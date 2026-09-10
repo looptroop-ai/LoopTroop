@@ -111,13 +111,15 @@ export interface StallGuard {
  * Declared here rather than re-exported from the source module on purpose: what
  * these types describe is the *generated copy*, and a test that imports it is
  * exercising the code that ships inside `install.sh` rather than the code it was
- * made from. `env` and `platform` are injectable so the Windows rules can be
- * tested off Windows.
+ * made from. `env`, `policyEnv` and `platform` are injectable so the Windows
+ * rules can be tested off Windows.
  */
 export function findTrustedExecutablePath(
   name: string,
   options?: {
     env?: NodeJS.ProcessEnv
+    /** Where the override, `SystemRoot` and `PATHEXT` are read. Defaults to `process.env`. */
+    policyEnv?: NodeJS.ProcessEnv
     platform?: NodeJS.Platform
     readMountTable?: () => string
     cache?: Map<string, unknown> | null

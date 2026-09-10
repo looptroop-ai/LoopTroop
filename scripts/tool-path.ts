@@ -18,7 +18,7 @@
  * refused and the variable that would allow it.
  */
 import { isAbsolute } from 'node:path'
-import { resolveTrustedProgram, searchListHasRelativeEntry } from '../server/lib/executablePath.ts'
+import { bareNameSearchReachesWorkingDirectory, resolveTrustedProgram } from '../server/lib/executablePath.ts'
 
 export interface ToolLookup {
   /**
@@ -28,6 +28,8 @@ export interface ToolLookup {
    * whichever older one the runner already had.
    */
   env?: NodeJS.ProcessEnv
+  /** Test seam: the platform whose rules apply. */
+  platform?: NodeJS.Platform
 }
 
 /** The file `name` runs as. Throws with the reason if there is no trusted one. */
@@ -65,10 +67,10 @@ export function quoteProgramForShell(path: string, platform: NodeJS.Platform = p
  * - **Not installed** falls back to the name, so the spawn's own ENOENT is the
  *   answer the caller already reports — `smoke-published.mjs` probes whether
  *   `yarn` exists. That is only safe when the operating system's search cannot
- *   reach anything the resolver did not already look at, so it is refused when
- *   the child's PATH has a relative or empty entry: the resolver skips those,
- *   the OS does not, and `PATH=/usr/bin:` — a trailing colon — ran `./tool` from
- *   the working directory.
+ *   reach the working directory, which the resolver never searches: never on
+ *   Windows, which looks there first whatever PATH says, and not on POSIX when
+ *   the child's PATH has a relative or empty entry — `PATH=/usr/bin:`, a
+ *   trailing colon, ran `./tool`.
  * - **A relative path** is never handed back: it would be run from whatever the
  *   working directory is.
  * - **Found, and refused** throws. Falling back there would spawn the exact file
@@ -82,17 +84,14 @@ export function quoteProgramForShell(path: string, platform: NodeJS.Platform = p
  * one that is already quoted.
  */
 export function spawnProgram(command: string, options: ToolLookup & { shell?: boolean | string } = {}): string {
-  const resolution = resolveTrustedProgram(command, { env: options.env, policyEnv: process.env })
+  const resolution = resolveTrustedProgram(command, { env: options.env, platform: options.platform })
   if (resolution.path === undefined) {
     if (resolution.refusedAt !== undefined) throw new Error(resolution.reason)
     if (/[\\/]/.test(command) && !isAbsolute(command)) {
       throw new Error(`${command} is a relative path, and it would run from the current directory: ${resolution.reason}`)
     }
-    if (searchListHasRelativeEntry(options.env ?? process.env)) {
-      throw new Error(
-        `${resolution.reason} Not falling back to the name: PATH has a relative or empty entry, and the operating system`
-        + ' would search the current directory for it.',
-      )
+    if (bareNameSearchReachesWorkingDirectory(options.env ?? process.env, options.platform)) {
+      throw new Error(`${resolution.reason} Not falling back to the name: the operating system would look for it in the current directory.`)
     }
     return command
   }

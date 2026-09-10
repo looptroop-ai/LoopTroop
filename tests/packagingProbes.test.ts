@@ -666,13 +666,25 @@ describe('shell command lines', () => {
 })
 
 describe('spawnProgram when a tool is not installed', () => {
-  it('refuses to fall back to the name when PATH would reach the current directory', () => {
-    // `PATH=/usr/bin:` ends in an empty entry, which the OS reads as the
-    // working directory. Handing back the bare name there ran `./tool`.
-    expect(() => spawnProgram('definitely-not-installed-anywhere', { env: { PATH: '/nonexistent-looptroop-bin:' } }))
-      .toThrow(/relative or empty entry/)
-    expect(spawnProgram('definitely-not-installed-anywhere', { env: { PATH: '/nonexistent-looptroop-bin' } }))
+  it('refuses to fall back to the name when the OS search would reach the current directory', () => {
+    // `PATH=/usr/bin:` ends in an empty entry, which POSIX reads as the working
+    // directory. Handing back the bare name there ran `./tool`.
+    expect(() => spawnProgram('definitely-not-installed-anywhere', { env: { PATH: '/nonexistent-looptroop-bin:' }, platform: 'linux' }))
+      .toThrow(/current directory/)
+    expect(spawnProgram('definitely-not-installed-anywhere', { env: { PATH: '/nonexistent-looptroop-bin' }, platform: 'linux' }))
       .toBe('definitely-not-installed-anywhere')
+    // Windows looks in the current directory first, whatever PATH says, so no
+    // PATH makes the fallback safe there. Only this process opting out does,
+    // and the variable is unset for the case: some hosts set it for everyone.
+    vi.stubEnv('NoDefaultCurrentDirectoryInExePath', undefined)
+    try {
+      expect(() => spawnProgram('definitely-not-installed-anywhere', {
+        env: { PATH: 'C:\\nonexistent-looptroop-bin' },
+        platform: 'win32',
+      })).toThrow(/current directory/)
+    } finally {
+      vi.unstubAllEnvs()
+    }
   })
 
   it('never hands back a relative path to run from the current directory', () => {

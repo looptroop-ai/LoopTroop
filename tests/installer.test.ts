@@ -1227,7 +1227,9 @@ describe('PATH resolution', () => {
    */
   function resolveOnPath(command: string, pathValue: string, pathExt: string): string | null {
     return findTrustedExecutablePath(command, {
-      env: { PATH: pathValue, PATHEXT: pathExt },
+      env: { PATH: pathValue },
+      // PATHEXT is policy, read from the caller's environment, not the child's.
+      policyEnv: { PATHEXT: pathExt },
       platform: 'win32',
       cache: null,
     })

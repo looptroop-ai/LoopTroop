@@ -1,13 +1,18 @@
-import { chmodSync, chownSync, mkdirSync, renameSync, statSync, symlinkSync, unlinkSync, utimesSync, writeFileSync } from 'node:fs'
+import { spawnSync } from 'node:child_process'
+import { chmodSync, chownSync, mkdirSync, mkdtempSync, realpathSync, renameSync, statSync, symlinkSync, unlinkSync, utimesSync, writeFileSync } from 'node:fs'
 import { delimiter, join, win32 } from 'node:path'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import { makeTempDir, removeTempDir } from '../../test/tempDir'
 import {
+  bareNameSearchReachesWorkingDirectory,
   findTrustedExecutablePath,
+  launchThroughInterpreter,
+  needsCommandInterpreter,
+  planProgramLaunch,
   requireTrustedExecutablePath,
+  resolveCommandInterpreter,
   resolveTrustedExecutable,
   resolveTrustedProgram,
-  searchListHasRelativeEntry,
   trustedSearchDirectories,
   TRUSTED_EXECUTABLE_DIRS_ENV,
   type CachedResolution,
@@ -27,8 +32,22 @@ afterEach(() => {
   for (const root of roots.splice(0)) removeTempDir(root)
 })
 
+/**
+ * A temp directory whose ancestors belong to root.
+ *
+ * Every directory above a tool is judged, and the unprivileged branch of
+ * `ownedBySomeoneElse` makes everything this user owns look foreign. macOS puts
+ * `tmpdir()` in `/var/folders/…/T`, which the user owns, so a case meant to be
+ * refused at one directory was refused at an ancestor instead — and a drive-mount
+ * case meant to pass was refused above the mount. `/tmp` is root's on both, and
+ * its real path is taken so the path as written and the real one agree.
+ */
+function makeRootOwnedTempDir(prefix: string): string {
+  return process.platform === 'win32' ? makeTempDir(prefix) : mkdtempSync(join(realpathSync('/tmp'), prefix))
+}
+
 function tempRoot(): string {
-  const root = makeTempDir('executable-path-')
+  const root = makeRootOwnedTempDir('executable-path-')
   roots.push(root)
   return root
 }
@@ -85,7 +104,8 @@ const itAsRoot = posix && process.getuid?.() === 0 ? it : it.skip
 describe('trustedSearchDirectories', () => {
   it('prepends the override, and does not use it to filter PATH', () => {
     const directories = trustedSearchDirectories({
-      env: { PATH: ['/usr/bin', '/usr/local/bin'].join(':'), [TRUSTED_EXECUTABLE_DIRS_ENV]: '/opt/tools' },
+      env: { PATH: ['/usr/bin', '/usr/local/bin'].join(':') },
+      policyEnv: { [TRUSTED_EXECUTABLE_DIRS_ENV]: '/opt/tools' },
       // POSIX rules, named: on a Windows host the default platform would seed
       // the real system directories and split on `;`.
       platform: 'linux',
@@ -235,7 +255,8 @@ describe('the trust-policy matrix', () => {
     const tool = makeExecutable(join(root, 'opt'), 'looptool')
 
     expect(findTrustedExecutablePath('looptool', {
-      env: { PATH: '/nonexistent', [TRUSTED_EXECUTABLE_DIRS_ENV]: join(root, 'opt') },
+      env: { PATH: '/nonexistent' },
+      policyEnv: { [TRUSTED_EXECUTABLE_DIRS_ENV]: join(root, 'opt') },
       platform: 'linux',
       cache: freshCache(),
     })).toBe(tool)
@@ -250,7 +271,8 @@ describe('the trust-policy matrix', () => {
     const restore = ownedBySomeoneElse(shared, tool)
     try {
       expect(findTrustedExecutablePath('looptool', {
-        env: { PATH: '', [TRUSTED_EXECUTABLE_DIRS_ENV]: shared },
+        env: { PATH: '' },
+        policyEnv: { [TRUSTED_EXECUTABLE_DIRS_ENV]: shared },
         platform: 'linux',
         cache: freshCache(),
       })).toBe(tool)
@@ -356,8 +378,9 @@ describe('Windows resolution', () => {
    * own `powershell.exe` answered before the test's.
    */
   const NO_WINDOWS = '/nonexistent-windows-root'
-  function windowsEnv(root: string, extra: NodeJS.ProcessEnv = {}): NodeJS.ProcessEnv {
-    return { PATH: join(root, 'bin'), USERPROFILE: root, SystemRoot: NO_WINDOWS, ...extra }
+  /** The child's PATH, and the policy — system root and PATHEXT — beside it, where it is read. */
+  function windowsOptions(root: string, policy: NodeJS.ProcessEnv = {}): { env: NodeJS.ProcessEnv; policyEnv: NodeJS.ProcessEnv } {
+    return { env: { PATH: join(root, 'bin'), USERPROFILE: root }, policyEnv: { SystemRoot: NO_WINDOWS, ...policy } }
   }
 
   it('applies PATHEXT to a bare name', () => {
@@ -368,7 +391,7 @@ describe('Windows resolution', () => {
     const exe = makeExecutable(join(root, 'bin'), 'tool.EXE')
 
     expect(findTrustedExecutablePath('tool', {
-      env: windowsEnv(root, { PATHEXT: '.COM;.EXE;.BAT;.CMD' }),
+      ...windowsOptions(root, { PATHEXT: '.COM;.EXE;.BAT;.CMD' }),
       platform: 'win32',
       cache: freshCache(),
     })).toBe(exe)
@@ -382,7 +405,7 @@ describe('Windows resolution', () => {
     const shim = makeExecutable(join(root, 'bin'), 'npm.CMD')
 
     expect(findTrustedExecutablePath('npm', {
-      env: windowsEnv(root, { PATHEXT: '.COM;.EXE;.BAT;.CMD' }),
+      ...windowsOptions(root, { PATHEXT: '.COM;.EXE;.BAT;.CMD' }),
       platform: 'win32',
       cache: freshCache(),
     })).toBe(shim)
@@ -393,7 +416,7 @@ describe('Windows resolution', () => {
     const exe = makeExecutable(join(root, 'bin'), 'powershell.EXE')
 
     expect(findTrustedExecutablePath('powershell.EXE', {
-      env: windowsEnv(root, { PATHEXT: '.COM;.EXE' }),
+      ...windowsOptions(root, { PATHEXT: '.COM;.EXE' }),
       platform: 'win32',
       cache: freshCache(),
     })).toBe(exe)
@@ -407,7 +430,8 @@ describe('Windows resolution', () => {
     const exe = makeExecutable(join(root, 'hostedtoolcache', 'node', 'x64'), 'npm.CMD')
 
     expect(findTrustedExecutablePath('npm', {
-      env: { PATH: join(root, 'hostedtoolcache', 'node', 'x64'), PATHEXT: '.EXE;.CMD', SystemRoot: NO_WINDOWS },
+      env: { PATH: join(root, 'hostedtoolcache', 'node', 'x64') },
+      policyEnv: { PATHEXT: '.EXE;.CMD', SystemRoot: NO_WINDOWS },
       platform: 'win32',
       cache: freshCache(),
     })).toBe(exe)
@@ -421,9 +445,9 @@ describe('Windows resolution', () => {
     // works from a shell whose PATH never mentions it.
     expect(trustedSearchDirectories({
       env: {
-        SystemRoot: 'C:\\Windows',
         PATH: ['C:\\Tools\\', '"C:\\Program Files\\nodejs"', '', '.', 'relative\\bin', 'c:\\windows\\system32'].join(win32.delimiter),
       },
+      policyEnv: { SystemRoot: 'C:\\Windows' },
       platform: 'win32',
     })).toEqual([
       'C:\\Windows\\System32',
@@ -436,7 +460,7 @@ describe('Windows resolution', () => {
   })
 
   it('seeds no system directories on any other platform', () => {
-    expect(trustedSearchDirectories({ env: { SystemRoot: 'C:\\Windows', PATH: '/usr/bin' }, platform: 'linux' }))
+    expect(trustedSearchDirectories({ env: { PATH: '/usr/bin' }, policyEnv: { SystemRoot: 'C:\\Windows' }, platform: 'linux' }))
       .toEqual(['/usr/bin'])
   })
 
@@ -445,10 +469,33 @@ describe('Windows resolution', () => {
     const exe = makeExecutable(join(root, 'bin'), 'tool.EXE')
 
     expect(findTrustedExecutablePath('tool', {
-      env: { PATH: `"${join(root, 'bin')}"`, USERPROFILE: root, PATHEXT: '.EXE', SystemRoot: NO_WINDOWS },
+      env: { PATH: `"${join(root, 'bin')}"`, USERPROFILE: root },
+      policyEnv: { PATHEXT: '.EXE', SystemRoot: NO_WINDOWS },
       platform: 'win32',
       cache: freshCache(),
     })).toBe(exe)
+  })
+
+  it('reads PATHEXT from the policy environment, not from the child\'s', () => {
+    // Which extensions make a file a program decides which file runs. A child
+    // environment putting `.CMD` ahead of `.EXE` chose the script.
+    const root = tempRoot()
+    makeExecutable(join(root, 'bin'), 'tool.CMD')
+    const exe = makeExecutable(join(root, 'bin'), 'tool.EXE')
+
+    expect(findTrustedExecutablePath('tool', {
+      env: { PATH: join(root, 'bin'), PATHEXT: '.CMD;.EXE' },
+      policyEnv: { PATHEXT: '.EXE;.CMD', SystemRoot: NO_WINDOWS },
+      platform: 'win32',
+      cache: freshCache(),
+    })).toBe(exe)
+  })
+
+  it('judges a Windows path by Windows rules when the program is named outright', () => {
+    // `C:\\...` is not absolute to the host's `path` off Windows, so it was sent
+    // to the name resolver and refused as "a path, not a program name".
+    expect(resolveTrustedProgram('C:\\nonexistent\\tool.exe', { platform: 'win32', policyEnv: { SystemRoot: NO_WINDOWS } }).reason)
+      .toBe('C:\\nonexistent\\tool.exe is not an executable file.')
   })
 })
 
@@ -513,7 +560,7 @@ describe('the WSL drive-mount exception', () => {
     // The mount point sits directly under the temp root, not below a directory
     // this test made: every directory above a tool is judged now, and the test's
     // own directories look foreign to the unprivileged branch of the helper.
-    const mountPoint = makeTempDir('executable path ')
+    const mountPoint = makeRootOwnedTempDir('executable path ')
     roots.push(mountPoint)
     const tool = makeExecutable(mountPoint, 'git.exe')
     const restore = ownedBySomeoneElse(mountPoint, tool)
@@ -672,7 +719,8 @@ describe('the resolution cache', () => {
     // Windows would look for looptool.EXE and find nothing, and the trust rule
     // is a different one; a shared key would hand it the POSIX answer.
     expect(findTrustedExecutablePath('looptool', {
-      env: { PATH: join(root, 'bin'), USERPROFILE: root, PATHEXT: '.EXE', SystemRoot: '/nonexistent-windows-root' },
+      env: { PATH: join(root, 'bin'), USERPROFILE: root },
+      policyEnv: { PATHEXT: '.EXE', SystemRoot: '/nonexistent-windows-root' },
       platform: 'win32',
       cache,
     })).toBeNull()
@@ -837,14 +885,265 @@ describe('round-2 trust rules', () => {
     }
   })
 
-  it('spots a search list the operating system would read as the current directory', () => {
-    // A bare-name fallback is only safe when the OS search cannot reach the
-    // working directory — and a trailing colon, the everyday result of
-    // `PATH=$PATH:`, is enough to reach it.
-    expect(searchListHasRelativeEntry({ PATH: '/usr/bin:/bin' }, 'linux')).toBe(false)
-    expect(searchListHasRelativeEntry({ PATH: '/usr/bin:' }, 'linux')).toBe(true)
-    expect(searchListHasRelativeEntry({ PATH: '.:/usr/bin' }, 'linux')).toBe(true)
-    expect(searchListHasRelativeEntry({ PATH: 'C:\\Windows;tools' }, 'win32')).toBe(true)
-    expect(searchListHasRelativeEntry({ PATH: 'C:\\Windows;"C:\\Program Files\\x"' }, 'win32')).toBe(false)
+})
+
+describe('round-3 trust rules', () => {
+  itPosix('reads the policy from this process, not from the environment being searched, by default', () => {
+    // The default used to be the child's environment, so every caller resolving
+    // for a child had to remember to split the two — and three did not.
+    const root = tempRoot()
+    const shared = join(root, 'shared')
+    makeExecutable(shared, 'looptool')
+    const restore = ownedBySomeoneElse(shared, join(shared, 'looptool'))
+    try {
+      const resolution = resolveTrustedExecutable('looptool', {
+        env: { PATH: shared, [TRUSTED_EXECUTABLE_DIRS_ENV]: shared },
+        platform: 'linux',
+        cache: freshCache(),
+      })
+      expect(resolution.refusedAt).toBe(join(shared, 'looptool'))
+      // And for a program named outright, which read it the same way.
+      expect(resolveTrustedProgram(join(shared, 'looptool'), { env: { [TRUSTED_EXECUTABLE_DIRS_ENV]: shared }, platform: 'linux' }).refusedAt)
+        .toBe(join(shared, 'looptool'))
+    } finally {
+      restore()
+    }
+  })
+
+  it('reads a POSIX PATH exactly as written, and a Windows one trimmed', () => {
+    // ` /usr/bin` is a directory called ` /usr/bin` in the working directory to
+    // `execvp`. Trimming it searched /usr/bin while the OS searched the checkout.
+    expect(trustedSearchDirectories({ env: { PATH: ' /usr/bin:/bin' }, policyEnv: {}, platform: 'linux' })).toEqual(['/bin'])
+    expect(trustedSearchDirectories({ env: { PATH: ' C:\\Tools ' }, policyEnv: { SystemRoot: 'relative' }, platform: 'win32' }))
+      .toEqual(['C:\\Tools'])
+  })
+
+  itPosix('judges the path as written, so a link inside somebody else\'s directory is refused', () => {
+    // The spawned path is the one written, and the OS follows the link in it
+    // again at spawn time. A walk of the real path alone passed `/bin` reached
+    // through a link that its owner could point anywhere.
+    const root = tempRoot()
+    const other = join(root, 'other')
+    mkdirSync(other)
+    symlinkSync('/bin', join(other, 'link'))
+    const restore = ownedBySomeoneElse(other)
+    try {
+      const found = resolveTrustedExecutable('sh', { env: { PATH: join(other, 'link') }, policyEnv: {}, platform: 'linux', cache: freshCache() })
+      expect(found.path).toBeUndefined()
+      expect(found.reason).toContain(`${other}, above its directory,`)
+
+      const named = resolveTrustedProgram(join(other, 'link', 'sh'), { policyEnv: {}, platform: 'linux' })
+      expect(named.refusedAt).toBe(join(other, 'link', 'sh'))
+    } finally {
+      restore()
+    }
+  })
+
+  itPosix('bounds the cache, dropping the oldest entry', () => {
+    // Keyed per search list, and every project's pathPrepend is another one.
+    const root = tempRoot()
+    const tool = makeExecutable(join(root, 'bin'), 'looptool')
+    const cache = freshCache()
+    const filler = { path: tool, dev: 0, ino: 0, mtimeMs: 0, size: 0, candidate: tool, candidateIdentity: { dev: 0, ino: 0, mtimeMs: 0 }, directory: '/', extension: '' }
+    for (let index = 0; index < 256; index += 1) cache.set(`filler-${index}`, filler)
+
+    expect(findTrustedExecutablePath('looptool', { env: { PATH: join(root, 'bin') }, policyEnv: {}, platform: 'linux', cache })).toBe(tool)
+    expect(cache.size).toBe(256)
+    expect(cache.has('filler-0')).toBe(false)
+    expect(cache.has('filler-1')).toBe(true)
+  })
+
+  it('knows when a bare-name spawn would look in the working directory', () => {
+    // POSIX: only when PATH says so. A trailing colon, the everyday result of
+    // `PATH=$PATH:`, says so.
+    expect(bareNameSearchReachesWorkingDirectory({ PATH: '/usr/bin:/bin' }, 'linux')).toBe(false)
+    expect(bareNameSearchReachesWorkingDirectory({ PATH: '/usr/bin:' }, 'linux')).toBe(true)
+    expect(bareNameSearchReachesWorkingDirectory({ PATH: '.:/usr/bin' }, 'linux')).toBe(true)
+    expect(bareNameSearchReachesWorkingDirectory({ PATH: ' /usr/bin' }, 'linux')).toBe(true)
+    // Windows: always, whatever PATH says — libuv and CreateProcess look in the
+    // current directory first — unless the spawning process opted out.
+    expect(bareNameSearchReachesWorkingDirectory({ PATH: 'C:\\Windows' }, 'win32', {})).toBe(true)
+    expect(bareNameSearchReachesWorkingDirectory({ PATH: 'C:\\Windows' }, 'win32', { NoDefaultCurrentDirectoryInExePath: '1' })).toBe(false)
+    expect(bareNameSearchReachesWorkingDirectory({ PATH: 'C:\\Windows;tools' }, 'win32', { NoDefaultCurrentDirectoryInExePath: '1' })).toBe(true)
+    // The opt-out is the spawning process's, so the child's does not count.
+    expect(bareNameSearchReachesWorkingDirectory({ PATH: 'C:\\Windows', NoDefaultCurrentDirectoryInExePath: '1' }, 'win32', {})).toBe(true)
+  })
+})
+
+/**
+ * What cmd.exe and then `CommandLineToArgvW` make of a line, written out so the
+ * escaping can be checked off Windows. The Windows-only case below runs the real
+ * thing.
+ */
+function cmdReads(line: string): string {
+  let out = ''
+  for (let index = 0; index < line.length; index += 1) {
+    const character = line[index]!
+    if (character === '^') {
+      out += line[index + 1] ?? ''
+      index += 1
+      continue
+    }
+    // Every quote is escaped, so cmd.exe never enters a quoted section; one that
+    // is not escaped, or a live separator or expansion, is the bug under test.
+    if ('"&|<>%!'.includes(character)) throw new Error(`cmd.exe would act on ${character} at ${index} in ${line}`)
+    out += character
+  }
+  return out
+}
+
+function argvOf(commandLine: string): string[] {
+  const args: string[] = []
+  let current = ''
+  let inQuotes = false
+  let started = false
+  for (let index = 0; index < commandLine.length; index += 1) {
+    const character = commandLine[index]!
+    if (character === '\\') {
+      let run = 0
+      while (commandLine[index + run] === '\\') run += 1
+      if (commandLine[index + run] === '"') {
+        current += '\\'.repeat(Math.floor(run / 2))
+        if (run % 2 === 1) current += '"'
+        else inQuotes = !inQuotes
+        index += run
+      } else {
+        current += '\\'.repeat(run)
+        index += run - 1
+      }
+      started = true
+    } else if (character === '"') {
+      inQuotes = !inQuotes
+      started = true
+    } else if ((character === ' ' || character === '\t') && !inQuotes) {
+      if (started) args.push(current)
+      current = ''
+      started = false
+    } else {
+      current += character
+      started = true
+    }
+  }
+  if (started) args.push(current)
+  return args
+}
+
+const TRICKY_ARGUMENTS = [
+  '',
+  'plain',
+  'with space',
+  'a&b|c<d>e',
+  '%PATH%',
+  '!USERNAME!',
+  '^caret^',
+  '(paren) [bracket]',
+  'semi;colon,comma',
+  'star*question?',
+  'back`tick',
+  'C:\\Program Files\\',
+  'trailing\\\\',
+  'a\\"b',
+  'a\\\\"b',
+  'say "hi"',
+  '"',
+  '\\',
+  'ünïcödé ✓',
+]
+
+describe('the cmd.exe launcher', () => {
+  it('sends only command scripts through cmd.exe, and only on Windows', () => {
+    expect(needsCommandInterpreter('C:\\nodejs\\npm.cmd', 'win32')).toBe(true)
+    expect(needsCommandInterpreter('C:\\tools\\build.BAT', 'win32')).toBe(true)
+    expect(needsCommandInterpreter('C:\\Git\\cmd\\git.exe', 'win32')).toBe(false)
+    expect(needsCommandInterpreter('C:\\tools\\tool', 'win32')).toBe(false)
+    expect(needsCommandInterpreter('/usr/bin/npm.cmd', 'linux')).toBe(false)
+  })
+
+  it('writes every argument so the program receives it unchanged', () => {
+    // Includes the runs of backslashes before a quote and at the end that
+    // cross-spawn 7.0.6 gets wrong: `trailing\\\\` arrived with one backslash and a quote.
+    const launch = launchThroughInterpreter('C:\\Windows\\System32\\cmd.exe', 'C:\\Program Files\\nodejs\\npm.cmd', TRICKY_ARGUMENTS)
+    expect(launch.file).toBe('C:\\Windows\\System32\\cmd.exe')
+    expect(launch.windowsVerbatimArguments).toBe(true)
+    expect(launch.args.slice(0, 3)).toEqual(['/d', '/s', '/c'])
+    const line = launch.args[3]!
+    expect(line.startsWith('"') && line.endsWith('"')).toBe(true)
+
+    const read = cmdReads(line.slice(1, -1))
+    const program = 'C:\\Program Files\\nodejs\\npm.cmd '
+    expect(read.startsWith(program)).toBe(true)
+    expect(argvOf(read.slice(program.length))).toEqual(TRICKY_ARGUMENTS)
+  })
+
+  it('escapes a node_modules\\.bin shim twice, because the shim reads its line again', () => {
+    const script = 'C:\\repo\\node_modules\\.bin\\eslint.cmd'
+    const line = launchThroughInterpreter('cmd.exe', script, TRICKY_ARGUMENTS).args[3]!
+    const firstRead = cmdReads(line.slice(1, -1))
+    expect(firstRead.startsWith(`${script} `)).toBe(true)
+    // The shim's own `%*` line is the second read.
+    expect(argvOf(cmdReads(firstRead.slice(script.length + 1)))).toEqual(TRICKY_ARGUMENTS)
+  })
+
+  it('finds cmd.exe from the policy environment, never the child\'s', () => {
+    const root = tempRoot()
+    const trusted = makeExecutable(join(root, 'system'), 'cmd.exe')
+    const planted = makeExecutable(join(root, 'planted'), 'cmd.exe')
+
+    expect(resolveCommandInterpreter({ env: { ComSpec: planted }, policyEnv: { ComSpec: trusted }, platform: 'win32' }).path).toBe(trusted)
+    expect(resolveCommandInterpreter({
+      env: { ComSpec: planted, PATH: '' },
+      policyEnv: { SystemRoot: '/nonexistent-windows-root' },
+      platform: 'win32',
+      cache: freshCache(),
+    }).path).toBeUndefined()
+  })
+
+  it('plans a direct spawn for everything that is not a Windows command script', () => {
+    expect(planProgramLaunch('/usr/bin/npm', ['ci'], { platform: 'linux' }))
+      .toEqual({ file: '/usr/bin/npm', args: ['ci'], windowsVerbatimArguments: false })
+    expect(planProgramLaunch('C:\\Git\\cmd\\git.exe', ['status'], { platform: 'win32' }))
+      .toEqual({ file: 'C:\\Git\\cmd\\git.exe', args: ['status'], windowsVerbatimArguments: false })
+  })
+
+  it('plans a command script through the resolved cmd.exe, or says why it cannot', () => {
+    const interpreter = () => ({ path: 'C:\\Windows\\System32\\cmd.exe' })
+    const launch = planProgramLaunch('C:\\nodejs\\npm.cmd', ['ci'], { platform: 'win32', resolveInterpreter: interpreter })
+    expect(launch.file).toBe('C:\\Windows\\System32\\cmd.exe')
+    expect(launch.args?.[3]).toBe('"C:\\nodejs\\npm.cmd ^"ci^""')
+
+    const missing = planProgramLaunch('C:\\nodejs\\npm.cmd', ['ci'], { platform: 'win32', resolveInterpreter: () => ({ reason: 'cmd.exe was not found.' }) })
+    expect(missing.reason).toBe('C:\\nodejs\\npm.cmd is a command script, which needs cmd.exe to run, and cmd.exe could not be used: cmd.exe was not found.')
+
+    // A line break ends a cmd.exe command line and drops what follows.
+    const broken = planProgramLaunch('C:\\nodejs\\npm.cmd', ['one\ntwo'], { platform: 'win32', resolveInterpreter: interpreter })
+    expect(broken.reason).toContain('cannot pass it an argument that contains a line break')
+  })
+
+  const onWindows = process.platform === 'win32' ? it : it.skip
+  onWindows('round-trips every argument through the real cmd.exe', () => {
+    // A shim that forwards `%*` to Node, as npm's do, in both places: a
+    // `node_modules\\.bin` shim (escaped twice) and anywhere else (once). The
+    // quote-bearing arguments go only to the first — a script elsewhere that
+    // forwards `%*` re-reads a quote, which is the documented limit.
+    const root = tempRoot()
+    const body = `@"${process.execPath}" -e "process.stdout.write(JSON.stringify(process.argv.slice(1)))" %*\r\n`
+    const shim = join(root, 'node_modules', '.bin', 'echoargs.cmd')
+    const plain = join(root, 'tools', 'echo args.cmd')
+    mkdirSync(join(root, 'node_modules', '.bin'), { recursive: true })
+    mkdirSync(join(root, 'tools'), { recursive: true })
+    writeFileSync(shim, body)
+    writeFileSync(plain, body)
+    const interpreter = resolveCommandInterpreter()
+    expect(interpreter.path).toBeDefined()
+
+    const run = (script: string, args: string[]): unknown => {
+      const launch = launchThroughInterpreter(interpreter.path!, script, args)
+      const result = spawnSync(launch.file, launch.args, { windowsVerbatimArguments: true, encoding: 'utf8' })
+      expect(result.status, result.stderr).toBe(0)
+      return JSON.parse(result.stdout)
+    }
+    expect(run(shim, TRICKY_ARGUMENTS)).toEqual(TRICKY_ARGUMENTS)
+    const quoteFree = TRICKY_ARGUMENTS.filter((arg) => !arg.includes('"'))
+    expect(run(plain, quoteFree)).toEqual(quoteFree)
   })
 })

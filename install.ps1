@@ -710,9 +710,9 @@ async function download(url, destination) {
  * searches them, and the structural rules. The override adds directories to
  * search; it cannot narrow the search, on Windows or anywhere else.
  *
- * The policy inputs — the override and the Windows system root — are read from
- * the environment the *caller* controls (`policyEnv`), never from the one a
- * child is being given. A command that could set its own
+ * The policy inputs — the override, the Windows system root, `PATHEXT` and
+ * `ComSpec` — are read from this process's environment (`policyEnv`), never
+ * from the one a child is being given. A command that could set its own
  * `LOOPTROOP_TRUSTED_EXECUTABLE_DIRS` could vouch for any directory it liked.
  *
  * `scripts/trusted-tool.ts` answers the same question with a *stricter* policy,
@@ -722,9 +722,15 @@ async function download(url, destination) {
  * machine and a container, where it is not.
  *
  * What it does not promise: resolution is followed by a spawn, and the file can
- * be replaced in between. `LOOPTROOP_TRUSTED_EXECUTABLE_DIRS` is an operator
- * telling the daemon where its tools are — it is not a defence against an
- * attacker who can already set this process's environment, and nothing here
+ * change in between. Spawning the entry rather than the real file widens that a
+ * little: a link in the entry's path can be pointed somewhere else after the
+ * check, and the operating system follows it again at spawn time. Whoever can do
+ * that owns a directory on the way, which the ownership rule has already
+ * refused — it walks the path as written as well as the real one — so the
+ * window is open to root, this user and the Node binary's owner, who could
+ * replace the tool outright anyway. `LOOPTROOP_TRUSTED_EXECUTABLE_DIRS` is an
+ * operator telling the daemon where its tools are — it is not a defence against
+ * an attacker who can already set this process's environment, and nothing here
  * pretends otherwise.
  *
  * Erasable TypeScript only, and `node:` imports only. `scripts` modules import
@@ -753,6 +759,9 @@ const DEFAULT_PATHEXT = '.COM;.EXE;.BAT;.CMD'
  * will not run it from. Falling back to the bare name after a refusal would
  * spawn the very file this module exists to refuse.
  */
+
+
+
 
 
 
@@ -803,9 +812,21 @@ const DEFAULT_PATHEXT = '.COM;.EXE;.BAT;.CMD'
 /**
  * Lives as long as the process does, and starts empty, so there is nothing to
  * clear on daemon start. Keyed per name, platform, extensions, override and
- * search list, so it grows with the number of distinct tools asked for.
+ * search list — and every project's `pathPrepend` is a different search list —
+ * so it is bounded, dropping the oldest entry once it holds this many. A miss
+ * costs one fresh resolution, never a wrong answer.
  */
 const processCache = new Map                          ()
+const CACHE_LIMIT = 256
+
+function remember(cache                               , key        , entry                  )       {
+  cache.delete(key)
+  if (cache.size >= CACHE_LIMIT) {
+    const oldest = cache.keys().next().value
+    if (oldest !== undefined) cache.delete(oldest)
+  }
+  cache.set(key, entry)
+}
 
 /** `node:path` for the platform being *described*, not the one running. */
 function pathFor(platform                 )                           {
@@ -826,7 +847,7 @@ function pathFor(platform                 )                           {
  */
 export function trustedSearchDirectories(options                           = {})           {
   const env = options.env ?? process.env
-  const policyEnv = options.policyEnv ?? env
+  const policyEnv = options.policyEnv ?? process.env
   const platform = options.platform ?? process.platform
   const p = pathFor(platform)
   const pathValue = env.PATH ?? env.Path ?? ''
@@ -838,22 +859,49 @@ export function trustedSearchDirectories(options                           = {})
 }
 
 /**
- * Whether a search list contains an entry the operating system would read as
- * the current directory — `.`, an empty segment, or any relative path.
+ * Whether spawning a *bare name* would let the operating system look in the
+ * current directory — so whether a caller may fall back to one after the
+ * resolver found nothing.
  *
- * The resolver skips those entries. A caller that falls back to spawning a bare
- * name after "not found" does not get that protection: the operating system
- * searches the same list and does not skip them, so `PATH=/usr/bin:` — a
- * trailing colon, the everyday result of `PATH=$PATH:` — ran `./tool` from the
- * working directory. Callers use this to know when a fallback is safe.
+ * The resolver never searches the working directory. The operating system's own
+ * search, which a bare-name spawn hands the choice to, sometimes does:
+ *
+ * - **POSIX** searches `PATH` exactly as written, and an empty or relative entry
+ *   is the working directory: `PATH=/usr/bin:` — a trailing colon, the everyday
+ *   result of `PATH=$PATH:` — ran `./tool`.
+ * - **Windows** looks in the current directory *before* `PATH`, whatever `PATH`
+ *   says. Both `CreateProcess` and libuv's own search (`src/win/process.c`,
+ *   "look in cwd first, then scan path") do it, and so does cmd.exe. The one
+ *   off switch is `NoDefaultCurrentDirectoryInExePath` in the environment of the
+ *   process doing the spawning — this one, which is why `callerEnv` is
+ *   `process.env` and not the child's.
  */
-export function searchListHasRelativeEntry(env                    = process.env, platform                  = process.platform)          {
+export function bareNameSearchReachesWorkingDirectory(
+  env                    = process.env,
+  platform                  = process.platform,
+  callerEnv                    = process.env,
+)          {
+  if (platform === 'win32' && callerEnv.NoDefaultCurrentDirectoryInExePath === undefined) return true
   const p = pathFor(platform)
   const pathValue = env.PATH ?? env.Path ?? ''
   return pathValue.split(p.delimiter).some((entry) => {
-    const directory = entry.trim().replace(/^"(.*)"$/, '$1')
+    const directory = asSearchDirectory(entry, platform)
     return directory === '' || !p.isAbsolute(directory)
   })
+}
+
+/**
+ * One raw `PATH` entry as a directory name.
+ *
+ * On Windows, trimmed and unquoted: `PATH` there is edited by hand in a dialog,
+ * and `"C:\Program Files\x"` is how Windows itself tolerates a space. On POSIX,
+ * exactly as written. An entry there is a directory name, byte for byte, and
+ * ` /usr/bin` with a leading space is a *relative* directory — one in the
+ * working directory. Trimming it made the resolver search `/usr/bin` while
+ * `execvp` searched the checkout.
+ */
+function asSearchDirectory(entry        , platform                 )         {
+  return platform === 'win32' ? entry.trim().replace(/^"(.*)"$/, '$1') : entry
 }
 
 /**
@@ -861,7 +909,7 @@ export function searchListHasRelativeEntry(env                    = process.env,
  *
  * Parsing follows the platform being described — its separator, what counts as
  * absolute, whether case matters when deciding two entries are the same — but
- * the value is only trimmed, never rewritten: `path.win32.normalize` turns
+ * the value is never rewritten beyond that: `path.win32.normalize` turns
  * `/tmp/x` into `\tmp\x`, which is correct for Windows and names nothing on the
  * Linux host the Windows rules are tested from. The file lookup is always the
  * host's.
@@ -871,9 +919,7 @@ function searchEntries(entries                   , platform                 )   
   const seen = new Set        ()
   const directories           = []
   for (const entry of entries) {
-    // Windows tolerates `"C:\Program Files\x"` in PATH and strips the quotes
-    // itself; `join` does not, and the quoted form resolves to nothing.
-    let directory = entry.trim().replace(/^"(.*)"$/, '$1')
+    let directory = asSearchDirectory(entry, platform)
     if (directory === '' || !p.isAbsolute(directory)) continue
     const root = p.parse(directory).root
     while (directory.length > root.length && /[\\/]$/.test(directory)) directory = directory.slice(0, -1)
@@ -947,6 +993,10 @@ function realpathOrNull(path        )                {
  * program, and `CreateProcess` never reads it — which is why a bare `npm`, an
  * `npm.cmd`, is invisible to a direct spawn. A name that already carries an
  * extension is taken as given.
+ *
+ * Read from the policy environment: which extensions make a file a program is
+ * part of deciding which file runs, and a child's `PATHEXT` putting `.JS` or
+ * `.PS1` ahead of `.EXE` would otherwise choose it.
  */
 function candidateExtensions(name        , platform                 , env                   )           {
   if (platform !== 'win32') return ['']
@@ -1044,6 +1094,8 @@ function trustedOwners()              {
 
 
 
+
+
 /**
  * Why `path` or a directory above it fails the ownership rule, or `null`.
  *
@@ -1052,6 +1104,12 @@ function trustedOwners()              {
  * from under a tool by whoever owns its *parent*. A root-owned `bin/tool` inside
  * somebody else's directory is theirs to replace.
  *
+ * Walked twice — along the path as written, and along the real path behind it.
+ * The spawned path is the one written, so its own parents decide who can
+ * retarget a link in it: a trusted `/usr/bin/git` reached through
+ * `/home/other/link -> /usr/bin` passed a walk of the real path alone, and
+ * `/home/other` could point the link anywhere between the check and the spawn.
+ *
  * Windows answers `null` because NTFS ownership is invisible to `fs.stat`. A
  * directory the operator named is excused, with everything above it — the
  * override is exactly how someone says "this belongs to a service account and
@@ -1059,15 +1117,18 @@ function trustedOwners()              {
  */
 function ownershipRefusal(path        , what        , context              )                {
   if (context.platform === 'win32' || context.namedByOperator) return null
-  const owners = trustedOwners()
   const real = realpathOrNull(path)
   if (real === null) return `its ${what} could not be inspected`
-  let current = real
+  return ancestorRefusal(trustedPath.resolve(path), what, context) ?? ancestorRefusal(real, what, context)
+}
+
+function ancestorRefusal(start        , what        , context              )                {
+  let current = start
   for (;;) {
     const stats = statOrNull(current)
     if (stats === null) return `its ${what} could not be inspected`
-    if (!owners.has(stats.uid) && !isWindowsDriveMount(current, context.readMountTable())) {
-      const whose = current === real ? `its ${what}` : `${current}, above its ${what},`
+    if (!context.owners.has(stats.uid) && !isWindowsDriveMount(current, context.readMountTable())) {
+      const whose = current === start ? `its ${what}` : `${current}, above its ${what},`
       return `${whose} is owned by uid ${stats.uid}, which is neither root, you, nor the owner of the Node running LoopTroop`
     }
     const parent = trustedPath.dirname(current)
@@ -1077,19 +1138,20 @@ function ownershipRefusal(path        , what        , context              )    
 }
 
 /**
- * Why the file behind `candidate` may not be run, or `null` when it may.
+ * Why `candidate` — and `target`, the real file behind it — may not be run, or
+ * `null` when it may.
  *
  * Judged on both sides of the link: the search directory, which is what `PATH`
- * offered, and the real file with its own directory. Checking only the first
- * was a gap — a link in a trusted directory could point into a tree someone else
- * owns. Homebrew and Nix still pass, because their stores belong to the user who
- * installed them or to root.
+ * offered, the path that will be spawned, and the real file with its own
+ * directory. Checking only the first was a gap — a link in a trusted directory
+ * could point into a tree someone else owns. Homebrew and Nix still pass,
+ * because their stores belong to the user who installed them or to root.
  */
-function candidateRefusal(directory        , target        , context              )                {
+function candidateRefusal(directory        , candidate        , target        , context              )                {
   if (!statOrNull(directory)?.isDirectory()) return 'its directory is not a directory'
   return ownershipRefusal(directory, 'directory', context)
     ?? ownershipRefusal(trustedPath.dirname(target), 'target directory', context)
-    ?? ownershipRefusal(target, 'file', context)
+    ?? ownershipRefusal(candidate, 'file', context)
 }
 
 function identityMatches(stats                        , entry                                  )          {
@@ -1128,16 +1190,22 @@ function cachedResolutionHolds(
   if (position === -1) return false
   for (const directory of directories.slice(0, position + 1)) {
     for (const extension of extensions) {
-      if (directory === entry.directory && extension === entry.extension) break
+      // Everything before the cached candidate, in search order, and nothing
+      // after it.
+      if (directory === entry.directory && extension === entry.extension) return entryStillHolds(entry, platform, context)
       if (isExecutableFile(trustedPath.join(directory, `${name}${extension}`), platform)) return false
     }
   }
+  return false
+}
+
+function entryStillHolds(entry                  , platform                 , context              )          {
   if (!identityMatches(lstatOrNull(entry.candidate), entry.candidateIdentity)) return false
   if (!isExecutableFile(entry.candidate, platform)) return false
   if (realpathOrNull(entry.candidate) !== entry.path) return false
   const stats = statOrNull(entry.path)
   if (!stats?.isFile() || !identityMatches(stats, entry)) return false
-  return candidateRefusal(entry.directory, entry.path, context) === null
+  return candidateRefusal(entry.directory, entry.candidate, entry.path, context) === null
 }
 
 /**
@@ -1153,10 +1221,11 @@ export function resolveTrustedExecutable(
   options                           = {},
 )                              {
   const env = options.env ?? process.env
-  const policyEnv = options.policyEnv ?? env
+  const policyEnv = options.policyEnv ?? process.env
   const platform = options.platform ?? process.platform
   const p = pathFor(platform)
   const readMountTable = options.readMountTable ?? readMountTableFromProc
+  const owners = trustedOwners()
 
   if (name === '') return { reason: 'An empty program name cannot be resolved.' }
   if (/[\\/]/.test(name) || p.isAbsolute(name)) {
@@ -1166,7 +1235,7 @@ export function resolveTrustedExecutable(
   const override = policyEnv[TRUSTED_EXECUTABLE_DIRS_ENV] ?? ''
   const directories = trustedSearchDirectories({ env, policyEnv, platform })
   const namedByOperator = new Set(searchEntries(override.split(p.delimiter), platform))
-  const extensions = candidateExtensions(name, platform, env)
+  const extensions = candidateExtensions(name, platform, policyEnv)
   const cache = options.cache === undefined ? processCache : options.cache
   // The override is in the key as well as in the directory list, because a
   // directory can be on both and only the override excuses the ownership rule.
@@ -1174,7 +1243,7 @@ export function resolveTrustedExecutable(
 
   const cached = cache?.get(cacheKey)
   if (cached) {
-    const context = { platform, readMountTable, namedByOperator: namedByOperator.has(cached.directory) }
+    const context = { platform, readMountTable, namedByOperator: namedByOperator.has(cached.directory), owners }
     if (cachedResolutionHolds(cached, name, directories, extensions, platform, context)) {
       return { path: cached.candidate, target: cached.path }
     }
@@ -1182,7 +1251,7 @@ export function resolveTrustedExecutable(
   }
 
   for (const directory of directories) {
-    const context = { platform, readMountTable, namedByOperator: namedByOperator.has(directory) }
+    const context = { platform, readMountTable, namedByOperator: namedByOperator.has(directory), owners }
     for (const extension of extensions) {
       // The host's `join`: whatever the platform being described, the file is
       // looked up on the filesystem this process is running on.
@@ -1191,7 +1260,7 @@ export function resolveTrustedExecutable(
       const target = realpathOrNull(candidate)
       const refusal = target === null
         ? 'it could not be resolved to a real file'
-        : candidateRefusal(directory, target, context)
+        : candidateRefusal(directory, candidate, target, context)
       if (target === null || refusal !== null) {
         return {
           reason: `${name} resolves to ${candidate}, which this daemon will not run: ${refusal}.`
@@ -1202,7 +1271,7 @@ export function resolveTrustedExecutable(
       const stats = statOrNull(target)
       const candidateStats = lstatOrNull(candidate)
       if (!stats?.isFile() || candidateStats === null) continue
-      cache?.set(cacheKey, {
+      if (cache) remember(cache, cacheKey, {
         path: target,
         dev: stats.dev,
         ino: stats.ino,
@@ -1254,18 +1323,23 @@ export function resolveTrustedProgram(
   options                           = {},
 )                              {
   const platform = options.platform ?? process.platform
-  if (!trustedPath.isAbsolute(program)) return resolveTrustedExecutable(program, options)
+  const p = pathFor(platform)
+  if (!p.isAbsolute(program)) return resolveTrustedExecutable(program, options)
   if (!isExecutableFile(program, platform)) return { reason: `${program} is not an executable file.` }
   const target = realpathOrNull(program)
   if (target === null) return { reason: `${program} could not be resolved to a real path.` }
-  const policyEnv = options.policyEnv ?? options.env ?? process.env
-  const named = new Set(searchEntries((policyEnv[TRUSTED_EXECUTABLE_DIRS_ENV] ?? '').split(pathFor(platform).delimiter), platform))
+  const policyEnv = options.policyEnv ?? process.env
+  const named = new Set(searchEntries((policyEnv[TRUSTED_EXECUTABLE_DIRS_ENV] ?? '').split(p.delimiter), platform))
+  const directory = trustedPath.dirname(program)
   const context = {
     platform,
     readMountTable: options.readMountTable ?? readMountTableFromProc,
-    namedByOperator: named.has(trustedPath.dirname(program)),
+    namedByOperator: named.has(directory),
+    owners: trustedOwners(),
   }
-  const refusal = ownershipRefusal(trustedPath.dirname(target), 'directory', context) ?? ownershipRefusal(target, 'file', context)
+  // The path as named is judged as well as the real one: it is what gets
+  // spawned, so a link on the way to it is followed again at spawn time.
+  const refusal = candidateRefusal(directory, program, target, context)
   if (refusal !== null) {
     return {
       reason: `${program} will not be run: ${refusal}. Set ${TRUSTED_EXECUTABLE_DIRS_ENV} to its directory if that location is deliberate.`,
@@ -1280,6 +1354,142 @@ export function requireTrustedExecutablePath(name        , options              
   const resolution = resolveTrustedExecutable(name, options)
   if (resolution.path === undefined) throw new Error(resolution.reason)
   return resolution.path
+}
+
+/**
+ * How to start a resolved program: the file to spawn, its arguments, and whether
+ * Node must pass those arguments through untouched.
+ */
+
+
+
+
+
+
+/** A launch, or the reason a program cannot be started faithfully. Never both. */
+
+
+
+
+/**
+ * Whether `program` can only be started through cmd.exe.
+ *
+ * Windows starts `.exe` and `.com` images itself. A `.cmd` or `.bat` is a script
+ * for cmd.exe, and Node has refused to spawn one directly since the BatBadBut
+ * fix (CVE-2024-27980) — which is how a correctly resolved `npm.cmd` failed to
+ * start with EINVAL. Only those two go through cmd.exe. cross-spawn sends every
+ * non-image there, but cmd.exe given a name without an extension looks for it
+ * with each `PATHEXT` extension added, and would run a sibling `tool.cmd`
+ * rather than the `tool` that was resolved.
+ */
+export function needsCommandInterpreter(program        , platform                  = process.platform)          {
+  return platform === 'win32' && /\.(?:bat|cmd)$/i.test(program)
+}
+
+/**
+ * cmd.exe, found the way any other program is.
+ *
+ * `ComSpec` names it when Windows set it — read from the policy environment, so
+ * a child's cannot choose it — and is held to the rules for a program named by
+ * path. Otherwise `cmd.exe` is found through the system directories, which are
+ * searched first. There is no bare-name fallback: `shell: true` would have Node
+ * look `cmd.exe` up itself, and that is the lookup this module exists to remove.
+ */
+export function resolveCommandInterpreter(options                           = {})                              {
+  const policyEnv = options.policyEnv ?? process.env
+  const named = policyEnv.ComSpec?.trim() || policyEnv.COMSPEC?.trim()
+  return named ? resolveTrustedProgram(named, options) : resolveTrustedExecutable('cmd.exe', options)
+}
+
+/** cmd.exe's metacharacters, the set qntm.org/cmd and cross-spawn escape. */
+const CMD_METACHARACTERS = /[()\][%!^"`<>&|;, *?]/g
+
+function escapeForCmd(value        )         {
+  return value.replace(CMD_METACHARACTERS, '^$&')
+}
+
+/**
+ * One argument, written so the program started through cmd.exe receives it
+ * unchanged.
+ *
+ * Two parsers read it, and each gets its own layer (qntm.org/cmd):
+ *
+ * 1. `CommandLineToArgvW`, which the program splits its command line with. The
+ *    argument is wrapped in quotes; backslashes are literal except in a run that
+ *    ends at a quote, and such a run is doubled.
+ * 2. cmd.exe, which reads the line first. Every metacharacter, the quotes
+ *    included, gets a `^`, so cmd.exe never enters a quoted section, never
+ *    expands `%NAME%`, and never reads `&` or `|` as anything but text.
+ *
+ * The backslashes are counted in a loop. cross-spawn 7.0.6 does that step with a
+ * regular expression rewritten to avoid backtracking, which keeps only one
+ * backslash of a run: `x\\` arrived as `x\"`.
+ *
+ * A `node_modules\.bin` shim reads its line through cmd.exe a second time —
+ * the `%*` in npm's shims — so its arguments are escaped twice, as cross-spawn
+ * does. Other command scripts get one layer, which is right for a script that
+ * reads `%~1`; one that forwards `%*` elsewhere re-reads an argument containing
+ * a double quote.
+ */
+function quoteArgumentForCmd(value        , escapeTwice         )         {
+  let quoted = ''
+  let backslashes = 0
+  for (const character of value) {
+    if (character === '\\') {
+      backslashes += 1
+      continue
+    }
+    quoted += '\\'.repeat(character === '"' ? backslashes * 2 + 1 : backslashes) + character
+    backslashes = 0
+  }
+  const escaped = escapeForCmd(`"${quoted}${'\\'.repeat(backslashes * 2)}"`)
+  return escapeTwice ? escapeForCmd(escaped) : escaped
+}
+
+/**
+ * The spawn that runs the command script `program` through `interpreter`.
+ *
+ * `/d` skips the AutoRun commands the registry can attach to every cmd.exe.
+ * `/s /c` with the whole line in one pair of quotes has cmd.exe strip exactly
+ * that pair and run what is inside, and `windowsVerbatimArguments` stops Node
+ * quoting the line a second time. The script's own path gets the metacharacter
+ * escape only: cmd.exe reads it as the command, not as an argument, and the
+ * space in `C:\Program Files` would otherwise end it.
+ */
+export function launchThroughInterpreter(interpreter        , program        , args                   )                {
+  const script = trustedPath.win32.normalize(program)
+  const escapeTwice = /node_modules[\\/]\.bin[\\/][^\\/]+\.cmd$/i.test(script)
+  const line = [escapeForCmd(script), ...args.map((arg) => quoteArgumentForCmd(arg, escapeTwice))].join(' ')
+  return { file: interpreter, args: ['/d', '/s', '/c', `"${line}"`], windowsVerbatimArguments: true }
+}
+
+
+
+
+
+
+/**
+ * How to start `program`, already resolved, with `args`: directly, or for a
+ * Windows command script through a resolved cmd.exe. Every launcher in the
+ * daemon, the scripts and the installer goes through here, so cmd.exe is quoted
+ * one way.
+ *
+ * A reason instead of a launch when the program cannot be started as asked:
+ * cmd.exe cannot be used, or an argument holds a line break, which ends a
+ * cmd.exe command line and would drop every argument after it without a word.
+ */
+export function planProgramLaunch(program        , args                   , options                       = {})                    {
+  if (!needsCommandInterpreter(program, options.platform ?? process.platform)) {
+    return { file: program, args: [...args], windowsVerbatimArguments: false }
+  }
+  if (args.some((arg) => /[\r\n]/.test(arg))) {
+    return { reason: `${program} is a command script, and cmd.exe cannot pass it an argument that contains a line break.` }
+  }
+  const interpreter = options.resolveInterpreter?.() ?? resolveCommandInterpreter(options)
+  if (interpreter.path === undefined) {
+    return { reason: `${program} is a command script, which needs cmd.exe to run, and cmd.exe could not be used: ${interpreter.reason}` }
+  }
+  return launchThroughInterpreter(interpreter.path, program, args)
 }
 // --- END executable-path ---
 

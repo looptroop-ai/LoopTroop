@@ -600,3 +600,15 @@ describe('OpenCode supervision', () => {
     expect(supervisor.current.kind).toBe('degraded')
   })
 })
+
+describe('OpenCodeMissingError', () => {
+  it('says "install it" for a missing binary, and the refusal for a refused one', () => {
+    // Same class either way — both degrade the same — but telling someone
+    // whose OpenCode is installed to install it was the wrong advice.
+    expect(new OpenCodeMissingError('http://127.0.0.1:4096').message).toContain('is not on PATH')
+
+    const refused = new OpenCodeMissingError('http://127.0.0.1:4096', 'its directory is owned by uid 4242.')
+    expect(refused.message).toContain('will not be run: its directory is owned by uid 4242.')
+    expect(refused.message).not.toContain('Install it from')
+  })
+})

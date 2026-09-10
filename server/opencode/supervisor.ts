@@ -1,7 +1,7 @@
 import { spawn, type ChildProcess } from 'node:child_process'
 import { setTimeout as delay } from 'node:timers/promises'
 import { isProcessAlive, killProcessTree } from '../cli/processControl'
-import { findTrustedExecutablePath } from '../lib/executablePath'
+import { resolveTrustedExecutable } from '../lib/executablePath'
 import { getErrorMessage } from '@shared/typeGuards'
 
 /** Attempts after a crash before the daemon stops trying and reports degraded. */
@@ -31,11 +31,18 @@ export type OpenCodeStatus =
   | { kind: 'degraded'; baseUrl: string; reason: string }
 
 export class OpenCodeMissingError extends Error {
-  constructor(baseUrl: string) {
-    super(
-      `OpenCode is not running at ${baseUrl} and the \`opencode\` command is not on PATH.\n` +
-      'Install it from https://opencode.ai, or start it yourself with `opencode serve`.',
-    )
+  /**
+   * `refusal` is set when an `opencode` *was* found and the resolver would not
+   * run it. The error stays the same class — it degrades exactly as a missing
+   * binary does — but "not on PATH, install it" is the wrong thing to tell
+   * someone whose OpenCode is installed in a directory this machine refuses.
+   */
+  constructor(baseUrl: string, refusal?: string) {
+    super(refusal === undefined
+      ? `OpenCode is not running at ${baseUrl} and the \`opencode\` command is not on PATH.\n`
+        + 'Install it from https://opencode.ai, or start it yourself with `opencode serve`.'
+      : `OpenCode is not running at ${baseUrl}, and the \`opencode\` that was found will not be run: ${refusal}\n`
+        + 'Start it yourself with `opencode serve`, or move it somewhere owned by you or by root.')
     this.name = 'OpenCodeMissingError'
   }
 }
@@ -211,9 +218,16 @@ export class OpenCodeSupervisor {
     //
     // An unresolvable `opencode` raises the same error a missing one already
     // does, so nothing that used to degrade becomes a new kind of failure.
-    const resolveProgram = this.options.resolveProgram ?? findTrustedExecutablePath
-    const program = resolveProgram('opencode')
-    if (program === null) throw new OpenCodeMissingError(this.options.baseUrl)
+    let program: string | null
+    let refusal: string | undefined
+    if (this.options.resolveProgram) {
+      program = this.options.resolveProgram('opencode')
+    } else {
+      const resolution = resolveTrustedExecutable('opencode')
+      program = resolution.path ?? null
+      refusal = resolution.refusedAt === undefined ? undefined : resolution.reason
+    }
+    if (program === null) throw new OpenCodeMissingError(this.options.baseUrl, refusal)
 
     // Node has refused to launch a `.cmd` or `.bat` directly since the BatBadBut
     // hardening, so an npm-installed OpenCode still needs a shell. What changed

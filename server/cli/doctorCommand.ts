@@ -1,5 +1,5 @@
 import { execFileSync } from 'node:child_process'
-import { resolveTrustedProgram } from '../lib/executablePath'
+import { resolveTrustedProgram, TRUSTED_EXECUTABLE_DIRS_ENV } from '../lib/executablePath'
 import { existsSync, accessSync, constants } from 'node:fs'
 import { resolveAppConfigDir } from '../lib/appConfigDir'
 import { resolveSettings, getSettingsPath } from '../lib/appSettings'
@@ -133,12 +133,33 @@ function installHint(tool: string): string {
   }
 }
 
+/**
+ * The `detail` and `remedy` for a tool doctor could not run.
+ *
+ * A refusal keeps `missing: true` — it degrades as a missing tool does, and
+ * `missing` is a key other programs read — but says what actually happened.
+ * Reporting a tool that is installed as "not found on PATH", with an install
+ * hint, sent people to reinstall something they had.
+ */
+function unavailable(probe: ProbeResult, detail: string, remedy: string): { detail: string; remedy: string } {
+  if (probe.kind !== 'unavailable' || probe.refusal === undefined) return { detail, remedy }
+  return {
+    detail: probe.refusal,
+    remedy: `Set ${TRUSTED_EXECUTABLE_DIRS_ENV} to that directory if the tool is meant to be there, or install it somewhere owned by you or by root.`,
+  }
+}
+
 /** What running one of doctor's probe commands established. */
 export type ProbeResult =
   | { kind: 'ok'; output: string }
   | { kind: 'timed-out' }
-  /** Not on PATH, or on it and exiting non-zero. */
-  | { kind: 'unavailable' }
+  /**
+   * Not on PATH, or on it and exiting non-zero — or found and refused, in which
+   * case `refusal` says why. A refused tool degrades exactly as a missing one
+   * does, but the advice differs: "install it" is wrong for a tool that is
+   * installed, somewhere this machine will not run it from.
+   */
+  | { kind: 'unavailable'; refusal?: string }
 
 /**
  * Runs one of doctor's probe commands under a deadline.
@@ -170,7 +191,9 @@ export function runProbe(command: string, args: string[], timeoutMs: number): Pr
   // which is what `doctor` already says about a tool that is not installed —
   // with the reason now naming the directory instead of a syscall.
   const resolution = resolveTrustedProgram(command)
-  if (resolution.path === undefined) return { kind: 'unavailable' }
+  if (resolution.path === undefined) {
+    return resolution.refusedAt === undefined ? { kind: 'unavailable' } : { kind: 'unavailable', refusal: resolution.reason }
+  }
   const program = resolution.path
 
   // The shell used to be here to resolve a *name* — `npm` to `npm.cmd` — which
@@ -288,8 +311,7 @@ function checkNpm(latest: string | null = null): Check {
       name: 'npm',
       status: 'warn',
       missing: true,
-      detail: 'not found on PATH',
-      remedy: 'npm ships with Node. A Node installed without it cannot run the npm upgrade path.',
+      ...unavailable(probe, 'not found on PATH', 'npm ships with Node. A Node installed without it cannot run the npm upgrade path.'),
     }
   }
 
@@ -322,8 +344,7 @@ function checkBinary(
     name,
     status: required ? 'fail' : 'warn',
     missing: true,
-    detail: 'not found on PATH',
-    remedy: installHint(name),
+    ...unavailable(probe, 'not found on PATH', installHint(name)),
   }
 }
 
@@ -492,8 +513,7 @@ function checkOpenCodeVersion(latest: string | null = null): Check {
     // A server that is already running can still serve LoopTroop, so a missing
     // binary is only a problem for starting one. Whether that is survivable is
     // decided by `judgeOpenCode`, which can see both facts at once.
-    detail: 'not found on PATH',
-    remedy: 'Install it from https://opencode.ai, or point LOOPTROOP_OPENCODE_BASE_URL at a running server.',
+    ...unavailable(probe, 'not found on PATH', 'Install it from https://opencode.ai, or point LOOPTROOP_OPENCODE_BASE_URL at a running server.'),
   }
 }
 

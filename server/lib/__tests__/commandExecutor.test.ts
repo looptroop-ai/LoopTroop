@@ -1,4 +1,4 @@
-import { chmodSync, mkdirSync, writeFileSync } from 'node:fs'
+import { chmodSync, mkdirSync, symlinkSync, writeFileSync } from 'node:fs'
 import { join } from 'node:path'
 import { EventEmitter } from 'node:events'
 import type { spawn } from 'node:child_process'
@@ -73,6 +73,40 @@ describe('resolveCommandProgram', () => {
       cwd: join(repository, 'tools'),
       repoRoot: repository,
     })).toEqual({ path: tool })
+  })
+
+  it.runIf(process.platform !== 'win32')('refuses a relative program whose link leads out of the repository', () => {
+    // The lexical check passes `tools/check`; `realpath` then follows it. Without
+    // a second check after resolution, a link in the repository ran whatever it
+    // pointed at.
+    const repository = makeRepo()
+    const outside = makeRepo()
+    const target = makeExecutable(outside, 'evil')
+    mkdirSync(join(repository, 'tools'), { recursive: true })
+    symlinkSync(target, join(repository, 'tools', 'check'))
+
+    const resolution = resolveCommandProgram('./check', {
+      env: { PATH: '' },
+      cwd: join(repository, 'tools'),
+      repoRoot: repository,
+    })
+
+    expect(resolution.path).toBeUndefined()
+    expect(resolution.reason).toContain('must stay within the repository root')
+    expect(resolution.refusedAt).toBeDefined()
+  })
+
+  it.runIf(process.platform !== 'win32')('accepts a relative program linked to another file inside the repository', () => {
+    const repository = makeRepo()
+    const target = makeExecutable(join(repository, 'scripts'), 'real-check')
+    mkdirSync(join(repository, 'tools'), { recursive: true })
+    symlinkSync(target, join(repository, 'tools', 'check'))
+
+    expect(resolveCommandProgram('./check', {
+      env: { PATH: '' },
+      cwd: join(repository, 'tools'),
+      repoRoot: repository,
+    })).toEqual({ path: target })
   })
 
   it('refuses a relative program that climbs out of the repository', () => {
@@ -280,6 +314,89 @@ describe('executeCommand', () => {
     expect(result.exitCode).toBeNull()
     expect(result.signal).toBeNull()
     expect(result.stderr).toContain('was not found in any trusted directory')
+  })
+
+  it('prepends to the PATH the command declared, not to the one it replaced', async () => {
+    // `pathPrepend` read the base environment and so discarded a PATH the
+    // command itself had set.
+    const repository = makeRepo()
+    mkdirSync(join(repository, 'node_modules', '.bin'), { recursive: true })
+    let seenPath: string | undefined
+    await executeCommand({
+      mode: 'process',
+      program: 'tool',
+      args: [],
+      cwd: '.',
+      env: { PATH: '/declared/by/the/command' },
+    }, {
+      repoRoot: repository,
+      platform: 'linux',
+      env: { PATH: '/from/the/daemon' },
+      runtimeEnvironment: { pathPrepend: ['node_modules/.bin'], variables: {} },
+      resolveProgram: () => ({ path: '/usr/bin/tool' }),
+      spawnProcess: ((_file: string, _args: string[], options: { env: NodeJS.ProcessEnv }) => {
+        seenPath = options.env.PATH
+        const child = makeUnkillableChild()
+        setImmediate(() => child.emit('close', 0, null))
+        return child
+      }) as unknown as typeof spawn,
+    })
+
+    expect(seenPath).toBe([join(repository, 'node_modules', '.bin'), '/declared/by/the/command'].join(':'))
+  })
+
+  it('starts a resolved Windows command script through cmd.exe, with its arguments quoted', async () => {
+    // npm is npm.cmd on Windows, and Node refuses to launch one directly since
+    // the BatBadBut hardening: a process-mode `npm test` resolved correctly and
+    // then failed to start with EINVAL.
+    let seen: { file: string; args: string[]; verbatim?: boolean } | undefined
+    await executeCommand({
+      mode: 'process',
+      program: 'npm',
+      args: ['run', 'test:unit', 'a b', 'x&y'],
+      cwd: '.',
+      env: {},
+    }, {
+      repoRoot: makeRepo(),
+      platform: 'windows',
+      env: { ComSpec: 'C:\\Windows\\System32\\cmd.exe' },
+      resolveProgram: () => ({ path: 'C:\\Program Files\\nodejs\\npm.cmd' }),
+      spawnProcess: ((file: string, args: string[], options: { windowsVerbatimArguments?: boolean }) => {
+        seen = { file, args, verbatim: options.windowsVerbatimArguments }
+        const child = makeUnkillableChild()
+        setImmediate(() => child.emit('close', 0, null))
+        return child
+      }) as unknown as typeof spawn,
+    })
+
+    expect(seen).toEqual({
+      file: 'C:\\Windows\\System32\\cmd.exe',
+      args: ['/d', '/s', '/c', '""C:\\Program Files\\nodejs\\npm.cmd" run test:unit "a b" "x&y""'],
+      verbatim: true,
+    })
+  })
+
+  it('spawns a resolved Windows program directly', async () => {
+    let seen: { file: string; args: string[]; verbatim?: boolean } | undefined
+    await executeCommand({
+      mode: 'process',
+      program: 'git',
+      args: ['status'],
+      cwd: '.',
+      env: {},
+    }, {
+      repoRoot: makeRepo(),
+      platform: 'windows',
+      resolveProgram: () => ({ path: 'C:\\Program Files\\Git\\cmd\\git.exe' }),
+      spawnProcess: ((file: string, args: string[], options: { windowsVerbatimArguments?: boolean }) => {
+        seen = { file, args, verbatim: options.windowsVerbatimArguments }
+        const child = makeUnkillableChild()
+        setImmediate(() => child.emit('close', 0, null))
+        return child
+      }) as unknown as typeof spawn,
+    })
+
+    expect(seen).toEqual({ file: 'C:\\Program Files\\Git\\cmd\\git.exe', args: ['status'], verbatim: false })
   })
 
   it('rejects traversal before starting a process', async () => {

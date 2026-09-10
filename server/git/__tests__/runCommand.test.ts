@@ -5,7 +5,13 @@ import {
   runCommand,
   runCommandBinarySync,
   runCommandSync,
+  runGit,
+  runGitBinarySync,
+  runGitSync,
 } from '../runCommand'
+import { chmodSync, mkdirSync, writeFileSync } from 'node:fs'
+import { join } from 'node:path'
+import { makeTempDir, removeTempDir } from '../../test/tempDir'
 
 // Real child processes, no module mocking: the point of these is that the
 // runner's guarantees hold against the operating system, not against a stub.
@@ -137,5 +143,42 @@ describe('server/git/runCommand', () => {
 
   it('defaults to the timeout the established runner used', () => {
     expect(GIT_DEFAULT_TIMEOUT_MS).toBe(30_000)
+  })
+
+  it.runIf(process.platform !== 'win32')('resolves the program against the environment the child gets', () => {
+    // Resolving against `process.env` while spawning with the caller's `env`
+    // let the two disagree: a tool on the caller's PATH alone was reported
+    // missing, and a caller that narrowed PATH on purpose had it ignored.
+    const root = makeTempDir('run-command-env-')
+    try {
+      mkdirSync(join(root, 'bin'), { recursive: true })
+      writeFileSync(join(root, 'bin', 'only-here'), '#!/bin/sh\necho found\n')
+      chmodSync(join(root, 'bin', 'only-here'), 0o755)
+
+      const result = runCommandSync('only-here', [], { env: { PATH: join(root, 'bin') }, log: false })
+
+      expect(result.ok).toBe(true)
+      expect(result.stdout).toBe('found')
+    } finally {
+      removeTempDir(root)
+    }
+  })
+
+  it('refuses a git working directory that is not an absolute path, on every git entry point', async () => {
+    // `git -C <path>` puts the caller's value straight into git's arguments.
+    // A relative one would be read against the daemon's own working directory,
+    // and is the only shape that could begin with `-` and be taken as an option.
+    // Reported the way a missing git is — never thrown — because every caller
+    // already handles a failed git command.
+    for (const bad of ['relative/project', '-c', '', `/tmp/with\u0000nul`]) {
+      const sync = runGitSync(bad, ['status'], { log: false })
+      const binary = runGitBinarySync(bad, ['status'], { log: false })
+      const async = await runGit(bad, ['status'], { log: false })
+      for (const result of [sync, binary, async]) {
+        expect(result.ok).toBe(false)
+        expect(result.status).toBeNull()
+        expect(result.errorDetail).toMatch(/working directory/)
+      }
+    }
   })
 })

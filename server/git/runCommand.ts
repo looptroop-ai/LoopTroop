@@ -26,6 +26,7 @@
  */
 
 import { spawn, spawnSync } from 'node:child_process'
+import { isAbsolute, resolve } from 'node:path'
 import { resolveTrustedProgram } from '../lib/executablePath'
 import * as commandLogger from '../log/commandLogger'
 
@@ -184,8 +185,11 @@ function isTimeoutError(error: Error | undefined): boolean {
  * `ok: false` with the message in `errorDetail`, and the message here names the
  * directory and the override rather than saying ENOENT.
  */
-function resolveBin(bin: string): { path: string; failure?: undefined } | { path?: undefined; failure: Error } {
-  const resolution = resolveTrustedProgram(bin)
+function resolveBin(bin: string, options: RunCommandOptions | undefined): { path: string; failure?: undefined } | { path?: undefined; failure: Error } {
+  // Against the environment the child will actually get. Resolving against
+  // `process.env` while spawning with a caller's `env` let the two disagree:
+  // a caller that narrowed PATH on purpose had it ignored.
+  const resolution = resolveTrustedProgram(bin, { env: buildEnv(options?.env) })
   return resolution.path === undefined ? { failure: new Error(resolution.reason) } : { path: resolution.path }
 }
 
@@ -194,7 +198,7 @@ function unresolvedOutcome<TOut>(failure: Error, empty: TOut): RawOutcome<TOut> 
 }
 
 function runSyncRaw(bin: string, args: string[], options: RunCommandOptions | undefined): RawOutcome<Buffer> {
-  const resolved = resolveBin(bin)
+  const resolved = resolveBin(bin, options)
   if (resolved.path === undefined) return unresolvedOutcome(resolved.failure, Buffer.alloc(0))
 
   const spawned = spawnSync(resolved.path, args, {
@@ -238,6 +242,32 @@ export function runCommandBinarySync(bin: string, args: string[], options?: RunC
 }
 
 /**
+ * The directory handed to `git -C`, or why it cannot be one.
+ *
+ * Every `runGit*` call puts a caller's path straight into git's argument
+ * vector, and several of those paths trace back to a request. So it is held to
+ * what a working directory has to be: a non-empty absolute path with no NUL in
+ * it. Absolute is the rule that matters — a relative one would be read against
+ * the daemon's own working directory, which is never the project anyone meant,
+ * and it is the only way a value could start with `-` and be read as an option.
+ *
+ * A path that fails is reported the way a missing `git` is — `ok: false` with
+ * the reason — and never thrown, because every caller already handles a failed
+ * git command and none of them expects this function to raise. Containing the
+ * path inside a known project is PR-16's work; this is the shape check.
+ */
+function gitWorkingDirectory(projectPath: string): { path: string; failure?: undefined } | { path?: undefined; failure: Error } {
+  if (typeof projectPath !== 'string' || projectPath.trim() === '') {
+    return { failure: new Error('git needs a working directory, and none was given.') }
+  }
+  if (projectPath.includes('\0')) return { failure: new Error('A git working directory cannot contain a NUL byte.') }
+  if (!isAbsolute(projectPath)) {
+    return { failure: new Error(`A git working directory must be an absolute path, and '${projectPath}' is not.`) }
+  }
+  return { path: resolve(projectPath) }
+}
+
+/**
  * Runs `git -C <projectPath> <args>` synchronously.
  *
  * Never throws on a non-zero exit — each call site keeps its own contract for
@@ -245,12 +275,16 @@ export function runCommandBinarySync(bin: string, args: string[], options?: RunC
  * `repository` throws).
  */
 export function runGitSync(projectPath: string, args: string[], options?: RunCommandOptions): RunCommandResult {
-  return runCommandSync('git', ['-C', projectPath, ...args], options)
+  const directory = gitWorkingDirectory(projectPath)
+  if (directory.path === undefined) return finish(unresolvedOutcome(directory.failure, ''), 'git', args, options)
+  return runCommandSync('git', ['-C', directory.path, ...args], options)
 }
 
 /** As `runGitSync`, with stdout left undecoded. */
 export function runGitBinarySync(projectPath: string, args: string[], options?: RunCommandOptions): RunCommandBinaryResult {
-  return runCommandBinarySync('git', ['-C', projectPath, ...args], options)
+  const directory = gitWorkingDirectory(projectPath)
+  if (directory.path === undefined) return finish(unresolvedOutcome(directory.failure, Buffer.alloc(0)), 'git', args, options)
+  return runCommandBinarySync('git', ['-C', directory.path, ...args], options)
 }
 
 /** Throwing wrapper for the callers whose contract is "throw on failure". */
@@ -269,7 +303,7 @@ function runAsyncRaw(bin: string, args: string[], options: RunCommandOptions | u
   const timeoutMs = options?.timeoutMs ?? GIT_DEFAULT_TIMEOUT_MS
   const maxBuffer = options?.maxBuffer ?? GIT_MAX_BUFFER_BYTES
 
-  const resolved = resolveBin(bin)
+  const resolved = resolveBin(bin, options)
   if (resolved.path === undefined) return Promise.resolve(unresolvedOutcome(resolved.failure, ''))
 
   return new Promise((settleWith) => {
@@ -427,7 +461,9 @@ export async function runCommand(bin: string, args: string[], options?: RunComma
 
 /** Runs `git -C <projectPath> <args>` without blocking the event loop. */
 export function runGit(projectPath: string, args: string[], options?: RunCommandOptions): Promise<RunCommandResult> {
-  return runCommand('git', ['-C', projectPath, ...args], options)
+  const directory = gitWorkingDirectory(projectPath)
+  if (directory.path === undefined) return Promise.resolve(finish(unresolvedOutcome(directory.failure, ''), 'git', args, options))
+  return runCommand('git', ['-C', directory.path, ...args], options)
 }
 
 /** Throwing wrapper for the async callers whose contract is "throw on failure". */

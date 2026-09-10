@@ -1,5 +1,5 @@
 import { spawn } from 'node:child_process'
-import { existsSync } from 'node:fs'
+import { existsSync, realpathSync } from 'node:fs'
 import { isAbsolute, relative, resolve } from 'node:path'
 import type { CommandSpec, RuntimeEnvironment } from '../../shared/commandSpec'
 import type { CommandShellKind, HostPlatform } from '../../shared/hostContext'
@@ -151,7 +151,65 @@ export function resolveCommandProgram(
   } catch {
     return { reason: `Command program must stay within the repository root: ${program}` }
   }
-  return resolveTrustedProgram(contained)
+  const resolution = resolveTrustedProgram(contained)
+  if (resolution.path === undefined) return resolution
+  // Checked again *after* `realpath`, against the repository's own real path.
+  // The lexical check above passes `tools/check`, and `resolveTrustedProgram`
+  // then follows it — so a link at `tools/check` pointing at `/tmp/anything`
+  // passed containment and ran outside the repository. The root is
+  // canonicalised too, or a repository reached through a symlinked parent (the
+  // macOS `/var` → `/private/var` case) would reject its own files.
+  const root = realpathOrSelf(context.repoRoot)
+  const step = relative(root, resolution.path)
+  if (step === '' || step.startsWith('..') || isAbsolute(step)) {
+    return { reason: `Command program must stay within the repository root: ${program} leads to ${resolution.path}`, refusedAt: contained }
+  }
+  return resolution
+}
+
+function realpathOrSelf(path: string): string {
+  try {
+    return realpathSync(path)
+  } catch {
+    return resolve(path)
+  }
+}
+
+/**
+ * One cmd.exe token, quoted only when leaving it bare would change it.
+ *
+ * Quoting everything breaks a batch shim that compares `%1`, because cmd hands
+ * the argument over with the quotes still on; quoting nothing lets a space or a
+ * `&` in a plan's argument split or chain the command. The same rule
+ * `scripts/installer-core.mjs` uses for the same job.
+ */
+function quoteForCmd(value: string): string {
+  if (!/[\s&|<>^()"]/.test(value)) return value
+  return `"${value.replace(/"/g, '""')}"`
+}
+
+/**
+ * How to start `program` on this host.
+ *
+ * The resolver returns `npm.cmd` for `npm` on Windows, because that is what
+ * `npm` is there — and Node has refused to launch a `.cmd` or `.bat` directly
+ * since the BatBadBut hardening, so a process-mode `npm test` resolved
+ * correctly and then failed to start with EINVAL. A command script goes through
+ * `cmd.exe /d /s /c` with every token quoted here, and
+ * `windowsVerbatimArguments` so Node does not add a second layer of quoting.
+ * Everything else is spawned directly.
+ */
+function launchPlan(
+  program: string,
+  args: string[],
+  platform: HostPlatform,
+  env: NodeJS.ProcessEnv,
+): { file: string; args: string[]; windowsVerbatimArguments: boolean } {
+  if (platform !== 'windows' || !/\.(cmd|bat)$/i.test(program)) {
+    return { file: program, args, windowsVerbatimArguments: false }
+  }
+  const line = `"${[`"${program}"`, ...args.map(quoteForCmd)].join(' ')}"`
+  return { file: env.ComSpec || env.COMSPEC || 'cmd.exe', args: ['/d', '/s', '/c', line], windowsVerbatimArguments: true }
 }
 
 export async function executeCommand(
@@ -176,9 +234,12 @@ export async function executeCommand(
     ...command.env,
   }
   if (pathPrepend.length > 0) {
+    // Prepended to the PATH the command will actually get, which is the merged
+    // one: reading the base environment here discarded a `PATH` the command or
+    // the runtime variables had set on purpose.
     environment.PATH = [
       ...pathPrepend,
-      baseEnvironment.PATH ?? baseEnvironment.Path ?? '',
+      environment.PATH ?? environment.Path ?? '',
     ].filter(Boolean).join(pathSeparator)
   }
 
@@ -203,10 +264,13 @@ export async function executeCommand(
     }
   }
 
+  const launch = launchPlan(resolvedProgram.path, invocation.args, platform, environment)
+
   return await new Promise<CommandExecutionResult>((resolveExecution) => {
-    const child = spawnProcess(resolvedProgram.path, invocation.args, {
+    const child = spawnProcess(launch.file, launch.args, {
       cwd,
       env: environment,
+      windowsVerbatimArguments: launch.windowsVerbatimArguments,
       stdio: ['ignore', 'pipe', 'pipe'],
       detached: platform !== 'windows',
     })

@@ -72,9 +72,19 @@ describe('probing external commands on Windows', () => {
   it('reports a tool the resolver refuses as unavailable', () => {
     // The same answer `doctor` already gives for a tool that is not installed,
     // which is what the report has to keep saying: nothing here becomes fatal.
-    resolveTrustedProgram.mockReturnValue({ reason: 'npm resolves to /tmp/npm, in a directory this daemon does not trust' })
+    resolveTrustedProgram.mockReturnValue({ reason: 'npm was not found in any trusted directory on PATH.' })
 
     expect(withPlatform('win32', () => runProbe('npm', ['--version'], 5_000))).toEqual({ kind: 'unavailable' })
+    expect(execFileSync).not.toHaveBeenCalled()
+  })
+
+  it('carries the reason for a refused tool, so the report does not tell you to install it', () => {
+    // Found and refused is not "not found on PATH": the tool is installed, and
+    // the install hint that used to follow was advice to reinstall it.
+    const reason = 'npm resolves to /srv/tools/npm, which this daemon will not run: its directory is owned by uid 4242.'
+    resolveTrustedProgram.mockReturnValue({ reason, refusedAt: '/srv/tools/npm' })
+
+    expect(withPlatform('linux', () => runProbe('npm', ['--version'], 5_000))).toEqual({ kind: 'unavailable', refusal: reason })
     expect(execFileSync).not.toHaveBeenCalled()
   })
 

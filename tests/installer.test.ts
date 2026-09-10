@@ -1689,4 +1689,3 @@ describe('runTool when a tool is not installed', () => {
     expect(quoteForCmd('')).toBe('""')
   })
 })
-

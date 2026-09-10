@@ -683,4 +683,3 @@ describe('spawnProgram when a tool is not installed', () => {
     expect(shellCommandLine('C:\\x\\tool.cmd', ['a', '', 'b'], 'win32')).toBe('"C:\\x\\tool.cmd" a "" b')
   })
 })
-

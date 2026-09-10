@@ -97,7 +97,9 @@ try {
   // add minutes and prove nothing about this package.
   run('choco', [
     'install', 'looptroop', '--version', version,
-    ...(nupkg === null ? [] : ['--source', `"${dirname(nupkg)}"`]),
+    // Raw: `run` builds the command line and quotes each argument itself, so a
+    // pre-quoted value arrived with a second, literal layer of quotes.
+    ...(nupkg === null ? [] : ['--source', dirname(nupkg)]),
     '--yes', '--no-progress', '--ignore-dependencies',
   ])
 

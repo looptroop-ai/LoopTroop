@@ -1243,6 +1243,8 @@ export function requireTrustedExecutablePath(name        , options              
  */
 export function quoteForCmd(value) {
   const text = String(value)
+  // An empty argument is still an argument; left bare it vanishes from the line.
+  if (text === '') return '""'
   if (!/[\s&|<>^()"]/.test(text)) return text
   return `"${text.replace(/"/g, '""')}"`
 }
@@ -1272,19 +1274,26 @@ export function quoteForCmd(value) {
  * `install.ps1` and cannot import anything at all.
  */
 export function runTool(command, args, options = {}) {
-  const resolution = resolveTrustedExecutable(command)
+  // Against the environment the child gets, with the trust policy read from
+  // this process's own — the installer's caller is the operator.
+  const env = options.env ?? process.env
+  const resolution = resolveTrustedExecutable(command, { env, policyEnv: process.env })
   // Found and refused stops here, with the reason. Falling through to a bare
-  // name — which this did — made the child search the same PATH and run the
-  // exact file the resolver had just refused.
+  // name made the child search the same PATH and run the exact file the
+  // resolver had just refused.
   if (resolution.refusedAt !== undefined) {
     fail(resolution.reason, `Set ${TRUSTED_EXECUTABLE_DIRS_ENV} to that directory if the tool is meant to be there.`)
   }
-  // Not installed at all is left to fail as ENOENT, deliberately: the caller's
-  // own message about a missing tool is better advice than one invented here,
-  // and every caller of this has one.
+  // Not installed at all fails as ENOENT, the way a missing tool always has —
+  // every caller has its own message for that — but it is *reported*, not
+  // produced by spawning the bare name. The operating system's search does not
+  // skip the relative and empty PATH entries the resolver skips, so with
+  // `PATH=/usr/bin:` a bare `npm` ran `./npm` from wherever the installer was
+  // started: a Downloads folder, typically.
   const resolved = resolution.path ?? null
   if (resolved === null) {
-    return spawnSync(command, args, { ...options, shell: false })
+    const error = Object.assign(new Error(`spawnSync ${command} ENOENT`), { code: 'ENOENT', errno: -2, syscall: `spawnSync ${command}`, path: command })
+    return { pid: 0, output: [null, '', ''], stdout: '', stderr: '', status: null, signal: null, error }
   }
 
   // A real executable image, or any POSIX file: spawn it directly.
@@ -1304,8 +1313,12 @@ export function runTool(command, args, options = {}) {
   // Windows set it; otherwise `cmd.exe` is resolved like any other tool — from
   // the system directories the resolver searches first — rather than handed to
   // a bare-name spawn, which is the one lookup this whole file exists to avoid.
-  const interpreter = process.env.ComSpec || findTrustedExecutablePath('cmd.exe')
-  if (!interpreter) fail('cmd.exe could not be found, and it is needed to run command scripts on Windows.')
+  // `ComSpec` is held to the same rules as any program named by path.
+  const named = process.env.ComSpec?.trim()
+  const interpreter = named
+    ? resolveTrustedProgram(named).path
+    : findTrustedExecutablePath('cmd.exe')
+  if (!interpreter) fail('cmd.exe could not be used, and it is needed to run command scripts on Windows.', named ? `ComSpec names ${named}.` : '')
   return spawnSync(interpreter, ['/d', '/s', '/c', line], {
     ...options,
     shell: false,

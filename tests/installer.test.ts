@@ -1664,3 +1664,29 @@ describe('runTool', () => {
     }
   })
 })
+
+describe('runTool when a tool is not installed', () => {
+  it.runIf(process.platform !== 'win32')('reports ENOENT instead of letting the OS search the current directory', () => {
+    // The resolver skips relative and empty PATH entries; the operating system
+    // does not. With a trailing colon — the everyday result of `PATH=$PATH:` —
+    // a bare-name fallback ran `./looptool` from the child's working directory.
+    const dir = realpathSync(mkdtempSync(join(tmpdir(), 'looptroop-runtool-cwd-')))
+    const marker = join(dir, 'ran')
+    writeFileSync(join(dir, 'looptool'), `#!/bin/sh\ntouch '${marker}'\n`)
+    chmodSync(join(dir, 'looptool'), 0o755)
+    try {
+      const result = runTool('looptool', [], { cwd: dir, env: { PATH: '/nonexistent-looptroop-bin:' } })
+
+      expect(result.status).toBeNull()
+      expect((result.error as NodeJS.ErrnoException | undefined)?.code).toBe('ENOENT')
+      expect(existsSync(marker)).toBe(false)
+    } finally {
+      removeTempDir(dir)
+    }
+  })
+
+  it('keeps an empty argument as an argument', () => {
+    expect(quoteForCmd('')).toBe('""')
+  })
+})
+

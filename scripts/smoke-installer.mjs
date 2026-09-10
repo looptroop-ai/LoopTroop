@@ -20,7 +20,7 @@ import { existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync }
 import { tmpdir } from 'node:os'
 import { dirname, join, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
-import { toolPath } from './tool-path.ts'
+import { shellCommandLine, toolPath } from './tool-path.ts'
 
 const repoRoot = resolve(dirname(fileURLToPath(import.meta.url)), '..')
 const IS_WINDOWS = process.platform === 'win32'
@@ -36,14 +36,12 @@ const expectedVersion = JSON.parse(readFileSync(join(repoRoot, 'package.json'), 
 const work = mkdtempSync(join(tmpdir(), 'looptroop-installer-smoke-'))
 
 try {
-  // Quoted only when a shell will parse it. On Unix there is no shell, so the
-  // quotes would become part of the path and npm would write nowhere useful.
-  const packDestination = IS_WINDOWS ? `"${work}"` : work
-  // Quoted for the same reason the destination is: npm resolves to
-  // `npm.cmd` under `C:\Program Files\nodejs`, and an unquoted path through
-  // cmd.exe stops at the first space.
+  // npm is `npm.cmd` on Windows, so it goes through the shell there — as one
+  // command line with the program and every argument quoted by
+  // `shellCommandLine`, rather than an array Node joins unquoted.
   const npm = toolPath('npm')
-  const pack = spawnSync(IS_WINDOWS ? `"${npm}"` : npm, ['pack', '--pack-destination', packDestination, '--silent'], {
+  const packArgs = ['pack', '--pack-destination', work, '--silent']
+  const pack = spawnSync(IS_WINDOWS ? shellCommandLine(npm, packArgs) : npm, IS_WINDOWS ? [] : packArgs, {
     cwd: repoRoot,
     encoding: 'utf8',
     shell: IS_WINDOWS,
@@ -150,7 +148,7 @@ try {
     )
   }
 
-  const version = spawnSync(IS_WINDOWS ? `"${installed}"` : installed, ['--version'], { encoding: 'utf8', shell: IS_WINDOWS })
+  const version = spawnSync(IS_WINDOWS ? shellCommandLine(installed, ['--version']) : installed, IS_WINDOWS ? [] : ['--version'], { encoding: 'utf8', shell: IS_WINDOWS })
   if (version.stdout.trim() !== expectedVersion) {
     fail(`The installed command reports ${version.stdout.trim() || '(nothing)'}, expected ${expectedVersion}.`)
   }

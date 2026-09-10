@@ -17,7 +17,8 @@
  * its tool has nothing to degrade to, and the message names the directory it
  * refused and the variable that would allow it.
  */
-import { resolveTrustedProgram } from '../server/lib/executablePath.ts'
+import { isAbsolute } from 'node:path'
+import { resolveTrustedProgram, searchListHasRelativeEntry } from '../server/lib/executablePath.ts'
 
 export interface ToolLookup {
   /**
@@ -59,24 +60,40 @@ export function quoteProgramForShell(path: string, platform: NodeJS.Platform = p
  * The program to hand `spawn`, given the name a caller wrote.
  *
  * The difference from `toolPath` is what happens when there is no answer, and
- * the two failures are not alike:
+ * the failures are not alike:
  *
- * - **Not installed** falls back to the name. Every caller of this already
- *   reports a missing tool from the spawn's own `ENOENT`, often as the thing
- *   being tested — `smoke-published.mjs` probes whether `yarn` exists — and
- *   turning that into a throw would change what those scripts measure.
+ * - **Not installed** falls back to the name, so the spawn's own ENOENT is the
+ *   answer the caller already reports — `smoke-published.mjs` probes whether
+ *   `yarn` exists. That is only safe when the operating system's search cannot
+ *   reach anything the resolver did not already look at, so it is refused when
+ *   the child's PATH has a relative or empty entry: the resolver skips those,
+ *   the OS does not, and `PATH=/usr/bin:` — a trailing colon — ran `./tool` from
+ *   the working directory.
+ * - **A relative path** is never handed back: it would be run from whatever the
+ *   working directory is.
  * - **Found, and refused** throws. Falling back there would spawn the exact file
  *   this is meant to refuse.
  *
+ * The trust policy is read from this process's environment, not the child's:
+ * the child's is what the script is about to build, and a script that could
+ * vouch for a directory by writing its own child env could vouch for anything.
+ *
  * `shell` quotes the result with `quoteProgramForShell`. Pass the raw path, not
- * one that is already quoted: a quoted string is neither a name nor an absolute
- * path, so it used to fall through to the not-found branch and reach the shell
- * unresolved.
+ * one that is already quoted.
  */
 export function spawnProgram(command: string, options: ToolLookup & { shell?: boolean | string } = {}): string {
-  const resolution = resolveTrustedProgram(command, { env: options.env })
+  const resolution = resolveTrustedProgram(command, { env: options.env, policyEnv: process.env })
   if (resolution.path === undefined) {
     if (resolution.refusedAt !== undefined) throw new Error(resolution.reason)
+    if (/[\\/]/.test(command) && !isAbsolute(command)) {
+      throw new Error(`${command} is a relative path, and it would run from the current directory: ${resolution.reason}`)
+    }
+    if (searchListHasRelativeEntry(options.env ?? process.env)) {
+      throw new Error(
+        `${resolution.reason} Not falling back to the name: PATH has a relative or empty entry, and the operating system`
+        + ' would search the current directory for it.',
+      )
+    }
     return command
   }
   return options.shell ? quoteProgramForShell(resolution.path) : resolution.path
@@ -93,7 +110,8 @@ export function spawnProgram(command: string, options: ToolLookup & { shell?: bo
  * set.
  */
 export function quoteArgForShell(value: string, platform: NodeJS.Platform = process.platform): string {
-  if (platform === 'win32') return /[\s&|<>^()"]/.test(value) ? `"${value.replace(/"/g, '""')}"` : value
+  // An empty argument is still an argument; left bare it vanishes from the line.
+  if (platform === 'win32') return value === '' || /[\s&|<>^()"]/.test(value) ? `"${value.replace(/"/g, '""')}"` : value
   return /^[\w@%+=:,./-]+$/.test(value) ? value : `'${value.replace(/'/g, `'\\''`)}'`
 }
 

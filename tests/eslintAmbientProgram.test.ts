@@ -30,6 +30,11 @@ const PROBE = [
   "db.exec('BEGIN')",                                                            // 17 ok: not a process
   "spawnSync('/bin/sh', ['-c', 'true'], { shell: true })",                       // 18 shell with a literal
   'undefinedHelper()',                                                           // 19 no-undef (.mjs)
+  "import * as proc from 'node:child_process'",                                  // 20 namespace alias
+  "proc.execSync('git status')",                                                 // 21 (the alias is caught at 20)
+  'const run = promisify(execFile)',                                             // 22 promisify alias
+  "const worker = { spawn: (job) => job }",                                      // 23
+  "worker.spawn('job')",                                                         // 24 ok: not child_process
 ].join('\n')
 
 async function flaggedLines(filePath: string): Promise<number[]> {
@@ -40,13 +45,13 @@ async function flaggedLines(filePath: string): Promise<number[]> {
 
 describe('the ambient-program lint rule', () => {
   it('flags every bypass and nothing legitimate, in a script', async () => {
-    expect(await flaggedLines('scripts/__lint-probe.mjs')).toEqual([1, 6, 7, 8, 9, 11, 12, 13, 18, 19])
+    expect(await flaggedLines('scripts/__lint-probe.mjs')).toEqual([1, 6, 7, 8, 9, 11, 12, 13, 18, 19, 20, 22])
   })
 
   it('applies to server code too, where no-undef is left to TypeScript', async () => {
     const lines = await flaggedLines('server/__lint-probe.ts')
-    for (const line of [1, 6, 7, 8, 9, 11, 12, 13, 18]) expect(lines).toContain(line)
-    for (const line of [14, 15, 17]) expect(lines).not.toContain(line)
+    for (const line of [1, 6, 7, 8, 9, 11, 12, 13, 18, 20, 22]) expect(lines).toContain(line)
+    for (const line of [14, 15, 17, 24]) expect(lines).not.toContain(line)
   })
 
   it('leaves test scaffolding alone, which spawns git against fixture repositories by design', async () => {

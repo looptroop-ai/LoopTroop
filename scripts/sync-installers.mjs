@@ -132,10 +132,32 @@ const resolverBody = stripTypeScriptTypes(readFileSync(RESOLVER_PATH, 'utf8'), {
 // resolver may import Node built-ins and nothing else. A relative import parses
 // and passes `--check` below, and then fails on the first machine that runs the
 // installer — so it is refused here, where the constraint can be enforced.
-for (const match of resolverBody.matchAll(/^\s*(?:import|export)\b[^'"]*from\s*['"]([^'"]+)['"]/gm)) {
-  if (!match[1].startsWith('node:')) {
+//
+// Every way JavaScript can load a module, not only `import … from`: a bare
+// `import './x'` and a dynamic `import('./x')` or `require('./x')` parse and pass
+// `--check` just the same. Read a line at a time with patterns that cannot
+// backtrack across the whole file.
+const MODULE_SPECIFIERS = [
+  /\bfrom\s*['"]([^'"\n]+)['"]/g,
+  /^\s*import\s*['"]([^'"\n]+)['"]/g,
+  /\bimport\s*\(\s*['"]([^'"\n]+)['"]/g,
+  /\brequire\s*\(\s*['"]([^'"\n]+)['"]/g,
+]
+function moduleSpecifiers(source) {
+  const found = []
+  for (const line of source.split('\n')) {
+    const code = line.trimStart()
+    if (code.startsWith('//') || code.startsWith('*') || code.startsWith('/*')) continue
+    for (const pattern of MODULE_SPECIFIERS) {
+      for (const match of line.matchAll(pattern)) found.push(match[1])
+    }
+  }
+  return found
+}
+for (const specifier of moduleSpecifiers(resolverBody)) {
+  if (!specifier.startsWith('node:')) {
     fail(
-      `server/lib/executablePath.ts imports '${match[1]}', and the installer copy of it can import nothing but node: built-ins.`,
+      `server/lib/executablePath.ts imports '${specifier}', and the installer copy of it can import nothing but node: built-ins.`,
       'The installer runs from a temporary file with no repository beside it. Inline what it needs instead.',
     )
   }

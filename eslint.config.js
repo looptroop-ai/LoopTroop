@@ -113,12 +113,31 @@ const BARE_PROGRAM_SHAPES = [
 const ambientProgramRules = [
   ...BARE_PROGRAM_SHAPES.flatMap((shape) => [
     { selector: `CallExpression[callee.name=/^(${SPAWN_CALLEES})$/]${shape}`, message: RESOLVE_MESSAGE },
-    { selector: `CallExpression[callee.property.name=/^(${SPAWN_METHODS})$/]${shape}`, message: RESOLVE_MESSAGE },
+    // A method call only counts on a `child_process` namespace. Matching any
+    // object's `.spawn(…)` flagged `worker.spawn('job')` as a process launch,
+    // which is how a rule earns suppressions. A namespace under any other name
+    // is refused below, so this list is the whole set.
     {
-      selector: `CallExpression[callee.object.name=/^(${CHILD_PROCESS_NAMESPACES})$/][callee.property.name=/^(exec|execSync)$/]${shape}`,
+      selector: `CallExpression[callee.object.name=/^(${CHILD_PROCESS_NAMESPACES})$/][callee.property.name=/^(${SPAWN_METHODS}|exec|execSync)$/]${shape}`,
       message: RESOLVE_MESSAGE,
     },
   ]),
+  {
+    // `import * as proc from 'node:child_process'` hides every `proc.exec(…)`
+    // from the clause above, which knows the namespace by name.
+    selector:
+      "ImportDeclaration[source.value=/^(node:)?child_process$/] > ImportNamespaceSpecifier"
+      + `[local.name!=/^(${CHILD_PROCESS_NAMESPACES})$/]`,
+    message: `Import the child_process namespace as one of: ${CHILD_PROCESS_NAMESPACES.split('|').join(', ')}. Any other name hides its calls from the rule that requires programs to be resolved.`,
+  },
+  {
+    // `const run = promisify(execFile)` is a launcher under a name the rule has
+    // never heard of. The two names it knows are the ones this codebase uses.
+    selector:
+      "VariableDeclarator[init.type='CallExpression'][init.callee.name='promisify']"
+      + `[init.arguments.0.name=/^(${SPAWN_CALLEES})$/][id.name!=/^(execFileAsync|execAsync)$/]`,
+    message: 'Name a promisified child_process launcher execFileAsync or execAsync, so the ambient-program rule can see its calls.',
+  },
   {
     // `import { spawn as launch }` gives the rule a callee name it cannot
     // know. Nothing here needs the alias, so it is refused rather than tracked.

@@ -19,7 +19,7 @@ import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync } from 'node:f
 import { tmpdir } from 'node:os'
 import { basename, dirname, join, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
-import { toolPath } from './tool-path.ts'
+import { shellCommandLine, toolPath } from './tool-path.ts'
 
 const repoRoot = resolve(dirname(fileURLToPath(import.meta.url)), '..')
 const IS_WINDOWS = process.platform === 'win32'
@@ -67,10 +67,11 @@ try {
   const wrapper = join(root, 'bin', IS_WINDOWS ? 'looptroop.cmd' : 'looptroop')
   if (!existsSync(wrapper)) fail(`The bundle has no ${IS_WINDOWS ? 'bin/looptroop.cmd' : 'bin/looptroop'}.`)
 
-  // Quoted, and through a shell only on Windows: node cannot execute a `.cmd`
-  // directly, and an unquoted path through `cmd.exe` breaks on the first space.
-  const invoke = IS_WINDOWS ? `"${wrapper}"` : wrapper
-  const version = spawnSync(invoke, ['--version'], { encoding: 'utf8', shell: IS_WINDOWS })
+  // Through a shell only on Windows, where node cannot execute a `.cmd`
+  // directly — and then as one command line built by `shellCommandLine`, rather
+  // than an argument array Node joins unquoted (DEP0190).
+  const launch = (args) => IS_WINDOWS ? [shellCommandLine(wrapper, args), []] : [wrapper, args]
+  const version = spawnSync(...launch(['--version']), { encoding: 'utf8', shell: IS_WINDOWS })
   if (version.status !== 0) {
     fail('The bundled launcher could not run.', version.stderr || String(version.error))
   }
@@ -85,7 +86,7 @@ try {
   // the exit code is not the assertion — producing a report is.
   const configDir = join(work, 'config')
   mkdirSync(configDir)
-  const doctor = spawnSync(invoke, ['doctor'], {
+  const doctor = spawnSync(...launch(['doctor']), {
     encoding: 'utf8',
     shell: IS_WINDOWS,
     env: { ...process.env, LOOPTROOP_CONFIG_DIR: configDir, LOOPTROOP_OPENCODE_MODE: 'mock' },

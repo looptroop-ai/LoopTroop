@@ -43,6 +43,11 @@ function flag(name) {
 
 const IS_WINDOWS = process.platform === 'win32'
 
+/** A PowerShell single-quoted string literal: nothing inside expands, `'` is doubled. */
+function psLiteral(value) {
+  return `'${String(value).replace(/'/g, "''")}'`
+}
+
 /** Always async: a synchronous child would block the checks that follow it. */
 function invoke(command, args, options = {}) {
   return new Promise((settle, reject) => {
@@ -113,7 +118,9 @@ async function main() {
   log(`Unpacking ${basename(archive)}...`)
   if (archive.endsWith('.zip')) {
     execFileSync(toolPath('powershell'), ['-NoProfile', '-Command',
-      `Expand-Archive -LiteralPath '${archive}' -DestinationPath '${unpacked}' -Force`,
+      // A PowerShell single-quoted literal ends at the first `'` unless it is
+      // doubled, and `archive` is a command-line argument.
+      `Expand-Archive -LiteralPath ${psLiteral(archive)} -DestinationPath ${psLiteral(unpacked)} -Force`,
     ], { stdio: ['ignore', 'pipe', 'inherit'] })
   } else {
     execFileSync(toolPath('tar'), ['-xzf', archive, '-C', unpacked], { stdio: ['ignore', 'pipe', 'inherit'] })

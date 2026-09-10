@@ -664,3 +664,23 @@ describe('shell command lines', () => {
     expect(JSON.parse(output)).toEqual(['a b', 'c&d', '$(touch x)'])
   })
 })
+
+describe('spawnProgram when a tool is not installed', () => {
+  it('refuses to fall back to the name when PATH would reach the current directory', () => {
+    // `PATH=/usr/bin:` ends in an empty entry, which the OS reads as the
+    // working directory. Handing back the bare name there ran `./tool`.
+    expect(() => spawnProgram('definitely-not-installed-anywhere', { env: { PATH: '/nonexistent-looptroop-bin:' } }))
+      .toThrow(/relative or empty entry/)
+    expect(spawnProgram('definitely-not-installed-anywhere', { env: { PATH: '/nonexistent-looptroop-bin' } }))
+      .toBe('definitely-not-installed-anywhere')
+  })
+
+  it('never hands back a relative path to run from the current directory', () => {
+    expect(() => spawnProgram('./evil', { env: { PATH: '' } })).toThrow(/relative path/)
+  })
+
+  it('keeps an empty argument on a Windows command line', () => {
+    expect(shellCommandLine('C:\\x\\tool.cmd', ['a', '', 'b'], 'win32')).toBe('"C:\\x\\tool.cmd" a "" b')
+  })
+})
+

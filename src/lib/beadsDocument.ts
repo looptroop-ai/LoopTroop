@@ -1,5 +1,5 @@
 import { commandSpecSchema, type CommandSpec } from '@shared/commandSpec'
-import { isRecord } from '@shared/typeGuards'
+import { carriesValue, isRecord } from '@shared/typeGuards'
 import type { ManualQaBeadOrigin } from '@/hooks/useTickets'
 import { tryParseStructuredContent } from './structuredContent'
 
@@ -213,11 +213,6 @@ const GUIDANCE_ALIASES = {
  * read the same fields and must not agree about whitespace.
  */
 export type BeadReadPolicy = 'display' | 'verbatim'
-
-/** Present, in the sense every reader means it: `null` is not a value. */
-function carriesValue(value: unknown): boolean {
-  return value !== undefined && value !== null
-}
 
 function candidates(bead: RawBead, field: BeadField): unknown[] {
   return BEAD_FIELD_ALIASES[field].map((key) => bead[key])

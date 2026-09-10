@@ -37,6 +37,18 @@ export function normalizeString(value: unknown): string | undefined {
  * Uses `Object.hasOwn` rather than `in`: `in` walks the prototype, so a record
  * with no `constructor` key of its own still answers to one.
  */
+/**
+ * Whether a field carries a value, in the sense every reader means it.
+ *
+ * `null` is what a writer leaves behind when it clears a field, so a reader
+ * asking "does the canonical spelling hold this?" has to read it as absent —
+ * otherwise a `null` beside a real value under an older spelling looks like an
+ * answer and the real one is dropped.
+ */
+export function carriesValue(value: unknown): boolean {
+  return value !== undefined && value !== null
+}
+
 export function getValueByExactAlias(record: Record<string, unknown>, aliases: string[]): unknown {
   for (const alias of aliases) {
     if (Object.hasOwn(record, alias)) return record[alias]

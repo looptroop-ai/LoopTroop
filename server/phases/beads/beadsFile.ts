@@ -1,4 +1,4 @@
-import { isRecord } from '@shared/typeGuards'
+import { carriesValue, isRecord } from '@shared/typeGuards'
 import { readJsonlWithDiagnostics } from '../../io/jsonl'
 import type { Bead, BeadStatus } from './types'
 import { BEAD_STATUSES, isBeadStatus, resolveBeadStatusAlias } from './types'
@@ -219,11 +219,6 @@ export const NESTED_BEAD_FIELD_ALIASES: Array<[field: string, canonical: string,
   ['dependencies', 'blocked_by', 'blockedBy'],
   ['contextGuidance', 'anti_patterns', 'antiPatterns'],
 ]
-
-/** Present, in the sense the readers mean: `null` is not a value either. */
-function carriesValue(value: unknown): boolean {
-  return value !== undefined && value !== null
-}
 
 /**
  * Moves the spellings a record may carry onto the canonical ones.

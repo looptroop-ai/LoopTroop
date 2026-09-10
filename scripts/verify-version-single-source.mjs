@@ -11,6 +11,7 @@
  */
 import { execFileSync } from 'node:child_process'
 import { readFileSync } from 'node:fs'
+import { toolPath } from './tool-path.ts'
 
 /** Paths that legitimately contain literal version strings. */
 const ALLOWED_PATHS = [
@@ -73,7 +74,7 @@ const EXCLUDED_PATTERNS = [
 ]
 
 function run(command, args) {
-  return execFileSync(command, args, { encoding: 'utf8', maxBuffer: 32 * 1024 * 1024 })
+  return execFileSync(toolPath(command), args, { encoding: 'utf8', maxBuffer: 32 * 1024 * 1024 })
 }
 
 const version = JSON.parse(readFileSync('package.json', 'utf8')).version

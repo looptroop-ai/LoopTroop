@@ -14,6 +14,7 @@ import { execFileSync } from 'node:child_process'
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { dirname, join, relative } from 'node:path'
+import { toolPath } from './tool-path.ts'
 
 const NATIVE_EXTENSIONS = ['.node']
 const LIFECYCLE_SCRIPTS = ['preinstall', 'install', 'postinstall']
@@ -29,7 +30,7 @@ const LIFECYCLE_SCRIPTS = ['preinstall', 'install', 'postinstall']
 const ALLOWED_LIFECYCLE_PACKAGES = new Set()
 
 function run(command, args, cwd) {
-  return execFileSync(command, args, { cwd, encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'] })
+  return execFileSync(toolPath(command), args, { cwd, encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'] })
 }
 
 function walk(dir, onFile) {

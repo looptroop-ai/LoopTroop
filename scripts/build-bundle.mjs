@@ -34,6 +34,7 @@ import { fileURLToPath } from 'node:url'
 // A `.ts` module from a `.mjs` one: Node strips the types, and these scripts
 // already run under bare `node` rather than tsx for exactly that reason.
 import { ArgumentError, parseArgs, requireNoPositional } from './cli-args.ts'
+import { toolPath } from './tool-path.ts'
 
 const repoRoot = resolve(dirname(fileURLToPath(import.meta.url)), '..')
 
@@ -56,7 +57,7 @@ function fail(message, ...detail) {
 }
 
 function run(command, args, cwd) {
-  return execFileSync(command, args, { cwd, encoding: 'utf8', stdio: ['ignore', 'pipe', 'inherit'] })
+  return execFileSync(toolPath(command), args, { cwd, encoding: 'utf8', stdio: ['ignore', 'pipe', 'inherit'] })
 }
 
 

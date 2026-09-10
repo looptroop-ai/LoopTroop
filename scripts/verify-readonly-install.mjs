@@ -43,6 +43,7 @@ import { fileURLToPath } from 'node:url'
 // launcher refuses.
 import { satisfiesFloor } from './installer-core.mjs'
 import { waitForHealth } from './smoke-lib.mjs'
+import { spawnProgram } from './tool-path.ts'
 
 /**
  * The floor `dist/server/cli/launcher.cjs` enforces before it loads anything —
@@ -149,7 +150,7 @@ function check(name, condition, detail) {
 }
 
 function run(command, args, options = {}) {
-  const result = spawnSync(command, args, {
+  const result = spawnSync(spawnProgram(command, { shell: options.shell }), args, {
     encoding: 'utf8',
     ...options,
     env: { ...process.env, ...CHILD_ENV, ...(options.env ?? {}) },

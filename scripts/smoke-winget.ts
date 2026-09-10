@@ -25,6 +25,7 @@ import { tmpdir } from 'node:os'
 import { basename, join, resolve } from 'node:path'
 import { removeWorkDirectory } from './smoke-lib.mjs'
 import { renderWingetManifests } from './package-manifests.ts'
+import { spawnProgram } from './tool-path.ts'
 
 class SmokeError extends Error {
   detail: string[]
@@ -60,7 +61,7 @@ interface RunResult { code: number | null, stdout: string, stderr: string }
  */
 function invoke(command: string, args: string[], options: { allowFailure?: boolean, env?: NodeJS.ProcessEnv } = {}): Promise<RunResult> {
   return new Promise((settle, reject) => {
-    const child = spawn(command, args, { env: { ...process.env, ...options.env } })
+    const child = spawn(spawnProgram(command), args, { env: { ...process.env, ...options.env } })
     let stdout = ''
     let stderr = ''
     child.stdout.on('data', (chunk: Buffer) => { stdout += chunk.toString() })

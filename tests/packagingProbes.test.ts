@@ -6,9 +6,10 @@ import { tmpdir } from 'node:os'
 import { delimiter, isAbsolute, join, win32 } from 'node:path'
 import { claimTapDirectory, isOwnedTap } from '../scripts/brew-local-tap.ts'
 import { defaultTrustedPrefixes, resolveTrustedTool } from '../scripts/trusted-tool.ts'
+import { spawnProgram } from '../scripts/tool-path.ts'
 import { withoutCredentials } from '../scripts/container-docker.ts'
 import { removeWorkDirectory, waitForHealth } from '../scripts/smoke-lib.mjs'
-import { removeTempDir } from '../server/test/tempDir'
+import { makeTempDir, removeTempDir } from '../server/test/tempDir'
 
 const scratch: string[] = []
 
@@ -526,5 +527,72 @@ describe('trusted tool resolution', () => {
       .toHaveProperty('refusal')
     expect(resolveTrustedTool('gh', { env: { LOOPTROOP_GH_PATH: join(elsewhere, 'nope') }, pathValue: '', platform: 'linux' }))
       .toHaveProperty('refusal')
+  })
+})
+
+/**
+ * The two failures a script must not treat alike.
+ *
+ * A tool that is *not installed* is an outcome several of these scripts are
+ * measuring — `smoke-published.mjs` probes whether `yarn` is there — so falling
+ * back to the name keeps the spawn's own ENOENT as the answer. A tool that *is*
+ * there, in a directory this machine will not run from, is the case the whole
+ * resolver exists for, and falling back would spawn exactly that file.
+ */
+describe('spawnProgram', () => {
+  const dirs: string[] = []
+
+  afterEach(() => {
+    for (const dir of dirs.splice(0)) removeTempDir(dir)
+  })
+
+  /** Canonicalised, because the resolver realpaths its answer and macOS `/tmp` is a symlink. */
+  function scratch(): string {
+    const dir = makeTempDir('looptroop-spawn-program-')
+    dirs.push(dir)
+    return dir
+  }
+
+  function executable(directory: string, name: string): string {
+    mkdirSync(directory, { recursive: true })
+    const path = join(directory, name)
+    writeFileSync(path, '#!/bin/sh\nexit 0\n')
+    chmodSync(path, 0o755)
+    return path
+  }
+
+  /** `PATH` is read from the real environment here, so it is restored either way. */
+  function withPath<T>(pathValue: string, run: () => T): T {
+    const previous = process.env.PATH
+    process.env.PATH = pathValue
+    try {
+      return run()
+    } finally {
+      process.env.PATH = previous
+    }
+  }
+
+  it('falls back to the name when the tool is not installed anywhere', () => {
+    expect(withPath(scratch(), () => spawnProgram('definitely-not-installed-anywhere')))
+      .toBe('definitely-not-installed-anywhere')
+  })
+
+  it.runIf(process.platform !== 'win32')('throws rather than spawning one found in a world-writable directory', () => {
+    const open = scratch()
+    executable(open, 'looptool')
+    chmodSync(open, 0o777)
+
+    expect(() => withPath(open, () => spawnProgram('looptool'))).toThrow(/writable by any user/)
+  })
+
+  it.runIf(process.platform !== 'win32')('quotes a resolved path for a shell, and leaves it bare otherwise', () => {
+    const spaced = join(scratch(), 'Program Files')
+    const tool = executable(spaced, 'looptool')
+
+    withPath(spaced, () => {
+      // Unquoted through a shell, a path with a space stops at the space.
+      expect(spawnProgram('looptool', { shell: true })).toBe(`"${tool}"`)
+      expect(spawnProgram('looptool')).toBe(tool)
+    })
   })
 })

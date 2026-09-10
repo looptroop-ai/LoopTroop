@@ -23,6 +23,7 @@ import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, statSync } fr
 import { tmpdir } from 'node:os'
 import { join, resolve } from 'node:path'
 import { waitForHealth } from './smoke-lib.mjs'
+import { spawnProgram } from './tool-path.ts'
 
 const IS_WINDOWS = process.platform === 'win32'
 
@@ -116,7 +117,7 @@ function heading(title) {
  * than being interrupted by them.
  */
 function run(command, args, options = {}) {
-  const result = spawnSync(command, args, {
+  const result = spawnSync(spawnProgram(command, { shell: options.shell }), args, {
     encoding: 'utf8',
     shell: false,
     ...options,

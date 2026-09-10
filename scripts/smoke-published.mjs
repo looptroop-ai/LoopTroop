@@ -34,6 +34,7 @@ import { createServer } from 'node:net'
 import { homedir, tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { removeWorkDirectory, waitForHealth } from './smoke-lib.mjs'
+import { spawnProgram } from './tool-path.ts'
 
 const IS_WINDOWS = process.platform === 'win32'
 
@@ -699,7 +700,7 @@ function redact(text) {
 // ---------------------------------------------------------------------------
 
 function run(command, args, options = {}) {
-  const result = spawnSync(command, args, {
+  const result = spawnSync(spawnProgram(command, { shell: options.shell }), args, {
     encoding: 'utf8',
     shell: false,
     ...options,
@@ -1273,16 +1274,19 @@ async function runChannel(recipe, options) {
       heading('Pre-start an OpenCode for LoopTroop to adopt')
       const opencodeLog = join(scratch, 'adopted-opencode.log')
       const logFd = openSync(opencodeLog, 'a')
-      // Through a shell on every platform, not only Windows. Installed from
-      // npm, `opencode` is a shim — `opencode.cmd` on Windows, and on POSIX a
-      // symlink into a package directory — and letting the shell resolve it is
-      // the same reasoning the daemon's own supervisor applies.
+      // Resolved, then through a shell — not a name handed to the shell to look
+      // up. Installed from npm, `opencode` is a shim: `opencode.cmd` on
+      // Windows, which Node refuses to launch directly, and on POSIX a symlink
+      // into a package directory. The resolver applies PATHEXT and follows the
+      // link, so the shell is left with only the part it is needed for, which
+      // is the same reasoning the daemon's own supervisor applies.
       //
       // Output goes to a file rather than `ignore`. A server that refuses to
       // start otherwise reports itself as "nothing is listening", which says
       // what happened but nothing about why, and this is a detached process
       // whose stderr is gone the moment it exits.
-      adopted = spawn(`opencode serve --hostname 127.0.0.1 --port ${opencodePort}`, [], {
+      const opencodeBin = spawnProgram('opencode', { shell: true })
+      adopted = spawn(`${opencodeBin} serve --hostname 127.0.0.1 --port ${opencodePort}`, [], {
         stdio: ['ignore', logFd, logFd],
         detached: !IS_WINDOWS,
         shell: true,

@@ -4,6 +4,7 @@ import { tmpdir } from 'node:os'
 import { basename, dirname, join, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { getErrorMessage } from '../shared/typeGuards'
+import { spawnProgram } from './tool-path.ts'
 
 const __dirname = dirname(fileURLToPath(import.meta.url))
 export const repoRoot = resolve(__dirname, '..')
@@ -497,8 +498,9 @@ function spawnViaShell(command: string, args: string[], options: SpawnSyncOption
   // Under the shell the quoted parts are joined here rather than handed over as
   // an array. Node joins them the same way and, since DEP0190 (Node 22), warns
   // about doing so — noise on top of whatever the command itself printed.
-  const quoted = [quoteForShell(command), ...args.map(quoteForShell)]
-  return spawnSync(isWindows ? quoted.join(' ') : command, isWindows ? [] : args, {
+  const program = spawnProgram(command)
+  const quoted = [quoteForShell(program), ...args.map(quoteForShell)]
+  return spawnSync(isWindows ? quoted.join(' ') : program, isWindows ? [] : args, {
     ...options,
     shell: isWindows,
   })

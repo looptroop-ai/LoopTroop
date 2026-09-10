@@ -46,7 +46,7 @@ const IS_WINDOWS = process.platform === 'win32'
 /** Always async: a synchronous child would block the checks that follow it. */
 function invoke(command, args, options = {}) {
   return new Promise((settle, reject) => {
-    const child = spawn(command, args, { env: { ...process.env, ...options.env } })
+    const child = spawn(spawnProgram(command), args, { env: { ...process.env, ...options.env } })
     let stdout = ''
     let stderr = ''
     child.stdout.on('data', (chunk) => { stdout += chunk.toString() })

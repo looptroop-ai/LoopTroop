@@ -35,6 +35,7 @@ import { fileURLToPath } from 'node:url'
 import { distTagFor } from './version-bump.ts'
 import { isGhNotFound, type ReleaseFacts, resolveReleaseState } from './release-state.ts'
 import { ArgumentError, parseArgs, requireNoPositional } from './cli-args.ts'
+import { spawnProgram } from './tool-path.ts'
 
 const repoRoot = resolve(dirname(fileURLToPath(import.meta.url)), '..')
 
@@ -53,7 +54,7 @@ function fail(message: string): never {
  * as "absent".
  */
 function runLookup(command: string, args: string[]): string | null {
-  const result = execFileSync(command, args, {
+  const result = execFileSync(spawnProgram(command, { shell: process.platform === 'win32' }), args, {
     encoding: 'utf8',
     // stderr is captured, not discarded. Absence is read *from* stderr — E404
     // for npm, HTTP 404 for gh — so ignoring it would leave every failure

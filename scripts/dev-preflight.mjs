@@ -15,6 +15,7 @@ import { spawnSync } from 'node:child_process'
 import { accessSync, constants, statSync } from 'node:fs'
 import { dirname, resolve, basename } from 'node:path'
 import { fileURLToPath } from 'node:url'
+import { spawnProgram } from './tool-path.ts'
 
 const __dirname = dirname(fileURLToPath(import.meta.url))
 const repoRoot = resolve(__dirname, '..')
@@ -34,7 +35,7 @@ function quoteForShell(value) {
 }
 
 function spawnViaShell(command, args, options) {
-  return spawnSync(quoteForShell(command), args.map(quoteForShell), {
+  return spawnSync(quoteForShell(spawnProgram(command)), args.map(quoteForShell), {
     ...options,
     shell: isWindows,
   })

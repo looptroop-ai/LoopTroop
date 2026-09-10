@@ -30,6 +30,7 @@ import type { Channel } from './package-manifests.ts'
 import { renderDescriptor } from './package-manifests.ts'
 import { createLocalTap, removeLocalTap } from './brew-local-tap.ts'
 import { doctorReportsInstallChannel } from './output-safety.ts'
+import { spawnProgram } from './tool-path.ts'
 
 const repoRoot = resolve(dirname(fileURLToPath(import.meta.url)), '..')
 
@@ -88,7 +89,7 @@ interface RunResult { status: number | null, stdout: string, stderr: string }
  */
 function run(command: string, args: string[], options: { env?: NodeJS.ProcessEnv, allowFailure?: boolean } = {}): Promise<RunResult> {
   return new Promise((done, reject) => {
-    const child = spawn(command, args, { env: { ...process.env, ...options.env } })
+    const child = spawn(spawnProgram(command), args, { env: { ...process.env, ...options.env } })
     let stdout = ''
     let stderr = ''
     child.stdout.on('data', (chunk: Buffer) => { stdout += chunk.toString() })

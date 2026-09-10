@@ -28,6 +28,7 @@ import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync } from 'node:f
 import { tmpdir } from 'node:os'
 import { join, resolve } from 'node:path'
 import { removeWorkDirectory } from './smoke-lib.mjs'
+import { spawnProgram } from './tool-path.ts'
 
 const IS_WINDOWS = process.platform === 'win32'
 
@@ -63,9 +64,10 @@ function check(ok, message) {
 }
 
 function run(command, args, options = {}) {
-  const result = spawnSync(command, args, {
+  const shell = options.shell ?? IS_WINDOWS
+  const result = spawnSync(spawnProgram(command, { shell }), args, {
     encoding: 'utf8',
-    shell: IS_WINDOWS,
+    shell,
     ...options,
     env: { ...process.env, ...options.env },
   })

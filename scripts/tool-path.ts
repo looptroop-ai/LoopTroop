@@ -30,3 +30,30 @@ export function toolPath(name: string): string {
 export function findToolPath(name: string): string | null {
   return resolveTrustedProgram(name).path ?? null
 }
+
+/**
+ * The program to hand `spawn`, given the name a caller wrote.
+ *
+ * The difference from `toolPath` is what happens when there is no answer, and
+ * the two failures are not alike:
+ *
+ * - **Not installed** falls back to the name. Every caller of this already
+ *   reports a missing tool from the spawn's own `ENOENT`, often as the thing
+ *   being tested — `smoke-published.mjs` probes whether `yarn` exists — and
+ *   turning that into a throw would change what those scripts measure.
+ * - **Found, in a directory this machine will not run from** throws. Falling
+ *   back there would spawn the exact file this is meant to refuse.
+ *
+ * `shell` quotes the result, because a resolved path is usually longer than the
+ * name it replaced and `C:\Program Files\nodejs\npm.cmd` handed to a shell
+ * unquoted stops at the first space.
+ */
+export function spawnProgram(command: string, options: { shell?: boolean | string } = {}): string {
+  const resolution = resolveTrustedProgram(command)
+  if (resolution.path === undefined) {
+    if (resolution.refusedAt !== undefined) throw new Error(resolution.reason)
+    return command
+  }
+  const quoted = options.shell && /\s/.test(resolution.path) ? `"${resolution.path}"` : resolution.path
+  return quoted
+}

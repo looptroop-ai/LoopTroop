@@ -46,6 +46,7 @@ import { createServer } from 'node:http'
 import type { AddressInfo } from 'node:net'
 import { basename, join, resolve } from 'node:path'
 import { renderAurPackage, AUR_PACKAGE_NAME } from './package-manifests.ts'
+import { spawnProgram } from './tool-path.ts'
 
 class SmokeError extends Error {
   detail: string[]
@@ -81,7 +82,7 @@ interface RunResult { code: number | null, stdout: string, stderr: string }
  */
 function invoke(command: string, args: string[], options: { allowFailure?: boolean, cwd?: string, env?: NodeJS.ProcessEnv } = {}): Promise<RunResult> {
   return new Promise((settle, reject) => {
-    const child = spawn(command, args, {
+    const child = spawn(spawnProgram(command), args, {
       ...(options.cwd === undefined ? {} : { cwd: options.cwd }),
       env: { ...process.env, ...options.env },
     })

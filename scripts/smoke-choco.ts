@@ -32,6 +32,7 @@ import { existsSync, mkdtempSync, readFileSync, rmSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { dirname, join, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
+import { spawnProgram } from './tool-path.ts'
 
 const repoRoot = resolve(dirname(fileURLToPath(import.meta.url)), '..')
 
@@ -56,7 +57,7 @@ function flag(name: string, fallback: string | null = null): string {
 interface RunResult { status: number | null, stdout: string, stderr: string }
 
 function run(command: string, args: string[], options: { env?: NodeJS.ProcessEnv, allowFailure?: boolean } = {}): RunResult {
-  const result = spawnSync(command, args, {
+  const result = spawnSync(spawnProgram(command, { shell: true }), args, {
     encoding: 'utf8',
     env: { ...process.env, ...options.env },
     shell: true,

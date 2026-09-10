@@ -659,10 +659,18 @@ export const TRUSTED_EXECUTABLE_DIRS_ENV = 'LOOPTROOP_TRUSTED_EXECUTABLE_DIRS'
 
 const DEFAULT_PATHEXT = '.COM;.EXE;.BAT;.CMD'
 
-/** A resolution, or the reason there is not one. Never both. */
+/**
+ * A resolution, or the reason there is not one. Never both.
+ *
+ * `refusedAt` separates the two failures that must not be treated alike: a tool
+ * that is *not installed*, where falling back to the bare name only reproduces
+ * the ENOENT a caller already reports, and a tool that *is* there in a directory
+ * this machine will not run from, where falling back would spawn the very file
+ * this module exists to refuse.
+ */
                                          
-                                        
-                                        
+                                                               
+                                                            
 
                                            
                          
@@ -943,6 +951,7 @@ export function resolveTrustedExecutable(
         return {
           reason: `${name} resolves to ${candidate}, in a directory this daemon does not trust: ${refusal}.`
             + ` Set ${TRUSTED_EXECUTABLE_DIRS_ENV} to a directory holding a trusted ${name} if that location is deliberate.`,
+          refusedAt: candidate,
         }
       }
       // The *search* directory is what has to be trusted, not the symlink's
@@ -1010,6 +1019,8 @@ export function resolveTrustedProgram(
   const platform = options.platform ?? process.platform
   if (!trustedPath.isAbsolute(program)) return resolveTrustedExecutable(program, options)
   if (!isExecutableFile(program, platform)) return { reason: `${program} is not an executable file.` }
+  // Named outright and present: there is no search to hijack, so the only
+  // question left was whether it is a program at all.
   try {
     return { path: trustedFs.realpathSync(program) }
   } catch {

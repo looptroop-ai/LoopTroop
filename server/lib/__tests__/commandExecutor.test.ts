@@ -346,7 +346,7 @@ describe('executeCommand', () => {
     expect(seenPath).toBe([join(repository, 'node_modules', '.bin'), '/declared/by/the/command'].join(':'))
   })
 
-  it('starts a resolved Windows command script through cmd.exe, with its arguments quoted', async () => {
+  it('starts a resolved Windows command script through cmd.exe, with its arguments escaped', async () => {
     // npm is npm.cmd on Windows, and Node refuses to launch one directly since
     // the BatBadBut hardening: a process-mode `npm test` resolved correctly and
     // then failed to start with EINVAL.
@@ -354,7 +354,7 @@ describe('executeCommand', () => {
     await executeCommand({
       mode: 'process',
       program: 'npm',
-      args: ['run', 'test:unit', 'a b', 'x&y', ''],
+      args: ['run', 'test:unit', 'a b', 'x&y', '', '%PATH%'],
       cwd: '.',
       env: {},
     }, {
@@ -374,8 +374,11 @@ describe('executeCommand', () => {
 
     expect(seen).toEqual({
       file: 'C:\\Windows\\System32\\cmd.exe',
-      // The empty argument survives as `""`; left bare it vanished from the line.
-      args: ['/d', '/s', '/c', '""C:\\Program Files\\nodejs\\npm.cmd" run test:unit "a b" "x&y" """'],
+      // Every metacharacter carries a caret, the quotes included, so cmd.exe
+      // never enters a quoted section: the space and `&` stay text, the empty
+      // argument survives as a pair of quotes, and `%PATH%` is not expanded —
+      // the documented limit of the quoting this replaced.
+      args: ['/d', '/s', '/c', '"C:\\Program^ Files\\nodejs\\npm.cmd ^"run^" ^"test:unit^" ^"a^ b^" ^"x^&y^" ^"^" ^"^%PATH^%^""'],
       verbatim: true,
     })
   })
@@ -485,6 +488,13 @@ describe('executeCommand', () => {
       })
       expect(resolution.path).toBeUndefined()
       expect(resolution.refusedAt).toBeDefined()
+      // Nor when the caller names no policy environment: that means this
+      // process's, not the child's.
+      expect(resolveCommandProgram('plan-tool', {
+        env: { PATH: shared, LOOPTROOP_TRUSTED_EXECUTABLE_DIRS: shared },
+        cwd: repository,
+        repoRoot: repository,
+      }).refusedAt).toBeDefined()
     } finally {
       spy?.mockRestore()
       process.execPath = execPath

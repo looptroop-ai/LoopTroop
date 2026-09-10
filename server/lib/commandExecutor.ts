@@ -4,7 +4,7 @@ import { basename, dirname, isAbsolute, join, relative, resolve } from 'node:pat
 import type { CommandSpec, RuntimeEnvironment } from '../../shared/commandSpec'
 import type { CommandShellKind, HostPlatform } from '../../shared/hostContext'
 import { createBoundedOutputCollector } from './commandOutput'
-import { resolveTrustedExecutable, resolveTrustedProgram, type TrustedExecutableResolution } from './executablePath'
+import { planProgramLaunch, resolveTrustedExecutable, resolveTrustedProgram, type TrustedExecutableResolution } from './executablePath'
 import { FORCE_KILL_DELAY_MS, PROCESS_ABANDON_GRACE_MS } from './constants'
 import { terminateProcessTreeWithEscalation } from './processTree'
 
@@ -143,10 +143,10 @@ export interface ProgramResolutionContext {
   /** The child's environment, PATH prepends included. */
   env: NodeJS.ProcessEnv
   /**
-   * The daemon's own environment, where the trust policy is read: the override
-   * and the Windows system root. Never the child's — a plan's `command.env`
-   * could otherwise set `LOOPTROOP_TRUSTED_EXECUTABLE_DIRS` and vouch for any
-   * directory it liked.
+   * The daemon's own environment, where the trust policy is read: the override,
+   * the Windows system root, `PATHEXT` and `ComSpec`. Never the child's — a
+   * plan's `command.env` could otherwise set `LOOPTROOP_TRUSTED_EXECUTABLE_DIRS`
+   * and vouch for any directory it liked. Defaults to `process.env`.
    */
   policyEnv?: NodeJS.ProcessEnv
   /** The command's working directory, already proven to be inside the repository. */
@@ -192,7 +192,7 @@ export function resolveCommandProgram(
   context: ProgramResolutionContext,
 ): TrustedExecutableResolution {
   const hasSeparator = /[\\/]/.test(program)
-  const trust = { env: context.env, policyEnv: context.policyEnv ?? context.env }
+  const trust = { env: context.env, policyEnv: context.policyEnv }
   if (!hasSeparator) return resolveTrustedExecutable(program, trust)
   if (isAbsolute(program)) return resolveTrustedProgram(program, trust)
 
@@ -235,47 +235,6 @@ function realpathOrSelf(path: string): string {
 }
 
 /**
- * One cmd.exe token, quoted only when leaving it bare would change it.
- *
- * Quoting everything breaks a batch shim that compares `%1`, because cmd hands
- * the argument over with the quotes still on; quoting nothing lets a space or a
- * `&` in a plan's argument split or chain the command. The same rule
- * `scripts/installer-core.mjs` uses for the same job.
- */
-function quoteForCmd(value: string): string {
-  // An empty argument is still an argument; left bare it vanished from the line.
-  if (value === '') return '""'
-  if (!/[\s&|<>^()"]/.test(value)) return value
-  return `"${value.replace(/"/g, '""')}"`
-}
-
-/**
- * How to start `program` on this host.
- *
- * The resolver returns `npm.cmd` for `npm` on Windows, because that is what
- * `npm` is there — and Node has refused to launch a `.cmd` or `.bat` directly
- * since the BatBadBut hardening, so a process-mode `npm test` resolved
- * correctly and then failed to start with EINVAL. A command script goes through
- * `cmd.exe /d /s /c` with every token quoted here, and
- * `windowsVerbatimArguments` so Node does not add a second layer of quoting.
- * Everything else is spawned directly.
- */
-function launchPlan(
-  program: string,
-  args: string[],
-  platform: HostPlatform,
-  interpreter: () => TrustedExecutableResolution,
-): { file: string; args: string[]; windowsVerbatimArguments: boolean } | { error: string } {
-  if (platform !== 'windows' || !/\.(cmd|bat)$/i.test(program)) {
-    return { file: program, args, windowsVerbatimArguments: false }
-  }
-  const shell = interpreter()
-  if (shell.path === undefined) return { error: `A Windows command script needs cmd.exe to run, and it could not be used: ${shell.reason}` }
-  const line = `"${[`"${program}"`, ...args.map(quoteForCmd)].join(' ')}"`
-  return { file: shell.path, args: ['/d', '/s', '/c', line], windowsVerbatimArguments: true }
-}
-
-/**
  * The command interpreter a Windows command script is run with.
  *
  * Resolved like any other program, and from the daemon's environment: `ComSpec`
@@ -289,7 +248,7 @@ function commandInterpreter(
   resolveProgram: (program: string, context: ProgramResolutionContext) => TrustedExecutableResolution,
   context: ProgramResolutionContext,
 ): TrustedExecutableResolution {
-  const policyEnv = context.policyEnv ?? context.env
+  const policyEnv = context.policyEnv ?? process.env
   const named = policyEnv.ComSpec?.trim() || policyEnv.COMSPEC?.trim()
   return resolveProgram(named || 'cmd.exe', { ...context, env: policyEnv })
 }
@@ -349,8 +308,16 @@ export async function executeCommand(
     }
   }
 
-  const launch = launchPlan(resolvedProgram.path, invocation.args, platform, () => commandInterpreter(resolveProgram, context))
-  if ('error' in launch) {
+  // The resolver returns `npm.cmd` for `npm` on Windows, because that is what
+  // `npm` is there, and Node refuses to launch a command script directly — a
+  // process-mode `npm test` resolved correctly and then failed with EINVAL. The
+  // shared launcher starts it through cmd.exe, found through the same seam as
+  // the program, with every argument escaped for cmd.exe.
+  const launch = planProgramLaunch(resolvedProgram.path, invocation.args, {
+    platform: platform === 'windows' ? 'win32' : platform === 'macos' ? 'darwin' : 'linux',
+    resolveInterpreter: () => commandInterpreter(resolveProgram, context),
+  })
+  if (launch.reason !== undefined) {
     return {
       command,
       cwd,
@@ -358,7 +325,7 @@ export async function executeCommand(
       exitCode: null,
       signal: null,
       stdout: '',
-      stderr: launch.error,
+      stderr: launch.reason,
       durationMs: Date.now() - startedAt,
       timedOut: false,
     }

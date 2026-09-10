@@ -1,7 +1,7 @@
 import { spawn, type ChildProcess } from 'node:child_process'
 import { setTimeout as delay } from 'node:timers/promises'
 import { isProcessAlive, killProcessTree } from '../cli/processControl'
-import { resolveTrustedExecutable } from '../lib/executablePath'
+import { planProgramLaunch, resolveTrustedExecutable } from '../lib/executablePath'
 import { getErrorMessage } from '@shared/typeGuards'
 
 /** Attempts after a crash before the daemon stops trying and reports degraded. */
@@ -205,8 +205,10 @@ export class OpenCodeSupervisor {
     const port = url.port || (url.protocol === 'https:' ? '443' : '80')
     // A parsed URL does not make a hostname safe: `new URL('http://foo&bar:1')`
     // has the hostname `foo&bar`, and on Windows an npm-installed OpenCode is
-    // started through cmd.exe, which reads `&` as "and then run". A host name,
-    // an IPv4 address or a bracketed IPv6 one is all this can be.
+    // started through cmd.exe. The launcher escapes every argument for cmd.exe,
+    // so this is not what stands between a URL and a second command any more;
+    // it is the plainer rule that a host name, an IPv4 address or a bracketed
+    // IPv6 one is all this can be.
     if (!/^(?:[A-Za-z0-9](?:[A-Za-z0-9.-]*[A-Za-z0-9])?|\[[0-9A-Fa-f:.]+\])$/.test(host)) {
       throw new Error(`OpenCode's address has a host name LoopTroop will not start a server for: ${JSON.stringify(host)}. Check LOOPTROOP_OPENCODE_BASE_URL.`)
     }
@@ -237,34 +239,33 @@ export class OpenCodeSupervisor {
     if (program === null) throw new OpenCodeMissingError(this.options.baseUrl, refusal)
 
     // Node has refused to launch a `.cmd` or `.bat` directly since the BatBadBut
-    // hardening, so an npm-installed OpenCode still needs a shell. What changed
-    // is what the shell is given: the *resolved path*, quoted, instead of a bare
-    // name. cmd.exe does no PATH search on a path, so the shell no longer
-    // chooses the file — it only runs the shim. The command line is joined here
-    // rather than passed as an array because Node would join it identically and,
-    // since DEP0190 (Node 22), warn about doing so on top of our own output.
-    const shim = /\.(cmd|bat)$/i.test(program)
-    const child = spawnProcess(
-      shim ? `"${program}" ${argv.join(' ')}` : program,
-      shim ? [] : argv,
-      {
-        stdio: ['ignore', 'inherit', 'inherit'],
-        // Its own group, so terminating the daemon can take the whole tree down
-        // rather than orphaning children of OpenCode.
-        detached: process.platform !== 'win32',
-        // Only for the shim, and only ever over a path this process just
-        // resolved plus a host name checked above to hold no shell syntax and a
-        // port that is digits.
-        shell: shim,
+    // hardening, so an npm-installed OpenCode still goes through cmd.exe — one
+    // the resolver found, not one `shell: true` would have Node look up, with
+    // the shim's path and every argument escaped by the launcher the rest of
+    // LoopTroop uses. On any other platform, and for a real `.exe`, it is a
+    // direct spawn. The test seam answers for cmd.exe as well as for OpenCode.
+    const seam = this.options.resolveProgram
+    const launch = planProgramLaunch(program, argv, seam === undefined ? {} : {
+      resolveInterpreter: () => {
+        const interpreter = seam('cmd.exe')
+        return interpreter === null ? { reason: 'cmd.exe was not found.' } : { path: interpreter }
       },
-    )
+    })
+    if (launch.reason !== undefined) throw new OpenCodeMissingError(this.options.baseUrl, launch.reason)
+    const child = spawnProcess(launch.file, launch.args, {
+      stdio: ['ignore', 'inherit', 'inherit'],
+      // Its own group, so terminating the daemon can take the whole tree down
+      // rather than orphaning children of OpenCode.
+      detached: process.platform !== 'win32',
+      windowsVerbatimArguments: launch.windowsVerbatimArguments,
+    })
 
     const spawnFailed = new Promise<never>((_, reject) => {
       child.once('error', () => reject(new OpenCodeMissingError(this.options.baseUrl)))
     })
 
     // An immediate exit almost always means the binary is missing — including
-    // under the Windows shell above, where a missing command is not a spawn
+    // through cmd.exe above, where a shim whose target is gone is not a spawn
     // error at all: cmd.exe starts, prints "is not recognized" and exits 9009.
     const exitedEarly = new Promise<never>((_, reject) => {
       child.once('exit', (code) => {

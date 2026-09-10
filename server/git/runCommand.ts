@@ -49,10 +49,16 @@ const TIMEOUT_ABANDON_GRACE_MS = 2_000
  * `GIT_TERMINAL_PROMPT=0` refuses the terminal prompt outright; `GIT_ASKPASS`
  * pointing at `echo` makes the graphical fallback answer with an empty string
  * instead of opening a dialog nobody is looking at.
+ *
+ * By absolute path on POSIX, because git looks a bare name up on `PATH`, and a
+ * bare name is the search this module's callers stopped doing. A system without
+ * `/bin/echo` (NixOS) gets an askpass that fails, which git treats as no answer
+ * — the same outcome. Windows keeps the name: `echo` there is Git for Windows'
+ * own `usr\bin\echo.exe`, found through the PATH git sets up for itself.
  */
 export const NON_INTERACTIVE_GIT_ENV: Readonly<NodeJS.ProcessEnv> = Object.freeze({
   GIT_TERMINAL_PROMPT: '0',
-  GIT_ASKPASS: 'echo',
+  GIT_ASKPASS: process.platform === 'win32' ? 'echo' : '/bin/echo',
 })
 
 export interface RunCommandOptions {
@@ -293,12 +299,15 @@ function gitInvocation(directory: string, args: string[], options: RunCommandOpt
 /**
  * A spawn that failed because the working directory is not there reads as
  * `spawnSync git ENOENT` — indistinguishable from git not being installed.
- * Said the way git itself says it when `-C` names a missing directory.
+ *
+ * Said as what it is: git never started. This used to borrow git's own
+ * `cannot change to …` wording, which sent anyone searching for it into git's
+ * sources for a message git never printed.
  */
 function explainMissingDirectory<TOut>(raw: RawOutcome<TOut>, directory: string): RawOutcome<TOut> {
   const code = (raw.spawnError as NodeJS.ErrnoException | undefined)?.code
   if ((code !== 'ENOENT' && code !== 'ENOTDIR') || isDirectory(directory)) return raw
-  return { ...raw, spawnError: new Error(`cannot change to '${directory}': No such file or directory`) }
+  return { ...raw, spawnError: new Error(`git was not started: its working directory ${directory} does not exist or is not a directory.`) }
 }
 
 function isDirectory(path: string): boolean {

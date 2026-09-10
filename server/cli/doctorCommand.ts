@@ -1,5 +1,5 @@
-import { execFileSync } from 'node:child_process'
-import { resolveTrustedProgram, TRUSTED_EXECUTABLE_DIRS_ENV } from '../lib/executablePath'
+import { spawnSync } from 'node:child_process'
+import { planProgramLaunch, resolveTrustedProgram, TRUSTED_EXECUTABLE_DIRS_ENV } from '../lib/executablePath'
 import { existsSync, accessSync, constants } from 'node:fs'
 import { resolveAppConfigDir } from '../lib/appConfigDir'
 import { resolveSettings, getSettingsPath } from '../lib/appSettings'
@@ -168,7 +168,7 @@ export type ProbeResult =
  * `doctor` from becoming the thing that hangs. `gh auth status` is the sharp
  * case: it reaches github.com to validate the token, so a black-holed proxy
  * turns the command someone runs to diagnose a hang into a second hang, with no
- * output and nothing to interrupt — execFileSync blocks the whole process, so
+ * output and nothing to interrupt — spawnSync blocks the whole process, so
  * there is no later point at which this could be given up on.
  *
  * The name is resolved to a file before anything is spawned, so a probe reports
@@ -181,9 +181,8 @@ export type ProbeResult =
  *
  * A resolved `.cmd` or `.bat` still needs cmd.exe, because Node has refused to
  * launch one directly since the BatBadBut hardening (18.20.2/20.12.2/21+) and
- * throws `EINVAL`. Only the shim goes that way, and only ever with literal
- * arguments — which is what makes cmd's re-parsing safe, since anything derived
- * from a path or from user input would have to be quoted first.
+ * throws `EINVAL`. Only the shim goes that way, through the shared launcher: a
+ * resolved cmd.exe, and the shim's path and arguments escaped for it.
  */
 export function runProbe(command: string, args: string[], timeoutMs: number): ProbeResult {
   // Resolved first, so the file that answers is one this machine trusts rather
@@ -194,60 +193,48 @@ export function runProbe(command: string, args: string[], timeoutMs: number): Pr
   if (resolution.path === undefined) {
     return resolution.refusedAt === undefined ? { kind: 'unavailable' } : { kind: 'unavailable', refusal: resolution.reason }
   }
-  const program = resolution.path
-
   // The shell used to be here to resolve a *name* — `npm` to `npm.cmd` — which
-  // the resolver now does itself through PATHEXT. What is left is that Node has
-  // refused to launch a `.cmd` or `.bat` directly since the BatBadBut
-  // hardening, so a shim still needs cmd.exe. It is handed the resolved path,
-  // quoted, so the shell performs no search of its own; the arguments are
-  // literals at every call site, which is what makes cmd's re-parsing safe.
-  const needsShell = /\.(cmd|bat)$/i.test(program)
-  // Under a shell, the command line is joined here rather than handed over as an
-  // array. Node concatenates the two itself and, since DEP0190 (Node 22), prints
-  // a deprecation warning about doing so — which landed at the top of every
-  // `doctor` run on Windows, above the report it was asked for. Joining the
-  // literals ourselves is the same command line without the warning; it is safe
-  // for exactly the reason above, that nothing here comes from user input.
-  const file = needsShell ? [`"${program}"`, ...args].join(' ') : program
-  const fileArgs = needsShell ? [] : args
+  // the resolver now does itself through PATHEXT. What is left is that a shim
+  // needs cmd.exe, and the launcher supplies a resolved one: no `shell: true`,
+  // so no DEP0190 warning above the report and no cmd.exe looked up by name.
+  const launch = planProgramLaunch(resolution.path, args)
+  if (launch.reason !== undefined) return { kind: 'unavailable', refusal: launch.reason }
   const started = Date.now()
-  try {
-    const output = execFileSync(file, fileArgs, {
-      encoding: 'utf8',
-      stdio: ['ignore', 'pipe', 'ignore'],
-      timeout: timeoutMs,
-      // Escalates rather than asking twice: a probe that outran its budget has
-      // nothing left to negotiate, and `doctor` must not hang on one.
-      killSignal: 'SIGKILL',
-      // This stays outside the shared git runner on purpose: it probes any
-      // binary by name, and on Windows it needs cmd.exe to resolve `npm` to
-      // `npm.cmd`, which the git runner deliberately does not do. It carries
-      // its own timeout; what it was missing is the non-interactive
-      // environment, so a `git`/`gh` probe cannot stop on a credential prompt.
-      env: { ...process.env, ...NON_INTERACTIVE_GIT_ENV },
-      shell: needsShell,
-    })
-    return { kind: 'ok', output }
-  } catch (error) {
-    // A command that was found and then hung is a different problem from one
-    // that is not installed, and the install hint would be wrong advice.
-    //
-    // Missing still lands here under a shell, by a different route: cmd.exe
-    // starts perfectly well and exits 9009 with "is not recognized", which
-    // execFileSync raises as a non-zero exit rather than as `ENOENT`.
-    //
-    // The deadline is recognised by how long this took, not only by `ETIMEDOUT`,
-    // because under a shell that code does not arrive: the deadline kills
-    // cmd.exe, and what surfaces is an ordinary non-zero exit from the wrapper.
-    // Relying on the code alone reported every hung probe on Windows as a
-    // missing one — telling someone to install a tool they already have, which
-    // is the exact confusion this branch exists to prevent.
-    const elapsed = Date.now() - started
-    return (error as NodeJS.ErrnoException).code === 'ETIMEDOUT' || elapsed >= timeoutMs
-      ? { kind: 'timed-out' }
-      : { kind: 'unavailable' }
-  }
+  // `spawnSync`, not `execFileSync`: only `spawnSync` documents
+  // `windowsVerbatimArguments`, which a line escaped for cmd.exe needs.
+  const result = spawnSync(launch.file, launch.args, {
+    encoding: 'utf8',
+    stdio: ['ignore', 'pipe', 'ignore'],
+    timeout: timeoutMs,
+    // Escalates rather than asking twice: a probe that outran its budget has
+    // nothing left to negotiate, and `doctor` must not hang on one.
+    killSignal: 'SIGKILL',
+    // This stays outside the shared git runner on purpose: it probes any
+    // binary by name, and on Windows it needs cmd.exe to start `npm.cmd`, which
+    // the git runner deliberately does not do. It carries its own timeout; what
+    // it was missing is the non-interactive environment, so a `git`/`gh` probe
+    // cannot stop on a credential prompt.
+    env: { ...process.env, ...NON_INTERACTIVE_GIT_ENV },
+    windowsVerbatimArguments: launch.windowsVerbatimArguments,
+  })
+  if (result.error === undefined && result.status === 0) return { kind: 'ok', output: result.stdout }
+  // A command that was found and then hung is a different problem from one that
+  // is not installed, and the install hint would be wrong advice.
+  //
+  // Missing can also arrive through cmd.exe, by a different route: cmd.exe
+  // starts perfectly well and exits 9009 with "is not recognized" — a non-zero
+  // exit rather than `ENOENT`.
+  //
+  // The deadline is recognised by how long this took, not only by `ETIMEDOUT`,
+  // because through cmd.exe that code does not arrive: the deadline kills
+  // cmd.exe, and what surfaces is an ordinary non-zero exit from the wrapper.
+  // Relying on the code alone reported every hung probe on Windows as a missing
+  // one — telling someone to install a tool they already have, which is the
+  // exact confusion this branch exists to prevent.
+  const elapsed = Date.now() - started
+  return (result.error as NodeJS.ErrnoException | undefined)?.code === 'ETIMEDOUT' || elapsed >= timeoutMs
+    ? { kind: 'timed-out' }
+    : { kind: 'unavailable' }
 }
 
 /** The line to show for a probe that never came back, and what to do about it. */

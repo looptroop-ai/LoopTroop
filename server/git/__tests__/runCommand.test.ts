@@ -115,8 +115,10 @@ describe('server/git/runCommand', () => {
 
   it('applies the non-interactive git environment on both paths', async () => {
     const read = script('process.stdout.write(`${process.env.GIT_TERMINAL_PROMPT}:${process.env.GIT_ASKPASS}`)')
-    expect(runCommandSync(node, read, { log: false }).stdout).toBe('0:echo')
-    expect((await runCommand(node, read, { log: false })).stdout).toBe('0:echo')
+    // By absolute path on POSIX: git looks a bare askpass name up on PATH.
+    const askpass = process.platform === 'win32' ? 'echo' : '/bin/echo'
+    expect(runCommandSync(node, read, { log: false }).stdout).toBe(`0:${askpass}`)
+    expect((await runCommand(node, read, { log: false })).stdout).toBe(`0:${askpass}`)
     expect(NON_INTERACTIVE_GIT_ENV.GIT_TERMINAL_PROMPT).toBe('0')
   })
 
@@ -185,14 +187,15 @@ describe('server/git/runCommand', () => {
   it('says a missing working directory is missing, instead of reporting git as not installed', async () => {
     // The directory is git's working directory now, not a `-C` argument, and a
     // spawn into a directory that is not there fails with ENOENT — the same code
-    // as a missing git. It is reported the way `git -C` itself reports it.
+    // as a missing git. It is said in LoopTroop's own words, not git's, because
+    // git never ran.
     const missing = '/nonexistent/looptroop-project'
     const sync = runGitSync(missing, ['status'], { log: false })
     const async = await runGit(missing, ['status'], { log: false })
 
     for (const result of [sync, async]) {
       expect(result.ok).toBe(false)
-      expect(result.errorDetail).toBe(`cannot change to '${missing}': No such file or directory`)
+      expect(result.errorDetail).toBe(`git was not started: its working directory ${missing} does not exist or is not a directory.`)
     }
   })
 })

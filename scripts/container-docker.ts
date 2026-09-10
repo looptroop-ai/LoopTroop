@@ -11,6 +11,7 @@
 import { spawnSync } from 'node:child_process'
 
 import { DIGEST_PATTERN, classifyRegistryFailure } from './container-tags.ts'
+import { toolPath } from './tool-path.ts'
 
 export interface DockerResult {
   /** null when docker could not be executed at all. */
@@ -26,7 +27,7 @@ export interface DockerResult {
  * references and digests are passed as argv entries.
  */
 export function docker(args: string[], options: { env?: NodeJS.ProcessEnv } = {}): DockerResult {
-  const result = spawnSync('docker', args, {
+  const result = spawnSync(toolPath('docker'), args, {
     encoding: 'utf8',
     shell: false,
     maxBuffer: 32 * 1024 * 1024,

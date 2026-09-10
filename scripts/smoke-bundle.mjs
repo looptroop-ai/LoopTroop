@@ -19,6 +19,7 @@ import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync } from 'node:f
 import { tmpdir } from 'node:os'
 import { basename, dirname, join, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
+import { toolPath } from './tool-path.ts'
 
 const repoRoot = resolve(dirname(fileURLToPath(import.meta.url)), '..')
 const IS_WINDOWS = process.platform === 'win32'
@@ -49,7 +50,7 @@ try {
   // path. GNU tar — which is what a `shell: bash` step on Windows finds first,
   // from Git for Windows — reads `D:\a\...` as a remote host called `D` and
   // fails with "Cannot connect to D: resolve failed".
-  const extract = spawnSync('tar', ['-xzf', basename(bundlePath), '-C', unpacked], {
+  const extract = spawnSync(toolPath('tar'), ['-xzf', basename(bundlePath), '-C', unpacked], {
     cwd: dirname(bundlePath),
     encoding: 'utf8',
   })

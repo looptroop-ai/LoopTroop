@@ -18,6 +18,7 @@ import { writeFileSync } from 'node:fs'
 import { join } from 'node:path'
 import { renderHomebrewFormula } from './package-manifests.ts'
 import { createLocalTap, removeLocalTap } from './brew-local-tap.ts'
+import { toolPath } from './tool-path.ts'
 
 const AUDIT_TAP = 'looptroop-ai/audit' as const
 
@@ -36,7 +37,7 @@ function flag(name: string): string {
 
 function brew(args: string[], allowFailure = false): string {
   try {
-    return execFileSync('brew', args, { encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'] })
+    return execFileSync(toolPath('brew'), args, { encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'] })
   } catch (error) {
     if (allowFailure) return ''
     const shown = error instanceof Error && 'stdout' in error

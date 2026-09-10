@@ -1,6 +1,7 @@
 import { execFileSync } from 'node:child_process'
 import { readFileSync } from 'node:fs'
 import { formatDevHttpUrl, isWildcardHost, listLanAddresses, type ResolvedDevHostMode } from './dev-host-mode'
+import { toolPath } from './tool-path.ts'
 
 const WINDOWS_ADDRESS_COMMAND = `
 $ErrorActionPreference = 'SilentlyContinue'
@@ -136,7 +137,7 @@ export function getWslIpv4Addresses() {
 
 export function getWindowsLanAddresses() {
   try {
-    const output = execFileSync('powershell.exe', [
+    const output = execFileSync(toolPath('powershell.exe'), [
       '-NoProfile',
       '-NonInteractive',
       '-Command',

@@ -20,6 +20,7 @@ import { existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync }
 import { tmpdir } from 'node:os'
 import { dirname, join, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
+import { toolPath } from './tool-path.ts'
 
 const repoRoot = resolve(dirname(fileURLToPath(import.meta.url)), '..')
 const IS_WINDOWS = process.platform === 'win32'
@@ -38,7 +39,11 @@ try {
   // Quoted only when a shell will parse it. On Unix there is no shell, so the
   // quotes would become part of the path and npm would write nowhere useful.
   const packDestination = IS_WINDOWS ? `"${work}"` : work
-  const pack = spawnSync('npm', ['pack', '--pack-destination', packDestination, '--silent'], {
+  // Quoted for the same reason the destination is: npm resolves to
+  // `npm.cmd` under `C:\Program Files\nodejs`, and an unquoted path through
+  // cmd.exe stops at the first space.
+  const npm = toolPath('npm')
+  const pack = spawnSync(IS_WINDOWS ? `"${npm}"` : npm, ['pack', '--pack-destination', packDestination, '--silent'], {
     cwd: repoRoot,
     encoding: 'utf8',
     shell: IS_WINDOWS,
@@ -65,7 +70,7 @@ try {
   /** The wrapper this platform serves, invoked with the options it takes. */
   function wrapper(...options) {
     return IS_WINDOWS
-      ? [windowsShell, [
+      ? [toolPath(windowsShell), [
           '-NoProfile',
           // 5.1 defaults to a policy that refuses to run a script from a file;
           // pwsh accepts the flag too, so one argument list serves both.
@@ -73,7 +78,7 @@ try {
           '-File', join(repoRoot, 'install.ps1'),
           ...options,
         ]]
-      : ['sh', [join(repoRoot, 'install.sh'), ...options]]
+      : [toolPath('sh'), [join(repoRoot, 'install.sh'), ...options]]
   }
 
   /**

@@ -21,6 +21,7 @@ import { chmodSync, existsSync, mkdirSync, mkdtempSync, readdirSync, rmSync, wri
 import { tmpdir } from 'node:os'
 import { basename, join, resolve } from 'node:path'
 import { removeWorkDirectory } from './smoke-lib.mjs'
+import { toolPath } from './tool-path.ts'
 
 function fail(message, ...detail) {
   process.stderr.write(`\nFAIL: ${message}\n`)
@@ -109,11 +110,11 @@ async function main() {
 
   log(`Unpacking ${basename(archive)}...`)
   if (archive.endsWith('.zip')) {
-    execFileSync('powershell', ['-NoProfile', '-Command',
+    execFileSync(toolPath('powershell'), ['-NoProfile', '-Command',
       `Expand-Archive -LiteralPath '${archive}' -DestinationPath '${unpacked}' -Force`,
     ], { stdio: ['ignore', 'pipe', 'inherit'] })
   } else {
-    execFileSync('tar', ['-xzf', archive, '-C', unpacked], { stdio: ['ignore', 'pipe', 'inherit'] })
+    execFileSync(toolPath('tar'), ['-xzf', archive, '-C', unpacked], { stdio: ['ignore', 'pipe', 'inherit'] })
   }
 
   const root = join(unpacked, readdirSync(unpacked)[0] ?? fail('The archive unpacked to nothing.'))

@@ -40,6 +40,7 @@ import { createHash } from 'node:crypto'
 import { chmodSync, copyFileSync, existsSync, mkdirSync, readdirSync, readFileSync, rmSync, utimesSync, writeFileSync } from 'node:fs'
 import { basename, dirname, join, relative, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
+import { toolPath } from './tool-path.ts'
 
 const repoRoot = resolve(dirname(fileURLToPath(import.meta.url)), '..')
 
@@ -54,7 +55,7 @@ function fail(message, ...detail) {
 }
 
 function run(command, args, options = {}) {
-  return execFileSync(command, args, { encoding: 'utf8', stdio: ['ignore', 'pipe', 'inherit'], ...options })
+  return execFileSync(toolPath(command), args, { encoding: 'utf8', stdio: ['ignore', 'pipe', 'inherit'], ...options })
 }
 
 const args = process.argv.slice(2)
@@ -218,7 +219,7 @@ async function writeArchive(binary) {
     // time is already fixed, and `TZ=UTC` keeps ZIP's DOS local time stable
     // wherever this runs.
     const entries = readdirSync(staging).sort().map((entry) => `${name}/${entry}`)
-    execFileSync('7z', ['a', '-tzip', '-mx=9', '-mtc=off', '-mta=off', out, ...entries], {
+    execFileSync(toolPath('7z'), ['a', '-tzip', '-mx=9', '-mtc=off', '-mta=off', out, ...entries], {
       cwd: stagingRoot,
       env: { ...process.env, TZ: 'UTC' },
       stdio: ['ignore', 'pipe', 'inherit'],

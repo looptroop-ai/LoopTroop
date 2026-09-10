@@ -15,6 +15,7 @@ import { execFileSync } from 'node:child_process'
 import { readFileSync } from 'node:fs'
 import { dirname, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
+import { toolPath } from './tool-path.ts'
 
 const repoRoot = resolve(dirname(fileURLToPath(import.meta.url)), '..')
 
@@ -25,7 +26,7 @@ function fail(message) {
 
 /** npm on Windows is a .cmd shim, which needs a shell to be executable. */
 function npm(args) {
-  return execFileSync('npm', args, {
+  return execFileSync(toolPath('npm'), args, {
     encoding: 'utf8',
     shell: process.platform === 'win32',
   }).trim()

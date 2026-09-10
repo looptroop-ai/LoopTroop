@@ -17,6 +17,7 @@
  */
 import { execFileSync } from 'node:child_process'
 import { readFileSync } from 'node:fs'
+import { toolPath } from './tool-path.ts'
 
 /**
  * Documents every published package must carry: the licence it is offered
@@ -67,7 +68,7 @@ function readPackedFiles() {
   // --dry-run so nothing is written; --json so this reads a list rather than
   // scraping the human-readable notice output, which changes between npm
   // releases.
-  const raw = execFileSync('npm', ['pack', '--dry-run', '--json'], {
+  const raw = execFileSync(toolPath('npm'), ['pack', '--dry-run', '--json'], {
     encoding: 'utf8',
     maxBuffer: 32 * 1024 * 1024,
     stdio: ['ignore', 'pipe', 'inherit'],

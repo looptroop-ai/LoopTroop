@@ -11,6 +11,7 @@ import { execFileSync } from 'node:child_process'
 import { existsSync, readFileSync, readdirSync, writeFileSync } from 'node:fs'
 import { join } from 'node:path'
 import { escapeMarkdownTableCell } from './output-safety.ts'
+import { toolPath } from './tool-path.ts'
 
 const OUTPUT_PATH = 'THIRD-PARTY-NOTICES.md'
 const LICENSE_FILENAMES = /^(LICENSE|LICENCE|COPYING|NOTICE)(\.(md|txt))?$/i
@@ -71,7 +72,7 @@ function resolveCopyright(licenseText, manifest) {
 
 /** `npm ls --omit=dev` gives the production tree, including transitive packages. */
 function collectProductionPackages() {
-  const raw = execFileSync('npm', ['ls', '--omit=dev', '--all', '--json'], {
+  const raw = execFileSync(toolPath('npm'), ['ls', '--omit=dev', '--all', '--json'], {
     encoding: 'utf8',
     maxBuffer: 64 * 1024 * 1024,
   })

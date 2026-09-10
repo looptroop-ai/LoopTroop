@@ -128,6 +128,19 @@ const resolverBody = stripTypeScriptTypes(readFileSync(RESOLVER_PATH, 'utf8'), {
   .join('\n')
   .trimEnd()
 
+// The installer runs from a temporary file with nothing beside it, so the
+// resolver may import Node built-ins and nothing else. A relative import parses
+// and passes `--check` below, and then fails on the first machine that runs the
+// installer — so it is refused here, where the constraint can be enforced.
+for (const match of resolverBody.matchAll(/^\s*(?:import|export)\b[^'"]*from\s*['"]([^'"]+)['"]/gm)) {
+  if (!match[1].startsWith('node:')) {
+    fail(
+      `server/lib/executablePath.ts imports '${match[1]}', and the installer copy of it can import nothing but node: built-ins.`,
+      'The installer runs from a temporary file with no repository beside it. Inline what it needs instead.',
+    )
+  }
+}
+
 const coreSource = readFileSync(CORE_PATH, 'utf8')
 const resolverFrom = coreSource.indexOf(RESOLVER_BEGIN)
 const resolverTo = coreSource.indexOf(RESOLVER_END)

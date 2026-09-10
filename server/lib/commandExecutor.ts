@@ -127,13 +127,22 @@ export interface ProgramResolutionContext {
  *   directory happens to be is how the path-separator exception turns into a
  *   second injection route — the containment check is the point, not a
  *   formality.
- * - **An absolute path** is taken as an executable file, if it is one. No
- *   containment check: a plan naming `/usr/bin/make` is naming a tool, not
- *   escaping a root, and a repository-containment rule would refuse every one
- *   of them. This is a deliberate departure from the plan's text, which reads
- *   the containment requirement onto every path-shaped program; nothing is
- *   gained by it, because `mode: 'shell'` runs an arbitrary script from the
- *   same source.
+ * - **An absolute path** is taken as an executable file, if it is one and it
+ *   passes the ownership rule. No containment check: a plan naming
+ *   `/usr/bin/make` is naming a tool, not escaping a root, and a
+ *   repository-containment rule would refuse every one of them. This departs
+ *   from the cleanup plan's text, which reads containment onto every
+ *   path-shaped program.
+ *
+ * Where these programs come from, since it decides how much the rules above
+ * are worth: an execution setup plan is **written by a model** and approved by
+ * a person at a gate. It is not the project's own configuration. Refusing
+ * absolute programs would still buy nothing, because the same approved plan can
+ * say `mode: 'shell'` and run any script at all — and inside a shell script,
+ * `sh` resolves the tools itself, against the child's PATH, with none of these
+ * checks. The approval gate is the control for what a plan runs; this function
+ * only stops PATH, the working directory, or a link from quietly choosing a
+ * different file than the one the plan named.
  */
 export function resolveCommandProgram(
   program: string,

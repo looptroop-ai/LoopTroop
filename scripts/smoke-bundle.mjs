@@ -19,7 +19,7 @@ import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync } from 'node:f
 import { tmpdir } from 'node:os'
 import { basename, dirname, join, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
-import { shellCommandLine, toolPath } from './tool-path.ts'
+import { launchTool, toolPath } from './tool-path.ts'
 
 const repoRoot = resolve(dirname(fileURLToPath(import.meta.url)), '..')
 const IS_WINDOWS = process.platform === 'win32'
@@ -67,11 +67,14 @@ try {
   const wrapper = join(root, 'bin', IS_WINDOWS ? 'looptroop.cmd' : 'looptroop')
   if (!existsSync(wrapper)) fail(`The bundle has no ${IS_WINDOWS ? 'bin/looptroop.cmd' : 'bin/looptroop'}.`)
 
-  // Through a shell only on Windows, where node cannot execute a `.cmd`
-  // directly — and then as one command line built by `shellCommandLine`, rather
-  // than an argument array Node joins unquoted (DEP0190).
-  const launch = (args) => IS_WINDOWS ? [shellCommandLine(wrapper, args), []] : [wrapper, args]
-  const version = spawnSync(...launch(['--version']), { encoding: 'utf8', shell: IS_WINDOWS })
+  // Through a resolved cmd.exe only on Windows, where Node cannot execute a
+  // `.cmd` directly, with every argument escaped — the launcher the daemon uses.
+  const launch = (args) => {
+    const plan = launchTool(wrapper, args)
+    return [plan.file, plan.args, plan.windowsVerbatimArguments]
+  }
+  const [versionFile, versionArgs, versionVerbatim] = launch(['--version'])
+  const version = spawnSync(versionFile, versionArgs, { encoding: 'utf8', windowsVerbatimArguments: versionVerbatim })
   if (version.status !== 0) {
     fail('The bundled launcher could not run.', version.stderr || String(version.error))
   }
@@ -86,9 +89,10 @@ try {
   // the exit code is not the assertion — producing a report is.
   const configDir = join(work, 'config')
   mkdirSync(configDir)
-  const doctor = spawnSync(...launch(['doctor']), {
+  const [doctorFile, doctorArgs, doctorVerbatim] = launch(['doctor'])
+  const doctor = spawnSync(doctorFile, doctorArgs, {
     encoding: 'utf8',
-    shell: IS_WINDOWS,
+    windowsVerbatimArguments: doctorVerbatim,
     env: { ...process.env, LOOPTROOP_CONFIG_DIR: configDir, LOOPTROOP_OPENCODE_MODE: 'mock' },
   })
   const report = `${doctor.stdout}${doctor.stderr}`

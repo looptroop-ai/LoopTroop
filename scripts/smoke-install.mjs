@@ -23,7 +23,7 @@ import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, statSync } fr
 import { tmpdir } from 'node:os'
 import { join, resolve } from 'node:path'
 import { waitForHealth } from './smoke-lib.mjs'
-import { shellCommandLine, spawnProgram } from './tool-path.ts'
+import { planToolLaunch } from './tool-path.ts'
 
 const IS_WINDOWS = process.platform === 'win32'
 
@@ -117,16 +117,22 @@ function heading(title) {
  * than being interrupted by them.
  */
 function run(command, args, options = {}) {
-  // Resolved against the environment the child gets, and — when a shell will
-  // read it — joined into one command line with every token quoted, because
-  // Node joins an argument array for `shell: true` without quoting any of it.
-  const env = { ...process.env, ...CHILD_ENV, ...(options.env ?? {}) }
-  const program = spawnProgram(command, { env })
-  const result = spawnSync(options.shell ? shellCommandLine(program, args) : program, options.shell ? [] : args, {
+  // Resolved against the environment the child gets, and started the way the
+  // daemon starts a program: a Windows command script — npm.cmd, yarn.cmd, the
+  // installed looptroop.cmd — through a resolved cmd.exe with every argument
+  // escaped, anything else directly. A tool that cannot be resolved comes back
+  // as a run that never started, with the reason.
+  const { env: extraEnv, ...spawnOptions } = options
+  const env = { ...process.env, ...CHILD_ENV, ...(extraEnv ?? {}) }
+  const launch = planToolLaunch(command, args, { env })
+  if (launch.reason !== undefined) {
+    return { code: null, signal: null, error: launch.reason, stdout: '', stderr: '', combined: '' }
+  }
+  const result = spawnSync(launch.file, launch.args, {
     encoding: 'utf8',
-    shell: false,
-    ...options,
+    ...spawnOptions,
     env,
+    windowsVerbatimArguments: launch.windowsVerbatimArguments,
   })
   return {
     code: result.status,
@@ -141,9 +147,9 @@ function run(command, args, options = {}) {
   }
 }
 
-/** npm is a shell script on POSIX and a .cmd on Windows, so it needs a shell there. */
+/** npm, which `run` resolves to `npm.cmd` on Windows and starts through cmd.exe. */
 function npm(args, options = {}) {
-  return run(IS_WINDOWS ? 'npm.cmd' : 'npm', args, { shell: IS_WINDOWS, ...options })
+  return run('npm', args, options)
 }
 
 /**
@@ -158,32 +164,17 @@ function looptroopPath(prefix) {
 }
 
 /**
- * Quotes one argument for `cmd.exe`. Everything is quoted rather than only the
- * values that look like they need it: inside double quotes cmd stops treating
- * `&`, `|`, `^` and friends as syntax, which is the whole point of doing this
- * instead of interpolating into a shell string.
- */
-function quoteForCmd(value) {
-  return `"${String(value).replace(/"/g, '""')}"`
-}
-
-/**
  * Runs the installed launcher.
  *
  * On Windows npm's `bin` entry is `looptroop.cmd`, and a batch file is not an
- * executable image: `CreateProcess` cannot run it, so `spawnSync` with the
- * default `shell: false` came back with a null exit code and empty output for
- * every command — which read as thirteen assertion failures about JSON and
- * health, none of them the actual problem. It has to go through the command
- * interpreter, and `/d /s /c` with one pre-quoted line keeps the argument
- * boundaries we chose rather than letting a shell re-split them.
+ * executable image: spawned directly it came back with a null exit code and
+ * empty output for every command — which read as thirteen assertion failures
+ * about JSON and health, none of them the actual problem. `run` starts a
+ * command script through cmd.exe with the argument boundaries we chose, so this
+ * is `run` under the name the call sites read best with.
  */
 function runShim(shimPath, args, options = {}) {
-  if (!IS_WINDOWS) return run(shimPath, args, options)
-
-  const comspec = process.env.ComSpec ?? process.env.COMSPEC ?? 'cmd.exe'
-  const line = `"${[shimPath, ...args].map(quoteForCmd).join(' ')}"`
-  return run(comspec, ['/d', '/s', '/c', line], { ...options, windowsVerbatimArguments: true })
+  return run(shimPath, args, options)
 }
 
 function readJson(text, name) {

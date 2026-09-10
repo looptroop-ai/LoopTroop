@@ -15,7 +15,7 @@ import { spawnSync } from 'node:child_process'
 import { accessSync, constants, statSync } from 'node:fs'
 import { dirname, resolve, basename } from 'node:path'
 import { fileURLToPath } from 'node:url'
-import { shellCommandLine, spawnProgram } from './tool-path.ts'
+import { planToolLaunch } from './tool-path.ts'
 
 const __dirname = dirname(fileURLToPath(import.meta.url))
 const repoRoot = resolve(__dirname, '..')
@@ -26,17 +26,18 @@ const binExtension = isWindows ? '.cmd' : ''
 /**
  * Windows `.cmd`/`.bat` shims (npm.cmd, tsx.cmd, ...) are batch scripts that
  * can only run via cmd.exe. Since the BatBadBut fix (Node 18.20.2/20.12.2/21+),
- * spawnSync refuses to launch them directly and throws EINVAL. Routing through
- * the shell fixes that, but `shell: true` re-parses the command line — so the
- * line is built by `shellCommandLine`, which quotes every token for cmd.exe.
+ * spawnSync refuses to launch them directly and throws EINVAL. The shared
+ * launcher starts them through a resolved cmd.exe with every argument escaped,
+ * where `shell: true` would have Node look cmd.exe up by name and join the
+ * arguments unquoted. A tool that cannot be resolved is reported the way a
+ * failed spawn is, in `error`.
  */
-function spawnViaShell(command, args, options) {
-  // One command line under the Windows shell, not an argument array Node joins
-  // unquoted (DEP0190); an array everywhere else, where there is no shell.
-  const program = spawnProgram(command)
-  return spawnSync(isWindows ? shellCommandLine(program, args) : program, isWindows ? [] : args, {
+function spawnTool(command, args, options) {
+  const launch = planToolLaunch(command, args)
+  if (launch.reason !== undefined) return { status: null, error: new Error(launch.reason) }
+  return spawnSync(launch.file, launch.args, {
     ...options,
-    shell: isWindows,
+    windowsVerbatimArguments: launch.windowsVerbatimArguments,
   })
 }
 const tsxBin = resolve(repoRoot, 'node_modules', '.bin', `tsx${binExtension}`)
@@ -95,7 +96,7 @@ if (reasons.length > 0) {
     console.log(`[dev-preflight] - ${reason}`)
   }
 
-  const result = spawnViaShell(npmCommand, ['ci', ...npmInstallFlags], {
+  const result = spawnTool(npmCommand, ['ci', ...npmInstallFlags], {
     cwd: repoRoot,
     encoding: 'utf8',
     stdio: 'pipe',
@@ -139,7 +140,7 @@ if (reasons.length > 0) {
 
 // Delegate to the TypeScript preflight for all other checks
 console.log('[dev-preflight] Running startup maintenance, process cleanup, and port checks.')
-const result = spawnViaShell(tsxBin, [resolve(repoRoot, 'scripts', 'dev-preflight.ts')], {
+const result = spawnTool(tsxBin, [resolve(repoRoot, 'scripts', 'dev-preflight.ts')], {
   cwd: repoRoot,
   stdio: 'inherit',
 })

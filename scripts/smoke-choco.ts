@@ -32,7 +32,7 @@ import { existsSync, mkdtempSync, readFileSync, rmSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { dirname, join, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
-import { shellCommandLine, spawnProgram } from './tool-path.ts'
+import { planToolLaunch } from './tool-path.ts'
 
 const repoRoot = resolve(dirname(fileURLToPath(import.meta.url)), '..')
 
@@ -57,13 +57,16 @@ function flag(name: string, fallback: string | null = null): string {
 interface RunResult { status: number | null, stdout: string, stderr: string }
 
 function run(command: string, args: string[], options: { env?: NodeJS.ProcessEnv, allowFailure?: boolean } = {}): RunResult {
-  // Always a shell here: `choco` and its shims are command scripts. Resolved
-  // against the child's environment and joined into one quoted line.
+  // Resolved against the child's environment. A shim that is a command script
+  // starts through a resolved cmd.exe with every argument escaped; `choco.exe`
+  // and its shimgen shims start directly.
   const env = { ...process.env, ...options.env }
-  const result = spawnSync(shellCommandLine(spawnProgram(command, { env }), args), [], {
+  const launch = planToolLaunch(command, args, { env })
+  if (launch.reason !== undefined) fail(`${command} could not be started.`, launch.reason)
+  const result = spawnSync(launch.file, launch.args, {
     encoding: 'utf8',
     env,
-    shell: true,
+    windowsVerbatimArguments: launch.windowsVerbatimArguments,
   })
   const output = { status: result.status, stdout: result.stdout ?? '', stderr: result.stderr ?? '' }
   if (result.status !== 0 && options.allowFailure !== true) {

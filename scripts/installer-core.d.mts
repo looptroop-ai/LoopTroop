@@ -126,15 +126,31 @@ export function findTrustedExecutablePath(
   },
 ): string | null
 
-/** One cmd.exe token, whatever the value contains. */
-export function quoteForCmd(value: string): string
+/**
+ * The launcher generated into the core with the resolver: how `runTool` starts
+ * a resolved program — directly, or for a Windows command script through a
+ * resolved cmd.exe with every argument escaped.
+ */
+export function planProgramLaunch(
+  program: string,
+  args: readonly string[],
+  options?: {
+    env?: NodeJS.ProcessEnv
+    policyEnv?: NodeJS.ProcessEnv
+    platform?: NodeJS.Platform
+    resolveInterpreter?: () => { path: string } | { path?: undefined; reason: string }
+  },
+):
+  | { file: string; args: string[]; windowsVerbatimArguments: boolean; reason?: undefined }
+  | { file?: undefined; args?: undefined; windowsVerbatimArguments?: undefined; reason: string }
 
 /**
  * Runs a tool the installer needs, by the path the generated resolver chose.
  *
  * Exported for the test that proves a *refused* tool stops the install with the
  * reason instead of being spawned by bare name. Throws the installer's own
- * error for a refusal; a tool that is simply missing is left to fail as ENOENT.
+ * error for a refusal, and for a command script no cmd.exe can be found for; a
+ * tool that is simply missing is reported as ENOENT without being spawned.
  */
 export function runTool(
   command: string,

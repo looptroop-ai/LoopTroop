@@ -11,11 +11,11 @@
  *
  * Run before `npm ci`, so the install itself happens under the pinned version.
  */
-import { execFileSync } from 'node:child_process'
+import { spawnSync } from 'node:child_process'
 import { readFileSync } from 'node:fs'
 import { dirname, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
-import { shellCommandLine, toolPath } from './tool-path.ts'
+import { launchTool } from './tool-path.ts'
 
 const repoRoot = resolve(dirname(fileURLToPath(import.meta.url)), '..')
 
@@ -25,18 +25,21 @@ function fail(message) {
 }
 
 /**
- * npm on Windows is a .cmd shim, which needs a shell to be executable — and a
- * shell re-parses what it is given, so the resolved path and every argument go
- * to it as one quoted command line rather than as an array Node would join
- * unquoted. `C:\\Program Files\\nodejs\\npm.cmd` split at the space otherwise.
+ * npm on Windows is a .cmd shim, which only cmd.exe can run. The shared
+ * launcher starts it through a resolved cmd.exe with the path and every
+ * argument escaped — `C:\\Program Files\\nodejs\\npm.cmd` split at the space
+ * when a shell was handed it unquoted.
  */
 function npm(args) {
-  const program = toolPath('npm')
-  const shell = process.platform === 'win32'
-  return execFileSync(shell ? shellCommandLine(program, args) : program, shell ? [] : args, {
+  const launch = launchTool('npm', args)
+  const result = spawnSync(launch.file, launch.args, {
     encoding: 'utf8',
-    shell,
-  }).trim()
+    stdio: ['ignore', 'pipe', 'inherit'],
+    windowsVerbatimArguments: launch.windowsVerbatimArguments,
+  })
+  if (result.error) fail(`npm ${args.join(' ')} could not be started: ${result.error.message}`)
+  if (result.status !== 0) fail(`npm ${args.join(' ')} exited ${result.status ?? result.signal}.`)
+  return result.stdout.trim()
 }
 
 const manifest = JSON.parse(readFileSync(resolve(repoRoot, 'package.json'), 'utf8'))

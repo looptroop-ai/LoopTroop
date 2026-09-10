@@ -694,8 +694,8 @@ export interface ProgramLaunch {
 
 /** A launch, or the reason a program cannot be started faithfully. Never both. */
 export type ProgramLaunchPlan =
-  | (ProgramLaunch & { reason?: undefined })
-  | { file?: undefined; args?: undefined; windowsVerbatimArguments?: undefined; reason: string }
+  | (ProgramLaunch & { reason?: undefined; refusedAt?: undefined })
+  | { file?: undefined; args?: undefined; windowsVerbatimArguments?: undefined; reason: string; refusedAt?: string }
 
 /**
  * Whether `program` can only be started through cmd.exe.

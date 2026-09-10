@@ -45,6 +45,28 @@ node_missing() {
   exit 1
 }
 
+# `node` is looked up on PATH by this shell, twice below, before the core and
+# its resolver run — and an empty or relative PATH entry is the current
+# directory. A trailing colon, the everyday result of `PATH=$PATH:`, or a `.`,
+# and `curl … | sh` run from a Downloads folder would run a `node` sitting in it.
+# The core's resolver never searches there; this is the same rule for the
+# lookups made before it exists. Everything started from here inherits the
+# cleaned PATH. Globbing is off while PATH is split, so an entry holding `*`
+# stays one entry.
+absolute_path=
+saved_ifs=$IFS
+IFS=:
+set -f
+for entry in ${PATH:-}; do
+  case "$entry" in
+    /*) absolute_path="${absolute_path:+$absolute_path:}$entry" ;;
+  esac
+done
+set +f
+IFS=$saved_ifs
+PATH=$absolute_path
+export PATH
+
 command -v node >/dev/null 2>&1 || node_missing "$@"
 
 work=$(mktemp -d 2>/dev/null || mktemp -d -t looptroop-install)
@@ -1498,29 +1520,6 @@ export function planProgramLaunch(program        , args                   , opti
 // --- END executable-path ---
 
 /**
- * One cmd.exe token, quoted only when leaving it bare would change it.
- *
- * Quoting everything is the obvious version and it is wrong for a batch file.
- * `cmd` hands a `.cmd` shim its arguments as written, so `%1` becomes
- * `"--version"` with the quotes still attached and a shim that compares
- * `if "%1"=="--version"` stops matching. Real `npm.cmd` only forwards `%*` to
- * Node, whose own parser strips them, which is why this went unnoticed — but the
- * next shim need not be so forgiving.
- *
- * So: quote what would otherwise be split or interpreted — whitespace, and the
- * characters `cmd` treats as syntax — and leave everything else exactly as the
- * caller wrote it. The same rule `dev-preflight.mjs` and `dev-maintenance.ts`
- * already use.
- */
-export function quoteForCmd(value) {
-  const text = String(value)
-  // An empty argument is still an argument; left bare it vanishes from the line.
-  if (text === '') return '""'
-  if (!/[\s&|<>^()"]/.test(text)) return text
-  return `"${text.replace(/"/g, '""')}"`
-}
-
-/**
  * Runs a command without a shell re-reading its arguments.
  *
  * `shell: true` on Windows was the previous answer and it is wrong in a way
@@ -1530,25 +1529,24 @@ export function quoteForCmd(value) {
  * arguments — every account whose name contains a space, which is most of them.
  * The same re-parsing is what lets a path be read as a shell operator.
  *
- * A shell is needed on Windows for one reason only: `npm` and `looptroop` are
+ * cmd.exe is needed on Windows for one reason only: `npm` and `looptroop` are
  * `.cmd` shims there, batch files rather than executable images, and Node has
- * refused to spawn one without a shell since the BatBadBut fix. So the shell is
- * used only when the resolver actually finds a shim, and its command line is
- * built here with explicit quoting rather than by joining on spaces.
+ * refused to spawn one without a shell since the BatBadBut fix. So it is used
+ * only when the resolver actually finds a shim, through `planProgramLaunch` —
+ * the launcher generated above from `server/lib/executablePath.ts`, the same
+ * one the daemon and the repository scripts use. It resolves cmd.exe rather
+ * than handing its name to a bare-name spawn, and escapes the shim's path and
+ * every argument for it.
  *
  * The name is resolved on *every* platform, not only Windows. `PATH` deciding
  * which `tar` unpacks a downloaded archive, or which `npm` installs it, is the
  * same hole on Linux — it just had no shim problem to make it visible.
- *
- * `smoke-published.mjs` carries the same helper. It is repeated rather than
- * imported because this file is embedded verbatim into `install.sh` and
- * `install.ps1` and cannot import anything at all.
  */
 export function runTool(command, args, options = {}) {
   // Against the environment the child gets, with the trust policy read from
   // this process's own — the installer's caller is the operator.
   const env = options.env ?? process.env
-  const resolution = resolveTrustedExecutable(command, { env, policyEnv: process.env })
+  const resolution = resolveTrustedExecutable(command, { env })
   // Found and refused stops here, with the reason. Falling through to a bare
   // name made the child search the same PATH and run the exact file the
   // resolver had just refused.
@@ -1557,43 +1555,22 @@ export function runTool(command, args, options = {}) {
   }
   // Not installed at all fails as ENOENT, the way a missing tool always has —
   // every caller has its own message for that — but it is *reported*, not
-  // produced by spawning the bare name. The operating system's search does not
-  // skip the relative and empty PATH entries the resolver skips, so with
-  // `PATH=/usr/bin:` a bare `npm` ran `./npm` from wherever the installer was
-  // started: a Downloads folder, typically.
-  const resolved = resolution.path ?? null
-  if (resolved === null) {
+  // produced by spawning the bare name. The operating system's search reaches
+  // the working directory where the resolver never looks: through a relative or
+  // empty PATH entry on POSIX, and before PATH on Windows, so a bare `npm` ran
+  // `./npm` from wherever the installer was started — a Downloads folder,
+  // typically.
+  if (resolution.path === undefined) {
     const error = Object.assign(new Error(`spawnSync ${command} ENOENT`), { code: 'ENOENT', errno: -2, syscall: `spawnSync ${command}`, path: command })
     return { pid: 0, output: [null, '', ''], stdout: '', stderr: '', status: null, signal: null, error }
   }
 
-  // A real executable image, or any POSIX file: spawn it directly.
-  if (process.platform !== 'win32' || !/\.(cmd|bat)$/i.test(resolved)) {
-    return spawnSync(resolved, args, { ...options, shell: false })
-  }
-
-  // `/d` skips AutoRun commands from the registry, `/s` makes cmd strip only
-  // the outermost pair of quotes and take the rest verbatim, and
-  // `windowsVerbatimArguments` stops Node adding a second layer of its own.
-  //
-  // The executable is always quoted — it is a full path, and the usual place
-  // for a Windows tool is under `C:\Program Files`. The arguments are quoted
-  // only where they need it, so a shim reading `%1` sees what the caller wrote.
-  const line = `"${[`"${resolved}"`, ...args.map(quoteForCmd)].join(' ')}"`
-  // The interpreter is a program too. `ComSpec` names it by absolute path when
-  // Windows set it; otherwise `cmd.exe` is resolved like any other tool — from
-  // the system directories the resolver searches first — rather than handed to
-  // a bare-name spawn, which is the one lookup this whole file exists to avoid.
-  // `ComSpec` is held to the same rules as any program named by path.
-  const named = process.env.ComSpec?.trim()
-  const interpreter = named
-    ? resolveTrustedProgram(named).path
-    : findTrustedExecutablePath('cmd.exe')
-  if (!interpreter) fail('cmd.exe could not be used, and it is needed to run command scripts on Windows.', named ? `ComSpec names ${named}.` : '')
-  return spawnSync(interpreter, ['/d', '/s', '/c', line], {
+  const launch = planProgramLaunch(resolution.path, args, { env })
+  if (launch.reason !== undefined) fail(launch.reason)
+  return spawnSync(launch.file, launch.args, {
     ...options,
     shell: false,
-    windowsVerbatimArguments: true,
+    windowsVerbatimArguments: launch.windowsVerbatimArguments,
   })
 }
 

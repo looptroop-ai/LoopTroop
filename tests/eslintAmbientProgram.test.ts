@@ -35,6 +35,10 @@ const PROBE = [
   'const run = promisify(execFile)',                                             // 22 promisify alias
   "const worker = { spawn: (job) => job }",                                      // 23
   "worker.spawn('job')",                                                         // 24 ok: not child_process
+  "import * as util from 'node:util'",                                           // 25
+  'const runLater = util.promisify(childProcess.execFile)',                      // 26 promisify through namespaces
+  'const execFileAsync2 = util.promisify(childProcess.exec)',                    // 27 same, any unknown name
+  'const execAsync = util.promisify(childProcess.exec)',                         // 28 ok: a name the rule knows
 ].join('\n')
 
 async function flaggedLines(filePath: string): Promise<number[]> {
@@ -45,12 +49,12 @@ async function flaggedLines(filePath: string): Promise<number[]> {
 
 describe('the ambient-program lint rule', () => {
   it('flags every bypass and nothing legitimate, in a script', async () => {
-    expect(await flaggedLines('scripts/__lint-probe.mjs')).toEqual([1, 6, 7, 8, 9, 11, 12, 13, 18, 19, 20, 22])
+    expect(await flaggedLines('scripts/__lint-probe.mjs')).toEqual([1, 6, 7, 8, 9, 11, 12, 13, 18, 19, 20, 22, 26, 27])
   })
 
   it('applies to server code too, where no-undef is left to TypeScript', async () => {
     const lines = await flaggedLines('server/__lint-probe.ts')
-    for (const line of [1, 6, 7, 8, 9, 11, 12, 13, 18, 20, 22]) expect(lines).toContain(line)
+    for (const line of [1, 6, 7, 8, 9, 11, 12, 13, 18, 20, 22, 26, 27]) expect(lines).toContain(line)
     for (const line of [14, 15, 17, 24]) expect(lines).not.toContain(line)
   })
 

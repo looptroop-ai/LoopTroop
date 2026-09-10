@@ -6,7 +6,6 @@ import { basename, dirname, isAbsolute, resolve } from 'node:path'
 import { Database } from '../server/db/sqliteShim'
 import { getErrorMessage } from '../shared/typeGuards'
 import { TERMINAL_WORKFLOW_STATUSES } from '../shared/workflowMeta'
-import { findToolPath } from './tool-path.ts'
 import { resolveTrustedProgram } from '../server/lib/executablePath.ts'
 
 interface CliOptions {
@@ -699,10 +698,13 @@ function runShell(command: string, timeoutMs = 5000): CommandResult {
 
   // Resolved rather than left to `PATH`, and resolved *before* the spawn so the
   // "bash is not here, try sh" fallback keys on the same answer it always did.
+  // A bash that is there and refused is reported with the reason, the way
+  // `runProcess` reports a refused tool, rather than walked past to sh: that
+  // ran a different shell than the one asked for and called bash missing.
   // This script diagnoses a stall and must never become the thing that fails,
   // so an unresolvable shell is reported, not thrown.
-  const shellPath = findToolPath(shellCmd)
-  const result = shellPath === null ? null : spawnSync(shellPath, shellArgs, {
+  const shell = resolveTrustedProgram(shellCmd)
+  const result = shell.path === undefined ? null : spawnSync(shell.path, shellArgs, {
     cwd: process.cwd(),
     encoding: 'utf8',
     timeout: timeoutMs,
@@ -710,18 +712,19 @@ function runShell(command: string, timeoutMs = 5000): CommandResult {
 
   const durationMs = Date.now() - start
   const error = result?.error
-  const missing = result === null || (error !== undefined && (error as NodeJS.ErrnoException).code === 'ENOENT')
+  const missing = (result === null && shell.refusedAt === undefined)
+    || (error !== undefined && (error as NodeJS.ErrnoException).code === 'ENOENT')
 
   // If bash not found, retry with sh
   if (missing && shellCmd === 'bash') {
-    const shPath = findToolPath('sh')
-    const fallback = shPath === null ? null : spawnSync(shPath, ['-c', command], {
+    const sh = resolveTrustedProgram('sh')
+    const fallback = sh.path === undefined ? null : spawnSync(sh.path, ['-c', command], {
       cwd: process.cwd(),
       encoding: 'utf8',
       timeout: timeoutMs,
     })
     const fallbackError = fallback === null
-      ? new Error('sh was not found in any trusted directory on PATH.')
+      ? new Error(sh.reason)
       : fallback.error
     const timedOut = fallbackError?.name === 'TimeoutError'
     return {
@@ -738,7 +741,7 @@ function runShell(command: string, timeoutMs = 5000): CommandResult {
   }
 
   const timedOut = error?.name === 'TimeoutError'
-  const reason = error ?? (result === null ? new Error(`${shellCmd} was not found in any trusted directory on PATH.`) : undefined)
+  const reason = error ?? (shell.path === undefined ? new Error(shell.reason) : undefined)
   return {
     command,
     shell: `${shellCmd} ${shellArgs.slice(0, -1).join(' ')}`,

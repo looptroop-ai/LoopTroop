@@ -8,7 +8,7 @@ import { tmpdir } from 'node:os'
 import { dirname, join, resolve, win32 } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import {
-  binaryAssetName, binaryTarget, defaultPrefix, detectLibc, INSTALL_OPTIONS, onPath, quoteForCmd,
+  binaryAssetName, binaryTarget, defaultPrefix, detectLibc, INSTALL_OPTIONS, onPath, planProgramLaunch,
   findTrustedExecutablePath, runTool, stallGuard, streamBody,
 } from '../scripts/installer-core.mjs'
 import { removeTempDir } from '../server/test/tempDir'
@@ -1304,37 +1304,32 @@ describe('PATH resolution', () => {
   })
 })
 
+/**
+ * The generated launcher, tested through the copy that ships inside the
+ * installers. `npm install -g <tarball>` is the case that mattered: a shell
+ * joining arguments on spaces handed npm four arguments for every account whose
+ * name contains a space.
+ */
 describe('windows command lines', () => {
+  const interpreter = () => ({ path: 'C:\\Windows\\System32\\cmd.exe' })
+  const line = (args: string[]) => planProgramLaunch('C:\\Program Files\\nodejs\\npm.cmd', args, { platform: 'win32', resolveInterpreter: interpreter }).args?.[3]
+
   it('makes one token of an argument containing spaces', () => {
-    expect(quoteForCmd(String.raw`C:\Users\Ada Lovelace\AppData\Local\Temp\looptroop-9.9.9.tgz`))
-      .toBe(String.raw`"C:\Users\Ada Lovelace\AppData\Local\Temp\looptroop-9.9.9.tgz"`)
+    expect(line(['install', '-g', String.raw`C:\Users\Ada Lovelace\AppData\Local\Temp\looptroop-9.9.9.tgz`]))
+      .toBe(String.raw`"C:\Program^ Files\nodejs\npm.cmd ^"install^" ^"-g^" ^"C:\Users\Ada^ Lovelace\AppData\Local\Temp\looptroop-9.9.9.tgz^""`)
   })
 
-  /**
-   * The other half of the rule, and the one that is easy to get wrong by
-   * quoting everything. `cmd` hands a `.cmd` shim its arguments as written, so
-   * a quoted `install` arrives as `"install"` and a shim comparing
-   * `if "%1"=="--version"` stops matching. Anything that needs no quoting is
-   * passed through exactly as the caller wrote it.
-   */
-  it('leaves an argument that needs no quoting exactly as it was', () => {
-    for (const plain of ['install', '-g', '--no-audit', String.raw`C:\Users\ada\x.tgz`]) {
-      expect(quoteForCmd(plain)).toBe(plain)
-    }
+  it('escapes what cmd.exe would read as an operator or an expansion', () => {
+    expect(line(['a&b', 'a|b', '%PATH%'])).toBe(String.raw`"C:\Program^ Files\nodejs\npm.cmd ^"a^&b^" ^"a^|b^" ^"^%PATH^%^""`)
   })
 
-  it('makes one token of an argument cmd.exe would otherwise read as an operator', () => {
-    for (const value of ['a&b', 'a|b', 'a>b', 'a<b', 'a^b', 'a(b)']) {
-      expect(quoteForCmd(value)).toBe(`"${value}"`)
-    }
+  it('keeps an empty argument as an argument', () => {
+    expect(line([''])).toBe(String.raw`"C:\Program^ Files\nodejs\npm.cmd ^"^""`)
   })
 
-  /**
-   * A path cannot contain a quote on Windows, so this is about arguments that
-   * are not paths. Doubling is cmd's own escape.
-   */
-  it('doubles an embedded quote rather than ending the token', () => {
-    expect(quoteForCmd('say "hello"')).toBe('"say ""hello"""')
+  it('spawns a real program directly, arguments untouched', () => {
+    expect(planProgramLaunch('C:\\Windows\\System32\\tar.exe', ['-xf', 'a b.tgz'], { platform: 'win32' }))
+      .toEqual({ file: 'C:\\Windows\\System32\\tar.exe', args: ['-xf', 'a b.tgz'], windowsVerbatimArguments: false })
   })
 })
 
@@ -1687,7 +1682,4 @@ describe('runTool when a tool is not installed', () => {
     }
   })
 
-  it('keeps an empty argument as an argument', () => {
-    expect(quoteForCmd('')).toBe('""')
-  })
 })

@@ -133,9 +133,14 @@ const ambientProgramRules = [
   {
     // `const run = promisify(execFile)` is a launcher under a name the rule has
     // never heard of. The two names it knows are the ones this codebase uses.
+    // `util.promisify(childProcess.execFile)` is the same launcher spelled
+    // through two namespaces, and slipped past a clause that knew only the bare
+    // names.
     selector:
-      "VariableDeclarator[init.type='CallExpression'][init.callee.name='promisify']"
-      + `[init.arguments.0.name=/^(${SPAWN_CALLEES})$/][id.name!=/^(execFileAsync|execAsync)$/]`,
+      "VariableDeclarator[init.type='CallExpression']"
+      + ":matches([init.callee.name='promisify'], [init.callee.property.name='promisify'])"
+      + `:matches([init.arguments.0.name=/^(${SPAWN_CALLEES})$/], [init.arguments.0.property.name=/^(${SPAWN_CALLEES})$/])`
+      + '[id.name!=/^(execFileAsync|execAsync)$/]',
     message: 'Name a promisified child_process launcher execFileAsync or execAsync, so the ambient-program rule can see its calls.',
   },
   {

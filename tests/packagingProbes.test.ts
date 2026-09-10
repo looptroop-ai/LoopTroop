@@ -1,5 +1,4 @@
 import { describe, it, expect, afterAll, afterEach, vi } from 'vitest'
-import { execFileSync } from 'node:child_process'
 import { chmodSync, chownSync, existsSync, mkdirSync, mkdtempSync, readFileSync, writeFileSync } from 'node:fs'
 import { createServer } from 'node:http'
 import type { AddressInfo } from 'node:net'
@@ -7,7 +6,7 @@ import { tmpdir } from 'node:os'
 import { delimiter, isAbsolute, join, win32 } from 'node:path'
 import { claimTapDirectory, isOwnedTap } from '../scripts/brew-local-tap.ts'
 import { defaultTrustedPrefixes, resolveTrustedTool } from '../scripts/trusted-tool.ts'
-import { quoteArgForShell, quoteProgramForShell, shellCommandLine, spawnProgram } from '../scripts/tool-path.ts'
+import { launchTool, planToolLaunch, spawnProgram } from '../scripts/tool-path.ts'
 import { withoutCredentials } from '../scripts/container-docker.ts'
 import { removeWorkDirectory, waitForHealth } from '../scripts/smoke-lib.mjs'
 import { makeTempDir, removeTempDir } from '../server/test/tempDir'
@@ -573,7 +572,9 @@ describe('spawnProgram', () => {
     }
   }
 
-  it('falls back to the name when the tool is not installed anywhere', () => {
+  // POSIX only: Windows looks in the current directory before PATH, so a bare
+  // name is never handed back there (pinned in the next describe).
+  it.runIf(process.platform !== 'win32')('falls back to the name when the tool is not installed anywhere', () => {
     expect(withPath(scratch(), () => spawnProgram('definitely-not-installed-anywhere')))
       .toBe('definitely-not-installed-anywhere')
   })
@@ -605,13 +606,12 @@ describe('spawnProgram', () => {
     }
   })
 
-  it.runIf(process.platform !== 'win32')('quotes a resolved path for the shell that will read it, and leaves it bare otherwise', () => {
+  it.runIf(process.platform !== 'win32')('hands back the resolved path as it is, space and all', () => {
+    // No shell reads it any more, so there is nothing to quote it for.
     const spaced = join(scratch(), 'Program Files')
     const tool = executable(spaced, 'looptool')
 
     withPath(spaced, () => {
-      // `sh` reads it here, so single quotes — inside which nothing expands.
-      expect(spawnProgram('looptool', { shell: true })).toBe(`'${tool}'`)
       expect(spawnProgram('looptool')).toBe(tool)
     })
   })
@@ -631,37 +631,82 @@ describe('spawnProgram', () => {
   })
 })
 
-describe('shell command lines', () => {
-  it('quotes the program always, and not only when it holds a space', () => {
-    // `C:\Tools&CI` has no space and is two commands to cmd.exe; a POSIX path
-    // with `$` expands inside double quotes.
-    expect(quoteProgramForShell('C:\\Tools&CI\\npm.cmd', 'win32')).toBe('"C:\\Tools&CI\\npm.cmd"')
-    expect(quoteProgramForShell('/opt/$HOME/bin/tool', 'linux')).toBe("'/opt/$HOME/bin/tool'")
-    expect(quoteProgramForShell("/opt/it's/tool", 'linux')).toBe("'/opt/it'\\''s/tool'")
+/**
+ * `planToolLaunch` and `launchTool` are how a script starts a tool that may be
+ * a Windows command script: the shared launcher, not `shell: true`. The
+ * escaping itself is pinned in the resolver's own tests; these pin the wiring.
+ */
+describe('launching a tool', () => {
+  const dirs: string[] = []
+
+  afterEach(() => {
+    for (const dir of dirs.splice(0)) removeTempDir(dir)
   })
 
-  it('quotes an argument only when leaving it bare would change it', () => {
-    // Quoting every argument breaks a cmd shim comparing `%1`: cmd hands it over
-    // with the quotes still on.
-    expect(quoteArgForShell('--version', 'win32')).toBe('--version')
-    expect(quoteArgForShell('C:\\Users\\Ada Lovelace\\x.tgz', 'win32')).toBe('"C:\\Users\\Ada Lovelace\\x.tgz"')
-    expect(quoteArgForShell('a&b', 'win32')).toBe('"a&b"')
-    expect(quoteArgForShell('say "hi"', 'win32')).toBe('"say ""hi"""')
-    expect(quoteArgForShell('--prefix=/tmp/x', 'linux')).toBe('--prefix=/tmp/x')
-    expect(quoteArgForShell('a b;rm -rf', 'linux')).toBe("'a b;rm -rf'")
+  function scratch(): string {
+    const dir = makeTempDir('looptroop-launch-tool-')
+    dirs.push(dir)
+    return dir
+  }
+
+  function executable(directory: string, name: string): string {
+    const path = join(directory, name)
+    writeFileSync(path, '#!/bin/sh\nexit 0\n')
+    chmodSync(path, 0o755)
+    return path
+  }
+
+  it.runIf(process.platform !== 'win32')('spawns a real program directly, arguments untouched', () => {
+    const dir = scratch()
+    const tool = executable(dir, 'looptool')
+
+    expect(planToolLaunch('looptool', ['a b', 'c&d'], { env: { PATH: dir } }))
+      .toEqual({ file: tool, args: ['a b', 'c&d'], windowsVerbatimArguments: false })
   })
 
-  it('builds one line, so Node never joins an argument array unquoted', () => {
-    expect(shellCommandLine('C:\\Program Files\\nodejs\\npm.cmd', ['install', '-g', 'C:\\a b\\x.tgz'], 'win32'))
-      .toBe('"C:\\Program Files\\nodejs\\npm.cmd" install -g "C:\\a b\\x.tgz"')
+  it('starts a Windows command script through cmd.exe, with its arguments escaped', () => {
+    // Upper-case extensions, because PATHEXT spells them that way and this also
+    // runs on a case-sensitive filesystem. The cmd.exe beside it answers when
+    // this host has no ComSpec of its own; a Windows runner uses its real one.
+    const dir = scratch()
+    executable(dir, 'npm.CMD')
+    executable(dir, 'cmd.exe')
+
+    const launch = launchTool('npm', ['install', '-g', 'C:\\a b\\x.tgz'], { env: { PATH: dir }, platform: 'win32' })
+    expect(launch.file.toLowerCase()).toMatch(/cmd\.exe$/)
+    expect(launch.windowsVerbatimArguments).toBe(true)
+    expect(launch.args.slice(0, 3)).toEqual(['/d', '/s', '/c'])
+    expect(launch.args[3]).toMatch(/npm\.CMD \^"install\^" \^"-g\^" \^"C:\\a\^ b\\x\.tgz\^""$/)
   })
 
-  it.runIf(process.platform !== 'win32')('survives a real shell with spaces and metacharacters in the arguments', () => {
-    // The claim that matters, checked against /bin/sh rather than against a
-    // string: three arguments go in, three come out, and nothing runs.
-    const line = shellCommandLine(process.execPath, ['-e', 'console.log(JSON.stringify(process.argv.slice(1)))', 'a b', 'c&d', '$(touch x)'])
-    const output = execFileSync('/bin/sh', ['-c', line], { encoding: 'utf8' })
-    expect(JSON.parse(output)).toEqual(['a b', 'c&d', '$(touch x)'])
+  it('says why a tool cannot be started, or throws it', () => {
+    const lookup = { env: { PATH: scratch() } }
+
+    expect(planToolLaunch('definitely-not-installed-anywhere', [], lookup).reason).toMatch(/was not found in any trusted directory/)
+    expect(() => launchTool('definitely-not-installed-anywhere', [], lookup)).toThrow(/was not found in any trusted directory/)
+  })
+
+  it.runIf(process.platform !== 'win32')('says a refused tool was refused, so a caller does not call it missing', () => {
+    const foreign = scratch()
+    const tool = executable(foreign, 'looptool')
+    const asRoot = process.getuid?.() === 0
+    if (asRoot) {
+      chownSync(foreign, 4242, 4242)
+      chownSync(tool, 4242, 4242)
+    }
+    const spy = asRoot ? null : vi.spyOn(process, 'getuid').mockReturnValue((process.getuid?.() ?? 0) + 1)
+    const execPath = process.execPath
+    if (!asRoot) process.execPath = '/nonexistent/looptroop-test/node'
+    try {
+      expect(planToolLaunch('looptool', [], { env: { PATH: foreign } }).refusedAt).toBe(tool)
+    } finally {
+      spy?.mockRestore()
+      process.execPath = execPath
+      if (asRoot) {
+        chownSync(tool, 0, 0)
+        chownSync(foreign, 0, 0)
+      }
+    }
   })
 })
 
@@ -691,7 +736,4 @@ describe('spawnProgram when a tool is not installed', () => {
     expect(() => spawnProgram('./evil', { env: { PATH: '' } })).toThrow(/relative path/)
   })
 
-  it('keeps an empty argument on a Windows command line', () => {
-    expect(shellCommandLine('C:\\x\\tool.cmd', ['a', '', 'b'], 'win32')).toBe('"C:\\x\\tool.cmd" a "" b')
-  })
 })

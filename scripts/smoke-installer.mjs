@@ -20,7 +20,7 @@ import { existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync }
 import { tmpdir } from 'node:os'
 import { dirname, join, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
-import { shellCommandLine, toolPath } from './tool-path.ts'
+import { launchTool, toolPath } from './tool-path.ts'
 
 const repoRoot = resolve(dirname(fileURLToPath(import.meta.url)), '..')
 const IS_WINDOWS = process.platform === 'win32'
@@ -36,18 +36,16 @@ const expectedVersion = JSON.parse(readFileSync(join(repoRoot, 'package.json'), 
 const work = mkdtempSync(join(tmpdir(), 'looptroop-installer-smoke-'))
 
 try {
-  // npm is `npm.cmd` on Windows, so it goes through the shell there — as one
-  // command line with the program and every argument quoted by
-  // `shellCommandLine`, rather than an array Node joins unquoted.
-  const npm = toolPath('npm')
-  const packArgs = ['pack', '--pack-destination', work, '--silent']
-  const pack = spawnSync(IS_WINDOWS ? shellCommandLine(npm, packArgs) : npm, IS_WINDOWS ? [] : packArgs, {
+  // npm is `npm.cmd` on Windows, so it starts through a resolved cmd.exe there,
+  // with every argument escaped — the launcher the daemon uses.
+  const pack = launchTool('npm', ['pack', '--pack-destination', work, '--silent'])
+  const packed = spawnSync(pack.file, pack.args, {
     cwd: repoRoot,
     encoding: 'utf8',
-    shell: IS_WINDOWS,
+    windowsVerbatimArguments: pack.windowsVerbatimArguments,
   })
-  if (pack.status !== 0) fail('npm pack failed.', pack.stderr || String(pack.error))
-  const tarball = join(work, pack.stdout.trim().split('\n').pop().trim())
+  if (packed.status !== 0) fail('npm pack failed.', packed.stderr || String(packed.error))
+  const tarball = join(work, packed.stdout.trim().split('\n').pop().trim())
 
   // A throwaway npm prefix, so a global install on a shared runner does not
   // outlive this script or collide with the other install smoke test.
@@ -148,7 +146,8 @@ try {
     )
   }
 
-  const version = spawnSync(IS_WINDOWS ? shellCommandLine(installed, ['--version']) : installed, IS_WINDOWS ? [] : ['--version'], { encoding: 'utf8', shell: IS_WINDOWS })
+  const probe = launchTool(installed, ['--version'])
+  const version = spawnSync(probe.file, probe.args, { encoding: 'utf8', windowsVerbatimArguments: probe.windowsVerbatimArguments })
   if (version.stdout.trim() !== expectedVersion) {
     fail(`The installed command reports ${version.stdout.trim() || '(nothing)'}, expected ${expectedVersion}.`)
   }

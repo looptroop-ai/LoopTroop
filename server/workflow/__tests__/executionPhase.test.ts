@@ -11,7 +11,6 @@ import { listOpenCodeSessionsForTicket } from '../../opencode/sessionManager'
 import {
   readTicketBeads,
   recoverCodingBeadWithReset,
-  recoverFailedCodingBead,
   writeTicketBeads,
 } from '../phases/beadsPhase'
 import { phaseIntermediate } from '../phases/state'
@@ -512,7 +511,7 @@ describe('handleCoding', () => {
   })
 
   it('preserves retry notes and iteration when resetToBeadStart fails during context wipe', async () => {
-    const { ticket, context } = await createInitializedTestTicket(repoManager, {
+    const { ticket, context, paths } = await createInitializedTestTicket(repoManager, {
       title: 'Reset failure preserves retry metadata',
     })
     writeTicketBeads(ticket.id, [makePendingBead('bead-1', 1, { iteration: 1 })])
@@ -566,7 +565,11 @@ describe('handleCoding', () => {
     expect(executedBead?.iteration).toBe(2)
     expect(executedBead?.failedIterationNotes).toEqual([makeNote('retry note after timeout')])
 
-    const recoveredBead = recoverFailedCodingBead(ticket.id)
+    // The reset that failed during the wipe is the same one the retry performs,
+    // so let it succeed here: what this asserts is that the notes and iteration
+    // the failed wipe left behind are what a retry picks up.
+    resetToBeadStartMock.mockImplementation(() => {})
+    const recoveredBead = recoverCodingBeadWithReset(ticket.id, { worktreePath: paths.worktreePath })
     expect(recoveredBead?.id).toBe('bead-1')
     expect(recoveredBead?.status).toBe('pending')
     expect(recoveredBead?.iteration).toBe(2)
@@ -604,6 +607,34 @@ describe('handleCoding', () => {
       handleCoding(ticket.id, context, sendEvent, new AbortController().signal),
     ).rejects.toThrow('No runnable bead found; unresolved dependencies remain')
     expect(executeBeadMock).not.toHaveBeenCalled()
+  })
+
+  /**
+   * The third call site that sorts through `compareBeadRecoveryOrder`.
+   *
+   * Its other cases each offer one in-progress bead, which cannot tell a sort
+   * from a first match — the same weakness the checkpoint cases had.
+   */
+  it('resumes the most recently touched interrupted bead when several are in progress', async () => {
+    const { ticket, context } = await createInitializedTestTicket(repoManager, {
+      title: 'Two interrupted beads',
+    })
+    writeTicketBeads(ticket.id, [
+      makePendingBead('older', 1, {
+        status: 'in_progress', updatedAt: '2026-01-01T00:00:00.000Z', beadStartCommit: 'older-sha',
+      }),
+      makePendingBead('newer', 2, {
+        status: 'in_progress', updatedAt: '2026-01-02T00:00:00.000Z', beadStartCommit: 'newer-sha',
+      }),
+    ])
+    const sendEvent = vi.fn()
+    executeBeadMock.mockResolvedValue({ success: true, beadId: 'newer', iteration: 2, output: 'done', errors: [] })
+
+    await handleCoding(ticket.id, context, sendEvent, new AbortController().signal)
+
+    // The reset names the bead it resumed, so it is the unambiguous witness.
+    expect(resetToBeadStartMock).toHaveBeenCalledWith(expect.any(String), 'newer-sha', expect.anything())
+    expect((executeBeadMock.mock.calls[0]![1] as Bead).id).toBe('newer')
   })
 
   it('recovers an interrupted in-progress bead before selecting runnable work', async () => {
@@ -1161,8 +1192,47 @@ describe('handleCoding', () => {
     expect(readTicketBeads(ticket.id).find((b) => b.id === 'bead-1')?.status).toBe('done')
   })
 
-  it('requeues the latest failed bead for retry without clearing notes or iteration', async () => {
+  /**
+   * The checkpoint recovery sorts through the same comparator, and its existing
+   * cases each offer one candidate — which cannot tell an ordering from a
+   * first-match. Two checkpoints, and the newer one has to win.
+   */
+  it('re-finalizes the most recent checkpoint when more than one is recoverable', async () => {
+    commitBeadChangesMock.mockReturnValue({ committed: false, pushed: false })
     const { ticket } = await createInitializedTestTicket(repoManager, {
+      title: 'Two recoverable checkpoints',
+    })
+    const beads = [
+      makePendingBead('older', 1, {
+        status: 'error', startedAt: '2026-01-01T00:01:00.000Z', updatedAt: '2026-01-01T00:02:00.000Z', beadStartCommit: 'a',
+      }),
+      makePendingBead('newer', 2, {
+        status: 'error', startedAt: '2026-01-02T00:01:00.000Z', updatedAt: '2026-01-02T00:02:00.000Z', beadStartCommit: 'b',
+      }),
+    ]
+    writeTicketBeads(ticket.id, beads)
+    for (const bead of beads) {
+      upsertLatestPhaseArtifact(ticket.id, `bead_execution:${bead.id}`, 'CODING', JSON.stringify({
+        success: true,
+        beadId: bead.id,
+        iteration: bead.iteration,
+        output: 'checkpointed success',
+        errors: [],
+        checkpoint: {
+          beadId: bead.id,
+          iteration: bead.iteration,
+          startedAt: bead.startedAt,
+          updatedAt: bead.updatedAt,
+          beadStartCommit: bead.beadStartCommit,
+        },
+      }))
+    }
+
+    expect(recoverSuccessfulExecutionCheckpointForFinalization(ticket.id)?.id).toBe('newer')
+  })
+
+  it('requeues the latest failed bead for retry without clearing notes or iteration', async () => {
+    const { ticket, paths } = await createInitializedTestTicket(repoManager, {
       title: 'Retry failed coding bead',
     })
     writeTicketBeads(ticket.id, [
@@ -1177,7 +1247,7 @@ describe('handleCoding', () => {
       }),
     ])
 
-    const recoveredBead = recoverFailedCodingBead(ticket.id)
+    const recoveredBead = recoverCodingBeadWithReset(ticket.id, { worktreePath: paths.worktreePath })
 
     expect(recoveredBead?.id).toBe('bead-1')
     expect(recoveredBead?.status).toBe('pending')
@@ -1246,7 +1316,7 @@ describe('handleCoding', () => {
   })
 
   it('requeues the latest in-progress bead when coding blocked before status flipped to error', async () => {
-    const { ticket } = await createInitializedTestTicket(repoManager, {
+    const { ticket, paths } = await createInitializedTestTicket(repoManager, {
       title: 'Retry blocked in-progress coding bead',
     })
     writeTicketBeads(ticket.id, [
@@ -1258,13 +1328,74 @@ describe('handleCoding', () => {
       }),
     ])
 
-    const recoveredBead = recoverFailedCodingBead(ticket.id)
+    const recoveredBead = recoverCodingBeadWithReset(ticket.id, { worktreePath: paths.worktreePath })
 
     expect(recoveredBead?.id).toBe('bead-1')
     expect(recoveredBead?.status).toBe('pending')
     expect(recoveredBead?.iteration).toBe(2)
     expect(recoveredBead?.failedIterationNotes).toEqual([makeNote('retry guidance', 2)])
     expect(recoveredBead?.beadStartCommit).toBe('abc123')
+  })
+
+  /**
+   * Which failed bead a retry picks up.
+   *
+   * The order itself is `compareBeadRecoveryOrder`, with its own table in
+   * `server/phases/beads/__tests__/recoveryOrder.test.ts`. What is left here is
+   * the call site: which beads are candidates at all, and that the recovery
+   * sorts through that comparator rather than taking the first row in the file.
+   */
+  describe('failed bead recovery order', () => {
+    /** A bead a retry could pick up, dated so the order is unambiguous. */
+    function candidate(id: string, status: Bead['status'], updatedAt: string, extra: Partial<Bead> = {}): Bead {
+      return makePendingBead(id, 1, { status, updatedAt, beadStartCommit: 'abc123', ...extra })
+    }
+
+    async function recoverFrom(title: string, beads: Bead[], options: { onlyInProgress?: boolean } = {}) {
+      const { ticket, paths } = await createInitializedTestTicket(repoManager, { title })
+      writeTicketBeads(ticket.id, beads)
+      return recoverCodingBeadWithReset(ticket.id, { worktreePath: paths.worktreePath, ...options })
+    }
+
+    it('recovers nothing when no bead failed', async () => {
+      expect(await recoverFrom('No failed bead', [
+        candidate('done', 'done', '2026-01-02T00:00:00.000Z'),
+        makePendingBead('pending', 2),
+      ])).toBeNull()
+    })
+
+    it('recovers nothing from an empty tracker', async () => {
+      expect(await recoverFrom('Empty tracker', [])).toBeNull()
+    })
+
+    it('sorts the candidates rather than taking the first in the file', async () => {
+      const recovered = await recoverFrom('Latest failure wins', [
+        candidate('older', 'error', '2026-01-01T00:00:00.000Z'),
+        candidate('newer', 'error', '2026-01-02T00:00:00.000Z'),
+      ])
+
+      expect(recovered?.id).toBe('newer')
+    })
+
+    it('considers in-progress beads alongside failed ones by default', async () => {
+      // Recency decides, not the status: an in-progress bead the run abandoned
+      // more recently than an older failure is the one to resume.
+      const recovered = await recoverFrom('In-progress considered', [
+        candidate('errored', 'error', '2026-01-01T00:00:00.000Z'),
+        candidate('running', 'in_progress', '2026-01-02T00:00:00.000Z'),
+      ])
+
+      expect(recovered?.id).toBe('running')
+    })
+
+    it('recovers only in-progress beads when asked to', async () => {
+      const recovered = await recoverFrom('Only in progress', [
+        candidate('errored', 'error', '2026-01-02T00:00:00.000Z'),
+        candidate('running', 'in_progress', '2026-01-01T00:00:00.000Z'),
+      ], { onlyInProgress: true })
+
+      expect(recovered?.id).toBe('running')
+    })
   })
 
   describe('the OpenCode step cap', () => {

@@ -61,6 +61,52 @@ const RELEASES: FixtureRelease[] = [
   { tag_name: 'v0.5.8', assets: [{ name: 'looptroop-0.5.8.tgz' }] },
 ]
 
+interface InstallerRun {
+  status: number | null
+  /** Non-null when the installer was killed rather than allowed to exit. */
+  signal?: NodeJS.Signals | string | null
+  stdout?: string
+  stderr?: string
+  /**
+   * The wrapper harness accumulates both streams into one.
+   *
+   * Named apart from `stdout`/`stderr` because a `spawnSync` result also has an
+   * `output` — an array of the streams — and the two must not be confused.
+   */
+  outputText?: () => string
+}
+
+/**
+ * Asserts an exit status, and says what happened when it is not the one asked
+ * for.
+ *
+ * A killed process reports `status: null`, and `expected null to be 1` names
+ * neither the signal nor a line of the output — which is all a CI log had to
+ * offer when `rolls back a version that runs but whose daemon will not start`
+ * failed this way on PR #148, three times, each time passing in the sibling run
+ * on the same commit. The next occurrence has to arrive diagnosable.
+ *
+ * One helper for both harnesses: the wrapper's had drifted to its own copy that
+ * did not normalise the signal, and the two together were one of SonarCloud's
+ * duplicated blocks.
+ */
+function expectExit(run: InstallerRun, status: number) {
+  // `spawnSync` reports no signal as `undefined`; a spawned child's `close`
+  // reports it as `null`. Both mean "exited normally", and these cases run the
+  // installer each way.
+  const signal = run.signal ?? null
+  const output = run.outputText ? run.outputText() : `${run.stdout ?? ''}${run.stderr ?? ''}`
+  // Attached whenever anything is wrong, the signal included: a run killed
+  // *after* producing the expected status is exactly the case where the trailing
+  // output says why.
+  const mismatch = run.status !== status || signal !== null
+  expect({
+    status: run.status,
+    signal,
+    ...(mismatch ? { output: output.slice(-2000) } : {}),
+  }).toEqual({ status, signal: null })
+}
+
 describe('installer core', () => {
   const tempDirs: string[] = []
   let server: Server
@@ -195,7 +241,7 @@ describe('installer core', () => {
    * request could never be answered and both sides would wait forever.
    */
   function runInstaller(args: string[], extraEnv: NodeJS.ProcessEnv = {}) {
-    return new Promise<{ status: number | null, stdout: string, stderr: string }>((done, reject) => {
+    return new Promise<InstallerRun>((done, reject) => {
       const child = spawn(process.execPath, [CORE, ...args], {
         env: {
           ...process.env,
@@ -214,7 +260,7 @@ describe('installer core', () => {
       child.stdout.on('data', (chunk: Buffer) => { stdout += chunk.toString() })
       child.stderr.on('data', (chunk: Buffer) => { stderr += chunk.toString() })
       child.on('error', reject)
-      child.on('close', (status) => done({ status, stdout, stderr }))
+      child.on('close', (status, signal) => done({ status, signal, stdout, stderr }))
     })
   }
 
@@ -249,7 +295,7 @@ describe('installer core', () => {
 
     // v0.6.1 is newer and stable, and has nothing to download.
     expect(result.stdout).toContain('Installing LoopTroop 0.5.9')
-    expect(result.status).toBe(0)
+    expectExit(result, 0)
   })
 
   it('never picks a prerelease by default', async () => {
@@ -260,7 +306,7 @@ describe('installer core', () => {
     const result = await runInstaller(['--dry-run', '--version', '0.6.0-rc.1'])
 
     expect(result.stdout).toContain('Installing LoopTroop 0.6.0-rc.1')
-    expect(result.status).toBe(0)
+    expectExit(result, 0)
   })
 
   it('accepts a pinned version written with a leading v', async () => {
@@ -270,7 +316,7 @@ describe('installer core', () => {
   it('refuses a pinned release with no installable assets', async () => {
     const result = await runInstaller(['--dry-run', '--version', '0.6.1'])
 
-    expect(result.status).toBe(1)
+    expectExit(result, 1)
     expect(result.stderr).toContain('no installable assets')
   })
 
@@ -290,14 +336,14 @@ describe('installer core', () => {
   ])('refuses %j where a value belongs', async (argv, expected) => {
     const result = await runInstaller(argv)
 
-    expect(result.status).toBe(1)
+    expectExit(result, 1)
     expect(result.stderr).toContain(expected)
   })
 
   it('refuses an unknown option rather than ignoring it', async () => {
     const result = await runInstaller(['--dry-run', '--global'])
 
-    expect(result.status).toBe(1)
+    expectExit(result, 1)
     expect(result.stderr).toContain('Unknown option')
   })
 
@@ -306,7 +352,7 @@ describe('installer core', () => {
     try {
       const result = await runInstaller([])
 
-      expect(result.status).toBe(1)
+      expectExit(result, 1)
       expect(result.stderr).toContain('does not match the checksum')
       expect(result.stderr).toContain('Nothing was installed.')
       expect(result.stdout).not.toContain('Installing with npm')
@@ -320,7 +366,7 @@ describe('installer core', () => {
     try {
       const result = await runInstaller([])
 
-      expect(result.status).toBe(1)
+      expectExit(result, 1)
       expect(result.stderr).toContain('the release records')
       expect(result.stdout).not.toContain('Installing with npm')
     } finally {
@@ -331,7 +377,7 @@ describe('installer core', () => {
   it('installs the verified tarball with npm, so npm can still uninstall it', async () => {
     const result = await runInstaller([])
 
-    expect(result.status).toBe(0)
+    expectExit(result, 0)
     expect(result.stdout).toContain(`Verified sha256 ${TARBALL_SHA}`)
     expect(result.stdout).toContain('Installing with npm')
     // `-g`, and the downloaded file rather than a registry name: the bytes that
@@ -351,7 +397,7 @@ describe('installer core', () => {
     try {
       const result = await runInstaller(['--dry-run'])
 
-      expect(result.status).toBe(1)
+      expectExit(result, 1)
       expect(result.stderr).toContain('needs Node >=99.0.0')
       expect(result.stderr).toContain('will not install Node for you')
     } finally {
@@ -364,7 +410,7 @@ describe('installer core', () => {
     try {
       const result = await runInstaller(['--dry-run'])
 
-      expect(result.status).toBe(1)
+      expectExit(result, 1)
       expect(result.stderr).toContain('needs npm >=999.0.0')
     } finally {
       engines = null
@@ -375,7 +421,7 @@ describe('installer core', () => {
     // The manifest shipped by the release before this one has no `engines`.
     // Treating that as a failed check would make the installer unable to install
     // the very release it is being added for.
-    expect((await runInstaller(['--dry-run'])).status).toBe(0)
+    expectExit(await runInstaller(['--dry-run']), 0)
   })
 
   it('installs a local tarball without touching the network', async () => {
@@ -386,7 +432,7 @@ describe('installer core', () => {
 
     const result = await runInstaller(['--tarball', tarball], { LOOPTROOP_INSTALL_API: 'http://127.0.0.1:1' })
 
-    expect(result.status).toBe(0)
+    expectExit(result, 0)
     expect(result.stdout).toContain('Installing with npm')
   })
 
@@ -405,21 +451,21 @@ describe('installer core', () => {
     copyFileSync(CORE, join(dir, 'real', 'installer-core.mjs'))
     symlinkSync(join(dir, 'real'), join(dir, 'link'), 'dir')
 
-    const result = await new Promise<{ status: number | null, stdout: string }>((done) => {
+    const result = await new Promise<InstallerRun & { stdout: string }>((done) => {
       const child = spawn(process.execPath, [join(dir, 'link', 'installer-core.mjs'), '--help'])
       let stdout = ''
       child.stdout.on('data', (chunk: Buffer) => { stdout += chunk.toString() })
-      child.on('close', (status) => done({ status, stdout }))
+      child.on('close', (status, signal) => done({ status, signal, stdout }))
     })
 
-    expect(result.status).toBe(0)
+    expectExit(result, 0)
     expect(result.stdout).toContain('Usage:')
   })
 
   it('reports a missing local tarball instead of installing something else', async () => {
     const result = await runInstaller(['--tarball', join(tmpdir(), 'looptroop-absent.tgz')])
 
-    expect(result.status).toBe(1)
+    expectExit(result, 1)
     expect(result.stderr).toContain('No such tarball')
   })
 
@@ -550,14 +596,14 @@ describe('installer core', () => {
     it('refuses to combine with --tarball rather than picking one', async () => {
       const result = await runInstaller(['--binary', '--tarball', '/tmp/x.tgz'])
 
-      expect(result.status).toBe(1)
+      expectExit(result, 1)
       expect(result.stderr).toContain('cannot be combined')
     })
 
     it('refuses --prefix without --binary, which would silently do nothing', async () => {
       const result = await runInstaller(['--prefix', '/opt/lt'])
 
-      expect(result.status).toBe(1)
+      expectExit(result, 1)
       expect(result.stderr).toContain('applies only to --binary')
     })
 
@@ -565,7 +611,7 @@ describe('installer core', () => {
       const prefix = freshPrefix()
       const result = await runInstaller(['--binary', '--dry-run', '--prefix', prefix])
 
-      expect(result.status).toBe(0)
+      expectExit(result, 0)
       expect(result.stdout).toContain(`would verify sha256 ${archive?.sha256}`)
       expect(existsSync(join(prefix, 'bin'))).toBe(false)
     })
@@ -573,7 +619,7 @@ describe('installer core', () => {
     it.runIf(canInstallBinary)('refuses a release that carries no executable for this target', async () => {
       const result = await runInstaller(['--binary', '--version', '0.6.1', '--prefix', freshPrefix()])
 
-      expect(result.status).toBe(1)
+      expectExit(result, 1)
       expect(result.stderr).toContain(`carries no ${TARGET} executable`)
     })
 
@@ -586,7 +632,7 @@ describe('installer core', () => {
       omitArchiveDigest = true
       const result = await runInstaller(['--binary', '--prefix', freshPrefix()])
 
-      expect(result.status).toBe(1)
+      expectExit(result, 1)
       expect(result.stderr).toContain('records no checksum')
     })
 
@@ -596,7 +642,7 @@ describe('installer core', () => {
       try {
         const result = await runInstaller(['--binary', '--prefix', prefix])
 
-        expect(result.status).toBe(1)
+        expectExit(result, 1)
         expect(result.stderr).toContain('does not match the checksum')
         expect(existsSync(join(prefix, 'bin', 'looptroop'))).toBe(false)
       } finally {
@@ -610,7 +656,7 @@ describe('installer core', () => {
         LOOPTROOP_STUB_STATE: join(prefix, 'state'),
       })
 
-      expect(result.status).toBe(0)
+      expectExit(result, 0)
       expect(result.stdout).toContain(`Verified sha256 ${archive?.sha256}`)
 
       const installed = join(prefix, 'bin', 'looptroop')
@@ -636,12 +682,12 @@ describe('installer core', () => {
       const prefix = freshPrefix()
       const stubState = join(prefix, 'state')
       archive = buildArchive('0.5.9', stubProgram('0.5.9'), 'notice from the installed version')
-      expect((await runInstaller(['--binary', '--prefix', prefix], { LOOPTROOP_STUB_STATE: stubState })).status).toBe(0)
+      expectExit(await runInstaller(['--binary', '--prefix', prefix], { LOOPTROOP_STUB_STATE: stubState }), 0)
 
       archive = buildArchive('0.5.9', '#!/bin/sh\nexit 3\n', 'notice from the version that does not run')
       const result = await runInstaller(['--binary', '--prefix', prefix], { LOOPTROOP_STUB_STATE: stubState })
 
-      expect(result.status).toBe(1)
+      expectExit(result, 1)
       expect(result.stderr).toContain('rolled back')
       expect(readFileSync(join(prefix, 'LICENSE.node.txt'), 'utf8')).toBe('notice from the installed version')
     })
@@ -660,12 +706,12 @@ describe('installer core', () => {
       const prefix = freshPrefix()
       const stubState = join(prefix, 'state')
       archive = buildArchive('0.5.9', stubProgram('0.5.9', { status: 'unparseable' }))
-      expect((await runInstaller(['--binary', '--prefix', prefix], { LOOPTROOP_STUB_STATE: stubState })).status).toBe(0)
+      expectExit(await runInstaller(['--binary', '--prefix', prefix], { LOOPTROOP_STUB_STATE: stubState }), 0)
 
       archive = buildArchive('0.5.9', stubProgram('0.5.9'))
       const result = await runInstaller(['--binary', '--prefix', prefix], { LOOPTROOP_STUB_STATE: stubState })
 
-      expect(result.status).toBe(0)
+      expectExit(result, 0)
       expect(result.stdout).toContain('would not report whether its daemon is running')
       // Started again, from the copy that is now installed.
       expect(result.stdout).toContain('the daemon is running again')
@@ -691,14 +737,14 @@ describe('installer core', () => {
       const prefix = freshPrefix()
       const stubState = join(prefix, 'state')
       archive = buildArchive('0.5.9', stubProgram('0.5.9'))
-      expect((await runInstaller(['--binary', '--prefix', prefix], { LOOPTROOP_STUB_STATE: stubState })).status).toBe(0)
+      expectExit(await runInstaller(['--binary', '--prefix', prefix], { LOOPTROOP_STUB_STATE: stubState }), 0)
       writeFileSync(stubState, '')
 
       // Starts, and then only ever reports itself as present-but-not-answering.
       archive = buildArchive('0.5.9', stubProgram('0.5.9', { status: 'not-answering' }))
       const result = await runInstaller(['--binary', '--prefix', prefix], { LOOPTROOP_STUB_STATE: stubState })
 
-      expect(result.status).toBe(1)
+      expectExit(result, 1)
       expect(result.stderr).toContain('would not start')
       expect(result.stderr).toContain('rolled back')
     }, 90_000)
@@ -715,7 +761,7 @@ describe('installer core', () => {
       const prefix = freshPrefix()
       const stubState = join(prefix, 'state')
       archive = buildArchive('0.5.9', stubProgram('0.5.9', { status: 'not-answering' }))
-      expect((await runInstaller(['--binary', '--prefix', prefix], { LOOPTROOP_STUB_STATE: stubState })).status).toBe(0)
+      expectExit(await runInstaller(['--binary', '--prefix', prefix], { LOOPTROOP_STUB_STATE: stubState }), 0)
       // Alive, and not answering.
       writeFileSync(stubState, '')
 
@@ -727,7 +773,7 @@ describe('installer core', () => {
       archive = buildArchive('0.5.9', stubProgram('0.5.9'))
       const result = await runInstaller(['--binary', '--prefix', prefix], { LOOPTROOP_STUB_STATE: stubState })
 
-      expect(result.status).toBe(0)
+      expectExit(result, 0)
       expect(result.stdout).toContain('Stopping the running daemon')
       // Stopped, and put back: it was serving before the upgrade.
       expect(result.stdout).toContain('the daemon is running again')
@@ -748,14 +794,14 @@ describe('installer core', () => {
       const prefix = freshPrefix()
       const stubState = join(prefix, 'state')
       archive = buildArchive('0.5.9', stubProgram('0.5.9', { status: 'unparseable-and-stop-fails' }))
-      expect((await runInstaller(['--binary', '--prefix', prefix], { LOOPTROOP_STUB_STATE: stubState })).status).toBe(0)
+      expectExit(await runInstaller(['--binary', '--prefix', prefix], { LOOPTROOP_STUB_STATE: stubState }), 0)
 
       const installed = join(prefix, 'bin', 'looptroop')
       const before = readFileSync(installed, 'utf8')
       archive = buildArchive('0.5.9', stubProgram('0.5.9'))
       const result = await runInstaller(['--binary', '--prefix', prefix], { LOOPTROOP_STUB_STATE: stubState })
 
-      expect(result.status).toBe(1)
+      expectExit(result, 1)
       expect(result.stderr).toContain('did not succeed')
       expect(result.stderr).toContain('Nothing was installed')
       // The executable it refused to replace is byte-for-byte what it was.
@@ -776,7 +822,7 @@ describe('installer core', () => {
       archive = buildArchive('0.5.9', stubProgram('0.5.9'))
       const result = await runInstaller(['--binary', '--prefix', prefix], { LOOPTROOP_STUB_STATE: stubState })
 
-      expect(result.status).toBe(0)
+      expectExit(result, 0)
       expect(result.stdout).toContain('does not run, so there is no daemon of its to stop')
       expect(spawnSync(join(prefix, 'bin', 'looptroop'), ['--version'], { encoding: 'utf8' }).stdout.trim()).toBe('0.5.9')
       // Without that escape this would take the "cannot say, so stop it" path,
@@ -811,7 +857,7 @@ describe('installer core', () => {
         LOOPTROOP_STUB_LOCK: lock,
       })
 
-      expect(result.status).toBe(0)
+      expectExit(result, 0)
       expect(existsSync(lock)).toBe(true)
       expect(readFileSync(lock, 'utf8')).toContain('someone-else')
     })
@@ -838,7 +884,7 @@ describe('installer core', () => {
         LOOPTROOP_STUB_STATE: join(prefix, 'state'),
       })
 
-      expect(result.status).toBe(0)
+      expectExit(result, 0)
       expect(readFileSync(backup, 'utf8')).toBe('the only working copy')
       expect(existsSync(join(bin, 'looptroop.rejected-4242'))).toBe(false)
     })
@@ -863,13 +909,13 @@ describe('installer core', () => {
       const stubState = join(prefix, 'state')
       const installed = join(prefix, 'bin', 'looptroop')
 
-      expect((await runInstaller(['--binary', '--prefix', prefix], { LOOPTROOP_STUB_STATE: stubState })).status).toBe(0)
+      expectExit(await runInstaller(['--binary', '--prefix', prefix], { LOOPTROOP_STUB_STATE: stubState }), 0)
 
       // The same version, from an archive whose program is broken.
       archive = buildArchive('0.5.9', '#!/bin/sh\nexit 3\n')
       const result = await runInstaller(['--binary', '--prefix', prefix], { LOOPTROOP_STUB_STATE: stubState })
 
-      expect(result.status).toBe(1)
+      expectExit(result, 1)
       expect(result.stderr).toContain('rolled back')
       expect(result.stderr).toContain('previous version is back in place')
       // The point of all of it: what they had still works.
@@ -896,7 +942,7 @@ describe('installer core', () => {
       archive = buildArchive('0.5.9', '#!/bin/sh\nexit 3\n')
       const result = await runInstaller(['--binary', '--prefix', prefix], { LOOPTROOP_STUB_STATE: stubState })
 
-      expect(result.status).toBe(1)
+      expectExit(result, 1)
       expect(result.stderr).toContain('rolled back')
       expect(result.stderr).toContain('It is running again.')
       // The daemon it stopped is back, from the executable that still works.
@@ -928,7 +974,7 @@ describe('installer core', () => {
       try {
         const result = await runInstaller(['--binary', '--prefix', prefix], { LOOPTROOP_STUB_STATE: stubState })
 
-        expect(result.status).toBe(1)
+        expectExit(result, 1)
         expect(result.stderr).toContain('Could not replace')
         expect(result.stderr).toContain('previous version is untouched')
         // The point: it stopped the daemon, so it has to start it again.
@@ -967,7 +1013,7 @@ describe('installer core', () => {
 
       const result = await runInstaller(['--binary', '--prefix', prefix], { LOOPTROOP_STUB_STATE: stubState })
 
-      expect(result.status).toBe(1)
+      expectExit(result, 1)
       expect(result.stderr).toContain('would not start')
       expect(result.stderr).toContain('It is running again.')
       // Back on the version that works, and serving again: the state file only
@@ -980,7 +1026,7 @@ describe('installer core', () => {
       archive = buildArchive('0.5.9', '#!/bin/sh\nexit 3\n')
       const result = await runInstaller(['--binary', '--prefix', freshPrefix()])
 
-      expect(result.status).toBe(1)
+      expectExit(result, 1)
       expect(result.stderr).toContain('does not run here')
       expect(result.stderr).not.toContain('rolled back')
     })
@@ -998,7 +1044,7 @@ describe('installer core', () => {
 
       const result = await runInstaller(['--binary', '--prefix', prefix], { LOOPTROOP_STUB_STATE: stubState })
 
-      expect(result.status).toBe(0)
+      expectExit(result, 0)
       expect(result.stdout).toContain('Stopping the running daemon')
       expect(result.stdout).toContain('Starting it again')
       expect(existsSync(stubState)).toBe(true)
@@ -1027,7 +1073,7 @@ describe('installer core', () => {
 
       const result = await runInstaller(['--binary', '--prefix', prefix])
 
-      expect(result.status).toBe(1)
+      expectExit(result, 1)
       expect(result.stderr).toContain('Another install is already running')
       // Still there: a refusal must not clear the lock it refused over.
       expect(existsSync(join(prefix, '.install.lock'))).toBe(true)
@@ -1046,7 +1092,7 @@ describe('installer core', () => {
       })
 
       expect(result.stdout).toContain('stale install lock')
-      expect(result.status).toBe(0)
+      expectExit(result, 0)
     })
   })
 })
@@ -1274,7 +1320,7 @@ describe('installer wrappers', () => {
     })
 
     expect(`${result.stdout}${result.stderr}`).toContain('PASS')
-    expect(result.status).toBe(0)
+    expectExit(result, 0)
   })
 
   /**
@@ -1435,9 +1481,7 @@ describe('installer wrappers', () => {
 
     it('leaves nothing behind after an install that failed, and reports the failure', async () => {
       const run = runWrapper(['--tarball', '/nonexistent/looptroop.tgz'])
-      const { status } = await run.settled
-
-      expect(status).toBe(1)
+      expectExit({ ...await run.settled, outputText: run.output }, 1)
       expect(run.output()).toContain('No such tarball')
       expect(leftovers(run.temp)).toEqual([])
     })
@@ -1482,7 +1526,17 @@ describe('installer wrappers', () => {
       })
       await waitForOutput(run, 'Installing with npm')
 
-      process.kill(-run.child.pid!, 'SIGINT')
+      // Only while it is still running: once it has exited, its pid — and so
+      // the group id, which is the same number — can belong to something else,
+      // and this would deliver a SIGINT to whatever inherited it.
+      expect(run.child.exitCode).toBeNull()
+      try {
+        process.kill(-run.child.pid!, 'SIGINT')
+      } catch (error) {
+        // It exited between the check above and this line. Nothing to
+        // interrupt, and nothing to fail: what this asserts is the cleanup.
+        if ((error as NodeJS.ErrnoException).code !== 'ESRCH') throw error
+      }
       await run.settled
 
       // Both directories: the wrapper's own, and the one the core creates
@@ -1522,9 +1576,7 @@ describe('installer wrappers', () => {
         node: `#!/bin/sh\nexit ${code}\n`,
       })
 
-      const { status } = await run.settled
-
-      expect(status).toBe(code)
+      expectExit({ ...await run.settled, outputText: run.output }, code)
       expect(leftovers(run.temp)).toEqual([])
     }, 20_000)
 
@@ -1544,10 +1596,10 @@ describe('installer wrappers', () => {
       await waitForOutput(run, 'CHILD-RUNNING')
 
       run.child.kill('SIGTERM')
-      const { status } = await run.settled
+      const settled = await run.settled
 
       expect(run.output()).toContain('CHILD-GOT-TERM')
-      expect(status).toBe(3)
+      expectExit({ ...settled, outputText: run.output }, 3)
       expect(leftovers(run.temp)).toEqual([])
     }, 40_000)
   })

@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest'
 import * as jsYaml from 'js-yaml'
-import { repairYamlDoubleQuotedInvalidEscapes, repairYamlDoubleQuotedScalarInnerQuotes, repairYamlDuplicateKeys, repairYamlFreeTextScalars, repairYamlIndentation, repairYamlInlineKeys, repairYamlInlineSequenceParents, repairYamlListDashSpace, repairYamlMappingKeyColonSpace, repairYamlNestedMappingChildren, repairYamlPlainScalarColons, repairYamlQuotedScalarFragments, repairYamlReservedIndicatorScalars, repairYamlSequenceEntryIndent, repairYamlSequenceItemPrimaryKeys, repairYamlTypeUnionScalars, repairYamlUnclosedQuotes, repairYamlWrappedPlainListScalars, stripCodeFences } from '../yamlRepair'
+import { BLOCK_SCALAR_HEADER, BLOCK_SCALAR_VALUE, LIST_BLOCK_SCALAR_HEADER, MAPPING_BLOCK_SCALAR_HEADER, repairYamlDoubleQuotedInvalidEscapes, repairYamlDoubleQuotedScalarInnerQuotes, repairYamlDuplicateKeys, repairYamlFreeTextScalars, repairYamlIndentation, repairYamlInlineKeys, repairYamlInlineSequenceParents, repairYamlListDashSpace, repairYamlMappingKeyColonSpace, repairYamlNestedMappingChildren, repairYamlPlainScalarColons, repairYamlQuotedScalarFragments, repairYamlReservedIndicatorScalars, repairYamlSequenceEntryIndent, repairYamlSequenceItemPrimaryKeys, repairYamlTypeUnionScalars, repairYamlUnclosedQuotes, repairYamlWrappedPlainListScalars, stripCodeFences } from '../yamlRepair'
 
 describe.concurrent('repairYamlListDashSpace', () => {
   it.each([
@@ -1436,5 +1436,333 @@ describe.concurrent('repairYamlDuplicateKeys — block scalars', () => {
     // The surviving tail is what makes this a defect rather than a cosmetic
     // gap: the repaired scalar carries a line the source never had twice.
     expect(jsYaml.load(repairYamlDuplicateKeys(input))).toEqual({ t: 'one\n\ntwo\n\ntwo\n', z: 9 })
+  })
+})
+
+/**
+ * A block scalar body is text, not YAML, and every repair that walks lines
+ * tracks one so it can leave that text alone.
+ *
+ * Most repairs in this file carry that tracking, and `repairYamlDuplicateKeys`
+ * has its own case below. Disabling the skip in each of them, one at a time,
+ * turned only three of these tests red — so the rest were free to rewrite the
+ * inside of a block scalar with nothing to catch it, which is how a repair
+ * invents text rather than reformatting it. How many carry it is not the point
+ * and keeps changing; "no repair rewrites a block scalar body" at the end of
+ * this file is the check that does not go stale. Each case below is
+ * built the same way: the exact line the repair *does* fix, placed once inside
+ * a block scalar body and once after it. The body has to survive and the line
+ * after it has to be repaired — a case that only checked the body would pass on
+ * a repair that had stopped working altogether.
+ */
+describe.concurrent('block scalar bodies are left alone', () => {
+  it.each([
+    [
+      'repairYamlDoubleQuotedScalarInnerQuotes',
+      repairYamlDoubleQuotedScalarInnerQuotes,
+      ['body: |', '  note: "he said "hi" today"', 'note: "he said "hi" today"'].join('\n'),
+      ['body: |', '  note: "he said "hi" today"', 'note: "he said \\"hi\\" today"'].join('\n'),
+    ],
+    [
+      'repairYamlFreeTextScalars',
+      repairYamlFreeTextScalars,
+      ['body: |', '  free_text: Log type: structured trace', 'free_text: Log type: structured trace'].join('\n'),
+      ['body: |', '  free_text: Log type: structured trace', 'free_text: "Log type: structured trace"'].join('\n'),
+    ],
+    [
+      'repairYamlQuotedScalarFragments',
+      repairYamlQuotedScalarFragments,
+      ['body: |', '  description: "pink" remains supported.', 'description: "pink" remains supported.'].join('\n'),
+      ['body: |', '  description: "pink" remains supported.', 'description: "\\"pink\\" remains supported."'].join('\n'),
+    ],
+    [
+      'repairYamlReservedIndicatorScalars',
+      repairYamlReservedIndicatorScalars,
+      ['body: |', '  owner: @loop-troop', 'owner: @loop-troop'].join('\n'),
+      ['body: |', '  owner: @loop-troop', 'owner: "@loop-troop"'].join('\n'),
+    ],
+    [
+      'repairYamlPlainScalarColons',
+      repairYamlPlainScalarColons,
+      ['body: |', '  key: hello world: foo bar', 'key: hello world: foo bar'].join('\n'),
+      ['body: |', '  key: hello world: foo bar', 'key: "hello world: foo bar"'].join('\n'),
+    ],
+    [
+      'repairYamlMappingKeyColonSpace',
+      repairYamlMappingKeyColonSpace,
+      ['body: |', '  artifact:interview', 'artifact:interview'].join('\n'),
+      ['body: |', '  artifact:interview', 'artifact: interview'].join('\n'),
+    ],
+    [
+      'repairYamlDoubleQuotedInvalidEscapes',
+      repairYamlDoubleQuotedInvalidEscapes,
+      ['body: |', '  pattern: "^\\+(?!\\+\\+)"', 'pattern: "^\\+(?!\\+\\+)"'].join('\n'),
+      ['body: |', '  pattern: "^\\+(?!\\+\\+)"', 'pattern: "^\\\\+(?!\\\\+\\\\+)"'].join('\n'),
+    ],
+  ])('%s', (_, repair, input, expected) => {
+    expect(repair(input)).toBe(expected)
+  })
+
+  it('repairYamlUnclosedQuotes does not close a quote inside a block scalar', () => {
+    // No "after" line here: the repair closes a quote by looking at the line
+    // that follows, so the body's own successor is what has to be ignored.
+    const input = [
+      'items:', '  - id: Q01', '    question: |',
+      '      answer: "unterminated', '      phase: foundation', '  - id: Q02',
+    ].join('\n')
+
+    expect(repairYamlUnclosedQuotes(input)).toBe(input)
+    expect(repairYamlUnclosedQuotes(['  - id: Q04', '    question: "unterminated', '    phase: foundation'].join('\n')))
+      .toBe(['  - id: Q04', '    question: "unterminated"', '    phase: foundation'].join('\n'))
+  })
+
+  it('repairYamlSequenceEntryIndent does not straighten dashes inside a block scalar', () => {
+    const input = [
+      'questions:', '  - id: Q01', '    question: |',
+      '      - id: Q02', '       - id: Q03', '  - id: Q04',
+    ].join('\n')
+
+    expect(repairYamlSequenceEntryIndent(input)).toBe(input)
+    expect(repairYamlSequenceEntryIndent(['questions:', '  - id: Q01', '   - id: Q02'].join('\n')))
+      .toBe(['questions:', '  - id: Q01', '  - id: Q02'].join('\n'))
+  })
+
+  it('repairYamlInlineKeys does not split a body line into two', () => {
+    // The defect this found: it skipped the block scalar *header* and then
+    // tokenized the body like any other line, so a value a model wrote came
+    // back with a newline in the middle of it.
+    const input = ['description: |', '  key1: value1 key2: value2', 'key1: value1 key2: value2'].join('\n')
+
+    expect(repairYamlInlineKeys(input)).toBe(
+      ['description: |', '  key1: value1 key2: value2', 'key1: value1', 'key2: value2'].join('\n'),
+    )
+  })
+
+  it('repairYamlInlineKeys keeps skipping a body across a blank line', () => {
+    const input = ['description: |', '  one', '', '  key1: v1 key2: v2', 'next: 1'].join('\n')
+
+    expect(repairYamlInlineKeys(input)).toBe(input)
+  })
+
+  it('repairYamlSequenceItemPrimaryKeys does not name a bare scalar inside a block scalar', () => {
+    const options = { beads: { primaryKey: 'id', childKeys: ['title', 'description'] } }
+    const input = [
+      'beads:',
+      '  - id: b1',
+      '    description: |',
+      '      beads:',
+      '        - config-xml-json-marshalling',
+      '          title: Implement XML/JSON unmarshalling',
+      '  - config-xml-json-marshalling',
+      '    title: Implement XML/JSON unmarshalling',
+    ].join('\n')
+
+    const result = repairYamlSequenceItemPrimaryKeys(input, options)
+
+    expect(result.yaml).toBe([
+      'beads:',
+      '  - id: b1',
+      '    description: |',
+      '      beads:',
+      '        - config-xml-json-marshalling',
+      '          title: Implement XML/JSON unmarshalling',
+      '  - id: config-xml-json-marshalling',
+      '    title: Implement XML/JSON unmarshalling',
+    ].join('\n'))
+    // The reported repair is the real one, on the line after the body: a repair
+    // reported for a line inside the body would be reported to the user too.
+    expect(result.repairs).toEqual([
+      { parentKey: 'beads', primaryKey: 'id', value: 'config-xml-json-marshalling', line: 7 },
+    ])
+  })
+})
+
+/**
+ * The header grammar, which decides whether any of that skipping happens.
+ *
+ * Sixteen copies of the pattern lived in four variants, and a repair whose copy
+ * did not recognise a header simply never entered its block-scalar state. These
+ * are the shapes that were missed everywhere: an explicit indentation
+ * indicator, a trailing comment, and a block scalar as a sequence entry.
+ */
+describe.concurrent('block scalar headers YAML allows', () => {
+  const bodyLine = '  key1: value1 key2: value2'
+
+  /**
+   * The four patterns are written out rather than composed, so nothing but this
+   * holds them to the same grammar. A `new RegExp` over a shared string would
+   * have been the compiler's job — and a non-literal constructor, which the
+   * security scanner reads as a finding.
+   */
+  it('spells the same indicator and tail in all four patterns', () => {
+    const indicator = '[>|](?:[+-][1-9]?|[1-9][+-]?)?'
+    const tail = String.raw`(?:\s+#.*)?\s*$`
+
+    for (const pattern of [
+      MAPPING_BLOCK_SCALAR_HEADER,
+      LIST_BLOCK_SCALAR_HEADER,
+      BLOCK_SCALAR_HEADER,
+      BLOCK_SCALAR_VALUE,
+    ]) {
+      expect(pattern.source).toContain(indicator)
+      expect(pattern.source.endsWith(tail)).toBe(true)
+    }
+  })
+
+  it.each([
+    ['a mapping header', MAPPING_BLOCK_SCALAR_HEADER, 'description: |2', '- |2'],
+    ['a sequence header', LIST_BLOCK_SCALAR_HEADER, '- |2', 'description: |2'],
+  ])('%s matches its own form and not the other', (_, pattern, matches, doesNot) => {
+    expect(pattern.test(matches)).toBe(true)
+    expect(pattern.test(doesNot)).toBe(false)
+  })
+
+  it('matches either form through the combined pattern', () => {
+    expect(BLOCK_SCALAR_HEADER.test('description: |2')).toBe(true)
+    expect(BLOCK_SCALAR_HEADER.test('- |2')).toBe(true)
+    expect(BLOCK_SCALAR_HEADER.test('description: not a block')).toBe(false)
+  })
+
+  it.each([
+    ['a plain indicator', 'description: |'],
+    ['a folded indicator', 'description: >'],
+    ['a chomping indicator', 'description: |-'],
+    ['a keep indicator', 'description: |+'],
+    ['an explicit indentation indicator', 'description: |2'],
+    ['both indicators', 'description: |2-'],
+    ['both indicators the other way round', 'description: >-2'],
+    ['a trailing comment', 'description: | # note'],
+    ['a chomping indicator and a comment', 'description: >- # note'],
+  ])('leaves the body under %s alone', (_, header) => {
+    const input = [header, bodyLine, 'after: 1'].join('\n')
+
+    expect(repairYamlInlineKeys(input)).toBe([header, bodyLine, 'after: 1'].join('\n'))
+  })
+
+  it('leaves the body of a sequence-entry block scalar alone', () => {
+    const input = ['items:', '  - |', '    key1: value1 key2: value2'].join('\n')
+
+    expect(repairYamlInlineKeys(input)).toBe(input)
+  })
+
+  it.each([
+    ['|', 'a plain indicator'],
+    ['|2', 'an indentation indicator'],
+    ['>', 'a folded indicator'],
+    ['| # note', 'a trailing comment'],
+  ])('repairYamlPlainScalarColons leaves an indented list body under %s alone', (header) => {
+    // Recognising the header was not enough here: `|` is a safe value start, so
+    // the line was pushed and skipped before the loop's arming ran, and the
+    // body was quoted line by line.
+    const input = ['key:', `  - ${header}`, '    key1: v1 key2: v2'].join('\n')
+
+    expect(repairYamlPlainScalarColons(input)).toBe(input)
+  })
+
+  it('repairYamlPlainScalarColons resumes after an indented list block scalar', () => {
+    const input = ['key:', '  - |', '    text', 'after: a: b'].join('\n')
+
+    expect(repairYamlPlainScalarColons(input)).toBe(
+      ['key:', '  - |', '    text', 'after: "a: b"'].join('\n'),
+    )
+  })
+
+  it.each([
+    ['repairYamlPlainScalarColons', repairYamlPlainScalarColons, '   key: a: b', 'key: a: b', 'key: "a: b"'],
+    ['repairYamlReservedIndicatorScalars', repairYamlReservedIndicatorScalars, '   owner: @x', 'owner: @x', 'owner: "@x"'],
+  ])('%s skips a body under an indentation indicator and resumes after it', (_, repair, body, after, repaired) => {
+    // The gap was never one repair's: the pattern family had no `[1-9]` in it,
+    // so every one of them tokenized a body opened with `|2`.
+    const input = ['description: |2', body, after].join('\n')
+
+    expect(repair(input)).toBe(['description: |2', body, repaired].join('\n'))
+  })
+})
+
+/**
+ * Every repair, over every body line, in every header form.
+ *
+ * Four rounds of review found the same defect four times, each time in a
+ * repair the previous round's enumeration had missed: I listed the functions
+ * that already tracked a block scalar, or the header shape one reviewer
+ * reported, instead of the set the rule governs — *every* repair, against
+ * *every* way a body line can look. This table is that set, so the next repair
+ * added to this file is covered by construction rather than by whoever
+ * remembers to add a case.
+ *
+ * The rule: a literal block's body is text. No repair may change a byte of it.
+ */
+describe.concurrent('no repair rewrites a block scalar body', () => {
+  /** Every exported repair, called the way its own signature requires. */
+  const repairs: Array<[string, (yaml: string) => string]> = [
+    ['repairYamlListDashSpace', repairYamlListDashSpace],
+    ['repairYamlIndentation', repairYamlIndentation],
+    ['repairYamlSequenceItemPrimaryKeys', (yaml) => repairYamlSequenceItemPrimaryKeys(yaml, {
+      items: { primaryKey: 'id', childKeys: ['title'] },
+    }).yaml],
+    ['repairYamlInlineSequenceParents', repairYamlInlineSequenceParents],
+    ['repairYamlMappingKeyColonSpace', repairYamlMappingKeyColonSpace],
+    ['repairYamlDoubleQuotedInvalidEscapes', repairYamlDoubleQuotedInvalidEscapes],
+    ['repairYamlDoubleQuotedScalarInnerQuotes', repairYamlDoubleQuotedScalarInnerQuotes],
+    ['repairYamlNestedMappingChildren', (yaml) => repairYamlNestedMappingChildren(yaml, { parent: ['answer'] })],
+    ['repairYamlSequenceEntryIndent', repairYamlSequenceEntryIndent],
+    ['repairYamlDuplicateKeys', repairYamlDuplicateKeys],
+    ['repairYamlFreeTextScalars', repairYamlFreeTextScalars],
+    ['repairYamlQuotedScalarFragments', repairYamlQuotedScalarFragments],
+    ['repairYamlTypeUnionScalars', repairYamlTypeUnionScalars],
+    ['repairYamlReservedIndicatorScalars', repairYamlReservedIndicatorScalars],
+    ['repairYamlInlineKeys', repairYamlInlineKeys],
+    ['repairYamlWrappedPlainListScalars', repairYamlWrappedPlainListScalars],
+    ['repairYamlPlainScalarColons', repairYamlPlainScalarColons],
+    ['repairYamlUnclosedQuotes', repairYamlUnclosedQuotes],
+  ]
+
+  /** Every body line that has been reported rewritten, and its neighbours. */
+  const bodyLines = [
+    'key1: value1 key2: value2',
+    '-key: value',
+    'items: - item',
+    'prose reports value: false',
+    '- not an entry',
+    'owner: @handle',
+    'key: a: b',
+    'answer: text',
+    'question: "unterminated',
+    'type: "epic" | "user_story"',
+    'free_text: Log type: trace',
+    '`backticks` and a trailing colon:',
+  ]
+
+  /** Every header form YAML allows, mapping and sequence. */
+  const headers = ['|', '|-', '|+', '|2', '>', '>-', '>2', '| # note', '>- # note']
+
+  it('covers every repair this module exports', async () => {
+    // The table above is a list, and a list is exactly what kept going stale:
+    // four rounds of review, four repairs missed. A repair added to the module
+    // and not to the table would otherwise be untested for this rule.
+    const module = await import('../yamlRepair')
+    const exported = Object.entries(module)
+      .filter(([name, value]) => name.startsWith('repairYaml') && typeof value === 'function')
+      .map(([name]) => name)
+
+    expect(repairs.map(([name]) => name).sort()).toEqual(exported.sort())
+  })
+
+  it.each(repairs)('%s leaves every body line alone under a mapping header', (_, repair) => {
+    for (const header of headers) {
+      for (const body of bodyLines) {
+        const input = ['parent:', `  body: ${header}`, `    ${body}`, '  answer: text'].join('\n')
+        expect(repair(input), `${header} / ${body}`).toBe(input)
+      }
+    }
+  })
+
+  it.each(repairs)('%s leaves every body line alone under a sequence header', (_, repair) => {
+    for (const header of headers) {
+      for (const body of bodyLines) {
+        const input = ['items:', `  - ${header}`, `    ${body}`].join('\n')
+        expect(repair(input), `- ${header} / ${body}`).toBe(input)
+      }
+    }
   })
 })

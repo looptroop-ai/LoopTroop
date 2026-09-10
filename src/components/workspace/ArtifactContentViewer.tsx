@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useState } from 'react'
 import * as jsYaml from 'js-yaml'
-import { commandSpecSchema, renderCommandSpec, type CommandSpec } from '@shared/commandSpec'
+import { renderCommandSpec, type CommandSpec } from '@shared/commandSpec'
+import type { ManualQaBeadOrigin } from '@/hooks/useTickets'
 import { Trophy, Lightbulb } from 'lucide-react'
 import { getModelDisplayName } from '@/components/shared/modelBadgeUtils'
 import { ModelBadge, ModelIcon } from '@/components/shared/ModelBadge'
@@ -52,7 +53,18 @@ import { buildReadableRawDisplayContent } from './rawDisplayContent'
 import { CopyButton, RawContentWithCopy, RawDisplayPre, RawDisplayStats } from './RawTextDisplay'
 import { ManualQaOriginBadge, ManualQaOriginCard } from './ManualQaOriginCard'
 import { parsePrdDocument, PRD_TECHNICAL_SECTION_CONFIG } from '@/lib/prdDocument'
-import { parseBeadsArtifact, type RawBead } from '@/lib/beadsDocument'
+import {
+  parseBeadsArtifact,
+  readBeadCommands,
+  readBeadDependencies,
+  readBeadGuidance,
+  readBeadNumber,
+  readBeadString,
+  readBeadValue,
+  readBeadStringList,
+  type BeadField,
+  type RawBead,
+} from '@/lib/beadsDocument'
 import { isRenderableManualQaOrigin } from '@/lib/artifactFieldShape'
 import { CollapsibleSection } from './artifactViewers/CollapsibleSection'
 import { TextCopyButton } from './artifactViewers/TextCopyButton'
@@ -1473,14 +1485,27 @@ function renderBeadGuidance(guidance: RawBead['contextGuidance']): React.ReactNo
     )
   }
 
-  const patterns = Array.isArray(guidance.patterns)
-    ? guidance.patterns.filter((item): item is string => typeof item === 'string' && item.trim().length > 0)
-    : []
-  const antiPatterns = Array.isArray(guidance.anti_patterns)
-    ? guidance.anti_patterns.filter((item): item is string => typeof item === 'string' && item.trim().length > 0)
-    : []
+  // Through the shared reader, which knows `anti_patterns` and `antiPatterns`
+  // are the same field. Reading one spelling here left a bead written the other
+  // way showing its anti-patterns in the approval editor and a JSON dump in
+  // this view — the divergence the alias table exists to end, one field over
+  // from the one it was added for.
+  const { patterns, anti_patterns: antiPatterns } = readBeadGuidance(
+    { contextGuidance: guidance } as RawBead,
+    'display',
+  )
 
   if (patterns.length === 0 && antiPatterns.length === 0) {
+    // Guidance the reader understands and that is simply empty renders as
+    // nothing, like an empty criteria list. The JSON dump is for a value the
+    // reader could not make sense of — and every structured save writes
+    // `{ patterns: [], anti_patterns: [] }`, so dumping that showed the
+    // artifact view an empty object for a bead with no guidance at all.
+    const knownKeys = ['patterns', 'anti_patterns', 'antiPatterns']
+    const isEmptyGuidanceRecord = Object.entries(guidance)
+      .every(([key, value]) => knownKeys.includes(key) && Array.isArray(value) && value.length === 0)
+    if (isEmptyGuidanceRecord) return null
+
     return (
       <div className="text-xs">
         <strong className="text-muted-foreground font-medium">Context Guidance:</strong>{' '}
@@ -1516,62 +1541,35 @@ function renderBeadGuidance(guidance: RawBead['contextGuidance']): React.ReactNo
   )
 }
 
-function getBeadStringArray(bead: RawBead, keys: string[]): string[] {
-  for (const key of keys) {
-    const value = bead[key]
-    if (!Array.isArray(value)) continue
-    return value
-      .filter((item): item is string => typeof item === 'string')
-      .map((item) => item.trim())
-      .filter(Boolean)
-  }
-  return []
+/**
+ * The bead field readers, over the alias table in `@/lib/beadsDocument`.
+ *
+ * `display` is the policy every view wants: a value that is only whitespace is
+ * not a value. The approval editor reads the same fields `verbatim`, because it
+ * hands them back to be saved. The alias lists themselves used to be typed out
+ * at each call — twenty here, a dozen in the editor's normalizer — and had
+ * drifted: the editor read `blockedBy` beside `blocked_by` and this file did
+ * not, so a bead written with the camelCase spelling showed its dependencies on
+ * the approval screen and none in the artifact view.
+ */
+function getBeadStringArray(bead: RawBead, field: BeadField): string[] {
+  return readBeadStringList(bead, field, 'display')
 }
 
-function getBeadCommands(bead: RawBead, keys: string[]): CommandSpec[] {
-  for (const key of keys) {
-    const value = bead[key]
-    if (!Array.isArray(value)) continue
-    return value.flatMap((command) => {
-      const parsed = commandSpecSchema.safeParse(command)
-      return parsed.success ? [parsed.data] : []
-    })
-  }
-  return []
+function getBeadCommands(bead: RawBead, field: BeadField): CommandSpec[] {
+  return readBeadCommands(bead, field)
 }
 
-function getBeadStringValue(bead: RawBead, keys: string[]): string {
-  for (const key of keys) {
-    const value = bead[key]
-    if (typeof value === 'string' && value.trim()) {
-      return value.trim()
-    }
-  }
-  return ''
+function getBeadStringValue(bead: RawBead, field: BeadField): string {
+  return readBeadString(bead, field, 'display')
 }
 
-function getBeadNumberValue(bead: RawBead, keys: string[]): number | null {
-  for (const key of keys) {
-    const value = bead[key]
-    if (typeof value === 'number' && Number.isFinite(value)) return value
-  }
-  return null
+function getBeadNumberValue(bead: RawBead, field: BeadField): number | null {
+  return readBeadNumber(bead, field)
 }
 
 function getBeadDependencies(bead: RawBead): { blockedBy: string[]; blocks: string[] } {
-  const raw = bead.dependencies
-  if (!raw || typeof raw !== 'object' || Array.isArray(raw)) {
-    return { blockedBy: [], blocks: [] }
-  }
-
-  const record = raw as Record<string, unknown>
-  const blockedBy = Array.isArray(record.blocked_by)
-    ? record.blocked_by.filter((item): item is string => typeof item === 'string' && item.trim().length > 0)
-    : []
-  const blocks = Array.isArray(record.blocks)
-    ? record.blocks.filter((item): item is string => typeof item === 'string' && item.trim().length > 0)
-    : []
-
+  const { blocked_by: blockedBy, blocks } = readBeadDependencies(bead, 'display')
   return { blockedBy, blocks }
 }
 
@@ -1665,26 +1663,26 @@ function makeExpansionArrayField(label: string, values: string[], mono = false):
 }
 
 function buildExpansionAddedGroups(planBead: RawBead | undefined, expandedBead: RawBead, index: number): ExpansionAddedGroup[] {
-  const planId = planBead ? getBeadStringValue(planBead, ['id']) : ''
-  const expandedId = getBeadStringValue(expandedBead, ['id'])
+  const planId = planBead ? getBeadStringValue(planBead, 'id') : ''
+  const expandedId = getBeadStringValue(expandedBead, 'id')
   const { blockedBy, blocks } = getBeadDependencies(expandedBead)
 
   const modelFields = [
     expandedId && expandedId !== planId ? makeExpansionField('Execution ID', expandedId, true) : null,
-    makeExpansionField('Issue Type', getBeadStringValue(expandedBead, ['issueType', 'issue_type'])),
-    makeExpansionArrayField('Labels', getBeadStringArray(expandedBead, ['labels'])),
+    makeExpansionField('Issue Type', getBeadStringValue(expandedBead, 'issueType')),
+    makeExpansionArrayField('Labels', getBeadStringArray(expandedBead, 'labels')),
     makeExpansionArrayField('Blocked By', blockedBy, true),
     makeExpansionArrayField('Blocks', blocks, true),
-    makeExpansionArrayField('Target Files', getBeadStringArray(expandedBead, ['targetFiles', 'target_files']), true),
+    makeExpansionArrayField('Target Files', getBeadStringArray(expandedBead, 'targetFiles'), true),
   ].filter((field): field is ExpansionAddedField => field !== null)
 
   const runtimeFields = [
-    makeExpansionField('Priority', getBeadNumberValue(expandedBead, ['priority']) ?? index + 1),
-    makeExpansionField('Status', getBeadStringValue(expandedBead, ['status']) || 'pending'),
-    makeExpansionField('External Ref', getBeadStringValue(expandedBead, ['externalRef', 'external_ref']), true),
-    makeExpansionField('Iteration', getBeadNumberValue(expandedBead, ['iteration'])),
-    makeExpansionField('Created At', getBeadStringValue(expandedBead, ['createdAt', 'created_at']), true),
-    makeExpansionField('Updated At', getBeadStringValue(expandedBead, ['updatedAt', 'updated_at']), true),
+    makeExpansionField('Priority', getBeadNumberValue(expandedBead, 'priority') ?? index + 1),
+    makeExpansionField('Status', getBeadStringValue(expandedBead, 'status') || 'pending'),
+    makeExpansionField('External Ref', getBeadStringValue(expandedBead, 'externalRef'), true),
+    makeExpansionField('Iteration', getBeadNumberValue(expandedBead, 'iteration')),
+    makeExpansionField('Created At', getBeadStringValue(expandedBead, 'createdAt'), true),
+    makeExpansionField('Updated At', getBeadStringValue(expandedBead, 'updatedAt'), true),
   ].filter((field): field is ExpansionAddedField => field !== null)
 
   return [
@@ -1745,7 +1743,7 @@ function ExpandedPlanDiffView({ content }: { content: string }) {
   )
   const addedFieldCount = useMemo(() => countExpansionAddedFields(content), [content])
   const planBeadsById = useMemo(
-    () => new Map((planBeads ?? []).map((bead) => [getBeadStringValue(bead, ['id']), bead])),
+    () => new Map((planBeads ?? []).map((bead) => [getBeadStringValue(bead, 'id'), bead])),
     [planBeads],
   )
 
@@ -1761,10 +1759,10 @@ function ExpandedPlanDiffView({ content }: { content: string }) {
       {expandedBeads.map((expandedBead, index) => {
         // By id, for the same reason as the count above: the two lists are
         // filtered independently, so positions do not correspond.
-        const planBead = planBeadsById.get(getBeadStringValue(expandedBead, ['id']))
-        const title = getBeadStringValue(expandedBead, ['title']) || getBeadStringValue(planBead ?? {}, ['title']) || `Bead ${index + 1}`
-        const planId = getBeadStringValue(planBead ?? {}, ['id'])
-        const expandedId = getBeadStringValue(expandedBead, ['id'])
+        const planBead = planBeadsById.get(getBeadStringValue(expandedBead, 'id'))
+        const title = getBeadStringValue(expandedBead, 'title') || getBeadStringValue(planBead ?? {}, 'title') || `Bead ${index + 1}`
+        const planId = getBeadStringValue(planBead ?? {}, 'id')
+        const expandedId = getBeadStringValue(expandedBead, 'id')
         const groups = buildExpansionAddedGroups(planBead, expandedBead, index)
 
         return (
@@ -1996,34 +1994,34 @@ export function BeadsDraftView({ content }: { content: string }) {
         <div className="text-xs text-muted-foreground mb-2">{beadsArray.length} beads</div>
         {beadsArray.map((bead, index) => (
           (() => {
-            const prdRefs = getBeadStringArray(bead, ['prdRefs', 'prd_refs', 'prd_references'])
-            const labels = getBeadStringArray(bead, ['labels'])
-            const acceptanceCriteria = getBeadStringArray(bead, ['acceptanceCriteria', 'acceptance_criteria'])
-            const tests = getBeadStringArray(bead, ['tests'])
-            const testCommands = getBeadCommands(bead, ['testCommands', 'test_commands'])
-            const testCommandReason = getBeadStringValue(bead, ['testCommandReason', 'test_command_reason'])
-            const targetFiles = getBeadStringArray(bead, ['targetFiles', 'target_files'])
-            const status = getBeadStringValue(bead, ['status']) || 'pending'
+            const prdRefs = getBeadStringArray(bead, 'prdRefs')
+            const labels = getBeadStringArray(bead, 'labels')
+            const acceptanceCriteria = getBeadStringArray(bead, 'acceptanceCriteria')
+            const tests = getBeadStringArray(bead, 'tests')
+            const testCommands = getBeadCommands(bead, 'testCommands')
+            const testCommandReason = getBeadStringValue(bead, 'testCommandReason')
+            const targetFiles = getBeadStringArray(bead, 'targetFiles')
+            const status = getBeadStringValue(bead, 'status') || 'pending'
             const tone = getBeadStatusTone(status)
-            const order = getBeadNumberValue(bead, ['priority']) ?? index + 1
-            const description = getBeadStringValue(bead, ['description'])
-            const title = getBeadStringValue(bead, ['title']) || `Bead ${index + 1}`
-            const issueType = getBeadStringValue(bead, ['issueType', 'issue_type'])
-            const externalRef = getBeadStringValue(bead, ['externalRef', 'external_ref'])
-            const notes = getBeadStringValue(bead, ['notes'])
-            const iteration = getBeadNumberValue(bead, ['iteration'])
-            const createdAt = getBeadStringValue(bead, ['createdAt', 'created_at'])
-            const updatedAt = getBeadStringValue(bead, ['updatedAt', 'updated_at'])
-            const startedAt = getBeadStringValue(bead, ['startedAt', 'started_at'])
-            const completedAt = getBeadStringValue(bead, ['completedAt', 'completed_at'])
-            const beadStartCommit = getBeadStringValue(bead, ['beadStartCommit', 'bead_start_commit'])
+            const order = getBeadNumberValue(bead, 'priority') ?? index + 1
+            const description = getBeadStringValue(bead, 'description')
+            const title = getBeadStringValue(bead, 'title') || `Bead ${index + 1}`
+            const issueType = getBeadStringValue(bead, 'issueType')
+            const externalRef = getBeadStringValue(bead, 'externalRef')
+            const notes = getBeadStringValue(bead, 'notes')
+            const iteration = getBeadNumberValue(bead, 'iteration')
+            const createdAt = getBeadStringValue(bead, 'createdAt')
+            const updatedAt = getBeadStringValue(bead, 'updatedAt')
+            const startedAt = getBeadStringValue(bead, 'startedAt')
+            const completedAt = getBeadStringValue(bead, 'completedAt')
+            const beadStartCommit = getBeadStringValue(bead, 'beadStartCommit')
             // A stored origin is whatever was written; `ManualQaOriginCard`
             // maps `sourceItems` without checking it, so `qaOrigin: {}` took
             // the whole bead view down. An unrenderable origin reads as no
             // origin, which is what the ticket-runtime normaliser already does.
-            const storedQaOrigin = bead.qaOrigin ?? bead.qa_origin ?? null
+            const storedQaOrigin = (readBeadValue(bead, 'qaOrigin') ?? null) as ManualQaBeadOrigin | null
             const qaOrigin = isRenderableManualQaOrigin(storedQaOrigin) ? storedQaOrigin : null
-            const metadataId = getBeadStringValue(bead, ['id'])
+            const metadataId = getBeadStringValue(bead, 'id')
             const { blockedBy, blocks } = getBeadDependencies(bead)
             return (
               <div key={`${metadataId || 'bead'}-${index}`} id={`bead-${index}`}>
@@ -2107,7 +2105,7 @@ export function BeadsDraftView({ content }: { content: string }) {
                       )}
                     </BeadSection>
                   )}
-                  {renderBeadGuidance((bead.contextGuidance ?? bead.context_guidance) as RawBead['contextGuidance'])}
+                  {renderBeadGuidance(readBeadValue(bead, 'contextGuidance') as RawBead['contextGuidance'])}
                   {acceptanceCriteria.length > 0 && (
                     <BeadSection title="Acceptance Criteria" accent="border-green-300 dark:border-green-700">
                       <ul className="list-disc pl-4 space-y-0.5">

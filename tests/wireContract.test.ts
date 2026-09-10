@@ -82,6 +82,7 @@ const EXPECTED_ROUTES = [
   'GET /api/tickets/:id/artifacts/manifest',
   'GET /api/tickets/:id/beads',
   'GET /api/tickets/:id/beads/:beadId/diff',
+  'GET /api/tickets/:id/beads/raw',
   'GET /api/tickets/:id/execution-setup-plan',
   'GET /api/tickets/:id/interview',
   'GET /api/tickets/:id/logs',

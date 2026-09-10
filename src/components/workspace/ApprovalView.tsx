@@ -15,10 +15,20 @@ import { PrdApprovalPane } from './PrdApprovalPane'
 import { PrdDocumentView } from './PrdDocumentView'
 import { BeadsDraftView } from './ArtifactContentViewer'
 import { buildReadableRawDisplayContent } from './rawDisplayContent'
-import { BeadsApprovalEditor, type ParsedBead } from './BeadsApprovalEditor'
+import { BeadsApprovalEditor } from './BeadsApprovalEditor'
 import { CoverageApprovalWarning } from './CoverageApprovalWarning'
 import { resolveCoverageApprovalWarning } from './coverageApprovalWarningUtils'
-import { BEADS_APPROVAL_FOCUS_EVENT, describeBeadEntry, filterBeadShaped } from '@/lib/beadsDocument'
+import { isRecord } from '@shared/typeGuards'
+import {
+  BEADS_APPROVAL_FOCUS_EVENT,
+  describeBeadEntry,
+  filterBeadShaped,
+  hasUnrepresentableBeadCommands,
+  hasUnstructuredBeadGuidance,
+  normalizeBead,
+  stripSupersededBeadAliases,
+  type NormalizedBead,
+} from '@/lib/beadsDocument'
 import { ExecutionSetupPlanApprovalPane } from './ExecutionSetupPlanApprovalPane'
 import { PhaseAttemptSelector, PhaseAttemptsUnavailable } from './PhaseAttemptSelector'
 import { selectedAttemptNumber } from './phaseAttemptSelection'
@@ -34,7 +44,6 @@ import {
   approveArtifact,
   fixCoverageGaps,
 } from './approvalHooks'
-import { commandSpecSchema } from '@shared/commandSpec'
 import { apiFilePath, apiTicketPath } from '@/lib/apiPaths'
 import { throwIfNotOk } from '@/lib/fetchError'
 import { QueryErrorNotice } from '@/components/shared/QueryErrorNotice'
@@ -55,12 +64,38 @@ interface BeadsApprovalUiState {
   isEditMode?: boolean
   editTab?: EditTab
   jsonlDraft?: string
-  structuredDraft?: ParsedBead[]
+  structuredDraft?: NormalizedBead[]
+  /** The hash of the file the draft was typed against, if it was recorded. */
+  contentSha256?: string | null
 }
 
 interface BeadsArtifactResponse {
   beads: unknown[]
   contentSha256: string | null
+  /**
+   * The tracker as stored, damaged lines included.
+   *
+   * Not rebuilt from `beads`: a line that did not parse is not in that array,
+   * so a JSONL tab reconstructed from it shows a file the operator does not
+   * have — and saving it deletes the damage instead of repairing it.
+   */
+  rawContent: string
+  /** 1-based line numbers in the file that did not parse. */
+  malformedLines: number[]
+  /** 1-based line numbers that parsed but do not describe a bead. */
+  unrepresentableLines: number[]
+}
+
+/** `Line 4` or `Lines 4, 9, 12`, capped so a badly damaged file stays readable. */
+function describeLines(lines: number[]): string {
+  if (lines.length === 1) return `Line ${lines[0]}`
+  const listed = lines.slice(0, 10).join(', ')
+  return `Lines ${listed}${lines.length > 10 ? `, +${lines.length - 10} more` : ''}`
+}
+
+/** A line-number list from a payload, keeping only what is one. */
+function numberList(value: unknown): number[] {
+  return Array.isArray(value) ? value.filter((line): line is number => typeof line === 'number') : []
 }
 
 function beadsArrayToJsonl(beads: unknown[]): string {
@@ -72,13 +107,23 @@ function jsonlToBeadsArray(jsonl: string): unknown[] {
 }
 
 function validateJsonl(jsonl: string): string | null {
-  const lines = jsonl.split('\n').filter((l) => l.trim())
+  // Numbered over the whole draft, blank lines included: the server, the
+  // damaged-line header and this editor all have to name the same line, and
+  // filtering first renumbered everything after a blank one.
+  const lines = jsonl.split('\n')
   for (let i = 0; i < lines.length; i++) {
     const line = lines[i]!
+    if (!line.trim()) continue
     try {
-      const parsed = JSON.parse(line)
+      const parsed: unknown = JSON.parse(line)
       if (typeof parsed !== 'object' || parsed === null || Array.isArray(parsed)) {
         return `Line ${i + 1}: expected a JSON object, got ${Array.isArray(parsed) ? 'array' : typeof parsed}`
+      }
+      // Checked here so the number the operator is given is the line they are
+      // looking at. The route rejects this too, but by the row's position in
+      // the parsed array — which is not the file line once blanks are in play.
+      if (!isRecord(parsed) || typeof parsed.id !== 'string' || !parsed.id.trim()) {
+        return `Line ${i + 1}: every bead needs a non-empty "id"`
       }
     } catch {
       return `Line ${i + 1}: invalid JSON — ${line.substring(0, 60)}…`
@@ -87,69 +132,28 @@ function validateJsonl(jsonl: string): string | null {
   return null
 }
 
-function normalizeBeadForEditor(bead: Record<string, unknown>): ParsedBead {
-  const getStringArray = (record: Record<string, unknown>, keys: string[]): string[] => {
-    for (const key of keys) {
-      if (Array.isArray(record[key])) return (record[key] as unknown[]).filter((v): v is string => typeof v === 'string')
-    }
-    return []
-  }
-  const getString = (record: Record<string, unknown>, keys: string[]): string => {
-    for (const key of keys) {
-      if (typeof record[key] === 'string') return record[key] as string
-    }
-    return ''
-  }
-  const getCommands = (record: Record<string, unknown>, keys: string[]) => {
-    for (const key of keys) {
-      if (!Array.isArray(record[key])) continue
-      return (record[key] as unknown[]).flatMap((value) => {
-        const parsed = commandSpecSchema.safeParse(value)
-        return parsed.success ? [parsed.data] : []
-      })
-    }
-    return []
-  }
-  const deps = (bead.dependencies ?? {}) as Record<string, unknown>
-  const guidance = (bead.contextGuidance ?? bead.context_guidance ?? {}) as Record<string, unknown>
-  return {
-    ...bead,
-    id: getString(bead, ['id']),
-    title: getString(bead, ['title']),
-    description: getString(bead, ['description']),
-    prdRefs: getStringArray(bead, ['prdRefs', 'prd_refs', 'prd_references']),
-    acceptanceCriteria: getStringArray(bead, ['acceptanceCriteria', 'acceptance_criteria']),
-    tests: getStringArray(bead, ['tests']),
-    testCommands: getCommands(bead, ['testCommands', 'test_commands']),
-    testCommandReason: getString(bead, ['testCommandReason', 'test_command_reason']) || undefined,
-    targetFiles: getStringArray(bead, ['targetFiles', 'target_files']),
-    contextGuidance: {
-      patterns: getStringArray(guidance, ['patterns']),
-      anti_patterns: getStringArray(guidance, ['anti_patterns', 'antiPatterns']),
-    },
-    dependencies: {
-      blocked_by: getStringArray(deps, ['blocked_by', 'blockedBy']),
-      blocks: getStringArray(deps, ['blocks']),
-    },
-  }
-}
-
 /**
  * The editor's beads, from the same filtered list every other surface uses.
  *
- * Without the filter a stored `null` reached `normalizeBeadForEditor`, which
+ * Without the filter a stored `null` reached `normalizeBead`, which
  * dereferences `bead.dependencies`, and took the structured editor down. The
  * shared filter also keeps the editor's ordering aligned with the outline's
  * focus anchors and the artifact view.
  */
-function parseBeadsForEditor(data: unknown[]): ParsedBead[] {
-  return filterBeadShaped(data, describeBeadEntry).map((bead) => normalizeBeadForEditor(bead))
+function parseBeadsForEditor(data: unknown[]): NormalizedBead[] {
+  // `verbatim`: an editor must give back exactly what is stored. The artifact
+  // views read the same fields with `display`, which trims and drops blanks.
+  return filterBeadShaped(data, describeBeadEntry).map((bead) => normalizeBead(bead, 'verbatim'))
 }
 
 /** Build a canonical bead object for isSaving — merges editor fields back into the original, keeping read-only fields intact. */
-function buildBeadForSave(bead: ParsedBead): Record<string, unknown> {
+function buildBeadForSave(bead: NormalizedBead): Record<string, unknown> {
   const { contextGuidance, dependencies, acceptanceCriteria, testCommands, testCommandReason, targetFiles, prdRefs, ...rest } = bead
-  return {
+  // Stripped over the *whole* record, canonical fields included. Run over
+  // `rest` alone it saw no canonical `prdRefs`, kept `prd_refs` as though it
+  // were the only copy, and the canonical value was spread back on top — both
+  // spellings again, which is the thing this is here to stop.
+  return stripSupersededBeadAliases({
     ...rest,
     acceptanceCriteria,
     testCommands,
@@ -164,7 +168,7 @@ function buildBeadForSave(bead: ParsedBead): Record<string, unknown> {
       blocked_by: dependencies.blocked_by,
       blocks: dependencies.blocks,
     },
-  }
+  } as NormalizedBead) as Record<string, unknown>
 }
 
 function BeadsApprovalPane({
@@ -208,15 +212,23 @@ function BeadsApprovalPane({
   } = useQuery({
     queryKey: ['artifact', ticket.id, 'beads', 'approval'],
     queryFn: async ({ signal }) => {
-      const r = await fetch(apiTicketPath(ticket.id, 'beads'), { signal })
+      const r = await fetch(apiTicketPath(ticket.id, 'beads', 'raw'), { signal })
       await throwIfNotOk(r, 'Failed to load beads')
       const contentSha256 = typeof r.headers?.get === 'function'
         ? r.headers.get('X-Content-Sha256')
         : null
-      const data = await r.json()
+      const data = await r.json() as Partial<{
+        content: string
+        items: unknown[]
+        malformedLines: number[]
+        unrepresentableLines: number[]
+      }>
       return {
-        beads: Array.isArray(data) ? data as unknown[] : [],
+        beads: Array.isArray(data.items) ? data.items : [],
         contentSha256,
+        rawContent: typeof data.content === 'string' ? data.content : '',
+        malformedLines: numberList(data.malformedLines),
+        unrepresentableLines: numberList(data.unrepresentableLines),
       } satisfies BeadsArtifactResponse
     },
     staleTime: QUERY_STALE_TIME_5M,
@@ -224,11 +236,50 @@ function BeadsApprovalPane({
 
   const beadsArray = useMemo(() => fetchedBeads?.beads ?? [], [fetchedBeads])
   const currentContentSha256 = fetchedBeads?.contentSha256 ?? null
-  const rawJsonl = useMemo(() => beadsArray.length > 0 ? beadsArrayToJsonl(beadsArray) : '', [beadsArray])
+  const malformedLines = useMemo(() => fetchedBeads?.malformedLines ?? [], [fetchedBeads])
+  // Rows that parsed and are not beads. The structured editor is built from the
+  // records it can read, so saving it writes these out of the file — the same
+  // loss the damaged lines had, one step further along.
+  const unrepresentableLines = useMemo(() => fetchedBeads?.unrepresentableLines ?? [], [fetchedBeads])
+  // The file as stored. A damaged line is only visible — and only repairable —
+  // here; the structured editor is built from the records that parsed.
+  const rawJsonl = fetchedBeads?.rawContent ?? ''
+  const hasMalformedLines = malformedLines.length > 0
+  const hasUnrepresentableLines = unrepresentableLines.length > 0
+  // Guidance the structured editor has no field for — free text, or a list of
+  // guidance strings — which it would show as empty pattern lists and write
+  // over that value on save.
+  const unstructuredGuidanceBeadIds = useMemo(
+    // The position is taken before filtering: named from the surviving list, a
+    // bead with no id was announced under a place it does not occupy.
+    () => beadsArray.flatMap((bead, index) => (
+      isRecord(bead) && hasUnstructuredBeadGuidance(bead)
+        ? [typeof bead.id === 'string' && bead.id ? bead.id : `bead ${index + 1}`]
+        : []
+    )),
+    [beadsArray],
+  )
+  const hasUnstructuredGuidance = unstructuredGuidanceBeadIds.length > 0
+  // Commands the editor's own reader refuses — the bare-string form older
+  // trackers carry, most of them. It drops what it cannot parse, so a save
+  // would write the bead back without them.
+  const unrepresentableCommandBeadIds = useMemo(
+    () => beadsArray.flatMap((bead, index) => (
+      isRecord(bead) && hasUnrepresentableBeadCommands(bead)
+        ? [typeof bead.id === 'string' && bead.id ? bead.id : `bead ${index + 1}`]
+        : []
+    )),
+    [beadsArray],
+  )
+  const hasUnrepresentableCommands = unrepresentableCommandBeadIds.length > 0
+  const structuredEditorBlocked = hasMalformedLines || hasUnrepresentableLines || hasUnstructuredGuidance
+    || hasUnrepresentableCommands
+  const malformedLineSummary = describeLines(malformedLines)
+  const unrepresentableLineSummary = describeLines(unrepresentableLines)
 
   const [isEditMode, setIsEditMode] = useState(false)
   const [editTab, setEditTab] = useState<EditTab>('structured')
-  const [structuredDraft, setStructuredDraft] = useState<ParsedBead[] | null>(null)
+  const [structuredDraft, setStructuredDraft] = useState<NormalizedBead[] | null>(null)
   const [jsonlDraft, setJsonlDraft] = useState('')
   const [isSaving, setIsSaving] = useState(false)
   const [isApproving, setIsApproving] = useState(false)
@@ -237,6 +288,8 @@ function BeadsApprovalPane({
   // coverage run would be the wrong explanation attached to a new approval.
   const [gapReason, setGapReason] = useState('')
   const [saveError, setSaveError] = useState<string | null>(null)
+  /** A save the server refused because the tracker changed underneath it. */
+  const [staleSave, setStaleSave] = useState(false)
   const [approveError, setApproveError] = useState<string | null>(null)
   const [coverageFixError, setCoverageFixError] = useState<string | null>(null)
   const [isFixingCoverageGaps, setIsFixingCoverageGaps] = useState(false)
@@ -283,14 +336,24 @@ function BeadsApprovalPane({
     skipRestoreRef,
     restore: (persisted, document) => {
       const documentBeads = Array.isArray(document.beads) ? document.beads : []
-      const documentRaw = documentBeads.length > 0 ? beadsArrayToJsonl(documentBeads) : ''
+      const documentRaw = typeof document.rawContent === 'string' ? document.rawContent : ''
       const documentStructured = documentBeads.length > 0 ? parseBeadsForEditor(documentBeads) : null
       const nextEditMode = Boolean(persisted?.isEditMode)
       const nextEditTab: EditTab = persisted?.editTab === 'jsonl' ? 'jsonl' : 'structured'
-      const nextStructuredDraft = Array.isArray(persisted?.structuredDraft) && persisted.structuredDraft.length > 0
+      // A draft is only a draft *of* the file it was typed against. Saved
+      // before the tracker changed — damaged by another writer, or repaired by
+      // one — it would otherwise be restored over the new bytes, shown as "the
+      // file as stored", and saved back with the hash of a read it never saw.
+      const draftMatchesFile = typeof persisted?.contentSha256 === 'string'
+        ? persisted.contentSha256 === document.contentSha256
+        : false
+      const nextStructuredDraft = draftMatchesFile
+        && Array.isArray(persisted?.structuredDraft) && persisted.structuredDraft.length > 0
         ? persisted.structuredDraft
         : documentStructured
-      const nextJsonlDraft = typeof persisted?.jsonlDraft === 'string' ? persisted.jsonlDraft : documentRaw
+      const nextJsonlDraft = draftMatchesFile && typeof persisted?.jsonlDraft === 'string'
+        ? persisted.jsonlDraft
+        : documentRaw
 
       setIsEditMode(nextEditMode)
       setEditTab(nextEditTab)
@@ -302,6 +365,7 @@ function BeadsApprovalPane({
         editTab: nextEditTab,
         jsonlDraft: nextJsonlDraft,
         structuredDraft: nextStructuredDraft,
+        contentSha256: document.contentSha256,
       }
     },
   })
@@ -316,6 +380,9 @@ function BeadsApprovalPane({
       editTab,
       jsonlDraft,
       structuredDraft,
+      // The file the draft belongs to, so a restore can tell whether it still
+      // does.
+      contentSha256: currentContentSha256,
     },
     ticketId: ticket.id,
     scope: uiStateScope,
@@ -347,6 +414,29 @@ function BeadsApprovalPane({
         setSaveError(error)
         return
       }
+    } else if (hasMalformedLines || hasUnrepresentableLines) {
+      // The structured editor holds only the records that parsed, so saving it
+      // over the file is a deletion of everything else in it.
+      const lines = hasMalformedLines ? malformedLines : unrepresentableLines
+      const summary = hasMalformedLines ? malformedLineSummary : unrepresentableLineSummary
+      setSaveError(
+        `${summary} ${hasMalformedLines ? 'could not be read' : 'does not describe a bead'}, and the structured editor `
+        + `does not contain ${lines.length === 1 ? 'it' : 'them'}. Repair the file in the JSONL tab instead — saving `
+        + `from here would drop ${lines.length === 1 ? 'that line' : 'those lines'}.`,
+      )
+      return
+    } else if (hasUnrepresentableCommands) {
+      setSaveError(
+        `${unrepresentableCommandBeadIds.join(', ')} store a test command the structured editor cannot read, and `
+        + 'saving from here would drop it. Edit them in the JSONL tab instead.',
+      )
+      return
+    } else if (hasUnstructuredGuidance) {
+      setSaveError(
+        `${unstructuredGuidanceBeadIds.join(', ')} store context guidance as free text, which the structured editor `
+        + 'cannot show. Edit them in the JSONL tab instead — saving from here would replace that text with empty lists.',
+      )
+      return
     }
 
     setIsSaving(true)
@@ -359,7 +449,15 @@ function BeadsApprovalPane({
 
       const response = await fetch(apiTicketPath(ticket.id, 'beads'), {
         method: 'PUT',
-        headers: { 'Content-Type': 'application/json' },
+        headers: {
+          'Content-Type': 'application/json',
+          // The file this draft was built on. The route refuses the write if
+          // the tracker changed in between, rather than overwriting whatever
+          // landed — a repair of the damaged lines, most likely.
+          ...(currentContentSha256 ? { 'X-Content-Sha256': currentContentSha256 } : {}),
+          // Which editor produced it, for the edit receipt.
+          'X-Edit-Surface': editTab,
+        },
         body: JSON.stringify(beadsToSave),
       })
 
@@ -372,6 +470,11 @@ function BeadsApprovalPane({
       queryClient.setQueryData(['artifact', ticket.id, 'beads', 'approval'], {
         beads: beadsToSave,
         contentSha256: nextContentSha256,
+        // What was just written is the file now, and it parses by construction:
+        // the save is what repairs a tracker that had damaged lines.
+        rawContent: beadsArrayToJsonl(beadsToSave),
+        malformedLines: [],
+        unrepresentableLines: [],
       } satisfies BeadsArtifactResponse)
       queryClient.setQueryData(['artifact', ticket.id, 'beads'], beadsToSave)
       queryClient.invalidateQueries({ queryKey: ['artifact', ticket.id, 'beads', 'approval'] })
@@ -379,14 +482,27 @@ function BeadsApprovalPane({
       queryClient.invalidateQueries({ queryKey: ['ticket', ticket.id] })
       clearTicketArtifactsCache(queryClient, ticket.id)
 
+      // What was just written is the file now. Left as they were, the drafts
+      // are autosaved again a moment later and a reload restores them as
+      // "unsaved changes" against a file that already has them.
+      setJsonlDraft(beadsArrayToJsonl(beadsToSave))
+      setStructuredDraft(null)
       setIsEditMode(false)
       setEditTab('structured')
     } catch (error) {
-      setSaveError(error instanceof Error ? error.message : 'Save failed')
+      const message = error instanceof Error ? error.message : 'Save failed'
+      // A refused save means the file on disk is not the one this draft was
+      // built on, and the screen is still showing the old one. Saying so, and
+      // offering the way back, is the whole point of refusing rather than
+      // overwriting.
+      setSaveError(message.includes('changed since it was read')
+        ? `${message}. Reload to work from the file that is there now — reloading replaces your draft with it.`
+        : message)
+      if (message.includes('changed since it was read')) setStaleSave(true)
     } finally {
       setIsSaving(false)
     }
-  }, [editTab, jsonlDraft, structuredDraft, ticket.id, queryClient])
+  }, [currentContentSha256, editTab, hasMalformedLines, hasUnrepresentableLines, hasUnrepresentableCommands, hasUnstructuredGuidance, jsonlDraft, malformedLineSummary, malformedLines, structuredDraft, ticket.id, unrepresentableCommandBeadIds, unrepresentableLineSummary, unrepresentableLines, unstructuredGuidanceBeadIds, queryClient])
 
   const handleApprove = useCallback(async () => {
     setIsApproving(true)
@@ -479,12 +595,36 @@ function BeadsApprovalPane({
           <Button
             size="sm"
             onClick={handleApprove}
-            disabled={isApproving || isSaving || isFixingCoverageGaps || isCoverageUnknown || (isEditMode && hasUnsavedChanges) || beadsArray.length === 0 || !currentContentSha256 || ticket.status !== 'WAITING_BEADS_APPROVAL'}
+            disabled={isApproving || isSaving || isFixingCoverageGaps || isCoverageUnknown || (isEditMode && hasUnsavedChanges) || beadsArray.length === 0 || hasMalformedLines || hasUnrepresentableLines || !currentContentSha256 || ticket.status !== 'WAITING_BEADS_APPROVAL'}
             className="text-xs shrink-0"
           >
             {isApproving ? 'Approving...' : coverageWarning?.gaps.length ? 'Approve with gaps' : 'Approve'}
           </Button>
         </div>
+
+        {hasMalformedLines || hasUnrepresentableLines ? (
+          <div
+            role="status"
+            className="rounded-md border border-amber-300 bg-amber-50/70 px-3 py-2 text-xs text-amber-800 dark:border-amber-900/60 dark:bg-amber-950/20 dark:text-amber-200"
+          >
+            {hasMalformedLines ? (
+              <div>
+                {malformedLineSummary} could not be read as JSON and {malformedLines.length === 1 ? 'is' : 'are'} not in
+                the structured editor.
+              </div>
+            ) : null}
+            {hasUnrepresentableLines ? (
+              <div>
+                {unrepresentableLineSummary} {unrepresentableLines.length === 1 ? 'holds' : 'hold'} valid JSON that is
+                not a bead, so {unrepresentableLines.length === 1 ? 'it is' : 'they are'} not in the structured editor
+                either.
+              </div>
+            ) : null}
+            <div>
+              Open the JSONL tab to repair the file. Approving is blocked until every line reads as a bead.
+            </div>
+          </div>
+        ) : null}
 
         <PhaseArtifactsPanel
           phase={phase}
@@ -506,7 +646,36 @@ function BeadsApprovalPane({
           />
         ) : null}
 
-        {saveError ? <p className="text-xs text-red-500">{saveError}</p> : null}
+        {saveError ? (
+          <div className="flex items-center gap-2">
+            <p className="text-xs text-red-500">{saveError}</p>
+            {staleSave ? (
+              <Button
+                type="button"
+                variant="outline"
+                size="sm"
+                className="text-xs shrink-0"
+                onClick={() => {
+                  setStaleSave(false)
+                  setSaveError(null)
+                  // Rebased onto what lands, not merely refetched. The restore
+                  // effect runs once, so the drafts would otherwise keep the
+                  // refused bytes while the autosave re-anchored them to the
+                  // *new* hash — after which the next save passes the guard and
+                  // overwrites the file this reload just fetched.
+                  void refetchBeads().then((result) => {
+                    const next = result.data
+                    if (!next) return
+                    setJsonlDraft(next.rawContent)
+                    setStructuredDraft(next.beads.length > 0 ? parseBeadsForEditor(next.beads) : null)
+                  })
+                }}
+              >
+                Reload file
+              </Button>
+            ) : null}
+          </div>
+        ) : null}
         {approveError ? <p className="text-xs text-red-500">{approveError}</p> : null}
       </div>
 
@@ -563,6 +732,28 @@ function BeadsApprovalPane({
                     <div className="rounded-md border border-emerald-200 bg-emerald-50/70 px-3 py-2 text-xs text-emerald-700 dark:border-emerald-900/60 dark:bg-emerald-950/20 dark:text-emerald-200">
                       JSONL looks structurally valid.
                     </div>
+                  )}
+                </div>
+              ) : structuredEditorBlocked ? (
+                <div className="rounded-md border border-amber-300 bg-amber-50/70 px-3 py-2 text-xs text-amber-800 dark:border-amber-900/60 dark:bg-amber-950/20 dark:text-amber-200">
+                  {hasMalformedLines || hasUnrepresentableLines ? (
+                    <>
+                      The structured editor is unavailable while the tracker holds rows it cannot represent: it would
+                      contain only the beads it could read, and saving it would delete the rest. Repair the file in the
+                      JSONL tab instead, which opens on the file as stored.
+                    </>
+                  ) : hasUnstructuredGuidance ? (
+                    <>
+                      The structured editor has no field for context guidance written as free text, so saving from it
+                      would replace that text with empty lists. Edit {unstructuredGuidanceBeadIds.join(', ')} in the
+                      JSONL tab instead.
+                    </>
+                  ) : (
+                    <>
+                      The structured editor cannot read every test command on {unrepresentableCommandBeadIds.join(', ')}
+                      {' '}— an older form it does not model — and saving from it would drop them. Edit those beads in
+                      the JSONL tab instead.
+                    </>
                   )}
                 </div>
               ) : structuredDraft && structuredDraft.length > 0 ? (

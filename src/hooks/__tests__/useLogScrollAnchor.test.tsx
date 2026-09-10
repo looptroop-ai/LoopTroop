@@ -1,7 +1,7 @@
 import { act, render } from '@testing-library/react'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { useState } from 'react'
-import { useLogScrollAnchor, type LogScrollPagination } from '../useLogScrollAnchor'
+import { useLogScrollAnchor, type LogScrollAnchor, type LogScrollPagination } from '../useLogScrollAnchor'
 
 /**
  * jsdom reports zero for every scroll measurement, so the three the hook reads
@@ -30,12 +30,16 @@ function installGeometry() {
 
 interface HarnessState { isAtTop: boolean; isAutoScroll: boolean }
 
-function Harness({ pagination, onState, onViewport }: {
+function Harness({ pagination, onState, onViewport, onAnchor, ...options }: {
   pagination?: LogScrollPagination
   onState: (state: HarnessState) => void
   onViewport?: (node: HTMLDivElement | null) => void
+  onAnchor?: (anchor: LogScrollAnchor) => void
+  scrollToBottomOverride?: (behavior: ScrollBehavior) => boolean
+  rebindKey?: unknown
 }) {
-  const anchor = useLogScrollAnchor({ pagination })
+  const anchor = useLogScrollAnchor({ pagination, ...options })
+  onAnchor?.(anchor)
   onState({ isAtTop: anchor.isAtTop, isAutoScroll: anchor.isAutoScroll })
   return (
     <div
@@ -144,13 +148,64 @@ describe('useLogScrollAnchor', () => {
     expect(fetchOlder).not.toHaveBeenCalled()
   })
 
-  it('removes its scroll listener on unmount', () => {
-    const anchor = renderAnchor()
-    const remove = vi.spyOn(anchor.viewport, 'removeEventListener')
+  /**
+   * Records every `scroll` listener added to and removed from any element,
+   * through to the real implementation so behaviour is unchanged. Installed
+   * before the render, because the hook binds its listener during commit.
+   */
+  function trackScrollListeners() {
+    const added: EventListener[] = []
+    const removed: EventListener[] = []
+    // React binds its own delegated `scroll` listener to the render container,
+    // so only the viewport's own listeners are counted.
+    const isViewport = (node: HTMLElement) => node.dataset.testid === 'viewport'
+    const realAdd = HTMLElement.prototype.addEventListener
+    const realRemove = HTMLElement.prototype.removeEventListener
+    vi.spyOn(HTMLElement.prototype, 'addEventListener').mockImplementation(function (
+      this: HTMLElement, type: string, listener: EventListener, ...rest: unknown[]
+    ) {
+      if (type === 'scroll' && isViewport(this)) added.push(listener)
+      return (realAdd as unknown as (...args: unknown[]) => void).call(this, type, listener, ...rest)
+    } as unknown as typeof HTMLElement.prototype.addEventListener)
+    vi.spyOn(HTMLElement.prototype, 'removeEventListener').mockImplementation(function (
+      this: HTMLElement, type: string, listener: EventListener, ...rest: unknown[]
+    ) {
+      if (type === 'scroll' && isViewport(this)) removed.push(listener)
+      return (realRemove as unknown as (...args: unknown[]) => void).call(this, type, listener, ...rest)
+    } as unknown as typeof HTMLElement.prototype.removeEventListener)
+    return { added, removed }
+  }
 
-    anchor.unmount()
+  it('removes on unmount the very listener it added', () => {
+    // The pair matters, not the call count: `removeEventListener` given a
+    // different function object is a no-op, and the listener survives the
+    // unmount holding the detached node and the hook's state alive.
+    const listeners = trackScrollListeners()
+    const view = render(<Harness onState={() => {}} />)
 
-    expect(remove).toHaveBeenCalledWith('scroll', expect.any(Function))
+    view.unmount()
+
+    expect(listeners.added.length).toBeGreaterThan(0)
+    expect(listeners.removed).toEqual(listeners.added)
+  })
+
+  it('re-attaches the listener when rebindKey changes, and only then', () => {
+    // For a viewport node that is replaced without the hook unmounting: the
+    // listener lives on the node itself, so it has to move with it.
+    const listeners = trackScrollListeners()
+    const view = render(<Harness onState={() => {}} rebindKey="a" />)
+    const afterMount = listeners.added.length
+    expect(afterMount).toBeGreaterThan(0)
+
+    view.rerender(<Harness onState={() => {}} rebindKey="a" />)
+    expect(listeners.added).toHaveLength(afterMount)
+
+    view.rerender(<Harness onState={() => {}} rebindKey="b" />)
+    expect(listeners.added).toHaveLength(afterMount + 1)
+    // Every listener but the live one has been removed, in the order it was
+    // added: a rebind that added without removing would leak the old one onto
+    // the node, and both would answer the next scroll.
+    expect(listeners.removed).toEqual(listeners.added.slice(0, -1))
   })
 
   /**
@@ -273,5 +328,191 @@ describe('useLogScrollAnchor', () => {
     }
 
     expect(scrollAdds()).toBe(afterMount)
+  })
+  it('uses the caller\'s scroll override, and falls through when it declines', () => {
+    let anchor: LogScrollAnchor | undefined
+    const override = vi.fn(() => true)
+    const view = render(
+      <Harness onState={() => {}} onAnchor={(a) => { anchor = a }} scrollToBottomOverride={override} />,
+    )
+    const scrollTo = vi.spyOn(view.getByTestId('viewport'), 'scrollTo')
+
+    act(() => { anchor!.scheduleScrollToBottom('auto') })
+    expect(override).toHaveBeenCalledWith('auto')
+    expect(scrollTo).not.toHaveBeenCalled()
+
+    // `FullLogView` hands its virtualizer here and returns false when the
+    // virtualizer cannot do it, which has to reach the viewport instead.
+    override.mockReturnValue(false)
+    act(() => { anchor!.scheduleScrollToBottom('auto') })
+    expect(scrollTo).toHaveBeenCalled()
+  })
+
+  it('calls the override the caller passed on this render, not the one it mounted with', () => {
+    // The override is read through a ref written in a layout effect. Reading a
+    // stale one means scrolling a virtualizer that has since been replaced.
+    let anchor: LogScrollAnchor | undefined
+    const first = vi.fn(() => true)
+    const second = vi.fn(() => true)
+    const view = render(
+      <Harness onState={() => {}} onAnchor={(a) => { anchor = a }} scrollToBottomOverride={first} />,
+    )
+
+    view.rerender(
+      <Harness onState={() => {}} onAnchor={(a) => { anchor = a }} scrollToBottomOverride={second} />,
+    )
+    act(() => { anchor!.scheduleScrollToBottom('auto') })
+
+    expect(second).toHaveBeenCalledTimes(1)
+    expect(first).not.toHaveBeenCalled()
+  })
+
+  it('coalesces smooth scrolls into one frame, and cancels a pending one on unmount', () => {
+    const frames: FrameRequestCallback[] = []
+    const cancelled: number[] = []
+    vi.stubGlobal('requestAnimationFrame', (callback: FrameRequestCallback) => {
+      frames.push(callback)
+      return frames.length
+    })
+    vi.stubGlobal('cancelAnimationFrame', (handle: number) => { cancelled.push(handle) })
+
+    let anchor: LogScrollAnchor | undefined
+    const view = render(<Harness onState={() => {}} onAnchor={(a) => { anchor = a }} />)
+    const scrollTo = vi.spyOn(view.getByTestId('viewport'), 'scrollTo')
+
+    act(() => {
+      anchor!.scheduleScrollToBottom('smooth')
+      anchor!.scheduleScrollToBottom('smooth')
+    })
+    expect(frames).toHaveLength(2)
+    expect(cancelled).toEqual([1])
+
+    act(() => { frames[1]!(performance.now()) })
+    expect(scrollTo).toHaveBeenCalledTimes(1)
+
+    // A frame still pending when the surface goes away would scroll a detached
+    // node — or, before the cleanup existed, keep the closure alive.
+    act(() => { anchor!.scheduleScrollToBottom('smooth') })
+    view.unmount()
+    expect(cancelled).toEqual([1, 3])
+  })
+
+  it('drops a pending frame when an immediate scroll overtakes it', () => {
+    const frames: FrameRequestCallback[] = []
+    const cancelled: number[] = []
+    vi.stubGlobal('requestAnimationFrame', (callback: FrameRequestCallback) => {
+      frames.push(callback)
+      return frames.length
+    })
+    vi.stubGlobal('cancelAnimationFrame', (handle: number) => { cancelled.push(handle) })
+
+    let anchor: LogScrollAnchor | undefined
+    const view = render(<Harness onState={() => {}} onAnchor={(a) => { anchor = a }} />)
+    const scrollTo = vi.spyOn(view.getByTestId('viewport'), 'scrollTo')
+
+    act(() => {
+      anchor!.scheduleScrollToBottom('smooth')
+      anchor!.scheduleScrollToBottom('auto')
+    })
+
+    expect(cancelled).toEqual([1])
+    expect(scrollTo).toHaveBeenCalledTimes(1)
+    expect(scrollTo).toHaveBeenCalledWith(expect.objectContaining({ behavior: 'auto' }))
+  })
+
+  it('arms and disarms the pin on request, for a control that jumps to or away from the tail', () => {
+    let anchor: LogScrollAnchor | undefined
+    let state: HarnessState = { isAtTop: true, isAutoScroll: true }
+    render(
+      <Harness onState={(s) => { state = s }} onAnchor={(a) => { anchor = a }} />,
+    )
+
+    act(() => { anchor!.disableAutoScroll() })
+    expect(state.isAutoScroll).toBe(false)
+    // The ref is what effects read, and it must not lag the state.
+    expect(anchor!.autoScrollEnabledRef.current).toBe(false)
+
+    act(() => { anchor!.enableAutoScroll() })
+    expect(state.isAutoScroll).toBe(true)
+    expect(anchor!.autoScrollEnabledRef.current).toBe(true)
+  })
+
+  describe('the older-page anchor', () => {
+    function renderPaginated(shouldAnchor: () => boolean) {
+      let anchor: LogScrollAnchor | undefined
+      let viewport: HTMLDivElement | null = null
+      const pagination = {
+        enabled: true, hasOlder: true, isFetchingOlder: false,
+        fetchOlder: vi.fn(), shouldAnchor, loadedEntryCount: 0,
+      }
+      const view = render(
+        <Harness
+          pagination={pagination}
+          onState={() => {}}
+          onAnchor={(a) => { anchor = a }}
+          onViewport={(node) => { if (node) viewport = node }}
+        />,
+      )
+      const rerenderWith = (next: Partial<LogScrollPagination>) => view.rerender(
+        <Harness
+          pagination={{ ...pagination, ...next }}
+          onState={() => {}}
+          onAnchor={(a) => { anchor = a }}
+          onViewport={(node) => { if (node) viewport = node }}
+        />,
+      )
+      return { pagination, rerenderWith, get anchor() { return anchor! }, get viewport() { return viewport! } }
+    }
+
+    function reachTop(view: { viewport: HTMLDivElement }) {
+      geometry.scrollTop = 0
+      act(() => { view.viewport.dispatchEvent(new Event('scroll')) })
+    }
+
+    it('keeps the first visible row where it is when an older page lands', () => {
+      const view = renderPaginated(() => true)
+      reachTop(view)
+
+      // The older page is prepended, so the document grows above the viewport.
+      geometry.scrollHeight = 1600
+      view.rerenderWith({ loadedEntryCount: 50 })
+
+      expect(geometry.scrollTop).toBe(600)
+    })
+
+    it('does not restore an offset the caller declined to anchor', () => {
+      const view = renderPaginated(() => false)
+      reachTop(view)
+
+      geometry.scrollHeight = 1600
+      view.rerenderWith({ loadedEntryCount: 50 })
+
+      expect(geometry.scrollTop).toBe(0)
+    })
+
+    it('forgets the anchor when the caller jumps to the very top', () => {
+      // A jump to the top loads every older page at once; restoring whichever
+      // page happened to be anchored would undo the jump.
+      const view = renderPaginated(() => true)
+      reachTop(view)
+
+      act(() => { view.anchor.clearOlderPageAnchor() })
+      geometry.scrollHeight = 1600
+      view.rerenderWith({ loadedEntryCount: 50 })
+
+      expect(geometry.scrollTop).toBe(0)
+    })
+
+    it('waits for the fetch to settle before restoring the offset', () => {
+      const view = renderPaginated(() => true)
+      reachTop(view)
+
+      geometry.scrollHeight = 1600
+      view.rerenderWith({ loadedEntryCount: 50, isFetchingOlder: true })
+      expect(geometry.scrollTop).toBe(0)
+
+      view.rerenderWith({ loadedEntryCount: 50, isFetchingOlder: false })
+      expect(geometry.scrollTop).toBe(600)
+    })
   })
 })

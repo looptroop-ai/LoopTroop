@@ -8,7 +8,6 @@ import { literalPathspec, REPO_SCOPE_PATHSPECS } from '../../git/pathspecs'
 import { runGitSync, runGitSyncOrThrow } from '../../git/runCommand'
 import {
   buildGeneratedNoiseWarning,
-  classifyWorktreePath,
   getExecutionSetupCommitExcludedRoots,
   summarizeWorktreeChanges,
 } from '../../git/worktreeChanges'
@@ -17,28 +16,12 @@ interface ResetWorktreeOptions {
   preservePaths?: string[]
 }
 
-interface FileAllowOptions {
-  excludedRoots?: string[]
-  untracked?: boolean
-}
-
 export const WORKTREE_RESET_PRESERVE_PATHS = [
   '.ticket',
 ] as const
 
 export { getExecutionSetupCommitExcludedRoots } from '../../git/worktreeChanges'
 import { normalizeRepoPath } from '../../git/worktreeChanges'
-
-export function isAllowedFile(path: string, options: FileAllowOptions = {}): boolean {
-  return classifyWorktreePath(path, {
-    setupExcludedRoots: options.excludedRoots,
-    untracked: options.untracked ?? true,
-  }).category === 'committable'
-}
-
-export function filterAllowedFiles(files: string[], options: FileAllowOptions = {}): string[] {
-  return files.filter((file) => isAllowedFile(file, options))
-}
 
 function runGitOp(worktreePath: string, args: string[]): string {
   return runGitSyncOrThrow(worktreePath, args)

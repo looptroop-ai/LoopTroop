@@ -1315,6 +1315,32 @@ items:
     expect(screen.getAllByText('Markdown Fence Unwrap')).toHaveLength(2)
   })
 
+  it('shows nothing for guidance that is present and empty, rather than dumping it', () => {
+    // Every structured save writes `{ patterns: [], anti_patterns: [] }`, so a
+    // bead with no guidance carries that record. Falling through to the JSON
+    // dump showed the reader an empty object instead of an absent section — the
+    // dump is for a value the reader could not make sense of.
+    render(
+      <ArtifactContent
+        artifactId="empty-guidance-beads"
+        phase="WAITING_BEADS_APPROVAL"
+        content={JSON.stringify({
+          winnerId: 'openai/gpt-5.2',
+          refinedContent: buildBeadsDraftContent({
+            title: 'Carries an empty guidance record',
+            guidance: { patterns: [], anti_patterns: [] },
+          }),
+        })}
+      />,
+    )
+
+    fireEvent.click(screen.getByText('Carries an empty guidance record').closest('button')!)
+
+    expect(screen.queryByText('Patterns')).not.toBeInTheDocument()
+    expect(screen.queryByText(/"anti_patterns"/)).not.toBeInTheDocument()
+    expect(screen.queryByText(/Context Guidance/)).not.toBeInTheDocument()
+  })
+
   it('keeps legacy string bead guidance working for final bead drafts', () => {
     render(
       <ArtifactContent

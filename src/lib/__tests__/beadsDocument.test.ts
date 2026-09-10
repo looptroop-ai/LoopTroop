@@ -1,5 +1,21 @@
 import { describe, it, expect, vi, afterEach } from 'vitest'
-import { countBeadsInContent, parseBeadsArtifact } from '../beadsDocument'
+import {
+  BEAD_FIELD_ALIASES,
+  countBeadsInContent,
+  normalizeBead,
+  parseBeadsArtifact,
+  readBeadDependencies,
+  readBeadNumber,
+  readBeadString,
+  readBeadStringList,
+  readBeadValue,
+  hasUnrepresentableBeadCommands,
+  hasUnstructuredBeadGuidance,
+  type NormalizedBead,
+  stripSupersededBeadAliases,
+  SUPERSEDED_BEAD_FIELD_ALIASES,
+  type RawBead,
+} from '../beadsDocument'
 
 afterEach(() => {
   vi.restoreAllMocks()
@@ -121,5 +137,370 @@ describe('countBeadsInContent', () => {
     countBeadsInContent('[null, 42, {"id":"B-1"}]')
 
     expect(warn).not.toHaveBeenCalled()
+  })
+})
+
+/**
+ * One alias table, two reading policies.
+ *
+ * The alias lists used to be written out at every call site — about twenty in
+ * the artifact viewer, a dozen more in the approval editor's normalizer — and
+ * had already drifted apart. What the two sides must *not* share is the
+ * whitespace policy: a view trims, an editor gives back what is stored.
+ */
+describe('the bead field readers', () => {
+  it('prefers the first spelling and falls back through the rest', () => {
+    expect(readBeadString({ prd_refs: [] , title: 'camel' }, 'title', 'display')).toBe('camel')
+    expect(readBeadStringList({ prdRefs: ['a'], prd_refs: ['b'], prd_references: ['c'] }, 'prdRefs', 'display'))
+      .toEqual(['a'])
+    expect(readBeadStringList({ prd_refs: ['b'], prd_references: ['c'] }, 'prdRefs', 'display')).toEqual(['b'])
+    expect(readBeadStringList({ prd_references: ['c'] }, 'prdRefs', 'display')).toEqual(['c'])
+  })
+
+  it('reads the camelCase dependency spelling, which only the editor used to accept', () => {
+    // The divergence this table exists to end: a bead written with `blockedBy`
+    // showed its dependencies on the approval screen and none in the artifact
+    // view.
+    expect(readBeadDependencies({ dependencies: { blockedBy: ['B-1'], blocks: ['B-2'] } }, 'display'))
+      .toEqual({ blocked_by: ['B-1'], blocks: ['B-2'] })
+    expect(readBeadDependencies({ dependencies: { blocked_by: ['B-1'] } }, 'display'))
+      .toEqual({ blocked_by: ['B-1'], blocks: [] })
+  })
+
+  it.each([
+    ['a dependencies field that is not an object', { dependencies: 'none' } as unknown as RawBead],
+    ['a dependencies array', { dependencies: [] } as unknown as RawBead],
+    ['no dependencies at all', {} as RawBead],
+  ])('reads empty lists from %s', (_, bead) => {
+    expect(readBeadDependencies(bead, 'display')).toEqual({ blocked_by: [], blocks: [] })
+  })
+
+  it('trims for display and keeps the text exactly for an editor', () => {
+    const bead = { title: '  spaced  ', tests: ['  a  ', '   ', 'b'] }
+
+    expect(readBeadString(bead, 'title', 'display')).toBe('spaced')
+    expect(readBeadString(bead, 'title', 'verbatim')).toBe('  spaced  ')
+    expect(readBeadStringList(bead, 'tests', 'display')).toEqual(['a', 'b'])
+    expect(readBeadStringList(bead, 'tests', 'verbatim')).toEqual(['  a  ', '   ', 'b'])
+  })
+
+  it('skips a blank value for display but not for an editor', () => {
+    // A stored `title: "  "` is not a title on screen; in the editor it is
+    // what the person typed and has to come back unchanged.
+    const bead = { title: '   ', description: 42 } as unknown as RawBead
+
+    expect(readBeadString(bead, 'title', 'display')).toBe('')
+    expect(readBeadString(bead, 'title', 'verbatim')).toBe('   ')
+    expect(readBeadString(bead, 'description', 'display')).toBe('')
+  })
+
+  it('drops list entries that are not strings, under either policy', () => {
+    const bead = { tests: ['a', null, 7, 'b'] } as unknown as RawBead
+
+    expect(readBeadStringList(bead, 'tests', 'display')).toEqual(['a', 'b'])
+    expect(readBeadStringList(bead, 'tests', 'verbatim')).toEqual(['a', 'b'])
+  })
+
+  it('reads a finite number and nothing else', () => {
+    expect(readBeadNumber({ priority: 3 }, 'priority')).toBe(3)
+    expect(readBeadNumber({ priority: 0 }, 'priority')).toBe(0)
+    expect(readBeadNumber({ priority: Number.NaN }, 'priority')).toBeNull()
+    expect(readBeadNumber({ priority: '3' } as unknown as RawBead, 'priority')).toBeNull()
+    expect(readBeadNumber({}, 'priority')).toBeNull()
+  })
+
+  it('hands the whole value back for the fields a renderer judges itself', () => {
+    const origin = { sourceItems: [] } as unknown as NonNullable<RawBead['qaOrigin']>
+
+    expect(readBeadValue({ qa_origin: origin }, 'qaOrigin')).toBe(origin)
+    // A stored `null` is not a value: the next spelling has to be tried.
+    expect(readBeadValue({ qaOrigin: null, qa_origin: origin }, 'qaOrigin')).toBe(origin)
+    expect(readBeadValue({}, 'qaOrigin')).toBeUndefined()
+  })
+
+  it('lists the canonical spelling first for every field', () => {
+    // The canonical name is the key, so a table whose first alias was not the
+    // key would make the readers and the normalized shape disagree.
+    for (const [field, aliases] of Object.entries(BEAD_FIELD_ALIASES)) {
+      expect(aliases[0]).toBe(field)
+    }
+  })
+})
+
+describe('normalizeBead', () => {
+  it('reads every aliased field onto its canonical name', () => {
+    const normalized = normalizeBead({
+      id: 'B-1',
+      title: 'Title',
+      prd_refs: ['PRD-1'],
+      acceptance_criteria: ['AC-1'],
+      test_commands: [{ mode: 'shell', shell: 'posix', script: 'npm test' }],
+      test_command_reason: 'why',
+      target_files: ['src/app.ts'],
+      context_guidance: { patterns: ['p'], antiPatterns: ['a'] },
+      dependencies: { blockedBy: ['B-0'], blocks: [] },
+    } as never, 'display')
+
+    expect(normalized).toMatchObject({
+      id: 'B-1',
+      prdRefs: ['PRD-1'],
+      acceptanceCriteria: ['AC-1'],
+      testCommandReason: 'why',
+      targetFiles: ['src/app.ts'],
+      contextGuidance: { patterns: ['p'], anti_patterns: ['a'] },
+      dependencies: { blocked_by: ['B-0'], blocks: [] },
+    })
+    expect(normalized.testCommands).toHaveLength(1)
+  })
+
+  it('fills in every field the editor writes to, even for a bare bead', () => {
+    const normalized = normalizeBead({ id: 'B-1' }, 'verbatim')
+
+    expect(normalized).toMatchObject({
+      title: '',
+      description: '',
+      prdRefs: [],
+      acceptanceCriteria: [],
+      tests: [],
+      testCommands: [],
+      targetFiles: [],
+      contextGuidance: { patterns: [], anti_patterns: [] },
+      dependencies: { blocked_by: [], blocks: [] },
+    })
+  })
+
+  it('keeps fields it does not know, which the save path writes back', () => {
+    const normalized = normalizeBead({ id: 'B-1', somethingNew: { kept: true } }, 'verbatim')
+
+    expect(normalized.somethingNew).toEqual({ kept: true })
+  })
+
+  it('omits a test command reason that is not there', () => {
+    expect(normalizeBead({ id: 'B-1' }, 'display').testCommandReason).toBeUndefined()
+  })
+
+  it('drops every command entry that is not a command spec, bare strings included', () => {
+    // The schema is the contract the command runner reads; a bare string is
+    // an older shape it cannot execute, so it is dropped rather than guessed at.
+    const normalized = normalizeBead({
+      id: 'B-1',
+      testCommands: ['npm test', null, { mode: 'nonsense' }, { mode: 'shell', shell: 'posix', script: 'npm test' }],
+    } as never, 'display')
+
+    expect(normalized.testCommands).toEqual([
+      expect.objectContaining({ mode: 'shell', script: 'npm test' }),
+    ])
+  })
+})
+
+describe('the superseded spellings', () => {
+  it('lists every alias that is not the canonical name, and no canonical name', () => {
+    expect(SUPERSEDED_BEAD_FIELD_ALIASES).toContain('prd_refs')
+    expect(SUPERSEDED_BEAD_FIELD_ALIASES).toContain('context_guidance')
+    expect(SUPERSEDED_BEAD_FIELD_ALIASES).not.toContain('prdRefs')
+    for (const field of Object.keys(BEAD_FIELD_ALIASES)) {
+      expect(SUPERSEDED_BEAD_FIELD_ALIASES).not.toContain(field)
+    }
+  })
+
+  it('drops them and keeps everything else', () => {
+    // What a save writes: each field once. The superseded copy held the
+    // pre-edit value, so a reader preferring that spelling saw the edit undone.
+    expect(stripSupersededBeadAliases({
+      id: 'B-1',
+      prdRefs: ['NEW'],
+      prd_refs: ['OLD'],
+      contextGuidance: { patterns: [], anti_patterns: [] },
+      context_guidance: { patterns: ['stale'] },
+      somethingUnknown: { kept: true },
+    } as unknown as RawBead)).toEqual({
+      id: 'B-1',
+      prdRefs: ['NEW'],
+      contextGuidance: { patterns: [], anti_patterns: [] },
+      somethingUnknown: { kept: true },
+    })
+  })
+
+  it('treats a canonical null as carrying nothing, so the other spelling survives', () => {
+    // `null` is what a writer leaves when it clears a field, and every reader
+    // reads it as absent. Counting it as "the canonical name has this" deleted
+    // the value the record actually holds.
+    expect(stripSupersededBeadAliases({
+      id: 'B-1',
+      qaOrigin: null,
+      qa_origin: { sourceItems: [] },
+    } as unknown as RawBead)).toEqual({
+      id: 'B-1',
+      qaOrigin: null,
+      qa_origin: { sourceItems: [] },
+    })
+  })
+
+  it('keeps a spelling that is the only copy of its value', () => {
+    // The editor normalizes the fields it edits and nothing else, so a record
+    // storing only `started_at`, `bead_start_commit` or `qa_origin` has no
+    // canonical copy to fall back on. Dropping those on save erased the commit
+    // a safe reset depends on.
+    const onlySnakeCase = {
+      id: 'B-1',
+      started_at: '2026-01-01T00:00:00.000Z',
+      bead_start_commit: 'abc123',
+      qa_origin: { sourceItems: [] },
+    } as unknown as RawBead
+
+    expect(stripSupersededBeadAliases(onlySnakeCase)).toEqual(onlySnakeCase)
+  })
+})
+
+describe('hasUnstructuredBeadGuidance', () => {
+  it.each([
+    ['guidance written as free text', { contextGuidance: 'Patterns: do X; avoid Y' }],
+    ['the same under the other spelling', { context_guidance: 'Patterns: do X' }],
+  ])('reports %s', (_, bead) => {
+    expect(hasUnstructuredBeadGuidance(bead as RawBead)).toBe(true)
+  })
+
+  it.each([
+    ['a list of guidance strings', { contextGuidance: ['a', 'b'] }],
+    ['a record whose lists are not lists', { contextGuidance: { patterns: 'do X' } }],
+    ['a record holding a key the editor has no field for', { contextGuidance: { rationale: 'because' } }],
+    ['a list holding something that is not a string', { contextGuidance: { patterns: [1] } }],
+    ['free text under the other spelling of a structured record', {
+      contextGuidance: { patterns: [], anti_patterns: [] },
+      context_guidance: 'free text',
+    }],
+  ])('reports %s', (_, bead) => {
+    // Everything here reads as empty pattern lists in the editor and is written
+    // back as empty lists on save: the same silent replacement, one shape deeper
+    // each time.
+    expect(hasUnstructuredBeadGuidance(bead as RawBead)).toBe(true)
+  })
+
+  it.each([
+    ['a structured guidance object', { contextGuidance: { patterns: ['p'], anti_patterns: [] } }],
+    ['the same under the camelCase anti-pattern spelling', { contextGuidance: { antiPatterns: ['a'] } }],
+    ['an empty guidance object', { contextGuidance: {} }],
+    ['guidance explicitly cleared', { contextGuidance: null }],
+    ['no guidance at all', {}],
+  ])('does not report %s', (_, bead) => {
+    expect(hasUnstructuredBeadGuidance(bead as RawBead)).toBe(false)
+  })
+})
+
+describe('normalizeBead reads the read-only metadata fields too', () => {
+  it('resolves issueType and externalRef from either spelling', () => {
+    // The editor renders these straight off the record, so a bead stored with
+    // the snake_case spelling read as a default there while the artifact view
+    // showed the real value.
+    const normalized = normalizeBead({ id: 'B-1', issue_type: 'bug', external_ref: 'LOO-9' } as never, 'display')
+
+    expect(normalized.issueType).toBe('bug')
+    expect(normalized.externalRef).toBe('LOO-9')
+  })
+})
+
+describe('the client parser numbers lines the way the server does', () => {
+  it('reports a damaged line at its position in the file, blank lines counted', () => {
+    // The server reports these numbers in `X-Malformed-Lines`, and an operator
+    // opens the file at them. A client warning naming a different line for the
+    // same content sends them to the wrong place.
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {})
+
+    parseBeadsArtifact(['', '', '{"id":"B-1"}', 'not json'].join('\n'))
+
+    expect(warn).toHaveBeenCalledWith(expect.stringContaining('line 4'))
+  })
+})
+
+describe('what a structured save writes back', () => {
+  /** The save path, as `ApprovalView.buildBeadForSave` composes it. */
+  function buildBeadForSave(bead: NormalizedBead): Record<string, unknown> {
+    const { contextGuidance, dependencies, acceptanceCriteria, testCommands, testCommandReason, targetFiles, prdRefs, ...rest } = bead
+    return stripSupersededBeadAliases({
+      ...rest,
+      acceptanceCriteria,
+      testCommands,
+      ...(testCommands.length === 0 && testCommandReason ? { testCommandReason } : {}),
+      targetFiles,
+      prdRefs,
+      contextGuidance: { patterns: contextGuidance.patterns, anti_patterns: contextGuidance.anti_patterns },
+      dependencies: { blocked_by: dependencies.blocked_by, blocks: dependencies.blocks },
+    } as NormalizedBead) as Record<string, unknown>
+  }
+
+  it('keeps runtime metadata the editor never touches, in whichever spelling it was stored', () => {
+    const saved = buildBeadForSave(normalizeBead({
+      id: 'B-1',
+      started_at: '2026-01-01T00:00:00.000Z',
+      bead_start_commit: 'abc123',
+      qa_origin: { sourceItems: [] },
+    } as never, 'verbatim'))
+
+    expect(saved).toMatchObject({
+      started_at: '2026-01-01T00:00:00.000Z',
+      bead_start_commit: 'abc123',
+      qa_origin: { sourceItems: [] },
+    })
+  })
+
+  it('writes an edited field once, dropping the spelling it superseded', () => {
+    const saved = buildBeadForSave(normalizeBead({ id: 'B-1', prd_refs: ['OLD'] } as never, 'verbatim'))
+
+    expect(saved.prdRefs).toEqual(['OLD'])
+    expect(saved).not.toHaveProperty('prd_refs')
+  })
+
+  it('adds no empty metadata to a bead that carried none', () => {
+    const saved = buildBeadForSave(normalizeBead({ id: 'B-1' } as never, 'verbatim'))
+
+    expect(saved).not.toHaveProperty('issueType')
+    expect(saved).not.toHaveProperty('externalRef')
+    expect(saved).not.toHaveProperty('testCommandReason')
+  })
+})
+
+describe('a tracker whose damage comes first', () => {
+  it('keeps the beads after a damaged opening line', () => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {})
+
+    // Recognising JSONL by the document's first character hid every intact
+    // bead behind a damaged first line — the failure the whole repair flow
+    // exists to prevent, in the one reader that decides whether there is a
+    // bead artifact at all.
+    expect(parseBeadsArtifact('not json\n{"id":"B-1","title":"Intact"}\n'))
+      .toEqual([expect.objectContaining({ id: 'B-1' })])
+    expect(warn).toHaveBeenCalledWith(expect.stringContaining('line 1'))
+  })
+
+  it('still reads ordinary text as no bead artifact at all', () => {
+    expect(parseBeadsArtifact('This is a paragraph about beads.\nAnd another line.\n')).toBeNull()
+  })
+})
+
+describe('hasUnrepresentableBeadCommands', () => {
+  const shellCommand = { mode: 'shell', shell: 'posix', script: 'npm test' }
+
+  it.each([
+    ['a bare-string command, the form older trackers carry', ['npm test']],
+    ['one legacy command beside a modelled one', [shellCommand, 'npm test']],
+    ['a command that is not a command at all', [null]],
+    ['a commands field that is not a list', 'npm test'],
+  ])('reports %s', (_, testCommands) => {
+    // The editor reads commands through the schema and drops what it refuses.
+    // The runtime still accepts the bare-string form and migrates it once it
+    // knows the host's shell — the browser cannot, so it must not delete them.
+    expect(hasUnrepresentableBeadCommands({ id: 'B-1', testCommands } as never)).toBe(true)
+  })
+
+  it.each([
+    ['commands the schema accepts', [shellCommand]],
+    ['an empty command list', []],
+    ['no commands at all', undefined],
+  ])('does not report %s', (_, testCommands) => {
+    expect(hasUnrepresentableBeadCommands({ id: 'B-1', testCommands } as never)).toBe(false)
+  })
+
+  it('looks under the older spelling too', () => {
+    expect(hasUnrepresentableBeadCommands({ id: 'B-1', test_commands: ['npm test'] } as never)).toBe(true)
   })
 })

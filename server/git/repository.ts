@@ -120,7 +120,7 @@ export function ensureLocalGitExclude(projectPath: string, rules: string | reado
 }
 
 /** Writes the rules into the repository's own .gitignore, so clones inherit them. */
-export function ensureRepoGitignore(projectPath: string, rules: readonly string[] = LOOP_TROOP_EXCLUDE_RULES) {
+function ensureRepoGitignore(projectPath: string, rules: readonly string[] = LOOP_TROOP_EXCLUDE_RULES) {
   appendIgnoreRules(resolve(projectPath, '.gitignore'), rules)
 }
 

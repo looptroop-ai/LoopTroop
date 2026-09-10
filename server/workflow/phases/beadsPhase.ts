@@ -14,6 +14,7 @@ import type { Message, PromptPart, StreamEvent } from '../../opencode/types'
 import { getLatestPhaseArtifact, getTicketByRef, getTicketPaths, insertPhaseArtifact, patchTicket, resolvePhaseAttempt } from '../../storage/tickets'
 import { writeJsonl } from '../../io/jsonl'
 import { readBeadsFile } from '../../phases/beads/beadsFile'
+import { compareBeadRecoveryOrder } from '../../phases/beads/recoveryOrder'
 import { buildStructuredRetryPrompt, normalizeBeadSubsetYamlOutput, normalizeBeadsJsonlOutput } from '../../structuredOutput'
 import {
   validateBeadsRefinementOutput,
@@ -865,7 +866,7 @@ export async function handleBeadsRefine(
   sendEvent({ type: 'REFINED' })
 }
 
-export function getBeadsPath(ticketId: string): string {
+function getBeadsPath(ticketId: string): string {
   const paths = getTicketPaths(ticketId)
   if (!paths) throw new Error(`Ticket workspace not initialized: missing ticket paths for ${ticketId}`)
   return paths.beadsPath
@@ -882,33 +883,6 @@ export function writeTicketBeads(ticketId: string, beads: Bead[]) {
     upsertBeadsApprovalSnapshot(ticketId)
   }
   syncTicketRuntimeProjection(ticketId)
-}
-
-function compareErroredBeads(left: Bead, right: Bead) {
-  const leftUpdatedAt = Date.parse(left.updatedAt || left.startedAt || left.completedAt || '')
-  const rightUpdatedAt = Date.parse(right.updatedAt || right.startedAt || right.completedAt || '')
-
-  if (!Number.isNaN(leftUpdatedAt) || !Number.isNaN(rightUpdatedAt)) {
-    if (Number.isNaN(leftUpdatedAt)) return 1
-    if (Number.isNaN(rightUpdatedAt)) return -1
-    return rightUpdatedAt - leftUpdatedAt
-  }
-
-  return right.iteration - left.iteration
-}
-
-export function recoverFailedCodingBead(ticketId: string): Bead | null {
-  const beads = readTicketBeads(ticketId)
-  const failedBead = [...beads]
-    .filter((bead) => bead.status === 'error')
-    .sort(compareErroredBeads)[0]
-    ?? [...beads]
-      .filter((bead) => bead.status === 'in_progress')
-      .sort(compareErroredBeads)[0]
-
-  if (!failedBead) return null
-
-  return recoverCodingBead(ticketId, beads, failedBead)
 }
 
 export function recoverCodingBeadWithReset(
@@ -931,7 +905,7 @@ export function recoverCodingBeadWithReset(
         ...beads.filter((bead) => bead.status === 'error'),
         ...beads.filter((bead) => bead.status === 'in_progress'),
       ]
-  const failedBead = [...candidates].sort(compareErroredBeads)[0]
+  const failedBead = [...candidates].sort(compareBeadRecoveryOrder)[0]
   if (!failedBead) return null
 
   if (!failedBead.beadStartCommit) {

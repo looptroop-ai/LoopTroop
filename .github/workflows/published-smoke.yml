@@ -231,7 +231,7 @@ jobs:
               # the step installs. Legal here only because the install is
               # global: npm 12 rejects the flag outright on a project-scoped
               # install.
-              npm install --global --allow-scripts="${pin%%=*}" "${pin#*=}"
+              npm install --global --allow-scripts="${pin#*=}" "${pin#*=}"
               installed="${pin#*=}"
             fi
           done
@@ -338,7 +338,8 @@ jobs:
         env:
           GITHUB_TOKEN: ''
           GH_TOKEN: ''
-        run: npm install --global --allow-scripts=opencode-ai opencode-ai
+        # Maintained manually: update both versions together after reviewing install scripts.
+        run: npm install --global --allow-scripts=opencode-ai@1.18.21 opencode-ai@1.18.21
 
       - name: Confirm OpenCode is on PATH
         if: matrix.opencode != 'mock' && matrix.opencode != 'none'

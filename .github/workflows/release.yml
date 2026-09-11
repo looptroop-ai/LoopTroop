@@ -265,7 +265,7 @@ jobs:
       # macOS ships bsdtar as `tar`, which rejects the reproducible flags.
       - name: Install GNU tar
         if: runner.os == 'macOS'
-        run: brew install gnu-tar
+        run: brew list --versions gnu-tar >/dev/null || brew install gnu-tar
 
       - name: Build the binary
         run: node scripts/build-binary.mjs --out "${{ runner.temp }}/binary"
@@ -796,7 +796,7 @@ jobs:
 
       - name: Pin npm
         run: |
-          npm install --global npm@12.0.2
+          npm install --global --ignore-scripts npm@12.0.2
           npm --version
 
       - name: Download the release artefacts
@@ -978,7 +978,7 @@ jobs:
           node-version: 24.18.1
 
       - name: Pin npm
-        run: node -e "require('node:child_process').execSync('npm install --global npm@12.0.2',{stdio:'inherit'})"
+        run: node scripts/pin-npm.mjs
 
       # `--profile gate` keeps this exactly as large as it was: install, version,
       # and the doctor checks. Deliberately NOT the full lifecycle the published
@@ -1242,7 +1242,7 @@ jobs:
             exit 1
           fi
 
-          docker buildx build \
+          tar -cf - Dockerfile "${TARBALL}" | docker buildx build \
             --platform "${PLATFORM}" \
             --build-arg TARBALL="${TARBALL}" \
             --build-arg VERSION="${VERSION}" \
@@ -1251,7 +1251,7 @@ jobs:
             --output "type=image,name=${DH_IMAGE},push-by-digest=true,name-canonical=true,push=true" \
             --output "type=image,name=${GHCR_IMAGE},push-by-digest=true,name-canonical=true,push=true" \
             --metadata-file /tmp/meta.json \
-            .
+            -
 
       # Both exporters push identical manifest bytes, so both registries report
       # the same digest and buildx collapses them into one metadata key. That is
@@ -2312,5 +2312,4 @@ jobs:
         run: |
           echo "::error::Release stages failed:${{ steps.compose.outputs.failed }}"
           exit 1
-
 

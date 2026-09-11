@@ -519,6 +519,34 @@ export async function streamBody(response, limit, what, write, touch) {
   return total
 }
 
+/** Fetches installer metadata or bytes without sending any request over an insecure redirect. */
+export async function fetchInstallerUrl(url, { headers, signal } = {}) {
+  let current = new URL(url)
+  const fixture = process.env.LOOPTROOP_INSTALL_API ? new URL(process.env.LOOPTROOP_INSTALL_API) : null
+  const fixtureOrigin = fixture?.protocol === 'http:'
+    && (fixture.hostname === 'localhost' || fixture.hostname === '[::1]' || /^127\.\d+\.\d+\.\d+$/.test(fixture.hostname))
+    ? fixture.origin : null
+  const requestHeaders = new Headers(headers)
+  let usedHttps = false
+  for (let redirects = 0; ; redirects++) {
+    if (current.protocol !== 'https:' && (usedHttps || current.protocol !== 'http:' || current.origin !== fixtureOrigin)) {
+      throw new Error('Installer downloads require HTTPS; insecure URLs and redirects are refused.')
+    }
+    usedHttps ||= current.protocol === 'https:'
+    // The HTTP loopback exception is for fixtures, never for credentials.
+    if (current.protocol === 'http:') requestHeaders.delete('authorization')
+    const response = await fetch(current, { headers: requestHeaders, signal, redirect: 'manual' })
+    if (![301, 302, 303, 307, 308].includes(response.status)) return response
+    const location = response.headers.get('location')
+    if (location === null) return response
+    await response.body?.cancel()
+    if (redirects === 20) throw new Error('Installer download exceeded 20 redirects.')
+    const next = new URL(location, current)
+    if (next.origin !== current.origin) requestHeaders.delete('authorization')
+    current = next
+  }
+}
+
 async function getJson(url) {
   const headers = { accept: 'application/vnd.github+json', 'user-agent': 'looptroop-installer' }
   // Only to lift the 60-per-hour anonymous rate limit when one happens to be
@@ -530,7 +558,7 @@ async function getJson(url) {
   try {
     let response
     try {
-      response = await fetch(url, { headers, signal: guard.signal })
+      response = await fetchInstallerUrl(url, { headers, signal: guard.signal })
     } catch (error) {
       fail('Could not reach GitHub.', guard.reason() ?? String(error.message ?? error), 'Check your network and try again.')
     }
@@ -566,9 +594,8 @@ async function download(url, destination) {
   try {
     let response
     try {
-      response = await fetch(url, {
+      response = await fetchInstallerUrl(url, {
         headers: { 'user-agent': 'looptroop-installer' },
-        redirect: 'follow',
         signal: guard.signal,
       })
     } catch (error) {
@@ -1816,25 +1843,12 @@ function extractArchive(archive, into) {
   )
 }
 
-/**
- * Runs `action` with nobody else installing into `dir` at the same time.
- *
- * Two installers in one directory is not hypothetical — a user re-running a
- * curl pipe because the first looked stuck is exactly how it happens — and the
- * interleaving that costs you is one process renaming the backup into place
- * while the other is mid-swap, which ends with no working executable at all.
- *
- * A lock left by a killed process would otherwise wedge the directory forever,
- * so one older than the longest plausible install is taken rather than obeyed.
- */
-function withInstallLock(dir, action) {
+/** Runs a synchronous install while holding its directory lock. */
+export function withInstallLock(dir, action) {
   const lock = join(dir, '.install.lock')
+  const claim = `${lock}.claim`
   const STALE_AFTER = 15 * 60 * 1000
-  // Not the pid: pids are reused, and two installers started a second apart on
-  // a busy machine can hold the same one after a wrap. A token nobody else can
-  // reproduce makes "is this still my lock?" answerable.
   const token = `${process.pid}-${randomUUID()}`
-
   const take = () => {
     writeFileSync(lock, `${token} ${new Date().toISOString()}\n`, { flag: 'wx' })
   }
@@ -1846,81 +1860,71 @@ function withInstallLock(dir, action) {
     }
   }
 
-  /**
-   * Clears a lock left by a killed run, or refuses.
-   *
-   * The obvious version — see it is old, delete it, create a new one — is not
-   * safe with two installers in the directory: both see the same stale lock,
-   * both delete it, both create one, and the second deletes the first's *new*
-   * lock on its way past. Both then believe they hold it.
-   *
-   * `rename` is the fix, because exactly one process can rename a given file:
-   * whoever wins takes custody of the old lock and the losers get ENOENT and
-   * fall through to `take()`, where `wx` decides between them. Custody also
-   * makes the staleness test sound — the age is read from a file nobody else
-   * can still be touching — and a lock that turns out to be fresh is renamed
-   * back rather than destroyed.
-   */
   const clearStaleLock = () => {
-    const observed = statSync(lock, { throwIfNoEntry: false })
-    if (observed === undefined) return
-    if (Date.now() - observed.mtimeMs < STALE_AFTER) {
-      fail(
-        'Another install is already running in this directory.',
-        `Its lock is at ${lock}.`,
-        'Wait for it to finish, or delete that file if you are sure nothing is running.',
-      )
-    }
-
-    const aside = `${lock}.stale-${token}`
+    let observed
+    let owner
     try {
-      renameSync(lock, aside)
+      observed = statSync(lock)
+      owner = readFileSync(lock, 'utf8')
     } catch (error) {
-      // Somebody else got there first. Their `take()` and ours now race on
-      // `wx`, which is exactly the outcome this is trying to reach.
+      // The previous install may have finished while we were acquiring.
       if (error.code === 'ENOENT') return
       throw error
     }
-
-    const owned = statSync(aside, { throwIfNoEntry: false })
-    const age = Date.now() - (owned?.mtimeMs ?? 0)
-    if (owned !== undefined && age < STALE_AFTER) {
-      // It was refreshed between the check above and the rename, so it belongs
-      // to a live install after all. Put it back before refusing.
-      renameSync(aside, lock)
+    const age = Date.now() - observed.mtimeMs
+    const pid = Number(/^([1-9]\d*)-/.exec(owner)?.[1])
+    let alive = true
+    if (Number.isSafeInteger(pid)) {
+      try {
+        // A PID proves only that a process exists, not that it is the owner:
+        // reuse stays blocked. Recovery assumes one host and PID namespace.
+        process.kill(pid, 0)
+      } catch (error) {
+        // Permission errors and unknown failures cannot prove the owner died.
+        alive = error.code !== 'ESRCH'
+      }
+    }
+    if (age < STALE_AFTER || alive) {
       fail(
-        'Another install is already running in this directory.',
+        'Another install is already running in this directory, or its owner cannot be checked (the recorded PID may have been reused).',
         `Its lock is at ${lock}.`,
         'Wait for it to finish, or delete that file if you are sure nothing is running.',
       )
     }
-
     say(`Clearing a stale install lock (${Math.round(age / 60000)} minutes old).`)
-    discard(aside)
+    rmSync(lock)
   }
 
+  // Every acquisition holds this claim while inspecting/removing the old lock
+  // and creating its replacement. Renaming a stale lock let another contender
+  // rename a *new* owner's lock and briefly admit a third installer.
+  // ponytail: a crash during acquisition leaves the claim for manual cleanup;
+  // automatic claim recovery needs an OS lock, not another age-based takeover.
   try {
-    take()
+    writeFileSync(claim, `${token}\n`, { flag: 'wx' })
   } catch (error) {
     if (error.code !== 'EEXIST') throw error
-    clearStaleLock()
+    fail(
+      'Another installer is acquiring or recovering the install lock.',
+      `Its recovery lock is at ${claim}.`,
+      'Wait and retry. If it persists, confirm no installer is running before deleting that file.',
+    )
+  }
+  try {
     try {
       take()
-    } catch (retry) {
-      if (retry.code !== 'EEXIST') throw retry
-      fail(
-        'Another install took the lock in this directory first.',
-        `Its lock is at ${lock}.`,
-        'Wait for it to finish and run this again.',
-      )
+    } catch (error) {
+      if (error.code !== 'EEXIST') throw error
+      clearStaleLock()
+      take()
     }
+  } finally {
+    discard(claim)
   }
 
   try {
     return action()
   } finally {
-    // Only ours. Removing a lock we do not hold is the same mistake the
-    // takeover above exists to prevent, reached from the other end.
     if (holdsOurs()) discard(lock)
   }
 }

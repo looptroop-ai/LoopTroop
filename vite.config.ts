@@ -279,6 +279,15 @@ export default defineConfig({
     react(),
     tailwindcss(),
     {
+      name: 'looptroop-production-csp',
+      apply: 'build',
+      // HMR needs WebSockets in development, including remote/tunnel hosts.
+      // Published pages use same-origin HTTP/SSE and need no WebSocket allowance.
+      transformIndexHtml(html) {
+        return html.replace("connect-src 'self' ws:;", "connect-src 'self';")
+      },
+    },
+    {
       name: 'looptroop-dev-health-probe',
       configureServer(server) {
         server.middlewares.use((req, res, next) => {

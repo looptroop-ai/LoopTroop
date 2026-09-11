@@ -85,19 +85,27 @@ function flag(name: string): string {
 const suppliedToken = process.env.WINGET_TOKEN?.trim()
 if (!suppliedToken) fail('WINGET_TOKEN is not set.')
 const token = suppliedToken
+const gitCredential = Buffer.from(`x-access-token:${token}`).toString('base64')
+// Append like the daemon's Git helper: caller-supplied transport settings survive.
+const inheritedConfigCount = Number(process.env.GIT_CONFIG_COUNT ?? '0')
+if (!Number.isSafeInteger(inheritedConfigCount) || inheritedConfigCount < 0) fail('GIT_CONFIG_COUNT must be a non-negative integer.')
+const gitAuth = {
+  GIT_CONFIG_COUNT: String(inheritedConfigCount + 1),
+  [`GIT_CONFIG_KEY_${inheritedConfigCount}`]: `http.https://github.com/${FORK}.git.extraHeader`,
+  [`GIT_CONFIG_VALUE_${inheritedConfigCount}`]: `AUTHORIZATION: basic ${gitCredential}`,
+}
 
 /** Anything that would print the token, with the token taken out. */
 function redact(text: string): string {
-  return text.split(token).join('[redacted]').replace(/x-access-token:[^@\s]+@/g, 'x-access-token:[redacted]@')
+  return text.split(token).join('[redacted]').split(gitCredential).join('[redacted]')
 }
 
 /**
  * `gh` and `git`, resolved once each from a directory the runner owns.
  *
- * Every child of this script is handed `GH_TOKEN`, and the clone URL carries
- * the token too, so which program runs is which program receives the
- * credential. Resolved on first use and remembered, since `run` is called for
- * both tools many times.
+ * Every child of this script receives the credential through its environment,
+ * so which program runs is which program receives the credential. Resolved on
+ * first use and remembered, since `run` is called for both tools many times.
  */
 const resolvedTools = new Map<string, string>()
 function resolveTool(command: string): string {
@@ -123,7 +131,11 @@ function run(command: string, args: string[], options: { cwd?: string, allowFail
       cwd: options.cwd,
       encoding: 'utf8',
       stdio: ['ignore', 'pipe', 'pipe'],
-      env: { ...process.env, GH_TOKEN: token },
+      env: {
+        ...process.env,
+        GH_TOKEN: token,
+        ...(command === 'git' ? gitAuth : {}),
+      },
     })
   } catch (error) {
     // `quiet` distinguishes "this failed" from "this produced nothing", which
@@ -131,8 +143,7 @@ function run(command: string, args: string[], options: { cwd?: string, allowFail
     if (options.quiet === true) return null
     if (options.allowFailure === true) return ''
     const detail = error instanceof Error && 'stderr' in error ? String((error as { stderr?: unknown }).stderr ?? '') : ''
-    // Redacted, both halves. The clone URL embeds the token, so the argument
-    // list is a credential and `git` prints the remote back in its own errors.
+    // Git diagnostics may include the encoded authorization header.
     fail(`${command} ${redact(args.join(' '))} failed.`, redact(detail))
   }
 }
@@ -186,7 +197,7 @@ try {
   // a full history would be gigabytes for a directory of three small files.
   log(`Cloning ${FORK} (shallow)...`)
   const repo = join(work, 'winget-pkgs')
-  run('git', ['clone', '--depth', '1', `https://x-access-token:${token}@github.com/${FORK}.git`, repo])
+  run('git', ['clone', '--depth', '1', `https://github.com/${FORK}.git`, repo])
 
   // Reset onto upstream so the fork being stale cannot carry unrelated changes
   // into the pull request.
@@ -234,10 +245,7 @@ try {
 
     if (unchanged) {
       log('The open pull request already carries exactly these manifests. Nothing to do.')
-      // Not `process.exit`: the `finally` below removes a clone whose
-      // `.git/config` holds the remote URL, and that URL embeds the token.
-      // `process.exit` does not run `finally`, so both of this script's early
-      // exits left the credential on disk.
+      // Let `finally` remove the temporary clone on the no-op path too.
       done = true
     }
     if (!done) log('The manifests have changed; updating the pull request.')
@@ -281,7 +289,5 @@ try {
     log('Acceptance is a review queue, not a result. Nothing waits on it.')
   }
 } finally {
-  // The clone's `.git/config` carries the token in its remote URL, so this is
-  // credential cleanup and not only tidiness.
   rmSync(work, { recursive: true, force: true })
 }

@@ -18,6 +18,16 @@ import { stripTypeScriptTypes } from 'node:module'
 import { dirname, join, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
 
+// Keep Node's parser as the authority. Like installers:check, hide only its
+// known API-status advisory; forward every other warning to Node's listeners.
+const warningListeners = process.rawListeners('warning')
+process.removeAllListeners('warning')
+process.on('warning', (warning) => {
+  if (warning.name === 'ExperimentalWarning'
+    && warning.message === 'stripTypeScriptTypes is an experimental feature and might change at any time') return
+  for (const listener of warningListeners) listener.call(process, warning)
+})
+
 const scriptsDir = resolve(dirname(fileURLToPath(import.meta.url)))
 const failures = []
 let checked = 0

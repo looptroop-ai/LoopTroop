@@ -895,6 +895,7 @@ describe('installer core', () => {
 
       expect(readdirSync(join(prefix, 'bin'))).toEqual(['looptroop'])
       expect(existsSync(join(prefix, '.install.lock'))).toBe(false)
+      expect(existsSync(join(prefix, '.install.lock.claim'))).toBe(false)
     })
 
     /**
@@ -1083,7 +1084,11 @@ describe('installer core', () => {
       const prefix = freshPrefix()
       mkdirSync(prefix, { recursive: true })
       const lock = join(prefix, '.install.lock')
-      writeFileSync(lock, '999999 ages ago\n')
+      // Reap a real child so recovery does not depend on an arbitrary PID being unused.
+      const owner = spawnSync(process.execPath, ['-e', ''], { encoding: 'utf8' })
+      expectExit(owner, 0)
+      expect(() => process.kill(owner.pid, 0)).toThrow(expect.objectContaining({ code: 'ESRCH' }))
+      writeFileSync(lock, `${owner.pid}-dead-owner ages ago\n`)
       const hoursAgo = new Date(Date.now() - 3 * 60 * 60 * 1000)
       utimesSync(lock, hoursAgo, hoursAgo)
 

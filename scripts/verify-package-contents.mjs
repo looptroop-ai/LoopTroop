@@ -16,6 +16,7 @@
  * from the working tree rode along.
  */
 import { readFileSync } from 'node:fs'
+import { JSDOM } from 'jsdom'
 import { execTool } from './tool-path.ts'
 
 /**
@@ -109,6 +110,20 @@ if (manifest.main && !present.has(manifest.main)) {
 
 for (const required of REQUIRED_FILES) {
   if (!present.has(required)) failures.push(`Missing from the tarball: ${required}`)
+}
+
+// Read the actual head policy, not matching text inside a comment or script.
+if (present.has('dist/client/index.html')) {
+  const dom = new JSDOM(readFileSync('dist/client/index.html', 'utf8'))
+  const policies = dom.window.document.head.querySelectorAll(':scope > meta[http-equiv="Content-Security-Policy" i]')
+  const connections = (policies[0]?.getAttribute('content') ?? '').split(';')
+    .map((directive) => directive.split(/[\t\n\f\r ]+/).filter(Boolean))
+    .filter(([name]) => name?.toLowerCase() === 'connect-src')
+  if (policies.length !== 1 || connections.length !== 1
+    || connections[0].length !== 2 || connections[0][1] !== "'self'") {
+    failures.push('The published client must restrict connect-src to the same origin.')
+  }
+  dom.window.close()
 }
 
 for (const path of packed) {

@@ -225,6 +225,7 @@ async function main() {
   const leftovers = readdirSync(join(prefix, 'bin')).filter((entry) => entry !== `looptroop${EXE}`)
   if (leftovers.length > 0) fail('The install left staging files behind.', leftovers.join(', '))
   if (existsSync(join(prefix, '.install.lock'))) fail('The install left its lock behind.')
+  if (existsSync(join(prefix, '.install.lock.claim'))) fail('The install left its recovery lock behind.')
   log('  no staging files and no lock left behind')
 
   const doctor = await invoke(installed, ['doctor', '--json'], { env: childEnv, allowFailure: true })

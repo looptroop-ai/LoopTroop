@@ -1,6 +1,8 @@
 #!/usr/bin/env node
 /**
  * Installs the npm version this repository declares, and proves it took.
+ * --prefer-bundled keeps an already reviewed npm major for the Node Current lane;
+ * unsupported bundled versions warn and fall back to the declared version.
  *
  * `package.json` names an npm version in `packageManager` and `engines`, but a
  * runner ships whatever npm came bundled with its Node — ubuntu-24.04 images
@@ -51,14 +53,29 @@ if (!declared) {
   fail(`package.json "packageManager" must name an exact npm version, not ${JSON.stringify(manifest.packageManager)}.`)
 }
 
+// Changing this major requires reviewing the lifecycle policy and its dismissals.
+if (!declared.startsWith('12.')) fail('Review .github/security-alert-dispositions.md before changing the npm policy major.')
+
 const current = npm(['--version'])
+if (process.argv.includes('--check-policy')) {
+  if (!/^12\.\d+\.\d+$/.test(current)) fail(`npm 12 is required for the reviewed install-script policy; found ${current}.`)
+  process.stdout.write(`npm ${current} uses the reviewed install-script policy.\n`)
+  process.exit(0)
+}
+if (process.argv.includes('--prefer-bundled')) {
+  if (/^12\.\d+\.\d+$/.test(current)) {
+    process.stdout.write(`Keeping bundled npm ${current}: its install-script policy is reviewed.\n`)
+    process.exit(0)
+  }
+  process.stdout.write(`::warning::Bundled npm ${current} is outside the reviewed policy. Testing Node with approved npm ${declared} instead.\n`)
+}
 if (current === declared) {
   process.stdout.write(`npm ${current} already matches package.json.\n`)
   process.exit(0)
 }
 
 process.stdout.write(`npm ${current} is installed; package.json declares ${declared}. Installing it.\n`)
-npm(['install', '--global', `npm@${declared}`])
+npm(['install', '--global', '--ignore-scripts', `npm@${declared}`])
 
 // Asserted rather than assumed: a global install that lands outside PATH leaves
 // the old npm in place and would otherwise pass silently.

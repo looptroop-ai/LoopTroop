@@ -196,7 +196,7 @@
       ]
     },
     {
-      "description": "esbuild is exact-pinned because package.json carries version-keyed allowScripts entries for it, added for npm v12+ compatibility. Renovate bumps the version but cannot add the matching esbuild@X.Y.Z permission, so its pull request needs that key added by hand before the native postinstall is approved and the branch can go green.",
+      "description": "esbuild is exact-pinned because package.json carries version-keyed allowScripts approvals for it. Update those approvals when esbuild moves, and update the explicit fsevents denial when lockfile maintenance changes fsevents. Renovate does not maintain these policy keys; the install-script policy test checks them against the lockfile before the branch can go green.",
       "matchPackageNames": [
         "esbuild"
       ],

@@ -44,7 +44,7 @@ jobs:
           version=1.7.12
           sha256=8aca8db96f1b94770f1b0d72b6dddcb1ebb8123cb3712530b08cc387b349a3d8
           url="https://github.com/rhysd/actionlint/releases/download/v${version}/actionlint_${version}_linux_amd64.tar.gz"
-          curl --fail --silent --show-error --location --retry 3 -o /tmp/actionlint.tgz "${url}"
+          curl --proto '=https' --proto-redir '=https' --tlsv1.2 --fail --silent --show-error --location --retry 3 -o /tmp/actionlint.tgz "${url}"
           echo "${sha256}  /tmp/actionlint.tgz" | sha256sum --check --status
           tar -xzf /tmp/actionlint.tgz -C /tmp actionlint
 
@@ -308,12 +308,12 @@ jobs:
           VERSION: ${{ steps.pack.outputs.version }}
         run: |
           set -euo pipefail
-          docker build \
+          tar -cf - Dockerfile "${TARBALL}" | docker build \
             --build-arg TARBALL="${TARBALL}" \
             --build-arg VERSION="${VERSION}" \
             --build-arg REVISION="${GITHUB_SHA}" \
             --tag looptroop:smoke \
-            .
+            -
 
       # Everything the script asserts happens inside the container, over
       # `docker exec`. The daemon binds the container's own loopback by design,
@@ -449,7 +449,7 @@ jobs:
       # package the job installs.
       - name: Install ${{ matrix.manager }}
         if: matrix.manager != 'bun' || runner.os != 'Windows'
-        run: npm install -g --allow-scripts=${{ matrix.manager }} ${{ matrix.package }}
+        run: npm install -g --allow-scripts=${{ matrix.package }} ${{ matrix.package }}
 
       # The release archive, checked against the digest bun published for it,
       # rather than piping bun.sh/install.ps1 into a shell. That script is
@@ -766,7 +766,7 @@ jobs:
       # rejects.
       - name: Install GNU tar
         if: runner.os == 'macOS'
-        run: brew install gnu-tar
+        run: brew list --versions gnu-tar >/dev/null || brew install gnu-tar
 
       # Twice, requiring identical bytes. The SEA blob embeds the absolute path
       # of the script it was built from, which made the first version of this
@@ -932,9 +932,11 @@ jobs:
           node-version: 26
           cache: npm
 
-      # Deliberately not pinned: the npm bundled with Node 26 is part of what
-      # this lane is here to warn about, and pinning it back to ours would hide
-      # exactly the incompatibility we want early news of.
+      # Keep bundled npm within the reviewed major. Otherwise report the mismatch
+      # and bootstrap our approved npm so Node compatibility tests still run.
+      - name: Select npm with reviewed install-script policy
+        run: node scripts/pin-npm.mjs --prefer-bundled
+
       - name: Install dependencies
         run: npm ci
 

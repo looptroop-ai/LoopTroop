@@ -213,6 +213,16 @@ const serverIntegrationTests = [
   'tests/channelPush.test.ts',
   // Starts an HTTP server and spawns the installer as a child process.
   'tests/installer.test.ts',
+  'tests/installScriptPolicy.test.ts',
+  'tests/pinNpm.test.ts',
+  'tests/stripTypes.test.ts',
+  'tests/wingetSubmit.test.ts',
+  'tests/installerDownload.test.ts',
+  // Native shell subprocesses need the bounded integration pool and its startup budget.
+  'tests/smokePublished.test.ts',
+  'tests/packageContents.test.ts',
+  'tests/mainEntry.test.ts',
+  'server/phases/executionSetup/__tests__/runtimeLauncher.test.ts',
   // Rebuilds the OpenCode adapter singleton, which siblings share and mock.
   'tests/opencodeRuntimeConfig.test.ts',
   // Same reason, arrived at the hard way. `questionWindows.ts` is imported by

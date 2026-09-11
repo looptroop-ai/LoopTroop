@@ -1,6 +1,3 @@
-# The build stage only ever copies the tarball named by --build-arg TARBALL.
-# Everything else is excluded so the daemon under test cannot reach a stray
-# `dist/`, `node_modules/`, or checkout in the build context — the same reason
-# the install smoke test runs from an empty directory.
+# Build with the tar context shown in Dockerfile: Dockerfile and the selected
+# release tarball only. A checkout context excludes all files by default.
 *
-!looptroop-*.tgz

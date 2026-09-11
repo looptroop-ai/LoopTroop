@@ -1083,7 +1083,7 @@ describe('installer core', () => {
       const prefix = freshPrefix()
       mkdirSync(prefix, { recursive: true })
       const lock = join(prefix, '.install.lock')
-      writeFileSync(lock, '999999 ages ago\n')
+      writeFileSync(lock, '999999-dead-owner ages ago\n')
       const hoursAgo = new Date(Date.now() - 3 * 60 * 60 * 1000)
       utimesSync(lock, hoursAgo, hoursAgo)
 

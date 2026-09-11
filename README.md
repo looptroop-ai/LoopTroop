@@ -100,6 +100,9 @@ asks for sudo, and writes nothing outside npm's global prefix.
 
 There is also a standalone executable that carries its own Node runtime — see
 [Installation](https://www.looptroop.ovh/docs/installation#standalone-executable).
+The standalone installer keeps its install lock while the owner is alive, even
+during a slow install. If it reports a leftover `.install.lock.claim`, wait and
+retry; remove that file only after confirming no installer is running.
 </details>
 
 <details>

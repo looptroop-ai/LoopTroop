@@ -168,3 +168,6 @@ export function streamBody(
   write: (chunk: Buffer) => void,
   touch: () => void,
 ): Promise<number>
+
+/** Runs a synchronous install with exclusive ownership of its directory. */
+export function withInstallLock<T>(dir: string, action: () => T): T

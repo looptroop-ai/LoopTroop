@@ -142,11 +142,15 @@ it now uses the local ID and deliberately creates differing IDs to cover that di
 Those tests now pass on Windows. A later loaded runner exposed short PowerShell startup budgets
 in two other tests: both now use the existing integration pool, bounded subprocess waits, and
 explicit subprocess-error diagnostics. Bootstrap scenarios have independent timeout budgets.
-Both latest CI runs passed all test lanes, including the Windows PowerShell checks. One macOS
+Both subsequent CI runs passed all test lanes, including the Windows PowerShell checks. One macOS
 Homebrew channel job failed while fetching Homebrew's own tap with an HTTP/2 framing error;
 its sibling run passed. The failed Packaging summary aggregates that channel failure.
 CI and release setup now reuse an installed GNU tar instead of asking Homebrew to install it again.
 This removes the redundant-install warning while retaining installation on runners that lack it.
+The latest Windows failure was a stopped tsx/esbuild service in the package-import probe; its
+next identical invocation passed. The logs do not establish why the service stopped. That test
+now uses the existing isolated integration pool and one child for both assertions, with bounded
+timeouts and temporary-file cleanup. No retry or skipped assertion hides a failed import.
 
 The Node Current job originally stopped at bundled npm 11.19.1, leaving its tests unexecuted.
 It now warns about an unsupported bundled npm and falls back to the declared approved version.
@@ -194,6 +198,12 @@ remain visible; this decision does not suppress failures or weaken verification.
   relationships and deprecation notices were checked in npm's registry. Updating Renovate alone
   does not remove these chains; changing its installation method or hiding npm output does not
   repair them. Retain the validator so dependency-update configuration continues to be checked.
+  Its optional RE2 native module is also unavailable under the reviewed script policy. Renovate
+  [explicitly falls back to JavaScript RegExp](https://github.com/renovatebot/renovate/blob/44.13.2/lib/util/regex.ts).
+  Schema validation continues; RE2-specific syntax checking is reduced. The current configuration
+  uses simple patterns and has no identified engine mismatch. Reassess before adding patterns
+  that depend on [RE2-specific behavior](https://docs.renovatebot.com/string-pattern-matching/);
+  do not suppress the warning or broadly approve native installation scripts.
 - **Linux binary injection:** postject's bundled LIEF emits `Can't find string offset for section name`
   diagnostics for `.note` sections. The [upstream maintainer identifies their source](https://github.com/nodejs/postject/issues/83#issuecomment-1506397578)
   and deliberately retains the diagnostics. The installed postject matches its
@@ -202,6 +212,10 @@ remain visible; this decision does not suppress failures or weaken verification.
   not establish compatibility with every ELF tool. Stripping the executable to silence the
   warning is unsafe: an [upstream report describes resulting crashes](https://github.com/nodejs/postject/issues/90).
   Keep the diagnostics and binary checks, and revisit when postject ships an updated LIEF.
+  Windows injection also reports a signature diagnostic. The
+  [pinned Node documentation](https://github.com/nodejs/node/blob/v24.18.1/doc/api/single-executable-applications.md)
+  explicitly makes Windows signature removal optional and permits these warnings when it is
+  skipped. The build comment now reflects that distinction from mandatory macOS removal.
 
 These are CI-tool limitations, not changes to LoopTroop's runtime dependency tree. Deprecation
 does not by itself establish an exploitable vulnerability in these jobs; it also does not prove

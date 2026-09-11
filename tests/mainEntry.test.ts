@@ -4,6 +4,7 @@ import { mkdtempSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { resolve } from 'node:path'
 import { pathToFileURL } from 'node:url'
+import { removeTempDir } from '../server/test/tempDir'
 
 /**
  * `server/index.ts` is the package's `main`, so importing it must not start
@@ -26,28 +27,32 @@ describe('published main entry', () => {
     // CommonJS, where the top-level await below is a syntax error.
     const probe = resolve(dir, 'probe.mts')
 
-    writeFileSync(
-      probe,
-      [
-        `const before = process.listenerCount('SIGTERM') + process.listenerCount('SIGINT')`,
-        // A URL, not a path: `import('C:\\...')` is ERR_UNSUPPORTED_ESM_URL_SCHEME
-        // on Windows, where the drive letter reads as a scheme.
-        `const mod = await import(${JSON.stringify(pathToFileURL(resolve(repoRoot, 'server/index.ts')).href)})`,
-        `const after = process.listenerCount('SIGTERM') + process.listenerCount('SIGINT')`,
-        `console.log(JSON.stringify({ signalListeners: after - before, exports: Object.keys(mod).sort() }))`,
-      ].join('\n'),
-    )
+    try {
+      writeFileSync(
+        probe,
+        [
+          `const before = process.listenerCount('SIGTERM') + process.listenerCount('SIGINT')`,
+          // A URL, not a path: `import('C:\\...')` is ERR_UNSUPPORTED_ESM_URL_SCHEME
+          // on Windows, where the drive letter reads as a scheme.
+          `const mod = await import(${JSON.stringify(pathToFileURL(resolve(repoRoot, 'server/index.ts')).href)})`,
+          `const after = process.listenerCount('SIGTERM') + process.listenerCount('SIGINT')`,
+          `console.log(JSON.stringify({ signalListeners: after - before, exports: Object.keys(mod).sort() }))`,
+        ].join('\n'),
+      )
 
-    const stdout = execFileSync(process.execPath, ['--import', 'tsx', probe], {
-      cwd: repoRoot,
-      encoding: 'utf8',
-      timeout: 60_000,
-      // A daemon that did start would inherit these and could touch real state.
-      env: { ...process.env, LOOPTROOP_CONFIG_DIR: resolve(dir, 'config') },
-    })
+      const stdout = execFileSync(process.execPath, ['--import', 'tsx', probe], {
+        cwd: repoRoot,
+        encoding: 'utf8',
+        timeout: 60_000,
+        // A daemon that did start would inherit these and could touch real state.
+        env: { ...process.env, LOOPTROOP_CONFIG_DIR: resolve(dir, 'config') },
+      })
 
-    const line = stdout.trim().split('\n').at(-1) ?? '{}'
-    return JSON.parse(line) as { signalListeners: number; exports: string[] }
+      const line = stdout.trim().split('\n').at(-1) ?? '{}'
+      return JSON.parse(line) as { signalListeners: number; exports: string[] }
+    } finally {
+      removeTempDir(dir)
+    }
   }
 
   /**
@@ -55,11 +60,9 @@ describe('published main entry', () => {
    * bound a port would hold the event loop open and be killed by the timeout
    * instead of returning.
    */
-  it('imports without binding a port or installing signal handlers', () => {
-    expect(importInChild().signalListeners).toBe(0)
-  })
-
-  it('still exports the embeddable surface', () => {
-    expect(importInChild().exports).toEqual(['createApp', 'createRuntime', 'isLoopbackHost', 'main'])
-  })
+  it('exports the embeddable surface without binding a port or installing signal handlers', () => {
+    const result = importInChild()
+    expect(result.signalListeners).toBe(0)
+    expect(result.exports).toEqual(['createApp', 'createRuntime', 'isLoopbackHost', 'main'])
+  }, 75_000)
 })

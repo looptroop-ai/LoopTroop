@@ -298,10 +298,9 @@ try {
   copyFileSync(process.execPath, binaryPath)
   chmodSync(binaryPath, 0o755)
 
-  // macOS and Windows binaries are signed, and postject cannot rewrite a signed
-  // one. Removing it first is a required step of the documented flow, not a
-  // tidy-up: skip it and injection fails, or produces something that will not
-  // run.
+  // macOS requires signature removal before injection. Node's Windows SEA flow
+  // makes removal optional and permits postject's signature diagnostic when
+  // it is skipped; the resulting binary is still checked before publication.
   if (process.platform === 'darwin') {
     run('codesign', ['--remove-signature', binaryPath])
   }

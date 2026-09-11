@@ -221,6 +221,7 @@ const serverIntegrationTests = [
   // Native shell subprocesses need the bounded integration pool and its startup budget.
   'tests/smokePublished.test.ts',
   'tests/packageContents.test.ts',
+  'tests/mainEntry.test.ts',
   'server/phases/executionSetup/__tests__/runtimeLauncher.test.ts',
   // Rebuilds the OpenCode adapter singleton, which siblings share and mock.
   'tests/opencodeRuntimeConfig.test.ts',

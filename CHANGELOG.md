@@ -235,6 +235,7 @@ Unreleased changes appear first and represent commits that have not yet been inc
 - Three aliases re-exported for a question-diff type that no longer exists, the three helpers behind them, an execution-setup runtime-path list with no reader, and an execution-setup barrel re-exporting three artifact names every caller already imports from their own module.
 
 ### Fixed
+- Isolated the package-import regression check in its own integration worker and reused one subprocess for both assertions, reducing Windows subprocess contention while retaining failure detection and cleaning up temporary files.
 - PowerShell runtime launchers preserve a single program argument as an argument, instead of splitting it into characters. Windows launcher tests use one case-insensitive PATH entry and fixed shell commands; AI-question tests wait for timer hydration, and authentication tests initialize their database and require successful authorized responses.
 - Manual QA event reads and version discovery no longer depend on an unrelated `v1` directory being intact. Worktree size previews skip final aliases without following them, and an unreadable log no longer prevents recovery of the remaining logs on the same ticket.
 - Unsafe ticket size and approval requests return HTTP 400 without advancing approval state. Folder opening also reports targets removed or replaced before launch as invalid paths. Missing bead trackers during planning no longer produce read-failure warnings.

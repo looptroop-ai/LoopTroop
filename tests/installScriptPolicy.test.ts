@@ -1,4 +1,6 @@
-import { spawnSync } from 'node:child_process'
+import { execFile } from 'node:child_process'
+import { createServer } from 'node:http'
+import { promisify } from 'node:util'
 import { existsSync, mkdirSync, readFileSync, readdirSync, writeFileSync } from 'node:fs'
 import { join } from 'node:path'
 import { fileURLToPath } from 'node:url'
@@ -9,6 +11,7 @@ import { makeTempDir, removeTempDir } from '../server/test/tempDir'
 
 const repo = fileURLToPath(new URL('../', import.meta.url))
 const manifest = JSON.parse(readFileSync(join(repo, 'package.json'), 'utf8')) as {
+  packageManager: string
   allowScripts: Record<string, boolean>
 }
 const workflowDir = join(repo, '.github/workflows')
@@ -102,58 +105,78 @@ describe('dependency install script policy', () => {
     expect(validators).toHaveLength(1)
     expect(validators[0]).toMatch(/^npx --yes --package renovate@\d+\.\d+\.\d+ renovate-config-validator --strict$/)
     const bootstraps = commands.filter((run) => /npm install --global .*npm@/.test(run))
-    expect(bootstraps).toHaveLength(2)
-    for (const run of bootstraps) expect(run).toMatch(/npm install --global --ignore-scripts npm@\d+\.\d+\.\d+/)
+    expect(bootstraps).toHaveLength(1)
+    for (const run of bootstraps) expect(run).toContain(`npm install --global --ignore-scripts ${manifest.packageManager}`)
     expect(readFileSync(join(repo, 'scripts/pin-npm.mjs'), 'utf8')).toContain("npm(['install', '--global', '--ignore-scripts', `npm@${declared}`])")
   })
 
-  it('executes an approved local tarball hook and blocks an unapproved one offline', () => {
+  it('executes an approved registry hook and blocks an unapproved one offline', async () => {
     const root = makeTempDir('looptroop-install-policy-')
-    const npm = (args: string[], cwd: string) => {
-      const launch = launchTool('npm', args)
-      const result = spawnSync(launch.file, launch.args, {
+    const packages = new Map<string, { name: string; version: string; scripts: { postinstall: string } }>()
+    let registry = ''
+    const server = createServer((request, response) => {
+      const name = request.url?.split('/')[1] ?? ''
+      const packageJson = packages.get(name)
+      if (!packageJson) {
+        response.writeHead(404).end()
+      } else if (request.url === `/${name}/-/${name}-1.0.0.tgz`) {
+        response.end(readFileSync(join(root, `${name}-1.0.0.tgz`)))
+      } else {
+        response.setHeader('content-type', 'application/json')
+        response.end(JSON.stringify({
+          name, 'dist-tags': { latest: '1.0.0' },
+          versions: { '1.0.0': { ...packageJson, dist: { tarball: `${registry}/${name}/-/${name}-1.0.0.tgz` } } },
+        }))
+      }
+    })
+    const npm = async (args: string[], cwd: string) => {
+      const launch = launchTool('npm', ['--cache', join(root, 'cache'), '--userconfig', join(root, 'npmrc'), ...args])
+      const result = await promisify(execFile)(launch.file, launch.args, {
         cwd,
         encoding: 'utf8',
         timeout: 30_000,
         windowsVerbatimArguments: launch.windowsVerbatimArguments,
-        env: { ...process.env, npm_config_cache: join(root, 'cache'), npm_config_userconfig: join(root, 'npmrc') },
       })
-      expect(result.error).toBeUndefined()
-      expect(result.status, result.stderr).toBe(0)
       return `${result.stdout}\n${result.stderr}`.trim()
     }
     try {
-      writeFileSync(join(root, 'npmrc'), '')
-      expect(npm(['--version'], root)).toMatch(/^12\./)
+      await new Promise<void>((resolve) => server.listen(0, '127.0.0.1', resolve))
+      const address = server.address()
+      if (!address || typeof address === 'string') throw new Error('Fixture registry did not bind a TCP port')
+      registry = `http://127.0.0.1:${address.port}`
+      writeFileSync(join(root, 'npmrc'), `registry=${registry}\n`)
+      expect(await npm(['--version'], root)).toMatch(/^12\./)
       const dependencies: Record<string, string> = {}
       for (const name of ['approved-hook', 'unapproved-hook']) {
         const directory = join(root, name)
         mkdirSync(directory)
-        writeFileSync(join(directory, 'package.json'), JSON.stringify({
-          name, version: '1.0.0', scripts: { postinstall: 'node postinstall.cjs' },
-        }))
+        const packageJson = { name, version: '1.0.0', scripts: { postinstall: 'node postinstall.cjs' } }
+        packages.set(name, packageJson)
+        writeFileSync(join(directory, 'package.json'), JSON.stringify(packageJson))
         writeFileSync(join(directory, 'postinstall.cjs'), "require('node:fs').writeFileSync('ran', 'yes')\n")
-        npm(['pack', '--offline', '--ignore-scripts', '--pack-destination', root], directory)
-        dependencies[name] = `file:${join(root, `${name}-1.0.0.tgz`).replaceAll('\\', '/')}`
+        await npm(['pack', '--offline', '--ignore-scripts', '--pack-destination', root], directory)
+        dependencies[name] = '1.0.0'
       }
       writeFileSync(join(root, 'package.json'), JSON.stringify({
-        name: 'install-policy-fixture', version: '1.0.0', private: true,
-        // npm matches tarball identities by file spec, not their untrusted package name.
-        dependencies,
+        name: 'install-policy-fixture', version: '1.0.0', private: true, dependencies,
+        allowScripts: { 'approved-hook@1.0.0': true },
       }))
-      npm(['install', '--ignore-scripts', '--offline', '--no-audit', '--no-fund'], root)
-      // npm writes its resolved tarball identity, including native Windows paths.
-      npm(['install-scripts', 'approve', 'approved-hook', '--allow-scripts-pin', '--offline'], root)
-      const output = npm(['ci', '--offline', '--no-audit', '--no-fund'], root)
+      // Prime only the local cache. The policy checks then run offline, using the
+      // same registry identities as the repository instead of Windows file paths.
+      await npm(['install', `--registry=${registry}`, '--ignore-scripts', '--no-audit', '--no-fund'], root)
+      await new Promise<void>((resolve, reject) => server.close((error) => error ? reject(error) : resolve()))
+      const output = await npm(['ci', '--offline', '--no-audit', '--no-fund'], root)
       expect(existsSync(join(root, 'node_modules/approved-hook/ran')), output).toBe(true)
       expect(existsSync(join(root, 'node_modules/unapproved-hook/package.json'))).toBe(true)
       expect(existsSync(join(root, 'node_modules/unapproved-hook/ran'))).toBe(false)
       expect(output).toContain('unapproved-hook@1.0.0')
-      npm(['install-scripts', 'deny', 'unapproved-hook', '--allow-scripts-pin', '--offline'], root)
-      const denied = npm(['ci', '--offline', '--no-audit', '--no-fund'], root)
+      await npm(['install-scripts', 'deny', 'unapproved-hook', '--allow-scripts-pin', '--offline'], root)
+      const denied = await npm(['ci', '--offline', '--no-audit', '--no-fund'], root)
       expect(existsSync(join(root, 'node_modules/unapproved-hook/ran'))).toBe(false)
       expect(denied).not.toContain('install-scripts')
     } finally {
+      server.close()
+      server.closeAllConnections()
       removeTempDir(root)
     }
   }, 60_000)

@@ -1,4 +1,6 @@
 import { Node, Project, SyntaxKind } from 'ts-morph'
+import { readFileSync } from 'node:fs'
+import { resolveConfig } from 'vite'
 import { describe, expect, it } from 'vitest'
 import {
   DEV_SERVER_RESOURCE_HEADERS,
@@ -52,6 +54,22 @@ function collectBrowserBareImports(): string[] {
 }
 
 describe('Vite dependency optimization policy', () => {
+  it('restricts built pages to same-origin connections while retaining development HMR', async () => {
+    const html = readFileSync('index.html', 'utf8')
+    const production = await resolveConfig({}, 'build')
+    const development = await resolveConfig({}, 'serve')
+    const name = 'looptroop-production-csp'
+    expect(development.plugins.some((plugin) => plugin.name === name)).toBe(false)
+    expect(html).toContain("connect-src 'self' ws:;")
+    const transform = production.plugins.find((plugin) => plugin.name === name)?.transformIndexHtml
+    expect(typeof transform).toBe('function')
+    if (typeof transform !== 'function') throw new Error('Missing production CSP transform')
+    const built = await Reflect.apply(transform, undefined, [html, { path: '/index.html', filename: 'index.html' }])
+    expect(built).toContain("connect-src 'self';")
+    expect(built).not.toContain("connect-src 'self' ws:;")
+    expect(built).toContain("style-src 'self' 'unsafe-inline'; script-src 'self';")
+  })
+
   it('disables late discovery and declares every production browser dependency', () => {
     expect(frontendOptimizeDeps.noDiscovery).toBe(true)
     expect([...FRONTEND_OPTIMIZED_DEPENDENCIES].sort()).toEqual(collectBrowserBareImports())

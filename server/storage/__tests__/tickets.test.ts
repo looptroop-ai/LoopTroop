@@ -64,6 +64,8 @@ describe('ticket start configuration locking', () => {
   })
 
   it('does not advance the ticket counter when the insert fails', async () => {
+    // Attached IDs and each project's local ID belong to separate databases.
+    attachProject({ folderPath: lockRepoManager.createRepo(), name: 'Other', shortname: 'OTHER' })
     const repoDir = lockRepoManager.createRepo()
     const project = attachProject({ folderPath: repoDir, name: 'LoopTroop', shortname: 'LOOP' })
     const { getProjectContextById } = await import('../projects')
@@ -76,6 +78,7 @@ describe('ticket start configuration locking', () => {
     // The next id is already taken, so the insert fails after the counter has
     // been advanced. Apart, the two statements burn a number every time.
     const context = getProjectContextById(project.id)!
+    expect(context.project.id).not.toBe(project.id)
     context.projectDb.update(tickets)
       .set({ externalId: 'LOOP-2' })
       .where(eq(tickets.externalId, first.externalId))
@@ -83,7 +86,7 @@ describe('ticket start configuration locking', () => {
 
     expect(() => createTicket({ projectId: project.id, title: 'Collides' })).toThrow()
 
-    const counterAfter = context.projectDb.select().from(projects).where(eq(projects.id, project.id)).get()?.ticketCounter
+    const counterAfter = context.projectDb.select().from(projects).where(eq(projects.id, context.project.id)).get()?.ticketCounter
     expect(counterAfter).toBe(1)
   })
 

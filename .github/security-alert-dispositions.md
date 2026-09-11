@@ -9,7 +9,7 @@ Repository installs retain the exact-version esbuild approvals in `package.json`
 Disabling all scripts here would skip esbuild's binary setup. The npm pin script asserts the
 reviewed major as well as the declared version. The Node Current lane keeps its bundled npm,
 but refuses to install unless it is npm 12. Policy tests exercise an approved and a denied
-local package using npm's own tarball identity resolution on every platform, and check workflow
+local registry package with exact name/version approvals, and check workflow
 ordering and the lockfile's script-bearing dependencies. The optional fsevents install script
 is explicitly denied, so npm no longer reports it as awaiting review. npm's own global bootstrap
 also disables scripts. Windows installer smoke checks retain and verify the pinned npm even
@@ -45,7 +45,7 @@ Reasons used in the ledger:
 
 ## Dismissal ledger
 
-All 26 rows below were dismissed as `won't fix` on GitHub on 2026-09-11, and their
+All 27 rows below were dismissed as `won't fix` on GitHub on 2026-09-11, and their
 dismissed state was read back from the API. Each is accepted only for the stated scope.
 
 | Alert | Rule | Location at review | Reason | Date |
@@ -76,6 +76,7 @@ dismissed state was read back from the API. Each is accepted only for the stated
 | #47 | `typescript:S4036` | `server/test/fixtureRepo.ts:53` | Test fixture | 2026-09-11 |
 | #48 | `typescript:S4036` | `server/test/tempDir.ts:92` | Test fixture | 2026-09-11 |
 | #49 | `typescript:S4036` | `server/test/tempDir.ts:93` | Test fixture | 2026-09-11 |
+| #158 | `githubactions:S6505` | `.github/workflows/published-smoke.yml:342` | OpenCode tooling (PR analysis repeat) | 2026-09-11 |
 
 ## Fixed instead of dismissed
 
@@ -93,13 +94,16 @@ dismissed state was read back from the API. Each is accepted only for the stated
 - The OpenCode tooling install is exact-pinned (#18). LoopTroop channel selection is unchanged.
 - Workflow permission alerts #16 and #20 were already fixed before this stage.
 
-No CSP script restriction is weakened. No app route, status, parser, or payload changes in this
+Production pages now restrict connections to the same origin; the broad WebSocket scheme allowance
+is retained only for development reloads, including remote development. The style exception and
+script restrictions are unchanged. No app route, status, parser, or payload key changes in this
 stage; the existing upgrade-command value now includes HTTPS enforcement. Container build inputs
 are limited to the selected tarball and Dockerfile; WinGet Git credentials move from process
 arguments to fork-scoped process configuration without replacing inherited Git settings.
 Installer locking protects live owners and serializes abandoned-lock recovery. PID checks
 assume one host and PID namespace. A reused PID remains conservatively blocked and requires
 manual cleanup after verifying no installer is running, just like an abandoned recovery claim.
+Concurrent use with installers predating this claim protocol is outside the fresh-install scope.
 
 ## Published documentation
 
@@ -112,10 +116,37 @@ the published wrapper with `--help` before documenting them.
 
 ## CI review observations
 
-The first PR17 CI run exposed a Windows-only local-tarball approval mismatch, corrected by
-letting npm write the fixture's resolved identity. The floating Node Current job reported
-npm 11.19.1 and refused installation as intended: its policy still requires npm 12.
-The Kilo review failed because its model output limit was reached, without a code finding.
+The Windows-only local-tarball approval mismatch persisted even with npm's approval writer:
+its lockfile reader and policy resolver disagree on Windows path separators. The fixture now
+serves two packages through a loopback registry, primes an isolated cache with scripts disabled,
+then stops the server before testing real offline clean installs. This exercises the same
+name/version policy as repository dependencies without skipping Windows or weakening the checks.
+A separate ticket-counter test queried the attached project ID inside a project-local database;
+it now uses the local ID and deliberately creates differing IDs to cover that distinction.
+
+The floating Node Current job reported npm 11.19.1 and refused installation as intended: its
+policy still requires npm 12. No build or tests run in that lane until the bundled npm meets
+the policy; it currently reports a toolchain-policy mismatch, not Node compatibility results.
+The latest Kilo review completed with no findings; its earlier output-limit failure is superseded.
+
+### Scanner dashboard findings
+
+GitHub alert #158 repeats the exact-approved OpenCode tooling finding. Its dismissal was read
+back from the GitHub API. The separate
+[SonarCloud issue](https://sonarcloud.io/project/issues?id=looptroop-ai_LoopTroop&issues=AaCQ17S6Ad9JgHF7hF2t&pullRequest=154)
+still requires acceptance in SonarCloud; a GitHub dismissal does not resolve that quality gate.
+
+[Codacy's new finding](https://app.codacy.com/gh/looptroop-ai/LoopTroop/pull-requests/154)
+flags the fetch call in the exported installer download helper as accepting user-controlled URLs.
+This is a standalone local installer, not a server endpoint: callers obtain URLs from release
+metadata or explicit operator configuration. Every redirect is scheme-checked before dispatch,
+and cross-origin authorization is removed. A fixed hostname list would break configured release
+mirrors or changes to GitHub's asset delivery hosts without addressing an exposed server route.
+Treat this as a scoped false positive for the current local callers; reassess if the helper ever
+handles remote application requests. Codacy's dashboard decision remains pending.
+
+No authenticated SonarCloud or Codacy connection was available for these dashboard decisions.
+No blanket analyzer exclusions or line-moving workarounds were introduced to hide the findings.
 
 ### Upstream warnings retained after review
 

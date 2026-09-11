@@ -95,7 +95,7 @@ const UPGRADE_COMMANDS: Record<InstallChannel, string> = {
   // script cannot be given a parameter and this one needs `-Binary`.
   binary: process.platform === 'win32'
     ? '& ([scriptblock]::Create((irm https://www.looptroop.ovh/install.ps1))) -Binary'
-    : 'curl -fsSL https://www.looptroop.ovh/install | sh -s -- --binary',
+    : 'curl --proto =https --proto-redir =https --tlsv1.2 -fsSL https://www.looptroop.ovh/install | sh -s -- --binary',
   container: 'docker pull looptroopai/looptroop:latest',
   source: 'git pull && npm install && npm run build',
   unknown: 'See https://www.looptroop.ovh for upgrade instructions',

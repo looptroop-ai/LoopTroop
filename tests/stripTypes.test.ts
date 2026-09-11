@@ -39,14 +39,27 @@ describe('bare Node TypeScript verification', () => {
     expect(result.stderr).toContain('scripts/fixture.ts:')
   })
 
-  it('preserves unrelated warnings, including other experimental APIs', () => {
-    const result = verify('const value: number = 1', `
+  it.each(['verify-strip-types', 'sync-installers'])('%s preserves unrelated warnings and once listeners', (name) => {
+    const source = readFileSync(new URL(`../scripts/${name}.mjs`, import.meta.url), 'utf8')
+    // Exercise the filter without running the installer's file synchronization.
+    const filter = source.match(/const warningListeners = [\s\S]*?\n\}\)/)?.[0]
+    expect(filter).toBeDefined()
+    const result = spawnSync(process.execPath, ['--input-type=module', '-e', `
+      process.once('warning', (warning) => console.log('ONCE:', warning.message))
+      process.on('warning', (warning) => console.log('ALWAYS:', warning.message))
+      ${filter}
+      process.emitWarning('stripTypeScriptTypes is an experimental feature and might change at any time', 'ExperimentalWarning')
       process.emitWarning('stripTypeScriptTypes unrelated experimental warning', 'ExperimentalWarning')
-      process.emitWarning('stripTypeScriptTypes unrelated warning', { code: 'TEST_WARNING' })
-    `)
+      process.emitWarning('stripTypeScriptTypes unrelated warning', { code: 'TEST_WARNING', detail: 'warning detail retained' })
+    `], { encoding: 'utf8', timeout: 10_000 })
+    expect(result.error).toBeUndefined()
     expect(result.status).toBe(0)
+    expect(result.stdout.match(/ONCE:/g)).toHaveLength(1)
+    expect(result.stdout).toContain('ONCE: stripTypeScriptTypes unrelated experimental warning')
+    expect(result.stdout.match(/ALWAYS:/g)).toHaveLength(2)
     expect(result.stderr).toContain('ExperimentalWarning: stripTypeScriptTypes unrelated experimental warning')
     expect(result.stderr).toContain('[TEST_WARNING] Warning: stripTypeScriptTypes unrelated warning')
+    expect(result.stderr).toContain('warning detail retained')
     expect(result.stderr).not.toContain('stripTypeScriptTypes is an experimental feature')
   })
 })

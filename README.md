@@ -64,7 +64,7 @@ Instead of trusting a single, endless AI chat session - where the conversation h
 ## Quick start
 
 ```bash
-curl -fsSL https://www.looptroop.ovh/install | sh
+curl --proto =https --proto-redir =https --tlsv1.2 -fsSL https://www.looptroop.ovh/install | sh
 looptroop open
 ```
 
@@ -81,7 +81,7 @@ start it.
 <summary><b>curl / irm</b> — the one-line installer (shown above)</summary>
 
 ```bash
-curl -fsSL https://www.looptroop.ovh/install | sh
+curl --proto =https --proto-redir =https --tlsv1.2 -fsSL https://www.looptroop.ovh/install | sh
 ```
 
 ```powershell
@@ -100,9 +100,10 @@ asks for sudo, and writes nothing outside npm's global prefix.
 
 There is also a standalone executable that carries its own Node runtime — see
 [Installation](https://www.looptroop.ovh/docs/installation#standalone-executable).
-The standalone installer keeps its install lock while the owner is alive, even
-during a slow install. If it reports a leftover `.install.lock.claim`, wait and
-retry; remove that file only after confirming no installer is running.
+The standalone installer refuses to replace a lock while its recorded process
+still exists or cannot be checked. After a crash, that process ID may have been
+reused. If it reports `.install.lock` or `.install.lock.claim`, wait and retry;
+remove only the named file after confirming no installer is running.
 </details>
 
 <details>

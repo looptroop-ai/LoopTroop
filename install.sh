@@ -1,9 +1,9 @@
 #!/bin/sh
 # LoopTroop installer for macOS and Linux.
 #
-#   curl -fsSL https://www.looptroop.ovh/install | sh
-#   curl -fsSL https://www.looptroop.ovh/install | sh -s -- --version 9.9.9
-#   curl -fsSL https://www.looptroop.ovh/install | sh -s -- --binary
+#   curl --proto '=https' --proto-redir '=https' --tlsv1.2 -fsSL https://www.looptroop.ovh/install | sh
+#   curl --proto '=https' --proto-redir '=https' --tlsv1.2 -fsSL https://www.looptroop.ovh/install | sh -s -- --version 9.9.9
+#   curl --proto '=https' --proto-redir '=https' --tlsv1.2 -fsSL https://www.looptroop.ovh/install | sh -s -- --binary
 #
 # Downloads what a LoopTroop release published, checks it against the checksum
 # that release recorded, and installs it: the npm package with npm by default,
@@ -611,6 +611,32 @@ export async function streamBody(response, limit, what, write, touch) {
   return total
 }
 
+/** Fetches installer metadata or bytes without sending any request over an insecure redirect. */
+export async function fetchInstallerUrl(url, { headers, signal } = {}) {
+  let current = new URL(url)
+  const fixture = process.env.LOOPTROOP_INSTALL_API ? new URL(process.env.LOOPTROOP_INSTALL_API) : null
+  const fixtureOrigin = fixture?.protocol === 'http:'
+    && (fixture.hostname === 'localhost' || fixture.hostname === '[::1]' || /^127\.\d+\.\d+\.\d+$/.test(fixture.hostname))
+    ? fixture.origin : null
+  const requestHeaders = new Headers(headers)
+  let usedHttps = false
+  for (let redirects = 0; ; redirects++) {
+    if (current.protocol !== 'https:' && (usedHttps || current.protocol !== 'http:' || current.origin !== fixtureOrigin)) {
+      throw new Error('Installer downloads require HTTPS; insecure URLs and redirects are refused.')
+    }
+    usedHttps ||= current.protocol === 'https:'
+    const response = await fetch(current, { headers: requestHeaders, signal, redirect: 'manual' })
+    if (![301, 302, 303, 307, 308].includes(response.status)) return response
+    const location = response.headers.get('location')
+    if (location === null) return response
+    await response.body?.cancel()
+    if (redirects === 20) throw new Error('Installer download exceeded 20 redirects.')
+    const next = new URL(location, current)
+    if (next.origin !== current.origin) requestHeaders.delete('authorization')
+    current = next
+  }
+}
+
 async function getJson(url) {
   const headers = { accept: 'application/vnd.github+json', 'user-agent': 'looptroop-installer' }
   // Only to lift the 60-per-hour anonymous rate limit when one happens to be
@@ -622,7 +648,7 @@ async function getJson(url) {
   try {
     let response
     try {
-      response = await fetch(url, { headers, signal: guard.signal })
+      response = await fetchInstallerUrl(url, { headers, signal: guard.signal })
     } catch (error) {
       fail('Could not reach GitHub.', guard.reason() ?? String(error.message ?? error), 'Check your network and try again.')
     }
@@ -658,9 +684,8 @@ async function download(url, destination) {
   try {
     let response
     try {
-      response = await fetch(url, {
+      response = await fetchInstallerUrl(url, {
         headers: { 'user-agent': 'looptroop-installer' },
-        redirect: 'follow',
         signal: guard.signal,
       })
     } catch (error) {
@@ -1941,6 +1966,8 @@ export function withInstallLock(dir, action) {
     let alive = true
     if (Number.isSafeInteger(pid)) {
       try {
+        // A PID proves only that a process exists, not that it is the owner:
+        // reuse stays blocked. Recovery assumes one host and PID namespace.
         process.kill(pid, 0)
       } catch (error) {
         // Permission errors and unknown failures cannot prove the owner died.
@@ -1949,7 +1976,7 @@ export function withInstallLock(dir, action) {
     }
     if (age < STALE_AFTER || alive) {
       fail(
-        'Another install is already running in this directory, or its owner cannot be checked.',
+        'Another install is already running in this directory, or its owner cannot be checked (the recorded PID may have been reused).',
         `Its lock is at ${lock}.`,
         'Wait for it to finish, or delete that file if you are sure nothing is running.',
       )

@@ -18,6 +18,7 @@ afterEach(() => {
 
 function prepare() {
   vi.stubEnv('WINGET_TOKEN', token)
+  vi.stubEnv('GIT_CONFIG_COUNT', '0')
   process.argv = ['node', 'winget-submit.ts', '--version', '9.9.9', '--url', 'https://example.invalid/package.zip', '--sha256', 'a'.repeat(64)]
   vi.spyOn(process.stdout, 'write').mockImplementation(() => true)
   vi.mocked(execFileSync).mockImplementation((command, args) => command === 'gh' && args?.[1] === 'list' ? '[]' : '')
@@ -39,10 +40,28 @@ describe('WinGet submission credentials', () => {
       if (command === 'git') {
         expect(options?.env).toMatchObject({
           GIT_CONFIG_COUNT: '1',
-          GIT_CONFIG_KEY_0: 'http.https://github.com/.extraHeader',
+          GIT_CONFIG_KEY_0: 'http.https://github.com/looptroop-ai/winget-pkgs.git.extraHeader',
           GIT_CONFIG_VALUE_0: `AUTHORIZATION: basic ${credential}`,
         })
       }
+    }
+  })
+
+  it('preserves inherited Git configuration when adding authentication', async () => {
+    prepare()
+    vi.stubEnv('GIT_CONFIG_COUNT', '1')
+    vi.stubEnv('GIT_CONFIG_KEY_0', 'http.version')
+    vi.stubEnv('GIT_CONFIG_VALUE_0', 'HTTP/1.1')
+    await import('../scripts/winget-submit.ts')
+    for (const [command, , options] of vi.mocked(execFileSync).mock.calls) {
+      if (command !== 'git') continue
+      expect(options?.env).toMatchObject({
+        GIT_CONFIG_COUNT: '2',
+        GIT_CONFIG_KEY_0: 'http.version',
+        GIT_CONFIG_VALUE_0: 'HTTP/1.1',
+        GIT_CONFIG_KEY_1: 'http.https://github.com/looptroop-ai/winget-pkgs.git.extraHeader',
+        GIT_CONFIG_VALUE_1: `AUTHORIZATION: basic ${credential}`,
+      })
     }
   })
 

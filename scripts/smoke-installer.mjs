@@ -20,7 +20,7 @@ import { existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync }
 import { tmpdir } from 'node:os'
 import { dirname, join, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
-import { launchTool, toolPath } from './tool-path.ts'
+import { execTool, launchTool, toolPath } from './tool-path.ts'
 
 const repoRoot = resolve(dirname(fileURLToPath(import.meta.url)), '..')
 const IS_WINDOWS = process.platform === 'win32'
@@ -32,7 +32,8 @@ function fail(message, ...detail) {
   process.exit(1)
 }
 
-const expectedVersion = JSON.parse(readFileSync(join(repoRoot, 'package.json'), 'utf8')).version
+const manifest = JSON.parse(readFileSync(join(repoRoot, 'package.json'), 'utf8'))
+const expectedVersion = manifest.version
 const work = mkdtempSync(join(tmpdir(), 'looptroop-installer-smoke-'))
 
 try {
@@ -51,6 +52,22 @@ try {
   // outlive this script or collide with the other install smoke test.
   const prefix = join(work, 'prefix')
   mkdirSync(prefix, { recursive: true })
+
+  // Both spellings keep the install isolated even when the runner exports the
+  // uppercase one. On Windows, Node's npm.cmd redirects through this prefix;
+  // prefer the original global npm shim before switching to the empty prefix.
+  const installEnv = { ...process.env, npm_config_prefix: prefix, NPM_CONFIG_PREFIX: prefix }
+  if (IS_WINDOWS) {
+    const npmPrefix = execTool('npm', ['prefix', '-g']).trim()
+    const path = process.env.PATH ?? process.env.Path ?? ''
+    delete installEnv.Path
+    installEnv.PATH = `${npmPrefix};${path}`
+  }
+  const isolatedNpm = execTool('npm', ['--version'], { env: installEnv }).trim()
+  if (`npm@${isolatedNpm}` !== manifest.packageManager) {
+    fail('The isolated installer would use a different npm version.',
+      `Expected ${manifest.packageManager}; found npm@${isolatedNpm}.`)
+  }
 
   // `--shell powershell` runs the wrapper under Windows PowerShell 5.1 rather
   // than PowerShell 7. They are different runtimes, and 5.1 is the one preinstalled
@@ -94,7 +111,7 @@ try {
     const [probeCommand, probeArgs] = wrapper(...options)
     const probe = spawnSync(probeCommand, probeArgs, {
       encoding: 'utf8',
-      env: { ...process.env, npm_config_prefix: prefix, NPM_CONFIG_PREFIX: prefix },
+      env: installEnv,
     })
     const output = `${probe.stdout ?? ''}${probe.stderr ?? ''}`
 
@@ -113,11 +130,7 @@ try {
 
   const install = spawnSync(command, args, {
     encoding: 'utf8',
-    // Both spellings. npm reads either, and the macOS runners already export
-    // the uppercase one — with both present it is unspecified which wins, which
-    // is exactly how this passed on Linux and Windows and installed into the
-    // runner's real global prefix on macOS.
-    env: { ...process.env, npm_config_prefix: prefix, NPM_CONFIG_PREFIX: prefix },
+    env: installEnv,
   })
   // Both streams, always. A wrapper that exits 0 having printed nothing is a
   // failure mode in its own right, and hiding stderr on the success path makes

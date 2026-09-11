@@ -86,6 +86,14 @@ const suppliedToken = process.env.WINGET_TOKEN?.trim()
 if (!suppliedToken) fail('WINGET_TOKEN is not set.')
 const token = suppliedToken
 const gitCredential = Buffer.from(`x-access-token:${token}`).toString('base64')
+// Append like the daemon's Git helper: caller-supplied transport settings survive.
+const inheritedConfigCount = Number(process.env.GIT_CONFIG_COUNT ?? '0')
+if (!Number.isSafeInteger(inheritedConfigCount) || inheritedConfigCount < 0) fail('GIT_CONFIG_COUNT must be a non-negative integer.')
+const gitAuth = {
+  GIT_CONFIG_COUNT: String(inheritedConfigCount + 1),
+  [`GIT_CONFIG_KEY_${inheritedConfigCount}`]: `http.https://github.com/${FORK}.git.extraHeader`,
+  [`GIT_CONFIG_VALUE_${inheritedConfigCount}`]: `AUTHORIZATION: basic ${gitCredential}`,
+}
 
 /** Anything that would print the token, with the token taken out. */
 function redact(text: string): string {
@@ -126,11 +134,7 @@ function run(command: string, args: string[], options: { cwd?: string, allowFail
       env: {
         ...process.env,
         GH_TOKEN: token,
-        ...(command === 'git' ? {
-          GIT_CONFIG_COUNT: '1',
-          GIT_CONFIG_KEY_0: 'http.https://github.com/.extraHeader',
-          GIT_CONFIG_VALUE_0: `AUTHORIZATION: basic ${gitCredential}`,
-        } : {}),
+        ...(command === 'git' ? gitAuth : {}),
       },
     })
   } catch (error) {

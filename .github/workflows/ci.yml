@@ -449,7 +449,7 @@ jobs:
       # package the job installs.
       - name: Install ${{ matrix.manager }}
         if: matrix.manager != 'bun' || runner.os != 'Windows'
-        run: npm install -g --allow-scripts=${{ matrix.manager }} ${{ matrix.package }}
+        run: npm install -g --allow-scripts=${{ matrix.package }} ${{ matrix.package }}
 
       # The release archive, checked against the digest bun published for it,
       # rather than piping bun.sh/install.ps1 into a shell. That script is

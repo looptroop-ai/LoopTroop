@@ -215,6 +215,8 @@ const serverIntegrationTests = [
   'tests/installer.test.ts',
   'tests/installScriptPolicy.test.ts',
   'tests/stripTypes.test.ts',
+  'tests/wingetSubmit.test.ts',
+  'tests/installerDownload.test.ts',
   // Rebuilds the OpenCode adapter singleton, which siblings share and mock.
   'tests/opencodeRuntimeConfig.test.ts',
   // Same reason, arrived at the hard way. `questionWindows.ts` is imported by

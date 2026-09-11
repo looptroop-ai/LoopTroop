@@ -9,7 +9,11 @@ Repository installs retain the exact-version esbuild approvals in `package.json`
 Disabling all scripts here would skip esbuild's binary setup. The npm pin script asserts the
 reviewed major as well as the declared version. The Node Current lane keeps its bundled npm,
 but refuses to install unless it is npm 12. Policy tests exercise an approved and a denied
-local package, and check workflow ordering and the lockfile's script-bearing dependencies.
+local package using npm's own tarball identity resolution on every platform, and check workflow
+ordering and the lockfile's script-bearing dependencies. The optional fsevents install script
+is explicitly denied, so npm no longer reports it as awaiting review. npm's own global bootstrap
+also disables scripts. Windows installer smoke checks retain and verify the pinned npm even
+after switching to an isolated global prefix.
 
 This is a scoped acceptance of vetted install scripts, not a claim that scripts are harmless.
 Only repository installs read the root allowlist: global installs and npx do not.
@@ -25,6 +29,8 @@ Reasons used in the ledger:
 - **OpenCode tooling:** the global install and its script approval name the same exact OpenCode
   version. Its postinstall installs the platform binary. This is smoke tooling; the LoopTroop
   release under test still comes from the live channel.
+  Global package-manager approvals likewise include the exact version. Their fixed matrix and
+  the Renovate validator pin are checked by policy tests; OpenCode tooling updates remain manual.
 - **Test fixture:** this helper only sets up temporary repositories under the developer/CI
   account using the test runner's Git. It does not handle application requests or ship in the
   daemon. Production tool launches use trusted executable resolution; importing that resolver
@@ -74,22 +80,48 @@ dismissed state was read back from the API. Each is accepted only for the stated
 ## Fixed instead of dismissed
 
 - Docker's production install disables lifecycle scripts. Its Node base shipped npm 11, so the
-  image now installs and verifies the npm version from the selected tarball. The production
+  build stage now installs and verifies the npm version from the selected tarball. The production
   dependency tree has no install hooks; esbuild is a development dependency. The old blanket
   esbuild rationale did not apply to alert #33 (`docker:S6505`).
 - HTTPS downloads for actionlint and the GitHub CLI signing key restrict both initial requests
   and redirects to HTTPS and require TLS 1.2 or later (#21 and #34).
+- Installer metadata and archive requests validate every redirect before following it, retain
+  their existing timeout and size limits, and remove authorization on cross-origin redirects.
+  Only an explicitly configured HTTP loopback fixture may use HTTP, within its own origin;
+  an HTTPS request can never downgrade to that fixture. Published curl bootstrap and upgrade
+  commands also restrict initial requests and redirects to HTTPS.
 - The OpenCode tooling install is exact-pinned (#18). LoopTroop channel selection is unchanged.
 - Workflow permission alerts #16 and #20 were already fixed before this stage.
 
 No CSP script restriction is weakened. No app route, status, parser, or payload changes in this
-stage. Container build inputs are limited to the selected tarball and Dockerfile; WinGet Git
-credentials move from process arguments to process-scoped configuration. Installer locking
-protects live owners and serializes abandoned-lock recovery.
+stage; the existing upgrade-command value now includes HTTPS enforcement. Container build inputs
+are limited to the selected tarball and Dockerfile; WinGet Git credentials move from process
+arguments to fork-scoped process configuration without replacing inherited Git settings.
+Installer locking protects live owners and serializes abandoned-lock recovery. PID checks
+assume one host and PID namespace. A reused PID remains conservatively blocked and requires
+manual cleanup after verifying no installer is running, just like an abandoned recovery claim.
 
 ## Published documentation
 
 The website checkout was checked separately. Its installation page now includes conditional
-recovery guidance for an installer that reports `.install.lock.claim`: wait and retry, and
+recovery guidance for an installer that reports `.install.lock` or `.install.lock.claim`: wait and retry, and
 remove only the named file after verifying no installer is running. Its released CLI source
-reference and the installer updates already scheduled for release are unchanged.
+reference and the installer updates already scheduled for release are unchanged. Its curl
+bootstrap commands now enforce HTTPS, including redirects; those flags were checked against
+the published wrapper with `--help` before documenting them.
+
+## CI review observations
+
+The first PR17 CI run exposed a Windows-only local-tarball approval mismatch, corrected by
+letting npm write the fixture's resolved identity. The floating Node Current job reported
+npm 11.19.1 and refused installation as intended: its policy still requires npm 12.
+The Kilo review failed because its model output limit was reached, without a code finding.
+
+Two external tools still emit upstream deprecation warnings: the current pinned
+download-artifact action's archive dependency uses deprecated Buffer construction
+([upstream issue](https://github.com/actions/download-artifact/issues/484)), and Renovate's
+validator dependency tree contains deprecated packages. A plain `gh run download` replacement
+would lose the action's artifact digest verification. These warnings are separate from the
+repository-owned warnings corrected here. The TypeScript checker and installer generator
+filter only Node's exact parser API-status advisory, preserving other warning details and
+one-shot listeners.

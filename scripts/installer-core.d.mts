@@ -160,6 +160,12 @@ export function runTool(
 
 export function stallGuard(idleMs: number, what: string): StallGuard
 
+/** GET metadata or bytes through HTTPS redirects, allowing only an explicit local API fixture over HTTP. */
+export function fetchInstallerUrl(
+  url: string,
+  options?: { headers?: HeadersInit; signal?: AbortSignal },
+): Promise<Response>
+
 /** Reads a response body to a byte cap, writing chunks out as they arrive. */
 export function streamBody(
   response: Response,

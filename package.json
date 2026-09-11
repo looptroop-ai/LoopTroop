@@ -164,6 +164,7 @@
   "//allowScripts": "Security decisions and scoped exceptions: .github/security-alert-dispositions.md",
   "allowScripts": {
     "esbuild@0.25.12": true,
-    "esbuild@0.28.2": true
+    "esbuild@0.28.2": true,
+    "fsevents@2.3.3": false
   }
 }

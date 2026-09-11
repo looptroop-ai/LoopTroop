@@ -34,15 +34,14 @@ import { stripTypeScriptTypes } from 'node:module'
 import { dirname, join, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
 
-// `stripTypeScriptTypes` is still flagged experimental, and Node writes that
-// notice to stderr on import. Left alone it prints on every `installers:check`
-// run, including the green ones, which is how a real warning stops being read.
-// Node's own printer is a listener like any other, so it has to go before a
-// filtered one can take its place.
+// Keep Node's parser as the authority. Like verify:strip-types, hide only its
+// known API-status advisory; forward every other warning to Node's listeners.
+const warningListeners = process.rawListeners('warning')
 process.removeAllListeners('warning')
 process.on('warning', (warning) => {
-  if (warning.name === 'ExperimentalWarning' && warning.message.includes('stripTypeScriptTypes')) return
-  process.stderr.write(`${warning.name}: ${warning.message}\n`)
+  if (warning.name === 'ExperimentalWarning'
+    && warning.message === 'stripTypeScriptTypes is an experimental feature and might change at any time') return
+  for (const listener of warningListeners) listener.call(process, warning)
 })
 
 const repoRoot = resolve(dirname(fileURLToPath(import.meta.url)), '..')

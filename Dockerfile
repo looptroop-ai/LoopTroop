@@ -5,7 +5,7 @@
 # Resolving `looptroop@x.y.z` from npm instead would make this channel wait on
 # the npm channel, and a release must not have channels depending on siblings.
 #
-# Build locally with:
+# Build locally in a POSIX shell (bash, sh or similar):
 #   npm pack
 #   version="$(node -p 'require("./package.json").version')"
 #   tar -cf - Dockerfile "looptroop-${version}.tgz" | docker build \
@@ -138,6 +138,7 @@ COPY ${TARBALL} ./package.tgz
 
 # Read npm's pin from the release itself. Global installs do not use the
 # project's allowScripts policy; neither install here needs lifecycle scripts.
+# Pinning also keeps build-stage dependency resolution on the supported npm.
 # The runtime stage takes only the installed tree, leaving npm's cache behind.
 RUN tar -xzf package.tgz package/package.json \
   && npm_version="$(node -p 'const pin = require("./package/package.json").packageManager; const match = /^npm@(\d+\.\d+\.\d+)$/.exec(pin); if (!match) throw new Error("packageManager must pin an exact npm version"); match[1]')" \

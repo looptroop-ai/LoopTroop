@@ -66,7 +66,7 @@ if (current === declared) {
 }
 
 process.stdout.write(`npm ${current} is installed; package.json declares ${declared}. Installing it.\n`)
-npm(['install', '--global', `npm@${declared}`])
+npm(['install', '--global', '--ignore-scripts', `npm@${declared}`])
 
 // Asserted rather than assumed: a global install that lands outside PATH leaves
 // the old npm in place and would otherwise pass silently.

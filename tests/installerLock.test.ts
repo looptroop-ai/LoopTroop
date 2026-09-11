@@ -64,7 +64,7 @@ describe('installer lock ownership and recovery', () => {
     })
     expect(withInstallLock(dir, () => {
       expect(existsSync(`${lock}.claim`)).toBe(false)
-      expect(readFileSync(lock, 'utf8')).toMatch(new RegExp(`^${process.pid}-`))
+      expect(readFileSync(lock, 'utf8').startsWith(`${process.pid}-`)).toBe(true)
       expect(() => withInstallLock(dir, () => { throw new Error('overlap') })).toThrow('Another install is already running')
       return 'installed'
     })).toBe('installed')

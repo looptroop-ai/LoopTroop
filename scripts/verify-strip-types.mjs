@@ -20,7 +20,7 @@ import { fileURLToPath } from 'node:url'
 
 // Keep Node's parser as the authority. Like installers:check, hide only its
 // known API-status advisory; forward every other warning to Node's listeners.
-const warningListeners = process.listeners('warning')
+const warningListeners = process.rawListeners('warning')
 process.removeAllListeners('warning')
 process.on('warning', (warning) => {
   if (warning.name === 'ExperimentalWarning'

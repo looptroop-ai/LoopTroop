@@ -53,8 +53,8 @@ describe('dependency install script policy', () => {
         let checked = false
         for (const { run = '' } of steps) {
           for (const line of run.split('\n')) {
-            if (/^\s*node scripts\/pin-npm\.mjs(?: --check-policy)?\s*$/.test(line)) {
-              expect(line.trim()).toBe(`node scripts/pin-npm.mjs${file === 'ci.yml' && job === 'early-warning' ? ' --check-policy' : ''}`)
+            if (/^\s*node scripts\/pin-npm\.mjs(?: --prefer-bundled)?\s*$/.test(line)) {
+              expect(line.trim()).toBe(`node scripts/pin-npm.mjs${file === 'ci.yml' && job === 'early-warning' ? ' --prefer-bundled' : ''}`)
               checked = true
             }
             if (!/^\s*npm (?:ci|install|i)(?:\s|$)/.test(line) || /(?:^|\s)(?:-g|--global)(?:\s|$)/.test(line)) continue

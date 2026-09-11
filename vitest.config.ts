@@ -214,6 +214,7 @@ const serverIntegrationTests = [
   // Starts an HTTP server and spawns the installer as a child process.
   'tests/installer.test.ts',
   'tests/installScriptPolicy.test.ts',
+  'tests/pinNpm.test.ts',
   'tests/stripTypes.test.ts',
   'tests/wingetSubmit.test.ts',
   'tests/installerDownload.test.ts',

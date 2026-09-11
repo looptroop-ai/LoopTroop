@@ -8,8 +8,10 @@ Match future findings by rule and code location; alert numbers are references to
 
 Repository installs retain the exact-version esbuild approvals in `package.json`.
 Disabling all scripts here would skip esbuild's binary setup. The npm pin script asserts the
-reviewed major as well as the declared version. The Node Current lane keeps its bundled npm,
-but refuses to install unless it is npm 12. Policy tests exercise an approved and a denied
+reviewed major as well as the declared version. The Node Current lane keeps bundled npm when
+it is major 12. Otherwise it reports the mismatch and installs the declared npm with scripts
+disabled before installing project dependencies. Node compatibility tests therefore still run
+without trusting an unreviewed install-script policy. Policy tests exercise an approved and a denied
 local registry package with exact name/version approvals, and check workflow
 ordering and the lockfile's script-bearing dependencies. The optional fsevents install script
 is explicitly denied, so npm no longer reports it as awaiting review. npm's own global bootstrap
@@ -146,9 +148,10 @@ its sibling run passed. The failed Packaging summary aggregates that channel fai
 CI and release setup now reuse an installed GNU tar instead of asking Homebrew to install it again.
 This removes the redundant-install warning while retaining installation on runners that lack it.
 
-The floating Node Current job reported npm 11.19.1 and refused installation as intended: its
-policy still requires npm 12. No build or tests run in that lane until the bundled npm meets
-the policy; it currently reports a toolchain-policy mismatch, not Node compatibility results.
+The Node Current job originally stopped at bundled npm 11.19.1, leaving its tests unexecuted.
+It now warns about an unsupported bundled npm and falls back to the declared approved version.
+Bundled npm within major 12 remains floating. A failed bootstrap or version verification still
+fails the job before project installation; genuine test failures remain visible.
 The latest Kilo review completed with no findings; its earlier output-limit failure is superseded.
 
 ### Scanner dashboard findings

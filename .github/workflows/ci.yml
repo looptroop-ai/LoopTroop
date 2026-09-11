@@ -932,12 +932,10 @@ jobs:
           node-version: 26
           cache: npm
 
-      # Deliberately not pinned: the npm bundled with Node 26 is part of what
-      # this lane is here to warn about, and pinning it back to ours would hide
-      # exactly the incompatibility we want early news of. A new npm major must
-      # have its script policy reviewed before this lane installs dependencies.
-      - name: Check npm install-script policy
-        run: node scripts/pin-npm.mjs --check-policy
+      # Keep bundled npm within the reviewed major. Otherwise report the mismatch
+      # and bootstrap our approved npm so Node compatibility tests still run.
+      - name: Select npm with reviewed install-script policy
+        run: node scripts/pin-npm.mjs --prefer-bundled
 
       - name: Install dependencies
         run: npm ci

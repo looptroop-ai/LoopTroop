@@ -1,8 +1,9 @@
 import { act, renderHook, waitFor } from '@testing-library/react'
-import { QueryClientProvider } from '@tanstack/react-query'
+import { QueryClientProvider, useQuery } from '@tanstack/react-query'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { queryClient } from '@/lib/queryClient'
-import { SERVER_LOG_REFRESH_EVENT } from '@/context/logUtils'
+import { serverLogCache, SERVER_LOG_REFRESH_EVENT } from '@/context/logUtils'
+import { SSE_RECONNECT_DELAY_MS } from '@/lib/constants'
 import { getTicketArtifactsQueryKey, useTicketArtifacts, type TicketArtifact } from '../useTicketArtifacts'
 
 vi.mock('@/lib/devApi', () => ({
@@ -528,6 +529,79 @@ describe('useSSE', () => {
     })
   })
 
+  it('clears a replay gap cursor, refetches the snapshot, and reconnects without the stale cursor', async () => {
+    const ticketId = '1:T-gap'
+    const storageKey = `looptroop-sse-last-event-id:${ticketId}`
+    localStorage.setItem(storageKey, '99')
+    serverLogCache.set(`${ticketId}|phase`, [])
+    const snapshot = vi.fn(async () => ({ status: 'CODING' }))
+    const { result, unmount } = renderHook(() => {
+      const ticket = useQuery({ queryKey: ['ticket', ticketId], queryFn: snapshot, staleTime: Infinity })
+      const stream = useSSE({ ticketId })
+      return { ticket, stream }
+    }, { wrapper: ({ children }) => <QueryClientProvider client={queryClient}>{children}</QueryClientProvider> })
+    await waitFor(() => expect(result.current.ticket.data?.status).toBe('CODING'))
+    const source = MockEventSource.instances[0]!
+    snapshot.mockResolvedValue({ status: 'COMPLETE' })
+    await act(async () => source.emit('replay_gap', { ticketId, reason: 'cursor_unavailable' }, ''))
+    await waitFor(() => expect(result.current.ticket.data?.status).toBe('COMPLETE'))
+    expect(localStorage.getItem(storageKey)).toBeNull()
+    expect(result.current.stream.lastEventIdRef.current).toBe('0')
+    expect(serverLogCache.has(`${ticketId}|phase`)).toBe(false)
+    expect(source.closed).toBe(false)
+
+    vi.useFakeTimers()
+    try {
+      await act(async () => {
+        source.emitTransportError()
+        await vi.advanceTimersByTimeAsync(SSE_RECONNECT_DELAY_MS)
+      })
+      expect(MockEventSource.instances).toHaveLength(2)
+      const reconnected = MockEventSource.instances[1]!
+      expect(new URL(reconnected.url).searchParams.has('lastEventId')).toBe(false)
+      await act(async () => reconnected.emit('progress', { content: 'resumed' }, '100'))
+      expect(localStorage.getItem(storageKey)).toBe('100')
+      await act(async () => source.emitAfterClose('replay_gap', { ticketId }, ''))
+      expect(localStorage.getItem(storageKey)).toBe('100')
+    } finally {
+      unmount()
+      vi.useRealTimers()
+    }
+  })
+
+  it.each(['-1', '1.5', '9007199254740992', 'invalid', '1\n'])('drops malformed persisted cursor %j before connecting', async (cursor) => {
+    const ticketId = '1:T-invalid'
+    const storageKey = `looptroop-sse-last-event-id:${ticketId}`
+    localStorage.setItem(storageKey, cursor)
+    const { unmount } = renderHook(() => useSSE({ ticketId }))
+    await waitFor(() => expect(MockEventSource.instances).toHaveLength(1))
+    expect(new URL(MockEventSource.instances[0]!.url).searchParams.has('lastEventId')).toBe(false)
+    expect(localStorage.getItem(storageKey)).toBeNull()
+    unmount()
+  })
+
+  it('exposes snapshot refetch errors after a gap without restoring the rejected cursor', async () => {
+    const ticketId = '1:T-gap-error'
+    const snapshot = vi.fn(async () => ({ status: 'CODING' }))
+    const { result, unmount } = renderHook(() => {
+      const ticket = useQuery({ queryKey: ['ticket', ticketId], queryFn: snapshot, staleTime: Infinity, retry: false })
+      const stream = useSSE({ ticketId })
+      return { ticket, stream }
+    }, { wrapper: ({ children }) => <QueryClientProvider client={queryClient}>{children}</QueryClientProvider> })
+    await waitFor(() => expect(result.current.ticket.data?.status).toBe('CODING'))
+    snapshot.mockRejectedValue(new Error('Snapshot unavailable'))
+    expect(result.current.ticket.isRefetchError).toBe(false)
+    await act(async () => {
+      MockEventSource.instances[0]!.emit('progress', {}, '42')
+      MockEventSource.instances[0]!.emit('replay_gap', { ticketId, reason: 'cursor_unavailable' }, '')
+    })
+    await waitFor(() => expect(result.current.ticket.isRefetchError).toBe(true))
+    expect(result.current.ticket.error?.message).toBe('Snapshot unavailable')
+    expect(result.current.stream.lastEventIdRef.current).toBe('0')
+    expect(localStorage.getItem(`looptroop-sse-last-event-id:${ticketId}`)).toBeNull()
+    unmount()
+  })
+
   it('recovers ticket, artifact, interview, setup, bead, and log data when opening after a persisted stream gap', async () => {
     const ticketId = '1:T-42'
     localStorage.setItem(`looptroop-sse-last-event-id:${ticketId}`, '99')
@@ -552,9 +626,9 @@ describe('useSSE', () => {
         expect(invalidateSpy).toHaveBeenCalledWith({ queryKey: ['tickets'] })
         expect(invalidateSpy).toHaveBeenCalledWith({ queryKey: ['ticket-artifacts', ticketId] })
         expect(invalidateSpy).toHaveBeenCalledWith({ queryKey: ['interview', ticketId] })
-        expect(invalidateSpy).toHaveBeenCalledWith({ queryKey: ['artifact', ticketId, 'execution-setup-plan'] })
+        expect(invalidateSpy).toHaveBeenCalledWith({ queryKey: ['artifact', ticketId] })
         expect(invalidateSpy).toHaveBeenCalledWith({ queryKey: ['ticket-beads', ticketId] })
-        expect(invalidateSpy).toHaveBeenCalledWith({ queryKey: ['artifact', ticketId, 'beads'] })
+        expect(invalidateSpy).toHaveBeenCalledWith({ queryKey: ['bead-diff', ticketId] })
         expect(invalidateSpy).toHaveBeenCalledWith({ queryKey: ['manual-qa', ticketId] })
         expect(logRefreshSpy).toHaveBeenCalledWith(expect.objectContaining({
           detail: { ticketId },

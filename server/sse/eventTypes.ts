@@ -18,6 +18,7 @@ export const SSE_EVENT_TYPES = [
   'needs_input',
   'artifact_change',
   'ai_metrics',
+  'replay_gap',
 ] as const
 
 export type SSEEventType = typeof SSE_EVENT_TYPES[number]

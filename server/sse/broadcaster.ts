@@ -106,12 +106,22 @@ class SSEBroadcaster {
     }
   }
 
-  // Replay events since lastEventId
-  getEventsSince(ticketId: string, lastEventId: string): { id: string; event: string; data: string }[] {
-    const buffer = this.eventBuffer.get(ticketId) ?? []
-    const lastId = parseInt(lastEventId, 10)
-    if (isNaN(lastId)) return buffer
-    return buffer.filter(e => parseInt(e.id, 10) > lastId)
+  // A missing cursor cannot prove continuity (eviction, coalescing, or daemon restart).
+  getEventsSince(ticketId: string, lastEventId: string):
+    | { events: BufferedSSEEvent[]; gap: null }
+    | { events: []; gap: 'invalid_cursor' | 'cursor_unavailable' } {
+    if (!/^(0|[1-9]\d{0,15})$/.test(lastEventId) || !Number.isSafeInteger(Number(lastEventId))) {
+      return { events: [], gap: 'invalid_cursor' }
+    }
+    const buffer = (this.eventBuffer.get(ticketId) ?? [])
+      .filter(event => Date.now() - event.timestamp < this.bufferTtlMs)
+    if (!buffer.some(event => event.id === lastEventId)) {
+      return { events: [], gap: 'cursor_unavailable' }
+    }
+    return {
+      events: buffer.filter(event => Number(event.id) > Number(lastEventId)),
+      gap: null,
+    }
   }
 
   getClientCount(ticketId: string): number {
@@ -166,10 +176,10 @@ class SSEBroadcaster {
         )
 
         if (existingIndex >= 0) {
-          buffer[existingIndex] = nextEvent
-        } else {
-          buffer.push(nextEvent)
+          buffer.splice(existingIndex, 1)
         }
+        // Keep ID order so eviction always removes the oldest event.
+        buffer.push(nextEvent)
 
         this.trimBuffer(buffer)
         this.setOrDeleteBuffer(ticketId, buffer)

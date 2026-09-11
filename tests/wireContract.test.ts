@@ -165,6 +165,7 @@ const EXPECTED_SSE_EVENTS = [
   'log',
   'needs_input',
   'progress',
+  'replay_gap',
   'state_change',
 ].sort()
 

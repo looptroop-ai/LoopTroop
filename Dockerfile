@@ -8,11 +8,11 @@
 # Build locally with:
 #   npm pack
 #   version="$(node -p 'require("./package.json").version')"
-#   docker build \
+#   tar -cf - Dockerfile "looptroop-${version}.tgz" | docker build \
 #     --build-arg TARBALL="looptroop-${version}.tgz" \
 #     --build-arg VERSION="${version}" \
 #     --build-arg REVISION="$(git rev-parse HEAD)" \
-#     -t looptroop .
+#     -t looptroop -
 #
 # The version is read rather than typed for the same reason CI reads it: a
 # literal here goes stale on the next release and nothing would notice. VERSION
@@ -136,10 +136,15 @@ RUN test -n "$TARBALL" || (echo "ERROR: --build-arg TARBALL=<file>.tgz is requir
 
 COPY ${TARBALL} ./package.tgz
 
-# --omit=dev because that is what a user gets, and into a self-contained prefix
-# so the runtime stage can take the tree without npm's cache riding along.
-RUN npm install --global --omit=dev --prefix /opt/looptroop ./package.tgz \
-  && rm -f package.tgz
+# Read npm's pin from the release itself. Global installs do not use the
+# project's allowScripts policy; neither install here needs lifecycle scripts.
+# The runtime stage takes only the installed tree, leaving npm's cache behind.
+RUN tar -xzf package.tgz package/package.json \
+  && npm_version="$(node -p 'const pin = require("./package/package.json").packageManager; const match = /^npm@(\d+\.\d+\.\d+)$/.exec(pin); if (!match) throw new Error("packageManager must pin an exact npm version"); match[1]')" \
+  && npm install --global --ignore-scripts "npm@${npm_version}" \
+  && test "$(npm --version)" = "$npm_version" \
+  && npm install --global --ignore-scripts --omit=dev --prefix /opt/looptroop ./package.tgz \
+  && rm -rf package package.tgz
 
 
 FROM node:24.18.1-bookworm-slim@sha256:235600a8101ab264e117b1768e925532262668dc9b581ef1dd7d96ced463b8e7 AS runtime
@@ -174,7 +179,7 @@ RUN apt-get update \
     gnupg \
     openssh-client \
   && install -m 0755 -d /etc/apt/keyrings \
-  && curl -fsSL https://cli.github.com/packages/githubcli-archive-keyring.gpg \
+  && curl --proto '=https' --proto-redir '=https' --tlsv1.2 -fsSL https://cli.github.com/packages/githubcli-archive-keyring.gpg \
     -o /etc/apt/keyrings/githubcli-archive-keyring.gpg \
   && chmod 0644 /etc/apt/keyrings/githubcli-archive-keyring.gpg \
   && echo "deb [arch=$(dpkg --print-architecture) signed-by=/etc/apt/keyrings/githubcli-archive-keyring.gpg] https://cli.github.com/packages stable main" \

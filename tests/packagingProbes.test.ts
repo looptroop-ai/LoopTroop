@@ -1,5 +1,6 @@
 import { describe, it, expect, afterAll, afterEach, vi } from 'vitest'
-import { chmodSync, chownSync, existsSync, mkdirSync, mkdtempSync, readFileSync, writeFileSync } from 'node:fs'
+import { spawnSync } from 'node:child_process'
+import { chmodSync, chownSync, existsSync, mkdirSync, mkdtempSync, readFileSync, statSync, writeFileSync } from 'node:fs'
 import { createServer } from 'node:http'
 import type { AddressInfo } from 'node:net'
 import { tmpdir } from 'node:os'
@@ -22,6 +23,29 @@ function freshDir() {
   scratch.push(dir)
   return dir
 }
+
+describe.skipIf(process.platform === 'win32')('container build context', () => {
+  it.each(['ci', 'release', 'container-republish'])('%s sends only the selected tarball and Dockerfile', (workflow) => {
+    const source = readFileSync(new URL(`../.github/workflows/${workflow}.yml`, import.meta.url), 'utf8')
+    const command = source.match(/tar -cf - Dockerfile[^\n]*\| docker (?:buildx )?build \\\n(?:[^\n]*\\\n)*\s+-(?=\n)/)?.[0]
+    expect(command).toBeDefined()
+    const directory = freshDir()
+    writeFileSync(join(directory, 'Dockerfile'), 'FROM scratch\n')
+    writeFileSync(join(directory, 'looptroop-selected.tgz'), 'selected')
+    writeFileSync(join(directory, 'looptroop-old.tgz'), Buffer.alloc(1024 * 1024))
+    writeFileSync(join(directory, '.env'), 'secret')
+    const result = spawnSync('bash', ['-euo', 'pipefail', '-c', `docker() { cat > context.tar; tar -tf context.tar; }; ${command}`], {
+      cwd: directory,
+      encoding: 'utf8',
+      env: { ...process.env, TARBALL: 'looptroop-selected.tgz', VERSION: 'test', REVISION: 'test', GITHUB_SHA: 'test', PLATFORM: 'linux/amd64', DH_IMAGE: 'test', GHCR_IMAGE: 'test' },
+    })
+    expect(result.error).toBeUndefined()
+    expect(result.stderr).toBe('')
+    expect(result.status).toBe(0)
+    expect(result.stdout.trim().split('\n')).toEqual(['Dockerfile', 'looptroop-selected.tgz'])
+    expect(statSync(join(directory, 'context.tar')).size).toBeLessThan(32 * 1024)
+  })
+})
 
 /**
  * The throwaway tap is built by deleting the directory it is about to occupy,

@@ -44,7 +44,7 @@ jobs:
           version=1.7.12
           sha256=8aca8db96f1b94770f1b0d72b6dddcb1ebb8123cb3712530b08cc387b349a3d8
           url="https://github.com/rhysd/actionlint/releases/download/v${version}/actionlint_${version}_linux_amd64.tar.gz"
-          curl --fail --silent --show-error --location --retry 3 -o /tmp/actionlint.tgz "${url}"
+          curl --proto '=https' --proto-redir '=https' --tlsv1.2 --fail --silent --show-error --location --retry 3 -o /tmp/actionlint.tgz "${url}"
           echo "${sha256}  /tmp/actionlint.tgz" | sha256sum --check --status
           tar -xzf /tmp/actionlint.tgz -C /tmp actionlint
 
@@ -308,12 +308,12 @@ jobs:
           VERSION: ${{ steps.pack.outputs.version }}
         run: |
           set -euo pipefail
-          docker build \
+          tar -cf - Dockerfile "${TARBALL}" | docker build \
             --build-arg TARBALL="${TARBALL}" \
             --build-arg VERSION="${VERSION}" \
             --build-arg REVISION="${GITHUB_SHA}" \
             --tag looptroop:smoke \
-            .
+            -
 
       # Everything the script asserts happens inside the container, over
       # `docker exec`. The daemon binds the container's own loopback by design,
@@ -934,7 +934,11 @@ jobs:
 
       # Deliberately not pinned: the npm bundled with Node 26 is part of what
       # this lane is here to warn about, and pinning it back to ours would hide
-      # exactly the incompatibility we want early news of.
+      # exactly the incompatibility we want early news of. A new npm major must
+      # have its script policy reviewed before this lane installs dependencies.
+      - name: Check npm install-script policy
+        run: node scripts/pin-npm.mjs --check-policy
+
       - name: Install dependencies
         run: npm ci
 

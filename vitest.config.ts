@@ -214,6 +214,7 @@ const serverIntegrationTests = [
   // Starts an HTTP server and spawns the installer as a child process.
   'tests/installer.test.ts',
   'tests/installScriptPolicy.test.ts',
+  'tests/stripTypes.test.ts',
   // Rebuilds the OpenCode adapter singleton, which siblings share and mock.
   'tests/opencodeRuntimeConfig.test.ts',
   // Same reason, arrived at the hard way. `questionWindows.ts` is imported by

@@ -87,9 +87,9 @@ stage. Container build inputs are limited to the selected tarball and Dockerfile
 credentials move from process arguments to process-scoped configuration. Installer locking
 protects live owners and serializes abandoned-lock recovery.
 
-## Release documentation follow-up
+## Published documentation
 
-The website checkout was checked separately and is clean on `main`. It describes released
-behavior and makes no claims about these internal security controls. At the release that
-ships this stage, copy the standalone recovery-lock guidance from README into the website
-installation page alongside the installer documentation updates already scheduled for release.
+The website checkout was checked separately. Its installation page now includes conditional
+recovery guidance for an installer that reports `.install.lock.claim`: wait and retry, and
+remove only the named file after verifying no installer is running. Its released CLI source
+reference and the installer updates already scheduled for release are unchanged.

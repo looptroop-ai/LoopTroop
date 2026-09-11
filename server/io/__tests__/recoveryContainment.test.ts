@@ -20,7 +20,7 @@ afterEach(() => {
 describe('recovery descriptor containment', () => {
   it.each([
     ['file', false], ['alias', false], ['file', true], ['alias', true],
-  ] as const)('never promotes a replacement %s (copy fallback: %s)', (replacementKind, copyFallback) => {
+  ] as const)('never reports a replacement %s as recovered (copy fallback: %s)', (replacementKind, copyFallback) => {
     const target = join(directory, 'data.json')
     const tmp = makeAtomicTmpPath(target)
     const original = '{"validated":true}'
@@ -48,9 +48,30 @@ describe('recovery descriptor containment', () => {
     if (copyFallback) {
       expect(readFileSync(target, 'utf8')).toBe(original)
       if (process.platform !== 'win32') expect(lstatSync(target).mode & 0o777).toBe(0o600)
-    } else expect(existsSync(target)).toBe(false)
+    } else if (replacementKind === 'file') {
+      expect(readFileSync(target, 'utf8')).toBe('{"notValidated":true}')
+    } else expect(lstatSync(target).isSymbolicLink()).toBe(true)
     if (replacementKind === 'file') expect(readFileSync(tmp, 'utf8')).toBe('{"notValidated":true}')
     else expect(lstatSync(tmp).isSymbolicLink()).toBe(true)
+  })
+
+  it('preserves a legitimate target installed after the recovery hardlink was created', () => {
+    const target = join(directory, 'data.json')
+    const tmp = makeAtomicTmpPath(target)
+    const heldTarget = join(directory, 'held-recovery-target')
+    writeFileSync(tmp, '{"validated":true}')
+    const link = fs.linkSync
+    vi.spyOn(fs, 'linkSync').mockImplementation((source, destination) => {
+      link(source, destination)
+      renameSync(target, heldTarget)
+      writeFileSync(target, '{"newerWriter":true}')
+    })
+    vi.spyOn(console, 'error').mockImplementation(() => {})
+
+    expect(recoverOrphanTmpFiles(directory)).toEqual([])
+    expect(readFileSync(target, 'utf8')).toBe('{"newerWriter":true}')
+    expect(readFileSync(tmp, 'utf8')).toBe('{"validated":true}')
+    expect(readFileSync(heldTarget, 'utf8')).toBe('{"validated":true}')
   })
 
   it('keeps a target created after inspection and preserves the temp for a later attempt', () => {

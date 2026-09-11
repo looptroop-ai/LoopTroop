@@ -42,6 +42,14 @@ describe('ticket file containment', () => {
     expect(() => writeTicketMeta(project, 'ABC-1', { title: 'unsafe' })).toThrow()
   })
 
+  it.each(['file.txt:secret', 'runtime/log::$DATA', 'folder:stream/file'])('rejects alternate-stream syntax in %s before ticket I/O', (path) => {
+    for (const kind of ['read', 'remove'] as const) {
+      expect(() => resolveProjectTicketContainedPath(project, 'ABC-1', path, kind)).toThrow()
+    }
+    expect(() => { writeProjectTicketFile(project, 'ABC-1', path, 'unsafe') }).toThrow()
+    expect(readTicketMeta(project, 'ABC-1')).toEqual({})
+  })
+
   it('rejects artifact links leaving the ticket even when they stay in the project', () => {
     mkdirSync(ticketDir, { recursive: true })
     const sibling = join(project, 'private')

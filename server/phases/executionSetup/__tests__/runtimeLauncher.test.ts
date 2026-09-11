@@ -5,7 +5,6 @@ import { afterEach, describe, expect, it } from 'vitest'
 import { writeExecutionSetupRuntimeLauncher } from '../runtimeLauncher'
 import type { ExecutionSetupProfile } from '../types'
 import { makeTempDir, removeTempDir } from '../../../test/tempDir'
-import { launchThroughInterpreter } from '../../../lib/executablePath'
 
 const roots: string[] = []
 afterEach(() => { for (const root of roots.splice(0)) removeTempDir(root) })
@@ -92,19 +91,26 @@ describe('execution setup runtime launcher', () => {
       const readerPath = join(worktreePath, 'read-env.cjs')
       const environmentKeys = JSON.stringify([...Object.keys(setup.runtimeEnvironment.variables), 'PATH'])
       writeFileSync(readerPath, `process.stdout.write(Buffer.from(JSON.stringify(Object.fromEntries(${environmentKeys}.map(key => [key, process.env[key]])))).toString('base64'))`)
-      const launch = shell === 'cmd'
-        ? launchThroughInterpreter('cmd.exe', launcherPath, [process.execPath, readerPath])
-        : shell === 'powershell'
-          ? { file: 'powershell.exe', args: ['-NoProfile', '-NonInteractive', '-ExecutionPolicy', 'Bypass', '-File', launcherPath, process.execPath, readerPath] }
-          : { file: 'sh', args: [launcherPath, process.execPath, readerPath] }
       const pathKey = Object.keys(process.env).find((key) => key.toLowerCase() === 'path') ?? 'PATH'
       const inheritedPath = `${process.env[pathKey] ?? ''}${shell === 'cmd' ? ';" & echo injected>injected & rem "!PATH!' : ''}`
-      const result = spawnSync(launch.file, launch.args?.map((arg) => arg === '/v:off' ? '/v:on' : arg), {
+      // Node deduplicates Windows environment keys case-insensitively; keep only our PATH.
+      const env = Object.fromEntries(Object.entries(process.env).filter(([key]) => key.toLowerCase() !== 'path'))
+      const options = {
         cwd: worktreePath,
-        env: { ...process.env, [pathKey]: inheritedPath },
-        encoding: 'utf8',
-        windowsVerbatimArguments: shell === 'cmd',
-      })
+        env: {
+          ...env,
+          PATH: inheritedPath,
+          LOOPTROOP_TEST_LAUNCHER: launcherPath,
+          LOOPTROOP_TEST_NODE: process.execPath,
+        },
+        encoding: 'utf8' as const,
+      }
+      // Shell source stays fixed; paths are data, even if Node or the temp root has spaces.
+      const result = shell === 'cmd'
+        ? spawnSync('cmd.exe', ['/d', '/v:on', '/s', '/c', '""%LOOPTROOP_TEST_LAUNCHER%" "%LOOPTROOP_TEST_NODE%" read-env.cjs"'], { ...options, windowsVerbatimArguments: true })
+        : shell === 'powershell'
+          ? spawnSync('powershell.exe', ['-NoProfile', '-NonInteractive', '-ExecutionPolicy', 'Bypass', '-Command', '& $env:LOOPTROOP_TEST_LAUNCHER $env:LOOPTROOP_TEST_NODE read-env.cjs'], options)
+          : spawnSync('sh', ['-c', 'exec "$LOOPTROOP_TEST_LAUNCHER" "$LOOPTROOP_TEST_NODE" read-env.cjs'], options)
       expect(result.status, result.stderr).toBe(0)
       const actual = JSON.parse(Buffer.from(result.stdout.trim(), 'base64').toString('utf8'))
       expect(actual).toMatchObject(setup.runtimeEnvironment.variables)

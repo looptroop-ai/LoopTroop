@@ -82,8 +82,10 @@ reviewed position rather than an oversight.
 
 Ticket artifact access validates canonical paths from the attached project
 through its worktree and ticket directory. Ordinary internal links remain
-supported; Manual QA evidence rejects links. Cleanup unlinks final aliases and
+supported; Manual QA evidence rejects links. Ticket-relative filenames reject
+colons, including NTFS alternate-stream syntax. Cleanup unlinks final aliases and
 refuses redirected managed roots so it cannot delete their destinations.
+Worktree initialization also refuses these redirects before creating files.
 
 These checks are not an operating-system sandbox. Node has no portable
 directory-relative open/rename API, and another process running as the local
@@ -94,6 +96,10 @@ The AI agent's own command execution retains the local user's permissions.
 Generated runtime launchers validate shell environment names and encode or quote
 values as literal data. Shell-specific inputs that cannot be represented safely
 are rejected before the launcher is written.
+
+Recovery rejects a hard-link publication whose identity differs from the
+validated source. It leaves that target untouched because another writer may
+have replaced it, and keeps the temporary source for inspection.
 
 Ordinary draft creation rolls back its database row if artifact materialization
 fails. Files already written are not part of the database transaction and may

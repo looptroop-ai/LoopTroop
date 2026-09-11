@@ -14,6 +14,7 @@ import type { IgnoreMode } from '@shared/ignoreMode'
 import { getProjectIgnoreMode } from '../storage/projects'
 import {
   detectGitBaseBranch,
+  getProjectWorktreesRoot,
   getTicketDir as resolveTicketDir,
   getTicketWorktreePath as resolveTicketWorktreePath,
   normalizeFolderPath,
@@ -23,6 +24,7 @@ import { ensureWorktreeOwnerMarker } from '../storage/worktreeOwnership'
 import { resolveProjectTicketContainedPath, writeProjectTicketFile } from './containedPath'
 import { getErrorMessage } from '@shared/typeGuards'
 import { gitSyncSucceeds, runGitSync } from '../git/runCommand'
+import { assertManagedWorktreesRoot } from '../git/worktreeRemoval'
 
 interface InitializeOptions {
   externalId: string
@@ -336,8 +338,10 @@ export async function initializeTicket(options: InitializeOptions): Promise<Init
   // Callers may pass an uncanonicalised folder; normalising here keeps every
   // derived path byte-identical to the project root stored at attach time.
   const projectFolder = normalizeFolderPath(options.projectFolder)
+  assertManagedWorktreesRoot(projectFolder, getProjectWorktreesRoot(projectFolder))
   ensureGitRepo(projectFolder)
   await tryFetchOrigin(projectFolder)
+  assertManagedWorktreesRoot(projectFolder, getProjectWorktreesRoot(projectFolder))
   const baseBranch = detectGitBaseBranch(projectFolder)
   const baseBranchRef = ensureBaseBranch(projectFolder, baseBranch)
   const worktreePath = getTicketWorktreePath(projectFolder, options.externalId)

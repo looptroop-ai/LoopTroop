@@ -206,9 +206,10 @@ describe('AIQuestionProvider', () => {
     stubAggregate({ questions: [question], timers: { [ticket.id]: first } })
 
     function Stopper({ ticketId }: { ticketId: string }) {
-      const { stopTimer, ingestSseEvent } = useAIQuestions()
+      const { getTimer, stopTimer, ingestSseEvent } = useAIQuestions()
       return (
         <>
+          <div>generation:{getTimer(ticketId)?.generation ?? 'none'}</div>
           <button onClick={() => stopTimer(ticketId)}>stop</button>
           <button onClick={() => ingestSseEvent({
             type: 'opencode_question_updated',
@@ -223,7 +224,7 @@ describe('AIQuestionProvider', () => {
     }
 
     renderProvider([ticket], <Stopper ticketId={ticket.id} />)
-    await waitFor(() => expect(screen.getByText('stop')).toBeInTheDocument())
+    await waitFor(() => expect(screen.getByText('generation:1')).toBeInTheDocument())
     const calls = () => (globalThis.fetch as ReturnType<typeof vi.fn>).mock.calls
       .filter(([url]) => String(url).includes('question-timer/stop'))
 

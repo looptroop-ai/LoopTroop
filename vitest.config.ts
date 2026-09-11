@@ -138,6 +138,7 @@ const clientNodeTests = [
 // Reproduce with `--sequence.shuffle.files --sequence.seed=N`.
 const serverIntegrationTests = [
   'server/__tests__/startupSessions.test.ts',
+  'server/routes/__tests__/tickets.manualQaContainment.test.ts',
   'server/cli/__tests__/cliUpdate.test.ts',
   'server/git/__tests__/github.test.ts',
   'server/git/__tests__/push.test.ts',

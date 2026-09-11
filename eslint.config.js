@@ -197,10 +197,10 @@ export default tseslint.config(
     },
   },
   {
-    // Workflow artifacts must keep using ticket-scoped I/O. Metadata operations
+    // Workflow and storage artifacts must keep using ticket-scoped I/O. Metadata operations
     // remain available; low-level descriptor/binary exceptions need a local,
-    // documented suppression rather than weakening the whole workflow boundary.
-    files: ['server/workflow/**/*.ts'],
+    // documented suppression rather than weakening the artifact boundary.
+    files: ['server/workflow/**/*.ts', 'server/storage/**/*.ts'],
     ignores: ['**/__tests__/**', '**/*.test.ts'],
     rules: {
       'no-restricted-imports': ['error', {

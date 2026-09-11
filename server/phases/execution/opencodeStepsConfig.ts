@@ -1,7 +1,9 @@
 import { createHash } from 'crypto'
-import { lstatSync, readFileSync, readdirSync, rmSync, unlinkSync } from 'fs'
+import { lstatSync, readdirSync, rmSync, unlinkSync } from 'fs'
 import { dirname, join, resolve } from 'path'
-import { parseAtomicTmpPath, safeAtomicWrite } from '../../io/atomicWrite'
+import { parseAtomicTmpPath, safeAtomicWrite, safeAtomicWriteWithin } from '../../io/atomicWrite'
+import { readFileNoFollowSync } from '../../io/readFile'
+import { resolveContainedPath } from '../../lib/containedPath'
 import { getErrorMessage } from '@shared/typeGuards'
 
 /**
@@ -153,7 +155,7 @@ function readExistingConfig(configPath: string): ExistingConfig {
 
   let raw: string
   try {
-    raw = readFileSync(configPath, 'utf8')
+    raw = readFileNoFollowSync(configPath)
   } catch (error) {
     return { kind: 'unusable', reason: `it could not be read (${getErrorMessage(error)})` }
   }
@@ -265,8 +267,9 @@ export function applyOpencodeStepsConfig(params: {
   try {
     // Owner-only: this is a verbatim copy of a file that can hold provider
     // credentials, and it outlives the run whenever a restore cannot complete.
-    safeAtomicWrite(
-      sidecarPathFor(params.ticketDir),
+    safeAtomicWriteWithin(
+      params.ticketDir,
+      RESTORE_SIDECAR_FILENAME,
       `${JSON.stringify(sidecar, null, 2)}\n`,
       { mode: RESTORE_SIDECAR_FILE_MODE },
     )
@@ -358,7 +361,7 @@ function removeSidecar(ticketDir: string): void {
 function readSidecar(ticketDir: string, expectedConfigPath: string): RestoreSidecar | null {
   let raw: string
   try {
-    raw = readFileSync(sidecarPathFor(ticketDir), 'utf8')
+    raw = readFileNoFollowSync(resolveContainedPath(ticketDir, RESTORE_SIDECAR_FILENAME))
   } catch {
     return null
   }
@@ -405,7 +408,7 @@ function readCurrentConfig(configPath: string): { kind: 'absent' } | { kind: 'fi
   if (stats.isSymbolicLink()) return { kind: 'foreign', reason: 'it is now a symbolic link' }
   if (!stats.isFile()) return { kind: 'foreign', reason: 'it is no longer a regular file' }
   try {
-    return { kind: 'file', raw: readFileSync(configPath, 'utf8') }
+    return { kind: 'file', raw: readFileNoFollowSync(configPath) }
   } catch (error) {
     return { kind: 'foreign', reason: `it could not be read (${getErrorMessage(error)})` }
   }

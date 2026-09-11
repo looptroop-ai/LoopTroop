@@ -47,7 +47,7 @@ function buildPowerShellLauncher(profile: ExecutionSetupProfile): string {
     ...(pathEntries ? [`$env:PATH = (@(${pathEntries}) -join [IO.Path]::PathSeparator) + [IO.Path]::PathSeparator + $env:PATH`] : []),
     'if ($args.Count -eq 0) { throw "A program is required." }',
     '$program = $args[0]',
-    '$programArgs = if ($args.Count -gt 1) { $args[1..($args.Count - 1)] } else { @() }',
+    '$programArgs = @(if ($args.Count -gt 1) { $args[1..($args.Count - 1)] })',
     '& $program @programArgs',
     'exit $LASTEXITCODE',
     '',

@@ -1,5 +1,5 @@
 import { afterAll, beforeEach, describe, expect, it, vi } from 'vitest'
-import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs'
+import { existsSync, mkdirSync, readdirSync, readFileSync, symlinkSync, writeFileSync } from 'node:fs'
 import { spawnSync } from 'node:child_process'
 import { resolve } from 'node:path'
 import { appendLogEvent } from '../../log/executionLog'
@@ -168,6 +168,19 @@ describe('initializeTicket', () => {
       encoding: 'utf8',
     })
     expect(branchResult.status).not.toBe(0)
+  })
+
+  it('rejects an in-project managed-root alias before creating worktree or ticket files', async () => {
+    const repoDir = repoManager.createRepo()
+    const destination = resolve(repoDir, 'unmanaged')
+    mkdirSync(destination)
+    mkdirSync(resolve(repoDir, '.looptroop'))
+    symlinkSync(destination, resolve(repoDir, '.looptroop/worktrees'), 'junction')
+
+    await expect(initializeTicket({ projectFolder: repoDir, externalId: 'TEST-1' }))
+      .rejects.toThrow('Managed worktrees root must not be a symbolic link')
+    expect(readdirSync(destination)).toEqual([])
+    expect(git(repoDir, ['branch', '--list', 'TEST-1'])).toBe('')
   })
 
   /**

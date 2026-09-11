@@ -27,13 +27,14 @@ async function restrictedLines(filePath: string): Promise<number[]> {
   return [...new Set((result?.messages ?? []).filter((message) => message.ruleId === 'no-restricted-imports').map((message) => message.line))]
 }
 
-describe('workflow artifact I/O lint boundary', () => {
-  it('rejects raw content imports, aliases and namespaces while retaining metadata and contained I/O', async () => {
-    expect(await restrictedLines('server/workflow/phases/__lint-probe.ts')).toEqual([1, 2, 3, 4, 5, 6, 7, 13, 14, 15, 16])
+describe('artifact I/O lint boundary', () => {
+  it.each(['server/workflow/phases/__lint-probe.ts', 'server/storage/__lint-probe.ts'])('rejects raw content imports in %s while retaining metadata and contained I/O', async (path) => {
+    expect(await restrictedLines(path)).toEqual([1, 2, 3, 4, 5, 6, 7, 13, 14, 15, 16])
   })
 
   it('leaves fixture setup and low-level I/O implementations outside the workflow boundary', async () => {
     expect(await restrictedLines('server/workflow/__tests__/__lint-probe.test.ts')).toEqual([])
+    expect(await restrictedLines('server/storage/__tests__/__lint-probe.test.ts')).toEqual([])
     expect(await restrictedLines('server/io/__lint-probe.ts')).toEqual([])
   })
 })

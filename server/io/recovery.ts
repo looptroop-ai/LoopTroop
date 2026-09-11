@@ -168,7 +168,8 @@ function promoteTmpFile(fd: number, tmpPath: string, targetPath: string): boolea
     if (linked) {
       const entry = lstatSync(targetPath)
       if (entry.isSymbolicLink() || entry.dev !== source.dev || entry.ino !== source.ino) {
-        removeMatchingEntry(targetPath, entry)
+        // This entry may have been installed by another writer after linkSync.
+        // A mismatch cannot establish ownership, so preserve both names.
         throw new Error('Temporary file changed before recovery promotion')
       }
     } else {

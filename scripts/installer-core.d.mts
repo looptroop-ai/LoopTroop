@@ -106,14 +106,57 @@ export interface StallGuard {
 }
 
 /**
- * Where PATH resolves `command`, with PATHEXT applied and quotes stripped.
- * `pathValue` and `pathExt` are injectable so the candidate ordering can be
- * tested off Windows.
+ * The resolver generated into the core from `server/lib/executablePath.ts`.
+ *
+ * Declared here rather than re-exported from the source module on purpose: what
+ * these types describe is the *generated copy*, and a test that imports it is
+ * exercising the code that ships inside `install.sh` rather than the code it was
+ * made from. `env`, `policyEnv` and `platform` are injectable so the Windows
+ * rules can be tested off Windows.
  */
-export function resolveOnPath(command: string, pathValue?: string, pathExt?: string): string | null
+export function findTrustedExecutablePath(
+  name: string,
+  options?: {
+    env?: NodeJS.ProcessEnv
+    /** Where the override, `SystemRoot` and `PATHEXT` are read. Defaults to `process.env`. */
+    policyEnv?: NodeJS.ProcessEnv
+    platform?: NodeJS.Platform
+    readMountTable?: () => string
+    cache?: Map<string, unknown> | null
+  },
+): string | null
 
-/** One cmd.exe token, whatever the value contains. */
-export function quoteForCmd(value: string): string
+/**
+ * The launcher generated into the core with the resolver: how `runTool` starts
+ * a resolved program — directly, or for a Windows command script through a
+ * resolved cmd.exe with every argument escaped.
+ */
+export function planProgramLaunch(
+  program: string,
+  args: readonly string[],
+  options?: {
+    env?: NodeJS.ProcessEnv
+    policyEnv?: NodeJS.ProcessEnv
+    platform?: NodeJS.Platform
+    resolveInterpreter?: () => { path: string } | { path?: undefined; reason: string }
+  },
+):
+  | { file: string; args: string[]; windowsVerbatimArguments: boolean; reason?: undefined }
+  | { file?: undefined; args?: undefined; windowsVerbatimArguments?: undefined; reason: string }
+
+/**
+ * Runs a tool the installer needs, by the path the generated resolver chose.
+ *
+ * Exported for the test that proves a *refused* tool stops the install with the
+ * reason instead of being spawned by bare name. Throws the installer's own
+ * error for a refusal, and for a command script no cmd.exe can be found for; a
+ * tool that is simply missing is reported as ENOENT without being spawned.
+ */
+export function runTool(
+  command: string,
+  args: string[],
+  options?: import('node:child_process').SpawnSyncOptions,
+): import('node:child_process').SpawnSyncReturns<string | Buffer>
 
 export function stallGuard(idleMs: number, what: string): StallGuard
 

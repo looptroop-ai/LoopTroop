@@ -5,7 +5,13 @@ import {
   runCommand,
   runCommandBinarySync,
   runCommandSync,
+  runGit,
+  runGitBinarySync,
+  runGitSync,
 } from '../runCommand'
+import { chmodSync, mkdirSync, writeFileSync } from 'node:fs'
+import { join } from 'node:path'
+import { makeTempDir, removeTempDir } from '../../test/tempDir'
 
 // Real child processes, no module mocking: the point of these is that the
 // runner's guarantees hold against the operating system, not against a stub.
@@ -109,8 +115,10 @@ describe('server/git/runCommand', () => {
 
   it('applies the non-interactive git environment on both paths', async () => {
     const read = script('process.stdout.write(`${process.env.GIT_TERMINAL_PROMPT}:${process.env.GIT_ASKPASS}`)')
-    expect(runCommandSync(node, read, { log: false }).stdout).toBe('0:echo')
-    expect((await runCommand(node, read, { log: false })).stdout).toBe('0:echo')
+    // By absolute path on POSIX: git looks a bare askpass name up on PATH.
+    const askpass = process.platform === 'win32' ? 'echo' : '/bin/echo'
+    expect(runCommandSync(node, read, { log: false }).stdout).toBe(`0:${askpass}`)
+    expect((await runCommand(node, read, { log: false })).stdout).toBe(`0:${askpass}`)
     expect(NON_INTERACTIVE_GIT_ENV.GIT_TERMINAL_PROMPT).toBe('0')
   })
 
@@ -137,5 +145,57 @@ describe('server/git/runCommand', () => {
 
   it('defaults to the timeout the established runner used', () => {
     expect(GIT_DEFAULT_TIMEOUT_MS).toBe(30_000)
+  })
+
+  it.runIf(process.platform !== 'win32')('resolves the program against the environment the child gets', () => {
+    // Resolving against `process.env` while spawning with the caller's `env`
+    // let the two disagree: a tool on the caller's PATH alone was reported
+    // missing, and a caller that narrowed PATH on purpose had it ignored.
+    const root = makeTempDir('run-command-env-')
+    try {
+      mkdirSync(join(root, 'bin'), { recursive: true })
+      writeFileSync(join(root, 'bin', 'only-here'), '#!/bin/sh\necho found\n')
+      chmodSync(join(root, 'bin', 'only-here'), 0o755)
+
+      const result = runCommandSync('only-here', [], { env: { PATH: join(root, 'bin') }, log: false })
+
+      expect(result.ok).toBe(true)
+      expect(result.stdout).toBe('found')
+    } finally {
+      removeTempDir(root)
+    }
+  })
+
+  it('refuses a git working directory that is not an absolute path, on every git entry point', async () => {
+    // `git -C <path>` puts the caller's value straight into git's arguments.
+    // A relative one would be read against the daemon's own working directory,
+    // and is the only shape that could begin with `-` and be taken as an option.
+    // Reported the way a missing git is — never thrown — because every caller
+    // already handles a failed git command.
+    for (const bad of ['relative/project', '-c', '', `/tmp/with\u0000nul`]) {
+      const sync = runGitSync(bad, ['status'], { log: false })
+      const binary = runGitBinarySync(bad, ['status'], { log: false })
+      const async = await runGit(bad, ['status'], { log: false })
+      for (const result of [sync, binary, async]) {
+        expect(result.ok).toBe(false)
+        expect(result.status).toBeNull()
+        expect(result.errorDetail).toMatch(/working directory/)
+      }
+    }
+  })
+
+  it('says a missing working directory is missing, instead of reporting git as not installed', async () => {
+    // The directory is git's working directory now, not a `-C` argument, and a
+    // spawn into a directory that is not there fails with ENOENT — the same code
+    // as a missing git. It is said in LoopTroop's own words, not git's, because
+    // git never ran.
+    const missing = '/nonexistent/looptroop-project'
+    const sync = runGitSync(missing, ['status'], { log: false })
+    const async = await runGit(missing, ['status'], { log: false })
+
+    for (const result of [sync, async]) {
+      expect(result.ok).toBe(false)
+      expect(result.errorDetail).toBe(`git was not started: its working directory ${missing} does not exist or is not a directory.`)
+    }
   })
 })

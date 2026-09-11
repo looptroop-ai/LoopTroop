@@ -30,6 +30,7 @@ import { basename, dirname, isAbsolute, relative, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { execFileSync } from 'node:child_process'
 import { ArgumentError, parseArgs, requirePositional } from './cli-args.ts'
+import { toolPath } from './tool-path.ts'
 
 const repoRoot = resolve(dirname(fileURLToPath(import.meta.url)), '..')
 
@@ -90,7 +91,7 @@ const integrity = `sha512-${createHash('sha512').update(bytes).digest('base64')}
 
 const commit = (() => {
   try {
-    return execFileSync('git', ['rev-parse', 'HEAD'], { encoding: 'utf8' }).trim()
+    return execFileSync(toolPath('git'), ['rev-parse', 'HEAD'], { encoding: 'utf8' }).trim()
   } catch {
     return null
   }

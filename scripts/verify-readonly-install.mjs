@@ -43,6 +43,7 @@ import { fileURLToPath } from 'node:url'
 // launcher refuses.
 import { satisfiesFloor } from './installer-core.mjs'
 import { waitForHealth } from './smoke-lib.mjs'
+import { planToolLaunch } from './tool-path.ts'
 
 /**
  * The floor `dist/server/cli/launcher.cjs` enforces before it loads anything —
@@ -149,10 +150,20 @@ function check(name, condition, detail) {
 }
 
 function run(command, args, options = {}) {
-  const result = spawnSync(command, args, {
+  // Resolved against the environment the child gets, and started the way the
+  // daemon starts a program: a Windows command script — npm.cmd, yarn.cmd, the
+  // installed looptroop.cmd — through a resolved cmd.exe with every argument
+  // escaped, anything else directly. A tool that cannot be resolved comes back
+  // as a run that never started, with the reason.
+  const { env: extraEnv, ...spawnOptions } = options
+  const env = { ...process.env, ...CHILD_ENV, ...(extraEnv ?? {}) }
+  const launch = planToolLaunch(command, args, { env })
+  if (launch.reason !== undefined) return { code: null, stdout: '', combined: launch.reason }
+  const result = spawnSync(launch.file, launch.args, {
     encoding: 'utf8',
-    ...options,
-    env: { ...process.env, ...CHILD_ENV, ...(options.env ?? {}) },
+    ...spawnOptions,
+    env,
+    windowsVerbatimArguments: launch.windowsVerbatimArguments,
   })
   return {
     code: result.status,

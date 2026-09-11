@@ -26,7 +26,7 @@
  * "nothing exists yet", because mistaking an outage for a first release is how
  * a release gets published twice.
  */
-import { execFileSync } from 'node:child_process'
+import { spawnSync } from 'node:child_process'
 import { appendFileSync, readFileSync } from 'node:fs'
 import { dirname, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
@@ -35,6 +35,7 @@ import { fileURLToPath } from 'node:url'
 import { distTagFor } from './version-bump.ts'
 import { isGhNotFound, type ReleaseFacts, resolveReleaseState } from './release-state.ts'
 import { ArgumentError, parseArgs, requireNoPositional } from './cli-args.ts'
+import { launchTool } from './tool-path.ts'
 
 const repoRoot = resolve(dirname(fileURLToPath(import.meta.url)), '..')
 
@@ -53,16 +54,24 @@ function fail(message: string): never {
  * as "absent".
  */
 function runLookup(command: string, args: string[]): string | null {
-  const result = execFileSync(command, args, {
+  // `npm.cmd` on Windows starts through a resolved cmd.exe with every argument
+  // escaped. A failure throws the way `execFileSync` did, with `stderr` on the
+  // error, because that is where absence is read from.
+  const launch = launchTool(command, args)
+  const result = spawnSync(launch.file, launch.args, {
     encoding: 'utf8',
     // stderr is captured, not discarded. Absence is read *from* stderr — E404
     // for npm, HTTP 404 for gh — so ignoring it would leave every failure
     // looking identical and turn every unpublished version into a hard stop.
     stdio: ['ignore', 'pipe', 'pipe'],
     maxBuffer: 16 * 1024 * 1024,
-    shell: process.platform === 'win32',
+    windowsVerbatimArguments: launch.windowsVerbatimArguments,
   })
-  return result.trim()
+  if (result.error) throw Object.assign(result.error, { stderr: result.stderr })
+  if (result.status !== 0) {
+    throw Object.assign(new Error(`${command} ${args.join(' ')} exited ${result.status ?? result.signal}`), { stderr: result.stderr })
+  }
+  return result.stdout.trim()
 }
 
 /** What `npm` prints when the requested version does not exist. */

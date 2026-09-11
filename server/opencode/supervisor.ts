@@ -1,6 +1,7 @@
 import { spawn, type ChildProcess } from 'node:child_process'
 import { setTimeout as delay } from 'node:timers/promises'
 import { isProcessAlive, killProcessTree } from '../cli/processControl'
+import { planProgramLaunch, resolveTrustedExecutable } from '../lib/executablePath'
 import { getErrorMessage } from '@shared/typeGuards'
 
 /** Attempts after a crash before the daemon stops trying and reports degraded. */
@@ -30,11 +31,18 @@ export type OpenCodeStatus =
   | { kind: 'degraded'; baseUrl: string; reason: string }
 
 export class OpenCodeMissingError extends Error {
-  constructor(baseUrl: string) {
-    super(
-      `OpenCode is not running at ${baseUrl} and the \`opencode\` command is not on PATH.\n` +
-      'Install it from https://opencode.ai, or start it yourself with `opencode serve`.',
-    )
+  /**
+   * `refusal` is set when an `opencode` *was* found and the resolver would not
+   * run it. The error stays the same class — it degrades exactly as a missing
+   * binary does — but "not on PATH, install it" is the wrong thing to tell
+   * someone whose OpenCode is installed in a directory this machine refuses.
+   */
+  constructor(baseUrl: string, refusal?: string) {
+    super(refusal === undefined
+      ? `OpenCode is not running at ${baseUrl} and the \`opencode\` command is not on PATH.\n`
+        + 'Install it from https://opencode.ai, or start it yourself with `opencode serve`.'
+      : `OpenCode is not running at ${baseUrl}, and the \`opencode\` that was found will not be run: ${refusal}\n`
+        + 'Start it yourself with `opencode serve`, or move it somewhere owned by you or by root.')
     this.name = 'OpenCodeMissingError'
   }
 }
@@ -90,6 +98,13 @@ export interface OpenCodeSupervisorOptions {
   printLogs?: boolean
   /** Injected by tests so no real process is spawned. */
   spawnProcess?: typeof spawn
+  /**
+   * Where `opencode` is, injected by tests alongside `spawnProcess`.
+   *
+   * The suite describes what a launch does; it must not also require OpenCode
+   * to be installed on the machine running it, which resolving for real would.
+   */
+  resolveProgram?: (name: string) => string | null
   probe?: (baseUrl: string) => Promise<boolean>
   /**
    * Injected by tests, which hold fake children carrying invented pids. Real
@@ -188,31 +203,61 @@ export class OpenCodeSupervisor {
     const url = new URL(this.options.baseUrl)
     const host = url.hostname === 'localhost' ? '127.0.0.1' : url.hostname
     const port = url.port || (url.protocol === 'https:' ? '443' : '80')
+    // A parsed URL does not make a hostname safe: `new URL('http://foo&bar:1')`
+    // has the hostname `foo&bar`, and on Windows an npm-installed OpenCode is
+    // started through cmd.exe. The launcher escapes every argument for cmd.exe,
+    // so this is not what stands between a URL and a second command any more;
+    // it is the plainer rule that a host name, an IPv4 address or a bracketed
+    // IPv6 one is all this can be.
+    if (!/^(?:[A-Za-z0-9](?:[A-Za-z0-9.-]*[A-Za-z0-9])?|\[[0-9A-Fa-f:.]+\])$/.test(host)) {
+      throw new Error(`OpenCode's address has a host name LoopTroop will not start a server for: ${JSON.stringify(host)}. Check LOOPTROOP_OPENCODE_BASE_URL.`)
+    }
     const spawnProcess = this.options.spawnProcess ?? spawn
 
     const logArgs = this.options.printLogs ? ['--print-logs', '--log-level', 'DEBUG'] : []
-    const useShell = process.platform === 'win32'
     const argv = ['serve', ...logArgs, '--hostname', host, '--port', port]
-    // Under the Windows shell the command line is joined here rather than passed
-    // as an array: Node would join it identically and, since DEP0190 (Node 22),
-    // print a deprecation warning about doing so on top of our own output.
-    const child = spawnProcess(useShell ? ['opencode', ...argv].join(' ') : 'opencode', useShell ? [] : argv, {
+
+    // Resolved rather than left to `PATH`. The resolver applies PATHEXT itself,
+    // which is what the Windows shell used to be here for: `opencode` is only
+    // an `.exe` when it came from the official installer or Scoop, and installed
+    // with npm, bun or pnpm it is `opencode.cmd`, which `CreateProcess` cannot
+    // find because it appends `.exe` and ignores PATHEXT. Every Windows user who
+    // installed OpenCode from npm used to get `OpenCodeMissingError` for a
+    // server sitting on their PATH.
+    //
+    // An unresolvable `opencode` raises the same error a missing one already
+    // does, so nothing that used to degrade becomes a new kind of failure.
+    let program: string | null
+    let refusal: string | undefined
+    if (this.options.resolveProgram) {
+      program = this.options.resolveProgram('opencode')
+    } else {
+      const resolution = resolveTrustedExecutable('opencode')
+      program = resolution.path ?? null
+      refusal = resolution.refusedAt === undefined ? undefined : resolution.reason
+    }
+    if (program === null) throw new OpenCodeMissingError(this.options.baseUrl, refusal)
+
+    // Node has refused to launch a `.cmd` or `.bat` directly since the BatBadBut
+    // hardening, so an npm-installed OpenCode still goes through cmd.exe — one
+    // the resolver found, not one `shell: true` would have Node look up, with
+    // the shim's path and every argument escaped by the launcher the rest of
+    // LoopTroop uses. On any other platform, and for a real `.exe`, it is a
+    // direct spawn. The test seam answers for cmd.exe as well as for OpenCode.
+    const seam = this.options.resolveProgram
+    const launch = planProgramLaunch(program, argv, seam === undefined ? {} : {
+      resolveInterpreter: () => {
+        const interpreter = seam('cmd.exe')
+        return interpreter === null ? { reason: 'cmd.exe was not found.' } : { path: interpreter }
+      },
+    })
+    if (launch.reason !== undefined) throw new OpenCodeMissingError(this.options.baseUrl, launch.reason)
+    const child = spawnProcess(launch.file, launch.args, {
       stdio: ['ignore', 'inherit', 'inherit'],
       // Its own group, so terminating the daemon can take the whole tree down
       // rather than orphaning children of OpenCode.
       detached: process.platform !== 'win32',
-      // Through a shell on Windows, because `opencode` is only an `.exe` when it
-      // came from the official installer or Scoop. Installed with npm, bun or
-      // pnpm it is `opencode.cmd`, which `CreateProcess` cannot find — it
-      // appends `.exe` and ignores `PATHEXT` — and which Node refuses to launch
-      // directly since the BatBadBut hardening. Without this, every Windows user
-      // who installed OpenCode from npm gets `OpenCodeMissingError` for a server
-      // that is sitting on their PATH.
-      //
-      // cmd.exe re-parses the command line, which is safe here only because both
-      // interpolations come from a parsed URL: a hostname cannot contain a space
-      // or a shell metacharacter, and a port is digits.
-      shell: useShell,
+      windowsVerbatimArguments: launch.windowsVerbatimArguments,
     })
 
     const spawnFailed = new Promise<never>((_, reject) => {
@@ -220,7 +265,7 @@ export class OpenCodeSupervisor {
     })
 
     // An immediate exit almost always means the binary is missing — including
-    // under the Windows shell above, where a missing command is not a spawn
+    // through cmd.exe above, where a shim whose target is gone is not a spawn
     // error at all: cmd.exe starts, prints "is not recognized" and exits 9009.
     const exitedEarly = new Promise<never>((_, reject) => {
       child.once('exit', (code) => {

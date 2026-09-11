@@ -26,6 +26,9 @@
  */
 
 import { spawn, spawnSync } from 'node:child_process'
+import { statSync } from 'node:fs'
+import { isAbsolute } from 'node:path'
+import { resolveTrustedProgram } from '../lib/executablePath'
 import * as commandLogger from '../log/commandLogger'
 
 /** Matches the timeout `server/git/repository.ts` has always used. */
@@ -46,10 +49,16 @@ const TIMEOUT_ABANDON_GRACE_MS = 2_000
  * `GIT_TERMINAL_PROMPT=0` refuses the terminal prompt outright; `GIT_ASKPASS`
  * pointing at `echo` makes the graphical fallback answer with an empty string
  * instead of opening a dialog nobody is looking at.
+ *
+ * By absolute path on POSIX, because git looks a bare name up on `PATH`, and a
+ * bare name is the search this module's callers stopped doing. A system without
+ * `/bin/echo` (NixOS) gets an askpass that fails, which git treats as no answer
+ * — the same outcome. Windows keeps the name: `echo` there is Git for Windows'
+ * own `usr\bin\echo.exe`, found through the PATH git sets up for itself.
  */
 export const NON_INTERACTIVE_GIT_ENV: Readonly<NodeJS.ProcessEnv> = Object.freeze({
   GIT_TERMINAL_PROMPT: '0',
-  GIT_ASKPASS: 'echo',
+  GIT_ASKPASS: process.platform === 'win32' ? 'echo' : '/bin/echo',
 })
 
 export interface RunCommandOptions {
@@ -173,8 +182,33 @@ function isTimeoutError(error: Error | undefined): boolean {
   return Boolean(error && (error as NodeJS.ErrnoException).code === 'ETIMEDOUT')
 }
 
+/**
+ * The file `bin` names, or the outcome shape that says why it could not run.
+ *
+ * A tool that cannot be resolved has to look exactly like a tool that is not
+ * installed, because to every caller here it is the same condition: `git` is
+ * missing, `gh` is missing, and the call site's own fallback applies. Reporting
+ * it as a spawn error does that — `finish` already turns one into
+ * `ok: false` with the message in `errorDetail`, and the message here names the
+ * directory and the override rather than saying ENOENT.
+ */
+function resolveBin(bin: string, options: RunCommandOptions | undefined): { path: string; failure?: undefined } | { path?: undefined; failure: Error } {
+  // Against the environment the child will actually get. Resolving against
+  // `process.env` while spawning with a caller's `env` let the two disagree:
+  // a caller that narrowed PATH on purpose had it ignored.
+  const resolution = resolveTrustedProgram(bin, { env: buildEnv(options?.env) })
+  return resolution.path === undefined ? { failure: new Error(resolution.reason) } : { path: resolution.path }
+}
+
+function unresolvedOutcome<TOut>(failure: Error, empty: TOut): RawOutcome<TOut> {
+  return { status: null, signal: null, timedOut: false, stdout: empty, stderr: '', spawnError: failure }
+}
+
 function runSyncRaw(bin: string, args: string[], options: RunCommandOptions | undefined): RawOutcome<Buffer> {
-  const spawned = spawnSync(bin, args, {
+  const resolved = resolveBin(bin, options)
+  if (resolved.path === undefined) return unresolvedOutcome(resolved.failure, Buffer.alloc(0))
+
+  const spawned = spawnSync(resolved.path, args, {
     cwd: options?.cwd,
     input: options?.input,
     env: buildEnv(options?.env),
@@ -215,19 +249,96 @@ export function runCommandBinarySync(bin: string, args: string[], options?: RunC
 }
 
 /**
- * Runs `git -C <projectPath> <args>` synchronously.
+ * The directory handed to `git -C`, or why it cannot be one.
+ *
+ * Every `runGit*` call puts a caller's path straight into git's argument
+ * vector, and several of those paths trace back to a request. So it is held to
+ * what a working directory has to be: a non-empty absolute path with no NUL in
+ * it. Absolute is the rule that matters — a relative one would be read against
+ * the daemon's own working directory, which is never the project anyone meant,
+ * and it is the only way a value could start with `-` and be read as an option.
+ *
+ * A path that fails is reported the way a missing `git` is — `ok: false` with
+ * the reason — and never thrown, because every caller already handles a failed
+ * git command and none of them expects this function to raise. Containing the
+ * path inside a known project is PR-16's work; this is the shape check.
+ */
+function gitWorkingDirectory(projectPath: string): { path: string; failure?: undefined } | { path?: undefined; failure: Error } {
+  if (typeof projectPath !== 'string' || projectPath.trim() === '') {
+    return { failure: new Error('git needs a working directory, and none was given.') }
+  }
+  if (projectPath.includes('\0')) return { failure: new Error('A git working directory cannot contain a NUL byte.') }
+  if (!isAbsolute(projectPath)) {
+    return { failure: new Error(`A git working directory must be an absolute path, and '${projectPath}' is not.`) }
+  }
+  // Validated, not rewritten. `resolve('/repo')` on Windows is `D:\repo`, and
+  // handing git a different string than the caller passed was a behaviour
+  // change dressed as a check.
+  return { path: projectPath }
+}
+
+/**
+ * How a `runGit*` call reaches git: the directory as the working directory,
+ * and the familiar `-C <dir>` form only in what is shown.
+ *
+ * The directory is not put in git's argument vector at all. `git -C <dir>` and
+ * running git *in* `<dir>` are the same to git, and a caller's path that never
+ * enters argv cannot be read as an option or an argument by anything — which is
+ * what SonarCloud's S6350 was tracing from a request into `git -C`. The command
+ * log and the error text keep showing `git -C <dir> …`, so nothing a person
+ * reads changes.
+ */
+function gitInvocation(directory: string, args: string[], options: RunCommandOptions | undefined): {
+  args: string[]
+  displayArgs: string[]
+  options: RunCommandOptions
+} {
+  return { args, displayArgs: ['-C', directory, ...args], options: { ...options, cwd: directory } }
+}
+
+/**
+ * A spawn that failed because the working directory is not there reads as
+ * `spawnSync git ENOENT` — indistinguishable from git not being installed.
+ *
+ * Said as what it is: git never started. This used to borrow git's own
+ * `cannot change to …` wording, which sent anyone searching for it into git's
+ * sources for a message git never printed.
+ */
+function explainMissingDirectory<TOut>(raw: RawOutcome<TOut>, directory: string): RawOutcome<TOut> {
+  const code = (raw.spawnError as NodeJS.ErrnoException | undefined)?.code
+  if ((code !== 'ENOENT' && code !== 'ENOTDIR') || isDirectory(directory)) return raw
+  return { ...raw, spawnError: new Error(`git was not started: its working directory ${directory} does not exist or is not a directory.`) }
+}
+
+function isDirectory(path: string): boolean {
+  try {
+    return statSync(path).isDirectory()
+  } catch {
+    return false
+  }
+}
+
+/**
+ * Runs git in `projectPath` synchronously, shown as `git -C <projectPath> <args>`.
  *
  * Never throws on a non-zero exit — each call site keeps its own contract for
  * that, and they differ on purpose (`hookDiscovery` returns null where
  * `repository` throws).
  */
 export function runGitSync(projectPath: string, args: string[], options?: RunCommandOptions): RunCommandResult {
-  return runCommandSync('git', ['-C', projectPath, ...args], options)
+  const directory = gitWorkingDirectory(projectPath)
+  if (directory.path === undefined) return finish(unresolvedOutcome(directory.failure, ''), 'git', args, options)
+  const call = gitInvocation(directory.path, args, options)
+  const raw = explainMissingDirectory(runSyncRaw('git', call.args, call.options), directory.path)
+  return finish({ ...raw, stdout: decode(raw.stdout, options) }, 'git', call.displayArgs, options)
 }
 
 /** As `runGitSync`, with stdout left undecoded. */
 export function runGitBinarySync(projectPath: string, args: string[], options?: RunCommandOptions): RunCommandBinaryResult {
-  return runCommandBinarySync('git', ['-C', projectPath, ...args], options)
+  const directory = gitWorkingDirectory(projectPath)
+  if (directory.path === undefined) return finish(unresolvedOutcome(directory.failure, Buffer.alloc(0)), 'git', args, options)
+  const call = gitInvocation(directory.path, args, options)
+  return finish(explainMissingDirectory(runSyncRaw('git', call.args, call.options), directory.path), 'git', call.displayArgs, options)
 }
 
 /** Throwing wrapper for the callers whose contract is "throw on failure". */
@@ -246,10 +357,13 @@ function runAsyncRaw(bin: string, args: string[], options: RunCommandOptions | u
   const timeoutMs = options?.timeoutMs ?? GIT_DEFAULT_TIMEOUT_MS
   const maxBuffer = options?.maxBuffer ?? GIT_MAX_BUFFER_BYTES
 
+  const resolved = resolveBin(bin, options)
+  if (resolved.path === undefined) return Promise.resolve(unresolvedOutcome(resolved.failure, ''))
+
   return new Promise((settleWith) => {
     let child: ReturnType<typeof spawn>
     try {
-      child = spawn(bin, args, { cwd: options?.cwd, env: buildEnv(options?.env) })
+      child = spawn(resolved.path, args, { cwd: options?.cwd, env: buildEnv(options?.env) })
     } catch (error) {
       settleWith({
         status: null,
@@ -399,9 +513,13 @@ export async function runCommand(bin: string, args: string[], options?: RunComma
   return finish(await runAsyncRaw(bin, args, options), bin, args, options)
 }
 
-/** Runs `git -C <projectPath> <args>` without blocking the event loop. */
+/** Runs git in `projectPath` without blocking the event loop. */
 export function runGit(projectPath: string, args: string[], options?: RunCommandOptions): Promise<RunCommandResult> {
-  return runCommand('git', ['-C', projectPath, ...args], options)
+  const directory = gitWorkingDirectory(projectPath)
+  if (directory.path === undefined) return Promise.resolve(finish(unresolvedOutcome(directory.failure, ''), 'git', args, options))
+  const call = gitInvocation(directory.path, args, options)
+  return runAsyncRaw('git', call.args, call.options)
+    .then((raw) => finish(explainMissingDirectory(raw, directory.path), 'git', call.displayArgs, options))
 }
 
 /** Throwing wrapper for the async callers whose contract is "throw on failure". */

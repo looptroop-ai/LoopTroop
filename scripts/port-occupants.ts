@@ -1,6 +1,7 @@
 import { execFileSync } from 'node:child_process'
 import { realpathSync } from 'node:fs'
 import { basename } from 'node:path'
+import { spawnProgram } from './tool-path.ts'
 
 const MAX_DISPLAY_OCCUPANTS = 2
 const MAX_COMMAND_LENGTH = 88
@@ -43,7 +44,7 @@ function createDefaultDeps(): PortInspectorDeps {
     },
     runCommand: (file, args) => {
       try {
-        return execFileSync(file, args, {
+        return execFileSync(spawnProgram(file), args, {
           encoding: 'utf8',
           stdio: ['ignore', 'pipe', 'pipe'],
           windowsHide: true,

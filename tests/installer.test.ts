@@ -1,15 +1,15 @@
-import { describe, it, expect, afterAll, afterEach, beforeAll, beforeEach } from 'vitest'
+import { describe, it, expect, afterAll, afterEach, beforeAll, beforeEach, vi } from 'vitest'
 import { createHash } from 'node:crypto'
 import { spawn, spawnSync } from 'node:child_process'
-import { chmodSync, copyFileSync, existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, symlinkSync, utimesSync, writeFileSync } from 'node:fs'
+import { chmodSync, chownSync, copyFileSync, existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, realpathSync, symlinkSync, utimesSync, writeFileSync } from 'node:fs'
 import { createServer, type Server } from 'node:http'
 import type { AddressInfo } from 'node:net'
 import { tmpdir } from 'node:os'
-import { delimiter, dirname, join, resolve } from 'node:path'
+import { dirname, join, resolve, win32 } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import {
-  binaryAssetName, binaryTarget, defaultPrefix, detectLibc, INSTALL_OPTIONS, onPath, quoteForCmd,
-  resolveOnPath, stallGuard, streamBody,
+  binaryAssetName, binaryTarget, defaultPrefix, detectLibc, INSTALL_OPTIONS, onPath, planProgramLaunch,
+  findTrustedExecutablePath, runTool, stallGuard, streamBody,
 } from '../scripts/installer-core.mjs'
 import { removeTempDir } from '../server/test/tempDir'
 
@@ -1183,16 +1183,19 @@ describe('bounded transfers', () => {
  * that rule, which is most of them.
  */
 /**
- * The search `CreateProcess` does, reimplemented so the installer can see
- * *what* PATH resolved to — a real executable and a batch shim have to be
- * launched differently, and there is no way to launch either correctly without
- * knowing which.
+ * The resolver **as it is generated into the installer**, not as it is written.
  *
- * Every case here is a Windows rule, and these run on Linux, so PATH and
- * PATHEXT are passed in. That is deliberate: the first version of this resolver
- * tried the extensionless name first, which broke every `npm` call on Windows
- * and could not fail anywhere else. A rule that only holds on one platform has
- * to be testable on the others.
+ * `scripts/sync-installers.mjs` strips `server/lib/executablePath.ts` into
+ * `scripts/installer-core.mjs`, which then goes verbatim into `install.sh` and
+ * `install.ps1`. These import from the core, so what is exercised is the copy
+ * that ships — the previous hand-written copy passed its own tests for four
+ * releases while disagreeing with the daemon about which `npm` to run.
+ *
+ * Every case here is a Windows rule, and these run on Linux, so PATH, PATHEXT
+ * and the platform are passed in. That is deliberate: the first version of this
+ * resolver tried the extensionless name first, which broke every `npm` call on
+ * Windows and could not fail anywhere else. A rule that only holds on one
+ * platform has to be testable on the others.
  */
 describe('PATH resolution', () => {
   const roots: string[] = []
@@ -1202,11 +1205,34 @@ describe('PATH resolution', () => {
   })
 
   /** A directory holding each named file, and its path. */
+  /**
+   * Canonicalised, because the resolver answers with the real path and macOS
+   * keeps its temp directory behind a symlink (`/var` is `/private/var`). A raw
+   * `tmpdir()` here failed five cases on the macOS lane and nowhere else.
+   */
   function directoryWith(...names: string[]) {
-    const dir = mkdtempSync(join(tmpdir(), 'looptroop-path-test-'))
+    const dir = realpathSync(mkdtempSync(join(tmpdir(), 'looptroop-path-test-')))
     roots.push(dir)
     for (const name of names) writeFileSync(join(dir, name), '')
     return dir
+  }
+
+  /**
+   * The Windows search, by Windows rules, on whatever host runs the suite.
+   *
+   * `platform: 'win32'` makes the generated resolver split PATH on `;` and apply
+   * PATHEXT, so these cases join their PATH with `win32.delimiter`. No override
+   * is needed: Windows has no ownership signal for the resolver to judge, so a
+   * directory is searched wherever it is.
+   */
+  function resolveOnPath(command: string, pathValue: string, pathExt: string): string | null {
+    return findTrustedExecutablePath(command, {
+      env: { PATH: pathValue },
+      // PATHEXT is policy, read from the caller's environment, not the child's.
+      policyEnv: { PATHEXT: pathExt },
+      platform: 'win32',
+      cache: null,
+    })
   }
 
   // Lowercase, unlike the real `.COM;.EXE;.BAT;.CMD`. Windows filesystems are
@@ -1256,8 +1282,8 @@ describe('PATH resolution', () => {
     const first = directoryWith('tool.exe')
     const second = directoryWith('tool.exe')
 
-    expect(resolveOnPath('tool', [first, second].join(delimiter), PATHEXT)).toBe(join(first, 'tool.exe'))
-    expect(resolveOnPath('tool', [second, first].join(delimiter), PATHEXT)).toBe(join(second, 'tool.exe'))
+    expect(resolveOnPath('tool', [first, second].join(win32.delimiter), PATHEXT)).toBe(join(first, 'tool.exe'))
+    expect(resolveOnPath('tool', [second, first].join(win32.delimiter), PATHEXT)).toBe(join(second, 'tool.exe'))
   })
 
   /**
@@ -1274,41 +1300,40 @@ describe('PATH resolution', () => {
   it('skips empty entries and reports nothing found as null', () => {
     const dir = directoryWith('other.exe')
 
-    expect(resolveOnPath('tool', ['', dir, '""'].join(delimiter), PATHEXT)).toBeNull()
+    expect(resolveOnPath('tool', ['', dir, '""'].join(win32.delimiter), PATHEXT)).toBeNull()
   })
 })
 
+/**
+ * The generated launcher, tested through the copy that ships inside the
+ * installers. `npm install -g <tarball>` is the case that mattered: a shell
+ * joining arguments on spaces handed npm four arguments for every account whose
+ * name contains a space.
+ */
 describe('windows command lines', () => {
+  const interpreter = () => ({ path: 'C:\\Windows\\System32\\cmd.exe' })
+  const line = (args: string[]) => planProgramLaunch('C:\\Program Files\\nodejs\\npm.cmd', args, { platform: 'win32', resolveInterpreter: interpreter }).args?.[4]
+
   it('makes one token of an argument containing spaces', () => {
-    expect(quoteForCmd(String.raw`C:\Users\Ada Lovelace\AppData\Local\Temp\looptroop-9.9.9.tgz`))
-      .toBe(String.raw`"C:\Users\Ada Lovelace\AppData\Local\Temp\looptroop-9.9.9.tgz"`)
+    expect(line(['install', '-g', String.raw`C:\Users\Ada Lovelace\AppData\Local\Temp\looptroop-9.9.9.tgz`]))
+      .toBe(String.raw`"C:\Program^ Files\nodejs\npm.cmd install -g ^"C:\Users\Ada^ Lovelace\AppData\Local\Temp\looptroop-9.9.9.tgz^""`)
   })
 
-  /**
-   * The other half of the rule, and the one that is easy to get wrong by
-   * quoting everything. `cmd` hands a `.cmd` shim its arguments as written, so
-   * a quoted `install` arrives as `"install"` and a shim comparing
-   * `if "%1"=="--version"` stops matching. Anything that needs no quoting is
-   * passed through exactly as the caller wrote it.
-   */
-  it('leaves an argument that needs no quoting exactly as it was', () => {
-    for (const plain of ['install', '-g', '--no-audit', String.raw`C:\Users\ada\x.tgz`]) {
-      expect(quoteForCmd(plain)).toBe(plain)
-    }
+  it('leaves a plain argument bare, so a shim comparing %1 still matches it', () => {
+    expect(line(['--version'])).toBe(String.raw`"C:\Program^ Files\nodejs\npm.cmd --version"`)
   })
 
-  it('makes one token of an argument cmd.exe would otherwise read as an operator', () => {
-    for (const value of ['a&b', 'a|b', 'a>b', 'a<b', 'a^b', 'a(b)']) {
-      expect(quoteForCmd(value)).toBe(`"${value}"`)
-    }
+  it('escapes what cmd.exe would read as an operator or an expansion', () => {
+    expect(line(['a&b', 'a|b', '%PATH%'])).toBe(String.raw`"C:\Program^ Files\nodejs\npm.cmd ^"a^&b^" ^"a^|b^" ^"^%PATH^%^""`)
   })
 
-  /**
-   * A path cannot contain a quote on Windows, so this is about arguments that
-   * are not paths. Doubling is cmd's own escape.
-   */
-  it('doubles an embedded quote rather than ending the token', () => {
-    expect(quoteForCmd('say "hello"')).toBe('"say ""hello"""')
+  it('keeps an empty argument as an argument', () => {
+    expect(line([''])).toBe(String.raw`"C:\Program^ Files\nodejs\npm.cmd ^"^""`)
+  })
+
+  it('spawns a real program directly, arguments untouched', () => {
+    expect(planProgramLaunch('C:\\Windows\\System32\\tar.exe', ['-xf', 'a b.tgz'], { platform: 'win32' }))
+      .toEqual({ file: 'C:\\Windows\\System32\\tar.exe', args: ['-xf', 'a b.tgz'], windowsVerbatimArguments: false })
   })
 })
 
@@ -1418,6 +1443,57 @@ describe('installer wrappers', () => {
    * of those is a separate way to get this wrong, so all three are exercised
    * rather than read out of the source.
    */
+  /**
+   * `install.sh` looks `node` up before the core and its resolver exist, so it
+   * drops empty and relative PATH entries first: with `.` on PATH, `curl … | sh`
+   * run from a folder holding a file called `node` ran it. A PATH with nothing
+   * absolute in it must not become an empty one, which the shell reads as the
+   * current directory too.
+   */
+  describe.runIf(process.platform !== 'win32')('install.sh never looks in the current directory', () => {
+    const scratch: string[] = []
+
+    afterAll(() => {
+      for (const dir of scratch.splice(0)) removeTempDir(dir)
+    })
+
+    /** A working directory holding a `node` and a `uname` that leave a mark if run. */
+    function plantedDirectory(): string {
+      const dir = mkdtempSync(join(tmpdir(), 'looptroop-wrapper-cwd-'))
+      scratch.push(dir)
+      for (const name of ['node', 'uname']) {
+        writeFileSync(join(dir, name), `#!/bin/sh\necho PLANTED-${name}\n`)
+        chmodSync(join(dir, name), 0o755)
+      }
+      return dir
+    }
+
+    it('skips a relative entry and runs the real node', () => {
+      const cwd = plantedDirectory()
+      const result = spawnSync('/bin/sh', [join(repoRoot, 'install.sh'), '--help'], {
+        cwd,
+        encoding: 'utf8',
+        env: { HOME: cwd, PATH: `.:${dirname(process.execPath)}:/usr/bin:/bin` },
+      })
+
+      expect(`${result.stdout}${result.stderr}`).not.toContain('PLANTED')
+      expect(result.stdout).toContain('Usage:')
+    })
+
+    it('reports node missing when no PATH entry is absolute, rather than searching the current directory', () => {
+      const cwd = plantedDirectory()
+      const result = spawnSync('/bin/sh', [join(repoRoot, 'install.sh'), '--help'], {
+        cwd,
+        encoding: 'utf8',
+        env: { HOME: cwd, PATH: 'relative:.' },
+      })
+
+      expect(`${result.stdout}${result.stderr}`).not.toContain('PLANTED')
+      expect(result.status).toBe(1)
+      expect(result.stderr).toContain('it is not on your PATH')
+    })
+  })
+
   describe.runIf(process.platform !== 'win32')('install.sh cleans up after itself', () => {
     const scratch: string[] = []
 
@@ -1603,4 +1679,62 @@ describe('installer wrappers', () => {
       expect(leftovers(run.temp)).toEqual([])
     }, 40_000)
   })
+})
+
+/**
+ * `runTool` used to take "no trusted answer" as one case and spawn the bare
+ * name for it — so a tool found and *refused* was run anyway, by the child's
+ * own search of the same PATH. A refusal now stops the install with the reason.
+ */
+describe('runTool', () => {
+  it.runIf(process.platform !== 'win32')('stops on a refused tool instead of spawning it by name', () => {
+    const dir = realpathSync(mkdtempSync(join(tmpdir(), 'looptroop-runtool-')))
+    const marker = join(dir, 'ran')
+    const tool = join(dir, 'looptool')
+    writeFileSync(tool, `#!/bin/sh\ntouch '${marker}'\n`)
+    chmodSync(tool, 0o755)
+    const previousPath = process.env.PATH
+    process.env.PATH = dir
+    // Root can give the directory away; anyone else makes every file look
+    // foreign by stubbing getuid, which is enough for one directory.
+    const asRoot = process.getuid?.() === 0
+    if (asRoot) chownSync(dir, 4242, 4242)
+    const spy = asRoot ? null : vi.spyOn(process, 'getuid').mockReturnValue((process.getuid?.() ?? 0) + 1)
+    // The running Node's owner is trusted too — on a CI runner that is the very
+    // uid being made to look foreign — so it is taken out of the case.
+    const execPath = process.execPath
+    if (!asRoot) process.execPath = '/nonexistent/looptroop-test/node'
+    try {
+      expect(() => runTool('looptool', [])).toThrow(/neither root, you, nor the owner of the Node/)
+      expect(existsSync(marker)).toBe(false)
+    } finally {
+      spy?.mockRestore()
+      process.execPath = execPath
+      if (asRoot) chownSync(dir, 0, 0)
+      process.env.PATH = previousPath
+      removeTempDir(dir)
+    }
+  })
+})
+
+describe('runTool when a tool is not installed', () => {
+  it.runIf(process.platform !== 'win32')('reports ENOENT instead of letting the OS search the current directory', () => {
+    // The resolver skips relative and empty PATH entries; the operating system
+    // does not. With a trailing colon — the everyday result of `PATH=$PATH:` —
+    // a bare-name fallback ran `./looptool` from the child's working directory.
+    const dir = realpathSync(mkdtempSync(join(tmpdir(), 'looptroop-runtool-cwd-')))
+    const marker = join(dir, 'ran')
+    writeFileSync(join(dir, 'looptool'), `#!/bin/sh\ntouch '${marker}'\n`)
+    chmodSync(join(dir, 'looptool'), 0o755)
+    try {
+      const result = runTool('looptool', [], { cwd: dir, env: { PATH: '/nonexistent-looptroop-bin:' } })
+
+      expect(result.status).toBeNull()
+      expect((result.error as NodeJS.ErrnoException | undefined)?.code).toBe('ENOENT')
+      expect(existsSync(marker)).toBe(false)
+    } finally {
+      removeTempDir(dir)
+    }
+  })
+
 })

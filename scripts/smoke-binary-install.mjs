@@ -27,6 +27,7 @@ import { tmpdir } from 'node:os'
 import { basename, dirname, join, resolve } from 'node:path'
 import { removeWorkDirectory } from './smoke-lib.mjs'
 import { fileURLToPath } from 'node:url'
+import { spawnProgram } from './tool-path.ts'
 
 const repoRoot = resolve(dirname(fileURLToPath(import.meta.url)), '..')
 const CORE = join(repoRoot, 'scripts', 'installer-core.mjs')
@@ -63,7 +64,9 @@ function flag(name) {
  */
 function invoke(command, args, options = {}) {
   return new Promise((settle, reject) => {
-    const child = spawn(command, args, { env: { ...process.env, ...options.env } })
+    // Resolved against the environment the child gets, not this process's.
+    const env = { ...process.env, ...options.env }
+    const child = spawn(spawnProgram(command, { env }), args, { env })
     let stdout = ''
     let stderr = ''
     child.stdout.on('data', (chunk) => { stdout += chunk.toString() })

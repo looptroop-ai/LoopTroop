@@ -10,10 +10,10 @@
  * Native addons require a compiler toolchain at install time (the main cause of
  * failed installs) and cannot be bundled into a standalone binary.
  */
-import { execFileSync } from 'node:child_process'
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { dirname, join, relative } from 'node:path'
+import { execTool } from './tool-path.ts'
 
 const NATIVE_EXTENSIONS = ['.node']
 const LIFECYCLE_SCRIPTS = ['preinstall', 'install', 'postinstall']
@@ -28,8 +28,9 @@ const LIFECYCLE_SCRIPTS = ['preinstall', 'install', 'postinstall']
  */
 const ALLOWED_LIFECYCLE_PACKAGES = new Set()
 
+/** Through `execTool`, because npm is `npm.cmd` on Windows and `execFileSync` cannot start it. */
 function run(command, args, cwd) {
-  return execFileSync(command, args, { cwd, encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'] })
+  return execTool(command, args, { cwd, stdio: ['ignore', 'pipe', 'pipe'] })
 }
 
 function walk(dir, onFile) {

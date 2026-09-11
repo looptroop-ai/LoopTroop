@@ -7,6 +7,15 @@ const spawnMock = vi.fn((...args: unknown[]) => spawnFromSyncResult(
   spawnSyncMock(...args) as ReturnType<typeof import('node:child_process').spawnSync>,
 ))
 
+// The runner resolves `git`, `gh` and `ssh` to a real file before spawning
+// them. These cases describe what a command *returns*, so they stub the
+// resolution to the name itself: otherwise every argv assertion would carry
+// whichever directory this machine keeps its tools in, and a runner without
+// `gh` installed would never reach the stub at all.
+vi.mock('../../lib/executablePath', () => ({
+  resolveTrustedProgram: (program: string) => ({ path: program }),
+}))
+
 vi.mock('node:child_process', async () => {
   const actual = await vi.importActual<typeof import('node:child_process')>('node:child_process')
   return {
@@ -251,9 +260,10 @@ describe('server/git/github', () => {
       localBaseHead: 'local-sha',
       remoteBaseHead: 'remote-sha',
     })
-    expect(spawnSyncMock.mock.calls.some(([, args]) => (
+    expect(spawnSyncMock.mock.calls.some(([, args, options]) => (
       Array.isArray(args)
-      && args.join(' ') === '-C /repo fetch --no-progress --prune origin'
+      && args.join(' ') === 'fetch --no-progress --prune origin'
+      && (options as { cwd?: string } | undefined)?.cwd === '/repo'
     ))).toBe(true)
     const fetchCallIndex = spawnSyncMock.mock.calls.findIndex(([, args]) => Array.isArray(args) && args.includes('fetch'))
     const statusCallIndex = spawnSyncMock.mock.calls.findIndex(([, args]) => Array.isArray(args) && args.includes('status'))
@@ -282,9 +292,10 @@ describe('server/git/github', () => {
     const result = await github.syncLocalBaseBranch('/repo', 'main')
 
     expect(result.remoteBaseHead).toBe('remote-sha')
-    expect(spawnSyncMock.mock.calls.some(([, args]) => (
+    expect(spawnSyncMock.mock.calls.some(([, args, options]) => (
       Array.isArray(args)
-      && args.join(' ') === '-C /repo status --porcelain=1 --untracked-files=all -- . :(top,exclude).looptroop'
+      && args.join(' ') === 'status --porcelain=1 --untracked-files=all -- . :(top,exclude).looptroop'
+      && (options as { cwd?: string } | undefined)?.cwd === '/repo'
     ))).toBe(true)
   })
 
@@ -327,9 +338,10 @@ describe('server/git/github', () => {
       verifiedCommitSha: 'candidate123',
       remoteBaseHead: 'remote-base-sha',
     })
-    expect(spawnSyncMock.mock.calls.some(([, args]) => (
+    expect(spawnSyncMock.mock.calls.some(([, args, options]) => (
       Array.isArray(args)
-      && args.join(' ') === '-C /repo merge-base --is-ancestor candidate123 remote-base-sha'
+      && args.join(' ') === 'merge-base --is-ancestor candidate123 remote-base-sha'
+      && (options as { cwd?: string } | undefined)?.cwd === '/repo'
     ))).toBe(true)
     expect(spawnSyncMock.mock.calls.some(([, args]) => Array.isArray(args) && args.includes('checkout'))).toBe(false)
     expect(spawnSyncMock.mock.calls.some(([, args]) => Array.isArray(args) && args.includes('merge'))).toBe(false)

@@ -37,6 +37,7 @@ import {
   formatPortOccupantSummary,
   inspectPortOccupants,
 } from './port-occupants'
+import { toolPath } from './tool-path.ts'
 
 const __dirname = dirname(fileURLToPath(import.meta.url))
 const repoRoot = resolve(__dirname, '..')
@@ -87,7 +88,7 @@ function formatElapsedTime(startedAt: number) {
 
 function listProcesses() {
   try {
-    const output = execFileSync('ps', ['-eo', 'pid=,ppid=,args='], { encoding: 'utf8' })
+    const output = execFileSync(toolPath('ps'), ['-eo', 'pid=,ppid=,args='], { encoding: 'utf8' })
     return parseProcessTable(output)
   } catch (error) {
     const message = getErrorMessage(error)

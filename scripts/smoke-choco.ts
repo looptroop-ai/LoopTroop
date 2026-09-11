@@ -32,6 +32,7 @@ import { existsSync, mkdtempSync, readFileSync, rmSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { dirname, join, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
+import { planToolLaunch } from './tool-path.ts'
 
 const repoRoot = resolve(dirname(fileURLToPath(import.meta.url)), '..')
 
@@ -56,10 +57,16 @@ function flag(name: string, fallback: string | null = null): string {
 interface RunResult { status: number | null, stdout: string, stderr: string }
 
 function run(command: string, args: string[], options: { env?: NodeJS.ProcessEnv, allowFailure?: boolean } = {}): RunResult {
-  const result = spawnSync(command, args, {
+  // Resolved against the child's environment. A shim that is a command script
+  // starts through a resolved cmd.exe with every argument escaped; `choco.exe`
+  // and its shimgen shims start directly.
+  const env = { ...process.env, ...options.env }
+  const launch = planToolLaunch(command, args, { env })
+  if (launch.reason !== undefined) fail(`${command} could not be started.`, launch.reason)
+  const result = spawnSync(launch.file, launch.args, {
     encoding: 'utf8',
-    env: { ...process.env, ...options.env },
-    shell: true,
+    env,
+    windowsVerbatimArguments: launch.windowsVerbatimArguments,
   })
   const output = { status: result.status, stdout: result.stdout ?? '', stderr: result.stderr ?? '' }
   if (result.status !== 0 && options.allowFailure !== true) {
@@ -93,14 +100,16 @@ try {
   // add minutes and prove nothing about this package.
   run('choco', [
     'install', 'looptroop', '--version', version,
-    ...(nupkg === null ? [] : ['--source', `"${dirname(nupkg)}"`]),
+    // Raw: `run` builds the command line and quotes each argument itself, so a
+    // pre-quoted value arrived with a second, literal layer of quotes.
+    ...(nupkg === null ? [] : ['--source', dirname(nupkg)]),
     '--yes', '--no-progress', '--ignore-dependencies',
   ])
 
   if (!existsSync(chocoBin)) fail(`The package installed without producing a shim at ${chocoBin}.`)
   log(`  shim created at ${chocoBin}`)
 
-  const reported = run(`"${chocoBin}"`, ['--version'], { env: childEnv }).stdout.trim()
+  const reported = run(chocoBin, ['--version'], { env: childEnv }).stdout.trim()
   if (reported !== version) fail(`The installed command reports ${reported || '(nothing)'}, expected ${version}.`)
   log(`  runs, and reports ${version}`)
 
@@ -109,7 +118,7 @@ try {
   //
   // `doctor` exits non-zero on any failing check and a fresh machine has
   // plenty, so its status is not the assertion; the install check's detail is.
-  const doctor = run(`"${chocoBin}"`, ['doctor', '--json'], { env: childEnv, allowFailure: true })
+  const doctor = run(chocoBin, ['doctor', '--json'], { env: childEnv, allowFailure: true })
   const report = `${doctor.stdout}${doctor.stderr}`
 
   let checks: { name?: string, detail?: string }[]

@@ -28,6 +28,7 @@ import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync } from 'node:f
 import { tmpdir } from 'node:os'
 import { join, resolve } from 'node:path'
 import { removeWorkDirectory } from './smoke-lib.mjs'
+import { planToolLaunch } from './tool-path.ts'
 
 const IS_WINDOWS = process.platform === 'win32'
 
@@ -63,11 +64,22 @@ function check(ok, message) {
 }
 
 function run(command, args, options = {}) {
-  const result = spawnSync(command, args, {
+  // Resolved against the child's environment: the freshly installed shim is in
+  // `binDir` at the front of `childEnv.PATH`, and resolving against this
+  // process's PATH instead let a `looptroop` the runner already had win over
+  // the one this smoke had just installed. A Windows command script — what a
+  // node manager installs — starts through a resolved cmd.exe with every
+  // argument escaped; a tool that cannot be resolved is a run that never
+  // started, with the reason.
+  const { env: extraEnv, ...spawnOptions } = options
+  const env = { ...process.env, ...extraEnv }
+  const launch = planToolLaunch(command, args, { env })
+  if (launch.reason !== undefined) return { status: null, stdout: '', stderr: launch.reason, output: launch.reason }
+  const result = spawnSync(launch.file, launch.args, {
     encoding: 'utf8',
-    shell: IS_WINDOWS,
-    ...options,
-    env: { ...process.env, ...options.env },
+    ...spawnOptions,
+    env,
+    windowsVerbatimArguments: launch.windowsVerbatimArguments,
   })
   return {
     status: result.status,

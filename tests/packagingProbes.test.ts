@@ -1,14 +1,15 @@
-import { describe, it, expect, afterAll, afterEach } from 'vitest'
-import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, writeFileSync } from 'node:fs'
+import { describe, it, expect, afterAll, afterEach, vi } from 'vitest'
+import { chmodSync, chownSync, existsSync, mkdirSync, mkdtempSync, readFileSync, writeFileSync } from 'node:fs'
 import { createServer } from 'node:http'
 import type { AddressInfo } from 'node:net'
 import { tmpdir } from 'node:os'
 import { delimiter, isAbsolute, join, win32 } from 'node:path'
 import { claimTapDirectory, isOwnedTap } from '../scripts/brew-local-tap.ts'
 import { defaultTrustedPrefixes, resolveTrustedTool } from '../scripts/trusted-tool.ts'
+import { launchTool, planToolLaunch, spawnProgram } from '../scripts/tool-path.ts'
 import { withoutCredentials } from '../scripts/container-docker.ts'
 import { removeWorkDirectory, waitForHealth } from '../scripts/smoke-lib.mjs'
-import { removeTempDir } from '../server/test/tempDir'
+import { makeTempDir, removeTempDir } from '../server/test/tempDir'
 
 const scratch: string[] = []
 
@@ -527,4 +528,212 @@ describe('trusted tool resolution', () => {
     expect(resolveTrustedTool('gh', { env: { LOOPTROOP_GH_PATH: join(elsewhere, 'nope') }, pathValue: '', platform: 'linux' }))
       .toHaveProperty('refusal')
   })
+})
+
+/**
+ * The two failures a script must not treat alike.
+ *
+ * A tool that is *not installed* is an outcome several of these scripts are
+ * measuring — `smoke-published.mjs` probes whether `yarn` is there — so falling
+ * back to the name keeps the spawn's own ENOENT as the answer. A tool that *is*
+ * there, in a directory this machine will not run from, is the case the whole
+ * resolver exists for, and falling back would spawn exactly that file.
+ */
+describe('spawnProgram', () => {
+  const dirs: string[] = []
+
+  afterEach(() => {
+    for (const dir of dirs.splice(0)) removeTempDir(dir)
+  })
+
+  /** Canonicalised, because the resolver realpaths its answer and macOS `/tmp` is a symlink. */
+  function scratch(): string {
+    const dir = makeTempDir('looptroop-spawn-program-')
+    dirs.push(dir)
+    return dir
+  }
+
+  function executable(directory: string, name: string): string {
+    mkdirSync(directory, { recursive: true })
+    const path = join(directory, name)
+    writeFileSync(path, '#!/bin/sh\nexit 0\n')
+    chmodSync(path, 0o755)
+    return path
+  }
+
+  /** `PATH` is read from the real environment here, so it is restored either way. */
+  function withPath<T>(pathValue: string, run: () => T): T {
+    const previous = process.env.PATH
+    process.env.PATH = pathValue
+    try {
+      return run()
+    } finally {
+      process.env.PATH = previous
+    }
+  }
+
+  // POSIX only: Windows looks in the current directory before PATH, so a bare
+  // name is never handed back there (pinned in the next describe).
+  it.runIf(process.platform !== 'win32')('falls back to the name when the tool is not installed anywhere', () => {
+    expect(withPath(scratch(), () => spawnProgram('definitely-not-installed-anywhere')))
+      .toBe('definitely-not-installed-anywhere')
+  })
+
+  it.runIf(process.platform !== 'win32')('throws rather than spawning one found in a directory somebody else owns', () => {
+    const foreign = scratch()
+    const tool = executable(foreign, 'looptool')
+    // Root can hand the files to another uid; anyone else stubs `getuid` so
+    // that every file looks foreign, which is enough for a single-directory case.
+    const asRoot = process.getuid?.() === 0
+    if (asRoot) {
+      chownSync(foreign, 4242, 4242)
+      chownSync(tool, 4242, 4242)
+    }
+    const spy = asRoot ? null : vi.spyOn(process, 'getuid').mockReturnValue((process.getuid?.() ?? 0) + 1)
+    // The running Node's owner is trusted too — on a CI runner that is the very
+    // uid being made to look foreign — so it is taken out of the case.
+    const execPath = process.execPath
+    if (!asRoot) process.execPath = '/nonexistent/looptroop-test/node'
+    try {
+      expect(() => withPath(foreign, () => spawnProgram('looptool'))).toThrow(/neither root, you, nor the owner of the Node/)
+    } finally {
+      spy?.mockRestore()
+      process.execPath = execPath
+      if (asRoot) {
+        chownSync(tool, 0, 0)
+        chownSync(foreign, 0, 0)
+      }
+    }
+  })
+
+  it.runIf(process.platform !== 'win32')('hands back the resolved path as it is, space and all', () => {
+    // No shell reads it any more, so there is nothing to quote it for.
+    const spaced = join(scratch(), 'Program Files')
+    const tool = executable(spaced, 'looptool')
+
+    withPath(spaced, () => {
+      expect(spawnProgram('looptool')).toBe(tool)
+    })
+  })
+
+  it.runIf(process.platform !== 'win32')('resolves against the environment the child gets, not this process\'s', () => {
+    // A smoke that puts a freshly installed tool at the front of the child's
+    // PATH resolved against the parent's, and exercised whichever older copy
+    // the runner already had.
+    const parent = scratch()
+    const child = scratch()
+    executable(parent, 'looptool')
+    const wanted = executable(child, 'looptool')
+
+    withPath(parent, () => {
+      expect(spawnProgram('looptool', { env: { PATH: child } })).toBe(wanted)
+    })
+  })
+})
+
+/**
+ * `planToolLaunch` and `launchTool` are how a script starts a tool that may be
+ * a Windows command script: the shared launcher, not `shell: true`. The
+ * escaping itself is pinned in the resolver's own tests; these pin the wiring.
+ */
+describe('launching a tool', () => {
+  const dirs: string[] = []
+
+  afterEach(() => {
+    for (const dir of dirs.splice(0)) removeTempDir(dir)
+  })
+
+  function scratch(): string {
+    const dir = makeTempDir('looptroop-launch-tool-')
+    dirs.push(dir)
+    return dir
+  }
+
+  function executable(directory: string, name: string): string {
+    const path = join(directory, name)
+    writeFileSync(path, '#!/bin/sh\nexit 0\n')
+    chmodSync(path, 0o755)
+    return path
+  }
+
+  it.runIf(process.platform !== 'win32')('spawns a real program directly, arguments untouched', () => {
+    const dir = scratch()
+    const tool = executable(dir, 'looptool')
+
+    expect(planToolLaunch('looptool', ['a b', 'c&d'], { env: { PATH: dir } }))
+      .toEqual({ file: tool, args: ['a b', 'c&d'], windowsVerbatimArguments: false })
+  })
+
+  it('starts a Windows command script through cmd.exe, with its arguments escaped', () => {
+    // Upper-case extensions, because PATHEXT spells them that way and this also
+    // runs on a case-sensitive filesystem. The cmd.exe beside it answers when
+    // this host has no ComSpec of its own; a Windows runner uses its real one.
+    const dir = scratch()
+    executable(dir, 'npm.CMD')
+    executable(dir, 'cmd.exe')
+
+    const launch = launchTool('npm', ['install', '-g', 'C:\\a b\\x.tgz'], { env: { PATH: dir }, platform: 'win32' })
+    expect(launch.file.toLowerCase()).toMatch(/cmd\.exe$/)
+    expect(launch.windowsVerbatimArguments).toBe(true)
+    expect(launch.args.slice(0, 4)).toEqual(['/d', '/v:off', '/s', '/c'])
+    expect(launch.args[4]).toMatch(/npm\.CMD install -g \^"C:\\a\^ b\\x\.tgz\^""$/)
+  })
+
+  it('says why a tool cannot be started, or throws it', () => {
+    const lookup = { env: { PATH: scratch() } }
+
+    expect(planToolLaunch('definitely-not-installed-anywhere', [], lookup).reason).toMatch(/was not found in any trusted directory/)
+    expect(() => launchTool('definitely-not-installed-anywhere', [], lookup)).toThrow(/was not found in any trusted directory/)
+  })
+
+  it.runIf(process.platform !== 'win32')('says a refused tool was refused, so a caller does not call it missing', () => {
+    const foreign = scratch()
+    const tool = executable(foreign, 'looptool')
+    const asRoot = process.getuid?.() === 0
+    if (asRoot) {
+      chownSync(foreign, 4242, 4242)
+      chownSync(tool, 4242, 4242)
+    }
+    const spy = asRoot ? null : vi.spyOn(process, 'getuid').mockReturnValue((process.getuid?.() ?? 0) + 1)
+    const execPath = process.execPath
+    if (!asRoot) process.execPath = '/nonexistent/looptroop-test/node'
+    try {
+      expect(planToolLaunch('looptool', [], { env: { PATH: foreign } }).refusedAt).toBe(tool)
+    } finally {
+      spy?.mockRestore()
+      process.execPath = execPath
+      if (asRoot) {
+        chownSync(tool, 0, 0)
+        chownSync(foreign, 0, 0)
+      }
+    }
+  })
+})
+
+describe('spawnProgram when a tool is not installed', () => {
+  it('refuses to fall back to the name when the OS search would reach the current directory', () => {
+    // `PATH=/usr/bin:` ends in an empty entry, which POSIX reads as the working
+    // directory. Handing back the bare name there ran `./tool`.
+    expect(() => spawnProgram('definitely-not-installed-anywhere', { env: { PATH: '/nonexistent-looptroop-bin:' }, platform: 'linux' }))
+      .toThrow(/current directory/)
+    expect(spawnProgram('definitely-not-installed-anywhere', { env: { PATH: '/nonexistent-looptroop-bin' }, platform: 'linux' }))
+      .toBe('definitely-not-installed-anywhere')
+    // Windows looks in the current directory first, whatever PATH says, so no
+    // PATH makes the fallback safe there. Only this process opting out does,
+    // and the variable is unset for the case: some hosts set it for everyone.
+    vi.stubEnv('NoDefaultCurrentDirectoryInExePath', undefined)
+    try {
+      expect(() => spawnProgram('definitely-not-installed-anywhere', {
+        env: { PATH: 'C:\\nonexistent-looptroop-bin' },
+        platform: 'win32',
+      })).toThrow(/current directory/)
+    } finally {
+      vi.unstubAllEnvs()
+    }
+  })
+
+  it('never hands back a relative path to run from the current directory', () => {
+    expect(() => spawnProgram('./evil', { env: { PATH: '' } })).toThrow(/relative path/)
+  })
+
 })

@@ -34,6 +34,7 @@ import { createServer } from 'node:net'
 import { homedir, tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { removeWorkDirectory, waitForHealth } from './smoke-lib.mjs'
+import { launchTool, planToolLaunch } from './tool-path.ts'
 
 const IS_WINDOWS = process.platform === 'win32'
 
@@ -396,13 +397,12 @@ export const CHANNELS = {
     // the add reports success and then `looptroop` is not a command. The
     // documentation tells users to add this themselves, so it is part of the
     // install rather than test scaffolding.
-    pathHint: () => run('yarn', ['global', 'bin'], { shell: IS_WINDOWS }).stdout.trim() || null,
+    pathHint: () => run('yarn', ['global', 'bin']).stdout.trim() || null,
     install: ({ version, pin }) => ({
       command: 'yarn',
       args: ['global', 'add', pin ? `looptroop@${version}` : 'looptroop'],
-      shell: IS_WINDOWS,
     }),
-    uninstall: () => ({ command: 'yarn', args: ['global', 'remove', 'looptroop'], shell: IS_WINDOWS }),
+    uninstall: () => ({ command: 'yarn', args: ['global', 'remove', 'looptroop'] }),
     published: probeNpmRegistry,
     latest: async () => probeNpmLatest(),
     expect: {
@@ -586,9 +586,9 @@ function binaryChannel(target, os, port, opencodePort) {
   }
 }
 
-/** npm is a shell script on POSIX and a `.cmd` on Windows, so it needs a shell there. */
+/** npm, which `run` resolves to `npm.cmd` on Windows and starts through cmd.exe. */
 function npmSpec(args) {
-  return { command: IS_WINDOWS ? 'npm.cmd' : 'npm', args, shell: IS_WINDOWS }
+  return { command: 'npm', args }
 }
 
 /** A POSIX pipeline. `sh -c` because the documented command is a pipe. */
@@ -699,11 +699,20 @@ function redact(text) {
 // ---------------------------------------------------------------------------
 
 function run(command, args, options = {}) {
-  const result = spawnSync(command, args, {
+  // Resolved against the environment the child gets, and started the way the
+  // daemon starts a program: a Windows command script — npm.cmd, yarn.cmd, the
+  // installed looptroop.cmd — through a resolved cmd.exe with every argument
+  // escaped, anything else directly. A tool that cannot be resolved comes back
+  // as a run that never started, with the reason.
+  const { env: extraEnv, ...spawnOptions } = options
+  const env = { ...process.env, ...(extraEnv ?? {}) }
+  const launch = planToolLaunch(command, args, { env })
+  if (launch.reason !== undefined) return { code: null, stdout: '', stderr: '', combined: launch.reason }
+  const result = spawnSync(launch.file, launch.args, {
     encoding: 'utf8',
-    shell: false,
-    ...options,
-    env: { ...process.env, ...(options.env ?? {}) },
+    ...spawnOptions,
+    env,
+    windowsVerbatimArguments: launch.windowsVerbatimArguments,
   })
   // A null status means the process never started — almost always because the
   // command is not on PATH. Left as `exit null: ` with empty output it reads as
@@ -720,36 +729,23 @@ function run(command, args, options = {}) {
   }
 }
 
-/** npm is a shell script on POSIX and a .cmd on Windows, so it needs a shell there. */
+/** npm, which `run` resolves to `npm.cmd` on Windows and starts through cmd.exe. */
 function npm(args, options = {}) {
-  return run(IS_WINDOWS ? 'npm.cmd' : 'npm', args, { shell: IS_WINDOWS, ...options })
-}
-
-/**
- * Quotes one argument for `cmd.exe`. Everything is quoted rather than only what
- * looks like it needs it: inside double quotes cmd stops treating `&`, `|`, `^`
- * and friends as syntax, which is the point of doing this at all.
- */
-function quoteForCmd(value) {
-  return `"${String(value).replace(/"/g, '""')}"`
+  return run('npm', args, options)
 }
 
 /**
  * Runs the installed launcher.
  *
  * On Windows the `bin` entry is `looptroop.cmd`, and a batch file is not an
- * executable image: `CreateProcess` cannot run it, so `spawnSync` with the
- * default `shell: false` returns a null exit code and empty output for every
- * command — which reads as a dozen assertion failures about JSON and health,
- * none of them the actual problem. Four separate defects in this repository
- * share that root cause, so this is copied verbatim rather than re-derived.
+ * executable image: spawned directly it came back with a null exit code and
+ * empty output for every command — which read as a dozen assertion failures
+ * about JSON and health, none of them the actual problem. `run` starts a
+ * command script through cmd.exe, so this is `run` under the name the call
+ * sites read best with.
  */
 function runShim(shimPath, args, options = {}) {
-  if (!IS_WINDOWS) return run(shimPath, args, options)
-
-  const comspec = process.env.ComSpec ?? process.env.COMSPEC ?? 'cmd.exe'
-  const line = `"${[shimPath, ...args].map(quoteForCmd).join(' ')}"`
-  return run(comspec, ['/d', '/s', '/c', line], { ...options, windowsVerbatimArguments: true })
+  return run(shimPath, args, options)
 }
 
 function readJson(text, name) {
@@ -776,7 +772,7 @@ function whichLooptroop(pathHint) {
     ? { PATH: `${pathHint}${IS_WINDOWS ? ';' : ':'}${process.env.PATH ?? ''}` }
     : {}
   const probe = IS_WINDOWS
-    ? run('where', ['looptroop'], { shell: true, env })
+    ? run('where', ['looptroop'], { env })
     : run('sh', ['-c', 'command -v looptroop'], { env })
   if (probe.code !== 0) return null
   const first = probe.stdout.split('\n').map((line) => line.trim()).find(Boolean)
@@ -1184,7 +1180,6 @@ async function runChannel(recipe, options) {
     // address has requests left.
     const install = run(spec.command, spec.args, {
       cwd: elsewhere,
-      shell: spec.shell ?? false,
       env: spec.env ?? {},
     })
     // A barrier, not an assertion: every later step would otherwise run against
@@ -1273,19 +1268,22 @@ async function runChannel(recipe, options) {
       heading('Pre-start an OpenCode for LoopTroop to adopt')
       const opencodeLog = join(scratch, 'adopted-opencode.log')
       const logFd = openSync(opencodeLog, 'a')
-      // Through a shell on every platform, not only Windows. Installed from
-      // npm, `opencode` is a shim — `opencode.cmd` on Windows, and on POSIX a
-      // symlink into a package directory — and letting the shell resolve it is
-      // the same reasoning the daemon's own supervisor applies.
+      // Resolved, then through a shell — not a name handed to the shell to look
+      // up. Installed from npm, `opencode` is a shim: `opencode.cmd` on
+      // Windows, which Node refuses to launch directly, and on POSIX a symlink
+      // into a package directory. The resolver applies PATHEXT and follows the
+      // link, so the shell is left with only the part it is needed for, which
+      // is the same reasoning the daemon's own supervisor applies.
       //
       // Output goes to a file rather than `ignore`. A server that refuses to
       // start otherwise reports itself as "nothing is listening", which says
       // what happened but nothing about why, and this is a detached process
       // whose stderr is gone the moment it exits.
-      adopted = spawn(`opencode serve --hostname 127.0.0.1 --port ${opencodePort}`, [], {
+      const opencodeLaunch = launchTool('opencode', ['serve', '--hostname', '127.0.0.1', '--port', String(opencodePort)])
+      adopted = spawn(opencodeLaunch.file, opencodeLaunch.args, {
         stdio: ['ignore', logFd, logFd],
         detached: !IS_WINDOWS,
-        shell: true,
+        windowsVerbatimArguments: opencodeLaunch.windowsVerbatimArguments,
         // Somebody else's server. It has no more business holding this
         // workflow's token than the CLI under test does.
         env: { ...process.env, ...ANONYMOUS },
@@ -1455,7 +1453,6 @@ async function runChannel(recipe, options) {
       log(`  $ ${removal.display ?? [removal.command, ...removal.args].join(' ')}`)
       const removed = run(removal.command, removal.args, {
         cwd: elsewhere,
-        shell: removal.shell ?? false,
         env: { ...ANONYMOUS, ...(removal.env ?? {}) },
       })
       check('uninstall', removed.code === 0, `exit ${removed.code}: ${removed.combined.trim().slice(-200)}`)

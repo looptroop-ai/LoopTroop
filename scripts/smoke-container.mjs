@@ -30,6 +30,7 @@ import { randomUUID } from 'node:crypto'
 import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
+import { toolPath } from './tool-path.ts'
 
 const failures = []
 let step = 0
@@ -84,7 +85,7 @@ const sleep = (ms) => new Promise((done) => setTimeout(done, ms))
  * argument vector — neither the host's (visible in `ps`) nor the container's.
  */
 function docker(args, options = {}) {
-  const result = spawnSync('docker', args, {
+  const result = spawnSync(toolPath('docker'), args, {
     encoding: 'utf8',
     shell: false,
     maxBuffer: 32 * 1024 * 1024,
@@ -445,7 +446,7 @@ try {
       ['-C', projectDir, 'add', 'README.md'],
       ['-C', projectDir, '-c', 'user.email=smoke@example.com', '-c', 'user.name=Smoke', 'commit', '-m', 'init'],
     ]) {
-      spawnSync('git', args, { encoding: 'utf8', env: gitEnv })
+      spawnSync(toolPath('git'), args, { encoding: 'utf8', env: gitEnv })
     }
     const asHost = [
       'run', '--rm',

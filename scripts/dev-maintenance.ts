@@ -1,9 +1,10 @@
-import { spawnSync, type SpawnSyncOptionsWithStringEncoding } from 'node:child_process'
+import { spawnSync, type SpawnSyncOptionsWithStringEncoding, type SpawnSyncReturns } from 'node:child_process'
 import { accessSync, constants, copyFileSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, statSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { basename, dirname, join, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { getErrorMessage } from '../shared/typeGuards'
+import { planToolLaunch } from './tool-path.ts'
 
 const __dirname = dirname(fileURLToPath(import.meta.url))
 export const repoRoot = resolve(__dirname, '..')
@@ -485,22 +486,23 @@ function stripAnsi(raw: string) {
 /**
  * Windows `.cmd`/`.bat` shims (npm.cmd, opencode.cmd, ...) are batch scripts
  * that only run via cmd.exe. Since the BatBadBut fix (Node 18.20.2/20.12.2/21+),
- * spawnSync refuses to launch them directly and throws EINVAL. Routing through
- * the shell fixes that, but `shell: true` re-parses the command line, so any
- * argument containing whitespace or shell metacharacters must be quoted.
+ * spawnSync refuses to launch them directly and throws EINVAL. The shared
+ * launcher starts them through a resolved cmd.exe with every argument escaped,
+ * where `shell: true` would have Node look cmd.exe up by name.
+ *
+ * A tool that cannot be resolved comes back as `unresolved`, with the reason
+ * and whether it was refused rather than missing.
  */
-function quoteForShell(value: string): string {
-  return isWindows && /[\s&|<>^()"]/.test(value) ? `"${value}"` : value
-}
-
-function spawnViaShell(command: string, args: string[], options: SpawnSyncOptionsWithStringEncoding) {
-  // Under the shell the quoted parts are joined here rather than handed over as
-  // an array. Node joins them the same way and, since DEP0190 (Node 22), warns
-  // about doing so — noise on top of whatever the command itself printed.
-  const quoted = [quoteForShell(command), ...args.map(quoteForShell)]
-  return spawnSync(isWindows ? quoted.join(' ') : command, isWindows ? [] : args, {
+function spawnTool(
+  command: string,
+  args: string[],
+  options: SpawnSyncOptionsWithStringEncoding,
+): SpawnSyncReturns<string> | { unresolved: { reason: string; refused: boolean } } {
+  const launch = planToolLaunch(command, args)
+  if (launch.reason !== undefined) return { unresolved: { reason: launch.reason, refused: launch.refusedAt !== undefined } }
+  return spawnSync(launch.file, launch.args, {
     ...options,
-    shell: isWindows,
+    windowsVerbatimArguments: launch.windowsVerbatimArguments,
   })
 }
 
@@ -509,12 +511,13 @@ function runCommand(
   label: string,
   { verbose = false, cwd = repoRoot }: { verbose?: boolean; cwd?: string } = {},
 ): NpmCommandResult {
-  const result = spawnViaShell(npmCommand, args, {
+  const result = spawnTool(npmCommand, args, {
     cwd,
     encoding: 'utf8',
     stdio: verbose ? 'inherit' : 'pipe',
   })
 
+  if ('unresolved' in result) throw new Error(`Failed to start ${label}: ${result.unresolved.reason}`)
   if (result.error) {
     throw new Error(`Failed to start ${label}: ${result.error.message}`)
   }
@@ -532,11 +535,24 @@ function runExternalCommand(
   _label: string,
   { verbose = false }: { verbose?: boolean } = {},
 ) {
-  const result = spawnViaShell(command, args, {
+  const result = spawnTool(command, args, {
     cwd: repoRoot,
     encoding: 'utf8',
     stdio: verbose ? 'inherit' : 'pipe',
   })
+
+  // Missing keeps the caller's "not installed" path; refused does not, because
+  // "install it" is the wrong advice for a tool that is installed somewhere
+  // this machine will not run it from.
+  if ('unresolved' in result) {
+    return {
+      missing: !result.unresolved.refused,
+      status: null,
+      stdout: '',
+      stderr: '',
+      error: new Error(result.unresolved.reason),
+    }
+  }
 
   if (result.error) {
     return {
@@ -551,9 +567,9 @@ function runExternalCommand(
   const stdout = stripAnsi(trimCommandOutput(result.stdout ?? ''))
   const stderr = stripAnsi(trimCommandOutput(result.stderr ?? ''))
 
-  // With `shell: true` on Windows, a missing command does not surface as an
-  // ENOENT spawn error: cmd.exe launches fine and exits non-zero (9009/1) with
-  // a "not recognized" message. Detect that so callers keep their graceful
+  // Through cmd.exe on Windows, a shim whose target is gone does not surface as
+  // an ENOENT spawn error: cmd.exe launches fine and exits non-zero (9009/1)
+  // with a "not recognized" message. Detect that so callers keep their graceful
   // "not installed" path instead of treating it as a hard failure.
   if (isWindows && result.status !== 0 && /is not recognized|cannot find the path/i.test(stderr)) {
     return { missing: true, status: result.status, stdout: '', stderr: '', error: null }

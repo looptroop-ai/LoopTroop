@@ -21,6 +21,7 @@ import { chmodSync, existsSync, mkdirSync, mkdtempSync, readdirSync, rmSync, wri
 import { tmpdir } from 'node:os'
 import { basename, join, resolve } from 'node:path'
 import { removeWorkDirectory } from './smoke-lib.mjs'
+import { spawnProgram, toolPath } from './tool-path.ts'
 
 function fail(message, ...detail) {
   process.stderr.write(`\nFAIL: ${message}\n`)
@@ -42,10 +43,17 @@ function flag(name) {
 
 const IS_WINDOWS = process.platform === 'win32'
 
+/** A PowerShell single-quoted string literal: nothing inside expands, `'` is doubled. */
+function psLiteral(value) {
+  return `'${String(value).replace(/'/g, "''")}'`
+}
+
 /** Always async: a synchronous child would block the checks that follow it. */
 function invoke(command, args, options = {}) {
   return new Promise((settle, reject) => {
-    const child = spawn(command, args, { env: { ...process.env, ...options.env } })
+    // Resolved against the environment the child gets, not this process's.
+    const env = { ...process.env, ...options.env }
+    const child = spawn(spawnProgram(command, { env }), args, { env })
     let stdout = ''
     let stderr = ''
     child.stdout.on('data', (chunk) => { stdout += chunk.toString() })
@@ -109,11 +117,13 @@ async function main() {
 
   log(`Unpacking ${basename(archive)}...`)
   if (archive.endsWith('.zip')) {
-    execFileSync('powershell', ['-NoProfile', '-Command',
-      `Expand-Archive -LiteralPath '${archive}' -DestinationPath '${unpacked}' -Force`,
+    execFileSync(toolPath('powershell'), ['-NoProfile', '-Command',
+      // A PowerShell single-quoted literal ends at the first `'` unless it is
+      // doubled, and `archive` is a command-line argument.
+      `Expand-Archive -LiteralPath ${psLiteral(archive)} -DestinationPath ${psLiteral(unpacked)} -Force`,
     ], { stdio: ['ignore', 'pipe', 'inherit'] })
   } else {
-    execFileSync('tar', ['-xzf', archive, '-C', unpacked], { stdio: ['ignore', 'pipe', 'inherit'] })
+    execFileSync(toolPath('tar'), ['-xzf', archive, '-C', unpacked], { stdio: ['ignore', 'pipe', 'inherit'] })
   }
 
   const root = join(unpacked, readdirSync(unpacked)[0] ?? fail('The archive unpacked to nothing.'))

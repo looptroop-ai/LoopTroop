@@ -20,6 +20,7 @@ import { existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync }
 import { tmpdir } from 'node:os'
 import { dirname, join, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
+import { launchTool, toolPath } from './tool-path.ts'
 
 const repoRoot = resolve(dirname(fileURLToPath(import.meta.url)), '..')
 const IS_WINDOWS = process.platform === 'win32'
@@ -35,16 +36,16 @@ const expectedVersion = JSON.parse(readFileSync(join(repoRoot, 'package.json'), 
 const work = mkdtempSync(join(tmpdir(), 'looptroop-installer-smoke-'))
 
 try {
-  // Quoted only when a shell will parse it. On Unix there is no shell, so the
-  // quotes would become part of the path and npm would write nowhere useful.
-  const packDestination = IS_WINDOWS ? `"${work}"` : work
-  const pack = spawnSync('npm', ['pack', '--pack-destination', packDestination, '--silent'], {
+  // npm is `npm.cmd` on Windows, so it starts through a resolved cmd.exe there,
+  // with every argument escaped — the launcher the daemon uses.
+  const pack = launchTool('npm', ['pack', '--pack-destination', work, '--silent'])
+  const packed = spawnSync(pack.file, pack.args, {
     cwd: repoRoot,
     encoding: 'utf8',
-    shell: IS_WINDOWS,
+    windowsVerbatimArguments: pack.windowsVerbatimArguments,
   })
-  if (pack.status !== 0) fail('npm pack failed.', pack.stderr || String(pack.error))
-  const tarball = join(work, pack.stdout.trim().split('\n').pop().trim())
+  if (packed.status !== 0) fail('npm pack failed.', packed.stderr || String(packed.error))
+  const tarball = join(work, packed.stdout.trim().split('\n').pop().trim())
 
   // A throwaway npm prefix, so a global install on a shared runner does not
   // outlive this script or collide with the other install smoke test.
@@ -65,7 +66,7 @@ try {
   /** The wrapper this platform serves, invoked with the options it takes. */
   function wrapper(...options) {
     return IS_WINDOWS
-      ? [windowsShell, [
+      ? [toolPath(windowsShell), [
           '-NoProfile',
           // 5.1 defaults to a policy that refuses to run a script from a file;
           // pwsh accepts the flag too, so one argument list serves both.
@@ -73,7 +74,7 @@ try {
           '-File', join(repoRoot, 'install.ps1'),
           ...options,
         ]]
-      : ['sh', [join(repoRoot, 'install.sh'), ...options]]
+      : [toolPath('sh'), [join(repoRoot, 'install.sh'), ...options]]
   }
 
   /**
@@ -145,7 +146,8 @@ try {
     )
   }
 
-  const version = spawnSync(IS_WINDOWS ? `"${installed}"` : installed, ['--version'], { encoding: 'utf8', shell: IS_WINDOWS })
+  const probe = launchTool(installed, ['--version'])
+  const version = spawnSync(probe.file, probe.args, { encoding: 'utf8', windowsVerbatimArguments: probe.windowsVerbatimArguments })
   if (version.stdout.trim() !== expectedVersion) {
     fail(`The installed command reports ${version.stdout.trim() || '(nothing)'}, expected ${expectedVersion}.`)
   }

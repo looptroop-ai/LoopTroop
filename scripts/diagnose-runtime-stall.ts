@@ -6,6 +6,7 @@ import { basename, dirname, isAbsolute, resolve } from 'node:path'
 import { Database } from '../server/db/sqliteShim'
 import { getErrorMessage } from '../shared/typeGuards'
 import { TERMINAL_WORKFLOW_STATUSES } from '../shared/workflowMeta'
+import { resolveTrustedProgram } from '../server/lib/executablePath.ts'
 
 interface CliOptions {
   backendPort?: number
@@ -29,6 +30,13 @@ interface CommandResult {
   stderr: string
   timedOut: boolean
   error?: string
+  /**
+   * The program is not installed. Kept apart from `error` so an optional tool —
+   * PowerShell on Linux — can be left out of a report instead of appearing as a
+   * failed probe; a tool that was *found and refused* is not missing, and is
+   * reported with the resolver's reason.
+   */
+  missing?: boolean
 }
 
 interface HttpProbeResult {
@@ -688,54 +696,84 @@ function runShell(command: string, timeoutMs = 5000): CommandResult {
     shellArgs = ['--noprofile', '--norc', '-c', command]
   }
 
-  const result = spawnSync(shellCmd, shellArgs, {
+  // Resolved rather than left to `PATH`, and resolved *before* the spawn so the
+  // "bash is not here, try sh" fallback keys on the same answer it always did.
+  // A bash that is there and refused is reported with the reason, the way
+  // `runProcess` reports a refused tool, rather than walked past to sh: that
+  // ran a different shell than the one asked for and called bash missing.
+  // This script diagnoses a stall and must never become the thing that fails,
+  // so an unresolvable shell is reported, not thrown.
+  const shell = resolveTrustedProgram(shellCmd)
+  const result = shell.path === undefined ? null : spawnSync(shell.path, shellArgs, {
     cwd: process.cwd(),
     encoding: 'utf8',
     timeout: timeoutMs,
   })
 
   const durationMs = Date.now() - start
-  const error = result.error
+  const error = result?.error
+  const missing = (result === null && shell.refusedAt === undefined)
+    || (error !== undefined && (error as NodeJS.ErrnoException).code === 'ENOENT')
 
   // If bash not found, retry with sh
-  if (error && (error as NodeJS.ErrnoException).code === 'ENOENT' && shellCmd === 'bash') {
-    const fallback = spawnSync('sh', ['-c', command], {
+  if (missing && shellCmd === 'bash') {
+    const sh = resolveTrustedProgram('sh')
+    const fallback = sh.path === undefined ? null : spawnSync(sh.path, ['-c', command], {
       cwd: process.cwd(),
       encoding: 'utf8',
       timeout: timeoutMs,
     })
-    const fallbackError = fallback.error
+    const fallbackError = fallback === null
+      ? new Error(sh.reason)
+      : fallback.error
     const timedOut = fallbackError?.name === 'TimeoutError'
     return {
       command,
       shell: 'sh -c',
       durationMs: Date.now() - start,
-      exitCode: fallback.status,
-      signal: fallback.signal,
-      stdout: fallback.stdout ?? '',
-      stderr: fallback.stderr ?? '',
+      exitCode: fallback?.status ?? null,
+      signal: fallback?.signal ?? null,
+      stdout: fallback?.stdout ?? '',
+      stderr: fallback?.stderr ?? '',
       timedOut,
       ...(fallbackError ? { error: fallbackError.message } : {}),
     }
   }
 
   const timedOut = error?.name === 'TimeoutError'
+  const reason = error ?? (shell.path === undefined ? new Error(shell.reason) : undefined)
   return {
     command,
     shell: `${shellCmd} ${shellArgs.slice(0, -1).join(' ')}`,
     durationMs,
-    exitCode: result.status,
-    signal: result.signal,
-    stdout: result.stdout ?? '',
-    stderr: result.stderr ?? '',
+    exitCode: result?.status ?? null,
+    signal: result?.signal ?? null,
+    stdout: result?.stdout ?? '',
+    stderr: result?.stderr ?? '',
     timedOut,
-    ...(error ? { error: error.message } : {}),
+    ...(reason ? { error: reason.message } : {}),
   }
 }
 
 function runProcess(command: string, args: string[], timeoutMs = 3000): CommandResult {
   const start = Date.now()
-  const result = spawnSync(command, args, {
+  const resolution = resolveTrustedProgram(command)
+  if (resolution.path === undefined) {
+    return {
+      command: `${command} ${args.join(' ')}`.trim(),
+      shell: 'direct',
+      durationMs: 0,
+      exitCode: null,
+      signal: null,
+      stdout: '',
+      stderr: '',
+      timedOut: false,
+      error: resolution.reason,
+      missing: resolution.refusedAt === undefined,
+    }
+  }
+  const program = resolution.path
+  const result = spawnSync(program, args, {
     cwd: process.cwd(),
     encoding: 'utf8',
     timeout: timeoutMs,
@@ -786,7 +824,9 @@ function collectShellLatencyBaselines(): SpawnLatencyBaseline[] {
   }
 
   const psResult = runProcess('powershell.exe', ['-NoProfile', '-NonInteractive', '-Command', 'exit 0'], 5000)
-  if (!psResult.error?.includes('ENOENT')) {
+  // Left out when PowerShell simply is not there — a Linux machine without it
+  // has no symptom to report — but kept when it was found and refused, which is.
+  if (!psResult.missing && !psResult.error?.includes('ENOENT')) {
     baselines.push({ label: 'powershell.exe -NoProfile -Command exit 0', result: psResult })
   }
 

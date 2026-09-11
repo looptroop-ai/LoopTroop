@@ -12,6 +12,7 @@ import {
   shouldDeclareDead,
   type LivenessState,
 } from './dev-backend-liveness'
+import { launchTool } from './tool-path.ts'
 
 const __dirname = dirname(fileURLToPath(import.meta.url))
 const repoRoot = resolve(__dirname, '..')
@@ -44,10 +45,17 @@ if (pollingDecision.usePolling) {
 }
 console.log(`[dev-backend] ${pollingDecision.reason}`)
 
-const child = spawn(tsxBin, ['watch', 'server/index.ts'], {
+// Held to the same rules as any other program named by path — a checkout's
+// `node_modules/.bin` is exactly the tree the resolver exists to judge — and
+// `tsx.cmd` on Windows, which Node refuses to launch directly since the
+// BatBadBut hardening, starts through a resolved cmd.exe with its arguments
+// escaped.
+const tsx = launchTool(tsxBin, ['watch', 'server/index.ts'], { env: childEnv })
+const child = spawn(tsx.file, tsx.args, {
   cwd: repoRoot,
   stdio: 'inherit',
   env: childEnv,
+  windowsVerbatimArguments: tsx.windowsVerbatimArguments,
 })
 
 child.once('error', (error) => {

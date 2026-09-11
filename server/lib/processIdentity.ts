@@ -1,4 +1,5 @@
 import { execFileSync } from 'node:child_process'
+import { findTrustedExecutablePath } from './executablePath'
 import { readFileSync } from 'node:fs'
 import { createHash } from 'node:crypto'
 
@@ -55,8 +56,14 @@ function createDefaultDeps(): ProcessIdentityDeps {
       }
     },
     runCommand: (file, args) => {
+      // `ps` and `powershell.exe` decide whether a pid is the process that
+      // claimed a lock, so which file answers is worth pinning. An unresolvable
+      // one returns null, which every caller of this module already reads as
+      // "cannot verify" — the same answer a missing `ps` gives today.
+      const program = findTrustedExecutablePath(file)
+      if (program === null) return null
       try {
-        return execFileSync(file, args, {
+        return execFileSync(program, args, {
           encoding: 'utf8',
           stdio: ['ignore', 'pipe', 'ignore'],
           timeout: process.platform === 'win32' ? WINDOWS_COMMAND_TIMEOUT_MS : COMMAND_TIMEOUT_MS,

@@ -5,6 +5,7 @@ import { resolveOpenCodeBaseUrl } from './opencode-dev-base-url'
 import { resolveOpenCodeLogMode } from './opencode-log-mode'
 import { withManagedOpenCodeServerEnv } from './opencode-permission-env'
 import { LOOPTROOP_OPENCODE_ROUTING_CONFIG } from '../shared/openRouterRouting'
+import { launchTool } from './tool-path.ts'
 
 const requestedBaseUrl = process.env.LOOPTROOP_OPENCODE_BASE_URL?.trim() || DEFAULT_OPENCODE_BASE_URL
 const hasExplicitBaseUrl = Boolean(process.env.LOOPTROOP_OPENCODE_BASE_URL?.trim())
@@ -55,9 +56,18 @@ if (!managedServerEnv.OPENCODE_CONFIG?.trim()) {
   }
 }
 
-const child = spawn('opencode', ['serve', ...opencodeLogMode.serveArgs, '--hostname', serveHostname, '--port', String(port)], {
+// Resolved against the environment OpenCode will get, rather than left to
+// `PATH`; an unresolvable OpenCode fails here with the reason instead of as an
+// ENOENT from the spawn below. Installed from npm, bun or pnpm it is
+// `opencode.cmd` on Windows, which Node refuses to launch directly since the
+// BatBadBut hardening — so a command script starts through a resolved cmd.exe
+// with every argument escaped, as the daemon's supervisor starts it, and a
+// real program is spawned directly.
+const opencode = launchTool('opencode', ['serve', ...opencodeLogMode.serveArgs, '--hostname', serveHostname, '--port', String(port)], { env: managedServerEnv })
+const child = spawn(opencode.file, opencode.args, {
   stdio: 'inherit',
   env: managedServerEnv,
+  windowsVerbatimArguments: opencode.windowsVerbatimArguments,
 })
 
 child.once('error', (error) => {

@@ -2,6 +2,7 @@ import { spawn, type ChildProcess } from 'node:child_process'
 import { openSync } from 'node:fs'
 import { setTimeout as delay } from 'node:timers/promises'
 import { readDaemonState, getDaemonLogPath, getDaemonLogDir, clearDaemonState, clearStaleDaemonState, readDaemonStartFailure, redactDaemonState, type DaemonState } from '../lib/daemonPaths'
+import { resolveTrustedExecutable } from '../lib/executablePath'
 import { resolveAppConfigDir, ensureSecureDir } from '../lib/appConfigDir'
 import { rotateDaemonLog } from '../lib/daemonLog'
 import { summarizeUpdateStatus, type UpdateStatus } from '../lib/updateCheck'
@@ -771,11 +772,17 @@ export function browserOpener(url: string, platform: NodeJS.Platform): {
 
 export function openInBrowser(url: string): Promise<BrowserLaunch> {
   const { command: opener, args } = browserOpener(url, process.platform)
+  // Resolved rather than taken from `PATH`: this runs on `looptroop start`, in
+  // whatever shell the user happened to be in, and an opener is handed a URL.
+  // An unresolvable one is reported as a launch that did not happen — the same
+  // outcome, and the same message channel, as a spawn that failed.
+  const resolution = resolveTrustedExecutable(opener)
+  if (resolution.path === undefined) return Promise.resolve({ opened: false, reason: resolution.reason })
 
   return new Promise<BrowserLaunch>((resolve) => {
     let child: ReturnType<typeof spawn>
     try {
-      child = spawn(opener, args, { detached: true, stdio: ['ignore', 'ignore', 'pipe'] })
+      child = spawn(resolution.path, args, { detached: true, stdio: ['ignore', 'ignore', 'pipe'] })
     } catch (error) {
       resolve({ opened: false, reason: getErrorMessage(error) })
       return

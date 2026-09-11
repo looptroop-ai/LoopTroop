@@ -31,6 +31,7 @@ import { chmodSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:f
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { renderAurPackage, AUR_PACKAGE_NAME } from './package-manifests.ts'
+import { spawnProgram } from './tool-path.ts'
 
 const REMOTE = `ssh://aur@aur.archlinux.org/${AUR_PACKAGE_NAME}.git`
 
@@ -71,7 +72,7 @@ const ssh = join(work, 'ssh')
 
 function run(command: string, args: string[], options: { cwd?: string, allowFailure?: boolean } = {}): string {
   try {
-    return execFileSync(command, args, {
+    return execFileSync(spawnProgram(command), args, {
       cwd: options.cwd,
       encoding: 'utf8',
       stdio: ['ignore', 'pipe', 'pipe'],

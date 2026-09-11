@@ -22,7 +22,6 @@
  *   - It is *reproducible*. Two builds of one commit must be byte-identical, or
  *     "the hash in the formula matches the release" stops meaning anything.
  */
-import { execFileSync } from 'node:child_process'
 import { createHash } from 'node:crypto'
 import {
   chmodSync, copyFileSync, cpSync, existsSync, mkdirSync, mkdtempSync,
@@ -34,7 +33,7 @@ import { fileURLToPath } from 'node:url'
 // A `.ts` module from a `.mjs` one: Node strips the types, and these scripts
 // already run under bare `node` rather than tsx for exactly that reason.
 import { ArgumentError, parseArgs, requireNoPositional } from './cli-args.ts'
-import { toolPath } from './tool-path.ts'
+import { execTool } from './tool-path.ts'
 
 const repoRoot = resolve(dirname(fileURLToPath(import.meta.url)), '..')
 
@@ -56,8 +55,9 @@ function fail(message, ...detail) {
   process.exit(1)
 }
 
+/** Through `execTool`, because npm is `npm.cmd` on Windows and `execFileSync` cannot start it. */
 function run(command, args, cwd) {
-  return execFileSync(toolPath(command), args, { cwd, encoding: 'utf8', stdio: ['ignore', 'pipe', 'inherit'] })
+  return execTool(command, args, { cwd, stdio: ['ignore', 'pipe', 'inherit'] })
 }
 
 

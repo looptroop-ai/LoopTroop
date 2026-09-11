@@ -15,9 +15,8 @@
  * the documents a redistributed package must carry are present, and nothing
  * from the working tree rode along.
  */
-import { execFileSync } from 'node:child_process'
 import { readFileSync } from 'node:fs'
-import { toolPath } from './tool-path.ts'
+import { execTool } from './tool-path.ts'
 
 /**
  * Documents every published package must carry: the licence it is offered
@@ -68,8 +67,9 @@ function readPackedFiles() {
   // --dry-run so nothing is written; --json so this reads a list rather than
   // scraping the human-readable notice output, which changes between npm
   // releases.
-  const raw = execFileSync(toolPath('npm'), ['pack', '--dry-run', '--json'], {
-    encoding: 'utf8',
+  // `execTool`, not `execFileSync`: npm is `npm.cmd` on Windows, which
+  // `execFileSync` cannot start.
+  const raw = execTool('npm', ['pack', '--dry-run', '--json'], {
     maxBuffer: 32 * 1024 * 1024,
     stdio: ['ignore', 'pipe', 'inherit'],
   })

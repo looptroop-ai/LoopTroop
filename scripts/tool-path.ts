@@ -18,6 +18,7 @@
  * its tool has nothing to degrade to, and the message names the directory it
  * refused and the variable that would allow it.
  */
+import { spawnSync, type StdioOptions } from 'node:child_process'
 import { isAbsolute } from 'node:path'
 import {
   bareNameSearchReachesWorkingDirectory,
@@ -83,6 +84,45 @@ export function launchTool(name: string, args: readonly string[], lookup: ToolLo
   const launch = planToolLaunch(name, args, lookup)
   if (launch.reason !== undefined) throw new Error(launch.reason)
   return launch
+}
+
+export interface ExecToolOptions extends ToolLookup {
+  cwd?: string
+  /** Defaults to stdin ignored, stdout captured, stderr passed through. */
+  stdio?: StdioOptions
+  maxBuffer?: number
+}
+
+/**
+ * `execFileSync` for a tool that may be a Windows command script.
+ *
+ * `execFileSync(toolPath('npm'), …)` is what the npm verifiers used, and it
+ * cannot start `npm.cmd`: Node refuses a command script without a shell, so
+ * `licenses:check` and `verify:package` failed on Windows with EINVAL. This
+ * starts the tool through `launchTool` and keeps `execFileSync`'s contract: the
+ * output is returned, and a failed start or a non-zero exit is thrown, with
+ * `status`, `signal`, `stdout` and `stderr` on the error.
+ */
+export function execTool(name: string, args: readonly string[], options: ExecToolOptions = {}): string {
+  const { env, platform, ...spawnOptions } = options
+  const launch = launchTool(name, args, { env, platform })
+  const result = spawnSync(launch.file, launch.args, {
+    encoding: 'utf8',
+    stdio: ['ignore', 'pipe', 'inherit'],
+    ...spawnOptions,
+    env,
+    windowsVerbatimArguments: launch.windowsVerbatimArguments,
+  })
+  if (result.error) throw result.error
+  if (result.status !== 0) {
+    throw Object.assign(new Error(`${name} ${args.join(' ')} exited ${result.status ?? result.signal}`), {
+      status: result.status,
+      signal: result.signal,
+      stdout: result.stdout,
+      stderr: result.stderr,
+    })
+  }
+  return result.stdout ?? ''
 }
 
 /**

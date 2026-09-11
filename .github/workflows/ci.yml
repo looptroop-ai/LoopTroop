@@ -766,7 +766,7 @@ jobs:
       # rejects.
       - name: Install GNU tar
         if: runner.os == 'macOS'
-        run: brew install gnu-tar
+        run: brew list --versions gnu-tar >/dev/null || brew install gnu-tar
 
       # Twice, requiring identical bytes. The SEA blob embeds the absolute path
       # of the script it was built from, which made the first version of this

@@ -103,8 +103,9 @@ dismissed state was read back from the API. Each is accepted only for the stated
 
 Production pages now restrict connections to the same origin; the broad WebSocket scheme allowance
 is retained only for development reloads, including remote development. The style exception and
-script restrictions are unchanged. Package verification checks the emitted client policy as well
-as the Vite configuration test. No app route, status, parser, or payload key changes in this
+script restrictions are unchanged. Package verification reads the emitted CSP meta tag and checks
+its connection directive; matching text in comments or elsewhere in the page cannot satisfy it.
+The Vite configuration test separately checks the build transform. No app route, status, parser, or payload key changes in this
 stage; the existing upgrade-command value now includes HTTPS enforcement. Container build inputs
 are limited to the selected tarball and Dockerfile; WinGet Git credentials move from process
 arguments to fork-scoped process configuration without replacing inherited Git settings.
@@ -139,6 +140,11 @@ it now uses the local ID and deliberately creates differing IDs to cover that di
 Those tests now pass on Windows. A later loaded runner exposed short PowerShell startup budgets
 in two other tests: both now use the existing integration pool, bounded subprocess waits, and
 explicit subprocess-error diagnostics. Bootstrap scenarios have independent timeout budgets.
+Both latest CI runs passed all test lanes, including the Windows PowerShell checks. One macOS
+Homebrew channel job failed while fetching Homebrew's own tap with an HTTP/2 framing error;
+its sibling run passed. The failed Packaging summary aggregates that channel failure.
+CI and release setup now reuse an installed GNU tar instead of asking Homebrew to install it again.
+This removes the redundant-install warning while retaining installation on runners that lack it.
 
 The floating Node Current job reported npm 11.19.1 and refused installation as intended: its
 policy still requires npm 12. No build or tests run in that lane until the bundled npm meets

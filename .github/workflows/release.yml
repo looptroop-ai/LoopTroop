@@ -265,7 +265,7 @@ jobs:
       # macOS ships bsdtar as `tar`, which rejects the reproducible flags.
       - name: Install GNU tar
         if: runner.os == 'macOS'
-        run: brew install gnu-tar
+        run: brew list --versions gnu-tar >/dev/null || brew install gnu-tar
 
       - name: Build the binary
         run: node scripts/build-binary.mjs --out "${{ runner.temp }}/binary"

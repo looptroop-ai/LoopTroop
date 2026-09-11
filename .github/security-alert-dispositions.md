@@ -91,6 +91,11 @@ dismissed state was read back from the API. Each is accepted only for the stated
   Only an explicitly configured HTTP loopback fixture may use HTTP, within its own origin;
   an HTTPS request can never downgrade to that fixture. Published curl bootstrap and upgrade
   commands also restrict initial requests and redirects to HTTPS.
+- PowerShell bootstrap and upgrade commands use curl's HTTPS restrictions too, capture the
+  complete response, and refuse failed or empty downloads before creating a script block.
+  This avoids PowerShell's older automatic-redirect behavior. The curl prerequisite is explicit;
+  users without it can use the existing npm channel. POSIX protocol arguments are quoted so
+  zsh does not interpret them as command-path expansion.
 - The OpenCode tooling install is exact-pinned (#18). LoopTroop channel selection is unchanged.
 - Workflow permission alerts #16 and #20 were already fixed before this stage.
 
@@ -113,6 +118,11 @@ remove only the named file after verifying no installer is running. Its released
 reference and the installer updates already scheduled for release are unchanged. Its curl
 bootstrap commands now enforce HTTPS, including redirects; those flags were checked against
 the published wrapper with `--help` before documenting them.
+The POSIX command was also checked in zsh. PowerShell command behavior was checked with harmless
+multiline script fixtures, including failed and empty downloads and parameter forwarding.
+The published PowerShell wrapper does not support a help switch: an attempted help-only check
+instead performed a global npm installation. No daemon was started; subsequent checks used
+fixtures. Do not use the live PowerShell wrapper as a help-only verification command.
 
 ## CI review observations
 

@@ -1,5 +1,6 @@
 import { describe, it, expect } from 'vitest'
 import { readFileSync } from 'node:fs'
+import { spawnSync } from 'node:child_process'
 import { planMatrix, CHANNELS, binaryPrefix, validatePublishedVersion } from '../scripts/smoke-published.mjs'
 import type { ChannelRecipe, InstalledChannel } from '../scripts/smoke-published.mjs'
 
@@ -261,11 +262,38 @@ describe('planMatrix', () => {
     // The website URL is the path a user takes, and exercising the redirect is
     // half the point of the leg.
     const sh = installedChannel('installer-sh').install({ version: '9.9.9', pin: false })
-    expect(sh.display).toBe('curl --proto =https --proto-redir =https --tlsv1.2 -fsSL https://www.looptroop.ovh/install | sh')
+    expect(sh.display).toBe('curl --proto "=https" --proto-redir "=https" --tlsv1.2 -fsSL https://www.looptroop.ovh/install | sh')
 
     const ps1 = installedChannel('installer-ps1').install({ version: '9.9.9', pin: false })
-    expect(ps1.display).toBe('irm https://www.looptroop.ovh/install.ps1 | iex')
+    expect(ps1.display).toBe('$script = curl.exe --proto "=https" --proto-redir "=https" --tlsv1.2 -fsSL https://www.looptroop.ovh/install.ps1; if ($LASTEXITCODE -ne 0 -or !$script) { throw "Installer download failed" }; & ([scriptblock]::Create(($script -join "`n")))')
   })
+
+  it.runIf(process.platform === 'win32' || spawnSync('pwsh', ['-NoProfile', '-Command', '$PSVersionTable.PSVersion.ToString()'], { timeout: 10_000 }).status === 0)('executes complete PowerShell downloads only after curl succeeds', () => {
+    const shell = process.platform === 'win32' ? 'powershell.exe' : 'pwsh'
+    const command = installedChannel('installer-ps1-binary').install({ version: '9.9.9', pin: true }).display
+    for (const [exitCode, empty] of [[0, false], [22, false], [0, true]] as const) {
+      const result = spawnSync(shell, ['-NoProfile', '-NonInteractive', '-Command', `
+function curl.exe {
+  $global:LASTEXITCODE = ${exitCode}
+  if (${empty ? '$true' : '$false'}) { return }
+  'param([switch]$Binary, [string]$Version)'
+  '$message = @"'
+  'complete script'
+  '"@'
+  'Write-Output "$message $Binary $Version"'
+}
+${command}
+`], { encoding: 'utf8', timeout: 10_000 })
+      if (exitCode === 0 && !empty) {
+        expect(result.status, result.stderr).toBe(0)
+        expect(result.stdout.trim()).toBe('complete script True 9.9.9')
+      } else {
+        expect(result.status).not.toBe(0)
+        expect(result.stderr).toContain('Installer download failed')
+        expect(result.stdout).not.toContain('complete script')
+      }
+    }
+  }, 30_000)
 
   it('fetches a pinned wrapper from the release, never from the website', () => {
     // The website always points at releases/latest, so pinning through it would
@@ -282,7 +310,7 @@ describe('planMatrix', () => {
   it('drives PowerShell 5.1 with the progress bar silenced', () => {
     // `powershell.exe` is Windows PowerShell 5.1, the runtime that ships with
     // Windows and therefore the one the documented one-liner lands in. `pwsh`
-    // is a different runtime. The progress bar makes `irm` take minutes.
+    // is a different runtime.
     const spec = installedChannel('installer-ps1').install({ version: '9.9.9', pin: false })
     expect(spec.command).toBe('powershell.exe')
     expect(spec.args?.join(' ')).toContain("$ProgressPreference = 'SilentlyContinue'")
@@ -308,7 +336,7 @@ describe('planMatrix', () => {
     // form. One string here would fail on one of the two operating systems.
     const { upgradeCommand } = installedChannel('installer-sh-binary').expect
     expect(upgradeCommand('win32')).toContain('scriptblock')
-    expect(upgradeCommand('linux')).toBe('curl --proto =https --proto-redir =https --tlsv1.2 -fsSL https://www.looptroop.ovh/install | sh -s -- --binary')
+    expect(upgradeCommand('linux')).toBe('curl --proto "=https" --proto-redir "=https" --tlsv1.2 -fsSL https://www.looptroop.ovh/install | sh -s -- --binary')
     expect(upgradeCommand('win32')).not.toBe(upgradeCommand('linux'))
   })
 

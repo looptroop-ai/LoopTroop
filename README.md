@@ -64,7 +64,7 @@ Instead of trusting a single, endless AI chat session - where the conversation h
 ## Quick start
 
 ```bash
-curl --proto =https --proto-redir =https --tlsv1.2 -fsSL https://www.looptroop.ovh/install | sh
+curl --proto "=https" --proto-redir "=https" --tlsv1.2 -fsSL https://www.looptroop.ovh/install | sh
 looptroop open
 ```
 
@@ -78,14 +78,14 @@ start it.
 ### Every way to install it
 
 <details>
-<summary><b>curl / irm</b> — the one-line installer (shown above)</summary>
+<summary><b>curl / PowerShell</b> — the one-line installer (shown above)</summary>
 
 ```bash
-curl --proto =https --proto-redir =https --tlsv1.2 -fsSL https://www.looptroop.ovh/install | sh
+curl --proto "=https" --proto-redir "=https" --tlsv1.2 -fsSL https://www.looptroop.ovh/install | sh
 ```
 
 ```powershell
-irm https://www.looptroop.ovh/install.ps1 | iex
+$script = curl.exe --proto "=https" --proto-redir "=https" --tlsv1.2 -fsSL https://www.looptroop.ovh/install.ps1; if ($LASTEXITCODE -ne 0 -or !$script) { throw "Installer download failed" }; & ([scriptblock]::Create(($script -join "`n")))
 ```
 
 Resolves the newest release, checks the download against the checksum that
@@ -94,6 +94,10 @@ release published, and hands it to npm. Because it installs through npm,
 exactly as they would have. Pin a version with `--version X.Y.Z` (`-Version` on
 Windows). It installs wherever npm's global prefix points; change that with
 `npm config set prefix`.
+
+The PowerShell command also needs `curl.exe`, included in current Windows 10
+and Windows 11. If it is unavailable, use the npm channel below. It downloads
+the complete script over HTTPS and stops if the download fails.
 
 **Needs Node and npm already installed.** It never installs Node for you, never
 asks for sudo, and writes nothing outside npm's global prefix.

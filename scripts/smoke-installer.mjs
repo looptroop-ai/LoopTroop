@@ -71,7 +71,7 @@ try {
 
   // `--shell powershell` runs the wrapper under Windows PowerShell 5.1 rather
   // than PowerShell 7. They are different runtimes, and 5.1 is the one preinstalled
-  // on Windows — so it is what `irm https://www.looptroop.ovh/install.ps1 | iex`
+  // on Windows — so it is what the documented PowerShell bootstrap
   // lands in for a user who has never installed pwsh. Testing only pwsh left the
   // documented one-liner's actual runtime unproven.
   const shellArg = process.argv.indexOf('--shell')

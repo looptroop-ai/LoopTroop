@@ -4,6 +4,7 @@ import { resolve } from 'node:path'
 import { makeTempDir, pinGitLineEndings, removeTempDir } from '../../test/tempDir'
 import { afterEach, describe, expect, it } from 'vitest'
 import { removeWorktree } from '../worktreeRemoval'
+import { getTicketWorktreePath } from '../../storage/paths'
 
 const roots: string[] = []
 
@@ -101,5 +102,47 @@ describe('removeWorktree', () => {
       worktreePath: outsidePath,
     })).toThrow('outside the managed worktrees root')
     expect(existsSync(outsidePath)).toBe(true)
+  })
+
+  it('rejects an external destination behind a replaced worktrees parent', () => {
+    const root = makeTempDir('looptroop-worktree-link-')
+    roots.push(root)
+    const projectRoot = resolve(root, 'project')
+    const worktreesRoot = resolve(projectRoot, '.looptroop', 'worktrees')
+    const outside = resolve(root, 'outside')
+    mkdirSync(resolve(projectRoot, '.looptroop'), { recursive: true })
+    mkdirSync(resolve(outside, 'TEST-1'), { recursive: true })
+    writeFileSync(resolve(outside, 'TEST-1', 'keep.txt'), 'preserve me')
+    symlinkSync(outside, worktreesRoot, 'junction')
+    const commands: string[][] = []
+
+    expect(() => removeWorktree({
+      projectRoot,
+      worktreesRoot,
+      worktreePath: resolve(worktreesRoot, 'TEST-1'),
+      runGit: (args) => { commands.push(args) },
+    })).toThrow('escapes root')
+    expect(commands).toEqual([])
+    expect(readFileSync(resolve(outside, 'TEST-1', 'keep.txt'), 'utf8')).toBe('preserve me')
+  })
+
+  it('removes a contained worktree alias without deleting its destination', () => {
+    const root = makeTempDir('looptroop-worktree-alias-')
+    roots.push(root)
+    const worktreesRoot = resolve(root, '.looptroop', 'worktrees')
+    const destination = resolve(worktreesRoot, 'TEST-2')
+    mkdirSync(destination, { recursive: true })
+    writeFileSync(resolve(destination, 'keep.txt'), 'preserve me')
+    symlinkSync(destination, resolve(worktreesRoot, 'TEST-1'), 'junction')
+
+    removeWorktree({
+      projectRoot: root,
+      worktreesRoot,
+      worktreePath: getTicketWorktreePath(root, 'TEST-1'),
+      runGit: () => { throw new Error('Not a registered worktree') },
+    })
+
+    expect(existsSync(resolve(worktreesRoot, 'TEST-1'))).toBe(false)
+    expect(readFileSync(resolve(destination, 'keep.txt'), 'utf8')).toBe('preserve me')
   })
 })

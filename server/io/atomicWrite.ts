@@ -1,6 +1,7 @@
-import { writeFileSync, renameSync, openSync, fsyncSync, closeSync, mkdirSync, unlinkSync, chmodSync, statSync } from 'fs'
-import { dirname } from 'path'
+import { writeFileSync, renameSync, openSync, fsyncSync, closeSync, mkdirSync, unlinkSync, fchmodSync, lstatSync, constants, realpathSync } from 'fs'
+import { dirname, isAbsolute, win32 } from 'path'
 import { randomBytes } from 'crypto'
+import { ContainedPathError, resolveContainedPath } from '../lib/containedPath'
 
 /** POSIX modes are advisory on Windows, where ACLs already restrict the profile. */
 const SUPPORTS_POSIX_MODES = process.platform !== 'win32'
@@ -121,7 +122,8 @@ export function retryWhileWindowsHoldsTheFile<T>(
 function currentMode(filePath: string): number | null {
   if (!SUPPORTS_POSIX_MODES) return null
   try {
-    return statSync(filePath).mode & 0o777
+    const stat = lstatSync(filePath)
+    return stat.isSymbolicLink() ? null : stat.mode & 0o777
   } catch {
     return null
   }
@@ -148,6 +150,46 @@ export function safeAtomicWrite(
   content: string,
   options: SafeAtomicWriteOptions = {},
 ): void {
+  atomicWrite(filePath, content, options)
+}
+
+/**
+ * Writes below an independently trusted root, resolving contained symlinks once
+ * and rejecting subsequent changes to the canonical destination.
+ * Node exposes no directory-relative openat/renameat API: repeated checks and
+ * an exclusive, no-follow temp descriptor narrow but cannot eliminate an
+ * ancestor swap between a check and the following filesystem operation.
+ */
+export function safeAtomicWriteWithin(
+  root: string,
+  relativePath: string,
+  content: string,
+  options: SafeAtomicWriteOptions = {},
+): void {
+  if (isAbsolute(relativePath) || win32.isAbsolute(relativePath)) {
+    throw new ContainedPathError('Atomic write requires a relative path')
+  }
+  const canonicalRoot = realpathSync.native(root)
+  const filePath = resolveContainedPath(canonicalRoot, relativePath, {
+    allowMissing: true,
+    allowMissingParents: true,
+  })
+  atomicWrite(filePath, content, options, (candidate, allowMissingParents = false) => {
+    if (realpathSync.native(canonicalRoot) !== canonicalRoot) {
+      throw new ContainedPathError('Atomic write root changed')
+    }
+    if (resolveContainedPath(canonicalRoot, candidate, { allowMissing: true, allowMissingParents }) !== candidate) {
+      throw new ContainedPathError('Atomic write destination changed')
+    }
+  })
+}
+
+function atomicWrite(
+  filePath: string,
+  content: string,
+  options: SafeAtomicWriteOptions,
+  assertContained?: (candidate: string, allowMissingParents?: boolean) => void,
+): void {
   const deps = options.deps ?? defaultDeps
   const tmpPath = makeAtomicTmpPath(filePath)
   const dir = dirname(filePath)
@@ -156,7 +198,9 @@ export function safeAtomicWrite(
   // to the default 0644 that the fresh temp file would carry through rename.
   const existingMode = currentMode(filePath)
 
+  assertContained?.(filePath, true)
   mkdirSync(dir, { recursive: true })
+  assertContained?.(filePath)
 
   const requestedMode = SUPPORTS_POSIX_MODES ? options.mode : undefined
 
@@ -165,45 +209,44 @@ export function safeAtomicWrite(
     // The mode goes to `open`, so the content is never on disk at the umask —
     // not even under the temp name, which is where a `chmod` afterwards would
     // leave it exposed.
-    writeFileSync(tmpPath, content, requestedMode === undefined
-      ? 'utf-8'
-      : { encoding: 'utf-8', mode: requestedMode })
+    assertContained?.(tmpPath)
+    const fd = openSync(tmpPath, constants.O_WRONLY | constants.O_CREAT | constants.O_EXCL | (constants.O_NOFOLLOW ?? 0), requestedMode ?? existingMode ?? 0o666)
     tmpCreated = true
-
-    // Re-applied because the umask subtracts from the creation mode: 0640 under
-    // a 0027 umask lands as 0640, but 0666 lands as 0640 too. A requested mode
-    // is a requirement, not a preference — swallowing the failure is how a
-    // checkpoint that must be 0600 ends up world-readable with nothing said.
-    // The `finally` below removes the temp, so the target keeps what it had.
-    if (requestedMode !== undefined) {
-      chmodSync(tmpPath, requestedMode)
-    } else if (existingMode !== null) {
-      try { chmodSync(tmpPath, existingMode) } catch { /* best-effort */ }
-    }
-
-    // 'r+' not 'r': Windows FlushFileBuffers needs a writable handle and fails
-    // with EPERM otherwise.
-    const fd = openSync(tmpPath, 'r+')
     try {
+      writeFileSync(fd, content, 'utf-8')
+      // Apply modes on the opened descriptor, never through a replaceable path.
+      if (requestedMode !== undefined) {
+        fchmodSync(fd, requestedMode)
+      } else if (existingMode !== null) {
+        try { fchmodSync(fd, existingMode) } catch { /* best-effort */ }
+      }
       fsyncSync(fd)
     } finally {
       closeSync(fd)
     }
 
-    retryWhileWindowsHoldsTheFile(() => { deps.rename(tmpPath, filePath) }, deps)
+    retryWhileWindowsHoldsTheFile(() => {
+      assertContained?.(tmpPath)
+      assertContained?.(filePath)
+      deps.rename(tmpPath, filePath)
+    }, deps)
     tmpCreated = false
 
     // Best-effort parent-directory fsync for crash durability on Linux/macOS.
     // Not all platforms support opening directories; failures are silently ignored.
     try {
-      const dirFd = openSync(dir, 'r')
+      assertContained?.(filePath)
+      const dirFd = openSync(dir, constants.O_RDONLY | (constants.O_NOFOLLOW ?? 0))
       try { fsyncSync(dirFd) } finally { closeSync(dirFd) }
     } catch {
       // Ignored — not critical and not supported on all filesystems
     }
   } finally {
     if (tmpCreated) {
-      try { unlinkSync(tmpPath) } catch { /* best-effort cleanup */ }
+      try {
+        assertContained?.(tmpPath)
+        unlinkSync(tmpPath)
+      } catch { /* best-effort cleanup; never follow an escaped parent */ }
     }
   }
 }

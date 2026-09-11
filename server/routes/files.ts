@@ -1,11 +1,11 @@
 import { Hono } from 'hono'
 import * as fs from 'node:fs'
-import * as path from 'node:path'
 import * as readline from 'node:readline'
-import { execFile } from 'node:child_process'
-import { resolveTrustedExecutable } from '../lib/executablePath'
-import { promisify } from 'node:util'
-import { getTicketByRef, getTicketPaths } from '../storage/tickets'
+import { getTicketByRef, resolveTicketContainedPath } from '../storage/tickets'
+import { listProjects } from '../storage/projects'
+import { resolveAppConfigDir } from '../lib/appConfigDir'
+import { ContainedPathError } from '../lib/containedPath'
+import { revealFolderInExplorer } from '../lib/openPath'
 import { resolvePhaseAttempt } from '../storage/ticketPhaseAttempts'
 import { foldPersistedLogEntries } from '../log/readDedupe'
 import { normalizePersistedLogEntry } from '../log/view'
@@ -15,6 +15,22 @@ import { readOpenCodeNativeLogs } from '../opencode/logDiagnostics'
 import { getErrorMessage } from '@shared/typeGuards'
 
 const filesRouter = new Hono()
+filesRouter.onError((error, c) => {
+  if (error instanceof ContainedPathError) return c.json({ error: error.message }, 400)
+  throw error
+})
+
+const READ_FLAGS = fs.constants.O_RDONLY | (fs.constants.O_NOFOLLOW ?? 0)
+
+function openLogStream(logPath: string): fs.ReadStream | null {
+  try {
+    const fd = fs.openSync(logPath, READ_FLAGS)
+    return fs.createReadStream(logPath, { fd, encoding: 'utf-8', autoClose: true })
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === 'ENOENT') return null
+    throw error
+  }
+}
 
 const VALID_FILES = ['interview', 'prd'] as const
 type ValidFile = typeof VALID_FILES[number]
@@ -25,9 +41,7 @@ function isValidFile(file: string): file is ValidFile {
 }
 
 function resolveTicketFilePath(ticketId: string, file: ValidFile): string | null {
-  const paths = getTicketPaths(ticketId)
-  if (!paths) return null
-  return path.join(paths.ticketDir, `${file}.yaml`)
+  return resolveTicketContainedPath(ticketId, `${file}.yaml`) ?? null
 }
 
 function normalizeLogChannel(channel?: string): LogChannel {
@@ -73,13 +87,10 @@ function logEntryMatchesFilters(
 
 async function extractTicketSessionIds(logPath: string): Promise<string[]> {
   const ids = new Set<string>()
-  try {
-    await fs.promises.access(logPath)
-  } catch {
-    return []
-  }
+  const input = openLogStream(logPath)
+  if (!input) return []
   const rl = readline.createInterface({
-    input: fs.createReadStream(logPath, { encoding: 'utf-8' }),
+    input,
     crlfDelay: Infinity,
   })
   for await (const line of rl) {
@@ -119,15 +130,12 @@ async function readLogFileEntries(logPath: string, filters: {
   status?: string
   phase?: string
   phaseAttempt?: number
-}): Promise<Record<string, unknown>[]> {
-  try {
-    await fs.promises.access(logPath)
-  } catch {
-    return []
-  }
+}): Promise<Record<string, unknown>[] | null> {
+  const input = openLogStream(logPath)
+  if (!input) return null
   const entries: Record<string, unknown>[] = []
   const rl = readline.createInterface({
-    input: fs.createReadStream(logPath, { encoding: 'utf-8' }),
+    input,
     crlfDelay: Infinity,
   })
   for await (const line of rl) {
@@ -149,8 +157,11 @@ filesRouter.get('/files/:ticketId/logs', async (c) => {
   const ticket = getTicketByRef(ticketId)
   if (!ticket) return c.json({ error: 'Ticket not found' }, 404)
 
-  const paths = getTicketPaths(ticketId)
-  if (!paths) return c.json({ error: 'Ticket not found' }, 404)
+  const paths = {
+    executionLogPath: resolveTicketContainedPath(ticketId, 'runtime/execution-log.jsonl')!,
+    debugLogPath: resolveTicketContainedPath(ticketId, 'runtime/execution-log.debug.jsonl')!,
+    aiLogPath: resolveTicketContainedPath(ticketId, 'runtime/execution-log.ai.jsonl')!,
+  }
   const channel = normalizeLogChannel(c.req.query('channel'))
 
   const statusFilter = c.req.query('status')
@@ -181,7 +192,7 @@ filesRouter.get('/files/:ticketId/logs', async (c) => {
         const normalized = normalizeLogEntry(entry)
         return normalized && logEntryMatchesFilters(normalized, filters) ? [normalized] : []
       })
-    const allEntries = [...normalEntries, ...debugEntries, ...aiEntries, ...ocNativeEntries]
+    const allEntries = [...(normalEntries ?? []), ...(debugEntries ?? []), ...(aiEntries ?? []), ...ocNativeEntries]
     return c.json(sortByTimestamp(foldPersistedLogEntries(allEntries)))
   }
 
@@ -191,15 +202,9 @@ filesRouter.get('/files/:ticketId/logs', async (c) => {
       ? paths.aiLogPath
       : paths.executionLogPath
 
-  // Kept ahead of the read: a ticket with no log file at all answers with an
-  // empty list rather than the synthetic "status is active" row below.
-  try {
-    await fs.promises.access(logPath)
-  } catch {
-    return c.json([])
-  }
-
   const entries = await readLogFileEntries(logPath, filters)
+  // An absent log answers with an empty list, without a synthetic status row.
+  if (entries === null) return c.json([])
   const foldedEntries = sortByTimestamp(foldPersistedLogEntries(entries))
 
   const isAuxiliaryChannel = channel === 'debug' || channel === 'ai'
@@ -243,13 +248,12 @@ filesRouter.get('/files/:ticketId/:file', async (c) => {
   if (!filePath) return c.json({ error: 'Ticket not found' }, 404)
 
   try {
-    await fs.promises.access(filePath)
-  } catch {
-    return c.json({ content: '', exists: false })
+    const content = await fs.promises.readFile(filePath, { encoding: 'utf-8', flag: READ_FLAGS })
+    return c.json({ content, exists: true, contentSha256: contentSha256(content) })
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === 'ENOENT') return c.json({ content: '', exists: false })
+    throw error
   }
-
-  const content = await fs.promises.readFile(filePath, 'utf-8')
-  return c.json({ content, exists: true, contentSha256: contentSha256(content) })
 })
 
 filesRouter.put('/files/:ticketId/:file', async (c) => {
@@ -278,72 +282,20 @@ filesRouter.put('/files/:ticketId/:file', async (c) => {
   return c.json({ error: `Unsupported file type: ${file satisfies never}` }, 400)
 })
 
-const execFileAsync = promisify(execFile)
-
-/**
- * Runs one of the platform openers, by path rather than by name.
- *
- * These are the most attacker-facing spawns in the daemon: an HTTP request
- * decides which directory is revealed, and until now the *program* that
- * revealed it was whatever `PATH` offered first. Jailing the path while leaving
- * the opener ambient would have fixed half of it.
- *
- * An unresolvable opener throws, which the route already turns into a 500 with
- * the reason attached — the same shape an ENOENT from a missing opener
- * produced, and the reason now names the override instead of a syscall.
- */
-async function runOpener(name: string, args: string[]): Promise<{ stdout: string }> {
-  const resolution = resolveTrustedExecutable(name)
-  if (resolution.path === undefined) throw new Error(resolution.reason)
-  const { stdout } = await execFileAsync(resolution.path, args)
-  return { stdout }
-}
-
-async function revealFolderInExplorer(targetPath: string) {
-  let resolvedPath = path.resolve(targetPath)
-  try {
-    const stats = await fs.promises.stat(resolvedPath)
-    if (!stats.isDirectory()) {
-      resolvedPath = path.dirname(resolvedPath)
-    }
-  } catch {
-    // If the path doesn't exist, try its parent
-    resolvedPath = path.dirname(resolvedPath)
-  }
-
-  const isWsl = process.platform === 'linux' && (
-    !!process.env.WSL_DISTRO_NAME ||
-    !!process.env.WSL_INTEROP ||
-    await fs.promises.readFile('/proc/version', 'utf8').then(v => v.toLowerCase().includes('microsoft')).catch(() => false)
-  )
-
-  if (isWsl) {
-    try {
-      const { stdout } = await runOpener('wslpath', ['-w', resolvedPath])
-      const winPath = stdout.trim()
-      await runOpener('powershell.exe', ['-NoProfile', '-Command', `Invoke-Item '${winPath.replace(/'/g, "''")}'`])
-    } catch {
-      await runOpener('explorer.exe', [resolvedPath])
-    }
-  } else if (process.platform === 'win32') {
-    await runOpener('explorer.exe', [resolvedPath])
-  } else if (process.platform === 'darwin') {
-    await runOpener('open', [resolvedPath])
-  } else {
-    await runOpener('xdg-open', [resolvedPath])
-  }
-}
-
 filesRouter.post('/files/open-path', async (c) => {
   try {
     const body = await c.req.json()
     if (!body || typeof body.path !== 'string' || !body.path.trim()) {
       return c.json({ error: 'A valid "path" parameter is required.' }, 400)
     }
-    await revealFolderInExplorer(body.path.trim())
+    await revealFolderInExplorer(body.path, [
+      ...listProjects().map(project => project.folderPath),
+      resolveAppConfigDir(),
+    ])
     return c.json({ success: true })
   } catch (err) {
     const message = getErrorMessage(err)
+    if (err instanceof ContainedPathError) return c.json({ error: message }, 400)
     return c.json({ error: 'Failed to open path', details: message }, 500)
   }
 })

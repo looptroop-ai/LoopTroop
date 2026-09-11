@@ -6,7 +6,6 @@ import {
   lstatSync,
   mkdirSync,
   readFileSync,
-  realpathSync,
   readdirSync,
   renameSync,
   rmSync,
@@ -14,11 +13,12 @@ import {
 import { open } from 'node:fs/promises'
 import { basename, dirname, extname, relative, resolve, sep } from 'node:path'
 import * as jsYaml from 'js-yaml'
-import { safeAtomicWrite } from '../../io/atomicWrite'
+import { safeAtomicWriteWithin } from '../../io/atomicWrite'
 import { withFileLock } from '../../io/fileLock'
 import { appendJsonl, readJsonl } from '../../io/jsonl'
 import { buildYamlDocument } from '../../structuredOutput/yamlUtils'
 import { contentSha256 } from '../../lib/contentHash'
+import { escapesRoot, resolveContainedPath } from '../../lib/containedPath'
 import { getTicketPaths, listPhaseArtifacts, listPhaseAttempts } from '../../storage/tickets'
 import {
   MANUAL_QA_SCHEMA_VERSION,
@@ -73,6 +73,14 @@ export function getManualQaStoragePaths(ticketDir: string, version: number): Man
   assertVersion(version)
   const root = resolve(ticketDir, 'manual-qa')
   const versionDir = resolve(root, `v${version}`)
+  for (const directory of [root, versionDir]) {
+    try {
+      const stats = lstatSync(directory)
+      if (!stats.isDirectory() || stats.isSymbolicLink()) throw new Error('Manual QA path contains an unsafe directory.')
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error
+    }
+  }
   return {
     root,
     versionDir,
@@ -100,8 +108,8 @@ export function resolveManualQaTicketDir(ticketId: string): string {
   return paths.ticketDir
 }
 
-function writeYaml(path: string, value: unknown): void {
-  safeAtomicWrite(path, buildYamlDocument(value))
+function writeYaml(ticketDir: string, path: string, value: unknown): void {
+  safeAtomicWriteWithin(ticketDir, relative(ticketDir, path), buildYamlDocument(value))
 }
 
 function readYaml<T>(path: string, parser: { parse(value: unknown): T }): T | null {
@@ -112,7 +120,7 @@ function readYaml<T>(path: string, parser: { parse(value: unknown): T }): T | nu
 export function persistManualQaChecklist(ticketDir: string, checklist: ManualQaChecklist): string {
   const parsed = ManualQaChecklistSchema.parse(checklist)
   const path = getManualQaStoragePaths(ticketDir, parsed.version).checklistPath
-  writeYaml(path, parsed)
+  writeYaml(ticketDir, path, parsed)
   return contentSha256(readFileSync(path, 'utf8'))
 }
 
@@ -127,7 +135,7 @@ export function getManualQaChecklistHash(ticketDir: string, version: number): st
 
 export function persistManualQaCoverage(ticketDir: string, coverage: ManualQaCoverage): void {
   const parsed = ManualQaCoverageSchema.parse(coverage)
-  writeYaml(getManualQaStoragePaths(ticketDir, parsed.version).coveragePath, parsed)
+  writeYaml(ticketDir, getManualQaStoragePaths(ticketDir, parsed.version).coveragePath, parsed)
 }
 
 export function readManualQaCoverage(ticketDir: string, version: number): ManualQaCoverage | null {
@@ -136,7 +144,7 @@ export function readManualQaCoverage(ticketDir: string, version: number): Manual
 
 export function persistManualQaResults(ticketDir: string, results: ManualQaResults): void {
   const parsed = ManualQaResultsSchema.parse(results)
-  writeYaml(getManualQaStoragePaths(ticketDir, parsed.version).resultsPath, parsed)
+  writeYaml(ticketDir, getManualQaStoragePaths(ticketDir, parsed.version).resultsPath, parsed)
 }
 
 export function readManualQaResults(ticketDir: string, version: number): ManualQaResults | null {
@@ -145,7 +153,7 @@ export function readManualQaResults(ticketDir: string, version: number): ManualQ
 
 export function persistManualQaSummary(ticketDir: string, summary: ManualQaSummary): void {
   const parsed = ManualQaSummarySchema.parse(summary)
-  writeYaml(getManualQaStoragePaths(ticketDir, parsed.version).summaryPath, parsed)
+  writeYaml(ticketDir, getManualQaStoragePaths(ticketDir, parsed.version).summaryPath, parsed)
 }
 
 export function readManualQaSummary(ticketDir: string, version: number): ManualQaSummary | null {
@@ -165,7 +173,7 @@ export function persistManualQaModelCapabilitySnapshot(
     }
     return
   }
-  safeAtomicWrite(path, JSON.stringify(parsed, null, 2))
+  safeAtomicWriteWithin(ticketDir, relative(ticketDir, path), JSON.stringify(parsed, null, 2))
 }
 
 export function readManualQaModelCapabilitySnapshot(
@@ -180,7 +188,9 @@ export function readManualQaModelCapabilitySnapshot(
 export function appendManualQaEvent(ticketDir: string, event: ManualQaEvent): ManualQaEvent {
   const parsed = ManualQaEventSchema.parse(event)
   const path = getManualQaStoragePaths(ticketDir, parsed.version).eventsPath
+  resolveContainedPath(ticketDir, path, { allowMissingParents: true })
   mkdirSync(resolve(path, '..'), { recursive: true })
+  resolveContainedPath(ticketDir, path, { allowMissing: true })
   const existing = readJsonl<unknown>(path).map((value) => ManualQaEventSchema.parse(value))
   const duplicate = existing.find((entry) => entry.eventId === parsed.eventId)
   if (duplicate) {
@@ -201,7 +211,7 @@ export function readManualQaEvents(ticketDir: string): ManualQaEvent[] {
 export function snapshotManualQaDraft(ticketDir: string, draft: ManualQaDraft): ManualQaDraft {
   const parsed = ManualQaDraftSchema.parse(draft)
   const snapshotPath = resolve(getManualQaStoragePaths(ticketDir, parsed.version).versionDir, 'manual-qa-draft.yaml')
-  if (!existsSync(snapshotPath)) writeYaml(snapshotPath, parsed)
+  if (!existsSync(snapshotPath)) writeYaml(ticketDir, snapshotPath, parsed)
   return parsed
 }
 
@@ -212,7 +222,9 @@ export function reserveManualQaVersion(
   actionId: string = randomUUID(),
 ): ManualQaGenerationReservation {
   const paths = getManualQaStoragePaths(ticketDir, version)
+  resolveContainedPath(ticketDir, paths.versionDir, { allowMissingParents: true })
   mkdirSync(paths.versionDir, { recursive: true })
+  resolveContainedPath(ticketDir, paths.versionDir)
   if (existsSync(paths.reservationPath)) {
     const existing = JSON.parse(readFileSync(paths.reservationPath, 'utf8')) as ManualQaGenerationReservation
     if (existing.ticketId !== ticketId || existing.version !== version) {
@@ -228,13 +240,14 @@ export function reserveManualQaVersion(
     state: 'reserved',
     createdAt: new Date().toISOString(),
   }
-  safeAtomicWrite(paths.reservationPath, JSON.stringify(reservation, null, 2))
+  safeAtomicWriteWithin(ticketDir, relative(ticketDir, paths.reservationPath), JSON.stringify(reservation, null, 2))
   return reservation
 }
 
 export function completeManualQaReservation(ticketDir: string, reservation: ManualQaGenerationReservation, checklistHash: string): void {
-  safeAtomicWrite(
-    getManualQaStoragePaths(ticketDir, reservation.version).reservationPath,
+  safeAtomicWriteWithin(
+    ticketDir,
+    relative(ticketDir, getManualQaStoragePaths(ticketDir, reservation.version).reservationPath),
     JSON.stringify({
       ...reservation,
       state: 'complete',
@@ -316,7 +329,7 @@ export function persistManualQaEvidenceActionReceipt(
       const paths = getManualQaStoragePaths(ticketDir, version)
       const path = evidenceActionReceiptPath(ticketDir, version, actionId)
       resolveContainedEvidencePath(paths.root, paths.evidenceDir, relative(paths.evidenceDir, path))
-      safeAtomicWrite(path, JSON.stringify(completed, null, 2))
+      safeAtomicWriteWithin(ticketDir, relative(ticketDir, path), JSON.stringify(completed, null, 2))
       return completed
     }
     return existing
@@ -335,7 +348,7 @@ export function persistManualQaEvidenceActionReceipt(
     allowMissing: true,
     allowMissingParents: true,
   })
-  safeAtomicWrite(path, JSON.stringify(receipt, null, 2))
+  safeAtomicWriteWithin(ticketDir, relative(ticketDir, path), JSON.stringify(receipt, null, 2))
   return receipt
 }
 
@@ -387,8 +400,9 @@ async function withEvidenceIndexLock<T>(
 function writeEvidenceIndex(ticketDir: string, version: number, entries: ManualQaEvidenceRef[]): void {
   const paths = getManualQaStoragePaths(ticketDir, version)
   resolveContainedEvidencePath(paths.root, paths.evidenceDir, 'index.json', { allowMissing: true })
-  safeAtomicWrite(
-    paths.evidenceIndexPath,
+  safeAtomicWriteWithin(
+    ticketDir,
+    relative(ticketDir, paths.evidenceIndexPath),
     JSON.stringify(ManualQaEvidenceRefSchema.array().parse(entries), null, 2),
   )
 }
@@ -405,54 +419,45 @@ function resolveContainedEvidencePath(
   }
   const path = resolve(evidenceDir, storedName)
   const lexicalRelative = relative(evidenceDir, path)
-  if (
-    !lexicalRelative
-    || lexicalRelative === '..'
-    || lexicalRelative.startsWith(`..${sep}`)
-    || lexicalRelative.startsWith('/')
-    || lexicalRelative.startsWith('\\')
-  ) throw new Error('Evidence path escaped Manual QA storage containment.')
+  if (!lexicalRelative || escapesRoot(evidenceDir, path)) {
+    throw new Error('Evidence path escaped Manual QA storage containment.')
+  }
 
   const parent = dirname(path)
   const parentRelative = relative(manualQaRoot, parent)
-  if (
-    parentRelative === '..'
-    || parentRelative.startsWith(`..${sep}`)
-    || parentRelative.startsWith('/')
-    || parentRelative.startsWith('\\')
-  ) throw new Error('Evidence path escaped Manual QA storage containment.')
+  if (escapesRoot(manualQaRoot, parent)) throw new Error('Evidence path escaped Manual QA storage containment.')
   let current = manualQaRoot
   let parentMissing = false
   for (const segment of parentRelative.split(sep).filter(Boolean)) {
     current = resolve(current, segment)
-    if (!existsSync(current)) {
+    let stats
+    try {
+      stats = lstatSync(current)
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error
       parentMissing = true
       break
     }
-    const stats = lstatSync(current)
     if (!stats.isDirectory() || stats.isSymbolicLink()) {
       throw new Error('Evidence path contains an unsafe directory.')
     }
   }
-  const realRoot = realpathSync(manualQaRoot)
   if (parentMissing) {
     if (options.allowMissingParents) return path
     throw new Error('Evidence directory is missing.')
-  } else {
-    const realParent = realpathSync(parent)
-    if (realParent !== realRoot && !realParent.startsWith(`${realRoot}${sep}`)) {
-      throw new Error('Evidence path escaped Manual QA storage containment.')
-    }
   }
-
-  if (!existsSync(path)) {
+  let stats
+  try {
+    stats = lstatSync(path)
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error
     if (options.allowMissing) return path
     throw new Error('Evidence path is missing.')
   }
-  const stats = lstatSync(path)
   if (!stats.isFile() || stats.isSymbolicLink()) throw new Error('Evidence file is unsafe.')
-  const realPath = realpathSync(path)
-  if (!realPath.startsWith(`${realRoot}${sep}`)) {
+  try {
+    resolveContainedPath(manualQaRoot, path)
+  } catch {
     throw new Error('Evidence path escaped Manual QA storage containment.')
   }
   return path
@@ -509,33 +514,28 @@ function assertContainedDirectory(directory: string, root: string): void {
   const resolvedRootPath = resolve(root)
   const resolvedDirectoryPath = resolve(directory)
   const lexicalRelative = relative(resolvedRootPath, resolvedDirectoryPath)
-  if (
-    lexicalRelative === '..'
-    || lexicalRelative.startsWith(`..${sep}`)
-    || lexicalRelative.startsWith('/')
-    || lexicalRelative.startsWith('\\')
-  ) throw new Error('Evidence directory escaped Manual QA storage containment.')
+  if (escapesRoot(resolvedRootPath, resolvedDirectoryPath)) {
+    throw new Error('Evidence directory escaped Manual QA storage containment.')
+  }
   const rootStats = lstatSync(resolvedRootPath)
   if (!rootStats.isDirectory() || rootStats.isSymbolicLink()) {
     throw new Error('Evidence path contains an unsafe directory.')
   }
-  const realRoot = realpathSync(resolvedRootPath)
   let current = resolvedRootPath
   for (const segment of lexicalRelative.split(sep).filter(Boolean)) {
     const next = resolve(current, segment)
-    if (!existsSync(next)) {
-      try {
-        mkdirSync(next, { mode: 0o700 })
-      } catch (error) {
-        if (!(error && typeof error === 'object' && 'code' in error && error.code === 'EEXIST')) throw error
-      }
+    try {
+      mkdirSync(next, { mode: 0o700 })
+    } catch (error) {
+      if (!(error && typeof error === 'object' && 'code' in error && error.code === 'EEXIST')) throw error
     }
     const stats = lstatSync(next)
     if (!stats.isDirectory() || stats.isSymbolicLink()) {
       throw new Error('Evidence path contains an unsafe directory.')
     }
-    const realCurrent = realpathSync(next)
-    if (realCurrent !== realRoot && !realCurrent.startsWith(`${realRoot}${sep}`)) {
+    try {
+      resolveContainedPath(resolvedRootPath, next)
+    } catch {
       throw new Error('Evidence directory escaped Manual QA storage containment.')
     }
     current = next

@@ -118,6 +118,7 @@ export function writeSettingsFile(patch: SettingsFile, configDir = resolveAppCon
   const settingsPath = getSettingsPath(configDir)
 
   ensureSecureDir(configDir)
+  // Dirname-relative writing is safe here: config.json is constant under trusted configDir.
   safeAtomicWrite(settingsPath, `${JSON.stringify(merged, null, 2)}\n`)
   secureFile(settingsPath)
 }

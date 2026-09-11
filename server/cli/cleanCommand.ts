@@ -9,6 +9,7 @@ import { isProcessAlive, killProcessTree, waitForExit } from './processControl'
 import { readRunningDaemon } from './commands'
 import { getErrorMessage } from '@shared/typeGuards'
 import { runCommandSync } from '../git/runCommand'
+import { resolveContainedPath } from '../lib/containedPath'
 
 export interface CleanOptions {
   apply: boolean
@@ -184,6 +185,7 @@ export function planWorktreeCleanup(
 
     let entries: Dirent[]
     try {
+      resolveContainedPath(projectRoot, worktreesRoot)
       entries = readdirSync(worktreesRoot, { withFileTypes: true })
     } catch {
       continue

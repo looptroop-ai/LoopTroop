@@ -6,6 +6,7 @@ import {
   mkdtempSync,
   readFileSync,
   rmSync,
+  symlinkSync,
   utimesSync,
   writeFileSync,
 } from 'node:fs'
@@ -317,6 +318,17 @@ describe('clean command', () => {
 
     it('survives a worktrees root that does not exist', () => {
       expect(planFor(makeProject())).toEqual([])
+      expect(planFor(resolve(makeTempDir('missing'), 'removed-project'))).toEqual([])
+    })
+
+    it('does not inspect worktrees through a parent link outside the project', () => {
+      const project = makeTempDir('linked-project')
+      const outside = makeTempDir('outside')
+      mkdirSync(resolve(project, '.looptroop'), { recursive: true })
+      mkdirSync(resolve(outside, 'ticket-unowned'))
+      symlinkSync(outside, resolve(project, '.looptroop', 'worktrees'), 'junction')
+
+      expect(planFor(project)).toEqual([])
     })
   })
 

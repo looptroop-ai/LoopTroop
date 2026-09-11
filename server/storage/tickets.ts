@@ -20,6 +20,8 @@ export {
   getTicketStorageContext,
   listNonTerminalTickets,
   getTicketPaths,
+  resolveTicketContainedPath,
+  writeTicketFile,
   findProjectExecutionBandConflict,
   parseLockedCouncilMembers,
   parseLockedCouncilMemberVariants,

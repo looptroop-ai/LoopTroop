@@ -2,6 +2,7 @@ import { existsSync, rmSync } from 'node:fs'
 import { runGitSyncOrThrow } from './runCommand'
 import { dirname, resolve } from 'node:path'
 import { makeOwnerWritableRecursive } from '../io/removal'
+import { resolveContainedPath } from '../lib/containedPath'
 
 type GitCommandRunner = (args: string[]) => void
 
@@ -33,6 +34,7 @@ export function removeWorktree({
   }
 
   if (!existsSync(worktreePath)) return
+  resolveContainedPath(projectRoot, worktreePath)
 
   makeOwnerWritableRecursive(worktreePath)
 

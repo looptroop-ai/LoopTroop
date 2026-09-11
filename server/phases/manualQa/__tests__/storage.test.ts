@@ -81,6 +81,29 @@ function persistChecklist(ticketDir: string) {
 }
 
 describe('Manual QA canonical storage', () => {
+  it('rejects a linked storage root before creating a version or writing a checklist', () => {
+    const ticketDir = root()
+    const outside = root()
+    symlinkSync(outside, join(ticketDir, 'manual-qa'), 'dir')
+
+    expect(() => persistChecklist(ticketDir)).toThrow('unsafe directory')
+    expect(() => reserveManualQaVersion(ticketDir, '1:DEMO-1', 1)).toThrow('unsafe directory')
+    expect(existsSync(join(outside, 'v1'))).toBe(false)
+  })
+
+  it('rejects an escaping reservation file before completing it', () => {
+    const ticketDir = root()
+    const reservation = reserveManualQaVersion(ticketDir, '1:DEMO-1', 1)
+    const reservationPath = getManualQaStoragePaths(ticketDir, 1).reservationPath
+    const outsideFile = join(root(), 'reservation.json')
+    writeFileSync(outsideFile, 'untouched')
+    rmSync(reservationPath)
+    symlinkSync(outsideFile, reservationPath, 'file')
+
+    expect(() => completeManualQaReservation(ticketDir, reservation, 'a'.repeat(64))).toThrow('escapes root')
+    expect(readFileSync(outsideFile, 'utf8')).toBe('untouched')
+  })
+
   it('reuses a durable generation reservation after restart', () => {
     const ticketDir = root()
     const first = reserveManualQaVersion(ticketDir, '1:DEMO-1', 1, 'generation:one')
@@ -417,9 +440,9 @@ describe('Manual QA canonical storage', () => {
       .toEqual(['concurrent-first', 'concurrent-second'])
   })
 
-  it('rejects evidence reads through a symlinked item directory', async () => {
+  it.each(['outside', 'inside', 'dangling'])('rejects evidence reads through a %s symlinked item directory', async (destination) => {
     const ticketDir = root()
-    const outside = root()
+    const outside = destination === 'outside' ? root() : join(ticketDir, 'manual-qa', 'linked-evidence')
     persistChecklist(ticketDir)
     const evidence = await streamManualQaEvidence({
       ticketDir,
@@ -438,8 +461,10 @@ describe('Manual QA canonical storage', () => {
     }).path
     const itemDir = dirname(storedPath)
     removeTempDir(itemDir)
-    mkdirSync(outside, { recursive: true })
-    writeFileSync(join(outside, basename(storedPath)), 'outside')
+    if (destination !== 'dangling') {
+      mkdirSync(outside, { recursive: true })
+      writeFileSync(join(outside, basename(storedPath)), 'outside')
+    }
     symlinkSync(outside, itemDir, 'dir')
 
     expect(() => resolveManualQaEvidence({

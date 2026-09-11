@@ -2,6 +2,7 @@ import { existsSync, mkdirSync, realpathSync } from 'fs'
 import { isAbsolute, resolve } from 'path'
 import { resolveBaseBranch } from '../git/repository'
 import { runGitSync } from '../git/runCommand'
+import { ContainedPathError, resolveContainedPath } from '../lib/containedPath'
 export function normalizeFolderPath(input: string): string {
   let output = input.trim().replace(/[\\/]+$/, '')
   output = output.replace(/\\/g, '/')
@@ -55,7 +56,16 @@ export function getProjectWorktreesRoot(projectRoot: string): string {
 }
 
 export function getTicketWorktreePath(projectRoot: string, externalId: string): string {
-  return resolve(getProjectWorktreesRoot(projectRoot), externalId)
+  if (!externalId || externalId === '.' || externalId === '..' || /[\\/\0:]/.test(externalId)) {
+    throw new ContainedPathError('Invalid ticket path')
+  }
+  // Trust the project, never a worktrees directory that may have been replaced by a link.
+  const worktreePath = resolve(getProjectWorktreesRoot(projectRoot), externalId)
+  resolveContainedPath(projectRoot, worktreePath, {
+    allowMissingParents: true,
+  })
+  // Preserve the entry's identity: cleanup must unlink a worktree alias, not delete its destination.
+  return worktreePath
 }
 
 export function getTicketDir(projectRoot: string, externalId: string): string {

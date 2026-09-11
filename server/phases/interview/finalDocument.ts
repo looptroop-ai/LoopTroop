@@ -1,13 +1,12 @@
 import { eq } from 'drizzle-orm'
-import { existsSync, readFileSync, rmSync } from 'node:fs'
-import { resolve } from 'node:path'
+import { existsSync, rmSync } from 'node:fs'
+import { readFileNoFollowSync } from '../../io/readFile'
 import type { InterviewAnswerUpdate, InterviewDocument } from '@shared/interviewArtifact'
 import { phaseArtifacts } from '../../db/schema'
-import { safeAtomicWrite } from '../../io/atomicWrite'
 import { clearContextCache } from '../../opencode/contextBuilder'
 import { clearExecutionSetupState } from '../executionSetup/storage'
 import { broadcaster } from '../../sse/broadcaster'
-import { getActivePhaseAttempt, getTicketByRef, getTicketContext, getTicketPaths } from '../../storage/tickets'
+import { getActivePhaseAttempt, getTicketByRef, getTicketContext, getTicketPaths, resolveTicketContainedPath, writeTicketFile } from '../../storage/tickets'
 import { upsertLatestPhaseArtifact } from '../../storage/ticketArtifacts'
 import { assertExpectedContentSha256 } from '../../lib/artifactApproval'
 import { contentSha256 } from '../../lib/contentHash'
@@ -43,11 +42,11 @@ const DOWNSTREAM_ARTIFACT_TYPES = new Set([
 const INTERVIEW_APPROVAL_SNAPSHOT_ARTIFACT = 'approval_snapshot:interview'
 
 function getInterviewPath(ticketId: string): string {
-  const paths = getTicketPaths(ticketId)
-  if (!paths) {
+  const path = resolveTicketContainedPath(ticketId, 'interview.yaml')
+  if (!path) {
     throw new Error('Ticket workspace not initialized')
   }
-  return resolve(paths.ticketDir, 'interview.yaml')
+  return path
 }
 
 function readInterviewYaml(ticketId: string): string {
@@ -55,7 +54,7 @@ function readInterviewYaml(ticketId: string): string {
   if (!existsSync(interviewPath)) {
     throw new Error('Interview artifact not found')
   }
-  return readFileSync(interviewPath, 'utf-8')
+  return readFileNoFollowSync(interviewPath)
 }
 
 function normalizeInterviewDocumentForTicket(ticketId: string, rawContent: string): InterviewDocument {
@@ -85,9 +84,8 @@ function writeInterviewDocument(
     approvalSnapshotRaw?: string
   },
 ): string {
-  const interviewPath = getInterviewPath(ticketId)
   const nextRaw = buildInterviewDocumentYaml(document)
-  safeAtomicWrite(interviewPath, nextRaw)
+  writeTicketFile(ticketId, 'interview.yaml', nextRaw)
   const snapshotRaw = options?.approvalSnapshotRaw ?? nextRaw
   upsertLatestPhaseArtifact(
     ticketId,
@@ -140,8 +138,8 @@ export function invalidateDownstreamPlanningArtifacts(ticketId: string): {
   const removedFiles: string[] = []
   const ticketPaths = getTicketPaths(ticketId)
   if (ticketPaths) {
-    const prdPath = resolve(ticketPaths.ticketDir, 'prd.yaml')
-    const beadsDir = resolve(ticketPaths.ticketDir, 'beads')
+    const prdPath = resolveTicketContainedPath(ticketId, 'prd.yaml', 'remove')!
+    const beadsDir = resolveTicketContainedPath(ticketId, 'beads', 'remove')!
 
     if (existsSync(prdPath)) {
       rmSync(prdPath, { force: true })

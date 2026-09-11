@@ -1,10 +1,10 @@
 import { Hono } from 'hono'
 import type { Context } from 'hono'
-import * as fs from 'node:fs'
+import { readFileNoFollowSync } from '../io/readFile'
 import * as path from 'node:path'
 import { z } from 'zod'
-import { getTicketByRef, getTicketPaths, getLatestPhaseArtifact, isDisplayOnlyMockTicket } from '../storage/tickets'
-import { safeAtomicWrite } from '../io/atomicWrite'
+import { getTicketByRef, getTicketPaths, getLatestPhaseArtifact, isDisplayOnlyMockTicket, resolveTicketContainedPath, writeTicketFile } from '../storage/tickets'
+import { ContainedPathError } from '../lib/containedPath'
 import { syncTicketRuntimeProjection } from '../storage/ticketRuntimeProjection'
 import { clearExecutionSetupState } from '../phases/executionSetup/storage'
 import { upsertBeadsApprovalSnapshot } from '../phases/beads/document'
@@ -37,6 +37,10 @@ const beadItemSchema = z.object({
 })
 
 const beadsRouter = new Hono()
+beadsRouter.onError((error, c) => {
+  if (error instanceof ContainedPathError) return c.json({ error: error.message }, 400)
+  throw error
+})
 const FLOW_NAME_PATTERN = /^[A-Za-z0-9._/-]+$/
 
 function isSafeFlowName(flow: string): boolean {
@@ -44,7 +48,7 @@ function isSafeFlowName(flow: string): boolean {
   return flow.split('/').every((segment) => Boolean(segment) && segment !== '.' && segment !== '..')
 }
 
-function resolveBeadsPath(ticketId: string, flow?: string): { filePath: string } | { error: string; status: 400 | 404 } {
+function resolveBeadsPath(ticketId: string, flow?: string): { filePath: string; relativePath: string } | { error: string; status: 400 | 404 } {
   const paths = getTicketPaths(ticketId)
   if (!paths) return { error: 'Ticket not found', status: 404 }
   const resolvedFlow = flow?.trim() || paths.baseBranch
@@ -52,14 +56,14 @@ function resolveBeadsPath(ticketId: string, flow?: string): { filePath: string }
     return { error: 'Invalid flow parameter', status: 400 }
   }
 
-  const beadsRoot = path.resolve(paths.ticketDir, 'beads')
-  const filePath = path.resolve(beadsRoot, resolvedFlow, '.beads', 'issues.jsonl')
-  const relativePath = path.relative(beadsRoot, filePath)
-  if (relativePath.startsWith('..') || path.isAbsolute(relativePath)) {
-    return { error: 'Invalid flow parameter', status: 400 }
+  const relativePath = `beads/${resolvedFlow}/.beads/issues.jsonl`
+  try {
+    const filePath = resolveTicketContainedPath(ticketId, relativePath)
+    return filePath ? { filePath, relativePath } : { error: 'Ticket not found', status: 404 }
+  } catch (error) {
+    if (error instanceof ContainedPathError) return { error: 'Invalid flow parameter', status: 400 }
+    throw error
   }
-
-  return { filePath }
 }
 
 /** How many damaged line numbers the header carries before it summarises. */
@@ -134,7 +138,7 @@ function formatLineList(lines: number[]): string {
  */
 function readBeadsContentOrNull(filePath: string): string | null {
   try {
-    return fs.readFileSync(filePath, 'utf-8')
+    return readFileNoFollowSync(filePath)
   } catch (error) {
     if ((error as NodeJS.ErrnoException).code === 'ENOENT') return null
     throw error
@@ -276,7 +280,7 @@ beadsRouter.put('/tickets/:id/beads', async (c) => {
   try {
     // createdAt is set at approval time, not save time
     const jsonl = canonicalBeads.map((item: unknown) => JSON.stringify(item)).join('\n') + '\n'
-    safeAtomicWrite(filePath, jsonl)
+    writeTicketFile(ticketId, resolved.relativePath, jsonl)
     upsertBeadsApprovalSnapshot(ticketId, jsonl)
     const executionSetupInvalidation = clearExecutionSetupState(ticketId)
     writeUserEditReceipt({

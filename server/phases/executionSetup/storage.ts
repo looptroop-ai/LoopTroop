@@ -3,8 +3,7 @@ import { existsSync, readdirSync, rmSync } from 'node:fs'
 import { join, resolve } from 'node:path'
 import { eq } from 'drizzle-orm'
 import { phaseArtifacts } from '../../db/schema'
-import { safeAtomicWrite } from '../../io/atomicWrite'
-import { getTicketContext, getTicketPaths } from '../../storage/tickets'
+import { getTicketContext, getTicketPaths, resolveTicketContainedPath, writeTicketFile } from '../../storage/tickets'
 import {
   EXECUTION_SETUP_PLAN_ARTIFACT_TYPE,
   EXECUTION_SETUP_PLAN_NOTES_ARTIFACT_TYPE,
@@ -80,15 +79,17 @@ export function removeExecutionSetupPathViolations(
 }
 
 export function writeExecutionSetupProfileMirror(ticketId: string, profile: ExecutionSetupProfile): string | null {
-  const paths = getTicketPaths(ticketId)
-  if (!paths) return null
-  safeAtomicWrite(paths.executionSetupProfilePath, serializeExecutionSetupProfile(profile))
-  return paths.executionSetupProfilePath
+  const path = resolveTicketContainedPath(ticketId, 'runtime/execution-setup-profile.json')
+  if (!path) return null
+  writeTicketFile(ticketId, 'runtime/execution-setup-profile.json', serializeExecutionSetupProfile(profile))
+  return path
 }
 
 export function clearExecutionSetupRuntimeArtifacts(ticketId: string, options: { preserveToolCache?: boolean } = {}): string[] {
   const paths = getTicketPaths(ticketId)
   if (!paths) return []
+  paths.executionSetupProfilePath = resolveTicketContainedPath(ticketId, 'runtime/execution-setup-profile.json', 'remove')!
+  paths.executionSetupDir = resolveTicketContainedPath(ticketId, 'runtime/execution-setup', 'remove')!
 
   const removed: string[] = []
   if (existsSync(paths.executionSetupProfilePath)) {

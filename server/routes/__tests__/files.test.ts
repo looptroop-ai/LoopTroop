@@ -1,6 +1,6 @@
 import { afterAll, beforeEach, describe, expect, it, vi } from 'vitest'
-import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs'
-import { dirname } from 'node:path'
+import { existsSync, mkdirSync, readFileSync, symlinkSync, writeFileSync } from 'node:fs'
+import { dirname, join } from 'node:path'
 import { Hono } from 'hono'
 import { initializeDatabase } from '../../db/init'
 import { sqlite } from '../../db/index'
@@ -66,6 +66,22 @@ afterAll(() => {
 describe('filesRouter GET /files/:ticketId/logs', () => {
   const app = new Hono()
   app.route('/api', filesRouter)
+
+  it('rejects an artifact directory link leaving the ticket and an outside open-path request', async () => {
+    const { ticket, paths, repoDir } = createProjectTicket()
+    const outside = join(repoDir, 'private')
+    mkdirSync(outside)
+    const runtimeParent = join(paths.ticketDir, 'runtime')
+    // A directory junction works without Windows Developer Mode or symlink privileges.
+    mkdirSync(runtimeParent, { recursive: true })
+    symlinkSync(outside, paths.debugLogPath, 'junction')
+    const response = await app.request(`/api/files/${encodeURIComponent(ticket.id)}/logs?channel=debug`)
+    expect(response.status).toBe(400)
+    const open = await app.request('/api/files/open-path', {
+      method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ path: dirname(repoDir) }),
+    })
+    expect(open.status).toBe(400)
+  })
 
   it('reads normal, debug, and AI logs while preserving filters and folding upserts', async () => {
     const { ticket, paths } = createProjectTicket()

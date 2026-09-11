@@ -1,7 +1,7 @@
 import { mkdirSync, symlinkSync } from 'node:fs'
 import { join, resolve } from 'node:path'
 import { afterEach, beforeEach, describe, expect, it } from 'vitest'
-import { normalizeFolderPath } from '../paths'
+import { getTicketWorktreePath, normalizeFolderPath } from '../paths'
 import { makeTempDir, removeTempDir } from '../../test/tempDir'
 
 let scratchDir: string
@@ -77,5 +77,41 @@ describe('normalizeFolderPath', () => {
       expect(normalized).toMatch(/^C:\/Users\/dev$/i)
       expect(normalized).not.toContain('/mnt/')
     })
+  })
+})
+
+describe('getTicketWorktreePath', () => {
+  it('allows a new ticket beneath its existing project', () => {
+    expect(getTicketWorktreePath(scratchDir, 'LT-1')).toBe(join(scratchDir, '.looptroop', 'worktrees', 'LT-1'))
+    expect(() => getTicketWorktreePath(join(scratchDir, 'missing-project'), 'LT-1')).toThrow()
+  })
+
+  it('rejects identifiers that can select a different directory', () => {
+    for (const externalId of ['', '.', '..', '../other', 'nested/ticket', 'nested\\ticket', 'C:ticket', 'bad\0id']) {
+      expect(() => getTicketWorktreePath(scratchDir, externalId)).toThrow('Invalid ticket path')
+    }
+  })
+
+  it('rejects a replaced worktrees parent before a ticket directory exists', () => {
+    const project = join(scratchDir, 'project')
+    const outside = join(scratchDir, 'outside')
+    mkdirSync(join(project, '.looptroop'), { recursive: true })
+    mkdirSync(outside)
+    symlinkSync(outside, join(project, '.looptroop', 'worktrees'), 'junction')
+    expect(() => getTicketWorktreePath(project, 'LT-1')).toThrow('escapes root')
+  })
+
+  it('accepts worktree links only when they stay inside the project', () => {
+    const project = join(scratchDir, 'project')
+    const worktrees = join(project, '.looptroop', 'worktrees')
+    const actual = join(project, 'actual-worktree')
+    const outside = join(scratchDir, 'outside')
+    mkdirSync(worktrees, { recursive: true })
+    mkdirSync(actual)
+    mkdirSync(outside)
+    symlinkSync(actual, join(worktrees, 'LT-1'), 'junction')
+    symlinkSync(outside, join(worktrees, 'LT-2'), 'junction')
+    expect(getTicketWorktreePath(project, 'LT-1')).toBe(join(worktrees, 'LT-1'))
+    expect(() => getTicketWorktreePath(project, 'LT-2')).toThrow('escapes root')
   })
 })

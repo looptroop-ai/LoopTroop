@@ -151,6 +151,20 @@ describe('execution setup workspace inputs', () => {
     expect(readFileSync(join(fixture.worktreePath, 'mixed-inputs', 'nested', 'fixture.txt'), 'utf8')).toBe('nested input\n')
   })
 
+  it('rejects an escaping destination ancestor before creating missing descendants', () => {
+    const fixture = createWorkspaceFixture()
+    mkdirSync(join(fixture.projectRoot, 'untracked-inputs/nested'), { recursive: true })
+    writeFileSync(join(fixture.projectRoot, 'untracked-inputs/nested/input.txt'), 'local input\n')
+    const outside = join(fixture.projectRoot, '..', 'outside-copy')
+    mkdirSync(outside)
+    symlinkSync(outside, join(fixture.worktreePath, 'untracked-inputs'), 'dir')
+
+    expect(() => materializeExecutionSetupWorkspaceInputs({
+      ...fixture,
+      workspaceInputs: [input('untracked-inputs/nested', 'directory', 'untracked')],
+    })).toThrow('escapes the project through a symbolic link')
+  })
+
   it('rematerializes approved inputs after a retry reset removes them', () => {
     const fixture = createWorkspaceFixture()
     mkdirSync(join(fixture.projectRoot, 'ignored-inputs', 'nested'), { recursive: true })

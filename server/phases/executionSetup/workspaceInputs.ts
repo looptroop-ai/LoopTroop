@@ -1,8 +1,9 @@
-import { copyFileSync, existsSync, lstatSync, mkdirSync, readdirSync, realpathSync } from 'node:fs'
-import { dirname, isAbsolute, relative, resolve } from 'node:path'
+import { copyFileSync, existsSync, lstatSync, mkdirSync, readdirSync } from 'node:fs'
+import { dirname, isAbsolute, resolve } from 'node:path'
 import { runGitSync } from '../../git/runCommand'
 import { literalPathspec } from '../../git/pathspecs'
 import type { ExecutionSetupWorkspaceInputPayload } from '../../structuredOutput/types'
+import { escapesRoot, resolveContainedPath } from '../../lib/containedPath'
 
 const INTERNAL_ROOTS = ['.git', '.ticket', '.looptroop'] as const
 export const WORKSPACE_INPUT_DEFAULT_MAX_FILES = 10_000
@@ -19,20 +20,10 @@ function normalizeRelativePath(input: string): string {
   return input.trim().replace(/\\/g, '/').replace(/^\.\//, '').replace(/\/+$/, '')
 }
 
-function isWithin(root: string, candidate: string): boolean {
-  const rel = relative(resolve(root), resolve(candidate))
-  return rel === '' || (!rel.startsWith('..') && !isAbsolute(rel))
-}
-
 function assertResolvedWithin(root: string, candidate: string, path: string): void {
-  const realRoot = realpathSync(root)
-  let existing = candidate
-  while (!existsSync(existing)) {
-    const parent = dirname(existing)
-    if (parent === existing) break
-    existing = parent
-  }
-  if (!isWithin(realRoot, realpathSync(existing))) {
+  try {
+    resolveContainedPath(root, candidate, { allowMissingParents: true })
+  } catch {
     throw new Error(`Workspace input path escapes the project through a symbolic link: ${path}`)
   }
 }
@@ -146,7 +137,7 @@ export function validateExecutionSetupWorkspaceInputs(input: {
 
     const sourcePath = resolve(input.projectRoot, path)
     const destinationPath = resolve(input.worktreePath, path)
-    if (!isWithin(input.projectRoot, sourcePath) || !isWithin(input.worktreePath, destinationPath)) {
+    if (escapesRoot(input.projectRoot, sourcePath) || escapesRoot(input.worktreePath, destinationPath)) {
       throw new Error(`Workspace input path escapes the project: ${path}`)
     }
     if (!existsSync(sourcePath)) throw new Error(`Workspace input does not exist in the original checkout: ${path}`)
@@ -206,6 +197,7 @@ function copyEligiblePath(input: {
   if (isTracked(input.projectRoot, input.path) || isTracked(input.worktreePath, input.path)) return 0
   if (!sourceStatusMatches(input.projectRoot, input.path, input.sourceStatus)) return 0
   mkdirSync(dirname(destinationPath), { recursive: true })
+  assertResolvedWithin(input.worktreePath, destinationPath, input.path)
   copyFileSync(sourcePath, destinationPath)
   return 1
 }

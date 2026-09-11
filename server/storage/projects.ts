@@ -13,10 +13,12 @@ import { DEFAULT_IGNORE_MODE, isIgnoreMode, type IgnoreMode } from '@shared/igno
 import { isGitHookPolicy } from '../git/hookPolicy'
 import type { GitHookPolicy } from '../structuredOutput/types'
 import { removeWorktree } from '../git/worktreeRemoval'
+import { resolveContainedPath } from '../lib/containedPath'
 import {
   ensureProjectStorageDirs,
   getProjectLoopTroopDir,
   getProjectWorktreesRoot,
+  getTicketWorktreePath,
   normalizeFolderPath,
   resolveGitRepoRoot,
 } from './paths'
@@ -587,11 +589,10 @@ export function listAttachedProjectRoots(): string[] {
 }
 
 export async function getProjectWorktreesSize(projectRoot: string): Promise<number> {
-  const worktreesRoot = getProjectWorktreesRoot(projectRoot)
   const externalIds = getTerminalTicketExternalIds(projectRoot)
   let sum = 0
   for (const id of externalIds) {
-    sum += await calcDirSize(resolvePath(worktreesRoot, id))
+    sum += await calcDirSize(getTicketWorktreePath(projectRoot, id))
   }
   return sum
 }
@@ -605,7 +606,7 @@ export async function deleteProjectWorktrees(projectRoot: string): Promise<{ fre
 
   let freedBytes = 0
   for (const externalId of externalIds) {
-    const worktreePath = resolvePath(worktreesRoot, externalId)
+    const worktreePath = getTicketWorktreePath(projectRoot, externalId)
     if (!(await existsAsync(worktreePath))) continue
     freedBytes += await calcDirSize(worktreePath)
     removeWorktree({ projectRoot, worktreesRoot, worktreePath })
@@ -627,6 +628,7 @@ export async function deleteAllProjectWorktrees(projectRoot: string): Promise<{ 
     runGitSync(projectRoot, ['worktree', 'prune'])
     return { freedBytes: 0 }
   }
+  resolveContainedPath(projectRoot, worktreesRoot)
 
   let freedBytes = 0
   const entries = await readdir(worktreesRoot, { withFileTypes: true })

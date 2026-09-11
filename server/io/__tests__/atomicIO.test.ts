@@ -1,8 +1,9 @@
 import { describe, it, expect, beforeEach, afterEach } from 'vitest'
-import { mkdirSync, readFileSync, writeFileSync, existsSync, readdirSync, renameSync, statSync, lstatSync, truncateSync, symlinkSync } from 'fs'
+import { mkdirSync, readFileSync, writeFileSync, existsSync, readdirSync, renameSync, statSync, lstatSync, truncateSync, symlinkSync, unlinkSync } from 'fs'
 import { tmpdir } from 'os'
-import { dirname, join } from 'path'
-import { makeAtomicTmpPath, parseAtomicTmpPath, safeAtomicWrite } from '../atomicWrite'
+import { basename, dirname, join } from 'path'
+import { makeAtomicTmpPath, parseAtomicTmpPath, safeAtomicWrite, safeAtomicWriteWithin } from '../atomicWrite'
+import { ContainedPathError } from '../../lib/containedPath'
 import { safeAtomicAppend } from '../atomicAppend'
 import { recoverOrphanTmpFiles, fixTrailingLineCorruption } from '../recovery'
 import { readJsonl, writeJsonl, appendJsonl } from '../jsonl'
@@ -183,6 +184,132 @@ describe('safeAtomicWrite', () => {
 
       expect(flaky.attempts).toHaveLength(1)
       expect(waits).toEqual([])
+    })
+  })
+})
+
+describe('safeAtomicWriteWithin', () => {
+  it('creates missing parents and replaces a contained file', () => {
+    safeAtomicWriteWithin(TEST_DIR, 'nested/deep/file.txt', 'first', { mode: 0o600 })
+    safeAtomicWriteWithin(TEST_DIR, 'nested/deep/file.txt', 'second')
+    const filePath = join(TEST_DIR, 'nested/deep/file.txt')
+    expect(readFileSync(filePath, 'utf8')).toBe('second')
+    if (process.platform !== 'win32') expect(statSync(filePath).mode & 0o777).toBe(0o600)
+  })
+
+  it('rejects traversal and absolute paths before creating parents', () => {
+    const root = join(TEST_DIR, 'root')
+    mkdirSync(root)
+    const candidates = ['../outside/file', join(TEST_DIR, 'outside/file'), 'C:\\outside\\file']
+    if (process.platform === 'win32') candidates.push('..\\outside\\file')
+    for (const candidate of candidates) {
+      expect(() => safeAtomicWriteWithin(root, candidate, 'unsafe')).toThrow(ContainedPathError)
+    }
+    expect(readdirSync(TEST_DIR)).toEqual(['root'])
+    expect(readdirSync(root)).toEqual([])
+  })
+
+  it('rejects an ancestor junction before creating directories outside the root', () => {
+    const root = join(TEST_DIR, 'root')
+    const outside = join(TEST_DIR, 'outside')
+    mkdirSync(root)
+    mkdirSync(outside)
+    symlinkSync(outside, join(root, 'linked'), process.platform === 'win32' ? 'junction' : 'dir')
+    expect(() => safeAtomicWriteWithin(root, 'linked/new/file.txt', 'unsafe')).toThrow(ContainedPathError)
+    expect(readdirSync(outside)).toEqual([])
+  })
+
+  it('accepts a symlink above the trusted root', () => {
+    const root = join(TEST_DIR, 'root')
+    const alias = join(TEST_DIR, 'alias')
+    mkdirSync(root)
+    symlinkSync(root, alias, process.platform === 'win32' ? 'junction' : 'dir')
+    safeAtomicWriteWithin(alias, 'file.txt', 'allowed')
+    expect(readFileSync(join(root, 'file.txt'), 'utf8')).toBe('allowed')
+  })
+
+  it('writes through a contained directory link to its canonical destination', () => {
+    const target = join(TEST_DIR, 'target')
+    mkdirSync(target)
+    symlinkSync(target, join(TEST_DIR, 'alias'), process.platform === 'win32' ? 'junction' : 'dir')
+    safeAtomicWriteWithin(TEST_DIR, 'alias/nested/file.txt', 'allowed')
+    expect(readFileSync(join(target, 'nested/file.txt'), 'utf8')).toBe('allowed')
+    expect(lstatSync(join(TEST_DIR, 'alias')).isSymbolicLink()).toBe(true)
+  })
+
+  it('rejects an ancestor swap during retries without cleaning up outside the root', () => {
+    const root = join(TEST_DIR, 'root')
+    const outside = join(TEST_DIR, 'outside')
+    mkdirSync(root)
+    mkdirSync(outside)
+    let outsideTemp = ''
+    let attempts = 0
+    expect(() => safeAtomicWriteWithin(root, 'nested/file.txt', 'unsafe', {
+      deps: {
+        platform: 'win32',
+        rename: (from) => {
+          attempts += 1
+          outsideTemp = join(outside, basename(from))
+          writeFileSync(outsideTemp, 'keep')
+          renameSync(join(root, 'nested'), join(root, 'moved'))
+          symlinkSync(outside, join(root, 'nested'), process.platform === 'win32' ? 'junction' : 'dir')
+          throw Object.assign(new Error('Locked'), { code: 'EBUSY' })
+        },
+        wait: () => {},
+      },
+    })).toThrow(ContainedPathError)
+    expect(attempts).toBe(1)
+    expect(readFileSync(outsideTemp, 'utf8')).toBe('keep')
+    expect(existsSync(join(outside, 'file.txt'))).toBe(false)
+  })
+
+  describe.skipIf(process.platform === 'win32')('file symlinks', () => {
+    it('writes through a contained file link and preserves the link', () => {
+      const target = join(TEST_DIR, 'target.txt')
+      const alias = join(TEST_DIR, 'alias.txt')
+      writeFileSync(target, 'original')
+      symlinkSync(target, alias)
+      safeAtomicWriteWithin(TEST_DIR, 'alias.txt', 'replacement')
+      expect(readFileSync(target, 'utf8')).toBe('replacement')
+      expect(lstatSync(alias).isSymbolicLink()).toBe(true)
+    })
+
+    it('rejects target symlinks without touching the destination or its mode', () => {
+      const root = join(TEST_DIR, 'root')
+      const outside = join(TEST_DIR, 'outside.txt')
+      mkdirSync(root)
+      writeFileSync(outside, 'original', { mode: 0o600 })
+      const mode = statSync(outside).mode
+      symlinkSync(outside, join(root, 'file.txt'))
+      expect(() => safeAtomicWriteWithin(root, 'file.txt', 'unsafe', { mode: 0o666 })).toThrow(ContainedPathError)
+      expect(readFileSync(outside, 'utf8')).toBe('original')
+      expect(statSync(outside).mode).toBe(mode)
+      expect(readdirSync(root)).toEqual(['file.txt'])
+    })
+
+    it.each([
+      ['target', false], ['temporary', false], ['target', true], ['temporary', true],
+    ] as const)('rechecks the %s path on every rename retry (internal link: %s)', (swapped, internal) => {
+      const root = join(TEST_DIR, 'root')
+      const outside = join(internal ? root : TEST_DIR, 'other.txt')
+      mkdirSync(root)
+      writeFileSync(outside, 'original')
+      let attempts = 0
+      expect(() => safeAtomicWriteWithin(root, 'file.txt', 'unsafe', {
+        deps: {
+          platform: 'win32',
+          rename: (from, to) => {
+            attempts += 1
+            const attacked = swapped === 'target' ? to : from
+            if (swapped === 'temporary') unlinkSync(attacked)
+            symlinkSync(outside, attacked)
+            throw Object.assign(new Error('Locked'), { code: 'EBUSY' })
+          },
+          wait: () => {},
+        },
+      })).toThrow(ContainedPathError)
+      expect(attempts).toBe(1)
+      expect(readFileSync(outside, 'utf8')).toBe('original')
     })
   })
 })

@@ -550,8 +550,8 @@ describe('executeCommand', () => {
     mkdirSync(join(repository, 'packages', 'real'), { recursive: true })
     symlinkSync(join(repository, 'packages', 'real'), join(repository, 'app'))
 
-    expect(resolveCommandCwd(repository, 'app')).toBe(join(repository, 'app'))
-    expect(resolveCommandCwd(repository, 'app/not-yet')).toBe(join(repository, 'app', 'not-yet'))
+    expect(resolveCommandCwd(repository, 'app')).toBe(join(repository, 'packages', 'real'))
+    expect(resolveCommandCwd(repository, 'app/not-yet')).toBe(join(repository, 'packages', 'real', 'not-yet'))
   })
 
   it.runIf(process.platform !== 'win32')('refuses a pathPrepend entry that is a link out of the repository', async () => {

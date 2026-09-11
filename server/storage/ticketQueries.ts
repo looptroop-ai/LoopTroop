@@ -19,6 +19,7 @@ import { readJsonl } from '../io/jsonl'
 import { reconcileStoredBeadStatus } from '../phases/beads/beadsFile'
 import { getAvailableWorkflowActions, isTerminalWorkflowStatus } from '@shared/workflowMeta'
 import { getTicketBeadsPath, resolveTicketBaseBranch } from '../ticket/metadata'
+import { resolveProjectTicketContainedPath, writeProjectTicketFile } from '../ticket/containedPath'
 import type { ArtifactSnapshot } from '../sse/eventTypes'
 import { EXECUTION_BAND_STATUSES } from '../workflow/executionBand'
 import { normalizeBlockedErrorDiagnostics, type BlockedErrorDiagnostics } from '@shared/errorDiagnostics'
@@ -1375,6 +1376,18 @@ export function listNonTerminalTickets(): PublicTicket[] {
     !isTerminalWorkflowStatus(ticket.status)
     && !isDisplayOnlyMockTicket(ticket)
   ))
+}
+
+export function resolveTicketContainedPath(ticketRef: string, relativePath: string, kind: 'read' | 'remove' = 'read'): string | undefined {
+  const storage = getTicketStorageContext(ticketRef)
+  if (!storage) return undefined
+  return resolveProjectTicketContainedPath(storage.projectRoot, storage.externalId, relativePath, kind)
+}
+
+export function writeTicketFile(ticketRef: string, relativePath: string, content: string): void {
+  const storage = getTicketStorageContext(ticketRef)
+  if (!storage) throw new Error('Ticket workspace not initialized')
+  writeProjectTicketFile(storage.projectRoot, storage.externalId, relativePath, content)
 }
 
 export function getTicketPaths(ticketRef: string): {

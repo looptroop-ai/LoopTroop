@@ -315,6 +315,9 @@ export async function executeCommand(
   // the program, with every argument escaped for cmd.exe.
   const launch = planProgramLaunch(resolvedProgram.path, invocation.args, {
     platform: platform === 'windows' ? 'win32' : platform === 'macos' ? 'darwin' : 'linux',
+    // What cmd.exe will run with, the plan's variables included: they decide
+    // what a `%…%` in an argument could expand to.
+    env: environment,
     resolveInterpreter: () => commandInterpreter(resolveProgram, context),
   })
   if (launch.reason !== undefined) {

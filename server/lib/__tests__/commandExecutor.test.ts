@@ -374,13 +374,40 @@ describe('executeCommand', () => {
 
     expect(seen).toEqual({
       file: 'C:\\Windows\\System32\\cmd.exe',
-      // Every metacharacter carries a caret, the quotes included, so cmd.exe
-      // never enters a quoted section: the space and `&` stay text, the empty
-      // argument survives as a pair of quotes, and `%PATH%` is not expanded —
-      // the documented limit of the quoting this replaced.
-      args: ['/d', '/s', '/c', '"C:\\Program^ Files\\nodejs\\npm.cmd ^"run^" ^"test:unit^" ^"a^ b^" ^"x^&y^" ^"^" ^"^%PATH^%^""'],
+      // A plain argument goes bare. Anything else is quoted and every
+      // metacharacter carries a caret, the quotes included, so cmd.exe never
+      // enters a quoted section: the space and `&` stay text, the empty argument
+      // survives as a pair of quotes, and `%PATH%` is not expanded — the
+      // documented limit of the quoting this replaced.
+      args: ['/d', '/v:off', '/s', '/c', '"C:\\Program^ Files\\nodejs\\npm.cmd run test:unit ^"a^ b^" ^"x^&y^" ^"^" ^"^%PATH^%^""'],
       verbatim: true,
     })
+  })
+
+  it('refuses a command script argument that the plan\'s own environment would let cmd.exe expand', async () => {
+    // The caret makes `%X%` a lookup of `X^`, which is safe until the plan
+    // defines `X^` for its command — Windows allows the name.
+    let started = false
+    const result = await executeCommand({
+      mode: 'process',
+      program: 'npm',
+      args: ['run', '%X%'],
+      cwd: '.',
+      env: { 'X^': 'value & another-command' },
+    }, {
+      repoRoot: makeRepo(),
+      platform: 'windows',
+      env: { ComSpec: 'C:\\Windows\\System32\\cmd.exe' },
+      resolveProgram: (program) => ({ path: program === 'npm' ? 'C:\\nodejs\\npm.cmd' : program }),
+      spawnProcess: (() => {
+        started = true
+        return makeUnkillableChild()
+      }) as unknown as typeof spawn,
+    })
+
+    expect(started).toBe(false)
+    expect(result.exitCode).toBeNull()
+    expect(result.stderr).toContain('would expand %X% in its arguments')
   })
 
   it('spawns a resolved Windows program directly', async () => {

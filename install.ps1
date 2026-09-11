@@ -1024,8 +1024,37 @@ function candidateExtensions(name        , platform                 , env       
   return (env.PATHEXT || DEFAULT_PATHEXT).split(';').map((value) => value.trim()).filter(Boolean)
 }
 
+/**
+ * Whether `path` is a Windows App Execution Alias — `winget.exe`, or the Store's
+ * `python.exe` — in `%LOCALAPPDATA%\Microsoft\WindowsApps`.
+ *
+ * Store and App Installer packages put these reparse points on `PATH`, and
+ * `CreateProcess` runs one by its path, but Node cannot follow one: `fs.stat`
+ * throws EACCES, and so does `fs.realpath`, which stats on the way
+ * (nodejs/node#36790; the libuv fix, libuv#4663, is still open). `lstat` sees the
+ * reparse point. So an alias is a path `lstat` reports and `stat` refuses with
+ * EACCES in particular; a dangling link fails with ENOENT and is not one.
+ *
+ * It is taken as the program at its own path rather than followed: the package
+ * behind it lives under `C:\Program Files\WindowsApps`, which is locked down,
+ * and Windows has no ownership rule here to apply to it anyway. Running that
+ * path is what the operating system's own search did before LoopTroop resolved
+ * names — until it did, `winget` on a hosted runner was "not installed".
+ */
+function isWindowsAppAlias(path        , platform                 )          {
+  if (platform !== 'win32') return false
+  try {
+    trustedFs.statSync(path)
+    return false
+  } catch (error) {
+    if ((error                         ).code !== 'EACCES') return false
+  }
+  const link = lstatOrNull(path)
+  return link !== null && !link.isDirectory()
+}
+
 function isExecutableFile(path        , platform                 )          {
-  if (!statOrNull(path)?.isFile()) return false
+  if (!statOrNull(path)?.isFile()) return isWindowsAppAlias(path, platform)
   // Windows has no execute bit and PATHEXT has already chosen the extension by
   // the time this runs.
   if (platform === 'win32') return true
@@ -1221,9 +1250,10 @@ function cachedResolutionHolds(
 function entryStillHolds(entry                  , platform                 , context              )          {
   if (!identityMatches(lstatOrNull(entry.candidate), entry.candidateIdentity)) return false
   if (!isExecutableFile(entry.candidate, platform)) return false
-  if (realpathOrNull(entry.candidate) !== entry.path) return false
-  const stats = statOrNull(entry.path)
-  if (!stats?.isFile() || !identityMatches(stats, entry)) return false
+  const alias = isWindowsAppAlias(entry.candidate, platform)
+  if ((alias ? entry.candidate : realpathOrNull(entry.candidate)) !== entry.path) return false
+  const stats = alias ? lstatOrNull(entry.path) : statOrNull(entry.path)
+  if (stats === null || !(alias || stats.isFile()) || !identityMatches(stats, entry)) return false
   return candidateRefusal(entry.directory, entry.candidate, entry.path, context) === null
 }
 
@@ -1276,7 +1306,9 @@ export function resolveTrustedExecutable(
       // looked up on the filesystem this process is running on.
       const candidate = trustedPath.join(directory, `${name}${extension}`)
       if (!isExecutableFile(candidate, platform)) continue
-      const target = realpathOrNull(candidate)
+      // An App Execution Alias is the program at its own path; see isWindowsAppAlias.
+      const alias = isWindowsAppAlias(candidate, platform)
+      const target = alias ? candidate : realpathOrNull(candidate)
       const refusal = target === null
         ? 'it could not be resolved to a real file'
         : candidateRefusal(directory, candidate, target, context)
@@ -1287,9 +1319,9 @@ export function resolveTrustedExecutable(
           refusedAt: candidate,
         }
       }
-      const stats = statOrNull(target)
+      const stats = alias ? lstatOrNull(target) : statOrNull(target)
       const candidateStats = lstatOrNull(candidate)
-      if (!stats?.isFile() || candidateStats === null) continue
+      if (stats === null || !(alias || stats.isFile()) || candidateStats === null) continue
       if (cache) remember(cache, cacheKey, {
         path: target,
         dev: stats.dev,
@@ -1345,7 +1377,7 @@ export function resolveTrustedProgram(
   const p = pathFor(platform)
   if (!p.isAbsolute(program)) return resolveTrustedExecutable(program, options)
   if (!isExecutableFile(program, platform)) return { reason: `${program} is not an executable file.` }
-  const target = realpathOrNull(program)
+  const target = isWindowsAppAlias(program, platform) ? program : realpathOrNull(program)
   if (target === null) return { reason: `${program} could not be resolved to a real path.` }
   const policyEnv = options.policyEnv ?? process.env
   const named = new Set(searchEntries((policyEnv[TRUSTED_EXECUTABLE_DIRS_ENV] ?? '').split(p.delimiter), platform))
@@ -1423,34 +1455,32 @@ export function resolveCommandInterpreter(options                           = {}
 /** cmd.exe's metacharacters, the set qntm.org/cmd and cross-spawn escape. */
 const CMD_METACHARACTERS = /[()\][%!^"`<>&|;, *?]/g
 
+/**
+ * An argument that reaches the program unchanged with no quoting at all: not
+ * empty, and holding nothing either parser acts on — no whitespace, no quote, no
+ * cmd.exe metacharacter, and none of the `=`, `,` or `;` a batch file's own `%1`
+ * splits on.
+ *
+ * Left bare, where cross-spawn quotes every argument: a quoted `--version`
+ * arrives in a batch file as `"--version"`, quotes included, and a script
+ * comparing `if "%1"=="--version"` stops matching.
+ */
+const PLAIN_ARGUMENT = /^[^\s"()[\]%!^`<>&|;,*?=\u00ff]+$/
+
 function escapeForCmd(value        )         {
   return value.replace(CMD_METACHARACTERS, '^$&')
 }
 
 /**
- * One argument, written so the program started through cmd.exe receives it
- * unchanged.
+ * `value` wrapped for `CommandLineToArgvW`, which the program splits its command
+ * line with: in quotes, with backslashes literal except in a run that ends at a
+ * quote, and such a run doubled.
  *
- * Two parsers read it, and each gets its own layer (qntm.org/cmd):
- *
- * 1. `CommandLineToArgvW`, which the program splits its command line with. The
- *    argument is wrapped in quotes; backslashes are literal except in a run that
- *    ends at a quote, and such a run is doubled.
- * 2. cmd.exe, which reads the line first. Every metacharacter, the quotes
- *    included, gets a `^`, so cmd.exe never enters a quoted section, never
- *    expands `%NAME%`, and never reads `&` or `|` as anything but text.
- *
- * The backslashes are counted in a loop. cross-spawn 7.0.6 does that step with a
+ * The backslashes are counted in a loop. cross-spawn 7.0.6 does this step with a
  * regular expression rewritten to avoid backtracking, which keeps only one
  * backslash of a run: `x\\` arrived as `x\"`.
- *
- * A `node_modules\.bin` shim reads its line through cmd.exe a second time —
- * the `%*` in npm's shims — so its arguments are escaped twice, as cross-spawn
- * does. Other command scripts get one layer, which is right for a script that
- * reads `%~1`; one that forwards `%*` elsewhere re-reads an argument containing
- * a double quote.
  */
-function quoteArgumentForCmd(value        , escapeTwice         )         {
+function quoteForArgv(value        )         {
   let quoted = ''
   let backslashes = 0
   for (const character of value) {
@@ -1461,25 +1491,130 @@ function quoteArgumentForCmd(value        , escapeTwice         )         {
     quoted += '\\'.repeat(character === '"' ? backslashes * 2 + 1 : backslashes) + character
     backslashes = 0
   }
-  const escaped = escapeForCmd(`"${quoted}${'\\'.repeat(backslashes * 2)}"`)
+  return `"${quoted}${'\\'.repeat(backslashes * 2)}"`
+}
+
+/**
+ * One argument, written so the program started through cmd.exe receives it
+ * unchanged.
+ *
+ * Two parsers read it, and each gets its own layer (qntm.org/cmd): the quoting
+ * `CommandLineToArgvW` needs, then a `^` before every cmd.exe metacharacter,
+ * the quotes included, so cmd.exe never enters a quoted section and never reads
+ * `&` or `|` as anything but text. `%` is escaped too, which covers every case
+ * but two — `planProgramLaunch` refuses those.
+ *
+ * A `node_modules\.bin` shim reads its line through cmd.exe a second time — the
+ * `%*` in npm's shims — so its arguments are escaped twice, as cross-spawn does.
+ */
+function quoteArgumentForCmd(value        , escapeTwice         )         {
+  if (PLAIN_ARGUMENT.test(value)) return value
+  const escaped = escapeForCmd(quoteForArgv(value))
   return escapeTwice ? escapeForCmd(escaped) : escaped
+}
+
+/** Whether `script` reads its own command line again, and gets its arguments escaped twice. */
+function readsItsLineAgain(script        )          {
+  return /node_modules[\\/]\.bin[\\/][^\\/]+\.cmd$/i.test(script)
+}
+
+/** What goes inside `cmd.exe /c "…"`: the script's path, then its arguments. */
+function commandLineForCmd(program        , args                   )         {
+  const script = trustedPath.win32.normalize(program)
+  const escapeTwice = readsItsLineAgain(script)
+  return [escapeForCmd(script), ...args.map((arg) => quoteArgumentForCmd(arg, escapeTwice))].join(' ')
 }
 
 /**
  * The spawn that runs the command script `program` through `interpreter`.
  *
- * `/d` skips the AutoRun commands the registry can attach to every cmd.exe.
- * `/s /c` with the whole line in one pair of quotes has cmd.exe strip exactly
- * that pair and run what is inside, and `windowsVerbatimArguments` stops Node
- * quoting the line a second time. The script's own path gets the metacharacter
- * escape only: cmd.exe reads it as the command, not as an argument, and the
- * space in `C:\Program Files` would otherwise end it.
+ * `/d` skips the AutoRun commands the registry can attach to every cmd.exe, and
+ * `/v:off` the delayed expansion it can switch on for all of them, which would
+ * expand `!NAME!` after the carets are gone. `/s /c` with the whole line in one
+ * pair of quotes has cmd.exe strip exactly that pair and run what is inside, and
+ * `windowsVerbatimArguments` stops Node quoting the line a second time. The
+ * script's own path gets the metacharacter escape only: cmd.exe reads it as the
+ * command, not as an argument, and the space in `C:\Program Files` would
+ * otherwise end it.
+ *
+ * Builds the line and nothing more. `planProgramLaunch` is what refuses an
+ * argument this cannot carry.
  */
 export function launchThroughInterpreter(interpreter        , program        , args                   )                {
-  const script = trustedPath.win32.normalize(program)
-  const escapeTwice = /node_modules[\\/]\.bin[\\/][^\\/]+\.cmd$/i.test(script)
-  const line = [escapeForCmd(script), ...args.map((arg) => quoteArgumentForCmd(arg, escapeTwice))].join(' ')
-  return { file: interpreter, args: ['/d', '/s', '/c', `"${line}"`], windowsVerbatimArguments: true }
+  return {
+    file: interpreter,
+    args: ['/d', '/v:off', '/s', '/c', `"${commandLineForCmd(program, args)}"`],
+    windowsVerbatimArguments: true,
+  }
+}
+
+/**
+ * A `%…%` reference cmd.exe would still expand in `line`, or `null`.
+ *
+ * The caret before every `%` works by moving the name cmd.exe looks up:
+ * `%PATH%` becomes a lookup of `PATH^`, which is not defined, and on a command
+ * line cmd.exe leaves an undefined reference alone. Two things defeat that, and
+ * there is no escape for either:
+ *
+ * - The name is defined after all. Windows allows `^` in a variable's name, and
+ *   a plan chooses its command's environment.
+ * - The edit forms, `%PATH:a=b%` and `%PATH:~0,4%`, look the name up before the
+ *   colon, where no caret lands — and `CD`, `DATE` and the other dynamic names
+ *   exist without being in any environment.
+ *
+ * Every pair of neighbouring `%` is checked, because which pairs cmd.exe forms
+ * depends on which names it found.
+ */
+function expandableReference(line        , env                   )                {
+  const defined = new Set(Object.keys(env).map((name) => name.toLowerCase()))
+  let opening = line.indexOf('%')
+  while (opening !== -1) {
+    const closing = line.indexOf('%', opening + 1)
+    if (closing === -1) return null
+    const content = line.slice(opening + 1, closing)
+    const colon = content.indexOf(':')
+    const name = colon === -1 ? content : content.slice(0, colon)
+    if ((colon !== -1 && !name.endsWith('^')) || defined.has(name.toLowerCase())) return `%${content.replace(/\^/g, '')}%`
+    opening = closing
+  }
+  return null
+}
+
+/**
+ * Whether cmd.exe, reading `quoted` a second time, would find a metacharacter
+ * outside quotes.
+ *
+ * A command script that passes its arguments on with `%*` — npm's global shims
+ * and `npm.cmd` itself do — has cmd.exe read them again. The first read removed
+ * the carets, and the second tracks quotes without knowing that `\"` is an
+ * escaped one, so the text after an embedded quote is outside quotes to it and
+ * a `&` there runs a second command. A `node_modules\.bin` shim is escaped twice
+ * instead, as cross-spawn does; anything else cannot be told apart, so such an
+ * argument is refused. One with a quote and nothing else to act on is left
+ * alone.
+ */
+function exposedOnSecondRead(value        )          {
+  let inQuotes = false
+  for (const character of quoteForArgv(value)) {
+    if (character === '"') inQuotes = !inQuotes
+    else if (!inQuotes && '&|<>^()'.includes(character)) return true
+  }
+  return false
+}
+
+/** Why cmd.exe cannot be trusted to pass `args` to `program` unchanged, or `null`. */
+function commandLineRefusal(program        , args                   , env                   )                {
+  // A line break ends a cmd.exe command line and would drop every argument
+  // after it without a word.
+  if (args.some((arg) => /[\r\n]/.test(arg))) return 'cannot pass it an argument that contains a line break'
+  if (!readsItsLineAgain(trustedPath.win32.normalize(program))) {
+    const exposed = args.find(exposedOnSecondRead)
+    if (exposed !== undefined) {
+      return `would read ${JSON.stringify(exposed)} a second time with part of it outside quotes, where \`&\`, \`|\`, \`<\`, \`>\`, \`^\` and parentheses act`
+    }
+  }
+  const expanded = expandableReference(commandLineForCmd(program, args), env)
+  return expanded === null ? null : `would expand ${expanded} in its arguments, and no escaping prevents that`
 }
 
 
@@ -1494,16 +1629,17 @@ export function launchThroughInterpreter(interpreter        , program        , a
  * one way.
  *
  * A reason instead of a launch when the program cannot be started as asked:
- * cmd.exe cannot be used, or an argument holds a line break, which ends a
- * cmd.exe command line and would drop every argument after it without a word.
+ * cmd.exe cannot be used, or it would not pass an argument through unchanged —
+ * a line break, a `%…%` it would expand whatever the escaping, or a quote that
+ * leaves a metacharacter exposed to a script that reads its line again. `env`
+ * is the environment cmd.exe will run with, which decides what it can expand.
  */
 export function planProgramLaunch(program        , args                   , options                       = {})                    {
   if (!needsCommandInterpreter(program, options.platform ?? process.platform)) {
     return { file: program, args: [...args], windowsVerbatimArguments: false }
   }
-  if (args.some((arg) => /[\r\n]/.test(arg))) {
-    return { reason: `${program} is a command script, and cmd.exe cannot pass it an argument that contains a line break.` }
-  }
+  const refusal = commandLineRefusal(program, args, options.env ?? process.env)
+  if (refusal !== null) return { reason: `${program} is a command script, and cmd.exe ${refusal}.` }
   const interpreter = options.resolveInterpreter?.() ?? resolveCommandInterpreter(options)
   if (interpreter.path === undefined) {
     return { reason: `${program} is a command script, which needs cmd.exe to run, and cmd.exe could not be used: ${interpreter.reason}` }

@@ -197,7 +197,13 @@ export function runProbe(command: string, args: string[], timeoutMs: number): Pr
   // the resolver now does itself through PATHEXT. What is left is that a shim
   // needs cmd.exe, and the launcher supplies a resolved one: no `shell: true`,
   // so no DEP0190 warning above the report and no cmd.exe looked up by name.
-  const launch = planProgramLaunch(resolution.path, args)
+  // This stays outside the shared git runner on purpose: it probes any binary
+  // by name, and on Windows it needs cmd.exe to start `npm.cmd`, which the git
+  // runner deliberately does not do. It carries its own timeout; what it was
+  // missing is the non-interactive environment, so a `git`/`gh` probe cannot
+  // stop on a credential prompt.
+  const env = { ...process.env, ...NON_INTERACTIVE_GIT_ENV }
+  const launch = planProgramLaunch(resolution.path, args, { env })
   if (launch.reason !== undefined) return { kind: 'unavailable', refusal: launch.reason }
   const started = Date.now()
   // `spawnSync`, not `execFileSync`: only `spawnSync` documents
@@ -209,12 +215,7 @@ export function runProbe(command: string, args: string[], timeoutMs: number): Pr
     // Escalates rather than asking twice: a probe that outran its budget has
     // nothing left to negotiate, and `doctor` must not hang on one.
     killSignal: 'SIGKILL',
-    // This stays outside the shared git runner on purpose: it probes any
-    // binary by name, and on Windows it needs cmd.exe to start `npm.cmd`, which
-    // the git runner deliberately does not do. It carries its own timeout; what
-    // it was missing is the non-interactive environment, so a `git`/`gh` probe
-    // cannot stop on a credential prompt.
-    env: { ...process.env, ...NON_INTERACTIVE_GIT_ENV },
+    env,
     windowsVerbatimArguments: launch.windowsVerbatimArguments,
   })
   if (result.error === undefined && result.status === 0) return { kind: 'ok', output: result.stdout }

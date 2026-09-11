@@ -77,7 +77,7 @@ describe('probing external commands on Windows', () => {
     // the line again.
     expect(spawnSync).toHaveBeenCalledWith(
       CMD,
-      ['/d', '/s', '/c', '"C:\\Users\\dev\\AppData\\Roaming\\npm\\npm.cmd ^"--version^""'],
+      ['/d', '/v:off', '/s', '/c', '"C:\\Users\\dev\\AppData\\Roaming\\npm\\npm.cmd --version"'],
       expect.objectContaining({ windowsVerbatimArguments: true }),
     )
   })

@@ -1,5 +1,5 @@
 import { spawnSync } from 'node:child_process'
-import { chmodSync, chownSync, mkdirSync, mkdtempSync, realpathSync, renameSync, statSync, symlinkSync, unlinkSync, utimesSync, writeFileSync } from 'node:fs'
+import { chmodSync, chownSync, lstatSync, mkdirSync, mkdtempSync, realpathSync, renameSync, statSync, symlinkSync, unlinkSync, utimesSync, writeFileSync } from 'node:fs'
 import { delimiter, join, win32 } from 'node:path'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import { makeTempDir, removeTempDir } from '../../test/tempDir'
@@ -100,6 +100,16 @@ const posix = process.platform !== 'win32'
 const itPosix = posix ? it : it.skip
 /** Cases that need one foreign path among trusted ones, which only root can arrange. */
 const itAsRoot = posix && process.getuid?.() === 0 ? it : it.skip
+/** Cases that need a path this user cannot `stat`, which root never has. */
+const itAsNonRoot = posix && process.getuid?.() !== 0 ? it : it.skip
+
+function lstatOrNull(path: string): ReturnType<typeof lstatSync> | null {
+  try {
+    return lstatSync(path)
+  } catch {
+    return null
+  }
+}
 
 describe('trustedSearchDirectories', () => {
   it('prepends the override, and does not use it to filter PATH', () => {
@@ -489,6 +499,62 @@ describe('Windows resolution', () => {
       platform: 'win32',
       cache: freshCache(),
     })).toBe(exe)
+  })
+
+  itAsNonRoot('resolves a Windows App Execution Alias as the program at its own path', () => {
+    // `fs.stat` refuses an alias with EACCES, `fs.realpath` too, and `lstat`
+    // sees it. A link into a directory this user cannot search has the same
+    // signature here, which is how the Windows rule is exercised off Windows —
+    // and why root, which can search anything, skips it.
+    const root = tempRoot()
+    const packageDirectory = join(root, 'WindowsApps-package')
+    makeExecutable(packageDirectory, 'winget.EXE')
+    const aliases = join(root, 'WindowsApps')
+    mkdirSync(aliases)
+    const alias = join(aliases, 'winget.EXE')
+    symlinkSync(join(packageDirectory, 'winget.EXE'), alias)
+    chmodSync(packageDirectory, 0o000)
+    try {
+      const options = { env: { PATH: aliases }, policyEnv: { PATHEXT: '.EXE', SystemRoot: NO_WINDOWS }, platform: 'win32' as const }
+      const cache = freshCache()
+      expect(resolveTrustedExecutable('winget', { ...options, cache })).toEqual({ path: alias, target: alias })
+      // Served from the cache, which re-checks it the same way.
+      const entry = [...cache.values()][0]
+      expect(resolveTrustedExecutable('winget', { ...options, cache })).toEqual({ path: alias, target: alias })
+      expect([...cache.values()][0]).toBe(entry)
+      expect(resolveTrustedProgram(alias, { platform: 'win32', policyEnv: {} })).toEqual({ path: alias, target: alias })
+      // POSIX has no such thing: the same link is simply not a program there,
+      // not a program that is refused.
+      const posixAnswer = resolveTrustedExecutable('winget.EXE', { env: { PATH: aliases }, policyEnv: {}, platform: 'linux', cache: null })
+      expect(posixAnswer.reason).toContain('was not found in any trusted directory')
+      expect(posixAnswer.refusedAt).toBeUndefined()
+    } finally {
+      chmodSync(packageDirectory, 0o755)
+    }
+  })
+
+  itPosix('does not take a dangling link for an alias', () => {
+    // A link whose target is gone fails `stat` with ENOENT, not EACCES.
+    const root = tempRoot()
+    const bin = join(root, 'bin')
+    mkdirSync(bin)
+    symlinkSync(join(root, 'gone.EXE'), join(bin, 'tool.EXE'))
+
+    expect(findTrustedExecutablePath('tool', {
+      env: { PATH: bin },
+      policyEnv: { PATHEXT: '.EXE', SystemRoot: NO_WINDOWS },
+      platform: 'win32',
+      cache: null,
+    })).toBeNull()
+  })
+
+  const runnerAlias = process.platform === 'win32' && process.env.LOCALAPPDATA
+    ? join(process.env.LOCALAPPDATA, 'Microsoft', 'WindowsApps', 'winget.exe')
+    : null
+  const itWithRunnerAlias = runnerAlias !== null && lstatOrNull(runnerAlias) !== null ? it : it.skip
+  itWithRunnerAlias('resolves the real winget alias on a Windows machine that has one', () => {
+    // The case the WinGet lane failed on: `winget` on PATH only as an alias.
+    expect(findTrustedExecutablePath('winget', { cache: null })).toMatch(/\\WindowsApps\\winget\.exe$/i)
   })
 
   it('judges a Windows path by Windows rules when the program is named outright', () => {
@@ -1065,8 +1131,8 @@ describe('the cmd.exe launcher', () => {
     const launch = launchThroughInterpreter('C:\\Windows\\System32\\cmd.exe', 'C:\\Program Files\\nodejs\\npm.cmd', TRICKY_ARGUMENTS)
     expect(launch.file).toBe('C:\\Windows\\System32\\cmd.exe')
     expect(launch.windowsVerbatimArguments).toBe(true)
-    expect(launch.args.slice(0, 3)).toEqual(['/d', '/s', '/c'])
-    const line = launch.args[3]!
+    expect(launch.args.slice(0, 4)).toEqual(['/d', '/v:off', '/s', '/c'])
+    const line = launch.args[4]!
     expect(line.startsWith('"') && line.endsWith('"')).toBe(true)
 
     const read = cmdReads(line.slice(1, -1))
@@ -1077,7 +1143,7 @@ describe('the cmd.exe launcher', () => {
 
   it('escapes a node_modules\\.bin shim twice, because the shim reads its line again', () => {
     const script = 'C:\\repo\\node_modules\\.bin\\eslint.cmd'
-    const line = launchThroughInterpreter('cmd.exe', script, TRICKY_ARGUMENTS).args[3]!
+    const line = launchThroughInterpreter('cmd.exe', script, TRICKY_ARGUMENTS).args[4]!
     const firstRead = cmdReads(line.slice(1, -1))
     expect(firstRead.startsWith(`${script} `)).toBe(true)
     // The shim's own `%*` line is the second read.
@@ -1109,7 +1175,9 @@ describe('the cmd.exe launcher', () => {
     const interpreter = () => ({ path: 'C:\\Windows\\System32\\cmd.exe' })
     const launch = planProgramLaunch('C:\\nodejs\\npm.cmd', ['ci'], { platform: 'win32', resolveInterpreter: interpreter })
     expect(launch.file).toBe('C:\\Windows\\System32\\cmd.exe')
-    expect(launch.args?.[3]).toBe('"C:\\nodejs\\npm.cmd ^"ci^""')
+    // A plain argument goes bare: quoted, `ci` would reach a batch file's `%1`
+    // as `"ci"`, quotes and all.
+    expect(launch.args?.[4]).toBe('"C:\\nodejs\\npm.cmd ci"')
 
     const missing = planProgramLaunch('C:\\nodejs\\npm.cmd', ['ci'], { platform: 'win32', resolveInterpreter: () => ({ reason: 'cmd.exe was not found.' }) })
     expect(missing.reason).toBe('C:\\nodejs\\npm.cmd is a command script, which needs cmd.exe to run, and cmd.exe could not be used: cmd.exe was not found.')
@@ -1117,6 +1185,54 @@ describe('the cmd.exe launcher', () => {
     // A line break ends a cmd.exe command line and drops what follows.
     const broken = planProgramLaunch('C:\\nodejs\\npm.cmd', ['one\ntwo'], { platform: 'win32', resolveInterpreter: interpreter })
     expect(broken.reason).toContain('cannot pass it an argument that contains a line break')
+  })
+
+  it('quotes only an argument that needs it, and turns delayed expansion off', () => {
+    // Bare, a flag reaches a script comparing `if "%1"=="--version"` as itself.
+    // Whitespace, a quote, a metacharacter, or the `=`, `,` and `;` a batch
+    // file's `%1` splits on, and it is quoted and escaped as before.
+    const launch = launchThroughInterpreter('cmd.exe', 'C:\\tools\\tool.cmd', ['--version', 'C:\\x\\y.tgz', 'a b', 'k=v', 'x;y', ''])
+    expect(launch.args).toEqual(['/d', '/v:off', '/s', '/c', '"C:\\tools\\tool.cmd --version C:\\x\\y.tgz ^"a^ b^" ^"k=v^" ^"x^;y^" ^"^""'])
+  })
+
+  it('refuses a %…% reference cmd.exe would expand whatever the escaping', () => {
+    const plan = (args: string[], env: NodeJS.ProcessEnv) => planProgramLaunch('C:\\nodejs\\npm.cmd', args, {
+      platform: 'win32',
+      env,
+      resolveInterpreter: () => ({ path: 'C:\\Windows\\System32\\cmd.exe' }),
+    })
+
+    // The caret makes `%PATH%` a lookup of `PATH^`, which nothing defines.
+    expect(plan(['%PATH%', '100%'], { PATH: 'C:\\Windows' }).reason).toBeUndefined()
+    // Unless something does: Windows allows a caret in a name, and a plan
+    // chooses its command's environment. Names are case-insensitive there.
+    expect(plan(['%X%'], { 'x^': 'value & another-command' }).reason).toContain('would expand %X% in its arguments')
+    // The edit forms look the name up before the colon, where no caret lands,
+    // and dynamic names such as CD are in no environment at all.
+    expect(plan(['%PATH:a=b%'], {}).reason).toContain('would expand %PATH:a=b%')
+    expect(plan(['%CD:~0,2%'], {}).reason).toContain('would expand %CD:~0,2%')
+    // Across arguments too: cmd.exe pairs the `%` wherever they are.
+    expect(plan(['x%PATH:', 'a=b%'], {}).reason).toContain('would expand')
+    // And a `%` that closed one reference can open the next: `%A%` finds
+    // nothing, and cmd.exe may carry on from its second `%`.
+    expect(plan(['%A%PATH:a=b%'], {}).reason).toContain('would expand %PATH:a=b%')
+  })
+
+  it('refuses a quote that would leave a metacharacter exposed to a script reading its line again', () => {
+    const plan = (script: string, args: string[]) => planProgramLaunch(script, args, {
+      platform: 'win32',
+      env: {},
+      resolveInterpreter: () => ({ path: 'C:\\Windows\\System32\\cmd.exe' }),
+    })
+
+    // npm's global shims pass `%*` on, and cmd.exe reads `\"` as a quote that
+    // ends the quoted part, so ` & bye` would be a second command.
+    expect(plan('C:\\Users\\dev\\AppData\\Roaming\\npm\\tool.cmd', ['say "hi & bye"']).reason)
+      .toContain('a second time with part of it outside quotes')
+    // A quote with nothing to act on outside it is carried as it is.
+    expect(plan('C:\\Users\\dev\\AppData\\Roaming\\npm\\tool.cmd', ['description="hello"']).reason).toBeUndefined()
+    // A `node_modules\\.bin` shim is escaped twice instead, so it is not refused.
+    expect(plan('C:\\repo\\node_modules\\.bin\\tool.cmd', ['say "hi & bye"']).reason).toBeUndefined()
   })
 
   const onWindows = process.platform === 'win32' ? it : it.skip
@@ -1145,5 +1261,12 @@ describe('the cmd.exe launcher', () => {
     expect(run(shim, TRICKY_ARGUMENTS)).toEqual(TRICKY_ARGUMENTS)
     const quoteFree = TRICKY_ARGUMENTS.filter((arg) => !arg.includes('"'))
     expect(run(plain, quoteFree)).toEqual(quoteFree)
+
+    // A script reading `%1` itself sees a plain argument exactly as written.
+    const first = join(root, 'tools', 'first.cmd')
+    writeFileSync(first, '@echo [%1]\r\n')
+    const launch = launchThroughInterpreter(interpreter.path!, first, ['--version'])
+    const echoed = spawnSync(launch.file, launch.args, { windowsVerbatimArguments: true, encoding: 'utf8' })
+    expect(echoed.stdout.trim()).toBe('[--version]')
   })
 })

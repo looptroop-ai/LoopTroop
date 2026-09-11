@@ -183,8 +183,8 @@ describe('OpenCode supervision', () => {
 
     expect(seen[0]?.command).toBe(CMD)
     expect(seen[0]?.args).toEqual([
-      '/d', '/s', '/c',
-      `"C:\\Users\\dev\\AppData\\Roaming\\npm\\opencode.cmd ^"serve^" ^"--hostname^" ^"127.0.0.1^" ^"--port^" ^"${seen[0]?.port}^""`,
+      '/d', '/v:off', '/s', '/c',
+      `"C:\\Users\\dev\\AppData\\Roaming\\npm\\opencode.cmd serve --hostname 127.0.0.1 --port ${seen[0]?.port}"`,
     ])
     expect(seen[0]?.options.windowsVerbatimArguments).toBe(true)
     expect(seen[0]?.options.shell).toBeUndefined()

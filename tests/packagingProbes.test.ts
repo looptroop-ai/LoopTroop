@@ -675,8 +675,8 @@ describe('launching a tool', () => {
     const launch = launchTool('npm', ['install', '-g', 'C:\\a b\\x.tgz'], { env: { PATH: dir }, platform: 'win32' })
     expect(launch.file.toLowerCase()).toMatch(/cmd\.exe$/)
     expect(launch.windowsVerbatimArguments).toBe(true)
-    expect(launch.args.slice(0, 3)).toEqual(['/d', '/s', '/c'])
-    expect(launch.args[3]).toMatch(/npm\.CMD \^"install\^" \^"-g\^" \^"C:\\a\^ b\\x\.tgz\^""$/)
+    expect(launch.args.slice(0, 4)).toEqual(['/d', '/v:off', '/s', '/c'])
+    expect(launch.args[4]).toMatch(/npm\.CMD install -g \^"C:\\a\^ b\\x\.tgz\^""$/)
   })
 
   it('says why a tool cannot be started, or throws it', () => {

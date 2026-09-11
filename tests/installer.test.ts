@@ -1312,11 +1312,15 @@ describe('PATH resolution', () => {
  */
 describe('windows command lines', () => {
   const interpreter = () => ({ path: 'C:\\Windows\\System32\\cmd.exe' })
-  const line = (args: string[]) => planProgramLaunch('C:\\Program Files\\nodejs\\npm.cmd', args, { platform: 'win32', resolveInterpreter: interpreter }).args?.[3]
+  const line = (args: string[]) => planProgramLaunch('C:\\Program Files\\nodejs\\npm.cmd', args, { platform: 'win32', resolveInterpreter: interpreter }).args?.[4]
 
   it('makes one token of an argument containing spaces', () => {
     expect(line(['install', '-g', String.raw`C:\Users\Ada Lovelace\AppData\Local\Temp\looptroop-9.9.9.tgz`]))
-      .toBe(String.raw`"C:\Program^ Files\nodejs\npm.cmd ^"install^" ^"-g^" ^"C:\Users\Ada^ Lovelace\AppData\Local\Temp\looptroop-9.9.9.tgz^""`)
+      .toBe(String.raw`"C:\Program^ Files\nodejs\npm.cmd install -g ^"C:\Users\Ada^ Lovelace\AppData\Local\Temp\looptroop-9.9.9.tgz^""`)
+  })
+
+  it('leaves a plain argument bare, so a shim comparing %1 still matches it', () => {
+    expect(line(['--version'])).toBe(String.raw`"C:\Program^ Files\nodejs\npm.cmd --version"`)
   })
 
   it('escapes what cmd.exe would read as an operator or an expansion', () => {
@@ -1439,6 +1443,57 @@ describe('installer wrappers', () => {
    * of those is a separate way to get this wrong, so all three are exercised
    * rather than read out of the source.
    */
+  /**
+   * `install.sh` looks `node` up before the core and its resolver exist, so it
+   * drops empty and relative PATH entries first: with `.` on PATH, `curl … | sh`
+   * run from a folder holding a file called `node` ran it. A PATH with nothing
+   * absolute in it must not become an empty one, which the shell reads as the
+   * current directory too.
+   */
+  describe.runIf(process.platform !== 'win32')('install.sh never looks in the current directory', () => {
+    const scratch: string[] = []
+
+    afterAll(() => {
+      for (const dir of scratch.splice(0)) removeTempDir(dir)
+    })
+
+    /** A working directory holding a `node` and a `uname` that leave a mark if run. */
+    function plantedDirectory(): string {
+      const dir = mkdtempSync(join(tmpdir(), 'looptroop-wrapper-cwd-'))
+      scratch.push(dir)
+      for (const name of ['node', 'uname']) {
+        writeFileSync(join(dir, name), `#!/bin/sh\necho PLANTED-${name}\n`)
+        chmodSync(join(dir, name), 0o755)
+      }
+      return dir
+    }
+
+    it('skips a relative entry and runs the real node', () => {
+      const cwd = plantedDirectory()
+      const result = spawnSync('/bin/sh', [join(repoRoot, 'install.sh'), '--help'], {
+        cwd,
+        encoding: 'utf8',
+        env: { HOME: cwd, PATH: `.:${dirname(process.execPath)}:/usr/bin:/bin` },
+      })
+
+      expect(`${result.stdout}${result.stderr}`).not.toContain('PLANTED')
+      expect(result.stdout).toContain('Usage:')
+    })
+
+    it('reports node missing when no PATH entry is absolute, rather than searching the current directory', () => {
+      const cwd = plantedDirectory()
+      const result = spawnSync('/bin/sh', [join(repoRoot, 'install.sh'), '--help'], {
+        cwd,
+        encoding: 'utf8',
+        env: { HOME: cwd, PATH: 'relative:.' },
+      })
+
+      expect(`${result.stdout}${result.stderr}`).not.toContain('PLANTED')
+      expect(result.status).toBe(1)
+      expect(result.stderr).toContain('it is not on your PATH')
+    })
+  })
+
   describe.runIf(process.platform !== 'win32')('install.sh cleans up after itself', () => {
     const scratch: string[] = []
 

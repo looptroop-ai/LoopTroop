@@ -104,10 +104,6 @@ asks for sudo, and writes nothing outside npm's global prefix.
 
 There is also a standalone executable that carries its own Node runtime — see
 [Installation](https://www.looptroop.ovh/docs/installation#standalone-executable).
-The standalone installer refuses to replace a lock while its recorded process
-still exists or cannot be checked. After a crash, that process ID may have been
-reused. If it reports `.install.lock` or `.install.lock.claim`, wait and retry;
-remove only the named file after confirming no installer is running.
 </details>
 
 <details>

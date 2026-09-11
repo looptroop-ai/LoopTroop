@@ -1,5 +1,5 @@
 import { afterAll, beforeEach, describe, expect, it, vi } from 'vitest'
-import { existsSync, readFileSync, writeFileSync } from 'node:fs'
+import { existsSync, readFileSync, symlinkSync, writeFileSync } from 'node:fs'
 import { parseUiArtifactCompanionArtifact } from '@shared/artifactCompanions'
 import type { DraftResult, Vote } from '../../council/types'
 import { clearProjectDatabaseCache } from '../../db/project'
@@ -42,6 +42,22 @@ import { upsertCouncilDraftArtifact } from '../phases/helpers'
 const repoManager = createTestRepoManager('prd-draft-')
 
 describe('handlePrdDraft', () => {
+  it.each(['missing', 'invalid', 'escaping'] as const)('keeps optional %s interview handling safe when rebuilding vote context', async (kind) => {
+    const { ticket, context, paths } = await createInitializedTestTicket(repoManager)
+    phaseIntermediate.set(`${ticket.id}:prd`, {
+      drafts: [], memberOutcomes: {}, worktreePath: paths.worktreePath, phase: 'prd_draft',
+    })
+    if (kind === 'invalid') writeFileSync(`${paths.ticketDir}/interview.yaml`, 'invalid interview')
+    if (kind === 'escaping') symlinkSync(repoManager.createRepo(), `${paths.ticketDir}/interview.yaml`, 'junction')
+    const controller = new AbortController()
+    controller.abort()
+    // Stop before model work. Optional input reaches cancellation; an unsafe
+    // input must be rejected while building context, never silently discarded.
+    await expect(handlePrdVote(ticket.id, context, vi.fn(), controller.signal)).rejects.toThrow(
+      kind === 'escaping' ? 'escapes root' : /cancel/i,
+    )
+    expect(conductVotingMock).not.toHaveBeenCalled()
+  })
   beforeEach(() => {
     resetTestDb()
     phaseIntermediate.clear()

@@ -50,6 +50,16 @@ function makeExecutable(directory: string, name: string): string {
 }
 
 describe('resolveCommandProgram', () => {
+  it.runIf(process.platform !== 'win32')('resolves repository tools with a canonical cwd and aliased repository root', () => {
+    const root = makeRepo()
+    const repository = join(root, 'real')
+    const tool = makeExecutable(join(repository, '..tools'), 'check')
+    const alias = join(root, 'alias')
+    symlinkSync(repository, alias, 'junction')
+    expect(resolveCommandProgram('./..tools/check', {
+      cwd: resolveCommandCwd(alias, '.'), repoRoot: alias, env: process.env,
+    }).path).toBe(tool)
+  })
   it.runIf(process.platform !== 'win32')('resolves a bare name against the child\'s PATH, not the daemon\'s', () => {
     // `pathPrepend` puts a project's own `node_modules/.bin` on the child's
     // PATH. Resolving against `process.env` would refuse every project-local
@@ -550,8 +560,8 @@ describe('executeCommand', () => {
     mkdirSync(join(repository, 'packages', 'real'), { recursive: true })
     symlinkSync(join(repository, 'packages', 'real'), join(repository, 'app'))
 
-    expect(resolveCommandCwd(repository, 'app')).toBe(join(repository, 'app'))
-    expect(resolveCommandCwd(repository, 'app/not-yet')).toBe(join(repository, 'app', 'not-yet'))
+    expect(resolveCommandCwd(repository, 'app')).toBe(join(repository, 'packages', 'real'))
+    expect(resolveCommandCwd(repository, 'app/not-yet')).toBe(join(repository, 'packages', 'real', 'not-yet'))
   })
 
   it.runIf(process.platform !== 'win32')('refuses a pathPrepend entry that is a link out of the repository', async () => {

@@ -1,8 +1,9 @@
-import { describe, it, expect, afterEach } from 'vitest'
+import { describe, it, expect, beforeAll, afterEach } from 'vitest'
 import { mkdtempSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { createApp } from '../server/app'
+import { initializeDatabase } from '../server/db/init'
 import { createSessionCredentials, readCookie, SESSION_COOKIE_NAME, type SessionCredentials } from '../server/middleware/sessionAuth'
 import type { Hono } from 'hono'
 import { removeTempDir } from '../server/test/tempDir'
@@ -14,6 +15,7 @@ import { removeTempDir } from '../server/test/tempDir'
  */
 describe('daemon session auth', () => {
   const tempDirs: string[] = []
+  beforeAll(() => initializeDatabase())
 
   afterEach(() => {
     for (const dir of tempDirs.splice(0)) {
@@ -80,9 +82,7 @@ describe('daemon session auth', () => {
     const response = await app.request('/api/projects', {
       headers: { Authorization: `Bearer ${credentials.apiToken}` },
     })
-    // Past the middleware is the contract here; this pool has no database, so
-    // the handler itself cannot return 200.
-    expect(response.status).not.toBe(401)
+    expect(response.status).toBe(200)
   })
 
   it('rejects a wrong bearer token', async () => {
@@ -148,8 +148,7 @@ describe('daemon session auth', () => {
     })
 
     expect(response.status).toBe(withToken.status)
-    expect(response.status).not.toBe(401)
-    expect(response.status).not.toBe(403)
+    expect(response.status).toBe(200)
   })
 
   it('does not let the cookie authenticate a request the browser did not vouch for', async () => {

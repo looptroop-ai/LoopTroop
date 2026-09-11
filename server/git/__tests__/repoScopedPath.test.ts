@@ -37,7 +37,10 @@ describe('normalizeRepoScopedPath', () => {
     expect(normalizeRepoScopedPath('src/app\r.ts')).toBeNull()
   })
 
-  it('rejects LoopTroop control directories and nothing merely resembling them', () => {
+  it('rejects Git and LoopTroop control paths and nothing merely resembling them', () => {
+    expect(normalizeRepoScopedPath('.git')).toBeNull()
+    expect(normalizeRepoScopedPath('.git/config')).toBeNull()
+    expect(normalizeRepoScopedPath('.github/workflows/ci.yml')).toBe('.github/workflows/ci.yml')
     expect(normalizeRepoScopedPath('.ticket')).toBeNull()
     expect(normalizeRepoScopedPath('.ticket/prd.yaml')).toBeNull()
     expect(normalizeRepoScopedPath('.looptroop')).toBeNull()

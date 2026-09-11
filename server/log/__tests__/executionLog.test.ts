@@ -2,24 +2,26 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { appendLogEvent, clearTicketFingerprints, createLogEvent, shouldSkipLogEmission } from '../executionLog'
 import * as ticketsModule from '../../storage/tickets'
 import * as atomicAppendModule from '../../io/atomicAppend'
+import { resolve } from 'node:path'
 
 const mockGetTicketPaths = vi.spyOn(ticketsModule, 'getTicketPaths').mockReturnValue({
-  projectRoot: '/tmp/test-project',
-  executionLogPath: '/tmp/test-execution-log.jsonl',
-  debugLogPath: '/tmp/test-execution-log.debug.jsonl',
-  aiLogPath: '/tmp/test-execution-log.ai.jsonl',
-  worktreePath: '/tmp/test-worktree',
-  ticketDir: '/tmp/test-ticket-dir',
-  executionSetupDir: '/tmp/test-ticket-dir/.ticket/runtime/execution-setup',
-  executionSetupProfilePath: '/tmp/test-ticket-dir/.ticket/runtime/execution-setup-profile.json',
+  projectRoot: resolve('/tmp/test-project'),
+  executionLogPath: resolve('/tmp/test-execution-log.jsonl'),
+  debugLogPath: resolve('/tmp/test-execution-log.debug.jsonl'),
+  aiLogPath: resolve('/tmp/test-execution-log.ai.jsonl'),
+  worktreePath: resolve('/tmp/test-worktree'),
+  ticketDir: resolve('/tmp/test-ticket-dir'),
+  executionSetupDir: resolve('/tmp/test-ticket-dir/.ticket/runtime/execution-setup'),
+  executionSetupProfilePath: resolve('/tmp/test-ticket-dir/.ticket/runtime/execution-setup-profile.json'),
   baseBranch: 'main',
-  beadsPath: '/tmp/test-beads.jsonl',
+  beadsPath: resolve('/tmp/test-beads.jsonl'),
 })
 
-const mockAppend = vi.spyOn(atomicAppendModule, 'safeAtomicAppend').mockImplementation((_path, line) => ({
+const mockAppend = vi.fn((_path: string, line: string) => ({
   offset: 0,
   length: Buffer.byteLength(`${line}\n`),
 }))
+vi.spyOn(atomicAppendModule, 'safeAtomicAppendWithin').mockImplementation((root, path, line) => mockAppend(resolve(root, path), line))
 
 describe('createLogEvent', () => {
   it('preserves a provided timestamp so live and persisted log entries stay aligned', () => {
@@ -126,8 +128,8 @@ describe('appendLogEvent', () => {
 
     expect(mockAppend).toHaveBeenCalledTimes(2)
     expect(mockAppend.mock.calls.map((call) => call[0])).toEqual([
-      '/tmp/test-execution-log.ai.jsonl',
-      '/tmp/test-execution-log.jsonl',
+      resolve('/tmp/test-execution-log.ai.jsonl'),
+      resolve('/tmp/test-execution-log.jsonl'),
     ])
   })
 
@@ -199,7 +201,7 @@ describe('appendLogEvent', () => {
     )
 
     expect(mockAppend).toHaveBeenCalledOnce()
-    expect(mockAppend.mock.calls[0]?.[0]).toBe('/tmp/test-execution-log.jsonl')
+    expect(mockAppend.mock.calls[0]?.[0]).toBe(resolve('/tmp/test-execution-log.jsonl'))
   })
 
   it('persists direct debug events to the debug log with raw payload fields', () => {
@@ -219,7 +221,7 @@ describe('appendLogEvent', () => {
     )
 
     expect(mockAppend).toHaveBeenCalledOnce()
-    expect(mockAppend.mock.calls[0]?.[0]).toBe('/tmp/test-execution-log.debug.jsonl')
+    expect(mockAppend.mock.calls[0]?.[0]).toBe(resolve('/tmp/test-execution-log.debug.jsonl'))
     const written = JSON.parse(mockAppend.mock.calls[0]![1]!)
     expect(written.type).toBe('debug')
     expect(written.source).toBe('debug')
@@ -246,7 +248,7 @@ describe('appendLogEvent', () => {
     )
 
     expect(mockAppend).toHaveBeenCalledOnce()
-    expect(mockAppend.mock.calls[0]?.[0]).toBe('/tmp/test-execution-log.debug.jsonl')
+    expect(mockAppend.mock.calls[0]?.[0]).toBe(resolve('/tmp/test-execution-log.debug.jsonl'))
   })
 
   it('skips persisting repeated append events with the same fingerprint', () => {
@@ -326,10 +328,10 @@ describe('appendLogEvent', () => {
 
     expect(mockAppend).toHaveBeenCalledTimes(4)
     expect(mockAppend.mock.calls.map((call) => call[0])).toEqual([
-      '/tmp/test-execution-log.ai.jsonl',
-      '/tmp/test-execution-log.jsonl',
-      '/tmp/test-execution-log.ai.jsonl',
-      '/tmp/test-execution-log.jsonl',
+      resolve('/tmp/test-execution-log.ai.jsonl'),
+      resolve('/tmp/test-execution-log.jsonl'),
+      resolve('/tmp/test-execution-log.ai.jsonl'),
+      resolve('/tmp/test-execution-log.jsonl'),
     ])
   })
 
@@ -414,8 +416,8 @@ describe('appendLogEvent', () => {
 
     expect(mockAppend).toHaveBeenCalledTimes(2)
     expect(mockAppend.mock.calls.map((call) => call[0])).toEqual([
-      '/tmp/test-execution-log.ai.jsonl',
-      '/tmp/test-execution-log.jsonl',
+      resolve('/tmp/test-execution-log.ai.jsonl'),
+      resolve('/tmp/test-execution-log.jsonl'),
     ])
   })
 })

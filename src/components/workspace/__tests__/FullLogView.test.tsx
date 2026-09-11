@@ -138,15 +138,17 @@ function makeTicket(overrides: Omit<Partial<Ticket>, 'runtime'> & { runtime?: Om
   }
 }
 
-function renderWithTooltipProvider(ui: React.ReactElement) {
+async function renderWithTooltipProvider(ui: React.ReactElement) {
   const queryClient = createTestQueryClient()
-  return render(ui, {
+  const rendered = render(ui, {
     wrapper: ({ children }) => (
       <QueryClientProvider client={queryClient}>
         <TooltipProvider>{children}</TooltipProvider>
       </QueryClientProvider>
     ),
   })
+  await waitFor(() => expect(queryClient.isFetching()).toBe(0))
+  return rendered
 }
 
 beforeAll(() => {
@@ -213,8 +215,8 @@ describe('FullLogView', () => {
       return createJsonResponse({ entries: [], olderCursor: null, hasOlder: false })
     })
 
-    renderWithTooltipProvider(<FullLogView ticket={makeTicket()} />)
-    fireEvent.click(screen.getByRole('button', { name: /^AI/ }))
+    await renderWithTooltipProvider(<FullLogView ticket={makeTicket()} />)
+    await act(async () => fireEvent.click(screen.getByRole('button', { name: /^AI/ })))
     expect(fetchSpy.mock.calls.some(([input]) => String(input).includes('/ai-details?'))).toBe(false)
     fireEvent.click(screen.getByRole('button', { name: 'AI details' }))
 
@@ -287,7 +289,7 @@ describe('FullLogView', () => {
       return createJsonResponse({ entries: [], olderCursor: null, hasOlder: false })
     })
 
-    renderWithTooltipProvider(<FullLogView ticket={makeTicket()} />)
+    await renderWithTooltipProvider(<FullLogView ticket={makeTicket()} />)
     expect(fetchSpy.mock.calls.some(([input]) => String(input).includes('/skips'))).toBe(false)
 
     fireEvent.click(screen.getByRole('button', { name: 'Skips' }))
@@ -303,7 +305,7 @@ describe('FullLogView', () => {
     fetchSpy.mockRestore()
   })
 
-  it('shows configured effort on lifecycle model tabs', () => {
+  it('shows configured effort on lifecycle model tabs', async () => {
     const firstModel = 'openai/gpt-5.4'
     const secondModel = 'anthropic/claude-sonnet-4.6'
     getAllLogsMock.mockReturnValue([
@@ -322,7 +324,7 @@ describe('FullLogView', () => {
       }),
     ])
 
-    renderWithTooltipProvider(
+    await renderWithTooltipProvider(
       <FullLogView
         ticket={makeTicket({
           lockedMainImplementer: firstModel,
@@ -338,9 +340,9 @@ describe('FullLogView', () => {
     expect(screen.getByTitle(`${secondModel} · Effort: None (provider default)`)).toBeInTheDocument()
   })
 
-  it('renders empty state when there are no logs', () => {
+  it('renders empty state when there are no logs', async () => {
     getAllLogsMock.mockReturnValue([])
-    renderWithTooltipProvider(<FullLogView />)
+    await renderWithTooltipProvider(<FullLogView />)
     expect(screen.getByText(/no log entries yet/i)).toBeTruthy()
   })
 
@@ -368,7 +370,7 @@ describe('FullLogView', () => {
       .mockImplementationOnce(() => olderResponse)
 
     try {
-      renderWithTooltipProvider(<FullLogView ticket={makeTicket()} />)
+      await renderWithTooltipProvider(<FullLogView ticket={makeTicket()} />)
       expect(await screen.findByText('Newest lifecycle row.')).toBeInTheDocument()
       const countTrigger = screen.getByRole('button', { name: '2,000 entries' })
       fireEvent.focus(countTrigger)
@@ -443,7 +445,7 @@ describe('FullLogView', () => {
       }))
 
     try {
-      renderWithTooltipProvider(<FullLogView ticket={makeTicket()} />)
+      await renderWithTooltipProvider(<FullLogView ticket={makeTicket()} />)
       expect(await screen.findByText('Newest row.')).toBeInTheDocument()
 
       const viewport = screen.getByTestId('log-viewport')
@@ -474,7 +476,7 @@ describe('FullLogView', () => {
       makeLog('first', '[SYS] First', 'DRAFT'),
       makeLog('last', '[SYS] Last', 'CODING'),
     ])
-    renderWithTooltipProvider(<FullLogView />)
+    await renderWithTooltipProvider(<FullLogView />)
 
     const viewport = screen.getByTestId('log-viewport')
     Object.defineProperty(viewport, 'scrollHeight', { configurable: true, value: 1000 })
@@ -513,7 +515,7 @@ describe('FullLogView', () => {
     })
 
     try {
-      renderWithTooltipProvider(<FullLogView ticket={makeTicket()} />)
+      await renderWithTooltipProvider(<FullLogView ticket={makeTicket()} />)
       expect(await screen.findByText('Visible newest row.')).toBeInTheDocument()
       const copyButton = screen.getByRole('button', { name: 'Copy all logs' })
 
@@ -532,37 +534,37 @@ describe('FullLogView', () => {
     }
   })
 
-  it('renders the header with "Full Log" title', () => {
+  it('renders the header with "Full Log" title', async () => {
     getAllLogsMock.mockReturnValue([])
-    renderWithTooltipProvider(<FullLogView />)
+    await renderWithTooltipProvider(<FullLogView />)
     expect(screen.getByText('Full Log')).toBeTruthy()
   })
 
-  it('renders phase delimiters when status changes between entries', () => {
+  it('renders phase delimiters when status changes between entries', async () => {
     getAllLogsMock.mockReturnValue([
       makeLog('1', '[SYS] Scanning files', 'SCANNING_RELEVANT_FILES'),
       makeLog('2', '[SYS] Starting council', 'COUNCIL_DELIBERATING'),
       makeLog('3', '[MODEL] Draft output', 'COUNCIL_DELIBERATING'),
     ])
-    renderWithTooltipProvider(<FullLogView />)
+    await renderWithTooltipProvider(<FullLogView />)
 
     expect(screen.getByText('Scanning Relevant Files')).toBeTruthy()
     expect(screen.getByText('Council Drafting Questions')).toBeTruthy()
   })
 
-  it('renders a second delimiter when the same status reappears after another', () => {
+  it('renders a second delimiter when the same status reappears after another', async () => {
     getAllLogsMock.mockReturnValue([
       makeLog('1', '[SYS] First coding run', 'CODING'),
       makeLog('2', '[ERROR] Blocked', 'BLOCKED_ERROR'),
       makeLog('3', '[SYS] Retry coding', 'CODING'),
     ])
-    renderWithTooltipProvider(<FullLogView />)
+    await renderWithTooltipProvider(<FullLogView />)
 
     const codingDelimiters = screen.getAllByText(/Implementing/)
     expect(codingDelimiters).toHaveLength(2)
   })
 
-  it('renders completed beads and the active bead as separate sections in coding runs', () => {
+  it('renders completed beads and the active bead as separate sections in coding runs', async () => {
     getAllLogsMock.mockReturnValue([
       makeLog('b1-start', '[SYS] Executing bead bead-1: First bead', 'CODING'),
       makeLog('b1-output', '[MODEL] bead 1 output', 'CODING', {
@@ -594,7 +596,7 @@ describe('FullLogView', () => {
       }),
     ])
 
-    renderWithTooltipProvider(
+    await renderWithTooltipProvider(
       <FullLogView
         ticket={makeTicket({
           currentBead: 3,
@@ -621,12 +623,12 @@ describe('FullLogView', () => {
     expect(screen.queryByText('Bead 4/4')).toBeNull()
   })
 
-  it('uses the base implementing label in Full Log for coding runs', () => {
+  it('uses the base implementing label in Full Log for coding runs', async () => {
     getAllLogsMock.mockReturnValue([
       makeLog('1', '[SYS] Plain coding entry', 'CODING'),
     ])
 
-    renderWithTooltipProvider(
+    await renderWithTooltipProvider(
       <FullLogView
         ticket={makeTicket({
           currentBead: 3,
@@ -644,16 +646,16 @@ describe('FullLogView', () => {
     expect(screen.queryByText('Implementing (Bead 3/4)')).toBeNull()
   })
 
-  it('renders all filter tabs', () => {
+  it('renders all filter tabs', async () => {
     getAllLogsMock.mockReturnValue([])
-    renderWithTooltipProvider(<FullLogView />)
+    await renderWithTooltipProvider(<FullLogView />)
 
     for (const tab of ['ALL', 'SYS', 'AI', 'ERROR', 'DEBUG']) {
       expect(screen.getByRole('button', { name: tab })).toBeTruthy()
     }
   })
 
-  it('loads normal lifecycle logs on open and detail channels only when their tabs are selected', () => {
+  it('loads normal lifecycle logs on open and detail channels only when their tabs are selected', async () => {
     getAllLogsMock.mockReturnValue([
       makeLog('sys-1', '[SYS] System event', 'CODING'),
       makeLog('ai-1', '[MODEL] First output', 'CODING', {
@@ -669,36 +671,36 @@ describe('FullLogView', () => {
         modelId: 'anthropic/claude-sonnet-4',
       }),
     ])
-    renderWithTooltipProvider(<FullLogView />)
+    await renderWithTooltipProvider(<FullLogView />)
 
     expect(loadAllLogsMock).toHaveBeenCalledWith()
     expect(loadAllLogsMock).not.toHaveBeenCalledWith({ channel: 'debug' })
     expect(loadAllLogsMock).not.toHaveBeenCalledWith({ channel: 'ai' })
 
-    fireEvent.click(screen.getByRole('button', { name: 'AI' }))
+    await act(async () => fireEvent.click(screen.getByRole('button', { name: 'AI' })))
 
     expect(loadAllLogsMock).toHaveBeenLastCalledWith({ channel: 'ai' })
     expect(screen.getByText(/First output/i)).toBeTruthy()
     expect(screen.queryByText(/System event/i)).toBeNull()
 
-    fireEvent.click(screen.getByRole('button', { name: 'DEBUG' }))
+    await act(async () => fireEvent.click(screen.getByRole('button', { name: 'DEBUG' })))
 
     expect(loadAllLogsMock).toHaveBeenCalledWith({ channel: 'all' })
   })
 
-  it('filters logs when a tab is selected', () => {
+  it('filters logs when a tab is selected', async () => {
     getAllLogsMock.mockReturnValue([
       makeLog('1', '[SYS] System event', 'CODING', { source: 'system', audience: 'all', kind: 'milestone' }),
       makeLog('2', '[ERROR] Something failed', 'CODING', { source: 'error', audience: 'all', kind: 'error' }),
       makeLog('3', '[SYS] Another event', 'CODING', { source: 'system', audience: 'all', kind: 'milestone' }),
     ])
-    renderWithTooltipProvider(<FullLogView />)
+    await renderWithTooltipProvider(<FullLogView />)
 
-    fireEvent.click(screen.getByRole('button', { name: 'ERROR' }))
+    await act(async () => fireEvent.click(screen.getByRole('button', { name: 'ERROR' })))
     expect(screen.getByText('1 entry')).toBeTruthy()
   })
 
-  it('shows non-error command chatter in SYS in the full log view', () => {
+  it('shows non-error command chatter in SYS in the full log view', async () => {
     getAllLogsMock.mockReturnValue([
       makeLog('probe', '[CMD] $ git rev-parse --abbrev-ref HEAD  →  master', 'DRAFT', {
         source: 'system',
@@ -709,25 +711,25 @@ describe('FullLogView', () => {
       makeLog('sys', '[SYS] Start requested.', 'DRAFT'),
     ])
 
-    renderWithTooltipProvider(<FullLogView />)
+    await renderWithTooltipProvider(<FullLogView />)
 
     expect(screen.queryByText(/rev-parse --abbrev-ref HEAD/i)).toBeNull()
     expect(screen.queryByText(/worktree add/i)).toBeNull()
 
-    fireEvent.click(screen.getByRole('button', { name: 'SYS' }))
+    await act(async () => fireEvent.click(screen.getByRole('button', { name: 'SYS' })))
 
     expect(screen.getByText(/rev-parse --abbrev-ref HEAD/i)).toBeTruthy()
     expect(screen.getByText(/worktree add/i)).toBeTruthy()
     expect(screen.getByText(/Start requested/i)).toBeTruthy()
 
     fireEvent.click(screen.getByRole('button', { name: 'Show commands' }))
-    fireEvent.click(screen.getByRole('button', { name: 'CMD' }))
+    await act(async () => fireEvent.click(screen.getByRole('button', { name: 'CMD' })))
 
     expect(screen.getByText(/rev-parse --abbrev-ref HEAD/i)).toBeTruthy()
     expect(screen.getByText(/worktree add/i)).toBeTruthy()
   })
 
-  it('shows real command failures in ALL and ERROR while keeping benign probe misses out of ERROR in the full log view', () => {
+  it('shows real command failures in ALL and ERROR while keeping benign probe misses out of ERROR in the full log view', async () => {
     getAllLogsMock.mockReturnValue([
       makeLog('probe-error', '[CMD] $ git symbolic-ref --quiet --short refs/remotes/origin/HEAD  →  origin/HEAD not set', 'DRAFT', {
         source: 'system',
@@ -739,18 +741,18 @@ describe('FullLogView', () => {
       }),
     ])
 
-    renderWithTooltipProvider(<FullLogView />)
+    await renderWithTooltipProvider(<FullLogView />)
 
     expect(screen.getByText(/merge --no-edit/i)).toBeTruthy()
     expect(screen.queryByText(/origin\/HEAD not set/i)).toBeNull()
 
-    fireEvent.click(screen.getByRole('button', { name: 'ERROR' }))
+    await act(async () => fireEvent.click(screen.getByRole('button', { name: 'ERROR' })))
 
     expect(screen.queryByText(/origin\/HEAD not set/i)).toBeNull()
     expect(screen.getByText(/merge --no-edit/i)).toBeTruthy()
   })
 
-  it('keeps staged diff probes out of ERROR even when older logs tagged them as errors', () => {
+  it('keeps staged diff probes out of ERROR even when older logs tagged them as errors', async () => {
     getAllLogsMock.mockReturnValue([
       makeLog('probe-error', '[CMD] $ git diff --cached --quiet  →  error: exit code 1', 'CODING', {
         source: 'system',
@@ -762,18 +764,18 @@ describe('FullLogView', () => {
       }),
     ])
 
-    renderWithTooltipProvider(<FullLogView />)
+    await renderWithTooltipProvider(<FullLogView />)
 
     expect(screen.getByText(/commit -m test/i)).toBeTruthy()
     expect(screen.queryByText(/diff --cached --quiet/i)).toBeNull()
 
-    fireEvent.click(screen.getByRole('button', { name: 'ERROR' }))
+    await act(async () => fireEvent.click(screen.getByRole('button', { name: 'ERROR' })))
 
     expect(screen.getByText(/commit -m test/i)).toBeTruthy()
     expect(screen.queryByText(/diff --cached --quiet/i)).toBeNull()
   })
 
-  it('shows model tabs from the AI tab and filters by selected model', () => {
+  it('shows model tabs from the AI tab and filters by selected model', async () => {
     getAllLogsMock.mockReturnValue([
       makeLog('1', '[MODEL] First output', 'CODING', {
         source: 'model:openai/gpt-5.4',
@@ -789,10 +791,10 @@ describe('FullLogView', () => {
       }),
     ])
 
-    renderWithTooltipProvider(<FullLogView />)
+    await renderWithTooltipProvider(<FullLogView />)
 
     fireEvent.click(screen.getByRole('button', { name: 'Show models' }))
-    fireEvent.click(screen.getByRole('button', { name: /gpt-5\.4/i }))
+    await act(async () => fireEvent.click(screen.getByRole('button', { name: /gpt-5\.4/i })))
 
     expect(loadAllLogsMock).toHaveBeenLastCalledWith({ channel: 'ai' })
     expect(screen.getByText('1 entry')).toBeTruthy()
@@ -800,7 +802,7 @@ describe('FullLogView', () => {
     expect(screen.queryByText(/Second output/)).toBeNull()
   })
 
-  it('preserves bead section headers in AI view even when bead-start markers are filtered out', () => {
+  it('preserves bead section headers in AI view even when bead-start markers are filtered out', async () => {
     getAllLogsMock.mockReturnValue([
       makeLog('b1-start', '[SYS] Executing bead bead-1: First bead', 'CODING'),
       makeLog('b1-output', '[MODEL] bead 1 output', 'CODING', {
@@ -818,7 +820,7 @@ describe('FullLogView', () => {
       }),
     ])
 
-    renderWithTooltipProvider(
+    await renderWithTooltipProvider(
       <FullLogView
         ticket={makeTicket({
           currentBead: 2,
@@ -836,14 +838,14 @@ describe('FullLogView', () => {
       />,
     )
 
-    fireEvent.click(screen.getByRole('button', { name: 'AI > gpt-5.4' }))
+    await act(async () => fireEvent.click(screen.getByRole('button', { name: 'AI > gpt-5.4' })))
 
     expect(screen.getByText('Bead 1/2')).toBeTruthy()
     expect(screen.getByText('Bead 2/2')).toBeTruthy()
     expect(screen.queryByText(/Executing bead bead-1/i)).toBeNull()
   })
 
-  it('collapses single-model AI tabs into one combined AI model tab', () => {
+  it('collapses single-model AI tabs into one combined AI model tab', async () => {
     getAllLogsMock.mockReturnValue([
       makeLog('1', '[MODEL] First output', 'CODING', {
         source: 'model:openai/gpt-5.4',
@@ -853,28 +855,28 @@ describe('FullLogView', () => {
       }),
     ])
 
-    renderWithTooltipProvider(<FullLogView />)
+    await renderWithTooltipProvider(<FullLogView />)
 
     expect(screen.getByRole('button', { name: 'AI > gpt-5.4' })).toBeTruthy()
     expect(screen.queryByRole('button', { name: 'Show models' })).toBeNull()
     expect(screen.queryByRole('button', { name: 'AI' })).toBeNull()
 
-    fireEvent.click(screen.getByRole('button', { name: 'AI > gpt-5.4' }))
+    await act(async () => fireEvent.click(screen.getByRole('button', { name: 'AI > gpt-5.4' })))
     expect(screen.getByText(/First output/)).toBeTruthy()
   })
 
-  it('shows the correct total entry count', () => {
+  it('shows the correct total entry count', async () => {
     getAllLogsMock.mockReturnValue([
       makeLog('1', '[SYS] Event 1', 'CODING'),
       makeLog('2', '[SYS] Event 2', 'CODING'),
       makeLog('3', '[SYS] Event 3', 'DRAFTING_PRD'),
     ])
-    renderWithTooltipProvider(<FullLogView />)
+    await renderWithTooltipProvider(<FullLogView />)
 
     expect(screen.getByText('3 entries')).toBeTruthy()
   })
 
-  it('keeps coding preamble entries above the first bead section', () => {
+  it('keeps coding preamble entries above the first bead section', async () => {
     getAllLogsMock.mockReturnValue([
       makeLog('pre', '[SYS] Preparing coding context', 'CODING'),
       makeLog('b1-start', '[SYS] Executing bead bead-1: First bead', 'CODING'),
@@ -886,7 +888,7 @@ describe('FullLogView', () => {
       }),
     ])
 
-    renderWithTooltipProvider(
+    await renderWithTooltipProvider(
       <FullLogView
         ticket={makeTicket({
           currentBead: 1,
@@ -909,7 +911,7 @@ describe('FullLogView', () => {
     expect(Boolean(preambleNode.compareDocumentPosition(beadLabelNode) & Node.DOCUMENT_POSITION_FOLLOWING)).toBe(true)
   })
 
-  it('keeps separate implementing sections across retry runs', () => {
+  it('keeps separate implementing sections across retry runs', async () => {
     getAllLogsMock.mockReturnValue([
       makeLog('b1-start', '[SYS] Executing bead bead-1: First bead', 'CODING'),
       makeLog('b1-output', '[MODEL] bead 1 output', 'CODING', {
@@ -931,7 +933,7 @@ describe('FullLogView', () => {
       }),
     ])
 
-    renderWithTooltipProvider(
+    await renderWithTooltipProvider(
       <FullLogView
         ticket={makeTicket({
           status: 'CODING',
@@ -955,7 +957,7 @@ describe('FullLogView', () => {
     expect(screen.getByText('Bead 2/2')).toBeTruthy()
   })
 
-  it('falls back to an unsplit coding section when no bead-start marker exists', () => {
+  it('falls back to an unsplit coding section when no bead-start marker exists', async () => {
     getAllLogsMock.mockReturnValue([
       makeLog('plain-1', '[SYS] Running coding without bead marker', 'CODING'),
       makeLog('plain-2', '[MODEL] Plain coding output', 'CODING', {
@@ -966,7 +968,7 @@ describe('FullLogView', () => {
       }),
     ])
 
-    renderWithTooltipProvider(
+    await renderWithTooltipProvider(
       <FullLogView
         ticket={makeTicket({
           currentBead: 1,
@@ -985,12 +987,12 @@ describe('FullLogView', () => {
     expect(screen.queryByText(/^Bead \d+\/\d+$/i)).toBeNull()
   })
 
-  it('renders log entries using LogEntryRow with sequential indices', () => {
+  it('renders log entries using LogEntryRow with sequential indices', async () => {
     getAllLogsMock.mockReturnValue([
       makeLog('a', '[SYS] First', 'SCANNING_RELEVANT_FILES'),
       makeLog('b', '[SYS] Second', 'COUNCIL_DELIBERATING'),
     ])
-    renderWithTooltipProvider(<FullLogView />)
+    await renderWithTooltipProvider(<FullLogView />)
 
     // LogEntryRow renders index+1 padded to 3 chars
     expect(screen.getByText('1')).toBeTruthy()
@@ -1001,7 +1003,7 @@ describe('FullLogView', () => {
     getAllLogsMock.mockReturnValue([
       makeLog('1', '[SYS] Start', 'CODING', { timestamp: TEST.timestamp }),
     ])
-    renderWithTooltipProvider(<FullLogView />)
+    await renderWithTooltipProvider(<FullLogView />)
 
     await act(async () => {
       fireEvent.click(screen.getByRole('button', { name: 'Copy all logs' }))
@@ -1013,7 +1015,7 @@ describe('FullLogView', () => {
     expect(copiedText).toContain('[SYS] Start')
   })
 
-  it('shows the current activity strip below the toolbar and above the full log body', () => {
+  it('shows the current activity strip below the toolbar and above the full log body', async () => {
     getAllLogsMock.mockReturnValue([
       makeLog('prompt-1', '[PROMPT] openai/gpt-5-codex prompt #1\nImplement bead 2.', 'CODING', {
         source: 'model:openai/gpt-5-codex',
@@ -1025,7 +1027,7 @@ describe('FullLogView', () => {
       }),
     ])
 
-    renderWithTooltipProvider(<FullLogView ticket={makeTicket()} />)
+    await renderWithTooltipProvider(<FullLogView ticket={makeTicket()} />)
 
     const strip = screen.getByRole('status', { name: 'Current activity' })
     const viewport = screen.getByTestId('log-viewport')
@@ -1036,7 +1038,7 @@ describe('FullLogView', () => {
     expect(Boolean(strip.compareDocumentPosition(viewport) & Node.DOCUMENT_POSITION_FOLLOWING)).toBe(true)
   })
 
-  it('does not show stale near-timeout activity from older phases in the full log view', () => {
+  it('does not show stale near-timeout activity from older phases in the full log view', async () => {
     getAllLogsMock.mockReturnValue([
       makeLog('prompt-old-prd', '[PROMPT] openai/gpt-5-codex prompt #1\nDraft the PRD.', 'DRAFTING_PRD', {
         source: 'model:openai/gpt-5-codex',
@@ -1050,7 +1052,7 @@ describe('FullLogView', () => {
       }),
     ])
 
-    renderWithTooltipProvider(<FullLogView ticket={makeTicket({ status: 'CODING' })} />)
+    await renderWithTooltipProvider(<FullLogView ticket={makeTicket({ status: 'CODING' })} />)
 
     expect(screen.queryByRole('status', { name: 'Current activity' })).not.toBeInTheDocument()
     expect(screen.queryByText(/Approaching timeout/i)).not.toBeInTheDocument()

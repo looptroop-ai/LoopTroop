@@ -54,6 +54,7 @@ export function registerOpenRouterRoutingModels(modelIds: readonly string[]): bo
       models,
     },
   }
+  // Dirname-relative writing is safe here: trusted startup config fixes this path, not model IDs.
   safeAtomicWrite(configPath, `${JSON.stringify(config, null, 2)}\n`)
   return true
 }

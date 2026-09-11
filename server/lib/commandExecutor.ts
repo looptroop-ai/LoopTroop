@@ -1,12 +1,13 @@
 import { spawn } from 'node:child_process'
 import { existsSync, realpathSync } from 'node:fs'
-import { basename, dirname, isAbsolute, join, relative, resolve } from 'node:path'
+import { isAbsolute, relative, resolve } from 'node:path'
 import type { CommandSpec, RuntimeEnvironment } from '../../shared/commandSpec'
 import type { CommandShellKind, HostPlatform } from '../../shared/hostContext'
 import { createBoundedOutputCollector } from './commandOutput'
 import { planProgramLaunch, resolveTrustedExecutable, resolveTrustedProgram, type TrustedExecutableResolution } from './executablePath'
 import { FORCE_KILL_DELAY_MS, PROCESS_ABANDON_GRACE_MS } from './constants'
 import { terminateProcessTreeWithEscalation } from './processTree'
+import { escapesRoot, resolveContainedPath } from './containedPath'
 
 // Guarded with Test-Path so an unset $LASTEXITCODE cannot turn a clean cmdlet
 // run into a strict-mode failure. Matches the launcher script in
@@ -48,48 +49,10 @@ export function resolveCommandCwd(repoRoot: string, cwd: string): string {
   if (isAbsolute(cwd) || /^[a-zA-Z]:[\\/]/.test(cwd) || cwd.replace(/\\/g, '/').split('/').includes('..')) {
     throw new Error('Command working directory must stay within the repository root')
   }
-  const root = resolve(repoRoot)
-  const resolved = resolve(root, cwd)
-  if (!isInside(root, resolved)) {
+  try {
+    return resolveContainedPath(repoRoot, cwd, { allowMissingParents: true })
+  } catch {
     throw new Error('Command working directory must stay within the repository root')
-  }
-  // Lexically inside is not inside. `vendor/pkg` can be a link to `/tmp/work`,
-  // and the kernel follows it: the command then runs, writes and reads there
-  // while every check here saw a path in the repository. So the nearest part of
-  // the path that exists is followed to where it really is, and that has to be
-  // inside the repository's own real path too. Round 1 fixed this for a
-  // relative *program* and left the working directory and `pathPrepend` —
-  // which come through here — as they were.
-  if (!isInside(realpathOrSelf(root), realpathOfNearestExisting(resolved))) {
-    throw new Error('Command working directory must stay within the repository root')
-  }
-  return resolved
-}
-
-function isInside(root: string, path: string): boolean {
-  const step = relative(root, path)
-  return step === '' || (!step.startsWith('..') && !isAbsolute(step))
-}
-
-/**
- * The real path of `path`, or of the nearest directory above it that exists.
- *
- * A working directory the command is about to create does not exist yet, but a
- * directory above it can still be a link that leads out — `link/new-dir` with
- * `link -> /tmp/outside` — so the part that exists is what is followed.
- */
-function realpathOfNearestExisting(path: string): string {
-  let current = path
-  const missing: string[] = []
-  for (;;) {
-    try {
-      return join(realpathSync(current), ...missing.reverse())
-    } catch {
-      const parent = dirname(current)
-      if (parent === current) return path
-      missing.push(basename(current))
-      current = parent
-    }
   }
 }
 
@@ -198,9 +161,10 @@ export function resolveCommandProgram(
 
   let contained: string
   try {
-    // Reuses the working-directory rule so the two cannot disagree about what
-    // "inside the repository" means; it throws with that same message.
-    contained = resolveCommandCwd(context.repoRoot, relative(context.repoRoot, resolve(context.cwd, program)))
+    // Check the absolute candidate against both root spellings: cwd is already
+    // canonical, while an attached repository may still be named by an alias.
+    contained = resolve(context.cwd, program)
+    resolveContainedPath(context.repoRoot, contained, { allowMissingParents: true })
   } catch {
     // Refused, not missing: a caller that falls back on "not found" must not
     // fall back onto a program that points out of the repository.
@@ -219,8 +183,7 @@ export function resolveCommandProgram(
   // work out where it lives from how it was started — so `path` is the link and
   // only `target` says where it leads.
   const leadsTo = resolution.target ?? resolution.path
-  const step = relative(root, leadsTo)
-  if (step === '' || step.startsWith('..') || isAbsolute(step)) {
+  if (relative(root, leadsTo) === '' || escapesRoot(root, leadsTo)) {
     return { reason: `Command program must stay within the repository root: ${program} leads to ${leadsTo}`, refusedAt: contained }
   }
   return resolution
@@ -228,7 +191,7 @@ export function resolveCommandProgram(
 
 function realpathOrSelf(path: string): string {
   try {
-    return realpathSync(path)
+    return realpathSync.native(path)
   } catch {
     return resolve(path)
   }

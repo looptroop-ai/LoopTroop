@@ -1,5 +1,5 @@
 import { spawnSync } from 'node:child_process'
-import { existsSync, readFileSync, writeFileSync } from 'node:fs'
+import { existsSync, mkdirSync, readFileSync, symlinkSync, writeFileSync } from 'node:fs'
 import { resolve } from 'node:path'
 import { afterAll, beforeEach, describe, expect, it } from 'vitest'
 import { createInitializedTestTicket, createTestRepoManager, resetTestDb } from '../../../test/integration'
@@ -122,5 +122,62 @@ describe('Manual QA workspace checkpoints', () => {
     discardManualQaWorkspaceDrift(setup.ticket.id, 1, ['app-runtime.txt'], 'committed-discard')
     expect(existsSync(resolve(setup.paths.worktreePath, 'app-runtime.txt'))).toBe(false)
     expect(captureFinalTestDirtyFiles(setup.paths.worktreePath).map(file => file.path)).toEqual(['final-test.tmp'])
+  })
+
+  it('rejects an escaping quarantine link before copying or discarding drift', async () => {
+    const setup = await prepareFixture()
+    prepareManualQaCheckpoint(setup.ticket.id, 1)
+    const source = resolve(setup.paths.worktreePath, 'README.md')
+    writeFileSync(source, '# Keep this drift\n')
+    const outside = resolve(setup.paths.worktreePath, 'quarantine-outside')
+    mkdirSync(outside)
+    mkdirSync(resolve(setup.paths.ticketDir, 'manual-qa/v1'), { recursive: true })
+    symlinkSync(outside, resolve(setup.paths.ticketDir, 'manual-qa/v1/quarantine'), process.platform === 'win32' ? 'junction' : 'dir')
+
+    expect(() => discardManualQaWorkspaceDrift(setup.ticket.id, 1, ['README.md'], 'unsafe-quarantine'))
+      .toThrow('Manual QA path escapes its contained root')
+    expect(readFileSync(source, 'utf8')).toBe('# Keep this drift\n')
+    expect(existsSync(resolve(outside, 'README.md'))).toBe(false)
+  })
+
+  it('rejects a quarantine link into other ticket artifacts before overwriting or discarding drift', async () => {
+    const setup = await prepareFixture()
+    prepareManualQaCheckpoint(setup.ticket.id, 1)
+    const source = resolve(setup.paths.worktreePath, 'README.md')
+    writeFileSync(source, '# Keep this drift\n')
+    const protectedArtifacts = resolve(setup.paths.ticketDir, 'protected-artifacts')
+    mkdirSync(protectedArtifacts)
+    writeFileSync(resolve(protectedArtifacts, 'README.md'), 'original artifact')
+    mkdirSync(resolve(setup.paths.ticketDir, 'manual-qa/v1'), { recursive: true })
+    symlinkSync(protectedArtifacts, resolve(setup.paths.ticketDir, 'manual-qa/v1/quarantine'), process.platform === 'win32' ? 'junction' : 'dir')
+
+    expect(() => discardManualQaWorkspaceDrift(setup.ticket.id, 1, ['README.md'], 'redirected-quarantine'))
+      .toThrow('quarantine path redirects')
+    expect(readFileSync(source, 'utf8')).toBe('# Keep this drift\n')
+    expect(readFileSync(resolve(protectedArtifacts, 'README.md'), 'utf8')).toBe('original artifact')
+  })
+
+  it('rejects escaped baseline storage before committing the candidate', async () => {
+    const setup = await prepareFixture()
+    const outside = resolve(setup.paths.worktreePath, 'outside-receipts')
+    mkdirSync(outside)
+    symlinkSync(outside, resolve(setup.paths.ticketDir, 'manual-qa'), process.platform === 'win32' ? 'junction' : 'dir')
+    const head = git(setup.paths.worktreePath, 'rev-parse', 'HEAD')
+
+    expect(() => prepareManualQaCheckpoint(setup.ticket.id, 1)).toThrow('Manual QA path escapes its contained root')
+    expect(git(setup.paths.worktreePath, 'rev-parse', 'HEAD')).toBe(head)
+    expect(existsSync(resolve(outside, 'workspace-baseline-v1.json'))).toBe(false)
+  })
+
+  it('rejects a linked baseline file before reading it or committing the candidate', async () => {
+    const setup = await prepareFixture()
+    const outside = resolve(setup.paths.worktreePath, 'outside-baseline')
+    mkdirSync(outside)
+    mkdirSync(resolve(setup.paths.ticketDir, 'manual-qa'))
+    symlinkSync(outside, resolve(setup.paths.ticketDir, 'manual-qa/workspace-baseline-v1.json'), process.platform === 'win32' ? 'junction' : 'dir')
+    const head = git(setup.paths.worktreePath, 'rev-parse', 'HEAD')
+
+    expect(() => prepareManualQaCheckpoint(setup.ticket.id, 1)).toThrow('Manual QA path escapes its contained root')
+    expect(git(setup.paths.worktreePath, 'rev-parse', 'HEAD')).toBe(head)
   })
 })

@@ -9,6 +9,7 @@ import { isProcessAlive, killProcessTree, waitForExit } from './processControl'
 import { readRunningDaemon } from './commands'
 import { getErrorMessage } from '@shared/typeGuards'
 import { runCommandSync } from '../git/runCommand'
+import { assertManagedWorktreesRoot } from '../git/worktreeRemoval'
 
 export interface CleanOptions {
   apply: boolean
@@ -180,6 +181,7 @@ export function planWorktreeCleanup(
   for (const target of targets) {
     const projectRoot = normalizeFolderPath(target.projectRoot)
     const worktreesRoot = getProjectWorktreesRoot(projectRoot)
+    if (!assertManagedWorktreesRoot(projectRoot, worktreesRoot)) continue
     if (!existsSync(worktreesRoot)) continue
 
     let entries: Dirent[]

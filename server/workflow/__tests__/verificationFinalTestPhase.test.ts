@@ -1,5 +1,7 @@
 import { afterAll, beforeEach, describe, expect, it, vi } from 'vitest'
-import { mkdirSync, readFileSync, writeFileSync } from 'fs'
+import { mkdirSync, readFileSync, symlinkSync, writeFileSync } from 'fs'
+import { join } from 'node:path'
+import type { executeFinalTestWithRetries } from '../../phases/finalTest/executor'
 import {
   makeBeadsYaml,
   makeInterviewYaml,
@@ -75,6 +77,30 @@ describe('handleFinalTest', () => {
   afterAll(() => {
     resetTestDb()
     repoManager.cleanup()
+  })
+
+  it('filters reported paths by components and canonical containment without rejecting dotted filenames', async () => {
+    const { ticket, context, paths } = await createInitializedTestTicket(repoManager)
+    const outside = join(paths.projectRoot, 'outside')
+    mkdirSync(outside)
+    symlinkSync(outside, join(paths.worktreePath, 'escape'), 'junction')
+    writeFileSync(join(paths.worktreePath, 'a..b.test.ts'), 'safe')
+    const reported = ['a..b.test.ts', 'missing.test.ts', '../outside/file', `${paths.worktreePath}-sibling/file`, 'escape/file']
+    executeFinalTestWithRetriesMock.mockImplementationOnce(async (...args: Parameters<typeof executeFinalTestWithRetries>) => {
+      const report = await args[5].executePlan({
+        attempt: 1,
+        generation: {
+          output: '',
+          commandPlan: { markerFound: true, summary: null, commands: [], testFiles: reported, modifiedFiles: reported, fileEffects: [], testsCount: 0, errors: [] },
+          structuredOutput: { repairApplied: false, repairWarnings: [], autoRetryCount: 0 },
+        },
+      })
+      expect(report.testFiles).toEqual(['a..b.test.ts', 'missing.test.ts'])
+      expect(report.modifiedFiles).toEqual(['a..b.test.ts'])
+      return { ...report, attempt: 1, maxIterations: 1, attemptHistory: [], retryNotes: [] }
+    })
+    await handleFinalTest(ticket.id, { ...context, lockedMainImplementer: TEST.implementer }, vi.fn(), new AbortController().signal)
+    expect(executeFinalTestWithRetriesMock).toHaveBeenCalledOnce()
   })
 
   it('reloads persisted final-test retry notes into context and uses execution runtime settings', async () => {

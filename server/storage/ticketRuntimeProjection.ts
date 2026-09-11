@@ -1,14 +1,8 @@
 import { rmSync } from 'node:fs'
-import { resolve } from 'node:path'
 import * as yaml from 'js-yaml'
 import { isTerminalWorkflowStatus } from '@shared/workflowMeta'
-import { safeAtomicWrite } from '../io/atomicWrite'
-import { getTicketByRef, getTicketPaths, listTickets, type PublicTicket } from './ticketQueries'
-
-function getRuntimeStatePath(ticket: PublicTicket): string | null {
-  const paths = getTicketPaths(ticket.id)
-  return paths ? resolve(paths.ticketDir, 'runtime', 'state.yaml') : null
-}
+import { getTicketByRef, resolveTicketContainedPath, writeTicketFile, listTickets, type PublicTicket } from './ticketQueries'
+import { getErrorMessage } from '@shared/typeGuards'
 
 function buildRuntimeProjection(ticket: PublicTicket) {
   return {
@@ -60,7 +54,7 @@ export function syncTicketRuntimeProjection(ticketOrRef: PublicTicket | string):
   const ticket = typeof ticketOrRef === 'string' ? getTicketByRef(ticketOrRef) : ticketOrRef
   if (!ticket) return
 
-  const statePath = getRuntimeStatePath(ticket)
+  const statePath = resolveTicketContainedPath(ticket.id, 'runtime/state.yaml', isTerminalWorkflowStatus(ticket.status) ? 'remove' : 'read')
   if (!statePath) return
 
   if (isTerminalWorkflowStatus(ticket.status)) {
@@ -68,7 +62,7 @@ export function syncTicketRuntimeProjection(ticketOrRef: PublicTicket | string):
     return
   }
 
-  safeAtomicWrite(statePath, yaml.dump(buildRuntimeProjection(ticket), {
+  writeTicketFile(ticket.id, 'runtime/state.yaml', yaml.dump(buildRuntimeProjection(ticket), {
     noRefs: true,
     lineWidth: 120,
     sortKeys: false,
@@ -77,8 +71,14 @@ export function syncTicketRuntimeProjection(ticketOrRef: PublicTicket | string):
 
 export function rebuildTicketRuntimeProjections(): number {
   const tickets = listTickets()
+  let rebuilt = 0
   for (const ticket of tickets) {
-    syncTicketRuntimeProjection(ticket)
+    try {
+      syncTicketRuntimeProjection(ticket)
+      rebuilt++
+    } catch (error) {
+      console.warn(`[startup] Skipped runtime projection for ${ticket.id}: ${getErrorMessage(error)}`)
+    }
   }
-  return tickets.length
+  return rebuilt
 }

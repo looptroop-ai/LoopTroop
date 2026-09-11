@@ -3,7 +3,7 @@ import { queryClient } from '@/lib/queryClient'
 import { getApiUrl, waitForDevBackend } from '@/lib/devApi'
 import { SSE_RECONNECT_DELAY_MS } from '@/lib/constants'
 import { getBeadDiffQueryKey } from '@/lib/beadDiffQuery'
-import { SERVER_LOG_REFRESH_EVENT } from '@/context/logUtils'
+import { clearServerLogCache, SERVER_LOG_REFRESH_EVENT } from '@/context/logUtils'
 import { probeSessionAfterStreamFailure } from '@/lib/sessionState'
 import { patchTicketStatusInCache } from './ticketStatusCache'
 import { getTicketArtifactsQueryKey } from './useTicketArtifacts'
@@ -28,7 +28,9 @@ function readPersistedLastEventId(ticketId: string): string {
   if (typeof window === 'undefined') return '0'
   try {
     const stored = localStorage.getItem(getLastEventIdStorageKey(ticketId))
-    return stored && stored !== '0' ? stored : '0'
+    if (stored && /^(0|[1-9]\d{0,15})$/.test(stored) && Number.isSafeInteger(Number(stored))) return stored
+    localStorage.removeItem(getLastEventIdStorageKey(ticketId))
+    return '0'
   } catch {
     return '0'
   }
@@ -56,6 +58,7 @@ function getBeadIdFromArtifactType(artifactType: unknown): string | null {
 
 function dispatchServerLogRefresh(ticketId: string) {
   if (typeof window === 'undefined') return
+  clearServerLogCache(ticketId)
   window.dispatchEvent(new CustomEvent(SERVER_LOG_REFRESH_EVENT, { detail: { ticketId } }))
 }
 
@@ -68,10 +71,10 @@ function recoverTicketAfterStreamGap(ticketId: string) {
   queryClient.invalidateQueries({ queryKey: ['tickets'] })
   queryClient.invalidateQueries({ queryKey: ['ticket-artifacts', ticketId] })
   queryClient.invalidateQueries({ queryKey: ['interview', ticketId] })
-  queryClient.invalidateQueries({ queryKey: ['artifact', ticketId, 'interview'] })
-  queryClient.invalidateQueries({ queryKey: ['artifact', ticketId, 'execution-setup-plan'] })
   queryClient.invalidateQueries({ queryKey: ['ticket-beads', ticketId] })
-  queryClient.invalidateQueries({ queryKey: ['artifact', ticketId, 'beads'] })
+  queryClient.invalidateQueries({ queryKey: ['ticket-skips', ticketId] })
+  queryClient.invalidateQueries({ queryKey: ['artifact', ticketId] })
+  queryClient.invalidateQueries({ queryKey: ['bead-diff', ticketId] })
   invalidateManualQaQueries(ticketId)
   queryClient.invalidateQueries({ queryKey: getTicketAiDetailsQueryKey(ticketId) })
   dispatchServerLogRefresh(ticketId)
@@ -193,6 +196,7 @@ export function useSSE({ ticketId, onEvent }: SSEOptions) {
 
       const es = new EventSource(url.toString())
       eventSourceRef.current = es
+      let recoveredOnThisConnection = false
 
       /**
        * Every callback below can fire after this connection stopped being the current
@@ -219,8 +223,27 @@ export function useSSE({ ticketId, onEvent }: SSEOptions) {
         if (recoverOnOpenRef.current) {
           recoverOnOpenRef.current = false
           const tid = ticketIdRef.current
-          if (tid) recoverTicketAfterStreamGap(tid)
+          if (tid) {
+            recoverTicketAfterStreamGap(tid)
+            recoveredOnThisConnection = true
+          }
         }
+      })
+
+      es.addEventListener('replay_gap', () => {
+        if (!isCurrentConnection()) return
+        lastEventIdRef.current = '0'
+        try {
+          localStorage.removeItem(getLastEventIdStorageKey(ticketId))
+        } catch {
+          // The in-memory cursor still resets when storage is unavailable.
+        }
+        recoverOnOpenRef.current = false
+        // Keep the live subscription while snapshots refetch, so recovery itself
+        // cannot lose events between the snapshot request and a new connection.
+        // Native open may already have refreshed this same handshake.
+        if (!recoveredOnThisConnection) recoverTicketAfterStreamGap(ticketId)
+        recoveredOnThisConnection = true
       })
 
       es.addEventListener('state_change', (e) => {

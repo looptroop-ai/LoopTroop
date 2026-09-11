@@ -1,6 +1,6 @@
 import { afterAll, beforeEach, describe, expect, it, vi } from 'vitest'
 import { Hono } from 'hono'
-import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs'
+import { existsSync, mkdirSync, readFileSync, renameSync, symlinkSync, writeFileSync } from 'node:fs'
 import { resolve } from 'node:path'
 import { initializeDatabase } from '../../db/init'
 import { sqlite } from '../../db/index'
@@ -124,6 +124,22 @@ describe('ticketRouter PRD approval routes', () => {
   afterAll(() => {
     clearProjectDatabaseCache()
     repoManager.cleanup()
+  })
+
+  it('rejects an escaping artifact root with 400 without advancing approval', async () => {
+    const { app, ticket, paths, prdRaw } = await setupPrdApprovalTicket()
+    const outsideTicket = resolve(paths.projectRoot, 'outside-ticket')
+    renameSync(paths.ticketDir, outsideTicket)
+    symlinkSync(outsideTicket, paths.ticketDir, 'junction')
+
+    const response = await app.request(`/api/tickets/${ticket.id}/approve-prd`, {
+      method: 'POST',
+      ...approvalPayload(prdRaw),
+    })
+
+    expect(response.status).toBe(400)
+    expect(getTicketByRef(ticket.id)?.status).toBe('WAITING_PRD_APPROVAL')
+    expect(readFileSync(resolve(outsideTicket, 'prd.yaml'), 'utf8')).toBe(prdRaw)
   })
 
   it('approves the PRD, stamps approval metadata, and advances the ticket', async () => {

@@ -78,6 +78,37 @@ same-host mechanism can exclude, and the hostname costs a URL people have to
 trust and a DNS path that corporate resolvers interfere with. This is a
 reviewed position rather than an oversight.
 
+### Filesystem containment in the development branch
+
+Ticket artifact access validates canonical paths from the attached project
+through its worktree and ticket directory. Ordinary internal links remain
+supported; Manual QA evidence rejects links. Ticket-relative filenames reject
+colons, including NTFS alternate-stream syntax. Cleanup unlinks final aliases and
+refuses redirected managed roots so it cannot delete their destinations.
+Worktree initialization also refuses these redirects before creating files.
+
+These checks are not an operating-system sandbox. Node has no portable
+directory-relative open/rename API, and another process running as the local
+user can still replace an ancestor between validation and a filesystem call.
+Verified file descriptors and repeated containment checks narrow that race.
+The AI agent's own command execution retains the local user's permissions.
+
+Generated runtime launchers validate shell environment names and encode or quote
+values as literal data. Shell-specific inputs that cannot be represented safely
+are rejected before the launcher is written.
+
+Recovery checks the temporary path against the validated source descriptor
+before each hard-link attempt and verifies the published target afterward.
+A mismatch before linking leaves the target uncreated. A mismatched published
+target remains untouched because another writer may have replaced it; recovery
+also keeps the temporary source for inspection. The check-to-link race remains
+subject to the local-process limitation above.
+
+Ordinary draft creation rolls back its database row if artifact materialization
+fails. Files already written are not part of the database transaction and may
+remain after a later failure. Manual QA improvement-origin mappings remain
+durable so retries can recover the same child ticket.
+
 ## Data Handling
 
 LoopTroop collects no telemetry and sends no usage data anywhere.

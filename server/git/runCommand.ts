@@ -260,8 +260,10 @@ export function runCommandBinarySync(bin: string, args: string[], options?: RunC
  *
  * A path that fails is reported the way a missing `git` is — `ok: false` with
  * the reason — and never thrown, because every caller already handles a failed
- * git command and none of them expects this function to raise. Containing the
- * path inside a known project is PR-16's work; this is the shape check.
+ * git command and none of them expects this function to raise. Ticket callers
+ * obtain contained worktree paths from storage/paths against their project
+ * root. This standalone runner also serves selected-folder inspection before
+ * attachment, so it cannot require every directory to be an attached project.
  */
 function gitWorkingDirectory(projectPath: string): { path: string; failure?: undefined } | { path?: undefined; failure: Error } {
   if (typeof projectPath !== 'string' || projectPath.trim() === '') {

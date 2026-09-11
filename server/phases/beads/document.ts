@@ -1,5 +1,6 @@
-import { readFileSync, writeFileSync, existsSync } from 'node:fs'
-import { getTicketPaths } from '../../storage/tickets'
+import { relative } from 'node:path'
+import { getTicketPaths, writeTicketFile } from '../../storage/tickets'
+import { readFileNoFollowSync } from '../../io/readFile'
 import { upsertLatestPhaseArtifact } from '../../storage/ticketArtifacts'
 import { assertExpectedContentSha256 } from '../../lib/artifactApproval'
 import { contentSha256 } from '../../lib/contentHash'
@@ -19,16 +20,16 @@ export class BeadPlanValidationError extends Error {}
 
 const BEADS_APPROVAL_SNAPSHOT_ARTIFACT = 'approval_snapshot:beads'
 
-function resolveBeadsPath(ticketId: string): string {
+function resolveBeadsPaths(ticketId: string) {
   const paths = getTicketPaths(ticketId)
   if (!paths) {
     throw new Error('Ticket workspace not initialized')
   }
-  return paths.beadsPath
+  return paths
 }
 
 export function upsertBeadsApprovalSnapshot(ticketId: string, rawContent?: string): void {
-  const content = rawContent ?? readFileSync(resolveBeadsPath(ticketId), 'utf-8')
+  const content = rawContent ?? readFileNoFollowSync(resolveBeadsPaths(ticketId).beadsPath)
   upsertLatestPhaseArtifact(
     ticketId,
     BEADS_APPROVAL_SNAPSHOT_ARTIFACT,
@@ -45,12 +46,15 @@ export function approveBeadsDocument(ticketId: string, expectedContentSha256: st
   approvedAt: string
   contentSha256: string
 } {
-  const beadsPath = resolveBeadsPath(ticketId)
-  if (!existsSync(beadsPath)) {
-    throw new Error('Beads artifact not found')
+  const paths = resolveBeadsPaths(ticketId)
+  const beadsPath = paths.beadsPath
+  let content: string
+  try {
+    content = readFileNoFollowSync(beadsPath)
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === 'ENOENT') throw new Error('Beads artifact not found')
+    throw error
   }
-
-  const content = readFileSync(beadsPath, 'utf-8')
   const reviewedContentSha256 = assertExpectedContentSha256({
     artifactType: 'beads',
     currentContent: content,
@@ -122,7 +126,7 @@ export function approveBeadsDocument(ticketId: string, expectedContentSha256: st
   const updatedLines = parsedRecords.map((record) => JSON.stringify({ ...record, createdAt: approvedAt }))
 
   const updatedContent = updatedLines.join('\n') + '\n'
-  writeFileSync(beadsPath, updatedContent, 'utf-8')
+  writeTicketFile(ticketId, relative(paths.ticketDir, beadsPath), updatedContent)
 
   upsertBeadsApprovalSnapshot(ticketId, updatedContent)
   const approvalReceipt = JSON.stringify({

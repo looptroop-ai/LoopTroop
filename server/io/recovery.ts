@@ -1,22 +1,24 @@
 import {
   readdirSync,
   readFileSync,
-  writeFileSync,
   existsSync,
-  statSync,
+  fstatSync,
   lstatSync,
-  openSync,
   readSync,
+  writeSync,
+  fsyncSync,
+  fchmodSync,
+  openSync,
+  linkSync,
   ftruncateSync,
   closeSync,
-  linkSync,
-  copyFileSync,
   unlinkSync,
   constants as fsConstants,
 } from 'fs'
 import { extname, join } from 'path'
 import * as jsYaml from 'js-yaml'
 import { parseAtomicTmpPath, retryWhileWindowsHoldsTheFile } from './atomicWrite'
+import { openFileNoFollowSync } from './readFile'
 
 /** Files below this threshold are loaded entirely into memory (safe for Node's string limit). */
 const MAX_DIRECT_READ_BYTES = 256 * 1024 * 1024 // 256 MB
@@ -24,12 +26,6 @@ const MAX_DIRECT_READ_BYTES = 256 * 1024 * 1024 // 256 MB
 const SCAN_CHUNK_SIZE = 8 * 1024 // 8 KB
 /** Maximum bytes to scan backwards when looking for the start of the last line. */
 const MAX_LAST_LINE_SCAN = 4 * 1024 * 1024 // 4 MB
-
-/**
- * Filesystems that do not implement `link` at all, or refuse it for this
- * caller. Only for these does promotion fall back to the check-then-rename
- * that `link` exists to avoid.
- */
 const LINK_UNSUPPORTED_CODES: ReadonlySet<string> = new Set([
   'EPERM', 'EACCES', 'ENOSYS', 'EXDEV', 'EOPNOTSUPP', 'ENOTSUP', 'EMLINK',
 ])
@@ -53,13 +49,8 @@ type TmpVerdict =
 
 const PROMOTE: TmpVerdict = { action: 'promote' }
 
-function judgeTmpContent(tmpPath: string, targetPath: string): TmpVerdict {
-  let size: number
-  try {
-    size = statSync(tmpPath).size
-  } catch {
-    return { action: 'leave', reason: 'it could not be read' }
-  }
+function judgeTmpContent(fd: number, targetPath: string): TmpVerdict {
+  const { size } = fstatSync(fd)
   if (size === 0) return { action: 'discard', reason: 'it is empty' }
 
   const extension = extname(targetPath).toLowerCase()
@@ -79,7 +70,7 @@ function judgeTmpContent(tmpPath: string, targetPath: string): TmpVerdict {
 
   if (extension === '.json') {
     try {
-      JSON.parse(readFileSync(tmpPath, 'utf-8'))
+      JSON.parse(readFileSync(fd, 'utf8'))
     } catch {
       return { action: 'discard', reason: 'it is not readable JSON' }
     }
@@ -89,7 +80,7 @@ function judgeTmpContent(tmpPath: string, targetPath: string): TmpVerdict {
   if (extension === '.yaml' || extension === '.yml') {
     let document: unknown
     try {
-      document = jsYaml.load(readFileSync(tmpPath, 'utf-8'))
+      document = jsYaml.load(readFileSync(fd, 'utf8'))
     } catch {
       return { action: 'discard', reason: 'it is not a readable YAML document' }
     }
@@ -125,7 +116,7 @@ function reportLegacyTmpFile(tmpPath: string): void {
   // either promoting it or saying so.
   let modified = 'an unknown time'
   try {
-    modified = statSync(tmpPath).mtime.toISOString()
+    modified = lstatSync(tmpPath).mtime.toISOString()
   } catch { /* reported without it */ }
   console.warn(
     `[recovery] Ignoring ${tmpPath} (last modified ${modified}): its name predates the current ` +
@@ -157,61 +148,79 @@ function pathIsTaken(path: string): boolean {
   }
 }
 
-/**
- * Puts a temp file back under its real name, refusing to replace a target that
- * already exists.
- *
- * "Check that it is missing, then rename" is a race, and POSIX `rename`
- * replaces silently — so a complete document can be overwritten by a partial
- * one written before the crash. Node exposes no `renameat2(RENAME_NOREPLACE)`,
- * which leaves `link` as the portable primitive that fails rather than
- * replaces. Temp and target always share a directory, so they are always on one
- * filesystem, which is what makes `link` available at all.
- *
- * Where the filesystem has no `link` — FAT volumes, some network shares — the
- * fallback is `copyFile` with `COPYFILE_EXCL`, which opens the target
- * `O_CREAT|O_EXCL` and so fails on an existing name (a dangling symlink
- * included) rather than replacing it. It copies rather than renames, which
- * costs a pass over the bytes on a path that is already rare.
- */
-function promoteTmpFile(tmpPath: string, targetPath: string): boolean {
-  const removeTmp = () => {
-    try {
-      unlinkSync(tmpPath)
-    } catch (error) {
-      console.warn(`[recovery] Promoted ${targetPath} but could not remove ${tmpPath}:`, error)
-    }
-  }
+function removeMatchingEntry(path: string, opened: { dev: number; ino: number }): void {
+  const entry = lstatSync(path)
+  if (entry.dev === opened.dev && entry.ino === opened.ino) unlinkSync(path)
+}
 
+/** Publish atomically when hardlinks work; fallback copies only the validated descriptor. */
+function promoteTmpFile(fd: number, tmpPath: string, targetPath: string): boolean {
+  let targetFd: number | undefined
   try {
-    retryWhileWindowsHoldsTheFile(() => { linkSync(tmpPath, targetPath) })
-    removeTmp()
-    return true
-  } catch (error) {
-    const code = (error as NodeJS.ErrnoException).code
-    if (code === 'EEXIST') {
-      discardTmpFile(tmpPath, 'its target already exists')
-      return false
-    }
-    if (code === undefined || !LINK_UNSUPPORTED_CODES.has(code)) {
-      console.error(`[recovery] Failed to promote ${tmpPath}:`, error)
-      return false
-    }
+    const source = fstatSync(fd)
+    let linked = false
     try {
       retryWhileWindowsHoldsTheFile(() => {
-        copyFileSync(tmpPath, targetPath, fsConstants.COPYFILE_EXCL)
+        const entry = lstatSync(tmpPath)
+        if (entry.isSymbolicLink() || entry.dev !== source.dev || entry.ino !== source.ino) {
+          throw new Error('Temporary file changed before recovery promotion')
+        }
+        // Narrow the validation-to-link window; Node cannot link an opened fd.
+        linkSync(tmpPath, targetPath)
       })
-      removeTmp()
-      return true
-    } catch (copyError) {
-      if ((copyError as NodeJS.ErrnoException).code === 'EEXIST') {
-        discardTmpFile(tmpPath, 'its target already exists')
-        return false
-      }
-      console.error(`[recovery] Failed to promote ${tmpPath}:`, copyError)
-      return false
+      linked = true
+    } catch (error) {
+      if (!LINK_UNSUPPORTED_CODES.has((error as NodeJS.ErrnoException).code ?? '')) throw error
     }
+    if (linked) {
+      const entry = lstatSync(targetPath)
+      if (entry.isSymbolicLink() || entry.dev !== source.dev || entry.ino !== source.ino) {
+        // This entry may have been installed by another writer after linkSync.
+        // A mismatch cannot establish ownership, so preserve both names.
+        throw new Error('Temporary file changed before recovery promotion')
+      }
+    } else {
+      retryWhileWindowsHoldsTheFile(() => {
+        targetFd = openSync(targetPath, fsConstants.O_WRONLY | fsConstants.O_CREAT | fsConstants.O_EXCL, source.mode & 0o777)
+      })
+      fchmodSync(targetFd!, source.mode & 0o777)
+      // Bounded memory even for large JSONL logs; explicit offsets also ignore
+      // the descriptor position left by JSON/YAML validation. As with the old
+      // COPYFILE_EXCL fallback, a process crash can leave an incomplete target.
+      const buffer = Buffer.allocUnsafe(64 * 1024)
+      let position = 0
+      while (position < source.size) {
+        const count = readSync(fd, buffer, 0, Math.min(buffer.length, source.size - position), position)
+        if (count === 0) throw new Error('Temporary file changed during recovery')
+        let written = 0
+        while (written < count) {
+          const bytes = writeSync(targetFd!, buffer, written, count - written)
+          if (bytes === 0) throw new Error('Recovery write made no progress')
+          written += bytes
+        }
+        position += count
+      }
+      fsyncSync(targetFd!)
+    }
+  } catch (error) {
+    if (targetFd !== undefined) {
+      try {
+        removeMatchingEntry(targetPath, fstatSync(targetFd))
+      } catch (cleanupError) {
+        console.warn(`[recovery] Could not remove incomplete ${targetPath}:`, cleanupError)
+      }
+    }
+    console.error(`[recovery] Failed to promote ${tmpPath}:`, error)
+    return false
+  } finally {
+    if (targetFd !== undefined) closeSync(targetFd)
   }
+  try {
+    removeMatchingEntry(tmpPath, fstatSync(fd))
+  } catch (error) {
+    console.warn(`[recovery] Promoted ${targetPath} but could not remove ${tmpPath}:`, error)
+  }
+  return true
 }
 
 /**
@@ -251,21 +260,25 @@ export function recoverOrphanTmpFiles(rootDir: string): string[] {
           continue
         }
 
-        const verdict = judgeTmpContent(fullPath, targetPath)
-        if (verdict.action === 'discard') {
-          discardTmpFile(fullPath, `${verdict.reason}, so it cannot be the finished ${targetPath}`)
-          continue
-        }
-        if (verdict.action === 'leave') {
-          console.warn(
-            `[recovery] Leaving ${fullPath} where it is: ${verdict.reason}, so it cannot be ` +
-              `confirmed as the finished ${targetPath}`,
-          )
-          continue
-        }
-
-        if (promoteTmpFile(fullPath, targetPath)) {
-          recovered.push(targetPath)
+        let fd: number | undefined
+        try {
+          fd = openFileNoFollowSync(fullPath)
+          const verdict = judgeTmpContent(fd, targetPath)
+          if (verdict.action === 'discard') {
+            removeMatchingEntry(fullPath, fstatSync(fd))
+            console.warn(`[recovery] Discarded temp file ${fullPath}: ${verdict.reason}`)
+          } else if (verdict.action === 'leave') {
+            console.warn(
+              `[recovery] Leaving ${fullPath} where it is: ${verdict.reason}, so it cannot be ` +
+                `confirmed as the finished ${targetPath}`,
+            )
+          } else if (promoteTmpFile(fd, fullPath, targetPath)) {
+            recovered.push(targetPath)
+          }
+        } catch (error) {
+          console.warn(`[recovery] Leaving unreadable temp file ${fullPath}:`, error)
+        } finally {
+          if (fd !== undefined) closeSync(fd)
         }
       }
     } catch {
@@ -279,40 +292,51 @@ export function recoverOrphanTmpFiles(rootDir: string): string[] {
 
 // Fix trailing-line corruption in JSONL files
 export function fixTrailingLineCorruption(filePath: string): boolean {
-  if (!existsSync(filePath)) return false
-
-  const { size: fileSize } = statSync(filePath)
-  if (fileSize === 0) return false
-
-  if (fileSize > MAX_DIRECT_READ_BYTES) {
-    return fixCorruptionLarge(filePath, fileSize)
+  let fd: number
+  try {
+    fd = openFileNoFollowSync(filePath, fsConstants.O_RDWR)
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === 'ENOENT') return false
+    throw error
   }
+  try {
+    const { size: fileSize } = fstatSync(fd)
+    if (fileSize === 0) return false
 
-  const content = readFileSync(filePath, 'utf-8')
-  const lines = content.split('\n')
+    if (fileSize > MAX_DIRECT_READ_BYTES) {
+      return fixCorruptionLarge(fd, filePath, fileSize)
+    }
 
-  // Remove empty trailing lines
-  while (lines.length > 0 && lines[lines.length - 1]?.trim() === '') {
-    lines.pop()
-  }
+    const content = readFileSync(fd)
+    const lines = content.toString('utf-8').split('\n')
 
-  // Check last line is valid JSON
-  if (lines.length > 0) {
-    const lastLine = lines[lines.length - 1]
-    if (lastLine) {
-      try {
-        JSON.parse(lastLine)
-      } catch {
-        // Last line is corrupt, remove it
-        console.warn(`[recovery] Truncating corrupt last line in ${filePath}`)
-        lines.pop()
-        writeFileSync(filePath, lines.join('\n') + (lines.length > 0 ? '\n' : ''), 'utf-8')
-        return true
+    // Remove empty trailing lines
+    while (lines.length > 0 && lines[lines.length - 1]?.trim() === '') {
+      lines.pop()
+    }
+
+    // Check last line is valid JSON
+    if (lines.length > 0) {
+      const lastLine = lines[lines.length - 1]
+      if (lastLine) {
+        try {
+          JSON.parse(lastLine)
+        } catch {
+          console.warn(`[recovery] Truncating corrupt last line in ${filePath}`)
+          lines.pop()
+          // Truncate original bytes on the verified descriptor; never reopen by name.
+          let retainedBytes = 0
+          for (let line = 0; line < lines.length; line++) retainedBytes = content.indexOf(0x0a, retainedBytes) + 1
+          ftruncateSync(fd, retainedBytes)
+          return true
+        }
       }
     }
-  }
 
-  return false
+    return false
+  } finally {
+    closeSync(fd)
+  }
 }
 
 /**
@@ -320,36 +344,31 @@ export function fixTrailingLineCorruption(filePath: string): boolean {
  * loading the whole file into memory. Only truncates — never re-encodes — to avoid
  * UTF-8 boundary issues.
  */
-function fixCorruptionLarge(filePath: string, fileSize: number): boolean {
-  const fd = openSync(filePath, 'r+')
+function fixCorruptionLarge(fd: number, filePath: string, fileSize: number): boolean {
+  const contentEnd = findContentEnd(fd, fileSize)
+  if (contentEnd <= 0) return false
+
+  const lineStart = findLineStart(fd, contentEnd)
+  if (lineStart === null) {
+    console.warn(
+      `[recovery] Skipping large-file corruption check for ${filePath}: ` +
+        `last line exceeds ${MAX_LAST_LINE_SCAN / 1024 / 1024} MB scan limit`,
+    )
+    return false
+  }
+
+  const lineLen = contentEnd - lineStart
+  const lineBuf = Buffer.allocUnsafe(lineLen)
+  const bytesRead = readSync(fd, lineBuf, 0, lineLen, lineStart)
+  const lastLine = lineBuf.subarray(0, bytesRead).toString('utf-8')
+
   try {
-    const contentEnd = findContentEnd(fd, fileSize)
-    if (contentEnd <= 0) return false
-
-    const lineStart = findLineStart(fd, contentEnd)
-    if (lineStart === null) {
-      console.warn(
-        `[recovery] Skipping large-file corruption check for ${filePath}: ` +
-          `last line exceeds ${MAX_LAST_LINE_SCAN / 1024 / 1024} MB scan limit`,
-      )
-      return false
-    }
-
-    const lineLen = contentEnd - lineStart
-    const lineBuf = Buffer.allocUnsafe(lineLen)
-    const bytesRead = readSync(fd, lineBuf, 0, lineLen, lineStart)
-    const lastLine = lineBuf.subarray(0, bytesRead).toString('utf-8')
-
-    try {
-      JSON.parse(lastLine)
-      return false
-    } catch {
-      console.warn(`[recovery] Truncating corrupt last line in ${filePath} (large file)`)
-      ftruncateSync(fd, lineStart)
-      return true
-    }
-  } finally {
-    closeSync(fd)
+    JSON.parse(lastLine)
+    return false
+  } catch {
+    console.warn(`[recovery] Truncating corrupt last line in ${filePath} (large file)`)
+    ftruncateSync(fd, lineStart)
+    return true
   }
 }
 

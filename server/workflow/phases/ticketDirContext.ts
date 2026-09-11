@@ -1,9 +1,9 @@
 import type { TicketContext } from '../../machines/types'
-import { existsSync, readFileSync } from 'fs'
-import { resolve } from 'path'
+import { existsSync } from 'fs'
 import {
   getTicketContext as getStoredTicketContext,
   getTicketPaths,
+  readTicketFile,
 } from '../../storage/tickets'
 import {
   buildStructuredOutputMetadata,
@@ -25,11 +25,7 @@ export function loadTicketDirContext(context: TicketContext) {
     throw new Error(`Ticket workspace not initialized: missing ticket directory for ${context.externalId}`)
   }
 
-  const relevantFilesPath = resolve(ticketDir, 'relevant-files.yaml')
-  let relevantFiles: string | undefined
-  if (existsSync(relevantFilesPath)) {
-    try { relevantFiles = readFileSync(relevantFilesPath, 'utf-8') } catch { /* ignore */ }
-  }
+  const relevantFiles = readTicketFile(context.ticketId, 'relevant-files.yaml') ?? undefined
 
   return { worktreePath, ticket: ticket.localTicket, ticketDir, relevantFiles }
 }

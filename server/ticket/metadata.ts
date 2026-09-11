@@ -1,7 +1,7 @@
-import { existsSync, mkdirSync, readFileSync } from 'node:fs'
-import { dirname, resolve } from 'node:path'
-import { safeAtomicWrite } from '../io/atomicWrite'
-import { detectGitBaseBranch, getTicketDir, getTicketWorktreePath } from '../storage/paths'
+import { lstatSync } from 'node:fs'
+import { readFileNoFollowSync } from '../io/readFile'
+import { detectGitBaseBranch } from '../storage/paths'
+import { resolveProjectTicketContainedPath, writeProjectTicketFile } from './containedPath'
 
 export interface TicketMetaRecord {
   externalId?: string
@@ -53,15 +53,13 @@ export function councilMembersEqualOrdered(left: string[], right: string[]): boo
 }
 
 export function getTicketMetaPath(projectRoot: string, externalId: string): string {
-  return resolve(getTicketDir(projectRoot, externalId), 'meta', 'ticket.meta.json')
+  return resolveProjectTicketContainedPath(projectRoot, externalId, 'meta/ticket.meta.json')
 }
 
 export function readTicketMeta(projectRoot: string, externalId: string): TicketMetaRecord {
   const path = getTicketMetaPath(projectRoot, externalId)
-  if (!existsSync(path)) return {}
-
   try {
-    const parsed = JSON.parse(readFileSync(path, 'utf-8')) as TicketMetaRecord
+    const parsed = JSON.parse(readFileNoFollowSync(path)) as TicketMetaRecord
     return parsed && typeof parsed === 'object' ? parsed : {}
   } catch {
     return {}
@@ -69,9 +67,7 @@ export function readTicketMeta(projectRoot: string, externalId: string): TicketM
 }
 
 export function writeTicketMeta(projectRoot: string, externalId: string, meta: TicketMetaRecord): TicketMetaRecord {
-  const path = getTicketMetaPath(projectRoot, externalId)
-  mkdirSync(dirname(path), { recursive: true })
-  safeAtomicWrite(path, JSON.stringify(meta, null, 2))
+  writeProjectTicketFile(projectRoot, externalId, 'meta/ticket.meta.json', JSON.stringify(meta, null, 2))
   return meta
 }
 
@@ -125,8 +121,14 @@ export function resolveTicketBaseBranch(projectRoot: string, externalId: string)
   }
 
   const detected = detectGitBaseBranch(projectRoot)
-  // Only persist when the worktree still exists; otherwise we'd recreate deleted directories.
-  if (existsSync(getTicketWorktreePath(projectRoot, externalId))) {
+  // Read-side enrichment must not recreate a deleted worktree or its .ticket directory.
+  let ticketDirExists = false
+  try {
+    ticketDirExists = lstatSync(resolveProjectTicketContainedPath(projectRoot, externalId, '.')).isDirectory()
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error
+  }
+  if (ticketDirExists) {
     updateTicketMeta(projectRoot, externalId, { baseBranch: detected })
   }
   return detected
@@ -138,7 +140,7 @@ export function getTicketBeadsDir(
   baseBranch?: string,
 ): string {
   const resolvedBaseBranch = baseBranch ?? resolveTicketBaseBranch(projectRoot, externalId)
-  return resolve(getTicketDir(projectRoot, externalId), 'beads', resolvedBaseBranch, '.beads')
+  return resolveProjectTicketContainedPath(projectRoot, externalId, `beads/${resolvedBaseBranch}/.beads`)
 }
 
 export function getTicketBeadsPath(
@@ -146,5 +148,6 @@ export function getTicketBeadsPath(
   externalId: string,
   baseBranch?: string,
 ): string {
-  return resolve(getTicketBeadsDir(projectRoot, externalId, baseBranch), 'issues.jsonl')
+  const branch = baseBranch ?? resolveTicketBaseBranch(projectRoot, externalId)
+  return resolveProjectTicketContainedPath(projectRoot, externalId, `beads/${branch}/.beads/issues.jsonl`)
 }

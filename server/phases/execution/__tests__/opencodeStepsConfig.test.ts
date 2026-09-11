@@ -1,6 +1,6 @@
 import { describe, it, expect, beforeEach, afterEach } from 'vitest'
 import { createHash } from 'crypto'
-import { existsSync, mkdirSync, readFileSync, rmSync, statSync, symlinkSync, writeFileSync } from 'fs'
+import { existsSync, mkdirSync, readFileSync, renameSync, rmSync, statSync, symlinkSync, writeFileSync } from 'fs'
 import { tmpdir } from 'os'
 import { join } from 'path'
 import {
@@ -68,6 +68,16 @@ afterEach(() => {
 })
 
 describe('applyOpencodeStepsConfig', () => {
+  it('does not apply a cap when the restore sidecar points outside the ticket', () => {
+    const outside = join(TEST_DIR, 'outside-restore.json')
+    writeFileSync(outside, '{}\n')
+    symlinkSync(outside, SIDECAR_PATH)
+
+    expect(apply().outcome.applied).toBe(false)
+    expect(existsSync(CONFIG_PATH)).toBe(false)
+    expect(readFileSync(outside, 'utf8')).toBe('{}\n')
+  })
+
   it('writes the minimal document when the project has no opencode.json', () => {
     const { outcome } = apply(25)
 
@@ -322,6 +332,30 @@ describe('restoreOpencodeStepsConfig', () => {
 })
 
 describe('restoreInterruptedOpencodeStepsConfig', () => {
+  it('does not restore from a sidecar linked outside the ticket', () => {
+    const { outcome } = apply()
+    if (!outcome.applied) throw new Error('expected the step cap to apply')
+    const outside = join(TEST_DIR, 'outside-restore.json')
+    renameSync(SIDECAR_PATH, outside)
+    const originalRecord = readFileSync(outside, 'utf8')
+    symlinkSync(outside, SIDECAR_PATH)
+
+    expect(restoreInterruptedOpencodeStepsConfig(TICKET_DIR, WORKTREE_DIR)).toBe('nothing-to-do')
+    expect(readFileSync(CONFIG_PATH, 'utf8')).toBe(outcome.handle.appliedContent)
+    expect(readFileSync(outside, 'utf8')).toBe(originalRecord)
+  })
+
+  it('still restores through a sidecar alias contained in the ticket', () => {
+    apply()
+    const destination = join(TICKET_DIR, 'original-restore.json')
+    renameSync(SIDECAR_PATH, destination)
+    symlinkSync(destination, SIDECAR_PATH)
+
+    expect(restoreInterruptedOpencodeStepsConfig(TICKET_DIR, WORKTREE_DIR)).toBe('removed')
+    expect(existsSync(CONFIG_PATH)).toBe(false)
+    expect(existsSync(destination)).toBe(true)
+  })
+
   it('does nothing when no run was interrupted', () => {
     expect(restoreInterruptedOpencodeStepsConfig(TICKET_DIR, WORKTREE_DIR)).toBe('nothing-to-do')
   })

@@ -165,6 +165,7 @@ function writeDaemonRecord(record: DaemonRecord, configDir?: string): void {
     closeSync(openSync(statePath, 'a', CONFIG_FILE_MODE))
     secureFile(statePath)
   }
+  // Dirname-relative writing is safe here: daemon.json is constant under trusted configDir.
   safeAtomicWrite(statePath, `${JSON.stringify(record, null, 2)}\n`)
   secureFile(statePath)
 }

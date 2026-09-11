@@ -1,7 +1,7 @@
 import { and, asc, desc, eq } from 'drizzle-orm'
 import { z } from 'zod'
-import { readFileSync } from 'node:fs'
-import { resolve } from 'node:path'
+import { readFileNoFollowSync } from '../io/readFile'
+import { ContainedPathError } from '../lib/containedPath'
 import { db as appDb } from '../db/index'
 import { PROFILE_DEFAULTS } from '../db/defaults'
 import { getProjectContextById, getProjectById, listProjects } from './projects'
@@ -19,6 +19,7 @@ import { readJsonl } from '../io/jsonl'
 import { reconcileStoredBeadStatus } from '../phases/beads/beadsFile'
 import { getAvailableWorkflowActions, isTerminalWorkflowStatus } from '@shared/workflowMeta'
 import { getTicketBeadsPath, resolveTicketBaseBranch } from '../ticket/metadata'
+import { resolveProjectTicketContainedPath, writeProjectTicketFile } from '../ticket/containedPath'
 import type { ArtifactSnapshot } from '../sse/eventTypes'
 import { EXECUTION_BAND_STATUSES } from '../workflow/executionBand'
 import { normalizeBlockedErrorDiagnostics, type BlockedErrorDiagnostics } from '@shared/errorDiagnostics'
@@ -786,7 +787,7 @@ function readManualQaProjection(
 function readManualQaOrigin(projectRoot: string | undefined, externalId: string): PublicTicket['manualQaOrigin'] {
   if (!projectRoot) return null
   try {
-    const content = readFileSync(resolve(getTicketDir(projectRoot, externalId), 'meta', 'manual-qa-origin.json'), 'utf8')
+    const content = readFileNoFollowSync(resolveProjectTicketContainedPath(projectRoot, externalId, 'meta/manual-qa-origin.json'))
     const parsed = ManualQaImprovementOriginSchema.safeParse(JSON.parse(content) as unknown)
     return parsed.success ? parsed.data : null
   } catch {
@@ -837,7 +838,18 @@ export function toPublicTicket(projectId: number, ticket: LocalTicketRow): Publi
   const profile = appDb.select().from(profiles).get()
   const projectContext = getProjectContextById(projectId)
   const isMockTicket = isDisplayOnlyMockTicket(ticket)
-  const baseBranch = project ? resolveTicketBaseBranch(project.folderPath, ticket.externalId) : 'unknown'
+  let baseBranch = 'unknown'
+  let artifactRoot = ''
+  if (project) {
+    try {
+      baseBranch = resolveTicketBaseBranch(project.folderPath, ticket.externalId)
+      artifactRoot = getTicketDir(project.folderPath, ticket.externalId)
+    } catch (error) {
+      // Filesystem enrichment is optional for the board, not for file operations.
+      // Keep the DB ticket visible when its workspace is missing or unsafe.
+      if (!(error instanceof ContainedPathError) && !(error instanceof Error && 'code' in error)) throw error
+    }
+  }
   const lockedCouncilMembers = parseLockedCouncilMembers(ticket.lockedCouncilMembers)
   const lockedCouncilMemberVariants = parseLockedCouncilMemberVariants(ticket.lockedCouncilMemberVariants)
   const snapshot = parseJsonObject<{ context?: { previousStatus?: unknown } }>(ticket.xstateSnapshot)
@@ -861,7 +873,7 @@ export function toPublicTicket(projectId: number, ticket: LocalTicketRow): Publi
     errorOccurrences,
     activeErrorOccurrenceId,
   )
-  const runtime = project ? buildRuntime(projectId, project.folderPath, ticket, baseBranch, previousStatus) : {
+  const runtime = project ? buildRuntime(projectId, project.folderPath, ticket, baseBranch, previousStatus, artifactRoot) : {
     baseBranch,
     currentBead: ticket.currentBead ?? 0,
     completedBeads: 0,
@@ -1068,6 +1080,7 @@ function buildRuntime(
   ticket: LocalTicketRow,
   baseBranch: string,
   previousStatus: string | null,
+  artifactRoot: string,
 ): PublicTicket['runtime'] {
   const projectContext = getProjectContextById(projectId)
   const profile = appDb.select().from(profiles).get()
@@ -1178,7 +1191,7 @@ function buildRuntime(
     activeBeadId: inProgressBead?.id ?? (blockedFromCoding ? lastFailedBead?.id ?? null : null),
     activeBeadIteration: inProgressBead?.iteration ?? (blockedFromCoding ? lastFailedBead?.iteration ?? null : null),
     lastFailedBeadId: blockedFromCoding ? lastFailedBead?.id ?? null : null,
-    artifactRoot: getTicketDir(projectRoot, ticket.externalId),
+    artifactRoot,
     beads: beads.map((bead) => ({
       id: bead.id,
       title: bead.title,
@@ -1375,6 +1388,29 @@ export function listNonTerminalTickets(): PublicTicket[] {
     !isTerminalWorkflowStatus(ticket.status)
     && !isDisplayOnlyMockTicket(ticket)
   ))
+}
+
+export function resolveTicketContainedPath(ticketRef: string, relativePath: string, kind: 'read' | 'remove' = 'read'): string | undefined {
+  const storage = getTicketStorageContext(ticketRef)
+  if (!storage) return undefined
+  return resolveProjectTicketContainedPath(storage.projectRoot, storage.externalId, relativePath, kind)
+}
+
+export function writeTicketFile(ticketRef: string, relativePath: string, content: string): void {
+  const storage = getTicketStorageContext(ticketRef)
+  if (!storage) throw new Error('Ticket workspace not initialized')
+  writeProjectTicketFile(storage.projectRoot, storage.externalId, relativePath, content)
+}
+
+/** Unknown tickets and absent artifacts are empty; unsafe or unreadable files are errors. */
+export function readTicketFile(ticketRef: string, relativePath: string): string | null {
+  try {
+    const path = resolveTicketContainedPath(ticketRef, relativePath)
+    return path ? readFileNoFollowSync(path) : null
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === 'ENOENT') return null
+    throw error
+  }
 }
 
 export function getTicketPaths(ticketRef: string): {

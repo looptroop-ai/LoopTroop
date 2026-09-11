@@ -1,7 +1,8 @@
-import { existsSync, readFileSync } from 'node:fs'
 import { resolve } from 'node:path'
 import { z } from 'zod'
 import { parseYamlOrJsonCandidate } from '../../structuredOutput/yamlUtils'
+import { ContainedPathError } from '../../lib/containedPath'
+import { readManualQaText } from './storage'
 
 /**
  * The Manual QA view of `prd.yaml`.
@@ -65,8 +66,8 @@ export function readManualQaPrd(
   purpose = 'Manual QA checklist generation',
 ): ManualQaPrd & { raw: string } {
   const path = manualQaPrdPath(ticketDir)
-  if (!existsSync(path)) throw new Error(`Approved PRD is required before ${purpose}.`)
-  const raw = readFileSync(path, 'utf8')
+  const raw = readManualQaText(ticketDir, path)
+  if (raw === null) throw new Error(`Approved PRD is required before ${purpose}.`)
   return { ...manualQaPrdSchema.parse(parseYamlOrJsonCandidate(raw)), raw }
 }
 
@@ -77,7 +78,8 @@ export function readManualQaPrd(
 export function tryReadManualQaPrd(ticketDir: string): ManualQaPrd | null {
   try {
     return readManualQaPrd(ticketDir)
-  } catch {
+  } catch (error) {
+    if (error instanceof ContainedPathError) throw error
     return null
   }
 }

@@ -1,12 +1,12 @@
 import { and, desc, eq, isNull } from 'drizzle-orm'
-import { existsSync, mkdirSync, rmSync } from 'fs'
-import { resolve } from 'path'
+import { existsSync, rmSync } from 'fs'
+import { resolve } from 'node:path'
 import { runGitSyncOrThrow } from '../git/runCommand'
 import { z } from 'zod'
 import { getProjectContextById } from './projects'
 import { manualQaImprovementTickets, opencodeSessions, phaseArtifacts, projects, ticketErrorOccurrences, ticketPhaseAttempts, ticketStatusHistory, tickets } from '../db/schema'
-import { getProjectWorktreesRoot, getTicketAiLogPath, getTicketDebugLogPath, getTicketDir, getTicketExecutionLogPath, getTicketWorktreePath } from './paths'
-import { safeAtomicWrite } from '../io/atomicWrite'
+import { detectGitBaseBranch, getProjectWorktreesRoot } from './paths'
+import { resolveProjectTicketContainedPath, writeProjectTicketFile } from '../ticket/containedPath'
 import { councilMembersEqualOrdered, lockTicketModelSelection, resolveTicketBaseBranch } from '../ticket/metadata'
 import type {
   PublicTicket,
@@ -23,7 +23,7 @@ import { AI_QUESTION_WINDOW_DEFAULT_MS } from '@shared/aiQuestions'
 import { DEFAULT_GIT_HOOK_POLICY, type GitHookPolicy } from '@shared/gitHookPolicy'
 import { ticketContentFields, ticketOverrideFields } from '../lib/settingSchemas'
 import { syncTicketRuntimeProjection } from './ticketRuntimeProjection'
-import { removeWorktree } from '../git/worktreeRemoval'
+import { assertManagedWorktreesRoot, removeWorktree } from '../git/worktreeRemoval'
 import {
   getTicketContext,
   toPublicTicket,
@@ -342,18 +342,25 @@ function runGit(projectRoot: string, args: string[]) {
 }
 
 function removeTicketFilesystem(projectRoot: string, externalId: string, branchName?: string | null) {
-  const worktreePath = getTicketWorktreePath(projectRoot, externalId)
-  const baseBranch = resolveTicketBaseBranch(projectRoot, externalId)
+  const worktreesRoot = getProjectWorktreesRoot(projectRoot)
+  if (!assertManagedWorktreesRoot(projectRoot, worktreesRoot)) return
+  // Removal validates the parent and unlinks final aliases, including dangling ones.
+  const worktreePath = resolve(worktreesRoot, externalId)
+  let baseBranch: string
+  try {
+    baseBranch = resolveTicketBaseBranch(projectRoot, externalId)
+  } catch {
+    // Unsafe/missing ticket metadata must not prevent unlinking its worktree entry.
+    baseBranch = detectGitBaseBranch(projectRoot)
+  }
   const resolvedBranchName = branchName?.trim() || externalId
 
-  if (existsSync(worktreePath)) {
-    removeWorktree({
-      projectRoot,
-      worktreesRoot: getProjectWorktreesRoot(projectRoot),
-      worktreePath,
-      runGit: (args) => runGit(projectRoot, args),
-    })
-  }
+  removeWorktree({
+    projectRoot,
+    worktreesRoot,
+    worktreePath,
+    runGit: (args) => runGit(projectRoot, args),
+  })
 
   if (resolvedBranchName !== baseBranch) {
     try {
@@ -390,7 +397,7 @@ export function createTicket(input: {
   // number, and a crash between them leaves the counter permanently ahead of
   // the tickets that exist. `createManualQaImprovementTicket` below already
   // does it this way; this is the same sequence.
-  const ticket = project.projectDb.transaction((tx) => {
+  return project.projectDb.transaction((tx) => {
     const currentProject = tx.select().from(projects).where(eq(projects.id, project.project.id)).get()
     if (!currentProject) throw new Error('Project not found')
     const newCounter = (currentProject.ticketCounter ?? 0) + 1
@@ -417,24 +424,16 @@ export function createTicket(input: {
       .get()
 
     if (!inserted) throw new Error(`Failed to create ticket: ${externalId}`)
-    return inserted
-  })
-
-  const externalId = ticket.externalId
-  const metaDir = resolve(getTicketDir(project.projectRoot, externalId), 'meta')
-  mkdirSync(metaDir, { recursive: true })
-  safeAtomicWrite(
-    resolve(metaDir, 'ticket.meta.json'),
-    JSON.stringify({
+    // A rejected filesystem destination must not commit a draft or consume its number.
+    writeProjectTicketFile(project.projectRoot, externalId, 'meta/ticket.meta.json', JSON.stringify({
       externalId,
       title: validatedInput.title,
-      createdAt: ticket.createdAt,
-    }, null, 2),
-  )
-
-  const publicTicket = toPublicTicket(validatedInput.projectId, ticket)
-  syncTicketRuntimeProjection(publicTicket)
-  return publicTicket
+      createdAt: inserted.createdAt,
+    }, null, 2))
+    const publicTicket = toPublicTicket(validatedInput.projectId, inserted)
+    syncTicketRuntimeProjection(publicTicket)
+    return publicTicket
+  })
 }
 
 /**
@@ -466,11 +465,9 @@ export function createManualQaImprovementTicket(input: {
   if (!project) throw new Error('Project not found')
 
   const materializeTicketFiles = (row: typeof tickets.$inferSelect): PublicTicket => {
-    const metaDir = resolve(getTicketDir(project.projectRoot, row.externalId), 'meta')
-    mkdirSync(metaDir, { recursive: true })
-    const metaPath = resolve(metaDir, 'ticket.meta.json')
+    const metaPath = resolveProjectTicketContainedPath(project.projectRoot, row.externalId, 'meta/ticket.meta.json')
     if (!existsSync(metaPath)) {
-      safeAtomicWrite(metaPath, JSON.stringify({
+      writeProjectTicketFile(project.projectRoot, row.externalId, 'meta/ticket.meta.json', JSON.stringify({
         externalId: row.externalId,
         title: row.title,
         createdAt: row.createdAt,
@@ -758,14 +755,13 @@ export function cleanupCanceledTicketData(
       tx.delete(opencodeSessions).where(eq(opencodeSessions.ticketId, localTicketId)).run()
     })
   } else if (opts.deleteLog) {
-    for (const logPath of [
-      getTicketExecutionLogPath(projectRoot, externalId),
-      getTicketDebugLogPath(projectRoot, externalId),
-      getTicketAiLogPath(projectRoot, externalId),
+    for (const relativePath of [
+      'runtime/execution-log.jsonl',
+      'runtime/execution-log.debug.jsonl',
+      'runtime/execution-log.ai.jsonl',
     ]) {
-      if (existsSync(logPath)) {
-        rmSync(logPath, { force: true })
-      }
+      const logPath = resolveProjectTicketContainedPath(projectRoot, externalId, relativePath, 'remove')
+      rmSync(logPath, { force: true })
     }
   }
 

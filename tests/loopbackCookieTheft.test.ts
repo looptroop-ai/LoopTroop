@@ -1,10 +1,11 @@
-import { describe, it, expect, afterEach } from 'vitest'
+import { describe, it, expect, beforeAll, afterEach } from 'vitest'
 import { mkdtempSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { createServer, type Server } from 'node:http'
 import { serve } from '@hono/node-server'
 import { createApp } from '../server/app'
+import { initializeDatabase } from '../server/db/init'
 import { createSessionCredentials, SESSION_COOKIE_NAME } from '../server/middleware/sessionAuth'
 import { removeTempDir } from '../server/test/tempDir'
 
@@ -25,6 +26,7 @@ import { removeTempDir } from '../server/test/tempDir'
 describe('a second loopback service cannot use a captured session cookie', () => {
   const tempDirs: string[] = []
   const servers: Server[] = []
+  beforeAll(() => initializeDatabase())
 
   afterEach(async () => {
     for (const server of servers.splice(0)) {
@@ -155,8 +157,7 @@ describe('a second loopback service cannot use a captured session cookie', () =>
     const sameOrigin = await fetch(`http://127.0.0.1:${daemon.port}/api/projects`, {
       headers: { Cookie: cookie, 'Sec-Fetch-Site': 'same-origin' },
     })
-    expect(sameOrigin.status).not.toBe(403)
-    expect(sameOrigin.status).not.toBe(401)
+    expect(sameOrigin.status).toBe(200)
 
     // And a page-driven XHR, which does send Origin naming this same authority.
     const withOrigin = await fetch(`http://127.0.0.1:${daemon.port}/api/projects`, {
@@ -166,8 +167,7 @@ describe('a second loopback service cannot use a captured session cookie', () =>
         'Sec-Fetch-Site': 'same-origin',
       },
     })
-    expect(withOrigin.status).not.toBe(403)
-    expect(withOrigin.status).not.toBe(401)
+    expect(withOrigin.status).toBe(200)
   })
 
   it('leaves scripted callers alone, which hold a token rather than the cookie', async () => {
@@ -179,8 +179,7 @@ describe('a second loopback service cannot use a captured session cookie', () =>
     const scripted = await fetch(`http://127.0.0.1:${daemon.port}/api/projects`, {
       headers: { Authorization: `Bearer ${daemon.credentials.apiToken}` },
     })
-    expect(scripted.status).not.toBe(403)
-    expect(scripted.status).not.toBe(401)
+    expect(scripted.status).toBe(200)
 
     // Health stays public, so `looptroop status` and CI keep working.
     const health = await fetch(`http://127.0.0.1:${daemon.port}/api/health`)

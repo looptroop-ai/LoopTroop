@@ -1,6 +1,6 @@
 import { existsSync, rmSync } from 'fs'
 import { resolve } from 'path'
-import { getTicketPaths } from '../../storage/tickets'
+import { getTicketPaths, resolveTicketContainedPath } from '../../storage/tickets'
 import { makeOwnerWritableRecursive } from '../../io/removal'
 
 export interface CleanupReport {
@@ -37,30 +37,32 @@ export function cleanupTicketResources(ticketId: string): CleanupReport {
 
   // Remove transient runtime state but preserve audit/debug evidence.
   const runtimePaths = [
-    resolve(ticketRoot, '.ticket', 'runtime', 'locks'),
-    resolve(ticketRoot, '.ticket', 'runtime', 'sessions'),
-    resolve(ticketRoot, '.ticket', 'runtime', 'streams'),
-    resolve(ticketRoot, '.ticket', 'runtime', 'tmp'),
-    resolve(ticketRoot, '.ticket', 'runtime', 'state.yaml'),
-    paths.executionSetupDir,
-    paths.executionSetupProfilePath,
+    'runtime/locks',
+    'runtime/sessions',
+    'runtime/streams',
+    'runtime/tmp',
+    'runtime/state.yaml',
+    'runtime/execution-setup',
+    'runtime/execution-setup-profile.json',
   ]
 
-  for (const targetPath of runtimePaths) {
-    if (existsSync(targetPath)) {
-      try {
+  for (const relativePath of runtimePaths) {
+    try {
+      // Delete the final entry, never the canonical destination of a contained alias.
+      const targetPath = resolveTicketContainedPath(ticketId, relativePath, 'remove')
+      if (targetPath && existsSync(targetPath)) {
         makeOwnerWritableRecursive(targetPath)
         rmSync(targetPath, { recursive: true, force: true })
-        if (targetPath === paths.executionSetupProfilePath || targetPath.endsWith('.yaml') || targetPath.endsWith('.json')) {
+        if (relativePath.endsWith('.yaml') || relativePath.endsWith('.json')) {
           report.removedFiles.push(targetPath)
         } else {
           report.removedDirs.push(targetPath)
         }
-      } catch (err) {
-        report.errors.push(
-          `Failed to remove ${targetPath}: ${err instanceof Error ? err.message : 'Unknown'}`,
-        )
       }
+    } catch (err) {
+      report.errors.push(
+        `Failed to remove ${relativePath}: ${err instanceof Error ? err.message : 'Unknown'}`,
+      )
     }
   }
 

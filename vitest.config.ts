@@ -138,12 +138,17 @@ const clientNodeTests = [
 // Reproduce with `--sequence.shuffle.files --sequence.seed=N`.
 const serverIntegrationTests = [
   'server/__tests__/startupSessions.test.ts',
+  'server/routes/__tests__/tickets.manualQaContainment.test.ts',
   'server/cli/__tests__/cliUpdate.test.ts',
   'server/git/__tests__/github.test.ts',
   'server/git/__tests__/push.test.ts',
   'server/git/__tests__/repository.test.ts',
   'server/io/__tests__/atomicIO.test.ts',
+  'server/io/__tests__/readFile.test.ts',
+  'server/io/__tests__/recoveryContainment.test.ts',
   'server/log/__tests__/executionLog.test.ts',
+  'server/lib/__tests__/openPath.test.ts',
+  'server/opencode/__tests__/manualQaFileParts.test.ts',
   'server/opencode/__tests__/modelValidation.test.ts',
   'server/opencode/__tests__/sessionManager.test.ts',
   'server/phases/execution/__tests__/executor.test.ts',
@@ -151,6 +156,7 @@ const serverIntegrationTests = [
   'server/phases/executionSetup/__tests__/executor.test.ts',
   'server/phases/executionSetup/__tests__/storage.test.ts',
   'server/phases/finalTest/__tests__/generator.test.ts',
+  'server/phases/beads/__tests__/document.test.ts',
   'server/phases/integration/__tests__/squash.test.ts',
   'server/phases/interview/__tests__/qa.test.ts',
   'server/phases/manualQa/__tests__/focusedDiff.test.ts',
@@ -256,6 +262,7 @@ const serverIntegrationTests = [
   'server/phases/manualQa/__tests__/checkpoint.test.ts',
   'server/phases/manualQa/__tests__/operations.test.ts',
   'server/storage/__tests__/ticketQueries.test.ts',
+  'server/storage/__tests__/projectWorktreeCleanup.test.ts',
   'server/workflow/__tests__/executionSetupPhase.test.ts',
   'server/workflow/__tests__/interviewVotePhase.test.ts',
 ] as const

@@ -1,5 +1,5 @@
 import { createHash, randomUUID } from 'node:crypto'
-import { createReadStream, existsSync, readFileSync } from 'node:fs'
+import { createReadStream } from 'node:fs'
 import { Readable } from 'node:stream'
 import type { Context } from 'hono'
 import { ensureActorForTicket, sendTicketEvent } from '../../machines/persistence'
@@ -22,6 +22,7 @@ import {
   skipManualQa,
   readManualQaEvidenceIndex,
   readManualQaChecklist,
+  readManualQaText,
   getManualQaStoragePaths,
   readManualQaEvidenceActionReceipt,
   persistManualQaEvidenceActionReceipt,
@@ -32,6 +33,7 @@ import { getRequiredRouteParam, getTicketParam } from './routeUtils'
 import { createManualQaImprovementDraftId } from '../../../shared/manualQaImprovement'
 import { buildManualQaMergeGroupIds } from '../../../shared/manualQaMergeGroups'
 import { getErrorMessage } from '@shared/typeGuards'
+import { openFileNoFollowSync } from '../../io/readFile'
 
 function parseVersion(c: Context): number {
   const version = Number(getRequiredRouteParam(c, 'version'))
@@ -263,7 +265,8 @@ export function handleGetManualQaVersion(c: Context) {
       ? detectManualQaWorkspaceDrift(resolved.ticketId, version)
       : null
     const operationPath = getManualQaStoragePaths(resolved.paths.ticketDir, version).operationPath
-    const operation = existsSync(operationPath) ? JSON.parse(readFileSync(operationPath, 'utf8')) : null
+    const operationContent = readManualQaText(resolved.paths.ticketDir, operationPath)
+    const operation = operationContent === null ? null : JSON.parse(operationContent)
     const roundComplete = Boolean(detail.summary && detail.summary.outcome !== 'failed')
     return c.json({
       ...detail,
@@ -391,16 +394,20 @@ export function handleReadManualQaEvidence(c: Context) {
       && found.metadata.inlinePreview
       && isSafeRasterMediaType(found.metadata.mediaType)
     const filename = found.metadata.originalName.replace(/["\r\n]/g, '_')
-    const body = Readable.toWeb(createReadStream(found.path)) as ReadableStream<Uint8Array>
-    return new Response(body, {
-      headers: {
-        'Content-Type': found.metadata.mediaType,
-        'Content-Length': String(found.metadata.size),
-        'Content-Disposition': `${inline ? 'inline' : 'attachment'}; filename="${filename}"`,
-        'X-Content-Type-Options': 'nosniff',
-        'Cache-Control': 'private, no-store',
-      },
+    const headers = new Headers({
+      'Content-Type': found.metadata.mediaType,
+      'Content-Length': String(found.metadata.size),
+      'Content-Disposition': `${inline ? 'inline' : 'attachment'}; filename="${filename}"`,
+      'X-Content-Type-Options': 'nosniff',
+      'Cache-Control': 'private, no-store',
     })
+    const stream = createReadStream(found.path, { fd: openFileNoFollowSync(found.path), autoClose: true })
+    try {
+      return new Response(Readable.toWeb(stream) as ReadableStream<Uint8Array>, { headers })
+    } catch (error) {
+      stream.destroy()
+      throw error
+    }
   } catch (error) {
     return manualQaError(c, error)
   }

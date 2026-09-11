@@ -110,6 +110,7 @@ function writeCache(cache: UpdateCache, configDir?: string): void {
   try {
     const cachePath = getCachePath(configDir)
     ensureSecureDir(resolve(cachePath, '..'))
+    // Dirname-relative writing is safe here: update-check.json is constant under trusted configDir.
     safeAtomicWrite(cachePath, `${JSON.stringify(cache, null, 2)}\n`)
     secureFile(cachePath)
   } catch {

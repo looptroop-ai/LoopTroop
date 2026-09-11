@@ -1,10 +1,9 @@
 import { runGitSync } from '../../git/runCommand'
-import { existsSync, readdirSync, rmSync } from 'node:fs'
+import { lstatSync, readdirSync, rmSync } from 'node:fs'
 import { join, resolve } from 'node:path'
 import { eq } from 'drizzle-orm'
 import { phaseArtifacts } from '../../db/schema'
-import { safeAtomicWrite } from '../../io/atomicWrite'
-import { getTicketContext, getTicketPaths } from '../../storage/tickets'
+import { getTicketContext, getTicketPaths, resolveTicketContainedPath, writeTicketFile } from '../../storage/tickets'
 import {
   EXECUTION_SETUP_PLAN_ARTIFACT_TYPE,
   EXECUTION_SETUP_PLAN_NOTES_ARTIFACT_TYPE,
@@ -80,27 +79,36 @@ export function removeExecutionSetupPathViolations(
 }
 
 export function writeExecutionSetupProfileMirror(ticketId: string, profile: ExecutionSetupProfile): string | null {
-  const paths = getTicketPaths(ticketId)
-  if (!paths) return null
-  safeAtomicWrite(paths.executionSetupProfilePath, serializeExecutionSetupProfile(profile))
-  return paths.executionSetupProfilePath
+  const path = resolveTicketContainedPath(ticketId, 'runtime/execution-setup-profile.json')
+  if (!path) return null
+  writeTicketFile(ticketId, 'runtime/execution-setup-profile.json', serializeExecutionSetupProfile(profile))
+  return path
 }
 
 export function clearExecutionSetupRuntimeArtifacts(ticketId: string, options: { preserveToolCache?: boolean } = {}): string[] {
-  const paths = getTicketPaths(ticketId)
-  if (!paths) return []
+  const executionSetupProfilePath = resolveTicketContainedPath(ticketId, 'runtime/execution-setup-profile.json', 'remove')
+  const executionSetupDir = resolveTicketContainedPath(ticketId, 'runtime/execution-setup', 'remove')
+  if (!executionSetupProfilePath || !executionSetupDir) return []
+  const paths = { executionSetupProfilePath, executionSetupDir }
 
   const removed: string[] = []
-  if (existsSync(paths.executionSetupProfilePath)) {
+  try {
+    lstatSync(paths.executionSetupProfilePath)
     rmSync(paths.executionSetupProfilePath, { recursive: true, force: true })
     removed.push(paths.executionSetupProfilePath)
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error
   }
 
-  if (!existsSync(paths.executionSetupDir)) {
-    return removed
+  let setupStat
+  try {
+    setupStat = lstatSync(paths.executionSetupDir)
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === 'ENOENT') return removed
+    throw error
   }
 
-  if (!options.preserveToolCache) {
+  if (!options.preserveToolCache || setupStat.isSymbolicLink()) {
     rmSync(paths.executionSetupDir, { recursive: true, force: true })
     removed.push(paths.executionSetupDir)
     return removed

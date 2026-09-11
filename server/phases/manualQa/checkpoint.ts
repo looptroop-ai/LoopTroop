@@ -8,10 +8,10 @@ import {
   existsSync,
   lstatSync,
   mkdirSync,
-  readFileSync,
   rmSync,
 } from 'node:fs'
-import { dirname, join, relative, resolve, sep } from 'node:path'
+import { dirname, join, relative, resolve } from 'node:path'
+import { resolveContainedPath } from '../../lib/containedPath'
 import {
   captureFinalTestDirtyFiles,
   resolveFinalTestCandidateFiles,
@@ -19,8 +19,8 @@ import {
   type FinalTestDirtyFile,
 } from '../finalTest/fileEffectsAudit'
 import { getTicketByRef, getTicketPaths } from '../../storage/tickets'
-import { appendManualQaEvent } from './storage'
-import { safeAtomicWrite } from '../../io/atomicWrite'
+import { appendManualQaEvent, readManualQaText } from './storage'
+import { safeAtomicWriteWithin } from '../../io/atomicWrite'
 import {
   classifyWorktreePath,
   getExecutionSetupCommitExcludedRoots,
@@ -93,9 +93,10 @@ function runGit(worktreePath: string, args: string[], allowEmpty = false): strin
   return output
 }
 
-function assertContained(root: string, target: string): void {
-  const rel = relative(resolve(root), resolve(target))
-  if (rel === '..' || rel.startsWith(`..${sep}`) || rel.startsWith('/') || rel.startsWith('\\')) {
+function assertContained(root: string, target: string): string {
+  try {
+    return resolveContainedPath(root, target, { allowMissingParents: true })
+  } catch {
     throw new Error(`Manual QA path escapes its contained root: ${target}`)
   }
 }
@@ -107,8 +108,8 @@ function assertContained(root: string, target: string): void {
  * startup recovery can identify. The private writer this replaced had none of
  * that.
  */
-function writeReceiptJson(path: string, value: unknown): void {
-  safeAtomicWrite(path, `${JSON.stringify(value, null, 2)}\n`, { mode: RECEIPT_FILE_MODE })
+function writeReceiptJson(ticketDir: string, path: string, value: unknown): void {
+  safeAtomicWriteWithin(ticketDir, relative(ticketDir, path), `${JSON.stringify(value, null, 2)}\n`, { mode: RECEIPT_FILE_MODE })
 }
 
 function baselinePath(ticketDir: string, version: number): string {
@@ -120,10 +121,11 @@ function driftReceiptPath(ticketDir: string, actionId: string): string {
   return join(ticketDir, 'manual-qa', `workspace-drift-${actionHash}.json`)
 }
 
-function readReceipt(path: string): ManualQaDriftReceipt | null {
-  if (!existsSync(path)) return null
+function readReceipt(ticketDir: string, path: string): ManualQaDriftReceipt | null {
+  const content = readManualQaText(ticketDir, path)
+  if (content === null) return null
   try {
-    return JSON.parse(readFileSync(path, 'utf8')) as ManualQaDriftReceipt
+    return JSON.parse(content) as ManualQaDriftReceipt
   } catch {
     throw new Error(`Manual QA drift receipt is invalid: ${path}`)
   }
@@ -198,8 +200,10 @@ function captureBaseline(
 
 function readBaseline(ticketDir: string, version: number): ManualQaWorkspaceBaseline {
   const path = baselinePath(ticketDir, version)
-  if (!existsSync(path)) throw new Error(`Manual QA workspace baseline is missing for v${version}`)
-  const value = JSON.parse(readFileSync(path, 'utf8')) as ManualQaWorkspaceBaseline
+  assertContained(ticketDir, path)
+  const content = readManualQaText(ticketDir, path)
+  if (content === null) throw new Error(`Manual QA workspace baseline is missing for v${version}`)
+  const value = JSON.parse(content) as ManualQaWorkspaceBaseline
   if (
     value.schemaVersion !== 1
     || value.version !== version
@@ -239,14 +243,23 @@ function quarantineFiles(
   files: string[],
 ): string[] {
   const quarantineRoot = join(ticketDir, 'manual-qa', `v${version}`, 'quarantine')
+  const canonicalTicketDir = resolveContainedPath(ticketDir, '.')
   const quarantined: string[] = []
   for (const file of uniqueProjectPaths(files)) {
     const source = resolve(worktreePath, file)
     const destination = resolve(quarantineRoot, file)
+    const expectedDestination = resolve(canonicalTicketDir, relative(ticketDir, destination))
     assertContained(worktreePath, source)
-    assertContained(quarantineRoot, destination)
+    // A link to another ticket artifact is contained but is not quarantine:
+    // copying there could overwrite that artifact before discarding the source.
+    if (assertContained(ticketDir, destination) !== expectedDestination) {
+      throw new Error('Manual QA quarantine path redirects outside its intended directory.')
+    }
     if (!existsSync(source) && !lstatSafe(source)) continue
     mkdirSync(dirname(destination), { recursive: true })
+    if (assertContained(ticketDir, destination) !== expectedDestination) {
+      throw new Error('Manual QA quarantine path redirects outside its intended directory.')
+    }
     cpSync(source, destination, { recursive: true, dereference: false, errorOnExist: false, force: true })
     quarantined.push(file)
   }
@@ -314,8 +327,10 @@ export function prepareManualQaCheckpoint(ticketId: string, version: number): Ma
   if (!Number.isInteger(version) || version < 1) throw new Error('Manual QA version must be a positive integer')
 
   const existingBaselinePath = baselinePath(paths.ticketDir, version)
-  if (existsSync(existingBaselinePath)) {
-    const baseline = JSON.parse(readFileSync(existingBaselinePath, 'utf8')) as ManualQaWorkspaceBaseline
+  assertContained(paths.ticketDir, existingBaselinePath)
+  const existingBaseline = readManualQaText(paths.ticketDir, existingBaselinePath)
+  if (existingBaseline !== null) {
+    const baseline = JSON.parse(existingBaseline) as ManualQaWorkspaceBaseline
     const currentStatus = filterDeliveryRelevantDirtyFiles(
       paths.worktreePath,
       captureFinalTestDirtyFiles(paths.worktreePath),
@@ -352,7 +367,7 @@ export function prepareManualQaCheckpoint(ticketId: string, version: number): Ma
   }
 
   const baseline = captureBaseline(paths.worktreePath, version, localOnlyPaths)
-  writeReceiptJson(existingBaselinePath, baseline)
+  writeReceiptJson(paths.ticketDir, existingBaselinePath, baseline)
   return { baseline, checkpointCommit, candidateFiles, quarantinedFiles: [] }
 }
 
@@ -368,7 +383,8 @@ function applyManualQaDriftDecision(
   if (!paths || !ticket) throw new Error(`Ticket workspace not initialized: ${ticketId}`)
   if (!actionId.trim()) throw new Error('Manual QA workspace decision requires an action ID')
   const receiptPath = driftReceiptPath(paths.ticketDir, actionId)
-  const existing = readReceipt(receiptPath)
+  assertContained(paths.ticketDir, receiptPath)
+  const existing = readReceipt(paths.ticketDir, receiptPath)
   if (existing) {
     if (existing.actionId !== actionId || existing.version !== version || existing.decision !== decision) {
       throw new Error('Manual QA workspace action ID was already used for another decision.')
@@ -442,7 +458,7 @@ function applyManualQaDriftDecision(
     throw new Error(`Manual QA workspace still has unresolved drift: ${remainingStatus.map(file => file.path).join(', ')}`)
   }
   const nextBaseline = captureBaseline(paths.worktreePath, version, baseline.localOnlyPaths)
-  writeReceiptJson(baselinePath(paths.ticketDir, version), nextBaseline)
+  writeReceiptJson(paths.ticketDir, baselinePath(paths.ticketDir, version), nextBaseline)
   const receipt: ManualQaDriftReceipt = {
     schemaVersion: 1,
     actionId,
@@ -453,7 +469,7 @@ function applyManualQaDriftDecision(
     resultingHead: nextBaseline.head,
     createdAt: new Date().toISOString(),
   }
-  writeReceiptJson(receiptPath, receipt)
+  writeReceiptJson(paths.ticketDir, receiptPath, receipt)
   appendDriftEvent(paths.ticketDir, ticket.externalId, receipt)
   return receipt
 }

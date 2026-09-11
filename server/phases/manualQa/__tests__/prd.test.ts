@@ -1,13 +1,19 @@
-import { mkdtempSync, writeFileSync } from 'node:fs'
+import { mkdtempSync, rmSync, symlinkSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import * as jsYaml from 'js-yaml'
-import { describe, expect, it } from 'vitest'
+import { afterEach, describe, expect, it } from 'vitest'
 import { manualQaPrdPath, readManualQaPrd, tryReadManualQaPrd } from '../prd'
 import { deriveManualQaPrdCriteria } from '../coverage'
 
+const roots: string[] = []
+afterEach(() => {
+  for (const root of roots.splice(0)) rmSync(root, { recursive: true, force: true })
+})
+
 function ticketDirWith(prd: unknown): string {
   const dir = mkdtempSync(join(tmpdir(), 'looptroop-manual-qa-prd-'))
+  roots.push(dir)
   if (prd !== undefined) {
     writeFileSync(manualQaPrdPath(dir), jsYaml.dump(prd))
   }
@@ -56,6 +62,14 @@ describe('readManualQaPrd', () => {
 })
 
 describe('tryReadManualQaPrd', () => {
+  it('does not treat an escaping final PRD link as an optional missing document', () => {
+    const ticketDir = ticketDirWith(undefined)
+    const outside = ticketDirWith(validPrd)
+    symlinkSync(outside, manualQaPrdPath(ticketDir), process.platform === 'win32' ? 'junction' : 'dir')
+    expect(() => readManualQaPrd(ticketDir)).toThrow('escapes root')
+    expect(() => tryReadManualQaPrd(ticketDir)).toThrow('escapes root')
+  })
+
   it('returns the PRD when it reads', () => {
     expect(tryReadManualQaPrd(ticketDirWith(validPrd))?.epics).toHaveLength(1)
   })

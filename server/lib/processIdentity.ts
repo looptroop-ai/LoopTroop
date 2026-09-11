@@ -165,8 +165,8 @@ function readWindowsIdentity(pid: number, deps: ProcessIdentityDeps): string | n
   const ticks = parseWindowsTicks(deps.runCommand('powershell.exe', [
     '-NoProfile',
     '-NonInteractive',
-    '-Command',
-    windowsStartTimeScript(pid),
+    '-EncodedCommand',
+    Buffer.from(windowsStartTimeScript(pid), 'utf16le').toString('base64'),
   ]))
   if (ticks === null) return null
   return `win32:${pid}:${ticks}`

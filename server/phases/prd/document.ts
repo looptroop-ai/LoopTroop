@@ -1,13 +1,12 @@
 import { eq } from 'drizzle-orm'
-import { existsSync, readFileSync, rmSync } from 'node:fs'
-import { resolve } from 'node:path'
+import { existsSync, rmSync } from 'node:fs'
+import { readFileNoFollowSync } from '../../io/readFile'
 import type { PrdDocument } from '../../structuredOutput/types'
 import { phaseArtifacts } from '../../db/schema'
-import { safeAtomicWrite } from '../../io/atomicWrite'
 import { clearContextCache } from '../../opencode/contextBuilder'
 import { clearExecutionSetupState } from '../executionSetup/storage'
 import { broadcaster } from '../../sse/broadcaster'
-import { getActivePhaseAttempt, getTicketByRef, getTicketContext, getTicketPaths } from '../../storage/tickets'
+import { getActivePhaseAttempt, getTicketByRef, getTicketContext, getTicketPaths, resolveTicketContainedPath, writeTicketFile } from '../../storage/tickets'
 import { upsertLatestPhaseArtifact } from '../../storage/ticketArtifacts'
 import { assertExpectedContentSha256 } from '../../lib/artifactApproval'
 import { contentSha256 } from '../../lib/contentHash'
@@ -32,11 +31,11 @@ const BEADS_DOWNSTREAM_ARTIFACT_TYPES = new Set([
 const PRD_APPROVAL_SNAPSHOT_ARTIFACT = 'approval_snapshot:prd'
 
 function getPrdPath(ticketId: string): string {
-  const paths = getTicketPaths(ticketId)
-  if (!paths) {
+  const path = resolveTicketContainedPath(ticketId, 'prd.yaml')
+  if (!path) {
     throw new Error('Ticket workspace not initialized')
   }
-  return resolve(paths.ticketDir, 'prd.yaml')
+  return path
 }
 
 function readPrdYaml(ticketId: string): string {
@@ -44,15 +43,14 @@ function readPrdYaml(ticketId: string): string {
   if (!existsSync(prdPath)) {
     throw new Error('PRD artifact not found')
   }
-  return readFileSync(prdPath, 'utf-8')
+  return readFileNoFollowSync(prdPath)
 }
 
 function readInterviewContent(ticketId: string): string {
-  const paths = getTicketPaths(ticketId)
-  if (!paths) throw new Error('Ticket workspace not initialized')
-  const interviewPath = resolve(paths.ticketDir, 'interview.yaml')
+  const interviewPath = resolveTicketContainedPath(ticketId, 'interview.yaml')
+  if (!interviewPath) throw new Error('Ticket workspace not initialized')
   if (!existsSync(interviewPath)) throw new Error('Interview artifact not found')
-  return readFileSync(interviewPath, 'utf-8')
+  return readFileNoFollowSync(interviewPath)
 }
 
 function normalizePrdDocumentForTicket(ticketId: string, rawContent: string): PrdDocument {
@@ -85,9 +83,8 @@ export function writePrdDocument(
     approvalSnapshotRaw?: string
   },
 ): string {
-  const prdPath = getPrdPath(ticketId)
   const nextRaw = buildYamlDocument(document)
-  safeAtomicWrite(prdPath, nextRaw)
+  writeTicketFile(ticketId, 'prd.yaml', nextRaw)
   const snapshotRaw = options?.approvalSnapshotRaw ?? nextRaw
   upsertLatestPhaseArtifact(
     ticketId,
@@ -202,7 +199,7 @@ export function invalidateDownstreamBeadsArtifacts(ticketId: string): {
   const removedFiles: string[] = []
   const ticketPaths = getTicketPaths(ticketId)
   if (ticketPaths) {
-    const beadsDir = resolve(ticketPaths.ticketDir, 'beads')
+    const beadsDir = resolveTicketContainedPath(ticketId, 'beads', 'remove')!
     if (existsSync(beadsDir)) {
       rmSync(beadsDir, { recursive: true, force: true })
       removedFiles.push(beadsDir)

@@ -1,6 +1,6 @@
-import { readFileSync, existsSync } from 'fs'
+import { readFileNoFollowSync } from './readFile'
 import { safeAtomicWrite } from './atomicWrite'
-import { safeAtomicAppend } from './atomicAppend'
+import { safeAtomicAppend, safeAtomicAppendWithin } from './atomicAppend'
 import { warnIfVerbose } from '../runtime'
 
 export interface JsonlReadResult<T> {
@@ -24,8 +24,12 @@ export interface JsonlReadResult<T> {
  * which needs to know a line was dropped in order to make it.
  */
 export function readJsonlWithDiagnostics<T = Record<string, unknown>>(filePath: string): JsonlReadResult<T> {
-  if (!existsSync(filePath)) return { items: [], itemLines: [], malformedLines: [] }
-  return parseJsonlContent<T>(readFileSync(filePath, 'utf-8'), filePath)
+  try {
+    return parseJsonlContent<T>(readFileNoFollowSync(filePath), filePath)
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === 'ENOENT') return { items: [], itemLines: [], malformedLines: [] }
+    throw error
+  }
 }
 
 /**
@@ -72,4 +76,8 @@ export function writeJsonl<T>(filePath: string, items: T[]): void {
 
 export function appendJsonl<T>(filePath: string, item: T): void {
   safeAtomicAppend(filePath, JSON.stringify(item))
+}
+
+export function appendJsonlWithin<T>(root: string, relativePath: string, item: T): void {
+  safeAtomicAppendWithin(root, relativePath, JSON.stringify(item))
 }

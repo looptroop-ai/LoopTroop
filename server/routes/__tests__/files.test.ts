@@ -1,14 +1,17 @@
 import { afterAll, beforeEach, describe, expect, it, vi } from 'vitest'
-import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs'
-import { dirname } from 'node:path'
+import { existsSync, mkdirSync, readFileSync, renameSync, symlinkSync, writeFileSync } from 'node:fs'
+import { dirname, join } from 'node:path'
 import { Hono } from 'hono'
 import { initializeDatabase } from '../../db/init'
 import { sqlite } from '../../db/index'
-import { clearProjectDatabaseCache } from '../../db/project'
-import { attachProject } from '../../storage/projects'
+import { clearProjectDatabaseCache, closeProjectDatabase } from '../../db/project'
+import { attachProject, listProjects } from '../../storage/projects'
+import { getProjectDbPath } from '../../storage/paths'
+import * as openPath from '../../lib/openPath'
 import { createTicket, getTicketPaths } from '../../storage/tickets'
 import { createFixtureRepoManager } from '../../test/fixtureRepo'
 import { recoverTicketRuntimeArtifacts } from '../../startup'
+import * as fileReader from '../../io/readFile'
 import { cleanupTicketResources } from '../../phases/cleanup/cleaner'
 const { readOpenCodeNativeLogsMock } = vi.hoisted(() => ({ readOpenCodeNativeLogsMock: vi.fn(() => []) }))
 
@@ -66,6 +69,42 @@ afterAll(() => {
 describe('filesRouter GET /files/:ticketId/logs', () => {
   const app = new Hono()
   app.route('/api', filesRouter)
+
+  it('keeps an attached folder authorized when its project metadata is unavailable', async () => {
+    const { project } = createProjectTicket()
+    const repoDir = project.folderPath
+    expect(closeProjectDatabase(repoDir)).toBe(true)
+    const projectDbPath = getProjectDbPath(repoDir)
+    renameSync(projectDbPath, `${projectDbPath}.unavailable`)
+    expect(listProjects()).toEqual([])
+    const opener = vi.spyOn(openPath, 'revealFolderInExplorer').mockResolvedValueOnce(undefined)
+    try {
+      const response = await app.request('/api/files/open-path', {
+        method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ path: repoDir }),
+      })
+      expect(response.status).toBe(200)
+      expect(await response.json()).toEqual({ success: true })
+      expect(opener).toHaveBeenCalledWith(repoDir, expect.arrayContaining([repoDir]))
+    } finally {
+      opener.mockRestore()
+    }
+  })
+
+  it('rejects an artifact directory link leaving the ticket and an outside open-path request', async () => {
+    const { ticket, paths, repoDir } = createProjectTicket()
+    const outside = join(repoDir, 'private')
+    mkdirSync(outside)
+    const runtimeParent = join(paths.ticketDir, 'runtime')
+    // A directory junction works without Windows Developer Mode or symlink privileges.
+    mkdirSync(runtimeParent, { recursive: true })
+    symlinkSync(outside, paths.debugLogPath, 'junction')
+    const response = await app.request(`/api/files/${encodeURIComponent(ticket.id)}/logs?channel=debug`)
+    expect(response.status).toBe(400)
+    const open = await app.request('/api/files/open-path', {
+      method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ path: dirname(repoDir) }),
+    })
+    expect(open.status).toBe(400)
+  })
 
   it('reads normal, debug, and AI logs while preserving filters and folding upserts', async () => {
     const { ticket, paths } = createProjectTicket()
@@ -290,6 +329,30 @@ describe('filesRouter GET /files/:ticketId/logs', () => {
 })
 
 describe('recoverTicketRuntimeArtifacts', () => {
+  it('repairs later logs when an earlier log cannot be opened for repair', () => {
+    const { paths } = createProjectTicket()
+    mkdirSync(dirname(paths.executionLogPath), { recursive: true })
+    writeFileSync(paths.executionLogPath, '{"keep":true}\n')
+    writeFileSync(paths.debugLogPath, '{"debug":true}\n{broken')
+    writeFileSync(paths.aiLogPath, '{"ai":true}\n{broken')
+    const open = fileReader.openFileNoFollowSync
+    const opener = vi.spyOn(fileReader, 'openFileNoFollowSync').mockImplementation((path, flags) => {
+      if (path === paths.executionLogPath) throw Object.assign(new Error('read-only log'), { code: 'EACCES' })
+      return open(path, flags)
+    })
+    const warning = vi.spyOn(console, 'warn').mockImplementation(() => {})
+    try {
+      expect(recoverTicketRuntimeArtifacts().repairedExecutionLogs).toBe(2)
+      expect(readFileSync(paths.executionLogPath, 'utf8')).toBe('{"keep":true}\n')
+      expect(readFileSync(paths.debugLogPath, 'utf8')).toBe('{"debug":true}\n')
+      expect(readFileSync(paths.aiLogPath, 'utf8')).toBe('{"ai":true}\n')
+      expect(warning).toHaveBeenCalledWith(expect.stringContaining('Skipped log recovery'))
+    } finally {
+      opener.mockRestore()
+      warning.mockRestore()
+    }
+  })
+
   it('repairs trailing corruption in normal, debug, and AI execution logs', () => {
     const { paths } = createProjectTicket()
     const normalEntry = JSON.stringify({ timestamp: '2026-03-13T12:00:00.000Z', message: 'normal' })
@@ -314,6 +377,42 @@ describe('recoverTicketRuntimeArtifacts', () => {
 })
 
 describe('cleanupTicketResources', () => {
+  it('unlinks a contained setup directory alias without deleting approvals', () => {
+    const { ticket, paths } = createProjectTicket()
+    const approvals = join(paths.ticketDir, 'approvals')
+    mkdirSync(approvals, { recursive: true })
+    writeFileSync(join(approvals, 'keep.json'), '{"approved":true}')
+    mkdirSync(dirname(paths.executionSetupDir), { recursive: true })
+    symlinkSync(approvals, paths.executionSetupDir, 'junction')
+
+    const report = cleanupTicketResources(ticket.id)
+
+    expect(report.status).toBe('clean')
+    expect(report.removedDirs).toContain(paths.executionSetupDir)
+    expect(existsSync(paths.executionSetupDir)).toBe(false)
+    expect(readFileSync(join(approvals, 'keep.json'), 'utf8')).toBe('{"approved":true}')
+  })
+
+  it('unlinks a contained setup profile alias without deleting audit evidence', () => {
+    const { ticket, paths } = createProjectTicket()
+    writeJsonl(paths.executionLogPath, [{ message: 'preserved audit entry' }])
+    const auditDirectory = join(paths.ticketDir, 'audit-evidence')
+    const sentinel = join(auditDirectory, 'keep.json')
+    mkdirSync(auditDirectory)
+    writeFileSync(sentinel, '{"preserved":true}')
+    // Windows junctions do not require Developer Mode or file-symlink privileges.
+    if (process.platform === 'win32') symlinkSync(auditDirectory, paths.executionSetupProfilePath, 'junction')
+    else symlinkSync(paths.executionLogPath, paths.executionSetupProfilePath)
+
+    const report = cleanupTicketResources(ticket.id)
+
+    expect(report.status).toBe('clean')
+    expect(report.removedFiles).toContain(paths.executionSetupProfilePath)
+    expect(existsSync(paths.executionSetupProfilePath)).toBe(false)
+    expect(readFileSync(paths.executionLogPath, 'utf8')).toBe('{"message":"preserved audit entry"}\n')
+    expect(readFileSync(sentinel, 'utf8')).toBe('{"preserved":true}')
+  })
+
   it('preserves normal, debug, and AI execution logs as audit artifacts', () => {
     const { ticket, paths } = createProjectTicket()
     writeJsonl(paths.executionLogPath, [{ timestamp: '2026-03-13T12:00:00.000Z', message: 'normal' }])

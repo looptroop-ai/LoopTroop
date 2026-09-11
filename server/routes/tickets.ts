@@ -1,4 +1,5 @@
 import { Hono } from 'hono'
+import { ContainedPathError } from '../lib/containedPath'
 import {
   handleListTickets,
   handleGetTicket,
@@ -59,6 +60,10 @@ import {
 } from './ticketHandlers'
 
 const ticketRouter = new Hono()
+ticketRouter.onError((error, c) => {
+  if (error instanceof ContainedPathError) return c.json({ error: error.message }, 400)
+  throw error
+})
 
 ticketRouter.get('/tickets', (c) => handleListTickets(c))
 ticketRouter.get('/tickets/:id', (c) => handleGetTicket(c))

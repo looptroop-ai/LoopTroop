@@ -24,8 +24,9 @@ import { parseModelRef } from './types'
 import { isPermissionDeniedByRules } from './toolPolicy'
 import type { TicketState } from './contextBuilder'
 import { resolve } from 'path'
-import { relative, sep } from 'path'
-import { existsSync, lstatSync } from 'fs'
+import { relative } from 'path'
+import { ContainedPathError, resolveContainedPath } from '../lib/containedPath'
+import { readFileNoFollowSync } from '../io/readFile'
 import { pathToFileURL } from 'url'
 import { logIfVerbose, warnIfVerbose } from '../runtime'
 import { getOpenCodeBaseUrl } from './runtimeConfig'
@@ -693,8 +694,7 @@ export class OpenCodeSDKAdapter implements OpenCodeAdapter {
   }
 
   private async loadTicketState(ticketId: string, beadId?: string): Promise<TicketState> {
-    const { existsSync, readFileSync } = await import('fs')
-    const { getLatestPhaseArtifact, getTicketContext, getTicketPaths } = await import('../storage/tickets')
+    const { getLatestPhaseArtifact, getTicketContext, getTicketPaths, readTicketFile } = await import('../storage/tickets')
 
     const state: TicketState = { ticketId }
 
@@ -716,17 +716,15 @@ export class OpenCodeSDKAdapter implements OpenCodeAdapter {
     ]
 
     for (const { file, field } of artifactLoaders) {
-      const filePath = resolve(ticketDir, file)
-      if (!existsSync(filePath)) continue
       try {
-        state[field] = readFileSync(filePath, 'utf-8')
+        state[field] = readTicketFile(ticketId, file) ?? undefined
       } catch (err) {
+        if (err instanceof ContainedPathError) throw err
         warnIfVerbose(`[adapter] Failed to read ${file}:`, err)
       }
     }
 
     const beadsPath = paths.beadsPath
-    const executionSetupProfilePath = paths.executionSetupProfilePath
     const executionSetupPlanArtifact = getLatestPhaseArtifact(ticketId, 'execution_setup_plan', 'WAITING_EXECUTION_SETUP_APPROVAL')
     if (executionSetupPlanArtifact?.content) {
       state.executionSetupPlan = executionSetupPlanArtifact.content
@@ -735,51 +733,52 @@ export class OpenCodeSDKAdapter implements OpenCodeAdapter {
     const executionSetupPlanNotesArtifact = getLatestPhaseArtifact(ticketId, 'execution_setup_plan_notes', 'WAITING_EXECUTION_SETUP_APPROVAL')
     state.executionSetupPlanNotes = parseExecutionSetupPlanNotes(executionSetupPlanNotesArtifact?.content)
 
-    if (existsSync(executionSetupProfilePath)) {
-      try {
-        state.executionSetupProfile = readFileSync(executionSetupProfilePath, 'utf-8')
-      } catch (err) {
-        warnIfVerbose('[adapter] Failed to read execution setup profile:', err)
-      }
+    try {
+      state.executionSetupProfile = readTicketFile(ticketId, 'runtime/execution-setup-profile.json') ?? undefined
+    } catch (err) {
+      if (err instanceof ContainedPathError) throw err
+      warnIfVerbose('[adapter] Failed to read execution setup profile:', err)
     }
 
     const executionSetupNotesArtifact = getLatestPhaseArtifact(ticketId, 'execution_setup_retry_notes', 'PREPARING_EXECUTION_ENV')
     state.executionSetupNotes = parseExecutionSetupRetryNotes(executionSetupNotesArtifact?.content)
 
-    if (existsSync(beadsPath)) {
-      try {
-        const beadFile = readFileSync(beadsPath, 'utf-8')
-        state.beads = beadFile
+    try {
+      const containedBeadsPath = resolveContainedPath(ticketDir, beadsPath)
+      const beadFile = readFileNoFollowSync(containedBeadsPath)
+      state.beads = beadFile
 
-        if (beadId) {
-          // The raw file text above is what the prompt shows; the bead itself is
-          // read through the reconciler, so a legacy stored status does not reach
-          // `formatBeadContext` unrecognised and a malformed line does not abort
-          // the whole read.
-          const bead = readBeadsFile(beadsPath).find((entry) => entry.id === beadId)
+      if (beadId) {
+        // The raw file text above is what the prompt shows; the bead itself is
+        // read through the reconciler, so a legacy stored status does not reach
+        // `formatBeadContext` unrecognised and a malformed line does not abort
+        // the whole read.
+        const bead = readBeadsFile(containedBeadsPath).find((entry) => entry.id === beadId)
 
-          if (bead) {
-            state.beadData = formatBeadContext(bead)
-            const formatHistory = (title: string, entries: Bead['failedIterationNotes']) => {
-              if (entries.length === 0) return null
-              return [
-                `## ${title}`,
-                ...entries.map((entry) => [
-                  `### Iteration ${entry.iteration} — ${entry.timestamp}`,
-                  entry.errorCode ? `Error code: ${entry.errorCode}` : '',
-                  entry.content,
-                ].filter(Boolean).join('\n')),
-              ].join('\n\n')
-            }
-            state.beadNotes = [
-              formatHistory('Failed Iteration Notes', bead.failedIterationNotes),
-              formatHistory('User Retry Notes', bead.userRetryNotes),
-              formatHistory('Finalization Failure Notes', bead.finalizationFailureNotes),
-            ].filter((entry): entry is string => Boolean(entry))
+        if (bead) {
+          state.beadData = formatBeadContext(bead)
+          const formatHistory = (title: string, entries: Bead['failedIterationNotes']) => {
+            if (entries.length === 0) return null
+            return [
+              `## ${title}`,
+              ...entries.map((entry) => [
+                `### Iteration ${entry.iteration} — ${entry.timestamp}`,
+                entry.errorCode ? `Error code: ${entry.errorCode}` : '',
+                entry.content,
+              ].filter(Boolean).join('\n')),
+            ].join('\n\n')
           }
+          state.beadNotes = [
+            formatHistory('Failed Iteration Notes', bead.failedIterationNotes),
+            formatHistory('User Retry Notes', bead.userRetryNotes),
+            formatHistory('Finalization Failure Notes', bead.finalizationFailureNotes),
+          ].filter((entry): entry is string => Boolean(entry))
         }
-      } catch (err) {
-        warnIfVerbose(`[adapter] Failed to read issues.jsonl:`, err)
+      }
+    } catch (err) {
+      if (err instanceof ContainedPathError) throw err
+      if ((err as NodeJS.ErrnoException).code !== 'ENOENT') {
+        warnIfVerbose(`[adapter] Failed to read beads.jsonl:`, err)
       }
     }
 
@@ -894,34 +893,32 @@ export class OpenCodeSDKAdapter implements OpenCodeAdapter {
 
   private async loadQaEvidenceFileParts(ticketId: string, beadId: string): Promise<PromptPart[]> {
     const { getTicketPaths } = await import('../storage/tickets')
+    const { getManualQaStoragePaths, resolveContainedEvidencePath } = await import('../phases/manualQa/storage')
     const paths = getTicketPaths(ticketId)
-    if (!paths || !existsSync(paths.beadsPath)) return []
+    if (!paths) return []
     let bead: Bead | undefined
     try {
       // Authoritative read: this manifest decides which evidence images the
       // prompt carries, so a dropped line has to be an error rather than an
       // image that quietly does not arrive.
-      bead = readBeadsFile(paths.beadsPath, { malformedEntries: 'fail' }).find((entry) => entry.id === beadId)
+      bead = readBeadsFile(resolveContainedPath(paths.ticketDir, paths.beadsPath, { allowMissingParents: true }), { malformedEntries: 'fail' })
+        .find((entry) => entry.id === beadId)
     } catch (error) {
+      if ((error as NodeJS.ErrnoException).code === 'ENOENT') return []
       throw new Error(`Failed to load Manual QA evidence manifest for bead ${beadId}: ${getErrorMessage(error)}`)
     }
     if (!bead?.qaOrigin || bead.qaOrigin.imageDelivery !== 'attached') return []
     return bead.qaOrigin.sourceItems.flatMap((item) => item.evidence.flatMap((evidence) => {
       if (!evidence.mediaType.toLowerCase().startsWith('image/')) return []
-      const localPath = resolve(paths.ticketDir, evidence.relativePath)
-      const rel = relative(paths.ticketDir, localPath)
-      let safeFile = false
+      let localPath: string
       try {
-        const stats = lstatSync(localPath)
-        safeFile = rel !== '..'
-          && !rel.startsWith(`..${sep}`)
-          && existsSync(localPath)
-          && !stats.isSymbolicLink()
-          && stats.isFile()
+        const evidencePaths = getManualQaStoragePaths(paths.ticketDir, bead.qaOrigin!.version)
+        localPath = resolveContainedPath(paths.ticketDir, resolveContainedEvidencePath(
+          evidencePaths.root,
+          evidencePaths.evidenceDir,
+          relative(evidencePaths.evidenceDir, resolve(paths.ticketDir, evidence.relativePath)),
+        ))
       } catch {
-        safeFile = false
-      }
-      if (!safeFile) {
         throw new Error(`Manual QA image evidence ${evidence.id} for bead ${beadId} is missing or unsafe: ${evidence.relativePath}`)
       }
       return [{

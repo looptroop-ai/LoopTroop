@@ -1,9 +1,10 @@
 import type { LogEvent, LogEventType, LogSource } from './types'
-import { safeAtomicAppend } from '../io/atomicAppend'
+import { safeAtomicAppendWithin } from '../io/atomicAppend'
 import { getTicketPaths } from '../storage/tickets'
 import { resolvePhaseAttempt } from '../storage/ticketPhaseAttempts'
 import { queueProjectionAppend, type PersistedLogChannel } from './projection'
 import type { WorkflowPhaseId } from '@shared/workflowMeta'
+import { relative } from 'node:path'
 
 type StructuredLogFields = Omit<LogEvent, 'timestamp' | 'type' | 'ticketId' | 'phase' | 'message' | 'source' | 'status' | 'data'>
 
@@ -172,10 +173,10 @@ export function appendLogEvent(
   }
 
   if (isAiDetailEvent(event)) {
-    appendEventToChannel(ticketId, 'ai', paths.aiLogPath, event, phase, phaseAttempt, fingerprint)
+    appendEventToChannel(ticketId, paths.projectRoot, 'ai', paths.aiLogPath, event, phase, phaseAttempt, fingerprint)
   }
 
-  appendEventToChannel(ticketId, primaryChannel, primaryLogPath, event, phase, phaseAttempt, fingerprint)
+  appendEventToChannel(ticketId, paths.projectRoot, primaryChannel, primaryLogPath, event, phase, phaseAttempt, fingerprint)
 }
 
 const MAX_PERSISTED_FINGERPRINTS_PER_TICKET = 256
@@ -184,6 +185,7 @@ const persistedFingerprintsByTicket = new Map<string, Map<string, number>>()
 
 function appendEventToChannel(
   ticketId: string,
+  projectRoot: string,
   channel: PersistedLogChannel,
   logPath: string,
   event: LogEvent,
@@ -196,7 +198,7 @@ function appendEventToChannel(
   }
 
   const serialized = JSON.stringify(event)
-  const range = safeAtomicAppend(logPath, serialized)
+  const range = safeAtomicAppendWithin(projectRoot, relative(projectRoot, logPath), serialized)
   queueProjectionAppend(ticketId, channel, event as unknown as Record<string, unknown>, range.offset, range.length)
   if (fingerprint) {
     rememberPersistedFingerprint(ticketId, channel, phase, phaseAttempt, fingerprint)

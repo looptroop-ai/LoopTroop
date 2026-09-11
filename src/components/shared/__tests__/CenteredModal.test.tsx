@@ -1,6 +1,6 @@
 import { useState } from 'react'
 import { createPortal } from 'react-dom'
-import { cleanup, fireEvent, render, screen } from '@testing-library/react'
+import { act, cleanup, fireEvent, render, screen } from '@testing-library/react'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import { CenteredModal } from '../CenteredModal'
 import { DropdownPicker } from '../DropdownPicker'
@@ -121,7 +121,7 @@ describe('CenteredModal — popups the dialog owns', () => {
 
     // Shift+Tab off the first control wraps to the last thing in the dialog's scope.
     const first = dialog.querySelector('button')!
-    first.focus()
+    act(() => { first.focus() })
     fireEvent.keyDown(first, { key: 'Tab', shiftKey: true })
 
     expect(document.activeElement).toBe(option)
@@ -222,7 +222,7 @@ describe('CenteredModal — popups belonging to something else', () => {
     renderPickerOutsideDialog()
     const dialog = screen.getByRole('dialog', { name: 'Keyboard Shortcuts' })
     const first = dialog.querySelector('button')!
-    first.focus()
+    act(() => { first.focus() })
 
     // Shift+Tab off the first control wraps to the end of the dialog's own scope. If
     // the picker behind were counted as part of it, that end would be its option.

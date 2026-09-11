@@ -1,4 +1,5 @@
-import { afterEach, describe, expect, it } from 'vitest'
+import { afterEach, describe, expect, it, vi } from 'vitest'
+import * as fs from 'node:fs'
 import { execFileSync } from 'node:child_process'
 import { mkdirSync, readFileSync, symlinkSync, truncateSync, writeFileSync } from 'node:fs'
 import { join } from 'node:path'
@@ -8,6 +9,10 @@ import {
   validateExecutionSetupWorkspaceInputs,
 } from '../workspaceInputs'
 import { makeTempDir, pinGitLineEndings, removeTempDir } from '../../../test/tempDir'
+
+vi.mock('node:fs', async (importOriginal) => ({
+  ...await importOriginal<typeof import('node:fs')>(),
+}))
 
 interface WorkspaceFixture {
   projectRoot: string
@@ -55,10 +60,27 @@ function input(
 }
 
 afterEach(() => {
+  vi.restoreAllMocks()
   for (const root of fixtureRoots.splice(0)) removeTempDir(root)
 })
 
 describe('execution setup workspace inputs', () => {
+  it('detects an empty destination directory replaced during creation', () => {
+    const fixture = createWorkspaceFixture()
+    mkdirSync(join(fixture.projectRoot, 'ignored-inputs'))
+    const outside = join(fixture.projectRoot, '..', 'outside-empty')
+    mkdirSync(outside)
+    const destination = join(fixture.worktreePath, 'ignored-inputs')
+    const originalMkdir = fs.mkdirSync
+    vi.spyOn(fs, 'mkdirSync').mockImplementation(((path, options) => {
+      if (path === destination) symlinkSync(outside, destination, 'junction')
+      return originalMkdir(path, options)
+    }) as typeof fs.mkdirSync)
+    expect(() => materializeExecutionSetupWorkspaceInputs({
+      ...fixture, workspaceInputs: [input('ignored-inputs', 'directory', 'ignored')],
+    })).toThrow('escapes the project')
+    expect(fs.readdirSync(outside)).toEqual([])
+  })
   it('validates ignored files and untracked directories from the original checkout', () => {
     const fixture = createWorkspaceFixture()
     writeFileSync(join(fixture.projectRoot, 'ignored-file.json'), '{}\n')
@@ -79,6 +101,7 @@ describe('execution setup workspace inputs', () => {
 
   it.each([
     ['parent traversal', '../outside.txt', 'file', 'untracked', 'must stay inside the project'],
+    ['normalized internal traversal', 'inputs/../.git/config', 'file', 'untracked', 'must stay inside the project'],
     ['Git internals', '.git/config', 'file', 'untracked', 'cannot target Git or LoopTroop internals'],
     ['ticket internals', '.ticket/runtime/state.json', 'file', 'untracked', 'cannot target Git or LoopTroop internals'],
     ['LoopTroop internals', '.looptroop/project.json', 'file', 'untracked', 'cannot target Git or LoopTroop internals'],
@@ -125,7 +148,7 @@ describe('execution setup workspace inputs', () => {
     const outside = join(fixture.projectRoot, '..', 'outside-inputs')
     mkdirSync(outside, { recursive: true })
     writeFileSync(join(outside, 'manifest.json'), '{}\n')
-    symlinkSync(outside, join(fixture.projectRoot, 'linked-inputs'), 'dir')
+    symlinkSync(outside, join(fixture.projectRoot, 'linked-inputs'), 'junction')
 
     expect(() => validateExecutionSetupWorkspaceInputs({
       ...fixture,
@@ -149,6 +172,20 @@ describe('execution setup workspace inputs', () => {
     expect(readFileSync(join(fixture.worktreePath, 'mixed-inputs', 'tracked.txt'), 'utf8')).toBe('tracked baseline\n')
     expect(readFileSync(join(fixture.worktreePath, 'mixed-inputs', 'local.txt'), 'utf8')).toBe('local input\n')
     expect(readFileSync(join(fixture.worktreePath, 'mixed-inputs', 'nested', 'fixture.txt'), 'utf8')).toBe('nested input\n')
+  })
+
+  it('rejects an escaping destination ancestor before creating missing descendants', () => {
+    const fixture = createWorkspaceFixture()
+    mkdirSync(join(fixture.projectRoot, 'untracked-inputs/nested'), { recursive: true })
+    writeFileSync(join(fixture.projectRoot, 'untracked-inputs/nested/input.txt'), 'local input\n')
+    const outside = join(fixture.projectRoot, '..', 'outside-copy')
+    mkdirSync(outside)
+    symlinkSync(outside, join(fixture.worktreePath, 'untracked-inputs'), 'junction')
+
+    expect(() => materializeExecutionSetupWorkspaceInputs({
+      ...fixture,
+      workspaceInputs: [input('untracked-inputs/nested', 'directory', 'untracked')],
+    })).toThrow('escapes the project through a symbolic link')
   })
 
   it('rematerializes approved inputs after a retry reset removes them', () => {

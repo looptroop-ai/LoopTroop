@@ -2,8 +2,7 @@ import type { Context } from 'hono'
 
 /** Room for the bookkeeping around the AI call itself, not for the call. */
 const BATCH_PROCESSING_MARGIN_MS = 60_000
-import { existsSync, readFileSync } from 'node:fs'
-import { resolve } from 'node:path'
+import { readFileNoFollowSync } from '../../io/readFile'
 import { ensureActorForTicket, sendTicketEvent } from '../../machines/persistence'
 import { abortTicketSessions } from '../../opencode/sessionManager'
 import { isMockOpenCodeMode } from '../../opencode/factory'
@@ -23,7 +22,7 @@ import {
 import {
   getLatestPhaseArtifact,
   getTicketByRef,
-  getTicketPaths,
+  resolveTicketContainedPath,
   upsertLatestPhaseArtifact,
 } from '../../storage/tickets'
 import { parseCompiledInterviewArtifact } from '../../phases/interview/compiled'
@@ -175,14 +174,11 @@ function buildInterviewPayload(ticketId: string): {
   }
 
   if (!raw) {
-    const ticketPaths = getTicketPaths(ticketId)
-    const canonicalInterviewPath = ticketPaths ? resolve(ticketPaths.ticketDir, 'interview.yaml') : null
-    if (canonicalInterviewPath && existsSync(canonicalInterviewPath)) {
-      try {
-        raw = readFileSync(canonicalInterviewPath, 'utf-8')
-      } catch {
-        raw = null
-      }
+    try {
+      const canonicalInterviewPath = resolveTicketContainedPath(ticketId, 'interview.yaml')
+      raw = canonicalInterviewPath ? readFileNoFollowSync(canonicalInterviewPath) : null
+    } catch {
+      raw = null
     }
   }
 

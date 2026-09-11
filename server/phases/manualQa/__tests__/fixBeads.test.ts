@@ -1,9 +1,14 @@
 import { describe, expect, it } from 'vitest'
+import { rmSync, symlinkSync } from 'node:fs'
+import { makeTempDir, removeTempDir } from '../../../test/tempDir'
+import { getManualQaStoragePaths } from '../storage'
 import {
   buildManualQaFixGroups,
   hydrateManualQaFixBeads,
   hasSuccessfulManualQaRepositoryToolCall,
   parseManualQaFixBeadsOutput,
+  persistManualQaFixBeadCandidates,
+  readManualQaFixBeadCandidates,
 } from '../fixBeads'
 import type { ManualQaChecklist, ManualQaDraft, ManualQaModelCapabilitySnapshot } from '../types'
 import type { Message } from '../../../opencode/types'
@@ -76,6 +81,25 @@ beads:
 const PROJECT_PATH = '/repo'
 
 describe('Manual QA fix-bead generation contracts', () => {
+  it('rejects a linked candidate document before reading or overwriting it', () => {
+    const ticketDir = makeTempDir('manual-qa-fix-path-')
+    const outside = makeTempDir('manual-qa-fix-outside-')
+    try {
+      const groups = buildManualQaFixGroups(checklist, draft)
+      const candidates = parseManualQaFixBeadsOutput(validResponse, groups)
+      persistManualQaFixBeadCandidates(ticketDir, 1, candidates)
+      expect(readManualQaFixBeadCandidates(ticketDir, 1, groups)).toEqual(candidates)
+      const path = getManualQaStoragePaths(ticketDir, 1).fixBeadsPath
+      rmSync(path)
+      symlinkSync(outside, path, process.platform === 'win32' ? 'junction' : 'dir')
+      expect(() => readManualQaFixBeadCandidates(ticketDir, 1, groups)).toThrow('escapes root')
+      expect(() => persistManualQaFixBeadCandidates(ticketDir, 1, candidates)).toThrow('escapes root')
+    } finally {
+      removeTempDir(ticketDir)
+      removeTempDir(outside)
+    }
+  })
+
   const message = (
     status: 'running' | 'completed' | 'error',
     tool = 'read',

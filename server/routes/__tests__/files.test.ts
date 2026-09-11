@@ -377,6 +377,42 @@ describe('recoverTicketRuntimeArtifacts', () => {
 })
 
 describe('cleanupTicketResources', () => {
+  it('unlinks a contained setup directory alias without deleting approvals', () => {
+    const { ticket, paths } = createProjectTicket()
+    const approvals = join(paths.ticketDir, 'approvals')
+    mkdirSync(approvals, { recursive: true })
+    writeFileSync(join(approvals, 'keep.json'), '{"approved":true}')
+    mkdirSync(dirname(paths.executionSetupDir), { recursive: true })
+    symlinkSync(approvals, paths.executionSetupDir, 'junction')
+
+    const report = cleanupTicketResources(ticket.id)
+
+    expect(report.status).toBe('clean')
+    expect(report.removedDirs).toContain(paths.executionSetupDir)
+    expect(existsSync(paths.executionSetupDir)).toBe(false)
+    expect(readFileSync(join(approvals, 'keep.json'), 'utf8')).toBe('{"approved":true}')
+  })
+
+  it('unlinks a contained setup profile alias without deleting audit evidence', () => {
+    const { ticket, paths } = createProjectTicket()
+    writeJsonl(paths.executionLogPath, [{ message: 'preserved audit entry' }])
+    const auditDirectory = join(paths.ticketDir, 'audit-evidence')
+    const sentinel = join(auditDirectory, 'keep.json')
+    mkdirSync(auditDirectory)
+    writeFileSync(sentinel, '{"preserved":true}')
+    // Windows junctions do not require Developer Mode or file-symlink privileges.
+    if (process.platform === 'win32') symlinkSync(auditDirectory, paths.executionSetupProfilePath, 'junction')
+    else symlinkSync(paths.executionLogPath, paths.executionSetupProfilePath)
+
+    const report = cleanupTicketResources(ticket.id)
+
+    expect(report.status).toBe('clean')
+    expect(report.removedFiles).toContain(paths.executionSetupProfilePath)
+    expect(existsSync(paths.executionSetupProfilePath)).toBe(false)
+    expect(readFileSync(paths.executionLogPath, 'utf8')).toBe('{"message":"preserved audit entry"}\n')
+    expect(readFileSync(sentinel, 'utf8')).toBe('{"preserved":true}')
+  })
+
   it('preserves normal, debug, and AI execution logs as audit artifacts', () => {
     const { ticket, paths } = createProjectTicket()
     writeJsonl(paths.executionLogPath, [{ timestamp: '2026-03-13T12:00:00.000Z', message: 'normal' }])

@@ -216,7 +216,7 @@ describe('FullLogView', () => {
     })
 
     await renderWithTooltipProvider(<FullLogView ticket={makeTicket()} />)
-    fireEvent.click(screen.getByRole('button', { name: /^AI/ }))
+    await act(async () => fireEvent.click(screen.getByRole('button', { name: /^AI/ })))
     expect(fetchSpy.mock.calls.some(([input]) => String(input).includes('/ai-details?'))).toBe(false)
     fireEvent.click(screen.getByRole('button', { name: 'AI details' }))
 
@@ -677,13 +677,13 @@ describe('FullLogView', () => {
     expect(loadAllLogsMock).not.toHaveBeenCalledWith({ channel: 'debug' })
     expect(loadAllLogsMock).not.toHaveBeenCalledWith({ channel: 'ai' })
 
-    fireEvent.click(screen.getByRole('button', { name: 'AI' }))
+    await act(async () => fireEvent.click(screen.getByRole('button', { name: 'AI' })))
 
     expect(loadAllLogsMock).toHaveBeenLastCalledWith({ channel: 'ai' })
     expect(screen.getByText(/First output/i)).toBeTruthy()
     expect(screen.queryByText(/System event/i)).toBeNull()
 
-    fireEvent.click(screen.getByRole('button', { name: 'DEBUG' }))
+    await act(async () => fireEvent.click(screen.getByRole('button', { name: 'DEBUG' })))
 
     expect(loadAllLogsMock).toHaveBeenCalledWith({ channel: 'all' })
   })
@@ -696,7 +696,7 @@ describe('FullLogView', () => {
     ])
     await renderWithTooltipProvider(<FullLogView />)
 
-    fireEvent.click(screen.getByRole('button', { name: 'ERROR' }))
+    await act(async () => fireEvent.click(screen.getByRole('button', { name: 'ERROR' })))
     expect(screen.getByText('1 entry')).toBeTruthy()
   })
 
@@ -716,14 +716,14 @@ describe('FullLogView', () => {
     expect(screen.queryByText(/rev-parse --abbrev-ref HEAD/i)).toBeNull()
     expect(screen.queryByText(/worktree add/i)).toBeNull()
 
-    fireEvent.click(screen.getByRole('button', { name: 'SYS' }))
+    await act(async () => fireEvent.click(screen.getByRole('button', { name: 'SYS' })))
 
     expect(screen.getByText(/rev-parse --abbrev-ref HEAD/i)).toBeTruthy()
     expect(screen.getByText(/worktree add/i)).toBeTruthy()
     expect(screen.getByText(/Start requested/i)).toBeTruthy()
 
     fireEvent.click(screen.getByRole('button', { name: 'Show commands' }))
-    fireEvent.click(screen.getByRole('button', { name: 'CMD' }))
+    await act(async () => fireEvent.click(screen.getByRole('button', { name: 'CMD' })))
 
     expect(screen.getByText(/rev-parse --abbrev-ref HEAD/i)).toBeTruthy()
     expect(screen.getByText(/worktree add/i)).toBeTruthy()
@@ -746,7 +746,7 @@ describe('FullLogView', () => {
     expect(screen.getByText(/merge --no-edit/i)).toBeTruthy()
     expect(screen.queryByText(/origin\/HEAD not set/i)).toBeNull()
 
-    fireEvent.click(screen.getByRole('button', { name: 'ERROR' }))
+    await act(async () => fireEvent.click(screen.getByRole('button', { name: 'ERROR' })))
 
     expect(screen.queryByText(/origin\/HEAD not set/i)).toBeNull()
     expect(screen.getByText(/merge --no-edit/i)).toBeTruthy()
@@ -769,7 +769,7 @@ describe('FullLogView', () => {
     expect(screen.getByText(/commit -m test/i)).toBeTruthy()
     expect(screen.queryByText(/diff --cached --quiet/i)).toBeNull()
 
-    fireEvent.click(screen.getByRole('button', { name: 'ERROR' }))
+    await act(async () => fireEvent.click(screen.getByRole('button', { name: 'ERROR' })))
 
     expect(screen.getByText(/commit -m test/i)).toBeTruthy()
     expect(screen.queryByText(/diff --cached --quiet/i)).toBeNull()
@@ -794,7 +794,7 @@ describe('FullLogView', () => {
     await renderWithTooltipProvider(<FullLogView />)
 
     fireEvent.click(screen.getByRole('button', { name: 'Show models' }))
-    fireEvent.click(screen.getByRole('button', { name: /gpt-5\.4/i }))
+    await act(async () => fireEvent.click(screen.getByRole('button', { name: /gpt-5\.4/i })))
 
     expect(loadAllLogsMock).toHaveBeenLastCalledWith({ channel: 'ai' })
     expect(screen.getByText('1 entry')).toBeTruthy()
@@ -838,7 +838,7 @@ describe('FullLogView', () => {
       />,
     )
 
-    fireEvent.click(screen.getByRole('button', { name: 'AI > gpt-5.4' }))
+    await act(async () => fireEvent.click(screen.getByRole('button', { name: 'AI > gpt-5.4' })))
 
     expect(screen.getByText('Bead 1/2')).toBeTruthy()
     expect(screen.getByText('Bead 2/2')).toBeTruthy()
@@ -861,7 +861,7 @@ describe('FullLogView', () => {
     expect(screen.queryByRole('button', { name: 'Show models' })).toBeNull()
     expect(screen.queryByRole('button', { name: 'AI' })).toBeNull()
 
-    fireEvent.click(screen.getByRole('button', { name: 'AI > gpt-5.4' }))
+    await act(async () => fireEvent.click(screen.getByRole('button', { name: 'AI > gpt-5.4' })))
     expect(screen.getByText(/First output/)).toBeTruthy()
   })
 

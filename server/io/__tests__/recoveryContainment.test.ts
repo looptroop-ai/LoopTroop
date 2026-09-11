@@ -20,7 +20,7 @@ afterEach(() => {
 describe('recovery descriptor containment', () => {
   it.each([
     ['file', false], ['alias', false], ['file', true], ['alias', true],
-  ] as const)('never reports a replacement %s as recovered (copy fallback: %s)', (replacementKind, copyFallback) => {
+  ] as const)('rejects a replaced %s before linking and pins unsupported-link copies (copy fallback: %s)', (replacementKind, copyFallback) => {
     const target = join(directory, 'data.json')
     const tmp = makeAtomicTmpPath(target)
     const original = '{"validated":true}'
@@ -28,29 +28,32 @@ describe('recovery descriptor containment', () => {
     const outside = join(directory, 'outside')
     mkdirSync(outside)
     const open = fileReader.openFileNoFollowSync
-    if (copyFallback) vi.spyOn(fs, 'linkSync').mockImplementation(() => { throw Object.assign(new Error('unsupported'), { code: 'ENOSYS' }) })
-    else if (replacementKind === 'alias') {
-      // Windows cannot hardlink a junction; reproduce the linked alias at the
-      // publication boundary without requiring file-symlink privileges.
-      vi.spyOn(fs, 'linkSync').mockImplementation(() => { symlinkSync(outside, target, 'junction') })
+    const replaceSource = () => {
+      renameSync(tmp, join(directory, 'held-original'))
+      if (replacementKind === 'file') writeFileSync(tmp, '{"notValidated":true}')
+      else symlinkSync(outside, tmp, 'junction')
+    }
+    const linker = vi.spyOn(fs, 'linkSync')
+    if (copyFallback) {
+      linker.mockImplementation(() => {
+        replaceSource()
+        throw Object.assign(new Error('unsupported'), { code: 'ENOSYS' })
+      })
     }
     vi.spyOn(console, 'error').mockImplementation(() => {})
     vi.spyOn(fileReader, 'openFileNoFollowSync').mockImplementation((path, flags) => {
       const fd = open(path, flags)
-      if (path === tmp) {
-        renameSync(tmp, join(directory, 'held-original'))
-        if (replacementKind === 'file') writeFileSync(tmp, '{"notValidated":true}')
-        else symlinkSync(outside, tmp, 'junction')
-      }
+      if (path === tmp && !copyFallback) replaceSource()
       return fd
     })
     expect(recoverOrphanTmpFiles(directory)).toEqual(copyFallback ? [target] : [])
     if (copyFallback) {
       expect(readFileSync(target, 'utf8')).toBe(original)
       if (process.platform !== 'win32') expect(lstatSync(target).mode & 0o777).toBe(0o600)
-    } else if (replacementKind === 'file') {
-      expect(readFileSync(target, 'utf8')).toBe('{"notValidated":true}')
-    } else expect(lstatSync(target).isSymbolicLink()).toBe(true)
+    } else {
+      expect(existsSync(target)).toBe(false)
+      expect(linker).not.toHaveBeenCalled()
+    }
     if (replacementKind === 'file') expect(readFileSync(tmp, 'utf8')).toBe('{"notValidated":true}')
     else expect(lstatSync(tmp).isSymbolicLink()).toBe(true)
   })

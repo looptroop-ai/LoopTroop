@@ -160,7 +160,14 @@ function promoteTmpFile(fd: number, tmpPath: string, targetPath: string): boolea
     const source = fstatSync(fd)
     let linked = false
     try {
-      retryWhileWindowsHoldsTheFile(() => { linkSync(tmpPath, targetPath) })
+      retryWhileWindowsHoldsTheFile(() => {
+        const entry = lstatSync(tmpPath)
+        if (entry.isSymbolicLink() || entry.dev !== source.dev || entry.ino !== source.ino) {
+          throw new Error('Temporary file changed before recovery promotion')
+        }
+        // Narrow the validation-to-link window; Node cannot link an opened fd.
+        linkSync(tmpPath, targetPath)
+      })
       linked = true
     } catch (error) {
       if (!LINK_UNSUPPORTED_CODES.has((error as NodeJS.ErrnoException).code ?? '')) throw error

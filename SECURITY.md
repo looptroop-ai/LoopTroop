@@ -97,9 +97,12 @@ Generated runtime launchers validate shell environment names and encode or quote
 values as literal data. Shell-specific inputs that cannot be represented safely
 are rejected before the launcher is written.
 
-Recovery rejects a hard-link publication whose identity differs from the
-validated source. It leaves that target untouched because another writer may
-have replaced it, and keeps the temporary source for inspection.
+Recovery checks the temporary path against the validated source descriptor
+before each hard-link attempt and verifies the published target afterward.
+A mismatch before linking leaves the target uncreated. A mismatched published
+target remains untouched because another writer may have replaced it; recovery
+also keeps the temporary source for inspection. The check-to-link race remains
+subject to the local-process limitation above.
 
 Ordinary draft creation rolls back its database row if artifact materialization
 fails. Files already written are not part of the database transaction and may

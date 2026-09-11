@@ -83,9 +83,10 @@ const CHILD_PROCESS_NAMESPACES = 'childProcess|child_process|cp'
 const BARE_NAME = String.raw`/^[^\\/]+$/`
 
 const RESOLVE_MESSAGE =
-  'Resolve the program before spawning it: findTrustedExecutablePath from server/lib/executablePath,'
-  + ' toolPath from scripts/tool-path, or resolveTrustedTool from scripts/trusted-tool for a release job.'
-  + ' A bare name lets the first directory on PATH decide which file runs.'
+  'Resolve the program before spawning it: resolveTrustedProgram and planProgramLaunch from'
+  + ' server/lib/executablePath, launchTool or execTool from scripts/tool-path, or resolveTrustedTool from'
+  + ' scripts/trusted-tool for a release job. A bare name lets the first directory on PATH decide which file'
+  + ' runs, and a resolved Windows .cmd still needs the launch plan, because Node will not spawn one directly.'
 
 /**
  * Every spelling of "a bare name in the program position" this codebase has
@@ -160,7 +161,8 @@ const ambientProgramRules = [
       + " ObjectExpression > Property[key.name='shell'][value.value=true]",
     message:
       'A shell resolves the command through PATH itself, so a literal command with `shell: true` is the same hole.'
-      + ' Resolve the program first and pass the quoted path, which is what a Windows .cmd shim needs anyway.',
+      + ' Resolve the program and start it with planProgramLaunch (launchTool in scripts), which is also how a'
+      + ' Windows .cmd shim is started: through a resolved cmd.exe, with every argument escaped.',
   },
 ]
 

@@ -976,17 +976,32 @@ function candidateExtensions(name        , platform                 , env       
 function isWindowsAppAlias(path        , platform                 )          {
   if (platform !== 'win32') return false
   try {
-    trustedFs.statSync(path)
+    trustedFs.statSync(path, { throwIfNoEntry: false })
     return false
   } catch (error) {
-    if ((error                         ).code !== 'EACCES') return false
+    return isAppAliasFailure(error, path)
   }
+}
+
+/** Whether `stat` failing on `path` with `error` is the signature of an App Execution Alias. */
+function isAppAliasFailure(error         , path        )          {
+  if ((error                         ).code !== 'EACCES') return false
   const link = lstatOrNull(path)
   return link !== null && !link.isDirectory()
 }
 
 function isExecutableFile(path        , platform                 )          {
-  if (!statOrNull(path)?.isFile()) return isWindowsAppAlias(path, platform)
+  let stats
+  try {
+    // One `stat` per candidate. Most candidates do not exist — every `PATH`
+    // directory is tried with every `PATHEXT` extension, and again on a cache
+    // hit — so a missing one must cost one quiet lookup, and only a lookup that
+    // failed is asked whether it failed the way an App Execution Alias does.
+    stats = trustedFs.statSync(path, { throwIfNoEntry: false })
+  } catch (error) {
+    return platform === 'win32' && isAppAliasFailure(error, path)
+  }
+  if (!stats?.isFile()) return false
   // Windows has no execute bit and PATHEXT has already chosen the extension by
   // the time this runs.
   if (platform === 'win32') return true

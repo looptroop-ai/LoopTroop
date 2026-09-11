@@ -533,19 +533,18 @@ describe('Windows resolution', () => {
     }
   })
 
-  itPosix('does not take a dangling link for an alias', () => {
-    // A link whose target is gone fails `stat` with ENOENT, not EACCES.
+  itPosix('does not take a dangling link, or a path stat fails on another way, for an alias', () => {
+    // Only EACCES is the alias signature. A link whose target is gone fails
+    // with ENOENT, and a link loop with ELOOP; neither is a program.
     const root = tempRoot()
     const bin = join(root, 'bin')
     mkdirSync(bin)
     symlinkSync(join(root, 'gone.EXE'), join(bin, 'tool.EXE'))
+    symlinkSync(join(bin, 'loop.EXE'), join(bin, 'loop.EXE'))
+    const options = { env: { PATH: bin }, policyEnv: { PATHEXT: '.EXE', SystemRoot: NO_WINDOWS }, platform: 'win32' as const, cache: null }
 
-    expect(findTrustedExecutablePath('tool', {
-      env: { PATH: bin },
-      policyEnv: { PATHEXT: '.EXE', SystemRoot: NO_WINDOWS },
-      platform: 'win32',
-      cache: null,
-    })).toBeNull()
+    expect(findTrustedExecutablePath('tool', options)).toBeNull()
+    expect(findTrustedExecutablePath('loop', options)).toBeNull()
   })
 
   const runnerAlias = process.platform === 'win32' && process.env.LOCALAPPDATA

@@ -115,7 +115,7 @@ for (const required of REQUIRED_FILES) {
 // Read the actual head policy, not matching text inside a comment or script.
 if (present.has('dist/client/index.html')) {
   const dom = new JSDOM(readFileSync('dist/client/index.html', 'utf8'))
-  const policies = dom.window.document.head.querySelectorAll('meta[http-equiv="Content-Security-Policy" i]')
+  const policies = dom.window.document.head.querySelectorAll(':scope > meta[http-equiv="Content-Security-Policy" i]')
   const connections = (policies[0]?.getAttribute('content') ?? '').split(';')
     .map((directive) => directive.split(/[\t\n\f\r ]+/).filter(Boolean))
     .filter(([name]) => name?.toLowerCase() === 'connect-src')

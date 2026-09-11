@@ -104,7 +104,7 @@ dismissed state was read back from the API. Each is accepted only for the stated
 Production pages now restrict connections to the same origin; the broad WebSocket scheme allowance
 is retained only for development reloads, including remote development. The style exception and
 script restrictions are unchanged. Package verification reads the emitted CSP meta tag and checks
-its connection directive; matching text in comments or elsewhere in the page cannot satisfy it.
+its connection directive; matching text in comments, inactive noscript content or elsewhere in the page cannot satisfy it.
 The Vite configuration test separately checks the build transform. No app route, status, parser, or payload key changes in this
 stage; the existing upgrade-command value now includes HTTPS enforcement. Container build inputs
 are limited to the selected tarball and Dockerfile; WinGet Git credentials move from process
@@ -173,7 +173,7 @@ No blanket analyzer exclusions or line-moving workarounds were introduced to hid
 
 ### Upstream warnings retained after review
 
-Rechecked on 2026-09-11. No released, drop-in fix was found for the two warning sources below.
+Rechecked on 2026-09-11. No released, drop-in fix was found for the warning sources below.
 Retaining these tools and documenting the limitations was approved for PR17. Their warnings
 remain visible; this decision does not suppress failures or weaken verification.
 
@@ -191,6 +191,14 @@ remain visible; this decision does not suppress failures or weaken verification.
   relationships and deprecation notices were checked in npm's registry. Updating Renovate alone
   does not remove these chains; changing its installation method or hiding npm output does not
   repair them. Retain the validator so dependency-update configuration continues to be checked.
+- **Linux binary injection:** postject's bundled LIEF emits `Can't find string offset for section name`
+  diagnostics for `.note` sections. The [upstream maintainer identifies their source](https://github.com/nodejs/postject/issues/83#issuecomment-1506397578)
+  and deliberately retains the diagnostics. The installed postject matches its
+  [latest release](https://github.com/nodejs/postject/releases/tag/v1.0.0-alpha.6).
+  Current Linux binary jobs pass their reproducibility and execution checks; that evidence does
+  not establish compatibility with every ELF tool. Stripping the executable to silence the
+  warning is unsafe: an [upstream report describes resulting crashes](https://github.com/nodejs/postject/issues/90).
+  Keep the diagnostics and binary checks, and revisit when postject ships an updated LIEF.
 
 These are CI-tool limitations, not changes to LoopTroop's runtime dependency tree. Deprecation
 does not by itself establish an exploitable vulnerability in these jobs; it also does not prove

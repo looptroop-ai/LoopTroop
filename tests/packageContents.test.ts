@@ -13,6 +13,7 @@ it.each([
   ['valid head policy', valid, true],
   ['permissive policy beside a matching comment', `<!-- ${valid} -->${policy("connect-src 'self' https:;")}`, false],
   ['commented-out policy', `<!-- ${valid} -->`, false],
+  ['policy inside noscript', `<noscript>${valid}</noscript>`, false],
   ['missing policy', '', false],
   ['duplicate connect directive', policy("connect-src https:; connect-src 'self';"), false],
 ] as const)('checks the packed client with %s', (_name, head, passes) => {

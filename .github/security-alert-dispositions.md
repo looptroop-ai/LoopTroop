@@ -117,11 +117,33 @@ letting npm write the fixture's resolved identity. The floating Node Current job
 npm 11.19.1 and refused installation as intended: its policy still requires npm 12.
 The Kilo review failed because its model output limit was reached, without a code finding.
 
-Two external tools still emit upstream deprecation warnings: the current pinned
-download-artifact action's archive dependency uses deprecated Buffer construction
-([upstream issue](https://github.com/actions/download-artifact/issues/484)), and Renovate's
-validator dependency tree contains deprecated packages. A plain `gh run download` replacement
-would lose the action's artifact digest verification. These warnings are separate from the
-repository-owned warnings corrected here. The TypeScript checker and installer generator
+### Upstream warnings retained after review
+
+Rechecked on 2026-09-11. No released, drop-in fix was found for the two warning sources below.
+Retaining these tools and documenting the limitations was approved for PR17. Their warnings
+remain visible; this decision does not suppress failures or weaken verification.
+
+- **Artifact downloads:** the pinned action matches the [latest upstream release](https://github.com/actions/download-artifact/releases/latest).
+  Its archive extraction dependencies still use deprecated Buffer construction, and the
+  [upstream report remains open](https://github.com/actions/download-artifact/issues/484).
+  The action transfers build files between CI jobs and
+  [fails on a digest mismatch by default](https://github.com/actions/download-artifact/blob/3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c/action.yml#L42-L46).
+  The [GitHub CLI download implementation](https://github.com/cli/cli/blob/trunk/pkg/cmd/run/download/http.go)
+  downloads and extracts the archive without that digest comparison. Replacing the action with
+  the CLI alone would therefore remove a check we already rely on.
+- **Renovate configuration validation:** [current registry metadata](https://registry.npmjs.org/renovate/latest)
+  still includes global-agent and bunyan. Their dependency chains reach deprecated boolean,
+  and, through bunyan's optional mv dependency, rimraf, glob and inflight. The dependency
+  relationships and deprecation notices were checked in npm's registry. Updating Renovate alone
+  does not remove these chains; changing its installation method or hiding npm output does not
+  repair them. Retain the validator so dependency-update configuration continues to be checked.
+
+These are CI-tool limitations, not changes to LoopTroop's runtime dependency tree. Deprecation
+does not by itself establish an exploitable vulnerability in these jobs; it also does not prove
+the affected code is safe. Recheck when the upstream action fixes its extraction dependencies,
+when Renovate removes these chains, or if an advisory identifies an applicable vulnerability.
+Any replacement must preserve artifact digest enforcement or equivalent configuration validation.
+
+Repository-owned warning fixes remain in place. The TypeScript checker and installer generator
 filter only Node's exact parser API-status advisory, preserving other warning details and
 one-shot listeners.

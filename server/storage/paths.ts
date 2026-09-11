@@ -56,12 +56,17 @@ export function getProjectWorktreesRoot(projectRoot: string): string {
   return resolve(getProjectLoopTroopDir(projectRoot), 'worktrees')
 }
 
-export function getTicketWorktreePath(projectRoot: string, externalId: string): string {
+/** Validate an entry name without following the final worktree alias. */
+export function getTicketWorktreeEntryPath(projectRoot: string, externalId: string): string {
   if (!externalId || externalId === '.' || externalId === '..' || /[\\/\0:]/.test(externalId)) {
     throw new ContainedPathError('Invalid ticket path')
   }
+  return resolve(getProjectWorktreesRoot(projectRoot), externalId)
+}
+
+export function getTicketWorktreePath(projectRoot: string, externalId: string): string {
   // Trust the project, never a worktrees directory that may have been replaced by a link.
-  const worktreePath = resolve(getProjectWorktreesRoot(projectRoot), externalId)
+  const worktreePath = getTicketWorktreeEntryPath(projectRoot, externalId)
   resolveContainedPath(projectRoot, worktreePath, {
     allowMissingParents: true,
   })

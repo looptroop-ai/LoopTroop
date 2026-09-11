@@ -1,5 +1,5 @@
 import { execFile } from 'node:child_process'
-import { promises as fs, realpathSync, statSync } from 'node:fs'
+import { promises as fs, lstatSync, realpathSync } from 'node:fs'
 import { dirname, isAbsolute } from 'node:path'
 import { promisify } from 'node:util'
 import { ContainedPathError, resolveContainedPath } from './containedPath'
@@ -38,15 +38,32 @@ export async function revealFolderInExplorer(targetPath: string, allowedRoots: s
     }
   }
   if (!root || !target) throw new ContainedPathError('Path must exist inside an attached project or the LoopTroop application configuration directory')
-  const folder = statSync(target).isDirectory() ? target : dirname(target)
+  let folder: string
+  try {
+    const stats = lstatSync(target)
+    if (stats.isSymbolicLink()) throw new ContainedPathError('Path changed before it could be opened')
+    folder = stats.isDirectory() ? target : dirname(target)
+  } catch (error) {
+    if (['ENOENT', 'ENOTDIR', 'ELOOP'].includes((error as NodeJS.ErrnoException).code ?? '')) {
+      throw new ContainedPathError('Path changed before it could be opened')
+    }
+    throw error
+  }
   const trustedRoot = root
 
   async function runOpener(name: string, args: string[]): Promise<{ stdout: string }> {
     const resolution = resolveTrustedExecutable(name)
     if (resolution.path === undefined) throw new Error(resolution.reason)
-    if (realpathSync.native(trustedRoot) !== trustedRoot
-      || resolveContainedPath(trustedRoot, folder) !== folder) {
-      throw new ContainedPathError('Path changed before it could be opened')
+    try {
+      if (realpathSync.native(trustedRoot) !== trustedRoot
+        || resolveContainedPath(trustedRoot, folder) !== folder) {
+        throw new ContainedPathError('Path changed before it could be opened')
+      }
+    } catch (error) {
+      if (['ENOENT', 'ENOTDIR', 'ELOOP'].includes((error as NodeJS.ErrnoException).code ?? '')) {
+        throw new ContainedPathError('Path changed before it could be opened')
+      }
+      throw error
     }
     return execFileAsync(resolution.path, args)
   }

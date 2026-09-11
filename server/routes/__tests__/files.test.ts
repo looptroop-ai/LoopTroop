@@ -11,6 +11,7 @@ import * as openPath from '../../lib/openPath'
 import { createTicket, getTicketPaths } from '../../storage/tickets'
 import { createFixtureRepoManager } from '../../test/fixtureRepo'
 import { recoverTicketRuntimeArtifacts } from '../../startup'
+import * as fileReader from '../../io/readFile'
 import { cleanupTicketResources } from '../../phases/cleanup/cleaner'
 const { readOpenCodeNativeLogsMock } = vi.hoisted(() => ({ readOpenCodeNativeLogsMock: vi.fn(() => []) }))
 
@@ -70,8 +71,9 @@ describe('filesRouter GET /files/:ticketId/logs', () => {
   app.route('/api', filesRouter)
 
   it('keeps an attached folder authorized when its project metadata is unavailable', async () => {
-    const { repoDir } = createProjectTicket()
-    closeProjectDatabase(repoDir)
+    const { project } = createProjectTicket()
+    const repoDir = project.folderPath
+    expect(closeProjectDatabase(repoDir)).toBe(true)
     const projectDbPath = getProjectDbPath(repoDir)
     renameSync(projectDbPath, `${projectDbPath}.unavailable`)
     expect(listProjects()).toEqual([])
@@ -327,6 +329,30 @@ describe('filesRouter GET /files/:ticketId/logs', () => {
 })
 
 describe('recoverTicketRuntimeArtifacts', () => {
+  it('repairs later logs when an earlier log cannot be opened for repair', () => {
+    const { paths } = createProjectTicket()
+    mkdirSync(dirname(paths.executionLogPath), { recursive: true })
+    writeFileSync(paths.executionLogPath, '{"keep":true}\n')
+    writeFileSync(paths.debugLogPath, '{"debug":true}\n{broken')
+    writeFileSync(paths.aiLogPath, '{"ai":true}\n{broken')
+    const open = fileReader.openFileNoFollowSync
+    const opener = vi.spyOn(fileReader, 'openFileNoFollowSync').mockImplementation((path, flags) => {
+      if (path === paths.executionLogPath) throw Object.assign(new Error('read-only log'), { code: 'EACCES' })
+      return open(path, flags)
+    })
+    const warning = vi.spyOn(console, 'warn').mockImplementation(() => {})
+    try {
+      expect(recoverTicketRuntimeArtifacts().repairedExecutionLogs).toBe(2)
+      expect(readFileSync(paths.executionLogPath, 'utf8')).toBe('{"keep":true}\n')
+      expect(readFileSync(paths.debugLogPath, 'utf8')).toBe('{"debug":true}\n')
+      expect(readFileSync(paths.aiLogPath, 'utf8')).toBe('{"ai":true}\n')
+      expect(warning).toHaveBeenCalledWith(expect.stringContaining('Skipped log recovery'))
+    } finally {
+      opener.mockRestore()
+      warning.mockRestore()
+    }
+  })
+
   it('repairs trailing corruption in normal, debug, and AI execution logs', () => {
     const { paths } = createProjectTicket()
     const normalEntry = JSON.stringify({ timestamp: '2026-03-13T12:00:00.000Z', message: 'normal' })

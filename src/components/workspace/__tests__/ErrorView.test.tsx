@@ -1,4 +1,4 @@
-import { fireEvent, screen, within } from '@testing-library/react'
+import { act, fireEvent, screen, within } from '@testing-library/react'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 import type { ReactElement } from 'react'
 import type { LogContextValue, LogEntry } from '@/context/logUtils'
@@ -139,7 +139,7 @@ describe('ErrorView', () => {
     expect(screen.getByText(/retry the drafting phase/i)).toBeInTheDocument()
   })
 
-  it('requires confirmation before canceling a blocked ticket', () => {
+  it('requires confirmation before canceling a blocked ticket', async () => {
     const cancelMutate = vi.fn()
     mockUseCancelTicket.mockReturnValue({ mutate: cancelMutate, mutateAsync: cancelMutate, isPending: false })
     const ticket = makeLiveCodingErrorTicket()
@@ -150,7 +150,9 @@ describe('ErrorView', () => {
     expect(cancelMutate).not.toHaveBeenCalled()
     expect(screen.getByText('Cancel Ticket')).toBeInTheDocument()
 
-    fireEvent.click(screen.getByRole('button', { name: 'Yes, Cancel Ticket' }))
+    await act(async () => {
+      fireEvent.click(screen.getByRole('button', { name: 'Yes, Cancel Ticket' }))
+    })
     expect(cancelMutate).toHaveBeenCalledWith({
       id: ticket.id,
       options: { deleteContent: false, deleteLog: false, deleteTicket: false, reason: '' },

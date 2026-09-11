@@ -13,6 +13,7 @@ import {
   getManualQaEvidenceRelativePath,
   getManualQaChecklistHash,
   isSafeRasterMediaType,
+  listManualQaVersions,
   persistManualQaChecklist,
   persistManualQaModelCapabilitySnapshot,
   persistManualQaResults,
@@ -131,6 +132,24 @@ describe('Manual QA canonical storage', () => {
     const ticketDir = root()
     symlinkSync(root(), join(ticketDir, 'manual-qa'), process.platform === 'win32' ? 'junction' : 'dir')
     expect(() => readManualQaEvents(ticketDir)).toThrow('unsafe directory')
+    expect(() => listManualQaVersions(ticketDir)).toThrow('unsafe directory')
+  })
+
+  it.each(['file', 'alias'] as const)('reads root events and lists valid versions when v1 is an unrelated %s', (kind) => {
+    const ticketDir = root()
+    const storageRoot = join(ticketDir, 'manual-qa')
+    mkdirSync(join(storageRoot, 'v2'), { recursive: true })
+    if (kind === 'file') writeFileSync(join(storageRoot, 'v1'), 'invalid version directory')
+    else symlinkSync(root(), join(storageRoot, 'v1'), process.platform === 'win32' ? 'junction' : 'dir')
+    const event = {
+      schemaVersion: 1 as const, eventId: 'v2-ready', eventType: 'checklist_ready' as const,
+      ticketId: 'DEMO-1', version: 2, actionId: 'generation-two',
+      createdAt: '2026-07-13T00:00:00.000Z', data: { checklistHash: 'a'.repeat(64) },
+    }
+    appendManualQaEvent(ticketDir, event)
+    expect(readManualQaEvents(ticketDir)).toEqual([event])
+    expect(listManualQaVersions(ticketDir)).toEqual([2])
+    expect(() => getManualQaStoragePaths(ticketDir, 1)).toThrow('unsafe directory')
   })
 
   it('reuses a durable generation reservation after restart', () => {

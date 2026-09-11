@@ -2,6 +2,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { promises as fs, mkdirSync, rmSync, symlinkSync, writeFileSync } from 'node:fs'
 import { join } from 'node:path'
 import { makeTempDir } from '../../test/tempDir'
+import * as containment from '../containedPath'
 
 const { launch } = vi.hoisted(() => ({ launch: vi.fn(async (_program: string, _args: string[]) => ({ stdout: '' })) }))
 vi.mock('node:child_process', () => ({
@@ -75,8 +76,23 @@ describe('folder opener containment', () => {
     expect(launch.mock.calls.at(-1)?.[1]).toEqual([project])
   })
 
+  it.each(['removed', 'linked'] as const)('refuses a target %s after containment before inspecting it', async (change) => {
+    const { project, outside } = fixture()
+    const folder = join(project, 'folder')
+    mkdirSync(folder)
+    const resolve = containment.resolveContainedPath
+    vi.spyOn(containment, 'resolveContainedPath').mockImplementationOnce((...args) => {
+      const result = resolve(...args)
+      rmSync(folder, { recursive: true })
+      if (change === 'linked') symlinkSync(outside, folder, 'junction')
+      return result
+    })
+    await expect(revealFolderInExplorer(folder, [project])).rejects.toBeInstanceOf(containment.ContainedPathError)
+    expect(launch).not.toHaveBeenCalled()
+  })
+
   it('encodes spaces, apostrophes and PowerShell metacharacters as literal text', () => {
-    const target = "C:\\project folder\\O'Brien’; Write-Output injected; #$x"
+    const target = "C:\\project folder\\O'Brien’\"; Write-Output injected; #$x"
     const script = Buffer.from(encodedInvokeItem(target), 'base64').toString('utf16le')
     const encoded = Buffer.from(target, 'utf16le').toString('base64')
     expect(script).toBe(`Invoke-Item -LiteralPath ([Text.Encoding]::Unicode.GetString([Convert]::FromBase64String('${encoded}')))`)
@@ -95,6 +111,19 @@ describe('folder opener containment', () => {
       return { stdout: "C:\\project folder\\O'Brien" }
     })
     await expect(revealFolderInExplorer(folder, [project])).rejects.toThrow()
+    expect(launch).toHaveBeenCalledTimes(1)
+  })
+
+  it.skipIf(process.platform !== 'linux')('reports a removed folder as an invalid path without an Explorer fallback', async () => {
+    const { project } = fixture()
+    const folder = join(project, 'folder')
+    mkdirSync(folder)
+    vi.stubEnv('WSL_DISTRO_NAME', 'test')
+    launch.mockImplementationOnce(async () => {
+      rmSync(folder, { recursive: true })
+      return { stdout: 'C:\\project\\folder\n' }
+    })
+    await expect(revealFolderInExplorer(folder, [project])).rejects.toBeInstanceOf(containment.ContainedPathError)
     expect(launch).toHaveBeenCalledTimes(1)
   })
 

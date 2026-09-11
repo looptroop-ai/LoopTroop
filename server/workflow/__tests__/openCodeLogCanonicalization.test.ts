@@ -12,16 +12,16 @@ import * as atomicAppendModule from '../../io/atomicAppend'
 import { broadcaster } from '../../sse/broadcaster'
 
 vi.spyOn(ticketsModule, 'getTicketPaths').mockReturnValue({
-  projectRoot: '/tmp/test-project',
-  executionLogPath: '/tmp/test-execution-log.jsonl',
-  debugLogPath: '/tmp/test-execution-log.debug.jsonl',
-  aiLogPath: '/tmp/test-execution-log.ai.jsonl',
-  worktreePath: '/tmp/test-worktree',
-  ticketDir: '/tmp/test-ticket-dir',
-  executionSetupDir: '/tmp/test-ticket-dir/.ticket/runtime/execution-setup',
-  executionSetupProfilePath: '/tmp/test-ticket-dir/.ticket/runtime/execution-setup-profile.json',
+  projectRoot: resolve('/tmp/test-project'),
+  executionLogPath: resolve('/tmp/test-execution-log.jsonl'),
+  debugLogPath: resolve('/tmp/test-execution-log.debug.jsonl'),
+  aiLogPath: resolve('/tmp/test-execution-log.ai.jsonl'),
+  worktreePath: resolve('/tmp/test-worktree'),
+  ticketDir: resolve('/tmp/test-ticket-dir'),
+  executionSetupDir: resolve('/tmp/test-ticket-dir/.ticket/runtime/execution-setup'),
+  executionSetupProfilePath: resolve('/tmp/test-ticket-dir/.ticket/runtime/execution-setup-profile.json'),
   baseBranch: 'main',
-  beadsPath: '/tmp/test-beads.jsonl',
+  beadsPath: resolve('/tmp/test-beads.jsonl'),
 })
 
 const mockAppend = vi.fn((_path: string, line: string) => ({
@@ -43,13 +43,13 @@ function getPersistedEntries() {
 
 function getNormalPersistedEntries() {
   return mockAppend.mock.calls
-    .filter(([logPath]) => logPath === '/tmp/test-execution-log.jsonl')
+    .filter(([logPath]) => logPath === resolve('/tmp/test-execution-log.jsonl'))
     .map(([, payload]) => JSON.parse(payload))
 }
 
 function getAiPersistedEntries() {
   return mockAppend.mock.calls
-    .filter(([logPath]) => logPath === '/tmp/test-execution-log.ai.jsonl')
+    .filter(([logPath]) => logPath === resolve('/tmp/test-execution-log.ai.jsonl'))
     .map(([, payload]) => JSON.parse(payload))
 }
 

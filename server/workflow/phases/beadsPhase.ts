@@ -1,3 +1,4 @@
+import { relative } from 'node:path'
 import type { TicketContext, TicketEvent } from '../../machines/types'
 import type { DraftResult, MemberOutcome, Vote } from '../../council/types'
 import { CancelledError } from '../../council/types'
@@ -11,8 +12,7 @@ import type { Bead, BeadSubset } from '../../phases/beads/types'
 import type { CommandSpec } from '@shared/commandSpec'
 import { buildMinimalContext, clearContextCache, type TicketState } from '../../opencode/contextBuilder'
 import type { Message, PromptPart, StreamEvent } from '../../opencode/types'
-import { getLatestPhaseArtifact, getTicketByRef, getTicketPaths, insertPhaseArtifact, patchTicket, resolvePhaseAttempt, readTicketFile } from '../../storage/tickets'
-import { writeJsonl } from '../../io/jsonl'
+import { getLatestPhaseArtifact, getTicketByRef, getTicketPaths, insertPhaseArtifact, patchTicket, resolvePhaseAttempt, readTicketFile, writeTicketFile } from '../../storage/tickets'
 import { readBeadsFile } from '../../phases/beads/beadsFile'
 import { compareBeadRecoveryOrder } from '../../phases/beads/recoveryOrder'
 import { buildStructuredRetryPrompt, normalizeBeadSubsetYamlOutput, normalizeBeadsJsonlOutput } from '../../structuredOutput'
@@ -864,7 +864,10 @@ export function readTicketBeads(ticketId: string): Bead[] {
 }
 
 export function writeTicketBeads(ticketId: string, beads: Bead[]) {
-  writeJsonl(getBeadsPath(ticketId), beads)
+  const paths = getTicketPaths(ticketId)
+  if (!paths) throw new Error(`Ticket workspace not initialized: missing ticket paths for ${ticketId}`)
+  const content = beads.map(bead => JSON.stringify(bead)).join('\n') + (beads.length > 0 ? '\n' : '')
+  writeTicketFile(ticketId, relative(paths.ticketDir, paths.beadsPath), content)
   const ticket = getTicketByRef(ticketId)
   if (ticket && isBeforeExecution(ticket.status, ticket.previousStatus)) {
     upsertBeadsApprovalSnapshot(ticketId)

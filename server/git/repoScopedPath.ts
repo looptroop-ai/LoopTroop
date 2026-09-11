@@ -10,10 +10,10 @@
  *
  * Accepts what a genuinely relative path looks like on either platform and
  * rejects everything else: absolute and drive-qualified paths, any `.` or `..`
- * segment wherever it sits, control characters, and LoopTroop's own directories.
+ * segment wherever it sits, control characters, and Git/LoopTroop metadata.
  */
 
-const CONTROL_DIRECTORIES = ['.ticket', '.looptroop'] as const
+const CONTROL_DIRECTORIES = ['.git', '.ticket', '.looptroop'] as const
 
 export function normalizeRepoScopedPath(filePath: string): string | null {
   const trimmed = filePath.trim().replace(/\\/g, '/')

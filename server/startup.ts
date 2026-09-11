@@ -45,8 +45,12 @@ export function recoverTicketRuntimeArtifacts() {
       // file — recovery puts a torn one back under its own name, and this is what
       // then trims the incomplete final line.
       for (const logPath of [paths.executionLogPath, paths.debugLogPath, paths.aiLogPath, paths.beadsPath]) {
-        if (fixTrailingLineCorruption(logPath)) {
-          repairedExecutionLogs += 1
+        try {
+          if (fixTrailingLineCorruption(logPath)) {
+            repairedExecutionLogs += 1
+          }
+        } catch (error) {
+          console.warn(`[startup] Skipped log recovery for ${logPath}: ${getErrorMessage(error)}`)
         }
       }
     } catch (error) {

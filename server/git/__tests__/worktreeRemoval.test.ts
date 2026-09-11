@@ -55,7 +55,7 @@ describe('removeWorktree', () => {
     removeWorktree({ projectRoot, worktreesRoot, worktreePath: alias })
     expect(existsSync(alias)).toBe(false)
     expect(readFileSync(resolve(worktreePath, 'README.md'), 'utf8')).toBe('fixture\n')
-    expect(git(projectRoot, ['worktree', 'list', '--porcelain'])).toContain(worktreePath)
+    expect(git(projectRoot, ['worktree', 'list', '--porcelain'])).toContain(worktreePath.replaceAll('\\', '/'))
   })
 
   it('unlinks dangling worktree aliases', () => {
@@ -102,7 +102,7 @@ describe('removeWorktree', () => {
 
     expect(existsSync(worktreePath)).toBe(false)
     expect(readFileSync(externalTarget, 'utf8')).toBe('preserve me\n')
-    expect(git(projectRoot, ['worktree', 'list', '--porcelain'])).not.toContain(worktreePath)
+    expect(git(projectRoot, ['worktree', 'list', '--porcelain'])).not.toContain(worktreePath.replaceAll('\\', '/'))
   })
 
   it('falls back to filesystem removal and prunes after Git removal fails', () => {

@@ -17,7 +17,7 @@ import {
   ensureProjectStorageDirs,
   getProjectLoopTroopDir,
   getProjectWorktreesRoot,
-  getTicketWorktreePath,
+  getTicketWorktreeEntryPath,
   normalizeFolderPath,
   resolveGitRepoRoot,
 } from './paths'
@@ -589,10 +589,12 @@ export function listAttachedProjectRoots(): string[] {
 }
 
 export async function getProjectWorktreesSize(projectRoot: string): Promise<number> {
+  const worktreesRoot = getProjectWorktreesRoot(projectRoot)
+  if (!assertManagedWorktreesRoot(projectRoot, worktreesRoot)) return 0
   const externalIds = getTerminalTicketExternalIds(projectRoot)
   let sum = 0
   for (const id of externalIds) {
-    sum += await calcDirSize(getTicketWorktreePath(projectRoot, id))
+    sum += await calcDirSize(getTicketWorktreeEntryPath(projectRoot, id))
   }
   return sum
 }
@@ -609,7 +611,7 @@ export async function deleteProjectWorktrees(projectRoot: string): Promise<{ fre
   for (const externalId of externalIds) {
     // Final aliases (including dangling ones) are entries to unlink, not roots
     // to resolve. removeWorktree validates the parent and direct-child shape.
-    const worktreePath = resolvePath(worktreesRoot, externalId)
+    const worktreePath = getTicketWorktreeEntryPath(projectRoot, externalId)
     freedBytes += await calcDirSize(worktreePath)
     removeWorktree({ projectRoot, worktreesRoot, worktreePath })
   }

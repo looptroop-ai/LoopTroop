@@ -396,7 +396,7 @@ describe('DashboardHeader', () => {
     expect(screen.getByRole('button', { name: /cancel…/i })).toBeInTheDocument()
   })
 
-  it('requires confirmation before canceling a DRAFT ticket', () => {
+  it('requires confirmation before canceling a DRAFT ticket', async () => {
     const cancelMutate = vi.fn()
     mockUseCancelTicket.mockReturnValue({ mutate: cancelMutate, mutateAsync: cancelMutate, isPending: false })
 
@@ -413,7 +413,9 @@ describe('DashboardHeader', () => {
     expect(cancelMutate).not.toHaveBeenCalled()
     expect(screen.getByText('Cancel Ticket')).toBeInTheDocument()
 
-    fireEvent.click(screen.getByRole('button', { name: 'Yes, Cancel Ticket' }))
+    await act(async () => {
+      fireEvent.click(screen.getByRole('button', { name: 'Yes, Cancel Ticket' }))
+    })
 
     expect(cancelMutate).toHaveBeenCalledWith({
       id: ticket.id,
@@ -439,7 +441,7 @@ describe('DashboardHeader', () => {
     expect(deleteLogCheckbox.checked).toBe(false)
   })
 
-  it('calls cancelTicket with deleteContent=false and deleteLog=false by default', () => {
+  it('calls cancelTicket with deleteContent=false and deleteLog=false by default', async () => {
     const cancelMutate = vi.fn()
     mockUseCancelTicket.mockReturnValue({ mutate: cancelMutate, mutateAsync: cancelMutate, isPending: false })
 
@@ -452,7 +454,9 @@ describe('DashboardHeader', () => {
     )
 
     fireEvent.click(screen.getByRole('button', { name: /cancel…/i }))
-    fireEvent.click(screen.getByRole('button', { name: /yes, cancel ticket/i }))
+    await act(async () => {
+      fireEvent.click(screen.getByRole('button', { name: /yes, cancel ticket/i }))
+    })
 
     expect(cancelMutate).toHaveBeenCalledWith({
       id: ticket.id,
@@ -460,7 +464,7 @@ describe('DashboardHeader', () => {
     })
   })
 
-  it('passes deleteContent=true when the checkbox is checked before confirming', () => {
+  it('passes deleteContent=true when the checkbox is checked before confirming', async () => {
     const cancelMutate = vi.fn()
     mockUseCancelTicket.mockReturnValue({ mutate: cancelMutate, mutateAsync: cancelMutate, isPending: false })
 
@@ -474,7 +478,9 @@ describe('DashboardHeader', () => {
 
     fireEvent.click(screen.getByRole('button', { name: /cancel…/i }))
     fireEvent.click(screen.getByTestId('delete-content-checkbox'))
-    fireEvent.click(screen.getByRole('button', { name: /yes, cancel ticket/i }))
+    await act(async () => {
+      fireEvent.click(screen.getByRole('button', { name: /yes, cancel ticket/i }))
+    })
 
     expect(cancelMutate).toHaveBeenCalledWith({
       id: ticket.id,
@@ -482,7 +488,7 @@ describe('DashboardHeader', () => {
     })
   })
 
-  it('passes deleteLog=true when only the log checkbox is checked', () => {
+  it('passes deleteLog=true when only the log checkbox is checked', async () => {
     const cancelMutate = vi.fn()
     mockUseCancelTicket.mockReturnValue({ mutate: cancelMutate, mutateAsync: cancelMutate, isPending: false })
 
@@ -496,7 +502,9 @@ describe('DashboardHeader', () => {
 
     fireEvent.click(screen.getByRole('button', { name: /cancel…/i }))
     fireEvent.click(screen.getByTestId('delete-log-checkbox'))
-    fireEvent.click(screen.getByRole('button', { name: /yes, cancel ticket/i }))
+    await act(async () => {
+      fireEvent.click(screen.getByRole('button', { name: /yes, cancel ticket/i }))
+    })
 
     expect(cancelMutate).toHaveBeenCalledWith({
       id: ticket.id,
@@ -504,7 +512,7 @@ describe('DashboardHeader', () => {
     })
   })
 
-  it('passes deleteTicket=true and checks disabled state when delete ticket checkbox is checked', () => {
+  it('passes deleteTicket=true and checks disabled state when delete ticket checkbox is checked', async () => {
     const cancelMutate = vi.fn()
     mockUseCancelTicket.mockReturnValue({ mutate: cancelMutate, mutateAsync: cancelMutate, isPending: false })
 
@@ -536,7 +544,9 @@ describe('DashboardHeader', () => {
     expect(deleteLogCheckbox.checked).toBe(true)
     expect(screen.getByRole('button', { name: 'Yes, Delete Ticket' })).toBeInTheDocument()
 
-    fireEvent.click(screen.getByRole('button', { name: 'Yes, Delete Ticket' }))
+    await act(async () => {
+      fireEvent.click(screen.getByRole('button', { name: 'Yes, Delete Ticket' }))
+    })
 
     expect(cancelMutate).toHaveBeenCalledWith({
       id: ticket.id,

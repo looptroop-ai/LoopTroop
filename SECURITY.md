@@ -91,6 +91,15 @@ user can still replace an ancestor between validation and a filesystem call.
 Verified file descriptors and repeated containment checks narrow that race.
 The AI agent's own command execution retains the local user's permissions.
 
+Generated runtime launchers validate shell environment names and encode or quote
+values as literal data. Shell-specific inputs that cannot be represented safely
+are rejected before the launcher is written.
+
+Ordinary draft creation rolls back its database row if artifact materialization
+fails. Files already written are not part of the database transaction and may
+remain after a later failure. Manual QA improvement-origin mappings remain
+durable so retries can recover the same child ticket.
+
 ## Data Handling
 
 LoopTroop collects no telemetry and sends no usage data anywhere.

@@ -1,9 +1,11 @@
-import { mkdirSync, readFileSync, readdirSync, symlinkSync } from 'node:fs'
-import { join } from 'node:path'
+import { spawnSync } from 'node:child_process'
+import { existsSync, mkdirSync, readFileSync, readdirSync, symlinkSync, writeFileSync } from 'node:fs'
+import { delimiter, join } from 'node:path'
 import { afterEach, describe, expect, it } from 'vitest'
 import { writeExecutionSetupRuntimeLauncher } from '../runtimeLauncher'
 import type { ExecutionSetupProfile } from '../types'
 import { makeTempDir, removeTempDir } from '../../../test/tempDir'
+import { launchThroughInterpreter } from '../../../lib/executablePath'
 
 const roots: string[] = []
 afterEach(() => { for (const root of roots.splice(0)) removeTempDir(root) })
@@ -40,6 +42,77 @@ function profile(preferredShell: 'posix' | 'cmd' | 'powershell'): ExecutionSetup
 }
 
 describe('execution setup runtime launcher', () => {
+  it.each(['posix', 'powershell', 'cmd'] as const)('rejects executable environment names before writing a %s launcher', (shell) => {
+    const worktreePath = makeTempDir('looptroop-launcher-key-')
+    roots.push(worktreePath)
+    const setup = profile(shell)
+    setup.runtimeEnvironment.variables = { 'FOO; printf injected; #': 'value' }
+    expect(() => writeExecutionSetupRuntimeLauncher({ worktreePath, profile: setup })).toThrow('shell identifiers')
+    expect(readdirSync(worktreePath)).toEqual([])
+  })
+
+  it.each(['\n', '\r', '\0'])('rejects unrepresentable cmd environment values (%j)', (character) => {
+    const worktreePath = makeTempDir('looptroop-launcher-value-')
+    roots.push(worktreePath)
+    const setup = profile('cmd')
+    setup.runtimeEnvironment.variables.TOOL_MODE = `value${character}echo injected`
+    expect(() => writeExecutionSetupRuntimeLauncher({ worktreePath, profile: setup })).toThrow('cannot be represented')
+    expect(readdirSync(worktreePath)).toEqual([])
+  })
+
+  it.each(['"', '\n', '\r', '\0'])('rejects unrepresentable cmd PATH entries (%j)', (character) => {
+    const worktreePath = makeTempDir('looptroop-launcher-path-')
+    roots.push(worktreePath)
+    const setup = profile('cmd')
+    setup.runtimeEnvironment.pathPrepend = [`tools/${character}& echo injected`]
+    expect(() => writeExecutionSetupRuntimeLauncher({ worktreePath, profile: setup })).toThrow('cannot be represented')
+    expect(readdirSync(worktreePath)).toEqual([])
+  })
+
+  it.each(process.platform === 'win32' ? ['cmd', 'powershell'] as const : ['posix'] as const)(
+    'passes shell-sensitive environment values and PATH entries literally through native %s', (shell) => {
+      const worktreePath = makeTempDir('looptroop-launcher-literals-')
+      roots.push(worktreePath)
+      const setup = profile(shell)
+      const value = shell === 'powershell'
+        ? "value’; New-Item injected; #‘ “literal”"
+        : `literal ' " & | < > ^ %PATH% !PATH! $(touch injected) \`touch injected\``
+      const pathEntry = shell === 'posix'
+        ? `tools/$(touch injected)-'"!%PATH%`
+        : shell === 'powershell' ? "tools/’); New-Item injected; #‘" : 'tools/%PATH% !PATH! & (literal)'
+      setup.runtimeEnvironment.variables = {
+        TOOL_MODE: value,
+        repo_root: 'custom root',
+        looptroop_repo_root: 'custom private root',
+        looptroop_path_prepend: 'custom private path',
+      }
+      setup.runtimeEnvironment.pathPrepend = [pathEntry]
+      const artifact = writeExecutionSetupRuntimeLauncher({ worktreePath, profile: setup })
+      const launcherPath = join(worktreePath, artifact.path)
+      const readerPath = join(worktreePath, 'read-env.cjs')
+      const environmentKeys = JSON.stringify([...Object.keys(setup.runtimeEnvironment.variables), 'PATH'])
+      writeFileSync(readerPath, `process.stdout.write(Buffer.from(JSON.stringify(Object.fromEntries(${environmentKeys}.map(key => [key, process.env[key]])))).toString('base64'))`)
+      const launch = shell === 'cmd'
+        ? launchThroughInterpreter('cmd.exe', launcherPath, [process.execPath, readerPath])
+        : shell === 'powershell'
+          ? { file: 'powershell.exe', args: ['-NoProfile', '-NonInteractive', '-ExecutionPolicy', 'Bypass', '-File', launcherPath, process.execPath, readerPath] }
+          : { file: 'sh', args: [launcherPath, process.execPath, readerPath] }
+      const pathKey = Object.keys(process.env).find((key) => key.toLowerCase() === 'path') ?? 'PATH'
+      const inheritedPath = `${process.env[pathKey] ?? ''}${shell === 'cmd' ? ';" & echo injected>injected & rem "!PATH!' : ''}`
+      const result = spawnSync(launch.file, launch.args?.map((arg) => arg === '/v:off' ? '/v:on' : arg), {
+        cwd: worktreePath,
+        env: { ...process.env, [pathKey]: inheritedPath },
+        encoding: 'utf8',
+        windowsVerbatimArguments: shell === 'cmd',
+      })
+      expect(result.status, result.stderr).toBe(0)
+      const actual = JSON.parse(Buffer.from(result.stdout.trim(), 'base64').toString('utf8'))
+      expect(actual).toMatchObject(setup.runtimeEnvironment.variables)
+      expect(actual.PATH).toBe(`${join(worktreePath, pathEntry)}${delimiter}${inheritedPath}`)
+      expect(existsSync(join(worktreePath, 'injected'))).toBe(false)
+    },
+  )
+
   it('does not write a launcher through an escaping ticket directory', () => {
     const root = makeTempDir('looptroop-launcher-link-')
     roots.push(root)
@@ -64,6 +137,8 @@ describe('execution setup runtime launcher', () => {
     const content = readFileSync(join(worktreePath, artifact.path), 'utf8')
     expect(content).toContain(invocation)
     expect(content).toContain('TOOL_MODE')
-    expect(content).toContain('tool-cache')
+    expect(content).toContain(shell === 'powershell'
+      ? Buffer.from('.ticket/runtime/execution-setup/tool-cache/bin', 'utf16le').toString('base64')
+      : 'tool-cache')
   })
 })

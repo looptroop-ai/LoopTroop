@@ -777,7 +777,9 @@ export class OpenCodeSDKAdapter implements OpenCodeAdapter {
       }
     } catch (err) {
       if (err instanceof ContainedPathError) throw err
-      warnIfVerbose(`[adapter] Failed to read issues.jsonl:`, err)
+      if ((err as NodeJS.ErrnoException).code !== 'ENOENT') {
+        warnIfVerbose(`[adapter] Failed to read beads.jsonl:`, err)
+      }
     }
 
     return state

@@ -69,18 +69,20 @@ function assertVersion(version: number): void {
   if (!Number.isInteger(version) || version < 1) throw new Error('Manual QA version must be a positive integer.')
 }
 
+function validateManualQaDirectory(directory: string): string {
+  try {
+    const stats = lstatSync(directory)
+    if (!stats.isDirectory() || stats.isSymbolicLink()) throw new Error('Manual QA path contains an unsafe directory.')
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error
+  }
+  return directory
+}
+
 export function getManualQaStoragePaths(ticketDir: string, version: number): ManualQaStoragePaths {
   assertVersion(version)
-  const root = resolve(ticketDir, 'manual-qa')
-  const versionDir = resolve(root, `v${version}`)
-  for (const directory of [root, versionDir]) {
-    try {
-      const stats = lstatSync(directory)
-      if (!stats.isDirectory() || stats.isSymbolicLink()) throw new Error('Manual QA path contains an unsafe directory.')
-    } catch (error) {
-      if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error
-    }
-  }
+  const root = validateManualQaDirectory(resolve(ticketDir, 'manual-qa'))
+  const versionDir = validateManualQaDirectory(resolve(root, `v${version}`))
   return {
     root,
     versionDir,
@@ -216,7 +218,7 @@ export function appendManualQaEvent(ticketDir: string, event: ManualQaEvent): Ma
 }
 
 export function readManualQaEvents(ticketDir: string): ManualQaEvent[] {
-  const path = getManualQaStoragePaths(ticketDir, 1).eventsPath
+  const path = resolve(validateManualQaDirectory(resolve(ticketDir, 'manual-qa')), 'events.jsonl')
   return parseJsonlContent<unknown>(readManualQaText(ticketDir, path) ?? '', path).items
     .map((value) => ManualQaEventSchema.parse(value))
 }
@@ -272,7 +274,7 @@ export function completeManualQaReservation(ticketDir: string, reservation: Manu
 }
 
 export function listManualQaVersions(ticketDir: string): number[] {
-  const root = getManualQaStoragePaths(ticketDir, 1).root
+  const root = validateManualQaDirectory(resolve(ticketDir, 'manual-qa'))
   let entries
   try {
     entries = readdirSync(resolveContainedPath(ticketDir, root), { withFileTypes: true })

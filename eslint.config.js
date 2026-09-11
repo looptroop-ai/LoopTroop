@@ -217,6 +217,14 @@ export default tseslint.config(
           group: ['**/io/atomicWrite', '**/io/atomicWrite.*'],
           importNames: ['safeAtomicWrite'],
           message: 'Use writeTicketFile, or safeAtomicWriteWithin with a validated root, for workflow artifacts.',
+        }, {
+          group: ['**/io/jsonl', '**/io/jsonl.*'],
+          importNames: ['writeJsonl', 'appendJsonl'],
+          message: 'Use writeTicketFile or appendJsonlWithin with a validated root for workflow artifacts.',
+        }, {
+          group: ['**/io/atomicAppend', '**/io/atomicAppend.*'],
+          importNames: ['safeAtomicAppend'],
+          message: 'Use safeAtomicAppendWithin with a validated root for workflow artifacts.',
         }],
       }],
     },

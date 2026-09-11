@@ -1,4 +1,6 @@
 import type { Context } from 'hono'
+import { lstatSync } from 'node:fs'
+import { ContainedPathError } from '../../lib/containedPath'
 import { db as appDb } from '../../db/index'
 import { profiles } from '../../db/schema'
 import {
@@ -19,6 +21,7 @@ import {
   EXECUTION_SETUP_RUNTIME_REWIND_PHASES,
   getTicketByRef,
   getTicketPaths,
+  resolveTicketContainedPath,
   INTERVIEW_EDIT_RESTART_PHASES,
   isDisplayOnlyMockTicket,
   PRD_EDIT_RESTART_PHASES,
@@ -143,11 +146,20 @@ export interface PhaseRestartSummary {
   createdAttempts: PublicTicketPhaseAttemptRow[]
 }
 
+function requireExistingTicketWorkspace(ticketId: string): void {
+  // getTicketPaths can persist missing base-branch metadata, so check existence first.
+  const ticketDir = resolveTicketContainedPath(ticketId, '.')
+  if (!ticketDir || !lstatSync(ticketDir, { throwIfNoEntry: false })?.isDirectory()) {
+    throw new ContainedPathError('Ticket workspace not initialized')
+  }
+  if (!getTicketPaths(ticketId)) throw new Error('Ticket workspace not initialized')
+}
+
 export async function preparePlanningRestart(
   ticketId: string,
   targetApprovalStatus: 'WAITING_INTERVIEW_APPROVAL' | 'WAITING_PRD_APPROVAL',
 ): Promise<PhaseRestartSummary> {
-  if (!getTicketPaths(ticketId)) throw new Error('Ticket workspace not initialized')
+  requireExistingTicketWorkspace(ticketId)
   const restartPhase = targetApprovalStatus === 'WAITING_INTERVIEW_APPROVAL'
     ? 'WAITING_INTERVIEW_APPROVAL'
     : 'WAITING_PRD_APPROVAL'
@@ -177,7 +189,7 @@ export async function preparePlanningRestart(
 }
 
 export async function prepareExecutionSetupPlanRestart(ticketId: string): Promise<PhaseRestartSummary> {
-  if (!getTicketPaths(ticketId)) throw new Error('Ticket workspace not initialized')
+  requireExistingTicketWorkspace(ticketId)
   const restartReason = 'execution_setup_plan_regenerate'
   emitRoutePhaseLog(
     ticketId,
@@ -203,7 +215,7 @@ export async function prepareExecutionSetupPlanRestart(ticketId: string): Promis
 
 export async function prepareExecutionSetupRuntimeRewind(ticketId: string): Promise<PhaseRestartSummary> {
   // Refuse an unsafe workspace before canceling work or archiving its attempts.
-  if (!getTicketPaths(ticketId)) throw new Error('Ticket workspace not initialized')
+  requireExistingTicketWorkspace(ticketId)
   const restartReason = 'execution_setup_runtime_rewind'
   emitRoutePhaseLog(ticketId, 'WAITING_EXECUTION_SETUP_APPROVAL', 'info', 'Stopping workspace runtime setup and returning to setup-plan approval.')
   cancelTicket(ticketId)
@@ -239,7 +251,7 @@ export async function prepareExecutionSetupRuntimeRewind(ticketId: string): Prom
 export async function prepareExecutionSetupRuntimeRegeneration(
   ticketId: string,
 ): Promise<PhaseRestartSummary> {
-  if (!getTicketPaths(ticketId)) throw new Error('Ticket workspace not initialized')
+  requireExistingTicketWorkspace(ticketId)
   const restartReason = 'execution_setup_runtime_regenerate'
   emitRoutePhaseLog(
     ticketId,

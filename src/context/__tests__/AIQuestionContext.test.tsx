@@ -180,9 +180,11 @@ describe('AIQuestionProvider', () => {
       return <div>remaining:{getRemainingMs(ticketId) ?? 'none'}</div>
     }
 
-    renderProvider([ticket], <Remaining ticketId={ticket.id} />)
-
-    await vi.waitFor(() => expect(screen.getByText('remaining:300000')).toBeInTheDocument())
+    await act(async () => {
+      renderProvider([ticket], <Remaining ticketId={ticket.id} />)
+      await vi.advanceTimersByTimeAsync(0)
+    })
+    expect(screen.getByText('remaining:300000')).toBeInTheDocument()
     vi.useRealTimers()
   })
 

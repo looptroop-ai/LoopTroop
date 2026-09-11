@@ -3,9 +3,10 @@ import { join } from 'node:path'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import { OpenCodeSDKAdapter } from '../adapter'
 import type { PromptPart } from '../types'
-import { getTicketPaths, readTicketFile } from '../../storage/tickets'
+import { getTicketContext, getTicketPaths, readTicketFile } from '../../storage/tickets'
 import { makeTempDir, removeTempDir } from '../../test/tempDir'
 import { readManualQaText } from '../../phases/manualQa/storage'
+import * as runtime from '../../runtime'
 
 vi.mock('../../storage/tickets', () => ({
   getTicketPaths: vi.fn(),
@@ -20,6 +21,7 @@ const roots: string[] = []
 afterEach(() => {
   for (const root of roots.splice(0)) removeTempDir(root)
   vi.clearAllMocks()
+  vi.restoreAllMocks()
 })
 
 interface AdapterPartitionProbe {
@@ -36,6 +38,17 @@ function probe(adapter: OpenCodeSDKAdapter): AdapterPartitionProbe {
 }
 
 describe('OpenCode Manual QA file parts', () => {
+  it('does not warn about beads that have not been generated yet', async () => {
+    const ticketDir = makeTempDir('adapter-missing-beads-')
+    roots.push(ticketDir)
+    const warn = vi.spyOn(runtime, 'warnIfVerbose')
+    vi.mocked(getTicketContext).mockReturnValue({ localTicket: { title: 'Draft' } } as NonNullable<ReturnType<typeof getTicketContext>>)
+    vi.mocked(getTicketPaths).mockReturnValue({ ticketDir, beadsPath: join(ticketDir, 'beads.jsonl') } as NonNullable<ReturnType<typeof getTicketPaths>>)
+    vi.mocked(readTicketFile).mockReturnValue(null)
+    await probe(new OpenCodeSDKAdapter('http://127.0.0.1:9')).loadTicketState('1:DEMO-1')
+    expect(warn).not.toHaveBeenCalled()
+  })
+
   it.each(['interview.yaml', 'prd.yaml', 'runtime/execution-setup-profile.json', 'beads.jsonl'])('rejects linked %s before loading model context', async (file) => {
     const ticketDir = makeTempDir('adapter-context-')
     const outside = makeTempDir('adapter-context-outside-')

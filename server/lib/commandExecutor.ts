@@ -191,7 +191,7 @@ export function resolveCommandProgram(
 
 function realpathOrSelf(path: string): string {
   try {
-    return realpathSync(path)
+    return realpathSync.native(path)
   } catch {
     return resolve(path)
   }

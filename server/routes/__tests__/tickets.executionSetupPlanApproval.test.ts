@@ -1,4 +1,4 @@
-import { existsSync, mkdirSync, renameSync, symlinkSync, writeFileSync } from 'node:fs'
+import { existsSync, mkdirSync, renameSync, rmSync, symlinkSync, writeFileSync } from 'node:fs'
 import { dirname, join } from 'node:path'
 import { afterAll, afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { Hono } from 'hono'
@@ -24,7 +24,9 @@ import { revertTicketToApprovalStatus } from '../../machines/persistence'
 import { lockExecutionSetupPlanDetectedHooks } from '../../phases/executionSetupPlan/hookEvidence'
 import { saveExecutionSetupPlan } from '../../phases/executionSetupPlan/document'
 import { serializeExecutionSetupPlan } from '../../phases/executionSetupPlan/types'
-import { prepareExecutionSetupRuntimeRegeneration, prepareExecutionSetupRuntimeRewind } from '../ticketHandlers/routeUtils'
+import { prepareExecutionSetupPlanRestart, prepareExecutionSetupRuntimeRegeneration, prepareExecutionSetupRuntimeRewind, preparePlanningRestart } from '../ticketHandlers/routeUtils'
+import * as workflowRunner from '../../workflow/runner'
+import * as executionLog from '../../log/executionLog'
 
 const shellCommand = (script: string) => ({
   mode: 'shell' as const,
@@ -601,6 +603,38 @@ describe('ticketRouter execution setup plan approval routes', () => {
     expect(phases.map(phase => listPhaseAttempts(ticket.id, phase))).toEqual(attempts)
     expect(getTicketByRef(ticket.id)?.status).toBe('PREPARING_EXECUTION_ENV')
     expect(revertTicketToApprovalStatus).not.toHaveBeenCalled()
+  })
+
+  it.each(['worktreePath', 'ticketDir'] as const)('refuses every restart when %s is missing without recreating it', async (missingPath) => {
+    const { app, ticket, paths } = await setupExecutionSetupPlanTicket()
+    await moveTicketToRuntimeSetup(app, ticket)
+    const phases = ['GENERATING_EXECUTION_SETUP_PLAN', 'WAITING_EXECUTION_SETUP_APPROVAL', 'PREPARING_EXECUTION_ENV'] as const
+    const attempts = phases.map(phase => listPhaseAttempts(ticket.id, phase))
+    rmSync(paths[missingPath], { recursive: true })
+    const cancel = vi.spyOn(workflowRunner, 'cancelTicket').mockClear()
+    const append = vi.spyOn(executionLog, 'appendLogEvent').mockClear()
+    vi.mocked(revertTicketToApprovalStatus).mockClear()
+
+    await expect(preparePlanningRestart(ticket.id, 'WAITING_INTERVIEW_APPROVAL')).rejects.toThrow()
+    await expect(preparePlanningRestart(ticket.id, 'WAITING_PRD_APPROVAL')).rejects.toThrow()
+    await expect(prepareExecutionSetupPlanRestart(ticket.id)).rejects.toThrow()
+    await expect(prepareExecutionSetupRuntimeRewind(ticket.id)).rejects.toThrow()
+    await expect(prepareExecutionSetupRuntimeRegeneration(ticket.id)).rejects.toThrow()
+
+    const response = await app.request(`/api/tickets/${ticket.id}/regenerate-execution-setup-plan`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: '{}',
+    })
+    expect(response.status).toBe(400)
+
+    expect(existsSync(paths[missingPath])).toBe(false)
+    expect(append).not.toHaveBeenCalled()
+    expect(cancel).not.toHaveBeenCalled()
+    expect(phases.map(phase => listPhaseAttempts(ticket.id, phase))).toEqual(attempts)
+    expect(getTicketByRef(ticket.id)?.status).toBe('PREPARING_EXECUTION_ENV')
+    expect(revertTicketToApprovalStatus).not.toHaveBeenCalled()
+    expect(existsSync(paths[missingPath])).toBe(false)
   })
 
   it('rewinds from runtime setup when saving an edited setup plan', async () => {

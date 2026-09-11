@@ -1,4 +1,5 @@
 import type { Context } from 'hono'
+import { ContainedPathError } from '../../lib/containedPath'
 import { ensureActorForTicket, sendTicketEvent } from '../../machines/persistence'
 import {
   findProjectExecutionBandConflict,
@@ -383,6 +384,7 @@ function approveInterviewForRoute(c: Context, ticketId: string, expectedContentS
     sendTicketEvent(ticketId, { type: 'APPROVE' })
   } catch (err) {
     if (err instanceof StaleArtifactApprovalError) return staleApprovalResponse(c, err)
+    if (err instanceof ContainedPathError) throw err
     logTicketOperationError(ticketId, 'Failed to approve interview for', err)
     return c.json({
       error: 'Failed to approve interview',
@@ -431,6 +433,7 @@ function approvePrdForRoute(c: Context, ticketId: string, expectedContentSha256:
     sendTicketEvent(ticketId, { type: 'APPROVE' })
   } catch (err) {
     if (err instanceof StaleArtifactApprovalError) return staleApprovalResponse(c, err)
+    if (err instanceof ContainedPathError) throw err
     logTicketOperationError(ticketId, 'Failed to approve PRD for', err)
     return c.json({
       error: 'Failed to approve PRD',
@@ -484,6 +487,7 @@ function approveBeadsForRoute(c: Context, ticketId: string, expectedContentSha25
     sendTicketEvent(ticketId, { type: 'APPROVE' })
   } catch (err) {
     if (err instanceof StaleArtifactApprovalError) return staleApprovalResponse(c, err)
+    if (err instanceof ContainedPathError) throw err
     // "Your plan needs editing" is not a server fault, and answering 500 sent
     // an operator to the logs for something the screen could have told them.
     // The reachable one is a bead with no test commands and no reason for it:
@@ -585,6 +589,7 @@ function approveExecutionSetupPlanForRoute(c: Context, ticketId: string, expecte
     sendTicketEvent(ticketId, { type: 'APPROVE_EXECUTION_SETUP_PLAN' })
   } catch (err) {
     if (err instanceof StaleArtifactApprovalError) return staleApprovalResponse(c, err)
+    if (err instanceof ContainedPathError) throw err
     logTicketOperationError(ticketId, 'Failed to approve execution setup plan for', err)
     return c.json({
       error: 'Failed to approve execution setup plan',

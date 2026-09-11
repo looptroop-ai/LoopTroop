@@ -1,8 +1,7 @@
-import { statSync } from 'node:fs'
+import { lstatSync } from 'node:fs'
 import { readFileNoFollowSync } from '../io/readFile'
-import { detectGitBaseBranch, getTicketWorktreePath } from '../storage/paths'
+import { detectGitBaseBranch } from '../storage/paths'
 import { resolveProjectTicketContainedPath, writeProjectTicketFile } from './containedPath'
-import { resolveContainedPath } from '../lib/containedPath'
 
 export interface TicketMetaRecord {
   externalId?: string
@@ -122,14 +121,14 @@ export function resolveTicketBaseBranch(projectRoot: string, externalId: string)
   }
 
   const detected = detectGitBaseBranch(projectRoot)
-  // Only persist when the worktree still exists; otherwise we'd recreate deleted directories.
-  let worktreeExists = false
+  // Read-side enrichment must not recreate a deleted worktree or its .ticket directory.
+  let ticketDirExists = false
   try {
-    worktreeExists = statSync(resolveContainedPath(projectRoot, getTicketWorktreePath(projectRoot, externalId))).isDirectory()
+    ticketDirExists = lstatSync(resolveProjectTicketContainedPath(projectRoot, externalId, '.')).isDirectory()
   } catch (error) {
     if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error
   }
-  if (worktreeExists) {
+  if (ticketDirExists) {
     updateTicketMeta(projectRoot, externalId, { baseBranch: detected })
   }
   return detected

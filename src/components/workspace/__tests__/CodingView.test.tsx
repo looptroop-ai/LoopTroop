@@ -725,7 +725,7 @@ describe('CodingView', () => {
     ).toHaveLength(1)
   })
 
-  it('shows the full non-debug bead transcript in the Log tab', () => {
+  it('shows the full non-debug bead transcript in the Log tab', async () => {
     const beadLogs: LogEntry[] = [
       {
         id: '1',
@@ -813,7 +813,7 @@ describe('CodingView', () => {
     expect(copyBtn).toBeInTheDocument()
 
     // Test copy function
-    fireEvent.click(copyBtn)
+    await act(async () => { fireEvent.click(copyBtn) })
     expect(writeTextMock).toHaveBeenCalled()
     const copiedText = writeTextMock.mock.calls[0]?.[0]
     expect(copiedText).toContain('[CMD] $ git status')
@@ -900,7 +900,7 @@ describe('CodingView', () => {
     expect(outputTab.parentElement).toHaveAttribute('title', 'Final model response or diagnostic for the selected bead iteration.')
   })
 
-  it('renders bead raw Input with copy and raw stats from execution attempts', () => {
+  it('renders bead raw Input with copy and raw stats from execution attempts', async () => {
     const prompt = 'Accepted prompt line 1\nAccepted prompt line 2'
     const response = 'Accepted final output'
     mockUseTicketArtifacts.mockImplementation((_ticketId?: string, options?: { phase?: string }) => ({
@@ -957,7 +957,7 @@ describe('CodingView', () => {
     expect(screen.getByText('Session session-raw-1')).toBeTruthy()
 
     const copyBtn = screen.getByRole('button', { name: 'Copy bead input' })
-    fireEvent.click(copyBtn)
+    await act(async () => { fireEvent.click(copyBtn) })
     expect(writeTextMock).toHaveBeenCalledWith(prompt)
   })
 

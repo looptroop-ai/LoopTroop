@@ -1,5 +1,5 @@
 import { afterAll, beforeEach, describe, expect, it, vi } from 'vitest'
-import { mkdirSync, writeFileSync } from 'node:fs'
+import { mkdirSync, renameSync, symlinkSync, writeFileSync } from 'node:fs'
 import { join } from 'node:path'
 import { Hono } from 'hono'
 import { initializeDatabase } from '../../db/init'
@@ -37,6 +37,24 @@ describe('ticketRouter GET /tickets/:id/size', () => {
   afterAll(() => {
     clearProjectDatabaseCache()
     repoManager.cleanup()
+  })
+
+  it('returns 400 when a ticket artifact root escapes its worktree', async () => {
+    const repoDir = repoManager.createRepo()
+    const project = attachProject({ folderPath: repoDir, name: 'Size containment', shortname: 'SIZE' })
+    const ticket = createTicket({ projectId: project.id, title: 'Unsafe workspace', description: '' })
+    const init = await initializeTicket({ projectFolder: repoDir, externalId: ticket.externalId })
+    const ticketDir = join(init.worktreePath, '.ticket')
+    const outsideTicket = join(repoDir, 'outside-ticket')
+    renameSync(ticketDir, outsideTicket)
+    symlinkSync(outsideTicket, ticketDir, 'junction')
+    const app = new Hono()
+    app.route('/api', ticketRouter)
+
+    const response = await app.request(`/api/tickets/${ticket.id}/size`)
+
+    expect(response.status).toBe(400)
+    expect(await response.json()).toEqual({ error: expect.any(String) })
   })
 
   it('calculates the size of a ticket worktree path recursively', async () => {

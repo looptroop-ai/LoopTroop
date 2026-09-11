@@ -1,4 +1,4 @@
-import { cleanup, render, screen, fireEvent } from '@testing-library/react'
+import { act, cleanup, render, screen, fireEvent } from '@testing-library/react'
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { makeTicket } from '@/test/factories'
@@ -111,7 +111,7 @@ describe('VerificationSummaryPanel', () => {
     expect(onMerge).toHaveBeenCalledOnce()
   })
 
-  it('confirms before finishing without merge, and carries the reason through', () => {
+  it('confirms before finishing without merge, and carries the reason through', async () => {
     const onCloseUnmerged = vi.fn()
     renderPanel({}, { onMerge: vi.fn(), onCloseUnmerged, isPending: false })
 
@@ -123,17 +123,21 @@ describe('VerificationSummaryPanel', () => {
     fireEvent.change(screen.getByLabelText(/why finish without merging/i), {
       target: { value: 'Superseded by a different branch.' },
     })
-    fireEvent.click(screen.getAllByText('Finish Without Merge')[1]!)
+    await act(async () => {
+      fireEvent.click(screen.getAllByText('Finish Without Merge')[1]!)
+    })
 
     expect(onCloseUnmerged).toHaveBeenCalledWith('Superseded by a different branch.')
   })
 
-  it('finishes without merge with no reason when none is given', () => {
+  it('finishes without merge with no reason when none is given', async () => {
     const onCloseUnmerged = vi.fn()
     renderPanel({}, { onMerge: vi.fn(), onCloseUnmerged, isPending: false })
 
     fireEvent.click(screen.getByText('Finish Without Merge'))
-    fireEvent.click(screen.getAllByText('Finish Without Merge')[1]!)
+    await act(async () => {
+      fireEvent.click(screen.getAllByText('Finish Without Merge')[1]!)
+    })
 
     expect(onCloseUnmerged).toHaveBeenCalledWith(undefined)
   })

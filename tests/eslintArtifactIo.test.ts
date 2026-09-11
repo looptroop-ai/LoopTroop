@@ -14,6 +14,12 @@ const probe = [
   "import { safeAtomicWriteWithin } from '../../io/atomicWrite'",
   "import { readTicketFile, writeTicketFile } from '../../storage/tickets'",
   "import { readFileNoFollowSync } from '../../io/readFile'",
+  "import { writeJsonl as writeRows, appendJsonl } from '../../io/jsonl'",
+  "import * as jsonl from '../../io/jsonl.ts'",
+  "import { safeAtomicAppend } from '../../io/atomicAppend'",
+  "import * as append from '../../io/atomicAppend.ts'",
+  "import { appendJsonlWithin } from '../../io/jsonl'",
+  "import { safeAtomicAppendWithin } from '../../io/atomicAppend'",
 ].join('\n')
 
 async function restrictedLines(filePath: string): Promise<number[]> {
@@ -23,7 +29,7 @@ async function restrictedLines(filePath: string): Promise<number[]> {
 
 describe('workflow artifact I/O lint boundary', () => {
   it('rejects raw content imports, aliases and namespaces while retaining metadata and contained I/O', async () => {
-    expect(await restrictedLines('server/workflow/phases/__lint-probe.ts')).toEqual([1, 2, 3, 4, 5, 6, 7])
+    expect(await restrictedLines('server/workflow/phases/__lint-probe.ts')).toEqual([1, 2, 3, 4, 5, 6, 7, 13, 14, 15, 16])
   })
 
   it('leaves fixture setup and low-level I/O implementations outside the workflow boundary', async () => {

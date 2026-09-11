@@ -1,11 +1,13 @@
 import { afterAll, beforeEach, describe, expect, it, vi } from 'vitest'
-import { existsSync, mkdirSync, readFileSync, symlinkSync, writeFileSync } from 'node:fs'
+import { existsSync, mkdirSync, readFileSync, renameSync, symlinkSync, writeFileSync } from 'node:fs'
 import { dirname, join } from 'node:path'
 import { Hono } from 'hono'
 import { initializeDatabase } from '../../db/init'
 import { sqlite } from '../../db/index'
-import { clearProjectDatabaseCache } from '../../db/project'
-import { attachProject } from '../../storage/projects'
+import { clearProjectDatabaseCache, closeProjectDatabase } from '../../db/project'
+import { attachProject, listProjects } from '../../storage/projects'
+import { getProjectDbPath } from '../../storage/paths'
+import * as openPath from '../../lib/openPath'
 import { createTicket, getTicketPaths } from '../../storage/tickets'
 import { createFixtureRepoManager } from '../../test/fixtureRepo'
 import { recoverTicketRuntimeArtifacts } from '../../startup'
@@ -66,6 +68,25 @@ afterAll(() => {
 describe('filesRouter GET /files/:ticketId/logs', () => {
   const app = new Hono()
   app.route('/api', filesRouter)
+
+  it('keeps an attached folder authorized when its project metadata is unavailable', async () => {
+    const { repoDir } = createProjectTicket()
+    closeProjectDatabase(repoDir)
+    const projectDbPath = getProjectDbPath(repoDir)
+    renameSync(projectDbPath, `${projectDbPath}.unavailable`)
+    expect(listProjects()).toEqual([])
+    const opener = vi.spyOn(openPath, 'revealFolderInExplorer').mockResolvedValueOnce(undefined)
+    try {
+      const response = await app.request('/api/files/open-path', {
+        method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ path: repoDir }),
+      })
+      expect(response.status).toBe(200)
+      expect(await response.json()).toEqual({ success: true })
+      expect(opener).toHaveBeenCalledWith(repoDir, expect.arrayContaining([repoDir]))
+    } finally {
+      opener.mockRestore()
+    }
+  })
 
   it('rejects an artifact directory link leaving the ticket and an outside open-path request', async () => {
     const { ticket, paths, repoDir } = createProjectTicket()

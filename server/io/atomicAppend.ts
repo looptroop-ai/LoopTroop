@@ -1,5 +1,7 @@
-import { closeSync, fstatSync, fsyncSync, mkdirSync, openSync, readSync, writeSync } from 'fs'
-import { dirname } from 'path'
+import { closeSync, constants, fstatSync, fsyncSync, mkdirSync, readSync, writeSync } from 'node:fs'
+import { dirname } from 'node:path'
+import { ContainedPathError, resolveContainedPath } from '../lib/containedPath'
+import { openFileNoFollowSync } from './readFile'
 
 export interface AtomicAppendRange {
   offset: number
@@ -8,10 +10,27 @@ export interface AtomicAppendRange {
 
 /** Appends one JSONL line and returns the exact byte range written. */
 export function safeAtomicAppend(filePath: string, line: string): AtomicAppendRange {
-  mkdirSync(dirname(filePath), { recursive: true })
+  return append(filePath, line)
+}
 
-  const fd = openSync(filePath, 'a+')
+export function safeAtomicAppendWithin(root: string, relativePath: string, line: string): AtomicAppendRange {
+  const canonicalRoot = resolveContainedPath(root, '.')
+  const target = resolveContainedPath(canonicalRoot, relativePath, { allowMissingParents: true })
+  const check = () => {
+    if (resolveContainedPath(canonicalRoot, target, { allowMissingParents: true }) !== target) {
+      throw new ContainedPathError('Append destination changed')
+    }
+  }
+  return append(target, line, check)
+}
+
+function append(filePath: string, line: string, check?: () => void): AtomicAppendRange {
+  check?.()
+  mkdirSync(dirname(filePath), { recursive: true })
+  check?.()
+  const fd = openFileNoFollowSync(filePath, constants.O_RDWR | constants.O_APPEND | constants.O_CREAT)
   try {
+    check?.()
     const stats = fstatSync(fd)
     let prefix = ''
 

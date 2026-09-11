@@ -1,10 +1,13 @@
-import { afterAll, describe, expect, it } from 'vitest'
+import { afterAll, afterEach, describe, expect, it, vi } from 'vitest'
 import { execFileSync } from 'node:child_process'
-import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs'
+import { existsSync, lstatSync, mkdirSync, readFileSync, symlinkSync, writeFileSync } from 'node:fs'
+import * as tickets from '../../../storage/tickets'
+import { resolveProjectTicketContainedPath } from '../../../ticket/containedPath'
 import { join } from 'node:path'
 import { makeTempDir, pinGitLineEndings, removeTempDir } from '../../../test/tempDir'
 import {
   createExecutionSetupPathSnapshot,
+  clearExecutionSetupRuntimeArtifacts,
   removeExecutionSetupPathViolations,
   validateExecutionSetupPaths,
 } from '../storage'
@@ -23,6 +26,7 @@ function createGitRepo(): string {
 
 describe('execution setup storage tracking', () => {
   const repoDirs: string[] = []
+  afterEach(() => vi.restoreAllMocks())
 
   function makeFreshRepo(): string {
     const dir = createGitRepo()
@@ -34,6 +38,21 @@ describe('execution setup storage tracking', () => {
     for (const dir of repoDirs) {
       removeTempDir(dir)
     }
+  })
+
+  it.each([false, true])('unlinks setup directory aliases without traversing them (dangling: %s)', (dangling) => {
+    const root = makeFreshRepo()
+    const runtime = join(root, '.looptroop/worktrees/TEST-1/.ticket/runtime')
+    const outside = makeFreshRepo()
+    const alias = join(runtime, 'execution-setup')
+    mkdirSync(runtime, { recursive: true })
+    symlinkSync(dangling ? join(outside, 'missing') : outside, alias, 'junction')
+    vi.spyOn(tickets, 'resolveTicketContainedPath').mockImplementation((_id, path, kind) =>
+      resolveProjectTicketContainedPath(root, 'TEST-1', path, kind),
+    )
+    expect(clearExecutionSetupRuntimeArtifacts('1:TEST-1', { preserveToolCache: true })).toContain(alias)
+    expect(() => lstatSync(alias)).toThrow()
+    expect(readFileSync(join(outside, 'hello.ts'), 'utf8')).toBe('export const hello = 1\n')
   })
 
   it('allows setup to change tracked repository files outside runtime paths', () => {

@@ -17,12 +17,12 @@ export function encodedInvokeItem(targetPath: string): string {
 
 /** The platform openers accept names, not directory handles; a residual swap window remains. */
 export async function revealFolderInExplorer(targetPath: string, allowedRoots: string[]): Promise<void> {
-  if (!isAbsolute(targetPath) || targetPath.includes('\0')) throw new ContainedPathError('Path must be absolute and inside an attached project or the LoopTroop application directory')
+  if (!isAbsolute(targetPath) || targetPath.includes('\0')) throw new ContainedPathError('Path must be absolute and inside an attached project or the LoopTroop application configuration directory')
   let requestedPath: string
   try {
     requestedPath = realpathSync.native(targetPath)
   } catch {
-    throw new ContainedPathError('Path must exist inside an attached project or the LoopTroop application directory')
+    throw new ContainedPathError('Path must exist inside an attached project or the LoopTroop application configuration directory')
   }
   let root: string | undefined
   let target: string | undefined
@@ -37,7 +37,7 @@ export async function revealFolderInExplorer(targetPath: string, allowedRoots: s
       // An unavailable project cannot authorize a path. Try the other stored roots.
     }
   }
-  if (!root || !target) throw new ContainedPathError('Path must exist inside an attached project or the LoopTroop application directory')
+  if (!root || !target) throw new ContainedPathError('Path must exist inside an attached project or the LoopTroop application configuration directory')
   const folder = statSync(target).isDirectory() ? target : dirname(target)
   const trustedRoot = root
 
@@ -56,12 +56,16 @@ export async function revealFolderInExplorer(targetPath: string, allowedRoots: s
     || await fs.readFile('/proc/version', 'utf8').then(v => v.toLowerCase().includes('microsoft')).catch(() => false)
   )
   if (isWsl) {
+    // The trusted system translator maps the contained Linux name to Windows.
+    // Strip its terminator only: whitespace can belong to the actual filename.
+    const { stdout } = await runOpener('wslpath', ['-w', folder])
+    const windowsFolder = stdout.replace(/\r?\n$/, '')
+    if (!windowsFolder || /[\r\n\0]/.test(windowsFolder)) throw new ContainedPathError('Invalid translated folder path')
     try {
-      const { stdout } = await runOpener('wslpath', ['-w', folder])
-      await runOpener('powershell.exe', ['-NoProfile', '-EncodedCommand', encodedInvokeItem(stdout.trim())])
+      await runOpener('powershell.exe', ['-NoProfile', '-EncodedCommand', encodedInvokeItem(windowsFolder)])
     } catch (error) {
       if (error instanceof ContainedPathError) throw error
-      await runOpener('explorer.exe', [folder])
+      await runOpener('explorer.exe', [windowsFolder])
     }
   } else {
     const opener = process.platform === 'win32' ? 'explorer.exe' : process.platform === 'darwin' ? 'open' : 'xdg-open'

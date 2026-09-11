@@ -22,6 +22,7 @@ export {
   getTicketPaths,
   resolveTicketContainedPath,
   writeTicketFile,
+  readTicketFile,
   findProjectExecutionBandConflict,
   parseLockedCouncilMembers,
   parseLockedCouncilMemberVariants,

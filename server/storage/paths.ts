@@ -3,6 +3,7 @@ import { isAbsolute, resolve } from 'path'
 import { resolveBaseBranch } from '../git/repository'
 import { runGitSync } from '../git/runCommand'
 import { ContainedPathError, resolveContainedPath } from '../lib/containedPath'
+import { resolveProjectTicketContainedPath } from '../ticket/containedPath'
 export function normalizeFolderPath(input: string): string {
   let output = input.trim().replace(/[\\/]+$/, '')
   output = output.replace(/\\/g, '/')
@@ -69,31 +70,31 @@ export function getTicketWorktreePath(projectRoot: string, externalId: string): 
 }
 
 export function getTicketDir(projectRoot: string, externalId: string): string {
-  return resolve(getTicketWorktreePath(projectRoot, externalId), '.ticket')
+  return resolveProjectTicketContainedPath(projectRoot, externalId, '.')
 }
 
 export function getTicketRuntimeDir(projectRoot: string, externalId: string): string {
-  return resolve(getTicketDir(projectRoot, externalId), 'runtime')
+  return resolveProjectTicketContainedPath(projectRoot, externalId, 'runtime')
 }
 
 export function getTicketExecutionLogPath(projectRoot: string, externalId: string): string {
-  return resolve(getTicketRuntimeDir(projectRoot, externalId), 'execution-log.jsonl')
+  return resolveProjectTicketContainedPath(projectRoot, externalId, 'runtime/execution-log.jsonl')
 }
 
 export function getTicketDebugLogPath(projectRoot: string, externalId: string): string {
-  return resolve(getTicketRuntimeDir(projectRoot, externalId), 'execution-log.debug.jsonl')
+  return resolveProjectTicketContainedPath(projectRoot, externalId, 'runtime/execution-log.debug.jsonl')
 }
 
 export function getTicketAiLogPath(projectRoot: string, externalId: string): string {
-  return resolve(getTicketRuntimeDir(projectRoot, externalId), 'execution-log.ai.jsonl')
+  return resolveProjectTicketContainedPath(projectRoot, externalId, 'runtime/execution-log.ai.jsonl')
 }
 
 export function getTicketExecutionSetupDir(projectRoot: string, externalId: string): string {
-  return resolve(getTicketRuntimeDir(projectRoot, externalId), 'execution-setup')
+  return resolveProjectTicketContainedPath(projectRoot, externalId, 'runtime/execution-setup')
 }
 
 export function getTicketExecutionSetupProfilePath(projectRoot: string, externalId: string): string {
-  return resolve(getTicketRuntimeDir(projectRoot, externalId), 'execution-setup-profile.json')
+  return resolveProjectTicketContainedPath(projectRoot, externalId, 'runtime/execution-setup-profile.json')
 }
 
 export function ensureProjectStorageDirs(projectRoot: string) {

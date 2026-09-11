@@ -580,6 +580,34 @@ describe('useSSE', () => {
     unmount()
   })
 
+  it('refreshes once for an open plus replay gap, but refreshes again after a later disconnect', async () => {
+    const ticketId = '1:T-gap-reconnect'
+    localStorage.setItem(`looptroop-sse-last-event-id:${ticketId}`, '99')
+    const invalidateSpy = vi.spyOn(queryClient, 'invalidateQueries')
+    const { unmount } = renderHook(() => useSSE({ ticketId }))
+    await waitFor(() => expect(MockEventSource.instances).toHaveLength(1))
+    const source = MockEventSource.instances[0]!
+    const skipRefreshes = () => invalidateSpy.mock.calls.filter(([filters]) => filters?.queryKey?.[0] === 'ticket-skips')
+    await act(async () => {
+      source.emitOpen()
+      source.emit('replay_gap', { ticketId, reason: 'cursor_unavailable' }, '')
+    })
+    expect(skipRefreshes()).toHaveLength(1)
+    expect(localStorage.getItem(`looptroop-sse-last-event-id:${ticketId}`)).toBeNull()
+    vi.useFakeTimers()
+    try {
+      await act(async () => {
+        source.emitTransportError()
+        await vi.advanceTimersByTimeAsync(SSE_RECONNECT_DELAY_MS)
+      })
+      await act(async () => MockEventSource.instances[1]!.emitOpen())
+      expect(skipRefreshes()).toHaveLength(2)
+    } finally {
+      unmount()
+      vi.useRealTimers()
+    }
+  })
+
   it('exposes snapshot refetch errors after a gap without restoring the rejected cursor', async () => {
     const ticketId = '1:T-gap-error'
     const snapshot = vi.fn(async () => ({ status: 'CODING' }))
@@ -628,6 +656,7 @@ describe('useSSE', () => {
         expect(invalidateSpy).toHaveBeenCalledWith({ queryKey: ['interview', ticketId] })
         expect(invalidateSpy).toHaveBeenCalledWith({ queryKey: ['artifact', ticketId] })
         expect(invalidateSpy).toHaveBeenCalledWith({ queryKey: ['ticket-beads', ticketId] })
+        expect(invalidateSpy).toHaveBeenCalledWith({ queryKey: ['ticket-skips', ticketId] })
         expect(invalidateSpy).toHaveBeenCalledWith({ queryKey: ['bead-diff', ticketId] })
         expect(invalidateSpy).toHaveBeenCalledWith({ queryKey: ['manual-qa', ticketId] })
         expect(logRefreshSpy).toHaveBeenCalledWith(expect.objectContaining({

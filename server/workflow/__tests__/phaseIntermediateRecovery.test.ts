@@ -4,6 +4,8 @@ import { TEST } from '../../test/factories'
 import { createInitializedTestTicket, createTestRepoManager, resetTestDb } from '../../test/integration'
 import { tryRecoverPhaseIntermediate } from '../phases/helpers'
 import { phaseIntermediate } from '../phases/state'
+import { symlinkSync } from 'node:fs'
+import { join } from 'node:path'
 
 vi.mock('../../opencode/factory', () => ({
   getOpenCodeAdapter: () => ({}),
@@ -38,6 +40,20 @@ function seedInterviewVotes(ticketId: string, content: string) {
 }
 
 describe('tryRecoverPhaseIntermediate validates the persisted winner', () => {
+  it.each(['prd', 'beads'] as const)('refuses %s recovery when its canonical input escapes the ticket', async (pipeline) => {
+    const { ticket, context, paths } = await createInitializedTestTicket(repoManager)
+    insertPhaseArtifact(ticket.id, {
+      phase: pipeline === 'prd' ? 'DRAFTING_PRD' : 'DRAFTING_BEADS',
+      artifactType: `${pipeline}_drafts`,
+      content: JSON.stringify({
+        isFinal: true, drafts: [{ memberId: WINNER_ID, outcome: 'completed', content: 'draft' }],
+      }),
+    })
+    const outside = repoManager.createRepo()
+    symlinkSync(outside, join(paths.ticketDir, pipeline === 'prd' ? 'interview.yaml' : 'prd.yaml'), 'junction')
+    expect(tryRecoverPhaseIntermediate(ticket.id, context, pipeline, false)).toBe(false)
+    expect(phaseIntermediate.has(`${ticket.id}:${pipeline}`)).toBe(false)
+  })
   beforeEach(() => {
     resetTestDb()
     phaseIntermediate.clear()

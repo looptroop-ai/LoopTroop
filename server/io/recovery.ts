@@ -1,11 +1,9 @@
 import {
   readdirSync,
   readFileSync,
-  writeFileSync,
   existsSync,
-  statSync,
+  fstatSync,
   lstatSync,
-  openSync,
   readSync,
   ftruncateSync,
   closeSync,
@@ -17,6 +15,7 @@ import {
 import { extname, join } from 'path'
 import * as jsYaml from 'js-yaml'
 import { parseAtomicTmpPath, retryWhileWindowsHoldsTheFile } from './atomicWrite'
+import { openFileNoFollowSync, readFileNoFollowSync } from './readFile'
 
 /** Files below this threshold are loaded entirely into memory (safe for Node's string limit). */
 const MAX_DIRECT_READ_BYTES = 256 * 1024 * 1024 // 256 MB
@@ -56,7 +55,9 @@ const PROMOTE: TmpVerdict = { action: 'promote' }
 function judgeTmpContent(tmpPath: string, targetPath: string): TmpVerdict {
   let size: number
   try {
-    size = statSync(tmpPath).size
+    const stat = lstatSync(tmpPath)
+    if (!stat.isFile() || stat.isSymbolicLink()) return { action: 'leave', reason: 'it is not a regular file' }
+    size = stat.size
   } catch {
     return { action: 'leave', reason: 'it could not be read' }
   }
@@ -79,7 +80,7 @@ function judgeTmpContent(tmpPath: string, targetPath: string): TmpVerdict {
 
   if (extension === '.json') {
     try {
-      JSON.parse(readFileSync(tmpPath, 'utf-8'))
+      JSON.parse(readFileNoFollowSync(tmpPath))
     } catch {
       return { action: 'discard', reason: 'it is not readable JSON' }
     }
@@ -89,7 +90,7 @@ function judgeTmpContent(tmpPath: string, targetPath: string): TmpVerdict {
   if (extension === '.yaml' || extension === '.yml') {
     let document: unknown
     try {
-      document = jsYaml.load(readFileSync(tmpPath, 'utf-8'))
+      document = jsYaml.load(readFileNoFollowSync(tmpPath))
     } catch {
       return { action: 'discard', reason: 'it is not a readable YAML document' }
     }
@@ -125,7 +126,7 @@ function reportLegacyTmpFile(tmpPath: string): void {
   // either promoting it or saying so.
   let modified = 'an unknown time'
   try {
-    modified = statSync(tmpPath).mtime.toISOString()
+    modified = lstatSync(tmpPath).mtime.toISOString()
   } catch { /* reported without it */ }
   console.warn(
     `[recovery] Ignoring ${tmpPath} (last modified ${modified}): its name predates the current ` +
@@ -279,40 +280,51 @@ export function recoverOrphanTmpFiles(rootDir: string): string[] {
 
 // Fix trailing-line corruption in JSONL files
 export function fixTrailingLineCorruption(filePath: string): boolean {
-  if (!existsSync(filePath)) return false
-
-  const { size: fileSize } = statSync(filePath)
-  if (fileSize === 0) return false
-
-  if (fileSize > MAX_DIRECT_READ_BYTES) {
-    return fixCorruptionLarge(filePath, fileSize)
+  let fd: number
+  try {
+    fd = openFileNoFollowSync(filePath, fsConstants.O_RDWR)
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === 'ENOENT') return false
+    throw error
   }
+  try {
+    const { size: fileSize } = fstatSync(fd)
+    if (fileSize === 0) return false
 
-  const content = readFileSync(filePath, 'utf-8')
-  const lines = content.split('\n')
+    if (fileSize > MAX_DIRECT_READ_BYTES) {
+      return fixCorruptionLarge(fd, filePath, fileSize)
+    }
 
-  // Remove empty trailing lines
-  while (lines.length > 0 && lines[lines.length - 1]?.trim() === '') {
-    lines.pop()
-  }
+    const content = readFileSync(fd)
+    const lines = content.toString('utf-8').split('\n')
 
-  // Check last line is valid JSON
-  if (lines.length > 0) {
-    const lastLine = lines[lines.length - 1]
-    if (lastLine) {
-      try {
-        JSON.parse(lastLine)
-      } catch {
-        // Last line is corrupt, remove it
-        console.warn(`[recovery] Truncating corrupt last line in ${filePath}`)
-        lines.pop()
-        writeFileSync(filePath, lines.join('\n') + (lines.length > 0 ? '\n' : ''), 'utf-8')
-        return true
+    // Remove empty trailing lines
+    while (lines.length > 0 && lines[lines.length - 1]?.trim() === '') {
+      lines.pop()
+    }
+
+    // Check last line is valid JSON
+    if (lines.length > 0) {
+      const lastLine = lines[lines.length - 1]
+      if (lastLine) {
+        try {
+          JSON.parse(lastLine)
+        } catch {
+          console.warn(`[recovery] Truncating corrupt last line in ${filePath}`)
+          lines.pop()
+          // Truncate original bytes on the verified descriptor; never reopen by name.
+          let retainedBytes = 0
+          for (let line = 0; line < lines.length; line++) retainedBytes = content.indexOf(0x0a, retainedBytes) + 1
+          ftruncateSync(fd, retainedBytes)
+          return true
+        }
       }
     }
-  }
 
-  return false
+    return false
+  } finally {
+    closeSync(fd)
+  }
 }
 
 /**
@@ -320,36 +332,31 @@ export function fixTrailingLineCorruption(filePath: string): boolean {
  * loading the whole file into memory. Only truncates — never re-encodes — to avoid
  * UTF-8 boundary issues.
  */
-function fixCorruptionLarge(filePath: string, fileSize: number): boolean {
-  const fd = openSync(filePath, 'r+')
+function fixCorruptionLarge(fd: number, filePath: string, fileSize: number): boolean {
+  const contentEnd = findContentEnd(fd, fileSize)
+  if (contentEnd <= 0) return false
+
+  const lineStart = findLineStart(fd, contentEnd)
+  if (lineStart === null) {
+    console.warn(
+      `[recovery] Skipping large-file corruption check for ${filePath}: ` +
+        `last line exceeds ${MAX_LAST_LINE_SCAN / 1024 / 1024} MB scan limit`,
+    )
+    return false
+  }
+
+  const lineLen = contentEnd - lineStart
+  const lineBuf = Buffer.allocUnsafe(lineLen)
+  const bytesRead = readSync(fd, lineBuf, 0, lineLen, lineStart)
+  const lastLine = lineBuf.subarray(0, bytesRead).toString('utf-8')
+
   try {
-    const contentEnd = findContentEnd(fd, fileSize)
-    if (contentEnd <= 0) return false
-
-    const lineStart = findLineStart(fd, contentEnd)
-    if (lineStart === null) {
-      console.warn(
-        `[recovery] Skipping large-file corruption check for ${filePath}: ` +
-          `last line exceeds ${MAX_LAST_LINE_SCAN / 1024 / 1024} MB scan limit`,
-      )
-      return false
-    }
-
-    const lineLen = contentEnd - lineStart
-    const lineBuf = Buffer.allocUnsafe(lineLen)
-    const bytesRead = readSync(fd, lineBuf, 0, lineLen, lineStart)
-    const lastLine = lineBuf.subarray(0, bytesRead).toString('utf-8')
-
-    try {
-      JSON.parse(lastLine)
-      return false
-    } catch {
-      console.warn(`[recovery] Truncating corrupt last line in ${filePath} (large file)`)
-      ftruncateSync(fd, lineStart)
-      return true
-    }
-  } finally {
-    closeSync(fd)
+    JSON.parse(lastLine)
+    return false
+  } catch {
+    console.warn(`[recovery] Truncating corrupt last line in ${filePath} (large file)`)
+    ftruncateSync(fd, lineStart)
+    return true
   }
 }
 

@@ -1,8 +1,10 @@
-import { afterAll, beforeEach, describe, expect, it } from 'vitest'
+import { afterAll, beforeEach, describe, expect, it, vi } from 'vitest'
 import { eq } from 'drizzle-orm'
+import { mkdirSync, renameSync, symlinkSync, writeFileSync } from 'node:fs'
+import { join } from 'node:path'
 import { createInitializedTestTicket, createTestRepoManager, resetTestDb } from '../../test/integration'
 import { writeJsonl } from '../../io/jsonl'
-import { getTicketByRef, getTicketContext } from '../tickets'
+import { getTicketByRef, getTicketContext, listTickets, readTicketFile, resolveTicketContainedPath } from '../tickets'
 import { resolveReviewCutoffStatus } from '../ticketQueries'
 import { questionWaits, ticketStatusHistory, tickets } from '../../db/schema'
 
@@ -31,6 +33,48 @@ describe('runtime Manual QA bead origin projection', () => {
   afterAll(() => {
     resetTestDb()
     runtimeRepoManager.cleanup()
+  })
+
+  it('keeps a ticket visible when its workspace is unsafe while refusing file access', async () => {
+    const setup = await createInitializedTestTicket(runtimeRepoManager, { title: 'Unsafe workspace' })
+    const saved = join(setup.paths.projectRoot, 'saved-ticket')
+    renameSync(setup.paths.ticketDir, saved)
+    symlinkSync(saved, setup.paths.ticketDir, 'junction')
+
+    const visible = listTickets().find(ticket => ticket.id === setup.ticket.id)
+    expect(visible?.title).toBe('Unsafe workspace')
+    expect(visible?.runtime.artifactRoot).toBe('')
+    expect(() => resolveTicketContainedPath(setup.ticket.id, 'interview.yaml')).toThrow()
+  })
+
+  it('continues startup recovery and projection rebuild after one unsafe ticket', async () => {
+    const unsafe = await createInitializedTestTicket(runtimeRepoManager, { title: 'Unsafe recovery', shortname: 'UNSAF' })
+    const healthy = await createInitializedTestTicket(runtimeRepoManager, { title: 'Healthy recovery', shortname: 'SAFE' })
+    const saved = join(unsafe.paths.projectRoot, 'saved-ticket')
+    renameSync(unsafe.paths.ticketDir, saved)
+    symlinkSync(saved, unsafe.paths.ticketDir, 'junction')
+    const { recoverTicketRuntimeArtifacts } = await import('../../startup')
+    const warning = vi.spyOn(console, 'warn').mockImplementation(() => {})
+    try {
+      expect(recoverTicketRuntimeArtifacts().rebuiltProjections).toBe(1)
+      expect(warning).toHaveBeenCalledWith(expect.stringContaining(unsafe.ticket.id))
+      expect(readTicketFile(healthy.ticket.id, 'runtime/state.yaml')).toContain('Healthy recovery')
+    } finally {
+      warning.mockRestore()
+    }
+  })
+
+  it('reads contained artifacts, returns null for absence, and rejects escaping descendants', async () => {
+    const setup = await createInitializedTestTicket(runtimeRepoManager, { title: 'Contained reads' })
+    writeFileSync(join(setup.paths.ticketDir, 'interview.yaml'), 'safe')
+    expect(readTicketFile(setup.ticket.id, 'interview.yaml')).toBe('safe')
+    expect(readTicketFile(setup.ticket.id, 'missing.yaml')).toBeNull()
+    expect(readTicketFile('999999:NONE-1', 'missing.yaml')).toBeNull()
+    const outside = join(setup.paths.projectRoot, 'outside-artifacts')
+    mkdirSync(outside)
+    writeFileSync(join(outside, 'secret.txt'), 'outside')
+    symlinkSync(outside, join(setup.paths.ticketDir, 'escaped'), 'junction')
+    expect(() => readTicketFile(setup.ticket.id, 'escaped/secret.txt')).toThrow()
   })
 
   it('projects a validated typed origin and drops malformed or unsafe origins', async () => {

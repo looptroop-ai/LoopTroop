@@ -1,5 +1,5 @@
 import { execFileSync } from 'node:child_process'
-import { chmodSync, existsSync, mkdirSync, readFileSync, symlinkSync, writeFileSync } from 'node:fs'
+import { chmodSync, existsSync, lstatSync, mkdirSync, readFileSync, symlinkSync, writeFileSync } from 'node:fs'
 import { resolve } from 'node:path'
 import { makeTempDir, pinGitLineEndings, removeTempDir } from '../../test/tempDir'
 import { afterEach, describe, expect, it } from 'vitest'
@@ -40,6 +40,44 @@ afterEach(() => {
 })
 
 describe('removeWorktree', () => {
+  it('accepts a project reached through a symlinked ancestor', () => {
+    const { root, projectRoot, worktreePath } = createRepoWithWorktree()
+    const alias = resolve(root, 'project-alias')
+    symlinkSync(projectRoot, alias, 'junction')
+    const worktreesRoot = resolve(alias, '.looptroop/worktrees')
+    removeWorktree({ projectRoot: alias, worktreesRoot, worktreePath: resolve(worktreesRoot, 'TEST-1') })
+    expect(existsSync(worktreePath)).toBe(false)
+  })
+  it('unlinks an alias to a registered worktree without asking Git to remove its destination', () => {
+    const { projectRoot, worktreesRoot, worktreePath } = createRepoWithWorktree()
+    const alias = resolve(worktreesRoot, 'TEST-2')
+    symlinkSync(worktreePath, alias, 'junction')
+    removeWorktree({ projectRoot, worktreesRoot, worktreePath: alias })
+    expect(existsSync(alias)).toBe(false)
+    expect(readFileSync(resolve(worktreePath, 'README.md'), 'utf8')).toBe('fixture\n')
+    expect(git(projectRoot, ['worktree', 'list', '--porcelain'])).toContain(worktreePath)
+  })
+
+  it('unlinks dangling worktree aliases', () => {
+    const { projectRoot, worktreesRoot } = createRepoWithWorktree()
+    const alias = resolve(worktreesRoot, 'TEST-2')
+    symlinkSync(resolve(projectRoot, 'missing'), alias, 'junction')
+    removeWorktree({ projectRoot, worktreesRoot, worktreePath: alias })
+    expect(() => lstatSync(alias)).toThrow()
+  })
+
+  it.each(['worktrees', '.looptroop'])('rejects an internal alias at %s before deleting source files', (component) => {
+    const root = makeTempDir('looptroop-worktree-root-alias-')
+    roots.push(root)
+    const source = resolve(root, 'source')
+    const worktreesRoot = resolve(root, '.looptroop', 'worktrees')
+    const destination = component === 'worktrees' ? source : resolve(source, 'worktrees')
+    mkdirSync(resolve(destination, 'TEST-1'), { recursive: true })
+    if (component === 'worktrees') mkdirSync(resolve(root, '.looptroop'))
+    symlinkSync(source, component === 'worktrees' ? worktreesRoot : resolve(root, '.looptroop'), 'junction')
+    expect(() => removeWorktree({ projectRoot: root, worktreesRoot, worktreePath: resolve(worktreesRoot, 'TEST-1') })).toThrow('must not be a symbolic link')
+    expect(existsSync(resolve(destination, 'TEST-1'))).toBe(true)
+  })
   it.runIf(process.platform !== 'win32')('removes read-only cache trees without following symlinks', () => {
     const { root, projectRoot, worktreesRoot, worktreePath } = createRepoWithWorktree()
     const externalTarget = resolve(root, 'external-target.txt')

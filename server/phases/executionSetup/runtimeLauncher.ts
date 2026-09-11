@@ -1,5 +1,4 @@
-import { chmodSync, mkdirSync, writeFileSync } from 'node:fs'
-import { dirname, resolve } from 'node:path'
+import { safeAtomicWriteWithin } from '../../io/atomicWrite'
 import type { ExecutionSetupProfile } from './types'
 
 function quotePosix(value: string): string {
@@ -76,15 +75,12 @@ export function writeExecutionSetupRuntimeLauncher(input: {
     : shell === 'cmd'
       ? '.ticket/runtime/execution-setup/launcher.cmd'
       : '.ticket/runtime/execution-setup/launcher.sh'
-  const absolutePath = resolve(input.worktreePath, relativePath)
-  mkdirSync(dirname(absolutePath), { recursive: true })
   const content = shell === 'powershell'
     ? buildPowerShellLauncher(input.profile)
     : shell === 'cmd'
       ? buildCmdLauncher(input.profile)
       : buildPosixLauncher(input.profile)
-  writeFileSync(absolutePath, content, 'utf8')
-  if (shell === 'posix') chmodSync(absolutePath, 0o700)
+  safeAtomicWriteWithin(input.worktreePath, relativePath, content, shell === 'posix' ? { mode: 0o700 } : undefined)
   return {
     path: relativePath,
     kind: 'command-launcher',

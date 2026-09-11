@@ -29,11 +29,12 @@ import { buildPromptFromTemplate, PROM2, PROM3 } from '../../prompts/index'
 import { randomUUID } from 'node:crypto'
 import { and, eq, lte } from 'drizzle-orm'
 import { interviewBatchClaims } from '../../db/schema'
-import { getLatestPhaseArtifact, getTicketByRef, getTicketContext, getTicketPaths, insertPhaseArtifact, upsertLatestPhaseArtifact, countPhaseArtifacts } from '../../storage/tickets'
+import { getLatestPhaseArtifact, getTicketByRef, getTicketContext, getTicketPaths, insertPhaseArtifact, upsertLatestPhaseArtifact, countPhaseArtifacts, writeTicketFile } from '../../storage/tickets'
 import { isMockOpenCodeMode } from '../../opencode/factory'
-import { safeAtomicWrite } from '../../io/atomicWrite'
+import { safeAtomicWriteWithin } from '../../io/atomicWrite'
+import { readFileNoFollowSync } from '../../io/readFile'
+import { resolveContainedPath } from '../../lib/containedPath'
 import { broadcaster } from '../../sse/broadcaster'
-import { readFileSync, existsSync } from 'fs'
 import { resolve } from 'path'
 import * as jsYaml from 'js-yaml'
 import { normalizeInterviewQuestionsOutput, normalizeInterviewRefinementOutput } from '../../structuredOutput'
@@ -121,18 +122,17 @@ export function persistInterviewSession(ticketId: string, snapshot: InterviewSes
 }
 
 export function loadCanonicalInterview(ticketDir: string): string | undefined {
-  const interviewPath = resolve(ticketDir, 'interview.yaml')
-  if (!existsSync(interviewPath)) return undefined
   try {
-    return readFileSync(interviewPath, 'utf-8')
-  } catch {
-    return undefined
+    return readFileNoFollowSync(resolveContainedPath(ticketDir, 'interview.yaml', { allowMissing: true }))
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === 'ENOENT') return undefined
+    throw error
   }
 }
 
 export function writeCanonicalInterview(ticketId: string, ticketDir: string, snapshot: InterviewSessionSnapshot) {
   const interviewPath = resolve(ticketDir, 'interview.yaml')
-  safeAtomicWrite(interviewPath, buildCanonicalInterviewYaml(ticketId, snapshot))
+  safeAtomicWriteWithin(ticketDir, 'interview.yaml', buildCanonicalInterviewYaml(ticketId, snapshot))
   return interviewPath
 }
 
@@ -430,7 +430,7 @@ export function skipAllInterviewQuestionsToApproval(
   const canonicalInterview = buildCanonicalInterviewYaml(externalId, finalizedSnapshot)
   const interviewPath = resolve(paths.ticketDir, 'interview.yaml')
 
-  safeAtomicWrite(interviewPath, canonicalInterview)
+  writeTicketFile(ticketId, 'interview.yaml', canonicalInterview)
   persistInterviewSession(ticketId, finalizedSnapshot)
   recordInterviewSkipReceipts({
     ticketId,

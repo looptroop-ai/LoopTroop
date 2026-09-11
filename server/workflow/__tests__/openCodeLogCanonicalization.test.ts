@@ -1,4 +1,5 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest'
+import { resolve } from 'node:path'
 
 vi.mock('../../sse/broadcaster', () => ({
   broadcaster: {
@@ -23,10 +24,11 @@ vi.spyOn(ticketsModule, 'getTicketPaths').mockReturnValue({
   beadsPath: '/tmp/test-beads.jsonl',
 })
 
-const mockAppend = vi.spyOn(atomicAppendModule, 'safeAtomicAppend').mockImplementation((_path, line) => ({
+const mockAppend = vi.fn((_path: string, line: string) => ({
   offset: 0,
   length: Buffer.byteLength(`${line}\n`),
 }))
+vi.spyOn(atomicAppendModule, 'safeAtomicAppendWithin').mockImplementation((root, path, line) => mockAppend(resolve(root, path), line))
 const mockBroadcast = vi.mocked(broadcaster.broadcast)
 
 import {

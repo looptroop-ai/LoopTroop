@@ -1,6 +1,7 @@
-import { existsSync, readFileSync } from 'node:fs'
 import { resolve } from 'node:path'
-import { safeAtomicWrite } from '../io/atomicWrite'
+import { readFileNoFollowSync } from '../io/readFile'
+import { resolveContainedPath } from '../lib/containedPath'
+import { writeProjectTicketFile } from '../ticket/containedPath'
 import { normalizeFolderPath } from './paths'
 
 /**
@@ -31,11 +32,9 @@ export function getWorktreeOwnerMarkerPath(worktreePath: string): string {
 }
 
 export function readWorktreeOwnerMarker(worktreePath: string): WorktreeOwnerMarker | null {
-  const markerPath = getWorktreeOwnerMarkerPath(worktreePath)
-  if (!existsSync(markerPath)) return null
-
   try {
-    const parsed: unknown = JSON.parse(readFileSync(markerPath, 'utf8'))
+    const markerPath = resolveContainedPath(worktreePath, getWorktreeOwnerMarkerPath(worktreePath))
+    const parsed: unknown = JSON.parse(readFileNoFollowSync(markerPath))
     if (typeof parsed !== 'object' || parsed === null) return null
 
     const candidate = parsed as Partial<WorktreeOwnerMarker>
@@ -69,7 +68,7 @@ export function ensureWorktreeOwnerMarker(
     externalId: details.externalId,
     createdAt: new Date().toISOString(),
   }
-  safeAtomicWrite(getWorktreeOwnerMarkerPath(worktreePath), `${JSON.stringify(marker, null, 2)}\n`)
+  writeProjectTicketFile(details.projectRoot, details.externalId, 'runtime/owner.json', `${JSON.stringify(marker, null, 2)}\n`)
   return marker
 }
 

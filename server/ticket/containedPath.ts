@@ -12,7 +12,7 @@ export function resolveProjectTicketContainedPath(
   if (!externalId || externalId === '.' || externalId === '..' || /[\\/\0:]/.test(externalId)) {
     throw new ContainedPathError('Invalid ticket path')
   }
-  if (isAbsolute(relativePath) || /^[A-Za-z]:/.test(relativePath)
+  if (relativePath.includes('\0') || isAbsolute(relativePath) || /^[A-Za-z]:/.test(relativePath)
     || relativePath.startsWith('\\') || relativePath.split(/[\\/]/).includes('..')) {
     throw new ContainedPathError('File path must stay within the ticket directory')
   }

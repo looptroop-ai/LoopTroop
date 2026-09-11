@@ -2,6 +2,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { appendLogEvent, clearTicketFingerprints, createLogEvent, shouldSkipLogEmission } from '../executionLog'
 import * as ticketsModule from '../../storage/tickets'
 import * as atomicAppendModule from '../../io/atomicAppend'
+import { resolve } from 'node:path'
 
 const mockGetTicketPaths = vi.spyOn(ticketsModule, 'getTicketPaths').mockReturnValue({
   projectRoot: '/tmp/test-project',
@@ -16,10 +17,11 @@ const mockGetTicketPaths = vi.spyOn(ticketsModule, 'getTicketPaths').mockReturnV
   beadsPath: '/tmp/test-beads.jsonl',
 })
 
-const mockAppend = vi.spyOn(atomicAppendModule, 'safeAtomicAppend').mockImplementation((_path, line) => ({
+const mockAppend = vi.fn((_path: string, line: string) => ({
   offset: 0,
   length: Buffer.byteLength(`${line}\n`),
 }))
+vi.spyOn(atomicAppendModule, 'safeAtomicAppendWithin').mockImplementation((root, path, line) => mockAppend(resolve(root, path), line))
 
 describe('createLogEvent', () => {
   it('preserves a provided timestamp so live and persisted log entries stay aligned', () => {

@@ -12,8 +12,7 @@ import { applyIgnoreMode } from '../git/repository'
 import { DEFAULT_IGNORE_MODE, isIgnoreMode, type IgnoreMode } from '@shared/ignoreMode'
 import { isGitHookPolicy } from '../git/hookPolicy'
 import type { GitHookPolicy } from '../structuredOutput/types'
-import { removeWorktree } from '../git/worktreeRemoval'
-import { resolveContainedPath } from '../lib/containedPath'
+import { assertManagedWorktreesRoot, removeWorktree } from '../git/worktreeRemoval'
 import {
   ensureProjectStorageDirs,
   getProjectLoopTroopDir,
@@ -515,6 +514,7 @@ async function calcDirSize(dirPath: string): Promise<number> {
   if (!(await existsAsync(dirPath))) return 0
   let total = 0
   try {
+    if ((await lstat(dirPath)).isSymbolicLink()) return 0
     const entries = await readdir(dirPath, { withFileTypes: true })
     for (const entry of entries) {
       if (entry.isSymbolicLink()) continue
@@ -599,6 +599,7 @@ export async function getProjectWorktreesSize(projectRoot: string): Promise<numb
 
 export async function deleteProjectWorktrees(projectRoot: string): Promise<{ freedBytes: number }> {
   const worktreesRoot = getProjectWorktreesRoot(projectRoot)
+  if (!assertManagedWorktreesRoot(projectRoot, worktreesRoot)) return { freedBytes: 0 }
   if (!(await existsAsync(worktreesRoot))) return { freedBytes: 0 }
 
   const externalIds = getTerminalTicketExternalIds(projectRoot)
@@ -606,8 +607,9 @@ export async function deleteProjectWorktrees(projectRoot: string): Promise<{ fre
 
   let freedBytes = 0
   for (const externalId of externalIds) {
-    const worktreePath = getTicketWorktreePath(projectRoot, externalId)
-    if (!(await existsAsync(worktreePath))) continue
+    // Final aliases (including dangling ones) are entries to unlink, not roots
+    // to resolve. removeWorktree validates the parent and direct-child shape.
+    const worktreePath = resolvePath(worktreesRoot, externalId)
     freedBytes += await calcDirSize(worktreePath)
     removeWorktree({ projectRoot, worktreesRoot, worktreePath })
   }
@@ -624,11 +626,11 @@ export async function deleteProjectWorktrees(projectRoot: string): Promise<{ fre
  */
 export async function deleteAllProjectWorktrees(projectRoot: string): Promise<{ freedBytes: number }> {
   const worktreesRoot = getProjectWorktreesRoot(projectRoot)
+  if (!assertManagedWorktreesRoot(projectRoot, worktreesRoot)) return { freedBytes: 0 }
   if (!(await existsAsync(worktreesRoot))) {
     runGitSync(projectRoot, ['worktree', 'prune'])
     return { freedBytes: 0 }
   }
-  resolveContainedPath(projectRoot, worktreesRoot)
 
   let freedBytes = 0
   const entries = await readdir(worktreesRoot, { withFileTypes: true })

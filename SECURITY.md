@@ -78,6 +78,19 @@ same-host mechanism can exclude, and the hostname costs a URL people have to
 trust and a DNS path that corporate resolvers interfere with. This is a
 reviewed position rather than an oversight.
 
+### Filesystem containment in the development branch
+
+Ticket artifact access validates canonical paths from the attached project
+through its worktree and ticket directory. Ordinary internal links remain
+supported; Manual QA evidence rejects links. Cleanup unlinks final aliases and
+refuses redirected managed roots so it cannot delete their destinations.
+
+These checks are not an operating-system sandbox. Node has no portable
+directory-relative open/rename API, and another process running as the local
+user can still replace an ancestor between validation and a filesystem call.
+Verified file descriptors and repeated containment checks narrow that race.
+The AI agent's own command execution retains the local user's permissions.
+
 ## Data Handling
 
 LoopTroop collects no telemetry and sends no usage data anywhere.

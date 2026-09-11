@@ -1,11 +1,11 @@
-import { existsSync, readFileSync } from 'node:fs'
-import { resolve } from 'node:path'
+import { existsSync } from 'node:fs'
 import * as jsYaml from 'js-yaml'
 import type { TicketContext, TicketEvent } from '../../machines/types'
 import {
   getActivePhaseAttempt,
   getLatestPhaseArtifact,
   getTicketPaths,
+  readTicketFile,
   insertPhaseArtifact,
   upsertLatestPhaseArtifact,
 } from '../../storage/tickets'
@@ -608,18 +608,14 @@ export function buildPullRequestContext(ticketId: string, context: TicketContext
   finalTestReport: string
   manualQaSummary: string
 } {
-  const { ticketDir } = loadTicketDirContext(context)
+  loadTicketDirContext(context)
   const ticketState: TicketState = {
     ticketId: context.externalId,
     title: context.title,
     description,
   }
 
-  const prdPath = resolve(ticketDir, 'prd.yaml')
-
-  if (existsSync(prdPath)) {
-    try { ticketState.prd = readFileSync(prdPath, 'utf8') } catch { /* ignore */ }
-  }
+  ticketState.prd = readTicketFile(ticketId, 'prd.yaml') ?? undefined
 
   const finalTestArtifact = getLatestPhaseArtifact(ticketId, 'final_test_report', 'RUNNING_FINAL_TEST')
   // Canonical files first, then the stored artifact — through the same reader

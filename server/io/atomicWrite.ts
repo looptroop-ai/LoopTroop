@@ -234,8 +234,8 @@ function atomicWrite(
 
     // Best-effort parent-directory fsync for crash durability on Linux/macOS.
     // Not all platforms support opening directories; failures are silently ignored.
+    assertContained?.(filePath)
     try {
-      assertContained?.(filePath)
       const dirFd = openSync(dir, constants.O_RDONLY | (constants.O_NOFOLLOW ?? 0))
       try { fsyncSync(dirFd) } finally { closeSync(dirFd) }
     } catch {

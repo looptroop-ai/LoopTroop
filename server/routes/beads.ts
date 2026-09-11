@@ -254,7 +254,8 @@ beadsRouter.put('/tickets/:id/beads', async (c) => {
   let beforeRaw: string | null
   try {
     beforeRaw = readBeadsContentOrNull(filePath)
-  } catch {
+  } catch (error) {
+    if (error instanceof ContainedPathError) throw error
     return c.json({ error: 'Failed to read the existing bead plan' }, 500)
   }
 
@@ -310,7 +311,8 @@ beadsRouter.put('/tickets/:id/beads', async (c) => {
     })
     syncTicketRuntimeProjection(ticketId)
     c.header('X-Content-Sha256', contentSha256(jsonl))
-  } catch {
+  } catch (error) {
+    if (error instanceof ContainedPathError) throw error
     return c.json({ error: 'Failed to write file' }, 500)
   }
 

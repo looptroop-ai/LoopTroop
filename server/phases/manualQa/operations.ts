@@ -2,10 +2,10 @@ import { createHash } from 'node:crypto'
 import { REPO_SCOPE_PATHSPECS } from '../../git/pathspecs'
 import { runGitSync } from '../../git/runCommand'
 import { and, eq } from 'drizzle-orm'
-import { cpSync, existsSync, lstatSync, mkdirSync, readFileSync } from 'node:fs'
+import { closeSync, cpSync, mkdirSync, readFileSync } from 'node:fs'
 import { resolve } from 'node:path'
-import { safeAtomicWrite } from '../../io/atomicWrite'
-import { writeJsonl } from '../../io/jsonl'
+import { openFileNoFollowSync } from '../../io/readFile'
+import { resolveContainedPath } from '../../lib/containedPath'
 import { readBeadsFile } from '../beads/beadsFile'
 import { tryReadManualQaPrd } from './prd'
 import {
@@ -57,6 +57,8 @@ import {
   readManualQaModelCapabilitySnapshot,
   readManualQaResults,
   readManualQaSummary,
+  readManualQaText,
+  writeManualQaText,
   resolveManualQaEvidence,
   resolveManualQaTicketDir,
   sanitizeEvidenceName,
@@ -131,8 +133,9 @@ export function detectManualQaWorkspaceDrift(ticketId: string, version: number):
   const paths = getTicketPaths(ticketId)
   if (!paths) throw new Error(`Ticket storage was not found: ${ticketId}`)
   const baselinePath = getManualQaStoragePaths(paths.ticketDir, version).baselinePath
-  if (!existsSync(baselinePath)) throw new Error('Manual QA workspace baseline is missing.')
-  const baseline = JSON.parse(readFileSync(baselinePath, 'utf8')) as { head: string; trackedSignatures?: Record<string, string> }
+  const baselineText = readManualQaText(paths.ticketDir, baselinePath)
+  if (baselineText === null) throw new Error('Manual QA workspace baseline is missing.')
+  const baseline = JSON.parse(baselineText) as { head: string; trackedSignatures?: Record<string, string> }
   const currentHead = runGitHead(paths.worktreePath)
   const dirtyFiles = captureFinalTestDirtyFiles(paths.worktreePath)
   const currentSignatures: Record<string, string> = {}
@@ -329,8 +332,8 @@ function emitManualQaOperationMilestone(ticketId: string, externalId: string, me
   })
 }
 
-function writeJournal(path: string, journal: ManualQaOperationJournal): void {
-  safeAtomicWrite(path, JSON.stringify(journal, null, 2))
+function writeJournal(path: string, journal: ManualQaOperationJournal, ticketDir = resolveManualQaTicketDir(journal.ticketId)): void {
+  writeManualQaText(ticketDir, path, JSON.stringify(journal, null, 2))
 }
 
 function persistManualQaDatabaseOperation(ticketId: string, journal: ManualQaOperationJournal): void {
@@ -364,6 +367,7 @@ function persistManualQaDatabaseOperation(ticketId: string, journal: ManualQaOpe
 }
 
 export function reserveManualQaSubmissionOperation(input: {
+  ticketDir: string
   path: string
   actionId: string
   operationType: ManualQaOperationJournal['operationType']
@@ -372,8 +376,9 @@ export function reserveManualQaSubmissionOperation(input: {
   checklistHash: string
   draftRevision: number
 }): ManualQaOperationJournal {
-  if (existsSync(input.path)) {
-    const existing = JSON.parse(readFileSync(input.path, 'utf8')) as ManualQaOperationJournal
+  const content = readManualQaText(input.ticketDir, input.path)
+  if (content !== null) {
+    const existing = JSON.parse(content) as ManualQaOperationJournal
     if (
       existing.actionId !== input.actionId
       || existing.operationType !== input.operationType
@@ -399,7 +404,7 @@ export function reserveManualQaSubmissionOperation(input: {
     createdAt: now,
     updatedAt: now,
   }
-  writeJournal(input.path, journal)
+  writeJournal(input.path, journal, input.ticketDir)
   return journal
 }
 
@@ -523,7 +528,9 @@ function copyImprovementEvidence(input: {
   evidence: ManualQaEvidenceRef[]
 }): { copied: QaOriginEvidenceRef[]; omitted: Array<{ id: string; reason: string }> } {
   const destinationDir = resolve(input.destinationTicketDir, 'origin', 'manual-qa', 'evidence')
+  resolveContainedPath(input.destinationTicketDir, destinationDir, { allowMissingParents: true })
   mkdirSync(destinationDir, { recursive: true })
+  resolveContainedPath(input.destinationTicketDir, destinationDir)
   const copied: QaOriginEvidenceRef[] = []
   const omitted: Array<{ id: string; reason: string }> = []
   for (const evidence of input.evidence) {
@@ -534,13 +541,18 @@ function copyImprovementEvidence(input: {
         itemId: input.itemId,
         evidenceId: evidence.id,
       })
-      if (lstatSync(source.path).isSymbolicLink()) throw new Error('symlink evidence is not allowed')
-      // Sanitized, not just basename'd: storedName may carry characters Windows
-      // rejects in filenames, such as the NTFS stream separator ':'.
-      const destinationName = `${evidence.id}-${sanitizeEvidenceName(evidence.storedName)}`
-      const destination = resolve(destinationDir, destinationName)
+      // Hash the ID to preserve uniqueness without Windows filename characters;
+      // the full name remains below the usual 255-byte component limit.
+      const destinationName = `${contentSha256Text(evidence.id)}-${sanitizeEvidenceName(evidence.storedName)}`
+      const destination = resolveContainedPath(input.destinationTicketDir, resolve(destinationDir, destinationName), { allowMissing: true })
       cpSync(source.path, destination, { errorOnExist: false, force: true })
-      const rawHash = createHash('sha256').update(readFileSync(destination)).digest('hex')
+      const fd = openFileNoFollowSync(resolveContainedPath(input.destinationTicketDir, destination))
+      let rawHash: string
+      try {
+        rawHash = createHash('sha256').update(readFileSync(fd)).digest('hex')
+      } finally {
+        closeSync(fd)
+      }
       if (rawHash !== evidence.sha256) throw new Error('hash mismatch')
       copied.push({
         id: evidence.id,
@@ -562,7 +574,8 @@ function findExistingImprovement(projectId: number, originId: string): ReturnTyp
     const paths = getTicketPaths(ticket.id)
     if (!paths) return false
     try {
-      const raw = JSON.parse(readFileSync(resolve(paths.ticketDir, 'meta', 'manual-qa-origin.json'), 'utf8')) as unknown
+      const content = readManualQaText(paths.ticketDir, resolve(paths.ticketDir, 'meta', 'manual-qa-origin.json'))
+      const raw = content === null ? null : JSON.parse(content) as unknown
       return Boolean(raw && typeof raw === 'object' && (raw as { originId?: unknown }).originId === originId)
     } catch {
       return false
@@ -589,8 +602,9 @@ function createImprovementTicket(input: {
     `${contentSha256Text(originId)}.json`,
   )
   let reservedTicketId: string | null = null
-  if (existsSync(reservationPath)) {
-    const reservation = JSON.parse(readFileSync(reservationPath, 'utf8')) as { originId?: unknown; ticketId?: unknown }
+  const reservationText = readManualQaText(input.sourceTicketDir, reservationPath)
+  if (reservationText !== null) {
+    const reservation = JSON.parse(reservationText) as { originId?: unknown; ticketId?: unknown }
     if (reservation.originId !== originId || typeof reservation.ticketId !== 'string') {
       throw new Error(`Manual QA improvement reservation is invalid: ${originId}`)
     }
@@ -598,7 +612,7 @@ function createImprovementTicket(input: {
   }
   const existing = reservedTicketId ? getTicketByRef(reservedTicketId) : findExistingImprovement(input.projectId, originId)
   const sourceBeadsPath = getTicketPaths(input.sourceTicketId)?.beadsPath
-  const sourceBeads = sourceBeadsPath && existsSync(sourceBeadsPath) ? readBeadsFile(sourceBeadsPath) : []
+  const sourceBeads = sourceBeadsPath ? readBeadsFile(resolveContainedPath(input.sourceTicketDir, sourceBeadsPath, { allowMissingParents: true })) : []
   const built = buildImprovementDescription({
     description: input.draft.description,
     contextOverride: input.draft.contextOverride,
@@ -636,7 +650,7 @@ function createImprovementTicket(input: {
   }
   const destinationPaths = getTicketPaths(ticket.id)
   if (!destinationPaths) throw new Error(`Improvement ticket storage was not created: ${ticket.id}`)
-  safeAtomicWrite(reservationPath, JSON.stringify({
+  writeManualQaText(input.sourceTicketDir, reservationPath, JSON.stringify({
     schemaVersion: MANUAL_QA_SCHEMA_VERSION,
     originId,
     actionId: input.actionId,
@@ -645,8 +659,8 @@ function createImprovementTicket(input: {
     createdAt: ticket.createdAt,
   }, null, 2))
   const childOriginPath = resolve(destinationPaths.ticketDir, 'meta', 'manual-qa-origin.json')
-  if (!existsSync(childOriginPath)) {
-    safeAtomicWrite(childOriginPath, JSON.stringify({
+  if (readManualQaText(destinationPaths.ticketDir, childOriginPath) === null) {
+    writeManualQaText(destinationPaths.ticketDir, childOriginPath, JSON.stringify({
       schemaVersion: MANUAL_QA_SCHEMA_VERSION,
       originId,
       actionId: input.actionId,
@@ -684,8 +698,8 @@ function createImprovementTicket(input: {
     imageEvidenceMode: 'references_only',
     createdAt: ticket.createdAt,
   })
-  safeAtomicWrite(childOriginPath, JSON.stringify(origin, null, 2))
-  safeAtomicWrite(resolve(destinationPaths.ticketDir, 'origin', 'manual-qa', 'source-receipt.json'), JSON.stringify(origin, null, 2))
+  writeManualQaText(destinationPaths.ticketDir, childOriginPath, JSON.stringify(origin, null, 2))
+  writeManualQaText(destinationPaths.ticketDir, resolve(destinationPaths.ticketDir, 'origin', 'manual-qa', 'source-receipt.json'), JSON.stringify(origin, null, 2))
   return ticket.id
 }
 
@@ -825,10 +839,11 @@ function repairTerminalManualQaArtifacts(input: {
   if (input.summary.outcome !== 'skipped') return
 
   const skipReceiptPath = getManualQaStoragePaths(input.ticketDir, input.summary.version).skipReceiptPath
-  if (!existsSync(skipReceiptPath)) {
+  const receiptText = readManualQaText(input.ticketDir, skipReceiptPath)
+  if (receiptText === null) {
     throw new Error('Canonical Manual QA skip receipt is missing during recovery.')
   }
-  const parsed = parseYamlOrJsonCandidate(readFileSync(skipReceiptPath, 'utf8'))
+  const parsed = parseYamlOrJsonCandidate(receiptText)
   if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) {
     throw new Error('Canonical Manual QA skip receipt is invalid during recovery.')
   }
@@ -881,9 +896,9 @@ function captureOperationSourceAttempts(ticketId: string, journal: ManualQaOpera
 }
 
 function prepareQaFixWorkflow(ticketId: string, journal: ManualQaOperationJournal): void {
-  const beadsPath = getTicketPaths(ticketId)?.beadsPath
-  if (!beadsPath) throw new Error(`Ticket storage was not found: ${ticketId}`)
-  const beads = readBeadsFile(beadsPath)
+  const paths = getTicketPaths(ticketId)
+  if (!paths) throw new Error(`Ticket storage was not found: ${ticketId}`)
+  const beads = readBeadsFile(resolveContainedPath(paths.ticketDir, paths.beadsPath, { allowMissingParents: true }))
   const completed = beads.filter((bead) => bead.status === 'done').length
   const currentBead = beads.length === 0 ? 0 : completed >= beads.length ? beads.length : completed + 1
   patchTicket(ticketId, {
@@ -971,8 +986,9 @@ export async function submitManualQa(input: {
   const existingSummary = readManualQaSummary(paths.ticketDir, input.version)
   const operationPath = getManualQaStoragePaths(paths.ticketDir, input.version).operationPath
   if (existingSummary && existingSummary.outcome !== 'failed') {
-    const existingJournal = existsSync(operationPath)
-      ? JSON.parse(readFileSync(operationPath, 'utf8')) as ManualQaOperationJournal
+    const journalText = readManualQaText(paths.ticketDir, operationPath)
+    const existingJournal = journalText !== null
+      ? JSON.parse(journalText) as ManualQaOperationJournal
       : null
     const recoveryActionId = existingJournal?.actionId ?? `manual-qa-recovery-v${input.version}`
     finalizeRecoveredOperation(input.ticketId, operationPath, existingJournal, existingSummary)
@@ -1014,6 +1030,7 @@ export async function submitManualQa(input: {
   // Reserve and validate the durable operation before writing immutable
   // snapshots. Conflicting retries must not modify canonical results first.
   const journal = reserveManualQaSubmissionOperation({
+    ticketDir: paths.ticketDir,
     path: operationPath,
     actionId: input.guard.actionId,
     operationType: 'submit',
@@ -1093,7 +1110,7 @@ export async function submitManualQa(input: {
     persistSummaryArtifact(input.ticketId, intermediate)
   }
 
-  const existingBeads = readBeadsFile(paths.beadsPath)
+  const existingBeads = readBeadsFile(resolveContainedPath(paths.ticketDir, paths.beadsPath, { allowMissingParents: true }))
   const fixGroups = buildManualQaFixGroups(checklist, draft)
   let fixBeads: Bead[] = []
   if (fixGroups.length > 0) {
@@ -1182,7 +1199,7 @@ export async function submitManualQa(input: {
     const childPaths = getTicketPaths(ticketId)
     if (!childPaths) throw new Error(`Improvement ticket storage was not found while writing its source receipt: ${ticketId}`)
     const origin = ManualQaImprovementOriginSchema.parse(JSON.parse(
-      readFileSync(resolve(childPaths.ticketDir, 'meta', 'manual-qa-origin.json'), 'utf8'),
+      readManualQaText(childPaths.ticketDir, resolve(childPaths.ticketDir, 'meta', 'manual-qa-origin.json')) ?? 'null',
     ) as unknown)
     return {
       ticketId,
@@ -1205,7 +1222,7 @@ export async function submitManualQa(input: {
     tickets: improvementCreations,
     createdAt: new Date().toISOString(),
   }
-  safeAtomicWrite(getManualQaStoragePaths(paths.ticketDir, input.version).improvementTicketReceiptPath, JSON.stringify(improvementReceipt, null, 2))
+  writeManualQaText(paths.ticketDir, getManualQaStoragePaths(paths.ticketDir, input.version).improvementTicketReceiptPath, JSON.stringify(improvementReceipt, null, 2))
   persistManualQaPhaseArtifact(input.ticketId, 'manual_qa_improvement_ticket_receipt', improvementReceipt, operationActionId)
   for (const creation of improvementCreations) {
     appendManualQaEvent(paths.ticketDir, {
@@ -1231,7 +1248,8 @@ export async function submitManualQa(input: {
   persistManualQaDatabaseOperation(input.ticketId, journal)
   if (fixBeads.length > 0) {
     const existingIds = new Set(existingBeads.map((bead) => bead.id))
-    writeJsonl(paths.beadsPath, [...existingBeads, ...fixBeads.filter((bead) => !existingIds.has(bead.id))])
+    writeManualQaText(paths.ticketDir, paths.beadsPath, [...existingBeads, ...fixBeads.filter((bead) => !existingIds.has(bead.id))]
+      .map(bead => JSON.stringify(bead)).join('\n') + '\n')
     for (const bead of fixBeads) {
       emitManualQaOperationMilestone(
         input.ticketId,
@@ -1249,7 +1267,7 @@ export async function submitManualQa(input: {
     beadIds: journal.fixBeadIds,
     createdAt: new Date().toISOString(),
   }
-  safeAtomicWrite(getManualQaStoragePaths(paths.ticketDir, input.version).beadCreationReceiptPath, JSON.stringify(beadReceipt, null, 2))
+  writeManualQaText(paths.ticketDir, getManualQaStoragePaths(paths.ticketDir, input.version).beadCreationReceiptPath, JSON.stringify(beadReceipt, null, 2))
   persistManualQaPhaseArtifact(input.ticketId, 'manual_qa_bead_creation_receipt', beadReceipt, operationActionId)
   if (journal.fixBeadIds.length > 0) {
     appendManualQaEvent(paths.ticketDir, {
@@ -1313,8 +1331,9 @@ export async function skipManualQa(input: {
   const operationPath = getManualQaStoragePaths(ticketDir, input.version).operationPath
   const existing = readManualQaSummary(ticketDir, input.version)
   if (existing && existing.outcome !== 'failed') {
-    const existingJournal = existsSync(operationPath)
-      ? JSON.parse(readFileSync(operationPath, 'utf8')) as ManualQaOperationJournal
+    const journalText = readManualQaText(ticketDir, operationPath)
+    const existingJournal = journalText !== null
+      ? JSON.parse(journalText) as ManualQaOperationJournal
       : null
     const recoveryActionId = existingJournal?.actionId ?? `manual-qa-recovery-v${input.version}`
     finalizeRecoveredOperation(input.ticketId, operationPath, existingJournal, existing)
@@ -1343,6 +1362,7 @@ export async function skipManualQa(input: {
   }
   const now = new Date().toISOString()
   const journal = reserveManualQaSubmissionOperation({
+    ticketDir,
     path: operationPath,
     actionId: input.guard.actionId,
     operationType: 'skip',
@@ -1362,7 +1382,7 @@ export async function skipManualQa(input: {
 
   snapshotManualQaDraft(ticketDir, draft)
   persistManualQaPhaseArtifact(input.ticketId, 'manual_qa_draft', draft, operationActionId)
-  safeAtomicWrite(getManualQaStoragePaths(ticketDir, input.version).skipReceiptPath, [
+  writeManualQaText(ticketDir, getManualQaStoragePaths(ticketDir, input.version).skipReceiptPath, [
     `schemaVersion: ${MANUAL_QA_SCHEMA_VERSION}`,
     'artifact: manual_qa_skip_receipt',
     `ticketId: ${JSON.stringify(ticket.externalId)}`,

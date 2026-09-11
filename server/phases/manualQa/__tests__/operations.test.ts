@@ -226,6 +226,7 @@ describe('Manual QA submission recovery and integrity', () => {
     const paths = getManualQaStoragePaths(setup.paths.ticketDir, 1)
     const actionId = 'skip-crash-window'
     reserveManualQaSubmissionOperation({
+      ticketDir: setup.paths.ticketDir,
       path: paths.operationPath,
       actionId,
       operationType: 'skip',
@@ -274,6 +275,7 @@ describe('Manual QA submission recovery and integrity', () => {
     const setup = await prepareFixture()
     const paths = getManualQaStoragePaths(setup.paths.ticketDir, 1)
     reserveManualQaSubmissionOperation({
+      ticketDir: setup.paths.ticketDir,
       path: paths.operationPath,
       actionId: 'another-action',
       operationType: 'submit',
@@ -310,6 +312,7 @@ describe('Manual QA submission recovery and integrity', () => {
     const setup = await prepareFixture()
     const paths = getManualQaStoragePaths(setup.paths.ticketDir, 1)
     reserveManualQaSubmissionOperation({
+      ticketDir: setup.paths.ticketDir,
       path: paths.operationPath,
       actionId: setup.guard.actionId,
       operationType: 'submit',
@@ -655,6 +658,19 @@ describe('Manual QA submission recovery and integrity', () => {
       priority: 2,
       manualQaEnabled: true,
     }]
+    const evidenceBytes = Uint8Array.from([0, 255, 128, 65])
+    const evidence = await streamManualQaEvidence({
+      ticketDir: setup.paths.ticketDir,
+      version: 1,
+      itemId: 'required-improvement',
+      evidenceId: 'evidence:improvement',
+      originalName: 'binary.dat',
+      mediaType: 'application/octet-stream',
+      body: byteStream(evidenceBytes),
+    })
+    setup.draft.evidence = [evidence]
+    setup.draft.results[0]!.evidenceIds = [evidence.id]
+    setup.draft.improvements[0]!.evidenceIds = [evidence.id]
     const summary = await submitManualQa({
       ticketId: setup.ticket.id,
       version: 1,
@@ -680,10 +696,11 @@ describe('Manual QA submission recovery and integrity', () => {
       source: 'manual_qa_improvement',
       sourceItemIds: ['required-improvement'],
       resultType: 'improvement',
-      evidenceRefs: [],
+      evidenceRefs: [expect.objectContaining({ id: evidence.id, sha256: evidence.sha256 })],
       priority: 2,
       manualQaEnabled: true,
     })
+    expect(readFileSync(resolve(childPaths.ticketDir, origin.evidenceRefs[0].relativePath))).toEqual(Buffer.from(evidenceBytes))
     const retried = await submitManualQa({
       ticketId: setup.ticket.id,
       version: 1,

@@ -1,7 +1,7 @@
 import { mkdirSync, symlinkSync } from 'node:fs'
 import { join, resolve } from 'node:path'
 import { afterEach, beforeEach, describe, expect, it } from 'vitest'
-import { getTicketWorktreePath, normalizeFolderPath } from '../paths'
+import { getTicketDir, getTicketExecutionLogPath, getTicketWorktreePath, normalizeFolderPath } from '../paths'
 import { makeTempDir, removeTempDir } from '../../test/tempDir'
 
 let scratchDir: string
@@ -47,7 +47,7 @@ describe('normalizeFolderPath', () => {
     const realDir = join(scratchDir, 'real')
     const linkDir = join(scratchDir, 'link')
     mkdirSync(realDir)
-    symlinkSync(realDir, linkDir, 'dir')
+    symlinkSync(realDir, linkDir, 'junction')
 
     expect(normalizeFolderPath(linkDir)).toBe(normalizeFolderPath(realDir))
   })
@@ -81,6 +81,20 @@ describe('normalizeFolderPath', () => {
 })
 
 describe('getTicketWorktreePath', () => {
+  it('checks ticket roots and runtime descendants independently against the project', () => {
+    const worktree = join(scratchDir, '.looptroop', 'worktrees', 'LT-1')
+    const outside = join(scratchDir, 'outside-ticket')
+    mkdirSync(worktree, { recursive: true })
+    mkdirSync(outside)
+    symlinkSync(outside, join(worktree, '.ticket'), 'junction')
+    expect(() => getTicketDir(scratchDir, 'LT-1')).toThrow('Ticket directory must stay within its worktree')
+
+    const secondTicket = join(scratchDir, '.looptroop', 'worktrees', 'LT-2', '.ticket')
+    mkdirSync(secondTicket, { recursive: true })
+    symlinkSync(outside, join(secondTicket, 'runtime'), 'junction')
+    expect(() => getTicketExecutionLogPath(scratchDir, 'LT-2')).toThrow('File path must stay within the ticket directory')
+  })
+
   it('allows a new ticket beneath its existing project', () => {
     expect(getTicketWorktreePath(scratchDir, 'LT-1')).toBe(join(scratchDir, '.looptroop', 'worktrees', 'LT-1'))
     expect(() => getTicketWorktreePath(join(scratchDir, 'missing-project'), 'LT-1')).toThrow()

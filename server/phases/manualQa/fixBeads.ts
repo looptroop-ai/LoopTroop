@@ -1,5 +1,4 @@
 import { createHash } from 'node:crypto'
-import { existsSync, readFileSync } from 'node:fs'
 import path from 'node:path'
 import { z } from 'zod'
 import { isRecord } from '@shared/typeGuards'
@@ -20,7 +19,6 @@ import {
   resolveStructuredRetryRuntimeSettings,
 } from '../../workflow/phases/helpers'
 import { adapter } from '../../workflow/phases/state'
-import { safeAtomicWrite } from '../../io/atomicWrite'
 import type { Bead, QaOrigin, QaOriginSourceItem } from '../beads/types'
 import type {
   ManualQaChecklist,
@@ -30,7 +28,7 @@ import type {
 } from './types'
 import { normalizeCommandSpec } from '@shared/commandSpec'
 import { detectHostContext } from '../../lib/hostContext'
-import { getManualQaEvidenceRelativePath, getManualQaStoragePaths } from './storage'
+import { getManualQaEvidenceRelativePath, getManualQaStoragePaths, readManualQaText, writeManualQaText } from './storage'
 import { readManualQaPrd } from './prd'
 import { getErrorMessage } from '@shared/typeGuards'
 import { focusedDiffMetadata } from './focusedDiff'
@@ -460,7 +458,7 @@ export function persistManualQaFixBeadCandidates(
     version,
     beads: candidates,
   })
-  safeAtomicWrite(path, content)
+  writeManualQaText(ticketDir, path, content)
   return content
 }
 
@@ -470,8 +468,9 @@ export function readManualQaFixBeadCandidates(
   groups: ManualQaFixGroup[],
 ): ManualQaFixBeadCandidate[] | null {
   const path = getManualQaStoragePaths(ticketDir, version).fixBeadsPath
-  if (!existsSync(path)) return null
-  const parsed = PersistedCandidateDocumentSchema.parse(jsYaml.load(readFileSync(path, 'utf8')))
+  const content = readManualQaText(ticketDir, path)
+  if (content === null) return null
+  const parsed = PersistedCandidateDocumentSchema.parse(jsYaml.load(content))
   if (parsed.version !== version) throw new Error('Persisted Manual QA fix beads belong to a different version.')
   validateManualQaFixBeadCandidates(parsed.beads, groups)
   return parsed.beads

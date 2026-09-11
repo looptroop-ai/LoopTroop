@@ -7,7 +7,7 @@ import { createBoundedOutputCollector } from './commandOutput'
 import { planProgramLaunch, resolveTrustedExecutable, resolveTrustedProgram, type TrustedExecutableResolution } from './executablePath'
 import { FORCE_KILL_DELAY_MS, PROCESS_ABANDON_GRACE_MS } from './constants'
 import { terminateProcessTreeWithEscalation } from './processTree'
-import { resolveContainedPath } from './containedPath'
+import { escapesRoot, resolveContainedPath } from './containedPath'
 
 // Guarded with Test-Path so an unset $LASTEXITCODE cannot turn a clean cmdlet
 // run into a strict-mode failure. Matches the launcher script in
@@ -161,10 +161,10 @@ export function resolveCommandProgram(
 
   let contained: string
   try {
-    // Reuses the working-directory rule so the two cannot disagree about what
-    // "inside the repository" means; it throws with that same message.
+    // Check the absolute candidate against both root spellings: cwd is already
+    // canonical, while an attached repository may still be named by an alias.
     contained = resolve(context.cwd, program)
-    resolveCommandCwd(context.repoRoot, relative(context.repoRoot, contained))
+    resolveContainedPath(context.repoRoot, contained, { allowMissingParents: true })
   } catch {
     // Refused, not missing: a caller that falls back on "not found" must not
     // fall back onto a program that points out of the repository.
@@ -183,8 +183,7 @@ export function resolveCommandProgram(
   // work out where it lives from how it was started — so `path` is the link and
   // only `target` says where it leads.
   const leadsTo = resolution.target ?? resolution.path
-  const step = relative(root, leadsTo)
-  if (step === '' || step.startsWith('..') || isAbsolute(step)) {
+  if (relative(root, leadsTo) === '' || escapesRoot(root, leadsTo)) {
     return { reason: `Command program must stay within the repository root: ${program} leads to ${leadsTo}`, refusedAt: contained }
   }
   return resolution

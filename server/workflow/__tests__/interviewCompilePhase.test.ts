@@ -1,5 +1,7 @@
 import { afterAll, beforeEach, describe, expect, it, vi } from 'vitest'
-import { readFileSync } from 'node:fs'
+import { readFileSync, rmSync, symlinkSync } from 'node:fs'
+import { join } from 'node:path'
+import { createInterviewSessionSnapshot } from '../../phases/interview/sessionState'
 import { parseUiArtifactCompanionArtifact } from '@shared/artifactCompanions'
 import { parseUiRefinementDiffArtifact } from '@shared/refinementDiffArtifacts'
 import type { DraftPhaseResult, DraftProgressEvent } from '../../council/types'
@@ -30,7 +32,7 @@ vi.mock('../../council/refiner', () => ({
   refineDraft: refineDraftMock,
 }))
 
-import { handleInterviewCompile, handleInterviewDeliberate } from '../phases/interviewPhase'
+import { handleInterviewCompile, handleInterviewDeliberate, loadCanonicalInterview, writeCanonicalInterview } from '../phases/interviewPhase'
 
 const repoManager = createTestRepoManager('interview-compile')
 
@@ -54,6 +56,20 @@ function buildInterviewDraftContent(question: string) {
 }
 
 describe('interview workflow phases', () => {
+  it('keeps external IDs as interview content and rejects escaped canonical artifact aliases', async () => {
+    const { ticket, paths } = await createInitializedTestTicket(repoManager)
+    const snapshot = createInterviewSessionSnapshot({
+      winnerId: TEST.councilMembers[0], compiledQuestions: [], maxInitialQuestions: 2,
+    })
+    expect(loadCanonicalInterview(paths.ticketDir)).toBeUndefined()
+    const path = writeCanonicalInterview(ticket.externalId, paths.ticketDir, snapshot)
+    expect(loadCanonicalInterview(paths.ticketDir)).toContain(ticket.externalId)
+    rmSync(path)
+    const outside = repoManager.createRepo()
+    symlinkSync(outside, join(paths.ticketDir, 'interview.yaml'), 'junction')
+    expect(() => loadCanonicalInterview(paths.ticketDir)).toThrow('escapes root')
+    expect(() => writeCanonicalInterview(ticket.externalId, paths.ticketDir, snapshot)).toThrow('escapes root')
+  })
   beforeEach(() => {
     resetTestDb()
     phaseIntermediate.clear()

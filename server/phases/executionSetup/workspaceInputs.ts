@@ -30,7 +30,7 @@ function assertResolvedWithin(root: string, candidate: string, path: string): vo
 
 function assertSafeWorkspaceInputPath(path: string): string {
   const normalized = normalizeRelativePath(path)
-  if (!normalized || normalized === '.' || isAbsolute(path) || normalized === '..' || normalized.startsWith('../')) {
+  if (!normalized || normalized === '.' || isAbsolute(path) || normalized.split('/').includes('..')) {
     throw new Error(`Workspace input path must stay inside the project: ${path}`)
   }
   if (INTERNAL_ROOTS.some((root) => normalized === root || normalized.startsWith(`${root}/`))) {
@@ -140,9 +140,9 @@ export function validateExecutionSetupWorkspaceInputs(input: {
     if (escapesRoot(input.projectRoot, sourcePath) || escapesRoot(input.worktreePath, destinationPath)) {
       throw new Error(`Workspace input path escapes the project: ${path}`)
     }
-    if (!existsSync(sourcePath)) throw new Error(`Workspace input does not exist in the original checkout: ${path}`)
     assertResolvedWithin(input.projectRoot, sourcePath, path)
     assertResolvedWithin(input.worktreePath, destinationPath, path)
+    if (!existsSync(sourcePath)) throw new Error(`Workspace input does not exist in the original checkout: ${path}`)
     const stat = lstatSync(sourcePath)
     if (stat.isSymbolicLink()) throw new Error(`Workspace input cannot be a symbolic link: ${path}`)
     if (entry.kind === 'file' && !stat.isFile()) throw new Error(`Workspace input is not a file: ${path}`)
@@ -188,7 +188,9 @@ function copyEligiblePath(input: {
       copied += copyEligiblePath({ ...input, path: childPath })
     }
     if (copied === 0 && sourceStatusMatches(input.projectRoot, input.path, input.sourceStatus)) {
+      assertResolvedWithin(input.worktreePath, destinationPath, input.path)
       mkdirSync(destinationPath, { recursive: true })
+      assertResolvedWithin(input.worktreePath, destinationPath, input.path)
     }
     return copied
   }
@@ -196,7 +198,10 @@ function copyEligiblePath(input: {
   if (!stat.isFile()) return 0
   if (isTracked(input.projectRoot, input.path) || isTracked(input.worktreePath, input.path)) return 0
   if (!sourceStatusMatches(input.projectRoot, input.path, input.sourceStatus)) return 0
+  assertResolvedWithin(input.worktreePath, destinationPath, input.path)
   mkdirSync(dirname(destinationPath), { recursive: true })
+  assertResolvedWithin(input.projectRoot, sourcePath, input.path)
+  if (lstatSync(sourcePath).isSymbolicLink()) throw new Error(`Workspace input contains a symbolic link: ${input.path}`)
   assertResolvedWithin(input.worktreePath, destinationPath, input.path)
   copyFileSync(sourcePath, destinationPath)
   return 1

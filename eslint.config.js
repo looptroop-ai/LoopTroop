@@ -197,6 +197,31 @@ export default tseslint.config(
     },
   },
   {
+    // Workflow artifacts must keep using ticket-scoped I/O. Metadata operations
+    // remain available; low-level descriptor/binary exceptions need a local,
+    // documented suppression rather than weakening the whole workflow boundary.
+    files: ['server/workflow/**/*.ts'],
+    ignores: ['**/__tests__/**', '**/*.test.ts'],
+    rules: {
+      'no-restricted-imports': ['error', {
+        paths: ['fs', 'node:fs', 'fs/promises', 'node:fs/promises'].map((name) => ({
+          name,
+          importNames: [
+            'default', 'promises', 'readFile', 'readFileSync', 'writeFile', 'writeFileSync',
+            'appendFile', 'appendFileSync', 'open', 'openSync', 'createReadStream', 'createWriteStream',
+            'read', 'readSync', 'write', 'writeSync',
+          ],
+          message: 'Use readTicketFile/writeTicketFile, or contained no-follow I/O for a validated root. Raw content I/O bypasses artifact containment.',
+        })),
+        patterns: [{
+          group: ['**/io/atomicWrite', '**/io/atomicWrite.*'],
+          importNames: ['safeAtomicWrite'],
+          message: 'Use writeTicketFile, or safeAtomicWriteWithin with a validated root, for workflow artifacts.',
+        }],
+      }],
+    },
+  },
+  {
     /**
      * The `.mjs` scripts, for this one rule only.
      *

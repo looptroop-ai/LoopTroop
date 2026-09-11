@@ -154,7 +154,7 @@ describe('streamRouter', () => {
     }
   })
 
-  it.each(['live write', 'heartbeat', 'ticket cleanup'])('closes the stream and releases its heartbeat after %s failure or shutdown', async (trigger) => {
+  it.each(['reader cancellation', 'live write', 'heartbeat', 'ticket cleanup'])('closes the stream and releases its heartbeat after %s failure or shutdown', async (trigger) => {
     const ticket = createStreamRouteTicket()
     vi.useFakeTimers()
     const response = await app.request(`/api/stream?ticketId=${encodeURIComponent(ticket.id)}`)
@@ -163,7 +163,11 @@ describe('streamRouter', () => {
       await reader.read()
       expect(broadcaster.getClientCount(ticket.id)).toBe(1)
       expect(vi.getTimerCount()).toBe(1)
-      if (trigger === 'ticket cleanup') {
+      if (trigger === 'reader cancellation') {
+        // Real transport cancellation invokes Hono's abort hook; its write API
+        // swallows I/O errors, so rejected-write mocks alone cannot cover this.
+        await reader.cancel()
+      } else if (trigger === 'ticket cleanup') {
         broadcaster.clearTicket(ticket.id)
       } else {
         vi.spyOn(SSEStreamingApi.prototype, 'writeSSE').mockRejectedValueOnce(new Error('Disconnected'))

@@ -11,6 +11,7 @@ import {
   appendManualQaEvent,
   getManualQaStoragePaths,
   getManualQaEvidenceRelativePath,
+  getManualQaChecklistHash,
   isSafeRasterMediaType,
   persistManualQaChecklist,
   persistManualQaModelCapabilitySnapshot,
@@ -20,6 +21,9 @@ import {
   readManualQaEvidenceActionReceipt,
   readManualQaEvidenceIndex,
   readManualQaEvents,
+  readManualQaChecklist,
+  readManualQaCoverage,
+  readManualQaSummary,
   readManualQaModelCapabilitySnapshot,
   readManualQaResults,
   removeManualQaEvidence,
@@ -84,14 +88,14 @@ describe('Manual QA canonical storage', () => {
   it('rejects a linked storage root before creating a version or writing a checklist', () => {
     const ticketDir = root()
     const outside = root()
-    symlinkSync(outside, join(ticketDir, 'manual-qa'), 'dir')
+    symlinkSync(outside, join(ticketDir, 'manual-qa'), process.platform === 'win32' ? 'junction' : 'dir')
 
     expect(() => persistChecklist(ticketDir)).toThrow('unsafe directory')
     expect(() => reserveManualQaVersion(ticketDir, '1:DEMO-1', 1)).toThrow('unsafe directory')
     expect(existsSync(join(outside, 'v1'))).toBe(false)
   })
 
-  it('rejects an escaping reservation file before completing it', () => {
+  it.skipIf(process.platform === 'win32')('rejects an escaping reservation file before reading or completing it', () => {
     const ticketDir = root()
     const reservation = reserveManualQaVersion(ticketDir, '1:DEMO-1', 1)
     const reservationPath = getManualQaStoragePaths(ticketDir, 1).reservationPath
@@ -100,8 +104,33 @@ describe('Manual QA canonical storage', () => {
     rmSync(reservationPath)
     symlinkSync(outsideFile, reservationPath, 'file')
 
+    expect(() => reserveManualQaVersion(ticketDir, '1:DEMO-1', 1)).toThrow('escapes root')
     expect(() => completeManualQaReservation(ticketDir, reservation, 'a'.repeat(64))).toThrow('escapes root')
     expect(readFileSync(outsideFile, 'utf8')).toBe('untouched')
+  })
+
+  it.each([
+    ['checklistPath', readManualQaChecklist],
+    ['checklistPath', getManualQaChecklistHash],
+    ['coveragePath', readManualQaCoverage],
+    ['resultsPath', readManualQaResults],
+    ['summaryPath', readManualQaSummary],
+    ['modelCapabilityPath', readManualQaModelCapabilitySnapshot],
+    ['eventsPath', readManualQaEvents],
+  ] as const)('rejects an escaping final link before reading %s', (key, read) => {
+    const ticketDir = root()
+    const path = getManualQaStoragePaths(ticketDir, 1)[key]
+    mkdirSync(dirname(path), { recursive: true })
+    // Junctions need no Windows symlink privilege; containment rejects the
+    // escaped destination before any file-type check or content parsing.
+    symlinkSync(root(), path, process.platform === 'win32' ? 'junction' : 'dir')
+    expect(() => read(ticketDir, 1)).toThrow('escapes root')
+  })
+
+  it('rejects a linked event root even when no versioned artifact is requested', () => {
+    const ticketDir = root()
+    symlinkSync(root(), join(ticketDir, 'manual-qa'), process.platform === 'win32' ? 'junction' : 'dir')
+    expect(() => readManualQaEvents(ticketDir)).toThrow('unsafe directory')
   })
 
   it('reuses a durable generation reservation after restart', () => {
@@ -465,7 +494,7 @@ describe('Manual QA canonical storage', () => {
       mkdirSync(outside, { recursive: true })
       writeFileSync(join(outside, basename(storedPath)), 'outside')
     }
-    symlinkSync(outside, itemDir, 'dir')
+    symlinkSync(outside, itemDir, process.platform === 'win32' ? 'junction' : 'dir')
 
     expect(() => resolveManualQaEvidence({
       ticketDir,
@@ -491,7 +520,7 @@ describe('Manual QA canonical storage', () => {
     const versionDir = getManualQaStoragePaths(ticketDir, 1).versionDir
     cpSync(versionDir, outside, { recursive: true })
     removeTempDir(versionDir)
-    symlinkSync(outside, versionDir, 'dir')
+    symlinkSync(outside, versionDir, process.platform === 'win32' ? 'junction' : 'dir')
 
     expect(() => resolveManualQaEvidence({
       ticketDir,
@@ -508,7 +537,7 @@ describe('Manual QA canonical storage', () => {
     const versionDir = getManualQaStoragePaths(ticketDir, 1).versionDir
     cpSync(versionDir, outside, { recursive: true })
     removeTempDir(versionDir)
-    symlinkSync(outside, versionDir, 'dir')
+    symlinkSync(outside, versionDir, process.platform === 'win32' ? 'junction' : 'dir')
 
     await expect(streamManualQaEvidence({
       ticketDir,
@@ -694,8 +723,10 @@ describe('Manual QA canonical storage', () => {
   })
 
   it('reuses submission operations by action ID and rejects conflicting retries', () => {
-    const path = join(root(), 'manual-qa', 'v1', 'submission-operation.json')
+    const ticketDir = root()
+    const path = join(ticketDir, 'manual-qa', 'v1', 'submission-operation.json')
     const first = reserveManualQaSubmissionOperation({
+      ticketDir,
       path,
       actionId: 'submit:one',
       operationType: 'submit',
@@ -705,6 +736,7 @@ describe('Manual QA canonical storage', () => {
       draftRevision: 4,
     })
     expect(reserveManualQaSubmissionOperation({
+      ticketDir,
       path,
       actionId: 'submit:one',
       operationType: 'submit',
@@ -714,6 +746,7 @@ describe('Manual QA canonical storage', () => {
       draftRevision: 4,
     })).toEqual(first)
     expect(() => reserveManualQaSubmissionOperation({
+      ticketDir,
       path,
       actionId: 'submit:one',
       operationType: 'submit',
@@ -723,6 +756,7 @@ describe('Manual QA canonical storage', () => {
       draftRevision: 4,
     })).toThrow('different input')
     expect(() => reserveManualQaSubmissionOperation({
+      ticketDir,
       path,
       actionId: 'submit:one',
       operationType: 'skip',
@@ -731,5 +765,15 @@ describe('Manual QA canonical storage', () => {
       checklistHash: 'a'.repeat(64),
       draftRevision: 4,
     })).toThrow('different input')
+  })
+
+  it('rejects submission journals outside the independently supplied ticket root', () => {
+    const ticketDir = root()
+    const path = join(root(), 'submission-operation.json')
+    expect(() => reserveManualQaSubmissionOperation({
+      ticketDir, path, actionId: 'submit:one', operationType: 'submit',
+      ticketId: '1:DEMO-1', version: 1, checklistHash: 'a'.repeat(64), draftRevision: 1,
+    })).toThrow('escapes root')
+    expect(existsSync(path)).toBe(false)
   })
 })

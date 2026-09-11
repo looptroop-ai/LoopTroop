@@ -13,10 +13,7 @@ import {
   validatePrdRefinementOutput,
 } from '../../phases/prd/refined'
 import { buildMinimalContext, type TicketState } from '../../opencode/contextBuilder'
-import { getTicketPaths, insertPhaseArtifact } from '../../storage/tickets'
-import { safeAtomicWrite } from '../../io/atomicWrite'
-import { existsSync, readFileSync } from 'fs'
-import { resolve } from 'path'
+import { getTicketPaths, insertPhaseArtifact, readTicketFile, resolveTicketContainedPath, writeTicketFile } from '../../storage/tickets'
 import * as jsYaml from 'js-yaml'
 import { normalizeInterviewDocumentOutput, normalizePrdYamlOutput, getPrdDraftMetrics } from '../../structuredOutput'
 import { buildPromptFromTemplate, PROM11, PROM12 } from '../../prompts/index'
@@ -58,13 +55,12 @@ import { persistUiArtifactCompanionArtifact } from '../artifactCompanions'
 import { withStructuredRetryDiagnosticAttempt } from '@shared/structuredRetryDiagnostics'
 import { getStructuredRetryDiagnosticFromError } from '../../lib/structuredRetryDiagnostics'
 
-function requireCanonicalInterviewForPrdDraft(ticketDir: string, ticketExternalId: string): string {
-  const interviewPath = resolve(ticketDir, 'interview.yaml')
-  if (!existsSync(interviewPath)) {
-    throw new Error(`Canonical interview artifact is required before PRD drafting: ${interviewPath}`)
+function requireCanonicalInterviewForPrdDraft(ticketId: string, ticketExternalId: string): string {
+  const interview = readTicketFile(ticketId, 'interview.yaml')
+  if (interview === null) {
+    throw new Error(`Canonical interview artifact is required before PRD drafting: ${ticketExternalId}/interview.yaml`)
   }
 
-  const interview = readFileSync(interviewPath, 'utf-8')
   const validation = normalizeInterviewDocumentOutput(interview, { ticketId: ticketExternalId })
   if (!validation.ok) {
     throw new Error(`Canonical interview artifact is invalid for PRD drafting: ${validation.error}`)
@@ -287,12 +283,12 @@ export async function handlePrdDraft(
   sendEvent: (event: TicketEvent) => void,
   signal: AbortSignal,
 ) {
-  const { worktreePath, ticket, ticketDir, relevantFiles } = loadTicketDirContext(context)
+  const { worktreePath, ticket, relevantFiles } = loadTicketDirContext(context)
   const phase = 'DRAFTING_PRD' as const
   const council = resolveCouncilMembers(context)
   const members = council.members
 
-  const interview = requireCanonicalInterviewForPrdDraft(ticketDir, context.externalId)
+  const interview = requireCanonicalInterviewForPrdDraft(ticketId, context.externalId)
 
   const ticketState: TicketState = {
     ticketId: context.externalId,
@@ -596,13 +592,11 @@ export async function handlePrdVote(
   const councilSettings = resolveCouncilRuntimeSettings(context)
   const ticketDirContext = loadTicketDirContext(context)
   const voteTicketState = intermediate.ticketState ?? (() => {
-    const { ticket, relevantFiles, ticketDir } = ticketDirContext
-    let interview: string | undefined
-    try {
-      interview = requireCanonicalInterviewForPrdDraft(ticketDir, context.externalId)
-    } catch {
-      interview = undefined
-    }
+    const { ticket, relevantFiles } = ticketDirContext
+    const content = readTicketFile(ticketId, 'interview.yaml')
+    const interview = content !== null && normalizeInterviewDocumentOutput(content, { ticketId: context.externalId }).ok
+      ? content
+      : undefined
     return {
       ticketId: context.externalId,
       title: context.title,
@@ -931,7 +925,6 @@ export async function handlePrdRefine(
 
   // Clean up intermediate data
   phaseIntermediate.delete(`${ticketId}:prd`)
-  const prdPath = resolve(ticketDir, 'prd.yaml')
   if (!validatedRefinement) {
     throw new Error('PRD refinement completed without a validated artifact')
   }
@@ -1000,7 +993,8 @@ export async function handlePrdRefine(
   persistUiRefinementDiffArtifact(ticketId, 'REFINING_PRD', ticketDir, uiDiffArtifact)
 
   // Save refined PRD to disk
-  safeAtomicWrite(prdPath, refinedContent)
+  writeTicketFile(ticketId, 'prd.yaml', refinedContent)
+  const prdPath = resolveTicketContainedPath(ticketId, 'prd.yaml')
   clearContextCache(context.externalId)
 
   emitPhaseLog(
@@ -1026,8 +1020,7 @@ export async function handleMockPrdDraft(ticketId: string, context: TicketContex
   const paths = getTicketPaths(ticketId)
   if (!paths) throw new Error(`Ticket workspace not initialized: missing ticket paths for ${context.externalId}`)
   const { members } = resolveCouncilMembers(context)
-  const interviewPath = resolve(paths.ticketDir, 'interview.yaml')
-  const fullAnswersContent = existsSync(interviewPath) ? readFileSync(interviewPath, 'utf-8') : ''
+  const fullAnswersContent = readTicketFile(ticketId, 'interview.yaml') ?? ''
   const fullAnswers = members.map((member) => ({
     memberId: member.modelId,
     outcome: 'completed' as const,
@@ -1114,8 +1107,7 @@ export async function handleMockPrdRefine(ticketId: string, context: TicketConte
   if (!paths) throw new Error(`Ticket workspace not initialized: missing ticket paths for ${context.externalId}`)
   const { members } = resolveCouncilMembers(context)
   const winnerId = members[0]?.modelId ?? 'mock-model-1'
-  const interviewPath = resolve(paths.ticketDir, 'interview.yaml')
-  const interviewContent = existsSync(interviewPath) ? readFileSync(interviewPath, 'utf-8') : ''
+  const interviewContent = readTicketFile(ticketId, 'interview.yaml') ?? ''
   const normalizedPrd = normalizePrdYamlOutput(buildMockPrdContent(context), {
     ticketId: context.externalId,
     interviewContent,
@@ -1152,7 +1144,7 @@ export async function handleMockPrdRefine(ticketId: string, context: TicketConte
     structuredOutput: refinedArtifact.structuredOutput ?? null,
   })
   persistUiRefinementDiffArtifact(ticketId, 'REFINING_PRD', paths.ticketDir, uiDiffArtifact)
-  safeAtomicWrite(resolve(paths.ticketDir, 'prd.yaml'), normalizedPrd.normalizedContent)
+  writeTicketFile(ticketId, 'prd.yaml', normalizedPrd.normalizedContent)
   clearContextCache(context.externalId)
   emitPhaseLog(ticketId, context.externalId, 'REFINING_PRD', 'info', 'Mock PRD written to disk.')
   sendEvent({ type: 'REFINED' })

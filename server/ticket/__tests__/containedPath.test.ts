@@ -1,7 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it } from 'vitest'
-import { mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, symlinkSync, writeFileSync } from 'node:fs'
-import { tmpdir } from 'node:os'
+import { mkdirSync, readFileSync, rmSync, symlinkSync, writeFileSync } from 'node:fs'
 import { join } from 'node:path'
+import { makeTempDir } from '../../test/tempDir'
 import { resolveProjectTicketContainedPath, writeProjectTicketFile } from '../containedPath'
 import { getTicketBeadsPath, readTicketMeta, writeTicketMeta } from '../metadata'
 import { readFileNoFollowSync } from '../../io/readFile'
@@ -10,7 +10,7 @@ let scratch: string
 let project: string
 let ticketDir: string
 beforeEach(() => {
-  scratch = realpathSync(mkdtempSync(join(tmpdir(), 'looptroop-ticket-containment-')))
+  scratch = makeTempDir('looptroop-ticket-containment-')
   project = join(scratch, 'project')
   ticketDir = join(project, '.looptroop', 'worktrees', 'ABC-1', '.ticket')
   mkdirSync(project)
@@ -32,6 +32,7 @@ describe('ticket file containment', () => {
     }
     expect(() => getTicketBeadsPath(project, 'ABC-1', '../../../outside')).toThrow()
     expect(() => writeProjectTicketFile(project, 'ABC-1', '../other', 'unsafe')).toThrow()
+    expect(() => resolveProjectTicketContainedPath(project, 'ABC-1', 'file\0', 'remove')).toThrow()
   })
 
   it('rejects a replaced worktrees directory before reading or creating metadata', () => {
@@ -73,11 +74,15 @@ describe('ticket file containment', () => {
   it('removes a final link without recursively deleting its destination', () => {
     writeProjectTicketFile(project, 'ABC-1', 'keep.txt', 'keep')
     const beads = join(ticketDir, 'beads')
-    symlinkSync(ticketDir, beads, 'junction')
+    const destination = join(ticketDir, 'real')
+    mkdirSync(destination)
+    writeFileSync(join(destination, 'keep.txt'), 'keep destination')
+    symlinkSync(destination, beads, 'junction')
     const entry = resolveProjectTicketContainedPath(project, 'ABC-1', 'beads', 'remove')
     expect(entry).toBe(beads)
     rmSync(entry, { recursive: true })
     expect(readFileSync(join(ticketDir, 'keep.txt'), 'utf8')).toBe('keep')
+    expect(readFileSync(join(destination, 'keep.txt'), 'utf8')).toBe('keep destination')
     expect(() => resolveProjectTicketContainedPath(project, 'ABC-1', '.', 'remove')).toThrow()
   })
 

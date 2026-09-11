@@ -1,7 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
-import { promises as fs, mkdirSync, mkdtempSync, realpathSync, rmSync, symlinkSync, writeFileSync } from 'node:fs'
-import { tmpdir } from 'node:os'
+import { promises as fs, mkdirSync, rmSync, symlinkSync, writeFileSync } from 'node:fs'
 import { join } from 'node:path'
+import { makeTempDir } from '../../test/tempDir'
 
 const { launch } = vi.hoisted(() => ({ launch: vi.fn(async (_program: string, _args: string[]) => ({ stdout: '' })) }))
 vi.mock('node:child_process', () => ({
@@ -18,7 +18,7 @@ beforeEach(() => {
   vi.spyOn(fs, 'readFile').mockResolvedValue('Linux')
 })
 function fixture() {
-  const root = realpathSync(mkdtempSync(join(tmpdir(), 'looptroop-open-path-')))
+  const root = makeTempDir('looptroop-open-path-')
   roots.push(root)
   const project = join(root, 'project')
   const outside = join(root, 'outside')
@@ -95,6 +95,26 @@ describe('folder opener containment', () => {
       return { stdout: "C:\\project folder\\O'Brien" }
     })
     await expect(revealFolderInExplorer(folder, [project])).rejects.toThrow()
+    expect(launch).toHaveBeenCalledTimes(1)
+  })
+
+  it.skipIf(process.platform !== 'linux')('keeps translated trailing spaces in the PowerShell and Explorer arguments', async () => {
+    const { project } = fixture()
+    vi.stubEnv('WSL_DISTRO_NAME', 'test')
+    const windowsPath = 'C:\\project with trailing space '
+    launch.mockResolvedValueOnce({ stdout: `${windowsPath}\n` })
+      .mockRejectedValueOnce(new Error('PowerShell unavailable'))
+    await revealFolderInExplorer(project, [project])
+    expect(launch.mock.calls[0]?.[1]).toEqual(['-w', project])
+    expect(launch.mock.calls[1]?.[1]).toContain(encodedInvokeItem(windowsPath))
+    expect(launch.mock.calls[2]?.[1]).toEqual([windowsPath])
+  })
+
+  it.skipIf(process.platform !== 'linux')('does not launch Explorer with an untranslated POSIX path', async () => {
+    const { project } = fixture()
+    vi.stubEnv('WSL_DISTRO_NAME', 'test')
+    launch.mockRejectedValueOnce(new Error('Translation failed'))
+    await expect(revealFolderInExplorer(project, [project])).rejects.toThrow('Translation failed')
     expect(launch).toHaveBeenCalledTimes(1)
   })
 })

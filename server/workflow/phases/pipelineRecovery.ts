@@ -5,11 +5,10 @@ import type {
   MemberOutcome,
 } from '../../council/types'
 import type { TicketContext } from '../../machines/types'
-import { existsSync, readFileSync } from 'fs'
-import { resolve } from 'path'
 import {
   getLatestPhaseArtifact,
   getActivePhaseAttempt,
+  readTicketFile,
 } from '../../storage/tickets'
 import { buildPrdContextBuilder } from '../../phases/prd/draft'
 import { buildBeadsContextBuilder } from '../../phases/beads/draft'
@@ -93,7 +92,7 @@ export function tryRecoverPhaseIntermediate(
     const recoveredDrafts = recoverPersistedDrafts(result.drafts, result.memberOutcomes)
     if (result.isFinal !== true || recoveredDrafts.length === 0) return false
 
-    const { worktreePath, ticket, ticketDir, relevantFiles } = loadTicketDirContext(context)
+    const { worktreePath, ticket, relevantFiles } = loadTicketDirContext(context)
 
     let contextBuilder: PhaseIntermediateData['contextBuilder']
     let baseTicketState: TicketState | undefined
@@ -106,13 +105,9 @@ export function tryRecoverPhaseIntermediate(
       }
       baseTicketState = ticketState
     } else if (pipeline === 'prd') {
-      const interviewPath = resolve(ticketDir, 'interview.yaml')
       const fullAnswersArtifact = getLatestPhaseArtifact(ticketId, 'prd_full_answers', draftStatus, draftAttempt ?? undefined)
-      let interview: string | undefined
+      const interview = readTicketFile(ticketId, 'interview.yaml') ?? undefined
       let fullAnswers: string[] | undefined
-      if (existsSync(interviewPath)) {
-        try { interview = readFileSync(interviewPath, 'utf-8') } catch { /* ignore */ }
-      }
       if (fullAnswersArtifact) {
         try {
           const parsed = JSON.parse(fullAnswersArtifact.content) as {
@@ -137,11 +132,7 @@ export function tryRecoverPhaseIntermediate(
       contextBuilder = buildPrdContextBuilder(ticketState)
       baseTicketState = ticketState
     } else {
-      const prdPath = resolve(ticketDir, 'prd.yaml')
-      let prd: string | undefined
-      if (existsSync(prdPath)) {
-        try { prd = readFileSync(prdPath, 'utf-8') } catch { /* ignore */ }
-      }
+      const prd = readTicketFile(ticketId, 'prd.yaml') ?? undefined
       const ticketState: TicketState = {
         ticketId: context.externalId,
         title: context.title,

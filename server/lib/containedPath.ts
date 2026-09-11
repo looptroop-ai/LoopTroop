@@ -1,4 +1,4 @@
-import { lstatSync, realpathSync } from 'node:fs'
+import { lstatSync, realpathSync, statSync } from 'node:fs'
 import { isAbsolute, relative, resolve, sep } from 'node:path'
 
 export class ContainedPathError extends Error {
@@ -72,6 +72,11 @@ export function resolveContainedPath(root: string, candidate: string, options: C
         throw error
       }
       if (escapesRoot(canonicalRoot, current)) throw new ContainedPathError('Symbolic link escapes root')
+      stats = statSync(current)
+    }
+    // Windows can report ENOENT for file/child; do not treat it as a missing tail.
+    if (index < parts.length - 1 && !stats.isDirectory()) {
+      throw Object.assign(new ContainedPathError('Path parent must be a directory'), { code: 'ENOTDIR' })
     }
   }
   return current

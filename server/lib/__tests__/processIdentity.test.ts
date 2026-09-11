@@ -104,7 +104,8 @@ describe('readProcessStartToken', () => {
       platform: 'win32',
       readTextFile: () => null,
       runCommand: (file, args) =>
-        file === 'powershell.exe' && args.some((arg) => arg.includes('Get-Process'))
+        file === 'powershell.exe' && args.includes('-EncodedCommand')
+          && Buffer.from(args.at(-1)!, 'base64').toString('utf16le').includes('Get-Process -Id 55')
           ? '133850000000000000'
           : null,
     }

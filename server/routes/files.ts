@@ -2,7 +2,8 @@ import { Hono } from 'hono'
 import * as fs from 'node:fs'
 import * as readline from 'node:readline'
 import { getTicketByRef, resolveTicketContainedPath } from '../storage/tickets'
-import { listProjects } from '../storage/projects'
+import { listAttachedProjectRoots } from '../storage/projects'
+import { openFileNoFollowSync, readFileNoFollowSync } from '../io/readFile'
 import { resolveAppConfigDir } from '../lib/appConfigDir'
 import { ContainedPathError } from '../lib/containedPath'
 import { revealFolderInExplorer } from '../lib/openPath'
@@ -20,11 +21,9 @@ filesRouter.onError((error, c) => {
   throw error
 })
 
-const READ_FLAGS = fs.constants.O_RDONLY | (fs.constants.O_NOFOLLOW ?? 0)
-
 function openLogStream(logPath: string): fs.ReadStream | null {
   try {
-    const fd = fs.openSync(logPath, READ_FLAGS)
+    const fd = openFileNoFollowSync(logPath)
     return fs.createReadStream(logPath, { fd, encoding: 'utf-8', autoClose: true })
   } catch (error) {
     if ((error as NodeJS.ErrnoException).code === 'ENOENT') return null
@@ -157,11 +156,11 @@ filesRouter.get('/files/:ticketId/logs', async (c) => {
   const ticket = getTicketByRef(ticketId)
   if (!ticket) return c.json({ error: 'Ticket not found' }, 404)
 
-  const paths = {
-    executionLogPath: resolveTicketContainedPath(ticketId, 'runtime/execution-log.jsonl')!,
-    debugLogPath: resolveTicketContainedPath(ticketId, 'runtime/execution-log.debug.jsonl')!,
-    aiLogPath: resolveTicketContainedPath(ticketId, 'runtime/execution-log.ai.jsonl')!,
-  }
+  const executionLogPath = resolveTicketContainedPath(ticketId, 'runtime/execution-log.jsonl')
+  const debugLogPath = resolveTicketContainedPath(ticketId, 'runtime/execution-log.debug.jsonl')
+  const aiLogPath = resolveTicketContainedPath(ticketId, 'runtime/execution-log.ai.jsonl')
+  if (!executionLogPath || !debugLogPath || !aiLogPath) return c.json({ error: 'Ticket not found' }, 404)
+  const paths = { executionLogPath, debugLogPath, aiLogPath }
   const channel = normalizeLogChannel(c.req.query('channel'))
 
   const statusFilter = c.req.query('status')
@@ -248,7 +247,7 @@ filesRouter.get('/files/:ticketId/:file', async (c) => {
   if (!filePath) return c.json({ error: 'Ticket not found' }, 404)
 
   try {
-    const content = await fs.promises.readFile(filePath, { encoding: 'utf-8', flag: READ_FLAGS })
+    const content = readFileNoFollowSync(filePath)
     return c.json({ content, exists: true, contentSha256: contentSha256(content) })
   } catch (error) {
     if ((error as NodeJS.ErrnoException).code === 'ENOENT') return c.json({ content: '', exists: false })
@@ -289,7 +288,7 @@ filesRouter.post('/files/open-path', async (c) => {
       return c.json({ error: 'A valid "path" parameter is required.' }, 400)
     }
     await revealFolderInExplorer(body.path, [
-      ...listProjects().map(project => project.folderPath),
+      ...listAttachedProjectRoots(),
       resolveAppConfigDir(),
     ])
     return c.json({ success: true })

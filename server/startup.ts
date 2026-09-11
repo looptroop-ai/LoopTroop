@@ -28,25 +28,29 @@ export function recoverTicketRuntimeArtifacts() {
   let settledOpencodeStepCaps = 0
 
   for (const ticket of listTickets()) {
-    const paths = getTicketPaths(ticket.id)
-    if (!paths) continue
+    try {
+      const paths = getTicketPaths(ticket.id)
+      if (!paths) continue
 
-    recoveredTmpFiles += recoverOrphanTmpFiles(paths.ticketDir).length
-    // A coding run killed outright never reached the step that puts the
-    // project's own `opencode.json` back, so the next boot does it instead.
-    // Counted for either outcome the boot can settle: the project's file put
-    // back, or the file the interrupted run created taken away.
-    const stepCap = restoreInterruptedOpencodeStepsConfig(paths.ticketDir, paths.worktreePath)
-    if (stepCap === 'restored' || stepCap === 'removed') {
-      settledOpencodeStepCaps += 1
-    }
-    // Every JSONL `safeAtomicWrite` can leave half-written, including the bead
-    // file — recovery puts a torn one back under its own name, and this is what
-    // then trims the incomplete final line.
-    for (const logPath of [paths.executionLogPath, paths.debugLogPath, paths.aiLogPath, paths.beadsPath]) {
-      if (fixTrailingLineCorruption(logPath)) {
-        repairedExecutionLogs += 1
+      recoveredTmpFiles += recoverOrphanTmpFiles(paths.ticketDir).length
+      // A coding run killed outright never reached the step that puts the
+      // project's own `opencode.json` back, so the next boot does it instead.
+      // Counted for either outcome the boot can settle: the project's file put
+      // back, or the file the interrupted run created taken away.
+      const stepCap = restoreInterruptedOpencodeStepsConfig(paths.ticketDir, paths.worktreePath)
+      if (stepCap === 'restored' || stepCap === 'removed') {
+        settledOpencodeStepCaps += 1
       }
+      // Every JSONL `safeAtomicWrite` can leave half-written, including the bead
+      // file — recovery puts a torn one back under its own name, and this is what
+      // then trims the incomplete final line.
+      for (const logPath of [paths.executionLogPath, paths.debugLogPath, paths.aiLogPath, paths.beadsPath]) {
+        if (fixTrailingLineCorruption(logPath)) {
+          repairedExecutionLogs += 1
+        }
+      }
+    } catch (error) {
+      console.warn(`[startup] Skipped artifact recovery for ${ticket.id}: ${getErrorMessage(error)}`)
     }
   }
 

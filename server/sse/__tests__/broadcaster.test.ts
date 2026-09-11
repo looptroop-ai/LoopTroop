@@ -12,6 +12,7 @@ function markReplayStart(broadcaster: SSEBroadcaster): string {
 describe('SSEBroadcaster', () => {
   afterEach(() => {
     broadcaster.clearTicket('1:T-HEARTBEAT')
+    vi.restoreAllMocks()
   })
 
   it('preserves a provided timestamp in the SSE payload', () => {
@@ -129,6 +130,7 @@ describe('SSEBroadcaster', () => {
   })
 
   it('reports absent, future, expired, and evicted cursors as gaps', () => {
+    const clock = vi.spyOn(Date, 'now').mockReturnValue(1_000)
     const broadcaster = new SSEBroadcaster({ maxBufferSize: 1, bufferTtlMs: 100 })
     const cursor = markReplayStart(broadcaster)
     expect(broadcaster.getEventsSince('other-ticket', cursor).gap).toBe('cursor_unavailable')
@@ -136,10 +138,10 @@ describe('SSEBroadcaster', () => {
     expect(broadcaster.getEventsSince('1:T-42', cursor)).toEqual({ events: [], gap: null })
     broadcaster.broadcast('1:T-42', 'progress', {})
     expect(broadcaster.getEventsSince('1:T-42', cursor).gap).toBe('cursor_unavailable')
-    const now = Date.now()
-    vi.spyOn(Date, 'now').mockReturnValue(now + 101)
+    clock.mockReturnValue(1_099)
+    expect(broadcaster.getEventsSince('1:T-42', String(Number(cursor) + 1)).gap).toBeNull()
+    clock.mockReturnValue(1_100)
     expect(broadcaster.getEventsSince('1:T-42', String(Number(cursor) + 1)).gap).toBe('cursor_unavailable')
-    vi.restoreAllMocks()
   })
 
   it('replays coalesced entries in increasing ID order', () => {

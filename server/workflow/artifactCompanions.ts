@@ -1,11 +1,9 @@
-import { resolve } from 'node:path'
 import {
   buildUiArtifactCompanionArtifactType,
   buildUiArtifactCompanionArtifact,
   type UiArtifactCompanionArtifact,
 } from '@shared/artifactCompanions'
-import { safeAtomicWrite } from '../io/atomicWrite'
-import { getTicketPaths, upsertLatestPhaseArtifact } from '../storage/tickets'
+import { getTicketPaths, upsertLatestPhaseArtifact, writeTicketFile } from '../storage/tickets'
 import type { ArtifactPhase } from '@shared/workflowMeta'
 
 function buildCompanionMirrorFileName(baseArtifactType: string): string {
@@ -30,13 +28,9 @@ export function persistUiArtifactCompanionArtifact(
 
   const paths = getTicketPaths(ticketId)
   if (paths?.ticketDir) {
-    safeAtomicWrite(
-      resolve(
-        paths.ticketDir,
-        'ui',
-        'artifact-companions',
-        buildCompanionMirrorFileName(baseArtifactType),
-      ),
+    writeTicketFile(
+      ticketId,
+      `ui/artifact-companions/${buildCompanionMirrorFileName(baseArtifactType)}`,
       JSON.stringify(artifact, null, 2),
     )
   }

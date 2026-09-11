@@ -1,4 +1,4 @@
-import { existsSync, mkdirSync, writeFileSync } from 'node:fs'
+import { existsSync, mkdirSync, renameSync, symlinkSync, writeFileSync } from 'node:fs'
 import { dirname, join } from 'node:path'
 import { afterAll, afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { Hono } from 'hono'
@@ -24,6 +24,7 @@ import { revertTicketToApprovalStatus } from '../../machines/persistence'
 import { lockExecutionSetupPlanDetectedHooks } from '../../phases/executionSetupPlan/hookEvidence'
 import { saveExecutionSetupPlan } from '../../phases/executionSetupPlan/document'
 import { serializeExecutionSetupPlan } from '../../phases/executionSetupPlan/types'
+import { prepareExecutionSetupRuntimeRegeneration, prepareExecutionSetupRuntimeRewind } from '../ticketHandlers/routeUtils'
 
 const shellCommand = (script: string) => ({
   mode: 'shell' as const,
@@ -583,6 +584,23 @@ describe('ticketRouter execution setup plan approval routes', () => {
     const activePayload = await activeResponse.json() as { exists: boolean; plan: { summary: string } | null }
     expect(activePayload.exists).toBe(false)
     expect(activePayload.plan).toBeNull()
+  })
+
+  it('refuses unsafe runtime storage before archiving attempts for rewind or regeneration', async () => {
+    const { app, ticket, paths } = await setupExecutionSetupPlanTicket()
+    await moveTicketToRuntimeSetup(app, ticket)
+    const phases = ['GENERATING_EXECUTION_SETUP_PLAN', 'WAITING_EXECUTION_SETUP_APPROVAL', 'PREPARING_EXECUTION_ENV'] as const
+    const attempts = phases.map(phase => listPhaseAttempts(ticket.id, phase))
+    const savedRuntime = join(paths.projectRoot, 'saved-runtime')
+    renameSync(join(paths.ticketDir, 'runtime'), savedRuntime)
+    symlinkSync(savedRuntime, join(paths.ticketDir, 'runtime'), 'junction')
+    vi.mocked(revertTicketToApprovalStatus).mockClear()
+
+    await expect(prepareExecutionSetupRuntimeRewind(ticket.id)).rejects.toThrow()
+    await expect(prepareExecutionSetupRuntimeRegeneration(ticket.id)).rejects.toThrow()
+    expect(phases.map(phase => listPhaseAttempts(ticket.id, phase))).toEqual(attempts)
+    expect(getTicketByRef(ticket.id)?.status).toBe('PREPARING_EXECUTION_ENV')
+    expect(revertTicketToApprovalStatus).not.toHaveBeenCalled()
   })
 
   it('rewinds from runtime setup when saving an edited setup plan', async () => {

@@ -328,7 +328,16 @@ describe('clean command', () => {
       mkdirSync(resolve(outside, 'ticket-unowned'))
       symlinkSync(outside, resolve(project, '.looptroop', 'worktrees'), 'junction')
 
-      expect(planFor(project)).toEqual([])
+      expect(() => planFor(project)).toThrow('escapes root')
+    })
+
+    it('refuses a managed root alias pointing at source directories inside the project', () => {
+      const project = makeProject()
+      const source = resolve(project, 'source')
+      mkdirSync(source)
+      mkdirSync(resolve(project, '.looptroop'), { recursive: true })
+      symlinkSync(source, resolve(project, '.looptroop', 'worktrees'), 'junction')
+      expect(() => planFor(project)).toThrow('must not be a symbolic link')
     })
   })
 

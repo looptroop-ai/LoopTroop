@@ -1,8 +1,23 @@
-import { existsSync, rmSync } from 'node:fs'
+import { existsSync, lstatSync, realpathSync, rmSync, unlinkSync } from 'node:fs'
 import { runGitSyncOrThrow } from './runCommand'
 import { dirname, resolve } from 'node:path'
 import { makeOwnerWritableRecursive } from '../io/removal'
-import { resolveContainedPath } from '../lib/containedPath'
+import { ContainedPathError, resolveContainedPath } from '../lib/containedPath'
+
+/** Cleanup must not enumerate an alias for either managed directory. */
+export function assertManagedWorktreesRoot(projectRoot: string, worktreesRoot: string): string | undefined {
+  let canonicalProject: string
+  try {
+    canonicalProject = realpathSync.native(projectRoot)
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === 'ENOENT') return undefined
+    throw error
+  }
+  const expected = resolve(canonicalProject, '.looptroop', 'worktrees')
+  const actual = resolveContainedPath(projectRoot, worktreesRoot, { allowMissingParents: true })
+  if (actual !== expected) throw new ContainedPathError('Managed worktrees root must not be a symbolic link')
+  return actual
+}
 
 type GitCommandRunner = (args: string[]) => void
 
@@ -33,7 +48,20 @@ export function removeWorktree({
     throw new Error(`Refusing to remove path outside the managed worktrees root: ${resolvedWorktreePath}`)
   }
 
-  if (!existsSync(worktreePath)) return
+  if (!assertManagedWorktreesRoot(projectRoot, worktreesRoot)) return
+  let stats
+  try {
+    stats = lstatSync(worktreePath)
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === 'ENOENT') return
+    throw error
+  }
+  // Git resolves aliases to registered worktrees before removing them. Never
+  // hand it a link: removing this entry must preserve the destination.
+  if (stats.isSymbolicLink()) {
+    unlinkSync(worktreePath)
+    return
+  }
   resolveContainedPath(projectRoot, worktreePath)
 
   makeOwnerWritableRecursive(worktreePath)

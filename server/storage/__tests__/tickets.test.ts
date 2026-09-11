@@ -1,5 +1,6 @@
 import { afterAll, beforeEach, describe, expect, it } from 'vitest'
-import { rmSync } from 'node:fs'
+import { existsSync, mkdirSync, rmSync, symlinkSync } from 'node:fs'
+import { join } from 'node:path'
 import { initializeDatabase } from '../../db/init'
 import { sqlite } from '../../db/index'
 import { clearProjectDatabaseCache } from '../../db/project'
@@ -84,6 +85,27 @@ describe('ticket start configuration locking', () => {
 
     const counterAfter = context.projectDb.select().from(projects).where(eq(projects.id, project.id)).get()?.ticketCounter
     expect(counterAfter).toBe(1)
+  })
+
+  it.each(['.ticket', '.ticket/runtime'])('rolls back a draft and its counter when %s materialization is unsafe', async (unsafePath) => {
+    const repoDir = lockRepoManager.createRepo()
+    const project = attachProject({ folderPath: repoDir, name: 'LoopTroop', shortname: 'LOOP' })
+    const { getProjectContextById } = await import('../projects')
+    const { projects, tickets } = await import('../../db/schema')
+    const { eq } = await import('drizzle-orm')
+    const reserved = join(repoDir, '.looptroop', 'worktrees', 'LOOP-1')
+    const outside = join(repoDir, 'outside-ticket')
+    mkdirSync(reserved, { recursive: true })
+    mkdirSync(outside)
+    if (unsafePath === '.ticket/runtime') mkdirSync(join(reserved, '.ticket'))
+    symlinkSync(outside, join(reserved, unsafePath), 'junction')
+
+    expect(() => createTicket({ projectId: project.id, title: 'Unsafe destination' })).toThrow()
+    const context = getProjectContextById(project.id)!
+    expect(context.projectDb.select().from(tickets).all()).toHaveLength(0)
+    expect(context.projectDb.select().from(projects).where(eq(projects.id, context.project.id)).get()?.ticketCounter).toBe(0)
+    expect(existsSync(join(outside, 'meta', 'ticket.meta.json'))).toBe(false)
+    expect(existsSync(join(outside, 'state.yaml'))).toBe(false)
   })
 
   it('persists the started model selection into ticket metadata and blocks later model changes', () => {

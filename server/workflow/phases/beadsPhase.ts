@@ -11,7 +11,7 @@ import type { Bead, BeadSubset } from '../../phases/beads/types'
 import type { CommandSpec } from '@shared/commandSpec'
 import { buildMinimalContext, clearContextCache, type TicketState } from '../../opencode/contextBuilder'
 import type { Message, PromptPart, StreamEvent } from '../../opencode/types'
-import { getLatestPhaseArtifact, getTicketByRef, getTicketPaths, insertPhaseArtifact, patchTicket, resolvePhaseAttempt } from '../../storage/tickets'
+import { getLatestPhaseArtifact, getTicketByRef, getTicketPaths, insertPhaseArtifact, patchTicket, resolvePhaseAttempt, readTicketFile } from '../../storage/tickets'
 import { writeJsonl } from '../../io/jsonl'
 import { readBeadsFile } from '../../phases/beads/beadsFile'
 import { compareBeadRecoveryOrder } from '../../phases/beads/recoveryOrder'
@@ -24,8 +24,6 @@ import {
 } from '../../phases/beads/refined'
 import { buildPromptFromTemplate, PROM21, PROM22, PROM25 } from '../../prompts/index'
 import { VOTING_RUBRIC_BEADS } from '../../council/types'
-import { existsSync, readFileSync } from 'fs'
-import { resolve } from 'path'
 import * as jsYaml from 'js-yaml'
 import { withStructuredRetryDiagnosticAttempt } from '@shared/structuredRetryDiagnostics'
 import {
@@ -266,17 +264,13 @@ export async function handleBeadsDraft(
   sendEvent: (event: TicketEvent) => void,
   signal: AbortSignal,
 ) {
-  const { worktreePath, ticket, ticketDir, relevantFiles } = loadTicketDirContext(context)
+  const { worktreePath, ticket, relevantFiles } = loadTicketDirContext(context)
   const phase = 'DRAFTING_BEADS' as const
   const council = resolveCouncilMembers(context)
   const members = council.members
 
   // Load PRD from disk
-  const prdPath = resolve(ticketDir, 'prd.yaml')
-  let prd: string | undefined
-  if (existsSync(prdPath)) {
-    try { prd = readFileSync(prdPath, 'utf-8') } catch { /* ignore */ }
-  }
+  const prd = readTicketFile(ticketId, 'prd.yaml') ?? undefined
 
   const ticketState: TicketState = {
     ticketId: context.externalId,
@@ -495,12 +489,8 @@ export async function handleBeadsVote(
     throw new Error('No beads context builder found — cannot vote')
   }
   const voteTicketState = intermediate.ticketState ?? (() => {
-    const { ticket, ticketDir, relevantFiles } = loadTicketDirContext(context)
-    const prdPath = resolve(ticketDir, 'prd.yaml')
-    let prd: string | undefined
-    if (existsSync(prdPath)) {
-      try { prd = readFileSync(prdPath, 'utf-8') } catch { /* ignore */ }
-    }
+    const { ticket, relevantFiles } = loadTicketDirContext(context)
+    const prd = readTicketFile(ticketId, 'prd.yaml') ?? undefined
     return {
       ticketId: context.externalId,
       title: context.title,
@@ -657,7 +647,7 @@ export async function handleBeadsRefine(
   sendEvent: (event: TicketEvent) => void,
   signal: AbortSignal,
 ) {
-  const { ticketDir } = loadTicketDirContext(context)
+  loadTicketDirContext(context)
   const intermediate = phaseIntermediate.get(`${ticketId}:beads`)
   if (!intermediate || !intermediate.winnerId) {
     throw new Error('No Beads vote results found — cannot refine')
@@ -675,10 +665,7 @@ export async function handleBeadsRefine(
   if (!paths) {
     throw new Error(`Ticket workspace not initialized: missing ticket paths for ${context.externalId}`)
   }
-  const prdPath = resolve(ticketDir, 'prd.yaml')
-  const prd = existsSync(prdPath)
-    ? readFileSync(prdPath, 'utf-8')
-    : undefined
+  const prd = readTicketFile(ticketId, 'prd.yaml') ?? undefined
 
   emitPhaseLog(ticketId, context.externalId, 'REFINING_BEADS', 'info',
     `Beads refinement started. Winner: ${intermediate.winnerId}, incorporating ideas from ${losingDrafts.length} alternative drafts.`, { source: 'system', modelId: intermediate.winnerId })

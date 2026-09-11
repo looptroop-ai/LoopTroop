@@ -1,9 +1,12 @@
-import { readFileSync } from 'node:fs'
+import { mkdirSync, readFileSync, readdirSync, symlinkSync } from 'node:fs'
 import { join } from 'node:path'
-import { describe, expect, it } from 'vitest'
+import { afterEach, describe, expect, it } from 'vitest'
 import { writeExecutionSetupRuntimeLauncher } from '../runtimeLauncher'
 import type { ExecutionSetupProfile } from '../types'
-import { makeTempDir } from '../../../test/tempDir'
+import { makeTempDir, removeTempDir } from '../../../test/tempDir'
+
+const roots: string[] = []
+afterEach(() => { for (const root of roots.splice(0)) removeTempDir(root) })
 
 function profile(preferredShell: 'posix' | 'cmd' | 'powershell'): ExecutionSetupProfile {
   return {
@@ -37,12 +40,24 @@ function profile(preferredShell: 'posix' | 'cmd' | 'powershell'): ExecutionSetup
 }
 
 describe('execution setup runtime launcher', () => {
+  it('does not write a launcher through an escaping ticket directory', () => {
+    const root = makeTempDir('looptroop-launcher-link-')
+    roots.push(root)
+    const worktreePath = join(root, 'worktree')
+    const outside = join(root, 'outside')
+    mkdirSync(worktreePath)
+    mkdirSync(outside)
+    symlinkSync(outside, join(worktreePath, '.ticket'), 'junction')
+    expect(() => writeExecutionSetupRuntimeLauncher({ worktreePath, profile: profile('posix') })).toThrow()
+    expect(readdirSync(outside)).toEqual([])
+  })
   it.each([
     ['posix', 'launcher.sh', 'exec "$@"'],
     ['powershell', 'launcher.ps1', '& $program @programArgs'],
     ['cmd', 'launcher.cmd', '%*'],
   ] as const)('writes a host-specific %s launcher', (shell, filename, invocation) => {
     const worktreePath = makeTempDir('looptroop-launcher-')
+    roots.push(worktreePath)
     const artifact = writeExecutionSetupRuntimeLauncher({ worktreePath, profile: profile(shell) })
 
     expect(artifact.path).toBe(`.ticket/runtime/execution-setup/${filename}`)

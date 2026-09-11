@@ -15,13 +15,12 @@ import { getProjectIgnoreMode } from '../storage/projects'
 import {
   detectGitBaseBranch,
   getTicketDir as resolveTicketDir,
-  getTicketRuntimeDir,
   getTicketWorktreePath as resolveTicketWorktreePath,
   normalizeFolderPath,
 } from '../storage/paths'
-import { getTicketBeadsDir, updateTicketMeta } from './metadata'
+import { updateTicketMeta } from './metadata'
 import { ensureWorktreeOwnerMarker } from '../storage/worktreeOwnership'
-import { safeAtomicWrite } from '../io/atomicWrite'
+import { resolveProjectTicketContainedPath, writeProjectTicketFile } from './containedPath'
 import { getErrorMessage } from '@shared/typeGuards'
 import { gitSyncSucceeds, runGitSync } from '../git/runCommand'
 
@@ -272,29 +271,13 @@ function preserveTicketSkeleton(worktreePath: string): {
 function ensureTicketDirectories(
   projectRoot: string,
   externalId: string,
-  ticketDir: string,
   baseBranch: string,
 ) {
-  const runtimeDir = resolve(ticketDir, 'runtime')
-  const dirs = [
-    ticketDir,
-    resolve(ticketDir, 'meta'),
-    resolve(ticketDir, 'approvals'),
-    runtimeDir,
-    resolve(runtimeDir, 'streams'),
-    resolve(runtimeDir, 'sessions'),
-    resolve(runtimeDir, 'locks'),
-    resolve(runtimeDir, 'tmp'),
-    getTicketBeadsDir(projectRoot, externalId, baseBranch),
-  ]
-
-  for (const dir of dirs) {
-    mkdirSync(dir, { recursive: true })
+  for (const path of ['.', 'meta', 'approvals', 'runtime', 'runtime/streams', 'runtime/sessions', 'runtime/locks', 'runtime/tmp', `beads/${baseBranch}/.beads`]) {
+    const directory = resolveProjectTicketContainedPath(projectRoot, externalId, path)
+    mkdirSync(directory, { recursive: true })
+    resolveProjectTicketContainedPath(projectRoot, externalId, path)
   }
-}
-
-function writeRuntimeGitignore(ticketDir: string) {
-  safeAtomicWrite(resolve(ticketDir, '.gitignore'), RUNTIME_GITIGNORE)
 }
 
 function buildWorktreeAddArgs(
@@ -379,9 +362,8 @@ export async function initializeTicket(options: InitializeOptions): Promise<Init
   // whichever mechanism reaches it without leaving a file behind.
   ensureWorktreePathsIgnored(worktreePath, ignoreMode)
 
-  ensureTicketDirectories(projectFolder, options.externalId, ticketDir, baseBranch)
-  mkdirSync(getTicketRuntimeDir(projectFolder, options.externalId), { recursive: true })
-  writeRuntimeGitignore(ticketDir)
+  ensureTicketDirectories(projectFolder, options.externalId, baseBranch)
+  writeProjectTicketFile(projectFolder, options.externalId, '.gitignore', RUNTIME_GITIGNORE)
   // Written after the ignore rules, so the marker is already excluded by the
   // time it exists and never shows up as an untracked file on the branch.
   ensureWorktreeOwnerMarker(worktreePath, {

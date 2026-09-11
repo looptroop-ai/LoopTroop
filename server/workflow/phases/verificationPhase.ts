@@ -8,7 +8,7 @@ import { throwIfCancelled } from '../../lib/abort'
 import { COMMAND_OUTPUT_SLICE_LENGTH, MODEL_OUTPUT_PREVIEW_LENGTH } from '../../lib/constants'
 import { buildMinimalContext, type TicketState } from '../../opencode/contextBuilder'
 import { buildPromptFromTemplate, PROM0, PROM13b, PROM24, PROM53 } from '../../prompts/index'
-import { getLatestPhaseArtifact, getTicketPaths, insertPhaseArtifact, countPhaseArtifacts, upsertLatestPhaseArtifact } from '../../storage/tickets'
+import { getLatestPhaseArtifact, getTicketPaths, insertPhaseArtifact, countPhaseArtifacts, upsertLatestPhaseArtifact, readTicketFile, writeTicketFile } from '../../storage/tickets'
 import {
   formatPromptText,
   runOpenCodePrompt,
@@ -17,7 +17,9 @@ import {
   type OpenCodePromptDispatchEvent,
   type OpenCodeRunResult,
 } from '../runOpenCodePrompt'
-import { safeAtomicWrite } from '../../io/atomicWrite'
+import { readFileNoFollowSync } from '../../io/readFile'
+import { resolveContainedPath } from '../../lib/containedPath'
+import { normalizeRepoScopedPath } from '../../git/repoScopedPath'
 import { buildRelevantFilesArtifact, type RelevantFilesData } from '../../ticket/relevantFiles'
 import {
   normalizeBeadSubsetYamlOutput,
@@ -30,7 +32,7 @@ import {
 } from '../../structuredOutput'
 import { buildYamlDocument } from '../../structuredOutput/yamlUtils'
 import { isMockOpenCodeMode } from '../../opencode/factory'
-import { existsSync, readFileSync } from 'fs'
+import { existsSync } from 'fs'
 import { resolve } from 'path'
 import { runPreFlightChecks } from '../../phases/preflight/doctor'
 import type { FinalTestGenerationResult } from '../../phases/finalTest/generator'
@@ -39,7 +41,6 @@ import { parseFinalTestCommands } from '../../phases/finalTest/parser'
 import { executeFinalTestCommands } from '../../phases/finalTest/runner'
 import {
   EXECUTION_SETUP_PROFILE_ARTIFACT_TYPE,
-  EXECUTION_SETUP_PROFILE_MIRROR,
 } from '../../phases/executionSetup/types'
 import {
   runtimeEnvironmentSchema,
@@ -2144,7 +2145,7 @@ async function handlePrdCoverageVerificationLoop(params: {
       remainingGaps: auditResult.envelope.gaps,
     })
 
-    safeAtomicWrite(prdPath, revisionArtifact.refinedContent)
+    writeTicketFile(params.ticketId, 'prd.yaml', revisionArtifact.refinedContent)
     clearContextCache(params.context.externalId)
 
     if (revisionRun.revision.repairWarnings.length > 0) {
@@ -2627,7 +2628,7 @@ async function runPrdCoverageExtraFix(params: {
       source: 'ai_fix_button',
       extraFixNumber,
     })
-    safeAtomicWrite(resolve(params.ticketDir, 'prd.yaml'), revisionArtifact.refinedContent)
+    writeTicketFile(params.ticketId, 'prd.yaml', revisionArtifact.refinedContent)
   }
 
   params.ticketState.prd = revisionArtifact.refinedContent
@@ -3023,8 +3024,7 @@ export async function performCoverageExtraFix(params: {
     if (!fullAnswersContent) {
       throw new Error(`PRD extra fix requires the winning model's Full Answers artifact for ${auditorId}, but it was not available.`)
     }
-    const prdPath = resolve(ticketDir, 'prd.yaml')
-    const currentCandidateContent = existsSync(prdPath) ? readFileSync(prdPath, 'utf-8').trim() : ''
+    const currentCandidateContent = readTicketFile(params.ticketId, 'prd.yaml')?.trim() ?? ''
     if (!currentCandidateContent) {
       throw new Error('PRD extra fix requires a current prd.yaml artifact.')
     }
@@ -3052,8 +3052,7 @@ export async function performCoverageExtraFix(params: {
     })
   }
 
-  const prdPath = resolve(ticketDir, 'prd.yaml')
-  const effectivePrdContent = existsSync(prdPath) ? readFileSync(prdPath, 'utf-8').trim() : ''
+  const effectivePrdContent = readTicketFile(params.ticketId, 'prd.yaml')?.trim() ?? ''
   if (!effectivePrdContent) {
     throw new Error('Beads extra fix requires an approved PRD artifact.')
   }
@@ -3091,7 +3090,7 @@ export async function handleRelevantFilesScan(
   signal: AbortSignal,
 ) {
   const phase = 'SCANNING_RELEVANT_FILES' as const
-  const { worktreePath, ticket, ticketDir } = loadTicketDirContext(context)
+  const { worktreePath, ticket } = loadTicketDirContext(context)
 
   const ticketState: TicketState = {
     ticketId: context.externalId,
@@ -3439,8 +3438,7 @@ export async function handleRelevantFilesScan(
       })),
     }
     const artifactContent = buildRelevantFilesArtifact(context.externalId, parsed)
-    const artifactPath = resolve(ticketDir, 'relevant-files.yaml')
-    safeAtomicWrite(artifactPath, artifactContent)
+    writeTicketFile(ticketId, 'relevant-files.yaml', artifactContent)
 
     insertPhaseArtifact(ticketId, {
       phase,
@@ -3627,14 +3625,13 @@ export async function handleCoverageVerification(
   }
 
   if (phase === 'prd') {
-    const prdPath = resolve(ticketDir, 'prd.yaml')
-    const diskPrdContent = existsSync(prdPath) ? readFileSync(prdPath, 'utf-8').trim() : ''
+    const diskPrdContent = readTicketFile(ticketId, 'prd.yaml')?.trim() ?? ''
     if (diskPrdContent.length > 0) {
       effectivePrdContent = diskPrdContent
     } else if (refinedContent?.trim()) {
       effectivePrdContent = refinedContent.trim()
       try {
-        safeAtomicWrite(prdPath, refinedContent)
+        writeTicketFile(ticketId, 'prd.yaml', refinedContent)
         emitPhaseLog(ticketId, context.externalId, stateLabel, 'info', `Recovered missing prd.yaml from the validated refined PRD artifact before coverage.`)
       } catch (err) {
         const msg = `Failed to restore prd.yaml from the validated refined PRD artifact before coverage: ${getErrorMessage(err)}`
@@ -3653,7 +3650,7 @@ export async function handleCoverageVerification(
 
       effectivePrdContent = recoveredPrdContent.trim()
       try {
-        safeAtomicWrite(prdPath, recoveredPrdContent)
+        writeTicketFile(ticketId, 'prd.yaml', recoveredPrdContent)
         emitPhaseLog(ticketId, context.externalId, stateLabel, 'info', `Recovered missing prd.yaml from the validated refined PRD artifact before coverage.`)
       } catch (err) {
         const msg = `Failed to restore prd.yaml from the validated refined PRD artifact before coverage: ${getErrorMessage(err)}`
@@ -3665,8 +3662,7 @@ export async function handleCoverageVerification(
   }
 
   if (phase === 'beads') {
-    const prdPath = resolve(ticketDir, 'prd.yaml')
-    const diskPrdContent = existsSync(prdPath) ? readFileSync(prdPath, 'utf-8').trim() : ''
+    const diskPrdContent = readTicketFile(ticketId, 'prd.yaml')?.trim() ?? ''
     if (!diskPrdContent) {
       const msg = 'Beads coverage requires an approved PRD, but prd.yaml was not available.'
       emitPhaseLog(ticketId, context.externalId, stateLabel, 'error', msg)
@@ -4242,7 +4238,7 @@ export async function handleBeadsExpansion(
   sendEvent: (event: TicketEvent) => void,
   signal: AbortSignal,
 ) {
-  const { worktreePath, ticket, ticketDir, relevantFiles } = loadTicketDirContext(context)
+  const { worktreePath, ticket, relevantFiles } = loadTicketDirContext(context)
   const paths = getTicketPaths(ticketId)
   const stateLabel = 'EXPANDING_BEADS'
   const councilSettings = resolveCouncilRuntimeSettings(context)
@@ -4284,8 +4280,7 @@ export async function handleBeadsExpansion(
 
   const { candidateContent, candidateVersion } = expansionInput
 
-  const prdPath = resolve(ticketDir, 'prd.yaml')
-  const diskPrdContent = existsSync(prdPath) ? readFileSync(prdPath, 'utf-8').trim() : ''
+  const diskPrdContent = readTicketFile(ticketId, 'prd.yaml')?.trim() ?? ''
   if (!diskPrdContent) {
     const msg = 'Beads expansion requires an approved PRD, but prd.yaml was not available.'
     emitPhaseLog(ticketId, context.externalId, stateLabel, 'error', msg)
@@ -4430,7 +4425,7 @@ function parseRuntimeEnvironment(content: string | null | undefined): RuntimeEnv
   }
 }
 
-function resolveFinalTestRuntimeEnvironment(ticketId: string, worktreePath: string): RuntimeEnvironment | undefined {
+function resolveFinalTestRuntimeEnvironment(ticketId: string): RuntimeEnvironment | undefined {
   const profileArtifact = getLatestPhaseArtifact(
     ticketId,
     EXECUTION_SETUP_PROFILE_ARTIFACT_TYPE,
@@ -4439,16 +4434,7 @@ function resolveFinalTestRuntimeEnvironment(ticketId: string, worktreePath: stri
   const artifactEnvironment = parseRuntimeEnvironment(profileArtifact?.content)
   if (artifactEnvironment) return artifactEnvironment
 
-  const profileMirrorPath = resolve(worktreePath, EXECUTION_SETUP_PROFILE_MIRROR)
-  if (existsSync(profileMirrorPath)) {
-    try {
-      return parseRuntimeEnvironment(readFileSync(profileMirrorPath, 'utf-8'))
-    } catch {
-      return undefined
-    }
-  }
-
-  return undefined
+  return parseRuntimeEnvironment(readTicketFile(ticketId, 'runtime/execution-setup-profile.json'))
 }
 
 function parseFinalTestRetryNotes(content: string | null | undefined): string[] {
@@ -4586,19 +4572,22 @@ function validateFinalTestFiles(
   const validated: string[] = []
 
   for (const filePath of testFiles) {
-    if (filePath.includes('..')) {
+    const normalized = normalizeRepoScopedPath(filePath)
+    if (!normalized) {
       onMessage(`Rejected test file path with traversal: ${filePath}`)
       continue
     }
-    const resolvedPath = resolve(worktreePath, filePath)
-    if (!resolvedPath.startsWith(worktreePath)) {
+    let resolvedPath: string
+    try {
+      resolvedPath = resolveContainedPath(worktreePath, normalized, { allowMissingParents: true })
+    } catch {
       onMessage(`Rejected test file path outside worktree: ${filePath}`)
       continue
     }
     if (!existsSync(resolvedPath)) {
       onMessage(`AI-reported test file not found on disk: ${filePath}`)
     }
-    validated.push(filePath)
+    validated.push(normalized)
   }
 
   return validated
@@ -4612,12 +4601,15 @@ function validateFinalCandidateFiles(
   const validated: string[] = []
 
   for (const filePath of modifiedFiles) {
-    if (filePath.includes('..')) {
+    const normalized = normalizeRepoScopedPath(filePath)
+    if (!normalized) {
       onMessage(`Rejected modified file path with traversal: ${filePath}`)
       continue
     }
-    const resolvedPath = resolve(worktreePath, filePath)
-    if (!resolvedPath.startsWith(worktreePath)) {
+    let resolvedPath: string
+    try {
+      resolvedPath = resolveContainedPath(worktreePath, normalized, { allowMissingParents: true })
+    } catch {
       onMessage(`Rejected modified file path outside worktree: ${filePath}`)
       continue
     }
@@ -4625,7 +4617,7 @@ function validateFinalCandidateFiles(
       onMessage(`AI-reported modified file not found on disk: ${filePath}`)
       continue
     }
-    validated.push(filePath)
+    validated.push(normalized)
   }
 
   return validated
@@ -4656,18 +4648,10 @@ export async function handleFinalTest(
   }
 
   if (ticketDir) {
-    const interviewPath = resolve(ticketDir, 'interview.yaml')
-    const prdPath = resolve(ticketDir, 'prd.yaml')
-    const beadsPath = paths?.beadsPath
-
-    if (existsSync(interviewPath)) {
-      try { ticketState.interview = readFileSync(interviewPath, 'utf-8') } catch { /* ignore */ }
-    }
-    if (existsSync(prdPath)) {
-      try { ticketState.prd = readFileSync(prdPath, 'utf-8') } catch { /* ignore */ }
-    }
-    if (existsSync(beadsPath)) {
-      try { ticketState.beads = readFileSync(beadsPath, 'utf-8') } catch { /* ignore */ }
+    ticketState.interview = readTicketFile(ticketId, 'interview.yaml') ?? undefined
+    ticketState.prd = readTicketFile(ticketId, 'prd.yaml') ?? undefined
+    if (paths?.beadsPath && existsSync(paths.beadsPath)) {
+      ticketState.beads = readFileNoFollowSync(paths.beadsPath)
     }
   }
 
@@ -4684,7 +4668,7 @@ export async function handleFinalTest(
   const executionSettings = resolveExecutionRuntimeSettings(context)
   const aiResponseSettings = resolveAiResponseRuntimeSettings(context)
   const phaseStartCommit = recordWorktreeStartCommit(worktreePath)
-  const runtimeEnvironment = resolveFinalTestRuntimeEnvironment(ticketId, worktreePath)
+  const runtimeEnvironment = resolveFinalTestRuntimeEnvironment(ticketId)
   let finalTestBaselineDirtyFiles: FinalTestDirtyFile[] = captureFinalTestDirtyFiles(worktreePath)
   let finalTestSessionId = ''
   const streamStates = new Map<string, OpenCodeStreamState>()

@@ -72,6 +72,7 @@ function recoverTicketAfterStreamGap(ticketId: string) {
   queryClient.invalidateQueries({ queryKey: ['ticket-artifacts', ticketId] })
   queryClient.invalidateQueries({ queryKey: ['interview', ticketId] })
   queryClient.invalidateQueries({ queryKey: ['ticket-beads', ticketId] })
+  queryClient.invalidateQueries({ queryKey: ['ticket-skips', ticketId] })
   queryClient.invalidateQueries({ queryKey: ['artifact', ticketId] })
   queryClient.invalidateQueries({ queryKey: ['bead-diff', ticketId] })
   invalidateManualQaQueries(ticketId)
@@ -195,6 +196,7 @@ export function useSSE({ ticketId, onEvent }: SSEOptions) {
 
       const es = new EventSource(url.toString())
       eventSourceRef.current = es
+      let recoveredOnThisConnection = false
 
       /**
        * Every callback below can fire after this connection stopped being the current
@@ -221,7 +223,10 @@ export function useSSE({ ticketId, onEvent }: SSEOptions) {
         if (recoverOnOpenRef.current) {
           recoverOnOpenRef.current = false
           const tid = ticketIdRef.current
-          if (tid) recoverTicketAfterStreamGap(tid)
+          if (tid) {
+            recoverTicketAfterStreamGap(tid)
+            recoveredOnThisConnection = true
+          }
         }
       })
 
@@ -236,7 +241,9 @@ export function useSSE({ ticketId, onEvent }: SSEOptions) {
         recoverOnOpenRef.current = false
         // Keep the live subscription while snapshots refetch, so recovery itself
         // cannot lose events between the snapshot request and a new connection.
-        recoverTicketAfterStreamGap(ticketId)
+        // Native open may already have refreshed this same handshake.
+        if (!recoveredOnThisConnection) recoverTicketAfterStreamGap(ticketId)
+        recoveredOnThisConnection = true
       })
 
       es.addEventListener('state_change', (e) => {

@@ -4,7 +4,8 @@ import { tmpdir } from 'os'
 import { basename, dirname, join } from 'path'
 import { makeAtomicTmpPath, parseAtomicTmpPath, safeAtomicWrite, safeAtomicWriteWithin } from '../atomicWrite'
 import { ContainedPathError } from '../../lib/containedPath'
-import { safeAtomicAppend } from '../atomicAppend'
+import { safeAtomicAppend, safeAtomicAppendWithin } from '../atomicAppend'
+import { readFileNoFollowSync } from '../readFile'
 import { recoverOrphanTmpFiles, fixTrailingLineCorruption } from '../recovery'
 import { readJsonl, writeJsonl, appendJsonl } from '../jsonl'
 import { removeTempDir } from '../../test/tempDir'
@@ -188,7 +189,61 @@ describe('safeAtomicWrite', () => {
   })
 })
 
+describe('contained reads and appends', () => {
+  it('reads regular files and preserves missing-file errors', () => {
+    const file = join(TEST_DIR, 'read.txt')
+    writeFileSync(file, 'safe')
+    expect(readFileNoFollowSync(file)).toBe('safe')
+    expect(() => readFileNoFollowSync(join(TEST_DIR, 'missing'))).toThrow(expect.objectContaining({ code: 'ENOENT' }))
+    expect(() => readFileNoFollowSync(TEST_DIR)).toThrow(ContainedPathError)
+  })
+
+  it('appends through contained directory aliases but refuses escaping aliases', () => {
+    const root = join(TEST_DIR, 'root')
+    const inside = join(root, 'inside')
+    const outside = join(TEST_DIR, 'outside')
+    mkdirSync(inside, { recursive: true })
+    mkdirSync(outside)
+    symlinkSync(inside, join(root, 'alias'), 'junction')
+    symlinkSync(outside, join(root, 'escape'), 'junction')
+    safeAtomicAppendWithin(root, 'alias/events.jsonl', '{"safe":true}')
+    expect(readFileSync(join(inside, 'events.jsonl'), 'utf8')).toBe('{"safe":true}\n')
+    expect(() => safeAtomicAppendWithin(root, 'escape/events.jsonl', 'unsafe')).toThrow(ContainedPathError)
+    expect(readdirSync(outside)).toEqual([])
+    expect(() => readFileNoFollowSync(join(root, 'escape'))).toThrow(ContainedPathError)
+  })
+
+  it.skipIf(process.platform === 'win32')('refuses unvalidated final file links before reading or appending', () => {
+    const target = join(TEST_DIR, 'target')
+    const alias = join(TEST_DIR, 'alias')
+    writeFileSync(target, 'keep')
+    symlinkSync(target, alias)
+    expect(() => readFileNoFollowSync(alias)).toThrow(ContainedPathError)
+    expect(() => safeAtomicAppend(alias, 'unsafe')).toThrow(ContainedPathError)
+    expect(readFileSync(target, 'utf8')).toBe('keep')
+  })
+})
+
 describe('safeAtomicWriteWithin', () => {
+  it('does not swallow a containment failure after rename as a directory-fsync failure', () => {
+    const root = join(TEST_DIR, 'root')
+    const outside = join(TEST_DIR, 'outside')
+    mkdirSync(root)
+    mkdirSync(outside)
+    expect(() => safeAtomicWriteWithin(root, 'nested/file.txt', 'safe', {
+      deps: {
+        platform: process.platform,
+        wait: () => {},
+        rename: (from, to) => {
+          renameSync(from, to)
+          renameSync(join(root, 'nested'), join(root, 'moved'))
+          symlinkSync(outside, join(root, 'nested'), 'junction')
+        },
+      },
+    })).toThrow(ContainedPathError)
+    expect(readdirSync(outside)).toEqual([])
+    expect(readFileSync(join(root, 'moved/file.txt'), 'utf8')).toBe('safe')
+  })
   it('creates missing parents and replaces a contained file', () => {
     safeAtomicWriteWithin(TEST_DIR, 'nested/deep/file.txt', 'first', { mode: 0o600 })
     safeAtomicWriteWithin(TEST_DIR, 'nested/deep/file.txt', 'second')
@@ -267,11 +322,12 @@ describe('safeAtomicWriteWithin', () => {
     it('writes through a contained file link and preserves the link', () => {
       const target = join(TEST_DIR, 'target.txt')
       const alias = join(TEST_DIR, 'alias.txt')
-      writeFileSync(target, 'original')
+      writeFileSync(target, 'original', { mode: 0o600 })
       symlinkSync(target, alias)
       safeAtomicWriteWithin(TEST_DIR, 'alias.txt', 'replacement')
       expect(readFileSync(target, 'utf8')).toBe('replacement')
       expect(lstatSync(alias).isSymbolicLink()).toBe(true)
+      expect(statSync(target).mode & 0o777).toBe(0o600)
     })
 
     it('rejects target symlinks without touching the destination or its mode', () => {

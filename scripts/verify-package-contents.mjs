@@ -111,6 +111,12 @@ for (const required of REQUIRED_FILES) {
   if (!present.has(required)) failures.push(`Missing from the tarball: ${required}`)
 }
 
+// Check the emitted policy too: a configured Vite hook alone does not prove it shipped.
+if (present.has('dist/client/index.html')
+  && !readFileSync('dist/client/index.html', 'utf8').includes("connect-src 'self';")) {
+  failures.push('The published client must restrict connect-src to the same origin.')
+}
+
 for (const path of packed) {
   for (const { pattern, reason } of FORBIDDEN) {
     if (pattern.test(path)) failures.push(`Should not be published (${reason}): ${path}`)

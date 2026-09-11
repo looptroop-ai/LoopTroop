@@ -1,6 +1,7 @@
 # Reviewed code-scanning dispositions
 
-Reviewed on 2026-09-11 against PR17, based on `main` at `377628ec`.
+Reviewed on 2026-09-11 for roadmap stage PR17, implemented in
+[GitHub PR #154](https://github.com/looptroop-ai/LoopTroop/pull/154), based on `main` at `377628ec`.
 Match future findings by rule and code location; alert numbers are references to this scan only.
 
 ## Install scripts
@@ -89,7 +90,8 @@ dismissed state was read back from the API. Each is accepted only for the stated
 - Installer metadata and archive requests validate every redirect before following it, retain
   their existing timeout and size limits, and remove authorization on cross-origin redirects.
   Only an explicitly configured HTTP loopback fixture may use HTTP, within its own origin;
-  an HTTPS request can never downgrade to that fixture. Published curl bootstrap and upgrade
+  an HTTPS request can never downgrade to that fixture, and HTTP fixtures never receive an
+  Authorization header, including inherited GitHub tokens. Published curl bootstrap and upgrade
   commands also restrict initial requests and redirects to HTTPS.
 - PowerShell bootstrap and upgrade commands use curl's HTTPS restrictions too, capture the
   complete response, and refuse failed or empty downloads before creating a script block.
@@ -101,7 +103,8 @@ dismissed state was read back from the API. Each is accepted only for the stated
 
 Production pages now restrict connections to the same origin; the broad WebSocket scheme allowance
 is retained only for development reloads, including remote development. The style exception and
-script restrictions are unchanged. No app route, status, parser, or payload key changes in this
+script restrictions are unchanged. Package verification checks the emitted client policy as well
+as the Vite configuration test. No app route, status, parser, or payload key changes in this
 stage; the existing upgrade-command value now includes HTTPS enforcement. Container build inputs
 are limited to the selected tarball and Dockerfile; WinGet Git credentials move from process
 arguments to fork-scoped process configuration without replacing inherited Git settings.
@@ -133,6 +136,9 @@ then stops the server before testing real offline clean installs. This exercises
 name/version policy as repository dependencies without skipping Windows or weakening the checks.
 A separate ticket-counter test queried the attached project ID inside a project-local database;
 it now uses the local ID and deliberately creates differing IDs to cover that distinction.
+Those tests now pass on Windows. A later loaded runner exposed short PowerShell startup budgets
+in two other tests: both now use the existing integration pool, bounded subprocess waits, and
+explicit subprocess-error diagnostics. Bootstrap scenarios have independent timeout budgets.
 
 The floating Node Current job reported npm 11.19.1 and refused installation as intended: its
 policy still requires npm 12. No build or tests run in that lane until the bundled npm meets
@@ -144,7 +150,8 @@ The latest Kilo review completed with no findings; its earlier output-limit fail
 GitHub alert #158 repeats the exact-approved OpenCode tooling finding. Its dismissal was read
 back from the GitHub API. The separate
 [SonarCloud issue](https://sonarcloud.io/project/issues?id=looptroop-ai_LoopTroop&issues=AaCQ17S6Ad9JgHF7hF2t&pullRequest=154)
-still requires acceptance in SonarCloud; a GitHub dismissal does not resolve that quality gate.
+now reports ACCEPTED with a WONTFIX resolution, verified through SonarCloud's API. The latest
+SonarCloud quality gate passes; this source-system acceptance is separate from GitHub's dismissal.
 
 [Codacy's new finding](https://app.codacy.com/gh/looptroop-ai/LoopTroop/pull-requests/154)
 flags the fetch call in the exported installer download helper as accepting user-controlled URLs.
@@ -155,7 +162,7 @@ mirrors or changes to GitHub's asset delivery hosts without addressing an expose
 Treat this as a scoped false positive for the current local callers; reassess if the helper ever
 handles remote application requests. Codacy's dashboard decision remains pending.
 
-No authenticated SonarCloud or Codacy connection was available for these dashboard decisions.
+No authenticated Codacy connection was available to resolve its remaining dashboard finding.
 No blanket analyzer exclusions or line-moving workarounds were introduced to hide the findings.
 
 ### Upstream warnings retained after review

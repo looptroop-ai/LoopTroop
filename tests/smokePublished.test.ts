@@ -268,11 +268,10 @@ describe('planMatrix', () => {
     expect(ps1.display).toBe('$script = curl.exe --proto "=https" --proto-redir "=https" --tlsv1.2 -fsSL https://www.looptroop.ovh/install.ps1; if ($LASTEXITCODE -ne 0 -or !$script) { throw "Installer download failed" }; & ([scriptblock]::Create(($script -join "`n")))')
   })
 
-  it.runIf(process.platform === 'win32' || spawnSync('pwsh', ['-NoProfile', '-Command', '$PSVersionTable.PSVersion.ToString()'], { timeout: 10_000 }).status === 0)('executes complete PowerShell downloads only after curl succeeds', () => {
+  it.runIf(process.platform === 'win32' || spawnSync('pwsh', ['-NoProfile', '-Command', '$PSVersionTable.PSVersion.ToString()'], { timeout: 10_000 }).status === 0).each([[0, false], [22, false], [0, true]] as const)('executes PowerShell downloads only after curl succeeds (exit %i, empty %s)', (exitCode, empty) => {
     const shell = process.platform === 'win32' ? 'powershell.exe' : 'pwsh'
     const command = installedChannel('installer-ps1-binary').install({ version: '9.9.9', pin: true }).display
-    for (const [exitCode, empty] of [[0, false], [22, false], [0, true]] as const) {
-      const result = spawnSync(shell, ['-NoProfile', '-NonInteractive', '-Command', `
+    const result = spawnSync(shell, ['-NoProfile', '-NonInteractive', '-Command', `
 function curl.exe {
   $global:LASTEXITCODE = ${exitCode}
   if (${empty ? '$true' : '$false'}) { return }
@@ -283,17 +282,17 @@ function curl.exe {
   'Write-Output "$message $Binary $Version"'
 }
 ${command}
-`], { encoding: 'utf8', timeout: 10_000 })
-      if (exitCode === 0 && !empty) {
-        expect(result.status, result.stderr).toBe(0)
-        expect(result.stdout.trim()).toBe('complete script True 9.9.9')
-      } else {
-        expect(result.status).not.toBe(0)
-        expect(result.stderr).toContain('Installer download failed')
-        expect(result.stdout).not.toContain('complete script')
-      }
+`], { encoding: 'utf8', timeout: 30_000 })
+    expect(result.error).toBeUndefined()
+    if (exitCode === 0 && !empty) {
+      expect(result.status, result.stderr).toBe(0)
+      expect(result.stdout.trim()).toBe('complete script True 9.9.9')
+    } else {
+      expect(result.status).not.toBe(0)
+      expect(result.stderr).toContain('Installer download failed')
+      expect(result.stdout).not.toContain('complete script')
     }
-  }, 30_000)
+  }, 45_000)
 
   it('fetches a pinned wrapper from the release, never from the website', () => {
     // The website always points at releases/latest, so pinning through it would

@@ -52,6 +52,22 @@ describe('installer request transport', () => {
     expect(fetch).not.toHaveBeenCalled()
   })
 
+  it('never forwards authorization to HTTP fixtures, including their redirects', async () => {
+    vi.stubEnv('LOOPTROOP_INSTALL_API', 'http://127.0.0.1:8123')
+    const authorizations: (string | null)[] = []
+    const fetch = vi.fn(async (_url: URL, options: RequestInit) => {
+      authorizations.push(new Headers(options.headers).get('authorization'))
+      return authorizations.length === 1
+        ? new Response(null, { status: 302, headers: { location: '/asset' } })
+        : new Response('asset')
+    })
+    vi.stubGlobal('fetch', fetch)
+    const headers = { authorization: 'Bearer inherited-token' }
+    expect(await (await fetchInstallerUrl('http://127.0.0.1:8123/metadata', { headers })).text()).toBe('asset')
+    expect(authorizations).toEqual([null, null])
+    expect(headers.authorization).toBe('Bearer inherited-token')
+  })
+
   it('preserves the stall signal and same-origin authorization, removing authorization when the origin changes', async () => {
     const signal = new AbortController().signal
     const authorizations: (string | null)[] = []

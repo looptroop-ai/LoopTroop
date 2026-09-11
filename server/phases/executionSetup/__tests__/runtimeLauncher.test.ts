@@ -104,6 +104,7 @@ describe('execution setup runtime launcher', () => {
           LOOPTROOP_TEST_NODE: process.execPath,
         },
         encoding: 'utf8' as const,
+        timeout: 30_000,
       }
       // Shell source stays fixed; paths are data, even if Node or the temp root has spaces.
       const result = shell === 'cmd'
@@ -111,6 +112,7 @@ describe('execution setup runtime launcher', () => {
         : shell === 'powershell'
           ? spawnSync('powershell.exe', ['-NoProfile', '-NonInteractive', '-ExecutionPolicy', 'Bypass', '-Command', '& $env:LOOPTROOP_TEST_LAUNCHER $env:LOOPTROOP_TEST_NODE read-env.cjs'], options)
           : spawnSync('sh', ['-c', 'exec "$LOOPTROOP_TEST_LAUNCHER" "$LOOPTROOP_TEST_NODE" read-env.cjs'], options)
+      expect(result.error).toBeUndefined()
       expect(result.status, result.stderr).toBe(0)
       const actual = JSON.parse(Buffer.from(result.stdout.trim(), 'base64').toString('utf8'))
       expect(actual).toMatchObject(setup.runtimeEnvironment.variables)

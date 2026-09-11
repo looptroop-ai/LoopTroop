@@ -601,6 +601,8 @@ export async function fetchInstallerUrl(url, { headers, signal } = {}) {
       throw new Error('Installer downloads require HTTPS; insecure URLs and redirects are refused.')
     }
     usedHttps ||= current.protocol === 'https:'
+    // The HTTP loopback exception is for fixtures, never for credentials.
+    if (current.protocol === 'http:') requestHeaders.delete('authorization')
     const response = await fetch(current, { headers: requestHeaders, signal, redirect: 'manual' })
     if (![301, 302, 303, 307, 308].includes(response.status)) return response
     const location = response.headers.get('location')

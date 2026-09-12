@@ -183,6 +183,7 @@ const serverIntegrationTests = [
   'server/workflow/__tests__/relevantFilesScan.test.ts',
   'server/workflow/__tests__/runOpenCodePrompt.test.ts',
   'server/workflow/__tests__/runner.test.ts',
+  'server/workflow/__tests__/workflowErrors.test.ts',
   'server/workflow/__tests__/skipAllInterviewQuestionsToApproval.test.ts',
   'server/workflow/__tests__/verificationFinalTestPhase.test.ts',
   // Mocks the OpenCode session layer, which the daemon tests load for real.

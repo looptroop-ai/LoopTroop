@@ -1,3 +1,4 @@
+import { TicketWorkspaceNotInitializedError } from '../../lib/workflowErrors'
 import { eq } from 'drizzle-orm'
 import { existsSync, rmSync } from 'node:fs'
 import { readFileNoFollowSync } from '../../io/readFile'
@@ -44,7 +45,7 @@ const INTERVIEW_APPROVAL_SNAPSHOT_ARTIFACT = 'approval_snapshot:interview'
 function getInterviewPath(ticketId: string): string {
   const path = resolveTicketContainedPath(ticketId, 'interview.yaml')
   if (!path) {
-    throw new Error('Ticket workspace not initialized')
+    throw new TicketWorkspaceNotInitializedError('Ticket workspace not initialized')
   }
   return path
 }

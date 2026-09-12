@@ -1,3 +1,4 @@
+import { TicketWorkspaceNotInitializedError } from '../../lib/workflowErrors'
 import type { TicketContext, TicketEvent } from '../../machines/types'
 import type { DraftResult, MemberOutcome, Vote, VotePresentationOrder } from '../../council/types'
 import { CancelledError, VOTING_RUBRIC_PRD } from '../../council/types'
@@ -763,7 +764,7 @@ export async function handlePrdRefine(
   const streamStates = new Map<string, OpenCodeStreamState>()
   const paths = getTicketPaths(ticketId)
   if (!paths) {
-    throw new Error(`Ticket workspace not initialized: missing ticket paths for ${context.externalId}`)
+    throw new TicketWorkspaceNotInitializedError(`Ticket workspace not initialized: missing ticket paths for ${context.externalId}`)
   }
   const ticketDir = paths.ticketDir
   const winnerFullAnswers = findWinnerFullAnswers(intermediate.fullAnswers ?? [], intermediate.winnerId)
@@ -1018,7 +1019,7 @@ export function buildMockPrdContent(context: TicketContext) {
 
 export async function handleMockPrdDraft(ticketId: string, context: TicketContext, sendEvent: (event: TicketEvent) => void) {
   const paths = getTicketPaths(ticketId)
-  if (!paths) throw new Error(`Ticket workspace not initialized: missing ticket paths for ${context.externalId}`)
+  if (!paths) throw new TicketWorkspaceNotInitializedError(`Ticket workspace not initialized: missing ticket paths for ${context.externalId}`)
   const { members } = resolveCouncilMembers(context)
   const fullAnswersContent = readTicketFile(ticketId, 'interview.yaml') ?? ''
   const fullAnswers = members.map((member) => ({
@@ -1104,7 +1105,7 @@ export async function handleMockPrdVote(ticketId: string, context: TicketContext
 
 export async function handleMockPrdRefine(ticketId: string, context: TicketContext, sendEvent: (event: TicketEvent) => void) {
   const paths = getTicketPaths(ticketId)
-  if (!paths) throw new Error(`Ticket workspace not initialized: missing ticket paths for ${context.externalId}`)
+  if (!paths) throw new TicketWorkspaceNotInitializedError(`Ticket workspace not initialized: missing ticket paths for ${context.externalId}`)
   const { members } = resolveCouncilMembers(context)
   const winnerId = members[0]?.modelId ?? 'mock-model-1'
   const interviewContent = readTicketFile(ticketId, 'interview.yaml') ?? ''

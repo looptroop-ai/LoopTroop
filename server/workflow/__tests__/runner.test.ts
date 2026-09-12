@@ -4,6 +4,7 @@ import type { TicketContext } from '../../machines/types'
 import { ticketMachine } from '../../machines/ticketMachine'
 import { attachWorkflowRunner } from '../runner'
 import { phaseIntermediate, runningPhases, ticketAbortControllers } from '../phases'
+import { OpenCodeUnavailableError, TicketWorkspaceNotInitializedError } from '../../lib/workflowErrors'
 import { TEST, makeTicketContext } from '../../test/factories'
 
 function createSnapshotActor(value: string, overrides: Partial<TicketContext> = {}) {
@@ -25,6 +26,8 @@ function createSnapshotActor(value: string, overrides: Partial<TicketContext> = 
 }
 
 const {
+  mockLifecyclePhaseMocks,
+  handleInterviewDeliberateMock,
   handleCodingMock,
   handleFinalTestMock,
   handlePrdRefineMock,
@@ -33,6 +36,21 @@ const {
   emitPhaseLogMock,
   isMockOpenCodeModeMock,
 } = vi.hoisted(() => ({
+  mockLifecyclePhaseMocks: {
+    handleMockCouncilDeliberate: vi.fn(),
+    handleMockInterviewVote: vi.fn(),
+    handleMockInterviewCompile: vi.fn(),
+    handleMockInterviewQAStart: vi.fn(),
+    handleMockPrdDraft: vi.fn(),
+    handleMockPrdVote: vi.fn(),
+    handleMockPrdRefine: vi.fn(),
+    handleMockBeadsDraft: vi.fn(),
+    handleMockBeadsVote: vi.fn(),
+    handleMockBeadsRefine: vi.fn(),
+    handleMockBeadsExpansion: vi.fn(),
+    handleMockCoverage: vi.fn(),
+  },
+  handleInterviewDeliberateMock: vi.fn(),
   handleCodingMock: vi.fn(),
   handleFinalTestMock: vi.fn(),
   handlePrdRefineMock: vi.fn(),
@@ -54,6 +72,8 @@ vi.mock('../phases', async () => {
   const actual = await vi.importActual<typeof import('../phases')>('../phases')
   return {
     ...actual,
+    ...mockLifecyclePhaseMocks,
+    handleInterviewDeliberate: handleInterviewDeliberateMock,
     handleCoding: handleCodingMock,
     handleFinalTest: handleFinalTestMock,
     handlePrdRefine: handlePrdRefineMock,
@@ -78,6 +98,8 @@ describe('attachWorkflowRunner', () => {
       controller.abort()
     }
     ticketAbortControllers.clear()
+    for (const mock of Object.values(mockLifecyclePhaseMocks)) mock.mockReset()
+    handleInterviewDeliberateMock.mockReset()
     handleCodingMock.mockReset()
     handleFinalTestMock.mockReset()
     handlePrdRefineMock.mockReset()
@@ -86,6 +108,110 @@ describe('attachWorkflowRunner', () => {
     emitPhaseLogMock.mockReset()
     isMockOpenCodeModeMock.mockReset()
     phaseIntermediate.clear()
+  })
+
+  it.each([
+    [new OpenCodeUnavailableError('OpenCode server is not running. Start it with `opencode serve`. (connection refused)'), 'OPENCODE_UNREACHABLE'],
+    [new TicketWorkspaceNotInitializedError('Ticket workspace not initialized: missing ticket context'), 'WORKSPACE_NOT_INITIALIZED'],
+    [new Error('Not enough council responses'), 'QUORUM_NOT_MET'],
+    [new OpenCodeUnavailableError('Health check did not pass'), 'OPENCODE_UNREACHABLE'],
+    [new TicketWorkspaceNotInitializedError('Workspace unavailable'), 'WORKSPACE_NOT_INITIALIZED'],
+    [new Error('Response quoted: OpenCode server is not running'), 'QUORUM_NOT_MET'],
+    [new Error('Response quoted: Ticket workspace not initialized'), 'QUORUM_NOT_MET'],
+  ])('classifies deliberation failure by type: %s → %s', async (error, code) => {
+    handleInterviewDeliberateMock.mockRejectedValue(error)
+    const actor = createSnapshotActor('COUNCIL_DELIBERATING')
+    const sendEvent = vi.fn((event) => actor.send(event))
+    actor.start()
+    attachWorkflowRunner(TEST.ticketId, actor, sendEvent)
+
+    await vi.waitFor(() => expect(actor.getSnapshot().value).toBe('BLOCKED_ERROR'))
+    expect(sendEvent).toHaveBeenCalledExactlyOnceWith({
+      type: 'ERROR', message: error.message, codes: [code],
+      diagnostics: { kind: 'runtime', source: 'opencode', summary: error.message },
+    })
+    expect(actor.getSnapshot().context.error).toBe(error.message)
+    expect(actor.getSnapshot().context.errorCodes).toEqual([code])
+    expect(error.name).toBe('Error')
+    expect(JSON.stringify(error)).toBe(JSON.stringify(new Error(error.message)))
+    actor.stop()
+  })
+
+  it('preserves other phases error codes for typed workspace failures', async () => {
+    phaseIntermediate.set(`${TEST.ticketId}:prd`, {} as never)
+    const error = new TicketWorkspaceNotInitializedError('Ticket workspace not initialized')
+    handlePrdRefineMock.mockRejectedValue(error)
+    const actor = createRefiningPrdActor()
+    const sendEvent = vi.fn((event) => actor.send(event))
+    actor.start()
+    attachWorkflowRunner(TEST.ticketId, actor, sendEvent)
+
+    await vi.waitFor(() => expect(actor.getSnapshot().value).toBe('BLOCKED_ERROR'))
+    expect(sendEvent).toHaveBeenCalledExactlyOnceWith({
+      type: 'ERROR', message: error.message,
+      diagnostics: { kind: 'runtime', source: 'opencode', summary: error.message },
+    })
+    actor.stop()
+  })
+
+  it.each([
+    ['COUNCIL_DELIBERATING', 'handleMockCouncilDeliberate'],
+    ['COUNCIL_VOTING_INTERVIEW', 'handleMockInterviewVote'],
+    ['COMPILING_INTERVIEW', 'handleMockInterviewCompile'],
+    ['WAITING_INTERVIEW_ANSWERS', 'handleMockInterviewQAStart'],
+    ['DRAFTING_PRD', 'handleMockPrdDraft'],
+    ['COUNCIL_VOTING_PRD', 'handleMockPrdVote'],
+    ['REFINING_PRD', 'handleMockPrdRefine'],
+    ['DRAFTING_BEADS', 'handleMockBeadsDraft'],
+    ['COUNCIL_VOTING_BEADS', 'handleMockBeadsVote'],
+    ['REFINING_BEADS', 'handleMockBeadsRefine'],
+    ['EXPANDING_BEADS', 'handleMockBeadsExpansion'],
+    ['VERIFYING_INTERVIEW_COVERAGE', 'handleMockCoverage', 'interview'],
+    ['VERIFYING_PRD_COVERAGE', 'handleMockCoverage', 'prd'],
+    ['VERIFYING_BEADS_COVERAGE', 'handleMockCoverage', 'beads'],
+  ] as const)('dispatches the mock handler for %s', async (state, handlerName, phase?) => {
+    isMockOpenCodeModeMock.mockReturnValue(true)
+    const handler = mockLifecyclePhaseMocks[handlerName].mockResolvedValue(undefined)
+    const actor = createSnapshotActor(state)
+    const sendEvent = vi.fn()
+    actor.start()
+    attachWorkflowRunner(TEST.ticketId, actor, sendEvent)
+
+    await vi.waitFor(() => expect(runningPhases.has(`${TEST.ticketId}:${state}`)).toBe(false))
+    const tail = state === 'WAITING_INTERVIEW_ANSWERS' ? [] : phase ? [phase, sendEvent] : [sendEvent]
+    expect(handler).toHaveBeenCalledExactlyOnceWith(TEST.ticketId, expect.anything(), ...tail)
+    actor.stop()
+  })
+
+  it('advances mock relevant-file scanning without launching a real scan', async () => {
+    isMockOpenCodeModeMock.mockReturnValue(true)
+    const actor = createSnapshotActor('SCANNING_RELEVANT_FILES')
+    const sendEvent = vi.fn()
+    actor.start()
+    attachWorkflowRunner(TEST.ticketId, actor, sendEvent)
+
+    await vi.waitFor(() => expect(runningPhases.has(`${TEST.ticketId}:SCANNING_RELEVANT_FILES`)).toBe(false))
+    expect(sendEvent).toHaveBeenCalledExactlyOnceWith({ type: 'RELEVANT_FILES_READY' })
+    actor.stop()
+  })
+
+  it.each([
+    'PRE_FLIGHT_CHECK', 'GENERATING_EXECUTION_SETUP_PLAN', 'PREPARING_EXECUTION_ENV',
+    'CODING', 'RUNNING_FINAL_TEST', 'GENERATING_QA_CHECKLIST', 'INTEGRATING_CHANGES',
+    'CREATING_PULL_REQUEST', 'CLEANING_ENV',
+  ])('dispatches the mock execution handler for %s', async (state) => {
+    isMockOpenCodeModeMock.mockReturnValue(true)
+    handleMockExecutionUnsupportedMock.mockResolvedValue(undefined)
+    const actor = createSnapshotActor(state)
+    const sendEvent = vi.fn()
+    actor.start()
+    attachWorkflowRunner(TEST.ticketId, actor, sendEvent)
+
+    await vi.waitFor(() => expect(runningPhases.has(`${TEST.ticketId}:${state}`)).toBe(false))
+    expect(handleMockExecutionUnsupportedMock).toHaveBeenCalledExactlyOnceWith(
+      TEST.ticketId, expect.anything(), state, sendEvent,
+    )
+    actor.stop()
   })
 
   it('does not block an active PRD refinement when the phase rejects after abort', async () => {

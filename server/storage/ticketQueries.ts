@@ -1,3 +1,4 @@
+import { TicketWorkspaceNotInitializedError } from '../lib/workflowErrors'
 import { and, asc, desc, eq } from 'drizzle-orm'
 import { z } from 'zod'
 import { readFileNoFollowSync } from '../io/readFile'
@@ -1398,7 +1399,7 @@ export function resolveTicketContainedPath(ticketRef: string, relativePath: stri
 
 export function writeTicketFile(ticketRef: string, relativePath: string, content: string): void {
   const storage = getTicketStorageContext(ticketRef)
-  if (!storage) throw new Error('Ticket workspace not initialized')
+  if (!storage) throw new TicketWorkspaceNotInitializedError('Ticket workspace not initialized')
   writeProjectTicketFile(storage.projectRoot, storage.externalId, relativePath, content)
 }
 

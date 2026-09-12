@@ -82,7 +82,8 @@ import {
   handleCleanup,
 } from './phases'
 import { handleManualQaChecklistGeneration } from '../phases/manualQa'
-import { isWorkflowPhaseId } from '@shared/workflowMeta'
+import { isWorkflowPhaseId, type WorkflowPhaseId } from '@shared/workflowMeta'
+import { OpenCodeUnavailableError, TicketWorkspaceNotInitializedError } from '../lib/workflowErrors'
 
 // Re-export public API for external callers
 export {
@@ -95,88 +96,65 @@ export {
   handleRelevantFilesScan,
 }
 
-async function handleMockLifecycleState(
+const mockLifecycleHandlers: Partial<Record<WorkflowPhaseId, (
   ticketId: string,
   context: TicketContext,
-  state: string,
   sendEvent: (event: TicketEvent) => void,
-) {
-  switch (state) {
-    case 'SCANNING_RELEVANT_FILES':
-      sendEvent({ type: 'RELEVANT_FILES_READY' })
-      return
-    case 'COUNCIL_DELIBERATING':
-      await handleMockCouncilDeliberate(ticketId, context, sendEvent)
-      return
-    case 'COUNCIL_VOTING_INTERVIEW':
-      await handleMockInterviewVote(ticketId, context, sendEvent)
-      return
-    case 'COMPILING_INTERVIEW':
-      await handleMockInterviewCompile(ticketId, context, sendEvent)
-      return
-    case 'WAITING_INTERVIEW_ANSWERS':
-      if (!interviewQASessions.has(ticketId)) {
-        await handleMockInterviewQAStart(ticketId, context)
-      }
-      return
-    case 'VERIFYING_INTERVIEW_COVERAGE':
-      await handleMockCoverage(ticketId, context, 'interview', sendEvent)
-      return
-    case 'DRAFTING_PRD':
-      await handleMockPrdDraft(ticketId, context, sendEvent)
-      return
-    case 'COUNCIL_VOTING_PRD':
-      await handleMockPrdVote(ticketId, context, sendEvent)
-      return
-    case 'REFINING_PRD':
-      await handleMockPrdRefine(ticketId, context, sendEvent)
-      return
-    case 'VERIFYING_PRD_COVERAGE':
-      await handleMockCoverage(ticketId, context, 'prd', sendEvent)
-      return
-    case 'DRAFTING_BEADS':
-      await handleMockBeadsDraft(ticketId, context, sendEvent)
-      return
-    case 'COUNCIL_VOTING_BEADS':
-      await handleMockBeadsVote(ticketId, context, sendEvent)
-      return
-    case 'REFINING_BEADS':
-      await handleMockBeadsRefine(ticketId, context, sendEvent)
-      return
-    case 'VERIFYING_BEADS_COVERAGE':
-      await handleMockCoverage(ticketId, context, 'beads', sendEvent)
-      return
-    case 'EXPANDING_BEADS':
-      await handleMockBeadsExpansion(ticketId, context, sendEvent)
-      return
-    case 'PRE_FLIGHT_CHECK':
-      await handleMockExecutionUnsupported(ticketId, context, 'PRE_FLIGHT_CHECK', sendEvent)
-      return
-    case 'GENERATING_EXECUTION_SETUP_PLAN':
-      await handleMockExecutionUnsupported(ticketId, context, 'GENERATING_EXECUTION_SETUP_PLAN', sendEvent)
-      return
-    case 'PREPARING_EXECUTION_ENV':
-      await handleMockExecutionUnsupported(ticketId, context, 'PREPARING_EXECUTION_ENV', sendEvent)
-      return
-    case 'CODING':
-      await handleMockExecutionUnsupported(ticketId, context, 'CODING', sendEvent)
-      return
-    case 'RUNNING_FINAL_TEST':
-      await handleMockExecutionUnsupported(ticketId, context, 'RUNNING_FINAL_TEST', sendEvent)
-      return
-    case 'GENERATING_QA_CHECKLIST':
-      await handleMockExecutionUnsupported(ticketId, context, 'GENERATING_QA_CHECKLIST', sendEvent)
-      return
-    case 'INTEGRATING_CHANGES':
-      await handleMockExecutionUnsupported(ticketId, context, 'INTEGRATING_CHANGES', sendEvent)
-      return
-    case 'CREATING_PULL_REQUEST':
-      await handleMockExecutionUnsupported(ticketId, context, 'CREATING_PULL_REQUEST', sendEvent)
-      return
-    case 'CLEANING_ENV':
-      await handleMockExecutionUnsupported(ticketId, context, 'CLEANING_ENV', sendEvent)
-      return
-  }
+) => Promise<void>>> = {
+  SCANNING_RELEVANT_FILES: async (_ticketId, _context, sendEvent) => {
+    sendEvent({ type: 'RELEVANT_FILES_READY' })
+  },
+  COUNCIL_DELIBERATING: handleMockCouncilDeliberate,
+  COUNCIL_VOTING_INTERVIEW: handleMockInterviewVote,
+  COMPILING_INTERVIEW: handleMockInterviewCompile,
+  WAITING_INTERVIEW_ANSWERS: async (ticketId, context) => {
+    if (!interviewQASessions.has(ticketId)) {
+      await handleMockInterviewQAStart(ticketId, context)
+    }
+  },
+  VERIFYING_INTERVIEW_COVERAGE: async (ticketId, context, sendEvent) => {
+    await handleMockCoverage(ticketId, context, 'interview', sendEvent)
+  },
+  DRAFTING_PRD: handleMockPrdDraft,
+  COUNCIL_VOTING_PRD: handleMockPrdVote,
+  REFINING_PRD: handleMockPrdRefine,
+  VERIFYING_PRD_COVERAGE: async (ticketId, context, sendEvent) => {
+    await handleMockCoverage(ticketId, context, 'prd', sendEvent)
+  },
+  DRAFTING_BEADS: handleMockBeadsDraft,
+  COUNCIL_VOTING_BEADS: handleMockBeadsVote,
+  REFINING_BEADS: handleMockBeadsRefine,
+  VERIFYING_BEADS_COVERAGE: async (ticketId, context, sendEvent) => {
+    await handleMockCoverage(ticketId, context, 'beads', sendEvent)
+  },
+  EXPANDING_BEADS: handleMockBeadsExpansion,
+  PRE_FLIGHT_CHECK: async (ticketId, context, sendEvent) => {
+    await handleMockExecutionUnsupported(ticketId, context, 'PRE_FLIGHT_CHECK', sendEvent)
+  },
+  GENERATING_EXECUTION_SETUP_PLAN: async (ticketId, context, sendEvent) => {
+    await handleMockExecutionUnsupported(ticketId, context, 'GENERATING_EXECUTION_SETUP_PLAN', sendEvent)
+  },
+  PREPARING_EXECUTION_ENV: async (ticketId, context, sendEvent) => {
+    await handleMockExecutionUnsupported(ticketId, context, 'PREPARING_EXECUTION_ENV', sendEvent)
+  },
+  CODING: async (ticketId, context, sendEvent) => {
+    await handleMockExecutionUnsupported(ticketId, context, 'CODING', sendEvent)
+  },
+  RUNNING_FINAL_TEST: async (ticketId, context, sendEvent) => {
+    await handleMockExecutionUnsupported(ticketId, context, 'RUNNING_FINAL_TEST', sendEvent)
+  },
+  GENERATING_QA_CHECKLIST: async (ticketId, context, sendEvent) => {
+    await handleMockExecutionUnsupported(ticketId, context, 'GENERATING_QA_CHECKLIST', sendEvent)
+  },
+  INTEGRATING_CHANGES: async (ticketId, context, sendEvent) => {
+    await handleMockExecutionUnsupported(ticketId, context, 'INTEGRATING_CHANGES', sendEvent)
+  },
+  CREATING_PULL_REQUEST: async (ticketId, context, sendEvent) => {
+    await handleMockExecutionUnsupported(ticketId, context, 'CREATING_PULL_REQUEST', sendEvent)
+  },
+  CLEANING_ENV: async (ticketId, context, sendEvent) => {
+    await handleMockExecutionUnsupported(ticketId, context, 'CLEANING_ENV', sendEvent)
+  },
 }
 
 function resolveSnapshotState(
@@ -262,37 +240,11 @@ export function attachWorkflowRunner(
 
     const signal = getOrCreateAbortSignal(ticketId)
 
-    if (isMockOpenCodeMode()) {
-      const mockHandledStates = new Set([
-        'SCANNING_RELEVANT_FILES',
-        'COUNCIL_DELIBERATING',
-        'COUNCIL_VOTING_INTERVIEW',
-        'COMPILING_INTERVIEW',
-        'WAITING_INTERVIEW_ANSWERS',
-        'VERIFYING_INTERVIEW_COVERAGE',
-        'DRAFTING_PRD',
-        'COUNCIL_VOTING_PRD',
-        'REFINING_PRD',
-        'VERIFYING_PRD_COVERAGE',
-        'DRAFTING_BEADS',
-        'COUNCIL_VOTING_BEADS',
-        'REFINING_BEADS',
-        'VERIFYING_BEADS_COVERAGE',
-        'EXPANDING_BEADS',
-        'PRE_FLIGHT_CHECK',
-        'GENERATING_EXECUTION_SETUP_PLAN',
-        'PREPARING_EXECUTION_ENV',
-        'CODING',
-        'RUNNING_FINAL_TEST',
-        'GENERATING_QA_CHECKLIST',
-        'INTEGRATING_CHANGES',
-        'CREATING_PULL_REQUEST',
-        'CLEANING_ENV',
-      ])
-
-      if (isWorkflowPhaseId(state) && mockHandledStates.has(state)) {
+    if (isMockOpenCodeMode() && isWorkflowPhaseId(state)) {
+      const mockHandler = mockLifecycleHandlers[state]
+      if (mockHandler) {
         runningPhases.add(key)
-        handleMockLifecycleState(ticketId, context, state, sendEvent)
+        mockHandler(ticketId, context, sendEvent)
           .catch((err: unknown) => {
             if (isCancellationError(err, signal)) return
             const errMsg = getErrorMessage(err)
@@ -324,11 +276,9 @@ export function attachWorkflowRunner(
         .catch(err => {
           if (isCancellationError(err, signal)) return
           const errMsg = getErrorMessage(err)
-          const isOpenCode = errMsg.includes('OpenCode server is not running')
-          const isWorkspace = errMsg.includes('Ticket workspace not initialized')
-          const codes = isOpenCode
+          const codes = err instanceof OpenCodeUnavailableError
             ? ['OPENCODE_UNREACHABLE']
-            : isWorkspace
+            : err instanceof TicketWorkspaceNotInitializedError
               ? ['WORKSPACE_NOT_INITIALIZED']
               : ['QUORUM_NOT_MET']
           emitPhaseLog(ticketId, context.externalId, 'COUNCIL_DELIBERATING', 'error', errMsg)

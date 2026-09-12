@@ -1,3 +1,4 @@
+import { TicketWorkspaceNotInitializedError } from '../../lib/workflowErrors'
 import { existsSync } from 'node:fs'
 import * as jsYaml from 'js-yaml'
 import type { TicketContext, TicketEvent } from '../../machines/types'
@@ -652,7 +653,7 @@ export async function handleCreatePullRequest(
       const { worktreePath, ticket } = loadTicketDirContext(context)
       const paths = getTicketPaths(ticketId)
       if (!paths) {
-        throw new Error(`Ticket workspace not initialized: missing ticket paths for ${context.externalId}`)
+        throw new TicketWorkspaceNotInitializedError(`Ticket workspace not initialized: missing ticket paths for ${context.externalId}`)
       }
 
       throwIfAborted(signal, ticketId)

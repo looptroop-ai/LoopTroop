@@ -1,3 +1,4 @@
+import { TicketWorkspaceNotInitializedError } from '../../lib/workflowErrors'
 import type { TicketContext, TicketEvent } from '../../machines/types'
 import type { PromptPart } from '../../opencode/types'
 import { withCommandLoggingAsync } from '../../log/commandLogger'
@@ -142,7 +143,7 @@ async function generateAndPersistExecutionSetupPlan(input: {
 }): Promise<ExecutionSetupPlanReport> {
   const paths = getTicketPaths(input.ticketId)
   if (!paths) {
-    throw new Error(`Ticket workspace not initialized: missing ticket paths for ${input.context.externalId}`)
+    throw new TicketWorkspaceNotInitializedError(`Ticket workspace not initialized: missing ticket paths for ${input.context.externalId}`)
   }
 
   const planModelId = input.context.lockedMainImplementer

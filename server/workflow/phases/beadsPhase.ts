@@ -1,3 +1,4 @@
+import { TicketWorkspaceNotInitializedError } from '../../lib/workflowErrors'
 import { relative } from 'node:path'
 import type { TicketContext, TicketEvent } from '../../machines/types'
 import type { DraftResult, MemberOutcome, Vote } from '../../council/types'
@@ -663,7 +664,7 @@ export async function handleBeadsRefine(
   const streamStates = new Map<string, OpenCodeStreamState>()
   const paths = getTicketPaths(ticketId)
   if (!paths) {
-    throw new Error(`Ticket workspace not initialized: missing ticket paths for ${context.externalId}`)
+    throw new TicketWorkspaceNotInitializedError(`Ticket workspace not initialized: missing ticket paths for ${context.externalId}`)
   }
   const prd = readTicketFile(ticketId, 'prd.yaml') ?? undefined
 
@@ -855,7 +856,7 @@ export async function handleBeadsRefine(
 
 function getBeadsPath(ticketId: string): string {
   const paths = getTicketPaths(ticketId)
-  if (!paths) throw new Error(`Ticket workspace not initialized: missing ticket paths for ${ticketId}`)
+  if (!paths) throw new TicketWorkspaceNotInitializedError(`Ticket workspace not initialized: missing ticket paths for ${ticketId}`)
   return paths.beadsPath
 }
 
@@ -865,7 +866,7 @@ export function readTicketBeads(ticketId: string): Bead[] {
 
 export function writeTicketBeads(ticketId: string, beads: Bead[]) {
   const paths = getTicketPaths(ticketId)
-  if (!paths) throw new Error(`Ticket workspace not initialized: missing ticket paths for ${ticketId}`)
+  if (!paths) throw new TicketWorkspaceNotInitializedError(`Ticket workspace not initialized: missing ticket paths for ${ticketId}`)
   const content = beads.map(bead => JSON.stringify(bead)).join('\n') + (beads.length > 0 ? '\n' : '')
   writeTicketFile(ticketId, relative(paths.ticketDir, paths.beadsPath), content)
   const ticket = getTicketByRef(ticketId)
@@ -1194,7 +1195,7 @@ export async function handleMockBeadsVote(ticketId: string, context: TicketConte
 
 export async function handleMockBeadsRefine(ticketId: string, context: TicketContext, sendEvent: (event: TicketEvent) => void) {
   const paths = getTicketPaths(ticketId)
-  if (!paths) throw new Error(`Ticket workspace not initialized: missing ticket paths for ${context.externalId}`)
+  if (!paths) throw new TicketWorkspaceNotInitializedError(`Ticket workspace not initialized: missing ticket paths for ${context.externalId}`)
   const { members } = resolveCouncilMembers(context)
   const winnerId = readMockBeadsWinnerId(ticketId, members[0]?.modelId ?? 'mock-model-1')
   const refinedContent = buildMockBeadDraftContent(context)

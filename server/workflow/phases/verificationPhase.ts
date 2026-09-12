@@ -1,3 +1,4 @@
+import { TicketWorkspaceNotInitializedError } from '../../lib/workflowErrors'
 import type { TicketContext, TicketEvent } from '../../machines/types'
 import { withCommandLoggingAsync } from '../../log/commandLogger'
 import { handleMockExecutionUnsupported } from './executionPhase'
@@ -5244,7 +5245,7 @@ export async function handleMockBeadsExpansion(
   const { members } = resolveCouncilMembers(context)
   const winnerId = readMockBeadsWinnerId(ticketId, members[0]?.modelId ?? 'mock-model-1')
   const paths = getTicketPaths(ticketId)
-  if (!paths) throw new Error(`Ticket workspace not initialized: missing ticket paths for ${context.externalId}`)
+  if (!paths) throw new TicketWorkspaceNotInitializedError(`Ticket workspace not initialized: missing ticket paths for ${context.externalId}`)
 
   const beadSubsets = buildMockBeadSubsets(context)
   const mockExpansionCandidates = beadSubsets.map((subset, index) => {

@@ -248,6 +248,7 @@ Unreleased changes appear first and represent commits that have not yet been inc
 - Three aliases re-exported for a question-diff type that no longer exists, the three helpers behind them, an execution-setup runtime-path list with no reader, and an execution-setup barrel re-exporting three artifact names every caller already imports from their own module.
 
 ### Fixed
+- Slow or incomplete Cancel and Finish Without Merge uploads no longer hold the merge lock. Payload validation finishes before locking, then current ticket state is checked before any action.
 - Ticket GET requests no longer contact GitHub, update PR artifacts, or complete merges. A daemon-owned poller checks waiting tickets at startup and about every 30 seconds after each sweep, retries failed checks with per-ticket delays capped at five minutes, and resumes after restart. Shutdown stops scheduling and drains the active check within the process shutdown deadline before closing storage. A successful merge report lets restart finish the workflow without repeating remote completion.
 - Verified merge checkpoints cannot be overwritten by cancellation or finishing without merge. Recovery repairs stale PR metadata, validates the recorded PR identity, and keeps the checkpoint available if later finalization fails.
 - An unreadable attached project no longer prevents healthy projects from detecting merged PRs. Invalid GitHub metadata produces an advisory retry instead of silently resetting backoff; requests pin the API contract that supplies the landed commit.

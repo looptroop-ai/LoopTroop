@@ -1,5 +1,8 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 import { Hono } from 'hono'
+import { serve } from '@hono/node-server'
+import { request } from 'node:http'
+import { once } from 'node:events'
 import { initializeDatabase } from '../../db/init'
 import { sqlite } from '../../db/index'
 import { clearProjectDatabaseCache } from '../../db/project'
@@ -299,13 +302,58 @@ describe('ticketRouter PR review routes', () => {
     const checkpoint = getLatestPhaseArtifact(ticket.id, 'merge_report', 'WAITING_PR_REVIEW')!
     const app = new Hono().route('/api', ticketRouter)
     const response = await app.request(`/api/tickets/${ticket.id}/${action}`, {
-      method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ deleteTicket: true }),
+      method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(action === 'cancel' ? { deleteTicket: true } : {}),
     })
     expect(response.status).toBe(409)
     expect(getTicketByRef(ticket.id)?.status).toBe('WAITING_PR_REVIEW')
     expect(getLatestPhaseArtifact(ticket.id, 'merge_report', 'WAITING_PR_REVIEW')?.id).toBe(checkpoint.id)
     expect(completeCloseUnmergedMock).not.toHaveBeenCalled()
     expect(sendTicketEvent).not.toHaveBeenCalled()
+  })
+
+  it.each(['cancel', 'close-unmerged'])('allows completion during a slow %s body and checks the new state afterwards', async (action) => {
+    const { ticket } = await createWaitingPrReviewTicket()
+    refreshPullRequestStateMock.mockResolvedValue({ state: 'merged', number: 42 })
+    let bodyStarted!: () => void
+    const readingBody = new Promise<void>((resolve) => { bodyStarted = resolve })
+    const app = new Hono()
+    app.use('*', async (c, next) => {
+      const readText = c.req.text.bind(c.req)
+      c.req.text = () => { bodyStarted(); return readText() }
+      await next()
+    })
+    app.route('/api', ticketRouter)
+    const server = serve({ fetch: app.fetch, hostname: '127.0.0.1', port: 0 })
+    await once(server, 'listening')
+    const address = server.address()
+    if (!address || typeof address === 'string') throw new Error('Expected a TCP test server')
+    const pending = request({
+      hostname: '127.0.0.1', port: address.port,
+      path: `/api/tickets/${ticket.id}/${action}`, method: 'POST',
+      headers: { 'Content-Type': 'application/json', 'Transfer-Encoding': 'chunked' },
+    })
+    const response = once(pending, 'response')
+    let completion: Promise<void> | undefined
+    try {
+      pending.flushHeaders()
+      await readingBody
+      completion = syncWaitingPullRequestTicket(ticket.id)
+      await vi.waitFor(() => expect(getTicketByRef(ticket.id)?.status).toBe('CLEANING_ENV'))
+      pending.end('{}')
+      const [result] = await response
+      expect(result.statusCode).toBe(409)
+      result.resume()
+      expect(completeMergedPullRequestMock).toHaveBeenCalledOnce()
+      expect(completeCloseUnmergedMock).not.toHaveBeenCalled()
+      expect(sendTicketEvent).not.toHaveBeenCalledWith(ticket.id, { type: 'CANCEL' })
+    } finally {
+      if (!pending.writableEnded) pending.end('{}')
+      const [result] = await response
+      result.resume()
+      await completion
+      if ('closeAllConnections' in server) server.closeAllConnections()
+      await new Promise<void>((resolve, reject) => server.close(error => error ? reject(error) : resolve()))
+    }
   })
 
   it.each(['dispatch', 'post-commit refresh'])('keeps a verified merge retryable after %s fails', async (failure) => {

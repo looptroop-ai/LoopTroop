@@ -216,3 +216,38 @@ Website build, all 79 tests and site/CLI-reference verification passed; document
 to website main in `8d79d5a`, with new behavior still marked unreleased. No end-to-end or full
 lifecycle tests were run. The green remote CI results above describe `9e5c8b6e`; fresh CI after
 this follow-up is left for the owner to verify.
+
+
+## Round 3: final review of `0bfca48e`
+
+Read the latest conversation, review and inline comment updates and CI results before editing.
+CodeRabbit's new outside-diff finding is valid: Cancel parsed its request stream while holding
+its ticket's merge lock. Finish Without Merge had the same issue. Both now parse and validate
+before acquiring the lock, then read current ticket state and verified checkpoints under the
+lock. Delayed uploads cannot stall daemon completion; a request arriving after completion is
+rejected by the existing state checks. Malformed payloads are rejected before ticket-state
+validation, so an invalid payload receives 400 even for a missing or completed ticket.
+
+CodeRabbit's remaining workspace-error summary repeats the deliberately preserved interview
+validation wrapper; the owner's wire-contract choice still applies. Its default docstring
+coverage target is not a repository gate. Greptile reports no remaining finding and 5/5
+confidence; Codacy and Sonar report zero new issues. Qodo and Gitar have no new actionable
+finding. Their old action-table observations remain resolved by the receipt-ID design.
+
+An independent bounded review of the complete PR found no other important defect in candidate
+and landed-commit verification, current-attempt recovery, polling/shutdown, receipt uniqueness,
+or typed-error/mock dispatch. No speculative refactors were added.
+
+The latest CI snapshot contained 87 successes, three running Windows test checks, three skips
+and one failure.
+[Kilo's review](https://app.kilo.ai/code-reviews/55155d3f-e53f-4f48-b646-b794ee6212b5)
+again failed because its assistant request was rate limited, with no code annotations. Sampled
+completed workflow-lint, Node Current and Linux/Windows binary logs contained only the already
+reviewed npm fallback and postject diagnostics. No new deprecation was identified.
+
+Round 3 verification passed: 413 application test files, 5,769 tests and 10 skips; full lint,
+both typecheck projects, build and version checks. The test cleanup needed a type guard for
+Hono’s HTTP/HTTP2 server union; after that test-only correction, all 39 PR-route tests and
+scoped lint passed again. Website build, 79 tests and site/CLI-reference verification passed;
+the documentation is published on website main in `1ea845c`. No end-to-end or full lifecycle
+tests were run. Fresh CI after this follow-up is left for the owner; no merge was performed.

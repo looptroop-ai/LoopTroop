@@ -1,0 +1,90 @@
+# PR20 review dispositions
+
+Reviewed all six reports in `tmp/pr20`, every issue comment, inline comment and submitted review on PR #157, and the initial CI results for `cb67e9f5`. This continues the existing PR and preserves the owner's approved extraction of only identical repair steps.
+
+Report references below use C = Claude Opus 5, D = DeepSeek V4.1 Flash, F = Gemini 3.8 Flash, G = Grok 4.6, M = MiMo V2.5, and S = Muse Spark.
+
+## CI and bot reviews
+
+| Observation | Assessment and action |
+| --- | --- |
+| CodeQL alert #159; D1; inline comment 3996550043 | The benchmark intentionally changes only the opening brace; it is not a sanitizer. Replace the flagged string replacement with explicit prefix/slice construction. No security-alert dismissal or suppression is needed. |
+| Kilo failure; D1 | Check-run 103570378018 reports: “Review failed: The model output limit was reached.” It has no annotations or code findings. This is an external review failure; fresh CI/review results remain for the owner to verify after the fixes are pushed. |
+| CodeRabbit docstring coverage warning | Add concise contract documentation to the changed parser/cache and benchmark helpers. Keep the existing implementation and avoid generating unrelated boilerplate. |
+| Sourcery | Its submitted review reports an exhausted review budget. The separate guide is a generated summary, not completed code review evidence. Its diagram incorrectly places schema validation inside the parser and only on misses; callers validate after either path. |
+| Amazon Q, Codex, CodeRabbit, Qodo, Greptile, Gitar | No actionable correctness findings. Their generated summaries do not override the reproduced issues from the local reports. |
+| Codacy, SonarCloud, Socket and Semgrep | Passed. SonarCloud's zero reported new-code coverage is not a claim that tests were absent; the local suite and CI test jobs ran the regressions. |
+| Green CI warnings | All 39 jobs in each initial push/PR CI run passed. Full logs showed the same upstream artifact-download `Buffer()` deprecation, Renovate dependencies/RE2 fallback, postject diagnostics and intentional Node/npm policy fallback already covered by `.github/security-alert-dispositions.md` and `.github/pr19-review-dispositions.md`. No new warning family or action-retirement warning appeared. Current upstream releases do not supply fixes for those accepted warnings. |
+| Local verification follow-up | One execution-timeout regression failed under load because its real 25 ms budget included asynchronous owned-session persistence. It now advances a controlled clock only after the stalled prompt is dispatched, preserving its assertions and runtime behavior; its 20-test file passed. Final compilation and frontend/server builds passed separately after combined build invocations received termination signals during bundling. Standalone frontend builds used a 3,072 MiB Node heap limit; runtime configuration is unchanged. |
+
+## Cache findings
+
+| Reports | Assessment and action |
+| --- | --- |
+| C1: cache failed parses | Correct that failures repeat repair work. Keep them uncached: replacing a `YAMLException` with `Error(message)` loses its `reason`, `mark` and class. Negative caching would require a separate error contract, and cannot improve genuinely unique-input misses. The revised benchmark reports invalid input separately. |
+| C3, D3, F2.2: incomplete future option keys | Add a mapped-type completeness check to the keyed options object. A new option now fails compilation until classified; existing default normalization remains intact. |
+| S2, S7: key serialization can reject valid JSON | Confirmed for circular/BigInt repair options, although current callers use static valid configurations. If key creation fails, use the uncached parser, preserving its original acceptance and diagnostics. |
+| F2.1, M3: sort option keys; S3: preserve order | Sorting is unsafe. Parent names normalize before insertion into a Map; two spellings can collide, and the last configuration wins. A regression uses `PARENT`/`parent` with opposite orders and requires different results. Top-level option insertion order was already irrelevant to the explicit key construction. |
+| C4, D4, F2.4, G1, M1, S5: revision location/enforcement | Keep the explicitly requested revision marker and advance it with these repair changes. Clarify that production code changes restart the daemon and empty this process-local cache. Claims that a source edit leaves old entries running under new code are incorrect here. No source hashing, import snapshots, build hooks or persistent-cache design is needed. |
+| C5, D6, F2.3, G3, M6/M12, S4: clear/reset/TTL/statistics | Existing occupancy tests pass shuffled runs and deliberately replace/evict prior entries. No current contamination failure was reproduced. Keep the entry/byte bounds; no ticket/workspace teardown hook, counters, TTL, weak references or test-only production API is warranted. Future tests using module mocks must follow the repository's existing isolation rules. |
+| G4: deserialization failure becomes parse failure | Confirmed without corrupting private cache state: V8 can serialize a deep object that exceeds its deserialization stack. Evict unreadable snapshots and return a miss. Repeated deep JSON remains parseable; the regression also covers serialization bypass. |
+| G5: defensive empty-map reset | Current accounting remains consistent, including the new failed-read eviction. An empty map with a positive byte count requires a separate accounting bug; silently resetting the count would conceal it. Keep the invariants and eviction tests. |
+| F3.1: selective caching/two-hit filter | No production hit-rate evidence establishes a better admission policy. Such a filter adds state and loses the first reuse that motivates this cache. Measure realistic large inputs before changing the approved parser-level policy. |
+| F3.2: clone on misses too | No isolation defect: serialization snapshots the value before the first caller receives it. The first caller already owns a fresh parse graph. Deserializing again on misses only adds work. |
+| M2: lazy deserialization proxy | Speculative and would change how validators access objects. Keep independent eager results; the large-artifact benchmark measures their actual cost. |
+| C8, S8: key-byte accounting | The bound includes a conservative two bytes per JavaScript key character, not an exact UTF-8 heap estimate. Retain consistent insert/evict accounting and arbitrary-key unit coverage. |
+| C8: binary handling is unreachable; M13: V8 portability | Correct that current js-yaml defaults reject `!!binary` and `!!timestamp`. The cache helper's Date/binary tests cover its serialized-value contract, not current YAML tag support; clarify the documentation. Node/V8 is the daemon runtime, so cross-engine persistence is not required. |
+
+## YAML and extraction findings
+
+| Reports | Assessment and action |
+| --- | --- |
+| C2/C8, D2, F1.1, G2, S1/S7: duplicate bodies/comments | Confirmed. The owner approved removing only complete identical entries; conflicting blocks and multiline values remain invalid for the existing correction/retry flow. External comments survive, and invalid scalar continuation after a dedented comment stays invalid. Nested mappings can legally continue after a comment, so comparisons and removal must cover their full bodies. Blank lines inside scalars participate in comparison because they can change the retained value's chomping. |
+| New related duplicate-repair finding | Fixed: retained block-scalar bodies no longer lose repeated mapping-looking lines. Coverage includes mapping, sequence and sequence-mapping headers and resuming repair at sibling keys, including multiple spaces after a sequence dash. Both retained-scalar guards end at dedented external comments. |
+| New related entry-boundary findings | Complete-entry comparison includes indentless lists and scalar whitespace. Multiline quoted/flow values and annotated scalars can contain apparent keys that an indentation-only repair cannot interpret safely. Duplicate and nested-mapping repairs now bypass candidates with uncertain boundaries; duplicate flow entries remain for YAML to reject. This can decline a repair, but prevents losing literal text. |
+| G related leftover: nested-mapping header detector | Confirmed that a moved `\|2` header leaves its body at the wrong indent. Use the shared header grammar and preserve all body lines while shifting the header/body together. Also protect retained scalars containing an apparent parent/child pair from nested-mapping repair. |
+| C8, S7: weak valid-header assertions | Compare exact loaded values, including indentation and chomping, and cover the additional valid header variants. Keep idempotence and unchanged-input checks. |
+| C7: finish/refile the broader extraction; M9: detector cleanup still open | The owner explicitly chose the narrower extraction. Different later branches and their warning bookkeeping stay in place; this is an accepted scope decision, not work automatically assigned to PR21. PR14 already unified the exported header grammar; only the reproduced internal omission above needed repair. |
+| G2: share both skip branches | A common skip predicate would retain header-only comparison and comment-boundary errors. Address entry boundaries and equality at the shared repair instead. |
+| M7/M8/M10/M11/M14, C verified-correct section | The glued-indicator and reserved-indicator changes are correct. M8 reverses the regex diff in prose, and M11 attributes the trim/dedupe consolidation to an earlier PR; the actual PR20 diff performs it. No additional behavioral change follows from those descriptions. |
+| M4: rename `excluded`; M5/S9: always destructure all prefix stages | Keep the typed single-string parameter and only the intermediate values each branch uses. The branches intentionally compute warnings differently, as approved. |
+| G related leftover: route `parsesAsPlainYamlOrJson` through cache | This helper deliberately tests whether raw text parses without repair when computing `repairApplied` for relevant-files output. Replacing it with the repairing parser would hide that intervention signal. Leave it unchanged. |
+| C8/D6: redundant trim/empty guard | Remove the private uncached function's repeated trim and guard; only the public wrapper calls it with nonempty trimmed input. |
+| G6: website follow-up | Keep the explicitly unreleased website section current with the final reviewed behavior and push it to website main in this session. |
+
+## Benchmark findings
+
+| Reports | Assessment and action |
+| --- | --- |
+| C6, D5, F4.1, S6, M15 | Replace the single headline percentage with workload-specific measurements and sample ranges. Keep unique and repeated inputs equal in length; report failed inputs separately, distinguish same-draft reuse from distinct drafts, and add a roughly 48 KB/64-bead workload. Verify parsed values and refinement success rather than truthiness alone. |
+| F4.1 versus C6/M15 | The original same-input refinement row correctly demonstrated within-call reuse, already documented, but did not isolate distinct-draft misses. Retain it with an explicit label and add the distinct-draft row. |
+| D5: vary only two copies | Two repeated keys would both become cache hits. Use a fresh fixed-width identifier for each unique input instead. |
+| S6: reset/counters for benchmark | Warm each measured workload and report timing spread. Independent baseline/current processes and unique identifiers establish the intended workloads without adding runtime instrumentation. |
+| D6: npm benchmark alias | The existing documented command works. Another package script adds no required capability. |
+
+Validation results and refreshed measurements are recorded in `pr20-implementation.md`. No review-report source files were edited, no PR was merged, and no bot was instructed to change code.
+
+## Second review round: head `6f4db1df`
+
+Read all six replacement reports, all nine issue comments, three inline comments and five submitted reviews before implementation. Report letters in this section refer to the replacement files. The first-round assessments above retain their original scope.
+
+| Observation | Assessment and action |
+| --- | --- |
+| Current CI and Kilo; D6 | Both CI runs, `34706773372` and `34706775680`, passed all 39 jobs, including the executor tests on every platform. Full logs contain the same accepted upstream warnings and no new warning family. CodeQL now passes. Kilo check `103588139247` again failed with "Review failed: The model output limit was reached" and no annotations. No workflow change or bot rerun request is needed. |
+| Sonar issues; D2 | The green quality gate still contains three new major issues: two `typescript:S8786` regex findings and `typescript:S2310` for changing a for-loop counter. Remove the overlapping whitespace matching and use explicit iteration for entry skips. Moving the regex outside the diff would not fix its runtime behavior. |
+| Greptile P1; C1, D1, F1.2, G1 | Confirmed through the full parser and the new benchmark fixture. Closed YAML flow syntax such as `[EPIC-1]`, single-quoted items, trailing commas and bare mapping keys must not disable unrelated repairs. Replace JSON-only extent proof with matching delimiters outside quoted text. Keep whole-candidate protection for genuinely uncertain multiline/annotated nodes; simply deleting those guards would restore literal-text corruption. |
+| Blank separators; F1.1/F1.3, M8/M9 | Confirmed for ordinary scalar and mapping entries. Keep separator blanks outside comparison/removal while preserving scalar whitespace, including a nested terminal block scalar. Blindly trimming every trailing blank would break chomping. M8 incorrectly describes the final split-element check as applying to an internal blank line. |
+| Incomplete invalid entries; D4, S1 | Both reports expose partial edits of already-invalid input, not acceptance of a different valid value. Decline removal when a complete entry boundary cannot be established, including a scalar's malformed continuation after an external comment. Brackets in `foo [` are plain-scalar characters, not a flow opener; no new mid-value flow interpretation is warranted. |
+| CodeRabbit table comment; D3 | Escape the literal pipe in the block-header example so the disposition remains a two-column GFM table. CodeRabbit's current docstring coverage is 88%, above its 80% threshold. |
+| Cache redesign/admission; C2, F2.2 | Keep the approved bounded cache. The earlier timings combine repair changes, serialization, assertions and host variation; the uncached-error row cannot be explained by V8 serialization because failures never reach storage. A Map scoped to one parser invocation would not capture reuse across normalizer calls, and moving it into callers would require new ownership/plumbing decisions. Report measured miss costs without claiming zero-cost memoization or a production hit rate. |
+| Large fixture and timed assertions; C3/C4, F3.1 | Retain the clean serializer fixture and add a hand-written model-shaped artifact with YAML flow lists, identical duplicates and separators. It reproduces the regression on the reviewed head and parses on the original baseline. Verify full values before timing and keep only cheap checks inside measured loops. |
+| Repeated unreadable snapshots; C5 | Correct performance limitation for unusually deep graphs: reparsing may serialize another unreadable snapshot. Acceptance is already preserved. No realistic affected artifact was shown, so a new blacklist or failure-marker state is deferred; the existing depth regression remains. |
+| Clear/reset API; F2.1, G2 | No failing cache-isolation test was demonstrated. Entry and byte limits already bound retention, and occupancy tests replace prior entries. Keep the existing API; production lifecycle hooks and watch-mode maintenance are not required for this parser fix. |
+| Accounting defenses; G3, M1 | Current synchronous accounting is consistent. M1's rapid-failure scenario cannot subtract one entry twice because the first failure deletes it. Clamping counters or resetting an unexpectedly empty map would conceal a different accounting defect. |
+| Revision location; G4, C8, M10 | Advance the repair contract marker with these rule changes. Moving it into the shared file would not enforce future bumps; process restart remains the actual production invalidation boundary. |
+| Strict policy and dashed first keys; C6, D5 | The owner already chose to reject conflicting duplicates. Preserve that decision. Matching a dashed first key against a differently spelled sibling header is a pre-existing recovery gap, not this regression; do not broaden duplicate acceptance here. |
+| Executor scope/changelog; C7, D scope note, G5, S2 | Keep the tested clock fix, already called out in the PR body and dispositions. Remove its runtime-unchanged entry from the user-facing Fixed list; no executor code changes are needed in this round. |
+| M summary and minor findings | Several claimed additions belong to earlier PRs, and the uncertainty helper is not used by free-text repair. Existing tests prove unusual dash spacing uses the actual key column; reverting to dash indentation would reintroduce a bug. Binary isolation, mapped key completeness, option ordering, reserved indicators and the dependency graph need no further changes. Block scalars remain the callers' responsibility. |
+| C8 helper cleanups; G related leftovers | The current regex guarantees the key-column and first-colon lookups; hypothetical future syntax is not a reason to add parameters now. Explain why deeper comments belong to the removed entry. Keep raw `parsesAsPlainYamlOrJson` unchanged because it detects repair intervention. Update the website's unreleased section with the reviewed behavior. |
+
+Final verification and measurements are recorded in `pr20-implementation.md`. Fresh CI after the push remains for the owner to verify.

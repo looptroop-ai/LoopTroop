@@ -648,7 +648,7 @@ describe('executeBead', () => {
     expect(timeoutNotePrompt).not.toContain('CONTEXT REFRESH:')
   })
 
-  it('treats owned coding iteration timeout as context wipe instead of continuable session preservation', async () => {
+  it('treats owned coding iteration timeout as context wipe instead of continuable session preservation', async ({ onTestFinished }) => {
     resetTestDb()
     const { ticket, paths } = await createInitializedTestTicket(repoManager, {
       title: 'Owned coding timeout reset',
@@ -666,7 +666,14 @@ describe('executeBead', () => {
 
     const contextWipes: Array<{ reason: string; attempt: number; nextAttempt: number; maxAttempts: number | null }> = []
     const preservedTimeouts: string[] = []
-    const result = await executeBead(
+    // Session persistence must not consume this test's 25 ms model-work clock.
+    vi.useFakeTimers()
+    onTestFinished(() => { vi.useRealTimers() })
+    let onFirstPromptDispatched!: () => void
+    const firstPromptDispatched = new Promise<void>((resolve) => {
+      onFirstPromptDispatched = resolve
+    })
+    const runPromise = executeBead(
       adapter,
       buildBead(),
       [{ type: 'text', content: 'Bead context' }],
@@ -677,6 +684,7 @@ describe('executeBead', () => {
       {
         ticketId: ticket.id,
         model: 'model-a',
+        onPromptDispatched: onFirstPromptDispatched,
         onContextWipe: async ({ reason, attempt, nextAttempt, maxAttempts }) => {
           contextWipes.push({ reason, attempt, nextAttempt, maxAttempts })
         },
@@ -685,6 +693,10 @@ describe('executeBead', () => {
         },
       },
     )
+
+    await firstPromptDispatched
+    await vi.advanceTimersByTimeAsync(25)
+    const result = await runPromise
 
     expect(result.success).toBe(true)
     expect(result.iteration).toBe(2)

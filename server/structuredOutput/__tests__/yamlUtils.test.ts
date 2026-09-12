@@ -15,6 +15,45 @@ describe.concurrent('buildStructuredRetryPrompt', () => {
 })
 
 describe.concurrent('parseYamlOrJsonCandidate', () => {
+  it.each([
+    ['[EPIC-1, US-1]', ['EPIC-1', 'US-1']],
+    ["['alpha', 'beta']", ['alpha', 'beta']],
+    ['{owner: model}', { owner: 'model' }],
+    ['[one, two,]', ['one', 'two']],
+    ["[don't]", ["don't"]],
+    ["{name: Bob's}", { name: "Bob's" }],
+  ])('repairs duplicates and nested mappings beside closed YAML flow %s', (flow, refs) => {
+    const repairWarnings: string[] = []
+    const input = `refs: ${flow}\nparent:\nfirst: 1\nname: same\nname: same\n\nnext: 9`
+
+    expect(parseYamlOrJsonCandidate(input, {
+      nestedMappingChildren: { parent: ['first'] }, repairWarnings,
+    })).toEqual({ refs, parent: { first: 1 }, name: 'same', next: 9 })
+    expect(repairWarnings).toContain('Removed duplicate YAML mapping keys before parsing.')
+  })
+
+  it.each(['t: |\n  one\n# c\n  two', 't: foo [\n  a\n]', 't: foo {\n  a: b\n}'])(
+    'rejects both malformed duplicate entries without reporting partial removal: %s', (entry) => {
+      const repairWarnings: string[] = []
+
+      expect(() => parseYamlOrJsonCandidate(`${entry}\n${entry}\nz: 9`, { repairWarnings })).toThrow()
+      expect(repairWarnings).not.toContain('Removed duplicate YAML mapping keys before parsing.')
+    },
+  )
+
+  it.each([
+    ['block scalar', 't: |\n  one\nt: |\n  two'],
+    ['nested mapping', 'options:\n  value: one\noptions:\n  value: two'],
+    ['nested list', 'options:\n  - one\noptions:\n  - two'],
+    ['indentless list', 'options:\n- one\noptions:\n- two'],
+    ['plain multiline value', 't: first\n  one\nt: first\n  two'],
+  ])('rejects conflicting duplicate %s values through the full repair cascade', (_, input) => {
+    const repairWarnings: string[] = []
+
+    expect(() => parseYamlOrJsonCandidate(input, { repairWarnings })).toThrow()
+    expect(repairWarnings).not.toContain('Removed duplicate YAML mapping keys before parsing.')
+  })
+
   const interviewNestedMappingChildren = {
     generated_by: ['winner_model', 'generated_at', 'canonicalization'],
     answer: ['skipped', 'selected_option_ids', 'free_text', 'answered_by', 'answered_at'],
@@ -321,6 +360,98 @@ describe.concurrent('parseYamlOrJsonCandidate', () => {
     expect(parsed.technical_requirements.architecture_constraints).toEqual([
       'Must extend the existing date schema interface',
     ])
+  })
+})
+
+describe.concurrent('cached candidate parsing', () => {
+  it('keeps deeply nested valid JSON parseable on repeated calls', () => {
+    // Depending on the Node/V8 stack budget, these exercise a cache hit,
+    // serialization bypass, or successful serialization followed by a failed read.
+    for (const depth of [2000, 3000, 4000]) {
+      const content = `${'{"child":'.repeat(depth)}null${'}'.repeat(depth)}`
+      for (let call = 0; call < 2; call++) {
+        let value = parseYamlOrJsonCandidate(content)
+        for (let level = 0; level < depth; level++) value = (value as { child: unknown }).child
+        expect(value).toBeNull()
+      }
+    }
+  })
+
+  it('bypasses unkeyable repair options without rejecting valid JSON', () => {
+    const circular: Record<string, unknown> = {}
+    circular.self = circular
+    for (const nestedMappingChildren of [circular, { answer: 1n }]) {
+      const options = { nestedMappingChildren } as Parameters<typeof parseYamlOrJsonCandidate>[1]
+      expect(parseYamlOrJsonCandidate('{"key_fallback":true}', options)).toEqual({ key_fallback: true })
+    }
+  })
+
+  it('preserves option order when normalized parent names collide', () => {
+    const content = 'parent:\nfirst: 1'
+    expect(parseYamlOrJsonCandidate(content, {
+      nestedMappingChildren: { PARENT: ['first'], parent: ['second'] },
+    })).toEqual({ parent: null, first: 1 })
+    expect(parseYamlOrJsonCandidate(content, {
+      nestedMappingChildren: { parent: ['second'], PARENT: ['first'] },
+    })).toEqual({ parent: { first: 1 } })
+  })
+
+  it('keeps distinct lone UTF-16 surrogates in JSON strings separate', () => {
+    for (const code of [0xd800, 0xd801, 0xfffd]) {
+      const value = String.fromCharCode(code)
+      const content = `"${value}"`
+      expect(parseYamlOrJsonCandidate(content)).toBe(value)
+      expect(parseYamlOrJsonCandidate(content)).toBe(value)
+    }
+  })
+
+  it('replays repairs even if the first caller did not request warnings', () => {
+    const content = 'items:\n  -id: cache-one\n  -id: cache-two'
+    const first = parseYamlOrJsonCandidate(content) as { items: { id: string }[] }
+    first.items[0]!.id = 'caller edit'
+    const repairWarnings = ['existing warning']
+    const second = parseYamlOrJsonCandidate(content, { repairWarnings })
+    expect(second).toEqual({ items: [{ id: 'cache-one' }, { id: 'cache-two' }] })
+    expect(repairWarnings).toEqual([
+      'existing warning',
+      'Inserted the missing space after a YAML list dash before parsing.',
+    ])
+    parseYamlOrJsonCandidate(content, { repairWarnings })
+    expect(repairWarnings).toHaveLength(2)
+    repairWarnings.push('caller-specific warning')
+    const nextWarnings: string[] = []
+    parseYamlOrJsonCandidate(content, { repairWarnings: nextWarnings })
+    expect(nextWarnings).toEqual(['Inserted the missing space after a YAML list dash before parsing.'])
+  })
+
+  it('separates nested-mapping repair settings in both call orders', () => {
+    for (const child of ['first', 'second']) {
+      const content = `answer:\n${child}: true`
+      const options = { nestedMappingChildren: { answer: [child] } }
+      if (child === 'first') parseYamlOrJsonCandidate(content)
+      expect(parseYamlOrJsonCandidate(content, options)).toEqual({ answer: { [child]: true } })
+      expect(parseYamlOrJsonCandidate(content)).toEqual({ answer: null, [child]: true })
+      expect(parseYamlOrJsonCandidate(content, options)).toEqual({ answer: { [child]: true } })
+    }
+  })
+
+  it('separates every primary-key repair option and never reuses an opt-in for other callers', () => {
+    const content = 'beads:\n  - cache-bead\n    title: Cache test'
+    const options = { sequenceItemPrimaryKeys: { beads: { primaryKey: 'id', childKeys: ['title'] } } }
+    expect(() => parseYamlOrJsonCandidate(content)).toThrow()
+    expect(parseYamlOrJsonCandidate(content, options)).toEqual({ beads: [{ id: 'cache-bead', title: 'Cache test' }] })
+    options.sequenceItemPrimaryKeys.beads.primaryKey = 'slug'
+    expect(parseYamlOrJsonCandidate(content, options)).toEqual({ beads: [{ slug: 'cache-bead', title: 'Cache test' }] })
+    options.sequenceItemPrimaryKeys.beads.childKeys = ['description']
+    expect(() => parseYamlOrJsonCandidate(content, options)).toThrow()
+    expect(() => parseYamlOrJsonCandidate(content)).toThrow()
+  })
+
+  it('keeps terminal-noise recovery opt-in after a successful repair', () => {
+    const content = '{"cache_noise":true}\u001b[0m'
+    expect(parseYamlOrJsonCandidate(content, { allowTrailingTerminalNoise: true })).toEqual({ cache_noise: true })
+    expect(() => parseYamlOrJsonCandidate(content)).toThrow()
+    expect(() => parseYamlOrJsonCandidate(content, { allowTrailingTerminalNoise: false })).toThrow()
   })
 })
 

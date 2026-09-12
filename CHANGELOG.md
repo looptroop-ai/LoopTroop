@@ -10,6 +10,7 @@ Unreleased changes appear first and represent commits that have not yet been inc
 > Changes merged since the last versioned release that have not yet shipped in a tagged version.
 
 ### Summary
+- Repeated model-output parsing reuses bounded cached results; YAML repair preserves literal text and retries conflicting duplicate values instead of discarding them.
 - Merges made on GitHub, including squash and rebase merges, now finish waiting tickets while the daemon runs, even when the UI is closed.
 - Toasts and progress rings use stable identifiers; saved UI and Manual QA actions use cryptographic IDs, including over HTTP LAN connections.
 - Local IPv6 addresses work consistently across backend checks, OpenCode startup, diagnostics and dev LAN reporting.
@@ -135,6 +136,7 @@ Unreleased changes appear first and represent commits that have not yet been inc
 - Closed the two critical and seven high code-scanning findings. Windows opens sign-in links through the URL protocol handler without `cmd.exe`; the published install smoke accepts only the stable and `rc.N` version formats the release tooling can produce; channel checks no longer compile command-line values as regular expressions or mistake uninstall output for an installed channel; ticket links receive URI encoding after protocol validation without changing existing percent escapes; release-note markers and multiline third-party notice cells use context-specific handling; node-manager smoke paths come from fixed manager mappings; and test fixtures no longer use predictable paths under `/tmp`.
 
 ### Changed
+- Structured-output parsing caches successful candidates by content hash, repair options and repair-pipeline revision, with limits of 128 entries and 8 MiB of serialized values, warnings and key bytes. Each caller receives independent data and warnings; candidate selection, schema validation and repair ordering remain unchanged. Oversized results and parsing failures are not cached. Unkeyable options and unreadable snapshots fall back to parsing, including deeply nested valid JSON; new repair options must be accounted for in the cache key at compile time.
 - Skip receipts now have database-enforced uniqueness per ticket and receipt ID in the existing artifact storage. Bulk skips can share an action ID, repeated receipts are ignored, and failed batches roll back atomically. Ordinary artifact cleanup handles receipt deletion without a separate claim table.
 - Workflow mock dispatch now uses one handler record, so supported phases cannot drift from a separate list. Workspace and OpenCode failures carry internal error types while retaining the existing user messages, phase-specific error codes, and serialized error shape.
 - Kept README installation guidance focused on secure commands and prerequisites; detailed lock recovery remains in the installation guide.
@@ -248,6 +250,10 @@ Unreleased changes appear first and represent commits that have not yet been inc
 - Three aliases re-exported for a question-diff type that no longer exists, the three helpers behind them, an execution-setup runtime-path list with no reader, and an execution-setup barrel re-exporting three artifact names every caller already imports from their own module.
 
 ### Fixed
+- YAML duplicate-key repair removes entries only when their complete contents match. Conflicting block scalars, nested mappings and multiline values remain invalid for the existing correction/retry flow. Removed scalars consume blank gaps without dropping external comments; retained bodies keep repeated literal lines, and malformed continuation after a dedented comment stays invalid.
+- Closed YAML flow values such as `[EPIC-1]` and `{owner: model}` no longer disable unrelated duplicate-key or nested-mapping repairs. Ordinary blank separators remain outside duplicate entries; scalar whitespace keeps its meaning, and malformed continuations are left untouched.
+- Malformed `free_text` values such as `|some prose` and `>some prose` are quoted as literal text. Valid block-scalar headers keep their existing meaning, and reserved-indicator repairs retain their separate rules.
+- Nested-mapping indentation repair preserves literal block contents, including explicit indentation indicators and text that resembles mapping keys or comments.
 - Slow or incomplete Cancel and Finish Without Merge uploads no longer hold the merge lock. Payload validation finishes before locking, then current ticket state is checked before any action.
 - Ticket GET requests no longer contact GitHub, update PR artifacts, or complete merges. A daemon-owned poller checks waiting tickets at startup and about every 30 seconds after each sweep, retries failed checks with per-ticket delays capped at five minutes, and resumes after restart. Shutdown stops scheduling and drains the active check within the process shutdown deadline before closing storage. A successful merge report lets restart finish the workflow without repeating remote completion.
 - Verified merge checkpoints cannot be overwritten by cancellation or finishing without merge. Recovery repairs stale PR metadata, validates the recorded PR identity, and keeps the checkpoint available if later finalization fails.

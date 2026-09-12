@@ -245,6 +245,16 @@ describe('repairYamlIndentation', () => {
 })
 
 describe('repairYamlNestedMappingChildren', () => {
+  it.each(['[EPIC-1, US-1]', "['alpha', 'beta']", '{owner: model}', '[one, two,]', '["literal ]", {owner: "a } b"}]', "[don't]", "{name: Bob's}"])(
+    'repairs unrelated nested mappings alongside closed YAML flow %s', (flow) => {
+      const input = `parent:\nfirst: 1\nrefs: ${flow}`
+      const expected = `parent:\n  first: 1\nrefs: ${flow}`
+
+      expect(repairYamlNestedMappingChildren(input, { parent: ['first'] })).toBe(expected)
+      expect(jsYaml.load(expected)).toEqual({ parent: { first: 1 }, refs: (jsYaml.load(`refs: ${flow}`) as { refs: unknown }).refs })
+    },
+  )
+
   it.each(['body: &anchor |', 'body: !!str |', '- body: &anchor |', 'body: "first', '- "first', '- &anchor |', '- ['])('preserves uncertain scalar text under %s', (header) => {
     const input = `${header}\n    parent:\n    answer: text${header.endsWith('first') ? '\nlast"' : ''}`
 
@@ -1439,6 +1449,68 @@ describe.concurrent('repairYamlTypeUnionScalars', () => {
 })
 
 describe.concurrent('repairYamlDuplicateKeys — block scalars', () => {
+  it.each(['[EPIC-1, US-1]', "['alpha', 'beta']", '{owner: model}', '[one, two,]', '["literal ]", {owner: "a } b"}]', "[don't]", "{name: Bob's}"])(
+    'repairs unrelated duplicates alongside closed YAML flow %s', (flow) => {
+      const input = `refs: ${flow}\na: 1\na: 1`
+      const expected = `refs: ${flow}\na: 1`
+
+      expect(repairYamlDuplicateKeys(input)).toBe(expected)
+      expect(jsYaml.load(expected)).toEqual({ refs: (jsYaml.load(`refs: ${flow}`) as { refs: unknown }).refs, a: 1 })
+    },
+  )
+
+  it.each(['a: 1', 'a:\n  x: 1', 'a: first\n  second'])(
+    'preserves separator blanks outside identical non-block entries: %s', (entry) => {
+      const input = `${entry}\n${entry}\n \n\nz: 9`
+      const expected = `${entry}\n \n\nz: 9`
+
+      expect(repairYamlDuplicateKeys(input)).toBe(expected)
+      expect(() => jsYaml.load(expected)).not.toThrow()
+    },
+  )
+
+  it('keeps differing trailing blanks inside nested terminal scalars', () => {
+    const input = 'a:\n  text: |+\n    one\na:\n  text: |+\n    one\n\nz: 9'
+
+    expect(repairYamlDuplicateKeys(input)).toBe(input)
+    expect(() => jsYaml.load(input)).toThrow()
+  })
+
+  it('removes identical nested scalars without dropping their kept trailing blank', () => {
+    const entry = 'a:\n  text: |+\n    one\n'
+    const repaired = repairYamlDuplicateKeys(`${entry}\n${entry}\nz: 9`)
+
+    expect(repaired).toBe(`${entry}\nz: 9`)
+    expect(jsYaml.load(repaired)).toEqual({ a: { text: 'one\n\n' }, z: 9 })
+  })
+
+  it.each([
+    't: |\n  one\n# c\n  two',
+    'a:\n  t: |\n    one\n# c\n    two',
+    't: foo [\n  a\n]',
+    't: foo {\n  a: b\n}',
+    't: text\n  continued\ninvalid boundary',
+  ])('leaves both complete entries untouched when their boundaries are malformed: %s', (entry) => {
+    const input = `${entry}\n${entry}\nz: 9`
+
+    expect(repairYamlDuplicateKeys(input)).toBe(input)
+    expect(() => jsYaml.load(input)).toThrow()
+  })
+
+  it.each(['t: foo [1]', 't: foo [\n  continued'])(
+    'treats brackets inside plain scalar text as text: %s', (entry) => {
+      expect(repairYamlDuplicateKeys(`${entry}\n${entry}`)).toBe(entry)
+      expect(() => jsYaml.load(entry)).not.toThrow()
+    },
+  )
+
+  it('handles a whitespace-only sequence tail without overlapping whitespace matches', () => {
+    const input = `-${' '.repeat(50_000)}\r`
+
+    expect(repairYamlDuplicateKeys(input)).toBe(input)
+    expect(repairYamlNestedMappingChildren(input, { parent: ['answer'] })).toBe(input)
+  })
+
   it.each([
     ['literal scalar', 't: |\n  one\nt: |\n  two'],
     ['folded scalar', 't: >-\n  one\nt: >-\n  two'],

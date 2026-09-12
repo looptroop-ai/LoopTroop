@@ -938,7 +938,7 @@ export function repairYamlNestedMappingChildren(
       blockScalarBaseIndent = -1
     }
     const nodeValue = (line.match(/^\s*(?:-\s+)?[A-Za-z_][\w_-]*\s*:(.*)$/)?.[1]
-      ?? line.match(/^\s*-\s+(.+)$/)?.[1])?.trim()
+      ?? (/^-\s/.test(trimmed) ? trimmed.slice(2).trimStart() : undefined))?.trim()
     if (nodeValue !== undefined && hasUncertainYamlScalarExtent(nodeValue)) return yaml
     if (BLOCK_SCALAR_HEADER.test(trimmed)) {
       blockScalarBaseIndent = MAPPING_BLOCK_SCALAR_HEADER.test(trimmed)
@@ -1197,6 +1197,7 @@ export function repairYamlDuplicateKeys(yaml: string): string {
 
   // Scan only on a repeated header. Comparing headers alone would silently
   // discard different block bodies or merge different plain continuations.
+  const entryBoundary = /^(?:[A-Za-z_][\w_-]*\s*:|-(?:\s|$)|---$|\.\.\.$)/
   /** Collect a complete indentation-delimited entry, excluding external comments. */
   function collectEntry(start: number, indent: number): { end: number; text: string } | null {
     const header = lines[start]!
@@ -1206,6 +1207,9 @@ export function repairYamlDuplicateKeys(yaml: string): string {
     if (/^[{[&*!]/.test(value)) return null
     const entryLines = [header]
     const scalar = DUPLICATE_KEYS_BLOCK_SCALAR_PATTERN.test(header.trim())
+    let scalarIndent = scalar ? indent : -1
+    let separatorStart = -1
+    let separatorLines = 0
     let end = start + 1
     for (; end < lines.length; end += 1) {
       const line = lines[end]!
@@ -1213,21 +1217,62 @@ export function repairYamlDuplicateKeys(yaml: string): string {
       const lineIndent = getLineIndent(line)
       // The final empty split element is a line terminator, not a blank line.
       if (end === lines.length - 1 && line === '') break
+      if (!trimmed) {
+        if (scalarIndent < 0) {
+          if (separatorStart < 0) separatorStart = end
+          separatorLines += 1
+        }
+        entryLines.push(line)
+        continue
+      }
+      if (scalarIndent >= 0 && lineIndent > scalarIndent) {
+        entryLines.push(line)
+        continue
+      }
+      if (scalarIndent >= 0 && trimmed.startsWith('#')) {
+        let following = end + 1
+        while (following < lines.length && (!lines[following]!.trim() || lines[following]!.trim().startsWith('#'))) {
+          following += 1
+        }
+        if (following < lines.length
+          && (getLineIndent(lines[following]!) > scalarIndent || !entryBoundary.test(lines[following]!.trim()))) {
+          return null
+        }
+      }
+      scalarIndent = -1
       if (trimmed.startsWith('#') && lineIndent <= indent) {
         if (scalar) break
         continue
       }
-      if (trimmed && lineIndent <= indent) {
+      if (lineIndent <= indent) {
         // YAML also allows an unindented sequence as a mapping's value.
-        if (scalar || lineIndent < indent || !/^-(?:\s|$)/.test(trimmed)) break
+        if (scalar || lineIndent < indent || !/^-(?:\s|$)/.test(trimmed)) {
+          if (!entryBoundary.test(trimmed)) return null
+          break
+        }
+      }
+      separatorStart = -1
+      separatorLines = 0
+      if (DUPLICATE_KEYS_BLOCK_SCALAR_PATTERN.test(trimmed)) {
+        scalarIndent = MAPPING_BLOCK_SCALAR_HEADER.test(trimmed)
+          ? line.match(/^(\s*-\s+)/)?.[1]?.length ?? lineIndent
+          : lineIndent
       }
       entryLines.push(line)
+    }
+    // Trailing document separators do not belong to plain values or mappings.
+    // Blanks still inside a terminal scalar are significant, including |+.
+    if (separatorStart >= 0) {
+      entryLines.splice(entryLines.length - separatorLines, separatorLines)
+      end = separatorStart
     }
     return { end, text: entryLines.join('\n') }
   }
 
-  for (let index = 0; index < lines.length; index += 1) {
-    const line = lines[index]!
+  let index = 0
+  while (index < lines.length) {
+    const currentIndex = index
+    const line = lines[index++]!
     const trimmed = line.trim()
     const lineIndent = getLineIndent(line)
 
@@ -1272,7 +1317,7 @@ export function repairYamlDuplicateKeys(yaml: string): string {
       }
 
       const map = new Map<string, number>()
-      map.set(key, index)
+      map.set(key, currentIndex)
       seenByIndent.set(effectiveIndent, map)
 
       result.push(line)
@@ -1282,7 +1327,7 @@ export function repairYamlDuplicateKeys(yaml: string): string {
       continue
     }
 
-    const sequenceValue = line.match(/^\s*-\s+(.+)$/)?.[1]?.trim()
+    const sequenceValue = /^-\s/.test(trimmed) ? trimmed.slice(2).trimStart() : undefined
     if (sequenceValue !== undefined && hasUncertainYamlScalarExtent(sequenceValue)) return yaml
 
     // Bare mapping key: `key: value` or `  key: value`
@@ -1302,20 +1347,22 @@ export function repairYamlDuplicateKeys(yaml: string): string {
       const previousIndex = seenAtLevel.get(key)
       if (previousIndex !== undefined && lines[previousIndex] === line) {
         const previousEntry = collectEntry(previousIndex, lineIndent)
-        const entry = collectEntry(index, lineIndent)
+        const entry = collectEntry(currentIndex, lineIndent)
         if (previousEntry && entry && previousEntry.text === entry.text) {
-          for (let cursor = index + 1; cursor < entry.end; cursor += 1) {
+          for (let cursor = currentIndex + 1; cursor < entry.end; cursor += 1) {
             const nestedLine = lines[cursor]!
+            // Deeper comments belong to the identical removed entry. Only
+            // comments outside that entry need to be emitted again.
             if (nestedLine.trim().startsWith('#') && getLineIndent(nestedLine) <= lineIndent) {
               result.push(nestedLine)
             }
           }
-          index = entry.end - 1
+          index = entry.end
           continue
         }
       }
 
-      seenAtLevel.set(key, index)
+      seenAtLevel.set(key, currentIndex)
     }
 
     result.push(line)
@@ -1597,15 +1644,39 @@ function splitYamlValueAndComment(value: string): { value: string; comment: stri
 /** Whether boundaries require tags, aliases or multiline scalar/flow parsing. */
 function hasUncertainYamlScalarExtent(value: string): boolean {
   if (value.startsWith('[') || value.startsWith('{')) {
-    const inlineValue = splitYamlValueAndComment(value).value.trimEnd()
-    try {
-      // JSON proves the whole flow value is on this line, including brackets
-      // inside strings. Other YAML flow forms remain conservatively untouched.
-      JSON.parse(inlineValue)
-      return false
-    } catch {
-      return true
+    // Establish only where the flow collection ends. Bare YAML values, single
+    // quotes and trailing commas do not require JSON syntax for that proof.
+    const closers: string[] = []
+    let tokenStart = true
+    let cursor = 0
+    while (cursor < value.length) {
+      const char = value[cursor]!
+      if (tokenStart && (char === '"' || char === '\'')) {
+        const quoteEnd = findLeadingQuotedScalarFragmentEnd(value.slice(cursor))
+        if (quoteEnd === null) return true
+        cursor += quoteEnd + 1
+        tokenStart = false
+        continue
+      }
+      if (char === '#' && /\s/.test(value[cursor - 1] ?? '')) return true
+      if (char === '[' || char === '{') {
+        closers.push(char === '[' ? ']' : '}')
+        tokenStart = true
+      } else if (char === ']' || char === '}') {
+        if (closers.pop() !== char) return true
+        if (closers.length === 0) {
+          const tail = value.slice(cursor + 1).trimStart()
+          return tail.length > 0 && !tail.startsWith('#')
+        }
+        tokenStart = false
+      } else if (char === ',' || char === ':') {
+        tokenStart = true
+      } else if (!/\s/.test(char)) {
+        tokenStart = false
+      }
+      cursor += 1
     }
+    return true
   }
   return /^[&*!]/.test(value)
     || (/^["']/.test(value) && findLeadingQuotedScalarFragmentEnd(value) === null)

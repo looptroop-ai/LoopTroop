@@ -571,7 +571,7 @@ function applyInlineRepairPipeline(candidate: string, options?: ParseYamlOrJsonC
 
 // Repair contract marker; bump with rule/order changes, including shared repairs.
 // The cache is process-local: deploying new code also restarts with an empty cache.
-const REPAIR_PIPELINE_VERSION = '2'
+const REPAIR_PIPELINE_VERSION = '3'
 
 /** Parse or reuse a candidate while preserving per-call repairs and mutable result ownership. */
 export function parseYamlOrJsonCandidate(

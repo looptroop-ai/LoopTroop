@@ -16,6 +16,32 @@ describe.concurrent('buildStructuredRetryPrompt', () => {
 
 describe.concurrent('parseYamlOrJsonCandidate', () => {
   it.each([
+    ['[EPIC-1, US-1]', ['EPIC-1', 'US-1']],
+    ["['alpha', 'beta']", ['alpha', 'beta']],
+    ['{owner: model}', { owner: 'model' }],
+    ['[one, two,]', ['one', 'two']],
+    ["[don't]", ["don't"]],
+    ["{name: Bob's}", { name: "Bob's" }],
+  ])('repairs duplicates and nested mappings beside closed YAML flow %s', (flow, refs) => {
+    const repairWarnings: string[] = []
+    const input = `refs: ${flow}\nparent:\nfirst: 1\nname: same\nname: same\n\nnext: 9`
+
+    expect(parseYamlOrJsonCandidate(input, {
+      nestedMappingChildren: { parent: ['first'] }, repairWarnings,
+    })).toEqual({ refs, parent: { first: 1 }, name: 'same', next: 9 })
+    expect(repairWarnings).toContain('Removed duplicate YAML mapping keys before parsing.')
+  })
+
+  it.each(['t: |\n  one\n# c\n  two', 't: foo [\n  a\n]', 't: foo {\n  a: b\n}'])(
+    'rejects both malformed duplicate entries without reporting partial removal: %s', (entry) => {
+      const repairWarnings: string[] = []
+
+      expect(() => parseYamlOrJsonCandidate(`${entry}\n${entry}\nz: 9`, { repairWarnings })).toThrow()
+      expect(repairWarnings).not.toContain('Removed duplicate YAML mapping keys before parsing.')
+    },
+  )
+
+  it.each([
     ['block scalar', 't: |\n  one\nt: |\n  two'],
     ['nested mapping', 'options:\n  value: one\noptions:\n  value: two'],
     ['nested list', 'options:\n  - one\noptions:\n  - two'],

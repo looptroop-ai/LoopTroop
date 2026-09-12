@@ -40,6 +40,33 @@ const refinedDraft = buildYamlDocument({
 const largeDraft = buildYamlDocument({ beads })
 const largeBytes = Buffer.byteLength(largeDraft)
 assert.ok(largeBytes >= 35_000 && largeBytes <= 50_000)
+// Model-shaped YAML uses ordinary flow lists and repeats a complete scalar entry.
+const modelDraft = [
+  'beads:',
+  ...beads.flatMap((bead) => [
+    `  - id: ${bead.id}`,
+    `    title: ${bead.title}`,
+    `    prdRefs: [${bead.prdRefs.join(', ')}]`,
+    `    description: ${bead.description}`,
+    '    contextGuidance:',
+    `      patterns: ${JSON.stringify(bead.contextGuidance.patterns)}`,
+    `      anti_patterns: ${JSON.stringify(bead.contextGuidance.anti_patterns)}`,
+    `    acceptanceCriteria: ${JSON.stringify(bead.acceptanceCriteria)}`,
+    `    tests: ${JSON.stringify(bead.tests)}`,
+    '    testCommands:',
+    '      - mode: process',
+    '        program: npm',
+    '        args: [test, --, AppShell]',
+    '        cwd: .',
+    '        env: {}',
+  ]),
+  'status: clean',
+  'status: clean',
+  '',
+  'review: approved',
+].join('\n')
+const modelBytes = Buffer.byteLength(modelDraft)
+assert.ok(modelBytes >= 35_000 && modelBytes <= 50_000)
 
 const samples = 5
 let nextMiss = 0
@@ -53,14 +80,18 @@ function inputFor(content: string, misses: boolean): string {
     : `# benchmark ${id}\n${content}`
 }
 
-/** Check each valid repair fixture against its expected parsed value. */
-function parseCorpus(misses: boolean) {
+/** Parse valid repair fixtures, checking full values only outside timing. */
+function parseCorpus(misses: boolean, validate: boolean) {
   for (const [name, content, expected] of fixtures) {
-    const { _benchmark, ...value } = parseYamlOrJsonCandidate(inputFor(content, misses), {
+    const parsed = parseYamlOrJsonCandidate(inputFor(content, misses), {
       repairWarnings: [],
     }) as Record<string, unknown>
-    assert.equal(typeof _benchmark, name === 'json' ? 'string' : 'undefined')
-    assert.deepEqual(value, expected, name)
+    assert.ok(parsed)
+    if (validate) {
+      const { _benchmark, ...value } = parsed
+      assert.equal(typeof _benchmark, name === 'json' ? 'string' : 'undefined')
+      assert.deepEqual(value, expected, name)
+    }
   }
 }
 
@@ -69,9 +100,11 @@ function parseInvalid(misses: boolean) {
   assert.throws(() => parseYamlOrJsonCandidate(inputFor(invalidOutput, misses), { repairWarnings: [] }))
 }
 
-/** Verify the full multi-bead value while measuring artifact-sized parsing. */
-function parseLarge(misses: boolean) {
-  assert.deepEqual(parseYamlOrJsonCandidate(inputFor(largeDraft, misses), { repairWarnings: [] }), { beads })
+/** Parse either large fixture, validating its complete value outside timing. */
+function parseLarge(misses: boolean, validate: boolean, model = false) {
+  const parsed = parseYamlOrJsonCandidate(inputFor(model ? modelDraft : largeDraft, misses), { repairWarnings: [] })
+  assert.ok(parsed)
+  if (validate) assert.deepEqual(parsed, model ? { beads, status: 'clean', review: 'approved' } : { beads })
 }
 
 /** Check normalization and change detection for distinct or reused drafts. */
@@ -86,13 +119,13 @@ function refineBeads(misses: boolean, sameInput: boolean, large = false) {
 }
 
 /** Return min/median/max milliseconds per pass after warming the chosen mode. */
-function measure(run: (misses: boolean) => void, misses: boolean, passes: number): string {
+function measure(run: (misses: boolean, validate: boolean) => void, misses: boolean, passes: number): string {
   // Warm each mode separately so a repeated phase never includes a cold first pass.
-  for (let pass = 0; pass < 20; pass++) run(misses)
+  for (let pass = 0; pass < 20; pass++) run(misses, false)
   const durations: number[] = []
   for (let sample = 0; sample < samples; sample++) {
     const start = performance.now()
-    for (let pass = 0; pass < passes; pass++) run(misses)
+    for (let pass = 0; pass < passes; pass++) run(misses, false)
     durations.push((performance.now() - start) / passes)
   }
   durations.sort((a, b) => a - b)
@@ -103,7 +136,9 @@ function measure(run: (misses: boolean) => void, misses: boolean, passes: number
 const workloads = [
   ['valid corpus (7 candidates)', parseCorpus, 200],
   ['invalid candidate (uncached errors)', parseInvalid, 200],
-  [`large bead parse (${largeBytes} bytes, ${beads.length} beads)`, parseLarge, 20],
+  [`large clean bead parse (${largeBytes} bytes, ${beads.length} beads)`, parseLarge, 20],
+  [`large model-shaped bead parse (${modelBytes} bytes, ${beads.length} beads)`,
+    (misses: boolean, validate: boolean) => parseLarge(misses, validate, true), 20],
   ['bead refinement (distinct drafts)', (misses: boolean) => refineBeads(misses, false), 200],
   ['bead refinement (same draft twice)', (misses: boolean) => refineBeads(misses, true), 200],
   ['large refinement (same draft twice)', (misses: boolean) => refineBeads(misses, true, true), 20],
@@ -111,8 +146,11 @@ const workloads = [
 
 console.log(`Node ${process.version}; ${samples} samples; milliseconds per pass, min/median/max`)
 console.log('Unique/repeated inputs have equal lengths; same-draft unique passes include intra-call reuse.')
-console.log('Assertions and input construction are timed. Results depend on workload and machine; no timing thresholds.')
+console.log('Full values are checked before timing; cheap assertions and input construction are timed. No timing thresholds.')
+console.log('Results depend on workload and machine; clean and model-shaped repair inputs are reported separately.')
 for (const [label, run, passes] of workloads) {
+  // Check unique, first repeated, and cached repeated results before measurement.
+  for (const misses of [true, false, false]) run(misses, true)
   const missMs = measure(run, true, passes)
   const repeatMs = measure(run, false, passes)
   console.log(`${label} (${passes} passes/sample): unique=${missMs} ms, repeated=${repeatMs} ms`)

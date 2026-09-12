@@ -250,8 +250,8 @@ Unreleased changes appear first and represent commits that have not yet been inc
 - Three aliases re-exported for a question-diff type that no longer exists, the three helpers behind them, an execution-setup runtime-path list with no reader, and an execution-setup barrel re-exporting three artifact names every caller already imports from their own module.
 
 ### Fixed
-- The execution-timeout regression uses a controlled clock, avoiding failures when session persistence takes longer than a real 25 ms deadline under load. Runtime timeout behavior is unchanged.
 - YAML duplicate-key repair removes entries only when their complete contents match. Conflicting block scalars, nested mappings and multiline values remain invalid for the existing correction/retry flow. Removed scalars consume blank gaps without dropping external comments; retained bodies keep repeated literal lines, and malformed continuation after a dedented comment stays invalid.
+- Closed YAML flow values such as `[EPIC-1]` and `{owner: model}` no longer disable unrelated duplicate-key or nested-mapping repairs. Ordinary blank separators remain outside duplicate entries; scalar whitespace keeps its meaning, and malformed continuations are left untouched.
 - Malformed `free_text` values such as `|some prose` and `>some prose` are quoted as literal text. Valid block-scalar headers keep their existing meaning, and reserved-indicator repairs retain their separate rules.
 - Nested-mapping indentation repair preserves literal block contents, including explicit indentation indicators and text that resembles mapping keys or comments.
 - Slow or incomplete Cancel and Finish Without Merge uploads no longer hold the merge lock. Payload validation finishes before locking, then current ticket state is checked before any action.

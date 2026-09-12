@@ -1017,14 +1017,14 @@ const WORKFLOW_PHASE_DETAILS = {
     ],
   },
   WAITING_PR_REVIEW: {
-    overview: 'LoopTroop stops automation and waits for you to review the draft pull request before finishing the ticket. This is the last human gate. You can inspect the PR in GitHub, review the net candidate diff, bead activity, ignored-file audit, and test results locally, then either merge the PR or finish the ticket without merging.',
+    overview: 'LoopTroop waits for you to review the draft pull request before finishing the ticket. While the daemon runs, it checks GitHub for an external merge even when no UI is open. This is the last human gate. You can inspect the PR in GitHub, review the net candidate diff, bead activity, ignored-file audit, and test results locally, then either merge the PR or finish the ticket without merging.',
     steps: [
       'Draft PR Presentation: The workspace shows the PR URL, current PR state, candidate SHA, branch and base refs, integration report, final test summary, candidate-file audit, and final net diff.',
       'Diff Review Modes: The bead-commits modal defaults to Net Diff for the actual base-to-candidate PR review surface, while By Bead preserves cumulative implementation activity and By File groups repeated bead touches.',
       'Manual Review: You inspect the draft PR and the local result. There is no time limit. LoopTroop waits for your decision.',
       'Merge Path: Choosing Merge PR & Finish marks the PR ready if needed and merges it into the base branch on GitHub. Once GitHub reports the PR merged, LoopTroop verifies that the remote base branch contains the candidate commit and leaves your local checkout untouched.',
       'Finish Without Merge Path: Choosing Finish Without Merge asks you to confirm, and takes an optional reason for stopping here. The PR and the remote ticket branch are preserved exactly as they are, then the ticket proceeds to cleanup and terminal completion. The reason is stored on the merge report as the current record, and in the ticket-wide skip trail as history. Nothing else explains why this branch stopped.',
-      'External Merge Detection: If the PR is merged manually in GitHub while this phase is open, LoopTroop detects that during polling, skips a second remote merge call, verifies the remote base branch, and continues automatically.',
+      'External Merge Detection: While the daemon runs, it checks waiting tickets on startup and roughly every 30 seconds, even with no UI open. A merge on GitHub triggers remote-base verification and completion without another merge request. Failed background checks leave the ticket waiting and retry with delays from one to five minutes. Restarting the daemon resumes checking; shutdown stops new checks and waits for the active check.',
     ],
     outputs: [
       'A stable draft-PR review gate that exposes final PR metadata, test results, integration summary, ignored-file audit, and the net candidate diff.',
@@ -1603,7 +1603,7 @@ const BASE_WORKFLOW_PHASES = [
   {
     id: 'WAITING_PR_REVIEW',
     label: 'Reviewing Pull Request',
-    description: 'Review the draft pull request, final diff, ignored-file audit, and test results before you merge or finish without merging. Finishing without merging asks for confirmation and takes an optional reason. This is the last human gate before cleanup and terminal completion.',
+    description: 'Review the draft pull request, final diff, ignored-file audit, and test results before you merge or finish without merging. Finishing without merging asks for confirmation and takes an optional reason. This is the last human gate before cleanup and terminal completion. The running daemon also detects merges made on GitHub without an open UI.',
     details: WORKFLOW_PHASE_DETAILS.WAITING_PR_REVIEW,
     kanbanPhase: 'needs_input',
     groupId: 'post_implementation',

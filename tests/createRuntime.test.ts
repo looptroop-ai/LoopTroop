@@ -67,10 +67,46 @@ describe('createRuntime side-effect freedom', () => {
     expect(Reflect.get(broadcaster, 'cleanupInterval')).toBeNull()
   })
 
+  it('starts merge polling only on start and awaits it during close', async () => {
+    const configDir = makeConfigDir()
+    const previous = process.env.LOOPTROOP_CONFIG_DIR
+    process.env.LOOPTROOP_CONFIG_DIR = configDir
+    const poller = await import('../server/workflow/mergePoller')
+    const startup = await import('../server/startup')
+    const boot = vi.spyOn(startup, 'startupSequence').mockResolvedValue(undefined)
+    let releaseStop!: () => void
+    const pendingStop = new Promise<void>((resolve) => { releaseStop = resolve })
+    const stop = vi.fn(() => pendingStop)
+    const start = vi.spyOn(poller, 'startMergePoller').mockReturnValue(stop)
+    const { createRuntime } = await import('../server/createRuntime')
+    const runtime = createRuntime({ port: 0, hostname: '127.0.0.1' })
+    try {
+      expect(start).not.toHaveBeenCalled()
+      await runtime.start()
+      expect(start).toHaveBeenCalledTimes(1)
+      let closed = false
+      const closing = runtime.close().then(() => { closed = true })
+      await vi.waitFor(() => expect(stop).toHaveBeenCalledTimes(1))
+      expect(closed).toBe(false)
+      releaseStop()
+      await closing
+      expect(closed).toBe(true)
+    } finally {
+      releaseStop()
+      await runtime.close()
+      start.mockRestore()
+      boot.mockRestore()
+      if (previous === undefined) delete process.env.LOOPTROOP_CONFIG_DIR
+      else process.env.LOOPTROOP_CONFIG_DIR = previous
+    }
+  })
+
   it('binds no socket until start() runs, then reports the real port', async () => {
     const configDir = makeConfigDir()
     const previous = process.env.LOOPTROOP_CONFIG_DIR
     process.env.LOOPTROOP_CONFIG_DIR = configDir
+    const poller = await import('../server/workflow/mergePoller')
+    const startPolling = vi.spyOn(poller, 'startMergePoller')
 
     try {
       const { createRuntime } = await import('../server/createRuntime')
@@ -80,6 +116,7 @@ describe('createRuntime side-effect freedom', () => {
 
       const address = await runtime.start()
       try {
+        expect(startPolling).not.toHaveBeenCalled()
         expect(address.port).toBeGreaterThan(0)
         expect(address.hostname).toBe('127.0.0.1')
         expect(runtime.address).toEqual(address)
@@ -89,6 +126,7 @@ describe('createRuntime side-effect freedom', () => {
 
       expect(runtime.address).toBeNull()
     } finally {
+      startPolling.mockRestore()
       if (previous === undefined) delete process.env.LOOPTROOP_CONFIG_DIR
       else process.env.LOOPTROOP_CONFIG_DIR = previous
     }

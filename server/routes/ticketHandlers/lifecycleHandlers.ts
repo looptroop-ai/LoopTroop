@@ -1,3 +1,4 @@
+import { completeTicketMerge, withTicketMergeLock } from '../../workflow/mergeCompletion'
 import type { Context } from 'hono'
 import { PROFILE_DEFAULTS } from '../../db/defaults'
 import {
@@ -39,7 +40,6 @@ import {
 } from '../../storage/tickets'
 import {
   completeCloseUnmerged,
-  completeMergedPullRequest,
   readPullRequestReport,
 } from '../../workflow/phases/pullRequestPhase'
 import { recoverCodingBeadWithReset } from '../../workflow/phases/beadsPhase'
@@ -376,7 +376,12 @@ export async function handleStartTicket(c: Context) {
   }
 }
 
-export async function handleCancelTicket(c: Context) {
+export function handleCancelTicket(c: Context) {
+  const ticketId = getTicketParam(c)
+  return withTicketMergeLock(ticketId, () => handleCancelTicketLocked(c))
+}
+
+async function handleCancelTicketLocked(c: Context) {
   const ticketId = getTicketParam(c)
   const ticket = getTicketByRef(ticketId)
   if (!ticket) return c.json({ error: 'Ticket not found' }, 404)
@@ -473,7 +478,12 @@ export async function handleCancelTicket(c: Context) {
   return respondWithState(c, ticketId, 'Cancel action accepted')
 }
 
-export async function handleMergeTicket(c: Context) {
+export function handleMergeTicket(c: Context) {
+  const ticketId = getTicketParam(c)
+  return withTicketMergeLock(ticketId, () => handleMergeTicketLocked(c))
+}
+
+async function handleMergeTicketLocked(c: Context) {
   const ticketId = getTicketParam(c)
   const ticket = getTicketByRef(ticketId)
   if (!ticket) return c.json({ error: 'Ticket not found' }, 404)
@@ -493,31 +503,7 @@ export async function handleMergeTicket(c: Context) {
   const phase = 'WAITING_PR_REVIEW'
 
   try {
-    const mergeReport = await withCommandLoggingAsync(
-      ticketId,
-      ticket.externalId,
-      phase,
-      () => completeMergedPullRequest({
-        ticketId,
-        externalId: ticket.externalId,
-        projectPath: ticketContext.projectRoot,
-        baseBranch: ticket.runtime.baseBranch,
-        headBranch: ticket.branchName?.trim() || ticket.externalId,
-        candidateCommitSha: ticket.runtime.candidateCommitSha,
-        prReport,
-      }),
-      (cmdPhase, type, content) => emitRoutePhaseLog(ticketId, cmdPhase, type, content),
-    )
-
-    ensureActorForTicket(ticketId)
-    emitRoutePhaseLog(ticketId, phase, 'info', mergeReport.message, {
-      prNumber: mergeReport.prNumber,
-      prUrl: mergeReport.prUrl,
-      prState: mergeReport.prState,
-      localBaseHead: mergeReport.localBaseHead,
-      remoteBaseHead: mergeReport.remoteBaseHead,
-    })
-    sendTicketEvent(ticketId, { type: 'MERGE_COMPLETE' })
+    await completeTicketMerge(ticket, ticketContext.projectRoot, prReport)
   } catch (err) {
     const details = getErrorMessage(err)
     const message = `Pull request merge failed: ${details}`
@@ -540,7 +526,12 @@ export async function handleMergeTicket(c: Context) {
   return respondWithState(c, ticketId, 'Merge complete')
 }
 
-export async function handleCloseUnmergedTicket(c: Context) {
+export function handleCloseUnmergedTicket(c: Context) {
+  const ticketId = getTicketParam(c)
+  return withTicketMergeLock(ticketId, () => handleCloseUnmergedTicketLocked(c))
+}
+
+async function handleCloseUnmergedTicketLocked(c: Context) {
   const ticketId = getTicketParam(c)
   const ticket = getTicketByRef(ticketId)
   if (!ticket) return c.json({ error: 'Ticket not found' }, 404)

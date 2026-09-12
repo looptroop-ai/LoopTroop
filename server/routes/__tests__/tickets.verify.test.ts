@@ -15,6 +15,7 @@ import { createFixtureRepoManager } from '../../test/fixtureRepo'
 import { initializeTicket } from '../../ticket/initialize'
 import { ticketRouter } from '../tickets'
 import { listSkipEvents } from '../../workflow/skipReceipts'
+import { syncWaitingPullRequestTicket } from '../../workflow/mergeCompletion'
 
 const {
   readPullRequestReportMock,
@@ -203,6 +204,77 @@ describe('ticketRouter PR review routes', () => {
     const after = getTicketByRef(ticket.id)
     expect(after?.status).toBe('WAITING_PR_REVIEW')
     expect(after?.errorMessage).toBeFalsy()
+    expect(refreshPullRequestStateMock).not.toHaveBeenCalled()
+    expect(completeMergedPullRequestMock).not.toHaveBeenCalled()
+    expect(refreshPullRequestReportMock).not.toHaveBeenCalled()
+  })
+
+  it('keeps overlapping GETs read-only even when GitHub has merged the PR', async () => {
+    const { ticket } = await createWaitingPrReviewTicket()
+    refreshPullRequestStateMock.mockResolvedValue({ state: 'merged' })
+    const app = new Hono().route('/api', ticketRouter)
+    const responses = await Promise.all([
+      app.request(`/api/tickets/${ticket.id}`), app.request(`/api/tickets/${ticket.id}`),
+    ])
+    expect(responses.map(response => response.status)).toEqual([200, 200])
+    expect(getTicketByRef(ticket.id)?.status).toBe('WAITING_PR_REVIEW')
+    expect(refreshPullRequestStateMock).not.toHaveBeenCalled()
+    expect(completeMergedPullRequestMock).not.toHaveBeenCalled()
+    expect(refreshPullRequestReportMock).not.toHaveBeenCalled()
+  })
+
+  it('finalizes an external merge once without any GET or remote merge request', async () => {
+    const { ticket } = await createWaitingPrReviewTicket()
+    refreshPullRequestStateMock.mockResolvedValue({ state: 'merged', number: 42 })
+    await Promise.all([syncWaitingPullRequestTicket(ticket.id), syncWaitingPullRequestTicket(ticket.id)])
+    expect(completeMergedPullRequestMock).toHaveBeenCalledOnce()
+    expect(completeMergedPullRequestMock).toHaveBeenCalledWith(expect.objectContaining({ skipRemoteMerge: true }))
+    expect(getTicketByRef(ticket.id)?.status).toBe('CLEANING_ENV')
+  })
+
+  it('refreshes open PR metadata without initiating a merge', async () => {
+    const { ticket } = await createWaitingPrReviewTicket()
+    refreshPullRequestStateMock.mockResolvedValue({ state: 'open', number: 42, headRefOid: 'new-head' })
+    await syncWaitingPullRequestTicket(ticket.id)
+    expect(refreshPullRequestReportMock).toHaveBeenCalledWith(ticket.id, expect.objectContaining({ prState: 'open', prHeadSha: 'new-head' }))
+    expect(completeMergedPullRequestMock).not.toHaveBeenCalled()
+    expect(getTicketByRef(ticket.id)?.status).toBe('WAITING_PR_REVIEW')
+  })
+
+  it('retries failed background completion without blocking the ticket', async () => {
+    const { ticket } = await createWaitingPrReviewTicket()
+    refreshPullRequestStateMock.mockResolvedValue({ state: 'merged', number: 42 })
+    completeMergedPullRequestMock.mockRejectedValueOnce(new Error('GitHub temporarily unavailable'))
+    await expect(syncWaitingPullRequestTicket(ticket.id)).rejects.toThrow('GitHub temporarily unavailable')
+    expect(getTicketByRef(ticket.id)?.status).toBe('WAITING_PR_REVIEW')
+    await syncWaitingPullRequestTicket(ticket.id)
+    expect(getTicketByRef(ticket.id)?.status).toBe('CLEANING_ENV')
+  })
+
+  it('serializes a background completion with the Merge action', async () => {
+    const { ticket } = await createWaitingPrReviewTicket()
+    let finishRefresh!: (value: unknown) => void
+    refreshPullRequestStateMock.mockReturnValueOnce(new Promise(resolve => { finishRefresh = resolve }))
+    const background = syncWaitingPullRequestTicket(ticket.id)
+    await vi.waitFor(() => expect(refreshPullRequestStateMock).toHaveBeenCalledOnce())
+    const app = new Hono().route('/api', ticketRouter)
+    const response = app.request(`/api/tickets/${ticket.id}/merge`, { method: 'POST' })
+    finishRefresh({ state: 'merged', number: 42 })
+    await background
+    expect((await response).status).toBe(409)
+    expect(completeMergedPullRequestMock).toHaveBeenCalledOnce()
+    expect(getTicketByRef(ticket.id)?.status).toBe('CLEANING_ENV')
+  })
+
+  it('serializes overlapping Merge actions', async () => {
+    const { ticket } = await createWaitingPrReviewTicket()
+    const app = new Hono().route('/api', ticketRouter)
+    const responses = await Promise.all([
+      app.request(`/api/tickets/${ticket.id}/merge`, { method: 'POST' }),
+      app.request(`/api/tickets/${ticket.id}/merge`, { method: 'POST' }),
+    ])
+    expect(responses.map(response => response.status).sort()).toEqual([200, 409])
+    expect(completeMergedPullRequestMock).toHaveBeenCalledOnce()
   })
 
   it('merges the pull request and advances to cleanup', async () => {

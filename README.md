@@ -236,6 +236,8 @@ Unlike high-speed coding tools that optimize for immediate chat responses, LoopT
 
 ## How it works
 
+At the final PR review gate, the running daemon detects merges made on GitHub even when the UI is closed. It verifies the remote base branch before finishing the ticket; background checks never initiate a merge.
+
 ```mermaid
 flowchart LR
     A["🎫 Ticket Input"] --> B["🔍 Codebase Discovery"]

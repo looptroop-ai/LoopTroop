@@ -10,6 +10,7 @@ Unreleased changes appear first and represent commits that have not yet been inc
 > Changes merged since the last versioned release that have not yet shipped in a tagged version.
 
 ### Summary
+- Merges made on GitHub now finish waiting tickets while the daemon runs, even when the UI is closed.
 - Toasts and progress rings use stable identifiers; saved UI and Manual QA actions use cryptographic IDs, including over HTTP LAN connections.
 - Local IPv6 addresses work consistently across backend checks, OpenCode startup, diagnostics and dev LAN reporting.
 - Installers protect slow-running installs and refuse insecure download redirects; release tooling limits build inputs, credentials and install scripts.
@@ -52,7 +53,7 @@ Unreleased changes appear first and represent commits that have not yet been inc
 - A bead edit that only changed its PRD references or its context guidance now shows up in the refinement diff instead of being dropped from it.
 - A git command that cannot finish now gives up instead of taking the whole app with it. Every `git` and `gh` call has a deadline, refuses to open a credential prompt, and can handle the same large diff wherever it runs. The ones that talk to GitHub no longer block everything else while they wait.
 - Both pushes to your remote now use the same credentials, and so do the fetches that create a ticket and that check the remote before delivery. On a machine whose only credential is a token in the environment — a container, typically — delivery pushed the branch fine and then stalled for two minutes on the candidate commit, asking for a password it could not request; the fetches failed outright.
-- Opening a ticket can no longer break it. A slow or rate-limited GitHub during a routine page refresh used to move the ticket to Blocked; it is now recorded as an advisory note and retried on the next refresh.
+- Opening a ticket can no longer break it. A slow or rate-limited GitHub during a routine page refresh used to move the ticket to Blocked; background checks now record an advisory note and retry without blocking the ticket.
 - A renamed file is now delivered as a move rather than as two copies, and a bead commit that fails leaves nothing half-staged behind it.
 - Checks that were quietly skipping work now do it: a coverage follow-up budget of 0% really means none, a bead dependency declared in one direction only is rejected instead of running anyway, and a plan approved on one operating system keeps its own commands instead of being rewritten for whoever opens it.
 - Git hook validation refuses to run when it cannot undo what the hooks do, and puts the worktree and the staged files back even when a hook fails or the run is cancelled.
@@ -247,6 +248,8 @@ Unreleased changes appear first and represent commits that have not yet been inc
 - Three aliases re-exported for a question-diff type that no longer exists, the three helpers behind them, an execution-setup runtime-path list with no reader, and an execution-setup barrel re-exporting three artifact names every caller already imports from their own module.
 
 ### Fixed
+- Ticket GET requests no longer contact GitHub, update PR artifacts, or complete merges. A daemon-owned poller checks waiting tickets at startup and about every 30 seconds after each sweep, retries failed checks with per-ticket delays capped at five minutes, and resumes after restart. Shutdown stops scheduling and drains the active check before closing storage.
+- Background detection and the Merge action share completion logic and a per-ticket lock with close and cancel. Background checks only finish PRs already merged on GitHub; failures remain advisory and keep the ticket waiting. The explicit Merge action retains its existing failure response and blocked status.
 - Isolated the package-import regression check in its own integration worker and reused one subprocess for both assertions, reducing Windows subprocess contention while retaining failure detection and cleaning up temporary files.
 - PowerShell runtime launchers preserve a single program argument as an argument, instead of splitting it into characters. Windows launcher tests use one case-insensitive PATH entry and fixed shell commands; AI-question tests wait for timer hydration, and authentication tests initialize their database and require successful authorized responses.
 - Manual QA event reads and version discovery no longer depend on an unrelated `v1` directory being intact. Worktree size previews skip final aliases without following them, and an unreadable log no longer prevents recovery of the remaining logs on the same ticket.

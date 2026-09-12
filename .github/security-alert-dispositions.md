@@ -1,5 +1,45 @@
 # Reviewed code-scanning dispositions
 
+## PR18 identifier and test fixes
+
+Rechecked on 2026-09-12 against `fe3d7d4c`: 11 open alerts remain in this stage.
+The installer shell-command alert from the original plan was already fixed by PR15.
+The closed PR #129 was reviewed as a reference; its process-launch changes are superseded
+by the trusted resolver now on `main`.
+
+- S2245 alerts #35 and #36: toast IDs use a counter; progress-ring gradient IDs use React's
+  `useId` and remain stable when progress changes. An explicit gradient ID still takes precedence.
+- S2245 alerts #12 and #37: ticket UI and Manual QA actions share a cryptographic ID generator.
+  Native UUIDs remain preferred. HTTP LAN origins use 16 random bytes encoded as hex, since
+  [Web Crypto](https://w3c.github.io/webcrypto/#Crypto-interface) exposes `getRandomValues`
+  outside secure contexts but restricts `randomUUID`. These IDs reach server deduplication
+  and evidence persistence, so a counter that resets on reload would be insufficient.
+- S2245 alert #38: the diagnostic disk probe uses Node's UUID generator for its temporary filename.
+- CodeQL alert #1: the daemon-lock race harness writes fixed source and passes its paths,
+  contender index and contender count through argv. It keeps the start barrier, wait for every
+  loser, bounded lock hold and overlapping-holder assertions. The old patch's hardcoded
+  contender count was not carried forward.
+- CodeQL alert #9: the prompt-template test reads the file directly before appending its user
+  comment; the identity replacement served no purpose.
+
+These changes affect internal identifiers and test setup. Ticket revision ordering, action
+prefixes, status descriptions, API keys and diagnostic output fields retain their contracts.
+The website checkout was checked separately, including its operations and diagnostics pages;
+these implementation changes require no published instructions or release-source update.
+Existing ignore rules cover the build, test and temporary outputs.
+
+The four S1313 findings (#94, #95, #118 and #119) compare hosts against the dotted
+and hexadecimal IPv4-mapped forms of loopback. These are protocol addresses, not deployment
+endpoints; see [RFC 4291, section 2.5.5.2](https://www.rfc-editor.org/rfc/rfc4291#section-2.5.5.2).
+Regression cases cover both spellings, bracketed uppercase input, rejection of mapped
+non-loopback addresses by the backend, and omission of mapped loopback hosts from LAN URLs.
+Their scanner disposition is pending the owner's choice; no alerts have been dismissed here.
+
+Local verification passed: the full suite (408 files, 5,543 tests passed, 10 skipped),
+focused identifier and lock-race tests, lint, typechecks, production build, package contents,
+production native-addon scan, version consistency, script type stripping and license notices.
+The diagnostic help entry point also ran successfully. No end-to-end or lifecycle smoke was run.
+
 Reviewed on 2026-09-11 for roadmap stage PR17, implemented in
 [GitHub PR #154](https://github.com/looptroop-ai/LoopTroop/pull/154), based on `main` at `377628ec`.
 Match future findings by rule and code location; alert numbers are references to this scan only.

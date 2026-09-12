@@ -829,38 +829,43 @@ describe('daemon lock', () => {
       const ready = join(configDir, 'ready')
       const done = join(configDir, 'done')
 
-      const source = (index: number) => [
+      const raceScript = join(configDir, 'race.mjs')
+      writeFileSync(raceScript, [
         `import { existsSync, readdirSync, writeFileSync } from 'node:fs'`,
-        `import { acquireDaemonLock } from ${JSON.stringify(lockModule)}`,
-        `const settled = () => readdirSync(${JSON.stringify(configDir)}).filter((e) => e.startsWith('done.')).length`,
-        `writeFileSync(${JSON.stringify(ready)} + '.' + ${index}, '')`,
-        `while (!existsSync(${JSON.stringify(barrier)})) {}`,
+        `const [lockModule, configDir, barrier, ready, done, index, contenders] = process.argv.slice(2)`,
+        `const { acquireDaemonLock } = await import(lockModule)`,
+        `const settled = () => readdirSync(configDir).filter((e) => e.startsWith('done.')).length`,
+        `writeFileSync(ready + '.' + index, '')`,
+        `while (!existsSync(barrier)) {}`,
         `try {`,
-        `  const lock = acquireDaemonLock(${JSON.stringify(configDir)})`,
+        `  const lock = acquireDaemonLock(configDir)`,
         `  const from = Date.now()`,
         // Hold until every other contender has had its answer, so releasing can
         // never be what lets a second one through. Bounded, because a genuine
         // exclusion failure means the losers this waits for do not exist, and
         // that must surface as a failed assertion rather than a hung suite.
         `  const deadline = Date.now() + 20000`,
-        `  while (settled() < ${CONTENDERS - 1} && Date.now() < deadline) {`,
+        `  while (settled() < Number(contenders) - 1 && Date.now() < deadline) {`,
         `    await new Promise((resolve) => setTimeout(resolve, 10))`,
         `  }`,
         // Whether every loser reported, or the clock ran out first. On the
         // deadline path the hold no longer proves anything: a contender still
         // descheduled when the lock came free finds it genuinely free, and its
         // `held` line is the harness starving rather than the lock failing.
-        `  const waited = settled() < ${CONTENDERS - 1} ? 'deadline' : 'all-settled'`,
+        `  const waited = settled() < Number(contenders) - 1 ? 'deadline' : 'all-settled'`,
         `  lock.release()`,
         `  console.log('held ' + lock.owner.nonce + ' ' + from + ' ' + Date.now() + ' ' + waited)`,
         `} catch (error) {`,
-        `  writeFileSync(${JSON.stringify(done)} + '.' + ${index}, '')`,
+        `  writeFileSync(done + '.' + index, '')`,
         `  console.log(error instanceof Error ? error.name : 'unknown')`,
         `}`,
-      ].join('\n')
+      ].join('\n'))
 
       const children = Array.from({ length: CONTENDERS }, (_, index) => {
-        const child = spawn(process.execPath, ['--import', 'tsx', '--eval', source(index)], {
+        const child = spawn(process.execPath, [
+          '--import', 'tsx', raceScript,
+          lockModule, configDir, barrier, ready, done, String(index), String(CONTENDERS),
+        ], {
           cwd: resolve(import.meta.dirname, '..'),
         })
         let output = ''

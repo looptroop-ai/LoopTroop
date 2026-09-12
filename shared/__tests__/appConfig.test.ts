@@ -132,7 +132,7 @@ describe('appConfig frontend origin', () => {
 
 describe('isLoopbackHost', () => {
   it('accepts the loopback names and addresses', () => {
-    for (const host of ['localhost', 'LOCALHOST', '127.0.0.1', '127.1.2.3', '127.255.255.255', '::1', '[::1]', '::ffff:127.0.0.1']) {
+    for (const host of ['localhost', 'LOCALHOST', '127.0.0.1', '127.1.2.3', '127.255.255.255', '::1', '[::1]', '::ffff:127.0.0.1', '::ffff:7f00:1', '[::FFFF:7F00:1]']) {
       expect(isLoopbackHost(host)).toBe(true)
     }
   })
@@ -152,7 +152,7 @@ describe('isLoopbackHost', () => {
   })
 
   it('rejects other private and public addresses', () => {
-    for (const host of ['0.0.0.0', '10.0.0.1', '192.168.1.1', '128.0.0.1', 'example.com']) {
+    for (const host of ['0.0.0.0', '10.0.0.1', '192.168.1.1', '128.0.0.1', 'example.com', '::ffff:192.168.1.1', '::ffff:c0a8:101']) {
       expect(isLoopbackHost(host)).toBe(false)
     }
   })

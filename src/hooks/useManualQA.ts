@@ -1,6 +1,7 @@
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { throwIfNotOk } from '@/lib/fetchError'
 import { apiTicketPath } from '@/lib/apiPaths'
+import { createActionId } from '@/lib/actionId'
 import { MANUAL_QA_ACTIVE_VERSION_POLL_MS, MANUAL_QA_GENERATING_POLL_MS } from '@/lib/constants'
 
 export type ManualQaResultStatus = 'pass' | 'fail' | 'waive' | 'improvement' | 'pending'
@@ -540,5 +541,5 @@ export function manualQaEvidenceUrl(ticketId: string, version: number, itemId: s
 }
 
 export function newManualQaActionId(prefix: string) {
-  return `${prefix}:${globalThis.crypto?.randomUUID?.() ?? `${Date.now()}-${Math.random().toString(16).slice(2)}`}`
+  return `${prefix}:${createActionId()}`
 }

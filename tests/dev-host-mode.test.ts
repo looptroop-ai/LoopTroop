@@ -99,9 +99,9 @@ describe('LAN URL formatting', () => {
     })).toEqual(['http://devbox.local:5174'])
   })
 
-  it('does not advertise loopback-only host values as LAN addresses', () => {
+  it.each(['localhost', '::ffff:127.0.0.1', '::ffff:7f00:1', '[::FFFF:7F00:1]'])('does not advertise loopback-only host %s as a LAN address', (host) => {
     expect(getDevLanUrls({
-      hostMode: hostModeEnabled('localhost'),
+      hostMode: hostModeEnabled(host),
       port: 5173,
       interfaces: {},
     })).toEqual([])

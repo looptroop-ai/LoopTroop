@@ -1,3 +1,5 @@
+import { createActionId } from './actionId'
+
 const revisions = new Map<string, number>()
 
 function getRevisionKey(ticketId: string, scope: string): string {
@@ -9,9 +11,7 @@ export function getTicketUiStateRevision(ticketId: string, scope: string): numbe
 }
 
 export function createTicketUiStateActionId(): string {
-  return typeof crypto !== 'undefined' && typeof crypto.randomUUID === 'function'
-    ? crypto.randomUUID()
-    : `${Date.now()}-${Math.random().toString(36).slice(2)}`
+  return createActionId()
 }
 
 export function rememberTicketUiStateRevision(ticketId: string, scope: string, revision: number | null | undefined): void {

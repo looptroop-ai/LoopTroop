@@ -1,4 +1,5 @@
 import { spawnSync } from 'node:child_process'
+import { randomUUID } from 'node:crypto'
 import { promises as dnsPromises } from 'node:dns'
 import { existsSync, mkdirSync, readFileSync, readdirSync, realpathSync, statSync, unlinkSync, writeFileSync } from 'node:fs'
 import { homedir } from 'node:os'
@@ -891,7 +892,7 @@ function commandExists(binary: string): boolean {
 
 function measureDiskWriteLatency(dirPath: string): FsLatencyProbe {
   const startedAt = Date.now()
-  const tempFile = resolve(dirPath, `.stall-diag-${Math.random().toString(36).slice(2)}.tmp`)
+  const tempFile = resolve(dirPath, `.stall-diag-${randomUUID()}.tmp`)
   const buffer = Buffer.alloc(1024 * 64, 'x') // 64KB write
 
   try {

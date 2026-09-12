@@ -10,6 +10,7 @@ Unreleased changes appear first and represent commits that have not yet been inc
 > Changes merged since the last versioned release that have not yet shipped in a tagged version.
 
 ### Summary
+- Toasts and progress rings use stable identifiers; saved UI and Manual QA actions use cryptographic IDs, including over HTTP LAN connections.
 - Installers protect slow-running installs and refuse insecure download redirects; release tooling limits build inputs, credentials and install scripts.
 - Ticket files, cleanup and folder opening stay inside their allowed directories; unavailable workspaces no longer break the board, and reconnecting live views recover missing history.
 - The `--binary` installer establishes what the running daemon is doing before it replaces the executable, and refuses when it cannot; it leaves the previous version's files alone when an upgrade rolls back, gives every download a timeout and a size limit, and can no longer be run twice in one directory by accident.
@@ -93,6 +94,8 @@ Unreleased changes appear first and represent commits that have not yet been inc
 - Added download history to the installation documentation. The chart records public npm, Docker Hub and GitHub release counters every hour, can show new downloads or cumulative totals, and separates installer-script fetches from the sources included in the download total. History begins when tracking is enabled; the chart does not fill earlier periods with estimates or npm-only data.
 
 ### Security
+- Replaced the flagged `Math.random()` identifiers with a toast counter, React component IDs, cryptographic browser action IDs, and UUIDs for diagnostic temporary files. Browser action IDs retain cryptographic randomness when `randomUUID()` is unavailable over HTTP.
+- The daemon-lock concurrency test passes paths and contender counts as child-process arguments instead of inserting them into executable source. Its synchronized start, lock-hold checks and dynamic contender count remain intact. Removed a no-op replacement from the prompt-template preservation test.
 - Container builds receive only the selected release tarball and Dockerfile, use the package's declared npm version during the build, and disable production install scripts. HTTPS downloads in CI and the image refuse insecure redirects. Installer metadata and archives reject an insecure redirect before following it, and documented curl installation and upgrade commands enforce HTTPS too, with quoted protocol flags that also work in macOS zsh.
 - PowerShell bootstrap and upgrade commands use `curl.exe` to reject insecure redirects before executing the complete downloaded script. Failed or empty downloads stop execution. This path now requires curl; the npm channel remains available when curl is absent.
 - Installer download credentials are never sent over HTTP, including explicitly configured local test endpoints.

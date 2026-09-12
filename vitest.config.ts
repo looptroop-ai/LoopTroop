@@ -112,6 +112,7 @@ const clientNodeTests = [
   'src/hooks/__tests__/clearTicketCaches.test.ts',
   'src/hooks/__tests__/ticketStatusCache.test.ts',
   'src/hooks/__tests__/useTickets.test.ts',
+  'src/lib/__tests__/actionId.test.ts',
   'src/lib/__tests__/apiPaths.test.ts',
   'src/lib/__tests__/beadsDocument.test.ts',
   'src/lib/__tests__/errorOccurrences.test.ts',

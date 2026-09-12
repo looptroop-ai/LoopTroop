@@ -1,11 +1,39 @@
 import { describe, it, expect } from 'vitest'
-import { EventEmitter } from 'node:events'
+import { EventEmitter, once } from 'node:events'
+import { createServer } from 'node:http'
 import {
   MAX_RESTART_ATTEMPTS,
   OpenCodeSupervisor,
   OpenCodeMissingError,
+  probeOpenCode,
   type ProcessTermination,
 } from '../server/opencode/supervisor'
+
+it('accepts a direct health response without ever contacting a redirect target', async () => {
+  let redirect = false
+  const requests: string[] = []
+  const server = createServer((req, res) => {
+    requests.push(req.url ?? '')
+    if (redirect && req.url === '/config') {
+      res.writeHead(302, { Location: '/redirect-target' }).end()
+    } else {
+      res.writeHead(200).end('{}')
+    }
+  })
+  server.listen(0, '127.0.0.1')
+  await once(server, 'listening')
+  try {
+    const address = server.address()
+    if (!address || typeof address === 'string') throw new Error('Missing test listener')
+    const baseUrl = `http://127.0.0.1:${address.port}`
+    expect(await probeOpenCode(baseUrl)).toBe(true)
+    redirect = true
+    expect(await probeOpenCode(baseUrl)).toBe(false)
+    expect(requests).toEqual(['/config', '/config'])
+  } finally {
+    await new Promise<void>((resolve, reject) => server.close((error) => error ? reject(error) : resolve()))
+  }
+})
 
 /**
  * 2.10 contract: an already-running server is adopted untouched; a missing
@@ -645,6 +673,34 @@ describe('OpenCodeMissingError', () => {
 })
 
 describe('the address OpenCode is started on', () => {
+  it.each([
+    ['[::1]', '::1'],
+    ['[::ffff:127.0.0.2]', '::ffff:7f00:2'],
+    ['127.0.0.2', '127.0.0.2'],
+    ['localhost', '127.0.0.1'],
+  ])('passes %s as a bare --hostname while keeping the health URL intact', async (host, serveHost) => {
+    const baseUrl = `http://${host}:4096`
+    const child = Object.assign(new EventEmitter(), { pid: 12345, exitCode: null })
+    const args: string[][] = []
+    const probes: string[] = []
+    const supervisor = new OpenCodeSupervisor({
+      baseUrl,
+      resolveProgram: () => '/usr/local/bin/opencode',
+      spawnProcess: ((_command: string, argv: string[]) => {
+        args.push(argv)
+        return child as never
+      }) as never,
+      probe: async (url) => {
+        probes.push(url)
+        return args.length > 0
+      },
+    })
+
+    await expect(supervisor.start()).resolves.toEqual({ kind: 'managed', baseUrl, pid: 12345 })
+    expect(args).toEqual([['serve', '--hostname', serveHost, '--port', '4096']])
+    expect(probes).toEqual([baseUrl, baseUrl])
+  })
+
   it('refuses a host name that would be shell syntax, before anything is spawned', async () => {
     // `new URL('http://foo&bar:4096').hostname` is `foo&bar`, and an npm-installed
     // OpenCode on Windows starts through cmd.exe, where `&` runs a second command.

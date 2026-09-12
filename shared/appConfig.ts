@@ -58,14 +58,26 @@ function parseIPv4(value: string): [number, number, number, number] | null {
   return octets as [number, number, number, number]
 }
 
+/** Canonical bracketed IPv6 from a bare or bracketed address, never an authority. */
+export function canonicalIpv6Host(host: string): string | null {
+  const address = host.startsWith('[') && host.endsWith(']') ? host.slice(1, -1) : host
+  // Never repair brackets, strip zone IDs or let URL syntax change the host.
+  if (!address || /[^\da-f:.]/i.test(address)) return null
+  try {
+    return new URL(`http://[${address}]/`).hostname
+  } catch {
+    return null
+  }
+}
+
 export function isLoopbackHost(hostname: string): boolean {
-  const normalized = hostname.trim().toLowerCase().replace(/^\[|\]$/g, '')
-  if (
-    normalized === 'localhost'
-    || normalized === '::1'
-    || normalized === '::ffff:127.0.0.1'
-    || normalized === '::ffff:7f00:1'
-  ) return true
+  const normalized = hostname.trim().toLowerCase()
+  if (normalized === 'localhost') return true
+  if (normalized.includes(':')) {
+    const canonical = canonicalIpv6Host(normalized)
+    // IPv4-mapped IPv6 has exactly 80 zero bits, then ffff, then IPv4.
+    return canonical === '[::1]' || (canonical !== null && /^\[::ffff:7f[\da-f]{2}:[\da-f]{1,4}\]$/.test(canonical))
+  }
   // The whole 127.0.0.0/8 block is loopback, but only as an address.
   return parseIPv4(normalized)?.[0] === 127
 }

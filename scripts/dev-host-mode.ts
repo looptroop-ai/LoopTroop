@@ -1,5 +1,6 @@
 import net from 'node:net'
 import { networkInterfaces, type NetworkInterfaceInfo } from 'node:os'
+import { canonicalIpv6Host, isLoopbackHost } from '../shared/appConfig.ts'
 
 export const LOOPTROOP_DEV_HOST = 'LOOPTROOP_DEV_HOST'
 export const NPM_CONFIG_LONG = 'npm_config_long'
@@ -113,17 +114,8 @@ export function resolveDevHostMode({ env = process.env }: { env?: Env } = {}): R
 }
 
 export function isWildcardHost(host: string) {
-  const normalized = normalizeBracketedIpv6Host(host.trim().toLowerCase())
-  return normalized === '0.0.0.0' || normalized === '::'
-}
-
-function isLoopbackDevHost(host: string) {
-  const normalized = normalizeBracketedIpv6Host(host.trim().toLowerCase())
-  return normalized === 'localhost'
-    || normalized === '::1'
-    || normalized === '::ffff:127.0.0.1'
-    || normalized === '::ffff:7f00:1'
-    || normalized.startsWith('127.')
+  const normalized = host.trim().toLowerCase()
+  return normalized === '0.0.0.0' || canonicalIpv6Host(normalized) === '[::]'
 }
 
 function formatDevHostForUrl(host: string) {
@@ -157,7 +149,7 @@ function getAdvertisedDevHosts(
   interfaces: NetworkInterfaceMap = networkInterfaces(),
 ) {
   if (!hostMode.enabled) return []
-  if (isLoopbackDevHost(hostMode.bindHost)) return []
+  if (isLoopbackHost(hostMode.bindHost)) return []
   if (!isWildcardHost(hostMode.bindHost)) return [hostMode.bindHost]
 
   return listLanAddresses(interfaces).map((address) => address.address)

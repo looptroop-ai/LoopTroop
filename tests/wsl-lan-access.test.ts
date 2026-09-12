@@ -19,9 +19,9 @@ describe('isWslRuntime', () => {
 })
 
 describe('buildWslLanAccessPlan', () => {
-  it('builds Windows LAN URLs and explicit portproxy guidance for WSL wildcard LAN sharing', () => {
+  it.each(['0.0.0.0', '::', '0:0:0:0:0:0:0:0'])('builds Windows LAN URLs and portproxy guidance for wildcard %s', (bindHost) => {
     const plan = buildWslLanAccessPlan({
-      hostMode: enabledWildcardHostMode,
+      hostMode: { ...enabledWildcardHostMode, bindHost },
       frontendPort: 5173,
       isWsl: true,
       wslAddresses: ['172.25.190.136'],

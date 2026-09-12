@@ -1,5 +1,173 @@
 # Reviewed code-scanning dispositions
 
+## PR18 identifier and test fixes
+
+Rechecked on 2026-09-12 against `fe3d7d4c`: this stage started with 11 open alerts.
+The installer shell-command alert from the original plan was already fixed by PR15.
+The closed PR #129 was reviewed as a reference and reimplemented, not replayed; its process-launch changes are superseded
+by the trusted resolver now on `main`.
+
+- S2245 alerts #35 and #36: toast IDs use a provider-local ref so their lifetime matches retained
+  state during Fast Refresh; progress-ring gradient IDs use React's `useId` and remain stable
+  when progress changes. The unused explicit gradient-ID prop was removed after checking callers.
+- S2245 alerts #12 and #37: ticket UI and Manual QA actions share a cryptographic ID generator.
+  Native UUIDs remain preferred. HTTP LAN origins use 16 random bytes encoded as hex, since
+  [Web Crypto](https://w3c.github.io/webcrypto/#Crypto-interface) exposes `getRandomValues`
+  outside secure contexts but restricts `randomUUID`. These IDs reach server deduplication
+  and evidence persistence, so a counter that resets on reload would be insufficient.
+  Both formats are opaque IDs accepted by the existing server validators. Missing Web Crypto
+  now gives an explicit error; it never falls back to weak randomness.
+- S2245 alert #38: the diagnostic disk probe uses Node's UUID generator for its temporary filename.
+- CodeQL alert #1: the daemon-lock race harness writes fixed source and passes its paths,
+  contender index and contender count through argv. It keeps the start barrier, wait for every
+  loser, bounded lock hold and overlapping-holder assertions. The old patch's hardcoded
+  contender count was not carried forward. The neighboring claim-takeover test now passes
+  its paths through argv too, using the same fixed-source approach.
+- CodeQL alert #9: the prompt-template test reads the file directly before appending its user
+  comment; the identity replacement served no purpose.
+
+These changes affect internal identifiers, test setup and local-address recognition. Ticket revision ordering, action
+prefixes, status descriptions, API keys and diagnostic output fields retain their contracts.
+The website checkout was checked separately, including its operations and diagnostics pages;
+its loopback-only guidance remains accurate and its released source reference is unchanged.
+Existing ignore rules cover the build, test and temporary outputs.
+
+The four S1313 findings (#94, #95, #118 and #119) compare hosts against the dotted
+and hexadecimal IPv4-mapped forms of loopback. These are protocol addresses, not deployment
+endpoints; see [RFC 4291, section 2.5.5.2](https://www.rfc-editor.org/rfc/rfc4291#section-2.5.5.2).
+Regression cases cover both spellings, bracketed uppercase input, rejection of mapped
+non-loopback addresses by the backend, and omission of mapped loopback hosts from LAN URLs.
+With the owner's approval, all four were dismissed as `false positive` on GitHub on
+2026-09-12. Their dismissed states were read back from the API. The owner subsequently approved
+broader mapped-loopback support and one shared predicate during PR review. That functional
+change supersedes the exact-literal comparisons; it does not invalidate the original false-positive
+rationale. This records GitHub dispositions; it does not claim a separate SonarCloud dashboard
+resolution. The seven code fixes await merge and a scan of `main` before their alerts can close.
+
+Initial local verification for the implementation in `a330a1a2` passed: the full suite (408 files, 5,543 tests passed, 10 skipped),
+focused identifier and lock-race tests, lint, typechecks, production build, package contents,
+production native-addon scan, version consistency, script type stripping and license notices.
+The diagnostic help entry point also ran successfully. No end-to-end or lifecycle smoke was run.
+
+### Review follow-up
+
+The shared predicate uses the platform URL parser to normalize valid IPv6 literals before
+checking IPv6 loopback and the IPv4-mapped 127/8 range. Its input check rejects URL syntax,
+partial brackets and zone IDs rather than allowing the URL parser to repair them.
+The dev URL printer reuses that predicate, so hostnames that merely start with `127.` are
+advertised normally. The backend's remote opt-in and token requirements are unchanged.
+Bracketed IPv6 request authorities are canonicalized before Origin comparison; ports and
+different addresses still distinguish origins. Bare IPv6 addresses now use the same canonical
+spelling as bracketed addresses, although browser Host headers use brackets.
+
+All eight local reports and all PR conversation, review and inline comments at `71d94d2c`
+were read together before changes. Findings shared by several reviewers are grouped below.
+
+| Finding | Disposition |
+| --- | --- |
+| Toast IDs reset during Fast Refresh (Qodo, Greptile, GPT-5.4, DeepSeek) | Fixed with a provider-local ref. Added rerender coverage; this is not a simulation of the Vite Fast Refresh runtime. |
+| Codacy non-null assertions and floating promise in the toast test | Fixed by querying accessible dismiss buttons and awaiting the React update. Dismiss buttons now have labels. |
+| Missing Web Crypto guard (Gitar and several reports) | Added explicit failure and tests for missing/incomplete crypto. The reported HTTP-LAN failure was overstated: supported browsers expose `getRandomValues` on HTTP. |
+| Hex IDs should become UUIDs | No format change. Server consumers accept opaque strings; a hypothetical future UUID-only validator is not a current requirement. The helper documents both formats. |
+| Divergent dev predicate and incomplete mapped-loopback recognition | Included with explicit owner approval. Both consumers share strict address recognition; equivalent IPv6 Host/Origin spellings also need canonical comparison. This expands accepted local addresses without admitting mapped remote addresses. |
+| Replace literals with generated or named constants | Superseded by the approved shared predicate. The original dismissal was valid; rejecting some other loopback addresses did not make these literal comparisons unsafe. |
+| Claim-takeover test still builds source from values | Converted to fixed source plus argv. This removes the neighboring pattern without claiming the old fixture was exploitable or predicting where CodeQL will report next. |
+| Unused gradient-ID prop and misplaced tests | Removed the unused prop; ring tests now belong to the ring. Pure action-ID tests run in the client-node project and still exercise both public consumers. |
+| Remove toast clock/random mocks | Rejected: fixing both inputs forces collisions if the old implementation returns. Kept them and explained the regression guard. No test-reset export or counter factory is needed. |
+| SVG selector, older React ID spelling, dynamic imports and temporary-script cleanup | No defect found. Gradient tests assert two IDs and their references; the child uses an absolute file URL with tsx, and suite cleanup removes its directory. No compatibility work for older React is needed. |
+| Additional IPv6 spellings and zone IDs | Covered by the shared recognition tests. IPv4-translated/SIIT addresses are distinct from IPv4-mapped addresses and must not inherit loopback trust. |
+| PR17 reference, absent constants and verification record | Separated the PR17 heading and clarified the record. PR154 already exists; the generated constants claimed by one report existed only in the old unmerged patch. |
+| Diagnostic UUID justification, remaining random test port, generic docstring quota | The UUID avoids incidental temporary-name collisions. The unrelated supervisor port fixture is outside this change. Added the useful action-ID contract comment; no boilerplate docstrings or speculative port allocator. |
+
+At `71d94d2c`, both full CI runs passed, including the Windows and macOS race tests:
+[push](https://github.com/looptroop-ai/LoopTroop/actions/runs/34673381565) and
+[pull request](https://github.com/looptroop-ai/LoopTroop/actions/runs/34673390878).
+CodeQL and Sonar passed. Codacy's two test findings are addressed above.
+Kilo failed because its model output limit was reached and produced no code findings.
+Sourcery exhausted its review budget. Neither failure establishes a code defect.
+Amazon Q's claim of 50 concurrent scenarios is inaccurate: 50 was the combined prompt-store
+and daemon-lock test count, not the count of contention scenarios.
+
+Review-fix validation on 2026-09-12: 411 test files passed (5,574 tests passed, 10 skipped),
+plus 66 focused network tests and an independent 3,072-case mapped-address boundary sweep.
+Full lint, both typecheck projects, the production build, script type stripping, version checks
+and license checks passed, as did package contents and production native-addon checks.
+The first build process was killed while heavy checks ran together;
+the sequential rerun passed. A new Vite native-config warning was fixed by adding the explicit
+extension to the dev-host module's shared import. New CI results are left for the owner to review.
+
+### Refreshed review at `d3ca1356`
+
+Read all five refreshed local reports, including the completed Opus report, alongside all PR
+comments and CI results before finishing these follow-ups.
+
+| Finding | Disposition |
+| --- | --- |
+| IPv6 OpenCode URLs classified as remote; diagnostics miss the listener | Fixed both consumers through shared loopback/wildcard recognition. Socket probes and both OpenCode launch paths use bare IPv6; HTTP probes retain brackets. Diagnostic output fields and port-zero behavior stay unchanged. |
+| Expanded IPv6 wildcard binds print unusable LAN URLs and disable WSL guidance | Canonicalize IPv6 through the shared platform helper and recognize `::`. IPv4-mapped zero is a distinct address, not IPv6 unspecified; it retains explicit-host behavior rather than assuming identical bind semantics across platforms. |
+| Duplicated IPv6 parsing, empty ports, inconsistent port bounds and bare IPv6 spelling | Shared canonical IPv6 helper and one authority parser. Empty ports use the default, as specified by [RFC 9110](https://www.rfc-editor.org/rfc/rfc9110.html#section-4.2.1); invalid authorities cannot produce a canonical comparison key. Different addresses and ports remain different origins. |
+| Toast rerender test does not simulate Fast Refresh | Renamed the test to state what it proves and documented the ref lifetime next to the counter. No artificial HMR harness. |
+| WSL numeric-address prefix filter | Already gated by dotted numeric address validation; it does not misclassify hostnames or define backend trust. No change needed. |
+| Duplicate dismiss labels, React variable names, mock style and UUID formatting | No current defect. Tests deliberately use distinct messages; IDs remain opaque and accessibility labels remain meaningful. |
+
+Both full CI runs at `d3ca1356` passed:
+[push](https://github.com/looptroop-ai/LoopTroop/actions/runs/34675113565) and
+[pull request](https://github.com/looptroop-ai/LoopTroop/actions/runs/34675115114).
+CodeQL, Sonar and Semgrep passed. Codacy's
+[issue API](https://app.codacy.com/api/v3/analysis/organizations/gh/looptroop-ai/repositories/LoopTroop/pull-requests/155/issues)
+still attributes both toast findings to `71d94d2c`, quoting the removed non-null assertion and
+unawaited React update. Its current-head dashboard metadata does not mean those issue details
+were refreshed. Kilo again exhausted its model output limit. Full CI logs contained only the
+previously reviewed warning families documented below; no additional warning suppression was added.
+
+The website checkout was checked separately again. Its generic loopback, startup and diagnostic
+guidance remains accurate; no unreleased documentation was published. No new ignore rule is needed.
+
+Current follow-up validation: all 411 test files passed (5,642 tests passed, 10 skipped),
+including 165 focused network, startup and toast checks. Full lint, both typecheck projects,
+production build, package contents, production native-addon scan, script type stripping,
+version consistency and license checks passed. Diagnostic help ran successfully.
+No end-to-end or lifecycle smoke was run; the owner will review CI for the pushed update.
+
+### Final bot and CI review at `215aecb3`
+
+Both [push CI](https://github.com/looptroop-ai/LoopTroop/actions/runs/34676906940) and
+[PR CI](https://github.com/looptroop-ai/LoopTroop/actions/runs/34676908163) passed, including
+platform and packaging jobs. Full logs contain only the reviewed upstream warning families.
+Kilo again reached its model output limit. Gitar, Greptile and Qodo report no outstanding
+findings; CodeRabbit adds the two probe findings considered below. Its generic docstring
+quota does not justify boilerplate comments.
+
+Codacy has now refreshed: its current findings are the toast test's shorthand void callback
+and the provider probe's fetch, rather than the earlier stale assertions. The callback now
+uses a block. The fetch finding names existing developer-tool behavior moved by the IPv6
+fix: callers use operator configuration, and remote hosts return before this local probe.
+It is not a new application route accepting an untrusted destination.
+
+The redirect concern is relevant: a different listener could redirect a readiness probe and
+be mistaken for OpenCode. Provider, daemon health and doctor probes reject redirects, with local HTTP
+regression coverage. This follows the [Fetch redirect policy](https://fetch.spec.whatwg.org/#http-redirect-fetch)
+without adding a custom redirect validator.
+
+The request to omit authentication for all HTTP probes is rejected. The probe reaches local
+loopback/wildcard destinations, and [OpenCode supports HTTP Basic authentication](https://opencode.ai/docs/server/#authentication)
+on its local HTTP server. Removing the header breaks existing password-protected startup,
+including the dev launcher's generated credentials. Loopback does not authenticate the
+identity of a process occupying that port; TLS or authenticated IPC would address that broader
+threat but would require a separate transport design. No claim is made that redirects are the
+only possible local-process threat. The scanner finding may remain until its dashboard review.
+
+The whole PR diff and sibling network callers were checked again. Identifier contracts,
+daemon-lock contention coverage and remote-address rejection remain intact. The website's
+released startup/authentication instructions remain accurate; no website edit is needed.
+
+Follow-up validation passed: 411 test files, 5,645 tests passed and 10 skipped; full lint,
+both typecheck projects, production build, package contents, version consistency and script
+type stripping. The focused identifier/lock regressions and direct HTTP redirect/authentication
+tests also passed. No end-to-end or lifecycle smoke was run. New CI is left for owner review.
+
+## PR17 workflow, container and page hardening
+
 Reviewed on 2026-09-11 for roadmap stage PR17, implemented in
 [GitHub PR #154](https://github.com/looptroop-ai/LoopTroop/pull/154), based on `main` at `377628ec`.
 Match future findings by rule and code location; alert numbers are references to this scan only.
@@ -46,7 +214,7 @@ Reasons used in the ledger:
   plan specifies. Vite's production shell itself has no inline script or stylesheet.
   See [CodeMirror nonce support](https://codemirror.net/docs/ref/#view.EditorView%5EcspNonce).
 
-## Dismissal ledger
+## PR17 dismissal ledger
 
 All 27 rows below were dismissed as `won't fix` on GitHub on 2026-09-11, and their
 dismissed state was read back from the API. Each is accepted only for the stated scope.
@@ -204,6 +372,11 @@ remain visible; this decision does not suppress failures or weaken verification.
   uses simple patterns and has no identified engine mismatch. Reassess before adding patterns
   that depend on [RE2-specific behavior](https://docs.renovatebot.com/string-pattern-matching/);
   do not suppress the warning or broadly approve native installation scripts.
+  PR18's CI logs also contain the Google metadata dependency path through gaxios:
+  rimraf brings in a deprecated glob, while node-fetch and fetch-blob bring in node-domexception.
+  These paths still exist in [current Renovate registry metadata](https://registry.npmjs.org/renovate/latest)
+  and [gaxios metadata](https://registry.npmjs.org/gaxios/7.1.3), checked on 2026-09-12.
+  Updating the validator alone therefore does not remove these additional warnings.
 - **Linux binary injection:** postject's bundled LIEF emits `Can't find string offset for section name`
   diagnostics for `.note` sections. The [upstream maintainer identifies their source](https://github.com/nodejs/postject/issues/83#issuecomment-1506397578)
   and deliberately retains the diagnostics. The installed postject matches its

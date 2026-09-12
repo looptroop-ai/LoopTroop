@@ -1,6 +1,6 @@
 import { describe, it, expect, beforeEach, afterEach } from 'vitest'
 import { Hono } from 'hono'
-import { createHostGuardMiddleware, hostnameFromAuthority, requestAuthority } from '../hostGuard'
+import { canonicalAuthority, createHostGuardMiddleware, hostnameFromAuthority, portFromAuthority, requestAuthority } from '../hostGuard'
 
 /**
  * 2.8 contract: binding to loopback does not make the daemon private to a
@@ -50,6 +50,49 @@ describe('host guard', () => {
     // The URL is loopback; only the Host header exposes the rebinding, which is
     // why it is checked rather than inferred from the connection.
     expect(await response.json()).toMatchObject({ error: expect.stringContaining('loopback') })
+  })
+
+  it.each(['[::ffff:127.5.5.5]:3000', '[0:0:0:0:0:ffff:7fff:ffff]:3000', '[0:0:0:0:0:0:0:1]:3000'])('accepts mapped and expanded loopback Host %s with or without its matching Origin', async (host) => {
+    expect((await request({ Host: host })).status).toBe(200)
+    expect((await request({ Host: host, Origin: `http://${host}` })).status).toBe(200)
+  })
+
+  it.each(['[::ffff:128.0.0.1]:3000', '[::ffff:0:127.0.0.1]:3000', '127.attacker.example:3000', '[::1', '::1]', '[::1]evil', '[::1]:invalid', '[::1]:65536', '127.0.0.1:65536', 'localhost:invalid'])('rejects remote or malformed Host %s', async (host) => {
+    expect((await request({ Host: host })).status).toBe(403)
+  })
+
+  it('canonicalizes equivalent mapped spellings while keeping different hosts and ports separate', async () => {
+    const host = '[::ffff:127.5.5.5]:03000'
+    expect((await request({ Host: host, Origin: 'http://[::ffff:7f05:505]:3000' })).status).toBe(200)
+    for (const origin of ['http://[::ffff:7f05:505]:9999', 'http://[::ffff:7f05:506]:3000', 'http://127.5.5.5:3000']) {
+      expect((await request({ Host: host, Origin: origin })).status, origin).toBe(403)
+    }
+  })
+
+  it('still rejects remote mapped extra origins', async () => {
+    const origin = 'http://[::ffff:192.168.1.1]:5173'
+    expect((await request({ Host: '[::ffff:127.5.5.5]:3000', Origin: origin }, [origin])).status).toBe(403)
+  })
+
+  it.each(['127.0.0.1:', 'localhost:', '[::1]:', '[::ffff:127.5.5.5]:'])('treats an empty port in Host %s as the default port', async (host) => {
+    expect((await request({ Host: host })).status).toBe(200)
+    expect((await request({ Host: host, Origin: `http://${host.slice(0, -1)}` })).status).toBe(200)
+    expect((await request({ Host: host, Origin: `http://${host}3000` })).status).toBe(403)
+    expect(portFromAuthority(host)).toBeNull()
+    expect(canonicalAuthority(host)).toBe(canonicalAuthority(`${host}80`))
+  })
+
+  it.each(['', ':80', '127.0.0.1:99999', '[::1]:99999', '[::1]:bad', '[::1]suffix:80', '[::1', '::1]'])('does not build a canonical authority from invalid input %j', (host) => {
+    expect(hostnameFromAuthority(host)).toBe('')
+    expect(portFromAuthority(host)).toBeNull()
+    expect(canonicalAuthority(host)).toBe('')
+  })
+
+  it.each(['127.0.0.1', '[::1]'])('preserves the valid port boundaries for %s', (host) => {
+    for (const port of ['0', '00080', '65535']) {
+      expect(portFromAuthority(`${host}:${port}`)).toBe(port)
+      expect(canonicalAuthority(`${host}:${port}`)).toBe(`${hostnameFromAuthority(host)}:${Number(port)}`)
+    }
   })
 
   it('rejects a request driven from another origin', async () => {
@@ -217,6 +260,7 @@ describe('host guard', () => {
     expect(hostnameFromAuthority('127.0.0.1:3000')).toBe('127.0.0.1')
     expect(hostnameFromAuthority('[::1]:3000')).toBe('::1')
     expect(hostnameFromAuthority('::1')).toBe('::1')
+    expect(hostnameFromAuthority('0:0:0:0:0:0:0:1')).toBe('::1')
     expect(hostnameFromAuthority('LocalHost')).toBe('localhost')
   })
 })

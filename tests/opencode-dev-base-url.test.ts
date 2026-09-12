@@ -1,7 +1,104 @@
-import { describe, expect, it } from 'vitest'
-import { resolveOpenCodeBaseUrl } from '../scripts/opencode-dev-base-url'
+import { afterEach, describe, expect, it, vi } from 'vitest'
+import { createServer } from 'node:http'
+import { once } from 'node:events'
+import { getServeHostname, parseLocalPortFromUrl, resolveOpenCodeBaseUrl } from '../scripts/opencode-dev-base-url'
+
+afterEach(() => {
+  vi.unstubAllGlobals()
+  vi.unstubAllEnvs()
+})
 
 describe('resolveOpenCodeBaseUrl', () => {
+  it('authenticates a local provider directly but never follows its redirect', async () => {
+    vi.stubEnv('OPENCODE_SERVER_USERNAME', 'opencode')
+    vi.stubEnv('OPENCODE_SERVER_PASSWORD', 'local-test-password')
+    const authorization = `Basic ${Buffer.from('opencode:local-test-password').toString('base64')}`
+    let redirect = false
+    const requests: string[] = []
+    const server = createServer((req, res) => {
+      requests.push(req.url ?? '')
+      if (req.headers.authorization !== authorization) {
+        res.writeHead(401).end()
+      } else if (redirect && req.url === '/provider') {
+        res.writeHead(302, { Location: '/redirect-target' }).end()
+      } else {
+        res.writeHead(200).end('{}')
+      }
+    })
+    server.listen(0, '127.0.0.1')
+    await once(server, 'listening')
+    try {
+      const address = server.address()
+      if (!address || typeof address === 'string') throw new Error('Missing test listener')
+      const options = {
+        requestedBaseUrl: `http://127.0.0.1:${address.port}`,
+        hasExplicitBaseUrl: true,
+        deps: {
+          canConnect: async () => true,
+          inspectPortOccupants: () => ({ port: address.port, occupants: [], rawSocketSnapshot: null }),
+        },
+      }
+      expect((await resolveOpenCodeBaseUrl(options)).status).toBe('already-running')
+      redirect = true
+      await expect(resolveOpenCodeBaseUrl(options)).rejects.toThrow('occupied by a non-OpenCode process')
+      expect(requests).toEqual(['/provider', '/provider'])
+    } finally {
+      await new Promise<void>((resolve, reject) => server.close((error) => error ? reject(error) : resolve()))
+    }
+  })
+
+  it.each([
+    ['http://[::1]:4096', '::1'],
+    ['http://[::ffff:127.0.0.2]:4096', '::ffff:7f00:2'],
+    ['http://127.0.0.2:4096', '127.0.0.2'],
+    ['http://[::]:4096', '::'],
+  ])('probes %s with bare socket hosts and preserves URL brackets on fallback', async (requestedBaseUrl, hostname) => {
+    const canConnect = vi.fn(async () => true)
+    const canListen = vi.fn(async () => true)
+    const result = await resolveOpenCodeBaseUrl({
+      requestedBaseUrl,
+      hasExplicitBaseUrl: false,
+      deps: {
+        isOpenCodeResponding: async () => false,
+        canConnect,
+        canListen,
+        inspectPortOccupants: () => ({ port: 4096, occupants: [], rawSocketSnapshot: null }),
+      },
+    })
+
+    const fallback = new URL(requestedBaseUrl)
+    fallback.port = '4097'
+    expect(result.status).toBe('ready-to-start')
+    expect(result.baseUrl).toBe(fallback.origin)
+    expect(canConnect).toHaveBeenCalledWith(hostname, 4096)
+    expect(canListen).toHaveBeenCalledWith(hostname, 4097)
+    expect(getServeHostname(fallback)).toBe(hostname)
+  })
+
+  it.each([
+    ['http://[::1]:4096', 'http://[::1]:4096/provider'],
+    ['http://[::ffff:127.0.0.2]:4096', 'http://[::ffff:7f00:2]:4096/provider'],
+  ])('reuses %s through a valid bracketed provider URL', async (requestedBaseUrl, providerUrl) => {
+    const fetchMock = vi.fn(async () => new Response('{}'))
+    vi.stubGlobal('fetch', fetchMock)
+
+    const result = await resolveOpenCodeBaseUrl({ requestedBaseUrl, hasExplicitBaseUrl: true })
+
+    expect(result.status).toBe('already-running')
+    expect(fetchMock).toHaveBeenCalledWith(providerUrl, expect.any(Object))
+  })
+
+  it('probes the IPv6 loopback when a wildcard listener cannot be reached at ::', async () => {
+    const isOpenCodeResponding = vi.fn(async (_url: URL, hostname: string) => hostname === '::1')
+    const result = await resolveOpenCodeBaseUrl({
+      requestedBaseUrl: 'http://[::]:4096',
+      hasExplicitBaseUrl: true,
+      deps: { isOpenCodeResponding },
+    })
+    expect(result.status).toBe('already-running')
+    expect(isOpenCodeResponding.mock.calls.map((call) => call[1])).toEqual(['::', '::1'])
+  })
+
   it('reuses an already running OpenCode instance on the requested port', async () => {
     const result = await resolveOpenCodeBaseUrl({
       requestedBaseUrl: 'http://127.0.0.1:4096',
@@ -95,16 +192,39 @@ describe('resolveOpenCodeBaseUrl', () => {
     )
   })
 
-  it('skips local startup for remote hosts', async () => {
+  it.each(['example.com', '127.attacker.example', '[::ffff:192.0.2.1]', '[2001:db8::1]'])('skips local startup for remote host %s', async (host) => {
+    const canConnect = vi.fn(async () => false)
     const result = await resolveOpenCodeBaseUrl({
-      requestedBaseUrl: 'https://example.com/opencode/',
+      requestedBaseUrl: `https://${host}/opencode/`,
       hasExplicitBaseUrl: true,
+      deps: { canConnect },
     })
 
+    const baseUrl = `https://${new URL(`https://${host}`).hostname}/opencode`
     expect(result).toEqual({
-      baseUrl: 'https://example.com/opencode',
-      note: 'Using remote OpenCode at https://example.com/opencode.',
+      baseUrl,
+      note: `Using remote OpenCode at ${baseUrl}.`,
       status: 'remote',
     })
+    expect(canConnect).not.toHaveBeenCalled()
+  })
+})
+
+describe('parseLocalPortFromUrl', () => {
+  it.each([
+    ['http://[::1]:4096', 4096],
+    ['http://[::ffff:127.0.0.2]:4097', 4097],
+    ['http://127.0.0.2:4098', 4098],
+    ['http://localhost', 80],
+    ['https://[::1]', 443],
+    ['http://0.0.0.0:4096', 4096],
+    ['http://[0:0:0:0:0:0:0:0]:4096', 4096],
+    ['http://127.0.0.1:0', 0],
+    ['http://127.attacker.example:4096', null],
+    ['http://[::ffff:192.0.2.1]:4096', null],
+    ['http://example.com', null],
+    ['not a URL', null],
+  ])('extracts only local ports from %s', (url, expected) => {
+    expect(parseLocalPortFromUrl(url)).toBe(expected)
   })
 })

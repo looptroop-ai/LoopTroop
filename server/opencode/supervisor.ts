@@ -132,7 +132,7 @@ export interface OpenCodeSupervisorOptions {
 
 export async function probeOpenCode(baseUrl: string): Promise<boolean> {
   try {
-    const response = await fetch(`${baseUrl}/config`, { signal: AbortSignal.timeout(HEALTH_TIMEOUT_MS) })
+    const response = await fetch(`${baseUrl}/config`, { redirect: 'error', signal: AbortSignal.timeout(HEALTH_TIMEOUT_MS) })
     return response.ok
   } catch {
     return false
@@ -215,7 +215,8 @@ export class OpenCodeSupervisor {
     const spawnProcess = this.options.spawnProcess ?? spawn
 
     const logArgs = this.options.printLogs ? ['--print-logs', '--log-level', 'DEBUG'] : []
-    const argv = ['serve', ...logArgs, '--hostname', host, '--port', port]
+    const serveHost = host.startsWith('[') ? host.slice(1, -1) : host
+    const argv = ['serve', ...logArgs, '--hostname', serveHost, '--port', port]
 
     // Resolved rather than left to `PATH`. The resolver applies PATHEXT itself,
     // which is what the Windows shell used to be here for: `opencode` is only

@@ -251,3 +251,12 @@ Hono’s HTTP/HTTP2 server union; after that test-only correction, all 39 PR-rou
 scoped lint passed again. Website build, 79 tests and site/CLI-reference verification passed;
 the documentation is published on website main in `1ea845c`. No end-to-end or full lifecycle
 tests were run. Fresh CI after this follow-up is left for the owner; no merge was performed.
+
+
+## Final documentation placement
+
+At the owner's request, removed the detailed merge-verification paragraph from README. The
+docs landing page was unchanged. Dedicated workflow documentation retains the important
+no-UI completion, squash/rebase validation and protected-finish behavior; its long polling
+implementation note was shortened. The local plan's PR-19 section now contains a brief completed
+handoff and the receipt-ID decision, replacing stale implementation instructions.

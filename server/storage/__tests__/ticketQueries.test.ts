@@ -61,6 +61,31 @@ describe('runtime Manual QA bead origin projection', () => {
     }
   })
 
+  it('continues discovery after an attached project fails and retries it on the next sweep', async () => {
+    const broken = await createInitializedTestTicket(runtimeRepoManager, { title: 'Unavailable project', shortname: 'BROKE' })
+    const healthy = await createInitializedTestTicket(runtimeRepoManager, { title: 'Healthy project', shortname: 'HEALTH' })
+    for (const setup of [broken, healthy]) {
+      const context = getTicketContext(setup.ticket.id)!
+      context.projectDb.update(tickets).set({ status: 'WAITING_PR_REVIEW' })
+        .where(eq(tickets.id, context.localTicketId)).run()
+    }
+    const projects = await import('../projects')
+    const lookup = projects.getProjectContextById
+    const failure = vi.spyOn(projects, 'getProjectContextById').mockImplementation((id) => {
+      if (id === broken.project.id) throw new Error('Project database unavailable')
+      return lookup(id)
+    })
+    const warning = vi.spyOn(console, 'warn').mockImplementation(() => {})
+    try {
+      expect(listWaitingPullRequestTicketRefs()).toEqual([healthy.ticket.id])
+      expect(warning).toHaveBeenCalledWith(expect.stringContaining(`project ${broken.project.id}`))
+    } finally {
+      failure.mockRestore()
+      warning.mockRestore()
+    }
+    expect(listWaitingPullRequestTicketRefs().sort()).toEqual([broken.ticket.id, healthy.ticket.id].sort())
+  })
+
   it('keeps a ticket visible when its workspace is unsafe while refusing file access', async () => {
     const setup = await createInitializedTestTicket(runtimeRepoManager, { title: 'Unsafe workspace' })
     const saved = join(setup.paths.projectRoot, 'saved-ticket')

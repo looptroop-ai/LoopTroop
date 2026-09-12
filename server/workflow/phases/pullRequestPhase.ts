@@ -1106,7 +1106,7 @@ export function refreshPullRequestReport(ticketId: string, report: PullRequestRe
   upsertLatestPhaseArtifact(ticketId, PULL_REQUEST_REPORT_ARTIFACT, 'CREATING_PULL_REQUEST', JSON.stringify(report))
 }
 
-export async function refreshPullRequestState(projectPath: string, prNumber: number | null): Promise<PullRequestInfo | null> {
+export async function refreshPullRequestState(projectPath: string, prNumber: number | null): Promise<PullRequestInfo> {
   if (prNumber == null) {
     throw new Error('A recorded pull request number is required to refresh pull request state.')
   }
@@ -1152,12 +1152,7 @@ export async function completeMergedPullRequest(input: {
   prReport: PullRequestReport
   skipRemoteMerge?: boolean
 }): Promise<MergeCompletionReport> {
-  const existingPullRequest = await refreshPullRequestState(input.projectPath, input.prReport.prNumber)
-  if (!existingPullRequest) {
-    throw new Error(`No pull request found for branch ${input.headBranch}.`)
-  }
-
-  let pr = existingPullRequest
+  let pr = await refreshPullRequestState(input.projectPath, input.prReport.prNumber)
   let currentStep = 'verify_pull_request_candidate'
 
   try {

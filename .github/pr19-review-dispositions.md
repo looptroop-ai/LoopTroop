@@ -143,3 +143,76 @@ type-stripping, notices and installer checks passed. Website build, 79 tests and
 site/CLI-reference verification passed; the updated documentation was pushed directly to
 website main in commit `2b2a34b` and remains marked unreleased. No end-to-end or full
 lifecycle tests were run. New CI runs are left for the owner to verify.
+
+
+## Round 2: review of `9e5c8b6e`
+
+All eight refreshed reports in `tmp/pr19/`, PR conversation/review comments, inline comments,
+and current CI results were read before this round's fixes. The report paths are session-local,
+gitignored inputs; the dispositions below preserve their finding references for later readers.
+Claude, Deepseek, GPT, Gemini, Grok and Opus references use their numbered findings. Mimo uses
+its numbered confirmations and O-1/O-2. Muse's unnumbered bullets are identified here as M1–M14
+(merge section) and R1–R9 (receipt section), in their original order. This round supersedes earlier
+service statuses; it does not reopen the owner's recorded behavior decisions.
+
+| Findings | Disposition |
+| --- | --- |
+| Claude 1–2; Deepseek 1, 5; Gemini 4; Grok 2; Opus 6; Muse M3–M4 | Numbered GitHub lookup now returns valid metadata or throws. Malformed successful responses become visible advisory failures with backoff. Removed the unused branch lookup, obsolete mock and stale branch diagnostic. Missing head metadata still fails safely; branch/candidate validation was not relaxed. |
+| Grok 2; Muse M9 | Recognize `merged: true` as well as `merged_at`. Ready/merge refreshes reuse the numbered lookup and its requested/returned PR identity check. |
+| Grok 3 | Explicitly pin the supported REST API version that retains `merge_commit_sha`; retain the post-merge GET and exact candidate check. A future API migration is needed before the pinned version retires, rather than adding a second metadata source now. |
+| Deepseek 2; Grok 1; Muse M10 | A durable verified merge cannot be overwritten by Cancel or Finish Without Merge. If work after persisting proof fails, keep the waiting attempt available for recovery instead of dispatching ERROR and archiving its proof on Retry. Normal cleanup remains noncancelable. |
+| Claude 3; Deepseek 3; Muse M1–M2 | Checkpoint recovery validates the current attempt, stored PR number, candidate and recorded head. It repairs PR metadata and emits the structured merge audit details before resuming completion. |
+| Deepseek 4 | Rejected fallback to the checkpoint's self-declared identity when current runtime authority is missing. Recovery remains fail-closed against the current attempt and approved candidate; an older report cannot authorize a different attempt. |
+| Muse M6–M8 | Revalidate project root after the unlocked advisory read, alongside the existing waiting-state, PR-number, branch and candidate checks. Avoid the redundant advisory write when authoritative merged completion will update the report. Both callers already check the waiting state under the ticket lock; no duplicate entry guard added. |
+| Muse M5; Claude 17 | Preserve the generation timestamp and valid metadata provenance. Do not blanket-coalesce all nullable remote timestamps: `closedAt: null` can correctly mean the PR reopened. The merge report's completion time and the PR report's generation time describe different events. |
+| GPT 1; Opus 1, 6–8; Gemini 2; Muse M13–M14 | Retain the owner's advisory policy for all background failures, including validation failures: serial sweeps, 30 seconds after a sweep, 60/120/240/300-second failure backoff. Closed PRs remain observable because they can reopen. No terminal-error classifier, automatic skip, new sync route, concurrency, jitter or persistent retry policy. Missing approved candidate/PR identity prevents completion; documentation describes the limits. |
+| GPT 2 | Runtime import-time timeout was not reproduced: the existing runtime suite passed 14 tests in 8.14 seconds. Existing app routes already import merge completion, so lazy-loading only the poller would not remove the claimed dependency graph. No speculative import refactor. |
+| Opus 5; Grok 4; Gemini 5 | Update published ticket-flow and post-implementation guidance for noncancelable cleanup, checkpoint recovery, restart after a stall, and candidate-head plus landed-commit verification. In-app Merge still requires merge commits to be enabled; external squash/rebase remains supported. No merge-method configuration added. |
+| Gemini 1 | Repeated Finish Without Merge success was not requested. Preserve its existing state-conflict response; the owner's idempotent acknowledgement applies to a proven successful Merge. |
+| Gemini 3 | Preserve the interview phase's existing wrapper text and error-code behavior. Moving the workspace throw outside that wrapper would change the wire contract the owner explicitly retained. |
+| Grok 5 | Mock cleanup's unsupported-execution behavior is intentional and unchanged. Exhaustive mock dispatch does not introduce a new mock lifecycle. |
+| Claude 4, 7; Muse M11–M12; Opus 9 (logging) | Keep lock-scoped revalidation and bounded explicit merge serialization. No extra DB cache, lock-key redesign or per-process log suppression without a demonstrated need. Recovery's richer log is addressed above. Existing git/gh deadlines remain in force. |
+| Claude 5; Gemini 6; Deepseek minor (index); Opus 3; Muse R9 | SQLite is the chosen driver and the runtime index and Drizzle metadata agree. Existing tests write an actual generated receipt and reject a direct duplicate, so prefix/key drift that disables the runtime constraint is already detected. No additional schema framework or speculative constraint-target change. |
+| Claude 6; Opus 9 (receipt return); Muse R1–R4 | Retain receipt-ID uniqueness and duplicate-ignore behavior, including duplicates within one batch. The return contains newly written receipts. Action-level uniqueness would reject valid multiple receipts for one action; no extra action index/table, conflict exception or new summary identity scheme. |
+| Opus 2, 4; Muse R5–R7 | Fresh installs only: no backfill, deduplication, obsolete-table drop or opening a database after its required unique constraint fails. Production writers validate receipt JSON before inserting. Manually malformed rows do not justify weakening validation or changing the approved collision policy. |
+| Gemini 7; Muse R8 | Current small synchronous deletion transactions are correct on the same `node:sqlite` connection. No bulk-delete or transaction-handle rewrite solely for style. |
+| Deepseek minor (viewer label and report paths) | The repeated viewer ternary has no behavioral defect and does not require a separate refactor. Session-local report provenance is clarified above. |
+| Claude 8–16; Mimo 1–7, O-1/O-2; Opus “Verified, no action needed”; Gemini resolved-items section | These confirm prior fixes or chosen contracts: receipt-ID index, candidate-pinned merge, unlocked advisory reads with revalidation, noncancelable cleanup, repeated proven-Merge acknowledgement, exhaustive mock dispatch, lightweight discovery and isolated poller logging. No additional implementation was requested by these confirmations. |
+
+[Greptile comment 3996227636](https://github.com/looptroop-ai/LoopTroop/pull/156#discussion_r3996227636)
+identified one attached project's database failure preventing discovery in every other project.
+Discovery now isolates and reports each project failure while continuing healthy projects. This
+preserves required schema validation; it does not open a failing database without its constraint.
+Other saved comments repeat findings already accounted for in this ledger.
+
+The [GitHub API version policy](https://docs.github.com/en/rest/about-the-rest-api/api-versions?apiVersion=2022-11-28)
+sets retirement of the pinned `2022-11-28` API to March 10, 2028. The explicit pin makes the
+landed-SHA dependency visible; it is not a claim of indefinite API support.
+
+### Round 2 CI and verification
+
+The PR page showed 94 checks: 90 successful, three skipped and one failed. The REST check-runs
+endpoint listed 93 because it excludes the additional commit status (89 successful, three skipped,
+one failed). Both [CI run 34695291630](https://github.com/looptroop-ai/LoopTroop/actions/runs/34695291630)
+and [CI run 34695294347](https://github.com/looptroop-ai/LoopTroop/actions/runs/34695294347) passed,
+as did [CodeQL run 34695292044](https://github.com/looptroop-ai/LoopTroop/actions/runs/34695292044).
+
+Actual log warnings match the retained upstream dispositions above: artifact extraction's Buffer
+deprecation, Renovate's transitive deprecations and RE2 fallback, postject's Linux section/Windows
+signature diagnostics, and the approved npm fallback in the Node Current job. No new action
+retirement warning was found. Session-local logs are `/tmp/pr19-round2-run-<run-id>.log`.
+
+[Codacy](https://app.codacy.com/gh/looptroop-ai/LoopTroop/pull-requests/156) now passes and reports
+two solved findings; the previous action-required result is superseded. Sonar reports no new issues
+or security hotspots. [Kilo's latest review](https://app.kilo.ai/code-reviews/45123389-16ec-4d7b-8b44-3fa83de77972)
+failed because its assistant request was rate limited. This is an incomplete service review, not a
+code finding. No service status was dismissed or changed.
+
+The combined follow-up passed all 413 application test files: 5,767 tests passed and 10 skipped.
+Full lint, both typecheck projects, build, type-stripping, notices, installer consistency, package
+contents, native-addon and version checks passed. Focused regressions cover GitHub metadata,
+checkpoint recovery and conflicting actions, project-root revalidation, and discovery isolation.
+Website build, all 79 tests and site/CLI-reference verification passed; documentation was pushed
+to website main in `8d79d5a`, with new behavior still marked unreleased. No end-to-end or full
+lifecycle tests were run. The green remote CI results above describe `9e5c8b6e`; fresh CI after
+this follow-up is left for the owner to verify.

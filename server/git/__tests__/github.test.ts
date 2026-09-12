@@ -52,7 +52,7 @@ describe('server/git/github', () => {
   it('reads the GitHub-recorded landed SHA by PR number even with a deleted head repository', async () => {
     spawnSyncMock.mockImplementation((command: string, args: readonly string[]) => {
       if (command === 'git') return makeSpawnResult({ stdout: 'https://github.com/looptroop-ai/LoopTroop.git' })
-      expect(args).toEqual(['api', 'repos/looptroop-ai/LoopTroop/pulls/42', '--method', 'GET'])
+      expect(args).toEqual(['api', 'repos/looptroop-ai/LoopTroop/pulls/42', '--method', 'GET', '-H', 'X-GitHub-Api-Version: 2022-11-28'])
       return makeSpawnResult({ stdout: JSON.stringify({
         number: 42, html_url: 'https://github.com/looptroop-ai/LoopTroop/pull/42', title: 'Merged PR',
         state: 'closed', merged_at: '2026-01-01T00:00:00Z', merge_commit_sha: 'landed-sha',
@@ -82,6 +82,41 @@ describe('server/git/github', () => {
     await expect(github.getPullRequestByNumber('/repo', 42)).rejects.toThrow('returned pull request #99, expected #42')
   })
 
+  it.each([null, {}, { number: 42 }, { number: 42, html_url: 'url', title: 'PR', state: 'closed', base: { ref: 'main' } }])('rejects malformed numbered PR metadata: %j', async (record) => {
+    spawnSyncMock.mockImplementation((command: string) => command === 'git'
+      ? makeSpawnResult({ stdout: 'https://github.com/looptroop-ai/LoopTroop.git' })
+      : makeSpawnResult({ stdout: JSON.stringify(record) }))
+    const github = await import('../github')
+    await expect(github.getPullRequestByNumber('/repo', 42)).rejects.toThrow('invalid metadata for pull request #42')
+  })
+
+  it('recognizes merged=true even when the merged timestamp is unavailable', async () => {
+    spawnSyncMock.mockImplementation((command: string) => command === 'git'
+      ? makeSpawnResult({ stdout: 'https://github.com/looptroop-ai/LoopTroop.git' })
+      : makeSpawnResult({ stdout: JSON.stringify({
+        number: 42, html_url: 'url', title: 'Merged PR', state: 'closed', merged: true, merged_at: null,
+        merge_commit_sha: 'landed', head: { ref: 'head', sha: 'candidate' }, base: { ref: 'main' },
+      }) }))
+    const github = await import('../github')
+    expect(await github.getPullRequestByNumber('/repo', 42)).toMatchObject({ state: 'merged', mergedAt: null })
+  })
+
+  it.each(['ready', 'merge'])('validates the refreshed PR identity after %s', async (action) => {
+    spawnSyncMock.mockImplementation((command: string, args: readonly string[]) => {
+      if (command === 'git') return makeSpawnResult({ stdout: 'https://github.com/looptroop-ai/LoopTroop.git' })
+      if (args.includes('ready') || args.includes('PUT')) return makeSpawnResult({ stdout: '{}' })
+      expect(args).toContain('X-GitHub-Api-Version: 2022-11-28')
+      return makeSpawnResult({ stdout: JSON.stringify({
+        number: 99, html_url: 'url', title: 'Wrong PR', state: 'open',
+        head: { ref: 'head', sha: 'candidate' }, base: { ref: 'main' },
+      }) })
+    })
+    const github = await import('../github')
+    await expect(action === 'ready'
+      ? github.markPullRequestReady('/repo', 42)
+      : github.mergePullRequest('/repo', 42, 'PR', 'candidate')).rejects.toThrow('returned pull request #99, expected #42')
+  })
+
   it('pins the GitHub merge request to the approved candidate head', async () => {
     spawnSyncMock.mockImplementation((command: string, args: readonly string[]) => {
       if (command === 'git') return makeSpawnResult({ stdout: 'https://github.com/looptroop-ai/LoopTroop.git' })
@@ -89,6 +124,7 @@ describe('server/git/github', () => {
         expect(args).toEqual([
           'api', 'repos/looptroop-ai/LoopTroop/pulls/42/merge', '--method', 'PUT',
           '-f', 'merge_method=merge', '-f', 'commit_title=Approved change', '-f', 'sha=candidate-sha',
+          '-H', 'X-GitHub-Api-Version: 2022-11-28',
         ])
         return makeSpawnResult({ stdout: '{"merged":true}' })
       }

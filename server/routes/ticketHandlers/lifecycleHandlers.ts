@@ -388,7 +388,8 @@ async function handleCancelTicketLocked(c: Context) {
   if (isTerminalWorkflowStatus(ticket.status)) {
     return c.json({ error: 'Cannot cancel a terminal ticket' }, 409)
   }
-  if (!getAvailableWorkflowActions(ticket.status).includes('cancel')) {
+  if (!getAvailableWorkflowActions(ticket.status).includes('cancel')
+    || (ticket.status === 'WAITING_PR_REVIEW' && hasVerifiedMergeReport(ticket))) {
     return c.json({ error: 'Cannot cancel a ticket after completion has started' }, 409)
   }
 
@@ -511,6 +512,15 @@ async function handleMergeTicketLocked(c: Context) {
   try {
     await completeTicketMerge(ticket, ticketContext.projectRoot, prReport)
   } catch (err) {
+    const current = getTicketByRef(ticketId)
+    if (current && hasVerifiedMergeReport(current)) {
+      // Keep the verified attempt visible so the poller or another Merge can finish it.
+      // Dispatching ERROR here would let Retry archive the committed checkpoint.
+      return c.json({
+        error: 'The pull request merge is verified, but ticket completion failed. Try Merge again.',
+        details: getErrorMessage(err),
+      }, 500)
+    }
     const details = getErrorMessage(err)
     const message = `Pull request merge failed: ${details}`
     const codes = ['PULL_REQUEST_MERGE_FAILED']
@@ -545,6 +555,10 @@ async function handleCloseUnmergedTicketLocked(c: Context) {
   if (mockResponse) return mockResponse
   if (ticket.status !== 'WAITING_PR_REVIEW') {
     return c.json({ error: 'Ticket is not waiting for pull request review' }, 409)
+  }
+
+  if (hasVerifiedMergeReport(ticket)) {
+    return c.json({ error: 'The pull request merge is already verified; completion is pending. Try Merge again.' }, 409)
   }
 
   const rawBody = await readJsonBody(c)

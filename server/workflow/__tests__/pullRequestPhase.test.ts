@@ -25,7 +25,6 @@ const mocks = vi.hoisted(() => ({
   readGitDiff: vi.fn(),
   createOrUpdateDraftPullRequest: vi.fn(),
   captureGitRecoveryReceipt: vi.fn((input: unknown) => input),
-  getPullRequestForBranch: vi.fn(),
   getPullRequestByNumber: vi.fn(),
   ensureWorktreeClean: vi.fn(),
   markPullRequestReady: vi.fn(),
@@ -60,7 +59,6 @@ vi.mock('../../git/github', () => ({
   readGitDiff: mocks.readGitDiff,
   createOrUpdateDraftPullRequest: mocks.createOrUpdateDraftPullRequest,
   captureGitRecoveryReceipt: mocks.captureGitRecoveryReceipt,
-  getPullRequestForBranch: mocks.getPullRequestForBranch,
   getPullRequestByNumber: mocks.getPullRequestByNumber,
   ensureWorktreeClean: mocks.ensureWorktreeClean,
   markPullRequestReady: mocks.markPullRequestReady,
@@ -476,7 +474,6 @@ describe('pull request drafting context', () => {
     })
 
     expect(mocks.getPullRequestByNumber).toHaveBeenCalledWith(context.externalId, 42)
-    expect(mocks.getPullRequestForBranch).not.toHaveBeenCalled()
     expect(mocks.mergePullRequest).toHaveBeenCalledTimes(method === 'app merge' ? 1 : 0)
     if (method === 'app merge') {
       expect(mocks.mergePullRequest).toHaveBeenCalledWith(context.externalId, 42, prInfo.title, 'candidate123')
@@ -502,13 +499,10 @@ describe('pull request drafting context', () => {
   it('refreshes the stored PR number when its head branch was deleted or reused', async () => {
     const stored = { number: 42, state: 'merged', headRefName: 'deleted-head' }
     mocks.getPullRequestByNumber.mockResolvedValueOnce(stored)
-    mocks.getPullRequestForBranch.mockResolvedValueOnce({ number: 99, state: 'open' })
 
     expect(await refreshPullRequestState('/repo', 42)).toBe(stored)
     expect(mocks.getPullRequestByNumber).toHaveBeenCalledWith('/repo', 42)
-    expect(mocks.getPullRequestForBranch).not.toHaveBeenCalled()
     await expect(refreshPullRequestState('/repo', null)).rejects.toThrow('recorded pull request number is required')
-    expect(mocks.getPullRequestForBranch).not.toHaveBeenCalled()
     expect(mocks.getPullRequestByNumber).toHaveBeenCalledTimes(1)
   })
 

@@ -1039,7 +1039,7 @@ const WORKFLOW_PHASE_DETAILS = {
     notes: [
       'Context available: PR metadata, final test report, integration summary, and merge controls. No AI prompt context is assembled in this review gate.',
       'This is the final human quality gate in the GitHub endgame.',
-      'Repeating Merge after a verified merge has entered cleanup or completed returns the recorded success without merging again.',
+      'Repeating Merge after a verified merge has entered cleanup or completed returns the recorded success without merging again. A verified merge checkpoint also prevents Cancel or Finish Without Merge from replacing the recorded outcome while finalization is pending.',
       'Finishing without merge does not require deleting the PR or the remote branch.',
       'Finishing without merge is a decision worth explaining. Nothing later in the ticket asks why the branch stopped.',
       'Internal merge, fetch, push, and cleanup commands appear in `SYS > CMD` as final summaries so the review gate stays auditable without noisy progress chatter.',
@@ -1064,7 +1064,7 @@ const WORKFLOW_PHASE_DETAILS = {
     notes: [
       'Context available: Ticket Details and Beads Plan.',
       'Cleanup is conservative. When there is doubt, LoopTroop preserves resources instead of deleting them.',
-      'Once cleanup starts, the finish decision is recorded and Cancel is no longer available.',
+      'Once cleanup starts, the finish decision is recorded and Cancel is no longer available. Restarting the daemon retries interrupted cleanup from saved state.',
       'Cleanup warnings are housekeeping issues, not delivery failures. The ticket status still becomes Completed.',
     ],
   },
@@ -1607,7 +1607,7 @@ const BASE_WORKFLOW_PHASES = [
   {
     id: 'WAITING_PR_REVIEW',
     label: 'Reviewing Pull Request',
-    description: 'Review the draft pull request, final diff, ignored-file audit, and test results before you merge or finish without merging. Finishing without merging asks for confirmation and takes an optional reason. This is the last human gate before cleanup and terminal completion. The running daemon detects merges made on GitHub, including squash and rebase merges, without an open UI. It checks the approved candidate head and landed commit, and resumes verified completion after a restart. Repeated Merge requests return the recorded success after a verified merge.',
+    description: 'Review the draft pull request, final diff, ignored-file audit, and test results before you merge or finish without merging. Finishing without merging asks for confirmation and takes an optional reason. This is the last human gate before cleanup and terminal completion. The running daemon detects merges made on GitHub, including squash and rebase merges, without an open UI. It checks the approved candidate head and landed commit, and resumes verified completion after a restart. Repeated Merge requests return the recorded success after a verified merge. Once that merge is recorded, Cancel and Finish Without Merge cannot replace it.',
     details: WORKFLOW_PHASE_DETAILS.WAITING_PR_REVIEW,
     kanbanPhase: 'needs_input',
     groupId: 'post_implementation',
@@ -1620,7 +1620,7 @@ const BASE_WORKFLOW_PHASES = [
   {
     id: 'CLEANING_ENV',
     label: 'Cleaning Up',
-    description: 'The finish decision is recorded, so this ticket can no longer be canceled. LoopTroop is removing temporary runtime data while keeping the artifacts and logs you may still want to inspect. Cleanup warnings remain visible, but they do not turn a successful delivery into a failure.',
+    description: 'The finish decision is recorded, so this ticket can no longer be canceled. LoopTroop is removing temporary runtime data while keeping the artifacts and logs you may still want to inspect. Cleanup warnings remain visible, but they do not turn a successful delivery into a failure. Restarting the daemon retries interrupted cleanup.',
     details: WORKFLOW_PHASE_DETAILS.CLEANING_ENV,
     kanbanPhase: 'in_progress',
     groupId: 'post_implementation',

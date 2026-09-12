@@ -1315,13 +1315,17 @@ export function listTickets(projectId?: number): PublicTicket[] {
 export function listWaitingPullRequestTicketRefs(): string[] {
   const refs: string[] = []
   for (const attached of appDb.select({ id: attachedProjects.id }).from(attachedProjects).all()) {
-    const project = getProjectContextById(attached.id)
-    if (!project) continue
-    const waiting = project.projectDb.select({ externalId: tickets.externalId }).from(tickets).where(and(
-      eq(tickets.status, 'WAITING_PR_REVIEW'),
-      or(isNull(tickets.branchName), ne(tickets.branchName, DISPLAY_ONLY_MOCK_BRANCH_NAME)),
-    )).all()
-    refs.push(...waiting.map(ticket => buildTicketRef(attached.id, ticket.externalId)))
+    try {
+      const project = getProjectContextById(attached.id)
+      if (!project) continue
+      const waiting = project.projectDb.select({ externalId: tickets.externalId }).from(tickets).where(and(
+        eq(tickets.status, 'WAITING_PR_REVIEW'),
+        or(isNull(tickets.branchName), ne(tickets.branchName, DISPLAY_ONLY_MOCK_BRANCH_NAME)),
+      )).all()
+      refs.push(...waiting.map(ticket => buildTicketRef(attached.id, ticket.externalId)))
+    } catch (error) {
+      console.warn(`[merge-poller] Could not discover waiting tickets for project ${attached.id}: ${getErrorMessage(error)}`)
+    }
   }
   return refs
 }

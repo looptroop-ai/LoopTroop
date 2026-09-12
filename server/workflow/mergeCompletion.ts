@@ -26,30 +26,54 @@ export async function withTicketMergeLock<T>(ticketId: string, operation: () => 
   }
 }
 
-/** A successful report for this attempt is the checkpoint before the workflow event. */
-export function hasVerifiedMergeReport(ticket: PublicTicket): boolean {
+/** A successful report for the current attempt is the checkpoint before the workflow event. */
+function readVerifiedMergeReport(ticket: PublicTicket) {
   const artifact = getLatestPhaseArtifact(ticket.id, 'merge_report', 'WAITING_PR_REVIEW')
-  if (!artifact) return false
+  const prReport = readPullRequestReport(ticket.id)
+  if (!artifact || !prReport) return null
   try {
     const report: unknown = JSON.parse(artifact.content)
-    return isRecord(report)
-      && report.status === 'passed' && report.disposition === 'merged' && report.prState === 'merged'
-      && typeof report.baseBranch === 'string' && report.baseBranch.length > 0
-      && report.baseBranch === ticket.runtime.baseBranch
-      && report.headBranch === (ticket.branchName?.trim() || ticket.externalId)
-      && typeof report.candidateCommitSha === 'string' && report.candidateCommitSha.length > 0
-      && report.candidateCommitSha === ticket.runtime.candidateCommitSha
-      && typeof report.prNumber === 'number' && Number.isInteger(report.prNumber) && report.prNumber > 0
-      && typeof report.remoteBaseHead === 'string' && report.remoteBaseHead.length > 0
+    if (!isRecord(report)
+      || report.status !== 'passed' || report.disposition !== 'merged' || report.prState !== 'merged'
+      || typeof report.baseBranch !== 'string' || report.baseBranch.length === 0
+      || report.baseBranch !== ticket.runtime.baseBranch
+      || report.headBranch !== (ticket.branchName?.trim() || ticket.externalId)
+      || typeof report.candidateCommitSha !== 'string' || report.candidateCommitSha.length === 0
+      || report.candidateCommitSha !== ticket.runtime.candidateCommitSha
+      || report.prHeadSha !== report.candidateCommitSha
+      || typeof report.prNumber !== 'number' || !Number.isSafeInteger(report.prNumber) || report.prNumber <= 0
+      || report.prNumber !== prReport.prNumber
+      || (report.prUrl !== null && typeof report.prUrl !== 'string')
+      || typeof report.message !== 'string'
+      || typeof report.remoteBaseHead !== 'string' || report.remoteBaseHead.length === 0) return null
+    return {
+      prNumber: report.prNumber, prUrl: report.prUrl, prState: 'merged' as const,
+      prHeadSha: report.candidateCommitSha, message: report.message, remoteBaseHead: report.remoteBaseHead,
+    }
   } catch {
-    return false
+    return null
   }
 }
 
+export function hasVerifiedMergeReport(ticket: PublicTicket): boolean {
+  return readVerifiedMergeReport(ticket) !== null
+}
+
 function resumeVerifiedMerge(ticket: PublicTicket): boolean {
-  if (!hasVerifiedMergeReport(ticket)) return false
+  const report = readVerifiedMergeReport(ticket)
+  if (!report) return false
+  const prReport = readPullRequestReport(ticket.id)!
+  // A crash can leave the PR projection behind the committed verification report.
+  // Keep its timestamps: the checkpoint records verification, not GitHub's merge time.
+  refreshPullRequestReport(ticket.id, {
+    ...prReport,
+    prNumber: report.prNumber, prUrl: report.prUrl, prState: report.prState,
+    prHeadSha: report.prHeadSha, message: report.message,
+  })
   ensureActorForTicket(ticket.id)
-  emitRoutePhaseLog(ticket.id, 'WAITING_PR_REVIEW', 'info', 'Resuming completion of the verified pull request merge.')
+  emitRoutePhaseLog(ticket.id, 'WAITING_PR_REVIEW', 'info', 'Resuming completion of the verified pull request merge.', {
+    prNumber: report.prNumber, prUrl: report.prUrl, prState: report.prState, remoteBaseHead: report.remoteBaseHead,
+  })
   sendTicketEvent(ticket.id, { type: 'MERGE_COMPLETE' })
   return true
 }
@@ -114,13 +138,14 @@ export async function syncWaitingPullRequestTicket(ticketId: string): Promise<vo
     input.projectRoot,
     input.report.prNumber,
   )
-  if (!pr) return
   await withTicketMergeLock(ticketId, async () => {
     const ticket = getTicketByRef(ticketId)
     if (!ticket || ticket.status !== 'WAITING_PR_REVIEW' || isDisplayOnlyMockTicket(ticket)) return
     if (resumeVerifiedMerge(ticket)) return
+    const context = getTicketContext(ticketId)
     const report = readPullRequestReport(ticketId)
-    if (!report || report.prNumber !== input.report.prNumber
+    if (!context || context.projectRoot !== input.projectRoot
+      || !report || report.prNumber !== input.report.prNumber
       || ticket.branchName !== input.ticket.branchName
       || ticket.runtime.baseBranch !== input.ticket.runtime.baseBranch
       || ticket.runtime.candidateCommitSha !== input.ticket.runtime.candidateCommitSha) return
@@ -136,11 +161,11 @@ export async function syncWaitingPullRequestTicket(ticketId: string): Promise<vo
       mergedAt: pr.mergedAt,
       closedAt: pr.closedAt,
     }
-    if (pr.state !== report.prState || pr.headRefOid !== report.prHeadSha) {
+    if (pr.state !== 'merged' && (pr.state !== report.prState || pr.headRefOid !== report.prHeadSha)) {
       refreshPullRequestReport(ticketId, updatedReport)
     }
     if (pr.state === 'merged') {
-      await completeTicketMerge(ticket, input.projectRoot, updatedReport, true)
+      await completeTicketMerge(ticket, context.projectRoot, updatedReport, true)
     }
   })
 }

@@ -609,6 +609,23 @@ describe('repairYamlFreeTextScalars', () => {
     expect(parsed.answer.free_text).toBe(expectedValue)
   })
 
+  it.each(['|some prose', '>some prose', '|2more prose', '>-more prose'])('quotes glued free_text value %s without changing its text', (value) => {
+    const input = `answer:\n  free_text: ${value} # note\n  answered_by: user`
+    const expected = `answer:\n  free_text: "${value}" # note\n  answered_by: user`
+
+    expect(() => jsYaml.load(input)).toThrow()
+    const repaired = repairYamlFreeTextScalars(input)
+    expect(repaired).toBe(expected)
+    expect(jsYaml.load(repaired)).toEqual({ answer: { free_text: value, answered_by: 'user' } })
+    expect(repairYamlFreeTextScalars(repaired)).toBe(repaired)
+  })
+
+  it.each(['|', '>', '|2-', '>-2', '| # note', '>+ # note'])('preserves valid free_text block header %s', (header) => {
+    const input = `answer:\n  free_text: ${header}\n    prose: unchanged\n  answered_by: user`
+    expect(repairYamlFreeTextScalars(input)).toBe(input)
+    expect(jsYaml.load(input)).toEqual({ answer: { free_text: expect.any(String), answered_by: 'user' } })
+  })
+
   it('preserves block-scalar free_text values unchanged', () => {
     const input = [
       'answer:',
@@ -1411,31 +1428,13 @@ describe.concurrent('repairYamlDuplicateKeys — block scalars', () => {
     expect(repairYamlDuplicateKeys(input)).toBe(input)
   })
 
-  /**
-   * Current behaviour, and a defect: a blank line ends the skip.
-   *
-   * The nested-block skip passes blank and comment lines through, but the
-   * block-scalar skip only continues while a line is indented deeper than the
-   * key — and a blank line measures as indent zero. So the removal stops there
-   * and the rest of the duplicate is emitted again, folded into the first
-   * scalar, which invents a value neither copy had.
-   *
-   * Asserted as it stands so that the fix is a visible edit to this file rather
-   * than a silent change in what the repair accepts. The fix belongs to the
-   * cleanup plan's §13.7 ("duplicate block-scalar skip gap"), which lets the
-   * block-scalar skip pass blank and comment lines through the way the
-   * nested-block skip already does. When that lands, this expectation becomes
-   * the input with the duplicate fully removed.
-   */
-  it('stops removing a duplicate block scalar at the first blank line', () => {
-    const input = ['t: |', '  one', '', '  two', 't: |', '  one', '', '  two', 'z: 9'].join('\n')
+  it.each(['', ' ', '# note'])('removes the whole duplicate scalar across a %j line', (gap) => {
+    const input = ['t: |', '  one', '', '  two', 't: |', '  one', gap, '  two', 'z: 9'].join('\n')
+    const repaired = repairYamlDuplicateKeys(input)
 
-    expect(repairYamlDuplicateKeys(input)).toBe(
-      ['t: |', '  one', '', '  two', '', '  two', 'z: 9'].join('\n'),
-    )
-    // The surviving tail is what makes this a defect rather than a cosmetic
-    // gap: the repaired scalar carries a line the source never had twice.
-    expect(jsYaml.load(repairYamlDuplicateKeys(input))).toEqual({ t: 'one\n\ntwo\n\ntwo\n', z: 9 })
+    expect(repaired).toBe(['t: |', '  one', '', '  two', 'z: 9'].join('\n'))
+    expect(jsYaml.load(repaired)).toEqual({ t: 'one\n\ntwo\n', z: 9 })
+    expect(repairYamlDuplicateKeys(repaired)).toBe(repaired)
   })
 })
 

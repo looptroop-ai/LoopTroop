@@ -1,8 +1,10 @@
 import * as jsYaml from 'js-yaml'
+import { createHash } from 'node:crypto'
 import type { PromptPart } from '../opencode/types'
 import { repairYamlDoubleQuotedInvalidEscapes, repairYamlDoubleQuotedScalarInnerQuotes, repairYamlDuplicateKeys, repairYamlFreeTextScalars, repairYamlIndentation, repairYamlInlineKeys, repairYamlInlineSequenceParents, repairYamlListDashSpace, repairYamlMappingKeyColonSpace, repairYamlNestedMappingChildren, repairYamlPlainScalarColons, repairYamlQuotedScalarFragments, repairYamlReservedIndicatorScalars, repairYamlSequenceEntryIndent, repairYamlSequenceItemPrimaryKeys, repairYamlTypeUnionScalars, repairYamlUnclosedQuotes, repairYamlWrappedPlainListScalars, stripCodeFences, type YamlSequenceItemPrimaryKeyOptions, type YamlSequenceItemPrimaryKeyRepair } from '@shared/yamlRepair'
 import { isRecord } from '@shared/typeGuards'
 import { stripTranscriptPrefixes as stripSharedTranscriptPrefixes } from '@shared/transcriptPrefix'
+import { cacheParse, getCachedParse } from './parseCache'
 
 export { isRecord }
 
@@ -16,9 +18,9 @@ export function stripTranscriptPrefixes(content: string): string {
   return stripSharedTranscriptPrefixes(content).trim()
 }
 
-function addCandidate(target: string[], seen: Set<string>, value: string | null | undefined) {
+function addCandidate(target: string[], seen: Set<string>, value: string | null | undefined, excluded?: string) {
   const normalized = value?.trim()
-  if (!normalized || seen.has(normalized)) return
+  if (!normalized || normalized === excluded || seen.has(normalized)) return
   seen.add(normalized)
   target.push(normalized)
 }
@@ -519,16 +521,9 @@ function buildTrailingTerminalNoiseVariants(content: string): string[] {
   const variants: string[] = []
   const seen = new Set<string>()
 
-  const addVariant = (value: string | null) => {
-    const normalized = value?.trim()
-    if (!normalized || normalized === content || seen.has(normalized)) return
-    seen.add(normalized)
-    variants.push(normalized)
-  }
-
-  addVariant(stripTrailingTerminalNoiseFromBalancedJson(content))
-  addVariant(stripTrailingInlineTerminalNoise(content))
-  addVariant(stripTrailingTerminalNoiseLines(content))
+  addCandidate(variants, seen, stripTrailingTerminalNoiseFromBalancedJson(content), content)
+  addCandidate(variants, seen, stripTrailingInlineTerminalNoise(content), content)
+  addCandidate(variants, seen, stripTrailingTerminalNoiseLines(content), content)
 
   return variants
 }
@@ -556,7 +551,59 @@ function stripTrailingClosingCodeFenceLine(content: string): string | null {
   return stripped || null
 }
 
+// Only this prefix is shared. Later branches deliberately try different repair
+// sequences; retain the intermediate strings for their existing warning checks.
+function applyInlineRepairPipeline(candidate: string, options?: ParseYamlOrJsonCandidateOptions) {
+  const inlineSequence = repairYamlInlineSequenceParents(candidate)
+  const inlineKeys = repairYamlInlineKeys(inlineSequence, {
+    nestedMappingChildren: options?.nestedMappingChildren,
+  })
+  const yaml = repairYamlMappingKeyColonSpace(inlineKeys, {
+    sequenceItemPrimaryKeys: options?.sequenceItemPrimaryKeys,
+  })
+  return { inlineSequence, inlineKeys, yaml }
+}
+
+// Bump when repair rules or their ordering change, including shared/yamlRepair.ts.
+const REPAIR_PIPELINE_VERSION = '1'
+
 export function parseYamlOrJsonCandidate(
+  content: string,
+  options?: ParseYamlOrJsonCandidateOptions,
+): unknown {
+  const trimmed = content.trim()
+  if (!trimmed) return null
+  // Preserve option property order: repair rules may traverse it. Warning sinks
+  // belong to callers and must neither enter the key nor be retained in a cache.
+  const key = createHash('sha256')
+    .update(JSON.stringify([
+      REPAIR_PIPELINE_VERSION,
+      options?.nestedMappingChildren ?? null,
+      options?.sequenceItemPrimaryKeys ?? null,
+      options?.allowTrailingTerminalNoise ?? false,
+    ]))
+    .update('\0')
+    // UTF-8 replaces lone surrogates, which would alias distinct valid JSON strings.
+    .update(trimmed, 'utf16le')
+    .digest('hex')
+  const cached = getCachedParse(key)
+  if (cached) {
+    for (const warning of cached.repairWarnings) appendRepairWarningOnce(options?.repairWarnings, warning)
+    return cached.value
+  }
+
+  const repairWarnings: string[] = []
+  try {
+    const parsed = parseYamlOrJsonCandidateUncached(trimmed, { ...options, repairWarnings })
+    cacheParse(key, parsed, repairWarnings)
+    return parsed
+  } finally {
+    // Preserve diagnostics on failed parses too; failures are deliberately not cached.
+    for (const warning of repairWarnings) appendRepairWarningOnce(options?.repairWarnings, warning)
+  }
+}
+
+function parseYamlOrJsonCandidateUncached(
   content: string,
   options?: ParseYamlOrJsonCandidateOptions,
 ): unknown {
@@ -641,13 +688,11 @@ export function parseYamlOrJsonCandidate(
         } catch { /* fall through to the original input and later repairs */ }
       }
 
-      const inlineSequencePreRepaired = repairYamlInlineSequenceParents(candidate)
-      const inlineKeyPreRepaired = repairYamlInlineKeys(inlineSequencePreRepaired, {
-        nestedMappingChildren: options?.nestedMappingChildren,
-      })
-      const mappingKeyColonSpacePreRepaired = repairYamlMappingKeyColonSpace(inlineKeyPreRepaired, {
-        sequenceItemPrimaryKeys: options?.sequenceItemPrimaryKeys,
-      })
+      const {
+        inlineSequence: inlineSequencePreRepaired,
+        inlineKeys: inlineKeyPreRepaired,
+        yaml: mappingKeyColonSpacePreRepaired,
+      } = applyInlineRepairPipeline(candidate, options)
       const wrappedPlainListScalarPreRepaired = repairYamlWrappedPlainListScalars(mappingKeyColonSpacePreRepaired)
       const plainScalarColonPreRepaired = repairYamlPlainScalarColons(wrappedPlainListScalarPreRepaired)
       const sequenceItemPrimaryKeyPreRepaired = repairYamlSequenceItemPrimaryKeys(
@@ -685,13 +730,10 @@ export function parseYamlOrJsonCandidate(
         }
 
         // Earliest repair: split inline sequence parents and keys onto separate lines (prerequisite for all other repairs)
-        const inlineSequenceRepaired = repairYamlInlineSequenceParents(effectiveBase)
-        const inlineRepaired = repairYamlInlineKeys(inlineSequenceRepaired, {
-          nestedMappingChildren: options?.nestedMappingChildren,
-        })
-        const mappingKeyColonSpaceRepaired = repairYamlMappingKeyColonSpace(inlineRepaired, {
-          sequenceItemPrimaryKeys: options?.sequenceItemPrimaryKeys,
-        })
+        const {
+          inlineKeys: inlineRepaired,
+          yaml: mappingKeyColonSpaceRepaired,
+        } = applyInlineRepairPipeline(effectiveBase, options)
         const sequenceItemPrimaryKeyInlineRepaired = repairYamlSequenceItemPrimaryKeys(
           mappingKeyColonSpaceRepaired,
           options?.sequenceItemPrimaryKeys,

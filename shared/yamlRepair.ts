@@ -282,8 +282,6 @@ function isSequenceItemMappingChildLine(line: string, dashIndent: number): boole
 
 // Hoisted out of the function body: these are tested once per line of every
 // candidate. None carries the `g` flag, so there is no `lastIndex` to reset.
-// The block-scalar detector here is the comment-tolerant one, and stays
-// distinct from the comment-blind detectors elsewhere in this module.
 const SEQUENCE_PRIMARY_KEY_BARE_COLLECTION_KEY = /^(\s*)([A-Za-z_][\w_-]*)\s*:\s*(?:#.*)?$/
 const SEQUENCE_PRIMARY_KEY_BLOCK_SCALAR_PATTERN = BLOCK_SCALAR_HEADER
 const SEQUENCE_PRIMARY_KEY_DASH_SCALAR_LINE = /^(\s*)-\s+(.+)$/
@@ -1148,7 +1146,7 @@ export function repairYamlSequenceEntryIndent(yaml: string): string {
   return result.join('\n')
 }
 
-// Hoisted; tested once per line. This detector is deliberately comment-blind.
+// Hoisted; tested once per line, using the shared block-scalar grammar.
 const DUPLICATE_KEYS_BLOCK_SCALAR_PATTERN = BLOCK_SCALAR_HEADER
 
 /**
@@ -1192,7 +1190,7 @@ export function repairYamlDuplicateKeys(yaml: string): string {
 
     // If we're skipping block-scalar continuation of a removed duplicate
     if (skipBlockScalarIndent >= 0) {
-      if (lineIndent > skipBlockScalarIndent) {
+      if (!trimmed || trimmed.startsWith('#') || lineIndent > skipBlockScalarIndent) {
         continue // skip continuation line
       }
       skipBlockScalarIndent = -1
@@ -1283,7 +1281,8 @@ export function repairYamlFreeTextScalars(yaml: string): string {
   const result: string[] = []
   const BLOCK_SCALAR_PATTERN = BLOCK_SCALAR_HEADER
   const BLOCK_SCALAR_VALUE_PATTERN = BLOCK_SCALAR_VALUE
-  const SAFE_VALUE_START = /^["'|>&*!#]/
+  // Valid block scalar headers are handled before this plain-value guard.
+  const SAFE_VALUE_START = /^["'&*!#]/
   let blockScalarBaseIndent = -1
 
   for (let index = 0; index < lines.length; index += 1) {
@@ -1784,7 +1783,6 @@ export function repairYamlReservedIndicatorScalars(yaml: string): string {
   const result: string[] = []
   const MAPPING_BLOCK_SCALAR_PATTERN = MAPPING_BLOCK_SCALAR_HEADER
   const LIST_BLOCK_SCALAR_PATTERN = LIST_BLOCK_SCALAR_HEADER
-  const SAFE_VALUE_START = /^["'[{>|&*!#]/
   const RESERVED_INDICATOR_START = /^[`@]/
   let blockScalarBaseIndent = -1
 
@@ -1816,7 +1814,7 @@ export function repairYamlReservedIndicatorScalars(yaml: string): string {
       const prefix = mappingMatch[1]!
       const { value, comment } = splitYamlValueAndComment(mappingMatch[2]!)
       const trimmedValue = value.trim()
-      if (!trimmedValue || SAFE_VALUE_START.test(trimmedValue) || !RESERVED_INDICATOR_START.test(trimmedValue)) {
+      if (!RESERVED_INDICATOR_START.test(trimmedValue)) {
         result.push(line)
         continue
       }
@@ -1830,7 +1828,7 @@ export function repairYamlReservedIndicatorScalars(yaml: string): string {
       const prefix = listScalarMatch[1]!
       const { value, comment } = splitYamlValueAndComment(listScalarMatch[2]!)
       const trimmedValue = value.trim()
-      if (!trimmedValue || SAFE_VALUE_START.test(trimmedValue) || !RESERVED_INDICATOR_START.test(trimmedValue)) {
+      if (!RESERVED_INDICATOR_START.test(trimmedValue)) {
         result.push(line)
         continue
       }

@@ -324,6 +324,66 @@ describe.concurrent('parseYamlOrJsonCandidate', () => {
   })
 })
 
+describe.concurrent('cached candidate parsing', () => {
+  it('keeps distinct lone UTF-16 surrogates in JSON strings separate', () => {
+    for (const code of [0xd800, 0xd801, 0xfffd]) {
+      const value = String.fromCharCode(code)
+      const content = `"${value}"`
+      expect(parseYamlOrJsonCandidate(content)).toBe(value)
+      expect(parseYamlOrJsonCandidate(content)).toBe(value)
+    }
+  })
+
+  it('replays repairs even if the first caller did not request warnings', () => {
+    const content = 'items:\n  -id: cache-one\n  -id: cache-two'
+    const first = parseYamlOrJsonCandidate(content) as { items: { id: string }[] }
+    first.items[0]!.id = 'caller edit'
+    const repairWarnings = ['existing warning']
+    const second = parseYamlOrJsonCandidate(content, { repairWarnings })
+    expect(second).toEqual({ items: [{ id: 'cache-one' }, { id: 'cache-two' }] })
+    expect(repairWarnings).toEqual([
+      'existing warning',
+      'Inserted the missing space after a YAML list dash before parsing.',
+    ])
+    parseYamlOrJsonCandidate(content, { repairWarnings })
+    expect(repairWarnings).toHaveLength(2)
+    repairWarnings.push('caller-specific warning')
+    const nextWarnings: string[] = []
+    parseYamlOrJsonCandidate(content, { repairWarnings: nextWarnings })
+    expect(nextWarnings).toEqual(['Inserted the missing space after a YAML list dash before parsing.'])
+  })
+
+  it('separates nested-mapping repair settings in both call orders', () => {
+    for (const child of ['first', 'second']) {
+      const content = `answer:\n${child}: true`
+      const options = { nestedMappingChildren: { answer: [child] } }
+      if (child === 'first') parseYamlOrJsonCandidate(content)
+      expect(parseYamlOrJsonCandidate(content, options)).toEqual({ answer: { [child]: true } })
+      expect(parseYamlOrJsonCandidate(content)).toEqual({ answer: null, [child]: true })
+      expect(parseYamlOrJsonCandidate(content, options)).toEqual({ answer: { [child]: true } })
+    }
+  })
+
+  it('separates every primary-key repair option and never reuses an opt-in for other callers', () => {
+    const content = 'beads:\n  - cache-bead\n    title: Cache test'
+    const options = { sequenceItemPrimaryKeys: { beads: { primaryKey: 'id', childKeys: ['title'] } } }
+    expect(() => parseYamlOrJsonCandidate(content)).toThrow()
+    expect(parseYamlOrJsonCandidate(content, options)).toEqual({ beads: [{ id: 'cache-bead', title: 'Cache test' }] })
+    options.sequenceItemPrimaryKeys.beads.primaryKey = 'slug'
+    expect(parseYamlOrJsonCandidate(content, options)).toEqual({ beads: [{ slug: 'cache-bead', title: 'Cache test' }] })
+    options.sequenceItemPrimaryKeys.beads.childKeys = ['description']
+    expect(() => parseYamlOrJsonCandidate(content, options)).toThrow()
+    expect(() => parseYamlOrJsonCandidate(content)).toThrow()
+  })
+
+  it('keeps terminal-noise recovery opt-in after a successful repair', () => {
+    const content = '{"cache_noise":true}\u001b[0m'
+    expect(parseYamlOrJsonCandidate(content, { allowTrailingTerminalNoise: true })).toEqual({ cache_noise: true })
+    expect(() => parseYamlOrJsonCandidate(content)).toThrow()
+    expect(() => parseYamlOrJsonCandidate(content, { allowTrailingTerminalNoise: false })).toThrow()
+  })
+})
+
 describe.concurrent('getValueByAliases', () => {
   it('matches snake_case aliases against normalized object keys', () => {
     expect(getValueByAliases({

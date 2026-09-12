@@ -142,17 +142,13 @@ describe('ticketRouter PR review routes', () => {
       message: 'Draft PR ready.',
     })
     completeMergedPullRequestMock.mockImplementation((input: { ticketId: string }) => {
-      insertPhaseArtifact(input.ticketId, {
-        phase: 'WAITING_PR_REVIEW',
-        artifactType: 'merge_report',
-        content: JSON.stringify({ disposition: 'merged' }),
-      })
-      return {
+      const ticket = getTicketByRef(input.ticketId)!
+      const report = {
         status: 'passed',
         completedAt: '2026-01-01T00:00:00.000Z',
         disposition: 'merged',
-        baseBranch: 'main',
-        headBranch: 'TEST-1',
+        baseBranch: ticket.runtime.baseBranch,
+        headBranch: ticket.branchName || ticket.externalId,
         candidateCommitSha: 'abc123def456',
         prNumber: 42,
         prUrl: 'https://github.com/test/repo/pull/42',
@@ -163,6 +159,10 @@ describe('ticketRouter PR review routes', () => {
         remoteBranchDeleteWarning: null,
         message: 'Pull request merged into origin/main. Local checkout was not modified.',
       }
+      insertPhaseArtifact(input.ticketId, {
+        phase: 'WAITING_PR_REVIEW', artifactType: 'merge_report', content: JSON.stringify(report),
+      })
+      return report
     })
     completeCloseUnmergedMock.mockImplementation((input: { ticketId: string; reason?: string | null }) => {
       insertPhaseArtifact(input.ticketId, {
@@ -315,7 +315,7 @@ describe('ticketRouter PR review routes', () => {
     const response = app.request(`/api/tickets/${ticket.id}/merge`, { method: 'POST' })
     finishCompletion()
     await background
-    expect((await response).status).toBe(409)
+    expect((await response).status).toBe(200)
     expect(completeMergedPullRequestMock).toHaveBeenCalledOnce()
     expect(getTicketByRef(ticket.id)?.status).toBe('CLEANING_ENV')
   })
@@ -327,7 +327,7 @@ describe('ticketRouter PR review routes', () => {
       app.request(`/api/tickets/${ticket.id}/merge`, { method: 'POST' }),
       app.request(`/api/tickets/${ticket.id}/merge`, { method: 'POST' }),
     ])
-    expect(responses.map(response => response.status).sort()).toEqual([200, 409])
+    expect(responses.map(response => response.status).sort()).toEqual([200, 200])
     expect(completeMergedPullRequestMock).toHaveBeenCalledOnce()
   })
 
@@ -344,6 +344,40 @@ describe('ticketRouter PR review routes', () => {
       status: 'CLEANING_ENV',
       message: 'Merge complete',
     })
+    expect(completeMergedPullRequestMock).toHaveBeenCalledOnce()
+  })
+
+  it.each(['CLEANING_ENV', 'COMPLETED'])('returns recorded Merge success from %s without remote work', async (status) => {
+    const { ticket } = await createWaitingPrReviewTicket()
+    const app = new Hono().route('/api', ticketRouter)
+    expect((await app.request(`/api/tickets/${ticket.id}/merge`, { method: 'POST' })).status).toBe(200)
+    patchTicket(ticket.id, { status })
+    const response = await app.request(`/api/tickets/${ticket.id}/merge`, { method: 'POST' })
+    expect(response.status).toBe(200)
+    expect(await response.json()).toMatchObject({ status, message: 'Merge complete' })
+    expect(completeMergedPullRequestMock).toHaveBeenCalledOnce()
+  })
+
+  it.each(['CANCELED', 'BLOCKED_ERROR', 'DRAFT'])('rejects a repeated Merge from %s even with a verified report', async (status) => {
+    const { ticket } = await createWaitingPrReviewTicket()
+    const app = new Hono().route('/api', ticketRouter)
+    await app.request(`/api/tickets/${ticket.id}/merge`, { method: 'POST' })
+    patchTicket(ticket.id, { status })
+    expect((await app.request(`/api/tickets/${ticket.id}/merge`, { method: 'POST' })).status).toBe(409)
+    expect(completeMergedPullRequestMock).toHaveBeenCalledOnce()
+  })
+
+  it.each(['CLEANING_ENV', 'COMPLETED'])('rejects Merge from %s without matching verified completion', async (status) => {
+    const { ticket } = await createWaitingPrReviewTicket()
+    const app = new Hono().route('/api', ticketRouter)
+    patchTicket(ticket.id, { status })
+    expect((await app.request(`/api/tickets/${ticket.id}/merge`, { method: 'POST' })).status).toBe(409)
+    completeMergedPullRequestMock({ ticketId: ticket.id })
+    const report = JSON.parse(getLatestPhaseArtifact(ticket.id, 'merge_report', 'WAITING_PR_REVIEW')!.content)
+    for (const invalid of [{ ...report, disposition: 'closed_unmerged' }, { ...report, candidateCommitSha: 'other-candidate' }]) {
+      insertPhaseArtifact(ticket.id, { phase: 'WAITING_PR_REVIEW', artifactType: 'merge_report', content: JSON.stringify(invalid) })
+      expect((await app.request(`/api/tickets/${ticket.id}/merge`, { method: 'POST' })).status).toBe(409)
+    }
     expect(completeMergedPullRequestMock).toHaveBeenCalledOnce()
   })
 

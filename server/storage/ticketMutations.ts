@@ -4,7 +4,7 @@ import { resolve } from 'node:path'
 import { runGitSyncOrThrow } from '../git/runCommand'
 import { z } from 'zod'
 import { getProjectContextById } from './projects'
-import { manualQaImprovementTickets, opencodeSessions, phaseArtifacts, projects, skipReceiptActions, ticketErrorOccurrences, ticketPhaseAttempts, ticketStatusHistory, tickets } from '../db/schema'
+import { manualQaImprovementTickets, opencodeSessions, phaseArtifacts, projects, ticketErrorOccurrences, ticketPhaseAttempts, ticketStatusHistory, tickets } from '../db/schema'
 import { detectGitBaseBranch, getProjectWorktreesRoot } from './paths'
 import { resolveProjectTicketContainedPath, writeProjectTicketFile } from '../ticket/containedPath'
 import { councilMembersEqualOrdered, lockTicketModelSelection, resolveTicketBaseBranch } from '../ticket/metadata'
@@ -752,7 +752,6 @@ export function cleanupCanceledTicketData(
     removeTicketFilesystem(projectRoot, externalId, branchName)
     projectDb.transaction((tx) => {
       tx.delete(phaseArtifacts).where(eq(phaseArtifacts.ticketId, localTicketId)).run()
-      tx.delete(skipReceiptActions).where(eq(skipReceiptActions.ticketId, localTicketId)).run()
       tx.delete(opencodeSessions).where(eq(opencodeSessions.ticketId, localTicketId)).run()
     })
   } else if (opts.deleteLog) {

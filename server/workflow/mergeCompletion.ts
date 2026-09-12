@@ -112,8 +112,7 @@ export async function syncWaitingPullRequestTicket(ticketId: string): Promise<vo
   // Remote reads do not hold up Cancel or Close. Revalidate before any write.
   const pr = await refreshPullRequestState(
     input.projectRoot,
-    input.ticket.branchName?.trim() || input.ticket.externalId,
-    input.ticket.runtime.baseBranch,
+    input.report.prNumber,
   )
   if (!pr) return
   await withTicketMergeLock(ticketId, async () => {

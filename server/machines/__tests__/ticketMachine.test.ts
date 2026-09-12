@@ -1,10 +1,26 @@
 import { describe, expect, it } from 'vitest'
 import { createActor } from 'xstate'
 import { FINAL_TEST_FAILED } from '@shared/errorCodes'
-import { isWorkflowPhaseId, WORKFLOW_PHASE_IDS } from '@shared/workflowMeta'
+import { getAvailableWorkflowActions, isWorkflowPhaseId, WORKFLOW_PHASE_IDS } from '@shared/workflowMeta'
 import { ticketMachine } from '../ticketMachine'
 
 describe('ticketMachine states', () => {
+  it('keeps cleanup running when a late Cancel arrives', () => {
+    const initial = createActor(ticketMachine, { input: { ticketId: '1:T-1', projectId: 1, externalId: 'T-1', title: 'Cleanup' } })
+    const actor = createActor(ticketMachine, {
+      snapshot: ticketMachine.resolveState({ value: 'CLEANING_ENV', context: initial.getSnapshot().context }),
+      input: {},
+    })
+    actor.start()
+    expect(getAvailableWorkflowActions('CLEANING_ENV')).not.toContain('cancel')
+    expect(actor.getSnapshot().can({ type: 'CANCEL' })).toBe(false)
+    actor.send({ type: 'CANCEL' })
+    expect(actor.getSnapshot().value).toBe('CLEANING_ENV')
+    actor.send({ type: 'CLEANUP_DONE' })
+    expect(actor.getSnapshot().value).toBe('COMPLETED')
+    actor.stop()
+  })
+
   it('has one state per declared workflow phase, and no others', () => {
     // The machine's states and the shared phase table describe the same set of
     // statuses. They used to be kept in step by a second status list written out

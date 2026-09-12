@@ -1022,9 +1022,9 @@ const WORKFLOW_PHASE_DETAILS = {
       'Draft PR Presentation: The workspace shows the PR URL, current PR state, candidate SHA, branch and base refs, integration report, final test summary, candidate-file audit, and final net diff.',
       'Diff Review Modes: The bead-commits modal defaults to Net Diff for the actual base-to-candidate PR review surface, while By Bead preserves cumulative implementation activity and By File groups repeated bead touches.',
       'Manual Review: You inspect the draft PR and the local result. There is no time limit. LoopTroop waits for your decision.',
-      'Merge Path: Choosing Merge PR & Finish marks the PR ready if needed and merges it into the base branch on GitHub. Once GitHub reports the PR merged, LoopTroop verifies that the remote base branch contains the candidate commit and leaves your local checkout untouched.',
+      'Merge Path: Choosing Merge PR & Finish marks the PR ready if needed and merges it into the base branch on GitHub. Once GitHub reports the PR merged, LoopTroop requires the PR head to match the approved candidate and verifies that the remote base branch contains the commit GitHub records as landed, including squash and rebase merges. Your local checkout stays untouched.',
       'Finish Without Merge Path: Choosing Finish Without Merge asks you to confirm, and takes an optional reason for stopping here. The PR and the remote ticket branch are preserved exactly as they are, then the ticket proceeds to cleanup and terminal completion. The reason is stored on the merge report as the current record, and in the ticket-wide skip trail as history. Nothing else explains why this branch stopped.',
-      'External Merge Detection: While the daemon runs, it checks waiting tickets on startup and starts another serial sweep 30 seconds after the previous sweep finishes, even with no UI open. A merge on GitHub triggers remote-base verification and completion without another merge request. Failed background checks leave the ticket waiting and retry with delays from one to five minutes. Restarting the daemon resumes checking; shutdown stops new checks and waits for the active check within the process shutdown deadline. A completed merge report lets restart finish the workflow without repeating remote completion.',
+      'External Merge Detection: While the daemon runs, it checks waiting tickets on startup and starts another serial sweep 30 seconds after the previous sweep finishes, even with no UI open. Checks use the recorded PR number, including after branch deletion. A merge on GitHub triggers candidate-head validation, landed-commit verification on the remote base, and completion without another merge request. Failed background checks leave the ticket waiting and retry with delays from one to five minutes. Restarting the daemon resumes checking; shutdown stops new checks and waits for the active check within the process shutdown deadline. A completed merge report lets restart finish the workflow without repeating remote completion.',
     ],
     outputs: [
       'A stable draft-PR review gate that exposes final PR metadata, test results, integration summary, ignored-file audit, and the net candidate diff.',
@@ -1034,18 +1034,19 @@ const WORKFLOW_PHASE_DETAILS = {
     transitions: [
       'Merge PR & Finish → Cleaning Up: GitHub merge succeeds, remote base verification succeeds, and cleanup starts without changing the local checkout.',
       'Finish Without Merge → Cleaning Up: The ticket finishes successfully without merging and cleanup starts.',
-      'System Error → Blocked Error: If the GitHub merge fails or the remote base branch cannot be verified to contain the candidate commit, the workflow blocks as a PR merge failure. Retry rechecks remote state without trying to merge again when GitHub already reports the PR as merged.',
+      'System Error → Blocked Error: If the GitHub merge fails or the PR head differs from the approved candidate or the remote base cannot be verified to contain the landed commit, the workflow blocks as a PR merge failure. Retry rechecks remote state without trying to merge again when GitHub already reports the PR as merged.',
     ],
     notes: [
       'Context available: PR metadata, final test report, integration summary, and merge controls. No AI prompt context is assembled in this review gate.',
       'This is the final human quality gate in the GitHub endgame.',
+      'Repeating Merge after a verified merge has entered cleanup or completed returns the recorded success without merging again.',
       'Finishing without merge does not require deleting the PR or the remote branch.',
       'Finishing without merge is a decision worth explaining. Nothing later in the ticket asks why the branch stopped.',
       'Internal merge, fetch, push, and cleanup commands appear in `SYS > CMD` as final summaries so the review gate stays auditable without noisy progress chatter.',
     ],
   },
   CLEANING_ENV: {
-    overview: 'LoopTroop removes temporary runtime resources created during the ticket run while preserving the artifacts needed for audit, review, and history. This phase runs automatically right after verification and does not need user input. Cleanup errors are recorded as visible warnings, but they do not stop completion.',
+    overview: 'LoopTroop removes temporary runtime resources created during the ticket run while preserving the artifacts needed for audit, review, and history. This phase runs automatically after the finish decision has been recorded and cannot be canceled. Cleanup errors are recorded as visible warnings, but they do not stop completion.',
     steps: [
       'Cleanup Scope Determination: LoopTroop decides which runtime resources are transient and safe to remove and which artifacts are permanent and must be preserved. Runtime state is treated as transient. Planning and audit artifacts are treated as permanent.',
       'Transient Resource Removal: Lock files, active session folders, stream buffers, temporary files, and runtime state files are removed when present. They were useful during execution but do not need to remain afterward.',
@@ -1063,7 +1064,7 @@ const WORKFLOW_PHASE_DETAILS = {
     notes: [
       'Context available: Ticket Details and Beads Plan.',
       'Cleanup is conservative. When there is doubt, LoopTroop preserves resources instead of deleting them.',
-      'This phase is automatic and does not require user interaction.',
+      'Once cleanup starts, the finish decision is recorded and Cancel is no longer available.',
       'Cleanup warnings are housekeeping issues, not delivery failures. The ticket status still becomes Completed.',
     ],
   },
@@ -1606,7 +1607,7 @@ const BASE_WORKFLOW_PHASES = [
   {
     id: 'WAITING_PR_REVIEW',
     label: 'Reviewing Pull Request',
-    description: 'Review the draft pull request, final diff, ignored-file audit, and test results before you merge or finish without merging. Finishing without merging asks for confirmation and takes an optional reason. This is the last human gate before cleanup and terminal completion. The running daemon detects merges made on GitHub without an open UI and resumes verified completion after a restart.',
+    description: 'Review the draft pull request, final diff, ignored-file audit, and test results before you merge or finish without merging. Finishing without merging asks for confirmation and takes an optional reason. This is the last human gate before cleanup and terminal completion. The running daemon detects merges made on GitHub, including squash and rebase merges, without an open UI. It checks the approved candidate head and landed commit, and resumes verified completion after a restart. Repeated Merge requests return the recorded success after a verified merge.',
     details: WORKFLOW_PHASE_DETAILS.WAITING_PR_REVIEW,
     kanbanPhase: 'needs_input',
     groupId: 'post_implementation',
@@ -1619,7 +1620,7 @@ const BASE_WORKFLOW_PHASES = [
   {
     id: 'CLEANING_ENV',
     label: 'Cleaning Up',
-    description: 'LoopTroop is removing temporary runtime data while keeping the artifacts and logs you may still want to inspect. Cleanup warnings remain visible, but they do not turn a successful delivery into a failure.',
+    description: 'The finish decision is recorded, so this ticket can no longer be canceled. LoopTroop is removing temporary runtime data while keeping the artifacts and logs you may still want to inspect. Cleanup warnings remain visible, but they do not turn a successful delivery into a failure.',
     details: WORKFLOW_PHASE_DETAILS.CLEANING_ENV,
     kanbanPhase: 'in_progress',
     groupId: 'post_implementation',
@@ -1844,6 +1845,8 @@ export function getAvailableWorkflowActions(status: string): WorkflowAction[] {
   if (isTerminalWorkflowStatus(status)) return []
 
   switch (status) {
+    case 'CLEANING_ENV':
+      return []
     case 'DRAFT':
       return ['start', 'cancel']
     case 'WAITING_INTERVIEW_APPROVAL':

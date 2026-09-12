@@ -10,7 +10,7 @@ Unreleased changes appear first and represent commits that have not yet been inc
 > Changes merged since the last versioned release that have not yet shipped in a tagged version.
 
 ### Summary
-- Merges made on GitHub now finish waiting tickets while the daemon runs, even when the UI is closed.
+- Merges made on GitHub, including squash and rebase merges, now finish waiting tickets while the daemon runs, even when the UI is closed.
 - Toasts and progress rings use stable identifiers; saved UI and Manual QA actions use cryptographic IDs, including over HTTP LAN connections.
 - Local IPv6 addresses work consistently across backend checks, OpenCode startup, diagnostics and dev LAN reporting.
 - Installers protect slow-running installs and refuse insecure download redirects; release tooling limits build inputs, credentials and install scripts.
@@ -135,7 +135,7 @@ Unreleased changes appear first and represent commits that have not yet been inc
 - Closed the two critical and seven high code-scanning findings. Windows opens sign-in links through the URL protocol handler without `cmd.exe`; the published install smoke accepts only the stable and `rc.N` version formats the release tooling can produce; channel checks no longer compile command-line values as regular expressions or mistake uninstall output for an installed channel; ticket links receive URI encoding after protocol validation without changing existing percent escapes; release-note markers and multiline third-party notice cells use context-specific handling; node-manager smoke paths come from fixed manager mappings; and test fixtures no longer use predictable paths under `/tmp`.
 
 ### Changed
-- Skip actions now claim a database-enforced unique ticket/action pair before writing their receipts. Bulk skips still keep one receipt per item; failed writes roll back the claim, and receipt rollback, content cleanup, and ticket deletion release it.
+- Skip receipts now have database-enforced uniqueness per ticket and receipt ID in the existing artifact storage. Bulk skips can share an action ID, repeated receipts are ignored, and failed batches roll back atomically. Ordinary artifact cleanup handles receipt deletion without a separate claim table.
 - Workflow mock dispatch now uses one handler record, so supported phases cannot drift from a separate list. Workspace and OpenCode failures carry internal error types while retaining the existing user messages, phase-specific error codes, and serialized error shape.
 - Kept README installation guidance focused on secure commands and prerequisites; detailed lock recovery remains in the installation guide.
 - The bare-Node TypeScript check filters only Node's known parser-status advisory, following the installer-sync check. It still uses Node's parser, fails on unsupported syntax, and preserves all other warnings.
@@ -250,7 +250,8 @@ Unreleased changes appear first and represent commits that have not yet been inc
 ### Fixed
 - Ticket GET requests no longer contact GitHub, update PR artifacts, or complete merges. A daemon-owned poller checks waiting tickets at startup and about every 30 seconds after each sweep, retries failed checks with per-ticket delays capped at five minutes, and resumes after restart. Shutdown stops scheduling and drains the active check within the process shutdown deadline before closing storage. A successful merge report lets restart finish the workflow without repeating remote completion.
 - Polling reads only waiting ticket references and releases the ticket lock during GitHub state reads, so slow reads do not delay Cancel or Finish Without Merge. A failed advisory log cannot stop checks for other tickets. PR reports retain their generation timestamp and label generated content separately from live GitHub state.
-- Project database repair removes orphaned skip-action claims as well as their receipts; valid claims survive reopening and continue preventing duplicate actions.
+- External squash and rebase merges are verified using the commit GitHub records as landed on the remote base. The PR head must still match the approved candidate, so later unapproved changes cannot pass completion. Checks use the stored PR number even after its branch is deleted. Merge requests include the approved SHA so GitHub rejects a head changed between checking and merging.
+- Cleanup cannot be canceled after the finish decision is recorded. A repeated Merge request returns success when verified completion is already recorded; canceled, blocked and unrelated states still reject it.
 - Mock workflow dispatch explicitly covers inactive states, preventing them from falling through to live execution when the workflow gains a state.
 - Background detection and the Merge action share completion logic and a per-ticket lock with close and cancel. Background checks only finish PRs already merged on GitHub; failures remain advisory and keep the ticket waiting. The explicit Merge action retains its existing failure response and blocked status.
 - Isolated the package-import regression check in its own integration worker and reused one subprocess for both assertions, reducing Windows subprocess contention while retaining failure detection and cleaning up temporary files.

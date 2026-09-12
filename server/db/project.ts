@@ -135,13 +135,6 @@ function initializeProjectSqlite(sqlite: Database) {
       archived_at TEXT
     );
 
-    CREATE TABLE IF NOT EXISTS skip_receipt_actions (
-      ticket_id INTEGER NOT NULL REFERENCES tickets(id) ON DELETE CASCADE,
-      action_id TEXT NOT NULL
-    );
-    CREATE UNIQUE INDEX IF NOT EXISTS idx_skip_receipt_actions_ticket_action
-      ON skip_receipt_actions(ticket_id, action_id);
-
     CREATE TABLE IF NOT EXISTS manual_qa_operations (
       id INTEGER PRIMARY KEY AUTOINCREMENT,
       ticket_id INTEGER NOT NULL REFERENCES tickets(id) ON DELETE CASCADE,
@@ -261,6 +254,9 @@ function initializeProjectSqlite(sqlite: Database) {
     CREATE INDEX IF NOT EXISTS idx_project_tickets_status ON tickets(status);
     CREATE INDEX IF NOT EXISTS idx_project_tickets_external_id ON tickets(external_id);
     CREATE INDEX IF NOT EXISTS idx_phase_artifacts_ticket ON phase_artifacts(ticket_id);
+    CREATE UNIQUE INDEX IF NOT EXISTS idx_phase_artifacts_ticket_skip_receipt
+      ON phase_artifacts(ticket_id, CASE WHEN json_valid(content) THEN json_extract(content, '$.receipt_id') END)
+      WHERE artifact_type GLOB 'skip_receipt:*';
     CREATE UNIQUE INDEX IF NOT EXISTS idx_manual_qa_operations_ticket_action
       ON manual_qa_operations(ticket_id, action_id);
     CREATE INDEX IF NOT EXISTS idx_sessions_ticket_phase ON opencode_sessions(ticket_id, phase, state);
@@ -359,10 +355,6 @@ function cleanupProjectForeignKeyOrphans(sqlite: Database) {
       OR ticket_id IN (SELECT id FROM tickets WHERE project_id NOT IN (SELECT id FROM projects));
 
     DELETE FROM ticket_phase_attempts
-    WHERE ticket_id NOT IN (SELECT id FROM tickets)
-      OR ticket_id IN (SELECT id FROM tickets WHERE project_id NOT IN (SELECT id FROM projects));
-
-    DELETE FROM skip_receipt_actions
     WHERE ticket_id NOT IN (SELECT id FROM tickets)
       OR ticket_id IN (SELECT id FROM tickets WHERE project_id NOT IN (SELECT id FROM projects));
 

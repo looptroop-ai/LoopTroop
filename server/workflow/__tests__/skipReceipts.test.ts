@@ -1,6 +1,6 @@
 import { afterAll, beforeEach, describe, expect, it } from 'vitest'
 import { eq } from 'drizzle-orm'
-import { skipReceiptActions } from '../../db/schema'
+import { phaseArtifacts } from '../../db/schema'
 import { countSkipEvents } from '@shared/skipReceipt'
 import { initializeDatabase } from '../../db/init'
 import { sqlite } from '../../db/index'
@@ -106,53 +106,70 @@ describe('skip receipts', () => {
     expect(listSkipEvents(ticket.id)).toHaveLength(1)
   })
 
-  it('enforces action uniqueness per ticket in the database and cascades ticket deletion', () => {
+  it('returns only inserted receipts when a batch repeats an item', () => {
+    const ticket = makeTicket()
+    const written = writeSkipReceipts({
+      ticketId: ticket.id, surface: 'interview_question', itemType: 'interview_question',
+      phase: 'WAITING_INTERVIEW_ANSWERS', ticketStatusBefore: 'WAITING_INTERVIEW_ANSWERS',
+      actionId: 'repeated-item',
+      items: [{ itemId: 'Q01', reason: 'First reason' }, { itemId: 'Q01', reason: 'Repeated item' }],
+    })
+    expect(written).toHaveLength(1)
+    expect(written[0]!.reason).toBe('First reason')
+    expect(listSkipEvents(ticket.id)).toHaveLength(1)
+    expect(listPhaseArtifacts(ticket.id)).toHaveLength(1)
+  })
+
+  it('enforces receipt uniqueness across surfaces and attempts, scoped to the ticket', () => {
     const ticket = makeTicket()
     const context = getTicketContext(ticket.id)!
-    const claim = { ticketId: context.localTicketId, actionId: 'action-claimed' }
-    context.projectDb.insert(skipReceiptActions).values(claim).run()
-    expect(() => context.projectDb.insert(skipReceiptActions).values(claim).run())
+    const receipt = writeSkipReceipts({
+      ticketId: ticket.id, surface: 'interview_question', itemType: 'interview_question',
+      phase: 'WAITING_INTERVIEW_ANSWERS', ticketStatusBefore: 'WAITING_INTERVIEW_ANSWERS',
+      actionId: 'receipt-index', items: [{ itemId: 'Q01', reason: null }],
+    })[0]!
+    const duplicate = {
+      ticketId: context.localTicketId, phase: 'WAITING_INTERVIEW_APPROVAL', phaseAttempt: 2,
+      artifactType: 'skip_receipt:interview_approval_mark_skipped', content: JSON.stringify(receipt),
+    }
+    expect(() => context.projectDb.insert(phaseArtifacts).values(duplicate).run())
       .toThrow(expect.objectContaining({
         cause: expect.objectContaining({ message: expect.stringContaining('UNIQUE constraint failed') }),
       }))
-
     const other = createTicket({ projectId: ticket.projectId, title: 'Other ticket' })
     const otherContext = getTicketContext(other.id)!
-    context.projectDb.insert(skipReceiptActions).values({ ...claim, ticketId: otherContext.localTicketId }).run()
-    expect(hasSkipReceiptsForAction(other.id, claim.actionId)).toBe(true)
-    deleteTicket(ticket.id)
-    expect(context.projectDb.select().from(skipReceiptActions)
-      .where(eq(skipReceiptActions.ticketId, context.localTicketId)).all()).toEqual([])
-    expect(hasSkipReceiptsForAction(other.id, claim.actionId)).toBe(true)
-  })
-
-  it('cleans orphaned claims before enabling foreign keys when reopening a project', () => {
-    const ticket = makeTicket()
-    const context = getTicketContext(ticket.id)!
-    const database = getProjectDatabase(context.projectRoot)
-    database.sqlite.pragma('foreign_keys=OFF')
-    database.sqlite.prepare('INSERT INTO skip_receipt_actions (ticket_id, action_id) VALUES (?, ?)')
-      .run(context.localTicketId, 'kept')
-    database.sqlite.prepare('INSERT INTO skip_receipt_actions (ticket_id, action_id) VALUES (?, ?)')
-      .run(999999, 'missing-ticket')
-    database.sqlite.prepare('INSERT INTO tickets (external_id, project_id, title) VALUES (?, ?, ?)')
-      .run('ORPHAN-1', 999999, 'Missing project')
-    database.sqlite.exec(`
-      INSERT INTO skip_receipt_actions (ticket_id, action_id)
-      SELECT id, 'missing-project' FROM tickets WHERE external_id = 'ORPHAN-1';
-    `)
-    expect(database.sqlite.pragma('foreign_key_check')).not.toEqual([])
+    context.projectDb.insert(phaseArtifacts).values({ ...duplicate, ticketId: otherContext.localTicketId }).run()
+    expect(hasSkipReceiptsForAction(other.id, receipt.action_id)).toBe(true)
 
     clearProjectDatabaseCache()
     const reopened = getProjectDatabase(context.projectRoot)
-    expect(reopened.db.select().from(skipReceiptActions).all()).toEqual([
-      { ticketId: context.localTicketId, actionId: 'kept' },
-    ])
-    expect(reopened.sqlite.pragma('foreign_key_check')).toEqual([])
-    expect(reopened.sqlite.pragma('foreign_keys', { simple: true })).toBe(1)
+    expect(() => reopened.db.insert(phaseArtifacts).values(duplicate).run()).toThrow()
+    expect(reopened.sqlite.prepare("SELECT name FROM sqlite_master WHERE name = 'skip_receipt_actions'").get())
+      .toBeUndefined()
+    deleteTicket(ticket.id)
+    expect(reopened.db.select().from(phaseArtifacts)
+      .where(eq(phaseArtifacts.ticketId, context.localTicketId)).all()).toEqual([])
+    expect(hasSkipReceiptsForAction(other.id, receipt.action_id)).toBe(true)
   })
 
-  it('rolls back the claim and earlier items when a later receipt is invalid', () => {
+  it('leaves non-receipt artifacts and malformed receipt content outside the unique key', () => {
+    const ticket = makeTicket()
+    const context = getTicketContext(ticket.id)!
+    for (const artifactType of ['ordinary_report', 'skip_receipt:interview_question']) {
+      for (const content of ['plain text', '{', '{}']) {
+        const row = { ticketId: context.localTicketId, phase: 'DRAFT', artifactType, content }
+        context.projectDb.insert(phaseArtifacts).values([row, row]).run()
+      }
+    }
+    const other = {
+      ticketId: context.localTicketId, phase: 'DRAFT', artifactType: 'ordinary_report',
+      content: JSON.stringify({ receipt_id: 'shared-with-another-artifact' }),
+    }
+    context.projectDb.insert(phaseArtifacts).values([other, other]).run()
+    expect(listSkipEvents(ticket.id)).toEqual([])
+  })
+
+  it('rolls back earlier items when a later receipt is invalid', () => {
     const ticket = makeTicket()
     const input = {
       ticketId: ticket.id,
@@ -169,7 +186,7 @@ describe('skip receipts', () => {
     expect(writeSkipReceipts({ ...input, items: input.items.slice(0, 1) })).toHaveLength(1)
   })
 
-  it('clears action claims when canceled ticket content is removed', () => {
+  it('clears receipt uniqueness when canceled ticket content is removed', () => {
     const ticket = makeTicket()
     const input = {
       ticketId: ticket.id,

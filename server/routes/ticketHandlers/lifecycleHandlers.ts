@@ -1,4 +1,4 @@
-import { completeTicketMerge, withTicketMergeLock } from '../../workflow/mergeCompletion'
+import { completeTicketMerge, hasVerifiedMergeReport, withTicketMergeLock } from '../../workflow/mergeCompletion'
 import type { Context } from 'hono'
 import { PROFILE_DEFAULTS } from '../../db/defaults'
 import {
@@ -46,7 +46,7 @@ import { recoverCodingBeadWithReset } from '../../workflow/phases/beadsPhase'
 import { recoverSuccessfulExecutionCheckpointForFinalization } from '../../workflow/phases/executionPhase'
 import { isExecutionBandStatus } from '../../workflow/executionBand'
 import { getErrorMessage } from '@shared/typeGuards'
-import { isTerminalWorkflowStatus } from '@shared/workflowMeta'
+import { getAvailableWorkflowActions, isTerminalWorkflowStatus } from '@shared/workflowMeta'
 import { broadcaster } from '../../sse/broadcaster'
 import {
   clearSessionContinuation,
@@ -388,6 +388,9 @@ async function handleCancelTicketLocked(c: Context) {
   if (isTerminalWorkflowStatus(ticket.status)) {
     return c.json({ error: 'Cannot cancel a terminal ticket' }, 409)
   }
+  if (!getAvailableWorkflowActions(ticket.status).includes('cancel')) {
+    return c.json({ error: 'Cannot cancel a ticket after completion has started' }, 409)
+  }
 
   const rawBody = await readJsonBody(c)
   if (!rawBody.ok) {
@@ -489,6 +492,9 @@ async function handleMergeTicketLocked(c: Context) {
   if (!ticket) return c.json({ error: 'Ticket not found' }, 404)
   const mockResponse = rejectDisplayOnlyMockTicket(c, ticket)
   if (mockResponse) return mockResponse
+  if ((ticket.status === 'CLEANING_ENV' || ticket.status === 'COMPLETED') && hasVerifiedMergeReport(ticket)) {
+    return respondWithState(c, ticketId, 'Merge complete')
+  }
   if (ticket.status !== 'WAITING_PR_REVIEW') {
     return c.json({ error: 'Ticket is not waiting for pull request review' }, 409)
   }

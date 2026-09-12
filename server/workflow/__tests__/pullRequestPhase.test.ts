@@ -15,6 +15,7 @@ import {
   completeMergedPullRequest,
   handleCreatePullRequest,
   readPullRequestReport,
+  refreshPullRequestState,
 } from '../phases/pullRequestPhase'
 
 const mocks = vi.hoisted(() => ({
@@ -25,6 +26,7 @@ const mocks = vi.hoisted(() => ({
   createOrUpdateDraftPullRequest: vi.fn(),
   captureGitRecoveryReceipt: vi.fn((input: unknown) => input),
   getPullRequestForBranch: vi.fn(),
+  getPullRequestByNumber: vi.fn(),
   ensureWorktreeClean: vi.fn(),
   markPullRequestReady: vi.fn(),
   mergePullRequest: vi.fn(),
@@ -59,6 +61,7 @@ vi.mock('../../git/github', () => ({
   createOrUpdateDraftPullRequest: mocks.createOrUpdateDraftPullRequest,
   captureGitRecoveryReceipt: mocks.captureGitRecoveryReceipt,
   getPullRequestForBranch: mocks.getPullRequestForBranch,
+  getPullRequestByNumber: mocks.getPullRequestByNumber,
   ensureWorktreeClean: mocks.ensureWorktreeClean,
   markPullRequestReady: mocks.markPullRequestReady,
   mergePullRequest: mocks.mergePullRequest,
@@ -416,7 +419,7 @@ describe('pull request drafting context', () => {
     }))
   })
 
-  it('completes a merged PR by verifying the remote base without syncing the user checkout', async () => {
+  it.each(['app merge', 'external squash', 'external rebase'])('completes %s using its landed SHA without syncing the user checkout', async (method) => {
     resetTestDb()
     const { ticket, context } = await createInitializedTestTicket(repoManager, {
       title: 'Remote merge verification',
@@ -435,14 +438,17 @@ describe('pull request drafting context', () => {
       closedAt: null,
       mergedAt: null,
     }
-    mocks.getPullRequestForBranch.mockReturnValue(prInfo)
-    mocks.mergePullRequest.mockReturnValue({
+    const merged = {
       ...prInfo,
       state: 'merged',
+      mergeCommitSha: `${method}-landed`,
       mergedAt: '2026-01-01T00:05:00.000Z',
-    })
+    }
+    mocks.getPullRequestByNumber.mockReturnValue(method === 'app merge' ? prInfo : merged)
+    mocks.mergePullRequest.mockReturnValue(merged)
 
     await completeMergedPullRequest({
+      skipRemoteMerge: method !== 'app merge',
       ticketId: ticket.id,
       externalId: ticket.externalId,
       projectPath: context.externalId,
@@ -469,8 +475,13 @@ describe('pull request drafting context', () => {
       },
     })
 
-    expect(mocks.mergePullRequest).toHaveBeenCalledOnce()
-    expect(mocks.verifyRemoteBaseContainsCommit).toHaveBeenCalledWith(context.externalId, 'main', 'candidate123')
+    expect(mocks.getPullRequestByNumber).toHaveBeenCalledWith(context.externalId, 42)
+    expect(mocks.getPullRequestForBranch).not.toHaveBeenCalled()
+    expect(mocks.mergePullRequest).toHaveBeenCalledTimes(method === 'app merge' ? 1 : 0)
+    if (method === 'app merge') {
+      expect(mocks.mergePullRequest).toHaveBeenCalledWith(context.externalId, 42, prInfo.title, 'candidate123')
+    }
+    expect(mocks.verifyRemoteBaseContainsCommit).toHaveBeenCalledWith(context.externalId, 'main', `${method}-landed`)
     expect(mocks.ensureWorktreeClean).not.toHaveBeenCalledWith(context.externalId)
     expect(mocks.tryDeleteRemoteBranch).toHaveBeenCalledWith(context.externalId, ticket.externalId)
     const mergeReport = getLatestPhaseArtifact(ticket.id, 'merge_report', 'WAITING_PR_REVIEW')
@@ -488,7 +499,20 @@ describe('pull request drafting context', () => {
     })
   })
 
-  it('blocks before merge when the pull request head does not match the candidate commit', async () => {
+  it('refreshes the stored PR number when its head branch was deleted or reused', async () => {
+    const stored = { number: 42, state: 'merged', headRefName: 'deleted-head' }
+    mocks.getPullRequestByNumber.mockResolvedValueOnce(stored)
+    mocks.getPullRequestForBranch.mockResolvedValueOnce({ number: 99, state: 'open' })
+
+    expect(await refreshPullRequestState('/repo', 42)).toBe(stored)
+    expect(mocks.getPullRequestByNumber).toHaveBeenCalledWith('/repo', 42)
+    expect(mocks.getPullRequestForBranch).not.toHaveBeenCalled()
+    await expect(refreshPullRequestState('/repo', null)).rejects.toThrow('recorded pull request number is required')
+    expect(mocks.getPullRequestForBranch).not.toHaveBeenCalled()
+    expect(mocks.getPullRequestByNumber).toHaveBeenCalledTimes(1)
+  })
+
+  it.each(['head mismatch', 'missing candidate', 'merged head mismatch', 'merged base mismatch', 'merged branch mismatch'])('blocks completion for %s', async (failure) => {
     resetTestDb()
     const { ticket, context } = await createInitializedTestTicket(repoManager, {
       title: 'Candidate mismatch',
@@ -498,16 +522,17 @@ describe('pull request drafting context', () => {
       url: 'https://github.example/pulls/42',
       title: 'Candidate mismatch',
       body: 'Body',
-      state: 'open' as const,
-      baseRefName: 'main',
-      headRefName: ticket.externalId,
+      state: failure.startsWith('merged') ? 'merged' : 'open',
+      mergeCommitSha: 'landed123',
+      baseRefName: failure === 'merged base mismatch' ? 'wrong-base' : 'main',
+      headRefName: failure === 'merged branch mismatch' ? 'wrong-head' : ticket.externalId,
       headRefOid: 'old-sha',
       createdAt: '2026-01-01T00:00:00.000Z',
       updatedAt: '2026-01-01T00:00:00.000Z',
       closedAt: null,
       mergedAt: null,
     }
-    mocks.getPullRequestForBranch.mockReturnValue(prInfo)
+    mocks.getPullRequestByNumber.mockReturnValue(prInfo)
 
     await expect(completeMergedPullRequest({
       ticketId: ticket.id,
@@ -515,7 +540,7 @@ describe('pull request drafting context', () => {
       projectPath: context.externalId,
       baseBranch: 'main',
       headBranch: ticket.externalId,
-      candidateCommitSha: 'candidate123',
+      candidateCommitSha: failure === 'missing candidate' ? null : 'candidate123',
       prReport: {
         status: 'passed',
         completedAt: '2026-01-01T00:00:00.000Z',
@@ -534,13 +559,19 @@ describe('pull request drafting context', () => {
         closedAt: null,
         message: 'Draft PR ready.',
       },
-    })).rejects.toThrow('does not match candidate candidate123')
+    })).rejects.toThrow(failure === 'missing candidate'
+      ? 'has no approved candidate commit SHA'
+      : failure === 'merged base mismatch'
+        ? 'targets wrong-base, expected main'
+        : failure === 'merged branch mismatch'
+          ? 'uses head branch wrong-head'
+          : 'does not match candidate candidate123')
 
     expect(mocks.mergePullRequest).not.toHaveBeenCalled()
     expect(mocks.verifyRemoteBaseContainsCommit).not.toHaveBeenCalled()
   })
 
-  it('fails after merge if the remote base does not contain the candidate commit', async () => {
+  it.each([true, false])('rejects unverifiable merged metadata (has landed SHA: %s)', async (hasLandedSha) => {
     resetTestDb()
     const { ticket, context } = await createInitializedTestTicket(repoManager, {
       title: 'Remote verification failure',
@@ -551,6 +582,7 @@ describe('pull request drafting context', () => {
       title: 'Remote verification failure',
       body: 'Body',
       state: 'merged' as const,
+      mergeCommitSha: hasLandedSha ? 'landed123' : null,
       baseRefName: 'main',
       headRefName: ticket.externalId,
       headRefOid: 'candidate123',
@@ -559,9 +591,12 @@ describe('pull request drafting context', () => {
       closedAt: '2026-01-01T00:05:00.000Z',
       mergedAt: '2026-01-01T00:05:00.000Z',
     }
-    mocks.getPullRequestForBranch.mockReturnValue(prInfo)
+    mocks.getPullRequestByNumber.mockReturnValue(prInfo)
+    const expectedError = hasLandedSha
+      ? 'Remote origin/main does not contain commit landed123.'
+      : 'Pull request #42 does not expose a merged commit SHA to verify on origin/main.'
     mocks.verifyRemoteBaseContainsCommit.mockImplementation(() => {
-      throw new Error('Remote origin/main does not contain commit candidate123.')
+      throw new Error('Remote origin/main does not contain commit landed123.')
     })
 
     await expect(completeMergedPullRequest({
@@ -590,14 +625,15 @@ describe('pull request drafting context', () => {
         message: 'Draft PR ready.',
       },
       skipRemoteMerge: true,
-    })).rejects.toThrow('Remote origin/main does not contain commit candidate123')
+    })).rejects.toThrow(expectedError)
 
+    expect(mocks.verifyRemoteBaseContainsCommit).toHaveBeenCalledTimes(hasLandedSha ? 1 : 0)
     expect(mocks.mergePullRequest).not.toHaveBeenCalled()
     expect(mocks.tryDeleteRemoteBranch).not.toHaveBeenCalled()
     const receipt = getLatestPhaseArtifact(ticket.id, 'git_recovery_receipt', 'WAITING_PR_REVIEW')
     expect(JSON.parse(receipt!.content)).toMatchObject({
       step: 'verify_remote_merge',
-      error: 'Remote origin/main does not contain commit candidate123.',
+      error: expectedError,
     })
   })
 })

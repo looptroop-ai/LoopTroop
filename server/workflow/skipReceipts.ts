@@ -39,7 +39,7 @@ import {
   type SkipReceipt,
   type SkipSurface,
 } from '@shared/skipReceipt'
-import { phaseArtifacts, skipReceiptActions } from '../db/schema'
+import { phaseArtifacts } from '../db/schema'
 import { broadcaster } from '../sse/broadcaster'
 import { getTicketContext } from '../storage/ticketQueries'
 import { toArtifactManifestEntry } from '../storage/ticketArtifacts'
@@ -272,14 +272,12 @@ function readSkipReceiptRows(ticketRef: string): Array<{
     }))
 }
 
-/** True when the action has a committed claim, the authority for receipt idempotency. */
+/** True when this action already left a valid receipt on the ticket. */
 export function hasSkipReceiptsForAction(ticketRef: string, actionId: string): boolean {
-  const context = getTicketContext(ticketRef)
-  if (!context) return false
-  return !!context.projectDb.select().from(skipReceiptActions).where(and(
-    eq(skipReceiptActions.ticketId, context.localTicketId),
-    eq(skipReceiptActions.actionId, actionId),
-  )).get()
+  return readSkipReceiptRows(ticketRef).some((row) => (
+    SKIP_RECEIPT_ARTIFACT_TYPES.includes(row.artifactType)
+    && parseStoredReceipt(row.content)?.action_id === actionId
+  ))
 }
 
 /**
@@ -291,8 +289,8 @@ export function writeSkipReceipts(input: WriteSkipReceiptsInput): SkipReceipt[] 
   const context = getTicketContext(input.ticketId)
   if (!context) throw new Error(`Ticket not found: ${input.ticketId}`)
   if (input.items.length === 0 && !input.summary) return []
-  // Fast replay exit before phase validation; the transactional claim below
-  // enforces uniqueness if another writer claims the action after this read.
+  // Fast replay exit before phase validation. The database independently rejects
+  // duplicate receipt IDs, including writes that bypass this check.
   if (hasSkipReceiptsForAction(input.ticketId, input.actionId)) return []
 
   const skippedBy = normalizeSkipActor(input.skippedBy)
@@ -371,17 +369,9 @@ export function writeSkipReceipts(input: WriteSkipReceiptsInput): SkipReceipt[] 
   }
 
   const now = new Date().toISOString()
-  // Claim the action and write every item atomically. A separate row lets the
-  // database reject a replay without rejecting a bulk action's child receipts.
-  const inserted = context.projectDb.transaction((tx) => {
-    const claimed = tx.insert(skipReceiptActions).values({
-      ticketId: context.localTicketId,
-      actionId: input.actionId,
-    }).onConflictDoNothing().returning().get()
-    if (!claimed) return []
-    return receipts.map((receipt) => tx
-    .insert(phaseArtifacts)
-    .values({
+  // Keep the batch atomic; uniqueness belongs to each receipt, not the shared action ID.
+  const inserted = context.projectDb.transaction((tx) => receipts.flatMap((receipt) => {
+    const artifact = tx.insert(phaseArtifacts).values({
       ticketId: context.localTicketId,
       phase: input.phase,
       phaseAttempt,
@@ -389,10 +379,9 @@ export function writeSkipReceipts(input: WriteSkipReceiptsInput): SkipReceipt[] 
       content: JSON.stringify(skipReceiptSchema.parse(receipt)),
       createdAt: now,
       updatedAt: now,
-    })
-    .returning()
-    .get())
-  })
+    }).onConflictDoNothing().returning().get()
+    return artifact ? [{ receipt, artifact }] : []
+  }))
   if (inserted.length === 0) return []
 
   // One broadcast per action, after the transaction commits. Never inside it: a
@@ -405,11 +394,11 @@ export function writeSkipReceipts(input: WriteSkipReceiptsInput): SkipReceipt[] 
       ticketId: input.ticketId,
       phase: input.phase,
       artifactType,
-      artifact: toArtifactManifestEntry(input.ticketId, lastInserted),
+      artifact: toArtifactManifestEntry(input.ticketId, lastInserted.artifact),
     })
   }
 
-  return receipts
+  return inserted.map(({ receipt }) => receipt)
 }
 
 /**
@@ -432,10 +421,6 @@ export function deleteSkipReceiptsForAction(ticketRef: string, actionId: string)
     for (const row of doomed) {
       tx.delete(phaseArtifacts).where(eq(phaseArtifacts.id, row.id)).run()
     }
-    tx.delete(skipReceiptActions).where(and(
-      eq(skipReceiptActions.ticketId, context.localTicketId),
-      eq(skipReceiptActions.actionId, actionId),
-    )).run()
     return doomed.length
   })
 }

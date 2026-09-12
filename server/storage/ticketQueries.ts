@@ -50,7 +50,7 @@ export function isDisplayOnlyMockTicket(ticket: Pick<LocalTicketRow, 'branchName
 }
 
 function getDisplayOnlyMockTicketActions(status: string): string[] {
-  return isTerminalWorkflowStatus(status) ? [] : ['cancel']
+  return getAvailableWorkflowActions(status).includes('cancel') ? ['cancel'] : []
 }
 
 const TrimmedNonEmptyStringSchema = z.string().trim().min(1)

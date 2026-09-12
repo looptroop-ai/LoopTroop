@@ -34,7 +34,7 @@ import {
   captureGitRecoveryReceipt,
   createOrUpdateDraftPullRequest,
   ensureWorktreeClean,
-  getPullRequestForBranch,
+  getPullRequestByNumber,
   markPullRequestReady,
   mergePullRequest,
   readGitDiff,
@@ -1106,8 +1106,11 @@ export function refreshPullRequestReport(ticketId: string, report: PullRequestRe
   upsertLatestPhaseArtifact(ticketId, PULL_REQUEST_REPORT_ARTIFACT, 'CREATING_PULL_REQUEST', JSON.stringify(report))
 }
 
-export function refreshPullRequestState(projectPath: string, branchName: string, baseBranch: string): Promise<PullRequestInfo | null> {
-  return getPullRequestForBranch(projectPath, branchName, baseBranch)
+export async function refreshPullRequestState(projectPath: string, prNumber: number | null): Promise<PullRequestInfo | null> {
+  if (prNumber == null) {
+    throw new Error('A recorded pull request number is required to refresh pull request state.')
+  }
+  return getPullRequestByNumber(projectPath, prNumber)
 }
 
 function assertPullRequestMatchesExpected(input: {
@@ -1122,7 +1125,9 @@ function assertPullRequestMatchesExpected(input: {
   if (input.pr.headRefName !== input.headBranch) {
     throw new Error(`Pull request #${input.pr.number} uses head branch ${input.pr.headRefName}, expected ${input.headBranch}.`)
   }
-  if (!input.candidateCommitSha) return
+  if (!input.candidateCommitSha) {
+    throw new Error(`Pull request #${input.pr.number} has no approved candidate commit SHA to compare with its head.`)
+  }
   if (!input.pr.headRefOid) {
     throw new Error(`Pull request #${input.pr.number} does not expose a head SHA to compare with candidate ${input.candidateCommitSha}.`)
   }
@@ -1147,7 +1152,7 @@ export async function completeMergedPullRequest(input: {
   prReport: PullRequestReport
   skipRemoteMerge?: boolean
 }): Promise<MergeCompletionReport> {
-  const existingPullRequest = await getPullRequestForBranch(input.projectPath, input.headBranch, input.baseBranch)
+  const existingPullRequest = await refreshPullRequestState(input.projectPath, input.prReport.prNumber)
   if (!existingPullRequest) {
     throw new Error(`No pull request found for branch ${input.headBranch}.`)
   }
@@ -1178,16 +1183,26 @@ export async function completeMergedPullRequest(input: {
       }
 
       currentStep = 'merge_pull_request'
-      pr = await mergePullRequest(input.projectPath, pr.number, pr.title)
+      pr = await mergePullRequest(input.projectPath, pr.number, pr.title, input.candidateCommitSha ?? '')
     }
 
     if (pr.state !== 'merged') {
       throw new Error(`Pull request #${pr.number} did not report merged after merge completion; state is ${pr.state}.`)
     }
 
+    assertPullRequestMatchesExpected({
+      pr,
+      baseBranch: input.baseBranch,
+      headBranch: input.headBranch,
+      candidateCommitSha: input.candidateCommitSha,
+    })
     currentStep = 'verify_remote_merge'
-    const verificationSha = input.candidateCommitSha ?? pr.headRefOid
-    const remoteVerification = await verifyRemoteBaseContainsCommit(input.projectPath, input.baseBranch, verificationSha ?? '')
+    // For squash/rebase this is the landed commit, not the original candidate.
+    // Only read it after confirming merged: open PRs expose a test merge SHA.
+    if (!pr.mergeCommitSha) {
+      throw new Error(`Pull request #${pr.number} does not expose a merged commit SHA to verify on origin/${input.baseBranch}.`)
+    }
+    const remoteVerification = await verifyRemoteBaseContainsCommit(input.projectPath, input.baseBranch, pr.mergeCommitSha)
     const remoteBranchDelete = pr.state === 'merged'
       ? await tryDeleteRemoteBranch(input.projectPath, input.headBranch)
       : { deleted: false, warning: null as string | null }

@@ -15,6 +15,19 @@ describe.concurrent('buildStructuredRetryPrompt', () => {
 })
 
 describe.concurrent('parseYamlOrJsonCandidate', () => {
+  it.each([
+    ['block scalar', 't: |\n  one\nt: |\n  two'],
+    ['nested mapping', 'options:\n  value: one\noptions:\n  value: two'],
+    ['nested list', 'options:\n  - one\noptions:\n  - two'],
+    ['indentless list', 'options:\n- one\noptions:\n- two'],
+    ['plain multiline value', 't: first\n  one\nt: first\n  two'],
+  ])('rejects conflicting duplicate %s values through the full repair cascade', (_, input) => {
+    const repairWarnings: string[] = []
+
+    expect(() => parseYamlOrJsonCandidate(input, { repairWarnings })).toThrow()
+    expect(repairWarnings).not.toContain('Removed duplicate YAML mapping keys before parsing.')
+  })
+
   const interviewNestedMappingChildren = {
     generated_by: ['winner_model', 'generated_at', 'canonicalization'],
     answer: ['skipped', 'selected_option_ids', 'free_text', 'answered_by', 'answered_at'],
@@ -325,6 +338,38 @@ describe.concurrent('parseYamlOrJsonCandidate', () => {
 })
 
 describe.concurrent('cached candidate parsing', () => {
+  it('keeps deeply nested valid JSON parseable on repeated calls', () => {
+    // Depending on the Node/V8 stack budget, these exercise a cache hit,
+    // serialization bypass, or successful serialization followed by a failed read.
+    for (const depth of [2000, 3000, 4000]) {
+      const content = `${'{"child":'.repeat(depth)}null${'}'.repeat(depth)}`
+      for (let call = 0; call < 2; call++) {
+        let value = parseYamlOrJsonCandidate(content)
+        for (let level = 0; level < depth; level++) value = (value as { child: unknown }).child
+        expect(value).toBeNull()
+      }
+    }
+  })
+
+  it('bypasses unkeyable repair options without rejecting valid JSON', () => {
+    const circular: Record<string, unknown> = {}
+    circular.self = circular
+    for (const nestedMappingChildren of [circular, { answer: 1n }]) {
+      const options = { nestedMappingChildren } as Parameters<typeof parseYamlOrJsonCandidate>[1]
+      expect(parseYamlOrJsonCandidate('{"key_fallback":true}', options)).toEqual({ key_fallback: true })
+    }
+  })
+
+  it('preserves option order when normalized parent names collide', () => {
+    const content = 'parent:\nfirst: 1'
+    expect(parseYamlOrJsonCandidate(content, {
+      nestedMappingChildren: { PARENT: ['first'], parent: ['second'] },
+    })).toEqual({ parent: null, first: 1 })
+    expect(parseYamlOrJsonCandidate(content, {
+      nestedMappingChildren: { parent: ['second'], PARENT: ['first'] },
+    })).toEqual({ parent: { first: 1 } })
+  })
+
   it('keeps distinct lone UTF-16 surrogates in JSON strings separate', () => {
     for (const code of [0xd800, 0xd801, 0xfffd]) {
       const value = String.fromCharCode(code)

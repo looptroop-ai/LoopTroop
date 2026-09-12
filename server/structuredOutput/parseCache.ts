@@ -11,16 +11,27 @@ interface CachedParse {
   repairWarnings: string[]
 }
 
+/** Return an independent result, or a miss after evicting an unreadable snapshot. */
 export function getCachedParse(key: string): CachedParse | undefined {
   const entry = entries.get(key)
   if (!entry) return undefined
+  let parsed: CachedParse
+  try {
+    // Binary views can point into this buffer. An unpooled copy also prevents
+    // callers reaching another result through a returned view's .buffer.
+    parsed = deserialize(Uint8Array.from(entry)) as CachedParse
+  } catch {
+    // V8 can serialize a deep graph that exceeds its deserialization stack.
+    entries.delete(key)
+    retainedBytes -= entry.byteLength + key.length * 2
+    return undefined
+  }
   entries.delete(key)
   entries.set(key, entry)
-  // Binary views can point into this buffer. An unpooled copy also prevents
-  // callers reaching another result through a returned view's .buffer.
-  return deserialize(Uint8Array.from(entry)) as CachedParse
+  return parsed
 }
 
+/** Snapshot a successful parse within the entry/byte limits; bypass unsupported values. */
 export function cacheParse(key: string, value: unknown, repairWarnings: string[]): void {
   let entry: Buffer
   try {

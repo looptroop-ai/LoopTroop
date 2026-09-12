@@ -18,6 +18,7 @@ export function stripTranscriptPrefixes(content: string): string {
   return stripSharedTranscriptPrefixes(content).trim()
 }
 
+/** Append a nonempty trimmed candidate once, unless it equals the excluded text. */
 function addCandidate(target: string[], seen: Set<string>, value: string | null | undefined, excluded?: string) {
   const normalized = value?.trim()
   if (!normalized || normalized === excluded || seen.has(normalized)) return
@@ -517,6 +518,7 @@ function stripTrailingInlineTerminalNoise(content: string): string | null {
   return null
 }
 
+/** Collect distinct terminal-noise removals without retrying the original text. */
 function buildTrailingTerminalNoiseVariants(content: string): string[] {
   const variants: string[] = []
   const seen = new Set<string>()
@@ -528,6 +530,7 @@ function buildTrailingTerminalNoiseVariants(content: string): string[] {
   return variants
 }
 
+/** Remove a final closing fence only when the candidate has no matching opener. */
 function stripTrailingClosingCodeFenceLine(content: string): string | null {
   const lines = content.split('\n')
   let end = lines.length
@@ -551,8 +554,10 @@ function stripTrailingClosingCodeFenceLine(content: string): string | null {
   return stripped || null
 }
 
-// Only this prefix is shared. Later branches deliberately try different repair
-// sequences; retain the intermediate strings for their existing warning checks.
+/**
+ * Apply only the shared prefix. Later branches deliberately try different repair
+ * sequences; retain the intermediate strings for their existing warning checks.
+ */
 function applyInlineRepairPipeline(candidate: string, options?: ParseYamlOrJsonCandidateOptions) {
   const inlineSequence = repairYamlInlineSequenceParents(candidate)
   const inlineKeys = repairYamlInlineKeys(inlineSequence, {
@@ -564,28 +569,36 @@ function applyInlineRepairPipeline(candidate: string, options?: ParseYamlOrJsonC
   return { inlineSequence, inlineKeys, yaml }
 }
 
-// Bump when repair rules or their ordering change, including shared/yamlRepair.ts.
-const REPAIR_PIPELINE_VERSION = '1'
+// Repair contract marker; bump with rule/order changes, including shared repairs.
+// The cache is process-local: deploying new code also restarts with an empty cache.
+const REPAIR_PIPELINE_VERSION = '2'
 
+/** Parse or reuse a candidate while preserving per-call repairs and mutable result ownership. */
 export function parseYamlOrJsonCandidate(
   content: string,
   options?: ParseYamlOrJsonCandidateOptions,
 ): unknown {
   const trimmed = content.trim()
   if (!trimmed) return null
-  // Preserve option property order: repair rules may traverse it. Warning sinks
-  // belong to callers and must neither enter the key nor be retained in a cache.
-  const key = createHash('sha256')
-    .update(JSON.stringify([
-      REPAIR_PIPELINE_VERSION,
-      options?.nestedMappingChildren ?? null,
-      options?.sequenceItemPrimaryKeys ?? null,
-      options?.allowTrailingTerminalNoise ?? false,
-    ]))
-    .update('\0')
-    // UTF-8 replaces lone surrogates, which would alias distinct valid JSON strings.
-    .update(trimmed, 'utf16le')
-    .digest('hex')
+  // Normalized aliases can collide, so nested option property order matters.
+  // The mapped type makes adding an unkeyed repair option a compile error.
+  let key: string
+  try {
+    const keyedOptions = {
+      nestedMappingChildren: options?.nestedMappingChildren ?? null,
+      sequenceItemPrimaryKeys: options?.sequenceItemPrimaryKeys ?? null,
+      allowTrailingTerminalNoise: options?.allowTrailingTerminalNoise ?? false,
+    } satisfies Record<Exclude<keyof ParseYamlOrJsonCandidateOptions, 'repairWarnings'>, unknown>
+    key = createHash('sha256')
+      .update(JSON.stringify([REPAIR_PIPELINE_VERSION, keyedOptions]))
+      .update('\0')
+      // UTF-8 replaces lone surrogates, which would alias distinct valid JSON strings.
+      .update(trimmed, 'utf16le')
+      .digest('hex')
+  } catch {
+    // JSON may parse without using repair options that cannot be serialized.
+    return parseYamlOrJsonCandidateUncached(trimmed, options)
+  }
   const cached = getCachedParse(key)
   if (cached) {
     for (const warning of cached.repairWarnings) appendRepairWarningOnce(options?.repairWarnings, warning)
@@ -603,16 +616,14 @@ export function parseYamlOrJsonCandidate(
   }
 }
 
+/** Parse already-trimmed, nonempty text through the existing repair attempts. */
 function parseYamlOrJsonCandidateUncached(
-  content: string,
+  trimmed: string,
   options?: ParseYamlOrJsonCandidateOptions,
 ): unknown {
   const applyNestedMappingRepair = (value: string): string => options?.nestedMappingChildren
     ? repairYamlNestedMappingChildren(value, options.nestedMappingChildren)
     : value
-  const trimmed = content.trim()
-  if (!trimmed) return null
-
   const tryParseCandidate = (candidate: string, allowTrailingNoiseVariants = true): unknown => {
     const finalizeParsedCandidate = (
       parsed: unknown,

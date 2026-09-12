@@ -21,7 +21,7 @@ describe('pre-parse repairs are recorded', () => {
       'options:',
       '  - first',
       'options:',
-      '  - second',
+      '  - first',
     ].join('\n'), { repairWarnings })
 
     expect(parsed).toEqual({ options: ['first'] })

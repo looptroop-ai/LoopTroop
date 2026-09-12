@@ -924,9 +924,29 @@ export function repairYamlNestedMappingChildren(
   const lines = yaml.split('\n')
   const result: string[] = []
 
+  let blockScalarBaseIndent = -1
+
   for (let index = 0; index < lines.length; index += 1) {
     const line = lines[index]!
     const trimmed = line.trim()
+
+    if (blockScalarBaseIndent >= 0) {
+      if (!trimmed || getLineIndent(line) > blockScalarBaseIndent) {
+        result.push(line)
+        continue
+      }
+      blockScalarBaseIndent = -1
+    }
+    const nodeValue = (line.match(/^\s*(?:-\s+)?[A-Za-z_][\w_-]*\s*:(.*)$/)?.[1]
+      ?? line.match(/^\s*-\s+(.+)$/)?.[1])?.trim()
+    if (nodeValue !== undefined && hasUncertainYamlScalarExtent(nodeValue)) return yaml
+    if (BLOCK_SCALAR_HEADER.test(trimmed)) {
+      blockScalarBaseIndent = MAPPING_BLOCK_SCALAR_HEADER.test(trimmed)
+        ? line.match(/^(\s*-\s+)/)?.[1]?.length ?? getLineIndent(line)
+        : getLineIndent(line)
+      result.push(line)
+      continue
+    }
 
     const bareParentMatch = trimmed.match(/^([A-Za-z_][\w-]*)\s*:\s*$/)
     const inlinePlaceholderParentMatch = trimmed.match(/^([A-Za-z_][\w-]*)\s*:\s*([A-Za-z_][\w-]*)\s*$/)
@@ -992,8 +1012,9 @@ export function repairYamlNestedMappingChildren(
 
       const childSourceIndent = currentIndent
       const childTargetIndent = parentIndent + 2
+      const childOpensScalar = BLOCK_SCALAR_VALUE.test(currentMatch[2]!.trim())
       const childOpensNested = currentMatch[2]!.trim().length === 0
-        || /^[>|][+-]?(?:\s+#.*)?$/.test(currentMatch[2]!.trim())
+        || childOpensScalar
       const childDelta = childTargetIndent - childSourceIndent
 
       const repairedChildLine = replaceLineIndent(currentLine, childTargetIndent)
@@ -1003,6 +1024,15 @@ export function repairYamlNestedMappingChildren(
       while (cursor < lines.length) {
         const nestedLine = lines[cursor]!
         const nestedTrimmed = nestedLine.trim()
+        const nestedIndent = getLineIndent(nestedLine)
+
+        // Literal scalar content can look like a sibling key or a comment.
+        // Move it with its header before interpreting mapping boundaries.
+        if (childOpensScalar && nestedIndent > childSourceIndent) {
+          result.push(replaceLineIndent(nestedLine, nestedIndent + childDelta))
+          cursor += 1
+          continue
+        }
 
         if (!nestedTrimmed || nestedTrimmed.startsWith('#')) {
           result.push(nestedLine)
@@ -1014,7 +1044,6 @@ export function repairYamlNestedMappingChildren(
           break
         }
 
-        const nestedIndent = getLineIndent(nestedLine)
         const nestedMatch = nestedTrimmed.match(/^([A-Za-z_][\w-]*)\s*:(.*)$/)
         if (nestedMatch && nestedIndent <= childTargetIndent) {
           if (allowedChildren.has(normalizeYamlRepairKey(nestedMatch[1]!))) {
@@ -1154,46 +1183,61 @@ const DUPLICATE_KEYS_BLOCK_SCALAR_PATTERN = BLOCK_SCALAR_HEADER
  *
  * Models sometimes emit the same key-value pair twice within a mapping, or
  * repeat a block key like `options:` with the same nested list. This function
- * removes exact duplicates (same key + same full line text) while preserving
- * entries with different values (those are ambiguous and should be left for
- * js-yaml to error on). When the duplicate key opens a nested block, the
- * duplicate block contents are removed as well so they do not get merged into
- * the first key during YAML parsing.
+ * compares complete entries, including nested and multiline values. Conflicting
+ * duplicates remain for js-yaml to reject. Retained scalar text and external
+ * comments stay untouched.
  */
 export function repairYamlDuplicateKeys(yaml: string): string {
   const lines = yaml.split('\n')
   const result: string[] = []
 
-  // Map from effective indent level → Map<key_name, full_line_text>
-  const seenByIndent = new Map<number, Map<string, string>>()
+  // Map from effective indent level → Map<key_name, original_line_index>
+  const seenByIndent = new Map<number, Map<string, number>>()
+  let blockScalarBaseIndent = -1
 
-  // When >= 0, we are skipping nested lines of a removed duplicate mapping
-  // block (for example a duplicate `options:` plus its list items).
-  let skipNestedBlockIndent = -1
-
-  // When >= 0, we are skipping continuation lines of a removed block-scalar duplicate
-  let skipBlockScalarIndent = -1
-
-  for (const line of lines) {
-    const trimmed = line.trim()
-    const lineIndent = line.match(/^(\s*)/)?.[1]?.length ?? 0
-
-    if (skipNestedBlockIndent >= 0) {
-      if (!trimmed || trimmed.startsWith('#')) {
+  // Scan only on a repeated header. Comparing headers alone would silently
+  // discard different block bodies or merge different plain continuations.
+  /** Collect a complete indentation-delimited entry, excluding external comments. */
+  function collectEntry(start: number, indent: number): { end: number; text: string } | null {
+    const header = lines[start]!
+    const value = header.slice(header.indexOf(':') + 1).trim()
+    // Indentation cannot establish the extent of flow collections or nodes
+    // with tags/anchors. Leave those duplicates for YAML to reject.
+    if (/^[{[&*!]/.test(value)) return null
+    const entryLines = [header]
+    const scalar = DUPLICATE_KEYS_BLOCK_SCALAR_PATTERN.test(header.trim())
+    let end = start + 1
+    for (; end < lines.length; end += 1) {
+      const line = lines[end]!
+      const trimmed = line.trim()
+      const lineIndent = getLineIndent(line)
+      // The final empty split element is a line terminator, not a blank line.
+      if (end === lines.length - 1 && line === '') break
+      if (trimmed.startsWith('#') && lineIndent <= indent) {
+        if (scalar) break
         continue
       }
-      if (lineIndent > skipNestedBlockIndent) {
-        continue
+      if (trimmed && lineIndent <= indent) {
+        // YAML also allows an unindented sequence as a mapping's value.
+        if (scalar || lineIndent < indent || !/^-(?:\s|$)/.test(trimmed)) break
       }
-      skipNestedBlockIndent = -1
+      entryLines.push(line)
     }
+    return { end, text: entryLines.join('\n') }
+  }
 
-    // If we're skipping block-scalar continuation of a removed duplicate
-    if (skipBlockScalarIndent >= 0) {
-      if (!trimmed || trimmed.startsWith('#') || lineIndent > skipBlockScalarIndent) {
-        continue // skip continuation line
+  for (let index = 0; index < lines.length; index += 1) {
+    const line = lines[index]!
+    const trimmed = line.trim()
+    const lineIndent = getLineIndent(line)
+
+    // Retained scalar bodies are literal text, even when lines look like keys.
+    if (blockScalarBaseIndent >= 0) {
+      if (!trimmed || lineIndent > blockScalarBaseIndent) {
+        result.push(line)
+        continue
       }
-      skipBlockScalarIndent = -1
+      blockScalarBaseIndent = -1
     }
 
     // Blank / comment lines pass through
@@ -1210,12 +1254,14 @@ export function repairYamlDuplicateKeys(yaml: string): string {
     }
 
     // List item with key: `  - key: value`
-    // Each list item starts a fresh mapping at effectiveIndent = dashIndent + 2
+    // Each list item starts a fresh mapping at the key's actual column.
     const listItemKeyMatch = line.match(/^(\s*)-\s+([A-Za-z_][\w_-]*)\s*:(.*)$/)
     if (listItemKeyMatch) {
+      const value = listItemKeyMatch[3]!.trim()
+      if (hasUncertainYamlScalarExtent(value)) return yaml
       const dashIndent = listItemKeyMatch[1]!.length
-      const effectiveIndent = dashIndent + 2
       const key = listItemKeyMatch[2]!
+      const effectiveIndent = line.indexOf(key, dashIndent + 1)
 
       // New list item → fresh mapping context. This level needs no delete: the
       // `set` below replaces it outright.
@@ -1225,17 +1271,27 @@ export function repairYamlDuplicateKeys(yaml: string): string {
         }
       }
 
-      const map = new Map<string, string>()
-      map.set(key, line)
+      const map = new Map<string, number>()
+      map.set(key, index)
       seenByIndent.set(effectiveIndent, map)
 
       result.push(line)
+      if (DUPLICATE_KEYS_BLOCK_SCALAR_PATTERN.test(trimmed)) {
+        blockScalarBaseIndent = effectiveIndent
+      }
       continue
     }
+
+    const sequenceValue = line.match(/^\s*-\s+(.+)$/)?.[1]?.trim()
+    if (sequenceValue !== undefined && hasUncertainYamlScalarExtent(sequenceValue)) return yaml
 
     // Bare mapping key: `key: value` or `  key: value`
     const keyMatch = line.match(/^(\s*)([A-Za-z_][\w_-]*)\s*:(.*)$/)
     if (keyMatch) {
+      // A multiline quote can contain apparent keys at any indentation. Do
+      // not reinterpret that text or guess where its mapping resumes.
+      const value = keyMatch[3]!.trim()
+      if (hasUncertainYamlScalarExtent(value)) return yaml
       const key = keyMatch[2]!
 
       if (!seenByIndent.has(lineIndent)) {
@@ -1243,24 +1299,29 @@ export function repairYamlDuplicateKeys(yaml: string): string {
       }
       const seenAtLevel = seenByIndent.get(lineIndent)!
 
-      const previousLine = seenAtLevel.get(key)
-      if (previousLine === line) {
-        // Exact duplicate — skip this line
-        if (DUPLICATE_KEYS_BLOCK_SCALAR_PATTERN.test(trimmed)) {
-          skipBlockScalarIndent = lineIndent
-        } else {
-          const valuePortion = keyMatch[3]?.trim() ?? ''
-          if (!valuePortion || valuePortion.startsWith('#')) {
-            skipNestedBlockIndent = lineIndent
+      const previousIndex = seenAtLevel.get(key)
+      if (previousIndex !== undefined && lines[previousIndex] === line) {
+        const previousEntry = collectEntry(previousIndex, lineIndent)
+        const entry = collectEntry(index, lineIndent)
+        if (previousEntry && entry && previousEntry.text === entry.text) {
+          for (let cursor = index + 1; cursor < entry.end; cursor += 1) {
+            const nestedLine = lines[cursor]!
+            if (nestedLine.trim().startsWith('#') && getLineIndent(nestedLine) <= lineIndent) {
+              result.push(nestedLine)
+            }
           }
+          index = entry.end - 1
+          continue
         }
-        continue
       }
 
-      seenAtLevel.set(key, line)
+      seenAtLevel.set(key, index)
     }
 
     result.push(line)
+    if (DUPLICATE_KEYS_BLOCK_SCALAR_PATTERN.test(trimmed)) {
+      blockScalarBaseIndent = lineIndent
+    }
   }
 
   return result.join('\n')
@@ -1531,6 +1592,23 @@ function splitYamlValueAndComment(value: string): { value: string; comment: stri
   }
 
   return { value: value.trimEnd(), comment: '' }
+}
+
+/** Whether boundaries require tags, aliases or multiline scalar/flow parsing. */
+function hasUncertainYamlScalarExtent(value: string): boolean {
+  if (value.startsWith('[') || value.startsWith('{')) {
+    const inlineValue = splitYamlValueAndComment(value).value.trimEnd()
+    try {
+      // JSON proves the whole flow value is on this line, including brackets
+      // inside strings. Other YAML flow forms remain conservatively untouched.
+      JSON.parse(inlineValue)
+      return false
+    } catch {
+      return true
+    }
+  }
+  return /^[&*!]/.test(value)
+    || (/^["']/.test(value) && findLeadingQuotedScalarFragmentEnd(value) === null)
 }
 
 function findLeadingQuotedScalarFragmentEnd(value: string): number | null {

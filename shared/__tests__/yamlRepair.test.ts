@@ -245,6 +245,38 @@ describe('repairYamlIndentation', () => {
 })
 
 describe('repairYamlNestedMappingChildren', () => {
+  it.each(['body: &anchor |', 'body: !!str |', '- body: &anchor |', 'body: "first', '- "first', '- &anchor |', '- ['])('preserves uncertain scalar text under %s', (header) => {
+    const input = `${header}\n    parent:\n    answer: text${header.endsWith('first') ? '\nlast"' : ''}`
+
+    expect(repairYamlNestedMappingChildren(input, { parent: ['answer'] })).toBe(input)
+  })
+
+  it.each(['- body: |', '-   body: |'])('resumes repairing sibling mappings after %s', (header) => {
+    const indent = header.indexOf('body')
+    const siblingIndent = ' '.repeat(indent)
+    const bodyIndent = ' '.repeat(indent + 2)
+    const input = `${header}\n${bodyIndent}literal\n# external comment\n${siblingIndent}parent:\n${siblingIndent}answer: text`
+    const expected = `${header}\n${bodyIndent}literal\n# external comment\n${siblingIndent}parent:\n${bodyIndent}answer: text`
+
+    expect(repairYamlNestedMappingChildren(input, { parent: ['answer'] })).toBe(expected)
+    expect(jsYaml.load(expected)).toEqual([{ body: 'literal\n', parent: { answer: 'text' } }])
+  })
+
+  it.each(['body: |2', 'body: >-2', '- |2', '- body: |2'])('preserves parent/child-looking text under %s', (header) => {
+    const input = `${header}\n    parent:\n    answer: text`
+
+    expect(repairYamlNestedMappingChildren(input, { parent: ['answer'] })).toBe(input)
+  })
+
+  it.each(['|2', '|2-', '>-2', '|2 # note'])('moves the whole scalar under a repaired child with header %s', (header) => {
+    const input = `parent:\nanswer: ${header}\n  first\n  # literal comment\n  answer: literal text\nnext: 9`
+    const expected = `parent:\n  answer: ${header}\n    first\n    # literal comment\n    answer: literal text\nnext: 9`
+    const repaired = repairYamlNestedMappingChildren(input, { parent: ['answer'] })
+
+    expect(repaired).toBe(expected)
+    expect(jsYaml.load(repaired)).toEqual({ parent: { answer: (jsYaml.load(input) as { answer: string }).answer }, next: 9 })
+  })
+
   it('passes through valid nested mappings unchanged', () => {
     const yaml = [
       'generated_by:',
@@ -620,10 +652,24 @@ describe('repairYamlFreeTextScalars', () => {
     expect(repairYamlFreeTextScalars(repaired)).toBe(repaired)
   })
 
-  it.each(['|', '>', '|2-', '>-2', '| # note', '>+ # note'])('preserves valid free_text block header %s', (header) => {
+  it.each([
+    ['|', 'prose: unchanged\n'],
+    ['>', 'prose: unchanged\n'],
+    ['|-', 'prose: unchanged'],
+    ['>-', 'prose: unchanged'],
+    ['|+', 'prose: unchanged\n'],
+    ['>+', 'prose: unchanged\n'],
+    ['|1', ' prose: unchanged\n'],
+    ['|2', 'prose: unchanged\n'],
+    ['>2', 'prose: unchanged\n'],
+    ['|2-', 'prose: unchanged'],
+    ['>-2', 'prose: unchanged'],
+    ['| # note', 'prose: unchanged\n'],
+    ['>+ # note', 'prose: unchanged\n'],
+  ])('preserves valid free_text block header %s', (header, expectedValue) => {
     const input = `answer:\n  free_text: ${header}\n    prose: unchanged\n  answered_by: user`
     expect(repairYamlFreeTextScalars(input)).toBe(input)
-    expect(jsYaml.load(input)).toEqual({ answer: { free_text: expect.any(String), answered_by: 'user' } })
+    expect(jsYaml.load(input)).toEqual({ answer: { free_text: expectedValue, answered_by: 'user' } })
   })
 
   it('preserves block-scalar free_text values unchanged', () => {
@@ -1394,6 +1440,97 @@ describe.concurrent('repairYamlTypeUnionScalars', () => {
 
 describe.concurrent('repairYamlDuplicateKeys — block scalars', () => {
   it.each([
+    ['literal scalar', 't: |\n  one\nt: |\n  two'],
+    ['folded scalar', 't: >-\n  one\nt: >-\n  two'],
+    ['nested mapping', 'options:\n  value: one\noptions:\n  value: two'],
+    ['nested list', 'options:\n  - one\noptions:\n  - two'],
+    ['indentless list', 'options:\n- one\noptions:\n- two'],
+    ['plain continuation', 't: first\n  one\nt: first\n  two'],
+    ['block whitespace', 't: |\n  one\n\n  two\nt: |\n  one\n \n  two'],
+    ['kept trailing blank', 't: |+\n  one\n\nt: |+\n  one'],
+    ['multiline quoted value', 't: "first\none"\nt: "first\ntwo"'],
+    ['multiline flow sequence', 't: [\none]\nt: [\ntwo]'],
+    ['multiline flow mapping', 't: {\nvalue: one}\nt: {\nvalue: two}'],
+  ])('leaves conflicting %s entries for YAML to reject', (_, input) => {
+    expect(repairYamlDuplicateKeys(input)).toBe(input)
+    expect(() => jsYaml.load(input)).toThrow()
+  })
+
+  it.each([
+    ['nested mapping', 'options:\n  value: one'],
+    ['plain continuation', 't: first\n  one'],
+    ['indentless list', 'options:\n- one\n- two'],
+    ['kept trailing blank', 't: |+\n  one\n'],
+  ])('removes complete identical %s entries', (_, entry) => {
+    const input = `${entry}\n${entry}\nz: 9`
+    const expected = `${entry}\nz: 9`
+
+    expect(repairYamlDuplicateKeys(input)).toBe(expected)
+    expect(jsYaml.load(expected)).toEqual(jsYaml.load(`${entry}\nz: 9`))
+    expect(repairYamlDuplicateKeys(expected)).toBe(expected)
+  })
+
+  it.each(['', '\n'])('removes an identical final entry with terminator %j', (ending) => {
+    const input = `t: |\n  one\nt: |\n  one${ending}`
+
+    expect(jsYaml.load(repairYamlDuplicateKeys(input))).toEqual({ t: 'one\n' })
+  })
+
+  it.each([
+    'body: "first\nx: one\nx: one\nlast"',
+    'body: \'first\nx: one\nx: one\nlast\'',
+    'body: &anchor |\n  x: one\n  x: one',
+    'body: !!str |\n  x: one\n  x: one',
+    '- body: &anchor |\n    x: one\n    x: one',
+    'body: [\n  "first\n  x: one\n  x: one\n  last"\n  ]',
+    'body: ["first]\n  x: one\n  x: one\n  last"]',
+    '- "first\n  x: one\n  x: one\n  last"',
+    '- &anchor |\n  x: one\n  x: one',
+    '- ["first\n  x: one\n  x: one\n  last"]',
+  ])('leaves text alone when the scalar extent needs more than indentation: %s', (input) => {
+    expect(repairYamlDuplicateKeys(input)).toBe(input)
+  })
+
+  it.each(['t: |', 't: |2', '- |', '- t: |'])('preserves repeated literal keys inside retained %s', (header) => {
+    const input = `${header}\n    name: a\n    name: a`
+
+    expect(repairYamlDuplicateKeys(input)).toBe(input)
+  })
+
+  it.each(['- t: |', '-   t: |'])('resumes duplicate-key repair after sequence mapping scalar %s', (header) => {
+    const indent = header.indexOf('t:')
+    const siblingIndent = ' '.repeat(indent)
+    const bodyIndent = ' '.repeat(indent + 2)
+    const input = `${header}\n${bodyIndent}name: a\n${bodyIndent}name: a\n# external comment\n${siblingIndent}z: 9\n${siblingIndent}z: 9`
+    const expected = `${header}\n${bodyIndent}name: a\n${bodyIndent}name: a\n# external comment\n${siblingIndent}z: 9`
+
+    expect(repairYamlDuplicateKeys(input)).toBe(expected)
+    expect(jsYaml.load(expected)).toEqual([{ t: 'name: a\nname: a\n', z: 9 }])
+  })
+
+  it.each(['# keep me\nz: 9', '# keep me'])('preserves external comments after a duplicate scalar before %s', (tail) => {
+    const input = `t: |\n  one\nt: |\n  one\n${tail}`
+
+    expect(repairYamlDuplicateKeys(input)).toBe(`t: |\n  one\n${tail}`)
+  })
+
+  it('preserves invalid continuation after an external comment for YAML to reject', () => {
+    const input = 't: |\n  one\n\n  two\nt: |\n  one\n# note\n  two\nz: 9'
+    const repaired = repairYamlDuplicateKeys(input)
+
+    expect(repaired).toBe(input)
+    expect(() => jsYaml.load(repaired)).toThrow()
+  })
+
+  it('preserves external comments without leaking removed nested mapping children', () => {
+    const input = 'options:\n  - a\n  - b\noptions:\n  - a\n# keep me\n  - b\n# keep this too\nz: 9'
+    const repaired = repairYamlDuplicateKeys(input)
+
+    expect(repaired).toBe('options:\n  - a\n  - b\n# keep me\n# keep this too\nz: 9')
+    expect(jsYaml.load(repaired)).toEqual({ options: ['a', 'b'], z: 9 })
+  })
+
+  it.each([
     [
       'an exact duplicate block scalar',
       ['t: |', '  one', '  two', 't: |', '  one', '  two', 'z: 9'].join('\n'),
@@ -1428,11 +1565,11 @@ describe.concurrent('repairYamlDuplicateKeys — block scalars', () => {
     expect(repairYamlDuplicateKeys(input)).toBe(input)
   })
 
-  it.each(['', ' ', '# note'])('removes the whole duplicate scalar across a %j line', (gap) => {
-    const input = ['t: |', '  one', '', '  two', 't: |', '  one', gap, '  two', 'z: 9'].join('\n')
+  it.each(['', ' '])('removes the whole duplicate scalar across a %j line', (gap) => {
+    const input = ['t: |', '  one', gap, '  two', 't: |', '  one', gap, '  two', 'z: 9'].join('\n')
     const repaired = repairYamlDuplicateKeys(input)
 
-    expect(repaired).toBe(['t: |', '  one', '', '  two', 'z: 9'].join('\n'))
+    expect(repaired).toBe(['t: |', '  one', gap, '  two', 'z: 9'].join('\n'))
     expect(jsYaml.load(repaired)).toEqual({ t: 'one\n\ntwo\n', z: 9 })
     expect(repairYamlDuplicateKeys(repaired)).toBe(repaired)
   })

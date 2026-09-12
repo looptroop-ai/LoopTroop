@@ -1,7 +1,7 @@
 import { spawn } from 'node:child_process'
 import { DEFAULT_OPENCODE_BASE_URL } from '../shared/appConfig'
 import { getErrorMessage } from '../shared/typeGuards'
-import { resolveOpenCodeBaseUrl } from './opencode-dev-base-url'
+import { getServeHostname, resolveOpenCodeBaseUrl } from './opencode-dev-base-url'
 import { resolveOpenCodeLogMode } from './opencode-log-mode'
 import { withManagedOpenCodeServerEnv } from './opencode-permission-env'
 import { LOOPTROOP_OPENCODE_ROUTING_CONFIG } from '../shared/openRouterRouting'
@@ -41,7 +41,7 @@ if (status !== 'ready-to-start') {
 const url = new URL(baseUrl)
 const port = Number(url.port || (url.protocol === 'https:' ? 443 : 80))
 
-const serveHostname = url.hostname === 'localhost' ? '127.0.0.1' : url.hostname
+const serveHostname = getServeHostname(url)
 console.log(`[dev-opencode] Checking OpenCode availability at ${baseUrl}.`)
 console.log(`[dev-opencode] Starting OpenCode on ${serveHostname}:${port}.`)
 if (opencodeLogMode.mode === 'all') {

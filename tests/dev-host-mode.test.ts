@@ -2,6 +2,7 @@ import { describe, expect, it } from 'vitest'
 import {
   DEFAULT_DEV_BIND_HOST,
   getDevLanUrls,
+  isWildcardHost,
   listLanAddresses,
   LOOPTROOP_DEV_HOST,
   NPM_CONFIG_LONG,
@@ -64,9 +65,9 @@ describe('resolveDevHostMode', () => {
 })
 
 describe('LAN URL formatting', () => {
-  it('formats all detected non-loopback IPv4 interfaces for wildcard host mode', () => {
+  it.each(['0.0.0.0', '::', '[::]', '0:0:0:0:0:0:0:0', '[0000:0000:0000:0000:0000:0000:0000:0000]'])('formats LAN interfaces for wildcard host %s', (host) => {
     const urls = getDevLanUrls({
-      hostMode: hostModeEnabled(DEFAULT_DEV_BIND_HOST),
+      hostMode: resolveDevHostMode({ env: { [LOOPTROOP_DEV_HOST]: host } }),
       port: 5173,
       interfaces: {
         lo: [{ address: '127.0.0.1', family: 'IPv4', internal: true, cidr: '127.0.0.1/8', mac: '00:00:00:00:00:00', netmask: '255.0.0.0' }],
@@ -79,6 +80,10 @@ describe('LAN URL formatting', () => {
       'http://192.168.1.22:5173',
       'http://10.0.0.8:5173',
     ])
+  })
+
+  it.each(['[::', '::]', '[::]:5173', '::%lo', '::1', '::ffff:0.0.0.0', '0.0.0.0.evil.test'])('does not treat %s as an unspecified bind address', (host) => {
+    expect(isWildcardHost(host)).toBe(false)
   })
 
   it('returns no LAN URLs when wildcard host mode has no detected network interface', () => {

@@ -57,8 +57,8 @@ partial brackets and zone IDs rather than allowing the URL parser to repair them
 The dev URL printer reuses that predicate, so hostnames that merely start with `127.` are
 advertised normally. The backend's remote opt-in and token requirements are unchanged.
 Bracketed IPv6 request authorities are canonicalized before Origin comparison; ports and
-different addresses still distinguish origins. The authority helper retains its existing
-bare-IPv6 handling, although browser Host headers use brackets.
+different addresses still distinguish origins. Bare IPv6 addresses now use the same canonical
+spelling as bracketed addresses, although browser Host headers use brackets.
 
 All eight local reports and all PR conversation, review and inline comments at `71d94d2c`
 were read together before changes. Findings shared by several reviewers are grouped below.
@@ -95,6 +95,39 @@ and license checks passed, as did package contents and production native-addon c
 The first build process was killed while heavy checks ran together;
 the sequential rerun passed. A new Vite native-config warning was fixed by adding the explicit
 extension to the dev-host module's shared import. New CI results are left for the owner to review.
+
+### Refreshed review at `d3ca1356`
+
+Read all five refreshed local reports, including the completed Opus report, alongside all PR
+comments and CI results before finishing these follow-ups.
+
+| Finding | Disposition |
+| --- | --- |
+| IPv6 OpenCode URLs classified as remote; diagnostics miss the listener | Fixed both consumers through shared loopback/wildcard recognition. Socket probes and both OpenCode launch paths use bare IPv6; HTTP probes retain brackets. Diagnostic output fields and port-zero behavior stay unchanged. |
+| Expanded IPv6 wildcard binds print unusable LAN URLs and disable WSL guidance | Canonicalize IPv6 through the shared platform helper and recognize `::`. IPv4-mapped zero is a distinct address, not IPv6 unspecified; it retains explicit-host behavior rather than assuming identical bind semantics across platforms. |
+| Duplicated IPv6 parsing, empty ports, inconsistent port bounds and bare IPv6 spelling | Shared canonical IPv6 helper and one authority parser. Empty ports use the default, as specified by [RFC 9110](https://www.rfc-editor.org/rfc/rfc9110.html#section-4.2.1); invalid authorities cannot produce a canonical comparison key. Different addresses and ports remain different origins. |
+| Toast rerender test does not simulate Fast Refresh | Renamed the test to state what it proves and documented the ref lifetime next to the counter. No artificial HMR harness. |
+| WSL numeric-address prefix filter | Already gated by dotted numeric address validation; it does not misclassify hostnames or define backend trust. No change needed. |
+| Duplicate dismiss labels, React variable names, mock style and UUID formatting | No current defect. Tests deliberately use distinct messages; IDs remain opaque and accessibility labels remain meaningful. |
+
+Both full CI runs at `d3ca1356` passed:
+[push](https://github.com/looptroop-ai/LoopTroop/actions/runs/34675113565) and
+[pull request](https://github.com/looptroop-ai/LoopTroop/actions/runs/34675115114).
+CodeQL, Sonar and Semgrep passed. Codacy's
+[issue API](https://app.codacy.com/api/v3/analysis/organizations/gh/looptroop-ai/repositories/LoopTroop/pull-requests/155/issues)
+still attributes both toast findings to `71d94d2c`, quoting the removed non-null assertion and
+unawaited React update. Its current-head dashboard metadata does not mean those issue details
+were refreshed. Kilo again exhausted its model output limit. Full CI logs contained only the
+previously reviewed warning families documented below; no additional warning suppression was added.
+
+The website checkout was checked separately again. Its generic loopback, startup and diagnostic
+guidance remains accurate; no unreleased documentation was published. No new ignore rule is needed.
+
+Current follow-up validation: all 411 test files passed (5,642 tests passed, 10 skipped),
+including 165 focused network, startup and toast checks. Full lint, both typecheck projects,
+production build, package contents, production native-addon scan, script type stripping,
+version consistency and license checks passed. Diagnostic help ran successfully.
+No end-to-end or lifecycle smoke was run; the owner will review CI for the pushed update.
 
 ## PR17 workflow, container and page hardening
 

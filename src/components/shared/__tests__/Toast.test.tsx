@@ -29,7 +29,7 @@ it('dismisses simultaneous toasts independently and expires the remaining toast'
   expect(screen.queryByText('Second')).not.toBeInTheDocument()
 })
 
-it('keeps toast IDs distinct when the provider rerenders with active toasts', () => {
+it('keeps active toasts independently dismissible across ordinary rerenders', () => {
   function Trigger({ message }: { message: string }) {
     const { addToast } = useToast()
     return <button onClick={() => addToast('info', message)}>Notify</button>

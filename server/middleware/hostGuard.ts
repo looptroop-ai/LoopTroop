@@ -1,30 +1,36 @@
 import type { Context, Next } from 'hono'
-import { isLoopbackHost } from '../../shared/appConfig'
+import { canonicalIpv6Host, isLoopbackHost } from '../../shared/appConfig'
 import { API_TOKEN_HEADER, SESSION_COOKIE_NAME, readCookie } from './sessionAuth'
 
-/**
- * Strips the port and any IPv6 brackets from a Host or Origin authority, so
- * `[::1]:3000` and `127.0.0.1:3000` both reduce to the hostname alone.
- * Bracketed IPv6 uses URL's canonical spelling for Origin comparisons. Bare
- * IPv6 remains unchanged for existing callers; HTTP Host uses brackets.
- */
-export function hostnameFromAuthority(authority: string): string {
+/** Parses one authority, sharing host canonicalization and port validation. */
+function parseAuthority(authority: string): { hostname: string, port: string | null } | null {
   const trimmed = authority.trim().toLowerCase()
+  let hostname: string
+  let port: string | null = null
   if (trimmed.startsWith('[')) {
-    const match = /^\[([\da-f:.]+)\](?::(\d+))?$/.exec(trimmed)
-    if (!match || (match[2] !== undefined && Number(match[2]) > 65535)) return ''
-    try {
-      return new URL(`http://[${match[1]}]/`).hostname.slice(1, -1)
-    } catch {
-      return ''
+    const match = /^\[([\da-f:.]+)\](?::(\d*))?$/.exec(trimmed)
+    if (!match) return null
+    hostname = canonicalIpv6Host(match[1] ?? '')?.slice(1, -1) ?? ''
+    port = match[2] || null
+  } else {
+    const colon = trimmed.indexOf(':')
+    if (colon === -1) {
+      hostname = trimmed
+    } else if (trimmed.indexOf(':', colon + 1) !== -1) {
+      // A bare IPv6 address names no port; HTTP Host uses brackets.
+      hostname = canonicalIpv6Host(trimmed)?.slice(1, -1) ?? ''
+    } else {
+      hostname = trimmed.slice(0, colon)
+      port = trimmed.slice(colon + 1) || null
     }
   }
-  // An IPv6 address without brackets has several colons; only a host:port pair
-  // has exactly one, and only that trailing part is a port.
-  const colon = trimmed.indexOf(':')
-  if (colon === -1 || trimmed.indexOf(':', colon + 1) !== -1) return trimmed
-  const port = trimmed.slice(colon + 1)
-  return /^\d+$/.test(port) && Number(port) <= 65535 ? trimmed.slice(0, colon) : ''
+  if (!hostname || (port !== null && (!/^\d+$/.test(port) || Number(port) > 65535))) return null
+  return { hostname, port }
+}
+
+/** The canonical hostname without brackets or port, or empty for invalid input. */
+export function hostnameFromAuthority(authority: string): string {
+  return parseAuthority(authority)?.hostname ?? ''
 }
 
 export function isLoopbackAuthority(authority: string | undefined): boolean {
@@ -32,31 +38,19 @@ export function isLoopbackAuthority(authority: string | undefined): boolean {
   return isLoopbackHost(hostnameFromAuthority(authority))
 }
 
-/** The port of an authority, or null when it names none. */
+/** The port of an authority, or null when absent, empty or invalid. */
 export function portFromAuthority(authority: string): string | null {
-  const trimmed = authority.trim().toLowerCase()
-
-  if (trimmed.startsWith('[')) {
-    const end = trimmed.indexOf(']')
-    if (end === -1) return null
-    const rest = trimmed.slice(end + 1)
-    return rest.startsWith(':') && /^\d+$/.test(rest.slice(1)) ? rest.slice(1) : null
-  }
-
-  const colon = trimmed.indexOf(':')
-  // Several colons is an unbracketed IPv6 address, which names no port.
-  if (colon === -1 || trimmed.indexOf(':', colon + 1) !== -1) return null
-  const port = trimmed.slice(colon + 1)
-  return /^\d+$/.test(port) ? port : null
+  return parseAuthority(authority)?.port ?? null
 }
 
 /**
  * `host:port` for an authority, with the implied port filled in so `127.0.0.1`
  * and `127.0.0.1:80` compare equal. The daemon speaks http, so a Host header
- * with no port means 80.
+ * with no port means 80. Invalid authorities return an empty string.
  */
 export function canonicalAuthority(authority: string, defaultPort = '80'): string {
-  return `${hostnameFromAuthority(authority)}:${Number(portFromAuthority(authority) ?? defaultPort)}`
+  const parsed = parseAuthority(authority)
+  return parsed ? `${parsed.hostname}:${Number(parsed.port ?? defaultPort)}` : ''
 }
 
 /**

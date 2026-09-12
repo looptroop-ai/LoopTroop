@@ -645,6 +645,34 @@ describe('OpenCodeMissingError', () => {
 })
 
 describe('the address OpenCode is started on', () => {
+  it.each([
+    ['[::1]', '::1'],
+    ['[::ffff:127.0.0.2]', '::ffff:7f00:2'],
+    ['127.0.0.2', '127.0.0.2'],
+    ['localhost', '127.0.0.1'],
+  ])('passes %s as a bare --hostname while keeping the health URL intact', async (host, serveHost) => {
+    const baseUrl = `http://${host}:4096`
+    const child = Object.assign(new EventEmitter(), { pid: 12345, exitCode: null })
+    const args: string[][] = []
+    const probes: string[] = []
+    const supervisor = new OpenCodeSupervisor({
+      baseUrl,
+      resolveProgram: () => '/usr/local/bin/opencode',
+      spawnProcess: ((_command: string, argv: string[]) => {
+        args.push(argv)
+        return child as never
+      }) as never,
+      probe: async (url) => {
+        probes.push(url)
+        return args.length > 0
+      },
+    })
+
+    await expect(supervisor.start()).resolves.toEqual({ kind: 'managed', baseUrl, pid: 12345 })
+    expect(args).toEqual([['serve', '--hostname', serveHost, '--port', '4096']])
+    expect(probes).toEqual([baseUrl, baseUrl])
+  })
+
   it('refuses a host name that would be shell syntax, before anything is spawned', async () => {
     // `new URL('http://foo&bar:4096').hostname` is `foo&bar`, and an npm-installed
     // OpenCode on Windows starts through cmd.exe, where `&` runs a second command.

@@ -19,6 +19,7 @@ const ICONS: Record<ToastType, React.ReactNode> = {
 
 export function ToastProvider({ children }: { children: ReactNode }) {
   const [toasts, setToasts] = useState<Toast[]>([])
+  // Fast Refresh can reload module variables while preserving these toasts.
   const nextToastId = useRef(0)
 
   const addToast = useCallback((type: ToastType, message: string, duration = TOAST_DURATION_MS) => {

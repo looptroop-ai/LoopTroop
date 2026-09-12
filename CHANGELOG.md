@@ -10,7 +10,8 @@ Unreleased changes appear first and represent commits that have not yet been inc
 > Changes merged since the last versioned release that have not yet shipped in a tagged version.
 
 ### Summary
-- Toasts and progress rings use stable identifiers; saved UI and Manual QA actions use cryptographic IDs, including over HTTP LAN connections. Backend and dev-server checks consistently recognize mapped loopback addresses.
+- Toasts and progress rings use stable identifiers; saved UI and Manual QA actions use cryptographic IDs, including over HTTP LAN connections.
+- Local IPv6 addresses work consistently across backend checks, OpenCode startup, diagnostics and dev LAN reporting.
 - Installers protect slow-running installs and refuse insecure download redirects; release tooling limits build inputs, credentials and install scripts.
 - Ticket files, cleanup and folder opening stay inside their allowed directories; unavailable workspaces no longer break the board, and reconnecting live views recover missing history.
 - The `--binary` installer establishes what the running daemon is doing before it replaces the executable, and refuses when it cannot; it leaves the previous version's files alone when an upgrade rolls back, gives every download a timeout and a size limit, and can no longer be run twice in one directory by accident.
@@ -94,7 +95,8 @@ Unreleased changes appear first and represent commits that have not yet been inc
 - Added download history to the installation documentation. The chart records public npm, Docker Hub and GitHub release counters every hour, can show new downloads or cumulative totals, and separates installer-script fetches from the sources included in the download total. History begins when tracking is enabled; the chart does not fill earlier periods with estimates or npm-only data.
 
 ### Security
-- Backend binding, request guards and dev LAN URL reporting share strict loopback recognition across valid IPv4-mapped forms of 127/8. Equivalent IPv6 spellings compare consistently for same-origin requests; remote mapped addresses and malformed authorities remain rejected.
+- Backend binding, request guards, OpenCode startup, diagnostics and dev LAN URL reporting share strict loopback recognition across valid IPv4-mapped forms of 127/8. Equivalent IPv6 spellings compare consistently for same-origin requests; empty authority ports use the default and out-of-range ports are rejected. Remote mapped addresses and malformed authorities remain rejected.
+- OpenCode probes keep IPv6 brackets in HTTP URLs and remove them for socket connections and process arguments. Expanded IPv6 wildcard binds now produce interface LAN URLs and the appropriate WSL guidance.
 - Toast counters now stay with provider state through hot reload, and dismiss buttons have accessible names. Missing Web Crypto produces a clear error without falling back to weak randomness. Removed an unused progress-ring ID override and moved its regression coverage to the component's own test file.
 - Reviewed and dismissed four hardcoded-address findings for intentional IPv4-mapped loopback comparisons. The review records that decision and the later approved shared address recognition, with regression coverage.
 - Replaced the flagged `Math.random()` identifiers with a toast counter, React component IDs, cryptographic browser action IDs, and UUIDs for diagnostic temporary files. Browser action IDs retain cryptographic randomness when `randomUUID()` is unavailable over HTTP.

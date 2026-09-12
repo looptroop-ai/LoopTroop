@@ -6,6 +6,8 @@ import {
 } from './port-occupants'
 import { getOpenCodeBasicAuthHeader } from '../shared/opencodeAuth'
 import { getErrorMessage } from '../shared/typeGuards'
+import { isLoopbackHost } from '../shared/appConfig'
+import { isWildcardHost } from './dev-host-mode'
 
 const MAX_PORT_SCAN_ATTEMPTS = 50
 
@@ -31,7 +33,17 @@ export type ResolvedOpenCodeBaseUrl = {
 }
 
 function isLocalHost(hostname: string) {
-  return hostname === '127.0.0.1' || hostname === 'localhost' || hostname === '0.0.0.0' || hostname === '::1'
+  return isLoopbackHost(hostname) || isWildcardHost(hostname)
+}
+
+export function parseLocalPortFromUrl(value: string): number | null {
+  try {
+    const url = new URL(value)
+    if (!isLocalHost(url.hostname)) return null
+    return Number(url.port || (url.protocol === 'https:' ? 443 : 80))
+  } catch {
+    return null
+  }
 }
 
 function formatBaseUrl(url: URL) {
@@ -48,15 +60,17 @@ function getPort(url: URL) {
 }
 
 function getProbeHosts(url: URL) {
+  const hostname = url.hostname.startsWith('[') ? url.hostname.slice(1, -1) : url.hostname
   return Array.from(new Set([
-    url.hostname,
-    url.hostname === '0.0.0.0' ? '127.0.0.1' : url.hostname,
-    url.hostname === 'localhost' ? '127.0.0.1' : '',
+    hostname,
+    isWildcardHost(hostname) ? (hostname.includes(':') ? '::1' : '127.0.0.1') : '',
+    hostname === 'localhost' ? '127.0.0.1' : '',
   ].filter(Boolean)))
 }
 
-function getServeHostname(url: URL) {
-  return url.hostname === 'localhost' ? '127.0.0.1' : url.hostname
+export function getServeHostname(url: URL) {
+  if (url.hostname === 'localhost') return '127.0.0.1'
+  return url.hostname.startsWith('[') ? url.hostname.slice(1, -1) : url.hostname
 }
 
 function withOccupantDetails(
@@ -87,7 +101,8 @@ async function canConnect(hostname: string, port: number) {
 async function isOpenCodeResponding(url: URL, hostname: string, port: number) {
   try {
     const authHeader = getOpenCodeBasicAuthHeader()
-    const res = await fetch(`${url.protocol}//${hostname}:${port}/provider`, {
+    const urlHost = hostname.includes(':') ? `[${hostname}]` : hostname
+    const res = await fetch(`${url.protocol}//${urlHost}:${port}/provider`, {
       ...(authHeader ? { headers: { Authorization: authHeader } } : {}),
       signal: AbortSignal.timeout(1000),
     })

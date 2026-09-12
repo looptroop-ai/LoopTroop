@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it, vi } from 'vitest'
-import { getAllowedBackendHost, getBackendOrigin, getBackendPort, getDocsBaseUrl, getFrontendOrigin, getFrontendPort, isLoopbackHost } from '../appConfig'
+import { canonicalIpv6Host, getAllowedBackendHost, getBackendOrigin, getBackendPort, getDocsBaseUrl, getFrontendOrigin, getFrontendPort, isLoopbackHost } from '../appConfig'
 
 const ORIGINAL_ENV = {
   LOOPTROOP_BACKEND_PORT: process.env.LOOPTROOP_BACKEND_PORT,
@@ -143,6 +143,21 @@ describe('appConfig frontend origin', () => {
       expect(() => getAllowedBackendHost(), host).toThrow('LOOPTROOP_API_TOKEN must be set')
       delete process.env.LOOPTROOP_ALLOW_REMOTE_API
     }
+  })
+})
+
+describe('canonicalIpv6Host', () => {
+  it.each([
+    ['0:0:0:0:0:0:0:0', '[::]'],
+    ['[0000:0000:0000:0000:0000:0000:0000:0001]', '[::1]'],
+    ['::ffff:127.5.5.5', '[::ffff:7f05:505]'],
+    ['[2001:DB8:0:0:0:0:0:1]', '[2001:db8::1]'],
+  ])('canonicalizes %s without changing its address', (host, expected) => {
+    expect(canonicalIpv6Host(host)).toBe(expected)
+  })
+
+  it.each(['localhost', '127.0.0.1', '[::1', '::1]', '[::1]:', '[::1]:80', '::1%lo', '::1/path', ' ::1', '::1\n'])('rejects non-address input %j', (host) => {
+    expect(canonicalIpv6Host(host)).toBeNull()
   })
 })
 

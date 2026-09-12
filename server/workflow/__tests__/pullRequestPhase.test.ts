@@ -482,6 +482,7 @@ describe('pull request drafting context', () => {
       message: 'Pull request merged into origin/main. Local checkout was not modified.',
     })
     expect(readPullRequestReport(ticket.id)).toMatchObject({
+      completedAt: '2026-01-01T00:00:00.000Z',
       prState: 'merged',
       message: 'Pull request merged into origin/main. Local checkout was not modified.',
     })

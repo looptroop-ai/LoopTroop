@@ -272,7 +272,7 @@ function readSkipReceiptRows(ticketRef: string): Array<{
     }))
 }
 
-/** True when this exact user action already left receipts on this ticket. */
+/** True when the action has a committed claim, the authority for receipt idempotency. */
 export function hasSkipReceiptsForAction(ticketRef: string, actionId: string): boolean {
   const context = getTicketContext(ticketRef)
   if (!context) return false
@@ -291,6 +291,8 @@ export function writeSkipReceipts(input: WriteSkipReceiptsInput): SkipReceipt[] 
   const context = getTicketContext(input.ticketId)
   if (!context) throw new Error(`Ticket not found: ${input.ticketId}`)
   if (input.items.length === 0 && !input.summary) return []
+  // Fast replay exit before phase validation; the transactional claim below
+  // enforces uniqueness if another writer claims the action after this read.
   if (hasSkipReceiptsForAction(input.ticketId, input.actionId)) return []
 
   const skippedBy = normalizeSkipActor(input.skippedBy)

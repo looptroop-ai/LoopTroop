@@ -15,7 +15,7 @@ import { createFixtureRepoManager } from '../../test/fixtureRepo'
 import { initializeTicket } from '../../ticket/initialize'
 import { ticketRouter } from '../tickets'
 import { listSkipEvents } from '../../workflow/skipReceipts'
-import { syncWaitingPullRequestTicket } from '../../workflow/mergeCompletion'
+import { hasVerifiedMergeReport, syncWaitingPullRequestTicket } from '../../workflow/mergeCompletion'
 
 const {
   readPullRequestReportMock,
@@ -232,6 +232,55 @@ describe('ticketRouter PR review routes', () => {
     expect(getTicketByRef(ticket.id)?.status).toBe('CLEANING_ENV')
   })
 
+  it('resumes a durable merge after interrupted event dispatch without contacting GitHub', async () => {
+    const { ticket } = await createWaitingPrReviewTicket()
+    const current = getTicketByRef(ticket.id)!
+    insertPhaseArtifact(ticket.id, {
+      phase: 'WAITING_PR_REVIEW', artifactType: 'merge_report',
+      content: JSON.stringify({
+        status: 'passed', disposition: 'merged', prState: 'merged', prNumber: 42,
+        baseBranch: current.runtime.baseBranch, headBranch: current.branchName,
+        candidateCommitSha: current.runtime.candidateCommitSha, remoteBaseHead: 'verified-base',
+      }),
+    })
+    refreshPullRequestStateMock.mockRejectedValue(new Error('GitHub unavailable after restart'))
+    await syncWaitingPullRequestTicket(ticket.id)
+    expect(getTicketByRef(ticket.id)?.status).toBe('CLEANING_ENV')
+    expect(refreshPullRequestStateMock).not.toHaveBeenCalled()
+    expect(completeMergedPullRequestMock).not.toHaveBeenCalled()
+  })
+
+  it.each(['corrupt', 'unverified', 'different-candidate', 'missing-candidate'])('rejects a %s merge checkpoint', async (kind) => {
+    const { ticket } = await createWaitingPrReviewTicket()
+    const current = getTicketByRef(ticket.id)!
+    const report = {
+      status: 'passed', disposition: 'merged', prState: 'merged', prNumber: 42,
+      baseBranch: current.runtime.baseBranch, headBranch: current.branchName,
+      candidateCommitSha: kind === 'missing-candidate' ? undefined : kind === 'different-candidate' ? 'stale-sha' : current.runtime.candidateCommitSha,
+      remoteBaseHead: kind === 'unverified' ? null : 'verified-base',
+    }
+    insertPhaseArtifact(ticket.id, {
+      phase: 'WAITING_PR_REVIEW', artifactType: 'merge_report',
+      content: kind === 'corrupt' ? '{' : JSON.stringify(report),
+    })
+    expect(hasVerifiedMergeReport(current)).toBe(false)
+  })
+
+  it('does not hold Close behind a remote read or complete from its stale result', async () => {
+    const { ticket } = await createWaitingPrReviewTicket()
+    let finishRefresh!: (value: unknown) => void
+    refreshPullRequestStateMock.mockReturnValueOnce(new Promise(resolve => { finishRefresh = resolve }))
+    const background = syncWaitingPullRequestTicket(ticket.id)
+    await vi.waitFor(() => expect(refreshPullRequestStateMock).toHaveBeenCalledOnce())
+    const app = new Hono().route('/api', ticketRouter)
+    const response = await app.request(`/api/tickets/${ticket.id}/close-unmerged`, { method: 'POST' })
+    expect(response.status).toBe(200)
+    expect(completeCloseUnmergedMock).toHaveBeenCalledOnce()
+    finishRefresh({ state: 'merged', number: 42 })
+    await background
+    expect(completeMergedPullRequestMock).not.toHaveBeenCalled()
+  })
+
   it('refreshes open PR metadata without initiating a merge', async () => {
     const { ticket } = await createWaitingPrReviewTicket()
     refreshPullRequestStateMock.mockResolvedValue({ state: 'open', number: 42, headRefOid: 'new-head' })
@@ -253,13 +302,18 @@ describe('ticketRouter PR review routes', () => {
 
   it('serializes a background completion with the Merge action', async () => {
     const { ticket } = await createWaitingPrReviewTicket()
-    let finishRefresh!: (value: unknown) => void
-    refreshPullRequestStateMock.mockReturnValueOnce(new Promise(resolve => { finishRefresh = resolve }))
+    let finishCompletion!: () => void
+    const complete = completeMergedPullRequestMock.getMockImplementation()!
+    completeMergedPullRequestMock.mockImplementationOnce(async (input) => {
+      await new Promise<void>(resolve => { finishCompletion = resolve })
+      return complete(input)
+    })
+    refreshPullRequestStateMock.mockResolvedValue({ state: 'merged', number: 42 })
     const background = syncWaitingPullRequestTicket(ticket.id)
-    await vi.waitFor(() => expect(refreshPullRequestStateMock).toHaveBeenCalledOnce())
+    await vi.waitFor(() => expect(completeMergedPullRequestMock).toHaveBeenCalledOnce())
     const app = new Hono().route('/api', ticketRouter)
     const response = app.request(`/api/tickets/${ticket.id}/merge`, { method: 'POST' })
-    finishRefresh({ state: 'merged', number: 42 })
+    finishCompletion()
     await background
     expect((await response).status).toBe(409)
     expect(completeMergedPullRequestMock).toHaveBeenCalledOnce()

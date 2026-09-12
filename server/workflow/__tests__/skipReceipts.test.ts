@@ -4,7 +4,7 @@ import { skipReceiptActions } from '../../db/schema'
 import { countSkipEvents } from '@shared/skipReceipt'
 import { initializeDatabase } from '../../db/init'
 import { sqlite } from '../../db/index'
-import { clearProjectDatabaseCache } from '../../db/project'
+import { clearProjectDatabaseCache, getProjectDatabase } from '../../db/project'
 import { createFixtureRepoManager } from '../../test/fixtureRepo'
 import { attachProject } from '../../storage/projects'
 import {
@@ -124,6 +124,32 @@ describe('skip receipts', () => {
     expect(context.projectDb.select().from(skipReceiptActions)
       .where(eq(skipReceiptActions.ticketId, context.localTicketId)).all()).toEqual([])
     expect(hasSkipReceiptsForAction(other.id, claim.actionId)).toBe(true)
+  })
+
+  it('cleans orphaned claims before enabling foreign keys when reopening a project', () => {
+    const ticket = makeTicket()
+    const context = getTicketContext(ticket.id)!
+    const database = getProjectDatabase(context.projectRoot)
+    database.sqlite.pragma('foreign_keys=OFF')
+    database.sqlite.prepare('INSERT INTO skip_receipt_actions (ticket_id, action_id) VALUES (?, ?)')
+      .run(context.localTicketId, 'kept')
+    database.sqlite.prepare('INSERT INTO skip_receipt_actions (ticket_id, action_id) VALUES (?, ?)')
+      .run(999999, 'missing-ticket')
+    database.sqlite.prepare('INSERT INTO tickets (external_id, project_id, title) VALUES (?, ?, ?)')
+      .run('ORPHAN-1', 999999, 'Missing project')
+    database.sqlite.exec(`
+      INSERT INTO skip_receipt_actions (ticket_id, action_id)
+      SELECT id, 'missing-project' FROM tickets WHERE external_id = 'ORPHAN-1';
+    `)
+    expect(database.sqlite.pragma('foreign_key_check')).not.toEqual([])
+
+    clearProjectDatabaseCache()
+    const reopened = getProjectDatabase(context.projectRoot)
+    expect(reopened.db.select().from(skipReceiptActions).all()).toEqual([
+      { ticketId: context.localTicketId, actionId: 'kept' },
+    ])
+    expect(reopened.sqlite.pragma('foreign_key_check')).toEqual([])
+    expect(reopened.sqlite.pragma('foreign_keys', { simple: true })).toBe(1)
   })
 
   it('rolls back the claim and earlier items when a later receipt is invalid', () => {

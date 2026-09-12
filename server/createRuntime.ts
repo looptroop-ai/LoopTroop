@@ -16,7 +16,7 @@ export interface RuntimeConfig extends CreateAppOptions {
   /** Overrides the resolved settings. Use 0 to let the OS assign a free port. */
   port?: number
   hostname?: string
-  /** Skip the database/OpenCode boot sequence. For tests that only need the app. */
+  /** Skip database/OpenCode startup and merge polling. For tests that only need the app. */
   skipStartupSequence?: boolean
   /** Pre-resolved settings, so a caller that already parsed flags resolves once. */
   settings?: ResolvedSettings

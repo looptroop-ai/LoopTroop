@@ -1,12 +1,12 @@
 import { TicketWorkspaceNotInitializedError } from '../lib/workflowErrors'
-import { and, asc, desc, eq } from 'drizzle-orm'
+import { and, asc, desc, eq, isNull, ne, or } from 'drizzle-orm'
 import { z } from 'zod'
 import { readFileNoFollowSync } from '../io/readFile'
 import { ContainedPathError } from '../lib/containedPath'
 import { db as appDb } from '../db/index'
 import { PROFILE_DEFAULTS } from '../db/defaults'
 import { getProjectContextById, getProjectById, listProjects } from './projects'
-import { opencodeSessions, phaseArtifacts, profiles, projects, ticketErrorOccurrences, ticketStatusHistory, tickets } from '../db/schema'
+import { attachedProjects, opencodeSessions, phaseArtifacts, profiles, projects, ticketErrorOccurrences, ticketStatusHistory, tickets } from '../db/schema'
 import {
   getTicketAiLogPath,
   getTicketDir,
@@ -1309,6 +1309,21 @@ export function listTickets(projectId?: number): PublicTicket[] {
     aggregated.push(...projectTickets.map(ticket => toPublicTicket(project.attached.id, ticket)))
   }
   return aggregated.sort((a, b) => new Date(b.updatedAt).getTime() - new Date(a.updatedAt).getTime())
+}
+
+/** Lists merge-poll candidates without loading ticket files or public projections. */
+export function listWaitingPullRequestTicketRefs(): string[] {
+  const refs: string[] = []
+  for (const attached of appDb.select({ id: attachedProjects.id }).from(attachedProjects).all()) {
+    const project = getProjectContextById(attached.id)
+    if (!project) continue
+    const waiting = project.projectDb.select({ externalId: tickets.externalId }).from(tickets).where(and(
+      eq(tickets.status, 'WAITING_PR_REVIEW'),
+      or(isNull(tickets.branchName), ne(tickets.branchName, DISPLAY_ONLY_MOCK_BRANCH_NAME)),
+    )).all()
+    refs.push(...waiting.map(ticket => buildTicketRef(attached.id, ticket.externalId)))
+  }
+  return refs
 }
 
 /** Fetches a single ticket by its composite ref (`projectId:externalId`). */

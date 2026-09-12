@@ -1,4 +1,4 @@
-import { sqliteTable, text, integer, real } from 'drizzle-orm/sqlite-core'
+import { sqliteTable, text, integer, real, uniqueIndex } from 'drizzle-orm/sqlite-core'
 import { PROFILE_DEFAULTS } from './defaults'
 
 export const profiles = sqliteTable('profiles', {
@@ -132,7 +132,9 @@ export const phaseArtifacts = sqliteTable('phase_artifacts', {
 export const skipReceiptActions = sqliteTable('skip_receipt_actions', {
   ticketId: integer('ticket_id').notNull().references(() => tickets.id, { onDelete: 'cascade' }),
   actionId: text('action_id').notNull(),
-})
+}, (table) => [
+  uniqueIndex('idx_skip_receipt_actions_ticket_action').on(table.ticketId, table.actionId),
+])
 
 export const manualQaOperations = sqliteTable('manual_qa_operations', {
   id: integer('id').primaryKey({ autoIncrement: true }),

@@ -195,6 +195,43 @@ describe('attachWorkflowRunner', () => {
     actor.stop()
   })
 
+  it.each(['toString', 'constructor', '__proto__', 'UNKNOWN_PHASE'])('ignores an invalid mock snapshot state %s', (state) => {
+    isMockOpenCodeModeMock.mockReturnValue(true)
+    const actor = {
+      getSnapshot: () => ({ value: state, context: makeTicketContext() }),
+      subscribe: vi.fn(),
+    } as unknown as ReturnType<typeof createSnapshotActor>
+    const sendEvent = vi.fn()
+
+    expect(() => attachWorkflowRunner(TEST.ticketId, actor, sendEvent)).not.toThrow()
+    expect(runningPhases.size).toBe(0)
+    expect(sendEvent).not.toHaveBeenCalled()
+    for (const handler of Object.values(mockLifecyclePhaseMocks)) expect(handler).not.toHaveBeenCalled()
+    expect(handleMockExecutionUnsupportedMock).not.toHaveBeenCalled()
+  })
+
+  it.each([
+    'DRAFT', 'WAITING_INTERVIEW_APPROVAL', 'WAITING_PRD_APPROVAL', 'WAITING_BEADS_APPROVAL',
+    'WAITING_EXECUTION_SETUP_APPROVAL', 'WAITING_MANUAL_QA', 'WAITING_PR_REVIEW', 'BLOCKED_ERROR',
+  ])('leaves mock %s idle without starting real phase work', (state) => {
+    isMockOpenCodeModeMock.mockReturnValue(true)
+    const actor = createSnapshotActor(state)
+    const sendEvent = vi.fn()
+    actor.start()
+    attachWorkflowRunner(TEST.ticketId, actor, sendEvent)
+
+    expect(runningPhases.size).toBe(0)
+    expect(sendEvent).not.toHaveBeenCalled()
+    for (const handler of Object.values(mockLifecyclePhaseMocks)) expect(handler).not.toHaveBeenCalled()
+    expect(handleMockExecutionUnsupportedMock).not.toHaveBeenCalled()
+    expect(handleInterviewDeliberateMock).not.toHaveBeenCalled()
+    expect(handleCodingMock).not.toHaveBeenCalled()
+    expect(handleFinalTestMock).not.toHaveBeenCalled()
+    expect(handlePrdRefineMock).not.toHaveBeenCalled()
+    expect(handleExecutionSetupPlanGenerationMock).not.toHaveBeenCalled()
+    actor.stop()
+  })
+
   it.each([
     'PRE_FLIGHT_CHECK', 'GENERATING_EXECUTION_SETUP_PLAN', 'PREPARING_EXECUTION_ENV',
     'CODING', 'RUNNING_FINAL_TEST', 'GENERATING_QA_CHECKLIST', 'INTEGRATING_CHANGES',

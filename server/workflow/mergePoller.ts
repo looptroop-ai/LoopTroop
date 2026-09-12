@@ -1,5 +1,5 @@
 import { getErrorMessage } from '@shared/typeGuards'
-import { listNonTerminalTickets } from '../storage/tickets'
+import { listWaitingPullRequestTicketRefs } from '../storage/tickets'
 import { emitRoutePhaseLog } from '../routes/ticketHandlers/routeUtils'
 import { syncWaitingPullRequestTicket } from './mergeCompletion'
 
@@ -15,24 +15,28 @@ export function startMergePoller(): () => Promise<void> {
 
   async function poll(): Promise<void> {
     try {
-      const tickets = listNonTerminalTickets().filter(ticket => ticket.status === 'WAITING_PR_REVIEW')
-      const waitingIds = new Set(tickets.map(ticket => ticket.id))
+      const tickets = listWaitingPullRequestTicketRefs()
+      const waitingIds = new Set(tickets)
       for (const id of retries.keys()) {
         if (!waitingIds.has(id)) retries.delete(id)
       }
       // ponytail: one GitHub request chain at a time; add bounded concurrency if large queues need it.
-      for (const ticket of tickets) {
+      for (const ticketId of tickets) {
         if (stopped) break
-        const retry = retries.get(ticket.id)
+        const retry = retries.get(ticketId)
         if (retry && retry.at > Date.now()) continue
         try {
-          await syncWaitingPullRequestTicket(ticket.id)
-          retries.delete(ticket.id)
+          await syncWaitingPullRequestTicket(ticketId)
+          retries.delete(ticketId)
         } catch (error) {
           const delay = Math.min((retry?.delay ?? POLL_INTERVAL_MS) * 2, MAX_RETRY_MS)
-          retries.set(ticket.id, { delay, at: Date.now() + delay })
-          emitRoutePhaseLog(ticket.id, 'WAITING_PR_REVIEW', 'info',
-            `Pull request sync failed; retrying in ${delay / 1000} seconds: ${getErrorMessage(error)}`)
+          retries.set(ticketId, { delay, at: Date.now() + delay })
+          try {
+            emitRoutePhaseLog(ticketId, 'WAITING_PR_REVIEW', 'info',
+              `Pull request sync failed; retrying in ${delay / 1000} seconds: ${getErrorMessage(error)}`)
+          } catch (logError) {
+            console.warn(`[merge-poller] Could not log failure for ${ticketId}: ${getErrorMessage(logError)}`)
+          }
         }
       }
     } catch (error) {

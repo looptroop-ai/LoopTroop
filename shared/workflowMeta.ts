@@ -1024,7 +1024,7 @@ const WORKFLOW_PHASE_DETAILS = {
       'Manual Review: You inspect the draft PR and the local result. There is no time limit. LoopTroop waits for your decision.',
       'Merge Path: Choosing Merge PR & Finish marks the PR ready if needed and merges it into the base branch on GitHub. Once GitHub reports the PR merged, LoopTroop verifies that the remote base branch contains the candidate commit and leaves your local checkout untouched.',
       'Finish Without Merge Path: Choosing Finish Without Merge asks you to confirm, and takes an optional reason for stopping here. The PR and the remote ticket branch are preserved exactly as they are, then the ticket proceeds to cleanup and terminal completion. The reason is stored on the merge report as the current record, and in the ticket-wide skip trail as history. Nothing else explains why this branch stopped.',
-      'External Merge Detection: While the daemon runs, it checks waiting tickets on startup and roughly every 30 seconds, even with no UI open. A merge on GitHub triggers remote-base verification and completion without another merge request. Failed background checks leave the ticket waiting and retry with delays from one to five minutes. Restarting the daemon resumes checking; shutdown stops new checks and waits for the active check.',
+      'External Merge Detection: While the daemon runs, it checks waiting tickets on startup and starts another serial sweep 30 seconds after the previous sweep finishes, even with no UI open. A merge on GitHub triggers remote-base verification and completion without another merge request. Failed background checks leave the ticket waiting and retry with delays from one to five minutes. Restarting the daemon resumes checking; shutdown stops new checks and waits for the active check within the process shutdown deadline. A completed merge report lets restart finish the workflow without repeating remote completion.',
     ],
     outputs: [
       'A stable draft-PR review gate that exposes final PR metadata, test results, integration summary, ignored-file audit, and the net candidate diff.',
@@ -1191,6 +1191,9 @@ const EXPANDING_BEADS_CONTEXT_SECTIONS = [
 function getSafeResumeDescription(phase: Pick<WorkflowPhaseMeta, 'id' | 'kanbanPhase'>): string {
   if (phase.id === 'DRAFT') {
     return 'No automation runs here. Restarts simply reopen the saved ticket.'
+  }
+  if (phase.id === 'WAITING_PR_REVIEW') {
+    return 'Restarts resume GitHub polling from saved ticket state. A verified merge report resumes completion without repeating remote work; other failed checks retry with backoff.'
   }
   if (phase.id === 'CODING') {
     return 'If the current bead can be matched safely after a restart, LoopTroop resumes it. Otherwise it resets that bead from durable state, keeps the retry notes, and continues. If the worktree cannot be trusted, it blocks instead.'
@@ -1603,7 +1606,7 @@ const BASE_WORKFLOW_PHASES = [
   {
     id: 'WAITING_PR_REVIEW',
     label: 'Reviewing Pull Request',
-    description: 'Review the draft pull request, final diff, ignored-file audit, and test results before you merge or finish without merging. Finishing without merging asks for confirmation and takes an optional reason. This is the last human gate before cleanup and terminal completion. The running daemon also detects merges made on GitHub without an open UI.',
+    description: 'Review the draft pull request, final diff, ignored-file audit, and test results before you merge or finish without merging. Finishing without merging asks for confirmation and takes an optional reason. This is the last human gate before cleanup and terminal completion. The running daemon detects merges made on GitHub without an open UI and resumes verified completion after a restart.',
     details: WORKFLOW_PHASE_DETAILS.WAITING_PR_REVIEW,
     kanbanPhase: 'needs_input',
     groupId: 'post_implementation',

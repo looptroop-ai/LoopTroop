@@ -1,20 +1,17 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { startMergePoller } from '../mergePoller'
+import { emitRoutePhaseLog } from '../../routes/ticketHandlers/routeUtils'
 
-const { listNonTerminalTicketsMock, syncWaitingPullRequestTicketMock } = vi.hoisted(() => ({
-  listNonTerminalTicketsMock: vi.fn(),
+const { listWaitingPullRequestTicketRefsMock, syncWaitingPullRequestTicketMock } = vi.hoisted(() => ({
+  listWaitingPullRequestTicketRefsMock: vi.fn(),
   syncWaitingPullRequestTicketMock: vi.fn(),
 }))
 
 vi.mock('../../storage/tickets', () => ({
-  listNonTerminalTickets: listNonTerminalTicketsMock,
+  listWaitingPullRequestTicketRefs: listWaitingPullRequestTicketRefsMock,
 }))
 vi.mock('../../routes/ticketHandlers/routeUtils', () => ({ emitRoutePhaseLog: vi.fn() }))
 vi.mock('../mergeCompletion', () => ({ syncWaitingPullRequestTicket: syncWaitingPullRequestTicketMock }))
-
-function ticket(id: string, status = 'WAITING_PR_REVIEW') {
-  return { id, status, branchName: `feature/${id}` }
-}
 
 describe('daemon merge poller', () => {
   let stop: (() => Promise<void>) | undefined
@@ -22,9 +19,10 @@ describe('daemon merge poller', () => {
 
   beforeEach(() => {
     vi.spyOn(console, 'warn').mockImplementation(() => {})
+    vi.mocked(emitRoutePhaseLog).mockReset()
     vi.useFakeTimers()
     vi.setSystemTime(0)
-    listNonTerminalTicketsMock.mockReset().mockReturnValue([])
+    listWaitingPullRequestTicketRefsMock.mockReset().mockReturnValue([])
     syncWaitingPullRequestTicketMock.mockReset().mockResolvedValue(undefined)
   })
 
@@ -38,14 +36,14 @@ describe('daemon merge poller', () => {
   })
 
   it('recovers waiting tickets immediately and discovers new ones without a UI request', async () => {
-    listNonTerminalTicketsMock.mockReturnValue([ticket('restored'), ticket('coding', 'CODING')])
+    listWaitingPullRequestTicketRefsMock.mockReturnValue(['restored'])
     stop = startMergePoller()
     expect(syncWaitingPullRequestTicketMock).not.toHaveBeenCalled()
 
     await vi.advanceTimersByTimeAsync(0)
     expect(syncWaitingPullRequestTicketMock).toHaveBeenCalledExactlyOnceWith('restored')
 
-    listNonTerminalTicketsMock.mockReturnValue([ticket('new')])
+    listWaitingPullRequestTicketRefsMock.mockReturnValue(['new'])
     await vi.advanceTimersByTimeAsync(29_999)
     expect(syncWaitingPullRequestTicketMock).toHaveBeenCalledTimes(1)
     await vi.advanceTimersByTimeAsync(1)
@@ -54,7 +52,7 @@ describe('daemon merge poller', () => {
   })
 
   it('backs off each failing ticket independently up to five minutes and resets after success', async () => {
-    listNonTerminalTicketsMock.mockReturnValue([ticket('failing'), ticket('healthy')])
+    listWaitingPullRequestTicketRefsMock.mockReturnValue(['failing', 'healthy'])
     const attempts: number[] = []
     syncWaitingPullRequestTicketMock.mockImplementation(async (id: string) => {
       if (id !== 'failing') return
@@ -71,28 +69,28 @@ describe('daemon merge poller', () => {
   })
 
   it('runs tickets serially and waits thirty seconds after a sweep finishes', async () => {
-    listNonTerminalTicketsMock.mockReturnValue([ticket('first'), ticket('second')])
+    listWaitingPullRequestTicketRefsMock.mockReturnValue(['first', 'second'])
     syncWaitingPullRequestTicketMock.mockImplementationOnce(() => new Promise<void>((resolve) => { releasePending = resolve }))
     stop = startMergePoller()
     await vi.advanceTimersByTimeAsync(0)
     expect(syncWaitingPullRequestTicketMock).toHaveBeenCalledExactlyOnceWith('first')
 
     await vi.advanceTimersByTimeAsync(120_000)
-    expect(listNonTerminalTicketsMock).toHaveBeenCalledTimes(1)
+    expect(listWaitingPullRequestTicketRefsMock).toHaveBeenCalledTimes(1)
     expect(syncWaitingPullRequestTicketMock).toHaveBeenCalledTimes(1)
     releasePending?.()
     await vi.advanceTimersByTimeAsync(0)
     expect(syncWaitingPullRequestTicketMock).toHaveBeenLastCalledWith('second')
 
     await vi.advanceTimersByTimeAsync(29_999)
-    expect(listNonTerminalTicketsMock).toHaveBeenCalledTimes(1)
+    expect(listWaitingPullRequestTicketRefsMock).toHaveBeenCalledTimes(1)
     await vi.advanceTimersByTimeAsync(1)
-    expect(listNonTerminalTicketsMock).toHaveBeenCalledTimes(2)
+    expect(listWaitingPullRequestTicketRefsMock).toHaveBeenCalledTimes(2)
   })
 
   it('recovers discovery after a transient storage failure', async () => {
-    listNonTerminalTicketsMock.mockImplementationOnce(() => { throw new Error('Storage temporarily unavailable') })
-      .mockReturnValue([ticket('recovered')])
+    listWaitingPullRequestTicketRefsMock.mockImplementationOnce(() => { throw new Error('Storage temporarily unavailable') })
+      .mockReturnValue(['recovered'])
     stop = startMergePoller()
     await vi.advanceTimersByTimeAsync(0)
     expect(syncWaitingPullRequestTicketMock).not.toHaveBeenCalled()
@@ -101,16 +99,26 @@ describe('daemon merge poller', () => {
     expect(syncWaitingPullRequestTicketMock).toHaveBeenCalledExactlyOnceWith('recovered')
   })
 
+  it('continues the sweep when recording one ticket failure also fails', async () => {
+    listWaitingPullRequestTicketRefsMock.mockReturnValue(['first', 'second'])
+    syncWaitingPullRequestTicketMock.mockRejectedValueOnce(new Error('GitHub unavailable'))
+    vi.mocked(emitRoutePhaseLog).mockImplementationOnce(() => { throw new Error('Log unavailable') })
+    stop = startMergePoller()
+    await vi.advanceTimersByTimeAsync(0)
+    expect(syncWaitingPullRequestTicketMock).toHaveBeenLastCalledWith('second')
+    expect(console.warn).toHaveBeenCalledWith('[merge-poller] Could not log failure for first: Log unavailable')
+  })
+
   it('drops backoff once a ticket leaves the waiting state', async () => {
-    listNonTerminalTicketsMock.mockReturnValue([ticket('retry')])
+    listWaitingPullRequestTicketRefsMock.mockReturnValue(['retry'])
     syncWaitingPullRequestTicketMock
       .mockRejectedValueOnce(new Error('Temporary remote failure'))
       .mockRejectedValueOnce(new Error('Temporary remote failure'))
     stop = startMergePoller()
     await vi.advanceTimersByTimeAsync(60_000)
-    listNonTerminalTicketsMock.mockReturnValue([])
+    listWaitingPullRequestTicketRefsMock.mockReturnValue([])
     await vi.advanceTimersByTimeAsync(30_000)
-    listNonTerminalTicketsMock.mockReturnValue([ticket('retry')])
+    listWaitingPullRequestTicketRefsMock.mockReturnValue(['retry'])
     await vi.advanceTimersByTimeAsync(30_000)
     expect(syncWaitingPullRequestTicketMock).toHaveBeenCalledTimes(3)
   })
@@ -120,12 +128,12 @@ describe('daemon merge poller', () => {
     await stop()
     await stop()
     await vi.advanceTimersByTimeAsync(90_000)
-    expect(listNonTerminalTicketsMock).not.toHaveBeenCalled()
+    expect(listWaitingPullRequestTicketRefsMock).not.toHaveBeenCalled()
     expect(vi.getTimerCount()).toBe(0)
   })
 
   it('drains an active ticket on stop and skips the remaining sweep', async () => {
-    listNonTerminalTicketsMock.mockReturnValue([ticket('first'), ticket('second')])
+    listWaitingPullRequestTicketRefsMock.mockReturnValue(['first', 'second'])
     syncWaitingPullRequestTicketMock.mockImplementationOnce(() => new Promise<void>((resolve) => { releasePending = resolve }))
     stop = startMergePoller()
     await vi.advanceTimersByTimeAsync(0)

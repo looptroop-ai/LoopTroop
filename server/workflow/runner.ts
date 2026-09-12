@@ -96,11 +96,13 @@ export {
   handleRelevantFilesScan,
 }
 
-const mockLifecycleHandlers: Partial<Record<WorkflowPhaseId, (
+// Every workflow state must explicitly choose a mock handler or no automatic work.
+const mockLifecycleHandlers: Record<WorkflowPhaseId, ((
   ticketId: string,
   context: TicketContext,
   sendEvent: (event: TicketEvent) => void,
-) => Promise<void>>> = {
+) => Promise<void>) | undefined> = {
+  DRAFT: undefined,
   SCANNING_RELEVANT_FILES: async (_ticketId, _context, sendEvent) => {
     sendEvent({ type: 'RELEVANT_FILES_READY' })
   },
@@ -115,12 +117,14 @@ const mockLifecycleHandlers: Partial<Record<WorkflowPhaseId, (
   VERIFYING_INTERVIEW_COVERAGE: async (ticketId, context, sendEvent) => {
     await handleMockCoverage(ticketId, context, 'interview', sendEvent)
   },
+  WAITING_INTERVIEW_APPROVAL: undefined,
   DRAFTING_PRD: handleMockPrdDraft,
   COUNCIL_VOTING_PRD: handleMockPrdVote,
   REFINING_PRD: handleMockPrdRefine,
   VERIFYING_PRD_COVERAGE: async (ticketId, context, sendEvent) => {
     await handleMockCoverage(ticketId, context, 'prd', sendEvent)
   },
+  WAITING_PRD_APPROVAL: undefined,
   DRAFTING_BEADS: handleMockBeadsDraft,
   COUNCIL_VOTING_BEADS: handleMockBeadsVote,
   REFINING_BEADS: handleMockBeadsRefine,
@@ -128,12 +132,14 @@ const mockLifecycleHandlers: Partial<Record<WorkflowPhaseId, (
     await handleMockCoverage(ticketId, context, 'beads', sendEvent)
   },
   EXPANDING_BEADS: handleMockBeadsExpansion,
+  WAITING_BEADS_APPROVAL: undefined,
   PRE_FLIGHT_CHECK: async (ticketId, context, sendEvent) => {
     await handleMockExecutionUnsupported(ticketId, context, 'PRE_FLIGHT_CHECK', sendEvent)
   },
   GENERATING_EXECUTION_SETUP_PLAN: async (ticketId, context, sendEvent) => {
     await handleMockExecutionUnsupported(ticketId, context, 'GENERATING_EXECUTION_SETUP_PLAN', sendEvent)
   },
+  WAITING_EXECUTION_SETUP_APPROVAL: undefined,
   PREPARING_EXECUTION_ENV: async (ticketId, context, sendEvent) => {
     await handleMockExecutionUnsupported(ticketId, context, 'PREPARING_EXECUTION_ENV', sendEvent)
   },
@@ -146,15 +152,20 @@ const mockLifecycleHandlers: Partial<Record<WorkflowPhaseId, (
   GENERATING_QA_CHECKLIST: async (ticketId, context, sendEvent) => {
     await handleMockExecutionUnsupported(ticketId, context, 'GENERATING_QA_CHECKLIST', sendEvent)
   },
+  WAITING_MANUAL_QA: undefined,
   INTEGRATING_CHANGES: async (ticketId, context, sendEvent) => {
     await handleMockExecutionUnsupported(ticketId, context, 'INTEGRATING_CHANGES', sendEvent)
   },
   CREATING_PULL_REQUEST: async (ticketId, context, sendEvent) => {
     await handleMockExecutionUnsupported(ticketId, context, 'CREATING_PULL_REQUEST', sendEvent)
   },
+  WAITING_PR_REVIEW: undefined,
   CLEANING_ENV: async (ticketId, context, sendEvent) => {
     await handleMockExecutionUnsupported(ticketId, context, 'CLEANING_ENV', sendEvent)
   },
+  COMPLETED: undefined,
+  CANCELED: undefined,
+  BLOCKED_ERROR: undefined,
 }
 
 function resolveSnapshotState(
@@ -241,6 +252,8 @@ export function attachWorkflowRunner(
     const signal = getOrCreateAbortSignal(ticketId)
 
     if (isMockOpenCodeMode() && isWorkflowPhaseId(state)) {
+      // The own-key workflow check above restricts access to our static, exhaustive handler record.
+      // nosemgrep: javascript.lang.security.audit.unsafe-dynamic-method.unsafe-dynamic-method
       const mockHandler = mockLifecycleHandlers[state]
       if (mockHandler) {
         runningPhases.add(key)
@@ -254,8 +267,8 @@ export function attachWorkflowRunner(
           .finally(() => {
             runningPhases.delete(key)
           })
-        return
       }
+      return
     }
 
     if (state === 'SCANNING_RELEVANT_FILES') {

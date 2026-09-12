@@ -1218,7 +1218,6 @@ export async function completeMergedPullRequest(input: {
     })
     refreshPullRequestReport(input.ticketId, {
       ...input.prReport,
-      completedAt: new Date().toISOString(),
       prNumber: pr.number,
       prUrl: pr.url,
       prState: pr.state,

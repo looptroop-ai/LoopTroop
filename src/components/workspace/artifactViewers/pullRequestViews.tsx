@@ -214,13 +214,13 @@ export function PullRequestReportView({ content }: { content: string }) {
   const isPassed = parsed.status === 'passed'
   const isFailed = parsed.status === 'failed'
   const title = isPassed
-    ? 'Draft pull request ready'
+    ? 'Pull request report'
     : isFailed
       ? 'Pull request creation failed'
       : 'Pull request report'
   const message = parsed.message
     ?? (isPassed
-      ? 'The candidate branch was pushed and the draft pull request metadata was recorded.'
+      ? 'The candidate branch was pushed and the generated pull request metadata was recorded.'
       : 'Pull request metadata was recorded.')
   const safePrUrl = getSafeGitHubPullRequestUrl(parsed.prUrl)
 
@@ -299,7 +299,7 @@ export function PullRequestReportView({ content }: { content: string }) {
           >
             <GitPullRequest className="h-4 w-4 shrink-0 mt-0.5" />
             <span className="min-w-0 flex-1">
-              <span className="block text-xs font-semibold">Open draft PR in GitHub</span>
+              <span className="block text-xs font-semibold">Open PR in GitHub</span>
               <span className="mt-1 block text-[11px] font-mono break-all">{safePrUrl}</span>
             </span>
             <ExternalLink className="h-3.5 w-3.5 shrink-0 mt-0.5" />
@@ -316,7 +316,7 @@ export function PullRequestReportView({ content }: { content: string }) {
 
         {parsed.title ? (
           <div className="rounded-md border border-border bg-background px-3 py-2">
-            <div className="text-[10px] font-semibold uppercase tracking-wider text-muted-foreground">PR Title</div>
+            <div className="text-[10px] font-semibold uppercase tracking-wider text-muted-foreground">Generated PR Title</div>
             <div className="mt-1 text-sm font-semibold text-foreground break-words">{parsed.title}</div>
           </div>
         ) : null}

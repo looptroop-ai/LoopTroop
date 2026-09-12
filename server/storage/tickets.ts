@@ -13,6 +13,7 @@ export {
   parseTicketRef,
   isDisplayOnlyMockTicket,
   listTickets,
+  listWaitingPullRequestTicketRefs,
   getTicketByRef,
   findTicketRefByLocalId,
   getTicketContext,

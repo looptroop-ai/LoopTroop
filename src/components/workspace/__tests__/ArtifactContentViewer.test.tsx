@@ -4155,8 +4155,8 @@ items:
     )
 
     expect(screen.getByText('Pull Request Report')).toBeInTheDocument()
-    expect(screen.getByText('Draft pull request ready')).toBeInTheDocument()
-    expect(screen.getByRole('link', { name: /open draft pr in github/i })).toHaveAttribute(
+    expect(screen.getByText('Pull request report')).toBeInTheDocument()
+    expect(screen.getByRole('link', { name: /open pr in github/i })).toHaveAttribute(
       'href',
       'https://github.com/looptroop-ai/pocketbase-master/pull/42',
     )
@@ -4241,7 +4241,7 @@ items:
       />,
     )
 
-    expect(screen.queryByRole('link', { name: /open draft pr in github/i })).not.toBeInTheDocument()
+    expect(screen.queryByRole('link', { name: /open pr in github/i })).not.toBeInTheDocument()
     expect(screen.getByText('Recorded pull request URL is not a valid GitHub PR link.')).toBeInTheDocument()
   })
 

@@ -2,7 +2,7 @@
 
 ## PR18 identifier and test fixes
 
-Rechecked on 2026-09-12 against `fe3d7d4c`: 11 open alerts remain in this stage.
+Rechecked on 2026-09-12 against `fe3d7d4c`: this stage started with 11 open alerts.
 The installer shell-command alert from the original plan was already fixed by PR15.
 The closed PR #129 was reviewed as a reference; its process-launch changes are superseded
 by the trusted resolver now on `main`.
@@ -33,7 +33,10 @@ and hexadecimal IPv4-mapped forms of loopback. These are protocol addresses, not
 endpoints; see [RFC 4291, section 2.5.5.2](https://www.rfc-editor.org/rfc/rfc4291#section-2.5.5.2).
 Regression cases cover both spellings, bracketed uppercase input, rejection of mapped
 non-loopback addresses by the backend, and omission of mapped loopback hosts from LAN URLs.
-Their scanner disposition is pending the owner's choice; no alerts have been dismissed here.
+With the owner's approval, all four were dismissed as `false positive` on GitHub on
+2026-09-12. Their dismissed states were read back from the API. The readable literals stay
+in place. This records GitHub dispositions; it does not claim a separate SonarCloud dashboard
+resolution. The seven code fixes await merge and a scan of `main` before their alerts can close.
 
 Local verification passed: the full suite (408 files, 5,543 tests passed, 10 skipped),
 focused identifier and lock-race tests, lint, typechecks, production build, package contents,

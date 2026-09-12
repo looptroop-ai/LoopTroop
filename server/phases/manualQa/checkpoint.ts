@@ -1,3 +1,4 @@
+import { TicketWorkspaceNotInitializedError } from '../../lib/workflowErrors'
 import { withGitIndexRollback } from '../../git/indexSnapshot'
 import { literalPathspec, REPO_SCOPE_PATHSPECS } from '../../git/pathspecs'
 import { normalizeRepoScopedPath, uniqueRepoScopedPaths } from '../../git/repoScopedPath'
@@ -323,7 +324,7 @@ function commitExactFiles(worktreePath: string, files: string[], message: string
 export function prepareManualQaCheckpoint(ticketId: string, version: number): ManualQaCheckpointResult {
   const paths = getTicketPaths(ticketId)
   const ticket = getTicketByRef(ticketId)
-  if (!paths || !ticket) throw new Error(`Ticket workspace not initialized: ${ticketId}`)
+  if (!paths || !ticket) throw new TicketWorkspaceNotInitializedError(`Ticket workspace not initialized: ${ticketId}`)
   if (!Number.isInteger(version) || version < 1) throw new Error('Manual QA version must be a positive integer')
 
   const existingBaselinePath = baselinePath(paths.ticketDir, version)
@@ -380,7 +381,7 @@ function applyManualQaDriftDecision(
 ): ManualQaDriftReceipt {
   const paths = getTicketPaths(ticketId)
   const ticket = getTicketByRef(ticketId)
-  if (!paths || !ticket) throw new Error(`Ticket workspace not initialized: ${ticketId}`)
+  if (!paths || !ticket) throw new TicketWorkspaceNotInitializedError(`Ticket workspace not initialized: ${ticketId}`)
   if (!actionId.trim()) throw new Error('Manual QA workspace decision requires an action ID')
   const receiptPath = driftReceiptPath(paths.ticketDir, actionId)
   assertContained(paths.ticketDir, receiptPath)

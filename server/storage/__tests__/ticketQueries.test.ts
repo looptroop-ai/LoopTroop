@@ -4,8 +4,8 @@ import { mkdirSync, renameSync, symlinkSync, writeFileSync } from 'node:fs'
 import { join } from 'node:path'
 import { createInitializedTestTicket, createTestRepoManager, resetTestDb } from '../../test/integration'
 import { writeJsonl } from '../../io/jsonl'
-import { getTicketByRef, getTicketContext, listTickets, readTicketFile, resolveTicketContainedPath } from '../tickets'
-import { resolveReviewCutoffStatus } from '../ticketQueries'
+import { createTicket, getTicketByRef, getTicketContext, listTickets, listWaitingPullRequestTicketRefs, readTicketFile, resolveTicketContainedPath } from '../tickets'
+import { DISPLAY_ONLY_MOCK_BRANCH_NAME, resolveReviewCutoffStatus } from '../ticketQueries'
 import { questionWaits, ticketStatusHistory, tickets } from '../../db/schema'
 
 const runtimeRepoManager = createTestRepoManager('ticket-runtime-qa-origin-')
@@ -33,6 +33,57 @@ describe('runtime Manual QA bead origin projection', () => {
   afterAll(() => {
     resetTestDb()
     runtimeRepoManager.cleanup()
+  })
+
+  it('selects only real waiting PR refs across attached projects without projecting tickets', async () => {
+    const first = await createInitializedTestTicket(runtimeRepoManager, { title: 'First waiting PR', shortname: 'FIRST' })
+    const second = await createInitializedTestTicket(runtimeRepoManager, { title: 'Second waiting PR', shortname: 'SECOND' })
+    const firstContext = getTicketContext(first.ticket.id)!
+    const secondContext = getTicketContext(second.ticket.id)!
+    firstContext.projectDb.update(tickets).set({ status: 'WAITING_PR_REVIEW', branchName: null })
+      .where(eq(tickets.id, firstContext.localTicketId)).run()
+    secondContext.projectDb.update(tickets).set({ status: 'WAITING_PR_REVIEW', branchName: 'feature/second' })
+      .where(eq(tickets.id, secondContext.localTicketId)).run()
+    const mock = createTicket({ projectId: first.project.id, title: 'Display mock' })
+    const mockContext = getTicketContext(mock.id)!
+    firstContext.projectDb.update(tickets).set({ status: 'WAITING_PR_REVIEW', branchName: DISPLAY_ONLY_MOCK_BRANCH_NAME })
+      .where(eq(tickets.id, mockContext.localTicketId)).run()
+    createTicket({ projectId: second.project.id, title: 'Draft' })
+
+    // Fail if discovery attempts the filesystem enrichment used by toPublicTicket.
+    const projection = vi.spyOn(await import('../../ticket/metadata'), 'resolveTicketBaseBranch')
+      .mockImplementation(() => { throw new Error('Discovery must not project tickets') })
+    try {
+      expect(listWaitingPullRequestTicketRefs().sort()).toEqual([first.ticket.id, second.ticket.id].sort())
+      expect(projection).not.toHaveBeenCalled()
+    } finally {
+      projection.mockRestore()
+    }
+  })
+
+  it('continues discovery after an attached project fails and retries it on the next sweep', async () => {
+    const broken = await createInitializedTestTicket(runtimeRepoManager, { title: 'Unavailable project', shortname: 'BROKE' })
+    const healthy = await createInitializedTestTicket(runtimeRepoManager, { title: 'Healthy project', shortname: 'HEALTH' })
+    for (const setup of [broken, healthy]) {
+      const context = getTicketContext(setup.ticket.id)!
+      context.projectDb.update(tickets).set({ status: 'WAITING_PR_REVIEW' })
+        .where(eq(tickets.id, context.localTicketId)).run()
+    }
+    const projects = await import('../projects')
+    const lookup = projects.getProjectContextById
+    const failure = vi.spyOn(projects, 'getProjectContextById').mockImplementation((id) => {
+      if (id === broken.project.id) throw new Error('Project database unavailable')
+      return lookup(id)
+    })
+    const warning = vi.spyOn(console, 'warn').mockImplementation(() => {})
+    try {
+      expect(listWaitingPullRequestTicketRefs()).toEqual([healthy.ticket.id])
+      expect(warning).toHaveBeenCalledWith(expect.stringContaining(`project ${broken.project.id}`))
+    } finally {
+      failure.mockRestore()
+      warning.mockRestore()
+    }
+    expect(listWaitingPullRequestTicketRefs().sort()).toEqual([broken.ticket.id, healthy.ticket.id].sort())
   })
 
   it('keeps a ticket visible when its workspace is unsafe while refusing file access', async () => {

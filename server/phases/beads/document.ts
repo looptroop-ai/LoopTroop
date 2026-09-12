@@ -1,3 +1,4 @@
+import { TicketWorkspaceNotInitializedError } from '../../lib/workflowErrors'
 import { relative } from 'node:path'
 import { getTicketPaths, writeTicketFile } from '../../storage/tickets'
 import { readFileNoFollowSync } from '../../io/readFile'
@@ -23,7 +24,7 @@ const BEADS_APPROVAL_SNAPSHOT_ARTIFACT = 'approval_snapshot:beads'
 function resolveBeadsPaths(ticketId: string) {
   const paths = getTicketPaths(ticketId)
   if (!paths) {
-    throw new Error('Ticket workspace not initialized')
+    throw new TicketWorkspaceNotInitializedError('Ticket workspace not initialized')
   }
   return paths
 }

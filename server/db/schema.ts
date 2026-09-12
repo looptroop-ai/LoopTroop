@@ -1,4 +1,5 @@
-import { sqliteTable, text, integer, real } from 'drizzle-orm/sqlite-core'
+import { sql } from 'drizzle-orm'
+import { sqliteTable, text, integer, real, uniqueIndex } from 'drizzle-orm/sqlite-core'
 import { PROFILE_DEFAULTS } from './defaults'
 
 export const profiles = sqliteTable('profiles', {
@@ -127,7 +128,11 @@ export const phaseArtifacts = sqliteTable('phase_artifacts', {
   content: text('content').notNull(), // JSON stringified artifact
   createdAt: text('created_at').notNull().$defaultFn(() => new Date().toISOString()),
   updatedAt: text('updated_at').notNull().$defaultFn(() => new Date().toISOString()),
-})
+}, (table) => [
+  uniqueIndex('idx_phase_artifacts_ticket_skip_receipt')
+    .on(table.ticketId, sql`CASE WHEN json_valid(${table.content}) THEN json_extract(${table.content}, '$.receipt_id') END`)
+    .where(sql`${table.artifactType} GLOB 'skip_receipt:*'`),
+])
 
 export const manualQaOperations = sqliteTable('manual_qa_operations', {
   id: integer('id').primaryKey({ autoIncrement: true }),

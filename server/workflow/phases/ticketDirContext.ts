@@ -1,3 +1,4 @@
+import { TicketWorkspaceNotInitializedError } from '../../lib/workflowErrors'
 import type { TicketContext } from '../../machines/types'
 import { existsSync } from 'fs'
 import {
@@ -15,14 +16,14 @@ export function loadTicketDirContext(context: TicketContext) {
   const paths = getTicketPaths(context.ticketId)
 
   if (!ticket || !paths) {
-    throw new Error(`Ticket workspace not initialized: missing ticket context for ${context.externalId}`)
+    throw new TicketWorkspaceNotInitializedError(`Ticket workspace not initialized: missing ticket context for ${context.externalId}`)
   }
 
   const worktreePath = paths.worktreePath
   const ticketDir = paths.ticketDir
 
   if (!existsSync(ticketDir)) {
-    throw new Error(`Ticket workspace not initialized: missing ticket directory for ${context.externalId}`)
+    throw new TicketWorkspaceNotInitializedError(`Ticket workspace not initialized: missing ticket directory for ${context.externalId}`)
   }
 
   const relevantFiles = readTicketFile(context.ticketId, 'relevant-files.yaml') ?? undefined

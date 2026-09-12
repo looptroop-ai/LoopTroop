@@ -3302,7 +3302,7 @@ describe('PhaseArtifactsPanel', () => {
     expect(screen.queryByText(/https:\/\/github\.com\/looptroop-ai\/pocketbase-master\/pull\/42/i)).not.toBeInTheDocument()
 
     fireEvent.click(screen.getByRole('button', { name: /Pull Request Report/i }))
-    expect(screen.getByRole('link', { name: /open draft pr in github/i })).toHaveAttribute(
+    expect(screen.getByRole('link', { name: /open pr in github/i })).toHaveAttribute(
       'href',
       'https://github.com/looptroop-ai/pocketbase-master/pull/42',
     )

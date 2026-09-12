@@ -254,6 +254,9 @@ function initializeProjectSqlite(sqlite: Database) {
     CREATE INDEX IF NOT EXISTS idx_project_tickets_status ON tickets(status);
     CREATE INDEX IF NOT EXISTS idx_project_tickets_external_id ON tickets(external_id);
     CREATE INDEX IF NOT EXISTS idx_phase_artifacts_ticket ON phase_artifacts(ticket_id);
+    CREATE UNIQUE INDEX IF NOT EXISTS idx_phase_artifacts_ticket_skip_receipt
+      ON phase_artifacts(ticket_id, CASE WHEN json_valid(content) THEN json_extract(content, '$.receipt_id') END)
+      WHERE artifact_type GLOB 'skip_receipt:*';
     CREATE UNIQUE INDEX IF NOT EXISTS idx_manual_qa_operations_ticket_action
       ON manual_qa_operations(ticket_id, action_id);
     CREATE INDEX IF NOT EXISTS idx_sessions_ticket_phase ON opencode_sessions(ticket_id, phase, state);

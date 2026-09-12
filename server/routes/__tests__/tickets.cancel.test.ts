@@ -77,6 +77,19 @@ describe('ticketRouter POST /tickets/:id/cancel', () => {
     repoManager.cleanup()
   })
 
+  it.each([false, true])('rejects cancellation during cleanup (display mock: %s)', async (mock) => {
+    const { ticket } = await createCancelableTicket(repoManager.createRepo())
+    patchTicket(ticket.id, { status: 'CLEANING_ENV', ...(mock ? { branchName: DISPLAY_ONLY_MOCK_BRANCH_NAME } : {}) })
+    const response = await app.request(`/api/tickets/${ticket.id}/cancel`, {
+      method: 'POST', body: JSON.stringify({ deleteTicket: true }), headers: { 'Content-Type': 'application/json' },
+    })
+    expect(response.status).toBe(409)
+    expect(await response.json()).toEqual({ error: 'Cannot cancel a ticket after completion has started' })
+    expect(getTicketByRef(ticket.id)?.status).toBe('CLEANING_ENV')
+    expect(getTicketByRef(ticket.id)?.availableActions).not.toContain('cancel')
+    expect(sendTicketEvent).not.toHaveBeenCalled()
+  })
+
   it('cancels a ticket without cleanup when no body is sent', async () => {
     const repoDir = repoManager.createRepo()
     const { ticket, init } = await createCancelableTicket(repoDir)

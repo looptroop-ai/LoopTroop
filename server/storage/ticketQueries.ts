@@ -1,11 +1,12 @@
-import { and, asc, desc, eq } from 'drizzle-orm'
+import { TicketWorkspaceNotInitializedError } from '../lib/workflowErrors'
+import { and, asc, desc, eq, isNull, ne, or } from 'drizzle-orm'
 import { z } from 'zod'
 import { readFileNoFollowSync } from '../io/readFile'
 import { ContainedPathError } from '../lib/containedPath'
 import { db as appDb } from '../db/index'
 import { PROFILE_DEFAULTS } from '../db/defaults'
 import { getProjectContextById, getProjectById, listProjects } from './projects'
-import { opencodeSessions, phaseArtifacts, profiles, projects, ticketErrorOccurrences, ticketStatusHistory, tickets } from '../db/schema'
+import { attachedProjects, opencodeSessions, phaseArtifacts, profiles, projects, ticketErrorOccurrences, ticketStatusHistory, tickets } from '../db/schema'
 import {
   getTicketAiLogPath,
   getTicketDir,
@@ -49,7 +50,7 @@ export function isDisplayOnlyMockTicket(ticket: Pick<LocalTicketRow, 'branchName
 }
 
 function getDisplayOnlyMockTicketActions(status: string): string[] {
-  return isTerminalWorkflowStatus(status) ? [] : ['cancel']
+  return getAvailableWorkflowActions(status).includes('cancel') ? ['cancel'] : []
 }
 
 const TrimmedNonEmptyStringSchema = z.string().trim().min(1)
@@ -1310,6 +1311,25 @@ export function listTickets(projectId?: number): PublicTicket[] {
   return aggregated.sort((a, b) => new Date(b.updatedAt).getTime() - new Date(a.updatedAt).getTime())
 }
 
+/** Lists merge-poll candidates without loading ticket files or public projections. */
+export function listWaitingPullRequestTicketRefs(): string[] {
+  const refs: string[] = []
+  for (const attached of appDb.select({ id: attachedProjects.id }).from(attachedProjects).all()) {
+    try {
+      const project = getProjectContextById(attached.id)
+      if (!project) continue
+      const waiting = project.projectDb.select({ externalId: tickets.externalId }).from(tickets).where(and(
+        eq(tickets.status, 'WAITING_PR_REVIEW'),
+        or(isNull(tickets.branchName), ne(tickets.branchName, DISPLAY_ONLY_MOCK_BRANCH_NAME)),
+      )).all()
+      refs.push(...waiting.map(ticket => buildTicketRef(attached.id, ticket.externalId)))
+    } catch (error) {
+      console.warn(`[merge-poller] Could not discover waiting tickets for project ${attached.id}: ${getErrorMessage(error)}`)
+    }
+  }
+  return refs
+}
+
 /** Fetches a single ticket by its composite ref (`projectId:externalId`). */
 export function getTicketByRef(ticketRef: string): PublicTicket | undefined {
   const context = getTicketContext(ticketRef)
@@ -1398,7 +1418,7 @@ export function resolveTicketContainedPath(ticketRef: string, relativePath: stri
 
 export function writeTicketFile(ticketRef: string, relativePath: string, content: string): void {
   const storage = getTicketStorageContext(ticketRef)
-  if (!storage) throw new Error('Ticket workspace not initialized')
+  if (!storage) throw new TicketWorkspaceNotInitializedError('Ticket workspace not initialized')
   writeProjectTicketFile(storage.projectRoot, storage.externalId, relativePath, content)
 }
 

@@ -1,3 +1,4 @@
+import { OpenCodeUnavailableError, TicketWorkspaceNotInitializedError } from '../../lib/workflowErrors'
 import type { TicketContext, TicketEvent } from '../../machines/types'
 import type { DraftResult, MemberOutcome, Vote, VotePresentationOrder } from '../../council/types'
 import { CancelledError, throwIfAborted, VOTING_RUBRIC_INTERVIEW } from '../../council/types'
@@ -410,7 +411,7 @@ export function skipAllInterviewQuestionsToApproval(
     ?? PROFILE_DEFAULTS.maxCoveragePasses
   const paths = getTicketPaths(ticketId)
   if (!paths) {
-    throw new Error(`Ticket workspace not initialized: missing ticket paths for ${externalId}`)
+    throw new TicketWorkspaceNotInitializedError(`Ticket workspace not initialized: missing ticket paths for ${externalId}`)
   }
 
   // Exactly the questions *this* action skips. Passing every finalized question
@@ -601,7 +602,7 @@ export async function handleInterviewDeliberate(
     if (!health.available) {
       const msg = `OpenCode server is not running. Start it with \`opencode serve\`. (${health.error ?? 'connection refused'})`
       emitPhaseLog(ticketId, context.externalId, phase, 'error', msg)
-      throw new Error(msg)
+      throw new OpenCodeUnavailableError(msg)
     }
     emitPhaseLog(
       ticketId,
@@ -613,10 +614,10 @@ export async function handleInterviewDeliberate(
   } catch (err) {
     throwIfCancelled(err, signal, ticketId)
     // Re-throw if we already formatted the message
-    if (err instanceof Error && err.message.startsWith('OpenCode server is not running')) throw err
+    if (err instanceof OpenCodeUnavailableError) throw err
     const msg = `OpenCode server is not running. Start it with \`opencode serve\`. (${getErrorMessage(err)})`
     emitPhaseLog(ticketId, context.externalId, phase, 'error', msg)
-    throw new Error(msg)
+    throw new OpenCodeUnavailableError(msg)
   }
 
   // Step 2: Resolve council members from locked config (frozen at ticket start)
@@ -1124,7 +1125,7 @@ export async function handleInterviewCompile(
   try {
     const paths = getTicketPaths(ticketId)
     if (!paths) {
-      throw new Error(`Ticket workspace not initialized: missing ticket paths for ${context.externalId}`)
+      throw new TicketWorkspaceNotInitializedError(`Ticket workspace not initialized: missing ticket paths for ${context.externalId}`)
     }
     const losingDraftMeta = losingDrafts.map((d) => ({ memberId: d.memberId, content: d.content }))
     const compiledArtifact = buildCompiledInterviewArtifact(
@@ -1453,7 +1454,7 @@ export async function handleInterviewQABatch(
   if (currentBatch.source === 'coverage') {
     const paths = getTicketPaths(ticketId)
     if (!paths) {
-      throw new Error(`Ticket workspace not initialized: missing ticket paths for ${externalId}`)
+      throw new TicketWorkspaceNotInitializedError(`Ticket workspace not initialized: missing ticket paths for ${externalId}`)
     }
     const completedSnapshot = markInterviewSessionComplete(answeredSnapshot)
     writeCanonicalInterview(externalId, paths.ticketDir, completedSnapshot)
@@ -1490,7 +1491,7 @@ export async function handleInterviewQABatch(
     if (persistedSessionInfo?.sessionId === 'mock-session') {
       const paths = getTicketPaths(ticketId)
       if (!paths) {
-        throw new Error(`Ticket workspace not initialized: missing ticket paths for ${externalId}`)
+        throw new TicketWorkspaceNotInitializedError(`Ticket workspace not initialized: missing ticket paths for ${externalId}`)
       }
 
       const nextMockBatch = buildPersistedMockInterviewBatch(answeredSnapshot)
@@ -1604,7 +1605,7 @@ export async function handleInterviewQABatch(
 
   if (result.isComplete) {
     if (!paths) {
-      throw new Error(`Ticket workspace not initialized: missing ticket paths for ${externalId}`)
+      throw new TicketWorkspaceNotInitializedError(`Ticket workspace not initialized: missing ticket paths for ${externalId}`)
     }
 
     const completedSnapshot = markInterviewSessionComplete(answeredSnapshot, result.finalYaml)
@@ -1952,7 +1953,7 @@ export async function handleMockInterviewCompile(
   sendEvent: (event: TicketEvent) => void,
 ) {
   const paths = getTicketPaths(ticketId)
-  if (!paths) throw new Error(`Ticket workspace not initialized: missing ticket paths for ${context.externalId}`)
+  if (!paths) throw new TicketWorkspaceNotInitializedError(`Ticket workspace not initialized: missing ticket paths for ${context.externalId}`)
   const { members } = resolveCouncilMembers(context)
   const winnerId = readMockInterviewWinnerId(ticketId, members[0]?.modelId ?? 'mock-model-1')
   const refinedContent = buildMockInterviewCompiledContent()

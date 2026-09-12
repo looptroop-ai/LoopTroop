@@ -1,4 +1,6 @@
+import { completeTicketMerge, hasVerifiedMergeReport, withTicketMergeLock } from '../../workflow/mergeCompletion'
 import type { Context } from 'hono'
+import type { z } from 'zod'
 import { PROFILE_DEFAULTS } from '../../db/defaults'
 import {
   ensureActorForTicket,
@@ -39,14 +41,13 @@ import {
 } from '../../storage/tickets'
 import {
   completeCloseUnmerged,
-  completeMergedPullRequest,
   readPullRequestReport,
 } from '../../workflow/phases/pullRequestPhase'
 import { recoverCodingBeadWithReset } from '../../workflow/phases/beadsPhase'
 import { recoverSuccessfulExecutionCheckpointForFinalization } from '../../workflow/phases/executionPhase'
 import { isExecutionBandStatus } from '../../workflow/executionBand'
 import { getErrorMessage } from '@shared/typeGuards'
-import { isTerminalWorkflowStatus } from '@shared/workflowMeta'
+import { getAvailableWorkflowActions, isTerminalWorkflowStatus } from '@shared/workflowMeta'
 import { broadcaster } from '../../sse/broadcaster'
 import {
   clearSessionContinuation,
@@ -377,13 +378,6 @@ export async function handleStartTicket(c: Context) {
 }
 
 export async function handleCancelTicket(c: Context) {
-  const ticketId = getTicketParam(c)
-  const ticket = getTicketByRef(ticketId)
-  if (!ticket) return c.json({ error: 'Ticket not found' }, 404)
-  if (isTerminalWorkflowStatus(ticket.status)) {
-    return c.json({ error: 'Cannot cancel a terminal ticket' }, 409)
-  }
-
   const rawBody = await readJsonBody(c)
   if (!rawBody.ok) {
     return c.json({ error: 'Cancel request body must be valid JSON' }, 400)
@@ -395,8 +389,24 @@ export async function handleCancelTicket(c: Context) {
   if (!cancelOptions.success) {
     return c.json({ error: 'Invalid cancel payload', details: cancelOptions.error.flatten() }, 400)
   }
-  const { deleteContent, deleteLog, deleteTicket } = cancelOptions.data
-  const cancelReason = normalizeSkipReason(cancelOptions.data.reason)
+  const ticketId = getTicketParam(c)
+  return withTicketMergeLock(ticketId, () => handleCancelTicketLocked(c, cancelOptions.data))
+}
+
+async function handleCancelTicketLocked(c: Context, options: z.infer<typeof cancelTicketSchema>) {
+  const ticketId = getTicketParam(c)
+  const ticket = getTicketByRef(ticketId)
+  if (!ticket) return c.json({ error: 'Ticket not found' }, 404)
+  if (isTerminalWorkflowStatus(ticket.status)) {
+    return c.json({ error: 'Cannot cancel a terminal ticket' }, 409)
+  }
+  if (!getAvailableWorkflowActions(ticket.status).includes('cancel')
+    || (ticket.status === 'WAITING_PR_REVIEW' && hasVerifiedMergeReport(ticket))) {
+    return c.json({ error: 'Cannot cancel a ticket after completion has started' }, 409)
+  }
+
+  const { deleteContent, deleteLog, deleteTicket } = options
+  const cancelReason = normalizeSkipReason(options.reason)
   // Snapshotted before anything fires: `CANCEL` moves the ticket to CANCELED, so
   // reading the phase afterwards would attribute the skip to the wrong status.
   const statusBeforeCancel = ticket.status
@@ -473,12 +483,20 @@ export async function handleCancelTicket(c: Context) {
   return respondWithState(c, ticketId, 'Cancel action accepted')
 }
 
-export async function handleMergeTicket(c: Context) {
+export function handleMergeTicket(c: Context) {
+  const ticketId = getTicketParam(c)
+  return withTicketMergeLock(ticketId, () => handleMergeTicketLocked(c))
+}
+
+async function handleMergeTicketLocked(c: Context) {
   const ticketId = getTicketParam(c)
   const ticket = getTicketByRef(ticketId)
   if (!ticket) return c.json({ error: 'Ticket not found' }, 404)
   const mockResponse = rejectDisplayOnlyMockTicket(c, ticket)
   if (mockResponse) return mockResponse
+  if ((ticket.status === 'CLEANING_ENV' || ticket.status === 'COMPLETED') && hasVerifiedMergeReport(ticket)) {
+    return respondWithState(c, ticketId, 'Merge complete')
+  }
   if (ticket.status !== 'WAITING_PR_REVIEW') {
     return c.json({ error: 'Ticket is not waiting for pull request review' }, 409)
   }
@@ -493,32 +511,17 @@ export async function handleMergeTicket(c: Context) {
   const phase = 'WAITING_PR_REVIEW'
 
   try {
-    const mergeReport = await withCommandLoggingAsync(
-      ticketId,
-      ticket.externalId,
-      phase,
-      () => completeMergedPullRequest({
-        ticketId,
-        externalId: ticket.externalId,
-        projectPath: ticketContext.projectRoot,
-        baseBranch: ticket.runtime.baseBranch,
-        headBranch: ticket.branchName?.trim() || ticket.externalId,
-        candidateCommitSha: ticket.runtime.candidateCommitSha,
-        prReport,
-      }),
-      (cmdPhase, type, content) => emitRoutePhaseLog(ticketId, cmdPhase, type, content),
-    )
-
-    ensureActorForTicket(ticketId)
-    emitRoutePhaseLog(ticketId, phase, 'info', mergeReport.message, {
-      prNumber: mergeReport.prNumber,
-      prUrl: mergeReport.prUrl,
-      prState: mergeReport.prState,
-      localBaseHead: mergeReport.localBaseHead,
-      remoteBaseHead: mergeReport.remoteBaseHead,
-    })
-    sendTicketEvent(ticketId, { type: 'MERGE_COMPLETE' })
+    await completeTicketMerge(ticket, ticketContext.projectRoot, prReport)
   } catch (err) {
+    const current = getTicketByRef(ticketId)
+    if (current && hasVerifiedMergeReport(current)) {
+      // Keep the verified attempt visible so the poller or another Merge can finish it.
+      // Dispatching ERROR here would let Retry archive the committed checkpoint.
+      return c.json({
+        error: 'The pull request merge is verified, but ticket completion failed. Try Merge again.',
+        details: getErrorMessage(err),
+      }, 500)
+    }
     const details = getErrorMessage(err)
     const message = `Pull request merge failed: ${details}`
     const codes = ['PULL_REQUEST_MERGE_FAILED']
@@ -541,6 +544,19 @@ export async function handleMergeTicket(c: Context) {
 }
 
 export async function handleCloseUnmergedTicket(c: Context) {
+  const rawBody = await readJsonBody(c)
+  if (!rawBody.ok) {
+    return c.json({ error: 'Close request body must be valid JSON' }, 400)
+  }
+  const parsed = closeUnmergedSchema.safeParse(rawBody.body)
+  if (!parsed.success) {
+    return c.json({ error: 'Invalid close payload', details: parsed.error.flatten() }, 400)
+  }
+  const ticketId = getTicketParam(c)
+  return withTicketMergeLock(ticketId, () => handleCloseUnmergedTicketLocked(c, parsed.data))
+}
+
+async function handleCloseUnmergedTicketLocked(c: Context, options: z.infer<typeof closeUnmergedSchema>) {
   const ticketId = getTicketParam(c)
   const ticket = getTicketByRef(ticketId)
   if (!ticket) return c.json({ error: 'Ticket not found' }, 404)
@@ -550,15 +566,11 @@ export async function handleCloseUnmergedTicket(c: Context) {
     return c.json({ error: 'Ticket is not waiting for pull request review' }, 409)
   }
 
-  const rawBody = await readJsonBody(c)
-  if (!rawBody.ok) {
-    return c.json({ error: 'Close request body must be valid JSON' }, 400)
+  if (hasVerifiedMergeReport(ticket)) {
+    return c.json({ error: 'The pull request merge is already verified; completion is pending. Try Merge again.' }, 409)
   }
-  const parsed = closeUnmergedSchema.safeParse(rawBody.body)
-  if (!parsed.success) {
-    return c.json({ error: 'Invalid close payload', details: parsed.error.flatten() }, 400)
-  }
-  const closeReason = normalizeSkipReason(parsed.data.reason)
+
+  const closeReason = normalizeSkipReason(options.reason)
   const statusBeforeClose = ticket.status
 
   try {

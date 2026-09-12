@@ -1,3 +1,4 @@
+import { TicketWorkspaceNotInitializedError } from '../../lib/workflowErrors'
 import type { TicketContext, TicketEvent } from '../../machines/types'
 import type { TicketState } from '../../opencode/contextBuilder'
 import { buildMinimalContext } from '../../opencode/contextBuilder'
@@ -512,7 +513,7 @@ export async function handleExecutionSetup(
     ticketId, context.externalId, 'PREPARING_EXECUTION_ENV',
     async () => {
       const paths = getTicketPaths(ticketId)
-      if (!paths) throw new Error(`Ticket workspace not initialized: missing ticket paths for ${context.externalId}`)
+      if (!paths) throw new TicketWorkspaceNotInitializedError(`Ticket workspace not initialized: missing ticket paths for ${context.externalId}`)
 
       const setupModelId = context.lockedMainImplementer
       if (!setupModelId) {

@@ -104,6 +104,7 @@ export interface PullRequestInfo {
   baseRefName: string
   headRefName: string
   headRefOid: string | null
+  mergeCommitSha: string | null
   createdAt: string | null
   updatedAt: string | null
   closedAt: string | null
@@ -156,6 +157,8 @@ interface GitHubPullRecord {
   updated_at?: unknown
   closed_at?: unknown
   merged_at?: unknown
+  merged?: unknown
+  merge_commit_sha?: unknown
   head?: {
     ref?: unknown
     sha?: unknown
@@ -273,7 +276,7 @@ function formatGhAuthEntry(entry: GhAuthStatusEntry): string {
 
 function normalizePullRequestState(record: GitHubPullRecord): PullRequestState | null {
   const mergedAt = normalizeString(record.merged_at)
-  if (mergedAt) return 'merged'
+  if (record.merged === true || mergedAt) return 'merged'
   const state = normalizeString(record.state)?.toUpperCase()
   if (state === 'CLOSED') return 'closed'
   if (state === 'OPEN' && record.draft === true) return 'draft'
@@ -300,6 +303,7 @@ function toPullRequestInfo(record: GitHubPullRecord): PullRequestInfo | null {
     baseRefName,
     headRefName,
     headRefOid: normalizeString(record.head?.sha),
+    mergeCommitSha: normalizeString(record.merge_commit_sha),
     createdAt: normalizeString(record.created_at),
     updatedAt: normalizeString(record.updated_at),
     closedAt: normalizeString(record.closed_at),
@@ -438,7 +442,8 @@ async function runGhJson<T>(
   args: string[],
   options?: { input?: string; env?: NodeJS.ProcessEnv },
 ): Promise<T> {
-  const stdout = await runGh(args, {
+  // This supported API version retains merge_commit_sha, used to verify landed commits.
+  const stdout = await runGh([...args, '-H', 'X-GitHub-Api-Version: 2022-11-28'], {
     cwd: projectPath,
     input: options?.input,
     env: options?.env,
@@ -472,9 +477,25 @@ async function listPullRequests(projectPath: string, repo: GitHubRepoRef, branch
     .sort((left, right) => right.number - left.number)
 }
 
-export async function getPullRequestForBranch(projectPath: string, branchName: string, baseBranch: string): Promise<PullRequestInfo | null> {
+export async function getPullRequestByNumber(projectPath: string, prNumber: number): Promise<PullRequestInfo> {
+  if (!Number.isSafeInteger(prNumber) || prNumber <= 0) {
+    throw new Error('Pull request number must be a positive safe integer.')
+  }
   const repo = assertGitHubOrigin(projectPath)
-  return (await listPullRequests(projectPath, repo, branchName, baseBranch))[0] ?? null
+  const record = await runGhJson<GitHubPullRecord>(projectPath, [
+    'api',
+    `repos/${repo.slug}/pulls/${prNumber}`,
+    '--method',
+    'GET',
+  ])
+  const info = record && typeof record === 'object' ? toPullRequestInfo(record) : null
+  if (!info) {
+    throw new Error(`GitHub returned invalid metadata for pull request #${prNumber}.`)
+  }
+  if (info.number !== prNumber) {
+    throw new Error(`GitHub returned pull request #${info.number}, expected #${prNumber}.`)
+  }
+  return info
 }
 
 export async function createOrUpdateDraftPullRequest(params: {
@@ -527,21 +548,13 @@ export async function createOrUpdateDraftPullRequest(params: {
 
 export async function markPullRequestReady(projectPath: string, prNumber: number): Promise<PullRequestInfo> {
   await runGh(['pr', 'ready', String(prNumber)], { cwd: projectPath })
-  const repo = assertGitHubOrigin(projectPath)
-  const refreshed = await runGhJson<GitHubPullRecord>(projectPath, [
-    'api',
-    `repos/${repo.slug}/pulls/${prNumber}`,
-    '--method',
-    'GET',
-  ])
-  const info = toPullRequestInfo(refreshed)
-  if (!info) {
-    throw new Error(`Failed to refresh pull request #${prNumber} after marking it ready`)
-  }
-  return info
+  return getPullRequestByNumber(projectPath, prNumber)
 }
 
-export async function mergePullRequest(projectPath: string, prNumber: number, title: string): Promise<PullRequestInfo> {
+export async function mergePullRequest(projectPath: string, prNumber: number, title: string, expectedHeadSha: string): Promise<PullRequestInfo> {
+  if (!expectedHeadSha.trim()) {
+    throw new Error('An approved candidate commit SHA is required to merge a pull request.')
+  }
   const repo = assertGitHubOrigin(projectPath)
   await runGhJson<{ merged?: unknown; message?: unknown }>(projectPath, [
     'api',
@@ -552,19 +565,11 @@ export async function mergePullRequest(projectPath: string, prNumber: number, ti
     'merge_method=merge',
     '-f',
     `commit_title=${title}`,
+    '-f',
+    `sha=${expectedHeadSha}`,
   ])
 
-  const refreshed = await runGhJson<GitHubPullRecord>(projectPath, [
-    'api',
-    `repos/${repo.slug}/pulls/${prNumber}`,
-    '--method',
-    'GET',
-  ])
-  const info = toPullRequestInfo(refreshed)
-  if (!info) {
-    throw new Error(`Failed to refresh merged pull request #${prNumber}`)
-  }
-  return info
+  return getPullRequestByNumber(projectPath, prNumber)
 }
 
 export function readGitDiff(projectPath: string, fromRef: string, toRef: string): GitDiffSummary {

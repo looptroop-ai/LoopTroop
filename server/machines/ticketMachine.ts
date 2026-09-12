@@ -544,7 +544,6 @@ export const ticketMachine = setup({
       on: {
         CLEANUP_DONE: { target: 'COMPLETED' },
         ERROR: { target: 'BLOCKED_ERROR', actions: ['recordError'] },
-        CANCEL: { target: 'CANCELED' },
       },
     },
     BLOCKED_ERROR: {

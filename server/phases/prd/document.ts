@@ -1,3 +1,4 @@
+import { TicketWorkspaceNotInitializedError } from '../../lib/workflowErrors'
 import { eq } from 'drizzle-orm'
 import { existsSync, rmSync } from 'node:fs'
 import { readFileNoFollowSync } from '../../io/readFile'
@@ -33,7 +34,7 @@ const PRD_APPROVAL_SNAPSHOT_ARTIFACT = 'approval_snapshot:prd'
 function getPrdPath(ticketId: string): string {
   const path = resolveTicketContainedPath(ticketId, 'prd.yaml')
   if (!path) {
-    throw new Error('Ticket workspace not initialized')
+    throw new TicketWorkspaceNotInitializedError('Ticket workspace not initialized')
   }
   return path
 }
@@ -48,7 +49,7 @@ function readPrdYaml(ticketId: string): string {
 
 function readInterviewContent(ticketId: string): string {
   const interviewPath = resolveTicketContainedPath(ticketId, 'interview.yaml')
-  if (!interviewPath) throw new Error('Ticket workspace not initialized')
+  if (!interviewPath) throw new TicketWorkspaceNotInitializedError('Ticket workspace not initialized')
   if (!existsSync(interviewPath)) throw new Error('Interview artifact not found')
   return readFileNoFollowSync(interviewPath)
 }

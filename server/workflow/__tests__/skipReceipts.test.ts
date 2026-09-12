@@ -1,14 +1,19 @@
 import { afterAll, beforeEach, describe, expect, it } from 'vitest'
+import { eq } from 'drizzle-orm'
+import { phaseArtifacts } from '../../db/schema'
 import { countSkipEvents } from '@shared/skipReceipt'
 import { initializeDatabase } from '../../db/init'
 import { sqlite } from '../../db/index'
-import { clearProjectDatabaseCache } from '../../db/project'
+import { clearProjectDatabaseCache, getProjectDatabase } from '../../db/project'
 import { createFixtureRepoManager } from '../../test/fixtureRepo'
 import { attachProject } from '../../storage/projects'
 import {
   archiveActivePhaseAttempts,
   createFreshPhaseAttempts,
   createTicket,
+  cleanupCanceledTicketData,
+  deleteTicket,
+  getTicketContext,
   ensureActivePhaseAttempt,
   insertPhaseArtifact,
   listPhaseArtifacts,
@@ -97,7 +102,106 @@ describe('skip receipts', () => {
     expect(writeSkipReceipts(input)).toHaveLength(1)
     expect(hasSkipReceiptsForAction(ticket.id, 'action-replayed')).toBe(true)
     expect(writeSkipReceipts(input)).toHaveLength(0)
+    expect(writeSkipReceipts({ ...input, items: [{ itemId: 'Q02', reason: null }] })).toHaveLength(0)
     expect(listSkipEvents(ticket.id)).toHaveLength(1)
+  })
+
+  it('returns only inserted receipts when a batch repeats an item', () => {
+    const ticket = makeTicket()
+    const written = writeSkipReceipts({
+      ticketId: ticket.id, surface: 'interview_question', itemType: 'interview_question',
+      phase: 'WAITING_INTERVIEW_ANSWERS', ticketStatusBefore: 'WAITING_INTERVIEW_ANSWERS',
+      actionId: 'repeated-item',
+      items: [{ itemId: 'Q01', reason: 'First reason' }, { itemId: 'Q01', reason: 'Repeated item' }],
+    })
+    expect(written).toHaveLength(1)
+    expect(written[0]!.reason).toBe('First reason')
+    expect(listSkipEvents(ticket.id)).toHaveLength(1)
+    expect(listPhaseArtifacts(ticket.id)).toHaveLength(1)
+  })
+
+  it('enforces receipt uniqueness across surfaces and attempts, scoped to the ticket', () => {
+    const ticket = makeTicket()
+    const context = getTicketContext(ticket.id)!
+    const receipt = writeSkipReceipts({
+      ticketId: ticket.id, surface: 'interview_question', itemType: 'interview_question',
+      phase: 'WAITING_INTERVIEW_ANSWERS', ticketStatusBefore: 'WAITING_INTERVIEW_ANSWERS',
+      actionId: 'receipt-index', items: [{ itemId: 'Q01', reason: null }],
+    })[0]!
+    const duplicate = {
+      ticketId: context.localTicketId, phase: 'WAITING_INTERVIEW_APPROVAL', phaseAttempt: 2,
+      artifactType: 'skip_receipt:interview_approval_mark_skipped', content: JSON.stringify(receipt),
+    }
+    expect(() => context.projectDb.insert(phaseArtifacts).values(duplicate).run())
+      .toThrow(expect.objectContaining({
+        cause: expect.objectContaining({ message: expect.stringContaining('UNIQUE constraint failed') }),
+      }))
+    const other = createTicket({ projectId: ticket.projectId, title: 'Other ticket' })
+    const otherContext = getTicketContext(other.id)!
+    context.projectDb.insert(phaseArtifacts).values({ ...duplicate, ticketId: otherContext.localTicketId }).run()
+    expect(hasSkipReceiptsForAction(other.id, receipt.action_id)).toBe(true)
+
+    clearProjectDatabaseCache()
+    const reopened = getProjectDatabase(context.projectRoot)
+    expect(() => reopened.db.insert(phaseArtifacts).values(duplicate).run()).toThrow()
+    expect(reopened.sqlite.prepare("SELECT name FROM sqlite_master WHERE name = 'skip_receipt_actions'").get())
+      .toBeUndefined()
+    deleteTicket(ticket.id)
+    expect(reopened.db.select().from(phaseArtifacts)
+      .where(eq(phaseArtifacts.ticketId, context.localTicketId)).all()).toEqual([])
+    expect(hasSkipReceiptsForAction(other.id, receipt.action_id)).toBe(true)
+  })
+
+  it('leaves non-receipt artifacts and malformed receipt content outside the unique key', () => {
+    const ticket = makeTicket()
+    const context = getTicketContext(ticket.id)!
+    for (const artifactType of ['ordinary_report', 'skip_receipt:interview_question']) {
+      for (const content of ['plain text', '{', '{}']) {
+        const row = { ticketId: context.localTicketId, phase: 'DRAFT', artifactType, content }
+        context.projectDb.insert(phaseArtifacts).values([row, row]).run()
+      }
+    }
+    const other = {
+      ticketId: context.localTicketId, phase: 'DRAFT', artifactType: 'ordinary_report',
+      content: JSON.stringify({ receipt_id: 'shared-with-another-artifact' }),
+    }
+    context.projectDb.insert(phaseArtifacts).values([other, other]).run()
+    expect(listSkipEvents(ticket.id)).toEqual([])
+  })
+
+  it('rolls back earlier items when a later receipt is invalid', () => {
+    const ticket = makeTicket()
+    const input = {
+      ticketId: ticket.id,
+      surface: 'interview_question' as const,
+      itemType: 'interview_question' as const,
+      phase: 'WAITING_INTERVIEW_ANSWERS' as const,
+      ticketStatusBefore: 'WAITING_INTERVIEW_ANSWERS',
+      actionId: 'action-failed',
+      items: [{ itemId: 'Q01', reason: null }, { itemId: '', reason: null }],
+    }
+    expect(() => writeSkipReceipts(input)).toThrow()
+    expect(hasSkipReceiptsForAction(ticket.id, input.actionId)).toBe(false)
+    expect(listSkipEvents(ticket.id)).toEqual([])
+    expect(writeSkipReceipts({ ...input, items: input.items.slice(0, 1) })).toHaveLength(1)
+  })
+
+  it('clears receipt uniqueness when canceled ticket content is removed', () => {
+    const ticket = makeTicket()
+    const input = {
+      ticketId: ticket.id,
+      surface: 'cancel_ticket' as const,
+      itemType: 'ticket' as const,
+      phase: 'CODING' as const,
+      ticketStatusBefore: 'CODING',
+      actionId: 'action-canceled',
+      items: [{ itemId: null, reason: null }],
+    }
+    writeSkipReceipts(input)
+    expect(cleanupCanceledTicketData(ticket.id, { deleteContent: true })).toBe(true)
+    expect(hasSkipReceiptsForAction(ticket.id, input.actionId)).toBe(false)
+    expect(listSkipEvents(ticket.id)).toEqual([])
+    expect(writeSkipReceipts(input)).toHaveLength(1)
   })
 
   it('matches an action by its recorded field, not by a pattern in the row', () => {
@@ -254,6 +358,15 @@ describe('skip receipts', () => {
     expect(events[0]?.itemId).toBe('Q02')
     // The action id is free again, so the retry records cleanly.
     expect(hasSkipReceiptsForAction(ticket.id, 'action-reverted')).toBe(false)
+    expect(writeSkipReceipts({
+      ticketId: ticket.id,
+      surface: 'interview_question',
+      itemType: 'interview_question',
+      phase: 'WAITING_INTERVIEW_ANSWERS',
+      ticketStatusBefore: 'WAITING_INTERVIEW_ANSWERS',
+      actionId: 'action-reverted',
+      items: [{ itemId: 'Q01', reason: 'Retried successfully.' }],
+    })).toHaveLength(1)
   })
 
   it('does not count a resolution as a skip', () => {

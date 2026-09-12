@@ -1,3 +1,4 @@
+import { TicketWorkspaceNotInitializedError } from '../../lib/workflowErrors'
 import type { TicketContext, TicketEvent } from '../../machines/types'
 import { getLatestPhaseArtifact, getTicketPaths, upsertLatestPhaseArtifact } from '../../storage/tickets'
 import { isMockOpenCodeMode } from '../../opencode/factory'
@@ -289,7 +290,7 @@ export async function handleCoding(
     ticketId, context.externalId, 'CODING',
     async () => {
   const paths = getTicketPaths(ticketId)
-  if (!paths) throw new Error(`Ticket workspace not initialized: missing ticket paths for ${context.externalId}`)
+  if (!paths) throw new TicketWorkspaceNotInitializedError(`Ticket workspace not initialized: missing ticket paths for ${context.externalId}`)
 
   let beads = readTicketBeads(ticketId)
   if (beads.length === 0) {

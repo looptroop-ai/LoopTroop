@@ -10,12 +10,13 @@ import { assertAllowedBackendHost, getAllowedBackendHost } from '../shared/appCo
 import { resolveSettings, type ResolvedSettings, type SettingSource } from './lib/appSettings'
 import { configureOpenCodeRuntime } from './opencode/runtimeConfig'
 import { resetOpenCodeAdapter } from './opencode/factory'
+import { startMergePoller } from './workflow/mergePoller'
 
 export interface RuntimeConfig extends CreateAppOptions {
   /** Overrides the resolved settings. Use 0 to let the OS assign a free port. */
   port?: number
   hostname?: string
-  /** Skip the database/OpenCode boot sequence. For tests that only need the app. */
+  /** Skip database/OpenCode startup and merge polling. For tests that only need the app. */
   skipStartupSequence?: boolean
   /** Pre-resolved settings, so a caller that already parsed flags resolves once. */
   settings?: ResolvedSettings
@@ -62,6 +63,7 @@ export function createRuntime(config: RuntimeConfig = {}): LoopTroopRuntime {
   let handle: ReturnType<typeof serve> | null = null
   let address: RuntimeAddress | null = null
   let closing: Promise<void> | null = null
+  let stopMergePoller: (() => Promise<void>) | null = null
   // `address` alone cannot say "starting": it is only set once listen succeeds,
   // so two concurrent start() calls both saw null and both ran the startup
   // sequence, each allocating its own timers.
@@ -174,6 +176,7 @@ export function createRuntime(config: RuntimeConfig = {}): LoopTroopRuntime {
       throw error
     }
 
+    if (!config.skipStartupSequence) stopMergePoller = startMergePoller()
     return address
   }
 
@@ -189,6 +192,8 @@ export function createRuntime(config: RuntimeConfig = {}): LoopTroopRuntime {
   async function close(): Promise<void> {
     closing ??= (async () => {
       if (starting) await starting.catch(() => undefined)
+      const pollerStopped = stopMergePoller?.()
+      stopMergePoller = null
       if (handle && typeof handle.close === 'function') {
         await new Promise<void>((resolveClose) => {
           handle?.close(() => resolveClose())
@@ -196,6 +201,7 @@ export function createRuntime(config: RuntimeConfig = {}): LoopTroopRuntime {
       }
       handle = null
       address = null
+      await pollerStopped
       teardownStartedResources()
     })()
 

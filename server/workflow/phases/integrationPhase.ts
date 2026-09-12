@@ -1,3 +1,4 @@
+import { TicketWorkspaceNotInitializedError } from '../../lib/workflowErrors'
 import type { TicketContext, TicketEvent } from '../../machines/types'
 import { getLatestPhaseArtifact, getTicketPaths, insertPhaseArtifact } from '../../storage/tickets'
 import { isMockOpenCodeMode } from '../../opencode/factory'
@@ -60,7 +61,7 @@ export async function handleIntegration(
     async () => {
   const paths = getTicketPaths(ticketId)
   if (!paths) {
-    throw new Error(`Ticket workspace not initialized: missing ticket paths for ${context.externalId}`)
+    throw new TicketWorkspaceNotInitializedError(`Ticket workspace not initialized: missing ticket paths for ${context.externalId}`)
   }
 
   if (signal?.aborted) throw new CancelledError(ticketId)

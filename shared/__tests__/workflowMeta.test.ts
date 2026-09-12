@@ -91,9 +91,9 @@ describe('isTerminalWorkflowStatus', () => {
       expect(getAvailableWorkflowActions(status), status).toEqual([])
     }
 
-    // And the reverse, so the check that produces the empty list cannot quietly
-    // widen: every status that is still running keeps at least Cancel.
-    for (const phase of WORKFLOW_PHASES.filter((p) => p.terminal !== true)) {
+    expect(getAvailableWorkflowActions('CLEANING_ENV')).toEqual([])
+    // Other unfinished phases keep their user controls.
+    for (const phase of WORKFLOW_PHASES.filter((p) => p.terminal !== true && p.id !== 'CLEANING_ENV')) {
       expect(getAvailableWorkflowActions(phase.id), phase.id).not.toEqual([])
     }
   })

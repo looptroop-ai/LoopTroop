@@ -272,17 +272,7 @@ function readSkipReceiptRows(ticketRef: string): Array<{
     }))
 }
 
-/**
- * True when this exact user action already left receipts on this ticket.
- *
- * Parsed rather than pattern-matched. The substring test this replaces looked
- * for `"action_id":"<id>"` anywhere in the serialised row — which, checked
- * against the schema, no reason or question context can actually produce: the
- * only unescaped `action_id` key is the receipt's own, and a reason quoting
- * that text is escaped by `JSON.stringify`. So this is not a bug fix; it is a
- * check that holds because of what it reads rather than because of what the
- * schema currently happens to allow.
- */
+/** True when this action already left a valid receipt on the ticket. */
 export function hasSkipReceiptsForAction(ticketRef: string, actionId: string): boolean {
   return readSkipReceiptRows(ticketRef).some((row) => (
     SKIP_RECEIPT_ARTIFACT_TYPES.includes(row.artifactType)
@@ -299,6 +289,8 @@ export function writeSkipReceipts(input: WriteSkipReceiptsInput): SkipReceipt[] 
   const context = getTicketContext(input.ticketId)
   if (!context) throw new Error(`Ticket not found: ${input.ticketId}`)
   if (input.items.length === 0 && !input.summary) return []
+  // Fast replay exit before phase validation. The database independently rejects
+  // duplicate receipt IDs, including writes that bypass this check.
   if (hasSkipReceiptsForAction(input.ticketId, input.actionId)) return []
 
   const skippedBy = normalizeSkipActor(input.skippedBy)
@@ -377,19 +369,9 @@ export function writeSkipReceipts(input: WriteSkipReceiptsInput): SkipReceipt[] 
   }
 
   const now = new Date().toISOString()
-  // The idempotency check runs again inside the write transaction, where the
-  // read and the insert cannot be separated. Outside it — as it was — two
-  // submissions of the same action could both see "not yet recorded" and both
-  // write a full set of receipts.
-  //
-  // A unique index on (ticket_id, action_id) would enforce this in the database
-  // instead, but that needs a migration; recorded as a follow-up rather than
-  // shipped here.
-  const inserted = context.projectDb.transaction((tx) => {
-    if (hasSkipReceiptsForAction(input.ticketId, input.actionId)) return []
-    return receipts.map((receipt) => tx
-    .insert(phaseArtifacts)
-    .values({
+  // Keep the batch atomic; uniqueness belongs to each receipt, not the shared action ID.
+  const inserted = context.projectDb.transaction((tx) => receipts.flatMap((receipt) => {
+    const artifact = tx.insert(phaseArtifacts).values({
       ticketId: context.localTicketId,
       phase: input.phase,
       phaseAttempt,
@@ -397,10 +379,9 @@ export function writeSkipReceipts(input: WriteSkipReceiptsInput): SkipReceipt[] 
       content: JSON.stringify(skipReceiptSchema.parse(receipt)),
       createdAt: now,
       updatedAt: now,
-    })
-    .returning()
-    .get())
-  })
+    }).onConflictDoNothing().returning().get()
+    return artifact ? [{ receipt, artifact }] : []
+  }))
   if (inserted.length === 0) return []
 
   // One broadcast per action, after the transaction commits. Never inside it: a
@@ -413,11 +394,11 @@ export function writeSkipReceipts(input: WriteSkipReceiptsInput): SkipReceipt[] 
       ticketId: input.ticketId,
       phase: input.phase,
       artifactType,
-      artifact: toArtifactManifestEntry(input.ticketId, lastInserted),
+      artifact: toArtifactManifestEntry(input.ticketId, lastInserted.artifact),
     })
   }
 
-  return receipts
+  return inserted.map(({ receipt }) => receipt)
 }
 
 /**
@@ -432,18 +413,16 @@ export function writeSkipReceipts(input: WriteSkipReceiptsInput): SkipReceipt[] 
 export function deleteSkipReceiptsForAction(ticketRef: string, actionId: string): number {
   const context = getTicketContext(ticketRef)
   if (!context) return 0
-  const doomed = readSkipReceiptRows(ticketRef).filter((row) => (
-    SKIP_RECEIPT_ARTIFACT_TYPES.includes(row.artifactType)
-    && parseStoredReceipt(row.content)?.action_id === actionId
-  ))
-  if (doomed.length === 0) return 0
-
-  context.projectDb.transaction((tx) => {
+  return context.projectDb.transaction((tx) => {
+    const doomed = readSkipReceiptRows(ticketRef).filter((row) => (
+      SKIP_RECEIPT_ARTIFACT_TYPES.includes(row.artifactType)
+      && parseStoredReceipt(row.content)?.action_id === actionId
+    ))
     for (const row of doomed) {
       tx.delete(phaseArtifacts).where(eq(phaseArtifacts.id, row.id)).run()
     }
+    return doomed.length
   })
-  return doomed.length
 }
 
 /**

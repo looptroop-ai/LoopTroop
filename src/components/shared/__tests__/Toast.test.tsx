@@ -32,7 +32,7 @@ it('dismisses simultaneous toasts independently and expires the remaining toast'
 it('keeps active toasts independently dismissible across ordinary rerenders', () => {
   function Trigger({ message }: { message: string }) {
     const { addToast } = useToast()
-    return <button onClick={() => addToast('info', message)}>Notify</button>
+    return <button onClick={() => { addToast('info', message) }}>Notify</button>
   }
   const { rerender } = render(<ToastProvider><Trigger message="Before" /></ToastProvider>)
   fireEvent.click(screen.getByText('Notify'))

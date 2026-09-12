@@ -1,9 +1,52 @@
 import { afterEach, describe, expect, it, vi } from 'vitest'
+import { createServer } from 'node:http'
+import { once } from 'node:events'
 import { getServeHostname, parseLocalPortFromUrl, resolveOpenCodeBaseUrl } from '../scripts/opencode-dev-base-url'
 
-afterEach(() => vi.unstubAllGlobals())
+afterEach(() => {
+  vi.unstubAllGlobals()
+  vi.unstubAllEnvs()
+})
 
 describe('resolveOpenCodeBaseUrl', () => {
+  it('authenticates a local provider directly but never follows its redirect', async () => {
+    vi.stubEnv('OPENCODE_SERVER_USERNAME', 'opencode')
+    vi.stubEnv('OPENCODE_SERVER_PASSWORD', 'local-test-password')
+    const authorization = `Basic ${Buffer.from('opencode:local-test-password').toString('base64')}`
+    let redirect = false
+    const requests: string[] = []
+    const server = createServer((req, res) => {
+      requests.push(req.url ?? '')
+      if (req.headers.authorization !== authorization) {
+        res.writeHead(401).end()
+      } else if (redirect && req.url === '/provider') {
+        res.writeHead(302, { Location: '/redirect-target' }).end()
+      } else {
+        res.writeHead(200).end('{}')
+      }
+    })
+    server.listen(0, '127.0.0.1')
+    await once(server, 'listening')
+    try {
+      const address = server.address()
+      if (!address || typeof address === 'string') throw new Error('Missing test listener')
+      const options = {
+        requestedBaseUrl: `http://127.0.0.1:${address.port}`,
+        hasExplicitBaseUrl: true,
+        deps: {
+          canConnect: async () => true,
+          inspectPortOccupants: () => ({ port: address.port, occupants: [], rawSocketSnapshot: null }),
+        },
+      }
+      expect((await resolveOpenCodeBaseUrl(options)).status).toBe('already-running')
+      redirect = true
+      await expect(resolveOpenCodeBaseUrl(options)).rejects.toThrow('occupied by a non-OpenCode process')
+      expect(requests).toEqual(['/provider', '/provider'])
+    } finally {
+      await new Promise<void>((resolve, reject) => server.close((error) => error ? reject(error) : resolve()))
+    }
+  })
+
   it.each([
     ['http://[::1]:4096', '::1'],
     ['http://[::ffff:127.0.0.2]:4096', '::ffff:7f00:2'],

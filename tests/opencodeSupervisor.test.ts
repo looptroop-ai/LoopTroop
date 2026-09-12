@@ -1,11 +1,39 @@
 import { describe, it, expect } from 'vitest'
-import { EventEmitter } from 'node:events'
+import { EventEmitter, once } from 'node:events'
+import { createServer } from 'node:http'
 import {
   MAX_RESTART_ATTEMPTS,
   OpenCodeSupervisor,
   OpenCodeMissingError,
+  probeOpenCode,
   type ProcessTermination,
 } from '../server/opencode/supervisor'
+
+it('accepts a direct health response without ever contacting a redirect target', async () => {
+  let redirect = false
+  const requests: string[] = []
+  const server = createServer((req, res) => {
+    requests.push(req.url ?? '')
+    if (redirect && req.url === '/config') {
+      res.writeHead(302, { Location: '/redirect-target' }).end()
+    } else {
+      res.writeHead(200).end('{}')
+    }
+  })
+  server.listen(0, '127.0.0.1')
+  await once(server, 'listening')
+  try {
+    const address = server.address()
+    if (!address || typeof address === 'string') throw new Error('Missing test listener')
+    const baseUrl = `http://127.0.0.1:${address.port}`
+    expect(await probeOpenCode(baseUrl)).toBe(true)
+    redirect = true
+    expect(await probeOpenCode(baseUrl)).toBe(false)
+    expect(requests).toEqual(['/config', '/config'])
+  } finally {
+    await new Promise<void>((resolve, reject) => server.close((error) => error ? reject(error) : resolve()))
+  }
+})
 
 /**
  * 2.10 contract: an already-running server is adopted untouched; a missing

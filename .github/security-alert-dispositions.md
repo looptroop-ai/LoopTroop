@@ -129,6 +129,43 @@ production build, package contents, production native-addon scan, script type st
 version consistency and license checks passed. Diagnostic help ran successfully.
 No end-to-end or lifecycle smoke was run; the owner will review CI for the pushed update.
 
+### Final bot and CI review at `215aecb3`
+
+Both [push CI](https://github.com/looptroop-ai/LoopTroop/actions/runs/34676906940) and
+[PR CI](https://github.com/looptroop-ai/LoopTroop/actions/runs/34676908163) passed, including
+platform and packaging jobs. Full logs contain only the reviewed upstream warning families.
+Kilo again reached its model output limit. Gitar, Greptile and Qodo report no outstanding
+findings; CodeRabbit adds the two probe findings considered below. Its generic docstring
+quota does not justify boilerplate comments.
+
+Codacy has now refreshed: its current findings are the toast test's shorthand void callback
+and the provider probe's fetch, rather than the earlier stale assertions. The callback now
+uses a block. The fetch finding names existing developer-tool behavior moved by the IPv6
+fix: callers use operator configuration, and remote hosts return before this local probe.
+It is not a new application route accepting an untrusted destination.
+
+The redirect concern is relevant: a different listener could redirect a readiness probe and
+be mistaken for OpenCode. Provider, daemon health and doctor probes reject redirects, with local HTTP
+regression coverage. This follows the [Fetch redirect policy](https://fetch.spec.whatwg.org/#http-redirect-fetch)
+without adding a custom redirect validator.
+
+The request to omit authentication for all HTTP probes is rejected. The probe reaches local
+loopback/wildcard destinations, and [OpenCode supports HTTP Basic authentication](https://opencode.ai/docs/server/#authentication)
+on its local HTTP server. Removing the header breaks existing password-protected startup,
+including the dev launcher's generated credentials. Loopback does not authenticate the
+identity of a process occupying that port; TLS or authenticated IPC would address that broader
+threat but would require a separate transport design. No claim is made that redirects are the
+only possible local-process threat. The scanner finding may remain until its dashboard review.
+
+The whole PR diff and sibling network callers were checked again. Identifier contracts,
+daemon-lock contention coverage and remote-address rejection remain intact. The website's
+released startup/authentication instructions remain accurate; no website edit is needed.
+
+Follow-up validation passed: 411 test files, 5,645 tests passed and 10 skipped; full lint,
+both typecheck projects, production build, package contents, version consistency and script
+type stripping. The focused identifier/lock regressions and direct HTTP redirect/authentication
+tests also passed. No end-to-end or lifecycle smoke was run. New CI is left for owner review.
+
 ## PR17 workflow, container and page hardening
 
 Reviewed on 2026-09-11 for roadmap stage PR17, implemented in

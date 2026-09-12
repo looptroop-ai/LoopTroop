@@ -103,6 +103,7 @@ async function isOpenCodeResponding(url: URL, hostname: string, port: number) {
     const authHeader = getOpenCodeBasicAuthHeader()
     const urlHost = hostname.includes(':') ? `[${hostname}]` : hostname
     const res = await fetch(`${url.protocol}//${urlHost}:${port}/provider`, {
+      redirect: 'error',
       ...(authHeader ? { headers: { Authorization: authHeader } } : {}),
       signal: AbortSignal.timeout(1000),
     })

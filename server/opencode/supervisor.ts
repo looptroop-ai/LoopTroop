@@ -132,7 +132,7 @@ export interface OpenCodeSupervisorOptions {
 
 export async function probeOpenCode(baseUrl: string): Promise<boolean> {
   try {
-    const response = await fetch(`${baseUrl}/config`, { signal: AbortSignal.timeout(HEALTH_TIMEOUT_MS) })
+    const response = await fetch(`${baseUrl}/config`, { redirect: 'error', signal: AbortSignal.timeout(HEALTH_TIMEOUT_MS) })
     return response.ok
   } catch {
     return false

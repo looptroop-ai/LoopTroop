@@ -240,6 +240,17 @@ describe('doctor command', () => {
     expect(opencode?.detail).toContain('mock')
   })
 
+  it('checks OpenCode directly without allowing a redirect to another service', async () => {
+    useConfigDir()
+    process.env.LOOPTROOP_OPENCODE_MODE = 'real'
+    const fetchMock = vi.spyOn(globalThis, 'fetch').mockImplementation(async () => new Response('{}'))
+
+    const opencode = (await runChecks()).find((check) => check.name === 'opencode')
+
+    expect(opencode?.status).toBe('ok')
+    expect(fetchMock).toHaveBeenCalledWith(expect.stringMatching(/\/config$/), expect.objectContaining({ redirect: 'error' }))
+  })
+
   it('prints a human summary without --json', async () => {
     useConfigDir()
     const stdout = captureStdout()

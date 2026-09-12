@@ -455,7 +455,7 @@ async function checkOpenCode(daemon: DaemonState | null, cliAvailable: boolean):
 
 async function probeOpenCodeConfig(baseUrl: string): Promise<OpenCodeReachability> {
   try {
-    const response = await fetch(`${baseUrl}/config`, { signal: AbortSignal.timeout(2_000) })
+    const response = await fetch(`${baseUrl}/config`, { redirect: 'error', signal: AbortSignal.timeout(2_000) })
     return response.ok ? { kind: 'ok' } : { kind: 'responded', status: response.status }
   } catch {
     return { kind: 'unreachable' }

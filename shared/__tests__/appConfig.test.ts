@@ -128,12 +128,34 @@ describe('appConfig frontend origin', () => {
     process.env.LOOPTROOP_API_TOKEN = 'my-token'
     expect(getAllowedBackendHost()).toBe('0.0.0.0')
   })
+
+  it('allows mapped loopback binds but keeps remote and malformed binds behind opt-in and a token', () => {
+    delete process.env.LOOPTROOP_ALLOW_REMOTE_API
+    delete process.env.LOOPTROOP_API_TOKEN
+    for (const host of ['::ffff:127.5.5.5', '0:0:0:0:0:ffff:7fff:ffff', '0:0:0:0:0:0:0:1']) {
+      process.env.LOOPTROOP_BACKEND_HOST = host
+      expect(getAllowedBackendHost()).toBe(host)
+    }
+    for (const host of ['::ffff:128.0.0.1', '::ffff:0:127.0.0.1', '[::1', '127.attacker.example']) {
+      process.env.LOOPTROOP_BACKEND_HOST = host
+      expect(() => getAllowedBackendHost(), host).toThrow('Refusing to bind')
+      process.env.LOOPTROOP_ALLOW_REMOTE_API = '1'
+      expect(() => getAllowedBackendHost(), host).toThrow('LOOPTROOP_API_TOKEN must be set')
+      delete process.env.LOOPTROOP_ALLOW_REMOTE_API
+    }
+  })
 })
 
 describe('isLoopbackHost', () => {
   it('accepts the loopback names and addresses', () => {
-    for (const host of ['localhost', 'LOCALHOST', '127.0.0.1', '127.1.2.3', '127.255.255.255', '::1', '[::1]', '::ffff:127.0.0.1', '::ffff:7f00:1', '[::FFFF:7F00:1]']) {
-      expect(isLoopbackHost(host)).toBe(true)
+    for (const host of [
+      'localhost', 'LOCALHOST', '127.0.0.0', '127.0.0.1', '127.1.2.3', '127.255.255.255',
+      '::1', '[::1]', '0:0:0:0:0:0:0:1', '[0000:0000:0000:0000:0000:0000:0000:0001]',
+      '::ffff:127.0.0.1', '::ffff:7f00:1', '[::FFFF:7F00:1]', '::ffff:127.5.5.5',
+      '::ffff:127.0.0.0', '[::ffff:127.255.255.255]', '0:0:0:0:0:ffff:127.5.5.5',
+      '0:0:0:0:0:ffff:7fff:ffff', '0::ffff:7f05:505',
+    ]) {
+      expect(isLoopbackHost(host), host).toBe(true)
     }
   })
 
@@ -152,8 +174,19 @@ describe('isLoopbackHost', () => {
   })
 
   it('rejects other private and public addresses', () => {
-    for (const host of ['0.0.0.0', '10.0.0.1', '192.168.1.1', '128.0.0.1', 'example.com', '::ffff:192.168.1.1', '::ffff:c0a8:101']) {
-      expect(isLoopbackHost(host)).toBe(false)
+    for (const host of ['0.0.0.0', '10.0.0.1', '192.168.1.1', '128.0.0.1', 'example.com', '::ffff:192.168.1.1', '::ffff:c0a8:101', '::ffff:126.255.255.255', '::ffff:128.0.0.0', '::ffff:0:127.0.0.1', '::127.0.0.1', '64:ff9b::127.0.0.1', '::']) {
+      expect(isLoopbackHost(host), host).toBe(false)
+    }
+  })
+
+  it('rejects malformed IPv6 and URL syntax instead of repairing it', () => {
+    for (const host of [
+      '[::1', '::1]', '[[::1]]', '[localhost]', '[127.0.0.1]', '[::1]:3000',
+      '::1%lo', '[::1%25lo]', '::ffff:127.00.0.1', '::ffff:127.256.0.1',
+      '::ffff:127.0.1', '::ffff::127.0.0.1', '0:0:0:0:0:0:ffff:127.0.0.1',
+      '::1\n:0', '::1/path', '::1]@attacker.example', '[::1]evil',
+    ]) {
+      expect(isLoopbackHost(host), host).toBe(false)
     }
   })
 })

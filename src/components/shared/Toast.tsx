@@ -1,4 +1,4 @@
-import { useState, useEffect, useCallback, type ReactNode } from 'react'
+import { useState, useEffect, useCallback, useRef, type ReactNode } from 'react'
 import { X, CheckCircle, AlertCircle, AlertTriangle, Info } from 'lucide-react'
 import { TOAST_DURATION_MS } from '@/lib/constants'
 import { ToastContext, type ToastType } from './toastDef'
@@ -17,13 +17,12 @@ const ICONS: Record<ToastType, React.ReactNode> = {
   info: <Info className="h-4 w-4 text-blue-500" />,
 }
 
-let nextToastId = 0
-
 export function ToastProvider({ children }: { children: ReactNode }) {
   const [toasts, setToasts] = useState<Toast[]>([])
+  const nextToastId = useRef(0)
 
   const addToast = useCallback((type: ToastType, message: string, duration = TOAST_DURATION_MS) => {
-    const id = `toast-${++nextToastId}`
+    const id = `toast-${++nextToastId.current}`
     setToasts(prev => [...prev, { id, type, message, duration }])
   }, [])
 
@@ -53,7 +52,7 @@ function ToastItem({ toast, onDismiss }: { toast: Toast; onDismiss: (id: string)
     <div className="flex items-center gap-2 rounded-lg border bg-background px-4 py-3 shadow-lg">
       {ICONS[toast.type]}
       <span className="text-sm flex-1">{toast.message}</span>
-      <button onClick={() => onDismiss(toast.id)} className="text-muted-foreground hover:text-foreground">
+      <button aria-label={`Dismiss ${toast.message}`} onClick={() => onDismiss(toast.id)} className="text-muted-foreground hover:text-foreground">
         <X className="h-3.5 w-3.5" />
       </button>
     </div>

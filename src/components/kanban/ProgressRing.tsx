@@ -5,7 +5,6 @@ export interface ProgressRingProps {
   size?: number
   stroke?: number
   colorClass?: string
-  gradientId?: string
 }
 
 export function ProgressRing({
@@ -13,13 +12,12 @@ export function ProgressRing({
   size = 20,
   stroke = 2.5,
   colorClass = 'text-brand-500',
-  gradientId,
 }: ProgressRingProps) {
   const reactId = useId()
   const radius = (size - stroke) / 2
   const circumference = 2 * Math.PI * radius
   const offset = circumference - (Math.min(100, Math.max(0, percent)) / 100) * circumference
-  const uniqueId = gradientId ?? `ring-grad-${reactId}`
+  const uniqueId = `ring-grad-${reactId}`
 
   return (
     <svg width={size} height={size} viewBox={`0 0 ${size} ${size}`} className="shrink-0 transition-transform duration-300">

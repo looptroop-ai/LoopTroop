@@ -8,8 +8,9 @@ afterEach(() => {
   vi.restoreAllMocks()
 })
 
-it('dismisses simultaneous toasts independently and expires the remaining toast', () => {
+it('dismisses simultaneous toasts independently and expires the remaining toast', async () => {
   vi.useFakeTimers()
+  // Force collisions if timestamp/random IDs are reintroduced.
   vi.spyOn(Date, 'now').mockReturnValue(0)
   vi.spyOn(Math, 'random').mockReturnValue(0)
   function Trigger() {
@@ -21,9 +22,23 @@ it('dismisses simultaneous toasts independently and expires the remaining toast'
   }
   render(<ToastProvider><Trigger /></ToastProvider>)
   fireEvent.click(screen.getByText('Notify'))
-  fireEvent.click(screen.getByText('First').parentElement!.querySelector('button')!)
+  fireEvent.click(screen.getByRole('button', { name: 'Dismiss First' }))
   expect(screen.queryByText('First')).not.toBeInTheDocument()
   expect(screen.getByText('Second')).toBeInTheDocument()
-  act(() => vi.advanceTimersByTime(2000))
+  await act(() => vi.advanceTimersByTime(2000))
   expect(screen.queryByText('Second')).not.toBeInTheDocument()
+})
+
+it('keeps toast IDs distinct when the provider rerenders with active toasts', () => {
+  function Trigger({ message }: { message: string }) {
+    const { addToast } = useToast()
+    return <button onClick={() => addToast('info', message)}>Notify</button>
+  }
+  const { rerender } = render(<ToastProvider><Trigger message="Before" /></ToastProvider>)
+  fireEvent.click(screen.getByText('Notify'))
+  rerender(<ToastProvider><Trigger message="After" /></ToastProvider>)
+  fireEvent.click(screen.getByText('Notify'))
+  fireEvent.click(screen.getByRole('button', { name: 'Dismiss After' }))
+  expect(screen.queryByText('After')).not.toBeInTheDocument()
+  expect(screen.getByText('Before')).toBeInTheDocument()
 })

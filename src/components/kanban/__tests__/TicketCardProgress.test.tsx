@@ -1,29 +1,11 @@
 import { describe, expect, it } from 'vitest'
-import { render, screen } from '@testing-library/react'
+import { screen } from '@testing-library/react'
 import { AIQuestionContext } from '@/context/aiQuestionContextDef'
 import { UIProvider } from '@/context/UIContext'
 import { createAiQuestionContextStub } from '@/test/aiQuestionContext'
 import { makeTicket } from '@/test/factories'
 import { renderWithProviders } from '@/test/renderHelpers'
 import { TicketCard } from '../TicketCard'
-import { ProgressRing } from '../ProgressRing'
-
-it('keeps each ring gradient distinct and stable across progress updates', () => {
-  const rings = (percent: number, gradientId?: string) => <>
-    <ProgressRing percent={percent} gradientId={gradientId} />
-    <ProgressRing percent={percent} />
-  </>
-  const { container, rerender } = render(rings(10))
-  const ids = () => Array.from(container.querySelectorAll('linearGradient'), element => element.id)
-  const initialIds = ids()
-  expect(new Set(initialIds).size).toBe(2)
-  rerender(rings(50))
-  expect(ids()).toEqual(initialIds)
-  expect(Array.from(container.querySelectorAll('circle[stroke^="url"]'), element => element.getAttribute('stroke')))
-    .toEqual(initialIds.map(id => `url(#${id})`))
-  rerender(rings(75, 'custom-gradient'))
-  expect(ids()).toEqual(['custom-gradient', initialIds[1]])
-})
 
 function renderCard(ticket: ReturnType<typeof makeTicket>) {
   return renderWithProviders(

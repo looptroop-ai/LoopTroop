@@ -52,6 +52,28 @@ describe('host guard', () => {
     expect(await response.json()).toMatchObject({ error: expect.stringContaining('loopback') })
   })
 
+  it.each(['[::ffff:127.5.5.5]:3000', '[0:0:0:0:0:ffff:7fff:ffff]:3000', '[0:0:0:0:0:0:0:1]:3000'])('accepts mapped and expanded loopback Host %s with or without its matching Origin', async (host) => {
+    expect((await request({ Host: host })).status).toBe(200)
+    expect((await request({ Host: host, Origin: `http://${host}` })).status).toBe(200)
+  })
+
+  it.each(['[::ffff:128.0.0.1]:3000', '[::ffff:0:127.0.0.1]:3000', '127.attacker.example:3000', '[::1', '::1]', '[::1]evil', '[::1]:invalid', '[::1]:65536', 'localhost:invalid'])('rejects remote or malformed Host %s', async (host) => {
+    expect((await request({ Host: host })).status).toBe(403)
+  })
+
+  it('canonicalizes equivalent mapped spellings while keeping different hosts and ports separate', async () => {
+    const host = '[::ffff:127.5.5.5]:03000'
+    expect((await request({ Host: host, Origin: 'http://[::ffff:7f05:505]:3000' })).status).toBe(200)
+    for (const origin of ['http://[::ffff:7f05:505]:9999', 'http://[::ffff:7f05:506]:3000', 'http://127.5.5.5:3000']) {
+      expect((await request({ Host: host, Origin: origin })).status, origin).toBe(403)
+    }
+  })
+
+  it('still rejects remote mapped extra origins', async () => {
+    const origin = 'http://[::ffff:192.168.1.1]:5173'
+    expect((await request({ Host: '[::ffff:127.5.5.5]:3000', Origin: origin }, [origin])).status).toBe(403)
+  })
+
   it('rejects a request driven from another origin', async () => {
     const response = await request({ Host: '127.0.0.1:3000', Origin: 'https://attacker.example' })
 

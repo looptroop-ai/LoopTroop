@@ -5,18 +5,26 @@ import { API_TOKEN_HEADER, SESSION_COOKIE_NAME, readCookie } from './sessionAuth
 /**
  * Strips the port and any IPv6 brackets from a Host or Origin authority, so
  * `[::1]:3000` and `127.0.0.1:3000` both reduce to the hostname alone.
+ * Bracketed IPv6 uses URL's canonical spelling for Origin comparisons. Bare
+ * IPv6 remains unchanged for existing callers; HTTP Host uses brackets.
  */
 export function hostnameFromAuthority(authority: string): string {
   const trimmed = authority.trim().toLowerCase()
   if (trimmed.startsWith('[')) {
-    const end = trimmed.indexOf(']')
-    return end === -1 ? trimmed.slice(1) : trimmed.slice(1, end)
+    const match = /^\[([\da-f:.]+)\](?::(\d+))?$/.exec(trimmed)
+    if (!match || (match[2] !== undefined && Number(match[2]) > 65535)) return ''
+    try {
+      return new URL(`http://[${match[1]}]/`).hostname.slice(1, -1)
+    } catch {
+      return ''
+    }
   }
   // An IPv6 address without brackets has several colons; only a host:port pair
   // has exactly one, and only that trailing part is a port.
   const colon = trimmed.indexOf(':')
   if (colon === -1 || trimmed.indexOf(':', colon + 1) !== -1) return trimmed
-  return trimmed.slice(0, colon)
+  const port = trimmed.slice(colon + 1)
+  return /^\d+$/.test(port) && Number(port) <= 65535 ? trimmed.slice(0, colon) : ''
 }
 
 export function isLoopbackAuthority(authority: string | undefined): boolean {
@@ -48,7 +56,7 @@ export function portFromAuthority(authority: string): string | null {
  * with no port means 80.
  */
 export function canonicalAuthority(authority: string, defaultPort = '80'): string {
-  return `${hostnameFromAuthority(authority)}:${portFromAuthority(authority) ?? defaultPort}`
+  return `${hostnameFromAuthority(authority)}:${Number(portFromAuthority(authority) ?? defaultPort)}`
 }
 
 /**

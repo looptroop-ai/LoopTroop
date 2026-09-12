@@ -769,22 +769,26 @@ describe('daemon lock', () => {
 
       // A child so the claim is created by a process that can then be left
       // holding a stale handle to it, exactly as a suspended contender would.
-      const source = [
-        `import { existsSync, writeFileSync, readFileSync } from 'node:fs'`,
-        `import { acquireDaemonLock } from ${JSON.stringify(lockModule)}`,
+      const claimScript = join(configDir, 'claim-takeover.mjs')
+      writeFileSync(claimScript, [
+        `import { existsSync, writeFileSync } from 'node:fs'`,
+        `import { hostname } from 'node:os'`,
+        `const [lockModule, configDir, claim] = process.argv.slice(2)`,
+        `const { acquireDaemonLock } = await import(lockModule)`,
         // Take the claim by starting an acquisition, then put a different
         // owner's record at the same path — a takeover, from this process's
         // point of view — and let the acquisition run to completion.
-        `const lock = acquireDaemonLock(${JSON.stringify(configDir)})`,
-        `writeFileSync(${JSON.stringify(claim)}, JSON.stringify({`,
-        `  nonce: 'someone-else', pid: process.pid, host: ${JSON.stringify(hostname())},`,
+        `const lock = acquireDaemonLock(configDir)`,
+        `writeFileSync(claim, JSON.stringify({`,
+        `  nonce: 'someone-else', pid: process.pid, host: hostname(),`,
         `  at: new Date().toISOString(),`,
         `}))`,
         `lock.release()`,
-        `console.log(existsSync(${JSON.stringify(claim)}) ? 'kept' : 'deleted')`,
-      ].join('\n')
+        `console.log(existsSync(claim) ? 'kept' : 'deleted')`,
+      ].join('\n'))
 
-      const child = spawn(process.execPath, ['--import', 'tsx', '--eval', source], {
+      // tsx loads the TypeScript lock module imported by the fixed ESM script.
+      const child = spawn(process.execPath, ['--import', 'tsx', claimScript, lockModule, configDir, claim], {
         cwd: resolve(import.meta.dirname, '..'),
       })
       let output = ''

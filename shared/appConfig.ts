@@ -59,13 +59,23 @@ function parseIPv4(value: string): [number, number, number, number] | null {
 }
 
 export function isLoopbackHost(hostname: string): boolean {
-  const normalized = hostname.trim().toLowerCase().replace(/^\[|\]$/g, '')
-  if (
-    normalized === 'localhost'
-    || normalized === '::1'
-    || normalized === '::ffff:127.0.0.1'
-    || normalized === '::ffff:7f00:1'
-  ) return true
+  const normalized = hostname.trim().toLowerCase()
+  if (normalized === 'localhost') return true
+  if (normalized.includes(':')) {
+    const address = normalized.startsWith('[') && normalized.endsWith(']')
+      ? normalized.slice(1, -1)
+      : normalized
+    // Limit URL parsing to an IPv6 literal: never repair brackets, strip zone
+    // IDs or let URL syntax turn an invalid address into a different host.
+    if (!/^[\da-f:.]+$/.test(address)) return false
+    try {
+      const canonical = new URL(`http://[${address}]/`).hostname
+      // IPv4-mapped IPv6 has exactly 80 zero bits, then ffff, then IPv4.
+      return canonical === '[::1]' || /^\[::ffff:7f[\da-f]{2}:[\da-f]{1,4}\]$/.test(canonical)
+    } catch {
+      return false
+    }
+  }
   // The whole 127.0.0.0/8 block is loopback, but only as an address.
   return parseIPv4(normalized)?.[0] === 127
 }

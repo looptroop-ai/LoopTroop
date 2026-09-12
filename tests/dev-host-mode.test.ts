@@ -99,12 +99,28 @@ describe('LAN URL formatting', () => {
     })).toEqual(['http://devbox.local:5174'])
   })
 
-  it.each(['localhost', '::ffff:127.0.0.1', '::ffff:7f00:1', '[::FFFF:7F00:1]'])('does not advertise loopback-only host %s as a LAN address', (host) => {
+  it.each(['localhost', '127.5.5.5', '::ffff:127.0.0.1', '::ffff:7f00:1', '[::FFFF:7F00:1]', '::ffff:127.5.5.5', '0:0:0:0:0:ffff:7fff:ffff', '0:0:0:0:0:0:0:1'])('does not advertise loopback-only host %s as a LAN address', (host) => {
     expect(getDevLanUrls({
       hostMode: hostModeEnabled(host),
       port: 5173,
       interfaces: {},
     })).toEqual([])
+  })
+
+  it.each(['127.attacker.example', '127.0.0.1.evil.test'])('advertises hostname %s even when it starts with 127.', (host) => {
+    expect(getDevLanUrls({
+      hostMode: resolveDevHostMode({ env: { [LOOPTROOP_DEV_HOST]: host } }),
+      port: 5173,
+      interfaces: {},
+    })).toEqual([`http://${host}:5173`])
+  })
+
+  it.each(['::ffff:192.168.1.50', '[::ffff:192.168.1.50]'])('advertises explicitly configured remote mapped address %s', (host) => {
+    expect(getDevLanUrls({
+      hostMode: resolveDevHostMode({ env: { [LOOPTROOP_DEV_HOST]: host } }),
+      port: 5173,
+      interfaces: {},
+    })).toEqual(['http://[::ffff:192.168.1.50]:5173'])
   })
 
   it('deduplicates detected LAN addresses', () => {

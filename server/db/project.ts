@@ -135,6 +135,13 @@ function initializeProjectSqlite(sqlite: Database) {
       archived_at TEXT
     );
 
+    CREATE TABLE IF NOT EXISTS skip_receipt_actions (
+      ticket_id INTEGER NOT NULL REFERENCES tickets(id) ON DELETE CASCADE,
+      action_id TEXT NOT NULL
+    );
+    CREATE UNIQUE INDEX IF NOT EXISTS idx_skip_receipt_actions_ticket_action
+      ON skip_receipt_actions(ticket_id, action_id);
+
     CREATE TABLE IF NOT EXISTS manual_qa_operations (
       id INTEGER PRIMARY KEY AUTOINCREMENT,
       ticket_id INTEGER NOT NULL REFERENCES tickets(id) ON DELETE CASCADE,

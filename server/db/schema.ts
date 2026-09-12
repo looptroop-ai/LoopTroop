@@ -129,6 +129,11 @@ export const phaseArtifacts = sqliteTable('phase_artifacts', {
   updatedAt: text('updated_at').notNull().$defaultFn(() => new Date().toISOString()),
 })
 
+export const skipReceiptActions = sqliteTable('skip_receipt_actions', {
+  ticketId: integer('ticket_id').notNull().references(() => tickets.id, { onDelete: 'cascade' }),
+  actionId: text('action_id').notNull(),
+})
+
 export const manualQaOperations = sqliteTable('manual_qa_operations', {
   id: integer('id').primaryKey({ autoIncrement: true }),
   ticketId: integer('ticket_id').notNull().references(() => tickets.id, { onDelete: 'cascade' }),

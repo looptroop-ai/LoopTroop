@@ -39,7 +39,7 @@ import {
   type SkipReceipt,
   type SkipSurface,
 } from '@shared/skipReceipt'
-import { phaseArtifacts } from '../db/schema'
+import { phaseArtifacts, skipReceiptActions } from '../db/schema'
 import { broadcaster } from '../sse/broadcaster'
 import { getTicketContext } from '../storage/ticketQueries'
 import { toArtifactManifestEntry } from '../storage/ticketArtifacts'
@@ -272,22 +272,14 @@ function readSkipReceiptRows(ticketRef: string): Array<{
     }))
 }
 
-/**
- * True when this exact user action already left receipts on this ticket.
- *
- * Parsed rather than pattern-matched. The substring test this replaces looked
- * for `"action_id":"<id>"` anywhere in the serialised row — which, checked
- * against the schema, no reason or question context can actually produce: the
- * only unescaped `action_id` key is the receipt's own, and a reason quoting
- * that text is escaped by `JSON.stringify`. So this is not a bug fix; it is a
- * check that holds because of what it reads rather than because of what the
- * schema currently happens to allow.
- */
+/** True when this exact user action already left receipts on this ticket. */
 export function hasSkipReceiptsForAction(ticketRef: string, actionId: string): boolean {
-  return readSkipReceiptRows(ticketRef).some((row) => (
-    SKIP_RECEIPT_ARTIFACT_TYPES.includes(row.artifactType)
-    && parseStoredReceipt(row.content)?.action_id === actionId
-  ))
+  const context = getTicketContext(ticketRef)
+  if (!context) return false
+  return !!context.projectDb.select().from(skipReceiptActions).where(and(
+    eq(skipReceiptActions.ticketId, context.localTicketId),
+    eq(skipReceiptActions.actionId, actionId),
+  )).get()
 }
 
 /**
@@ -377,16 +369,14 @@ export function writeSkipReceipts(input: WriteSkipReceiptsInput): SkipReceipt[] 
   }
 
   const now = new Date().toISOString()
-  // The idempotency check runs again inside the write transaction, where the
-  // read and the insert cannot be separated. Outside it — as it was — two
-  // submissions of the same action could both see "not yet recorded" and both
-  // write a full set of receipts.
-  //
-  // A unique index on (ticket_id, action_id) would enforce this in the database
-  // instead, but that needs a migration; recorded as a follow-up rather than
-  // shipped here.
+  // Claim the action and write every item atomically. A separate row lets the
+  // database reject a replay without rejecting a bulk action's child receipts.
   const inserted = context.projectDb.transaction((tx) => {
-    if (hasSkipReceiptsForAction(input.ticketId, input.actionId)) return []
+    const claimed = tx.insert(skipReceiptActions).values({
+      ticketId: context.localTicketId,
+      actionId: input.actionId,
+    }).onConflictDoNothing().returning().get()
+    if (!claimed) return []
     return receipts.map((receipt) => tx
     .insert(phaseArtifacts)
     .values({
@@ -432,18 +422,20 @@ export function writeSkipReceipts(input: WriteSkipReceiptsInput): SkipReceipt[] 
 export function deleteSkipReceiptsForAction(ticketRef: string, actionId: string): number {
   const context = getTicketContext(ticketRef)
   if (!context) return 0
-  const doomed = readSkipReceiptRows(ticketRef).filter((row) => (
-    SKIP_RECEIPT_ARTIFACT_TYPES.includes(row.artifactType)
-    && parseStoredReceipt(row.content)?.action_id === actionId
-  ))
-  if (doomed.length === 0) return 0
-
-  context.projectDb.transaction((tx) => {
+  return context.projectDb.transaction((tx) => {
+    const doomed = readSkipReceiptRows(ticketRef).filter((row) => (
+      SKIP_RECEIPT_ARTIFACT_TYPES.includes(row.artifactType)
+      && parseStoredReceipt(row.content)?.action_id === actionId
+    ))
     for (const row of doomed) {
       tx.delete(phaseArtifacts).where(eq(phaseArtifacts.id, row.id)).run()
     }
+    tx.delete(skipReceiptActions).where(and(
+      eq(skipReceiptActions.ticketId, context.localTicketId),
+      eq(skipReceiptActions.actionId, actionId),
+    )).run()
+    return doomed.length
   })
-  return doomed.length
 }
 
 /**

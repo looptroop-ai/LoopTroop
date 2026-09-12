@@ -1,4 +1,6 @@
 import { afterAll, beforeEach, describe, expect, it } from 'vitest'
+import { eq } from 'drizzle-orm'
+import { skipReceiptActions } from '../../db/schema'
 import { countSkipEvents } from '@shared/skipReceipt'
 import { initializeDatabase } from '../../db/init'
 import { sqlite } from '../../db/index'
@@ -9,6 +11,9 @@ import {
   archiveActivePhaseAttempts,
   createFreshPhaseAttempts,
   createTicket,
+  cleanupCanceledTicketData,
+  deleteTicket,
+  getTicketContext,
   ensureActivePhaseAttempt,
   insertPhaseArtifact,
   listPhaseArtifacts,
@@ -97,7 +102,63 @@ describe('skip receipts', () => {
     expect(writeSkipReceipts(input)).toHaveLength(1)
     expect(hasSkipReceiptsForAction(ticket.id, 'action-replayed')).toBe(true)
     expect(writeSkipReceipts(input)).toHaveLength(0)
+    expect(writeSkipReceipts({ ...input, items: [{ itemId: 'Q02', reason: null }] })).toHaveLength(0)
     expect(listSkipEvents(ticket.id)).toHaveLength(1)
+  })
+
+  it('enforces action uniqueness per ticket in the database and cascades ticket deletion', () => {
+    const ticket = makeTicket()
+    const context = getTicketContext(ticket.id)!
+    const claim = { ticketId: context.localTicketId, actionId: 'action-claimed' }
+    context.projectDb.insert(skipReceiptActions).values(claim).run()
+    expect(() => context.projectDb.insert(skipReceiptActions).values(claim).run())
+      .toThrow(expect.objectContaining({
+        cause: expect.objectContaining({ message: expect.stringContaining('UNIQUE constraint failed') }),
+      }))
+
+    const other = createTicket({ projectId: ticket.projectId, title: 'Other ticket' })
+    const otherContext = getTicketContext(other.id)!
+    context.projectDb.insert(skipReceiptActions).values({ ...claim, ticketId: otherContext.localTicketId }).run()
+    expect(hasSkipReceiptsForAction(other.id, claim.actionId)).toBe(true)
+    deleteTicket(ticket.id)
+    expect(context.projectDb.select().from(skipReceiptActions)
+      .where(eq(skipReceiptActions.ticketId, context.localTicketId)).all()).toEqual([])
+    expect(hasSkipReceiptsForAction(other.id, claim.actionId)).toBe(true)
+  })
+
+  it('rolls back the claim and earlier items when a later receipt is invalid', () => {
+    const ticket = makeTicket()
+    const input = {
+      ticketId: ticket.id,
+      surface: 'interview_question' as const,
+      itemType: 'interview_question' as const,
+      phase: 'WAITING_INTERVIEW_ANSWERS' as const,
+      ticketStatusBefore: 'WAITING_INTERVIEW_ANSWERS',
+      actionId: 'action-failed',
+      items: [{ itemId: 'Q01', reason: null }, { itemId: '', reason: null }],
+    }
+    expect(() => writeSkipReceipts(input)).toThrow()
+    expect(hasSkipReceiptsForAction(ticket.id, input.actionId)).toBe(false)
+    expect(listSkipEvents(ticket.id)).toEqual([])
+    expect(writeSkipReceipts({ ...input, items: input.items.slice(0, 1) })).toHaveLength(1)
+  })
+
+  it('clears action claims when canceled ticket content is removed', () => {
+    const ticket = makeTicket()
+    const input = {
+      ticketId: ticket.id,
+      surface: 'cancel_ticket' as const,
+      itemType: 'ticket' as const,
+      phase: 'CODING' as const,
+      ticketStatusBefore: 'CODING',
+      actionId: 'action-canceled',
+      items: [{ itemId: null, reason: null }],
+    }
+    writeSkipReceipts(input)
+    expect(cleanupCanceledTicketData(ticket.id, { deleteContent: true })).toBe(true)
+    expect(hasSkipReceiptsForAction(ticket.id, input.actionId)).toBe(false)
+    expect(listSkipEvents(ticket.id)).toEqual([])
+    expect(writeSkipReceipts(input)).toHaveLength(1)
   })
 
   it('matches an action by its recorded field, not by a pattern in the row', () => {
@@ -254,6 +315,15 @@ describe('skip receipts', () => {
     expect(events[0]?.itemId).toBe('Q02')
     // The action id is free again, so the retry records cleanly.
     expect(hasSkipReceiptsForAction(ticket.id, 'action-reverted')).toBe(false)
+    expect(writeSkipReceipts({
+      ticketId: ticket.id,
+      surface: 'interview_question',
+      itemType: 'interview_question',
+      phase: 'WAITING_INTERVIEW_ANSWERS',
+      ticketStatusBefore: 'WAITING_INTERVIEW_ANSWERS',
+      actionId: 'action-reverted',
+      items: [{ itemId: 'Q01', reason: 'Retried successfully.' }],
+    })).toHaveLength(1)
   })
 
   it('does not count a resolution as a skip', () => {

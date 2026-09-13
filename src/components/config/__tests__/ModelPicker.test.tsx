@@ -86,11 +86,11 @@ describe('ModelPicker', () => {
 
     expect(screen.getByText('GPT Alpha')).toBeInTheDocument()
 
-    fireEvent.click(screen.getByText('OpenAI'))
+    fireEvent.click(screen.getByRole('button', { name: /^OpenAI/ }))
 
-    expect(screen.queryByText('GPT Alpha')).not.toBeInTheDocument()
+    expect(screen.queryByRole('option', { name: /GPT Alpha/ })).not.toBeInTheDocument()
 
-    fireEvent.click(screen.getByText('OpenAI'))
+    fireEvent.click(screen.getByRole('button', { name: /^OpenAI/ }))
 
     expect(screen.getByText('GPT Alpha')).toBeInTheDocument()
   })
@@ -208,7 +208,7 @@ describe('ModelPicker — closing', () => {
     fireEvent.click(trigger)
 
     // Selecting closes the list from inside it, detaching the button the user was on.
-    fireEvent.click(screen.getByRole('button', { name: /GPT Alpha/ }))
+    fireEvent.click(screen.getByRole('option', { name: /GPT Alpha/ }))
 
     expect(screen.queryByLabelText('Search models')).not.toBeInTheDocument()
     expect(document.activeElement).toBe(trigger)
@@ -237,5 +237,122 @@ describe('ModelPicker — closing', () => {
 
     expect(screen.queryByLabelText('Search models')).not.toBeInTheDocument()
     document.body.removeChild(otherList)
+  })
+})
+
+describe('ModelPicker — combobox', () => {
+  beforeEach(() => {
+    mockModelsQuery()
+  })
+
+  it('links the search field to options only, keeping filters and disclosures outside the listbox', () => {
+    render(<ModelPicker value="openai/gpt-alpha" onChange={vi.fn()} disabledValues={['anthropic/claude-gpt-bridge']} />)
+    const trigger = screen.getByRole('button', { name: 'Pick a model' })
+    fireEvent.click(trigger)
+
+    const search = screen.getByRole('combobox', { name: 'Search models' })
+    const listbox = screen.getByRole('listbox', { name: 'Available models' })
+    expect(search).toHaveAttribute('aria-controls', listbox.id)
+    expect(search).toHaveAttribute('aria-expanded', 'true')
+    expect(search).toHaveAttribute('aria-autocomplete', 'list')
+    expect(document.getElementById(trigger.getAttribute('aria-controls')!)).toContainElement(search)
+    expect(within(listbox).queryByRole('button')).not.toBeInTheDocument()
+    expect(within(listbox).queryByRole('checkbox')).not.toBeInTheDocument()
+    expect(within(listbox).queryByRole('combobox')).not.toBeInTheDocument()
+    expect(within(listbox).getByRole('group', { name: 'OpenAI' })).toBeInTheDocument()
+    expect(within(listbox).getByRole('option', { name: /GPT Alpha/ })).toHaveAttribute('aria-selected', 'true')
+    expect(within(listbox).getByRole('option', { name: /Claude GPT Bridge/ })).toHaveAttribute('aria-disabled', 'true')
+    for (const option of within(listbox).getAllByRole('option')) expect(option).toHaveAttribute('tabindex', '-1')
+  })
+
+  it('uses arrows and Enter to choose an enabled model while focus stays in search', () => {
+    const onChange = vi.fn()
+    render(<ModelPicker value="" onChange={onChange} disabledValues={['anthropic/claude-gpt-bridge']} />)
+    const trigger = screen.getByRole('button', { name: 'Pick a model' })
+    fireEvent.click(trigger)
+    const search = screen.getByRole('combobox')
+    search.focus()
+
+    fireEvent.keyDown(search, { key: 'ArrowDown' })
+    const first = screen.getByRole('option', { name: /GPT Alpha/ })
+    expect(search).toHaveAttribute('aria-activedescendant', first.id)
+    expect(first).toHaveAttribute('aria-selected', 'true')
+    expect(search).toHaveFocus()
+    fireEvent.keyDown(search, { key: 'ArrowDown' })
+    const last = screen.getByRole('option', { name: /local\/same-name/ })
+    expect(search).toHaveAttribute('aria-activedescendant', last.id)
+    expect(first).toHaveAttribute('aria-selected', 'false')
+    fireEvent.keyDown(search, { key: 'ArrowUp' })
+    expect(search).toHaveAttribute('aria-activedescendant', first.id)
+    fireEvent.keyDown(search, { key: 'Enter' })
+
+    expect(onChange).toHaveBeenCalledExactlyOnceWith('openai/gpt-alpha')
+    expect(screen.queryByRole('combobox')).not.toBeInTheDocument()
+    expect(trigger).toHaveFocus()
+  })
+
+  it('skips collapsed groups and starts at the last option for ArrowUp', () => {
+    render(<ModelPicker value="" onChange={vi.fn()} />)
+    fireEvent.click(screen.getByRole('button', { name: 'Pick a model' }))
+    const disclosure = screen.getByRole('button', { name: /^Local/ })
+    fireEvent.click(disclosure)
+    expect(disclosure).toHaveAttribute('aria-expanded', 'false')
+    expect(document.getElementById(disclosure.getAttribute('aria-controls')!)).toHaveAttribute('hidden')
+    const search = screen.getByRole('combobox')
+    fireEvent.keyDown(search, { key: 'ArrowUp' })
+    expect(search).toHaveAttribute('aria-activedescendant', screen.getByRole('option', { name: /Claude GPT Bridge/ }).id)
+  })
+
+  it('clears active suggestions when searching and does not accept empty results', () => {
+    const onChange = vi.fn()
+    render(<ModelPicker value="" onChange={onChange} />)
+    fireEvent.click(screen.getByRole('button', { name: 'Pick a model' }))
+    const search = screen.getByRole('combobox')
+    fireEvent.keyDown(search, { key: 'ArrowDown' })
+    fireEvent.change(search, { target: { value: 'missing-model' } })
+    expect(search).not.toHaveAttribute('aria-activedescendant')
+    fireEvent.keyDown(search, { key: 'ArrowDown' })
+    fireEvent.keyDown(search, { key: 'Enter' })
+    expect(search).not.toHaveAttribute('aria-activedescendant')
+    expect(onChange).not.toHaveBeenCalled()
+    expect(within(screen.getByRole('listbox')).queryByText(/No models match/)).not.toBeInTheDocument()
+    expect(screen.getByText(/No models match/)).toBeInTheDocument()
+  })
+
+  it('leaves text editing and Tab keys to the browser', () => {
+    render(<ModelPicker value="" onChange={vi.fn()} />)
+    fireEvent.click(screen.getByRole('button', { name: 'Pick a model' }))
+    const search = screen.getByRole('combobox')
+    for (const key of ['Home', 'End', 'ArrowLeft', 'ArrowRight', 'Tab']) {
+      expect(fireEvent.keyDown(search, { key })).toBe(true)
+    }
+  })
+
+  it('drops an active option when refreshed configuration disables it', () => {
+    const onChange = vi.fn()
+    const { rerender } = render(<ModelPicker value="" onChange={onChange} />)
+    fireEvent.click(screen.getByRole('button', { name: 'Pick a model' }))
+    const search = screen.getByRole('combobox')
+    fireEvent.keyDown(search, { key: 'ArrowDown' })
+    expect(search).toHaveAttribute('aria-activedescendant')
+
+    rerender(<ModelPicker value="" onChange={onChange} disabledValues={models.map(model => model.fullId)} />)
+    expect(search).not.toHaveAttribute('aria-activedescendant')
+    fireEvent.keyDown(search, { key: 'ArrowDown' })
+    fireEvent.keyDown(search, { key: 'Enter' })
+    expect(search).not.toHaveAttribute('aria-activedescendant')
+    expect(onChange).not.toHaveBeenCalled()
+  })
+
+  it('keeps independent IDs when several model pickers are open', () => {
+    render(<><ModelPicker value="" onChange={vi.fn()} /><ModelPicker value="" onChange={vi.fn()} /></>)
+    for (const trigger of screen.getAllByRole('button', { name: 'Pick a model' })) fireEvent.click(trigger)
+    const searches = screen.getAllByRole('combobox')
+    expect(searches[0]!.getAttribute('aria-controls')).not.toBe(searches[1]!.getAttribute('aria-controls'))
+    for (const search of searches) {
+      fireEvent.keyDown(search, { key: 'ArrowDown' })
+      const listbox = document.getElementById(search.getAttribute('aria-controls')!)!
+      expect(listbox).toContainElement(document.getElementById(search.getAttribute('aria-activedescendant')!))
+    }
   })
 })

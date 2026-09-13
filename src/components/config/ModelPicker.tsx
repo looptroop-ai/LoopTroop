@@ -49,17 +49,25 @@ function getModelQueryErrorCopy(error: unknown): { trigger: string; detail: stri
   }
 }
 
-function ModelRow({ model, selected, disabled, onSelect }: {
+function ModelRow({ model, selected, disabled, onSelect, id, active }: {
   model: OpenCodeModel
   selected: boolean
   disabled?: boolean
   onSelect: () => void
+  id: string
+  active: boolean | undefined
 }) {
   const cost = costLabel(model.costInput)
   const showFullId = model.name !== model.fullId
   return (
     <button
       type="button"
+      id={id}
+      role="option"
+      aria-selected={active ?? selected}
+      aria-disabled={disabled || undefined}
+      tabIndex={-1}
+      onMouseDown={event => event.preventDefault()}
       onClick={onSelect}
       disabled={disabled}
       title={showFullId ? `${model.name} (${model.fullId})` : model.name}
@@ -67,6 +75,7 @@ function ModelRow({ model, selected, disabled, onSelect }: {
         'w-full text-left px-3 py-2.5 flex items-start gap-3 transition-colors',
         'hover:bg-accent focus:bg-accent outline-none',
         selected && 'bg-primary/8',
+        active && 'bg-accent',
         disabled && 'opacity-40 cursor-not-allowed hover:bg-transparent focus:bg-transparent',
       )}
     >
@@ -116,71 +125,6 @@ function ModelRow({ model, selected, disabled, onSelect }: {
   )
 }
 
-function ProviderGroup({
-  providerName,
-  models,
-  value,
-  disabledValues,
-  onChange,
-  onClose,
-  query
-}: {
-  providerName: string
-  models: OpenCodeModel[]
-  value: string
-  disabledValues: string[]
-  onChange: (id: string) => void
-  onClose: () => void
-  query: string
-}) {
-  const [isCollapsed, setIsCollapsed] = useState(false)
-  const hasQuery = query.trim().length > 0
-  const wasSearchingRef = useRef(false)
-
-  useEffect(() => {
-    if (hasQuery && !wasSearchingRef.current) {
-      setIsCollapsed(false)
-    }
-    wasSearchingRef.current = hasQuery
-  }, [hasQuery])
-
-
-  return (
-    <div>
-      <button
-        type="button"
-        aria-expanded={!isCollapsed}
-        className="sticky top-0 z-10 w-full bg-popover/95 backdrop-blur-sm px-3 py-1.5 flex items-center justify-between cursor-pointer hover:bg-muted/50 transition-colors select-none border-b border-border/40 text-left focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-inset"
-        onClick={() => setIsCollapsed(c => !c)}
-      >
-        <span className="text-[11px] font-semibold uppercase tracking-wider text-muted-foreground">
-          {providerName}
-          <span className="ml-1.5 font-normal normal-case opacity-60">
-            {models.length} {models.length === 1 ? 'model' : 'models'}
-          </span>
-        </span>
-        <ChevronDown className={cn('h-3.5 w-3.5 text-muted-foreground opacity-70 transition-transform', isCollapsed && '-rotate-90')} aria-hidden="true" />
-      </button>
-      {!isCollapsed && (
-        <div className="flex flex-col">
-          {models.map(m => (
-            <ModelRow
-              key={m.fullId}
-              model={m}
-              selected={m.fullId === value}
-              disabled={m.fullId !== value && disabledValues.includes(m.fullId)}
-              onSelect={() => {
-                onChange(m.fullId)
-                onClose()
-              }}
-            />
-          ))}
-        </div>
-      )}
-    </div>
-  )
-}
-
 export function ModelPicker({ value, onChange, placeholder = 'Search models…', disabledValues = [] }: ModelPickerProps) {
   const [isShowingAll, setIsShowingAll] = useState(false)
   const {
@@ -207,6 +151,10 @@ export function ModelPicker({ value, onChange, placeholder = 'Search models…',
   // Names this picker to the list it portals away; see `PORTAL_ATTRIBUTE`.
   const ownerId = useId()
   const [query, setQuery] = useState('')
+  const [collapsedProviders, setCollapsedProviders] = useState<string[]>([])
+  const [activeOptionId, setActiveOptionId] = useState<string>()
+  const popupId = `${ownerId}-popup`
+  const listboxId = `${ownerId}-models`
   const [isShowingOnlyFree, setIsShowingOnlyFree] = useState(false)
   const containerRef = useRef<HTMLDivElement>(null)
   const triggerRef = useRef<HTMLButtonElement>(null)
@@ -334,6 +282,34 @@ export function ModelPicker({ value, onChange, placeholder = 'Search models…',
     return Array.from(groups.entries())
   }, [filtered])
 
+  const activeId = grouped.some(([providerID, group]) =>
+    !collapsedProviders.includes(providerID) && group.models.some(model =>
+      `${ownerId}-option-${model.fullId}` === activeOptionId &&
+      (model.fullId === cleanValue || !cleanDisabledValues.includes(model.fullId))
+    )
+  ) ? activeOptionId : undefined
+
+  const handleSearchKeyDown = (event: ReactKeyboardEvent<HTMLInputElement>) => {
+    if (event.nativeEvent.isComposing || event.ctrlKey || event.metaKey || event.altKey) return
+    if (event.key === 'Enter' && activeId) {
+      event.preventDefault()
+      document.getElementById(activeId)?.click()
+      return
+    }
+    if (event.key !== 'ArrowDown' && event.key !== 'ArrowUp') return
+    event.preventDefault()
+    const options = Array.from(dropdownNodeRef.current?.querySelectorAll<HTMLElement>(
+      '[role="option"]:not([aria-disabled="true"])',
+    ) ?? []).filter(option => !option.closest('[hidden]'))
+    const index = options.findIndex(option => option.id === activeId)
+    const nextIndex = event.key === 'ArrowDown'
+      ? Math.min(index + 1, options.length - 1)
+      : index < 0 ? options.length - 1 : Math.max(index - 1, 0)
+    const option = options[nextIndex]
+    setActiveOptionId(option?.id)
+    option?.scrollIntoView({ block: 'nearest' })
+  }
+
   /**
    * Escape closes the list and nothing else. The list is portaled to `document.body`,
    * so an unstopped Escape carries on to the Configuration window's own document
@@ -354,10 +330,14 @@ export function ModelPicker({ value, onChange, placeholder = 'Search models…',
       <button
         ref={triggerRef}
         type="button"
-        aria-haspopup="listbox"
+        aria-controls={isOpen ? popupId : undefined}
         aria-expanded={isOpen}
         aria-label="Pick a model"
-        onClick={() => setIsOpen(v => !v)}
+        onClick={() => {
+          setIsOpen(v => !v)
+          setActiveOptionId(undefined)
+          setCollapsedProviders([])
+        }}
         className={cn(
           'w-full flex items-center gap-2 rounded-lg border border-input bg-background px-3 py-2.5',
           'text-sm text-left transition-colors',
@@ -396,8 +376,7 @@ export function ModelPicker({ value, onChange, placeholder = 'Search models…',
         <div
           ref={dropdownRef}
           {...{ [PORTAL_ATTRIBUTE]: ownerId }}
-          role="listbox"
-          aria-label="Available models"
+          id={popupId}
           className={cn(
             'rounded-lg border border-border bg-popover shadow-xl',
             'flex flex-col overflow-hidden',
@@ -410,8 +389,19 @@ export function ModelPicker({ value, onChange, placeholder = 'Search models…',
               <input
                 ref={inputRef}
                 type="search"
+                role="combobox"
+                aria-expanded={true}
+                aria-controls={listboxId}
+                aria-autocomplete="list"
+                aria-activedescendant={activeId}
+                onKeyDown={handleSearchKeyDown}
+                onBlur={() => setActiveOptionId(undefined)}
                 value={query}
-                onChange={e => setQuery(e.target.value)}
+                onChange={e => {
+                  if (!query.trim() && e.target.value.trim()) setCollapsedProviders([])
+                  setQuery(e.target.value)
+                  setActiveOptionId(undefined)
+                }}
                 placeholder="Search by name, provider, family…"
                 className="flex-1 bg-transparent text-sm outline-none placeholder:text-muted-foreground"
                 aria-label="Search models"
@@ -422,7 +412,7 @@ export function ModelPicker({ value, onChange, placeholder = 'Search models…',
                 <button
                   type="button"
                   aria-label="Clear search"
-                  onClick={() => setQuery('')}
+                  onClick={() => { setQuery(''); setActiveOptionId(undefined); inputRef.current?.focus() }}
                   className="text-muted-foreground hover:text-foreground text-xs"
                 >
                   ✕
@@ -438,6 +428,27 @@ export function ModelPicker({ value, onChange, placeholder = 'Search models…',
               />
               <span className="text-xs text-muted-foreground">Show free models only</span>
             </label>
+            <div className="flex flex-wrap gap-1 px-3 pb-2 max-h-24 overflow-y-auto">
+              {grouped.map(([providerID, { providerName, models: providerModels }]) => (
+                <button
+                  key={providerID}
+                  type="button"
+                  aria-expanded={!collapsedProviders.includes(providerID)}
+                  aria-controls={`${ownerId}-provider-${providerID}`}
+                  onClick={() => {
+                    setCollapsedProviders(current => current.includes(providerID)
+                      ? current.filter(id => id !== providerID)
+                      : [...current, providerID])
+                    setActiveOptionId(undefined)
+                  }}
+                  className="flex items-center gap-1 rounded border border-border px-2 py-1 text-xs text-muted-foreground hover:bg-accent focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+                >
+                  {providerName}
+                  <span className="opacity-60">{providerModels.length} {providerModels.length === 1 ? 'model' : 'models'}</span>
+                  <ChevronDown className={cn('h-3 w-3', collapsedProviders.includes(providerID) && '-rotate-90')} aria-hidden="true" />
+                </button>
+              ))}
+            </div>
           </div>
 
           {/* Results */}
@@ -466,21 +477,39 @@ export function ModelPicker({ value, onChange, placeholder = 'Search models…',
               </div>
             )}
 
-            {grouped.map(([providerID, { providerName, models: pModels }]) => (
-              <ProviderGroup
-                key={providerID}
-                providerName={providerName}
-                models={pModels}
-                value={cleanValue}
-                disabledValues={cleanDisabledValues}
-                onChange={onChange}
-                onClose={() => {
-                  setIsOpen(false)
-                  setQuery('')
-                }}
-                query={query}
-              />
-            ))}
+            <div id={listboxId} role="listbox" aria-label="Available models">
+              {grouped.map(([providerID, { providerName, models: providerModels }]) => (
+                <div
+                  key={providerID}
+                  id={`${ownerId}-provider-${providerID}`}
+                  role="group"
+                  aria-label={providerName}
+                  hidden={collapsedProviders.includes(providerID)}
+                >
+                  <div aria-hidden="true" className="sticky top-0 z-10 bg-popover/95 backdrop-blur-sm px-3 py-1.5 text-[11px] font-semibold uppercase tracking-wider text-muted-foreground border-b border-border/40">
+                    {providerName}
+                  </div>
+                  {providerModels.map(model => (
+                    <ModelRow
+                      key={model.fullId}
+                      id={`${ownerId}-option-${model.fullId}`}
+                      model={model}
+                      active={activeId ? activeId === `${ownerId}-option-${model.fullId}` : undefined}
+                      selected={model.fullId === cleanValue}
+                      disabled={model.fullId !== cleanValue && cleanDisabledValues.includes(model.fullId)}
+                      onSelect={() => {
+                        onChange(model.fullId)
+                        setIsOpen(false)
+                        setQuery('')
+                        setActiveOptionId(undefined)
+                        setCollapsedProviders([])
+                        triggerRef.current?.focus()
+                      }}
+                    />
+                  ))}
+                </div>
+              ))}
+            </div>
           </div>
 
           {/* Show all providers toggle */}

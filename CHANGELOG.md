@@ -10,7 +10,7 @@ Unreleased changes appear first and represent commits that have not yet been inc
 > Changes merged since the last versioned release that have not yet shipped in a tagged version.
 
 ### Summary
-- Model log tabs retain system milestones after reload.
+- Model log tabs retain system milestones after reload, and the model picker supports accessible search and keyboard selection.
 - Repeated model-output parsing reuses bounded cached results; YAML repair preserves literal text and retries conflicting duplicate values instead of discarding them.
 - Merges made on GitHub, including squash and rebase merges, now finish waiting tickets while the daemon runs, even when the UI is closed.
 - Toasts and progress rings use stable identifiers; saved UI and Manual QA actions use cryptographic IDs, including over HTTP LAN connections.
@@ -251,6 +251,7 @@ Unreleased changes appear first and represent commits that have not yet been inc
 - Three aliases re-exported for a question-diff type that no longer exists, the three helpers behind them, an execution-setup runtime-path list with no reader, and an execution-setup barrel re-exporting three artifact names every caller already imports from their own module.
 
 ### Fixed
+- The model picker exposes a combobox with grouped model options. Provider-collapse controls sit above the results; arrow keys move through available models, Enter selects, and Escape returns focus to the picker button.
 - AI and model history queries include model-attributed system milestones alongside AI detail rows, with matching pagination, totals, and exports. The live log context preserves the same rows when loading AI history.
 - YAML duplicate-key repair removes entries only when their complete contents match. Conflicting block scalars, nested mappings and multiline values remain invalid for the existing correction/retry flow. Removed scalars consume blank gaps without dropping external comments; retained bodies keep repeated literal lines, and malformed continuation after a dedented comment stays invalid.
 - Closed YAML flow values such as `[EPIC-1]` and `{owner: model}` no longer disable unrelated duplicate-key or nested-mapping repairs. Ordinary blank separators remain outside duplicate entries; scalar whitespace keeps its meaning, and malformed continuations are left untouched.

@@ -120,10 +120,9 @@ export function useTicketHistoricalLogs(ticketId: string | undefined, scope: His
       }
       return page
     },
-    // History is only fetched toward older cursors via fetchPreviousPage.
-    // React Query still requires this callback to calculate result metadata.
-    getNextPageParam: () => undefined,
-    getPreviousPageParam: firstPage => firstPage.hasOlder ? firstPage.olderCursor ?? undefined : undefined,
+    // Keep the newest page first so native refetch starts there, then follows
+    // fresh older cursors through the loaded page count.
+    getNextPageParam: lastPage => lastPage.hasOlder ? lastPage.olderCursor ?? undefined : undefined,
     staleTime: QUERY_STALE_TIME_30S,
   })
 
@@ -133,16 +132,14 @@ export function useTicketHistoricalLogs(ticketId: string | undefined, scope: His
     // re-emitting `milestone:<phase>:started` used to collapse two archived attempts
     // into one row; and a row re-emitted under a fresh id is still the same row.
     //
-    // Read in the order React Query holds the pages, which is oldest page first:
-    // `fetchPreviousPage` prepends. Walking them backwards let an older page's copy
-    // overwrite the newer one, so an entry whose append and later finalize fell on
-    // opposite sides of a page boundary showed the unfinished text.
+    // Fold oldest pages first, reversing the cache's newest-first page order.
+    // This lets a newer finalize replace an older append across page boundaries.
     // One slot per row, with every alias pointing at the slot rather than at the row, so
     // a row that arrives under a second alias updates the slot instead of leaving the
     // first alias holding the copy from before the merge.
     const rows: LogEntry[] = []
     const slotByAlias = new Map<string, number>()
-    for (const page of query.data?.pages ?? []) {
+    for (const page of (query.data?.pages ?? []).toReversed()) {
       for (const entry of page.entries) {
         const aliases = getLogEntryAliases(entry)
         const slot = aliases.map(alias => slotByAlias.get(alias)).find((value): value is number => value !== undefined)
@@ -189,28 +186,28 @@ export function useTicketHistoricalLogs(ticketId: string | undefined, scope: His
     return response.text()
   }, [scope, ticketId])
 
-  const fetchPreviousPage = query.fetchPreviousPage
+  const fetchNextPage = query.fetchNextPage
   /**
    * Walks every older page in one go. Callers pass `isCancelled` and flip it when the
    * scope they started the walk for is gone — a different bead, a different attempt, an
    * unmounted panel — because the loop otherwise keeps paging into a query that is no
    * longer on screen, and the last page to land wins.
    *
-   * Depends on `fetchPreviousPage` alone so it keeps one identity for the life of the
-   * query. Listing `hasPreviousPage` rebuilt it on every page, and a caller that holds
+   * Depends on `fetchNextPage` alone so it keeps one identity for the life of the
+   * query. Listing `hasNextPage` rebuilt it on every page, and a caller that holds
    * it in an effect dependency then cancels and restarts its own walk mid-flight — which
    * is how a failure ends up looking like a cancellation and never latches. The entry
-   * condition is gone with it: `fetchPreviousPage` on a query with no older page is a
-   * no-op that reports `hasPreviousPage: false`, and both callers already gate on it.
+   * condition is gone with it: `fetchNextPage` on a query with no older page is a
+   * no-op that reports `hasNextPage: false`, and both callers already gate on it.
    */
   const fetchAllOlder = useCallback(async (isCancelled?: () => boolean): Promise<void> => {
     for (;;) {
       if (isCancelled?.()) return
-      const result = await fetchPreviousPage()
+      const result = await fetchNextPage()
       if (result.isError) throw result.error
-      if (isCancelled?.() || !result.hasPreviousPage) return
+      if (isCancelled?.() || !result.hasNextPage) return
     }
-  }, [fetchPreviousPage])
+  }, [fetchNextPage])
 
   useEffect(() => {
     if (!ticketId || !enabled) return
@@ -229,10 +226,10 @@ export function useTicketHistoricalLogs(ticketId: string | undefined, scope: His
     totalEntries: countPage?.totalEntries ?? null,
     totalTextLines: countPage?.totalTextLines ?? null,
     modelIds: modelCatalog.data ?? null,
-    fetchOlder: query.fetchPreviousPage,
+    fetchOlder: query.fetchNextPage,
     fetchAllOlder,
-    hasOlder: query.hasPreviousPage,
-    isFetchingOlder: query.isFetchingPreviousPage,
+    hasOlder: query.hasNextPage,
+    isFetchingOlder: query.isFetchingNextPage,
     exportLogs,
   }
 }

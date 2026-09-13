@@ -106,7 +106,7 @@ describe('useTicketHistoricalLogs', () => {
     expect(result.current.entries).toEqual([])
   })
 
-  it('requests 20 newest rows, then pages upward in batches of 250 with the returned cursor', async () => {
+  it('refreshes loaded history from the newest page with fresh cursors, totals, and models', async () => {
     const fetchSpy = vi.spyOn(globalThis, 'fetch')
       .mockImplementationOnce(() => createJsonResponse({
         entries: [{ phase: 'CODING', entryId: 'new', content: 'new', timestamp: '2026-03-10T00:00:02.000Z' }],
@@ -123,10 +123,19 @@ describe('useTicketHistoricalLogs', () => {
       }))
       .mockImplementationOnce(() => createJsonResponse({
         entries: [{ phase: 'CODING', entryId: 'recovered', content: 'recovered', timestamp: '2026-03-10T00:00:03.000Z' }],
-        olderCursor: 'cursor-older',
+        olderCursor: 'fresh-older',
         hasOlder: true,
         totalEntries: 2001,
         totalTextLines: 4822,
+        modelIds: ['provider/archived-model', 'provider/new-model'],
+      }))
+      .mockImplementationOnce(() => createJsonResponse({
+        entries: [
+          { phase: 'CODING', entryId: 'old', content: 'old', timestamp: '2026-03-10T00:00:01.000Z' },
+          { phase: 'CODING', entryId: 'new', content: 'new', timestamp: '2026-03-10T00:00:02.000Z' },
+        ],
+        olderCursor: null,
+        hasOlder: false,
       }))
     const { result } = renderHistoricalLogs({ scope: 'phase', phase: 'CODING', phaseAttempt: 2, view: 'overview', })
 
@@ -149,8 +158,19 @@ describe('useTicketHistoricalLogs', () => {
     )
 
     act(() => window.dispatchEvent(new CustomEvent(SERVER_LOG_REFRESH_EVENT, { detail: { ticketId: 'ticket-1' } })))
-    await waitFor(() => expect(fetchSpy).toHaveBeenCalledTimes(3))
-    await waitFor(() => expect(result.current.entries.map(entry => entry.entryId)).toEqual(['recovered']))
+    await waitFor(() => expect(fetchSpy).toHaveBeenCalledTimes(4))
+    expect(fetchSpy).toHaveBeenNthCalledWith(3,
+      '/api/tickets/ticket-1/logs?scope=phase&view=overview&limit=20&phase=CODING&phaseAttempt=2',
+      expect.objectContaining({ signal: expect.any(AbortSignal) }),
+    )
+    expect(fetchSpy).toHaveBeenNthCalledWith(4,
+      '/api/tickets/ticket-1/logs?scope=phase&view=overview&limit=250&phase=CODING&phaseAttempt=2&before=fresh-older',
+      expect.objectContaining({ signal: expect.any(AbortSignal) }),
+    )
+    await waitFor(() => expect(result.current.entries.map(entry => entry.entryId)).toEqual(['old', 'new', 'recovered']))
+    expect(result.current.modelIds).toEqual(['provider/archived-model', 'provider/new-model'])
+    expect(result.current.data?.pages).toHaveLength(2)
+    expect(result.current.hasOlder).toBe(false)
     expect(result.current.totalEntries).toBe(2001)
     expect(result.current.totalTextLines).toBe(4822)
   })
@@ -177,10 +197,7 @@ describe('useTicketHistoricalLogs', () => {
     await waitFor(() => expect(result.current.hasOlder).toBe(true))
     await act(async () => { await result.current.fetchAllOlder() })
 
-    // None of these rows carries a timestamp, so the sort leaves them in the order they
-    // were folded. That order is now the order the pages are held in — oldest first —
-    // where it used to be the reverse, which listed undated history newest-first inside
-    // a log that reads downwards.
+    // Undated rows must retain the oldest-first fold order, regardless of cache order.
     await waitFor(() => expect(result.current.entries.map(entry => entry.entryId)).toEqual(['old', 'middle', 'new']))
     expect(fetchSpy).toHaveBeenNthCalledWith(
       2,
@@ -260,8 +277,7 @@ describe('useTicketHistoricalLogs', () => {
     await act(async () => { await result.current.fetchAllOlder() })
     await waitFor(() => expect(result.current.data?.pages.length).toBe(2))
 
-    // React Query prepends older pages, so folding them backwards let the unfinished
-    // append overwrite the finalize that had already been fetched.
+    // Folding oldest first prevents the unfinished append from replacing the finalize.
     expect(result.current.entries).toHaveLength(1)
     expect(result.current.entries[0]?.line).toContain('the finished answer')
     // ...and the row still reads from when it started, the way the live overlay merges
@@ -332,7 +348,7 @@ describe('useTicketHistoricalLogs', () => {
   })
 
   it('keeps one identity while it pages, so a caller can own a walk across it', async () => {
-    // The second page is the last one, so `hasPreviousPage` flips true -> false. That
+    // The second page is the last one, so `hasOlder` flips true -> false. That
     // flip is what used to rebuild the callback.
     vi.spyOn(globalThis, 'fetch')
       .mockImplementationOnce(() => createJsonResponse({

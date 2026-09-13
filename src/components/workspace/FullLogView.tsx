@@ -439,7 +439,7 @@ export function FullLogView({ ticket }: FullLogViewProps) {
   // the bead drain does: released when the walk's scope goes away, so it stops rather
   // than paging into a query nobody is looking at.
   //
-  // The scope is the whole history query, not just the ticket. `fetchPreviousPage` is
+  // The scope is the whole history query, not just the ticket. `fetchOlder` is
   // bound to the observer, so it follows whichever query the observer holds — switch to
   // DEBUG or a model tab mid-walk and the remaining pages land against the new tab.
   const topNavigationOwnerRef = useRef({ cancelled: false })

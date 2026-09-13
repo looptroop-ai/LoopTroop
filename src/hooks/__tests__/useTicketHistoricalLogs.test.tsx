@@ -18,6 +18,56 @@ function renderHistoricalLogs(scope: HistoricalLogScope) {
 describe('useTicketHistoricalLogs', () => {
   afterEach(() => vi.restoreAllMocks())
 
+  it('keeps newer model metadata when revisiting and paging an older cached filter', async () => {
+    vi.spyOn(globalThis, 'fetch').mockImplementation(input => {
+      const url = new URL(String(input), 'http://localhost')
+      if (url.searchParams.has('before')) return createJsonResponse({ entries: [], hasOlder: false, olderCursor: null })
+      const modelIds = url.searchParams.get('view') === 'ai' ? ['provider/a', 'provider/b'] : ['provider/a']
+      return createJsonResponse({ entries: [], hasOlder: true, olderCursor: 'older', modelIds })
+    })
+    const client = createTestQueryClient()
+    const { result, rerender } = renderHook(
+      ({ view }: { view: HistoricalLogScope['view'] }) => useTicketHistoricalLogs('ticket-1', { scope: 'lifecycle', view }),
+      { initialProps: { view: 'overview' }, wrapper: ({ children }: { children: ReactNode }) => <QueryClientProvider client={client}>{children}</QueryClientProvider> },
+    )
+    await waitFor(() => expect(result.current.modelIds).toEqual(['provider/a']))
+    rerender({ view: 'ai' })
+    await waitFor(() => expect(result.current.modelIds).toEqual(['provider/a', 'provider/b']))
+    rerender({ view: 'overview' })
+    expect(result.current.modelIds).toEqual(['provider/a', 'provider/b'])
+    await act(async () => { await result.current.fetchOlder() })
+    expect(result.current.modelIds).toEqual(['provider/a', 'provider/b'])
+  })
+
+  it('retains complete model metadata across filter loading and resets it for another scope', async () => {
+    const models = ['provider/older-model', 'provider/newer-model']
+    let finishModelPage: (response: Response) => void = () => {}
+    vi.spyOn(globalThis, 'fetch').mockImplementation(input => {
+      const url = new URL(String(input), 'http://localhost')
+      if (url.searchParams.get('phaseAttempt') === '2') return new Promise(() => {})
+      if (url.searchParams.has('modelId')) return new Promise(resolve => { finishModelPage = resolve })
+      return createJsonResponse({ entries: [], hasOlder: false, olderCursor: null, modelIds: models })
+    })
+    const client = createTestQueryClient()
+    const { result, rerender } = renderHook(
+      ({ scope }: { scope: HistoricalLogScope }) => useTicketHistoricalLogs('ticket-1', scope),
+      {
+        initialProps: { scope: { scope: 'phase', phase: 'CODING', phaseAttempt: 1, view: 'overview' } },
+        wrapper: ({ children }: { children: ReactNode }) => <QueryClientProvider client={client}>{children}</QueryClientProvider>,
+      },
+    )
+    await waitFor(() => expect(result.current.modelIds).toEqual(models))
+    rerender({ scope: { scope: 'phase', phase: 'CODING', phaseAttempt: 1, view: 'ai', modelId: models[0] } })
+    expect(result.current.isLoading).toBe(true)
+    expect(result.current.modelIds).toEqual(models)
+    await act(async () => { finishModelPage(await createJsonResponse({ entries: [], hasOlder: false, olderCursor: null, modelIds: models })) })
+    await waitFor(() => expect(result.current.isLoading).toBe(false))
+    expect(result.current.modelIds).toEqual(models)
+    rerender({ scope: { scope: 'phase', phase: 'CODING', phaseAttempt: 2, view: 'ai', modelId: models[0] } })
+    expect(result.current.modelIds).toBeNull()
+    expect(result.current.entries).toEqual([])
+  })
+
   it('requests 20 newest rows, then pages upward in batches of 250 with the returned cursor', async () => {
     const fetchSpy = vi.spyOn(globalThis, 'fetch')
       .mockImplementationOnce(() => createJsonResponse({
@@ -26,6 +76,7 @@ describe('useTicketHistoricalLogs', () => {
         hasOlder: true,
         totalEntries: 2000,
         totalTextLines: 4821,
+        modelIds: ['provider/archived-model'],
       }))
       .mockImplementationOnce(() => createJsonResponse({
         entries: [{ phase: 'CODING', entryId: 'old', content: 'old', timestamp: '2026-03-10T00:00:01.000Z' }],
@@ -52,6 +103,7 @@ describe('useTicketHistoricalLogs', () => {
 
     await act(async () => { await result.current.fetchOlder() })
     await waitFor(() => expect(result.current.entries.map(entry => entry.entryId)).toEqual(['old', 'new']))
+    expect(result.current.modelIds).toEqual(['provider/archived-model'])
     expect(fetchSpy).toHaveBeenNthCalledWith(
       2,
       '/api/tickets/ticket-1/logs?scope=phase&view=overview&limit=250&phase=CODING&phaseAttempt=2&before=cursor-older',

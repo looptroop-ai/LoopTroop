@@ -249,6 +249,80 @@ beforeEach(() => {
 })
 
 describe('PhaseLogPanel', () => {
+  it('retains historical model tabs while a model page loads and resets them for a new attempt', async () => {
+    const modelIds = ['provider/model-a', 'provider/model-b']
+    let resolveModel!: (response: Response) => void
+    const modelResponse = new Promise<Response>(resolve => { resolveModel = resolve })
+    const fetchSpy = vi.spyOn(globalThis, 'fetch').mockImplementation(input => {
+      const params = new URL(String(input), 'http://localhost').searchParams
+      if (params.get('phaseAttempt') === '2') {
+        return createJsonResponse({
+          entries: params.has('modelId') ? [] : [{ phase: 'CODING', entryId: 'second-attempt', content: 'Second attempt overview.' }],
+          modelIds: [], olderCursor: null, hasOlder: false,
+        })
+      }
+      if (params.has('modelId')) return modelResponse
+      return createJsonResponse({ entries: [], modelIds, olderCursor: 'older-models', hasOlder: true })
+    })
+    try {
+      const rendered = renderWithTooltipProvider(<PhaseLogPanel phase="CODING" phaseAttempt={1} ticket={makeTicket()} />)
+      fireEvent.click(await screen.findByRole('button', { name: 'Show models' }))
+      fireEvent.click(screen.getByTitle(/^provider\/model-a ·/))
+      await waitFor(() => expect(fetchSpy).toHaveBeenCalledTimes(2))
+      expect(screen.getByTitle(/^provider\/model-a ·/)).toHaveClass('bg-primary')
+      expect(screen.getByTitle(/^provider\/model-b ·/)).toBeInTheDocument()
+      expect(new URL(String(fetchSpy.mock.calls[1]![0]), 'http://localhost').searchParams.get('modelId')).toBe(modelIds[0])
+
+      await act(async () => resolveModel(await createJsonResponse({
+        entries: [{ phase: 'CODING', entryId: 'model-a-row', source: 'model:provider/model-a', modelId: modelIds[0], audience: 'ai', kind: 'text', content: 'Historical model answer.' }],
+        modelIds, olderCursor: null, hasOlder: false,
+      })))
+      expect(await screen.findByText('Historical model answer.')).toBeInTheDocument()
+      expect(screen.getByTitle(/^provider\/model-a ·/)).toHaveClass('bg-primary')
+      expect(screen.getByTitle(/^provider\/model-b ·/)).toBeInTheDocument()
+      expect(fetchSpy).toHaveBeenCalledTimes(2)
+
+      rendered.rerender(<PhaseLogPanel phase="CODING" phaseAttempt={2} ticket={makeTicket()} />)
+      expect(await screen.findByText('Second attempt overview.')).toBeInTheDocument()
+      expect(screen.queryByTitle(/^provider\/model-a ·/)).not.toBeInTheDocument()
+      const lastQuery = new URL(String(fetchSpy.mock.lastCall![0]), 'http://localhost').searchParams
+      expect(lastQuery.get('phaseAttempt')).toBe('2')
+      expect(lastQuery.get('view')).toBe('overview')
+      expect(lastQuery.has('modelId')).toBe(false)
+      expect(fetchSpy).toHaveBeenCalledTimes(4)
+    } finally {
+      fetchSpy.mockRestore()
+    }
+  })
+
+  it('normalizes an unavailable default model before subsequent history and export requests', async () => {
+    const fetchSpy = vi.spyOn(globalThis, 'fetch').mockImplementation(input => {
+      const url = new URL(String(input), 'http://localhost')
+      if (url.pathname.endsWith('/logs/export')) return Promise.resolve(new Response('Complete overview history.'))
+      return createJsonResponse({
+        entries: url.searchParams.has('modelId') ? [] : [{ phase: 'CODING', entryId: 'overview', content: 'Overview after model fallback.' }],
+        modelIds: ['provider/model-a', 'provider/model-b'], olderCursor: null, hasOlder: false,
+      })
+    })
+    try {
+      renderWithTooltipProvider(<PhaseLogPanel phase="CODING" ticket={makeTicket()} defaultTab="provider/removed-model" />)
+      expect(await screen.findByText('Overview after model fallback.')).toBeInTheDocument()
+      expect(fetchSpy).toHaveBeenCalledTimes(2)
+      fireEvent.click(screen.getByRole('button', { name: 'Copy all logs' }))
+      await waitFor(() => expect(writeTextMock).toHaveBeenCalledWith('Complete overview history.'))
+      const urls = fetchSpy.mock.calls.map(([input]) => new URL(String(input), 'http://localhost'))
+      expect(urls[0]!.searchParams.get('modelId')).toBe('provider/removed-model')
+      expect(urls.at(-1)!.pathname).toContain('/logs/export')
+      for (const url of urls.slice(1)) {
+        expect(url.searchParams.get('view')).toBe('overview')
+        expect(url.searchParams.has('modelId')).toBe(false)
+      }
+      expect(fetchSpy).toHaveBeenCalledTimes(3)
+    } finally {
+      fetchSpy.mockRestore()
+    }
+  })
+
   it('shows lazy AI details without changing the visible entry count', async () => {
     const aiLog = makeLog('ai-1', '[MODEL] Done', {
       source: 'model:openai/gpt-5.4',

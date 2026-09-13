@@ -196,13 +196,13 @@ export function FullLogView({ ticket }: FullLogViewProps) {
   }, [ticket?.lockedCouncilMembers])
 
   const detectedModelIds = useMemo(() => {
-    const ids = new Set<string>()
+    const ids = new Set<string>(ticket?.id ? historicalLogs.modelIds ?? [] : [])
     for (const entry of combinedLogs) {
       const modelId = getEntryFullModelId(entry)
       if (modelId) ids.add(modelId)
     }
     return Array.from(ids)
-  }, [combinedLogs])
+  }, [combinedLogs, historicalLogs.modelIds, ticket?.id])
   const observedModelVariants = useMemo(() => {
     const variants = new Map<string, string>()
     for (const entry of combinedLogs) {
@@ -245,6 +245,9 @@ export function FullLogView({ ticket }: FullLogViewProps) {
     : singleModelTabId && activeTab === singleModelTabId
       ? 'AI'
       : 'ALL'
+  if (ticket?.id && historicalLogs.modelIds !== null && effectiveTab !== activeTab) {
+    setActiveTab(effectiveTab)
+  }
   const aiDetailsModelId = isAiLogTab(effectiveTab) && effectiveTab !== 'AI' ? effectiveTab : undefined
   const showAiDetails = Boolean(ticket?.id) && isAiLogTab(effectiveTab)
   const aiDetailsRequest = useMemo(() => ({

@@ -291,11 +291,30 @@ export async function queryLogPage(ticketId: string, query: LogPageQuery) {
   if (!storage) return null
   const { context, sqlite } = storage
   const before = decodeCursor(query.before)
+  const shouldIncludeTotals = query.includeTotals !== false && before === null
   const clauses = ['ticket_id = ?']
   const params: SQLInputValue[] = [context.localTicketId]
   if (query.scope === 'phase' && query.phase) { clauses.push('phase = ?'); params.push(query.phase) }
   if (typeof query.phaseAttempt === 'number') { clauses.push('phase_attempt = ?'); params.push(query.phaseAttempt) }
   if (query.beadId) { clauses.push('bead_id = ?'); params.push(query.beadId) }
+  let modelIds: string[] | undefined
+  if (shouldIncludeTotals) {
+    // Tabs describe the whole scope, even when the selected view or model has
+    // no rows on this page. Use the same explicit-id precedence as model rows.
+    const modelSql = `
+      SELECT DISTINCT COALESCE(NULLIF(model_id, ''), substr(json_extract(entry_json, '$.source'), 7)) AS full_model_id
+      FROM execution_log_projection
+      WHERE ${clauses.join(' AND ')} AND channel = 'normal' AND classification != 'debug'
+        AND (COALESCE(model_id, '') != '' OR json_extract(entry_json, '$.source') GLOB 'model:?*')
+      ORDER BY full_model_id
+    `
+    let modelStatement = storage.statements.queryPages.get(modelSql)
+    if (!modelStatement) {
+      modelStatement = sqlite.prepare(modelSql)
+      storage.statements.queryPages.set(modelSql, modelStatement)
+    }
+    modelIds = (modelStatement.all(...params) as Array<{ full_model_id: string }>).map(row => row.full_model_id)
+  }
   if (query.view === 'debug') { clauses.push("channel = 'debug'") }
   else { clauses.push("channel = 'normal'") }
   // The overview backs the ALL tab. Apply its visible-row rules before LIMIT
@@ -338,7 +357,6 @@ export async function queryLogPage(ticketId: string, query: LogPageQuery) {
     ))`)
     params.push(query.modelId, `model:${query.modelId}`)
   }
-  const shouldIncludeTotals = query.includeTotals !== false && before === null
   const countWhere = clauses.join(' AND ')
   const countSql = `
     SELECT
@@ -396,6 +414,7 @@ export async function queryLogPage(ticketId: string, query: LogPageQuery) {
     ...(counts ? {
       totalEntries: counts.total_entries,
       totalTextLines: counts.total_text_lines,
+      modelIds,
     } : {}),
   }
 }

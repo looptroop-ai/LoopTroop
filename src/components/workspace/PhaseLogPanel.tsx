@@ -260,13 +260,13 @@ export function PhaseLogPanel({
   // Detect model IDs through the same identity the tab filter uses, so every tab this
   // builds has rows behind it.
   const detectedModelIds = useMemo(() => {
-    const ids = new Set<string>()
+    const ids = new Set<string>(shouldLoadHistoricalLogs ? historicalLogs.modelIds ?? [] : [])
     for (const entry of phaseLogs) {
       const modelId = getEntryFullModelId(entry)
       if (modelId) ids.add(modelId)
     }
     return Array.from(ids)
-  }, [phaseLogs])
+  }, [historicalLogs.modelIds, phaseLogs, shouldLoadHistoricalLogs])
   const observedModelVariants = useMemo(() => {
     const variants = new Map<string, string>()
     for (const entry of phaseLogs) {
@@ -312,6 +312,11 @@ export function PhaseLogPanel({
     : singleModelTabId && activeTab === singleModelTabId
       ? 'AI'
       : 'ALL'
+  // Scope-wide metadata survives filter changes, so correcting an unavailable tab
+  // also corrects the history/export query without the selected model erasing itself.
+  if (shouldLoadHistoricalLogs && historicalLogs.modelIds !== null && effectiveTab !== activeTab) {
+    setActiveTab(effectiveTab)
+  }
   const filteredLogs = filterEntries(phaseLogs, effectiveTab)
   const shouldShowModelNameInLogTags = effectiveTab === 'ALL' || effectiveTab === 'AI'
   const aiDetailsModelId = isAiLogTab(effectiveTab) && effectiveTab !== 'AI' ? effectiveTab : undefined

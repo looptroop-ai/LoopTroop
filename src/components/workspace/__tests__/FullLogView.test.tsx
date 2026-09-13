@@ -183,6 +183,55 @@ beforeEach(() => {
 })
 
 describe('FullLogView', () => {
+  it('keeps older models available while narrowed history loads and clears a stale model on ticket changes', async () => {
+    const modelIds = ['provider/model-a', 'provider/model-b']
+    let resolveModel!: (response: Response) => void
+    const modelResponse = new Promise<Response>(resolve => { resolveModel = resolve })
+    const fetchSpy = vi.spyOn(globalThis, 'fetch').mockImplementation(input => {
+      const url = new URL(String(input), 'http://localhost')
+      if (url.pathname.includes('/second-ticket/')) {
+        return createJsonResponse({
+          entries: url.searchParams.has('modelId') ? [] : [{ phase: 'CODING', entryId: 'second-ticket', content: 'Second ticket overview.' }],
+          modelIds: [], olderCursor: null, hasOlder: false,
+        })
+      }
+      if (url.searchParams.has('modelId')) return modelResponse
+      return createJsonResponse({
+        entries: [{ phase: 'CODING', entryId: 'latest', source: 'model:provider/model-a', modelId: modelIds[0], content: 'Latest model milestone.' }],
+        modelIds, olderCursor: 'older-models', hasOlder: true,
+      })
+    })
+    try {
+      const rendered = await renderWithTooltipProvider(<FullLogView ticket={makeTicket()} />)
+      fireEvent.click(screen.getByRole('button', { name: 'Show models' }))
+      fireEvent.click(screen.getByTitle(/^provider\/model-a ·/))
+      await waitFor(() => expect(fetchSpy).toHaveBeenCalledTimes(2))
+      expect(screen.getByTitle(/^provider\/model-a ·/)).toHaveClass('bg-primary')
+      expect(screen.getByTitle(/^provider\/model-b ·/)).toBeInTheDocument()
+      expect(new URL(String(fetchSpy.mock.calls[1]![0]), 'http://localhost').searchParams.get('modelId')).toBe(modelIds[0])
+
+      await act(async () => resolveModel(await createJsonResponse({
+        entries: [{ phase: 'CODING', entryId: 'model-a-history', source: 'model:provider/model-a', modelId: modelIds[0], audience: 'ai', kind: 'text', content: 'Historical model answer.' }],
+        modelIds, olderCursor: null, hasOlder: false,
+      })))
+      expect(await screen.findByText('Historical model answer.')).toBeInTheDocument()
+      expect(screen.getByTitle(/^provider\/model-a ·/)).toHaveClass('bg-primary')
+      expect(screen.getByTitle(/^provider\/model-b ·/)).toBeInTheDocument()
+      expect(fetchSpy).toHaveBeenCalledTimes(2)
+
+      rendered.rerender(<FullLogView ticket={makeTicket({ id: 'second-ticket' })} />)
+      expect(await screen.findByText('Second ticket overview.')).toBeInTheDocument()
+      expect(screen.queryByTitle(/^provider\/model-a ·/)).not.toBeInTheDocument()
+      const lastQuery = new URL(String(fetchSpy.mock.lastCall![0]), 'http://localhost')
+      expect(lastQuery.pathname).toContain('/second-ticket/logs')
+      expect(lastQuery.searchParams.get('view')).toBe('overview')
+      expect(lastQuery.searchParams.has('modelId')).toBe(false)
+      expect(fetchSpy).toHaveBeenCalledTimes(4)
+    } finally {
+      fetchSpy.mockRestore()
+    }
+  })
+
   it('loads lifecycle AI details only after its panel is opened', async () => {
     getAllLogsMock.mockReturnValue([
       makeLog('ai-1', '[MODEL] Done', 'CODING', {

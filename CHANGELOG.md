@@ -10,7 +10,7 @@ Unreleased changes appear first and represent commits that have not yet been inc
 > Changes merged since the last versioned release that have not yet shipped in a tagged version.
 
 ### Summary
-- Model log tabs retain system milestones after reload; model selection and setup disclosures are accessible, and refused clipboard copies show a visible error.
+- Model log tabs stay available across filters and retain milestones after reload; model selection and setup disclosures are accessible, and refused clipboard copies show a visible error.
 - Repeated model-output parsing reuses bounded cached results; YAML repair preserves literal text and retries conflicting duplicate values instead of discarding them.
 - Merges made on GitHub, including squash and rebase merges, now finish waiting tickets while the daemon runs, even when the UI is closed.
 - Toasts and progress rings use stable identifiers; saved UI and Manual QA actions use cryptographic IDs, including over HTTP LAN connections.
@@ -251,6 +251,7 @@ Unreleased changes appear first and represent commits that have not yet been inc
 - Three aliases re-exported for a question-diff type that no longer exists, the three helpers behind them, an execution-setup runtime-path list with no reader, and an execution-setup barrel re-exporting three artifact names every caller already imports from their own module.
 
 ### Fixed
+- Phase and Full Log tabs use complete model metadata for their history scope, including models found only on older pages. Unavailable selections reset both the displayed tab and its history/export query; cached filters cannot replace newer model metadata, and switching scope clears it.
 - Copy buttons for ticket details, paths, artifacts, individual log rows, bead logs, and sign-in instructions show `Copy failed` when clipboard access is refused. The message remains until a retry succeeds. Execution-setup step disclosures expose their expanded state to assistive technology.
 - The model picker exposes a combobox with grouped model options. Provider-collapse controls sit above the results; arrow keys move through available models, Enter selects, and Escape returns focus to the picker button.
 - AI and model history queries include model-attributed system milestones alongside AI detail rows, with matching pagination, totals, and exports. The live log context preserves the same rows when loading AI history.

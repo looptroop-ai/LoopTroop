@@ -4,7 +4,7 @@ import { appendFileSync } from 'node:fs'
 import { clearProjectDatabaseCache } from '../../db/project'
 import { sqlite } from '../../db/index'
 import { appendLogEvent } from '../../log/executionLog'
-import { exportLogEntries } from '../../log/projection'
+import { exportLogEntries, queryLogPage } from '../../log/projection'
 import { ticketRouter } from '../tickets'
 import { health } from '../health'
 import { createInitializedTestTicket, createTestRepoManager, resetTestDb } from '../../test/integration'
@@ -321,5 +321,42 @@ describe('ticket log projection API', () => {
     expect(aiExport?.map(entry => entry.content)).toEqual([
       'model milestone', 'model output', 'source milestone', 'session milestone', 'opencode milestone', 'other model',
     ])
+  })
+
+  it('lists all scoped models independently of the selected view, model, and newest page', async () => {
+    const { ticket } = await createInitializedTestTicket(repoManager)
+    const { ticket: otherTicket } = await createInitializedTestTicket(repoManager)
+    const scope = { audience: 'all', kind: 'milestone', phaseAttempt: 2, beadId: 'bead-1' }
+    appendLogEvent(ticket.id, 'info', 'CODING', 'older explicit model', { ...scope, modelId: 'test/a' }, 'model:test/ignored-source', 'CODING')
+    appendLogEvent(ticket.id, 'info', 'CODING', 'older source model', { ...scope, modelId: '' }, 'model:test/b', 'CODING')
+    appendLogEvent(ticket.id, 'info', 'CODING', 'empty source model', scope, 'model:', 'CODING')
+    appendLogEvent(ticket.id, 'info', 'CODING', 'other attempt', { ...scope, phaseAttempt: 1, modelId: 'test/attempt' }, 'system', 'CODING')
+    appendLogEvent(ticket.id, 'info', 'CODING', 'other bead', { ...scope, beadId: 'bead-2', modelId: 'test/bead' }, 'system', 'CODING')
+    appendLogEvent(ticket.id, 'info', 'RUNNING_FINAL_TEST', 'other phase', { ...scope, modelId: 'test/phase' }, 'system', 'RUNNING_FINAL_TEST')
+    appendLogEvent(otherTicket.id, 'info', 'CODING', 'other ticket', { ...scope, modelId: 'test/ticket' }, 'system', 'CODING')
+    appendLogEvent(ticket.id, 'debug', 'CODING', 'debug model', { ...scope, modelId: 'test/debug' }, 'debug', 'CODING')
+    appendLogEvent(ticket.id, 'info', 'CODING', 'newest model', { ...scope, modelId: 'test/z' }, 'system', 'CODING')
+
+    const url = `/api/tickets/${encodeURIComponent(ticket.id)}/logs?scope=phase&phase=CODING&phaseAttempt=2&beadId=bead-1&limit=1`
+    const first = await (await app.request(`${url}&view=ai`)).json() as {
+      entries: Array<{ content: string }>; modelIds: string[]; olderCursor: string
+    }
+    expect(first.entries.map(entry => entry.content)).toEqual(['newest model'])
+    expect(first.modelIds).toEqual(['test/a', 'test/b', 'test/z'])
+    for (const view of ['overview', 'system', 'command', 'ai', 'error', 'debug']) {
+      const response = await app.request(`${url}&view=${view}&modelId=test%2Fz`)
+      expect(await response.json()).toMatchObject({ modelIds: first.modelIds })
+    }
+    const older = await app.request(`${url}&view=ai&before=${encodeURIComponent(first.olderCursor)}`)
+    expect(await older.json()).not.toHaveProperty('modelIds')
+    const withoutTotals = await queryLogPage(ticket.id, {
+      scope: 'phase', phase: 'CODING', view: 'ai', limit: 1, includeTotals: false,
+    })
+    expect(withoutTotals).not.toHaveProperty('modelIds')
+
+    const lifecycle = await app.request(`/api/tickets/${encodeURIComponent(ticket.id)}/logs?scope=lifecycle&view=ai&limit=1`)
+    expect(await lifecycle.json()).toMatchObject({
+      modelIds: ['test/a', 'test/attempt', 'test/b', 'test/bead', 'test/phase', 'test/z'],
+    })
   })
 })

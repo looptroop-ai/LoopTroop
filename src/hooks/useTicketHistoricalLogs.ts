@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo } from 'react'
+import { useCallback, useEffect, useMemo, useState } from 'react'
 import { useInfiniteQuery } from '@tanstack/react-query'
 import {
   getLogEntryAliases,
@@ -29,6 +29,8 @@ interface HistoricalLogPage {
   hasOlder: boolean
   totalEntries: number | null
   totalTextLines: number | null
+  modelIds: string[] | null
+  modelIdsUpdatedAt: number
   /** Context for a delimiter that begins before this page. */
   boundary?: Record<string, unknown>
 }
@@ -62,6 +64,10 @@ function normalizePage(payload: unknown, fallbackPhase?: string): HistoricalLogP
     hasOlder: data.hasOlder === true,
     totalEntries: normalizeCount(data.totalEntries),
     totalTextLines: normalizeCount(data.totalTextLines),
+    modelIds: Array.isArray(data.modelIds)
+      ? data.modelIds.filter((id): id is string => typeof id === 'string' && id.length > 0)
+      : null,
+    modelIdsUpdatedAt: Date.now(),
     boundary: data.boundary && typeof data.boundary === 'object' ? data.boundary as Record<string, unknown> : undefined,
   }
 }
@@ -142,6 +148,23 @@ export function useTicketHistoricalLogs(ticketId: string | undefined, scope: His
   }, [query.data?.pages])
   const refetch = query.refetch
   const countPage = query.data?.pages.find(page => page.totalEntries !== null || page.totalTextLines !== null)
+  const modelScopeKey = JSON.stringify([ticketId, scope.scope, scope.phase, scope.phaseAttempt, scope.beadId])
+  const [modelCatalog, setModelCatalog] = useState<{ scopeKey: string; modelIds: string[] | null; updatedAt: number }>({
+    scopeKey: modelScopeKey,
+    modelIds: null,
+    updatedAt: 0,
+  })
+  // Keep scope metadata while a different filter loads, but never carry it into
+  // another ticket, phase, attempt, or bead. Filtered rows cannot define their own tabs.
+  const modelPage = query.data?.pages.find(page => page.modelIds !== null)
+  const sameModelScope = modelCatalog.scopeKey === modelScopeKey
+  // Paging an older cached filter updates the query timestamp, not its catalog.
+  const usePageModels = modelPage != null && (!sameModelScope || modelPage.modelIdsUpdatedAt >= modelCatalog.updatedAt)
+  const modelIds = usePageModels ? modelPage.modelIds : sameModelScope ? modelCatalog.modelIds : null
+  const modelUpdatedAt = usePageModels ? modelPage.modelIdsUpdatedAt : sameModelScope ? modelCatalog.updatedAt : 0
+  if (!sameModelScope || modelCatalog.modelIds !== modelIds || modelCatalog.updatedAt !== modelUpdatedAt) {
+    setModelCatalog({ scopeKey: modelScopeKey, modelIds, updatedAt: modelUpdatedAt })
+  }
 
   const exportLogs = useCallback(async (signal?: AbortSignal): Promise<string> => {
     if (!ticketId) return ''
@@ -194,6 +217,7 @@ export function useTicketHistoricalLogs(ticketId: string | undefined, scope: His
     entries,
     totalEntries: countPage?.totalEntries ?? null,
     totalTextLines: countPage?.totalTextLines ?? null,
+    modelIds,
     fetchOlder: query.fetchPreviousPage,
     fetchAllOlder,
     hasOlder: query.hasPreviousPage,

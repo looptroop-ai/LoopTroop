@@ -72,6 +72,7 @@ beforeEach(() => {
 afterEach(() => {
   cleanup()
   fetchSpy.mockRestore()
+  Reflect.deleteProperty(navigator, 'clipboard')
 })
 
 describe('CodingView hover cards', () => {
@@ -157,6 +158,18 @@ describe('CodingView hover cards', () => {
   })
 
   describe('Target file row', () => {
+    it('shows a copy failure and clears it when retry succeeds', async () => {
+      const writeText = vi.fn().mockRejectedValueOnce(new Error('Permission denied')).mockResolvedValueOnce(undefined)
+      Object.defineProperty(navigator, 'clipboard', { configurable: true, value: { writeText } })
+      renderCoding({ runtime: { beads: [makeBead({ title: 'Test Bead', status: 'in_progress', targetFiles: ['src/main.ts'] })] } })
+      fireEvent.click(screen.getByRole('button', { name: /Test Bead/ }))
+      const button = screen.getByRole('button', { name: 'Copy path' })
+      fireEvent.click(button)
+      expect(await screen.findByRole('alert')).toHaveTextContent('Copy failed')
+      fireEvent.click(button)
+      await waitFor(() => { expect(screen.queryByRole('alert')).not.toBeInTheDocument() })
+    })
+
     it('renders target files as code elements with copy button', () => {
       renderCoding({
         runtime: {

@@ -53,11 +53,10 @@ function normalizeLogChannel(channel?: string): LogChannel {
  *
  * One canonical normaliser, shared with the durable projection index, so a row
  * cannot be classified one way when it is indexed and another when it is read
- * back. The endpoints fill in `audience` and `kind` where a row omits them;
- * the index stores them absent.
+ * back. Both fill in `audience` and `kind` where a row omits them.
  */
 function normalizeLogEntry(entry: unknown): Record<string, unknown> | null {
-  return normalizePersistedLogEntry(entry, { audienceAndKind: 'infer' })
+  return normalizePersistedLogEntry(entry)
 }
 
 function getEntryPhaseAttempt(entry: Record<string, unknown>): number | null {

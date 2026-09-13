@@ -18,6 +18,7 @@ import {
   clearServerLogCache,
 } from './logUtils'
 import { throwIfNotOk } from '@/lib/fetchError'
+import { isAiLogEntry } from '@shared/logClassification'
 
 export type { LogEntry }
 
@@ -108,7 +109,7 @@ function shouldIncludeEntryForScope(entry: LogEntry, scope: ServerLogScope): boo
   const isDebug = isDebugLogEntry(entry)
   if (scope.channel === 'all') return true
   if (scope.channel === 'debug') return isDebug
-  if (scope.channel === 'ai') return !isDebug && entry.audience === 'ai'
+  if (scope.channel === 'ai') return isAiLogEntry(entry)
   return !isDebug
 }
 

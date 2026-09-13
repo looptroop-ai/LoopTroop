@@ -249,6 +249,43 @@ beforeEach(() => {
 })
 
 describe('PhaseLogPanel', () => {
+
+  it.each([200, 503])('keeps pending model requests and exports aligned, then normalizes after status %i', async status => {
+    let resolveModel!: (response: Response) => void
+    const fetchSpy = vi.spyOn(globalThis, 'fetch').mockImplementation(input => {
+      const url = new URL(String(input), 'http://localhost')
+      if (url.pathname.endsWith('/logs/export')) return Promise.resolve(new Response('Complete overview history.'))
+      if (url.searchParams.has('modelId')) return new Promise(resolve => { resolveModel = resolve })
+      return createJsonResponse({
+        entries: url.searchParams.has('modelId') ? [] : [{ phase: 'CODING', entryId: 'overview', content: 'Overview after model fallback.' }],
+        modelIds: ['provider/model-a', 'provider/model-b'], olderCursor: null, hasOlder: false,
+      })
+    })
+    try {
+      renderWithTooltipProvider(<PhaseLogPanel phase="CODING" ticket={makeTicket()} defaultTab="provider/removed-model" />)
+      await waitFor(() => expect(fetchSpy).toHaveBeenCalledTimes(1))
+      expect(screen.getByTitle(/^provider\/removed-model ·/)).toHaveClass('bg-primary')
+      expect(screen.getByRole('button', { name: 'Copy all logs' })).toBeDisabled()
+      fireEvent.click(screen.getByRole('button', { name: 'Copy all logs' }))
+      expect(writeTextMock).not.toHaveBeenCalled()
+      await act(async () => resolveModel(await createJsonResponse({ entries: [], modelIds: [] }, status)))
+      expect(await screen.findByText('Overview after model fallback.')).toBeInTheDocument()
+      expect(fetchSpy).toHaveBeenCalledTimes(2)
+      fireEvent.click(screen.getByRole('button', { name: 'Copy all logs' }))
+      await waitFor(() => expect(writeTextMock).toHaveBeenCalledTimes(1))
+      const urls = fetchSpy.mock.calls.map(([input]) => new URL(String(input), 'http://localhost'))
+      expect(urls[0]!.searchParams.get('modelId')).toBe('provider/removed-model')
+      expect(urls.at(-1)!.pathname).toContain('/logs/export')
+      for (const url of urls.slice(1)) {
+        expect(url.searchParams.get('view')).toBe('overview')
+        expect(url.searchParams.has('modelId')).toBe(false)
+      }
+      expect(fetchSpy).toHaveBeenCalledTimes(3)
+    } finally {
+      fetchSpy.mockRestore()
+    }
+  })
+
   it('shows lazy AI details without changing the visible entry count', async () => {
     const aiLog = makeLog('ai-1', '[MODEL] Done', {
       source: 'model:openai/gpt-5.4',

@@ -1,4 +1,5 @@
 import { useState } from 'react'
+import { useCopyToClipboard } from '@/hooks/useCopyToClipboard'
 import type { ErrorBoundaryDetails } from './ErrorBoundary'
 
 export function AppCrashScreen({ error, componentStack }: ErrorBoundaryDetails) {
@@ -12,6 +13,7 @@ export function AppCrashScreen({ error, componentStack }: ErrorBoundaryDetails) 
   ]
     .filter(Boolean)
     .join('\n')
+  const [copied, copy, copyFailed, copyFailureCount] = useCopyToClipboard(undefined, detailText)
 
   return (
     <div className="flex min-h-screen items-center justify-center p-8 text-center">
@@ -47,14 +49,15 @@ export function AppCrashScreen({ error, componentStack }: ErrorBoundaryDetails) 
             <pre className="max-h-80 overflow-auto rounded-md border border-destructive/30 bg-destructive/5 p-3 text-left text-[11px] leading-relaxed text-destructive whitespace-pre-wrap">
               {detailText}
             </pre>
-            <div className="mt-2 flex justify-end">
+            <div className="mt-2 flex items-center justify-end gap-2">
               <button
                 type="button"
-                onClick={() => { void navigator.clipboard?.writeText(detailText) }}
+                onClick={() => { void copy(detailText) }}
                 className="rounded-md border border-border bg-background px-2.5 py-1 text-xs font-medium hover:bg-muted"
               >
-                Copy details
+                {copied ? 'Copied' : 'Copy details'}
               </button>
+              {copyFailed && <span key={copyFailureCount} role="alert" className="shrink-0 whitespace-nowrap text-xs text-destructive">Copy failed</span>}
             </div>
           </div>
         )}

@@ -1,6 +1,7 @@
 import { useState, useRef, useEffect, memo, useMemo, useCallback } from 'react'
 import { Copy, Check } from 'lucide-react'
 import { cn } from '@/lib/utils'
+import { getLogEntryIdentity } from '@/context/logUtils'
 import type { LogEntry } from '@/context/LogContext'
 import { formatLogLine, getEntryColor, formatTimestamp } from './logFormat'
 import { useCopyToClipboard } from '@/hooks/useCopyToClipboard'
@@ -310,7 +311,8 @@ function showsStreamingUi(entry: LogEntry): boolean {
 export const LogEntryRow = memo(function LogEntryRow({ entry, index, showModelName }: LogEntryRowProps) {
   const [isExpanded, setIsExpanded] = useState(false)
   const [isOverflowing, setIsOverflowing] = useState(false)
-  const [copied, handleCopyEntry] = useCopyToClipboard()
+  const [copied, handleCopyEntry, copyFailed, copyFailureCount] = useCopyToClipboard(undefined, getLogEntryIdentity(entry))
+  const copyFailure = copyFailed && <span key={copyFailureCount} role="alert" className="w-full text-[10px] text-destructive">Copy failed</span>
   const contentRef = useRef<HTMLDivElement>(null)
   const isStreamingUiEntry = showsStreamingUi(entry)
   const copyEntry = useCallback(() => {
@@ -354,8 +356,9 @@ export const LogEntryRow = memo(function LogEntryRow({ entry, index, showModelNa
     <button
       type="button"
       aria-label="Copy log entry"
+      data-copy-failed={copyFailed || undefined}
       onClick={copyEntry}
-      className={cn('transition-colors cursor-pointer', className)}
+      className={cn('transition-colors cursor-pointer data-[copy-failed]:opacity-100 focus:opacity-100', className)}
     >
       {copied ? <Check className="w-3 h-3 text-emerald-500" /> : <Copy className="w-3 h-3" />}
     </button>
@@ -372,7 +375,7 @@ export const LogEntryRow = memo(function LogEntryRow({ entry, index, showModelNa
         </div>
         {isTruncatable && (
           <div
-            className="sticky top-1 z-10 flex items-center gap-1"
+            className="sticky top-1 z-10 flex flex-wrap items-center gap-1"
             data-log-entry-sticky-actions
           >
             {renderCopyButton(
@@ -385,8 +388,10 @@ export const LogEntryRow = memo(function LogEntryRow({ entry, index, showModelNa
             >
               {isExpanded ? 'Less' : 'More'}
             </button>
+            {copyFailure}
           </div>
         )}
+        {!isTruncatable && copyFailure}
         {isStreamingUiEntry && (
           <div className="mt-0.5">
             <span className="text-[10px] bg-emerald-500/10 text-emerald-500 px-1.5 py-0.5 rounded border border-emerald-500/30 shadow-sm opacity-80 select-none cursor-default animate-pulse">

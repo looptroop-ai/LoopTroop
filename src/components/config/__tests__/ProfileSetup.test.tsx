@@ -55,12 +55,14 @@ vi.mock('@/hooks/useProfile', () => ({
 }))
 
 vi.mock('../ModelPicker', () => ({
-  ModelPicker: ({ value, placeholder = 'Search models…', onChange }: {
+  ModelPicker: ({ id, label, value, placeholder = 'Search models…', onChange }: {
+    id?: string
+    label?: string
     value?: string
     placeholder?: string
     onChange?: (modelId: string) => void
   }) => (
-    <button type="button" onClick={() => onChange?.('openai/next-model')}>{value || placeholder}</button>
+    <button id={id} aria-label={`${label} ${value || placeholder}`} type="button" onClick={() => onChange?.('openai/next-model')}>{value || placeholder}</button>
   ),
 }))
 
@@ -172,6 +174,9 @@ describe('ProfileSetup', () => {
   it('allows a council of ten models including the main implementer', async () => {
     await renderProfileSetup()
 
+    expect(screen.getByRole('button', { name: 'Main Implementer Model opencode/big-pickle' })).toHaveAttribute('id', 'main-implementer')
+    expect(screen.getByRole('button', { name: 'Council member 2 openai/gpt-5.1-codex' })).toBeInTheDocument()
+
     const addButton = screen.getByRole('button', { name: 'Add Council Member' })
     fireEvent.click(addButton)
     fireEvent.click(addButton)
@@ -182,7 +187,7 @@ describe('ProfileSetup', () => {
     fireEvent.click(addButton)
     fireEvent.click(addButton)
 
-    expect(screen.getByText('Council member 10…')).toBeInTheDocument()
+    expect(screen.getByRole('button', { name: 'Council member 10 Council member 10…' })).toBeInTheDocument()
     expect(screen.queryByRole('button', { name: 'Add Council Member' })).not.toBeInTheDocument()
   })
 
@@ -290,7 +295,7 @@ describe('ProfileSetup', () => {
     await renderProfileSetup()
     expect(await screen.findByRole('button', { name: '●High' })).toHaveAttribute('aria-pressed', 'true')
 
-    fireEvent.click(screen.getByRole('button', { name: 'opencode/big-pickle' }))
+    fireEvent.click(screen.getByRole('button', { name: 'Main Implementer Model opencode/big-pickle' }))
 
     await waitFor(() => {
       expect(screen.getByRole('button', { name: '○None' })).toHaveAttribute('aria-pressed', 'true')

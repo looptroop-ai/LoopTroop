@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useState } from 'react'
+import { useCallback, useEffect, useId, useState } from 'react'
 import { Button } from '@/components/ui/button'
 import { Badge } from '@/components/ui/badge'
 import type { CommandSpec } from '@shared/commandSpec'
@@ -656,6 +656,7 @@ interface ExecutionSetupPlanEditorProps {
 }
 
 export function ExecutionSetupPlanEditor({ plan, disabled, onChange }: ExecutionSetupPlanEditorProps) {
+  const editorId = useId()
   const [expandedIndex, setExpandedIndex] = useState<number | null>(plan.steps.length > 0 ? 0 : null)
 
   const updatePlan = useCallback((update: Partial<ExecutionSetupPlan>) => {
@@ -984,6 +985,8 @@ export function ExecutionSetupPlanEditor({ plan, disabled, onChange }: Execution
             <div key={step.id || index} id={`execution-setup-step-${index}`} className="rounded-lg border border-border bg-background">
               <button
                 type="button"
+                aria-expanded={expanded}
+                aria-controls={expanded ? `${editorId}-step-body-${index}` : undefined}
                 onClick={() => setExpandedIndex(expanded ? null : index)}
                 className="w-full px-3 py-2 text-left flex items-center gap-2 hover:bg-accent/30 rounded-t-lg"
               >
@@ -994,10 +997,10 @@ export function ExecutionSetupPlanEditor({ plan, disabled, onChange }: Execution
                 <Badge variant={step.required ? 'default' : 'outline'} className="h-4 text-[10px]">
                   {step.required ? 'required' : 'optional'}
                 </Badge>
-                <span className="text-muted-foreground text-[10px]">{expanded ? '▼' : '▶'}</span>
+                <span aria-hidden="true" className="text-muted-foreground text-[10px]">{expanded ? '▼' : '▶'}</span>
               </button>
               {expanded ? (
-                <div className="px-3 pb-3 pt-3 border-t border-border space-y-3">
+                <div id={`${editorId}-step-body-${index}`} className="px-3 pb-3 pt-3 border-t border-border space-y-3">
                   <div className="flex justify-end">
                     <Button
                       type="button"

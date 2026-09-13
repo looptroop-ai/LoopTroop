@@ -326,6 +326,8 @@ export function ProfileSetup({ onClose, onOpenAbout = () => undefined }: Profile
               />
             </div>
             <ModelPicker
+              id="main-implementer"
+              label="Main Implementer Model"
               value={formData.mainImplementer ?? ''}
               onChange={v => {
                 updateField('mainImplementer', v)
@@ -390,6 +392,7 @@ export function ProfileSetup({ onClose, onOpenAbout = () => undefined }: Profile
                           })
                         }
                       }}
+                      label={`Council member ${i + 2}`}
                       placeholder={`Council member ${i + 2}…`}
                       disabledValues={[formData.mainImplementer, ...councilSlots.filter((_, j) => j !== i)].filter(Boolean) as string[]}
                     />

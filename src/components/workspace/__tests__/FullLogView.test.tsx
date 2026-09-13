@@ -183,6 +183,7 @@ beforeEach(() => {
 })
 
 describe('FullLogView', () => {
+
   it('loads lifecycle AI details only after its panel is opened', async () => {
     getAllLogsMock.mockReturnValue([
       makeLog('ai-1', '[MODEL] Done', 'CODING', {

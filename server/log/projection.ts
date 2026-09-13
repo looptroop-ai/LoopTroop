@@ -1,10 +1,12 @@
 import { existsSync, statSync } from 'node:fs'
 import { open, stat } from 'node:fs/promises'
+import { createHash } from 'node:crypto'
 import type { SQLInputValue } from 'node:sqlite'
 import type { Database, Statement } from '../db/sqliteShim'
 import { getProjectDatabase } from '../db/project'
 import { getTicketContext, getTicketPaths } from '../storage/tickets'
 import { extractLogFingerprint } from '@shared/logIdentity'
+import { getLogModelId, isAiLogEntry } from '@shared/logClassification'
 import { normalizePersistedLogEntry, classifyPersistedLogEntry, type LogView } from './view'
 import { getErrorMessage } from '@shared/typeGuards'
 
@@ -14,6 +16,7 @@ interface ProjectionRow {
   identity: string
   ordinal: number
   entry_json: string
+  mirror_occurrence: number
 }
 
 interface ProjectionCursor {
@@ -23,6 +26,7 @@ interface ProjectionCursor {
 
 interface ProjectionStatements {
   selectEntry: Statement
+  countMirrors: Statement
   upsertEntry: Statement
   selectCursor: Statement
   advanceCursor: Statement
@@ -47,17 +51,20 @@ function prepareProjectionStatements(sqlite: Database): ProjectionStatements {
   const cached = projectionStatements.get(sqlite)
   if (cached) return cached
   const statements: ProjectionStatements = {
-    selectEntry: sqlite.prepare(`SELECT identity, ordinal, entry_json FROM execution_log_projection WHERE ticket_id = ? AND channel = ? AND identity = ?`),
+    selectEntry: sqlite.prepare(`SELECT identity, ordinal, entry_json, mirror_occurrence FROM execution_log_projection WHERE ticket_id = ? AND channel = ? AND identity = ?`),
+    countMirrors: sqlite.prepare(`SELECT COUNT(*) AS count FROM execution_log_projection WHERE ticket_id = ? AND channel = ? AND mirror_key = ?`),
     upsertEntry: sqlite.prepare(`
       INSERT INTO execution_log_projection (
         ticket_id, channel, identity, ordinal, timestamp, phase, phase_attempt, status, classification,
-        model_id, bead_id, entry_json, byte_offset, byte_length
-      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        model_id, bead_id, entry_json, byte_offset, byte_length,
+        ai_visible, mirror_key, mirror_occurrence, updated_timestamp, text_lines
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
       ON CONFLICT(ticket_id, channel, identity) DO UPDATE SET
         timestamp = excluded.timestamp, phase = excluded.phase, phase_attempt = excluded.phase_attempt,
         status = excluded.status, classification = excluded.classification, model_id = excluded.model_id,
         bead_id = excluded.bead_id, entry_json = excluded.entry_json, byte_offset = excluded.byte_offset,
-        byte_length = excluded.byte_length
+        byte_length = excluded.byte_length, ai_visible = excluded.ai_visible,
+        updated_timestamp = excluded.updated_timestamp, text_lines = excluded.text_lines
     `),
     selectCursor: sqlite.prepare(`SELECT channel, indexed_offset FROM execution_log_projection_cursors WHERE ticket_id = ? AND channel = ?`),
     advanceCursor: sqlite.prepare(`
@@ -95,6 +102,11 @@ function ensureProjectionSchema(ticketId: string): ProjectionStorage | null {
       entry_json TEXT NOT NULL,
       byte_offset INTEGER NOT NULL,
       byte_length INTEGER NOT NULL,
+      ai_visible INTEGER NOT NULL,
+      mirror_key TEXT NOT NULL,
+      mirror_occurrence INTEGER NOT NULL,
+      updated_timestamp TEXT NOT NULL,
+      text_lines INTEGER NOT NULL,
       PRIMARY KEY (ticket_id, channel, identity)
     );
     CREATE TABLE IF NOT EXISTS execution_log_projection_cursors (
@@ -107,6 +119,10 @@ function ensureProjectionSchema(ticketId: string): ProjectionStorage | null {
       ON execution_log_projection(ticket_id, classification, phase, phase_attempt, model_id, ordinal DESC);
     CREATE INDEX IF NOT EXISTS idx_execution_log_projection_bead
       ON execution_log_projection(ticket_id, channel, phase, phase_attempt, bead_id, ordinal DESC);
+    CREATE INDEX IF NOT EXISTS idx_execution_log_projection_ai
+      ON execution_log_projection(ticket_id, ai_visible, model_id, phase, phase_attempt, bead_id);
+    CREATE INDEX IF NOT EXISTS idx_execution_log_projection_mirror
+      ON execution_log_projection(ticket_id, mirror_key, mirror_occurrence, channel, updated_timestamp, timestamp);
   `)
   initializedProjectionDatabases.add(sqlite)
   return { context, sqlite, statements: prepareProjectionStatements(sqlite) }
@@ -114,7 +130,7 @@ function ensureProjectionSchema(ticketId: string): ProjectionStorage | null {
 
 function identityFor(entry: Record<string, unknown>, offset: number): string {
   const entryId = typeof entry.entryId === 'string' && entry.entryId.trim()
-  if (entryId && entry.op !== 'append') return `entry:${entryId}`
+  if (entryId && entry.op !== 'append') return `entry:${entry.phase}:${entry.phaseAttempt}:${entryId}`
   const fingerprint = extractLogFingerprint(entry)
   if (fingerprint && entry.op === 'append') return `fingerprint:${entry.phase}:${entry.phaseAttempt}:${fingerprint}`
   return `offset:${offset}`
@@ -128,6 +144,11 @@ function mergeCanonical(previous: Record<string, unknown>, next: Record<string, 
   }
 }
 
+function sortableTimestamp(value: unknown): string {
+  const time = Date.parse(String(value ?? ''))
+  return Number.isFinite(time) ? new Date(time).toISOString() : ''
+}
+
 function indexEntry(ticketId: string, channel: PersistedLogChannel, raw: unknown, offset: number, length: number, existingStorage?: ProjectionStorage) {
   const storage = existingStorage ?? ensureProjectionSchema(ticketId)
   if (!storage) return
@@ -139,12 +160,24 @@ function indexEntry(ticketId: string, channel: PersistedLogChannel, raw: unknown
   const canonical = existing ? mergeCanonical(JSON.parse(existing.entry_json), entry) : entry
   const classification = classifyPersistedLogEntry(canonical)
   const ordinal = existing?.ordinal ?? offset
+  const aiVisible = isAiLogEntry(canonical)
+  const mirrorKey = aiVisible && identity.startsWith('offset:')
+    ? `record:${createHash('sha256').update(JSON.stringify(entry)).digest('hex')}`
+    : identity
+  // Anonymous identical appends remain separate events. Pair the nth copy in
+  // each file so a failed second append does not hide an unmatched AI record.
+  const occurrence = existing?.mirror_occurrence
+    ?? (mirrorKey.startsWith('record:')
+      ? (statements.countMirrors.get(context.localTicketId, channel, mirrorKey) as { count: number }).count
+      : 0)
+  const content = String(canonical.content ?? canonical.message ?? '')
   statements.upsertEntry.run(
-    context.localTicketId, channel, identity, ordinal, String(canonical.timestamp ?? ''), String(canonical.phase ?? 'unknown'),
+    context.localTicketId, channel, identity, ordinal, sortableTimestamp(canonical.timestamp), String(canonical.phase ?? 'unknown'),
     Number(canonical.phaseAttempt ?? 1), String(canonical.status ?? canonical.phase ?? 'unknown'), classification,
-    typeof canonical.modelId === 'string' ? canonical.modelId : null,
+    getLogModelId(canonical),
     typeof canonical.beadId === 'string' ? canonical.beadId : null,
-    JSON.stringify(canonical), offset, length,
+    JSON.stringify(canonical), offset, length, Number(aiVisible), mirrorKey, occurrence,
+    sortableTimestamp(entry.timestamp), content ? content.split('\n').length : 0,
   )
 }
 
@@ -273,11 +306,21 @@ export interface LogPageQuery {
   includeTotals?: boolean
 }
 
-function decodeCursor(cursor?: string): number | null {
+interface LogCursor {
+  ordinal: number
+  timestamp: string
+  mirrorKey: string
+  mirrorOccurrence: number
+}
+
+function decodeCursor(cursor?: string): LogCursor | null {
   if (!cursor) return null
   try {
-    const value = JSON.parse(Buffer.from(cursor, 'base64url').toString('utf8')) as { ordinal?: unknown }
-    return typeof value.ordinal === 'number' && Number.isFinite(value.ordinal) ? value.ordinal : null
+    const value = JSON.parse(Buffer.from(cursor, 'base64url').toString('utf8')) as Partial<LogCursor>
+    return typeof value.ordinal === 'number' && Number.isSafeInteger(value.ordinal) && value.ordinal >= 0
+      && typeof value.timestamp === 'string' && typeof value.mirrorKey === 'string'
+      && typeof value.mirrorOccurrence === 'number' && Number.isSafeInteger(value.mirrorOccurrence) && value.mirrorOccurrence >= 0
+      ? value as LogCursor : null
   } catch { return null }
 }
 
@@ -285,19 +328,55 @@ export function isValidLogCursor(cursor?: string): boolean {
   return !cursor || decodeCursor(cursor) !== null
 }
 
+// The two disk appends are independent. Keep the latest surviving canonical
+// revision from either file, with AI winning a timestamp tie, and pair mirrors
+// before counting or paginating. The lookup uses the mirror index, not JSON.
+const AI_VISIBLE_ROWS = `ai_visible = 1 AND channel IN ('normal', 'ai') AND NOT EXISTS (
+  SELECT 1 FROM execution_log_projection AS mirror
+  WHERE mirror.ticket_id = p.ticket_id AND mirror.mirror_key = p.mirror_key
+    AND mirror.mirror_occurrence = p.mirror_occurrence
+    AND mirror.channel IN ('normal', 'ai') AND mirror.channel != p.channel
+    AND (mirror.updated_timestamp > p.updated_timestamp
+      OR (mirror.updated_timestamp = p.updated_timestamp AND mirror.channel = 'ai'))
+)`
+
+// A finalization can survive in only one file. Its first appearance in either
+// file anchors the row, even when a later page sees a different winning mirror.
+const AI_START_TIMESTAMP = `(SELECT MIN(origin.timestamp) FROM execution_log_projection AS origin
+  WHERE origin.ticket_id = p.ticket_id AND origin.mirror_key = p.mirror_key
+    AND origin.mirror_occurrence = p.mirror_occurrence AND origin.channel IN ('normal', 'ai'))`
+
 export async function queryLogPage(ticketId: string, query: LogPageQuery) {
   await catchUpLogProjection(ticketId)
   const storage = ensureProjectionSchema(ticketId)
   if (!storage) return null
   const { context, sqlite } = storage
   const before = decodeCursor(query.before)
+  const shouldIncludeTotals = query.includeTotals !== false && before === null
   const clauses = ['ticket_id = ?']
   const params: SQLInputValue[] = [context.localTicketId]
   if (query.scope === 'phase' && query.phase) { clauses.push('phase = ?'); params.push(query.phase) }
   if (typeof query.phaseAttempt === 'number') { clauses.push('phase_attempt = ?'); params.push(query.phaseAttempt) }
   if (query.beadId) { clauses.push('bead_id = ?'); params.push(query.beadId) }
+  let modelIds: string[] | undefined
+  if (shouldIncludeTotals) {
+    // Tabs describe the whole scope, even when the selected view or model has
+    // no rows on this page. Use the same explicit-id precedence as model rows.
+    const modelSql = `
+      SELECT DISTINCT model_id
+      FROM execution_log_projection AS p
+      WHERE ${clauses.join(' AND ')} AND ${AI_VISIBLE_ROWS} AND model_id IS NOT NULL
+      ORDER BY model_id
+    `
+    let modelStatement = storage.statements.queryPages.get(modelSql)
+    if (!modelStatement) {
+      modelStatement = sqlite.prepare(modelSql)
+      storage.statements.queryPages.set(modelSql, modelStatement)
+    }
+    modelIds = (modelStatement.all(...params) as Array<{ model_id: string }>).map(row => row.model_id)
+  }
   if (query.view === 'debug') { clauses.push("channel = 'debug'") }
-  else if (query.view === 'ai') { clauses.push("channel = 'ai'") }
+  else if (query.view === 'ai') { clauses.push(AI_VISIBLE_ROWS) }
   else { clauses.push("channel = 'normal'") }
   // The overview backs the ALL tab. Apply its visible-row rules before LIMIT
   // so a page of commands or AI detail-only rows cannot produce an apparently
@@ -318,39 +397,20 @@ export async function queryLogPage(ticketId: string, query: LogPageQuery) {
       )
     )`)
   }
-  // The AI detail channel is already audience-scoped and intentionally includes
-  // model error rows so one provider recovery event remains visible in both its
-  // model transcript and the ERROR view.
   if (query.view !== 'overview' && query.view !== 'ai') {
     clauses.push('classification = ?')
     params.push(query.view)
   }
-  if (query.modelId) { clauses.push('model_id = ?'); params.push(query.modelId) }
-  const shouldIncludeTotals = query.includeTotals !== false && before === null
+  if (query.modelId) {
+    clauses.push('model_id = ?')
+    params.push(query.modelId)
+  }
   const countWhere = clauses.join(' AND ')
   const countSql = `
     SELECT
       COUNT(*) AS total_entries,
-      COALESCE(SUM(
-        CASE
-          WHEN json_type(entry_json, '$.content') = 'text' THEN
-            CASE
-              WHEN length(json_extract(entry_json, '$.content')) = 0 THEN 0
-              ELSE 1
-                + length(json_extract(entry_json, '$.content'))
-                - length(replace(json_extract(entry_json, '$.content'), char(10), ''))
-            END
-          WHEN json_type(entry_json, '$.message') = 'text' THEN
-            CASE
-              WHEN length(json_extract(entry_json, '$.message')) = 0 THEN 0
-              ELSE 1
-                + length(json_extract(entry_json, '$.message'))
-                - length(replace(json_extract(entry_json, '$.message'), char(10), ''))
-            END
-          ELSE 0
-        END
-      ), 0) AS total_text_lines
-    FROM execution_log_projection
+      COALESCE(SUM(text_lines), 0) AS total_text_lines
+    FROM execution_log_projection AS p
     WHERE ${countWhere}
   `
   let counts: { total_entries: number; total_text_lines: number } | null = null
@@ -365,25 +425,45 @@ export async function queryLogPage(ticketId: string, query: LogPageQuery) {
 
   const pageClauses = [...clauses]
   const pageParams = [...params]
-  if (before !== null) { pageClauses.push('ordinal < ?'); pageParams.push(before) }
+  if (before !== null) {
+    if (query.view === 'ai') {
+      pageClauses.push(`(${AI_START_TIMESTAMP}, mirror_key, mirror_occurrence) < (?, ?, ?)`)
+      pageParams.push(before.timestamp, before.mirrorKey, before.mirrorOccurrence)
+    } else {
+      pageClauses.push('ordinal < ?')
+      pageParams.push(before.ordinal)
+    }
+  }
   const where = pageClauses.join(' AND ')
-  const sql = `SELECT ordinal, entry_json FROM execution_log_projection WHERE ${where} ORDER BY ordinal DESC LIMIT ?`
+  const timestamp = query.view === 'ai' ? AI_START_TIMESTAMP : 'timestamp'
+  const order = query.view === 'ai' ? 'sort_timestamp DESC, mirror_key DESC, mirror_occurrence DESC' : 'ordinal DESC'
+  const sql = `SELECT ordinal, ${timestamp} AS sort_timestamp, mirror_key, mirror_occurrence, entry_json FROM execution_log_projection AS p WHERE ${where} ORDER BY ${order} LIMIT ?`
   let statement = storage.statements.queryPages.get(sql)
   if (!statement) {
     statement = sqlite.prepare(sql)
     storage.statements.queryPages.set(sql, statement)
   }
-  const rows = statement.all(...pageParams, query.limit + 1) as Array<{ ordinal: number; entry_json: string }>
+  const rows = statement.all(...pageParams, query.limit + 1) as Array<{
+    ordinal: number; sort_timestamp: string; mirror_key: string; mirror_occurrence: number; entry_json: string
+  }>
   const hasOlder = rows.length > query.limit
   const page = rows.slice(0, query.limit)
   const oldest = page.at(-1)
   return {
-    entries: page.reverse().map(row => JSON.parse(row.entry_json)),
-    olderCursor: hasOlder && oldest ? Buffer.from(JSON.stringify({ ordinal: oldest.ordinal })).toString('base64url') : null,
+    entries: page.reverse().map(row => {
+      const entry = JSON.parse(row.entry_json)
+      if (query.view === 'ai' && row.sort_timestamp) entry.timestamp = row.sort_timestamp
+      return entry
+    }),
+    olderCursor: hasOlder && oldest ? Buffer.from(JSON.stringify({
+      ordinal: oldest.ordinal, timestamp: oldest.sort_timestamp,
+      mirrorKey: oldest.mirror_key, mirrorOccurrence: oldest.mirror_occurrence,
+    })).toString('base64url') : null,
     hasOlder,
     ...(counts ? {
       totalEntries: counts.total_entries,
       totalTextLines: counts.total_text_lines,
+      modelIds,
     } : {}),
   }
 }

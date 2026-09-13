@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useMemo } from 'react'
-import { useInfiniteQuery } from '@tanstack/react-query'
+import { skipToken, useInfiniteQuery, useQuery, useQueryClient } from '@tanstack/react-query'
 import {
   getLogEntryAliases,
   INITIAL_LOG_PAGE_LIMIT,
@@ -29,8 +29,15 @@ interface HistoricalLogPage {
   hasOlder: boolean
   totalEntries: number | null
   totalTextLines: number | null
+  modelIds: string[] | null
   /** Context for a delimiter that begins before this page. */
   boundary?: Record<string, unknown>
+}
+
+interface ModelCatalog {
+  modelIds: string[] | null
+  nextRevision: number
+  appliedRevision: number
 }
 
 function normalizeCount(value: unknown): number | null {
@@ -62,6 +69,9 @@ function normalizePage(payload: unknown, fallbackPhase?: string): HistoricalLogP
     hasOlder: data.hasOlder === true,
     totalEntries: normalizeCount(data.totalEntries),
     totalTextLines: normalizeCount(data.totalTextLines),
+    modelIds: Array.isArray(data.modelIds)
+      ? data.modelIds.filter((id): id is string => typeof id === 'string' && id.length > 0)
+      : null,
     boundary: data.boundary && typeof data.boundary === 'object' ? data.boundary as Record<string, unknown> : undefined,
   }
 }
@@ -71,6 +81,15 @@ function normalizePage(payload: unknown, fallbackPhase?: string): HistoricalLogP
  * outside this query; callers can overlay them by stable entry identity.
  */
 export function useTicketHistoricalLogs(ticketId: string | undefined, scope: HistoricalLogScope, enabled = true) {
+  const queryClient = useQueryClient()
+  const modelQueryKey = ['ticket-log-models', ticketId ?? '__missing__', scope.scope, scope.phase ?? '', scope.phaseAttempt ?? '', scope.beadId ?? '']
+  // Share the catalog across filter queries and remounts. Only a fresh response
+  // updates it; reading or paging a cached filter cannot replay older metadata.
+  const modelCatalog = useQuery<ModelCatalog, Error, string[] | null>({
+    queryKey: modelQueryKey,
+    queryFn: skipToken,
+    select: catalog => catalog.modelIds,
+  })
   const queryKey = useMemo(() => [
     'ticket-log-history', ticketId ?? '__missing__', scope.scope, scope.phase ?? '', scope.phaseAttempt ?? '', scope.view, scope.modelId ?? '', scope.beadId ?? '',
   ], [scope.beadId, scope.modelId, scope.phase, scope.phaseAttempt, scope.scope, scope.view, ticketId])
@@ -82,14 +101,28 @@ export function useTicketHistoricalLogs(ticketId: string | undefined, scope: His
     // query; `null` represents the newest page and is omitted from the URL.
     initialPageParam: null as string | null,
     queryFn: async ({ pageParam, signal }) => {
+      // Filter queries can overlap. Order successful catalogs by request start,
+      // so a delayed older response cannot erase a newer response's model IDs.
+      const revision = pageParam === null
+        ? queryClient.setQueryData<ModelCatalog>(modelQueryKey, previous => ({
+            modelIds: previous?.modelIds ?? null,
+            nextRevision: (previous?.nextRevision ?? 0) + 1,
+            appliedRevision: previous?.appliedRevision ?? 0,
+          }))!.nextRevision
+        : 0
       const response = await fetch(getQuery(ticketId!, scope, pageParam ?? undefined), { signal })
       await throwIfNotOk(response, 'Unable to load logs')
-      return normalizePage(await response.json(), scope.phase)
+      const page = normalizePage(await response.json(), scope.phase)
+      if (pageParam === null && page.modelIds !== null && !signal.aborted) {
+        queryClient.setQueryData<ModelCatalog>(modelQueryKey, previous => previous && revision > previous.appliedRevision
+          ? { ...previous, modelIds: page.modelIds, appliedRevision: revision }
+          : previous)
+      }
+      return page
     },
-    // History is only fetched toward older cursors via fetchPreviousPage.
-    // React Query still requires this callback to calculate result metadata.
-    getNextPageParam: () => undefined,
-    getPreviousPageParam: firstPage => firstPage.hasOlder ? firstPage.olderCursor ?? undefined : undefined,
+    // Keep the newest page first so native refetch starts there, then follows
+    // fresh older cursors through the loaded page count.
+    getNextPageParam: lastPage => lastPage.hasOlder ? lastPage.olderCursor ?? undefined : undefined,
     staleTime: QUERY_STALE_TIME_30S,
   })
 
@@ -99,16 +132,14 @@ export function useTicketHistoricalLogs(ticketId: string | undefined, scope: His
     // re-emitting `milestone:<phase>:started` used to collapse two archived attempts
     // into one row; and a row re-emitted under a fresh id is still the same row.
     //
-    // Read in the order React Query holds the pages, which is oldest page first:
-    // `fetchPreviousPage` prepends. Walking them backwards let an older page's copy
-    // overwrite the newer one, so an entry whose append and later finalize fell on
-    // opposite sides of a page boundary showed the unfinished text.
+    // Fold oldest pages first, reversing the cache's newest-first page order.
+    // This lets a newer finalize replace an older append across page boundaries.
     // One slot per row, with every alias pointing at the slot rather than at the row, so
     // a row that arrives under a second alias updates the slot instead of leaving the
     // first alias holding the copy from before the merge.
     const rows: LogEntry[] = []
     const slotByAlias = new Map<string, number>()
-    for (const page of query.data?.pages ?? []) {
+    for (const page of (query.data?.pages ?? []).toReversed()) {
       for (const entry of page.entries) {
         const aliases = getLogEntryAliases(entry)
         const slot = aliases.map(alias => slotByAlias.get(alias)).find((value): value is number => value !== undefined)
@@ -155,28 +186,28 @@ export function useTicketHistoricalLogs(ticketId: string | undefined, scope: His
     return response.text()
   }, [scope, ticketId])
 
-  const fetchPreviousPage = query.fetchPreviousPage
+  const fetchNextPage = query.fetchNextPage
   /**
    * Walks every older page in one go. Callers pass `isCancelled` and flip it when the
    * scope they started the walk for is gone — a different bead, a different attempt, an
    * unmounted panel — because the loop otherwise keeps paging into a query that is no
    * longer on screen, and the last page to land wins.
    *
-   * Depends on `fetchPreviousPage` alone so it keeps one identity for the life of the
-   * query. Listing `hasPreviousPage` rebuilt it on every page, and a caller that holds
+   * Depends on `fetchNextPage` alone so it keeps one identity for the life of the
+   * query. Listing `hasNextPage` rebuilt it on every page, and a caller that holds
    * it in an effect dependency then cancels and restarts its own walk mid-flight — which
    * is how a failure ends up looking like a cancellation and never latches. The entry
-   * condition is gone with it: `fetchPreviousPage` on a query with no older page is a
-   * no-op that reports `hasPreviousPage: false`, and both callers already gate on it.
+   * condition is gone with it: `fetchNextPage` on a query with no older page is a
+   * no-op that reports `hasNextPage: false`, and both callers already gate on it.
    */
   const fetchAllOlder = useCallback(async (isCancelled?: () => boolean): Promise<void> => {
     for (;;) {
       if (isCancelled?.()) return
-      const result = await fetchPreviousPage()
+      const result = await fetchNextPage()
       if (result.isError) throw result.error
-      if (isCancelled?.() || !result.hasPreviousPage) return
+      if (isCancelled?.() || !result.hasNextPage) return
     }
-  }, [fetchPreviousPage])
+  }, [fetchNextPage])
 
   useEffect(() => {
     if (!ticketId || !enabled) return
@@ -194,10 +225,11 @@ export function useTicketHistoricalLogs(ticketId: string | undefined, scope: His
     entries,
     totalEntries: countPage?.totalEntries ?? null,
     totalTextLines: countPage?.totalTextLines ?? null,
-    fetchOlder: query.fetchPreviousPage,
+    modelIds: modelCatalog.data ?? null,
+    fetchOlder: query.fetchNextPage,
     fetchAllOlder,
-    hasOlder: query.hasPreviousPage,
-    isFetchingOlder: query.isFetchingPreviousPage,
+    hasOlder: query.hasNextPage,
+    isFetchingOlder: query.isFetchingNextPage,
     exportLogs,
   }
 }

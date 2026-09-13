@@ -67,7 +67,7 @@ function getStatusBadgeClasses(status: string): string {
 }
 
 function CopyablePathRow({ label, path }: { label: string; path: string }) {
-  const [copied, handleCopy] = useCopyToClipboard()
+  const [copied, handleCopy, copyFailed] = useCopyToClipboard()
   const [isOpening, setIsOpening] = useState(false)
 
   const handleOpenPath = async () => {
@@ -119,6 +119,7 @@ function CopyablePathRow({ label, path }: { label: string; path: string }) {
                   <button
                         type="button"
                         onClick={() => handleCopy(path)}
+                        aria-label="Copy path"
                         className="shrink-0 p-0.5 rounded hover:bg-muted transition-colors"
                       >
                         {copied ? <CheckIcon className="h-3 w-3 text-green-500" /> : <Copy className="h-3 w-3 text-muted-foreground" />}
@@ -126,6 +127,7 @@ function CopyablePathRow({ label, path }: { label: string; path: string }) {
                 </TooltipTrigger>
                 <TooltipContent className="max-w-xs text-center text-balance">Copy path</TooltipContent>
               </Tooltip>
+        {copyFailed && <span role="alert" className="text-xs text-destructive">Copy failed</span>}
       </div>
     </div>
   )
@@ -133,7 +135,7 @@ function CopyablePathRow({ label, path }: { label: string; path: string }) {
 
 
 function CopyableDescription({ description }: { description: string }) {
-  const [copied, handleCopy] = useCopyToClipboard()
+  const [copied, handleCopy, copyFailed] = useCopyToClipboard()
 
   return (
     <div className="col-span-2 border-t-[2px] border-border/70 pt-2 mt-1">
@@ -144,6 +146,7 @@ function CopyableDescription({ description }: { description: string }) {
                   <button
                         type="button"
                         onClick={() => handleCopy(description)}
+                        aria-label="Copy description"
                         className="opacity-0 group-hover:opacity-100 transition-opacity shrink-0 p-0.5 rounded hover:bg-muted"
                       >
                         {copied ? <CheckIcon className="h-3 w-3 text-green-500" /> : <Copy className="h-3 w-3 text-muted-foreground" />}
@@ -151,6 +154,7 @@ function CopyableDescription({ description }: { description: string }) {
                 </TooltipTrigger>
                 <TooltipContent className="max-w-xs text-center text-balance">Copy description</TooltipContent>
               </Tooltip>
+        {copyFailed && <span role="alert" className="text-xs text-destructive">Copy failed</span>}
       </div>
       <div className="mt-1 rounded-md border border-border/50 bg-muted/30 p-3 max-h-[300px] overflow-y-auto">
         <TicketDescriptionViewer description={description} />

@@ -880,7 +880,7 @@ function BeadRefHoverCard({ beadId, beads, onSelectBead }: {
 }
 
 function TargetFileRow({ file }: { file: string }) {
-  const [copied, handleCopy] = useCopyToClipboard(COPY_SUCCESS_DISPLAY_SHORT_MS)
+  const [copied, handleCopy, copyFailed] = useCopyToClipboard(COPY_SUCCESS_DISPLAY_SHORT_MS)
 
   return (
     <div className="group flex items-center gap-1">
@@ -905,6 +905,7 @@ function TargetFileRow({ file }: { file: string }) {
             </TooltipTrigger>
             <TooltipContent className="max-w-xs text-center text-balance">Copy path</TooltipContent>
           </Tooltip>
+      {copyFailed && <span role="alert" className="text-xs text-destructive">Copy failed</span>}
     </div>
   )
 }
@@ -1316,7 +1317,7 @@ export function CodingView({ ticket, readOnly }: CodingViewProps) {
     }
   }, [changesTabEnabled, detailTab])
 
-  const [copied, copyToClipboard] = useCopyToClipboard()
+  const [copied, copyToClipboard, copyFailed] = useCopyToClipboard()
   const handleCopyLogs = useCallback(() => {
     if (!selectedBeadLogEntries.length) return
     const textToCopy = selectedBeadLogEntries.map((entry) => {
@@ -1534,6 +1535,7 @@ export function CodingView({ ticket, readOnly }: CodingViewProps) {
                     </TooltipTrigger>
                     <TooltipContent className="max-w-xs text-center text-balance">Copy bead logs</TooltipContent>
                   </Tooltip>
+                  {copyFailed && <span role="alert" className="text-xs text-destructive">Copy failed</span>}
                 </div>
               )}
             </div>

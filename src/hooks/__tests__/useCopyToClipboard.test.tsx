@@ -12,6 +12,7 @@ function stubClipboard(writeText: (text: string) => Promise<void>) {
 
 afterEach(() => {
   Reflect.deleteProperty(navigator, 'clipboard')
+  vi.useRealTimers()
 })
 
 /**
@@ -32,6 +33,7 @@ describe('useCopyToClipboard', () => {
     expect(writeText).toHaveBeenCalledWith('copy me')
     expect(outcome).toBe(true)
     expect(result.current[0]).toBe(true)
+    expect(result.current[2]).toBe(false)
   })
 
   it('reports failure and leaves the copied state alone when the write is refused', async () => {
@@ -45,6 +47,7 @@ describe('useCopyToClipboard', () => {
 
     expect(outcome).toBe(false)
     expect(result.current[0]).toBe(false)
+    expect(result.current[2]).toBe(true)
   })
 
   it('does not reject, so a call site is free to ignore the result', async () => {
@@ -70,6 +73,7 @@ describe('useCopyToClipboard', () => {
     // The tick from the first copy would otherwise sit there for the rest of its
     // timer, reporting the refusal as a success.
     expect(result.current[0]).toBe(false)
+    expect(result.current[2]).toBe(true)
   })
 
   it('ignores a refusal that settles after a later success', async () => {
@@ -92,5 +96,40 @@ describe('useCopyToClipboard', () => {
     })
 
     expect(result.current[0]).toBe(true)
+    expect(result.current[2]).toBe(false)
+  })
+
+  it('keeps failure visible until a successful retry, including when the clipboard API is unavailable', async () => {
+    vi.useFakeTimers()
+    const { result } = renderHook(() => useCopyToClipboard(100))
+
+    await act(async () => { await result.current[1]('first') })
+    expect(result.current[2]).toBe(true)
+    act(() => { vi.advanceTimersByTime(1000) })
+    expect(result.current[2]).toBe(true)
+
+    stubClipboard(() => Promise.resolve())
+    await act(async () => { await result.current[1]('retry') })
+    expect(result.current[0]).toBe(true)
+    expect(result.current[2]).toBe(false)
+    act(() => { vi.advanceTimersByTime(100) })
+    expect(result.current[0]).toBe(false)
+  })
+
+  it('ignores a success that settles after a later refusal', async () => {
+    let resolveFirst: () => void = () => {}
+    const writeText = vi.fn()
+      .mockImplementationOnce(() => new Promise<void>((resolve) => { resolveFirst = resolve }))
+      .mockRejectedValueOnce(new Error('Write permission denied.'))
+    Object.defineProperty(navigator, 'clipboard', { configurable: true, value: { writeText } })
+    const { result } = renderHook(() => useCopyToClipboard())
+
+    let first: Promise<boolean> | undefined
+    await act(async () => { first = result.current[1]('first') })
+    await act(async () => { await result.current[1]('second') })
+    await act(async () => { resolveFirst(); await first })
+
+    expect(result.current[0]).toBe(false)
+    expect(result.current[2]).toBe(true)
   })
 })

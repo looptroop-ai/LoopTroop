@@ -310,7 +310,7 @@ function showsStreamingUi(entry: LogEntry): boolean {
 export const LogEntryRow = memo(function LogEntryRow({ entry, index, showModelName }: LogEntryRowProps) {
   const [isExpanded, setIsExpanded] = useState(false)
   const [isOverflowing, setIsOverflowing] = useState(false)
-  const [copied, handleCopyEntry] = useCopyToClipboard()
+  const [copied, handleCopyEntry, copyFailed] = useCopyToClipboard()
   const contentRef = useRef<HTMLDivElement>(null)
   const isStreamingUiEntry = showsStreamingUi(entry)
   const copyEntry = useCallback(() => {
@@ -387,6 +387,7 @@ export const LogEntryRow = memo(function LogEntryRow({ entry, index, showModelNa
             </button>
           </div>
         )}
+        {copyFailed && <span role="alert" className="text-[10px] text-destructive">Copy failed</span>}
         {isStreamingUiEntry && (
           <div className="mt-0.5">
             <span className="text-[10px] bg-emerald-500/10 text-emerald-500 px-1.5 py-0.5 rounded border border-emerald-500/30 shadow-sm opacity-80 select-none cursor-default animate-pulse">

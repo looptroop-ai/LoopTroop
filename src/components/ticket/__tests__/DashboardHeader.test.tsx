@@ -1,5 +1,5 @@
-import { act, fireEvent, screen, within } from '@testing-library/react'
-import { beforeAll, beforeEach, describe, expect, it, vi } from 'vitest'
+import { act, fireEvent, screen, waitFor, within } from '@testing-library/react'
+import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest'
 import { UIContext, type UIContextValue } from '@/context/uiContextDef'
 import { renderWithProviders } from '@/test/renderHelpers'
 import { normalizeTicketResponse } from '@/lib/ticketNormalization'
@@ -62,6 +62,8 @@ function makeUIValue(ticketId: string, externalId: string): UIContextValue {
 }
 
 describe('DashboardHeader', () => {
+  afterEach(() => { Reflect.deleteProperty(navigator, 'clipboard') })
+
   beforeAll(() => {
     Object.defineProperty(window, 'requestAnimationFrame', {
       configurable: true,
@@ -97,6 +99,23 @@ describe('DashboardHeader', () => {
     mockUseTicketAction.mockReturnValue({ mutate: vi.fn(), isPending: false })
     mockUseCancelTicket.mockReturnValue({ mutate: vi.fn(), mutateAsync: vi.fn(), isPending: false })
     mockUseUpdateTicket.mockReturnValue({ mutateAsync: vi.fn() })
+  })
+
+  it.each(['Copy path', 'Copy description'])('shows a failure for %s and clears it after retry', async (name) => {
+    const writeText = vi.fn().mockRejectedValueOnce(new Error('Permission denied')).mockResolvedValueOnce(undefined)
+    Object.defineProperty(navigator, 'clipboard', { configurable: true, value: { writeText } })
+    const ticket = makeTicket({ status: 'DRAFTING_PRD', projectId: 1, description: 'Example description' })
+    renderWithProviders(
+      <UIContext.Provider value={makeUIValue(ticket.id, ticket.externalId)}>
+        <DashboardHeader ticket={ticket} />
+      </UIContext.Provider>,
+    )
+    fireEvent.click(screen.getByRole('button', { name: /details/i }))
+    const button = screen.getAllByRole('button', { name })[0]!
+    fireEvent.click(button)
+    expect(await screen.findByRole('alert')).toHaveTextContent('Copy failed')
+    fireEvent.click(button)
+    await waitFor(() => { expect(screen.queryByRole('alert')).not.toBeInTheDocument() })
   })
 
   it('shows deterministic bead completion and the ETA range during execution', () => {

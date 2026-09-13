@@ -984,6 +984,7 @@ export function ExecutionSetupPlanEditor({ plan, disabled, onChange }: Execution
             <div key={step.id || index} id={`execution-setup-step-${index}`} className="rounded-lg border border-border bg-background">
               <button
                 type="button"
+                aria-expanded={expanded}
                 onClick={() => setExpandedIndex(expanded ? null : index)}
                 className="w-full px-3 py-2 text-left flex items-center gap-2 hover:bg-accent/30 rounded-t-lg"
               >

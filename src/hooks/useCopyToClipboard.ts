@@ -3,8 +3,8 @@ import { COPY_SUCCESS_DISPLAY_MS } from '@/lib/constants'
 
 /**
  * Hook for copy-to-clipboard with a transient "copied" indicator.
- * Returns [isCopied, copy] where copy accepts the text to copy and resolves to
- * whether the write succeeded.
+ * Returns [isCopied, copy, copyFailed] where copy resolves to whether the write
+ * succeeded. Failures remain visible until a successful retry.
  *
  * The clipboard is refusable — a denied permission, or any page not served from a
  * secure context — and the rejection used to travel no further than the console
@@ -12,6 +12,7 @@ import { COPY_SUCCESS_DISPLAY_MS } from '@/lib/constants'
  */
 export function useCopyToClipboard(displayMs = COPY_SUCCESS_DISPLAY_MS) {
   const [isCopied, setIsCopied] = useState(false)
+  const [copyFailed, setCopyFailed] = useState(false)
   const timerRef = useRef<ReturnType<typeof setTimeout>>(undefined)
   const attemptRef = useRef(0)
 
@@ -31,11 +32,13 @@ export function useCopyToClipboard(displayMs = COPY_SUCCESS_DISPLAY_MS) {
         if (attempt === attemptRef.current) {
           clearTimeout(timerRef.current)
           setIsCopied(false)
+          setCopyFailed(true)
         }
         return false
       }
       if (attempt !== attemptRef.current) return true
       setIsCopied(true)
+      setCopyFailed(false)
       clearTimeout(timerRef.current)
       timerRef.current = setTimeout(() => setIsCopied(false), displayMs)
       return true
@@ -47,5 +50,5 @@ export function useCopyToClipboard(displayMs = COPY_SUCCESS_DISPLAY_MS) {
     return () => clearTimeout(timerRef.current)
   }, [])
 
-  return [isCopied, copy] as const
+  return [isCopied, copy, copyFailed] as const
 }

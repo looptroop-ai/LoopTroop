@@ -37,6 +37,26 @@ function buildPlan(): ExecutionSetupPlan {
 }
 
 describe('ExecutionSetupPlanEditor workspace verification', () => {
+  it('exposes whether each setup step is expanded', () => {
+    const onChange = vi.fn()
+    const { rerender } = render(<ExecutionSetupPlanEditor plan={buildPlan()} onChange={onChange} />)
+    fireEvent.click(screen.getByRole('button', { name: 'Add Step' }))
+    rerender(<ExecutionSetupPlanEditor plan={onChange.mock.calls.at(-1)![0]} onChange={onChange} />)
+
+    const first = screen.getByRole('button', { name: /Setup Step 1/ })
+    expect(first).toHaveAttribute('aria-expanded', 'true')
+    fireEvent.click(first)
+    expect(first).toHaveAttribute('aria-expanded', 'false')
+    expect(screen.queryByRole('button', { name: 'Remove Step' })).not.toBeInTheDocument()
+    fireEvent.click(first)
+    expect(first).toHaveAttribute('aria-expanded', 'true')
+
+    fireEvent.click(screen.getByRole('button', { name: 'Add Step' }))
+    rerender(<ExecutionSetupPlanEditor plan={onChange.mock.calls.at(-1)![0]} onChange={onChange} />)
+    expect(first).toHaveAttribute('aria-expanded', 'false')
+    expect(screen.getByRole('button', { name: /Setup Step 2/ })).toHaveAttribute('aria-expanded', 'true')
+  })
+
   it('keeps discovered hooks read-only and allows validation commands to be edited, reordered, and removed', () => {
     const onChange = vi.fn()
     const plan = buildPlan()

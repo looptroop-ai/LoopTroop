@@ -1,11 +1,14 @@
 import { extractLogFingerprint, hasMatchingLogFingerprint } from '@shared/logIdentity'
 import { apiTicketPath } from '@/lib/apiPaths'
+import { getLogModelId } from '@shared/logClassification'
+export { isDebugLogEntry } from '@shared/logClassification'
 
 import { isPromptTimeoutKind, type PromptTimeoutKind } from '@shared/promptTimeout'
 export type { PromptTimeoutKind }
 
 export interface LogEntry {
   id: string
+  type?: string
   entryId: string
   fingerprint?: string
   line: string
@@ -231,8 +234,8 @@ function deriveKind(data: Record<string, unknown>, type: string, audience: LogEn
 }
 
 function deriveModelId(data: Record<string, unknown>, source: string): string | undefined {
-  if (typeof data.modelId === 'string' && data.modelId) return data.modelId
-  if (source.startsWith('model:')) return source.slice('model:'.length)
+  const modelId = getLogModelId({ modelId: data.modelId, source })
+  if (modelId) return modelId
 
   const nested = data.data && typeof data.data === 'object'
     ? (data.data as Record<string, unknown>)
@@ -316,6 +319,7 @@ export function normalizeLogRecord(data: Record<string, unknown>, fallbackPhase:
 
   return {
     id: entryId,
+    type,
     entryId,
     line,
     source,
@@ -369,6 +373,7 @@ export function normalizeStoredEntry(entry: Partial<LogEntry>, fallbackStatus: s
 
   return {
     id: entryId,
+    ...(entry.type ? { type: entry.type } : {}),
     entryId,
     line,
     source,
@@ -389,10 +394,6 @@ export function normalizeStoredEntry(entry: Partial<LogEntry>, fallbackStatus: s
     streaming: Boolean(entry.streaming),
     op: entry.op === 'upsert' || entry.op === 'finalize' ? entry.op : 'append',
   }
-}
-
-export function isDebugLogEntry(entry: Pick<LogEntry, 'audience' | 'source' | 'line'>): boolean {
-  return entry.audience === 'debug' || entry.source === 'debug' || entry.line.includes('[DEBUG]')
 }
 
 export function compareTimestamps(a?: string, b?: string): number {

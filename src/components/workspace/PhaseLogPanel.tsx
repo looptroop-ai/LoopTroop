@@ -20,7 +20,7 @@ import { LogEntryRow } from './LogLine'
 import { LogCountLabel, LogCountTooltip } from './LogCountLegend'
 import { countLogTextLines } from './logCountUtils'
 import { CurrentActivityStrip } from './CurrentActivityStrip'
-import { useCopyToClipboard } from '@/hooks/useCopyToClipboard'
+import { useCopyLogs } from '@/hooks/useCopyLogs'
 import { BeadDelimiter } from './logGrouping'
 import { buildBeadSections } from './logGroupingHelpers'
 import { useTicketHistoricalLogs, type HistoricalLogView } from '@/hooks/useTicketHistoricalLogs'
@@ -78,7 +78,14 @@ export function PhaseLogPanel({
   // made each arriving line re-request the page that line belongs to.
   const loadLogsForPhase = logCtx?.loadLogsForPhase
   const getLogsForPhase = logCtx?.getLogsForPhase
-  const [activeTab, setActiveTab] = useState<string>(defaultTab ?? 'ALL')
+  const scopeKey = JSON.stringify([ticket?.id, phase, phaseAttempt])
+  const [tabScope, setTabScope] = useState(scopeKey)
+  const [selectedTab, setActiveTab] = useState<string>(defaultTab ?? 'ALL')
+  const activeTab = tabScope === scopeKey ? selectedTab : 'ALL'
+  if (tabScope !== scopeKey) {
+    setTabScope(scopeKey)
+    setActiveTab('ALL')
+  }
   const [isAiDetailsOpen, setIsAiDetailsOpen] = useState(false)
   const aiDetailsPanelId = useId()
   const liveLogOptions = useMemo(
@@ -280,8 +287,10 @@ export function PhaseLogPanel({
     [observedModelVariants, ticket],
   )
 
+  const pendingModelTab = shouldLoadHistoricalLogs && historicalLogs.modelIds === null && !historicalLogs.isError
+    && isAiLogTab(activeTab) && activeTab !== 'AI' ? activeTab : null
   const modelTabs = useMemo(() => {
-    const enableModelTabs = isKnownMultiModelPhase || detectedModelIds.length > 0
+    const enableModelTabs = isKnownMultiModelPhase || detectedModelIds.length > 0 || pendingModelTab
     if (!enableModelTabs) return []
 
     const seen = new Set<string>()
@@ -294,11 +303,12 @@ export function PhaseLogPanel({
 
     if (isKnownMultiModelPhase) configuredModelIds.forEach(add)
     detectedModelIds.forEach(add)
+    if (pendingModelTab) add(pendingModelTab)
 
     return tabs
-  }, [isKnownMultiModelPhase, configuredModelIds, detectedModelIds])
+  }, [isKnownMultiModelPhase, configuredModelIds, detectedModelIds, pendingModelTab])
 
-  const singleModelTabId = !isKnownMultiModelPhase && modelTabs.length === 1 ? modelTabs[0]! : null
+  const singleModelTabId = !pendingModelTab && !isKnownMultiModelPhase && modelTabs.length === 1 ? modelTabs[0]! : null
   const aiTabLabel = singleModelTabId ? `AI > ${getModelDisplayName(singleModelTabId)}` : 'AI'
   const hasModelTabs = modelTabs.length > 0 && !singleModelTabId
   const availableTabs: string[] = useMemo(() => {
@@ -314,7 +324,7 @@ export function PhaseLogPanel({
       : 'ALL'
   // Scope-wide metadata survives filter changes, so correcting an unavailable tab
   // also corrects the history/export query without the selected model erasing itself.
-  if (shouldLoadHistoricalLogs && historicalLogs.modelIds !== null && effectiveTab !== activeTab) {
+  if (shouldLoadHistoricalLogs && (historicalLogs.modelIds !== null || historicalLogs.isError) && effectiveTab !== activeTab) {
     setActiveTab(effectiveTab)
   }
   const filteredLogs = filterEntries(phaseLogs, effectiveTab)
@@ -374,31 +384,15 @@ export function PhaseLogPanel({
     virtualItems.find(item => item.type === 'entry')?.key,
     `${phase}:${phaseAttempt ?? 'active'}:${effectiveTab}`,
   )
-  const [copied, copyToClipboard] = useCopyToClipboard()
-  const [isCopyingLogs, setIsCopyingLogs] = useState(false)
-  const [copyLogsFailed, setCopyLogsFailed] = useState(false)
-  const handleCopyLogs = useCallback(async () => {
-    if (isCopyingLogs) return
-    setIsCopyingLogs(true)
-    setCopyLogsFailed(false)
-    try {
-      const textToCopy = shouldLoadHistoricalLogs
-        ? await historicalLogs.exportLogs()
-        : filteredLogs.map((entry) => {
-            const ts = entry.timestamp ? `[${entry.timestamp}] ` : ''
-            return `${ts}${formatLogLine(entry, shouldShowModelNameInLogTags).copyText}`
-          }).join('\n')
-      if (!textToCopy) return
-      // The clipboard write reports refusal by returning false rather than throwing,
-      // so the failure branch below covers the export only — both have to be checked
-      // or a denied clipboard reads as a successful copy.
-      if (!await copyToClipboard(textToCopy)) setCopyLogsFailed(true)
-    } catch {
-      setCopyLogsFailed(true)
-    } finally {
-      setIsCopyingLogs(false)
-    }
-  }, [copyToClipboard, filteredLogs, historicalLogs, isCopyingLogs, shouldLoadHistoricalLogs, shouldShowModelNameInLogTags])
+  const { copied, isCopyingLogs, copyLogsFailed, handleCopyLogs } = useCopyLogs(
+    JSON.stringify([scopeKey, effectiveTab, shouldLoadHistoricalLogs]),
+    async signal => shouldLoadHistoricalLogs
+      ? historicalLogs.exportLogs(signal)
+      : filteredLogs.map(entry => {
+          const ts = entry.timestamp ? `[${entry.timestamp}] ` : ''
+          return `${ts}${formatLogLine(entry, shouldShowModelNameInLogTags).copyText}`
+        }).join('\n'),
+  )
 
   const visibleLogTail = useMemo(() => {
     const lastEntry = filteredLogs.at(-1)
@@ -520,7 +514,7 @@ export function PhaseLogPanel({
                     {tooltipContent}
                   </TooltipContent>
                 </Tooltip>
-                {!isModelsCollapsed && modelTabs.map(mTab => (
+                {(!isModelsCollapsed || pendingModelTab) && modelTabs.map(mTab => (
                   <ModelBadge
                     key={mTab}
                     modelId={mTab}
@@ -654,7 +648,7 @@ export function PhaseLogPanel({
                               type="button"
                               aria-label="Copy all logs"
                               onClick={() => void handleCopyLogs()}
-                              disabled={isCopyingLogs || (!shouldLoadHistoricalLogs && !hasLogs)}
+                              disabled={isCopyingLogs || (isLoadingLogs && !hasLogs) || (!shouldLoadHistoricalLogs && !hasLogs)}
                               className={cn(
                                 'flex items-center justify-center p-1 rounded-md hover:bg-muted/70 hover:text-foreground transition-all disabled:opacity-50 disabled:cursor-not-allowed',
                                 isCopyingLogs && 'pointer-events-none',
@@ -676,6 +670,7 @@ export function PhaseLogPanel({
                   : 'Copy all logs'}
             </TooltipContent>
           </Tooltip>
+          {copyLogsFailed > 0 && <span key={copyLogsFailed} role="alert" className="text-xs text-destructive">Could not copy complete logs. Click to retry.</span>}
         </div>
       </div>
       <CurrentActivityStrip

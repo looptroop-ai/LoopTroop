@@ -18,7 +18,7 @@ import { LogCountLabel, LogCountTooltip } from './LogCountLegend'
 import { countLogTextLines } from './logCountUtils'
 import { ModelBadge } from '@/components/shared/ModelBadge'
 import { getModelDisplayName } from '@/components/shared/modelBadgeUtils'
-import { useCopyToClipboard } from '@/hooks/useCopyToClipboard'
+import { useCopyLogs } from '@/hooks/useCopyLogs'
 import { CurrentActivityStrip } from './CurrentActivityStrip'
 import { BeadDelimiter } from './logGrouping'
 import { buildBeadSections, type RenderedBeadSection } from './logGroupingHelpers'
@@ -148,7 +148,14 @@ export function FullLogView({ ticket }: FullLogViewProps) {
     [getAllLogs],
   )
 
-  const [activeTab, setActiveTab] = useState<string>('ALL')
+  const scopeKey = ticket?.id ?? 'live'
+  const [tabScope, setTabScope] = useState(scopeKey)
+  const [selectedTab, setActiveTab] = useState<string>('ALL')
+  const activeTab = tabScope === scopeKey ? selectedTab : 'ALL'
+  if (tabScope !== scopeKey) {
+    setTabScope(scopeKey)
+    setActiveTab('ALL')
+  }
   const [isAiDetailsOpen, setIsAiDetailsOpen] = useState(false)
   const aiDetailsPanelId = useId()
   const [isSkipsOpen, setIsSkipsOpen] = useState(false)
@@ -216,6 +223,8 @@ export function FullLogView({ ticket }: FullLogViewProps) {
     [observedModelVariants, ticket],
   )
 
+  const pendingModelTab = ticket?.id && historicalLogs.modelIds === null && !historicalLogs.isError
+    && isAiLogTab(activeTab) && activeTab !== 'AI' ? activeTab : null
   const modelTabs = useMemo(() => {
     const seen = new Set<string>()
     const tabs: string[] = []
@@ -227,13 +236,14 @@ export function FullLogView({ ticket }: FullLogViewProps) {
 
     configuredModelIds.forEach(add)
     detectedModelIds.forEach(add)
+    if (pendingModelTab) add(pendingModelTab)
 
     return tabs
-  }, [configuredModelIds, detectedModelIds])
+  }, [configuredModelIds, detectedModelIds, pendingModelTab])
 
-  const singleModelTabId = modelTabs.length === 1 ? modelTabs[0]! : null
+  const singleModelTabId = !pendingModelTab && modelTabs.length === 1 ? modelTabs[0]! : null
   const aiTabLabel = singleModelTabId ? `AI > ${getModelDisplayName(singleModelTabId)}` : 'AI'
-  const hasModelTabs = modelTabs.length > 1
+  const hasModelTabs = modelTabs.length > 1 || Boolean(pendingModelTab)
   const availableTabs: string[] = useMemo(() => {
     const tabs: string[] = [...FIXED_TABS]
     if (hasModelTabs) tabs.push(...modelTabs)
@@ -245,7 +255,7 @@ export function FullLogView({ ticket }: FullLogViewProps) {
     : singleModelTabId && activeTab === singleModelTabId
       ? 'AI'
       : 'ALL'
-  if (ticket?.id && historicalLogs.modelIds !== null && effectiveTab !== activeTab) {
+  if (ticket?.id && (historicalLogs.modelIds !== null || historicalLogs.isError) && effectiveTab !== activeTab) {
     setActiveTab(effectiveTab)
   }
   const aiDetailsModelId = isAiLogTab(effectiveTab) && effectiveTab !== 'AI' ? effectiveTab : undefined
@@ -381,31 +391,15 @@ export function FullLogView({ ticket }: FullLogViewProps) {
   }, [autoScrollEnabledRef, effectiveTab, enableAutoScroll, hasLogs, scheduleScrollToBottom, ticket?.id, visibleLogTail])
 
   // ── Copy all logs ──────────────────────────────────────────────
-  const [copied, copyToClipboard] = useCopyToClipboard()
-  const [isCopyingLogs, setIsCopyingLogs] = useState(false)
-  const [copyLogsFailed, setCopyLogsFailed] = useState(false)
-  const handleCopyLogs = useCallback(async () => {
-    if (isCopyingLogs) return
-    setIsCopyingLogs(true)
-    setCopyLogsFailed(false)
-    try {
-      const textToCopy = ticket?.id
-        ? await historicalLogs.exportLogs()
-        : renderedEntries.map((entry) => {
-            const ts = entry.timestamp ? `[${entry.timestamp}] ` : ''
-            return `${ts}[${entry.status}] ${formatLogLine(entry, true).copyText}`
-          }).join('\n')
-      if (!textToCopy) return
-      // The clipboard write reports refusal by returning false rather than throwing,
-      // so the failure branch below covers the export only — both have to be checked
-      // or a denied clipboard reads as a successful copy.
-      if (!await copyToClipboard(textToCopy)) setCopyLogsFailed(true)
-    } catch {
-      setCopyLogsFailed(true)
-    } finally {
-      setIsCopyingLogs(false)
-    }
-  }, [renderedEntries, copyToClipboard, historicalLogs, isCopyingLogs, ticket?.id])
+  const { copied, isCopyingLogs, copyLogsFailed, handleCopyLogs } = useCopyLogs(
+    JSON.stringify([scopeKey, effectiveTab]),
+    async signal => ticket?.id
+      ? historicalLogs.exportLogs(signal)
+      : renderedEntries.map(entry => {
+          const ts = entry.timestamp ? `[${entry.timestamp}] ` : ''
+          return `${ts}[${entry.status}] ${formatLogLine(entry, true).copyText}`
+        }).join('\n'),
+  )
 
   // ── Global entry index counter ──────────────────────────────────
   const globalIndexMap = useMemo(() => {
@@ -563,7 +557,7 @@ export function FullLogView({ ticket }: FullLogViewProps) {
                     {tooltipContent}
                   </TooltipContent>
                 </Tooltip>
-                {!isModelsCollapsed && modelTabs.map((modelTab) => (
+                {(!isModelsCollapsed || pendingModelTab) && modelTabs.map((modelTab) => (
                   <ModelBadge
                     key={modelTab}
                     modelId={modelTab}
@@ -712,7 +706,7 @@ export function FullLogView({ ticket }: FullLogViewProps) {
                               type="button"
                               aria-label="Copy all logs"
                               onClick={() => void handleCopyLogs()}
-                              disabled={isCopyingLogs || (!ticket?.id && !hasLogs)}
+                              disabled={isCopyingLogs || (isLoadingLogs && !hasLogs) || (!ticket?.id && !hasLogs)}
                               className={cn(
                                 'flex items-center justify-center p-1 rounded-md hover:bg-muted/70 hover:text-foreground transition-all disabled:opacity-50 disabled:cursor-not-allowed',
                                 isCopyingLogs && 'pointer-events-none',
@@ -734,6 +728,7 @@ export function FullLogView({ ticket }: FullLogViewProps) {
                   : 'Copy all logs'}
             </TooltipContent>
           </Tooltip>
+          {copyLogsFailed > 0 && <span key={copyLogsFailed} role="alert" className="text-xs text-destructive">Could not copy complete logs. Click to retry.</span>}
         </div>
       </div>
 

@@ -1,4 +1,5 @@
 import { extractLogFingerprint } from '@shared/logIdentity'
+import { isAiLogEntry, isDebugLogEntry } from '@shared/logClassification'
 
 export type LogView = 'overview' | 'system' | 'command' | 'ai' | 'error' | 'debug'
 
@@ -8,9 +9,9 @@ export function classifyPersistedLogEntry(entry: Record<string, unknown>): Exclu
   const source = String(entry.source ?? '')
   const audience = String(entry.audience ?? '')
   const content = String(entry.content ?? entry.message ?? '')
-  if (type === 'debug' || source === 'debug' || audience === 'debug') return 'debug'
+  if (isDebugLogEntry(entry)) return 'debug'
   if (type === 'error' || source === 'error' || String(entry.kind ?? '') === 'error') return 'error'
-  if (audience === 'ai' || type === 'model_output' || source === 'opencode' || source.startsWith('model:')) return 'ai'
+  if (isAiLogEntry({ type, source, audience })) return 'ai'
   if (/^\[CMD\]/.test(content)) return 'command'
   return 'system'
 }

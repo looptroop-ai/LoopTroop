@@ -1,4 +1,4 @@
-import { useState, useCallback, useRef, useEffect } from 'react'
+import { useState, useCallback, useRef, useLayoutEffect } from 'react'
 import { COPY_SUCCESS_DISPLAY_MS } from '@/lib/constants'
 
 /** Copy feedback persists on failure until success or a different logical target. */
@@ -30,7 +30,8 @@ export function useCopyToClipboard(displayMs = COPY_SUCCESS_DISPLAY_MS, targetKe
     return true
   }, [displayMs, targetKey])
 
-  useEffect(() => () => {
+  // Invalidate the old target before a consumer's layout effect can copy the new one.
+  useLayoutEffect(() => () => {
     ++attemptRef.current
     clearTimeout(timerRef.current)
   }, [targetKey])

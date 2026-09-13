@@ -1,6 +1,7 @@
-import { afterAll, beforeEach, describe, expect, it } from 'vitest'
+import { afterAll, beforeEach, describe, expect, it, vi } from 'vitest'
 import { Hono } from 'hono'
 import { appendFileSync } from 'node:fs'
+import * as fsPromises from 'node:fs/promises'
 import { clearProjectDatabaseCache } from '../../db/project'
 import { sqlite } from '../../db/index'
 import { appendLogEvent } from '../../log/executionLog'
@@ -9,6 +10,10 @@ import { ticketRouter } from '../tickets'
 import { health } from '../health'
 import { createInitializedTestTicket, createTestRepoManager, resetTestDb } from '../../test/integration'
 import { getTicketPaths } from '../../storage/tickets'
+
+vi.mock('node:fs/promises', async importOriginal => ({
+  ...await importOriginal<typeof import('node:fs/promises')>(),
+}))
 
 const repoManager = createTestRepoManager('log-projection-')
 const app = new Hono()
@@ -358,5 +363,117 @@ describe('ticket log projection API', () => {
     expect(await lifecycle.json()).toMatchObject({
       modelIds: ['test/a', 'test/attempt', 'test/b', 'test/bead', 'test/phase', 'test/z'],
     })
+  })
+
+  it('recovers AI-only writes and newer finalizations without losing repeated anonymous appends', async () => {
+    const { ticket } = await createInitializedTestTicket(repoManager)
+    const paths = getTicketPaths(ticket.id)!
+    const base = { phase: 'CODING', phaseAttempt: 1, type: 'model_output', audience: 'ai', source: 'model:test/model' }
+    const row = (second: number, content: string, fields = {}) => ({
+      ...base, timestamp: `2026-01-01T00:00:0${second}.000Z`, content, ...fields,
+    })
+    const prompt = row(0, 'prompt', { fingerprint: 'prompt-1' })
+    const old = row(1, 'old response', { entryId: 'response-1', op: 'finalize' })
+    const repeated = row(2, 'repeated\nline')
+    const survivor = row(3, 'surviving AI write', { source: 'model:test/survivor', timestamp: '2026-01-01T02:00:03.000+02:00' })
+    const tiedMilestone = row(2, 'tied system milestone', { type: 'info', audience: 'all', source: 'system', modelId: 'test/model', timestamp: '2026-01-01T00:00:02.500Z' })
+    const milestone = row(4, 'system milestone', { type: 'info', audience: 'all', source: 'system', modelId: 'test/model' })
+    appendFileSync(paths.executionLogPath, [prompt, old, repeated, tiedMilestone, milestone].map(entry => JSON.stringify(entry)).join('\n') + '\n')
+    appendFileSync(paths.aiLogPath, [prompt, old, repeated, repeated, survivor, row(3, 'new response', { entryId: 'response-1', op: 'finalize' })]
+      .map(entry => JSON.stringify(entry)).join('\n') + '\n')
+
+    const query = { scope: 'phase', phase: 'CODING', phaseAttempt: 1, view: 'ai' } as const
+    const first = await queryLogPage(ticket.id, { ...query, limit: 1 })
+    expect(first).toMatchObject({
+      entries: [{ content: 'system milestone' }], totalEntries: 7, totalTextLines: 9,
+      modelIds: ['test/model', 'test/survivor'], hasOlder: true,
+    })
+    const complete = await exportLogEntries(ticket.id, query, { pageSize: 1 })
+    expect(complete?.map(entry => entry.content)).toEqual([
+      'prompt', 'new response', 'repeated\nline', 'repeated\nline', 'tied system milestone', 'surviving AI write', 'system milestone',
+    ])
+    expect(complete?.find(entry => entry.content === 'surviving AI write')).not.toHaveProperty('modelId')
+    const model = await queryLogPage(ticket.id, { ...query, modelId: 'test/survivor', limit: 1 })
+    expect(model).toMatchObject({ entries: [{ content: 'surviving AI write' }], totalEntries: 1 })
+
+    appendFileSync(paths.executionLogPath, JSON.stringify(row(5, 'newest normal response', { entryId: 'response-1', op: 'finalize' })) + '\n')
+    appendFileSync(paths.executionLogPath, JSON.stringify(row(6, 'second attempt response', { entryId: 'response-1', op: 'finalize', phaseAttempt: 2 })) + '\n')
+    const updated = await exportLogEntries(ticket.id, query, { pageSize: 1 })
+    expect(updated?.map(entry => entry.content)).toEqual([
+      'prompt', 'newest normal response', 'repeated\nline', 'repeated\nline', 'tied system milestone', 'surviving AI write', 'system milestone',
+    ])
+    expect(await queryLogPage(ticket.id, { ...query, phaseAttempt: 2, limit: 1 })).toMatchObject({
+      entries: [{ content: 'second attempt response' }], totalEntries: 1,
+    })
+  })
+
+  it('includes bare model output and quoted debug tags but excludes explicit debug rows in normal storage', async () => {
+    const { ticket } = await createInitializedTestTicket(repoManager)
+    const base = { phase: 'CODING', timestamp: '2026-01-01T00:00:00.000Z' }
+    const rows = [
+      { ...base, type: 'model_output', content: '[DEBUG] quoted by a model' },
+      { ...base, type: 'info', source: 'system', modelId: 'test/model', content: 'Milestone mentions [DEBUG]' },
+      { ...base, type: 'debug', source: 'model:test/debug', content: 'Private trace' },
+    ]
+    appendFileSync(getTicketPaths(ticket.id)!.executionLogPath, rows.map(entry => JSON.stringify(entry)).join('\n') + '\n')
+    const page = await queryLogPage(ticket.id, { scope: 'phase', phase: 'CODING', view: 'ai', limit: 20 })
+    expect(page).toMatchObject({
+      entries: expect.arrayContaining([
+        expect.objectContaining({ content: '[DEBUG] quoted by a model' }),
+        expect.objectContaining({ content: 'Milestone mentions [DEBUG]' }),
+      ]),
+      totalEntries: 2, modelIds: ['test/model'],
+    })
+  })
+
+  it('keeps an AI cursor stable when finalization switches the winning channel between pages', async () => {
+    const { ticket } = await createInitializedTestTicket(repoManager)
+    const paths = getTicketPaths(ticket.id)!
+    const base = { phase: 'CODING', type: 'model_output', audience: 'ai', op: 'finalize', modelId: 'test/model', timestamp: '2026-01-01T00:00:01.000Z' }
+    appendFileSync(paths.executionLogPath, [
+      { ...base, entryId: 'a', content: 'older tied row' },
+      { ...base, entryId: 'z', content: 'initial response' },
+    ].map(entry => JSON.stringify(entry)).join('\n') + '\n')
+    const query = { scope: 'phase', phase: 'CODING', view: 'ai', limit: 1 } as const
+    const first = await queryLogPage(ticket.id, query)
+    expect(first).toMatchObject({ entries: [{ content: 'initial response' }], totalEntries: 2 })
+    const final = { ...base, entryId: 'z', content: 'final response', timestamp: '2026-01-01T00:00:05.000Z' }
+    appendFileSync(paths.aiLogPath, JSON.stringify(final) + '\n')
+    const older = await queryLogPage(ticket.id, { ...query, before: first!.olderCursor! })
+    expect(older).toMatchObject({ entries: [{ content: 'older tied row' }], hasOlder: false })
+    expect(await queryLogPage(ticket.id, query)).toMatchObject({
+      entries: [{ content: 'final response', timestamp: base.timestamp }], totalEntries: 2,
+    })
+
+    // Export catches up between pages too: switch back to a newer normal-only
+    // finalization after its first page, without revisiting that logical row.
+    const realStat = fsPromises.stat
+    let catchUps = 0
+    const statSpy = vi.spyOn(fsPromises, 'stat').mockImplementation((path, options) => {
+      if (path === paths.executionLogPath && ++catchUps === 2) {
+        appendFileSync(paths.executionLogPath, JSON.stringify({ ...final, content: 'later response', timestamp: '2026-01-01T00:00:06.000Z' }) + '\n')
+      }
+      return realStat(path, options)
+    })
+    try {
+      const exported = await exportLogEntries(ticket.id, query, { pageSize: 1 })
+      expect(exported?.map(entry => entry.content)).toEqual(['older tied row', 'final response'])
+      expect(catchUps).toBe(2)
+    } finally {
+      statSpy.mockRestore()
+    }
+  })
+
+  it('rejects cursor fields with array values before binding them to SQLite', async () => {
+    const { ticket } = await createInitializedTestTicket(repoManager)
+    const valid = { ordinal: 1, timestamp: '', mirrorKey: 'entry:a', mirrorOccurrence: 0 }
+    for (const cursor of [
+      { ordinal: 1, timestamp: '', channel: ['ai'] },
+      ...Object.keys(valid).map(key => ({ ...valid, [key]: ['invalid'] })),
+    ]) {
+      const before = Buffer.from(JSON.stringify(cursor)).toString('base64url')
+      const response = await app.request(`/api/tickets/${encodeURIComponent(ticket.id)}/logs?view=ai&before=${before}`)
+      expect(response.status).toBe(400)
+    }
   })
 })

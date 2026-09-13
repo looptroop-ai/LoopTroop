@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest'
 import type { LogEntry } from '@/context/LogContext'
-import { filterEntries, formatLogLine } from '../logFormat'
+import { filterBeadLogEntries, filterEntries, formatLogLine } from '../logFormat'
+import { isDebugLogEntry, normalizeLogRecord } from '@/context/logUtils'
 
 function makeLog(overrides: Partial<LogEntry> = {}): LogEntry {
   return {
@@ -21,6 +22,16 @@ function makeLog(overrides: Partial<LogEntry> = {}): LogEntry {
 }
 
 describe('logFormat filtering', () => {
+  it('keeps quoted debug tags in normalized model output and excludes explicit debug attribution', () => {
+    const model = normalizeLogRecord({ type: 'model_output', source: 'system', audience: 'all', content: '[DEBUG] quoted model prose' }, 'CODING')
+    const trace = normalizeLogRecord({ type: 'debug', source: 'model:test/model', audience: 'all', content: 'private trace' }, 'CODING')
+    expect(isDebugLogEntry(model)).toBe(false)
+    expect(isDebugLogEntry(trace)).toBe(true)
+    expect(filterEntries([model, trace], 'AI')).toEqual([model])
+    expect(filterEntries([trace], 'test/model')).toEqual([])
+    expect(filterBeadLogEntries([model, trace])).toEqual([model])
+  })
+
   it('shows provider API errors in ALL and ERROR tabs', () => {
     const providerError = makeLog()
 

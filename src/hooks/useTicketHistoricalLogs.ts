@@ -1,5 +1,5 @@
-import { useCallback, useEffect, useMemo, useState } from 'react'
-import { useInfiniteQuery } from '@tanstack/react-query'
+import { useCallback, useEffect, useMemo } from 'react'
+import { skipToken, useInfiniteQuery, useQuery, useQueryClient } from '@tanstack/react-query'
 import {
   getLogEntryAliases,
   INITIAL_LOG_PAGE_LIMIT,
@@ -30,9 +30,14 @@ interface HistoricalLogPage {
   totalEntries: number | null
   totalTextLines: number | null
   modelIds: string[] | null
-  modelIdsUpdatedAt: number
   /** Context for a delimiter that begins before this page. */
   boundary?: Record<string, unknown>
+}
+
+interface ModelCatalog {
+  modelIds: string[] | null
+  nextRevision: number
+  appliedRevision: number
 }
 
 function normalizeCount(value: unknown): number | null {
@@ -67,7 +72,6 @@ function normalizePage(payload: unknown, fallbackPhase?: string): HistoricalLogP
     modelIds: Array.isArray(data.modelIds)
       ? data.modelIds.filter((id): id is string => typeof id === 'string' && id.length > 0)
       : null,
-    modelIdsUpdatedAt: Date.now(),
     boundary: data.boundary && typeof data.boundary === 'object' ? data.boundary as Record<string, unknown> : undefined,
   }
 }
@@ -77,6 +81,15 @@ function normalizePage(payload: unknown, fallbackPhase?: string): HistoricalLogP
  * outside this query; callers can overlay them by stable entry identity.
  */
 export function useTicketHistoricalLogs(ticketId: string | undefined, scope: HistoricalLogScope, enabled = true) {
+  const queryClient = useQueryClient()
+  const modelQueryKey = ['ticket-log-models', ticketId ?? '__missing__', scope.scope, scope.phase ?? '', scope.phaseAttempt ?? '', scope.beadId ?? '']
+  // Share the catalog across filter queries and remounts. Only a fresh response
+  // updates it; reading or paging a cached filter cannot replay older metadata.
+  const modelCatalog = useQuery<ModelCatalog, Error, string[] | null>({
+    queryKey: modelQueryKey,
+    queryFn: skipToken,
+    select: catalog => catalog.modelIds,
+  })
   const queryKey = useMemo(() => [
     'ticket-log-history', ticketId ?? '__missing__', scope.scope, scope.phase ?? '', scope.phaseAttempt ?? '', scope.view, scope.modelId ?? '', scope.beadId ?? '',
   ], [scope.beadId, scope.modelId, scope.phase, scope.phaseAttempt, scope.scope, scope.view, ticketId])
@@ -88,9 +101,24 @@ export function useTicketHistoricalLogs(ticketId: string | undefined, scope: His
     // query; `null` represents the newest page and is omitted from the URL.
     initialPageParam: null as string | null,
     queryFn: async ({ pageParam, signal }) => {
+      // Filter queries can overlap. Order successful catalogs by request start,
+      // so a delayed older response cannot erase a newer response's model IDs.
+      const revision = pageParam === null
+        ? queryClient.setQueryData<ModelCatalog>(modelQueryKey, previous => ({
+            modelIds: previous?.modelIds ?? null,
+            nextRevision: (previous?.nextRevision ?? 0) + 1,
+            appliedRevision: previous?.appliedRevision ?? 0,
+          }))!.nextRevision
+        : 0
       const response = await fetch(getQuery(ticketId!, scope, pageParam ?? undefined), { signal })
       await throwIfNotOk(response, 'Unable to load logs')
-      return normalizePage(await response.json(), scope.phase)
+      const page = normalizePage(await response.json(), scope.phase)
+      if (pageParam === null && page.modelIds !== null && !signal.aborted) {
+        queryClient.setQueryData<ModelCatalog>(modelQueryKey, previous => previous && revision > previous.appliedRevision
+          ? { ...previous, modelIds: page.modelIds, appliedRevision: revision }
+          : previous)
+      }
+      return page
     },
     // History is only fetched toward older cursors via fetchPreviousPage.
     // React Query still requires this callback to calculate result metadata.
@@ -148,23 +176,6 @@ export function useTicketHistoricalLogs(ticketId: string | undefined, scope: His
   }, [query.data?.pages])
   const refetch = query.refetch
   const countPage = query.data?.pages.find(page => page.totalEntries !== null || page.totalTextLines !== null)
-  const modelScopeKey = JSON.stringify([ticketId, scope.scope, scope.phase, scope.phaseAttempt, scope.beadId])
-  const [modelCatalog, setModelCatalog] = useState<{ scopeKey: string; modelIds: string[] | null; updatedAt: number }>({
-    scopeKey: modelScopeKey,
-    modelIds: null,
-    updatedAt: 0,
-  })
-  // Keep scope metadata while a different filter loads, but never carry it into
-  // another ticket, phase, attempt, or bead. Filtered rows cannot define their own tabs.
-  const modelPage = query.data?.pages.find(page => page.modelIds !== null)
-  const sameModelScope = modelCatalog.scopeKey === modelScopeKey
-  // Paging an older cached filter updates the query timestamp, not its catalog.
-  const usePageModels = modelPage != null && (!sameModelScope || modelPage.modelIdsUpdatedAt >= modelCatalog.updatedAt)
-  const modelIds = usePageModels ? modelPage.modelIds : sameModelScope ? modelCatalog.modelIds : null
-  const modelUpdatedAt = usePageModels ? modelPage.modelIdsUpdatedAt : sameModelScope ? modelCatalog.updatedAt : 0
-  if (!sameModelScope || modelCatalog.modelIds !== modelIds || modelCatalog.updatedAt !== modelUpdatedAt) {
-    setModelCatalog({ scopeKey: modelScopeKey, modelIds, updatedAt: modelUpdatedAt })
-  }
 
   const exportLogs = useCallback(async (signal?: AbortSignal): Promise<string> => {
     if (!ticketId) return ''
@@ -217,7 +228,7 @@ export function useTicketHistoricalLogs(ticketId: string | undefined, scope: His
     entries,
     totalEntries: countPage?.totalEntries ?? null,
     totalTextLines: countPage?.totalTextLines ?? null,
-    modelIds,
+    modelIds: modelCatalog.data ?? null,
     fetchOlder: query.fetchPreviousPage,
     fetchAllOlder,
     hasOlder: query.hasPreviousPage,

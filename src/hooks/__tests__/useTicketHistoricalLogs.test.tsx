@@ -18,25 +18,51 @@ function renderHistoricalLogs(scope: HistoricalLogScope) {
 describe('useTicketHistoricalLogs', () => {
   afterEach(() => vi.restoreAllMocks())
 
-  it('keeps newer model metadata when revisiting and paging an older cached filter', async () => {
-    vi.spyOn(globalThis, 'fetch').mockImplementation(input => {
+  it.each([200, 503])('orders concurrent filter catalogs when the newer request returns status %i', async status => {
+    let resolveOlder!: (response: Response) => void
+    const fetchSpy = vi.spyOn(globalThis, 'fetch')
+      .mockImplementationOnce(() => new Promise(resolve => { resolveOlder = resolve }))
+      .mockImplementationOnce(() => createJsonResponse({ entries: [], modelIds: ['provider/a', 'provider/b'] }, status))
+    const client = createTestQueryClient()
+    const wrapper = ({ children }: { children: ReactNode }) => <QueryClientProvider client={client}>{children}</QueryClientProvider>
+    const older = renderHook(() => useTicketHistoricalLogs('ticket-1', { scope: 'lifecycle', view: 'overview' }), { wrapper })
+    await waitFor(() => expect(fetchSpy).toHaveBeenCalledTimes(1))
+    const newer = renderHook(() => useTicketHistoricalLogs('ticket-1', { scope: 'lifecycle', view: 'ai' }), { wrapper })
+    await waitFor(() => expect(newer.result.current.isFetching).toBe(false))
+    await act(async () => { resolveOlder(await createJsonResponse({ entries: [], modelIds: ['provider/a'] })) })
+    await waitFor(() => expect(older.result.current.isFetching).toBe(false))
+    const expected = status === 200 ? ['provider/a', 'provider/b'] : ['provider/a']
+    await waitFor(() => expect(older.result.current.modelIds).toEqual(expected))
+    expect(newer.result.current.modelIds).toEqual(expected)
+    expect(fetchSpy).toHaveBeenCalledTimes(2)
+  })
+
+  it.each([1000, 900])('keeps the catalog through cached paging and remounts when the clock becomes %i', async clock => {
+    const now = vi.spyOn(Date, 'now').mockReturnValue(1000)
+    const fetchSpy = vi.spyOn(globalThis, 'fetch').mockImplementation(input => {
       const url = new URL(String(input), 'http://localhost')
       if (url.searchParams.has('before')) return createJsonResponse({ entries: [], hasOlder: false, olderCursor: null })
       const modelIds = url.searchParams.get('view') === 'ai' ? ['provider/a', 'provider/b'] : ['provider/a']
       return createJsonResponse({ entries: [], hasOlder: true, olderCursor: 'older', modelIds })
     })
     const client = createTestQueryClient()
-    const { result, rerender } = renderHook(
+    const wrapper = ({ children }: { children: ReactNode }) => <QueryClientProvider client={client}>{children}</QueryClientProvider>
+    const { result, rerender, unmount } = renderHook(
       ({ view }: { view: HistoricalLogScope['view'] }) => useTicketHistoricalLogs('ticket-1', { scope: 'lifecycle', view }),
-      { initialProps: { view: 'overview' }, wrapper: ({ children }: { children: ReactNode }) => <QueryClientProvider client={client}>{children}</QueryClientProvider> },
+      { initialProps: { view: 'overview' }, wrapper },
     )
     await waitFor(() => expect(result.current.modelIds).toEqual(['provider/a']))
+    now.mockReturnValue(clock)
     rerender({ view: 'ai' })
     await waitFor(() => expect(result.current.modelIds).toEqual(['provider/a', 'provider/b']))
     rerender({ view: 'overview' })
     expect(result.current.modelIds).toEqual(['provider/a', 'provider/b'])
     await act(async () => { await result.current.fetchOlder() })
     expect(result.current.modelIds).toEqual(['provider/a', 'provider/b'])
+    unmount()
+    const remounted = renderHook(() => useTicketHistoricalLogs('ticket-1', { scope: 'lifecycle', view: 'overview' }), { wrapper })
+    expect(remounted.result.current.modelIds).toEqual(['provider/a', 'provider/b'])
+    expect(fetchSpy).toHaveBeenCalledTimes(3)
   })
 
   it('retains complete model metadata across filter loading and resets it for another scope', async () => {

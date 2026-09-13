@@ -1,4 +1,5 @@
-import { act, renderHook } from '@testing-library/react'
+import { act, renderHook, waitFor } from '@testing-library/react'
+import { useLayoutEffect } from 'react'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import { useCopyToClipboard } from '../useCopyToClipboard'
 
@@ -21,6 +22,25 @@ afterEach(() => {
  * so the button reported success it had not had.
  */
 describe('useCopyToClipboard', () => {
+  it.each([true, false])('retains feedback for a new target copied during layout (success: %s)', async success => {
+    const writeText = stubClipboard(() => success ? Promise.resolve() : Promise.reject(new Error('Denied')))
+    const { result, rerender } = renderHook(({ target }) => {
+      const feedback = useCopyToClipboard(undefined, target)
+      const copy = feedback[1]
+      useLayoutEffect(() => { void copy(target) }, [copy, target])
+      return feedback
+    }, { initialProps: { target: 'first-target' } })
+    await waitFor(() => { expect(result.current[success ? 0 : 2]).toBe(true) })
+
+    rerender({ target: 'second-target' })
+    await waitFor(() => { expect(result.current[success ? 0 : 2]).toBe(true) })
+
+    expect(writeText).toHaveBeenLastCalledWith('second-target')
+    expect(result.current[0]).toBe(success)
+    expect(result.current[2]).toBe(!success)
+    expect(result.current[3]).toBe(success ? 0 : 1)
+  })
+
   it('reports success and shows the copied state', async () => {
     const writeText = stubClipboard(() => Promise.resolve())
     const { result } = renderHook(() => useCopyToClipboard())

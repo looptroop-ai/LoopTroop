@@ -1,6 +1,7 @@
 import type { LogEntry } from '@/context/LogContext'
 import { getModelDisplayName } from '@/components/shared/modelBadgeUtils'
 import { isBenignGitProbeErrorLine } from '@/context/logUtils'
+import { getLogModelId, isAiLogEntry, isDebugLogEntry } from '@shared/logClassification'
 
 interface FormattedLogLine {
   tagText: string | null
@@ -16,10 +17,7 @@ interface FormattedLogLine {
  * filter behind a tab has to accept either as well, or a tab that exists solely
  * because of a source-tagged row opens onto nothing.
  */
-export function getEntryFullModelId(entry: LogEntry): string | null {
-  if (entry.modelId) return entry.modelId
-  return entry.source.startsWith('model:') ? entry.source.slice('model:'.length) : null
-}
+export const getEntryFullModelId = getLogModelId
 
 function getModelKey(entry: LogEntry): string | null {
   return getEntryFullModelId(entry)
@@ -68,14 +66,7 @@ function hasLeadingLogTag(entry: LogEntry, tag: string): boolean {
 }
 
 function isAiDetailOutput(entry: LogEntry): boolean {
-  return AI_DETAIL_OUTPUT_KINDS.has(entry.kind)
-    && (
-      entry.audience === 'ai'
-      || entry.source === 'opencode'
-      || entry.source.startsWith('model:')
-      || Boolean(entry.sessionId)
-      || Boolean(entry.modelId)
-    )
+  return AI_DETAIL_OUTPUT_KINDS.has(entry.kind) && isAiLogEntry(entry)
 }
 
 function isSystemShapedAiDetail(entry: LogEntry): boolean {
@@ -107,7 +98,7 @@ function getCanonicalLogEntries(entries: LogEntry[]): LogEntry[] {
 }
 
 export function getEntryColor(entry: LogEntry): string {
-  if (entry.audience === 'debug' || entry.source === 'debug' || (hasLeadingLogTag(entry, 'DEBUG') && !isAiDetailOutput(entry))) return 'text-amber-600 dark:text-amber-400'
+  if (isDebugLogEntry(entry)) return 'text-amber-600 dark:text-amber-400'
   if (entry.kind === 'tool' || entry.line.includes('[TOOL]')) return 'text-cyan-600 dark:text-cyan-400'
   if (entry.kind === 'error' || entry.source === 'error' || (hasLeadingLogTag(entry, 'ERROR') && !isAiDetailOutput(entry))) return 'text-red-600 dark:text-red-400'
   if (hasLeadingLogTag(entry, 'CMD')) return 'text-cyan-600 dark:text-cyan-400'
@@ -258,15 +249,9 @@ export const isSystem = (entry: LogEntry) => entry.audience === 'all' && entry.s
 
 export function filterEntries(entries: LogEntry[], tab: string): LogEntry[] {
   const canonicalEntries = getCanonicalLogEntries(entries)
-  const isDebug = (entry: LogEntry) => entry.audience === 'debug' || entry.source === 'debug' || (hasLeadingLogTag(entry, 'DEBUG') && !isAiDetailOutput(entry))
+  const isDebug = isDebugLogEntry
   const isError = (entry: LogEntry) => (entry.kind === 'error' || entry.source === 'error' || (hasLeadingLogTag(entry, 'ERROR') && !isAiDetailOutput(entry))) && !isBenignGitProbeErrorLine(entry.line)
   const isPrompt = (entry: LogEntry) => entry.kind === 'prompt'
-  const isFromOpenCode = (entry: LogEntry) =>
-    entry.audience === 'ai' ||
-    entry.source === 'opencode' ||
-    entry.source.startsWith('model:') ||
-    Boolean(entry.modelId) ||
-    Boolean(entry.sessionId)
   const isOverviewAiEntry = (entry: LogEntry) =>
     entry.audience === 'ai'
     && ((entry.kind === 'text' && (!entry.streaming || entry.op === 'append')) || isLegacyTranscriptSummary(entry))
@@ -279,21 +264,19 @@ export function filterEntries(entries: LogEntry[], tab: string): LogEntry[] {
     case 'CMD':
       return canonicalEntries.filter(e => isSystem(e) && isCommand(e) && !isDebug(e))
     case 'AI':
-      return canonicalEntries.filter(isFromOpenCode)
+      return canonicalEntries.filter(isAiLogEntry)
     case 'ERROR':
       return canonicalEntries.filter(isError)
     case 'DEBUG':
       return canonicalEntries
     default:
-      return canonicalEntries.filter(entry => getEntryFullModelId(entry) === tab)
+      return canonicalEntries.filter(entry => !isDebug(entry) && getEntryFullModelId(entry) === tab)
   }
 }
 
 export function filterBeadLogEntries(entries: LogEntry[]): LogEntry[] {
   const canonicalEntries = getCanonicalLogEntries(entries)
-  return canonicalEntries.filter(entry =>
-    !(entry.audience === 'debug' || entry.source === 'debug' || entry.line.includes('[DEBUG]')),
-  )
+  return canonicalEntries.filter(entry => !isDebugLogEntry(entry))
 }
 
 export const MULTI_MODEL_PHASES = new Set([

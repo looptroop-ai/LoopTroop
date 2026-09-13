@@ -132,4 +132,29 @@ describe('useCopyToClipboard', () => {
     expect(result.current[0]).toBe(false)
     expect(result.current[2]).toBe(true)
   })
+
+  it('resets on target change and ignores a pending write from the previous target', async () => {
+    let rejectCopy: (reason: Error) => void = () => {}
+    stubClipboard(() => new Promise((_, reject) => { rejectCopy = reject }))
+    const { result, rerender } = renderHook(({ target }) => useCopyToClipboard(undefined, target), {
+      initialProps: { target: 'bead-a' },
+    })
+    let pending: Promise<boolean> | undefined
+    await act(async () => { pending = result.current[1]('old logs') })
+    rerender({ target: 'bead-b' })
+    await act(async () => { rejectCopy(new Error('Denied')); await pending })
+    expect(result.current[2]).toBe(false)
+
+    stubClipboard(() => Promise.reject(new Error('Denied')))
+    await act(async () => { await result.current[1]('new logs') })
+    expect(result.current[2]).toBe(true)
+    expect(result.current[3]).toBe(1)
+    await act(async () => { await result.current[1]('new logs') })
+    expect(result.current[3]).toBe(2)
+    rerender({ target: 'bead-a' })
+    expect(result.current[2]).toBe(false)
+    rerender({ target: 'bead-b' })
+    expect(result.current[2]).toBe(false)
+  })
+
 })

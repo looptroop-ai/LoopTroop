@@ -7,7 +7,7 @@ import { buildReadableRawDisplayContent } from './rawDisplayContent'
 import { StatPill, StatPillRow } from './artifactViewers/StatPillRow'
 
 export function CopyButton({ content, className = '', title = 'Copy raw output' }: { content: string; className?: string; title?: string }) {
-  const [copied, copyToClipboard, copyFailed] = useCopyToClipboard()
+  const [copied, copyToClipboard, copyFailed, copyFailureCount] = useCopyToClipboard(undefined, content)
 
   const handleCopy = (e: React.MouseEvent) => {
     e.stopPropagation()
@@ -27,7 +27,7 @@ export function CopyButton({ content, className = '', title = 'Copy raw output' 
           {copied ? <Check className="h-3.5 w-3.5 text-green-500" /> : <Copy className="h-3.5 w-3.5 text-muted-foreground" />}
         </button>
       </TooltipTrigger>
-      {copyFailed && <span role="alert" className="text-xs text-destructive">Copy failed</span>}
+      {copyFailed && <span key={copyFailureCount} role="alert" className="shrink-0 whitespace-nowrap text-xs text-destructive">Copy failed</span>}
       <TooltipContent className="max-w-xs text-center text-balance">{title}</TooltipContent>
     </Tooltip>
   )

@@ -16,7 +16,7 @@ const SIGN_IN_COMMAND = 'looptroop open'
  * would otherwise name the command that had just failed, forever.
  */
 export function SignedOutScreen() {
-  const [isCopied, copy, copyFailed] = useCopyToClipboard()
+  const [isCopied, copy, copyFailed, copyFailureCount] = useCopyToClipboard()
   // A session cookie is host-only, so one bought at 127.0.0.1 is never sent to
   // localhost even on the same port. Signing in again cannot fix a page that is
   // simply at the other name, and nothing else on screen would say so.
@@ -42,7 +42,7 @@ export function SignedOutScreen() {
             >
               {isCopied ? 'Copied' : 'Copy'}
             </button>
-            {copyFailed && <span role="alert" className="text-xs text-destructive">Copy failed</span>}
+            {copyFailed && <span key={copyFailureCount} role="alert" className="shrink-0 whitespace-nowrap text-xs text-destructive">Copy failed</span>}
           </div>
         </div>
 

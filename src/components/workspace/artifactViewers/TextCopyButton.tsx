@@ -7,7 +7,7 @@ import { useCopyToClipboard } from '@/hooks/useCopyToClipboard'
  * `CopyButton` in `RawTextDisplay.tsx`, which is always visible and labelled.
  */
 export function TextCopyButton({ content, title, className = '' }: { content: string; title: string; className?: string }) {
-  const [copied, copyToClipboard, copyFailed] = useCopyToClipboard()
+  const [copied, copyToClipboard, copyFailed, copyFailureCount] = useCopyToClipboard(undefined, content)
 
   const handleCopy = (e: React.MouseEvent) => {
     e.stopPropagation()
@@ -17,18 +17,19 @@ export function TextCopyButton({ content, title, className = '' }: { content: st
 
   return (
     <Tooltip>
-        <TooltipTrigger asChild>
-          <button
-            type="button"
-            aria-label={title}
-            onClick={handleCopy}
-            className={`opacity-0 group-hover:opacity-100 transition-opacity hover:opacity-80 focus:opacity-100 outline-none ${className}`}
-          >
-            {copied ? <Check className="h-3 w-3" /> : <Copy className="h-3 w-3" />}
-          </button>
-        </TooltipTrigger>
-        {copyFailed && <span role="alert" className="text-xs text-destructive">Copy failed</span>}
-        <TooltipContent className="max-w-xs text-center text-balance">{title}</TooltipContent>
-      </Tooltip>
+      <TooltipTrigger asChild>
+        <button
+          type="button"
+          aria-label={title}
+          data-copy-failed={copyFailed || undefined}
+          onClick={handleCopy}
+          className={`opacity-0 data-[copy-failed]:opacity-100 group-hover:opacity-100 transition-opacity hover:opacity-80 focus:opacity-100 outline-none ${className}`}
+        >
+          {copied ? <Check className="h-3 w-3" /> : <Copy className="h-3 w-3" />}
+        </button>
+      </TooltipTrigger>
+      {copyFailed && <span key={copyFailureCount} role="alert" className="shrink-0 whitespace-nowrap text-xs text-destructive">Copy failed</span>}
+      <TooltipContent className="max-w-xs text-center text-balance">{title}</TooltipContent>
+    </Tooltip>
   )
 }

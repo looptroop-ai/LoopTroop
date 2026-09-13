@@ -880,7 +880,7 @@ function BeadRefHoverCard({ beadId, beads, onSelectBead }: {
 }
 
 function TargetFileRow({ file }: { file: string }) {
-  const [copied, handleCopy, copyFailed] = useCopyToClipboard(COPY_SUCCESS_DISPLAY_SHORT_MS)
+  const [copied, handleCopy, copyFailed, copyFailureCount] = useCopyToClipboard(COPY_SUCCESS_DISPLAY_SHORT_MS, file)
 
   return (
     <div className="group flex items-center gap-1">
@@ -895,8 +895,9 @@ function TargetFileRow({ file }: { file: string }) {
               <button
                   type="button"
                   aria-label="Copy path"
+                  data-copy-failed={copyFailed || undefined}
                   onClick={() => handleCopy(file)}
-                  className="shrink-0 opacity-0 group-hover:opacity-100 transition-opacity p-0.5 rounded hover:bg-accent"
+                  className="shrink-0 opacity-0 data-[copy-failed]:opacity-100 group-hover:opacity-100 transition-opacity p-0.5 rounded hover:bg-accent"
                 >
                   {copied
                     ? <Check className="h-3 w-3 text-green-500" />
@@ -905,7 +906,7 @@ function TargetFileRow({ file }: { file: string }) {
             </TooltipTrigger>
             <TooltipContent className="max-w-xs text-center text-balance">Copy path</TooltipContent>
           </Tooltip>
-      {copyFailed && <span role="alert" className="text-xs text-destructive">Copy failed</span>}
+      {copyFailed && <span key={copyFailureCount} role="alert" className="shrink-0 whitespace-nowrap text-xs text-destructive">Copy failed</span>}
     </div>
   )
 }
@@ -1317,7 +1318,7 @@ export function CodingView({ ticket, readOnly }: CodingViewProps) {
     }
   }, [changesTabEnabled, detailTab])
 
-  const [copied, copyToClipboard, copyFailed] = useCopyToClipboard()
+  const [copied, copyToClipboard, copyFailed, copyFailureCount] = useCopyToClipboard(undefined, `${ticket.id}:${phaseForView}:${logPhaseAttempt}:${viewedBead?.id}:${activeRawAttempt ? getRawAttemptKey(activeRawAttempt) : "all"}:${showAllBeadLogs}`)
   const handleCopyLogs = useCallback(() => {
     if (!selectedBeadLogEntries.length) return
     const textToCopy = selectedBeadLogEntries.map((entry) => {
@@ -1535,7 +1536,7 @@ export function CodingView({ ticket, readOnly }: CodingViewProps) {
                     </TooltipTrigger>
                     <TooltipContent className="max-w-xs text-center text-balance">Copy bead logs</TooltipContent>
                   </Tooltip>
-                  {copyFailed && <span role="alert" className="text-xs text-destructive">Copy failed</span>}
+                  {copyFailed && <span key={copyFailureCount} role="alert" className="shrink-0 whitespace-nowrap text-xs text-destructive">Copy failed</span>}
                 </div>
               )}
             </div>

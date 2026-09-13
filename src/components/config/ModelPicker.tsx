@@ -8,6 +8,8 @@ import { useOpenCodeModels, useAllOpenCodeModels } from '@/hooks/useOpenCodeMode
 import type { OpenCodeModel } from '@/hooks/useOpenCodeModels'
 
 interface ModelPickerProps {
+  id?: string
+  label?: string
   value: string
   onChange: (modelFullId: string) => void
   placeholder?: string
@@ -125,7 +127,7 @@ function ModelRow({ model, selected, disabled, onSelect, id, active }: {
   )
 }
 
-export function ModelPicker({ value, onChange, placeholder = 'Search models…', disabledValues = [] }: ModelPickerProps) {
+export function ModelPicker({ id, label, value, onChange, placeholder = 'Search models…', disabledValues = [] }: ModelPickerProps) {
   const [isShowingAll, setIsShowingAll] = useState(false)
   const {
     data: connectedModels,
@@ -284,7 +286,7 @@ export function ModelPicker({ value, onChange, placeholder = 'Search models…',
 
   const activeId = grouped.some(([providerID, group]) =>
     !collapsedProviders.includes(providerID) && group.models.some(model =>
-      `${ownerId}-option-${model.fullId}` === activeOptionId &&
+      `${ownerId}-option-${encodeURIComponent(model.fullId)}` === activeOptionId &&
       (model.fullId === cleanValue || !cleanDisabledValues.includes(model.fullId))
     )
   ) ? activeOptionId : undefined
@@ -329,10 +331,11 @@ export function ModelPicker({ value, onChange, placeholder = 'Search models…',
       {/* Trigger button */}
       <button
         ref={triggerRef}
+        id={id}
         type="button"
         aria-controls={isOpen ? popupId : undefined}
         aria-expanded={isOpen}
-        aria-label="Pick a model"
+        aria-labelledby={`${ownerId}-label ${ownerId}-value`}
         onClick={() => {
           setIsOpen(v => !v)
           setActiveOptionId(undefined)
@@ -345,19 +348,20 @@ export function ModelPicker({ value, onChange, placeholder = 'Search models…',
           isOpen && 'border-ring ring-2 ring-ring',
         )}
       >
+        <span id={`${ownerId}-label`} className="sr-only">{label ?? 'Pick a model'}</span>
         {(isLoading || (isError && isFetching)) ? (
           <Loader2 className="h-4 w-4 animate-spin text-muted-foreground shrink-0" aria-hidden="true" />
         ) : (
           <Zap className="h-4 w-4 text-muted-foreground shrink-0" aria-hidden="true" />
         )}
-        <span className="flex-1 truncate">
+        <span id={`${ownerId}-value`} className="flex-1 truncate">
           {isError && !isFetching ? (
             <span className="text-destructive text-xs">{errorCopy.trigger}</span>
           ) : isError && isFetching ? (
             <span className="text-muted-foreground text-xs">Connecting to OpenCode…</span>
           ) : selected ? (
             <>
-              <span className="font-medium">{selected.name}</span>
+              <span className="font-medium">{selected.name}</span>{' '}
               <span className="text-muted-foreground ml-1.5 text-xs">{selected.providerName}</span>
             </>
           ) : value ? (
@@ -404,7 +408,8 @@ export function ModelPicker({ value, onChange, placeholder = 'Search models…',
                 }}
                 placeholder="Search by name, provider, family…"
                 className="flex-1 bg-transparent text-sm outline-none placeholder:text-muted-foreground"
-                aria-label="Search models"
+                aria-label={label ? `${label}: search models` : 'Search models'}
+                aria-describedby={`${ownerId}-value`}
                 autoComplete="off"
                 spellCheck={false}
               />
@@ -434,7 +439,7 @@ export function ModelPicker({ value, onChange, placeholder = 'Search models…',
                   key={providerID}
                   type="button"
                   aria-expanded={!collapsedProviders.includes(providerID)}
-                  aria-controls={`${ownerId}-provider-${providerID}`}
+                  aria-controls={`${ownerId}-provider-${encodeURIComponent(providerID)}`}
                   onClick={() => {
                     setCollapsedProviders(current => current.includes(providerID)
                       ? current.filter(id => id !== providerID)
@@ -452,7 +457,7 @@ export function ModelPicker({ value, onChange, placeholder = 'Search models…',
           </div>
 
           {/* Results */}
-          <div className="overflow-y-auto flex-1">
+          <div className="overflow-y-auto scroll-pt-8 flex-1">
             {isError && !isFetching && (
               <div className="flex items-center gap-2 px-4 py-6 text-sm text-destructive">
                 <AlertCircle className="h-4 w-4 shrink-0" aria-hidden="true" />
@@ -477,24 +482,30 @@ export function ModelPicker({ value, onChange, placeholder = 'Search models…',
               </div>
             )}
 
-            <div id={listboxId} role="listbox" aria-label="Available models">
+            {!isLoading && !isError && grouped.length > 0 && grouped.every(([providerID]) => collapsedProviders.includes(providerID)) && (
+              <div role="status" className="px-4 py-6 text-sm text-muted-foreground text-center">
+                All providers are collapsed. Expand a provider above to see its models.
+              </div>
+            )}
+
+            <div id={listboxId} role="listbox" aria-label={label ? `${label}: available models` : 'Available models'}>
               {grouped.map(([providerID, { providerName, models: providerModels }]) => (
                 <div
                   key={providerID}
-                  id={`${ownerId}-provider-${providerID}`}
+                  id={`${ownerId}-provider-${encodeURIComponent(providerID)}`}
                   role="group"
                   aria-label={providerName}
                   hidden={collapsedProviders.includes(providerID)}
                 >
-                  <div aria-hidden="true" className="sticky top-0 z-10 bg-popover/95 backdrop-blur-sm px-3 py-1.5 text-[11px] font-semibold uppercase tracking-wider text-muted-foreground border-b border-border/40">
+                  <div aria-hidden="true" className="sticky top-0 z-10 bg-popover/95 backdrop-blur-sm h-8 px-3 leading-8 truncate text-[11px] font-semibold uppercase tracking-wider text-muted-foreground border-b border-border/40">
                     {providerName}
                   </div>
                   {providerModels.map(model => (
                     <ModelRow
                       key={model.fullId}
-                      id={`${ownerId}-option-${model.fullId}`}
+                      id={`${ownerId}-option-${encodeURIComponent(model.fullId)}`}
                       model={model}
-                      active={activeId ? activeId === `${ownerId}-option-${model.fullId}` : undefined}
+                      active={activeId ? activeId === `${ownerId}-option-${encodeURIComponent(model.fullId)}` : undefined}
                       selected={model.fullId === cleanValue}
                       disabled={model.fullId !== cleanValue && cleanDisabledValues.includes(model.fullId)}
                       onSelect={() => {

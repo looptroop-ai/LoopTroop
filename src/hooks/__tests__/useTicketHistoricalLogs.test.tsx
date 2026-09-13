@@ -18,6 +18,18 @@ function renderHistoricalLogs(scope: HistoricalLogScope) {
 describe('useTicketHistoricalLogs', () => {
   afterEach(() => vi.restoreAllMocks())
 
+  it('preserves the model array reference when fresh responses contain the same catalog', async () => {
+    const fetchSpy = vi.spyOn(globalThis, 'fetch').mockImplementation(() => createJsonResponse({
+      entries: [], modelIds: ['provider/a', 'provider/b'], olderCursor: null, hasOlder: false,
+    }))
+    const { result } = renderHistoricalLogs({ scope: 'lifecycle', view: 'overview' })
+    await waitFor(() => expect(result.current.modelIds).toEqual(['provider/a', 'provider/b']))
+    const models = result.current.modelIds
+    await act(async () => { await result.current.refetch() })
+    expect(fetchSpy).toHaveBeenCalledTimes(2)
+    expect(result.current.modelIds).toBe(models)
+  })
+
   it.each([200, 503])('orders concurrent filter catalogs when the newer request returns status %i', async status => {
     let resolveOlder!: (response: Response) => void
     const fetchSpy = vi.spyOn(globalThis, 'fetch')

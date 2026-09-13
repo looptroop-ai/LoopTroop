@@ -407,7 +407,7 @@ describe('ticket log projection API', () => {
     })
   })
 
-  it('includes bare model output and quoted debug tags but excludes explicit debug rows in normal storage', async () => {
+  it('keeps bare model output in AI and ALL without exposing detail or debug rows', async () => {
     const { ticket } = await createInitializedTestTicket(repoManager)
     const base = { phase: 'CODING', timestamp: '2026-01-01T00:00:00.000Z' }
     const rows = [
@@ -423,6 +423,24 @@ describe('ticket log projection API', () => {
         expect.objectContaining({ content: 'Milestone mentions [DEBUG]' }),
       ]),
       totalEntries: 2, modelIds: ['test/model'],
+    })
+
+    appendFileSync(getTicketPaths(ticket.id)!.executionLogPath, JSON.stringify({
+      ...base, type: 'model_output', audience: 'ai', kind: 'tool', content: 'Newer tool detail',
+    }) + '\n')
+    const overviewQuery = { scope: 'phase', phase: 'CODING', view: 'overview', limit: 1 } as const
+    const overview = await queryLogPage(ticket.id, overviewQuery)
+    expect(overview).toMatchObject({
+      entries: [{ content: 'Milestone mentions [DEBUG]', audience: 'all', kind: 'milestone' }],
+      totalEntries: 2, totalTextLines: 2, hasOlder: true,
+    })
+    expect(await queryLogPage(ticket.id, { ...overviewQuery, before: overview!.olderCursor! })).toMatchObject({
+      entries: [{ content: '[DEBUG] quoted by a model', audience: 'ai', kind: 'text' }], hasOlder: false,
+    })
+    const exported = await exportLogEntries(ticket.id, overviewQuery, { pageSize: 1 })
+    expect(exported?.map(entry => entry.content)).toEqual(['[DEBUG] quoted by a model', 'Milestone mentions [DEBUG]'])
+    expect(await queryLogPage(ticket.id, { ...overviewQuery, view: 'system' })).toMatchObject({
+      entries: [{ content: 'Milestone mentions [DEBUG]' }], totalEntries: 1,
     })
   })
 

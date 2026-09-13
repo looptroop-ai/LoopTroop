@@ -473,7 +473,7 @@ export function ModelPicker({ id, label, value, onChange, placeholder = 'Search 
             )}
 
             {!isLoading && !isError && grouped.length === 0 && (
-              <div className="px-4 py-6 text-sm text-muted-foreground text-center">
+              <div role="status" className="px-4 py-6 text-sm text-muted-foreground text-center">
                 {query
                   ? `No models match "${query}"`
                   : isShowingOnlyFree

@@ -34,6 +34,30 @@ describe.each(['phase', 'lifecycle'] as const)('%s history selection', scope => 
       : <FullLogView ticket={ticket} />
   }
 
+  it.each([false, true])('disables a known-empty view only when it has no live rows (live rows: %s)', async hasLiveRows => {
+    if (hasLiveRows) live.entries = [normalizeLogRecord({ entryId: 'live', content: 'Live row.' }, 'CODING')]
+    const fetchSpy = vi.spyOn(globalThis, 'fetch').mockImplementation(input => String(input).includes('/logs/export')
+      ? Promise.resolve(new Response(''))
+      : createJsonResponse({ entries: [], modelIds: [], olderCursor: null, hasOlder: false, totalEntries: 0 }))
+    const view = renderWithProviders(panel())
+    await waitFor(() => expect(view.queryClient.isFetching()).toBe(0))
+    const copy = screen.getByRole('button', { name: 'Copy all logs' })
+    if (hasLiveRows) {
+      expect(screen.getByText('Live row.')).toBeInTheDocument()
+      expect(copy).toBeEnabled()
+      fireEvent.click(copy)
+      await waitFor(() => expect(copy).toBeEnabled())
+      expect(fetchSpy).toHaveBeenCalledTimes(2)
+    } else {
+      expect(copy).toBeDisabled()
+      fireEvent.click(copy)
+      expect(fetchSpy).toHaveBeenCalledTimes(1)
+    }
+    expect(writeText).not.toHaveBeenCalled()
+    expect(screen.queryByRole('alert')).not.toBeInTheDocument()
+    expect(copy.querySelector('.lucide-check')).not.toBeInTheDocument()
+  })
+
   it.each([200, 503])('keeps selection and exports aligned through loading and a scope response with status %i', async status => {
     let resolveModel!: (response: Response) => void
     const fetchSpy = vi.spyOn(globalThis, 'fetch').mockImplementation(input => {

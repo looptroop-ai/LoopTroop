@@ -4,10 +4,10 @@ import { useCopyToClipboard } from './useCopyToClipboard'
 /** Export and clipboard feedback belong to the selected scope and filter. */
 export function useCopyLogs(targetKey: string, getText: (signal: AbortSignal) => Promise<string>) {
   const [copied, copyToClipboard] = useCopyToClipboard(undefined, targetKey)
-  const [state, setState] = useState({ targetKey, pending: false, failures: 0 })
+  const [state, setState] = useState({ targetKey, pending: false, failures: 0, empty: false })
   const controllerRef = useRef<AbortController | null>(null)
   const current = state.targetKey === targetKey
-  if (!current) setState({ targetKey, pending: false, failures: 0 })
+  if (!current) setState({ targetKey, pending: false, failures: 0, empty: false })
 
   // Release the old export before consumers can start the new target during layout.
   useLayoutEffect(() => () => { controllerRef.current?.abort() }, [targetKey])
@@ -20,11 +20,15 @@ export function useCopyLogs(targetKey: string, getText: (signal: AbortSignal) =>
     try {
       const text = await getText(controller.signal)
       if (controller.signal.aborted) return
-      if (!text || !await copyToClipboard(text)) throw new Error('Copy failed')
-      if (!controller.signal.aborted) setState({ targetKey, pending: false, failures: 0 })
+      if (!text) {
+        setState(previous => ({ ...previous, pending: false, empty: true }))
+        return
+      }
+      if (!await copyToClipboard(text)) throw new Error('Copy failed')
+      if (!controller.signal.aborted) setState({ targetKey, pending: false, failures: 0, empty: false })
     } catch {
       if (!controller.signal.aborted) {
-        setState(previous => ({ targetKey, pending: false, failures: previous.failures + 1 }))
+        setState(previous => ({ targetKey, pending: false, failures: previous.failures + 1, empty: false }))
       }
     } finally {
       if (controllerRef.current === controller) controllerRef.current = null
@@ -32,7 +36,7 @@ export function useCopyLogs(targetKey: string, getText: (signal: AbortSignal) =>
   }, [copyToClipboard, getText, targetKey])
 
   return {
-    copied: copied && current && state.failures === 0,
+    copied: copied && current && state.failures === 0 && !state.empty,
     isCopyingLogs: current && state.pending,
     copyLogsFailed: current ? state.failures : 0,
     handleCopyLogs: copy,

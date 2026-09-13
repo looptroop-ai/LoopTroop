@@ -5,6 +5,30 @@ import { useCopyLogs } from '../useCopyLogs'
 
 afterEach(() => { Reflect.deleteProperty(navigator, 'clipboard') })
 
+it.each(['none', 'failure', 'success'] as const)('settles an empty export after %s without changing the clipboard or reporting a new outcome', async prior => {
+  const writeText = vi.fn().mockResolvedValue(undefined)
+  Object.defineProperty(navigator, 'clipboard', { configurable: true, value: { writeText } })
+  const load = vi.fn<() => Promise<string>>()
+  if (prior === 'failure') load.mockRejectedValueOnce(new Error('Export refused'))
+  if (prior === 'success') load.mockResolvedValueOnce('Previous logs.')
+  load.mockResolvedValueOnce('').mockResolvedValueOnce('Retry logs.')
+  const { result } = renderHook(() => useCopyLogs('ticket:ALL', load))
+
+  if (prior !== 'none') await act(async () => { await result.current.handleCopyLogs() })
+  await act(async () => { await result.current.handleCopyLogs() })
+
+  expect(result.current.isCopyingLogs).toBe(false)
+  expect(result.current.copied).toBe(false)
+  expect(result.current.copyLogsFailed).toBe(prior === 'failure' ? 1 : 0)
+  expect(writeText).toHaveBeenCalledTimes(prior === 'success' ? 1 : 0)
+  expect(writeText).not.toHaveBeenCalledWith('')
+
+  await act(async () => { await result.current.handleCopyLogs() })
+  expect(result.current.copied).toBe(true)
+  expect(result.current.copyLogsFailed).toBe(0)
+  expect(writeText).toHaveBeenLastCalledWith('Retry logs.')
+})
+
 it('aborts the previous export before a layout effect starts copying the new target', async () => {
   let resolveOld!: (text: string) => void
   const oldExport = new Promise<string>(resolve => { resolveOld = resolve })

@@ -11,6 +11,27 @@ import { LogEntryRow } from '../LogLine'
 afterEach(() => { Reflect.deleteProperty(navigator, 'clipboard') })
 
 describe('copy failure feedback', () => {
+  it.each(['short row', 'long\nrow\nwith\nsix\ntext\nlines'])('keeps failure on the same log identity after status changes: %s', async content => {
+    const writeText = vi.fn().mockRejectedValue(new Error('Write permission denied.'))
+    Object.defineProperty(navigator, 'clipboard', { configurable: true, value: { writeText } })
+    const entry = normalizeLogRecord({ entryId: 'stable-row', content, phaseAttempt: 1 }, 'CODING')
+    const { rerender } = render(<LogEntryRow entry={entry} index={0} showModelName={false} />)
+    const button = screen.getByRole('button', { name: 'Copy log entry' })
+    expect(button).toHaveClass('focus:opacity-100')
+    fireEvent.click(button)
+    const alert = await screen.findByRole('alert')
+    expect(button).toHaveAttribute('data-copy-failed', 'true')
+    expect(button).toHaveClass('data-[copy-failed]:opacity-100')
+
+    rerender(<LogEntryRow entry={{ ...entry, status: 'FINAL_TESTING' }} index={0} showModelName={false} />)
+    expect(screen.getByRole('alert')).toBe(alert)
+    expect(screen.getByRole('button', { name: 'Copy log entry' })).toHaveAttribute('data-copy-failed', 'true')
+
+    rerender(<LogEntryRow entry={{ ...entry, entryId: 'different-row' }} index={0} showModelName={false} />)
+    expect(screen.queryByRole('alert')).not.toBeInTheDocument()
+    expect(screen.getByRole('button', { name: 'Copy log entry' })).not.toHaveAttribute('data-copy-failed')
+  })
+
   it.each([
     ['raw output', <CopyButton content="example" />, 'Copy raw output'],
     ['artifact text', <TextCopyButton content="example" title="Copy artifact" />, 'Copy artifact'],

@@ -389,7 +389,7 @@ export function DashboardHeader({ ticket }: DashboardHeaderProps) {
                                       <button
                                                     type="button"
                                                     onClick={() => setIsEditingTitle(true)}
-                                                    className="opacity-0 data-[copy-failed]:opacity-100 group-hover:opacity-100 transition-opacity p-1 hover:bg-muted rounded shrink-0"
+                                                    className="opacity-0 group-hover:opacity-100 transition-opacity p-1 hover:bg-muted rounded shrink-0"
                                                     aria-label="Edit title"
                                                   >
                                                     <Pencil className="h-3.5 w-3.5 text-muted-foreground" />

@@ -18,50 +18,33 @@ export function classifyPersistedLogEntry(entry: Record<string, unknown>): Exclu
 
 /** The audience a row belongs to when it does not declare one. */
 function inferAudience(record: Record<string, unknown>, type: string): string {
-  const source = record.source
-  if (source === 'debug' || type === 'debug') return 'debug'
-  if (
-    source === 'opencode'
-    || (typeof source === 'string' && source.startsWith('model:'))
-    || type === 'model_output'
-  ) return 'ai'
+  const source = typeof record.source === 'string' && record.source
+    ? record.source
+    : typeof record.modelId === 'string' && record.modelId
+      ? `model:${record.modelId}`
+      : type === 'model_output' ? 'opencode' : type === 'debug' ? 'debug' : 'system'
+  if (source === 'debug') return 'debug'
+  if (source === 'opencode' || source.startsWith('model:')) return 'ai'
   return 'all'
 }
 
 /** The kind a row belongs to when it does not declare one. */
-function inferKind(type: string): string {
+function inferKind(type: string, audience: string): string {
   if (type === 'test_result') return 'test'
   if (type === 'error') return 'error'
-  if (type === 'model_output') return 'text'
+  if (audience === 'ai') return type === 'model_output' ? 'text' : 'session'
   return 'milestone'
 }
 
-export interface NormalizePersistedLogEntryOptions {
-  /**
-   * What to do when a row carries no `audience` or `kind`.
-   *
-   * `infer` derives them from `type` and `source`, which is what the log HTTP
-   * endpoints have always returned. `passthrough` leaves them undefined, which
-   * is what the durable projection index stores.
-   *
-   * The two used to be separate functions, so an older or malformed row could
-   * be classified one way by the projection and another by the endpoint reading
-   * it back.
-   */
-  audienceAndKind?: 'infer' | 'passthrough'
-}
-
-export function normalizePersistedLogEntry(
-  raw: unknown,
-  options: NormalizePersistedLogEntryOptions = {},
-): Record<string, unknown> | null {
+/** Infer omitted display fields before either indexing a row or returning it. */
+export function normalizePersistedLogEntry(raw: unknown): Record<string, unknown> | null {
   if (!raw || typeof raw !== 'object') return null
   const record = raw as Record<string, unknown>
   const phase = typeof record.phase === 'string' ? record.phase : typeof record.status === 'string' ? record.status : 'unknown'
   const phaseAttempt = Number(record.phaseAttempt)
   const content = typeof record.content === 'string' ? record.content : typeof record.message === 'string' ? record.message : ''
   const type = typeof record.type === 'string' ? record.type : 'info'
-  const infer = options.audienceAndKind === 'infer'
+  const audience = typeof record.audience === 'string' ? record.audience : inferAudience(record, type)
   const normalized: Record<string, unknown> = {
     ...record,
     phase,
@@ -72,12 +55,10 @@ export function normalizePersistedLogEntry(
     message: typeof record.message === 'string' ? record.message : content,
     content,
     type,
-    audience: typeof record.audience === 'string'
-      ? record.audience
-      : (infer ? inferAudience(record, type) : undefined),
+    audience,
     kind: typeof record.kind === 'string'
       ? record.kind
-      : (infer ? inferKind(type) : undefined),
+      : inferKind(type, audience),
     op: typeof record.op === 'string' ? record.op : 'append',
   }
   const fingerprint = extractLogFingerprint(record)

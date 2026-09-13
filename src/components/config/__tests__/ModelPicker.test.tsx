@@ -387,7 +387,10 @@ describe('ModelPicker — combobox', () => {
     expect(search).not.toHaveAttribute('aria-activedescendant')
     expect(onChange).not.toHaveBeenCalled()
     expect(within(screen.getByRole('listbox')).queryByText(/No models match/)).not.toBeInTheDocument()
-    expect(screen.getByText(/No models match/)).toBeInTheDocument()
+    expect(screen.getByRole('status')).toHaveTextContent('No models match "missing-model"')
+    fireEvent.change(search, { target: { value: 'gpt' } })
+    expect(screen.queryByRole('status')).not.toBeInTheDocument()
+    expect(screen.getAllByRole('option')).toHaveLength(2)
   })
 
   it('leaves text editing and Tab keys to the browser', () => {

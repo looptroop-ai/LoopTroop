@@ -311,7 +311,7 @@ function showsStreamingUi(entry: LogEntry): boolean {
 export const LogEntryRow = memo(function LogEntryRow({ entry, index, showModelName }: LogEntryRowProps) {
   const [isExpanded, setIsExpanded] = useState(false)
   const [isOverflowing, setIsOverflowing] = useState(false)
-  const [copied, handleCopyEntry, copyFailed, copyFailureCount] = useCopyToClipboard(undefined, `${entry.status}:${getLogEntryIdentity(entry)}`)
+  const [copied, handleCopyEntry, copyFailed, copyFailureCount] = useCopyToClipboard(undefined, getLogEntryIdentity(entry))
   const copyFailure = copyFailed && <span key={copyFailureCount} role="alert" className="w-full text-[10px] text-destructive">Copy failed</span>
   const contentRef = useRef<HTMLDivElement>(null)
   const isStreamingUiEntry = showsStreamingUi(entry)
@@ -356,8 +356,9 @@ export const LogEntryRow = memo(function LogEntryRow({ entry, index, showModelNa
     <button
       type="button"
       aria-label="Copy log entry"
+      data-copy-failed={copyFailed || undefined}
       onClick={copyEntry}
-      className={cn('transition-colors cursor-pointer', className)}
+      className={cn('transition-colors cursor-pointer data-[copy-failed]:opacity-100 focus:opacity-100', className)}
     >
       {copied ? <Check className="w-3 h-3 text-emerald-500" /> : <Copy className="w-3 h-3" />}
     </button>

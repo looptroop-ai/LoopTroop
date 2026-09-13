@@ -706,7 +706,7 @@ export function FullLogView({ ticket }: FullLogViewProps) {
                               type="button"
                               aria-label="Copy all logs"
                               onClick={() => void handleCopyLogs()}
-                              disabled={isCopyingLogs || (isLoadingLogs && !hasLogs) || (!ticket?.id && !hasLogs)}
+                              disabled={isCopyingLogs || (!hasLogs && (isLoadingLogs || !ticket?.id || historicalLogs.totalEntries === 0))}
                               className={cn(
                                 'flex items-center justify-center p-1 rounded-md hover:bg-muted/70 hover:text-foreground transition-all disabled:opacity-50 disabled:cursor-not-allowed',
                                 isCopyingLogs && 'pointer-events-none',

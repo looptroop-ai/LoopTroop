@@ -285,4 +285,41 @@ describe('ticket log projection API', () => {
     expect((await modelResponse.json() as { entries: Array<{ content: string }> }).entries.map(entry => entry.content)).toEqual([expected])
     expect((await errorResponse.json() as { entries: Array<{ content: string }> }).entries.map(entry => entry.content)).toEqual([expected])
   })
+
+  it('restores model milestones and source-attributed rows once across pages and exports', async () => {
+    const { ticket } = await createInitializedTestTicket(repoManager)
+    const scope = { audience: 'all', kind: 'milestone', phaseAttempt: 2, beadId: 'bead-1' }
+    appendLogEvent(ticket.id, 'info', 'CODING', 'model milestone', { ...scope, modelId: 'test/model' }, 'system', 'CODING')
+    appendLogEvent(ticket.id, 'model_output', 'CODING', 'model output', { ...scope, audience: 'ai', kind: 'text', modelId: 'test/model' }, 'opencode', 'CODING')
+    appendLogEvent(ticket.id, 'info', 'CODING', 'source milestone', scope, 'model:test/model', 'CODING')
+    appendLogEvent(ticket.id, 'info', 'CODING', 'session milestone', { ...scope, sessionId: 'session-1' }, 'system', 'CODING')
+    appendLogEvent(ticket.id, 'info', 'CODING', 'opencode milestone', scope, 'opencode', 'CODING')
+    appendLogEvent(ticket.id, 'info', 'CODING', 'unrelated system row', scope, 'system', 'CODING')
+    appendLogEvent(ticket.id, 'debug', 'CODING', 'model debug row', { ...scope, modelId: 'test/model' }, 'debug', 'CODING')
+    appendLogEvent(ticket.id, 'info', 'CODING', 'other model', { ...scope, modelId: 'test/other' }, 'model:test/model', 'CODING')
+    appendLogEvent(ticket.id, 'info', 'CODING', 'other attempt', { ...scope, phaseAttempt: 1, modelId: 'test/model' }, 'system', 'CODING')
+    appendLogEvent(ticket.id, 'info', 'CODING', 'other bead', { ...scope, beadId: 'bead-2', modelId: 'test/model' }, 'system', 'CODING')
+    appendLogEvent(ticket.id, 'info', 'RUNNING_FINAL_TEST', 'other phase', { ...scope, modelId: 'test/model' }, 'system', 'RUNNING_FINAL_TEST')
+
+    const url = `/api/tickets/${encodeURIComponent(ticket.id)}/logs?scope=phase&phase=CODING&phaseAttempt=2&beadId=bead-1&view=ai&modelId=test%2Fmodel&limit=2`
+    const response = await app.request(url)
+    expect(response.status).toBe(200)
+    const first = await response.json() as { entries: Array<{ content: string }>; olderCursor: string; totalEntries: number; totalTextLines: number }
+    expect(first.entries.map(entry => entry.content)).toEqual(['model output', 'source milestone'])
+    expect(first.totalEntries).toBe(3)
+    expect(first.totalTextLines).toBe(3)
+    const older = await app.request(`${url}&before=${encodeURIComponent(first.olderCursor)}`)
+    expect(await older.json()).toMatchObject({
+      entries: [{ content: 'model milestone' }],
+      hasOlder: false,
+    })
+
+    const query = { scope: 'phase', phase: 'CODING', phaseAttempt: 2, beadId: 'bead-1', view: 'ai' } as const
+    const modelExport = await exportLogEntries(ticket.id, { ...query, modelId: 'test/model' }, { pageSize: 1 })
+    expect(modelExport?.map(entry => entry.content)).toEqual(['model milestone', 'model output', 'source milestone'])
+    const aiExport = await exportLogEntries(ticket.id, query, { pageSize: 2 })
+    expect(aiExport?.map(entry => entry.content)).toEqual([
+      'model milestone', 'model output', 'source milestone', 'session milestone', 'opencode milestone', 'other model',
+    ])
+  })
 })

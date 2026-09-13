@@ -108,7 +108,13 @@ function shouldIncludeEntryForScope(entry: LogEntry, scope: ServerLogScope): boo
   const isDebug = isDebugLogEntry(entry)
   if (scope.channel === 'all') return true
   if (scope.channel === 'debug') return isDebug
-  if (scope.channel === 'ai') return !isDebug && entry.audience === 'ai'
+  if (scope.channel === 'ai') return !isDebug && (
+    entry.audience === 'ai'
+    || entry.source === 'opencode'
+    || entry.source.startsWith('model:')
+    || Boolean(entry.modelId)
+    || Boolean(entry.sessionId)
+  )
   return !isDebug
 }
 

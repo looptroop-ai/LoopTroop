@@ -266,7 +266,7 @@ describe('LogProvider', () => {
     expect(globalThis.fetch).toHaveBeenLastCalledWith('/api/tickets/1%3AT-debug-phase/logs?scope=phase&view=debug&limit=20&phase=CODING')
   })
 
-  it('requests phase AI detail logs through the AI channel and merges them into the phase bucket', async () => {
+  it('restores AI details and attributed milestones through the AI channel without unrelated rows', async () => {
     vi.spyOn(globalThis, 'fetch')
       .mockImplementationOnce(() => createJsonResponse([]))
       .mockImplementationOnce(() => createJsonResponse([{
@@ -281,7 +281,17 @@ describe('LogProvider', () => {
         op: 'upsert',
         streaming: true,
         timestamp: '2026-03-13T10:00:03.000Z',
-      }]))
+      }, ...[
+        { entryId: 'model-milestone', source: 'system', modelId: 'test/model' },
+        { entryId: 'source-milestone', source: 'model:test/model' },
+        { entryId: 'session-milestone', source: 'system', sessionId: 'session-1' },
+        { entryId: 'opencode-milestone', source: 'opencode' },
+        { entryId: 'unrelated-system', source: 'system' },
+        { entryId: 'model-debug', source: 'debug', modelId: 'test/model' },
+      ].map(fields => ({
+        type: 'info', phase: 'CODING', status: 'CODING', audience: 'all', kind: 'milestone',
+        content: fields.entryId, timestamp: '2026-03-13T10:00:04.000Z', ...fields,
+      }))]))
 
     render(createElement(
       LogProvider,
@@ -310,6 +320,11 @@ describe('LogProvider', () => {
         line: 'Restored thinking row.',
       }),
     ]))
+    expect(getCodingLogs().map(entry => entry.entryId)).toEqual(expect.arrayContaining([
+      'session-1:thinking', 'model-milestone', 'source-milestone', 'session-milestone', 'opencode-milestone',
+    ]))
+    expect(getCodingLogs().map(entry => entry.entryId)).not.toContain('unrelated-system')
+    expect(getCodingLogs().map(entry => entry.entryId)).not.toContain('model-debug')
   })
 
   it('preserves live phaseAttempt values and filters phase logs by attempt', async () => {

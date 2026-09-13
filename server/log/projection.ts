@@ -297,7 +297,6 @@ export async function queryLogPage(ticketId: string, query: LogPageQuery) {
   if (typeof query.phaseAttempt === 'number') { clauses.push('phase_attempt = ?'); params.push(query.phaseAttempt) }
   if (query.beadId) { clauses.push('bead_id = ?'); params.push(query.beadId) }
   if (query.view === 'debug') { clauses.push("channel = 'debug'") }
-  else if (query.view === 'ai') { clauses.push("channel = 'ai'") }
   else { clauses.push("channel = 'normal'") }
   // The overview backs the ALL tab. Apply its visible-row rules before LIMIT
   // so a page of commands or AI detail-only rows cannot produce an apparently
@@ -318,14 +317,27 @@ export async function queryLogPage(ticketId: string, query: LogPageQuery) {
       )
     )`)
   }
-  // The AI detail channel is already audience-scoped and intentionally includes
-  // model error rows so one provider recovery event remains visible in both its
-  // model transcript and the ERROR view.
+  // Normal contains every AI row plus model-attributed system milestones. Read
+  // it once to preserve their shared order without duplicating the AI channel.
+  if (query.view === 'ai') {
+    clauses.push(`classification != 'debug' AND (
+      json_extract(entry_json, '$.audience') = 'ai'
+      OR json_extract(entry_json, '$.source') = 'opencode'
+      OR json_extract(entry_json, '$.source') GLOB 'model:*'
+      OR COALESCE(model_id, '') != ''
+      OR COALESCE(json_extract(entry_json, '$.sessionId'), '') != ''
+    )`)
+  }
   if (query.view !== 'overview' && query.view !== 'ai') {
     clauses.push('classification = ?')
     params.push(query.view)
   }
-  if (query.modelId) { clauses.push('model_id = ?'); params.push(query.modelId) }
+  if (query.modelId) {
+    clauses.push(`(model_id = ? OR (
+      COALESCE(model_id, '') = '' AND json_extract(entry_json, '$.source') = ?
+    ))`)
+    params.push(query.modelId, `model:${query.modelId}`)
+  }
   const shouldIncludeTotals = query.includeTotals !== false && before === null
   const countWhere = clauses.join(' AND ')
   const countSql = `

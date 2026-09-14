@@ -77,6 +77,41 @@ describe('recovery descriptor containment', () => {
     expect(readFileSync(heldTarget, 'utf8')).toBe('{"validated":true}')
   })
 
+  it('rejects a replaced published target even if the later path stats reuse dev and ino', () => {
+    const target = join(directory, 'data.json')
+    const tmp = makeAtomicTmpPath(target)
+    const heldTarget = join(directory, 'held-recovery-target')
+    writeFileSync(tmp, '{"validated":true}')
+    const link = fs.linkSync
+    const lstat = fs.lstatSync
+    let replacementInstalled = false
+
+    vi.spyOn(fs, 'linkSync').mockImplementation((source, destination) => {
+      link(source, destination)
+      renameSync(target, heldTarget)
+      writeFileSync(target, '{"newerWriter":true}')
+      replacementInstalled = true
+    })
+    vi.spyOn(fs, 'lstatSync').mockImplementation((path) => {
+      const stats = lstat(path)
+      if (replacementInstalled && path === target) {
+        const sourceStats = lstat(tmp)
+        return Object.assign(
+          Object.create(Object.getPrototypeOf(stats)),
+          stats,
+          { dev: sourceStats.dev, ino: sourceStats.ino },
+        )
+      }
+      return stats
+    })
+    vi.spyOn(console, 'error').mockImplementation(() => {})
+
+    expect(recoverOrphanTmpFiles(directory)).toEqual([])
+    expect(readFileSync(target, 'utf8')).toBe('{"newerWriter":true}')
+    expect(readFileSync(tmp, 'utf8')).toBe('{"validated":true}')
+    expect(readFileSync(heldTarget, 'utf8')).toBe('{"validated":true}')
+  })
+
   it('keeps a target created after inspection and preserves the temp for a later attempt', () => {
     const target = join(directory, 'data.json')
     const tmp = makeAtomicTmpPath(target)

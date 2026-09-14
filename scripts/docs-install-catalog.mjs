@@ -25,25 +25,34 @@ function upgradeCommands(recipe) {
   }
 }
 
-export function buildInstallCatalog() {
+function pinnable(recipe) {
+  if (recipe.stub) return null
+  return recipe.pinnable ?? true
+}
+
+export function buildInstallCatalogChannel(id, recipe) {
+  return {
+    id,
+    kind: recipeKind(recipe),
+    live: !recipe.stub,
+    documentedInstall: recipe.documented,
+    stubReason: recipe.stub ?? null,
+    pinnable: pinnable(recipe),
+    doctorChannel: recipe.stub || recipe.delegate || !recipe.expect ? null : recipe.expect.channel,
+    upgradeCommands: upgradeCommands(recipe),
+    legs: recipe.stub ? [] : recipe.legs.map((leg) => ({
+      os: leg.os,
+      tier: leg.tier,
+      opencode: leg.opencode,
+    })),
+  }
+}
+
+export function buildInstallCatalog(channels = CHANNELS) {
   return {
     schemaVersion: 1,
     sourceFile: 'scripts/smoke-published.mjs',
-    channels: Object.entries(CHANNELS).map(([id, recipe]) => ({
-      id,
-      kind: recipeKind(recipe),
-      live: !recipe.stub,
-      documentedInstall: recipe.documented,
-      stubReason: recipe.stub ?? null,
-      pinnable: recipe.stub ? null : recipe.pinnable ?? false,
-      doctorChannel: recipe.stub || recipe.delegate || !recipe.expect ? null : recipe.expect.channel,
-      upgradeCommands: upgradeCommands(recipe),
-      legs: recipe.stub ? [] : recipe.legs.map((leg) => ({
-        os: leg.os,
-        tier: leg.tier,
-        opencode: leg.opencode,
-      })),
-    })),
+    channels: Object.entries(channels).map(([id, recipe]) => buildInstallCatalogChannel(id, recipe)),
   }
 }
 

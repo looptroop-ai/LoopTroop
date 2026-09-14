@@ -110,6 +110,21 @@ function judgeTmpContent(fd: number, targetPath: string): TmpVerdict {
  */
 const LEGACY_TMP_NAME = /\.tmp-\d+-\d+$/
 
+type FileIdentity = Pick<ReturnType<typeof fstatSync>, 'dev' | 'ino' | 'size' | 'mtimeMs' | 'birthtimeMs'>
+
+function sameOptionalTimestamp(left: number | bigint, right: number | bigint): boolean {
+  if (typeof left === 'bigint' || typeof right === 'bigint') return left === right
+  return !Number.isFinite(left) || !Number.isFinite(right) || left === right
+}
+
+function sameFileIdentity(left: FileIdentity, right: FileIdentity): boolean {
+  return left.dev === right.dev
+    && left.ino === right.ino
+    && left.size === right.size
+    && sameOptionalTimestamp(left.mtimeMs, right.mtimeMs)
+    && sameOptionalTimestamp(left.birthtimeMs, right.birthtimeMs)
+}
+
 function reportLegacyTmpFile(tmpPath: string): void {
   // Left in place: the pre-upgrade crash that produced it is exactly the case
   // someone would want to look at, and vaulting it silently is worse than
@@ -148,9 +163,9 @@ function pathIsTaken(path: string): boolean {
   }
 }
 
-function removeMatchingEntry(path: string, opened: { dev: number; ino: number }): void {
+function removeMatchingEntry(path: string, opened: FileIdentity): void {
   const entry = lstatSync(path)
-  if (entry.dev === opened.dev && entry.ino === opened.ino) unlinkSync(path)
+  if (sameFileIdentity(entry, opened)) unlinkSync(path)
 }
 
 /** Publish atomically when hardlinks work; fallback copies only the validated descriptor. */
@@ -162,7 +177,7 @@ function promoteTmpFile(fd: number, tmpPath: string, targetPath: string): boolea
     try {
       retryWhileWindowsHoldsTheFile(() => {
         const entry = lstatSync(tmpPath)
-        if (entry.isSymbolicLink() || entry.dev !== source.dev || entry.ino !== source.ino) {
+        if (entry.isSymbolicLink() || !sameFileIdentity(entry, source)) {
           throw new Error('Temporary file changed before recovery promotion')
         }
         // Narrow the validation-to-link window; Node cannot link an opened fd.
@@ -174,7 +189,7 @@ function promoteTmpFile(fd: number, tmpPath: string, targetPath: string): boolea
     }
     if (linked) {
       const entry = lstatSync(targetPath)
-      if (entry.isSymbolicLink() || entry.dev !== source.dev || entry.ino !== source.ino) {
+      if (entry.isSymbolicLink() || !sameFileIdentity(entry, source)) {
         // This entry may have been installed by another writer after linkSync.
         // A mismatch cannot establish ownership, so preserve both names.
         throw new Error('Temporary file changed before recovery promotion')

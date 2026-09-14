@@ -2,6 +2,7 @@ import { execFileSync } from 'node:child_process'
 import { existsSync, mkdtempSync, realpathSync, rmSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
+import { requireTrustedExecutablePath } from '../lib/executablePath'
 
 /**
  * Temp root as the product will see it.
@@ -91,9 +92,10 @@ export function removeTempDir(path: string): void {
  * their config has to be addressed through `--git-dir` rather than `-C`.
  */
 export function pinGitLineEndings(repoDir: string): void {
+  const git = requireTrustedExecutablePath('git', { cache: null })
   const gitLocator = existsSync(join(repoDir, '.git'))
     ? ['-C', repoDir]
     : ['--git-dir', repoDir]
-  execFileSync('git', [...gitLocator, 'config', 'core.autocrlf', 'false'], { stdio: 'pipe' })
-  execFileSync('git', [...gitLocator, 'config', 'core.eol', 'lf'], { stdio: 'pipe' })
+  execFileSync(git, [...gitLocator, 'config', 'core.autocrlf', 'false'], { stdio: 'pipe' })
+  execFileSync(git, [...gitLocator, 'config', 'core.eol', 'lf'], { stdio: 'pipe' })
 }

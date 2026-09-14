@@ -1,7 +1,8 @@
 import { execFileSync } from 'node:child_process'
-import { mkdtempSync, realpathSync, rmSync } from 'node:fs'
+import { existsSync, mkdtempSync, realpathSync, rmSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
+import { requireTrustedExecutablePath } from '../lib/executablePath'
 
 /**
  * Temp root as the product will see it.
@@ -86,9 +87,15 @@ export function removeTempDir(path: string): void {
  * Pins line-ending behaviour for a test repository.
  *
  * Git for Windows defaults to `autocrlf=true` and rewrites content on
- * checkout, so byte-for-byte assertions fail there and nowhere else.
+ * checkout, so byte-for-byte assertions fail there and nowhere else. Some
+ * integration tests also create bare remotes, which have no working tree, so
+ * their config has to be addressed through `--git-dir` rather than `-C`.
  */
 export function pinGitLineEndings(repoDir: string): void {
-  execFileSync('git', ['-C', repoDir, 'config', 'core.autocrlf', 'false'], { stdio: 'pipe' })
-  execFileSync('git', ['-C', repoDir, 'config', 'core.eol', 'lf'], { stdio: 'pipe' })
+  const git = requireTrustedExecutablePath('git', { cache: null })
+  const gitLocator = existsSync(join(repoDir, '.git'))
+    ? ['-C', repoDir]
+    : ['--git-dir', repoDir]
+  execFileSync(git, [...gitLocator, 'config', 'core.autocrlf', 'false'], { stdio: 'pipe' })
+  execFileSync(git, [...gitLocator, 'config', 'core.eol', 'lf'], { stdio: 'pipe' })
 }

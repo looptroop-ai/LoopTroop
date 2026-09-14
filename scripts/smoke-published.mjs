@@ -283,7 +283,7 @@ export const CHANNELS = {
 
   // Two documented steps, not one: adding the bucket is part of the install.
   scoop: {
-    documented: 'scoop bucket add looptroop … ; scoop install looptroop',
+    documented: 'scoop bucket add looptroop https://github.com/looptroop-ai/scoop-bucket; scoop install looptroop',
     legs: [{ os: 'windows-latest', tier: 'release', opencode: 'npm' }],
     daemon: true,
     pinnable: false,

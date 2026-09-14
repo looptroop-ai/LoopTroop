@@ -10,6 +10,7 @@ Unreleased changes appear first and represent commits that have not yet been inc
 > Changes merged since the last versioned release that have not yet shipped in a tagged version.
 
 ### Summary
+- The repository now exposes its documented install-channel catalog as JSON, so the website can verify consolidated installation docs against the same channel table the published-release smoke uses.
 - Log history refreshes loaded pages and keeps model tabs and milestones available; model selection and setup disclosures are accessible, and refused clipboard copies show a visible error.
 - Repeated model-output parsing reuses bounded cached results; YAML repair preserves literal text and retries conflicting duplicate values instead of discarding them.
 - Merges made on GitHub, including squash and rebase merges, now finish waiting tickets while the daemon runs, even when the UI is closed.
@@ -24,6 +25,7 @@ Unreleased changes appear first and represent commits that have not yet been inc
 - Finishing a ticket without merging now asks for confirmation instead of ending the ticket on one click.
 - A cancelled ticket keeps its reason even when its artifacts are deleted with it.
 - The installation documentation now shows how downloads change over time, with source, date range, interval, metric and chart controls.
+- Consolidated docs work can now consume `node scripts/docs-install-catalog.mjs`, which prints the published-smoke install recipe table as deterministic JSON, including each channel's documented install path, coverage legs, planned-channel status, and doctor upgrade command where one exists.
 - A model that stops to ask you something no longer freezes the app or stalls the run. The question opens at the top of the ticket, waits five minutes by default, and then refuses itself so the run carries on. If you engage with it, the clock stops and it waits for you.
 - Two new settings decide whether a model may stop a run to ask you a question, and how long that question waits. Both can be set for the whole configuration, for one project, or for one ticket.
 - Waiting for you no longer costs a step its working time, and no longer counts as implementation time either. A step can take its full timeout plus however long it spent waiting on an answer, and the ticket's delivery time now separates the two.

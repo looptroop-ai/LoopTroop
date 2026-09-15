@@ -60,7 +60,7 @@ const HEALTH_TIMEOUT_MS = 60_000
  */
 const binaryUpgradeCommand = (platform) => (platform === 'win32'
   ? powershellInstaller('https://www.looptroop.ovh/install.ps1', ' -Binary')
-  : 'curl --proto "=https" --proto-redir "=https" --tlsv1.2 -fsSL https://www.looptroop.ovh/install | sh -s -- --binary')
+  : 'curl -fsSL https://www.looptroop.ovh/install | sh -s -- --binary')
 
 const REPO = process.env.LOOPTROOP_INSTALL_REPO || 'looptroop-ai/LoopTroop'
 const API = process.env.LOOPTROOP_INSTALL_API || 'https://api.github.com'
@@ -152,7 +152,7 @@ export const CHANNELS = {
   // against a real release". This is that proof, and until now it existed only
   // for PowerShell.
   'installer-sh': {
-    documented: 'curl --proto "=https" --proto-redir "=https" --tlsv1.2 -fsSL https://www.looptroop.ovh/install | sh',
+    documented: 'curl -fsSL https://www.looptroop.ovh/install | sh',
     legs: [
       { os: 'ubuntu-latest', tier: 'release', opencode: 'npm' },
       { os: 'macos-latest', tier: 'release', opencode: 'npm' },
@@ -214,7 +214,7 @@ export const CHANNELS = {
   // Node runtime — into `~/.looptroop`. Documented as a way to *install*, not
   // only to upgrade.
   'installer-sh-binary': {
-    documented: 'curl --proto "=https" --proto-redir "=https" --tlsv1.2 -fsSL https://www.looptroop.ovh/install | sh -s -- --binary',
+    documented: 'curl -fsSL https://www.looptroop.ovh/install | sh -s -- --binary',
     legs: [{ os: 'ubuntu-latest', tier: 'weekly', opencode: 'npm' }],
     daemon: true,
     pinnable: true,

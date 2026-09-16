@@ -156,7 +156,8 @@ function normalizeFinalTestFileEffects(value: unknown, repairWarnings?: string[]
       effect: { path, intent: winner.intent, ...(reason ? { reason } : {}) },
       explicitIntent: existing.explicitIntent || explicitIntent,
     })
-    repairWarnings?.push(`Merged duplicate final test file effect entries for ${path}.`)
+    const warning = `Merged duplicate final test file effect entries for ${path}.`
+    if (!repairWarnings?.includes(warning)) repairWarnings?.push(warning)
   }
 
   for (const rawEffect of rawEffects) {
@@ -169,7 +170,7 @@ function normalizeFinalTestFileEffects(value: unknown, repairWarnings?: string[]
     if (!isRecord(rawEffect)) {
       throw new Error('Final test file effect entries must be objects or paths')
     }
-    const path = toOptionalString(getValueByAliases(rawEffect, ['path', 'file', 'filepath', 'file_path']))
+    const path = toOptionalString(getValueByAliases(rawEffect, ['path', 'file_path', 'filePath', 'file', 'filepath']))
     if (!path) {
       throw new Error('Final test file effect entry is missing path')
     }
@@ -225,7 +226,7 @@ export function normalizeBeadCompletionMarkerOutput(rawContent: string): Structu
         ]))
       }
 
-      const beadId = getRequiredString(parsed, ['beadid', 'bead_id', 'id'], 'bead_id')
+      const beadId = getRequiredString(parsed, ['bead_id', 'beadId', 'beadid', 'id'], 'bead_id')
       const status = normalizeCompletionStatus(getValueByAliases(parsed, ['status']))
       const checks = normalizeCompletionChecks(getValueByAliases(parsed, ['checks', 'gates', 'qualitygates', 'quality_gates']))
       const reason = toOptionalString(getValueByAliases(parsed, ['reason', 'details', 'message']))
@@ -331,7 +332,7 @@ export function normalizeFinalTestCommandsOutput(
 
       const summary = toOptionalString(getValueByAliases(parsed, ['summary', 'reason', 'notes'])) ?? null
 
-      const rawTestFiles = getValueByAliases(parsed, ['test_files', 'testfiles', 'test_file', 'testfile'])
+      const rawTestFiles = getValueByAliases(parsed, ['test_files', 'testFiles', 'testfiles', 'test_file', 'testFile'])
       const testFiles = toStringArray(rawTestFiles).filter((f) => f.length > 0)
       if (typeof rawTestFiles === 'string' && testFiles.length > 0) {
         candidateWarnings.push('Coerced test_files from string to array')
@@ -340,10 +341,12 @@ export function normalizeFinalTestCommandsOutput(
 
       const rawModifiedFiles = getValueByAliases(parsed, [
         'modified_files',
+        'modifiedFiles',
         'modifiedfiles',
         'modified_file',
         'modifiedfile',
         'changed_files',
+        'changedFiles',
         'changedfiles',
       ])
       const modifiedFiles = toStringArray(rawModifiedFiles).filter((f) => f.length > 0)
@@ -356,8 +359,10 @@ export function normalizeFinalTestCommandsOutput(
 
       const rawFileEffects = getValueByAliases(parsed, [
         'file_effects',
+        'fileEffects',
         'fileeffects',
         'file_effect',
+        'fileEffect',
         'fileeffect',
         'effects',
       ])
@@ -366,7 +371,7 @@ export function normalizeFinalTestCommandsOutput(
         ? explicitFileEffects
         : dedupedModifiedFiles.map((path) => ({ path, intent: 'candidate' as const }))
 
-      const rawTestsCount = getValueByAliases(parsed, ['tests_count', 'testscount', 'test_count', 'testcount', 'num_tests'])
+      const rawTestsCount = getValueByAliases(parsed, ['tests_count', 'testsCount', 'testscount', 'test_count', 'testCount', 'testcount', 'num_tests', 'numTests'])
       const testsCount = toInteger(rawTestsCount)
 
       appendStructuredCandidateRecoveryWarning(candidateWarnings, rawContent, candidate, { tag: PROTOCOL_TAGS.FINAL_TEST_COMMANDS })
@@ -487,9 +492,9 @@ function normalizeExecutionSetupProjectCommands(
   if (!isRecord(value)) throw new Error(`${fieldLabel} missing object`)
   return {
     prepare: normalizeExecutionSetupCommands(getValueByAliases(value, ['prepare', 'bootstrap', 'setup']), `${fieldLabel}.prepare`, repairWarnings, hostContext),
-    testFull: normalizeExecutionSetupCommands(getValueByAliases(value, ['testfull', 'tests']), `${fieldLabel}.test_full`, repairWarnings, hostContext),
-    lintFull: normalizeExecutionSetupCommands(getValueByAliases(value, ['lintfull', 'lint']), `${fieldLabel}.lint_full`, repairWarnings, hostContext),
-    typecheckFull: normalizeExecutionSetupCommands(getValueByAliases(value, ['typecheckfull', 'typecheck']), `${fieldLabel}.typecheck_full`, repairWarnings, hostContext),
+    testFull: normalizeExecutionSetupCommands(getValueByAliases(value, ['test_full', 'testfull', 'tests']), `${fieldLabel}.test_full`, repairWarnings, hostContext),
+    lintFull: normalizeExecutionSetupCommands(getValueByAliases(value, ['lint_full', 'lintfull', 'lint']), `${fieldLabel}.lint_full`, repairWarnings, hostContext),
+    typecheckFull: normalizeExecutionSetupCommands(getValueByAliases(value, ['typecheck_full', 'typecheckfull', 'typecheck']), `${fieldLabel}.typecheck_full`, repairWarnings, hostContext),
   }
 }
 
@@ -545,7 +550,7 @@ function normalizeExecutionSetupWorkspaceInputs(
     }
     const sourceStatus = getRequiredString(
       entry,
-      ['sourcestatus', 'status'],
+      ['source_status', 'sourcestatus', 'status'],
       `workspace_inputs[${index}].source_status`,
     )
     if (sourceStatus !== 'ignored' && sourceStatus !== 'untracked') {
@@ -561,9 +566,9 @@ function normalizeExecutionSetupWorkspaceInputs(
         `workspace_inputs[${index}].category must be ${EXECUTION_SETUP_WORKSPACE_INPUT_CATEGORIES.slice(0, -1).join(', ')}, or ${EXECUTION_SETUP_WORKSPACE_INPUT_CATEGORIES.at(-1)}`,
       )
     }
-    const allowLargeCopy = getValueByAliases(entry, ['allowlargecopy'])
-    const rawFileCount = getValueByAliases(entry, ['filecount'])
-    const rawTotalBytes = getValueByAliases(entry, ['totalbytes'])
+    const allowLargeCopy = getValueByAliases(entry, ['allow_large_copy', 'allowlargecopy'])
+    const rawFileCount = getValueByAliases(entry, ['file_count', 'filecount'])
+    const rawTotalBytes = getValueByAliases(entry, ['total_bytes', 'totalbytes'])
     if (!preserveBackendFields && (rawFileCount !== undefined || rawTotalBytes !== undefined)) {
       repairWarnings?.push(
         `Ignored model-supplied workspace_inputs[${index}].file_count/total_bytes; LoopTroop measures these from the workspace.`,
@@ -597,7 +602,7 @@ function normalizeExecutionSetupGitHooks(
     return { policy: DEFAULT_GIT_HOOK_POLICY, detected: [], validationCommands: [] }
   }
   if (!isRecord(value)) throw new Error('git_hooks must be an object')
-  const rawDetected = getValueByAliases(value, ['detected', 'detectedhooks'])
+  const rawDetected = getValueByAliases(value, ['detected', 'detected_hooks', 'detectedhooks'])
   if (rawDetected !== undefined && rawDetected !== null && !preserveBackendFields) {
     repairWarnings?.push('Ignored model-supplied git_hooks.detected; LoopTroop discovers hook evidence from the current workspace.')
   }
@@ -619,7 +624,7 @@ function normalizeExecutionSetupGitHooks(
         if (!['yes', 'no', 'unknown'].includes(runnable)) {
           throw new Error(`git_hooks.detected[${index}].runnable must be yes, no, or unknown`)
         }
-        const managerHint = toOptionalString(getValueByAliases(entry, ['managerhint']))
+        const managerHint = toOptionalString(getValueByAliases(entry, ['manager_hint', 'managerhint']))
         return {
           name: getRequiredString(entry, ['name'], `git_hooks.detected[${index}].name`),
           path: normalizeExecutionSetupPath(getValueByAliases(entry, ['path']), `git_hooks.detected[${index}].path`),
@@ -630,7 +635,7 @@ function normalizeExecutionSetupGitHooks(
         }
       })
     : []
-  const rawCommands = getValueByAliases(value, ['validationcommands', 'commands'])
+  const rawCommands = getValueByAliases(value, ['validation_commands', 'validationcommands', 'commands'])
   const validationCommands = rawCommands === undefined || rawCommands === null
     ? []
     : Array.isArray(rawCommands)
@@ -673,7 +678,7 @@ function normalizeExecutionSetupPlanReadiness(
   const status = rawStatus === undefined
     ? defaults.status
     : normalizeExecutionSetupPlanReadinessStatus(rawStatus)
-  const actionsRequiredRaw = getValueByAliases(value, ['actionsrequired', 'actions_required'])
+  const actionsRequiredRaw = getValueByAliases(value, ['actions_required', 'actionsRequired'])
   const actionsRequired = typeof actionsRequiredRaw === 'boolean'
     ? actionsRequiredRaw
     : status !== 'ready'
@@ -755,13 +760,13 @@ function normalizeExecutionSetupPlan(
   if (!isRecord(value)) throw new Error('Execution setup plan is missing')
 
   for (const [aliases, label] of [
-    [['schemaversion', 'version'], 'schema_version'],
-    [['ticketid'], 'ticket_id'],
+    [['schema_version', 'schemaversion', 'version'], 'schema_version'],
+    [['ticket_id', 'ticketid'], 'ticket_id'],
     [['artifact'], 'artifact'],
     [['status'], 'status'],
-    [['hostcontext'], 'host_context'],
-    [['temproots', 'temproot'], 'temp_roots'],
-    [['qualitygatepolicy', 'qualitypolicy'], 'quality_gate_policy'],
+    [['host_context', 'hostcontext'], 'host_context'],
+    [['temp_roots', 'temproots', 'temproot'], 'temp_roots'],
+    [['quality_gate_policy', 'qualitygatepolicy', 'qualitypolicy'], 'quality_gate_policy'],
   ] as const) {
     if (!preserveBackendFields && getValueByAliases(value, [...aliases]) !== undefined) {
       repairWarnings?.push(`Ignored model-supplied ${label}; LoopTroop owns this setup-plan field.`)
@@ -771,25 +776,25 @@ function normalizeExecutionSetupPlan(
 
   // Resolved before anything is normalised, because everything below has to be
   // normalised against the host the plan records rather than the one running.
-  const rawHostContext = getValueByAliases(value, ['hostcontext'])
+  const rawHostContext = getValueByAliases(value, ['host_context', 'hostcontext'])
   const parsedHostContext = hostContextSchema.safeParse(rawHostContext)
   const hostContext = preserveBackendFields && parsedHostContext.success
     ? parsedHostContext.data
     : detectHostContext()
 
   const workspaceInputs = normalizeExecutionSetupWorkspaceInputs(
-    getValueByAliases(value, ['workspaceinputs']),
+    getValueByAliases(value, ['workspace_inputs', 'workspaceinputs']),
     preserveBackendFields,
     repairWarnings,
   )
-  const rawSteps = getValueByAliases(value, ['steps', 'plansteps'])
+  const rawSteps = getValueByAliases(value, ['steps', 'plan_steps', 'plansteps'])
   const steps = Array.isArray(rawSteps) ? rawSteps.map((entry, index) => {
     if (!isRecord(entry)) throw new Error(`steps[${index}] must be an object`)
     return normalizeExecutionSetupPlanStep(entry, index, repairWarnings, hostContext)
   }) : []
 
   const proposedReadiness = normalizeExecutionSetupPlanReadiness(
-    getValueByAliases(value, ['readiness', 'environmentreadiness', 'environment_readiness']),
+    getValueByAliases(value, ['readiness', 'environment_readiness', 'environmentreadiness']),
     {
       status: steps.length > 0 || workspaceInputs.length > 0 ? 'partial' : 'ready',
       actionsRequired: steps.length > 0 || workspaceInputs.length > 0,
@@ -805,18 +810,18 @@ function normalizeExecutionSetupPlan(
   }
 
   const projectCommands = normalizeExecutionSetupProjectCommands(
-    getValueByAliases(value, ['projectcommands', 'commands']),
+    getValueByAliases(value, ['project_commands', 'projectcommands', 'commands']),
     'Execution setup plan project_commands',
     repairWarnings,
     hostContext,
   )
-  const rawQualityPolicy = getValueByAliases(value, ['qualitygatepolicy', 'qualitypolicy'])
+  const rawQualityPolicy = getValueByAliases(value, ['quality_gate_policy', 'qualitygatepolicy', 'qualitypolicy'])
   const qualityGatePolicy = preserveBackendFields && isRecord(rawQualityPolicy)
     ? {
         tests: getRequiredString(rawQualityPolicy, ['tests'], 'quality_gate_policy.tests'),
         lint: getRequiredString(rawQualityPolicy, ['lint'], 'quality_gate_policy.lint'),
         typecheck: getRequiredString(rawQualityPolicy, ['typecheck'], 'quality_gate_policy.typecheck'),
-        fullProjectFallback: getRequiredString(rawQualityPolicy, ['fullprojectfallback'], 'quality_gate_policy.full_project_fallback'),
+        fullProjectFallback: getRequiredString(rawQualityPolicy, ['full_project_fallback', 'fullprojectfallback'], 'quality_gate_policy.full_project_fallback'),
       }
     : {
     tests: 'bead-test-commands-first',
@@ -826,26 +831,26 @@ function normalizeExecutionSetupPlan(
       }
   const cautions = toStringArray(getValueByAliases(value, ['cautions', 'warnings', 'notes']))
   const workspaceProbes = normalizeExecutionSetupCommandProbes(
-    getValueByAliases(value, ['workspaceprobes']),
+    getValueByAliases(value, ['workspace_probes', 'workspaceprobes']),
     'workspace_probes',
     repairWarnings,
     hostContext,
   )
   const gitHooks = normalizeExecutionSetupGitHooks(
-    getValueByAliases(value, ['githooks']),
+    getValueByAliases(value, ['git_hooks', 'githooks']),
     repairWarnings,
     preserveBackendFields,
     hostContext,
   )
   const schemaVersion = preserveBackendFields
-    ? toInteger(getValueByAliases(value, ['schemaversion'])) ?? 1
+    ? toInteger(getValueByAliases(value, ['schema_version', 'schemaversion'])) ?? 1
     : 1
-  const storedTicketId = toOptionalString(getValueByAliases(value, ['ticketid']))
+  const storedTicketId = toOptionalString(getValueByAliases(value, ['ticket_id', 'ticketid']))
   const ticketId = preserveBackendFields
     ? (storedTicketId || authoritativeTicketId || getRequiredString(value, ['ticketid'], 'ticket_id'))
     : ''
   const tempRoots = preserveBackendFields
-    ? toStringArray(getValueByAliases(value, ['temproots'])).map((entry) => normalizeExecutionSetupPath(entry, 'temp_roots entry'))
+    ? toStringArray(getValueByAliases(value, ['temp_roots', 'temproots'])).map((entry) => normalizeExecutionSetupPath(entry, 'temp_roots entry'))
     : ['.ticket/runtime/execution-setup', '.ticket/runtime/execution-setup/tool-cache']
 
   return {
@@ -911,14 +916,15 @@ function normalizeExecutionSetupToolRequirements(
     if (!isRecord(entry)) throw new Error(`tool_requirements[${index}] must be an object`)
     return {
       launcher: getRequiredString(entry, ['launcher', 'command', 'tool'], `tool_requirements[${index}].launcher`),
-      requiredBy: toStringArray(getValueByAliases(entry, ['requiredby', 'requiredfor', 'requiredcommands'])),
+      requiredBy: toStringArray(getValueByAliases(entry, ['required_by', 'requiredby', 'requiredfor', 'requiredcommands'])),
       status: normalizeExecutionSetupToolRequirementStatus(
         getValueByAliases(entry, ['status']),
         `tool_requirements[${index}].status`,
       ),
-      missingProbe: toOptionalString(getValueByAliases(entry, ['missingprobe', 'probe', 'discoveryprobe'])) ?? '',
+      missingProbe: toOptionalString(getValueByAliases(entry, ['missing_probe', 'missingprobe', 'probe', 'discoveryprobe'])) ?? '',
       provisioningAttempts: normalizeExecutionSetupProvisioningAttempts(
         getValueByAliases(entry, [
+          'provisioning_attempts',
           'provisioningattempts',
           'provisionattempts',
           'attempts',
@@ -926,8 +932,8 @@ function normalizeExecutionSetupToolRequirements(
         `tool_requirements[${index}].provisioning_attempts`,
         repairWarnings,
       ),
-      finalProbe: toOptionalString(getValueByAliases(entry, ['finalprobe', 'verificationprobe', 'probecommand'])) ?? '',
-      failureReason: toOptionalString(getValueByAliases(entry, ['failurereason', 'reason', 'blocker'])) ?? '',
+      finalProbe: toOptionalString(getValueByAliases(entry, ['final_probe', 'finalprobe', 'verificationprobe', 'probecommand'])) ?? '',
+      failureReason: toOptionalString(getValueByAliases(entry, ['failure_reason', 'failurereason', 'reason', 'blocker'])) ?? '',
     }
   })
 }
@@ -938,15 +944,16 @@ function normalizeExecutionSetupProfile(value: unknown, repairWarnings?: string[
   const status = normalizeExecutionSetupStatus(getValueByAliases(value, ['status']))
   const summary = getRequiredString(value, ['summary', 'reason'], 'summary')
 
-  const tempRoots = toStringArray(getValueByAliases(value, ['temproots', 'temproot']))
+  const tempRoots = toStringArray(getValueByAliases(value, ['temp_roots', 'temproots', 'temproot']))
     .map((entry) => normalizeExecutionSetupPath(entry, 'temp_roots entry'))
 
   const bootstrapCommands = normalizeExecutionSetupCommands(
-    getValueByAliases(value, ['bootstrapcommands', 'bootstrap']),
+    getValueByAliases(value, ['bootstrap_commands', 'bootstrapcommands', 'bootstrap']),
     'bootstrap_commands',
     repairWarnings,
   )
   const toolingProbeCommands = normalizeExecutionSetupCommands(getValueByAliases(value, [
+    'tooling_probe_commands',
     'toolingprobecommands',
     'toolingprobes',
     'probecommands',
@@ -959,18 +966,19 @@ function normalizeExecutionSetupProfile(value: unknown, repairWarnings?: string[
     detected: [],
     validationCommands: [],
   }
-  const runtimeEnvironmentValue = getValueByAliases(value, ['runtimeenvironment', 'environment'])
+  const runtimeEnvironmentValue = getValueByAliases(value, ['runtime_environment', 'runtimeenvironment', 'environment'])
   const runtimeEnvironment = runtimeEnvironmentValue == null
     ? runtimeEnvironmentSchema.parse({})
     : runtimeEnvironmentSchema.parse(runtimeEnvironmentValue)
   const toolRequirements = normalizeExecutionSetupToolRequirements(getValueByAliases(value, [
+    'tool_requirements',
     'toolrequirements',
     'toolrequirement',
     'toolingrequirements',
     'requiredtools',
   ]), repairWarnings)
 
-  const rawReusableArtifacts = getValueByAliases(value, ['reusableartifacts', 'artifacts'])
+  const rawReusableArtifacts = getValueByAliases(value, ['reusable_artifacts', 'reusableartifacts', 'artifacts'])
   const reusableArtifacts = Array.isArray(rawReusableArtifacts)
     ? rawReusableArtifacts.map((entry, index) => {
         if (!isRecord(entry)) throw new Error(`reusable_artifacts[${index}] must be an object`)
@@ -983,7 +991,7 @@ function normalizeExecutionSetupProfile(value: unknown, repairWarnings?: string[
     : []
 
   const projectCommands = normalizeExecutionSetupProjectCommands(
-    getValueByAliases(value, ['projectcommands', 'commands']),
+    getValueByAliases(value, ['project_commands', 'projectcommands', 'commands']),
     'Execution setup profile project_commands',
     repairWarnings,
   )
@@ -1022,7 +1030,7 @@ function normalizeExecutionSetupChecks(value: unknown): ExecutionSetupResultPayl
   if (!isRecord(value)) throw new Error('Execution setup result missing checks object')
   const workspace = getValueByAliases(value, ['workspace'])
   const tooling = getValueByAliases(value, ['tooling'])
-  const tempScope = getValueByAliases(value, ['tempscope'])
+  const tempScope = getValueByAliases(value, ['temp_scope', 'tempscope'])
   const policy = getValueByAliases(value, ['policy'])
   if (workspace === undefined) throw new Error('Execution setup checks missing workspace')
   if (tooling === undefined) throw new Error('Execution setup checks missing tooling')

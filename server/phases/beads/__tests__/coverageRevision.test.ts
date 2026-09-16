@@ -19,7 +19,7 @@ function buildBeadsContent() {
       },
       acceptanceCriteria: ['Validate attribution survives refinement'],
       tests: ['Shared tests cover refinement attribution'],
-      testCommands: ['npm run test:server'],
+      testCommands: [{ mode: 'process', program: 'npm', args: ['run', 'test:server'], cwd: '.', env: {} }],
     }],
     changes: [],
   }, { lineWidth: 120, noRefs: true }) as string

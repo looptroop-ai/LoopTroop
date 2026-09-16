@@ -1,7 +1,7 @@
 import * as jsYaml from 'js-yaml'
 import { createHash } from 'node:crypto'
 import type { PromptPart } from '../opencode/types'
-import { repairYamlDoubleQuotedInvalidEscapes, repairYamlDoubleQuotedScalarInnerQuotes, repairYamlDuplicateKeys, repairYamlFreeTextScalars, repairYamlIndentation, repairYamlInlineKeys, repairYamlInlineSequenceParents, repairYamlListDashSpace, repairYamlMappingKeyColonSpace, repairYamlNestedMappingChildren, repairYamlPlainScalarColons, repairYamlQuotedScalarFragments, repairYamlReservedIndicatorScalars, repairYamlSequenceEntryIndent, repairYamlSequenceItemPrimaryKeys, repairYamlTypeUnionScalars, repairYamlUnclosedQuotes, repairYamlWrappedPlainListScalars, stripCodeFences, type YamlSequenceItemPrimaryKeyOptions, type YamlSequenceItemPrimaryKeyRepair } from '@shared/yamlRepair'
+import { BLOCK_SCALAR_HEADER, MAPPING_BLOCK_SCALAR_HEADER, repairYamlDoubleQuotedInvalidEscapes, repairYamlDoubleQuotedScalarInnerQuotes, repairYamlDuplicateKeys, repairYamlFreeTextScalars, repairYamlIndentation, repairYamlInlineKeys, repairYamlInlineSequenceParents, repairYamlListDashSpace, repairYamlMappingKeyColonSpace, repairYamlNestedMappingChildren, repairYamlPlainScalarColons, repairYamlQuotedScalarFragments, repairYamlReservedIndicatorScalars, repairYamlSequenceEntryIndent, repairYamlSequenceItemPrimaryKeys, repairYamlTypeUnionScalars, repairYamlUnclosedQuotes, repairYamlWrappedPlainListScalars, stripCodeFences, type YamlSequenceItemPrimaryKeyOptions, type YamlSequenceItemPrimaryKeyRepair } from '@shared/yamlRepair'
 import { isRecord } from '@shared/typeGuards'
 import { stripTranscriptPrefixes as stripSharedTranscriptPrefixes } from '@shared/transcriptPrefix'
 import { cacheParse, getCachedParse } from './parseCache'
@@ -156,12 +156,69 @@ export function collectTaggedCandidates(rawContent: string, tag: string): string
   return candidates
 }
 
-/** Remove lines that are purely an XML tag — safe because real YAML string values won't be on a line alone as a bare tag */
+const SPURIOUS_XML_TAG_LINE_PATTERN = /^\s*<\/?[a-zA-Z_][a-zA-Z0-9_-]*\s*\/?\s*>\s*$/
+
+function getXmlBlockScalarBaseIndent(line: string): number {
+  const indent = line.match(/^(\s*)/)?.[1]?.length ?? 0
+  if (!MAPPING_BLOCK_SCALAR_HEADER.test(line.trim())) return indent
+  return line.match(/^(\s*-\s+)/)?.[1]?.length ?? indent
+}
+
+interface SpuriousXmlTagScan {
+  content: string
+  tags: string[]
+}
+
+/**
+ * Remove tag-only lines outside block scalar bodies and report only removals.
+ * HTML/XML-looking text in a literal scalar is payload, even when it occupies
+ * a line by itself.
+ */
+function scanSpuriousXmlTags(content: string): SpuriousXmlTagScan {
+  const keptLines: string[] = []
+  const tags: string[] = []
+  const seen = new Set<string>()
+  let blockScalarBaseIndent = -1
+
+  for (const line of content.split('\n')) {
+    const trimmed = line.trim()
+    const indent = line.match(/^(\s*)/)?.[1]?.length ?? 0
+
+    if (blockScalarBaseIndent >= 0) {
+      if (!trimmed || indent > blockScalarBaseIndent) {
+        keptLines.push(line)
+        continue
+      }
+      blockScalarBaseIndent = -1
+    }
+
+    if (!trimmed) {
+      keptLines.push(line)
+      continue
+    }
+
+    if (BLOCK_SCALAR_HEADER.test(trimmed)) {
+      blockScalarBaseIndent = getXmlBlockScalarBaseIndent(line)
+      keptLines.push(line)
+      continue
+    }
+
+    if (SPURIOUS_XML_TAG_LINE_PATTERN.test(line)) {
+      if (!seen.has(trimmed)) {
+        seen.add(trimmed)
+        tags.push(trimmed)
+      }
+      continue
+    }
+
+    keptLines.push(line)
+  }
+
+  return { content: keptLines.join('\n'), tags }
+}
+
 function stripSpuriousXmlTags(content: string): string {
-  return content
-    .split('\n')
-    .filter((line) => !/^\s*<\/?[a-zA-Z_][a-zA-Z0-9_-]*\s*\/?\s*>\s*$/.test(line))
-    .join('\n')
+  return scanSpuriousXmlTags(content).content
 }
 
 interface ParseYamlOrJsonCandidateOptions {
@@ -269,18 +326,7 @@ export function findExplicitWrapperPath(value: unknown, preferredKeys: string[])
 }
 
 function collectSpuriousXmlTags(content: string): string[] {
-  const tags: string[] = []
-  const seen = new Set<string>()
-
-  for (const line of content.split('\n')) {
-    const trimmed = line.trim()
-    if (!/^\s*<\/?[a-zA-Z_][a-zA-Z0-9_-]*\s*\/?\s*>\s*$/.test(trimmed)) continue
-    if (seen.has(trimmed)) continue
-    seen.add(trimmed)
-    tags.push(trimmed)
-  }
-
-  return tags
+  return scanSpuriousXmlTags(content).tags
 }
 
 function escapeRegExp(value: string): string {
@@ -569,16 +615,17 @@ function applyInlineRepairPipeline(candidate: string, options?: ParseYamlOrJsonC
   return { inlineSequence, inlineKeys, yaml }
 }
 
-// Repair contract marker; bump with rule/order changes, including shared repairs.
-// The cache is process-local: deploying new code also restarts with an empty cache.
-const REPAIR_PIPELINE_VERSION = '3'
+// The test suite hashes the complete yamlRepair/yamlUtils sources after
+// normalising this literal. Keeping only the resulting marker at runtime
+// makes cache invalidation work in bundled builds without reading source files.
+export const REPAIR_PIPELINE_VERSION = '7845240771ecd0a5df11ba7e466e182bbcd281e8461b6da87b938952f59bb94c'
 
 /** Parse or reuse a candidate while preserving per-call repairs and mutable result ownership. */
 export function parseYamlOrJsonCandidate(
   content: string,
   options?: ParseYamlOrJsonCandidateOptions,
 ): unknown {
-  const trimmed = content.trim()
+  const trimmed = content.replace(/\r\n?/g, '\n').trim()
   if (!trimmed) return null
   // Normalized aliases can collide, so nested option property order matters.
   // The mapped type makes adding an unkeyed repair option a compile error.
@@ -624,6 +671,18 @@ function parseYamlOrJsonCandidateUncached(
   const applyNestedMappingRepair = (value: string): string => options?.nestedMappingChildren
     ? repairYamlNestedMappingChildren(value, options.nestedMappingChildren)
     : value
+  const hasNonStringFreeText = (value: unknown): boolean => {
+    if (Array.isArray(value)) return value.some((entry) => hasNonStringFreeText(entry))
+    if (!isRecord(value)) return false
+    return Object.entries(value).some(([key, child]) =>
+      (normalizeKey(key) === 'freetext' && child !== undefined && typeof child !== 'string')
+      || hasNonStringFreeText(child),
+    )
+  }
+  const hasHeaderStyleListScalar = (value: string): boolean => value.split('\n').some((line) => {
+    const match = line.match(/^\s*-\s+(.+)$/)
+    return Boolean(match && /^[A-Z][A-Za-z0-9]*(?:-[A-Za-z0-9]+)+:\s+\S/.test(match[1]!))
+  })
   const tryParseCandidate = (candidate: string, allowTrailingNoiseVariants = true): unknown => {
     const finalizeParsedCandidate = (
       parsed: unknown,
@@ -710,7 +769,44 @@ function parseYamlOrJsonCandidateUncached(
         plainScalarColonPreRepaired,
         options?.sequenceItemPrimaryKeys,
       )
-      const preParseRepaired = applyNestedMappingRepair(sequenceItemPrimaryKeyPreRepaired.yaml)
+      const freeTextPreRepaired = repairYamlFreeTextScalars(sequenceItemPrimaryKeyPreRepaired.yaml)
+      const preParseRepaired = applyNestedMappingRepair(freeTextPreRepaired)
+
+      // A valid YAML document is authoritative. Some repairs are deliberately
+      // schema-directed because YAML accepts the wrong shape (inline sequence
+      // parents, header-like scalar list items, or non-string free_text), but a
+      // generic repair must not rewrite valid nested sequences or root scalars.
+      let rawParsed: unknown
+      let rawParsedSuccessfully = false
+      try {
+        rawParsed = jsYaml.load(candidate)
+        rawParsedSuccessfully = true
+      } catch { /* the repair cascade below handles malformed YAML */ }
+
+      if (rawParsedSuccessfully) {
+        const inlineYamlRepaired = inlineSequencePreRepaired !== candidate
+          || inlineKeyPreRepaired !== inlineSequencePreRepaired
+        const schemaRepairNeeded = inlineYamlRepaired
+          || (preParseRepaired !== candidate && hasHeaderStyleListScalar(candidate))
+          || (preParseRepaired !== candidate && hasNonStringFreeText(rawParsed))
+        if (!schemaRepairNeeded) return rawParsed
+
+        if (preParseRepaired !== candidate) {
+          try {
+            return finalizeParsedCandidate(jsYaml.load(preParseRepaired), {
+              inlineYaml: inlineYamlRepaired,
+              mappingKeyColonSpace: mappingKeyColonSpacePreRepaired !== inlineKeyPreRepaired,
+              wrappedPlainListScalar: wrappedPlainListScalarPreRepaired !== mappingKeyColonSpacePreRepaired,
+              plainScalarColon: plainScalarColonPreRepaired !== wrappedPlainListScalarPreRepaired,
+              sequenceItemPrimaryKey: sequenceItemPrimaryKeyPreRepaired.repairs,
+              nestedMappingChildren: preParseRepaired !== freeTextPreRepaired,
+              freeTextScalar: freeTextPreRepaired !== sequenceItemPrimaryKeyPreRepaired.yaml,
+            })
+          } catch { /* preserve the valid raw parse if a schema repair is unsafe */ }
+        }
+        return rawParsed
+      }
+
       if (preParseRepaired !== candidate) {
         try {
           return finalizeParsedCandidate(jsYaml.load(preParseRepaired), {
@@ -719,7 +815,8 @@ function parseYamlOrJsonCandidateUncached(
             wrappedPlainListScalar: wrappedPlainListScalarPreRepaired !== mappingKeyColonSpacePreRepaired,
             plainScalarColon: plainScalarColonPreRepaired !== wrappedPlainListScalarPreRepaired,
             sequenceItemPrimaryKey: sequenceItemPrimaryKeyPreRepaired.repairs,
-            nestedMappingChildren: preParseRepaired !== sequenceItemPrimaryKeyPreRepaired.yaml,
+            nestedMappingChildren: preParseRepaired !== freeTextPreRepaired,
+            freeTextScalar: freeTextPreRepaired !== sequenceItemPrimaryKeyPreRepaired.yaml,
           })
         } catch { /* fall through to the original input and later repairs */ }
       }
@@ -1226,7 +1323,7 @@ export function toBoolean(value: unknown): boolean | null {
  * `withAliasConflictWarnings` and every nested lookup inherits it. Parsing is
  * synchronous, so the value is only ever set for the duration of one call.
  */
-let activeAliasConflictWarnings: string[] | null = null
+let activeAliasConflictWarnings: string[] | undefined
 
 /**
  * Routes alias conflicts found from here on into `repairWarnings`, until the
@@ -1275,8 +1372,9 @@ function isSameAliasValue(left: unknown, right: unknown): boolean {
  *
  * This used to iterate the record's own insertion order and return the first
  * match, so a payload carrying both the canonical name and a legacy alias with
- * different values resolved by whichever the model happened to write first. The
- * alias list is the precedence order now, and a disagreement is reported.
+ * different values resolved by whichever the model happened to write first.
+ * Collect each normalized bucket once, then apply the alias list's literal
+ * precedence before falling back to the first bucket match.
  */
 export function getValueByAliases(record: Record<string, unknown>, aliases: string[]): unknown {
   const matchesByAlias = new Map<string, Array<{ key: string; value: unknown }>>()
@@ -1287,32 +1385,42 @@ export function getValueByAliases(record: Record<string, unknown>, aliases: stri
     else matchesByAlias.set(normalizedKey, [{ key, value }])
   }
 
-  let resolved: { key: string; value: unknown } | undefined
-  const conflicting: string[] = []
-  // Several alias lists carry two spellings of one token — `actionsrequired`
-  // and `actions_required` both normalise to `actionsrequired` — which visited
-  // the same record entries once per spelling and named each disagreement
-  // twice in the warning.
+  const matches: Array<{ key: string; value: unknown }> = []
+  const buckets: Array<{ aliases: string[]; matches: Array<{ key: string; value: unknown }> }> = []
   const visitedAliases = new Set<string>()
-
   for (const alias of aliases) {
     const normalizedAlias = normalizeKey(alias)
     if (visitedAliases.has(normalizedAlias)) continue
     visitedAliases.add(normalizedAlias)
-    for (const match of matchesByAlias.get(normalizedAlias) ?? []) {
-      if (!resolved) {
-        resolved = match
-        continue
-      }
-      if (!isSameAliasValue(resolved.value, match.value)) {
-        conflicting.push(match.key)
-      }
-    }
+    const bucket = matchesByAlias.get(normalizedAlias) ?? []
+    if (bucket.length === 0) continue
+    matches.push(...bucket)
+    buckets.push({
+      aliases: aliases.filter((candidate) => normalizeKey(candidate) === normalizedAlias),
+      matches: bucket,
+    })
   }
 
+  // Alias-list order still ranks different normalized tokens. Within the first
+  // bucket that has a value, exact literals win even when a legacy spelling was
+  // written first. This is deliberately limited to aliases the caller supplied;
+  // it does not invent camel/separator variants or let a lower-priority bucket
+  // outrank a higher-priority normalized match.
+  const firstBucket = buckets[0]
+  const resolved = firstBucket
+    ? firstBucket.aliases
+      .map((alias) => firstBucket.matches.find((match) => match.key === alias))
+      .find((match): match is { key: string; value: unknown } => match !== undefined)
+      ?? firstBucket.matches[0]
+    : undefined
+  const conflicting = resolved
+    ? matches.filter((match) => match !== resolved && !isSameAliasValue(resolved.value, match.value))
+    : []
+
   if (resolved && conflicting.length > 0) {
-    activeAliasConflictWarnings?.push(
-      `Resolved "${resolved.key}" and ignored the conflicting ${conflicting.length === 1 ? 'value' : 'values'} in ${conflicting.map((key) => `"${key}"`).join(', ')}.`,
+    appendRepairWarningOnce(
+      activeAliasConflictWarnings,
+      `Resolved "${resolved.key}" and ignored the conflicting ${conflicting.length === 1 ? 'value' : 'values'} in ${conflicting.map(({ key }) => `"${key}"`).join(', ')}.`,
     )
   }
 

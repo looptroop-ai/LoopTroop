@@ -177,6 +177,21 @@ describe('handleCoding', () => {
     expect(executeBeadMock).not.toHaveBeenCalled()
   })
 
+  it('fails closed on a malformed tracker without reporting completion or rewriting it', async () => {
+    const { ticket, context, paths } = await createInitializedTestTicket(repoManager, {
+      title: 'Malformed tracker completion guard',
+    })
+    const original = '{"id":"bead-1","status":"done"}\nnot-json\n'
+    writeFileSync(paths.beadsPath, original)
+    const sendEvent = vi.fn()
+
+    await expect(handleCoding(ticket.id, context, sendEvent, new AbortController().signal))
+      .rejects.toThrow(/unparseable JSON at line\(s\) 2/)
+
+    expect(sendEvent).not.toHaveBeenCalledWith({ type: 'ALL_BEADS_DONE' })
+    expect(readFileSync(paths.beadsPath, 'utf8')).toBe(original)
+  })
+
   it('sends ERROR event and returns when mock mode is active', async () => {
     isMockOpenCodeModeMock.mockReturnValue(true)
     const { ticket, context } = await createInitializedTestTicket(repoManager, {

@@ -218,6 +218,25 @@ describe.concurrent('workflow metadata', () => {
     ])
   })
 
+  it('documents the accepted beads contract across planning and approval', () => {
+    const drafting = WORKFLOW_PHASES.find((phase) => phase.id === 'DRAFTING_BEADS')
+    const voting = WORKFLOW_PHASES.find((phase) => phase.id === 'COUNCIL_VOTING_BEADS')
+    const refining = WORKFLOW_PHASES.find((phase) => phase.id === 'REFINING_BEADS')
+    const coverage = WORKFLOW_PHASES.find((phase) => phase.id === 'VERIFYING_BEADS_COVERAGE')
+    const expanding = WORKFLOW_PHASES.find((phase) => phase.id === 'EXPANDING_BEADS')
+    const approval = WORKFLOW_PHASES.find((phase) => phase.id === 'WAITING_BEADS_APPROVAL')
+
+    expect(drafting?.description).toContain('explicit structured verification commands')
+    expect(drafting?.details.steps.join(' ')).toContain('never turns a bare command string into a shell invocation')
+    expect(voting?.details.notes?.join(' ')).toContain('structured command and dependency fields')
+    expect(refining?.details.steps.join(' ')).toContain('explicit no-command reason')
+    expect(coverage?.details.overview).toContain('command absence alone is not a coverage gap')
+    expect(expanding?.description).toContain('preserving structured commands and explicit no-command reasons')
+    expect(approval?.description).toContain('JSONL diagnostics')
+    expect(approval?.details.steps.join(' ')).toContain('source-line diagnostics')
+    expect(approval?.details.notes?.join(' ')).toContain('draft base hash')
+  })
+
   it('describes PRD drafting as full answers first and PRD drafts second', () => {
     const prdDraftPhase = WORKFLOW_PHASES.find((phase) => phase.id === 'DRAFTING_PRD')
 

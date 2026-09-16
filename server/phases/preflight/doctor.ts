@@ -6,6 +6,7 @@ import { findProjectExecutionBandConflict, getLatestPhaseArtifact, getTicketCont
 import { throwIfAborted } from '../../council/types'
 import { raceWithCancel, throwIfCancelled } from '../../lib/abort'
 import { getRunnable } from '../execution/scheduler'
+import { inspectBeadDependencyGraph } from '../beads/dependencyGraph'
 import { getCurrentBranch } from '../../git/repository'
 import { buildExecutionBandConflictMessage } from '../../workflow/executionBand'
 import {
@@ -207,141 +208,22 @@ export async function runPreFlightChecks(
     })
   }
 
-  // 5. Dependency graph integrity (dangling + self-deps)
-  const beadIds = new Set(beads.map((b) => b.id))
-  let graphValid = true
-  for (const bead of beads) {
-    for (const dep of bead.dependencies.blocked_by) {
-      if (!beadIds.has(dep)) {
-        graphValid = false
-        checks.push({
-          name: 'Dependency Graph',
-          category: 'graph',
-          result: 'fail',
-          message: `Bead ${bead.id} has dangling blocked_by dependency: ${dep}`,
-        })
-      }
-    }
-    for (const dep of bead.dependencies.blocks) {
-      if (!beadIds.has(dep)) {
-        graphValid = false
-        checks.push({
-          name: 'Dependency Graph',
-          category: 'graph',
-          result: 'fail',
-          message: `Bead ${bead.id} has dangling blocks dependency: ${dep}`,
-        })
-      }
-    }
-    if (bead.dependencies.blocked_by.includes(bead.id) || bead.dependencies.blocks.includes(bead.id)) {
-      graphValid = false
-      checks.push({
-        name: 'Dependency Graph',
-        category: 'graph',
-        result: 'fail',
-        message: `Bead ${bead.id} has self-dependency`,
-      })
-    }
+  // 5. Dependency graph integrity. The shared validator keeps approval and
+  // pre-flight aligned while this caller retains the existing check name and
+  // its separate runnable-bead diagnostic below.
+  const graphValidation = inspectBeadDependencyGraph(beads)
+  let graphValid = graphValidation.graphValid
+  const edgesConsistent = graphValidation.edgesConsistent
+  for (const message of graphValidation.errors) {
+    checks.push({
+      name: 'Dependency Graph',
+      category: 'graph',
+      result: 'fail',
+      message,
+    })
   }
 
-  // The scheduler runs entirely off `blocked_by`, and so does the cycle check
-  // below, so a `blocks` edge with no inverse is an edge nothing enforces:
-  // `A.blocks = [B]` with `B.blocks = [A]` and both `blocked_by` empty declares
-  // a cycle, passes every check above, and lets both beads run at once.
-  // Requiring the inverse means the graph that is validated is the graph that
-  // is executed.
-  const beadsById = new Map(beads.map((bead) => [bead.id, bead]))
-  // Tracked apart from `graphValid` so a genuine cycle is still named: an
-  // inconsistent edge is a fault in its own right, not a reason to stop looking.
-  let edgesConsistent = true
-  for (const bead of beads) {
-    for (const dep of bead.dependencies.blocks) {
-      const target = beadsById.get(dep)
-      if (!target || target.dependencies.blocked_by.includes(bead.id)) continue
-      edgesConsistent = false
-      checks.push({
-        name: 'Dependency Graph',
-        category: 'graph',
-        result: 'fail',
-        message: `Bead ${bead.id} declares it blocks ${dep}, but ${dep} does not list ${bead.id} in blocked_by`,
-      })
-    }
-    for (const dep of bead.dependencies.blocked_by) {
-      const target = beadsById.get(dep)
-      if (!target || target.dependencies.blocks.includes(bead.id)) continue
-      edgesConsistent = false
-      checks.push({
-        name: 'Dependency Graph',
-        category: 'graph',
-        result: 'fail',
-        message: `Bead ${bead.id} is blocked by ${dep}, but ${dep} does not list ${bead.id} in blocks`,
-      })
-    }
-  }
-
-  // 6. Duplicate bead IDs
-  if (beads.length > 0 && beadIds.size !== beads.length) {
-    graphValid = false
-    const seen = new Set<string>()
-    for (const bead of beads) {
-      if (seen.has(bead.id)) {
-        checks.push({
-          name: 'Dependency Graph',
-          category: 'graph',
-          result: 'fail',
-          message: `Duplicate bead ID: ${bead.id}`,
-        })
-      }
-      seen.add(bead.id)
-    }
-  }
-
-  // 7. Circular dependency detection
-  if (beads.length > 0 && graphValid) {
-    const visited = new Set<string>()
-    const recStack = new Set<string>()
-    let hasCycleResult = false
-
-    function detectCycle(beadId: string): boolean {
-      visited.add(beadId)
-      recStack.add(beadId)
-
-      const bead = beadsById.get(beadId)
-      if (bead) {
-        for (const dep of bead.dependencies.blocked_by) {
-          if (!visited.has(dep)) {
-            if (detectCycle(dep)) return true
-          } else if (recStack.has(dep)) {
-            return true
-          }
-        }
-      }
-
-      recStack.delete(beadId)
-      return false
-    }
-
-    for (const bead of beads) {
-      if (!visited.has(bead.id)) {
-        if (detectCycle(bead.id)) {
-          hasCycleResult = true
-          break
-        }
-      }
-    }
-
-    if (hasCycleResult) {
-      graphValid = false
-      checks.push({
-        name: 'Dependency Graph',
-        category: 'graph',
-        result: 'fail',
-        message: 'Circular dependency detected in bead graph',
-      })
-    }
-  }
-
-  // 8. Runnable bead exists (at least one bead can start immediately)
+  // 6. Runnable bead exists (at least one bead can start immediately)
   if (beads.length > 0 && graphValid) {
     const runnable = getRunnable(beads)
     if (runnable.length === 0) {

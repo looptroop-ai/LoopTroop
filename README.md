@@ -95,8 +95,9 @@ exactly as they would have. Pin a version with `--version X.Y.Z` (`-Version` on
 Windows). It installs wherever npm's global prefix points; change that with
 `npm config set prefix`.
 
-**Needs Node and npm already installed.** It never installs Node for you, never
-asks for sudo, and writes nothing outside npm's global prefix.
+**Needs Node 24.18.1 or newer and npm 12.0.2 or newer already installed.** It
+never installs Node for you, never asks for sudo, and writes nothing outside
+npm's global prefix.
 
 There is also a standalone executable that carries its own Node runtime — see
 [Installation](https://www.looptroop.ovh/docs/installation#standalone-executable).
@@ -122,9 +123,9 @@ brew upgrade looptroop            # upgrade
 ```
 
 **Needs nothing else.** The formula pulls in `node@24` and `gh`, and takes git
-from the OS. It installs a locked bundle built once per release with every
-dependency resolved at build time, so everyone on this channel runs the exact
-versions the release was tested against.
+from the OS. It installs a locked bundle built once per release from the
+release lockfile, so everyone on this channel runs the exact versions the
+release was tested against.
 </details>
 
 <details>
@@ -137,7 +138,7 @@ scoop update looptroop            # upgrade
 ```
 
 **Needs nothing else.** The manifest depends on `nodejs-lts`, `git` and `gh`.
-Like Homebrew, it installs the locked bundle.
+Like Homebrew, it installs the locked bundle built from the release lockfile.
 </details>
 
 <details>
@@ -169,7 +170,7 @@ Asking for an exact version bypasses it.
 </details>
 
 <details>
-<summary><b>Yarn Classic</b> — everywhere</summary>
+<summary><b>Yarn Classic</b> — Bash/zsh commands</summary>
 
 ```bash
 yarn global add looptroop
@@ -179,11 +180,15 @@ yarn global upgrade looptroop@latest     # upgrade
 
 **Needs Node 24.18.1 or newer as well as Yarn**, plus git and `gh`.
 
-**Yarn does not put its global binaries on `PATH`.** This looks like a failed
-install and is not: the add reports success, and then `looptroop` is not a
-command. Add the line above to your shell profile, or the next terminal will
-have forgotten it. npm, bun and pnpm all install somewhere already on `PATH`,
-which is why this catches people out on Yarn alone.
+These commands use Bash or zsh syntax. Yarn Classic also runs on Windows, but a
+PowerShell PATH command is not documented here. Use npm on Windows for the
+recommended documented setup.
+
+**In Bash or zsh, Yarn does not put its global binaries on `PATH`.** This looks
+like a failed install and is not: the add reports success, and then `looptroop`
+is not a command. Add the line above to your shell profile, or the next terminal
+will have forgotten it. npm, bun and pnpm all install somewhere already on
+`PATH`, which is why this catches people out on Yarn alone.
 
 **Yarn Classic (1.x) only.** Yarn 2 removed `yarn global` and never replaced it,
 so modern Yarn cannot install a CLI globally at all — and it does not say so
@@ -199,11 +204,25 @@ and fails with a lockfile error. On modern Yarn, run it without installing with
 docker pull looptroopai/looptroop:latest
 ```
 
-**Needs only Docker.** Node, git and `gh` are all in the image. Two things it
-still needs from you, both deliberately not baked in: an OpenCode server it can
-reach, and a project mounted at its own absolute path. Both are covered on the
+**Needs only Docker.** Node, git and `gh` are all in the image. Release images
+use the matching tarball and `package-lock.json`, then record the installed
+package versions before the multi-architecture image is published. Two things
+the image still needs from you, both deliberately not baked in: an OpenCode
+server it can reach, and a project mounted at its own absolute path. See the
 [Installation page](https://www.looptroop.ovh/docs/installation#running-in-a-container).
 </details>
+
+### Standalone executable
+
+Standalone release archives carry Node `v26.9.0` in the executable, so a
+downloaded archive runs without Node installed on the host. That embedded
+runtime is separate from the application and package floor: Node `24.18.1+`
+remains required for the npm, bun, pnpm and Yarn channels and for the
+container's application runtime.
+
+Node 26 is currently the Current release line. Embedded-runtime security
+maintenance follows [Node's release schedule](https://github.com/nodejs/Release#release-schedule)
+separately from LoopTroop's application-runtime support.
 
 **[The Installation page](https://www.looptroop.ovh/docs/installation) is the one
 place that tracks which channels are live**, and covers upgrading, uninstalling,
@@ -310,11 +329,13 @@ fail ──> log failure trace ──> reset worktree ──> retry fresh
 
 This cycle repeats until all tests pass or retry limits are reached. **This can take hours (sometimes 10+ hours) by design.** It is built to run unattended (e.g., overnight).
 
+If startup finds an orphan YAML temp without its matching proof or a torn whole-file JSONL temp, it warns and leaves the temp unpromoted for inspection. Recovery blocks startup only when an in-progress fallback's `.recovery` ownership or completeness cannot be verified; that typed diagnostic appears before projections, ticket hydration, or execution timers, with the affected files preserved. LoopTroop does not guess or silently promote an uncertain write.
+
 Read more: [Beads & Execution](https://www.looptroop.ovh/docs/beads)
 
 ### Worktree isolation
 
-LoopTroop runs execution steps inside isolated Git worktrees rather than modifying your active branch. This keeps your working copy clean and ensures reliable, inspectable diffs. Note that worktrees provide workspace isolation, not sandboxed host security.
+LoopTroop runs execution steps inside isolated Git worktrees rather than modifying your active branch. This keeps your working copy clean and ensures reliable, inspectable diffs. Git mutations and resets have bounded process cleanup, unusual filenames stay intact when diffs are read, and generated runtime files stay out of candidate commits. Note that worktrees provide workspace isolation, not sandboxed host security.
 
 Read more: [System Architecture](https://www.looptroop.ovh/docs/system-architecture)
 

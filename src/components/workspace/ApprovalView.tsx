@@ -1,4 +1,4 @@
-import { startTransition, useMemo, useState, useCallback, useRef } from 'react'
+import { startTransition, useMemo, useState, useCallback, useRef, useEffect } from 'react'
 import { Button } from '@/components/ui/button'
 import { Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle } from '@/components/ui/dialog'
 import { useInterviewQuestions, useTicketUIState, useSaveTicketUIState } from '@/hooks/useTickets'
@@ -26,6 +26,8 @@ import {
   hasUnrepresentableBeadCommands,
   hasUnstructuredBeadGuidance,
   normalizeBead,
+  readBeadCommands,
+  readBeadString,
   stripSupersededBeadAliases,
   type NormalizedBead,
 } from '@/lib/beadsDocument'
@@ -102,8 +104,15 @@ function beadsArrayToJsonl(beads: unknown[]): string {
   return beads.map((b) => JSON.stringify(b)).join('\n') + '\n'
 }
 
-function jsonlToBeadsArray(jsonl: string): unknown[] {
-  return jsonl.split('\n').filter((l) => l.trim()).map((l) => JSON.parse(l))
+function jsonlToBeadsArray(jsonl: string): { beads: unknown[]; sourceLines: number[] } {
+  const beads: unknown[] = []
+  const sourceLines: number[] = []
+  for (const [index, line] of jsonl.split('\n').entries()) {
+    if (!line.trim()) continue
+    beads.push(JSON.parse(line))
+    sourceLines.push(index + 1)
+  }
+  return { beads, sourceLines }
 }
 
 function validateJsonl(jsonl: string): string | null {
@@ -148,7 +157,28 @@ function parseBeadsForEditor(data: unknown[]): NormalizedBead[] {
 
 /** Build a canonical bead object for isSaving — merges editor fields back into the original, keeping read-only fields intact. */
 function buildBeadForSave(bead: NormalizedBead): Record<string, unknown> {
-  const { contextGuidance, dependencies, acceptanceCriteria, testCommands, testCommandReason, targetFiles, prdRefs, ...rest } = bead
+  const {
+    contextGuidance,
+    dependencies,
+    acceptanceCriteria,
+    testCommands,
+    testCommandReason,
+    targetFiles,
+    prdRefs,
+    // These fields are controlled by the structured editor. Remove their
+    // known aliases before applying the edited canonical value: an empty edit
+    // is an intentional clear, and keeping an old alias would make the server
+    // (correctly) recover that populated alias on the next read.
+    acceptance_criteria: _acceptanceCriteriaAlias,
+    test_commands: _testCommandsAlias,
+    test_command_reason: _testCommandReasonAlias,
+    target_files: _targetFilesAlias,
+    prd_refs: _prdRefsAlias,
+    prd_references: _prdReferencesAlias,
+    context_guidance: _contextGuidanceAlias,
+    ...rest
+  } = bead
+  const { blocked_by, blocks, ...unknownDependencies } = dependencies
   // Stripped over the *whole* record, canonical fields included. Run over
   // `rest` alone it saw no canonical `prdRefs`, kept `prd_refs` as though it
   // were the only copy, and the canonical value was spread back on top — both
@@ -165,8 +195,9 @@ function buildBeadForSave(bead: NormalizedBead): Record<string, unknown> {
       anti_patterns: contextGuidance.anti_patterns,
     },
     dependencies: {
-      blocked_by: dependencies.blocked_by,
-      blocks: dependencies.blocks,
+      ...unknownDependencies,
+      blocked_by,
+      blocks,
     },
   } as NormalizedBead) as Record<string, unknown>
 }
@@ -272,6 +303,21 @@ function BeadsApprovalPane({
     [beadsArray],
   )
   const hasUnrepresentableCommands = unrepresentableCommandBeadIds.length > 0
+  // The approval contract requires an explicit reason when a bead has no
+  // automated command. Keep this separate from the unrepresentable-command
+  // warning: a bare string needs repair, while an intentionally empty list
+  // needs a human explanation in the structured editor.
+  const missingCommandReasonBeadIds = useMemo(
+    () => beadsArray.flatMap((bead, index) => {
+      if (!isRecord(bead) || hasUnrepresentableBeadCommands(bead)) return []
+      const hasReason = readBeadString(bead, 'testCommandReason', 'display').length > 0
+      return readBeadCommands(bead, 'testCommands').length === 0 && !hasReason
+        ? [typeof bead.id === 'string' && bead.id ? bead.id : `bead ${index + 1}`]
+        : []
+    }),
+    [beadsArray],
+  )
+  const hasMissingCommandReasons = missingCommandReasonBeadIds.length > 0
   const structuredEditorBlocked = hasMalformedLines || hasUnrepresentableLines || hasUnstructuredGuidance
     || hasUnrepresentableCommands
   const malformedLineSummary = describeLines(malformedLines)
@@ -281,6 +327,8 @@ function BeadsApprovalPane({
   const [editTab, setEditTab] = useState<EditTab>('structured')
   const [structuredDraft, setStructuredDraft] = useState<NormalizedBead[] | null>(null)
   const [jsonlDraft, setJsonlDraft] = useState('')
+  /** The immutable file version the current draft was read from. */
+  const [draftBaseSha256, setDraftBaseSha256] = useState<string | null>(null)
   const [isSaving, setIsSaving] = useState(false)
   const [isApproving, setIsApproving] = useState(false)
   // Deliberately not persisted with the approval draft: an acknowledgement is
@@ -298,6 +346,16 @@ function BeadsApprovalPane({
   const lastSavedSnapshotRef = useRef('')
   const skipRestoreRef = useRef(false)
   const containerRef = useRef<HTMLDivElement>(null)
+
+  const hasLiveDraftConflict = Boolean(
+    isEditMode && draftBaseSha256 && currentContentSha256 && draftBaseSha256 !== currentContentSha256,
+  )
+
+  useEffect(() => {
+    // A ticket switch must not let the previous ticket's optimistic-concurrency
+    // token authorize the first save for this one while its query is settling.
+    setDraftBaseSha256(null)
+  }, [ticket.id])
 
   const baseStructuredDraft = useMemo(
     () => beadsArray.length > 0 ? parseBeadsForEditor(beadsArray) : null,
@@ -359,13 +417,17 @@ function BeadsApprovalPane({
       setEditTab(nextEditTab)
       setStructuredDraft(nextStructuredDraft)
       setJsonlDraft(nextJsonlDraft)
+      const nextBaseSha256 = draftMatchesFile && typeof persisted?.contentSha256 === 'string'
+        ? persisted.contentSha256
+        : document.contentSha256
+      setDraftBaseSha256(nextBaseSha256)
 
       return {
         isEditMode: nextEditMode,
         editTab: nextEditTab,
         jsonlDraft: nextJsonlDraft,
         structuredDraft: nextStructuredDraft,
-        contentSha256: document.contentSha256,
+        contentSha256: nextBaseSha256,
       }
     },
   })
@@ -382,7 +444,7 @@ function BeadsApprovalPane({
       structuredDraft,
       // The file the draft belongs to, so a restore can tell whether it still
       // does.
-      contentSha256: currentContentSha256,
+      contentSha256: draftBaseSha256,
     },
     ticketId: ticket.id,
     scope: uiStateScope,
@@ -398,6 +460,8 @@ function BeadsApprovalPane({
       setEditTab(nextTab)
       setSaveError(null)
       setApproveError(null)
+      setStaleSave(false)
+      setDraftBaseSha256(currentContentSha256)
     })
   }
 
@@ -442,10 +506,12 @@ function BeadsApprovalPane({
     setIsSaving(true)
     setSaveError(null)
 
+    let staleResponse = false
     try {
+      const parsedJsonlDraft = editTab === 'jsonl' ? jsonlToBeadsArray(jsonlDraft) : null
       const beadsToSave = editTab === 'structured' && structuredDraft
         ? structuredDraft.map(buildBeadForSave)
-        : jsonlToBeadsArray(jsonlDraft)
+        : parsedJsonlDraft?.beads ?? []
 
       const response = await fetch(apiTicketPath(ticket.id, 'beads'), {
         method: 'PUT',
@@ -454,13 +520,20 @@ function BeadsApprovalPane({
           // The file this draft was built on. The route refuses the write if
           // the tracker changed in between, rather than overwriting whatever
           // landed — a repair of the damaged lines, most likely.
-          ...(currentContentSha256 ? { 'X-Content-Sha256': currentContentSha256 } : {}),
+          ...(draftBaseSha256 ? { 'X-Content-Sha256': draftBaseSha256 } : {}),
           // Which editor produced it, for the edit receipt.
           'X-Edit-Surface': editTab,
+          // Preserve the original JSONL positions so server validation can
+          // name the line the operator edited even when the draft contains
+          // blank lines.
+          ...(parsedJsonlDraft ? { 'X-Source-Lines': parsedJsonlDraft.sourceLines.join(',') } : {}),
         },
         body: JSON.stringify(beadsToSave),
       })
 
+      // Keep this decision tied to the protocol status. The server may reword
+      // its detail without changing the concurrency contract.
+      staleResponse = response.status === 409
       await throwIfNotOk(response, 'Failed to save beads')
 
       // Update cache with the saved array (API returns { success: true })
@@ -487,6 +560,7 @@ function BeadsApprovalPane({
       // "unsaved changes" against a file that already has them.
       setJsonlDraft(beadsArrayToJsonl(beadsToSave))
       setStructuredDraft(null)
+      setDraftBaseSha256(nextContentSha256)
       setIsEditMode(false)
       setEditTab('structured')
     } catch (error) {
@@ -495,14 +569,14 @@ function BeadsApprovalPane({
       // built on, and the screen is still showing the old one. Saying so, and
       // offering the way back, is the whole point of refusing rather than
       // overwriting.
-      setSaveError(message.includes('changed since it was read')
+      setSaveError(staleResponse
         ? `${message}. Reload to work from the file that is there now — reloading replaces your draft with it.`
         : message)
-      if (message.includes('changed since it was read')) setStaleSave(true)
+      if (staleResponse) setStaleSave(true)
     } finally {
       setIsSaving(false)
     }
-  }, [currentContentSha256, editTab, hasMalformedLines, hasUnrepresentableLines, hasUnrepresentableCommands, hasUnstructuredGuidance, jsonlDraft, malformedLineSummary, malformedLines, structuredDraft, ticket.id, unrepresentableCommandBeadIds, unrepresentableLineSummary, unrepresentableLines, unstructuredGuidanceBeadIds, queryClient])
+  }, [draftBaseSha256, editTab, hasMalformedLines, hasUnrepresentableLines, hasUnrepresentableCommands, hasUnstructuredGuidance, jsonlDraft, malformedLineSummary, malformedLines, structuredDraft, ticket.id, unrepresentableCommandBeadIds, unrepresentableLineSummary, unrepresentableLines, unstructuredGuidanceBeadIds, queryClient])
 
   const handleApprove = useCallback(async () => {
     setIsApproving(true)
@@ -512,7 +586,7 @@ function BeadsApprovalPane({
       await approveArtifact(queryClient, {
         ticketId: ticket.id,
         domain: 'beads',
-        expectedContentSha256: currentContentSha256,
+        expectedContentSha256: draftBaseSha256,
         gapAcknowledgementReason: gapReason,
         failureMessage: 'Failed to approve beads',
       })
@@ -523,7 +597,7 @@ function BeadsApprovalPane({
     } finally {
       setIsApproving(false)
     }
-  }, [currentContentSha256, gapReason, ticket.id, queryClient])
+  }, [draftBaseSha256, gapReason, ticket.id, queryClient])
 
   const handleFixCoverageGaps = useCallback(async () => {
     setIsFixingCoverageGaps(true)
@@ -595,7 +669,7 @@ function BeadsApprovalPane({
           <Button
             size="sm"
             onClick={handleApprove}
-            disabled={isApproving || isSaving || isFixingCoverageGaps || isCoverageUnknown || (isEditMode && hasUnsavedChanges) || beadsArray.length === 0 || hasMalformedLines || hasUnrepresentableLines || !currentContentSha256 || ticket.status !== 'WAITING_BEADS_APPROVAL'}
+            disabled={isApproving || isSaving || isFixingCoverageGaps || isCoverageUnknown || (isEditMode && hasUnsavedChanges) || hasLiveDraftConflict || beadsArray.length === 0 || hasMalformedLines || hasUnrepresentableLines || hasUnrepresentableCommands || hasUnstructuredGuidance || hasMissingCommandReasons || !draftBaseSha256 || ticket.status !== 'WAITING_BEADS_APPROVAL'}
             className="text-xs shrink-0"
           >
             {isApproving ? 'Approving...' : coverageWarning?.gaps.length ? 'Approve with gaps' : 'Approve'}
@@ -626,6 +700,47 @@ function BeadsApprovalPane({
           </div>
         ) : null}
 
+        {hasUnrepresentableCommands || hasUnstructuredGuidance ? (
+          <div
+            role="status"
+            className="rounded-md border border-amber-300 bg-amber-50/70 px-3 py-2 text-xs text-amber-800 dark:border-amber-900/60 dark:bg-amber-950/20 dark:text-amber-200"
+          >
+            {hasUnrepresentableCommands ? (
+              <div>
+                Approval is blocked because {unrepresentableCommandBeadIds.join(', ')} contain test commands the
+                structured contract cannot represent. Repair those commands in the JSONL tab; they will not be
+                converted to an implicit shell command.
+              </div>
+            ) : null}
+            {hasUnstructuredGuidance ? (
+              <div>
+                Approval is blocked because {unstructuredGuidanceBeadIds.join(', ')} contain context guidance outside
+                the structured fields. Repair it in the JSONL tab so the text is not lost.
+              </div>
+            ) : null}
+          </div>
+        ) : null}
+
+        {hasMissingCommandReasons ? (
+          <div
+            role="status"
+            className="rounded-md border border-amber-300 bg-amber-50/70 px-3 py-2 text-xs text-amber-800 dark:border-amber-900/60 dark:bg-amber-950/20 dark:text-amber-200"
+          >
+            Approval is blocked because {missingCommandReasonBeadIds.join(', ')} have no planned test command or
+            reason. Add a command, or explain why no automated command applies, before approving.
+          </div>
+        ) : null}
+
+        {hasLiveDraftConflict ? (
+          <div
+            role="alert"
+            className="rounded-md border border-amber-300 bg-amber-50/70 px-3 py-2 text-xs text-amber-800 dark:border-amber-900/60 dark:bg-amber-950/20 dark:text-amber-200"
+          >
+            The beads file changed while this draft was open. Reload it before saving or approving so another writer's
+            changes stay safe.
+          </div>
+        ) : null}
+
         <PhaseArtifactsPanel
           phase={phase}
           isCompleted={false}
@@ -648,7 +763,7 @@ function BeadsApprovalPane({
 
         {saveError ? (
           <div className="flex items-center gap-2">
-            <p className="text-xs text-red-500">{saveError}</p>
+            <p role="alert" className="text-xs text-red-500">{saveError}</p>
             {staleSave ? (
               <Button
                 type="button"
@@ -668,6 +783,7 @@ function BeadsApprovalPane({
                     if (!next) return
                     setJsonlDraft(next.rawContent)
                     setStructuredDraft(next.beads.length > 0 ? parseBeadsForEditor(next.beads) : null)
+                    setDraftBaseSha256(next.contentSha256)
                   })
                 }}
               >
@@ -676,7 +792,7 @@ function BeadsApprovalPane({
             ) : null}
           </div>
         ) : null}
-        {approveError ? <p className="text-xs text-red-500">{approveError}</p> : null}
+        {approveError ? <p role="alert" className="text-xs text-red-500">{approveError}</p> : null}
       </div>
 
       {/* Artifact content */}

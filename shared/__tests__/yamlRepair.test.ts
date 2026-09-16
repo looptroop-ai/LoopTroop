@@ -419,6 +419,7 @@ describe('stripCodeFences', () => {
     ['bare (no language tag)', '```\nquestions:\n  - id: Q01\n```', 'questions:\n  - id: Q01'],
     ['leading/trailing whitespace', '  \n```yaml\nquestions:\n  - id: Q01\n```  \n  ', 'questions:\n  - id: Q01'],
     ['internal indentation', '```yaml\nquestions:\n  - id: Q01\n    phase: foundation\n    question: "What?"\n```', 'questions:\n  - id: Q01\n    phase: foundation\n    question: "What?"'],
+    ['uppercase language tag', '```JSON\n{"a":1}\n```', '{"a":1}'],
   ])('strips %s wrapper', (_tag, input, expected) => {
     expect(stripCodeFences(input)).toBe(expected)
   })
@@ -492,6 +493,20 @@ describe('repairYamlDoubleQuotedInvalidEscapes', () => {
     ].join('\n')
 
     expect(repairYamlDoubleQuotedInvalidEscapes(input)).toBe(input)
+  })
+
+  it('recognizes a block scalar header with a trailing comment', () => {
+    const input = [
+      'pattern: "^\\+"',
+      'command: |  # shell',
+      '  grep -E "\\d+" file',
+    ].join('\n')
+
+    expect(repairYamlDoubleQuotedInvalidEscapes(input)).toBe([
+      'pattern: "^\\\\+"',
+      'command: |  # shell',
+      '  grep -E "\\d+" file',
+    ].join('\n'))
   })
 })
 
@@ -940,6 +955,18 @@ describe('repairYamlWrappedPlainListScalars', () => {
       ['items:', '  - prose reports value: false', '  - another item'].join('\n'),
     ],
   ])('leaves %s unchanged when folding would be ambiguous', (_, input) => {
+    expect(repairYamlWrappedPlainListScalars(input)).toBe(input)
+  })
+
+  it.each(['|', '|-', '>'])('does not fold dash prose inside a %s block scalar', (header) => {
+    const input = [
+      'parent:',
+      `  body: ${header}`,
+      '    - prose reports value: false, and',
+      '      continued line here',
+      '  answer: text',
+    ].join('\n')
+
     expect(repairYamlWrappedPlainListScalars(input)).toBe(input)
   })
 })
@@ -1563,6 +1590,28 @@ describe.concurrent('repairYamlDuplicateKeys — block scalars', () => {
     expect(repairYamlDuplicateKeys(input)).toBe(input)
   })
 
+  it('preserves quoted flow-body bytes while repairing an unrelated duplicate key', () => {
+    const body = [
+      'body: [',
+      '  "hello',
+      '  x: same',
+      '  x: same',
+      '  x: same',
+      '  world"',
+      '  ]',
+    ].join('\n')
+    const input = `${body}\ntitle: same\ntitle: same`
+    const repaired = repairYamlDuplicateKeys(input)
+    const expectedBody = (jsYaml.load(body) as { body: string[] }).body
+
+    expect(repaired).toBe(`${body}\ntitle: same`)
+    expect(jsYaml.load(repaired)).toEqual({
+      body: expectedBody,
+      title: 'same',
+    })
+    expect(expectedBody[0]).toContain('x: same x: same x: same')
+  })
+
   it.each(['t: |', 't: |2', '- |', '- t: |'])('preserves repeated literal keys inside retained %s', (header) => {
     const input = `${header}\n    name: a\n    name: a`
 
@@ -1972,5 +2021,53 @@ describe.concurrent('no repair rewrites a block scalar body', () => {
         expect(repair(input), `- ${header} / ${body}`).toBe(input)
       }
     }
+  })
+
+  it.each([
+    [
+      'repairYamlIndentation',
+      repairYamlIndentation,
+      ['items:', '  - id: one', '   title: title'].join('\n'),
+      ['parent:', '  body: |', '    items:', '      - id: one', '     title: title', '  answer: text'].join('\n'),
+    ],
+    [
+      'repairYamlSequenceItemPrimaryKeys',
+      (yaml: string) => repairYamlSequenceItemPrimaryKeys(yaml, { items: { primaryKey: 'id', childKeys: ['title'] } }).yaml,
+      ['items:', '  - item-one', '    title: title'].join('\n'),
+      ['parent:', '  body: |', '    items:', '      - item-one', '        title: title', '  answer: text'].join('\n'),
+    ],
+    [
+      'repairYamlMappingKeyColonSpace',
+      repairYamlMappingKeyColonSpace,
+      ['items:', '  - id:one', '    title: title'].join('\n'),
+      ['parent:', '  body: |', '    items:', '      - id:one', '        title: title', '  answer: text'].join('\n'),
+    ],
+    [
+      'repairYamlDoubleQuotedInvalidEscapes',
+      repairYamlDoubleQuotedInvalidEscapes,
+      'command: "\\+"',
+      ['parent:', '  body: |', '    command: "\\+"', '  answer: text'].join('\n'),
+    ],
+    [
+      'repairYamlNestedMappingChildren',
+      (yaml: string) => repairYamlNestedMappingChildren(yaml, { summary: ['goals'] }),
+      ['summary:', 'goals:', '  - one'].join('\n'),
+      ['parent:', '  body: |', '    summary:', '    goals:', '      - one', '  answer: text'].join('\n'),
+    ],
+    [
+      'repairYamlDuplicateKeys',
+      repairYamlDuplicateKeys,
+      ['title: same', 'title: same', 'anchor: &a value'].join('\n'),
+      ['parent:', '  body: |', '    title: same', '    title: same', '  answer: text'].join('\n'),
+    ],
+    [
+      'repairYamlWrappedPlainListScalars',
+      repairYamlWrappedPlainListScalars,
+      ['items:', '  - prose reports value: false, and', '    continued line here'].join('\n'),
+      ['parent:', '  body: |', '    items:', '      - prose reports value: false, and', '        continued line here', '  answer: text'].join('\n'),
+    ],
+  ] as Array<[string, (yaml: string) => string, string, string]>)('%s changes its malformed form outside a block and leaves the same body intact', (_name, repair, outside, block) => {
+    expect(repair(outside)).not.toBe(outside)
+    expect(repair(block)).toBe(block)
   })
 })

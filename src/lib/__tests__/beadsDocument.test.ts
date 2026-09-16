@@ -8,6 +8,7 @@ import {
   readBeadNumber,
   readBeadString,
   readBeadStringList,
+  readBeadCommands,
   readBeadValue,
   hasUnrepresentableBeadCommands,
   hasUnstructuredBeadGuidance,
@@ -157,6 +158,14 @@ describe('the bead field readers', () => {
     expect(readBeadStringList({ prd_references: ['c'] }, 'prdRefs', 'display')).toEqual(['c'])
   })
 
+  it('does not let an empty canonical value hide a populated alias', () => {
+    expect(readBeadStringList({ prdRefs: [], prd_refs: ['from-alias'] }, 'prdRefs', 'display'))
+      .toEqual(['from-alias'])
+    expect(readBeadString({ title: '', issue_type: 'bug' }, 'issueType', 'display')).toBe('bug')
+    expect(readBeadCommands({ testCommands: [], test_commands: [{ mode: 'shell', shell: 'posix', script: 'npm test', cwd: '.', env: {} }] }, 'testCommands'))
+      .toEqual([expect.objectContaining({ mode: 'shell', script: 'npm test' })])
+  })
+
   it('reads the camelCase dependency spelling, which only the editor used to accept', () => {
     // The divergence this table exists to end: a bead written with `blockedBy`
     // showed its dependencies on the approval screen and none in the artifact
@@ -275,6 +284,23 @@ describe('normalizeBead', () => {
     expect(normalized.somethingNew).toEqual({ kept: true })
   })
 
+  it('keeps unknown dependency metadata alongside the canonical edges', () => {
+    const normalized = normalizeBead({
+      id: 'B-1',
+      dependencies: {
+        blocked_by: [],
+        blocks: [],
+        related: ['B-2'],
+      },
+    } as never, 'verbatim')
+
+    expect(normalized.dependencies).toMatchObject({
+      blocked_by: [],
+      blocks: [],
+      related: ['B-2'],
+    })
+  })
+
   it('omits a test command reason that is not there', () => {
     expect(normalizeBead({ id: 'B-1' }, 'display').testCommandReason).toBeUndefined()
   })
@@ -317,6 +343,7 @@ describe('the superseded spellings', () => {
       id: 'B-1',
       prdRefs: ['NEW'],
       contextGuidance: { patterns: [], anti_patterns: [] },
+      context_guidance: { patterns: ['stale'] },
       somethingUnknown: { kept: true },
     })
   })
@@ -358,6 +385,14 @@ describe('hasUnstructuredBeadGuidance', () => {
     ['the same under the other spelling', { context_guidance: 'Patterns: do X' }],
   ])('reports %s', (_, bead) => {
     expect(hasUnstructuredBeadGuidance(bead as RawBead)).toBe(true)
+  })
+
+  it('reports an unrepresentable alias when the canonical command list is empty', () => {
+    expect(hasUnrepresentableBeadCommands({
+      id: 'B-1',
+      testCommands: [],
+      test_commands: ['npm test'],
+    } as never)).toBe(true)
   })
 
   it.each([
@@ -416,6 +451,7 @@ describe('what a structured save writes back', () => {
   /** The save path, as `ApprovalView.buildBeadForSave` composes it. */
   function buildBeadForSave(bead: NormalizedBead): Record<string, unknown> {
     const { contextGuidance, dependencies, acceptanceCriteria, testCommands, testCommandReason, targetFiles, prdRefs, ...rest } = bead
+    const { blocked_by, blocks, ...unknownDependencies } = dependencies
     return stripSupersededBeadAliases({
       ...rest,
       acceptanceCriteria,
@@ -424,7 +460,7 @@ describe('what a structured save writes back', () => {
       targetFiles,
       prdRefs,
       contextGuidance: { patterns: contextGuidance.patterns, anti_patterns: contextGuidance.anti_patterns },
-      dependencies: { blocked_by: dependencies.blocked_by, blocks: dependencies.blocks },
+      dependencies: { ...unknownDependencies, blocked_by, blocks },
     } as NormalizedBead) as Record<string, unknown>
   }
 
@@ -448,6 +484,15 @@ describe('what a structured save writes back', () => {
 
     expect(saved.prdRefs).toEqual(['OLD'])
     expect(saved).not.toHaveProperty('prd_refs')
+  })
+
+  it('keeps unknown dependency metadata through a structured save', () => {
+    const saved = buildBeadForSave(normalizeBead({
+      id: 'B-1',
+      dependencies: { blocked_by: [], blocks: [], related: ['B-2'] },
+    } as never, 'verbatim'))
+
+    expect(saved.dependencies).toEqual({ blocked_by: [], blocks: [], related: ['B-2'] })
   })
 
   it('adds no empty metadata to a bead that carried none', () => {

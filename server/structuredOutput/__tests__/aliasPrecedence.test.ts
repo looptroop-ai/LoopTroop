@@ -13,10 +13,8 @@ describe('getValueByAliases precedence', () => {
     expect(getValueByAliases(record, ['name', 'legacy_name'])).toBe('canonical')
   })
 
-  it('falls back to record order for two spellings of the same alias', () => {
-    // normalizeKey folds `generated_at` and `generatedAt` into one token, so the
-    // alias list cannot rank them. The conflict is still reported.
-    expect(getValueByAliases({ generated_at: 'first', generatedAt: 'second' }, ['generatedAt'])).toBe('first')
+  it('prefers an exact canonical spelling within one normalized alias bucket', () => {
+    expect(getValueByAliases({ generated_at: 'legacy', generatedAt: 'canonical' }, ['generatedAt'])).toBe('canonical')
   })
 
   it('does not depend on the order the payload happened to use', () => {
@@ -24,6 +22,45 @@ describe('getValueByAliases precedence', () => {
     const second = { name: 'canonical', legacy_name: 'legacy' }
     expect(getValueByAliases(first, ['name', 'legacy_name'])).toBe('canonical')
     expect(getValueByAliases(second, ['name', 'legacy_name'])).toBe('canonical')
+  })
+
+  it('keeps the canonical snake_case alias across payload permutations', () => {
+    const payloads = [
+      { winnermodel: 'legacy', winner_model: 'canonical' },
+      { winner_model: 'canonical', winnermodel: 'legacy' },
+    ]
+
+    for (const payload of payloads) {
+      const warnings: string[] = []
+      withAliasConflictWarnings(warnings, () => {
+        expect(getValueByAliases(payload, ['winner_model', 'winnermodel'])).toBe('canonical')
+      })
+      expect(warnings).toEqual(['Resolved "winner_model" and ignored the conflicting value in "winnermodel".'])
+    }
+  })
+
+  it('keeps required_commands ahead of its legacy spellings across permutations', () => {
+    const payloads = [
+      { requiredcommands: ['legacy'], required_commands: ['canonical'] },
+      { required_commands: ['canonical'], requiredcommands: ['legacy'] },
+    ]
+
+    for (const payload of payloads) {
+      expect(getValueByAliases(payload, ['required_commands', 'requiredcommands', 'commands'])).toEqual(['canonical'])
+    }
+  })
+
+  it('keeps alias-list precedence across normalized buckets', () => {
+    const warnings: string[] = []
+    withAliasConflictWarnings(warnings, () => {
+      expect(getValueByAliases(
+        { requiredCommands: ['canonical'], commands: ['lower-priority'] },
+        ['required_commands', 'commands'],
+      )).toEqual(['canonical'])
+    })
+    expect(warnings).toEqual([
+      'Resolved "requiredCommands" and ignored the conflicting value in "commands".',
+    ])
   })
 
   it('returns the single match when only a later alias is present', () => {
@@ -77,11 +114,11 @@ describe('getValueByAliases precedence', () => {
     const warnings: string[] = []
     withAliasConflictWarnings(warnings, () => {
       expect(getValueByAliases(
-        { actionsRequired: 'a', actions_required: 'b' },
-        ['actionsrequired', 'actions_required'],
-      )).toBe('a')
+        { actionsRequired: 'legacy', actions_required: 'canonical' },
+        ['actions_required', 'actionsRequired'],
+      )).toBe('canonical')
     })
-    expect(warnings).toEqual(['Resolved "actionsRequired" and ignored the conflicting value in "actions_required".'])
+    expect(warnings).toEqual(['Resolved "actions_required" and ignored the conflicting value in "actionsRequired".'])
   })
 })
 

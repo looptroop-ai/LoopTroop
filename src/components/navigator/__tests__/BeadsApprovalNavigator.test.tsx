@@ -78,4 +78,17 @@ describe('BeadsApprovalNavigator', () => {
       expect(screen.getByText(/Only bead/)).toBeInTheDocument()
     })
   })
+
+  it('disables the outline when the server reports damaged tracker lines', async () => {
+    renderNavigator({
+      items: [{ id: 'B-1', title: 'Intact bead' }],
+      damaged: true,
+    })
+
+    await waitFor(() => {
+      expect(screen.getByText(/damaged rows/i)).toBeInTheDocument()
+    })
+    expect(screen.queryByText('Intact bead')).not.toBeInTheDocument()
+    expect(screen.queryByRole('button', { name: /Intact bead/i })).not.toBeInTheDocument()
+  })
 })

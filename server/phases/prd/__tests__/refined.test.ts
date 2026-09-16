@@ -168,7 +168,10 @@ describe.concurrent('PRD refined artifacts', () => {
         attributionStatus: 'synthesized_unattributed',
       }),
     ])
-    expect(result.repairWarnings).toContain(PRD_MISSING_CHANGES_WARNING)
+    const warningText = result.repairWarnings.join('\n')
+    expect(warningText).toContain(PRD_MISSING_CHANGES_WARNING)
+    expect(warningText).toContain('Reconstructed omitted item-level changes')
+    expect(warningText).toContain('document-level edits remain')
   })
 
   it.each([
@@ -181,7 +184,11 @@ describe.concurrent('PRD refined artifacts', () => {
     // can only name an epic or a story, so there is no change to synthesize for
     // a document-level edit — but the artifact now says one was made.
     const result = validatePrdRefinementOutput(buildPrdContent(edit), validationContext())
-    expect(result.repairWarnings).toContain(PRD_MISSING_CHANGES_WARNING)
+    const warningText = result.repairWarnings.join('\n')
+    expect(warningText).toContain(PRD_MISSING_CHANGES_WARNING)
+    expect(warningText).toContain('document-level fields')
+    expect(warningText).toContain('no item-level changes were reconstructed')
+    expect(warningText).not.toContain('Reconstructed omitted item-level changes')
     expect(result.repairApplied).toBe(true)
   })
 

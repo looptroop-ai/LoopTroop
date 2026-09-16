@@ -53,4 +53,75 @@ describe('contained bead approval document', () => {
     expect(writeTicketFile).not.toHaveBeenCalled()
     expect(upsertLatestPhaseArtifact).not.toHaveBeenCalled()
   })
+
+  it('canonicalises aliased fields and derives the inverse dependency edge', () => {
+    const { beadsPath } = fixture()
+    const content = [
+      {
+        id: 'root', title: 'Root', status: 'pending', priority: 1,
+        testCommands: [{ mode: 'shell', shell: 'posix', script: 'npm test' }],
+        dependencies: { blocked_by: [], blocks: ['stale'] },
+      },
+      {
+        id: 'child', title: 'Child', status: 'pending', priority: 2,
+        test_commands: [{ mode: 'shell', shell: 'posix', script: 'npm test' }],
+        dependencies: { blockedBy: ['root'] },
+        dependency_metadata: { keep: true },
+      },
+    ].map((bead) => JSON.stringify(bead)).join('\n') + '\n'
+    writeFileSync(beadsPath, content)
+
+    approveBeadsDocument('1:DEMO-1', contentSha256(content))
+
+    const approved = readFileSync(beadsPath, 'utf8').trim().split('\n').map((line) => JSON.parse(line) as Record<string, unknown>)
+    expect(approved[1]).toMatchObject({
+      testCommands: expect.anything(),
+      dependencies: { blocked_by: ['root'], blocks: [] },
+      dependency_metadata: { keep: true },
+    })
+    expect(approved[1]).not.toHaveProperty('test_commands')
+    expect(approved[0]!.dependencies).toEqual({ blocked_by: [], blocks: ['child'] })
+  })
+
+  it('rejects invalid priority, legacy command text, and dependency graph errors before writing', () => {
+    const { beadsPath } = fixture()
+    const invalid = JSON.stringify({
+      id: 'one', title: 'A bead', status: 'pending', priority: 'high',
+      testCommands: ['npm test'],
+      dependencies: { blocked_by: ['missing'], blocks: [] },
+    }) + '\n'
+    writeFileSync(beadsPath, invalid)
+
+    expect(() => approveBeadsDocument('1:DEMO-1', contentSha256(invalid))).toThrow(/priority|testCommands|dependency/i)
+    expect(readFileSync(beadsPath, 'utf8')).toBe(invalid)
+    expect(writeTicketFile).not.toHaveBeenCalled()
+  })
+
+  it('rejects a circular dependency graph before writing', () => {
+    const { beadsPath } = fixture()
+    const content = [
+      {
+        id: 'one', title: 'One', status: 'pending', priority: 1,
+        testCommands: [{ mode: 'shell', shell: 'posix', script: 'npm test' }],
+        dependencies: { blocked_by: ['two'], blocks: [] },
+      },
+      {
+        id: 'two', title: 'Two', status: 'pending', priority: 2,
+        testCommands: [{ mode: 'shell', shell: 'posix', script: 'npm test' }],
+        dependencies: { blocked_by: ['one'], blocks: [] },
+      },
+    ].map((bead) => JSON.stringify(bead)).join('\n') + '\n'
+    writeFileSync(beadsPath, content)
+
+    expect(() => approveBeadsDocument('1:DEMO-1', contentSha256(content))).toThrow(/Circular dependency/)
+    expect(readFileSync(beadsPath, 'utf8')).toBe(content)
+    expect(writeTicketFile).not.toHaveBeenCalled()
+  })
+
+  it('returns a typed validation error when the tracker is missing', () => {
+    fixture()
+
+    expect(() => approveBeadsDocument('1:DEMO-1', 'a'.repeat(64))).toThrow(/Beads artifact not found/)
+    expect(writeTicketFile).not.toHaveBeenCalled()
+  })
 })

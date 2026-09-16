@@ -1,4 +1,5 @@
 import {
+  collectAliasConflictWarnings,
   getStringByAliases,
   getValueByAliases,
   isRecord,
@@ -73,79 +74,84 @@ export function parseCoverageGapResolutions<TAction extends string, TItemType ex
   repairWarnings: string[]
 } {
   const { label } = options
-  const rawGapResolutions = getValueByAliases(parsed, ['gap_resolutions', 'gapresolutions'])
-  if (!Array.isArray(rawGapResolutions)) {
-    throw new Error(`${label} coverage revision output must include a top-level gap_resolutions list`)
-  }
-
   const repairWarnings: string[] = []
-  const resolutions: CoverageGapResolution<TAction, TItemType>[] = []
-
-  for (const [index, value] of rawGapResolutions.entries()) {
-    if (!isRecord(value)) {
-      throw new Error(`${label} coverage gap_resolutions entry at index ${index} is not an object`)
+  const releaseAliasConflicts = collectAliasConflictWarnings(repairWarnings)
+  try {
+    const rawGapResolutions = getValueByAliases(parsed, ['gap_resolutions', 'gapResolutions', 'gapresolutions'])
+    if (!Array.isArray(rawGapResolutions)) {
+      throw new Error(`${label} coverage revision output must include a top-level gap_resolutions list`)
     }
 
-    const gap = getStringByAliases(value, ['gap'])?.trim() ?? ''
-    if (!gap) {
-      throw new Error(`${label} coverage gap_resolutions entry at index ${index} is missing gap`)
-    }
+    const resolutions: CoverageGapResolution<TAction, TItemType>[] = []
 
-    const rawAction = getStringByAliases(value, ['action'])?.trim() ?? ''
-    const action = options.resolveAction(normalizeKey(rawAction))
-    if (!action) {
-      throw new Error(`${label} coverage gap_resolutions entry for "${gap}" has unsupported action "${rawAction}"`)
-    }
+    for (const [index, value] of rawGapResolutions.entries()) {
+      if (!isRecord(value)) {
+        throw new Error(`${label} coverage gap_resolutions entry at index ${index} is not an object`)
+      }
 
-    const rationale = getStringByAliases(value, ['rationale'])?.trim() ?? ''
-    if (!rationale) {
-      throw new Error(`${label} coverage gap_resolutions entry for "${gap}" is missing rationale`)
-    }
+      const gap = getStringByAliases(value, ['gap'])?.trim() ?? ''
+      if (!gap) {
+        throw new Error(`${label} coverage gap_resolutions entry at index ${index} is missing gap`)
+      }
 
-    const rawAffectedItems = getValueByAliases(value, ['affected_items', 'affecteditems'])
-    const affectedItems = Array.isArray(rawAffectedItems)
-      ? rawAffectedItems.flatMap((item, itemIndex) => {
-          if (!isRecord(item)) {
-            throw new Error(`${label} coverage affected_items entry at gap "${gap}" index ${itemIndex} is not an object`)
-          }
-          const resolved = options.resolveAffectedItem({
-            id: getStringByAliases(item, ['id'])?.trim() ?? '',
-            label: getStringByAliases(item, ['label', 'title'])?.trim() ?? '',
-            rawItemType: getValueByAliases(item, ['item_type', 'itemtype']),
-            gap,
-            itemIndex,
-            repairWarnings,
+      const rawAction = getStringByAliases(value, ['action'])?.trim() ?? ''
+      const action = options.resolveAction(normalizeKey(rawAction))
+      if (!action) {
+        throw new Error(`${label} coverage gap_resolutions entry for "${gap}" has unsupported action "${rawAction}"`)
+      }
+
+      const rationale = getStringByAliases(value, ['rationale'])?.trim() ?? ''
+      if (!rationale) {
+        throw new Error(`${label} coverage gap_resolutions entry for "${gap}" is missing rationale`)
+      }
+
+      const rawAffectedItems = getValueByAliases(value, ['affected_items', 'affectedItems', 'affecteditems'])
+      const affectedItems = Array.isArray(rawAffectedItems)
+        ? rawAffectedItems.flatMap((item, itemIndex) => {
+            if (!isRecord(item)) {
+              throw new Error(`${label} coverage affected_items entry at gap "${gap}" index ${itemIndex} is not an object`)
+            }
+            const resolved = options.resolveAffectedItem({
+              id: getStringByAliases(item, ['id'])?.trim() ?? '',
+              label: getStringByAliases(item, ['label', 'title'])?.trim() ?? '',
+              rawItemType: getValueByAliases(item, ['item_type', 'itemtype']),
+              gap,
+              itemIndex,
+              repairWarnings,
+            })
+            return resolved ? [resolved] : []
           })
-          return resolved ? [resolved] : []
-        })
-      : []
+        : []
 
-    resolutions.push({ gap, action, rationale, affectedItems })
+      resolutions.push({ gap, action, rationale, affectedItems })
+    }
+
+    const normalizedCoverageGaps = coverageGaps.map((gap) => gap.trim()).filter(Boolean)
+    const seen = new Set<string>()
+    for (const resolution of resolutions) {
+      const matchedGap = matchCoverageGapReference(resolution.gap, normalizedCoverageGaps, options.gapMatchLabel)
+      if (!matchedGap) {
+        throw new Error(`${label} coverage gap_resolutions entry references unknown gap "${resolution.gap}"`)
+      }
+      if (seen.has(matchedGap.gap)) {
+        throw new Error(`${label} coverage gap_resolutions contains duplicate entry for "${matchedGap.gap}"`)
+      }
+      if (matchedGap.gap !== resolution.gap) {
+        resolution.gap = matchedGap.gap
+      }
+      if (matchedGap.repairWarning) {
+        repairWarnings.push(matchedGap.repairWarning)
+      }
+      seen.add(matchedGap.gap)
+    }
+
+    const missingGaps = normalizedCoverageGaps.filter((gap) => !seen.has(gap))
+    if (missingGaps.length > 0) {
+      throw new Error(`${label} coverage gap_resolutions must include exactly one entry per gap. Missing: ${missingGaps.join(' | ')}`)
+    }
+
+    return { gapResolutions: resolutions, repairWarnings }
+  } finally {
+    releaseAliasConflicts()
   }
-
-  const normalizedCoverageGaps = coverageGaps.map((gap) => gap.trim()).filter(Boolean)
-  const seen = new Set<string>()
-  for (const resolution of resolutions) {
-    const matchedGap = matchCoverageGapReference(resolution.gap, normalizedCoverageGaps, options.gapMatchLabel)
-    if (!matchedGap) {
-      throw new Error(`${label} coverage gap_resolutions entry references unknown gap "${resolution.gap}"`)
-    }
-    if (seen.has(matchedGap.gap)) {
-      throw new Error(`${label} coverage gap_resolutions contains duplicate entry for "${matchedGap.gap}"`)
-    }
-    if (matchedGap.gap !== resolution.gap) {
-      resolution.gap = matchedGap.gap
-    }
-    if (matchedGap.repairWarning) {
-      repairWarnings.push(matchedGap.repairWarning)
-    }
-    seen.add(matchedGap.gap)
-  }
-
-  const missingGaps = normalizedCoverageGaps.filter((gap) => !seen.has(gap))
-  if (missingGaps.length > 0) {
-    throw new Error(`${label} coverage gap_resolutions must include exactly one entry per gap. Missing: ${missingGaps.join(' | ')}`)
-  }
-
-  return { gapResolutions: resolutions, repairWarnings }
 }

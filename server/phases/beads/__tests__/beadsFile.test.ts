@@ -1,8 +1,15 @@
 import { afterEach, describe, expect, it, vi } from 'vitest'
-import { mkdtempSync, rmSync, writeFileSync } from 'node:fs'
+import { mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
-import { BEAD_FIELD_ALIASES, NESTED_BEAD_FIELD_ALIASES, readBeadsFile } from '../beadsFile'
+import {
+  BEAD_FIELD_ALIASES,
+  NESTED_BEAD_FIELD_ALIASES,
+  deriveBeadBlocks,
+  inspectBeadDependencyGraph,
+  readBeadsFile,
+  validateBeadDependencyGraph,
+} from '../beadsFile'
 import {
   BEAD_FIELD_ALIASES as CLIENT_BEAD_FIELD_ALIASES,
 } from '../../../../src/lib/beadsDocument'
@@ -43,6 +50,20 @@ afterEach(() => {
  * was then dropped here with a console warning nobody reads.
  */
 describe('readBeadsFile and the nested spellings', () => {
+  it('fails closed by default without changing malformed file bytes', () => {
+    const filePath = writeTracker('not json', bead({ id: 'B-2' }))
+    const before = readFileSync(filePath, 'utf8')
+
+    expect(() => readBeadsFile(filePath)).toThrow(/unparseable JSON at line/)
+    expect(readFileSync(filePath, 'utf8')).toBe(before)
+  })
+
+  it('keeps valid rows for an explicit diagnostic read', () => {
+    const beads = readBeadsFile(writeTracker('not json', bead({ id: 'B-2' })), { malformedEntries: 'skip' })
+
+    expect(beads.map((entry) => entry.id)).toEqual(['B-2'])
+  })
+
   it('reads a bead whose dependencies use the camelCase spelling', () => {
     const beads = readBeadsFile(writeTracker(bead({ dependencies: { blockedBy: ['B-0'], blocks: [] } })))
 
@@ -66,10 +87,22 @@ describe('readBeadsFile and the nested spellings', () => {
     expect(beads[0]!.dependencies.blocked_by).toEqual(['canonical'])
   })
 
+  it('uses a populated alias when the canonical list is empty', () => {
+    const beads = readBeadsFile(writeTracker(bead({
+      acceptanceCriteria: [],
+      acceptance_criteria: ['from alias'],
+    })))
+
+    expect(beads[0]!.acceptanceCriteria).toEqual(['from alias'])
+  })
+
   it('still rejects a dependency list that is the wrong type under either spelling', () => {
     const warn = vi.spyOn(console, 'warn').mockImplementation(() => {})
 
-    expect(readBeadsFile(writeTracker(bead({ dependencies: { blockedBy: 'B-0', blocks: [] } })))).toEqual([])
+    expect(readBeadsFile(
+      writeTracker(bead({ dependencies: { blockedBy: 'B-0', blocks: [] } })),
+      { malformedEntries: 'skip' },
+    )).toEqual([])
     expect(warn).toHaveBeenCalledWith(expect.stringContaining('field "dependencies" has the wrong type'))
   })
 
@@ -78,6 +111,51 @@ describe('readBeadsFile and the nested spellings', () => {
       writeTracker(bead({ dependencies: { blockedBy: 'B-0', blocks: [] } })),
       { malformedEntries: 'fail' },
     )).toThrow(/field "dependencies" has the wrong type/)
+  })
+})
+
+describe('bead dependency integrity', () => {
+  it('derives symmetric blocks from blocked_by and keeps unknown dependency keys', () => {
+    const records = deriveBeadBlocks([
+      {
+        id: 'B-0',
+        dependencies: { blocked_by: [], blocks: ['stale'], custom: { keep: true } },
+      },
+      {
+        id: 'B-1',
+        dependencies: { blocked_by: ['B-0'], blocks: [] },
+      },
+    ])
+
+    expect(records).toEqual([
+      { id: 'B-0', dependencies: { blocked_by: [], blocks: ['B-1'], custom: { keep: true } } },
+      { id: 'B-1', dependencies: { blocked_by: ['B-0'], blocks: [] } },
+    ])
+    expect(validateBeadDependencyGraph(records.map((record) => ({
+      id: record.id as string,
+      dependencies: record.dependencies as { blocked_by: string[]; blocks: string[] },
+    })))).toEqual([])
+  })
+
+  it('reports dangling and circular authoritative dependencies', () => {
+    expect(validateBeadDependencyGraph([
+      { id: 'B-1', dependencies: { blocked_by: ['missing'], blocks: [] } },
+    ])).toEqual(expect.arrayContaining([expect.stringContaining('dangling blocked_by')]))
+    expect(validateBeadDependencyGraph([
+      { id: 'B-1', dependencies: { blocked_by: ['B-2'], blocks: ['B-2'] } },
+      { id: 'B-2', dependencies: { blocked_by: ['B-1'], blocks: ['B-1'] } },
+    ])).toContain('Circular dependency detected in bead graph')
+  })
+
+  it('reports one-sided edges separately from structural graph validity', () => {
+    const validation = inspectBeadDependencyGraph([
+      { id: 'B-1', dependencies: { blocked_by: [], blocks: ['B-2'] } },
+      { id: 'B-2', dependencies: { blocked_by: [], blocks: [] } },
+    ])
+
+    expect(validation.graphValid).toBe(true)
+    expect(validation.edgesConsistent).toBe(false)
+    expect(validation.errors).toContain('Bead B-1 declares it blocks B-2, but B-2 does not list B-1 in blocked_by')
   })
 })
 
@@ -97,7 +175,7 @@ describe('readBeadsFile and the top-level spellings', () => {
     ['acceptance_criteria', 'acceptanceCriteria', ['AC-1']],
     ['target_files', 'targetFiles', ['src/app.ts']],
     ['prd_refs', 'prdRefs', ['E01']],
-    ['test_commands', 'testCommands', ['npm test']],
+    ['test_commands', 'testCommands', [{ mode: 'shell', shell: 'posix', script: 'npm test' }]],
     ['issue_type', 'issueType', 'bug'],
     ['external_ref', 'externalRef', 'LOO-9'],
     ['started_at', 'startedAt', '2026-01-01T00:00:00.000Z'],
@@ -148,7 +226,10 @@ describe('readBeadsFile and the top-level spellings', () => {
   it('still applies the type checks after canonicalising', () => {
     const warn = vi.spyOn(console, 'warn').mockImplementation(() => {})
 
-    expect(readBeadsFile(writeTracker(bead({ acceptance_criteria: 'not a list' })))).toEqual([])
+    expect(readBeadsFile(
+      writeTracker(bead({ acceptance_criteria: 'not a list' })),
+      { malformedEntries: 'skip' },
+    )).toEqual([])
     expect(warn).toHaveBeenCalledWith(expect.stringContaining('field "acceptanceCriteria" has the wrong type'))
   })
 })

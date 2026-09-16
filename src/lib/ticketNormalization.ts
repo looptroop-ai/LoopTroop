@@ -1,4 +1,5 @@
 import type {
+  BeadsRuntimeDiagnostics,
   ManualQaBeadOrigin,
   ManualQaOriginEvidenceRef,
   ManualQaOriginSourceItem,
@@ -24,6 +25,7 @@ const DEFAULT_TICKET_RUNTIME: TicketRuntime = {
   activeBeadIteration: null,
   lastFailedBeadId: null,
   artifactRoot: '',
+  beadsDiagnostics: null,
   beads: [],
   candidateCommitSha: null,
   preSquashHead: null,
@@ -177,6 +179,22 @@ function normalizeRuntimeBeads(value: unknown): TicketRuntime['beads'] {
     .filter((bead) => bead.id.length > 0)
 }
 
+function normalizeLineNumbers(value: unknown): number[] {
+  if (!Array.isArray(value)) return []
+  return [...new Set(value.filter((line): line is number => (
+    typeof line === 'number' && Number.isInteger(line) && line > 0
+  )))]
+}
+
+function normalizeBeadsRuntimeDiagnostics(value: unknown): BeadsRuntimeDiagnostics | null {
+  if (!isRecord(value)) return null
+  const malformedLines = normalizeLineNumbers(value.malformedLines)
+  const unrepresentableLines = normalizeLineNumbers(value.unrepresentableLines)
+  return malformedLines.length > 0 || unrepresentableLines.length > 0
+    ? { malformedLines, unrepresentableLines }
+    : null
+}
+
 function normalizeRuntimeEta(value: unknown): TicketRuntime['eta'] {
   if (!isRecord(value)) return null
   const bestMs = nullableNumber(value.bestMs)
@@ -215,6 +233,7 @@ function getTicketRuntime(ticket: Ticket | RawTicketResponse): TicketRuntime {
     activeBeadIteration: nullableNumber(rawRuntime.activeBeadIteration),
     lastFailedBeadId: nullableString(rawRuntime.lastFailedBeadId),
     artifactRoot: stringOrFallback(rawRuntime.artifactRoot, DEFAULT_TICKET_RUNTIME.artifactRoot),
+    beadsDiagnostics: normalizeBeadsRuntimeDiagnostics(rawRuntime.beadsDiagnostics),
     beads: normalizeRuntimeBeads(rawRuntime.beads),
     candidateCommitSha: nullableString(rawRuntime.candidateCommitSha),
     preSquashHead: nullableString(rawRuntime.preSquashHead),

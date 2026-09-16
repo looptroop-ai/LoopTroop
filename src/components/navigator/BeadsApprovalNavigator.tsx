@@ -20,6 +20,37 @@ interface BeadOutlineItem {
   dependencyCount: number
 }
 
+interface BeadsNavigatorData {
+  items: unknown[]
+  damaged: boolean
+}
+
+function hasDamagedHeader(response: Response): boolean {
+  const headers = response.headers
+  if (!headers || typeof headers.get !== 'function') return false
+  const countHeader = (name: string) => {
+    const value = headers.get(name)
+    return value !== null && Number(value) > 0
+  }
+  const listHeader = (name: string) => Boolean(headers.get(name)?.trim())
+  return countHeader('X-Malformed-Line-Count')
+    || countHeader('X-Unrepresentable-Line-Count')
+    || listHeader('X-Malformed-Lines')
+    || listHeader('X-Unrepresentable-Lines')
+}
+
+function readNavigatorData(value: unknown): BeadsNavigatorData {
+  // Keep already-cached array data usable while the query migrates to the
+  // damage-aware envelope returned by the route.
+  if (Array.isArray(value)) return { items: value, damaged: false }
+  if (!value || typeof value !== 'object') return { items: [], damaged: false }
+  const candidate = value as { items?: unknown; damaged?: unknown }
+  return {
+    items: Array.isArray(candidate.items) ? candidate.items : [],
+    damaged: candidate.damaged === true,
+  }
+}
+
 /**
  * The outline rows, taken from the same filtered list the artifact view renders.
  *
@@ -46,7 +77,12 @@ export function BeadsApprovalNavigator({ ticketId }: { ticketId: string }) {
     queryFn: async ({ signal }) => {
       const response = await fetch(apiTicketPath(ticketId, 'beads'), { signal })
       await throwIfNotOk(response, 'Failed to load beads')
-      return response.json()
+      const payload = await response.json()
+      const parsed = readNavigatorData(payload)
+      return {
+        items: parsed.items,
+        damaged: parsed.damaged || hasDamagedHeader(response),
+      } satisfies BeadsNavigatorData
     },
     staleTime: QUERY_STALE_TIME_5M,
   })
@@ -54,10 +90,16 @@ export function BeadsApprovalNavigator({ ticketId }: { ticketId: string }) {
   // Memoised for the same reason as the artifact view: the shared filter warns
   // about every entry it drops, so filtering in the render body repeats those
   // warnings on each re-render.
+  const navigatorData = useMemo(() => readNavigatorData(beadsData), [beadsData])
   const outline = useMemo(
-    () => (Array.isArray(beadsData) ? parseBeadsOutline(beadsData) : []),
-    [beadsData],
+    () => navigatorData.damaged ? [] : parseBeadsOutline(navigatorData.items),
+    [navigatorData],
   )
+  const emptyMessage = navigatorData.damaged
+    ? 'The beads tracker has damaged rows. Repair it in the JSONL editor before using the outline.'
+    : outline.length === 0
+      ? 'The beads approval outline will appear once the artifact is ready.'
+      : null
 
   return (
     <ApprovalOutlineShell
@@ -69,7 +111,7 @@ export function BeadsApprovalNavigator({ ticketId }: { ticketId: string }) {
       onRetry={() => void refetch()}
       loadingMessage="Loading beads outline…"
       errorTitle="The beads outline could not be loaded."
-      emptyMessage={outline.length === 0 ? 'The beads approval outline will appear once the artifact is ready.' : null}
+      emptyMessage={emptyMessage}
     >
       {outline.map((bead) => (
         <button

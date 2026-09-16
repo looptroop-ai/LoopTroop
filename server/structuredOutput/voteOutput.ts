@@ -135,7 +135,7 @@ export function normalizeVoteScorecardOutput(
         ])
 
         const root = isRecord(parsed) ? parsed : null
-        const nestedDraftScores = root ? getValueByAliases(root, ['draftscores', 'draft_scores']) : undefined
+        const nestedDraftScores = root ? getValueByAliases(root, ['draft_scores', 'draftscores']) : undefined
         const draftScoresRecord = root
           ? isRecord(nestedDraftScores) ? nestedDraftScores : root
           : null
@@ -177,7 +177,7 @@ export function normalizeVoteScorecardOutput(
             total += rawValue
           }
 
-          const totalScore = getValueByAliases(draftRecord, ['totalscore', 'total_score'])
+          const totalScore = getValueByAliases(draftRecord, ['total_score', 'totalScore', 'totalscore'])
           if (totalScore === undefined) {
             variantWarnings.push(`Filled missing total_score for ${draftLabel} from rubric category totals.`)
           } else if (typeof totalScore !== 'number' || !Number.isInteger(totalScore)) {

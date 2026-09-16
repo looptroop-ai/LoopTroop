@@ -5,6 +5,11 @@ installer part. `PASS` means the named packet evidence passed its bounded
 review; final integration and acceptance remain with the root worker. A row
 never implies that an unreviewed or unimplemented finding is complete.
 
+The release implementation is carried by open PR163. Its immutable website
+source pin was reviewed independently at website commit `83cdf633`; this
+release-part ledger records that bounded result and does not claim whole-audit
+acceptance.
+
 ## Reviewed release packet
 
 | Finding | Status | Evidence and permanent coverage | Limits |
@@ -16,8 +21,8 @@ never implies that an unreviewed or unimplemented finding is complete.
 | R05 | PASS, final pending | `release-workflow-evidence.md`; attestation jobs download bytes only, while publish/build credentials stay separated. | No live attestation or publish was performed. |
 | R06 | PASS, final pending | `release-workflow-evidence.md`; manifest-derived channel values cross workflow steps through environment variables after safe-basename validation. | Workflow execution was not run locally. |
 | R07 | PASS, final pending | `release-workflow-evidence.md`; Renovate notices are validated outside the checkout as one regular top-level file before copy. | No Renovate workflow run was performed. |
-| R11 | PASS, final pending | `release-scripts-evidence.md`; `tests/docsInstallCatalog.test.ts` and `node scripts/docs-install-catalog.mjs` cover the machine-readable install catalog. | Website source pin remains `83ae324348164c6f4d1c5dedaebcba69359d15c9` until root supplies the final public commit. |
-| R12 | Documented | Website verification checks out the immutable source ref and fails closed when the catalog is absent; the existing R12 section below records the design. | The ref must move with the final accepted app commit. |
+| R11 | PASS, final pending | `release-scripts-evidence.md`; `tests/docsInstallCatalog.test.ts` and `node scripts/docs-install-catalog.mjs` cover the machine-readable install catalog. | Website pins source ref `f784f055b45854016c245a2d902d6799b7e8265c` in website commit `83cdf633`; implementation and pin were reviewed independently. |
+| R12 | Documented | Website verification checks out the immutable source ref and fails closed when the catalog is absent; the existing R12 section below records the design. | The accepted implementation ref and website pin are already aligned; no pin treadmill is needed for this docs-only correction. |
 | R13 | PASS, final pending | `scripts/build-binary.mjs`, `.github/workflows/ci.yml`, `.github/workflows/release.yml`, and `tests/releaseScriptArgs.test.ts`/`tests/workflowPolicy.test.ts`; package, application and container jobs retain the Node `24.18.1` floor, while each standalone binary job pins the exact Node `26.9.0` native SEA builder and blocks on an embedded-runtime application check. Detailed results are in `/tmp/looptroop-release-part-evidence.md`. | CI-only policy execution was not run locally beyond the packet checks. |
 | R14 | PASS, final pending | `release-scripts-evidence.md`; all five install-smoke consumers compare structured `checks[].install.channel` and `checks[].install.upgradeCommand`, not `detail`. Website `docs/diagnostics.md#the-install-check` documents that contract. | No package-manager, container, or lifecycle smoke was run. |
 | R15 | PASS, final pending | `release-scripts-evidence.md`; WinGet gives Git and GitHub CLI only the copied child environment credentials they need and removes ambient token aliases. | No live WinGet submission was performed. |
@@ -46,20 +51,19 @@ never implies that an unreviewed or unimplemented finding is complete.
 
 ## R12 source evidence and applied choice
 
-The install catalog was introduced in app commit `68a8a5f3…` and is also present
-in `0b782f6c…` and the current app worktree. No published tag contains it. The
-website's owner-approved source ref remains the immutable app commit
-`83ae324348164c6f4d1c5dedaebcba69359d15c9` until root supplies the final public
-accepted commit. Website CI checks out that ref into `.source/LoopTroop`, and
-the verifier uses `LOOPTROOP_SOURCE_ROOT` when set or the local sibling checkout
+The install catalog is present in the accepted implementation ref
+`f784f055b45854016c245a2d902d6799b7e8265c`, which the website pins in commit
+`83cdf633`. Website CI checks out that ref into `.source/LoopTroop`, and the
+verifier uses `LOOPTROOP_SOURCE_ROOT` when set or the local sibling checkout
 otherwise. A missing catalog fails with an actionable error; there is no reduced
-two-channel fallback.
+two-channel fallback. The implementation ref and website pin were reviewed
+independently; PR163 remains open while whole-audit acceptance remains pending.
 
 ## Integration limits
 
 - `release-scripts-evidence.md`: `/tmp/looptroop-release-scripts-evidence.md`
 - `release-workflow-evidence.md`: `/tmp/looptroop-release-workflow-evidence.md`
 - `installer-evidence.md`: `/tmp/looptroop-installer-evidence.md`
-- A local Linux amd64 Docker image build and package-version inventory passed, and a local Linux x64 standalone build used the checksum-verified Node `26.9.0` native SEA builder twice with byte-identical output, clean ELF notes/segments, and non-lifecycle `--version`/`doctor --json` checks. No E2E, full lifecycle, live publish, native Windows, macOS or arm64 binary success, multi-architecture build or registry attestation/publication, or website source-pin update is claimed here.
-- The root worker must rerun any app version/catalog checks after final source integration and update the website immutable source ref and matching CI checkout together.
+- A local Linux amd64 Docker image build and package-version inventory passed, and a local Linux x64 standalone build used the checksum-verified Node `26.9.0` native SEA builder twice with byte-identical output, clean ELF notes/segments, and non-lifecycle `--version`/`doctor --json` checks. No E2E, full lifecycle, live publish, native Windows, macOS or arm64 binary success, multi-architecture build or registry attestation/publication is claimed here. The website source pin is independently reviewed and already points at the accepted implementation ref; this docs correction made no pin change.
+- The root worker must rerun any app version/catalog checks after final source integration. If the accepted implementation ref changes later, update the website immutable source ref and matching CI checkout together.
 - Future not-yet-implemented report packets need their own documentation pass; this ledger does not pre-document them.

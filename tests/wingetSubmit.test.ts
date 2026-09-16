@@ -36,13 +36,19 @@ describe('WinGet submission credentials', () => {
     for (const [command, args, options] of calls) {
       expect(JSON.stringify(args)).not.toContain(token)
       expect(JSON.stringify(args)).not.toContain(credential)
-      expect(options?.env?.GH_TOKEN).toBe(token)
+      if (command === 'gh') {
+        expect(options?.env?.GH_TOKEN).toBe(token)
+      } else {
+        expect(options?.env?.GH_TOKEN).toBeUndefined()
+        expect(options?.env?.GITHUB_TOKEN).toBeUndefined()
+      }
       if (command === 'git') {
         expect(options?.env).toMatchObject({
           GIT_CONFIG_COUNT: '1',
           GIT_CONFIG_KEY_0: 'http.https://github.com/looptroop-ai/winget-pkgs.git.extraHeader',
           GIT_CONFIG_VALUE_0: `AUTHORIZATION: basic ${credential}`,
         })
+        expect(options?.env?.WINGET_TOKEN).toBeUndefined()
       }
     }
   })
@@ -63,6 +69,32 @@ describe('WinGet submission credentials', () => {
         GIT_CONFIG_VALUE_1: `AUTHORIZATION: basic ${credential}`,
       })
     }
+  })
+
+  it('does not pass ambient GitHub auth variables to git', async () => {
+    prepare()
+    vi.stubEnv('GH_TOKEN', 'ambient-gh-token')
+    vi.stubEnv('GITHUB_TOKEN', 'ambient-github-token')
+    await import('../scripts/winget-submit.ts')
+
+    for (const [command, , options] of vi.mocked(execFileSync).mock.calls) {
+      if (command === 'gh') {
+        expect(options?.env?.GH_TOKEN).toBe(token)
+      }
+      if (command === 'git') {
+        expect(options?.env?.GH_TOKEN).toBeUndefined()
+        expect(options?.env?.GITHUB_TOKEN).toBeUndefined()
+      }
+    }
+  })
+
+  it('does not pass the source WINGET_TOKEN to git', async () => {
+    prepare()
+    await import('../scripts/winget-submit.ts')
+
+    const gitCalls = vi.mocked(execFileSync).mock.calls.filter(([command]) => command === 'git')
+    expect(gitCalls.length).toBeGreaterThan(0)
+    for (const [, , options] of gitCalls) expect(options?.env?.WINGET_TOKEN).toBeUndefined()
   })
 
   it('redacts both raw and encoded credentials from git failures', async () => {

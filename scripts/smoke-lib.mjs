@@ -74,3 +74,22 @@ export function removeWorkDirectory(path) {
     return error instanceof Error ? error : new Error(String(error))
   }
 }
+
+/**
+ * Reads the stable install facts from a `doctor --json` report.
+ *
+ * `detail` is prose for people and can change without changing the channel.
+ * The smoke scripts compare these fields so a wording edit cannot make a
+ * healthy install look broken, or let the wrong upgrade command pass.
+ */
+export function inspectDoctorInstall(stdout, expected) {
+  const report = JSON.parse(stdout)
+  const checks = Array.isArray(report?.checks) ? report.checks : []
+  const check = checks.find((entry) => entry?.name === 'install') ?? null
+  const facts = check?.install && typeof check.install === 'object' ? check.install : null
+  return {
+    check,
+    facts,
+    matches: facts?.channel === expected.channel && facts?.upgradeCommand === expected.upgradeCommand,
+  }
+}

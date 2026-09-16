@@ -8,8 +8,9 @@
 # Build locally in a POSIX shell (bash, sh or similar):
 #   npm pack
 #   version="$(node -p 'require("./package.json").version')"
-#   tar -cf - Dockerfile "looptroop-${version}.tgz" | docker build \
+#   tar -cf - Dockerfile package-lock.json "looptroop-${version}.tgz" | docker build \
 #     --build-arg TARBALL="looptroop-${version}.tgz" \
+#     --build-arg LOCKFILE=package-lock.json \
 #     --build-arg VERSION="${version}" \
 #     --build-arg REVISION="$(git rev-parse HEAD)" \
 #     -t looptroop -
@@ -129,23 +130,34 @@
 FROM node:24.18.1-bookworm-slim@sha256:235600a8101ab264e117b1768e925532262668dc9b581ef1dd7d96ced463b8e7 AS build
 
 ARG TARBALL
+ARG LOCKFILE=package-lock.json
 WORKDIR /build
 
 # Fail with the reason rather than with a confusing COPY error further down.
 RUN test -n "$TARBALL" || (echo "ERROR: --build-arg TARBALL=<file>.tgz is required" >&2; exit 1)
+RUN test -n "$LOCKFILE" || (echo "ERROR: --build-arg LOCKFILE=<file> is required" >&2; exit 1)
 
 COPY ${TARBALL} ./package.tgz
+COPY ${LOCKFILE} ./package-lock.json
 
 # Read npm's pin from the release itself. Global installs do not use the
 # project's allowScripts policy; neither install here needs lifecycle scripts.
 # Pinning also keeps build-stage dependency resolution on the supported npm.
-# The runtime stage takes only the installed tree, leaving npm's cache behind.
+# Extract into the established runtime prefix, then let the matching release
+# lockfile be the sole source of application dependencies. The runtime stage
+# takes only this installed tree, leaving npm's cache behind.
 RUN tar -xzf package.tgz package/package.json \
   && npm_version="$(node -p 'const pin = require("./package/package.json").packageManager; const match = /^npm@(\d+\.\d+\.\d+)$/.exec(pin); if (!match) throw new Error("packageManager must pin an exact npm version"); match[1]')" \
-  && npm install --global --ignore-scripts "npm@${npm_version}" \
+  && npm install --global --ignore-scripts --fetch-retries=3 --fetch-retry-mintimeout=10000 --fetch-retry-maxtimeout=60000 "npm@${npm_version}" \
   && test "$(npm --version)" = "$npm_version" \
-  && npm install --global --ignore-scripts --omit=dev --prefix /opt/looptroop ./package.tgz \
-  && rm -rf package package.tgz
+  && mkdir -p /opt/looptroop/lib/node_modules/looptroop /opt/looptroop/bin \
+  && tar -xzf package.tgz --strip-components=1 -C /opt/looptroop/lib/node_modules/looptroop \
+  && cp package-lock.json /opt/looptroop/lib/node_modules/looptroop/package-lock.json \
+  && cd /opt/looptroop/lib/node_modules/looptroop \
+  && npm ci --ignore-scripts --omit=dev --no-audit --no-fund --fetch-retries=3 --fetch-retry-mintimeout=10000 --fetch-retry-maxtimeout=60000 \
+  && chmod 0755 /opt/looptroop/lib/node_modules/looptroop/dist/server/cli/launcher.cjs \
+  && ln -s ../lib/node_modules/looptroop/dist/server/cli/launcher.cjs /opt/looptroop/bin/looptroop \
+  && rm -rf /build/package /build/package.tgz
 
 
 FROM node:24.18.1-bookworm-slim@sha256:235600a8101ab264e117b1768e925532262668dc9b581ef1dd7d96ced463b8e7 AS runtime
@@ -193,6 +205,19 @@ RUN apt-get update \
 
 COPY --from=build /opt/looptroop /opt/looptroop
 RUN ln -s /opt/looptroop/bin/looptroop /usr/local/bin/looptroop
+
+# Keep an inspectable record in the image of both the application/runtime
+# versions and every Debian package installed above. The release workflow reads
+# this file back from the image after each architecture is pushed, alongside the
+# digest, so provenance does not stop at “the registry accepted these bytes”.
+RUN mkdir -p /usr/share/looptroop \
+  && { \
+    printf 'gh\t%s\n' "$(gh --version | sed -n '1p')"; \
+    printf 'looptroop\t%s\n' "$(node -p "require('/opt/looptroop/lib/node_modules/looptroop/package.json').version")"; \
+    printf 'node\t%s\n' "$(node --version)"; \
+    printf 'npm\t%s\n' "$(npm --version)"; \
+    dpkg-query -W -f='os-package\t${binary:Package}\t${Version}\n'; \
+  } | sort > /usr/share/looptroop/image-package-versions.txt
 
 # What tells the CLI it is in a container, so `doctor` reports the container
 # channel and offers `docker pull` rather than `npm install -g` — a command that

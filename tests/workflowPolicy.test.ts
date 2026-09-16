@@ -1,0 +1,253 @@
+import { chmodSync, mkdtempSync, mkdirSync, readFileSync, readdirSync, rmSync, writeFileSync } from 'node:fs'
+import { delimiter, join } from 'node:path'
+import { spawnSync } from 'node:child_process'
+import { tmpdir } from 'node:os'
+import * as yaml from 'js-yaml'
+import { describe, expect, it } from 'vitest'
+
+const repo = process.cwd()
+const workflowDir = join(repo, '.github/workflows')
+const files = readdirSync(workflowDir).filter((file) => /\.ya?ml$/.test(file))
+const source = new Map(files.map((file) => [file, readFileSync(join(workflowDir, file), 'utf8')]))
+
+type Step = { name?: unknown; run?: unknown; uses?: unknown; env?: Record<string, unknown> }
+type Job = { permissions?: Record<string, unknown>; steps?: Step[] }
+type Workflow = { jobs?: Record<string, Job> }
+
+const workflows = new Map(files.map((file) => [
+  file,
+  yaml.load(source.get(file)!) as Workflow,
+]))
+
+type Version = { major: number; minor: number; patch: number }
+
+function version(value: string): Version {
+  const parts = value.split('.').map(Number)
+  const major = parts[0]
+  if (major === undefined || Number.isNaN(major)) throw new Error(`invalid version: ${value}`)
+  // A major/minor tag resolves to the newest patch available in that stream.
+  return {
+    major,
+    minor: parts[1] ?? Number.POSITIVE_INFINITY,
+    patch: parts[2] ?? Number.POSITIVE_INFINITY,
+  }
+}
+
+function atLeast(found: Version, floor: Version): boolean {
+  return found.major > floor.major
+    || (found.major === floor.major && found.minor > floor.minor)
+    || (found.major === floor.major && found.minor === floor.minor && found.patch >= floor.patch)
+}
+
+function runs(job: Job): string {
+  return (job.steps ?? []).map((step) => typeof step.run === 'string' ? step.run : '').join('\n')
+}
+
+function executeWindowsScope(run: string, changedPaths: string[]): {
+  status: number | null
+  stdout: string
+  output: string
+} {
+  const directory = mkdtempSync(join(tmpdir(), 'looptroop-windows-scope-'))
+  try {
+    const bin = join(directory, 'bin')
+    mkdirSync(bin)
+    const git = join(bin, 'git')
+    writeFileSync(git, '#!/bin/sh\nif [ "$1" = diff ] && [ "$2" = --name-only ]; then\n  printf \'%s\\n\' "$CHANGED_PATHS"\n  exit 0\nfi\nexit 1\n')
+    chmodSync(git, 0o755)
+    const outputPath = join(directory, 'github-output')
+    const result = spawnSync('bash', ['-euo', 'pipefail', '-c', run], {
+      encoding: 'utf8',
+      env: {
+        ...process.env,
+        BASE_SHA: 'base-sha',
+        CHANGED_PATHS: changedPaths.join('\n'),
+        GITHUB_OUTPUT: outputPath,
+        HEAD_SHA: 'head-sha',
+        PATH: `${bin}${delimiter}${process.env.PATH ?? ''}`,
+      },
+    })
+    return {
+      status: result.status,
+      stdout: result.stdout ?? '',
+      output: readFileSync(outputPath, 'utf8'),
+    }
+  } finally {
+    rmSync(directory, { recursive: true, force: true })
+  }
+}
+
+describe('release workflow policy', () => {
+  it('keeps every literal workflow and Docker Node runtime at the package floor', () => {
+    const packageJson = JSON.parse(readFileSync(join(repo, 'package.json'), 'utf8')) as { engines: { node: string } }
+    const match = /^>=(\d+\.\d+\.\d+)$/.exec(packageJson.engines.node)
+    if (!match?.[1]) throw new Error(`unsupported package engine: ${packageJson.engines.node}`)
+    const floor = version(match[1])
+
+    for (const [file, text] of source) {
+      for (const match of text.matchAll(/^\s*node-version:\s*(\d+(?:\.\d+){0,2})(?=\s|$)/gm)) {
+        const found = match[1]
+        if (!found) throw new Error(`${file}: node-version capture missing`)
+        expect(atLeast(version(found), floor), `${file}: node-version ${found}`).toBe(true)
+      }
+      for (const match of text.matchAll(/^\s*node:\s*(\d+(?:\.\d+){0,2})(?=\s|$)/gm)) {
+        const found = match[1]
+        if (!found) throw new Error(`${file}: matrix node capture missing`)
+        expect(atLeast(version(found), floor), `${file}: matrix node ${found}`).toBe(true)
+      }
+    }
+
+    const docker = readFileSync(join(repo, 'Dockerfile'), 'utf8')
+    for (const match of docker.matchAll(/^\s*FROM\s+node:(\d+(?:\.\d+){0,2})(?=[-@])/gm)) {
+      const found = match[1]
+      if (!found) throw new Error('Dockerfile: Node version capture missing')
+      expect(atLeast(version(found), floor), `Dockerfile: node ${found}`).toBe(true)
+    }
+  })
+
+  it('keeps OIDC and attestation permissions off dependency/build jobs', () => {
+    for (const [file, workflow] of workflows) {
+      for (const [jobName, job] of Object.entries(workflow.jobs ?? {})) {
+        const permissions = job.permissions ?? {}
+        if (permissions['id-token'] !== 'write' && permissions.attestations !== 'write') continue
+        expect(runs(job), `${file}: ${jobName}`).not.toMatch(/\bnpm\s+(?:ci|install|run)\b/)
+      }
+    }
+    const release = workflows.get('release.yml')!
+    expect(release.jobs?.binary?.permissions?.['id-token']).toBeUndefined()
+    expect(release.jobs?.build?.permissions?.attestations).toBeUndefined()
+    expect(runs(release.jobs?.npm ?? {})).toMatch(/\bnpm publish\b/)
+    expect(runs(release.jobs?.npm ?? {})).not.toMatch(/\bnpm\s+(?:ci|install|run)\b/)
+    expect(release.jobs?.['attest-release-assets']?.permissions?.attestations).toBe('write')
+    expect(release.jobs?.['container-attest']?.permissions?.['id-token']).toBe('write')
+    expect(runs(release.jobs?.['attest-release-assets'] ?? {}).trim()).toBe('')
+    expect(runs(release.jobs?.['container-attest'] ?? {})).toContain('docker login ghcr.io')
+    expect(runs(release.jobs?.['container-attest'] ?? {})).not.toMatch(/\bnpm\s+(?:ci|install|run)\b/)
+  })
+
+  it('does not put manifest-derived values in workflow shell source', () => {
+    for (const [file, workflow] of workflows) {
+      for (const [jobName, job] of Object.entries(workflow.jobs ?? {})) {
+        expect(runs(job), `${file}: ${jobName}`).not.toMatch(/\$\{\{\s*(?:steps\.inputs|needs\.prepare)\.outputs\./)
+      }
+    }
+  })
+
+  it('uses the released tag for scheduled and repair smoke code', () => {
+    const smoke = source.get('published-smoke.yml')!
+    expect(smoke).toContain('git checkout --detach "refs/tags/v${VERSION}"')
+    expect(smoke).toContain('ref: refs/tags/v${{ needs.plan.outputs.version }}')
+    expect(source.get('channel-republish.yml')!).not.toMatch(/--ref\s+main/)
+    expect(source.get('container-republish.yml')!).not.toMatch(/--ref\s+main/)
+    expect(source.get('release.yml')!).toContain('--ref "v${VERSION}"')
+  })
+
+  it('runs the published smoke gate on the Windows affected-file job', () => {
+    const ci = source.get('ci.yml')!
+    const gate = ci.slice(ci.indexOf('  windows-gate:'), ci.indexOf('  smoke-install:'))
+    expect(gate).toContain('npm view looptroop version')
+    expect(gate).toContain('node scripts/smoke-published.mjs')
+    expect(gate).toContain('--channel npm')
+    expect(gate).toContain('--pin')
+    expect(gate).toContain('--profile gate')
+    expect(gate).toContain('--leg "npm (windows-latest)"')
+  })
+
+  it('executes the Windows affected-file scope against affected and unrelated paths', () => {
+    const windowsGate = workflows.get('ci.yml')!.jobs?.['windows-gate']
+    const scope = windowsGate?.steps?.find((step) => step.name === 'Check whether the Windows profile is affected')?.run
+    if (typeof scope !== 'string') throw new Error('Windows gate scope script missing')
+
+    const affected = executeWindowsScope(scope, ['scripts/smoke-lib.mjs'])
+    expect(affected.status).toBe(0)
+    expect(affected.output).toBe('affected=true\n')
+    expect(affected.stdout).toContain('Windows gate affected: true')
+
+    const unrelated = executeWindowsScope(scope, ['server/README.md'])
+    expect(unrelated.status).toBe(0)
+    expect(unrelated.output).toBe('affected=false\n')
+    expect(unrelated.stdout).toContain('Windows gate affected: false')
+  })
+
+  it('keeps release pushes free of token-bearing URLs and pins Scoop fetches', () => {
+    for (const [file, text] of source) {
+      expect(text, file).not.toContain('https://x-access-token:')
+    }
+    expect(source.get('ci.yml')).toContain('irm https://get.scoop.sh')
+    expect(source.get('published-smoke.yml')).toContain('irm https://get.scoop.sh')
+    const releasePr = source.get('release-pr.yml')!
+    const push = releasePr.slice(releasePr.indexOf('  - name: Push the release branch'), releasePr.indexOf('  - name: Open the pull request'))
+    expect(push).toContain('unset RELEASE_TOKEN')
+    expect(push).toContain('core.hooksPath=/dev/null')
+  })
+
+  it('bounds npm network retries without adding a test retry loop', () => {
+    for (const [file, text] of source) {
+      if (!/\bnpm\s+(?:ci|install|publish|view)\b/.test(text)) continue
+      expect(text, file).toContain('NPM_CONFIG_FETCH_RETRIES:')
+      expect(text, file).toContain('NPM_CONFIG_FETCH_RETRY_MINTIMEOUT:')
+      expect(text, file).toContain('NPM_CONFIG_FETCH_RETRY_MAXTIMEOUT:')
+      expect(text, file).toMatch(/NPM_CONFIG_FETCH_RETRIES:\s*'3'/)
+      expect(text, file).toMatch(/NPM_CONFIG_FETCH_RETRY_MINTIMEOUT:\s*'10000'/)
+      expect(text, file).toMatch(/NPM_CONFIG_FETCH_RETRY_MAXTIMEOUT:\s*'60000'/)
+    }
+    expect(source.get('release.yml')).not.toMatch(/retry.*npm test|npm test.*retry/i)
+  })
+
+  it('retains the release lockfile and image package-version evidence', () => {
+    const docker = readFileSync(join(repo, 'Dockerfile'), 'utf8')
+    expect(docker).toContain('COPY ${LOCKFILE} ./package-lock.json')
+    expect(docker).toContain('tar -xzf package.tgz --strip-components=1 -C /opt/looptroop/lib/node_modules/looptroop')
+    expect(docker).toContain('npm ci --ignore-scripts --omit=dev')
+    expect(docker).not.toMatch(/npm install[^\n]*\.\/package\.tgz/)
+    expect(docker).toContain('chmod 0755 /opt/looptroop/lib/node_modules/looptroop/dist/server/cli/launcher.cjs')
+    expect(docker).toContain('/usr/share/looptroop/image-package-versions.txt')
+    for (const file of ['release.yml', 'container-republish.yml']) {
+      const text = source.get(file)!
+      expect(text, file).toContain('tar -cf - Dockerfile "${LOCKFILE}" "${TARBALL}"')
+      expect(text, file).toContain('image-package-versions-${ARCH}.txt')
+    }
+    const release = source.get('release.yml')!
+    const releaseContainer = release.slice(release.indexOf('  container-build:'), release.indexOf('  container-manifest:'))
+    expect(releaseContainer).toContain('--assets-dir .')
+    expect(release).toContain('subject-digest: ${{ needs.container-manifest.outputs.index_digest }}')
+    const repair = source.get('container-republish.yml')!
+    const repairPrepare = repair.slice(repair.indexOf('  prepare:'), repair.indexOf('  build:'))
+    expect(repairPrepare).toContain('release manifest has no package-lock.json asset')
+    expect(repairPrepare).toContain('--dir "${ASSET_DIR}"')
+    expect(repairPrepare).toContain('${process.env.ASSET_DIR}/package-lock.json')
+    const repairBuild = repair.slice(repair.indexOf('  build:'), repair.indexOf('  manifest:'))
+    expect(repairBuild).toContain('path: release-assets')
+    expect(repairBuild).toContain('LOCKFILE: release-assets/package-lock.json')
+    expect(repairBuild).toContain('test -f "${LOCKFILE}"')
+    expect(repair).toContain('subject-digest: ${{ needs.manifest.outputs.index_digest }}')
+  })
+
+  it('logs in each finished-image attestation job and disables storage records', () => {
+    const release = source.get('release.yml')!
+    const releaseAttest = release.slice(release.indexOf('  container-attest:'), release.indexOf('  container-verify:'))
+    expect(releaseAttest).toContain('docker login ghcr.io')
+    expect(releaseAttest).toContain('create-storage-record: false')
+
+    const repair = source.get('container-republish.yml')!
+    const repairAttest = repair.slice(repair.indexOf('  attest:'), repair.indexOf('  verify:'))
+    expect(repairAttest).toContain('docker login ghcr.io')
+    expect(repairAttest).toContain('create-storage-record: false')
+  })
+
+  it('downloads Renovate notices outside checkout and gives the token only to push', () => {
+    const text = source.get('renovate-notices.yml')!
+    expect(text).toContain('path: ${{ runner.temp }}/third-party-notices-artifact')
+    expect(text).toContain('Validate and copy the notices artifact')
+    expect(text).toContain('persist-credentials: false')
+    expect(text).toContain('RELEASE_TOKEN: ${{ secrets.RELEASE_PR_TOKEN }}')
+    const push = workflows.get('renovate-notices.yml')!.jobs?.push
+    const commit = push?.steps?.find((step) => step.name === 'Commit the regenerated notices')
+    const authenticatedPush = push?.steps?.find((step) => step.name === 'Push the regenerated notices')
+    expect(commit?.env).toBeUndefined()
+    expect(authenticatedPush?.env?.RELEASE_TOKEN).toBe('${{ secrets.RELEASE_PR_TOKEN }}')
+    expect(commit?.run).toContain('core.hooksPath=/dev/null')
+    expect(authenticatedPush?.run).toContain('unset RELEASE_TOKEN')
+    expect(authenticatedPush?.run).toContain('core.hooksPath=/dev/null')
+  })
+})

@@ -1,0 +1,328 @@
+{
+  "schemaVersion": 1,
+  "sourceFile": "scripts/smoke-published.mjs",
+  "channels": [
+    {
+      "id": "npm",
+      "kind": "installed",
+      "live": true,
+      "documentedInstall": "npm install -g looptroop",
+      "stubReason": null,
+      "pinnable": true,
+      "doctorChannel": "npm",
+      "upgradeCommands": {
+        "linux": "npm install -g looptroop@latest",
+        "darwin": "npm install -g looptroop@latest",
+        "win32": "npm install -g looptroop@latest"
+      },
+      "legs": [
+        {
+          "os": "ubuntu-latest",
+          "tier": "release",
+          "opencode": "npm"
+        },
+        {
+          "os": "macos-latest",
+          "tier": "release",
+          "opencode": "npm"
+        },
+        {
+          "os": "windows-latest",
+          "tier": "release",
+          "opencode": "npm"
+        }
+      ]
+    },
+    {
+      "id": "installer-sh",
+      "kind": "installed",
+      "live": true,
+      "documentedInstall": "curl -fsSL https://www.looptroop.ovh/install | sh",
+      "stubReason": null,
+      "pinnable": true,
+      "doctorChannel": "npm",
+      "upgradeCommands": {
+        "linux": "npm install -g looptroop@latest",
+        "darwin": "npm install -g looptroop@latest",
+        "win32": "npm install -g looptroop@latest"
+      },
+      "legs": [
+        {
+          "os": "ubuntu-latest",
+          "tier": "release",
+          "opencode": "npm"
+        },
+        {
+          "os": "macos-latest",
+          "tier": "release",
+          "opencode": "npm"
+        }
+      ]
+    },
+    {
+      "id": "installer-ps1",
+      "kind": "installed",
+      "live": true,
+      "documentedInstall": "$script = curl.exe --proto \"=https\" --proto-redir \"=https\" --tlsv1.2 -fsSL https://www.looptroop.ovh/install.ps1; if ($LASTEXITCODE -ne 0 -or !$script) { throw \"Installer download failed\" }; & ([scriptblock]::Create(($script -join \"`n\")))",
+      "stubReason": null,
+      "pinnable": true,
+      "doctorChannel": "npm",
+      "upgradeCommands": {
+        "linux": "npm install -g looptroop@latest",
+        "darwin": "npm install -g looptroop@latest",
+        "win32": "npm install -g looptroop@latest"
+      },
+      "legs": [
+        {
+          "os": "windows-latest",
+          "tier": "release",
+          "opencode": "npm"
+        }
+      ]
+    },
+    {
+      "id": "installer-sh-binary",
+      "kind": "installed",
+      "live": true,
+      "documentedInstall": "curl -fsSL https://www.looptroop.ovh/install | sh -s -- --binary",
+      "stubReason": null,
+      "pinnable": true,
+      "doctorChannel": "binary",
+      "upgradeCommands": {
+        "linux": "curl -fsSL https://www.looptroop.ovh/install | sh -s -- --binary",
+        "darwin": "curl -fsSL https://www.looptroop.ovh/install | sh -s -- --binary",
+        "win32": "$script = curl.exe --proto \"=https\" --proto-redir \"=https\" --tlsv1.2 -fsSL https://www.looptroop.ovh/install.ps1; if ($LASTEXITCODE -ne 0 -or !$script) { throw \"Installer download failed\" }; & ([scriptblock]::Create(($script -join \"`n\"))) -Binary"
+      },
+      "legs": [
+        {
+          "os": "ubuntu-latest",
+          "tier": "weekly",
+          "opencode": "npm"
+        }
+      ]
+    },
+    {
+      "id": "homebrew",
+      "kind": "installed",
+      "live": true,
+      "documentedInstall": "brew install looptroop-ai/tap/looptroop",
+      "stubReason": null,
+      "pinnable": false,
+      "doctorChannel": "homebrew",
+      "upgradeCommands": {
+        "linux": "brew upgrade looptroop",
+        "darwin": "brew upgrade looptroop",
+        "win32": "brew upgrade looptroop"
+      },
+      "legs": [
+        {
+          "os": "macos-latest",
+          "tier": "release",
+          "opencode": "npm"
+        },
+        {
+          "os": "ubuntu-latest",
+          "tier": "weekly",
+          "opencode": "npm"
+        }
+      ]
+    },
+    {
+      "id": "scoop",
+      "kind": "installed",
+      "live": true,
+      "documentedInstall": "scoop bucket add looptroop https://github.com/looptroop-ai/scoop-bucket; scoop install looptroop",
+      "stubReason": null,
+      "pinnable": false,
+      "doctorChannel": "scoop",
+      "upgradeCommands": {
+        "linux": "scoop update looptroop",
+        "darwin": "scoop update looptroop",
+        "win32": "scoop update looptroop"
+      },
+      "legs": [
+        {
+          "os": "windows-latest",
+          "tier": "release",
+          "opencode": "npm"
+        }
+      ]
+    },
+    {
+      "id": "bun",
+      "kind": "installed",
+      "live": true,
+      "documentedInstall": "bun add -g looptroop",
+      "stubReason": null,
+      "pinnable": true,
+      "doctorChannel": "bun",
+      "upgradeCommands": {
+        "linux": "bun add -g looptroop@latest",
+        "darwin": "bun add -g looptroop@latest",
+        "win32": "bun add -g looptroop@latest"
+      },
+      "legs": [
+        {
+          "os": "ubuntu-latest",
+          "tier": "weekly",
+          "opencode": "adopt"
+        }
+      ]
+    },
+    {
+      "id": "pnpm",
+      "kind": "installed",
+      "live": true,
+      "documentedInstall": "pnpm add -g looptroop",
+      "stubReason": null,
+      "pinnable": true,
+      "doctorChannel": "pnpm",
+      "upgradeCommands": {
+        "linux": "pnpm add -g looptroop@latest",
+        "darwin": "pnpm add -g looptroop@latest",
+        "win32": "pnpm add -g looptroop@latest"
+      },
+      "legs": [
+        {
+          "os": "ubuntu-latest",
+          "tier": "weekly",
+          "opencode": "npm"
+        }
+      ]
+    },
+    {
+      "id": "yarn",
+      "kind": "installed",
+      "live": true,
+      "documentedInstall": "yarn global add looptroop",
+      "stubReason": null,
+      "pinnable": true,
+      "doctorChannel": "yarn",
+      "upgradeCommands": {
+        "linux": "yarn global upgrade looptroop@latest",
+        "darwin": "yarn global upgrade looptroop@latest",
+        "win32": "yarn global upgrade looptroop@latest"
+      },
+      "legs": [
+        {
+          "os": "ubuntu-latest",
+          "tier": "weekly",
+          "opencode": "npm"
+        }
+      ]
+    },
+    {
+      "id": "binary-linux-x64",
+      "kind": "installed",
+      "live": true,
+      "documentedInstall": "download looptroop-<version>-linux-x64 from the releases page",
+      "stubReason": null,
+      "pinnable": true,
+      "doctorChannel": "binary",
+      "upgradeCommands": {
+        "linux": "curl -fsSL https://www.looptroop.ovh/install | sh -s -- --binary",
+        "darwin": "curl -fsSL https://www.looptroop.ovh/install | sh -s -- --binary",
+        "win32": "$script = curl.exe --proto \"=https\" --proto-redir \"=https\" --tlsv1.2 -fsSL https://www.looptroop.ovh/install.ps1; if ($LASTEXITCODE -ne 0 -or !$script) { throw \"Installer download failed\" }; & ([scriptblock]::Create(($script -join \"`n\"))) -Binary"
+      },
+      "legs": [
+        {
+          "os": "ubuntu-latest",
+          "tier": "weekly",
+          "opencode": "npm"
+        }
+      ]
+    },
+    {
+      "id": "binary-win-x64",
+      "kind": "installed",
+      "live": true,
+      "documentedInstall": "download looptroop-<version>-win-x64 from the releases page",
+      "stubReason": null,
+      "pinnable": true,
+      "doctorChannel": "binary",
+      "upgradeCommands": {
+        "linux": "curl -fsSL https://www.looptroop.ovh/install | sh -s -- --binary",
+        "darwin": "curl -fsSL https://www.looptroop.ovh/install | sh -s -- --binary",
+        "win32": "$script = curl.exe --proto \"=https\" --proto-redir \"=https\" --tlsv1.2 -fsSL https://www.looptroop.ovh/install.ps1; if ($LASTEXITCODE -ne 0 -or !$script) { throw \"Installer download failed\" }; & ([scriptblock]::Create(($script -join \"`n\"))) -Binary"
+      },
+      "legs": [
+        {
+          "os": "windows-latest",
+          "tier": "weekly",
+          "opencode": "npm"
+        }
+      ]
+    },
+    {
+      "id": "container",
+      "kind": "delegated",
+      "live": true,
+      "documentedInstall": "docker pull looptroopai/looptroop:latest",
+      "stubReason": null,
+      "pinnable": true,
+      "doctorChannel": null,
+      "upgradeCommands": null,
+      "legs": [
+        {
+          "os": "ubuntu-latest",
+          "tier": "weekly",
+          "opencode": "none"
+        }
+      ]
+    },
+    {
+      "id": "chocolatey",
+      "kind": "stub",
+      "live": false,
+      "documentedInstall": "choco install looptroop",
+      "stubReason": "Chocolatey moderation has not accepted a first version",
+      "pinnable": null,
+      "doctorChannel": null,
+      "upgradeCommands": null,
+      "legs": []
+    },
+    {
+      "id": "winget",
+      "kind": "stub",
+      "live": false,
+      "documentedInstall": "winget install LoopTroopAI.LoopTroop",
+      "stubReason": "the WinGet manifest has not been merged and indexed",
+      "pinnable": null,
+      "doctorChannel": null,
+      "upgradeCommands": null,
+      "legs": []
+    },
+    {
+      "id": "aur",
+      "kind": "stub",
+      "live": false,
+      "documentedInstall": "yay -S looptroop-bin",
+      "stubReason": "AUR registration is closed upstream",
+      "pinnable": null,
+      "doctorChannel": null,
+      "upgradeCommands": null,
+      "legs": []
+    },
+    {
+      "id": "installer-ps1-binary",
+      "kind": "installed",
+      "live": true,
+      "documentedInstall": "$script = curl.exe --proto \"=https\" --proto-redir \"=https\" --tlsv1.2 -fsSL https://www.looptroop.ovh/install.ps1; if ($LASTEXITCODE -ne 0 -or !$script) { throw \"Installer download failed\" }; & ([scriptblock]::Create(($script -join \"`n\"))) -Binary",
+      "stubReason": null,
+      "pinnable": true,
+      "doctorChannel": "binary",
+      "upgradeCommands": {
+        "linux": "curl -fsSL https://www.looptroop.ovh/install | sh -s -- --binary",
+        "darwin": "curl -fsSL https://www.looptroop.ovh/install | sh -s -- --binary",
+        "win32": "$script = curl.exe --proto \"=https\" --proto-redir \"=https\" --tlsv1.2 -fsSL https://www.looptroop.ovh/install.ps1; if ($LASTEXITCODE -ne 0 -or !$script) { throw \"Installer download failed\" }; & ([scriptblock]::Create(($script -join \"`n\"))) -Binary"
+      },
+      "legs": [
+        {
+          "os": "windows-latest",
+          "tier": "weekly",
+          "opencode": "npm"
+        }
+      ]
+    }
+  ]
+}

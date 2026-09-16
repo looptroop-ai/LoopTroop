@@ -580,6 +580,41 @@ describe('Windows resolution', () => {
     expect(resolveTrustedProgram('C:\\nonexistent\\tool.exe', { platform: 'win32', policyEnv: { SystemRoot: NO_WINDOWS } }).reason)
       .toBe('C:\\nonexistent\\tool.exe is not an executable file.')
   })
+
+  it('resolves an extensionless Windows path through PATHEXT siblings in policy order', () => {
+    const root = tempRoot()
+    const bin = join(root, 'project', 'node_modules', '.bin')
+    const program = join(bin, 'vitest')
+    const cmd = makeExecutable(bin, 'vitest.CMD')
+    const exe = makeExecutable(bin, 'vitest.EXE')
+
+    // The command resolver turns `node_modules/.bin/vitest` into this absolute
+    // path against its approved cwd before calling this function; this resolver
+    // must not choose a relative path against process.cwd().
+    expect(resolveTrustedProgram(program, {
+      platform: 'win32',
+      policyEnv: { PATHEXT: '.CMD;.EXE', SystemRoot: NO_WINDOWS },
+    })).toEqual({ path: cmd, target: cmd })
+
+    expect(resolveTrustedProgram(program, {
+      platform: 'win32',
+      policyEnv: { PATHEXT: '.EXE;.CMD', SystemRoot: NO_WINDOWS },
+    })).toEqual({ path: exe, target: exe })
+  })
+
+  it('refuses an extensionless Windows path when no PATHEXT sibling is executable', () => {
+    const root = tempRoot()
+    const program = makeExecutable(join(root, 'bin'), 'vitest')
+
+    const resolution = resolveTrustedProgram(program, {
+      platform: 'win32',
+      policyEnv: { PATHEXT: '.EXE;.CMD', SystemRoot: NO_WINDOWS },
+    })
+
+    expect(resolution.path).toBeUndefined()
+    expect(resolution.refusedAt).toBe(program)
+    expect(resolution.reason).toContain('no executable sibling listed in PATHEXT')
+  })
 })
 
 describe('the WSL drive-mount exception', () => {
@@ -857,6 +892,63 @@ describe('resolveTrustedProgram', () => {
 })
 
 describe('round-2 trust rules', () => {
+  it('trusts the kernel overflow UID only for an unmapped UID in a user namespace', () => {
+    const root = tempRoot()
+    const bin = join(root, 'bin')
+    const tool = makeExecutable(bin, 'looptool')
+    const withUid = (owner: number) => (reader: (path: string) => Stats | null) => (path: string): Stats | null => {
+      const stats = reader(path)
+      if (stats === null || path !== tool) return stats
+      return Object.assign(Object.create(Object.getPrototypeOf(stats)), stats, { uid: owner })
+    }
+
+    const options = {
+      env: { PATH: bin },
+      platform: 'linux' as const,
+      cache: null,
+      stat: withUid(65534)(statOrNull),
+      lstat: withUid(65534)(lstatOrNull),
+      readOverflowUid: () => '65534',
+    }
+
+    expect(resolveTrustedExecutable('looptool', {
+      ...options,
+      readUidMap: () => '0 0 4294967295\n',
+    }).reason).toContain('neither root, you, nor the owner of the Node')
+
+    expect(resolveTrustedExecutable('looptool', {
+      ...options,
+      readUidMap: () => '0 1000 1\n',
+    }).path).toBe(tool)
+
+    // The outside UID is part of the identity-map decision. A full-range map
+    // beginning at a nonzero host UID is not the initial namespace; use an
+    // overflow value just outside that range to make the distinction visible.
+    expect(resolveTrustedExecutable('looptool', {
+      ...options,
+      readUidMap: () => '0 1000 4294967295\n',
+      readOverflowUid: () => '4294967295',
+      stat: withUid(4294967295)(statOrNull),
+      lstat: withUid(4294967295)(lstatOrNull),
+    }).path).toBe(tool)
+
+    expect(resolveTrustedExecutable('looptool', {
+      ...options,
+      readUidMap: () => '0 0 65535\n',
+    }).reason).toContain('neither root, you, nor the owner of the Node')
+
+    expect(resolveTrustedExecutable('looptool', {
+      ...options,
+      readUidMap: () => '0 1000 1\n',
+      readOverflowUid: () => 'not-a-uid',
+    }).reason).toContain('neither root, you, nor the owner of the Node')
+
+    expect(resolveTrustedExecutable('looptool', {
+      ...options,
+      readUidMap: () => null,
+    }).reason).toContain('neither root, you, nor the owner of the Node')
+  })
+
   itPosix('trusts whoever owns the Node running LoopTroop', () => {
     // Under `sudo "$(which node)"` this process is root and the toolchain
     // belongs to the invoking user; root refusing it refused the Node it was
@@ -1680,6 +1772,9 @@ describe('the cmd.exe launcher', () => {
     // The edit forms look the name up before the colon, where no caret lands,
     // and dynamic names such as CD are in no environment at all.
     expect(plan(['%PATH:a=b%'], {}).reason).toContain('would expand %PATH:a=b%')
+    // Windows permits spaces in environment-variable names; the edit-form
+    // check must not narrow the name syntax and accidentally let this through.
+    expect(plan(['%MY VAR:a=b%'], { 'MY VAR': 'value' }).reason).toContain('would expand %MY VAR:a=b%')
     expect(plan(['%CD:~0,2%'], {}).reason).toContain('would expand %CD:~0,2%')
     // Across arguments too: cmd.exe pairs the `%` wherever they are.
     expect(plan(['x%PATH:', 'a=b%'], {}).reason).toContain('would expand')
@@ -1703,6 +1798,30 @@ describe('the cmd.exe launcher', () => {
     expect(plan('C:\\Users\\dev\\AppData\\Roaming\\npm\\tool.cmd', ['description="hello"']).reason).toBeUndefined()
     // A `node_modules\\.bin` shim is escaped twice instead, so it is not refused.
     expect(plan('C:\\repo\\node_modules\\.bin\\tool.cmd', ['say "hi & bye"']).reason).toBeUndefined()
+  })
+
+  it('carries second-read quote state across arguments', () => {
+    const plan = (args: string[]) => planProgramLaunch('C:\\x\\npm.cmd', args, {
+      platform: 'win32',
+      env: {},
+      resolveInterpreter: () => ({ path: 'C:\\Windows\\System32\\cmd.exe' }),
+    })
+
+    expect(plan(['foo"bar', '& calc']).reason).toContain('a second time with part of it outside quotes')
+  })
+
+  it('does not pair percent signs from independent quoted arguments', () => {
+    const plan = (args: string[], env: NodeJS.ProcessEnv = {}) => planProgramLaunch('C:\\x\\npm.cmd', args, {
+      platform: 'win32',
+      env,
+      resolveInterpreter: () => ({ path: 'C:\\Windows\\System32\\cmd.exe' }),
+    })
+
+    expect(plan(['--coverage.lines=50%', '--reporter=https://example.com', '--x=10%']).reason).toBeUndefined()
+    // A defined variable name still wins when the edit-form colon is in a
+    // later argument, after cmd.exe joins the command-line parts.
+    expect(plan(['%A', 'B:x=y%'], { 'A^" ^"B': 'x' }).reason)
+      .toContain('would expand %A" "B:x=y% in its arguments')
   })
 
   const onWindows = process.platform === 'win32' ? it : it.skip

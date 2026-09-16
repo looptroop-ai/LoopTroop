@@ -417,6 +417,15 @@ describe('workflow dispatch wiring', () => {
     expect(job.slice(0, job.indexOf('steps:'))).toContain("dist_tag == 'latest'")
   })
 
+  it('resolves the Windows launcher with PATHEXT-aware code', () => {
+    const driver = readFileSync('scripts/smoke-published.mjs', 'utf8')
+    // The Windows gate runs the resolver fixture with an extensionless shim
+    // before npm.cmd. Keep this driver on that same path rather than accepting
+    // the first line printed by `where`, which is not CreateProcess semantics.
+    expect(driver).toContain("import { findToolPath, launchTool, planToolLaunch } from './tool-path.ts'")
+    expect(driver).not.toContain("run('where', ['looptroop']")
+  })
+
   it('gives every gh step a token as well as a permission', () => {
     // `permissions:` scopes a token; it does not put one in the environment.
     // Without GH_TOKEN a `gh` call fails with an auth error rather than a

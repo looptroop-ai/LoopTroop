@@ -123,6 +123,10 @@ export interface TrustedExecutableOptions {
   platform?: NodeJS.Platform
   /** Test seam: the mount table consulted to recognise a Windows drive mount under WSL. */
   readMountTable?: () => string
+  /** Test seam: the process UID map used to recognise a non-initial user namespace. */
+  readUidMap?: () => string | null
+  /** Test seam: the kernel UID used when a host UID is not mapped into this namespace. */
+  readOverflowUid?: () => string | null
   /** Test seam: `null` bypasses the process-wide cache entirely. */
   cache?: Map<string, CachedResolution> | null
   /** Test seam: stat implementation for deterministic file metadata in tests. */
@@ -423,9 +427,23 @@ function realpathOrNull(path: string): string | null {
  */
 function candidateExtensions(name: string, platform: NodeJS.Platform, env: NodeJS.ProcessEnv): string[] {
   if (platform !== 'win32') return ['']
-  if (/\.[^\\/.]+$/.test(name)) return ['']
-  // `||`, not `??`: an empty PATHEXT would leave no extensions to try at all.
+  if (windowsNameHasExtension(name)) return ['']
+  // An empty PATHEXT falls back to the standard Windows extension set.
+  return windowsPathExtensions(env)
+}
+
+function windowsNameHasExtension(name: string): boolean {
+  return /\.[^\\/.]+$/.test(name)
+}
+
+function windowsPathExtensions(env: NodeJS.ProcessEnv): string[] {
   return (env.PATHEXT || DEFAULT_PATHEXT).split(';').map((value) => value.trim()).filter(Boolean)
+}
+
+/** Whether an absolute Windows program names a file type `CreateProcess` can run. */
+function hasWindowsExecutableExtension(program: string, env: NodeJS.ProcessEnv): boolean {
+  const extension = trustedPath.win32.extname(program).toLowerCase()
+  return extension !== '' && windowsPathExtensions(env).some((candidate) => candidate.toLowerCase() === extension)
 }
 
 /**
@@ -533,6 +551,47 @@ function readMountTableFromProc(): string {
   }
 }
 
+function readUidMapFromProc(): string | null {
+  try {
+    return trustedFs.readFileSync('/proc/self/uid_map', 'utf8')
+  } catch {
+    return null
+  }
+}
+
+function readOverflowUidFromProc(): string | null {
+  try {
+    return trustedFs.readFileSync('/proc/sys/kernel/overflowuid', 'utf8')
+  } catch {
+    return null
+  }
+}
+
+interface UidMapRange {
+  inside: number
+  outside: number
+  length: number
+}
+
+/** Parses the namespace UID ranges needed to keep the overflow exception narrow. */
+function parseUidMap(value: string | null): UidMapRange[] | null {
+  if (value === null) return null
+  const ranges = value.trim().split(/\r?\n/).filter(Boolean).map((line) => {
+    const fields = line.trim().split(/\s+/)
+    if (fields.length !== 3 || fields.some((field) => !/^\d+$/.test(field))) return null
+    const inside = Number(fields[0])
+    const outside = Number(fields[1])
+    const length = Number(fields[2])
+    if (!Number.isSafeInteger(inside) || !Number.isSafeInteger(outside) || !Number.isSafeInteger(length) || length <= 0) return null
+    return { inside, outside, length }
+  })
+  return ranges.length > 0 && ranges.every((range): range is UidMapRange => range !== null) ? ranges : null
+}
+
+function uidIsMapped(uid: number, ranges: UidMapRange[]): boolean {
+  return ranges.some(({ inside, length }) => uid >= inside && uid - inside < length)
+}
+
 /**
  * The uids whose files LoopTroop may run: root, this process, and whoever owns
  * the Node binary running it.
@@ -543,13 +602,33 @@ function readMountTableFromProc(): string {
  * itself running from. Trusting that owner widens nothing that matters: whoever
  * can replace the interpreter already controls every line this process runs.
  */
-function trustedOwners(): Set<number> {
+function trustedOwners(
+  readUidMap: () => string | null = readUidMapFromProc,
+  readOverflowUid: () => string | null = readOverflowUidFromProc,
+): Set<number> {
   const owners = new Set<number>([0])
   const uid = process.getuid?.()
   if (uid !== undefined) owners.add(uid)
   const interpreter = realpathOrNull(process.execPath)
   const interpreterOwner = interpreter === null ? undefined : statOrNull(interpreter)?.uid
   if (interpreterOwner !== undefined) owners.add(interpreterOwner)
+
+  // In a non-initial user namespace, host-owned files whose UID is not mapped
+  // appear as the kernel's overflow UID. Trust only that value, and only when
+  // the map is readable and does not map the same in-namespace UID to a real
+  // user. An unreadable map or overflow value stays fail-closed.
+  const ranges = parseUidMap(readUidMap())
+  if (ranges !== null) {
+    const identity = ranges.length === 1
+      && ranges[0]!.inside === 0
+      && ranges[0]!.outside === 0
+      && ranges[0]!.length === 4_294_967_295
+    if (!identity) {
+      const overflowText = readOverflowUid()?.trim()
+      const overflow = overflowText !== undefined && /^\d+$/.test(overflowText) ? Number(overflowText) : NaN
+      if (Number.isSafeInteger(overflow) && overflow >= 0 && !uidIsMapped(overflow, ranges)) owners.add(overflow)
+    }
+  }
   return owners
 }
 
@@ -804,7 +883,7 @@ export function resolveTrustedExecutable(
   const readMountTable = options.readMountTable ?? readMountTableFromProc
   const stat = options.stat ?? statOrNull
   const lstat = options.lstat ?? lstatOrNull
-  const owners = trustedOwners()
+  const owners = trustedOwners(options.readUidMap, options.readOverflowUid)
 
   if (name === '') return { reason: 'An empty program name cannot be resolved.' }
   if (/[\\/]/.test(name) || p.isAbsolute(name)) {
@@ -926,6 +1005,10 @@ export function findTrustedExecutablePath(name: string, options: TrustedExecutab
  * The path is returned as named, for the same reason a `PATH` entry is: a tool
  * may work out where it lives from how it was started.
  *
+ * On Windows, an extensionless absolute path is resolved by trying its
+ * `PATHEXT` siblings in policy order; the extensionless file itself is never
+ * run.
+ *
  * A *relative* path is refused rather than resolved. Which directory it is
  * relative to is the caller's decision and differs per call site: the daemon's
  * working directory is a checkout, and quietly picking that would be the
@@ -938,12 +1021,25 @@ export function resolveTrustedProgram(
   const platform = options.platform ?? process.platform
   const p = pathFor(platform)
   if (!p.isAbsolute(program)) return resolveTrustedExecutable(program, options)
+  const policyEnv = options.policyEnv ?? process.env
+  if (platform === 'win32' && !windowsNameHasExtension(program)) {
+    for (const extension of windowsPathExtensions(policyEnv)) {
+      const candidate = `${program}${extension}`
+      if (isExecutableFile(candidate, platform)) return resolveTrustedProgram(candidate, options)
+    }
+    return { reason: `${program} has no executable sibling listed in PATHEXT.`, refusedAt: program }
+  }
+  if (platform === 'win32' && !hasWindowsExecutableExtension(program, policyEnv)) {
+    return {
+      reason: `${program} is not a Windows executable path: its extension must be listed in PATHEXT.`,
+      refusedAt: program,
+    }
+  }
   if (!isExecutableFile(program, platform)) return { reason: `${program} is not an executable file.` }
   const target = isWindowsAppAlias(program, platform) ? program : realpathOrNull(program)
   if (target === null) return { reason: `${program} could not be resolved to a real path.` }
   const stat = options.stat ?? statOrNull
   const lstat = options.lstat ?? lstatOrNull
-  const policyEnv = options.policyEnv ?? process.env
   const named = trustedOperatorDirectories(policyEnv, platform)
   const canonicalDirs = canonicalTrustedDirectorySet(platform, policyEnv)
   const directory = p.dirname(program)
@@ -958,7 +1054,7 @@ export function resolveTrustedProgram(
     namedByOperator: directoryMatches(directory, named),
     canonicalOpenCodeDir: isOpencode && inCanonicalDir,
     isOpencode,
-    owners: trustedOwners(),
+    owners: trustedOwners(options.readUidMap, options.readOverflowUid),
   }
   // The path as named is judged as well as the real one: it is what gets
   // spawned, so a link on the way to it is followed again at spawn time.
@@ -1091,10 +1187,14 @@ function readsItsLineAgain(script: string): boolean {
 }
 
 /** What goes inside `cmd.exe /c "…"`: the script's path, then its arguments. */
-function commandLineForCmd(program: string, args: readonly string[]): string {
+function commandLineParts(program: string, args: readonly string[]): string[] {
   const script = trustedPath.win32.normalize(program)
   const escapeTwice = readsItsLineAgain(script)
-  return [escapeForCmd(script), ...args.map((arg) => quoteArgumentForCmd(arg, escapeTwice))].join(' ')
+  return [escapeForCmd(script), ...args.map((arg) => quoteArgumentForCmd(arg, escapeTwice))]
+}
+
+function commandLineForCmd(program: string, args: readonly string[]): string {
+  return commandLineParts(program, args).join(' ')
 }
 
 /**
@@ -1152,6 +1252,35 @@ function expandableReference(line: string, env: NodeJS.ProcessEnv): string | nul
   return null
 }
 
+/** Checks only a percent pair that crosses an actual command-line part boundary. */
+function expandableReferenceAcrossParts(parts: readonly string[], env: NodeJS.ProcessEnv): string | null {
+  const defined = new Set(Object.keys(env).map((name) => name.toLowerCase()))
+
+  for (let openingPart = 0; openingPart < parts.length; openingPart += 1) {
+    const part = parts[openingPart]!
+    const opening = part.lastIndexOf('%')
+    if (opening === -1) continue
+
+    let closingPart = openingPart + 1
+    while (closingPart < parts.length && !parts[closingPart]!.includes('%')) closingPart += 1
+    if (closingPart === parts.length) continue
+
+    const closing = parts[closingPart]!.indexOf('%')
+    const suffix = part.slice(opening + 1)
+    const content = [suffix, ...parts.slice(openingPart + 1, closingPart), parts[closingPart]!.slice(0, closing)].join(' ')
+    const colon = content.indexOf(':')
+    // A colon in a later quoted argument is ordinary text for an undefined
+    // name; an explicitly defined name can still include that text.
+    const colonInOpeningPart = colon >= 0 && colon < suffix.length
+    const name = colon === -1 ? content : content.slice(0, colon)
+    if ((colonInOpeningPart && !name.endsWith('^')) || defined.has(name.toLowerCase())) {
+      return `%${content.replace(/\^/g, '')}%`
+    }
+  }
+
+  return null
+}
+
 /**
  * Whether cmd.exe, reading `quoted` a second time, would find a metacharacter
  * outside quotes.
@@ -1165,13 +1294,15 @@ function expandableReference(line: string, env: NodeJS.ProcessEnv): string | nul
  * argument is refused. One with a quote and nothing else to act on is left
  * alone.
  */
-function exposedOnSecondRead(value: string): boolean {
+function exposedOnSecondRead(values: readonly string[]): string | null {
   let inQuotes = false
-  for (const character of quoteForArgv(value)) {
-    if (character === '"') inQuotes = !inQuotes
-    else if (!inQuotes && '&|<>^()'.includes(character)) return true
+  for (const value of values) {
+    for (const character of quoteForArgv(value)) {
+      if (character === '"') inQuotes = !inQuotes
+      else if (!inQuotes && '&|<>^()'.includes(character)) return value
+    }
   }
-  return false
+  return null
 }
 
 /** Why cmd.exe cannot be trusted to pass `args` to `program` unchanged, or `null`. */
@@ -1180,12 +1311,19 @@ function commandLineRefusal(program: string, args: readonly string[], env: NodeJ
   // after it without a word.
   if (args.some((arg) => /[\r\n]/.test(arg))) return 'cannot pass it an argument that contains a line break'
   if (!readsItsLineAgain(trustedPath.win32.normalize(program))) {
-    const exposed = args.find(exposedOnSecondRead)
-    if (exposed !== undefined) {
+    const exposed = exposedOnSecondRead(args)
+    if (exposed !== null) {
       return `would read ${JSON.stringify(exposed)} a second time with part of it outside quotes, where \`&\`, \`|\`, \`<\`, \`>\`, \`^\` and parentheses act`
     }
   }
-  const expanded = expandableReference(commandLineForCmd(program, args), env)
+  const parts = commandLineParts(program, args)
+  // Check each argument independently first. A percent in one quoted argument
+  // must not pair with a percent in another quoted argument merely because the
+  // full command line joins them with spaces. The final check handles a pair
+  // crossing a part boundary: an undefined edit colon must be in the opening
+  // part, while an explicitly defined name is checked wherever the colon is.
+  const expanded = parts.map((part) => expandableReference(part, env)).find((value) => value !== null)
+    ?? expandableReferenceAcrossParts(parts, env)
   return expanded === null ? null : `would expand ${expanded} in its arguments, and no escaping prevents that`
 }
 

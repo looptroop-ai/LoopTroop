@@ -29,6 +29,7 @@ import { spawnSync } from 'node:child_process'
 import { randomUUID } from 'node:crypto'
 import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
+import { inspectDoctorInstall } from './smoke-lib.mjs'
 import { join } from 'node:path'
 import { toolPath } from './tool-path.ts'
 
@@ -309,16 +310,23 @@ try {
   check('the stale npm record is seeded', seeded.code === 0, seeded.stderr.trim() || 'written')
 
   const doctor = runOnce(['doctor', '--json'])
-  const doctorJson = readJson(doctor.stdout, 'doctor --json')
-  const install = doctorJson?.checks?.find((entry) => entry.name === 'install')
-  check('doctor reports the container channel', install?.detail?.startsWith('container') === true,
-    install?.detail ?? 'no install check in the report')
+  let inspection
+  try {
+    inspection = inspectDoctorInstall(doctor.stdout, {
+      channel: 'container',
+      upgradeCommand: 'docker pull looptroopai/looptroop:latest',
+    })
+  } catch {
+    inspection = { check: null, facts: null, matches: false }
+  }
+  check('doctor reports the container channel', inspection.matches,
+    inspection.facts?.channel ?? 'no install facts in the report')
   // From the structured facts rather than the prose: `detail` is written for a
   // person and may be reworded, and matching on it made a display change look
   // like a broken container.
   check('the upgrade command is the docker one',
-    (install?.install?.upgradeCommand ?? '').includes('docker pull looptroopai/looptroop'),
-    install?.install?.upgradeCommand ?? 'no install facts in the report')
+    inspection.matches,
+    inspection.facts?.upgradeCommand ?? 'no install facts in the report')
   const rewritten = runOnce(['-c', 'cat "$LOOPTROOP_CONFIG_DIR/config.json"'], { entrypoint: 'sh' })
   const rewrittenRecord = rewritten.code === 0
     ? readJson(rewritten.stdout, 'config.json in the volume')?.install
@@ -425,10 +433,17 @@ try {
   check('docker restart succeeds', restarted.code === 0, restarted.stderr.trim() || 'restarted')
   if (await waitForHealthy('the container reaches healthy again')) {
     const again = exec(['looptroop', 'doctor', '--json'])
-    const againInstall = readJson(again.stdout, 'doctor --json after restart')
-      ?.checks?.find((entry) => entry.name === 'install')
-    check('doctor still reports the container channel', againInstall?.detail?.startsWith('container') === true,
-      againInstall?.detail ?? 'no install check in the report')
+    let againInspection
+    try {
+      againInspection = inspectDoctorInstall(again.stdout, {
+        channel: 'container',
+        upgradeCommand: 'docker pull looptroopai/looptroop:latest',
+      })
+    } catch {
+      againInspection = { check: null, facts: null, matches: false }
+    }
+    check('doctor still reports the container channel', againInspection.matches,
+      againInspection.facts?.channel ?? 'no install facts in the report')
   }
 
   // Only meaningful where the host uid is neither 0 nor 1000, which is the case
@@ -462,11 +477,18 @@ try {
     check('git accepts the mounted checkout', status.code === 0 && !/dubious ownership/.test(status.combined),
       status.code === 0 ? 'no ownership complaint' : status.stderr.trim().split('\n')[0] ?? `exit ${status.code}`)
     const redirected = docker([...asHost, options.image, 'doctor', '--json'])
-    const redirectedInstall = readJson(redirected.stdout, 'doctor --json with a redirected config dir')
-      ?.checks?.find((entry) => entry.name === 'install')
+    let redirectedInspection
+    try {
+      redirectedInspection = inspectDoctorInstall(redirected.stdout, {
+        channel: 'container',
+        upgradeCommand: 'docker pull looptroopai/looptroop:latest',
+      })
+    } catch {
+      redirectedInspection = { check: null, facts: null, matches: false }
+    }
     check('the CLI runs with the config directory redirected',
-      redirectedInstall?.detail?.startsWith('container') === true,
-      redirectedInstall?.detail ?? 'no install check in the report')
+      redirectedInspection.matches,
+      redirectedInspection.facts?.channel ?? 'no install facts in the report')
     check('it wrote to the redirected directory, not the volume',
       existsSync(join(hostConfigDir, 'config.json')), 'config.json on the bind mount')
   }

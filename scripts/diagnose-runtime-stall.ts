@@ -7,6 +7,7 @@ import { homedir } from 'node:os'
 import { basename, dirname, isAbsolute, resolve } from 'node:path'
 import { Database } from '../server/db/sqliteShim'
 import { getErrorMessage } from '../shared/typeGuards'
+import { stripAnsiSequences } from '../shared/ansi'
 import { TERMINAL_WORKFLOW_STATUSES } from '../shared/workflowMeta'
 import { resolveTrustedProgram } from '../server/lib/executablePath.ts'
 
@@ -478,11 +479,6 @@ if (process.argv.includes('--help')) {
   process.exit(0)
 }
 
-function stripAnsi(text: string): string {
-  // eslint-disable-next-line no-control-regex
-  return text.replace(/\x1b\[[0-9;]*m/g, '')
-}
-
 type AnsiColor = 'red' | 'yellow' | 'green' | 'cyan' | 'bold' | 'dim' | 'magenta'
 
 const ANSI: Record<AnsiColor, string> = {
@@ -503,7 +499,7 @@ function colorize(text: string, color: AnsiColor): string {
 
 function print(line = '') {
   console.log(line)
-  reportLines.push(stripAnsi(line))
+  reportLines.push(stripAnsiSequences(line))
 }
 
 function heading(title: string) {

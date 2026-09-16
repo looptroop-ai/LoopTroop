@@ -496,8 +496,6 @@ describe('installer core', () => {
           ? '  status) if [ -f "$LOOPTROOP_STUB_STATE" ]; then echo \'{"running":false,"notAnswering":{"pid":4242}}\'; else echo \'{"running":false,"notAnswering":null}\'; fi ;;'
           // Runs, exits 0, and says nothing a probe can parse.
           : '  status) echo "not json at all" ;;'
-      // A `stop` that reports failure, for the case where nothing at all can be
-      // established: the probe cannot answer and the command did not work.
       const stopArm = status === 'unparseable-and-stop-fails'
         ? '  stop) echo "stub cannot stop" >&2; exit 1 ;;'
         : '  stop) rm -f "$LOOPTROOP_STUB_STATE"; echo "stub stopped" ;;'
@@ -719,11 +717,33 @@ describe('installer core', () => {
     })
 
     /**
-     * The other half of that rule, and the reason it resolves rather than
-     * refuses. An executable that cannot print its own version cannot answer a
-     * daemon probe either — so refusing on an unreadable state would wedge
-     * exactly the person who most needs to reinstall.
+     * The other end of the unknown branch. When the probe cannot answer *and*
+     * `stop` reports that it failed, nothing at all has been established — so
+     * the executable is left alone rather than swapped on no information.
+     *
+     * `stop`'s exit code is the evidence here. Before it was read, the check
+     * was `daemonRunning(...) !== true`, which an unreadable probe satisfies
+     * on the first poll: the thirty-second wait proved nothing and the swap
+     * went ahead regardless.
      */
+    it.runIf(canInstallBinary)('refuses when the state is unreadable and the stop failed', async () => {
+      const prefix = freshPrefix()
+      const stubState = join(prefix, 'state')
+      archive = buildArchive('0.5.9', stubProgram('0.5.9', { status: 'unparseable-and-stop-fails' }))
+      expectExit(await runInstaller(['--binary', '--prefix', prefix], { LOOPTROOP_STUB_STATE: stubState }), 0)
+
+      const installed = join(prefix, 'bin', 'looptroop')
+      const before = readFileSync(installed, 'utf8')
+      archive = buildArchive('0.5.9', stubProgram('0.5.9'))
+      const result = await runInstaller(['--binary', '--prefix', prefix], { LOOPTROOP_STUB_STATE: stubState })
+
+      expectExit(result, 1)
+      expect(result.stderr).toContain('did not succeed')
+      expect(result.stderr).toContain('Nothing was installed')
+      // The executable it refused to replace is byte-for-byte what it was.
+      expect(readFileSync(installed, 'utf8')).toBe(before)
+    })
+
     /**
      * The mirror of the `notAnswering` fix, and the regression it caused.
      *
@@ -781,40 +801,15 @@ describe('installer core', () => {
     })
 
     /**
-     * The other end of the unknown branch. When the probe cannot answer *and*
-     * `stop` reports that it failed, nothing at all has been established — so
-     * the executable is left alone rather than swapped on no information.
-     *
-     * `stop`'s exit code is the evidence here. Before it was read, the check
-     * was `daemonRunning(...) !== true`, which an unreadable probe satisfies on
-     * the first poll: the thirty-second wait proved nothing and the swap went
-     * ahead regardless.
+     * If the executable cannot run, its unreadable status cannot establish
+     * daemon absence. Replacing it would risk leaving an old process serving
+     * while the new file reports a different version, so leave it alone.
      */
-    it.runIf(canInstallBinary)('refuses when the state is unreadable and the stop failed', async () => {
-      const prefix = freshPrefix()
-      const stubState = join(prefix, 'state')
-      archive = buildArchive('0.5.9', stubProgram('0.5.9', { status: 'unparseable-and-stop-fails' }))
-      expectExit(await runInstaller(['--binary', '--prefix', prefix], { LOOPTROOP_STUB_STATE: stubState }), 0)
-
-      const installed = join(prefix, 'bin', 'looptroop')
-      const before = readFileSync(installed, 'utf8')
-      archive = buildArchive('0.5.9', stubProgram('0.5.9'))
-      const result = await runInstaller(['--binary', '--prefix', prefix], { LOOPTROOP_STUB_STATE: stubState })
-
-      expectExit(result, 1)
-      expect(result.stderr).toContain('did not succeed')
-      expect(result.stderr).toContain('Nothing was installed')
-      // The executable it refused to replace is byte-for-byte what it was.
-      expect(readFileSync(installed, 'utf8')).toBe(before)
-    })
-
-    it.runIf(canInstallBinary)('installs over an executable that does not run at all', async () => {
+    it.runIf(canInstallBinary)('refuses to replace an executable that does not run', async () => {
       const prefix = freshPrefix()
       const stubState = join(prefix, 'state')
       archive = buildArchive('0.5.9', '#!/bin/sh\nexit 3\n')
-      // It installs nothing, but it does leave the broken copy quarantined and
-      // no working executable behind, which is the state to recover from.
-      await runInstaller(['--binary', '--prefix', prefix], { LOOPTROOP_STUB_STATE: stubState })
+      expectExit(await runInstaller(['--binary', '--prefix', prefix], { LOOPTROOP_STUB_STATE: stubState }), 1)
       mkdirSync(join(prefix, 'bin'), { recursive: true })
       writeFileSync(join(prefix, 'bin', 'looptroop'), '#!/bin/sh\nexit 3\n')
       chmodSync(join(prefix, 'bin', 'looptroop'), 0o755)
@@ -822,13 +817,9 @@ describe('installer core', () => {
       archive = buildArchive('0.5.9', stubProgram('0.5.9'))
       const result = await runInstaller(['--binary', '--prefix', prefix], { LOOPTROOP_STUB_STATE: stubState })
 
-      expectExit(result, 0)
-      expect(result.stdout).toContain('does not run, so there is no daemon of its to stop')
-      expect(spawnSync(join(prefix, 'bin', 'looptroop'), ['--version'], { encoding: 'utf8' }).stdout.trim()).toBe('0.5.9')
-      // Without that escape this would take the "cannot say, so stop it" path,
-      // whose whole point is that it starts the daemon again afterwards — and
-      // there was no daemon here to put back.
-      expect(existsSync(stubState)).toBe(false)
+      expectExit(result, 1)
+      expect(result.stderr).toContain('will not say whether its daemon is running')
+      expect(result.stderr).toContain('Nothing was installed')
     })
 
     /**
@@ -1343,6 +1334,11 @@ describe('windows command lines', () => {
 })
 
 describe('installer wrappers', () => {
+  const wrapperTempDirs: string[] = []
+  afterAll(() => {
+    for (const dir of wrapperTempDirs.splice(0)) removeTempDir(dir)
+  })
+
   it('carry an exact copy of the installer core', () => {
     const result = spawnSync(process.execPath, [join(repoRoot, 'scripts', 'sync-installers.mjs'), '--check'], {
       cwd: repoRoot,
@@ -1407,6 +1403,10 @@ describe('installer wrappers', () => {
   it('forward every option the core accepts', () => {
     const ps1 = readFileSync(join(repoRoot, 'install.ps1'), 'utf8')
     const sh = readFileSync(join(repoRoot, 'install.sh'), 'utf8')
+    const forwarding = ps1.slice(ps1.indexOf('  $forwarded = @()'), ps1.indexOf('  # So `-Help`'))
+
+    expect(forwarding.startsWith('  $forwarded = @()')).toBe(true)
+    expect(forwarding).toContain("$PSBoundParameters.ContainsKey('Version')")
 
     for (const option of INSTALL_OPTIONS) {
       // Declared as a parameter, so PowerShell binds it rather than refusing
@@ -1414,13 +1414,66 @@ describe('installer wrappers', () => {
       expect(`${option.ps} declared: ${new RegExp(`^\\s*\\[(?:string|switch)\\]\\$${option.ps.slice(1)},?\\s*$`, 'm').test(ps1)}`)
         .toBe(`${option.ps} declared: true`)
       // And mapped onto the spelling the core parses.
-      expect(`${option.ps} forwarded: ${ps1.includes(`'${option.sh}'`)}`)
+      expect(`${option.ps} forwarded: ${forwarding.includes(`'${option.sh}'`)}`)
         .toBe(`${option.ps} forwarded: true`)
     }
 
     // `install.sh` forwards positionally, so it needs no per-option mapping —
     // but it does have to pass the arguments on at all.
     expect(sh).toContain('node "$core" "$@"')
+  })
+
+  /**
+   * On Windows, run the actual wrapper with a harmless `node.cmd` recorder.
+   * The source check above catches drift on every platform; this catches a
+   * PowerShell binding or invocation change that leaves the text looking right.
+   */
+  it.runIf(process.platform === 'win32')('passes bound options to the child it runs', () => {
+    const bin = mkdtempSync(join(tmpdir(), 'looptroop-wrapper-node-'))
+    wrapperTempDirs.push(bin)
+    writeFileSync(join(bin, 'node.cmd'), [
+      '@echo off',
+      'echo NODE_ARGS %*',
+      '',
+    ].join('\r\n'))
+
+    // The child PATH intentionally contains only the recorder. Resolve the
+    // system Windows PowerShell before replacing it, because Windows PowerShell
+    // lives in a PATH subdirectory that this test deliberately omits.
+    const powershell = win32.resolve(
+      process.env.SystemRoot ?? process.env.WINDIR ?? 'C:\\Windows',
+      'System32', 'WindowsPowerShell', 'v1.0', 'powershell.exe',
+    )
+    const run = (args: string[]) => spawnSync(powershell, [
+      '-NoProfile', '-NonInteractive', '-File', join(repoRoot, 'install.ps1'),
+      ...args,
+    ], {
+      cwd: repoRoot,
+      encoding: 'utf8',
+      env: { ...process.env, PATH: bin },
+    })
+
+    const result = run([
+      '-Version', '9.9.9', '-Tarball', join(bin, 'tar ball.tgz'), '-Binary',
+      '-Prefix', join(bin, 'prefix'), '-DryRun', '-Help',
+    ])
+
+    expectExit(result, 0)
+    expect(result.stdout).toContain('NODE_ARGS')
+    expect(result.stdout).toContain('--version')
+    expect(result.stdout).toContain('9.9.9')
+    expect(result.stdout).toContain('--tarball')
+    expect(result.stdout).toContain('tar ball.tgz')
+    expect(result.stdout).toContain('--binary')
+    expect(result.stdout).toContain('--prefix')
+    expect(result.stdout).toContain('prefix')
+    expect(result.stdout).toContain('--dry-run')
+    expect(result.stdout).toContain('--help')
+
+    const empty = run(['-Version', '', '-Help'])
+    expectExit(empty, 1)
+    expect(`${empty.stdout}${empty.stderr}`).toContain('-Version needs a value, and was given an empty one.')
+    expect(`${empty.stdout}${empty.stderr}`).not.toContain('NODE_ARGS')
   })
 
   /**
@@ -1478,11 +1531,12 @@ describe('installer wrappers', () => {
       const result = spawnSync('/bin/sh', [join(repoRoot, 'install.sh'), '--help'], {
         cwd,
         encoding: 'utf8',
-        env: { HOME: cwd, PATH: `.:${dirname(process.execPath)}:/usr/bin:/bin` },
+        env: { HOME: cwd, PATH: `.:${dirname(process.execPath)}:/usr/bin:/bin`, LOOPTROOP_INSTALL_STYLE: 'ps1' },
       })
 
       expect(`${result.stdout}${result.stderr}`).not.toContain('PLANTED')
       expect(result.stdout).toContain('Usage:')
+      expect(result.stdout).toContain('Usage: install.sh')
     })
 
     it('reports node missing when no PATH entry is absolute, rather than searching the current directory', () => {

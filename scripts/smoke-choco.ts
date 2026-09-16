@@ -32,6 +32,7 @@ import { existsSync, mkdtempSync, readFileSync, rmSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { dirname, join, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
+import { inspectDoctorInstall } from './smoke-lib.mjs'
 import { planToolLaunch } from './tool-path.ts'
 
 const repoRoot = resolve(dirname(fileURLToPath(import.meta.url)), '..')
@@ -117,29 +118,29 @@ try {
   // whole report for two words that could co-occur in an unrelated remedy line.
   //
   // `doctor` exits non-zero on any failing check and a fresh machine has
-  // plenty, so its status is not the assertion; the install check's detail is.
+  // plenty, so its status is not the assertion; the install check's facts are.
   const doctor = run(chocoBin, ['doctor', '--json'], { env: childEnv, allowFailure: true })
   const report = `${doctor.stdout}${doctor.stderr}`
 
-  let checks: { name?: string, detail?: string }[]
+  let inspection: ReturnType<typeof inspectDoctorInstall>
   try {
-    checks = JSON.parse(doctor.stdout).checks
+    inspection = inspectDoctorInstall(doctor.stdout, {
+      channel: 'chocolatey',
+      upgradeCommand: 'choco upgrade looptroop',
+    })
   } catch {
     fail('`doctor --json` did not produce parseable JSON.', report.slice(0, 3000))
   }
 
-  const install = checks.find((check) => check.name === 'install')
-  if (install === undefined) fail('`doctor --json` reports no install check at all.', report.slice(0, 3000))
-
-  // `${channel} (upgrade: ${command})`, so the channel is the first word.
-  if (!/^chocolatey\b/.test(install.detail ?? '')) {
+  if (inspection.check === null) fail('`doctor --json` reports no install check at all.', report.slice(0, 3000))
+  if (!inspection.matches) {
     fail(
       '`doctor` does not report this as a chocolatey install.',
-      `It reports: ${install.detail ?? '(no detail)'}`,
+      `It reports channel ${inspection.facts?.channel ?? '(none)'} and upgrade ${inspection.facts?.upgradeCommand ?? '(none)'}.`,
       'That means the upgrade command shown to the user is the wrong one.',
     )
   }
-  log(`  \`doctor\` reports the chocolatey channel: ${install.detail}`)
+  log(`  \`doctor\` reports the chocolatey channel (upgrade: ${inspection.facts?.upgradeCommand ?? '(none)'})`)
 
   log('Uninstalling...')
   run('choco', ['uninstall', 'looptroop', '--yes', '--no-progress'])

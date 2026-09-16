@@ -46,6 +46,9 @@ permissions:
 env:
   DH_IMAGE: docker.io/looptroopai/looptroop
   GHCR_IMAGE: ghcr.io/looptroop-ai/looptroop
+  NPM_CONFIG_FETCH_RETRIES: '3'
+  NPM_CONFIG_FETCH_RETRY_MINTIMEOUT: '10000'
+  NPM_CONFIG_FETCH_RETRY_MAXTIMEOUT: '60000'
 
 # The same group `release.yml` uses, so a repair cannot race a release. Never
 # cancelled: this publishes to registries, and being interrupted between the two
@@ -106,13 +109,19 @@ jobs:
       - name: Download the released artefact
         env:
           GH_TOKEN: ${{ github.token }}
+          ASSET_DIR: ${{ runner.temp }}/release-assets
           VERSION: ${{ inputs.version }}
         run: |
           set -euo pipefail
+          mkdir -p "${ASSET_DIR}"
           gh release download "v${VERSION}" \
+            --dir "${ASSET_DIR}" \
             --pattern "looptroop-${VERSION}.tgz" \
+            --pattern package-lock.json \
             --pattern release-manifest.json
-          ls -l "looptroop-${VERSION}.tgz" release-manifest.json
+          ls -l "${ASSET_DIR}/looptroop-${VERSION}.tgz" \
+            "${ASSET_DIR}/package-lock.json" \
+            "${ASSET_DIR}/release-manifest.json"
 
       # Three separate questions, none of which the integrity check answers.
       #
@@ -124,6 +133,7 @@ jobs:
       - name: The artefact is the one this tag released
         id: resolve
         env:
+          ASSET_DIR: ${{ runner.temp }}/release-assets
           VERSION: ${{ inputs.version }}
         run: |
           set -euo pipefail
@@ -132,7 +142,7 @@ jobs:
           # Through the environment rather than argv, so nothing has to be
           # quoted into a program.
           TAG_COMMIT="${tag_commit}" node -e '
-            const manifest = JSON.parse(require("node:fs").readFileSync("release-manifest.json", "utf8"))
+            const manifest = JSON.parse(require("node:fs").readFileSync(`${process.env.ASSET_DIR}/release-manifest.json`, "utf8"))
             const version = process.env.VERSION
             const problems = []
             if (manifest.version !== version) {
@@ -149,7 +159,27 @@ jobs:
               process.exit(1)
             }
           '
-          npm run release:verify-artifact -- "looptroop-${VERSION}.tgz" release-manifest.json
+          npm run release:verify-artifact -- \
+            "${ASSET_DIR}/looptroop-${VERSION}.tgz" \
+            "${ASSET_DIR}/release-manifest.json"
+
+          # The container only needs the tarball and its matching lockfile. The
+          # release verifier's `--assets-dir` mode checks every release asset, so
+          # use a focused check here rather than pretending the un-downloaded
+          # installers and binaries are present.
+          node -e '
+            const fs = require("node:fs")
+            const crypto = require("node:crypto")
+            const manifest = JSON.parse(fs.readFileSync(`${process.env.ASSET_DIR}/release-manifest.json`, "utf8"))
+            const expected = manifest.assets?.["package-lock.json"]
+            if (!expected) throw new Error("release manifest has no package-lock.json asset")
+            const bytes = fs.readFileSync(`${process.env.ASSET_DIR}/package-lock.json`)
+            const sha256 = crypto.createHash("sha256").update(bytes).digest("hex")
+            if (bytes.length !== expected.bytes || sha256 !== expected.sha256) {
+              throw new Error(`package-lock.json does not match the release manifest (${sha256})`)
+            }
+            console.log(`package-lock.json matches ${sha256}`)
+          '
 
           # From the same function the release resolver uses, rather than a
           # second reading of the suffix here — the dist-tag is what decides
@@ -169,7 +199,7 @@ jobs:
           {
             echo "version=${VERSION}"
             echo "dist_tag=${dist_tag}"
-            echo "tarball=looptroop-${VERSION}.tgz"
+            echo "tarball=release-assets/looptroop-${VERSION}.tgz"
             echo "commit=${tag_commit}"
           } >> "$GITHUB_OUTPUT"
           echo "v${VERSION} at ${tag_commit}, dist-tag ${dist_tag}."
@@ -232,8 +262,9 @@ jobs:
         with:
           name: release-artefacts
           path: |
-            looptroop-${{ inputs.version }}.tgz
-            release-manifest.json
+            ${{ runner.temp }}/release-assets/looptroop-${{ inputs.version }}.tgz
+            ${{ runner.temp }}/release-assets/package-lock.json
+            ${{ runner.temp }}/release-assets/release-manifest.json
           if-no-files-found: error
           retention-days: 14
 
@@ -277,12 +308,30 @@ jobs:
         uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8
         with:
           name: release-artefacts
+          path: release-assets
 
       # Again, on this machine. The artefact travelled between jobs to get here.
       - name: Verify the artefact matches the manifest
         env:
           VERSION: ${{ needs.prepare.outputs.version }}
-        run: npm run release:verify-artifact -- "looptroop-${VERSION}.tgz" release-manifest.json
+        run: |
+          set -euo pipefail
+          npm run release:verify-artifact -- \
+            "release-assets/looptroop-${VERSION}.tgz" \
+            release-assets/release-manifest.json
+          node -e '
+            const fs = require("node:fs")
+            const crypto = require("node:crypto")
+            const manifest = JSON.parse(fs.readFileSync("release-assets/release-manifest.json", "utf8"))
+            const expected = manifest.assets?.["package-lock.json"]
+            if (!expected) throw new Error("release manifest has no package-lock.json asset")
+            const bytes = fs.readFileSync("release-assets/package-lock.json")
+            const sha256 = crypto.createHash("sha256").update(bytes).digest("hex")
+            if (bytes.length !== expected.bytes || sha256 !== expected.sha256) {
+              throw new Error(`package-lock.json does not match the release manifest (${sha256})`)
+            }
+            console.log(`package-lock.json matches ${sha256}`)
+          '
 
       - name: Log in to Docker Hub and GHCR
         env:
@@ -319,15 +368,18 @@ jobs:
       - name: Build the image and push it by digest
         env:
           TARBALL: ${{ needs.prepare.outputs.tarball }}
+          LOCKFILE: release-assets/package-lock.json
           VERSION: ${{ needs.prepare.outputs.version }}
           REVISION: ${{ needs.prepare.outputs.commit }}
           PLATFORM: linux/${{ matrix.arch }}
         run: |
           set -euo pipefail
           test -f "${TARBALL}"
-          tar -cf - Dockerfile "${TARBALL}" | docker buildx build \
+          test -f "${LOCKFILE}"
+          tar -cf - Dockerfile "${LOCKFILE}" "${TARBALL}" | docker buildx build \
             --platform "${PLATFORM}" \
             --build-arg TARBALL="${TARBALL}" \
+            --build-arg LOCKFILE="${LOCKFILE}" \
             --build-arg VERSION="${VERSION}" \
             --build-arg REVISION="${REVISION}" \
             --provenance=false \
@@ -376,11 +428,48 @@ jobs:
             echo "${image} serves ${digest}"
           done
 
+      # Record what the pushed image actually installed, not only the digest of
+      # its layers. Reading by the GHCR digest ties the package-version evidence
+      # to the same immutable subject that the manifest job later tags.
+      - name: Record installed package versions from the image
+        env:
+          ARCH: ${{ matrix.arch }}
+          PLATFORM: linux/${{ matrix.arch }}
+          REVISION: ${{ needs.prepare.outputs.commit }}
+          LOCKFILE: release-assets/package-lock.json
+          TARBALL: ${{ needs.prepare.outputs.tarball }}
+          VERSION: ${{ needs.prepare.outputs.version }}
+        run: |
+          set -euo pipefail
+          digest=$(cat "digest-${ARCH}.txt")
+          docker run --rm --platform "${PLATFORM}" --entrypoint /bin/cat \
+            "${GHCR_IMAGE}@${digest}" /usr/share/looptroop/image-package-versions.txt \
+            > "image-package-versions-${ARCH}.txt"
+          test -s "image-package-versions-${ARCH}.txt"
+          if ! grep -F -- "$(printf 'looptroop\t%s' "${VERSION}")" "image-package-versions-${ARCH}.txt" >/dev/null; then
+            echo "::error::The image does not record LoopTroop ${VERSION} as its installed package version."
+            cat "image-package-versions-${ARCH}.txt"
+            exit 1
+          fi
+          {
+            printf '### Container input and provenance (%s)\n\n' "${ARCH}"
+            printf -- '- tarball: `%s`\n' "${TARBALL}"
+            printf -- '- lockfile: `%s`\n' "${LOCKFILE}"
+            printf -- '- platform: `%s`\n' "${PLATFORM}"
+            printf -- '- revision: `%s`\n' "${REVISION}"
+            printf -- '- digest: `%s`\n\n' "${digest}"
+            echo '```'
+            cat "image-package-versions-${ARCH}.txt"
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
+
       - name: Upload the digest
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
         with:
           name: container-digest-${{ matrix.arch }}
-          path: digest-${{ matrix.arch }}.txt
+          path: |
+            digest-${{ matrix.arch }}.txt
+            image-package-versions-${{ matrix.arch }}.txt
           if-no-files-found: error
           retention-days: 14
 
@@ -464,12 +553,53 @@ jobs:
             --digest "$(cat digest-amd64.txt)" \
             --digest "$(cat digest-arm64.txt)"
 
+  # The per-architecture builds deliberately keep provenance off so the
+  # deterministic index assembly remains compatible. Attest that finished
+  # multi-architecture index, identified by the digest returned by `manifest`.
+  attest:
+    name: Attest finished container image
+    needs: [prepare, manifest]
+    if: always() && needs.manifest.result == 'success'
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    environment: release
+    permissions:
+      contents: read
+      id-token: write
+      attestations: write
+      packages: write
+    steps:
+      # `push-to-registry` makes the pinned actions/attest implementation read
+      # Docker's credential store on this fresh runner before it can attach the
+      # bundle to GHCR. Keep the token scoped to this one login step.
+      - name: Log in to GHCR for attestation
+        env:
+          GHCR_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          printf '%s' "${GHCR_TOKEN}" | docker login ghcr.io \
+            --username "${GITHUB_ACTOR}" --password-stdin
+
+      - name: Attest the finished GHCR index
+        uses: actions/attest-build-provenance@4d101475d8b20a2381f78447822ac1eab6504dd8 # v4.2.2
+        with:
+          subject-name: ${{ env.GHCR_IMAGE }}
+          subject-digest: ${{ needs.manifest.outputs.index_digest }}
+          push-to-registry: true
+          # This repair does not use Artifact Metadata storage records.
+          create-storage-record: false
+
   # ---------------------------------------------------------------------------
   # Prove the repair worked before saying it did.
   # ---------------------------------------------------------------------------
   verify:
     name: Verify container image (${{ matrix.arch }})
-    needs: [prepare, manifest]
+    needs: [prepare, manifest, attest]
+    if: >-
+      always()
+      && needs.prepare.result == 'success'
+      && needs.manifest.result == 'success'
+      && needs.attest.result == 'success'
     runs-on: ${{ matrix.runner }}
     timeout-minutes: 30
     permissions:
@@ -631,7 +761,7 @@ jobs:
           set -euo pipefail
           gh workflow run published-smoke.yml \
             --repo "${GITHUB_REPOSITORY}" \
-            --ref main \
+            --ref "v${VERSION}" \
             -f version="${VERSION}" \
             -f tier=weekly \
             -f only=container \

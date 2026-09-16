@@ -20,6 +20,7 @@
  */
 import { appendFileSync, readFileSync } from 'node:fs'
 import { resolve } from 'node:path'
+import { ArgumentError, parseArgs, requireNoPositional } from './cli-args.ts'
 import type { ReleaseManifest } from './release-assets.ts'
 import { digestedAssets } from './release-assets.ts'
 
@@ -29,15 +30,18 @@ function fail(message: string, ...detail: string[]): never {
   process.exit(1)
 }
 
-function flag(name: string, fallback: string | null = null): string {
-  const index = process.argv.indexOf(`--${name}`)
-  const value = index === -1 ? fallback : process.argv[index + 1]
-  if (value === undefined || value === null || value.startsWith('--')) fail(`--${name} is required.`)
-  return value
+let args: ReturnType<typeof parseArgs>
+try {
+  args = parseArgs(process.argv.slice(2), { manifest: 'value', repo: 'value' })
+  requireNoPositional(args)
+} catch (error) {
+  if (error instanceof ArgumentError) fail(error.message)
+  throw error
 }
 
-const manifestPath = resolve(flag('manifest', 'release-manifest.json'))
-const repo = flag('repo', process.env.GITHUB_REPOSITORY ?? null)
+const manifestPath = resolve(args.value('manifest') ?? 'release-manifest.json')
+const repo = args.value('repo') ?? process.env.GITHUB_REPOSITORY
+if (!repo) fail('--repo is required when GITHUB_REPOSITORY is not set.')
 
 let manifest: ReleaseManifest
 try {
@@ -47,6 +51,15 @@ try {
 }
 
 const assets = digestedAssets(manifest)
+const safeAssetName = /^[A-Za-z0-9][A-Za-z0-9._-]*$/u
+for (const name of Object.keys(assets)) {
+  if (!safeAssetName.test(name)) {
+    fail(
+      `${manifestPath} contains unsafe asset name ${JSON.stringify(name)}.`,
+      'Asset names must be a single safe basename containing only letters, numbers, dots, underscores and hyphens.',
+    )
+  }
+}
 const bundle = Object.keys(assets).find((name) => name.endsWith('-bundle.tar.gz'))
 if (bundle === undefined) {
   fail(

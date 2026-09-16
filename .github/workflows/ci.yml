@@ -18,6 +18,11 @@ env:
   # Silences npm's funding/update chatter so failures stand out in logs.
   NPM_CONFIG_FUND: 'false'
   NPM_CONFIG_AUDIT: 'false'
+  # Bounded registry fetch retries cover transient CDN failures without
+  # retrying tests or masking a failed build.
+  NPM_CONFIG_FETCH_RETRIES: '3'
+  NPM_CONFIG_FETCH_RETRY_MINTIMEOUT: '10000'
+  NPM_CONFIG_FETCH_RETRY_MAXTIMEOUT: '60000'
 
 jobs:
   # 4,400+ lines of workflow YAML, most of it inline bash and PowerShell that no
@@ -214,6 +219,93 @@ jobs:
       - name: Test
         run: npm run test
 
+  # A small Windows PR gate for changes that can alter executable resolution or
+  # the published-smoke workflow. The normal matrix is broad, but it is not a
+  # substitute for this profile: the extensionless-first shim regression only
+  # exists on Windows and must run against the real win32 path rules.
+  windows-gate:
+    name: Windows gate profile (affected files)
+    if: github.event_name == 'pull_request'
+    runs-on: windows-latest
+    timeout-minutes: 25
+    steps:
+      - name: Checkout the pull request
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Check whether the Windows profile is affected
+        id: scope
+        shell: bash
+        env:
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+        run: |
+          set -euo pipefail
+          affected=false
+          while IFS= read -r path; do
+            case "${path}" in
+              .github/workflows/*|package.json|package-lock.json|install.sh|install.ps1|\
+              scripts/smoke-lib.mjs|scripts/smoke-lib.d.mts|scripts/smoke-published.mjs|scripts/smoke-published.d.mts|scripts/tool-path.ts|\
+              server/lib/executablePath.ts|server/lib/__tests__/executablePath.test.ts|\
+              tests/installer.test.ts|tests/smokePublished.test.ts)
+                affected=true
+                break
+                ;;
+            esac
+          done < <(git diff --name-only "${BASE_SHA}" "${HEAD_SHA}")
+          echo "affected=${affected}" >> "$GITHUB_OUTPUT"
+          echo "Windows gate affected: ${affected}"
+
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7
+        if: steps.scope.outputs.affected == 'true'
+        with:
+          node-version: 24.18.1
+          cache: npm
+
+      - name: Pin npm to the declared version
+        if: steps.scope.outputs.affected == 'true'
+        run: node scripts/pin-npm.mjs
+        shell: bash
+
+      - name: Install dependencies
+        if: steps.scope.outputs.affected == 'true'
+        run: npm ci
+
+      # The driver installs this published candidate itself. Resolve the stable
+      # package that is actually available instead of the checkout version,
+      # which may be a release candidate that has not reached npm yet.
+      - name: Resolve a published npm candidate
+        if: steps.scope.outputs.affected == 'true'
+        id: candidate
+        shell: bash
+        run: |
+          set -euo pipefail
+          version="$(npm view looptroop version)"
+          test -n "${version}"
+          echo "version=${version}" >> "$GITHUB_OUTPUT"
+
+      # `installer.test.ts` includes the extensionless-first shim regression:
+      # on win32, `npm` must resolve to npm.cmd when an extensionless shim comes
+      # first in PATH. The executablePath suite checks the same resolver's
+      # ENOENT path preservation.
+      - name: Run the Windows resolver and published-smoke gates
+        if: steps.scope.outputs.affected == 'true'
+        shell: bash
+        env:
+          VERSION: ${{ steps.candidate.outputs.version }}
+        run: |
+          set -euo pipefail
+          npm test -- tests/installer.test.ts server/lib/__tests__/executablePath.test.ts tests/smokePublished.test.ts
+          node scripts/smoke-published.mjs \
+            --channel npm \
+            --version "${VERSION}" \
+            --pin \
+            --opencode mock \
+            --profile gate \
+            --leg "npm (windows-latest)"
+
   # Everything above runs against the source tree, where the working directory
   # already holds every file the daemon needs. This installs the tarball the way
   # a user would and drives the CLI against it, which is the only place a
@@ -313,8 +405,10 @@ jobs:
           VERSION: ${{ steps.pack.outputs.version }}
         run: |
           set -euo pipefail
-          tar -cf - Dockerfile "${TARBALL}" | docker build \
+          LOCKFILE=package-lock.json
+          tar -cf - Dockerfile "${LOCKFILE}" "${TARBALL}" | docker build \
             --build-arg TARBALL="${TARBALL}" \
+            --build-arg LOCKFILE="${LOCKFILE}" \
             --build-arg VERSION="${VERSION}" \
             --build-arg REVISION="${GITHUB_SHA}" \
             --tag looptroop:smoke \
@@ -649,7 +743,7 @@ jobs:
         shell: pwsh
         run: |
           $ErrorActionPreference = 'Stop'
-          iex "& {$(irm get.scoop.sh)} -RunAsAdmin"
+          iex "& {$(irm https://get.scoop.sh)} -RunAsAdmin"
           # The installer adds the shim directory to the *user* PATH, which this
           # process has already read; without this the next step's `scoop` is
           # not a command.

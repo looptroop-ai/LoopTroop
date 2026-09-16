@@ -123,9 +123,9 @@ brew upgrade looptroop            # upgrade
 ```
 
 **Needs nothing else.** The formula pulls in `node@24` and `gh`, and takes git
-from the OS. It installs a locked bundle built once per release with every
-dependency resolved at build time, so everyone on this channel runs the exact
-versions the release was tested against.
+from the OS. It installs a locked bundle built once per release from the
+release lockfile, so everyone on this channel runs the exact versions the
+release was tested against.
 </details>
 
 <details>
@@ -138,7 +138,7 @@ scoop update looptroop            # upgrade
 ```
 
 **Needs nothing else.** The manifest depends on `nodejs-lts`, `git` and `gh`.
-Like Homebrew, it installs the locked bundle.
+Like Homebrew, it installs the locked bundle built from the release lockfile.
 </details>
 
 <details>
@@ -204,9 +204,11 @@ and fails with a lockfile error. On modern Yarn, run it without installing with
 docker pull looptroopai/looptroop:latest
 ```
 
-**Needs only Docker.** Node, git and `gh` are all in the image. Two things it
-still needs from you, both deliberately not baked in: an OpenCode server it can
-reach, and a project mounted at its own absolute path. Both are covered on the
+**Needs only Docker.** Node, git and `gh` are all in the image. Release images
+use the matching tarball and `package-lock.json`, then record the installed
+package versions before the multi-architecture image is published. Two things
+the image still needs from you, both deliberately not baked in: an OpenCode
+server it can reach, and a project mounted at its own absolute path. See the
 [Installation page](https://www.looptroop.ovh/docs/installation#running-in-a-container).
 </details>
 

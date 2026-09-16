@@ -40,6 +40,7 @@ import { createHash } from 'node:crypto'
 import { chmodSync, copyFileSync, existsSync, mkdirSync, readdirSync, readFileSync, rmSync, utimesSync, writeFileSync } from 'node:fs'
 import { basename, dirname, join, relative, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
+import { ArgumentError, parseArgs, requireNoPositional } from './cli-args.ts'
 import { toolPath } from './tool-path.ts'
 
 const repoRoot = resolve(dirname(fileURLToPath(import.meta.url)), '..')
@@ -58,9 +59,16 @@ function run(command, args, options = {}) {
   return execFileSync(toolPath(command), args, { encoding: 'utf8', stdio: ['ignore', 'pipe', 'inherit'], ...options })
 }
 
-const args = process.argv.slice(2)
-const outIndex = args.indexOf('--out')
-const outDir = resolve(outIndex === -1 ? join(repoRoot, 'dist-binary') : args[outIndex + 1] ?? fail('--out needs a path'))
+const USAGE = 'Usage: node scripts/build-binary.mjs [--out <dir>]'
+let parsedArgs
+try {
+  parsedArgs = parseArgs(process.argv.slice(2), { out: 'value' })
+  requireNoPositional(parsedArgs)
+} catch (error) {
+  if (!(error instanceof ArgumentError)) throw error
+  fail(error.message, USAGE)
+}
+const outDir = resolve(parsedArgs.value('out') ?? join(repoRoot, 'dist-binary'))
 
 const pkg = JSON.parse(readFileSync(join(repoRoot, 'package.json'), 'utf8'))
 const version = pkg.version

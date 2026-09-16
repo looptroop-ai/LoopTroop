@@ -59,6 +59,11 @@ on:
 permissions:
   contents: read
 
+env:
+  NPM_CONFIG_FETCH_RETRIES: '3'
+  NPM_CONFIG_FETCH_RETRY_MINTIMEOUT: '10000'
+  NPM_CONFIG_FETCH_RETRY_MAXTIMEOUT: '60000'
+
 # The same group `release.yml` and `container-republish.yml` use, so a repair
 # cannot race a release. Never cancelled: this writes to other people's
 # repositories and to a moderated feed, and being interrupted partway is the
@@ -284,22 +289,29 @@ jobs:
       # is the whole question: the release exists, so if the formula points at
       # something that is not there, this is where it is caught.
       - name: Audit the formula
+        env:
+          VERSION: ${{ needs.prepare.outputs.version }}
+          BUNDLE_URL: ${{ needs.prepare.outputs.url }}
+          BUNDLE_SHA256: ${{ needs.prepare.outputs.sha256 }}
         run: >
           node scripts/audit-formula.ts --online
-          --version "${{ needs.prepare.outputs.version }}"
-          --url "${{ needs.prepare.outputs.url }}"
-          --sha256 "${{ needs.prepare.outputs.sha256 }}"
+          --version "${VERSION}"
+          --url "${BUNDLE_URL}"
+          --sha256 "${BUNDLE_SHA256}"
 
       - name: Push the formula
         env:
           GH_TOKEN: ${{ secrets.TAP_BUCKET_TOKEN }}
-        run: >
-          node scripts/channel-push.ts --channel homebrew
-          --repo looptroop-ai/homebrew-tap
-          --version "${{ needs.prepare.outputs.version }}"
-          --url "${{ needs.prepare.outputs.url }}"
-          --sha256 "${{ needs.prepare.outputs.sha256 }}"
-          ${{ needs.prepare.outputs.force == 'true' && '--force' || '' }}
+          VERSION: ${{ needs.prepare.outputs.version }}
+          BUNDLE_URL: ${{ needs.prepare.outputs.url }}
+          BUNDLE_SHA256: ${{ needs.prepare.outputs.sha256 }}
+          FORCE: ${{ needs.prepare.outputs.force }}
+        run: |
+          set -euo pipefail
+          args=(--channel homebrew --repo looptroop-ai/homebrew-tap
+            --version "${VERSION}" --url "${BUNDLE_URL}" --sha256 "${BUNDLE_SHA256}")
+          if [ "${FORCE}" = 'true' ]; then args+=(--force); fi
+          node scripts/channel-push.ts "${args[@]}"
 
   push-manifest:
     name: Republish the Scoop manifest
@@ -324,13 +336,16 @@ jobs:
       - name: Push the manifest
         env:
           GH_TOKEN: ${{ secrets.TAP_BUCKET_TOKEN }}
-        run: >
-          node scripts/channel-push.ts --channel scoop
-          --repo looptroop-ai/scoop-bucket
-          --version "${{ needs.prepare.outputs.version }}"
-          --url "${{ needs.prepare.outputs.url }}"
-          --sha256 "${{ needs.prepare.outputs.sha256 }}"
-          ${{ needs.prepare.outputs.force == 'true' && '--force' || '' }}
+          VERSION: ${{ needs.prepare.outputs.version }}
+          BUNDLE_URL: ${{ needs.prepare.outputs.url }}
+          BUNDLE_SHA256: ${{ needs.prepare.outputs.sha256 }}
+          FORCE: ${{ needs.prepare.outputs.force }}
+        run: |
+          set -euo pipefail
+          args=(--channel scoop --repo looptroop-ai/scoop-bucket
+            --version "${VERSION}" --url "${BUNDLE_URL}" --sha256 "${BUNDLE_SHA256}")
+          if [ "${FORCE}" = 'true' ]; then args+=(--force); fi
+          node scripts/channel-push.ts "${args[@]}"
 
   # ---------------------------------------------------------------------------
   # Chocolatey, whose recovery states are its own.
@@ -405,27 +420,33 @@ jobs:
       - name: Pack and prove it locally
         if: steps.feed.outputs.published == 'false'
         shell: bash
+        env:
+          BUNDLE: ${{ needs.prepare.outputs.bundle }}
+          BUNDLE_URL: ${{ needs.prepare.outputs.url }}
+          VERSION: ${{ needs.prepare.outputs.version }}
+          BUNDLE_SHA256: ${{ needs.prepare.outputs.sha256 }}
         run: |
           set -euo pipefail
           node scripts/build-choco.ts \
-            --bundle "${{ needs.prepare.outputs.bundle }}" \
-            --url "${{ needs.prepare.outputs.url }}" \
-            --version "${{ needs.prepare.outputs.version }}" \
-            --expect-sha256 "${{ needs.prepare.outputs.sha256 }}" \
+            --bundle "${BUNDLE}" \
+            --url "${BUNDLE_URL}" \
+            --version "${VERSION}" \
+            --expect-sha256 "${BUNDLE_SHA256}" \
             --out dist-choco
           node scripts/smoke-choco.ts \
-            --nupkg "dist-choco/looptroop.${{ needs.prepare.outputs.version }}.nupkg" \
-            --version "${{ needs.prepare.outputs.version }}"
+            --nupkg "dist-choco/looptroop.${VERSION}.nupkg" \
+            --version "${VERSION}"
 
       - name: Submit it
         if: steps.feed.outputs.published == 'false'
         shell: bash
         env:
           CHOCOLATEY_API_KEY: ${{ secrets.CHOCOLATEY_API_KEY }}
+          VERSION: ${{ needs.prepare.outputs.version }}
         run: >
           node scripts/choco-push.ts
-          --nupkg "dist-choco/looptroop.${{ needs.prepare.outputs.version }}.nupkg"
-          --version "${{ needs.prepare.outputs.version }}"
+          --nupkg "dist-choco/looptroop.${VERSION}.nupkg"
+          --version "${VERSION}"
 
       # The only check that what Chocolatey serves is what this release meant to
       # publish. Everything before moderation proves the package we built; this
@@ -441,9 +462,11 @@ jobs:
       - name: Install it from the feed and prove it
         if: steps.feed.outputs.published == 'true'
         shell: bash
+        env:
+          VERSION: ${{ needs.prepare.outputs.version }}
         run: >
           node scripts/smoke-choco.ts --from-feed
-          --version "${{ needs.prepare.outputs.version }}"
+          --version "${VERSION}"
 
   # ---------------------------------------------------------------------------
   # WinGet, whose recovery is a pull request rather than a write.
@@ -538,7 +561,7 @@ jobs:
           set -euo pipefail
           gh workflow run published-smoke.yml \
             --repo "${GITHUB_REPOSITORY}" \
-            --ref main \
+            --ref "v${VERSION}" \
             -f version="${VERSION}" \
             -f tier=weekly \
             -f only="${CHANNEL}" \

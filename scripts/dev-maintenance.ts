@@ -3,7 +3,8 @@ import { accessSync, constants, copyFileSync, existsSync, mkdirSync, mkdtempSync
 import { tmpdir } from 'node:os'
 import { basename, dirname, join, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
-import { getErrorMessage } from '../shared/typeGuards'
+import { getErrorMessage, isRecord } from '../shared/typeGuards'
+import { stripAnsiSequences } from '../shared/ansi'
 import { planToolLaunch } from './tool-path.ts'
 
 const __dirname = dirname(fileURLToPath(import.meta.url))
@@ -479,10 +480,6 @@ function getNextLocalDayStart(date: Date) {
   return next
 }
 
-function stripAnsi(raw: string) {
-  return raw.replace(new RegExp(String.raw`\u001B\[[0-?]*[ -/]*[@-~]`, 'g'), '')
-}
-
 /**
  * Windows `.cmd`/`.bat` shims (npm.cmd, opencode.cmd, ...) are batch scripts
  * that only run via cmd.exe. Since the BatBadBut fix (Node 18.20.2/20.12.2/21+),
@@ -564,8 +561,8 @@ function runExternalCommand(
     }
   }
 
-  const stdout = stripAnsi(trimCommandOutput(result.stdout ?? ''))
-  const stderr = stripAnsi(trimCommandOutput(result.stderr ?? ''))
+  const stdout = stripAnsiSequences(trimCommandOutput(result.stdout ?? ''))
+  const stderr = stripAnsiSequences(trimCommandOutput(result.stderr ?? ''))
 
   // Through cmd.exe on Windows, a shim whose target is gone does not surface as
   // an ENOENT spawn error: cmd.exe launches fine and exits non-zero (9009/1)
@@ -651,7 +648,7 @@ export function isExpectedAuditFindingsExit(result: NpmCommandResult) {
 }
 
 export function summarizePeerResolutionFailure(message: string) {
-  const lines = stripAnsi(message)
+  const lines = stripAnsiSequences(message)
     .split(/\r?\n/)
     .map((line) => line.replace(/^npm (?:error|warn)\s*/i, '').trim())
     .filter(Boolean)
@@ -1609,6 +1606,31 @@ export type OutdatedProbe =
   | { outcome: 'listed' }
   | { outcome: 'unavailable', message: string }
 
+function parseOutdatedJson(text: string): Record<string, OutdatedEntry> | null {
+  const parsed = parseJson<unknown>(text)
+  if (!isRecord(parsed)) return null
+  // npm 12 writes registry failures as JSON on stdout with a top-level error.
+  // Treating that object as a package entry records an outage as maintenance.
+  if (Object.hasOwn(parsed, 'error')) return null
+  return parsed as Record<string, OutdatedEntry>
+}
+
+function outdatedProbeFailureMessage(result: { stdout: string, stderr: string, status: number | null }): string {
+  if (result.stderr) return result.stderr
+
+  const parsed = parseJson<unknown>(result.stdout)
+  if (isRecord(parsed) && Object.hasOwn(parsed, 'error')) {
+    const error = parsed.error
+    if (isRecord(error)) {
+      const details = [error.code, error.summary]
+        .filter((value): value is string => typeof value === 'string' && value !== '')
+      if (details.length > 0) return details.join(': ')
+    }
+  }
+
+  return result.stdout || `npm outdated exited ${result.status ?? 'without a status'}`
+}
+
 /**
  * Reads an `npm outdated` run, which has three outcomes and used to be given
  * two.
@@ -1626,12 +1648,20 @@ export function classifyOutdatedProbe(
 ): OutdatedProbe {
   // Trimmed here as well as by `runCommand`, so this reads the same way for a
   // caller that hands it raw output: a lone newline is not a report.
-  if (result.stdout.trim() !== '') return { outcome: 'listed' }
-  if (result.status === 0) return { outcome: 'current' }
-  return {
-    outcome: 'unavailable',
-    message: result.stderr || `npm outdated exited ${result.status ?? 'without a status'}`,
+  const stdout = result.stdout.trim()
+  if (stdout === '') {
+    if (result.status === 0) return { outcome: 'current' }
+    return { outcome: 'unavailable', message: outdatedProbeFailureMessage(result) }
   }
+
+  const outdated = parseOutdatedJson(stdout)
+  if (outdated === null) return { outcome: 'unavailable', message: outdatedProbeFailureMessage(result) }
+  if (Object.keys(outdated).length === 0) {
+    if (result.status === 0) return { outcome: 'current' }
+    return { outcome: 'unavailable', message: outdatedProbeFailureMessage(result) }
+  }
+
+  return { outcome: 'listed' }
 }
 
 export function syncDirectDependencies(

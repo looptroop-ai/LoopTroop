@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest'
 import { spawnSync } from 'node:child_process'
+import { readFileSync } from 'node:fs'
 import { buildInstallCatalog } from '../scripts/docs-install-catalog.mjs'
 import { CHANNELS } from '../scripts/smoke-published.mjs'
 import type { ChannelRecipe } from '../scripts/smoke-published.mjs'
@@ -30,33 +31,9 @@ interface InstallCatalog {
   channels: InstallCatalogChannel[]
 }
 
-function channel(key: string): ChannelRecipe {
-  const recipe = CHANNELS[key]
-  if (!recipe) throw new Error(`no channel named "${key}"`)
-  return recipe
-}
-
-function expectedCatalogChannel(id: string, recipe: ChannelRecipe): InstallCatalogChannel {
-  return {
-    id,
-    kind: recipe.stub ? 'stub' : recipe.delegate ? 'delegated' : 'installed',
-    live: !recipe.stub,
-    documentedInstall: recipe.documented,
-    stubReason: recipe.stub ?? null,
-    pinnable: recipe.stub ? null : recipe.pinnable ?? true,
-    doctorChannel: recipe.stub || recipe.delegate || !recipe.expect ? null : recipe.expect.channel,
-    upgradeCommands: recipe.stub || recipe.delegate || !recipe.expect ? null : {
-      linux: recipe.expect.upgradeCommand('linux'),
-      darwin: recipe.expect.upgradeCommand('darwin'),
-      win32: recipe.expect.upgradeCommand('win32'),
-    },
-    legs: recipe.stub ? [] : (recipe.legs ?? []).map((leg) => ({
-      os: leg.os,
-      tier: leg.tier,
-      opencode: leg.opencode,
-    })),
-  }
-}
+const expectedCatalog = JSON.parse(
+  readFileSync(new URL('./fixtures/install-catalog.json', import.meta.url), 'utf8'),
+) as InstallCatalog
 
 describe('docs install catalog', () => {
   function runCatalog(): InstallCatalog {
@@ -82,17 +59,24 @@ describe('docs install catalog', () => {
   it('keeps the fields website verification needs for every emitted channel', () => {
     const catalog = runCatalog()
 
-    expect(catalog.channels).toEqual(
-      Object.entries(CHANNELS).map(([id, recipe]) => expectedCatalogChannel(id, recipe)),
-    )
+    expect(catalog).toEqual(expectedCatalog)
   })
 
-  it('keeps delegated channels delegated in the catalog contract', () => {
+  it('pins the catalog decisions independently of the smoke recipe implementation', () => {
     const catalog = runCatalog()
 
-    expect(catalog.channels.find((channel) => channel.id === 'container')).toEqual(
-      expectedCatalogChannel('container', channel('container')),
-    )
+    expect(catalog.channels.find((entry) => entry.id === 'scoop')).toMatchObject({
+      documentedInstall: 'scoop bucket add looptroop https://github.com/looptroop-ai/scoop-bucket; scoop install looptroop',
+    })
+    expect(catalog.channels.find((entry) => entry.id === 'container')).toMatchObject({
+      kind: 'delegated',
+    })
+    for (const id of ['chocolatey', 'winget', 'aur']) {
+      expect(catalog.channels.find((entry) => entry.id === id)).toMatchObject({
+        legs: [],
+        pinnable: null,
+      })
+    }
   })
 
   it('defaults omitted live pinnable flags to true to match the published smoke driver', () => {
@@ -109,7 +93,16 @@ describe('docs install catalog', () => {
       preview: previewRecipe,
     }) as InstallCatalog
 
-    expect(catalog.channels).toEqual([expectedCatalogChannel('preview', previewRecipe)])
-    expect(catalog.channels[0]?.pinnable).toBe(true)
+    expect(catalog.channels[0]).toMatchObject({
+      id: 'preview',
+      kind: 'delegated',
+      live: true,
+      documentedInstall: 'preview install',
+      stubReason: null,
+      pinnable: true,
+      doctorChannel: null,
+      upgradeCommands: null,
+      legs: [{ os: 'ubuntu-latest', tier: 'weekly', opencode: 'none' }],
+    })
   })
 })

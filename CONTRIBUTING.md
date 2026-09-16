@@ -69,6 +69,21 @@ immutable app commit that contains the catalog, check out that same ref in the
 website job, and fail closed when the catalog is missing. Do not replace the
 source pin with a branch or silently fall back to a reduced catalog.
 
+Release jobs verify the npm tarball, the matching `package-lock.json`, the
+managed-channel bundle, installer scripts, binaries, and checksums as one
+manifest. Container builds install the released tarball with its lockfile using
+`npm ci --ignore-scripts --omit=dev`; the finished multi-architecture index is
+attested and each image records its installed package versions. Registry fetches
+use three retries bounded to 10 to 60 seconds. Dependency and build jobs that do
+not publish lack attestation and OIDC permissions; the container build-and-push
+job retains the release environment, `packages: write` permission and registry
+login needed to publish images. Finished-index attestation runs in a separate
+download-only job. Git and package-feed credentials are scoped to the single
+invocation that needs them. Release scripts reject unknown flags and positional
+arguments, while published smoke checks read `doctor --json`'s structured
+`checks[].install.channel` and `checks[].install.upgradeCommand` fields instead
+of display prose.
+
 ## Issues
 
 Before opening an issue, please check whether a similar issue already exists.

@@ -1,6 +1,7 @@
 import { createHash } from 'node:crypto'
 import { REPO_SCOPE_PATHSPECS } from '../../git/pathspecs'
 import { runGitSync } from '../../git/runCommand'
+import { parseGitPathListZ } from '../../git/statusPorcelain'
 import { and, eq } from 'drizzle-orm'
 import { closeSync, cpSync, mkdirSync, readFileSync } from 'node:fs'
 import { resolve } from 'node:path'
@@ -114,7 +115,7 @@ function runGitHead(worktreePath: string): string {
 }
 
 function runGitText(worktreePath: string, args: string[]): string {
-  const result = runGitSync(worktreePath, args)
+  const result = runGitSync(worktreePath, args, { trimOutput: false })
   if (!result.ok) throw new Error(`Unable to audit Manual QA workspace: git ${args[0] ?? ''} failed.`)
   return result.stdout
 }
@@ -139,8 +140,8 @@ export function detectManualQaWorkspaceDrift(ticketId: string, version: number):
   const currentHead = runGitHead(paths.worktreePath)
   const dirtyFiles = captureFinalTestDirtyFiles(paths.worktreePath)
   const currentSignatures: Record<string, string> = {}
-  for (const entry of runGitText(paths.worktreePath, ['ls-files', '-s', '-z']).split('\0')) {
-    const match = entry.match(/^\d+ ([0-9a-f]+) \d+\t(.+)$/)
+  for (const entry of parseGitPathListZ(runGitText(paths.worktreePath, ['ls-files', '-s', '-z']))) {
+    const match = entry.match(/^\d+ ([0-9a-f]+) \d+\t([\s\S]+)$/)
     if (match?.[1] && match[2]) currentSignatures[match[2]] = match[1]
   }
   const signaturePaths = new Set([
@@ -152,9 +153,18 @@ export function detectManualQaWorkspaceDrift(ticketId: string, version: number):
     if ((baseline.trackedSignatures ?? {})[path] !== currentSignatures[path]) committedPaths.add(path)
   }
   if (baseline.head !== currentHead) {
-    for (const line of runGitText(paths.worktreePath, ['diff', '--name-status', baseline.head, currentHead, '--', ...REPO_SCOPE_PATHSPECS]).split('\n')) {
-      const fields = line.split('\t')
-      for (const path of fields.slice(1)) if (path) committedPaths.add(path)
+    const fields = parseGitPathListZ(runGitText(paths.worktreePath, [
+      'diff', '--name-status', '--no-renames', '-z', baseline.head, currentHead, '--', ...REPO_SCOPE_PATHSPECS,
+    ]))
+    // Git versions emit either `status<TAB>path<NUL>` or the equivalent
+    // alternating `status<NUL>path<NUL>` fields for this -z form. Accept
+    // both while splitting only at the first separator, so tabs, spaces,
+    // backslashes, and non-ASCII bytes in the path remain opaque.
+    for (let index = 0; index < fields.length; index += 1) {
+      const field = fields[index] ?? ''
+      const separator = field.indexOf('\t')
+      const path = separator >= 0 ? field.slice(separator + 1) : fields[++index] ?? ''
+      if (path) committedPaths.add(path)
     }
   }
   const dirtyPaths = new Set(dirtyFiles.map((entry) => entry.path))

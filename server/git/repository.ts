@@ -3,6 +3,10 @@ import { dirname, resolve } from 'node:path'
 import { DEFAULT_IGNORE_MODE, type IgnoreMode } from '@shared/ignoreMode'
 import { gitSucceeds, gitSyncSucceeds, runGitSyncOrThrow } from './runCommand'
 import { gitPushEnv } from './push'
+export { assertSafeRefName } from './ref'
+import { assertSafeRefName } from './ref'
+/** Remote operations get the push-sized budget; fetches can transfer a large history. */
+export const GIT_FETCH_TIMEOUT_MS = 120_000
 
 /**
  * Every command here is local plumbing except `tryFetchOrigin`, which contacts
@@ -33,6 +37,7 @@ export function getCurrentBranch(projectPath: string): string | null {
   try {
     const branch = runGit(projectPath, ['rev-parse', '--abbrev-ref', 'HEAD'])
     if (!branch || branch === 'HEAD') return null
+    assertSafeRefName(branch, 'Current branch')
     return branch
   } catch {
     return null
@@ -43,14 +48,19 @@ export function resolveBaseBranch(projectPath: string): string {
   try {
     const remoteHead = runGit(projectPath, ['symbolic-ref', '--quiet', '--short', 'refs/remotes/origin/HEAD'])
     if (remoteHead.startsWith('origin/')) {
-      return remoteHead.slice('origin/'.length)
+      const branch = remoteHead.slice('origin/'.length)
+      assertSafeRefName(branch, 'Detected base branch')
+      return branch
     }
   } catch {
     // Fall back to local inspection below.
   }
 
   const currentBranch = getCurrentBranch(projectPath)
-  if (currentBranch) return currentBranch
+  if (currentBranch) {
+    assertSafeRefName(currentBranch, 'Detected base branch')
+    return currentBranch
+  }
 
   for (const fallback of ['main', 'master']) {
     if (gitCommandSucceeds(projectPath, ['show-ref', '--verify', '--quiet', `refs/heads/${fallback}`])) {
@@ -62,6 +72,7 @@ export function resolveBaseBranch(projectPath: string): string {
 }
 
 export function resolveBaseBranchRef(projectPath: string, baseBranch: string): string {
+  assertSafeRefName(baseBranch, 'Base branch')
   const remoteRef = `origin/${baseBranch}`
   if (gitCommandSucceeds(projectPath, ['show-ref', '--verify', '--quiet', `refs/remotes/${remoteRef}`])) {
     return remoteRef
@@ -79,7 +90,10 @@ export function resolveBaseBranchRef(projectPath: string, baseBranch: string): s
  * would otherwise hold the daemon thread for the whole timeout.
  */
 export function tryFetchOrigin(projectPath: string): Promise<boolean> {
-  return gitSucceeds(projectPath, ['fetch', '--no-progress', '--prune', 'origin'], { env: gitPushEnv() })
+  return gitSucceeds(projectPath, ['fetch', '--no-progress', '--prune', 'origin'], {
+    timeoutMs: GIT_FETCH_TIMEOUT_MS,
+    env: gitPushEnv(),
+  })
 }
 
 /**

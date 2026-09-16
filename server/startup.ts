@@ -13,10 +13,11 @@ import {
   formatStartupStorageSummary,
   initializeStartupState,
 } from './startupState'
-import { fixTrailingLineCorruption, recoverOrphanTmpFiles } from './io/recovery'
+import { RecoveryBlockedError, fixTrailingLineCorruption, recoverOrphanTmpFiles } from './io/recovery'
 import { restoreInterruptedOpencodeStepsConfig } from './phases/execution/opencodeStepsConfig'
 import { rebuildTicketRuntimeProjections } from './storage/ticketRuntimeProjection'
 import { getErrorMessage } from '@shared/typeGuards'
+import { resolveAppConfigDir } from './lib/appConfigDir'
 import { getPendingQuestionSummary, reconcilePendingQuestionsAfterRestart } from './workflow/questionWindows'
 import { closeQuestionWait, listOpenQuestionWaitTicketIds } from './storage/questionWaits'
 import { resolveAiQuestionSettings } from './workflow/phases/helpers'
@@ -26,6 +27,12 @@ export function recoverTicketRuntimeArtifacts() {
   let recoveredTmpFiles = 0
   let repairedExecutionLogs = 0
   let settledOpencodeStepCaps = 0
+
+  // User-level caches and daemon state use the same atomic writer but do not
+  // live below a ticket. Recovery is restricted to known artifact names, so
+  // this does not reinterpret unrelated config-directory files as LoopTroop
+  // state.
+  recoveredTmpFiles += recoverOrphanTmpFiles(resolveAppConfigDir(), 'config').length
 
   for (const ticket of listTickets()) {
     try {
@@ -41,10 +48,10 @@ export function recoverTicketRuntimeArtifacts() {
       if (stepCap === 'restored' || stepCap === 'removed') {
         settledOpencodeStepCaps += 1
       }
-      // Every JSONL `safeAtomicWrite` can leave half-written, including the bead
-      // file — recovery puts a torn one back under its own name, and this is what
-      // then trims the incomplete final line.
-      for (const logPath of [paths.executionLogPath, paths.debugLogPath, paths.aiLogPath, paths.beadsPath]) {
+      // These are true append files. Beads are whole-file rewrites, so a torn
+      // beads temp stays unpromoted rather than being trimmed into a smaller
+      // authoritative plan.
+      for (const logPath of [paths.executionLogPath, paths.debugLogPath, paths.aiLogPath]) {
         try {
           if (fixTrailingLineCorruption(logPath)) {
             repairedExecutionLogs += 1
@@ -54,6 +61,7 @@ export function recoverTicketRuntimeArtifacts() {
         }
       }
     } catch (error) {
+      if (error instanceof RecoveryBlockedError) throw error
       console.warn(`[startup] Skipped artifact recovery for ${ticket.id}: ${getErrorMessage(error)}`)
     }
   }

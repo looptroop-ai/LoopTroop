@@ -1,5 +1,5 @@
 import { existsSync, lstatSync, realpathSync, rmSync, unlinkSync } from 'node:fs'
-import { runGitSyncOrThrow } from './runCommand'
+import { GIT_MUTATION_TIMEOUT_MS, runGitMutationOrThrow } from './runCommand'
 import { dirname, resolve } from 'node:path'
 import { makeOwnerWritableRecursive } from '../io/removal'
 import { ContainedPathError, resolveContainedPath } from '../lib/containedPath'
@@ -19,7 +19,7 @@ export function assertManagedWorktreesRoot(projectRoot: string, worktreesRoot: s
   return actual
 }
 
-type GitCommandRunner = (args: string[]) => void
+type GitCommandRunner = (args: string[]) => Promise<void>
 
 export interface RemoveWorktreeOptions {
   projectRoot: string
@@ -28,20 +28,20 @@ export interface RemoveWorktreeOptions {
   runGit?: GitCommandRunner
 }
 
-function runGitCommand(projectRoot: string, args: string[]): void {
-  runGitSyncOrThrow(projectRoot, args)
+async function runGitCommand(projectRoot: string, args: string[]): Promise<void> {
+  await runGitMutationOrThrow(projectRoot, args, { timeoutMs: GIT_MUTATION_TIMEOUT_MS })
 }
 
 /**
  * Removes a LoopTroop-managed Git worktree even when project tooling created
  * read-only files or directories inside it. Symlinks are never followed.
  */
-export function removeWorktree({
+export async function removeWorktree({
   projectRoot,
   worktreesRoot,
   worktreePath,
   runGit = (args) => runGitCommand(projectRoot, args),
-}: RemoveWorktreeOptions): void {
+}: RemoveWorktreeOptions): Promise<void> {
   const resolvedWorktreesRoot = resolve(worktreesRoot)
   const resolvedWorktreePath = resolve(worktreePath)
   if (dirname(resolvedWorktreePath) !== resolvedWorktreesRoot) {
@@ -68,7 +68,7 @@ export function removeWorktree({
 
   let gitRemovalFailed = false
   try {
-    runGit(['worktree', 'remove', '--force', worktreePath])
+    await runGit(['worktree', 'remove', '--force', worktreePath])
   } catch {
     gitRemovalFailed = true
   }
@@ -79,7 +79,7 @@ export function removeWorktree({
 
   if (gitRemovalFailed) {
     try {
-      runGit(['worktree', 'prune'])
+      await runGit(['worktree', 'prune'])
     } catch {
       // The filesystem target is already removed; stale Git metadata can be
       // pruned by a later cleanup operation.

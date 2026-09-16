@@ -161,7 +161,7 @@ export async function handleIntegration(
     ? finalTestFileResolution.candidateFiles
     : readFinalTestFilesToStage(ticketId)
 
-  const squash = prepareSquashCandidate(
+  const squash = await prepareSquashCandidate(
     paths.worktreePath,
     paths.baseBranch,
     context.title,

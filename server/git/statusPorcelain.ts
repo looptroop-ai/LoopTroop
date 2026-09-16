@@ -20,6 +20,11 @@ export interface GitStatusRecord {
   originalPath?: string
 }
 
+/** Reads a Git `-z` path list without changing any legal filename byte. */
+export function parseGitPathListZ(output: string): string[] {
+  return output.split('\0').filter((path) => path.length > 0)
+}
+
 /**
  * Splits the stream into records, adding the deletion a rename implies.
  *

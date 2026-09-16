@@ -1,5 +1,8 @@
 import { describe, expect, it } from 'vitest'
 import { normalizeRepoScopedPath, uniqueRepoScopedPaths } from '../repoScopedPath'
+import { mkdirSync, symlinkSync } from 'node:fs'
+import { join } from 'node:path'
+import { makeTempDir, removeTempDir } from '../../test/tempDir'
 
 describe('normalizeRepoScopedPath', () => {
   it('accepts an ordinary relative path unchanged', () => {
@@ -10,8 +13,10 @@ describe('normalizeRepoScopedPath', () => {
     expect(normalizeRepoScopedPath('./src//app.ts')).toBe('src/app.ts')
   })
 
-  it('accepts a Windows-style relative path by converting the separators', () => {
-    expect(normalizeRepoScopedPath('src\\components\\App.tsx')).toBe('src/components/App.tsx')
+  it('keeps POSIX backslashes opaque and converts them on Windows', () => {
+    expect(normalizeRepoScopedPath('src\\components\\App.tsx')).toBe(
+      process.platform === 'win32' ? 'src/components/App.tsx' : 'src\\components\\App.tsx',
+    )
   })
 
   it('rejects a path that climbs out at the end, not only at the start', () => {
@@ -31,10 +36,11 @@ describe('normalizeRepoScopedPath', () => {
     expect(normalizeRepoScopedPath('C:')).toBeNull()
   })
 
-  it('rejects control characters that would confuse a pathspec', () => {
+  it('rejects NUL but preserves other legal POSIX filename bytes', () => {
     expect(normalizeRepoScopedPath('src/app\u0000.ts')).toBeNull()
-    expect(normalizeRepoScopedPath('src/app\n.ts')).toBeNull()
-    expect(normalizeRepoScopedPath('src/app\r.ts')).toBeNull()
+    expect(normalizeRepoScopedPath('src/app\n.ts')).toBe('src/app\n.ts')
+    expect(normalizeRepoScopedPath('src/app\r.ts')).toBe('src/app\r.ts')
+    expect(normalizeRepoScopedPath('src/with\ttab ')).toBe('src/with\ttab ')
   })
 
   it('rejects Git and LoopTroop control paths and nothing merely resembling them', () => {
@@ -49,9 +55,9 @@ describe('normalizeRepoScopedPath', () => {
     expect(normalizeRepoScopedPath('src/.ticket/keep.ts')).toBe('src/.ticket/keep.ts')
   })
 
-  it('rejects empty and dot-only input', () => {
+  it('rejects empty and dot-only input but keeps a space-only filename', () => {
     expect(normalizeRepoScopedPath('')).toBeNull()
-    expect(normalizeRepoScopedPath('   ')).toBeNull()
+    expect(normalizeRepoScopedPath('   ')).toBe('   ')
     expect(normalizeRepoScopedPath('.')).toBeNull()
     expect(normalizeRepoScopedPath('..')).toBeNull()
   })
@@ -66,6 +72,19 @@ describe('uniqueRepoScopedPaths', () => {
       '../escape.ts',
       '.ticket/prd.yaml',
       'lib/util.ts',
-    ])).toEqual(['src/app.ts', 'lib/util.ts'])
+    ])).toEqual(process.platform === 'win32'
+      ? ['src/app.ts', 'lib/util.ts']
+      : ['src/app.ts', 'src\\app.ts', 'lib/util.ts'])
+  })
+
+  it.runIf(process.platform !== 'win32')('drops paths that traverse a symlinked ancestor when a repository root is supplied', () => {
+    const root = makeTempDir('repo-scoped-path-')
+    try {
+      mkdirSync(join(root, 'outside'))
+      symlinkSync(join(root, 'outside'), join(root, 'link'), 'dir')
+      expect(uniqueRepoScopedPaths(['link/file.ts', 'safe/file.ts'], root)).toEqual(['safe/file.ts'])
+    } finally {
+      removeTempDir(root)
+    }
   })
 })

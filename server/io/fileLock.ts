@@ -1,37 +1,24 @@
-import { closeSync, openSync, readFileSync, rmSync, statSync, writeSync } from 'node:fs'
-import { randomUUID } from 'node:crypto'
-import { hostname } from 'node:os'
-import { dirname } from 'node:path'
 import { mkdirSync } from 'node:fs'
+import { dirname } from 'node:path'
+import { Database } from '../db/sqliteShim'
 
 /**
- * A short-lived exclusive lock backed by an `O_EXCL` file.
+ * A short-lived cross-process lock backed by SQLite's native transaction lock.
  *
- * Used where a sequence of read, work, write has to be atomic across
- * *processes*, not just across the callers inside one daemon. An in-process
- * promise chain cannot do that: two daemons opened on the same project share
- * nothing but the filesystem, and the loser of the race silently commits a list
- * built from a stale read.
- *
- * Kept deliberately small. The lock is meant to be held for a filesystem
- * operation or two, and callers wait for it asynchronously so the event loop
- * keeps running while another holder finishes.
+ * The database file is persistent and app-owned. The connection holding the
+ * `BEGIN IMMEDIATE` transaction is the claim: SQLite releases it when the
+ * connection closes, including when its process dies, so there is no stale
+ * file to guess about or unlink while another process may own it.
  */
-
 export interface FileLockOptions {
   /** How long to keep waiting for the lock. Default 5s. */
   timeoutMs?: number
-  /**
-   * A lock file untouched for this long is treated as abandoned by a process
-   * that died holding it. Default 30s — long enough that a slow but live holder
-   * is never robbed, short enough that a crash does not wedge the feature.
-   */
-  staleMs?: number
   /** Poll interval while waiting. Default 25ms. */
   retryMs?: number
 }
 
-const LOCK_FILE_MODE = 0o600
+const DEFAULT_TIMEOUT_MS = 5_000
+const DEFAULT_RETRY_MS = 25
 
 export class FileLockTimeoutError extends Error {
   constructor(readonly lockPath: string) {
@@ -40,57 +27,36 @@ export class FileLockTimeoutError extends Error {
   }
 }
 
-/**
- * Writes a token nobody else can guess, and hands it back.
- *
- * The token is what makes release safe. Without one, a holder that ran past
- * `staleMs` — and so had its lock reclaimed by a waiter — went on to delete the
- * *replacement* lock on its way out, letting a third writer into a section the
- * second was still inside.
- */
-function tryAcquire(lockPath: string): string | null {
-  const token = `${process.pid}:${randomUUID()}`
+function duration(value: number | undefined, fallback: number): number {
+  return value !== undefined && Number.isFinite(value) ? Math.max(0, value) : fallback
+}
+
+function isBusy(error: unknown): boolean {
+  const candidate = error as NodeJS.ErrnoException
+  return candidate.code === 'SQLITE_BUSY'
+    || (candidate.code === 'ERR_SQLITE_ERROR' && /database(?: table)? is locked/i.test(String(candidate.message)))
+}
+
+function tryAcquire(lockPath: string): Database | null {
+  mkdirSync(dirname(lockPath), { recursive: true })
+  let database: Database | undefined
   try {
-    mkdirSync(dirname(lockPath), { recursive: true })
-    const fd = openSync(lockPath, 'wx', LOCK_FILE_MODE)
-    try {
-      writeSync(fd, JSON.stringify({ token, pid: process.pid, host: hostname(), acquiredAt: new Date().toISOString() }))
-    } finally {
-      closeSync(fd)
-    }
-    return token
+    database = new Database(lockPath)
+    // A native busy wait would block this process's event loop. Failed
+    // attempts return immediately and the caller yields between retries.
+    database.pragma('busy_timeout = 0')
+    database.exec('BEGIN IMMEDIATE')
+    return database
   } catch (error) {
-    if ((error as NodeJS.ErrnoException).code === 'EEXIST') return null
+    try { database?.close() } catch { /* preserve the acquisition error */ }
+    if (isBusy(error)) return null
     throw error
   }
 }
 
-/** The token currently in the lock file, or null when it cannot be read. */
-function readToken(lockPath: string): string | null {
-  try {
-    const parsed: unknown = JSON.parse(readFileSync(lockPath, 'utf8'))
-    if (!parsed || typeof parsed !== 'object') return null
-    const token = (parsed as { token?: unknown }).token
-    return typeof token === 'string' ? token : null
-  } catch {
-    return null
-  }
-}
-
-/** Removes the lock only while we still hold it. */
-function releaseOwned(lockPath: string, token: string): void {
-  if (readToken(lockPath) !== token) return
-  rmSync(lockPath, { force: true })
-}
-
-function discardIfStale(lockPath: string, staleMs: number): void {
-  try {
-    const stats = statSync(lockPath)
-    if (Date.now() - stats.mtimeMs < staleMs) return
-    rmSync(lockPath, { force: true })
-  } catch {
-    // Gone already, or unreadable; the next acquire attempt decides.
-  }
+function release(database: Database): void {
+  try { database.exec('ROLLBACK') } catch { /* close still releases a live transaction */ }
+  try { database.close() } catch { /* preserve the callback result/error */ }
 }
 
 const sleep = (ms: number) => new Promise<void>((resolve) => { setTimeout(resolve, ms) })
@@ -100,23 +66,21 @@ export async function withFileLock<T>(
   run: () => T | Promise<T>,
   options: FileLockOptions = {},
 ): Promise<T> {
-  const timeoutMs = options.timeoutMs ?? 5_000
-  const staleMs = options.staleMs ?? 30_000
-  const retryMs = options.retryMs ?? 25
+  const timeoutMs = duration(options.timeoutMs, DEFAULT_TIMEOUT_MS)
+  const retryMs = duration(options.retryMs, DEFAULT_RETRY_MS)
   const deadline = Date.now() + timeoutMs
+  let database: Database | null = null
 
-  let token: string | null = null
-  for (;;) {
-    token = tryAcquire(lockPath)
-    if (token) break
-    discardIfStale(lockPath, staleMs)
+  while (database === null) {
+    database = tryAcquire(lockPath)
+    if (database !== null) break
     if (Date.now() >= deadline) throw new FileLockTimeoutError(lockPath)
-    await sleep(retryMs)
+    await sleep(Math.min(retryMs, Math.max(0, deadline - Date.now())))
   }
 
   try {
     return await run()
   } finally {
-    releaseOwned(lockPath, token)
+    release(database)
   }
 }

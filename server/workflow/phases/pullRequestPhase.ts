@@ -695,7 +695,7 @@ export async function handleCreatePullRequest(
       })
 
       if (candidateFileAudit.excludedFiles.length > 0) {
-        const rewrite = rewriteCandidateCommitWithFiles(
+        const rewrite = await rewriteCandidateCommitWithFiles(
           worktreePath,
           integration.mergeBase,
           candidateCommitSha,
@@ -1199,7 +1199,7 @@ export async function completeMergedPullRequest(input: {
     }
     const remoteVerification = await verifyRemoteBaseContainsCommit(input.projectPath, input.baseBranch, pr.mergeCommitSha)
     const remoteBranchDelete = pr.state === 'merged'
-      ? await tryDeleteRemoteBranch(input.projectPath, input.headBranch)
+      ? await tryDeleteRemoteBranch(input.projectPath, input.headBranch, pr.headRefOid ?? input.candidateCommitSha ?? '')
       : { deleted: false, warning: null as string | null }
 
     const report: MergeCompletionReport = {

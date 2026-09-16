@@ -1,11 +1,16 @@
 import { existsSync, statSync } from 'node:fs'
 import { resolve } from 'node:path'
-import { getCurrentBranch } from './repository'
+import { getCurrentBranch, GIT_FETCH_TIMEOUT_MS } from './repository'
+import { assertSafeRefName } from './ref'
 import { EXCLUDE_LOOPTROOP_DIR, literalPathspec, REPO_SCOPE_PATHSPECS } from './pathspecs'
+import { classifyWorktreePath } from './worktreeChanges'
+import { parseGitStatusPorcelainZ } from './statusPorcelain'
 import {
+  isCommandAvailable,
   runCommand,
   runCommandSync,
   runGit as runGitAsync,
+  runGitMutationOrThrow,
   runGitSync,
   runGitSyncOrThrow,
   type RunCommandOptions,
@@ -57,13 +62,25 @@ function runGit(projectPath: string, args: string[]): string {
   return runGitSyncOrThrow(projectPath, args)
 }
 
+function runGitMutation(projectPath: string, args: string[]): Promise<string> {
+  return runGitMutationOrThrow(projectPath, args)
+}
+
 function tryGit(projectPath: string, args: string[], options?: RunCommandOptions): CommandAttempt {
   return toAttempt(runGitSync(projectPath, args, options))
 }
 
 /** Reaches the remote, so it is asynchronous unlike the other git helpers here. */
 function remoteGitOptions(options?: RunCommandOptions): RunCommandOptions {
-  return { ...options, env: { ...gitPushEnv(), ...options?.env } }
+  return {
+    ...options,
+    timeoutMs: options?.timeoutMs ?? GIT_FETCH_TIMEOUT_MS,
+    // Preserve caller-supplied config pairs, then append the optional gh
+    // helper at the count it inspected. Putting the helper last keeps a valid
+    // caller count from silently disabling the helper while invalid counts
+    // still pass through untouched for Git to reject clearly.
+    env: { ...options?.env, ...gitPushEnv({ ...process.env, ...options?.env }) },
+  }
 }
 
 // Through `runGit`, like every other git call here: it validates the working
@@ -181,8 +198,8 @@ interface GhAuthStatusPayload {
 
 // Deliberately excludes only `.looptroop`: this is the "is the worktree clean"
 // probe, and a change under `.ticket` is a change the delivery flow must see.
-const FILTERED_STATUS_ARGS = ['status', '--porcelain=1', '--untracked-files=all', '--', '.', EXCLUDE_LOOPTROOP_DIR]
-const SSH_HOSTNAME_CACHE = new Map<string, string | null>()
+const FILTERED_STATUS_ARGS = ['status', '--porcelain=1', '-z', '--untracked-files=all', '--', '.', EXCLUDE_LOOPTROOP_DIR]
+const SSH_HOSTNAME_CACHE = new Map<string, string>()
 
 function normalizeString(value: unknown): string | null {
   if (typeof value !== 'string') return null
@@ -211,10 +228,7 @@ function resolveSshHostname(host: string): string | null {
   }
 
   const result = trySyncCommand('ssh', ['-G', host])
-  if (!result.ok) {
-    SSH_HOSTNAME_CACHE.set(normalizedHost, null)
-    return null
-  }
+  if (!result.ok) return null
 
   const hostname = result.stdout
     .split(/\r?\n/)
@@ -222,7 +236,7 @@ function resolveSshHostname(host: string): string | null {
     .find((line) => line.toLowerCase().startsWith('hostname '))
 
   const resolved = hostname ? hostname.slice('hostname '.length).trim().toLowerCase() : null
-  SSH_HOSTNAME_CACHE.set(normalizedHost, resolved || null)
+  if (resolved) SSH_HOSTNAME_CACHE.set(normalizedHost, resolved)
   return resolved || null
 }
 
@@ -337,7 +351,7 @@ export function assertGitHubOrigin(projectPath: string): GitHubRepoRef {
 
 /** `gh --version` answers from disk, so this one probe stays synchronous. */
 export function isGhInstalled(): boolean {
-  return trySyncCommand('gh', ['--version'], { timeoutMs: GITHUB_PERMISSION_CHECK_TIMEOUT_MS }).ok
+  return isCommandAvailable('gh')
 }
 
 export async function getGhAuthStatus(): Promise<{ ok: true } | { ok: false; error: string }> {
@@ -505,6 +519,8 @@ export async function createOrUpdateDraftPullRequest(params: {
   title: string
   body: string
 }): Promise<PullRequestInfo> {
+  assertSafeRefName(params.branchName, 'Head branch')
+  assertSafeRefName(params.baseBranch, 'Base branch')
   const repo = assertGitHubOrigin(params.projectPath)
   const existing = (await listPullRequests(params.projectPath, repo, params.branchName, params.baseBranch))[0] ?? null
 
@@ -573,6 +589,8 @@ export async function mergePullRequest(projectPath: string, prNumber: number, ti
 }
 
 export function readGitDiff(projectPath: string, fromRef: string, toRef: string): GitDiffSummary {
+  assertSafeRefName(fromRef, 'Diff base ref')
+  assertSafeRefName(toRef, 'Diff head ref')
   const stat = runGit(projectPath, ['diff', '--stat', `${fromRef}..${toRef}`, '--', ...REPO_SCOPE_PATHSPECS])
   const nameStatus = runGit(projectPath, ['diff', '--name-status', `${fromRef}..${toRef}`, '--', ...REPO_SCOPE_PATHSPECS])
   const patchResult = tryGit(
@@ -608,22 +626,26 @@ function parseStatusLines(statusOutput: string): {
   stagedFiles: string[]
   unstagedFiles: string[]
   untrackedFiles: string[]
+  generatedNoiseFiles: string[]
 } {
   const stagedFiles = new Set<string>()
   const unstagedFiles = new Set<string>()
   const untrackedFiles = new Set<string>()
+  const generatedNoiseFiles = new Set<string>()
 
-  for (const rawLine of statusOutput.split('\n')) {
-    const line = rawLine.trimEnd()
-    if (line.length < 3) continue
-    const x = line[0] ?? ' '
-    const y = line[1] ?? ' '
-    const pathText = line.slice(3).trim()
-    const filePath = pathText.includes(' -> ') ? pathText.split(' -> ').at(-1)?.trim() ?? pathText : pathText
+  const records = parseGitStatusPorcelainZ(statusOutput)
+
+  for (const record of records) {
+    const x = record.indexStatus
+    const y = record.worktreeStatus
+    const filePath = record.path
     if (!filePath) continue
 
     if (x === '?' && y === '?') {
       untrackedFiles.add(filePath)
+      if (classifyWorktreePath(filePath, { untracked: true }).category === 'generatedNoise') {
+        generatedNoiseFiles.add(filePath)
+      }
       continue
     }
     if (x !== ' ') stagedFiles.add(filePath)
@@ -634,6 +656,7 @@ function parseStatusLines(statusOutput: string): {
     stagedFiles: [...stagedFiles],
     unstagedFiles: [...unstagedFiles],
     untrackedFiles: [...untrackedFiles],
+    generatedNoiseFiles: [...generatedNoiseFiles],
   }
 }
 
@@ -768,7 +791,8 @@ export function captureGitRecoveryReceipt(input: {
 
 export function ensureWorktreeClean(projectPath: string): void {
   const status = readWorktreeStatus(projectPath)
-  if (status.raw) {
+  const hasUnexpectedUntracked = status.untrackedFiles.some((filePath) => !status.generatedNoiseFiles.includes(filePath))
+  if (status.stagedFiles.length > 0 || status.unstagedFiles.length > 0 || hasUnexpectedUntracked) {
     throw new Error(`Worktree has uncommitted changes. ${formatWorktreeStatusDiagnostic(projectPath, status)}`)
   }
 }
@@ -933,6 +957,7 @@ export async function syncLocalBaseBranch(projectPath: string, baseBranch: strin
   localBaseHead: string
   remoteBaseHead: string
 }> {
+  assertSafeRefName(baseBranch, 'Base branch')
   await runRemoteGit(projectPath, ['fetch', '--no-progress', '--prune', 'origin'])
   ensureNoTrackedWorktreeChanges(projectPath)
 
@@ -942,13 +967,13 @@ export async function syncLocalBaseBranch(projectPath: string, baseBranch: strin
 
   if (originalBranch !== baseBranch) {
     try {
-      runGit(projectPath, ['checkout', baseBranch])
+      await runGitMutation(projectPath, ['checkout', baseBranch])
     } catch {
-      runGit(projectPath, ['checkout', '-B', baseBranch, remoteBaseRef])
+      await runGitMutation(projectPath, ['checkout', '-B', baseBranch, remoteBaseRef])
     }
   }
 
-  runGit(projectPath, ['merge', '--ff-only', remoteBaseRef])
+  await runGitMutation(projectPath, ['merge', '--ff-only', remoteBaseRef])
   const localBaseHead = runGit(projectPath, ['rev-parse', 'HEAD'])
 
   return {
@@ -959,15 +984,18 @@ export async function syncLocalBaseBranch(projectPath: string, baseBranch: strin
 }
 
 export async function verifyRemoteBaseContainsCommit(projectPath: string, baseBranch: string, commitSha: string): Promise<RemoteBaseVerification> {
+  assertSafeRefName(baseBranch, 'Base branch')
   const verifiedCommitSha = normalizeString(commitSha)
   if (!verifiedCommitSha) {
     throw new Error('Cannot verify remote merge without a pull request head or candidate commit SHA.')
   }
+  assertSafeRefName(verifiedCommitSha, 'Candidate commit ref')
 
   await runRemoteGit(projectPath, ['fetch', '--no-progress', '--prune', 'origin'])
 
   const remoteBaseRef = `refs/remotes/origin/${baseBranch}`
   const remoteBaseHead = runGit(projectPath, ['rev-parse', remoteBaseRef])
+  assertSafeRefName(remoteBaseHead, 'Remote base ref')
   const ancestor = tryGit(projectPath, ['merge-base', '--is-ancestor', verifiedCommitSha, remoteBaseHead])
   if (!ancestor.ok) {
     throw new Error(`Remote origin/${baseBranch} does not contain commit ${verifiedCommitSha}. Latest remote base is ${remoteBaseHead}.`)
@@ -980,8 +1008,13 @@ export async function verifyRemoteBaseContainsCommit(projectPath: string, baseBr
   }
 }
 
-export async function tryDeleteRemoteBranch(projectPath: string, branchName: string): Promise<{ deleted: boolean; warning: string | null }> {
-  const result = await tryRemoteGit(projectPath, ['push', 'origin', '--delete', branchName])
+export async function tryDeleteRemoteBranch(projectPath: string, branchName: string, expectedHeadSha: string): Promise<{ deleted: boolean; warning: string | null }> {
+  assertSafeRefName(branchName, 'Head branch')
+  if (!/^[0-9a-f]{40,64}$/i.test(expectedHeadSha)) {
+    return { deleted: false, warning: 'Remote branch deletion was skipped because its expected head SHA was unavailable.' }
+  }
+  const lease = `--force-with-lease=refs/heads/${branchName}:${expectedHeadSha}`
+  const result = await tryRemoteGit(projectPath, ['push', 'origin', lease, `:refs/heads/${branchName}`])
   return result.ok
     ? { deleted: true, warning: null }
     : { deleted: false, warning: result.error }

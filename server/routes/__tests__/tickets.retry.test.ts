@@ -63,7 +63,7 @@ vi.mock('../../workflow/phases/beadsPhase', async (importOriginal) => {
   const actual = await importOriginal<typeof import('../../workflow/phases/beadsPhase')>()
   return {
     ...actual,
-    recoverCodingBeadWithReset: vi.fn(() => ({ id: 'B1' })),
+    recoverCodingBeadWithReset: vi.fn(async () => ({ id: 'B1' })),
   }
 })
 
@@ -479,7 +479,7 @@ describe('ticketRouter POST /tickets/:id/retry', () => {
       xstateSnapshot: JSON.stringify({ context: { previousStatus: 'CODING' } }),
       errorMessage: 'Bead failed',
     })
-    vi.mocked(recoverCodingBeadWithReset).mockImplementationOnce(() => {
+    vi.mocked(recoverCodingBeadWithReset).mockImplementationOnce(async () => {
       throw new Error('unsafe reset')
     })
 
@@ -501,7 +501,7 @@ describe('ticketRouter POST /tickets/:id/retry', () => {
       xstateSnapshot: JSON.stringify({ context: { previousStatus: 'CODING' } }),
       errorMessage: 'Coding stopped without an identifiable bead',
     })
-    vi.mocked(recoverCodingBeadWithReset).mockReturnValueOnce(null)
+    vi.mocked(recoverCodingBeadWithReset).mockResolvedValueOnce(null)
 
     const response = await app.request(`/api/tickets/${ticket.id}/retry`, {
       method: 'POST',

@@ -2,7 +2,7 @@ import { eq, inArray } from 'drizzle-orm'
 import { existsSync, rmSync } from 'fs'
 import { access, lstat, readdir } from 'fs/promises'
 import { resolve as resolvePath } from 'path'
-import { runGitSync } from '../git/runCommand'
+import { runGitMutation } from '../git/runCommand'
 import { APP_DB_PATH, db as appDb } from '../db/index'
 import { closeProjectDatabase, getExistingProjectDatabase, getProjectDatabase } from '../db/project'
 import { attachedProjects, profiles, projects, tickets } from '../db/schema'
@@ -613,10 +613,10 @@ export async function deleteProjectWorktrees(projectRoot: string): Promise<{ fre
     // to resolve. removeWorktree validates the parent and direct-child shape.
     const worktreePath = getTicketWorktreeEntryPath(projectRoot, externalId)
     freedBytes += await calcDirSize(worktreePath)
-    removeWorktree({ projectRoot, worktreesRoot, worktreePath })
+    await removeWorktree({ projectRoot, worktreesRoot, worktreePath })
   }
 
-  runGitSync(projectRoot, ['worktree', 'prune'])
+  await runGitMutation(projectRoot, ['worktree', 'prune'])
 
   return { freedBytes }
 }
@@ -630,7 +630,7 @@ export async function deleteAllProjectWorktrees(projectRoot: string): Promise<{ 
   const worktreesRoot = getProjectWorktreesRoot(projectRoot)
   if (!assertManagedWorktreesRoot(projectRoot, worktreesRoot)) return { freedBytes: 0 }
   if (!(await existsAsync(worktreesRoot))) {
-    runGitSync(projectRoot, ['worktree', 'prune'])
+    await runGitMutation(projectRoot, ['worktree', 'prune'])
     return { freedBytes: 0 }
   }
 
@@ -640,13 +640,13 @@ export async function deleteAllProjectWorktrees(projectRoot: string): Promise<{ 
     const worktreePath = resolvePath(worktreesRoot, entry.name)
     freedBytes += await calcDirSize(worktreePath)
     if (entry.isDirectory() && !entry.isSymbolicLink()) {
-      removeWorktree({ projectRoot, worktreesRoot, worktreePath })
+      await removeWorktree({ projectRoot, worktreesRoot, worktreePath })
     } else {
       rmSync(worktreePath, { recursive: true, force: true })
     }
   }
 
-  runGitSync(projectRoot, ['worktree', 'prune'])
+  await runGitMutation(projectRoot, ['worktree', 'prune'])
   return { freedBytes }
 }
 

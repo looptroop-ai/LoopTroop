@@ -10,6 +10,7 @@ import { realpathSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { isAbsolute, resolve } from 'node:path'
 import { applyIgnoreMode, areLoopTroopPathsIgnored, ensureLocalGitExclude, resolveBaseBranchRef, tryFetchOrigin } from '../git/repository'
+import { assertSafeRefName } from '../git/ref'
 import type { IgnoreMode } from '@shared/ignoreMode'
 import { getProjectIgnoreMode } from '../storage/projects'
 import {
@@ -23,7 +24,8 @@ import { updateTicketMeta } from './metadata'
 import { ensureWorktreeOwnerMarker } from '../storage/worktreeOwnership'
 import { resolveProjectTicketContainedPath, writeProjectTicketFile } from './containedPath'
 import { getErrorMessage } from '@shared/typeGuards'
-import { gitSyncSucceeds, runGitSync } from '../git/runCommand'
+import { gitSyncSucceeds, runGitMutationOrThrow, runGitSync } from '../git/runCommand'
+import { parseGitPathListZ } from '../git/statusPorcelain'
 import { assertManagedWorktreesRoot } from '../git/worktreeRemoval'
 
 interface InitializeOptions {
@@ -151,17 +153,18 @@ function ensureWorktreePathsIgnored(worktreePath: string, mode: IgnoreMode) {
 }
 
 function getTrackedLoopTroopPaths(projectFolder: string): string[] {
-  const output = runGit(
-    ['ls-files', '-z', '--', '.looptroop'],
+  const result = runGitSync(
     projectFolder,
-    'INIT_LOOPTROOP_TRACKED_CHECK_FAILED',
-    'Failed to inspect tracked LoopTroop runtime paths',
+    ['ls-files', '-z', '--', '.looptroop'],
+    { trimOutput: false },
   )
-
-  return output
-    .split('\0')
-    .map(path => path.trim())
-    .filter(Boolean)
+  if (!result.ok) {
+    throw new TicketInitializationError(
+      'INIT_LOOPTROOP_TRACKED_CHECK_FAILED',
+      `Failed to inspect tracked LoopTroop runtime paths: ${result.errorDetail}`,
+    )
+  }
+  return parseGitPathListZ(result.stdout)
 }
 
 function ensureLoopTroopRuntimeUntracked(projectFolder: string) {
@@ -293,7 +296,7 @@ function buildWorktreeAddArgs(
     : ['worktree', 'add', '-b', branchName, worktreePath, baseBranchRef]
 }
 
-function materializeWorktree(
+async function materializeWorktree(
   projectFolder: string,
   worktreePath: string,
   branchName: string,
@@ -301,7 +304,11 @@ function materializeWorktree(
 ) {
   if (!existsSync(worktreePath)) {
     const args = buildWorktreeAddArgs(projectFolder, worktreePath, branchName, baseBranchRef)
-    runGit(args, projectFolder, 'INIT_WORKTREE_CREATE_FAILED', 'Failed to create ticket worktree')
+    try {
+      await runGitMutationOrThrow(projectFolder, args)
+    } catch (error) {
+      throw new TicketInitializationError('INIT_WORKTREE_CREATE_FAILED', `Failed to create ticket worktree: ${getErrorMessage(error)}`)
+    }
     return
   }
 
@@ -320,7 +327,11 @@ function materializeWorktree(
   const args = buildWorktreeAddArgs(projectFolder, worktreePath, branchName, baseBranchRef)
   const preserved = preserveTicketSkeleton(worktreePath)
   try {
-    runGit(args, projectFolder, 'INIT_WORKTREE_CREATE_FAILED', 'Failed to create ticket worktree')
+    try {
+      await runGitMutationOrThrow(projectFolder, args)
+    } catch (error) {
+      throw new TicketInitializationError('INIT_WORKTREE_CREATE_FAILED', `Failed to create ticket worktree: ${getErrorMessage(error)}`)
+    }
     preserved.restore()
   } catch (err) {
     preserved.restoreForFailure()
@@ -329,11 +340,13 @@ function materializeWorktree(
 }
 
 /**
- * Asynchronous for one reason: the origin fetch below reaches the network, and
- * this runs on the ticket-start request. Everything else here is local git
- * plumbing and stays synchronous.
+ * Asynchronous because origin fetch and worktree creation can both take an
+ * unbounded amount of time: fetch reaches the network, while worktree add may
+ * run checkout filters or smudge processes. The local inspection plumbing
+ * remains synchronous and bounded.
  */
 export async function initializeTicket(options: InitializeOptions): Promise<InitializeTicketResult> {
+  assertSafeRefName(options.externalId, 'Ticket branch')
   const branchName = options.externalId
   // Callers may pass an uncanonicalised folder; normalising here keeps every
   // derived path byte-identical to the project root stored at attach time.
@@ -352,7 +365,7 @@ export async function initializeTicket(options: InitializeOptions): Promise<Init
   ensureLoopTroopRuntimeUntracked(projectFolder)
   const reused = isValidTicketWorktree(projectFolder, worktreePath, branchName)
   if (!reused) {
-    materializeWorktree(projectFolder, worktreePath, branchName, baseBranchRef)
+    await materializeWorktree(projectFolder, worktreePath, branchName, baseBranchRef)
   }
 
   if (!isValidTicketWorktree(projectFolder, worktreePath, branchName)) {

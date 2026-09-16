@@ -569,7 +569,7 @@ describe('handleCoding', () => {
     // so let it succeed here: what this asserts is that the notes and iteration
     // the failed wipe left behind are what a retry picks up.
     resetToBeadStartMock.mockImplementation(() => {})
-    const recoveredBead = recoverCodingBeadWithReset(ticket.id, { worktreePath: paths.worktreePath })
+    const recoveredBead = await recoverCodingBeadWithReset(ticket.id, { worktreePath: paths.worktreePath })
     expect(recoveredBead?.id).toBe('bead-1')
     expect(recoveredBead?.status).toBe('pending')
     expect(recoveredBead?.iteration).toBe(2)
@@ -1247,7 +1247,7 @@ describe('handleCoding', () => {
       }),
     ])
 
-    const recoveredBead = recoverCodingBeadWithReset(ticket.id, { worktreePath: paths.worktreePath })
+    const recoveredBead = await recoverCodingBeadWithReset(ticket.id, { worktreePath: paths.worktreePath })
 
     expect(recoveredBead?.id).toBe('bead-1')
     expect(recoveredBead?.status).toBe('pending')
@@ -1274,7 +1274,7 @@ describe('handleCoding', () => {
     ])
 
     const userRetryNote = '\u001b[35mKeep this line exactly.\u001b[0m\n  Preserve this indentation.  '
-    const recoveredBead = recoverCodingBeadWithReset(ticket.id, {
+    const recoveredBead = await recoverCodingBeadWithReset(ticket.id, {
       worktreePath: paths.worktreePath,
       requireReset: true,
       userRetryNote,
@@ -1306,11 +1306,11 @@ describe('handleCoding', () => {
       throw new Error('reset failed')
     })
 
-    expect(() => recoverCodingBeadWithReset(ticket.id, {
+    await expect(recoverCodingBeadWithReset(ticket.id, {
       worktreePath: paths.worktreePath,
       requireReset: true,
       userRetryNote: 'This must not be appended',
-    })).toThrow('reset failed')
+    })).rejects.toThrow('reset failed')
 
     expect(readTicketBeads(ticket.id)).toEqual([originalBead])
   })
@@ -1328,7 +1328,7 @@ describe('handleCoding', () => {
       }),
     ])
 
-    const recoveredBead = recoverCodingBeadWithReset(ticket.id, { worktreePath: paths.worktreePath })
+    const recoveredBead = await recoverCodingBeadWithReset(ticket.id, { worktreePath: paths.worktreePath })
 
     expect(recoveredBead?.id).toBe('bead-1')
     expect(recoveredBead?.status).toBe('pending')

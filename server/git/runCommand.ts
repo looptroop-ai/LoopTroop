@@ -15,10 +15,13 @@
  * - **Async** (`runGit`, `runCommand`) for anything that talks to a network:
  *   `gh` API calls, `fetch`, `push`, `ls-remote`. These are the calls that can
  *   block for the entire timeout, so they must not sit on the event loop.
- * - **Sync** (`runGitSync`, `runCommandSync`) for local plumbing —
- *   `rev-parse`, `status`, `diff`, `add`, `commit`, `worktree prune`. These
- *   cannot reach a credential prompt and finish in milliseconds; keeping them
- *   synchronous keeps their callers synchronous.
+ * - **Sync** (`runGitSync`, `runCommandSync`) for bounded read-only plumbing —
+ *   `rev-parse`, `status`, `diff`, and availability probes. These keep their
+ *   callers synchronous because they only inspect local state.
+ * - **Async mutations** (`runGitMutation`) for `add`, `commit`, `checkout`,
+ *   `reset`, `merge`, `worktree`, and similar commands. Hooks, filters, LFS,
+ *   and a large checkout can all take minutes even without a network, so these
+ *   calls need the SIGTERM/SIGKILL timeout path too.
  *
  * A timeout bounds the wait but a synchronous call still blocks for its whole
  * duration, so on the sync path this turns a permanent freeze into a bounded
@@ -26,13 +29,20 @@
  */
 
 import { spawn, spawnSync } from 'node:child_process'
-import { statSync } from 'node:fs'
-import { isAbsolute } from 'node:path'
+import { existsSync, lstatSync, readFileSync, statSync } from 'node:fs'
+import { isAbsolute, resolve } from 'node:path'
 import { resolveTrustedProgram } from '../lib/executablePath'
 import * as commandLogger from '../log/commandLogger'
+import { terminateProcessTree } from '../lib/processTree'
 
 /** Matches the timeout `server/git/repository.ts` has always used. */
 export const GIT_DEFAULT_TIMEOUT_MS = 30_000
+
+/** Local Git mutations may run hooks, filters, or a large checkout. */
+export const GIT_MUTATION_TIMEOUT_MS = 5 * 60_000
+
+/** Shared short probe budget for checking whether a command is installed. */
+export const COMMAND_AVAILABILITY_TIMEOUT_MS = 5_000
 
 /** The ceiling the established runner in `phases/execution/gitOps.ts` used. */
 export const GIT_MAX_BUFFER_BYTES = 16 * 1024 * 1024
@@ -118,7 +128,17 @@ function logCmd(
 
 function buildEnv(extra: NodeJS.ProcessEnv | undefined): NodeJS.ProcessEnv {
   // `gh` shells out to git, so the non-interactive pair is applied to both.
-  return { ...process.env, ...NON_INTERACTIVE_GIT_ENV, ...extra }
+  const env = { ...process.env, ...NON_INTERACTIVE_GIT_ENV, ...extra }
+  // Preserve an explicitly configured SSH wrapper/command; otherwise make
+  // Git's SSH transport fail closed instead of opening /dev/tty for prompts.
+  // Check the values rather than property presence: callers sometimes carry
+  // an `undefined` ProcessEnv key through a config merge, and Node omits that
+  // key from the child environment anyway. An empty string remains an
+  // intentional override, while undefined gets the safe default.
+  if (typeof env.GIT_SSH_COMMAND !== 'string' && typeof env.GIT_SSH !== 'string') {
+    env.GIT_SSH_COMMAND = 'ssh -o BatchMode=yes'
+  }
+  return env
 }
 
 function timeoutMessage(bin: string, args: string[], timeoutMs: number): string {
@@ -132,6 +152,7 @@ interface RawOutcome<TOut> {
   stdout: TOut
   stderr: string
   spawnError?: Error
+  timeoutDetail?: string
 }
 
 function finish<TOut>(
@@ -145,7 +166,7 @@ function finish<TOut>(
   let errorDetail: string | undefined
   if (!ok) {
     if (raw.timedOut) {
-      errorDetail = timeoutMessage(bin, args, timeoutMs)
+      errorDetail = [timeoutMessage(bin, args, timeoutMs), raw.timeoutDetail].filter(Boolean).join(' ')
     } else if (raw.spawnError) {
       errorDetail = raw.spawnError.message
     } else {
@@ -208,24 +229,39 @@ function runSyncRaw(bin: string, args: string[], options: RunCommandOptions | un
   const resolved = resolveBin(bin, options)
   if (resolved.path === undefined) return unresolvedOutcome(resolved.failure, Buffer.alloc(0))
 
-  const spawned = spawnSync(resolved.path, args, {
-    cwd: options?.cwd,
-    input: options?.input,
-    env: buildEnv(options?.env),
-    maxBuffer: options?.maxBuffer ?? GIT_MAX_BUFFER_BYTES,
-    timeout: options?.timeoutMs ?? GIT_DEFAULT_TIMEOUT_MS,
-    // spawnSync blocks until the child exits and never escalates, so a child
-    // that traps SIGTERM would defeat the timeout on this path too. There is
-    // nothing to negotiate with a command that has already outrun its budget.
-    killSignal: 'SIGKILL',
-  })
+  let spawned: ReturnType<typeof spawnSync>
+  try {
+    spawned = spawnSync(resolved.path, args, {
+      cwd: options?.cwd,
+      input: options?.input,
+      env: buildEnv(options?.env),
+      maxBuffer: options?.maxBuffer ?? GIT_MAX_BUFFER_BYTES,
+      timeout: options?.timeoutMs ?? GIT_DEFAULT_TIMEOUT_MS,
+      // spawnSync blocks until the child exits and never escalates, so a child
+      // that traps SIGTERM would defeat the timeout on this path too. There is
+      // nothing to negotiate with a command that has already outrun its budget.
+      killSignal: 'SIGKILL',
+    })
+  } catch (error) {
+    return {
+      status: null,
+      signal: null,
+      timedOut: false,
+      stdout: Buffer.alloc(0),
+      stderr: '',
+      spawnError: error instanceof Error ? error : new Error(String(error)),
+    }
+  }
   // Asking spawnSync for Buffers rather than utf8 keeps one code path for both
   // output shapes; the string variant decodes below.
+  const stdout = typeof spawned.stdout === 'string'
+    ? Buffer.from(spawned.stdout)
+    : (spawned.stdout ?? Buffer.alloc(0))
   return {
     status: spawned.status,
     signal: spawned.signal,
     timedOut: isTimeoutError(spawned.error ?? undefined),
-    stdout: spawned.stdout ?? Buffer.alloc(0),
+    stdout,
     stderr: (spawned.stderr ?? Buffer.alloc(0)).toString('utf8').trim(),
     spawnError: spawned.error ?? undefined,
   }
@@ -251,12 +287,11 @@ export function runCommandBinarySync(bin: string, args: string[], options?: RunC
 /**
  * The directory handed to `git -C`, or why it cannot be one.
  *
- * Every `runGit*` call puts a caller's path straight into git's argument
- * vector, and several of those paths trace back to a request. So it is held to
- * what a working directory has to be: a non-empty absolute path with no NUL in
- * it. Absolute is the rule that matters — a relative one would be read against
- * the daemon's own working directory, which is never the project anyone meant,
- * and it is the only way a value could start with `-` and be read as an option.
+ * Every `runGit*` call uses a caller's path as its working directory, and
+ * several of those paths trace back to a request. So it is held to what a
+ * working directory has to be: a non-empty absolute path with no NUL in it.
+ * Absolute is the rule that matters — a relative one would be read against the
+ * daemon's own working directory, which is never the project anyone meant.
  *
  * A path that fails is reported the way a missing `git` is — `ok: false` with
  * the reason — and never thrown, because every caller already handles a failed
@@ -320,6 +355,32 @@ function isDirectory(path: string): boolean {
   }
 }
 
+function gitIndexLockPath(projectPath: string): string | null {
+  const gitEntry = resolve(projectPath, '.git')
+  try {
+    const stat = lstatSync(gitEntry)
+    if (stat.isDirectory()) return resolve(gitEntry, 'index.lock')
+    if (!stat.isFile()) return null
+
+    const gitdirLine = readFileSync(gitEntry, 'utf8').split(/\r?\n/).find((line) => /^gitdir:\s*/i.test(line))
+    if (!gitdirLine) return null
+    const gitdir = gitdirLine.replace(/^gitdir:\s*/i, '').trim()
+    return gitdir ? resolve(projectPath, gitdir, 'index.lock') : null
+  } catch {
+    return null
+  }
+}
+
+function explainTimedOutGit<TOut>(raw: RawOutcome<TOut>, projectPath: string): RawOutcome<TOut> {
+  if (!raw.timedOut) return raw
+  const lockPath = gitIndexLockPath(projectPath)
+  if (!lockPath || !existsSync(lockPath)) return raw
+  return {
+    ...raw,
+    timeoutDetail: `A timed-out git command left ${lockPath}; remove the lock only after confirming no git process is still running.`,
+  }
+}
+
 /**
  * Runs git in `projectPath` synchronously, shown as `git -C <projectPath> <args>`.
  *
@@ -331,7 +392,10 @@ export function runGitSync(projectPath: string, args: string[], options?: RunCom
   const directory = gitWorkingDirectory(projectPath)
   if (directory.path === undefined) return finish(unresolvedOutcome(directory.failure, ''), 'git', args, options)
   const call = gitInvocation(directory.path, args, options)
-  const raw = explainMissingDirectory(runSyncRaw('git', call.args, call.options), directory.path)
+  const raw = explainTimedOutGit(
+    explainMissingDirectory(runSyncRaw('git', call.args, call.options), directory.path),
+    directory.path,
+  )
   return finish({ ...raw, stdout: decode(raw.stdout, options) }, 'git', call.displayArgs, options)
 }
 
@@ -340,7 +404,15 @@ export function runGitBinarySync(projectPath: string, args: string[], options?: 
   const directory = gitWorkingDirectory(projectPath)
   if (directory.path === undefined) return finish(unresolvedOutcome(directory.failure, Buffer.alloc(0)), 'git', args, options)
   const call = gitInvocation(directory.path, args, options)
-  return finish(explainMissingDirectory(runSyncRaw('git', call.args, call.options), directory.path), 'git', call.displayArgs, options)
+  return finish(
+    explainTimedOutGit(
+      explainMissingDirectory(runSyncRaw('git', call.args, call.options), directory.path),
+      directory.path,
+    ),
+    'git',
+    call.displayArgs,
+    options,
+  )
 }
 
 /** Throwing wrapper for the callers whose contract is "throw on failure". */
@@ -355,6 +427,28 @@ export function gitSyncSucceeds(projectPath: string, args: string[], options?: R
   return runGitSync(projectPath, args, options).ok
 }
 
+/** Runs a local Git mutation on the async runner with a long, named budget. */
+export function runGitMutation(projectPath: string, args: string[], options?: RunCommandOptions): Promise<RunCommandResult> {
+  return runGit(projectPath, args, {
+    ...options,
+    timeoutMs: options?.timeoutMs ?? GIT_MUTATION_TIMEOUT_MS,
+  })
+}
+
+export async function runGitMutationOrThrow(projectPath: string, args: string[], options?: RunCommandOptions): Promise<string> {
+  const result = await runGitMutation(projectPath, args, options)
+  if (!result.ok) throw new Error(result.errorDetail)
+  return result.stdout
+}
+
+export function isCommandAvailable(bin: string, env?: NodeJS.ProcessEnv): boolean {
+  return runCommandSync(bin, ['--version'], {
+    timeoutMs: COMMAND_AVAILABILITY_TIMEOUT_MS,
+    ...(env ? { env } : {}),
+    log: false,
+  }).ok
+}
+
 function runAsyncRaw(bin: string, args: string[], options: RunCommandOptions | undefined): Promise<RawOutcome<string>> {
   const timeoutMs = options?.timeoutMs ?? GIT_DEFAULT_TIMEOUT_MS
   const maxBuffer = options?.maxBuffer ?? GIT_MAX_BUFFER_BYTES
@@ -365,7 +459,15 @@ function runAsyncRaw(bin: string, args: string[], options: RunCommandOptions | u
   return new Promise((settleWith) => {
     let child: ReturnType<typeof spawn>
     try {
-      child = spawn(resolved.path, args, { cwd: options?.cwd, env: buildEnv(options?.env) })
+      child = spawn(resolved.path, args, {
+        cwd: options?.cwd,
+        env: buildEnv(options?.env),
+        // `terminateProcessTree` signals the negative pid on POSIX. A detached
+        // child starts its own process group, so Git hooks, filters, and their
+        // descendants receive the same timeout signal instead of surviving
+        // after the runner has returned.
+        detached: process.platform !== 'win32',
+      })
     } catch (error) {
       settleWith({
         status: null,
@@ -385,6 +487,9 @@ function runAsyncRaw(bin: string, args: string[], options: RunCommandOptions | u
     let timedOut = false
     let overranBuffer = false
     let settled = false
+    let timeoutCleanupComplete = false
+    let pendingTimeoutOutcome: RawOutcome<string> | undefined
+    let forceKillSent = false
 
     // `spawn` has no `maxBuffer`, so the ceiling is enforced here to match what
     // the synchronous path does — including killing the child on overrun.
@@ -393,7 +498,7 @@ function runAsyncRaw(bin: string, args: string[], options: RunCommandOptions | u
       if (next > maxBuffer) {
         if (!overranBuffer) {
           overranBuffer = true
-          child.kill('SIGKILL')
+          terminateProcessTree(child, 'SIGKILL')
           // The same abandon the timeout path carries, for the same reason: a
           // grandchild holding the pipes means `close` never fires, and an
           // overrun that waits for it hangs the caller exactly as a timeout
@@ -415,7 +520,11 @@ function runAsyncRaw(bin: string, args: string[], options: RunCommandOptions | u
         child.unref()
         settle({
           status: null,
-          signal: 'SIGKILL',
+          // The child never emitted `close`, so this is a bounded abandonment,
+          // not an observed signal. The overrun remains authoritative, but
+          // claiming SIGKILL here would turn a synthetic fallback into false
+          // process-state evidence.
+          signal: null,
           timedOut,
           stdout: decode(Buffer.concat(stdoutChunks), options),
           stderr: Buffer.concat(stderrChunks).toString('utf8').trim(),
@@ -438,18 +547,31 @@ function runAsyncRaw(bin: string, args: string[], options: RunCommandOptions | u
     let killTimer: ReturnType<typeof setTimeout> | undefined
     let abandonTimer: ReturnType<typeof setTimeout> | undefined
     let overrunTimer: ReturnType<typeof setTimeout> | undefined
+    const forceKill = () => {
+      if (forceKillSent) return
+      forceKillSent = true
+      terminateProcessTree(child, 'SIGKILL')
+    }
     const timer = setTimeout(() => {
+      // An output overrun already owns termination and its diagnostic. Do not
+      // race it into a timeout while waiting for the bounded overrun fallback.
+      if (overranBuffer) return
       timedOut = true
-      child.kill('SIGTERM')
-      killTimer = setTimeout(() => child.kill('SIGKILL'), TIMEOUT_KILL_GRACE_MS)
+      terminateProcessTree(child, 'SIGTERM')
+      killTimer = setTimeout(forceKill, TIMEOUT_KILL_GRACE_MS)
       killTimer.unref?.()
       abandonTimer = setTimeout(() => {
         // Nothing here can reap the child, so it must not be what keeps the
         // process alive either.
+        timeoutCleanupComplete = true
         child.unref()
-        settle({
+        settle(pendingTimeoutOutcome ?? {
           status: null,
-          signal: 'SIGKILL',
+          // The child never emitted `close`, so this is a bounded abandonment,
+          // not an observed signal. The timeout remains authoritative, but
+          // claiming SIGKILL here would turn a synthetic fallback into false
+          // process-state evidence.
+          signal: null,
           timedOut: true,
           // Through `decode`, like the `close` path: a caller that asked for
           // untrimmed output is reading NUL-delimited records, and an abandoned
@@ -466,6 +588,15 @@ function runAsyncRaw(bin: string, args: string[], options: RunCommandOptions | u
 
     const settle = (outcome: RawOutcome<string>) => {
       if (settled) return
+      if (timedOut && !timeoutCleanupComplete) {
+        // Git can close while a hook or filter descendant is still alive with
+        // redirected stdio. Keep the timeout escalation and its bounded
+        // abandonment window alive; otherwise this direct close would clear
+        // the SIGKILL timer and return while that descendant can still mutate.
+        pendingTimeoutOutcome ??= outcome
+        forceKill()
+        return
+      }
       settled = true
       clearTimeout(timer)
       if (killTimer) clearTimeout(killTimer)
@@ -521,7 +652,12 @@ export function runGit(projectPath: string, args: string[], options?: RunCommand
   if (directory.path === undefined) return Promise.resolve(finish(unresolvedOutcome(directory.failure, ''), 'git', args, options))
   const call = gitInvocation(directory.path, args, options)
   return runAsyncRaw('git', call.args, call.options)
-    .then((raw) => finish(explainMissingDirectory(raw, directory.path), 'git', call.displayArgs, options))
+    .then((raw) => finish(
+      explainTimedOutGit(explainMissingDirectory(raw, directory.path), directory.path),
+      'git',
+      call.displayArgs,
+      options,
+    ))
 }
 
 /** Throwing wrapper for the async callers whose contract is "throw on failure". */

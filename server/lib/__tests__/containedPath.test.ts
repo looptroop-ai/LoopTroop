@@ -37,6 +37,15 @@ describe('resolveContainedPath', () => {
     expect(() => resolveContainedPath(`${root}\0`, 'file')).toThrow(ContainedPathError)
   })
 
+  it('rejects Windows alternate data streams while retaining POSIX colons', () => {
+    if (process.platform === 'win32') {
+      expect(() => resolveContainedPath(root, 'dir/file:stream', { allowMissing: true })).toThrow(ContainedPathError)
+      return
+    }
+    writeFileSync(join(root, 'dir', 'file:stream'), 'inside')
+    expect(resolveContainedPath(root, 'dir/file:stream')).toBe(join(realpathSync.native(root), 'dir', 'file:stream'))
+  })
+
   it('preserves ENOENT unless the missing leaf is explicitly allowed', () => {
     expect(() => resolveContainedPath(root, 'dir/missing')).toThrow(expect.objectContaining({ code: 'ENOENT' }))
     expect(resolveContainedPath(root, 'dir/missing', { allowMissing: true })).toBe(join(realpathSync.native(root), 'dir', 'missing'))

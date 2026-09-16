@@ -40,33 +40,33 @@ afterEach(() => {
 })
 
 describe('removeWorktree', () => {
-  it('accepts a project reached through a symlinked ancestor', () => {
+  it('accepts a project reached through a symlinked ancestor', async () => {
     const { root, projectRoot, worktreePath } = createRepoWithWorktree()
     const alias = resolve(root, 'project-alias')
     symlinkSync(projectRoot, alias, 'junction')
     const worktreesRoot = resolve(alias, '.looptroop/worktrees')
-    removeWorktree({ projectRoot: alias, worktreesRoot, worktreePath: resolve(worktreesRoot, 'TEST-1') })
+    await removeWorktree({ projectRoot: alias, worktreesRoot, worktreePath: resolve(worktreesRoot, 'TEST-1') })
     expect(existsSync(worktreePath)).toBe(false)
   })
-  it('unlinks an alias to a registered worktree without asking Git to remove its destination', () => {
+  it('unlinks an alias to a registered worktree without asking Git to remove its destination', async () => {
     const { projectRoot, worktreesRoot, worktreePath } = createRepoWithWorktree()
     const alias = resolve(worktreesRoot, 'TEST-2')
     symlinkSync(worktreePath, alias, 'junction')
-    removeWorktree({ projectRoot, worktreesRoot, worktreePath: alias })
+    await removeWorktree({ projectRoot, worktreesRoot, worktreePath: alias })
     expect(existsSync(alias)).toBe(false)
     expect(readFileSync(resolve(worktreePath, 'README.md'), 'utf8')).toBe('fixture\n')
     expect(git(projectRoot, ['worktree', 'list', '--porcelain'])).toContain(worktreePath.replaceAll('\\', '/'))
   })
 
-  it('unlinks dangling worktree aliases', () => {
+  it('unlinks dangling worktree aliases', async () => {
     const { projectRoot, worktreesRoot } = createRepoWithWorktree()
     const alias = resolve(worktreesRoot, 'TEST-2')
     symlinkSync(resolve(projectRoot, 'missing'), alias, 'junction')
-    removeWorktree({ projectRoot, worktreesRoot, worktreePath: alias })
+    await removeWorktree({ projectRoot, worktreesRoot, worktreePath: alias })
     expect(() => lstatSync(alias)).toThrow()
   })
 
-  it.each(['worktrees', '.looptroop'])('rejects an internal alias at %s before deleting source files', (component) => {
+  it.each(['worktrees', '.looptroop'])('rejects an internal alias at %s before deleting source files', async (component) => {
     const root = makeTempDir('looptroop-worktree-root-alias-')
     roots.push(root)
     const source = resolve(root, 'source')
@@ -75,10 +75,10 @@ describe('removeWorktree', () => {
     mkdirSync(resolve(destination, 'TEST-1'), { recursive: true })
     if (component === 'worktrees') mkdirSync(resolve(root, '.looptroop'))
     symlinkSync(source, component === 'worktrees' ? worktreesRoot : resolve(root, '.looptroop'), 'junction')
-    expect(() => removeWorktree({ projectRoot: root, worktreesRoot, worktreePath: resolve(worktreesRoot, 'TEST-1') })).toThrow('must not be a symbolic link')
+    await expect(removeWorktree({ projectRoot: root, worktreesRoot, worktreePath: resolve(worktreesRoot, 'TEST-1') })).rejects.toThrow('must not be a symbolic link')
     expect(existsSync(resolve(destination, 'TEST-1'))).toBe(true)
   })
-  it.runIf(process.platform !== 'win32')('removes read-only cache trees without following symlinks', () => {
+  it.runIf(process.platform !== 'win32')('removes read-only cache trees without following symlinks', async () => {
     const { root, projectRoot, worktreesRoot, worktreePath } = createRepoWithWorktree()
     const externalTarget = resolve(root, 'external-target.txt')
     const moduleRoot = resolve(
@@ -98,22 +98,22 @@ describe('removeWorktree', () => {
     chmodSync(readOnlyDir, 0o555)
     chmodSync(moduleRoot, 0o555)
 
-    removeWorktree({ projectRoot, worktreesRoot, worktreePath })
+    await removeWorktree({ projectRoot, worktreesRoot, worktreePath })
 
     expect(existsSync(worktreePath)).toBe(false)
     expect(readFileSync(externalTarget, 'utf8')).toBe('preserve me\n')
     expect(git(projectRoot, ['worktree', 'list', '--porcelain'])).not.toContain(worktreePath.replaceAll('\\', '/'))
   })
 
-  it('falls back to filesystem removal and prunes after Git removal fails', () => {
+  it('falls back to filesystem removal and prunes after Git removal fails', async () => {
     const { projectRoot, worktreesRoot, worktreePath } = createRepoWithWorktree()
     const commands: string[][] = []
 
-    removeWorktree({
+    await removeWorktree({
       projectRoot,
       worktreesRoot,
       worktreePath,
-      runGit: (args) => {
+      runGit: async (args) => {
         commands.push(args)
         if (args[1] === 'remove') throw new Error('simulated Git failure')
       },
@@ -126,7 +126,7 @@ describe('removeWorktree', () => {
     ])
   })
 
-  it('rejects targets outside the managed worktrees root', () => {
+  it('rejects targets outside the managed worktrees root', async () => {
     const root = makeTempDir('looptroop-worktree-containment-')
     roots.push(root)
     const projectRoot = resolve(root, 'project')
@@ -134,15 +134,15 @@ describe('removeWorktree', () => {
     const outsidePath = resolve(projectRoot, 'source')
     mkdirSync(outsidePath, { recursive: true })
 
-    expect(() => removeWorktree({
+    await expect(removeWorktree({
       projectRoot,
       worktreesRoot,
       worktreePath: outsidePath,
-    })).toThrow('outside the managed worktrees root')
+    })).rejects.toThrow('outside the managed worktrees root')
     expect(existsSync(outsidePath)).toBe(true)
   })
 
-  it('rejects an external destination behind a replaced worktrees parent', () => {
+  it('rejects an external destination behind a replaced worktrees parent', async () => {
     const root = makeTempDir('looptroop-worktree-link-')
     roots.push(root)
     const projectRoot = resolve(root, 'project')
@@ -154,17 +154,17 @@ describe('removeWorktree', () => {
     symlinkSync(outside, worktreesRoot, 'junction')
     const commands: string[][] = []
 
-    expect(() => removeWorktree({
+    await expect(removeWorktree({
       projectRoot,
       worktreesRoot,
       worktreePath: resolve(worktreesRoot, 'TEST-1'),
-      runGit: (args) => { commands.push(args) },
-    })).toThrow('escapes root')
+      runGit: async (args) => { commands.push(args) },
+    })).rejects.toThrow('escapes root')
     expect(commands).toEqual([])
     expect(readFileSync(resolve(outside, 'TEST-1', 'keep.txt'), 'utf8')).toBe('preserve me')
   })
 
-  it('removes a contained worktree alias without deleting its destination', () => {
+  it('removes a contained worktree alias without deleting its destination', async () => {
     const root = makeTempDir('looptroop-worktree-alias-')
     roots.push(root)
     const worktreesRoot = resolve(root, '.looptroop', 'worktrees')
@@ -173,11 +173,11 @@ describe('removeWorktree', () => {
     writeFileSync(resolve(destination, 'keep.txt'), 'preserve me')
     symlinkSync(destination, resolve(worktreesRoot, 'TEST-1'), 'junction')
 
-    removeWorktree({
+    await removeWorktree({
       projectRoot: root,
       worktreesRoot,
       worktreePath: getTicketWorktreePath(root, 'TEST-1'),
-      runGit: () => { throw new Error('Not a registered worktree') },
+      runGit: async () => { throw new Error('Not a registered worktree') },
     })
 
     expect(existsSync(resolve(worktreesRoot, 'TEST-1'))).toBe(false)

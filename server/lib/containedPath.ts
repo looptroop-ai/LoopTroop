@@ -1,5 +1,5 @@
 import { lstatSync, realpathSync, statSync } from 'node:fs'
-import { isAbsolute, relative, resolve, sep } from 'node:path'
+import { isAbsolute, relative, resolve, sep, win32 } from 'node:path'
 
 export class ContainedPathError extends Error {
   constructor(message: string) {
@@ -18,7 +18,11 @@ export interface ContainedPathOptions {
 function invalidPath(value: string): boolean {
   // Backslashes are filenames on POSIX. Only reject foreign rooted/drive paths;
   // native path operations already normalize both separators on Windows.
-  return value.includes('\0') || (process.platform !== 'win32' && /^(?:[a-z]:|\\)/i.test(value))
+  if (value.includes('\0')) return true
+  if (process.platform !== 'win32') return /^(?:[a-z]:|\\)/i.test(value)
+  const drivePrefix = /^[a-z]:/i.test(value)
+  if (drivePrefix && !win32.isAbsolute(value)) return true
+  return value.slice(drivePrefix ? 2 : 0).includes(':')
 }
 
 /** Advisory lexical check only; use resolveContainedPath for filesystem access. */

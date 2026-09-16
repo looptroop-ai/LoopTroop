@@ -78,4 +78,16 @@ describe('server/git/repository', () => {
     ])
     expect(spawnSyncMock.mock.calls[1]?.[2]).toEqual(expect.objectContaining({ cwd: '/repo' }))
   })
+
+  it('gives origin fetches an explicit remote timeout', async () => {
+    spawnSyncMock.mockReturnValue(makeSpawnResult())
+
+    const { GIT_FETCH_TIMEOUT_MS, tryFetchOrigin } = await import('../repository')
+    await expect(tryFetchOrigin('/repo')).resolves.toBe(true)
+
+    expect(spawnSyncMock).toHaveBeenCalledWith(expect.any(String), [
+      'fetch', '--no-progress', '--prune', 'origin',
+    ], expect.objectContaining({ cwd: '/repo' }))
+    expect(GIT_FETCH_TIMEOUT_MS).toBe(120_000)
+  })
 })

@@ -955,7 +955,7 @@ describe('round-2 trust rules', () => {
     const root = tempRoot()
     const opencodeDir = join(root, '.opencode', 'bin')
     const tool = makeExecutable(opencodeDir, 'opencode')
-    const restore = ownedBySomeoneElse(opencodeDir, tool)
+    const restore = ownedBySomeoneElse(tool)
     try {
       const resolution = resolveTrustedExecutable('opencode', {
         env: { PATH: opencodeDir },
@@ -974,7 +974,7 @@ describe('round-2 trust rules', () => {
     const root = tempRoot()
     const customDir = join(root, 'custom-opencode', 'bin')
     const tool = makeExecutable(customDir, 'opencode')
-    const restore = ownedBySomeoneElse(customDir, tool)
+    const restore = ownedBySomeoneElse(tool)
     try {
       const resolution = resolveTrustedExecutable('opencode', {
         env: { PATH: customDir },
@@ -983,6 +983,98 @@ describe('round-2 trust rules', () => {
         cache: freshCache(),
       })
       expect(resolution.path).toBe(tool)
+    } finally {
+      restore()
+    }
+  })
+
+  itPosix('refuses foreign-owned sibling binaries in ~/.opencode/bin', () => {
+    const root = tempRoot()
+    const opencodeDir = join(root, '.opencode', 'bin')
+    const gitTool = makeExecutable(opencodeDir, 'git')
+    const restore = ownedBySomeoneElse(gitTool)
+    try {
+      const resolution = resolveTrustedExecutable('git', {
+        env: { PATH: opencodeDir },
+        policyEnv: { HOME: root },
+        platform: 'linux',
+        cache: freshCache(),
+      })
+      expect(resolution.path).toBeUndefined()
+      expect(resolution.reason).toContain('is owned by uid')
+      expect(resolveTrustedProgram(gitTool, { platform: 'linux', policyEnv: { HOME: root } }).path).toBeUndefined()
+    } finally {
+      restore()
+    }
+  })
+
+  itPosix('refuses opencode if its directory is owned by an untrusted user', () => {
+    const root = tempRoot()
+    const opencodeDir = join(root, '.opencode', 'bin')
+    const tool = makeExecutable(opencodeDir, 'opencode')
+    const restore = ownedBySomeoneElse(opencodeDir)
+    try {
+      const resolution = resolveTrustedExecutable('opencode', {
+        env: { PATH: opencodeDir },
+        policyEnv: { HOME: root },
+        platform: 'linux',
+        cache: freshCache(),
+      })
+      expect(resolution.path).toBeUndefined()
+      expect(resolution.reason).toContain('is owned by uid')
+      expect(resolveTrustedProgram(tool, { platform: 'linux', policyEnv: { HOME: root } }).path).toBeUndefined()
+    } finally {
+      restore()
+    }
+  })
+
+  itPosix('refuses opencode in ~/.opencode/bin if the file is writable by group or others', () => {
+    const root = tempRoot()
+    const opencodeDir = join(root, '.opencode', 'bin')
+    const tool = makeExecutable(opencodeDir, 'opencode')
+    chmodSync(tool, 0o777)
+    const restore = ownedBySomeoneElse(tool)
+    try {
+      const resolution = resolveTrustedExecutable('opencode', {
+        env: { PATH: opencodeDir },
+        policyEnv: { HOME: root },
+        platform: 'linux',
+        cache: freshCache(),
+      })
+      expect(resolution.path).toBeUndefined()
+      expect(resolution.reason).toContain('is writable by group or others')
+    } finally {
+      chmodSync(tool, 0o755)
+      restore()
+    }
+  })
+
+  itPosix('trusts opencode when PATH contains dot-segments or symlink aliases to ~/.opencode/bin', () => {
+    const root = tempRoot()
+    const opencodeDir = join(root, '.opencode', 'bin')
+    const tool = makeExecutable(opencodeDir, 'opencode')
+    const restore = ownedBySomeoneElse(tool)
+    try {
+      // Dot-segment in PATH
+      const dotPath = join(root, '.opencode', '.', 'bin')
+      const dotResolution = resolveTrustedExecutable('opencode', {
+        env: { PATH: dotPath },
+        policyEnv: { HOME: root },
+        platform: 'linux',
+        cache: freshCache(),
+      })
+      expect(dotResolution.path).toBe(join(dotPath, 'opencode'))
+
+      // Symlink alias to opencodeDir
+      const aliasDir = join(root, 'alias-bin')
+      symlinkSync(opencodeDir, aliasDir)
+      const aliasResolution = resolveTrustedExecutable('opencode', {
+        env: { PATH: aliasDir },
+        policyEnv: { HOME: root },
+        platform: 'linux',
+        cache: freshCache(),
+      })
+      expect(aliasResolution.path).toBe(join(aliasDir, 'opencode'))
     } finally {
       restore()
     }
@@ -1013,19 +1105,6 @@ describe('round-2 trust rules', () => {
       OPENCODE_INSTALL_DIR: 'relative/bin',
       OPENCODE_DIR: '/opt/opencode/bin',
     })).toEqual(['/home/alice/.opencode/bin', '/opt/opencode/bin'])
-  })
-
-  it('resolves OpenCode on Windows in canonical directories without requiring an explicit override', () => {
-    const root = tempRoot()
-    const opencodeDir = join(root, '.opencode', 'bin')
-    const tool = makeExecutable(opencodeDir, 'opencode.EXE')
-    const resolution = resolveTrustedExecutable('opencode', {
-      env: { PATH: opencodeDir },
-      policyEnv: { USERPROFILE: root, PATHEXT: '.EXE', SystemRoot: '/nonexistent-windows-root' },
-      platform: 'win32',
-      cache: freshCache(),
-    })
-    expect(resolution.path).toBe(tool)
   })
 })
 

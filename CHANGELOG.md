@@ -10,7 +10,7 @@ Unreleased changes appear first and represent commits that have not yet been inc
 > Changes merged since the last versioned release that have not yet shipped in a tagged version.
 
 ### Summary
-- Canonical OpenCode installation directories (`~/.opencode/bin`) are now trusted by default across platforms, preventing execution refusals when OpenCode release archives are unpacked under root.
+- Canonical OpenCode installation directories (`~/.opencode/bin`) are now trusted by default for the `opencode` binary across platforms, preventing execution refusals when OpenCode release archives are unpacked under root while preserving directory ownership and file write-permission checks.
 - The repository now exposes its documented install-channel catalog as JSON, so the website can verify consolidated installation docs against the same channel table the published-release smoke uses.
 - Log history refreshes loaded pages and keeps model tabs and milestones available; model selection and setup disclosures are accessible, and refused clipboard copies show a visible error.
 - Repeated model-output parsing reuses bounded cached results; YAML repair preserves literal text and retries conflicting duplicate values instead of discarding them.
@@ -101,6 +101,7 @@ Unreleased changes appear first and represent commits that have not yet been inc
 - Added download history to the installation documentation. The chart records public npm, Docker Hub and GitHub release counters every hour, can show new downloads or cumulative totals, and separates installer-script fetches from the sources included in the download total. History begins when tracking is enabled; the chart does not fill earlier periods with estimates or npm-only data.
 
 ### Security
+- Scoped default OpenCode trust narrowly to the `opencode` binary within canonical installation directories (`~/.opencode/bin`, `OPENCODE_INSTALL_DIR`, `OPENCODE_DIR`) and verified ancestor ownership up to trusted roots, excusing foreign archive UIDs (such as runner UID 1001) only when the binary is not writable by group or others. Sibling binaries, untrusted parent directories, and writable binaries remain strictly refused, while directory matching resolves dot-segments and symlink aliases consistently.
 - Backend binding, request guards, OpenCode startup, diagnostics and dev LAN URL reporting share strict loopback recognition across valid IPv4-mapped forms of 127/8. Equivalent IPv6 spellings compare consistently for same-origin requests; empty authority ports use the default and out-of-range ports are rejected. Remote mapped addresses and malformed authorities remain rejected.
 - OpenCode probes keep IPv6 brackets in HTTP URLs and remove them for socket connections and process arguments. Expanded IPv6 wildcard binds now produce interface LAN URLs and the appropriate WSL guidance.
 - OpenCode startup probes reject redirects, so another listener cannot redirect the readiness check to a different endpoint. Password-protected local HTTP connections continue to authenticate.

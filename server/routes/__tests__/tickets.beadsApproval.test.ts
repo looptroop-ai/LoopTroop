@@ -217,6 +217,44 @@ describe('ticketRouter beads approval routes', () => {
     expect(payload.details).toContain('requires testCommandReason')
   })
 
+  it('approves aliased command and dependency fields after canonicalising them', async () => {
+    const { app, ticket, paths, beadsContent } = await setupBeadsApprovalTicket()
+    const beads = beadsContent.trim().split('\n').map((line) => JSON.parse(line) as Record<string, unknown>)
+    const first = beads[0]!
+    first.test_commands = first.testCommands
+    delete first.testCommands
+    first.dependencies = { blockedBy: [], blocks: ['bead-002'] }
+    const aliasedContent = `${beads.map((bead) => JSON.stringify(bead)).join('\n')}\n`
+    writeFileSync(paths.beadsPath, aliasedContent)
+
+    const response = await app.request(`/api/tickets/${ticket.id}/approve-beads`, {
+      method: 'POST',
+      ...approvalPayload(aliasedContent),
+    })
+
+    expect(response.status).toBe(200)
+    const stored = readFileSync(paths.beadsPath, 'utf8').trim().split('\n').map((line) => JSON.parse(line))
+    expect(stored[0]).toHaveProperty('testCommands')
+    expect(stored[0]).not.toHaveProperty('test_commands')
+    expect(stored[0].dependencies).toEqual({ blocked_by: [], blocks: ['bead-002'] })
+  })
+
+  it('answers 422 when approval finds a malformed priority', async () => {
+    const { app, ticket, paths, beadsContent } = await setupBeadsApprovalTicket()
+    const beads = beadsContent.trim().split('\n').map((line) => JSON.parse(line) as Record<string, unknown>)
+    beads[0]!.priority = 'high'
+    const invalidContent = `${beads.map((bead) => JSON.stringify(bead)).join('\n')}\n`
+    writeFileSync(paths.beadsPath, invalidContent)
+
+    const response = await app.request(`/api/tickets/${ticket.id}/approve-beads`, {
+      method: 'POST',
+      ...approvalPayload(invalidContent),
+    })
+
+    expect(response.status).toBe(422)
+    expect((await response.json() as { details?: string }).details).toContain('priority')
+  })
+
   it('answers 422 for a tracker whose JSON is damaged, naming the line', async () => {
     const { app, ticket, paths } = await setupBeadsApprovalTicket()
     const damaged = '{"id":"B-1", \n'
@@ -358,7 +396,7 @@ describe('ticketRouter beads approval routes', () => {
     expect(payload.error).toContain('not found')
   })
 
-  it('returns 500 when beads file is missing', async () => {
+  it('returns 422 with a clear repair reason when beads file is missing', async () => {
     const { app, ticket, paths, beadsContent } = await setupBeadsApprovalTicket()
 
     // Remove beads file
@@ -369,7 +407,7 @@ describe('ticketRouter beads approval routes', () => {
       ...approvalPayload(beadsContent),
     })
 
-    expect(response.status).toBe(500)
+    expect(response.status).toBe(422)
     const payload = (await response.json()) as { error: string; details: string }
     expect(payload.details).toContain('not found')
   })
@@ -420,6 +458,7 @@ describe('ticketRouter beads approval routes', () => {
     expect(response.status).toBe(422)
     const payload = (await response.json()) as { error: string; details: string }
     expect(payload.details).toContain('Invalid JSON at bead line 2')
+    expect(readFileSync(paths.beadsPath, 'utf8')).toBe(invalidContent)
   })
 
   it('stamps createdAt on all beads at approval time', async () => {
@@ -513,7 +552,7 @@ describe('ticketRouter beads approval routes', () => {
         prdRefs: ['E01-S01'],
         acceptanceCriteria: ['Updated criterion'],
         tests: ['updated test'],
-        testCommands: ['npm test'],
+        testCommands: [{ mode: 'process', program: 'npm', args: ['test'], cwd: '.', env: {} }],
         targetFiles: ['src/db/schema.ts'],
         contextGuidance: { patterns: ['use drizzle'], anti_patterns: [] },
         dependencies: { blocked_by: [], blocks: [] },
@@ -561,7 +600,7 @@ describe('ticketRouter beads approval routes', () => {
           prdRefs: ['E01-S01'],
           acceptanceCriteria: ['Updated criterion'],
           tests: ['updated test'],
-          testCommands: ['npm test'],
+          testCommands: [{ mode: 'process', program: 'npm', args: ['test'], cwd: '.', env: {} }],
           targetFiles: ['src/db/schema.ts'],
           contextGuidance: { patterns: ['use drizzle'], anti_patterns: [] },
           dependencies: { blocked_by: [], blocks: [] },

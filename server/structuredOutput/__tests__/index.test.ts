@@ -303,7 +303,7 @@ describe.concurrent('structured output normalization', () => {
       '    tests:',
       '      - Parser regression covers glued root keys.',
       '    testCommands:',
-      '      - npm run test:server',
+      '      - {mode: "shell", shell: "posix", script: "npm run test:server", cwd: ".", env: {}}',
     ].join('\n'))
     expect(beads.ok).toBe(true)
     if (!beads.ok) return
@@ -2085,7 +2085,7 @@ describe.concurrent('structured output normalization', () => {
       '    tests:',
       '      - Shared validator tests cover fences and wrappers',
       '    testCommands:',
-      '      - npm run test:server',
+      '      - {mode: "shell", shell: "posix", script: "npm run test:server", cwd: ".", env: {}}',
     ].join('\n'))
 
     expect(result.ok).toBe(true)
@@ -2121,7 +2121,7 @@ describe.concurrent('structured output normalization', () => {
 
     const redundantReason = normalizeBeadSubsetYamlOutput([
       ...base.slice(0, -1),
-      '    testCommands: [npm run test]',
+      '    testCommands: [{mode: "shell", shell: "posix", script: "npm run test", cwd: ".", env: {}}]',
       '    testCommandReason: This should not coexist with a command.',
     ].join('\n'))
     expect(redundantReason.ok).toBe(false)
@@ -2165,7 +2165,7 @@ describe.concurrent('structured output normalization', () => {
       '    tests:',
       '      - Parser regression covers bare id entries.',
       '    testCommands:',
-      '      - npm run test:server',
+      '      - {mode: "shell", shell: "posix", script: "npm run test:server", cwd: ".", env: {}}',
     ].join('\n'))
 
     expect(result.ok).toBe(true)
@@ -2193,7 +2193,7 @@ describe.concurrent('structured output normalization', () => {
       '    tests:',
       '      - Parser regression covers bare id entries.',
       '    testCommands:',
-      '      - npm run test:server',
+      '      - {mode: "shell", shell: "posix", script: "npm run test:server", cwd: ".", env: {}}',
     ].join('\n'))
 
     expect(result.ok).toBe(false)
@@ -2219,7 +2219,7 @@ describe.concurrent('structured output normalization', () => {
       '    tests:',
       '      - Theme reducer tests cover the pink path.',
       '    testCommands:',
-      '      - npm run test:server',
+      '      - {mode: "shell", shell: "posix", script: "npm run test:server", cwd: ".", env: {}}',
     ].join('\n'))
 
     expect(result.ok).toBe(true)
@@ -2249,7 +2249,7 @@ describe.concurrent('structured output normalization', () => {
       '    tests:',
       '      - Header parser regression covers doubled single quotes.',
       '    testCommands:',
-      '      - npm run test:server',
+      '      - {mode: "shell", shell: "posix", script: "npm run test:server", cwd: ".", env: {}}',
     ].join('\n'))
 
     expect(result.ok).toBe(true)
@@ -2279,8 +2279,13 @@ describe.concurrent('structured output normalization', () => {
       '      - Parser preserves the original visible scalar text.',
       '    tests:',
       '      - Combined parser regression covers malformed quoted list items plus command scalars.',
-      '    testCommands:',
-      `      - ${command}`,
+    '    testCommands:',
+    '      - mode: "shell"',
+    '        shell: "posix"',
+    '        script: |-',
+    ...command.split('\n').map((line) => `          ${line}`),
+    '        cwd: "."',
+    '        env: {}',
     ].join('\n'))
 
     expect(result.ok).toBe(true)
@@ -2314,8 +2319,12 @@ describe.concurrent('structured output normalization', () => {
       '      - Regex command text is preserved after YAML parsing.',
       '    tests:',
       '      - Parser regression covers invalid double-quoted YAML backslash escapes.',
-      '    testCommands:',
-      '      - "git diff -- core/settings_model.go | grep -E \'^\\+(?!\\+\\+)\'"',
+    '    testCommands:',
+    '      - mode: "shell"',
+    '        shell: "posix"',
+    `        script: "${command}"`,
+    '        cwd: "."',
+    '        env: {}',
     ].join('\n'))
 
     expect(result.ok).toBe(true)
@@ -2345,7 +2354,7 @@ describe.concurrent('structured output normalization', () => {
       '    tests:',
       '      - Normalizer accepts repaired object-form guidance.',
       '    testCommands:',
-      '      - npm run test:server',
+      '      - {mode: "shell", shell: "posix", script: "npm run test:server", cwd: ".", env: {}}',
     ].join('\n'))
 
     expect(result.ok).toBe(true)
@@ -2369,7 +2378,7 @@ describe.concurrent('structured output normalization', () => {
       '    tests:',
       '      - Normalizer accepts inline guidance labels from council drafts.',
       '    testCommands:',
-      '      - npm run test:server',
+      '      - {mode: "shell", shell: "posix", script: "npm run test:server", cwd: ".", env: {}}',
     ].join('\n'))
 
     expect(result.ok).toBe(true)
@@ -2396,7 +2405,7 @@ describe.concurrent('structured output normalization', () => {
         '    tests:',
         '      - Validator returns an error.',
         '    testCommands:',
-        '      - npm run test:server',
+        '      - {mode: "shell", shell: "posix", script: "npm run test:server", cwd: ".", env: {}}',
       ].join('\n'),
       [
         'beads:',
@@ -2410,7 +2419,7 @@ describe.concurrent('structured output normalization', () => {
         '    tests:',
         '      - Validator returns an error.',
         '    testCommands:',
-        '      - npm run test:server',
+        '      - {mode: "shell", shell: "posix", script: "npm run test:server", cwd: ".", env: {}}',
       ].join('\n'),
       [
         'beads:',
@@ -2424,7 +2433,7 @@ describe.concurrent('structured output normalization', () => {
         '    tests:',
         '      - Validator returns an error.',
         '    testCommands:',
-        '      - npm run test:server',
+        '      - {mode: "shell", shell: "posix", script: "npm run test:server", cwd: ".", env: {}}',
       ].join('\n'),
     ]
 
@@ -2453,7 +2462,7 @@ describe.concurrent('structured output normalization', () => {
       '    tests:',
       '      - Shared validator tests cover fences and wrappers',
       '    testCommands:',
-      '      - npm run test:server',
+      '      - {mode: "shell", shell: "posix", script: "npm run test:server", cwd: ".", env: {}}',
       'changes:',
       '  - type: added',
       '    item_type: bead',
@@ -2510,7 +2519,7 @@ describe.concurrent('structured output normalization', () => {
         ].join('\n'),
         acceptanceCriteria: ['done'],
         tests: ['test'],
-        testCommands: ['npm run test'],
+        testCommands: [{ mode: 'shell', shell: 'posix', script: 'npm run test', cwd: '.', env: {} }],
         priority: 1,
         status: 'pending',
         labels: [],
@@ -2538,7 +2547,7 @@ describe.concurrent('structured output normalization', () => {
         contextGuidance: 'Patterns: keep the bead narrowly scoped. Anti-patterns: do not depend on unrelated files.',
         acceptanceCriteria: ['done'],
         tests: ['test'],
-        testCommands: ['npm run test'],
+        testCommands: [{ mode: 'shell', shell: 'posix', script: 'npm run test', cwd: '.', env: {} }],
         priority: 1,
         status: 'pending',
         labels: [],
@@ -2578,7 +2587,7 @@ describe.concurrent('structured output normalization', () => {
         ].join('\n'),
         acceptanceCriteria: ['done'],
         tests: ['test'],
-        testCommands: ['npm run test'],
+        testCommands: [{ mode: 'shell', shell: 'posix', script: 'npm run test', cwd: '.', env: {} }],
         priority: 1,
         status: 'pending',
         labels: [],

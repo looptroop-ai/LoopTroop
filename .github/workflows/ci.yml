@@ -818,17 +818,17 @@ jobs:
 
   # The standalone binaries: LoopTroop with a Node runtime inside it, for
   # machines that have none. Built on the runner that matches the target,
-  # because a SEA embeds the running Node and a cross-built one would carry the
-  # wrong runtime.
+  # because native SEA embeds the selected Node runtime and a cross-built one
+  # would carry the wrong runtime.
   #
   # macOS x64 is absent deliberately: Node supports single-executable
   # applications on arm64 only there, so Intel Macs keep Homebrew and npm.
   #
   # The macOS runner is pinned rather than floating so the OS the binary is
   # built on is a decision rather than something that moves underneath it. It is
-  # not what decides the binary's minimum macOS version — the build copies the
-  # running Node executable and re-signs it, so that comes from Node, which
-  # `setup-node` pins. Bump this deliberately when the image is retired;
+  # not what decides the binary's minimum macOS version — the native builder
+  # writes the executable from the Node runtime `setup-node` pins. Bump this
+  # deliberately when the image is retired;
   # `macos-14` was withdrawn on 2 Nov 2026, and a retired image fails the whole
   # release, because `build` requires all four archives.
   binary:
@@ -847,7 +847,9 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
       - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7
         with:
-          node-version: 24.18.1
+          # Node 26.9.0 is the standalone builder runtime. Package, npm and
+          # container jobs deliberately keep the Node 24.18.1 application floor.
+          node-version: 26.9.0
           cache: npm
 
       - name: Pin npm to the declared version
@@ -867,10 +869,11 @@ jobs:
         if: runner.os == 'macOS'
         run: brew list --versions gnu-tar >/dev/null || brew install gnu-tar
 
-      # Twice, requiring identical bytes. The SEA blob embeds the absolute path
-      # of the script it was built from, which made the first version of this
-      # non-reproducible for a reason nothing downstream would have explained —
-      # a manifest records this hash and the descriptors point at it.
+      # Twice, requiring identical bytes. The native SEA config embeds the
+      # absolute staging path of the script, which made the first version of
+      # this non-reproducible for a reason nothing downstream would have
+      # explained — a manifest records this hash and the descriptors point at
+      # it.
       - name: Build the binary twice and require identical bytes
         shell: bash
         run: |
@@ -884,6 +887,37 @@ jobs:
             exit 1
           fi
           echo "Reproducible."
+
+      # This is a blocking application check of the runtime that will ship in
+      # the executable. The ordinary Node 26 early-warning lane is advisory;
+      # this command runs the built artifact itself and therefore cannot be
+      # replaced by a compatible-but-different host runtime.
+      - name: Run blocking application checks on the embedded runtime
+        shell: bash
+        run: |
+          set -euo pipefail
+          binary=$(find "${RUNNER_TEMP}/bin-a" -maxdepth 1 -type f \
+            -name 'looptroop-*-${{ matrix.target }}*' \
+            ! -name '*.tar.gz' ! -name '*.zip' | head -1)
+          if [ -z "${binary}" ]; then
+            echo "::error::The binary build produced no executable for ${{ matrix.target }}."
+            exit 1
+          fi
+          test "$("${binary}" --version)" = "$(node -p 'require("./package.json").version')"
+          doctor_dir="${RUNNER_TEMP}/embedded-doctor"
+          mkdir -p "${doctor_dir}"
+          doctor_status=0
+          doctor=$(LOOPTROOP_CONFIG_DIR="${doctor_dir}" \
+            LOOPTROOP_OPENCODE_MODE=mock "${binary}" doctor --json) || doctor_status=$?
+          # Doctor can report an environment-only failure (for example, no
+          # GitHub CLI login on a pull-request runner); this check is about the
+          # embedded runtime, which is asserted from its structured report.
+          if [ "${doctor_status}" -ne 0 ]; then
+            echo "Doctor reported environment status ${doctor_status}; checking the embedded runtime field."
+          fi
+          echo "${doctor}" | grep -F '"name": "node"'
+          echo "${doctor}" | grep -F 'v26.9.0 (latest'
+          echo "Embedded runtime application checks passed."
 
       # With Node removed from PATH, which is the only thing that proves the
       # claim: every runner has Node, so a binary that quietly used it would

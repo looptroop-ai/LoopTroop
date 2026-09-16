@@ -71,6 +71,10 @@ interface TicketCardProps {
       activeBeadIteration: number | null
       maxIterationsPerBead: number | null
       eta?: TicketEta | null
+      beadsDiagnostics?: {
+        malformedLines: number[]
+        unrepresentableLines: number[]
+      } | null
     }
   }
   projectColor?: string
@@ -168,14 +172,21 @@ export function TicketCard({ ticket, projectColor, projectIcon, projectName, sea
   const kanbanPhase = resolveKanbanPhase(ticket.status, { hasPendingQuestion: hasPendingAIQuestion })
   const isInProgress = !isTerminal && kanbanPhase === 'in_progress'
   const workflowRingProgress = getWorkflowRingProgress(ticket.status)
+  const beadsDiagnostics = ticket.runtime.beadsDiagnostics
+  const hasBeadTrackerDamage = Boolean(
+    beadsDiagnostics
+    && (beadsDiagnostics.malformedLines.length > 0 || beadsDiagnostics.unrepresentableLines.length > 0),
+  )
   // `runtime` is the live projection and the boundary normaliser already falls
   // back to the ticket's own columns when the server sends no runtime, so this
   // card no longer picks between the two itself — it had the precedence the
   // other way round from every other surface.
-  const beadCompletionProgress = getBeadCompletionProgress(ticket.status, {
-    totalBeads: ticket.runtime.totalBeads,
-    percentComplete: ticket.runtime.percentComplete,
-  })
+  const beadCompletionProgress = hasBeadTrackerDamage
+    ? null
+    : getBeadCompletionProgress(ticket.status, {
+        totalBeads: ticket.runtime.totalBeads,
+        percentComplete: ticket.runtime.percentComplete,
+      })
   const currentBead = ticket.runtime.currentBead
   const totalBeads = ticket.runtime.totalBeads
   const statusLabel = getStatusUserLabel(ticket.status, {
@@ -252,7 +263,9 @@ export function TicketCard({ ticket, projectColor, projectIcon, projectName, sea
   const needsInputUnseen = needsInputFlashing && !needsInputSeen && !errorFlashing
   const needsInputYellowFlashing = needsInputUnseen && isStatusNeedsInput
   const questionFlashing = needsInputUnseen && !isStatusNeedsInput
-  const statusProgressPercent = beadCompletionProgress?.percent ?? workflowRingProgress?.percent ?? null
+  const statusProgressPercent = hasBeadTrackerDamage
+    ? null
+    : beadCompletionProgress?.percent ?? workflowRingProgress?.percent ?? null
   const hasUnseenAttention = errorFlashing || needsInputYellowFlashing || questionFlashing
   const isBlockedError = ticket.status === 'BLOCKED_ERROR'
   // The pulse says "this one is waiting on you" in colour alone, so the label
@@ -377,6 +390,17 @@ export function TicketCard({ ticket, projectColor, projectIcon, projectName, sea
           {pendingAIQuestions > 0 && (
             <Badge variant="outline" className="shrink-0 text-[10px] font-mono px-2 py-0.5" style={{ borderColor: attentionColor, color: attentionColor }}>
               AI question {pendingAIQuestions}
+            </Badge>
+          )}
+          {hasBeadTrackerDamage && (
+            <Badge
+              variant="outline"
+              role="alert"
+              aria-label="Bead tracker needs repair; progress is incomplete until the damaged lines are repaired"
+              className="shrink-0 border-amber-500/50 bg-amber-500/10 text-[10px] font-mono px-2 py-0.5 text-amber-800 dark:text-amber-200"
+            >
+              <AlertTriangle className="mr-1 h-3 w-3" />
+              Bead tracker needs repair
             </Badge>
           )}
           {searchMatchLabel && (

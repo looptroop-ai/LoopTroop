@@ -83,6 +83,24 @@ describe('normalizeTicketResponse', () => {
     expect(bead?.qaOrigin?.sourceItems[0]?.links).toEqual([])
   })
 
+  it('normalizes tracker damage diagnostics without trusting malformed values', () => {
+    const ticket = normalizeTicketResponse(wirePayload({
+      runtime: {
+        beadsDiagnostics: {
+          malformedLines: [4, 4, 0, '5'],
+          unrepresentableLines: [7.5, 8, -1],
+        },
+        beads: [{ id: 'bead-1', title: 'Keep this row', status: 'pending', iteration: 0 }],
+      },
+    }))
+
+    expect(ticket.runtime.beads?.map((bead) => bead.id)).toEqual(['bead-1'])
+    expect(ticket.runtime.beadsDiagnostics).toEqual({
+      malformedLines: [4],
+      unrepresentableLines: [8],
+    })
+  })
+
   it('drops a Manual QA origin it cannot build an evidence URL from', () => {
     const ticket = normalizeTicketResponse(wirePayload({
       runtime: {

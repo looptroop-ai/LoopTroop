@@ -1,4 +1,5 @@
 import { carriesValue, isRecord } from '@shared/typeGuards'
+import { commandSpecSchema } from '@shared/commandSpec'
 import { readJsonlWithDiagnostics } from '../../io/jsonl'
 import type { Bead, BeadStatus } from './types'
 import { BEAD_STATUSES, isBeadStatus, resolveBeadStatusAlias } from './types'
@@ -40,14 +41,24 @@ export interface ReadBeadsFileOptions {
   /**
    * What a line that does not parse, or does not describe a bead, means.
    *
-   * `skip` (the default) is for the diagnostic reads — prompt context, progress
-   * counts — where losing one bead is better than losing the whole file.
-   * `fail` is for the authoritative reads, where a silently dropped bead would
-   * be reported as an absence: the Manual QA evidence manifest is the one that
-   * matters, because a missing line there attaches partial evidence to a prompt
-   * and tells nobody.
+   * `fail` (the default) is for authoritative reads, where a silently dropped
+   * bead would be reported as an absence. `skip` is for diagnostic reads — board
+   * projections and progress counts — where the surviving beads still help an
+   * operator see what needs repair.
    */
   malformedEntries?: 'skip' | 'fail'
+}
+
+export interface BeadReadDiagnostics {
+  /** 1-based lines that were not valid JSON. */
+  malformedLines: number[]
+  /** 1-based JSON lines that parsed but are not usable bead records. */
+  unrepresentableLines: number[]
+}
+
+export interface ReadBeadsFileResult {
+  beads: Bead[]
+  diagnostics: BeadReadDiagnostics
 }
 
 const isStringArray = (value: unknown): boolean =>
@@ -70,13 +81,14 @@ const isObjectArray = (value: unknown): boolean =>
   Array.isArray(value) && value.every((item) => isRecord(item))
 
 /**
- * A command list, in either shape the renderer accepts.
+ * A command list in the explicit shape the approval/runtime contract accepts.
  *
- * `renderCommandSpec` takes a string or a spec object; it dereferences
- * anything else, so `[null]` reached the coding prompt and threw there.
+ * A bare string does not identify its shell, and `renderCommandSpec` otherwise
+ * takes an unsafe implicit path; anything else, such as `[null]`, reached the
+ * coding prompt and threw there.
  */
 const isCommandArray = (value: unknown): boolean =>
-  Array.isArray(value) && value.every((item) => typeof item === 'string' || isRecord(item))
+  Array.isArray(value) && value.every((item) => commandSpecSchema.safeParse(item).success)
 
 /**
  * Manual QA provenance, as the evidence reader consumes it.
@@ -120,6 +132,10 @@ const BEAD_FIELD_CHECKS: Record<string, (value: unknown) => boolean> = {
   description: (value) => typeof value === 'string',
   issueType: (value) => typeof value === 'string',
   externalRef: (value) => typeof value === 'string',
+  // Unknown status strings are reconciled to `pending` below. Keep the shape
+  // check about the type; rejecting a string here would turn the reader's
+  // existing safe recovery into a dropped bead.
+  status: (value) => typeof value === 'string',
   testCommandReason: (value) => typeof value === 'string',
   createdAt: (value) => typeof value === 'string',
   updatedAt: (value) => typeof value === 'string',
@@ -230,7 +246,18 @@ export const NESTED_BEAD_FIELD_ALIASES: Array<[field: string, canonical: string,
 export function canonicalizeBeadAliases(entry: Record<string, unknown>): Record<string, unknown> {
   let result = entry
   for (const [alias, canonical] of Object.entries(BEAD_FIELD_ALIASES)) {
-    if (!carriesValue(result[alias]) || carriesValue(result[canonical])) continue
+    if (!Object.hasOwn(result, alias)) continue
+    if (carriesBeadValue(result[canonical])) {
+      // Known aliases are not unknown data. Keeping both lets a stale alias
+      // win on the next writer, so discard it once the canonical value exists.
+      const { [alias]: _ignored, ...rest } = result
+      result = rest
+      continue
+    }
+    // An alias-only empty list/object is still a valid spelling that must be
+    // surfaced under the canonical name. It is only ignored when the alias is
+    // nullish; otherwise a valid empty `qa_origin` would disappear on read.
+    if (!carriesValue(result[alias])) continue
     const { [alias]: aliased, ...rest } = result
     result = { ...rest, [canonical]: aliased }
   }
@@ -238,20 +265,81 @@ export function canonicalizeBeadAliases(entry: Record<string, unknown>): Record<
   for (const [field, canonical, alias] of NESTED_BEAD_FIELD_ALIASES) {
     const value = result[field]
     if (!isRecord(value)) continue
-    if (!carriesValue(value[alias]) || carriesValue(value[canonical])) continue
+    if (!Object.hasOwn(value, alias)) continue
+    if (carriesBeadValue(value[canonical])) {
+      const { [alias]: _ignored, ...rest } = value
+      result = { ...result, [field]: rest }
+      continue
+    }
+    if (!carriesValue(value[alias])) continue
     const { [alias]: aliased, ...rest } = value
     result = { ...result, [field]: { ...rest, [canonical]: aliased } }
   }
   return result
 }
 
-export function readBeadsFile(path: string, options: ReadBeadsFileOptions = {}): Bead[] {
-  const failClosed = options.malformedEntries === 'fail'
+/** Empty strings and lists are cleared values, not a reason to ignore a valid alias. */
+function carriesBeadValue(value: unknown): boolean {
+  if (!carriesValue(value)) return false
+  if (typeof value === 'string') return value.trim().length > 0
+  if (Array.isArray(value)) return value.length > 0
+  if (isRecord(value)) return Object.values(value).some(carriesBeadValue)
+  return true
+}
+
+/** Rebuilds the inverse dependency field from authoritative `blocked_by` edges. */
+export function deriveBeadBlocks<T extends Record<string, unknown>>(records: readonly T[]): T[] {
+  const blocksById = new Map<string, string[]>()
+  const normalized = records.map((record) => {
+    const canonical = canonicalizeBeadAliases(record)
+    const dependencies = isRecord(canonical.dependencies) ? canonical.dependencies : {}
+    const blockedBy = Array.isArray(dependencies.blocked_by)
+      ? dependencies.blocked_by.filter((dependency): dependency is string => typeof dependency === 'string')
+      : []
+    const id = typeof canonical.id === 'string' ? canonical.id : ''
+    if (id && !blocksById.has(id)) blocksById.set(id, [])
+    return { canonical, dependencies, blockedBy, id }
+  })
+
+  for (const { blockedBy, id } of normalized) {
+    if (!id) continue
+    for (const dependency of blockedBy) {
+      const blocks = blocksById.get(dependency)
+      if (blocks && !blocks.includes(id)) blocks.push(id)
+    }
+  }
+
+  return normalized.map(({ canonical, dependencies, blockedBy, id }) => ({
+    ...canonical,
+    dependencies: {
+      ...dependencies,
+      blocked_by: blockedBy,
+      blocks: blocksById.get(id) ?? [],
+    },
+  } as unknown as T))
+}
+
+export type {
+  BeadDependencyGraphEntry,
+  BeadDependencyGraphValidation,
+} from './dependencyGraph'
+export {
+  inspectBeadDependencyGraph,
+  validateBeadDependencyGraph,
+} from './dependencyGraph'
+
+export function readBeadsFileWithDiagnostics(path: string, options: ReadBeadsFileOptions = {}): ReadBeadsFileResult {
+  const failClosed = options.malformedEntries !== 'skip'
   const { items, itemLines, malformedLines } = readJsonlWithDiagnostics<unknown>(path)
   if (failClosed && malformedLines.length > 0) {
     throw new Error(`Bead file ${path} has unparseable JSON at line(s) ${malformedLines.join(', ')}.`)
   }
-  return items.flatMap((entry, index) => {
+  const diagnostics: BeadReadDiagnostics = {
+    malformedLines: [...malformedLines],
+    unrepresentableLines: [],
+  }
+  const beads: Bead[] = []
+  items.forEach((entry, index) => {
     // The line in the file, not the position among the entries that parsed:
     // blank and malformed lines sit between them, so the index named the wrong
     // record in exactly the files where the message mattered.
@@ -265,13 +353,22 @@ export function readBeadsFile(path: string, options: ReadBeadsFileOptions = {}):
       if (failClosed) {
         throw new Error(`Bead file ${path} has an entry at line ${line} with ${problem}.`)
       }
+      diagnostics.unrepresentableLines.push(line)
       console.warn(`[beads] Ignored the entry at line ${line} of ${path}: ${problem}.`)
-      return []
+      return
     }
     const bead = normalizeBeadCollections(canonical as unknown as Bead)
     const reconciled = reconcileStoredBeadStatus(bead.status, bead.id)
-    if (!reconciled.warning) return [bead]
+    if (!reconciled.warning) {
+      beads.push(bead)
+      return
+    }
     console.warn(`[beads] ${reconciled.warning}`)
-    return [{ ...bead, status: reconciled.status }]
+    beads.push({ ...bead, status: reconciled.status })
   })
+  return { beads, diagnostics }
+}
+
+export function readBeadsFile(path: string, options: ReadBeadsFileOptions = {}): Bead[] {
+  return readBeadsFileWithDiagnostics(path, options).beads
 }

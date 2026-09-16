@@ -120,6 +120,89 @@ describe('beadsRouter flow validation', () => {
       },
     })
   })
+
+  it('preserves unknown bead and dependency fields when saving', async () => {
+    const { ticket, paths } = createBeadsRouteTicket()
+    patchTicket(ticket.id, { status: 'WAITING_BEADS_APPROVAL' })
+    const bead = {
+      id: 'B-1',
+      title: 'Editable bead',
+      status: 'pending',
+      priority: 1,
+      dependencies: { blocked_by: [], blocks: [], related: ['B-9'] },
+      future_metadata: { owner: 'planner' },
+    }
+
+    const response = await app.request(`/api/tickets/${encodeURIComponent(ticket.id)}/beads`, {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify([bead]),
+    })
+
+    expect(response.status).toBe(200)
+    const stored = JSON.parse(readFileSync(paths.beadsPath, 'utf8').trim())
+    expect(stored).toMatchObject(bead)
+  })
+
+  it('explains the source line and field for invalid bead input', async () => {
+    const { ticket } = createBeadsRouteTicket()
+    patchTicket(ticket.id, { status: 'WAITING_BEADS_APPROVAL' })
+
+    const response = await app.request(`/api/tickets/${encodeURIComponent(ticket.id)}/beads`, {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify([{
+        id: 'B-1', title: 'Broken bead', status: 'pending', priority: 'high',
+        dependencies: { blocked_by: [], blocks: [] },
+      }]),
+    })
+
+    expect(response.status).toBe(400)
+    const payload = await response.json() as { details: string }
+    expect(payload.details).toMatch(/Line 1: priority:/)
+  })
+
+  it('uses validated JSONL source positions when reporting invalid rows after blank lines', async () => {
+    const { ticket } = createBeadsRouteTicket()
+    patchTicket(ticket.id, { status: 'WAITING_BEADS_APPROVAL' })
+
+    const response = await app.request(`/api/tickets/${encodeURIComponent(ticket.id)}/beads`, {
+      method: 'PUT',
+      headers: {
+        'Content-Type': 'application/json',
+        'X-Source-Lines': '4',
+        'X-Edit-Surface': 'jsonl',
+      },
+      body: JSON.stringify([{
+        id: 'B-1', title: 'Broken bead', status: 'pending', priority: 'high',
+        dependencies: { blocked_by: [], blocks: [] },
+      }]),
+    })
+
+    expect(response.status).toBe(400)
+    const payload = await response.json() as { details: string }
+    expect(payload.details).toMatch(/Line 4: priority:/)
+  })
+
+  it('rejects source positions that do not match the submitted rows', async () => {
+    const { ticket } = createBeadsRouteTicket()
+    patchTicket(ticket.id, { status: 'WAITING_BEADS_APPROVAL' })
+
+    const response = await app.request(`/api/tickets/${encodeURIComponent(ticket.id)}/beads`, {
+      method: 'PUT',
+      headers: {
+        'Content-Type': 'application/json',
+        'X-Source-Lines': '4,2',
+      },
+      body: JSON.stringify([{ id: 'B-1' }]),
+    })
+
+    expect(response.status).toBe(400)
+    expect(await response.json()).toMatchObject({
+      error: 'X-Source-Lines must contain exactly 1 positive line number.',
+    })
+  })
+
   /**
    * A tracker with one damaged line used to fail the whole request, which took
    * every other bead on the approval screen with it — the one moment where
@@ -311,6 +394,38 @@ describe('beadsRouter flow validation', () => {
       expect(response.status).toBe(428)
     })
   })
+
+  it('refuses a structured save that would drop damaged tracker rows', async () => {
+    const { ticket, paths } = createBeadsRouteTicket()
+    patchTicket(ticket.id, { status: 'WAITING_BEADS_APPROVAL' })
+    const damaged = `${JSON.stringify({
+      id: 'B-1', title: 'B-1', status: 'pending', priority: 1,
+      dependencies: { blocked_by: [], blocks: [] },
+    })}\nnot-json\n`
+    mkdirSync(dirname(paths.beadsPath), { recursive: true })
+    writeFileSync(paths.beadsPath, damaged)
+
+    const response = await app.request(`/api/tickets/${encodeURIComponent(ticket.id)}/beads`, {
+      method: 'PUT',
+      headers: {
+        'Content-Type': 'application/json',
+        'X-Content-Sha256': contentSha256(damaged),
+        'X-Edit-Surface': 'structured',
+      },
+      body: JSON.stringify([{
+        id: 'B-1', title: 'One', status: 'pending', priority: 1,
+        dependencies: { blocked_by: [], blocks: [] },
+      }]),
+    })
+
+    expect(response.status).toBe(422)
+    expect(await response.json()).toMatchObject({
+      error: 'Damaged bead plan must be repaired in JSONL mode',
+      malformedLines: [2],
+    })
+    expect(readFileSync(paths.beadsPath, 'utf8')).toBe(damaged)
+  })
+
   describe('rows that parse but are not beads', () => {
     function writeBeadsFile(beadsPath: string, content: string) {
       mkdirSync(dirname(beadsPath), { recursive: true })
@@ -354,7 +469,10 @@ describe('beadsRouter flow validation', () => {
 
       const response = await app.request(`/api/tickets/${encodeURIComponent(ticket.id)}/beads/raw`)
 
-      expect(await response.json()).toMatchObject({ unrepresentableLines: [] })
+      const payload = await response.json() as { items: Array<Record<string, unknown>>; unrepresentableLines: number[] }
+      expect(payload.unrepresentableLines).toEqual([])
+      expect(payload.items[0]).toMatchObject({ acceptanceCriteria: ['AC-1'] })
+      expect(payload.items[0]).not.toHaveProperty('acceptance_criteria')
     })
 
     it('says nothing about them when every row is a bead', async () => {
@@ -377,9 +495,13 @@ describe('beadsRouter flow validation', () => {
     })
   })
   describe('the dependency spelling the interface accepts', () => {
+    const rootBead = {
+      id: 'B-0', title: 'Root', status: 'pending' as const, priority: 1,
+      dependencies: { blockedBy: [], blocks: ['stale-inverse'] },
+    }
     const camelCaseBead = {
       id: 'B-1', title: 'One', status: 'pending' as const, priority: 1,
-      dependencies: { blockedBy: ['B-0'], blocks: [] },
+      dependencies: { blockedBy: ['B-0'] },
     }
 
     it('saves a bead written with blockedBy, and stores it as blocked_by', async () => {
@@ -389,14 +511,16 @@ describe('beadsRouter flow validation', () => {
       const response = await app.request(`/api/tickets/${encodeURIComponent(ticket.id)}/beads`, {
         method: 'PUT',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify([camelCaseBead]),
+        body: JSON.stringify([rootBead, camelCaseBead]),
       })
 
       expect(response.status).toBe(200)
       // Written in the spelling the runtime reads: the approval screen renders
-      // both, and a plan that reads correctly there has to run.
-      const stored = JSON.parse(readFileSync(paths.beadsPath, 'utf-8').trim())
-      expect(stored.dependencies).toEqual({ blocked_by: ['B-0'], blocks: [] })
+      // both, and a plan that reads correctly there has to run. The inverse is
+      // derived from blocked_by, so an omitted/stale blocks list cannot win.
+      const stored = readFileSync(paths.beadsPath, 'utf-8').trim().split('\n').map((line) => JSON.parse(line))
+      expect(stored[1].dependencies).toEqual({ blocked_by: ['B-0'], blocks: [] })
+      expect(stored[0].dependencies).toEqual({ blocked_by: [], blocks: ['B-1'] })
     })
 
     it('still refuses a bead with no dependency list at all', async () => {

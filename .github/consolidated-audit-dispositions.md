@@ -9,27 +9,28 @@ or unimplemented finding is complete.
 
 | Finding | Status | Evidence and permanent coverage | Limits |
 | --- | --- | --- | --- |
-| R01 | Partial, forward-port pending | The isolated release packet recorded the shared PATHEXT-aware resolver and affected-file gate, but the reopened published-smoke launch diagnostic is not yet in this integration checkout. | No R01 published launch smoke or native Windows gate is claimed here. |
+| R01 | PASS, final pending | `scripts/smoke-published.mjs` preserves the resolved launch file, errno/code, and operating-system message when a child cannot start; `tests/smokePublished.test.ts` exercises the production `run()` path with a real executable and a missing working directory. | Native Windows gate remains CI-only here. |
 | R02 | PASS, final pending | `release-workflow-evidence.md`; scheduled and repair smoke checks use the tested release tag and the reviewed OpenCode npm pin. | The moving official installer path is intentionally not asserted; scheduled smoke was not run locally. |
-| R03 | Documented | Website `docs/installation.md#standalone-executable` describes current source flags and keeps the served-installer `-DryRun`/`-Help` warning. | The served installer remains unsafe for those two flags until a release updates it. |
+| R03 | Documented | Website `docs/installation.md#standalone-executable` describes current source flags and keeps the served release's `-DryRun`/`-Help` warning. | The served installer remains unsafe for those two flags until a release updates it. |
 | R04 | PASS, final pending | `release-workflow-evidence.md`; release-PR and Renovate Git credentials are per-invocation headers and are removed before unrelated Git work. | No live push was performed. |
 | R05 | PASS, final pending | `release-workflow-evidence.md`; attestation jobs download bytes only, while publish/build credentials stay separated. | No live attestation or publish was performed. |
 | R06 | PASS, final pending | `release-workflow-evidence.md`; manifest-derived channel values cross workflow steps through environment variables after safe-basename validation. | Workflow execution was not run locally. |
 | R07 | PASS, final pending | `release-workflow-evidence.md`; Renovate notices are validated outside the checkout as one regular top-level file before copy. | No Renovate workflow run was performed. |
-| R11 | PASS, final pending | `release-scripts-evidence.md`; `tests/docsInstallCatalog.test.ts` and `node scripts/docs-install-catalog.mjs` cover the machine-readable install catalog. | Website source pin remains `83ae324348164c6f4d1c5dedaebcba69359d15c9` until root supplies the final public commit. |
-| R12 | Documented | Website verification checks out the immutable source ref and fails closed when the catalog is absent; the existing R12 section below records the design. | The ref must move with the final accepted app commit. |
-| R13 | PASS, final pending | `release-workflow-evidence.md`; workflow Node versions, matrix versions, and numeric Docker tags are checked against the package engine floor. | CI-only policy execution was not run locally beyond the packet checks. |
+| R11 | PASS, final pending | `release-scripts-evidence.md`; `tests/docsInstallCatalog.test.ts` and `node scripts/docs-install-catalog.mjs` cover the machine-readable install catalog. | Website already pins source ref `f784f055b45854016c245a2d902d6799b7e8265c` in website commit `83cdf633`; this docs checkpoint makes no pin change. |
+| R12 | Documented | Website verification checks out the immutable source ref and fails closed when the catalog is absent; the existing R12 section below records the design. | The accepted website pin and its CI checkout are independently reviewed; no pin change is needed for this docs checkpoint. |
+| R13 | PASS, final pending | `scripts/build-binary.mjs`, `.github/workflows/ci.yml`, `.github/workflows/release.yml`, and `tests/releaseScriptArgs.test.ts`/`tests/workflowPolicy.test.ts`; package, application, and container jobs retain the Node `24.18.1` floor, while each standalone binary job pins the exact Node `26.9.0` native SEA builder and blocks on an embedded-runtime application check. Detailed results are in `/tmp/looptroop-release-part-evidence.md`. | CI-only policy execution was not run locally beyond the packet checks. |
 | R14 | PASS, final pending | `release-scripts-evidence.md`; all five install-smoke consumers compare structured `checks[].install.channel` and `checks[].install.upgradeCommand`, not `detail`. Website `docs/diagnostics.md#the-install-check` documents that contract. | No package-manager, container, or lifecycle smoke was run. |
 | R15 | PASS, final pending | `release-scripts-evidence.md`; WinGet gives Git and GitHub CLI only the copied child environment credentials they need and removes ambient token aliases. | No live WinGet submission was performed. |
-| R16 | PASS, final pending | `release-workflow-evidence.md`; release assets include the npm tarball and matching `package-lock.json`; Docker copies both and runs locked `npm ci --ignore-scripts --omit=dev`. Website `docs/installation.md#running-in-a-container` describes the resulting image. | The isolated release evidence verified a Linux amd64 build locally; no multi-architecture build, registry publication, container lifecycle, or native-platform verification is claimed. |
+| R16 | PASS, final pending | `release-workflow-evidence.md`; release assets include the npm tarball and matching `package-lock.json`; Docker copies both and runs locked `npm ci --ignore-scripts --omit=dev`. Website `docs/installation.md#running-in-a-container` describes the resulting image. | A local Linux amd64 image build passed; multi-architecture registry publication and lifecycle remain CI-only. |
 | R17 | PASS, final pending | `release-workflow-evidence.md`; Scoop bootstrap uses the explicit `https://get.scoop.sh` URL. | Native Windows execution remains CI-only. |
 | R18 | PASS, final pending | `release-scripts-evidence.md` and `release-workflow-evidence.md`; release/channel argument parsers reject unknown, missing, flag-shaped, and positional inputs before side effects. | No publish-side effect was exercised. |
 | R19 | PASS, final pending | `release-scripts-evidence.md`; npm 12 JSON errors and failing empty objects remain unavailable, while successful empty JSON means current. | Only the bounded loopback failure probe was run; no registry update was attempted. |
-| R21 | PASS, final pending | `release-workflow-evidence.md`; the finished multi-architecture index is attested after assembly, and each architecture records installed package versions by immutable image digest. Website `docs/installation.md#running-in-a-container` records this evidence boundary. | Docker and registry jobs remain CI-only; no live image publication was performed. |
+| R21 | PASS, final pending | `release-workflow-evidence.md`; the local check built the amd64 image and inspected its recorded package-version inventory, while the workflow keeps multi-architecture assembly and index attestation after publication. Website `docs/installation.md#running-in-a-container` records this evidence boundary. | No multi-architecture build or attestation, live registry publication, Docker lifecycle, native Windows, or package-feed operation was run here. |
 | R24 | PASS, final pending | `release-workflow-evidence.md`; release, repair, CI, and Docker npm fetches use three retries with 10 to 60 second retry bounds. App `CONTRIBUTING.md` records the scope. | This does not change package-manager retry defaults for users. |
 | R26 | Documented | App `README.md` and website prerequisites state Node `24.18.1+` and npm `12.0.2+`. | No additional limitation. |
 | R27 | Documented | App `README.md` and website installation pages label Yarn commands as Bash/zsh and recommend npm on Windows without an unverified PowerShell PATH recipe. | Native Windows Yarn PATH behavior is not claimed as verified. |
 | R29 | PASS, final pending | `release-scripts-evidence.md`; WinGet submission prose declares Git and GitHub CLI dependencies. The app changelog records the correction. | No live WinGet submission was performed. |
+| R30 | PASS, final pending | `tests/wireContract.test.ts` keeps API routes, live-event names, and `doctor --json` check names as explicit wire contracts; `CHANGELOG.md` describes those names without fragile numeric totals. | The contract lists remain hand-maintained and final integration review remains with the root worker. |
 | S09 | PASS, final pending | `release-scripts-evidence.md`; maintenance and stall diagnostics use shared ANSI stripping, including C1 CSI and OSC sequences. | No additional platform limit beyond the packet test environment. |
 
 ## Accepted Git safety packet
@@ -110,6 +111,33 @@ and the full application/part gate remain unverified.
 | P17.6 | PASS, root accepted | `parser-evidence.md`; explicit blank status becomes pending with a warning, while absent/null keeps the default. | No E2E or full lifecycle run. |
 | P18 | PASS, root accepted | `parser-evidence.md`; parse-cache invalidation fingerprints the complete repair/parser sources without runtime source reads. | No E2E or full lifecycle run. |
 
+## Accepted beads contract packet
+
+The beads packet is accepted for this integration checkpoint, with final source
+assembly and the full part gate still pending. It covers the authoritative
+JSONL contract, structured command producers, approval validation, runtime
+diagnostics, and the affected board and workspace displays.
+
+| Finding | Status | Evidence and permanent coverage | Limits |
+| --- | --- | --- | --- |
+| G02 | PASS, final pending | `/tmp/looptroop-beads-evidence.md`; runtime projections retain valid rows, expose `runtime.beadsDiagnostics`, and show board/workspace repair warnings while suppressing completion summaries when the tracker is damaged. | No E2E or full lifecycle run; five server suites need the later integration gate after the active CLI process exits. |
+| W02 | PASS, final pending | Bead route, document, and graph tests treat `blocked_by` as authoritative and derive the inverse `blocks` edges on approval and save, so the editable dependency edge remains symmetric. | No E2E or full lifecycle run. |
+| P01 | PASS, final pending | Approval and editor tests validate structured `CommandSpec` entries without bare-string shell guessing and surface actionable repair reasons for unrepresentable commands or damaged rows. | No E2E or full lifecycle run. |
+| P04/P14 | PASS, final pending | ApprovalView keeps the immutable original draft baseline hash through edit, autosave, reload, save, and approve; stale writes return a typed `409` conflict rather than matching an English message. | No E2E or full lifecycle run. |
+| P11 | PASS, final pending | Canonicalization and route tests retain unknown top-level and dependency metadata, while original JSONL source-line and field diagnostics remain attached to validation errors. | No E2E or full lifecycle run. |
+| P15 | PASS, final pending | Damaged-tracker navigator/editor tests disclose malformed or unrepresentable lines and suppress anchors that cannot point to the raw editor content. | Native browser and assistive-technology verification remain unclaimed. |
+| P17(3) | Partial, final pending | Alias precedence is covered for the accepted precedence subitem only; the remaining P17 findings are not attributed to this packet. | No E2E or full lifecycle run. |
+| P19 | PASS, final pending | Shared dependency-graph and approval tests reject dangling `blocked_by` references and cycles before approval or write, reporting the offending ids. | No E2E or full lifecycle run. |
+| U06 | PASS, final pending | BeadsApprovalEditor tests connect field labels and disclosure panels to native controls with programmatic names, `aria-expanded`, and `aria-controls`. | Native browser and assistive-technology verification remain unclaimed. |
+
+The bounded packet evidence reports 264 server-pure tests, 53 doctor tests, 74
+server integration tests in the later rerun, 71 workflow setup/execution/refine
+tests, 3 draft/vote tests, 59 Manual QA tests, 85 client-node tests, and 62
+client-DOM tests, with both TypeScript projects, focused lint, and diff checks
+passing before the unrelated active-process error. Linux/Node execution was
+used; native Windows/macOS, real-browser accessibility, E2E, and full lifecycle
+checks remain outside this checkpoint.
+
 ## Installer foundation
 
 | Finding | Status | Evidence and permanent coverage | Limits |
@@ -131,14 +159,14 @@ and the full application/part gate remain unverified.
 
 ## R12 source evidence and applied choice
 
-The install catalog was introduced in app commit `68a8a5f3…` and is also present
-in `0b782f6c…` and the current app worktree. No published tag contains it. The
-website's owner-approved source ref remains the immutable app commit
-`83ae324348164c6f4d1c5dedaebcba69359d15c9` until root supplies the final public
-accepted commit. Website CI checks out that ref into `.source/LoopTroop`, and
-the verifier uses `LOOPTROOP_SOURCE_ROOT` when set or the local sibling checkout
+The install catalog is present in the current app worktree and is checked out by
+the website at immutable source ref
+`f784f055b45854016c245a2d902d6799b7e8265c`, pinned in website commit
+`83cdf633`. Website CI checks out that ref into `.source/LoopTroop`, and the
+verifier uses `LOOPTROOP_SOURCE_ROOT` when set or the local sibling checkout
 otherwise. A missing catalog fails with an actionable error; there is no reduced
-two-channel fallback.
+two-channel fallback. The implementation ref and website pin were reviewed
+independently; this docs checkpoint does not advance either one.
 
 ## Integration limits
 
@@ -146,7 +174,7 @@ two-channel fallback.
 - `release-workflow-evidence.md`: `/tmp/looptroop-release-workflow-evidence.md`
 - `parser-evidence.md`: `/tmp/looptroop-parser-evidence.md`
 - `installer-evidence.md`: `/tmp/looptroop-installer-evidence.md`
-- No E2E, full lifecycle, live publish, native Windows, physical-power-loss, or website source-pin update is claimed here. The release packet's local Linux amd64 Docker build is evidence only; no multi-architecture, publication, or container lifecycle result is claimed.
-- The R01 published-smoke launch diagnostic remains a partial, forward-port-pending item. R30's fragile numeric route/event counts remain pending their isolated release fix, and the native SEA 26.9.0 source has not been forward-ported into this integration checkout.
-- The root worker must rerun any app version/catalog checks after final source integration and update the website immutable source ref and matching CI checkout together.
+- No E2E, full lifecycle, live publish, native Windows, physical-power-loss, or website source-pin change is claimed in this checkpoint. The existing website pin is independently reviewed at commit `83cdf633`; the release packet's local Linux amd64 Docker build is evidence only, with no multi-architecture, publication, or container lifecycle result claimed.
+- The accepted release packet now includes the R01 published-smoke launch diagnostic, count-free R30 wire-contract documentation, and the exact native SEA Node `26.9.0` source behavior. The app/package/container floor remains Node `24.18.1`; local release evidence covers Linux amd64 and Linux x64 only. No E2E, full lifecycle, live publish, native Windows, macOS or arm64 binary success, multi-architecture build, registry attestation/publication, or website source-pin update is claimed here.
+- The root worker must rerun any app version/catalog checks after final source integration. The current website immutable source ref and matching CI checkout already point at `f784f055b45854016c245a2d902d6799b7e8265c`; later source integration must update them together if required.
 - Future not-yet-implemented report packets need their own documentation pass; this ledger does not pre-document them.

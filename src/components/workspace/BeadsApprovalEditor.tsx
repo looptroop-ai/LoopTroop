@@ -1,4 +1,4 @@
-import { useState, useCallback } from 'react'
+import { useState, useCallback, useId } from 'react'
 import { Button } from '@/components/ui/button'
 import { Badge } from '@/components/ui/badge'
 import type { NormalizedBead } from '@/lib/beadsDocument'
@@ -16,17 +16,24 @@ function StringListEditor({
   onChange,
   placeholder,
   disabled,
+  idPrefix,
+  labelId,
+  label,
 }: {
   items: string[]
   onChange: (items: string[]) => void
   placeholder?: string
   disabled?: boolean
+  idPrefix: string
+  labelId: string
+  label: string
 }) {
   return (
-    <div className="space-y-1">
+    <div className="space-y-1" role="group" aria-labelledby={labelId}>
       {items.map((item, index) => (
         <div key={index} className="flex items-start gap-1">
           <textarea
+            id={`${idPrefix}-${index}`}
             value={item}
             onChange={(e) => {
               const next = [...items]
@@ -37,6 +44,7 @@ function StringListEditor({
             rows={1}
             className="flex-1 min-h-[28px] rounded-md border border-input bg-background px-2 py-1 text-xs resize-y"
             placeholder={placeholder}
+            aria-labelledby={labelId}
           />
           <Button
             type="button"
@@ -45,6 +53,7 @@ function StringListEditor({
             onClick={() => onChange(items.filter((_, i) => i !== index))}
             disabled={disabled}
             className="h-7 w-7 p-0 text-muted-foreground hover:text-destructive shrink-0"
+            aria-label={`Remove ${label} ${index + 1}`}
           >
             ×
           </Button>
@@ -57,6 +66,7 @@ function StringListEditor({
         onClick={() => onChange([...items, ''])}
         disabled={disabled}
         className="text-xs h-7"
+        aria-label={`Add ${label}`}
       >
         + Add
       </Button>
@@ -66,6 +76,10 @@ function StringListEditor({
 
 export function BeadsApprovalEditor({ beads, disabled, onChange }: BeadsApprovalEditorProps) {
   const [expandedIndex, setExpandedIndex] = useState<number | null>(null)
+  const editorId = useId()
+
+  const fieldId = (index: number, field: string) => `${editorId}-bead-${index}-${field}`
+  const fieldLabelId = (index: number, field: string) => `${fieldId(index, field)}-label`
 
   const updateBead = useCallback((index: number, update: Partial<NormalizedBead>) => {
     const next = beads.map((bead, i) => {
@@ -91,6 +105,8 @@ export function BeadsApprovalEditor({ beads, disabled, onChange }: BeadsApproval
       <div className="text-xs text-muted-foreground mb-2">{beads.length} beads — click to expand and edit</div>
       {beads.map((bead, index) => {
         const isExpanded = expandedIndex === index
+        const headerId = fieldId(index, 'header')
+        const panelId = fieldId(index, 'panel')
         return (
           <div
             key={bead.id || index}
@@ -98,9 +114,12 @@ export function BeadsApprovalEditor({ beads, disabled, onChange }: BeadsApproval
             className="rounded-lg border border-border bg-background"
           >
             <button
+              id={headerId}
               type="button"
               onClick={() => setExpandedIndex(isExpanded ? null : index)}
               className="w-full text-left px-3 py-2 flex items-center gap-2 hover:bg-accent/30 rounded-t-lg"
+              aria-expanded={isExpanded}
+              aria-controls={isExpanded ? panelId : undefined}
             >
               <span className="bg-blue-100 dark:bg-blue-900 text-blue-700 dark:text-blue-300 px-1.5 py-0.5 rounded text-[10px] font-mono shrink-0">
                 #{index + 1}
@@ -110,11 +129,12 @@ export function BeadsApprovalEditor({ beads, disabled, onChange }: BeadsApproval
               <span className="text-muted-foreground text-[10px]">{isExpanded ? '▼' : '▶'}</span>
             </button>
             {isExpanded && (
-              <div className="px-3 pb-3 space-y-3 border-t border-border pt-3">
+              <div id={panelId} role="region" aria-labelledby={headerId} className="px-3 pb-3 space-y-3 border-t border-border pt-3">
                 {/* Title */}
                 <div>
-                  <label className="text-[10px] font-semibold uppercase tracking-widest text-foreground/60 block mb-1">Title</label>
+                  <label id={fieldLabelId(index, 'title')} htmlFor={fieldId(index, 'title')} className="text-[10px] font-semibold uppercase tracking-widest text-foreground/60 block mb-1">Title</label>
                   <input
+                    id={fieldId(index, 'title')}
                     value={bead.title}
                     onChange={(e) => updateBead(index, { title: e.target.value })}
                     disabled={disabled}
@@ -124,8 +144,9 @@ export function BeadsApprovalEditor({ beads, disabled, onChange }: BeadsApproval
 
                 {/* Description */}
                 <div>
-                  <label className="text-[10px] font-semibold uppercase tracking-widest text-foreground/60 block mb-1">Description</label>
+                  <label id={fieldLabelId(index, 'description')} htmlFor={fieldId(index, 'description')} className="text-[10px] font-semibold uppercase tracking-widest text-foreground/60 block mb-1">Description</label>
                   <textarea
+                    id={fieldId(index, 'description')}
                     value={bead.description}
                     onChange={(e) => updateBead(index, { description: e.target.value })}
                     disabled={disabled}
@@ -136,33 +157,36 @@ export function BeadsApprovalEditor({ beads, disabled, onChange }: BeadsApproval
 
                 {/* Acceptance Criteria */}
                 <div>
-                  <label className="text-[10px] font-semibold uppercase tracking-widest text-foreground/60 block mb-1">Acceptance Criteria</label>
-                  <StringListEditor items={bead.acceptanceCriteria} onChange={(items) => updateBead(index, { acceptanceCriteria: items })} disabled={disabled} placeholder="Criterion..." />
+                  <label id={fieldLabelId(index, 'acceptance')} className="text-[10px] font-semibold uppercase tracking-widest text-foreground/60 block mb-1">Acceptance Criteria</label>
+                  <StringListEditor idPrefix={fieldId(index, 'acceptance')} labelId={fieldLabelId(index, 'acceptance')} label="Acceptance criterion" items={bead.acceptanceCriteria} onChange={(items) => updateBead(index, { acceptanceCriteria: items })} disabled={disabled} placeholder="Criterion..." />
                 </div>
 
                 {/* Tests */}
                 <div>
-                  <label className="text-[10px] font-semibold uppercase tracking-widest text-foreground/60 block mb-1">Tests</label>
-                  <StringListEditor items={bead.tests} onChange={(items) => updateBead(index, { tests: items })} disabled={disabled} placeholder="Test specification..." />
+                  <label id={fieldLabelId(index, 'tests')} className="text-[10px] font-semibold uppercase tracking-widest text-foreground/60 block mb-1">Tests</label>
+                  <StringListEditor idPrefix={fieldId(index, 'tests')} labelId={fieldLabelId(index, 'tests')} label="Test" items={bead.tests} onChange={(items) => updateBead(index, { tests: items })} disabled={disabled} placeholder="Test specification..." />
                 </div>
 
                 {/* Planned Test Commands */}
                 <div>
-                  <label className="text-[10px] font-semibold uppercase tracking-widest text-foreground/60 block mb-1">Planned Test Commands</label>
-                  <CommandSpecListEditor
-                    commands={bead.testCommands}
-                    onChange={(commands) => updateBead(index, {
-                      testCommands: commands,
-                      ...(commands.length > 0 ? { testCommandReason: undefined } : {}),
-                    })}
-                    disabled={disabled}
-                  />
+                  <div role="group" aria-labelledby={fieldLabelId(index, 'commands')}>
+                    <div id={fieldLabelId(index, 'commands')} className="text-[10px] font-semibold uppercase tracking-widest text-foreground/60 block mb-1">Planned Test Commands</div>
+                    <CommandSpecListEditor
+                      commands={bead.testCommands}
+                      onChange={(commands) => updateBead(index, {
+                        testCommands: commands,
+                        ...(commands.length > 0 ? { testCommandReason: undefined } : {}),
+                      })}
+                      disabled={disabled}
+                    />
+                  </div>
                 </div>
 
                 {bead.testCommands.length === 0 && (
                   <div>
-                    <label className="text-[10px] font-semibold uppercase tracking-widest text-foreground/60 block mb-1">Why no automated command applies</label>
+                    <label id={fieldLabelId(index, 'command-reason')} htmlFor={fieldId(index, 'command-reason')} className="text-[10px] font-semibold uppercase tracking-widest text-foreground/60 block mb-1">Why no automated command applies</label>
                     <textarea
+                      id={fieldId(index, 'command-reason')}
                       value={bead.testCommandReason ?? ''}
                       onChange={(e) => updateBead(index, { testCommandReason: e.target.value })}
                       disabled={disabled}
@@ -175,30 +199,30 @@ export function BeadsApprovalEditor({ beads, disabled, onChange }: BeadsApproval
 
                 {/* Target Files */}
                 <div>
-                  <label className="text-[10px] font-semibold uppercase tracking-widest text-foreground/60 block mb-1">Target Files</label>
-                  <StringListEditor items={bead.targetFiles} onChange={(items) => updateBead(index, { targetFiles: items })} disabled={disabled} placeholder="src/file.ts" />
+                  <label id={fieldLabelId(index, 'targets')} className="text-[10px] font-semibold uppercase tracking-widest text-foreground/60 block mb-1">Target Files</label>
+                  <StringListEditor idPrefix={fieldId(index, 'targets')} labelId={fieldLabelId(index, 'targets')} label="Target file" items={bead.targetFiles} onChange={(items) => updateBead(index, { targetFiles: items })} disabled={disabled} placeholder="src/file.ts" />
                 </div>
 
                 {/* Context Guidance */}
                 <div>
-                  <label className="text-[10px] font-semibold uppercase tracking-widest text-foreground/60 block mb-1">Context Guidance — Patterns</label>
-                  <StringListEditor items={bead.contextGuidance.patterns} onChange={(items) => updateBead(index, { contextGuidance: { ...bead.contextGuidance, patterns: items } })} disabled={disabled} placeholder="Pattern..." />
+                  <label id={fieldLabelId(index, 'patterns')} className="text-[10px] font-semibold uppercase tracking-widest text-foreground/60 block mb-1">Context Guidance — Patterns</label>
+                  <StringListEditor idPrefix={fieldId(index, 'patterns')} labelId={fieldLabelId(index, 'patterns')} label="Pattern" items={bead.contextGuidance.patterns} onChange={(items) => updateBead(index, { contextGuidance: { ...bead.contextGuidance, patterns: items } })} disabled={disabled} placeholder="Pattern..." />
                 </div>
                 <div>
-                  <label className="text-[10px] font-semibold uppercase tracking-widest text-foreground/60 block mb-1">Context Guidance — Anti-patterns</label>
-                  <StringListEditor items={bead.contextGuidance.anti_patterns} onChange={(items) => updateBead(index, { contextGuidance: { ...bead.contextGuidance, anti_patterns: items } })} disabled={disabled} placeholder="Anti-pattern..." />
+                  <label id={fieldLabelId(index, 'anti-patterns')} className="text-[10px] font-semibold uppercase tracking-widest text-foreground/60 block mb-1">Context Guidance — Anti-patterns</label>
+                  <StringListEditor idPrefix={fieldId(index, 'anti-patterns')} labelId={fieldLabelId(index, 'anti-patterns')} label="Anti-pattern" items={bead.contextGuidance.anti_patterns} onChange={(items) => updateBead(index, { contextGuidance: { ...bead.contextGuidance, anti_patterns: items } })} disabled={disabled} placeholder="Anti-pattern..." />
                 </div>
 
                 {/* PRD Refs */}
                 <div>
-                  <label className="text-[10px] font-semibold uppercase tracking-widest text-foreground/60 block mb-1">PRD References</label>
-                  <StringListEditor items={bead.prdRefs} onChange={(items) => updateBead(index, { prdRefs: items })} disabled={disabled} placeholder="EPIC-1, US-1-1..." />
+                  <label id={fieldLabelId(index, 'prd-refs')} className="text-[10px] font-semibold uppercase tracking-widest text-foreground/60 block mb-1">PRD References</label>
+                  <StringListEditor idPrefix={fieldId(index, 'prd-refs')} labelId={fieldLabelId(index, 'prd-refs')} label="PRD reference" items={bead.prdRefs} onChange={(items) => updateBead(index, { prdRefs: items })} disabled={disabled} placeholder="EPIC-1, US-1-1..." />
                 </div>
 
                 {/* Dependencies: blocked_by */}
                 <div>
-                  <label className="text-[10px] font-semibold uppercase tracking-widest text-foreground/60 block mb-1">Blocked By</label>
-                  <StringListEditor items={bead.dependencies.blocked_by} onChange={(items) => updateBead(index, { dependencies: { ...bead.dependencies, blocked_by: items } })} disabled={disabled} placeholder="bead-id..." />
+                  <label id={fieldLabelId(index, 'blocked-by')} className="text-[10px] font-semibold uppercase tracking-widest text-foreground/60 block mb-1">Blocked By</label>
+                  <StringListEditor idPrefix={fieldId(index, 'blocked-by')} labelId={fieldLabelId(index, 'blocked-by')} label="Blocked-by bead" items={bead.dependencies.blocked_by} onChange={(items) => updateBead(index, { dependencies: { ...bead.dependencies, blocked_by: items } })} disabled={disabled} placeholder="bead-id..." />
                 </div>
 
                 {/* Read-only metadata */}

@@ -534,7 +534,7 @@ describe('Manual QA submission recovery and integrity', () => {
         },
         acceptanceCriteria: ['Item one works as specified.'],
         tests: ['Add an automated regression test for item one.'],
-        testCommands: ['npm run test:server'],
+        testCommands: [{ mode: 'process', program: 'npm', args: ['run', 'test:server'], cwd: '.', env: {} }],
         labels: ['manual-qa'],
         blockedByGroupIds: [],
         targetFiles: ['src/item-one.ts'],

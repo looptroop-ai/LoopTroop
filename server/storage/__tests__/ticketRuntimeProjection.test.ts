@@ -1,5 +1,5 @@
 import { afterAll, beforeEach, describe, expect, it } from 'vitest'
-import { existsSync, readFileSync } from 'node:fs'
+import { existsSync, readFileSync, writeFileSync } from 'node:fs'
 import * as yaml from 'js-yaml'
 import type { Bead } from '../../phases/beads/types'
 import { TEST } from '../../test/factories'
@@ -111,5 +111,22 @@ describe('ticket runtime projection', () => {
     syncTicketRuntimeProjection(ticket.id)
 
     expect(existsSync(statePath)).toBe(false)
+  })
+
+  it('writes tracker damage diagnostics while retaining valid bead rows', async () => {
+    const { ticket, paths } = await createInitializedTestTicket(repoManager, {
+      title: 'Projection tracker diagnostics',
+    })
+    writeFileSync(paths.beadsPath, '{"id":"valid-bead","status":"pending"}\nnot-json\n')
+
+    syncTicketRuntimeProjection(ticket.id)
+
+    const statePath = `${paths.ticketDir}/runtime/state.yaml`
+    const state = yaml.load(readFileSync(statePath, 'utf8')) as {
+      runtime: { beadsDiagnostics: { malformedLines: number[]; unrepresentableLines: number[] } | null }
+      beads: Array<{ id: string }>
+    }
+    expect(state.runtime.beadsDiagnostics).toEqual({ malformedLines: [2], unrepresentableLines: [] })
+    expect(state.beads.map((bead) => bead.id)).toEqual(['valid-bead'])
   })
 })

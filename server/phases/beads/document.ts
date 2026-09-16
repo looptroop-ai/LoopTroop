@@ -8,6 +8,14 @@ import { contentSha256 } from '../../lib/contentHash'
 import { nowIso } from '../../lib/dateUtils'
 import { commandSpecSchema } from '@shared/commandSpec'
 import { parseJsonlContent } from '../../io/jsonl'
+import {
+  canonicalizeBeadAliases,
+  describeBeadShapeProblem,
+  deriveBeadBlocks,
+  reconcileStoredBeadStatus,
+  validateBeadDependencyGraph,
+} from './beadsFile'
+import { isRecord } from '@shared/typeGuards'
 
 /**
  * The plan cannot be approved as written, and a person has to edit it.
@@ -53,7 +61,9 @@ export function approveBeadsDocument(ticketId: string, expectedContentSha256: st
   try {
     content = readFileNoFollowSync(beadsPath)
   } catch (error) {
-    if ((error as NodeJS.ErrnoException).code === 'ENOENT') throw new Error('Beads artifact not found')
+    if ((error as NodeJS.ErrnoException).code === 'ENOENT') {
+      throw new BeadPlanValidationError('Beads artifact not found')
+    }
     throw error
   }
   const reviewedContentSha256 = assertExpectedContentSha256({
@@ -85,7 +95,17 @@ export function approveBeadsDocument(ticketId: string, expectedContentSha256: st
     if (typeof parsed !== 'object' || parsed === null || Array.isArray(parsed)) {
       throw new BeadPlanValidationError(`Bead at line ${line} is not a JSON object`)
     }
-    parsedRecords.push(parsed as Record<string, unknown>)
+    const canonical = canonicalizeBeadAliases(parsed as Record<string, unknown>)
+    // `blocked_by` is the only dependency edge a person edits. The inverse is
+    // derived below, so an otherwise valid JSONL repair may omit `blocks`.
+    // Give the shared shape check the safe empty placeholder; a present value
+    // still has to be a string list and is never silently repaired here.
+    const dependencies = isRecord(canonical.dependencies) ? canonical.dependencies : null
+    parsedRecords.push(
+      dependencies && dependencies.blocks === undefined
+        ? { ...canonical, dependencies: { ...dependencies, blocks: [] } }
+        : canonical,
+    )
   }
 
   for (const [index, record] of parsedRecords.entries()) {
@@ -93,9 +113,8 @@ export function approveBeadsDocument(ticketId: string, expectedContentSha256: st
     // record's position counts only what parsed, so with a blank line above it
     // approval named a line the operator's editor does not hold that bead on.
     const line = itemLines[index] ?? index + 1
-    if (typeof record.id !== 'string' || !record.id.trim()) {
-      throw new BeadPlanValidationError(`Bead at line ${line} is missing a valid "id" field`)
-    }
+    const shapeProblem = describeBeadShapeProblem(record)
+    if (shapeProblem) throw new BeadPlanValidationError(`Bead at line ${line} ${shapeProblem}`)
     if (typeof record.title !== 'string' || !record.title.trim()) {
       throw new BeadPlanValidationError(`Bead at line ${line} is missing a valid "title" field`)
     }
@@ -119,12 +138,37 @@ export function approveBeadsDocument(ticketId: string, expectedContentSha256: st
     }
   }
 
+  // blocked_by is the scheduler's authoritative edge. Rebuild the inverse
+  // rather than trusting a stale `blocks` list from a human edit, then run the
+  // same dangling/self/cycle checks the pre-flight contract reports.
+  const normalizedRecords = parsedRecords.map((record) => {
+    if (typeof record.status !== 'string') return record
+    const reconciled = reconcileStoredBeadStatus(record.status, String(record.id))
+    return { ...record, status: reconciled.status }
+  })
+  const graphRecords = deriveBeadBlocks(normalizedRecords)
+  const graphErrors = validateBeadDependencyGraph(graphRecords.flatMap((record) => {
+    if (!isRecord(record.dependencies) || !Array.isArray(record.dependencies.blocked_by) || !Array.isArray(record.dependencies.blocks)) {
+      return []
+    }
+    return [{
+      id: String(record.id),
+      dependencies: {
+        blocked_by: record.dependencies.blocked_by.filter((dependency): dependency is string => typeof dependency === 'string'),
+        blocks: record.dependencies.blocks.filter((dependency): dependency is string => typeof dependency === 'string'),
+      },
+    }]
+  }))
+  if (graphErrors.length > 0) {
+    throw new BeadPlanValidationError(graphErrors.join('; '))
+  }
+
   // Stamp createdAt on all beads at approval time
   const approvedAt = nowIso()
   // Rewritten from the records already parsed above rather than re-parsing the
   // text: two passes over the same lines is two chances to disagree about what
   // the file holds.
-  const updatedLines = parsedRecords.map((record) => JSON.stringify({ ...record, createdAt: approvedAt }))
+  const updatedLines = graphRecords.map((record) => JSON.stringify({ ...record, createdAt: approvedAt }))
 
   const updatedContent = updatedLines.join('\n') + '\n'
   writeTicketFile(ticketId, relative(paths.ticketDir, beadsPath), updatedContent)

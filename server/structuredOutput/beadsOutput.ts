@@ -26,20 +26,14 @@ import {
 import { takeRefinementChanges } from './refinementChanges'
 import { buildStructuredOutputFailure } from './failure'
 import { getErrorMessage } from '@shared/typeGuards'
-import { normalizeCommandSpec, renderCommandSpec, type CommandSpec } from '@shared/commandSpec'
-import { detectHostContext } from '../lib/hostContext'
+import { commandSpecSchema, renderCommandSpec, type CommandSpec } from '@shared/commandSpec'
 
-function normalizeCommandSpecs(value: unknown, label: string, repairWarnings: string[]): CommandSpec[] {
+function normalizeCommandSpecs(value: unknown, label: string): CommandSpec[] {
   if (!Array.isArray(value)) throw new Error(`${label} is missing the testCommands list`)
-  const host = detectHostContext()
   return value.map((command, index) => {
-    try {
-      const normalized = normalizeCommandSpec(command, host)
-      if (normalized.warning) repairWarnings.push(`${label}[${index}]: ${normalized.warning}`)
-      return normalized.command
-    } catch {
-      throw new Error(`${label} contains an invalid test command`)
-    }
+    const parsed = commandSpecSchema.safeParse(command)
+    if (!parsed.success) throw new Error(`${label} contains an invalid test command (expected a structured CommandSpec) at index ${index}`)
+    return parsed.data
   })
 }
 
@@ -198,7 +192,7 @@ function normalizeBeadSubsetEntry(value: unknown, index: number, repairWarnings:
     : `bead-${index + 1}`
 
   const testCommandsValue = getValueByAliases(value, ['testCommands', 'test_commands', 'commands'])
-  const testCommands = normalizeCommandSpecs(testCommandsValue, `Bead ${id}`, repairWarnings)
+  const testCommands = normalizeCommandSpecs(testCommandsValue, `Bead ${id}`)
   const testCommandReasonValue = getValueByAliases(value, ['testCommandReason', 'test_command_reason'])
   if (testCommandReasonValue !== undefined && (typeof testCommandReasonValue !== 'string' || !testCommandReasonValue.trim())) {
     throw new Error(`Bead ${id} contains an invalid testCommandReason`)
@@ -828,7 +822,7 @@ function normalizeBeadRecord(value: unknown, index: number, repairWarnings: stri
   const status = normalizeBeadStatus(getValueByAliases(value, ['status']), `Bead at index ${index}`, repairWarnings)
 
   const testCommandsValue = getValueByAliases(value, ['testCommands', 'test_commands'])
-  const testCommands = normalizeCommandSpecs(testCommandsValue, `Bead at index ${index}`, repairWarnings)
+  const testCommands = normalizeCommandSpecs(testCommandsValue, `Bead at index ${index}`)
   const testCommandReasonValue = getValueByAliases(value, ['testCommandReason', 'test_command_reason'])
   if (testCommandReasonValue !== undefined && (typeof testCommandReasonValue !== 'string' || !testCommandReasonValue.trim())) {
     throw new Error(`Bead at index ${index} contains an invalid testCommandReason`)

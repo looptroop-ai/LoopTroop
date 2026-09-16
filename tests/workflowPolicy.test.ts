@@ -105,6 +105,32 @@ describe('release workflow policy', () => {
     }
   })
 
+  it('pins only standalone binary jobs to Node 26.9.0 and blocks embedded-runtime app checks', () => {
+    for (const file of ['ci.yml', 'release.yml']) {
+      const text = source.get(file)!
+      const start = text.indexOf('  binary:')
+      if (start === -1) throw new Error(`${file}: binary job missing`)
+      const nextJob = /\n {2}[A-Za-z0-9_-]+:/.exec(text.slice(start + 3))
+      const end = nextJob === null ? text.length : start + 3 + nextJob.index
+      const binary = text.slice(start, end)
+
+      expect(binary, `${file}: binary runtime`).toContain('node-version: 26.9.0')
+      expect(binary, `${file}: binary runtime`).not.toContain('node-version: 24.18.1')
+      expect(binary, `${file}: embedded-runtime check`).toContain('Run blocking application checks on the embedded runtime')
+      expect(binary, `${file}: embedded-runtime check`).toContain('doctor --json')
+      expect(binary, `${file}: embedded-runtime check`).toContain('v26.9.0 (latest')
+      expect(binary, `${file}: binary job`).not.toContain('continue-on-error:')
+
+      expect((text.match(/^\s*node-version:\s*26\.9\.0\s*$/gm) ?? []).length, `${file}: only binary jobs pin Node 26.9.0`).toBe(1)
+    }
+
+    const earlyWarning = source.get('ci.yml')!.slice(
+      source.get('ci.yml')!.indexOf('  early-warning:'),
+    )
+    expect(earlyWarning).toContain('continue-on-error: true')
+    expect(earlyWarning).toContain('node-version: 26')
+  })
+
   it('keeps OIDC and attestation permissions off dependency/build jobs', () => {
     for (const [file, workflow] of workflows) {
       for (const [jobName, job] of Object.entries(workflow.jobs ?? {})) {

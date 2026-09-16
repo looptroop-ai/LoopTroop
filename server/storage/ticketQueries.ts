@@ -16,8 +16,7 @@ import {
   getTicketExecutionSetupProfilePath,
   getTicketWorktreePath,
 } from './paths'
-import { readJsonl } from '../io/jsonl'
-import { reconcileStoredBeadStatus } from '../phases/beads/beadsFile'
+import { readBeadsFileWithDiagnostics } from '../phases/beads/beadsFile'
 import { getAvailableWorkflowActions, isTerminalWorkflowStatus } from '@shared/workflowMeta'
 import { getTicketBeadsPath, resolveTicketBaseBranch } from '../ticket/metadata'
 import { resolveProjectTicketContainedPath, writeProjectTicketFile } from '../ticket/containedPath'
@@ -38,7 +37,7 @@ import type { GitHookPolicy } from '../structuredOutput/types'
 import { clampAiQuestionWindowMs } from '@shared/aiQuestions'
 import { questionWaitOverlapMs } from './questionWaits'
 import { getPendingQuestionSummary } from '../workflow/questionWindows'
-import { getErrorMessage, isRecord } from '@shared/typeGuards'
+import { getErrorMessage } from '@shared/typeGuards'
 
 type LocalTicketRow = typeof tickets.$inferSelect
 type LocalProjectRow = typeof projects.$inferSelect
@@ -244,6 +243,10 @@ export interface PublicTicket extends Omit<LocalTicketRow, 'id' | 'lockedCouncil
     activeBeadIteration: number | null
     lastFailedBeadId: string | null
     artifactRoot: string
+    beadsDiagnostics: {
+      malformedLines: number[]
+      unrepresentableLines: number[]
+    } | null
     beads: Array<{
       id: string
       title: string
@@ -889,6 +892,7 @@ export function toPublicTicket(projectId: number, ticket: LocalTicketRow): Publi
     activeBeadIteration: null,
     lastFailedBeadId: null,
     artifactRoot: '',
+    beadsDiagnostics: null,
     beads: [],
     candidateCommitSha: null,
     preSquashHead: null,
@@ -1140,7 +1144,8 @@ function buildRuntime(
     prState?: 'draft' | 'open' | 'merged' | 'closed' | null
     prHeadSha?: string | null
   }>(pullRequestArtifact?.content)
-  const beads = readRuntimeBeads(projectRoot, ticket.externalId, baseBranch)
+  const runtimeBeadRead = readRuntimeBeads(projectRoot, ticket.externalId, baseBranch)
+  const beads = runtimeBeadRead.beads
   const inProgressBead = beads.find((bead) => bead.status === 'in_progress') ?? null
   const lastFailedBead = [...beads]
     .filter((bead) => bead.status === 'error')
@@ -1193,6 +1198,7 @@ function buildRuntime(
     activeBeadIteration: inProgressBead?.iteration ?? (blockedFromCoding ? lastFailedBead?.iteration ?? null : null),
     lastFailedBeadId: blockedFromCoding ? lastFailedBead?.id ?? null : null,
     artifactRoot,
+    beadsDiagnostics: runtimeBeadRead.diagnostics,
     beads: beads.map((bead) => ({
       id: bead.id,
       title: bead.title,
@@ -1220,37 +1226,48 @@ function buildRuntime(
 }
 
 function readRuntimeBeads(projectRoot: string, externalId: string, baseBranch: string) {
+  // This is a read-only board projection, so it may keep the valid rows while
+  // warning about a damaged tracker. Authoritative execution reads use the
+  // default fail-closed policy; this projection must not turn one bad line into
+  // a blank board and hide the work an operator needs to repair.
+  let beadsPath: string
   try {
-    return readJsonl<unknown>(getTicketBeadsPath(projectRoot, externalId, baseBranch))
-      // `JSON.parse('null')` succeeds, so a `null` line survives `readJsonl` and
-      // then threw on the first property read below. The throw was caught by the
-      // function's own handler, which returns `[]`, so one malformed line blanked
-      // every bead on the board while the scheduler — reading the same file
-      // through `readBeadsFile` — carried on with them.
-      .filter((bead): bead is Record<string, unknown> => isRecord(bead))
-      .map((bead) => {
-        const qaOrigin = RuntimeQaOriginSchema.safeParse(bead.qaOrigin)
-        return {
-          id: typeof bead.id === 'string' ? bead.id : '',
-          title: typeof bead.title === 'string' ? bead.title : 'Untitled',
-          // The scheduler reads through `readBeadsFile`, which reconciles a
-          // legacy stored status. This projection feeds the board, the watch
-          // view and the public ticket payload, and used to show the raw stored
-          // string, so the same bead read as `complete` here and `done` there.
-          status: reconcileStoredBeadStatus(bead.status, typeof bead.id === 'string' ? bead.id : '').status,
-          iteration: typeof bead.iteration === 'number' ? bead.iteration : 0,
-          failedIterationNotes: Array.isArray(bead.failedIterationNotes) ? bead.failedIterationNotes : [],
-          userRetryNotes: Array.isArray(bead.userRetryNotes) ? bead.userRetryNotes : [],
-          finalizationFailureNotes: Array.isArray(bead.finalizationFailureNotes) ? bead.finalizationFailureNotes : [],
-          updatedAt: typeof bead.updatedAt === 'string' ? bead.updatedAt : null,
-          startedAt: typeof bead.startedAt === 'string' ? bead.startedAt : null,
-          completedAt: typeof bead.completedAt === 'string' ? bead.completedAt : null,
-          qaOrigin: qaOrigin.success ? qaOrigin.data : null,
-        }
-      })
-      .filter((bead) => bead.id.length > 0)
-  } catch {
-    return []
+    beadsPath = getTicketBeadsPath(projectRoot, externalId, baseBranch)
+  } catch (error) {
+    // An unsafe ticket workspace is not a malformed tracker. Keep the ticket
+    // visible while refusing to follow the path, as the other public runtime
+    // fields do for an unsafe workspace.
+    if (error instanceof ContainedPathError) {
+      console.warn(`[tickets] Refusing runtime beads outside the ticket worktree for ${externalId}.`)
+      return { beads: [], diagnostics: null }
+    }
+    throw error
+  }
+  try {
+    const result = readBeadsFileWithDiagnostics(beadsPath, { malformedEntries: 'skip' })
+    const beads = result.beads.map((bead) => {
+      const qaOrigin = RuntimeQaOriginSchema.safeParse(bead.qaOrigin)
+      return {
+        id: bead.id,
+        title: typeof bead.title === 'string' ? bead.title : 'Untitled',
+        status: bead.status,
+        iteration: typeof bead.iteration === 'number' ? bead.iteration : 0,
+        failedIterationNotes: Array.isArray(bead.failedIterationNotes) ? bead.failedIterationNotes : [],
+        userRetryNotes: Array.isArray(bead.userRetryNotes) ? bead.userRetryNotes : [],
+        finalizationFailureNotes: Array.isArray(bead.finalizationFailureNotes) ? bead.finalizationFailureNotes : [],
+        updatedAt: typeof bead.updatedAt === 'string' ? bead.updatedAt : null,
+        startedAt: typeof bead.startedAt === 'string' ? bead.startedAt : null,
+        completedAt: typeof bead.completedAt === 'string' ? bead.completedAt : null,
+        qaOrigin: qaOrigin.success ? qaOrigin.data : null,
+      }
+    })
+    const diagnostics = result.diagnostics.malformedLines.length > 0 || result.diagnostics.unrepresentableLines.length > 0
+      ? result.diagnostics
+      : null
+    return { beads, diagnostics }
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === 'ENOENT') return { beads: [], diagnostics: null }
+    throw error
   }
 }
 

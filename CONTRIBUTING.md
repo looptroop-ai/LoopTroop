@@ -86,6 +86,12 @@ arguments, while published smoke checks read `doctor --json`'s structured
 `checks[].install.channel` and `checks[].install.upgradeCommand` fields instead
 of display prose.
 
+Standalone binary jobs use Node `v26.9.0`'s native `--build-sea` builder. This is
+an embedded-runtime pin only: application, package and container jobs keep the
+Node `24.18.1` floor. If that embedded runtime changes, review Node's release
+schedule separately, and preserve the CommonJS asset bundle, disabled code
+cache and disabled snapshot settings across all four binary target lanes.
+
 ## Issues
 
 Before opening an issue, please check whether a similar issue already exists.

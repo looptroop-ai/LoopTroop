@@ -26,8 +26,7 @@ import type {
   ManualQaEvidenceRef,
   ManualQaModelCapabilitySnapshot,
 } from './types'
-import { normalizeCommandSpec } from '@shared/commandSpec'
-import { detectHostContext } from '../../lib/hostContext'
+import { commandSpecSchema } from '@shared/commandSpec'
 import { getManualQaEvidenceRelativePath, getManualQaStoragePaths, readManualQaText, writeManualQaText } from './storage'
 import { readManualQaPrd } from './prd'
 import { getErrorMessage } from '@shared/typeGuards'
@@ -48,7 +47,7 @@ const CandidateSchema = z.object({
   }).strict(),
   acceptanceCriteria: z.array(z.string().trim().min(1)).min(1),
   tests: z.array(z.string().trim().min(1)).min(1),
-  testCommands: z.array(z.string().trim().min(1)),
+  testCommands: z.array(commandSpecSchema),
   testCommandReason: z.string().trim().min(1).optional(),
   labels: z.array(z.string().trim().min(1)).min(1),
   blockedByGroupIds: z.array(z.string().trim().min(1)).default([]),
@@ -552,9 +551,7 @@ export function hydrateManualQaFixBeads(input: {
       contextGuidance: candidate.contextGuidance,
       acceptanceCriteria: candidate.acceptanceCriteria,
       tests: candidate.tests,
-      testCommands: candidate.testCommands.map(
-        (command) => normalizeCommandSpec(command, detectHostContext()).command,
-      ),
+      testCommands: candidate.testCommands,
       ...(candidate.testCommandReason ? { testCommandReason: candidate.testCommandReason } : {}),
       priority: maxPriority + index + 1,
       status: 'pending',

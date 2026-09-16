@@ -376,6 +376,38 @@ describe('handleExecutionSetup', () => {
     expect(sendEvent).not.toHaveBeenCalledWith({ type: 'EXECUTION_SETUP_READY' })
   })
 
+  it('reports an unreadable bead tracker instead of treating it as having no test commands', async () => {
+    const { ticket, context, paths } = await createInitializedTestTicket(repoManager, {
+      title: 'Execution setup malformed bead tracker',
+    })
+    writeExecutionSetupPlan(ticket.id, ticket.externalId)
+    writeFileSync(paths.beadsPath, '{"id":"bead-1","testCommands":[]}\nnot-json\n')
+
+    executeExecutionSetupWithRetriesMock.mockImplementationOnce(async (...args: unknown[]) => {
+      const callbacks = args[5] as {
+        evaluateGeneration: (entry: { attempt: number; generation: unknown }) => Promise<ExecutionSetupReport>
+      }
+      return await callbacks.evaluateGeneration({
+        attempt: 1,
+        generation: buildExecutionSetupGeneration({ profile: readyExecutionSetupProfile(ticket.externalId) }),
+      })
+    })
+
+    const sendEvent = vi.fn()
+    await handleExecutionSetup(
+      ticket.id,
+      { ...context, lockedMainImplementer: TEST.implementer },
+      sendEvent,
+      new AbortController().signal,
+    )
+
+    expect(sendEvent).toHaveBeenCalledWith({
+      type: 'EXECUTION_SETUP_FAILED',
+      errors: [expect.stringContaining('unparseable JSON at line(s) 2')],
+    })
+    expect(sendEvent).not.toHaveBeenCalledWith({ type: 'EXECUTION_SETUP_READY' })
+  })
+
   it('caps backend setup probes at the time remaining in the aggregate attempt', async () => {
     const { ticket, context } = await createInitializedTestTicket(repoManager, {
       title: 'Execution setup remaining validation budget',

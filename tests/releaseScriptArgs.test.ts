@@ -12,6 +12,20 @@ function fixtureScript(path: string, body: string): void {
 }
 
 describe('release script argument contracts', () => {
+  it('uses the pinned native SEA builder without a legacy injector fallback', () => {
+    const builder = readFileSync(join(repo, 'scripts/build-binary.mjs'), 'utf8')
+
+    expect(builder).toContain("const EMBEDDED_NODE_VERSION = 'v26.9.0'")
+    expect(builder).toContain("['--build-sea', join(work, 'sea-config.json')]")
+    expect(builder).toContain("mainFormat: 'commonjs'")
+    expect(builder).toContain('output: binaryPath')
+    expect(builder).toContain('useCodeCache: false')
+    expect(builder).toContain('useSnapshot: false')
+    expect(builder).not.toContain('postject')
+    expect(builder).not.toContain('--experimental-sea-config')
+    expect(builder).not.toContain('sea-prep.blob')
+  })
+
   it('rejects malformed entrypoints before any release or build action', () => {
     const work = mkdtempSync(join(tmpdir(), 'looptroop-release-args-'))
     const marker = join(work, 'invoked')

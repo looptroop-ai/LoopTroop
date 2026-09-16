@@ -9,24 +9,25 @@
  * refuses anything but an `.exe`, and `ubi` and `eget` fetch a binary or
  * nothing. This is what serves those.
  *
- * ## Why the two-step flow and not `--build-sea`
+ * ## Why the standalone builder pins Node 26.9.0
  *
- * `node --build-sea` is one command and arrived in Node 25.5. This project
- * pins 24.18.1 everywhere, and 24 has only `--experimental-sea-config` plus
- * `postject`. Building on a newer Node would embed a runtime the test matrix
- * never exercises, which contradicts the floor being a promise on all three
- * platforms — and Node 25 is EOL besides. Revisit at the Node 26 LTS bump,
- * which is already on the floor-bump checklist.
+ * Native `node --build-sea` generation arrived in Node 25.5 and is the
+ * maintained path in Node 26.9.0. It writes the final executable directly,
+ * including the bundled CommonJS entry point and assets, so there is no
+ * preparation blob, copy step or third-party injector to keep in sync.
  *
- * A hard constraint follows: the Node that produces the blob must be the same
- * version as the Node it is injected into, so this copies the running
- * executable rather than downloading one.
+ * The application and package still support the Node 24.18.1 floor. A
+ * standalone executable is different: its embedded runtime is the builder's
+ * runtime, so this script refuses every version except Node 26.9.0. The binary
+ * CI and release jobs pin that exact runtime; other jobs keep the application
+ * floor. This is an explicit binary-toolchain boundary, not a package-engine
+ * bump.
  *
  * ## Why CommonJS
  *
- * Node 24's SEA runs a CommonJS script and has no `mainFormat`. The entry is
- * therefore bundled as CJS — one esbuild flag, and the package already ships a
- * `.cjs` launcher, so nothing about that is new.
+ * The injected entry is deliberately CommonJS. It is bundled as CJS — one
+ * esbuild flag, and the package already ships a `.cjs` launcher, so nothing
+ * about that is new.
  *
  * `import.meta` does not exist in CommonJS output, and six modules read
  * `import.meta.url` — one of them at the top level, where the failure would be
@@ -70,6 +71,15 @@ try {
 }
 const outDir = resolve(parsedArgs.value('out') ?? join(repoRoot, 'dist-binary'))
 
+const EMBEDDED_NODE_VERSION = 'v26.9.0'
+if (process.version !== EMBEDDED_NODE_VERSION) {
+  fail(
+    `Standalone binaries must be built with Node ${EMBEDDED_NODE_VERSION}.`,
+    `This process is running ${process.version}.`,
+    'Use the pinned binary CI/release runtime; there is no legacy SEA fallback.',
+  )
+}
+
 const pkg = JSON.parse(readFileSync(join(repoRoot, 'package.json'), 'utf8'))
 const version = pkg.version
 
@@ -111,7 +121,7 @@ if (!existsSync(join(clientDir, 'index.html'))) {
 /**
  * A fixed staging path, not a temporary one.
  *
- * The SEA blob embeds the absolute path of the script it was built from, so a
+ * The native SEA config embeds the absolute path of the bundled entry, so a
  * `mkdtemp` directory makes every build produce different bytes — proved by
  * building twice and comparing. Inside `node_modules` because that is already
  * ignored by git and by every packaging gate.
@@ -289,7 +299,8 @@ try {
 
   writeFileSync(join(work, 'sea-config.json'), `${JSON.stringify({
     main: entry,
-    output: join(work, 'sea-prep.blob'),
+    mainFormat: 'commonjs',
+    output: binaryPath,
     disableExperimentalSEAWarning: true,
     // `import()` does not work with the code cache, and every CLI command is a
     // lazy import. Snapshots are incompatible with the rest of this anyway.
@@ -298,35 +309,14 @@ try {
     assets,
   }, null, 2)}\n`)
 
-  process.stdout.write('Preparing the blob...\n')
-  run(process.execPath, ['--experimental-sea-config', join(work, 'sea-config.json')], { cwd: work })
-
   mkdirSync(outDir, { recursive: true })
   rmSync(binaryPath, { force: true })
-  copyFileSync(process.execPath, binaryPath)
-  chmodSync(binaryPath, 0o755)
 
-  // macOS requires signature removal before injection. Node's Windows SEA flow
-  // makes removal optional and permits postject's signature diagnostic when
-  // it is skipped; the resulting binary is still checked before publication.
-  if (process.platform === 'darwin') {
-    run('codesign', ['--remove-signature', binaryPath])
-  }
+  process.stdout.write('Building the native single executable...\n')
+  run(process.execPath, ['--build-sea', join(work, 'sea-config.json')], { cwd: work })
 
-  process.stdout.write('Injecting...\n')
-  run(process.execPath, [
-    join(repoRoot, 'node_modules', 'postject', 'dist', 'cli.js'),
-    binaryPath,
-    'NODE_SEA_BLOB',
-    join(work, 'sea-prep.blob'),
-    '--sentinel-fuse', 'NODE_SEA_FUSE_fce680ab2cc467b6e072b8b5df1996b2',
-    // The Mach-O segment the blob lives in. Only macOS needs it, and injection
-    // fails without it there.
-    ...(process.platform === 'darwin' ? ['--macho-segment-name', 'NODE_SEA'] : []),
-  ], { cwd: repoRoot })
-
-  // Ad-hoc, which is free and is not notarization. Without it an arm64 binary
-  // will not execute at all: macOS refuses an unsigned one outright.
+  // Ad-hoc signing, which is free and is not notarization. Without it an arm64
+  // binary will not execute at all: macOS refuses an unsigned one outright.
   if (process.platform === 'darwin') {
     run('codesign', ['--sign', '-', binaryPath])
   }

@@ -2,6 +2,14 @@ import { describe, expect, it, vi } from 'vitest'
 import { normalizeBeadsJsonlOutput } from '../index'
 import { reconcileStoredBeadStatus } from '../../phases/beads/beadsFile'
 
+const TEST_COMMAND = {
+  mode: 'shell' as const,
+  shell: 'posix' as const,
+  script: 'npm run test',
+  cwd: '.',
+  env: {},
+}
+
 function buildBeadRecord(overrides: Record<string, unknown> = {}): Record<string, unknown> {
   return {
     id: 'bead-1',
@@ -14,7 +22,7 @@ function buildBeadRecord(overrides: Record<string, unknown> = {}): Record<string
     },
     acceptanceCriteria: ['done'],
     tests: ['test'],
-    testCommands: ['npm run test'],
+    testCommands: [TEST_COMMAND],
     priority: 1,
     status: 'pending',
     labels: [],
@@ -120,8 +128,8 @@ describe('bead iteration clamping', () => {
 
   it('uses the canonical testCommands field when both spellings are present', () => {
     const result = parseBead({
-      testCommands: ['npm run canonical'],
-      test_commands: ['npm run legacy'],
+      testCommands: [{ ...TEST_COMMAND, script: 'npm run canonical' }],
+      test_commands: [{ ...TEST_COMMAND, script: 'npm run legacy' }],
     })
     expect(result.ok).toBe(true)
     if (!result.ok) return
@@ -199,7 +207,7 @@ describe('readBeadsFile', () => {
     // The Manual QA evidence manifest decides which images reach a prompt, so a
     // line that quietly disappears becomes evidence that silently never arrives.
     expect(() => readBeadsFile(path, { malformedEntries: 'fail' })).toThrow('unparseable JSON at line')
-    expect(readBeadsFile(path).map((bead) => bead.id)).toEqual(['bead-1'])
+    expect(readBeadsFile(path, { malformedEntries: 'skip' }).map((bead) => bead.id)).toEqual(['bead-1'])
   })
 
   it('fails closed on an entry with no id when the read is authoritative', async () => {
@@ -234,7 +242,7 @@ describe('readBeadsFile', () => {
 
     const warn = vi.spyOn(console, 'warn').mockImplementation(() => {})
     try {
-      const beads = readBeadsFile(path)
+      const beads = readBeadsFile(path, { malformedEntries: 'skip' })
       expect(beads.map((bead) => bead.id)).toEqual(['bead-1'])
       expect(warn).toHaveBeenCalledTimes(3)
     } finally {
@@ -261,7 +269,7 @@ describe('readBeadsFile', () => {
 
     const warn = vi.spyOn(console, 'warn').mockImplementation(() => {})
     try {
-      expect(readBeadsFile(path).map((bead) => bead.id)).toEqual(['bead-3'])
+      expect(readBeadsFile(path, { malformedEntries: 'skip' }).map((bead) => bead.id)).toEqual(['bead-3'])
     } finally {
       warn.mockRestore()
     }
@@ -292,7 +300,7 @@ describe('readBeadsFile', () => {
 
     const warn = vi.spyOn(console, 'warn').mockImplementation(() => {})
     try {
-      expect(readBeadsFile(path).map((bead) => bead.id)).toEqual(['good'])
+      expect(readBeadsFile(path, { malformedEntries: 'skip' }).map((bead) => bead.id)).toEqual(['good'])
     } finally {
       warn.mockRestore()
     }
@@ -378,7 +386,7 @@ describe('readBeadsFile', () => {
     expect(() => readBeadsFile(path, { malformedEntries: 'fail' })).toThrow('at line(s) 3')
     const warn = vi.spyOn(console, 'warn').mockImplementation(() => {})
     try {
-      readBeadsFile(path)
+      readBeadsFile(path, { malformedEntries: 'skip' })
       expect(warn).toHaveBeenCalledWith(expect.stringContaining('at line 4'))
     } finally {
       warn.mockRestore()

@@ -692,7 +692,7 @@ function redact(text) {
 // inside a packaging change would touch all eleven.
 // ---------------------------------------------------------------------------
 
-function run(command, args, options = {}) {
+export function run(command, args, options = {}) {
   // Resolved against the environment the child gets, and started the way the
   // daemon starts a program: a Windows command script — npm.cmd, yarn.cmd, the
   // installed looptroop.cmd — through a resolved cmd.exe with every argument
@@ -708,17 +708,20 @@ function run(command, args, options = {}) {
     env,
     windowsVerbatimArguments: launch.windowsVerbatimArguments,
   })
-  // A null status means the process never started — almost always because the
-  // command is not on PATH. Left as `exit null: ` with empty output it reads as
-  // a mysterious failure of the thing being tested; `spawnSync` puts the real
-  // reason in `error`, so surface it.
+  // A null status means the process never started. The resolved file can still
+  // exist: a missing cwd, interpreter or loader also reports ENOENT. Keep the
+  // launch target and the operating-system error together so this cannot be
+  // mistaken for a resolver miss.
   const combined = `${result.stdout ?? ''}${result.stderr ?? ''}`
+  const launchFailure = result.error
+    ? `${launch.file}: ${result.error.code ?? 'launch failed'}: ${result.error.message ?? String(result.error)}`
+    : ''
   return {
     code: result.status,
     stdout: result.stdout ?? '',
     stderr: result.stderr ?? '',
     combined: result.status === null && result.error
-      ? `${combined}${result.error.code === 'ENOENT' ? `${command} is not on PATH` : String(result.error.message)}`
+      ? `${combined}${launchFailure}`
       : combined,
   }
 }

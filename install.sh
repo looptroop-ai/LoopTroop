@@ -3153,7 +3153,7 @@ trap 'forward INT' INT
 trap 'forward TERM' TERM
 trap 'forward HUP' HUP
 
-LOOPTROOP_INSTALL_STYLE=sh node "$core" "$@" &
+LOOPTROOP_INSTALL_STYLE='sh' node "$core" "$@" &
 child=$!
 
 # A trapped signal interrupts `wait` and makes it report the signal rather than

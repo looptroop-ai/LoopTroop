@@ -5,7 +5,7 @@ import type {
   RefinementChangeItem,
   RefinementChangeType,
 } from '@shared/refinementChanges'
-import { isRecord, normalizeKey, getValueByAliases, toOrdinalInteger, toOptionalString } from './yamlUtils'
+import { isRecord, normalizeKey, getValueByAliases, toOrdinalInteger, toOptionalString, withAliasConflictWarnings } from './yamlUtils'
 
 function normalizeRefinementChangeType(value: unknown): RefinementChangeType | null {
   const raw = toOptionalString(value)
@@ -139,52 +139,54 @@ export function parseRefinementChanges(
   const changes: RefinementChange[] = []
   const repairWarnings: string[] = []
 
-  for (let index = 0; index < rawChanges.length; index += 1) {
-    const entry = rawChanges[index]
-    if (!isRecord(entry)) {
-      repairWarnings.push(`Skipped non-object refinement change at index ${index}.`)
-      continue
+  return withAliasConflictWarnings(repairWarnings, () => {
+    for (let index = 0; index < rawChanges.length; index += 1) {
+      const entry = rawChanges[index]
+      if (!isRecord(entry)) {
+        repairWarnings.push(`Skipped non-object refinement change at index ${index}.`)
+        continue
+      }
+
+      const type = normalizeRefinementChangeType(getValueByAliases(entry, ['type', 'change_type']))
+      if (!type) {
+        repairWarnings.push(`Skipped refinement change at index ${index} with invalid type.`)
+        continue
+      }
+
+      const itemType = toOptionalString(getValueByAliases(entry, ['item_type', 'itemType', 'itemtype']))
+
+      const rawBefore = getValueByAliases(entry, ['before'])
+      const rawAfter = getValueByAliases(entry, ['after'])
+      if (rawBefore === undefined && rawAfter === undefined && hasSummaryOnlyChangeMetadata(entry)) {
+        repairWarnings.push(`Skipped refinement change at index ${index} with path/summary metadata only; semantic before/after item records are required.`)
+        continue
+      }
+
+      const before = rawBefore === null ? null : normalizeRefinementChangeItem(rawBefore)
+      const after = rawAfter === null ? null : normalizeRefinementChangeItem(rawAfter)
+
+      const rawInspiration = getValueByAliases(entry, ['inspiration', 'inspired_by'])
+      const inspiration = rawInspiration === null || rawInspiration === undefined
+        ? null
+        : normalizeRefinementInspiration(rawInspiration, losingDraftMeta)
+      const attributionStatus: RefinementChangeAttributionStatus = inspiration
+        ? 'inspired'
+        : rawInspiration === null || rawInspiration === undefined
+          ? 'model_unattributed'
+          : 'invalid_unattributed'
+
+      changes.push({
+        type,
+        ...(itemType ? { itemType } : {}),
+        before,
+        after,
+        inspiration,
+        attributionStatus,
+      })
     }
 
-    const type = normalizeRefinementChangeType(getValueByAliases(entry, ['type', 'change_type']))
-    if (!type) {
-      repairWarnings.push(`Skipped refinement change at index ${index} with invalid type.`)
-      continue
-    }
-
-    const itemType = toOptionalString(getValueByAliases(entry, ['item_type', 'itemtype', 'itemType']))
-
-    const rawBefore = getValueByAliases(entry, ['before'])
-    const rawAfter = getValueByAliases(entry, ['after'])
-    if (rawBefore === undefined && rawAfter === undefined && hasSummaryOnlyChangeMetadata(entry)) {
-      repairWarnings.push(`Skipped refinement change at index ${index} with path/summary metadata only; semantic before/after item records are required.`)
-      continue
-    }
-
-    const before = rawBefore === null ? null : normalizeRefinementChangeItem(rawBefore)
-    const after = rawAfter === null ? null : normalizeRefinementChangeItem(rawAfter)
-
-    const rawInspiration = getValueByAliases(entry, ['inspiration', 'inspired_by'])
-    const inspiration = rawInspiration === null || rawInspiration === undefined
-      ? null
-      : normalizeRefinementInspiration(rawInspiration, losingDraftMeta)
-    const attributionStatus: RefinementChangeAttributionStatus = inspiration
-      ? 'inspired'
-      : rawInspiration === null || rawInspiration === undefined
-        ? 'model_unattributed'
-        : 'invalid_unattributed'
-
-    changes.push({
-      type,
-      ...(itemType ? { itemType } : {}),
-      before,
-      after,
-      inspiration,
-      attributionStatus,
-    })
-  }
-
-  return { changes, repairWarnings }
+    return { changes, repairWarnings }
+  })
 }
 
 /**
@@ -200,14 +202,21 @@ export function takeRefinementChanges(
 ): { changes: RefinementChange[]; repairWarnings: string[] } {
   if (!isRecord(parsed)) return { changes: [], repairWarnings: [] }
 
-  const rawChanges = getValueByAliases(parsed, ['changes'])
-  if (rawChanges !== undefined) {
-    // The lookup normalises keys, so a document writing `Changes:` is found
-    // here but was not the key being deleted, and it survived into a schema
-    // validation that does not expect it.
-    for (const key of Object.keys(parsed)) {
-      if (normalizeKey(key) === 'changes') delete parsed[key]
+  const repairWarnings: string[] = []
+  return withAliasConflictWarnings(repairWarnings, () => {
+    const rawChanges = getValueByAliases(parsed, ['changes'])
+    if (rawChanges !== undefined) {
+      // The lookup normalises keys, so a document writing `Changes:` is found
+      // here but was not the key being deleted, and it survived into a schema
+      // validation that does not expect it.
+      for (const key of Object.keys(parsed)) {
+        if (normalizeKey(key) === 'changes') delete parsed[key]
+      }
     }
-  }
-  return parseRefinementChanges(rawChanges, losingDraftMeta)
+    const parsedChanges = parseRefinementChanges(rawChanges, losingDraftMeta)
+    return {
+      changes: parsedChanges.changes,
+      repairWarnings: [...repairWarnings, ...parsedChanges.repairWarnings],
+    }
+  })
 }

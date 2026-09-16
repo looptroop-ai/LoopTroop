@@ -21,6 +21,15 @@ function makeChange(overrides: Record<string, unknown> = {}) {
 }
 
 describe.concurrent('parseRefinementChanges — inspiration item parsing', () => {
+  it('uses the canonical item_type spelling and reports a conflicting camel alias', () => {
+    const { changes, repairWarnings } = parseRefinementChanges([
+      makeChange({ item_type: 'user_story', itemType: 'bead' }),
+    ])
+
+    expect(changes[0]?.itemType).toBe('user_story')
+    expect(repairWarnings).toContain('Resolved "item_type" and ignored the conflicting value in "itemType".')
+  })
+
   it('accepts change_type aliases when semantic before and after item records are present', () => {
     const { changes, repairWarnings } = parseRefinementChanges(
       [makeChange({ change_type: 'modified' })],

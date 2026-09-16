@@ -91,10 +91,18 @@ describe('bead status validation', () => {
       expect(result.error).toContain('unsupported status')
     }
   })
+
+  it('maps an explicitly blank status to pending with a warning', () => {
+    const result = parseBead({ status: '   ' })
+    expect(result.ok).toBe(true)
+    if (!result.ok) return
+    expect(result.value[0]?.status).toBe('pending')
+    expect(result.repairWarnings).toContain('Bead at index 0 had an empty status; used "pending".')
+  })
 })
 
 describe('bead iteration clamping', () => {
-  it.each([0, -3, 1.5, 'later'])('clamps %s to 1 and warns', (iteration) => {
+  it.each([0, -3, 1.5, 'later', true, [1], [2, 3], {}])('clamps %s to 1 and warns', (iteration) => {
     const result = parseBead({ iteration })
     expect(result.ok).toBe(true)
     if (!result.ok) return
@@ -108,6 +116,20 @@ describe('bead iteration clamping', () => {
     if (!result.ok) return
     expect(result.value[0]?.iteration).toBe(4)
     expect(result.repairWarnings.some((warning) => warning.includes('iteration'))).toBe(false)
+  })
+
+  it('uses the canonical testCommands field when both spellings are present', () => {
+    const result = parseBead({
+      testCommands: ['npm run canonical'],
+      test_commands: ['npm run legacy'],
+    })
+    expect(result.ok).toBe(true)
+    if (!result.ok) return
+    const command = result.value[0]?.testCommands[0]
+    expect(command?.mode).toBe('shell')
+    if (!command || command.mode !== 'shell') return
+    expect(command.script).toBe('npm run canonical')
+    expect(result.repairWarnings).toContain('Resolved "testCommands" and ignored the conflicting value in "test_commands".')
   })
 })
 

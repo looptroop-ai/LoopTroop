@@ -64,6 +64,11 @@ For user-visible changes, add a concise entry under `## Unreleased` in `CHANGELO
 
 **When a release changes an install path, a command, a flag or a channel, the website repository ships in the same batch.** The published documentation lives in `looptroop-ai/LoopTroop-Website`, so nothing in this repository's CI can notice when it falls behind — and it did, for four releases, while every page still opened with `git clone` and `npm run dev`. Two automated guards now catch part of it (`verify:site` requires Getting Started to lead with an install command, and `sync:cli --check` fails when the CLI reference drifts from `USAGE`), but neither knows about a new channel or a changed flag. This repository now also exposes `node scripts/docs-install-catalog.mjs`, which prints the published-smoke install table as JSON so the website can verify its consolidated installation docs against the channels and commands this repository actually ships. Bumping `CLI_SOURCE_REF` in the website's `scripts/sync-cli-reference.mjs` to the new tag, and re-running `npm run sync:cli`, is part of shipping a release.
 
+If website CI must verify that catalog before a release tag exists, use an
+immutable app commit that contains the catalog, check out that same ref in the
+website job, and fail closed when the catalog is missing. Do not replace the
+source pin with a branch or silently fall back to a reduced catalog.
+
 ## Issues
 
 Before opening an issue, please check whether a similar issue already exists.

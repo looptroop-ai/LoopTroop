@@ -118,8 +118,8 @@ function normalizeAnswerType(
 }
 
 function normalizeGeneratedBy(record: Record<string, unknown>): InterviewDocumentGeneratedBy {
-  const winnerModel = getRequiredString(record, ['winnermodel', 'winner_model'], 'generated_by.winner_model')
-  const generatedAt = getRequiredString(record, ['generatedat', 'generated_at'], 'generated_by.generated_at')
+  const winnerModel = getRequiredString(record, ['winner_model', 'winnermodel'], 'generated_by.winner_model')
+  const generatedAt = getRequiredString(record, ['generated_at', 'generatedat'], 'generated_by.generated_at')
   const canonicalization = toOptionalString(getValueByAliases(record, ['canonicalization']))
 
   return {
@@ -140,9 +140,9 @@ function normalizeQuestionAnswer(
   }
 
   const selectedOptionIds = Array.from(new Set(toStringArray(
-    getValueByAliases(value, ['selectedoptionids', 'selected_option_ids', 'selected']),
+    getValueByAliases(value, ['selected_option_ids', 'selectedoptionids', 'selected']),
   )))
-  const freeText = getStringByAliases(value, ['freetext', 'free_text', 'text']) ?? ''
+  const freeText = getStringByAliases(value, ['free_text', 'freetext', 'text']) ?? ''
   const explicitSkipped = toBoolean(getValueByAliases(value, ['skipped']))
 
   let nextSelectedOptionIds = selectedOptionIds
@@ -156,7 +156,7 @@ function normalizeQuestionAnswer(
   }
 
   const skipped = explicitSkipped ?? (freeText.trim().length === 0 && nextSelectedOptionIds.length === 0)
-  const answeredByRaw = toOptionalString(getValueByAliases(value, ['answeredby', 'answered_by'])) ?? ''
+  const answeredByRaw = toOptionalString(getValueByAliases(value, ['answered_by', 'answeredby'])) ?? ''
   const answeredByNormalized = normalizeKey(answeredByRaw)
   const isUserSkip = answeredByNormalized === 'userskip' || answeredByNormalized === 'user_skip'
   // A skipped answer defaults to `ai_skip`, which is what every artifact written
@@ -167,11 +167,11 @@ function normalizeQuestionAnswer(
     : answeredByNormalized === 'aiskip' || answeredByNormalized === 'ai_skip'
       ? 'ai_skip'
       : 'user'
-  const rawAnsweredAt = toOptionalString(getValueByAliases(value, ['answeredat', 'answered_at'])) ?? ''
+  const rawAnsweredAt = toOptionalString(getValueByAliases(value, ['answered_at', 'answeredat'])) ?? ''
   // A user skip is a decision with a time. An AI-fill placeholder is not.
   const answeredAt = skipped && answeredBy !== 'user_skip' ? '' : rawAnsweredAt
   const skipReason = answeredBy === 'user_skip'
-    ? normalizeSkipReason(toOptionalString(getValueByAliases(value, ['skipreason', 'skip_reason'])))
+    ? normalizeSkipReason(toOptionalString(getValueByAliases(value, ['skip_reason', 'skipreason'])))
     : null
 
   return {
@@ -415,9 +415,9 @@ function normalizeQuestion(
   const prompt = getRequiredString(value, ['prompt', 'question', 'text'], `questions[${index}].prompt`)
   const phase = normalizePhaseLabel(getRequiredString(value, ['phase'], `questions[${index}].phase`))
   const source = normalizeQuestionSource(getValueByAliases(value, ['source']))
-  const followUpRound = toInteger(getValueByAliases(value, ['followupround', 'follow_up_round']))
+  const followUpRound = toInteger(getValueByAliases(value, ['follow_up_round', 'followupround']))
   const { answerType, impliedOptions } = normalizeAnswerType(
-    getValueByAliases(value, ['answertype', 'answer_type', 'type']),
+    getValueByAliases(value, ['answer_type', 'answertype', 'type']),
     warnings,
     `Question ${id}`,
   )
@@ -450,7 +450,7 @@ function normalizeFollowUpRound(value: unknown, index: number): InterviewDocumen
     throw new Error(`follow_up_rounds[${index}] is not an object`)
   }
 
-  const roundNumber = toInteger(getValueByAliases(value, ['roundnumber', 'round_number']))
+  const roundNumber = toInteger(getValueByAliases(value, ['round_number', 'roundnumber']))
   if (roundNumber === null || roundNumber < 1) {
     throw new Error(`follow_up_rounds[${index}] is missing round_number`)
   }
@@ -469,7 +469,7 @@ function normalizeFollowUpRound(value: unknown, index: number): InterviewDocumen
   return {
     round_number: roundNumber,
     source,
-    question_ids: Array.from(new Set(toStringArray(getValueByAliases(value, ['questionids', 'question_ids'])))),
+    question_ids: Array.from(new Set(toStringArray(getValueByAliases(value, ['question_ids', 'questionids'])))),
   }
 }
 
@@ -632,22 +632,22 @@ function buildAnswerOnlyResolvedInterviewCandidateInner(
 
     const rawAnswer = getValueByAliases(rawQuestion, ['answer'])
     const answerRecord = isRecord(rawAnswer) ? { ...rawAnswer } : {}
-    const hoistedAnsweredBy = getValueByAliases(rawQuestion, ['answeredby', 'answered_by'])
-    const hoistedAnsweredAt = getValueByAliases(rawQuestion, ['answeredat', 'answered_at'])
+    const hoistedAnsweredBy = getValueByAliases(rawQuestion, ['answered_by', 'answeredby'])
+    const hoistedAnsweredAt = getValueByAliases(rawQuestion, ['answered_at', 'answeredat'])
 
-    if (hoistedAnsweredBy !== undefined && getValueByAliases(answerRecord, ['answeredby', 'answered_by']) === undefined) {
+    if (hoistedAnsweredBy !== undefined && getValueByAliases(answerRecord, ['answered_by', 'answeredby']) === undefined) {
       answerRecord.answered_by = hoistedAnsweredBy
       repairWarnings.push(`Hoisted answered_by into answer for canonical question ${canonicalQuestion.id}.`)
     }
-    if (hoistedAnsweredAt !== undefined && getValueByAliases(answerRecord, ['answeredat', 'answered_at']) === undefined) {
+    if (hoistedAnsweredAt !== undefined && getValueByAliases(answerRecord, ['answered_at', 'answeredat']) === undefined) {
       answerRecord.answered_at = hoistedAnsweredAt
       repairWarnings.push(`Hoisted answered_at into answer for canonical question ${canonicalQuestion.id}.`)
     }
 
     const answerSiblingAliases: Array<[string[], string[]]> = [
       [['skipped'], ['skipped']],
-      [['selectedoptionids', 'selected_option_ids', 'selected'], ['selectedoptionids', 'selected_option_ids', 'selected']],
-      [['freetext', 'free_text', 'text'], ['freetext', 'free_text', 'text']],
+      [['selected_option_ids', 'selectedoptionids', 'selected'], ['selected_option_ids', 'selectedoptionids', 'selected']],
+      [['free_text', 'freetext', 'text'], ['free_text', 'freetext', 'text']],
     ]
     for (const [sourceKey, targetKey] of answerSiblingAliases) {
       const siblingValue = getValueByAliases(rawQuestion, sourceKey)
@@ -664,7 +664,7 @@ function buildAnswerOnlyResolvedInterviewCandidateInner(
   })
 
   let generatedBy = canonical.generated_by
-  const rawGeneratedBy = getValueByAliases(parsed, ['generatedby', 'generated_by'])
+  const rawGeneratedBy = getValueByAliases(parsed, ['generated_by', 'generatedby'])
   if (isRecord(rawGeneratedBy)) {
     try {
       generatedBy = normalizeGeneratedBy(rawGeneratedBy)
@@ -822,10 +822,10 @@ export function normalizeInterviewDocumentOutput(
         throw new Error('Interview document is missing questions')
       }
 
-      const schemaVersion = toInteger(getValueByAliases(parsed, ['schemaversion', 'schema_version'])) ?? 1
+      const schemaVersion = toInteger(getValueByAliases(parsed, ['schema_version', 'schemaversion'])) ?? 1
       // Bound once: the lookup reports a canonical/legacy disagreement, so
       // resolving the same aliases twice reported it twice.
-      const rawTicketId = getStringByAliases(parsed, ['ticketid', 'ticket_id'])?.trim()
+      const rawTicketId = getStringByAliases(parsed, ['ticket_id', 'ticketid'])?.trim()
       const ticketId = rawTicketId || options?.ticketId || ''
       if (!ticketId) {
         throw new Error('Interview document is missing ticket_id')
@@ -845,7 +845,7 @@ export function normalizeInterviewDocumentOutput(
         warnings.push(`Normalized status "${statusRaw}" to "${status}".`)
       }
 
-      const generatedBy = normalizeGeneratedBy(getNestedRecord(parsed, ['generatedby', 'generated_by']))
+      const generatedBy = normalizeGeneratedBy(getNestedRecord(parsed, ['generated_by', 'generatedby']))
       const seenQuestionIds = new Set<string>()
       const questions = rawQuestions.map((question, index) => normalizeQuestion(question, index, warnings))
 
@@ -868,7 +868,7 @@ export function normalizeInterviewDocumentOutput(
       }
 
       const followUpRounds = normalizeFollowUpRounds(
-        getValueByAliases(parsed, ['followuprounds', 'follow_up_rounds']),
+        getValueByAliases(parsed, ['follow_up_rounds', 'followuprounds']),
         warnings,
         { allowMalformedFollowUpRounds: options?.allowMalformedFollowUpRounds },
       )
@@ -886,12 +886,12 @@ export function normalizeInterviewDocumentOutput(
         summary: {
           goals: toStringArray(getValueByAliases(summary, ['goals'])),
           constraints: toStringArray(getValueByAliases(summary, ['constraints'])),
-          non_goals: toStringArray(getValueByAliases(summary, ['nongoals', 'non_goals'])),
-          final_free_form_answer: getStringByAliases(summary, ['finalfreeformanswer', 'final_free_form_answer']) ?? '',
+          non_goals: toStringArray(getValueByAliases(summary, ['non_goals', 'nongoals'])),
+          final_free_form_answer: getStringByAliases(summary, ['final_free_form_answer', 'finalfreeformanswer']) ?? '',
         },
         approval: {
-          approved_by: toOptionalString(getValueByAliases(approval, ['approvedby', 'approved_by'])) ?? '',
-          approved_at: toOptionalString(getValueByAliases(approval, ['approvedat', 'approved_at'])) ?? '',
+          approved_by: toOptionalString(getValueByAliases(approval, ['approved_by', 'approvedby'])) ?? '',
+          approved_at: toOptionalString(getValueByAliases(approval, ['approved_at', 'approvedat'])) ?? '',
         },
       })
       appendStructuredCandidateRecoveryWarning(warnings, rawContent, candidate)

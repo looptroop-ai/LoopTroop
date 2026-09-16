@@ -161,7 +161,7 @@ function normalizeContextGuidance(
     'patterns',
   )
   const antiPatterns = normalizeGuidanceItems(
-    getValueByAliases(value, ['antipatterns', 'anti_patterns', 'anti-patterns', 'anti_patterns_list']),
+    getValueByAliases(value, ['anti_patterns', 'antipatterns', 'anti-patterns', 'anti_patterns_list']),
     'anti-patterns',
   )
 
@@ -173,7 +173,7 @@ function normalizeDependencies(value: unknown): BeadDependencies {
 
   if (isRecord(value)) {
     return {
-      blocked_by: toStringArray(getValueByAliases(value, ['blockedby', 'blocked_by'])),
+      blocked_by: toStringArray(getValueByAliases(value, ['blocked_by', 'blockedby'])),
       blocks: toStringArray(getValueByAliases(value, ['blocks'])),
     }
   }
@@ -197,9 +197,9 @@ function normalizeBeadSubsetEntry(value: unknown, index: number, repairWarnings:
     ? idValue.trim()
     : `bead-${index + 1}`
 
-  const testCommandsValue = getValueByAliases(value, ['testcommands', 'test_commands', 'commands'])
+  const testCommandsValue = getValueByAliases(value, ['testCommands', 'test_commands', 'commands'])
   const testCommands = normalizeCommandSpecs(testCommandsValue, `Bead ${id}`, repairWarnings)
-  const testCommandReasonValue = getValueByAliases(value, ['testcommandreason', 'test_command_reason'])
+  const testCommandReasonValue = getValueByAliases(value, ['testCommandReason', 'test_command_reason'])
   if (testCommandReasonValue !== undefined && (typeof testCommandReasonValue !== 'string' || !testCommandReasonValue.trim())) {
     throw new Error(`Bead ${id} contains an invalid testCommandReason`)
   }
@@ -208,14 +208,14 @@ function normalizeBeadSubsetEntry(value: unknown, index: number, repairWarnings:
   const subset: BeadSubset = {
     id,
     title: getRequiredString(value, ['title', 'name'], `bead title at index ${index}`),
-    prdRefs: toStringArray(getValueByAliases(value, ['prdrefs', 'prd_refs', 'prdreferences', 'prd_references'])),
+    prdRefs: toStringArray(getValueByAliases(value, ['prdRefs', 'prd_refs', 'prdReferences', 'prdreferences', 'prd_references'])),
     description: getRequiredString(value, ['description', 'details'], `bead description at index ${index}`),
     contextGuidance: normalizeContextGuidance(
-      getValueByAliases(value, ['contextguidance', 'context_guidance', 'architecturalguidance', 'guidance']),
+      getValueByAliases(value, ['contextGuidance', 'context_guidance', 'architecturalGuidance', 'architecturalguidance', 'guidance']),
       index,
       repairWarnings,
     ),
-    acceptanceCriteria: toStringArray(getValueByAliases(value, ['acceptancecriteria', 'acceptance_criteria'])),
+    acceptanceCriteria: toStringArray(getValueByAliases(value, ['acceptanceCriteria', 'acceptance_criteria'])),
     tests: toStringArray(getValueByAliases(value, ['tests', 'testcases', 'test_cases'])),
     testCommands,
     ...(testCommandReason ? { testCommandReason } : {}),
@@ -773,8 +773,12 @@ function normalizeNoteHistory(value: unknown): Bead['failedIterationNotes'] {
  * which only runs `pending` and only finishes on `done`, with no validation error
  * anywhere.
  */
-function normalizeBeadStatus(value: unknown, label: string): BeadStatus {
+function normalizeBeadStatus(value: unknown, label: string, repairWarnings: string[]): BeadStatus {
   if (value === undefined || value === null) return 'pending'
+  if (typeof value === 'string' && !value.trim()) {
+    repairWarnings.push(`${label} had an empty status; used "pending".`)
+    return 'pending'
+  }
   const raw = typeof value === 'string' ? value.trim() : ''
   // Case is folded here as it is on the read path. Rejecting `Completed` while
   // accepting `completed` spent a structured retry on a capital letter, and the
@@ -800,7 +804,11 @@ function normalizeBeadStatus(value: unknown, label: string): BeadStatus {
  */
 function normalizeBeadIteration(value: unknown, label: string, repairWarnings: string[]): number {
   if (value === undefined || value === null) return 1
-  const parsed = Number(value)
+  const parsed = typeof value === 'number'
+    ? value
+    : typeof value === 'string' && value.trim()
+      ? Number(value.trim())
+      : Number.NaN
   if (Number.isInteger(parsed) && parsed > 0) return parsed
   repairWarnings.push(`${label}: replaced invalid iteration ${JSON.stringify(value)} with 1.`)
   return 1
@@ -812,16 +820,16 @@ function normalizeBeadRecord(value: unknown, index: number, repairWarnings: stri
   const dependencies = normalizeDependencies(getValueByAliases(value, ['dependencies']))
 
   const normalizedGuidance = normalizeContextGuidance(
-    getValueByAliases(value, ['contextguidance', 'context_guidance']),
+    getValueByAliases(value, ['contextGuidance', 'context_guidance']),
     index,
     repairWarnings,
   )
 
-  const status = normalizeBeadStatus(getValueByAliases(value, ['status']), `Bead at index ${index}`)
+  const status = normalizeBeadStatus(getValueByAliases(value, ['status']), `Bead at index ${index}`, repairWarnings)
 
-  const testCommandsValue = getValueByAliases(value, ['testcommands', 'test_commands'])
+  const testCommandsValue = getValueByAliases(value, ['testCommands', 'test_commands'])
   const testCommands = normalizeCommandSpecs(testCommandsValue, `Bead at index ${index}`, repairWarnings)
-  const testCommandReasonValue = getValueByAliases(value, ['testcommandreason', 'test_command_reason'])
+  const testCommandReasonValue = getValueByAliases(value, ['testCommandReason', 'test_command_reason'])
   if (testCommandReasonValue !== undefined && (typeof testCommandReasonValue !== 'string' || !testCommandReasonValue.trim())) {
     throw new Error(`Bead at index ${index} contains an invalid testCommandReason`)
   }
@@ -830,29 +838,29 @@ function normalizeBeadRecord(value: unknown, index: number, repairWarnings: stri
   const bead: Bead = {
     id: getRequiredString(value, ['id'], `bead id at index ${index}`),
     title: getRequiredString(value, ['title'], `bead title at index ${index}`),
-    prdRefs: toStringArray(getValueByAliases(value, ['prdrefs', 'prd_refs', 'prdreferences', 'prd_references'])),
+    prdRefs: toStringArray(getValueByAliases(value, ['prdRefs', 'prd_refs', 'prdReferences', 'prdreferences', 'prd_references'])),
     description: getRequiredString(value, ['description'], `bead description at index ${index}`),
     contextGuidance: normalizedGuidance,
-    acceptanceCriteria: toStringArray(getValueByAliases(value, ['acceptancecriteria', 'acceptance_criteria'])),
+    acceptanceCriteria: toStringArray(getValueByAliases(value, ['acceptanceCriteria', 'acceptance_criteria'])),
     tests: toStringArray(getValueByAliases(value, ['tests'])),
     testCommands,
     ...(testCommandReason ? { testCommandReason } : {}),
     priority: Number(getValueByAliases(value, ['priority']) ?? index + 1),
     status,
-    issueType: getStringByAliases(value, ['issuetype', 'issue_type'])?.trim() ?? 'task',
-    externalRef: getStringByAliases(value, ['externalref', 'external_ref'])?.trim() ?? '',
+    issueType: getStringByAliases(value, ['issueType', 'issue_type'])?.trim() ?? 'task',
+    externalRef: getStringByAliases(value, ['externalRef', 'external_ref'])?.trim() ?? '',
     labels: toStringArray(getValueByAliases(value, ['labels'])),
     dependencies,
-    targetFiles: toStringArray(getValueByAliases(value, ['targetfiles', 'target_files'])),
-    failedIterationNotes: normalizeNoteHistory(getValueByAliases(value, ['failediterationnotes', 'failed_iteration_notes'])),
-    userRetryNotes: normalizeNoteHistory(getValueByAliases(value, ['userretrynotes', 'user_retry_notes'])),
-    finalizationFailureNotes: normalizeNoteHistory(getValueByAliases(value, ['finalizationfailurenotes', 'finalization_failure_notes'])),
+    targetFiles: toStringArray(getValueByAliases(value, ['targetFiles', 'target_files'])),
+    failedIterationNotes: normalizeNoteHistory(getValueByAliases(value, ['failedIterationNotes', 'failed_iteration_notes'])),
+    userRetryNotes: normalizeNoteHistory(getValueByAliases(value, ['userRetryNotes', 'user_retry_notes'])),
+    finalizationFailureNotes: normalizeNoteHistory(getValueByAliases(value, ['finalizationFailureNotes', 'finalization_failure_notes'])),
     iteration: normalizeBeadIteration(getValueByAliases(value, ['iteration']), `Bead at index ${index}`, repairWarnings),
-    createdAt: getStringByAliases(value, ['createdat', 'created_at'])?.trim() ?? '',
-    updatedAt: getStringByAliases(value, ['updatedat', 'updated_at'])?.trim() ?? '',
-    completedAt: getStringByAliases(value, ['completedat', 'completed_at'])?.trim() ?? '',
-    startedAt: getStringByAliases(value, ['startedat', 'started_at'])?.trim() ?? '',
-    beadStartCommit: getStringByAliases(value, ['beadstartcommit', 'bead_start_commit'])?.trim() || null,
+    createdAt: getStringByAliases(value, ['createdAt', 'created_at'])?.trim() ?? '',
+    updatedAt: getStringByAliases(value, ['updatedAt', 'updated_at'])?.trim() ?? '',
+    completedAt: getStringByAliases(value, ['completedAt', 'completed_at'])?.trim() ?? '',
+    startedAt: getStringByAliases(value, ['startedAt', 'started_at'])?.trim() ?? '',
+    beadStartCommit: getStringByAliases(value, ['beadStartCommit', 'bead_start_commit'])?.trim() || null,
   }
 
   if (!Number.isInteger(bead.priority) || bead.priority <= 0) {
@@ -1062,9 +1070,9 @@ export function normalizeRelevantFilesOutput(rawContent: string): StructuredOutp
         const path = getRequiredString(entry, ['path', 'filepath', 'file_path', 'file'], `file path at index ${index}`)
         const rationale = getStringByAliases(entry, ['rationale', 'reason', 'why'])?.trim() ?? ''
         const relevance = getStringByAliases(entry, ['relevance'])?.trim().toLowerCase() ?? 'medium'
-        const likelyAction = getStringByAliases(entry, ['likelyaction', 'likely_action', 'action'])?.trim().toLowerCase() ?? 'read'
+        const likelyAction = getStringByAliases(entry, ['likely_action', 'likelyAction', 'action'])?.trim().toLowerCase() ?? 'read'
         const content = getStringByAliases(entry, ['content', 'contents', 'code', 'source', 'snippet', 'excerpt']) ?? ''
-        const contentPreview = getStringByAliases(entry, ['content_preview', 'contentpreview', 'preview', 'signatures']) ?? ''
+        const contentPreview = getStringByAliases(entry, ['content_preview', 'contentPreview', 'preview', 'signatures']) ?? ''
 
         return { path, rationale, relevance, likely_action: likelyAction, content, content_preview: contentPreview || content }
       })

@@ -21,7 +21,7 @@ export function CenteredModal({
   children,
   maxWidth = 'max-w-2xl',
   closeDisabled = false,
-  zIndexClass = 'z-50',
+  zIndexClass = 'z-[60]',
 }: CenteredModalProps) {
   const [isSessionDirty, setIsSessionDirty] = useState(false)
   const panelRef = useRef<HTMLDivElement>(null)

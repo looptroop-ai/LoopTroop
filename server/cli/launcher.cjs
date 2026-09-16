@@ -53,7 +53,7 @@ function isSupported(raw) {
 function nodeHelp() {
   if (process.platform === 'darwin') return '  brew install node\n'
   if (process.platform === 'win32') return '  winget install OpenJS.NodeJS.LTS\n'
-  return '  Use your distribution\'s package or https://github.com/nvm-sh/nvm\n'
+  return '  nvm install ' + REQUIRED_MAJOR + '   (https://github.com/nvm-sh/nvm)\n'
 }
 
 if (!isSupported(process.versions.node)) {

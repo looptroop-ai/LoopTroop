@@ -1,5 +1,9 @@
+import { createHash } from 'node:crypto'
+import { readFileSync } from 'node:fs'
+import { dirname, resolve } from 'node:path'
+import { fileURLToPath } from 'node:url'
 import { describe, expect, it } from 'vitest'
-import { buildStructuredRetryPrompt, getValueByAliases, parseYamlOrJsonCandidate } from '../yamlUtils'
+import { buildStructuredRetryPrompt, getValueByAliases, parseYamlOrJsonCandidate, REPAIR_PIPELINE_VERSION } from '../yamlUtils'
 
 describe.concurrent('buildStructuredRetryPrompt', () => {
   it('keeps retry prompts focused on schema correction only', () => {
@@ -15,6 +19,44 @@ describe.concurrent('buildStructuredRetryPrompt', () => {
 })
 
 describe.concurrent('parseYamlOrJsonCandidate', () => {
+  it('preserves a flow-body string while repairing an unrelated duplicate key', () => {
+    const body = [
+      'body: [',
+      '  "hello',
+      '  x: same',
+      '  x: same',
+      '  x: same',
+      '  world"',
+      '  ]',
+    ].join('\n')
+    const repairWarnings: string[] = []
+    const parsed = parseYamlOrJsonCandidate(`${body}\ntitle: same\ntitle: same`, { repairWarnings }) as {
+      body: string[]
+      title: string
+    }
+    const expectedBody = (parseYamlOrJsonCandidate(body) as { body: string[] }).body
+
+    expect(parsed.body).toEqual(expectedBody)
+    expect(parsed.body[0]).toContain('x: same x: same x: same')
+    expect(parsed.title).toBe('same')
+    expect(repairWarnings).toContain('Removed duplicate YAML mapping keys before parsing.')
+  })
+
+  it('keeps the cache marker tied to both complete parser sources', () => {
+    const repositoryRoot = resolve(dirname(fileURLToPath(import.meta.url)), '../../..')
+    const normalizeVersionDeclaration = (source: string) => source.replace(
+      /export const REPAIR_PIPELINE_VERSION = '[^']+'/,
+      "export const REPAIR_PIPELINE_VERSION = '<source-version>'",
+    )
+    const source = [
+      readFileSync(resolve(repositoryRoot, 'shared/yamlRepair.ts'), 'utf8'),
+      readFileSync(resolve(repositoryRoot, 'server/structuredOutput/yamlUtils.ts'), 'utf8'),
+    ].map(normalizeVersionDeclaration)
+    const expectedVersion = createHash('sha256').update(JSON.stringify(source)).digest('hex')
+
+    expect(REPAIR_PIPELINE_VERSION).toBe(expectedVersion)
+  })
+
   it.each([
     ['[EPIC-1, US-1]', ['EPIC-1', 'US-1']],
     ["['alpha', 'beta']", ['alpha', 'beta']],
@@ -54,6 +96,20 @@ describe.concurrent('parseYamlOrJsonCandidate', () => {
     expect(repairWarnings).not.toContain('Removed duplicate YAML mapping keys before parsing.')
   })
 
+  it('removes complete duplicates even when another mapping has an anchor', () => {
+    const repairWarnings: string[] = []
+    const parsed = parseYamlOrJsonCandidate([
+      'title: first',
+      'title: first',
+      'anchored: &value retained',
+      'other: second',
+      'other: second',
+    ].join('\n'), { repairWarnings }) as Record<string, unknown>
+
+    expect(parsed).toEqual({ title: 'first', anchored: 'retained', other: 'second' })
+    expect(repairWarnings).toContain('Removed duplicate YAML mapping keys before parsing.')
+  })
+
   const interviewNestedMappingChildren = {
     generated_by: ['winner_model', 'generated_at', 'canonicalization'],
     answer: ['skipped', 'selected_option_ids', 'free_text', 'answered_by', 'answered_at'],
@@ -79,6 +135,72 @@ describe.concurrent('parseYamlOrJsonCandidate', () => {
         question: 'What behavior should the API expose?',
       },
     ])
+  })
+
+  it('preserves a valid nested sequence when raw YAML parses successfully', () => {
+    expect(parseYamlOrJsonCandidate("items:\n  - - 'a: b'\n")).toEqual({ items: [['a: b']] })
+  })
+
+  it('keeps a nested sequence intact when a sibling still needs repair', () => {
+    const repairWarnings: string[] = []
+    expect(parseYamlOrJsonCandidate([
+      "items:",
+      "  - - 'a: b'",
+      '  -id: second',
+      '    title: Second item',
+    ].join('\n'), { repairWarnings })).toEqual({
+      items: [['a: b'], { id: 'second', title: 'Second item' }],
+    })
+    expect(repairWarnings).toContain('Inserted the missing space after a YAML list dash before parsing.')
+  })
+
+  it('keeps explicit nested mapping recovery ahead of the raw YAML parse', () => {
+    expect(parseYamlOrJsonCandidate([
+      'summary:',
+      'goals:',
+      '  - one',
+    ].join('\n'), {
+      nestedMappingChildren: { summary: ['goals'] },
+    })).toEqual({ summary: { goals: ['one'] } })
+  })
+
+  it('normalizes CRLF before applying line-based repairs and cache keys', () => {
+    const repairWarnings: string[] = []
+    expect(parseYamlOrJsonCandidate('title: Fix parser: handle colons\r\nnext: ok\r\n', { repairWarnings })).toEqual({
+      title: 'Fix parser: handle colons',
+      next: 'ok',
+    })
+    expect(repairWarnings).toContain('Quoted YAML plain scalar values containing colon-space before reparsing.')
+  })
+
+  it('preserves XML-looking lines inside a block scalar and warns only for removed tags', () => {
+    const repairWarnings: string[] = []
+    const parsed = parseYamlOrJsonCandidate([
+      'owner: @loop-troop',
+      '<metadata>',
+      'snippet: |',
+      '  <div>',
+      '  hello',
+      '  </div>',
+    ].join('\n'), { repairWarnings }) as { owner: string; snippet: string }
+
+    expect(parsed.snippet).toBe('<div>\nhello\n</div>\n')
+    expect(repairWarnings).toContain('Stripped XML-style tags <metadata> from the payload before parsing.')
+    expect(repairWarnings.join('\n')).not.toContain('<div>')
+    expect(repairWarnings.join('\n')).not.toContain('</div>')
+  })
+
+  it('uses the mapping key column as the block base for list-item scalar siblings', () => {
+    const repairWarnings: string[] = []
+    expect(parseYamlOrJsonCandidate([
+      'items:',
+      '  - body: |',
+      '      text',
+      '    owner: @loop-troop',
+    ].join('\n'), { repairWarnings })).toEqual({
+      items: [{ body: 'text\n', owner: '@loop-troop' }],
+    })
+    expect(repairWarnings).toContain('Quoted plain YAML scalars that began with reserved indicator characters (` or @) before reparsing.')
   })
 
   it('repairs compact inline interview mappings before YAML can accept the wrong scalar shape', () => {

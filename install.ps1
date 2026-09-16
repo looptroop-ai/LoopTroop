@@ -786,6 +786,7 @@ async function download(url, destination) {
  * `installers:check` refuses a violation of either.
  */
 import * as trustedFs from 'node:fs'
+import * as trustedOs from 'node:os'
 import * as trustedPath from 'node:path'
 
 /** Directories to search ahead of `PATH`, delimiter-separated, absolute. */
@@ -977,6 +978,59 @@ function searchEntries(entries                   , platform                 )   
     directories.push(directory)
   }
   return directories
+}
+
+/**
+ * Canonical tool directories trusted by default in addition to the operator override.
+ *
+ * LoopTroop orchestrates OpenCode, whose official installer unpacks into
+ * `~/.opencode/bin`. On Linux, release archives built on GitHub Actions runners
+ * are packed with `runner:runner` (uid 1001), and when extracted as root by GNU
+ * `tar` (which defaults to `--same-owner`), the resulting binary retains uid 1001
+ * while its parent directory is owned by root. Excusing OpenCode's canonical
+ * install directory spares operators and container users from having to supply
+ * an explicit `LOOPTROOP_TRUSTED_EXECUTABLE_DIRS` override.
+ */
+function canonicalTrustedDirectories(platform                 , policyEnv                   )           {
+  let home
+  if (platform === 'win32') {
+    home = policyEnv.USERPROFILE ?? policyEnv.HOME
+  } else {
+    home = policyEnv.HOME
+    if (!home && process.platform !== 'win32') {
+      try {
+        home = trustedOs.homedir()
+      } catch {
+        // Ignore homedir errors
+      }
+    }
+  }
+  const p = pathFor(platform)
+  const dirs           = []
+  if (home && p.isAbsolute(home)) {
+    dirs.push(p.join(home, '.opencode', 'bin'))
+  }
+  const explicitOpenCodeDir = policyEnv.OPENCODE_INSTALL_DIR ?? policyEnv.OPENCODE_DIR
+  if (explicitOpenCodeDir && p.isAbsolute(explicitOpenCodeDir)) {
+    dirs.push(explicitOpenCodeDir)
+  }
+  return dirs
+}
+
+function trustedOperatorDirectories(policyEnv                   , platform                 )              {
+  const p = pathFor(platform)
+  const override = policyEnv[TRUSTED_EXECUTABLE_DIRS_ENV] ?? ''
+  const candidates           = [
+    ...override.split(p.delimiter),
+    ...canonicalTrustedDirectories(platform, policyEnv),
+  ]
+  const entries = searchEntries(candidates, platform)
+  const set = new Set        (entries)
+  for (const entry of entries) {
+    const real = realpathOrNull(entry)
+    if (real !== null && real !== entry) set.add(real)
+  }
+  return set
 }
 
 /**
@@ -1325,12 +1379,12 @@ export function resolveTrustedExecutable(
 
   const override = policyEnv[TRUSTED_EXECUTABLE_DIRS_ENV] ?? ''
   const directories = trustedSearchDirectories({ env, policyEnv, platform })
-  const namedByOperator = new Set(searchEntries(override.split(p.delimiter), platform))
+  const namedByOperator = trustedOperatorDirectories(policyEnv, platform)
   const extensions = candidateExtensions(name, platform, policyEnv)
   const cache = options.cache === undefined ? processCache : options.cache
   // The override is in the key as well as in the directory list, because a
   // directory can be on both and only the override excuses the ownership rule.
-  const cacheKey = [platform, name, extensions.join(';'), override, directories.join(p.delimiter)].join('\u0000')
+  const cacheKey = [platform, name, extensions.join(';'), override, [...namedByOperator].sort().join(';'), directories.join(p.delimiter)].join('\u0000')
 
   const cached = cache?.get(cacheKey)
   if (cached) {
@@ -1422,7 +1476,7 @@ export function resolveTrustedProgram(
   const target = isWindowsAppAlias(program, platform) ? program : realpathOrNull(program)
   if (target === null) return { reason: `${program} could not be resolved to a real path.` }
   const policyEnv = options.policyEnv ?? process.env
-  const named = new Set(searchEntries((policyEnv[TRUSTED_EXECUTABLE_DIRS_ENV] ?? '').split(p.delimiter), platform))
+  const named = trustedOperatorDirectories(policyEnv, platform)
   const directory = trustedPath.dirname(program)
   const context = {
     platform,

@@ -950,6 +950,42 @@ describe('round-2 trust rules', () => {
     }
   })
 
+  itPosix('trusts ~/.opencode/bin by default without requiring an explicit override', () => {
+    const root = tempRoot()
+    const opencodeDir = join(root, '.opencode', 'bin')
+    const tool = makeExecutable(opencodeDir, 'opencode')
+    const restore = ownedBySomeoneElse(opencodeDir, tool)
+    try {
+      const resolution = resolveTrustedExecutable('opencode', {
+        env: { PATH: opencodeDir },
+        policyEnv: { HOME: root },
+        platform: 'linux',
+        cache: freshCache(),
+      })
+      expect(resolution.path).toBe(tool)
+      expect(resolveTrustedProgram(tool, { platform: 'linux', policyEnv: { HOME: root } }).path).toBe(tool)
+    } finally {
+      restore()
+    }
+  })
+
+  itPosix('trusts OPENCODE_INSTALL_DIR by default without requiring an explicit override', () => {
+    const root = tempRoot()
+    const customDir = join(root, 'custom-opencode', 'bin')
+    const tool = makeExecutable(customDir, 'opencode')
+    const restore = ownedBySomeoneElse(customDir, tool)
+    try {
+      const resolution = resolveTrustedExecutable('opencode', {
+        env: { PATH: customDir },
+        policyEnv: { OPENCODE_INSTALL_DIR: customDir },
+        platform: 'linux',
+        cache: freshCache(),
+      })
+      expect(resolution.path).toBe(tool)
+    } finally {
+      restore()
+    }
+  })
 })
 
 describe('round-3 trust rules', () => {

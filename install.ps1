@@ -735,12 +735,22 @@ async function download(url, destination) {
  * forty minutes. Rustup's `cargo`, mise and Volta shims and busybox all dispatch
  * on the name they were started by, for the same reason.
  *
- * It deliberately does **not** judge permission bits. That rule was here and it
- * was wrong in practice: GitHub's Ubuntu runners ship a world-writable
- * `/usr/local/bin`, so LoopTroop refused its own `npm` inside a container, and
- * every hosted Windows runner keeps npm in `C:\hostedtoolcache`, which no
- * location list was going to predict. A control that refuses the standard
- * layout of the platforms we ship on is not a control, it is an outage.
+ * For ordinary external tools on PATH, this resolver deliberately does not
+ * judge permission bits. That rule was here and it was wrong in practice:
+ * GitHub's Ubuntu runners ship a world-writable `/usr/local/bin`, so LoopTroop
+ * refused its own `npm` inside a container, and every hosted Windows runner
+ * keeps npm in `C:\hostedtoolcache`, which no location list was going to
+ * predict. A control that refuses the standard layout of the platforms we ship
+ * on is not a control, it is an outage.
+ *
+ * For OpenCode in canonical directories (`~/.opencode/bin`, `OPENCODE_INSTALL_DIR`,
+ * `OPENCODE_DIR`), an exception allows the binary to carry a foreign UID (such as
+ * the runner UID 1001 preserved when GNU tar extracts official release archives
+ * as root). In this specific exception, permission bits are strictly judged: the
+ * binary and its directory chain must not be writable by group or others, and the
+ * binary must be protected inside a private directory (denying group and other
+ * traversal, like `/root` or `~` with mode `0700`) so foreign users cannot reach
+ * or rewrite it. Traversable or sticky/shared directories (like `/tmp`) are refused.
  *
  * On Windows there is no ownership check either: `fs.stat` reports mode `0777`
  * and uid `0` for everything on NTFS, so neither means anything. Windows gets
@@ -806,6 +816,10 @@ const DEFAULT_PATHEXT = '.COM;.EXE;.BAT;.CMD'
  * will not run it from. Falling back to the bare name after a refusal would
  * spawn the very file this module exists to refuse.
  */
+
+
+
+
 
 
 
@@ -1265,6 +1279,8 @@ function trustedOwners()              {
 
 
 
+
+
 /**
  * Why `path` or a directory above it fails the ownership rule, or `null`.
  *
@@ -1295,7 +1311,7 @@ function ancestorRefusal(start        , what        , context              )    
   let current = start
   let enclosed = false
   for (;;) {
-    const stats = statOrNull(current)
+    const stats = context.stat(current)
     if (stats === null) return `its ${what} could not be inspected`
     if (!context.owners.has(stats.uid) && !isWindowsDriveMount(current, context.readMountTable())) {
       const whose = current === start ? `its ${what}` : `${current}, above its ${what},`
@@ -1323,7 +1339,7 @@ function ancestorRefusal(start        , what        , context              )    
 function isEnclosedInPrivateDirectory(path        , context              )          {
   let current = trustedPath.dirname(path)
   for (;;) {
-    const stats = statOrNull(current)
+    const stats = context.stat(current)
     if (!stats || !context.owners.has(stats.uid)) return false
     if ((stats.mode & 0o022) !== 0) return false
     if ((stats.mode & 0o011) === 0) {
@@ -1336,9 +1352,13 @@ function isEnclosedInPrivateDirectory(path        , context              )      
 }
 
 function isExactOpencode(filePath        , platform                 )          {
-  const ext = trustedPath.extname(filePath)
-  const base = ext ? trustedPath.basename(filePath, ext) : trustedPath.basename(filePath)
-  return platform === 'win32' ? base.toLowerCase() === 'opencode' : base === 'opencode'
+  const p = pathFor(platform)
+  if (platform === 'win32') {
+    const ext = p.extname(filePath)
+    const base = ext ? p.basename(filePath, ext) : p.basename(filePath)
+    return base.toLowerCase() === 'opencode'
+  }
+  return p.basename(filePath) === 'opencode'
 }
 
 function foreignFileRefusal(
@@ -1373,14 +1393,14 @@ function foreignFileRefusal(
 function fileRefusal(candidate        , target        , context              )                {
   if (context.platform === 'win32' || context.namedByOperator) return null
 
-  const candidateStats = statOrNull(candidate)
-  const targetStats = statOrNull(target)
+  const candidateStats = context.stat(candidate)
+  const targetStats = context.stat(target)
   if (candidateStats === null) return 'its file could not be inspected'
   if (targetStats === null) return 'its target file could not be inspected'
 
   if (context.isOpencode && context.canonicalOpenCodeDir) {
-    const candidateDirStats = statOrNull(trustedPath.dirname(candidate))
-    const targetDirStats = statOrNull(trustedPath.dirname(target))
+    const candidateDirStats = context.stat(trustedPath.dirname(candidate))
+    const targetDirStats = context.stat(trustedPath.dirname(target))
     if (candidateDirStats && (candidateDirStats.mode & 0o022) !== 0) {
       return 'its directory is writable by group or others'
     }
@@ -1416,7 +1436,7 @@ function fileRefusal(candidate        , target        , context              )  
  * because their stores belong to the user who installed them or to root.
  */
 function candidateRefusal(directory        , candidate        , target        , context              )                {
-  if (!statOrNull(directory)?.isDirectory()) return 'its directory is not a directory'
+  if (!context.stat(directory)?.isDirectory()) return 'its directory is not a directory'
   return ownershipRefusal(directory, 'directory', context)
     ?? ownershipRefusal(trustedPath.dirname(target), 'target directory', context)
     ?? fileRefusal(candidate, target, context)
@@ -1468,11 +1488,11 @@ function cachedResolutionHolds(
 }
 
 function entryStillHolds(entry                  , platform                 , context              )          {
-  if (!identityMatches(lstatOrNull(entry.candidate), entry.candidateIdentity)) return false
+  if (!identityMatches(context.lstat(entry.candidate), entry.candidateIdentity)) return false
   if (!isExecutableFile(entry.candidate, platform)) return false
   const alias = isWindowsAppAlias(entry.candidate, platform)
   if ((alias ? entry.candidate : realpathOrNull(entry.candidate)) !== entry.path) return false
-  const stats = alias ? lstatOrNull(entry.path) : statOrNull(entry.path)
+  const stats = alias ? context.lstat(entry.path) : context.stat(entry.path)
   if (stats === null || !(alias || stats.isFile()) || !identityMatches(stats, entry)) return false
   return candidateRefusal(entry.directory, entry.candidate, entry.path, context) === null
 }
@@ -1494,6 +1514,8 @@ export function resolveTrustedExecutable(
   const platform = options.platform ?? process.platform
   const p = pathFor(platform)
   const readMountTable = options.readMountTable ?? readMountTableFromProc
+  const stat = options.stat ?? statOrNull
+  const lstat = options.lstat ?? lstatOrNull
   const owners = trustedOwners()
 
   if (name === '') return { reason: 'An empty program name cannot be resolved.' }
@@ -1527,6 +1549,8 @@ export function resolveTrustedExecutable(
     const context               = {
       platform,
       readMountTable,
+      stat,
+      lstat,
       namedByOperator: directoryMatches(cached.directory, namedByOperator),
       canonicalOpenCodeDir: isOpencode && inCanonicalDir,
       isOpencode,
@@ -1552,6 +1576,8 @@ export function resolveTrustedExecutable(
       const context               = {
         platform,
         readMountTable,
+        stat,
+        lstat,
         namedByOperator: directoryMatches(directory, namedByOperator),
         canonicalOpenCodeDir: isOpencode && inCanonicalDir,
         isOpencode,
@@ -1567,8 +1593,8 @@ export function resolveTrustedExecutable(
           refusedAt: candidate,
         }
       }
-      const stats = alias ? lstatOrNull(target) : statOrNull(target)
-      const candidateStats = lstatOrNull(candidate)
+      const stats = alias ? context.lstat(target) : context.stat(target)
+      const candidateStats = context.lstat(candidate)
       if (stats === null || !(alias || stats.isFile()) || candidateStats === null) continue
       if (cache) remember(cache, cacheKey, {
         path: target,
@@ -1627,18 +1653,20 @@ export function resolveTrustedProgram(
   if (!isExecutableFile(program, platform)) return { reason: `${program} is not an executable file.` }
   const target = isWindowsAppAlias(program, platform) ? program : realpathOrNull(program)
   if (target === null) return { reason: `${program} could not be resolved to a real path.` }
+  const stat = options.stat ?? statOrNull
+  const lstat = options.lstat ?? lstatOrNull
   const policyEnv = options.policyEnv ?? process.env
   const named = trustedOperatorDirectories(policyEnv, platform)
   const canonicalDirs = canonicalTrustedDirectorySet(platform, policyEnv)
-  const directory = trustedPath.dirname(program)
-  const ext = trustedPath.extname(program)
-  const base = ext ? trustedPath.basename(program, ext) : trustedPath.basename(program)
-  const isOpencode = platform === 'win32' ? base.toLowerCase() === 'opencode' : base === 'opencode'
+  const directory = p.dirname(program)
+  const isOpencode = isExactOpencode(program, platform)
   const inCanonicalDir = directoryMatches(directory, canonicalDirs)
-    || directoryMatches(trustedPath.dirname(target), canonicalDirs)
+    || directoryMatches(p.dirname(target), canonicalDirs)
   const context               = {
     platform,
     readMountTable: options.readMountTable ?? readMountTableFromProc,
+    stat,
+    lstat,
     namedByOperator: directoryMatches(directory, named),
     canonicalOpenCodeDir: isOpencode && inCanonicalDir,
     isOpencode,

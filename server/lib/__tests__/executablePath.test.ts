@@ -1,10 +1,11 @@
 import { spawnSync } from 'node:child_process'
-import { chmodSync, chownSync, lstatSync, mkdirSync, mkdtempSync, realpathSync, renameSync, statSync, symlinkSync, unlinkSync, utimesSync, writeFileSync } from 'node:fs'
+import { chmodSync, chownSync, lstatSync, mkdirSync, mkdtempSync, realpathSync, renameSync, statSync, symlinkSync, unlinkSync, utimesSync, writeFileSync, type Stats } from 'node:fs'
 import { delimiter, join, win32 } from 'node:path'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import { makeTempDir, removeTempDir } from '../../test/tempDir'
 import {
   bareNameSearchReachesWorkingDirectory,
+  canonicalTrustedDirectories,
   findTrustedExecutablePath,
   launchThroughInterpreter,
   needsCommandInterpreter,
@@ -16,6 +17,7 @@ import {
   trustedSearchDirectories,
   TRUSTED_EXECUTABLE_DIRS_ENV,
   type CachedResolution,
+  type TrustedExecutableOptions,
 } from '../executablePath'
 
 /**
@@ -103,9 +105,25 @@ const itAsRoot = posix && process.getuid?.() === 0 ? it : it.skip
 /** Cases that need a path this user cannot `stat`, which root never has. */
 const itAsNonRoot = posix && process.getuid?.() !== 0 ? it : it.skip
 
-function lstatOrNull(path: string): ReturnType<typeof lstatSync> | null {
+function lstatOrNull(path: string): Stats | null {
   try {
     return lstatSync(path)
+  } catch {
+    return null
+  }
+}
+
+function statOrNull(path: string): Stats | null {
+  try {
+    return statSync(path)
+  } catch {
+    return null
+  }
+}
+
+function realpathOrNull(path: string): string | null {
+  try {
+    return realpathSync(path)
   } catch {
     return null
   }
@@ -950,6 +968,459 @@ describe('round-2 trust rules', () => {
     }
   })
 
+  function setupOpencodeFixture(options: {
+    rootMode?: number
+    toolMode?: number
+    dirMode?: number
+    parentMode?: number
+    foreign?: boolean
+    toolName?: string
+    customDir?: string
+  }) {
+    const root = tempRoot()
+    if (options.rootMode !== undefined) chmodSync(root, options.rootMode)
+    const opencodeParent = join(root, '.opencode')
+    const dir = options.customDir ? join(root, options.customDir) : join(opencodeParent, 'bin')
+    mkdirSync(dir, { recursive: true })
+    if (options.parentMode !== undefined) chmodSync(opencodeParent, options.parentMode)
+    if (options.dirMode !== undefined) chmodSync(dir, options.dirMode)
+    const tool = makeExecutable(dir, options.toolName ?? 'opencode')
+    if (options.toolMode !== undefined) chmodSync(tool, options.toolMode)
+
+    const isRealRoot = process.getuid?.() === 0
+    let restore = () => {}
+    if (options.foreign !== false && isRealRoot) {
+      restore = ownedBySomeoneElse(tool)
+    }
+
+    const statHook = (p: string): Stats | null => {
+      const s = statOrNull(p)
+      if (!s) return null
+      if (options.foreign !== false && !isRealRoot && (p === tool || realpathOrNull(p) === tool)) {
+        return Object.assign(Object.create(Object.getPrototypeOf(s)), s, { uid: FOREIGN_UID })
+      }
+      return s
+    }
+    const lstatHook = (p: string): Stats | null => {
+      const s = lstatOrNull(p)
+      if (!s) return null
+      if (options.foreign !== false && !isRealRoot && p === tool) {
+        return Object.assign(Object.create(Object.getPrototypeOf(s)), s, { uid: FOREIGN_UID })
+      }
+      return s
+    }
+    const resolveOpts: Partial<TrustedExecutableOptions> = isRealRoot
+      ? {}
+      : { stat: statHook, lstat: lstatHook }
+
+    return {
+      root,
+      dir,
+      tool,
+      resolveOpts,
+      cleanup: () => {
+        if (options.toolMode !== undefined) chmodSync(tool, 0o755)
+        if (options.dirMode !== undefined) chmodSync(dir, 0o755)
+        if (options.parentMode !== undefined) chmodSync(opencodeParent, 0o755)
+        if (options.rootMode !== undefined) chmodSync(root, 0o755)
+        restore()
+      },
+    }
+  }
+
+  itPosix('trusts ~/.opencode/bin by default when enclosed in private home directory', () => {
+    const { root, dir, tool, resolveOpts, cleanup } = setupOpencodeFixture({ rootMode: 0o700 })
+    try {
+      const resolution = resolveTrustedExecutable('opencode', {
+        ...resolveOpts,
+        env: { PATH: dir },
+        policyEnv: { HOME: root },
+        platform: 'linux',
+        cache: freshCache(),
+      })
+      expect(resolution.path).toBe(tool)
+      expect(resolveTrustedProgram(tool, { ...resolveOpts, platform: 'linux', policyEnv: { HOME: root } }).path).toBe(tool)
+    } finally {
+      cleanup()
+    }
+  })
+
+  itPosix('trusts OPENCODE_INSTALL_DIR by default when enclosed in private directory', () => {
+    const { dir, tool, resolveOpts, cleanup } = setupOpencodeFixture({
+      rootMode: 0o700,
+      customDir: 'custom-opencode/bin',
+    })
+    try {
+      const resolution = resolveTrustedExecutable('opencode', {
+        ...resolveOpts,
+        env: { PATH: dir },
+        policyEnv: { OPENCODE_INSTALL_DIR: dir },
+        platform: 'linux',
+        cache: freshCache(),
+      })
+      expect(resolution.path).toBe(tool)
+      expect(resolveTrustedProgram(tool, { ...resolveOpts, platform: 'linux', policyEnv: { OPENCODE_INSTALL_DIR: dir } }).path).toBe(tool)
+    } finally {
+      cleanup()
+    }
+  })
+
+  itPosix('refuses foreign-owned sibling binaries in ~/.opencode/bin', () => {
+    const { root, dir, tool, resolveOpts, cleanup } = setupOpencodeFixture({
+      rootMode: 0o700,
+      toolName: 'git',
+    })
+    try {
+      const resolution = resolveTrustedExecutable('git', {
+        ...resolveOpts,
+        env: { PATH: dir },
+        policyEnv: { HOME: root },
+        platform: 'linux',
+        cache: freshCache(),
+      })
+      expect(resolution.path).toBeUndefined()
+      expect(resolution.reason).toContain('is owned by uid')
+      expect(resolveTrustedProgram(tool, { ...resolveOpts, platform: 'linux', policyEnv: { HOME: root } }).path).toBeUndefined()
+    } finally {
+      cleanup()
+    }
+  })
+
+  itPosix('does not grant foreign-owner exception to opencode.sh on POSIX', () => {
+    const { root, dir, tool, resolveOpts, cleanup } = setupOpencodeFixture({
+      rootMode: 0o700,
+      toolName: 'opencode.sh',
+    })
+    try {
+      const resolution = resolveTrustedExecutable('opencode.sh', {
+        ...resolveOpts,
+        env: { PATH: dir },
+        policyEnv: { HOME: root },
+        platform: 'linux',
+        cache: freshCache(),
+      })
+      expect(resolution.path).toBeUndefined()
+      expect(resolution.reason).toContain('is owned by uid')
+      expect(resolveTrustedProgram(tool, { ...resolveOpts, platform: 'linux', policyEnv: { HOME: root } }).path).toBeUndefined()
+    } finally {
+      cleanup()
+    }
+  })
+
+  itPosix('refuses opencode if its directory is owned by an untrusted user', () => {
+    const root = tempRoot()
+    const opencodeDir = join(root, '.opencode', 'bin')
+    const tool = makeExecutable(opencodeDir, 'opencode')
+    const restore = ownedBySomeoneElse(opencodeDir)
+    try {
+      const resolution = resolveTrustedExecutable('opencode', {
+        env: { PATH: opencodeDir },
+        policyEnv: { HOME: root },
+        platform: 'linux',
+        cache: freshCache(),
+      })
+      expect(resolution.path).toBeUndefined()
+      expect(resolution.reason).toContain('is owned by uid')
+      expect(resolveTrustedProgram(tool, { platform: 'linux', policyEnv: { HOME: root } }).path).toBeUndefined()
+    } finally {
+      restore()
+    }
+  })
+
+  itPosix('refuses foreign-owned 0755 opencode when its directory chain is traversable by others', () => {
+    const { root, dir, resolveOpts, cleanup } = setupOpencodeFixture({ rootMode: 0o755 })
+    try {
+      const resolution = resolveTrustedExecutable('opencode', {
+        ...resolveOpts,
+        env: { PATH: dir },
+        policyEnv: { HOME: root },
+        platform: 'linux',
+        cache: freshCache(),
+      })
+      expect(resolution.path).toBeUndefined()
+      expect(resolution.reason).toMatch(/is writable by (group or others|its foreign owner)/)
+    } finally {
+      cleanup()
+    }
+  })
+
+  itPosix('refuses foreign-owned 0555 opencode in a world-traversable directory chain', () => {
+    const { root, dir, resolveOpts, cleanup } = setupOpencodeFixture({ rootMode: 0o755, toolMode: 0o555 })
+    try {
+      const resolution = resolveTrustedExecutable('opencode', {
+        ...resolveOpts,
+        env: { PATH: dir },
+        policyEnv: { HOME: root },
+        platform: 'linux',
+        cache: freshCache(),
+      })
+      expect(resolution.path).toBeUndefined()
+      expect(resolution.reason).toMatch(/is writable by (group or others|its foreign owner)/)
+    } finally {
+      cleanup()
+    }
+  })
+
+  itPosix('refuses foreign-owned 0555 opencode in a sticky 1777 directory', () => {
+    const { dir, resolveOpts, cleanup } = setupOpencodeFixture({ customDir: 'sticky-bin', dirMode: 0o1777, toolMode: 0o555 })
+    try {
+      const resolution = resolveTrustedExecutable('opencode', {
+        ...resolveOpts,
+        env: { PATH: dir },
+        policyEnv: { OPENCODE_INSTALL_DIR: dir },
+        platform: 'linux',
+        cache: freshCache(),
+      })
+      expect(resolution.path).toBeUndefined()
+      expect(resolution.reason).toContain('is writable by group or others')
+    } finally {
+      cleanup()
+    }
+  })
+
+  itPosix('refuses foreign-owned 0755 opencode when an ancestor allows group traversal (0710/0750)', () => {
+    for (const groupMode of [0o710, 0o750]) {
+      const { root, dir, resolveOpts, cleanup } = setupOpencodeFixture({ rootMode: groupMode })
+      try {
+        const resolution = resolveTrustedExecutable('opencode', {
+          ...resolveOpts,
+          env: { PATH: dir },
+          policyEnv: { HOME: root },
+          platform: 'linux',
+          cache: freshCache(),
+        })
+        expect(resolution.path).toBeUndefined()
+        expect(resolution.reason).toBeDefined()
+      } finally {
+        cleanup()
+      }
+    }
+  })
+
+  itPosix('refuses opencode in ~/.opencode/bin if the file is writable by group or others', () => {
+    const { root, dir, resolveOpts, cleanup } = setupOpencodeFixture({ rootMode: 0o700, toolMode: 0o777 })
+    try {
+      const resolution = resolveTrustedExecutable('opencode', {
+        ...resolveOpts,
+        env: { PATH: dir },
+        policyEnv: { HOME: root },
+        platform: 'linux',
+        cache: freshCache(),
+      })
+      expect(resolution.path).toBeUndefined()
+      expect(resolution.reason).toContain('is writable by group or others')
+    } finally {
+      cleanup()
+    }
+  })
+
+  itPosix('refuses root-owned opencode if the file is writable by group or others', () => {
+    const { root, dir, resolveOpts, cleanup } = setupOpencodeFixture({ rootMode: 0o700, toolMode: 0o777, foreign: false })
+    try {
+      const resolution = resolveTrustedExecutable('opencode', {
+        ...resolveOpts,
+        env: { PATH: dir },
+        policyEnv: { HOME: root },
+        platform: 'linux',
+        cache: freshCache(),
+      })
+      expect(resolution.path).toBeUndefined()
+      expect(resolution.reason).toContain('is writable by group or others')
+    } finally {
+      cleanup()
+    }
+  })
+
+  itPosix('refuses opencode in ~/.opencode/bin if the directory is writable by group or others', () => {
+    const { root, dir, resolveOpts, cleanup } = setupOpencodeFixture({ rootMode: 0o700, dirMode: 0o777 })
+    try {
+      const resolution = resolveTrustedExecutable('opencode', {
+        ...resolveOpts,
+        env: { PATH: dir },
+        policyEnv: { HOME: root },
+        platform: 'linux',
+        cache: freshCache(),
+      })
+      expect(resolution.path).toBeUndefined()
+      expect(resolution.reason).toContain('is writable by group or others')
+    } finally {
+      cleanup()
+    }
+  })
+
+  itPosix('refuses opencode if an ancestor directory in its canonical chain is writable by group or others', () => {
+    const { root, dir, resolveOpts, cleanup } = setupOpencodeFixture({ rootMode: 0o700, parentMode: 0o777 })
+    try {
+      const resolution = resolveTrustedExecutable('opencode', {
+        ...resolveOpts,
+        env: { PATH: dir },
+        policyEnv: { HOME: root },
+        platform: 'linux',
+        cache: freshCache(),
+      })
+      expect(resolution.path).toBeUndefined()
+      expect(resolution.reason).toContain('is writable by group or others')
+    } finally {
+      cleanup()
+    }
+  })
+
+  itPosix('validates foreign-owned opencode symlinks across private and non-private targets', () => {
+    const privRoot = tempRoot()
+    chmodSync(privRoot, 0o700)
+    const privBin = join(privRoot, '.opencode', 'bin')
+    mkdirSync(privBin, { recursive: true })
+
+    const targetPrivRoot = tempRoot()
+    chmodSync(targetPrivRoot, 0o700)
+    const targetPrivDir = join(targetPrivRoot, 'target-bin')
+    const targetTool = makeExecutable(targetPrivDir, 'opencode')
+
+    const isRealRoot = process.getuid?.() === 0
+    let restore = () => {}
+    if (isRealRoot) {
+      restore = ownedBySomeoneElse(targetTool)
+    }
+
+    const symlinkPath = join(privBin, 'opencode')
+    symlinkSync(targetTool, symlinkPath)
+
+    const statHook = (p: string): Stats | null => {
+      const s = statOrNull(p)
+      if (!s) return null
+      if (!isRealRoot && (p === targetTool || realpathOrNull(p) === targetTool)) {
+        return Object.assign(Object.create(Object.getPrototypeOf(s)), s, { uid: FOREIGN_UID })
+      }
+      return s
+    }
+    const lstatHook = (p: string): Stats | null => {
+      const s = lstatOrNull(p)
+      if (!s) return null
+      if (!isRealRoot && p === targetTool) {
+        return Object.assign(Object.create(Object.getPrototypeOf(s)), s, { uid: FOREIGN_UID })
+      }
+      return s
+    }
+    const resolveOpts: Partial<TrustedExecutableOptions> = isRealRoot
+      ? {}
+      : { stat: statHook, lstat: lstatHook }
+
+    try {
+      const okRes = resolveTrustedExecutable('opencode', {
+        ...resolveOpts,
+        env: { PATH: privBin },
+        policyEnv: { HOME: privRoot },
+        platform: 'linux',
+        cache: freshCache(),
+      })
+      expect(okRes.path).toBe(symlinkPath)
+
+      chmodSync(targetPrivRoot, 0o755)
+      const badRes = resolveTrustedExecutable('opencode', {
+        ...resolveOpts,
+        env: { PATH: privBin },
+        policyEnv: { HOME: privRoot },
+        platform: 'linux',
+        cache: freshCache(),
+      })
+      expect(badRes.path).toBeUndefined()
+      expect(badRes.reason).toMatch(/is writable by (group or others|its foreign owner)/)
+    } finally {
+      chmodSync(targetPrivRoot, 0o755)
+      chmodSync(privRoot, 0o755)
+      restore()
+    }
+  })
+
+  itPosix('re-verifies foreign-owned opencode on resolution cache hit', () => {
+    const { root, dir, tool, resolveOpts, cleanup } = setupOpencodeFixture({ rootMode: 0o700 })
+    const cache = freshCache()
+    try {
+      const first = resolveTrustedExecutable('opencode', {
+        ...resolveOpts,
+        env: { PATH: dir },
+        policyEnv: { HOME: root },
+        platform: 'linux',
+        cache,
+      })
+      expect(first.path).toBe(tool)
+
+      const second = resolveTrustedExecutable('opencode', {
+        ...resolveOpts,
+        env: { PATH: dir },
+        policyEnv: { HOME: root },
+        platform: 'linux',
+        cache,
+      })
+      expect(second.path).toBe(tool)
+
+      chmodSync(tool, 0o777)
+      const third = resolveTrustedExecutable('opencode', {
+        ...resolveOpts,
+        env: { PATH: dir },
+        policyEnv: { HOME: root },
+        platform: 'linux',
+        cache,
+      })
+      expect(third.path).toBeUndefined()
+    } finally {
+      cleanup()
+    }
+  })
+
+  itPosix('resolves opencode when PATH contains dot-segments or symlink aliases to ~/.opencode/bin', () => {
+    const root = tempRoot()
+    const opencodeDir = join(root, '.opencode', 'bin')
+    makeExecutable(opencodeDir, 'opencode')
+
+    // Dot-segment in PATH
+    const dotPath = join(root, '.opencode', '.', 'bin')
+    const dotResolution = resolveTrustedExecutable('opencode', {
+      env: { PATH: dotPath },
+      policyEnv: { HOME: root },
+      platform: 'linux',
+      cache: freshCache(),
+    })
+    expect(dotResolution.path).toBe(join(dotPath, 'opencode'))
+
+    // Symlink alias to opencodeDir
+    const aliasDir = join(root, 'alias-bin')
+    symlinkSync(opencodeDir, aliasDir)
+    const aliasResolution = resolveTrustedExecutable('opencode', {
+      env: { PATH: aliasDir },
+      policyEnv: { HOME: root },
+      platform: 'linux',
+      cache: freshCache(),
+    })
+    expect(aliasResolution.path).toBe(join(aliasDir, 'opencode'))
+  })
+
+  it('resolves canonical OpenCode directory on Windows via USERPROFILE or HOME fallback', () => {
+    expect(canonicalTrustedDirectories('win32', { USERPROFILE: 'C:\\Users\\alice' }))
+      .toEqual(['C:\\Users\\alice\\.opencode\\bin'])
+    expect(canonicalTrustedDirectories('win32', { HOME: 'C:\\Users\\bob' }))
+      .toEqual(['C:\\Users\\bob\\.opencode\\bin'])
+  })
+
+  it('selects the first absolute OpenCode directory and ignores relative paths', () => {
+    expect(canonicalTrustedDirectories('win32', {
+      USERPROFILE: 'C:\\Users\\alice',
+      OPENCODE_INSTALL_DIR: 'relative\\bin',
+      OPENCODE_DIR: 'C:\\OpenCode\\bin',
+    })).toEqual(['C:\\Users\\alice\\.opencode\\bin', 'C:\\OpenCode\\bin'])
+
+    expect(canonicalTrustedDirectories('linux', {
+      HOME: '/home/alice',
+      OPENCODE_INSTALL_DIR: '/opt/opencode/bin',
+      OPENCODE_DIR: '/alt/opencode/bin',
+    })).toEqual(['/home/alice/.opencode/bin', '/opt/opencode/bin'])
+
+    expect(canonicalTrustedDirectories('linux', {
+      HOME: '/home/alice',
+      OPENCODE_INSTALL_DIR: 'relative/bin',
+      OPENCODE_DIR: '/opt/opencode/bin',
+    })).toEqual(['/home/alice/.opencode/bin', '/opt/opencode/bin'])
+  })
 })
 
 describe('round-3 trust rules', () => {

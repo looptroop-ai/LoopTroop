@@ -96,6 +96,11 @@ jobs:
       - name: Test
         run: npm run test
 
+      # Exercises real filesystem chownSync and private directory traversal checks
+      # as root on Linux, which would otherwise skip on unprivileged runners.
+      - name: Test executable resolver as root
+        run: sudo --preserve-env=PATH env "PATH=$PATH" npm test -- server/lib/__tests__/executablePath.test.ts
+
       - name: Build application
         run: npm run build
 

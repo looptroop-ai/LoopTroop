@@ -923,18 +923,18 @@ function searchEntries(entries                   , platform                 )   
  * install directory spares operators and container users from having to supply
  * an explicit `LOOPTROOP_TRUSTED_EXECUTABLE_DIRS` override.
  */
-function canonicalTrustedDirectories(platform                 , policyEnv                   )           {
+export function canonicalTrustedDirectories(platform                 , policyEnv                   )           {
   let home
   if (platform === 'win32') {
     home = policyEnv.USERPROFILE ?? policyEnv.HOME
   } else {
     home = policyEnv.HOME
-    if (!home && process.platform !== 'win32') {
-      try {
-        home = trustedOs.homedir()
-      } catch {
-        // Ignore homedir errors
-      }
+  }
+  if (!home) {
+    try {
+      home = trustedOs.homedir?.()
+    } catch {
+      // Ignore homedir errors
     }
   }
   const p = pathFor(platform)
@@ -942,9 +942,11 @@ function canonicalTrustedDirectories(platform                 , policyEnv       
   if (home && p.isAbsolute(home)) {
     dirs.push(p.join(home, '.opencode', 'bin'))
   }
-  const explicitOpenCodeDir = policyEnv.OPENCODE_INSTALL_DIR ?? policyEnv.OPENCODE_DIR
-  if (explicitOpenCodeDir && p.isAbsolute(explicitOpenCodeDir)) {
-    dirs.push(explicitOpenCodeDir)
+  for (const custom of [policyEnv.OPENCODE_INSTALL_DIR, policyEnv.OPENCODE_DIR]) {
+    if (custom && p.isAbsolute(custom)) {
+      dirs.push(custom)
+      break
+    }
   }
   return dirs
 }
@@ -1314,9 +1316,10 @@ export function resolveTrustedExecutable(
   const namedByOperator = trustedOperatorDirectories(policyEnv, platform)
   const extensions = candidateExtensions(name, platform, policyEnv)
   const cache = options.cache === undefined ? processCache : options.cache
-  // The override is in the key as well as in the directory list, because a
-  // directory can be on both and only the override excuses the ownership rule.
-  const cacheKey = [platform, name, extensions.join(';'), override, [...namedByOperator].sort().join(';'), directories.join(p.delimiter)].join('\u0000')
+  // Trusted operator directories (including explicit overrides and canonical tool
+  // paths) are in the cache key because a directory can be on PATH and only
+  // operator trust excuses the ownership rule.
+  const cacheKey = [platform, name, extensions.join(';'), override, [...namedByOperator].sort((a, b) => a.localeCompare(b)).join(';'), directories.join(p.delimiter)].join('\u0000')
 
   const cached = cache?.get(cacheKey)
   if (cached) {

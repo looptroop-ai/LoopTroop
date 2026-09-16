@@ -5,6 +5,7 @@ import { afterEach, describe, expect, it, vi } from 'vitest'
 import { makeTempDir, removeTempDir } from '../../test/tempDir'
 import {
   bareNameSearchReachesWorkingDirectory,
+  canonicalTrustedDirectories,
   findTrustedExecutablePath,
   launchThroughInterpreter,
   needsCommandInterpreter,
@@ -985,6 +986,46 @@ describe('round-2 trust rules', () => {
     } finally {
       restore()
     }
+  })
+
+  it('resolves canonical OpenCode directory on Windows via USERPROFILE or HOME fallback', () => {
+    expect(canonicalTrustedDirectories('win32', { USERPROFILE: 'C:\\Users\\alice' }))
+      .toEqual(['C:\\Users\\alice\\.opencode\\bin'])
+    expect(canonicalTrustedDirectories('win32', { HOME: 'C:\\Users\\bob' }))
+      .toEqual(['C:\\Users\\bob\\.opencode\\bin'])
+  })
+
+  it('selects the first absolute OpenCode directory and ignores relative paths', () => {
+    expect(canonicalTrustedDirectories('win32', {
+      USERPROFILE: 'C:\\Users\\alice',
+      OPENCODE_INSTALL_DIR: 'relative\\bin',
+      OPENCODE_DIR: 'C:\\OpenCode\\bin',
+    })).toEqual(['C:\\Users\\alice\\.opencode\\bin', 'C:\\OpenCode\\bin'])
+
+    expect(canonicalTrustedDirectories('linux', {
+      HOME: '/home/alice',
+      OPENCODE_INSTALL_DIR: '/opt/opencode/bin',
+      OPENCODE_DIR: '/alt/opencode/bin',
+    })).toEqual(['/home/alice/.opencode/bin', '/opt/opencode/bin'])
+
+    expect(canonicalTrustedDirectories('linux', {
+      HOME: '/home/alice',
+      OPENCODE_INSTALL_DIR: 'relative/bin',
+      OPENCODE_DIR: '/opt/opencode/bin',
+    })).toEqual(['/home/alice/.opencode/bin', '/opt/opencode/bin'])
+  })
+
+  it('resolves OpenCode on Windows in canonical directories without requiring an explicit override', () => {
+    const root = tempRoot()
+    const opencodeDir = join(root, '.opencode', 'bin')
+    const tool = makeExecutable(opencodeDir, 'opencode.EXE')
+    const resolution = resolveTrustedExecutable('opencode', {
+      env: { PATH: opencodeDir },
+      policyEnv: { USERPROFILE: root, PATHEXT: '.EXE', SystemRoot: '/nonexistent-windows-root' },
+      platform: 'win32',
+      cache: freshCache(),
+    })
+    expect(resolution.path).toBe(tool)
   })
 })
 

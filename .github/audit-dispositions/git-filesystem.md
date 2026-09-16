@@ -1,0 +1,83 @@
+# Git and filesystem durability audit ledger
+
+This ledger covers only the reviewed Git safety and durable-IO packets for
+this part. `PASS, final pending` records packet evidence and still requires a
+fresh review of the finished part diff. It is not final acceptance.
+
+## Scope and boundaries
+
+The part includes Git G01, G05, G06, G13, G15, G22-G24, G31.2/G31.3, R23,
+W17 and W29.1, plus durable IO G03, G08-G14, G16, G25, G30.1-G30.4, G32 and
+S12(2). The shared workflow metadata source and test were copied unchanged.
+
+Release and installer work, executable resolution, parser and bead contracts,
+client routing, CLI/process recovery, hooks, and unrelated status changes are
+outside this part. No website files or source files outside the accepted
+packet were changed.
+
+## Git safety packet
+
+| Finding | Status | Evidence and detailed coverage | Limits |
+| --- | --- | --- | --- |
+| G01 | PASS, final pending | Local Git mutations use bounded async cleanup, including SIGTERM, SIGKILL escalation, descendant termination, and awaited settlement. The process-tree fixture covers a redirected-stdio, SIGTERM-ignoring descendant and leaves no index lock after timeout. | No E2E or full lifecycle run. |
+| G05 | PASS, final pending | Staged-then-deleted paths are omitted from the commit pathspec while real files remain attributable; a repeat finalization is a no-op. | No E2E or full lifecycle run. |
+| G06 | PASS, final pending | Origin fetch uses the explicit bounded fetch timeout and preserves the repository failure contract. | No live remote fetch or lifecycle run. |
+| G13 | PASS, final pending | NUL-delimited readers keep spaces, tabs, newlines, backslashes, non-ASCII, and rename/copy paths opaque. | No E2E or full lifecycle run. |
+| G15 | PASS, final pending | Repository, base-branch, GitHub, push, initialization, and focused-diff boundaries share strict ref validation for option-leading, control, whitespace, duplicate-dot, slash, `@`, dot-component, and `.lock` names. | No E2E or full lifecycle run. |
+| G22 | PASS, final pending | Synchronous spawn setup failures return the documented failed outcome instead of throwing; NUL argv and missing-command cases are covered. | No E2E or full lifecycle run. |
+| G23 | PASS, final pending | Candidate paths reject absolute, drive, dot, control, and symlink-ancestor escapes while allowing a legal final symlink and valid POSIX bytes. | Native Windows is not locally verified. |
+| G24 | PASS, final pending | Git child environments add `BatchMode=yes` when SSH settings are absent, preserve genuine caller settings and intentional empty values, and resolve availability against the effective environment. | No live remote authentication run. |
+| G31.2/3 | PASS, final pending | SSH alias discovery caches only successful non-empty results and retries transient failures; GitHub and push share command-availability and timeout semantics without a permanent negative cache. | No live remote authentication run. |
+| R23 | PASS, final pending | Malformed or oversized `GIT_CONFIG_COUNT` skips helper injection with a warning and preserves caller-provided configuration keys. | No live remote authentication run. |
+| W17 | PASS, final pending | Remote branch deletion requires a 40-64 character hexadecimal expected head and combines an explicit branch refspec with `--force-with-lease`; invalid or missing heads skip deletion. | No live remote deletion. |
+| W29.1 | PASS, final pending | Worktree cleanliness and bead commit capture share the generated-file allowlist; tracked and unexpected untracked changes remain visible. | No E2E or full lifecycle run. |
+
+The packet evidence is in `/tmp/looptroop-git-evidence.md`. Its focused Git
+and integration run passed 185 tests across 16 files, the process-tree
+regression rerun passed 23 tests across 2 files, and the workflow/routes/CLI
+run passed 173 tests across 10 files. Packet lint and diff checks passed.
+
+## Durable IO packet
+
+| Finding | Status | Evidence and detailed coverage | Limits |
+| --- | --- | --- | --- |
+| G03 | PASS, final pending | Execution-log appends resolve the canonical project root before containment checks, including symlink aliases, while rejecting outside roots. | No E2E or full lifecycle run. |
+| G08 | PASS, final pending | Fallback copies use exclusive no-follow targets, short-write loops, fsyncs, identity checks, and a matching `.recovery` ownership marker. Unresolved ownership or completeness preserves the files and raises a typed recovery error. | Physical power loss and native Windows are not locally verified. |
+| G09 | PASS, final pending | YAML temps require an exclusive, fsynced `.proof` with byte length and SHA-256 before promotion. | Physical power loss and native Windows are not locally verified. |
+| G10 | PASS, final pending | Whole-file JSONL recovery accepts empty files or complete newline-terminated records; torn, invalid, oversized, and unrelated temps remain untouched. | Physical power loss and native Windows are not locally verified. |
+| G11 | PASS, final pending | Atomic appends loop short writes, reject zero progress, fsync after completion, and return the exact byte range. | Physical power loss and native Windows are not locally verified. |
+| G12 | PASS, final pending | Manual QA discard and quarantine use `lstat`, copy final symlink entries without dereferencing them, and protect outside or dangling targets. | Native Windows is not locally verified. |
+| G13 | PASS, final pending | Manual QA operations use NUL-safe Git readers without trimming, backslash rewriting, or path reinterpretation. | Native Windows is not locally verified. |
+| G14/S12(2) | PASS, final pending | Project and ticket roots are absolute and contained; POSIX slashes, spaces, backslashes, and legal colons remain usable while Windows ADS syntax is rejected after a valid drive. | Native Windows is not locally verified. |
+| G16 | PASS, final pending | Manual QA event reads use safe parsing, skip and warn on invalid shapes, return diagnostics, retain raw lines, and keep later appends working. | No E2E or full lifecycle run. |
+| G25 | PASS, final pending | Evidence locking uses a persistent native SQLite database with `BEGIN IMMEDIATE`, bounded async retries, rollback/close release, and process-death release. The database is never unlinked. | Physical power loss and native Windows are not locally verified. |
+| G30.1-4 | PASS, final pending | Startup scans canonical roots and known config/ticket allowlists, skips unsafe unknown artifacts, verifies identity before cleanup, fsyncs promotion parents, and preserves unrelated configuration. | No E2E or full lifecycle run. |
+| G32 | PASS, final pending | `RecoveryBlockedError` propagates from config and ticket recovery only for unresolved in-progress fallback ownership or completeness, before projections, hydration, timers, or execution. | No E2E or full lifecycle run. |
+
+The packet evidence is in `/tmp/looptroop-io-evidence.md`. The scoped rerun
+passed 198 tests across 10 files, with 4 platform-conditional skips. Both
+application and test typechecks, packet lint, and packet diff checks passed.
+
+## Recovery and preservation rules
+
+An ordinary orphan YAML temp without proof, or a torn whole-file JSONL temp,
+is warned about and left unpromoted. An unresolved in-progress fallback whose
+ownership or completeness cannot be proved raises `RecoveryBlockedError` and
+reports `RECOVERY_BLOCKED` before startup projections, ticket hydration,
+timers, or execution. The target, source temp, marker, and any retained
+cleanup sidecar remain available for manual recovery. This daemon-level
+startup failure is separate from ticket `BLOCKED_ERROR`.
+
+YAML `.proof`, fallback `.recovery`, marker staging `.recovery.write-*`, and
+retained `.remove-*` files are intentional. SQLite may create `-journal`,
+`-wal`, and `-shm` files beside the persistent lock database. Cleanup of
+selected runtime and temporary children preserves runtime logs; the persistent
+Manual QA SQLite database is outside that transient cleanup scope. Evidence
+uploads reject symlinks, while workspace-drift quarantine copies the link
+entry itself instead of its external target.
+
+Native Windows, physical power loss, unsupported directory fsync behavior, E2E,
+full lifecycle runs, and live remote operations are not claimed here. The
+documentation integration notes and source traces are in
+`/tmp/looptroop-git-io-docs-evidence.md`; the original audit report remains
+read-only at `tmp/report/consolidated-report.md`.

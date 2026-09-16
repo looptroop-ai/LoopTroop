@@ -581,6 +581,7 @@ function ownershipRefusal(path: string, what: string, context: TrustContext): st
 
 function ancestorRefusal(start: string, what: string, context: TrustContext): string | null {
   let current = start
+  let enclosed = false
   for (;;) {
     const stats = statOrNull(current)
     if (stats === null) return `its ${what} could not be inspected`
@@ -588,9 +589,14 @@ function ancestorRefusal(start: string, what: string, context: TrustContext): st
       const whose = current === start ? `its ${what}` : `${current}, above its ${what},`
       return `${whose} is owned by uid ${stats.uid}, which is neither root, you, nor the owner of the Node running LoopTroop`
     }
-    if (context.isOpencode && context.canonicalOpenCodeDir && (stats.mode & 0o022) !== 0 && (stats.mode & 0o1000) === 0) {
-      const whose = current === start ? `its ${what}` : `${current}, in its ${what} chain,`
-      return `${whose} is writable by group or others`
+    if (context.isOpencode && context.canonicalOpenCodeDir && !enclosed) {
+      if ((stats.mode & 0o022) !== 0) {
+        const whose = current === start ? `its ${what}` : `${current}, in its ${what} chain,`
+        return `${whose} is writable by group or others`
+      }
+      if ((stats.mode & 0o011) === 0) {
+        enclosed = true
+      }
     }
     const parent = trustedPath.dirname(current)
     if (parent === current) return null
@@ -600,13 +606,15 @@ function ancestorRefusal(start: string, what: string, context: TrustContext): st
 
 /**
  * Returns true if an ancestor directory owned by a trusted owner denies
- * traversal to non-owners (e.g. /root with mode 0700).
+ * traversal to non-owners (both group and other cannot execute, and not writable).
  */
 function isEnclosedInPrivateDirectory(path: string, context: TrustContext): boolean {
   let current = trustedPath.dirname(path)
   for (;;) {
     const stats = statOrNull(current)
-    if (stats && context.owners.has(stats.uid) && (stats.mode & 0o001) === 0) {
+    if (!stats || !context.owners.has(stats.uid)) return false
+    if ((stats.mode & 0o022) !== 0) return false
+    if ((stats.mode & 0o011) === 0) {
       return true
     }
     const parent = trustedPath.dirname(current)
@@ -615,15 +623,40 @@ function isEnclosedInPrivateDirectory(path: string, context: TrustContext): bool
   }
 }
 
+function isExactOpencode(filePath: string, platform: NodeJS.Platform): boolean {
+  const ext = trustedPath.extname(filePath)
+  const base = ext ? trustedPath.basename(filePath, ext) : trustedPath.basename(filePath)
+  return platform === 'win32' ? base.toLowerCase() === 'opencode' : base === 'opencode'
+}
+
+function foreignFileRefusal(
+  filePath: string,
+  stats: trustedFs.Stats,
+  isTrusted: boolean,
+  label: string,
+  context: TrustContext,
+): string | null {
+  if (isTrusted) return null
+
+  if (context.isOpencode && context.canonicalOpenCodeDir && isExactOpencode(filePath, context.platform)) {
+    if (!isEnclosedInPrivateDirectory(filePath, context)) {
+      return `its ${label} is owned by uid ${stats.uid} and is writable by its foreign owner`
+    }
+    return null
+  }
+
+  return `its ${label} is owned by uid ${stats.uid}, which is neither root, you, nor the owner of the Node running LoopTroop`
+}
+
 /**
  * Validates the binary file itself.
  *
  * An explicit operator override excuses file ownership. A foreign-owned
  * `opencode` binary in a trusted canonical OpenCode directory is also excused
  * (its release tarball retains runner uid 1001 when unpacked by root), provided
- * its file and directory chain are not writable by group or others. Sibling
- * binaries (like `git` or `gh`) and any binary in a directory owned by an
- * untrusted user are never excused.
+ * its file and directory chain are not writable by group or others and are
+ * enclosed in a private directory. Sibling binaries (like `git` or `gh`) and any
+ * binary in a directory owned by an untrusted user are never excused.
  */
 function fileRefusal(candidate: string, target: string, context: TrustContext): string | null {
   if (context.platform === 'win32' || context.namedByOperator) return null
@@ -633,19 +666,13 @@ function fileRefusal(candidate: string, target: string, context: TrustContext): 
   if (candidateStats === null) return 'its file could not be inspected'
   if (targetStats === null) return 'its target file could not be inspected'
 
-  const mountTable = context.readMountTable()
-  const candidateTrusted = context.owners.has(candidateStats.uid) || isWindowsDriveMount(candidate, mountTable)
-  const targetTrusted = context.owners.has(targetStats.uid) || isWindowsDriveMount(target, mountTable)
-
-  if (candidateTrusted && targetTrusted) return null
-
   if (context.isOpencode && context.canonicalOpenCodeDir) {
     const candidateDirStats = statOrNull(trustedPath.dirname(candidate))
     const targetDirStats = statOrNull(trustedPath.dirname(target))
-    if (candidateDirStats && (candidateDirStats.mode & 0o022) !== 0 && (candidateDirStats.mode & 0o1000) === 0) {
+    if (candidateDirStats && (candidateDirStats.mode & 0o022) !== 0) {
       return 'its directory is writable by group or others'
     }
-    if (targetDirStats && (targetDirStats.mode & 0o022) !== 0 && (targetDirStats.mode & 0o1000) === 0) {
+    if (targetDirStats && (targetDirStats.mode & 0o022) !== 0) {
       return 'its target directory is writable by group or others'
     }
     if ((candidateStats.mode & 0o022) !== 0) {
@@ -654,22 +681,16 @@ function fileRefusal(candidate: string, target: string, context: TrustContext): 
     if ((targetStats.mode & 0o022) !== 0) {
       return 'its target file is writable by group or others'
     }
-    if ((candidateStats.mode & 0o222) === 0 && (targetStats.mode & 0o222) === 0) {
-      return null
-    }
-    if (!candidateTrusted && !isEnclosedInPrivateDirectory(candidate, context)) {
-      return `its file is owned by uid ${candidateStats.uid} and is writable by its foreign owner`
-    }
-    if (!targetTrusted && !isEnclosedInPrivateDirectory(target, context)) {
-      return `its target file is owned by uid ${targetStats.uid} and is writable by its foreign owner`
-    }
-    return null
   }
 
-  if (!candidateTrusted) {
-    return `its file is owned by uid ${candidateStats.uid}, which is neither root, you, nor the owner of the Node running LoopTroop`
-  }
-  return `its target file is owned by uid ${targetStats.uid}, which is neither root, you, nor the owner of the Node running LoopTroop`
+  const mountTable = context.readMountTable()
+  const candidateTrusted = context.owners.has(candidateStats.uid) || isWindowsDriveMount(candidate, mountTable)
+  const targetTrusted = context.owners.has(targetStats.uid) || isWindowsDriveMount(target, mountTable)
+
+  if (candidateTrusted && targetTrusted) return null
+
+  return foreignFileRefusal(candidate, candidateStats, candidateTrusted, 'file', context)
+    ?? foreignFileRefusal(target, targetStats, targetTrusted, 'target file', context)
 }
 
 /**
@@ -772,7 +793,7 @@ export function resolveTrustedExecutable(
   const directories = trustedSearchDirectories({ env, policyEnv, platform })
   const namedByOperator = trustedOperatorDirectories(policyEnv, platform)
   const canonicalDirs = canonicalTrustedDirectorySet(platform, policyEnv)
-  const isOpencode = name.toLowerCase() === 'opencode'
+  const isOpencode = platform === 'win32' ? name.toLowerCase() === 'opencode' : name === 'opencode'
   const extensions = candidateExtensions(name, platform, policyEnv)
   const cache = options.cache === undefined ? processCache : options.cache
   // Operator-trusted directories (the explicit override) and canonical tool
@@ -900,7 +921,7 @@ export function resolveTrustedProgram(
   const directory = trustedPath.dirname(program)
   const ext = trustedPath.extname(program)
   const base = ext ? trustedPath.basename(program, ext) : trustedPath.basename(program)
-  const isOpencode = base.toLowerCase() === 'opencode'
+  const isOpencode = platform === 'win32' ? base.toLowerCase() === 'opencode' : base === 'opencode'
   const inCanonicalDir = directoryMatches(directory, canonicalDirs)
     || directoryMatches(trustedPath.dirname(target), canonicalDirs)
   const context: TrustContext = {

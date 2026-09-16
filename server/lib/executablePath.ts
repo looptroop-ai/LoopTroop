@@ -588,8 +588,29 @@ function ancestorRefusal(start: string, what: string, context: TrustContext): st
       const whose = current === start ? `its ${what}` : `${current}, above its ${what},`
       return `${whose} is owned by uid ${stats.uid}, which is neither root, you, nor the owner of the Node running LoopTroop`
     }
+    if (context.isOpencode && context.canonicalOpenCodeDir && (stats.mode & 0o022) !== 0 && (stats.mode & 0o1000) === 0) {
+      const whose = current === start ? `its ${what}` : `${current}, in its ${what} chain,`
+      return `${whose} is writable by group or others`
+    }
     const parent = trustedPath.dirname(current)
     if (parent === current) return null
+    current = parent
+  }
+}
+
+/**
+ * Returns true if an ancestor directory owned by a trusted owner denies
+ * traversal to non-owners (e.g. /root with mode 0700).
+ */
+function isEnclosedInPrivateDirectory(path: string, context: TrustContext): boolean {
+  let current = trustedPath.dirname(path)
+  for (;;) {
+    const stats = statOrNull(current)
+    if (stats && context.owners.has(stats.uid) && (stats.mode & 0o001) === 0) {
+      return true
+    }
+    const parent = trustedPath.dirname(current)
+    if (parent === current) return false
     current = parent
   }
 }
@@ -600,9 +621,9 @@ function ancestorRefusal(start: string, what: string, context: TrustContext): st
  * An explicit operator override excuses file ownership. A foreign-owned
  * `opencode` binary in a trusted canonical OpenCode directory is also excused
  * (its release tarball retains runner uid 1001 when unpacked by root), provided
- * its file is not writable by group or others. Sibling binaries (like `git` or
- * `gh`) and any binary in a directory owned by an untrusted user are never
- * excused.
+ * its file and directory chain are not writable by group or others. Sibling
+ * binaries (like `git` or `gh`) and any binary in a directory owned by an
+ * untrusted user are never excused.
  */
 function fileRefusal(candidate: string, target: string, context: TrustContext): string | null {
   if (context.platform === 'win32' || context.namedByOperator) return null
@@ -621,10 +642,10 @@ function fileRefusal(candidate: string, target: string, context: TrustContext): 
   if (context.isOpencode && context.canonicalOpenCodeDir) {
     const candidateDirStats = statOrNull(trustedPath.dirname(candidate))
     const targetDirStats = statOrNull(trustedPath.dirname(target))
-    if (candidateDirStats && (candidateDirStats.mode & 0o022) !== 0) {
+    if (candidateDirStats && (candidateDirStats.mode & 0o022) !== 0 && (candidateDirStats.mode & 0o1000) === 0) {
       return 'its directory is writable by group or others'
     }
-    if (targetDirStats && (targetDirStats.mode & 0o022) !== 0) {
+    if (targetDirStats && (targetDirStats.mode & 0o022) !== 0 && (targetDirStats.mode & 0o1000) === 0) {
       return 'its target directory is writable by group or others'
     }
     if ((candidateStats.mode & 0o022) !== 0) {
@@ -632,6 +653,15 @@ function fileRefusal(candidate: string, target: string, context: TrustContext): 
     }
     if ((targetStats.mode & 0o022) !== 0) {
       return 'its target file is writable by group or others'
+    }
+    if ((candidateStats.mode & 0o222) === 0 && (targetStats.mode & 0o222) === 0) {
+      return null
+    }
+    if (!candidateTrusted && !isEnclosedInPrivateDirectory(candidate, context)) {
+      return `its file is owned by uid ${candidateStats.uid} and is writable by its foreign owner`
+    }
+    if (!targetTrusted && !isEnclosedInPrivateDirectory(target, context)) {
+      return `its target file is owned by uid ${targetStats.uid} and is writable by its foreign owner`
     }
     return null
   }

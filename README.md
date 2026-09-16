@@ -212,6 +212,19 @@ server it can reach, and a project mounted at its own absolute path. See the
 [Installation page](https://www.looptroop.ovh/docs/installation#running-in-a-container).
 </details>
 
+### Standalone executable
+
+Standalone release archives carry Node `v26.9.0` in the executable, so a
+downloaded archive runs without Node installed on the host. That embedded
+runtime is separate from the application and package floor: Node `24.18.1+`
+remains required for the npm, bun, pnpm and Yarn channels and for the
+container's application runtime.
+
+Node 26 is currently the Current release line, with its planned Active LTS
+transition on 2026-10-28. Embedded-runtime security maintenance follows
+[Node's release schedule](https://github.com/nodejs/Release#release-schedule)
+separately from LoopTroop's application-runtime support; dates can change.
+
 **[The Installation page](https://www.looptroop.ovh/docs/installation) is the one
 place that tracks which channels are live**, and covers upgrading, uninstalling,
 verifying a download against the checksums each release publishes, and running in

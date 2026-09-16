@@ -208,8 +208,8 @@ jobs:
   # ---------------------------------------------------------------------------
   # The standalone binaries, before anything is packed.
   # ---------------------------------------------------------------------------
-  # Each target is built on the runner that matches it: a single-file build
-  # embeds the running Node, so a cross-built one would carry the wrong runtime.
+  # Each target is built on the runner that matches it: native SEA embeds the
+  # selected Node runtime, so a cross-built one would carry the wrong runtime.
   # macOS x64 is absent because Node supports single-executable applications on
   # arm64 only there; Intel Macs keep Homebrew and npm.
   #
@@ -221,9 +221,9 @@ jobs:
   #
   # The macOS runner is pinned rather than floating so the OS the binary is
   # built on is a decision rather than something that moves underneath it. It is
-  # not what decides the binary's minimum macOS version — the build copies the
-  # running Node executable and re-signs it, so that comes from Node, which
-  # `setup-node` pins. Bump this deliberately when the image is retired;
+  # not what decides the binary's minimum macOS version — the native builder
+  # writes the executable from the Node runtime `setup-node` pins. Bump this
+  # deliberately when the image is retired;
   # `macos-14` was withdrawn on 2 Nov 2026.
   binary:
     name: Binary (${{ matrix.target }})
@@ -250,7 +250,9 @@ jobs:
       - name: Set up Node
         uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7
         with:
-          node-version: 24.18.1
+          # Standalone binaries use the maintained native SEA builder in Node
+          # 26.9.0. The release/package jobs retain the Node 24.18.1 floor.
+          node-version: 26.9.0
           cache: npm
 
       - name: Pin npm to the declared version
@@ -275,6 +277,30 @@ jobs:
       # With `node` shadowed, which is the only thing that proves the artefact:
       # every runner has Node, so a binary that quietly used it would pass any
       # weaker check and fail for the user this exists for.
+      - name: Run blocking application checks on the embedded runtime
+        shell: bash
+        run: |
+          set -euo pipefail
+          binary=$(find "${RUNNER_TEMP}/binary" -maxdepth 1 -type f \
+            -name 'looptroop-*-${{ matrix.target }}*' \
+            ! -name '*.tar.gz' ! -name '*.zip' | head -1)
+          if [ -z "${binary}" ]; then
+            echo "::error::The binary build produced no executable for ${{ matrix.target }}."
+            exit 1
+          fi
+          test "$("${binary}" --version)" = "$(node -p 'require("./package.json").version')"
+          doctor_dir="${RUNNER_TEMP}/embedded-doctor"
+          mkdir -p "${doctor_dir}"
+          doctor_status=0
+          doctor=$(LOOPTROOP_CONFIG_DIR="${doctor_dir}" \
+            LOOPTROOP_OPENCODE_MODE=mock "${binary}" doctor --json) || doctor_status=$?
+          if [ "${doctor_status}" -ne 0 ]; then
+            echo "Doctor reported environment status ${doctor_status}; checking the embedded runtime field."
+          fi
+          echo "${doctor}" | grep -F '"name": "node"'
+          echo "${doctor}" | grep -F 'v26.9.0 (latest'
+          echo "Embedded runtime application checks passed."
+
       - name: Drive it with no Node available
         shell: bash
         run: |

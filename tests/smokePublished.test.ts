@@ -1,6 +1,8 @@
 import { describe, it, expect } from 'vitest'
-import { readFileSync } from 'node:fs'
+import { readFileSync, rmSync } from 'node:fs'
 import { spawnSync } from 'node:child_process'
+import { tmpdir } from 'node:os'
+import { join } from 'node:path'
 import { planMatrix, CHANNELS, binaryPrefix, validatePublishedVersion } from '../scripts/smoke-published.mjs'
 import type { ChannelRecipe, InstalledChannel } from '../scripts/smoke-published.mjs'
 
@@ -424,6 +426,26 @@ describe('workflow dispatch wiring', () => {
     // the first line printed by `where`, which is not CreateProcess semantics.
     expect(driver).toContain("import { findToolPath, launchTool, planToolLaunch } from './tool-path.ts'")
     expect(driver).not.toContain("run('where', ['looptroop']")
+  })
+
+  it('keeps the resolved launch target and errno when a child cannot start', async () => {
+    // This is the production run helper, imported from the driver itself. A
+    // real executable plus a missing cwd makes spawnSync return ENOENT after
+    // resolution, which is the case a PATH-only message misdiagnoses.
+    const driver = await import('../scripts/smoke-published.mjs') as unknown as {
+      run: (command: string, args: string[], options?: { cwd?: string }) => {
+        code: number | null
+        combined: string
+      }
+    }
+    const missingCwd = join(tmpdir(), `looptroop-published-missing-cwd-${process.pid}`)
+    rmSync(missingCwd, { recursive: true, force: true })
+
+    const result = driver.run(process.execPath, ['--version'], { cwd: missingCwd })
+
+    expect(result.code).toBeNull()
+    expect(result.combined).toContain(`${process.execPath}: ENOENT:`)
+    expect(result.combined).not.toContain('process.execPath is not on PATH')
   })
 
   it('gives every gh step a token as well as a permission', () => {

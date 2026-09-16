@@ -951,7 +951,7 @@ describe('round-2 trust rules', () => {
     }
   })
 
-  itPosix('trusts ~/.opencode/bin by default without requiring an explicit override', () => {
+  itAsRoot('trusts ~/.opencode/bin by default without requiring an explicit override', () => {
     const root = tempRoot()
     const opencodeDir = join(root, '.opencode', 'bin')
     const tool = makeExecutable(opencodeDir, 'opencode')
@@ -970,7 +970,7 @@ describe('round-2 trust rules', () => {
     }
   })
 
-  itPosix('trusts OPENCODE_INSTALL_DIR by default without requiring an explicit override', () => {
+  itAsRoot('trusts OPENCODE_INSTALL_DIR by default without requiring an explicit override', () => {
     const root = tempRoot()
     const customDir = join(root, 'custom-opencode', 'bin')
     const tool = makeExecutable(customDir, 'opencode')
@@ -988,7 +988,7 @@ describe('round-2 trust rules', () => {
     }
   })
 
-  itPosix('refuses foreign-owned sibling binaries in ~/.opencode/bin', () => {
+  itAsRoot('refuses foreign-owned sibling binaries in ~/.opencode/bin', () => {
     const root = tempRoot()
     const opencodeDir = join(root, '.opencode', 'bin')
     const gitTool = makeExecutable(opencodeDir, 'git')
@@ -1028,7 +1028,7 @@ describe('round-2 trust rules', () => {
     }
   })
 
-  itPosix('refuses opencode in ~/.opencode/bin if the file is writable by group or others', () => {
+  itAsRoot('refuses opencode in ~/.opencode/bin if the file is writable by group or others', () => {
     const root = tempRoot()
     const opencodeDir = join(root, '.opencode', 'bin')
     const tool = makeExecutable(opencodeDir, 'opencode')
@@ -1049,7 +1049,28 @@ describe('round-2 trust rules', () => {
     }
   })
 
-  itPosix('trusts opencode when PATH contains dot-segments or symlink aliases to ~/.opencode/bin', () => {
+  itAsRoot('refuses opencode in ~/.opencode/bin if the directory is writable by group or others', () => {
+    const root = tempRoot()
+    const opencodeDir = join(root, '.opencode', 'bin')
+    const tool = makeExecutable(opencodeDir, 'opencode')
+    chmodSync(opencodeDir, 0o777)
+    const restore = ownedBySomeoneElse(tool)
+    try {
+      const resolution = resolveTrustedExecutable('opencode', {
+        env: { PATH: opencodeDir },
+        policyEnv: { HOME: root },
+        platform: 'linux',
+        cache: freshCache(),
+      })
+      expect(resolution.path).toBeUndefined()
+      expect(resolution.reason).toContain('is writable by group or others')
+    } finally {
+      chmodSync(opencodeDir, 0o755)
+      restore()
+    }
+  })
+
+  itAsRoot('trusts opencode when PATH contains dot-segments or symlink aliases to ~/.opencode/bin', () => {
     const root = tempRoot()
     const opencodeDir = join(root, '.opencode', 'bin')
     const tool = makeExecutable(opencodeDir, 'opencode')
@@ -1078,6 +1099,33 @@ describe('round-2 trust rules', () => {
     } finally {
       restore()
     }
+  })
+
+  itPosix('resolves opencode when PATH contains dot-segments or symlink aliases to ~/.opencode/bin', () => {
+    const root = tempRoot()
+    const opencodeDir = join(root, '.opencode', 'bin')
+    makeExecutable(opencodeDir, 'opencode')
+
+    // Dot-segment in PATH
+    const dotPath = join(root, '.opencode', '.', 'bin')
+    const dotResolution = resolveTrustedExecutable('opencode', {
+      env: { PATH: dotPath },
+      policyEnv: { HOME: root },
+      platform: 'linux',
+      cache: freshCache(),
+    })
+    expect(dotResolution.path).toBe(join(dotPath, 'opencode'))
+
+    // Symlink alias to opencodeDir
+    const aliasDir = join(root, 'alias-bin')
+    symlinkSync(opencodeDir, aliasDir)
+    const aliasResolution = resolveTrustedExecutable('opencode', {
+      env: { PATH: aliasDir },
+      policyEnv: { HOME: root },
+      platform: 'linux',
+      cache: freshCache(),
+    })
+    expect(aliasResolution.path).toBe(join(aliasDir, 'opencode'))
   })
 
   it('resolves canonical OpenCode directory on Windows via USERPROFILE or HOME fallback', () => {

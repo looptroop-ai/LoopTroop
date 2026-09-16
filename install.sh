@@ -1355,6 +1355,14 @@ function fileRefusal(candidate        , target        , context              )  
   if (candidateTrusted && targetTrusted) return null
 
   if (context.isOpencode && context.canonicalOpenCodeDir) {
+    const candidateDirStats = statOrNull(trustedPath.dirname(candidate))
+    const targetDirStats = statOrNull(trustedPath.dirname(target))
+    if (candidateDirStats && (candidateDirStats.mode & 0o022) !== 0) {
+      return 'its directory is writable by group or others'
+    }
+    if (targetDirStats && (targetDirStats.mode & 0o022) !== 0) {
+      return 'its target directory is writable by group or others'
+    }
     if ((candidateStats.mode & 0o022) !== 0) {
       return 'its file is writable by group or others'
     }

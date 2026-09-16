@@ -3,7 +3,8 @@ import { literalPathspec, REPO_SCOPE_PATHSPECS } from '../../git/pathspecs'
 import { resolveBaseBranchRef } from '../../git/repository'
 import { readWorktreeGitHookPolicy, shouldBypassGitHooks } from '../../git/hookPolicy'
 import { uniqueRepoScopedPaths } from '../../git/repoScopedPath'
-import { runGitSyncOrThrow } from '../../git/runCommand'
+import { parseGitPathListZ } from '../../git/statusPorcelain'
+import { runGit, runGitMutationOrThrow } from '../../git/runCommand'
 import { getErrorMessage } from '@shared/typeGuards'
 
 /**
@@ -12,8 +13,15 @@ import { getErrorMessage } from '@shared/typeGuards'
  * There used to be three private copies, none of which set `maxBuffer`, so a
  * diff large enough to succeed in the execution phase truncated here.
  */
-function runSquashGit(worktreePath: string, args: string[]): string {
-  return runGitSyncOrThrow(worktreePath, args)
+const GIT_MUTATION_COMMANDS = new Set(['add', 'checkout', 'commit', 'merge', 'reset', 'rm'])
+
+async function runSquashGit(worktreePath: string, args: string[]): Promise<string> {
+  if (args.some((arg) => GIT_MUTATION_COMMANDS.has(arg))) {
+    return runGitMutationOrThrow(worktreePath, args, args.includes('-z') ? { trimOutput: false } : undefined)
+  }
+  const result = await runGit(worktreePath, args, args.includes('-z') ? { trimOutput: false } : undefined)
+  if (!result.ok) throw new Error(result.errorDetail)
+  return result.stdout
 }
 
 export interface SquashResult {
@@ -27,56 +35,54 @@ export interface SquashResult {
 
 const GIT_ADD_BATCH_SIZE = 100
 
-const uniqueCandidatePaths = uniqueRepoScopedPaths
+function uniqueCandidatePaths(worktreePath: string, files: readonly string[]): string[] {
+  // Explicit candidate paths are later handed to `git add`/`checkout -f`; do
+  // not let a symlinked ancestor redirect one outside this worktree.
+  return uniqueRepoScopedPaths(files, worktreePath)
+}
 
 function parsePathList(output: string): string[] {
-  return output
-    .split('\n')
-    .map((line) => line.trim())
-    .filter(Boolean)
+  return parseGitPathListZ(output)
 }
 
 function parseNameStatus(output: string): Array<{ status: string; path: string }> {
-  return output
-    .split('\n')
-    .map((line) => line.trim())
-    .filter(Boolean)
-    .map((line) => {
-      const parts = line.split(/\t+/).map((part) => part.trim()).filter(Boolean)
-      return {
-        status: parts[0] ?? '',
-        path: parts.at(-1) ?? '',
-      }
-    })
-    .filter((entry) => entry.status && entry.path)
+  const fields = parseGitPathListZ(output)
+  const entries: Array<{ status: string; path: string }> = []
+  for (let index = 0; index + 1 < fields.length; index += 2) {
+    const status = fields[index] ?? ''
+    const path = fields[index + 1] ?? ''
+    if (status && path) entries.push({ status, path })
+  }
+  return entries
 }
 
-export function prepareSquashCandidate(
+export async function prepareSquashCandidate(
   worktreePath: string,
   baseBranch: string,
   ticketTitle: string,
   ticketId: string,
   extraFilesToStage: string[] = [],
-): SquashResult {
+): Promise<SquashResult> {
   let preSquashHead: string | undefined
   let resetForSquash = false
   const runGit = (args: string[]) => runSquashGit(worktreePath, args)
 
   try {
     const baseBranchRef = resolveBaseBranchRef(worktreePath, baseBranch)
-    preSquashHead = runGit(['rev-parse', 'HEAD'])
-    const mergeBase = runGit(['merge-base', 'HEAD', baseBranchRef])
-    const commitCount = Number(runGit(['rev-list', '--count', `${mergeBase}..HEAD`]))
-    const committedCandidateFiles = uniqueCandidatePaths(parsePathList(runGit([
+    preSquashHead = await runGit(['rev-parse', 'HEAD'])
+    const mergeBase = await runGit(['merge-base', 'HEAD', baseBranchRef])
+    const commitCount = Number(await runGit(['rev-list', '--count', `${mergeBase}..HEAD`]))
+    const committedCandidateFiles = uniqueCandidatePaths(worktreePath, parsePathList(await runGit([
       'diff',
       '--name-only',
+      '-z',
       '--no-renames',
       `${mergeBase}..${preSquashHead}`,
       '--',
       ...REPO_SCOPE_PATHSPECS,
     ])))
-    const explicitFiles = uniqueCandidatePaths(extraFilesToStage)
-    const candidateFiles = uniqueCandidatePaths([
+    const explicitFiles = uniqueCandidatePaths(worktreePath, extraFilesToStage)
+    const candidateFiles = uniqueCandidatePaths(worktreePath, [
       ...committedCandidateFiles,
       ...explicitFiles,
     ])
@@ -91,7 +97,7 @@ export function prepareSquashCandidate(
       }
     }
 
-    runGit(['reset', '--mixed', mergeBase])
+    await runGit(['reset', '--mixed', mergeBase])
     resetForSquash = true
 
     for (let index = 0; index < candidateFiles.length; index += GIT_ADD_BATCH_SIZE) {
@@ -99,12 +105,12 @@ export function prepareSquashCandidate(
       // Candidate paths are explicit, validated delivery decisions. `-f`
       // lets an explicitly declared permanent artifact override a repository
       // ignore rule without sweeping any other ignored/local files.
-      runGit(['add', '-v', '-f', '-A', '--', ...batch.map(literalPathspec)])
+      await runGit(['add', '-v', '-f', '-A', '--', ...batch.map(literalPathspec)])
     }
 
-    const stagedChanges = runGit(['diff', '--cached', '--name-only', '--', ...REPO_SCOPE_PATHSPECS])
-    if (!stagedChanges) {
-      runGit(['reset', '--mixed', preSquashHead])
+    const stagedChanges = parsePathList(await runGit(['diff', '--cached', '--name-only', '-z', '--', ...REPO_SCOPE_PATHSPECS]))
+    if (stagedChanges.length === 0) {
+      await runGit(['reset', '--mixed', preSquashHead])
       return {
         success: false,
         message: 'No candidate changes were available to squash',
@@ -114,7 +120,7 @@ export function prepareSquashCandidate(
       }
     }
 
-    runGit([
+    await runGit([
       '-c',
       'user.name=LoopTroop',
       '-c',
@@ -124,7 +130,7 @@ export function prepareSquashCandidate(
       '-m',
       `${ticketId}: ${ticketTitle}`,
     ])
-    const commitHash = runGit(['rev-parse', 'HEAD'])
+    const commitHash = await runGit(['rev-parse', 'HEAD'])
     resetForSquash = false
     return {
       success: true,
@@ -137,7 +143,7 @@ export function prepareSquashCandidate(
   } catch (error) {
     if (resetForSquash && preSquashHead) {
       try {
-        runGit(['reset', '--mixed', preSquashHead])
+        await runGit(['reset', '--mixed', preSquashHead])
       } catch {
         // Preserve the original error; caller-level recovery records the failure context.
       }
@@ -149,21 +155,21 @@ export function prepareSquashCandidate(
   }
 }
 
-export function rewriteCandidateCommitWithFiles(
+export async function rewriteCandidateCommitWithFiles(
   worktreePath: string,
   mergeBase: string,
   candidateCommitSha: string,
   ticketTitle: string,
   ticketId: string,
   includedFiles: string[],
-): SquashResult {
+): Promise<SquashResult> {
   let preRewriteHead: string | undefined
   let resetForRewrite = false
   const runGit = (args: string[]) => runSquashGit(worktreePath, args)
 
   try {
-    preRewriteHead = runGit(['rev-parse', 'HEAD'])
-    const candidateFiles = uniqueCandidatePaths(includedFiles)
+    preRewriteHead = await runGit(['rev-parse', 'HEAD'])
+    const candidateFiles = uniqueCandidatePaths(worktreePath, includedFiles)
 
     if (candidateFiles.length === 0) {
       return {
@@ -174,10 +180,11 @@ export function rewriteCandidateCommitWithFiles(
       }
     }
 
-    const changedFiles = new Set(parsePathList(runGit([
+    const changedFiles = new Set(parsePathList(await runGit([
       'diff',
       '--name-only',
       '--no-renames',
+      '-z',
       `${mergeBase}..${candidateCommitSha}`,
       '--',
       ...REPO_SCOPE_PATHSPECS,
@@ -193,10 +200,11 @@ export function rewriteCandidateCommitWithFiles(
       }
     }
 
-    const nameStatus = parseNameStatus(runGit([
+    const nameStatus = parseNameStatus(await runGit([
       'diff',
       '--name-status',
       '--no-renames',
+      '-z',
       `${mergeBase}..${candidateCommitSha}`,
       '--',
       ...includedChangedFiles.map(literalPathspec),
@@ -227,21 +235,21 @@ export function rewriteCandidateCommitWithFiles(
     // rewrite is meant to write from local-only output standing in its way.
     ensureNoUntrackedPathsOverwrittenBy(worktreePath, presentFiles, 'the candidate rewrite')
 
-    runGit(['reset', '--hard', mergeBase])
+    await runGit(['reset', '--hard', mergeBase])
     resetForRewrite = true
 
     for (let index = 0; index < presentFiles.length; index += GIT_ADD_BATCH_SIZE) {
       const batch = presentFiles.slice(index, index + GIT_ADD_BATCH_SIZE)
-      runGit(['checkout', candidateCommitSha, '--', ...batch.map(literalPathspec)])
+      await runGit(['checkout', candidateCommitSha, '--', ...batch.map(literalPathspec)])
     }
     for (let index = 0; index < deletedFiles.length; index += GIT_ADD_BATCH_SIZE) {
       const batch = deletedFiles.slice(index, index + GIT_ADD_BATCH_SIZE)
-      runGit(['rm', '-f', '--ignore-unmatch', '--', ...batch.map(literalPathspec)])
+      await runGit(['rm', '-f', '--ignore-unmatch', '--', ...batch.map(literalPathspec)])
     }
 
-    const stagedChanges = runGit(['diff', '--cached', '--name-only', '--', ...REPO_SCOPE_PATHSPECS])
-    if (!stagedChanges) {
-      runGit(['reset', '--hard', preRewriteHead])
+    const stagedChanges = parsePathList(await runGit(['diff', '--cached', '--name-only', '-z', '--', ...REPO_SCOPE_PATHSPECS]))
+    if (stagedChanges.length === 0) {
+      await runGit(['reset', '--hard', preRewriteHead])
       return {
         success: false,
         message: 'No candidate changes were available after file audit filtering',
@@ -250,7 +258,7 @@ export function rewriteCandidateCommitWithFiles(
       }
     }
 
-    runGit([
+    await runGit([
       '-c',
       'user.name=LoopTroop',
       '-c',
@@ -260,7 +268,7 @@ export function rewriteCandidateCommitWithFiles(
       '-m',
       `${ticketId}: ${ticketTitle}`,
     ])
-    const commitHash = runGit(['rev-parse', 'HEAD'])
+    const commitHash = await runGit(['rev-parse', 'HEAD'])
     resetForRewrite = false
     return {
       success: true,
@@ -273,7 +281,7 @@ export function rewriteCandidateCommitWithFiles(
   } catch (error) {
     if (resetForRewrite && preRewriteHead) {
       try {
-        runGit(['reset', '--hard', preRewriteHead])
+        await runGit(['reset', '--hard', preRewriteHead])
       } catch {
         // Preserve the original error; caller-level recovery records the failure context.
       }

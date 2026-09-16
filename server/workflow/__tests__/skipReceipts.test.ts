@@ -120,7 +120,7 @@ describe('skip receipts', () => {
     expect(listPhaseArtifacts(ticket.id)).toHaveLength(1)
   })
 
-  it('enforces receipt uniqueness across surfaces and attempts, scoped to the ticket', () => {
+  it('enforces receipt uniqueness across surfaces and attempts, scoped to the ticket', async () => {
     const ticket = makeTicket()
     const context = getTicketContext(ticket.id)!
     const receipt = writeSkipReceipts({
@@ -146,7 +146,7 @@ describe('skip receipts', () => {
     expect(() => reopened.db.insert(phaseArtifacts).values(duplicate).run()).toThrow()
     expect(reopened.sqlite.prepare("SELECT name FROM sqlite_master WHERE name = 'skip_receipt_actions'").get())
       .toBeUndefined()
-    deleteTicket(ticket.id)
+    await deleteTicket(ticket.id)
     expect(reopened.db.select().from(phaseArtifacts)
       .where(eq(phaseArtifacts.ticketId, context.localTicketId)).all()).toEqual([])
     expect(hasSkipReceiptsForAction(other.id, receipt.action_id)).toBe(true)
@@ -186,7 +186,7 @@ describe('skip receipts', () => {
     expect(writeSkipReceipts({ ...input, items: input.items.slice(0, 1) })).toHaveLength(1)
   })
 
-  it('clears receipt uniqueness when canceled ticket content is removed', () => {
+  it('clears receipt uniqueness when canceled ticket content is removed', async () => {
     const ticket = makeTicket()
     const input = {
       ticketId: ticket.id,
@@ -198,7 +198,7 @@ describe('skip receipts', () => {
       items: [{ itemId: null, reason: null }],
     }
     writeSkipReceipts(input)
-    expect(cleanupCanceledTicketData(ticket.id, { deleteContent: true })).toBe(true)
+    expect(await cleanupCanceledTicketData(ticket.id, { deleteContent: true })).toBe(true)
     expect(hasSkipReceiptsForAction(ticket.id, input.actionId)).toBe(false)
     expect(listSkipEvents(ticket.id)).toEqual([])
     expect(writeSkipReceipts(input)).toHaveLength(1)

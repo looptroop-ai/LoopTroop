@@ -1,5 +1,5 @@
-import { mkdirSync, symlinkSync } from 'node:fs'
-import { join, resolve } from 'node:path'
+import { existsSync, mkdirSync, symlinkSync } from 'node:fs'
+import { join } from 'node:path'
 import { afterEach, beforeEach, describe, expect, it } from 'vitest'
 import { getTicketDir, getTicketExecutionLogPath, getTicketWorktreePath, normalizeFolderPath } from '../paths'
 import { makeTempDir, removeTempDir } from '../../test/tempDir'
@@ -22,23 +22,32 @@ describe('normalizeFolderPath', () => {
     expect(normalizeFolderPath(`${target}///`)).toBe(normalizeFolderPath(target))
   })
 
-  it('trims surrounding whitespace', () => {
-    const target = join(scratchDir, 'project')
+  it('preserves legal surrounding whitespace at the filesystem boundary', () => {
+    // Trailing spaces are legal POSIX filename bytes but are stripped by the
+    // Windows filesystem. Keep the boundary assertion portable while still
+    // exercising whitespace in the native path on both platforms.
+    const target = join(scratchDir, process.platform === 'win32' ? 'project name' : 'project ')
     mkdirSync(target)
-    expect(normalizeFolderPath(`  ${target}  `)).toBe(normalizeFolderPath(target))
+    const expected = process.platform === 'win32' ? target.replace(/\\/g, '/') : target
+    expect(normalizeFolderPath(target)).toBe(expected)
+    expect(() => normalizeFolderPath(`  ${target}`)).toThrow('absolute')
   })
 
-  it('resolves relative paths against the working directory', () => {
-    expect(normalizeFolderPath('relative/path')).toBe(
-      normalizeFolderPath(resolve(process.cwd(), 'relative/path')),
-    )
+  it('rejects relative and empty paths', () => {
+    expect(() => normalizeFolderPath('relative/path')).toThrow('absolute')
+    expect(() => normalizeFolderPath('')).toThrow('absolute')
   })
 
-  it('converts backslashes to forward slashes', () => {
-    // Drive-relative on Windows, absolute on POSIX; either way the contract is
-    // that the output contains no backslashes.
-    expect(normalizeFolderPath('/tmp\\example\\path')).not.toContain('\\')
-    expect(normalizeFolderPath('/tmp\\example\\path')).toContain('/tmp/example/path')
+  it.runIf(process.platform !== 'win32')('preserves POSIX backslashes as legal filename characters', () => {
+    expect(normalizeFolderPath('/tmp\\example\\path')).toBe('/tmp\\example\\path')
+  })
+
+  it.runIf(process.platform === 'win32')('normalizes native Windows backslashes to separators', () => {
+    expect(normalizeFolderPath('C:\\tmp\\example\\path')).toBe('C:/tmp/example/path')
+  })
+
+  it.runIf(process.platform !== 'win32')('preserves the POSIX filesystem root', () => {
+    expect(normalizeFolderPath('/')).toBe('/')
   })
 
   // The macOS case that made CI fail: /var is a symlink to /private/var, so a
@@ -65,9 +74,12 @@ describe('normalizeFolderPath', () => {
   })
 
   describe.runIf(process.platform !== 'win32')('WSL drive-letter mapping', () => {
-    it('maps drive letters to /mnt on non-Windows platforms', () => {
-      expect(normalizeFolderPath('D:/code/project')).toBe('/mnt/d/code/project')
-      expect(normalizeFolderPath('C:\\Users\\dev')).toBe('/mnt/c/Users/dev')
+    it('only maps an existing WSL mount and rejects it elsewhere', () => {
+      if (existsSync('/mnt/d')) {
+        expect(normalizeFolderPath('D:/code/project')).toBe('/mnt/d/code/project')
+      } else {
+        expect(() => normalizeFolderPath('D:/code/project')).toThrow('absolute')
+      }
     })
   })
 
@@ -76,6 +88,10 @@ describe('normalizeFolderPath', () => {
       const normalized = normalizeFolderPath('C:\\Users\\dev')
       expect(normalized).toMatch(/^C:\/Users\/dev$/i)
       expect(normalized).not.toContain('/mnt/')
+    })
+
+    it('preserves a Windows drive root while removing only redundant separators', () => {
+      expect(normalizeFolderPath('C:\\')).toMatch(/^C:\/$/i)
     })
   })
 })

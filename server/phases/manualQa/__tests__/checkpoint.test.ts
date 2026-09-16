@@ -1,5 +1,5 @@
 import { spawnSync } from 'node:child_process'
-import { existsSync, mkdirSync, readFileSync, symlinkSync, writeFileSync } from 'node:fs'
+import { existsSync, lstatSync, mkdirSync, readFileSync, readlinkSync, symlinkSync, writeFileSync } from 'node:fs'
 import { resolve } from 'node:path'
 import { afterAll, beforeEach, describe, expect, it } from 'vitest'
 import { createInitializedTestTicket, createTestRepoManager, resetTestDb } from '../../../test/integration'
@@ -71,6 +71,36 @@ describe('Manual QA workspace checkpoints', () => {
     expect(result.baseline.trackedSignatures['README.md']).toMatch(/^[0-9a-f]{40}$/)
   })
 
+  it('keeps a whitespace-only filename present through NUL staged-field detection', async () => {
+    const setup = await createInitializedTestTicket(repoManager, { title: 'Manual QA whitespace path' })
+    const baseline = captureFinalTestDirtyFiles(setup.paths.worktreePath)
+    // A whitespace-only basename is valid on POSIX but Windows strips trailing
+    // spaces. Internal whitespace keeps the NUL field-presence assertion
+    // portable without pretending the POSIX-only name is legal everywhere.
+    const unusual = process.platform === 'win32' ? 'qa whitespace.txt' : '   '
+    writeFileSync(resolve(setup.paths.worktreePath, unusual), 'candidate\n')
+    const after = captureFinalTestDirtyFiles(setup.paths.worktreePath)
+    insertPhaseArtifact(setup.ticket.id, {
+      phase: 'RUNNING_FINAL_TEST',
+      artifactType: 'final_test_file_effects_audit',
+      content: JSON.stringify(buildFinalTestFileEffectsAudit({
+        baselineDirtyFiles: baseline,
+        dirtyFilesAfterTesting: after,
+        declaredEffects: [{ path: unusual, intent: 'candidate' }],
+      })),
+    })
+
+    const result = prepareManualQaCheckpoint(setup.ticket.id, 1)
+    expect(result.candidateFiles).toEqual([unusual])
+    const shown = spawnSync(
+      'git',
+      ['-C', setup.paths.worktreePath, 'show', '--format=', '--name-only', '-z', result.checkpointCommit!],
+      { encoding: 'buffer' },
+    )
+    expect(shown.status).toBe(0)
+    expect((shown.stdout as Buffer).includes(Buffer.from(`${unusual}\0`))).toBe(true)
+  })
+
   it('does not include unrelated pre-staged residue in the candidate checkpoint', async () => {
     const setup = await prepareFixture()
     git(setup.paths.worktreePath, 'add', 'final-test.tmp')
@@ -138,6 +168,33 @@ describe('Manual QA workspace checkpoints', () => {
       .toThrow('Manual QA path escapes its contained root')
     expect(readFileSync(source, 'utf8')).toBe('# Keep this drift\n')
     expect(existsSync(resolve(outside, 'README.md'))).toBe(false)
+  })
+
+  it('quarantines outward and dangling links without following or losing their targets', async () => {
+    const setup = await prepareFixture()
+    prepareManualQaCheckpoint(setup.ticket.id, 1)
+    const outward = resolve(setup.paths.worktreePath, 'qa-outward-link')
+    const dangling = resolve(setup.paths.worktreePath, 'qa-dangling-link')
+    const outside = resolve(setup.paths.worktreePath, '..', '..', 'outside-qa-target.txt')
+    writeFileSync(outside, 'private target\n')
+    symlinkSync(outside, outward)
+    symlinkSync(resolve(setup.paths.worktreePath, 'missing-qa-target.txt'), dangling)
+
+    const result = discardManualQaWorkspaceDrift(
+      setup.ticket.id,
+      1,
+      ['qa-outward-link', 'qa-dangling-link'],
+      'discard-links',
+    )
+
+    expect(result.files).toEqual(['qa-outward-link', 'qa-dangling-link'])
+    for (const name of ['qa-outward-link', 'qa-dangling-link']) {
+      const quarantined = resolve(setup.paths.ticketDir, 'manual-qa/v1/quarantine', name)
+      expect(lstatSync(quarantined).isSymbolicLink()).toBe(true)
+      expect(readlinkSync(quarantined)).toBe(name === 'qa-outward-link' ? outside : resolve(setup.paths.worktreePath, 'missing-qa-target.txt'))
+      expect(existsSync(resolve(setup.paths.worktreePath, name))).toBe(false)
+    }
+    expect(readFileSync(outside, 'utf8')).toBe('private target\n')
   })
 
   it('rejects a quarantine link into other ticket artifacts before overwriting or discarding drift', async () => {

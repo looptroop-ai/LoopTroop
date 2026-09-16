@@ -93,6 +93,17 @@ describe('execution setup storage tracking', () => {
     expect(validation.violations).toEqual([])
   })
 
+  it.runIf(process.platform !== 'win32')('keeps unusual Git paths opaque in setup snapshots', () => {
+    const dir = makeFreshRepo()
+    const baseline = createExecutionSetupPathSnapshot(dir)
+    const names = ['a\tb', 'sp ace ', 'back\\slash', 'ünï', 'line\nfeed']
+    for (const name of names) writeFileSync(join(dir, name), `content for ${name}\n`)
+
+    const validation = validateExecutionSetupPaths(dir, baseline)
+
+    expect(validation.changedPaths).toEqual(expect.arrayContaining(names))
+  })
+
   it('does not remove repository-local setup outputs when cleanup is requested', () => {
     const dir = makeFreshRepo()
     writeFileSync(join(dir, '.gitignore'), 'tool-cache/\n')

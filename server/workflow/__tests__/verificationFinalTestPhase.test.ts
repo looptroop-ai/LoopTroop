@@ -213,10 +213,10 @@ describe('handleFinalTest', () => {
       _signal: AbortSignal,
       _options: unknown,
       callbacks: {
-        beforeRetry: (entry: { nextAttempt: number }) => void
+        beforeRetry: (entry: { nextAttempt: number }) => void | Promise<void>
       },
     ) => {
-      callbacks.beforeRetry({ nextAttempt: 2 })
+      await callbacks.beforeRetry({ nextAttempt: 2 })
       return {
         status: 'passed' as const,
         passed: true,

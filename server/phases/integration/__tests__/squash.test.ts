@@ -61,7 +61,7 @@ function makeCandidateDeleting(
 }
 
 /** The rewrite every test in this group runs, with only `src.ts` included. */
-function rewriteSrcOnly(repoDir: string, mergeBase: string, candidate: string) {
+async function rewriteSrcOnly(repoDir: string, mergeBase: string, candidate: string) {
   return rewriteCandidateCommitWithFiles(
     repoDir,
     mergeBase,
@@ -73,7 +73,37 @@ function rewriteSrcOnly(repoDir: string, mergeBase: string, candidate: string) {
 }
 
 describe('prepareSquashCandidate', () => {
-  it('squashes multiple commits into one', () => {
+  it.runIf(process.platform !== 'win32')('async squash keeps opaque POSIX filenames intact', async () => {
+    const repoDir = repoManager.createRepo()
+    git(repoDir, ['checkout', '-b', BRANCH])
+    const names = ['a\tb', 'line\nfeed', 'sp ace ', 'back\\slash', 'ünï']
+    for (const name of names) writeFileSync(resolve(repoDir, name), `content for ${name}\n`)
+    git(repoDir, ['add', '--', ...names])
+    git(repoDir, ['commit', '-m', 'unusual names'])
+
+    const result = await prepareSquashCandidate(repoDir, 'main', 'Keep names', BRANCH)
+
+    expect(result.success).toBe(true)
+    const tree = execFileSync('git', ['-C', repoDir, 'ls-tree', '-r', '-z', '--name-only', 'HEAD'], { encoding: 'utf8' })
+    for (const name of names) expect(tree).toContain(`${name}\0`)
+  })
+
+  it.runIf(process.platform !== 'win32')('prepares a candidate whose only path is three spaces', async () => {
+    const repoDir = repoManager.createRepo()
+    const name = '   '
+    git(repoDir, ['checkout', '-b', BRANCH])
+    writeFileSync(resolve(repoDir, name), 'spaces-only\n')
+    git(repoDir, ['add', '--', name])
+    git(repoDir, ['commit', '-m', 'spaces-only candidate'])
+
+    const result = await prepareSquashCandidate(repoDir, 'main', 'Keep spaces', BRANCH)
+
+    expect(result.success).toBe(true)
+    expect(execFileSync('git', ['-C', repoDir, 'ls-tree', '-r', '-z', '--name-only', 'HEAD'], { encoding: 'utf8' }))
+      .toContain(`${name}\0`)
+  })
+
+  it('squashes multiple commits into one', async () => {
     const repoDir = repoManager.createRepo()
 
     git(repoDir, ['checkout', '-b', BRANCH])
@@ -87,7 +117,7 @@ describe('prepareSquashCandidate', () => {
     git(repoDir, ['add', 'c.txt'])
     git(repoDir, ['commit', '-m', 'add c'])
 
-    const result = prepareSquashCandidate(repoDir, 'main', 'Add features', BRANCH)
+    const result = await prepareSquashCandidate(repoDir, 'main', 'Add features', BRANCH)
 
     expect(result.success).toBe(true)
     expect(result.commitCount).toBe(3)
@@ -98,24 +128,24 @@ describe('prepareSquashCandidate', () => {
     expect(commitMsg).toBe(`${BRANCH}: Add features`)
   })
 
-  it('returns failure when no changes exist relative to base', () => {
+  it('returns failure when no changes exist relative to base', async () => {
     const repoDir = repoManager.createRepo()
 
     git(repoDir, ['checkout', '-b', BRANCH])
 
-    const result = prepareSquashCandidate(repoDir, 'main', 'Empty', BRANCH)
+    const result = await prepareSquashCandidate(repoDir, 'main', 'Empty', BRANCH)
 
     expect(result.success).toBe(false)
     expect(result.message).toContain('No candidate changes')
   })
 
-  it('returns failure for an invalid worktree path', () => {
-    const result = prepareSquashCandidate('/nonexistent/path', 'main', 'title', BRANCH)
+  it('returns failure for an invalid worktree path', async () => {
+    const result = await prepareSquashCandidate('/nonexistent/path', 'main', 'title', BRANCH)
 
     expect(result.success).toBe(false)
   })
 
-  it('squashes a single commit', () => {
+  it('squashes a single commit', async () => {
     const repoDir = repoManager.createRepo()
 
     git(repoDir, ['checkout', '-b', BRANCH])
@@ -123,7 +153,7 @@ describe('prepareSquashCandidate', () => {
     git(repoDir, ['add', 'only.txt'])
     git(repoDir, ['commit', '-m', 'only commit'])
 
-    const result = prepareSquashCandidate(repoDir, 'main', 'Single change', BRANCH)
+    const result = await prepareSquashCandidate(repoDir, 'main', 'Single change', BRANCH)
 
     expect(result.success).toBe(true)
     expect(result.commitCount).toBe(1)
@@ -133,7 +163,7 @@ describe('prepareSquashCandidate', () => {
     expect(commitMsg).toBe(`${BRANCH}: Single change`)
   })
 
-  it('stages committed bead files plus explicit final-test files without sweeping unrelated worktree changes', () => {
+  it('stages committed bead files plus explicit final-test files without sweeping unrelated worktree changes', async () => {
     const repoDir = repoManager.createRepo()
 
     writeFileSync(resolve(repoDir, 'generated.asset'), 'generated\n')
@@ -150,7 +180,7 @@ describe('prepareSquashCandidate', () => {
     writeFileSync(resolve(repoDir, 'runtime.db'), 'not for commit\n')
     unlinkSync(resolve(repoDir, 'generated.asset'))
 
-    const result = prepareSquashCandidate(repoDir, 'main', 'Selective stage', BRANCH, ['final.test.ts'])
+    const result = await prepareSquashCandidate(repoDir, 'main', 'Selective stage', BRANCH, ['final.test.ts'])
 
     expect(result.success).toBe(true)
     const showFiles = git(repoDir, ['show', '--pretty=', '--name-only', 'HEAD'])
@@ -166,7 +196,7 @@ describe('prepareSquashCandidate', () => {
     expect(status).toContain('?? runtime.db')
   })
 
-  it('excludes committed LoopTroop ticket artifacts from the final candidate', () => {
+  it('excludes committed LoopTroop ticket artifacts from the final candidate', async () => {
     const repoDir = repoManager.createRepo()
 
     git(repoDir, ['checkout', '-b', BRANCH])
@@ -176,7 +206,7 @@ describe('prepareSquashCandidate', () => {
     git(repoDir, ['add', '.ticket/prd.yaml', 'feature.ts'])
     git(repoDir, ['commit', '-m', 'feature with ticket metadata'])
 
-    const result = prepareSquashCandidate(repoDir, 'main', 'Exclude metadata', BRANCH)
+    const result = await prepareSquashCandidate(repoDir, 'main', 'Exclude metadata', BRANCH)
 
     expect(result.success).toBe(true)
     const showFiles = git(repoDir, ['show', '--pretty=', '--name-only', 'HEAD'])
@@ -184,7 +214,7 @@ describe('prepareSquashCandidate', () => {
     expect(showFiles).not.toContain('.ticket/prd.yaml')
   })
 
-  it('refuses to rewrite over a dirty worktree instead of resetting it away', () => {
+  it('refuses to rewrite over a dirty worktree instead of resetting it away', async () => {
     const repoDir = repoManager.createRepo()
 
     const { candidate, mergeBase } = makeCandidate(repoDir)
@@ -192,7 +222,7 @@ describe('prepareSquashCandidate', () => {
     // Uncommitted work the rewrite's `reset --hard` would destroy.
     writeFileSync(resolve(repoDir, 'src.ts'), 'export const feature = "edited by hand"\n')
 
-    const result = rewriteSrcOnly(repoDir, mergeBase, candidate)
+    const result = await rewriteSrcOnly(repoDir, mergeBase, candidate)
 
     expect(result.success).toBe(false)
     expect(result.message).toContain('the candidate rewrite')
@@ -200,7 +230,7 @@ describe('prepareSquashCandidate', () => {
     expect(git(repoDir, ['rev-parse', 'HEAD'])).toBe(candidate)
   })
 
-  it('still rewrites when the only residue is untracked local-only output', () => {
+  it('still rewrites when the only residue is untracked local-only output', async () => {
     const repoDir = repoManager.createRepo()
 
     const { candidate, mergeBase } = makeCandidate(repoDir)
@@ -211,13 +241,13 @@ describe('prepareSquashCandidate', () => {
     // cannot harm.
     writeFileSync(resolve(repoDir, 'local.tmp'), 'residue\n')
 
-    const result = rewriteSrcOnly(repoDir, mergeBase, candidate)
+    const result = await rewriteSrcOnly(repoDir, mergeBase, candidate)
 
     expect(result.success).toBe(true)
     expect(readFileSync(resolve(repoDir, 'local.tmp'), 'utf8')).toBe('residue\n')
   })
 
-  it('refuses when an untracked file sits where the merge base tracks one', () => {
+  it('refuses when an untracked file sits where the merge base tracks one', async () => {
     const repoDir = repoManager.createRepo()
 
     // The merge base carries `obsolete.ts`; the candidate deletes it.
@@ -231,7 +261,7 @@ describe('prepareSquashCandidate', () => {
     // warning, no reflog — which is what the tracked-only relaxation opened.
     writeFileSync(resolve(repoDir, 'obsolete.ts'), 'LOCAL OUTPUT\n')
 
-    const result = rewriteSrcOnly(repoDir, mergeBase, candidate)
+    const result = await rewriteSrcOnly(repoDir, mergeBase, candidate)
 
     expect(result.success).toBe(false)
     expect(result.message).toContain('obsolete.ts')
@@ -239,7 +269,7 @@ describe('prepareSquashCandidate', () => {
     expect(git(repoDir, ['rev-parse', 'HEAD'])).toBe(candidate)
   })
 
-  it('refuses when the local file in the way is ignored rather than untracked', () => {
+  it('refuses when the local file in the way is ignored rather than untracked', async () => {
     const repoDir = repoManager.createRepo()
 
     // Ignored build output is exactly what the earlier phases leave behind, and
@@ -256,14 +286,14 @@ describe('prepareSquashCandidate', () => {
     })
     writeFileSync(resolve(repoDir, 'build.log'), 'LOCAL BUILD OUTPUT\n')
 
-    const result = rewriteSrcOnly(repoDir, mergeBase, candidate)
+    const result = await rewriteSrcOnly(repoDir, mergeBase, candidate)
 
     expect(result.success).toBe(false)
     expect(result.message).toContain('build.log')
     expect(readFileSync(resolve(repoDir, 'build.log'), 'utf8')).toBe('LOCAL BUILD OUTPUT\n')
   })
 
-  it('names the local file, not the tree contents, when a directory takes its place', () => {
+  it('names the local file, not the tree contents, when a directory takes its place', async () => {
     const repoDir = repoManager.createRepo()
 
     // The merge base carries `sub/` as a directory.
@@ -280,7 +310,7 @@ describe('prepareSquashCandidate', () => {
     // `ls-tree -r` answers with `sub/a.txt`, which is not the file being lost.
     writeFileSync(resolve(repoDir, 'sub'), 'LOCAL OUTPUT\n')
 
-    const result = rewriteSrcOnly(repoDir, mergeBase, candidate)
+    const result = await rewriteSrcOnly(repoDir, mergeBase, candidate)
 
     expect(result.success).toBe(false)
     expect(result.message).toContain('overwritten')
@@ -289,7 +319,7 @@ describe('prepareSquashCandidate', () => {
     expect(readFileSync(resolve(repoDir, 'sub'), 'utf8')).toBe('LOCAL OUTPUT\n')
   })
 
-  it('refuses when local output sits on a path the candidate adds', () => {
+  it('refuses when local output sits on a path the candidate adds', async () => {
     const repoDir = repoManager.createRepo()
     const { candidate, mergeBase } = makeCandidate(repoDir)
 
@@ -302,14 +332,14 @@ describe('prepareSquashCandidate', () => {
     git(repoDir, ['reset', '--hard', mergeBase])
     writeFileSync(resolve(repoDir, 'src.ts'), 'LOCAL OUTPUT\n')
 
-    const result = rewriteSrcOnly(repoDir, mergeBase, candidate)
+    const result = await rewriteSrcOnly(repoDir, mergeBase, candidate)
 
     expect(result.success).toBe(false)
     expect(result.message).toContain('src.ts')
     expect(readFileSync(resolve(repoDir, 'src.ts'), 'utf8')).toBe('LOCAL OUTPUT\n')
   })
 
-  it('rewrites a candidate commit with only AI-audited included files', () => {
+  it('rewrites a candidate commit with only AI-audited included files', async () => {
     const repoDir = repoManager.createRepo()
 
     git(repoDir, ['checkout', '-b', BRANCH])
@@ -321,7 +351,7 @@ describe('prepareSquashCandidate', () => {
 
     const candidate = git(repoDir, ['rev-parse', 'HEAD'])
     const mergeBase = git(repoDir, ['merge-base', 'HEAD', 'main'])
-    const result = rewriteCandidateCommitWithFiles(
+    const result = await rewriteCandidateCommitWithFiles(
       repoDir,
       mergeBase,
       candidate,
@@ -339,5 +369,29 @@ describe('prepareSquashCandidate', () => {
     expect(showFiles).toContain('generated.js')
     expect(showFiles).not.toContain('tmp.log')
     expect(git(repoDir, ['status', '--porcelain'])).toBe('')
+  })
+
+  it.runIf(process.platform !== 'win32')('rewrites a candidate whose only audited path is three spaces', async () => {
+    const repoDir = repoManager.createRepo()
+    const name = '   '
+    git(repoDir, ['checkout', '-b', BRANCH])
+    writeFileSync(resolve(repoDir, name), 'spaces-only\n')
+    git(repoDir, ['add', '--', name])
+    git(repoDir, ['commit', '-m', 'spaces-only candidate'])
+    const candidate = git(repoDir, ['rev-parse', 'HEAD'])
+    const mergeBase = git(repoDir, ['merge-base', 'HEAD', 'main'])
+
+    const result = await rewriteCandidateCommitWithFiles(
+      repoDir,
+      mergeBase,
+      candidate,
+      'Filtered spaces-only candidate',
+      BRANCH,
+      [name],
+    )
+
+    expect(result.success).toBe(true)
+    expect(execFileSync('git', ['-C', repoDir, 'ls-tree', '-r', '-z', '--name-only', 'HEAD'], { encoding: 'utf8' }))
+      .toContain(`${name}\0`)
   })
 })

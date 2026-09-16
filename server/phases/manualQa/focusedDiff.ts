@@ -1,4 +1,5 @@
 import { REPO_SCOPE_PATHSPECS } from '../../git/pathspecs'
+import { assertSafeRefName } from '../../git/ref'
 import { runGitSync } from '../../git/runCommand'
 
 /** The prompt budget for this metadata. Exported so its tests assert the real number. */
@@ -16,6 +17,11 @@ const EMPTY = 'No candidate file metadata was reported.'
  * copies that can drift on excludes, timeout or truncation limit.
  */
 export function focusedDiffMetadata(worktreePath: string, baseBranch: string): string {
+  try {
+    assertSafeRefName(baseBranch, 'Base branch')
+  } catch {
+    return UNAVAILABLE
+  }
   const mergeBaseResult = runGitSync(worktreePath, ['merge-base', 'HEAD', baseBranch])
   const mergeBase = mergeBaseResult.ok ? mergeBaseResult.stdout : ''
   if (!mergeBase) return UNAVAILABLE

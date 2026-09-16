@@ -412,7 +412,7 @@ export async function handleCoding(
       executingBead = activeBead
       updateTicketProgressFromBeads(ticketId, beads)
     } else {
-      const interruptedBead = recoverCodingBeadWithReset(ticketId, {
+      const interruptedBead = await recoverCodingBeadWithReset(ticketId, {
         worktreePath: paths.worktreePath,
         onlyInProgress: true,
         requireReset: true,
@@ -586,9 +586,11 @@ export async function handleCoding(
           try {
             await withCommandLoggingFieldsAsync(
               { beadId },
-              async () => resetToBeadStart(paths.worktreePath, beadStartCommit!, {
-                preservePaths: resetPreservePaths(),
-              }),
+              async () => {
+                await resetToBeadStart(paths.worktreePath, beadStartCommit!, {
+                  preservePaths: resetPreservePaths(),
+                })
+              },
             )
             reapplyStepsConfigAfterReset()
           } catch (err) {

@@ -1,5 +1,6 @@
 import { getErrorMessage } from '@shared/typeGuards'
-import { runCommandSync, runGitOrThrow } from './runCommand'
+import { isCommandAvailable, runGitOrThrow } from './runCommand'
+import { assertSafeRefName } from './ref'
 
 /**
  * How long a `git push` is given before it is treated as stalled.
@@ -26,14 +27,22 @@ export const GIT_PUSH_TIMEOUT_MS = 120_000
  * a helper that cannot run would turn a clear "no credentials" into a confusing
  * helper failure.
  */
-function ghCredentialEnv(): NodeJS.ProcessEnv {
-  if (!process.env.GH_TOKEN && !process.env.GITHUB_TOKEN) return {}
-  if (!ghIsInstalled()) return {}
+function ghCredentialEnv(baseEnv: NodeJS.ProcessEnv = process.env): NodeJS.ProcessEnv {
+  if (!baseEnv.GH_TOKEN && !baseEnv.GITHUB_TOKEN) return {}
+  if (!ghIsInstalled(baseEnv)) return {}
 
   // Placed after any GIT_CONFIG_* pairs the environment already carries, rather
   // than at index 0, so this adds a helper instead of overwriting one.
-  const existing = Number.parseInt(process.env.GIT_CONFIG_COUNT ?? '0', 10)
-  const index = Number.isInteger(existing) && existing > 0 ? existing : 0
+  const rawCount = baseEnv.GIT_CONFIG_COUNT
+  if (rawCount !== undefined && !/^\d+$/.test(rawCount)) {
+    console.warn('[git] Skipping the GitHub credential helper: GIT_CONFIG_COUNT must be a non-negative integer.')
+    return {}
+  }
+  const index = rawCount === undefined ? 0 : Number(rawCount)
+  if (!Number.isSafeInteger(index) || index >= Number.MAX_SAFE_INTEGER) {
+    console.warn('[git] Skipping the GitHub credential helper: GIT_CONFIG_COUNT is too large.')
+    return {}
+  }
   return {
     GIT_CONFIG_COUNT: String(index + 1),
     [`GIT_CONFIG_KEY_${index}`]: 'credential.https://github.com.helper',
@@ -41,18 +50,8 @@ function ghCredentialEnv(): NodeJS.ProcessEnv {
   }
 }
 
-// Only the subprocess is remembered. Whether `gh` is installed cannot change
-// while the daemon runs, but which token is in the environment can, so the
-// decision itself is made fresh on every push.
-let ghInstalled: boolean | null = null
-
-function ghIsInstalled(): boolean {
-  if (ghInstalled === null) {
-    // Local and memoised, so this one stays synchronous: it answers from the
-    // machine, never the network, and only ever runs once per daemon.
-    ghInstalled = runCommandSync('gh', ['--version'], { timeoutMs: 10_000, log: false }).ok
-  }
-  return ghInstalled
+function ghIsInstalled(baseEnv: NodeJS.ProcessEnv): boolean {
+  return isCommandAvailable('gh', baseEnv)
 }
 
 /**
@@ -66,8 +65,8 @@ function ghIsInstalled(): boolean {
  * remote fetches all have to agree, or the one that does not is the one that
  * stalls.
  */
-export function gitPushEnv(): NodeJS.ProcessEnv {
-  return { ...ghCredentialEnv() }
+export function gitPushEnv(baseEnv: NodeJS.ProcessEnv = process.env): NodeJS.ProcessEnv {
+  return { ...ghCredentialEnv(baseEnv) }
 }
 
 /**
@@ -121,6 +120,13 @@ export async function pushBranchRef({
   maxRetries = GIT_PUSH_MAX_RETRIES,
   bypassHooks = false,
 }: PushBranchRefParams): Promise<PushBranchRefResult> {
+  try {
+    assertSafeRefName(destinationBranch, 'Destination branch')
+    assertSafeRefName(sourceRef, 'Source ref')
+    assertSafeRefName(remote, 'Git remote')
+  } catch (error) {
+    return { pushed: false, error: getErrorMessage(error) }
+  }
   const refspec = `${sourceRef}:refs/heads/${destinationBranch}`
   let leaseArg: string[] = []
 

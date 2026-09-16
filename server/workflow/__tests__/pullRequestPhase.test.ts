@@ -480,7 +480,11 @@ describe('pull request drafting context', () => {
     }
     expect(mocks.verifyRemoteBaseContainsCommit).toHaveBeenCalledWith(context.externalId, 'main', `${method}-landed`)
     expect(mocks.ensureWorktreeClean).not.toHaveBeenCalledWith(context.externalId)
-    expect(mocks.tryDeleteRemoteBranch).toHaveBeenCalledWith(context.externalId, ticket.externalId)
+    expect(mocks.tryDeleteRemoteBranch).toHaveBeenCalledWith(
+      context.externalId,
+      ticket.externalId,
+      'candidate123',
+    )
     const mergeReport = getLatestPhaseArtifact(ticket.id, 'merge_report', 'WAITING_PR_REVIEW')
     expect(JSON.parse(mergeReport!.content)).toMatchObject({
       status: 'passed',

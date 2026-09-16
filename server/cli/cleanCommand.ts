@@ -316,7 +316,7 @@ async function removeCandidates(candidates: WorktreeCandidate[]): Promise<number
 
   for (const candidate of candidates) {
     try {
-      removeWorktree({
+      await removeWorktree({
         projectRoot: candidate.projectRoot,
         worktreesRoot: candidate.worktreesRoot,
         worktreePath: candidate.path,

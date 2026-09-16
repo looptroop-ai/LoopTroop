@@ -1,22 +1,33 @@
 import { existsSync, mkdirSync, realpathSync } from 'fs'
-import { isAbsolute, resolve } from 'path'
+import { isAbsolute, join, resolve, win32 } from 'path'
 import { resolveBaseBranch } from '../git/repository'
 import { runGitSync } from '../git/runCommand'
 import { ContainedPathError, resolveContainedPath } from '../lib/containedPath'
 import { resolveProjectTicketContainedPath } from '../ticket/containedPath'
 export function normalizeFolderPath(input: string): string {
-  let output = input.trim().replace(/[\\/]+$/, '')
-  output = output.replace(/\\/g, '/')
-  // Drive letters only map to /mnt/<drive> under WSL. On native Windows the
-  // drive-letter path is already correct and rewriting it breaks every lookup.
-  if (process.platform !== 'win32') {
-    const driveMatch = output.match(/^([A-Za-z]):\/(.*)$/)
-    if (driveMatch && driveMatch[1] && driveMatch[2] !== undefined) {
-      output = `/mnt/${driveMatch[1].toLowerCase()}/${driveMatch[2]}`
-    }
+  if (typeof input !== 'string' || input.length === 0) {
+    throw new ContainedPathError('Project path must be absolute')
   }
-  if (!isAbsolute(output)) {
-    output = resolve(process.cwd(), output)
+
+  let output = input
+  if (process.platform === 'win32') {
+    if (!win32.isAbsolute(output)) throw new ContainedPathError('Project path must be absolute')
+    const root = win32.parse(output).root
+    const stripped = output.replace(/[\\/]+$/, '')
+    output = !stripped || stripped === root.replace(/[\\/]+$/, '') ? root : stripped
+    output = output.replace(/\\/g, '/')
+  } else {
+    const driveMatch = output.match(/^([A-Za-z]):[\\/]/)
+    if (driveMatch) {
+      // WSL drive mounts are supported only when the mount exists; a POSIX
+      // host must not silently reinterpret a relative-looking Windows path.
+      const mount = `/mnt/${driveMatch[1]!.toLowerCase()}`
+      if (!existsSync(mount)) throw new ContainedPathError('Project path must be absolute')
+      output = join(mount, output.slice(3).replace(/\\/g, '/'))
+    } else {
+      if (!isAbsolute(output)) throw new ContainedPathError('Project path must be absolute')
+      output = output.replace(/\/+$/, '') || '/'
+    }
   }
   // Canonicalise symlinks so one directory always compares equal to itself:
   // macOS maps /var to /private/var and Windows keeps 8.3 short names such as
@@ -29,7 +40,7 @@ export function normalizeFolderPath(input: string): string {
   }
   // Last: resolve() and realpathSync() both emit backslashes on Windows, and
   // this function's contract is forward slashes throughout.
-  return output.replace(/\\/g, '/')
+  return process.platform === 'win32' ? output.replace(/\\/g, '/') : output
 }
 
 export function resolveGitRepoRoot(folderPath: string): string | null {

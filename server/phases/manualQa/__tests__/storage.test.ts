@@ -1,6 +1,6 @@
 import { cpSync, existsSync, mkdirSync, readFileSync, rmSync, symlinkSync, writeFileSync } from 'node:fs'
 import { basename, dirname, join } from 'node:path'
-import { afterEach, describe, expect, it } from 'vitest'
+import { afterEach, describe, expect, it, vi } from 'vitest'
 import { makeTempDir, removeTempDir } from '../../../test/tempDir'
 import {
   MAX_MANUAL_QA_EVIDENCE_BYTES,
@@ -22,6 +22,7 @@ import {
   readManualQaEvidenceActionReceipt,
   readManualQaEvidenceIndex,
   readManualQaEvents,
+  readManualQaEventsWithDiagnostics,
   readManualQaChecklist,
   readManualQaCoverage,
   readManualQaSummary,
@@ -739,6 +740,38 @@ describe('Manual QA canonical storage', () => {
     appendManualQaEvent(ticketDir, event)
     appendManualQaEvent(ticketDir, event)
     expect(readManualQaEvents(ticketDir)).toEqual([event])
+  })
+
+  it('skips and diagnoses valid JSON with the wrong event shape without blocking append', () => {
+    const ticketDir = root()
+    const paths = getManualQaStoragePaths(ticketDir, 1)
+    mkdirSync(dirname(paths.eventsPath), { recursive: true })
+    const first = {
+      schemaVersion: 1 as const,
+      eventId: 'shape-check-first',
+      eventType: 'checklist_ready' as const,
+      ticketId: 'DEMO-1',
+      version: 1,
+      actionId: 'generation-one',
+      createdAt: '2026-07-13T00:00:00.000Z',
+      data: { checklistHash: 'a'.repeat(64) },
+    }
+    const invalid = { eventId: 'not-a-manual-qa-event', data: { preserved: true } }
+    writeFileSync(paths.eventsPath, `${JSON.stringify(first)}\n${JSON.stringify(invalid)}\n`)
+    const warning = vi.spyOn(console, 'warn').mockImplementation(() => {})
+
+    expect(readManualQaEventsWithDiagnostics(ticketDir)).toEqual({
+      events: [first],
+      malformedLines: [],
+      invalidShapeLines: [2],
+    })
+    expect(warning).toHaveBeenCalledWith(expect.stringContaining('invalid event line 2'))
+
+    const second = { ...first, eventId: 'shape-check-second', actionId: 'generation-two' }
+    appendManualQaEvent(ticketDir, second)
+    expect(readManualQaEvents(ticketDir)).toEqual([first, second])
+    expect(readFileSync(paths.eventsPath, 'utf8')).toContain(JSON.stringify(invalid))
+    warning.mockRestore()
   })
 
   it('reuses submission operations by action ID and rejects conflicting retries', () => {

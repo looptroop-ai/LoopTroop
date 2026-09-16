@@ -71,6 +71,24 @@ describe('server/git/push', () => {
     expect(spawnSyncMock.mock.calls[0]?.[1]).not.toContain('--progress')
   })
 
+  it.each(['-bad', 'bad name', 'bad..name', 'bad//name', 'bad/.name', 'bad/name.', 'bad.lock', 'bad.LOCK/child', '@', `bad\0name`])('rejects an unsafe destination branch %j before spawning git', async (destinationBranch) => {
+    const { pushBranchRef } = await import('../push')
+    const result = await pushBranchRef({ projectPath: '/repo', destinationBranch, maxRetries: 1 })
+
+    expect(result.pushed).toBe(false)
+    expect(result.error).toContain('Destination branch is not a safe Git ref')
+    expect(spawnSyncMock).not.toHaveBeenCalled()
+  })
+
+  it('rejects an unsafe source ref before it can become a push option', async () => {
+    const { pushBranchRef } = await import('../push')
+    const result = await pushBranchRef({ projectPath: '/repo', destinationBranch: 'TEST-1', sourceRef: '--receive-pack=evil', maxRetries: 1 })
+
+    expect(result.pushed).toBe(false)
+    expect(result.error).toContain('Source ref is not a safe Git ref')
+    expect(spawnSyncMock).not.toHaveBeenCalled()
+  })
+
   // gh reads GH_TOKEN from the environment; git does not. On a machine whose
   // only credential is that variable — a container, typically — every gh call
   // works and the push that follows asks for a password it cannot request.
@@ -162,6 +180,52 @@ describe('server/git/push', () => {
         await push()
         expect(pushEnv().GIT_TERMINAL_PROMPT).toBe('0')
       })
+    })
+
+    it('leaves caller Git config entries untouched when GIT_CONFIG_COUNT is invalid', async () => {
+      spawnSyncMock.mockReturnValue(makeSpawnResult())
+      const warning = vi.spyOn(console, 'warn').mockImplementation(() => {})
+      try {
+        await withEnv({
+          GH_TOKEN: 'token',
+          GITHUB_TOKEN: undefined,
+          GIT_CONFIG_COUNT: 'not-a-count',
+          GIT_CONFIG_KEY_0: 'user.name',
+          GIT_CONFIG_VALUE_0: 'Someone',
+        }, async () => {
+          await push()
+          const env = pushEnv()
+          expect(env.GIT_CONFIG_COUNT).toBe('not-a-count')
+          expect(env.GIT_CONFIG_KEY_0).toBe('user.name')
+          expect(env.GIT_CONFIG_VALUE_0).toBe('Someone')
+        })
+        expect(warning).toHaveBeenCalledWith(expect.stringContaining('GIT_CONFIG_COUNT must be a non-negative integer'))
+      } finally {
+        warning.mockRestore()
+      }
+    })
+
+    it('skips helper injection before the config count increment can overflow', async () => {
+      spawnSyncMock.mockReturnValue(makeSpawnResult())
+      const warning = vi.spyOn(console, 'warn').mockImplementation(() => {})
+      try {
+        await withEnv({
+          GH_TOKEN: 'token',
+          GITHUB_TOKEN: undefined,
+          GIT_CONFIG_COUNT: String(Number.MAX_SAFE_INTEGER),
+          GIT_CONFIG_KEY_0: 'user.name',
+          GIT_CONFIG_VALUE_0: 'Someone',
+        }, async () => {
+          await push()
+          const env = pushEnv()
+          expect(env.GIT_CONFIG_COUNT).toBe(String(Number.MAX_SAFE_INTEGER))
+          expect(env.GIT_CONFIG_KEY_0).toBe('user.name')
+          expect(env.GIT_CONFIG_VALUE_0).toBe('Someone')
+        })
+        expect(warning).toHaveBeenCalledWith(expect.stringContaining('GIT_CONFIG_COUNT is too large'))
+      } finally {
+        warning.mockRestore()
+      }
     })
   })
 

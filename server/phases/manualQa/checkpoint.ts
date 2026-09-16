@@ -3,15 +3,18 @@ import { withGitIndexRollback } from '../../git/indexSnapshot'
 import { literalPathspec, REPO_SCOPE_PATHSPECS } from '../../git/pathspecs'
 import { normalizeRepoScopedPath, uniqueRepoScopedPaths } from '../../git/repoScopedPath'
 import { runGitSync } from '../../git/runCommand'
+import { parseGitPathListZ } from '../../git/statusPorcelain'
 import { createHash } from 'node:crypto'
 import {
   cpSync,
   existsSync,
   lstatSync,
   mkdirSync,
+  readlinkSync,
   rmSync,
+  symlinkSync,
 } from 'node:fs'
-import { dirname, join, relative, resolve } from 'node:path'
+import { basename, dirname, join, relative, resolve } from 'node:path'
 import { resolveContainedPath } from '../../lib/containedPath'
 import {
   captureFinalTestDirtyFiles,
@@ -102,6 +105,23 @@ function assertContained(root: string, target: string): string {
   }
 }
 
+/** Contain the parent, then inspect the final entry without following it. */
+function assertContainedEntry(root: string, target: string): string {
+  try {
+    resolveContainedPath(root, dirname(target), { allowMissingParents: true })
+    const entry = lstatSafe(target)
+    if (entry && !entry.isSymbolicLink()) {
+      resolveContainedPath(root, target, { allowMissingParents: true })
+    }
+    if (!basename(target) || basename(target) === '.' || basename(target) === '..') {
+      throw new Error('Invalid final entry')
+    }
+    return target
+  } catch {
+    throw new Error(`Manual QA path escapes its contained root: ${target}`)
+  }
+}
+
 /**
  * Baseline and drift receipts are what a manual QA session is reconstructed
  * from after a crash, so they go through the same writer as every other durable
@@ -154,7 +174,7 @@ function captureTrackedSignatures(worktreePath: string): Record<string, string> 
   const signatures: Record<string, string> = {}
   for (const entry of output.split('\0')) {
     if (!entry) continue
-    const match = entry.match(/^\d+ ([0-9a-f]+) \d+\t(.+)$/)
+    const match = entry.match(/^\d+ ([0-9a-f]+) \d+\t([\s\S]+)$/)
     if (!match?.[1] || !match[2]) continue
     const path = normalizeProjectPath(match[2])
     if (path) signatures[path] = match[1]
@@ -250,18 +270,36 @@ function quarantineFiles(
     const source = resolve(worktreePath, file)
     const destination = resolve(quarantineRoot, file)
     const expectedDestination = resolve(canonicalTicketDir, relative(ticketDir, destination))
-    assertContained(worktreePath, source)
+    assertContainedEntry(worktreePath, source)
     // A link to another ticket artifact is contained but is not quarantine:
     // copying there could overwrite that artifact before discarding the source.
     if (assertContained(ticketDir, destination) !== expectedDestination) {
       throw new Error('Manual QA quarantine path redirects outside its intended directory.')
     }
-    if (!existsSync(source) && !lstatSafe(source)) continue
+    const sourceEntry = lstatSafe(source)
+    if (!existsSync(source) && !sourceEntry) continue
     mkdirSync(dirname(destination), { recursive: true })
     if (assertContained(ticketDir, destination) !== expectedDestination) {
       throw new Error('Manual QA quarantine path redirects outside its intended directory.')
     }
-    cpSync(source, destination, { recursive: true, dereference: false, errorOnExist: false, force: true })
+    if (sourceEntry?.isSymbolicLink()) {
+      // `cpSync` still stats a dangling link on some Node/filesystem pairs.
+      // Copy its directory entry directly so neither an outward nor a broken
+      // link is followed and the original target is never touched.
+      if (lstatSafe(destination)) throw new Error(`Manual QA quarantine destination already exists: ${destination}`)
+      symlinkSync(readlinkSync(source), destination)
+    } else {
+      cpSync(source, destination, {
+        recursive: true,
+        dereference: false,
+        verbatimSymlinks: true,
+        // A destination link can be planted after the containment check. Do
+        // not ask cp to replace or follow it; an existing quarantine entry is
+        // safer as an explicit conflict than as an overwrite.
+        errorOnExist: true,
+        force: false,
+      })
+    }
     quarantined.push(file)
   }
   return quarantined
@@ -270,8 +308,9 @@ function quarantineFiles(
 function lstatSafe(path: string): ReturnType<typeof lstatSync> | null {
   try {
     return lstatSync(path)
-  } catch {
-    return null
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === 'ENOENT') return null
+    throw error
   }
 }
 
@@ -297,8 +336,10 @@ function commitExactFiles(worktreePath: string, files: string[], message: string
   // used to leave these paths staged for whatever committed next.
   const committed = withGitIndexRollback(worktreePath, () => {
     runGit(worktreePath, ['add', '-f', '-A', '--', ...pathspecs], true)
-    const staged = runGit(worktreePath, ['diff', '--cached', '--name-only', '--', ...pathspecs], true)
-    if (!staged) return { keepIndex: false, value: false }
+    const staged = parseGitPathListZ(runGitRaw(worktreePath, [
+      'diff', '--cached', '--name-only', '-z', '--', ...pathspecs,
+    ]))
+    if (staged.length === 0) return { keepIndex: false, value: false }
     // `git commit` normally includes every path already staged in the worktree.
     // Restrict the commit itself so unrelated staged application/runtime residue
     // cannot leak into the clean Manual QA checkpoint before it is quarantined.
@@ -439,7 +480,7 @@ function applyManualQaDriftDecision(
     if (addedFiles.length > 0) {
       for (const file of addedFiles) {
         const target = resolve(paths.worktreePath, file)
-        assertContained(paths.worktreePath, target)
+        assertContainedEntry(paths.worktreePath, target)
         rmSync(target, { force: true, recursive: true })
       }
     }

@@ -1,4 +1,5 @@
 import { runGitSync } from '../../git/runCommand'
+import { parseGitPathListZ } from '../../git/statusPorcelain'
 import { lstatSync, readdirSync, rmSync } from 'node:fs'
 import { join, resolve } from 'node:path'
 import { eq } from 'drizzle-orm'
@@ -27,17 +28,10 @@ export interface ExecutionSetupPathSnapshot {
   untrackedPaths: string[]
 }
 
-function normalizeRepoRelativePath(input: string): string {
-  return input.replace(/\\/g, '/').replace(/^\.\//, '').trim()
-}
-
 function listGitPaths(worktreePath: string, args: string[]): string[] {
-  const result = runGitSync(worktreePath, args)
+  const result = runGitSync(worktreePath, [...args, '-z'], { trimOutput: false })
   if (!result.ok) return []
-  return result.stdout
-    .split('\n')
-    .map((entry) => normalizeRepoRelativePath(entry))
-    .filter(Boolean)
+  return parseGitPathListZ(result.stdout)
 }
 
 export function createExecutionSetupPathSnapshot(worktreePath: string): ExecutionSetupPathSnapshot {

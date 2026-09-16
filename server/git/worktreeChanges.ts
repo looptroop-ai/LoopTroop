@@ -119,21 +119,21 @@ interface ExecutionSetupProfileLike {
   workspace_inputs?: Array<{ path?: string | null } | null>
 }
 
-/** Repository-relative form: forward slashes, no `./` prefix, no trailing slash. */
+/** Repository-relative form that keeps Git's path bytes intact. */
 export function normalizeRepoPath(path: string): string {
-  return path
-    .replace(/\\/g, '/')
+  return (process.platform === 'win32' ? path.replace(/\\/g, '/') : path)
     .replace(/^\.\//, '')
-    .replace(/\/+$/, '')
 }
 
 function normalizeSetupRoot(worktreePath: string, input: unknown): string | null {
-  if (typeof input !== 'string' || !input.trim()) return null
-  const trimmed = input.trim()
-  const repoRelative = isAbsolute(trimmed)
-    ? relative(resolve(worktreePath), trimmed)
-    : trimmed
-  const normalized = normalizeRepoPath(repoRelative)
+  if (typeof input !== 'string' || input.length === 0) return null
+  const repoRelative = isAbsolute(input)
+    ? relative(resolve(worktreePath), input)
+    : input
+  // Setup roots are request/profile input rather than Git output, so a
+  // trailing separator can be canonicalised without changing a filename's
+  // bytes (trailing spaces remain untouched).
+  const normalized = normalizeRepoPath(repoRelative).replace(/\/+$/, '')
   if (
     !normalized
     || normalized === '.'
@@ -149,7 +149,12 @@ function normalizeSetupRoot(worktreePath: string, input: unknown): string | null
 function isWithinRoot(path: string, root: string): boolean {
   const normalizedPath = normalizeRepoPath(path)
   const normalizedRoot = normalizeRepoPath(root)
-  return normalizedPath === normalizedRoot || normalizedPath.startsWith(`${normalizedRoot}/`)
+  const compare = (value: string) => process.platform === 'win32' || process.platform === 'darwin'
+    ? value.toLowerCase()
+    : value
+  const comparablePath = compare(normalizedPath)
+  const comparableRoot = compare(normalizedRoot)
+  return comparablePath === comparableRoot || comparablePath.startsWith(`${comparableRoot}/`)
 }
 
 function collectPathStrings(value: unknown): string[] {

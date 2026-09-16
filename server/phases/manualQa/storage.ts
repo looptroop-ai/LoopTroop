@@ -15,6 +15,7 @@ import * as jsYaml from 'js-yaml'
 import { safeAtomicWriteWithin } from '../../io/atomicWrite'
 import { withFileLock } from '../../io/fileLock'
 import { appendJsonlWithin, parseJsonlContent } from '../../io/jsonl'
+import { fixTrailingLineCorruption } from '../../io/recovery'
 import { openFileNoFollowSync, readFileNoFollowSync } from '../../io/readFile'
 import { buildYamlDocument } from '../../structuredOutput/yamlUtils'
 import { contentSha256 } from '../../lib/contentHash'
@@ -205,6 +206,9 @@ export function readManualQaModelCapabilitySnapshot(
 export function appendManualQaEvent(ticketDir: string, event: ManualQaEvent): ManualQaEvent {
   const parsed = ManualQaEventSchema.parse(event)
   const path = getManualQaStoragePaths(ticketDir, parsed.version).eventsPath
+  // This is a real append file, unlike the JSONL artifacts rewritten through
+  // `writeManualQaText`; repair only its torn final record before deduping.
+  fixTrailingLineCorruption(path)
   const existing = readManualQaEvents(ticketDir)
   const duplicate = existing.find((entry) => entry.eventId === parsed.eventId)
   if (duplicate) {
@@ -218,9 +222,31 @@ export function appendManualQaEvent(ticketDir: string, event: ManualQaEvent): Ma
 }
 
 export function readManualQaEvents(ticketDir: string): ManualQaEvent[] {
+  return readManualQaEventsWithDiagnostics(ticketDir).events
+}
+
+export interface ManualQaEventsReadResult {
+  events: ManualQaEvent[]
+  malformedLines: number[]
+  invalidShapeLines: number[]
+}
+
+export function readManualQaEventsWithDiagnostics(ticketDir: string): ManualQaEventsReadResult {
   const path = resolve(validateManualQaDirectory(resolve(ticketDir, 'manual-qa')), 'events.jsonl')
-  return parseJsonlContent<unknown>(readManualQaText(ticketDir, path) ?? '', path).items
-    .map((value) => ManualQaEventSchema.parse(value))
+  const parsed = parseJsonlContent<unknown>(readManualQaText(ticketDir, path) ?? '', path)
+  const events: ManualQaEvent[] = []
+  const invalidShapeLines: number[] = []
+  for (const [index, value] of parsed.items.entries()) {
+    const result = ManualQaEventSchema.safeParse(value)
+    if (result.success) {
+      events.push(result.data)
+      continue
+    }
+    const line = parsed.itemLines[index] ?? index + 1
+    invalidShapeLines.push(line)
+    console.warn(`[manual-qa] Skipping invalid event line ${line} in ${path}`)
+  }
+  return { events, malformedLines: parsed.malformedLines, invalidShapeLines }
 }
 
 export function snapshotManualQaDraft(ticketDir: string, draft: ManualQaDraft): ManualQaDraft {
@@ -394,10 +420,10 @@ function readEvidenceText(ticketDir: string, version: number, path: string): str
  * removal could commit a list built before an upload finished, erasing it.
  *
  * The lock covers both processes and both operations. The fingerprint check is
- * the second half: a lock reclaimed as stale while its holder was merely slow
- * would let two writers into the section, and comparing what the index held
- * when the section started against what it holds at commit time catches that
- * rather than overwriting blind.
+ * the second half: if the index changes outside this section, comparing what
+ * it held when the section started against what it holds at commit time catches
+ * that rather than overwriting blind. SQLite owns lock lifetime, so a slow
+ * holder is waited on or times out; no stale lock-file reclaim window exists.
  *
  * The Manual QA *version* is the generation token the plan asks for: a restarted
  * run allocates a new version and therefore a different index, so a late

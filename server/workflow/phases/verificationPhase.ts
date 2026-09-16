@@ -4905,8 +4905,8 @@ export async function handleFinalTest(
           },
         )
       },
-      beforeRetry: ({ nextAttempt }) => {
-        resetWorktreeToCommit(worktreePath, phaseStartCommit, {
+      beforeRetry: async ({ nextAttempt }) => {
+        await resetWorktreeToCommit(worktreePath, phaseStartCommit, {
           preservePaths: [...WORKTREE_RESET_PRESERVE_PATHS],
         })
         emitPhaseLog(

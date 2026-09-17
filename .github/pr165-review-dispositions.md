@@ -88,3 +88,9 @@ typecheck passed. The initial aggregate failure was a stale reader expectation
 for safely defaulted collections; its corrected regression still rejects
 malformed commands and evidence. Website updates are on main through
 `3968e13`, with 87 tests, the site build and published-reference checks passing.
+
+Codacy follow-up `105307286454` repeats ten annotations on code already corrected
+in `ee1efc34` (the indexed assertions, navigator guard, and editor callbacks).
+It also reports a block-scoped function declaration in `dependencyGraph.ts`.
+The cycle walker is now a block-scoped function expression, retaining the same
+closure and recursion without widening its scope. No suppression was added.

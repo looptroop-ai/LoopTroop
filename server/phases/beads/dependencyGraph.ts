@@ -78,7 +78,7 @@ export function inspectBeadDependencyGraph(
 
     let cyclePath: string[] | null = null
 
-    function detectCycle(beadId: string, path: string[]): boolean {
+    const detectCycle = (beadId: string, path: string[]): boolean => {
       visited.add(beadId)
       recStack.add(beadId)
       path.push(beadId)

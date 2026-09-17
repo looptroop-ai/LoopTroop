@@ -30,10 +30,12 @@ import { getErrorMessage } from '@shared/typeGuards'
 import type { WorkflowPhaseId } from '@shared/workflowMeta'
 import { SessionManager } from '../opencode/sessionManager'
 import { shouldPreserveSessionForContinuation } from '../opencode/sessionContinuation'
-import { confirmCouncilSessionStopped } from './sessionStop'
+import { confirmCouncilSessionStopped, waitForCouncilSession } from './sessionStop'
 
-function unconfirmedVoterStopError(sessionId: string): Error {
-  return new Error(`Could not confirm abort of OpenCode session ${sessionId}`)
+function unconfirmedVoterStopError(sessionId?: string): Error {
+  return new Error(sessionId
+    ? `Could not confirm abort of OpenCode session ${sessionId}`
+    : 'Could not confirm abort of an OpenCode session that was still being created')
 }
 
 function buildStrictVoteSchemaReminder(rubric: typeof VOTING_RUBRIC): string {
@@ -466,10 +468,10 @@ export async function conductVoting(
       )
       let trackedSessionId = findTrackedSession()
       if (!trackedSessionId) {
-        await Promise.race([sessionReady, executionSettled])
+        const waitOutcome = await waitForCouncilSession(sessionReady, executionSettled)
         trackedSessionId = findTrackedSession()
+        if (!trackedSessionId) return waitOutcome === 'execution_settled'
       }
-      if (!trackedSessionId) return true
       sessionId = trackedSessionId
       return confirmCouncilSessionStopped(adapter, sessionManager, trackedSessionId, 'voter')
     }
@@ -503,7 +505,7 @@ export async function conductVoting(
       const callerCancelled = signal?.aborted || (isAbortError(error) && signal?.aborted)
       if (callerCancelled || error instanceof CancelledError) {
         const stopped = await ensureSessionStopped()
-        if (!stopped && sessionId) throw unconfirmedVoterStopError(sessionId)
+        if (!stopped) throw unconfirmedVoterStopError(sessionId)
         throw new CancelledError()
       }
 
@@ -511,7 +513,7 @@ export async function conductVoting(
       const timedOut = isPhaseDeadlineError(error) || isAiResponseTimeoutError(error) || closed
       if (timedOut) {
         const stopped = await ensureSessionStopped()
-        if (!stopped && sessionId) throw unconfirmedVoterStopError(sessionId)
+        if (!stopped) throw unconfirmedVoterStopError(sessionId)
         deadlineReached = true
       }
       if (!timedOut) {
@@ -531,7 +533,7 @@ export async function conductVoting(
           : false
         if (!preserveForContinuation) {
           const stopped = await ensureSessionStopped()
-          if (!stopped && sessionId) throw unconfirmedVoterStopError(sessionId)
+          if (!stopped) throw unconfirmedVoterStopError(sessionId)
         }
       }
       const outcome: MemberOutcome = timedOut

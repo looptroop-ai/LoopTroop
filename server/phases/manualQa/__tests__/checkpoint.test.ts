@@ -1,7 +1,7 @@
 import { spawnSync } from 'node:child_process'
-import { existsSync, lstatSync, mkdirSync, readFileSync, readlinkSync, symlinkSync, writeFileSync } from 'node:fs'
+import { existsSync, lstatSync, mkdirSync, readFileSync, readlinkSync, renameSync, symlinkSync, writeFileSync } from 'node:fs'
 import { resolve } from 'node:path'
-import { afterAll, beforeEach, describe, expect, it } from 'vitest'
+import { afterAll, afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { createInitializedTestTicket, createTestRepoManager, resetTestDb } from '../../../test/integration'
 import { insertPhaseArtifact } from '../../../storage/tickets'
 import {
@@ -14,6 +14,33 @@ import {
   prepareManualQaCheckpoint,
 } from '../checkpoint'
 import { readManualQaEvents } from '../storage'
+
+const race = vi.hoisted(() => ({
+  afterRead: undefined as (() => void) | undefined,
+  sourceIdentity: undefined as { dev: number; ino: number } | undefined,
+}))
+
+vi.mock('node:fs', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('node:fs')>()
+  return {
+    ...actual,
+    readSync: (...args: Parameters<typeof actual.readSync>) => {
+      const count = actual.readSync(...args)
+      const descriptor = actual.fstatSync(args[0])
+      if (
+        race.sourceIdentity
+        && race.afterRead
+        && descriptor.dev === race.sourceIdentity.dev
+        && descriptor.ino === race.sourceIdentity.ino
+      ) {
+        race.afterRead()
+        race.afterRead = undefined
+        race.sourceIdentity = undefined
+      }
+      return count
+    },
+  }
+})
 
 const repoManager = createTestRepoManager('manual-qa-checkpoint-')
 
@@ -49,6 +76,11 @@ async function prepareFixture() {
 
 describe('Manual QA workspace checkpoints', () => {
   beforeEach(() => resetTestDb())
+  afterEach(() => {
+    race.afterRead = undefined
+    race.sourceIdentity = undefined
+    vi.restoreAllMocks()
+  })
   afterAll(() => {
     resetTestDb()
     repoManager.cleanup()
@@ -153,6 +185,31 @@ describe('Manual QA workspace checkpoints', () => {
     expect(retryPath).toContain(`${destination}.attempt-`)
     expect(readFileSync(destination).at(-1)).toBe(97)
     expect(readFileSync(retryPath!)).toEqual(content)
+  })
+
+  it('keeps a replacement that arrives while comparing an existing quarantine copy', async () => {
+    const setup = await prepareFixture()
+    await prepareManualQaCheckpoint(setup.ticket.id, 1)
+    const source = resolve(setup.paths.worktreePath, 'README.md')
+    const original = Buffer.alloc(128 * 1024 + 7, 'a')
+    const replacement = Buffer.alloc(original.length, 'b')
+    const destination = resolve(setup.paths.ticketDir, 'manual-qa/v1/quarantine/README.md')
+    mkdirSync(resolve(setup.paths.ticketDir, 'manual-qa/v1/quarantine'), { recursive: true })
+    writeFileSync(source, original)
+    writeFileSync(destination, original)
+
+    const sourceIdentity = lstatSync(source)
+    race.sourceIdentity = { dev: sourceIdentity.dev, ino: sourceIdentity.ino }
+    race.afterRead = () => {
+      renameSync(source, resolve(setup.paths.ticketDir, 'held-original-during-compare'))
+      writeFileSync(source, replacement)
+    }
+
+    const result = await discardManualQaWorkspaceDrift(setup.ticket.id, 1, ['README.md'], 'replacement-during-compare')
+    const retryPath = result.quarantinePaths?.['README.md']
+    expect(retryPath).toContain(`${destination}.attempt-`)
+    expect(readFileSync(destination)).toEqual(original)
+    expect(readFileSync(retryPath!)).toEqual(replacement)
   })
 
   it('reverts an explicitly audited committed drift path instead of accepting a changed HEAD silently', async () => {

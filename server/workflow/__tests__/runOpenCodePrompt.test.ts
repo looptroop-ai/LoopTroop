@@ -102,6 +102,7 @@ class TestOpenCodeAdapter implements OpenCodeAdapter {
   >, private readonly options: {
     listSessions?: () => Session[]
     getSession?: (sessionId: string) => Session | null
+    createSession?: () => Promise<Session>
     createFailures?: Error[]
     healthStatus?: HealthStatus
   } = {}) {
@@ -114,6 +115,11 @@ class TestOpenCodeAdapter implements OpenCodeAdapter {
     options?: OpenCodeSessionCreateOptions,
   ): Promise<Session> {
     this.sessionCreateCalls.push({ projectPath, signal, options })
+    if (this.options.createSession) {
+      const session = await this.options.createSession()
+      this.sessions.push(session)
+      return session
+    }
     const failure = this.options.createFailures?.shift()
     if (failure) throw failure
     this.sessionCounter += 1
@@ -550,10 +556,9 @@ describe('runOpenCodePrompt', () => {
     const unavailableAdapter = new OpenCodeSDKAdapter('http://localhost:4096', unavailableClient as unknown as OpenCodeSDKClient)
 
     await expect(missingAdapter.getSession('ses-missing')).resolves.toBeNull()
-    await expect(unavailableAdapter.getSession('ses-preserve')).rejects.toMatchObject({
-      name: 'InternalServerError',
-      message: 'OpenCode unavailable',
-    })
+    await expect(unavailableAdapter.getSession('ses-preserve')).rejects.toThrow(
+      'OpenCode session lookup failed with HTTP 500',
+    )
   })
 
   it('uses each session worktree for question list, reply, and reject operations', async () => {
@@ -1186,6 +1191,33 @@ describe('runOpenCodePrompt', () => {
     expect(listOpenCodeSessionsForTicket(ticket.id, ['active'])).toEqual([])
     expect(listOpenCodeSessionsForTicket(ticket.id, ['abandoned']).map((session) => session.sessionId))
       .toEqual(['ses-1'])
+  })
+
+  it('aborts a session published after the acquisition deadline when its callback is closed', async () => {
+    const deferredSession = createDeferred<Session>()
+    const adapter = new TestOpenCodeAdapter(['assistant response'], {
+      createSession: () => deferredSession.promise,
+    })
+    const callbackError = new Error('session creation completed after cancellation')
+    let acquisitionClosed = false
+
+    const runPromise = runOpenCodePrompt({
+      adapter,
+      projectPath: '/tmp/project',
+      parts: [{ type: 'text', content: 'Prompt body' }],
+      timeoutMs: 25,
+      onSessionCreated: () => {
+        if (acquisitionClosed) throw callbackError
+      },
+    })
+
+    await new Promise((resolve) => setTimeout(resolve, 50))
+    acquisitionClosed = true
+    deferredSession.resolve({ id: 'late-session', projectPath: '/tmp/project' })
+
+    await expect(runPromise).rejects.toBe(callbackError)
+    expect(adapter.abortCalls).toEqual(['late-session'])
+    expect(adapter.promptCalls).toEqual([])
   })
 
   it('does not create a replacement while an owned session lookup is unverified', async () => {

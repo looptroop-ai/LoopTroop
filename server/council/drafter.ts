@@ -27,10 +27,12 @@ import { getErrorMessage } from '@shared/typeGuards'
 import type { WorkflowPhaseId } from '@shared/workflowMeta'
 import { SessionManager } from '../opencode/sessionManager'
 import { shouldPreserveSessionForContinuation } from '../opencode/sessionContinuation'
-import { confirmCouncilSessionStopped } from './sessionStop'
+import { confirmCouncilSessionStopped, waitForCouncilSession } from './sessionStop'
 
-function unconfirmedDraftStopError(sessionId: string): Error {
-  return new Error(`Could not confirm abort of OpenCode session ${sessionId}`)
+function unconfirmedDraftStopError(sessionId?: string): Error {
+  return new Error(sessionId
+    ? `Could not confirm abort of OpenCode session ${sessionId}`
+    : 'Could not confirm abort of an OpenCode session that was still being created')
 }
 
 interface DraftValidationResult {
@@ -362,12 +364,12 @@ export async function generateDrafts(
       let trackedSessionId = findTrackedSession()
       if (!trackedSessionId) {
         // A prompt can ignore its local abort signal. Give its session-create
-        // callback a chance to publish the id, but never wait for the prompt
-        // itself before attempting the remote stop.
-        await Promise.race([sessionReady, executionSettled])
+        // callback a bounded chance to publish the id, but never wait for the
+        // prompt itself before attempting the remote stop.
+        const waitOutcome = await waitForCouncilSession(sessionReady, executionSettled)
         trackedSessionId = findTrackedSession()
+        if (!trackedSessionId) return waitOutcome === 'execution_settled'
       }
-      if (!trackedSessionId) return true
       sessionId = trackedSessionId
       return confirmCouncilSessionStopped(adapter, sessionManager, trackedSessionId, 'drafter')
     }
@@ -403,14 +405,14 @@ export async function generateDrafts(
       const callerCancelled = signal?.aborted || (isAbortError(err) && signal?.aborted)
       if (callerCancelled || err instanceof CancelledError) {
         const stopped = await ensureSessionStopped()
-        if (!stopped && sessionId) throw unconfirmedDraftStopError(sessionId)
+        if (!stopped) throw unconfirmedDraftStopError(sessionId)
         throw new CancelledError()
       }
 
       const duration = Date.now() - startTime
       if (isPhaseDeadlineError(err) || isAiResponseTimeoutError(err) || closed) {
         const stopped = await ensureSessionStopped()
-        if (!stopped && sessionId) throw unconfirmedDraftStopError(sessionId)
+        if (!stopped) throw unconfirmedDraftStopError(sessionId)
         deadlineReached = true
         const draft: DraftResult = {
           memberId: member.modelId,
@@ -445,7 +447,7 @@ export async function generateDrafts(
         : false
       if (!preserveForContinuation) {
         const stopped = await ensureSessionStopped()
-        if (!stopped && sessionId) throw unconfirmedDraftStopError(sessionId)
+        if (!stopped) throw unconfirmedDraftStopError(sessionId)
       }
 
       const {

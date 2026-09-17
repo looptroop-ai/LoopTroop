@@ -76,10 +76,16 @@ OpenCode), attach a local repository with a GitHub origin, create a ticket, and
 start it.
 
 If LoopTroop cannot confirm that an OpenCode session stopped remotely, it keeps
-the ticket retryable and leaves the ownership visible. A ticket marker can
-recover that ownership when the project database is unavailable. If both the
-database and marker storage are unavailable, only the current process can guard
-the session, so a restart cannot claim recovery.
+the ticket retryable and leaves the ownership visible. The durable session-
+ownership marker, `runtime/opencode-pending-sessions.json`, can recover those
+session IDs when the project database is unavailable. Cancellation separately
+writes the private `.ticket/runtime/cancellation-pending.json` marker before
+cleanup; missing means no pending stop, while malformed or unreadable content
+fails closed and blocks coding. This cancellation marker records the stop
+request but does not identify or recover a remote session. Cleanup removes it
+only after terminal cleanup through the contained ticket-file boundary. If
+both the database and ownership marker storage are unavailable, only the
+current process can guard the session, so a restart cannot claim recovery.
 
 ### Client state and history
 

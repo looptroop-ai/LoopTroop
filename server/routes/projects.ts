@@ -137,7 +137,9 @@ async function readOriginRemoteUrlAsync(repoRoot: string): Promise<string | null
 async function getGitRepoInfo(folderPath: string): Promise<GitRepoInfo> {
   const resolved = normalizeFolderPath(folderPath)
   if (!(await existsAsync(resolved))) {
-    console.warn(`[getGitRepoInfo] Path does not exist: ${resolved} (original: ${folderPath})`)
+    // POSIX permits control bytes, including newlines, in a filename. Keep a
+    // diagnostic path readable without allowing one path to forge log records.
+    console.warn(`[getGitRepoInfo] Path does not exist: ${JSON.stringify(resolved)} (original: ${JSON.stringify(folderPath)})`)
     return { isGit: false }
   }
 

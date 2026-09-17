@@ -5,9 +5,11 @@ import { clearTicketWorkBudget } from '../workBudget'
 import { forgetTicketQuestionMemory } from '../questionWindows'
 import { clearTicketSessionContinuations } from '../../opencode/sessionContinuation'
 import { releaseInterviewBatch } from './interviewPhase'
+import { readTicketFile, removeTicketFile, writeTicketFile } from '../../storage/tickets'
 
 export const runningPhases = new Set<string>()
 const cancellationPendingTickets = new Set<string>()
+const CANCELLATION_PENDING_ARTIFACT = 'runtime/cancellation-pending.json'
 
 /**
  * The OpenCode adapter, resolved on first use rather than at import.
@@ -66,7 +68,7 @@ export function cleanupTicketState(
   interviewQASessions.delete(ticketId)
 
   if (!options.preserveRemoteState) {
-    cancellationPendingTickets.delete(ticketId)
+    clearTicketCancellationPending(ticketId)
   }
 
   // Every cancel, completion and restart passes through here. The ledger used
@@ -104,13 +106,45 @@ export function cleanupTicketState(
 /** Keep a failed cancel from allowing a local phase to start again. */
 export function markTicketCancellationPending(ticketId: string): void {
   cancellationPendingTickets.add(ticketId)
+  try {
+    writeTicketFile(ticketId, CANCELLATION_PENDING_ARTIFACT, `${JSON.stringify({
+      state: 'pending',
+      requestedAt: new Date().toISOString(),
+    })}\n`)
+  } catch (error) {
+    // Keep the process-local guard even if the ticket workspace is temporarily
+    // unavailable. A restart cannot recover this guard without the marker, so
+    // durable session rows remain the only restart evidence; never infer
+    // ownership from an arbitrary project file.
+    console.warn(`[workflow] Could not persist cancellation pending marker for ticket ${ticketId}:`, error)
+  }
 }
 
 export function isTicketCancellationPending(ticketId: string): boolean {
-  return cancellationPendingTickets.has(ticketId)
+  if (cancellationPendingTickets.has(ticketId)) return true
+  try {
+    const raw = readTicketFile(ticketId, CANCELLATION_PENDING_ARTIFACT)
+    if (raw === null) return false
+    const parsed: unknown = JSON.parse(raw)
+    const pending = typeof parsed === 'object'
+      && parsed !== null
+      && (parsed as Record<string, unknown>).state === 'pending'
+    if (!pending) throw new Error('cancellation pending marker has an invalid state')
+    return true
+  } catch (error) {
+    // A malformed or unreadable marker is uncertainty about an outstanding
+    // cancellation, not evidence that it is safe to start work again.
+    console.warn(`[workflow] Could not read cancellation pending marker for ticket ${ticketId}:`, error)
+    return true
+  }
 }
 
-export function clearTicketCancellationPending(ticketId: string): void {
+function clearTicketCancellationPending(ticketId: string): void {
+  try {
+    removeTicketFile(ticketId, CANCELLATION_PENDING_ARTIFACT)
+  } catch (error) {
+    console.warn(`[workflow] Could not clear cancellation pending marker for ticket ${ticketId}:`, error)
+  }
   cancellationPendingTickets.delete(ticketId)
 }
 

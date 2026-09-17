@@ -3039,6 +3039,24 @@ describe.concurrent('structured output normalization', () => {
     ])
   })
 
+  it('keeps repair warnings from a rejected fallback batch candidate', () => {
+    const result = normalizeInterviewTurnOutput([
+      'batch_number: 1',
+      'progress:',
+      '  current: 0',
+      '  total: 1',
+      'questions:',
+      '  -id: Q01',
+      '    question: "First question?"',
+      '  -id: Q01',
+      '    question: "Duplicate question?"',
+    ].join('\n'))
+
+    expect(result.ok).toBe(false)
+    if (result.ok) return
+    expect(result.repairWarnings).toContain('Inserted the missing space after a YAML list dash before parsing.')
+  })
+
   it('normalizes BEAD_STATUS markers with YAML payloads and gate aliases', () => {
     const result = normalizeBeadCompletionMarkerOutput([
       'work done',

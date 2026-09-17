@@ -48,6 +48,8 @@ const KNOWN_TICKET_ROOT_ARTIFACTS = new Set([
   'interview.yaml',
   'prd.yaml',
   'relevant-files.yaml',
+  'runtime/cancellation-pending.json',
+  'runtime/opencode-pending-sessions.json',
 ])
 
 interface AtomicProof {

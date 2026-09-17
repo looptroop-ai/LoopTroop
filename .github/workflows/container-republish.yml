@@ -72,6 +72,7 @@ jobs:
       dist_tag: ${{ steps.resolve.outputs.dist_tag }}
       floating: ${{ steps.floating.outputs.floating }}
       tarball: ${{ steps.resolve.outputs.tarball }}
+      lockfile: ${{ steps.resolve.outputs.lockfile }}
       commit: ${{ steps.resolve.outputs.commit }}
     steps:
       # A dispatch input is free text, and it is about to be interpolated into
@@ -117,11 +118,8 @@ jobs:
           gh release download "v${VERSION}" \
             --dir "${ASSET_DIR}" \
             --pattern "looptroop-${VERSION}.tgz" \
-            --pattern package-lock.json \
             --pattern release-manifest.json
-          ls -l "${ASSET_DIR}/looptroop-${VERSION}.tgz" \
-            "${ASSET_DIR}/package-lock.json" \
-            "${ASSET_DIR}/release-manifest.json"
+          ls -l "${ASSET_DIR}/looptroop-${VERSION}.tgz" "${ASSET_DIR}/release-manifest.json"
 
       # Three separate questions, none of which the integrity check answers.
       #
@@ -134,6 +132,7 @@ jobs:
         id: resolve
         env:
           ASSET_DIR: ${{ runner.temp }}/release-assets
+          GH_TOKEN: ${{ github.token }}
           VERSION: ${{ inputs.version }}
         run: |
           set -euo pipefail
@@ -163,23 +162,36 @@ jobs:
             "${ASSET_DIR}/looptroop-${VERSION}.tgz" \
             "${ASSET_DIR}/release-manifest.json"
 
-          # The container only needs the tarball and its matching lockfile. The
-          # release verifier's `--assets-dir` mode checks every release asset, so
-          # use a focused check here rather than pretending the un-downloaded
-          # installers and binaries are present.
-          node -e '
+          # Older manifests predate package-lock.json as a release asset. Keep
+          # those repairs on their tag's tarball-only Dockerfile path.
+          lockfile_expected=$(node -e '
             const fs = require("node:fs")
-            const crypto = require("node:crypto")
             const manifest = JSON.parse(fs.readFileSync(`${process.env.ASSET_DIR}/release-manifest.json`, "utf8"))
-            const expected = manifest.assets?.["package-lock.json"]
-            if (!expected) throw new Error("release manifest has no package-lock.json asset")
-            const bytes = fs.readFileSync(`${process.env.ASSET_DIR}/package-lock.json`)
-            const sha256 = crypto.createHash("sha256").update(bytes).digest("hex")
-            if (bytes.length !== expected.bytes || sha256 !== expected.sha256) {
-              throw new Error(`package-lock.json does not match the release manifest (${sha256})`)
-            }
-            console.log(`package-lock.json matches ${sha256}`)
+            process.stdout.write(manifest.assets?.["package-lock.json"] ? "yes" : "no")
           '
+          if [ "${lockfile_expected}" = yes ]; then
+            gh release download "v${VERSION}" --dir "${ASSET_DIR}" --pattern package-lock.json
+            # The container only needs the tarball and its matching lockfile.
+            # This focused check avoids pretending the other release assets are
+            # present while retaining strict digest verification when recorded.
+            ASSET_DIR="${ASSET_DIR}" node -e '
+              const fs = require("node:fs")
+              const crypto = require("node:crypto")
+              const manifest = JSON.parse(fs.readFileSync(`${process.env.ASSET_DIR}/release-manifest.json`, "utf8"))
+              const expected = manifest.assets?.["package-lock.json"]
+              if (!expected) throw new Error("release manifest changed while downloading package-lock.json")
+              const bytes = fs.readFileSync(`${process.env.ASSET_DIR}/package-lock.json`)
+              const sha256 = crypto.createHash("sha256").update(bytes).digest("hex")
+              if (bytes.length !== expected.bytes || sha256 !== expected.sha256) {
+                throw new Error(`package-lock.json does not match the release manifest (${sha256})`)
+              }
+              console.log(`package-lock.json matches ${sha256}`)
+            '
+            echo "lockfile=release-assets/package-lock.json" >> "$GITHUB_OUTPUT"
+          else
+            echo 'Legacy release manifest: no package-lock.json asset; using its tarball-only container path.'
+            echo 'lockfile=' >> "$GITHUB_OUTPUT"
+          fi
 
           # From the same function the release resolver uses, rather than a
           # second reading of the suffix here — the dist-tag is what decides
@@ -261,10 +273,7 @@ jobs:
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
         with:
           name: release-artefacts
-          path: |
-            ${{ runner.temp }}/release-assets/looptroop-${{ inputs.version }}.tgz
-            ${{ runner.temp }}/release-assets/package-lock.json
-            ${{ runner.temp }}/release-assets/release-manifest.json
+          path: ${{ runner.temp }}/release-assets
           if-no-files-found: error
           retention-days: 14
 
@@ -313,25 +322,30 @@ jobs:
       # Again, on this machine. The artefact travelled between jobs to get here.
       - name: Verify the artefact matches the manifest
         env:
+          LOCKFILE: ${{ needs.prepare.outputs.lockfile }}
           VERSION: ${{ needs.prepare.outputs.version }}
         run: |
           set -euo pipefail
           npm run release:verify-artifact -- \
             "release-assets/looptroop-${VERSION}.tgz" \
             release-assets/release-manifest.json
-          node -e '
-            const fs = require("node:fs")
-            const crypto = require("node:crypto")
-            const manifest = JSON.parse(fs.readFileSync("release-assets/release-manifest.json", "utf8"))
-            const expected = manifest.assets?.["package-lock.json"]
-            if (!expected) throw new Error("release manifest has no package-lock.json asset")
-            const bytes = fs.readFileSync("release-assets/package-lock.json")
-            const sha256 = crypto.createHash("sha256").update(bytes).digest("hex")
-            if (bytes.length !== expected.bytes || sha256 !== expected.sha256) {
-              throw new Error(`package-lock.json does not match the release manifest (${sha256})`)
-            }
-            console.log(`package-lock.json matches ${sha256}`)
-          '
+          if [ -n "${LOCKFILE}" ]; then
+            test -f "${LOCKFILE}"
+            LOCKFILE="${LOCKFILE}" node -e '
+              const fs = require("node:fs")
+              const crypto = require("node:crypto")
+              const manifest = JSON.parse(fs.readFileSync("release-assets/release-manifest.json", "utf8"))
+              const expected = manifest.assets?.["package-lock.json"]
+              const bytes = fs.readFileSync(process.env.LOCKFILE)
+              const sha256 = crypto.createHash("sha256").update(bytes).digest("hex")
+              if (!expected || bytes.length !== expected.bytes || sha256 !== expected.sha256) {
+                throw new Error(`package-lock.json does not match the release manifest (${sha256})`)
+              }
+              console.log(`package-lock.json matches ${sha256}`)
+            '
+          else
+            echo 'Legacy release: no lockfile asset to verify.'
+          fi
 
       - name: Log in to Docker Hub and GHCR
         env:
@@ -368,18 +382,23 @@ jobs:
       - name: Build the image and push it by digest
         env:
           TARBALL: ${{ needs.prepare.outputs.tarball }}
-          LOCKFILE: release-assets/package-lock.json
+          LOCKFILE: ${{ needs.prepare.outputs.lockfile }}
           VERSION: ${{ needs.prepare.outputs.version }}
           REVISION: ${{ needs.prepare.outputs.commit }}
           PLATFORM: linux/${{ matrix.arch }}
         run: |
           set -euo pipefail
           test -f "${TARBALL}"
-          test -f "${LOCKFILE}"
-          tar -cf - Dockerfile "${LOCKFILE}" "${TARBALL}" | docker buildx build \
+          context_files=(Dockerfile "${TARBALL}")
+          build_args=(--build-arg "TARBALL=${TARBALL}")
+          if [ -n "${LOCKFILE}" ]; then
+            test -f "${LOCKFILE}"
+            context_files+=("${LOCKFILE}")
+            build_args+=(--build-arg "LOCKFILE=${LOCKFILE}")
+          fi
+          tar -cf - "${context_files[@]}" | docker buildx build \
             --platform "${PLATFORM}" \
-            --build-arg TARBALL="${TARBALL}" \
-            --build-arg LOCKFILE="${LOCKFILE}" \
+            "${build_args[@]}" \
             --build-arg VERSION="${VERSION}" \
             --build-arg REVISION="${REVISION}" \
             --provenance=false \
@@ -436,21 +455,38 @@ jobs:
           ARCH: ${{ matrix.arch }}
           PLATFORM: linux/${{ matrix.arch }}
           REVISION: ${{ needs.prepare.outputs.commit }}
-          LOCKFILE: release-assets/package-lock.json
+          LOCKFILE: ${{ needs.prepare.outputs.lockfile }}
           TARBALL: ${{ needs.prepare.outputs.tarball }}
           VERSION: ${{ needs.prepare.outputs.version }}
         run: |
           set -euo pipefail
           digest=$(cat "digest-${ARCH}.txt")
-          docker run --rm --platform "${PLATFORM}" --entrypoint /bin/cat \
-            "${GHCR_IMAGE}@${digest}" /usr/share/looptroop/image-package-versions.txt \
-            > "image-package-versions-${ARCH}.txt"
-          test -s "image-package-versions-${ARCH}.txt"
-          if ! grep -F -- "$(printf 'looptroop\t%s' "${VERSION}")" "image-package-versions-${ARCH}.txt" >/dev/null; then
+          inventory="image-package-versions-${ARCH}.txt"
+          error_log=$(mktemp)
+          set +e
+          docker run --rm --platform "${PLATFORM}" --entrypoint /bin/sh \
+            "${GHCR_IMAGE}@${digest}" -c 'if [ -f /usr/share/looptroop/image-package-versions.txt ]; then cat /usr/share/looptroop/image-package-versions.txt; else exit 42; fi' \
+            > "${inventory}" 2> "${error_log}"
+          inventory_status=$?
+          set -e
+          if [ "${inventory_status}" -eq 42 ]; then
+            printf 'legacy image: package-version inventory was not produced by this tag\n' > "${inventory}"
+            echo 'Legacy image has no package-version inventory; retaining the repair evidence without applying the current strict check.'
+          elif [ "${inventory_status}" -ne 0 ]; then
+            cat "${error_log}" >&2
+            rm -f "${error_log}"
+            exit "${inventory_status}"
+          elif ! test -s "${inventory}"; then
+            echo '::error::The image package-version inventory is empty.'
+            rm -f "${error_log}"
+            exit 1
+          elif ! grep -F -- "$(printf 'looptroop\t%s' "${VERSION}")" "${inventory}" >/dev/null; then
             echo "::error::The image does not record LoopTroop ${VERSION} as its installed package version."
-            cat "image-package-versions-${ARCH}.txt"
+            cat "${inventory}"
+            rm -f "${error_log}"
             exit 1
           fi
+          rm -f "${error_log}"
           {
             printf '### Container input and provenance (%s)\n\n' "${ARCH}"
             printf -- '- tarball: `%s`\n' "${TARBALL}"

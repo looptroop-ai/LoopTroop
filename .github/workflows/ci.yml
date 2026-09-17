@@ -915,8 +915,14 @@ jobs:
           if [ "${doctor_status}" -ne 0 ]; then
             echo "Doctor reported environment status ${doctor_status}; checking the embedded runtime field."
           fi
-          echo "${doctor}" | grep -F '"name": "node"'
-          echo "${doctor}" | grep -F 'v26.9.0 (latest'
+          printf '%s' "${doctor}" | EXPECTED_NODE_VERSION="$(node -p 'process.versions.node')" node -e '
+            const report = JSON.parse(require("node:fs").readFileSync(0, "utf8"))
+            const nodeCheck = report.checks?.find((check) => check?.name === "node")
+            const expected = process.env.EXPECTED_NODE_VERSION
+            if (nodeCheck?.node?.version !== expected) {
+              throw new Error(`doctor node.version=${nodeCheck?.node?.version ?? "missing"}; expected ${expected}`)
+            }
+          '
           echo "Embedded runtime application checks passed."
 
       # With Node removed from PATH, which is the only thing that proves the

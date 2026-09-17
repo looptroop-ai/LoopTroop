@@ -62,7 +62,9 @@ describe('channel-inputs', () => {
   })
 
   it('rejects unknown options and positional arguments', () => {
-    expect(run(manifest(), '--typo', 'value').status).not.toBe(0)
+    const unknown = run(manifest(), '--typo', 'value')
+    expect(unknown.status).not.toBe(0)
+    expect(unknown.stderr).toContain('Usage: node scripts/channel-inputs.ts')
     expect(run(manifest(), 'stray').status).not.toBe(0)
   })
 })

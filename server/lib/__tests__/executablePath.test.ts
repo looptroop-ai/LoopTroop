@@ -602,6 +602,19 @@ describe('Windows resolution', () => {
     })).toEqual({ path: exe, target: exe })
   })
 
+  it('accepts an explicit Windows executable even when PATHEXT omits its extension', () => {
+    const root = tempRoot()
+    const program = makeExecutable(join(root, 'bin'), 'tool.EXE')
+
+    // PATHEXT controls how a bare name is expanded. A caller that already
+    // named `tool.EXE` has made that choice explicitly, so a custom PATHEXT
+    // containing only script extensions must not turn the path into "missing".
+    expect(resolveTrustedProgram(program, {
+      platform: 'win32',
+      policyEnv: { PATHEXT: '.CMD', SystemRoot: NO_WINDOWS },
+    })).toEqual({ path: program, target: program })
+  })
+
   it('refuses an extensionless Windows path when no PATHEXT sibling is executable', () => {
     const root = tempRoot()
     const program = makeExecutable(join(root, 'bin'), 'vitest')
@@ -892,7 +905,7 @@ describe('resolveTrustedProgram', () => {
 })
 
 describe('round-2 trust rules', () => {
-  it('trusts the kernel overflow UID only for an unmapped UID in a user namespace', () => {
+  itPosix('trusts the kernel overflow UID only for an unmapped UID in a user namespace', () => {
     const root = tempRoot()
     const bin = join(root, 'bin')
     const tool = makeExecutable(bin, 'looptool')

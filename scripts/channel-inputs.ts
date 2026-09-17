@@ -24,6 +24,8 @@ import { ArgumentError, parseArgs, requireNoPositional } from './cli-args.ts'
 import type { ReleaseManifest } from './release-assets.ts'
 import { digestedAssets } from './release-assets.ts'
 
+const USAGE = 'Usage: node scripts/channel-inputs.ts --manifest release-manifest.json --repo owner/name'
+
 function fail(message: string, ...detail: string[]): never {
   process.stderr.write(`::error::${message}\n`)
   for (const line of detail) process.stderr.write(`  ${line}\n`)
@@ -35,7 +37,7 @@ try {
   args = parseArgs(process.argv.slice(2), { manifest: 'value', repo: 'value' })
   requireNoPositional(args)
 } catch (error) {
-  if (error instanceof ArgumentError) fail(error.message)
+  if (error instanceof ArgumentError) fail(error.message, USAGE)
   throw error
 }
 

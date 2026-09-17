@@ -60,7 +60,7 @@ const HEALTH_TIMEOUT_MS = 60_000
  */
 const binaryUpgradeCommand = (platform) => (platform === 'win32'
   ? powershellInstaller('https://www.looptroop.ovh/install.ps1', ' -Binary')
-  : 'curl -fsSL https://www.looptroop.ovh/install | sh -s -- --binary')
+  : 'curl --proto "=https" --proto-redir "=https" --tlsv1.2 -fsSL https://www.looptroop.ovh/install | sh -s -- --binary')
 
 const REPO = process.env.LOOPTROOP_INSTALL_REPO || 'looptroop-ai/LoopTroop'
 const API = process.env.LOOPTROOP_INSTALL_API || 'https://api.github.com'
@@ -765,11 +765,11 @@ function readJson(text, name) {
  * tool launch. A `where` result is only text and can choose an extensionless
  * shim that CreateProcess would not run.
  */
-function whichLooptroop(pathHint) {
+export function whichLooptroop(pathHint) {
   const env = pathHint
     ? { PATH: `${pathHint}${IS_WINDOWS ? ';' : ':'}${process.env.PATH ?? ''}` }
-    : {}
-  const resolved = findToolPath('looptroop', { env })
+    : undefined
+  const resolved = findToolPath('looptroop', pathHint ? { env } : undefined)
   return resolved && existsSync(resolved) ? resolved : null
 }
 

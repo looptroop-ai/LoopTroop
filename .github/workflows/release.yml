@@ -297,8 +297,14 @@ jobs:
           if [ "${doctor_status}" -ne 0 ]; then
             echo "Doctor reported environment status ${doctor_status}; checking the embedded runtime field."
           fi
-          echo "${doctor}" | grep -F '"name": "node"'
-          echo "${doctor}" | grep -F 'v26.9.0 (latest'
+          printf '%s' "${doctor}" | EXPECTED_NODE_VERSION="$(node -p 'process.versions.node')" node -e '
+            const report = JSON.parse(require("node:fs").readFileSync(0, "utf8"))
+            const nodeCheck = report.checks?.find((check) => check?.name === "node")
+            const expected = process.env.EXPECTED_NODE_VERSION
+            if (nodeCheck?.node?.version !== expected) {
+              throw new Error(`doctor node.version=${nodeCheck?.node?.version ?? "missing"}; expected ${expected}`)
+            }
+          '
           echo "Embedded runtime application checks passed."
 
       - name: Drive it with no Node available
@@ -370,8 +376,8 @@ jobs:
           || (needs.binary.result == 'skipped' && needs.detect.outputs.skip_binaries == 'true'))
     runs-on: ubuntu-latest
     timeout-minutes: 25
-    # Same three as the binary job, and for the same reason: attestation needs
-    # to be isolated from the job that runs the repository's install/build code.
+    # Build is read-only. Attestation is isolated in its own download-only jobs
+    # below, so this job does not carry their write permissions.
     permissions:
       contents: read
     outputs:
@@ -454,13 +460,15 @@ jobs:
       # somebody on that platform tries to install and gets a 404.
       - name: Require every target's archive
         if: needs.detect.outputs.skip_binaries != 'true'
+        env:
+          VERSION: ${{ needs.detect.outputs.version }}
         run: |
           set -euo pipefail
           missing=""
           for target in linux-x64 linux-arm64 darwin-arm64 win-x64; do
             case "${target}" in
-              win-x64) name="looptroop-${{ needs.detect.outputs.version }}-${target}.zip" ;;
-              *) name="looptroop-${{ needs.detect.outputs.version }}-${target}.tar.gz" ;;
+              win-x64) name="looptroop-${VERSION}-${target}.zip" ;;
+              *) name="looptroop-${VERSION}-${target}.tar.gz" ;;
             esac
             [ -f "${name}" ] || missing="${missing} ${name}"
           done
@@ -475,12 +483,13 @@ jobs:
         id: manifest
         env:
           SKIP_BINARIES: ${{ needs.detect.outputs.skip_binaries }}
+          VERSION: ${{ needs.detect.outputs.version }}
         run: |
           set -euo pipefail
-          tarball="looptroop-${{ needs.detect.outputs.version }}.tgz"
+          tarball="looptroop-${VERSION}.tgz"
           # What Homebrew, Scoop and Chocolatey fetch. WinGet does not: its
           # portable installer takes the standalone Windows binary instead.
-          bundle="looptroop-${{ needs.detect.outputs.version }}-bundle.tar.gz"
+          bundle="looptroop-${VERSION}-bundle.tar.gz"
           # The binaries are named per target and there is one manifest, so they
           # are collected by glob rather than listed: a target added later must
           # not need this line edited, and a target that failed to upload must
@@ -616,20 +625,26 @@ jobs:
       # something other than npm, and a bundle that travelled with the wrong
       # manifest would otherwise be caught by whoever installed it.
       - name: Verify every artefact matches the manifest
+        env:
+          VERSION: ${{ needs.detect.outputs.version }}
         run: >
           npm run release:verify-artifact --
-          "looptroop-${{ needs.detect.outputs.version }}.tgz" release-manifest.json --assets-dir .
+          "looptroop-${VERSION}.tgz" release-manifest.json --assets-dir .
 
       - name: Install the tarball and exercise the CLI
-        run: node scripts/smoke-install.mjs --tarball "looptroop-${{ needs.detect.outputs.version }}.tgz"
+        env:
+          VERSION: ${{ needs.detect.outputs.version }}
+        run: node scripts/smoke-install.mjs --tarball "looptroop-${VERSION}.tgz"
 
       # The bundle is built once, on Linux, and unpacked on macOS and Windows.
       # This matrix is the only place before publication where it is executed on
       # a platform other than the one that made it.
       - name: Unpack the bundle and drive the CLI
+        env:
+          VERSION: ${{ needs.detect.outputs.version }}
         run: >
           node scripts/smoke-bundle.mjs
-          --bundle "looptroop-${{ needs.detect.outputs.version }}-bundle.tar.gz"
+          --bundle "looptroop-${VERSION}-bundle.tar.gz"
 
   # A read-only install prefix is how a lot of real installs look (a global
   # prefix owned by root, a container image with a read-only layer). Linux only:
@@ -734,12 +749,16 @@ jobs:
       # here would run third-party install scripts in the job that can create
       # releases and, at the finalize stage, push tags.
       - name: Render the release notes
-        run: npm run release:notes -- "${{ needs.detect.outputs.version }}" > /tmp/notes.md
+        env:
+          VERSION: ${{ needs.detect.outputs.version }}
+        run: npm run release:notes -- "${VERSION}" > /tmp/notes.md
 
       - name: Dry run — show what would be drafted
         if: needs.detect.outputs.dry_run == 'true'
+        env:
+          VERSION: ${{ needs.detect.outputs.version }}
         run: |
-          echo "### Dry run: would draft v${{ needs.detect.outputs.version }}" >> "$GITHUB_STEP_SUMMARY"
+          echo "### Dry run: would draft v${VERSION}" >> "$GITHUB_STEP_SUMMARY"
           echo "" >> "$GITHUB_STEP_SUMMARY"
           cat /tmp/notes.md >> "$GITHUB_STEP_SUMMARY"
 
@@ -2478,6 +2497,8 @@ jobs:
 
       - name: Fail the run if any stage failed
         if: steps.compose.outputs.failed != ''
+        env:
+          FAILED: ${{ steps.compose.outputs.failed }}
         run: |
-          echo "::error::Release stages failed:${{ steps.compose.outputs.failed }}"
+          echo "::error::Release stages failed:${FAILED}"
           exit 1

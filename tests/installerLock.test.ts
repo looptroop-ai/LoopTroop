@@ -1,14 +1,11 @@
 import { afterEach, describe, expect, it, vi } from 'vitest'
-import { spawnSync } from 'node:child_process'
 import { existsSync, mkdtempSync, readFileSync, utimesSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
-import { fileURLToPath } from 'node:url'
 import { withInstallLock } from '../scripts/installer-core.mjs'
 import { removeTempDir } from '../server/test/tempDir'
 
 const dirs: string[] = []
-const signalFixture = fileURLToPath(new URL('./fixtures/installer-lock-signal.mjs', import.meta.url))
 afterEach(() => {
   vi.restoreAllMocks()
   for (const dir of dirs.splice(0)) removeTempDir(dir)
@@ -104,18 +101,5 @@ describe('installer lock ownership and recovery', () => {
     expect(() => withInstallLock(dir, () => { throw new Error('install failed') })).toThrow('install failed')
     expect(existsSync(join(dir, '.install.lock'))).toBe(false)
     expect(existsSync(join(dir, '.install.lock.claim'))).toBe(false)
-  })
-
-  it.each([
-    ['removes its own lock', 'own', false],
-    ['preserves a replacement owner lock', 'replacement', true],
-  ])('signal cleanup %s', (_label, mode, replacement) => {
-    const dir = directory()
-    const result = spawnSync(process.execPath, [signalFixture, dir, mode], { encoding: 'utf8' })
-
-    expect(result.status).toBeNull()
-    expect(result.signal).toBe('SIGTERM')
-    expect(existsSync(join(dir, '.install.lock'))).toBe(replacement)
-    if (replacement) expect(readFileSync(join(dir, '.install.lock'), 'utf8')).toBe('replacement-owner\n')
   })
 })

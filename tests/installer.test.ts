@@ -801,25 +801,124 @@ describe('installer core', () => {
     })
 
     /**
-     * If the executable cannot run, its unreadable status cannot establish
-     * daemon absence. Replacing it would risk leaving an old process serving
-     * while the new file reports a different version, so leave it alone.
+     * A damaged executable cannot answer its own status probe. The installer
+     * checks the independent daemon state/port evidence instead, so a complete
+     * dead record plus a closed port permits repair without asking the broken
+     * file to stop itself.
      */
-    it.runIf(canInstallBinary)('refuses to replace an executable that does not run', async () => {
+    it.runIf(canInstallBinary)('replaces an unrunnable executable when independent daemon checks are clear', async () => {
       const prefix = freshPrefix()
       const stubState = join(prefix, 'state')
+      const configDir = join(prefix, 'config')
+      const installerEnv = { LOOPTROOP_STUB_STATE: stubState, LOOPTROOP_CONFIG_DIR: configDir }
       archive = buildArchive('0.5.9', '#!/bin/sh\nexit 3\n')
-      expectExit(await runInstaller(['--binary', '--prefix', prefix], { LOOPTROOP_STUB_STATE: stubState }), 1)
+      expectExit(await runInstaller(['--binary', '--prefix', prefix], installerEnv), 1)
       mkdirSync(join(prefix, 'bin'), { recursive: true })
       writeFileSync(join(prefix, 'bin', 'looptroop'), '#!/bin/sh\nexit 3\n')
       chmodSync(join(prefix, 'bin', 'looptroop'), 0o755)
+      mkdirSync(configDir, { recursive: true })
+      writeFileSync(join(configDir, 'daemon.json'), JSON.stringify({
+        instanceId: 'dead-test-daemon', pid: 999_999, port: 1, host: '127.0.0.1', apiToken: 'test-token',
+      }))
 
       archive = buildArchive('0.5.9', stubProgram('0.5.9'))
-      const result = await runInstaller(['--binary', '--prefix', prefix], { LOOPTROOP_STUB_STATE: stubState })
+      const result = await runInstaller(['--binary', '--prefix', prefix], installerEnv)
+
+      expectExit(result, 0)
+      expect(result.stdout).toContain('no daemon is using port 1')
+      expect(spawnSync(join(prefix, 'bin', 'looptroop'), ['--version'], { encoding: 'utf8' }).stdout.trim()).toBe('0.5.9')
+    })
+
+    it.runIf(canInstallBinary)('leaves an unrunnable executable when independent daemon checks find a live owner', async () => {
+      const prefix = freshPrefix()
+      const stubState = join(prefix, 'state')
+      const configDir = join(prefix, 'config')
+      const installerEnv = { LOOPTROOP_STUB_STATE: stubState, LOOPTROOP_CONFIG_DIR: configDir }
+      archive = buildArchive('0.5.9', '#!/bin/sh\nexit 3\n')
+      expectExit(await runInstaller(['--binary', '--prefix', prefix], installerEnv), 1)
+      mkdirSync(join(prefix, 'bin'), { recursive: true })
+      const installed = join(prefix, 'bin', 'looptroop')
+      writeFileSync(installed, '#!/bin/sh\nexit 3\n')
+      chmodSync(installed, 0o755)
+
+      const port = (server.address() as AddressInfo).port
+      mkdirSync(configDir, { recursive: true })
+      writeFileSync(join(configDir, 'daemon.json'), JSON.stringify({
+        instanceId: 'live-test-daemon', pid: process.pid, port, host: '0.0.0.0', apiToken: 'test-token',
+      }))
+      archive = buildArchive('0.5.9', stubProgram('0.5.9'))
+      const result = await runInstaller(['--binary', '--prefix', prefix], installerEnv)
 
       expectExit(result, 1)
-      expect(result.stderr).toContain('will not say whether its daemon is running')
-      expect(result.stderr).toContain('Nothing was installed')
+      expect(result.stderr).toContain(`PID ${process.pid}`)
+      expect(result.stderr).toContain(installed)
+      expect(readFileSync(installed, 'utf8')).toContain('exit 3')
+    })
+
+    it.runIf(canInstallBinary)('leaves an unrunnable executable when daemon state is missing', async () => {
+      const prefix = freshPrefix()
+      const stubState = join(prefix, 'state')
+      const configDir = join(prefix, 'config')
+      const installerEnv = { LOOPTROOP_STUB_STATE: stubState, LOOPTROOP_CONFIG_DIR: configDir }
+      archive = buildArchive('0.5.9', '#!/bin/sh\nexit 3\n')
+      expectExit(await runInstaller(['--binary', '--prefix', prefix], installerEnv), 1)
+      mkdirSync(join(prefix, 'bin'), { recursive: true })
+      const installed = join(prefix, 'bin', 'looptroop')
+      writeFileSync(installed, '#!/bin/sh\nexit 3\n')
+      chmodSync(installed, 0o755)
+
+      archive = buildArchive('0.5.9', stubProgram('0.5.9'))
+      const result = await runInstaller(['--binary', '--prefix', prefix], installerEnv)
+
+      expectExit(result, 1)
+      expect(result.stderr).toContain('left alone')
+      expect(readFileSync(installed, 'utf8')).toContain('exit 3')
+    })
+
+    it.runIf(canInstallBinary)('fails closed for malformed daemon state', async () => {
+      const prefix = freshPrefix()
+      const stubState = join(prefix, 'state')
+      const configDir = join(prefix, 'config')
+      const installerEnv = { LOOPTROOP_STUB_STATE: stubState, LOOPTROOP_CONFIG_DIR: configDir, LOOPTROOP_BACKEND_PORT: '1' }
+      archive = buildArchive('0.5.9', '#!/bin/sh\nexit 3\n')
+      expectExit(await runInstaller(['--binary', '--prefix', prefix], installerEnv), 1)
+      mkdirSync(join(prefix, 'bin'), { recursive: true })
+      const installed = join(prefix, 'bin', 'looptroop')
+      writeFileSync(installed, '#!/bin/sh\nexit 3\n')
+      chmodSync(installed, 0o755)
+      mkdirSync(configDir, { recursive: true })
+      writeFileSync(join(configDir, 'daemon.json'), JSON.stringify({ pid: 999_999, port: 1, host: '127.0.0.1' }))
+
+      archive = buildArchive('0.5.9', stubProgram('0.5.9'))
+      const result = await runInstaller(['--binary', '--prefix', prefix], installerEnv)
+
+      expectExit(result, 1)
+      expect(result.stderr).toContain('left alone')
+      expect(readFileSync(installed, 'utf8')).toContain('exit 3')
+    })
+
+    it.runIf(canInstallBinary)('fails closed when a recorded daemon endpoint cannot be probed', async () => {
+      const prefix = freshPrefix()
+      const stubState = join(prefix, 'state')
+      const configDir = join(prefix, 'config')
+      const installerEnv = { LOOPTROOP_STUB_STATE: stubState, LOOPTROOP_CONFIG_DIR: configDir }
+      archive = buildArchive('0.5.9', '#!/bin/sh\nexit 3\n')
+      expectExit(await runInstaller(['--binary', '--prefix', prefix], installerEnv), 1)
+      mkdirSync(join(prefix, 'bin'), { recursive: true })
+      const installed = join(prefix, 'bin', 'looptroop')
+      writeFileSync(installed, '#!/bin/sh\nexit 3\n')
+      chmodSync(installed, 0o755)
+      mkdirSync(configDir, { recursive: true })
+      writeFileSync(join(configDir, 'daemon.json'), JSON.stringify({
+        instanceId: 'unknown-test-daemon', pid: 999_999, port: 1, host: 'does-not-exist.invalid', apiToken: 'test-token',
+      }))
+
+      archive = buildArchive('0.5.9', stubProgram('0.5.9'))
+      const result = await runInstaller(['--binary', '--prefix', prefix], installerEnv)
+
+      expectExit(result, 1)
+      expect(result.stderr).toContain('left alone')
+      expect(readFileSync(installed, 'utf8')).toContain('exit 3')
     })
 
     /**
@@ -1403,7 +1502,11 @@ describe('installer wrappers', () => {
   it('forward every option the core accepts', () => {
     const ps1 = readFileSync(join(repoRoot, 'install.ps1'), 'utf8')
     const sh = readFileSync(join(repoRoot, 'install.sh'), 'utf8')
-    const forwarding = ps1.slice(ps1.indexOf('  $forwarded = @()'), ps1.indexOf('  # So `-Help`'))
+    const forwardingStart = ps1.indexOf('  $forwarded = @()')
+    const forwardingEnd = ps1.indexOf('  # So `-Help`')
+    expect(forwardingStart).toBeGreaterThanOrEqual(0)
+    expect(forwardingEnd).toBeGreaterThan(forwardingStart)
+    const forwarding = ps1.slice(forwardingStart, forwardingEnd)
 
     expect(forwarding.startsWith('  $forwarded = @()')).toBe(true)
     expect(forwarding).toContain("$PSBoundParameters.ContainsKey('Version')")

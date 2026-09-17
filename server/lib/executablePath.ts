@@ -437,13 +437,11 @@ function windowsNameHasExtension(name: string): boolean {
 }
 
 function windowsPathExtensions(env: NodeJS.ProcessEnv): string[] {
-  return (env.PATHEXT || DEFAULT_PATHEXT).split(';').map((value) => value.trim()).filter(Boolean)
-}
-
-/** Whether an absolute Windows program names a file type `CreateProcess` can run. */
-function hasWindowsExecutableExtension(program: string, env: NodeJS.ProcessEnv): boolean {
-  const extension = trustedPath.win32.extname(program).toLowerCase()
-  return extension !== '' && windowsPathExtensions(env).some((candidate) => candidate.toLowerCase() === extension)
+  return (env.PATHEXT || DEFAULT_PATHEXT)
+    .split(';')
+    .map((value) => value.trim())
+    .filter(Boolean)
+    .map((value) => value.startsWith('.') ? value : `.${value}`)
 }
 
 /**
@@ -1028,12 +1026,6 @@ export function resolveTrustedProgram(
       if (isExecutableFile(candidate, platform)) return resolveTrustedProgram(candidate, options)
     }
     return { reason: `${program} has no executable sibling listed in PATHEXT.`, refusedAt: program }
-  }
-  if (platform === 'win32' && !hasWindowsExecutableExtension(program, policyEnv)) {
-    return {
-      reason: `${program} is not a Windows executable path: its extension must be listed in PATHEXT.`,
-      refusedAt: program,
-    }
   }
   if (!isExecutableFile(program, platform)) return { reason: `${program} is not an executable file.` }
   const target = isWindowsAppAlias(program, platform) ? program : realpathOrNull(program)

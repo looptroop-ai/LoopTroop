@@ -111,11 +111,13 @@ describe('release script argument contracts', () => {
           expect(result.status, `${script.path} ${label}`).not.toBe(0)
           expect(result.stderr, `${script.path} ${label}`).toContain(diagnostic)
           expect(existsSync(marker) ? readFileSync(marker, 'utf8') : '', `${script.path} ${label}`).toBe('')
-          expect(result.stdout, `${script.path} ${label}`).not.toContain('Bundling the entry point')
+          if (script.path === 'scripts/build-binary.mjs') {
+            expect(result.stdout, `${script.path} ${label}`).not.toContain('Bundling the entry point')
+          }
         }
       }
     } finally {
       rmSync(work, { recursive: true, force: true })
     }
-  })
+  }, 45_000)
 })

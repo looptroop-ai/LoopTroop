@@ -1,9 +1,10 @@
 import { describe, it, expect } from 'vitest'
-import { readFileSync, rmSync } from 'node:fs'
+import { chmodSync, mkdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
 import { spawnSync } from 'node:child_process'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
-import { planMatrix, CHANNELS, binaryPrefix, validatePublishedVersion } from '../scripts/smoke-published.mjs'
+import { makeTempDir, removeTempDir } from '../server/test/tempDir'
+import { planMatrix, CHANNELS, binaryPrefix, validatePublishedVersion, whichLooptroop } from '../scripts/smoke-published.mjs'
 import type { ChannelRecipe, InstalledChannel } from '../scripts/smoke-published.mjs'
 
 /**
@@ -337,7 +338,7 @@ ${command}
     // form. One string here would fail on one of the two operating systems.
     const { upgradeCommand } = installedChannel('installer-sh-binary').expect
     expect(upgradeCommand('win32')).toContain('scriptblock')
-    expect(upgradeCommand('linux')).toBe('curl -fsSL https://www.looptroop.ovh/install | sh -s -- --binary')
+    expect(upgradeCommand('linux')).toBe('curl --proto "=https" --proto-redir "=https" --tlsv1.2 -fsSL https://www.looptroop.ovh/install | sh -s -- --binary')
     expect(upgradeCommand('win32')).not.toBe(upgradeCommand('linux'))
   })
 
@@ -426,6 +427,28 @@ describe('workflow dispatch wiring', () => {
     // the first line printed by `where`, which is not CreateProcess semantics.
     expect(driver).toContain("import { findToolPath, launchTool, planToolLaunch } from './tool-path.ts'")
     expect(driver).not.toContain("run('where', ['looptroop']")
+  })
+
+  it('uses the parent PATH when no launcher hint is supplied', () => {
+    const root = makeTempDir('looptroop-smoke-path-')
+    const previousPath = process.env.PATH
+    const previousPathExt = process.env.PATHEXT
+    const name = process.platform === 'win32' ? 'looptroop.CMD' : 'looptroop'
+    const launcher = join(root, name)
+    mkdirSync(root, { recursive: true })
+    writeFileSync(launcher, process.platform === 'win32' ? '@echo off\r\n' : '#!/bin/sh\nexit 0\n')
+    chmodSync(launcher, 0o755)
+    process.env.PATH = root
+    if (process.platform === 'win32') process.env.PATHEXT = '.CMD'
+    try {
+      expect(whichLooptroop()).toBe(launcher)
+    } finally {
+      if (previousPath === undefined) delete process.env.PATH
+      else process.env.PATH = previousPath
+      if (previousPathExt === undefined) delete process.env.PATHEXT
+      else process.env.PATHEXT = previousPathExt
+      removeTempDir(root)
+    }
   })
 
   it('keeps the resolved launch target and errno when a child cannot start', async () => {

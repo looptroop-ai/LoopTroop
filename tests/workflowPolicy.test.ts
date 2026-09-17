@@ -4,6 +4,7 @@ import { spawnSync } from 'node:child_process'
 import { tmpdir } from 'node:os'
 import * as yaml from 'js-yaml'
 import { describe, expect, it } from 'vitest'
+import { parseNodeFloor, parseNodeVersion, satisfiesNodeFloor } from '../shared/nodeFloor'
 
 const repo = process.cwd()
 const workflowDir = join(repo, '.github/workflows')
@@ -19,24 +20,11 @@ const workflows = new Map(files.map((file) => [
   yaml.load(source.get(file)!) as Workflow,
 ]))
 
-type Version = { major: number; minor: number; patch: number }
-
-function version(value: string): Version {
-  const parts = value.split('.').map(Number)
-  const major = parts[0]
-  if (major === undefined || Number.isNaN(major)) throw new Error(`invalid version: ${value}`)
-  // A major/minor tag resolves to the newest patch available in that stream.
-  return {
-    major,
-    minor: parts[1] ?? Number.POSITIVE_INFINITY,
-    patch: parts[2] ?? Number.POSITIVE_INFINITY,
-  }
-}
-
-function atLeast(found: Version, floor: Version): boolean {
-  return found.major > floor.major
-    || (found.major === floor.major && found.minor > floor.minor)
-    || (found.major === floor.major && found.minor === floor.minor && found.patch >= floor.patch)
+/** Exact numeric selectors are comparable; bare major selectors float by design. */
+function concreteVersion(value: string) {
+  const normalized = value.trim().replace(/^['"]|['"]$/g, '')
+  if (!normalized.includes('.')) return null
+  return parseNodeVersion(normalized)
 }
 
 function runs(job: Job): string {
@@ -64,7 +52,11 @@ function executeWindowsScope(run: string, changedPaths: string[]): {
         CHANGED_PATHS: changedPaths.join('\n'),
         GITHUB_OUTPUT: outputPath,
         HEAD_SHA: 'head-sha',
-        PATH: `${bin}${delimiter}${process.env.PATH ?? ''}`,
+        // GitHub's Windows runner executes this step through Git Bash. Give
+        // that shell a slash-separated path; a native `C:\\…` entry is not
+        // searched as a POSIX directory and silently falls through to the
+        // runner's real git, which leaves the scope false for the wrong reason.
+        PATH: `${process.platform === 'win32' ? bin.replaceAll(String.fromCharCode(92), '/') : bin}${delimiter}${process.env.PATH ?? ''}`,
       },
     })
     return {
@@ -78,22 +70,32 @@ function executeWindowsScope(run: string, changedPaths: string[]): {
 }
 
 describe('release workflow policy', () => {
+  it('treats quoted and shorthand Node selectors as concrete patch values', () => {
+    const floor = parseNodeFloor('>=24.18.1')
+    expect(satisfiesNodeFloor(parseNodeVersion('24.18'), floor)).toBe(false)
+    expect(satisfiesNodeFloor(parseNodeVersion('v24.18.1'), floor)).toBe(true)
+    expect(/^\s*node-version:\s*["']?(v?\d+(?:\.\d+){0,2})["']?(?=\s|$)/.exec('node-version: "24.18"')?.[1])
+      .toBe('24.18')
+  })
+
   it('keeps every literal workflow and Docker Node runtime at the package floor', () => {
     const packageJson = JSON.parse(readFileSync(join(repo, 'package.json'), 'utf8')) as { engines: { node: string } }
-    const match = /^>=(\d+\.\d+\.\d+)$/.exec(packageJson.engines.node)
-    if (!match?.[1]) throw new Error(`unsupported package engine: ${packageJson.engines.node}`)
-    const floor = version(match[1])
+    const floor = parseNodeFloor(packageJson.engines.node)
 
     for (const [file, text] of source) {
-      for (const match of text.matchAll(/^\s*node-version:\s*(\d+(?:\.\d+){0,2})(?=\s|$)/gm)) {
+      for (const match of text.matchAll(/^\s*node-version:\s*["']?(v?\d+(?:\.\d+){0,2})["']?(?=\s|$)/gm)) {
         const found = match[1]
         if (!found) throw new Error(`${file}: node-version capture missing`)
-        expect(atLeast(version(found), floor), `${file}: node-version ${found}`).toBe(true)
+        const parsed = concreteVersion(found)
+        if (parsed === null) continue
+        expect(satisfiesNodeFloor(parsed, floor), `${file}: node-version ${found}`).toBe(true)
       }
-      for (const match of text.matchAll(/^\s*node:\s*(\d+(?:\.\d+){0,2})(?=\s|$)/gm)) {
+      for (const match of text.matchAll(/^\s*node:\s*["']?(v?\d+(?:\.\d+){0,2})["']?(?=\s|$)/gm)) {
         const found = match[1]
         if (!found) throw new Error(`${file}: matrix node capture missing`)
-        expect(atLeast(version(found), floor), `${file}: matrix node ${found}`).toBe(true)
+        const parsed = concreteVersion(found)
+        if (parsed === null) continue
+        expect(satisfiesNodeFloor(parsed, floor), `${file}: matrix node ${found}`).toBe(true)
       }
     }
 
@@ -101,7 +103,9 @@ describe('release workflow policy', () => {
     for (const match of docker.matchAll(/^\s*FROM\s+node:(\d+(?:\.\d+){0,2})(?=[-@])/gm)) {
       const found = match[1]
       if (!found) throw new Error('Dockerfile: Node version capture missing')
-      expect(atLeast(version(found), floor), `Dockerfile: node ${found}`).toBe(true)
+      const parsed = concreteVersion(found)
+      if (parsed === null) continue
+      expect(satisfiesNodeFloor(parsed, floor), `Dockerfile: node ${found}`).toBe(true)
     }
   })
 
@@ -118,7 +122,9 @@ describe('release workflow policy', () => {
       expect(binary, `${file}: binary runtime`).not.toContain('node-version: 24.18.1')
       expect(binary, `${file}: embedded-runtime check`).toContain('Run blocking application checks on the embedded runtime')
       expect(binary, `${file}: embedded-runtime check`).toContain('doctor --json')
-      expect(binary, `${file}: embedded-runtime check`).toContain('v26.9.0 (latest')
+      expect(binary, `${file}: embedded-runtime check`).toContain('nodeCheck?.node?.version')
+      expect(binary, `${file}: embedded-runtime check`).toContain('EXPECTED_NODE_VERSION')
+      expect(binary, `${file}: embedded-runtime check`).not.toContain('v26.9.0 (latest')
       expect(binary, `${file}: binary job`).not.toContain('continue-on-error:')
 
       expect((text.match(/^\s*node-version:\s*26\.9\.0\s*$/gm) ?? []).length, `${file}: only binary jobs pin Node 26.9.0`).toBe(1)
@@ -154,7 +160,7 @@ describe('release workflow policy', () => {
   it('does not put manifest-derived values in workflow shell source', () => {
     for (const [file, workflow] of workflows) {
       for (const [jobName, job] of Object.entries(workflow.jobs ?? {})) {
-        expect(runs(job), `${file}: ${jobName}`).not.toMatch(/\$\{\{\s*(?:steps\.inputs|needs\.prepare)\.outputs\./)
+        expect(runs(job), `${file}: ${jobName}`).not.toMatch(/\$\{\{[^}\n]*outputs\./)
       }
     }
   })
@@ -228,25 +234,27 @@ describe('release workflow policy', () => {
     expect(docker).not.toMatch(/npm install[^\n]*\.\/package\.tgz/)
     expect(docker).toContain('chmod 0755 /opt/looptroop/lib/node_modules/looptroop/dist/server/cli/launcher.cjs')
     expect(docker).toContain('/usr/share/looptroop/image-package-versions.txt')
-    for (const file of ['release.yml', 'container-republish.yml']) {
-      const text = source.get(file)!
-      expect(text, file).toContain('tar -cf - Dockerfile "${LOCKFILE}" "${TARBALL}"')
-      expect(text, file).toContain('image-package-versions-${ARCH}.txt')
-    }
     const release = source.get('release.yml')!
     const releaseContainer = release.slice(release.indexOf('  container-build:'), release.indexOf('  container-manifest:'))
+    expect(releaseContainer).toContain('tar -cf - Dockerfile "${LOCKFILE}" "${TARBALL}"')
+    expect(releaseContainer).toContain('image-package-versions-${ARCH}.txt')
     expect(releaseContainer).toContain('--assets-dir .')
     expect(release).toContain('subject-digest: ${{ needs.container-manifest.outputs.index_digest }}')
     const repair = source.get('container-republish.yml')!
     const repairPrepare = repair.slice(repair.indexOf('  prepare:'), repair.indexOf('  build:'))
-    expect(repairPrepare).toContain('release manifest has no package-lock.json asset')
+    expect(repairPrepare).toContain('Legacy release manifest: no package-lock.json asset')
     expect(repairPrepare).toContain('--dir "${ASSET_DIR}"')
     expect(repairPrepare).toContain('${process.env.ASSET_DIR}/package-lock.json')
     const repairBuild = repair.slice(repair.indexOf('  build:'), repair.indexOf('  manifest:'))
     expect(repairBuild).toContain('path: release-assets')
-    expect(repairBuild).toContain('LOCKFILE: release-assets/package-lock.json')
-    expect(repairBuild).toContain('test -f "${LOCKFILE}"')
+    expect(repairBuild).toContain('LOCKFILE: ${{ needs.prepare.outputs.lockfile }}')
+    expect(repairBuild).toContain('context_files+=("${LOCKFILE}")')
+    expect(repairBuild).toContain('build_args+=(--build-arg "LOCKFILE=${LOCKFILE}")')
     expect(repair).toContain('subject-digest: ${{ needs.manifest.outputs.index_digest }}')
+    expect(repair).toContain('tar -cf - "${context_files[@]}" | docker buildx build')
+    expect(repair).toContain('image-package-versions-${ARCH}.txt')
+    expect(repair).toContain('inventory_status')
+    expect(repair).toContain("[ \"${inventory_status}\" -eq 42 ]")
   })
 
   it('logs in each finished-image attestation job and disables storage records', () => {

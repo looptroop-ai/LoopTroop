@@ -178,9 +178,11 @@ jobs:
       # "setup failed" rather than silently omitting them.
       - name: Record the expected legs
         shell: bash
+        env:
+          MATRIX: ${{ steps.plan.outputs.matrix }}
         run: |
           set -euo pipefail
-          echo '${{ steps.plan.outputs.matrix }}' > expected.json
+          printf '%s' "${MATRIX}" > expected.json
           node -e "
             const legs = JSON.parse(require('node:fs').readFileSync('expected.json','utf8')).include
             console.log(\`\${legs.length} leg(s) expected\`)

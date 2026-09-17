@@ -1159,13 +1159,11 @@ function windowsNameHasExtension(name        )          {
 }
 
 function windowsPathExtensions(env                   )           {
-  return (env.PATHEXT || DEFAULT_PATHEXT).split(';').map((value) => value.trim()).filter(Boolean)
-}
-
-/** Whether an absolute Windows program names a file type `CreateProcess` can run. */
-function hasWindowsExecutableExtension(program        , env                   )          {
-  const extension = trustedPath.win32.extname(program).toLowerCase()
-  return extension !== '' && windowsPathExtensions(env).some((candidate) => candidate.toLowerCase() === extension)
+  return (env.PATHEXT || DEFAULT_PATHEXT)
+    .split(';')
+    .map((value) => value.trim())
+    .filter(Boolean)
+    .map((value) => value.startsWith('.') ? value : `.${value}`)
 }
 
 /**
@@ -1751,12 +1749,6 @@ export function resolveTrustedProgram(
     }
     return { reason: `${program} has no executable sibling listed in PATHEXT.`, refusedAt: program }
   }
-  if (platform === 'win32' && !hasWindowsExecutableExtension(program, policyEnv)) {
-    return {
-      reason: `${program} is not a Windows executable path: its extension must be listed in PATHEXT.`,
-      refusedAt: program,
-    }
-  }
   if (!isExecutableFile(program, platform)) return { reason: `${program} is not an executable file.` }
   const target = isWindowsAppAlias(program, platform) ? program : realpathOrNull(program)
   if (target === null) return { reason: `${program} could not be resolved to a real path.` }
@@ -2301,13 +2293,10 @@ function extractArchive(archive, into) {
   )
 }
 
-let activeInstallLockRelease = null
-
 /** Releases install state before re-raising an interrupt signal. */
 export function installSignalHandlers(workDir) {
   for (const signal of ['SIGINT', 'SIGTERM', 'SIGHUP']) {
     process.on(signal, () => {
-      activeInstallLockRelease?.()
       discard(workDir)
       process.removeAllListeners(signal)
       process.kill(process.pid, signal)
@@ -2365,7 +2354,7 @@ export function withInstallLock(dir, action) {
     // Age is diagnostic only. An ESRCH result is the sole proof this process
     // has that the recorded owner is gone; every other result stays blocked.
     say(`Clearing a stale install lock (${Math.round(age / 60000)} minutes old).`)
-    rmSync(lock)
+    rmSync(lock, { force: true })
   }
 
   // Every acquisition holds this claim while inspecting/removing the old lock
@@ -2395,18 +2384,10 @@ export function withInstallLock(dir, action) {
     discard(claim)
   }
 
-  // The signal handler in main uses this while the synchronous action is still
-  // holding the lock. It rechecks the token so a replacement owner is safe.
-  const release = () => {
-    if (holdsOurs()) discard(lock)
-  }
-
   try {
-    activeInstallLockRelease = release
     return action()
   } finally {
-    if (activeInstallLockRelease === release) activeInstallLockRelease = null
-    release()
+    if (holdsOurs()) discard(lock)
   }
 }
 
@@ -2469,6 +2450,94 @@ function executableRuns(binary) {
   return spawnSync(binary, ['--version'], { encoding: 'utf8', timeout: 60_000 }).status === 0
 }
 
+function configDirectory(env = process.env) {
+  const configured = env.LOOPTROOP_CONFIG_DIR?.trim()
+  if (configured) return resolve(configured)
+  if (process.platform === 'win32') {
+    return resolve(env.APPDATA?.trim() || resolve(homedir(), 'AppData', 'Roaming'), 'looptroop')
+  }
+  return resolve(env.XDG_CONFIG_HOME?.trim() || resolve(homedir(), '.config'), 'looptroop')
+}
+
+function validPort(value) {
+  const port = typeof value === 'number' ? value : Number(String(value).trim())
+  return Number.isSafeInteger(port) && port > 0 && port <= 65_535 ? port : null
+}
+
+/** Reads only a complete live-daemon record; a partial one is uncertainty. */
+function daemonRecord(configDir) {
+  let parsed
+  try {
+    parsed = JSON.parse(readFileSync(join(configDir, 'daemon.json'), 'utf8'))
+  } catch (error) {
+    return error?.code === 'ENOENT' ? { kind: 'missing' } : { kind: 'unknown' }
+  }
+  if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) return { kind: 'unknown' }
+  const candidate = parsed
+  if (typeof candidate.instanceId !== 'string' || candidate.instanceId.length === 0
+    || !Number.isSafeInteger(candidate.pid) || candidate.pid <= 0
+    || !Number.isSafeInteger(candidate.port) || validPort(candidate.port) === null
+    || typeof candidate.host !== 'string' || candidate.host.trim().length === 0
+    || typeof candidate.apiToken !== 'string' || candidate.apiToken.length === 0) {
+    return { kind: 'unknown' }
+  }
+  return { kind: 'state', state: candidate }
+}
+
+/** Local loopback endpoints that can reach a wildcard listener. */
+function probeHosts(host) {
+  const normalized = host.trim().replace(/^\[|\]$/g, '')
+  if (normalized === '0.0.0.0') return ['127.0.0.1']
+  if (normalized === '::') return ['::1', '127.0.0.1']
+  return [normalized]
+}
+
+/**
+ * Checks a daemon port in a short-lived Node child. ECONNREFUSED proves that
+ * endpoint is closed; routing, DNS and timeout errors remain inconclusive.
+ */
+function probePort(host, port) {
+  const script = `const net=require('node:net');const [host,port]=process.argv.slice(1);const socket=net.createConnection({host,port:Number(port)});const done=(code)=>{socket.destroy();process.exit(code)};socket.once('connect',()=>done(0));socket.once('error',(error)=>done(error.code==='ECONNREFUSED'?1:2));setTimeout(()=>done(2),2500)`
+  let uncertain = false
+  for (const endpoint of probeHosts(host)) {
+    const result = spawnSync(process.execPath, ['-e', script, endpoint, String(port)], { encoding: 'utf8', timeout: 3_000 })
+    if (result.error || result.signal !== null || result.status === null || result.status === 2) {
+      uncertain = true
+      continue
+    }
+    if (result.status === 0) return true
+  }
+  return uncertain ? null : false
+}
+
+/**
+ * Establishes daemon absence without invoking the installed executable.
+ *
+ * A complete daemon record supplies the exact endpoint and PID. Without one,
+ * there is no authoritative endpoint to probe: CLI and environment settings
+ * can override the config file, and the untouched default may relocate to an
+ * OS-assigned port, so a closed 3000 (or any guessed port) is not proof of
+ * absence.
+ */
+function independentDaemonState() {
+  const directory = configDirectory()
+  const record = daemonRecord(directory)
+  if (record.kind !== 'state') return { kind: 'unknown' }
+
+  const { state } = record
+  const occupied = probePort(state.host, state.port)
+  let alive = null
+  try {
+    process.kill(state.pid, 0)
+    alive = true
+  } catch (error) {
+    alive = error?.code === 'ESRCH' ? false : null
+  }
+  if (alive === true || occupied === true) return { kind: 'present', pid: state.pid, port: state.port }
+  if (alive === false && occupied === false) return { kind: 'absent', port: state.port }
+  return { kind: 'unknown', pid: state.pid, port: state.port }
+}
+
 /**
  * Stops the daemon and waits for it to actually be gone.
  *
@@ -2498,10 +2567,12 @@ function stopDaemon(binary) {
  * live daemon and then not restart it, leaving the old version serving while
  * `looptroop --version` reported the new one.
  *
- * The unknown case has one safe recovery path. A damaged executable cannot
- * establish whether a daemon from that executable is still serving, so it is
- * left alone. A runnable copy can be asked to stop and must then confirm that
- * it did; if it may have been serving, it is started again afterwards.
+ * The unknown case has two safe paths. A damaged executable cannot establish
+ * whether a daemon from that executable is still serving, so an independent
+ * closed endpoint plus dead recorded PID may authorize replacement; missing,
+ * malformed or inconclusive evidence leaves it alone. A runnable copy can be
+ * asked to stop and must then confirm that it did; if it may have been serving,
+ * it is started again afterwards.
  */
 function settleDaemon(installed) {
   const state = daemonPresent(installed)
@@ -2521,11 +2592,19 @@ function settleDaemon(installed) {
   if (state === false) return { wasRunning: false }
 
   if (!executableRuns(installed)) {
+    const independent = independentDaemonState()
+    if (independent.kind === 'absent') {
+      say(`The installed copy is damaged, but no daemon is using port ${independent.port}; replacing it.`)
+      return { wasRunning: false }
+    }
+    const pidAdvice = independent.pid === undefined
+      ? 'No usable daemon PID was recorded.'
+      : `If PID ${independent.pid} is still the daemon, terminate that PID before retrying.`
     fail(
       'The installed copy will not say whether its daemon is running, so the executable was left alone.',
       'It may be damaged, but a live daemon could still be serving it.',
-      'Stop it yourself or remove the install directory and install afresh:',
-      `  ${installed} stop`,
+      pidAdvice,
+      `Remove the damaged executable at ${installed} (or its install directory) after confirming no daemon is running, then retry.`,
       'Nothing was installed.',
     )
   }

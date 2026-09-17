@@ -90,6 +90,7 @@ describe('beadsRouter flow validation', () => {
         status: 'pending',
         priority: 1,
         dependencies: { blocked_by: [], blocks: [] },
+        contextGuidance: { patterns: [], anti_patterns: [] },
         createdAt: '2026-01-01T00:00:00.000Z',
       },
     ]
@@ -162,6 +163,26 @@ describe('beadsRouter flow validation', () => {
     expect(payload.details).toMatch(/Line 1: priority:/)
   })
 
+  it('rejects unknown statuses instead of silently saving a pending bead', async () => {
+    const { ticket } = createBeadsRouteTicket()
+    patchTicket(ticket.id, { status: 'WAITING_BEADS_APPROVAL' })
+
+    const response = await app.request(`/api/tickets/${encodeURIComponent(ticket.id)}/beads`, {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify([{
+        id: 'B-1', title: 'Unknown status', status: 'paused', priority: 1,
+        dependencies: { blocked_by: [], blocks: [] },
+      }]),
+    })
+
+    expect(response.status).toBe(400)
+    expect(await response.json()).toMatchObject({
+      error: 'Invalid bead item(s)',
+      details: expect.stringContaining('status "paused" is invalid'),
+    })
+  })
+
   it('uses validated JSONL source positions when reporting invalid rows after blank lines', async () => {
     const { ticket } = createBeadsRouteTicket()
     patchTicket(ticket.id, { status: 'WAITING_BEADS_APPROVAL' })
@@ -170,13 +191,15 @@ describe('beadsRouter flow validation', () => {
       method: 'PUT',
       headers: {
         'Content-Type': 'application/json',
-        'X-Source-Lines': '4',
         'X-Edit-Surface': 'jsonl',
       },
-      body: JSON.stringify([{
-        id: 'B-1', title: 'Broken bead', status: 'pending', priority: 'high',
-        dependencies: { blocked_by: [], blocks: [] },
-      }]),
+      body: JSON.stringify({
+        beads: [{
+          id: 'B-1', title: 'Broken bead', status: 'pending', priority: 'high',
+          dependencies: { blocked_by: [], blocks: [] },
+        }],
+        sourceLines: [4],
+      }),
     })
 
     expect(response.status).toBe(400)
@@ -192,14 +215,13 @@ describe('beadsRouter flow validation', () => {
       method: 'PUT',
       headers: {
         'Content-Type': 'application/json',
-        'X-Source-Lines': '4,2',
       },
-      body: JSON.stringify([{ id: 'B-1' }]),
+      body: JSON.stringify({ beads: [{ id: 'B-1' }], sourceLines: [4, 2] }),
     })
 
     expect(response.status).toBe(400)
     expect(await response.json()).toMatchObject({
-      error: 'X-Source-Lines must contain exactly 1 positive line number.',
+      error: 'sourceLines must contain exactly 1 positive line number.',
     })
   })
 

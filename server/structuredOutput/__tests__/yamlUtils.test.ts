@@ -190,6 +190,15 @@ describe.concurrent('parseYamlOrJsonCandidate', () => {
     expect(repairWarnings.join('\n')).not.toContain('</div>')
   })
 
+  it('does not strip text that only resembles an XML tag', () => {
+    const repairWarnings: string[] = []
+    expect(() => parseYamlOrJsonCandidate([
+      '< metadata>',
+      'title: keep this text',
+    ].join('\n'), { repairWarnings })).toThrow()
+    expect(repairWarnings.join('\n')).not.toContain('Stripped XML-style tags')
+  })
+
   it('uses the mapping key column as the block base for list-item scalar siblings', () => {
     const repairWarnings: string[] = []
     expect(parseYamlOrJsonCandidate([
@@ -258,6 +267,19 @@ describe.concurrent('parseYamlOrJsonCandidate', () => {
       action: 'already_covered',
     })
   })
+
+  it.each(['  -  Content-Disposition: attachment; filename=synonyms.json', '  -\tContent-Disposition: attachment; filename=synonyms.json'])(
+    'recognizes header-like list scalars after dash whitespace: %s',
+    (line) => {
+      const repairWarnings: string[] = []
+      const parsed = parseYamlOrJsonCandidate(`api_contracts:\n${line}`, { repairWarnings }) as {
+        api_contracts: string[]
+      }
+
+      expect(parsed.api_contracts).toEqual(['Content-Disposition: attachment; filename=synonyms.json'])
+      expect(repairWarnings).toContain('Quoted YAML plain scalar values containing colon-space before reparsing.')
+    },
+  )
 
   it('preserves colon-containing scalar list items instead of turning them into mappings', () => {
     const repairWarnings: string[] = []

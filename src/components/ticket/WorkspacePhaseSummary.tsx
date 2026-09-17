@@ -496,7 +496,8 @@ export function WorkspacePhaseSummary({ phase, ticket, errorMessage, errorOccurr
     if (!diagnostics) return []
     return [...new Set([...diagnostics.malformedLines, ...diagnostics.unrepresentableLines])].sort((a, b) => a - b)
   }, [runtime.beadsDiagnostics])
-  const showBeadTrackerWarning = phase === 'CODING' && damagedBeadLines.length > 0
+  const beadTrackerReadError = runtime.beadsDiagnostics?.readError
+  const showBeadTrackerWarning = phase === 'CODING' && (damagedBeadLines.length > 0 || Boolean(beadTrackerReadError))
   const descriptionId = useId()
   const logCtx = useLogs()
   // The reader, not the context: its identity moves when the rows move and at no other
@@ -636,7 +637,9 @@ export function WorkspacePhaseSummary({ phase, ticket, errorMessage, errorOccurr
         </button>
         {showBeadTrackerWarning ? (
           <p role="alert" className="mt-1 ml-5 text-[11px] leading-[15px] text-amber-800 dark:text-amber-200">
-            The bead tracker needs repair. {damagedBeadLines.length === 1 ? 'One line could not be read' : `${damagedBeadLines.length} lines could not be read`}, so progress may be incomplete.
+            The bead tracker needs repair. {beadTrackerReadError
+              ? `It could not be read: ${beadTrackerReadError}`
+              : `${damagedBeadLines.length === 1 ? 'One line could not be read' : `${damagedBeadLines.length} lines could not be read`}, so progress may be incomplete.`}
           </p>
         ) : null}
         {isExpanded ? (

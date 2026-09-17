@@ -1,4 +1,4 @@
-import { carriesValue, isRecord } from '@shared/typeGuards'
+import { isRecord } from '@shared/typeGuards'
 import { commandSpecSchema } from '@shared/commandSpec'
 import { readJsonlWithDiagnostics } from '../../io/jsonl'
 import type { Bead, BeadStatus } from './types'
@@ -142,8 +142,8 @@ const BEAD_FIELD_CHECKS: Record<string, (value: unknown) => boolean> = {
   completedAt: (value) => typeof value === 'string',
   startedAt: (value) => typeof value === 'string',
   beadStartCommit: (value) => value === null || typeof value === 'string',
-  priority: (value) => typeof value === 'number' && Number.isFinite(value),
-  iteration: (value) => typeof value === 'number' && Number.isFinite(value),
+  priority: (value) => typeof value === 'number' && Number.isInteger(value) && value >= 1,
+  iteration: (value) => typeof value === 'number' && Number.isInteger(value) && value >= 1,
   prdRefs: isStringArray,
   acceptanceCriteria: isStringArray,
   tests: isStringArray,
@@ -189,11 +189,20 @@ export function describeBeadShapeProblem(entry: unknown): string | null {
  * expansion phase writes, so this normalises to the declared type rather than
  * inventing anything.
  */
-function normalizeBeadCollections(bead: Bead): Bead {
-  const dependencies = bead.dependencies ?? { blocked_by: [], blocks: [] }
-  const contextGuidance = bead.contextGuidance ?? { patterns: [], anti_patterns: [] }
-  if (dependencies === bead.dependencies && contextGuidance === bead.contextGuidance) return bead
-  return { ...bead, dependencies, contextGuidance }
+export function normalizeBeadCollections<T extends object>(bead: T): T {
+  const record = bead as Record<string, unknown>
+  const dependencies = record.dependencies === undefined
+    ? { blocked_by: [], blocks: [] }
+    : isRecord(record.dependencies)
+      ? { blocked_by: [], blocks: [], ...record.dependencies }
+      : record.dependencies
+  const contextGuidance = record.contextGuidance === undefined
+    ? { patterns: [], anti_patterns: [] }
+    : isRecord(record.contextGuidance)
+      ? { patterns: [], anti_patterns: [], ...record.contextGuidance }
+      : record.contextGuidance
+  if (dependencies === record.dependencies && contextGuidance === record.contextGuidance) return bead
+  return { ...record, dependencies, contextGuidance } as T
 }
 
 /**
@@ -239,25 +248,22 @@ export const NESTED_BEAD_FIELD_ALIASES: Array<[field: string, canonical: string,
 /**
  * Moves the spellings a record may carry onto the canonical ones.
  *
- * Only where the canonical key holds nothing: a record carrying both keeps the
- * one every reader already uses. Runs before the shape check, so a bead is
+ * Only where the canonical key is absent: a record carrying both keeps the
+ * one every reader already uses, including an intentional empty value. Runs before the shape check, so a bead is
  * judged on the fields readers will actually find.
  */
 export function canonicalizeBeadAliases(entry: Record<string, unknown>): Record<string, unknown> {
   let result = entry
   for (const [alias, canonical] of Object.entries(BEAD_FIELD_ALIASES)) {
     if (!Object.hasOwn(result, alias)) continue
-    if (carriesBeadValue(result[canonical])) {
+    if (Object.hasOwn(result, canonical) && result[canonical] !== undefined && result[canonical] !== null) {
       // Known aliases are not unknown data. Keeping both lets a stale alias
       // win on the next writer, so discard it once the canonical value exists.
       const { [alias]: _ignored, ...rest } = result
       result = rest
       continue
     }
-    // An alias-only empty list/object is still a valid spelling that must be
-    // surfaced under the canonical name. It is only ignored when the alias is
-    // nullish; otherwise a valid empty `qa_origin` would disappear on read.
-    if (!carriesValue(result[alias])) continue
+    if (result[alias] === undefined || result[alias] === null) continue
     const { [alias]: aliased, ...rest } = result
     result = { ...rest, [canonical]: aliased }
   }
@@ -266,32 +272,23 @@ export function canonicalizeBeadAliases(entry: Record<string, unknown>): Record<
     const value = result[field]
     if (!isRecord(value)) continue
     if (!Object.hasOwn(value, alias)) continue
-    if (carriesBeadValue(value[canonical])) {
+    if (Object.hasOwn(value, canonical) && value[canonical] !== undefined && value[canonical] !== null) {
       const { [alias]: _ignored, ...rest } = value
       result = { ...result, [field]: rest }
       continue
     }
-    if (!carriesValue(value[alias])) continue
+    if (value[alias] === undefined || value[alias] === null) continue
     const { [alias]: aliased, ...rest } = value
     result = { ...result, [field]: { ...rest, [canonical]: aliased } }
   }
   return result
 }
 
-/** Empty strings and lists are cleared values, not a reason to ignore a valid alias. */
-function carriesBeadValue(value: unknown): boolean {
-  if (!carriesValue(value)) return false
-  if (typeof value === 'string') return value.trim().length > 0
-  if (Array.isArray(value)) return value.length > 0
-  if (isRecord(value)) return Object.values(value).some(carriesBeadValue)
-  return true
-}
-
 /** Rebuilds the inverse dependency field from authoritative `blocked_by` edges. */
 export function deriveBeadBlocks<T extends Record<string, unknown>>(records: readonly T[]): T[] {
   const blocksById = new Map<string, string[]>()
   const normalized = records.map((record) => {
-    const canonical = canonicalizeBeadAliases(record)
+    const canonical = normalizeBeadCollections(canonicalizeBeadAliases(record))
     const dependencies = isRecord(canonical.dependencies) ? canonical.dependencies : {}
     const blockedBy = Array.isArray(dependencies.blocked_by)
       ? dependencies.blocked_by.filter((dependency): dependency is string => typeof dependency === 'string')
@@ -347,7 +344,9 @@ export function readBeadsFileWithDiagnostics(path: string, options: ReadBeadsFil
     // `readJsonl<Bead>` casts rather than checks, so a `null` line threw on
     // `.status` and took the whole tracker with it, and any other non-object
     // became a `Bead` with no id that later code compared against.
-    const canonical = isRecord(entry) ? canonicalizeBeadAliases(entry) : entry
+    const canonical = isRecord(entry)
+      ? normalizeBeadCollections(canonicalizeBeadAliases(entry))
+      : entry
     const problem = describeBeadShapeProblem(canonical)
     if (problem) {
       if (failClosed) {
@@ -357,7 +356,7 @@ export function readBeadsFileWithDiagnostics(path: string, options: ReadBeadsFil
       console.warn(`[beads] Ignored the entry at line ${line} of ${path}: ${problem}.`)
       return
     }
-    const bead = normalizeBeadCollections(canonical as unknown as Bead)
+    const bead = canonical as unknown as Bead
     const reconciled = reconcileStoredBeadStatus(bead.status, bead.id)
     if (!reconciled.warning) {
       beads.push(bead)

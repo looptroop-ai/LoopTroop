@@ -640,6 +640,18 @@ describe('repairYamlDuplicateKeys', () => {
     expect(parsed.questions[0]!.options?.map((option) => option.id)).toEqual(['opt1', 'opt2', 'opt3', 'opt4'])
   })
 
+  it('keeps duplicate-looking text inside a list block scalar with a colon comment', () => {
+    const input = [
+      'items:',
+      '- |  # note: keep',
+      '  x: 1',
+      '  x: 1',
+      '- other',
+    ].join('\n')
+
+    expect(repairYamlDuplicateKeys(input)).toBe(input)
+  })
+
 })
 
 describe('repairYamlFreeTextScalars', () => {

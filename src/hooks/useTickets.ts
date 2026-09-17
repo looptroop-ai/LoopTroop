@@ -38,6 +38,7 @@ export interface TicketEta {
 export interface BeadsRuntimeDiagnostics {
   malformedLines: number[]
   unrepresentableLines: number[]
+  readError?: string
 }
 
 export interface ManualQaOriginEvidenceRef {

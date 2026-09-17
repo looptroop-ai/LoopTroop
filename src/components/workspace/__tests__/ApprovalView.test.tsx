@@ -1205,7 +1205,7 @@ describe('Approval surfaces on a failed request', () => {
     expect(await screen.findByText('Failed to save beads (HTTP 400: Invalid bead item(s): Line 4: priority: Expected number)')).toBeInTheDocument()
     const put = fetchSpy.mock.calls.find(([, init]) => (init as RequestInit | undefined)?.method === 'PUT')
     expect(put).toBeDefined()
-    expect((put![1] as RequestInit).headers).toMatchObject({ 'X-Source-Lines': '1,3,4' })
+    expect(JSON.parse(String((put![1] as RequestInit).body))).toMatchObject({ sourceLines: [1, 3, 4] })
   })
   /**
    * The other two shapes the structured editor cannot hold.

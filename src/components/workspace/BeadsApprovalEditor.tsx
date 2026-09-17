@@ -45,6 +45,7 @@ function StringListEditor({
             className="flex-1 min-h-[28px] rounded-md border border-input bg-background px-2 py-1 text-xs resize-y"
             placeholder={placeholder}
             aria-labelledby={labelId}
+            aria-label={`${label} ${index + 1}`}
           />
           <Button
             type="button"
@@ -157,13 +158,13 @@ export function BeadsApprovalEditor({ beads, disabled, onChange }: BeadsApproval
 
                 {/* Acceptance Criteria */}
                 <div>
-                  <label id={fieldLabelId(index, 'acceptance')} className="text-[10px] font-semibold uppercase tracking-widest text-foreground/60 block mb-1">Acceptance Criteria</label>
+                  <div id={fieldLabelId(index, 'acceptance')} className="text-[10px] font-semibold uppercase tracking-widest text-foreground/60 block mb-1">Acceptance Criteria</div>
                   <StringListEditor idPrefix={fieldId(index, 'acceptance')} labelId={fieldLabelId(index, 'acceptance')} label="Acceptance criterion" items={bead.acceptanceCriteria} onChange={(items) => updateBead(index, { acceptanceCriteria: items })} disabled={disabled} placeholder="Criterion..." />
                 </div>
 
                 {/* Tests */}
                 <div>
-                  <label id={fieldLabelId(index, 'tests')} className="text-[10px] font-semibold uppercase tracking-widest text-foreground/60 block mb-1">Tests</label>
+                  <div id={fieldLabelId(index, 'tests')} className="text-[10px] font-semibold uppercase tracking-widest text-foreground/60 block mb-1">Tests</div>
                   <StringListEditor idPrefix={fieldId(index, 'tests')} labelId={fieldLabelId(index, 'tests')} label="Test" items={bead.tests} onChange={(items) => updateBead(index, { tests: items })} disabled={disabled} placeholder="Test specification..." />
                 </div>
 
@@ -173,6 +174,7 @@ export function BeadsApprovalEditor({ beads, disabled, onChange }: BeadsApproval
                     <div id={fieldLabelId(index, 'commands')} className="text-[10px] font-semibold uppercase tracking-widest text-foreground/60 block mb-1">Planned Test Commands</div>
                     <CommandSpecListEditor
                       commands={bead.testCommands}
+                      label={`Planned test command for bead ${index + 1}`}
                       onChange={(commands) => updateBead(index, {
                         testCommands: commands,
                         ...(commands.length > 0 ? { testCommandReason: undefined } : {}),
@@ -199,29 +201,29 @@ export function BeadsApprovalEditor({ beads, disabled, onChange }: BeadsApproval
 
                 {/* Target Files */}
                 <div>
-                  <label id={fieldLabelId(index, 'targets')} className="text-[10px] font-semibold uppercase tracking-widest text-foreground/60 block mb-1">Target Files</label>
+                  <div id={fieldLabelId(index, 'targets')} className="text-[10px] font-semibold uppercase tracking-widest text-foreground/60 block mb-1">Target Files</div>
                   <StringListEditor idPrefix={fieldId(index, 'targets')} labelId={fieldLabelId(index, 'targets')} label="Target file" items={bead.targetFiles} onChange={(items) => updateBead(index, { targetFiles: items })} disabled={disabled} placeholder="src/file.ts" />
                 </div>
 
                 {/* Context Guidance */}
                 <div>
-                  <label id={fieldLabelId(index, 'patterns')} className="text-[10px] font-semibold uppercase tracking-widest text-foreground/60 block mb-1">Context Guidance — Patterns</label>
+                  <div id={fieldLabelId(index, 'patterns')} className="text-[10px] font-semibold uppercase tracking-widest text-foreground/60 block mb-1">Context Guidance — Patterns</div>
                   <StringListEditor idPrefix={fieldId(index, 'patterns')} labelId={fieldLabelId(index, 'patterns')} label="Pattern" items={bead.contextGuidance.patterns} onChange={(items) => updateBead(index, { contextGuidance: { ...bead.contextGuidance, patterns: items } })} disabled={disabled} placeholder="Pattern..." />
                 </div>
                 <div>
-                  <label id={fieldLabelId(index, 'anti-patterns')} className="text-[10px] font-semibold uppercase tracking-widest text-foreground/60 block mb-1">Context Guidance — Anti-patterns</label>
+                  <div id={fieldLabelId(index, 'anti-patterns')} className="text-[10px] font-semibold uppercase tracking-widest text-foreground/60 block mb-1">Context Guidance — Anti-patterns</div>
                   <StringListEditor idPrefix={fieldId(index, 'anti-patterns')} labelId={fieldLabelId(index, 'anti-patterns')} label="Anti-pattern" items={bead.contextGuidance.anti_patterns} onChange={(items) => updateBead(index, { contextGuidance: { ...bead.contextGuidance, anti_patterns: items } })} disabled={disabled} placeholder="Anti-pattern..." />
                 </div>
 
                 {/* PRD Refs */}
                 <div>
-                  <label id={fieldLabelId(index, 'prd-refs')} className="text-[10px] font-semibold uppercase tracking-widest text-foreground/60 block mb-1">PRD References</label>
+                  <div id={fieldLabelId(index, 'prd-refs')} className="text-[10px] font-semibold uppercase tracking-widest text-foreground/60 block mb-1">PRD References</div>
                   <StringListEditor idPrefix={fieldId(index, 'prd-refs')} labelId={fieldLabelId(index, 'prd-refs')} label="PRD reference" items={bead.prdRefs} onChange={(items) => updateBead(index, { prdRefs: items })} disabled={disabled} placeholder="EPIC-1, US-1-1..." />
                 </div>
 
                 {/* Dependencies: blocked_by */}
                 <div>
-                  <label id={fieldLabelId(index, 'blocked-by')} className="text-[10px] font-semibold uppercase tracking-widest text-foreground/60 block mb-1">Blocked By</label>
+                  <div id={fieldLabelId(index, 'blocked-by')} className="text-[10px] font-semibold uppercase tracking-widest text-foreground/60 block mb-1">Blocked By</div>
                   <StringListEditor idPrefix={fieldId(index, 'blocked-by')} labelId={fieldLabelId(index, 'blocked-by')} label="Blocked-by bead" items={bead.dependencies.blocked_by} onChange={(items) => updateBead(index, { dependencies: { ...bead.dependencies, blocked_by: items } })} disabled={disabled} placeholder="bead-id..." />
                 </div>
 

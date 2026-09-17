@@ -23,7 +23,7 @@ type PrdUserStory = PrdEpic['user_stories'][number]
 
 export const PRD_MISSING_CHANGES_WARNING = 'PRD refinement returned no changes list while the document differed from the winning draft.'
 
-const PRD_RECONSTRUCTED_ITEM_CHANGES_WARNING = `${PRD_MISSING_CHANGES_WARNING} Reconstructed omitted item-level changes from the winning and refined drafts; document-level edits remain in the refined document.`
+const PRD_RECONSTRUCTED_ITEM_CHANGES_WARNING = `${PRD_MISSING_CHANGES_WARNING} Reconstructed omitted item-level changes from the winning and refined drafts; document-level edits, if any, are not listed in the change set.`
 const PRD_DOCUMENT_ONLY_CHANGES_WARNING = `${PRD_MISSING_CHANGES_WARNING} The difference is limited to document-level fields; no item-level changes were reconstructed.`
 
 /**

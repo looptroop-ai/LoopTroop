@@ -74,6 +74,7 @@ interface TicketCardProps {
       beadsDiagnostics?: {
         malformedLines: number[]
         unrepresentableLines: number[]
+        readError?: string
       } | null
     }
   }
@@ -175,7 +176,11 @@ export function TicketCard({ ticket, projectColor, projectIcon, projectName, sea
   const beadsDiagnostics = ticket.runtime.beadsDiagnostics
   const hasBeadTrackerDamage = Boolean(
     beadsDiagnostics
-    && (beadsDiagnostics.malformedLines.length > 0 || beadsDiagnostics.unrepresentableLines.length > 0),
+    && (
+      beadsDiagnostics.malformedLines.length > 0
+      || beadsDiagnostics.unrepresentableLines.length > 0
+      || Boolean(beadsDiagnostics.readError)
+    ),
   )
   // `runtime` is the live projection and the boundary normaliser already falls
   // back to the ticket's own columns when the server sends no runtime, so this
@@ -396,7 +401,7 @@ export function TicketCard({ ticket, projectColor, projectIcon, projectName, sea
             <Badge
               variant="outline"
               role="alert"
-              aria-label="Bead tracker needs repair; progress is incomplete until the damaged lines are repaired"
+              aria-label="Bead tracker needs repair; progress is incomplete until the tracker can be read"
               className="shrink-0 border-amber-500/50 bg-amber-500/10 text-[10px] font-mono px-2 py-0.5 text-amber-800 dark:text-amber-200"
             >
               <AlertTriangle className="mr-1 h-3 w-3" />

@@ -12,6 +12,7 @@ import {
   canonicalizeBeadAliases,
   describeBeadShapeProblem,
   deriveBeadBlocks,
+  normalizeBeadCollections,
   reconcileStoredBeadStatus,
   validateBeadDependencyGraph,
 } from './beadsFile'
@@ -95,17 +96,8 @@ export function approveBeadsDocument(ticketId: string, expectedContentSha256: st
     if (typeof parsed !== 'object' || parsed === null || Array.isArray(parsed)) {
       throw new BeadPlanValidationError(`Bead at line ${line} is not a JSON object`)
     }
-    const canonical = canonicalizeBeadAliases(parsed as Record<string, unknown>)
-    // `blocked_by` is the only dependency edge a person edits. The inverse is
-    // derived below, so an otherwise valid JSONL repair may omit `blocks`.
-    // Give the shared shape check the safe empty placeholder; a present value
-    // still has to be a string list and is never silently repaired here.
-    const dependencies = isRecord(canonical.dependencies) ? canonical.dependencies : null
-    parsedRecords.push(
-      dependencies && dependencies.blocks === undefined
-        ? { ...canonical, dependencies: { ...dependencies, blocks: [] } }
-        : canonical,
-    )
+    const canonical = normalizeBeadCollections(canonicalizeBeadAliases(parsed as Record<string, unknown>))
+    parsedRecords.push(canonical)
   }
 
   for (const [index, record] of parsedRecords.entries()) {

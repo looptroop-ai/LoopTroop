@@ -171,7 +171,7 @@ describe.concurrent('PRD refined artifacts', () => {
     const warningText = result.repairWarnings.join('\n')
     expect(warningText).toContain(PRD_MISSING_CHANGES_WARNING)
     expect(warningText).toContain('Reconstructed omitted item-level changes')
-    expect(warningText).toContain('document-level edits remain')
+    expect(warningText).toContain('document-level edits, if any, are not listed in the change set')
   })
 
   it.each([

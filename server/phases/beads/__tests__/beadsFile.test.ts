@@ -87,13 +87,23 @@ describe('readBeadsFile and the nested spellings', () => {
     expect(beads[0]!.dependencies.blocked_by).toEqual(['canonical'])
   })
 
-  it('uses a populated alias when the canonical list is empty', () => {
+  it('preserves an explicit empty canonical list over a populated alias', () => {
     const beads = readBeadsFile(writeTracker(bead({
       acceptanceCriteria: [],
       acceptance_criteria: ['from alias'],
     })))
 
-    expect(beads[0]!.acceptanceCriteria).toEqual(['from alias'])
+    expect(beads[0]!.acceptanceCriteria).toEqual([])
+  })
+
+  it('fills only missing nested collection keys before validating the bead', () => {
+    const beads = readBeadsFile(writeTracker(bead({
+      dependencies: { blocked_by: ['B-0'] },
+      contextGuidance: { patterns: ['keep'] },
+    })))
+
+    expect(beads[0]!.dependencies).toEqual({ blocked_by: ['B-0'], blocks: [] })
+    expect(beads[0]!.contextGuidance).toEqual({ patterns: ['keep'], anti_patterns: [] })
   })
 
   it('still rejects a dependency list that is the wrong type under either spelling', () => {
@@ -128,8 +138,16 @@ describe('bead dependency integrity', () => {
     ])
 
     expect(records).toEqual([
-      { id: 'B-0', dependencies: { blocked_by: [], blocks: ['B-1'], custom: { keep: true } } },
-      { id: 'B-1', dependencies: { blocked_by: ['B-0'], blocks: [] } },
+      {
+        id: 'B-0',
+        dependencies: { blocked_by: [], blocks: ['B-1'], custom: { keep: true } },
+        contextGuidance: { patterns: [], anti_patterns: [] },
+      },
+      {
+        id: 'B-1',
+        dependencies: { blocked_by: ['B-0'], blocks: [] },
+        contextGuidance: { patterns: [], anti_patterns: [] },
+      },
     ])
     expect(validateBeadDependencyGraph(records.map((record) => ({
       id: record.id as string,
@@ -144,7 +162,7 @@ describe('bead dependency integrity', () => {
     expect(validateBeadDependencyGraph([
       { id: 'B-1', dependencies: { blocked_by: ['B-2'], blocks: ['B-2'] } },
       { id: 'B-2', dependencies: { blocked_by: ['B-1'], blocks: ['B-1'] } },
-    ])).toContain('Circular dependency detected in bead graph')
+    ])).toContain('Circular dependency detected in bead graph: B-1 -> B-2 -> B-1')
   })
 
   it('reports one-sided edges separately from structural graph validity', () => {

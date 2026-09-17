@@ -134,7 +134,7 @@ function savePayload(raw: string, beads: unknown) {
   return {
     method: 'PUT' as const,
     headers: { 'Content-Type': 'application/json', 'X-Content-Sha256': contentSha256(raw) },
-    body: JSON.stringify(beads),
+    body: JSON.stringify({ beads }),
   }
 }
 

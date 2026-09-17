@@ -12,6 +12,7 @@ import {
   canonicalizeBeadAliases,
   describeBeadShapeProblem,
   deriveBeadBlocks,
+  normalizeBeadCollections,
   reconcileStoredBeadStatus,
   validateBeadDependencyGraph,
 } from '../phases/beads/beadsFile'
@@ -33,10 +34,11 @@ const beadStatusSchema = z.string().transform((value, ctx) => {
     ctx.addIssue({ code: z.ZodIssueCode.custom, message: 'status must be a non-empty string' })
     return z.NEVER
   }
-  // The canonical reader safely retries an unrecognised status as pending;
-  // save uses the same recovery rather than persisting a value the scheduler
-  // can never run.
-  return 'pending'
+  ctx.addIssue({
+    code: z.ZodIssueCode.custom,
+    message: `status "${value}" is invalid; expected pending, in_progress, done, or error`,
+  })
+  return z.NEVER
 })
 
 const beadItemSchema = z.object({
@@ -119,7 +121,7 @@ const MALFORMED_LINE_HEADER_LIMIT = 50
  */
 function findUnrepresentableLines(items: unknown[], itemLines: number[]): number[] {
   return items.flatMap((item, index) => (
-    describeBeadShapeProblem(isRecord(item) ? canonicalizeBeadAliases(item) : item) === null
+    describeBeadShapeProblem(isRecord(item) ? normalizeBeadCollections(canonicalizeBeadAliases(item)) : item) === null
       ? []
       : [itemLines[index] ?? index + 1]
   ))
@@ -129,7 +131,7 @@ function findUnrepresentableLines(items: unknown[], itemLines: number[]): number
 function canonicalizeParsedItems(items: unknown[]): unknown[] {
   return items.map((item) => {
     if (!isRecord(item)) return item
-    const canonical = canonicalizeBeadAliases(item)
+    const canonical = normalizeBeadCollections(canonicalizeBeadAliases(item))
     if (typeof canonical.status !== 'string' || typeof canonical.id !== 'string' || !canonical.id.trim()) return canonical
     const reconciled = reconcileStoredBeadStatus(canonical.status, canonical.id)
     if (reconciled.warning) console.warn(`[beads] ${reconciled.warning}`)
@@ -205,28 +207,23 @@ interface BeadValidationError {
   issues: string[]
 }
 
-function readClientSourceLines(c: Context, itemCount: number): number[] | null {
-  const raw = c.req.header('X-Source-Lines')
+function readClientSourceLines(raw: unknown, itemCount: number): number[] | null {
   if (raw === undefined) return null
-  if (itemCount === 0 && raw.trim() === '') return []
-
-  const tokens = raw.split(',').map((token) => token.trim())
-  if (tokens.length !== itemCount || tokens.some((token) => !/^[1-9]\d*$/.test(token))) {
+  if (!Array.isArray(raw) || raw.length !== itemCount || raw.some((line) => (
+    typeof line !== 'number' || !Number.isSafeInteger(line) || line < 1
+  ))) {
     throw new Error(
-      'X-Source-Lines must contain exactly '
+      'sourceLines must contain exactly '
       + itemCount
       + ' positive line number'
       + (itemCount === 1 ? '' : 's')
       + '.',
     )
   }
-  const lines = tokens.map(Number)
-  if (lines.some((line) => !Number.isSafeInteger(line))) {
-    throw new Error('X-Source-Lines contains a line number that is too large.')
-  }
+  const lines = raw as number[]
   for (let index = 1; index < lines.length; index++) {
     if (lines[index]! <= lines[index - 1]!) {
-      throw new Error('X-Source-Lines must be strictly increasing.')
+      throw new Error('sourceLines must be strictly increasing.')
     }
   }
   return lines
@@ -296,27 +293,35 @@ beadsRouter.put('/tickets/:id/beads', async (c) => {
   }
 
   const flow = c.req.query('flow')
-  const body = await c.req.json()
+  const rawBody: unknown = await c.req.json()
+  const body = isRecord(rawBody) && Array.isArray(rawBody.beads) ? rawBody.beads : rawBody
   if (!Array.isArray(body)) {
     return c.json({ error: 'Request body must be a JSON array' }, 400)
   }
   let sourceLines: number[] | null
   try {
-    sourceLines = readClientSourceLines(c, body.length)
+    sourceLines = readClientSourceLines(isRecord(rawBody) ? rawBody.sourceLines : undefined, body.length)
   } catch (error) {
-    return c.json({ error: error instanceof Error ? error.message : 'Invalid X-Source-Lines header' }, 400)
+    return c.json({ error: error instanceof Error ? error.message : 'Invalid sourceLines' }, 400)
   }
 
   // Validate each bead item has the fields required by the scheduler/execution engine.
-  // JSONL clients send the source line for each parsed row; structured clients
-  // have no source file positions, so their output line is its array position.
+  // JSONL clients send sourceLines in the request body for each parsed row;
+  // structured clients have no source file positions, so their output line is
+  // its array position.
   const validationErrors: BeadValidationError[] = []
   // What gets written: the record as sent, with aliases canonicalised and the
   // dependency spelling the runtime reads. Unknown top-level and dependency
   // keys remain on the record for newer readers.
   const canonicalBeads: Array<Record<string, unknown>> = []
   for (let i = 0; i < body.length; i++) {
-    const input = isRecord(body[i]) ? canonicalizeBeadAliases(body[i]) : null
+    // Validate the submitted dependency spelling before filling derived
+    // collections. A user edit must still include the authoritative
+    // `blocked_by`/`blockedBy` list; only the derived `blocks` inverse may be
+    // absent and filled below.
+    const input = isRecord(body[i])
+      ? canonicalizeBeadAliases(body[i])
+      : null
     const result = beadItemSchema.safeParse(input)
     if (!result.success) {
       validationErrors.push({
@@ -329,7 +334,11 @@ beadsRouter.put('/tickets/:id/beads', async (c) => {
       })
       continue
     }
-    const canonical = { ...(input ?? {}), ...result.data, dependencies: result.data.dependencies } as Record<string, unknown>
+    const canonical = normalizeBeadCollections({
+      ...(input ?? {}),
+      ...result.data,
+      dependencies: result.data.dependencies,
+    }) as Record<string, unknown>
     const shapeProblem = describeBeadShapeProblem(canonical)
     if (shapeProblem) {
       validationErrors.push({ index: i, line: sourceLines?.[i] ?? i + 1, issues: [shapeProblem] })

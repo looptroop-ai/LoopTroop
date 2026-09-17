@@ -19,11 +19,11 @@
  * `yamlRepair.test.ts` holds them to that rather than the compiler.
  */
 /** `key: |`, at the end of a mapping line. */
-export const MAPPING_BLOCK_SCALAR_HEADER = /:\s*[>|](?:[+-][1-9]?|[1-9][+-]?)?(?:\s+#.*)?\s*$/
+export const MAPPING_BLOCK_SCALAR_HEADER = /:\s*(?:(?:&[^\s]+|![^\s]+)\s+){0,2}[>|](?:[+-][1-9]?|[1-9][+-]?)?(?:\s+#.*)?\s*$/
 /** `- |`, a block scalar as a sequence entry, which carries no key. */
-export const LIST_BLOCK_SCALAR_HEADER = /^-\s*[>|](?:[+-][1-9]?|[1-9][+-]?)?(?:\s+#.*)?\s*$/
+export const LIST_BLOCK_SCALAR_HEADER = /^-\s*(?:(?:&[^\s]+|![^\s]+)\s+){0,2}[>|](?:[+-][1-9]?|[1-9][+-]?)?(?:\s+#.*)?\s*$/
 /** Either form. Most repairs walk lines and need both. */
-export const BLOCK_SCALAR_HEADER = /(?::|^-)\s*[>|](?:[+-][1-9]?|[1-9][+-]?)?(?:\s+#.*)?\s*$/
+export const BLOCK_SCALAR_HEADER = /(?::|^-)\s*(?:(?:&[^\s]+|![^\s]+)\s+){0,2}[>|](?:[+-][1-9]?|[1-9][+-]?)?(?:\s+#.*)?\s*$/
 /** The indicator alone, as a value: `foo:` on one line and `|` on the next. */
 export const BLOCK_SCALAR_VALUE = /^\s*([>|](?:[+-][1-9]?|[1-9][+-]?)?)(?:\s+#.*)?\s*$/
 
@@ -286,7 +286,6 @@ function isSequenceItemMappingChildLine(line: string, dashIndent: number): boole
 // candidate. None carries the `g` flag, so there is no `lastIndex` to reset.
 const SEQUENCE_PRIMARY_KEY_BARE_COLLECTION_KEY = /^(\s*)([A-Za-z_][\w_-]*)\s*:\s*(?:#.*)?$/
 const SEQUENCE_PRIMARY_KEY_BLOCK_SCALAR_PATTERN = BLOCK_SCALAR_HEADER
-const SEQUENCE_PRIMARY_KEY_DASH_SCALAR_LINE = /^(\s*)-\s+(.+)$/
 
 /**
  * Repair structured YAML list entries that emit the primary key as a bare item.
@@ -337,12 +336,14 @@ export function repairYamlSequenceItemPrimaryKeys(
       parentStack.pop()
     }
 
-    const dashMatch = line.match(SEQUENCE_PRIMARY_KEY_DASH_SCALAR_LINE)
-    if (dashMatch) {
-      const dashIndent = dashMatch[1]!.length
+    const dashIndent = getLineIndent(line)
+    const dashValue = trimmed[0] === '-' && /^\s/.test(trimmed.slice(1))
+      ? trimmed.slice(1).trimStart()
+      : null
+    if (dashValue !== null) {
       const immediateParent = parentStack[parentStack.length - 1]
       const config = immediateParent ? normalizedOptions.get(immediateParent.normalizedKey) : undefined
-      const value = config ? readSafeBareSequenceScalar(dashMatch[2]!) : null
+      const value = config ? readSafeBareSequenceScalar(dashValue) : null
       const nextLine = value ? findNextSignificantLine(lines, index + 1) : null
 
       if (
@@ -353,7 +354,7 @@ export function repairYamlSequenceItemPrimaryKeys(
         && nextLine
         && isKnownSequenceItemChildLine(nextLine, dashIndent, config)
       ) {
-        result.push(`${dashMatch[1]}- ${config.primaryKey}: ${value}`)
+        result.push(`${' '.repeat(dashIndent)}- ${config.primaryKey}: ${value}`)
         repairs.push({
           parentKey: immediateParent.key,
           primaryKey: config.primaryKey,
@@ -1189,12 +1190,12 @@ export function repairYamlSequenceEntryIndent(yaml: string): string {
 
 // Hoisted; tested once per line, using the shared block-scalar grammar plus the
 // node properties (`&anchor`, `!!tag`) YAML permits before an indicator.
-const DUPLICATE_KEYS_BLOCK_SCALAR_PATTERN = /(?::|^-)(?:\s+)(?:(?:&|\*|!)[^\s]+\s+)?[>|](?:[+-][1-9]?|[1-9][+-]?)?(?:\s+#.*)?\s*$/
+const DUPLICATE_KEYS_BLOCK_SCALAR_PATTERN = BLOCK_SCALAR_HEADER
 
 function getDuplicateKeysBlockScalarBaseIndent(line: string): number {
   const indent = getLineIndent(line)
   if (!DUPLICATE_KEYS_BLOCK_SCALAR_PATTERN.test(line.trim())) return indent
-  return line.trim().includes(':')
+  return /^-\s+[A-Za-z_][\w_-]*\s*:/.test(line.trim())
     ? line.match(/^(\s*-\s+)/)?.[1]?.length ?? indent
     : indent
 }
@@ -1222,12 +1223,15 @@ export function repairYamlDuplicateKeys(yaml: string): string {
   /** Collect a complete indentation-delimited entry, excluding external comments. */
   function collectEntry(start: number, indent: number, allowUncertain = false): { end: number; text: string } | null {
     const header = lines[start]!
-    const sequenceHeader = header.match(/^\s*-\s+(.*)$/)
+    const trimmedHeader = header.trim()
+    const sequenceHeader = trimmedHeader[0] === '-' && /^\s/.test(trimmedHeader.slice(1))
+      ? trimmedHeader.slice(1).trimStart()
+      : null
     const listItemKey = header.match(/^\s*-\s+[A-Za-z_][\w_-]*\s*:(.*)$/)
     const value = listItemKey
       ? listItemKey[1]!.trim()
-      : sequenceHeader
-        ? sequenceHeader[1]!.trim()
+      : sequenceHeader !== null
+        ? sequenceHeader.trim()
         : header.slice(header.indexOf(':') + 1).trim()
     const scalar = DUPLICATE_KEYS_BLOCK_SCALAR_PATTERN.test(header.trim())
     if (!scalar && hasUncertainYamlScalarExtent(value)) {

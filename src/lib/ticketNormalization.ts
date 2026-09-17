@@ -190,8 +190,11 @@ function normalizeBeadsRuntimeDiagnostics(value: unknown): BeadsRuntimeDiagnosti
   if (!isRecord(value)) return null
   const malformedLines = normalizeLineNumbers(value.malformedLines)
   const unrepresentableLines = normalizeLineNumbers(value.unrepresentableLines)
-  return malformedLines.length > 0 || unrepresentableLines.length > 0
-    ? { malformedLines, unrepresentableLines }
+  const readError = typeof value.readError === 'string' && value.readError.trim().length > 0
+    ? value.readError
+    : undefined
+  return malformedLines.length > 0 || unrepresentableLines.length > 0 || readError
+    ? { malformedLines, unrepresentableLines, ...(readError ? { readError } : {}) }
     : null
 }
 

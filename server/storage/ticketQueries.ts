@@ -246,6 +246,7 @@ export interface PublicTicket extends Omit<LocalTicketRow, 'id' | 'lockedCouncil
     beadsDiagnostics: {
       malformedLines: number[]
       unrepresentableLines: number[]
+      readError?: string
     } | null
     beads: Array<{
       id: string
@@ -1239,7 +1240,14 @@ function readRuntimeBeads(projectRoot: string, externalId: string, baseBranch: s
     // fields do for an unsafe workspace.
     if (error instanceof ContainedPathError) {
       console.warn(`[tickets] Refusing runtime beads outside the ticket worktree for ${externalId}.`)
-      return { beads: [], diagnostics: null }
+      return {
+        beads: [],
+        diagnostics: {
+          malformedLines: [],
+          unrepresentableLines: [],
+          readError: getErrorMessage(error),
+        },
+      }
     }
     throw error
   }
@@ -1267,7 +1275,16 @@ function readRuntimeBeads(projectRoot: string, externalId: string, baseBranch: s
     return { beads, diagnostics }
   } catch (error) {
     if ((error as NodeJS.ErrnoException).code === 'ENOENT') return { beads: [], diagnostics: null }
-    throw error
+    const readError = getErrorMessage(error)
+    console.warn(`[tickets] Failed to read runtime beads for ${externalId}: ${readError}`)
+    return {
+      beads: [],
+      diagnostics: {
+        malformedLines: [],
+        unrepresentableLines: [],
+        readError,
+      },
+    }
   }
 }
 

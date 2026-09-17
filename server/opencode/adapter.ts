@@ -753,7 +753,7 @@ export class OpenCodeSDKAdapter implements OpenCodeAdapter {
         // read through the reconciler, so a legacy stored status does not reach
         // `formatBeadContext` unrecognised and a malformed line does not abort
         // the whole read.
-        const bead = readBeadsFile(containedBeadsPath).find((entry) => entry.id === beadId)
+        const bead = readBeadsFile(containedBeadsPath, { malformedEntries: 'skip' }).find((entry) => entry.id === beadId)
 
         if (bead) {
           state.beadData = formatBeadContext(bead)

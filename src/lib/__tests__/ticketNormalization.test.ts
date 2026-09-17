@@ -89,6 +89,7 @@ describe('normalizeTicketResponse', () => {
         beadsDiagnostics: {
           malformedLines: [4, 4, 0, '5'],
           unrepresentableLines: [7.5, 8, -1],
+          readError: 'EISDIR: tracker path is a directory',
         },
         beads: [{ id: 'bead-1', title: 'Keep this row', status: 'pending', iteration: 0 }],
       },
@@ -98,6 +99,7 @@ describe('normalizeTicketResponse', () => {
     expect(ticket.runtime.beadsDiagnostics).toEqual({
       malformedLines: [4],
       unrepresentableLines: [8],
+      readError: 'EISDIR: tracker path is a directory',
     })
   })
 

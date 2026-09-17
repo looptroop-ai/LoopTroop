@@ -1,6 +1,6 @@
 import { afterAll, beforeEach, describe, expect, it, vi } from 'vitest'
 import { eq } from 'drizzle-orm'
-import { mkdirSync, renameSync, symlinkSync, writeFileSync } from 'node:fs'
+import { mkdirSync, renameSync, rmSync, symlinkSync, writeFileSync } from 'node:fs'
 import { join } from 'node:path'
 import { createInitializedTestTicket, createTestRepoManager, resetTestDb } from '../../test/integration'
 import { writeJsonl } from '../../io/jsonl'
@@ -224,6 +224,29 @@ describe('runtime Manual QA bead origin projection', () => {
     const runtime = getTicketByRef(setup.ticket.id)?.runtime
     expect(runtime?.beads.map((bead) => bead.id)).toEqual(['valid-bead'])
     expect(runtime?.beadsDiagnostics).toEqual({ malformedLines: [2], unrepresentableLines: [] })
+  })
+
+  it('isolates an unreadable tracker and keeps a healthy ticket visible', async () => {
+    const broken = await createInitializedTestTicket(runtimeRepoManager, { title: 'Unreadable tracker', shortname: 'BROKE' })
+    const healthy = await createInitializedTestTicket(runtimeRepoManager, { title: 'Healthy tracker', shortname: 'HEALTH' })
+    rmSync(broken.paths.beadsPath, { force: true })
+    mkdirSync(broken.paths.beadsPath, { recursive: true })
+    const warning = vi.spyOn(console, 'warn').mockImplementation(() => {})
+
+    try {
+      const projected = listTickets()
+      expect(projected.find((ticket) => ticket.id === healthy.ticket.id)?.title).toBe('Healthy tracker')
+      const brokenProjection = projected.find((ticket) => ticket.id === broken.ticket.id)
+      expect(brokenProjection?.runtime.beads).toEqual([])
+      expect(brokenProjection?.runtime.beadsDiagnostics).toMatchObject({
+        malformedLines: [],
+        unrepresentableLines: [],
+        readError: expect.any(String),
+      })
+      expect(warning).toHaveBeenCalledWith(expect.stringContaining(broken.ticket.externalId))
+    } finally {
+      warning.mockRestore()
+    }
   })
 
   it('preserves the bead update timestamp used to time the active iteration', async () => {

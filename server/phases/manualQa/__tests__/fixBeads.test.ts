@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { rmSync, symlinkSync } from 'node:fs'
+import { readFileSync, rmSync, symlinkSync, writeFileSync } from 'node:fs'
 import { makeTempDir, removeTempDir } from '../../../test/tempDir'
 import { getManualQaStoragePaths } from '../storage'
 import {
@@ -86,9 +86,12 @@ describe('Manual QA fix-bead generation contracts', () => {
     try {
       const groups = buildManualQaFixGroups(checklist, draft)
       const candidates = parseManualQaFixBeadsOutput(validResponse, groups)
-      persistManualQaFixBeadCandidates(ticketDir, 1, candidates)
+      const persisted = persistManualQaFixBeadCandidates(ticketDir, 1, candidates)
+      expect(persisted).toContain('schemaVersion: 2')
       expect(readManualQaFixBeadCandidates(ticketDir, 1, groups)).toEqual(candidates)
       const path = getManualQaStoragePaths(ticketDir, 1).fixBeadsPath
+      writeFileSync(path, readFileSync(path, 'utf8').replace('schemaVersion: 2', 'schemaVersion: 1'))
+      expect(readManualQaFixBeadCandidates(ticketDir, 1, groups)).toBeNull()
       rmSync(path)
       symlinkSync(outside, path, process.platform === 'win32' ? 'junction' : 'dir')
       expect(() => readManualQaFixBeadCandidates(ticketDir, 1, groups)).toThrow('escapes root')

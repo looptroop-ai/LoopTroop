@@ -525,10 +525,13 @@ function BeadsApprovalPane({
           'X-Edit-Surface': editTab,
           // Preserve the original JSONL positions so server validation can
           // name the line the operator edited even when the draft contains
-          // blank lines.
-          ...(parsedJsonlDraft ? { 'X-Source-Lines': parsedJsonlDraft.sourceLines.join(',') } : {}),
+          // blank lines. Source metadata belongs to the request body so it
+          // remains part of the structured payload rather than a header value.
         },
-        body: JSON.stringify(beadsToSave),
+        body: JSON.stringify({
+          beads: beadsToSave,
+          ...(parsedJsonlDraft ? { sourceLines: parsedJsonlDraft.sourceLines } : {}),
+        }),
       })
 
       // Keep this decision tied to the protocol status. The server may reword
@@ -586,7 +589,7 @@ function BeadsApprovalPane({
       await approveArtifact(queryClient, {
         ticketId: ticket.id,
         domain: 'beads',
-        expectedContentSha256: draftBaseSha256,
+        expectedContentSha256: currentContentSha256,
         gapAcknowledgementReason: gapReason,
         failureMessage: 'Failed to approve beads',
       })
@@ -597,7 +600,7 @@ function BeadsApprovalPane({
     } finally {
       setIsApproving(false)
     }
-  }, [draftBaseSha256, gapReason, ticket.id, queryClient])
+  }, [currentContentSha256, gapReason, ticket.id, queryClient])
 
   const handleFixCoverageGaps = useCallback(async () => {
     setIsFixingCoverageGaps(true)
@@ -669,7 +672,7 @@ function BeadsApprovalPane({
           <Button
             size="sm"
             onClick={handleApprove}
-            disabled={isApproving || isSaving || isFixingCoverageGaps || isCoverageUnknown || (isEditMode && hasUnsavedChanges) || hasLiveDraftConflict || beadsArray.length === 0 || hasMalformedLines || hasUnrepresentableLines || hasUnrepresentableCommands || hasUnstructuredGuidance || hasMissingCommandReasons || !draftBaseSha256 || ticket.status !== 'WAITING_BEADS_APPROVAL'}
+            disabled={isApproving || isSaving || isFixingCoverageGaps || isCoverageUnknown || (isEditMode && hasUnsavedChanges) || hasLiveDraftConflict || beadsArray.length === 0 || hasMalformedLines || hasUnrepresentableLines || hasUnrepresentableCommands || hasUnstructuredGuidance || hasMissingCommandReasons || !currentContentSha256 || ticket.status !== 'WAITING_BEADS_APPROVAL'}
             className="text-xs shrink-0"
           >
             {isApproving ? 'Approving...' : coverageWarning?.gaps.length ? 'Approve with gaps' : 'Approve'}

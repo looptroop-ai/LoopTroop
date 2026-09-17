@@ -156,7 +156,17 @@ export function collectTaggedCandidates(rawContent: string, tag: string): string
   return candidates
 }
 
-const SPURIOUS_XML_TAG_LINE_PATTERN = /^\s*<\/?[a-zA-Z_][a-zA-Z0-9_-]*\s*\/?\s*>\s*$/
+function isSpuriousXmlTagLine(line: string): boolean {
+  const trimmed = line.trim()
+  if (!trimmed.startsWith('<') || !trimmed.endsWith('>')) return false
+  let body = trimmed.slice(1, -1)
+  if (body.startsWith('/')) body = body.slice(1)
+  const name = body.match(/^[A-Za-z_][A-Za-z0-9_-]*/)?.[0]
+  if (!name) return false
+  let suffix = body.slice(name.length).trim()
+  if (suffix.startsWith('/')) suffix = suffix.slice(1).trim()
+  return suffix === ''
+}
 
 function getXmlBlockScalarBaseIndent(line: string): number {
   const indent = line.match(/^(\s*)/)?.[1]?.length ?? 0
@@ -203,7 +213,7 @@ function scanSpuriousXmlTags(content: string): SpuriousXmlTagScan {
       continue
     }
 
-    if (SPURIOUS_XML_TAG_LINE_PATTERN.test(line)) {
+    if (isSpuriousXmlTagLine(line)) {
       if (!seen.has(trimmed)) {
         seen.add(trimmed)
         tags.push(trimmed)
@@ -618,7 +628,7 @@ function applyInlineRepairPipeline(candidate: string, options?: ParseYamlOrJsonC
 // The test suite hashes the complete yamlRepair/yamlUtils sources after
 // normalising this literal. Keeping only the resulting marker at runtime
 // makes cache invalidation work in bundled builds without reading source files.
-export const REPAIR_PIPELINE_VERSION = '7845240771ecd0a5df11ba7e466e182bbcd281e8461b6da87b938952f59bb94c'
+export const REPAIR_PIPELINE_VERSION = 'e574e14c0a285d0fc249614a10ceaec921dfc86ad24f3b2743a13eda2054ad66'
 
 /** Parse or reuse a candidate while preserving per-call repairs and mutable result ownership. */
 export function parseYamlOrJsonCandidate(
@@ -671,17 +681,45 @@ function parseYamlOrJsonCandidateUncached(
   const applyNestedMappingRepair = (value: string): string => options?.nestedMappingChildren
     ? repairYamlNestedMappingChildren(value, options.nestedMappingChildren)
     : value
-  const hasNonStringFreeText = (value: unknown): boolean => {
-    if (Array.isArray(value)) return value.some((entry) => hasNonStringFreeText(entry))
+  const hasNonStringFreeText = (value: unknown, seen = new WeakSet<object>()): boolean => {
+    if (typeof value !== 'object' || value === null) return false
+    if (seen.has(value)) return false
+    seen.add(value)
+    if (Array.isArray(value)) return value.some((entry) => hasNonStringFreeText(entry, seen))
     if (!isRecord(value)) return false
     return Object.entries(value).some(([key, child]) =>
       (normalizeKey(key) === 'freetext' && child !== undefined && typeof child !== 'string')
-      || hasNonStringFreeText(child),
+      || hasNonStringFreeText(child, seen),
     )
   }
+  const preserveRawFreeTextValues = (raw: unknown, repaired: unknown, seen = new WeakSet<object>()): void => {
+    if (typeof raw !== 'object' || raw === null || typeof repaired !== 'object' || repaired === null) return
+    if (seen.has(raw)) return
+    seen.add(raw)
+    if (Array.isArray(raw)) {
+      if (!Array.isArray(repaired)) return
+      raw.forEach((entry, index) => preserveRawFreeTextValues(entry, repaired[index], seen))
+      return
+    }
+    if (!isRecord(raw) || Array.isArray(repaired) || !isRecord(repaired)) return
+    for (const [key, rawChild] of Object.entries(raw)) {
+      const repairedKey = Object.keys(repaired).find((candidate) => normalizeKey(candidate) === normalizeKey(key))
+      if (!repairedKey) continue
+      if (normalizeKey(key) === 'freetext') {
+        // A string already parsed by YAML is authoritative. Non-string values
+        // stay with the schema-directed repair, which is what turns an array,
+        // boolean, or number into the required text instead of copying the
+        // invalid shape back into the result.
+        if (typeof rawChild === 'string') repaired[repairedKey] = rawChild
+        continue
+      }
+      preserveRawFreeTextValues(rawChild, repaired[repairedKey], seen)
+    }
+  }
   const hasHeaderStyleListScalar = (value: string): boolean => value.split('\n').some((line) => {
-    const match = line.match(/^\s*-\s+(.+)$/)
-    return Boolean(match && /^[A-Z][A-Za-z0-9]*(?:-[A-Za-z0-9]+)+:\s+\S/.test(match[1]!))
+    const trimmedLine = line.trim()
+    if (trimmedLine[0] !== '-' || !/^\s/.test(trimmedLine.slice(1))) return false
+    return /^[A-Z][A-Za-z0-9]*(?:-[A-Za-z0-9]+)+:\s+\S/.test(trimmedLine.slice(1).trimStart())
   })
   const tryParseCandidate = (candidate: string, allowTrailingNoiseVariants = true): unknown => {
     const finalizeParsedCandidate = (
@@ -793,7 +831,9 @@ function parseYamlOrJsonCandidateUncached(
 
         if (preParseRepaired !== candidate) {
           try {
-            return finalizeParsedCandidate(jsYaml.load(preParseRepaired), {
+            const repairedParsed = jsYaml.load(preParseRepaired)
+            preserveRawFreeTextValues(rawParsed, repairedParsed)
+            return finalizeParsedCandidate(repairedParsed, {
               inlineYaml: inlineYamlRepaired,
               mappingKeyColonSpace: mappingKeyColonSpacePreRepaired !== inlineKeyPreRepaired,
               wrappedPlainListScalar: wrappedPlainListScalarPreRepaired !== mappingKeyColonSpacePreRepaired,

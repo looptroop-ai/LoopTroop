@@ -76,35 +76,41 @@ export function inspectBeadDependencyGraph(
     const visited = new Set<string>()
     const recStack = new Set<string>()
 
-    function detectCycle(beadId: string): boolean {
+    let cyclePath: string[] | null = null
+
+    function detectCycle(beadId: string, path: string[]): boolean {
       visited.add(beadId)
       recStack.add(beadId)
+      path.push(beadId)
 
       const bead = beadsById.get(beadId)
       if (bead) {
         for (const dependency of bead.dependencies.blocked_by) {
           if (!visited.has(dependency)) {
-            if (detectCycle(dependency)) return true
+            if (detectCycle(dependency, path)) return true
           } else if (recStack.has(dependency)) {
+            const cycleStart = path.indexOf(dependency)
+            cyclePath = [...path.slice(cycleStart >= 0 ? cycleStart : 0), dependency]
             return true
           }
         }
       }
 
+      path.pop()
       recStack.delete(beadId)
       return false
     }
 
     let hasCycle = false
     for (const bead of beads) {
-      if (!visited.has(bead.id) && detectCycle(bead.id)) {
+      if (!visited.has(bead.id) && detectCycle(bead.id, [])) {
         hasCycle = true
         break
       }
     }
     if (hasCycle) {
       graphValid = false
-      errors.push('Circular dependency detected in bead graph')
+      errors.push(`Circular dependency detected in bead graph: ${(cyclePath as string[] | null)?.join(' -> ') ?? 'unknown'}`)
     }
   }
 

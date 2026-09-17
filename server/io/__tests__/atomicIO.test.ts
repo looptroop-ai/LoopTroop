@@ -469,14 +469,18 @@ describe('recoverOrphanTmpFiles', () => {
     return tmpPath
   }
 
-  it('promotes an interrupted write under its real name', () => {
-    const target = join(TEST_DIR, 'runtime', 'execution-setup-profile.json')
-    const tmpFile = orphan(target, '{"key": "value"}')
+  it.each([
+    ['execution-setup-profile.json', '{"key":"value"}'],
+    ['cancellation-pending.json', '{"state":"pending","requestedAt":"2026-09-17T00:00:00Z"}'],
+    ['opencode-pending-sessions.json', '[{"sessionId":"session-1","phase":"CODING"}]'],
+  ])('promotes an interrupted runtime write under its real name: %s', (filename, content) => {
+    const target = join(TEST_DIR, 'runtime', filename)
+    const tmpFile = orphan(target, content)
 
     const recovered = recoverOrphanTmpFiles(TEST_DIR)
 
     expect(recovered).toContain(target)
-    expect(readFileSync(target, 'utf-8')).toBe('{"key": "value"}')
+    expect(readFileSync(target, 'utf-8')).toBe(content)
     expect(existsSync(tmpFile)).toBe(false)
   })
 

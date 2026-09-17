@@ -88,3 +88,12 @@ planning-save, and duplication observations above, adds the superseded
 atomic-I/O CI reports 5716501887 and 5716694342, adds Sonar update 5717202556,
 and adds inline observation 4038373610. The blank refreshed review record is
 5237605746; it contains no actionable finding.
+
+Final integration follow-up adds both pending markers to the exact known-file
+recovery inventory; the existing complete-JSON and containment checks still
+apply. All 63 atomic-I/O regressions pass, including interrupted writes of each
+marker. Remaining duplicate session and Manual QA test setup now reuses the
+existing fixture or a parameterized case; all 53 focused tests pass without
+production abstractions or analyzer exclusions. Runner tests explicitly mock
+the durable query and verify that a pending cancellation blocks restored coding
+(56 passing tests).

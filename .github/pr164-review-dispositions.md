@@ -94,7 +94,7 @@ Disposition labels:
 
 ### Additional refreshed envelopes
 
-Reviews `5238175126`, `5238259722`, and `5238307294` have empty bodies; associated inline/analyzer findings are assessed individually. Greptile `4038819640` correctly observes that repository-local `core.sshCommand` can execute an arbitrary configured wrapper. The existing documented project model is trusted, non-sandboxed execution, and G24 requires preserving genuine SSH configuration. Whether attaching a project should instead ignore repository-local SSH commands is an owner trust-policy choice, not an automatic reversal of G24. The question is held pending the owner's choice; no sandbox guarantee or completed fix is claimed.
+Reviews `5238175126`, `5238259722`, and `5238307294` have empty bodies; associated inline/analyzer findings are assessed individually. Greptile `4038819640` correctly observes that repository-local `core.sshCommand` can execute an arbitrary configured wrapper. On 2026-09-17 the owner explicitly chose to keep trusted-project behavior and document it. G24 therefore continues to preserve repository-local SSH configuration. README, contributor guidance, and website notes warn that remote Git operations and connection checks can execute a wrapper with the user's permissions. This is an accepted trust boundary, not a sandbox guarantee or an unresolved choice.
 
 Root's follow-up bounds quarantine comparison memory to two 64 KiB buffers,
 uses the shared no-follow regular-file opener, and checks file size and

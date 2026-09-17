@@ -10,6 +10,10 @@ LoopTroop is a local GUI orchestrator for repo-scale AI coding work. It plans ti
 
 Because LoopTroop can run coding agents with broad local permissions, avoid sharing secrets or private repository content in public issues. When testing runtime behavior, use a disposable VM, sandboxed development environment, or a repository you are comfortable modifying.
 
+Selected projects are trusted code, including their local Git configuration.
+Preserve `core.sshCommand` for custom SSH setups; do not describe remote Git
+checks as sandboxed or assume a repository-local wrapper is inert metadata.
+
 ## Ways to contribute
 
 - Report bugs with steps to reproduce and relevant logs.

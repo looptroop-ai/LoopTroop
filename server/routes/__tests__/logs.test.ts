@@ -499,6 +499,32 @@ describe('ticket log projection API', () => {
     expect(response.status).toBe(500)
   })
 
+  it('refreshes same-size native rewrites while keeping an older cursor immutable', async () => {
+    const { ticket } = await createInitializedTestTicket(repoManager)
+    appendLogEvent(ticket.id, 'info', 'CODING', 'ticket session', {
+      sessionId: 'session-rewrite', timestamp: '2026-01-01T00:00:01.000Z',
+    }, 'system', 'CODING')
+    let revision = 1
+    listOpenCodeNativeLogFilesMock.mockImplementation(() => [{
+      path: 'native.log', mtimeMs: revision, size: 100, fileIdentity: 'dev:same-inode',
+    }])
+    readOpenCodeNativeLogFileMock.mockImplementation(async () => [2, 3].map(second => ({
+      timestamp: `2026-01-01T00:00:0${second}.000Z`, type: 'debug', source: 'debug', audience: 'debug',
+      kind: 'session', op: 'append', phase: 'opencode_native', phaseAttempt: 1, status: 'opencode_native',
+      message: `revision-${revision}-${second}`, content: `revision-${revision}-${second}`,
+      sessionId: 'session-rewrite', data: {}, nativeIdentity: `native.log:${second}`,
+    })))
+    const query = { scope: 'phase', phase: 'CODING', view: 'debug', limit: 1 } as const
+    const first = await queryLogPage(ticket.id, query)
+    expect(first?.entries.map(entry => entry.content)).toEqual(['revision-1-3'])
+    revision = 2
+    const fresh = await queryLogPage(ticket.id, query)
+    expect(fresh?.entries.map(entry => entry.content)).toEqual(['revision-2-3'])
+    const older = await queryLogPage(ticket.id, { ...query, before: first!.olderCursor! })
+    expect(older?.entries.map(entry => entry.content)).toEqual(['revision-1-2'])
+    expect(readOpenCodeNativeLogFileMock).toHaveBeenCalledTimes(2)
+  })
+
   it('indexes an append from the saved byte offset and snapshots one generation pointer', async () => {
     const { ticket, repoDir } = await createInitializedTestTicket(repoManager)
     appendLogEvent(ticket.id, 'info', 'CODING', 'ticket session', {

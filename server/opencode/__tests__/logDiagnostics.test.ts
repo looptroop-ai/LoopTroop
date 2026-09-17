@@ -8,7 +8,6 @@ import {
   LOOPTROOP_OPENCODE_LOG_DIR,
   listOpenCodeNativeLogFiles,
   readOpenCodeNativeLogFile,
-  readOpenCodeNativeLogSnapshot,
   readOpenCodeNativeLogs,
   type OpenCodeNativeLogReadStats,
 } from '../logDiagnostics'
@@ -158,7 +157,7 @@ describe('readOpenCodeNativeLogs', () => {
     expect(readOpenCodeNativeLogs(['ses-1'], { logDirs: [dir] })).toHaveLength(1)
   })
 
-  it('complete snapshots include old and oversized files beyond diagnostic defaults', () => {
+  it('complete reads include old and oversized files beyond diagnostic defaults', () => {
     const dir = makeLogDir()
     const now = Date.now() / 1000
     for (let index = 0; index < 11; index += 1) {
@@ -174,12 +173,11 @@ describe('readOpenCodeNativeLogs', () => {
     utimesSync(oversizedPath, now - 101, now - 101)
 
     expect(readOpenCodeNativeLogs(['ses-old'], { logDirs: [dir] })).toHaveLength(0)
-    const snapshot = readOpenCodeNativeLogSnapshot(['ses-old'], { logDirs: [dir] })
-    expect(snapshot.entries.map(entry => entry.content)).toEqual([
+    const entries = readOpenCodeNativeLogs(['ses-old'], { logDirs: [dir], complete: true })
+    expect(entries.map(entry => entry.content)).toEqual([
       expect.stringContaining('large history'),
       expect.stringContaining('old history'),
     ])
-    expect(snapshot.snapshotKey).toMatch(/^[a-f0-9]{64}$/)
   })
 
   it('serializes stable native identities through the client fold', async () => {

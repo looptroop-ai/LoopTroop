@@ -103,6 +103,9 @@ distinct from complete-history work. Malformed list rows are isolated, invalid
 partial updates cannot erase valid cached values, and malformed detail
 responses remain visible as errors.
 
+Native DEBUG logs refresh when a file is rewritten without changing its size;
+older cursors still read their original snapshot.
+
 ### Every way to install it
 
 <details>

@@ -471,45 +471,6 @@ export async function readOpenCodeNativeLogFile(
   return results
 }
 
-export interface OpenCodeNativeLogSnapshot {
-  snapshotKey: string
-  entries: OpenCodeNativeLogEntry[]
-}
-
-function getNativeSnapshotKey(sessionIds: string[], candidates: OpenCodeNativeLogFile[]): string {
-  return createHash('sha256')
-    .update(JSON.stringify({
-      sessions: [...new Set(sessionIds)].sort(),
-      files: candidates.map(candidate => [candidate.path, candidate.fileIdentity ?? '', candidate.mtimeMs, candidate.size]),
-    }))
-    .digest('hex')
-}
-
-/** Return only the stable file-manifest identity; this does not parse log bodies. */
-export function getOpenCodeNativeLogSnapshotKey(
-  sessionIds: string[],
-  options: OpenCodeLogDiagnosticOptions = {},
-): string {
-  if (sessionIds.length === 0) return 'empty'
-  return getNativeSnapshotKey(sessionIds, readCandidateLogFiles({ ...options, complete: true }))
-}
-
-/**
- * Complete history is intentionally opt-in. Diagnostics retain their cheap
- * newest-file/size defaults; the history projection takes one complete file
- * snapshot, indexes it, and pages that index instead of reparsing every file.
- */
-export function readOpenCodeNativeLogSnapshot(
-  sessionIds: string[],
-  options: OpenCodeLogDiagnosticOptions = {},
-): OpenCodeNativeLogSnapshot {
-  if (sessionIds.length === 0) return { snapshotKey: 'empty', entries: [] }
-  const candidates = readCandidateLogFiles({ ...options, complete: true })
-  const snapshotKey = getNativeSnapshotKey(sessionIds, candidates)
-  const entries = readOpenCodeNativeLogs(sessionIds, { ...options, complete: true })
-  return { snapshotKey, entries }
-}
-
 export function findOpenCodeLogErrorDetails(
   sessionId: string | undefined,
   options: OpenCodeLogDiagnosticOptions = {},

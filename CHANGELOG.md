@@ -260,6 +260,7 @@ Unreleased changes appear first and represent commits that have not yet been inc
 - Three aliases re-exported for a question-diff type that no longer exists, the three helpers behind them, an execution-setup runtime-path list with no reader, and an execution-setup barrel re-exporting three artifact names every caller already imports from their own module.
 
 ### Fixed
+- Native DEBUG history refreshes same-size file rewrites without changing retained cursors.
 - Routed forms now warn only when their current values differ from the saved or hydrated baseline. Hydration, failed saves, refetches and later edits no longer overwrite or clear a draft that is still in progress; successful saves acknowledge only the snapshot they actually saved.
 - Live stream recovery now refreshes the ticket broadly only for an initial stored cursor or an explicit replay gap. Confirmed deletion fences late responses, pending AI-detail invalidations, question collapse state, UI revisions and SSE cursors so a reissued ticket identifier starts clean while unrelated tickets remain untouched.
 - Full Log history refreshes from the newest page, retains loaded snapshots and model tabs, and uses explicit complete-history drains for navigation and export instead of mounting the whole archive. Cursor expiry produces a typed retry path, while diagnostics distinguish bounded reads from complete history.

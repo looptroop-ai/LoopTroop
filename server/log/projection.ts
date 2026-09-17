@@ -713,9 +713,7 @@ async function ingestNativeFilesOnce(
     const truncated = Boolean(previous && candidate.size < previous.size)
     const appended = Boolean(previous && !identityChanged && !truncated && candidate.size > previous.size)
     const rewritten = Boolean(previous && !appended
-      && candidate.mtimeMs !== previous.mtime_ms
-      && !candidateIdentity
-      && !previous.file_identity)
+      && candidate.mtimeMs !== previous.mtime_ms)
     const changed = !previous || identityChanged || truncated || appended || rewritten
     if (!changed && !needsSessionScan) {
       if (previous && (previous.mtime_ms !== candidate.mtimeMs || previous.file_identity !== candidateIdentity)) {
@@ -960,7 +958,7 @@ function sqliteNativeFilesForSessions(
 
 function nativeSnapshotKey(sessionIds: string[], files: NativeFileIndexRow[]): string {
   return createHash('sha256').update(JSON.stringify({
-    sessions: [...new Set(sessionIds)].sort(),
+    sessions: [...new Set(sessionIds)].sort((left, right) => left < right ? -1 : left > right ? 1 : 0),
     files: files.map(file => [file.path, file.file_identity, file.mtime_ms, file.size, file.generation]),
   })).digest('hex')
 }

@@ -60,6 +60,37 @@ function createBasicTicket(input: {
   return { project, ticket }
 }
 
+function createInterviewBatchTicket(input: {
+  batchNumber?: number
+  maxInitialQuestions?: number
+  progress?: { current: number; total: number }
+} = {}): PublicTicket {
+  const { ticket } = createBasicTicket()
+  patchTicket(ticket.id, { status: 'WAITING_INTERVIEW_ANSWERS' })
+  const maxInitialQuestions = input.maxInitialQuestions ?? 1
+  const base = createInterviewSessionSnapshot({
+    winnerId: 'openai/gpt-5-mini',
+    compiledQuestions: [{ id: 'Q01', phase: 'Foundation', question: 'Why?' }],
+    maxInitialQuestions,
+  })
+  const batchNumber = input.batchNumber ?? 1
+  const batch = buildPersistedBatch({
+    questions: [{ id: 'Q01', phase: 'Foundation', question: 'Why?' }],
+    progress: input.progress ?? { current: 1, total: maxInitialQuestions },
+    isComplete: false,
+    isFinalFreeForm: false,
+    aiCommentary: 'One question.',
+    batchNumber,
+  }, 'prom4', base)
+  upsertLatestPhaseArtifact(
+    ticket.id,
+    INTERVIEW_SESSION_ARTIFACT,
+    'WAITING_INTERVIEW_ANSWERS',
+    serializeInterviewSessionSnapshot(recordPreparedBatch(base, batch)),
+  )
+  return ticket
+}
+
 describe('ticketRouter basic ticket routes', () => {
   beforeEach(() => {
     process.env.LOOPTROOP_OPENCODE_MODE = 'mock'
@@ -238,27 +269,7 @@ describe('ticketRouter basic ticket routes', () => {
   })
 
   it('submits an interview answer batch through the synchronous mock route path', async () => {
-    const { ticket } = createBasicTicket()
-    patchTicket(ticket.id, { status: 'WAITING_INTERVIEW_ANSWERS' })
-    const base = createInterviewSessionSnapshot({
-      winnerId: 'openai/gpt-5-mini',
-      compiledQuestions: [{ id: 'Q01', phase: 'Foundation', question: 'Why?' }],
-      maxInitialQuestions: 1,
-    })
-    const batch = buildPersistedBatch({
-      questions: [{ id: 'Q01', phase: 'Foundation', question: 'Why?' }],
-      progress: { current: 1, total: 1 },
-      isComplete: false,
-      isFinalFreeForm: false,
-      aiCommentary: 'One question.',
-      batchNumber: 1,
-    }, 'prom4', base)
-    upsertLatestPhaseArtifact(
-      ticket.id,
-      INTERVIEW_SESSION_ARTIFACT,
-      'WAITING_INTERVIEW_ANSWERS',
-      serializeInterviewSessionSnapshot(recordPreparedBatch(base, batch)),
-    )
+    const ticket = createInterviewBatchTicket()
     vi.mocked(handleInterviewQABatch).mockResolvedValue({
       questions: [
         {
@@ -320,27 +331,7 @@ describe('ticketRouter basic ticket routes', () => {
   })
 
   it('refuses a second answer batch while one is already being processed', async () => {
-    const { ticket } = createBasicTicket()
-    patchTicket(ticket.id, { status: 'WAITING_INTERVIEW_ANSWERS' })
-    const base = createInterviewSessionSnapshot({
-      winnerId: 'openai/gpt-5-mini',
-      compiledQuestions: [{ id: 'Q01', phase: 'Foundation', question: 'Why?' }],
-      maxInitialQuestions: 1,
-    })
-    const batch = buildPersistedBatch({
-      questions: [{ id: 'Q01', phase: 'Foundation', question: 'Why?' }],
-      progress: { current: 1, total: 1 },
-      isComplete: false,
-      isFinalFreeForm: false,
-      aiCommentary: 'One question.',
-      batchNumber: 1,
-    }, 'prom4', base)
-    upsertLatestPhaseArtifact(
-      ticket.id,
-      INTERVIEW_SESSION_ARTIFACT,
-      'WAITING_INTERVIEW_ANSWERS',
-      serializeInterviewSessionSnapshot(recordPreparedBatch(base, batch)),
-    )
+    const ticket = createInterviewBatchTicket()
     vi.mocked(claimInterviewBatch).mockReturnValueOnce(null)
 
     const response = await app.request(`/api/tickets/${ticket.id}/answer-batch`, {
@@ -357,27 +348,11 @@ describe('ticketRouter basic ticket routes', () => {
   })
 
   it('rejects stale and unknown answer-batch identities before claiming the ticket', async () => {
-    const { ticket } = createBasicTicket()
-    patchTicket(ticket.id, { status: 'WAITING_INTERVIEW_ANSWERS' })
-    const base = createInterviewSessionSnapshot({
-      winnerId: 'openai/gpt-5-mini',
-      compiledQuestions: [{ id: 'Q01', phase: 'Foundation', question: 'Why?' }],
-      maxInitialQuestions: 2,
-    })
-    const batch = buildPersistedBatch({
-      questions: [{ id: 'Q01', phase: 'Foundation', question: 'Why?' }],
-      progress: { current: 1, total: 2 },
-      isComplete: false,
-      isFinalFreeForm: false,
-      aiCommentary: 'One question.',
+    const ticket = createInterviewBatchTicket({
       batchNumber: 2,
-    }, 'prom4', base)
-    upsertLatestPhaseArtifact(
-      ticket.id,
-      INTERVIEW_SESSION_ARTIFACT,
-      'WAITING_INTERVIEW_ANSWERS',
-      serializeInterviewSessionSnapshot(recordPreparedBatch(base, batch)),
-    )
+      maxInitialQuestions: 2,
+      progress: { current: 1, total: 2 },
+    })
 
     const stale = await app.request(`/api/tickets/${ticket.id}/answer-batch`, {
       method: 'POST',
@@ -408,27 +383,7 @@ describe('ticketRouter basic ticket routes', () => {
     delete process.env.LOOPTROOP_OPENCODE_MODE
     vi.useFakeTimers()
     try {
-      const { ticket } = createBasicTicket()
-      patchTicket(ticket.id, { status: 'WAITING_INTERVIEW_ANSWERS' })
-      const base = createInterviewSessionSnapshot({
-        winnerId: 'openai/gpt-5-mini',
-        compiledQuestions: [{ id: 'Q01', phase: 'Foundation', question: 'Why?' }],
-        maxInitialQuestions: 1,
-      })
-      const batch = buildPersistedBatch({
-        questions: [{ id: 'Q01', phase: 'Foundation', question: 'Why?' }],
-        progress: { current: 1, total: 1 },
-        isComplete: false,
-        isFinalFreeForm: false,
-        aiCommentary: 'One question.',
-        batchNumber: 1,
-      }, 'prom4', base)
-      upsertLatestPhaseArtifact(
-        ticket.id,
-        INTERVIEW_SESSION_ARTIFACT,
-        'WAITING_INTERVIEW_ANSWERS',
-        serializeInterviewSessionSnapshot(recordPreparedBatch(base, batch)),
-      )
+      const ticket = createInterviewBatchTicket()
       // Never settles, which is what a background task that ignores the abort
       // looks like. The safety route test covers confirmed cleanup with a real
       // process; this mock supplies no persisted receipt to restore here.
@@ -456,27 +411,7 @@ describe('ticketRouter basic ticket routes', () => {
     delete process.env.LOOPTROOP_OPENCODE_MODE
     vi.useFakeTimers()
     try {
-      const { ticket } = createBasicTicket()
-      patchTicket(ticket.id, { status: 'WAITING_INTERVIEW_ANSWERS' })
-      const base = createInterviewSessionSnapshot({
-        winnerId: 'openai/gpt-5-mini',
-        compiledQuestions: [{ id: 'Q01', phase: 'Foundation', question: 'Why?' }],
-        maxInitialQuestions: 1,
-      })
-      const batch = buildPersistedBatch({
-        questions: [{ id: 'Q01', phase: 'Foundation', question: 'Why?' }],
-        progress: { current: 1, total: 1 },
-        isComplete: false,
-        isFinalFreeForm: false,
-        aiCommentary: 'One question.',
-        batchNumber: 1,
-      }, 'prom4', base)
-      upsertLatestPhaseArtifact(
-        ticket.id,
-        INTERVIEW_SESSION_ARTIFACT,
-        'WAITING_INTERVIEW_ANSWERS',
-        serializeInterviewSessionSnapshot(recordPreparedBatch(base, batch)),
-      )
+      const ticket = createInterviewBatchTicket()
       vi.mocked(processInterviewBatchAsync).mockReturnValue(new Promise(() => {}))
 
       const request = () => app.request(`/api/tickets/${ticket.id}/answer-batch`, {

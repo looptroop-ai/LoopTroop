@@ -68,6 +68,8 @@ export const upsertUiStateSchema = z.object({
 })
 
 const interviewAnswerFieldsSchema = {
+  /** Batches are single-use; the server checks this against the active batch. */
+  batchNumber: z.number().int().positive(),
   answers: z.record(z.string(), z.string()).default({}),
   selectedOptions: z.record(z.string(), z.array(z.string())).optional().default({}),
   /** Keyed by question id. Validated against the questions the batch actually skips. */
@@ -95,6 +97,7 @@ export const editAnswerSchema = z.object({
 }).strict()
 
 export const interviewApprovalAnswerSchema = z.object({
+  expectedContentSha256: z.string().regex(/^[a-f0-9]{64}$/).optional(),
   questions: z.array(z.object({
     id: z.string().min(1),
     answer: z.object({
@@ -115,10 +118,12 @@ const RAW_ARTIFACT_CONTENT_MAX_BYTES = 1_000_000
 
 export const rawInterviewSaveSchema = z.object({
   content: z.string().max(RAW_ARTIFACT_CONTENT_MAX_BYTES),
+  expectedContentSha256: z.string().regex(/^[a-f0-9]{64}$/).optional(),
 })
 
 export const rawPrdSaveSchema = z.object({
   content: z.string().max(RAW_ARTIFACT_CONTENT_MAX_BYTES),
+  expectedContentSha256: z.string().regex(/^[a-f0-9]{64}$/).optional(),
 })
 
 const prdUserStorySchema = z.object({
@@ -175,6 +180,7 @@ export const prdDocumentSchema = z.object({
 
 export const structuredPrdSaveSchema = z.object({
   document: prdDocumentSchema,
+  expectedContentSha256: z.string().regex(/^[a-f0-9]{64}$/).optional(),
 }).strict()
 
 export const rawExecutionSetupPlanSaveSchema = z.object({

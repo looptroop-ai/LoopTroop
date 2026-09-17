@@ -5,7 +5,7 @@ import { clearProjectDatabaseCache } from '../../db/project'
 import { attachProject } from '../../storage/projects'
 import { createTicket } from '../../storage/tickets'
 import { createFixtureRepoManager } from '../../test/fixtureRepo'
-import { cleanupTicketState } from '../phases/state'
+import { cancelTicket, cleanupTicketState } from '../phases/state'
 import {
   claimInterviewBatch,
   hasInFlightInterviewBatch,
@@ -173,6 +173,19 @@ describe('cleanupTicketState', () => {
     cleanupTicketState(TICKET)
 
     expect(isTicketWorkSuspended(TICKET)).toBe(false)
+  })
+
+  it('keeps the suspended budget during local cancellation until remote stop is confirmed', () => {
+    suspendTicketWork(TICKET)
+    expect(claimInterviewBatch(TICKET)).toBeTruthy()
+
+    cancelTicket(TICKET)
+
+    expect(isTicketWorkSuspended(TICKET)).toBe(true)
+    expect(hasInFlightInterviewBatch(TICKET)).toBe(true)
+    cleanupTicketState(TICKET)
+    expect(isTicketWorkSuspended(TICKET)).toBe(false)
+    expect(hasInFlightInterviewBatch(TICKET)).toBe(false)
   })
 
   it('drops pending session continuations', () => {

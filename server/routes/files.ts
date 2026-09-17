@@ -56,10 +56,20 @@ function normalizeLogChannel(channel?: string): LogChannel {
  * back. Both fill in `audience` and `kind` where a row omits them.
  */
 function normalizeLogEntry(entry: unknown): Record<string, unknown> | null {
-  return normalizePersistedLogEntry(entry)
+  const normalized = normalizePersistedLogEntry(entry)
+  if (!normalized || !entry || typeof entry !== 'object' || Array.isArray(entry)) return normalized
+  const raw = entry as Record<string, unknown>
+  // A missing/unknown attempt is not attempt one. Preserve an explicit null
+  // through the shared normalizer so filters and the UI can distinguish an
+  // unscoped row from a row that belongs to the first attempt.
+  if (Object.prototype.hasOwnProperty.call(raw, 'phaseAttempt') && raw.phaseAttempt == null) {
+    normalized.phaseAttempt = null
+  }
+  return normalized
 }
 
 function getEntryPhaseAttempt(entry: Record<string, unknown>): number | null {
+  if (entry.phaseAttempt === null || entry.phaseAttempt === undefined || entry.phaseAttempt === '') return null
   const phaseAttempt = typeof entry.phaseAttempt === 'number' && Number.isFinite(entry.phaseAttempt)
     ? entry.phaseAttempt
     : Number(entry.phaseAttempt)
@@ -210,7 +220,7 @@ filesRouter.get('/files/:ticketId/logs', async (c) => {
   const currentPhaseAttempt = !isAuxiliaryChannel && !hasCurrentStatusEntry ? resolvePhaseAttempt(ticketId, ticket.status) : null
   const syntheticMatchesFilters = logEntryMatchesFilters({
     phase: ticket.status,
-    phaseAttempt: currentPhaseAttempt ?? 1,
+    phaseAttempt: currentPhaseAttempt,
     status: ticket.status,
   }, filters)
   if (!isAuxiliaryChannel && !hasCurrentStatusEntry && syntheticMatchesFilters) {
@@ -219,7 +229,7 @@ filesRouter.get('/files/:ticketId/logs', async (c) => {
       timestamp: ticket.updatedAt ?? nowIso,
       type: 'info',
       phase: ticket.status,
-      phaseAttempt: currentPhaseAttempt ?? 1,
+      phaseAttempt: currentPhaseAttempt,
       status: ticket.status,
       source: 'system',
       message: `[SYS] Status ${ticket.status} is active. Older runs may not have generated status-scoped logs yet.`,

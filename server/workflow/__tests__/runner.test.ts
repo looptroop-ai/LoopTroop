@@ -6,6 +6,11 @@ import { attachWorkflowRunner } from '../runner'
 import { phaseIntermediate, runningPhases, ticketAbortControllers } from '../phases'
 import { OpenCodeUnavailableError, TicketWorkspaceNotInitializedError } from '../../lib/workflowErrors'
 import { TEST, makeTicketContext } from '../../test/factories'
+import {
+  clearAllPendingSessionContinuationsForTests,
+  hasPendingSessionContinuationForTicketPhase,
+  requestSessionContinuation,
+} from '../../opencode/sessionContinuation'
 
 function createSnapshotActor(value: string, overrides: Partial<TicketContext> = {}) {
   const context = makeTicketContext(overrides)
@@ -35,6 +40,7 @@ const {
   handleMockExecutionUnsupportedMock,
   emitPhaseLogMock,
   isMockOpenCodeModeMock,
+  abortTicketSessionsMock,
 } = vi.hoisted(() => ({
   mockLifecyclePhaseMocks: {
     handleMockCouncilDeliberate: vi.fn(),
@@ -58,6 +64,7 @@ const {
   handleMockExecutionUnsupportedMock: vi.fn(),
   emitPhaseLogMock: vi.fn(),
   isMockOpenCodeModeMock: vi.fn(),
+  abortTicketSessionsMock: vi.fn(),
 }))
 
 vi.mock('../../opencode/factory', async () => {
@@ -67,6 +74,11 @@ vi.mock('../../opencode/factory', async () => {
     isMockOpenCodeMode: isMockOpenCodeModeMock,
   }
 })
+
+vi.mock('../../opencode/sessionManager', async (importOriginal) => ({
+  ...await importOriginal<typeof import('../../opencode/sessionManager')>(),
+  abortTicketSessions: abortTicketSessionsMock,
+}))
 
 vi.mock('../phases', async () => {
   const actual = await vi.importActual<typeof import('../phases')>('../phases')
@@ -107,6 +119,8 @@ describe('attachWorkflowRunner', () => {
     handleMockExecutionUnsupportedMock.mockReset()
     emitPhaseLogMock.mockReset()
     isMockOpenCodeModeMock.mockReset()
+    abortTicketSessionsMock.mockReset()
+    clearAllPendingSessionContinuationsForTests()
     phaseIntermediate.clear()
   })
 
@@ -385,6 +399,33 @@ describe('attachWorkflowRunner', () => {
       expect(phaseIntermediate.has(`${TEST.ticketId}:prd`)).toBe(false)
     })
     expect(controller.signal.aborted).toBe(false)
+  })
+
+  it('retains cancellation state after an unconfirmed stop and cleans it after a later confirmation', async () => {
+    requestSessionContinuation({
+      ticketId: TEST.ticketId,
+      phase: 'CODING',
+      sessionId: 'ses-canceled',
+    })
+    abortTicketSessionsMock.mockResolvedValueOnce(false).mockResolvedValueOnce(true)
+    const actor = createSnapshotActor('CANCELED', {
+      title: 'Runner cancellation stop test',
+      status: 'CANCELED',
+      previousStatus: 'CODING',
+    })
+
+    actor.start()
+    attachWorkflowRunner(TEST.ticketId, actor, vi.fn())
+    await vi.waitFor(() => expect(abortTicketSessionsMock).toHaveBeenCalledTimes(1))
+    await vi.waitFor(() => expect(hasPendingSessionContinuationForTicketPhase(TEST.ticketId, 'CODING')).toBe(true))
+
+    // Let the first cleanup promise clear its in-flight guard before asking
+    // the runner to process the same terminal snapshot again.
+    await new Promise((resolve) => setTimeout(resolve, 0))
+    attachWorkflowRunner(TEST.ticketId, actor, vi.fn())
+    await vi.waitFor(() => expect(abortTicketSessionsMock).toHaveBeenCalledTimes(2))
+    await vi.waitFor(() => expect(hasPendingSessionContinuationForTicketPhase(TEST.ticketId, 'CODING')).toBe(false))
+    actor.stop()
   })
 
   it('continues CODING after a bead-complete self-transition', async () => {

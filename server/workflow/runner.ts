@@ -9,10 +9,13 @@ import {
   mergeErrorCodes,
 } from '../opencode/blockedErrorDiagnostics'
 import { getErrorMessage } from '@shared/typeGuards'
+import { abortTicketSessions } from '../opencode/sessionManager'
+import { clearTicketWindows } from './questionWindows'
 
 const ERR_DELIBERATION_DATA_LOST = 'Council data lost after restart. Retry to re-run deliberation.'
 const ERR_PRD_DATA_LOST = 'Council data lost after restart. Retry to re-run PRD drafting.'
 const ERR_BEADS_DATA_LOST = 'Council data lost after restart. Retry to re-run beads drafting.'
+const cancellationCleanupInFlight = new Set<string>()
 
 // Import from phase modules
 import {
@@ -34,6 +37,7 @@ import {
   handleInterviewCompile,
   handleInterviewQAStart,
   claimInterviewBatch,
+  renewInterviewBatchClaim,
   handleInterviewQABatch,
   processInterviewBatchAsync,
   releaseInterviewBatch,
@@ -89,6 +93,7 @@ import { OpenCodeUnavailableError, TicketWorkspaceNotInitializedError } from '..
 export {
   cancelTicket,
   claimInterviewBatch,
+  renewInterviewBatchClaim,
   handleInterviewQABatch,
   processInterviewBatchAsync,
   releaseInterviewBatch,
@@ -239,6 +244,26 @@ export function attachWorkflowRunner(
     // When the ticket reaches CANCELED, abort all running work
     if (state === 'CANCELED') {
       cancelTicket(ticketId)
+      if (!cancellationCleanupInFlight.has(ticketId)) {
+        cancellationCleanupInFlight.add(ticketId)
+        void (async () => {
+          const sessionsStopped = await abortTicketSessions(ticketId)
+          const windowsCleared = sessionsStopped
+            ? await clearTicketWindows(ticketId, 'ticket_canceled', 'The ticket was canceled while the question was open.')
+            : false
+          if (!sessionsStopped || !windowsCleared) {
+            console.warn(`[workflow] Could not confirm cancellation cleanup for ticket ${ticketId}; retaining remote-session state`)
+            return
+          }
+          cleanupTicketState(ticketId)
+        })()
+          .catch((err: unknown) => {
+            console.warn(`[workflow] Cancellation cleanup failed for ticket ${ticketId}; retaining remote-session state:`, err)
+          })
+          .finally(() => {
+            cancellationCleanupInFlight.delete(ticketId)
+          })
+      }
       return
     }
 

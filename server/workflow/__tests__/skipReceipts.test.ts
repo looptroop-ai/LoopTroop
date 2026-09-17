@@ -106,6 +106,38 @@ describe('skip receipts', () => {
     expect(listSkipEvents(ticket.id)).toHaveLength(1)
   })
 
+  it('deduplicates a decision within an attempt but records it again in a later attempt', () => {
+    const ticket = makeTicket()
+    ensureActivePhaseAttempt(ticket.id, 'WAITING_INTERVIEW_ANSWERS')
+    const input = {
+      ticketId: ticket.id,
+      surface: 'interview_question' as const,
+      itemType: 'interview_question' as const,
+      phase: 'WAITING_INTERVIEW_ANSWERS' as const,
+      ticketStatusBefore: 'WAITING_INTERVIEW_ANSWERS',
+      actionId: 'same-action-different-attempt',
+      items: [{ itemId: 'Q01', reason: 'First attempt.' }],
+    }
+
+    const first = writeSkipReceipts(input)
+    expect(writeSkipReceipts(input)).toHaveLength(0)
+    expect(hasSkipReceiptsForAction(ticket.id, input.actionId, {
+      phase: input.phase,
+      phaseAttempt: 1,
+    })).toBe(true)
+
+    archiveActivePhaseAttempts(ticket.id, [input.phase], 'test_retry')
+    createFreshPhaseAttempts(ticket.id, [input.phase])
+    const second = writeSkipReceipts({ ...input, items: [{ itemId: 'Q01', reason: 'Second attempt.' }] })
+    expect(second).toHaveLength(1)
+    expect(second[0]?.receipt_id).not.toBe(first[0]?.receipt_id)
+    expect(hasSkipReceiptsForAction(ticket.id, input.actionId, {
+      phase: input.phase,
+      phaseAttempt: 2,
+    })).toBe(true)
+    expect(listSkipEvents(ticket.id)).toHaveLength(2)
+  })
+
   it('returns only inserted receipts when a batch repeats an item', () => {
     const ticket = makeTicket()
     const written = writeSkipReceipts({

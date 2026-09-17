@@ -153,6 +153,7 @@ describe('handleCoding', () => {
     commitBeadChangesMock.mockReturnValue({ committed: true, pushed: false })
     captureBeadDiffMock.mockReturnValue({ ok: true, diff: 'diff --git a/file.ts b/file.ts' })
     assembleBeadContextMock.mockResolvedValue([])
+    abortSessionMock.mockResolvedValue(true)
   })
 
   afterAll(() => {
@@ -707,6 +708,41 @@ describe('handleCoding', () => {
     expect(listOpenCodeSessionsForTicket(ticket.id, ['abandoned']).map((session) => session.sessionId))
       .toEqual(['ses-interrupted'])
     expect(sendEvent).toHaveBeenCalledWith({ type: 'ALL_BEADS_DONE' })
+  })
+
+  it('withholds interrupted-bead reset when the remote session stop is unconfirmed', async () => {
+    const { ticket, context } = await createInitializedTestTicket(repoManager, {
+      title: 'Do not reset while interrupted session may still run',
+    })
+    writeTicketBeads(ticket.id, [
+      makePendingBead('bead-1', 1, {
+        status: 'in_progress',
+        iteration: 2,
+        beadStartCommit: 'start-sha',
+      }),
+    ])
+    const ticketContext = getTicketContext(ticket.id)
+    if (!ticketContext) throw new Error('Expected ticket context')
+    ticketContext.projectDb.insert(opencodeSessions).values({
+      sessionId: 'ses-unconfirmed-stop',
+      ticketId: ticketContext.localTicketId,
+      phase: 'CODING',
+      phaseAttempt: 1,
+      beadId: 'bead-1',
+      iteration: 2,
+      state: 'active',
+    }).run()
+    abortSessionMock.mockResolvedValue(false)
+    const sendEvent = vi.fn()
+
+    await expect(handleCoding(ticket.id, context, sendEvent, new AbortController().signal))
+      .rejects.toThrow(/Could not safely recover bead bead-1/)
+
+    expect(resetToBeadStartMock).not.toHaveBeenCalled()
+    expect(executeBeadMock).not.toHaveBeenCalled()
+    expect(listOpenCodeSessionsForTicket(ticket.id, ['active']).map((session) => session.sessionId))
+      .toEqual(['ses-unconfirmed-stop'])
+    expect(sendEvent).not.toHaveBeenCalledWith({ type: 'ALL_BEADS_DONE' })
   })
 
   it('continues an interrupted in-progress bead without resetting when a session continuation is pending', async () => {

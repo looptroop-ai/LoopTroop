@@ -14,6 +14,14 @@ import {
   releaseInterviewBatch,
   skipAllInterviewQuestionsToApproval,
 } from '../../workflow/runner'
+import {
+  claimInterviewBatchAfterConfirmedStop,
+  getPendingInterviewBatchStop,
+  getPendingInterviewBatchStopToken,
+  markInterviewBatchStopPending,
+  restoreInterviewBatchAfterFailure,
+  type InterviewBatchSkipReceipt,
+} from '../../workflow/phases/interviewPhase'
 import { abortTicketWork } from '../../workflow/phases/state'
 import {
   resolveAiResponseTimeoutForTicket,
@@ -40,12 +48,14 @@ import type { InterviewDocument } from '@shared/interviewArtifact'
 import {
   buildDraftInterviewDocumentFromAnswerUpdates,
   buildDraftInterviewDocumentFromRawContent,
+  invalidateDownstreamPlanningArtifacts,
   readInterviewDocument,
   saveApprovedInterviewDocument,
   saveInterviewDocument,
 } from '../../phases/interview/finalDocument'
 import { isBeforeExecution, isStatusAtOrPast } from '@shared/workflowMeta'
 import { getErrorMessage } from '@shared/typeGuards'
+import { assertExpectedContentSha256, StaleArtifactApprovalError } from '../../lib/artifactApproval'
 import { contentSha256 } from '../../lib/contentHash'
 import { writeUserEditReceipt } from '../../workflow/artifactEditReceipts'
 import {
@@ -56,12 +66,16 @@ import {
 } from '../../workflow/skipReceipts'
 import {
   buildRouteStatePayload,
+  assertPlanningEditClaim,
+  claimPlanningEdit,
   emitRoutePhaseLog,
   getTicketParam,
   logTicketOperationError,
+  PlanningEditClaimLostError,
   preparePlanningRestart,
   readJsonBody,
   rejectDisplayOnlyMockTicket,
+  releasePlanningEdit,
   respondWithState,
 } from './routeUtils'
 import {
@@ -71,6 +85,30 @@ import {
   interviewSkipAllPayloadSchema,
   rawInterviewSaveSchema,
 } from './schemas'
+
+class MissingArtifactSavePreconditionError extends Error {}
+
+function staleInterviewSaveResponse(c: Context, err: StaleArtifactApprovalError) {
+  return c.json({
+    error: 'Stale approval',
+    artifactType: err.artifactType,
+    expectedContentSha256: err.expectedContentSha256,
+    currentContentSha256: err.currentContentSha256,
+  }, 409)
+}
+
+function readInterviewSaveBaseline(ticketId: string, expectedContentSha256: string | undefined) {
+  if (!expectedContentSha256) {
+    throw new MissingArtifactSavePreconditionError('Interview save requires the hash of the loaded document')
+  }
+  const current = readInterviewDocument(ticketId)
+  assertExpectedContentSha256({
+    artifactType: 'interview',
+    currentContent: current.raw,
+    expectedContentSha256,
+  })
+  return current
+}
 
 /**
  * A reason only means something attached to a skip.
@@ -84,6 +122,14 @@ function findReasonsForAnsweredQuestions(
   skippedQuestionIds: Set<string>,
 ): string[] {
   return Object.keys(skipReasons).filter((questionId) => !skippedQuestionIds.has(questionId))
+}
+
+function findUnknownBatchQuestionIds(
+  questions: ReadonlyArray<{ id: string }>,
+  ...records: Array<Record<string, unknown>>
+): string[] {
+  const allowedIds = new Set(questions.map((question) => question.id))
+  return [...new Set(records.flatMap((record) => Object.keys(record).filter((questionId) => !allowedIds.has(questionId))))]
 }
 
 /**
@@ -252,8 +298,21 @@ export async function handleSkipTicket(c: Context) {
   if (!skipAllSession) {
     return c.json({ error: 'No interview session found' }, 404)
   }
+  const skipAllBatch = skipAllSession.currentBatch
+  if (!skipAllBatch || parsed.data.batchNumber !== skipAllBatch.batchNumber) {
+    return c.json({ error: 'Interview batch is stale; refresh before submitting' }, 409)
+  }
+  const unknownSkipQuestionIds = findUnknownBatchQuestionIds(
+    skipAllBatch.questions,
+    parsed.data.answers,
+    parsed.data.selectedOptions,
+    parsed.data.skipReasons,
+  )
+  if (unknownSkipQuestionIds.length > 0) {
+    return c.json({ error: 'Invalid answers payload', questionIds: unknownSkipQuestionIds }, 400)
+  }
   const skipAllSelectionErrors = collectBatchSelectionErrors(
-    skipAllSession.currentBatch?.questions ?? [],
+    skipAllBatch.questions,
     parsed.data.selectedOptions,
   )
   if (skipAllSelectionErrors.length > 0) {
@@ -272,36 +331,88 @@ export async function handleSkipTicket(c: Context) {
     }, 400)
   }
 
-  // The same claim the answer-batch route takes, for the same reason. Skipping
-  // the rest rewrites the session and moves the ticket on; an answer batch
-  // still running underneath then fails and reverts to *its* snapshot, undoing
-  // the skip-all entirely. The batch stays in `WAITING_INTERVIEW_ANSWERS`, so
-  // nothing else was stopping the two from overlapping.
-  const skipClaimToken = claimInterviewBatch(ticketId)
-  if (!skipClaimToken) {
-    return c.json({ error: 'An answer batch for this ticket is already being processed' }, 409)
+  // The same claim the answer-batch route takes, for the same reason. A
+  // failed remote stop becomes a durable marker. The retry confirms the stop
+  // before promoting that marker, so an expired lease can never let a second
+  // operation race an old remote worker.
+  const pendingStop = getPendingInterviewBatchStop(ticketId)
+  if (pendingStop === 'answer') {
+    return c.json({ error: 'An answer batch stop is awaiting confirmation; try again shortly' }, 409)
+  }
+
+  let skipClaimToken: string | null = null
+  let retainedPendingStop = false
+  if (pendingStop === 'skip') {
+    // Capture the exact marker before awaiting the remote stop. A concurrent
+    // retry may create a new generation with the same kind while this request
+    // is paused; confirming that newer marker would let this older caller
+    // release work it never stopped.
+    const pendingStopToken = getPendingInterviewBatchStopToken(ticketId, 'skip')
+    if (!pendingStopToken) {
+      return c.json({ error: 'The interview stop changed while retrying; try again shortly' }, 409)
+    }
+    let sessionsStopped = false
+    try {
+      sessionsStopped = await abortTicketSessions(ticketId)
+    } catch (err) {
+      console.warn(`[tickets] Failed to retry abort for ${ticketId} before skip-all:`, err)
+    }
+    if (!sessionsStopped) {
+      return c.json({ error: 'Could not confirm the interview stopped; try again shortly' }, 409)
+    }
+    skipClaimToken = claimInterviewBatchAfterConfirmedStop(ticketId, 'skip', pendingStopToken)
+    if (!skipClaimToken) {
+      return c.json({ error: 'The interview stop changed while retrying; try again shortly' }, 409)
+    }
+  } else {
+    skipClaimToken = claimInterviewBatch(ticketId)
+    if (!skipClaimToken) {
+      return c.json({ error: 'An answer batch for this ticket is already being processed' }, 409)
+    }
   }
 
   try {
     ensureActorForTicket(ticketId)
+    if (!pendingStop) {
+      const initialClaimToken = skipClaimToken
+      if (!initialClaimToken || !markInterviewBatchStopPending(ticketId, initialClaimToken, 'skip')) {
+        retainedPendingStop = true
+        return c.json({ error: 'Could not retain the interview stop for retry' }, 409)
+      }
+      retainedPendingStop = true
+      const pendingStopToken = getPendingInterviewBatchStopToken(ticketId, 'skip')
+      if (!pendingStopToken) {
+        return c.json({ error: 'Could not retain the interview stop for retry' }, 409)
+      }
+      let sessionsStopped = false
+      try {
+        sessionsStopped = await abortTicketSessions(ticketId)
+      } catch (err) {
+        console.warn(`[tickets] Failed to abort interview sessions for ${ticketId} after skip-all:`, err)
+      }
+      if (!sessionsStopped) {
+        return c.json({ error: 'Could not confirm the interview stopped; try again shortly' }, 409)
+      }
+      const confirmedClaim = claimInterviewBatchAfterConfirmedStop(ticketId, 'skip', pendingStopToken)
+      if (!confirmedClaim) {
+        return c.json({ error: 'The interview stop changed while retrying; try again shortly' }, 409)
+      }
+      skipClaimToken = confirmedClaim
+      retainedPendingStop = false
+    }
+
     skipAllInterviewQuestionsToApproval(ticketId, parsed.data.answers, {
       selectedOptions: parsed.data.selectedOptions,
       skipReasons: parsed.data.skipReasons,
       bulkReason: parsed.data.bulkSkipReason ?? null,
     })
 
-    try {
-      await abortTicketSessions(ticketId)
-    } catch (err) {
-      console.warn(`[tickets] Failed to abort interview sessions for ${ticketId} after skip-all:`, err)
-    }
-
     sendTicketEvent(ticketId, { type: 'SKIP_ALL_TO_APPROVAL' })
   } catch (err) {
     logTicketOperationError(ticketId, 'Failed to skip remaining interview questions for ticket', err)
     return c.json({ error: 'Failed to skip remaining interview questions', details: getErrorMessage(err) }, 500)
   } finally {
-    releaseInterviewBatch(ticketId, skipClaimToken)
+    if (!retainedPendingStop && skipClaimToken) releaseInterviewBatch(ticketId, skipClaimToken)
   }
 
   return respondWithState(c, ticketId, 'Remaining interview questions skipped')
@@ -329,11 +440,24 @@ export async function handleAnswerBatch(c: Context) {
   // Determine if the batch needs a slow AI call (PROM4) or can be handled fast
   const sessionArt = getLatestPhaseArtifact(ticketId, INTERVIEW_SESSION_ARTIFACT)
   const session = parseInterviewSessionSnapshot(sessionArt?.content)
+  const currentBatch = session?.currentBatch
+  if (!currentBatch || parsed.data.batchNumber !== currentBatch.batchNumber) {
+    return c.json({ error: 'Interview batch is stale; refresh before submitting' }, 409)
+  }
+  const unknownAnswerQuestionIds = findUnknownBatchQuestionIds(
+    currentBatch.questions,
+    parsed.data.answers,
+    parsed.data.selectedOptions,
+    parsed.data.skipReasons,
+  )
+  if (unknownAnswerQuestionIds.length > 0) {
+    return c.json({ error: 'Invalid answers payload', questionIds: unknownAnswerQuestionIds }, 400)
+  }
 
   // The schema accepts any array of strings; only the question knows whether the
   // ids in it exist, and how many of them it takes.
   const selectionErrors = collectBatchSelectionErrors(
-    session?.currentBatch?.questions ?? [],
+    currentBatch.questions,
     parsed.data.selectedOptions,
   )
   if (selectionErrors.length > 0) {
@@ -341,7 +465,7 @@ export async function handleAnswerBatch(c: Context) {
   }
 
   const batchSkippedIds = new Set(
-    (session?.currentBatch?.questions ?? [])
+    currentBatch.questions
       .filter((question) => isBatchAnswerSkipped(
         question,
         parsed.data.answers[question.id] ?? '',
@@ -357,7 +481,7 @@ export async function handleAnswerBatch(c: Context) {
     }, 400)
   }
 
-  const isCoverageBatch = session?.currentBatch?.source === 'coverage'
+  const isCoverageBatch = currentBatch.source === 'coverage'
   // Non-null only on the asynchronous path, which hands the snapshot to the
   // background task as the state to revert to. The synchronous path does not
   // revert, so it needs no snapshot — and a missing session on the asynchronous
@@ -387,9 +511,43 @@ export async function handleAnswerBatch(c: Context) {
   // The claim's own expiry is the batch's budget plus a margin: every path here
   // releases it explicitly, so the expiry only matters when a daemon dies
   // holding one, and it has to outlast the work it is guarding.
-  const claimToken = claimInterviewBatch(ticketId, batchTimeoutMs + BATCH_PROCESSING_MARGIN_MS)
+  const pendingStop = getPendingInterviewBatchStop(ticketId)
+  if (pendingStop === 'skip') {
+    return c.json({ error: 'A skip-all stop is awaiting confirmation; try again shortly' }, 409)
+  }
+
+  let claimToken: string | null
+  if (pendingStop === 'answer') {
+    // The first timeout already stopped local work. Repeat it here because the
+    // durable marker may be retried by another daemon, and only a confirmed
+    // remote stop may promote the marker back to an ordinary claim.
+    const pendingStopToken = getPendingInterviewBatchStopToken(ticketId, 'answer')
+    if (!pendingStopToken) {
+      return c.json({ error: 'The interview stop changed while retrying; try again shortly' }, 409)
+    }
+    abortTicketWork(ticketId)
+    let sessionsStopped = false
+    try {
+      sessionsStopped = await abortTicketSessions(ticketId)
+    } catch (err) {
+      console.warn(`[tickets] Failed to retry abort for ${ticketId} before answer-batch retry:`, err)
+    }
+    if (!sessionsStopped) {
+      return c.json({ error: 'Could not confirm the interview stopped; try again shortly' }, 409)
+    }
+    claimToken = claimInterviewBatchAfterConfirmedStop(
+      ticketId,
+      'answer',
+      pendingStopToken,
+      batchTimeoutMs + BATCH_PROCESSING_MARGIN_MS,
+    )
+  } else {
+    claimToken = claimInterviewBatch(ticketId, batchTimeoutMs + BATCH_PROCESSING_MARGIN_MS)
+  }
   if (!claimToken) {
-    return c.json({ error: 'An answer batch for this ticket is already being processed' }, 409)
+    return c.json({ error: pendingStop
+      ? 'The interview stop changed while retrying; try again shortly'
+      : 'An answer batch for this ticket is already being processed' }, 409)
   }
 
   try {
@@ -402,29 +560,87 @@ export async function handleAnswerBatch(c: Context) {
       sendTicketEvent(ticketId, { type: 'BATCH_ANSWERED', batchAnswers: parsed.data.answers, selectedOptions: parsed.data.selectedOptions })
 
       let timeoutId: ReturnType<typeof setTimeout> | null = null
+      let timeoutTriggered = false
+      let remoteStopConfirmed = false
+      let persistedReceipt: InterviewBatchSkipReceipt | undefined
       const timeoutPromise = new Promise<never>((_, reject) => {
         timeoutId = setTimeout(() => {
+          timeoutTriggered = true
           abortTicketWork(ticketId)
-          // The background task releases the claim when it settles, and a task
-          // that ignores the abort never does. The claim's own expiry would
-          // free it eventually, but that is a crash backstop measured in the
-          // whole batch budget — a ticket should be answerable again the moment
-          // its batch is abandoned, not one budget later. Releasing twice is
-          // harmless.
-          //
-          // The trade is deliberate: a task that survives its own abort could
-          // now run alongside a new submission. That is the lesser fault. The
-          // abort has already been sent, the batch's rollback state is per call
-          // so the two cannot corrupt each other, and a ticket nobody can
-          // answer until the daemon restarts is worse than a race that needs a
-          // cancellation to be ignored first.
-          releaseInterviewBatch(ticketId, claimToken)
-          reject(new Error('Async batch processing timed out'))
+          let restored = false
+          try {
+            restored = persistedReceipt
+              ? restoreInterviewBatchAfterFailure(ticketId, asyncSession, persistedReceipt, claimToken)
+              : false
+          } catch (error) {
+            console.warn(`[tickets] Failed to restore the interview batch for ${ticketId} after timeout:`, error)
+          }
+          const markedPending = markInterviewBatchStopPending(ticketId, claimToken, 'answer')
+          const pendingStopToken = markedPending
+            ? getPendingInterviewBatchStopToken(ticketId, 'answer')
+            : null
+          if (!markedPending || !pendingStopToken) {
+            reject(new Error('Could not retain the interview stop for retry'))
+            return
+          }
+          // If the callback was delayed past the lease, the first restore is
+          // correctly rejected by the live-claim guard. The marker is an
+          // exact-token hand-off, so retry the same CAS now that it carries a
+          // non-expiring stop lease. A takeover would have made the marker
+          // write fail above; it can never be overwritten here.
+          if (!restored) {
+            try {
+              restored = persistedReceipt
+                ? restoreInterviewBatchAfterFailure(ticketId, asyncSession, persistedReceipt, pendingStopToken)
+                : false
+            } catch (error) {
+              console.warn(`[tickets] Failed to restore the interview batch for ${ticketId} after retaining its stop:`, error)
+            }
+          }
+          if (!restored) {
+            reject(new Error('Could not restore the submitted batch; retry after confirmation'))
+            return
+          }
+          void abortTicketSessions(ticketId)
+            .then((stopped) => {
+              if (!stopped) {
+                reject(new Error('Could not confirm the interview stopped; the batch remains locked for retry'))
+                return
+              }
+              const confirmedClaim = claimInterviewBatchAfterConfirmedStop(
+                ticketId,
+                'answer',
+                pendingStopToken,
+                batchTimeoutMs + BATCH_PROCESSING_MARGIN_MS,
+              )
+              if (!confirmedClaim) {
+                reject(new Error('Could not retain the interview stop for retry'))
+                return
+              }
+              remoteStopConfirmed = true
+              releaseInterviewBatch(ticketId, confirmedClaim)
+              reject(new Error('Async batch processing timed out'))
+            })
+            .catch((error) => {
+              console.warn(`[tickets] Failed to confirm interview stop for ${ticketId} after timeout:`, error)
+              reject(new Error('Could not confirm the interview stopped; the batch remains locked for retry'))
+            })
         }, batchTimeoutMs)
       })
 
       Promise.race([
-        processInterviewBatchAsync(ticketId, parsed.data.answers, asyncSession, parsed.data.selectedOptions, parsed.data.skipReasons, claimToken),
+        processInterviewBatchAsync(
+          ticketId,
+          parsed.data.answers,
+          asyncSession,
+          parsed.data.selectedOptions,
+          parsed.data.skipReasons,
+          claimToken,
+          () => !timeoutTriggered || remoteStopConfirmed,
+          (receipt) => {
+            persistedReceipt = receipt
+          },
+        ),
         timeoutPromise,
       ])
         .finally(() => {
@@ -495,6 +711,7 @@ export async function handleEditAnswer(c: Context) {
     return c.json({ error: 'Ticket is not waiting for interview answers' }, 409)
   }
 
+  let editClaimToken: string | null = null
   try {
     const body = await c.req.json().catch(() => ({}))
     const parsed = editAnswerSchema.safeParse(body)
@@ -512,6 +729,11 @@ export async function handleEditAnswer(c: Context) {
     const previous = session.answers[questionId]
     if (!previous) {
       return c.json({ error: `No existing answer for question ${questionId}` }, 404)
+    }
+
+    editClaimToken = claimInterviewBatch(ticketId)
+    if (!editClaimToken) {
+      return c.json({ error: 'An interview batch is being processed; try editing again when it finishes' }, 409)
     }
 
     const updated = updateInterviewAnswer(session, questionId, answer, skipReason)
@@ -561,6 +783,8 @@ export async function handleEditAnswer(c: Context) {
   } catch (err) {
     logTicketOperationError(ticketId, 'Failed to edit interview answer for ticket', err)
     return c.json({ error: 'Failed to edit answer', details: getErrorMessage(err) }, 500)
+  } finally {
+    if (editClaimToken) releaseInterviewBatch(ticketId, editClaimToken)
   }
 }
 
@@ -580,71 +804,94 @@ export async function handlePutInterviewAnswers(c: Context) {
     return c.json({ error: 'Invalid interview answer payload', details: parsed.error.flatten() }, 400)
   }
 
-  let beforeRaw: string | null = null
-  let beforeItemCount: number | null = null
-  let beforeDocument: InterviewDocument | null = null
-  try {
-    const before = readInterviewDocument(ticketId)
-    beforeRaw = before.raw
-    beforeDocument = before.document
-    beforeItemCount = before.document.questions.length
-  } catch {
-    beforeRaw = null
-  }
-
-  let document: InterviewDocument
-  try {
-    document = buildDraftInterviewDocumentFromAnswerUpdates(ticketId, parsed.data.questions)
-  } catch (err) {
-    return c.json({
-      error: 'Failed to save interview answers',
-      details: getErrorMessage(err),
-    }, 400)
+  const planningLock = claimPlanningEdit(ticketId)
+  if (!planningLock) {
+    return c.json({ error: 'A planning edit is already being processed; try again when it finishes' }, 409)
   }
 
   try {
-    const shouldRestart = ticket.status !== 'WAITING_INTERVIEW_APPROVAL'
-    let restart: Awaited<ReturnType<typeof preparePlanningRestart>> | null = null
-    let result: ReturnType<typeof saveInterviewDocument>
-    if (ticket.status !== 'WAITING_INTERVIEW_APPROVAL') {
-      restart = await preparePlanningRestart(ticketId, 'WAITING_INTERVIEW_APPROVAL')
-      result = saveApprovedInterviewDocument(ticketId, document)
-      emitRoutePhaseLog(ticketId, 'WAITING_INTERVIEW_APPROVAL', 'info', 'Interview edit saved and approved. Restarting PRD planning from the edited interview.')
-      sendTicketEvent(ticketId, { type: 'APPROVE' })
-    } else {
-      result = saveInterviewDocument(ticketId, document)
+    let beforeRaw: string | null = null
+    let beforeItemCount: number | null = null
+    let beforeDocument: InterviewDocument | null = null
+    try {
+      const before = readInterviewSaveBaseline(ticketId, parsed.data.expectedContentSha256)
+      beforeRaw = before.raw
+      beforeDocument = before.document
+      beforeItemCount = before.document.questions.length
+    } catch (err) {
+      if (err instanceof MissingArtifactSavePreconditionError) {
+        return c.json({ error: err.message, artifactType: 'interview' }, 428)
+      }
+      if (err instanceof StaleArtifactApprovalError) return staleInterviewSaveResponse(c, err)
+      return c.json({ error: 'Failed to read interview document', details: getErrorMessage(err) }, 400)
     }
-    writeUserEditReceipt({
-      ticketId,
-      artifactType: 'interview',
-      phase: 'WAITING_INTERVIEW_APPROVAL',
-      action: shouldRestart ? 'save_and_restart' : 'save',
-      editSurface: 'answers',
-      statusBeforeEdit: ticket.status,
-      statusAfterEdit: getTicketByRef(ticketId)?.status ?? null,
-      beforeRaw,
-      afterRaw: result.raw,
-      beforeItemCount,
-      afterItemCount: result.document.questions.length,
-      restart,
-      invalidation: result.invalidation,
-    })
-    recordInterviewApprovalSkips({
-      ticketId,
-      ticketStatusBefore: ticket.status,
-      before: beforeDocument,
-      after: result.document,
-    })
-    return c.json({
-      success: true,
-      ...buildInterviewPayload(ticketId),
-      ...buildRouteStatePayload(ticketId),
-    })
-  } catch (err) {
-    return c.json({
-      error: 'Failed to save interview answers',
-      details: getErrorMessage(err),
-    }, 400)
+
+    let document: InterviewDocument
+    try {
+      document = buildDraftInterviewDocumentFromAnswerUpdates(ticketId, parsed.data.questions)
+    } catch (err) {
+      return c.json({
+        error: 'Failed to save interview answers',
+        details: getErrorMessage(err),
+      }, 400)
+    }
+
+    try {
+      const shouldRestart = ticket.status !== 'WAITING_INTERVIEW_APPROVAL'
+      let restart: Awaited<ReturnType<typeof preparePlanningRestart>> | null = null
+      let result: ReturnType<typeof saveInterviewDocument>
+      if (ticket.status !== 'WAITING_INTERVIEW_APPROVAL') {
+        // The durable content CAS must complete before restart preparation. A
+        // stale concurrent writer must not cancel work, archive attempts, or
+        // invalidate planning artifacts before it is rejected.
+        result = saveApprovedInterviewDocument(ticketId, document, parsed.data.expectedContentSha256!, { skipInvalidation: true })
+        restart = await preparePlanningRestart(ticketId, 'WAITING_INTERVIEW_APPROVAL', planningLock)
+        assertPlanningEditClaim(ticketId, planningLock)
+        result = {
+          ...result,
+          invalidation: invalidateDownstreamPlanningArtifacts(ticketId),
+        }
+        emitRoutePhaseLog(ticketId, 'WAITING_INTERVIEW_APPROVAL', 'info', 'Interview edit saved and approved. Restarting PRD planning from the edited interview.')
+        sendTicketEvent(ticketId, { type: 'APPROVE' })
+      } else {
+        result = saveInterviewDocument(ticketId, document, parsed.data.expectedContentSha256!)
+      }
+      writeUserEditReceipt({
+        ticketId,
+        artifactType: 'interview',
+        phase: 'WAITING_INTERVIEW_APPROVAL',
+        action: shouldRestart ? 'save_and_restart' : 'save',
+        editSurface: 'answers',
+        statusBeforeEdit: ticket.status,
+        statusAfterEdit: getTicketByRef(ticketId)?.status ?? null,
+        beforeRaw,
+        afterRaw: result.raw,
+        beforeItemCount,
+        afterItemCount: result.document.questions.length,
+        restart,
+        invalidation: result.invalidation,
+      })
+      recordInterviewApprovalSkips({
+        ticketId,
+        ticketStatusBefore: ticket.status,
+        before: beforeDocument,
+        after: result.document,
+      })
+      return c.json({
+        success: true,
+        ...buildInterviewPayload(ticketId),
+        ...buildRouteStatePayload(ticketId),
+      })
+    } catch (err) {
+      if (err instanceof PlanningEditClaimLostError) return c.json({ error: err.message }, 409)
+      if (err instanceof StaleArtifactApprovalError) return staleInterviewSaveResponse(c, err)
+      return c.json({
+        error: 'Failed to save interview answers',
+        details: getErrorMessage(err),
+      }, 400)
+    }
+  } finally {
+    releasePlanningEdit(ticketId, planningLock)
   }
 }
 
@@ -664,71 +911,94 @@ export async function handlePutInterview(c: Context) {
     return c.json({ error: 'Invalid interview document payload', details: parsed.error.flatten() }, 400)
   }
 
-  let beforeRaw: string | null = null
-  let beforeItemCount: number | null = null
-  let beforeDocument: InterviewDocument | null = null
-  try {
-    const before = readInterviewDocument(ticketId)
-    beforeRaw = before.raw
-    beforeDocument = before.document
-    beforeItemCount = before.document.questions.length
-  } catch {
-    beforeRaw = null
-  }
-
-  let document: InterviewDocument
-  try {
-    document = buildDraftInterviewDocumentFromRawContent(ticketId, parsed.data.content)
-  } catch (err) {
-    return c.json({
-      error: 'Failed to save interview document',
-      details: getErrorMessage(err),
-    }, 400)
+  const planningLock = claimPlanningEdit(ticketId)
+  if (!planningLock) {
+    return c.json({ error: 'A planning edit is already being processed; try again when it finishes' }, 409)
   }
 
   try {
-    const shouldRestart = ticket.status !== 'WAITING_INTERVIEW_APPROVAL'
-    let restart: Awaited<ReturnType<typeof preparePlanningRestart>> | null = null
-    let result: ReturnType<typeof saveInterviewDocument>
-    if (ticket.status !== 'WAITING_INTERVIEW_APPROVAL') {
-      restart = await preparePlanningRestart(ticketId, 'WAITING_INTERVIEW_APPROVAL')
-      result = saveApprovedInterviewDocument(ticketId, document)
-      emitRoutePhaseLog(ticketId, 'WAITING_INTERVIEW_APPROVAL', 'info', 'Interview edit saved and approved. Restarting PRD planning from the edited interview.')
-      sendTicketEvent(ticketId, { type: 'APPROVE' })
-    } else {
-      result = saveInterviewDocument(ticketId, document)
+    let beforeRaw: string | null = null
+    let beforeItemCount: number | null = null
+    let beforeDocument: InterviewDocument | null = null
+    try {
+      const before = readInterviewSaveBaseline(ticketId, parsed.data.expectedContentSha256)
+      beforeRaw = before.raw
+      beforeDocument = before.document
+      beforeItemCount = before.document.questions.length
+    } catch (err) {
+      if (err instanceof MissingArtifactSavePreconditionError) {
+        return c.json({ error: err.message, artifactType: 'interview' }, 428)
+      }
+      if (err instanceof StaleArtifactApprovalError) return staleInterviewSaveResponse(c, err)
+      return c.json({ error: 'Failed to read interview document', details: getErrorMessage(err) }, 400)
     }
-    writeUserEditReceipt({
-      ticketId,
-      artifactType: 'interview',
-      phase: 'WAITING_INTERVIEW_APPROVAL',
-      action: shouldRestart ? 'save_and_restart' : 'save',
-      editSurface: 'raw',
-      statusBeforeEdit: ticket.status,
-      statusAfterEdit: getTicketByRef(ticketId)?.status ?? null,
-      beforeRaw,
-      afterRaw: result.raw,
-      beforeItemCount,
-      afterItemCount: result.document.questions.length,
-      restart,
-      invalidation: result.invalidation,
-    })
-    recordInterviewApprovalSkips({
-      ticketId,
-      ticketStatusBefore: ticket.status,
-      before: beforeDocument,
-      after: result.document,
-    })
-    return c.json({
-      success: true,
-      ...buildInterviewPayload(ticketId),
-      ...buildRouteStatePayload(ticketId),
-    })
-  } catch (err) {
-    return c.json({
-      error: 'Failed to save interview document',
-      details: getErrorMessage(err),
-    }, 400)
+
+    let document: InterviewDocument
+    try {
+      document = buildDraftInterviewDocumentFromRawContent(ticketId, parsed.data.content)
+    } catch (err) {
+      return c.json({
+        error: 'Failed to save interview document',
+        details: getErrorMessage(err),
+      }, 400)
+    }
+
+    try {
+      const shouldRestart = ticket.status !== 'WAITING_INTERVIEW_APPROVAL'
+      let restart: Awaited<ReturnType<typeof preparePlanningRestart>> | null = null
+      let result: ReturnType<typeof saveInterviewDocument>
+      if (ticket.status !== 'WAITING_INTERVIEW_APPROVAL') {
+        // The durable content CAS must complete before restart preparation. A
+        // stale concurrent writer must not cancel work, archive attempts, or
+        // invalidate planning artifacts before it is rejected.
+        result = saveApprovedInterviewDocument(ticketId, document, parsed.data.expectedContentSha256!, { skipInvalidation: true })
+        restart = await preparePlanningRestart(ticketId, 'WAITING_INTERVIEW_APPROVAL', planningLock)
+        assertPlanningEditClaim(ticketId, planningLock)
+        result = {
+          ...result,
+          invalidation: invalidateDownstreamPlanningArtifacts(ticketId),
+        }
+        emitRoutePhaseLog(ticketId, 'WAITING_INTERVIEW_APPROVAL', 'info', 'Interview edit saved and approved. Restarting PRD planning from the edited interview.')
+        sendTicketEvent(ticketId, { type: 'APPROVE' })
+      } else {
+        result = saveInterviewDocument(ticketId, document, parsed.data.expectedContentSha256!)
+      }
+      writeUserEditReceipt({
+        ticketId,
+        artifactType: 'interview',
+        phase: 'WAITING_INTERVIEW_APPROVAL',
+        action: shouldRestart ? 'save_and_restart' : 'save',
+        editSurface: 'raw',
+        statusBeforeEdit: ticket.status,
+        statusAfterEdit: getTicketByRef(ticketId)?.status ?? null,
+        beforeRaw,
+        afterRaw: result.raw,
+        beforeItemCount,
+        afterItemCount: result.document.questions.length,
+        restart,
+        invalidation: result.invalidation,
+      })
+      recordInterviewApprovalSkips({
+        ticketId,
+        ticketStatusBefore: ticket.status,
+        before: beforeDocument,
+        after: result.document,
+      })
+      return c.json({
+        success: true,
+        ...buildInterviewPayload(ticketId),
+        ...buildRouteStatePayload(ticketId),
+      })
+    } catch (err) {
+      if (err instanceof PlanningEditClaimLostError) return c.json({ error: err.message }, 409)
+      if (err instanceof StaleArtifactApprovalError) return staleInterviewSaveResponse(c, err)
+      return c.json({
+        error: 'Failed to save interview document',
+        details: getErrorMessage(err),
+      }, 400)
+    }
+  } finally {
+    releasePlanningEdit(ticketId, planningLock)
   }
 }
 

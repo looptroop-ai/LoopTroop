@@ -54,6 +54,12 @@ interface PendingEvidenceUpload {
   message: string
 }
 
+interface PersistedDraftResult {
+  draft: ManualQaDraft
+  revision: number
+  confirmed: boolean
+}
+
 function EvidenceFilePicker({ itemId, onFiles }: { itemId: string; onFiles: (files: File[]) => Promise<void> }) {
   const inputRef = useRef<HTMLInputElement>(null)
 
@@ -243,7 +249,11 @@ export function ManualQAView({ ticket, readOnly = false }: ManualQAViewProps) {
   const [removingEvidenceIds, setRemovingEvidenceIds] = useState<Set<string>>(new Set())
   const [lastSavedAt, setLastSavedAt] = useState<Date | null>(null)
   const draftRef = useRef(draft)
-  const saveQueueRef = useRef<Promise<unknown>>(Promise.resolve())
+  const saveQueueRef = useRef<Promise<PersistedDraftResult>>(Promise.resolve({
+    draft: emptyDraft(),
+    revision: 0,
+    confirmed: false,
+  }))
   const latestDraftRevisionRef = useRef(0)
   const operationActionIdsRef = useRef(new Map<string, string>())
   const mutationIdentitiesRef = useRef(new Map<string, string>())
@@ -312,36 +322,41 @@ export function ManualQAView({ ticket, readOnly = false }: ManualQAViewProps) {
     if (uiState.data?.updatedAt) setLastSavedAt(new Date(uiState.data.updatedAt))
   }, [uiState.data?.updatedAt, version])
 
-  const persistDraft = useCallback((keepalive = false) => {
+  const persistDraft = useCallback((keepalive = false, snapshot = draftRef.current) => {
     if (!editable || version === null || !dirty) {
       return saveState === 'conflict'
         ? Promise.reject(new Error('Manual QA draft conflict; reload the latest draft before continuing.'))
-        : Promise.resolve()
+        : Promise.resolve({ draft: snapshot, revision: latestDraftRevisionRef.current })
     }
     if (!keepalive) setSaveState('saving')
-    const current = draftRef.current
+    const current = snapshot
     const run = async () => {
       if (keepalive) {
         flushTicketUiStateSnapshot(ticket.id, scope, current)
-        return false
+        return { draft: current, revision: latestDraftRevisionRef.current, confirmed: false }
       }
       const saved = await saveUiState.mutateAsync({ ticketId: ticket.id, scope, data: current })
       if (saved.conflict) throw new Error('Manual QA draft conflict')
       latestDraftRevisionRef.current = saved.revision
       if (saved.updatedAt) setLastSavedAt(new Date(saved.updatedAt))
-      return true
+      return { draft: current, revision: saved.revision, confirmed: true }
     }
-    const pending = saveQueueRef.current.then(run, run).then((confirmed) => {
-      if (confirmed) {
+    const pending = saveQueueRef.current.then(run, run).then((result) => {
+      if (result.confirmed) {
         if (draftRef.current === current) setDirty(false)
         setSaveState('saved')
       }
+      return result
     }).catch((error) => {
       const message = error instanceof Error ? error.message.toLowerCase() : ''
       setSaveState(message.includes('conflict') || message.includes('stale') ? 'conflict' : 'error')
       throw error
     })
-    saveQueueRef.current = pending.catch(() => undefined)
+    saveQueueRef.current = pending.catch(() => ({
+      draft: draftRef.current,
+      revision: latestDraftRevisionRef.current,
+      confirmed: false,
+    }))
     return pending
   }, [dirty, editable, saveState, saveUiState, scope, ticket.id, version])
 
@@ -422,12 +437,12 @@ export function ManualQAView({ ticket, readOnly = false }: ManualQAViewProps) {
   const coverageSourceItemTotal = round ? Object.values(round.coverageSummary.sourceItemCounts).reduce((sum, count) => sum + count, 0) : 0
   const evidenceMutationInProgress = uploadingEvidenceKeys.size > 0 || removingEvidenceIds.size > 0
 
-  const mutationBase = useCallback((actionId = newManualQaActionId('manual-qa')) => ({
+  const mutationBase = useCallback((actionId = newManualQaActionId('manual-qa'), revision = latestDraftRevisionRef.current) => ({
     ticketId: ticket.id,
     version: version!,
     actionId,
     expectedChecklistHash: checklistHash,
-    expectedDraftRevision: latestDraftRevisionRef.current,
+    expectedDraftRevision: revision,
   }), [checklistHash, ticket.id, version])
 
   const stableMutationBase = useCallback((key: string, prefix: string) => {
@@ -616,10 +631,15 @@ export function ManualQAView({ ticket, readOnly = false }: ManualQAViewProps) {
       setSubmitError(allErrors.join(' '))
       return
     }
+    // Capture the operator's click before any save/flush await. A later edit
+    // belongs to the next autosave revision and must not rewrite this submit.
+    const clickedDraft = draftRef.current
+    const clickedEvidence = evidence
+    const clickedRound = round
     try {
-      await persistDraft()
-      const canonicalDraft = buildCanonicalManualQaDraft(ticket.externalId, { ...round, evidence }, draftRef.current, latestDraftRevisionRef.current)
-      await submit.mutateAsync({ ...mutationBase(resumableActionId('submit')), draft: canonicalDraft })
+      const saved = await persistDraft(false, clickedDraft)
+      const canonicalDraft = buildCanonicalManualQaDraft(ticket.externalId, { ...clickedRound, evidence: clickedEvidence }, clickedDraft, saved.revision)
+      await submit.mutateAsync({ ...mutationBase(resumableActionId('submit'), saved.revision), draft: canonicalDraft })
     } catch (error) {
       setSubmitError(error instanceof Error ? error.message : 'Manual QA submission failed.')
     }
@@ -641,14 +661,16 @@ export function ManualQAView({ ticket, readOnly = false }: ManualQAViewProps) {
       }
       return
     }
-    const skippedDraft = { ...draft, skipReason: skipReason.trim() || undefined }
+    // The skip decision uses the same click snapshot rule as submit. Saving a
+    // newer draft while this request is in flight must not change the record.
+    const skippedDraft = { ...draftRef.current, skipReason: skipReason.trim() || undefined }
+    const clickedEvidence = evidence
+    const clickedRound = round
     setDraft(skippedDraft)
     try {
-      const saved = await saveUiState.mutateAsync({ ticketId: ticket.id, scope, data: skippedDraft })
-      if (saved.conflict) throw new Error('Manual QA draft conflict')
-      latestDraftRevisionRef.current = saved.revision
-      const canonicalDraft = buildCanonicalManualQaDraft(ticket.externalId, { ...round, evidence }, skippedDraft, saved.revision)
-      await skip.mutateAsync({ ...mutationBase(resumableActionId('skip')), reason: skipReason.trim() || undefined, draft: canonicalDraft })
+      const saved = await persistDraft(false, skippedDraft)
+      const canonicalDraft = buildCanonicalManualQaDraft(ticket.externalId, { ...clickedRound, evidence: clickedEvidence }, skippedDraft, saved.revision)
+      await skip.mutateAsync({ ...mutationBase(resumableActionId('skip'), saved.revision), reason: skipReason.trim() || undefined, draft: canonicalDraft })
       setSkipOpen(false)
     } catch (error) {
       setSubmitError(error instanceof Error ? error.message : 'Manual QA skip failed.')
@@ -897,6 +919,7 @@ export function ManualQAView({ ticket, readOnly = false }: ManualQAViewProps) {
           <div className="mx-auto flex max-w-4xl flex-wrap items-center justify-between gap-3">
             <div className="space-y-0.5 text-xs text-muted-foreground">
               <p>{incompleteRequired > 0 ? `${incompleteRequired} required check${incompleteRequired === 1 ? '' : 's'} incomplete` : hasFailures ? 'Failures will create Manual QA fix beads and return the ticket to Coding.' : 'Ready to submit for integration.'}</p>
+              {!submissionInProgress && <p>Submit captures the checks at click time; later draft edits stay in the newer autosave.</p>}
               <AutosaveStatus
                 state={saveState === 'idle' ? (dirty ? 'pending' : 'saved') : saveState}
                 lastSavedAt={lastSavedAt}

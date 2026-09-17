@@ -18,6 +18,19 @@ function createAdapterInternals(): AdapterInternals {
 }
 
 describe.concurrent('OpenCode diagnostic event mapping', () => {
+  it('ignores a tool part that arrives before OpenCode supplies its state', () => {
+    const event = createAdapterInternals().mapPartUpdate({
+      id: 'part-pending',
+      sessionID: 'session-1',
+      messageID: 'message-1',
+      type: 'tool',
+      callID: 'call-1',
+      tool: 'bash',
+    } as GenericMessagePart)
+
+    expect(event).toBeNull()
+  })
+
   it('maps tool duration, compaction time, and safe attachment metadata without payload URLs', () => {
     const event = createAdapterInternals().mapPartUpdate({
       id: 'part-1',

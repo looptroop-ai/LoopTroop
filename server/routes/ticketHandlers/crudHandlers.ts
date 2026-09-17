@@ -117,8 +117,11 @@ export async function handleDeleteTicket(c: Context) {
 
   try {
     cancelTicket(ticketId)
+    const stopped = await abortTicketSessions(ticketId)
+    if (stopped === false) {
+      return c.json({ error: 'Could not confirm that active OpenCode sessions stopped' }, 409)
+    }
     stopActor(ticketId)
-    await abortTicketSessions(ticketId)
     clearContextCache(ticketId)
 
     emitRoutePhaseLog(ticketId, resolveStoredWorkflowPhase(ticket.status), 'info', `Deleting ticket ${ticket.externalId}: removing worktree, branch, and database records.`)

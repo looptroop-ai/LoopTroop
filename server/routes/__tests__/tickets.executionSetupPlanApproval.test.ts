@@ -12,6 +12,7 @@ import {
   getLatestPhaseArtifact,
   getTicketByRef,
   getTicketPaths,
+  listPhaseArtifacts,
   listPhaseAttempts,
   patchTicket,
   upsertLatestPhaseArtifact,
@@ -20,11 +21,12 @@ import { createFixtureRepoManager } from '../../test/fixtureRepo'
 import { initializeTicket } from '../../ticket/initialize'
 import { ticketRouter } from '../tickets'
 import { contentSha256 } from '../../lib/contentHash'
-import { revertTicketToApprovalStatus } from '../../machines/persistence'
+import { revertTicketToApprovalStatus, sendTicketEvent } from '../../machines/persistence'
 import { lockExecutionSetupPlanDetectedHooks } from '../../phases/executionSetupPlan/hookEvidence'
 import { saveExecutionSetupPlan } from '../../phases/executionSetupPlan/document'
 import { serializeExecutionSetupPlan } from '../../phases/executionSetupPlan/types'
 import { prepareExecutionSetupPlanRestart, prepareExecutionSetupRuntimeRegeneration, prepareExecutionSetupRuntimeRewind, preparePlanningRestart } from '../ticketHandlers/routeUtils'
+import * as routeUtils from '../ticketHandlers/routeUtils'
 import * as workflowRunner from '../../workflow/runner'
 import * as executionLog from '../../log/executionLog'
 
@@ -503,6 +505,65 @@ describe('ticketRouter execution setup plan approval routes', () => {
       'execution_setup_plan',
       'WAITING_EXECUTION_SETUP_APPROVAL',
     )).toBeUndefined()
+  })
+
+  it('serializes concurrent regeneration while restart preparation is paused', async () => {
+    const { app, ticket } = await setupExecutionSetupPlanTicket()
+    upsertLatestPhaseArtifact(
+      ticket.id,
+      'execution_setup_plan',
+      'WAITING_EXECUTION_SETUP_APPROVAL',
+      serializePlan(ticket.externalId, 'Original plan.'),
+    )
+
+    let enteredRestart!: () => void
+    const restartEntered = new Promise<void>((resolve) => { enteredRestart = resolve })
+    let releaseRestart!: () => void
+    const restartReleased = new Promise<void>((resolve) => { releaseRestart = resolve })
+    const originalRestart = routeUtils.prepareExecutionSetupPlanRestart
+    const restartSpy = vi.spyOn(routeUtils, 'prepareExecutionSetupPlanRestart').mockImplementationOnce(async (ticketId) => {
+      enteredRestart()
+      await restartReleased
+      return originalRestart(ticketId)
+    })
+
+    try {
+      const first = app.request(`/api/tickets/${ticket.id}/regenerate-execution-setup-plan`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ commentary: 'Winner commentary.' }),
+      })
+      await restartEntered
+
+      const second = app.request(`/api/tickets/${ticket.id}/regenerate-execution-setup-plan`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ commentary: 'Loser commentary.' }),
+      })
+      releaseRestart()
+
+      const responses = await Promise.all([first, second])
+      expect(responses.map((response) => response.status).sort()).toEqual([200, 409])
+      expect(restartSpy).toHaveBeenCalledOnce()
+      expect(sendTicketEvent).toHaveBeenCalledTimes(1)
+      expect(listPhaseArtifacts(ticket.id, { phase: 'GENERATING_EXECUTION_SETUP_PLAN' })
+        .filter((artifact) => artifact.artifactType === 'execution_setup_plan_regeneration_request'))
+        .toHaveLength(1)
+      expect(getLatestPhaseArtifact(
+        ticket.id,
+        'execution_setup_plan_regeneration_request',
+        'GENERATING_EXECUTION_SETUP_PLAN',
+      )?.content).toContain('Winner commentary.')
+      expect(getLatestPhaseArtifact(
+        ticket.id,
+        'execution_setup_plan_regeneration_request',
+        'GENERATING_EXECUTION_SETUP_PLAN',
+      )?.content).not.toContain('Loser commentary.')
+      expect(listPhaseAttempts(ticket.id, 'WAITING_EXECUTION_SETUP_APPROVAL')).toHaveLength(2)
+      expect(listPhaseAttempts(ticket.id, 'GENERATING_EXECUTION_SETUP_PLAN')).toHaveLength(2)
+    } finally {
+      restartSpy.mockRestore()
+    }
   })
 
   it('archives the current attempt and creates a new one on regenerate', async () => {

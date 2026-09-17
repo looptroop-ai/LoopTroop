@@ -75,6 +75,12 @@ Then configure your settings and models (from providers already added in
 OpenCode), attach a local repository with a GitHub origin, create a ticket, and
 start it.
 
+If LoopTroop cannot confirm that an OpenCode session stopped remotely, it keeps
+the ticket retryable and leaves the ownership visible. A ticket marker can
+recover that ownership when the project database is unavailable. If both the
+database and marker storage are unavailable, only the current process can guard
+the session, so a restart cannot claim recovery.
+
 ### Every way to install it
 
 <details>

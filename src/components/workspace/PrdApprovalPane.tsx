@@ -37,6 +37,7 @@ import {
   useDebouncedApprovalUiState,
   useApprovalPaneState,
   useApprovalEditMode,
+  useLoadedContentHash,
   approveArtifact,
   fixCoverageGaps,
 } from './approvalHooks'
@@ -61,6 +62,8 @@ interface PrdApprovalUiState {
   editTab?: EditTab
   yamlDraft?: string
   structuredDraft?: PrdApprovalDraft
+  /** The file hash the dirty draft was loaded from, not the latest refetch. */
+  contentSha256?: string | null
 }
 
 interface PrdArtifactResponse {
@@ -153,6 +156,15 @@ export function PrdApprovalPane({
     [ticket.status, ticket.previousStatus],
   )
   const { data: persistedUiState, isSuccess: isUiStateSuccess, isError: isUiStateError } = useTicketUIState<PrdApprovalUiState>(ticket.id, uiStateScope, true)
+  const persistedUiStateFlushMeta = persistedUiState as typeof persistedUiState & {
+    flushPending?: boolean
+    flushFailed?: boolean
+  }
+  const uiStateFlushState = persistedUiStateFlushMeta?.flushFailed
+    ? 'failed' as const
+    : persistedUiStateFlushMeta?.flushPending
+      ? 'pending' as const
+      : null
   const { data: fetchedPrd, isLoading, isFetching, isError: isPrdError, error: prdError, refetch: refetchPrd } = useQuery({
     queryKey: ['artifact', ticket.id, 'prd', 'approval'],
     queryFn: async ({ signal }) => {
@@ -208,8 +220,10 @@ export function PrdApprovalPane({
   // coverage run would be the wrong explanation attached to a new approval.
   const [gapReason, setGapReason] = useState('')
   const restoredDraftRef = useRef(false)
+  const restoredSnapshotRef = useRef<string | null>(null)
   const lastSavedSnapshotRef = useRef('')
   const skipRestoreRef = useRef(false)
+  const draftRevisionRef = useRef(0)
   const containerRef = useRef<HTMLDivElement>(null)
 
   const baseStructuredDraft = useMemo(
@@ -224,6 +238,7 @@ export function PrdApprovalPane({
   const hasYamlChanges = yamlDraft !== rawContent
   const structuredEditorUnavailable = editTab === 'structured' && structuredDraft === null
   const hasUnsavedChanges = editTab === 'structured' ? hasStructuredChanges : hasYamlChanges
+  const loadedContentHashRef = useLoadedContentHash(ticket.id, currentContentSha256, hasUnsavedChanges)
   const yamlValidation = editTab === 'yaml' ? parsePrdDocumentContent(yamlDraft) : null
   const coverageWarning = useMemo(
     () => resolveCoverageApprovalWarning(artifacts, 'prd'),
@@ -234,7 +249,7 @@ export function PrdApprovalPane({
     [artifacts],
   )
 
-  useApprovalDraftReset(ticket.id, restoredDraftRef, lastSavedSnapshotRef)
+  useApprovalDraftReset(ticket.id, restoredDraftRef, lastSavedSnapshotRef, restoredSnapshotRef)
 
   const draftRestored = useApprovalDraftRestore({
     document: prdDocument,
@@ -249,13 +264,23 @@ export function PrdApprovalPane({
     ready: !isLoading && isUiStateSuccess,
     persisted: persistedUiState?.data,
     restoredDraftRef,
+    restoredSnapshotRef,
     lastSavedSnapshotRef,
     skipRestoreRef,
+    flushState: uiStateFlushState,
     restore: (persisted, document) => {
       const nextEditMode = Boolean(persisted?.isEditMode)
       const nextEditTab: EditTab = persisted?.editTab === 'yaml' ? 'yaml' : 'structured'
       const nextStructuredDraft = normalizePrdApprovalDraft(persisted?.structuredDraft, document)
       const nextYamlDraft = typeof persisted?.yamlDraft === 'string' ? persisted.yamlDraft : rawContent
+      // A restored dirty draft remains a draft of the file it was loaded from.
+      // Do not let a refetch replace that optimistic-concurrency token with the
+      // hash of newer remote bytes. Unstamped dirty state fails closed; the
+      // server will return its explicit missing-baseline response.
+      const nextContentSha256 = nextEditMode
+        ? (typeof persisted?.contentSha256 === 'string' ? persisted.contentSha256 : null)
+        : currentContentSha256
+      loadedContentHashRef.current = nextContentSha256
 
       setIsEditMode(nextEditMode)
       setEditTab(nextEditTab)
@@ -267,6 +292,7 @@ export function PrdApprovalPane({
         editTab: nextEditTab,
         yamlDraft: nextYamlDraft,
         structuredDraft: nextStructuredDraft,
+        contentSha256: nextContentSha256,
       }
     },
   })
@@ -281,12 +307,17 @@ export function PrdApprovalPane({
       editTab,
       yamlDraft,
       structuredDraft,
+      contentSha256: loadedContentHashRef.current,
     },
     ticketId: ticket.id,
     scope: uiStateScope,
     saveUiState,
     lastSavedSnapshotRef,
+    queryClient,
     initialUpdatedAt: persistedUiState?.updatedAt,
+    initialFlushState: uiStateFlushState,
+    restoredDraftRef,
+    restoredSnapshotRef,
   })
 
   function resetDraftsFromSaved(nextTab: EditTab = 'structured') {
@@ -294,6 +325,7 @@ export function PrdApprovalPane({
       setStructuredDraft(baseStructuredDraft)
       setYamlDraft(rawContent)
       setEditTab(nextTab === 'structured' && baseStructuredDraft === null ? 'yaml' : nextTab)
+      loadedContentHashRef.current = currentContentSha256
       setSaveError(null)
       setApproveError(null)
     })
@@ -315,6 +347,7 @@ export function PrdApprovalPane({
 
     setIsSaving(true)
     setSaveError(null)
+    const saveDraftRevision = draftRevisionRef.current
 
     try {
       const response = await fetch(apiFilePath(ticket.id, 'prd'), {
@@ -322,8 +355,11 @@ export function PrdApprovalPane({
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify(
           editTab === 'structured'
-            ? { document: buildPrdDocumentFromDraft(prdDocument, structuredDraft) }
-            : { content: yamlDraft },
+            ? {
+              document: buildPrdDocumentFromDraft(prdDocument, structuredDraft),
+              expectedContentSha256: loadedContentHashRef.current ?? undefined,
+            }
+            : { content: yamlDraft, expectedContentSha256: loadedContentHashRef.current ?? undefined },
         ),
       })
 
@@ -331,6 +367,7 @@ export function PrdApprovalPane({
       const payload = await response.json() as PrdArtifactResponse
 
       const nextRaw = payload.content ?? ''
+      loadedContentHashRef.current = payload.contentSha256 ?? null
       queryClient.setQueryData(['artifact', ticket.id, 'prd', 'approval'], {
         content: nextRaw,
         contentSha256: payload.contentSha256 ?? null,
@@ -340,6 +377,8 @@ export function PrdApprovalPane({
       queryClient.invalidateQueries({ queryKey: ['artifact', ticket.id, 'prd'] })
       queryClient.invalidateQueries({ queryKey: ['ticket', ticket.id] })
       clearTicketArtifactsCache(queryClient, ticket.id)
+
+      if (draftRevisionRef.current !== saveDraftRevision) return
 
       const savedDocument = parsePrdDocument(nextRaw)
       setStructuredDraft(savedDocument ? buildPrdApprovalDraft(savedDocument) : null)
@@ -361,7 +400,7 @@ export function PrdApprovalPane({
       await approveArtifact(queryClient, {
         ticketId: ticket.id,
         domain: 'prd',
-        expectedContentSha256: currentContentSha256,
+        expectedContentSha256: loadedContentHashRef.current,
         gapAcknowledgementReason: gapReason,
         failureMessage: 'Failed to approve PRD',
       })
@@ -515,7 +554,7 @@ export function PrdApprovalPane({
           <Button
             size="sm"
             onClick={handleApprove}
-            disabled={isApproving || isSaving || isFixingCoverageGaps || isCoverageUnknown || (isEditMode && (hasUnsavedChanges || structuredEditorUnavailable)) || !prdDocument || !currentContentSha256 || ticket.status !== phase}
+            disabled={isApproving || isSaving || isFixingCoverageGaps || isCoverageUnknown || (isEditMode && (hasUnsavedChanges || structuredEditorUnavailable)) || !prdDocument || !loadedContentHashRef.current || ticket.status !== phase}
             className="text-xs shrink-0"
           >
             {isApproving ? 'Approving...' : coverageWarning?.gaps.length ? 'Approve with gaps' : 'Approve'}
@@ -590,7 +629,14 @@ export function PrdApprovalPane({
                   <div className="rounded-xl border border-border bg-background/80 p-3 text-xs text-muted-foreground">
                     YAML mode gives full control over the canonical PRD artifact. Saving rewrites it into the server&apos;s canonical form and clears PRD approval metadata.
                   </div>
-                  <YamlEditor value={yamlDraft} onChange={setYamlDraft} className="min-h-[520px] rounded-xl border border-border bg-background" />
+                  <YamlEditor
+                    value={yamlDraft}
+                    onChange={(value) => {
+                      draftRevisionRef.current += 1
+                      setYamlDraft(value)
+                    }}
+                    className="min-h-[520px] rounded-xl border border-border bg-background"
+                  />
                   {yamlValidation?.error ? (
                     <div className="rounded-md border border-red-200 bg-red-50/70 px-3 py-2 text-xs text-red-700 dark:border-red-900/60 dark:bg-red-950/20 dark:text-red-200">
                       {yamlValidation.error}
@@ -605,7 +651,10 @@ export function PrdApprovalPane({
                 <PrdApprovalEditor
                   draft={structuredDraft}
                   disabled={isSaving}
-                  onChange={setStructuredDraft}
+                  onChange={(draft) => {
+                    draftRevisionRef.current += 1
+                    setStructuredDraft(draft)
+                  }}
                 />
               ) : (
                 <div className="rounded-md border border-red-200 bg-red-50/70 px-3 py-2 text-xs text-red-700 dark:border-red-900/60 dark:bg-red-950/20 dark:text-red-200">

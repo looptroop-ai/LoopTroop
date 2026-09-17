@@ -102,6 +102,7 @@ describe('Pre-Flight Doctor', () => {
   beforeEach(() => {
     vi.clearAllMocks()
     adapter = new MockOpenCodeAdapter()
+    Object.assign(adapter, { forgetSessionDirectory: vi.fn() })
     deps = {
       fileExists: () => true,
       getTicketPaths: () => ticketPaths,
@@ -142,6 +143,8 @@ describe('Pre-Flight Doctor', () => {
     expect(adapter.sessionCreateCalls).toHaveLength(1)
     expect(adapter.sessionCreateCalls[0]?.options?.permission).toEqual(OPENCODE_EXECUTION_ALLOW_ALL_PERMISSIONS)
     expect(adapter.promptCalls[0]?.options?.variant).toBe('high')
+    expect((adapter as unknown as { forgetSessionDirectory: ReturnType<typeof vi.fn> }).forgetSessionDirectory)
+      .toHaveBeenCalledWith('mock-session-1')
   })
 
   it('retries the execution capability probe session before prompting', async () => {
@@ -395,6 +398,15 @@ describe('Pre-Flight Doctor', () => {
     const capabilityCheck = report.criticalFailures.find((check) => check.name === 'OpenCode Execution Capability')
     expect(capabilityCheck).toBeDefined()
     expect(capabilityCheck?.message).toContain('unexpected response')
+  })
+
+  it('fails the capability check when the probe session stop is not confirmed', async () => {
+    vi.spyOn(adapter, 'abortSession').mockResolvedValue(false)
+
+    const report = await runPreFlightChecks(adapter, TEST.ticketId, [makeBead()], defaultContext, undefined, deps)
+
+    const capabilityCheck = report.criticalFailures.find((check) => check.name === 'OpenCode Execution Capability')
+    expect(capabilityCheck?.message).toContain('Could not confirm abort of capability-probe session')
   })
 
   it('reports rich provider errors from the execution capability probe stream', async () => {

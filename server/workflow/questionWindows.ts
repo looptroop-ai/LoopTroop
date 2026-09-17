@@ -745,11 +745,15 @@ function writeQuestionReceipt(input: {
   }
 }
 
-async function rejectWithRetries(requestId: string, projectRoot: string): Promise<string | null> {
+async function rejectWithRetries(
+  requestId: string,
+  projectRoot?: string,
+  sessionId?: string,
+): Promise<string | null> {
   let lastError: unknown
   for (let attempt = 1; attempt <= REJECT_ATTEMPTS; attempt += 1) {
     try {
-      await getOpenCodeAdapter().rejectQuestion(requestId, projectRoot)
+      await getOpenCodeAdapter().rejectQuestion(requestId, projectRoot, undefined, sessionId)
       return null
     } catch (error) {
       lastError = error
@@ -762,12 +766,14 @@ async function rejectWithRetries(requestId: string, projectRoot: string): Promis
 }
 
 /**
- * Refuses one request and closes it out locally either way.
+ * Refuses one request and closes it out only after the remote side is known to
+ * be finished.
  *
- * "Expiry that cannot reject" is the failure that recreates the original hang,
- * so a transport failure does not leave the record pending: the session is
- * abandoned, the failure is recorded, and the existing quorum and error paths
- * take it from there.
+ * "Expiry that cannot reject" is the failure that recreates the original hang.
+ * A confirmed session abort is a safe fallback. When neither operation is
+ * confirmed, the request remains tracked so the next retry/reconciliation can
+ * try again; finishing locally while the model is still waiting would let a
+ * reset or replacement race that model.
  */
 async function rejectRecord(
   timer: QuestionTimer,
@@ -776,21 +782,37 @@ async function rejectRecord(
   resolution: Exclude<QuestionResolution, 'replied'>,
   reason: string | null,
   siblingIds?: string[],
-): Promise<void> {
+): Promise<boolean> {
   const context = getTicketContext(record.ticketId)
   const failure = context
-    ? await rejectWithRetries(record.requestId, context.projectRoot)
+    ? await rejectWithRetries(record.requestId, undefined, record.sessionId)
     : 'Ticket is no longer available'
 
   if (failure) {
     // OpenCode would not take the refusal. Abandoning the session is what stops
-    // the model waiting on an answer that will never come; if even that fails
-    // there is nothing further to try, so it is recorded rather than retried.
+    // the model waiting on an answer that will never come. If that cannot be
+    // confirmed either, return the claim to pending and retain the local
+    // record; callers must not report a terminal stop while it may still run.
     const aborted = await getOpenCodeAdapter().abortSession(record.sessionId).catch(() => false)
     console.warn(
       `[questions] Could not refuse ${record.requestId} on ${record.ticketId}: ${failure}`
       + ` (session abort ${aborted ? 'succeeded' : 'failed'})`,
     )
+    if (!aborted) {
+      record.state = 'pending'
+      record.claimId = null
+      record.revision += 1
+      persistRequest(record, timer.timerKey)
+      if (timer.stoppedAt === null) {
+        timer.deadlineAt = Date.now() + REJECT_RETRY_DELAY_MS * REJECT_ATTEMPTS
+        timer.armedAt = Date.now()
+        timer.revision += 1
+        arm(timer)
+      }
+      persistTimer(timer)
+      broadcastTimer(timer)
+      return false
+    }
   }
   writeQuestionReceipt({
     timer,
@@ -811,6 +833,7 @@ async function rejectRecord(
     timestamp: new Date().toISOString(),
   })
   finish(timer, record)
+  return true
 }
 
 /**
@@ -1012,8 +1035,9 @@ export async function clearTicketWindows(
   ticketId: string,
   resolution: Exclude<QuestionResolution, 'replied' | 'user_skipped' | 'window_elapsed'>,
   reason: string,
-): Promise<void> {
+): Promise<boolean> {
   const timers = timersByTicket.get(ticketId)
+  let allFinished = true
   for (const timer of [...(timers?.values() ?? [])]) {
     disarm(timer)
     const doomed = pendingRequests(timer)
@@ -1021,14 +1045,18 @@ export async function clearTicketWindows(
       .filter((record): record is QuestionRequestRecord => record !== null)
     const siblingIds = doomed.map((record) => record.requestId)
     for (const record of doomed) {
-      await rejectRecord(timer, record, 'system', resolution, reason, siblingIds)
+      if (!await rejectRecord(timer, record, 'system', resolution, reason, siblingIds)) {
+        allFinished = false
+      }
     }
   }
+  if (!allFinished) return false
   timersByTicket.delete(ticketId)
   // Outside the timer loop and reachable with no timers at all: the answered
   // bookkeeping is per ticket, not per timer, and a ticket that completed
   // without an open question used to leak its entries for the process lifetime.
   forgetTicketMemory(ticketId)
+  return true
 }
 
 /**
@@ -1165,25 +1193,31 @@ export async function reconcilePendingQuestionsAfterRestart(input: {
   owners: RestartSessionOwner[]
   /** Per-ticket window, for a request whose artifact could not be rebuilt. */
   windowMsFor: (ticketId: string) => number
-}): Promise<{ reattached: number; rejected: number }> {
+}): Promise<{ reattached: number; rejected: number; unverified: number }> {
   const adapter = getOpenCodeAdapter()
-  let pending: Awaited<ReturnType<typeof adapter.listPendingQuestions>>
-  try {
-    pending = await adapter.listPendingQuestions(input.projectRoot)
-  } catch {
-    return { reattached: 0, rejected: 0 }
-  }
-  if (pending.length === 0) return { reattached: 0, rejected: 0 }
 
-  // Keyed by session, across the whole project. `listPendingQuestions` is
-  // project-scoped, so reconciling one ticket at a time meant every request
-  // belonging to a *sibling* ticket looked ownerless — and got rejected. Two
-  // active tickets in one project were enough to kill one of them on restart.
+  // OpenCode keys question requests by the session's directory. Listing the
+  // project root misses requests from worktrees, while listing each owner
+  // directory keeps a request attached to the session that can answer it.
   const owners = new Map(input.owners.map((owner) => [owner.sessionId, owner]))
+  const pendingById = new Map<string, Awaited<ReturnType<typeof adapter.listPendingQuestions>>[number]>()
+  let unverified = 0
+  for (const owner of owners.values()) {
+    let requests: Awaited<ReturnType<typeof adapter.listPendingQuestions>>
+    try {
+      requests = await adapter.listPendingQuestions(undefined, undefined, owner.sessionId)
+    } catch {
+      unverified += 1
+      continue
+    }
+    for (const request of requests) pendingById.set(request.id, request)
+  }
+  if (pendingById.size === 0) return { reattached: 0, rejected: 0, unverified }
+
   let reattached = 0
   let rejected = 0
 
-  for (const request of pending) {
+  for (const request of pendingById.values()) {
     const owner = owners.get(request.sessionID)
     if (owner?.active) {
       // The artifact is authoritative: a stopped clock stays stopped, and one
@@ -1207,11 +1241,29 @@ export async function reconcilePendingQuestionsAfterRestart(input: {
     // No live session owns it, so nothing will ever answer it. Refuse it and
     // leave a receipt: an orphan question that vanishes without a trail is how
     // a blocked round becomes unexplainable weeks later.
-    const failure = await rejectWithRetries(request.id, input.projectRoot)
+    const failure = await rejectWithRetries(request.id, undefined, request.sessionID)
+    if (!failure) {
+      if (owner) writeOrphanReceipt(owner, request, null)
+      rejected += 1
+      continue
+    }
+
+    const stopped = await adapter.abortSession(request.sessionID).catch(() => false)
+    if (!stopped) {
+      // The request is still remote and neither rejection nor session stop was
+      // confirmed. Keep the uncertainty visible to startup so it cannot close
+      // the wait or claim that every orphan was reconciled.
+      unverified += 1
+      console.warn(
+        `[questions] Could not reconcile orphan question ${request.id}: ${failure}`
+        + ' (session abort failed; retaining it for a later reconciliation)',
+      )
+      continue
+    }
     if (owner) writeOrphanReceipt(owner, request, failure)
     rejected += 1
   }
-  return { reattached, rejected }
+  return { reattached, rejected, unverified }
 }
 
 /**

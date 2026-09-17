@@ -31,6 +31,7 @@ import { apiTicketPath } from '@/lib/apiPaths'
 import { throwIfNotOk } from '@/lib/fetchError'
 import { QueryErrorNotice } from '@/components/shared/QueryErrorNotice'
 import { ApprovalEditToolbar } from './ApprovalEditToolbar'
+import { CollapsibleWarningNotice } from './artifactViewers/ArtifactProcessingNotice'
 
 type EditTab = 'structured' | 'raw'
 type RuntimeRewindTarget = 'edit' | 'regenerate' | null
@@ -73,6 +74,22 @@ function parseExecutionSetupApprovalReceipt(content?: string | null): ExecutionS
   } catch {
     return null
   }
+}
+
+function ExecutionSetupPlanParserWarnings({ warnings }: { warnings: string[] }) {
+  if (warnings.length === 0) return null
+  return (
+    <CollapsibleWarningNotice
+      title="Plan parser warnings"
+      summary={`${warnings.length} warning${warnings.length === 1 ? '' : 's'}; the displayed plan uses safe fallback values.`}
+      defaultOpen
+      body={(
+        <ul className="list-disc space-y-1 pl-4 text-[11px]">
+          {warnings.map((warning) => <li key={warning}>{warning}</li>)}
+        </ul>
+      )}
+    />
+  )
 }
 
 function formatReviewTimestamp(value?: string | null): string | null {
@@ -366,6 +383,7 @@ export function ExecutionSetupPlanApprovalPane({
   })
 
   const rawContent = fetchedPlan?.raw ?? ''
+  const parsedRawContent = useMemo(() => parseExecutionSetupPlanContent(rawContent), [rawContent])
   const currentContentSha256 = fetchedPlan?.contentSha256 ?? null
   const plan = fetchedPlan?.plan ?? null
   const isPlanLoading = !fetchedPlan && (isLoading || isFetching)
@@ -430,7 +448,11 @@ export function ExecutionSetupPlanApprovalPane({
   )
   const hasRawChanges = rawDraft !== rawContent
   const hasUnsavedChanges = editTab === 'structured' ? hasStructuredChanges : hasRawChanges
-  const rawValidation = editTab === 'raw' && rawDraft.trim().length > 0 ? parseExecutionSetupPlanContent(rawDraft).error : null
+  const rawDraftParse = useMemo(
+    () => rawDraft.trim().length > 0 ? parseExecutionSetupPlanContent(rawDraft) : null,
+    [rawDraft],
+  )
+  const rawValidation = editTab === 'raw' ? rawDraftParse?.error ?? null : null
 
   useApprovalDraftReset(ticket.id, restoredDraftRef, lastSavedSnapshotRef)
 
@@ -874,6 +896,8 @@ export function ExecutionSetupPlanApprovalPane({
 
           <RegenerateCommentaryPanel notes={regenerateNotes} />
 
+          <ExecutionSetupPlanParserWarnings warnings={parsedRawContent.warnings} />
+
           {/* Beside the plan, not instead of it: a failed refresh must not hide
               content the operator is about to approve, only mark it as stale. */}
           {isPlanError && fetchedPlan ? (
@@ -926,6 +950,7 @@ export function ExecutionSetupPlanApprovalPane({
                     Raw mode lets you edit the full readiness-and-setup artifact as JSON or YAML.
                   </div>
                   <YamlEditor value={rawDraft} onChange={setRawDraft} className="min-h-[520px] rounded-xl border border-border bg-background" />
+                  <ExecutionSetupPlanParserWarnings warnings={rawDraftParse?.warnings ?? []} />
                   {rawValidation ? (
                     <div className="rounded-md border border-red-200 bg-red-50/70 px-3 py-2 text-xs text-red-700 dark:border-red-900/60 dark:bg-red-950/20 dark:text-red-200">
                       {rawValidation}

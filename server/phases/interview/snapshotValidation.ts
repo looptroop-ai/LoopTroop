@@ -79,6 +79,17 @@ function requireNullableString(value: unknown, path: string): string | null {
   return requireString(value, path)
 }
 
+function requireTimestamp(value: unknown, path: string): string {
+  const text = requireNonEmptyString(value, path)
+  if (Number.isNaN(Date.parse(text))) fail(path, 'a valid timestamp')
+  return text
+}
+
+function requireNullableTimestamp(value: unknown, path: string): string | null {
+  if (value === null) return null
+  return requireTimestamp(value, path)
+}
+
 function requireNullableInteger(value: unknown, path: string): number | null {
   if (value === null) return null
   return requireNonNegativeInteger(value, path)
@@ -161,12 +172,12 @@ function requireAnswer(value: unknown, path: string): InterviewSessionAnswer {
     : requireNullableString(record.skipReason, `${path}.skipReason`)
   const skippedAt = record.skippedAt === undefined
     ? undefined
-    : requireNullableString(record.skippedAt, `${path}.skippedAt`)
+    : requireNullableTimestamp(record.skippedAt, `${path}.skippedAt`)
 
   return {
     answer: requireString(record.answer, `${path}.answer`),
     skipped: requireBoolean(record.skipped, `${path}.skipped`),
-    answeredAt: requireNullableString(record.answeredAt, `${path}.answeredAt`),
+    answeredAt: requireNullableTimestamp(record.answeredAt, `${path}.answeredAt`),
     batchNumber: requireNullableInteger(record.batchNumber, `${path}.batchNumber`),
     ...(selectedOptionIds !== undefined ? { selectedOptionIds } : {}),
     ...(skipReason !== undefined ? { skipReason } : {}),
@@ -210,7 +221,7 @@ function requireBatchHistoryEntry(value: unknown, path: string): InterviewBatchH
     source: requireMember(record.source, BATCH_SOURCES, `${path}.source`),
     questionIds: requireStringArray(record.questionIds, `${path}.questionIds`),
     isFinalFreeForm: requireBoolean(record.isFinalFreeForm, `${path}.isFinalFreeForm`),
-    submittedAt: requireString(record.submittedAt, `${path}.submittedAt`),
+    submittedAt: requireTimestamp(record.submittedAt, `${path}.submittedAt`),
     ...(roundNumber !== undefined ? { roundNumber } : {}),
   }
 }
@@ -268,7 +279,17 @@ function checkSnapshotConsistency(snapshot: InterviewSessionSnapshot): void {
     if (!canonical) {
       fail(`snapshot.currentBatch.questions[${index}].id`, `an id present in snapshot.questions ("${question.id}" is not)`)
     }
-    if (!isSameSessionQuestion(canonical, question)) {
+    const canRewordUnansweredCompiledQuestion = snapshot.answers[question.id] === undefined
+      && canonical.source === 'compiled'
+      && question.source === 'compiled'
+      && (canonical.answerType === undefined || question.answerType === undefined || canonical.answerType === question.answerType)
+      && (canonical.options === undefined || question.options === undefined
+        || (canonical.options.length === question.options.length
+          && canonical.options.every((option, optionIndex) => (
+            option.id === question.options?.[optionIndex]?.id
+            && option.label === question.options?.[optionIndex]?.label
+          ))))
+    if (!isSameSessionQuestion(canonical, question) && !canRewordUnansweredCompiledQuestion) {
       fail(
         `snapshot.currentBatch.questions[${index}]`,
         `the same question as snapshot.questions "${question.id}", not a different one reusing its id`,
@@ -338,26 +359,26 @@ export function validateInterviewSessionSnapshot(value: unknown): InterviewSnaps
     const answersRecord = requireRecord(record.answers, 'snapshot.answers')
 
     const snapshot: InterviewSessionSnapshot = {
-        schemaVersion: 1,
-        winnerId: requireNonEmptyString(record.winnerId, 'snapshot.winnerId'),
-        maxInitialQuestions: requireNonNegativeInteger(record.maxInitialQuestions, 'snapshot.maxInitialQuestions'),
-        maxFollowUps: requireNonNegativeInteger(record.maxFollowUps, 'snapshot.maxFollowUps'),
-        questions: requireArray(record.questions, 'snapshot.questions')
-          .map((question, index) => requireQuestion(question, `snapshot.questions[${index}]`)),
-        answers: Object.fromEntries(
-          Object.entries(answersRecord)
-            .map(([id, answer]) => [id, requireAnswer(answer, `snapshot.answers.${id}`)]),
-        ),
-        currentBatch: record.currentBatch === null || record.currentBatch === undefined
-          ? null
-          : requireBatch(record.currentBatch, 'snapshot.currentBatch'),
-        batchHistory: requireArray(record.batchHistory, 'snapshot.batchHistory')
-          .map((entry, index) => requireBatchHistoryEntry(entry, `snapshot.batchHistory[${index}]`)),
-        followUpRounds: requireArray(record.followUpRounds, 'snapshot.followUpRounds')
-          .map((round, index) => requireFollowUpRound(round, `snapshot.followUpRounds[${index}]`)),
-        rawFinalYaml: requireNullableString(record.rawFinalYaml ?? null, 'snapshot.rawFinalYaml'),
-        completedAt: requireNullableString(record.completedAt ?? null, 'snapshot.completedAt'),
-        updatedAt: requireString(record.updatedAt, 'snapshot.updatedAt'),
+      schemaVersion: 1,
+      winnerId: requireNonEmptyString(record.winnerId, 'snapshot.winnerId'),
+      maxInitialQuestions: requireNonNegativeInteger(record.maxInitialQuestions, 'snapshot.maxInitialQuestions'),
+      maxFollowUps: requireNonNegativeInteger(record.maxFollowUps, 'snapshot.maxFollowUps'),
+      questions: requireArray(record.questions, 'snapshot.questions')
+        .map((question, index) => requireQuestion(question, `snapshot.questions[${index}]`)),
+      answers: Object.fromEntries(
+        Object.entries(answersRecord)
+          .map(([id, answer]) => [id, requireAnswer(answer, `snapshot.answers.${id}`)]),
+      ),
+      currentBatch: record.currentBatch === null || record.currentBatch === undefined
+        ? null
+        : requireBatch(record.currentBatch, 'snapshot.currentBatch'),
+      batchHistory: requireArray(record.batchHistory, 'snapshot.batchHistory')
+        .map((entry, index) => requireBatchHistoryEntry(entry, `snapshot.batchHistory[${index}]`)),
+      followUpRounds: requireArray(record.followUpRounds, 'snapshot.followUpRounds')
+        .map((round, index) => requireFollowUpRound(round, `snapshot.followUpRounds[${index}]`)),
+      rawFinalYaml: requireNullableString(record.rawFinalYaml ?? null, 'snapshot.rawFinalYaml'),
+      completedAt: requireNullableTimestamp(record.completedAt ?? null, 'snapshot.completedAt'),
+      updatedAt: requireTimestamp(record.updatedAt, 'snapshot.updatedAt'),
     }
 
     checkSnapshotConsistency(snapshot)

@@ -12,6 +12,7 @@ import { createFixtureRepoManager } from '../../test/fixtureRepo'
 import { initializeTicket } from '../../ticket/initialize'
 import { getTicketAiLogPath, getTicketDebugLogPath, getTicketExecutionLogPath } from '../../storage/paths'
 import { listSkipEvents } from '../../workflow/skipReceipts'
+import { abortTicketSessions } from '../../opencode/sessionManager'
 
 vi.mock('../../workflow/runner', async () => (await import('../../test/routeMocks')).workflowRunnerMock())
 
@@ -114,6 +115,35 @@ describe('ticketRouter POST /tickets/:id/cancel', () => {
     expect(existsSync(logPath)).toBe(true)
     expect(existsSync(debugLogPath)).toBe(true)
     expect(existsSync(aiLogPath)).toBe(true)
+  })
+
+  it('does not report cancellation or delete content until the remote stop is confirmed', async () => {
+    const repoDir = repoManager.createRepo()
+    const { ticket, init } = await createCancelableTicket(repoDir)
+    vi.mocked(abortTicketSessions)
+      .mockResolvedValueOnce(false)
+      .mockResolvedValueOnce(true)
+
+    const first = await app.request(`/api/tickets/${ticket.id}/cancel`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ deleteContent: true }),
+    })
+
+    expect(first.status).toBe(409)
+    expect(getTicketByRef(ticket.id)?.status).toBe('DRAFTING_PRD')
+    expect(existsSync(init.worktreePath)).toBe(true)
+
+    const second = await app.request(`/api/tickets/${ticket.id}/cancel`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ deleteContent: true }),
+    })
+
+    expect(second.status).toBe(200)
+    expect(getTicketByRef(ticket.id)).toBeDefined()
+    expect(existsSync(init.worktreePath)).toBe(false)
+    expect(vi.mocked(abortTicketSessions)).toHaveBeenCalledTimes(2)
   })
 
   it('removes only the execution logs when deleteLog=true and deleteContent=false', async () => {

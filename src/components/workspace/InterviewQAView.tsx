@@ -306,7 +306,7 @@ export function InterviewQAView({ ticket }: InterviewQAViewProps) {
           onToggleHistory={() => setIsHistoryOpen(v => !v)}
           editingQuestionId={editingQuestionId}
           editingText={editingText}
-          isEditingAnswer={isEditingAnswer}
+          isEditingAnswer={isEditingAnswer || isSubmitting || isSkipping}
           editError={editAnswerError}
           onEditingTextChange={setEditingText}
           onStartEdit={handleStartEdit}

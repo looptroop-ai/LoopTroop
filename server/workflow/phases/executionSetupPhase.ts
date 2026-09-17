@@ -875,7 +875,10 @@ export async function handleExecutionSetup(
           },
           beforeRetry: async ({ generation, nextAttempt }) => {
             if (generation.session) {
-              await sessionManager.abandonSession(generation.session.id)
+              const stopped = await sessionManager.abortAndAbandonSession(generation.session.id)
+              if (!stopped) {
+                throw new Error(`Could not confirm abort of execution setup session ${generation.session.id}`)
+              }
             }
             await resetWorktreeToCommit(paths.worktreePath, phaseStartCommit, {
               preservePaths: [...WORKTREE_RESET_PRESERVE_PATHS],

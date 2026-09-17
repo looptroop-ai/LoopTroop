@@ -326,6 +326,28 @@ describe('ExecutionSetupPlanApprovalPane', () => {
     })
   })
 
+  it('shows parser warnings in the approval pane when a hook policy falls back', async () => {
+    const raw = buildRawPlan().replace('validate_advisory', 'future_policy')
+    vi.mocked(globalThis.fetch).mockImplementation((input, init) => {
+      const url = String(input)
+      if (url === `/api/tickets/${encodeURIComponent(TEST.ticketId)}/execution-setup-plan` && (!init?.method || init.method === 'GET')) {
+        return Promise.resolve(new Response(JSON.stringify({
+          exists: true,
+          raw,
+          contentSha256: 'a'.repeat(64),
+          plan: buildPlan(),
+          updatedAt: '2026-03-25T10:15:00.000Z',
+        }), { status: 200, headers: { 'Content-Type': 'application/json' } }))
+      }
+      throw new Error(`Unhandled fetch: ${url}`)
+    })
+
+    renderWithProviders(<ExecutionSetupPlanApprovalPane ticket={makeTicket({ status: 'WAITING_EXECUTION_SETUP_APPROVAL' })} />)
+
+    expect(await screen.findByText(/git_hooks\.policy: unknown value/i)).toBeInTheDocument()
+    expect(screen.getByText(/safe fallback values/i)).toBeInTheDocument()
+  })
+
   it('treats a missing approval plan as failed generation with diagnostics and regenerate available', async () => {
     mockUseTicketArtifacts.mockReturnValue({
       artifacts: [

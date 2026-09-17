@@ -41,7 +41,10 @@ export const phaseIntermediate = new Map<string, PhaseIntermediateData>()
  * Remove in-memory workflow state for a ticket without aborting any active work.
  * Call this when a ticket reaches a terminal state naturally.
  */
-export function cleanupTicketState(ticketId: string) {
+export function cleanupTicketState(
+  ticketId: string,
+  options: { preserveRemoteState?: boolean } = {},
+) {
   ticketAbortControllers.delete(ticketId)
 
   // Clean up runningPhases entries for this ticket
@@ -65,26 +68,32 @@ export function cleanupTicketState(ticketId: string) {
   // to be dropped from the cancel route alone, so a restart — which cancels and
   // then continues the *same* ticket id — carried a leftover depth or
   // suspension into the next run and held its clocks still.
-  clearTicketWorkBudget(ticketId)
+  if (!options.preserveRemoteState) {
+    clearTicketWorkBudget(ticketId)
+  }
 
-  // Per-ticket question bookkeeping outlives the timers themselves, and a
-  // ticket that completed without an open question never reached the window
-  // teardown that used to be its only clear.
-  forgetTicketQuestionMemory(ticketId)
+  if (!options.preserveRemoteState) {
+    // Per-ticket question bookkeeping outlives the timers themselves, and a
+    // ticket that completed without an open question never reached the window
+    // teardown that used to be its only clear.
+    forgetTicketQuestionMemory(ticketId)
 
-  // Same reasoning, same ticket id. Continuations were cleared only by
-  // `abortTicketSessions`, so a ticket that finished naturally — or was
-  // cancelled through a path that had no sessions left to abort — kept them
-  // for their full thirty-minute life, and a restart of the same ticket
-  // reapplied the finished run's retry attempts.
-  clearTicketSessionContinuations(ticketId)
+    // Same reasoning, same ticket id. Continuations were cleared only by
+    // `abortTicketSessions`, so a ticket that finished naturally — or was
+    // cancelled through a path that had no sessions left to abort — kept them
+    // for their full thirty-minute life, and a restart of the same ticket
+    // reapplied the finished run's retry attempts.
+    clearTicketSessionContinuations(ticketId)
+  }
 
-  // Untokened on purpose: a ticket that has reached a terminal state has no
-  // legitimate batch in flight, so whatever claim is on it belongs to a run
-  // that is over. This is the one caller allowed to take a claim it does not
-  // hold, and it is why the claim's expiry is a backstop rather than the
-  // primary recovery path.
-  releaseInterviewBatch(ticketId)
+  if (!options.preserveRemoteState) {
+    // Untokened on purpose: a ticket that has reached a terminal state has no
+    // legitimate batch in flight, so whatever claim is on it belongs to a run
+    // that is over. This is the one caller allowed to take a claim it does not
+    // hold, and it is why the claim's expiry is a backstop rather than the
+    // primary recovery path.
+    releaseInterviewBatch(ticketId)
+  }
 }
 
 /**
@@ -97,7 +106,10 @@ export function cancelTicket(ticketId: string) {
     controller.abort()
   }
 
-  cleanupTicketState(ticketId)
+  // The controller is local, but the session can still be editing remotely.
+  // Keep question/continuation bookkeeping until the caller has confirmed the
+  // remote stop; otherwise a reset or replacement can race the old session.
+  cleanupTicketState(ticketId, { preserveRemoteState: true })
 }
 
 export function abortTicketWork(ticketId: string) {

@@ -11,6 +11,7 @@ import { createTicket, getTicketByRef, patchTicket } from '../../storage/tickets
 import { ensureActivePhaseAttempt } from '../../storage/ticketPhaseAttempts'
 import { createFixtureRepoManager } from '../../test/fixtureRepo'
 import { initializeTicket } from '../../ticket/initialize'
+import { abortTicketSessions } from '../../opencode/sessionManager'
 
 vi.mock('../../workflow/runner', async () => (await import('../../test/routeMocks')).workflowRunnerMock())
 
@@ -129,5 +130,38 @@ describe('ticketRouter DELETE /tickets/:id', () => {
     const payload = await response.json() as { success?: boolean }
     expect(payload.success).toBe(true)
     expect(getTicketByRef(ticket.id)).toBeUndefined()
+  })
+
+  it('retains a terminal ticket until its remote sessions stop', async () => {
+    const repoDir = repoManager.createRepo()
+    const project = attachProject({
+      folderPath: repoDir,
+      name: 'LoopTroop stop check',
+      shortname: 'STOP',
+    })
+    const ticket = createTicket({
+      projectId: project.id,
+      title: 'Remote stop check',
+      description: 'Do not delete while OpenCode stop is uncertain.',
+    })
+    const init = await initializeTicket({
+      projectFolder: repoDir,
+      externalId: ticket.externalId,
+    })
+    patchTicket(ticket.id, { status: 'CANCELED', branchName: init.branchName })
+    const app = new Hono()
+    app.route('/api', ticketRouter)
+    vi.mocked(abortTicketSessions).mockClear()
+    vi.mocked(abortTicketSessions).mockResolvedValueOnce(false).mockResolvedValueOnce(true)
+
+    const first = await app.request(`/api/tickets/${ticket.id}`, { method: 'DELETE' })
+    expect(first.status).toBe(409)
+    expect(getTicketByRef(ticket.id)).toBeDefined()
+    expect(existsSync(init.worktreePath)).toBe(true)
+
+    const second = await app.request(`/api/tickets/${ticket.id}`, { method: 'DELETE' })
+    expect(second.status).toBe(200)
+    expect(getTicketByRef(ticket.id)).toBeUndefined()
+    expect(vi.mocked(abortTicketSessions)).toHaveBeenCalledTimes(2)
   })
 })

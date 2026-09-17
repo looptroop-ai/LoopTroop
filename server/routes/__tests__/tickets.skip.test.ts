@@ -26,7 +26,7 @@ import { claimInterviewBatch } from '../../workflow/phases/interviewPhase'
 import { initializeTicket } from '../../ticket/initialize'
 
 vi.mock('../../opencode/sessionManager', () => ({
-  abortTicketSessions: vi.fn(async () => undefined),
+  abortTicketSessions: vi.fn(async () => true),
 }))
 
 vi.mock('../../machines/persistence', async () => {
@@ -55,6 +55,7 @@ vi.mock('../../machines/persistence', async () => {
 })
 
 import { ticketRouter } from '../tickets'
+import { abortTicketSessions } from '../../opencode/sessionManager'
 
 const repoManager = createFixtureRepoManager({
   templatePrefix: 'looptroop-ticket-route-skip-',
@@ -150,10 +151,25 @@ describe('ticketRouter POST /tickets/:id/skip', () => {
     const app = new Hono()
     app.route('/api', ticketRouter)
 
+    vi.mocked(abortTicketSessions).mockResolvedValueOnce(false).mockResolvedValueOnce(true)
+    const uncertainResponse = await app.request(`/api/tickets/${ticket.id}/skip`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        batchNumber: 2,
+        answers: {
+          Q03: 'Exercise retries against a flaky upstream fake.',
+        },
+      }),
+    })
+    expect(uncertainResponse.status).toBe(409)
+    expect(getTicketByRef(ticket.id)?.status).toBe('WAITING_INTERVIEW_ANSWERS')
+
     const response = await app.request(`/api/tickets/${ticket.id}/skip`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({
+        batchNumber: 2,
         answers: {
           Q03: 'Exercise retries against a flaky upstream fake.',
         },
@@ -210,18 +226,31 @@ describe('ticketRouter POST /tickets/:id/skip', () => {
       serializeInterviewSessionSnapshot(recordPreparedBatch(base, batch)),
     )
 
+    const app = new Hono()
+    app.route('/api', ticketRouter)
+    const unknown = await app.request(`/api/tickets/${ticket.id}/skip`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        batchNumber: 1,
+        answers: { Q99: 'Unknown answer.' },
+        selectedOptions: { Q99: ['unknown'] },
+        skipReasons: { Q99: 'Unknown reason.' },
+      }),
+    })
+    expect(unknown.status).toBe(400)
+    expect(getTicketByRef(ticket.id)?.status).toBe('WAITING_INTERVIEW_ANSWERS')
+
     // A batch is in flight. Skipping the rest rewrites the session and moves
     // the ticket on; the batch then fails and reverts to its own snapshot,
     // undoing the skip-all entirely. Nothing but this claim stops the overlap —
     // the ticket stays in `WAITING_INTERVIEW_ANSWERS` throughout.
     expect(claimInterviewBatch(ticket.id)).toBeTruthy()
 
-    const app = new Hono()
-    app.route('/api', ticketRouter)
     const response = await app.request(`/api/tickets/${ticket.id}/skip`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ answers: {}, selectedOptions: {}, skipReasons: {} }),
+      body: JSON.stringify({ batchNumber: 1, answers: {}, selectedOptions: {}, skipReasons: {} }),
     })
 
     expect(response.status).toBe(409)
@@ -285,6 +314,7 @@ describe('ticketRouter POST /tickets/:id/skip', () => {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({
+        batchNumber: 1,
         answers: { Q01: 'Answered right here.' },
         skipReasons: { Q01: 'A reason for something that is not being skipped.' },
       }),
@@ -350,6 +380,7 @@ describe('ticketRouter POST /tickets/:id/skip', () => {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({
+        batchNumber: 1,
         answers: { Q01: '' },
         skipReasons: { Q01: 'Answered in the ticket description.' },
         bulkSkipReason: 'Shipping before the demo.',

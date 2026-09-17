@@ -17,7 +17,7 @@ import { throwIfAborted } from '../../council/types'
 import { throwIfCancelled } from '../../lib/abort'
 import { buildStructuredRetryPrompt } from '../../structuredOutput'
 import { SessionManager } from '../../opencode/sessionManager'
-import { COUNCIL_RESPONSE_TIMEOUT_MS, EXECUTOR_NOTE_TRUNCATION_LENGTH, EXECUTOR_DETAIL_TRUNCATION_LENGTH, MODEL_OUTPUT_PREVIEW_LENGTH } from '../../lib/constants'
+import { PROMPT_MAX_TIMEOUT_MS, EXECUTOR_NOTE_TRUNCATION_LENGTH, EXECUTOR_DETAIL_TRUNCATION_LENGTH, MODEL_OUTPUT_PREVIEW_LENGTH } from '../../lib/constants'
 import { getStructuredRetryDecision } from '../../lib/structuredOutputRetry'
 import { normalizeStructuredRetryCount } from '../../lib/structuredRetryPolicy'
 import { buildPromptFromTemplate, buildSameSessionPromptFromTemplate, PROM_CODING, PROM51 } from '../../prompts/index'
@@ -250,7 +250,10 @@ async function generateContextWipeNote(
     session,
     parts: [{ type: 'text', content: promptContent }],
     signal,
-    timeoutMs: COUNCIL_RESPONSE_TIMEOUT_MS,
+    // Recovery notes must not consume the council's twenty-minute deadline;
+    // they are best-effort context, and a bounded timeout leaves room for the
+    // actual next iteration.
+    timeoutMs: PROMPT_MAX_TIMEOUT_MS,
     model: options?.model,
     variant: options?.variant,
     erroredSessionPolicy: 'discard_errored_session_output',
@@ -547,6 +550,11 @@ export async function executeBead(
 
         let runResult = await runBeadPrompt()
         let structuredRetryAttempts = 0
+        // A finite bead retry setting also bounds ordinary same-session
+        // continuations within this iteration. Resetting here is intentional:
+        // the setting limits each context-wipe attempt, not the whole bead's
+        // lifetime. Zero keeps the existing unlimited behavior.
+        let sameSessionContinuationAttempts = 0
         const codingSessionOwnership = callbacks?.ticketId
           ? {
               ticketId: callbacks.ticketId,
@@ -650,8 +658,16 @@ export async function executeBead(
               continue
             }
 
-            if (activeSessionId && sessionManager) {
-              await sessionManager.abandonSession(activeSessionId)
+            if (activeSessionId) {
+              const stopped = sessionManager
+                ? await sessionManager.abortAndAbandonSession(activeSessionId)
+                : await adapter.abortSession(activeSessionId).catch((error) => {
+                    console.warn(`[executor] Failed to abort OpenCode session ${activeSessionId}:`, error)
+                    return false
+                  })
+              if (!stopped) {
+                throw new Error(`Could not confirm abort of OpenCode session ${activeSessionId}`)
+              }
               clearOpenCodePromptDispatchCount(activeSessionId)
               activeSessionId = null
             }
@@ -660,6 +676,10 @@ export async function executeBead(
             continue
           }
 
+          if (maxIterations > 0 && sameSessionContinuationAttempts >= maxIterations) {
+            throw new Error(`Configured continuation limit reached after ${maxIterations} attempt(s).`)
+          }
+          sameSessionContinuationAttempts += 1
           runResult = await runOpenCodeSessionPrompt({
             adapter,
             session: runResult.session,
@@ -815,7 +835,8 @@ export async function executeBead(
             },
           )
         }
-      } catch {
+      } catch (error) {
+        throwIfCancelled(error, signal)
         // Best effort only; deterministic fallback note below keeps the retry durable.
       }
 
@@ -831,6 +852,21 @@ export async function executeBead(
         iteration,
         content: stripAnsiSequences(effectiveNote),
       })
+      if (contextWipeSessionId) {
+        // The next callback normally resets the worktree. Do not let it race a
+        // model whose remote stop was only attempted or became unverifiable.
+        throwIfAborted(signal)
+        const stopped = await adapter.abortSession(contextWipeSessionId).catch((error) => {
+          console.warn(`[executor] Failed to abort context-wipe session ${contextWipeSessionId}:`, error)
+          return false
+        })
+        throwIfAborted(signal)
+        if (!stopped) {
+          const cleanupMessage = `Could not confirm abort of OpenCode session ${contextWipeSessionId}; worktree reset withheld.`
+          errors.push(cleanupMessage)
+          break
+        }
+      }
       const attempt = iteration - startingIteration + 1
       try {
         await callbacks?.onContextWipe?.({

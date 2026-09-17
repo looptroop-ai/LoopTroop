@@ -85,6 +85,18 @@ export async function generateExecutionSetupPlan(
   let sessionId = ''
   let activeSessionId: string | null = null
   const sessionManager = callbacks?.ticketId ? new SessionManager(adapter) : null
+  const stopActiveSession = async (sessionIdToStop: string): Promise<void> => {
+    const stopped = sessionManager
+      ? await sessionManager.abortAndAbandonSession(sessionIdToStop)
+      : await adapter.abortSession(sessionIdToStop).catch((error) => {
+          console.warn(`[executionSetupPlan] Failed to abort OpenCode session ${sessionIdToStop}:`, error)
+          return false
+        })
+    if (!stopped) {
+      throwIfAborted(signal)
+      throw new Error(`Could not confirm abort of OpenCode session ${sessionIdToStop}`)
+    }
+  }
   throwIfAborted(signal)
   let result: Awaited<ReturnType<typeof runOpenCodePrompt>>
 
@@ -129,8 +141,8 @@ export async function generateExecutionSetupPlan(
       },
     })
   } catch (error) {
-    if (activeSessionId && sessionManager) {
-      await sessionManager.abandonSession(activeSessionId)
+    if (activeSessionId) {
+      await stopActiveSession(activeSessionId)
     }
     throwIfCancelled(error, signal)
     throw error
@@ -217,8 +229,8 @@ export async function generateExecutionSetupPlan(
         result = retryResult
         response = retryResult.response
       } else {
-        if (activeSessionId && sessionManager) {
-          await sessionManager.abandonSession(activeSessionId)
+        if (activeSessionId) {
+          await stopActiveSession(activeSessionId)
           activeSessionId = null
         }
         result = await runOpenCodePrompt({
@@ -265,8 +277,8 @@ export async function generateExecutionSetupPlan(
         response = result.response
       }
     } catch (error) {
-      if (activeSessionId && sessionManager) {
-        await sessionManager.abandonSession(activeSessionId)
+      if (activeSessionId) {
+        await stopActiveSession(activeSessionId)
         activeSessionId = null
       }
       throwIfCancelled(error, signal)
@@ -292,11 +304,15 @@ export async function generateExecutionSetupPlan(
     })
   }
 
-  if (activeSessionId && sessionManager) {
+  if (activeSessionId) {
     if (parsed.plan) {
-      await sessionManager.completeSession(activeSessionId)
+      if (sessionManager) {
+        await sessionManager.completeSession(activeSessionId)
+      } else {
+        adapter.forgetSessionDirectory?.(activeSessionId)
+      }
     } else {
-      await sessionManager.abandonSession(activeSessionId)
+      await stopActiveSession(activeSessionId)
     }
   }
 

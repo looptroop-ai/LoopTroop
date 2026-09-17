@@ -244,6 +244,45 @@ describe('ManualQAView recovery behavior', () => {
     })
   })
 
+  it('submits the click snapshot while a later edit remains in the newer draft', async () => {
+    let finishSave!: (value: { conflict: boolean; revision: number; updatedAt: string }) => void
+    mocks.save.mockImplementationOnce(() => new Promise(resolve => { finishSave = resolve }))
+    renderWithProviders(<ManualQAView ticket={waitingTicket()} />)
+
+    fireEvent.click(screen.getByRole('button', { name: 'Pass' }))
+    fireEvent.click(screen.getByRole('button', { name: 'Submit QA' }))
+    await waitFor(() => expect(mocks.save).toHaveBeenCalledOnce())
+
+    const notes = screen.getByText('Notes').parentElement?.querySelector('textarea')
+    expect(notes).toBeTruthy()
+    fireEvent.change(notes!, { target: { value: 'Edited after submitting.' } })
+    finishSave({ conflict: false, revision: 1, updatedAt: new Date().toISOString() })
+
+    await waitFor(() => expect(mocks.submit).toHaveBeenCalledOnce())
+    expect(mocks.submit.mock.calls[0]![0].draft.results[0]).toMatchObject({ outcome: 'pass', note: '' })
+    expect(notes).toHaveValue('Edited after submitting.')
+  })
+
+  it('skips the click snapshot while a later edit remains in the newer draft', async () => {
+    let finishSave!: (value: { conflict: boolean; revision: number; updatedAt: string }) => void
+    mocks.save.mockImplementationOnce(() => new Promise(resolve => { finishSave = resolve }))
+    renderWithProviders(<ManualQAView ticket={waitingTicket()} />)
+
+    fireEvent.click(screen.getByRole('button', { name: 'Pass' }))
+    fireEvent.click(screen.getByRole('button', { name: 'Skip Manual QA…' }))
+    fireEvent.click(screen.getByRole('button', { name: 'Skip and integrate' }))
+    await waitFor(() => expect(mocks.save).toHaveBeenCalledOnce())
+
+    const notes = screen.getByText('Notes').parentElement?.querySelector('textarea')
+    expect(notes).toBeTruthy()
+    fireEvent.change(notes!, { target: { value: 'Edited after skipping.' } })
+    finishSave({ conflict: false, revision: 1, updatedAt: new Date().toISOString() })
+
+    await waitFor(() => expect(mocks.skip).toHaveBeenCalledOnce())
+    expect(mocks.skip.mock.calls[0]![0].draft.results[0]).toMatchObject({ outcome: 'pass', note: '' })
+    expect(notes).toHaveValue('Edited after skipping.')
+  })
+
   it('keeps PRD coverage collapsed by default', () => {
     mocks.round.mockReturnValue({
       data: {

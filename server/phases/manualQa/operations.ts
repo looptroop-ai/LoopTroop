@@ -215,7 +215,10 @@ function assertMutationGuard(ticketId: string, ticketDir: string, version: numbe
       throw new Error('Stored Manual QA draft state is invalid.')
     }
   }
-  if (serverRevision !== guard.expectedDraftRevision) {
+  // Submission owns the immutable draft snapshot supplied to this operation.
+  // A later autosave is a different, newer draft and must not reject the
+  // already-clicked checks.
+  if (serverRevision < guard.expectedDraftRevision) {
     throw new Error('Manual QA draft revision conflict; reload the server-owned draft before submitting.')
   }
 }

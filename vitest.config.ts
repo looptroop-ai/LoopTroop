@@ -278,6 +278,8 @@ const serverIntegrationTests = [
   'server/storage/__tests__/projectWorktreeCleanup.test.ts',
   'server/workflow/__tests__/executionSetupPhase.test.ts',
   'server/workflow/__tests__/interviewVotePhase.test.ts',
+  'server/workflow/__tests__/interviewBatchCas.test.ts',
+  'server/workflow/__tests__/interviewBatchClaims.test.ts',
 ] as const
 
 export default defineConfig({

@@ -4,6 +4,17 @@ import { SILENT_DISABLED_PERMISSIONS } from '../../opencode/toolPolicy'
 import type { CouncilMember, DraftResult } from '../types'
 import { VOTING_RUBRIC_BEADS, VOTING_RUBRIC_INTERVIEW, VOTING_RUBRIC_PRD } from '../types'
 import { conductVoting } from '../voter'
+import type { PromptPart } from '../../opencode/types'
+
+function stalledPrompt(signal?: AbortSignal): Promise<string> {
+  return new Promise((_resolve, reject) => {
+    signal?.addEventListener('abort', () => {
+      const abortError = new Error('Aborted')
+      abortError.name = 'AbortError'
+      reject(abortError)
+    }, { once: true })
+  })
+}
 
 describe('conductVoting', () => {
   const cases = [
@@ -134,5 +145,62 @@ describe('conductVoting', () => {
     expect(result.voterDetails[0]?.normalizedResponse).toBeUndefined()
     expect(adapter.promptCalls[0]?.options?.permission).toEqual(SILENT_DISABLED_PERMISSIONS)
     expect(adapter.promptCalls[1]?.options?.permission).toEqual(SILENT_DISABLED_PERMISSIONS)
+  })
+
+  it('recovers a voting timeout after the first remote stop attempt is unconfirmed', async () => {
+    class StopRetryAdapter extends MockOpenCodeAdapter {
+      private abortAttempt = 0
+
+      override async promptSession(_sessionId: string, _parts: PromptPart[], signal?: AbortSignal): Promise<string> {
+        return stalledPrompt(signal)
+      }
+
+      override async abortSession(_sessionId: string): Promise<boolean> {
+        this.abortAttempt += 1
+        return this.abortAttempt >= 3
+      }
+    }
+
+    const result = await conductVoting(
+      new StopRetryAdapter(),
+      [{ modelId: 'model-a', name: 'Model A' }],
+      [{ memberId: 'draft-a', content: 'draft-a content', outcome: 'completed', duration: 1 }],
+      [{ type: 'text', content: 'vote prompt' }],
+      '/tmp/test',
+      'interview_draft',
+      5,
+    )
+
+    expect(result.memberOutcomes).toEqual({ 'model-a': 'timed_out' })
+    expect(result.votes).toEqual([])
+  })
+
+  it('does not report a voting timeout when remote stop remains unconfirmed', async () => {
+    class UnconfirmedStopAdapter extends MockOpenCodeAdapter {
+      override async promptSession(_sessionId: string, _parts: PromptPart[], signal?: AbortSignal): Promise<string> {
+        return stalledPrompt(signal)
+      }
+
+      override async abortSession(_sessionId: string): Promise<boolean> {
+        return false
+      }
+    }
+
+    const progress: Array<{ outcome: string }> = []
+    await expect(conductVoting(
+      new UnconfirmedStopAdapter(),
+      [{ modelId: 'model-a', name: 'Model A' }],
+      [{ memberId: 'draft-a', content: 'draft-a content', outcome: 'completed', duration: 1 }],
+      [{ type: 'text', content: 'vote prompt' }],
+      '/tmp/test',
+      'interview_draft',
+      5,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      (entry) => progress.push({ outcome: entry.outcome }),
+    )).rejects.toThrow('Could not confirm abort of OpenCode session mock-session-1')
+    expect(progress).toEqual([])
   })
 })

@@ -28,6 +28,7 @@ import {
   rejectDisplayOnlyMockTicket,
   respondWithState,
 } from './routeUtils'
+import { withTicketMergeLock } from '../../workflow/mergeCompletion'
 import { ensureActorForTicket, sendTicketEvent } from '../../machines/persistence'
 import {
   rawExecutionSetupPlanSaveSchema,
@@ -264,6 +265,20 @@ export async function handlePutExecutionSetupPlan(c: Context) {
 
 export async function handleRegenerateExecutionSetupPlan(c: Context) {
   const ticketId = getTicketParam(c)
+  const body = await c.req.json().catch(() => ({}))
+  const parsed = regenerateExecutionSetupPlanSchema.safeParse(body)
+  if (!parsed.success) {
+    return c.json({ error: 'Invalid regenerate payload', details: parsed.error.flatten() }, 400)
+  }
+
+  return withTicketMergeLock(ticketId, () => handleRegenerateExecutionSetupPlanLocked(c, parsed.data))
+}
+
+async function handleRegenerateExecutionSetupPlanLocked(
+  c: Context,
+  options: { commentary: string; plan?: ExecutionSetupPlan | null; rawContent?: string | null },
+) {
+  const ticketId = getTicketParam(c)
   const ticket = getTicketByRef(ticketId)
   if (!ticket) return c.json({ error: 'Ticket not found' }, 404)
   const mockResponse = rejectDisplayOnlyMockTicket(c, ticket)
@@ -271,18 +286,15 @@ export async function handleRegenerateExecutionSetupPlan(c: Context) {
   if (!isEditableExecutionSetupPlanStatus(ticket.status)) {
     return c.json({ error: 'Ticket is not waiting for execution setup plan approval or preparing workspace runtime' }, 409)
   }
+  // Re-read the status under the per-ticket lock immediately before any
+  // restart, artifact write, or workflow event. A concurrent save/cancel may
+  // have changed the ticket while the request body was being parsed.
   const rewindsRuntimeSetup = shouldRewindRuntimeSetup(ticket.status)
 
-  const body = await c.req.json().catch(() => ({}))
-  const parsed = regenerateExecutionSetupPlanSchema.safeParse(body)
-  if (!parsed.success) {
-    return c.json({ error: 'Invalid regenerate payload', details: parsed.error.flatten() }, 400)
-  }
-
   // Read current plan before archiving (for context in background generation)
-  let currentPlan = parsed.data.plan ?? null
-  if (!currentPlan && parsed.data.rawContent) {
-    const normalized = normalizeRawSetupPlanContent(parsed.data.rawContent, ticketId)
+  let currentPlan = options.plan ?? null
+  if (!currentPlan && options.rawContent) {
+    const normalized = normalizeRawSetupPlanContent(options.rawContent, ticketId)
     if (!normalized.ok) {
       return c.json({ error: 'Invalid raw setup plan draft', details: normalized.error }, 400)
     }
@@ -304,9 +316,9 @@ export async function handleRegenerateExecutionSetupPlan(c: Context) {
   let requestArtifactId: number
   try {
     requestArtifactId = writeExecutionSetupPlanRegenerationRequest(ticketId, {
-      commentary: parsed.data.commentary,
+      commentary: options.commentary,
       currentPlan,
-      notes: [...existingNotes, parsed.data.commentary],
+      notes: [...existingNotes, options.commentary],
     })
     ensureActorForTicket(ticketId)
     sendTicketEvent(ticketId, {

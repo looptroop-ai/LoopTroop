@@ -56,6 +56,17 @@ from the `.d.mts` file beside it; keep the two in step.
 
 For code changes, run the relevant linting, typechecking, and tests for the area you touched.
 
+For workflow recovery documentation, distinguish a local cancellation request
+from confirmed remote stopping. Keep unconfirmed session ownership visible and
+retryable, and say that restart recovery needs the project database or its
+ticket marker. If both storage layers are unavailable, only the current process
+guard remains. Interview examples must include a positive `batchNumber` and
+explain that missing or invalid values fail schema validation while valid stale
+values are rejected before mutation. Automatic bead-response continuation
+within each bead iteration is bounded by a finite `maxIterations`; `0` means
+unlimited for that path. User-facing Continue across workflow phases is
+separate.
+
 ## Documentation and changelog
 
 Keep documentation updated with behavior changes. Published documentation lives in the public [LoopTroop-Website repository](https://github.com/looptroop-ai/LoopTroop-Website), while the canonical application changelog lives in `CHANGELOG.md`.

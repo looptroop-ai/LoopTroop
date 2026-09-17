@@ -28,9 +28,10 @@ import {
 import { buildMinimalContext, type TicketState } from '../../opencode/contextBuilder'
 import { buildPromptFromTemplate, PROM2, PROM3 } from '../../prompts/index'
 import { randomUUID } from 'node:crypto'
-import { and, eq, lte } from 'drizzle-orm'
+import { and, eq, exists, gt, lte } from 'drizzle-orm'
 import { interviewBatchClaims } from '../../db/schema'
 import { getLatestPhaseArtifact, getTicketByRef, getTicketContext, getTicketPaths, insertPhaseArtifact, upsertLatestPhaseArtifact, countPhaseArtifacts, writeTicketFile } from '../../storage/tickets'
+import { compareAndSetLatestPhaseArtifact } from '../../storage/ticketArtifacts'
 import { isMockOpenCodeMode } from '../../opencode/factory'
 import { safeAtomicWriteWithin } from '../../io/atomicWrite'
 import { readFileNoFollowSync } from '../../io/readFile'
@@ -41,6 +42,7 @@ import * as jsYaml from 'js-yaml'
 import { normalizeInterviewQuestionsOutput, normalizeInterviewRefinementOutput } from '../../structuredOutput'
 import type { InterviewQuestionChange } from '@shared/interviewQuestions'
 import type { InterviewSessionSnapshot } from '@shared/interviewSession'
+import { cloneSnapshot, nowIso } from '../../phases/interview/interviewUtils'
 import {
   buildInterviewUiRefinementDiffArtifact,
   buildInterviewUiRefinementDiffArtifactFromChanges,
@@ -251,6 +253,8 @@ export interface InterviewBatchSkipReceipt {
    * completed skip-all, and a revert cannot be taken back.
    */
   persistedUpdatedAt?: string
+  /** Exact normalized snapshot written before the model call. */
+  persistedSnapshotFingerprint?: string
 }
 
 /**
@@ -261,6 +265,41 @@ export interface InterviewBatchSkipReceipt {
  * daemon that died mid-batch from wedging the ticket forever.
  */
 const DEFAULT_BATCH_CLAIM_TTL_MS = 60 * 60 * 1000
+const INTERVIEW_STOP_PENDING_PREFIX = 'interview-stop-pending:'
+const INTERVIEW_STOP_PENDING_EXPIRY = '9999-12-31T23:59:59.999Z'
+
+export type InterviewBatchStopKind = 'answer' | 'skip'
+
+function buildPendingStopToken(kind: InterviewBatchStopKind): string {
+  return `${INTERVIEW_STOP_PENDING_PREFIX}${kind}:${randomUUID()}`
+}
+
+function parsePendingStopKind(token: string): InterviewBatchStopKind | null {
+  if (!token.startsWith(INTERVIEW_STOP_PENDING_PREFIX)) return null
+  const kind = token.slice(INTERVIEW_STOP_PENDING_PREFIX.length).split(':', 1)[0]
+  return kind === 'answer' || kind === 'skip' ? kind : null
+}
+
+// Claim timestamps are persisted as ISO text. Keep the validity comparison
+// independent of Date#toISOString so a fixed-clock test can still distinguish
+// a live lease from an expired one.
+function isoFromEpoch(milliseconds: number): string {
+  const date = new Date(milliseconds)
+  const pad = (value: number, width = 2) => String(value).padStart(width, '0')
+  return `${date.getUTCFullYear()}-${pad(date.getUTCMonth() + 1)}-${pad(date.getUTCDate())}T${pad(date.getUTCHours())}:${pad(date.getUTCMinutes())}:${pad(date.getUTCSeconds())}.${pad(date.getUTCMilliseconds(), 3)}Z`
+}
+
+function isClaimOwnerProvablyDead(token: string): boolean {
+  const separator = token.indexOf(':')
+  const ownerPid = Number(separator > 0 ? token.slice(0, separator) : Number.NaN)
+  if (!Number.isSafeInteger(ownerPid) || ownerPid <= 0 || ownerPid === process.pid) return false
+  try {
+    process.kill(ownerPid, 0)
+    return false
+  } catch (error) {
+    return (error as NodeJS.ErrnoException).code === 'ESRCH'
+  }
+}
 
 /**
  * Claims the answer batch for a ticket, in the project database.
@@ -304,6 +343,20 @@ export function claimInterviewBatch(ticketId: string, ttlMs = DEFAULT_BATCH_CLAI
   }
 
   return context.projectDb.transaction((tx): string | null => {
+    // A foreign process id that no longer exists proves that the daemon which
+    // held this row is gone. Unknown or live owners remain protected; expiry
+    // is still the fallback when liveness cannot be checked.
+    const existing = tx
+      .select({ token: interviewBatchClaims.token })
+      .from(interviewBatchClaims)
+      .where(eq(interviewBatchClaims.ticketId, context.localTicketId))
+      .get()
+    if (existing && isClaimOwnerProvablyDead(existing.token)) {
+      tx.delete(interviewBatchClaims)
+        .where(and(eq(interviewBatchClaims.ticketId, context.localTicketId), eq(interviewBatchClaims.token, existing.token)))
+        .run()
+    }
+
     // **The write is the guard.** Deciding from a `SELECT` first and writing
     // after would be exactly as unsafe as the `Set` this replaced: the shim
     // opens transactions with a plain `BEGIN`, so in WAL two daemons both read
@@ -347,6 +400,131 @@ export function claimInterviewBatch(ticketId: string, ttlMs = DEFAULT_BATCH_CLAI
 }
 
 /**
+ * Renews one exact lease generation without taking ownership of another.
+ *
+ * A planning edit can cross an awaited external stop. The old lease may have
+ * expired while that stop was in flight, so a later writer may legitimately
+ * replace its row. The conditional update is the fence: the old caller can
+ * continue only when the row still carries its own token. It may refresh an
+ * expired row that nobody has taken over yet, but it never recreates a row or
+ * steals a successor's claim.
+ *
+ * Pending-stop markers deliberately do not use this lease path. Their
+ * non-expiring hand-off and confirmed-stop promotion remain unchanged.
+ */
+export function renewInterviewBatchClaim(
+  ticketId: string,
+  claimToken: string,
+  ttlMs = DEFAULT_BATCH_CLAIM_TTL_MS,
+): boolean {
+  if (parsePendingStopKind(claimToken)) return false
+  const context = getTicketContext(ticketId)
+  if (!context) return false
+  const now = Date.now()
+  const updated = context.projectDb
+    .update(interviewBatchClaims)
+    .set({
+      claimedAt: new Date(now).toISOString(),
+      expiresAt: new Date(now + Math.max(0, ttlMs)).toISOString(),
+    })
+    .where(and(
+      eq(interviewBatchClaims.ticketId, context.localTicketId),
+      eq(interviewBatchClaims.token, claimToken),
+    ))
+    .run()
+  return updated.changes > 0
+}
+
+/** The pending stop marker is a durable retry hand-off, not an expiring lease. */
+export function getPendingInterviewBatchStop(ticketId: string): InterviewBatchStopKind | null {
+  const context = getTicketContext(ticketId)
+  if (!context) return null
+  const existing = context.projectDb
+    .select({ token: interviewBatchClaims.token })
+    .from(interviewBatchClaims)
+    .where(eq(interviewBatchClaims.ticketId, context.localTicketId))
+    .get()
+  return existing ? parsePendingStopKind(existing.token) : null
+}
+
+/**
+ * Reads the exact marker that a caller observed before it waited for the
+ * remote stop. The marker is a generation fence: a later retry may replace
+ * it while the caller is awaiting, so the caller must carry this token into
+ * the conditional promotion rather than looking up the kind again.
+ */
+export function getPendingInterviewBatchStopToken(
+  ticketId: string,
+  kind: InterviewBatchStopKind,
+): string | null {
+  const context = getTicketContext(ticketId)
+  if (!context) return null
+  const existing = context.projectDb
+    .select({ token: interviewBatchClaims.token })
+    .from(interviewBatchClaims)
+    .where(eq(interviewBatchClaims.ticketId, context.localTicketId))
+    .get()
+  return existing && parsePendingStopKind(existing.token) === kind ? existing.token : null
+}
+
+/**
+ * Converts this call's claim into a retry marker only while it still owns it.
+ * A marker cannot be reclaimed by the ordinary lease-expiry path, so a remote
+ * stop that was not confirmed remains blocking until a retry confirms it.
+ */
+export function markInterviewBatchStopPending(
+  ticketId: string,
+  claimToken: string,
+  kind: InterviewBatchStopKind,
+): boolean {
+  const context = getTicketContext(ticketId)
+  if (!context) return false
+  const pendingToken = buildPendingStopToken(kind)
+  const updated = context.projectDb.update(interviewBatchClaims)
+    .set({
+      token: pendingToken,
+      claimedAt: new Date().toISOString(),
+      expiresAt: INTERVIEW_STOP_PENDING_EXPIRY,
+    })
+    .where(and(
+      eq(interviewBatchClaims.ticketId, context.localTicketId),
+      eq(interviewBatchClaims.token, claimToken),
+    ))
+    .run()
+  return updated.changes > 0
+}
+
+/**
+ * Promotes a matching pending stop marker after the remote stop is confirmed.
+ * The conditional update makes competing retries mutually exclusive.
+ */
+export function claimInterviewBatchAfterConfirmedStop(
+  ticketId: string,
+  kind: InterviewBatchStopKind,
+  pendingToken: string,
+  ttlMs = DEFAULT_BATCH_CLAIM_TTL_MS,
+): string | null {
+  const context = getTicketContext(ticketId)
+  if (!context) return null
+  if (parsePendingStopKind(pendingToken) !== kind) return null
+  const now = Date.now()
+  const nowIso = new Date(now).toISOString()
+  const token = `${process.pid}:${randomUUID()}`
+  const retried = context.projectDb.update(interviewBatchClaims)
+    .set({
+      token,
+      claimedAt: nowIso,
+      expiresAt: new Date(now + Math.max(0, ttlMs)).toISOString(),
+    })
+    .where(and(
+      eq(interviewBatchClaims.ticketId, context.localTicketId),
+      eq(interviewBatchClaims.token, pendingToken),
+    ))
+    .run()
+  return retried.changes > 0 ? token : null
+}
+
+/**
  * Gives the claim back, but only while this acquisition still holds it.
  *
  * Without the token an expired claim that someone else had already taken over
@@ -387,6 +565,109 @@ export function hasInFlightInterviewBatch(ticketId: string): boolean {
     .where(eq(interviewBatchClaims.ticketId, context.localTicketId))
     .get()
   return Boolean(existing && Date.parse(existing.expiresAt) > Date.now())
+}
+
+function snapshotFingerprint(snapshot: InterviewSessionSnapshot): string {
+  const canonicalize = (value: unknown): unknown => {
+    if (Array.isArray(value)) return value.map(canonicalize)
+    if (!value || typeof value !== 'object') return value
+    return Object.fromEntries(
+      Object.entries(value)
+        .sort(([left], [right]) => left.localeCompare(right))
+        .map(([key, child]) => [key, canonicalize(child)]),
+    )
+  }
+  return JSON.stringify(canonicalize(snapshot))
+}
+
+function persistInterviewSessionIfCurrent(
+  ticketId: string,
+  expectedFingerprint: string,
+  snapshot: InterviewSessionSnapshot,
+  claimToken: string,
+): boolean {
+  const current = getLatestPhaseArtifact(
+    ticketId,
+    INTERVIEW_SESSION_ARTIFACT,
+    'WAITING_INTERVIEW_ANSWERS',
+  )
+  const currentSnapshot = parseInterviewSessionSnapshot(current?.content)
+  if (!current || !currentSnapshot || snapshotFingerprint(currentSnapshot) !== expectedFingerprint) {
+    return false
+  }
+
+  const nextContent = serializeInterviewSessionSnapshot(snapshot)
+  const context = getTicketContext(ticketId)
+  if (!context) return false
+  const claimGuard = exists(
+    context.projectDb.select({ ticketId: interviewBatchClaims.ticketId })
+      .from(interviewBatchClaims)
+      .where(and(
+        eq(interviewBatchClaims.ticketId, context.localTicketId),
+        eq(interviewBatchClaims.token, claimToken),
+        gt(interviewBatchClaims.expiresAt, isoFromEpoch(Date.now())),
+      )),
+  )
+  return compareAndSetLatestPhaseArtifact(
+    ticketId,
+    INTERVIEW_SESSION_ARTIFACT,
+    'WAITING_INTERVIEW_ANSWERS',
+    current.content,
+    nextContent,
+    undefined,
+    claimGuard,
+  )
+}
+
+function canReattachInterviewBatch(
+  current: InterviewSessionSnapshot,
+  original: InterviewSessionSnapshot,
+): boolean {
+  if (!original.currentBatch || current.currentBatch || current.completedAt) return false
+  if (JSON.stringify(current.questions) !== JSON.stringify(original.questions)) return false
+  if (JSON.stringify(current.batchHistory.slice(0, -1)) !== JSON.stringify(original.batchHistory)) return false
+  const lastHistoryEntry = current.batchHistory.at(-1)
+  if (!lastHistoryEntry || lastHistoryEntry.batchNumber !== original.currentBatch.batchNumber
+    || lastHistoryEntry.source !== original.currentBatch.source
+    || lastHistoryEntry.isFinalFreeForm !== original.currentBatch.isFinalFreeForm
+    || JSON.stringify(lastHistoryEntry.questionIds) !== JSON.stringify(original.currentBatch.questions.map((question) => question.id))) {
+    return false
+  }
+  const expectedAnswerIds = new Set([
+    ...Object.keys(original.answers),
+    ...original.currentBatch.questions.map((question) => question.id),
+  ])
+  return Object.keys(current.answers).length === expectedAnswerIds.size
+    && Object.keys(current.answers).every((questionId) => expectedAnswerIds.has(questionId))
+}
+
+export function restoreInterviewBatchAfterFailure(
+  ticketId: string,
+  original: InterviewSessionSnapshot,
+  receipt: InterviewBatchSkipReceipt,
+  claimToken: string,
+): boolean {
+  const current = readInterviewSessionSnapshotArtifact(ticketId)
+  if (!current) return false
+  const isSamePersistedSnapshot = Boolean(receipt.persistedSnapshotFingerprint && snapshotFingerprint(current) === receipt.persistedSnapshotFingerprint)
+  if (isSamePersistedSnapshot && receipt.persistedSnapshotFingerprint) {
+    const restoredWithCas = persistInterviewSessionIfCurrent(ticketId, receipt.persistedSnapshotFingerprint, original, claimToken)
+    if (!restoredWithCas) return false
+    if (receipt.actionId) deleteSkipReceiptsForAction(ticketId, receipt.actionId)
+    return true
+  }
+
+
+  // An edit may legitimately change only an answer while the model is away.
+  // Reattach the old batch onto that newer snapshot so the edit survives and
+  // the operator can submit again.
+  if (!canReattachInterviewBatch(current, original)) return false
+  const restored = cloneSnapshot(current)
+  restored.currentBatch = cloneSnapshot(original).currentBatch
+  restored.updatedAt = nowIso()
+  if (!persistInterviewSessionIfCurrent(ticketId, snapshotFingerprint(current), restored, claimToken)) return false
+  if (receipt.actionId) deleteSkipReceiptsForAction(ticketId, receipt.actionId)
+  return true
 }
 
 export function skipAllInterviewQuestionsToApproval(
@@ -1382,6 +1663,8 @@ export async function handleInterviewQABatch(
   selectedOptions: Record<string, string[]> = {},
   skipReasons: Record<string, string> = {},
   skipReceipt?: InterviewBatchSkipReceipt,
+  claimToken?: string,
+  onPersisted?: (receipt: InterviewBatchSkipReceipt) => void,
 ): Promise<BatchResponse> {
   const snapshot = readInterviewSessionSnapshotArtifact(ticketId)
   if (!snapshot?.currentBatch) {
@@ -1479,10 +1762,25 @@ export async function handleInterviewQABatch(
   }
 
   // Persist intermediate state immediately: answers saved, currentBatch cleared.
-  // This ensures GET /interview returns the correct state while the AI processes
-  // the next batch, and answers are not lost if the OpenCode call fails.
-  persistInterviewSession(ticketId, answeredSnapshot)
+  // The asynchronous PROM4 path uses the same claim-and-content CAS as its
+  // result and rollback writes, so a worker that lost ownership cannot clear a
+  // successor's batch before it reaches its first await.
+  const needsClaimedPersistence = !isMockOpenCodeMode()
+  const persistedWithClaim = needsClaimedPersistence
+    && Boolean(claimToken && persistInterviewSessionIfCurrent(ticketId, snapshotFingerprint(snapshot), answeredSnapshot, claimToken))
+  if (needsClaimedPersistence && !persistedWithClaim) {
+    if (skipReceipt?.actionId) {
+      deleteSkipReceiptsForAction(ticketId, skipReceipt.actionId)
+      delete skipReceipt.actionId
+    }
+    throw new Error('Interview batch changed or its claim expired before processing started')
+  }
+  if (!needsClaimedPersistence) {
+    persistInterviewSession(ticketId, answeredSnapshot)
+  }
   if (skipReceipt) skipReceipt.persistedUpdatedAt = answeredSnapshot.updatedAt
+  if (skipReceipt) skipReceipt.persistedSnapshotFingerprint = snapshotFingerprint(answeredSnapshot)
+  if (skipReceipt) onPersisted?.(skipReceipt)
 
   // Get session info from memory or reload from DB
   const sessionInfo = await restoreInterviewQASession(ticketId)
@@ -1586,21 +1884,33 @@ export async function handleInterviewQABatch(
   )
   throwIfAborted(signal, ticketId)
 
-  if (result.sessionId && result.sessionId !== sessionInfo.sessionId) {
-    interviewQASessions.set(ticketId, { sessionId: result.sessionId, winnerId: sessionInfo.winnerId })
-    upsertLatestPhaseArtifact(
-      ticketId,
-      INTERVIEW_QA_SESSION_ARTIFACT,
-      'WAITING_INTERVIEW_ANSWERS',
-      JSON.stringify({ sessionId: result.sessionId, winnerId: sessionInfo.winnerId }),
-    )
-    emitPhaseLog(
-      ticketId,
-      externalId,
-      'WAITING_INTERVIEW_ANSWERS',
-      'info',
-      `PROM4 session restarted after structured-output failure (old=${sessionInfo.sessionId}, new=${result.sessionId}).`,
-    )
+  const expectedFingerprint = skipReceipt?.persistedSnapshotFingerprint
+
+  const restartedSession = result.sessionId && result.sessionId !== sessionInfo.sessionId
+    ? result.sessionId
+    : null
+  const persistResultSnapshot = (nextSnapshot: InterviewSessionSnapshot) => {
+    if (!expectedFingerprint || !claimToken
+      || !persistInterviewSessionIfCurrent(ticketId, expectedFingerprint, nextSnapshot, claimToken)) {
+      throw new Error('Interview batch changed or its claim expired while the model was processing')
+    }
+
+    if (restartedSession) {
+      interviewQASessions.set(ticketId, { sessionId: restartedSession, winnerId: sessionInfo.winnerId })
+      upsertLatestPhaseArtifact(
+        ticketId,
+        INTERVIEW_QA_SESSION_ARTIFACT,
+        'WAITING_INTERVIEW_ANSWERS',
+        JSON.stringify({ sessionId: restartedSession, winnerId: sessionInfo.winnerId }),
+      )
+      emitPhaseLog(
+        ticketId,
+        externalId,
+        'WAITING_INTERVIEW_ANSWERS',
+        'info',
+        `PROM4 session restarted after structured-output failure (old=${sessionInfo.sessionId}, new=${restartedSession}).`,
+      )
+    }
   }
 
   if (result.isComplete) {
@@ -1609,8 +1919,15 @@ export async function handleInterviewQABatch(
     }
 
     const completedSnapshot = markInterviewSessionComplete(answeredSnapshot, result.finalYaml)
-    writeCanonicalInterview(externalId, paths.ticketDir, completedSnapshot)
-    persistInterviewSession(ticketId, completedSnapshot)
+    persistResultSnapshot(completedSnapshot)
+    try {
+      writeCanonicalInterview(externalId, paths.ticketDir, completedSnapshot)
+    } catch (error) {
+      if (expectedFingerprint && claimToken) {
+        persistInterviewSessionIfCurrent(ticketId, snapshotFingerprint(completedSnapshot), answeredSnapshot, claimToken)
+      }
+      throw error
+    }
 
     emitPhaseLog(
       ticketId,
@@ -1628,7 +1945,7 @@ export async function handleInterviewQABatch(
 
   const persistedNextBatch = buildPersistedBatch(result, 'prom4', answeredSnapshot)
   const updatedSnapshot = recordPreparedBatch(answeredSnapshot, persistedNextBatch)
-  persistInterviewSession(ticketId, updatedSnapshot)
+  persistResultSnapshot(updatedSnapshot)
 
   emitPhaseLog(ticketId, externalId, 'WAITING_INTERVIEW_ANSWERS', 'info',
     `PROM4 batch ${persistedNextBatch.batchNumber}: ${persistedNextBatch.questions.length} questions. Progress: ${persistedNextBatch.progress.current}/${persistedNextBatch.progress.total}.`)
@@ -1652,16 +1969,18 @@ export function processInterviewBatchAsync(
   selectedOptions: Record<string, string[]> = {},
   skipReasons: Record<string, string> = {},
   /**
-   * The claim this batch was dispatched under. Omitting it makes the release in
-   * `finally` untokened, which would delete whatever claim the ticket holds by
-   * then — including a later submission's.
-   */
+   * The claim this batch was dispatched under. PROM4 result and rollback writes
+   * are rejected when it is missing, and the final release is skipped too.
+  */
   claimToken?: string,
+  /** Keep the durable claim while a timeout's remote stop is unverified. */
+  mayReleaseClaim: () => boolean = () => true,
+  onPersisted?: (receipt: InterviewBatchSkipReceipt) => void,
 ): Promise<BatchResponse> {
   // This call's own receipt, so the revert below can only ever undo the skips
   // this call wrote.
   const skipReceipt: InterviewBatchSkipReceipt = {}
-  return handleInterviewQABatch(ticketId, batchAnswers, selectedOptions, skipReasons, skipReceipt)
+  return handleInterviewQABatch(ticketId, batchAnswers, selectedOptions, skipReasons, skipReceipt, claimToken, onPersisted)
     .catch((err) => {
       // Revert to original snapshot so the user can retry the submission —
       // but only while the session is still the one this call left behind.
@@ -1673,15 +1992,10 @@ export function processInterviewBatchAsync(
       // impossible, because a revert is unrecoverable and a skipped revert is
       // not.
       try {
-        const current = readInterviewSessionSnapshotArtifact(ticketId)
-        const stillOurs = skipReceipt.persistedUpdatedAt === undefined
-          || current?.updatedAt === skipReceipt.persistedUpdatedAt
-        if (stillOurs) {
-          persistInterviewSession(ticketId, originalSnapshot)
-          // The skips in that snapshot are gone, so their receipts describe a
-          // decision the ticket no longer carries.
-          if (skipReceipt.actionId) deleteSkipReceiptsForAction(ticketId, skipReceipt.actionId)
-        } else {
+        const restored = claimToken
+          ? restoreInterviewBatchAfterFailure(ticketId, originalSnapshot, skipReceipt, claimToken)
+          : false
+        if (!restored) {
           console.warn(`[runner] Not reverting the interview session for ${ticketId}: it has moved on since this batch wrote it.`)
         }
       } catch (revertErr) {
@@ -1692,7 +2006,7 @@ export function processInterviewBatchAsync(
     .finally(() => {
       // With the token, so a task that outlived its own claim cannot delete the
       // one a later submission is holding.
-      releaseInterviewBatch(ticketId, claimToken)
+      if (mayReleaseClaim() && claimToken) releaseInterviewBatch(ticketId, claimToken)
     })
 }
 

@@ -257,6 +257,7 @@ Unreleased changes appear first and represent commits that have not yet been inc
 - Three aliases re-exported for a question-diff type that no longer exists, the three helpers behind them, an execution-setup runtime-path list with no reader, and an execution-setup barrel re-exporting three artifact names every caller already imports from their own module.
 
 ### Fixed
+- Manual QA compares existing quarantine copies in bounded chunks, preserving distinct retry backups without loading entire files into memory.
 - Recovery keeps caller-visible paths stable across macOS and Windows canonicalization, fsyncs JSONL repairs, records fallback ownership before copying, and removes stale proof sidecars only for known artifacts. Manual QA drift mutations run through bounded asynchronous Git operations and serialize overlapping decisions per workspace.
 - Git diff audits preserve NUL-delimited filenames, including names with spaces and non-ASCII bytes. SSH transport keeps a repository's configured `core.sshCommand`, and WSL drive paths reject traversal outside their mounted drive.
 - Contained atomic writes reject final symlinks, worktree cleanup rechecks its managed parent after Git yields, and project routes report invalid paths instead of turning them into server errors.

@@ -75,6 +75,12 @@ Disposition labels:
 
 ## Verification
 
+Root's follow-up bounds quarantine comparison memory to two 64 KiB buffers,
+uses the shared no-follow regular-file opener, and checks file size and
+modification time after reading. A multi-chunk regression verifies identical
+backup reuse and preservation of a later same-sized change at its recorded
+retry destination.
+
 Focused checks on this branch included:
 
 - `vitest` pure path/Git tests: path normalization 16 passed, 3 skipped;

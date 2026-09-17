@@ -7,11 +7,13 @@ import { parseGitPathListZ } from '../../git/statusPorcelain'
 import { createHash } from 'node:crypto'
 import {
   cpSync,
+  closeSync,
   existsSync,
+  fstatSync,
   lstatSync,
   mkdirSync,
   readdirSync,
-  readFileSync,
+  readSync,
   readlinkSync,
   rmSync,
   symlinkSync,
@@ -27,6 +29,7 @@ import {
 import { getTicketByRef, getTicketPaths } from '../../storage/tickets'
 import { appendManualQaEvent, readManualQaText } from './storage'
 import { safeAtomicWriteWithin } from '../../io/atomicWrite'
+import { openFileNoFollowSync } from '../../io/readFile'
 import { withFileLock } from '../../io/fileLock'
 import {
   classifyWorktreePath,
@@ -347,11 +350,33 @@ function sameQuarantineEntry(source: string, destination: string): boolean {
       && sourceNames.every((name, index) => name === destinationNames[index]
         && sameQuarantineEntry(join(source, name), join(destination, name)))
   }
-  if (!left.isFile() || !right.isFile()) return false
+  if (!left.isFile() || !right.isFile() || left.size !== right.size) return false
+  const descriptors: number[] = []
   try {
-    return readFileSync(source).equals(readFileSync(destination))
+    descriptors.push(openFileNoFollowSync(source))
+    descriptors.push(openFileNoFollowSync(destination))
+    const buffers = [Buffer.alloc(64 * 1024), Buffer.alloc(64 * 1024)]
+    for (let position = 0; position < left.size; position += buffers[0]!.length) {
+      const length = Math.min(buffers[0]!.length, left.size - position)
+      for (let index = 0; index < descriptors.length; index += 1) {
+        let offset = 0
+        while (offset < length) {
+          const count = readSync(descriptors[index]!, buffers[index]!, offset, length - offset, position + offset)
+          if (count === 0) return false
+          offset += count
+        }
+      }
+      if (!buffers[0]!.subarray(0, length).equals(buffers[1]!.subarray(0, length))) return false
+    }
+    return descriptors.every((fd, index) => {
+      const expected = index === 0 ? left : right
+      const current = fstatSync(fd)
+      return current.size === expected.size && current.mtimeMs === expected.mtimeMs
+    })
   } catch {
     return false
+  } finally {
+    for (const fd of descriptors) closeSync(fd)
   }
 }
 

@@ -15,6 +15,7 @@ interface PromptEditorProps {
   promptId: string
   wordWrap: boolean
   onToggleWordWrap: () => void
+  onDirtyChange?: (isDirty: boolean) => void
 }
 
 /**
@@ -24,7 +25,7 @@ interface PromptEditorProps {
  */
 type ViewMode = 'edit' | 'diff' | 'preview'
 
-export function PromptEditor({ promptId, wordWrap, onToggleWordWrap }: PromptEditorProps) {
+export function PromptEditor({ promptId, wordWrap, onToggleWordWrap, onDirtyChange }: PromptEditorProps) {
   const { data: prompt, isLoading, error } = usePrompt(promptId)
   const savePrompt = useSavePrompt()
   const revertPrompt = useRevertPrompt()
@@ -35,6 +36,9 @@ export function PromptEditor({ promptId, wordWrap, onToggleWordWrap }: PromptEdi
   const [errors, setErrors] = useState<string[]>([])
   const [warnings, setWarnings] = useState<string[]>([])
   const [savedAt, setSavedAt] = useState<number | null>(null)
+  const [previewText, setPreviewText] = useState('')
+  const [previewError, setPreviewError] = useState<string | null>(null)
+  const [previewPending, setPreviewPending] = useState(false)
 
   const promptCurrent = prompt?.current
 
@@ -49,10 +53,8 @@ export function PromptEditor({ promptId, wordWrap, onToggleWordWrap }: PromptEdi
   // What is on screen right now, readable from inside an awaited save.
   const draftRef = useRef(draft)
   const promptIdRef = useRef(promptId)
-  useEffect(() => {
-    draftRef.current = draft
-    promptIdRef.current = promptId
-  })
+  draftRef.current = draft
+  promptIdRef.current = promptId
 
   /**
    * Set while the server copy this editor is about to receive is the echo of its own
@@ -60,20 +62,18 @@ export function PromptEditor({ promptId, wordWrap, onToggleWordWrap }: PromptEdi
    * that is not an external edit — without this the reset below erased the "Saved"
    * line and the warnings the save had just produced, milliseconds after showing them.
    *
-   * A flag rather than a comparison against the submitted text: the server stores a
-   * re-serialised document, not the bytes it was sent, so any save whose formatting
-   * differs from what `js-yaml` emits comes back different and a content check would
-   * call the editor's own save somebody else's edit.
+   * The saved prompt identity and submitted source are recorded together: the server
+   * stores a re-serialised document, not the bytes it was sent, so comparing only
+   * content would mistake a canonical echo for somebody else's edit.
    */
-  const ownSaveEchoRef = useRef(false)
-  /**
-   * Whether that echo should replace what is on screen. It should not when the user
-   * carried on typing while the save was in flight: the save still happened, so the
-   * invalidation is still ours to absorb, but the canonical copy it brings back is
-   * older than the draft and adopting it would delete what they typed.
-   */
-  const echoAdoptsDraftRef = useRef(true)
+  const ownSaveEchoRef = useRef<{
+    promptId: string
+    source: string
+  } | null>(null)
+  const promptBaselineRef = useRef<string | undefined>(undefined)
   const lastPromptIdRef = useRef<string | undefined>(undefined)
+  const previewRequestRef = useRef<{ promptId: string; source: string } | null>(null)
+  const revertRequestRef = useRef<{ promptId: string; source: string } | null>(null)
 
   // Reset local editing state whenever a different prompt is selected or the server
   // copy changes underneath the editor (a revert, or another writer).
@@ -81,33 +81,81 @@ export function PromptEditor({ promptId, wordWrap, onToggleWordWrap }: PromptEdi
     if (promptCurrent === undefined) return
     const isPromptSwitch = lastPromptIdRef.current !== promptId
     lastPromptIdRef.current = promptId
-    const isOwnSaveEcho = !isPromptSwitch && ownSaveEchoRef.current
-    ownSaveEchoRef.current = false
+    const ownSaveEcho = !isPromptSwitch && ownSaveEchoRef.current?.promptId === promptId
+      ? ownSaveEchoRef.current
+      : null
+    const isOwnSaveEcho = ownSaveEcho !== null
+    ownSaveEchoRef.current = null
 
     if (isOwnSaveEcho) {
       // The stored copy is canonical and is what the editor should now be showing,
       // but the save's own feedback still describes it.
-      if (echoAdoptsDraftRef.current) setDraft(promptCurrent)
-      echoAdoptsDraftRef.current = true
+      if (ownSaveEcho && draftRef.current === ownSaveEcho.source) {
+        promptBaselineRef.current = promptCurrent
+        setDraft(promptCurrent)
+      }
+      return
+    }
+
+    const revertRequest = !isPromptSwitch && revertRequestRef.current?.promptId === promptId
+      ? revertRequestRef.current
+      : null
+    if (revertRequest) {
+      revertRequestRef.current = null
+      promptBaselineRef.current = promptCurrent
+      if (draftRef.current === revertRequest.source) setDraft(promptCurrent)
+      setMode('edit')
+      setErrors([])
+      setWarnings([])
+      setSavedAt(null)
+      previewRequestRef.current = null
+      setPreviewText('')
+      setPreviewError(null)
+      setPreviewPending(false)
+      previewResetRef.current()
+      return
+    }
+
+    // Query invalidation can publish another writer's copy while this editor has
+    // a real draft. Keep the draft until the user saves or changes prompts; an
+    // external refetch is not permission to erase typed work.
+    if (!isPromptSwitch
+      && promptBaselineRef.current !== undefined
+      && draftRef.current !== promptBaselineRef.current) {
       return
     }
 
     setDraft(promptCurrent)
+    promptBaselineRef.current = promptCurrent
     setMode('edit')
     setErrors([])
     setWarnings([])
     setSavedAt(null)
+    previewRequestRef.current = null
+    setPreviewText('')
+    setPreviewError(null)
+    setPreviewPending(false)
     previewResetRef.current()
   }, [promptId, promptCurrent])
 
   // Editing is the point at which the last save stops being news.
   const handleDraftChange = useCallback((next: string) => {
-    ownSaveEchoRef.current = false
     setDraft(next)
     setErrors([])
     setWarnings([])
     setSavedAt(null)
+    previewRequestRef.current = null
+    setPreviewText('')
+    setPreviewError(null)
+    setPreviewPending(false)
   }, [])
+
+  const isDirty = promptCurrent !== undefined
+    && promptBaselineRef.current !== undefined
+    && draft !== promptBaselineRef.current
+  useEffect(() => {
+    onDirtyChange?.(isDirty)
+  }, [isDirty, onDirtyChange])
 
   if (isLoading) {
     return <div className="p-6 text-sm text-muted-foreground">Loading prompt…</div>
@@ -119,8 +167,6 @@ export function PromptEditor({ promptId, wordWrap, onToggleWordWrap }: PromptEdi
       </div>
     )
   }
-
-  const isDirty = draft !== prompt.current
 
   /**
    * The editor is one component instance for every prompt — the dialog swaps the
@@ -141,7 +187,7 @@ export function PromptEditor({ promptId, wordWrap, onToggleWordWrap }: PromptEdi
       // A refused request — offline, a 500, an unreadable response — used to travel
       // out of an onClick as an unhandled rejection, leaving the editor looking as
       // though nothing had been asked of it.
-      if (!describesCurrentEditor(savedPromptId, source)) return
+      if (promptIdRef.current !== savedPromptId) return
       setErrors([err instanceof Error ? err.message : 'Failed to save this prompt.'])
       setWarnings([])
       setSavedAt(null)
@@ -152,26 +198,42 @@ export function PromptEditor({ promptId, wordWrap, onToggleWordWrap }: PromptEdi
     if (result.errors.length === 0 && promptIdRef.current === savedPromptId) {
       // The write happened, so its echo is coming either way; only whether the editor
       // should adopt what comes back depends on the draft still being the saved one.
-      ownSaveEchoRef.current = true
-      echoAdoptsDraftRef.current = isCurrent
+      ownSaveEchoRef.current = {
+        promptId: savedPromptId,
+        source,
+      }
+      promptBaselineRef.current = source
     }
-    if (!isCurrent) return
-    if (result.errors.length === 0) setSavedAt(Date.now())
+    if (promptIdRef.current !== savedPromptId) return
+    if (result.errors.length === 0 && isCurrent) setSavedAt(Date.now())
     setErrors(result.errors)
     setWarnings(result.warnings)
   }
 
   const handleRevert = async () => {
     const revertedPromptId = promptId
-    ownSaveEchoRef.current = false
+    const sourceAtRevert = draftRef.current
+    revertRequestRef.current = { promptId: revertedPromptId, source: sourceAtRevert }
+    ownSaveEchoRef.current = null
+    let result: Awaited<ReturnType<typeof revertPrompt.mutateAsync>>
     try {
-      await revertPrompt.mutateAsync(revertedPromptId)
+      result = await revertPrompt.mutateAsync(revertedPromptId)
     } catch (err) {
+      revertRequestRef.current = null
       if (promptIdRef.current !== revertedPromptId) return
       setErrors([err instanceof Error ? err.message : 'Failed to revert this prompt.'])
       return
     }
-    if (promptIdRef.current !== revertedPromptId) return
+    if (promptIdRef.current !== revertedPromptId) {
+      revertRequestRef.current = null
+      return
+    }
+    revertRequestRef.current = null
+    const revertedSource = typeof result?.current === 'string' ? result.current : null
+    if (revertedSource !== null) {
+      promptBaselineRef.current = revertedSource
+      if (draftRef.current === sourceAtRevert) setDraft(revertedSource)
+    }
     setErrors([])
     setWarnings([])
     setSavedAt(null)
@@ -179,14 +241,42 @@ export function PromptEditor({ promptId, wordWrap, onToggleWordWrap }: PromptEdi
 
   const handlePreview = async () => {
     if (mode === 'preview') {
+      previewRequestRef.current = null
       setMode('edit')
+      setPreviewText('')
+      setPreviewError(null)
+      setPreviewPending(false)
       return
     }
     setMode('preview')
-    await preview.mutateAsync({ id: promptId, source: draft }).catch(() => undefined)
+    const request = { promptId, source: draft }
+    previewRequestRef.current = request
+    setPreviewText('')
+    setPreviewError(null)
+    setPreviewPending(true)
+    try {
+      const result = await preview.mutateAsync({ id: promptId, source: draft })
+      if (
+        previewRequestRef.current === request
+        && promptIdRef.current === request.promptId
+        && draftRef.current === request.source
+      ) {
+        setPreviewText(result.preview)
+        setPreviewPending(false)
+      }
+    } catch (err) {
+      if (
+        previewRequestRef.current === request
+        && promptIdRef.current === request.promptId
+        && draftRef.current === request.source
+      ) {
+        setPreviewError(err instanceof Error ? err.message : 'Failed to build preview.')
+        setPreviewPending(false)
+      }
+    }
   }
 
-  const previewText = preview.data?.preview ?? (preview.isPending ? 'Building preview…' : '')
+  const renderedPreviewText = previewText || (previewPending ? 'Building preview…' : '')
 
   return (
     <div className="flex h-full min-h-0 flex-col">
@@ -275,11 +365,16 @@ export function PromptEditor({ promptId, wordWrap, onToggleWordWrap }: PromptEdi
           Read-only: assembled prompt as the model receives it.
         </div>
       )}
+      {mode === 'preview' && previewError && (
+        <div role="alert" className="border-b border-destructive/30 bg-destructive/10 px-4 py-2 text-xs text-destructive">
+          {previewError}
+        </div>
+      )}
 
       <div className="min-h-0 flex-1 overflow-hidden">
         {mode === 'preview' && (
           <pre className={`h-full overflow-auto p-4 font-mono text-xs ${wordWrap ? 'whitespace-pre-wrap' : 'whitespace-pre'}`}>
-            {previewText}
+            {renderedPreviewText}
           </pre>
         )}
         {mode === 'diff' && (

@@ -88,4 +88,29 @@ describe('FolderPicker', () => {
     expect(screen.queryByText('slow is a repository')).not.toBeInTheDocument()
     expect(screen.getByRole('button', { name: /Select This Folder/i })).toBeDisabled()
   })
+
+  it('keeps a transient git-check failure separate from a non-repository result and offers retry', async () => {
+    vi.useFakeTimers({ shouldAdvanceTime: true })
+    vi.stubGlobal('fetch', vi.fn(async (input: RequestInfo | URL) => {
+      const url = String(input)
+      if (url.includes('/check-git?')) return new Response('temporary failure', { status: 503 })
+      return new Response(JSON.stringify(lsBody('/temporary')), {
+        status: 200,
+        headers: { 'Content-Type': 'application/json' },
+      })
+    }))
+
+    render(
+      <TooltipProvider>
+        <FolderPicker open onClose={() => undefined} onSelect={() => undefined} initialPath="/temporary" />
+      </TooltipProvider>,
+    )
+
+    await waitFor(() => expect(screen.getByText('/temporary')).toBeInTheDocument())
+    await act(async () => { await vi.advanceTimersByTimeAsync(GIT_CHECK_DEBOUNCE_MS) })
+
+    expect(await screen.findByText(/Git check failed.*503/i)).toBeInTheDocument()
+    expect(screen.queryByText(/not a git repository/i)).not.toBeInTheDocument()
+    expect(screen.getByRole('button', { name: 'Retry' })).toBeInTheDocument()
+  })
 })

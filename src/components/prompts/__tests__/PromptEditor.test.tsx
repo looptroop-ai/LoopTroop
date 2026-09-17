@@ -16,6 +16,7 @@ const state = vi.hoisted(() => ({
 
 const saveMutateAsync = vi.hoisted(() => vi.fn())
 const revertMutateAsync = vi.hoisted(() => vi.fn())
+const previewMutateAsync = vi.hoisted(() => vi.fn())
 const previewReset = vi.hoisted(() => vi.fn())
 
 vi.mock('@/hooks/usePrompts', () => ({
@@ -23,7 +24,7 @@ vi.mock('@/hooks/usePrompts', () => ({
   useSavePrompt: () => ({ mutateAsync: saveMutateAsync, isPending: false }),
   useRevertPrompt: () => ({ mutateAsync: revertMutateAsync, isPending: false }),
   // A fresh `reset` on every render, as the real mutation hook returns.
-  usePromptPreview: () => ({ mutateAsync: vi.fn(), reset: () => previewReset(), data: undefined, isPending: false }),
+  usePromptPreview: () => ({ mutateAsync: previewMutateAsync, reset: () => previewReset(), data: undefined, isPending: false }),
 }))
 
 // CodeMirror needs a real layout; a textarea carries the same contract for this test.
@@ -39,8 +40,8 @@ vi.mock('@/components/editor/YamlDiffEditor', () => ({
   ),
 }))
 
-function renderEditor() {
-  return render(<PromptEditor promptId="interview" wordWrap={false} onToggleWordWrap={vi.fn()} />)
+function renderEditor(onDirtyChange?: (isDirty: boolean) => void) {
+  return render(<PromptEditor promptId="interview" wordWrap={false} onToggleWordWrap={vi.fn()} onDirtyChange={onDirtyChange} />)
 }
 
 /** What the server sends back after a save, which the query then republishes. */
@@ -60,6 +61,7 @@ beforeEach(() => {
   }
   state.saveResult = { errors: [], warnings: [] }
   saveMutateAsync.mockReset().mockImplementation(async () => state.saveResult)
+  previewMutateAsync.mockReset().mockResolvedValue({ preview: 'assembled prompt\n' })
   revertMutateAsync.mockReset().mockResolvedValue(undefined)
   previewReset.mockReset()
 })
@@ -73,6 +75,19 @@ afterEach(cleanup)
  * a save with nothing to say.
  */
 describe('PromptEditor save feedback', () => {
+  it('reports only a draft that differs from the current prompt', async () => {
+    const onDirtyChange = vi.fn()
+    renderEditor(onDirtyChange)
+
+    await waitFor(() => expect(onDirtyChange).toHaveBeenLastCalledWith(false))
+    const source = screen.getByLabelText('Prompt source')
+    fireEvent.change(source, { target: { value: 'changed: yes\n' } })
+    await waitFor(() => expect(onDirtyChange).toHaveBeenLastCalledWith(true))
+
+    fireEvent.change(source, { target: { value: 'original: yes\n' } })
+    await waitFor(() => expect(onDirtyChange).toHaveBeenLastCalledWith(false))
+  })
+
   it('keeps the saved status and warnings when the server copy comes back', async () => {
     state.saveResult = { errors: [], warnings: ['Placeholder {{ticket}} is unused.'] }
     const { rerender } = renderEditor()
@@ -103,17 +118,18 @@ describe('PromptEditor save feedback', () => {
     expect(screen.queryByText('Placeholder {{ticket}} is unused.')).not.toBeInTheDocument()
   })
 
-  it('still resets everything when the server copy changes underneath the editor', async () => {
+  it('keeps a dirty draft when the server copy changes underneath the editor', async () => {
     const { rerender } = renderEditor()
 
     fireEvent.change(screen.getByLabelText('Prompt source'), { target: { value: 'my local draft\n' } })
+    const resetsBeforeExternalUpdate = previewReset.mock.calls.length
     // Someone else — a revert, another writer — replaced the server copy.
     serverAccepts('somebody elses copy\n', rerender)
 
     await waitFor(() => {
-      expect(screen.getByLabelText('Prompt source')).toHaveValue('somebody elses copy\n')
+      expect(screen.getByLabelText('Prompt source')).toHaveValue('my local draft\n')
     })
-    expect(previewReset).toHaveBeenCalled()
+    expect(previewReset).toHaveBeenCalledTimes(resetsBeforeExternalUpdate)
   })
 
   it('resets when a different prompt is selected', async () => {
@@ -127,6 +143,35 @@ describe('PromptEditor save feedback', () => {
     await waitFor(() => {
       expect(screen.getAllByLabelText('Prompt source').at(-1)).toHaveValue('council prompt\n')
     })
+  })
+
+  it('shows a current preview failure instead of an empty preview', async () => {
+    previewMutateAsync.mockRejectedValueOnce(new Error('Preview unavailable'))
+    renderEditor()
+
+    fireEvent.click(screen.getByRole('button', { name: 'Preview' }))
+
+    await waitFor(() => expect(screen.getByRole('alert')).toHaveTextContent('Preview unavailable'))
+  })
+
+  it('ignores a stale preview failure after a newer request starts', async () => {
+    let releaseFirst: (error: Error) => void = () => undefined
+    let releaseSecond: (value: { preview: string }) => void = () => undefined
+    previewMutateAsync
+      .mockImplementationOnce(() => new Promise((_resolve, reject) => { releaseFirst = reject }))
+      .mockImplementationOnce(() => new Promise((resolve) => { releaseSecond = resolve }))
+    renderEditor()
+
+    fireEvent.click(screen.getByRole('button', { name: 'Preview' }))
+    fireEvent.click(screen.getByRole('button', { name: 'Preview' }))
+    fireEvent.change(screen.getByLabelText('Prompt source'), { target: { value: 'new draft\n' } })
+    fireEvent.click(screen.getByRole('button', { name: 'Preview' }))
+
+    await act(async () => { releaseFirst(new Error('stale preview failure')) })
+    expect(screen.queryByText('stale preview failure')).not.toBeInTheDocument()
+
+    await act(async () => { releaseSecond({ preview: 'current preview\n' }) })
+    expect(screen.getByText(/current preview/)).toBeInTheDocument()
   })
 })
 
@@ -191,6 +236,23 @@ describe('PromptEditor save feedback — canonicalized and failed saves', () => 
     expect(screen.getByLabelText('Prompt source')).toHaveValue('second edit\n')
   })
 
+  it('keeps validation errors visible when the user types while the save is pending', async () => {
+    let release: (value: { errors: string[]; warnings: string[] }) => void = () => {}
+    saveMutateAsync.mockImplementation(() => new Promise((resolve) => { release = resolve }))
+    renderEditor()
+
+    fireEvent.change(screen.getByLabelText('Prompt source'), { target: { value: 'invalid: yes\n' } })
+    fireEvent.click(screen.getByRole('button', { name: /save/i }))
+    fireEvent.change(screen.getByLabelText('Prompt source'), { target: { value: 'fixed: yes\n' } })
+
+    await act(async () => {
+      release({ errors: ['Prompt source is not valid YAML.'], warnings: [] })
+    })
+
+    expect(screen.getByText('Prompt source is not valid YAML.')).toBeInTheDocument()
+    expect(screen.getByLabelText('Prompt source')).toHaveValue('fixed: yes\n')
+  })
+
   it('does not report a save against a prompt the user has switched away from', async () => {
     let release: (value: { errors: string[]; warnings: string[] }) => void = () => {}
     saveMutateAsync.mockImplementation(() => new Promise((resolve) => { release = resolve }))
@@ -209,5 +271,35 @@ describe('PromptEditor save feedback — canonicalized and failed saves', () => 
 
     expect(screen.queryByText('Saved. New runs will use this prompt.')).not.toBeInTheDocument()
     expect(screen.getByLabelText('Prompt source')).toHaveValue('council prompt\n')
+  })
+
+  it('keeps a dirty draft when revert fails', async () => {
+    state.prompt = { ...state.prompt, current: 'saved copy\n', modified: true }
+    revertMutateAsync.mockRejectedValueOnce(new Error('Failed to revert prompt (HTTP 503)'))
+    renderEditor()
+
+    fireEvent.change(screen.getByLabelText('Prompt source'), { target: { value: 'still editing\n' } })
+    await act(async () => {
+      fireEvent.click(screen.getByRole('button', { name: 'Revert' }))
+    })
+
+    expect(screen.getByLabelText('Prompt source')).toHaveValue('still editing\n')
+    expect(screen.getByText('Failed to revert prompt (HTTP 503)')).toBeInTheDocument()
+  })
+
+  it('does not replace a later edit when successful revert settles', async () => {
+    state.prompt = { ...state.prompt, current: 'saved copy\n', modified: true }
+    let release: (value: { current: string }) => void = () => undefined
+    revertMutateAsync.mockImplementationOnce(() => new Promise((resolve) => { release = resolve }))
+    renderEditor()
+
+    fireEvent.change(screen.getByLabelText('Prompt source'), { target: { value: 'first draft\n' } })
+    fireEvent.click(screen.getByRole('button', { name: 'Revert' }))
+    fireEvent.change(screen.getByLabelText('Prompt source'), { target: { value: 'later draft\n' } })
+    await act(async () => {
+      release({ current: 'original: yes\n' })
+    })
+
+    expect(screen.getByLabelText('Prompt source')).toHaveValue('later draft\n')
   })
 })

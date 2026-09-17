@@ -56,6 +56,14 @@ from the `.d.mts` file beside it; keep the two in step.
 
 For code changes, run the relevant linting, typechecking, and tests for the area you touched.
 
+Client changes should preserve three boundaries: a draft belongs to the ticket
+and form that created it, a live-stream recovery belongs to the connection and
+cursor generation that is still current, and confirmed deletion clears only
+the deleted ticket's client state. Tests should cover hydration/refetch races,
+late responses, failed saves, replay gaps, and reissued ticket identifiers
+when those boundaries are involved. Keep full-history actions explicit rather
+than mounting an unbounded archive during ordinary navigation.
+
 For workflow recovery documentation, distinguish a local cancellation request
 from confirmed remote stopping. Keep unconfirmed session ownership visible and
 retryable, and say that restart recovery needs the project database or its

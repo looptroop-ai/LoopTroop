@@ -89,6 +89,51 @@ describe('CenteredModal — dialog semantics and focus containment', () => {
 
     expect(document.activeElement).toBe(focusable[focusable.length - 1])
   })
+
+  it('skips focusable controls inside hidden ancestors', () => {
+    render(
+      <TooltipProvider>
+        <CenteredModal open onClose={vi.fn()} title="Configuration">
+          <button type="button">first</button>
+          <button type="button">last</button>
+          <div hidden><button type="button">hidden</button></div>
+        </CenteredModal>
+      </TooltipProvider>,
+    )
+    const dialog = screen.getByRole('dialog', { name: 'Configuration' })
+    const first = screen.getByRole('button', { name: 'Close' })
+    const last = screen.getByRole('button', { name: 'last' })
+    first.focus()
+
+    fireEvent.keyDown(first, { key: 'Tab', shiftKey: true })
+
+    expect(document.activeElement).toBe(last)
+    expect(dialog).toContainElement(screen.getByText('hidden'))
+  })
+
+  it('stacks the routed modal above the dashboard surface', () => {
+    renderModal()
+    const backdrop = screen.getByRole('dialog', { name: 'Configuration' }).parentElement!
+    expect(backdrop).toHaveClass('z-[60]')
+  })
+
+  it('confirms only when the caller reports an unsaved value', () => {
+    const onClose = vi.fn()
+    const confirm = vi.spyOn(window, 'confirm').mockReturnValue(false)
+    render(
+      <TooltipProvider>
+        <CenteredModal open onClose={onClose} title="Configuration" isDirty>
+          <button type="button">inside</button>
+        </CenteredModal>
+      </TooltipProvider>,
+    )
+
+    fireEvent.keyDown(document, { key: 'Escape' })
+
+    expect(confirm).toHaveBeenCalledWith('You have unsaved changes. Close this window anyway?')
+    expect(onClose).not.toHaveBeenCalled()
+    confirm.mockRestore()
+  })
 })
 
 /**
@@ -268,5 +313,39 @@ describe('CenteredModal — overlays with their own focus management', () => {
     fireEvent.keyDown(item, { key: 'Tab' })
 
     expect(document.activeElement).toBe(item)
+  })
+})
+
+describe('CenteredModal — picker ownership when another overlay is on top', () => {
+  it('lets About claim Escape from an underlying picker', () => {
+    const routeClose = vi.fn()
+
+    function Harness() {
+      const [aboutOpen, setAboutOpen] = useState(false)
+      return (
+        <TooltipProvider>
+          <CenteredModal open onClose={routeClose} title="Configuration">
+            <button type="button" onClick={() => setAboutOpen(true)}>Open About</button>
+            <DropdownPicker open onOpenChange={vi.fn()} trigger={<button type="button">Pick a project</button>}>
+              <button type="button">Project one</button>
+            </DropdownPicker>
+          </CenteredModal>
+          <CenteredModal open={aboutOpen} onClose={() => setAboutOpen(false)} title="About" zIndexClass="z-[60]">
+            <p>About Dialog</p>
+          </CenteredModal>
+        </TooltipProvider>
+      )
+    }
+
+    render(<Harness />)
+    fireEvent.click(screen.getByRole('button', { name: 'Open About' }))
+    expect(screen.getByRole('dialog', { name: 'About' })).toBeInTheDocument()
+
+    document.body.focus()
+    fireEvent.keyDown(document.body, { key: 'Escape' })
+
+    expect(screen.queryByRole('dialog', { name: 'About' })).not.toBeInTheDocument()
+    expect(screen.getByRole('button', { name: 'Project one' })).toBeInTheDocument()
+    expect(routeClose).not.toHaveBeenCalled()
   })
 })

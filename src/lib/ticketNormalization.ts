@@ -261,31 +261,48 @@ function getTicketAvailableActions(ticket: Ticket | RawTicketResponse): Ticket['
  * signature on this side is a string, so the conversion happens once, here,
  * rather than as a `String(...)` at each reader.
  */
-function normalizeErrorOccurrenceIds(raw: Record<string, unknown>): Pick<Ticket, 'errorOccurrences' | 'activeErrorOccurrenceId'> {
+function normalizeOccurrenceId(value: unknown): string | null {
+  if (typeof value === 'string') return value.length > 0 ? value : null
+  return typeof value === 'number' && Number.isFinite(value) ? String(value) : null
+}
+
+function normalizeErrorOccurrenceIds(
+  raw: Record<string, unknown>,
+  preserveInvalidActive = true,
+): Pick<Ticket, 'errorOccurrences' | 'activeErrorOccurrenceId'> {
   const rawOccurrences = Array.isArray(raw.errorOccurrences) ? raw.errorOccurrences : null
-  const activeId = raw.activeErrorOccurrenceId
+  const activeId = normalizeOccurrenceId(raw.activeErrorOccurrenceId)
+  const errorOccurrences = (rawOccurrences ?? []).flatMap((occurrence) => {
+    if (!isRecord(occurrence)) return []
+    const id = normalizeOccurrenceId(occurrence.id)
+    return id === null ? [] : [{ ...occurrence, id }]
+  }) as NonNullable<Ticket['errorOccurrences']>
 
   return {
-    ...(rawOccurrences
+    ...(rawOccurrences && (errorOccurrences.length > 0 || rawOccurrences.length === 0)
       ? {
-          errorOccurrences: rawOccurrences
-            .filter((occurrence): occurrence is Record<string, unknown> => isRecord(occurrence))
-            .map((occurrence) => ({
-              ...occurrence,
-              ...(occurrence.id != null ? { id: String(occurrence.id) } : {}),
-            })) as Ticket['errorOccurrences'],
+          errorOccurrences,
         }
       : {}),
-    ...(activeId != null ? { activeErrorOccurrenceId: String(activeId) } : {}),
+    ...('activeErrorOccurrenceId' in raw
+      ? raw.activeErrorOccurrenceId === null
+        ? { activeErrorOccurrenceId: null }
+        : activeId !== null || preserveInvalidActive
+          ? { activeErrorOccurrenceId: activeId }
+          : {}
+      : {}),
   }
 }
 
 function normalizeTicketForRender(ticket: Ticket | RawTicketResponse): Ticket {
   const raw = asRawTicket(ticket)
   const cleanup = isRecord(raw.cleanup) ? raw.cleanup : null
+  const normalized = { ...(ticket as Ticket) }
+  if ('errorOccurrences' in raw) delete normalized.errorOccurrences
+  if ('activeErrorOccurrenceId' in raw) delete normalized.activeErrorOccurrenceId
 
   return {
-    ...(ticket as Ticket),
+    ...normalized,
     runtime: getTicketRuntime(ticket),
     lockedCouncilMembers: getTicketCouncilMembers(ticket),
     availableActions: getTicketAvailableActions(ticket),
@@ -378,7 +395,15 @@ function normalizeImplementationTiming(value: unknown): Ticket['implementationTi
 
 export function normalizeTicketListResponse(payload: unknown): Ticket[] {
   if (!Array.isArray(payload)) throw new Error('Ticket list response was not an array')
-  return payload.map(normalizeTicketResponse)
+  const tickets: Ticket[] = []
+  payload.forEach((entry, index) => {
+    try {
+      tickets.push(normalizeTicketResponse(entry))
+    } catch (error) {
+      console.warn(`Skipping malformed ticket at index ${index}`, error)
+    }
+  })
+  return tickets
 }
 
 /** A ticket patch: only what the response carried, with a partial runtime. */
@@ -398,7 +423,49 @@ function normalizeRuntimePatch(rawRuntime: Record<string, unknown>): Partial<Tic
   const complete = getTicketRuntime({ runtime: rawRuntime } as unknown as RawTicketResponse)
   const patch: Partial<TicketRuntime> = {}
   for (const key of Object.keys(rawRuntime) as Array<keyof TicketRuntime>) {
-    if (key in complete) (patch as Record<string, unknown>)[key] = complete[key]
+    if (Object.hasOwn(complete, key)) (patch as Record<string, unknown>)[key] = complete[key]
+  }
+  return patch
+}
+
+function copyPatchString(raw: Record<string, unknown>, patch: Record<string, unknown>, key: string): void {
+  if (typeof raw[key] === 'string') patch[key] = raw[key]
+}
+
+function copyPatchNullableString(raw: Record<string, unknown>, patch: Record<string, unknown>, key: string): void {
+  if (raw[key] === null || typeof raw[key] === 'string') patch[key] = raw[key]
+}
+
+function copyPatchNumber(raw: Record<string, unknown>, patch: Record<string, unknown>, key: string): void {
+  if (typeof raw[key] === 'number' && Number.isFinite(raw[key])) patch[key] = raw[key]
+}
+
+function copyPatchNullableNumber(raw: Record<string, unknown>, patch: Record<string, unknown>, key: string): void {
+  if (raw[key] === null || (typeof raw[key] === 'number' && Number.isFinite(raw[key]))) patch[key] = raw[key]
+}
+
+function copyPatchBoolean(raw: Record<string, unknown>, patch: Record<string, unknown>, key: string): void {
+  if (typeof raw[key] === 'boolean') patch[key] = raw[key]
+}
+
+function normalizePatchScalars(raw: Record<string, unknown>): Record<string, unknown> {
+  const patch: Record<string, unknown> = {}
+  for (const key of ['externalId', 'title', 'createdAt', 'updatedAt']) copyPatchString(raw, patch, key)
+  if (typeof raw.status === 'string' && raw.status.length > 0) patch.status = raw.status
+  for (const key of ['description', 'xstateSnapshot', 'branchName', 'errorMessage', 'cancelReason', 'errorSeenSignature', 'needsInputSeenSignature', 'previousStatus', 'reviewCutoffStatus', 'startedAt', 'plannedDate', 'lockedMainImplementer', 'lockedMainImplementerVariant']) {
+    copyPatchNullableString(raw, patch, key)
+  }
+  for (const key of ['projectId', 'priority', 'workflowRevision']) copyPatchNumber(raw, patch, key)
+  for (const key of ['currentBead', 'totalBeads', 'percentComplete', 'aiQuestionWindowOverride', 'lockedInterviewQuestions', 'lockedCoverageFollowUpBudgetPercent', 'lockedMaxCoveragePasses', 'lockedMaxPrdCoveragePasses', 'lockedMaxBeadsCoveragePasses', 'lockedStructuredRetryCount']) {
+    copyPatchNullableNumber(raw, patch, key)
+  }
+  for (const key of ['isDisplayOnlyMock', 'hasPastErrors', 'manualQaOverride', 'aiQuestionsOverride']) copyPatchBoolean(raw, patch, key)
+  if (raw.completionDisposition === null || raw.completionDisposition === 'merged' || raw.completionDisposition === 'closed_unmerged') {
+    patch.completionDisposition = raw.completionDisposition
+  }
+  if (isRecord(raw.implementationTiming)) patch.implementationTiming = normalizeImplementationTiming(raw.implementationTiming)
+  if (Array.isArray(raw.visitedStatuses) && raw.visitedStatuses.every((value) => typeof value === 'string')) {
+    patch.visitedStatuses = raw.visitedStatuses
   }
   return patch
 }
@@ -419,18 +486,26 @@ export function normalizeTicketPatch(payload: unknown): TicketPatch | null {
 
   const raw = payload
   const cleanup = isRecord(raw.cleanup) ? raw.cleanup : null
+  const rawAvailableActions = Array.isArray(raw.availableActions) ? raw.availableActions : null
+  const rawLockedCouncilMembers = Array.isArray(raw.lockedCouncilMembers) ? raw.lockedCouncilMembers : null
+  const availableActions = rawAvailableActions
+    ? getTicketAvailableActions(raw as unknown as RawTicketResponse)
+    : null
+  const lockedCouncilMembers = rawLockedCouncilMembers
+    ? getTicketCouncilMembers(raw as unknown as RawTicketResponse)
+    : null
 
   const patch: Record<string, unknown> = {
-    ...(raw as unknown as Partial<Ticket>),
     id: payload.id,
+    ...normalizePatchScalars(raw),
     ...(isRecord(raw.runtime) ? { runtime: normalizeRuntimePatch(raw.runtime) } : {}),
-    ...('availableActions' in raw
-      ? { availableActions: getTicketAvailableActions(raw as unknown as RawTicketResponse) }
+    ...(availableActions && (availableActions.length > 0 || rawAvailableActions?.length === 0)
+      ? { availableActions }
       : {}),
-    ...('lockedCouncilMembers' in raw
-      ? { lockedCouncilMembers: getTicketCouncilMembers(raw as unknown as RawTicketResponse) }
+    ...(lockedCouncilMembers && (lockedCouncilMembers.length > 0 || rawLockedCouncilMembers?.length === 0)
+      ? { lockedCouncilMembers }
       : {}),
-    ...normalizeErrorOccurrenceIds(raw),
+    ...normalizeErrorOccurrenceIds(raw, false),
     ...(cleanup
       ? {
           cleanup: {
@@ -441,20 +516,6 @@ export function normalizeTicketPatch(payload: unknown): TicketPatch | null {
           },
         }
       : {}),
-  }
-
-  // The spread above copies the payload wholesale, and the conditional keys
-  // only ever *add*. So anything the response got wrong survives unless it is
-  // removed here: a numeric `status` reaches `getStatusBadgeClasses`, which
-  // calls `startsWith` on it, and a `runtime` that is not an object replaces a
-  // complete cached one.
-  for (const [key, isValid] of [
-    ['status', typeof raw.status === 'string'],
-    ['previousStatus', raw.previousStatus === null || typeof raw.previousStatus === 'string'],
-    ['runtime', isRecord(raw.runtime)],
-    ['errorOccurrences', Array.isArray(raw.errorOccurrences)],
-  ] as const) {
-    if (key in patch && !isValid) delete patch[key]
   }
 
   return patch as TicketPatch

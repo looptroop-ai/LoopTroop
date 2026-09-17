@@ -1,4 +1,4 @@
-import { useState } from 'react'
+import { useEffect, useRef, useState } from 'react'
 import { Button } from '@/components/ui/button'
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card'
 import { useCreateTicket, useTicketAction, type Ticket } from '@/hooks/useTickets'
@@ -31,9 +31,16 @@ import { useToast } from '@/components/shared/useToast'
 
 interface TicketFormProps {
   onClose: () => void
+  onDirtyChange?: (isDirty: boolean) => void
 }
 
-export function TicketForm({ onClose }: TicketFormProps) {
+function withoutTicketProject(snapshot: string): string {
+  const parsed = JSON.parse(snapshot) as { projectId?: number | ''; [key: string]: unknown }
+  const { projectId: _projectId, ...rest } = parsed
+  return JSON.stringify(rest)
+}
+
+export function TicketForm({ onClose, onDirtyChange }: TicketFormProps) {
   const { dispatch } = useUI()
   const { addToast } = useToast()
   const createTicket = useCreateTicket()
@@ -50,9 +57,35 @@ export function TicketForm({ onClose }: TicketFormProps) {
   const [manualQaOverride, setManualQaOverride] = useState<ManualQaOverride>(null)
   const [aiQuestionsOverride, setAiQuestionsOverride] = useState<AiQuestionsOverride>(null)
   const [aiQuestionWindowOverride, setAiQuestionWindowOverride] = useState<AiQuestionWindowOverride>(null)
+  const ticketBaselineRef = useRef<string | null>(null)
+  const ticketProjectsHydratedRef = useRef(projects.length > 0)
 
   const selectedProject = projects.find(p => p.id === projectId) ?? projects[0]
   const effectiveProjectId = selectedProject?.id ?? ''
+  const draftSnapshot = JSON.stringify({
+    title,
+    description,
+    projectId: effectiveProjectId,
+    priority,
+    manualQaOverride,
+    aiQuestionsOverride,
+    aiQuestionWindowOverride,
+  })
+  if (ticketBaselineRef.current === null) ticketBaselineRef.current = draftSnapshot
+  const draftSnapshotRef = useRef(draftSnapshot)
+  draftSnapshotRef.current = draftSnapshot
+  useEffect(() => {
+    if (ticketProjectsHydratedRef.current || projects.length === 0) return
+    ticketProjectsHydratedRef.current = true
+    const baseline = ticketBaselineRef.current
+    if (!baseline || withoutTicketProject(baseline) !== withoutTicketProject(draftSnapshotRef.current)) return
+    ticketBaselineRef.current = draftSnapshotRef.current
+    onDirtyChange?.(false)
+  }, [effectiveProjectId, onDirtyChange, projects.length])
+  const isDirty = draftSnapshot !== ticketBaselineRef.current
+  useEffect(() => {
+    onDirtyChange?.(isDirty)
+  }, [isDirty, onDirtyChange])
   const effectiveManualQa = resolveManualQaSettingLabel(
     manualQaOverride,
     selectedProject?.manualQaOverride ?? null,
@@ -85,11 +118,17 @@ export function TicketForm({ onClose }: TicketFormProps) {
 
   const handleCreateAndStart = async () => {
     if (!effectiveProjectId) return
+    const submittedSnapshot = draftSnapshotRef.current
     try {
       const created: Ticket = await createTicket.mutateAsync(createInput())
       await startTicket({ id: created.id, action: 'start' })
-      dispatch({ type: 'SELECT_TICKET', ticketId: created.id, externalId: created.externalId })
-      onClose()
+      ticketBaselineRef.current = submittedSnapshot
+      const hasLaterEdits = draftSnapshotRef.current !== submittedSnapshot
+      onDirtyChange?.(hasLaterEdits)
+      if (!hasLaterEdits) {
+        dispatch({ type: 'SELECT_TICKET', ticketId: created.id, externalId: created.externalId })
+        onClose()
+      }
     } catch (err) {
       const message = err instanceof Error ? err.message : 'Failed to start ticket'
       alert(`Unable to create and start ticket: ${message}`)
@@ -102,10 +141,16 @@ export function TicketForm({ onClose }: TicketFormProps) {
       addToast('warning', 'Attach a project before creating a ticket.')
       return
     }
+    const submittedSnapshot = draftSnapshotRef.current
     createTicket.mutate(
       createInput(),
       {
-        onSuccess: onClose,
+        onSuccess: () => {
+          ticketBaselineRef.current = submittedSnapshot
+          const hasLaterEdits = draftSnapshotRef.current !== submittedSnapshot
+          onDirtyChange?.(hasLaterEdits)
+          if (!hasLaterEdits) onClose()
+        },
         onError: (err) => {
           const message = err instanceof Error ? err.message : 'Failed to create ticket'
           addToast('error', `Unable to create ticket: ${message}`, 5000)
@@ -176,10 +221,9 @@ export function TicketForm({ onClose }: TicketFormProps) {
                   {projects.map((p, idx) => {
                     const isSelected = effectiveProjectId === p.id
                     return (
-                      <Tooltip>
+                      <Tooltip key={p.id}>
                           <TooltipTrigger asChild>
                             <button
-                                                key={p.id}
                                                 type="button"
                                                 className={cn(
                                                   'w-full flex items-center gap-2 px-3 py-2 text-sm text-left transition-colors',

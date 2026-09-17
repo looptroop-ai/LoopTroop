@@ -153,6 +153,40 @@ describe('TicketForm', () => {
     expect(mockAddToast).toHaveBeenCalledWith('error', 'Unable to create ticket: Project is unavailable', 5000)
   })
 
+  it('keeps the effective default project clean when it is selected explicitly', () => {
+    const dirty = vi.fn()
+    renderWithProviders(
+      <UIContext.Provider value={makeUIValue()}>
+        <TicketForm onClose={vi.fn()} onDirtyChange={dirty} />
+      </UIContext.Provider>,
+    )
+
+    fireEvent.click(screen.getByRole('button', { name: /Acme Console \(ACME\)/ }))
+    const projectOptions = screen.getAllByRole('button', { name: /Acme Console \(ACME\)/ })
+    fireEvent.click(projectOptions.at(-1)!)
+
+    expect(dirty).toHaveBeenLastCalledWith(false)
+  })
+
+  it('keeps later ticket edits open when an earlier create succeeds', () => {
+    const mutate = vi.fn()
+    const onClose = vi.fn()
+    mockUseCreateTicket.mockReturnValue({ mutate, mutateAsync: vi.fn(), isPending: false })
+    renderWithProviders(
+      <UIContext.Provider value={makeUIValue()}>
+        <TicketForm onClose={onClose} />
+      </UIContext.Provider>,
+    )
+
+    fireEvent.change(screen.getByPlaceholderText('Brief summary of the work'), { target: { value: 'Saved ticket' } })
+    fireEvent.click(screen.getByRole('button', { name: 'Create Ticket' }))
+    fireEvent.change(screen.getByPlaceholderText('Brief summary of the work'), { target: { value: 'Later ticket' } })
+    const options = mutate.mock.calls[0]?.[1] as { onSuccess: () => void }
+    options.onSuccess()
+
+    expect(onClose).not.toHaveBeenCalled()
+  })
+
   it('explains when no project is available', () => {
     mockUseProjects.mockReturnValue({ data: [] })
 

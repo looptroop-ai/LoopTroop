@@ -1,4 +1,4 @@
-import { useEffect, useId, useRef, useState } from 'react'
+import { useEffect, useId, useRef } from 'react'
 import { X } from 'lucide-react'
 import { Tooltip, TooltipTrigger, TooltipContent } from "@/components/ui/tooltip";
 import { useDialogFocus } from '@/hooks/useDialogFocus'
@@ -12,6 +12,7 @@ interface CenteredModalProps {
   maxWidth?: string
   closeDisabled?: boolean
   zIndexClass?: string
+  isDirty?: boolean
 }
 
 export function CenteredModal({
@@ -21,18 +22,12 @@ export function CenteredModal({
   children,
   maxWidth = 'max-w-2xl',
   closeDisabled = false,
-  zIndexClass = 'z-50',
+  zIndexClass = 'z-[60]',
+  isDirty = false,
 }: CenteredModalProps) {
-  const [isSessionDirty, setIsSessionDirty] = useState(false)
   const panelRef = useRef<HTMLDivElement>(null)
   const titleId = useId()
   const handleTrapKeyDown = useDialogFocus(open, panelRef)
-
-  useEffect(() => {
-    if (open) {
-      setIsSessionDirty(false)
-    }
-  }, [open])
 
   useEffect(() => {
     if (!open) return
@@ -44,7 +39,7 @@ export function CenteredModal({
         // closed the window behind it as well — the same defect the ticket dashboard
         // has already been taught to avoid.
         if (isEscapeClaimedByNestedOverlay(e, panelRef.current)) return
-        if (isSessionDirty) {
+        if (isDirty) {
           const shouldClose = window.confirm('You have unsaved changes. Close this window anyway?')
           if (!shouldClose) return
         }
@@ -53,7 +48,7 @@ export function CenteredModal({
     }
     document.addEventListener('keydown', handler)
     return () => document.removeEventListener('keydown', handler)
-  }, [closeDisabled, open, onClose, isSessionDirty])
+  }, [closeDisabled, isDirty, open, onClose])
 
   if (!open) return null
 
@@ -63,23 +58,8 @@ export function CenteredModal({
       onClick={(e) => {
         if (e.target !== e.currentTarget) return
         if (closeDisabled) return
-        if (isSessionDirty) return
+        if (isDirty) return
         onClose()
-      }}
-      onChangeCapture={(e) => {
-        const target = e.target as HTMLElement
-        if (target.tagName === 'INPUT' || target.tagName === 'TEXTAREA' || target.tagName === 'SELECT') {
-          setIsSessionDirty(true)
-        }
-      }}
-      onInputCapture={(e) => {
-        const target = e.target as HTMLElement
-        if (target.tagName === 'INPUT' || target.tagName === 'TEXTAREA') {
-          setIsSessionDirty(true)
-        }
-      }}
-      onSubmitCapture={() => {
-        setIsSessionDirty(false)
       }}
     >
       <div
@@ -97,7 +77,7 @@ export function CenteredModal({
                         type="button"
                         onClick={() => {
                           if (closeDisabled) return
-                          if (isSessionDirty) {
+                          if (isDirty) {
                             const shouldClose = window.confirm('You have unsaved changes. Close this window anyway?')
                             if (!shouldClose) return
                           }

@@ -1,6 +1,12 @@
 import type { Context } from 'hono'
 import { getTicketParam } from './routeUtils'
-import { exportLogEntries, isValidLogCursor, queryLogPage } from '../../log/projection'
+import {
+  exportLogEntries,
+  HISTORICAL_LOG_CURSOR_EXPIRED_CODE,
+  isHistoricalLogCursorExpiredError,
+  isValidLogCursor,
+  queryLogPage,
+} from '../../log/projection'
 import type { LogView } from '../../log/view'
 import { getTicketByRef } from '../../storage/tickets'
 
@@ -38,7 +44,19 @@ export async function handleGetTicketLogs(c: Context) {
   if (!getTicketByRef(ticketId)) return c.json({ error: 'Ticket not found' }, 404)
   const query = parseQuery(c, true)
   if ('error' in query) return c.json({ error: query.error }, 400)
-  const page = await queryLogPage(ticketId, query)
+  let page
+  try {
+    page = await queryLogPage(ticketId, query)
+  } catch (error) {
+    if (isHistoricalLogCursorExpiredError(error)) {
+      return c.json({
+        error: HISTORICAL_LOG_CURSOR_EXPIRED_CODE,
+        code: HISTORICAL_LOG_CURSOR_EXPIRED_CODE,
+        message: 'The log history changed while it was loading. Retry to start a fresh history walk.',
+      }, 409)
+    }
+    throw error
+  }
   if (!page) return c.json({ error: 'Ticket not found' }, 404)
   return c.json({ ...page, boundary: { phase: query.phase ?? null, phaseAttempt: query.phaseAttempt ?? null } })
 }
@@ -48,7 +66,19 @@ export async function handleExportTicketLogs(c: Context) {
   if (!getTicketByRef(ticketId)) return c.json({ error: 'Ticket not found' }, 404)
   const query = parseQuery(c, false)
   if ('error' in query) return c.json({ error: query.error }, 400)
-  const entries = await exportLogEntries(ticketId, query)
+  let entries
+  try {
+    entries = await exportLogEntries(ticketId, query)
+  } catch (error) {
+    if (isHistoricalLogCursorExpiredError(error)) {
+      return c.json({
+        error: HISTORICAL_LOG_CURSOR_EXPIRED_CODE,
+        code: HISTORICAL_LOG_CURSOR_EXPIRED_CODE,
+        message: 'The log history changed while it was exporting. Retry to start a fresh export.',
+      }, 409)
+    }
+    throw error
+  }
   if (!entries) return c.json({ error: 'Ticket not found' }, 404)
   const text = entries.map((entry) => {
     const timestamp = typeof entry.timestamp === 'string' ? entry.timestamp : ''

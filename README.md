@@ -81,6 +81,28 @@ recover that ownership when the project database is unavailable. If both the
 database and marker storage are unavailable, only the current process can guard
 the session, so a restart cannot claim recovery.
 
+### Client state and history
+
+The browser keeps ticket state scoped to the ticket you are viewing. Routed
+dialogs follow the address bar and browser Back/Forward, and a close warning
+appears only when a form's current values differ from its saved or initial
+values. Loading, refetching, or a failed save does not silently replace an
+edit that you are still making.
+
+Live ticket streams recover an initial stored cursor and refresh ticket data
+when the server reports a replay gap. Ordinary reconnects do not trigger a
+whole-ticket refresh, and a confirmed deletion clears the deleted ticket's
+browser state—including logs, pending-question UI, saved UI revisions and the
+stream cursor—before that identifier can be used again. A different ticket is
+not cleared as a side effect.
+
+The Full Log loads older history when you ask for it and can drain complete
+history for an action such as export or navigation without eagerly mounting
+the whole archive. Its retained snapshots and diagnostics keep bounded reads
+distinct from complete-history work. Malformed list rows are isolated, invalid
+partial updates cannot erase valid cached values, and malformed detail
+responses remain visible as errors.
+
 ### Every way to install it
 
 <details>

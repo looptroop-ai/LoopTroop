@@ -27,6 +27,10 @@ const mockAddToast = vi.hoisted(() => vi.fn())
 const mockProjectList = vi.hoisted(() => ({
   data: [] as Array<{ name: string; shortname: string }>,
 }))
+const mockProfileState = vi.hoisted(() => ({
+  data: undefined as { manualQaEnabled: boolean; gitHookPolicy: string; ignoreMode: string } | undefined,
+  isLoading: false,
+}))
 
 vi.mock('@/hooks/useProjects', () => ({
   useCreateProject: () => mockProjectMutations.create,
@@ -49,7 +53,7 @@ vi.mock('@/components/shared/useToast', () => ({
 }))
 
 vi.mock('@/hooks/useProfile', () => ({
-  useProfile: () => ({ data: { manualQaEnabled: false, gitHookPolicy: 'validate_advisory', ignoreMode: 'local' } }),
+  useProfile: () => mockProfileState,
 }))
 
 vi.mock('../FolderPicker', () => ({
@@ -94,6 +98,41 @@ describe('ProjectForm', () => {
     mockProjectMutations.remove.isPending = false
     mockAddToast.mockReset()
     mockProjectList.data = []
+    mockProfileState.data = { manualQaEnabled: false, gitHookPolicy: 'validate_advisory', ignoreMode: 'local' }
+    mockProfileState.isLoading = false
+  })
+
+  it('keeps a name typed during profile hydration dirty after defaults arrive', async () => {
+    mockProfileState.data = undefined
+    mockProfileState.isLoading = true
+    const dirty = vi.fn()
+    const view = render(<ProjectForm onClose={vi.fn()} onDirtyChange={dirty} />, { wrapper: Wrapper })
+
+    fireEvent.change(screen.getByLabelText(/Project Name/i), { target: { value: 'Unsaved project' } })
+    mockProfileState.data = { manualQaEnabled: true, gitHookPolicy: 'validate_advisory', ignoreMode: 'local' }
+    mockProfileState.isLoading = false
+    view.rerender(<ProjectForm onClose={vi.fn()} onDirtyChange={dirty} />)
+
+    await waitFor(() => expect(screen.getByLabelText(/Project Name/i)).toHaveValue('Unsaved project'))
+    expect(dirty).toHaveBeenLastCalledWith(true)
+  })
+
+  it('keeps the form open when a create finishes after a later edit', () => {
+    const onClose = vi.fn()
+    const dirty = vi.fn()
+    render(<ProjectForm onClose={onClose} onDirtyChange={dirty} />, { wrapper: Wrapper })
+
+    fireEvent.change(screen.getByLabelText(/Project Name/i), { target: { value: 'Saved project' } })
+    fireEvent.change(screen.getByLabelText(/Short Name/i), { target: { value: 'SAVE' } })
+    fireEvent.change(screen.getByLabelText(/Project Folder/i), { target: { value: '/work/saved' } })
+    fireEvent.submit(screen.getByRole('button', { name: 'Create Project' }).closest('form')!)
+
+    fireEvent.change(screen.getByLabelText(/Project Name/i), { target: { value: 'Later project' } })
+    const options = mockProjectMutations.create.mutate.mock.calls[0]?.[1] as { onSuccess: () => void }
+    options.onSuccess()
+
+    expect(onClose).not.toHaveBeenCalled()
+    expect(dirty).toHaveBeenLastCalledWith(true)
   })
 
   it('warns and blocks adding a directory that is already attached', async () => {

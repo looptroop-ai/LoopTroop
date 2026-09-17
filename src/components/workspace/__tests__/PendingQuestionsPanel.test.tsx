@@ -1,12 +1,20 @@
-import { render, screen, fireEvent } from '@testing-library/react'
-import { describe, expect, it, vi } from 'vitest'
+import { act, render, screen, fireEvent } from '@testing-library/react'
+import { afterEach, describe, expect, it, vi } from 'vitest'
 import { AIQuestionContext } from '@/context/aiQuestionContextDef'
 import type { AiQuestionRequest } from '@/context/aiQuestionContextDef'
 import type { AiQuestionTimerState } from '@shared/aiQuestions'
 import { createAiQuestionContextStub } from '@/test/aiQuestionContext'
+import {
+  clearTicketPersistentState,
+  getTicketQuestionsCollapsedStorageKey,
+} from '@/components/ticket/renderedTickets'
 import { PendingQuestionsPanel } from '../PendingQuestionsPanel'
 
 const TICKET_ID = 'proj-1:LOOP-1'
+
+afterEach(() => {
+  localStorage.clear()
+})
 
 function makeRequest(overrides: Partial<AiQuestionRequest> = {}): AiQuestionRequest {
   return {
@@ -79,6 +87,26 @@ describe('PendingQuestionsPanel', () => {
     expect(screen.getByText('claude-opus-4')).toBeInTheDocument()
     expect(screen.queryByRole('tablist')).not.toBeInTheDocument()
     expect(screen.getByText('4:00')).toBeInTheDocument()
+  })
+
+  it('reopens a mounted collapsed panel on delete without clearing another ticket preference', () => {
+    const otherTicketId = 'proj-1:LOOP-2'
+    localStorage.setItem(getTicketQuestionsCollapsedStorageKey(TICKET_ID), '1')
+    localStorage.setItem(getTicketQuestionsCollapsedStorageKey(otherTicketId), '1')
+
+    renderPanel({
+      getTicketRequests: () => [makeRequest()],
+      getTimer: () => makeTimer(),
+      getRemainingMs: () => 240_000,
+    })
+    const toggle = screen.getByRole('button', { name: /claude-opus-4/i })
+    expect(toggle).toHaveAttribute('aria-expanded', 'false')
+
+    act(() => { clearTicketPersistentState(TICKET_ID) })
+
+    expect(toggle).toHaveAttribute('aria-expanded', 'true')
+    expect(localStorage.getItem(getTicketQuestionsCollapsedStorageKey(TICKET_ID))).toBeNull()
+    expect(localStorage.getItem(getTicketQuestionsCollapsedStorageKey(otherTicketId))).toBe('1')
   })
 
   it('gives each model a tab and shows the countdown once', () => {

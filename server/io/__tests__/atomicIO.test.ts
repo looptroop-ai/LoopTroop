@@ -1,6 +1,6 @@
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest'
 import { createHash } from 'node:crypto'
-import { mkdirSync, readFileSync, writeFileSync, existsSync, readdirSync, renameSync, statSync, lstatSync, truncateSync, symlinkSync, unlinkSync, writeSync } from 'fs'
+import { mkdirSync, readFileSync, writeFileSync, existsSync, readdirSync, renameSync, statSync, lstatSync, truncateSync, symlinkSync, unlinkSync, writeSync, realpathSync } from 'fs'
 import { tmpdir } from 'os'
 import { basename, dirname, join } from 'path'
 import { atomicProofPath, makeAtomicTmpPath, parseAtomicTmpPath, safeAtomicWrite, safeAtomicWriteWithin } from '../atomicWrite'
@@ -628,7 +628,7 @@ describe('recoverOrphanTmpFiles', () => {
     }
 
     expect(existsSync(legacy)).toBe(true)
-    expect(warnings.join(' ')).toContain(legacy)
+    expect(warnings.join(' ')).toContain(realpathSync.native(legacy))
   })
 
   /**

@@ -1,5 +1,11 @@
 # PR #164 review dispositions
 
+Windows CI follow-up: PR 168 job `105308919869` exposed a test-only path-spelling
+mismatch inherited from this branch. Recovery deliberately scans canonical
+paths, so its legacy-temp warning uses `runneradmin`, not the `RUNNER~1` alias
+in Windows' temporary-directory environment. The assertion now compares the
+native canonical path; it still requires the exact preserved file to be named.
+
 This ledger covers every captured PR comment, review, inline finding, and CI
 notice in `/tmp/looptroop-pr-review/164.json`, `164.md`, `164-refresh.json`,
 and `164-delta.md`. The dispositions were checked against the current branch,

@@ -259,6 +259,7 @@ Unreleased changes appear first and represent commits that have not yet been inc
 - Three aliases re-exported for a question-diff type that no longer exists, the three helpers behind them, an execution-setup runtime-path list with no reader, and an execution-setup barrel re-exporting three artifact names every caller already imports from their own module.
 
 ### Fixed
+- Recovery regression checks accept Windows' canonical spelling of a temporary path while still requiring diagnostics to identify the exact preserved file.
 - Manual QA compares existing quarantine copies in bounded chunks, preserving distinct retry backups without loading entire files into memory.
 - Quarantine comparison now rechecks device/inode identity and metadata after reading, preserving a replacement that arrives while an existing backup is being compared.
 - Recovery keeps caller-visible paths stable across macOS and Windows canonicalization, fsyncs JSONL repairs, records fallback ownership before copying, and removes stale proof sidecars only for known artifacts. Manual QA drift mutations run through bounded asynchronous Git operations and serialize overlapping decisions per workspace.

@@ -125,11 +125,12 @@ const PROMOTE: TmpVerdict = { action: 'promote' }
 function judgeTmpContent(fd: number, tmpPath: string, targetPath: string): TmpVerdict {
   const { size } = fstatSync(fd)
   const extension = extname(targetPath).toLowerCase()
-  // An empty JSONL document is a complete empty collection (the normal
-  // serialization of `[]`); for every other artifact, an empty temp cannot be
-  // the finished file.
   if (size === 0) {
-    return extension === '.jsonl' ? PROMOTE : { action: 'discard', reason: 'it is empty' }
+    if (extension === '.jsonl') {
+      if (verifyAtomicProof(Buffer.alloc(0), tmpPath)) return PROMOTE
+      return { action: 'leave', reason: 'it has no matching complete-write proof' }
+    }
+    return { action: 'discard', reason: 'it is empty' }
   }
 
   // Everything below has to read the file to judge it. Past this size that is
@@ -149,10 +150,10 @@ function judgeTmpContent(fd: number, tmpPath: string, targetPath: string): TmpVe
   }
 
   if (extension === '.jsonl') {
-    if (size > MAX_DIRECT_READ_BYTES) {
-      return { action: 'leave', reason: `it is too large to check (${size} bytes)` }
-    }
     const content = readFileSync(fd)
+    if (!verifyAtomicProof(content, tmpPath)) {
+      return { action: 'leave', reason: 'it has no matching complete-write proof' }
+    }
     if (content.length === 0 || content[content.length - 1] !== 0x0a) {
       return { action: 'leave', reason: 'it has no complete trailing newline' }
     }
@@ -201,6 +202,40 @@ const LEGACY_TMP_NAME = /\.tmp-\d+-\d+$/
 
 type FileIdentity = Pick<ReturnType<typeof fstatSync>, 'dev' | 'ino' | 'size' | 'mtimeMs' | 'birthtimeMs'>
 
+type RecoveryPathGuard = (path: string, allowMissingTail?: boolean) => void
+
+/**
+ * Recovery works from names rather than directory descriptors. Revalidate the
+ * entire ancestor chain immediately before each open/publish/delete operation
+ * and reject symlink substitutions instead of following a redirected tree.
+ */
+function assertRecoveryPath(canonicalRoot: string, candidate: string, allowMissingTail = false): void {
+  if (realpathSync.native(canonicalRoot) !== canonicalRoot) {
+    throw new Error('Recovery root changed while scanning')
+  }
+  const offset = relative(canonicalRoot, candidate)
+  if (offset === '..' || offset.startsWith(`..${sep}`) || isAbsolute(offset)) {
+    throw new Error('Recovery path escapes its root')
+  }
+  if (!offset) return
+  let current = canonicalRoot
+  const parts = offset.split(sep)
+  for (let index = 0; index < parts.length; index += 1) {
+    current = join(current, parts[index]!)
+    let entry
+    try {
+      entry = lstatSync(current)
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code === 'ENOENT' && allowMissingTail) return
+      throw error
+    }
+    if (entry.isSymbolicLink()) throw new Error(`Recovery path contains a symlink: ${current}`)
+    if (index < parts.length - 1 && !entry.isDirectory()) {
+      throw new Error(`Recovery path parent is not a directory: ${current}`)
+    }
+  }
+}
+
 function recoveryMarkerPath(tmpPath: string): string {
   return `${tmpPath}${RECOVERY_MARKER_SUFFIX}`
 }
@@ -212,7 +247,7 @@ function cleanupSidecar(path: string): void {
 function readAtomicProof(tmpPath: string): AtomicProof | null {
   try {
     const parsed = JSON.parse(readFileNoFollowSync(atomicProofPath(tmpPath))) as Partial<AtomicProof>
-    if (typeof parsed.byteLength !== 'number' || !Number.isSafeInteger(parsed.byteLength) || parsed.byteLength < 1) return null
+    if (typeof parsed.byteLength !== 'number' || !Number.isSafeInteger(parsed.byteLength) || parsed.byteLength < 0) return null
     if (typeof parsed.sha256 !== 'string' || !/^[a-f0-9]{64}$/.test(parsed.sha256)) return null
     return { byteLength: parsed.byteLength, sha256: parsed.sha256 }
   } catch {
@@ -232,8 +267,17 @@ function writeRecoveryMarkerWithDeps(
   marker: RecoveryMarker,
   replace: boolean,
   deps: RecoveryDeps,
+  guard: RecoveryPathGuard,
 ): void {
   const staging = `${path}.write-${process.pid}-${randomUUID()}`
+  const cleanupStaging = () => {
+    try {
+      guard(staging, true)
+      cleanupSidecar(staging)
+    } catch { /* preserve an entry whose parent changed */ }
+  }
+  guard(path, true)
+  guard(staging, true)
   const fd = openSync(
     staging,
     fsConstants.O_WRONLY | fsConstants.O_CREAT | fsConstants.O_EXCL | (fsConstants.O_NOFOLLOW ?? 0),
@@ -252,6 +296,8 @@ function writeRecoveryMarkerWithDeps(
     closeSync(fd)
   }
   try {
+    guard(staging)
+    guard(path, true)
     if (replace) {
       // Replacement is a single atomic rename; a crash leaves either the old
       // complete marker or this complete staged marker, never an O_TRUNC hole.
@@ -285,11 +331,11 @@ function writeRecoveryMarkerWithDeps(
           closeSync(exclusive)
         }
       }
-      cleanupSidecar(staging)
+      cleanupStaging()
     }
     fsyncDirectory(dirname(path))
   } finally {
-    cleanupSidecar(staging)
+    cleanupStaging()
   }
 }
 
@@ -519,7 +565,7 @@ function targetContainsSource(sourceFd: number, source: FileIdentity, targetFd: 
 
 type ResumeResult = 'promoted' | 'unmarked'
 
-function resumeMarkedCopy(fd: number, tmpPath: string, targetPath: string, deps: RecoveryDeps): ResumeResult {
+function resumeMarkedCopy(fd: number, tmpPath: string, targetPath: string, deps: RecoveryDeps, guard: RecoveryPathGuard): ResumeResult {
   if (!hasRecoveryMarker(tmpPath)) return 'unmarked'
   const marker = readRecoveryMarker(tmpPath)
   if (!marker) {
@@ -551,6 +597,7 @@ function resumeMarkedCopy(fd: number, tmpPath: string, targetPath: string, deps:
     let target: FileIdentity | undefined
     let complete = false
     try {
+      guard(targetPath)
       targetFd = openFileNoFollowSync(targetPath)
       target = fstatSync(targetFd)
       complete = targetContainsSource(fd, source, targetFd, target)
@@ -568,6 +615,8 @@ function resumeMarkedCopy(fd: number, tmpPath: string, targetPath: string, deps:
       )
     }
     try {
+      guard(targetPath)
+      guard(tmpPath)
       if (removeMatchingEntry(tmpPath, source, deps)) {
         cleanupSidecar(atomicProofPath(tmpPath))
         cleanupSidecar(recoveryMarkerPath(tmpPath))
@@ -582,6 +631,7 @@ function resumeMarkedCopy(fd: number, tmpPath: string, targetPath: string, deps:
 
   let targetFd: number | undefined
   try {
+    guard(targetPath)
     targetFd = openSync(targetPath, fsConstants.O_WRONLY | (fsConstants.O_NOFOLLOW ?? 0))
     const target = fstatSync(targetFd)
     if (!sameEntryIdentity(target, marker.target)) {
@@ -622,6 +672,7 @@ function resumeMarkedCopy(fd: number, tmpPath: string, targetPath: string, deps:
   }
 
   try {
+    guard(tmpPath)
     if (removeMatchingEntry(tmpPath, source, deps)) {
       cleanupSidecar(atomicProofPath(tmpPath))
       cleanupSidecar(recoveryMarkerPath(tmpPath))
@@ -635,12 +686,14 @@ function resumeMarkedCopy(fd: number, tmpPath: string, targetPath: string, deps:
 }
 
 /** Publish with a hardlink when possible; the fallback is resumable and no-follow. */
-function promoteTmpFile(fd: number, tmpPath: string, targetPath: string, deps: RecoveryDeps): boolean {
+function promoteTmpFile(fd: number, tmpPath: string, targetPath: string, deps: RecoveryDeps, guard: RecoveryPathGuard): boolean {
   let targetFd: number | undefined
   let publishedIdentity: FileIdentity | undefined
   let copyCompleted = false
   const markerPath = recoveryMarkerPath(tmpPath)
   try {
+    guard(tmpPath)
+    guard(targetPath, true)
     const source = fstatSync(fd)
     const markerPresent = hasRecoveryMarker(tmpPath)
     const existingMarker = markerPresent ? readRecoveryMarker(tmpPath) : null
@@ -656,6 +709,8 @@ function promoteTmpFile(fd: number, tmpPath: string, targetPath: string, deps: R
     let linked = false
     try {
       retryWhileWindowsHoldsTheFile(() => {
+        guard(tmpPath)
+        guard(targetPath, true)
         const entry = lstatSync(tmpPath)
         if (entry.isSymbolicLink() || !sameFileIdentity(entry, source)) {
           throw new Error('Temporary file changed before recovery promotion')
@@ -678,9 +733,11 @@ function promoteTmpFile(fd: number, tmpPath: string, targetPath: string, deps: R
       fsyncDirectory(dirname(targetPath))
     } else {
       if (!existingMarker) {
-        writeRecoveryMarkerWithDeps(markerPath, { version: 1, targetPath, source }, false, deps)
+        guard(markerPath, true)
+        writeRecoveryMarkerWithDeps(markerPath, { version: 1, targetPath, source }, false, deps, guard)
       }
       retryWhileWindowsHoldsTheFile(() => {
+        guard(targetPath, true)
         targetFd = openSync(
           targetPath,
           fsConstants.O_WRONLY | fsConstants.O_CREAT | fsConstants.O_EXCL | (fsConstants.O_NOFOLLOW ?? 0),
@@ -690,6 +747,12 @@ function promoteTmpFile(fd: number, tmpPath: string, targetPath: string, deps: R
       fchmodSync(targetFd!, source.mode & 0o777)
       const target = fstatSync(targetFd!)
       publishedIdentity = target
+      // Record ownership as soon as the exclusive destination exists, before
+      // copying any bytes. If a crash interrupts the copy, the next boot can
+      // verify this exact inode and resume it instead of seeing a marker with
+      // no target identity and blocking forever.
+      guard(markerPath, true)
+      writeRecoveryMarkerWithDeps(markerPath, { version: 1, targetPath, source, target }, true, deps, guard)
       copyValidatedSource(fd, source, targetFd!, false)
       copyCompleted = true
       if (!sameEntryIdentity(lstatSync(targetPath), target)) {
@@ -700,7 +763,7 @@ function promoteTmpFile(fd: number, tmpPath: string, targetPath: string, deps: R
       // fsynced bytes. A crash before this atomic marker replacement therefore
       // leaves a complete target beside the prepared marker, never an empty
       // final artifact with no durable ownership record.
-      writeRecoveryMarkerWithDeps(markerPath, { version: 1, targetPath, source, target }, true, deps)
+      writeRecoveryMarkerWithDeps(markerPath, { version: 1, targetPath, source, target }, true, deps, guard)
     }
   } catch (error) {
     if (error instanceof RecoveryBlockedError) throw error
@@ -728,6 +791,7 @@ function promoteTmpFile(fd: number, tmpPath: string, targetPath: string, deps: R
     if (targetFd !== undefined) closeSync(targetFd)
   }
   try {
+    guard(targetPath)
     if (!publishedIdentity || !sameEntryIdentity(lstatSync(targetPath), publishedIdentity)) {
       throw new Error('Recovery target changed before temp cleanup')
     }
@@ -736,6 +800,7 @@ function promoteTmpFile(fd: number, tmpPath: string, targetPath: string, deps: R
     return false
   }
   try {
+    guard(tmpPath)
     if (removeMatchingEntry(tmpPath, fstatSync(fd), deps)) {
       cleanupSidecar(atomicProofPath(tmpPath))
       cleanupSidecar(markerPath)
@@ -771,9 +836,23 @@ export function recoverOrphanTmpFiles(
     return recovered
   }
 
+  // Recovery scans the canonical tree for safety, but callers and tests need
+  // paths in the spelling they supplied. On macOS `realpathSync.native` can
+  // add `/private`, and on Windows it can expand a short 8.3 component; those
+  // are the same files, not different recoveries.
+  const reportedPath = (canonicalPath: string): string => {
+    const relativePath = relative(canonicalRoot, canonicalPath)
+    return relativePath ? join(rootDir, relativePath) : rootDir
+  }
+
+  const guard: RecoveryPathGuard = (candidate, allowMissingTail = false) => {
+    assertRecoveryPath(canonicalRoot, candidate, allowMissingTail)
+  }
+
   function scanDir(dir: string) {
     if (!existsSync(dir)) return
     try {
+      guard(dir)
       const entries = readdirSync(dir, { withFileTypes: true })
       for (const entry of entries) {
         const fullPath = join(dir, entry.name)
@@ -782,6 +861,24 @@ export function recoverOrphanTmpFiles(
           continue
         }
         const name = entry.name.toLowerCase()
+        if (name.endsWith('.tmp.proof')) {
+          const tmpPath = fullPath.slice(0, -'.proof'.length)
+          const targetPath = parseAtomicTmpPath(tmpPath)
+          // A proof without its temp is no longer useful. Only clean one when
+          // its derived target is a known artifact; arbitrary `.proof` files
+          // remain untouched.
+          if (targetPath !== null
+            && isKnownArtifactTarget(canonicalRoot, targetPath, rootKind)) {
+            try {
+              guard(fullPath)
+              guard(tmpPath, true)
+              if (!pathIsTaken(tmpPath)) cleanupSidecar(fullPath)
+            } catch (error) {
+              console.warn(`[recovery] Leaving proof sidecar ${fullPath}: its path containment could not be proved (${errorMessage(error)})`)
+            }
+          }
+          continue
+        }
         if (!name.endsWith('.tmp') && !LEGACY_TMP_NAME.test(name)) continue
         if (entry.isSymbolicLink()) {
           console.warn(`[recovery] Ignoring symbolic-link temp file ${fullPath}`)
@@ -800,12 +897,20 @@ export function recoverOrphanTmpFiles(
           continue
         }
 
+        try {
+          guard(fullPath)
+          guard(targetPath, true)
+        } catch (error) {
+          console.warn(`[recovery] Leaving ${fullPath}: its path containment could not be proved (${errorMessage(error)})`)
+          continue
+        }
+
         if (pathIsTaken(targetPath)) {
           let fd: number | undefined
           try {
             fd = openFileNoFollowSync(fullPath)
-            const resumed = resumeMarkedCopy(fd, fullPath, targetPath, deps)
-            if (resumed === 'promoted') recovered.push(targetPath)
+            const resumed = resumeMarkedCopy(fd, fullPath, targetPath, deps, guard)
+            if (resumed === 'promoted') recovered.push(reportedPath(targetPath))
             else if (resumed === 'unmarked') {
               discardTmpFile(fullPath, 'its target already exists', fstatSync(fd), deps)
             }
@@ -820,6 +925,8 @@ export function recoverOrphanTmpFiles(
 
         let fd: number | undefined
         try {
+          guard(fullPath)
+          guard(targetPath, true)
           fd = openFileNoFollowSync(fullPath)
           const judgedSource = fstatSync(fd)
           const verdict = judgeTmpContent(fd, fullPath, targetPath)
@@ -838,8 +945,8 @@ export function recoverOrphanTmpFiles(
             )
           } else if (!sameFileIdentity(fstatSync(fd), judgedSource)) {
             console.warn(`[recovery] Leaving ${fullPath}: it changed while being checked`)
-          } else if (promoteTmpFile(fd, fullPath, targetPath, deps)) {
-            recovered.push(targetPath)
+          } else if (promoteTmpFile(fd, fullPath, targetPath, deps, guard)) {
+            recovered.push(reportedPath(targetPath))
           }
         } catch (error) {
           if (error instanceof RecoveryBlockedError) throw error
@@ -896,6 +1003,7 @@ export function fixTrailingLineCorruption(filePath: string): boolean {
           let retainedBytes = 0
           for (let line = 0; line < lines.length; line++) retainedBytes = content.indexOf(0x0a, retainedBytes) + 1
           ftruncateSync(fd, retainedBytes)
+          fsyncSync(fd)
           return true
         }
       }
@@ -936,6 +1044,7 @@ function fixCorruptionLarge(fd: number, filePath: string, fileSize: number): boo
   } catch {
     console.warn(`[recovery] Truncating corrupt last line in ${filePath} (large file)`)
     ftruncateSync(fd, lineStart)
+    fsyncSync(fd)
     return true
   }
 }

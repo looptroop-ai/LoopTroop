@@ -109,4 +109,11 @@ describe('candidate file audit parsing', () => {
       { path: 'new/name.ts', status: 'R100' },
     ])
   })
+
+  it('reads NUL-delimited names without losing spaces or non-ASCII bytes', () => {
+    expect(parseCandidateChangedFiles(`M\0folder/name with spaces.ts\0A\0café.ts\0`)).toEqual([
+      { path: 'folder/name with spaces.ts', status: 'M' },
+      { path: 'café.ts', status: 'A' },
+    ])
+  })
 })

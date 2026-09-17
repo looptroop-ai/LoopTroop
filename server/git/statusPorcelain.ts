@@ -64,7 +64,15 @@ export function parseGitStatusPorcelainZ(output: string): GitStatusRecord[] {
 
     // A rename leaves its source behind as a deletion; a copy does not touch it.
     if ((indexStatus === 'R' || worktreeStatus === 'R') && originalPath) {
-      records.push({ indexStatus: 'D', worktreeStatus: ' ', path: originalPath })
+      // Preserve the column that reported the rename. A worktree-only ` R`
+      // leaves the old path in the index and deletes it only from disk; making
+      // that synthetic record staged (`D `) causes the next commit to remove
+      // the source from the index even though the user never staged it.
+      records.push({
+        indexStatus: indexStatus === 'R' ? 'D' : ' ',
+        worktreeStatus: indexStatus === 'R' ? ' ' : 'D',
+        path: originalPath,
+      })
     }
   }
 

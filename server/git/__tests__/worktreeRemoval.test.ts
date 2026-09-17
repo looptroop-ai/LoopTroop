@@ -1,5 +1,5 @@
 import { execFileSync } from 'node:child_process'
-import { chmodSync, existsSync, lstatSync, mkdirSync, readFileSync, symlinkSync, writeFileSync } from 'node:fs'
+import { chmodSync, existsSync, lstatSync, mkdirSync, readFileSync, renameSync, symlinkSync, writeFileSync } from 'node:fs'
 import { resolve } from 'node:path'
 import { makeTempDir, pinGitLineEndings, removeTempDir } from '../../test/tempDir'
 import { afterEach, describe, expect, it } from 'vitest'
@@ -124,6 +124,27 @@ describe('removeWorktree', () => {
       ['worktree', 'remove', '--force', worktreePath],
       ['worktree', 'prune'],
     ])
+  })
+
+  it('revalidates the managed parent before fallback removal after Git yields', async () => {
+    const { root, projectRoot, worktreesRoot, worktreePath } = createRepoWithWorktree()
+    const outside = resolve(root, 'outside')
+    const movedRoot = resolve(root, 'worktrees-moved')
+    mkdirSync(outside, { recursive: true })
+
+    await expect(removeWorktree({
+      projectRoot,
+      worktreesRoot,
+      worktreePath,
+      runGit: async (args) => {
+        if (args[1] !== 'remove') return
+        renameSync(worktreesRoot, movedRoot)
+        symlinkSync(outside, worktreesRoot, 'junction')
+      },
+    })).rejects.toThrow(/escapes root|must not be a symbolic link/)
+
+    expect(existsSync(resolve(movedRoot, 'TEST-1', 'README.md'))).toBe(true)
+    expect(existsSync(resolve(outside, 'TEST-1'))).toBe(false)
   })
 
   it('rejects targets outside the managed worktrees root', async () => {

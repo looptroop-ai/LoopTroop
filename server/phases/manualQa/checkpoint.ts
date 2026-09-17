@@ -1,8 +1,8 @@
 import { TicketWorkspaceNotInitializedError } from '../../lib/workflowErrors'
-import { withGitIndexRollback } from '../../git/indexSnapshot'
+import { withGitIndexRollbackAsync } from '../../git/indexSnapshot'
 import { literalPathspec, REPO_SCOPE_PATHSPECS } from '../../git/pathspecs'
 import { normalizeRepoScopedPath, uniqueRepoScopedPaths } from '../../git/repoScopedPath'
-import { runGitSync } from '../../git/runCommand'
+import { runGitMutationOrThrow, runGitSync } from '../../git/runCommand'
 import { parseGitPathListZ } from '../../git/statusPorcelain'
 import { createHash } from 'node:crypto'
 import {
@@ -10,6 +10,8 @@ import {
   existsSync,
   lstatSync,
   mkdirSync,
+  readdirSync,
+  readFileSync,
   readlinkSync,
   rmSync,
   symlinkSync,
@@ -19,12 +21,13 @@ import { resolveContainedPath } from '../../lib/containedPath'
 import {
   captureFinalTestDirtyFiles,
   resolveFinalTestCandidateFiles,
-  restoreTrackedFinalTestLocalFiles,
+  restoreTrackedFinalTestLocalFilesAsync,
   type FinalTestDirtyFile,
 } from '../finalTest/fileEffectsAudit'
 import { getTicketByRef, getTicketPaths } from '../../storage/tickets'
 import { appendManualQaEvent, readManualQaText } from './storage'
 import { safeAtomicWriteWithin } from '../../io/atomicWrite'
+import { withFileLock } from '../../io/fileLock'
 import {
   classifyWorktreePath,
   getExecutionSetupCommitExcludedRoots,
@@ -56,6 +59,7 @@ interface ManualQaDriftReceipt {
   previousHead: string
   resultingHead: string
   createdAt: string
+  quarantinePaths?: Record<string, string>
 }
 
 /**
@@ -165,6 +169,7 @@ function appendDriftEvent(ticketDir: string, ticketExternalId: string, receipt: 
       files: receipt.files,
       previousHead: receipt.previousHead,
       resultingHead: receipt.resultingHead,
+      ...(receipt.quarantinePaths ? { quarantinePaths: receipt.quarantinePaths } : {}),
     },
   })
 }
@@ -262,10 +267,12 @@ function quarantineFiles(
   ticketDir: string,
   version: number,
   files: string[],
-): string[] {
+  actionId: string,
+): { files: string[]; destinations: Record<string, string> } {
   const quarantineRoot = join(ticketDir, 'manual-qa', `v${version}`, 'quarantine')
   const canonicalTicketDir = resolveContainedPath(ticketDir, '.')
   const quarantined: string[] = []
+  const destinations: Record<string, string> = {}
   for (const file of uniqueProjectPaths(files)) {
     const source = resolve(worktreePath, file)
     const destination = resolve(quarantineRoot, file)
@@ -278,18 +285,40 @@ function quarantineFiles(
     }
     const sourceEntry = lstatSafe(source)
     if (!existsSync(source) && !sourceEntry) continue
-    mkdirSync(dirname(destination), { recursive: true })
-    if (assertContained(ticketDir, destination) !== expectedDestination) {
+    let destinationPath = destination
+    const existingDestination = lstatSafe(destination)
+    if (existingDestination) {
+      if (sameQuarantineEntry(source, destination)) {
+        quarantined.push(file)
+        destinations[file] = destination
+        continue
+      }
+      const suffix = createHash('sha256').update(actionId, 'utf8').digest('hex').slice(0, 16)
+      destinationPath = resolve(quarantineRoot, `${file}.attempt-${suffix}`)
+      if (assertContained(ticketDir, destinationPath) !== resolve(canonicalTicketDir, relative(ticketDir, destinationPath))) {
+        throw new Error('Manual QA quarantine retry path redirects outside its intended directory.')
+      }
+      if (lstatSafe(destinationPath) && !sameQuarantineEntry(source, destinationPath)) {
+        throw new Error(`Manual QA quarantine destination already exists: ${destinationPath}`)
+      }
+      if (lstatSafe(destinationPath)) {
+        quarantined.push(file)
+        destinations[file] = destinationPath
+        continue
+      }
+    }
+    mkdirSync(dirname(destinationPath), { recursive: true })
+    if (assertContained(ticketDir, destinationPath) !== resolve(canonicalTicketDir, relative(ticketDir, destinationPath))) {
       throw new Error('Manual QA quarantine path redirects outside its intended directory.')
     }
     if (sourceEntry?.isSymbolicLink()) {
       // `cpSync` still stats a dangling link on some Node/filesystem pairs.
       // Copy its directory entry directly so neither an outward nor a broken
       // link is followed and the original target is never touched.
-      if (lstatSafe(destination)) throw new Error(`Manual QA quarantine destination already exists: ${destination}`)
-      symlinkSync(readlinkSync(source), destination)
+      if (lstatSafe(destinationPath)) throw new Error(`Manual QA quarantine destination already exists: ${destinationPath}`)
+      symlinkSync(readlinkSync(source), destinationPath)
     } else {
-      cpSync(source, destination, {
+      cpSync(source, destinationPath, {
         recursive: true,
         dereference: false,
         verbatimSymlinks: true,
@@ -301,8 +330,29 @@ function quarantineFiles(
       })
     }
     quarantined.push(file)
+    destinations[file] = destinationPath
   }
-  return quarantined
+  return { files: quarantined, destinations }
+}
+
+function sameQuarantineEntry(source: string, destination: string): boolean {
+  const left = lstatSafe(source)
+  const right = lstatSafe(destination)
+  if (!left || !right || left.isSymbolicLink() !== right.isSymbolicLink() || left.isDirectory() !== right.isDirectory()) return false
+  if (left.isSymbolicLink()) return readlinkSync(source) === readlinkSync(destination)
+  if (left.isDirectory()) {
+    const sourceNames = readdirSync(source).sort()
+    const destinationNames = readdirSync(destination).sort()
+    return sourceNames.length === destinationNames.length
+      && sourceNames.every((name, index) => name === destinationNames[index]
+        && sameQuarantineEntry(join(source, name), join(destination, name)))
+  }
+  if (!left.isFile() || !right.isFile()) return false
+  try {
+    return readFileSync(source).equals(readFileSync(destination))
+  } catch {
+    return false
+  }
 }
 
 function lstatSafe(path: string): ReturnType<typeof lstatSync> | null {
@@ -314,28 +364,28 @@ function lstatSafe(path: string): ReturnType<typeof lstatSync> | null {
   }
 }
 
-function discardExactFiles(worktreePath: string, files: string[], dirtyFiles: FinalTestDirtyFile[]): void {
+async function discardExactFiles(worktreePath: string, files: string[], dirtyFiles: FinalTestDirtyFile[]): Promise<void> {
   const dirtyByPath = new Map(dirtyFiles.map(file => [file.path, file]))
   const normalizedFiles = uniqueProjectPaths(files).filter(file => dirtyByPath.has(file))
   const tracked = normalizedFiles.filter(file => !dirtyByPath.get(file)?.untracked)
   const untracked = normalizedFiles.filter(file => dirtyByPath.get(file)?.untracked)
   if (tracked.length > 0) {
-    runGit(worktreePath, ['restore', '--staged', '--worktree', '--', ...tracked.map(literalPathspec)], true)
+    await runGitMutationOrThrow(worktreePath, ['restore', '--staged', '--worktree', '--', ...tracked.map(literalPathspec)])
   }
   if (untracked.length > 0) {
-    runGit(worktreePath, ['clean', '-fd', '--', ...untracked.map(literalPathspec)], true)
+    await runGitMutationOrThrow(worktreePath, ['clean', '-fd', '--', ...untracked.map(literalPathspec)])
   }
 }
 
-function commitExactFiles(worktreePath: string, files: string[], message: string): string | null {
+async function commitExactFiles(worktreePath: string, files: string[], message: string): Promise<string | null> {
   const normalizedFiles = uniqueProjectPaths(files)
   if (normalizedFiles.length === 0) return null
   const pathspecs = normalizedFiles.map(literalPathspec)
   // Staged and committed under an index snapshot, like the bead commit. `git
   // add` here writes the worktree's own index, and a commit that then threw
   // used to leave these paths staged for whatever committed next.
-  const committed = withGitIndexRollback(worktreePath, () => {
-    runGit(worktreePath, ['add', '-f', '-A', '--', ...pathspecs], true)
+  const committed = await withGitIndexRollbackAsync(worktreePath, async () => {
+    await runGitMutationOrThrow(worktreePath, ['add', '-f', '-A', '--', ...pathspecs])
     const staged = parseGitPathListZ(runGitRaw(worktreePath, [
       'diff', '--cached', '--name-only', '-z', '--', ...pathspecs,
     ]))
@@ -343,7 +393,7 @@ function commitExactFiles(worktreePath: string, files: string[], message: string
     // `git commit` normally includes every path already staged in the worktree.
     // Restrict the commit itself so unrelated staged application/runtime residue
     // cannot leak into the clean Manual QA checkpoint before it is quarantined.
-    runGit(worktreePath, [
+    await runGitMutationOrThrow(worktreePath, [
       '-c',
       'user.name=LoopTroop',
       '-c',
@@ -355,14 +405,14 @@ function commitExactFiles(worktreePath: string, files: string[], message: string
       '--only',
       '--',
       ...pathspecs,
-    ], true)
+    ])
     return { keepIndex: true, value: true }
   })
   if (!committed) return null
   return runGit(worktreePath, ['rev-parse', 'HEAD'])
 }
 
-export function prepareManualQaCheckpoint(ticketId: string, version: number): ManualQaCheckpointResult {
+export async function prepareManualQaCheckpoint(ticketId: string, version: number): Promise<ManualQaCheckpointResult> {
   const paths = getTicketPaths(ticketId)
   const ticket = getTicketByRef(ticketId)
   if (!paths || !ticket) throw new TicketWorkspaceNotInitializedError(`Ticket workspace not initialized: ${ticketId}`)
@@ -386,7 +436,7 @@ export function prepareManualQaCheckpoint(ticketId: string, version: number): Ma
   const resolution = resolveFinalTestCandidateFiles(ticketId)
   const audit = resolution.audit
   const candidateFiles = uniqueProjectPaths(resolution.candidateFiles)
-  const checkpointCommit = commitExactFiles(
+  const checkpointCommit = await commitExactFiles(
     paths.worktreePath,
     candidateFiles,
     `${ticket.externalId}: checkpoint accepted final-test effects for Manual QA v${version}`,
@@ -397,7 +447,7 @@ export function prepareManualQaCheckpoint(ticketId: string, version: number): Ma
   // later exact staging could otherwise carry their local contents into the
   // candidate. Restore only those tracked paths; untracked local outputs stay
   // available on disk for subsequent testing and Manual QA.
-  restoreTrackedFinalTestLocalFiles(paths.worktreePath, audit)
+  await restoreTrackedFinalTestLocalFilesAsync(paths.worktreePath, audit)
 
   const remainingStatus = filterDeliveryRelevantDirtyFiles(
     paths.worktreePath,
@@ -413,27 +463,29 @@ export function prepareManualQaCheckpoint(ticketId: string, version: number): Ma
   return { baseline, checkpointCommit, candidateFiles, quarantinedFiles: [] }
 }
 
-function applyManualQaDriftDecision(
+async function applyManualQaDriftDecision(
   ticketId: string,
   version: number,
   files: string[],
   actionId: string,
   decision: ManualQaDriftReceipt['decision'],
-): ManualQaDriftReceipt {
+): Promise<ManualQaDriftReceipt> {
   const paths = getTicketPaths(ticketId)
   const ticket = getTicketByRef(ticketId)
   if (!paths || !ticket) throw new TicketWorkspaceNotInitializedError(`Ticket workspace not initialized: ${ticketId}`)
-  if (!actionId.trim()) throw new Error('Manual QA workspace decision requires an action ID')
-  const receiptPath = driftReceiptPath(paths.ticketDir, actionId)
-  assertContained(paths.ticketDir, receiptPath)
-  const existing = readReceipt(paths.ticketDir, receiptPath)
-  if (existing) {
-    if (existing.actionId !== actionId || existing.version !== version || existing.decision !== decision) {
-      throw new Error('Manual QA workspace action ID was already used for another decision.')
+  const lockPath = join(paths.ticketDir, 'manual-qa', `v${version}`, '.workspace.lock')
+  return withFileLock(lockPath, async () => {
+    if (!actionId.trim()) throw new Error('Manual QA workspace decision requires an action ID')
+    const receiptPath = driftReceiptPath(paths.ticketDir, actionId)
+    assertContained(paths.ticketDir, receiptPath)
+    const existing = readReceipt(paths.ticketDir, receiptPath)
+    if (existing) {
+      if (existing.actionId !== actionId || existing.version !== version || existing.decision !== decision) {
+        throw new Error('Manual QA workspace action ID was already used for another decision.')
+      }
+      appendDriftEvent(paths.ticketDir, ticket.externalId, existing)
+      return existing
     }
-    appendDriftEvent(paths.ticketDir, ticket.externalId, existing)
-    return existing
-  }
 
   const requestedFiles = uniqueProjectPaths(files)
   const baseline = readBaseline(paths.ticketDir, version)
@@ -455,27 +507,29 @@ function applyManualQaDriftDecision(
   }
 
   const previousHead = currentHead
+  let quarantinePaths: Record<string, string> | undefined
   if (decision === 'include') {
-    commitExactFiles(
+    await commitExactFiles(
       paths.worktreePath,
       requestedFiles,
       `${ticket.externalId}: include audited Manual QA workspace changes for v${version}`,
     )
   } else {
-    quarantineFiles(paths.worktreePath, paths.ticketDir, version, requestedFiles)
-    discardExactFiles(paths.worktreePath, requestedFiles, currentDirty)
+    const quarantine = quarantineFiles(paths.worktreePath, paths.ticketDir, version, requestedFiles, actionId)
+    quarantinePaths = quarantine.destinations
+    await discardExactFiles(paths.worktreePath, requestedFiles, currentDirty)
     const committedFiles = requestedFiles.filter(file => committedDrift.has(file))
     const addedFiles = committedFiles.filter(file => committedDrift.get(file) === 'A')
     const restorableFiles = committedFiles.filter(file => committedDrift.get(file) !== 'A')
     if (restorableFiles.length > 0) {
-      runGit(paths.worktreePath, [
+      await runGitMutationOrThrow(paths.worktreePath, [
         'restore',
         `--source=${baseline.head}`,
         '--staged',
         '--worktree',
         '--',
         ...restorableFiles.map(literalPathspec),
-      ], true)
+      ])
     }
     if (addedFiles.length > 0) {
       for (const file of addedFiles) {
@@ -484,7 +538,7 @@ function applyManualQaDriftDecision(
         rmSync(target, { force: true, recursive: true })
       }
     }
-    commitExactFiles(
+    await commitExactFiles(
       paths.worktreePath,
       committedFiles,
       `${ticket.externalId}: discard audited Manual QA workspace changes for v${version}`,
@@ -510,26 +564,28 @@ function applyManualQaDriftDecision(
     previousHead,
     resultingHead: nextBaseline.head,
     createdAt: new Date().toISOString(),
+    ...(quarantinePaths ? { quarantinePaths } : {}),
   }
   writeReceiptJson(paths.ticketDir, receiptPath, receipt)
   appendDriftEvent(paths.ticketDir, ticket.externalId, receipt)
-  return receipt
+    return receipt
+  })
 }
 
-export function includeManualQaWorkspaceDrift(
+export async function includeManualQaWorkspaceDrift(
   ticketId: string,
   version: number,
   files: string[],
   actionId: string,
-): ManualQaDriftReceipt {
+): Promise<ManualQaDriftReceipt> {
   return applyManualQaDriftDecision(ticketId, version, files, actionId, 'include')
 }
 
-export function discardManualQaWorkspaceDrift(
+export async function discardManualQaWorkspaceDrift(
   ticketId: string,
   version: number,
   files: string[],
   actionId: string,
-): ManualQaDriftReceipt {
+): Promise<ManualQaDriftReceipt> {
   return applyManualQaDriftDecision(ticketId, version, files, actionId, 'discard')
 }

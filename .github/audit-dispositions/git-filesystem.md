@@ -46,7 +46,7 @@ run passed 173 tests across 10 files. Packet lint and diff checks passed.
 | G09 | PASS, final pending | YAML and whole-file JSONL temps require an exclusive, fsynced `.proof` with byte length and SHA-256 before promotion; stale proof sidecars are removed only for known artifacts. | Physical power loss and native Windows are not locally verified. |
 | G10 | PASS, final pending | Whole-file JSONL recovery accepts only proof-backed empty files or complete newline-terminated records; unproved, torn, invalid, oversized, and unrelated temps remain untouched. | Physical power loss and native Windows are not locally verified. |
 | G11 | PASS, final pending | Atomic appends hold one process-shared SQLite lock across the size read, short-write loop, fsync, and returned byte range. | Physical power loss and native Windows are not locally verified. |
-| G12 | PASS, final pending | Manual QA discard and quarantine use `lstat`, copy final symlink entries without dereferencing them, and protect outside or dangling targets. | Native Windows is not locally verified. |
+| G12 | PASS, final pending | Manual QA discard and quarantine use `lstat`, copy final symlink entries without dereferencing them, protect outside or dangling targets, and verify source/destination device-inode identity before and after bounded quarantine comparisons so an atomic replacement cannot be mistaken for an identical backup. | Native Windows is not locally verified. |
 | G13 | PASS, final pending | Manual QA operations use NUL-safe Git readers without trimming, backslash rewriting, or path reinterpretation. | Native Windows is not locally verified. |
 | G14/S12(2) | PASS, final pending | Project and ticket roots are absolute and contained; POSIX slashes, spaces, trailing backslashes, carriage returns, and legal colons remain usable while Windows ADS syntax is rejected after a valid drive. Invalid route paths return structured client errors. | Native Windows is not locally verified. |
 | G16 | PASS, final pending | Manual QA event reads use safe parsing, skip and warn on invalid shapes, return diagnostics, retain raw lines, and keep later appends working. | No E2E or full lifecycle run. |
@@ -74,7 +74,9 @@ retained `.remove-*` files are intentional. SQLite may create `-journal`,
 selected runtime and temporary children preserves runtime logs; the persistent
 Manual QA SQLite database is outside that transient cleanup scope. Evidence
 uploads reject symlinks, while workspace-drift quarantine copies the link
-entry itself instead of its external target.
+entry itself instead of its external target. Existing quarantine files are
+reused only when the compared descriptors still belong to both pathnames; a
+replacement is retained at its action-specific retry destination.
 
 Native Windows, physical power loss, unsupported directory fsync behavior, E2E,
 full lifecycle runs, and live remote operations are not claimed here. The

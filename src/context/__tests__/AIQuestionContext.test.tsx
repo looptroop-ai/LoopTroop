@@ -21,6 +21,25 @@ function Counts({ ticketId }: { ticketId: string }) {
   return <div>pending:{getPendingCount(ticketId)} requests:{getRequestCount(ticketId)}</div>
 }
 
+function SnapshotRecovery({ ticketId, showNew = false }: { ticketId: string; showNew?: boolean }) {
+  const { getRequestCount, refreshTicket, ingestSseEvent } = useAIQuestions()
+  return (
+    <>
+      <div>requests:{getRequestCount(ticketId)}</div>
+      <button onClick={() => ingestSseEvent({
+        type: 'opencode_question_resolved',
+        ticketId,
+        sessionId: 'session-1234567890',
+        requestId: 'question-1',
+      })}>resolve</button>
+      <button onClick={() => refreshTicket(ticketId)}>refresh</button>
+      {showNew && (
+        <button onClick={() => ingestSseEvent(buildQuestion(ticketId, { requestId: 'question-new' }))}>new</button>
+      )}
+    </>
+  )
+}
+
 function buildQuestion(ticketId: string, overrides: Record<string, unknown> = {}) {
   return {
     type: 'opencode_question',
@@ -393,24 +412,7 @@ describe('AIQuestionProvider', () => {
       return new Response(JSON.stringify({ questions: [], timer: null }), { status: 200 })
     }))
 
-    function Recovery({ ticketId }: { ticketId: string }) {
-      const { getRequestCount, refreshTicket, ingestSseEvent } = useAIQuestions()
-      return (
-        <>
-          <div>requests:{getRequestCount(ticketId)}</div>
-          <button onClick={() => refreshTicket(ticketId)}>refresh</button>
-          <button onClick={() => ingestSseEvent({
-            type: 'opencode_question_resolved',
-            ticketId,
-            sessionId: 'session-1234567890',
-            requestId: 'question-1',
-          })}>resolve</button>
-          <button onClick={() => ingestSseEvent(buildQuestion(ticketId, { requestId: 'question-new' }))}>new</button>
-        </>
-      )
-    }
-
-    renderProvider([ticket], <Recovery ticketId={ticket.id} />)
+    renderProvider([ticket], <SnapshotRecovery ticketId={ticket.id} showNew />)
     await waitFor(() => expect(screen.getByText('requests:1')).toBeInTheDocument())
 
     fireEvent.click(screen.getByText('refresh'))
@@ -448,23 +450,7 @@ describe('AIQuestionProvider', () => {
       return new Response(JSON.stringify({ questions: [], timer: null }), { status: 200 })
     }))
 
-    function Recovery({ ticketId }: { ticketId: string }) {
-      const { getRequestCount, refreshTicket, ingestSseEvent } = useAIQuestions()
-      return (
-        <>
-          <div>requests:{getRequestCount(ticketId)}</div>
-          <button onClick={() => ingestSseEvent({
-            type: 'opencode_question_resolved',
-            ticketId,
-            sessionId: 'session-1234567890',
-            requestId: 'question-1',
-          })}>resolve</button>
-          <button onClick={() => refreshTicket(ticketId)}>refresh</button>
-        </>
-      )
-    }
-
-    renderProvider([ticket], <Recovery ticketId={ticket.id} />)
+    renderProvider([ticket], <SnapshotRecovery ticketId={ticket.id} />)
     await waitFor(() => expect(screen.getByText('requests:1')).toBeInTheDocument())
 
     // Resolution happens before this GET starts. The server may still return
@@ -500,23 +486,7 @@ describe('AIQuestionProvider', () => {
       return new Response(JSON.stringify({ questions: [], timer: null }), { status: 200 })
     }))
 
-    function Recovery({ ticketId }: { ticketId: string }) {
-      const { getRequestCount, refreshTicket, ingestSseEvent } = useAIQuestions()
-      return (
-        <>
-          <div>requests:{getRequestCount(ticketId)}</div>
-          <button onClick={() => ingestSseEvent({
-            type: 'opencode_question_resolved',
-            ticketId,
-            sessionId: first.sessionId,
-            requestId: first.requestId,
-          })}>resolve</button>
-          <button onClick={() => refreshTicket(ticketId)}>refresh</button>
-        </>
-      )
-    }
-
-    renderProvider([ticket], <Recovery ticketId={ticket.id} />)
+    renderProvider([ticket], <SnapshotRecovery ticketId={ticket.id} />)
     await waitFor(() => expect(screen.getByText('requests:2')).toBeInTheDocument())
     fireEvent.click(screen.getByText('resolve'))
     await waitFor(() => expect(screen.getByText('requests:1')).toBeInTheDocument())

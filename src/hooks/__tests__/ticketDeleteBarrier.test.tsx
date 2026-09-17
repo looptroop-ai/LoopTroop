@@ -24,6 +24,10 @@ function uiStateSaves(spy: ReturnType<typeof vi.fn>): number {
   )).length
 }
 
+function jsonResponse(body: unknown, status = 200): Promise<Response> {
+  return Promise.resolve(new Response(JSON.stringify(body), { status }))
+}
+
 beforeEach(() => {
   vi.useFakeTimers({ shouldAdvanceTime: true })
 })
@@ -50,9 +54,9 @@ describe('the deletion write barrier', () => {
             releaseFirstSave = () => resolve(new Response(JSON.stringify({ revision: 1 }), { status: 200 }))
           })
         }
-        return Promise.resolve(new Response(JSON.stringify({ revision: 2 }), { status: 200 }))
+        return jsonResponse({ revision: 2 })
       }
-      return Promise.resolve(new Response(JSON.stringify({ success: true, ticketId }), { status: 200 }))
+      return jsonResponse({ success: true, ticketId })
     })
     vi.stubGlobal('fetch', fetchSpy)
 
@@ -89,9 +93,9 @@ describe('the deletion write barrier', () => {
   it('lets a save enqueued after the deletion through, which a recycled id needs', async () => {
     const fetchSpy = vi.fn((url: RequestInfo | URL, init?: RequestInit) => {
       if (String(url).includes('/ui-state') && init?.method === 'PUT') {
-        return Promise.resolve(new Response(JSON.stringify({ revision: 1 }), { status: 200 }))
+        return jsonResponse({ revision: 1 })
       }
-      return Promise.resolve(new Response(JSON.stringify({ success: true, ticketId }), { status: 200 }))
+      return jsonResponse({ success: true, ticketId })
     })
     vi.stubGlobal('fetch', fetchSpy)
 
@@ -120,9 +124,9 @@ describe('the deletion write barrier', () => {
             releaseFirstSave = () => resolve(new Response(JSON.stringify({ revision: 1 }), { status: 200 }))
           })
         }
-        return Promise.resolve(new Response(JSON.stringify({ revision: 2 }), { status: 200 }))
+        return jsonResponse({ revision: 2 })
       }
-      return Promise.resolve(new Response(JSON.stringify({ error: 'still in use' }), { status: 409 }))
+      return jsonResponse({ error: 'still in use' }, 409)
     })
     vi.stubGlobal('fetch', fetchSpy)
 
@@ -156,7 +160,7 @@ describe('the deletion write barrier', () => {
           releaseFirstSave = () => resolve(new Response(JSON.stringify({ revision: 7 }), { status: 200 }))
         })
       }
-      return Promise.resolve(new Response(JSON.stringify({ success: true, ticketId }), { status: 200 }))
+      return jsonResponse({ success: true, ticketId })
     })
     vi.stubGlobal('fetch', fetchSpy)
 
@@ -191,7 +195,7 @@ describe('the deletion write barrier', () => {
     let readCount = 0
     const fetchSpy = vi.fn((_url: RequestInfo | URL, init?: RequestInit) => {
       if (init?.method === 'DELETE') {
-        return Promise.resolve(new Response(JSON.stringify({ success: true, ticketId: reissuedTicketId }), { status: 200 }))
+        return jsonResponse({ success: true, ticketId: reissuedTicketId })
       }
       if (init?.method === 'PUT') {
         return Promise.resolve(new Response(JSON.stringify({

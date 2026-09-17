@@ -16,6 +16,18 @@ function renderHistoricalLogs(scope: HistoricalLogScope, strictMode = false) {
   return { ...renderHook(() => useTicketHistoricalLogs('ticket-1', scope), { wrapper }), client }
 }
 
+function historyPage(entryId: string | null, content: string, olderCursor: string | null, hasOlder: boolean) {
+  return createJsonResponse({
+    entries: entryId ? [{ phase: 'CODING', entryId, content }] : [],
+    olderCursor,
+    hasOlder,
+  })
+}
+
+function historyRequestUrl(input: RequestInfo | URL): URL {
+  return new URL(String(input), 'http://localhost')
+}
+
 describe('useTicketHistoricalLogs', () => {
   afterEach(() => vi.restoreAllMocks())
 
@@ -41,21 +53,13 @@ describe('useTicketHistoricalLogs', () => {
   it('does not share an in-flight older-page drain with a new query scope', async () => {
     let resolveAttemptOne!: (response: Response | PromiseLike<Response>) => void
     const fetchSpy = vi.spyOn(globalThis, 'fetch').mockImplementation(input => {
-      const url = new URL(String(input), 'http://localhost')
+      const url = historyRequestUrl(input)
       const attempt = url.searchParams.get('phaseAttempt')
       if (url.searchParams.has('before')) {
         if (attempt === '1') return new Promise<Response>(resolve => { resolveAttemptOne = resolve })
-        return createJsonResponse({
-          entries: [{ phase: 'CODING', entryId: 'old-attempt-two', content: 'old attempt two' }],
-          olderCursor: null,
-          hasOlder: false,
-        })
+        return historyPage('old-attempt-two', 'old attempt two', null, false)
       }
-      return createJsonResponse({
-        entries: [{ phase: 'CODING', entryId: `new-attempt-${attempt}`, content: `new attempt ${attempt}` }],
-        olderCursor: `cursor-${attempt}`,
-        hasOlder: true,
-      })
+      return historyPage(`new-attempt-${attempt}`, `new attempt ${attempt}`, `cursor-${attempt}`, true)
     })
     const client = createTestQueryClient()
     const { result, rerender } = renderHook(
@@ -82,7 +86,7 @@ describe('useTicketHistoricalLogs', () => {
     expect(fetchSpy).toHaveBeenCalledTimes(4)
 
     await act(async () => {
-      resolveAttemptOne(createJsonResponse({ entries: [], olderCursor: null, hasOlder: false }))
+      resolveAttemptOne(historyPage(null, '', null, false))
       await firstDrain
     })
   })
@@ -90,15 +94,11 @@ describe('useTicketHistoricalLogs', () => {
   it('does not cancel a drain when an uncancellable caller joins a cancelled caller', async () => {
     const olderResolvers: Array<(response: Response | PromiseLike<Response>) => void> = []
     const fetchSpy = vi.spyOn(globalThis, 'fetch').mockImplementation(input => {
-      const url = new URL(String(input), 'http://localhost')
+      const url = historyRequestUrl(input)
       if (url.searchParams.has('before')) {
         return new Promise<Response>(resolve => { olderResolvers.push(resolve) })
       }
-      return createJsonResponse({
-        entries: [{ phase: 'CODING', entryId: 'new', content: 'new' }],
-        olderCursor: 'cursor-one',
-        hasOlder: true,
-      })
+      return historyPage('new', 'new', 'cursor-one', true)
     })
     const { result } = renderHistoricalLogs({ scope: 'lifecycle', view: 'overview' })
 
@@ -114,20 +114,12 @@ describe('useTicketHistoricalLogs', () => {
     await waitFor(() => expect(fetchSpy).toHaveBeenCalledTimes(2))
 
     await act(async () => {
-      olderResolvers.shift()!(await createJsonResponse({
-        entries: [{ phase: 'CODING', entryId: 'old-one', content: 'old one' }],
-        olderCursor: 'cursor-two',
-        hasOlder: true,
-      }))
+      olderResolvers.shift()!(await historyPage('old-one', 'old one', 'cursor-two', true))
     })
     await waitFor(() => expect(fetchSpy).toHaveBeenCalledTimes(3))
 
     await act(async () => {
-      olderResolvers.shift()!(await createJsonResponse({
-        entries: [{ phase: 'CODING', entryId: 'old-two', content: 'old two' }],
-        olderCursor: null,
-        hasOlder: false,
-      }))
+      olderResolvers.shift()!(await historyPage('old-two', 'old two', null, false))
       await uncancellableDrain
     })
     await waitFor(() => expect(result.current.entries.map(entry => entry.entryId)).toEqual(['old-two', 'old-one', 'new']))

@@ -628,7 +628,7 @@ function applyInlineRepairPipeline(candidate: string, options?: ParseYamlOrJsonC
 // The test suite hashes the complete yamlRepair/yamlUtils sources after
 // normalising this literal. Keeping only the resulting marker at runtime
 // makes cache invalidation work in bundled builds without reading source files.
-export const REPAIR_PIPELINE_VERSION = 'e574e14c0a285d0fc249614a10ceaec921dfc86ad24f3b2743a13eda2054ad66'
+export const REPAIR_PIPELINE_VERSION = 'acac2738d520c92e82ce22d6490be0a7b4328477c215e56e2fc09e94ce65a876'
 
 /** Parse or reuse a candidate while preserving per-call repairs and mutable result ownership. */
 export function parseYamlOrJsonCandidate(
@@ -703,7 +703,8 @@ function parseYamlOrJsonCandidateUncached(
     }
     if (!isRecord(raw) || Array.isArray(repaired) || !isRecord(repaired)) return
     for (const [key, rawChild] of Object.entries(raw)) {
-      const repairedKey = Object.keys(repaired).find((candidate) => normalizeKey(candidate) === normalizeKey(key))
+      const repairedKey = Object.hasOwn(repaired, key) ? key
+        : Object.keys(repaired).find((candidate) => normalizeKey(candidate) === normalizeKey(key))
       if (!repairedKey) continue
       if (normalizeKey(key) === 'freetext') {
         // A string already parsed by YAML is authoritative. Non-string values

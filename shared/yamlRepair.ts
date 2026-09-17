@@ -341,6 +341,11 @@ export function repairYamlSequenceItemPrimaryKeys(
       ? trimmed.slice(1).trimStart()
       : null
     if (dashValue !== null) {
+      if (SEQUENCE_PRIMARY_KEY_BLOCK_SCALAR_PATTERN.test(trimmed)) {
+        result.push(line)
+        blockScalarBaseIndent = getBlockScalarBaseIndent(line)
+        continue
+      }
       const immediateParent = parentStack[parentStack.length - 1]
       const config = immediateParent ? normalizedOptions.get(immediateParent.normalizedKey) : undefined
       const value = config ? readSafeBareSequenceScalar(dashValue) : null

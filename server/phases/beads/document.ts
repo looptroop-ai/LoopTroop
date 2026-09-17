@@ -13,10 +13,10 @@ import {
   describeBeadShapeProblem,
   deriveBeadBlocks,
   normalizeBeadCollections,
-  reconcileStoredBeadStatus,
   validateBeadDependencyGraph,
 } from './beadsFile'
 import { isRecord } from '@shared/typeGuards'
+import { resolveBeadStatus } from './types'
 
 /**
  * The plan cannot be approved as written, and a person has to edit it.
@@ -107,6 +107,9 @@ export function approveBeadsDocument(ticketId: string, expectedContentSha256: st
     const line = itemLines[index] ?? index + 1
     const shapeProblem = describeBeadShapeProblem(record)
     if (shapeProblem) throw new BeadPlanValidationError(`Bead at line ${line} ${shapeProblem}`)
+    if (record.status !== undefined && !resolveBeadStatus(record.status)) {
+      throw new BeadPlanValidationError(`Bead at line ${line} has an unrecognised status ${JSON.stringify(record.status)}`)
+    }
     if (typeof record.title !== 'string' || !record.title.trim()) {
       throw new BeadPlanValidationError(`Bead at line ${line} is missing a valid "title" field`)
     }
@@ -135,8 +138,7 @@ export function approveBeadsDocument(ticketId: string, expectedContentSha256: st
   // same dangling/self/cycle checks the pre-flight contract reports.
   const normalizedRecords = parsedRecords.map((record) => {
     if (typeof record.status !== 'string') return record
-    const reconciled = reconcileStoredBeadStatus(record.status, String(record.id))
-    return { ...record, status: reconciled.status }
+    return { ...record, status: resolveBeadStatus(record.status) }
   })
   const graphRecords = deriveBeadBlocks(normalizedRecords)
   const graphErrors = validateBeadDependencyGraph(graphRecords.flatMap((record) => {

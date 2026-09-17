@@ -19,7 +19,7 @@ export function CommandSpecListEditor({
   return (
     <div className="space-y-2">
       {commands.map((command, index) => {
-        const itemLabel = `${label} ${index + 1}`
+        const itemLabel = `${label}, item ${index + 1}`
         return (
           <div key={index} className="rounded-md border border-input p-2 space-y-2">
             <div className="flex gap-2">

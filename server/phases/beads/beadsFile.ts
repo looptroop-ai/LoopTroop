@@ -2,7 +2,7 @@ import { isRecord } from '@shared/typeGuards'
 import { commandSpecSchema } from '@shared/commandSpec'
 import { readJsonlWithDiagnostics } from '../../io/jsonl'
 import type { Bead, BeadStatus } from './types'
-import { BEAD_STATUSES, isBeadStatus, resolveBeadStatusAlias } from './types'
+import { BEAD_STATUSES, isBeadStatus, resolveBeadStatus } from './types'
 
 /**
  * Reconciles a status read back from `beads.jsonl`.
@@ -20,9 +20,7 @@ export function reconcileStoredBeadStatus(
   if (isBeadStatus(value)) return { status: value }
 
   const raw = typeof value === 'string' ? value.trim() : ''
-  const folded = raw.toLowerCase()
-  const mapped: BeadStatus | undefined = resolveBeadStatusAlias(folded)
-    ?? (isBeadStatus(folded) ? folded : undefined)
+  const mapped = resolveBeadStatus(value)
   if (mapped) {
     return { status: mapped, warning: `Bead "${beadId}" had stored status "${raw}"; read as "${mapped}".` }
   }

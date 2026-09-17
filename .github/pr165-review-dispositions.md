@@ -47,6 +47,19 @@ claimed here.
 
 ## Check and tooling notes
 
+### Review refresh
+
+- `4038574570` and review `5237878160`: correct, fixed. Raw YAML string restoration matches exact keys before aliases, preserving distinct canonical and aliased answers in either order.
+- `4038675631`: correct, fixed. Primary-key repair now enters block-scalar mode for sequence headers; a regression preserves literal nested dash text and repairs the next real item.
+- `4038675647`: correct, fixed. Accessible command names use an explicit item label instead of adjacent ambiguous numbers.
+- Reviews `5238007388` and `5238650175`: correct outside-diff observations, fixed. Unknown stored statuses remain visible as unrepresentable rows and block structured saves and approval; recognised aliases remain supported. Edit and Save require an artifact baseline hash. Runtime diagnostic reads retain their separately documented fallback.
+- `5716846598`: informational review acknowledgement, no additional defect.
+- `5717458997`: fresh Sonar quality gate passed with no open findings.
+- `5716828825`: Codacy reports 13 findings; detail retrieval remains under investigation. A summary count is not evidence that the findings are fixed.
+- Refreshed `5706629493`: the non-gating docstring percentage is not a request for boilerplate; the concrete outside-diff defects are covered above. Refreshed `5706648553` marks the candidate schema issue resolved; `5706663126` includes the alias defect now fixed. Updated existing inline comments mark their earlier findings resolved.
+
+The refresh regressions and affected parser, route, document and UI suites passed: 460 tests across six files. The complete suite and cross-PR checks are run separately after integration.
+
 Root's integration review also removed the list fields' competing
 `aria-labelledby` attributes: those overrode the numbered `aria-label` names.
 The editor test now checks the computed accessible names of two list items.

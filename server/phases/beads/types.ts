@@ -31,6 +31,13 @@ export function resolveBeadStatusAlias(value: string): BeadStatus | undefined {
     : undefined
 }
 
+/** Recognised stored/input statuses, without the runtime reader's pending fallback. */
+export function resolveBeadStatus(value: unknown): BeadStatus | undefined {
+  if (typeof value !== 'string') return undefined
+  const folded = value.trim().toLowerCase()
+  return isBeadStatus(folded) ? folded : resolveBeadStatusAlias(folded)
+}
+
 export interface BeadDependencies {
   blocked_by: string[]
   blocks: string[]

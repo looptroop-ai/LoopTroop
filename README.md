@@ -300,6 +300,8 @@ A bead acts as a small, isolated implementation unit, allowing the execution age
 
 Read more: [Beads](https://www.looptroop.ovh/docs/beads)
 
+Bead approval preserves unknown stored statuses for JSONL repair instead of silently changing them to `pending`. Known aliases still normalize to supported statuses. Editing waits for the loaded artifact's content hash, so every save can check that it is replacing the version you read. YAML repair keeps valid answers and literal block text unchanged.
+
 ### Execution & Ralph-style recovery
 
 The actual implementation is carried out by an AI coding agent (OpenCode) running in an isolated workspace. If the agent struggles, continuing the same conversation can make things worse. LoopTroop's retry mechanism (the "Ralph Loop") preserves a highly compact error trace from the failure, resets the worktree, discards the contaminated session, and begins a fresh run with clean context-plus a note from previous failures.

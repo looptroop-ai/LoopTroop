@@ -479,6 +479,23 @@ describe('beadsRouter flow validation', () => {
       expect(response.headers.get('X-Unrepresentable-Line-Count')).toBe('5')
     })
 
+    it('preserves unknown stored statuses and requires JSONL repair', async () => {
+      const { ticket, paths } = createBeadsRouteTicket()
+      patchTicket(ticket.id, { status: 'WAITING_BEADS_APPROVAL' })
+      const content = bead('B-1').replace('pending', 'todo') + '\n'
+      writeBeadsFile(paths.beadsPath, content)
+      const url = `/api/tickets/${encodeURIComponent(ticket.id)}/beads`
+      const response = await app.request(`${url}/raw`)
+      expect(await response.json()).toMatchObject({ items: [{ status: 'todo' }], unrepresentableLines: [1] })
+      const saved = await app.request(url, {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json', 'X-Content-Sha256': contentSha256(content), 'X-Edit-Surface': 'structured' },
+        body: JSON.stringify([JSON.parse(bead('B-1'))]),
+      })
+      expect(saved.status).toBe(422)
+      expect(readFileSync(paths.beadsPath, 'utf8')).toBe(content)
+    })
+
     it('accepts a row written in the spellings the reader canonicalises', async () => {
       const { ticket, paths } = createBeadsRouteTicket()
       // Judged on the fields the reader will find, not the names on the line:

@@ -431,7 +431,7 @@ function BeadsApprovalPane({
       }
     },
   })
-  const canStartEditing = draftRestored || isUiStateError
+  const canStartEditing = Boolean(currentContentSha256) && (draftRestored || isUiStateError)
 
   useApprovalFocusAnchor(ticket.id, BEADS_APPROVAL_FOCUS_EVENT)
 
@@ -472,6 +472,10 @@ function BeadsApprovalPane({
   }
 
   const handleSave = useCallback(async () => {
+    if (!draftBaseSha256) {
+      setSaveError('Reload the beads before editing so the saved version can be checked.')
+      return
+    }
     if (editTab === 'jsonl') {
       const error = validateJsonl(jsonlDraft)
       if (error) {
@@ -520,7 +524,7 @@ function BeadsApprovalPane({
           // The file this draft was built on. The route refuses the write if
           // the tracker changed in between, rather than overwriting whatever
           // landed — a repair of the damaged lines, most likely.
-          ...(draftBaseSha256 ? { 'X-Content-Sha256': draftBaseSha256 } : {}),
+          'X-Content-Sha256': draftBaseSha256,
           // Which editor produced it, for the edit receipt.
           'X-Edit-Surface': editTab,
           // Preserve the original JSONL positions so server validation can
@@ -760,7 +764,7 @@ function BeadsApprovalPane({
             autosave={approvalAutosave}
             onSave={handleSave}
             isSaving={isSaving}
-            saveDisabled={isSaving || !hasUnsavedChanges}
+            saveDisabled={isSaving || !hasUnsavedChanges || !draftBaseSha256}
           />
         ) : null}
 

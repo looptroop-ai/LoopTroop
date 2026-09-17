@@ -774,6 +774,22 @@ describe('Interview approval UI', () => {
     expect(await screen.findByText(/Draft autosave on/)).toBeInTheDocument()
   })
 
+  it('keeps editing disabled until the artifact hash loads even when optional UI state fails', async () => {
+    mockUseTicketUIState.mockReturnValue({ isSuccess: false, isError: true, data: undefined })
+    let finishRead!: (response: Response) => void
+    const pending = new Promise<Response>((resolve) => { finishRead = resolve })
+    vi.spyOn(globalThis, 'fetch').mockImplementation((input) => {
+      const url = String(input)
+      if (url.endsWith('/beads/raw')) return pending
+      if (url.endsWith('/artifacts') || url.endsWith('/attempts')) return createJsonResponse([])
+      throw new Error(`Unexpected fetch: ${url}`)
+    })
+    renderApprovalView(makeTicket({ status: 'WAITING_BEADS_APPROVAL' }), 'beads')
+    expect(screen.getByRole('button', { name: /^Edit$/ })).toBeDisabled()
+    finishRead(await createBeadsRawResponse([{ id: 'one', title: 'Loaded bead', status: 'pending' }]))
+    await waitFor(() => expect(screen.getByRole('button', { name: /^Edit$/ })).not.toBeDisabled())
+  })
+
   it('can approve the loaded beads when the optional UI-state request fails', async () => {
     mockUseTicketUIState.mockReturnValue({
       isSuccess: false,

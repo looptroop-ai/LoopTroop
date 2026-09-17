@@ -53,7 +53,7 @@ describe('BeadsApprovalEditor accessibility', () => {
     expect(screen.getByRole('group', { name: 'PRD References' })).toBeInTheDocument()
     expect(screen.getByRole('group', { name: 'Blocked By' })).toBeInTheDocument()
 
-    const argument = screen.getByRole('textbox', { name: 'Planned test command for bead 1 1 argument 1' })
+    const argument = screen.getByRole('textbox', { name: 'Planned test command for bead 1, item 1 argument 1' })
     fireEvent.change(argument, { target: { value: '[' } })
     expect(argument).toHaveValue('[')
     fireEvent.change(argument, { target: { value: 'two words\nwith a newline' } })

@@ -97,6 +97,15 @@ describe('contained bead approval document', () => {
     expect(writeTicketFile).not.toHaveBeenCalled()
   })
 
+  it('rejects an unknown stored status without rewriting the tracker', () => {
+    const { beadsPath } = fixture()
+    const content = JSON.stringify({ id: 'one', title: 'One', status: 'todo', testCommands: [], testCommandReason: 'Manual check.' }) + '\n'
+    writeFileSync(beadsPath, content)
+    expect(() => approveBeadsDocument('1:DEMO-1', contentSha256(content))).toThrow(/unrecognised status "todo"/)
+    expect(readFileSync(beadsPath, 'utf8')).toBe(content)
+    expect(writeTicketFile).not.toHaveBeenCalled()
+  })
+
   it('rejects a circular dependency graph before writing', () => {
     const { beadsPath } = fixture()
     const content = [

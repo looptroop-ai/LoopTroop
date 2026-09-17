@@ -57,6 +57,13 @@ describe('repairYamlSequenceItemPrimaryKeys', () => {
     },
   } as const
 
+  it.each(['|', '>', '|-', '>+2 # literal'])('preserves sequence block scalar %s under a configured parent', (header) => {
+    const input = `beads:\n  - ${header}\n    - task-one\n      title: literal text\n  - task-two\n    title: repair this`
+    const result = repairYamlSequenceItemPrimaryKeys(input, options)
+    expect(result.yaml).toBe(input.replace('  - task-two', '  - id: task-two'))
+    expect(result.repairs).toHaveLength(1)
+  })
+
   it('repairs structured bead list items that emit a bare id before object fields', () => {
     const input = [
       'beads:',

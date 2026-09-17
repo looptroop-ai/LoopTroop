@@ -13,22 +13,20 @@ import {
   describeBeadShapeProblem,
   deriveBeadBlocks,
   normalizeBeadCollections,
-  reconcileStoredBeadStatus,
   validateBeadDependencyGraph,
 } from '../phases/beads/beadsFile'
 import { contentSha256 } from '../lib/contentHash'
 import { parseJsonlContent } from '../io/jsonl'
 import { isRecord } from '@shared/typeGuards'
 import { commandSpecSchema } from '@shared/commandSpec'
-import { isBeadStatus, resolveBeadStatusAlias } from '../phases/beads/types'
+import { resolveBeadStatus } from '../phases/beads/types'
 import { writeUserEditReceipt } from '../workflow/artifactEditReceipts'
 
 // Minimum schema for fields required by the scheduler and execution engine.
 // Other fields pass through without strict validation for forward-compatibility.
 const beadStatusSchema = z.string().transform((value, ctx) => {
   const folded = value.trim().toLowerCase()
-  if (isBeadStatus(folded)) return folded
-  const mapped = resolveBeadStatusAlias(folded)
+  const mapped = resolveBeadStatus(value)
   if (mapped) return mapped
   if (!folded) {
     ctx.addIssue({ code: z.ZodIssueCode.custom, message: 'status must be a non-empty string' })
@@ -120,11 +118,11 @@ const MALFORMED_LINE_HEADER_LIMIT = 50
  * fields the reader will actually find.
  */
 function findUnrepresentableLines(items: unknown[], itemLines: number[]): number[] {
-  return items.flatMap((item, index) => (
-    describeBeadShapeProblem(isRecord(item) ? normalizeBeadCollections(canonicalizeBeadAliases(item)) : item) === null
-      ? []
-      : [itemLines[index] ?? index + 1]
-  ))
+  return items.flatMap((item, index) => {
+    const canonical = isRecord(item) ? normalizeBeadCollections(canonicalizeBeadAliases(item)) : item
+    const unknownStatus = isRecord(canonical) && canonical.status !== undefined && !resolveBeadStatus(canonical.status)
+    return describeBeadShapeProblem(canonical) === null && !unknownStatus ? [] : [itemLines[index] ?? index + 1]
+  })
 }
 
 /** Canonical fields for the parsed projection; the raw endpoint keeps bytes separately. */
@@ -133,9 +131,7 @@ function canonicalizeParsedItems(items: unknown[]): unknown[] {
     if (!isRecord(item)) return item
     const canonical = normalizeBeadCollections(canonicalizeBeadAliases(item))
     if (typeof canonical.status !== 'string' || typeof canonical.id !== 'string' || !canonical.id.trim()) return canonical
-    const reconciled = reconcileStoredBeadStatus(canonical.status, canonical.id)
-    if (reconciled.warning) console.warn(`[beads] ${reconciled.warning}`)
-    return { ...canonical, status: reconciled.status }
+    return { ...canonical, status: resolveBeadStatus(canonical.status) ?? canonical.status }
   })
 }
 

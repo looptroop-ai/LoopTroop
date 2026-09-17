@@ -202,6 +202,13 @@ describe.concurrent('parseYamlOrJsonCandidate', () => {
     expect(parsed.other.free_text).toBe('first second')
   })
 
+  it.each([false, true])('preserves distinct canonical and alias answers (alias first: %s)', (aliasFirst) => {
+    const entries = ['free_text: canonical answer', 'freeText: alias answer']
+    if (aliasFirst) entries.reverse()
+    const parsed = parseYamlOrJsonCandidate([...entries, 'other:', '  free_text: false'].join('\n'))
+    expect(parsed).toEqual({ free_text: 'canonical answer', freeText: 'alias answer', other: { free_text: 'false' } })
+  })
+
   it('does not strip text that only resembles an XML tag', () => {
     const repairWarnings: string[] = []
     expect(() => parseYamlOrJsonCandidate([

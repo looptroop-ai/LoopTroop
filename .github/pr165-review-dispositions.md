@@ -65,3 +65,10 @@ Focused verification on this branch:
 - `npx vitest run src/components/workspace/__tests__/BeadsApprovalEditor.test.tsx src/components/workspace/__tests__/ApprovalView.test.tsx server/phases/beads/__tests__/beadsFile.test.ts server/structuredOutput/__tests__/yamlUtils.test.ts` — 4 files, 121 tests passed.
 - `npm run typecheck` — passed.
 - Earlier parser/beads/route focused packet — 436 tests passed; root owns the aggregate suite, lint, build, and integration checks.
+
+Root verification after follow-up fixes: all 422 test files passed (6,082 tests,
+10 skipped), full lint and build passed, and the full application/test
+typecheck passed. The initial aggregate failure was a stale reader expectation
+for safely defaulted collections; its corrected regression still rejects
+malformed commands and evidence. Website updates are on main through
+`3968e13`, with 87 tests, the site build and published-reference checks passing.

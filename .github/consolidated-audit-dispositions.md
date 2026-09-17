@@ -5,6 +5,35 @@ the named packet evidence passed its bounded review; final integration and
 acceptance remain with the root worker. A row never implies that an unreviewed
 or unimplemented finding is complete.
 
+## Current delivery checkpoint
+
+The current root delivery checkpoint supersedes earlier provisional delivery
+counts. All seven delivery PRs below completed their bounded local gates and
+fresh Astra review, remain open, and are unmerged; no CI result was awaited or
+accepted for this checkpoint. The root source-acceptance checkpoint is
+**154/154**. The older packet rows retain their original `PASS, final pending`
+labels as historical bounded dispositions; this current aggregate does not
+claim that every partial branch contains all 154 findings.
+
+| PR | Immutable head | Base | Delivery relationship |
+| --- | --- | --- | --- |
+| [#163](https://github.com/looptroop-ai/LoopTroop/pull/163) | `476c33ee74575b3f932c01d90f0dd3ccafa329f0` | `main` | Independent main-base concern |
+| [#164](https://github.com/looptroop-ai/LoopTroop/pull/164) | `5295ccdc7cb4622d52fb95e0579494f07c09d68f` | `main` | Git/filesystem and related application coverage |
+| [#165](https://github.com/looptroop-ai/LoopTroop/pull/165) | `22ffe8b0db253a9a3188c045c4e675fbe9383b49` | `main` | Independent main-base concern |
+| [#166](https://github.com/looptroop-ai/LoopTroop/pull/166) | `72688adc6e49be9a0902c847ee66bba8a044a244` | `#164` | Security prerequisite on PR164 |
+| [#167](https://github.com/looptroop-ai/LoopTroop/pull/167) | `431663e0530769a34fc5e064a925394a7dd90336` | `#164` | Client prerequisite on PR164 |
+| [#168](https://github.com/looptroop-ai/LoopTroop/pull/168) | `54019cb88071013e9c09d274d682bb0e2307f3ce` | `#166` | Security follow-on |
+| [#169](https://github.com/looptroop-ai/LoopTroop/pull/169) | `0b8c358c5f1c2bba4078eb4166596a02fcf84959` | `#167` | Client follow-on |
+
+The final combined verification evidence records **6,458 passed** and **13
+skipped** tests across **440 files**, plus the verified native Linux SEA build
+and Linux `amd64` container-build checks. The final published website
+checkpoint is main commit `2226ab575a2e37d0cb0f63651d2a070f0ee33c6d`; its
+immutable CLI source ref remains `f784f055b45854016c245a2d902d6799b7e8265c`.
+All 358 changed paths are covered by the part manifests, which is a
+path inventory and not independent proof of behavior. These results remain a
+delivery checkpoint for root review, not final repository or PR acceptance.
+
 ## Reviewed release packet
 
 | Finding | Status | Evidence and permanent coverage | Limits |
@@ -435,8 +464,9 @@ file was edited.
 The combined accepted count was **141/154 (~92%)** at the forms boundary; the
 cache packet raised it to **145/154 (~94%)** before the security packets. The
 accepted A, B, and C security packets now bring the root source-finding
-checkpoint to **154/154**. The four finished delivery PRs are 163, 164, 165,
-and 166; no future PR number is inferred.
+checkpoint to **154/154**. At that earlier delivery checkpoint, the four
+finished delivery PRs were 163, 164, 165, and 166; the current seven-PR
+delivery checkpoint above supersedes that provisional count.
 
 ## Accepted client ticket-cache documentation checkpoint
 
@@ -470,9 +500,10 @@ This prose checkpoint corresponds to the accepted security source trees
 `6751ecc73c27cc7bc284cca594a15a6cce6e48af` (B), and
 `77c385a6f1604861e25d5cbf5620faefb66c09f3` (C), reviewed against the current
 application and website checkpoints. The security source-finding count is
-**154/154**. This is a bounded documentation checkpoint, not a claim that all
-delivery PRs are complete: four remain open, five remain active, and parts 6
-and 7 remain pending in the integration plan.
+**154/154**. This is a bounded documentation checkpoint. Its earlier timing
+language that four PRs remained open, five were active, and parts 6 and 7 were
+pending is historical and superseded by the current seven-PR delivery
+checkpoint above; it does not claim final acceptance.
 
 | Finding | Status | Evidence and permanent coverage | Limits |
 | --- | --- | --- | --- |
@@ -480,7 +511,7 @@ and 7 remain pending in the integration plan.
 | S06 | PASS, final pending | Project, Git and hook commands, and managed or development OpenCode launches remove only the two LoopTroop daemon credential names after merged overrides, while retaining intentional provider and Git credentials and the trusted CLI handoff. | Child-environment filtering is not a process sandbox; no E2E or full lifecycle run. |
 | S07/S08/S09 remaining/G26 | PASS, final pending | Static launch and filesystem checks cover the tested AST forms and exact filename-plus-operation boundaries. Existing contained, no-follow, managed-root and ticket-root helpers remain the runtime contract; the project browser is metadata-only. | The rules do not claim whole-program alias or dataflow analysis; no E2E or full lifecycle run. |
 | S10 | PASS, final pending | SSE admission reserves before asynchronous setup, preserves six per-ticket and 100 global slots, and cleans up reservations idempotently. | No E2E or full lifecycle run. |
-| S11 | PASS, final pending | Host and origin parsing rejects alternate IPv4 spellings while retaining valid canonical IPv6 and hostname behavior. | No native Windows/macOS run. |
+| S11 | PASS, final pending | Local-mode Host validation is limited to loopback authorities. Origin parsing rejects non-canonical hostname spellings such as alternate IPv4 forms and explicit port `0`; same-authority Origins must match the actual scheme, hostname, and effective port. Remote mode does not add a strict Host-name validator to requests without an Origin. | No native Windows/macOS run. |
 | S12(1) | PASS, final pending | Manual QA action IDs use the documented restricted character set and 160-character maximum. | The row covers action IDs only. |
 | S12(2) | PASS, final pending | The existing G14/S12 row covers contained project and ticket roots, opaque legal path characters, and Windows ADS rejection. | This row is the durable path subset; it does not absorb the other S12 rows. |
 | S12(3) | PASS, final pending | Authority parsing rejects explicit port `0`, including zero-padded forms, before remote request handling. | No E2E or full lifecycle run. |
@@ -528,11 +559,21 @@ independently; this docs checkpoint does not advance either one.
 
 ## Integration limits
 
+- The current seven-PR delivery checkpoint above is complete for its bounded
+  local gates and fresh Astra review; all seven PRs remain open and unmerged,
+  and no CI result was awaited or accepted.
+- The final combined validation evidence records the local application,
+  package, workflow, and documentation gates as passing: 6,458 tests passed,
+  13 were skipped across 440 files, and the verified native Linux SEA build plus
+  Linux `amd64` container-build checks passed. This does not turn the bounded
+  evidence into final repository or PR acceptance.
+- All 358 changed paths are covered by the part manifests. That is a
+  path inventory, not independent behavior proof for each path.
 - `release-scripts-evidence.md`: `/tmp/looptroop-release-scripts-evidence.md`
 - `release-workflow-evidence.md`: `/tmp/looptroop-release-workflow-evidence.md`
 - `parser-evidence.md`: `/tmp/looptroop-parser-evidence.md`
 - `installer-evidence.md`: `/tmp/looptroop-installer-evidence.md`
-- No E2E, full lifecycle, live publish, native Windows, physical-power-loss, or website source-pin change is claimed in this checkpoint. The existing website pin is independently reviewed at commit `83cdf633`; the release packet's local Linux amd64 Docker build is evidence only, with no multi-architecture, publication, or container lifecycle result claimed.
+- No E2E, full lifecycle, live publish, native Windows, physical-power-loss, or website source-pin change is claimed in this checkpoint. The final published website checkpoint is independently reviewed at main commit `2226ab575a2e37d0cb0f63651d2a070f0ee33c6d`; the release packet's local Linux amd64 Docker build is evidence only, with no multi-architecture, publication, or container lifecycle result claimed.
 - The accepted release packet now includes the R01 published-smoke launch diagnostic, count-free R30 wire-contract documentation, and the exact native SEA Node `26.9.0` source behavior. The app/package/container floor remains Node `24.18.1`; local release evidence covers Linux amd64 and Linux x64 only. No E2E, full lifecycle, live publish, native Windows, macOS or arm64 binary success, multi-architecture build, registry attestation/publication, or website source-pin update is claimed here.
-- The root worker must rerun any app version/catalog checks after final source integration. The current website immutable source ref and matching CI checkout already point at `f784f055b45854016c245a2d902d6799b7e8265c`; later source integration must update them together if required.
+- The root worker must rerun any app version/catalog checks after final source integration. The current website immutable source ref and matching CI checkout point at `f784f055b45854016c245a2d902d6799b7e8265c`; later source integration must update them together if required.
 - Future not-yet-implemented report packets need their own documentation pass; this ledger does not pre-document them.

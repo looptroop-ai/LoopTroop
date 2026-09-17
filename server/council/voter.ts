@@ -30,26 +30,7 @@ import { getErrorMessage } from '@shared/typeGuards'
 import type { WorkflowPhaseId } from '@shared/workflowMeta'
 import { SessionManager } from '../opencode/sessionManager'
 import { shouldPreserveSessionForContinuation } from '../opencode/sessionContinuation'
-
-const COUNCIL_STOP_ATTEMPTS = 2
-
-async function confirmVoterSessionStopped(
-  adapter: OpenCodeAdapter,
-  sessionManager: SessionManager | null,
-  sessionId: string,
-): Promise<boolean> {
-  for (let attempt = 0; attempt < COUNCIL_STOP_ATTEMPTS; attempt += 1) {
-    try {
-      const stopped = sessionManager
-        ? await sessionManager.abortAndAbandonSession(sessionId)
-        : await adapter.abortSession(sessionId)
-      if (stopped) return true
-    } catch (error) {
-      console.warn(`[council/voter] Failed to abort OpenCode session ${sessionId}:`, error)
-    }
-  }
-  return false
-}
+import { confirmCouncilSessionStopped } from './sessionStop'
 
 function unconfirmedVoterStopError(sessionId: string): Error {
   return new Error(`Could not confirm abort of OpenCode session ${sessionId}`)
@@ -273,6 +254,10 @@ export async function conductVoting(
     const executionSettled = new Promise<void>((resolve) => {
       resolveExecutionSettled = resolve
     })
+    let resolveSessionReady: () => void = () => {}
+    const sessionReady = new Promise<void>((resolve) => {
+      resolveSessionReady = resolve
+    })
 
     const markTimedOut = () => {
       if (closed) return
@@ -334,6 +319,7 @@ export async function conductVoting(
             : {}),
           onSessionCreated: (session) => {
             sessionId = session.id
+            resolveSessionReady()
             if (closed) {
               throw new Error(`OpenCode session ${session.id} was created after the council deadline`)
             }
@@ -469,9 +455,8 @@ export async function conductVoting(
       })
 
     const ensureSessionStopped = async (): Promise<boolean> => {
-      await executionSettled
       if (promptReturned) return true
-      const trackedSessionId = sessionId || (
+      const findTrackedSession = () => sessionId || (
         sessionOwnership
           ? sessionManager?.getOwnedActiveSession(sessionOwnership.ticketId, sessionOwnership.phase, {
               phaseAttempt: sessionOwnership.phaseAttempt ?? 1,
@@ -479,9 +464,14 @@ export async function conductVoting(
             })?.sessionId
           : undefined
       )
+      let trackedSessionId = findTrackedSession()
+      if (!trackedSessionId) {
+        await Promise.race([sessionReady, executionSettled])
+        trackedSessionId = findTrackedSession()
+      }
       if (!trackedSessionId) return true
       sessionId = trackedSessionId
-      return confirmVoterSessionStopped(adapter, sessionManager, trackedSessionId)
+      return confirmCouncilSessionStopped(adapter, sessionManager, trackedSessionId, 'voter')
     }
 
     // Cleared while suspended and re-armed on resume, so a question wait moves

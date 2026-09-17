@@ -10,6 +10,9 @@ import {
 } from '../../machines/persistence'
 import { abortTicketSessions } from '../../opencode/sessionManager'
 import { clearContextCache } from '../../opencode/contextBuilder'
+import { clearTicketSessionContinuations } from '../../opencode/sessionContinuation'
+import { clearTicketWorkBudget } from '../../workflow/workBudget'
+import { forgetTicketQuestionMemory } from '../../workflow/questionWindows'
 import { broadcaster } from '../../sse/broadcaster'
 import { appendLogEvent, createLogEvent, shouldSkipLogEmission } from '../../log/executionLog'
 import {
@@ -151,6 +154,12 @@ async function cancelAndConfirmTicketSessions(ticketId: string): Promise<void> {
   if (stopped === false) {
     throw new Error('Could not confirm that active OpenCode sessions stopped')
   }
+  // Local cancellation is intentionally reversible until the remote stop is
+  // confirmed. Once it is confirmed, the next planning run must not inherit
+  // the previous run's budget, question windows, or continuation attempts.
+  clearTicketWorkBudget(ticketId)
+  forgetTicketQuestionMemory(ticketId)
+  clearTicketSessionContinuations(ticketId)
 }
 
 export interface PhaseRestartSummary {
@@ -200,6 +209,7 @@ export async function preparePlanningRestart(
   ticketId: string,
   targetApprovalStatus: 'WAITING_INTERVIEW_APPROVAL' | 'WAITING_PRD_APPROVAL',
   planningClaimToken?: string,
+  assertBaseline?: () => void,
 ): Promise<PhaseRestartSummary> {
   if (planningClaimToken) assertPlanningEditClaim(ticketId, planningClaimToken)
   requireExistingTicketWorkspace(ticketId)
@@ -216,6 +226,10 @@ export async function preparePlanningRestart(
   emitRoutePhaseLog(ticketId, restartPhase, 'info', 'Archiving downstream planning attempts and aborting active downstream work.')
   await cancelAndConfirmTicketSessions(ticketId)
   if (planningClaimToken) assertPlanningEditClaim(ticketId, planningClaimToken)
+  // The document may have changed while the remote stop was in flight. Check
+  // the user-provided baseline again before any attempt archival or status
+  // projection changes make the restart durable.
+  assertBaseline?.()
   clearContextCache(ticketId)
   ensureActivePhaseAttempt(ticketId, targetApprovalStatus)
   const archivedAttempts = archiveActivePhaseAttempts(ticketId, phasesToArchive, restartReason)
@@ -255,12 +269,16 @@ export async function prepareExecutionSetupPlanRestart(ticketId: string): Promis
   }
 }
 
-export async function prepareExecutionSetupRuntimeRewind(ticketId: string): Promise<PhaseRestartSummary> {
+export async function prepareExecutionSetupRuntimeRewind(
+  ticketId: string,
+  assertBaseline?: () => void,
+): Promise<PhaseRestartSummary> {
   // Refuse an unsafe workspace before canceling work or archiving its attempts.
   requireExistingTicketWorkspace(ticketId)
   const restartReason = 'execution_setup_runtime_rewind'
   emitRoutePhaseLog(ticketId, 'WAITING_EXECUTION_SETUP_APPROVAL', 'info', 'Stopping workspace runtime setup and returning to setup-plan approval.')
   await cancelAndConfirmTicketSessions(ticketId)
+  assertBaseline?.()
   clearContextCache(ticketId)
   ensureActivePhaseAttempt(ticketId, 'GENERATING_EXECUTION_SETUP_PLAN')
   ensureActivePhaseAttempt(ticketId, 'WAITING_EXECUTION_SETUP_APPROVAL')

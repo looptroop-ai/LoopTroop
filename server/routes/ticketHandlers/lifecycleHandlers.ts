@@ -17,7 +17,7 @@ import { clearContextCache } from '../../opencode/contextBuilder'
 import { getOpenCodeAdapter } from '../../opencode/factory'
 import { normalizeStructuredRetryCount } from '../../lib/structuredRetryPolicy'
 import { isGitHookPolicy } from '../../git/hookPolicy'
-import { cancelTicket } from '../../workflow/runner'
+import { cancelTicket, markTicketCancellationPending } from '../../workflow/runner'
 import { TicketInitializationError, initializeTicket } from '../../ticket/initialize'
 import { withCommandLoggingAsync } from '../../log/commandLogger'
 import { validateModelSelection } from '../../opencode/modelValidation'
@@ -430,6 +430,7 @@ async function handleCancelTicketLocked(c: Context, options: z.infer<typeof canc
       }
     } else {
       ensureActorForTicket(ticketId)
+      markTicketCancellationPending(ticketId)
       cancelTicket(ticketId)
       // Before the sessions go, so the receipts say the ticket was cancelled
       // rather than that a session vanished. Tearing the sessions down first

@@ -19,7 +19,7 @@ Unreleased changes appear first and represent commits that have not yet been inc
 - Local IPv6 addresses work consistently across backend checks, OpenCode startup, diagnostics and dev LAN reporting.
 - Installers protect slow-running installs and refuse insecure download redirects; release tooling limits build inputs, credentials and install scripts.
 - Ticket files, cleanup and folder opening stay inside their allowed directories; unavailable workspaces no longer break the board, and reconnecting live views recover missing history.
-- Workflow recovery now keeps uncertain remote stops retryable, rejects invalid or stale interview batches, and bounds automatic bead-response continuation within each bead iteration (`0` remains unlimited for that path).
+- Workflow recovery now keeps uncertain remote stops retryable, fences planning and setup saves with content hashes, and bounds automatic bead-response continuation within each bead iteration (`0` remains unlimited for that path).
 - The `--binary` installer establishes what the running daemon is doing before it replaces the executable, and refuses when it cannot; it leaves the previous version's files alone when an upgrade rolls back, gives every download a timeout and a size limit, and can no longer be run twice in one directory by accident.
 - Every user action that skips something now takes an optional reason: an interview question, all remaining questions at once, an answer marked skipped at approval, an approval with known coverage gaps, a Manual QA round, finishing without merging, and cancelling a ticket.
 - The model that fills in skipped interview answers can now read why they were skipped, instead of guessing blind. No other model sees those reasons.
@@ -259,6 +259,8 @@ Unreleased changes appear first and represent commits that have not yet been inc
 - Three aliases re-exported for a question-diff type that no longer exists, the three helpers behind them, an execution-setup runtime-path list with no reader, and an execution-setup barrel re-exporting three artifact names every caller already imports from their own module.
 
 ### Fixed
+- Council and planning recovery no longer waits on a settling promise before stopping remote work, treats message-only 404 text as unconfirmed, or archives a document before rechecking its baseline. Failed cancellation cleanup retries while keeping coding ownership closed; interview retries recover interrupted batches and abandoned sessions; Manual QA and interview edits keep their click or batch snapshot; and a checkpoint failure leaves its bead pending so Retry can safely try again.
+- Execution setup-plan saves now require the loaded content hash, serialize concurrent edits, and recheck the baseline after a runtime stop and before rewinding attempts. Close receipts, question listing, PID-reuse claims, and coverage writes retain their durable ownership fences instead of silently rebasing state.
 - Linked dependency directories are ignored alongside ordinary `node_modules` folders, so local worktree checks do not try to read them as source files.
 - A failed workspace-setup fallback prompt now keeps both attempts in its diagnostic report after the remote stop is confirmed, allowing normal attempt evaluation and retry handling.
 - Failed workspace runtime setup now exposes the existing setup-plan editor and extra-note retry, while setup-approval failures keep only their supported recovery controls.

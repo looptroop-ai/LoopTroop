@@ -953,13 +953,14 @@ async function submitBatch(
 
 async function editInterviewAnswer(
   ticketId: string,
+  batchNumber: number,
   questionId: string,
   answer: string,
 ): Promise<{ success: boolean; questions: unknown[] }> {
   const res = await fetch(apiTicketPath(ticketId, 'edit-answer'), {
     method: 'PATCH',
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ questionId, answer }),
+    body: JSON.stringify({ batchNumber, questionId, answer }),
   })
   await throwIfNotOk(res, 'Failed to edit answer')
   return res.json()
@@ -1010,8 +1011,8 @@ export function useSubmitBatch() {
 export function useEditInterviewAnswer() {
   const queryClient = useQueryClient()
   return useMutation({
-    mutationFn: ({ ticketId, questionId, answer }: { ticketId: string; questionId: string; answer: string }) =>
-      editInterviewAnswer(ticketId, questionId, answer),
+    mutationFn: ({ ticketId, batchNumber, questionId, answer }: { ticketId: string; batchNumber: number; questionId: string; answer: string }) =>
+      editInterviewAnswer(ticketId, batchNumber, questionId, answer),
     onSuccess: (_, variables) => {
       queryClient.invalidateQueries({ queryKey: ['interview', variables.ticketId] })
       queryClient.invalidateQueries({ queryKey: ['ticket-skips', variables.ticketId] })

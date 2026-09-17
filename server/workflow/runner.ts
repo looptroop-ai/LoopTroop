@@ -25,6 +25,8 @@ import {
   phaseIntermediate,
   cancelTicket,
   cleanupTicketState,
+  markTicketCancellationPending,
+  isTicketCancellationPending,
   getOrCreateAbortSignal,
 
   // Helpers
@@ -92,6 +94,7 @@ import { OpenCodeUnavailableError, TicketWorkspaceNotInitializedError } from '..
 // Re-export public API for external callers
 export {
   cancelTicket,
+  markTicketCancellationPending,
   claimInterviewBatch,
   renewInterviewBatchClaim,
   handleInterviewQABatch,
@@ -206,7 +209,7 @@ function startCodingPhase(
   const state = resolveSnapshotState(snapshot)
   const key = `${ticketId}:CODING`
 
-  if (state !== 'CODING' || runningPhases.has(key)) return
+  if (state !== 'CODING' || runningPhases.has(key) || isTicketCancellationPending(ticketId)) return
 
   const signal = getOrCreateAbortSignal(ticketId)
   const context = snapshot.context
@@ -253,12 +256,22 @@ export function attachWorkflowRunner(
             : false
           if (!sessionsStopped || !windowsCleared) {
             console.warn(`[workflow] Could not confirm cancellation cleanup for ticket ${ticketId}; retaining remote-session state`)
+            setTimeout(() => {
+              if (resolveSnapshotState(actor.getSnapshot()) === 'CANCELED') {
+                processSnapshot(actor.getSnapshot())
+              }
+            }, 250)
             return
           }
           cleanupTicketState(ticketId)
         })()
           .catch((err: unknown) => {
             console.warn(`[workflow] Cancellation cleanup failed for ticket ${ticketId}; retaining remote-session state:`, err)
+            setTimeout(() => {
+              if (resolveSnapshotState(actor.getSnapshot()) === 'CANCELED') {
+                processSnapshot(actor.getSnapshot())
+              }
+            }, 250)
           })
           .finally(() => {
             cancellationCleanupInFlight.delete(ticketId)

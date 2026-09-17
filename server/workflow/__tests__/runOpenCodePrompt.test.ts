@@ -651,6 +651,48 @@ describe('runOpenCodePrompt', () => {
     expect(abortCalls[0]?.[0]).toMatchObject({ sessionID: 'ses-1', directory: '/tmp/project' })
   })
 
+  it('treats an exact remote 404 as an already-stopped session', async () => {
+    const abort = vi.fn(async () => ({
+      error: { name: 'NotFoundError', message: 'Session not found' },
+      response: { status: 404 },
+    }))
+    const get = vi.fn(async () => ({
+      error: { name: 'NotFoundError', message: 'Session not found' },
+      response: { status: 404 },
+    }))
+    const fakeClient = createFakeSdkClient({ abort, get })
+    const adapter = new OpenCodeSDKAdapter('http://localhost:4096', fakeClient as unknown as OpenCodeSDKClient)
+
+    await expect(adapter.abortSession('ses-gone')).resolves.toBe(true)
+    expect(get).toHaveBeenCalledOnce()
+    expect(abort).not.toHaveBeenCalled()
+  })
+
+  it('keeps an unconfirmed session lookup as a failed stop', async () => {
+    const abort = vi.fn(async () => ({ data: true }))
+    const get = vi.fn(async () => ({
+      error: { name: 'InternalServerError', message: 'OpenCode unavailable' },
+      response: { status: 500 },
+    }))
+    const fakeClient = createFakeSdkClient({ abort, get })
+    const adapter = new OpenCodeSDKAdapter('http://localhost:4096', fakeClient as unknown as OpenCodeSDKClient)
+
+    await expect(adapter.abortSession('ses-unknown')).resolves.toBe(false)
+    expect(abort).not.toHaveBeenCalled()
+  })
+
+  it('does not treat a message-only 404 lookup failure as a confirmed stop', async () => {
+    const abort = vi.fn(async () => ({ data: true }))
+    const get = vi.fn(async () => ({
+      error: { name: 'TransportError', message: 'request failed with status 404' },
+    }))
+    const fakeClient = createFakeSdkClient({ abort, get })
+    const adapter = new OpenCodeSDKAdapter('http://localhost:4096', fakeClient as unknown as OpenCodeSDKClient)
+
+    await expect(adapter.abortSession('ses-ambiguous')).resolves.toBe(false)
+    expect(abort).not.toHaveBeenCalled()
+  })
+
   it('rechecks a session after a new prompt follows a confirmed abort', async () => {
     const abortCalls: unknown[][] = []
     let promptCalls = 0

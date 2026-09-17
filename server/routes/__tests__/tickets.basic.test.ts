@@ -305,6 +305,8 @@ describe('ticketRouter basic ticket routes', () => {
       { Q01: 'Keep the route behavior unchanged.' },
       {},
       {},
+      undefined,
+      expect.any(String),
     )
     expect(ensureActorForTicket).toHaveBeenCalledWith(ticket.id)
     expect(sendTicketEvent).toHaveBeenCalledWith(ticket.id, {

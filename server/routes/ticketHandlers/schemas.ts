@@ -90,6 +90,8 @@ export const interviewSkipAllPayloadSchema = z.object({
 }).strict()
 
 export const editAnswerSchema = z.object({
+  /** The active batch shown when the edit was opened. */
+  batchNumber: z.number().int().positive(),
   questionId: z.string().min(1),
   answer: z.string(),
   /** Only meaningful when the edit clears the answer, which is a skip. */
@@ -185,6 +187,7 @@ export const structuredPrdSaveSchema = z.object({
 
 export const rawExecutionSetupPlanSaveSchema = z.object({
   content: z.string().max(RAW_ARTIFACT_CONTENT_MAX_BYTES),
+  expectedContentSha256: z.string().regex(/^[a-f0-9]{64}$/).optional(),
 })
 
 export const executionSetupPlanSchema = z.object({
@@ -265,6 +268,7 @@ export const executionSetupPlanSchema = z.object({
 
 export const structuredExecutionSetupPlanSaveSchema = z.object({
   plan: executionSetupPlanSchema,
+  expectedContentSha256: z.string().regex(/^[a-f0-9]{64}$/).optional(),
 }).strict()
 
 export const approvalRequestSchema = z.object({

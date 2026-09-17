@@ -159,6 +159,7 @@ export async function startInterviewSession(
   ticketId?: string,
   timeoutMs: number = COUNCIL_RESPONSE_TIMEOUT_MS,
   structuredRetryCount?: number,
+  resumeSnapshot?: InterviewSessionSnapshot,
 ): Promise<{ sessionId: string; firstBatch: BatchResponse }> {
   const contextParts = buildMinimalContext('interview_qa', ticketState)
   const prompt = buildConversationalPrompt(PROM4, contextParts)
@@ -176,6 +177,9 @@ export async function startInterviewSession(
     '',
     `Begin the interview now. Treat the compiled questions above as your working interview checklist and present the first batch of questions.`,
   ].join('\n')
+  const promptParts: PromptPart[] = resumeSnapshot
+    ? buildInterviewResumePrompt(ticketState, resumeSnapshot)
+    : [{ type: 'text', content: fullPrompt }]
 
   let sessionId = ''
   const sessionManager = ticketId ? new SessionManager(adapter) : null
@@ -185,7 +189,7 @@ export async function startInterviewSession(
     result = await runOpenCodePrompt({
       adapter,
       projectPath,
-      parts: [{ type: 'text', content: fullPrompt }] as PromptPart[],
+      parts: promptParts,
       signal,
       timeoutMs,
       timeoutKind: 'ai_response',
@@ -244,7 +248,7 @@ export async function startInterviewSession(
         const restarted = await runOpenCodePrompt({
           adapter,
           projectPath,
-          parts: [{ type: 'text', content: fullPrompt }] as PromptPart[],
+          parts: promptParts,
           signal,
           timeoutMs,
           timeoutKind: 'ai_response',

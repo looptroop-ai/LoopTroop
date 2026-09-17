@@ -13,7 +13,6 @@ import {
   approvePrdDocument,
   buildDraftPrdDocumentFromRawContent,
   buildDraftPrdDocumentFromStructuredContent,
-  invalidateDownstreamBeadsArtifacts,
   readPrdDocument,
   saveApprovedPrdDocument,
   savePrdDocument,
@@ -174,16 +173,19 @@ export async function handlePutPrd(c: Context) {
         let restart: Awaited<ReturnType<typeof preparePlanningRestart>> | null = null
         let result: ReturnType<typeof savePrdDocument>
         if (ticket.status !== 'WAITING_PRD_APPROVAL') {
-          // The durable content CAS must complete before restart preparation. A
-          // stale concurrent writer must not cancel work, archive attempts, or
-          // invalidate planning artifacts before it is rejected.
-          result = saveApprovedPrdDocument(ticketId, document, rawParsed.data.expectedContentSha256!, { skipInvalidation: true })
-          restart = await preparePlanningRestart(ticketId, 'WAITING_PRD_APPROVAL', planningLock)
+          restart = await preparePlanningRestart(ticketId, 'WAITING_PRD_APPROVAL', planningLock, () => {
+            const current = readPrdDocument(ticketId)
+            assertExpectedContentSha256({
+              artifactType: 'prd',
+              currentContent: current.raw,
+              expectedContentSha256: rawParsed.data.expectedContentSha256!,
+            })
+          })
           assertPlanningEditClaim(ticketId, planningLock)
-          result = {
-            ...result,
-            invalidation: invalidateDownstreamBeadsArtifacts(ticketId),
-          }
+          // The baseline hash was checked before the stop. The durable content
+          // CAS happens only after the restart has confirmed that remote work
+          // stopped, so a failed stop never mutates the reviewed document.
+          result = saveApprovedPrdDocument(ticketId, document, rawParsed.data.expectedContentSha256!)
           emitRoutePhaseLog(ticketId, 'WAITING_PRD_APPROVAL', 'info', 'PRD edit saved and approved. Restarting Beads planning from the edited PRD.')
           sendTicketEvent(ticketId, { type: 'APPROVE' })
           writeUserEditReceipt({
@@ -282,15 +284,16 @@ export async function handlePutPrd(c: Context) {
         let restart: Awaited<ReturnType<typeof preparePlanningRestart>> | null = null
         let result: ReturnType<typeof savePrdDocument>
         if (ticket.status !== 'WAITING_PRD_APPROVAL') {
-        // Keep the durable CAS before any awaited restart work for the same
-        // reason as the raw editor path above.
-        result = saveApprovedPrdDocument(ticketId, document, structuredParsed.data.expectedContentSha256!, { skipInvalidation: true })
-        restart = await preparePlanningRestart(ticketId, 'WAITING_PRD_APPROVAL', planningLock)
+        restart = await preparePlanningRestart(ticketId, 'WAITING_PRD_APPROVAL', planningLock, () => {
+          const current = readPrdDocument(ticketId)
+          assertExpectedContentSha256({
+            artifactType: 'prd',
+            currentContent: current.raw,
+            expectedContentSha256: structuredParsed.data.expectedContentSha256!,
+          })
+        })
         assertPlanningEditClaim(ticketId, planningLock)
-        result = {
-          ...result,
-          invalidation: invalidateDownstreamBeadsArtifacts(ticketId),
-        }
+        result = saveApprovedPrdDocument(ticketId, document, structuredParsed.data.expectedContentSha256!)
         emitRoutePhaseLog(ticketId, 'WAITING_PRD_APPROVAL', 'info', 'PRD edit saved and approved. Restarting Beads planning from the edited PRD.')
         sendTicketEvent(ticketId, { type: 'APPROVE' })
         writeUserEditReceipt({

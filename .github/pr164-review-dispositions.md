@@ -92,6 +92,10 @@ Disposition labels:
 
 ## Verification
 
+### Additional refreshed envelopes
+
+Reviews `5238175126`, `5238259722`, and `5238307294` have empty bodies; associated inline/analyzer findings are assessed individually. Greptile `4038819640` correctly observes that repository-local `core.sshCommand` can execute an arbitrary configured wrapper. The existing documented project model is trusted, non-sandboxed execution, and G24 requires preserving genuine SSH configuration. Whether attaching a project should instead ignore repository-local SSH commands is an owner trust-policy choice, not an automatic reversal of G24. The question is held pending the owner's choice; no sandbox guarantee or completed fix is claimed.
+
 Root's follow-up bounds quarantine comparison memory to two 64 KiB buffers,
 uses the shared no-follow regular-file opener, and checks file size and
 modification time after reading. This branch also checks descriptor device and

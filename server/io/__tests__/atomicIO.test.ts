@@ -1,10 +1,11 @@
-import { describe, it, expect, beforeEach, afterEach } from 'vitest'
+import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest'
 import { createHash } from 'node:crypto'
 import { mkdirSync, readFileSync, writeFileSync, existsSync, readdirSync, renameSync, statSync, lstatSync, truncateSync, symlinkSync, unlinkSync, writeSync } from 'fs'
 import { tmpdir } from 'os'
 import { basename, dirname, join } from 'path'
 import { atomicProofPath, makeAtomicTmpPath, parseAtomicTmpPath, safeAtomicWrite, safeAtomicWriteWithin } from '../atomicWrite'
 import { ContainedPathError } from '../../lib/containedPath'
+import * as containedPaths from '../../lib/containedPath'
 import { safeAtomicAppend, safeAtomicAppendWithin } from '../atomicAppend'
 import { readFileNoFollowSync } from '../readFile'
 import { recoverOrphanTmpFiles, fixTrailingLineCorruption } from '../recovery'
@@ -320,6 +321,23 @@ describe('safeAtomicWriteWithin', () => {
   })
 
   describe.skipIf(process.platform === 'win32')('file symlinks', () => {
+    it('rejects a final link introduced when canonical destination resolution begins', () => {
+      const target = join(TEST_DIR, 'target.txt')
+      const alias = join(TEST_DIR, 'alias.txt')
+      writeFileSync(target, 'keep')
+      const resolvePath = containedPaths.resolveContainedPath
+      const spy = vi.spyOn(containedPaths, 'resolveContainedPath').mockImplementationOnce((...args) => {
+        symlinkSync(target, alias)
+        return resolvePath(...args)
+      })
+      try {
+        expect(() => safeAtomicWriteWithin(TEST_DIR, 'alias.txt', 'replacement')).toThrow(ContainedPathError)
+        expect(readFileSync(target, 'utf8')).toBe('keep')
+      } finally {
+        spy.mockRestore()
+      }
+    })
+
     it('rejects a contained final file link instead of replacing its destination', () => {
       const target = join(TEST_DIR, 'target.txt')
       const alias = join(TEST_DIR, 'alias.txt')

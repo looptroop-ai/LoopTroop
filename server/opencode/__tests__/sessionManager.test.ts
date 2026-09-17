@@ -29,6 +29,7 @@ import { createTicket, patchTicket } from '../../storage/tickets'
 import { readTicketFile, writeTicketFile } from '../../storage/ticketQueries'
 import * as ticketQueries from '../../storage/ticketQueries'
 import { createFixtureRepoManager } from '../../test/fixtureRepo'
+import type { WorkflowPhaseId } from '@shared/workflowMeta'
 
 class TestOpenCodeAdapter implements OpenCodeAdapter {
   public sessions: Session[] = []
@@ -129,6 +130,39 @@ const repoManager = createFixtureRepoManager({
     'README.md': '# Session Manager Test\n',
   },
 })
+
+async function createOwnedSessionFixture(input: {
+  phase: WorkflowPhaseId
+  memberId?: string
+  title: string
+  description: string
+}) {
+  const repoDir = repoManager.createRepo()
+  const project = attachProject({
+    folderPath: repoDir,
+    name: 'LoopTroop',
+    shortname: 'LOOP',
+  })
+  const ticket = createTicket({
+    projectId: project.id,
+    title: input.title,
+    description: input.description,
+  })
+  patchTicket(ticket.id, { status: input.phase })
+  const adapter = new TestOpenCodeAdapter()
+  const sessionManager = new SessionManager(adapter)
+  const session = await sessionManager.createSessionForPhase(
+    ticket.id,
+    input.phase,
+    1,
+    input.memberId,
+    undefined,
+    undefined,
+    undefined,
+    repoDir,
+  )
+  return { repoDir, ticket, adapter, sessionManager, session }
+}
 
 describe('SessionManager', () => {
   beforeEach(() => {
@@ -621,31 +655,12 @@ describe('SessionManager', () => {
   })
 
   it('reconnects a non-coding active session by exact id even when session lists omit it', async () => {
-    const repoDir = repoManager.createRepo()
-    const project = attachProject({
-      folderPath: repoDir,
-      name: 'LoopTroop',
-      shortname: 'LOOP',
-    })
-    const ticket = createTicket({
-      projectId: project.id,
+    const { ticket, adapter, sessionManager, session: created } = await createOwnedSessionFixture({
+      phase: 'VERIFYING_PRD_COVERAGE',
+      memberId: 'model-a',
       title: 'Reconnect exact session',
       description: 'Ensure list omissions do not lose preserved phase sessions.',
     })
-    patchTicket(ticket.id, { status: 'VERIFYING_PRD_COVERAGE' })
-
-    const adapter = new TestOpenCodeAdapter()
-    const sessionManager = new SessionManager(adapter)
-    const created = await sessionManager.createSessionForPhase(
-      ticket.id,
-      'VERIFYING_PRD_COVERAGE',
-      1,
-      'model-a',
-      undefined,
-      undefined,
-      undefined,
-      repoDir,
-    )
     adapter.sessions = []
     adapter.exactSessionLookup = (sessionId) => sessionId === created.id ? created : null
 
@@ -659,31 +674,12 @@ describe('SessionManager', () => {
   })
 
   it('abandons an active session only when exact lookup confirms it is gone', async () => {
-    const repoDir = repoManager.createRepo()
-    const project = attachProject({
-      folderPath: repoDir,
-      name: 'LoopTroop',
-      shortname: 'LOOP',
-    })
-    const ticket = createTicket({
-      projectId: project.id,
+    const { ticket, adapter, sessionManager, session: created } = await createOwnedSessionFixture({
+      phase: 'VERIFYING_PRD_COVERAGE',
+      memberId: 'model-a',
       title: 'Reconnect missing exact session',
       description: 'Ensure missing exact lookup abandons stale active rows.',
     })
-    patchTicket(ticket.id, { status: 'VERIFYING_PRD_COVERAGE' })
-
-    const adapter = new TestOpenCodeAdapter()
-    const sessionManager = new SessionManager(adapter)
-    const created = await sessionManager.createSessionForPhase(
-      ticket.id,
-      'VERIFYING_PRD_COVERAGE',
-      1,
-      'model-a',
-      undefined,
-      undefined,
-      undefined,
-      repoDir,
-    )
     adapter.exactSessionLookup = () => null
 
     await expect(sessionManager.validateAndReconnect(ticket.id, 'VERIFYING_PRD_COVERAGE', {
@@ -701,31 +697,11 @@ describe('SessionManager', () => {
   })
 
   it('does not replace a stale session until its remote stop is confirmed', async () => {
-    const repoDir = repoManager.createRepo()
-    const project = attachProject({
-      folderPath: repoDir,
-      name: 'LoopTroop',
-      shortname: 'LOOP',
-    })
-    const ticket = createTicket({
-      projectId: project.id,
+    const { ticket, adapter, sessionManager, session: created } = await createOwnedSessionFixture({
+      phase: 'CODING',
       title: 'Stop stale session before replacement',
       description: 'A status change must not let a stale session race a new one.',
     })
-    patchTicket(ticket.id, { status: 'CODING' })
-
-    const adapter = new TestOpenCodeAdapter()
-    const sessionManager = new SessionManager(adapter)
-    const created = await sessionManager.createSessionForPhase(
-      ticket.id,
-      'CODING',
-      1,
-      undefined,
-      undefined,
-      undefined,
-      undefined,
-      repoDir,
-    )
     patchTicket(ticket.id, { status: 'WAITING_INTERVIEW_APPROVAL' })
     adapter.abortResults = [false, true]
 
@@ -742,31 +718,11 @@ describe('SessionManager', () => {
   })
 
   it('refuses a replacement when the active session cannot be verified', async () => {
-    const repoDir = repoManager.createRepo()
-    const project = attachProject({
-      folderPath: repoDir,
-      name: 'LoopTroop',
-      shortname: 'LOOP',
-    })
-    const ticket = createTicket({
-      projectId: project.id,
+    const { ticket, adapter, sessionManager, session: created } = await createOwnedSessionFixture({
+      phase: 'CODING',
       title: 'Preserve unverified session',
       description: 'A lookup failure must not start replacement work.',
     })
-    patchTicket(ticket.id, { status: 'CODING' })
-
-    const adapter = new TestOpenCodeAdapter()
-    const sessionManager = new SessionManager(adapter)
-    const created = await sessionManager.createSessionForPhase(
-      ticket.id,
-      'CODING',
-      1,
-      undefined,
-      undefined,
-      undefined,
-      undefined,
-      repoDir,
-    )
     adapter.exactSessionLookup = () => {
       throw new Error('ECONNREFUSED')
     }
@@ -827,31 +783,11 @@ describe('SessionManager', () => {
     // The phase is a lookup key against a row this process may not have
     // written. Running it through a "narrow it or fall back" helper first
     // rewrites the key, finds nothing, and abandons a session that is alive.
-    const repoDir = repoManager.createRepo()
-    const project = attachProject({
-      folderPath: repoDir,
-      name: 'LoopTroop',
-      shortname: 'LOOP',
-    })
-    const ticket = createTicket({
-      projectId: project.id,
+    const { ticket, adapter, sessionManager, session: created } = await createOwnedSessionFixture({
+      phase: 'CODING',
       title: 'Reconnect a legacy session phase',
       description: 'A session row written under a status that has since been renamed.',
     })
-    patchTicket(ticket.id, { status: 'CODING' })
-
-    const adapter = new TestOpenCodeAdapter()
-    const sessionManager = new SessionManager(adapter)
-    const created = await sessionManager.createSessionForPhase(
-      ticket.id,
-      'CODING',
-      1,
-      undefined,
-      undefined,
-      undefined,
-      undefined,
-      repoDir,
-    )
 
     // Rewrite both the row and the ticket to a status this build no longer
     // declares, which is what an upgrade mid-run leaves behind. The session is

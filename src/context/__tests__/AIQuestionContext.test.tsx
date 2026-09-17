@@ -4,6 +4,7 @@ import { AIQuestionProvider } from '../AIQuestionContext'
 import { UIProvider } from '../UIContext'
 import { useAIQuestions } from '../useAIQuestions'
 import { makeTicket, TEST } from '@/test/factories'
+import { QUESTION_RECOVERY_INTERVAL_MS } from '@/lib/constants'
 
 class MockEventSource {
   onerror: (() => void) | null = null
@@ -369,6 +370,214 @@ describe('AIQuestionProvider', () => {
     // An update with no `requests` array is not a statement about the set.
     fireEvent.click(screen.getByText('timer-only'))
     await waitFor(() => expect(screen.getByText('requests:1')).toBeInTheDocument())
+  })
+
+  it('does not resurrect a resolved request from a stale snapshot', async () => {
+    const ticket = makeTicket({ status: 'CODING' })
+    let releaseStale!: (body: unknown) => void
+    let aggregateCalls = 0
+    vi.stubGlobal('EventSource', MockEventSource)
+    vi.stubGlobal('fetch', vi.fn(async (input: RequestInfo | URL) => {
+      const url = String(input)
+      if (url === '/api/opencode/questions') {
+        aggregateCalls += 1
+        if (aggregateCalls === 1) {
+          return new Response(JSON.stringify({ questions: [buildQuestion(ticket.id)], timers: {} }), { status: 200 })
+        }
+      }
+      if (url.endsWith('/opencode/questions')) {
+        return new Promise<Response>((resolve) => {
+          releaseStale = (body) => resolve(new Response(JSON.stringify(body), { status: 200 }))
+        })
+      }
+      return new Response(JSON.stringify({ questions: [], timer: null }), { status: 200 })
+    }))
+
+    function Recovery({ ticketId }: { ticketId: string }) {
+      const { getRequestCount, refreshTicket, ingestSseEvent } = useAIQuestions()
+      return (
+        <>
+          <div>requests:{getRequestCount(ticketId)}</div>
+          <button onClick={() => refreshTicket(ticketId)}>refresh</button>
+          <button onClick={() => ingestSseEvent({
+            type: 'opencode_question_resolved',
+            ticketId,
+            sessionId: 'session-1234567890',
+            requestId: 'question-1',
+          })}>resolve</button>
+          <button onClick={() => ingestSseEvent(buildQuestion(ticketId, { requestId: 'question-new' }))}>new</button>
+        </>
+      )
+    }
+
+    renderProvider([ticket], <Recovery ticketId={ticket.id} />)
+    await waitFor(() => expect(screen.getByText('requests:1')).toBeInTheDocument())
+
+    fireEvent.click(screen.getByText('refresh'))
+    await waitFor(() => expect(releaseStale).toBeDefined())
+
+    fireEvent.click(screen.getByText('resolve'))
+    await waitFor(() => expect(screen.getByText('requests:0')).toBeInTheDocument())
+
+    await act(async () => releaseStale({ questions: [buildQuestion(ticket.id)], timer: null }))
+    expect(screen.getByText('requests:0')).toBeInTheDocument()
+
+    // A later legitimate request still arrives normally; the tombstone belongs to one request id.
+    fireEvent.click(screen.getByText('new'))
+    await waitFor(() => expect(screen.getByText('requests:1')).toBeInTheDocument())
+  })
+
+  it('keeps a resolved request gone when a later snapshot still contains its old identity', async () => {
+    const ticket = makeTicket({ status: 'CODING' })
+    let releaseStale!: (body: unknown) => void
+    let aggregateCalls = 0
+    vi.stubGlobal('EventSource', MockEventSource)
+    vi.stubGlobal('fetch', vi.fn(async (input: RequestInfo | URL) => {
+      const url = String(input)
+      if (url === '/api/opencode/questions') {
+        aggregateCalls += 1
+        if (aggregateCalls === 1) {
+          return new Response(JSON.stringify({ questions: [buildQuestion(ticket.id)], timers: {} }), { status: 200 })
+        }
+      }
+      if (url.endsWith('/opencode/questions')) {
+        return new Promise<Response>((resolve) => {
+          releaseStale = (body) => resolve(new Response(JSON.stringify(body), { status: 200 }))
+        })
+      }
+      return new Response(JSON.stringify({ questions: [], timer: null }), { status: 200 })
+    }))
+
+    function Recovery({ ticketId }: { ticketId: string }) {
+      const { getRequestCount, refreshTicket, ingestSseEvent } = useAIQuestions()
+      return (
+        <>
+          <div>requests:{getRequestCount(ticketId)}</div>
+          <button onClick={() => ingestSseEvent({
+            type: 'opencode_question_resolved',
+            ticketId,
+            sessionId: 'session-1234567890',
+            requestId: 'question-1',
+          })}>resolve</button>
+          <button onClick={() => refreshTicket(ticketId)}>refresh</button>
+        </>
+      )
+    }
+
+    renderProvider([ticket], <Recovery ticketId={ticket.id} />)
+    await waitFor(() => expect(screen.getByText('requests:1')).toBeInTheDocument())
+
+    // Resolution happens before this GET starts. The server may still return
+    // its resolving identity when the adapter lookup falls back to the window.
+    fireEvent.click(screen.getByText('resolve'))
+    await waitFor(() => expect(screen.getByText('requests:0')).toBeInTheDocument())
+
+    fireEvent.click(screen.getByText('refresh'))
+    await waitFor(() => expect(releaseStale).toBeDefined())
+    await act(async () => releaseStale({ questions: [buildQuestion(ticket.id)], timer: null }))
+
+    expect(screen.getByText('requests:0')).toBeInTheDocument()
+  })
+
+  it('fences an in-flight response before retiring a finished ticket tombstone', async () => {
+    const ticket = makeTicket({ status: 'CODING' })
+    let releaseRefresh!: (body: unknown) => void
+    let releaseReactivatedPoll!: (body: unknown) => void
+    let aggregateCalls = 0
+    vi.stubGlobal('EventSource', MockEventSource)
+    vi.stubGlobal('fetch', vi.fn(async (input: RequestInfo | URL) => {
+      const url = String(input)
+      if (url === '/api/opencode/questions') {
+        aggregateCalls += 1
+        if (aggregateCalls === 1) {
+          return new Response(JSON.stringify({ questions: [buildQuestion(ticket.id)], timers: {} }), { status: 200 })
+        }
+        return new Promise<Response>((resolve) => {
+          releaseReactivatedPoll = (body) => resolve(new Response(JSON.stringify(body), { status: 200 }))
+        })
+      }
+      if (url.endsWith('/opencode/questions')) {
+        return new Promise<Response>((resolve) => {
+          releaseRefresh = (body) => resolve(new Response(JSON.stringify(body), { status: 200 }))
+        })
+      }
+      return new Response(JSON.stringify({ questions: [], timer: null }), { status: 200 })
+    }))
+
+    function Recovery({ ticketId }: { ticketId: string }) {
+      const { getRequestCount, refreshTicket, ingestSseEvent } = useAIQuestions()
+      return (
+        <>
+          <div>requests:{getRequestCount(ticketId)}</div>
+          <button onClick={() => ingestSseEvent({
+            type: 'opencode_question_resolved',
+            ticketId,
+            sessionId: 'session-1234567890',
+            requestId: 'question-1',
+          })}>resolve</button>
+          <button onClick={() => refreshTicket(ticketId)}>refresh</button>
+        </>
+      )
+    }
+
+    const { rerender } = renderProvider([ticket], <Recovery ticketId={ticket.id} />)
+    await waitFor(() => expect(screen.getByText('requests:1')).toBeInTheDocument())
+
+    fireEvent.click(screen.getByText('resolve'))
+    await waitFor(() => expect(screen.getByText('requests:0')).toBeInTheDocument())
+    fireEvent.click(screen.getByText('refresh'))
+    await waitFor(() => expect(releaseRefresh).toBeDefined())
+
+    // Remove and re-add the ticket before the old response lands. Clearing the
+    // tombstone is safe only if that response is fenced to the old lifetime.
+    rerender(
+      <UIProvider>
+        <AIQuestionProvider tickets={[]}><Recovery ticketId={ticket.id} /></AIQuestionProvider>
+      </UIProvider>,
+    )
+    await waitFor(() => expect(screen.getByText('requests:0')).toBeInTheDocument())
+    rerender(
+      <UIProvider>
+        <AIQuestionProvider tickets={[ticket]}><Recovery ticketId={ticket.id} /></AIQuestionProvider>
+      </UIProvider>,
+    )
+    await waitFor(() => expect(releaseReactivatedPoll).toBeDefined())
+
+    await act(async () => releaseRefresh({ questions: [buildQuestion(ticket.id)], timer: null }))
+    expect(screen.getByText('requests:0')).toBeInTheDocument()
+
+    await act(async () => releaseReactivatedPoll({ questions: [], timers: {} }))
+    expect(screen.getByText('requests:0')).toBeInTheDocument()
+  })
+
+  it('does not restart question recovery when ticket polling only replaces ticket objects', async () => {
+    vi.useFakeTimers()
+    try {
+      const ticket = makeTicket({ status: 'CODING' })
+      const fetchMock = vi.fn(async () => new Response(JSON.stringify({ questions: [], timers: {} }), { status: 200 }))
+      vi.stubGlobal('EventSource', MockEventSource)
+      vi.stubGlobal('fetch', fetchMock)
+
+      const { rerender } = renderProvider([ticket], <Counts ticketId={ticket.id} />)
+      await act(async () => {
+        await Promise.resolve()
+        await Promise.resolve()
+      })
+      expect(fetchMock).toHaveBeenCalledTimes(1)
+
+      rerender(
+        <UIProvider>
+          <AIQuestionProvider tickets={[{ ...ticket }]}> <Counts ticketId={ticket.id} /></AIQuestionProvider>
+        </UIProvider>,
+      )
+      await act(async () => { await vi.advanceTimersByTimeAsync(QUESTION_RECOVERY_INTERVAL_MS / 3) })
+      expect(fetchMock).toHaveBeenCalledTimes(1)
+
+      await act(async () => { await vi.advanceTimersByTimeAsync(QUESTION_RECOVERY_INTERVAL_MS * 2 / 3) })
+      expect(fetchMock).toHaveBeenCalledTimes(2)
+    } finally {
+      vi.useRealTimers()
+    }
   })
 
   it('lets go of a ticket that has finished', async () => {

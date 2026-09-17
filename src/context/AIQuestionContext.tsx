@@ -132,6 +132,41 @@ function pruneTicketRequests(
   })
 }
 
+type RequestTombstones = Map<string, Map<string, number>>
+
+function rememberRequestTombstone(
+  tombstones: RequestTombstones,
+  ticketId: string,
+  key: string,
+  generation: number,
+): void {
+  const ticketTombstones = tombstones.get(ticketId) ?? new Map<string, number>()
+  const previous = ticketTombstones.get(key)
+  if (previous === undefined || generation > previous) ticketTombstones.set(key, generation)
+  tombstones.set(ticketId, ticketTombstones)
+}
+
+function requestIsTombstoned(
+  tombstones: RequestTombstones,
+  ticketId: string,
+  key: string,
+): boolean {
+  return tombstones.get(ticketId)?.has(key) ?? false
+}
+
+function clearAbsentRequestTombstones(
+  tombstones: RequestTombstones,
+  ticketId: string,
+  live: Set<string>,
+): void {
+  const ticketTombstones = tombstones.get(ticketId)
+  if (!ticketTombstones) return
+  for (const key of ticketTombstones.keys()) {
+    if (!live.has(key)) ticketTombstones.delete(key)
+  }
+  if (ticketTombstones.size === 0) tombstones.delete(ticketId)
+}
+
 export function AIQuestionProvider({ tickets, children }: { tickets: Ticket[]; children: ReactNode }) {
   const { state: uiState } = useUI()
   const selectedTicketId = uiState.selectedTicketId
@@ -177,6 +212,8 @@ export function AIQuestionProvider({ tickets, children }: { tickets: Ticket[]; c
    */
   const snapshotTokenRef = useRef(0)
   const appliedSnapshotRef = useRef(new Map<string, number>())
+  /** Resolved request ids suppress stale snapshots until a successful snapshot omits them. */
+  const requestTombstonesRef = useRef<RequestTombstones>(new Map())
   /**
    * The last live event per ticket, kept apart from the last snapshot.
    *
@@ -192,6 +229,10 @@ export function AIQuestionProvider({ tickets, children }: { tickets: Ticket[]; c
   const timerFreshnessRef = useRef(new Map<string, { generation: number; revision: number }>())
 
   const ticketsById = useMemo(() => new Map(tickets.map((ticket) => [ticket.id, ticket])), [tickets])
+  // Ticket list polling replaces ticket objects even when membership is unchanged. The question
+  // recovery interval only needs the current metadata lookup, so keep it out of callback identity.
+  const ticketsByIdRef = useRef(ticketsById)
+  ticketsByIdRef.current = ticketsById
   const activeTickets = useMemo(() => tickets.filter((ticket) => !isTerminalWorkflowStatus(ticket.status)), [tickets])
   const activeTicketIds = useMemo(() => new Set(activeTickets.map((ticket) => ticket.id)), [activeTickets])
   const activeTicketKey = useMemo(() => activeTickets.map((ticket) => ticket.id).sort().join('|'), [activeTickets])
@@ -205,9 +246,7 @@ export function AIQuestionProvider({ tickets, children }: { tickets: Ticket[]; c
    * an effect declared before the poll's, so it is current when `recover` runs.
    */
   const activeTicketIdsRef = useRef(activeTicketIds)
-  useEffect(() => {
-    activeTicketIdsRef.current = activeTicketIds
-  }, [activeTicketIds])
+  activeTicketIdsRef.current = activeTicketIds
 
   const noteServerClock = useCallback((timer: AiQuestionTimerState | null | undefined) => {
     if (!timer?.serverNow) return
@@ -280,7 +319,7 @@ export function AIQuestionProvider({ tickets, children }: { tickets: Ticket[]; c
   const upsertRequest = useCallback((payload: AiQuestionPayload) => {
     if (!payload.requestId || !payload.sessionId || !payload.questions?.length) return
     const { requestId, sessionId, questions } = payload
-    const ticket = ticketsById.get(payload.ticketId)
+    const ticket = ticketsByIdRef.current.get(payload.ticketId)
     setRequests((current) => {
       const key = requestKey(sessionId, requestId)
       // Never clobber a draft the operator is part-way through typing.
@@ -303,16 +342,23 @@ export function AIQuestionProvider({ tickets, children }: { tickets: Ticket[]; c
         },
       }
     })
-  }, [ticketsById])
+  }, [])
 
   const ingestPayload = useCallback((payload: AiQuestionPayload) => {
     // A live event is newer than any snapshot request already in flight, so it
     // claims the sequence: a response that read the server before this arrived
     // must not prune what it just told us.
-    if (payload.ticketId) {
-      liveEventRef.current.set(payload.ticketId, ++snapshotTokenRef.current)
-    }
+    const eventGeneration = payload.ticketId ? ++snapshotTokenRef.current : 0
+    if (payload.ticketId) liveEventRef.current.set(payload.ticketId, eventGeneration)
     if (payload.type === 'opencode_question_resolved') {
+      if (payload.sessionId && payload.requestId) {
+        rememberRequestTombstone(
+          requestTombstonesRef.current,
+          payload.ticketId,
+          requestKey(payload.sessionId, payload.requestId),
+          eventGeneration,
+        )
+      }
       if (payload.sessionId && payload.requestId) removeRequest(payload.sessionId, payload.requestId)
       // The card has to leave Needs Input too. Without this a question refused
       // by its own timer, or answered in another tab, left the board showing a
@@ -369,13 +415,23 @@ export function AIQuestionProvider({ tickets, children }: { tickets: Ticket[]; c
     ticketId: string,
     rawQuestions: Array<Record<string, unknown>>,
     timer: AiQuestionTimerState | null,
-    options: { prune?: boolean } = {},
+    options: { generation: number; prune?: boolean },
   ) => {
     const live = new Set<string>()
+    let containsResolvedRequest = false
     for (const raw of rawQuestions) {
       const payload = parseQuestionPayload(raw)
       if (!payload?.sessionId || !payload.requestId) continue
-      live.add(requestKey(payload.sessionId, payload.requestId))
+      const key = requestKey(payload.sessionId, payload.requestId)
+      live.add(key)
+      if (requestIsTombstoned(requestTombstonesRef.current, ticketId, key)) {
+        // A successful endpoint can still return a resolving request when its
+        // adapter lookup failed and it fell back to the local window store. Its
+        // presence is proof that this response is stale relative to the
+        // resolved event, even when the GET started afterwards.
+        containsResolvedRequest = true
+        continue
+      }
       upsertRequest(payload)
     }
     // A successful fetch is authoritative for this ticket: anything it does not
@@ -383,8 +439,12 @@ export function AIQuestionProvider({ tickets, children }: { tickets: Ticket[]; c
     // question nobody can answer. A *failed* fetch prunes nothing, and neither
     // does one a live event has overtaken — its list is older than what the
     // event just told us, but the requests it carries are still real.
-    if (options.prune !== false) pruneTicketRequests(setRequests, ticketId, live)
-    if (options.prune !== false) applyTimer(ticketId, timer)
+    const authoritative = options.prune !== false && !containsResolvedRequest
+    if (authoritative) {
+      pruneTicketRequests(setRequests, ticketId, live)
+      applyTimer(ticketId, timer)
+      clearAbsentRequestTombstones(requestTombstonesRef.current, ticketId, live)
+    }
   }, [applyTimer, upsertRequest])
 
   /**
@@ -395,14 +455,23 @@ export function AIQuestionProvider({ tickets, children }: { tickets: Ticket[]; c
   const resolveSnapshotApplication = useCallback((
     ticketId: string,
     generation: number,
-  ): { prune: boolean } | null => {
-    if (generation <= (appliedSnapshotRef.current.get(ticketId) ?? 0)) return null
+  ): { generation: number; prune: boolean } | null => {
+    // A ticket can finish while a per-ticket response is in flight. Its
+    // lifecycle cleanup advances the same fence used for snapshot ordering;
+    // checking membership here also closes the render-to-effect gap.
+    if (!activeTicketIdsRef.current.has(ticketId)) return null
+    if (generation < (appliedSnapshotRef.current.get(ticketId) ?? 0)) return null
     appliedSnapshotRef.current.set(ticketId, generation)
-    return { prune: generation > (liveEventRef.current.get(ticketId) ?? 0) }
+    return { generation, prune: generation > (liveEventRef.current.get(ticketId) ?? 0) }
   }, [])
 
   const refreshTicket = useCallback((ticketId: string) => {
+    if (!activeTicketIdsRef.current.has(ticketId)) return
     const generation = ++snapshotTokenRef.current
+    // Reserve the sequence at request start. This lets lifecycle cleanup fence
+    // a response even when the ticket is removed before it lands; equality is
+    // allowed when this reserved response is the one being applied.
+    appliedSnapshotRef.current.set(ticketId, generation)
     void (async () => {
       try {
         const res = await fetch(apiTicketPath(ticketId, 'opencode', 'questions'))
@@ -444,6 +513,9 @@ export function AIQuestionProvider({ tickets, children }: { tickets: Ticket[]; c
       // does not list — so one slow poll landing after a faster later one, or
       // after a per-ticket refresh, would delete questions that are still live.
       const generation = ++snapshotTokenRef.current
+      for (const ticketId of activeIds) {
+        appliedSnapshotRef.current.set(ticketId, generation)
+      }
       try {
         const res = await fetch('/api/opencode/questions')
         await throwIfNotOk(res, 'Failed to recover questions')
@@ -535,6 +607,19 @@ export function AIQuestionProvider({ tickets, children }: { tickets: Ticket[]; c
     }
     // `liveEventRef`, like `appliedSnapshotRef`, is not pruned: resetting a
     // ticket to sequence 0 would let a response from its previous life apply.
+    for (const ticketId of new Set([
+      ...requestTombstonesRef.current.keys(),
+      ...appliedSnapshotRef.current.keys(),
+      ...liveEventRef.current.keys(),
+    ])) {
+      if (activeIds.has(ticketId)) continue
+      // The ticket's request identity is no longer reusable in this view. Keep
+      // one monotonic fence before retiring the tombstones so an outstanding
+      // response from the old lifetime cannot put the card back.
+      const fence = ++snapshotTokenRef.current
+      appliedSnapshotRef.current.set(ticketId, fence)
+      requestTombstonesRef.current.delete(ticketId)
+    }
   }, [activeTicketKey])
 
   const ticketRequests = useCallback((ticketId: string) => Object.values(requests)

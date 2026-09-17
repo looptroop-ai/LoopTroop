@@ -8,6 +8,7 @@ import { probeSessionAfterStreamFailure } from '@/lib/sessionState'
 import { patchTicketStatusInCache } from './ticketStatusCache'
 import { getTicketArtifactsQueryKey } from './useTicketArtifacts'
 import { getTicketAiDetailsQueryKey } from './useTicketAiDetails'
+import { collectQueryKeyStrings } from './useTickets'
 
 interface SSEOptions {
   ticketId: string | null
@@ -67,16 +68,10 @@ function invalidateManualQaQueries(ticketId: string) {
 }
 
 function recoverTicketAfterStreamGap(ticketId: string) {
-  queryClient.invalidateQueries({ queryKey: ['ticket', ticketId] })
   queryClient.invalidateQueries({ queryKey: ['tickets'] })
-  queryClient.invalidateQueries({ queryKey: ['ticket-artifacts', ticketId] })
-  queryClient.invalidateQueries({ queryKey: ['interview', ticketId] })
-  queryClient.invalidateQueries({ queryKey: ['ticket-beads', ticketId] })
-  queryClient.invalidateQueries({ queryKey: ['ticket-skips', ticketId] })
-  queryClient.invalidateQueries({ queryKey: ['artifact', ticketId] })
-  queryClient.invalidateQueries({ queryKey: ['bead-diff', ticketId] })
-  invalidateManualQaQueries(ticketId)
-  queryClient.invalidateQueries({ queryKey: getTicketAiDetailsQueryKey(ticketId) })
+  queryClient.invalidateQueries({
+    predicate: (query) => collectQueryKeyStrings(query.queryKey).includes(ticketId),
+  })
   dispatchServerLogRefresh(ticketId)
 }
 
@@ -463,7 +458,6 @@ export function useSSE({ ticketId, onEvent }: SSEOptions) {
         if (!isCurrentConnection()) return
         es.close()
         eventSourceRef.current = null
-        recoverOnOpenRef.current = true
         setConnectionState('reconnecting')
         // The stream cannot report a 401 — `onerror` carries no status — so the
         // first failure of a connection asks an ordinary route instead. Only

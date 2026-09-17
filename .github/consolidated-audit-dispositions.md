@@ -166,6 +166,33 @@ passing before the unrelated active-process error. Linux/Node execution was
 used; native Windows/macOS, real-browser accessibility, E2E, and full lifecycle
 checks remain outside this checkpoint.
 
+## Accepted client recovery packet
+
+The client recovery packet is accepted for this integration checkpoint. Its
+source snapshot is `0c0ec89dab2da492983e4ce1993901288e745f3d`, based on
+`2c6da1c4`; detailed evidence is in
+`/tmp/looptroop-client-recovery-evidence.md`. It covers U24, U25, U26, U29,
+U32, and U33(4,6); U33 remains partial overall. Final source integration, a
+fresh Astra-low review, and the full application/part gate remain with the root
+worker. No workflow status metadata changed in this packet.
+
+| Finding | Status | Evidence and permanent coverage | Limits |
+| --- | --- | --- | --- |
+| U24 | PASS, final pending | `AIQuestionProvider` records a resolved `(ticket, session, request)` tombstone. Successful snapshots skip that identity until a later accepted snapshot omits it, so an in-flight or stale response cannot reopen a resolved question. Actual-hook tests cover GET-before-resolution, resolution-before-a-new-GET, a later request, and ticket removal/re-addition fencing. | No E2E or full lifecycle run; native Windows/macOS and the complete application/part gate remain unverified. |
+| U25 | PASS, final pending | `useSSE` keeps the ticket-list refresh and uses the existing `collectQueryKeyStrings` predicate to invalidate cached families containing the affected ticket id. Contract coverage includes ticket, artifacts, interview, beads, skips, bead diffs, Manual QA, AI details, phase attempts, UI state, and log history, while another ticket remains untouched. | No E2E or full lifecycle run; native Windows/macOS and the complete application/part gate remain unverified. |
+| U26 | PASS, final pending | Current ticket metadata is read through a ref, so ten-second ticket-list object replacement does not recreate the question-recovery callback. The recovery effect stays keyed to active-ticket membership, with an immediate poll and a 30-second interval verified by fake timers. | No E2E or full lifecycle run; native Windows/macOS and the complete application/part gate remain unverified. |
+| U29 | PASS, final pending | The persisted-cursor flag triggers one initial cache recovery on `open` without clearing the cursor or reconnecting. An explicit `replay_gap` clears the cursor while retaining the live subscription and refreshes once; after that gap, later reconnects omit the cursor until a new event supplies one. Ordinary transport errors still invalidate the current ticket and ticket list without broad cache recovery, and the SSE tests cover both paths and duplicate-recovery avoidance. | No E2E or full lifecycle run; native Windows/macOS and the complete application/part gate remain unverified. |
+| U32 | PASS, final pending | `useSSE` probes once per failed connection, re-arms after `open`, and leaves a normal 200 response signed in. `probeSessionAfterStreamFailure` uses the five-second backend-health deadline and releases its shared in-flight promise in `finally`; direct and actual-hook tests cover the deadline and next-probe behavior. | No E2E or full lifecycle run; native Windows/macOS and the complete application/part gate remain unverified. |
+| U33(4) | PASS, final pending | Model queries and manual refresh retry only the exact startup response ``OpenCode server is not reachable. Start it with `opencode serve`.``. HTTP 500 failures use the existing normalized error and one request; query tests exercise the real hook retry and the manual-refresh no-retry path. | U33 remains partial overall; no E2E or full lifecycle run. |
+| U33(6) | Partial, final pending | No source change was needed: the existing delivery path is `AIQuestionProvider.getRemainingMs` to `PendingQuestionsPanel`; `useCountdown` is enabled only for a non-null value, and `applyTimer` generation/revision checks accept only current frames. The focused review found no asynchronous stale-null delivery path to change. | U33 remains partial overall; no E2E or full lifecycle run. |
+
+The exact focused Vitest command passed 4 files and 77 tests. Focused ESLint
+reported no issues, `git diff --check` was clean, and `npm run typecheck` passed
+with no diagnostics. `useSSE` is consumed by `TicketDashboard`; session probing
+is called only by `useSSE`, while the fetch session watch remains installed by
+`main.tsx`. OpenCode model queries feed `ModelPicker` and `ProfileSetup`; only
+the explicit startup response retries.
+
 ## Installer foundation
 
 | Finding | Status | Evidence and permanent coverage | Limits |

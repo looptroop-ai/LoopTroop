@@ -320,15 +320,14 @@ describe('safeAtomicWriteWithin', () => {
   })
 
   describe.skipIf(process.platform === 'win32')('file symlinks', () => {
-    it('writes through a contained file link and preserves the link', () => {
+    it('rejects a contained final file link instead of replacing its destination', () => {
       const target = join(TEST_DIR, 'target.txt')
       const alias = join(TEST_DIR, 'alias.txt')
       writeFileSync(target, 'original', { mode: 0o600 })
       symlinkSync(target, alias)
-      safeAtomicWriteWithin(TEST_DIR, 'alias.txt', 'replacement')
-      expect(readFileSync(target, 'utf8')).toBe('replacement')
+      expect(() => safeAtomicWriteWithin(TEST_DIR, 'alias.txt', 'replacement')).toThrow(ContainedPathError)
+      expect(readFileSync(target, 'utf8')).toBe('original')
       expect(lstatSync(alias).isSymbolicLink()).toBe(true)
-      expect(statSync(target).mode & 0o777).toBe(0o600)
     })
 
     it('rejects target symlinks without touching the destination or its mode', () => {
@@ -435,6 +434,15 @@ describe('recoverOrphanTmpFiles', () => {
   }
 
   function orphanYaml(targetPath: string, content: string): string {
+    const tmpPath = orphan(targetPath, content)
+    writeFileSync(atomicProofPath(tmpPath), JSON.stringify({
+      byteLength: Buffer.byteLength(content),
+      sha256: createHash('sha256').update(content).digest('hex'),
+    }))
+    return tmpPath
+  }
+
+  function orphanJsonl(targetPath: string, content: string): string {
     const tmpPath = orphan(targetPath, content)
     writeFileSync(atomicProofPath(tmpPath), JSON.stringify({
       byteLength: Buffer.byteLength(content),
@@ -568,11 +576,20 @@ describe('recoverOrphanTmpFiles', () => {
 
   it('recovers an empty JSONL whole-file artifact as an empty collection', () => {
     const target = join(TEST_DIR, 'beads', 'feature', '.beads', 'issues.jsonl')
-    const tmpFile = orphan(target, '')
+    const tmpFile = orphanJsonl(target, '')
 
     expect(recoverOrphanTmpFiles(TEST_DIR)).toEqual([target])
     expect(readFileSync(target, 'utf8')).toBe('')
     expect(existsSync(tmpFile)).toBe(false)
+  })
+
+  it('leaves an empty JSONL temp without a complete-write proof', () => {
+    const target = join(TEST_DIR, 'beads', 'feature', '.beads', 'issues.jsonl')
+    const tmpFile = orphan(target, '')
+
+    expect(recoverOrphanTmpFiles(TEST_DIR)).toEqual([])
+    expect(existsSync(target)).toBe(false)
+    expect(existsSync(tmpFile)).toBe(true)
   })
 
   /**
@@ -620,7 +637,7 @@ describe('recoverOrphanTmpFiles', () => {
     const tmpFile = orphan(target, '{"key": "value"}')
 
     expect(recoverOrphanTmpFiles(TEST_DIR)).toEqual([])
-    expect(existsSync(tmpFile)).toBe(false)
+    expect(existsSync(tmpFile)).toBe(true)
     expect(lstatSync(target).isSymbolicLink()).toBe(true)
   })
 

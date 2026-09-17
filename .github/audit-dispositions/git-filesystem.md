@@ -42,13 +42,13 @@ run passed 173 tests across 10 files. Packet lint and diff checks passed.
 | Finding | Status | Evidence and detailed coverage | Limits |
 | --- | --- | --- | --- |
 | G03 | PASS, final pending | Execution-log appends resolve the canonical project root before containment checks, including symlink aliases, while rejecting outside roots. | No E2E or full lifecycle run. |
-| G08 | PASS, final pending | Fallback copies use exclusive no-follow targets, short-write loops, fsyncs, identity checks, and a matching `.recovery` ownership marker. Unresolved ownership or completeness preserves the files and raises a typed recovery error. | Physical power loss and native Windows are not locally verified. |
-| G09 | PASS, final pending | YAML temps require an exclusive, fsynced `.proof` with byte length and SHA-256 before promotion. | Physical power loss and native Windows are not locally verified. |
-| G10 | PASS, final pending | Whole-file JSONL recovery accepts empty files or complete newline-terminated records; torn, invalid, oversized, and unrelated temps remain untouched. | Physical power loss and native Windows are not locally verified. |
-| G11 | PASS, final pending | Atomic appends loop short writes, reject zero progress, fsync after completion, and return the exact byte range. | Physical power loss and native Windows are not locally verified. |
+| G08 | PASS, final pending | Fallback copies use exclusive no-follow targets, record target identity before copying, short-write loops, fsyncs, identity checks, and a matching `.recovery` ownership marker. Unresolved ownership or completeness preserves the files and raises a typed recovery error. | Physical power loss and native Windows are not locally verified; names-based checks cannot eliminate every ancestor replacement race. |
+| G09 | PASS, final pending | YAML and whole-file JSONL temps require an exclusive, fsynced `.proof` with byte length and SHA-256 before promotion; stale proof sidecars are removed only for known artifacts. | Physical power loss and native Windows are not locally verified. |
+| G10 | PASS, final pending | Whole-file JSONL recovery accepts only proof-backed empty files or complete newline-terminated records; unproved, torn, invalid, oversized, and unrelated temps remain untouched. | Physical power loss and native Windows are not locally verified. |
+| G11 | PASS, final pending | Atomic appends hold one process-shared SQLite lock across the size read, short-write loop, fsync, and returned byte range. | Physical power loss and native Windows are not locally verified. |
 | G12 | PASS, final pending | Manual QA discard and quarantine use `lstat`, copy final symlink entries without dereferencing them, and protect outside or dangling targets. | Native Windows is not locally verified. |
 | G13 | PASS, final pending | Manual QA operations use NUL-safe Git readers without trimming, backslash rewriting, or path reinterpretation. | Native Windows is not locally verified. |
-| G14/S12(2) | PASS, final pending | Project and ticket roots are absolute and contained; POSIX slashes, spaces, backslashes, and legal colons remain usable while Windows ADS syntax is rejected after a valid drive. | Native Windows is not locally verified. |
+| G14/S12(2) | PASS, final pending | Project and ticket roots are absolute and contained; POSIX slashes, spaces, trailing backslashes, carriage returns, and legal colons remain usable while Windows ADS syntax is rejected after a valid drive. Invalid route paths return structured client errors. | Native Windows is not locally verified. |
 | G16 | PASS, final pending | Manual QA event reads use safe parsing, skip and warn on invalid shapes, return diagnostics, retain raw lines, and keep later appends working. | No E2E or full lifecycle run. |
 | G25 | PASS, final pending | Evidence locking uses a persistent native SQLite database with `BEGIN IMMEDIATE`, bounded async retries, rollback/close release, and process-death release. The database is never unlinked. | Physical power loss and native Windows are not locally verified. |
 | G30.1-4 | PASS, final pending | Startup scans canonical roots and known config/ticket allowlists, skips unsafe unknown artifacts, verifies identity before cleanup, fsyncs promotion parents, and preserves unrelated configuration. | No E2E or full lifecycle run. |
@@ -60,8 +60,8 @@ application and test typechecks, packet lint, and packet diff checks passed.
 
 ## Recovery and preservation rules
 
-An ordinary orphan YAML temp without proof, or a torn whole-file JSONL temp,
-is warned about and left unpromoted. An unresolved in-progress fallback whose
+An ordinary orphan YAML or whole-file JSONL temp without proof, including an
+empty JSONL temp, is warned about and left unpromoted. An unresolved in-progress fallback whose
 ownership or completeness cannot be proved raises `RecoveryBlockedError` and
 reports `RECOVERY_BLOCKED` before startup projections, ticket hydration,
 timers, or execution. The target, source temp, marker, and any retained

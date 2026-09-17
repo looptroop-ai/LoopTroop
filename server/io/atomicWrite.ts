@@ -1,6 +1,6 @@
 import { createHash } from 'node:crypto'
 import { writeFileSync, renameSync, openSync, fsyncSync, closeSync, mkdirSync, unlinkSync, fchmodSync, lstatSync, constants, realpathSync, writeSync } from 'fs'
-import { dirname, isAbsolute, win32 } from 'path'
+import { dirname, isAbsolute, resolve, win32 } from 'path'
 import { randomBytes } from 'crypto'
 import { ContainedPathError, resolveContainedPath } from '../lib/containedPath'
 
@@ -162,7 +162,7 @@ export function fsyncDirectory(directory: string): void {
   }
 }
 
-function writeYamlProof(
+function writeAtomicProof(
   proofPath: string,
   content: string,
   assertContained?: (candidate: string, allowMissingParents?: boolean) => void,
@@ -217,6 +217,14 @@ export function safeAtomicWriteWithin(
     throw new ContainedPathError('Atomic write requires a relative path')
   }
   const canonicalRoot = realpathSync.native(root)
+  const lexicalPath = resolve(canonicalRoot, relativePath)
+  try {
+    if (lstatSync(lexicalPath).isSymbolicLink()) {
+      throw new ContainedPathError('Atomic write destination must not be a symbolic link')
+    }
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error
+  }
   const filePath = resolveContainedPath(canonicalRoot, relativePath, {
     allowMissing: true,
     allowMissingParents: true,
@@ -241,7 +249,10 @@ function atomicWrite(
   const tmpPath = makeAtomicTmpPath(filePath)
   const dir = dirname(filePath)
   const proofPath = atomicProofPath(tmpPath)
-  const needsProof = /\.ya?ml$/i.test(filePath)
+  // Whole-file JSONL writes have the same recovery hazard as YAML: a valid
+  // prefix (including an empty file) is not evidence that the generation
+  // finished. Keep a hash sidecar until the rename makes the bytes visible.
+  const needsProof = /\.(?:ya?ml|jsonl)$/i.test(filePath)
 
   // Captured before the write so replacing a 0600 file cannot silently widen it
   // to the default 0644 that the fresh temp file would carry through rename.
@@ -277,7 +288,7 @@ function atomicWrite(
 
     if (needsProof) {
       try {
-        writeYamlProof(proofPath, content, assertContained)
+        writeAtomicProof(proofPath, content, assertContained)
         proofCreated = true
       } catch (error) {
         try {

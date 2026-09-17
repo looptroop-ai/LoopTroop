@@ -1,8 +1,20 @@
-import { existsSync, lstatSync, realpathSync, rmSync, unlinkSync } from 'node:fs'
+import { lstatSync, realpathSync, rmSync, unlinkSync } from 'node:fs'
 import { GIT_MUTATION_TIMEOUT_MS, runGitMutationOrThrow } from './runCommand'
 import { dirname, resolve } from 'node:path'
 import { makeOwnerWritableRecursive } from '../io/removal'
 import { ContainedPathError, resolveContainedPath } from '../lib/containedPath'
+
+type DirectoryIdentity = { dev: number; ino: number }
+
+function readDirectoryIdentity(path: string): DirectoryIdentity {
+  const stats = lstatSync(path)
+  if (!stats.isDirectory()) throw new ContainedPathError(`Managed worktrees root is not a directory: ${path}`)
+  return { dev: Number(stats.dev), ino: Number(stats.ino) }
+}
+
+function sameDirectoryIdentity(left: DirectoryIdentity, right: DirectoryIdentity): boolean {
+  return left.dev === right.dev && left.ino === right.ino
+}
 
 /** Cleanup must not enumerate an alias for either managed directory. */
 export function assertManagedWorktreesRoot(projectRoot: string, worktreesRoot: string): string | undefined {
@@ -49,6 +61,7 @@ export async function removeWorktree({
   }
 
   if (!assertManagedWorktreesRoot(projectRoot, worktreesRoot)) return
+  const managedRootIdentity = readDirectoryIdentity(worktreesRoot)
   let stats
   try {
     stats = lstatSync(worktreePath)
@@ -73,8 +86,20 @@ export async function removeWorktree({
     gitRemovalFailed = true
   }
 
-  if (existsSync(worktreePath)) {
-    rmSync(worktreePath, { recursive: true, force: true })
+  // Git is awaited above and may have allowed another cleanup process to
+  // replace the parent. Revalidate both containment and directory identity
+  // before the fallback can recursively remove anything through that path.
+  if (!assertManagedWorktreesRoot(projectRoot, worktreesRoot)) return
+  if (!sameDirectoryIdentity(managedRootIdentity, readDirectoryIdentity(worktreesRoot))) {
+    throw new ContainedPathError('Managed worktrees root changed during removal')
+  }
+
+  try {
+    const currentStats = lstatSync(worktreePath)
+    if (currentStats.isSymbolicLink()) unlinkSync(worktreePath)
+    else rmSync(worktreePath, { recursive: true, force: true })
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error
   }
 
   if (gitRemovalFailed) {

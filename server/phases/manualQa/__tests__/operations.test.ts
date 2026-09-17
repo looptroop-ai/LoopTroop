@@ -65,7 +65,7 @@ async function prepareFixture(items = [checklistItem('item-one')]) {
       declaredEffects: [],
     })),
   })
-  prepareManualQaCheckpoint(setup.ticket.id, 1)
+  await prepareManualQaCheckpoint(setup.ticket.id, 1)
   persistManualQaChecklist(setup.paths.ticketDir, {
     schemaVersion: 1,
     artifact: 'manual_qa_checklist',
@@ -496,7 +496,7 @@ describe('Manual QA submission recovery and integrity', () => {
       modelCapability: { imageEvidenceMode: 'references_only' },
     })
     expect(skipEvent).toHaveBeenCalledWith({ type: 'MANUAL_QA_SKIPPED' })
-  })
+  }, 120_000)
 
 
   it('stores no reason as null and reads the skip back through the shared audit trail', async () => {

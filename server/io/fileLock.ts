@@ -61,6 +61,10 @@ function release(database: Database): void {
 
 const sleep = (ms: number) => new Promise<void>((resolve) => { setTimeout(resolve, ms) })
 
+const sleepSync = (ms: number) => {
+  if (ms > 0) Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, ms)
+}
+
 export async function withFileLock<T>(
   lockPath: string,
   run: () => T | Promise<T>,
@@ -80,6 +84,31 @@ export async function withFileLock<T>(
 
   try {
     return await run()
+  } finally {
+    release(database)
+  }
+}
+
+/** Synchronous counterpart for the append path, whose byte range is synchronous. */
+export function withFileLockSync<T>(
+  lockPath: string,
+  run: () => T,
+  options: FileLockOptions = {},
+): T {
+  const timeoutMs = duration(options.timeoutMs, DEFAULT_TIMEOUT_MS)
+  const retryMs = duration(options.retryMs, DEFAULT_RETRY_MS)
+  const deadline = Date.now() + timeoutMs
+  let database: Database | null = null
+
+  while (database === null) {
+    database = tryAcquire(lockPath)
+    if (database !== null) break
+    if (Date.now() >= deadline) throw new FileLockTimeoutError(lockPath)
+    sleepSync(Math.min(retryMs, Math.max(0, deadline - Date.now())))
+  }
+
+  try {
+    return run()
   } finally {
     release(database)
   }

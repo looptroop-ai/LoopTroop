@@ -595,8 +595,8 @@ async function handleManualQaDriftDecision(c: Context, decision: 'include' | 'di
       ? body.files.filter((entry): entry is string => typeof entry === 'string')
       : currentDrift.files.map((entry) => entry.path)
     const receipt = decision === 'include'
-      ? includeManualQaWorkspaceDrift(resolved.ticketId, version, files, actionId)
-      : discardManualQaWorkspaceDrift(resolved.ticketId, version, files, actionId)
+      ? await includeManualQaWorkspaceDrift(resolved.ticketId, version, files, actionId)
+      : await discardManualQaWorkspaceDrift(resolved.ticketId, version, files, actionId)
     return c.json({ ...getManualQaVersionDetail(resolved.paths.ticketDir, version), version, status: 'waiting', workspaceDrift: { detected: false, files: [] }, operation: { status: 'drift_resolved', receipt } })
   } catch (error) {
     return manualQaError(c, error)

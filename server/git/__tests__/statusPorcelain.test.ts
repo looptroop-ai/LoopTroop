@@ -35,7 +35,7 @@ describe('parseGitStatusPorcelainZ', () => {
     // path, so the source was neither staged nor audited.
     expect(parseGitStatusPorcelainZ(` R new.ts${NUL}old.ts${NUL}`)).toEqual([
       { indexStatus: ' ', worktreeStatus: 'R', path: 'new.ts', originalPath: 'old.ts' },
-      { indexStatus: 'D', worktreeStatus: ' ', path: 'old.ts' },
+      { indexStatus: ' ', worktreeStatus: 'D', path: 'old.ts' },
     ])
   })
 

@@ -1,7 +1,8 @@
 import { existsSync, mkdirSync, symlinkSync } from 'node:fs'
+import { execFileSync } from 'node:child_process'
 import { join } from 'node:path'
 import { afterEach, beforeEach, describe, expect, it } from 'vitest'
-import { getTicketDir, getTicketExecutionLogPath, getTicketWorktreePath, normalizeFolderPath } from '../paths'
+import { getTicketDir, getTicketExecutionLogPath, getTicketWorktreePath, normalizeFolderPath, resolveGitRepoRoot } from '../paths'
 import { makeTempDir, removeTempDir } from '../../test/tempDir'
 
 let scratchDir: string
@@ -40,6 +41,18 @@ describe('normalizeFolderPath', () => {
 
   it.runIf(process.platform !== 'win32')('preserves POSIX backslashes as legal filename characters', () => {
     expect(normalizeFolderPath('/tmp\\example\\path')).toBe('/tmp\\example\\path')
+  })
+
+  it.runIf(process.platform !== 'win32')('preserves a literal trailing POSIX backslash', () => {
+    const target = join(scratchDir, 'project')
+    expect(normalizeFolderPath(`${target}\\`)).toBe(`${target}\\`)
+  })
+
+  it.runIf(process.platform !== 'win32')('preserves a POSIX repository root ending in carriage return', () => {
+    const target = join(scratchDir, 'project\r')
+    mkdirSync(target)
+    execFileSync('git', ['init', '--initial-branch=main', target], { stdio: 'ignore' })
+    expect(resolveGitRepoRoot(target)).toBe(normalizeFolderPath(target))
   })
 
   it.runIf(process.platform === 'win32')('normalizes native Windows backslashes to separators', () => {

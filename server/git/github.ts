@@ -58,8 +58,8 @@ function trySyncCommand(bin: string, args: string[], options?: RunCommandOptions
   return toAttempt(runCommandSync(bin, args, options))
 }
 
-function runGit(projectPath: string, args: string[]): string {
-  return runGitSyncOrThrow(projectPath, args)
+function runGit(projectPath: string, args: string[], options?: RunCommandOptions): string {
+  return runGitSyncOrThrow(projectPath, args, options)
 }
 
 function runGitMutation(projectPath: string, args: string[]): Promise<string> {
@@ -131,6 +131,8 @@ export interface PullRequestInfo {
 export interface GitDiffSummary {
   stat: string
   nameStatus: string
+  /** NUL-delimited names for consumers that must preserve Git's exact bytes. */
+  nameStatusZ?: string
   patch: string
   patchTruncated: boolean
   patchError: string | null
@@ -593,6 +595,15 @@ export function readGitDiff(projectPath: string, fromRef: string, toRef: string)
   assertSafeRefName(toRef, 'Diff head ref')
   const stat = runGit(projectPath, ['diff', '--stat', `${fromRef}..${toRef}`, '--', ...REPO_SCOPE_PATHSPECS])
   const nameStatus = runGit(projectPath, ['diff', '--name-status', `${fromRef}..${toRef}`, '--', ...REPO_SCOPE_PATHSPECS])
+  const nameStatusZ = runGit(projectPath, [
+    'diff',
+    '--name-status',
+    '-z',
+    '--no-renames',
+    `${fromRef}..${toRef}`,
+    '--',
+    ...REPO_SCOPE_PATHSPECS,
+  ], { trimOutput: false })
   const patchResult = tryGit(
     projectPath,
     ['diff', '--no-ext-diff', '--unified=0', `${fromRef}..${toRef}`, '--', ...REPO_SCOPE_PATHSPECS],
@@ -603,6 +614,7 @@ export function readGitDiff(projectPath: string, fromRef: string, toRef: string)
     return {
       stat,
       nameStatus,
+      nameStatusZ,
       patch: [
         '[LoopTroop omitted the full patch because it exceeded the safe capture limit or git diff failed.]',
         `Diff capture error: ${patchResult.error}`,
@@ -616,6 +628,7 @@ export function readGitDiff(projectPath: string, fromRef: string, toRef: string)
   return {
     stat,
     nameStatus,
+    nameStatusZ,
     patch: patchResult.stdout,
     patchTruncated: false,
     patchError: null,

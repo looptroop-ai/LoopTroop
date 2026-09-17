@@ -93,6 +93,8 @@ export interface RunCommandOptions {
    * and turns `hello.ts` into `ello.ts`.
    */
   trimOutput?: boolean
+  /** Internal: let Git's configured core.sshCommand win over our fallback. */
+  preserveCoreSshCommand?: boolean
 }
 
 interface RunOutcome<TOut> {
@@ -126,7 +128,7 @@ function logCmd(
   commandLogger.logCommand?.(bin, args, result)
 }
 
-function buildEnv(extra: NodeJS.ProcessEnv | undefined): NodeJS.ProcessEnv {
+function buildEnv(extra: NodeJS.ProcessEnv | undefined, preserveCoreSshCommand = false): NodeJS.ProcessEnv {
   // `gh` shells out to git, so the non-interactive pair is applied to both.
   const env = { ...process.env, ...NON_INTERACTIVE_GIT_ENV, ...extra }
   // Preserve an explicitly configured SSH wrapper/command; otherwise make
@@ -135,7 +137,9 @@ function buildEnv(extra: NodeJS.ProcessEnv | undefined): NodeJS.ProcessEnv {
   // an `undefined` ProcessEnv key through a config merge, and Node omits that
   // key from the child environment anyway. An empty string remains an
   // intentional override, while undefined gets the safe default.
-  if (typeof env.GIT_SSH_COMMAND !== 'string' && typeof env.GIT_SSH !== 'string') {
+  if (!preserveCoreSshCommand
+    && typeof env.GIT_SSH_COMMAND !== 'string'
+    && typeof env.GIT_SSH !== 'string') {
     env.GIT_SSH_COMMAND = 'ssh -o BatchMode=yes'
   }
   return env
@@ -217,7 +221,7 @@ function resolveBin(bin: string, options: RunCommandOptions | undefined): { path
   // Against the environment the child will actually get. Resolving against
   // `process.env` while spawning with a caller's `env` let the two disagree:
   // a caller that narrowed PATH on purpose had it ignored.
-  const resolution = resolveTrustedProgram(bin, { env: buildEnv(options?.env) })
+  const resolution = resolveTrustedProgram(bin, { env: buildEnv(options?.env, options?.preserveCoreSshCommand) })
   return resolution.path === undefined ? { failure: new Error(resolution.reason) } : { path: resolution.path }
 }
 
@@ -234,7 +238,7 @@ function runSyncRaw(bin: string, args: string[], options: RunCommandOptions | un
     spawned = spawnSync(resolved.path, args, {
       cwd: options?.cwd,
       input: options?.input,
-      env: buildEnv(options?.env),
+      env: buildEnv(options?.env, options?.preserveCoreSshCommand),
       maxBuffer: options?.maxBuffer ?? GIT_MAX_BUFFER_BYTES,
       timeout: options?.timeoutMs ?? GIT_DEFAULT_TIMEOUT_MS,
       // spawnSync blocks until the child exits and never escalates, so a child
@@ -330,7 +334,30 @@ function gitInvocation(directory: string, args: string[], options: RunCommandOpt
   displayArgs: string[]
   options: RunCommandOptions
 } {
-  return { args, displayArgs: ['-C', directory, ...args], options: { ...options, cwd: directory } }
+  const explicitEnvironment = options?.env
+  const hasExplicitSsh = typeof explicitEnvironment?.GIT_SSH_COMMAND === 'string'
+    || typeof explicitEnvironment?.GIT_SSH === 'string'
+    || typeof process.env.GIT_SSH_COMMAND === 'string'
+    || typeof process.env.GIT_SSH === 'string'
+  let preserveCoreSshCommand = false
+  if (!hasExplicitSsh) {
+    // GIT_SSH_COMMAND takes precedence over every Git config scope. Inspect
+    // the effective config before adding our non-interactive fallback so a
+    // repository's configured key, wrapper, or agent remains authoritative.
+    const configured = runSyncRaw('git', ['config', '--get', 'core.sshCommand'], {
+      ...options,
+      cwd: directory,
+      log: false,
+      timeoutMs: Math.min(options?.timeoutMs ?? GIT_DEFAULT_TIMEOUT_MS, COMMAND_AVAILABILITY_TIMEOUT_MS),
+      preserveCoreSshCommand: false,
+    })
+    preserveCoreSshCommand = configured.status === 0 && configured.stdout.toString('utf8').trim().length > 0
+  }
+  return {
+    args,
+    displayArgs: ['-C', directory, ...args],
+    options: { ...options, cwd: directory, preserveCoreSshCommand },
+  }
 }
 
 /**
@@ -461,7 +488,7 @@ function runAsyncRaw(bin: string, args: string[], options: RunCommandOptions | u
     try {
       child = spawn(resolved.path, args, {
         cwd: options?.cwd,
-        env: buildEnv(options?.env),
+        env: buildEnv(options?.env, options?.preserveCoreSshCommand),
         // `terminateProcessTree` signals the negative pid on POSIX. A detached
         // child starts its own process group, so Git hooks, filters, and their
         // descendants receive the same timeout signal instead of surviving
@@ -531,7 +558,6 @@ function runAsyncRaw(bin: string, args: string[], options: RunCommandOptions | u
           spawnError: new Error(`${bin} output exceeded ${maxBuffer} bytes`),
         })
       }, TIMEOUT_ABANDON_GRACE_MS)
-      timer.unref?.()
       overrunTimer = timer
     }
 
@@ -559,7 +585,6 @@ function runAsyncRaw(bin: string, args: string[], options: RunCommandOptions | u
       timedOut = true
       terminateProcessTree(child, 'SIGTERM')
       killTimer = setTimeout(forceKill, TIMEOUT_KILL_GRACE_MS)
-      killTimer.unref?.()
       abandonTimer = setTimeout(() => {
         // Nothing here can reap the child, so it must not be what keeps the
         // process alive either.
@@ -581,10 +606,7 @@ function runAsyncRaw(bin: string, args: string[], options: RunCommandOptions | u
           spawnError: Object.assign(new Error(`spawn ${bin} ETIMEDOUT`), { code: 'ETIMEDOUT' }),
         })
       }, TIMEOUT_KILL_GRACE_MS + TIMEOUT_ABANDON_GRACE_MS)
-      abandonTimer.unref?.()
     }, timeoutMs)
-    // A pending timer must not hold the process open during shutdown.
-    timer.unref?.()
 
     const settle = (outcome: RawOutcome<string>) => {
       if (settled) return

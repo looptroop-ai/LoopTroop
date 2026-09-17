@@ -31,6 +31,7 @@ import { buildWslProjectMountedDriveWarning, isWslWindowsMountPath } from '../..
 import { aiQuestionWindowOverrideSchema, gitHookPolicySchema, ignoreModeSchema } from '../lib/settingSchemas'
 import { getErrorMessage } from '@shared/typeGuards'
 import { runGit } from '../git/runCommand'
+import { ContainedPathError } from '../lib/containedPath'
 
 const projectRouter = new Hono()
 
@@ -112,9 +113,13 @@ async function resolveGitRepoRootAsync(folderPath: string): Promise<string | nul
   const result = await runGit(normalized, ['rev-parse', '--show-toplevel'], {
     timeoutMs: REPO_DISCOVERY_TIMEOUT_MS,
     log: false,
+    trimOutput: false,
   })
   if (!result.ok || !result.stdout) return null
-  return normalizeFolderPath(result.stdout)
+  let output = result.stdout
+  if (output.endsWith('\n')) output = output.slice(0, -1)
+  if (process.platform === 'win32' && output.endsWith('\r')) output = output.slice(0, -1)
+  return normalizeFolderPath(output)
 }
 
 async function readOriginRemoteUrlAsync(repoRoot: string): Promise<string | null> {
@@ -210,7 +215,13 @@ projectRouter.get('/projects/check-git', async (c) => {
   const rawPath = c.req.query('path')
   if (!rawPath) return c.json({ isGit: false, status: 'none', message: 'No path provided' })
 
-  const folderPath = normalizeFolderPath(rawPath)
+  let folderPath: string
+  try {
+    folderPath = normalizeFolderPath(rawPath)
+  } catch (error) {
+    if (!(error instanceof ContainedPathError)) throw error
+    return c.json({ isGit: false, status: 'invalid', message: error.message })
+  }
   const performanceWarning = getProjectPerformanceWarning(folderPath)
   const warningPayload = performanceWarning ? { performanceWarning } : {}
   if (!(await existsAsync(folderPath))) {
@@ -271,7 +282,13 @@ projectRouter.get('/projects/check-git', async (c) => {
 
 projectRouter.get('/projects/ls', async (c) => {
   const rawPath = c.req.query('path')
-  const targetPath = normalizeFolderPath(rawPath || homedir())
+  let targetPath: string
+  try {
+    targetPath = normalizeFolderPath(rawPath || homedir())
+  } catch (error) {
+    if (!(error instanceof ContainedPathError)) throw error
+    return c.json({ error: error.message }, 400)
+  }
 
   if (!(await existsAsync(targetPath))) {
     return c.json({ error: `Path does not exist: ${targetPath}` }, 400)

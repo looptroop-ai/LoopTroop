@@ -133,7 +133,8 @@ function normalizeSetupRoot(worktreePath: string, input: unknown): string | null
   // Setup roots are request/profile input rather than Git output, so a
   // trailing separator can be canonicalised without changing a filename's
   // bytes (trailing spaces remain untouched).
-  const normalized = normalizeRepoPath(repoRelative).replace(/\/+$/, '')
+  let normalized = normalizeRepoPath(repoRelative)
+  while (normalized.endsWith('/')) normalized = normalized.slice(0, -1)
   if (
     !normalized
     || normalized === '.'
@@ -149,7 +150,7 @@ function normalizeSetupRoot(worktreePath: string, input: unknown): string | null
 function isWithinRoot(path: string, root: string): boolean {
   const normalizedPath = normalizeRepoPath(path)
   const normalizedRoot = normalizeRepoPath(root)
-  const compare = (value: string) => process.platform === 'win32' || process.platform === 'darwin'
+  const compare = (value: string) => process.platform === 'win32'
     ? value.toLowerCase()
     : value
   const comparablePath = compare(normalizedPath)

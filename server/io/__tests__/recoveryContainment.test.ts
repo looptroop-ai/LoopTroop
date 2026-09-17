@@ -252,18 +252,17 @@ describe('recovery descriptor containment', () => {
     expect(existsSync(`${tmp}.recovery`)).toBe(false)
   })
 
-  it('recovers a complete fallback when marker publication is interrupted after copying', () => {
+  it('recovers a complete fallback when final marker publication is interrupted after copying', () => {
     const target = join(directory, 'runtime', 'execution-setup-profile.json')
     const content = JSON.stringify({ payload: 'marker boundary' })
     const tmp = makeAtomicTmpPath(target)
     writeFileSync(tmp, content)
-    let interrupted = false
+    let publications = 0
     const originalRename = renameSync
     const deps = {
       link: () => { throw Object.assign(new Error('unsupported'), { code: 'ENOSYS' }) },
       rename: (from: string, to: string) => {
-        if (!interrupted && to === `${tmp}.recovery`) {
-          interrupted = true
+        if (to === `${tmp}.recovery` && ++publications === 2) {
           throw new Error('simulated marker publication interruption')
         }
         originalRename(from, to)
@@ -272,14 +271,14 @@ describe('recovery descriptor containment', () => {
     vi.spyOn(console, 'error').mockImplementation(() => {})
 
     expect(recoverOrphanTmpFiles(directory, 'ticket', deps)).toEqual([])
-    expect(interrupted).toBe(true)
+    expect(publications).toBe(2)
     expect(readFileSync(target, 'utf8')).toBe(content)
     expect(readFileSync(tmp, 'utf8')).toBe(content)
     expect(JSON.parse(readFileSync(`${tmp}.recovery`, 'utf8'))).toMatchObject({
       targetPath: target,
       source: expect.any(Object),
+      target: expect.any(Object),
     })
-    expect(JSON.parse(readFileSync(`${tmp}.recovery`, 'utf8')).target).toBeUndefined()
 
     expect(recoverOrphanTmpFiles(directory)).toEqual([target])
     expect(existsSync(tmp)).toBe(false)

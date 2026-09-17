@@ -515,7 +515,7 @@ async function runCandidateFileAudit(input: {
   timeoutMs: number
   signal?: AbortSignal
 }): Promise<CandidateFileAuditReport> {
-  const changedFiles = parseCandidateChangedFiles(input.diff.nameStatus)
+  const changedFiles = parseCandidateChangedFiles(input.diff.nameStatusZ ?? input.diff.nameStatus)
   if (changedFiles.length === 0) {
     return buildCandidateFileAuditReport({
       status: 'passed',

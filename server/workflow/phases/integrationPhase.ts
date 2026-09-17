@@ -5,7 +5,7 @@ import { isMockOpenCodeMode } from '../../opencode/factory'
 import { prepareSquashCandidate } from '../../phases/integration/squash'
 import {
   resolveFinalTestCandidateFiles,
-  restoreTrackedFinalTestLocalFiles,
+  restoreTrackedFinalTestLocalFilesAsync,
 } from '../../phases/finalTest/fileEffectsAudit'
 import { emitPhaseLog } from './helpers'
 import { handleMockExecutionUnsupported } from './executionPhase'
@@ -143,7 +143,7 @@ export async function handleIntegration(
     'Analyzing ticket branch for squash...', { source: 'system', audience: 'all' })
 
   const finalTestFileResolution = resolveFinalTestCandidateFiles(ticketId)
-  const restoredTrackedLocalFiles = restoreTrackedFinalTestLocalFiles(
+  const restoredTrackedLocalFiles = await restoreTrackedFinalTestLocalFilesAsync(
     paths.worktreePath,
     finalTestFileResolution.audit,
   )

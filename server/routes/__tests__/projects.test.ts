@@ -82,6 +82,22 @@ function detachFromAppRegistry() {
 }
 
 describe('projectRouter project cleanup', () => {
+  it('reports invalid project paths without turning them into server errors', async () => {
+    const app = new Hono()
+    app.route('/api', projectRouter)
+
+    const checkGit = await app.request('/api/projects/check-git?path=relative/path')
+    expect(checkGit.status).toBe(200)
+    expect(await checkGit.json()).toMatchObject({
+      isGit: false,
+      status: 'invalid',
+    })
+
+    const listing = await app.request('/api/projects/ls?path=relative/path')
+    expect(listing.status).toBe(400)
+    expect(await listing.json()).toMatchObject({ error: expect.stringContaining('absolute') })
+  })
+
   it('persists concrete project Manual QA choices', () => {
     const repoDir = repoManager.createRepo()
     const project = attachProject({ folderPath: repoDir, name: 'QA project', shortname: 'MQA' })

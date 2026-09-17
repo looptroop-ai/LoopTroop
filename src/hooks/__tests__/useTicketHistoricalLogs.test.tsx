@@ -87,6 +87,52 @@ describe('useTicketHistoricalLogs', () => {
     })
   })
 
+  it('does not cancel a drain when an uncancellable caller joins a cancelled caller', async () => {
+    const olderResolvers: Array<(response: Response | PromiseLike<Response>) => void> = []
+    const fetchSpy = vi.spyOn(globalThis, 'fetch').mockImplementation(input => {
+      const url = new URL(String(input), 'http://localhost')
+      if (url.searchParams.has('before')) {
+        return new Promise<Response>(resolve => { olderResolvers.push(resolve) })
+      }
+      return createJsonResponse({
+        entries: [{ phase: 'CODING', entryId: 'new', content: 'new' }],
+        olderCursor: 'cursor-one',
+        hasOlder: true,
+      })
+    })
+    const { result } = renderHistoricalLogs({ scope: 'lifecycle', view: 'overview' })
+
+    await waitFor(() => expect(result.current.hasOlder).toBe(true))
+    let uncancellableDrain!: Promise<void>
+    await act(async () => {
+      uncancellableDrain = result.current.fetchAllOlder()
+      // The second caller belongs to a view that is already gone. It may cancel
+      // its own work, but it must not cancel the first caller's drain.
+      result.current.fetchAllOlder(() => true)
+      await Promise.resolve()
+    })
+    await waitFor(() => expect(fetchSpy).toHaveBeenCalledTimes(2))
+
+    await act(async () => {
+      olderResolvers.shift()!(await createJsonResponse({
+        entries: [{ phase: 'CODING', entryId: 'old-one', content: 'old one' }],
+        olderCursor: 'cursor-two',
+        hasOlder: true,
+      }))
+    })
+    await waitFor(() => expect(fetchSpy).toHaveBeenCalledTimes(3))
+
+    await act(async () => {
+      olderResolvers.shift()!(await createJsonResponse({
+        entries: [{ phase: 'CODING', entryId: 'old-two', content: 'old two' }],
+        olderCursor: null,
+        hasOlder: false,
+      }))
+      await uncancellableDrain
+    })
+    await waitFor(() => expect(result.current.entries.map(entry => entry.entryId)).toEqual(['old-two', 'old-one', 'new']))
+  })
+
   it('preserves the model array reference when fresh responses contain the same catalog', async () => {
     const fetchSpy = vi.spyOn(globalThis, 'fetch').mockImplementation(() => createJsonResponse({
       entries: [], modelIds: ['provider/a', 'provider/b'], olderCursor: null, hasOlder: false,

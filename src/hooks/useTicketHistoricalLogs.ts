@@ -281,6 +281,8 @@ type DrainState = {
   cancellationChecks: Set<() => boolean>
 }
 
+const NEVER_CANCELLED = () => false
+
 function normalizeCount(value: unknown): number | null {
   return typeof value === 'number' && Number.isFinite(value) && value >= 0 ? value : null
 }
@@ -451,11 +453,11 @@ export function useTicketHistoricalLogs(ticketId: string | undefined, scope: His
   const fetchAllOlder = useCallback((isCancelled?: () => boolean): Promise<void> => {
     const existing = drainStateRef.current
     if (existing?.key === queryScopeKey) {
-      if (isCancelled) existing.cancellationChecks.add(isCancelled)
+      existing.cancellationChecks.add(isCancelled ?? NEVER_CANCELLED)
       return existing.promise
     }
     const cancellationChecks = new Set<() => boolean>()
-    if (isCancelled) cancellationChecks.add(isCancelled)
+    cancellationChecks.add(isCancelled ?? NEVER_CANCELLED)
     const state: DrainState = {
       key: queryScopeKey,
       promise: Promise.resolve(),
@@ -463,7 +465,10 @@ export function useTicketHistoricalLogs(ticketId: string | undefined, scope: His
     }
     drainStateRef.current = state
     setDrainError(null)
-    const runIsCancelled = () => activeScopeKeyRef.current !== state.key
+    // The serialized key is not a generation: A -> B -> A can make an old A
+    // run look current again. The state identity is the actual ownership fence.
+    const runIsCancelled = () => drainStateRef.current !== state
+      || activeScopeKeyRef.current !== state.key
       || (state.cancellationChecks.size > 0 && [...state.cancellationChecks].every(check => check()))
     let unchangedCursor: string | null | undefined
     let cursorRecoveryUsed = false
@@ -515,8 +520,9 @@ export function useTicketHistoricalLogs(ticketId: string | undefined, scope: His
     state.promise = run
     const finish = (error?: unknown) => {
       if (drainStateRef.current !== state) return
+      const cancelled = runIsCancelled()
       drainStateRef.current = null
-      if (error && mountedRef.current && !runIsCancelled()) setDrainError(error)
+      if (error && mountedRef.current && !cancelled) setDrainError(error)
       // A cancelled walk may still have received a page before it observed
       // cancellation. Publish that page for the scope that is still mounted;
       // otherwise the cache remains frozen until an unrelated render.

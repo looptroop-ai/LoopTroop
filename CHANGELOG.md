@@ -268,6 +268,7 @@ Unreleased changes appear first and represent commits that have not yet been inc
 - Linked dependency directories are ignored alongside ordinary `node_modules` folders, so local worktree checks do not try to read them as source files.
 - A failed workspace-setup fallback prompt now keeps both attempts in its diagnostic report after the remote stop is confirmed, allowing normal attempt evaluation and retry handling.
 - Failed workspace runtime setup now exposes the existing setup-plan editor and extra-note retry, while setup-approval failures keep only their supported recovery controls.
+- Recovery regression checks accept Windows' canonical spelling of a temporary path while still requiring diagnostics to identify the exact preserved file.
 - Manual QA compares existing quarantine copies in bounded chunks, preserving distinct retry backups without loading entire files into memory.
 - Quarantine comparison now rechecks device/inode identity and metadata after reading, preserving a replacement that arrives while an existing backup is being compared.
 - Recovery keeps caller-visible paths stable across macOS and Windows canonicalization, fsyncs JSONL repairs, records fallback ownership before copying, and removes stale proof sidecars only for known artifacts. Manual QA drift mutations run through bounded asynchronous Git operations and serialize overlapping decisions per workspace.

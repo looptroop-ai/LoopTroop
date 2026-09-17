@@ -54,6 +54,16 @@ Actionlint/ShellCheck checks and all 20 focused workflow, daemon-evidence and
 argument-contract tests. Native Windows execution is left to CI; the Bash
 fixture change is not claimed as a locally executed Windows test.
 
+CI warnings were inspected separately from test failures. The artifact-download
+`DEP0005` warning comes from the pinned upstream action's extraction dependencies;
+[upstream issue 484](https://github.com/actions/download-artifact/issues/484)
+remains open. The Renovate validator invocation also emits transitive package
+deprecations and an optional native RE2-load warning before falling back to
+JavaScript regular expressions. These are not application dependency warnings
+and were not fixed or hidden by this review. Replacing the validator or vendoring
+the artifact action would be separate maintenance work, not evidence that these
+warnings have disappeared.
+
 The remaining review envelopes are accounted for here:
 
 - `5704700507`: correct; its container-repair and explicit Windows-path

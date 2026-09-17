@@ -65,7 +65,7 @@ Disposition labels:
 | 4031873552 | `server/io/recovery.ts` | correct | The mandatory recovery path guard rechecks the canonical root and all ancestors before opens, links, marker publication, promotion, and cleanup, rejecting symlink substitutions. |
 | 4031873557 | `server/git/github.ts` | correct | `readGitDiff` now requests a NUL-delimited, no-renames name-status stream, and candidate parsing preserves spaces, non-ASCII bytes, and other opaque path bytes. |
 | 4031873567 | `server/io/fileLock.ts` | not-applicable | Fresh installs do not promise migration of a pre-SQLite JSON lock; preserving an optional migration path would add a deletion race. |
-| 4031873572 | `server/io/atomicWrite.ts` | correct | `safeAtomicWriteWithin` rejects an existing final symlink before canonicalizing the destination; a final link introduced after validation is rejected by each containment recheck. Contained directory links remain supported. |
+| 4031873572 | `server/io/atomicWrite.ts` | correct | `safeAtomicWriteWithin` requires the shared path resolver to reject final symlinks during initial resolution and every recheck. Root's failing-then-passing regression inserts a link immediately before canonical resolution, proving a separate precheck was insufficient. Contained directory links remain supported. |
 | 4031887209 | `server/git/runCommand.ts` | correct | Timeout kill and abandonment timers remain referenced while settlement is deferred and are cleared only after settlement; focused command tests cover bounded timeout behavior. |
 | 4031887228 | `server/git/worktreeChanges.ts` | correct | Filesystem case behavior is platform-aware, preserving case-sensitive macOS volumes; trailing setup separators use a linear loop. |
 | 4031887231 | `server/git/worktreeRemoval.ts` | correct | After the awaited Git removal, cleanup revalidates managed-root containment and the parent directory device/inode identity before fallback deletion; a replacement-parent regression test preserves the outside tree. This narrows, but cannot mathematically eliminate, a names-based check/use race. |
@@ -74,6 +74,12 @@ Disposition labels:
 | 4031887244 | `server/storage/paths.ts` | correct | WSL drive mapping uses `resolve` and verifies the result remains below the mounted drive; traversal such as `D:/../../etc` is rejected. |
 
 ## Verification
+
+Root's follow-up bounds quarantine comparison memory to two 64 KiB buffers,
+uses the shared no-follow regular-file opener, and checks file size and
+modification time after reading. A multi-chunk regression verifies identical
+backup reuse and preservation of a later same-sized change at its recorded
+retry destination.
 
 Focused checks on this branch included:
 

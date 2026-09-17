@@ -1,6 +1,6 @@
 import { createHash } from 'node:crypto'
 import { writeFileSync, renameSync, openSync, fsyncSync, closeSync, mkdirSync, unlinkSync, fchmodSync, lstatSync, constants, realpathSync, writeSync } from 'fs'
-import { dirname, isAbsolute, resolve, win32 } from 'path'
+import { dirname, isAbsolute, win32 } from 'path'
 import { randomBytes } from 'crypto'
 import { ContainedPathError, resolveContainedPath } from '../lib/containedPath'
 
@@ -217,23 +217,16 @@ export function safeAtomicWriteWithin(
     throw new ContainedPathError('Atomic write requires a relative path')
   }
   const canonicalRoot = realpathSync.native(root)
-  const lexicalPath = resolve(canonicalRoot, relativePath)
-  try {
-    if (lstatSync(lexicalPath).isSymbolicLink()) {
-      throw new ContainedPathError('Atomic write destination must not be a symbolic link')
-    }
-  } catch (error) {
-    if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error
-  }
   const filePath = resolveContainedPath(canonicalRoot, relativePath, {
     allowMissing: true,
     allowMissingParents: true,
+    rejectFinalSymlink: true,
   })
   atomicWrite(filePath, content, options, (candidate, allowMissingParents = false) => {
     if (realpathSync.native(canonicalRoot) !== canonicalRoot) {
       throw new ContainedPathError('Atomic write root changed')
     }
-    if (resolveContainedPath(canonicalRoot, candidate, { allowMissing: true, allowMissingParents }) !== candidate) {
+    if (resolveContainedPath(canonicalRoot, candidate, { allowMissing: true, allowMissingParents, rejectFinalSymlink: true }) !== candidate) {
       throw new ContainedPathError('Atomic write destination changed')
     }
   })

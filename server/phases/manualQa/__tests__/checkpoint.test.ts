@@ -134,6 +134,27 @@ describe('Manual QA workspace checkpoints', () => {
       .toEqual(['drift_included', 'drift_discarded'])
   })
 
+  it('reuses identical quarantine bytes and preserves later same-sized drift separately', async () => {
+    const setup = await prepareFixture()
+    await prepareManualQaCheckpoint(setup.ticket.id, 1)
+    const source = resolve(setup.paths.worktreePath, 'README.md')
+    const content = Buffer.alloc(128 * 1024 + 7, 'a')
+    const destination = resolve(setup.paths.ticketDir, 'manual-qa/v1/quarantine/README.md')
+    mkdirSync(resolve(setup.paths.ticketDir, 'manual-qa/v1/quarantine'), { recursive: true })
+    writeFileSync(source, content)
+    writeFileSync(destination, content)
+
+    const first = await discardManualQaWorkspaceDrift(setup.ticket.id, 1, ['README.md'], 'same-backup')
+    expect(first.quarantinePaths?.['README.md']).toBe(destination)
+    content[content.length - 1] = 98
+    writeFileSync(source, content)
+    const second = await discardManualQaWorkspaceDrift(setup.ticket.id, 1, ['README.md'], 'new-backup')
+    const retryPath = second.quarantinePaths?.['README.md']
+    expect(retryPath).toContain(`${destination}.attempt-`)
+    expect(readFileSync(destination).at(-1)).toBe(97)
+    expect(readFileSync(retryPath!)).toEqual(content)
+  })
+
   it('reverts an explicitly audited committed drift path instead of accepting a changed HEAD silently', async () => {
     const setup = await prepareFixture()
     await prepareManualQaCheckpoint(setup.ticket.id, 1)

@@ -259,6 +259,7 @@ Unreleased changes appear first and represent commits that have not yet been inc
 - Three aliases re-exported for a question-diff type that no longer exists, the three helpers behind them, an execution-setup runtime-path list with no reader, and an execution-setup barrel re-exporting three artifact names every caller already imports from their own module.
 
 ### Fixed
+- Linked dependency directories are ignored alongside ordinary `node_modules` folders, so local worktree checks do not try to read them as source files.
 - A failed workspace-setup fallback prompt now keeps both attempts in its diagnostic report after the remote stop is confirmed, allowing normal attempt evaluation and retry handling.
 - Failed workspace runtime setup now exposes the existing setup-plan editor and extra-note retry, while setup-approval failures keep only their supported recovery controls.
 - Trusted program resolution automatically trusts OpenCode's canonical binary directory (`~/.opencode/bin`) and paths specified via `OPENCODE_INSTALL_DIR` or `OPENCODE_DIR`. When OpenCode is installed or updated on Linux as root, official release archives unpacked with GNU `tar` preserve the build runner's UID (`1001`), which previously caused LoopTroop's ancestor ownership security check to refuse the binary on startup.

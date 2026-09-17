@@ -190,7 +190,7 @@ describe.concurrent('workflow metadata', () => {
     expect(canceled?.description).toContain('If active remote work exists')
     expect(canceled?.description).toContain('stop to be confirmed')
     expect(canceled?.description).toContain('false, thrown, or unverified stop')
-    expect(canceled?.details.steps.join(' ')).toContain('before any artifact cleanup')
+    expect(canceled?.details.steps.join(' ')).toContain('cleanup only after the remote stop is confirmed')
 
     expect(blocked?.description).toContain('both the project database and ticket marker are unavailable')
     expect(blocked?.description).toContain('a restart cannot claim recovery')
@@ -241,7 +241,9 @@ describe.concurrent('workflow metadata', () => {
       const phase = WORKFLOW_PHASES.find((candidate) => candidate.id === phaseId)
 
       expect(phase?.description).toContain('Draft edits autosave with visible state and last-save time')
-      expect(phase?.description).toContain('explicit Save is required to update the authoritative')
+      expect(phase?.description).toContain(phaseId === 'WAITING_EXECUTION_SETUP_APPROVAL'
+        ? 'explicit Save requires the loaded plan hash'
+        : 'explicit Save is required to update the authoritative')
       expect(phase?.details.overview).toContain(
         phaseId === 'WAITING_BEADS_APPROVAL'
           ? 'review task descriptions, dependencies, acceptance criteria'

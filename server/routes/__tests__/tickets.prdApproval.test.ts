@@ -656,7 +656,10 @@ describe('ticketRouter PRD approval routes', () => {
     releaseRestart()
     const firstResponse = await firstResponsePromise
     prepareRestartSpy.mockRestore()
-    expect(firstResponse.status).toBe(200)
+    expect(firstResponse.status).toBe(409)
+    expect(readFileSync(`${paths.ticketDir}/prd.yaml`, 'utf-8')).toBe(remoteRaw)
+    expect(getTicketByRef(ticket.id)?.status).toBe('WAITING_BEADS_APPROVAL')
+    expect(getLatestPhaseArtifact(ticket.id, 'beads', 'DRAFTING_BEADS')).toBeDefined()
   })
 
   it('fences an expired planning holder before it can invalidate successor work', async () => {

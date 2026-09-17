@@ -1,7 +1,7 @@
 import { existsSync, readdirSync, statSync, type Dirent } from 'node:fs'
-import { resolve } from 'node:path'
+import { basename, resolve } from 'node:path'
 import { inspectDaemonLock } from '../lib/daemonLock'
-import { clearStaleDaemonState, readDaemonState } from '../lib/daemonPaths'
+import { clearDaemonState, readDaemonState } from '../lib/daemonPaths'
 import { matchProcess } from '../lib/processIdentity'
 import { getProjectWorktreesRoot, normalizeFolderPath } from '../storage/paths'
 import { markerVouchesFor, readWorktreeOwnerMarker } from '../storage/worktreeOwnership'
@@ -293,9 +293,16 @@ export function inspectOrphanedOpenCode(configDir?: string): OpenCodeVerdict {
  */
 async function stopOpenCode(pid: number, startToken: string | undefined): Promise<boolean> {
   if (process.platform !== 'win32') {
+    const beforeGroup = matchProcess(pid, startToken)
+    if (beforeGroup.kind !== 'same') return !isProcessAlive(pid)
+
     try {
       process.kill(-pid, 'SIGTERM')
     } catch {
+      // A group can disappear while the leader is still present. Recheck the
+      // leader before falling back to a direct signal, because the pid may
+      // have been reused in that gap.
+      if (matchProcess(pid, startToken).kind !== 'same') return !isProcessAlive(pid)
       try {
         process.kill(pid, 'SIGTERM')
       } catch {
@@ -306,15 +313,73 @@ async function stopOpenCode(pid: number, startToken: string | undefined): Promis
   }
 
   if (matchProcess(pid, startToken).kind !== 'same') return !isProcessAlive(pid)
-  await killProcessTree(pid)
+  await killProcessTree(pid, startToken ?? null)
   return await waitForExit(pid, OPENCODE_GRACEFUL_MS)
 }
 
-async function removeCandidates(candidates: WorktreeCandidate[]): Promise<number> {
+export function recheckWorktreeCleanupCandidate(
+  candidate: WorktreeCandidate,
+  closedTicketIds: readonly string[],
+): WorktreeCandidate {
+  const base = { ...candidate, removable: false }
+  if (!assertManagedWorktreesRoot(candidate.projectRoot, candidate.worktreesRoot)) {
+    return { ...base, reason: 'its project is no longer available' }
+  }
+
+  const marker = readWorktreeOwnerMarker(candidate.path)
+  if (marker === null) return { ...base, reason: NO_MARKER_REASON }
+  if (!markerVouchesFor(marker, {
+    projectRoot: candidate.projectRoot,
+    externalId: basename(candidate.path),
+  })) {
+    return { ...base, reason: 'its ownership marker describes a different worktree' }
+  }
+
+  const idleMs = Date.now() - lastActivityAt(candidate.path, marker.createdAt)
+  if (idleMs < LIVE_WINDOW_MS) {
+    return {
+      ...base,
+      reason: `changed ${Math.max(0, Math.round(idleMs / 1_000))}s ago, so it may still be in use`,
+    }
+  }
+
+  // A stillborn directory may become a real worktree while the preview is on
+  // screen. Treat that as live work, even when its ticket is already closed.
+  if (candidate.reason === 'not registered with git'
+    && readRegisteredWorktrees(candidate.projectRoot).has(normalizeFolderPath(candidate.path))) {
+    return { ...base, reason: 'became registered with git while cleanup was waiting' }
+  }
+
+  // Keep the closed-ticket snapshot as an additional guard for a registered
+  // worktree. If its ticket was reopened, it is live work again.
+  if (candidate.reason === 'its ticket is finished'
+    && !closedTicketIds.includes(basename(candidate.path))) {
+    return { ...base, reason: 'its ticket is no longer finished' }
+  }
+
+  const { blocker } = classifyGitState(candidate.path)
+  return blocker === null
+    ? { ...candidate, removable: true }
+    : { ...base, reason: blocker }
+}
+
+async function removeCandidates(
+  candidates: WorktreeCandidate[],
+  closedByProject: ReadonlyMap<string, () => readonly string[]>,
+): Promise<number> {
   const { removeWorktree } = await import('../git/worktreeRemoval')
   let removed = 0
 
   for (const candidate of candidates) {
+    const rechecked = recheckWorktreeCleanupCandidate(
+      candidate,
+      closedByProject.get(candidate.projectRoot)?.() ?? [],
+    )
+    if (!rechecked.removable) {
+      process.stdout.write(`  keeping   ${candidate.path}  (${rechecked.reason})\n`)
+      continue
+    }
+
     try {
       await removeWorktree({
         projectRoot: candidate.projectRoot,
@@ -382,10 +447,12 @@ export async function cleanCommand(options: CleanOptions): Promise<number> {
   // where the app has never booted, and hydration reads tables that only exist
   // after startup has created them.
   const { listAttachedProjectRoots, listClosedTicketIds } = await import('../storage/projects')
-  const candidates = planWorktreeCleanup(listAttachedProjectRoots().map((projectRoot) => ({
-    projectRoot,
-    closedTicketIds: listClosedTicketIds(projectRoot),
-  })))
+  const closedByProject = new Map<string, () => readonly string[]>()
+  const candidates = planWorktreeCleanup(listAttachedProjectRoots().map((projectRoot) => {
+    const closedTicketIds = listClosedTicketIds(projectRoot)
+    closedByProject.set(normalizeFolderPath(projectRoot), () => listClosedTicketIds(projectRoot))
+    return { projectRoot, closedTicketIds }
+  }))
   const orphan = inspectOrphanedOpenCode(options.configDir)
 
   if (candidates.length === 0 && orphan.kind === 'nothing') {
@@ -422,7 +489,7 @@ export async function cleanCommand(options: CleanOptions): Promise<number> {
     return 0
   }
 
-  const removed = await removeCandidates(removable)
+  const removed = await removeCandidates(removable, closedByProject)
   process.stdout.write(`\nRemoved ${removed} worktree(s).\n`)
 
   let orphanSurvived = false
@@ -431,9 +498,9 @@ export async function cleanCommand(options: CleanOptions): Promise<number> {
     const stopped = await stop(orphan.pid, recorded?.opencode?.startToken)
     if (stopped) {
       process.stdout.write(`Stopped the orphaned OpenCode server (pid ${orphan.pid}).\n`)
-      // The record described a daemon that is gone and a server that is now gone
-      // with it, so leaving it would point the next run at a recycled pid.
-      clearStaleDaemonState(options.configDir)
+      // The record may have been replaced while stopping the orphan. Only clear
+      // the generation inspected at the start of this command.
+      if (recorded !== null) clearDaemonState(recorded.instanceId, options.configDir)
     } else {
       orphanSurvived = true
       process.stderr.write(

@@ -71,6 +71,12 @@ looptroop open
 `open` starts LoopTroop in the background if it is not already running. Use
 `looptroop start` if you want the service without a browser.
 
+For maintenance, cleanup with `--apply` checks each abandoned worktree again
+immediately before removal and keeps it when ownership, activity, registration,
+or Git state has changed. Process cleanup refuses a signal when the recorded
+process identity is missing, recycled, or otherwise unverifiable. See the
+[CLI Reference](https://www.looptroop.ovh/docs/cli) for the service commands.
+
 Then configure your settings and models (from providers already added in
 OpenCode), attach a local repository with a GitHub origin, create a ticket, and
 start it.

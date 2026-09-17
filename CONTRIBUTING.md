@@ -56,6 +56,11 @@ from the `.d.mts` file beside it; keep the two in step.
 
 For code changes, run the relevant linting, typechecking, and tests for the area you touched.
 
+Changes to CLI or process behavior also belong in the website's CLI and
+operations docs. Keep process-safety notes explicit about identity checks,
+forceful Windows termination, and platform limits; do not promise lifecycle
+behavior that was not verified.
+
 ## Documentation and changelog
 
 Keep documentation updated with behavior changes. Published documentation lives in the public [LoopTroop-Website repository](https://github.com/looptroop-ai/LoopTroop-Website), while the canonical application changelog lives in `CHANGELOG.md`.

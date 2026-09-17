@@ -2,6 +2,7 @@ import { dirname, resolve } from 'node:path'
 import { closeSync, existsSync, openSync, readFileSync, rmSync } from 'node:fs'
 import { CONFIG_FILE_MODE, ensureSecureDir, resolveAppConfigDir, secureFile } from './appConfigDir'
 import { safeAtomicWrite } from '../io/atomicWrite'
+import { acquireDaemonLock, type AcquiredLock } from './daemonLock'
 
 /**
  * Informational record of the running daemon. Never the locking primitive:
@@ -116,6 +117,14 @@ export function getDaemonLogPath(configDir = resolveAppConfigDir()): string {
   return resolve(getDaemonLogDir(configDir), 'daemon.log')
 }
 
+/** Builds the daemon's HTTP origin, including brackets for IPv6 literals. */
+export function daemonOrigin(host: string, port: number): string {
+  const address = host.startsWith('[') && host.endsWith(']')
+    ? host.slice(1, -1)
+    : host
+  return `http://${address.includes(':') ? `[${address}]` : address}:${port}`
+}
+
 function isDaemonState(value: unknown): value is DaemonState {
   if (typeof value !== 'object' || value === null) return false
   const candidate = value as Record<string, unknown>
@@ -170,7 +179,12 @@ function writeDaemonRecord(record: DaemonRecord, configDir?: string): void {
   secureFile(statePath)
 }
 
-/** Records the live daemon: its API token, port and instance id. */
+/**
+ * Records the live daemon: its API token, port and instance id.
+ *
+ * Production callers hold `daemon.lock` for the whole publication window;
+ * cleanup takes that same lock before deciding whether to remove this record.
+ */
 export function writeDaemonState(state: DaemonState, configDir?: string): void {
   writeDaemonRecord(state, configDir)
 }
@@ -181,7 +195,8 @@ export function writeDaemonState(state: DaemonState, configDir?: string): void {
  * Written where the state file would have gone, because it answers the same
  * question — "what is LoopTroop doing?" — for the case where the answer is
  * nothing, and because a reader that finds it has by definition found no
- * running daemon.
+ * running daemon. The daemon-start caller holds `daemon.lock` while publishing
+ * it, just as it does for a live state record.
  */
 export function writeDaemonStartFailure(failure: DaemonStartFailure, configDir?: string): void {
   writeDaemonRecord({ startFailure: failure }, configDir)
@@ -204,8 +219,28 @@ export function readDaemonStartFailure(configDir?: string): DaemonStartFailure |
  * started in the meantime is left alone.
  */
 export function clearDaemonState(instanceId: string, configDir?: string): void {
+  // Take the same lock used by every daemon state writer. The first read is a
+  // cheap no-op for the common absent/successor case; the second read is the
+  // decision made while this cleanup owns the lock, so a writer that won the
+  // race cannot be deleted by the old generation.
   if (readDaemonState(configDir)?.instanceId !== instanceId) return
-  rmSync(getDaemonStatePath(configDir), { force: true })
+
+  let lock: AcquiredLock
+  try {
+    lock = acquireDaemonLock(configDir)
+  } catch {
+    // A live daemon owns the lock, or the lock cannot be judged. Either way,
+    // refusing to remove state is safer than touching a record we cannot
+    // serialize against.
+    return
+  }
+
+  try {
+    if (readDaemonState(configDir)?.instanceId !== instanceId) return
+    rmSync(getDaemonStatePath(configDir), { force: true })
+  } finally {
+    lock.release()
+  }
 }
 
 /**

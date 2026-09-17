@@ -16,6 +16,7 @@ import {
   cleanCommand,
   inspectOrphanedOpenCode,
   planWorktreeCleanup,
+  recheckWorktreeCleanupCandidate,
 } from '../server/cli/cleanCommand'
 import { initializeDatabase } from '../server/db/init'
 import { sqlite } from '../server/db/index'
@@ -342,6 +343,23 @@ describe('clean command', () => {
   })
 
   describe('applying the plan', () => {
+    it('rechecks ownership and dirtiness before removal', () => {
+      const project = makeProject()
+      const worktree = addWorktree(project, 'ticket-raced')
+      git(worktree, ['push', '-u', 'origin', 'ticket-raced'])
+      backdate(worktree)
+      const [candidate] = planFor(project, ['ticket-raced'])
+      expect(candidate?.removable).toBe(true)
+
+      writeFileSync(resolve(worktree, 'changed-after-scan.txt'), 'keep this\n')
+      backdate(worktree)
+
+      const rechecked = recheckWorktreeCleanupCandidate(candidate!, ['ticket-raced'])
+      expect(rechecked.removable).toBe(false)
+      expect(rechecked.reason).toContain('uncommitted')
+      expect(existsSync(worktree)).toBe(true)
+    })
+
     it('deletes nothing without --apply', async () => {
       const project = makeProject()
       const worktree = addSkeleton(project, 'ticket-listed')

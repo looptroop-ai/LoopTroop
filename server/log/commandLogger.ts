@@ -220,7 +220,19 @@ function redactCwd(args: string[]): string[] {
   for (let i = 0; i < args.length; i++) {
     if (args[i] === '-C' && i + 1 < args.length) {
       const fullPath = args[i + 1]!
-      const shortPath = fullPath.split('/').slice(-2).join('/')
+      const segments = fullPath.split(/[\\/]+/).filter(Boolean)
+      const homeIndex = segments.findIndex((segment, index) =>
+        /^(?:users|home)$/i.test(segment) && index + 1 < segments.length,
+      )
+      const rootIndex = segments.findIndex((segment, index) =>
+        /^root$/i.test(segment) && index + 1 < segments.length,
+      )
+      const visible = homeIndex >= 0
+        ? segments.slice(homeIndex + 2)
+        : rootIndex >= 0
+          ? segments.slice(rootIndex + 1)
+          : segments
+      const shortPath = visible.slice(-2).join('/') || '.'
       result.push('-C', shortPath)
       i++ // skip the path argument
     } else {

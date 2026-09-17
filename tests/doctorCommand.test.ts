@@ -6,7 +6,7 @@ import { join } from 'node:path'
 import { doctorCommand, runChecks, isOpenCodeCliLaunchable, judgeOpenCode, runProbe } from '../server/cli/doctorCommand'
 import { NODE_FLOOR as FLOOR } from '../server/lib/nodeFloor'
 import { formatNodeVersion } from '../shared/nodeFloor'
-import type { DaemonState } from '../server/lib/daemonPaths'
+import { writeDaemonState, type DaemonState } from '../server/lib/daemonPaths'
 import { APP_VERSION } from '../server/lib/appVersion'
 import { removeTempDir } from '../server/test/tempDir'
 
@@ -64,6 +64,32 @@ describe('doctor command', () => {
     expect(names).toContain('schema')
     expect(names).toContain('opencode')
     expect(names).toContain('daemon')
+  })
+
+  it('brackets an IPv6 daemon address in its report', async () => {
+    const configDir = useConfigDir()
+    writeDaemonState({
+      instanceId: 'ipv6-daemon',
+      pid: process.pid,
+      host: '::1',
+      port: 4317,
+      startedAt: new Date().toISOString(),
+      version: '0.0.0-test',
+      apiToken: 'test-token',
+    }, configDir)
+    vi.spyOn(globalThis, 'fetch').mockImplementation(async (input) => {
+      if (String(input).endsWith('/api/health')) {
+        return new Response(JSON.stringify({ instanceId: 'ipv6-daemon' }), {
+          status: 200,
+          headers: { 'Content-Type': 'application/json' },
+        })
+      }
+      return new Response('{}', { status: 200 })
+    })
+
+    const check = (await runChecks()).find((entry) => entry.name === 'daemon')
+
+    expect(check?.detail).toContain('http://[::1]:4317')
   })
 
   /**

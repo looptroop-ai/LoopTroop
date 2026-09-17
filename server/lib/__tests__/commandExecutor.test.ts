@@ -5,6 +5,8 @@ import type { spawn } from 'node:child_process'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import type { CommandSpec } from '../../../shared/commandSpec'
 import { buildCommandInvocation, executeCommand, resolveCommandCwd, resolveCommandProgram } from '../commandExecutor'
+import * as processIdentity from '../processIdentity'
+import * as processTree from '../processTree'
 import { makeTempDir, removeTempDir } from '../../test/tempDir'
 import { FORCE_KILL_DELAY_MS, PROCESS_ABANDON_GRACE_MS } from '../constants'
 
@@ -581,5 +583,72 @@ describe('executeCommand', () => {
   it('rejects traversal before starting a process', async () => {
     const repository = makeRepo()
     expect(() => resolveCommandCwd(repository, '../outside')).toThrow(/repository root/)
+  })
+
+  it('passes a missing spawn token through as a non-destructive timeout', async () => {
+    const readToken = vi.spyOn(processIdentity, 'readProcessStartToken').mockReturnValue(null)
+    const escalate = vi.spyOn(processTree, 'terminateProcessTreeWithEscalation').mockImplementation(() => undefined)
+    try {
+      vi.useFakeTimers()
+      const child = makeUnkillableChild()
+      const pending = executeCommand({
+        mode: 'process',
+        program: 'irrelevant',
+        args: [],
+        cwd: '.',
+        env: {},
+        timeoutMs: 25,
+      }, {
+        repoRoot: makeRepo(),
+        platform: 'linux',
+        resolveProgram: () => ({ path: 'irrelevant' }),
+        spawnProcess: (() => child) as unknown as typeof spawn,
+      })
+
+      await vi.advanceTimersByTimeAsync(25)
+      expect(readToken).toHaveBeenCalledWith(4242)
+      expect(escalate).toHaveBeenCalledWith(child, 'linux', null)
+
+      child.emit('close', null, 'SIGTERM')
+      expect((await pending).timedOut).toBe(true)
+    } finally {
+      readToken.mockRestore()
+      escalate.mockRestore()
+    }
+  })
+
+  it('keeps the spawn token when the pid is recycled before timeout', async () => {
+    let token: string | null = 'spawn-generation'
+    const readToken = vi.spyOn(processIdentity, 'readProcessStartToken').mockImplementation(() => token)
+    const escalate = vi.spyOn(processTree, 'terminateProcessTreeWithEscalation').mockImplementation(() => undefined)
+    try {
+      vi.useFakeTimers()
+      const child = makeUnkillableChild()
+      const pending = executeCommand({
+        mode: 'process',
+        program: 'irrelevant',
+        args: [],
+        cwd: '.',
+        env: {},
+        timeoutMs: 25,
+      }, {
+        repoRoot: makeRepo(),
+        platform: 'linux',
+        resolveProgram: () => ({ path: 'irrelevant' }),
+        spawnProcess: (() => child) as unknown as typeof spawn,
+      })
+
+      // This is the replacement visible to the escalation's later identity
+      // check; the executor must still hand it the token captured at spawn.
+      token = 'replacement-generation'
+      await vi.advanceTimersByTimeAsync(25)
+      expect(escalate).toHaveBeenCalledWith(child, 'linux', 'spawn-generation')
+
+      child.emit('close', null, 'SIGTERM')
+      expect((await pending).timedOut).toBe(true)
+    } finally {
+      readToken.mockRestore()
+      escalate.mockRestore()
+    }
   })
 })

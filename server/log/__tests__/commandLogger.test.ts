@@ -49,6 +49,34 @@ describe('commandLogger', () => {
     expect(logs[2]!.content).toBe('[CMD] $ git push  →  error: remote rejected')
   })
 
+  it('redacts Windows path prefixes as path segments', () => {
+    const logs: string[] = []
+    withCommandLogging(
+      'test-ticket', 'TEST-1', 'DRAFT',
+      () => {
+        logCommand('git', ['-C', String.raw`C:\Users\Alice\project\worktree`, 'status'], { ok: true })
+      },
+      (_phase, _type, content) => { logs.push(content) },
+    )
+
+    expect(logs[0]).toContain('-C project/worktree')
+    expect(logs[0]).not.toContain('Alice')
+  })
+
+  it('does not expose a profile name when the path has one visible segment', () => {
+    const logs: string[] = []
+    withCommandLogging(
+      'test-ticket', 'TEST-1', 'DRAFT',
+      () => {
+        logCommand('git', ['-C', String.raw`C:\Users\Alice\project`, 'status'], { ok: true })
+      },
+      (_phase, _type, content) => { logs.push(content) },
+    )
+
+    expect(logs[0]).toContain('-C project')
+    expect(logs[0]).not.toContain('Alice')
+  })
+
   it('summarizes silent internal commands instead of showing generic ok', () => {
     const logs: string[] = []
     withCommandLogging(

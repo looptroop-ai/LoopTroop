@@ -4,6 +4,8 @@ import { createRuntime, type LoopTroopRuntime } from '../createRuntime'
 import { IncompatibleSchemaVersionError } from '../db/schemaVersion'
 import { acquireDaemonLock, type AcquiredLock } from '../lib/daemonLock'
 import {
+  clearDaemonState,
+  daemonOrigin,
   getDaemonStatePath,
   writeDaemonStartFailure,
   writeDaemonState,
@@ -278,7 +280,7 @@ export async function startDaemon(options: StartDaemonOptions): Promise<DaemonHa
     // is minted per call: a nonce is single-use and expires, so a URL captured
     // once cannot be replayed or reused later.
     const bootstrapUrl = (): string =>
-      `http://${address.hostname}:${address.port}/#bootstrap=${bootstrapNonces.issue()}`
+      `${daemonOrigin(address.hostname, address.port)}/#bootstrap=${bootstrapNonces.issue()}`
 
     heartbeat = setInterval(() => lock.heartbeat(), HEARTBEAT_INTERVAL_MS)
     // The daemon's own timer must not be the reason the process stays alive.
@@ -298,9 +300,14 @@ export async function startDaemon(options: StartDaemonOptions): Promise<DaemonHa
           await runtime?.close()
         } finally {
           // Only stops a server this daemon started; an adopted one is left alone.
-          await opencode?.stop()
-          rmSync(getDaemonStatePath(options.configDir), { force: true })
-          lock.release()
+          try {
+            await opencode?.stop()
+          } finally {
+            // The state cleanup takes the existing lock itself. Release this
+            // generation first so a successor can never be mistaken for it.
+            lock.release()
+            clearDaemonState(instanceId, options.configDir)
+          }
         }
       })()
       return stopping

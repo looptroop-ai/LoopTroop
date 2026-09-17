@@ -2,6 +2,7 @@ import { spawn, type ChildProcess } from 'node:child_process'
 import { setTimeout as delay } from 'node:timers/promises'
 import { isProcessAlive, killProcessTree } from '../cli/processControl'
 import { planProgramLaunch, resolveTrustedExecutable } from '../lib/executablePath'
+import { matchProcess, readProcessStartToken } from '../lib/processIdentity'
 import { getErrorMessage } from '@shared/typeGuards'
 
 /** Attempts after a crash before the daemon stops trying and reports degraded. */
@@ -63,32 +64,54 @@ export interface ProcessTermination {
    * Asks the tree to exit. False when this platform cannot ask — Windows has no
    * SIGTERM — which sends the caller straight to `force`.
    */
-  request(pid: number): boolean
+  request(pid: number, expectedStartToken: string | null): boolean
   /** Ends the tree outright. */
-  force(pid: number): Promise<void>
+  force(pid: number, expectedStartToken: string | null): Promise<void>
   /** Whether the process is gone. */
-  hasExited(pid: number): boolean
+  hasExited(pid: number, expectedStartToken: string | null): boolean
+}
+
+function matchesExpectedProcess(pid: number, expectedStartToken: string | null): boolean {
+  if (expectedStartToken === null || !isProcessAlive(pid)) return false
+  return matchProcess(pid, expectedStartToken).kind === 'same'
 }
 
 export const defaultTermination: ProcessTermination = {
-  request(pid) {
+  request(pid, expectedStartToken) {
     if (process.platform === 'win32') return false
+    if (!matchesExpectedProcess(pid, expectedStartToken)) return false
     try {
       // Negative pid signals the group, so OpenCode's own children go too.
       process.kill(-pid, 'SIGTERM')
       return true
     } catch {
+      // The group may not exist for a foreground launch. Revalidate the
+      // original process before falling back to a direct signal: the pid may
+      // have exited and been reused while the group signal was attempted.
+      if (!matchesExpectedProcess(pid, expectedStartToken)) return false
       try {
         process.kill(pid, 'SIGTERM')
         return true
       } catch {
-        // Already gone, which is the outcome the caller wanted.
-        return true
+        return false
       }
     }
   },
   force: killProcessTree,
-  hasExited: (pid) => !isProcessAlive(pid),
+  hasExited: (pid, expectedStartToken) => {
+    if (!isProcessAlive(pid)) return true
+    // A live replacement is no longer ours. Treat it as exited from this
+    // supervisor's point of view; force() is still guarded and will refuse it.
+    // An unknown identity is not confirmation: shutdown reports that stop was
+    // unverified instead of silently claiming the process is gone.
+    return expectedStartToken !== null && matchProcess(pid, expectedStartToken).kind === 'different'
+  },
+}
+
+interface ManagedChild {
+  process: ChildProcess
+  pid: number
+  startToken: string | null
 }
 
 export interface OpenCodeSupervisorOptions {
@@ -147,7 +170,7 @@ export async function probeOpenCode(baseUrl: string): Promise<boolean> {
  * this supervisor started is ours to terminate.
  */
 export class OpenCodeSupervisor {
-  private child: ChildProcess | null = null
+  private child: ManagedChild | null = null
   private status: OpenCodeStatus
   private restartAttempts = 0
   private stopping = false
@@ -260,6 +283,11 @@ export class OpenCodeSupervisor {
       detached: process.platform !== 'win32',
       windowsVerbatimArguments: launch.windowsVerbatimArguments,
     })
+    const pid = child.pid
+    // Capture the identity at spawn time. A pid alone can be recycled while a
+    // health wait or shutdown is in progress, so every later termination check
+    // must compare against this original token rather than infer one late.
+    const startToken = pid === undefined ? null : readProcessStartToken(pid)
 
     const spawnFailed = new Promise<never>((_, reject) => {
       child.once('error', () => reject(new OpenCodeMissingError(this.options.baseUrl)))
@@ -278,7 +306,7 @@ export class OpenCodeSupervisor {
     // Assigned before the wait, so a stop() arriving mid-launch still finds the
     // child. Everything that can go wrong from here leaves a process running
     // that nobody has a handle to unless this is cleaned up on the way out.
-    this.child = child
+    this.child = pid === undefined ? null : { process: child, pid, startToken }
 
     try {
       await Promise.race([this.waitForHealth(), spawnFailed, exitedEarly])
@@ -288,7 +316,7 @@ export class OpenCodeSupervisor {
       // have stopped it. `opencode serve` also holds the port, so the next
       // start would adopt this broken process rather than replace it.
       this.child = null
-      await this.terminate(child)
+      await this.terminate(child, startToken)
       throw error
     }
 
@@ -296,7 +324,7 @@ export class OpenCodeSupervisor {
     child.once('exit', () => {
       // Dropped so a later stop() cannot signal a pid this process no longer
       // owns; a restart assigns its own child.
-      if (this.child === child) this.child = null
+      if (this.child?.process === child) this.child = null
       void this.handleUnexpectedExit()
     })
 
@@ -309,13 +337,13 @@ export class OpenCodeSupervisor {
     // A child with no pid never started. Recording 0 produced a status that
     // claimed a live managed server, while `isProcessAlive(0)` is false and no
     // stop path could ever reach it.
-    if (child.pid === undefined) {
+    if (pid === undefined) {
       this.child = null
       child.kill('SIGKILL')
       throw new Error('OpenCode process was started but reported no process id.')
     }
 
-    return { kind: 'managed', baseUrl: this.options.baseUrl, pid: child.pid }
+    return { kind: 'managed', baseUrl: this.options.baseUrl, pid }
   }
 
   private async waitForHealth(): Promise<void> {
@@ -401,30 +429,36 @@ export class OpenCodeSupervisor {
    * same treatment: it is a real `opencode serve`, holding the port, and by then
    * the status says `degraded` rather than `managed`.
    */
-  private async terminate(child: ChildProcess): Promise<void> {
+  private async terminate(child: ChildProcess, expectedStartToken: string | null): Promise<void> {
     const pid = child.pid
     if (pid === undefined || child.exitCode !== null) return
 
     const termination = this.options.termination ?? defaultTermination
     const budgets = this.options.exitBudgets ?? { gracefulMs: GRACEFUL_EXIT_MS, forceMs: FORCE_EXIT_MS }
 
-    if (termination.request(pid) && await this.waitForExit(termination, pid, budgets.gracefulMs)) return
+    if (termination.request(pid, expectedStartToken)
+      && await this.waitForExit(termination, pid, expectedStartToken, budgets.gracefulMs)) return
 
-    await termination.force(pid)
-    if (await this.waitForExit(termination, pid, budgets.forceMs)) return
+    await termination.force(pid, expectedStartToken)
+    if (await this.waitForExit(termination, pid, expectedStartToken, budgets.forceMs)) return
 
     // Reported rather than thrown: shutdown continues either way, and the one
     // thing worse than a surviving OpenCode is a daemon that will not exit.
     console.error(`[opencode] pid ${pid} did not exit; it may still be holding ${this.options.baseUrl}.`)
   }
 
-  private async waitForExit(termination: ProcessTermination, pid: number, timeoutMs: number): Promise<boolean> {
+  private async waitForExit(
+    termination: ProcessTermination,
+    pid: number,
+    expectedStartToken: string | null,
+    timeoutMs: number,
+  ): Promise<boolean> {
     const deadline = Date.now() + timeoutMs
     while (Date.now() < deadline) {
-      if (termination.hasExited(pid)) return true
+      if (termination.hasExited(pid, expectedStartToken)) return true
       await delay(50)
     }
-    return termination.hasExited(pid)
+    return termination.hasExited(pid, expectedStartToken)
   }
 
   /** Only ever stops a server this supervisor started. */
@@ -437,6 +471,6 @@ export class OpenCodeSupervisor {
     // or a restart that failed leaves the status `degraded` while the process
     // is still running — gating on `managed` orphaned exactly those. An adopted
     // server never sets a child in the first place, so it stays out of reach.
-    if (child) await this.terminate(child)
+    if (child) await this.terminate(child.process, child.startToken)
   }
 }

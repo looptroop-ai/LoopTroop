@@ -58,6 +58,34 @@ covered downstream tests, plus lint and diff checks. The packet did not verify
 native Windows, physical power loss, E2E behavior, or the complete application
 part gate.
 
+## Accepted CLI/process packet
+
+The CLI/process packet is accepted for this integration checkpoint. Its source
+snapshot is `be5d4e0414c061602b38608f4800945aa9f4054c`, based on
+`330962d76618f1de14cb9a176ba0f000ba5e2eed`; detailed evidence is in
+`/tmp/looptroop-cli-evidence.md`. Final source review and the full part gate
+remain with the root worker.
+
+| Finding | Status | Evidence and permanent coverage | Limits |
+| --- | --- | --- | --- |
+| G17 | PASS, final pending | `clean --apply` rechecks managed-root containment, ownership markers, activity, ticket registration, and Git state immediately before removal; `tests/cleanCommand.test.ts` keeps a worktree after a post-plan edit. | No E2E or lifecycle run; native Windows is not locally verified. |
+| G18 | PASS, final pending | Stale daemon cleanup re-reads the requested instance under the existing `daemon.lock` before deleting `daemon.json`; start publication uses that lock, so a successor record is preserved. | No E2E or lifecycle run; native Windows is not locally verified. |
+| G19/G20 | PASS, final pending | Destructive signals require a matching process start token and are rechecked before each signal; missing or changed identity refuses cleanup, and a concurrent start cannot report another invocation's daemon as its own. | No E2E or lifecycle run; native Windows is not locally verified. |
+| G21 | PASS, final pending | Timeout escalation carries the captured process start token, retains validated descendants when the leader closes, and refuses recycled or unverifiable identities. The existing Git descendant behavior remains separately covered. | Native Windows and non-Linux retained-group behavior are not locally verified; Windows `taskkill /T /F` is forceful. |
+| G27 | PASS, final pending | Shared daemon-origin formatting brackets bare or already-bracketed IPv6 literals across health, status, open, setup, and diagnostics output. | Native Windows/macOS are not locally verified. |
+| G28 | PASS, final pending | `logs --follow` registers its watcher before draining the handoff, preserves byte offset, partial-line, and UTF-8 decoder state, and handles rotation without duplicate or corrupted output. | Native Windows/macOS are not locally verified. |
+| G31.1/4 | PASS, final pending | Windows command-log redaction handles both slash styles and keeps only the final visible path segments; runtime `start` waits for an active `close` before reusing or creating startup state. | Native Windows is not locally verified. Together with G31.2/3 above, this covers the whole G31 finding. |
+
+The exact 18-file reserved CLI/process suite passed 263 tests with one skip,
+including shuffled runs; the daemon lock/state coverage passed 56 tests. A
+separate integration rerun adds the test-only OpenCode log fixture forwardport
+from PR164 commit `5295ccdc7cb4622d52fb95e0579494f07c09d68f`; PR164 remains
+open, and this checkpoint does not wait for or rely on its CI.
+
+The packet does not claim native Windows or macOS execution, E2E, daemon
+lifecycle behavior, or forced removal of unknown descendants on unsupported
+platforms. Missing, recycled, or unverifiable process identity fails closed.
+
 ## Accepted durable IO packet
 
 The durable IO packet is accepted for this integration checkpoint, with final

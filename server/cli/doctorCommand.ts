@@ -8,7 +8,7 @@ import { summarizeUpdateStatus, type UpdateStatus } from '../lib/updateCheck'
 import { getLatestToolVersions } from '../lib/toolVersions'
 import { isDevStackRunning } from '../lib/devStack'
 import { probePort } from '../lib/portProbe'
-import { readDaemonStartFailure, type DaemonState } from '../lib/daemonPaths'
+import { daemonOrigin, readDaemonStartFailure, type DaemonState } from '../lib/daemonPaths'
 import type { SchemaCompatibility } from '../db/schemaVersion'
 import { readRunningDaemon } from './commands'
 import { getErrorMessage } from '@shared/typeGuards'
@@ -561,7 +561,7 @@ async function checkDaemon(daemon: DaemonState | null): Promise<Check> {
     return {
       name: 'daemon',
       status: 'ok',
-      detail: `running on http://${daemon.host}:${daemon.port} (pid ${daemon.pid})`,
+      detail: `running on ${daemonOrigin(daemon.host, daemon.port)} (pid ${daemon.pid})`,
     }
   }
 

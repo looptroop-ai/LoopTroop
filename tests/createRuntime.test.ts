@@ -212,6 +212,36 @@ describe('createRuntime port allocation', () => {
     expect(runtime.address).toBeNull()
   })
 
+  it('does not return an in-flight start that close is cancelling', async () => {
+    const startup = await import('../server/startup')
+    let releaseStartup!: () => void
+    const startupGate = new Promise<void>((resolve) => { releaseStartup = resolve })
+    const boot = vi.spyOn(startup, 'startupSequence').mockImplementation(async () => {
+      if (boot.mock.calls.length === 1) await startupGate
+    })
+    const { createRuntime } = await import('../server/createRuntime')
+    const runtime = createRuntime({ port: 0, hostname: '127.0.0.1' })
+
+    try {
+      const first = runtime.start()
+      await vi.waitFor(() => expect(boot).toHaveBeenCalledTimes(1))
+      const closing = runtime.close()
+      const second = runtime.start()
+      releaseStartup()
+
+      const firstAddress = await first
+      await closing
+      const secondAddress = await second
+      expect(runtime.address).toEqual(secondAddress)
+      expect(secondAddress).toEqual(expect.objectContaining({ hostname: '127.0.0.1' }))
+      expect(firstAddress).toEqual(expect.objectContaining({ hostname: '127.0.0.1' }))
+    } finally {
+      releaseStartup()
+      await runtime.close()
+      boot.mockRestore()
+    }
+  })
+
   it('can be started again after it has been closed', async () => {
     const { createRuntime } = await import('../server/createRuntime')
     const runtime = createRuntime({ skipStartupSequence: true, port: 0, hostname: '127.0.0.1' })

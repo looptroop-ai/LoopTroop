@@ -1,10 +1,10 @@
-import { describe, it, expect, afterEach } from 'vitest'
+import { describe, it, expect, afterEach, vi } from 'vitest'
 import { spawn, type ChildProcess } from 'node:child_process'
 import { mkdtempSync, existsSync, readFileSync, writeFileSync } from 'node:fs'
 import { tmpdir, hostname } from 'node:os'
 import { join } from 'node:path'
-import { abandonFailedStart } from '../server/cli/commands'
-import { getDaemonLockPath, getDaemonStatePath } from '../server/lib/daemonPaths'
+import { abandonFailedStart, waitForReady } from '../server/cli/commands'
+import { getDaemonLockPath, getDaemonStatePath, writeDaemonState } from '../server/lib/daemonPaths'
 import { readProcessStartToken } from '../server/lib/processIdentity'
 import { isProcessAlive } from '../server/cli/processControl'
 import { removeTempDir } from '../server/test/tempDir'
@@ -63,6 +63,28 @@ describe('abandoning a start that never reported ready', () => {
       ...(startToken === null ? {} : { startToken }),
     }))
   }
+
+  it('does not adopt another concurrent start\'s ready state', async () => {
+    const configDir = makeConfigDir()
+    writeDaemonState({
+      instanceId: 'winner',
+      pid: process.pid,
+      host: '127.0.0.1',
+      port: 4317,
+      startedAt: new Date().toISOString(),
+      version: '0.0.0-test',
+      apiToken: 'test-token',
+    }, configDir)
+    vi.spyOn(globalThis, 'fetch').mockResolvedValue(new Response(JSON.stringify({ instanceId: 'winner' }), {
+      status: 200,
+      headers: { 'Content-Type': 'application/json' },
+    }))
+
+    // The winner is ready while this invocation is still waiting on its own
+    // child. A PID mismatch must take the loser through failure cleanup rather
+    // than returning the winner's state as if it belonged to this child.
+    expect(await waitForReady(configDir, process.pid + 1)).toBeNull()
+  })
 
   async function waitForDeath(pid: number, timeoutMs = 5_000): Promise<boolean> {
     const deadline = Date.now() + timeoutMs

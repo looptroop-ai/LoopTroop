@@ -123,12 +123,18 @@ describe('stopping a running daemon', () => {
   it('kills a daemon that accepts the request and then ignores it', async () => {
     const configDir = makeConfigDir()
     const pid = spawnStandIn(true)
+    const startToken = readProcessStartToken(pid)
+    expect(startToken).not.toBeNull()
     const fake = await startFakeDaemon({ instanceId: 'instance-under-test', apiToken: 'test-api-token' })
     writeLock(configDir, pid)
-    writeFileSync(getDaemonStatePath(configDir), JSON.stringify(makeState({ pid, port: fake.port })))
+    writeFileSync(getDaemonStatePath(configDir), JSON.stringify(makeState({
+      pid,
+      port: fake.port,
+      startToken: startToken ?? undefined,
+    })))
 
     const outcome = await stopRunningDaemon(
-      makeState({ pid, port: fake.port }),
+      makeState({ pid, port: fake.port, startToken: startToken ?? undefined }),
       { configDir, budgets: FAST_BUDGETS },
     )
 
@@ -140,14 +146,14 @@ describe('stopping a running daemon', () => {
     expect(existsSync(getDaemonStatePath(configDir))).toBe(false)
   })
 
-  it('stops a daemon whose HTTP endpoint is unreachable', async () => {
+  it('does not stop an unreachable daemon whose identity was not recorded', async () => {
     const pid = spawnStandIn(false)
-    // Port 1 is reserved and nothing answers there, so every rung above the
-    // signal must fail before the daemon is stopped.
+    // Port 1 is reserved and nothing answers there. Without a start token the
+    // live pid is unverifiable, so every destructive rung must refuse it.
     const outcome = await stopRunningDaemon(makeState({ pid, port: 1 }), { budgets: FAST_BUDGETS })
 
-    expect(outcome.kind).toBe('stopped')
-    expect(isAlive(pid)).toBe(false)
+    expect(outcome.kind).toBe('not-ours')
+    expect(isAlive(pid)).toBe(true)
   })
 
   it('leaves a lock belonging to another daemon alone', async () => {

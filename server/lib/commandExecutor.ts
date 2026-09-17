@@ -7,6 +7,7 @@ import { createBoundedOutputCollector } from './commandOutput'
 import { planProgramLaunch, resolveTrustedExecutable, resolveTrustedProgram, type TrustedExecutableResolution } from './executablePath'
 import { FORCE_KILL_DELAY_MS, PROCESS_ABANDON_GRACE_MS } from './constants'
 import { terminateProcessTreeWithEscalation } from './processTree'
+import { readProcessStartToken } from './processIdentity'
 import { escapesRoot, resolveContainedPath } from './containedPath'
 
 // Guarded with Test-Path so an unset $LASTEXITCODE cannot turn a clean cmdlet
@@ -305,6 +306,10 @@ export async function executeCommand(
       stdio: ['ignore', 'pipe', 'pipe'],
       detached: platform !== 'windows',
     })
+    // Capture identity at the spawn boundary. A timeout may run after this pid
+    // has exited and been recycled; passing the token through the escalation
+    // path makes that later signal refuse an unproven target.
+    const childStartToken = child.pid === undefined ? null : readProcessStartToken(child.pid)
     const stdoutCollector = createBoundedOutputCollector()
     const stderrCollector = createBoundedOutputCollector()
     let settled = false
@@ -342,7 +347,7 @@ export async function executeCommand(
     if (command.timeoutMs) {
       timeoutHandle = setTimeout(() => {
         timedOut = true
-        terminateProcessTreeWithEscalation(child, platform)
+        terminateProcessTreeWithEscalation(child, platform, childStartToken)
         // Killing the tree is a request, not a guarantee, so the timeout has to
         // be able to end without one. `close` fires only once every pipe is
         // closed, and a grandchild that outlives `taskkill` keeps them open —

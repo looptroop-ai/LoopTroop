@@ -399,6 +399,42 @@ export function claimInterviewBatch(ticketId: string, ttlMs = DEFAULT_BATCH_CLAI
   })
 }
 
+/**
+ * Renews one exact lease generation without taking ownership of another.
+ *
+ * A planning edit can cross an awaited external stop. The old lease may have
+ * expired while that stop was in flight, so a later writer may legitimately
+ * replace its row. The conditional update is the fence: the old caller can
+ * continue only when the row still carries its own token. It may refresh an
+ * expired row that nobody has taken over yet, but it never recreates a row or
+ * steals a successor's claim.
+ *
+ * Pending-stop markers deliberately do not use this lease path. Their
+ * non-expiring hand-off and confirmed-stop promotion remain unchanged.
+ */
+export function renewInterviewBatchClaim(
+  ticketId: string,
+  claimToken: string,
+  ttlMs = DEFAULT_BATCH_CLAIM_TTL_MS,
+): boolean {
+  if (parsePendingStopKind(claimToken)) return false
+  const context = getTicketContext(ticketId)
+  if (!context) return false
+  const now = Date.now()
+  const updated = context.projectDb
+    .update(interviewBatchClaims)
+    .set({
+      claimedAt: new Date(now).toISOString(),
+      expiresAt: new Date(now + Math.max(0, ttlMs)).toISOString(),
+    })
+    .where(and(
+      eq(interviewBatchClaims.ticketId, context.localTicketId),
+      eq(interviewBatchClaims.token, claimToken),
+    ))
+    .run()
+  return updated.changes > 0
+}
+
 /** The pending stop marker is a durable retry hand-off, not an expiring lease. */
 export function getPendingInterviewBatchStop(ticketId: string): InterviewBatchStopKind | null {
   const context = getTicketContext(ticketId)

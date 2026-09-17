@@ -1,10 +1,10 @@
 import { createHash } from 'crypto'
-import { lstatSync, readdirSync, rmSync, unlinkSync } from 'fs'
+import { lstatSync, readdirSync, realpathSync, rmSync, unlinkSync } from 'fs'
 import { dirname, join, resolve } from 'path'
 import { parseAtomicTmpPath, safeAtomicWrite, safeAtomicWriteWithin } from '../../io/atomicWrite'
 import { readFileNoFollowSync } from '../../io/readFile'
 import { resolveContainedPath } from '../../lib/containedPath'
-import { getErrorMessage } from '@shared/typeGuards'
+import { getErrorMessage, isRecord } from '@shared/typeGuards'
 
 /**
  * Capping OpenCode's steps means putting a configuration file in the worktree,
@@ -85,16 +85,32 @@ function notifier(report?: Report): Report {
   }
 }
 
-function isPlainObject(value: unknown): value is Record<string, unknown> {
-  return typeof value === 'object' && value !== null && !Array.isArray(value)
-}
-
 function sha256(content: string): string {
   return createHash('sha256').update(content, 'utf8').digest('hex')
 }
 
 function sidecarPathFor(ticketDir: string): string {
   return join(ticketDir, RESTORE_SIDECAR_FILENAME)
+}
+
+/** A repository-relative path for this feature's root configuration file. */
+export function isRootOpencodeConfigPath(repoRelativePath: string, worktreePath?: string): boolean {
+  const normalized = process.platform === 'win32' ? repoRelativePath.replace(/\\/g, '/') : repoRelativePath
+  const path = normalized.replace(/^\.\//, '')
+  if (path.includes('/')) return false
+  if (path === OPENCODE_CONFIG_FILENAME) return true
+  if (!worktreePath) return false
+  try {
+    const expectedPath = resolve(worktreePath, OPENCODE_CONFIG_FILENAME)
+    const candidatePath = resolve(worktreePath, path)
+    const expectedStats = lstatSync(expectedPath)
+    const candidateStats = lstatSync(candidatePath)
+    if (!expectedStats.isFile() || expectedStats.isSymbolicLink()
+      || !candidateStats.isFile() || candidateStats.isSymbolicLink()) return false
+    return realpathSync.native(expectedPath) === realpathSync.native(candidatePath)
+  } catch {
+    return false
+  }
 }
 
 /** The one path this feature is ever allowed to touch for a given worktree. */
@@ -112,6 +128,7 @@ export function opencodeConfigPathFor(worktreePath: string): string {
  * reason to sweep a user's repository.
  */
 function removeInterruptedConfigTemps(configPath: string): void {
+  const staleAfterMs = 60_000
   let entries: string[]
   try {
     entries = readdirSync(dirname(configPath))
@@ -122,6 +139,27 @@ function removeInterruptedConfigTemps(configPath: string): void {
     const candidate = join(dirname(configPath), entry)
     if (parseAtomicTmpPath(candidate) !== configPath) continue
     try {
+      const stats = lstatSync(candidate)
+      if (!stats.isFile()) {
+        console.warn(`[opencode-steps] Left ${candidate} in place because it is not a regular file`)
+        continue
+      }
+      const match = /\.(\d+)\.[0-9a-f]{12}\.tmp$/i.exec(entry)
+      const ownerPid = match ? Number(match[1]) : Number.NaN
+      const ageMs = Date.now() - stats.mtimeMs
+      let writerStatus: 'alive' | 'dead' | 'unknown' = 'unknown'
+      if (Number.isSafeInteger(ownerPid) && ownerPid > 0 && ownerPid <= 0x7fffffff) {
+        try {
+          process.kill(ownerPid, 0)
+          writerStatus = 'alive'
+        } catch (error) {
+          writerStatus = (error as NodeJS.ErrnoException).code === 'ESRCH' ? 'dead' : 'unknown'
+        }
+      }
+      if (ownerPid === process.pid || writerStatus !== 'dead' || ageMs < staleAfterMs) {
+        console.warn(`[opencode-steps] Left ${candidate} in place because its writer may still be active`)
+        continue
+      }
       unlinkSync(candidate)
       console.warn(`[opencode-steps] Removed ${candidate}, left behind by an interrupted write`)
     } catch (error) {
@@ -166,7 +204,7 @@ function readExistingConfig(configPath: string): ExistingConfig {
   } catch {
     return { kind: 'unusable', reason: 'it is not readable JSON' }
   }
-  if (!isPlainObject(parsed)) return { kind: 'unusable', reason: 'its top level is not a JSON object' }
+  if (!isRecord(parsed)) return { kind: 'unusable', reason: 'its top level is not a JSON object' }
   return { kind: 'file', raw, value: parsed }
 }
 
@@ -185,15 +223,15 @@ function minimalConfig(steps: number): Record<string, unknown> {
  */
 function mergeSteps(existing: Record<string, unknown>, steps: number): Record<string, unknown> | null {
   const agent = existing.agent
-  if (agent !== undefined && !isPlainObject(agent)) return null
-  const build = isPlainObject(agent) ? agent.build : undefined
-  if (build !== undefined && !isPlainObject(build)) return null
+  if (agent !== undefined && !isRecord(agent)) return null
+  const build = isRecord(agent) ? agent.build : undefined
+  if (build !== undefined && !isRecord(build)) return null
   return {
     ...existing,
     agent: {
-      ...(isPlainObject(agent) ? agent : {}),
+      ...(isRecord(agent) ? agent : {}),
       build: {
-        ...(isPlainObject(build) ? build : {}),
+        ...(isRecord(build) ? build : {}),
         steps,
       },
     },
@@ -342,6 +380,15 @@ function removeSidecar(ticketDir: string): void {
   }
 }
 
+function sidecarEntryExists(ticketDir: string): boolean {
+  try {
+    lstatSync(sidecarPathFor(ticketDir))
+    return true
+  } catch (error) {
+    return (error as NodeJS.ErrnoException).code !== 'ENOENT'
+  }
+}
+
 /**
  * Reads the restore record, refusing one that does not describe
  * `expectedConfigPath`.
@@ -369,7 +416,7 @@ function readSidecar(ticketDir: string, expectedConfigPath: string): RestoreSide
   try {
     const parsed: unknown = JSON.parse(raw)
     if (
-      isPlainObject(parsed)
+      isRecord(parsed)
       && parsed.schemaVersion === RESTORE_SIDECAR_SCHEMA_VERSION
       && parsed.owner === RESTORE_SIDECAR_OWNER
       && typeof parsed.configPath === 'string'
@@ -427,15 +474,14 @@ export type RestoreResult = 'restored' | 'removed' | 'conflict' | 'nothing-to-do
 function restoreFromSidecar(ticketDir: string, sidecar: RestoreSidecar, report: Report): RestoreResult {
   const current = readCurrentConfig(sidecar.configPath)
 
-  // A conflict keeps its restore record when — and only when — that record
-  // holds the project's original bytes. It is then the only copy of them, and
-  // deleting it to keep the directory tidy is the one deletion this module
-  // exists to prevent. With nothing to preserve, it goes, so the same warning
-  // does not reappear at every boot for the rest of the ticket's life.
+  // A conflict keeps its restore record even when this run created the file.
+  // The record is the ownership evidence that lets reset, staging and squash
+  // leave an edited cap visible instead of treating it as ordinary project
+  // content. It is removed only once the file is back to the recorded state
+  // (or has been removed).
   const keepsOriginal = sidecar.originalType === 'file'
   const conflict = (message: string): RestoreResult => {
-    report(keepsOriginal ? `${message} The version from before the run is still in ${RESTORE_SIDECAR_FILENAME}.` : message)
-    if (!keepsOriginal) removeSidecar(ticketDir)
+    report(`${message} The restore record remains in ${RESTORE_SIDECAR_FILENAME} until the conflict is resolved.`)
     return 'conflict'
   }
 
@@ -489,7 +535,18 @@ function restoreFromSidecar(ticketDir: string, sidecar: RestoreSidecar, report: 
 
 export function restoreOpencodeStepsConfig(handle: OpencodeStepsConfigHandle, report?: Report): RestoreResult {
   const sidecar = readSidecar(handle.ticketDir, handle.configPath)
-  if (!sidecar) return 'nothing-to-do'
+  if (!sidecar) {
+    if (sidecarEntryExists(handle.ticketDir)) return 'nothing-to-do'
+    const current = readCurrentConfig(handle.configPath)
+    if (current.kind === 'file' && current.raw === handle.appliedContent) {
+      notifier(report)(
+        `Could not restore ${OPENCODE_CONFIG_FILENAME} because ${RESTORE_SIDECAR_FILENAME} is missing. `
+        + 'The capped file was left in place for review.',
+      )
+      return 'conflict'
+    }
+    return 'nothing-to-do'
+  }
   const result = restoreFromSidecar(handle.ticketDir, sidecar, notifier(report))
   removeInterruptedConfigTemps(handle.configPath)
   return result
@@ -519,4 +576,17 @@ export function restoreInterruptedOpencodeStepsConfig(
     console.log(`[recovery] Removed the ${OPENCODE_CONFIG_FILENAME} left behind by an interrupted coding run at ${sidecar.configPath}`)
   }
   return result
+}
+
+/** A valid marker means the capped root file stays out of delivery staging. */
+export function hasPendingOpencodeStepsRestore(ticketDir: string, worktreePath: string): boolean {
+  return readSidecar(ticketDir, opencodeConfigPathFor(worktreePath)) !== null
+}
+
+/** A reset must not overwrite bytes changed after the cap was applied. */
+export function hasConflictingOpencodeStepsRestore(ticketDir: string, worktreePath: string): boolean {
+  const sidecar = readSidecar(ticketDir, opencodeConfigPathFor(worktreePath))
+  if (!sidecar) return false
+  const current = readCurrentConfig(sidecar.configPath)
+  return current.kind !== 'file' || sha256(current.raw) !== sidecar.writtenSha256
 }

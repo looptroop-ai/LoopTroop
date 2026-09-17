@@ -1,6 +1,7 @@
-import { describe, it, expect, beforeEach, afterEach } from 'vitest'
+import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest'
+import { spawnSync } from 'node:child_process'
 import { createHash } from 'crypto'
-import { existsSync, mkdirSync, readFileSync, renameSync, rmSync, statSync, symlinkSync, writeFileSync } from 'fs'
+import { existsSync, lstatSync, mkdirSync, readFileSync, renameSync, rmSync, statSync, symlinkSync, utimesSync, writeFileSync } from 'fs'
 import { tmpdir } from 'os'
 import { join } from 'path'
 import {
@@ -233,13 +234,73 @@ describe('applyOpencodeStepsConfig', () => {
     writeFileSync(CONFIG_PATH, original, 'utf8')
     const { outcome } = apply()
     if (!outcome.applied) throw new Error('expected the step cap to apply')
-    const strayTemp = `${CONFIG_PATH}.4821.a1b2c3d4e5f6.tmp`
+    const exitedWriter = spawnSync(process.execPath, ['-e', ''], { stdio: 'ignore' })
+    if (!exitedWriter.pid) throw new Error('expected the exited writer to have a pid')
+    const strayTemp = `${CONFIG_PATH}.${exitedWriter.pid}.a1b2c3d4e5f6.tmp`
     writeFileSync(strayTemp, '{"half":', 'utf8')
+    const stale = new Date(Date.now() - 120_000)
+    utimesSync(strayTemp, stale, stale)
 
     restore(outcome.handle)
 
     expect(existsSync(strayTemp)).toBe(false)
     expect(readFileSync(CONFIG_PATH, 'utf8')).toBe(original)
+  })
+
+  it('keeps a fresh writer temp and a symlink temp visible', () => {
+    const original = '{"mcp": {}}\n'
+    writeFileSync(CONFIG_PATH, original, 'utf8')
+    const { outcome } = apply()
+    if (!outcome.applied) throw new Error('expected the step cap to apply')
+
+    const freshTemp = `${CONFIG_PATH}.${process.pid}.a1b2c3d4e5f6.tmp`
+    writeFileSync(freshTemp, '{"in-flight": true}\n', 'utf8')
+    const outside = join(TEST_DIR, 'outside-temp.json')
+    writeFileSync(outside, '{"outside": true}\n', 'utf8')
+    const symlinkTemp = `${CONFIG_PATH}.4821.f1e2d3c4b5a6.tmp`
+    if (process.platform === 'win32') return
+    symlinkSync(outside, symlinkTemp)
+
+    restore(outcome.handle)
+
+    expect(existsSync(freshTemp)).toBe(true)
+    expect(lstatSync(symlinkTemp).isSymbolicLink()).toBe(true)
+    expect(readFileSync(outside, 'utf8')).toBe('{"outside": true}\n')
+    expect(readFileSync(symlinkTemp, 'utf8')).toBe('{"outside": true}\n')
+    rmSync(freshTemp)
+    rmSync(symlinkTemp)
+  })
+
+  it('keeps invalid and unknown writer PIDs visible', () => {
+    const original = '{"mcp": {}}\n'
+    writeFileSync(CONFIG_PATH, original, 'utf8')
+    const { outcome } = apply()
+    if (!outcome.applied) throw new Error('expected the step cap to apply')
+
+    const invalidPidTemp = `${CONFIG_PATH}.0.a1b2c3d4e5f6.tmp`
+    const unknownErrorTemp = `${CONFIG_PATH}.123456.a1b2c3d4e5f7.tmp`
+    writeFileSync(invalidPidTemp, '{"invalid": true}\n', 'utf8')
+    writeFileSync(unknownErrorTemp, '{"unknown": true}\n', 'utf8')
+    const stale = new Date(Date.now() - 120_000)
+    utimesSync(invalidPidTemp, stale, stale)
+    utimesSync(unknownErrorTemp, stale, stale)
+    const kill = vi.spyOn(process, 'kill').mockImplementation((pid) => {
+      if (pid === 123456) {
+        const error = Object.assign(new Error('permission state unknown'), { code: 'EACCES' })
+        throw error
+      }
+      return true
+    })
+
+    try {
+      restore(outcome.handle)
+      expect(existsSync(invalidPidTemp)).toBe(true)
+      expect(existsSync(unknownErrorTemp)).toBe(true)
+    } finally {
+      kill.mockRestore()
+      rmSync(invalidPidTemp)
+      rmSync(unknownErrorTemp)
+    }
   })
 
   /**
@@ -275,6 +336,18 @@ describe('restoreOpencodeStepsConfig', () => {
     expect(existsSync(SIDECAR_PATH)).toBe(false)
   })
 
+  it('reports a missing sidecar when the capped bytes are still visible', () => {
+    const { outcome } = apply()
+    if (!outcome.applied) throw new Error('expected the step cap to apply')
+    rmSync(SIDECAR_PATH)
+
+    const { result, reported } = restore(outcome.handle)
+
+    expect(result).toBe('conflict')
+    expect(readFileSync(CONFIG_PATH, 'utf8')).toBe(outcome.handle.appliedContent)
+    expect(reported.join(' ')).toMatch(/restore\.json is missing/)
+  })
+
   it('deletes the file only when this run created it', () => {
     const { outcome } = apply()
     if (!outcome.applied) throw new Error('expected the step cap to apply')
@@ -304,14 +377,23 @@ describe('restoreOpencodeStepsConfig', () => {
     expect(sidecar.originalContent).toBe('{"mcp": {}}\n')
   })
 
-  it('keeps a created file that was edited during the run, and its record is not worth keeping', () => {
+  it('keeps ownership evidence for an edited file this run created across a retry', () => {
     const { outcome } = apply()
     if (!outcome.applied) throw new Error('expected the step cap to apply')
     writeFileSync(CONFIG_PATH, '{"mine": true}\n', 'utf8')
 
     expect(restore(outcome.handle).result).toBe('conflict')
     expect(readFileSync(CONFIG_PATH, 'utf8')).toBe('{"mine": true}\n')
-    expect(existsSync(SIDECAR_PATH)).toBe(false)
+    expect(existsSync(SIDECAR_PATH)).toBe(true)
+
+    const retry = apply()
+    expect(retry.outcome.applied).toBe(false)
+    expect(retry.reported.join(' ')).toMatch(/earlier run's copy|still waiting/)
+    expect(existsSync(SIDECAR_PATH)).toBe(true)
+    expect(readFileSync(CONFIG_PATH, 'utf8')).toBe('{"mine": true}\n')
+
+    rmSync(CONFIG_PATH)
+    expect(apply().outcome.applied).toBe(true)
   })
 
   /**

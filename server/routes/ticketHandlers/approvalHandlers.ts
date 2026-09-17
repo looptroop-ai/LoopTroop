@@ -13,6 +13,7 @@ import {
   approvePrdDocument,
   buildDraftPrdDocumentFromRawContent,
   buildDraftPrdDocumentFromStructuredContent,
+  invalidateDownstreamBeadsArtifacts,
   readPrdDocument,
   saveApprovedPrdDocument,
   savePrdDocument,
@@ -35,11 +36,15 @@ import { deriveSkipActionId, formatSkipReceiptLogLines, writeSkipReceipts } from
 import { normalizeSkipReason } from '@shared/skipReceipt'
 import {
   buildExecutionBandConflictMessage,
+  assertPlanningEditClaim,
   buildRouteStatePayload,
+  claimPlanningEdit,
   emitRoutePhaseLog,
   getTicketParam,
   logTicketOperationError,
+  PlanningEditClaimLostError,
   preparePlanningRestart,
+  releasePlanningEdit,
   rejectDisplayOnlyMockTicket,
   respondWithState,
 } from './routeUtils'
@@ -64,6 +69,21 @@ function staleApprovalResponse(c: Context, err: StaleArtifactApprovalError) {
     expectedContentSha256: err.expectedContentSha256,
     currentContentSha256: err.currentContentSha256,
   }, 409)
+}
+
+class MissingArtifactSavePreconditionError extends Error {}
+
+function readPrdSaveBaseline(ticketId: string, expectedContentSha256: string | undefined) {
+  if (!expectedContentSha256) {
+    throw new MissingArtifactSavePreconditionError('PRD save requires the hash of the loaded document')
+  }
+  const current = readPrdDocument(ticketId)
+  assertExpectedContentSha256({
+    artifactType: 'prd',
+    currentContent: current.raw,
+    expectedContentSha256,
+  })
+  return current
 }
 
 export async function handleApproveTicket(c: Context) {
@@ -120,35 +140,75 @@ export async function handlePutPrd(c: Context) {
   const body = await c.req.json().catch(() => ({}))
   const rawParsed = rawPrdSaveSchema.safeParse(body)
   if (rawParsed.success) {
-    let beforeRaw: string | null = null
-    let beforeItemCount: number | null = null
-    try {
-      const before = readPrdDocument(ticketId)
-      beforeRaw = before.raw
-      beforeItemCount = countPrdItems(before.document)
-    } catch {
-      beforeRaw = null
-    }
-
-    let document: PrdDocument
-    try {
-      document = buildDraftPrdDocumentFromRawContent(ticketId, rawParsed.data.content)
-    } catch (err) {
-      return c.json({
-        error: 'Failed to save PRD document',
-        details: getErrorMessage(err),
-      }, 400)
+    const planningLock = claimPlanningEdit(ticketId)
+    if (!planningLock) {
+      return c.json({ error: 'A planning edit is already being processed; try again when it finishes' }, 409)
     }
 
     try {
-      const shouldRestart = ticket.status !== 'WAITING_PRD_APPROVAL'
-      let restart: Awaited<ReturnType<typeof preparePlanningRestart>> | null = null
-      let result: ReturnType<typeof savePrdDocument>
-      if (ticket.status !== 'WAITING_PRD_APPROVAL') {
-        restart = await preparePlanningRestart(ticketId, 'WAITING_PRD_APPROVAL')
-        result = saveApprovedPrdDocument(ticketId, document)
-        emitRoutePhaseLog(ticketId, 'WAITING_PRD_APPROVAL', 'info', 'PRD edit saved and approved. Restarting Beads planning from the edited PRD.')
-        sendTicketEvent(ticketId, { type: 'APPROVE' })
+      let before: ReturnType<typeof readPrdDocument>
+      try {
+        before = readPrdSaveBaseline(ticketId, rawParsed.data.expectedContentSha256)
+      } catch (err) {
+        if (err instanceof MissingArtifactSavePreconditionError) {
+          return c.json({ error: err.message, artifactType: 'prd' }, 428)
+        }
+        if (err instanceof StaleArtifactApprovalError) return staleApprovalResponse(c, err)
+        return c.json({ error: 'Failed to read PRD document', details: getErrorMessage(err) }, 400)
+      }
+      const beforeRaw = before.raw
+      const beforeItemCount = countPrdItems(before.document)
+
+      let document: PrdDocument
+      try {
+        document = buildDraftPrdDocumentFromRawContent(ticketId, rawParsed.data.content)
+      } catch (err) {
+        return c.json({
+          error: 'Failed to save PRD document',
+          details: getErrorMessage(err),
+        }, 400)
+      }
+
+      try {
+        const shouldRestart = ticket.status !== 'WAITING_PRD_APPROVAL'
+        let restart: Awaited<ReturnType<typeof preparePlanningRestart>> | null = null
+        let result: ReturnType<typeof savePrdDocument>
+        if (ticket.status !== 'WAITING_PRD_APPROVAL') {
+          // The durable content CAS must complete before restart preparation. A
+          // stale concurrent writer must not cancel work, archive attempts, or
+          // invalidate planning artifacts before it is rejected.
+          result = saveApprovedPrdDocument(ticketId, document, rawParsed.data.expectedContentSha256!, { skipInvalidation: true })
+          restart = await preparePlanningRestart(ticketId, 'WAITING_PRD_APPROVAL', planningLock)
+          assertPlanningEditClaim(ticketId, planningLock)
+          result = {
+            ...result,
+            invalidation: invalidateDownstreamBeadsArtifacts(ticketId),
+          }
+          emitRoutePhaseLog(ticketId, 'WAITING_PRD_APPROVAL', 'info', 'PRD edit saved and approved. Restarting Beads planning from the edited PRD.')
+          sendTicketEvent(ticketId, { type: 'APPROVE' })
+          writeUserEditReceipt({
+            ticketId,
+            artifactType: 'prd',
+            phase: 'WAITING_PRD_APPROVAL',
+            action: shouldRestart ? 'save_and_restart' : 'save',
+            editSurface: 'raw',
+            statusBeforeEdit: ticket.status,
+            statusAfterEdit: getTicketByRef(ticketId)?.status ?? null,
+            beforeRaw,
+            afterRaw: result.raw,
+            beforeItemCount,
+            afterItemCount: countPrdItems(result.document),
+            restart,
+            invalidation: result.invalidation,
+          })
+          return c.json({
+            success: true,
+            content: result.raw,
+            contentSha256: contentSha256(result.raw),
+            ...buildRouteStatePayload(ticketId),
+          })
+        }
+        result = savePrdDocument(ticketId, document, rawParsed.data.expectedContentSha256!)
         writeUserEditReceipt({
           ticketId,
           artifactType: 'prd',
@@ -170,34 +230,16 @@ export async function handlePutPrd(c: Context) {
           contentSha256: contentSha256(result.raw),
           ...buildRouteStatePayload(ticketId),
         })
+      } catch (err) {
+        if (err instanceof PlanningEditClaimLostError) return c.json({ error: err.message }, 409)
+        if (err instanceof StaleArtifactApprovalError) return staleApprovalResponse(c, err)
+        return c.json({
+          error: 'Failed to save PRD document',
+          details: getErrorMessage(err),
+        }, 400)
       }
-      result = savePrdDocument(ticketId, document)
-      writeUserEditReceipt({
-        ticketId,
-        artifactType: 'prd',
-        phase: 'WAITING_PRD_APPROVAL',
-        action: shouldRestart ? 'save_and_restart' : 'save',
-        editSurface: 'raw',
-        statusBeforeEdit: ticket.status,
-        statusAfterEdit: getTicketByRef(ticketId)?.status ?? null,
-        beforeRaw,
-        afterRaw: result.raw,
-        beforeItemCount,
-        afterItemCount: countPrdItems(result.document),
-        restart,
-        invalidation: result.invalidation,
-      })
-      return c.json({
-        success: true,
-        content: result.raw,
-        contentSha256: contentSha256(result.raw),
-        ...buildRouteStatePayload(ticketId),
-      })
-    } catch (err) {
-      return c.json({
-        error: 'Failed to save PRD document',
-        details: getErrorMessage(err),
-      }, 400)
+    } finally {
+      releasePlanningEdit(ticketId, planningLock)
     }
   }
 
@@ -206,35 +248,74 @@ export async function handlePutPrd(c: Context) {
     return c.json({ error: 'Invalid PRD document payload', details: structuredParsed.error.flatten() }, 400)
   }
 
-  let beforeRaw: string | null = null
-  let beforeItemCount: number | null = null
-  try {
-    const before = readPrdDocument(ticketId)
-    beforeRaw = before.raw
-    beforeItemCount = countPrdItems(before.document)
-  } catch {
-    beforeRaw = null
-  }
-
-  let document: PrdDocument
-  try {
-    document = buildDraftPrdDocumentFromStructuredContent(ticketId, structuredParsed.data.document)
-  } catch (err) {
-    return c.json({
-      error: 'Failed to save PRD document',
-      details: getErrorMessage(err),
-    }, 400)
+  const planningLock = claimPlanningEdit(ticketId)
+  if (!planningLock) {
+    return c.json({ error: 'A planning edit is already being processed; try again when it finishes' }, 409)
   }
 
   try {
-    const shouldRestart = ticket.status !== 'WAITING_PRD_APPROVAL'
-    let restart: Awaited<ReturnType<typeof preparePlanningRestart>> | null = null
-    let result: ReturnType<typeof savePrdDocument>
-    if (ticket.status !== 'WAITING_PRD_APPROVAL') {
-      restart = await preparePlanningRestart(ticketId, 'WAITING_PRD_APPROVAL')
-      result = saveApprovedPrdDocument(ticketId, document)
-      emitRoutePhaseLog(ticketId, 'WAITING_PRD_APPROVAL', 'info', 'PRD edit saved and approved. Restarting Beads planning from the edited PRD.')
-      sendTicketEvent(ticketId, { type: 'APPROVE' })
+    let before: ReturnType<typeof readPrdDocument>
+    try {
+      before = readPrdSaveBaseline(ticketId, structuredParsed.data.expectedContentSha256)
+    } catch (err) {
+      if (err instanceof MissingArtifactSavePreconditionError) {
+        return c.json({ error: err.message, artifactType: 'prd' }, 428)
+      }
+      if (err instanceof StaleArtifactApprovalError) return staleApprovalResponse(c, err)
+      return c.json({ error: 'Failed to read PRD document', details: getErrorMessage(err) }, 400)
+    }
+    const beforeRaw = before.raw
+    const beforeItemCount = countPrdItems(before.document)
+
+    let document: PrdDocument
+    try {
+      document = buildDraftPrdDocumentFromStructuredContent(ticketId, structuredParsed.data.document)
+    } catch (err) {
+      return c.json({
+        error: 'Failed to save PRD document',
+        details: getErrorMessage(err),
+      }, 400)
+    }
+
+    try {
+      const shouldRestart = ticket.status !== 'WAITING_PRD_APPROVAL'
+        let restart: Awaited<ReturnType<typeof preparePlanningRestart>> | null = null
+        let result: ReturnType<typeof savePrdDocument>
+        if (ticket.status !== 'WAITING_PRD_APPROVAL') {
+        // Keep the durable CAS before any awaited restart work for the same
+        // reason as the raw editor path above.
+        result = saveApprovedPrdDocument(ticketId, document, structuredParsed.data.expectedContentSha256!, { skipInvalidation: true })
+        restart = await preparePlanningRestart(ticketId, 'WAITING_PRD_APPROVAL', planningLock)
+        assertPlanningEditClaim(ticketId, planningLock)
+        result = {
+          ...result,
+          invalidation: invalidateDownstreamBeadsArtifacts(ticketId),
+        }
+        emitRoutePhaseLog(ticketId, 'WAITING_PRD_APPROVAL', 'info', 'PRD edit saved and approved. Restarting Beads planning from the edited PRD.')
+        sendTicketEvent(ticketId, { type: 'APPROVE' })
+        writeUserEditReceipt({
+          ticketId,
+          artifactType: 'prd',
+          phase: 'WAITING_PRD_APPROVAL',
+          action: shouldRestart ? 'save_and_restart' : 'save',
+          editSurface: 'structured',
+          statusBeforeEdit: ticket.status,
+          statusAfterEdit: getTicketByRef(ticketId)?.status ?? null,
+          beforeRaw,
+          afterRaw: result.raw,
+          beforeItemCount,
+          afterItemCount: countPrdItems(result.document),
+          restart,
+          invalidation: result.invalidation,
+        })
+        return c.json({
+          success: true,
+          content: result.raw,
+          contentSha256: contentSha256(result.raw),
+          ...buildRouteStatePayload(ticketId),
+        })
+      }
+      result = savePrdDocument(ticketId, document, structuredParsed.data.expectedContentSha256!)
       writeUserEditReceipt({
         ticketId,
         artifactType: 'prd',
@@ -256,34 +337,16 @@ export async function handlePutPrd(c: Context) {
         contentSha256: contentSha256(result.raw),
         ...buildRouteStatePayload(ticketId),
       })
+    } catch (err) {
+      if (err instanceof PlanningEditClaimLostError) return c.json({ error: err.message }, 409)
+      if (err instanceof StaleArtifactApprovalError) return staleApprovalResponse(c, err)
+      return c.json({
+        error: 'Failed to save PRD document',
+        details: getErrorMessage(err),
+      }, 400)
     }
-    result = savePrdDocument(ticketId, document)
-    writeUserEditReceipt({
-      ticketId,
-      artifactType: 'prd',
-      phase: 'WAITING_PRD_APPROVAL',
-      action: shouldRestart ? 'save_and_restart' : 'save',
-      editSurface: 'structured',
-      statusBeforeEdit: ticket.status,
-      statusAfterEdit: getTicketByRef(ticketId)?.status ?? null,
-      beforeRaw,
-      afterRaw: result.raw,
-      beforeItemCount,
-      afterItemCount: countPrdItems(result.document),
-      restart,
-      invalidation: result.invalidation,
-    })
-    return c.json({
-      success: true,
-      content: result.raw,
-      contentSha256: contentSha256(result.raw),
-      ...buildRouteStatePayload(ticketId),
-    })
-  } catch (err) {
-    return c.json({
-      error: 'Failed to save PRD document',
-      details: getErrorMessage(err),
-    }, 400)
+  } finally {
+    releasePlanningEdit(ticketId, planningLock)
   }
 }
 

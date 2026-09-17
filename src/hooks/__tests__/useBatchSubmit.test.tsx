@@ -186,6 +186,37 @@ describe('useBatchSubmit draft restore', () => {
     expect(puts).toHaveLength(1)
     expect(String(puts[0]?.[0])).toBe(`/api/tickets/${encodeURIComponent('1:T-flush')}/ui-state`)
     expect(String(puts[0]?.[1] && (puts[0][1] as RequestInit).body)).toContain('typed just before switching')
+    expect(queryClient.getQueryData<{ data?: unknown }>(['ticket-ui-state', '1:T-flush', SCOPE])?.data)
+      .toMatchObject({ draftAnswers: { [BATCH_KEY]: { q1: 'typed just before switching' } } })
+  })
+
+  it('keeps a rejected unmount flush draft dirty after an immediate remount', async () => {
+    let rejectFlush: ((reason?: unknown) => void) | undefined
+    let reads = 0
+    vi.spyOn(globalThis, 'fetch').mockImplementation((_input, init) => {
+      if ((init as RequestInit | undefined)?.method === 'PUT') {
+        return new Promise<Response>((_resolve, reject) => { rejectFlush = reject })
+      }
+      if (++reads === 1) return createJsonResponse(makeUiStatePayload({ exists: false, data: null }))
+      return new Promise<Response>(() => {})
+    })
+
+    const first = renderBatchSubmit('1:T-rejected-flush', queryClient)
+    await waitFor(() => expect(first.result.current.autosaveState).toBe('saved'))
+    act(() => first.result.current.handleBatchAnswer(BATCH_KEY, 'q1', 'unsaved latest'))
+    first.unmount()
+
+    const second = renderBatchSubmit('1:T-rejected-flush', queryClient)
+    await waitFor(() => expect(second.result.current.draftAnswers[BATCH_KEY]?.q1).toBe('unsaved latest'))
+
+    await act(async () => {
+      rejectFlush?.(new Error('keepalive too large'))
+      await Promise.resolve()
+    })
+
+    expect(second.result.current.draftAnswers[BATCH_KEY]?.q1).toBe('unsaved latest')
+    expect(second.result.current.autosaveState).not.toBe('saved')
+    second.unmount()
   })
 
   it('blocks a same-tick skip while a batch submit is still in flight', async () => {

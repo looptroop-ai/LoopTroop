@@ -22,6 +22,8 @@ export const WORKTREE_RESET_PRESERVE_PATHS = [
 
 export { getExecutionSetupCommitExcludedRoots } from '../../git/worktreeChanges'
 import { normalizeRepoPath } from '../../git/worktreeChanges'
+import { hasConflictingOpencodeStepsRestore, isRootOpencodeConfigPath } from './opencodeStepsConfig'
+import { join } from 'node:path'
 
 function runGitOp(worktreePath: string, args: string[]): string {
   return runGitSyncOrThrow(worktreePath, args)
@@ -112,7 +114,10 @@ export async function commitBeadChanges(
   }
 
   const excluded = new Set((options.excludePaths ?? []).map(normalizeRepoPath))
-  const committableEntries = summary.committable.filter(entry => !excluded.has(entry.path))
+  const excludesRootOpencodeConfig = [...excluded].some((path) => isRootOpencodeConfigPath(path, worktreePath))
+  const isExcluded = (path: string) => excluded.has(path)
+    || (excludesRootOpencodeConfig && isRootOpencodeConfigPath(path, worktreePath))
+  const committableEntries = summary.committable.filter(entry => !isExcluded(entry.path))
   // `AD` means a staged scratch file was deleted from disk. `git add` is still
   // needed to clear its stale index entry, but there is no path left for the
   // commit pathspec to name.
@@ -133,7 +138,7 @@ export async function commitBeadChanges(
       ...summary.setupExcluded,
       ...summary.generatedNoise,
     ].map(entry => entry.path),
-    ...summary.committable.map(entry => entry.path).filter(path => excluded.has(path)),
+    ...summary.committable.map(entry => entry.path).filter(isExcluded),
   ]
   const generatedNoiseWarning = summary.generatedNoise.length > 0
     ? buildGeneratedNoiseWarning(summary.generatedNoise)
@@ -280,5 +285,8 @@ export async function resetToBeadStart(
   beadStartCommit: string,
   options?: ResetWorktreeOptions,
 ): Promise<void> {
+  if (hasConflictingOpencodeStepsRestore(join(worktreePath, '.ticket'), worktreePath)) {
+    throw new Error('Cannot reset while an OpenCode steps configuration restore is unresolved')
+  }
   await resetWorktreeToCommit(worktreePath, beadStartCommit, options)
 }

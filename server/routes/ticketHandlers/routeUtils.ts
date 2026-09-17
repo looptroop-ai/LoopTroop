@@ -12,7 +12,12 @@ import { abortTicketSessions } from '../../opencode/sessionManager'
 import { clearContextCache } from '../../opencode/contextBuilder'
 import { broadcaster } from '../../sse/broadcaster'
 import { appendLogEvent, createLogEvent, shouldSkipLogEmission } from '../../log/executionLog'
-import { cancelTicket } from '../../workflow/runner'
+import {
+  cancelTicket,
+  claimInterviewBatch,
+  releaseInterviewBatch,
+  renewInterviewBatchClaim,
+} from '../../workflow/runner'
 import {
   archiveActivePhaseAttempts,
   createFreshPhaseAttempts,
@@ -154,6 +159,34 @@ export interface PhaseRestartSummary {
   createdAttempts: PublicTicketPhaseAttemptRow[]
 }
 
+/**
+ * The existing durable ticket claim also fences manual planning edits.
+ *
+ * The name is historical — interview batches were the first user of the row —
+ * but the row is the only ticket-scoped CAS claim shared by every daemon. A
+ * planning edit keeps it from the first baseline read through its save,
+ * awaited restart, and downstream invalidation, then releases it explicitly;
+ * no SQLite transaction is held across the external stop.
+ */
+export function claimPlanningEdit(ticketId: string): string | null {
+  return claimInterviewBatch(ticketId)
+}
+
+export function releasePlanningEdit(ticketId: string, token: string): void {
+  releaseInterviewBatch(ticketId, token)
+}
+
+export class PlanningEditClaimLostError extends Error {
+  constructor() {
+    super('Planning edit ownership was lost before restart side effects could be applied')
+    this.name = 'PlanningEditClaimLostError'
+  }
+}
+
+export function assertPlanningEditClaim(ticketId: string, token: string): void {
+  if (!renewInterviewBatchClaim(ticketId, token)) throw new PlanningEditClaimLostError()
+}
+
 function requireExistingTicketWorkspace(ticketId: string): void {
   // getTicketPaths can persist missing base-branch metadata, so check existence first.
   const ticketDir = resolveTicketContainedPath(ticketId, '.')
@@ -166,7 +199,9 @@ function requireExistingTicketWorkspace(ticketId: string): void {
 export async function preparePlanningRestart(
   ticketId: string,
   targetApprovalStatus: 'WAITING_INTERVIEW_APPROVAL' | 'WAITING_PRD_APPROVAL',
+  planningClaimToken?: string,
 ): Promise<PhaseRestartSummary> {
+  if (planningClaimToken) assertPlanningEditClaim(ticketId, planningClaimToken)
   requireExistingTicketWorkspace(ticketId)
   const restartPhase = targetApprovalStatus === 'WAITING_INTERVIEW_APPROVAL'
     ? 'WAITING_INTERVIEW_APPROVAL'
@@ -180,6 +215,7 @@ export async function preparePlanningRestart(
 
   emitRoutePhaseLog(ticketId, restartPhase, 'info', 'Archiving downstream planning attempts and aborting active downstream work.')
   await cancelAndConfirmTicketSessions(ticketId)
+  if (planningClaimToken) assertPlanningEditClaim(ticketId, planningClaimToken)
   clearContextCache(ticketId)
   ensureActivePhaseAttempt(ticketId, targetApprovalStatus)
   const archivedAttempts = archiveActivePhaseAttempts(ticketId, phasesToArchive, restartReason)

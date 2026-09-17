@@ -37,6 +37,7 @@ import {
   handleInterviewCompile,
   handleInterviewQAStart,
   claimInterviewBatch,
+  renewInterviewBatchClaim,
   handleInterviewQABatch,
   processInterviewBatchAsync,
   releaseInterviewBatch,
@@ -92,6 +93,7 @@ import { OpenCodeUnavailableError, TicketWorkspaceNotInitializedError } from '..
 export {
   cancelTicket,
   claimInterviewBatch,
+  renewInterviewBatchClaim,
   handleInterviewQABatch,
   processInterviewBatchAsync,
   releaseInterviewBatch,

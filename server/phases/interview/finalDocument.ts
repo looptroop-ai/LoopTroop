@@ -83,8 +83,16 @@ function writeInterviewDocument(
   document: InterviewDocument,
   options?: {
     approvalSnapshotRaw?: string
+    expectedContentSha256?: string
   },
 ): string {
+  if (options?.expectedContentSha256 !== undefined) {
+    assertExpectedContentSha256({
+      artifactType: 'interview',
+      currentContent: readInterviewYaml(ticketId),
+      expectedContentSha256: options.expectedContentSha256,
+    })
+  }
   const nextRaw = buildInterviewDocumentYaml(document)
   writeTicketFile(ticketId, 'interview.yaml', nextRaw)
   const snapshotRaw = options?.approvalSnapshotRaw ?? nextRaw
@@ -206,25 +214,31 @@ export function invalidateDownstreamPlanningArtifacts(ticketId: string): {
 export function saveInterviewDocument(
   ticketId: string,
   document: InterviewDocument,
+  expectedContentSha256: string,
+  options: { skipInvalidation?: boolean } = {},
 ): {
   raw: string
   document: InterviewDocument
   invalidation: { removedArtifacts: number; removedFiles: string[]; invalidatedPhases: string[] }
 } {
-  const raw = writeInterviewDocument(ticketId, document)
-  const invalidation = invalidateDownstreamPlanningArtifacts(ticketId)
+  const raw = writeInterviewDocument(ticketId, document, { expectedContentSha256 })
+  const invalidation = options.skipInvalidation
+    ? { removedArtifacts: 0, removedFiles: [], invalidatedPhases: [] }
+    : invalidateDownstreamPlanningArtifacts(ticketId)
   return { raw, document, invalidation }
 }
 
 export function saveApprovedInterviewDocument(
   ticketId: string,
   document: InterviewDocument,
+  expectedContentSha256: string,
+  options: { skipInvalidation?: boolean } = {},
 ): {
   raw: string
   document: InterviewDocument
   invalidation: { removedArtifacts: number; removedFiles: string[]; invalidatedPhases: string[] }
 } {
-  return saveInterviewDocument(ticketId, buildApprovedInterviewDocument(document, nowIso()))
+  return saveInterviewDocument(ticketId, buildApprovedInterviewDocument(document, nowIso()), expectedContentSha256, options)
 }
 
 export function approveInterviewDocument(ticketId: string, expectedContentSha256: string): {
@@ -243,6 +257,7 @@ export function approveInterviewDocument(ticketId: string, expectedContentSha256
   const document = buildApprovedInterviewDocument(current.document, approvedAt)
   const raw = writeInterviewDocument(ticketId, document, {
     approvalSnapshotRaw: current.raw,
+    expectedContentSha256,
   })
   const storedContentSha256 = contentSha256(raw)
   upsertLatestPhaseArtifact(

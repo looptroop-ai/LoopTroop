@@ -12,6 +12,7 @@ import {
   getPendingInterviewBatchStop,
   getPendingInterviewBatchStopToken,
   markInterviewBatchStopPending,
+  renewInterviewBatchClaim,
   releaseInterviewBatch,
 } from '../phases/interviewPhase'
 
@@ -97,6 +98,41 @@ describe('interview batch claim ownership across daemon boots', () => {
     expect(retryClaim).toBeTruthy()
     expect(getPendingInterviewBatchStop(ticket)).toBeNull()
     releaseInterviewBatch(ticket, retryClaim ?? undefined)
+  })
+
+  it('renews only the current lease generation and fences an expired successor', () => {
+    const ticket = makeTicket()
+    const liveClaim = claimInterviewBatch(ticket, 0)
+    expect(liveClaim).toBeTruthy()
+
+    expect(renewInterviewBatchClaim(ticket, liveClaim ?? '')).toBe(true)
+    expect(claimInterviewBatch(ticket)).toBeNull()
+    releaseInterviewBatch(ticket, liveClaim ?? undefined)
+
+    const expiredClaim = claimInterviewBatch(ticket, 0)
+    expect(expiredClaim).toBeTruthy()
+    const successorClaim = claimInterviewBatch(ticket)
+    expect(successorClaim).toBeTruthy()
+    expect(successorClaim).not.toBe(expiredClaim)
+    expect(renewInterviewBatchClaim(ticket, expiredClaim ?? '')).toBe(false)
+    expect(renewInterviewBatchClaim(ticket, 'missing-claim')).toBe(false)
+
+    releaseInterviewBatch(ticket, successorClaim ?? undefined)
+  })
+
+  it('does not turn a non-expiring pending-stop marker back into a lease', () => {
+    const ticket = makeTicket()
+    const claim = claimInterviewBatch(ticket)
+    expect(claim).toBeTruthy()
+    expect(markInterviewBatchStopPending(ticket, claim ?? '', 'answer')).toBe(true)
+    const pendingToken = getPendingInterviewBatchStopToken(ticket, 'answer')
+    expect(pendingToken).toBeTruthy()
+
+    expect(renewInterviewBatchClaim(ticket, pendingToken ?? '')).toBe(false)
+    expect(getPendingInterviewBatchStop(ticket)).toBe('answer')
+    expect(claimInterviewBatch(ticket, 0)).toBeNull()
+
+    releaseInterviewBatch(ticket, claim ?? undefined)
   })
 
   it('does not let a delayed confirmation promote a newer same-kind marker', async () => {

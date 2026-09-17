@@ -119,6 +119,113 @@ scoped typecheck, lint, and diff checks passed. Physical power loss, native
 Windows, directory-fsync behavior where the platform does not provide it, E2E,
 and the full application/part gate remain unverified.
 
+## Accepted execution and hook-recovery packet
+
+This bounded packet covers the accepted execution and Git-hook source snapshot
+at tree `a6103dd299d900c568170b6327c6b6136050b34c`, based on the app baseline
+`d51318f500a4b2a6b777827444104575fbd7833d`. The exact source/test manifest is
+the ten files named in `/tmp/looptroop-steps-hooks-evidence.md`; this ledger
+does not attribute unrelated working-tree edits to the packet. Final source
+assembly, fresh review, and acceptance remain with the root worker.
+
+The prior documentation review used frozen tree inputs `3b40df98` for the app
+and `3ccdac9e` for the website (both tree objects) and received `REVISE`.
+Those inputs remain provenance only; they do not represent current accepted
+documentation or final acceptance. Bounded docs evidence is recorded in
+`/tmp/looptroop-hooks-docs-evidence.md` and the companion save-safety evidence;
+the website grant is the existing ten-page scope plus the narrowly granted
+`docs/beads.md` page.
+
+| Finding | Status | Evidence and permanent coverage | Limits |
+| --- | --- | --- | --- |
+| G04 | PASS, final pending | The OpenCode step-cap sidecar remains on a real restore conflict, including when the cap created the root config. CODING refuses a destructive reset only when current bytes conflict with that marker; bead and squash staging exclude the valid root marker path, so an edited config remains visible and out of delivery. | No E2E or full lifecycle run. |
+| G07 | PASS, final pending | The execution phase no longer writes a common Git exclude rule for the temporary root config. A linked-worktree fixture resolves Git's existing `info/exclude` and proves no `/opencode.json` rule is added. | No native Windows/macOS equivalent-case run. |
+| G29 | PASS, final pending | Protected Git-hook validation persists an owner/schema-bound marker with worktree and Git-directory identities, index/worktree trees, and the initial untracked set. Reentry restores through Git APIs, preserves unknown additions when attribution is ambiguous, and retains the marker until recovery is safe. | No E2E or full lifecycle run. |
+| G30(5) | PASS, final pending | In-memory cap handles report a conflict when the exact capped bytes remain after the sidecar disappears; ordinary project ownership is not inferred. | A process restart with no durable sidecar has no ownership evidence. |
+| G30(6) | PASS, final pending | Root-config detection follows actual worktree path equivalence, keeping legal distinct Linux names and nested copies separate. | Coverage is limited to the current host filesystem; native Windows/macOS equivalent-case behavior is unverified. |
+| G30(7) | PASS, final pending | Temporary root-config cleanup accepts only a valid stale writer file with a positive exited PID and freshness bound; invalid, live, symlink, fresh, or unknown-error files remain visible. | The symlink fixture is skipped on Windows where arbitrary symlink creation needs host privileges. |
+| W13 | PASS, final pending | CODING records `HEAD` before publishing `in_progress`; a failed checkpoint leaves the bead pending and makes no execution call. | No E2E or full lifecycle run. |
+| S09 (shared-guard subset) | PARTIAL, final pending | This row covers only the OpenCode step-cap JSON-shape checks reusing the shared `isRecord` guard instead of a duplicate local helper; it is a partial subset, not a whole-finding S09 acceptance. | No additional platform claim; the remaining S09 scope is not covered by this row. |
+
+The focused direct suites passed 5 files and 172 tests. Exact granted-file
+ESLint reported no issues, the test-project typecheck reported no errors, and
+the granted-file diff check was clean. The repository source typecheck remained
+blocked by unrelated peer edits in `server/routes/__tests__/logs.test.ts` and
+`src/components/workspace/__tests__/PrdApprovalPane.test.tsx`; no packet file
+appeared in those diagnostics.
+
+The packet covers Linux/Node fixtures only. It does not claim native Windows or
+macOS filesystem equivalence, physical power-loss behavior, E2E, startup sweep,
+full lifecycle testing, or Git mutation/staging/commit/push from the shared
+working tree. The status and changelog prose that follows this packet records
+conditional safeguards, not whole-finding totals or final acceptance.
+
+## Accepted approval-save and UI-state documentation packet
+
+This documentation packet covers the accepted save source snapshot at tree
+`82c96acf6b0957445d1548b798bcb9afc41a91ce`, based on app baseline
+`d51318f500a4b2a6b777827444104575fbd7833d`; source evidence is recorded in
+`/tmp/looptroop-interview-saves-evidence.md`. The exact 21-file source/test
+manifest is:
+
+- `server/phases/interview/finalDocument.ts`
+- `server/phases/prd/document.ts`
+- `server/routes/__tests__/tickets.interviewApproval.test.ts`
+- `server/routes/__tests__/tickets.prdApproval.test.ts`
+- `server/routes/ticketHandlers/approvalHandlers.ts`
+- `server/routes/ticketHandlers/interviewHandlers.ts`
+- `server/routes/ticketHandlers/routeUtils.ts`
+- `server/routes/ticketHandlers/schemas.ts`
+- `server/workflow/__tests__/interviewBatchClaims.test.ts`
+- `server/workflow/phases/interviewPhase.ts`
+- `server/workflow/runner.ts`
+- `src/components/workspace/InterviewApprovalPane.tsx`
+- `src/components/workspace/PrdApprovalPane.tsx`
+- `src/components/workspace/__tests__/InterviewApprovalPane.test.tsx`
+- `src/components/workspace/__tests__/PrdApprovalPane.test.tsx`
+- `src/components/workspace/__tests__/approvalHooks.test.tsx`
+- `src/components/workspace/approvalHooks.ts`
+- `src/hooks/__tests__/useBatchSubmit.test.tsx`
+- `src/hooks/__tests__/useTicketUIState.test.tsx`
+- `src/hooks/useBatchSubmit.ts`
+- `src/hooks/useTickets.ts`
+
+The source changes require the loaded content hash for raw and structured
+interview/PRD saves, return HTTP 428 for a missing baseline and the existing
+typed HTTP 409 shape for a stale one, and fence post-approval restart work
+against the exact durable claim. Competing live writers are rejected before
+restart or invalidation; the exact interview batch, pending-stop, lease, and
+question-deadline contracts remain unchanged. Approval panes retain dirty
+draft baselines across refetch/remount and only advance them after a durable
+success. UI-state GETs retain pending or failed local drafts while remembering
+the server revision, normal and keepalive writes use latest-wins ordering, and
+leaving flushes remain best-effort with no browser-unload guarantee.
+
+The bounded source evidence reports the focused server, client, claim/CAS,
+QueryClient, approval-consumer, lint, TypeScript, and diff checks as passed;
+the exact commands and result counts remain in the source evidence file. The
+source snapshot and this docs packet do not claim E2E, browser-unload delivery,
+full lifecycle, native-platform, or final acceptance. The app documentation
+grant is exactly `README.md`, `CONTRIBUTING.md`, `CHANGELOG.md`,
+`.github/consolidated-audit-dispositions.md`, `shared/workflowMeta.ts`, and
+`src/lib/__tests__/workflowMeta.test.ts`; metadata edits are prose/assertion
+only and no enum or action changed.
+
+The companion website grant is the existing six pages
+`docs/operations.md`, `docs/configuration.md`, `docs/diagnostics.md`,
+`docs/opencode-integration.md`, `docs/ticket-flow.md`, and
+`docs/system-architecture.md`, plus the four newly granted pages
+`docs/api-reference.md`, `docs/frontend.md`, `docs/interview.md`, and
+`docs/prd.md`, plus the narrowly granted `docs/beads.md`, for eleven website
+files total. Website baseline is
+`1c948d6aa56329f1346108b81293f3ff0e7a439e`; immutable CLI pin
+`f784f055b45854016c245a2d902d6799b7e8265c` remains unchanged. Final source
+review and acceptance remain with the root worker. The prior docs review used
+tree inputs `3b40df98` (app) and `3ccdac9e` (website) and received `REVISE`;
+those inputs are provenance only and do not claim current docs acceptance or a
+final state. The two companion docs evidence files record the bounded
+corrections.
+
 ## Parser foundation
 
 | Finding | Status | Evidence and permanent coverage | Limits |

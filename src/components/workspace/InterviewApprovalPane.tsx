@@ -28,6 +28,7 @@ import {
   useDebouncedApprovalUiState,
   useApprovalPaneState,
   useApprovalEditMode,
+  useLoadedContentHash,
 } from './approvalHooks'
 import { buildReadableRawDisplayContent } from './rawDisplayContent'
 import { apiTicketPath } from '@/lib/apiPaths'
@@ -45,6 +46,8 @@ interface InterviewApprovalUiState {
   editTab?: EditTab
   yamlDraft?: string
   answerDrafts?: Record<string, InterviewAnswerUpdate['answer']>
+  /** The file hash the dirty draft was loaded from, not the latest refetch. */
+  contentSha256?: string | null
 }
 
 function normalizePersistedAnswerDrafts(
@@ -96,6 +99,15 @@ export function InterviewApprovalPane({
     [ticket.status, ticket.previousStatus],
   )
   const { data: persistedUiState, isSuccess: isUiStateSuccess, isError: isUiStateError } = useTicketUIState<InterviewApprovalUiState>(ticket.id, uiStateScope, true)
+  const persistedUiStateFlushMeta = persistedUiState as typeof persistedUiState & {
+    flushPending?: boolean
+    flushFailed?: boolean
+  }
+  const uiStateFlushState = persistedUiStateFlushMeta?.flushFailed
+    ? 'failed' as const
+    : persistedUiStateFlushMeta?.flushPending
+      ? 'pending' as const
+      : null
   const {
     data: interviewData,
     isLoading,
@@ -129,8 +141,10 @@ export function InterviewApprovalPane({
   const [approveError, setApproveError] = useState<string | null>(null)
   const [isCascadeWarningOpen, setIsCascadeWarningOpen] = useState(false)
   const restoredDraftRef = useRef(false)
+  const restoredSnapshotRef = useRef<string | null>(null)
   const lastSavedSnapshotRef = useRef('')
   const skipRestoreRef = useRef(false)
+  const draftRevisionRef = useRef(0)
   const containerRef = useRef<HTMLDivElement>(null)
 
   const baseAnswerDrafts = useMemo(
@@ -144,9 +158,10 @@ export function InterviewApprovalPane({
   )
   const hasYamlChanges = yamlDraft !== rawContent
   const hasUnsavedChanges = editTab === 'answers' ? hasAnswerChanges : hasYamlChanges
+  const loadedContentHashRef = useLoadedContentHash(ticket.id, currentContentSha256, hasUnsavedChanges)
   const yamlValidation = editTab === 'yaml' ? parseInterviewDocumentContent(yamlDraft) : null
 
-  useApprovalDraftReset(ticket.id, restoredDraftRef, lastSavedSnapshotRef)
+  useApprovalDraftReset(ticket.id, restoredDraftRef, lastSavedSnapshotRef, restoredSnapshotRef)
 
   const draftRestored = useApprovalDraftRestore({
     document: interviewDocument,
@@ -162,13 +177,22 @@ export function InterviewApprovalPane({
     ready: !isLoading && isUiStateSuccess,
     persisted: persistedUiState?.data,
     restoredDraftRef,
+    restoredSnapshotRef,
     lastSavedSnapshotRef,
     skipRestoreRef,
+    flushState: uiStateFlushState,
     restore: (persisted, document) => {
       const nextEditMode = Boolean(persisted?.isEditMode)
       const nextEditTab: EditTab = persisted?.editTab === 'yaml' ? 'yaml' : 'answers'
       const nextAnswerDrafts = normalizePersistedAnswerDrafts(persisted?.answerDrafts, document)
       const nextYamlDraft = typeof persisted?.yamlDraft === 'string' ? persisted.yamlDraft : rawContent
+      // Keep a restored draft tied to the bytes it was edited from. A remote
+      // refresh must not silently rebase that draft onto a newer artifact; a
+      // missing stamp fails closed at the durable save boundary.
+      const nextContentSha256 = nextEditMode
+        ? (typeof persisted?.contentSha256 === 'string' ? persisted.contentSha256 : null)
+        : currentContentSha256
+      loadedContentHashRef.current = nextContentSha256
 
       setIsEditMode(nextEditMode)
       setEditTab(nextEditTab)
@@ -180,6 +204,7 @@ export function InterviewApprovalPane({
         editTab: nextEditTab,
         yamlDraft: nextYamlDraft,
         answerDrafts: nextAnswerDrafts,
+        contentSha256: nextContentSha256,
       }
     },
   })
@@ -194,12 +219,17 @@ export function InterviewApprovalPane({
       editTab,
       yamlDraft,
       answerDrafts,
+      contentSha256: loadedContentHashRef.current,
     },
     ticketId: ticket.id,
     scope: uiStateScope,
     saveUiState,
     lastSavedSnapshotRef,
+    queryClient,
     initialUpdatedAt: persistedUiState?.updatedAt,
+    initialFlushState: uiStateFlushState,
+    restoredDraftRef,
+    restoredSnapshotRef,
   })
 
   function resetDraftsFromSaved(nextTab: EditTab = 'answers') {
@@ -207,6 +237,7 @@ export function InterviewApprovalPane({
       setAnswerDrafts(baseAnswerDrafts)
       setYamlDraft(rawContent)
       setEditTab(nextTab)
+      loadedContentHashRef.current = currentContentSha256
       setSaveError(null)
       setApproveError(null)
     })
@@ -228,6 +259,7 @@ export function InterviewApprovalPane({
 
     setIsSaving(true)
     setSaveError(null)
+    const saveDraftRevision = draftRevisionRef.current
 
     try {
       const response = await fetch(
@@ -240,6 +272,7 @@ export function InterviewApprovalPane({
           body: JSON.stringify(
             editTab === 'answers'
               ? {
+                expectedContentSha256: loadedContentHashRef.current ?? undefined,
                 questions: interviewDocument.questions.map((question) => ({
                   id: question.id,
                   answer: (() => {
@@ -255,18 +288,21 @@ export function InterviewApprovalPane({
                   })(),
                 })),
               }
-              : { content: yamlDraft },
+              : { content: yamlDraft, expectedContentSha256: loadedContentHashRef.current ?? undefined },
           ),
         },
       )
 
       await throwIfNotOk(response, 'Failed to save interview')
       const payload = await response.json()
+      loadedContentHashRef.current = payload.contentSha256 ?? null
 
       queryClient.setQueryData(['interview', ticket.id], payload)
       queryClient.setQueryData(['artifact', ticket.id, 'interview'], payload.raw ?? '')
       queryClient.invalidateQueries({ queryKey: ['ticket', ticket.id] })
       clearTicketArtifactsCache(queryClient, ticket.id)
+
+      if (draftRevisionRef.current !== saveDraftRevision) return
 
       const savedDocument = normalizeInterviewDocumentLike(payload.document) ?? parseInterviewDocument(payload.raw)
       setAnswerDrafts(savedDocument ? buildInterviewAnswerDrafts(savedDocument) : {})
@@ -288,7 +324,7 @@ export function InterviewApprovalPane({
       const response = await fetch(apiTicketPath(ticket.id, 'approve-interview'), {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ expectedContentSha256: currentContentSha256 }),
+        body: JSON.stringify({ expectedContentSha256: loadedContentHashRef.current }),
       })
       await throwIfNotOk(response, 'Failed to approve interview')
 
@@ -375,7 +411,7 @@ export function InterviewApprovalPane({
           <Button
             size="sm"
             onClick={handleApprove}
-            disabled={isApproving || isSaving || (isEditMode && hasUnsavedChanges) || !interviewDocument || !currentContentSha256 || ticket.status !== phase}
+            disabled={isApproving || isSaving || (isEditMode && hasUnsavedChanges) || !interviewDocument || !loadedContentHashRef.current || ticket.status !== phase}
             className="text-xs shrink-0"
           >
             {isApproving ? 'Approving…' : 'Approve'}
@@ -441,7 +477,14 @@ export function InterviewApprovalPane({
                 <div className="rounded-xl border border-border bg-background/80 p-3 text-xs text-muted-foreground">
                   YAML mode gives full control over the canonical interview artifact. Saving rewrites it into the server's canonical form and clears interview approval metadata.
                 </div>
-                <YamlEditor value={yamlDraft} onChange={setYamlDraft} className="min-h-[520px] rounded-xl border border-border bg-background" />
+                <YamlEditor
+                  value={yamlDraft}
+                  onChange={(value) => {
+                    draftRevisionRef.current += 1
+                    setYamlDraft(value)
+                  }}
+                  className="min-h-[520px] rounded-xl border border-border bg-background"
+                />
                 {yamlValidation?.error ? (
                   <div className="rounded-md border border-red-200 bg-red-50/70 px-3 py-2 text-xs text-red-700 dark:border-red-900/60 dark:bg-red-950/20 dark:text-red-200">
                     {yamlValidation.error}
@@ -458,6 +501,7 @@ export function InterviewApprovalPane({
                 drafts={answerDrafts}
                 disabled={isSaving}
                 onAnswerChange={(questionId, answer) => {
+                  draftRevisionRef.current += 1
                   setAnswerDrafts((current) => ({
                     ...current,
                     [questionId]: answer,

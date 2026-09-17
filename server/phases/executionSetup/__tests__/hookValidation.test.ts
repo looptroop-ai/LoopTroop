@@ -1,8 +1,13 @@
 import { execFileSync } from 'node:child_process'
-import { readFileSync, writeFileSync } from 'node:fs'
+import { existsSync, mkdirSync, readFileSync, rmSync, symlinkSync, writeFileSync } from 'node:fs'
 import { join } from 'node:path'
 import { afterEach, describe, expect, it } from 'vitest'
-import { runExplicitGitHookValidation, runGitHookValidationCommand, runGitHookValidationCommands } from '../hookValidation'
+import {
+  HOOK_VALIDATION_RESTORE_MARKER_RELATIVE,
+  runExplicitGitHookValidation,
+  runGitHookValidationCommand,
+  runGitHookValidationCommands,
+} from '../hookValidation'
 import { createShellCommandSpec } from '@shared/commandSpec'
 import { detectHostContext } from '../../../lib/hostContext'
 import { COMMAND_OUTPUT_EXCERPT_LENGTH } from '../../../lib/constants'
@@ -42,6 +47,26 @@ function profile(policy: string, command = ''): string {
       validation_commands: command ? [{ id: 'pre-commit', hook: 'pre-commit', command, purpose: 'test' }] : [],
     },
   })
+}
+
+function writeInterruptedValidationMarker(root: string, overrides: Record<string, unknown> = {}) {
+  const tree = execFileSync('git', ['-C', root, 'write-tree'], { encoding: 'utf8' }).trim()
+  const worktreePath = execFileSync('git', ['-C', root, 'rev-parse', '--show-toplevel'], { encoding: 'utf8' }).trim()
+  const gitDirectory = execFileSync('git', ['-C', root, 'rev-parse', '--absolute-git-dir'], { encoding: 'utf8' }).trim()
+  const markerPath = join(root, HOOK_VALIDATION_RESTORE_MARKER_RELATIVE)
+  mkdirSync(join(root, '.ticket', 'runtime'), { recursive: true })
+  writeFileSync(markerPath, `${JSON.stringify({
+    schemaVersion: 1,
+    owner: 'looptroop/git-hook-validation',
+    worktreePath,
+    gitDirectory,
+    tree,
+    indexTree: tree,
+    untrackedPaths: [],
+    createdAt: new Date().toISOString(),
+    ...overrides,
+  }, null, 2)}\n`)
+  return markerPath
 }
 
 describe('runExplicitGitHookValidation', () => {
@@ -315,6 +340,25 @@ describe('runGitHookValidationCommands', () => {
     })
   })
 
+  it('does not audit its own durable restore marker on a protected no-op', async () => {
+    const run = await runGitHookValidationCommands({
+      commands: [],
+      worktreePath: makeRepo(),
+      stopOnFirstFailure: true,
+      protectWorktree: true,
+      auditFileMutation: true,
+      nextTimeoutMs: () => 30_000,
+    })
+
+    expect(run.fileAudit).toEqual({
+      mutated: false,
+      candidatePaths: [],
+      temporaryPaths: [],
+      internalPaths: [],
+    })
+    expect(run.restoreFailure).toBeNull()
+  })
+
   it('ends the run when the caller has no budget left for the next command', async () => {
     const run = await runGitHookValidationCommands({
       commands: [hookCommand('first', passes), hookCommand('second', passes)],
@@ -346,6 +390,91 @@ describe('runGitHookValidationCommands', () => {
     expect(run.refused).toBe(true)
     expect(run.outcomes).toEqual([])
     expect(() => readFileSync(join(root, 'ran.txt'), 'utf8')).toThrow()
+  })
+
+  it('recovers an interrupted snapshot on reentry and preserves unknown additions', async () => {
+    const root = makeRepo()
+    const markerPath = writeInterruptedValidationMarker(root)
+    writeFileSync(join(root, 'tracked.txt'), 'hook was interrupted\n')
+    writeFileSync(join(root, 'created concurrently.txt'), 'keep me\n')
+
+    await expect(runGitHookValidationCommands({
+      commands: [hookCommand('must-not-run', 'node -e "process.exit(9)"')],
+      worktreePath: root,
+      stopOnFirstFailure: true,
+      protectWorktree: true,
+      auditFileMutation: true,
+      nextTimeoutMs: () => 30_000,
+    })).rejects.toThrow(/could not be attributed safely/)
+
+    expect(readFileSync(join(root, 'tracked.txt'), 'utf8')).toBe('before\n')
+    expect(readFileSync(join(root, 'created concurrently.txt'), 'utf8')).toBe('keep me\n')
+    expect(existsSync(markerPath)).toBe(true)
+
+    rmSync(join(root, 'created concurrently.txt'))
+    const recovered = await runGitHookValidationCommands({
+      commands: [hookCommand('reentry', 'node -e "process.exit(0)"')],
+      worktreePath: root,
+      stopOnFirstFailure: true,
+      protectWorktree: true,
+      auditFileMutation: true,
+      nextTimeoutMs: () => 30_000,
+    })
+
+    expect(recovered.outcomes.map((outcome) => outcome.command.id)).toEqual(['reentry'])
+    expect(existsSync(markerPath)).toBe(false)
+    expect(readFileSync(join(root, 'tracked.txt'), 'utf8')).toBe('before\n')
+  })
+
+  it.runIf(process.platform !== 'win32')('refuses an interrupted marker whose runtime ancestor escapes the worktree', async () => {
+    const root = makeRepo()
+    const outside = makeTempDir('looptroop-hook-validation-outside-')
+    roots.push(outside)
+    const markerPath = writeInterruptedValidationMarker(root)
+    const markerContent = readFileSync(markerPath)
+    rmSync(join(root, '.ticket', 'runtime'), { recursive: true, force: true })
+    symlinkSync(outside, join(root, '.ticket', 'runtime'))
+    const outsideMarker = join(outside, 'hook-validation-restore.json')
+    const outsideData = join(outside, 'must-survive.txt')
+    writeFileSync(outsideMarker, markerContent)
+    writeFileSync(outsideData, 'keep me\n')
+
+    await expect(runGitHookValidationCommands({
+      commands: [],
+      worktreePath: root,
+      stopOnFirstFailure: true,
+      protectWorktree: false,
+      auditFileMutation: false,
+      nextTimeoutMs: () => 30_000,
+    })).rejects.toThrow(/restore marker path is not contained|escapes root/)
+
+    expect(readFileSync(outsideMarker)).toEqual(markerContent)
+    expect(readFileSync(outsideData, 'utf8')).toBe('keep me\n')
+  })
+
+  it.each([
+    ['malformed', '{}'],
+    ['wrong worktree', 'wrong-worktree'],
+  ])('refuses a %s durable restore marker without running hooks', async (label, value) => {
+    const root = makeRepo()
+    const markerPath = label === 'malformed'
+      ? (() => {
+          const path = join(root, HOOK_VALIDATION_RESTORE_MARKER_RELATIVE)
+          mkdirSync(join(root, '.ticket', 'runtime'), { recursive: true })
+          writeFileSync(path, value)
+          return path
+        })()
+      : writeInterruptedValidationMarker(root, { worktreePath: value })
+
+    await expect(runGitHookValidationCommands({
+      commands: [hookCommand('must-not-run', 'node -e "process.exit(9)"')],
+      worktreePath: root,
+      stopOnFirstFailure: true,
+      protectWorktree: false,
+      auditFileMutation: false,
+      nextTimeoutMs: () => 30_000,
+    })).rejects.toThrow(/restore marker|different worktree/)
+    expect(existsSync(markerPath)).toBe(true)
   })
 })
 

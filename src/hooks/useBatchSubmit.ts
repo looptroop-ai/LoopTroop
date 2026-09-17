@@ -1,6 +1,13 @@
 import { useCallback, useState, useEffect, useRef } from 'react'
-import { useSubmitBatch, useSkipInterview, useTicketUIState, useSaveTicketUIState } from '@/hooks/useTickets'
-import { flushTicketUiStateSnapshot } from '@/components/workspace/approvalHooks'
+import { useQueryClient } from '@tanstack/react-query'
+import {
+  isCurrentTicketUiStateWrite,
+  useSubmitBatch,
+  useSkipInterview,
+  useTicketUIState,
+  useSaveTicketUIState,
+} from '@/hooks/useTickets'
+import { flushTicketUiStateSnapshot, UI_STATE_FLUSH_ERROR_EVENT } from '@/components/workspace/approvalHooks'
 import { INTERVIEW_BATCH_EVENT, parseInterviewBatchEventDetail } from '@/lib/interviewBatchEvents'
 import type { PersistedInterviewBatch } from '@shared/interviewSession'
 import type { AutosaveStatusState } from '@/components/workspace/AutosaveStatus'
@@ -17,6 +24,11 @@ export interface PersistedInterviewDrafts {
    * reason typed before a reload is still there after it.
    */
   skipReasons?: Record<string, Record<string, string>>
+}
+
+interface UiStateFlushCacheMeta {
+  flushPending?: boolean
+  flushFailed?: boolean
 }
 
 function serializeSkipped(map: Record<string, Set<string>>): Record<string, string[]> {
@@ -72,6 +84,7 @@ function clearMap<T extends Record<string, unknown>>(current: T): T {
 }
 
 export function useBatchSubmit(ticketId: string) {
+  const queryClient = useQueryClient()
   const { mutateAsync: submitBatchMutation, isPending: isSubmitting } = useSubmitBatch()
   const { mutateAsync: skipInterviewMutation, isPending: isSkipping } = useSkipInterview()
   const actionInFlightRef = useRef(false)
@@ -115,6 +128,22 @@ export function useBatchSubmit(ticketId: string) {
     setLastAutosavedAt(null)
   }, [ticketId])
 
+  useEffect(() => {
+    const reportFlushError = (event: Event) => {
+      const detail = (event as CustomEvent<{ ticketId?: string; scope?: string; writeGeneration?: number }>).detail
+      if (detail?.ticketId !== ticketId || detail.scope !== INTERVIEW_DRAFTS_SCOPE) return
+      if (typeof detail.writeGeneration === 'number'
+        && !isCurrentTicketUiStateWrite(ticketId, INTERVIEW_DRAFTS_SCOPE, detail.writeGeneration)) return
+      // A keepalive flush can finish after the component that started it has
+      // unmounted. Do not let a remount treat its optimistic cache entry as a
+      // confirmed baseline; leave the draft available for the normal retry.
+      lastSavedSnapshotRef.current = ''
+      setAutosaveState('error')
+    }
+    window.addEventListener(UI_STATE_FLUSH_ERROR_EVENT, reportFlushError)
+    return () => window.removeEventListener(UI_STATE_FLUSH_ERROR_EVENT, reportFlushError)
+  }, [ticketId])
+
   // Restore persisted drafts once on mount / ticket change.
   useEffect(() => {
     if (restoredDraftRef.current || !persistedDrafts) return
@@ -129,6 +158,9 @@ export function useBatchSubmit(ticketId: string) {
     if (persistedDrafts.ticketId !== ticketId) return
 
     const persisted = persistedDrafts.data
+    const flushMeta = persistedDrafts as typeof persistedDrafts & UiStateFlushCacheMeta
+    const flushPending = flushMeta.flushPending === true
+    const flushFailed = flushMeta.flushFailed === true
     const frame = requestAnimationFrame(() => {
       const persistedSkippedQuestions = persisted?.skippedQuestions
         ? deserializeSkipped(persisted.skippedQuestions)
@@ -154,14 +186,14 @@ export function useBatchSubmit(ticketId: string) {
           : {},
         skipReasons: persisted?.skipReasons ?? {},
       }
-      lastSavedSnapshotRef.current = JSON.stringify(snapshot)
+      lastSavedSnapshotRef.current = flushPending || flushFailed ? '' : JSON.stringify(snapshot)
       latestDraftSnapshotRef.current = {
-        serialized: lastSavedSnapshotRef.current,
+        serialized: JSON.stringify(snapshot),
         snapshot,
       }
       restoredDraftRef.current = true
       setLastAutosavedAt(persistedDrafts.updatedAt ? new Date(persistedDrafts.updatedAt) : null)
-      setAutosaveState('saved')
+      setAutosaveState(flushFailed ? 'error' : flushPending ? 'saving' : 'saved')
       setDraftsRestoreTick((current) => current + 1)
     })
     return () => cancelAnimationFrame(frame)
@@ -238,7 +270,7 @@ export function useBatchSubmit(ticketId: string) {
     const flushLatest = () => {
       const latest = latestDraftSnapshotRef.current
       if (!restoredDraftRef.current || !latest || latest.serialized === lastSavedSnapshotRef.current) return
-      flushTicketUiStateSnapshot(ticketId, INTERVIEW_DRAFTS_SCOPE, latest.snapshot)
+      flushTicketUiStateSnapshot(ticketId, INTERVIEW_DRAFTS_SCOPE, latest.snapshot, { queryClient })
     }
 
     window.addEventListener('pagehide', flushLatest)
@@ -252,7 +284,7 @@ export function useBatchSubmit(ticketId: string) {
       // not the one now on screen.
       flushLatest()
     }
-  }, [ticketId])
+  }, [queryClient, ticketId])
 
   const clearSkipReason = useCallback((currentBatchKey: string, questionId: string) => {
     setBatchSkipReasons((current) => {

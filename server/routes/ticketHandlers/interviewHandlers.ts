@@ -48,12 +48,14 @@ import type { InterviewDocument } from '@shared/interviewArtifact'
 import {
   buildDraftInterviewDocumentFromAnswerUpdates,
   buildDraftInterviewDocumentFromRawContent,
+  invalidateDownstreamPlanningArtifacts,
   readInterviewDocument,
   saveApprovedInterviewDocument,
   saveInterviewDocument,
 } from '../../phases/interview/finalDocument'
 import { isBeforeExecution, isStatusAtOrPast } from '@shared/workflowMeta'
 import { getErrorMessage } from '@shared/typeGuards'
+import { assertExpectedContentSha256, StaleArtifactApprovalError } from '../../lib/artifactApproval'
 import { contentSha256 } from '../../lib/contentHash'
 import { writeUserEditReceipt } from '../../workflow/artifactEditReceipts'
 import {
@@ -64,12 +66,16 @@ import {
 } from '../../workflow/skipReceipts'
 import {
   buildRouteStatePayload,
+  assertPlanningEditClaim,
+  claimPlanningEdit,
   emitRoutePhaseLog,
   getTicketParam,
   logTicketOperationError,
+  PlanningEditClaimLostError,
   preparePlanningRestart,
   readJsonBody,
   rejectDisplayOnlyMockTicket,
+  releasePlanningEdit,
   respondWithState,
 } from './routeUtils'
 import {
@@ -79,6 +85,30 @@ import {
   interviewSkipAllPayloadSchema,
   rawInterviewSaveSchema,
 } from './schemas'
+
+class MissingArtifactSavePreconditionError extends Error {}
+
+function staleInterviewSaveResponse(c: Context, err: StaleArtifactApprovalError) {
+  return c.json({
+    error: 'Stale approval',
+    artifactType: err.artifactType,
+    expectedContentSha256: err.expectedContentSha256,
+    currentContentSha256: err.currentContentSha256,
+  }, 409)
+}
+
+function readInterviewSaveBaseline(ticketId: string, expectedContentSha256: string | undefined) {
+  if (!expectedContentSha256) {
+    throw new MissingArtifactSavePreconditionError('Interview save requires the hash of the loaded document')
+  }
+  const current = readInterviewDocument(ticketId)
+  assertExpectedContentSha256({
+    artifactType: 'interview',
+    currentContent: current.raw,
+    expectedContentSha256,
+  })
+  return current
+}
 
 /**
  * A reason only means something attached to a skip.
@@ -774,71 +804,94 @@ export async function handlePutInterviewAnswers(c: Context) {
     return c.json({ error: 'Invalid interview answer payload', details: parsed.error.flatten() }, 400)
   }
 
-  let beforeRaw: string | null = null
-  let beforeItemCount: number | null = null
-  let beforeDocument: InterviewDocument | null = null
-  try {
-    const before = readInterviewDocument(ticketId)
-    beforeRaw = before.raw
-    beforeDocument = before.document
-    beforeItemCount = before.document.questions.length
-  } catch {
-    beforeRaw = null
-  }
-
-  let document: InterviewDocument
-  try {
-    document = buildDraftInterviewDocumentFromAnswerUpdates(ticketId, parsed.data.questions)
-  } catch (err) {
-    return c.json({
-      error: 'Failed to save interview answers',
-      details: getErrorMessage(err),
-    }, 400)
+  const planningLock = claimPlanningEdit(ticketId)
+  if (!planningLock) {
+    return c.json({ error: 'A planning edit is already being processed; try again when it finishes' }, 409)
   }
 
   try {
-    const shouldRestart = ticket.status !== 'WAITING_INTERVIEW_APPROVAL'
-    let restart: Awaited<ReturnType<typeof preparePlanningRestart>> | null = null
-    let result: ReturnType<typeof saveInterviewDocument>
-    if (ticket.status !== 'WAITING_INTERVIEW_APPROVAL') {
-      restart = await preparePlanningRestart(ticketId, 'WAITING_INTERVIEW_APPROVAL')
-      result = saveApprovedInterviewDocument(ticketId, document)
-      emitRoutePhaseLog(ticketId, 'WAITING_INTERVIEW_APPROVAL', 'info', 'Interview edit saved and approved. Restarting PRD planning from the edited interview.')
-      sendTicketEvent(ticketId, { type: 'APPROVE' })
-    } else {
-      result = saveInterviewDocument(ticketId, document)
+    let beforeRaw: string | null = null
+    let beforeItemCount: number | null = null
+    let beforeDocument: InterviewDocument | null = null
+    try {
+      const before = readInterviewSaveBaseline(ticketId, parsed.data.expectedContentSha256)
+      beforeRaw = before.raw
+      beforeDocument = before.document
+      beforeItemCount = before.document.questions.length
+    } catch (err) {
+      if (err instanceof MissingArtifactSavePreconditionError) {
+        return c.json({ error: err.message, artifactType: 'interview' }, 428)
+      }
+      if (err instanceof StaleArtifactApprovalError) return staleInterviewSaveResponse(c, err)
+      return c.json({ error: 'Failed to read interview document', details: getErrorMessage(err) }, 400)
     }
-    writeUserEditReceipt({
-      ticketId,
-      artifactType: 'interview',
-      phase: 'WAITING_INTERVIEW_APPROVAL',
-      action: shouldRestart ? 'save_and_restart' : 'save',
-      editSurface: 'answers',
-      statusBeforeEdit: ticket.status,
-      statusAfterEdit: getTicketByRef(ticketId)?.status ?? null,
-      beforeRaw,
-      afterRaw: result.raw,
-      beforeItemCount,
-      afterItemCount: result.document.questions.length,
-      restart,
-      invalidation: result.invalidation,
-    })
-    recordInterviewApprovalSkips({
-      ticketId,
-      ticketStatusBefore: ticket.status,
-      before: beforeDocument,
-      after: result.document,
-    })
-    return c.json({
-      success: true,
-      ...buildInterviewPayload(ticketId),
-      ...buildRouteStatePayload(ticketId),
-    })
-  } catch (err) {
-    return c.json({
-      error: 'Failed to save interview answers',
-      details: getErrorMessage(err),
-    }, 400)
+
+    let document: InterviewDocument
+    try {
+      document = buildDraftInterviewDocumentFromAnswerUpdates(ticketId, parsed.data.questions)
+    } catch (err) {
+      return c.json({
+        error: 'Failed to save interview answers',
+        details: getErrorMessage(err),
+      }, 400)
+    }
+
+    try {
+      const shouldRestart = ticket.status !== 'WAITING_INTERVIEW_APPROVAL'
+      let restart: Awaited<ReturnType<typeof preparePlanningRestart>> | null = null
+      let result: ReturnType<typeof saveInterviewDocument>
+      if (ticket.status !== 'WAITING_INTERVIEW_APPROVAL') {
+        // The durable content CAS must complete before restart preparation. A
+        // stale concurrent writer must not cancel work, archive attempts, or
+        // invalidate planning artifacts before it is rejected.
+        result = saveApprovedInterviewDocument(ticketId, document, parsed.data.expectedContentSha256!, { skipInvalidation: true })
+        restart = await preparePlanningRestart(ticketId, 'WAITING_INTERVIEW_APPROVAL', planningLock)
+        assertPlanningEditClaim(ticketId, planningLock)
+        result = {
+          ...result,
+          invalidation: invalidateDownstreamPlanningArtifacts(ticketId),
+        }
+        emitRoutePhaseLog(ticketId, 'WAITING_INTERVIEW_APPROVAL', 'info', 'Interview edit saved and approved. Restarting PRD planning from the edited interview.')
+        sendTicketEvent(ticketId, { type: 'APPROVE' })
+      } else {
+        result = saveInterviewDocument(ticketId, document, parsed.data.expectedContentSha256!)
+      }
+      writeUserEditReceipt({
+        ticketId,
+        artifactType: 'interview',
+        phase: 'WAITING_INTERVIEW_APPROVAL',
+        action: shouldRestart ? 'save_and_restart' : 'save',
+        editSurface: 'answers',
+        statusBeforeEdit: ticket.status,
+        statusAfterEdit: getTicketByRef(ticketId)?.status ?? null,
+        beforeRaw,
+        afterRaw: result.raw,
+        beforeItemCount,
+        afterItemCount: result.document.questions.length,
+        restart,
+        invalidation: result.invalidation,
+      })
+      recordInterviewApprovalSkips({
+        ticketId,
+        ticketStatusBefore: ticket.status,
+        before: beforeDocument,
+        after: result.document,
+      })
+      return c.json({
+        success: true,
+        ...buildInterviewPayload(ticketId),
+        ...buildRouteStatePayload(ticketId),
+      })
+    } catch (err) {
+      if (err instanceof PlanningEditClaimLostError) return c.json({ error: err.message }, 409)
+      if (err instanceof StaleArtifactApprovalError) return staleInterviewSaveResponse(c, err)
+      return c.json({
+        error: 'Failed to save interview answers',
+        details: getErrorMessage(err),
+      }, 400)
+    }
+  } finally {
+    releasePlanningEdit(ticketId, planningLock)
   }
 }
 
@@ -858,71 +911,94 @@ export async function handlePutInterview(c: Context) {
     return c.json({ error: 'Invalid interview document payload', details: parsed.error.flatten() }, 400)
   }
 
-  let beforeRaw: string | null = null
-  let beforeItemCount: number | null = null
-  let beforeDocument: InterviewDocument | null = null
-  try {
-    const before = readInterviewDocument(ticketId)
-    beforeRaw = before.raw
-    beforeDocument = before.document
-    beforeItemCount = before.document.questions.length
-  } catch {
-    beforeRaw = null
-  }
-
-  let document: InterviewDocument
-  try {
-    document = buildDraftInterviewDocumentFromRawContent(ticketId, parsed.data.content)
-  } catch (err) {
-    return c.json({
-      error: 'Failed to save interview document',
-      details: getErrorMessage(err),
-    }, 400)
+  const planningLock = claimPlanningEdit(ticketId)
+  if (!planningLock) {
+    return c.json({ error: 'A planning edit is already being processed; try again when it finishes' }, 409)
   }
 
   try {
-    const shouldRestart = ticket.status !== 'WAITING_INTERVIEW_APPROVAL'
-    let restart: Awaited<ReturnType<typeof preparePlanningRestart>> | null = null
-    let result: ReturnType<typeof saveInterviewDocument>
-    if (ticket.status !== 'WAITING_INTERVIEW_APPROVAL') {
-      restart = await preparePlanningRestart(ticketId, 'WAITING_INTERVIEW_APPROVAL')
-      result = saveApprovedInterviewDocument(ticketId, document)
-      emitRoutePhaseLog(ticketId, 'WAITING_INTERVIEW_APPROVAL', 'info', 'Interview edit saved and approved. Restarting PRD planning from the edited interview.')
-      sendTicketEvent(ticketId, { type: 'APPROVE' })
-    } else {
-      result = saveInterviewDocument(ticketId, document)
+    let beforeRaw: string | null = null
+    let beforeItemCount: number | null = null
+    let beforeDocument: InterviewDocument | null = null
+    try {
+      const before = readInterviewSaveBaseline(ticketId, parsed.data.expectedContentSha256)
+      beforeRaw = before.raw
+      beforeDocument = before.document
+      beforeItemCount = before.document.questions.length
+    } catch (err) {
+      if (err instanceof MissingArtifactSavePreconditionError) {
+        return c.json({ error: err.message, artifactType: 'interview' }, 428)
+      }
+      if (err instanceof StaleArtifactApprovalError) return staleInterviewSaveResponse(c, err)
+      return c.json({ error: 'Failed to read interview document', details: getErrorMessage(err) }, 400)
     }
-    writeUserEditReceipt({
-      ticketId,
-      artifactType: 'interview',
-      phase: 'WAITING_INTERVIEW_APPROVAL',
-      action: shouldRestart ? 'save_and_restart' : 'save',
-      editSurface: 'raw',
-      statusBeforeEdit: ticket.status,
-      statusAfterEdit: getTicketByRef(ticketId)?.status ?? null,
-      beforeRaw,
-      afterRaw: result.raw,
-      beforeItemCount,
-      afterItemCount: result.document.questions.length,
-      restart,
-      invalidation: result.invalidation,
-    })
-    recordInterviewApprovalSkips({
-      ticketId,
-      ticketStatusBefore: ticket.status,
-      before: beforeDocument,
-      after: result.document,
-    })
-    return c.json({
-      success: true,
-      ...buildInterviewPayload(ticketId),
-      ...buildRouteStatePayload(ticketId),
-    })
-  } catch (err) {
-    return c.json({
-      error: 'Failed to save interview document',
-      details: getErrorMessage(err),
-    }, 400)
+
+    let document: InterviewDocument
+    try {
+      document = buildDraftInterviewDocumentFromRawContent(ticketId, parsed.data.content)
+    } catch (err) {
+      return c.json({
+        error: 'Failed to save interview document',
+        details: getErrorMessage(err),
+      }, 400)
+    }
+
+    try {
+      const shouldRestart = ticket.status !== 'WAITING_INTERVIEW_APPROVAL'
+      let restart: Awaited<ReturnType<typeof preparePlanningRestart>> | null = null
+      let result: ReturnType<typeof saveInterviewDocument>
+      if (ticket.status !== 'WAITING_INTERVIEW_APPROVAL') {
+        // The durable content CAS must complete before restart preparation. A
+        // stale concurrent writer must not cancel work, archive attempts, or
+        // invalidate planning artifacts before it is rejected.
+        result = saveApprovedInterviewDocument(ticketId, document, parsed.data.expectedContentSha256!, { skipInvalidation: true })
+        restart = await preparePlanningRestart(ticketId, 'WAITING_INTERVIEW_APPROVAL', planningLock)
+        assertPlanningEditClaim(ticketId, planningLock)
+        result = {
+          ...result,
+          invalidation: invalidateDownstreamPlanningArtifacts(ticketId),
+        }
+        emitRoutePhaseLog(ticketId, 'WAITING_INTERVIEW_APPROVAL', 'info', 'Interview edit saved and approved. Restarting PRD planning from the edited interview.')
+        sendTicketEvent(ticketId, { type: 'APPROVE' })
+      } else {
+        result = saveInterviewDocument(ticketId, document, parsed.data.expectedContentSha256!)
+      }
+      writeUserEditReceipt({
+        ticketId,
+        artifactType: 'interview',
+        phase: 'WAITING_INTERVIEW_APPROVAL',
+        action: shouldRestart ? 'save_and_restart' : 'save',
+        editSurface: 'raw',
+        statusBeforeEdit: ticket.status,
+        statusAfterEdit: getTicketByRef(ticketId)?.status ?? null,
+        beforeRaw,
+        afterRaw: result.raw,
+        beforeItemCount,
+        afterItemCount: result.document.questions.length,
+        restart,
+        invalidation: result.invalidation,
+      })
+      recordInterviewApprovalSkips({
+        ticketId,
+        ticketStatusBefore: ticket.status,
+        before: beforeDocument,
+        after: result.document,
+      })
+      return c.json({
+        success: true,
+        ...buildInterviewPayload(ticketId),
+        ...buildRouteStatePayload(ticketId),
+      })
+    } catch (err) {
+      if (err instanceof PlanningEditClaimLostError) return c.json({ error: err.message }, 409)
+      if (err instanceof StaleArtifactApprovalError) return staleInterviewSaveResponse(c, err)
+      return c.json({
+        error: 'Failed to save interview document',
+        details: getErrorMessage(err),
+      }, 400)
+    }
+  } finally {
+    releasePlanningEdit(ticketId, planningLock)
   }
 }
 

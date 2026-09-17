@@ -103,6 +103,7 @@ describe.concurrent('workflow metadata', () => {
   it('describes bounded Git, scoped recovery, and durable Manual QA behavior', () => {
     const preFlight = WORKFLOW_PHASES.find((phase) => phase.id === 'PRE_FLIGHT_CHECK')
     const coding = WORKFLOW_PHASES.find((phase) => phase.id === 'CODING')
+    const integration = WORKFLOW_PHASES.find((phase) => phase.id === 'INTEGRATING_CHANGES')
     const manualQa = WORKFLOW_PHASES.find((phase) => phase.id === 'WAITING_MANUAL_QA')
     const cleanup = WORKFLOW_PHASES.find((phase) => phase.id === 'CLEANING_ENV')
     const blocked = WORKFLOW_PHASES.find((phase) => phase.id === 'BLOCKED_ERROR')
@@ -110,6 +111,17 @@ describe.concurrent('workflow metadata', () => {
     expect(preFlight?.description).toContain('safe Git path and ref inputs')
     expect(preFlight?.details.steps.join(' ')).toContain('NUL-delimited records')
     expect(coding?.description).toContain('bounded Git resets and commits')
+    expect(coding?.description).toContain('records its reset checkpoint before it becomes `in_progress`')
+    expect(coding?.details.steps.join(' ')).toContain('the bead stays `pending`')
+    expect(coding?.details.notes?.join(' ')).toContain('no execution call starts')
+    expect(coding?.details.steps.join(' ')).toContain('attempts a safe reset')
+    expect(coding?.details.steps.join(' ')).toContain('valid OpenCode step-cap sidecar')
+    expect(coding?.details.notes?.join(' ')).toContain('sidecar is missing after a restart')
+    expect(coding?.details.notes?.join(' ')).toContain('does not write a common Git exclude rule')
+    expect(integration?.description).toContain('unknown untracked additions')
+    expect(integration?.details.steps.join(' ')).toContain('identity-bound persisted marker')
+    expect(integration?.details.steps.join(' ')).toContain('Invalid or escaped markers fail before recovery writes')
+    expect(integration?.details.steps.join(' ')).toContain('remain intact')
     expect(manualQa?.details.steps.join(' ')).toContain('persistent SQLite transaction lock')
     expect(manualQa?.description).toContain('strict no-symlink policy')
     expect(manualQa?.details.steps.join(' ')).toContain('copies a symlink itself')
@@ -183,6 +195,22 @@ describe.concurrent('workflow metadata', () => {
         'visible Draft autosave on indicator reports pending, saving, saved, conflict, or failure state',
       )
       expect(phase?.details.steps.join(' ').toLowerCase()).toContain('explicit save')
+    }
+  })
+
+  it('documents guarded interview and PRD approval saves', () => {
+    for (const phaseId of ['WAITING_INTERVIEW_APPROVAL', 'WAITING_PRD_APPROVAL']) {
+      const phase = WORKFLOW_PHASES.find((candidate) => candidate.id === phaseId)
+      const steps = phase?.details.steps.join(' ') ?? ''
+      const notes = phase?.details.notes?.join(' ') ?? ''
+
+      expect(phase?.description).toContain('loaded content hash guards raw and structured saves')
+      expect(phase?.details.overview).toContain('missing baseline fails closed')
+      expect(steps).toContain('Missing save baselines return HTTP 428')
+      expect(steps).toContain('stale baselines return HTTP 409')
+      expect(steps).toContain('failed save keeps the draft unsaved for retry')
+      expect(notes).toContain('not silently rebased onto newer remote content')
+      expect(notes).toContain('not confirmation that the server saved the latest text')
     }
   })
 

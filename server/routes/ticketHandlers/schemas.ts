@@ -97,6 +97,7 @@ export const editAnswerSchema = z.object({
 }).strict()
 
 export const interviewApprovalAnswerSchema = z.object({
+  expectedContentSha256: z.string().regex(/^[a-f0-9]{64}$/).optional(),
   questions: z.array(z.object({
     id: z.string().min(1),
     answer: z.object({
@@ -117,10 +118,12 @@ const RAW_ARTIFACT_CONTENT_MAX_BYTES = 1_000_000
 
 export const rawInterviewSaveSchema = z.object({
   content: z.string().max(RAW_ARTIFACT_CONTENT_MAX_BYTES),
+  expectedContentSha256: z.string().regex(/^[a-f0-9]{64}$/).optional(),
 })
 
 export const rawPrdSaveSchema = z.object({
   content: z.string().max(RAW_ARTIFACT_CONTENT_MAX_BYTES),
+  expectedContentSha256: z.string().regex(/^[a-f0-9]{64}$/).optional(),
 })
 
 const prdUserStorySchema = z.object({
@@ -177,6 +180,7 @@ export const prdDocumentSchema = z.object({
 
 export const structuredPrdSaveSchema = z.object({
   document: prdDocumentSchema,
+  expectedContentSha256: z.string().regex(/^[a-f0-9]{64}$/).optional(),
 }).strict()
 
 export const rawExecutionSetupPlanSaveSchema = z.object({

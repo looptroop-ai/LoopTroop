@@ -333,13 +333,24 @@ Read more: [Beads](https://www.looptroop.ovh/docs/beads)
 
 ### Execution & Ralph-style recovery
 
-The actual implementation is carried out by an AI coding agent (OpenCode) running in an isolated workspace. If the agent struggles, continuing the same conversation can make things worse. LoopTroop's retry mechanism (the "Ralph Loop") preserves a highly compact error trace from the failure, resets the worktree, discards the contaminated session, and begins a fresh run with clean context-plus a note from previous failures.
+The actual implementation is carried out by an AI coding agent (OpenCode) running in an isolated workspace. If the agent struggles, continuing the same conversation can make things worse. LoopTroop's retry mechanism (the "Ralph Loop") preserves a highly compact error trace from the failure, attempts a safe worktree reset, discards the contaminated session, and begins a fresh run with clean context plus a note from previous failures. A conflicting OpenCode step-cap marker can refuse that destructive reset while preserving the edited config and sidecar; a later bead may continue without a fresh cap when no reset is needed.
 
 ```text
-fail ──> log failure trace ──> reset worktree ──> retry fresh
+fail ──> log failure trace ──> safe reset ──> retry fresh
 ```
 
 This cycle repeats until all tests pass or retry limits are reached. **This can take hours (sometimes 10+ hours) by design.** It is built to run unattended (e.g., overnight).
+
+When `OpenCode Max Steps` is set, LoopTroop keeps a ticket-side restore marker for
+the temporary root `opencode.json`. If that capped file is edited, the edited
+bytes and marker stay in place and a destructive reset that would overwrite them
+is refused. Ordinary capped runs still retry normally; a later bead can continue
+without applying a fresh cap when no reset is needed, and valid marker evidence
+keeps the root config out of bead and final commits. A missing sidecar after a
+restart provides no ownership evidence, so LoopTroop does not guess. Applying the
+cap does not add a common Git exclude rule. Filesystem-equivalent casing follows
+the actual worktree paths; native Windows/macOS equivalent-case behavior is not
+claimed here.
 
 If startup finds an orphan YAML temp without its matching proof or a torn whole-file JSONL temp, it warns and leaves the temp unpromoted for inspection. Recovery blocks startup only when an in-progress fallback's `.recovery` ownership or completeness cannot be verified; that typed diagnostic appears before projections, ticket hydration, or execution timers, with the affected files preserved. LoopTroop does not guess or silently promote an uncertain write.
 
@@ -347,7 +358,7 @@ Read more: [Beads & Execution](https://www.looptroop.ovh/docs/beads)
 
 ### Worktree isolation
 
-LoopTroop runs execution steps inside isolated Git worktrees rather than modifying your active branch. This keeps your working copy clean and ensures reliable, inspectable diffs. Git mutations and resets have bounded process cleanup, unusual filenames stay intact when diffs are read, and generated runtime files stay out of candidate commits. Note that worktrees provide workspace isolation, not sandboxed host security.
+LoopTroop runs execution steps inside isolated Git worktrees rather than modifying your active branch. This keeps your working copy clean and ensures reliable, inspectable diffs. Git mutations and resets have bounded process cleanup, unusual filenames stay intact when diffs are read, and generated runtime files stay out of candidate commits. Protected Git-hook validation uses an identity-bound restore marker for the worktree and index; invalid or escaped markers fail before recovery writes, and unknown untracked additions stay intact when attribution is unclear. Note that worktrees provide workspace isolation, not sandboxed host security.
 
 Read more: [System Architecture](https://www.looptroop.ovh/docs/system-architecture)
 
@@ -356,6 +367,13 @@ Read more: [System Architecture](https://www.looptroop.ovh/docs/system-architect
 LoopTroop keeps you in control of critical state transitions. You actively review and sign off on planning specs, execution blueprints, and final pull request deliverables. *(Note: Human approval gates will become optional in future releases).*
 
 For tickets with Manual QA enabled, LoopTroop prepares a checklist while you manually control the app and accept/reject/skip/create new tickets from the items.
+
+Interview and PRD approval editors keep the original content hash alongside a
+dirty draft. A missing save baseline fails closed with HTTP 428, and a stale
+baseline returns HTTP 409 instead of overwriting newer server content. A
+successful Save advances the baseline; failed saves and best-effort leaving
+flushes keep the latest draft visibly unsaved so it can be retried. Browser
+unload delivery is not guaranteed.
 
 Read more: [Ticket Flow](https://www.looptroop.ovh/docs/ticket-flow)
 

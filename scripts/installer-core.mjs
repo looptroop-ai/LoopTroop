@@ -676,13 +676,15 @@ async function download(url, destination) {
  * on is not a control, it is an outage.
  *
  * For OpenCode in canonical directories (`~/.opencode/bin`, `OPENCODE_INSTALL_DIR`,
- * `OPENCODE_DIR`), an exception allows the binary to carry a foreign UID (such as
- * the runner UID 1001 preserved when GNU tar extracts official release archives
- * as root). In this specific exception, permission bits are strictly judged: the
- * binary and its directory chain must not be writable by group or others, and the
- * binary must be protected inside a private directory (denying group and other
- * traversal, like `/root` or `~` with mode `0700`) so foreign users cannot reach
- * or rewrite it. Traversable or sticky/shared directories (like `/tmp`) are refused.
+ * `OPENCODE_DIR`), an exception allows a known foreign UID (such as the runner UID
+ * 1001 preserved when GNU tar extracts official release archives as root). In this
+ * specific exception, permission bits are strictly judged: the binary and its
+ * directory chain must not be writable by group or others, and the binary must be
+ * protected inside a private directory (denying group and other traversal, like
+ * `/root` or `~` with mode `0700`) so foreign users cannot reach or rewrite it.
+ * Traversable or sticky/shared directories (like `/tmp`) are refused. A Linux
+ * kernel overflow UID is not a known owner, even in this canonical location; it
+ * needs an explicit `LOOPTROOP_TRUSTED_EXECUTABLE_DIRS` entry.
  *
  * On Windows there is no ownership check either: `fs.stat` reports mode `0777`
  * and uid `0` for everything on NTFS, so neither means anything. Windows gets
@@ -936,10 +938,10 @@ function searchEntries(entries                   , platform                 )   
  * LoopTroop orchestrates OpenCode, whose official installer unpacks into
  * `~/.opencode/bin`. On Linux, release archives built on GitHub Actions runners
  * are packed with `runner:runner` (uid 1001), and when extracted as root by GNU
- * `tar` (which defaults to `--same-owner`), the resulting binary retains uid 1001
- * while its parent directory is owned by root. Excusing OpenCode's canonical
- * install directory spares operators and container users from having to supply
- * an explicit `LOOPTROOP_TRUSTED_EXECUTABLE_DIRS` override.
+ * `tar` (which defaults to `--same-owner`), the resulting binary retains that
+ * known foreign uid while its parent directory is owned by root. A kernel
+ * overflow UID is different: it means the real owner is not mapped into this
+ * namespace, so the canonical directory is not enough to vouch for it.
  */
 export function canonicalTrustedDirectories(platform                 , policyEnv                   )           {
   let home
@@ -1215,6 +1217,13 @@ function readOverflowUidFromProc()                {
 
 
 
+
+
+
+
+
+
+
 /** Parses the namespace UID ranges needed to keep the overflow exception narrow. */
 function parseUidMap(value               )                       {
   if (value === null) return null
@@ -1234,6 +1243,40 @@ function uidIsMapped(uid        , ranges               )          {
   return ranges.some(({ inside, length }) => uid >= inside && uid - inside < length)
 }
 
+/** Whether Linux ownership may be the namespace-wide unmapped-owner value. */
+function overflowOwnership(
+  readUidMap                     ,
+  readOverflowUid                     ,
+)                    {
+  const ranges = parseUidMap(readUidMap())
+  const isMapped = ranges === null ? undefined : (uid        ) => uidIsMapped(uid, ranges)
+  if (ranges === null) return { unverifiable: true }
+
+  const identity = ranges.length === 1
+    && ranges[0] .inside === 0
+    && ranges[0] .outside === 0
+    && ranges[0] .length === 4_294_967_295
+  if (identity) return { unverifiable: false, isMapped }
+
+  const overflowText = readOverflowUid()?.trim()
+  const overflow = overflowText !== undefined && /^\d+$/.test(overflowText) ? Number(overflowText) : Number.NaN
+  if (!Number.isSafeInteger(overflow) || overflow < 0) return { unverifiable: true, isMapped }
+  if (uidIsMapped(overflow, ranges)) return { uid: overflow, unverifiable: false, isMapped }
+  return { uid: overflow, unverifiable: true, isMapped }
+}
+
+function uidIsUnverifiable(uid                    , ownership                   )          {
+  return uid !== undefined
+    && ownership.unverifiable
+    && (ownership.uid === undefined || ownership.uid === uid)
+}
+
+function ownerIsTrusted(uid                    , ownership                   )          {
+  return uid !== undefined
+    && (ownership.isMapped === undefined || ownership.isMapped(uid))
+    && !uidIsUnverifiable(uid, ownership)
+}
+
 /**
  * The uids whose files LoopTroop may run: root, this process, and whoever owns
  * the Node binary running it.
@@ -1243,38 +1286,28 @@ function uidIsMapped(uid        , ranges               )          {
  * refusing the user's `/opt/hostedtoolcache/.../npm` refused the Node it was
  * itself running from. Trusting that owner widens nothing that matters: whoever
  * can replace the interpreter already controls every line this process runs.
+ * In a user namespace, the UID map must also prove that each owner is mapped;
+ * a numeric root or interpreter UID that is only an overflow placeholder is not
+ * an identity this process can safely trust.
  */
-function trustedOwners(
-  readUidMap                      = readUidMapFromProc,
-  readOverflowUid                      = readOverflowUidFromProc,
-)              {
-  const owners = new Set        ([0])
-  const uid = process.getuid?.()
-  if (uid !== undefined) owners.add(uid)
-  const interpreter = realpathOrNull(process.execPath)
-  const interpreterOwner = interpreter === null ? undefined : statOrNull(interpreter)?.uid
-  if (interpreterOwner !== undefined) owners.add(interpreterOwner)
-
-  // In a non-initial user namespace, host-owned files whose UID is not mapped
-  // appear as the kernel's overflow UID. Trust only that value, and only when
-  // the map is readable and does not map the same in-namespace UID to a real
-  // user. An unreadable map or overflow value stays fail-closed.
-  const ranges = parseUidMap(readUidMap())
-  if (ranges !== null) {
-    const identity = ranges.length === 1
-      && ranges[0] .inside === 0
-      && ranges[0] .outside === 0
-      && ranges[0] .length === 4_294_967_295
-    if (!identity) {
-      const overflowText = readOverflowUid()?.trim()
-      const overflow = overflowText !== undefined && /^\d+$/.test(overflowText) ? Number(overflowText) : Number.NaN
-      if (Number.isSafeInteger(overflow) && overflow >= 0 && !uidIsMapped(overflow, ranges)) owners.add(overflow)
-    }
+function trustedOwners(ownership                   , stat                                          )              {
+  const owners = new Set        ()
+  const add = (uid                    )       => {
+    if (uid === undefined || !ownerIsTrusted(uid, ownership)) return
+    owners.add(uid)
   }
+  add(0)
+  const uid = process.getuid?.()
+  add(uid)
+  const interpreter = realpathOrNull(process.execPath)
+  const interpreterOwner = interpreter === null ? undefined : stat(interpreter)?.uid
+  add(interpreterOwner)
   return owners
 }
 
 /** What the ownership rule needs to know about the call it is judging. */
+
+
 
 
 
@@ -1379,7 +1412,8 @@ function foreignFileRefusal(
 )                {
   if (isTrusted) return null
 
-  if (context.isOpencode && context.canonicalOpenCodeDir && isExactOpencode(filePath, context.platform)) {
+  if (ownerIsTrusted(stats.uid, context.overflowOwnership)
+    && context.isOpencode && context.canonicalOpenCodeDir && isExactOpencode(filePath, context.platform)) {
     if (!isEnclosedInPrivateDirectory(filePath, context)) {
       return `its ${label} is owned by uid ${stats.uid} and is writable by its foreign owner`
     }
@@ -1525,7 +1559,10 @@ export function resolveTrustedExecutable(
   const readMountTable = options.readMountTable ?? readMountTableFromProc
   const stat = options.stat ?? statOrNull
   const lstat = options.lstat ?? lstatOrNull
-  const owners = trustedOwners(options.readUidMap, options.readOverflowUid)
+  const overflow = platform === 'linux'
+    ? overflowOwnership(options.readUidMap ?? readUidMapFromProc, options.readOverflowUid ?? readOverflowUidFromProc)
+    : { unverifiable: false }
+  const owners = trustedOwners(overflow, stat)
 
   if (name === '') return { reason: 'An empty program name cannot be resolved.' }
   if (/[\\/]/.test(name) || p.isAbsolute(name)) {
@@ -1564,6 +1601,7 @@ export function resolveTrustedExecutable(
       canonicalOpenCodeDir: isOpencode && inCanonicalDir,
       isOpencode,
       owners,
+      overflowOwnership: overflow,
     }
     if (cachedResolutionHolds(cached, name, directories, extensions, platform, context)) {
       return { path: cached.candidate, target: cached.path }
@@ -1591,6 +1629,7 @@ export function resolveTrustedExecutable(
         canonicalOpenCodeDir: isOpencode && inCanonicalDir,
         isOpencode,
         owners,
+        overflowOwnership: overflow,
       }
       const refusal = target === null
         ? 'it could not be resolved to a real file'
@@ -1682,6 +1721,9 @@ export function resolveTrustedProgram(
   const isOpencode = isExactOpencode(program, platform)
   const inCanonicalDir = directoryMatches(directory, canonicalDirs)
     || directoryMatches(p.dirname(target), canonicalDirs)
+  const overflow = platform === 'linux'
+    ? overflowOwnership(options.readUidMap ?? readUidMapFromProc, options.readOverflowUid ?? readOverflowUidFromProc)
+    : { unverifiable: false }
   const context               = {
     platform,
     readMountTable: options.readMountTable ?? readMountTableFromProc,
@@ -1690,7 +1732,8 @@ export function resolveTrustedProgram(
     namedByOperator: directoryMatches(directory, named),
     canonicalOpenCodeDir: isOpencode && inCanonicalDir,
     isOpencode,
-    owners: trustedOwners(options.readUidMap, options.readOverflowUid),
+    owners: trustedOwners(overflow, stat),
+    overflowOwnership: overflow,
   }
   // The path as named is judged as well as the real one: it is what gets
   // spawned, so a link on the way to it is followed again at spawn time.

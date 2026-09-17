@@ -239,6 +239,13 @@ a container.
 - **OpenCode**, with at least one configured model provider. LoopTroop will start
   it if it is already installed, but it will not work without it and it will not
   install it for you.
+- On Linux user namespaces, a tool whose owner is the kernel's unmapped
+  overflow UID is refused by default, including in a canonical OpenCode
+  directory. If you deliberately keep tools in such a directory, set
+  `LOOPTROOP_TRUSTED_EXECUTABLE_DIRS` in the daemon's own environment to the
+  absolute directory that contains them. Separate multiple directories with
+  `:` on macOS/Linux or `;` on Windows; only the directories you name are
+  opted in, and a child process cannot change this setting.
 
 ## What is LoopTroop?
 

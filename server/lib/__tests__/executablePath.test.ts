@@ -905,61 +905,121 @@ describe('resolveTrustedProgram', () => {
 })
 
 describe('round-2 trust rules', () => {
-  itPosix('trusts the kernel overflow UID only for an unmapped UID in a user namespace', () => {
+  itPosix('requires an explicit trusted directory for unverifiable overflow ownership', () => {
+    const root = tempRoot()
+    const trusted = join(root, 'trusted')
+    const arbitrary = join(root, 'arbitrary')
+    const tool = makeExecutable(trusted, 'looptool')
+    const outside = makeExecutable(arbitrary, 'other-tool')
+    const fakeNode = makeExecutable(join(root, 'node-home'), 'node')
+    const owner = 65534
+    const foreignPaths = new Set([tool, outside, fakeNode])
+    const withOverflow = (reader: (path: string) => Stats | null) => (path: string): Stats | null => {
+      const stats = reader(path)
+      if (stats === null || !foreignPaths.has(path)) return stats
+      return Object.assign(Object.create(Object.getPrototypeOf(stats)), stats, { uid: owner })
+    }
+    const options = {
+      platform: 'linux' as const,
+      cache: null,
+      stat: withOverflow(statOrNull),
+      lstat: withOverflow(lstatOrNull),
+      readUidMap: () => '0 1000 1\n',
+      readOverflowUid: () => String(owner),
+    }
+    const originalExecPath = process.execPath
+    process.execPath = fakeNode
+    try {
+      expect(resolveTrustedExecutable('looptool', { ...options, env: { PATH: trusted } }).reason)
+        .toContain('neither root, you, nor the owner of the Node')
+
+      expect(resolveTrustedExecutable('looptool', {
+        ...options,
+        env: { PATH: trusted },
+        policyEnv: { [TRUSTED_EXECUTABLE_DIRS_ENV]: trusted },
+      }).path).toBe(tool)
+
+      expect(resolveTrustedExecutable('other-tool', {
+        ...options,
+        env: { PATH: arbitrary },
+        policyEnv: { [TRUSTED_EXECUTABLE_DIRS_ENV]: trusted },
+      }).reason).toContain('neither root, you, nor the owner of the Node')
+    } finally {
+      process.execPath = originalExecPath
+    }
+  })
+
+  itPosix('does not treat a canonical OpenCode directory as proof for an overflow-owned binary', () => {
+    const root = tempRoot()
+    chmodSync(root, 0o700)
+    const dir = join(root, '.opencode', 'bin')
+    const outside = join(root, 'outside')
+    const tool = makeExecutable(dir, 'opencode')
+    const outsideTool = makeExecutable(outside, 'other-tool')
+    const owner = 65534
+    const foreignPaths = new Set([tool, outsideTool])
+    const withOverflow = (reader: (path: string) => Stats | null) => (path: string): Stats | null => {
+      const stats = reader(path)
+      if (stats === null || !foreignPaths.has(path)) return stats
+      return Object.assign(Object.create(Object.getPrototypeOf(stats)), stats, { uid: owner })
+    }
+    const options = {
+      platform: 'linux' as const,
+      cache: null,
+      stat: withOverflow(statOrNull),
+      lstat: withOverflow(lstatOrNull),
+      readUidMap: () => '0 1000 1\n',
+      readOverflowUid: () => String(owner),
+    }
+    try {
+      expect(resolveTrustedExecutable('opencode', {
+        ...options,
+        env: { PATH: dir },
+        policyEnv: { HOME: root },
+      }).path).toBeUndefined()
+
+      expect(resolveTrustedExecutable('opencode', {
+        ...options,
+        env: { PATH: dir },
+        policyEnv: { HOME: root, [TRUSTED_EXECUTABLE_DIRS_ENV]: dir },
+      }).path).toBe(tool)
+
+      expect(resolveTrustedProgram(outsideTool, {
+        ...options,
+        policyEnv: { HOME: root, [TRUSTED_EXECUTABLE_DIRS_ENV]: dir },
+      }).path).toBeUndefined()
+    } finally {
+      chmodSync(root, 0o755)
+    }
+  })
+
+  itPosix('does not trust numeric root when the overflow UID is unmapped', () => {
     const root = tempRoot()
     const bin = join(root, 'bin')
     const tool = makeExecutable(bin, 'looptool')
-    const withUid = (owner: number) => (reader: (path: string) => Stats | null) => (path: string): Stats | null => {
+    const fakeNode = makeExecutable(join(root, 'node-home'), 'node')
+    const withOverflow = (reader: (path: string) => Stats | null) => (path: string): Stats | null => {
       const stats = reader(path)
-      if (stats === null || path !== tool) return stats
-      return Object.assign(Object.create(Object.getPrototypeOf(stats)), stats, { uid: owner })
+      if (stats === null || ![tool, fakeNode].includes(path)) return stats
+      return Object.assign(Object.create(Object.getPrototypeOf(stats)), stats, { uid: 0 })
     }
-
-    const options = {
-      env: { PATH: bin },
-      platform: 'linux' as const,
-      cache: null,
-      stat: withUid(65534)(statOrNull),
-      lstat: withUid(65534)(lstatOrNull),
-      readOverflowUid: () => '65534',
+    const originalExecPath = process.execPath
+    process.execPath = fakeNode
+    try {
+      const resolution = resolveTrustedExecutable('looptool', {
+        platform: 'linux',
+        env: { PATH: bin },
+        cache: null,
+        stat: withOverflow(statOrNull),
+        lstat: withOverflow(lstatOrNull),
+        readUidMap: () => '1000 1000 1\n',
+        readOverflowUid: () => '0',
+      })
+      expect(resolution.path).toBeUndefined()
+      expect(resolution.reason).toContain('neither root, you, nor the owner of the Node')
+    } finally {
+      process.execPath = originalExecPath
     }
-
-    expect(resolveTrustedExecutable('looptool', {
-      ...options,
-      readUidMap: () => '0 0 4294967295\n',
-    }).reason).toContain('neither root, you, nor the owner of the Node')
-
-    expect(resolveTrustedExecutable('looptool', {
-      ...options,
-      readUidMap: () => '0 1000 1\n',
-    }).path).toBe(tool)
-
-    // The outside UID is part of the identity-map decision. A full-range map
-    // beginning at a nonzero host UID is not the initial namespace; use an
-    // overflow value just outside that range to make the distinction visible.
-    expect(resolveTrustedExecutable('looptool', {
-      ...options,
-      readUidMap: () => '0 1000 4294967295\n',
-      readOverflowUid: () => '4294967295',
-      stat: withUid(4294967295)(statOrNull),
-      lstat: withUid(4294967295)(lstatOrNull),
-    }).path).toBe(tool)
-
-    expect(resolveTrustedExecutable('looptool', {
-      ...options,
-      readUidMap: () => '0 0 65535\n',
-    }).reason).toContain('neither root, you, nor the owner of the Node')
-
-    expect(resolveTrustedExecutable('looptool', {
-      ...options,
-      readUidMap: () => '0 1000 1\n',
-      readOverflowUid: () => 'not-a-uid',
-    }).reason).toContain('neither root, you, nor the owner of the Node')
-
-    expect(resolveTrustedExecutable('looptool', {
-      ...options,
-      readUidMap: () => null,
-    }).reason).toContain('neither root, you, nor the owner of the Node')
   })
 
   itPosix('trusts whoever owns the Node running LoopTroop', () => {

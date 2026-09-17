@@ -259,7 +259,7 @@ export async function generateExecutionSetup(
           initialInput,
         )
       }
-      if (!activeSession) {
+      if (!failedRetrySession) {
         throw retryError
       }
       const promptFailureAttempts: RawAttempt[] = []
@@ -270,7 +270,7 @@ export async function generateExecutionSetup(
         failureClass: classifyStructuredFailureFromError(error),
       })
       return buildPromptFailureGeneration(
-        activeSession,
+        failedRetrySession,
         retryError,
         [
           resolveStructuredRetryDiagnostic({

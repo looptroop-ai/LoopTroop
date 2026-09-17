@@ -68,7 +68,7 @@ describe('interview workflow phases', () => {
     const outside = repoManager.createRepo()
     symlinkSync(outside, join(paths.ticketDir, 'interview.yaml'), 'junction')
     expect(() => loadCanonicalInterview(paths.ticketDir)).toThrow('escapes root')
-    expect(() => writeCanonicalInterview(ticket.externalId, paths.ticketDir, snapshot)).toThrow('escapes root')
+    expect(() => writeCanonicalInterview(ticket.externalId, paths.ticketDir, snapshot)).toThrow('must not be a symbolic link')
   })
   beforeEach(() => {
     resetTestDb()

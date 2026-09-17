@@ -17,6 +17,7 @@ import {
   readlinkSync,
   rmSync,
   symlinkSync,
+  type Stats,
 } from 'node:fs'
 import { basename, dirname, join, relative, resolve } from 'node:path'
 import { resolveContainedPath } from '../../lib/containedPath'
@@ -380,7 +381,7 @@ function sameQuarantineEntry(source: string, destination: string): boolean {
   }
 }
 
-function lstatSafe(path: string): ReturnType<typeof lstatSync> | null {
+function lstatSafe(path: string): Stats | null {
   try {
     return lstatSync(path)
   } catch (error) {

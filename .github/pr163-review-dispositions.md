@@ -39,6 +39,36 @@ choice is intentionally waiting on the root/user overflow-UID decision.
 
 ## Review contract retained
 
+Root's post-push CI review found and fixed a missing command-substitution
+parenthesis in container repair. The Windows scope regression now supplies Git
+as a Bash function because a native PATH override still resolved the runner's
+Git. Sonar's new duplication failure was traced to repeated test setup;
+damaged-install fixtures and malformed-argument cases now share that setup
+without dropping scenarios or excluding files from analysis.
+
+Local aggregate verification passed all 424 test files (6,042 tests,
+11 skipped), full lint and build, version consistency, generated installer
+consistency, package contents, production native-addon checks and script
+type-stripping checks. The subsequent CI fixes passed the same pinned
+Actionlint/ShellCheck checks and all 20 focused workflow, daemon-evidence and
+argument-contract tests. Native Windows execution is left to CI; the Bash
+fixture change is not claimed as a locally executed Windows test.
+
+The remaining review envelopes are accounted for here:
+
+- `5704700507`: correct; its container-repair and explicit Windows-path
+  findings are fixed by the corresponding rows above.
+- `5704729991`: correct; repeats the held overflow-UID security finding.
+- `5228597247`: mixed; structured Node facts, container inventory handling,
+  and HTTPS recipes are fixed; overflow ownership remains held.
+- `5228460355`: not applicable; Sourcery's diff-size limit supplied no finding.
+- `5228482549`: informational approval, not independent proof of namespace
+  safety; the concrete overflow finding remains valid despite that approval.
+- `5228490619` and `5228513632`: empty review bodies; their associated issue
+  and inline comments are assessed above.
+- `5228508008`: Codex review envelope; the associated inline findings are
+  assessed above.
+
 The overflow-UID behavior is the only unresolved implementation choice in this
 packet. All other rows above are either fixed, explicitly deferred to another
 scope, or verified as not applicable; root must update the held row and the

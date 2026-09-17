@@ -168,7 +168,7 @@ jobs:
             const fs = require("node:fs")
             const manifest = JSON.parse(fs.readFileSync(`${process.env.ASSET_DIR}/release-manifest.json`, "utf8"))
             process.stdout.write(manifest.assets?.["package-lock.json"] ? "yes" : "no")
-          '
+          ')
           if [ "${lockfile_expected}" = yes ]; then
             gh release download "v${VERSION}" --dir "${ASSET_DIR}" --pattern package-lock.json
             # The container only needs the tarball and its matching lockfile.

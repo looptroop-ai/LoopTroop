@@ -1,5 +1,5 @@
-import { chmodSync, mkdtempSync, mkdirSync, readFileSync, readdirSync, rmSync, writeFileSync } from 'node:fs'
-import { delimiter, join } from 'node:path'
+import { mkdtempSync, readFileSync, readdirSync, rmSync } from 'node:fs'
+import { join } from 'node:path'
 import { spawnSync } from 'node:child_process'
 import { tmpdir } from 'node:os'
 import * as yaml from 'js-yaml'
@@ -38,13 +38,11 @@ function executeWindowsScope(run: string, changedPaths: string[]): {
 } {
   const directory = mkdtempSync(join(tmpdir(), 'looptroop-windows-scope-'))
   try {
-    const bin = join(directory, 'bin')
-    mkdirSync(bin)
-    const git = join(bin, 'git')
-    writeFileSync(git, '#!/bin/sh\nif [ "$1" = diff ] && [ "$2" = --name-only ]; then\n  printf \'%s\\n\' "$CHANGED_PATHS"\n  exit 0\nfi\nexit 1\n')
-    chmodSync(git, 0o755)
+    // A shell function overrides Git identically in POSIX shells and Git Bash,
+    // without relying on Windows-to-POSIX PATH conversion for an extensionless fixture.
+    const fixture = 'git() { if [ "$1" = diff ] && [ "$2" = --name-only ]; then printf \'%s\\n\' "$CHANGED_PATHS"; else return 1; fi; }\n'
     const outputPath = join(directory, 'github-output')
-    const result = spawnSync('bash', ['-euo', 'pipefail', '-c', run], {
+    const result = spawnSync('bash', ['-euo', 'pipefail', '-c', fixture + run], {
       encoding: 'utf8',
       env: {
         ...process.env,
@@ -52,11 +50,6 @@ function executeWindowsScope(run: string, changedPaths: string[]): {
         CHANGED_PATHS: changedPaths.join('\n'),
         GITHUB_OUTPUT: outputPath,
         HEAD_SHA: 'head-sha',
-        // GitHub's Windows runner executes this step through Git Bash. Give
-        // that shell a slash-separated path; a native `C:\\…` entry is not
-        // searched as a POSIX directory and silently falls through to the
-        // runner's real git, which leaves the scope false for the wrong reason.
-        PATH: `${process.platform === 'win32' ? bin.replaceAll(String.fromCharCode(92), '/') : bin}${delimiter}${process.env.PATH ?? ''}`,
       },
     })
     return {

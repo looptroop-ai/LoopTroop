@@ -11,6 +11,13 @@ function fixtureScript(path: string, body: string): void {
   chmodSync(path, 0o755)
 }
 
+const invalidArguments = (option: string, nextOption: string) => [
+  ['unknown option', ['--typo', 'value'], 'Unknown option --typo'],
+  ['positional extra', ['stray'], 'Unexpected argument'],
+  ['missing value', [option], 'needs a value'],
+  ['flag swallowed as value', [option, nextOption], `needs a value, but is followed by ${nextOption}`],
+] as const
+
 describe('release script argument contracts', () => {
   it('uses the pinned native SEA builder without a legacy injector fallback', () => {
     const builder = readFileSync(join(repo, 'scripts/build-binary.mjs'), 'utf8')
@@ -58,42 +65,22 @@ describe('release script argument contracts', () => {
         {
           path: 'scripts/choco-push.ts',
           base: ['--nupkg', packagePath, '--version', '9.9.9'],
-          cases: [
-            ['unknown option', ['--typo', 'value'], 'Unknown option --typo'],
-            ['positional extra', ['stray'], 'Unexpected argument'],
-            ['missing value', ['--version'], 'needs a value'],
-            ['flag swallowed as value', ['--version', '--nupkg'], 'needs a value, but is followed by --nupkg'],
-          ],
+          cases: invalidArguments('--version', '--nupkg'),
         },
         {
           path: 'scripts/aur-push.ts',
           base: ['--version', '9.9.9', '--url', 'https://example.invalid/bundle.tar.gz', '--sha256', 'a'.repeat(64)],
-          cases: [
-            ['unknown option', ['--typo', 'value'], 'Unknown option --typo'],
-            ['positional extra', ['stray'], 'Unexpected argument'],
-            ['missing value', ['--version'], 'needs a value'],
-            ['flag swallowed as value', ['--version', '--url'], 'needs a value, but is followed by --url'],
-          ],
+          cases: invalidArguments('--version', '--url'),
         },
         {
           path: 'scripts/audit-formula.ts',
           base: ['--version', '9.9.9', '--url', 'https://example.invalid/bundle.tar.gz', '--sha256', 'a'.repeat(64)],
-          cases: [
-            ['unknown option', ['--typo', 'value'], 'Unknown option --typo'],
-            ['positional extra', ['stray'], 'Unexpected argument'],
-            ['missing value', ['--version'], 'needs a value'],
-            ['flag swallowed as value', ['--version', '--url'], 'needs a value, but is followed by --url'],
-          ],
+          cases: invalidArguments('--version', '--url'),
         },
         {
           path: 'scripts/build-binary.mjs',
           base: ['--out', output],
-          cases: [
-            ['unknown option', ['--typo', 'value'], 'Unknown option --typo'],
-            ['positional extra', ['stray'], 'Unexpected argument'],
-            ['missing value', ['--out'], 'needs a value'],
-            ['flag swallowed as value', ['--out', '--typo'], 'needs a value, but is followed by --typo'],
-          ],
+          cases: invalidArguments('--out', '--typo'),
         },
       ] as const
 

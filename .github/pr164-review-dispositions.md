@@ -1,9 +1,9 @@
 # PR #164 review dispositions
 
 This ledger covers every captured PR comment, review, inline finding, and CI
-notice in `/tmp/looptroop-pr-review/164.json` and `164.md`. The dispositions
-were checked against the current branch, the accepted audit decisions, and the
-focused tests listed below.
+notice in `/tmp/looptroop-pr-review/164.json`, `164.md`, `164-refresh.json`,
+and `164-delta.md`. The dispositions were checked against the current branch,
+the accepted audit decisions, and the focused tests listed below.
 
 Disposition labels:
 
@@ -38,6 +38,8 @@ Disposition labels:
 | 5714612944 | Muse Spark pass 2 | correct | The route root parser now requests untrimmed Git output and removes only its platform terminator; Manual QA sync mutations are converted. The `ssh -G` request-path latency and hook-validation sites are outside this packet. |
 | 5714878480 | OpenCode independent review | correct | NUL-delimited Git diff output is retained alongside the human summary and consumed by candidate audits without trimming path bytes. The supplied-root symlink policy is intentionally fail-closed in the shared path helper; hardlink-unavailable fallback records ownership before copying. |
 | 5714892533 | Codex independent review | correct | The in-scope synchronous Manual QA mutations and trailing-space Git-root truncation are fixed. OpenCode conflict ownership, shared excludes, clean-plan races, CLI lifecycle, and nested config recovery are accepted decisions or other packets. |
+| 5717133545 | Codacy status | not-applicable | A status summary with no file, rule, or source details; the concrete analyzer findings are assessed in the inline records below. |
+| 5717565922 | SonarCloud quality gate | correct | The gate accurately reports open security findings, which are individually classified below. The reachable log-injection sink is fixed; the remaining path/oracle reports are documented false positives for intentional project discovery and diagnostics. |
 
 ## Captured reviews
 
@@ -72,23 +74,41 @@ Disposition labels:
 | 4031887234 | `server/io/atomicAppend.ts` | correct | A process-shared SQLite lock spans fstat, newline repair, every short write, fsync, and the returned byte range. |
 | 4031887237 | `server/io/fileLock.ts` | not-applicable | Legacy JSON-lock migration is excluded by the fresh-install decision; SQLite errors remain explicit rather than deleting an unknown file. |
 | 4031887244 | `server/storage/paths.ts` | correct | WSL drive mapping uses `resolve` and verifies the result remains below the mounted drive; traversal such as `D:/../../etc` is rejected. |
+| 4038893711 | `server/phases/manualQa/checkpoint.ts` | correct | Reusing an existing quarantine copy now proves that both opened descriptors still match their pathnames by device/inode (with size and timestamps as the portable fallback) before and after the bounded comparison. The regression replaces the source while its old descriptor is being read and verifies the replacement is retained at an action-specific retry destination. |
+| 4038934279 | `server/git/runCommand.ts` | wrong | The requested project directory is passed as the child working directory, never concatenated into an argument or shell command. `runGit*` requires an absolute, NUL-free path; callers derive it from the explicitly selected repository, and the generic `gh` working directory is likewise a project root. |
+| 4038934330 | `server/git/runCommand.ts` | wrong | `gitIndexLockPath` reads `.git` metadata below the caller-selected project solely to improve a timeout diagnostic. It does not publish, mutate, or expose a path outside that requested repository boundary. |
+| 4038934358 | `server/git/runCommand.ts` | wrong | The reported `resolve`/`lstat` path is the same validated project working directory used for the Git operation; this diagnostic lookup cannot turn a request into an arbitrary write or shell execution. |
+| 4038934395 | `server/git/runCommand.ts` | wrong | Async Git uses the validated project directory as `spawn`'s `cwd`; it is not interpolated into a command string and the child receives an argv array. The runner's generic `cwd` is internal CLI/GitHub project context, not a path component assembled from an untrusted filename. |
+| 4038934428 | `server/git/runCommand.ts` | wrong | The existence check only decides whether to add a timeout explanation for the index lock in the same requested repository. It is not an authorization check or a cross-root file read, so Sonar's filesystem-oracle taint is not a reachable disclosure boundary here. |
+| AaCwCmwAYG7j__vPWQCi | `server/routes/projects.ts` | wrong | `access` is the deliberate first probe for the folder-picker and repository-discovery endpoints. `normalizeFolderPath` rejects relative paths and constrains WSL drive mappings; users are selecting the local repository they want to attach, not supplying a path to a hidden project-root join. |
+| AaCwCmwAYG7j__vPWQCh | `server/routes/projects.ts` | wrong | `/projects/ls` is explicitly a directory browser for choosing a project. Its absolute normalized path is the requested directory, and the response lists only directories found there; restricting it to an already attached root would remove the attach flow rather than fix traversal. |
+| AaCwCmwAYG7j__vPWQCg | `server/routes/projects.ts` | correct | A POSIX filename may contain newline and other control bytes. The missing-path warning now JSON-encodes both path values so user-controlled bytes cannot forge additional log records while the diagnostic remains readable. |
+| AaCwCm3mYG7j__vPWQCk | `server/git/runCommand.ts` | wrong | `spawnSync` receives a resolved executable path and a separately validated working directory; no path is parsed as a shell command or appended to argv. The runner intentionally supports inspection of the user-selected folder before it is attached. |
+| AaCwCm3mYG7j__vPWQCj | `server/git/runCommand.ts` | wrong | The async runner has the same boundary as the synchronous path: executable resolution is trusted, argv is an array, and `cwd` is the selected absolute project directory. This is not a traversal through a repository-relative filename. |
+| AaCwCm3mYG7j__vPWQCo | `server/git/runCommand.ts` | wrong | `statSync` is only a post-spawn check used to distinguish a missing working directory from a missing Git executable. It follows the caller's requested directory and does not use the result to authorize a write. |
+| AaCwCm3mYG7j__vPWQCl | `server/git/runCommand.ts` | wrong | The `.git` lookup is a read-only timeout diagnostic rooted at the selected project directory; it does not accept a separate user-controlled suffix and cannot escape through a pathspec. |
+| AaCwCm3mYG7j__vPWQCn | `server/git/runCommand.ts` | wrong | Reading the linked-worktree `.git` file and resolving its `gitdir` is required to name a lock in the repository Git is already operating on. The value is diagnostic-only and is never used as a command or mutation target. |
+| AaCwCm3mYG7j__vPWQCm | `server/git/runCommand.ts` | wrong | The lock existence probe only enriches a timeout error for the caller's selected repository. It does not reveal an unrelated path and cannot be used to choose a later filesystem operation. |
 
 ## Verification
 
 Root's follow-up bounds quarantine comparison memory to two 64 KiB buffers,
 uses the shared no-follow regular-file opener, and checks file size and
-modification time after reading. A multi-chunk regression verifies identical
-backup reuse and preservation of a later same-sized change at its recorded
-retry destination.
+modification time after reading. This branch also checks descriptor device and
+inode identity before and after reading, so a replacement cannot be mistaken
+for the opened file. Multi-chunk regressions verify identical backup reuse and
+preservation of a later same-sized change at its recorded retry destination.
 
 Focused checks on this branch included:
 
 - `vitest` pure path/Git tests: path normalization 16 passed, 3 skipped;
   worktree removal 11 passed; related pure tests were rerun after each fix.
 - `vitest` integration recovery: 20 passed; atomic IO: 60 passed; project
-  routes: 27 passed; Manual QA operations/checkpoint: 26 passed.
-- `tsc --noEmit --pretty false` passed before the final route/path additions;
-  it is rerun as part of the handoff checks.
+  routes: 27 passed; Manual QA operations/checkpoint: 26 passed. The latest
+  focused reruns passed project routes 27/27 and checkpoint 12/12, including
+  the replacement-during-comparison regression.
+- `tsc --noEmit --pretty false` passed after the final route and checkpoint
+  changes, and the touched-file ESLint check passed.
 - `git diff --check` passed before the final documentation and disposition
   edits; it is rerun before commit.
 

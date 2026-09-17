@@ -356,6 +356,8 @@ function sameQuarantineEntry(source: string, destination: string): boolean {
   try {
     descriptors.push(openFileNoFollowSync(source))
     descriptors.push(openFileNoFollowSync(destination))
+    const opened = descriptors.map((fd) => fstatSync(fd))
+    if (!sameFileSnapshot(left, opened[0]!) || !sameFileSnapshot(right, opened[1]!)) return false
     const buffers = [Buffer.alloc(64 * 1024), Buffer.alloc(64 * 1024)]
     for (let position = 0; position < left.size; position += buffers[0]!.length) {
       const length = Math.min(buffers[0]!.length, left.size - position)
@@ -369,16 +371,32 @@ function sameQuarantineEntry(source: string, destination: string): boolean {
       }
       if (!buffers[0]!.subarray(0, length).equals(buffers[1]!.subarray(0, length))) return false
     }
-    return descriptors.every((fd, index) => {
-      const expected = index === 0 ? left : right
-      const current = fstatSync(fd)
-      return current.size === expected.size && current.mtimeMs === expected.mtimeMs
-    })
+    const afterRead = descriptors.map((fd) => fstatSync(fd))
+    const currentSource = lstatSafe(source)
+    const currentDestination = lstatSafe(destination)
+    return currentSource?.isFile() === true
+      && currentDestination?.isFile() === true
+      && sameFileSnapshot(currentSource, afterRead[0]!)
+      && sameFileSnapshot(currentDestination, afterRead[1]!)
   } catch {
     return false
   } finally {
     for (const fd of descriptors) closeSync(fd)
   }
+}
+
+/**
+ * Prove that a pathname still names the descriptor we compared. Device/inode
+ * identity catches an atomic replacement; size and timestamps cover platforms
+ * that do not expose a useful inode while also catching an in-place rewrite.
+ */
+function sameFileSnapshot(pathStats: Stats, descriptorStats: Stats): boolean {
+  const identityAvailable = pathStats.dev !== 0 || pathStats.ino !== 0
+    || descriptorStats.dev !== 0 || descriptorStats.ino !== 0
+  if (identityAvailable && (pathStats.dev !== descriptorStats.dev || pathStats.ino !== descriptorStats.ino)) return false
+  return pathStats.size === descriptorStats.size
+    && pathStats.mtimeMs === descriptorStats.mtimeMs
+    && pathStats.ctimeMs === descriptorStats.ctimeMs
 }
 
 function lstatSafe(path: string): Stats | null {

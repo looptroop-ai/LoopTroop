@@ -1,6 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
-import { skipToken, useInfiniteQuery, useQuery, useQueryClient } from '@tanstack/react-query'
-import { isCancelledError } from '@tanstack/query-core'
+import { isCancelledError, skipToken, useInfiniteQuery, useQuery, useQueryClient } from '@tanstack/react-query'
 import {
   getLogEntryAliases,
   INITIAL_LOG_PAGE_LIMIT,

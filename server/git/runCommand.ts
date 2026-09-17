@@ -34,6 +34,7 @@ import { isAbsolute, resolve } from 'node:path'
 import { resolveTrustedProgram } from '../lib/executablePath'
 import * as commandLogger from '../log/commandLogger'
 import { terminateProcessTree } from '../lib/processTree'
+import { createChildEnvironment } from '../lib/childEnvironment'
 
 /** Matches the timeout `server/git/repository.ts` has always used. */
 export const GIT_DEFAULT_TIMEOUT_MS = 30_000
@@ -138,7 +139,7 @@ function buildEnv(extra: NodeJS.ProcessEnv | undefined): NodeJS.ProcessEnv {
   if (typeof env.GIT_SSH_COMMAND !== 'string' && typeof env.GIT_SSH !== 'string') {
     env.GIT_SSH_COMMAND = 'ssh -o BatchMode=yes'
   }
-  return env
+  return createChildEnvironment(env)
 }
 
 function timeoutMessage(bin: string, args: string[], timeoutMs: number): string {

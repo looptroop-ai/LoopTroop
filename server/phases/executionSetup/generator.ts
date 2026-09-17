@@ -69,10 +69,6 @@ function isProgressOnlyExecutionSetupResponse(response: string, markerFound: boo
 
 export type GenerateExecutionSetupResult = ExecutionSetupGenerationResult
 
-function errorMessage(error: unknown): string {
-  return getErrorMessage(error)
-}
-
 function normalizeExecutionSetupPromptError(
   error: unknown,
   expired: boolean,
@@ -89,7 +85,7 @@ function buildPromptFailureGeneration(
   previousRawAttempts: RawAttempt[] = [],
   initialInput?: string,
 ): GenerateExecutionSetupResult {
-  const validationError = `Execution setup prompt failed: ${errorMessage(error)}`
+  const validationError = `Execution setup prompt failed: ${getErrorMessage(error)}`
   const failureClass = classifyStructuredFailureFromError(error)
   const rawAttempts: RawAttempt[] = [...previousRawAttempts]
   const rawAttempt = appendRejectedRawAttempt(rawAttempts, {
@@ -266,7 +262,7 @@ export async function generateExecutionSetup(
       appendRejectedRawAttempt(promptFailureAttempts, {
         stage: 'execution_setup',
         initialInput,
-        validationError: `Execution setup prompt failed: ${errorMessage(error)}`,
+        validationError: `Execution setup prompt failed: ${getErrorMessage(error)}`,
         failureClass: classifyStructuredFailureFromError(error),
       })
       return buildPromptFailureGeneration(
@@ -276,7 +272,7 @@ export async function generateExecutionSetup(
           resolveStructuredRetryDiagnostic({
             attempt: 1,
             rawResponse: '',
-            validationError: `Execution setup prompt failed: ${errorMessage(error)}`,
+            validationError: `Execution setup prompt failed: ${getErrorMessage(error)}`,
             failureClass: classifyStructuredFailureFromError(error),
           }),
         ],

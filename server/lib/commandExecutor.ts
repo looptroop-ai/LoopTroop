@@ -9,6 +9,7 @@ import { FORCE_KILL_DELAY_MS, PROCESS_ABANDON_GRACE_MS } from './constants'
 import { terminateProcessTreeWithEscalation } from './processTree'
 import { readProcessStartToken } from './processIdentity'
 import { escapesRoot, resolveContainedPath } from './containedPath'
+import { createChildEnvironment } from './childEnvironment'
 
 // Guarded with Test-Path so an unset $LASTEXITCODE cannot turn a clean cmdlet
 // run into a strict-mode failure. Matches the launcher script in
@@ -247,6 +248,7 @@ export async function executeCommand(
       environment.PATH ?? environment.Path ?? '',
     ].filter(Boolean).join(pathSeparator)
   }
+  const childEnvironment = createChildEnvironment(environment, platform === 'windows')
 
   // Resolved after the environment is built, so a project-local tool put on the
   // child's PATH by `pathPrepend` is found the way the child would find it.
@@ -256,7 +258,7 @@ export async function executeCommand(
   const resolveProgram = input.resolveProgram ?? resolveCommandProgram
   // The daemon's environment, before the plan's variables are merged in: that
   // is where the trust policy is read.
-  const context = { env: environment, policyEnv: baseEnvironment, cwd, repoRoot: input.repoRoot }
+  const context = { env: childEnvironment, policyEnv: baseEnvironment, cwd, repoRoot: input.repoRoot }
   const resolvedProgram = resolveProgram(invocation.bin, context)
   if (resolvedProgram.path === undefined) {
     return {
@@ -281,7 +283,7 @@ export async function executeCommand(
     platform: platform === 'windows' ? 'win32' : platform === 'macos' ? 'darwin' : 'linux',
     // What cmd.exe will run with, the plan's variables included: they decide
     // what a `%…%` in an argument could expand to.
-    env: environment,
+    env: childEnvironment,
     resolveInterpreter: () => commandInterpreter(resolveProgram, context),
   })
   if (launch.reason !== undefined) {
@@ -301,7 +303,7 @@ export async function executeCommand(
   return await new Promise<CommandExecutionResult>((resolveExecution) => {
     const child = spawnProcess(launch.file, launch.args, {
       cwd,
-      env: environment,
+      env: childEnvironment,
       windowsVerbatimArguments: launch.windowsVerbatimArguments,
       stdio: ['ignore', 'pipe', 'pipe'],
       detached: platform !== 'windows',

@@ -67,6 +67,20 @@ class SSEBroadcaster {
     this.clients.set(ticketId, existing)
   }
 
+  reserveClient(ticketId: string, clientId: string, maxPerTicket: number, maxTotal: number): boolean {
+    if (this.getClientCount(ticketId) >= maxPerTicket || this.getTotalClientCount() >= maxTotal) return false
+    this.addClient(ticketId, { id: clientId, send: () => undefined, close: () => undefined })
+    return true
+  }
+
+  activateClient(ticketId: string, client: SSEClient): boolean {
+    const existing = this.clients.get(ticketId)
+    const index = existing?.findIndex(candidate => candidate.id === client.id) ?? -1
+    if (!existing || index < 0) return false
+    existing[index] = client
+    return true
+  }
+
   removeClient(ticketId: string, clientId: string) {
     const existing = this.clients.get(ticketId)
     if (existing) {

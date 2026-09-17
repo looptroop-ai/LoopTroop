@@ -119,4 +119,28 @@ describe('ticketRouter GET /tickets/:id/skips', () => {
     const response = await app.request('/api/tickets/1:MISSING-9/skips')
     expect(response.status).toBe(404)
   })
+
+  it.each(['', 'has spaces', ':starts-with-punctuation', 'ümlaut', 'a'.repeat(161)])('rejects UI state action IDs outside the Manual QA contract: %j', async (actionId) => {
+    const { app, ticket } = await setupTicket()
+    const response = await app.request(`/api/tickets/${ticket.id}/ui-state`, {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ scope: 'manual-qa', data: {}, expectedRevision: null, actionId }),
+    })
+
+    expect(response.status).toBe(400)
+  })
+
+  it('accepts the Manual QA action ID charset and 160-character limit at the real UI-state route', async () => {
+    const { app, ticket } = await setupTicket()
+    const actionId = `manual-qa_submit:v1.${'x'.repeat(140)}`
+    expect(actionId).toHaveLength(160)
+    const response = await app.request(`/api/tickets/${ticket.id}/ui-state`, {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ scope: 'manual-qa', data: { ready: true }, expectedRevision: null, actionId }),
+    })
+
+    expect(response.status).toBe(200)
+  })
 })

@@ -51,6 +51,39 @@ describe('OpenCodeSupervisor', () => {
     expect(termination.force).not.toHaveBeenCalled()
   })
 
+  it('strips daemon credentials while retaining OpenCode provider credentials', async () => {
+    const ambient = process.env.LOOPTROOP_API_TOKEN
+    const provider = process.env.OPENCODE_SERVER_PASSWORD
+    process.env.LOOPTROOP_API_TOKEN = 'ambient-daemon-token'
+    process.env.OPENCODE_SERVER_PASSWORD = 'provider-password'
+    const child = fakeChild(4100)
+    const spawnProcess = vi.fn((..._args: unknown[]) => child)
+    const { termination } = terminationProbe()
+    const supervisor = new OpenCodeSupervisor({
+      baseUrl: 'http://127.0.0.1:4096',
+      probe: async () => false,
+      spawnProcess: spawnProcess as never,
+      resolveProgram: () => '/opt/opencode',
+      termination,
+      readyTimeoutMs: 0,
+      exitBudgets: { gracefulMs: 0, forceMs: 0 },
+    })
+
+    try {
+      await expect(supervisor.start()).rejects.toThrow('did not become reachable')
+      const options = spawnProcess.mock.calls[0]?.[2] as { env?: NodeJS.ProcessEnv } | undefined
+      expect(options?.env?.LOOPTROOP_API_TOKEN).toBeUndefined()
+      expect(options?.env?.OPENCODE_SERVER_PASSWORD).toBe('provider-password')
+      expect(process.env.LOOPTROOP_API_TOKEN).toBe('ambient-daemon-token')
+    } finally {
+      if (ambient === undefined) delete process.env.LOOPTROOP_API_TOKEN
+      else process.env.LOOPTROOP_API_TOKEN = ambient
+      if (provider === undefined) delete process.env.OPENCODE_SERVER_PASSWORD
+      else process.env.OPENCODE_SERVER_PASSWORD = provider
+      await supervisor.stop()
+    }
+  })
+
   it('cleans up a child when health never becomes ready', async () => {
     const child = fakeChild(4101)
     const { termination } = terminationProbe()

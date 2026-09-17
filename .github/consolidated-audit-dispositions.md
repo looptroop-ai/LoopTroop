@@ -432,10 +432,11 @@ Profile test plus all 22 blob-equality checks. The changed-path manifest is the
 the packet-listed `PromptsDialog` and `ProjectsPanel` test paths are absent in
 this checkout. No source, status metadata, cache implementation, or security
 file was edited.
-The combined accepted count is **141/154 (~92%)** at the forms boundary; the
-cache packet below raises it to **145/154 (~94%)**, leaving only **security (9)**
-unaccepted. The four finished delivery
-PRs are 163, 164, 165, and 166; no future PR number is inferred.
+The combined accepted count was **141/154 (~92%)** at the forms boundary; the
+cache packet raised it to **145/154 (~94%)** before the security packets. The
+accepted A, B, and C security packets now bring the root source-finding
+checkpoint to **154/154**. The four finished delivery PRs are 163, 164, 165,
+and 166; no future PR number is inferred.
 
 ## Accepted client ticket-cache documentation checkpoint
 
@@ -458,8 +459,42 @@ Cache evidence reports 8 focused files and 100 tests, the supplied Astra-low
 reviewer repro with 1 pass and 5 skips, focused ESLint with no issues, both
 configured TypeScript projects, and a clean manifest diff. The current-tab
 boundary is intentional: no cross-tab deletion broadcast or other untested
-remote cleanup is promised. The combined accepted count is now **145/154
-(~94%)**; only **security (9)** remains unaccepted.
+remote cleanup is promised. The cache packet boundary was **145/154 (~94%)**;
+the accepted A, B, and C security packets now bring the root source-finding
+checkpoint to **154/154**.
+
+## Accepted security documentation checkpoint
+
+This prose checkpoint corresponds to the accepted security source trees
+`e08fc7cb1345732d571228506b1bae26bffef511` (A),
+`6751ecc73c27cc7bc284cca594a15a6cce6e48af` (B), and
+`77c385a6f1604861e25d5cbf5620faefb66c09f3` (C), reviewed against the current
+application and website checkpoints. The security source-finding count is
+**154/154**. This is a bounded documentation checkpoint, not a claim that all
+delivery PRs are complete: four remain open, five remain active, and parts 6
+and 7 remain pending in the integration plan.
+
+| Finding | Status | Evidence and permanent coverage | Limits |
+| --- | --- | --- | --- |
+| S05 | PASS, final pending | Local mode recognizes only loopback Host authorities; Origin parsing rejects non-canonical hostname spellings and explicit port `0`, and same-authority Origins must match the actual scheme, hostname, and effective port. Explicit configured development origins retain their configured scheme. Remote opt-in does not claim a new strict Host-name validator for requests without an Origin; bearer-only requests remain supported. | No E2E or full lifecycle run. |
+| S06 | PASS, final pending | Project, Git and hook commands, and managed or development OpenCode launches remove only the two LoopTroop daemon credential names after merged overrides, while retaining intentional provider and Git credentials and the trusted CLI handoff. | Child-environment filtering is not a process sandbox; no E2E or full lifecycle run. |
+| S07/S08/S09 remaining/G26 | PASS, final pending | Static launch and filesystem checks cover the tested AST forms and exact filename-plus-operation boundaries. Existing contained, no-follow, managed-root and ticket-root helpers remain the runtime contract; the project browser is metadata-only. | The rules do not claim whole-program alias or dataflow analysis; no E2E or full lifecycle run. |
+| S10 | PASS, final pending | SSE admission reserves before asynchronous setup, preserves six per-ticket and 100 global slots, and cleans up reservations idempotently. | No E2E or full lifecycle run. |
+| S11 | PASS, final pending | Host and origin parsing rejects alternate IPv4 spellings while retaining valid canonical IPv6 and hostname behavior. | No native Windows/macOS run. |
+| S12(1) | PASS, final pending | Manual QA action IDs use the documented restricted character set and 160-character maximum. | The row covers action IDs only. |
+| S12(2) | PASS, final pending | The existing G14/S12 row covers contained project and ticket roots, opaque legal path characters, and Windows ADS rejection. | This row is the durable path subset; it does not absorb the other S12 rows. |
+| S12(3) | PASS, final pending | Authority parsing rejects explicit port `0`, including zero-padded forms, before remote request handling. | No E2E or full lifecycle run. |
+
+The A, B, and C packets reported their focused tests, active full lint and both
+TypeScript projects, scoped diffs, and platform limits in
+`/tmp/looptroop-request-security-evidence.md`,
+`/tmp/looptroop-child-env-evidence.md`, and
+`/tmp/looptroop-lint-security-evidence.md`. The S09 row above covers the
+remaining static-boundary subset; the release-maintenance S09 row at the top of
+this ledger remains a separate disposition. Likewise, S12(1) and S12(3) are
+request-boundary rows, while S12(2) remains the earlier contained-path row.
+No E2E, full lifecycle, live provider, native Windows/macOS, physical-power-loss,
+or all-PR completion result is claimed here.
 
 ## Installer foundation
 

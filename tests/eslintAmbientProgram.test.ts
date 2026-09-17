@@ -39,6 +39,15 @@ const PROBE = [
   'const runLater = util.promisify(childProcess.execFile)',                      // 26 promisify through namespaces
   'const execFileAsync2 = util.promisify(childProcess.exec)',                    // 27 same, any unknown name
   'const execAsync = util.promisify(childProcess.exec)',                         // 28 ok: a name the rule knows
+  "import childProcessDefault from 'node:child_process'",                       // 29 default import
+  "const dynamicChildProcess = import('node:child_process')",                    // 30 dynamic import
+  "import { createRequire } from 'node:module'",                                 // 31 createRequire import
+  'const requireFromModule = createRequire(import.meta.url)',                     // 32 createRequire call
+  "require('node:child_process')",                                               // 33 direct require
+  "import * as moduleApi from 'node:module'",                                    // 34 namespace module API
+  'const requireFromNamespace = moduleApi.createRequire(import.meta.url)',         // 35 namespace createRequire
+  "import moduleDefault from 'node:module'",                                     // 36 default module API
+  'const requireFromDefault = moduleDefault.createRequire(import.meta.url)',        // 37 default createRequire
 ].join('\n')
 
 async function flaggedLines(filePath: string): Promise<number[]> {
@@ -49,17 +58,44 @@ async function flaggedLines(filePath: string): Promise<number[]> {
 
 describe('the ambient-program lint rule', () => {
   it('flags every bypass and nothing legitimate, in a script', async () => {
-    expect(await flaggedLines('scripts/__lint-probe.mjs')).toEqual([1, 6, 7, 8, 9, 11, 12, 13, 18, 19, 20, 22, 26, 27])
+    expect(await flaggedLines('scripts/__lint-probe.mjs')).toEqual([1, 6, 7, 8, 9, 11, 12, 13, 18, 19, 20, 22, 26, 27, 29, 30, 31, 32, 33, 34, 35, 36, 37])
   })
 
   it('applies to server code too, where no-undef is left to TypeScript', async () => {
     const lines = await flaggedLines('server/__lint-probe.ts')
-    for (const line of [1, 6, 7, 8, 9, 11, 12, 13, 18, 20, 22, 26, 27]) expect(lines).toContain(line)
+    for (const line of [1, 6, 7, 8, 9, 11, 12, 13, 18, 20, 22, 26, 27, 29, 30, 31, 32, 33, 34, 35, 36, 37]) expect(lines).toContain(line)
     for (const line of [14, 15, 17, 24]) expect(lines).not.toContain(line)
   })
 
   it('leaves test scaffolding alone, which spawns git against fixture repositories by design', async () => {
     const lines = await flaggedLines('server/__tests__/__lint-probe.test.ts')
     for (const line of [6, 7, 8, 9, 11, 12, 13, 18]) expect(lines).not.toContain(line)
+  })
+
+  it('keeps the ambient-program guard active in the documented helper exception', async () => {
+    expect(await flaggedLines('server/git/github.ts')).toContain(6)
+  })
+})
+
+const SHARED_HELPER_PROBE = [
+  'class FieldHelpers { isRecord = () => true }',
+  'class StringFieldHelpers { ["getErrorMessage"] = function () { return "" } }',
+  'declare function normalizeString(value: unknown): string | undefined',
+  'const objectHelpers = { ["stripAnsiSequences"]: () => "" }',
+  'let getErrorMessage: (error: unknown) => string',
+  'getErrorMessage = (error) => String(error)',
+].join('\n')
+
+async function sharedHelperFlaggedLines(filePath: string): Promise<number[]> {
+  const [result] = await new ESLint().lintText(SHARED_HELPER_PROBE, { filePath })
+  return [...new Set((result?.messages ?? [])
+    .filter((message) => message.ruleId === 'no-restricted-syntax')
+    .map((message) => message.line))]
+    .sort((a, b) => a - b)
+}
+
+describe('the shared-helper lint rule', () => {
+  it('catches fields, declarations, string keys, and late let assignments', async () => {
+    expect(await sharedHelperFlaggedLines('server/__lint-helper-probe.ts')).toEqual([1, 2, 3, 4, 6])
   })
 })

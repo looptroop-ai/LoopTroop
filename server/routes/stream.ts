@@ -38,86 +38,110 @@ streamRouter.get('/stream', (c) => {
   if (!ticket) {
     return c.json({ error: 'Ticket not found' }, 404)
   }
-  if (broadcaster.getClientCount(ticket.id) >= MAX_SSE_CONNECTIONS_PER_TICKET) {
-    return c.json({ error: 'Too many streams for this ticket' }, 429)
-  }
-  if (broadcaster.getTotalClientCount() >= MAX_SSE_CONNECTIONS_TOTAL) {
-    return c.json({ error: 'Too many active streams' }, 429)
-  }
-
+  const requestSignal = c.req.raw.signal
+  if (requestSignal.aborted) return new Response(null, { status: 499 })
   const safeTicketId = ticket.id
+  const clientId = `${safeTicketId}-${Date.now()}-${randomBytes(6).toString('hex')}`
+  if (!broadcaster.reserveClient(safeTicketId, clientId, MAX_SSE_CONNECTIONS_PER_TICKET, MAX_SSE_CONNECTIONS_TOTAL)) {
+    return c.json(
+      { error: broadcaster.getClientCount(safeTicketId) >= MAX_SSE_CONNECTIONS_PER_TICKET
+        ? 'Too many streams for this ticket'
+        : 'Too many active streams' },
+      429,
+    )
+  }
 
-  return streamSSE(c, async (stream) => {
-    const clientId = `${safeTicketId}-${Date.now()}-${randomBytes(6).toString('hex')}`
-    let resolveStream: () => void = () => {}
-    let isCleanedUp = false
-    let interval: ReturnType<typeof setInterval> | null = null
+  let abortStream: () => void = () => {}
+  let cleanupReservation: () => void = () => {
+    broadcaster.removeClient(safeTicketId, clientId)
+  }
+  const onRequestAbort = () => {
+    cleanupReservation()
+    abortStream()
+  }
+  requestSignal.addEventListener('abort', onRequestAbort, { once: true })
 
-    function safeCleanup() {
-      if (isCleanedUp) return
-      isCleanedUp = true
-      cleanupStreamClient(safeTicketId, clientId, interval ?? undefined)
-      resolveStream()
-    }
+  try {
+    return streamSSE(c, async (stream) => {
+      let resolveStream: () => void = () => {}
+      let isCleanedUp = false
+      let interval: ReturnType<typeof setInterval> | null = null
 
-    const streamPromise = new Promise<void>((resolve) => { resolveStream = resolve })
-    stream.onAbort(safeCleanup)
-
-    // Queue the handshake and replay before subscribing, without yielding between
-    // them. Live events then follow replay in the writer rather than overtaking it.
-    const initialWrites = [stream.writeSSE({
-      event: STREAM_CONNECTED_EVENT,
-      data: JSON.stringify({ ticketId: safeTicketId, clientId, timestamp: new Date().toISOString() }),
-    })]
-    if (lastEventId !== undefined) {
-      const replay = broadcaster.getEventsSince(safeTicketId, lastEventId)
-      if (replay.gap) {
-        initialWrites.push(stream.writeSSE({
-          event: 'replay_gap',
-          data: JSON.stringify({ ticketId: safeTicketId, reason: replay.gap }),
-          // Empty id resets the browser's Last-Event-ID as well as our hook's cursor.
-          id: '',
-        }))
-      } else {
-        for (const event of replay.events) initialWrites.push(stream.writeSSE(event))
+      function safeCleanup() {
+        if (isCleanedUp) return
+        isCleanedUp = true
+        cleanupStreamClient(safeTicketId, clientId, interval ?? undefined)
+        requestSignal.removeEventListener('abort', onRequestAbort)
+        resolveStream()
       }
-    }
 
-    // Keep connection alive with heartbeat
-    interval = setInterval(async () => {
+      const streamPromise = new Promise<void>((resolve) => { resolveStream = resolve })
       try {
-        await stream.writeSSE({
-          event: STREAM_HEARTBEAT_EVENT,
-          data: JSON.stringify({ timestamp: new Date().toISOString() }),
-        })
-      } catch {
-        safeCleanup()
-      }
-    }, STREAM_HEARTBEAT_INTERVAL_MS)
+        cleanupReservation = safeCleanup
+        abortStream = () => stream.abort()
+        stream.onAbort(safeCleanup)
 
-    // Register client with broadcaster
-    broadcaster.addClient(safeTicketId, {
-      id: clientId,
-      send: (event: string, data: string, id: string) => {
-        stream.writeSSE({ event, data, id }).catch((err) => {
-          warnIfVerbose(`[stream] SSE write failed for client ${clientId}:`, err)
+        // Queue the handshake and replay before activating the reservation,
+        // without yielding between them. Live events then follow replay in the
+        // writer rather than overtaking it.
+        const initialWrites = [stream.writeSSE({
+          event: STREAM_CONNECTED_EVENT,
+          data: JSON.stringify({ ticketId: safeTicketId, clientId, timestamp: new Date().toISOString() }),
+        })]
+        if (lastEventId !== undefined) {
+          const replay = broadcaster.getEventsSince(safeTicketId, lastEventId)
+          if (replay.gap) {
+            initialWrites.push(stream.writeSSE({
+              event: 'replay_gap',
+              data: JSON.stringify({ ticketId: safeTicketId, reason: replay.gap }),
+              // Empty id resets the browser's Last-Event-ID as well as our hook's cursor.
+              id: '',
+            }))
+          } else {
+            for (const event of replay.events) initialWrites.push(stream.writeSSE(event))
+          }
+        }
+
+        // Keep connection alive with heartbeat
+        interval = setInterval(async () => {
+          try {
+            await stream.writeSSE({
+              event: STREAM_HEARTBEAT_EVENT,
+              data: JSON.stringify({ timestamp: new Date().toISOString() }),
+            })
+          } catch {
+            safeCleanup()
+          }
+        }, STREAM_HEARTBEAT_INTERVAL_MS)
+
+        if (!broadcaster.activateClient(safeTicketId, {
+          id: clientId,
+          send: (event: string, data: string, id: string) => {
+            stream.writeSSE({ event, data, id }).catch((err) => {
+              warnIfVerbose(`[stream] SSE write failed for client ${clientId}:`, err)
+              safeCleanup()
+            })
+          },
+          close: safeCleanup,
+          interval,
+        })) {
           safeCleanup()
-        })
-      },
-      close: safeCleanup,
-      interval,
+          return
+        }
+
+        await Promise.all(initialWrites)
+      } catch (error) {
+        safeCleanup()
+        throw error
+      }
+
+      // Keep stream open until abort, write failure, or ticket cleanup.
+      await streamPromise
     })
-
-    try {
-      await Promise.all(initialWrites)
-    } catch (error) {
-      safeCleanup()
-      throw error
-    }
-
-    // Keep stream open until abort, write failure, or ticket cleanup.
-    await streamPromise
-  })
+  } catch (error) {
+    cleanupReservation()
+    throw error
+  }
 })
 
 export { streamRouter }

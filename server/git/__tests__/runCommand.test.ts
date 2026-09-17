@@ -134,6 +134,37 @@ describe('server/git/runCommand', () => {
     expect(result.stdout).toBe('set:0')
   })
 
+  it('strips daemon credentials on both Git spawn paths and retains tool credentials', async () => {
+    const ambient = process.env.LOOPTROOP_API_TOKEN
+    process.env.LOOPTROOP_API_TOKEN = 'ambient-daemon-token'
+    const extra = {
+      LOOPTROOP_API_TOKEN: 'override-daemon-token',
+      LOOPTROOP_DEV_EVENT_TOKEN: 'override-dev-token',
+      OPENCODE_SERVER_PASSWORD: 'provider-password',
+      GH_TOKEN: 'github-token',
+    }
+    const original = { ...extra }
+    const read = script('process.stdout.write(JSON.stringify({looptroop:process.env.LOOPTROOP_API_TOKEN,devEvent:process.env.LOOPTROOP_DEV_EVENT_TOKEN,provider:process.env.OPENCODE_SERVER_PASSWORD,github:process.env.GH_TOKEN,ssh:process.env.GIT_SSH_COMMAND,interactive:process.env.GIT_TERMINAL_PROMPT}))')
+
+    try {
+      const sync = JSON.parse(runCommandSync(node, read, { env: extra, log: false }).stdout) as Record<string, string | undefined>
+      const asyncResult = JSON.parse((await runCommand(node, read, { env: extra, log: false })).stdout) as Record<string, string | undefined>
+
+      for (const result of [sync, asyncResult]) {
+        expect(result.looptroop).toBeUndefined()
+        expect(result.devEvent).toBeUndefined()
+        expect(result.provider).toBe('provider-password')
+        expect(result.github).toBe('github-token')
+        expect(result.ssh).toContain('BatchMode=yes')
+        expect(result.interactive).toBe('0')
+      }
+      expect(extra).toEqual(original)
+    } finally {
+      if (ambient === undefined) delete process.env.LOOPTROOP_API_TOKEN
+      else process.env.LOOPTROOP_API_TOKEN = ambient
+    }
+  })
+
   it('adds SSH BatchMode when SSH overrides are absent or undefined, preserving real overrides', () => {
     const read = script('process.stdout.write(`${process.env.GIT_SSH_COMMAND ?? "<unset>"}:${process.env.GIT_SSH ?? "<unset>"}`)')
     const defaultResult = runCommandSync(node, read, {

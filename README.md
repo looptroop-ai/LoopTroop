@@ -83,6 +83,32 @@ recover that ownership when the project database is unavailable. If both the
 database and marker storage are unavailable, only the current process can guard
 the session, so a restart cannot claim recovery.
 
+### Local control-plane security
+
+The installed daemon binds to loopback by default. A wider bind requires
+`LOOPTROOP_ALLOW_REMOTE_API`, `LOOPTROOP_BACKEND_HOST`, and
+`LOOPTROOP_API_TOKEN`. That environment token authorizes the wider bind; it is
+not the live API or browser-session token minted by the daemon and recorded in
+the owner-only daemon state.
+
+Remote browser requests that carry a session cookie must prove same-origin with
+the daemon authority. Bearer-only scripts remain supported, while an invalid
+bearer value cannot bypass the cookie check. In local mode, the request Host
+authority must be recognized as loopback. Origin parsing rejects non-canonical
+hostname spellings such as alternate IPv4 forms, and an explicit port `0` is
+rejected. A same-authority Origin must match the actual request scheme,
+hostname, and effective port. Remote mode is an explicit opt-in and does not
+add a new strict Host-name validator to requests without an Origin; configured
+development origins retain their configured scheme. Forwarded host headers are
+not trusted by default.
+
+Project commands, Git and hook commands, and managed or development OpenCode
+launches remove LoopTroop's internal daemon credentials after their environment
+overrides are merged. Provider authentication and intentional Git credentials
+remain available, and the trusted CLI-to-daemon handoff keeps its configured
+startup environment. This filtering protects credential propagation; it is not
+a process sandbox and does not prevent same-user filesystem access.
+
 Then configure your settings and models (from providers already added in
 OpenCode), attach a local repository with a GitHub origin, create a ticket, and
 start it.

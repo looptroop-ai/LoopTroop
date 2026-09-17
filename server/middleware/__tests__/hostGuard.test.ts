@@ -1,6 +1,6 @@
 import { describe, it, expect, beforeEach, afterEach } from 'vitest'
 import { Hono } from 'hono'
-import { canonicalAuthority, createHostGuardMiddleware, hostnameFromAuthority, portFromAuthority, requestAuthority } from '../hostGuard'
+import { canonicalAuthority, createHostGuardMiddleware, hostnameFromAuthority, parseOrigin, portFromAuthority, requestAuthority } from '../hostGuard'
 
 /**
  * 2.8 contract: binding to loopback does not make the daemon private to a
@@ -33,8 +33,8 @@ describe('host guard', () => {
     return app
   }
 
-  async function request(headers: Record<string, string>, additionalOrigins?: string[]): Promise<Response> {
-    return await makeApp(additionalOrigins).request('http://127.0.0.1:3000/api/thing', { headers })
+  async function request(headers: Record<string, string>, additionalOrigins?: string[], url = 'http://127.0.0.1:3000/api/thing'): Promise<Response> {
+    return await makeApp(additionalOrigins).request(url, { headers })
   }
 
   it('accepts a request from a loopback host', async () => {
@@ -82,14 +82,14 @@ describe('host guard', () => {
     expect(canonicalAuthority(host)).toBe(canonicalAuthority(`${host}80`))
   })
 
-  it.each(['', ':80', '127.0.0.1:99999', '[::1]:99999', '[::1]:bad', '[::1]suffix:80', '[::1', '::1]'])('does not build a canonical authority from invalid input %j', (host) => {
+  it.each(['', ':80', '127.0.0.1:0', '127.0.0.1:0000', '127.0.0.1:99999', '[::1]:99999', '[::1]:bad', '[::1]suffix:80', '[::1', '::1]'])('does not build a canonical authority from invalid input %j', (host) => {
     expect(hostnameFromAuthority(host)).toBe('')
     expect(portFromAuthority(host)).toBeNull()
     expect(canonicalAuthority(host)).toBe('')
   })
 
   it.each(['127.0.0.1', '[::1]'])('preserves the valid port boundaries for %s', (host) => {
-    for (const port of ['0', '00080', '65535']) {
+    for (const port of ['1', '00080', '65535']) {
       expect(portFromAuthority(`${host}:${port}`)).toBe(port)
       expect(canonicalAuthority(`${host}:${port}`)).toBe(`${hostnameFromAuthority(host)}:${Number(port)}`)
     }
@@ -103,6 +103,15 @@ describe('host guard', () => {
 
   it('rejects an opaque origin, which is what a sandboxed frame sends', async () => {
     expect((await request({ Host: '127.0.0.1:3000', Origin: 'null' })).status).toBe(403)
+  })
+
+  it.each(['http://2130706433:3000', 'http://0x7f.0.0.1:3000', 'http://127.0.0.1.:3000', 'http://127.1:3000'])('rejects an Origin whose literal IPv4 spelling WHATWG normalizes: %s', (origin) => {
+    expect(parseOrigin(origin)).toBeNull()
+  })
+
+  it('keeps hostname case folding and standard IPv6 origin canonicalization', () => {
+    expect(parseOrigin('http://LOCALHOST:3000')).toEqual({ hostname: 'localhost', authority: 'localhost:3000', scheme: 'http:' })
+    expect(parseOrigin('http://[0:0:0:0:0:0:0:1]:3000')).toEqual({ hostname: '::1', authority: '::1:3000', scheme: 'http:' })
   })
 
   /**
@@ -141,6 +150,8 @@ describe('host guard', () => {
 
     expect((await request(headers)).status).toBe(403)
     expect((await request(headers, ['http://localhost:5173'])).status).toBe(200)
+    expect((await request({ ...headers, Origin: 'https://localhost:5173' }, ['http://localhost:5173'])).status).toBe(403)
+    expect((await request({ ...headers, Origin: 'https://localhost:5173' }, ['https://localhost:5173'])).status).toBe(200)
   })
 
   it('never accepts a non-loopback extra origin', async () => {
@@ -162,17 +173,13 @@ describe('host guard', () => {
     // The CLI, the install smoke tests and the read-only verifier all look like
     // this. A caller holding the API token is not the browser and never needed
     // the browser's word for where it came from.
-    const cookie = 'looptroop_session=whatever'
-
     expect((await request({
       Host: '127.0.0.1:3000',
-      Cookie: cookie,
       Authorization: 'Bearer some-token',
     })).status).toBe(200)
 
     expect((await request({
       Host: '127.0.0.1:3000',
-      Cookie: cookie,
       'X-LoopTroop-Token': 'some-token',
     })).status).toBe(200)
   })
@@ -237,8 +244,38 @@ describe('host guard', () => {
     // reject every request it received.
     process.env.LOOPTROOP_ALLOW_REMOTE_API = '1'
 
-    const response = await request({ Host: 'looptroop.internal:3000', Origin: 'https://looptroop.internal' })
+    const response = await request({ Host: 'looptroop.internal:3000', Origin: 'http://looptroop.internal:3000' })
     expect(response.status).toBe(200)
+  })
+
+  it('keeps remote cookie requests on same-origin while allowing bearer callers', async () => {
+    process.env.LOOPTROOP_ALLOW_REMOTE_API = '1'
+    const host = 'looptroop.internal:3000'
+
+    expect((await request({ Host: host, Origin: 'http://looptroop.internal:3000', Cookie: 'looptroop_session=ours' })).status).toBe(200)
+    expect((await request({ Host: host, Origin: 'http://other.internal:3000', Cookie: 'looptroop_session=ours' })).status).toBe(403)
+    expect((await request({ Host: host, Cookie: 'looptroop_session=ours', 'Sec-Fetch-Site': 'same-site' })).status).toBe(403)
+    expect((await request({ Host: host, Cookie: 'looptroop_session=ours', Authorization: 'Bearer invalid', 'Sec-Fetch-Site': 'same-site' })).status).toBe(403)
+    expect((await request({ Host: host, Cookie: 'looptroop_session=ours', 'X-LoopTroop-Token': 'invalid', 'Sec-Fetch-Site': 'same-site' })).status).toBe(403)
+    expect((await request({ Host: host, Cookie: 'looptroop_session=ours', 'Sec-Fetch-Site': 'same-origin' })).status).toBe(200)
+    expect((await request({ Host: host, Authorization: 'Bearer some-token' })).status).toBe(200)
+    expect((await request({ Host: 'looptroop.internal:0', Authorization: 'Bearer some-token' })).status).toBe(403)
+  })
+
+  it('uses the actual HTTP or HTTPS request scheme for an authority without a port', async () => {
+    process.env.LOOPTROOP_ALLOW_REMOTE_API = '1'
+    const cases = [
+      ['http://looptroop.internal/api/thing', 'looptroop.internal', 'http://looptroop.internal'],
+      ['https://looptroop.internal/api/thing', 'looptroop.internal', 'https://looptroop.internal'],
+      ['http://looptroop.internal:3000/api/thing', 'looptroop.internal:3000', 'http://looptroop.internal:3000'],
+      ['https://looptroop.internal:8443/api/thing', 'looptroop.internal:8443', 'https://looptroop.internal:8443'],
+    ] as const
+
+    for (const [url, host, origin] of cases) {
+      expect((await request({ Host: host, Origin: origin, Cookie: 'looptroop_session=ours' }, undefined, url)).status).toBe(200)
+    }
+    expect((await request({ Host: 'looptroop.internal', Origin: 'https://looptroop.internal', Cookie: 'looptroop_session=ours' }, undefined, 'http://looptroop.internal/api/thing')).status).toBe(403)
+    expect((await request({ Host: 'looptroop.internal:3000', Origin: 'https://looptroop.internal:3000', Cookie: 'looptroop_session=ours' }, undefined, 'http://looptroop.internal:3000/api/thing')).status).toBe(403)
   })
 
   it('reads the authority from the URL only when no Host header was sent', async () => {

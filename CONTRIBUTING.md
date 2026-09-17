@@ -10,6 +10,29 @@ LoopTroop is a local GUI orchestrator for repo-scale AI coding work. It plans ti
 
 Because LoopTroop can run coding agents with broad local permissions, avoid sharing secrets or private repository content in public issues. When testing runtime behavior, use a disposable VM, sandboxed development environment, or a repository you are comfortable modifying.
 
+## Security boundaries when developing
+
+The API is a local control plane. Keep the installed daemon's loopback default,
+local-mode Host validation, strict Origin hostname spelling and
+scheme/host/effective-port checks, configured development-origin behavior,
+remote cookie same-origin checks, and bounded SSE admission behavior intact when
+changing request or stream routes. Remote mode is an explicit opt-in and does
+not add a new strict Host-name validator to requests without an Origin. The
+`LOOPTROOP_API_TOKEN` setting authorizes a wider bind; it is not the generated
+live API or browser-session credential.
+
+Project commands, Git and hook commands, and OpenCode launches use the shared
+child-environment boundary. Remove only LoopTroop's internal daemon credentials
+after all explicit overrides are merged. Preserve provider and Git credentials
+that the called tool intentionally needs, as well as the trusted CLI-to-daemon
+startup handoff. This environment filtering is not a sandbox.
+
+The static security checks cover known syntax forms and exact filename and
+operation boundaries. They are not whole-program alias or dataflow analysis.
+Use the existing contained and no-follow helpers for filesystem access, keep
+raw operations narrow and explicit, and add a focused real-filename regression
+when a new guard boundary is necessary.
+
 ## Ways to contribute
 
 - Report bugs with steps to reproduce and relevant logs.

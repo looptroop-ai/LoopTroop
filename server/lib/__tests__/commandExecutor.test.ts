@@ -216,6 +216,63 @@ describe('buildCommandInvocation', () => {
 })
 
 describe('executeCommand', () => {
+  it('strips daemon credentials after environment merges without mutating callers', async () => {
+    const ambient = process.env.LOOPTROOP_API_TOKEN
+    process.env.LOOPTROOP_API_TOKEN = 'ambient-daemon-token'
+    const runtimeVariables = {
+      LOOPTROOP_API_TOKEN: 'runtime-daemon-token',
+      LOOPTROOP_DEV_EVENT_TOKEN: 'runtime-dev-token',
+    }
+    const commandEnv = {
+      LOOPTROOP_API_TOKEN: 'command-daemon-token',
+      looptroop_api_token: 'windows-alias-token',
+      OPENCODE_SERVER_PASSWORD: 'provider-password',
+      GH_TOKEN: 'github-token',
+    }
+    let seenEnvironment: NodeJS.ProcessEnv | undefined
+
+    try {
+      const child = makeUnkillableChild()
+      const result = await executeCommand({
+        mode: 'process',
+        program: 'tool',
+        args: [],
+        cwd: '.',
+        env: commandEnv,
+      }, {
+        repoRoot: makeRepo(),
+        platform: 'windows',
+        runtimeEnvironment: { pathPrepend: [], variables: runtimeVariables },
+        resolveProgram: () => ({ path: 'tool.exe' }),
+        spawnProcess: ((_file: string, _args: string[], options: { env?: NodeJS.ProcessEnv }) => {
+          seenEnvironment = options.env
+          setImmediate(() => child.emit('close', 0, null))
+          return child
+        }) as unknown as typeof spawn,
+      })
+
+      expect(result.exitCode).toBe(0)
+      expect(seenEnvironment?.LOOPTROOP_API_TOKEN).toBeUndefined()
+      expect(seenEnvironment?.LOOPTROOP_DEV_EVENT_TOKEN).toBeUndefined()
+      expect(seenEnvironment?.looptroop_api_token).toBeUndefined()
+      expect(seenEnvironment?.OPENCODE_SERVER_PASSWORD).toBe('provider-password')
+      expect(seenEnvironment?.GH_TOKEN).toBe('github-token')
+      expect(runtimeVariables).toEqual({
+        LOOPTROOP_API_TOKEN: 'runtime-daemon-token',
+        LOOPTROOP_DEV_EVENT_TOKEN: 'runtime-dev-token',
+      })
+      expect(commandEnv).toEqual({
+        LOOPTROOP_API_TOKEN: 'command-daemon-token',
+        looptroop_api_token: 'windows-alias-token',
+        OPENCODE_SERVER_PASSWORD: 'provider-password',
+        GH_TOKEN: 'github-token',
+      })
+    } finally {
+      if (ambient === undefined) delete process.env.LOOPTROOP_API_TOKEN
+      else process.env.LOOPTROOP_API_TOKEN = ambient
+    }
+  })
+
   it.runIf(process.platform !== 'win32')('preserves arguments, cwd, environment, spaces, and Unicode', async () => {
     const repository = makeRepo()
     mkdirSync(join(repository, 'nested folder'))

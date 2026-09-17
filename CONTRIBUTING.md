@@ -59,8 +59,14 @@ For code changes, run the relevant linting, typechecking, and tests for the area
 For workflow recovery documentation, distinguish a local cancellation request
 from confirmed remote stopping. Keep unconfirmed session ownership visible and
 retryable, and say that restart recovery needs the project database or its
-ticket marker. If both storage layers are unavailable, only the current process
-guard remains. Interview examples must include a positive `batchNumber` and
+session-ownership marker, `runtime/opencode-pending-sessions.json`. That marker
+contains the durable session IDs; cancellation's separate private runtime marker is
+`.ticket/runtime/cancellation-pending.json`: it is written before cleanup,
+treated as pending when malformed or unreadable, and removed only after
+terminal cleanup through the contained ticket-file helper. It records a stop
+request but does not identify or recover a remote session. If both storage
+layers are unavailable, only the current process guard remains. Interview
+examples must include a positive `batchNumber` and
 explain that missing or invalid values fail schema validation while valid stale
 values are rejected before mutation. Automatic bead-response continuation
 within each bead iteration is bounded by a finite `maxIterations`; `0` means

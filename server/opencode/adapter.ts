@@ -1883,7 +1883,7 @@ export class OpenCodeSDKAdapter implements OpenCodeAdapter {
     return status === 404
   }
 
-  private readHttpStatus(value: Record<string, unknown> | undefined): number | undefined {
+  private readHttpStatus(value: Record<string, unknown> | null | undefined): number | undefined {
     if (typeof value?.status === 'number') return value.status
     if (typeof value?.statusCode === 'number') return value.statusCode
     return undefined

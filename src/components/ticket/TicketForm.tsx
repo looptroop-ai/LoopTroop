@@ -1,7 +1,7 @@
 import { useEffect, useRef, useState } from 'react'
 import { Button } from '@/components/ui/button'
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card'
-import { useCreateTicket, useTicketAction, type Ticket } from '@/hooks/useTickets'
+import { useCreateTicket, useTicketAction, useUpdateTicket, type Ticket } from '@/hooks/useTickets'
 import { useProjects } from '@/hooks/useProjects'
 import { useUI } from '@/context/useUI'
 import { DropdownPicker } from '@/components/shared/DropdownPicker'
@@ -32,6 +32,7 @@ import { useToast } from '@/components/shared/useToast'
 interface TicketFormProps {
   onClose: () => void
   onDirtyChange?: (isDirty: boolean) => void
+  onEditingChange?: (isEditing: boolean) => void
 }
 
 function withoutTicketProject(snapshot: string): string {
@@ -40,10 +41,11 @@ function withoutTicketProject(snapshot: string): string {
   return JSON.stringify(rest)
 }
 
-export function TicketForm({ onClose, onDirtyChange }: TicketFormProps) {
+export function TicketForm({ onClose, onDirtyChange, onEditingChange }: TicketFormProps) {
   const { dispatch } = useUI()
   const { addToast } = useToast()
   const createTicket = useCreateTicket()
+  const { mutate: updateTicket, isPending: isUpdatePending } = useUpdateTicket()
   const { mutateAsync: startTicket, isPending: isStartPending } = useTicketAction()
   const { data: projects = [] } = useProjects()
   const { data: profile } = useProfile()
@@ -57,8 +59,11 @@ export function TicketForm({ onClose, onDirtyChange }: TicketFormProps) {
   const [manualQaOverride, setManualQaOverride] = useState<ManualQaOverride>(null)
   const [aiQuestionsOverride, setAiQuestionsOverride] = useState<AiQuestionsOverride>(null)
   const [aiQuestionWindowOverride, setAiQuestionWindowOverride] = useState<AiQuestionWindowOverride>(null)
+  const [createdTicket, setCreatedTicket] = useState<Ticket | null>(null)
+  const [isCreatingAndStarting, setIsCreatingAndStarting] = useState(false)
   const ticketBaselineRef = useRef<string | null>(null)
   const ticketProjectsHydratedRef = useRef(projects.length > 0)
+  const isEditing = createdTicket !== null
 
   const selectedProject = projects.find(p => p.id === projectId) ?? projects[0]
   const effectiveProjectId = selectedProject?.id ?? ''
@@ -86,6 +91,9 @@ export function TicketForm({ onClose, onDirtyChange }: TicketFormProps) {
   useEffect(() => {
     onDirtyChange?.(isDirty)
   }, [isDirty, onDirtyChange])
+  useEffect(() => {
+    onEditingChange?.(isEditing)
+  }, [isEditing, onEditingChange])
   const effectiveManualQa = resolveManualQaSettingLabel(
     manualQaOverride,
     selectedProject?.manualQaOverride ?? null,
@@ -119,10 +127,18 @@ export function TicketForm({ onClose, onDirtyChange }: TicketFormProps) {
   const handleCreateAndStart = async () => {
     if (!effectiveProjectId) return
     const submittedSnapshot = draftSnapshotRef.current
+    setIsCreatingAndStarting(true)
+    let ticketWasCreated = false
     try {
       const created: Ticket = await createTicket.mutateAsync(createInput())
-      await startTicket({ id: created.id, action: 'start' })
+      ticketWasCreated = true
+      setCreatedTicket(created)
       ticketBaselineRef.current = submittedSnapshot
+      onDirtyChange?.(draftSnapshotRef.current !== submittedSnapshot)
+      const started = await startTicket({ id: created.id, action: 'start' })
+      setCreatedTicket(current => current
+        ? { ...current, status: started?.status ?? started?.state ?? current.status }
+        : current)
       const hasLaterEdits = draftSnapshotRef.current !== submittedSnapshot
       onDirtyChange?.(hasLaterEdits)
       if (!hasLaterEdits) {
@@ -131,7 +147,11 @@ export function TicketForm({ onClose, onDirtyChange }: TicketFormProps) {
       }
     } catch (err) {
       const message = err instanceof Error ? err.message : 'Failed to start ticket'
-      alert(`Unable to create and start ticket: ${message}`)
+      alert(ticketWasCreated
+        ? `Ticket created, but it could not start: ${message}`
+        : `Unable to create and start ticket: ${message}`)
+    } finally {
+      setIsCreatingAndStarting(false)
     }
   }
 
@@ -141,11 +161,41 @@ export function TicketForm({ onClose, onDirtyChange }: TicketFormProps) {
       addToast('warning', 'Attach a project before creating a ticket.')
       return
     }
+    if (createdTicket) {
+      const submittedSnapshot = draftSnapshotRef.current
+      const updateInput = {
+        id: createdTicket.id,
+        title,
+        description,
+        priority,
+        ...(createdTicket.status === 'DRAFT'
+          ? { manualQaOverride, aiQuestionsOverride, aiQuestionWindowOverride }
+          : {}),
+      }
+      updateTicket(
+        updateInput,
+        {
+          onSuccess: (updated: Ticket) => {
+            setCreatedTicket(updated)
+            ticketBaselineRef.current = submittedSnapshot
+            const hasLaterEdits = draftSnapshotRef.current !== submittedSnapshot
+            onDirtyChange?.(hasLaterEdits)
+            if (!hasLaterEdits) onClose()
+          },
+          onError: (err) => {
+            const message = err instanceof Error ? err.message : 'Failed to update ticket'
+            addToast('error', `Unable to update ticket: ${message}`, 5000)
+          },
+        },
+      )
+      return
+    }
     const submittedSnapshot = draftSnapshotRef.current
     createTicket.mutate(
       createInput(),
       {
-        onSuccess: () => {
+        onSuccess: (created: Ticket) => {
+          setCreatedTicket(created)
           ticketBaselineRef.current = submittedSnapshot
           const hasLaterEdits = draftSnapshotRef.current !== submittedSnapshot
           onDirtyChange?.(hasLaterEdits)
@@ -181,9 +231,10 @@ export function TicketForm({ onClose, onDirtyChange }: TicketFormProps) {
               trigger={
                 <Tooltip>
                     <TooltipTrigger asChild>
-                      <button
-                        type="button"
-                        className={cn(
+                        <button
+                          type="button"
+                          disabled={isEditing || createTicket.isPending || isStartPending}
+                          className={cn(
                           'w-full flex items-center justify-between gap-2 rounded-lg border px-3 py-2 text-sm font-medium transition-all shadow-2xs',
                           isProjectPickerOpen && 'ring-2 ring-brand-500/30',
                         )}
@@ -225,6 +276,7 @@ export function TicketForm({ onClose, onDirtyChange }: TicketFormProps) {
                           <TooltipTrigger asChild>
                             <button
                                                 type="button"
+                                                disabled={isEditing || createTicket.isPending || isStartPending}
                                                 className={cn(
                                                   'w-full flex items-center gap-2 px-3 py-2 text-sm text-left transition-colors',
                                                   idx !== projects.length - 1 && 'border-b border-input',
@@ -341,6 +393,11 @@ export function TicketForm({ onClose, onDirtyChange }: TicketFormProps) {
             </button>
             {isAdvancedOpen && (
               <div className="space-y-3 border-t border-border px-3 py-3">
+                {(isCreatingAndStarting || isStartPending || (createdTicket !== null && createdTicket.status !== 'DRAFT')) && (
+                  <p className="text-xs text-muted-foreground">
+                    Workflow settings are fixed once the ticket starts. Title, description, and priority remain editable.
+                  </p>
+                )}
                 <div className="flex items-center justify-between gap-2">
                   <div className="flex min-w-0 items-center gap-1.5">
                     <label className="text-xs font-medium">Manual QA checkpoint</label>
@@ -355,6 +412,7 @@ export function TicketForm({ onClose, onDirtyChange }: TicketFormProps) {
                     value={manualQaOverride}
                     onChange={setManualQaOverride}
                     inheritedEnabled={effectiveManualQa.enabled}
+                    disabled={isCreatingAndStarting || isStartPending || (createdTicket !== null && createdTicket.status !== 'DRAFT')}
                     compact
                   />
                 </div>
@@ -373,6 +431,7 @@ export function TicketForm({ onClose, onDirtyChange }: TicketFormProps) {
                     options={AI_QUESTIONS_INHERITABLE_OPTIONS}
                     value={aiQuestionsOverride}
                     onChange={setAiQuestionsOverride}
+                    disabled={isCreatingAndStarting || isStartPending || (createdTicket !== null && createdTicket.status !== 'DRAFT')}
                     footer={aiQuestionsOverride === null && (
                       <p className="mt-1 text-right text-xs text-muted-foreground">
                         Inherits <span className="font-medium text-foreground">{inheritedAiQuestions.enabled ? 'On' : 'Off'}</span> from {describeSettingSource(inheritedAiQuestions.source)}.
@@ -388,6 +447,7 @@ export function TicketForm({ onClose, onDirtyChange }: TicketFormProps) {
                     onChange={setAiQuestionWindowOverride}
                     inheritedMs={inheritedAiQuestionWindow.windowMs}
                     inheritedSourceLabel={describeSettingSource(inheritedAiQuestionWindow.source)}
+                    disabled={isCreatingAndStarting || isStartPending || (createdTicket !== null && createdTicket.status !== 'DRAFT')}
                     minMs={AI_QUESTION_WINDOW_MIN_MS}
                     maxMs={AI_QUESTION_WINDOW_MAX_MS}
                     formatValue={formatAiQuestionWindow}
@@ -408,33 +468,37 @@ export function TicketForm({ onClose, onDirtyChange }: TicketFormProps) {
               Cancel
             </Button>
           </TooltipTrigger>
-          <TooltipContent className="max-w-xs text-center text-balance">Close without creating ticket</TooltipContent>
+          <TooltipContent className="max-w-xs text-center text-balance">{isEditing ? 'Close ticket editor' : 'Close without creating ticket'}</TooltipContent>
         </Tooltip>
-        <Tooltip>
-          <TooltipTrigger asChild>
-            <Button
-              type="button"
-              variant="secondary"
-              disabled={createTicket.isPending || isStartPending || !effectiveProjectId}
-              onClick={handleCreateAndStart}
-              className="rounded-lg border border-border/70 bg-muted/60 text-foreground hover:bg-muted/90 active:scale-[0.98] font-mono text-xs font-semibold shadow-2xs transition-all"
-            >
-              {createTicket.isPending || isStartPending ? <LoadingText text="Starting" /> : 'Create & Start'}
-            </Button>
-          </TooltipTrigger>
-          <TooltipContent className="max-w-xs text-center text-balance">Create ticket and immediately start the workflow</TooltipContent>
-        </Tooltip>
+        {!isEditing && (
+          <Tooltip>
+            <TooltipTrigger asChild>
+              <Button
+                type="button"
+                variant="secondary"
+                disabled={isCreatingAndStarting || createTicket.isPending || isStartPending || !effectiveProjectId}
+                onClick={handleCreateAndStart}
+                className="rounded-lg border border-border/70 bg-muted/60 text-foreground hover:bg-muted/90 active:scale-[0.98] font-mono text-xs font-semibold shadow-2xs transition-all"
+              >
+                {isCreatingAndStarting || createTicket.isPending || isStartPending ? <LoadingText text="Starting" /> : 'Create & Start'}
+              </Button>
+            </TooltipTrigger>
+            <TooltipContent className="max-w-xs text-center text-balance">Create ticket and immediately start the workflow</TooltipContent>
+          </Tooltip>
+        )}
         <Tooltip>
           <TooltipTrigger asChild>
             <Button
               type="submit"
-              disabled={createTicket.isPending || isStartPending || !effectiveProjectId}
+              disabled={isCreatingAndStarting || createTicket.isPending || isStartPending || isUpdatePending || !effectiveProjectId}
               className="rounded-lg bg-foreground text-background font-mono text-xs font-semibold hover:opacity-90 active:scale-[0.98] shadow-xs transition-all"
             >
-              {createTicket.isPending ? <LoadingText text="Creating" /> : 'Create Ticket'}
+              {isCreatingAndStarting || createTicket.isPending || isUpdatePending
+                ? <LoadingText text={isEditing ? 'Saving' : 'Creating'} />
+                : isEditing ? 'Save Ticket' : 'Create Ticket'}
             </Button>
           </TooltipTrigger>
-          <TooltipContent className="max-w-xs text-center text-balance">Create ticket in selected project</TooltipContent>
+          <TooltipContent className="max-w-xs text-center text-balance">{isEditing ? 'Save changes to this ticket' : 'Create ticket in selected project'}</TooltipContent>
         </Tooltip>
       </div>
     </form>

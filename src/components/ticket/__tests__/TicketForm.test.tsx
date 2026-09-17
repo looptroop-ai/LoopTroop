@@ -1,11 +1,13 @@
-import { fireEvent, screen, within } from '@testing-library/react'
+import { act, fireEvent, screen, within } from '@testing-library/react'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 import { UIContext, type UIContextValue } from '@/context/uiContextDef'
 import { renderWithProviders } from '@/test/renderHelpers'
 import { TicketForm } from '../TicketForm'
+import type { Ticket } from '@/hooks/useTickets'
 
 const mockUseProjects = vi.hoisted(() => vi.fn())
 const mockUseCreateTicket = vi.hoisted(() => vi.fn())
+const mockUseUpdateTicket = vi.hoisted(() => vi.fn())
 const mockUseTicketAction = vi.hoisted(() => vi.fn())
 const mockAddToast = vi.hoisted(() => vi.fn())
 
@@ -22,6 +24,7 @@ vi.mock('@/hooks/useTickets', async () => {
   return {
     ...actual,
     useCreateTicket: () => mockUseCreateTicket(),
+    useUpdateTicket: () => mockUseUpdateTicket(),
     useTicketAction: () => mockUseTicketAction(),
   }
 })
@@ -87,6 +90,7 @@ describe('TicketForm', () => {
       }],
     })
     mockUseCreateTicket.mockReturnValue({ mutate: vi.fn(), mutateAsync: vi.fn(), isPending: false })
+    mockUseUpdateTicket.mockReturnValue({ mutate: vi.fn(), isPending: false })
     mockUseTicketAction.mockReturnValue({ mutateAsync: vi.fn(), isPending: false })
   })
 
@@ -170,8 +174,10 @@ describe('TicketForm', () => {
 
   it('keeps later ticket edits open when an earlier create succeeds', () => {
     const mutate = vi.fn()
+    const update = vi.fn()
     const onClose = vi.fn()
     mockUseCreateTicket.mockReturnValue({ mutate, mutateAsync: vi.fn(), isPending: false })
+    mockUseUpdateTicket.mockReturnValue({ mutate: update, isPending: false })
     renderWithProviders(
       <UIContext.Provider value={makeUIValue()}>
         <TicketForm onClose={onClose} />
@@ -181,10 +187,81 @@ describe('TicketForm', () => {
     fireEvent.change(screen.getByPlaceholderText('Brief summary of the work'), { target: { value: 'Saved ticket' } })
     fireEvent.click(screen.getByRole('button', { name: 'Create Ticket' }))
     fireEvent.change(screen.getByPlaceholderText('Brief summary of the work'), { target: { value: 'Later ticket' } })
-    const options = mutate.mock.calls[0]?.[1] as { onSuccess: () => void }
-    options.onSuccess()
+    const options = mutate.mock.calls[0]?.[1] as { onSuccess: (created: Ticket) => void }
+    act(() => options.onSuccess({ id: '1:ACME-2', status: 'DRAFT' } as Ticket))
 
     expect(onClose).not.toHaveBeenCalled()
+    expect(screen.getByRole('button', { name: 'Save Ticket' })).toBeInTheDocument()
+
+    fireEvent.click(screen.getByRole('button', { name: 'Save Ticket' }))
+    expect(update).toHaveBeenCalledWith(
+      expect.objectContaining({ id: '1:ACME-2', title: 'Later ticket' }),
+      expect.any(Object),
+    )
+    expect(mutate).toHaveBeenCalledTimes(1)
+  })
+
+  it('saves supported edits by ID after create-and-start without sending locked settings', async () => {
+    let resolveCreate!: (ticket: Ticket) => void
+    let resolveStart!: (result: { status: string }) => void
+    const createPromise = new Promise<Ticket>((resolve) => { resolveCreate = resolve })
+    const startPromise = new Promise<{ status: string }>((resolve) => { resolveStart = resolve })
+    const update = vi.fn()
+    mockUseCreateTicket.mockReturnValue({ mutate: vi.fn(), mutateAsync: vi.fn(() => createPromise), isPending: false })
+    mockUseUpdateTicket.mockReturnValue({ mutate: update, isPending: false })
+    mockUseTicketAction.mockReturnValue({ mutateAsync: vi.fn(() => startPromise), isPending: false })
+
+    renderWithProviders(
+      <UIContext.Provider value={makeUIValue()}>
+        <TicketForm onClose={vi.fn()} />
+      </UIContext.Provider>,
+    )
+
+    fireEvent.change(screen.getByPlaceholderText('Brief summary of the work'), { target: { value: 'Initial ticket' } })
+    fireEvent.click(screen.getByRole('button', { name: 'Create & Start' }))
+    await act(async () => resolveCreate({ id: '1:ACME-3', externalId: 'ACME-3', status: 'DRAFT' } as Ticket))
+
+    fireEvent.change(screen.getByPlaceholderText('Brief summary of the work'), { target: { value: 'Later title' } })
+    await act(async () => resolveStart({ status: 'IN_PROGRESS' }))
+
+    fireEvent.click(screen.getByRole('button', { name: 'Save Ticket' }))
+    expect(update).toHaveBeenCalledWith(
+      expect.objectContaining({ id: '1:ACME-3', title: 'Later title' }),
+      expect.any(Object),
+    )
+    expect(update.mock.calls[0]?.[0]).not.toHaveProperty('manualQaOverride')
+  })
+
+  it('keeps a created draft editable when create-and-start cannot start it', async () => {
+    const update = vi.fn()
+    const onClose = vi.fn()
+    const alert = vi.spyOn(window, 'alert').mockImplementation(() => {})
+    mockUseCreateTicket.mockReturnValue({
+      mutate: vi.fn(),
+      mutateAsync: vi.fn().mockResolvedValue({ id: '1:ACME-4', externalId: 'ACME-4', status: 'DRAFT' } as Ticket),
+      isPending: false,
+    })
+    mockUseUpdateTicket.mockReturnValue({ mutate: update, isPending: false })
+    mockUseTicketAction.mockReturnValue({
+      mutateAsync: vi.fn().mockRejectedValue(new Error('model unavailable')),
+      isPending: false,
+    })
+
+    renderWithProviders(
+      <UIContext.Provider value={makeUIValue()}>
+        <TicketForm onClose={onClose} />
+      </UIContext.Provider>,
+    )
+
+    fireEvent.change(screen.getByPlaceholderText('Brief summary of the work'), { target: { value: 'Created draft' } })
+    await act(async () => fireEvent.click(screen.getByRole('button', { name: 'Create & Start' })))
+
+    expect(alert).toHaveBeenCalledWith('Ticket created, but it could not start: model unavailable')
+    expect(onClose).not.toHaveBeenCalled()
+    expect(screen.getByRole('button', { name: 'Save Ticket' })).toBeInTheDocument()
+    fireEvent.click(screen.getByRole('button', { name: 'Save Ticket' }))
+    expect(update).toHaveBeenCalledWith(expect.objectContaining({ id: '1:ACME-4', title: 'Created draft' }), expect.any(Object))
+    alert.mockRestore()
   })
 
   it('explains when no project is available', () => {

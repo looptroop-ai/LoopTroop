@@ -248,6 +248,7 @@ function App() {
     project: false,
     ticket: false,
   })
+  const [ticketModalEditing, setTicketModalEditing] = useState(false)
   const activeModalRef = useRef(activeModal)
   activeModalRef.current = activeModal
   const modalDirtyRef = useRef(modalDirty)
@@ -266,6 +267,10 @@ function App() {
     && startupStatus?.storage.kind === 'restored'
     && startupStatus.ui.restoreNotice.shouldShow === true
   const isModalOpen = activeModal !== null || isAboutOpen || isWelcomeOpen || isRestorePopupOpen
+
+  useEffect(() => {
+    if (activeModal !== 'ticket') setTicketModalEditing(false)
+  }, [activeModal])
 
   useEffect(() => {
     if (openedWithModalRef.current === 'profile') {
@@ -549,11 +554,13 @@ function App() {
   // follows from the state through the route effect above.
   const openModal = useCallback((modal: ModalRoute) => {
     if (modal === 'profile') clearOpenCodeModelsQuery(queryClient)
+    if (modal === 'ticket') setTicketModalEditing(false)
     setModalDirty((current) => current[modal] ? { ...current, [modal]: false } : current)
     setActiveModal(modal)
   }, [queryClient])
   const closeModal = useCallback(() => {
     setActiveModal(null)
+    setTicketModalEditing(false)
     setModalDirty({ profile: false, prompts: false, project: false, ticket: false })
     // About is opened from inside Configuration; it has nowhere to belong once
     // Configuration is gone.
@@ -646,9 +653,9 @@ function App() {
           </Suspense>
         </CenteredModal>
 
-        <CenteredModal open={activeModal === 'ticket'} onClose={closeModal} title="New Ticket" maxWidth="max-w-xl" isDirty={modalDirty.ticket}>
+        <CenteredModal open={activeModal === 'ticket'} onClose={closeModal} title={ticketModalEditing ? 'Edit Ticket' : 'New Ticket'} maxWidth="max-w-xl" isDirty={modalDirty.ticket}>
           <Suspense fallback={MODAL_SUSPENSE_FALLBACK}>
-            <TicketForm onClose={closeModal} onDirtyChange={(dirty) => setModalDirty((current) => current.ticket === dirty ? current : { ...current, ticket: dirty })} />
+            <TicketForm onClose={closeModal} onEditingChange={setTicketModalEditing} onDirtyChange={(dirty) => setModalDirty((current) => current.ticket === dirty ? current : { ...current, ticket: dirty })} />
           </Suspense>
         </CenteredModal>
 

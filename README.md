@@ -95,6 +95,10 @@ appears only when a form's current values differ from its saved or initial
 values. Loading, refetching, or a failed save does not silently replace an
 edit that you are still making.
 
+If you keep typing while a new ticket or project is being created, the form
+keeps those later edits and switches to editing the item the server just
+created; the next save updates that item.
+
 Live ticket streams recover an initial stored cursor and refresh ticket data
 when the server reports a replay gap. Ordinary reconnects do not trigger a
 whole-ticket refresh, and a confirmed deletion clears the deleted ticket's

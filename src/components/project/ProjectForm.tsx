@@ -95,7 +95,9 @@ export function ProjectForm({ onClose, onBack, project, onDirtyChange }: Project
   const { addToast } = useToast()
   const { data: profile, isLoading: profileLoading } = useProfile()
   const { data: projects = [] } = useProjects()
-  const isEditing = !!project
+  const [createdProject, setCreatedProject] = useState<Project | null>(null)
+  const editingProject = project ?? createdProject
+  const isEditing = !!editingProject
   const [name, setName] = useState(project?.name ?? '')
   const [shortname, setShortname] = useState(project?.shortname ?? '')
   const [folder, setFolder] = useState(project?.folderPath ?? '')
@@ -142,6 +144,7 @@ export function ProjectForm({ onClose, onBack, project, onDirtyChange }: Project
     existingStateAction,
   })
   const closeView = onBack ?? onClose
+  const projectIdentityLocked = isEditing || createProject.isPending
   const restoreMode = !isEditing
     && !gitInfo.alreadyAttached
     && gitInfo.hasLoopTroopState === true
@@ -339,7 +342,8 @@ export function ProjectForm({ onClose, onBack, project, onDirtyChange }: Project
         ...(restoreMode ? { existingStateAction } : {}),
       },
       {
-        onSuccess: () => {
+        onSuccess: (created: Project) => {
+          setCreatedProject(created)
           projectBaselineRef.current = submittedSnapshot
           onDirtyChange?.(draftSnapshotRef.current !== submittedSnapshot)
           const successMessage = !restoreMode
@@ -358,11 +362,11 @@ export function ProjectForm({ onClose, onBack, project, onDirtyChange }: Project
 
   const handleSubmit = (e: React.FormEvent) => {
     e.preventDefault()
-    if (isEditing) {
+    if (editingProject) {
       const submittedSnapshot = draftSnapshotRef.current
       updateProject.mutate(
         {
-          id: project.id,
+          id: editingProject.id,
           name,
           icon,
           color,
@@ -372,7 +376,8 @@ export function ProjectForm({ onClose, onBack, project, onDirtyChange }: Project
           aiQuestionWindowOverride,
         },
         {
-          onSuccess: () => {
+          onSuccess: (updated: Project) => {
+            if (!project) setCreatedProject(updated)
             projectBaselineRef.current = submittedSnapshot
             onDirtyChange?.(draftSnapshotRef.current !== submittedSnapshot)
             addToast('success', 'Project updated.')
@@ -400,9 +405,9 @@ export function ProjectForm({ onClose, onBack, project, onDirtyChange }: Project
   }
 
   const handleDelete = () => {
-    if (!project) return
+    if (!editingProject) return
     if (!confirm('Are you sure you want to delete this project? This will remove its local .looptroop state from the repo and cannot be undone.')) return
-    deleteProject.mutate(project.id, {
+    deleteProject.mutate(editingProject.id, {
       onSuccess: () => {
         addToast('success', 'Project deleted and local LoopTroop state removed.')
         closeView()
@@ -462,7 +467,7 @@ export function ProjectForm({ onClose, onBack, project, onDirtyChange }: Project
             </div>
             <div className="w-32">
               <label htmlFor="project-shortname" className="text-sm font-medium block mb-1">Short Name</label>
-              {isEditing || isSavedShortnameLocked ? (
+              {projectIdentityLocked || isSavedShortnameLocked ? (
                 <span className="inline-block px-3 py-2 text-sm font-mono text-muted-foreground uppercase">{shortname}</span>
               ) : (
                 <input
@@ -634,7 +639,7 @@ export function ProjectForm({ onClose, onBack, project, onDirtyChange }: Project
               </div>
             )}
           </div>
-          {isEditing ? (
+          {editingProject ? (
             <div className="space-y-4">
               <div>
                 <label className="text-sm font-medium block mb-1">Project Folder</label>
@@ -668,10 +673,10 @@ export function ProjectForm({ onClose, onBack, project, onDirtyChange }: Project
                                           <span 
                                                           className="text-sm font-medium cursor-help"
                                                         >
-                                                          {formatRelativeTime(project.createdAt)}
+                                                          {formatRelativeTime(editingProject.createdAt)}
                                                         </span>
                                         </TooltipTrigger>
-                                        <TooltipContent className="max-w-xs text-center text-balance">{new Date(project.createdAt).toLocaleString()}</TooltipContent>
+                                        <TooltipContent className="max-w-xs text-center text-balance">{new Date(editingProject.createdAt).toLocaleString()}</TooltipContent>
                                       </Tooltip>
                 </div>
                 <div>
@@ -681,15 +686,15 @@ export function ProjectForm({ onClose, onBack, project, onDirtyChange }: Project
                                           <span 
                                                           className="text-sm font-medium cursor-help"
                                                         >
-                                                          {formatRelativeTime(project.updatedAt)}
-                                                          {project.latestActivityTicketExternalId && (
+                                                          {formatRelativeTime(editingProject.updatedAt)}
+                                                          {editingProject.latestActivityTicketExternalId && (
                                                             <span className="ml-1 text-muted-foreground font-normal">
-                                                              ({project.latestActivityTicketExternalId})
+                                                              ({editingProject.latestActivityTicketExternalId})
                                                             </span>
                                                           )}
                                                         </span>
                                         </TooltipTrigger>
-                                        <TooltipContent className="max-w-xs text-center text-balance">{`${new Date(project.updatedAt).toLocaleString()}${project.latestActivityTicketExternalId ? ` - Ticket ${project.latestActivityTicketExternalId}` : ''}`}</TooltipContent>
+                                        <TooltipContent className="max-w-xs text-center text-balance">{`${new Date(editingProject.updatedAt).toLocaleString()}${editingProject.latestActivityTicketExternalId ? ` - Ticket ${editingProject.latestActivityTicketExternalId}` : ''}`}</TooltipContent>
                                       </Tooltip>
                 </div>
               </div>
@@ -710,12 +715,13 @@ export function ProjectForm({ onClose, onBack, project, onDirtyChange }: Project
                     type="text"
                     value={folder}
                     onChange={e => setFolder(e.target.value)}
+                    disabled={createProject.isPending}
                     className="w-full rounded-md border border-input bg-background px-3 py-2 text-sm font-mono"
                     placeholder="Choose a folder or type a path"
                     autoComplete="off"
                     required
                   />
-                  <Button type="button" variant="outline" onClick={handleBrowseFolder}>
+                  <Button type="button" variant="outline" onClick={handleBrowseFolder} disabled={createProject.isPending}>
                     Browse...
                   </Button>
                 </div>
@@ -943,12 +949,12 @@ export function ProjectForm({ onClose, onBack, project, onDirtyChange }: Project
       initialPath={folder}
     />
 
-    {isEditing && project && (
+    {editingProject && (
       <DeleteWorktreesDialog
         open={isWorktreesDialogOpen}
         onClose={() => setIsWorktreesDialogOpen(false)}
-        projectId={project.id}
-        projectName={project.name}
+        projectId={editingProject.id}
+        projectName={editingProject.name}
       />
     )}
     {restoreMode && gitInfo.existingProject && existingStateAction !== 'restore' && (

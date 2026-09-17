@@ -1,9 +1,10 @@
 import type { ReactNode } from 'react'
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
-import { fireEvent, render, screen, waitFor } from '@testing-library/react'
+import { act, fireEvent, render, screen, waitFor } from '@testing-library/react'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { ProjectForm } from '../ProjectForm'
 import { TooltipProvider } from '@/components/ui/tooltip'
+import type { Project } from '@/hooks/useProjects'
 
 const mockProjectMutations = vi.hoisted(() => ({
   create: {
@@ -82,6 +83,18 @@ function Wrapper({ children }: { children: ReactNode }) {
   )
 }
 
+function makeCreatedProject(overrides: Partial<Project> = {}): Project {
+  return {
+    id: 7,
+    name: 'Created project',
+    shortname: 'CREA',
+    folderPath: '/work/created',
+    createdAt: '2026-01-01T00:00:00.000Z',
+    updatedAt: '2026-01-01T00:00:00.000Z',
+    ...overrides,
+  } as Project
+}
+
 describe('ProjectForm', () => {
   afterEach(() => {
     vi.unstubAllGlobals()
@@ -150,11 +163,24 @@ describe('ProjectForm', () => {
     fireEvent.submit(screen.getByRole('button', { name: 'Create Project' }).closest('form')!)
 
     fireEvent.change(screen.getByLabelText(/Project Name/i), { target: { value: 'Later project' } })
-    const options = mockProjectMutations.create.mutate.mock.calls[0]?.[1] as { onSuccess: () => void }
-    options.onSuccess()
+    const createdProject = makeCreatedProject({
+      name: 'Saved project',
+      shortname: 'SAVE',
+      folderPath: '/work/saved',
+    })
+    const options = mockProjectMutations.create.mutate.mock.calls[0]?.[1] as { onSuccess: (created: Project) => void }
+    act(() => options.onSuccess(createdProject))
 
     expect(onClose).not.toHaveBeenCalled()
     expect(dirty).toHaveBeenLastCalledWith(true)
+    expect(screen.getByRole('button', { name: 'Save Changes' })).toBeInTheDocument()
+
+    fireEvent.click(screen.getByRole('button', { name: 'Save Changes' }))
+    expect(mockProjectMutations.update.mutate).toHaveBeenCalledWith(
+      expect.objectContaining({ id: 7, name: 'Later project' }),
+      expect.any(Object),
+    )
+    expect(mockProjectMutations.create.mutate).toHaveBeenCalledTimes(1)
   })
 
   it('warns and blocks adding a directory that is already attached', async () => {
@@ -470,7 +496,11 @@ describe('ProjectForm', () => {
       }),
       expect.any(Object),
     )
-    mockProjectMutations.create.mutate.mock.calls[0]?.[1]?.onSuccess()
+    act(() => mockProjectMutations.create.mutate.mock.calls[0]?.[1]?.onSuccess(makeCreatedProject({
+      name: 'MeiliSearch',
+      shortname: 'MESE',
+      folderPath: '/work/meili',
+    })))
     expect(mockAddToast).toHaveBeenCalledWith('success', 'Project restored from existing LoopTroop data.')
   })
 
@@ -522,7 +552,11 @@ describe('ProjectForm', () => {
       }),
       expect.any(Object),
     )
-    mockProjectMutations.create.mutate.mock.calls[0]?.[1]?.onSuccess()
+    act(() => mockProjectMutations.create.mutate.mock.calls[0]?.[1]?.onSuccess(makeCreatedProject({
+      name: 'MeiliSearch',
+      shortname: 'MESE',
+      folderPath: '/work/meili',
+    })))
     expect(mockAddToast).toHaveBeenCalledWith('success', 'Project attached with its settings and a clean ticket list.')
   })
 
@@ -570,7 +604,11 @@ describe('ProjectForm', () => {
       }),
       expect.any(Object),
     )
-    mockProjectMutations.create.mutate.mock.calls[0]?.[1]?.onSuccess()
+    act(() => mockProjectMutations.create.mutate.mock.calls[0]?.[1]?.onSuccess(makeCreatedProject({
+      name: 'MeiliSearch',
+      shortname: 'NEW',
+      folderPath: '/work/meili',
+    })))
     expect(mockAddToast).toHaveBeenCalledWith('success', 'Fresh project created after removing existing LoopTroop state.')
   })
 

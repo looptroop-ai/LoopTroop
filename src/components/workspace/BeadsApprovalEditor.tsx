@@ -44,7 +44,6 @@ function StringListEditor({
             rows={1}
             className="flex-1 min-h-[28px] rounded-md border border-input bg-background px-2 py-1 text-xs resize-y"
             placeholder={placeholder}
-            aria-labelledby={labelId}
             aria-label={`${label} ${index + 1}`}
           />
           <Button

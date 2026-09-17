@@ -296,6 +296,7 @@ Unreleased changes appear first and represent commits that have not yet been inc
 - Fixed the beads approval editor silently replacing context guidance written as free text with empty pattern lists. That guidance has no field in the structured editor, so it now says which beads carry it and points at the JSONL tab, the way it does for a line it could not parse.
 - Fixed unreadable bead tracker files hiding healthy rows or falsely reducing a generated verification checklist. Diagnostic projections keep their surviving rows and expose the read error, while authoritative and checklist reads remain fail-closed.
 - Fixed the approval editor rejecting ordinary sequential edits to command arguments. Each argument now has its own literal text control, preserving spaces, newlines and temporarily incomplete values without guessing at shell syntax.
+- Bead-editor list fields expose their numbered accessible names without the shared group heading overriding them.
 - Fixed approval requests being blocked when optional UI-state data fails to load. Approval uses the fetched bead content hash and remains available when that unrelated request is unavailable.
 - Fixed persisted Manual QA repair candidates being treated as current after a schema change. Legacy schema versions regenerate instead of being interpreted as a newer checklist.
 - Fixed runtime-only retry and finalisation note aliases being lost when older bead writers use snake_case spellings.

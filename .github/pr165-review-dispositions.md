@@ -47,6 +47,10 @@ claimed here.
 
 ## Check and tooling notes
 
+Root's integration review also removed the list fields' competing
+`aria-labelledby` attributes: those overrode the numbered `aria-label` names.
+The editor test now checks the computed accessible names of two list items.
+
 The captured CI set was green for workflow lint, unit/integration checks,
 build/package checks, CodeQL, and the Sonar quality gate. The same capture
 reported CodeRabbit's non-gating docstring metric, Codacy `ACTION_REQUIRED`,

@@ -56,5 +56,6 @@ export function clearTicketPersistentState(ticketId: string): void {
 export const __renderedTicketsForTests = {
   reset() {
     renderedTicketIds.clear()
+    ticketSseCursorGenerations.clear()
   },
 }

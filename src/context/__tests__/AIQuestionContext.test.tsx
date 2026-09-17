@@ -479,6 +479,51 @@ describe('AIQuestionProvider', () => {
     expect(screen.getByText('requests:0')).toBeInTheDocument()
   })
 
+  it('still prunes other requests when a snapshot carries a stale resolved identity', async () => {
+    const ticket = makeTicket({ status: 'CODING' })
+    const first = buildQuestion(ticket.id)
+    const second = buildQuestion(ticket.id, { sessionId: 'session-2', requestId: 'question-2' })
+    let aggregateCalls = 0
+    vi.stubGlobal('EventSource', MockEventSource)
+    vi.stubGlobal('fetch', vi.fn(async (input: RequestInfo | URL) => {
+      const url = String(input)
+      if (url === '/api/opencode/questions') {
+        aggregateCalls += 1
+        return new Response(JSON.stringify({
+          questions: aggregateCalls === 1 ? [first, second] : [],
+          timers: {},
+        }), { status: 200 })
+      }
+      if (url.endsWith('/opencode/questions')) {
+        return new Response(JSON.stringify({ questions: [first], timer: null }), { status: 200 })
+      }
+      return new Response(JSON.stringify({ questions: [], timer: null }), { status: 200 })
+    }))
+
+    function Recovery({ ticketId }: { ticketId: string }) {
+      const { getRequestCount, refreshTicket, ingestSseEvent } = useAIQuestions()
+      return (
+        <>
+          <div>requests:{getRequestCount(ticketId)}</div>
+          <button onClick={() => ingestSseEvent({
+            type: 'opencode_question_resolved',
+            ticketId,
+            sessionId: first.sessionId,
+            requestId: first.requestId,
+          })}>resolve</button>
+          <button onClick={() => refreshTicket(ticketId)}>refresh</button>
+        </>
+      )
+    }
+
+    renderProvider([ticket], <Recovery ticketId={ticket.id} />)
+    await waitFor(() => expect(screen.getByText('requests:2')).toBeInTheDocument())
+    fireEvent.click(screen.getByText('resolve'))
+    await waitFor(() => expect(screen.getByText('requests:1')).toBeInTheDocument())
+    fireEvent.click(screen.getByText('refresh'))
+    await waitFor(() => expect(screen.getByText('requests:0')).toBeInTheDocument())
+  })
+
   it('fences an in-flight response before retiring a finished ticket tombstone', async () => {
     const ticket = makeTicket({ status: 'CODING' })
     let releaseRefresh!: (body: unknown) => void

@@ -166,6 +166,67 @@ describe('normalizeTicketPatch', () => {
     expect(patch?.runtime?.totalBeads).toBe(4)
   })
 
+  it('retains optional ticket metadata carried by a full mutation response', () => {
+    const patch = normalizeTicketPatch({
+      id: '1:NORM-1',
+      pendingQuestions: {
+        requestCount: 1,
+        requestIds: ['session:req'],
+        questionCount: 2,
+        deadlineAt: null,
+        stoppedAt: null,
+      },
+      manualQa: {
+        activeVersion: 2,
+        completedRoundCount: 1,
+        latestOutcome: 'passed',
+        artifactAvailability: { checklist: true, results: true, coverage: false, summary: true },
+      },
+      manualQaOrigin: {
+        schemaVersion: 1,
+        source: 'manual_qa_improvement',
+        originId: 'origin-1',
+        actionId: 'action-1',
+        sourceTicketId: '1:SOURCE-1',
+        sourceTicketExternalId: 'SOURCE-1',
+        sourceProjectId: 1,
+        sourceVersion: 2,
+        sourceItemIds: ['item-1'],
+        sourceItemTitles: ['Check one'],
+        resultType: 'improvement',
+        relatedPrdRefs: [],
+        relatedBeadRefs: [],
+        evidenceRefs: [],
+        omittedEvidence: [],
+        titleSha256: 'hash',
+        descriptionSha256: 'hash',
+        omittedFields: [],
+        imageEvidenceMode: 'references_only',
+        createdAt: '2026-09-01T00:00:00.000Z',
+      },
+      effectiveGitHookPolicy: 'validate_required',
+      effectiveGitHookPolicySource: 'project',
+      lockedCouncilMemberVariants: { 'openai/gpt-5': 'high' },
+      runtime: {
+        beadsDiagnostics: { malformedLines: [3], unrepresentableLines: [7], readError: 'beads file unreadable' },
+      },
+    })
+
+    expect(patch).toMatchObject({
+      pendingQuestions: { requestCount: 1, requestIds: ['session:req'], questionCount: 2 },
+      manualQa: { activeVersion: 2, latestOutcome: 'passed' },
+      manualQaOrigin: { originId: 'origin-1', sourceVersion: 2 },
+      effectiveGitHookPolicy: 'validate_required',
+      effectiveGitHookPolicySource: 'project',
+      lockedCouncilMemberVariants: { 'openai/gpt-5': 'high' },
+    })
+    expect((patch?.runtime as Record<string, unknown>)?.beadsDiagnostics).toEqual({
+      malformedLines: [3],
+      unrepresentableLines: [7],
+      readError: 'beads file unreadable',
+    })
+  })
+
   it('does not replace cached arrays with malformed partial values', () => {
     const patch = normalizeTicketPatch({
       id: '1:NORM-1',

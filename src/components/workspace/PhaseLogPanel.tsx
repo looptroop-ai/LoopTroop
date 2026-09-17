@@ -8,7 +8,7 @@ import { LOG_LEGEND_TOOLTIP_CLASS, LOG_LEGEND_TOOLTIP_STACK_CLASS } from './logT
 import { cn } from '@/lib/utils'
 import { useLogs } from '@/context/useLogContext'
 import type { LogEntry } from '@/context/LogContext'
-import { getLogEntryIdentity, isDebugLogEntry, mergeEntriesBatch } from '@/context/logUtils'
+import { compareLogEntriesByTimestamp, getLogEntryIdentity, isDebugLogEntry, mergeEntriesBatch } from '@/context/logUtils'
 import { getStatusUserLabel } from '@/lib/workflowMeta'
 import { isTerminalWorkflowStatus } from '@shared/workflowMeta'
 import { LoadingText } from '@/components/ui/LoadingText'
@@ -184,7 +184,7 @@ export function PhaseLogPanel({
         return [
           ...propLogs,
           ...debugEntries.filter((entry) => !seenIdentities.has(getLogEntryIdentity(entry))),
-        ]
+        ].sort(compareLogEntriesByTimestamp)
       }
       if (shouldLoadHistoricalLogs) {
         if (logMode === 'snapshot') return historicalLogs.entries

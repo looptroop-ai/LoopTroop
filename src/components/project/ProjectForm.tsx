@@ -131,7 +131,6 @@ export function ProjectForm({ onClose, onBack, project, onDirtyChange }: Project
   const profileDefaultsAppliedRef = useRef(isEditing || !!profile)
   const projectBaselineRef = useRef<string | null>(null)
   const projectInitialDraftRef = useRef<string | null>(null)
-  const pendingHydrationBaselineRef = useRef<string | null>(null)
   const projectInitialValuesRef = useRef({
     name,
     shortname,
@@ -276,7 +275,7 @@ export function ProjectForm({ onClose, onBack, project, onDirtyChange }: Project
       onDirtyChange?.(true)
       return
     }
-    pendingHydrationBaselineRef.current = projectDraftSnapshot({
+    projectBaselineRef.current = projectDraftSnapshot({
       name,
       shortname,
       folder,
@@ -295,13 +294,7 @@ export function ProjectForm({ onClose, onBack, project, onDirtyChange }: Project
   }, [aiQuestionWindowOverride, aiQuestionsOverride, color, existingStateAction, folder, icon, ignoreMode, isEditing, manualQaOverride, name, onDirtyChange, profile, shortname])
 
   useEffect(() => {
-    if (pendingHydrationBaselineRef.current && draftSnapshot === pendingHydrationBaselineRef.current) {
-      projectBaselineRef.current = pendingHydrationBaselineRef.current
-      pendingHydrationBaselineRef.current = null
-    } else if (
-      projectBaselineRef.current === null
-      && pendingHydrationBaselineRef.current === null
-    ) {
+    if (projectBaselineRef.current === null) {
       // The first draft is the meaningful baseline even while profile defaults
       // are still loading. Identity fields have no profile default; if no
       // profile arrives, never turn a value typed during loading into a clean
@@ -314,6 +307,11 @@ export function ProjectForm({ onClose, onBack, project, onDirtyChange }: Project
   useEffect(() => {
     onDirtyChange?.(isDirty)
   }, [isDirty, onDirtyChange])
+
+  const handleCloseView = () => {
+    if (isDirty && !window.confirm('Discard your unsaved project changes?')) return
+    closeView()
+  }
 
   const handleBrowseFolder = () => {
     setIsFolderPickerOpen(true)
@@ -431,7 +429,7 @@ export function ProjectForm({ onClose, onBack, project, onDirtyChange }: Project
     <>
     <form onSubmit={handleSubmit} className="max-w-2xl mx-auto space-y-6">
       {onBack && (
-        <Button type="button" variant="ghost" size="sm" onClick={onBack}>
+        <Button type="button" variant="ghost" size="sm" onClick={handleCloseView}>
           <ArrowLeft className="h-4 w-4 mr-1" />
           Back to list
         </Button>
@@ -918,7 +916,7 @@ export function ProjectForm({ onClose, onBack, project, onDirtyChange }: Project
           </div>
         )}
         <div className="flex gap-2.5 ml-auto">
-          <Button type="button" variant="outline" onClick={closeView} className="rounded-lg">Cancel</Button>
+          <Button type="button" variant="outline" onClick={handleCloseView} className="rounded-lg">Cancel</Button>
           <Button
             type="submit"
             disabled={isBusy || (!isEditing && (gitStatus !== 'valid' || gitInfo.alreadyAttached || hasProjectIdentityConflict))}

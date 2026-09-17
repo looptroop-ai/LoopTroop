@@ -89,16 +89,44 @@ describe('FolderPicker', () => {
     expect(screen.getByRole('button', { name: /Select This Folder/i })).toBeDisabled()
   })
 
+  it('does not let a stale listing cancel the current folder git check', async () => {
+    vi.useFakeTimers({ shouldAdvanceTime: true })
+    const picker = render(
+      <TooltipProvider>
+        <FolderPicker open onClose={() => undefined} onSelect={() => undefined} initialPath="/slow" />
+      </TooltipProvider>,
+    )
+
+    await waitFor(() => expect(pending.get('/api/projects/ls?path=%2Fslow')?.length).toBe(1))
+
+    // A newer navigation completes first and schedules its repository check.
+    picker.rerender(
+      <TooltipProvider>
+        <FolderPicker open onClose={() => undefined} onSelect={() => undefined} initialPath="/fast" />
+      </TooltipProvider>,
+    )
+    await waitFor(() => expect(pending.get('/api/projects/ls?path=%2Ffast')?.length).toBe(1))
+    await settle('/api/projects/ls?path=%2Ffast', lsBody('/fast'))
+
+    // The old listing arrives while the current check is still debounced. Its
+    // generation is stale, so it must not clear the current timer.
+    await settle('/api/projects/ls?path=%2Fslow', lsBody('/slow'))
+    await act(async () => { await vi.advanceTimersByTimeAsync(GIT_CHECK_DEBOUNCE_MS) })
+
+    expect(pending.get('/api/projects/check-git?path=%2Ffast')?.length).toBe(1)
+  })
+
   it('keeps a transient git-check failure separate from a non-repository result and offers retry', async () => {
     vi.useFakeTimers({ shouldAdvanceTime: true })
-    vi.stubGlobal('fetch', vi.fn(async (input: RequestInfo | URL) => {
+    const fetchMock = vi.fn(async (input: RequestInfo | URL) => {
       const url = String(input)
       if (url.includes('/check-git?')) return new Response('temporary failure', { status: 503 })
-      return new Response(JSON.stringify(lsBody('/temporary')), {
+      return new Response(JSON.stringify(lsBody('/temporary', ['child'])), {
         status: 200,
         headers: { 'Content-Type': 'application/json' },
       })
-    }))
+    })
+    vi.stubGlobal('fetch', fetchMock)
 
     render(
       <TooltipProvider>
@@ -111,6 +139,15 @@ describe('FolderPicker', () => {
 
     expect(await screen.findByText(/Git check failed.*503/i)).toBeInTheDocument()
     expect(screen.queryByText(/not a git repository/i)).not.toBeInTheDocument()
+    expect(screen.getByText('child')).toBeInTheDocument()
     expect(screen.getByRole('button', { name: 'Retry' })).toBeInTheDocument()
+
+    const callsBeforeRetry = fetchMock.mock.calls.length
+    fireEvent.click(screen.getByRole('button', { name: 'Retry' }))
+    // A Git retry does not re-list the directory or hide the entries already on screen.
+    expect(fetchMock.mock.calls.length).toBe(callsBeforeRetry)
+    await act(async () => { await vi.advanceTimersByTimeAsync(GIT_CHECK_DEBOUNCE_MS) })
+    expect(fetchMock.mock.calls.length).toBe(callsBeforeRetry + 1)
+    expect(screen.getByText('child')).toBeInTheDocument()
   })
 })

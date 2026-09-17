@@ -1,7 +1,7 @@
 import { createElement, useEffect } from 'react'
 import { act, render, screen } from '@testing-library/react'
 import { afterEach, describe, expect, it, vi } from 'vitest'
-import { formatLogLine, getServerLogCacheKey, mergeEntriesBatch, mergeEntry, normalizeLogRecord, normalizeStoredEntry, serverLogCache, SERVER_LOG_REFRESH_EVENT } from '@/context/logUtils'
+import { compareLogEntriesByTimestamp, formatLogLine, getServerLogCacheKey, mergeEntriesBatch, mergeEntry, normalizeLogRecord, normalizeStoredEntry, serverLogCache, SERVER_LOG_REFRESH_EVENT } from '@/context/logUtils'
 import { LogProvider } from '@/context/LogContext'
 import { useLogActions, useLogs, useLogState } from '@/context/useLogContext'
 import { createJsonResponse } from '@/test/renderHelpers'
@@ -190,6 +190,19 @@ describe('mergeEntriesBatch', () => {
     const merged = mergeEntriesBatch(serverRows, [live], true, stats)
     expect(merged.map(entry => entry.entryId)).toEqual(['server-first', 'server-second', 'live'])
     expect(stats).toMatchObject({ baseEntries: 2, incomingEntries: 1, renderedEntries: 3, comparatorCalls: 0 })
+  })
+
+  it('interleaves an older live AI row without a mirror key', () => {
+    const historical = [
+      normalizeLogRecord({ phase: 'CODING', entryId: 'server-first', content: 'first', timestamp: '2026-03-10T00:00:02.000Z', _logMirrorKey: 'mirror:first' }, 'CODING'),
+      normalizeLogRecord({ phase: 'CODING', entryId: 'server-second', content: 'second', timestamp: '2026-03-10T00:00:03.000Z', _logMirrorKey: 'mirror:second' }, 'CODING'),
+    ]
+    const live = normalizeLogRecord({ phase: 'CODING', entryId: 'live-before-page', content: 'live', timestamp: '2026-03-10T00:00:01.000Z' }, 'CODING')
+
+    expect(mergeEntriesBatch(historical, [live], true).map(entry => entry.entryId)).toEqual([
+      'live-before-page', 'server-first', 'server-second',
+    ])
+    expect(compareLogEntriesByTimestamp(live, historical[0]!)).toBeLessThan(0)
   })
 })
 

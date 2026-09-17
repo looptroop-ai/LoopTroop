@@ -35,11 +35,11 @@ export function KeyboardShortcuts() {
 
   if (!isOpen) return null
 
-  // Above every other surface, pickers included. At z-50 this sat *under* the ticket
-  // view and the About window (both z-[60]) — so `?` from either opened a help overlay
-  // nobody could see, and once it contained focus and made the page inert, the visible
-  // UI simply stopped responding. The two portaled pickers sit higher still, at z-[100]
-  // and DROPDOWN_Z_INDEX, so clearing only the z-[60] surfaces was not enough.
+  // Above every modal surface, pickers included. At z-50 this sat *under* the ticket
+  // view and routed modals, so `?` from one opened a help overlay nobody could see,
+  // and once it contained focus and made the page inert, the visible UI stopped
+  // responding. The two portaled pickers sit higher still, at z-[100] and
+  // DROPDOWN_Z_INDEX, so clearing only the modal layers is not enough.
   return (
     <div
       className="fixed inset-0 flex items-center justify-center bg-black/50"

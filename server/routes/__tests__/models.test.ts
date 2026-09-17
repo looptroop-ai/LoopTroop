@@ -79,4 +79,16 @@ describe('models routes', () => {
     expect(refreshProviderCatalog).toHaveBeenCalledOnce()
     expect(body.models.map((model: { fullId: string }) => model.fullId)).toEqual(['openai/connected'])
   })
+
+  it('returns a machine-readable retry code when discovery fails after connection', async () => {
+    fetchProviderCatalog.mockRejectedValueOnce(new Error('catalog unavailable'))
+
+    const response = await createApp().request('/api/models')
+    const body = await response.json()
+
+    expect(body).toMatchObject({
+      code: 'OPENCODE_DISCOVERY_FAILED',
+      message: 'OpenCode is connected, but model discovery failed.',
+    })
+  })
 })

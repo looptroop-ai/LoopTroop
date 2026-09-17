@@ -22,7 +22,7 @@ export function CenteredModal({
   children,
   maxWidth = 'max-w-2xl',
   closeDisabled = false,
-  zIndexClass = 'z-[60]',
+  zIndexClass = 'z-[70]',
   isDirty = false,
 }: CenteredModalProps) {
   const panelRef = useRef<HTMLDivElement>(null)

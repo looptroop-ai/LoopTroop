@@ -275,6 +275,12 @@ interface ModelCatalog {
   appliedRevision: number
 }
 
+type DrainState = {
+  key: string
+  promise: Promise<void>
+  cancellationChecks: Set<() => boolean>
+}
+
 function normalizeCount(value: unknown): number | null {
   return typeof value === 'number' && Number.isFinite(value) && value >= 0 ? value : null
 }
@@ -328,6 +334,7 @@ export function useTicketHistoricalLogs(ticketId: string | undefined, scope: His
   const queryKey = useMemo(() => [
     'ticket-log-history', ticketId ?? '__missing__', scope.scope, scope.phase ?? '', scope.phaseAttempt ?? '', scope.view, scope.modelId ?? '', scope.beadId ?? '',
   ], [scope.beadId, scope.modelId, scope.phase, scope.phaseAttempt, scope.scope, scope.view, ticketId])
+  const queryScopeKey = JSON.stringify(queryKey)
 
   const query = useInfiniteQuery({
     queryKey,
@@ -363,8 +370,10 @@ export function useTicketHistoricalLogs(ticketId: string | undefined, scope: His
   })
 
   const foldCacheRef = useRef<HistoricalLogFoldCache | null>(null)
-  const drainActiveRef = useRef(false)
-  const drainPromiseRef = useRef<Promise<void> | null>(null)
+  const activeScopeKeyRef = useRef(queryScopeKey)
+  activeScopeKeyRef.current = queryScopeKey
+  const foldScopeKeyRef = useRef<string | null>(null)
+  const drainStateRef = useRef<DrainState | null>(null)
   const mountedRef = useRef(true)
   const [foldRevision, setFoldRevision] = useState(0)
   const [drainError, setDrainError] = useState<unknown>(null)
@@ -377,11 +386,15 @@ export function useTicketHistoricalLogs(ticketId: string | undefined, scope: His
   }, [])
   const entries = useMemo(() => {
     void foldRevision
-    if (drainActiveRef.current && foldCacheRef.current) return foldCacheRef.current.entries
+    if (foldScopeKeyRef.current !== queryScopeKey) {
+      foldScopeKeyRef.current = queryScopeKey
+      foldCacheRef.current = null
+    }
+    if (drainStateRef.current?.key === queryScopeKey && foldCacheRef.current) return foldCacheRef.current.entries
     const folded = foldHistoricalLogPages(query.data?.pages ?? [], scope.view, foldCacheRef.current)
     foldCacheRef.current = folded
     return folded.entries
-  }, [foldRevision, query.data?.pages, scope.view])
+  }, [foldRevision, query.data?.pages, queryScopeKey, scope.view])
   const refetch = query.refetch
   const countPage = query.data?.pages.find(page => page.totalEntries !== null || page.totalTextLines !== null)
 
@@ -401,23 +414,27 @@ export function useTicketHistoricalLogs(ticketId: string | undefined, scope: His
   const queryDataRef = useRef(query.data)
   queryDataRef.current = query.data
 
-  const olderRequestRef = useRef<Promise<Awaited<ReturnType<typeof fetchNextPage>>> | null>(null)
+  const olderRequestRef = useRef<{
+    key: string
+    promise: Promise<Awaited<ReturnType<typeof fetchNextPage>>>
+  } | null>(null)
   const requestOlderPage = useCallback(() => {
     const existing = olderRequestRef.current
-    if (existing) return existing
+    if (existing?.key === queryScopeKey) return existing.promise
     const request = (async () => {
       // Native TanStack semantics keep a refresh alive when an older request
       // arrives. A fresh refresh may still supersede this request; the full
       // drain below sees the settled cursor and retries rather than truncating.
       return fetchNextPage({ cancelRefetch: false })
     })()
-    olderRequestRef.current = request
+    const state = { key: queryScopeKey, promise: request }
+    olderRequestRef.current = state
     void request.then(
-      () => { if (olderRequestRef.current === request) olderRequestRef.current = null },
-      () => { if (olderRequestRef.current === request) olderRequestRef.current = null },
+      () => { if (olderRequestRef.current === state) olderRequestRef.current = null },
+      () => { if (olderRequestRef.current === state) olderRequestRef.current = null },
     )
     return request
-  }, [fetchNextPage])
+  }, [fetchNextPage, queryScopeKey])
   /**
    * Walks every older page in one go. Callers pass `isCancelled` and flip it when the
    * scope they started the walk for is gone — a different bead, a different attempt, an
@@ -430,12 +447,24 @@ export function useTicketHistoricalLogs(ticketId: string | undefined, scope: His
    * is how a failure ends up looking like a cancellation and never latches. The entry
    * condition is gone with it: `fetchNextPage` on a query with no older page is a
    * no-op that reports `hasNextPage: false`, and both callers already gate on it.
-   */
+  */
   const fetchAllOlder = useCallback((isCancelled?: () => boolean): Promise<void> => {
-    const existing = drainPromiseRef.current
-    if (existing) return existing
-    drainActiveRef.current = true
+    const existing = drainStateRef.current
+    if (existing?.key === queryScopeKey) {
+      if (isCancelled) existing.cancellationChecks.add(isCancelled)
+      return existing.promise
+    }
+    const cancellationChecks = new Set<() => boolean>()
+    if (isCancelled) cancellationChecks.add(isCancelled)
+    const state: DrainState = {
+      key: queryScopeKey,
+      promise: Promise.resolve(),
+      cancellationChecks,
+    }
+    drainStateRef.current = state
     setDrainError(null)
+    const runIsCancelled = () => activeScopeKeyRef.current !== state.key
+      || (state.cancellationChecks.size > 0 && [...state.cancellationChecks].every(check => check()))
     let unchangedCursor: string | null | undefined
     let cursorRecoveryUsed = false
     const recoverExpiredCursor = async () => {
@@ -445,7 +474,7 @@ export function useTicketHistoricalLogs(ticketId: string | undefined, scope: His
     }
     const run = (async () => {
       for (;;) {
-        if (isCancelled?.()) return
+        if (runIsCancelled()) return
         const beforeCursor = queryDataRef.current?.pages.at(-1)?.olderCursor ?? null
         let result: Awaited<ReturnType<typeof fetchNextPage>>
         try {
@@ -468,7 +497,7 @@ export function useTicketHistoricalLogs(ticketId: string | undefined, scope: His
           }
           throw result.error
         }
-        if (isCancelled?.() || !result.hasNextPage) return
+        if (runIsCancelled() || !result.hasNextPage) return
         // A non-cancelling request may have shared a newest-page refresh. Never
         // silently stop on that unchanged cursor: retry once from the settled
         // query, then surface a broken server cursor instead of truncating.
@@ -483,17 +512,21 @@ export function useTicketHistoricalLogs(ticketId: string | undefined, scope: His
         unchangedCursor = undefined
       }
     })()
-    drainPromiseRef.current = run
+    state.promise = run
     const finish = (error?: unknown) => {
-      if (drainPromiseRef.current !== run) return
-      drainPromiseRef.current = null
-      drainActiveRef.current = false
-      if (error && mountedRef.current && !isCancelled?.()) setDrainError(error)
-      if (mountedRef.current && !isCancelled?.()) setFoldRevision(revision => revision + 1)
+      if (drainStateRef.current !== state) return
+      drainStateRef.current = null
+      if (error && mountedRef.current && !runIsCancelled()) setDrainError(error)
+      // A cancelled walk may still have received a page before it observed
+      // cancellation. Publish that page for the scope that is still mounted;
+      // otherwise the cache remains frozen until an unrelated render.
+      if (mountedRef.current && activeScopeKeyRef.current === state.key) {
+        setFoldRevision(revision => revision + 1)
+      }
     }
     run.then(() => finish(), finish)
     return run
-  }, [queryClient, queryKey, requestOlderPage])
+  }, [queryClient, queryKey, queryScopeKey, requestOlderPage])
 
   const retryHistoricalLogs = useCallback(async () => {
     if (drainError) {
@@ -504,6 +537,10 @@ export function useTicketHistoricalLogs(ticketId: string | undefined, scope: His
     }
     await refetch()
   }, [drainError, fetchAllOlder, queryClient, queryKey, refetch])
+
+  useEffect(() => {
+    setDrainError(null)
+  }, [queryScopeKey])
 
   useEffect(() => {
     if (!ticketId || !enabled) return

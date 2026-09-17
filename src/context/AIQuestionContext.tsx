@@ -418,7 +418,7 @@ export function AIQuestionProvider({ tickets, children }: { tickets: Ticket[]; c
     options: { generation: number; prune?: boolean },
   ) => {
     const live = new Set<string>()
-    let containsResolvedRequest = false
+    const visibleLive = new Set<string>()
     for (const raw of rawQuestions) {
       const payload = parseQuestionPayload(raw)
       if (!payload?.sessionId || !payload.requestId) continue
@@ -427,11 +427,13 @@ export function AIQuestionProvider({ tickets, children }: { tickets: Ticket[]; c
       if (requestIsTombstoned(requestTombstonesRef.current, ticketId, key)) {
         // A successful endpoint can still return a resolving request when its
         // adapter lookup failed and it fell back to the local window store. Its
-        // presence is proof that this response is stale relative to the
-        // resolved event, even when the GET started afterwards.
-        containsResolvedRequest = true
+        // presence is retained in `live` so the tombstone is not cleared, but
+        // it must not keep the rest of this authoritative snapshot from being
+        // pruned or from advancing the timer. Otherwise one stale row makes a
+        // ticket permanently non-authoritative until the tab is reloaded.
         continue
       }
+      visibleLive.add(key)
       upsertRequest(payload)
     }
     // A successful fetch is authoritative for this ticket: anything it does not
@@ -439,9 +441,9 @@ export function AIQuestionProvider({ tickets, children }: { tickets: Ticket[]; c
     // question nobody can answer. A *failed* fetch prunes nothing, and neither
     // does one a live event has overtaken — its list is older than what the
     // event just told us, but the requests it carries are still real.
-    const authoritative = options.prune !== false && !containsResolvedRequest
+    const authoritative = options.prune !== false
     if (authoritative) {
-      pruneTicketRequests(setRequests, ticketId, live)
+      pruneTicketRequests(setRequests, ticketId, visibleLive)
       applyTimer(ticketId, timer)
       clearAbsentRequestTombstones(requestTombstonesRef.current, ticketId, live)
     }
@@ -468,10 +470,6 @@ export function AIQuestionProvider({ tickets, children }: { tickets: Ticket[]; c
   const refreshTicket = useCallback((ticketId: string) => {
     if (!activeTicketIdsRef.current.has(ticketId)) return
     const generation = ++snapshotTokenRef.current
-    // Reserve the sequence at request start. This lets lifecycle cleanup fence
-    // a response even when the ticket is removed before it lands; equality is
-    // allowed when this reserved response is the one being applied.
-    appliedSnapshotRef.current.set(ticketId, generation)
     void (async () => {
       try {
         const res = await fetch(apiTicketPath(ticketId, 'opencode', 'questions'))
@@ -513,9 +511,6 @@ export function AIQuestionProvider({ tickets, children }: { tickets: Ticket[]; c
       // does not list — so one slow poll landing after a faster later one, or
       // after a per-ticket refresh, would delete questions that are still live.
       const generation = ++snapshotTokenRef.current
-      for (const ticketId of activeIds) {
-        appliedSnapshotRef.current.set(ticketId, generation)
-      }
       try {
         const res = await fetch('/api/opencode/questions')
         await throwIfNotOk(res, 'Failed to recover questions')

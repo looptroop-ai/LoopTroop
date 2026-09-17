@@ -420,6 +420,12 @@ export function compareTimestamps(a?: string, b?: string): number {
   return at - bt
 }
 
+/** A total display order for the one live overlay that intentionally interleaves rows. */
+export function compareLogEntriesByTimestamp(a: LogEntry, b: LogEntry): number {
+  return compareTimestamps(a.timestamp, b.timestamp)
+    || compareStableStrings(getLogEntryIdentity(a), getLogEntryIdentity(b))
+}
+
 function timestampDistanceMs(a?: string, b?: string): number | null {
   const at = a ? Date.parse(a) : Number.NaN
   const bt = b ? Date.parse(b) : Number.NaN
@@ -612,17 +618,13 @@ export function mergeEntriesBatch(
   const compareForDisplay = (a: LogEntry, b: LogEntry) => {
     if (!shouldSort) return 0
     if (stats) stats.comparatorCalls += 1
-    // A live row has no server mirror identity. Keep the server's canonical
-    // order around it instead of timestamp-sorting a mixed historical/live
-    // batch with a made-up fallback key.
-    if (!a._logMirrorKey || !b._logMirrorKey) return 0
     const timestampOrder = compareTimestamps(a.timestamp, b.timestamp)
     if (timestampOrder !== 0) return timestampOrder
-    // Server AI rows carry the projection's mirror key. Live rows do not, so
-    // leave their input order intact instead of moving bead-start markers after
-    // their streamed output merely because their fallback ids compare differently.
-    return compareStableStrings(a._logMirrorKey, b._logMirrorKey)
+    const aKey = a._logMirrorKey ?? getLogEntryIdentity(a)
+    const bKey = b._logMirrorKey ?? getLogEntryIdentity(b)
+    return compareStableStrings(aKey, bKey)
       || (a._logMirrorOccurrence ?? 0) - (b._logMirrorOccurrence ?? 0)
+      || compareStableStrings(getLogEntryIdentity(a), getLogEntryIdentity(b))
   }
   // Historical pages and live context readers are already canonical. An empty
   // overlay must be a cheap identity path; sorting the whole archive here was

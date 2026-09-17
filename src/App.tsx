@@ -248,6 +248,10 @@ function App() {
     project: false,
     ticket: false,
   })
+  const activeModalRef = useRef(activeModal)
+  activeModalRef.current = activeModal
+  const modalDirtyRef = useRef(modalDirty)
+  modalDirtyRef.current = modalDirty
   const [isAboutOpen, setIsAboutOpen] = useState(false)
   const [isWelcomeOpen, setIsWelcomeOpen] = useState(() => {
     try {
@@ -468,12 +472,26 @@ function App() {
       }
 
       modalWasPushedRef.current = false
+      const previousModal = activeModalRef.current
+      const nextModal = modalForPathname(pathname)
+      if (previousModal && previousModal !== nextModal && modalDirtyRef.current[previousModal]) {
+        if (!window.confirm('Discard your unsaved changes?')) {
+          // The browser has already moved to the previous entry. Restore the
+          // routed modal as a new app-owned entry so the user's edits remain
+          // visible and closing it can still return to the page behind it.
+          window.history.pushState(null, '', MODAL_ROUTES[previousModal])
+          modalWasPushedRef.current = true
+          setPopPathname(null)
+          return
+        }
+        setModalDirty((current) => ({ ...current, [previousModal]: false }))
+      }
       setPopPathname(pathname)
       // About has no route of its own and sits above everything else, so a Back that
       // reconciles the routed overlays would otherwise close Configuration underneath
       // it and leave About floating over the board with nothing behind it.
       setIsAboutOpen(false)
-      setActiveModal(modalForPathname(pathname))
+      setActiveModal(nextModal)
 
       const match = matchTicketRoute(pathname, ticketsRef.current)
       if (match.kind === 'pending') {
@@ -617,9 +635,8 @@ function App() {
           </Suspense>
         </CenteredModal>
 
-        {/* About stays on the dashboard's layer and renders after Configuration, so
-            DOM order keeps it visibly above that routed modal when both are open. */}
-        <CenteredModal open={isAboutOpen} onClose={closeAbout} title="About" maxWidth="max-w-2xl" zIndexClass="z-[60]">
+        {/* About renders above the routed modal it was opened from. */}
+        <CenteredModal open={isAboutOpen} onClose={closeAbout} title="About" maxWidth="max-w-2xl" zIndexClass="z-[80]">
           <AboutDialog />
         </CenteredModal>
 

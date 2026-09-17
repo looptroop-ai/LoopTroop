@@ -117,6 +117,28 @@ describe('ProjectForm', () => {
     expect(dirty).toHaveBeenLastCalledWith(true)
   })
 
+  it('guards Back to list and Cancel while the project form is dirty', () => {
+    const onBack = vi.fn()
+    const onClose = vi.fn()
+    const confirm = vi.spyOn(window, 'confirm').mockReturnValue(false)
+    const view = render(<ProjectForm onClose={onClose} onBack={onBack} />, { wrapper: Wrapper })
+
+    fireEvent.change(screen.getByLabelText(/Project Name/i), { target: { value: 'Unsaved project' } })
+    fireEvent.click(screen.getByRole('button', { name: 'Back to list' }))
+    expect(confirm).toHaveBeenCalledWith('Discard your unsaved project changes?')
+    expect(onBack).not.toHaveBeenCalled()
+
+    confirm.mockReturnValue(true)
+    fireEvent.click(screen.getByRole('button', { name: 'Back to list' }))
+    expect(onBack).toHaveBeenCalledTimes(1)
+
+    view.unmount()
+    render(<ProjectForm onClose={onClose} />, { wrapper: Wrapper })
+    fireEvent.change(screen.getByLabelText(/Project Name/i), { target: { value: 'Another unsaved project' } })
+    fireEvent.click(screen.getByRole('button', { name: 'Cancel' }))
+    expect(onClose).toHaveBeenCalledTimes(1)
+  })
+
   it('keeps the form open when a create finishes after a later edit', () => {
     const onClose = vi.fn()
     const dirty = vi.fn()

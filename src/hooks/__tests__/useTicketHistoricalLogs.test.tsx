@@ -38,6 +38,55 @@ describe('useTicketHistoricalLogs', () => {
     expect(fetchSpy).toHaveBeenCalledTimes(2)
   })
 
+  it('does not share an in-flight older-page drain with a new query scope', async () => {
+    let resolveAttemptOne!: (response: Response | PromiseLike<Response>) => void
+    const fetchSpy = vi.spyOn(globalThis, 'fetch').mockImplementation(input => {
+      const url = new URL(String(input), 'http://localhost')
+      const attempt = url.searchParams.get('phaseAttempt')
+      if (url.searchParams.has('before')) {
+        if (attempt === '1') return new Promise<Response>(resolve => { resolveAttemptOne = resolve })
+        return createJsonResponse({
+          entries: [{ phase: 'CODING', entryId: 'old-attempt-two', content: 'old attempt two' }],
+          olderCursor: null,
+          hasOlder: false,
+        })
+      }
+      return createJsonResponse({
+        entries: [{ phase: 'CODING', entryId: `new-attempt-${attempt}`, content: `new attempt ${attempt}` }],
+        olderCursor: `cursor-${attempt}`,
+        hasOlder: true,
+      })
+    })
+    const client = createTestQueryClient()
+    const { result, rerender } = renderHook(
+      ({ scope }: { scope: HistoricalLogScope }) => useTicketHistoricalLogs('ticket-1', scope),
+      {
+        initialProps: { scope: { scope: 'phase', phase: 'CODING', phaseAttempt: 1, view: 'overview' } },
+        wrapper: ({ children }: { children: ReactNode }) => <QueryClientProvider client={client}>{children}</QueryClientProvider>,
+      },
+    )
+
+    await waitFor(() => expect(result.current.entries.map(entry => entry.entryId)).toEqual(['new-attempt-1']))
+    let firstDrain!: Promise<void>
+    await act(async () => {
+      firstDrain = result.current.fetchAllOlder()
+      await Promise.resolve()
+    })
+    await waitFor(() => expect(fetchSpy).toHaveBeenCalledTimes(2))
+
+    rerender({ scope: { scope: 'phase', phase: 'CODING', phaseAttempt: 2, view: 'overview' } })
+    await waitFor(() => expect(result.current.entries.map(entry => entry.entryId)).toEqual(['new-attempt-2']))
+    await act(async () => { await result.current.fetchAllOlder() })
+
+    expect(result.current.entries.map(entry => entry.entryId)).toEqual(['old-attempt-two', 'new-attempt-2'])
+    expect(fetchSpy).toHaveBeenCalledTimes(4)
+
+    await act(async () => {
+      resolveAttemptOne(createJsonResponse({ entries: [], olderCursor: null, hasOlder: false }))
+      await firstDrain
+    })
+  })
+
   it('preserves the model array reference when fresh responses contain the same catalog', async () => {
     const fetchSpy = vi.spyOn(globalThis, 'fetch').mockImplementation(() => createJsonResponse({
       entries: [], modelIds: ['provider/a', 'provider/b'], olderCursor: null, hasOlder: false,

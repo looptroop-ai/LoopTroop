@@ -85,6 +85,7 @@ describe('useOpenCodeModels', () => {
         models: [],
         connectedProviders: [],
         defaultModels: {},
+        code: 'OPENCODE_UNREACHABLE',
         message: 'OpenCode server is not reachable. Start it with `opencode serve`.',
       }),
     })))
@@ -102,6 +103,7 @@ describe('useOpenCodeModels', () => {
             models: [],
             connectedProviders: [],
             defaultModels: {},
+            code: 'OPENCODE_UNREACHABLE',
             message: 'OpenCode server is not reachable. Start it with `opencode serve`.',
           }),
         })

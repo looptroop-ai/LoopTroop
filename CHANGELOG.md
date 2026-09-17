@@ -261,6 +261,8 @@ Unreleased changes appear first and represent commits that have not yet been inc
 
 ### Fixed
 - Native DEBUG history refreshes same-size file rewrites without changing retained cursors.
+- Client history drains, model discovery retries, routed-modal draft guards, and folder selection now stay scoped to the current view when requests finish out of order; malformed full-ticket action patches retain validated optional metadata.
+- Routed dialogs now layer above the ticket dashboard and mobile navigation, while About remains above the dialog that opened it.
 - Routed forms now warn only when their current values differ from the saved or hydrated baseline. Hydration, failed saves, refetches and later edits no longer overwrite or clear a draft that is still in progress; successful saves acknowledge only the snapshot they actually saved.
 - Live stream recovery now refreshes the ticket broadly only for an initial stored cursor or an explicit replay gap. Confirmed deletion fences late responses, pending AI-detail invalidations, question collapse state, UI revisions and SSE cursors so a reissued ticket identifier starts clean while unrelated tickets remain untouched.
 - Full Log history refreshes from the newest page, retains loaded snapshots and model tabs, and uses explicit complete-history drains for navigation and export instead of mounting the whole archive. Cursor expiry produces a typed retry path, while diagnostics distinguish bounded reads from complete history.

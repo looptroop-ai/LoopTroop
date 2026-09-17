@@ -13,9 +13,20 @@ interface ModelsApiResponse {
   connectedProviders: string[]
   defaultModels: Record<string, string>
   message?: string
+  code?: 'OPENCODE_UNREACHABLE' | 'OPENCODE_DISCOVERY_FAILED'
 }
 
-const OPENCODE_STARTING_MESSAGE = 'OpenCode server is not reachable. Start it with `opencode serve`.'
+export type OpenCodeModelsErrorCode = 'OPENCODE_UNREACHABLE' | 'OPENCODE_DISCOVERY_FAILED'
+
+export class OpenCodeModelsError extends Error {
+  readonly code?: OpenCodeModelsErrorCode
+
+  constructor(message: string, code?: OpenCodeModelsErrorCode) {
+    super(message)
+    this.name = 'OpenCodeModelsError'
+    this.code = code
+  }
+}
 
 export type OpenCodeModel = OpenCodeCatalogModel
 export const OPENCODE_MODELS_QUERY_KEY = ['opencode-models', 'connected'] as const
@@ -39,7 +50,7 @@ async function requestModelsApi(
   // When the backend cannot reach OpenCode it returns a `message` with an empty
   // model list (HTTP 200). Treat this as a retriable error so react-query retries
   // during the startup window while OpenCode is still initialising.
-  if (data.message) throw new Error(data.message)
+  if (data.message) throw new OpenCodeModelsError(data.message, data.code)
   return data
 }
 
@@ -56,7 +67,9 @@ function refreshModelsApi(signal?: AbortSignal): Promise<ModelsApiResponse> {
 }
 
 function shouldRetryModelFetch(failureCount: number, error: Error): boolean {
-  return failureCount < MODEL_FETCH_RETRY_COUNT && error.message.trim() === OPENCODE_STARTING_MESSAGE
+  const code = (error as OpenCodeModelsError).code
+  return failureCount < MODEL_FETCH_RETRY_COUNT
+    && (code === 'OPENCODE_UNREACHABLE' || code === 'OPENCODE_DISCOVERY_FAILED')
 }
 
 export function clearOpenCodeModelsQuery(queryClient: Pick<QueryClient, 'removeQueries'>) {

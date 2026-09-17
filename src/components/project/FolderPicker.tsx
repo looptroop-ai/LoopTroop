@@ -67,13 +67,14 @@ export function FolderPicker({ open, onClose, onSelect, initialPath }: FolderPic
     }, [])
 
     const checkGit = useCallback((path: string, generation: number) => {
-        if (gitCheckRef.current) clearTimeout(gitCheckRef.current)
         if (generation !== requestGenerationRef.current) return
+        if (gitCheckRef.current) clearTimeout(gitCheckRef.current)
         if (!path) { setGitStatus('none'); setGitMessage(''); setPerformanceWarning(''); return }
         setGitStatus('checking')
         setGitMessage('Checking repository...')
         gitCheckRef.current = setTimeout(async () => {
             if (generation !== requestGenerationRef.current) return
+            gitCheckRef.current = null
             try {
                 const res = await fetch(`/api/projects/check-git?path=${encodeURIComponent(path)}`)
                 // A refused request is not a verdict. Reading the body regardless
@@ -94,11 +95,11 @@ export function FolderPicker({ open, onClose, onSelect, initialPath }: FolderPic
         }, GIT_CHECK_DEBOUNCE_MS)
     }, [])
 
-    const fetchLs = useCallback(async (pathStr: string) => {
+    const fetchLs = useCallback(async (pathStr: string, preserveData = false) => {
         const generation = ++requestGenerationRef.current
         setIsLoading(true)
         setError(null)
-        setData(null)
+        if (!preserveData) setData(null)
         setGitStatus('none')
         setGitMessage('')
         setPerformanceWarning('')
@@ -122,6 +123,17 @@ export function FolderPicker({ open, onClose, onSelect, initialPath }: FolderPic
             if (generation === requestGenerationRef.current) setIsLoading(false)
         }
     }, [checkGit])
+
+    const retryGitCheck = useCallback(() => {
+        const path = data?.currentPath ?? inputPath
+        if (!path) return
+        const generation = ++requestGenerationRef.current
+        setError(null)
+        setGitStatus('none')
+        setGitMessage('')
+        setPerformanceWarning('')
+        checkGit(path, generation)
+    }, [checkGit, data?.currentPath, inputPath])
 
     useEffect(() => {
         if (open) {
@@ -180,7 +192,7 @@ export function FolderPicker({ open, onClose, onSelect, initialPath }: FolderPic
                 {error && (
                     <div role="alert" className="flex items-center justify-between gap-3 bg-destructive/10 text-destructive px-4 py-3 rounded-md text-sm font-medium">
                         <span>{error}</span>
-                        <Button type="button" variant="outline" size="sm" onClick={() => fetchLs(inputPath)} disabled={isLoading}>
+                        <Button type="button" variant="outline" size="sm" onClick={() => fetchLs(inputPath, true)} disabled={isLoading}>
                             Retry
                         </Button>
                     </div>
@@ -235,7 +247,7 @@ export function FolderPicker({ open, onClose, onSelect, initialPath }: FolderPic
                     </div>
                     <div className="flex gap-2 shrink-0">
                         {gitStatus === 'error' && (
-                            <Button type="button" variant="outline" onClick={() => fetchLs(inputPath)} disabled={isLoading}>
+                            <Button type="button" variant="outline" onClick={retryGitCheck} disabled={isLoading}>
                                 Retry
                             </Button>
                         )}

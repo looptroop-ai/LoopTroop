@@ -114,7 +114,7 @@ describe('CenteredModal — dialog semantics and focus containment', () => {
   it('stacks the routed modal above the dashboard surface', () => {
     renderModal()
     const backdrop = screen.getByRole('dialog', { name: 'Configuration' }).parentElement!
-    expect(backdrop).toHaveClass('z-[60]')
+    expect(backdrop).toHaveClass('z-[70]')
   })
 
   it('confirms only when the caller reports an unsaved value', () => {

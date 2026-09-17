@@ -20,6 +20,7 @@ export function PromptsDialog({ onDirtyChange }: { onDirtyChange?: (isDirty: boo
   const { data, isLoading, error } = usePromptCatalog()
   const resetAll = useResetAllPrompts()
   const [selectedPromptId, setSelectedPromptId] = useState<string | null>(null)
+  const [editorDirty, setEditorDirty] = useState(false)
   const [confirmReset, setConfirmReset] = useState(false)
   const [sidebarCollapsed, setSidebarCollapsed] = useState(false)
   const [wordWrap, setWordWrap] = useState(false)
@@ -39,6 +40,14 @@ export function PromptsDialog({ onDirtyChange }: { onDirtyChange?: (isDirty: boo
       else next.add(groupId)
       return next
     })
+  }
+
+  const selectPrompt = (promptId: string) => {
+    if (promptId === selectedPromptId) return
+    if (editorDirty && !window.confirm('Discard your unsaved prompt changes?')) return
+    setEditorDirty(false)
+    onDirtyChange?.(false)
+    setSelectedPromptId(promptId)
   }
 
   if (isLoading) {
@@ -104,7 +113,7 @@ export function PromptsDialog({ onDirtyChange }: { onDirtyChange?: (isDirty: boo
                             return (
                               <button
                                 key={status.status}
-                                onClick={() => setSelectedPromptId(prompt.id)}
+                                onClick={() => selectPrompt(prompt.id)}
                                 title={prompt.description}
                                 className={cn(
                                   'flex w-full flex-col rounded-md px-2.5 py-1 text-left transition-colors cursor-pointer',
@@ -135,7 +144,7 @@ export function PromptsDialog({ onDirtyChange }: { onDirtyChange?: (isDirty: boo
                               {status.prompts.map((prompt) => (
                                 <button
                                   key={prompt.id}
-                                  onClick={() => setSelectedPromptId(prompt.id)}
+                                  onClick={() => selectPrompt(prompt.id)}
                                   title={prompt.description}
                                   className={cn(
                                     'ml-2 flex w-full items-center gap-2 rounded-md px-2.5 py-1.5 text-left text-xs transition-colors cursor-pointer',
@@ -168,7 +177,10 @@ export function PromptsDialog({ onDirtyChange }: { onDirtyChange?: (isDirty: boo
                 promptId={selectedPromptId}
                 wordWrap={wordWrap}
                 onToggleWordWrap={() => setWordWrap((wrap) => !wrap)}
-                onDirtyChange={onDirtyChange}
+                onDirtyChange={(dirty) => {
+                  setEditorDirty(dirty)
+                  onDirtyChange?.(dirty)
+                }}
               />
             )
             : <div className="p-6 text-sm text-muted-foreground">Select a prompt to edit.</div>}

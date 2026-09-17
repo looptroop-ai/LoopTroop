@@ -35,10 +35,9 @@ describe('KeyboardShortcuts', () => {
   })
 
   /**
-   * The ticket view and the About window are both `z-[60]`, Radix dialogs are
-   * `z-[70]`, and the two portaled pickers are higher still. At `z-50` this overlay
-   * opened underneath all of them — invisible, holding focus, and making everything
-   * the user could still see inert.
+   * The ticket view is `z-[60]`, routed modals are `z-[70]`, About is `z-[80]`,
+   * and the two portaled pickers are higher still. Keeping the shortcuts window
+   * above the dashboard but below the active modal preserves keyboard ownership.
    */
   it('stacks above every other surface, pickers included', () => {
     open()

@@ -97,3 +97,9 @@ existing fixture or a parameterized case; all 53 focused tests pass without
 production abstractions or analyzer exclusions. Runner tests explicitly mock
 the durable query and verify that a pending cancellation blocks restored coding
 (56 passing tests).
+
+The later Codacy check `105311021642` reports one possible user-input path at
+`server/io/__tests__/atomicIO.test.ts:477`. This is a false positive: `filename`
+comes only from the three literal artifact names in the adjacent `it.each`
+table, joined under the test-owned temporary root. No request or repository
+input enters this fixture. The annotation was not dismissed externally.

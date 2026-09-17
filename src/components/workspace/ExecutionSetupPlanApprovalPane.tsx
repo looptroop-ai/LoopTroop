@@ -25,6 +25,7 @@ import {
   useDebouncedApprovalUiState,
   useApprovalPaneState,
   useApprovalEditMode,
+  useLoadedContentHash,
 } from './approvalHooks'
 import { requestWorkspacePhaseNavigation } from '@/lib/workspaceNavigation'
 import { apiTicketPath } from '@/lib/apiPaths'
@@ -50,6 +51,8 @@ interface ExecutionSetupPlanApprovalUiState {
   rawDraft?: string
   structuredDraft?: ExecutionSetupPlan | null
   commentary?: string
+  /** The file hash the dirty draft was loaded from, not the latest refetch. */
+  contentSha256?: string | null
 }
 
 interface ExecutionSetupApprovalReceipt {
@@ -352,6 +355,15 @@ export function ExecutionSetupPlanApprovalPane({
   const { mutateAsync: saveUiState } = useSaveTicketUIState()
   const uiStateScope = 'approval_execution_setup'
   const { data: persistedUiState, isSuccess: isUiStateSuccess, isError: isUiStateError } = useTicketUIState<ExecutionSetupPlanApprovalUiState>(ticket.id, uiStateScope, true)
+  const persistedUiStateFlushMeta = persistedUiState as typeof persistedUiState & {
+    flushPending?: boolean
+    flushFailed?: boolean
+  }
+  const uiStateFlushState = persistedUiStateFlushMeta?.flushFailed
+    ? 'failed' as const
+    : persistedUiStateFlushMeta?.flushPending
+      ? 'pending' as const
+      : null
   const isArchivedAttempt = phaseAttempt != null
   const effectiveLogMode = logMode ?? (isArchivedAttempt ? 'snapshot' : 'live')
   const isRuntimeSetupRewindMode = !readOnly && !isArchivedAttempt && ticket.status === 'PREPARING_EXECUTION_ENV'
@@ -438,6 +450,7 @@ export function ExecutionSetupPlanApprovalPane({
   const [approveError, setApproveError] = useState<string | null>(null)
   const [runtimeRewindTarget, setRuntimeRewindTarget] = useState<RuntimeRewindTarget>(null)
   const restoredDraftRef = useRef(false)
+  const restoredSnapshotRef = useRef<string | null>(null)
   const lastSavedSnapshotRef = useRef('')
   const skipRestoreRef = useRef(false)
   const containerRef = useRef<HTMLDivElement>(null)
@@ -448,13 +461,14 @@ export function ExecutionSetupPlanApprovalPane({
   )
   const hasRawChanges = rawDraft !== rawContent
   const hasUnsavedChanges = editTab === 'structured' ? hasStructuredChanges : hasRawChanges
+  const loadedContentHashRef = useLoadedContentHash(ticket.id, currentContentSha256, hasUnsavedChanges)
   const rawDraftParse = useMemo(
     () => rawDraft.trim().length > 0 ? parseExecutionSetupPlanContent(rawDraft) : null,
     [rawDraft],
   )
   const rawValidation = editTab === 'raw' ? rawDraftParse?.error ?? null : null
 
-  useApprovalDraftReset(ticket.id, restoredDraftRef, lastSavedSnapshotRef)
+  useApprovalDraftReset(ticket.id, restoredDraftRef, lastSavedSnapshotRef, restoredSnapshotRef)
 
   // Re-arm the one-shot restore when a read-only view ends.
   //
@@ -495,14 +509,23 @@ export function ExecutionSetupPlanApprovalPane({
     ready: isUiStateSuccess && !readOnly,
     persisted: persistedUiState?.data,
     restoredDraftRef,
+    restoredSnapshotRef,
     lastSavedSnapshotRef,
     skipRestoreRef,
+    flushState: uiStateFlushState,
     restore: (persisted, document) => {
       const nextEditMode = Boolean(persisted?.isEditMode)
       const nextEditTab: EditTab = persisted?.editTab === 'raw' ? 'raw' : 'structured'
       const nextStructuredDraft = persisted?.structuredDraft ?? document.plan
       const nextRawDraft = typeof persisted?.rawDraft === 'string' ? persisted.rawDraft : (document.raw ?? '')
       const nextCommentary = typeof persisted?.commentary === 'string' ? persisted.commentary : ''
+      // Keep a restored dirty draft tied to the bytes it was edited from. A
+      // background refresh must not silently rebase that draft onto newer
+      // remote bytes; an unstamped draft fails closed at the save boundary.
+      const nextContentSha256 = nextEditMode
+        ? (typeof persisted?.contentSha256 === 'string' ? persisted.contentSha256 : null)
+        : currentContentSha256
+      loadedContentHashRef.current = nextContentSha256
 
       setIsEditMode(nextEditMode)
       setEditTab(nextEditTab)
@@ -516,6 +539,7 @@ export function ExecutionSetupPlanApprovalPane({
         rawDraft: nextRawDraft,
         structuredDraft: nextStructuredDraft,
         commentary: nextCommentary,
+        contentSha256: nextContentSha256,
       }
     },
   })
@@ -539,12 +563,17 @@ export function ExecutionSetupPlanApprovalPane({
       rawDraft,
       structuredDraft,
       commentary,
+      contentSha256: loadedContentHashRef.current,
     },
     ticketId: ticket.id,
     scope: uiStateScope,
     saveUiState,
     lastSavedSnapshotRef,
+    queryClient,
     initialUpdatedAt: persistedUiState?.updatedAt,
+    initialFlushState: uiStateFlushState,
+    restoredDraftRef,
+    restoredSnapshotRef,
   })
 
   function resetDraftsFromSaved(nextTab: EditTab = 'structured') {
@@ -552,6 +581,7 @@ export function ExecutionSetupPlanApprovalPane({
       setStructuredDraft(plan)
       setRawDraft(rawContent)
       setEditTab(nextTab)
+      loadedContentHashRef.current = currentContentSha256
       setSaveError(null)
       setApproveError(null)
       setRegenerateError(null)
@@ -573,12 +603,13 @@ export function ExecutionSetupPlanApprovalPane({
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify(
           editTab === 'structured' && structuredDraft
-            ? { plan: structuredDraft, expectedContentSha256: currentContentSha256 ?? undefined }
-            : { content: rawDraft, expectedContentSha256: currentContentSha256 ?? undefined },
+            ? { plan: structuredDraft, expectedContentSha256: loadedContentHashRef.current ?? undefined }
+            : { content: rawDraft, expectedContentSha256: loadedContentHashRef.current ?? undefined },
         ),
       })
       await throwIfNotOk(response, 'Failed to save execution setup plan')
       const payload = await response.json() as { raw?: string; contentSha256?: string | null; plan?: ExecutionSetupPlan }
+      loadedContentHashRef.current = payload.contentSha256 ?? null
 
       const nextData: ExecutionSetupPlanApprovalResponse = {
         exists: Boolean(payload.plan),

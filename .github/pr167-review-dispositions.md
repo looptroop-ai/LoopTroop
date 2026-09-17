@@ -3,7 +3,8 @@
 This is the permanent review record for PR 167. Each observation is classified
 as fixed, accepted design, superseded by a later owner decision, not applicable,
 or informational. The branch owns the implementation and focused regressions;
-the root worker owns aggregate checks, the website, and the final merge decision.
+the root worker owns aggregate checks and the website. This branch does not merge
+the pull request.
 
 No E2E, full-lifecycle, live-provider, live-GitHub, native Windows/macOS, or
 standalone-binary validation is claimed here.
@@ -66,14 +67,15 @@ checked before closing the workflow packet.
 | Comment ID | Classification | Disposition |
 | --- | --- | --- |
 | 5714282549 | Accepted owner scope | P12/P13 positional pairing and memoization were explicitly deferred to the later artifact-viewer packet; PR 167 does not reverse that decision. Other parser observations were handled in PR 165 or are scope notes. |
-| 5714878772 | Correct, handled in PR 165 / deferred test gap | Projection isolation, diagnostic malformed-line handling, cycle identification, and approval hash behavior were addressed by the PR 165 owner packet. The remaining warning-test gap is recorded as deferred to the workflow packet; it is not silently claimed here. |
-| 5714892772 | Correct, handled in PR 165 / out of scope here | Nested collection normalization, diagnostic bead reads, retry-history aliases, and YAML repair behavior belong to the PR 165 parser packet and its owner decisions. No duplicate implementation was added to PR 167. |
+| 5714878772 | Correct, fixed in workflow packet | Projection isolation, diagnostic malformed-line handling, cycle identification, and approval hash behavior were addressed by the PR 165 owner packet. The fallback interview normalizer now retains warnings from the rejected batch candidate, with a regression in `server/structuredOutput/__tests__/index.test.ts`; the implementation uses `batchCandidateWarnings` at `server/structuredOutput/interviewOutput.ts:1364`. |
+| 5714892772 | Correct, fixed or superseded per item | Nested collection normalization, diagnostic bead reads, retry-history aliases, and YAML repair behavior belong to the PR 165 parser packet and its owner decisions. The interview snapshot timestamp item is already fixed in `server/phases/interview/snapshotValidation.ts:82-90,172-224,359-386`, with invalid `updatedAt` and `answeredAt` coverage in `server/phases/interview/__tests__/sessionIntegrity.test.ts:196-200`; the positional expansion items remain the accepted later artifact-viewer scope. |
 
 ## Implementation evidence
 
 Focused regressions cover council stop ordering, strict remote 404 evidence,
 failed-cancel fencing and cleanup retry, planning and setup-plan CAS ordering,
-Manual QA entry CAS, interview batch recovery and ownership, close receipts,
+the setup-plan UI retaining a persisted dirty-draft hash across a background
+refetch before PUT, Manual QA entry CAS, interview batch recovery and ownership, close receipts,
 question-list isolation, PID/boot claims, interrupted PROM4 recovery, W13
 pending-bead retry, and synchronous coverage persistence. Root-owned aggregate
 lint, build, website, and full-suite checks are intentionally not duplicated in

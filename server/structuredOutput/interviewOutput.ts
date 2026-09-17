@@ -1361,7 +1361,7 @@ export function normalizeInterviewTurnOutput(rawContent: string): StructuredOutp
     } catch (error) {
       lastError = getErrorMessage(error)
       lastErrorCause = error
-      lastCandidateWarnings = candidateWarnings
+      lastCandidateWarnings = batchCandidateWarnings
     } finally {
       releaseAliasConflicts()
     }

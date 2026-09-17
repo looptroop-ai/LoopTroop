@@ -299,8 +299,8 @@ describe('readBeadsFile', () => {
     try {
       const beads = readBeadsFile(path, { malformedEntries: 'skip' })
       expect(beads.map((bead) => bead.id)).toEqual(['empty-deps', 'empty-guidance', 'good'])
-      expect(beads[0]!.dependencies).toEqual({ blocked_by: [], blocks: [] })
-      expect(beads[1]!.contextGuidance).toEqual({ patterns: [], anti_patterns: [] })
+      expect(beads[0]?.dependencies).toEqual({ blocked_by: [], blocks: [] })
+      expect(beads[1]?.contextGuidance).toEqual({ patterns: [], anti_patterns: [] })
     } finally {
       warn.mockRestore()
     }

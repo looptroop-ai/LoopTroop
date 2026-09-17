@@ -158,13 +158,13 @@ export function BeadsApprovalEditor({ beads, disabled, onChange }: BeadsApproval
                 {/* Acceptance Criteria */}
                 <div>
                   <div id={fieldLabelId(index, 'acceptance')} className="text-[10px] font-semibold uppercase tracking-widest text-foreground/60 block mb-1">Acceptance Criteria</div>
-                  <StringListEditor idPrefix={fieldId(index, 'acceptance')} labelId={fieldLabelId(index, 'acceptance')} label="Acceptance criterion" items={bead.acceptanceCriteria} onChange={(items) => updateBead(index, { acceptanceCriteria: items })} disabled={disabled} placeholder="Criterion..." />
+                  <StringListEditor idPrefix={fieldId(index, 'acceptance')} labelId={fieldLabelId(index, 'acceptance')} label="Acceptance criterion" items={bead.acceptanceCriteria} onChange={(items) => { updateBead(index, { acceptanceCriteria: items }) }} disabled={disabled} placeholder="Criterion..." />
                 </div>
 
                 {/* Tests */}
                 <div>
                   <div id={fieldLabelId(index, 'tests')} className="text-[10px] font-semibold uppercase tracking-widest text-foreground/60 block mb-1">Tests</div>
-                  <StringListEditor idPrefix={fieldId(index, 'tests')} labelId={fieldLabelId(index, 'tests')} label="Test" items={bead.tests} onChange={(items) => updateBead(index, { tests: items })} disabled={disabled} placeholder="Test specification..." />
+                  <StringListEditor idPrefix={fieldId(index, 'tests')} labelId={fieldLabelId(index, 'tests')} label="Test" items={bead.tests} onChange={(items) => { updateBead(index, { tests: items }) }} disabled={disabled} placeholder="Test specification..." />
                 </div>
 
                 {/* Planned Test Commands */}
@@ -201,29 +201,29 @@ export function BeadsApprovalEditor({ beads, disabled, onChange }: BeadsApproval
                 {/* Target Files */}
                 <div>
                   <div id={fieldLabelId(index, 'targets')} className="text-[10px] font-semibold uppercase tracking-widest text-foreground/60 block mb-1">Target Files</div>
-                  <StringListEditor idPrefix={fieldId(index, 'targets')} labelId={fieldLabelId(index, 'targets')} label="Target file" items={bead.targetFiles} onChange={(items) => updateBead(index, { targetFiles: items })} disabled={disabled} placeholder="src/file.ts" />
+                  <StringListEditor idPrefix={fieldId(index, 'targets')} labelId={fieldLabelId(index, 'targets')} label="Target file" items={bead.targetFiles} onChange={(items) => { updateBead(index, { targetFiles: items }) }} disabled={disabled} placeholder="src/file.ts" />
                 </div>
 
                 {/* Context Guidance */}
                 <div>
                   <div id={fieldLabelId(index, 'patterns')} className="text-[10px] font-semibold uppercase tracking-widest text-foreground/60 block mb-1">Context Guidance — Patterns</div>
-                  <StringListEditor idPrefix={fieldId(index, 'patterns')} labelId={fieldLabelId(index, 'patterns')} label="Pattern" items={bead.contextGuidance.patterns} onChange={(items) => updateBead(index, { contextGuidance: { ...bead.contextGuidance, patterns: items } })} disabled={disabled} placeholder="Pattern..." />
+                  <StringListEditor idPrefix={fieldId(index, 'patterns')} labelId={fieldLabelId(index, 'patterns')} label="Pattern" items={bead.contextGuidance.patterns} onChange={(items) => { updateBead(index, { contextGuidance: { ...bead.contextGuidance, patterns: items } }) }} disabled={disabled} placeholder="Pattern..." />
                 </div>
                 <div>
                   <div id={fieldLabelId(index, 'anti-patterns')} className="text-[10px] font-semibold uppercase tracking-widest text-foreground/60 block mb-1">Context Guidance — Anti-patterns</div>
-                  <StringListEditor idPrefix={fieldId(index, 'anti-patterns')} labelId={fieldLabelId(index, 'anti-patterns')} label="Anti-pattern" items={bead.contextGuidance.anti_patterns} onChange={(items) => updateBead(index, { contextGuidance: { ...bead.contextGuidance, anti_patterns: items } })} disabled={disabled} placeholder="Anti-pattern..." />
+                  <StringListEditor idPrefix={fieldId(index, 'anti-patterns')} labelId={fieldLabelId(index, 'anti-patterns')} label="Anti-pattern" items={bead.contextGuidance.anti_patterns} onChange={(items) => { updateBead(index, { contextGuidance: { ...bead.contextGuidance, anti_patterns: items } }) }} disabled={disabled} placeholder="Anti-pattern..." />
                 </div>
 
                 {/* PRD Refs */}
                 <div>
                   <div id={fieldLabelId(index, 'prd-refs')} className="text-[10px] font-semibold uppercase tracking-widest text-foreground/60 block mb-1">PRD References</div>
-                  <StringListEditor idPrefix={fieldId(index, 'prd-refs')} labelId={fieldLabelId(index, 'prd-refs')} label="PRD reference" items={bead.prdRefs} onChange={(items) => updateBead(index, { prdRefs: items })} disabled={disabled} placeholder="EPIC-1, US-1-1..." />
+                  <StringListEditor idPrefix={fieldId(index, 'prd-refs')} labelId={fieldLabelId(index, 'prd-refs')} label="PRD reference" items={bead.prdRefs} onChange={(items) => { updateBead(index, { prdRefs: items }) }} disabled={disabled} placeholder="EPIC-1, US-1-1..." />
                 </div>
 
                 {/* Dependencies: blocked_by */}
                 <div>
                   <div id={fieldLabelId(index, 'blocked-by')} className="text-[10px] font-semibold uppercase tracking-widest text-foreground/60 block mb-1">Blocked By</div>
-                  <StringListEditor idPrefix={fieldId(index, 'blocked-by')} labelId={fieldLabelId(index, 'blocked-by')} label="Blocked-by bead" items={bead.dependencies.blocked_by} onChange={(items) => updateBead(index, { dependencies: { ...bead.dependencies, blocked_by: items } })} disabled={disabled} placeholder="bead-id..." />
+                  <StringListEditor idPrefix={fieldId(index, 'blocked-by')} labelId={fieldLabelId(index, 'blocked-by')} label="Blocked-by bead" items={bead.dependencies.blocked_by} onChange={(items) => { updateBead(index, { dependencies: { ...bead.dependencies, blocked_by: items } }) }} disabled={disabled} placeholder="bead-id..." />
                 </div>
 
                 {/* Read-only metadata */}

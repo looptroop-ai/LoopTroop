@@ -13,7 +13,7 @@ claimed here.
 | 5706627136 | Not applicable — informational | Codex review summary only; its actionable observations are recorded under their individual comments below. |
 | 5706629493 | Not applicable — quality warning | CodeRabbit walkthrough and 35.34% docstring-coverage warning identify a non-gating style metric, not a correctness defect. Bulk docstrings were not added; behaviour is covered by focused tests. |
 | 5706636537 | Not applicable — informational | Qodo summary/assessment only; actionable observations are tracked by their specific findings. |
-| 5706636785 | Correct — external rerun pending | Codacy reported `ACTION_REQUIRED` and 11 new findings, but the captured detail page is unavailable. Overlapping parser and editor findings were fixed or assessed here; the fresh Codacy result must be checked after push. |
+| 5706636785 | Correct — fixed; external rerun pending | Codacy's current PR 165 check run `105297465626` reported `ACTION_REQUIRED` with 11 GitHub annotations. All 11 low-risk lint findings are fixed here: two test non-null assertions, one impossible navigator header guard, seven editor callback bodies, and one accessibility-test non-null assertion. |
 | 5706648553 | Correct — fixed | Persisted Manual QA repair candidates now use schema version 2; stored version 1 candidates are discarded for regeneration. Tests cover read, write, and legacy-version handling. |
 | 5706649782 | Correct — fixed, rerun pending | Sonar's green quality gate still listed 4 regex-complexity findings and 7 label-control findings in the pre-fix snapshot. Parser scans are bounded/linear and editor headings are no longer label elements; focused tests and typecheck pass. Sonar must rerun on the final commit. |
 | 5706662691 | Correct — fixed | Approval sends the current fetched content hash, not the immutable draft baseline hash; refresh and approve tests cover the distinction. |
@@ -55,7 +55,9 @@ claimed here.
 - Reviews `5238007388` and `5238650175`: correct outside-diff observations, fixed. Unknown stored statuses remain visible as unrepresentable rows and block structured saves and approval; recognised aliases remain supported. Edit and Save require an artifact baseline hash. Runtime diagnostic reads retain their separately documented fallback.
 - `5716846598`: informational review acknowledgement, no additional defect.
 - `5717458997`: fresh Sonar quality gate passed with no open findings.
-- `5716828825`: Codacy reports 13 findings; detail retrieval remains under investigation. A summary count is not evidence that the findings are fixed.
+- `5716828825`: the captured Codacy review summary reported 13 findings; the later GitHub check run `105297465626` exposed the exact 11 annotations listed below, all fixed in this follow-up.
+- Codacy check run `105297465626` at head `0fb3a3ce` was `ACTION_REQUIRED` with these annotations: `server/structuredOutput/__tests__/beadStatusAndIteration.test.ts:302,303` forbidden non-null assertions; `src/components/navigator/BeadsApprovalNavigator.tsx:30` unnecessary always-falsy conditional; `src/components/workspace/BeadsApprovalEditor.tsx:161,167,203,209,213,219,225` forbidden void-expression arrow callbacks; and `src/components/workspace/__tests__/BeadsApprovalEditor.test.tsx:39` forbidden non-null assertion. The GitHub annotations API was available even though Codacy's detail page returned only its application shell.
+- Kilo check run `105296249091` was later completed as `cancelled` with zero annotations because a newer commit superseded it. Its provider detail page requires sign-in, so it supplied no source finding to classify.
 - Refreshed `5706629493`: the non-gating docstring percentage is not a request for boilerplate; the concrete outside-diff defects are covered above. Refreshed `5706648553` marks the candidate schema issue resolved; `5706663126` includes the alias defect now fixed. Updated existing inline comments mark their earlier findings resolved.
 
 The refresh regressions and affected parser, route, document and UI suites passed: 460 tests across six files. The complete suite and cross-PR checks are run separately after integration.
@@ -66,12 +68,13 @@ The editor test now checks the computed accessible names of two list items.
 
 The captured CI set was green for workflow lint, unit/integration checks,
 build/package checks, CodeQL, and the Sonar quality gate. The same capture
-reported CodeRabbit's non-gating docstring metric, Codacy `ACTION_REQUIRED`,
-and a Kilo Code Review failure without a downloadable detail payload. Sourcery
-was skipped by the diff-size rule. Central logs also contain dependency and
-runtime deprecation warnings; those are not treated as dependabot noise and
-remain follow-up work for the workflow owner. The final branch commit needs a
-fresh external run to resolve the Codacy/Kilo/Sonar pending statuses.
+reported CodeRabbit's non-gating docstring metric and Codacy `ACTION_REQUIRED`;
+the 11 Codacy annotations are fixed by this follow-up. Kilo's review was later
+cancelled as superseded and had no annotations. Sourcery was skipped by the
+diff-size rule. Central logs also contain dependency and runtime deprecation
+warnings; those are not treated as dependabot noise and remain follow-up work
+for the workflow owner. The final branch commit needs a fresh external Codacy
+run after these fixes.
 
 Focused verification on this branch:
 

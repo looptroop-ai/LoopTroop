@@ -27,7 +27,7 @@ interface BeadsNavigatorData {
 
 function hasDamagedHeader(response: Response): boolean {
   const headers = response.headers
-  if (!headers || typeof headers.get !== 'function') return false
+  if (typeof headers.get !== 'function') return false
   const countHeader = (name: string) => {
     const value = headers.get(name)
     return value !== null && Number(value) > 0

@@ -36,7 +36,7 @@ describe('BeadsApprovalEditor accessibility', () => {
     expect(disclosure).toHaveAttribute('aria-expanded', 'true')
     const panelId = disclosure.getAttribute('aria-controls')
     expect(panelId).toBeTruthy()
-    const panel = document.getElementById(panelId!)
+    const panel = panelId ? document.getElementById(panelId) : null
     expect(panel).toHaveAttribute('role', 'region')
     expect(panel).toHaveAttribute('aria-labelledby', disclosure.id)
     expect(screen.getByLabelText('Title')).toHaveValue('Accessible bead')

@@ -120,3 +120,28 @@ Native macOS/Windows runs, physical power-loss recovery, live remote
 authentication, E2E, and full lifecycle tests remain unclaimed. Website
 documentation is root-owned; the source-doc changes here require the matching
 website impact review before publication.
+
+## Final analyzer annotation review
+
+At head `2a93137`, CodeQL check `105301519108` repeats the two already assessed
+findings: the atomic-write SHA-256 integrity proof is not password hashing,
+and the Git SSH command fixture uses a fixed executable with an argv array.
+Neither warrants weakening integrity checks or adding shell escaping to argv.
+
+Sonar check `105300939661` and analysis `105300935246` retain the eight
+previously assessed project-path findings and assign a new key
+`AaCwTSgwT2w_qkSFC5HS` to `projects.ts:142`. Both paths in that diagnostic were
+already JSON-encoded by `2404f50c`; embedded line breaks cannot forge another
+log record. This new key does not identify a new unescaped logging path.
+
+Codacy check `105299321905` has four path-taint annotations. At
+`recovery.ts:224`, the joined segments come from a relative path already checked
+against the canonical root, with every component checked for symlinks. At
+`recovery.ts:845`, joining the caller's root spelling is only for the returned
+report; filesystem operations use the separately guarded canonical path.
+At `storage/paths.ts:34,35`, drive mapping checks that the resolved result stays
+inside the existing mount before using it. These four reports are false
+positives under those explicit checks.
+
+No external finding was dismissed or suppressed. The CodeQL, Sonar, and Codacy
+gates still report these annotations; these dispositions do not claim green CI.

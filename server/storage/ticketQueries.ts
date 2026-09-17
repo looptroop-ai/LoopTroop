@@ -960,6 +960,13 @@ export function toPublicTicket(projectId: number, ticket: LocalTicketRow): Publi
           source: 'profile' as const,
         }
 
+  const availableActions = isMockTicket
+    ? getDisplayOnlyMockTicketActions(ticket.status)
+    : addContinueActionWhenAvailable(getAvailableWorkflowActions(ticket.status), continuationCandidate)
+  if (!isMockTicket && ticket.status === 'BLOCKED_ERROR' && previousStatus === 'PREPARING_EXECUTION_ENV') {
+    availableActions.push('edit_execution_setup_plan')
+  }
+
   return {
     ...ticket,
     id: buildTicketRef(projectId, ticket.externalId),
@@ -988,12 +995,7 @@ export function toPublicTicket(projectId: number, ticket: LocalTicketRow): Publi
     visitedStatuses,
     manualQa,
     manualQaOrigin,
-    availableActions: isMockTicket
-      ? getDisplayOnlyMockTicketActions(ticket.status)
-      : addContinueActionWhenAvailable(
-        getAvailableWorkflowActions(ticket.status),
-        continuationCandidate,
-      ),
+    availableActions,
     previousStatus,
     reviewCutoffStatus,
     errorOccurrences,

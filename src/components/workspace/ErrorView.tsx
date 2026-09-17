@@ -318,7 +318,8 @@ export function ErrorView({ ticket, occurrence, readOnly = false }: ErrorViewPro
   const canContinue = isLiveError && ticket.availableActions.includes('continue')
   const canRetry = isLiveError && ticket.availableActions.includes('retry')
   const canRetryWithNote = isLiveError
-    && visibleOccurrence?.blockedFromStatus === 'CODING'
+    && (visibleOccurrence?.blockedFromStatus === 'CODING'
+      || visibleOccurrence?.blockedFromStatus === 'PREPARING_EXECUTION_ENV')
     && ticket.availableActions.includes('retry')
   const canEditExecutionSetupPlan = isSetupRuntimeError
     && visibleOccurrence?.blockedFromStatus === 'PREPARING_EXECUTION_ENV'
@@ -652,10 +653,10 @@ export function ErrorView({ ticket, occurrence, readOnly = false }: ErrorViewPro
         <DialogContent>
           <DialogHeader>
             <DialogTitle>
-              {canEditExecutionSetupPlan ? 'Retry workspace setup with an extra note' : 'Retry implementation with an extra note'}
+              {isSetupRuntimeError ? 'Retry workspace setup with an extra note' : 'Retry implementation with an extra note'}
             </DialogTitle>
             <DialogDescription id="retry-note-description">
-              {canEditExecutionSetupPlan
+              {isSetupRuntimeError
                 ? 'Send guidance to the current workspace setup session. LoopTroop sends only this note and runs one extra attempt beyond the configured retry limit.'
                 : 'Add guidance for the next fresh implementation attempt. The note will be appended to User Retry Notes; nothing already there will be replaced.'}
             </DialogDescription>

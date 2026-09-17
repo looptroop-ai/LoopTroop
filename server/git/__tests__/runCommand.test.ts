@@ -152,6 +152,23 @@ describe('server/git/runCommand', () => {
     }).stdout).toBe('<unset>:custom-ssh')
   })
 
+  it.runIf(process.platform !== 'win32')('does not replace a repository core.sshCommand', () => {
+    const root = makeTempDir('run-command-ssh-config-')
+    try {
+      execFileSync('git', ['-C', root, 'init'], { stdio: 'pipe' })
+      const marker = join(root, 'ssh-wrapper-used')
+      const wrapper = join(root, 'ssh-wrapper.sh')
+      writeFileSync(wrapper, `#!/bin/sh\nprintf configured > "${marker}"\nexit 1\n`, { mode: 0o755 })
+      execFileSync('git', ['-C', root, 'config', 'core.sshCommand', `${wrapper} --configured`], { stdio: 'pipe' })
+
+      runGitSync(root, ['ls-remote', 'ssh://example.invalid/unused.git'], { log: false })
+
+      expect(existsSync(marker)).toBe(true)
+    } finally {
+      removeTempDir(root)
+    }
+  })
+
   it('writes stdin and closes it', async () => {
     const echo = script('let d = ""; process.stdin.on("data", (c) => { d += c }); process.stdin.on("end", () => process.stdout.write(d))')
     expect((await runCommand(node, echo, { input: 'from-stdin', log: false })).stdout).toBe('from-stdin')

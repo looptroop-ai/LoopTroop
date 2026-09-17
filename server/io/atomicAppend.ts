@@ -1,6 +1,7 @@
 import { closeSync, constants, fstatSync, fsyncSync, mkdirSync, readSync, writeSync } from 'node:fs'
 import { dirname } from 'node:path'
 import { ContainedPathError, resolveContainedPath } from '../lib/containedPath'
+import { withFileLockSync } from './fileLock'
 import { openFileNoFollowSync } from './readFile'
 
 export interface AtomicAppendRange {
@@ -29,17 +30,24 @@ export function safeAtomicAppendWithin(
 ): AtomicAppendRange {
   const canonicalRoot = resolveContainedPath(root, '.')
   const target = resolveContainedPath(canonicalRoot, relativePath, { allowMissingParents: true })
-  const check = () => {
-    if (resolveContainedPath(canonicalRoot, target, { allowMissingParents: true }) !== target) {
+  const check = (candidate = target) => {
+    if (resolveContainedPath(canonicalRoot, candidate, { allowMissingParents: true }) !== candidate) {
       throw new ContainedPathError('Append destination changed')
     }
   }
   return append(target, line, check, deps)
 }
 
-function append(filePath: string, line: string, check: (() => void) | undefined, deps: AtomicAppendDeps): AtomicAppendRange {
+function append(filePath: string, line: string, check: ((candidate?: string) => void) | undefined, deps: AtomicAppendDeps): AtomicAppendRange {
   check?.()
   mkdirSync(dirname(filePath), { recursive: true })
+  check?.()
+  const lockPath = `${filePath}.lock`
+  check?.(lockPath)
+  return withFileLockSync(lockPath, () => appendWhileLocked(filePath, line, check, deps))
+}
+
+function appendWhileLocked(filePath: string, line: string, check: ((candidate?: string) => void) | undefined, deps: AtomicAppendDeps): AtomicAppendRange {
   check?.()
   const fd = openFileNoFollowSync(filePath, constants.O_RDWR | constants.O_APPEND | constants.O_CREAT)
   try {

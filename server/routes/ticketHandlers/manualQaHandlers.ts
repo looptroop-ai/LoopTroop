@@ -63,11 +63,10 @@ function assertServerDraftRevision(
   ticketId: string,
   version: number,
   expectedRevision: number,
-  allowNewer = false,
 ) {
   const latest = readManualQaDraftState(ticketId, version)
   const revision = latest?.revision ?? 0
-  if (allowNewer ? revision < expectedRevision : revision !== expectedRevision) {
+  if (revision !== expectedRevision) {
     const error = new Error('Manual QA draft revision conflict; reload the latest state.')
     Object.assign(error, { code: 'MANUAL_QA_DRAFT_CONFLICT', latest: latest ?? { data: null, revision: 0 } })
     throw error
@@ -506,7 +505,10 @@ export async function handleSubmitManualQa(c: Context) {
       ...parseMutationBody(body),
       operationType: 'submit' as const,
     }
-    const latest = assertServerDraftRevision(resolved.ticketId, version, guard.expectedDraftRevision, true)
+    // The click snapshot is allowed to outlive a later autosave only after the
+    // route has entered. A stale tab must not enter with a newer server draft
+    // and then submit its old click-time data over it.
+    const latest = assertServerDraftRevision(resolved.ticketId, version, guard.expectedDraftRevision)
     const draft = toCanonicalDraft({
       // The client captures the clicked draft before flushing autosave. A newer
       // autosave may arrive while generation runs; it must remain newer rather
@@ -543,7 +545,7 @@ export async function handleSkipManualQa(c: Context) {
     const version = Number(body.version)
     const mutation = parseMutationBody(body)
     const { expectedChecklistHash, expectedDraftRevision } = mutation
-    const latest = assertServerDraftRevision(resolved.ticketId, version, expectedDraftRevision, true)
+    const latest = assertServerDraftRevision(resolved.ticketId, version, expectedDraftRevision)
     const savedDraft = body.draft && typeof body.draft === 'object' && !Array.isArray(body.draft)
       ? body.draft as Record<string, unknown>
       : latest?.data && typeof latest.data === 'object' && !Array.isArray(latest.data)
@@ -595,8 +597,8 @@ async function handleManualQaDriftDecision(c: Context, decision: 'include' | 'di
       ? body.files.filter((entry): entry is string => typeof entry === 'string')
       : currentDrift.files.map((entry) => entry.path)
     const receipt = decision === 'include'
-      ? includeManualQaWorkspaceDrift(resolved.ticketId, version, files, actionId)
-      : discardManualQaWorkspaceDrift(resolved.ticketId, version, files, actionId)
+      ? await includeManualQaWorkspaceDrift(resolved.ticketId, version, files, actionId)
+      : await discardManualQaWorkspaceDrift(resolved.ticketId, version, files, actionId)
     return c.json({ ...getManualQaVersionDetail(resolved.paths.ticketDir, version), version, status: 'waiting', workspaceDrift: { detected: false, files: [] }, operation: { status: 'drift_resolved', receipt } })
   } catch (error) {
     return manualQaError(c, error)

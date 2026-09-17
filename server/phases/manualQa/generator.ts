@@ -244,7 +244,7 @@ export async function handleManualQaChecklistGeneration(
   })
 
   milestone('Creating the clean checkpoint and workspace baseline.', `v${version}:checkpoint-started`)
-  prepareManualQaCheckpoint(ticketId, version)
+  await prepareManualQaCheckpoint(ticketId, version)
   milestone('Checkpoint and workspace baseline are ready.', `v${version}:checkpoint-ready`)
 
   const restored = restoreManualQaGenerationArtifacts(paths.ticketDir, version)

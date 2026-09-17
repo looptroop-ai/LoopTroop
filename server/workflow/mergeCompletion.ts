@@ -13,6 +13,7 @@ import {
   type PullRequestReport,
 } from './phases/pullRequestPhase'
 import type { PullRequestInfo, PullRequestState } from '../git/github'
+import { deriveSkipActionId, formatSkipReceiptLogLines, writeSkipReceipts } from './skipReceipts'
 
 const pending = new Map<string, Promise<unknown>>()
 
@@ -75,6 +76,9 @@ function readClosedUnmergedReport(ticket: PublicTicket) {
     const prHeadSha = isRecord(report) && (report.prHeadSha === null || typeof report.prHeadSha === 'string')
       ? report.prHeadSha as string | null
       : undefined
+    const closeReason = isRecord(report) && (report.closeReason === null || typeof report.closeReason === 'string')
+      ? report.closeReason as string | null
+      : null
     const prUrl = isRecord(report) && (report.prUrl === null || typeof report.prUrl === 'string')
       ? report.prUrl as string | null
       : undefined
@@ -98,7 +102,7 @@ function readClosedUnmergedReport(ticket: PublicTicket) {
       prState,
       prHeadSha,
       message: report.message,
-      closeReason: report.closeReason,
+      closeReason,
     }
   } catch {
     return null
@@ -144,6 +148,18 @@ function resumeClosedUnmerged(ticket: PublicTicket): boolean {
     prHeadSha: report.prHeadSha,
     message: report.message,
   })
+  const closeReceipts = writeSkipReceipts({
+    ticketId: ticket.id,
+    surface: 'close_unmerged',
+    itemType: 'ticket',
+    phase: 'WAITING_PR_REVIEW',
+    ticketStatusBefore: 'WAITING_PR_REVIEW',
+    actionId: deriveSkipActionId('close_unmerged', [ticket.id, report.closeReason ?? null]),
+    items: [{ itemId: null, reason: report.closeReason ?? null }],
+  })
+  for (const line of formatSkipReceiptLogLines(closeReceipts)) {
+    emitRoutePhaseLog(ticket.id, 'WAITING_PR_REVIEW', 'info', line)
+  }
   ensureActorForTicket(ticket.id)
   emitRoutePhaseLog(ticket.id, 'WAITING_PR_REVIEW', 'info', 'Resuming completion of the recorded pull request close decision.', {
     disposition: 'closed_unmerged',

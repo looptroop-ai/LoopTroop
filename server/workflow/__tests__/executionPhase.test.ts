@@ -907,6 +907,31 @@ describe('handleCoding', () => {
     expect(executeBeadMock).not.toHaveBeenCalled()
   })
 
+  it('recovers a pending bead whose checkpoint failed before it started', async () => {
+    const { ticket, paths } = await createInitializedTestTicket(repoManager, {
+      title: 'Pending bead checkpoint retry',
+    })
+    writeTicketBeads(ticket.id, [
+      makePendingBead('bead-1', 1),
+    ])
+
+    const recovered = await recoverCodingBeadWithReset(ticket.id, {
+      worktreePath: paths.worktreePath,
+      requireReset: true,
+      userRetryNote: 'Retry after recording the checkpoint.',
+    })
+
+    expect(recovered).toMatchObject({
+      id: 'bead-1',
+      status: 'pending',
+      beadStartCommit: null,
+      userRetryNotes: [expect.objectContaining({
+        content: 'Retry after recording the checkpoint.',
+      })],
+    })
+    expect(resetToBeadStartMock).not.toHaveBeenCalled()
+  })
+
   it('throws when lockedMainImplementer is missing', async () => {
     const { ticket } = await createInitializedTestTicket(repoManager, {
       title: 'Missing implementer throw',

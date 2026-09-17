@@ -27,26 +27,7 @@ import { getErrorMessage } from '@shared/typeGuards'
 import type { WorkflowPhaseId } from '@shared/workflowMeta'
 import { SessionManager } from '../opencode/sessionManager'
 import { shouldPreserveSessionForContinuation } from '../opencode/sessionContinuation'
-
-const COUNCIL_STOP_ATTEMPTS = 2
-
-async function confirmDraftSessionStopped(
-  adapter: OpenCodeAdapter,
-  sessionManager: SessionManager | null,
-  sessionId: string,
-): Promise<boolean> {
-  for (let attempt = 0; attempt < COUNCIL_STOP_ATTEMPTS; attempt += 1) {
-    try {
-      const stopped = sessionManager
-        ? await sessionManager.abortAndAbandonSession(sessionId)
-        : await adapter.abortSession(sessionId)
-      if (stopped) return true
-    } catch (error) {
-      console.warn(`[council/drafter] Failed to abort OpenCode session ${sessionId}:`, error)
-    }
-  }
-  return false
-}
+import { confirmCouncilSessionStopped } from './sessionStop'
 
 function unconfirmedDraftStopError(sessionId: string): Error {
   return new Error(`Could not confirm abort of OpenCode session ${sessionId}`)
@@ -168,6 +149,10 @@ export async function generateDrafts(
     const executionSettled = new Promise<void>((resolve) => {
       resolveExecutionSettled = resolve
     })
+    let resolveSessionReady: () => void = () => {}
+    const sessionReady = new Promise<void>((resolve) => {
+      resolveSessionReady = resolve
+    })
     let lastFailureClass: DraftStructuredOutputMeta['failureClass']
     let rawResponse: string | undefined
     let normalizedResponse: string | undefined
@@ -228,6 +213,7 @@ export async function generateDrafts(
             : {}),
           onSessionCreated: (session) => {
             sessionId = session.id
+            resolveSessionReady()
             if (closed) {
               throw new Error(`OpenCode session ${session.id} was created after the council deadline`)
             }
@@ -364,9 +350,8 @@ export async function generateDrafts(
       })
 
     const ensureSessionStopped = async (): Promise<boolean> => {
-      await executionSettled
       if (promptReturned) return true
-      const trackedSessionId = sessionId ?? (
+      const findTrackedSession = () => sessionId ?? (
         runtimeOptions?.ticketId && runtimeOptions.phase
           ? sessionManager?.getOwnedActiveSession(runtimeOptions.ticketId, runtimeOptions.phase, {
               phaseAttempt: runtimeOptions.phaseAttempt ?? 1,
@@ -374,9 +359,17 @@ export async function generateDrafts(
             })?.sessionId
           : undefined
       )
+      let trackedSessionId = findTrackedSession()
+      if (!trackedSessionId) {
+        // A prompt can ignore its local abort signal. Give its session-create
+        // callback a chance to publish the id, but never wait for the prompt
+        // itself before attempting the remote stop.
+        await Promise.race([sessionReady, executionSettled])
+        trackedSessionId = findTrackedSession()
+      }
       if (!trackedSessionId) return true
       sessionId = trackedSessionId
-      return confirmDraftSessionStopped(adapter, sessionManager, trackedSessionId)
+      return confirmCouncilSessionStopped(adapter, sessionManager, trackedSessionId, 'drafter')
     }
 
     // Re-armed from the budget rather than set once, so a question wait moves it

@@ -573,8 +573,8 @@ export function ExecutionSetupPlanApprovalPane({
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify(
           editTab === 'structured' && structuredDraft
-            ? { plan: structuredDraft }
-            : { content: rawDraft },
+            ? { plan: structuredDraft, expectedContentSha256: currentContentSha256 ?? undefined }
+            : { content: rawDraft, expectedContentSha256: currentContentSha256 ?? undefined },
         ),
       })
       await throwIfNotOk(response, 'Failed to save execution setup plan')

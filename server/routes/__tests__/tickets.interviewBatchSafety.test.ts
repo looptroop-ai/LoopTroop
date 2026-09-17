@@ -30,7 +30,8 @@ vi.mock('../../phases/interview/qa', async (importOriginal) => ({
   submitBatchToSession: submitBatchToSessionMock,
 }))
 
-vi.mock('../../opencode/sessionManager', () => ({
+vi.mock('../../opencode/sessionManager', async (importOriginal) => ({
+  ...await importOriginal<typeof import('../../opencode/sessionManager')>(),
   abortTicketSessions: abortTicketSessionsMock,
 }))
 

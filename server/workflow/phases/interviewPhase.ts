@@ -8,6 +8,10 @@ import { requireWinnerDraft } from '../../council/draftUtils'
 import { checkMemberResponseQuorum, checkQuorum } from '../../council/quorum'
 import { deliberateInterview } from '../../phases/interview/deliberate'
 import { startInterviewSession, submitBatchToSession, type BatchResponse } from '../../phases/interview/qa'
+import {
+  listOpenCodeSessionsForTicket,
+  reactivateOpenCodeSessionForContinuation,
+} from '../../opencode/sessionManager'
 import { buildCompiledInterviewArtifact, requireCompiledInterviewArtifact } from '../../phases/interview/compiled'
 import {
   buildCanonicalInterviewYaml,
@@ -29,7 +33,7 @@ import { buildMinimalContext, type TicketState } from '../../opencode/contextBui
 import { buildPromptFromTemplate, PROM2, PROM3 } from '../../prompts/index'
 import { randomUUID } from 'node:crypto'
 import { and, eq, exists, gt, lte } from 'drizzle-orm'
-import { interviewBatchClaims } from '../../db/schema'
+import { interviewBatchClaims, phaseArtifacts } from '../../db/schema'
 import { getLatestPhaseArtifact, getTicketByRef, getTicketContext, getTicketPaths, insertPhaseArtifact, upsertLatestPhaseArtifact, countPhaseArtifacts, writeTicketFile } from '../../storage/tickets'
 import { compareAndSetLatestPhaseArtifact } from '../../storage/ticketArtifacts'
 import { isMockOpenCodeMode } from '../../opencode/factory'
@@ -91,6 +95,13 @@ import {
 } from './helpers'
 import type { OpenCodeStreamState } from './types'
 
+const INTERVIEW_BATCH_IN_FLIGHT_ARTIFACT = 'interview_batch_in_flight'
+
+interface InterruptedInterviewBatch {
+  originalSnapshot: InterviewSessionSnapshot
+  answeredSnapshotFingerprint: string
+}
+
 export function readInterviewQASessionArtifact(ticketId: string): { sessionId: string; winnerId: string } | null {
   const artifact = getLatestPhaseArtifact(ticketId, INTERVIEW_QA_SESSION_ARTIFACT)
   if (!artifact) return null
@@ -122,6 +133,37 @@ export function writeInterviewSessionSnapshotArtifact(ticketId: string, snapshot
 
 export function persistInterviewSession(ticketId: string, snapshot: InterviewSessionSnapshot) {
   writeInterviewSessionSnapshotArtifact(ticketId, snapshot)
+}
+
+function writeInterruptedInterviewBatch(ticketId: string, record: InterruptedInterviewBatch): void {
+  upsertLatestPhaseArtifact(
+    ticketId,
+    INTERVIEW_BATCH_IN_FLIGHT_ARTIFACT,
+    'WAITING_INTERVIEW_ANSWERS',
+    JSON.stringify(record),
+  )
+}
+
+function readInterruptedInterviewBatch(ticketId: string): InterruptedInterviewBatch | null {
+  const artifact = getLatestPhaseArtifact(ticketId, INTERVIEW_BATCH_IN_FLIGHT_ARTIFACT, 'WAITING_INTERVIEW_ANSWERS')
+  if (!artifact) return null
+  try {
+    const parsed: unknown = JSON.parse(artifact.content)
+    if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) return null
+    const record = parsed as Partial<InterruptedInterviewBatch>
+    if (typeof record.answeredSnapshotFingerprint !== 'string' || !record.originalSnapshot) return null
+    const originalSnapshot = parseInterviewSessionSnapshot(JSON.stringify(record.originalSnapshot))
+    return originalSnapshot ? { originalSnapshot, answeredSnapshotFingerprint: record.answeredSnapshotFingerprint } : null
+  } catch {
+    return null
+  }
+}
+
+function clearInterruptedInterviewBatch(ticketId: string): void {
+  const context = getTicketContext(ticketId)
+  const artifact = getLatestPhaseArtifact(ticketId, INTERVIEW_BATCH_IN_FLIGHT_ARTIFACT, 'WAITING_INTERVIEW_ANSWERS')
+  if (!context || !artifact) return
+  context.projectDb.delete(phaseArtifacts).where(eq(phaseArtifacts.id, artifact.id)).run()
 }
 
 export function loadCanonicalInterview(ticketDir: string): string | undefined {
@@ -267,6 +309,7 @@ export interface InterviewBatchSkipReceipt {
 const DEFAULT_BATCH_CLAIM_TTL_MS = 60 * 60 * 1000
 const INTERVIEW_STOP_PENDING_PREFIX = 'interview-stop-pending:'
 const INTERVIEW_STOP_PENDING_EXPIRY = '9999-12-31T23:59:59.999Z'
+const PROCESS_BOOT_ID = randomUUID()
 
 export type InterviewBatchStopKind = 'answer' | 'skip'
 
@@ -290,9 +333,15 @@ function isoFromEpoch(milliseconds: number): string {
 }
 
 function isClaimOwnerProvablyDead(token: string): boolean {
-  const separator = token.indexOf(':')
-  const ownerPid = Number(separator > 0 ? token.slice(0, separator) : Number.NaN)
-  if (!Number.isSafeInteger(ownerPid) || ownerPid <= 0 || ownerPid === process.pid) return false
+  const parts = token.split(':')
+  const ownerPid = Number(parts[0])
+  if (!Number.isSafeInteger(ownerPid) || ownerPid <= 0) return false
+  if (ownerPid === process.pid) {
+    // PID reuse is possible after a daemon restart. New claims carry this
+    // process boot id; legacy two-part claims remain protected because they
+    // provide no evidence either way.
+    return parts.length >= 3 && parts[1] !== PROCESS_BOOT_ID
+  }
   try {
     process.kill(ownerPid, 0)
     return false
@@ -328,7 +377,7 @@ export function claimInterviewBatch(ticketId: string, ttlMs = DEFAULT_BATCH_CLAI
   const context = getTicketContext(ticketId)
   if (!context) return null
 
-  const token = `${process.pid}:${randomUUID()}`
+  const token = `${process.pid}:${PROCESS_BOOT_ID}:${randomUUID()}`
   const now = Date.now()
   const nowIso = new Date(now).toISOString()
   const claim = {
@@ -509,7 +558,7 @@ export function claimInterviewBatchAfterConfirmedStop(
   if (parsePendingStopKind(pendingToken) !== kind) return null
   const now = Date.now()
   const nowIso = new Date(now).toISOString()
-  const token = `${process.pid}:${randomUUID()}`
+  const token = `${process.pid}:${PROCESS_BOOT_ID}:${randomUUID()}`
   const retried = context.projectDb.update(interviewBatchClaims)
     .set({
       token,
@@ -619,6 +668,41 @@ function persistInterviewSessionIfCurrent(
   )
 }
 
+/**
+ * Recover a PROM4 batch that was durably answered locally just before the
+ * process stopped. The marker is only useful while the normalized snapshot is
+ * exactly the intermediate one it names; a later result or edit clears it.
+ */
+export function restoreInterruptedInterviewBatch(ticketId: string): boolean {
+  const marker = readInterruptedInterviewBatch(ticketId)
+  if (!marker) return false
+  const current = readInterviewSessionSnapshotArtifact(ticketId)
+  if (!current) {
+    clearInterruptedInterviewBatch(ticketId)
+    return false
+  }
+  if (current.currentBatch) {
+    clearInterruptedInterviewBatch(ticketId)
+    return false
+  }
+  const currentFingerprint = snapshotFingerprint(current)
+  if (currentFingerprint !== marker.answeredSnapshotFingerprint) {
+    clearInterruptedInterviewBatch(ticketId)
+    return false
+  }
+
+  const claimToken = claimInterviewBatch(ticketId)
+  if (!claimToken) return false
+  try {
+    const restored = cloneSnapshot(marker.originalSnapshot)
+    if (!persistInterviewSessionIfCurrent(ticketId, currentFingerprint, restored, claimToken)) return false
+    clearInterruptedInterviewBatch(ticketId)
+    return true
+  } finally {
+    releaseInterviewBatch(ticketId, claimToken)
+  }
+}
+
 function canReattachInterviewBatch(
   current: InterviewSessionSnapshot,
   original: InterviewSessionSnapshot,
@@ -654,6 +738,7 @@ export function restoreInterviewBatchAfterFailure(
     const restoredWithCas = persistInterviewSessionIfCurrent(ticketId, receipt.persistedSnapshotFingerprint, original, claimToken)
     if (!restoredWithCas) return false
     if (receipt.actionId) deleteSkipReceiptsForAction(ticketId, receipt.actionId)
+    clearInterruptedInterviewBatch(ticketId)
     return true
   }
 
@@ -663,10 +748,15 @@ export function restoreInterviewBatchAfterFailure(
   // the operator can submit again.
   if (!canReattachInterviewBatch(current, original)) return false
   const restored = cloneSnapshot(current)
+  // `recordBatchAnswers` already appended this batch before the worker went
+  // away. Reattaching it must not leave a second history entry when the retry
+  // submits it again.
+  restored.batchHistory = current.batchHistory.slice(0, -1)
   restored.currentBatch = cloneSnapshot(original).currentBatch
   restored.updatedAt = nowIso()
   if (!persistInterviewSessionIfCurrent(ticketId, snapshotFingerprint(current), restored, claimToken)) return false
   if (receipt.actionId) deleteSkipReceiptsForAction(ticketId, receipt.actionId)
+  clearInterruptedInterviewBatch(ticketId)
   return true
 }
 
@@ -803,15 +893,31 @@ export function buildCoverageFollowUpCommentary(response: string): string {
 
 export async function restoreInterviewQASession(ticketId: string) {
   const cached = interviewQASessions.get(ticketId)
-  if (cached) return cached
+  const persisted = cached ?? readInterviewQASessionArtifact(ticketId)
+  if (!persisted) return null
+
+  // A failed PROM4 turn is deliberately abandoned after its remote stop is
+  // confirmed. Before reusing that session, prove the remote still exists and
+  // reacquire an active ownership row. Otherwise a retry would prompt an
+  // abandoned row that cancellation no longer visits.
+  const ownership = listOpenCodeSessionsForTicket(ticketId, ['active', 'abandoned'])
+    .find((row) => row.sessionId === persisted.sessionId)
+  if (ownership?.state === 'abandoned') {
+    const remote = await adapter.getSession(persisted.sessionId)
+    if (!remote || !reactivateOpenCodeSessionForContinuation(
+      ticketId,
+      'WAITING_INTERVIEW_ANSWERS',
+      persisted.sessionId,
+    )) {
+      interviewQASessions.delete(ticketId)
+      return null
+    }
+  }
 
   // After server restart the in-memory map is empty. Reload from DB and trust
   // the persisted session ID — adapter.listSessions() silently returns [] on
   // transient errors, causing valid sessions to be abandoned. The actual
   // OpenCode prompt call will surface a real error if the session is gone.
-  const persisted = readInterviewQASessionArtifact(ticketId)
-  if (!persisted) return null
-
   interviewQASessions.set(ticketId, persisted)
   return persisted
 }
@@ -1484,6 +1590,7 @@ export async function handleInterviewQAStart(
   sendEvent: (event: TicketEvent) => void,
   signal: AbortSignal,
 ) {
+  restoreInterruptedInterviewBatch(ticketId)
   const persistedSnapshot = readInterviewSessionSnapshotArtifact(ticketId)
   if (persistedSnapshot?.currentBatch) {
     emitPhaseLog(
@@ -1740,8 +1847,16 @@ export async function handleInterviewQABatch(
       throw new TicketWorkspaceNotInitializedError(`Ticket workspace not initialized: missing ticket paths for ${externalId}`)
     }
     const completedSnapshot = markInterviewSessionComplete(answeredSnapshot)
-    writeCanonicalInterview(externalId, paths.ticketDir, completedSnapshot)
-    persistInterviewSession(ticketId, completedSnapshot)
+    const expectedFingerprint = snapshotFingerprint(snapshot)
+    if (!claimToken || !persistInterviewSessionIfCurrent(ticketId, expectedFingerprint, completedSnapshot, claimToken)) {
+      throw new Error('Coverage interview batch changed or its claim expired before processing completed')
+    }
+    try {
+      writeCanonicalInterview(externalId, paths.ticketDir, completedSnapshot)
+    } catch (error) {
+      persistInterviewSessionIfCurrent(ticketId, snapshotFingerprint(completedSnapshot), snapshot, claimToken)
+      throw error
+    }
     // Clean up stale PROM4 session for the coverage loop re-entry
     interviewQASessions.delete(ticketId)
     emitPhaseLog(
@@ -1766,9 +1881,19 @@ export async function handleInterviewQABatch(
   // result and rollback writes, so a worker that lost ownership cannot clear a
   // successor's batch before it reaches its first await.
   const needsClaimedPersistence = !isMockOpenCodeMode()
+  const hasInterruptedBatchMarker = needsClaimedPersistence
+    && currentBatch.source === 'prom4'
+    && Boolean(claimToken)
+  if (hasInterruptedBatchMarker) {
+    writeInterruptedInterviewBatch(ticketId, {
+      originalSnapshot: cloneSnapshot(snapshot),
+      answeredSnapshotFingerprint: snapshotFingerprint(answeredSnapshot),
+    })
+  }
   const persistedWithClaim = needsClaimedPersistence
     && Boolean(claimToken && persistInterviewSessionIfCurrent(ticketId, snapshotFingerprint(snapshot), answeredSnapshot, claimToken))
   if (needsClaimedPersistence && !persistedWithClaim) {
+    if (hasInterruptedBatchMarker) clearInterruptedInterviewBatch(ticketId)
     if (skipReceipt?.actionId) {
       deleteSkipReceiptsForAction(ticketId, skipReceipt.actionId)
       delete skipReceipt.actionId
@@ -1783,9 +1908,9 @@ export async function handleInterviewQABatch(
   if (skipReceipt) onPersisted?.(skipReceipt)
 
   // Get session info from memory or reload from DB
-  const sessionInfo = await restoreInterviewQASession(ticketId)
+  const persistedSessionInfo = readInterviewQASessionArtifact(ticketId)
+  let sessionInfo = await restoreInterviewQASession(ticketId)
   if (!sessionInfo) {
-    const persistedSessionInfo = readInterviewQASessionArtifact(ticketId)
     if (persistedSessionInfo?.sessionId === 'mock-session') {
       const paths = getTicketPaths(ticketId)
       if (!paths) {
@@ -1832,13 +1957,68 @@ export async function handleInterviewQABatch(
       return persistedNextBatch
     }
 
-    throw new Error('No active PROM4 session for this ticket')
   }
 
   const signal = getOrCreateAbortSignal(ticketId)
   const streamState = createOpenCodeStreamState()
   const formattedAnswers = buildFormattedBatchAnswers(currentBatch.questions, batchAnswers, selectedOptions)
   const paths = getTicketPaths(ticketId)
+  let result: BatchResponse | undefined
+  const winnerId = sessionInfo?.winnerId ?? persistedSessionInfo?.winnerId ?? snapshot.winnerId
+  const onStreamEvent = (entry: { sessionId: string; event: Parameters<typeof emitOpenCodeStreamEvent>[5] }) => {
+    emitOpenCodeStreamEvent(
+      ticketId,
+      externalId,
+      'WAITING_INTERVIEW_ANSWERS',
+      winnerId,
+      entry.sessionId,
+      entry.event,
+      streamState,
+    )
+  }
+  const onPromptDispatched = (entry: { sessionId: string; event: Parameters<typeof emitOpenCodePromptLog>[4] }) => {
+    emitOpenCodePromptLog(
+      ticketId,
+      externalId,
+      'WAITING_INTERVIEW_ANSWERS',
+      winnerId,
+      entry.event,
+    )
+  }
+  if (!sessionInfo) {
+    if (!paths) {
+      throw new TicketWorkspaceNotInitializedError(`Ticket workspace not initialized: missing ticket paths for ${externalId}`)
+    }
+    const replacement = await startInterviewSession(
+      adapter,
+      paths.worktreePath,
+      winnerId,
+      '',
+      {
+        ticketId: externalId,
+        title: ticket?.title ?? '',
+        description: ticket?.description ?? '',
+      },
+      answeredSnapshot.maxInitialQuestions,
+      0,
+      signal,
+      onStreamEvent,
+      onPromptDispatched,
+      ticketId,
+      resolveAiResponseTimeoutForTicket(ticketId),
+      resolveStructuredRetryCountForTicket(ticketId),
+      answeredSnapshot,
+    )
+    sessionInfo = { sessionId: replacement.sessionId, winnerId }
+    interviewQASessions.set(ticketId, sessionInfo)
+    upsertLatestPhaseArtifact(
+      ticketId,
+      INTERVIEW_QA_SESSION_ARTIFACT,
+      'WAITING_INTERVIEW_ANSWERS',
+      JSON.stringify(sessionInfo),
+    )
+    result = replacement.firstBatch
+  }
   let restartOptions: Parameters<typeof submitBatchToSession>[9] | undefined
   if (paths) {
     restartOptions = {
@@ -1851,37 +2031,23 @@ export async function handleInterviewQABatch(
       snapshot: answeredSnapshot,
     }
   }
-  const result = await submitBatchToSession(
-    adapter,
-    sessionInfo.sessionId,
-    formattedAnswers,
-    signal,
-    sessionInfo.winnerId,
-    (entry) => {
-      emitOpenCodeStreamEvent(
-        ticketId,
-        externalId,
-        'WAITING_INTERVIEW_ANSWERS',
-        sessionInfo.winnerId,
-        entry.sessionId,
-        entry.event,
-        streamState,
-      )
-    },
-    (entry) => {
-      emitOpenCodePromptLog(
-        ticketId,
-        externalId,
-        'WAITING_INTERVIEW_ANSWERS',
-        sessionInfo.winnerId,
-        entry.event,
-      )
-    },
-    ticketId,
-    resolveAiResponseTimeoutForTicket(ticketId),
-    restartOptions,
-    resolveStructuredRetryCountForTicket(ticketId),
-  )
+  if (sessionInfo && !result) {
+    result = await submitBatchToSession(
+      adapter,
+      sessionInfo.sessionId,
+      formattedAnswers,
+      signal,
+      sessionInfo.winnerId,
+      onStreamEvent,
+      onPromptDispatched,
+      ticketId,
+      resolveAiResponseTimeoutForTicket(ticketId),
+      restartOptions,
+      resolveStructuredRetryCountForTicket(ticketId),
+    )
+  }
+  if (!result) throw new Error('Interview session did not return a batch response')
+  if (!sessionInfo) throw new Error('Interview session was not established')
   throwIfAborted(signal, ticketId)
 
   const expectedFingerprint = skipReceipt?.persistedSnapshotFingerprint
@@ -1894,6 +2060,7 @@ export async function handleInterviewQABatch(
       || !persistInterviewSessionIfCurrent(ticketId, expectedFingerprint, nextSnapshot, claimToken)) {
       throw new Error('Interview batch changed or its claim expired while the model was processing')
     }
+    clearInterruptedInterviewBatch(ticketId)
 
     if (restartedSession) {
       interviewQASessions.set(ticketId, { sessionId: restartedSession, winnerId: sessionInfo.winnerId })

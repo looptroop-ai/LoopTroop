@@ -123,9 +123,15 @@ async function getTicketPendingOpenCodeQuestions(ticketId: string) {
     // The question endpoint is location-scoped. Ask once per active session so
     // the adapter can resolve OpenCode's trusted session directory; the ticket's
     // attached project root is not necessarily the session's worktree.
-    const pending = (await Promise.all(
+    const listed = await Promise.allSettled(
       sessions.map((session) => adapter.listPendingQuestions(undefined, undefined, session.sessionId)),
-    )).flat()
+    )
+    const pending = listed.flatMap((result, index) => {
+      if (result.status === 'fulfilled') return result.value
+      const session = sessions[index]
+      console.warn(`[questions] Could not list pending questions for session ${session?.sessionId ?? 'unknown'}:`, result.reason)
+      return []
+    })
     const live = pending.filter((request) => sessionsById.has(request.sessionID))
     reconcileAgainstPending(ticketId, new Set(live.map((request) => request.id)))
 

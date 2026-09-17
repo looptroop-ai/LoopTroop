@@ -1,7 +1,7 @@
 import { getLatestPhaseArtifact } from '../../storage/tickets'
 import { literalPathspec, REPO_SCOPE_PATHSPECS } from '../../git/pathspecs'
 import { normalizeRepoScopedPath, uniqueRepoScopedPaths } from '../../git/repoScopedPath'
-import { runGitSync } from '../../git/runCommand'
+import { runGitMutationOrThrow, runGitSync } from '../../git/runCommand'
 import { parseGitStatusPorcelainZ } from '../../git/statusPorcelain'
 import { classifyWorktreePath } from '../../git/worktreeChanges'
 import {
@@ -403,5 +403,25 @@ export function restoreTrackedFinalTestLocalFiles(
   if (!result.ok) {
     throw new Error(`Failed to restore tracked local-only final-test file(s): ${result.errorDetail}`)
   }
+  return trackedLocalOnlyFiles
+}
+
+export async function restoreTrackedFinalTestLocalFilesAsync(
+  worktreePath: string,
+  audit: FinalTestFileEffectsAudit | undefined,
+): Promise<string[]> {
+  if (!audit) return []
+  const producedByPath = new Map(audit.producedByFinalTesting.map((file) => [file.path, file]))
+  const trackedLocalOnlyFiles = uniqueNormalizedPaths(audit.localOnlyFiles)
+    .filter((file) => producedByPath.has(file) && !producedByPath.get(file)?.untracked)
+  if (trackedLocalOnlyFiles.length === 0) return []
+
+  await runGitMutationOrThrow(worktreePath, [
+    'restore',
+    '--staged',
+    '--worktree',
+    '--',
+    ...trackedLocalOnlyFiles.map(literalPathspec),
+  ])
   return trackedLocalOnlyFiles
 }

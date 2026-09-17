@@ -107,7 +107,7 @@ describe('Manual QA canonical storage', () => {
     symlinkSync(outsideFile, reservationPath, 'file')
 
     expect(() => reserveManualQaVersion(ticketDir, '1:DEMO-1', 1)).toThrow('escapes root')
-    expect(() => completeManualQaReservation(ticketDir, reservation, 'a'.repeat(64))).toThrow('escapes root')
+    expect(() => completeManualQaReservation(ticketDir, reservation, 'a'.repeat(64))).toThrow('must not be a symbolic link')
     expect(readFileSync(outsideFile, 'utf8')).toBe('untouched')
   })
 

@@ -337,6 +337,36 @@ describe('ticketRouter execution setup plan approval routes', () => {
     expect(receiptData.after.sha256).toBe(contentSha256(stored!.content))
   })
 
+  it('rejects setup-plan saves without the loaded hash or with a stale hash', async () => {
+    const { app, ticket } = await setupExecutionSetupPlanTicket()
+    const raw = serializePlan(ticket.externalId, 'Existing setup plan')
+    upsertLatestPhaseArtifact(
+      ticket.id,
+      'execution_setup_plan',
+      'WAITING_EXECUTION_SETUP_APPROVAL',
+      raw,
+    )
+
+    const missingHash = await app.request(`/api/tickets/${ticket.id}/execution-setup-plan`, {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ plan: buildStructuredPlan(ticket.externalId, 'Missing hash') }),
+    })
+    expect(missingHash.status).toBe(428)
+
+    const staleHash = await app.request(`/api/tickets/${ticket.id}/execution-setup-plan`, {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        plan: buildStructuredPlan(ticket.externalId, 'Stale hash'),
+        expectedContentSha256: '0'.repeat(64),
+      }),
+    })
+    expect(staleHash.status).toBe(409)
+    expect(getLatestPhaseArtifact(ticket.id, 'execution_setup_plan', 'WAITING_EXECUTION_SETUP_APPROVAL')?.content)
+      .toBe(raw)
+  })
+
   it('reimposes the project hook policy on structured and raw saves while preserving validation commands', async () => {
     const { app, ticket } = await setupExecutionSetupPlanTicket()
     const validationCommand = {
@@ -374,11 +404,13 @@ describe('ticketRouter execution setup plan approval routes', () => {
       gitHooks: { ...structuredPlan.gitHooks, policy: 'validate_required' as const },
     }
     const rawContent = serializeExecutionSetupPlan(rawPlan)
+    const current = getLatestPhaseArtifact(ticket.id, 'execution_setup_plan', 'WAITING_EXECUTION_SETUP_APPROVAL')
+    expect(current).toBeDefined()
     expect(rawContent).toContain(`"ticket_id": "${ticket.externalId}"`)
     const rawResponse = await app.request(`/api/tickets/${ticket.id}/execution-setup-plan`, {
       method: 'PUT',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ content: rawContent }),
+      body: JSON.stringify({ content: rawContent, expectedContentSha256: contentSha256(current!.content) }),
     })
     expect(rawResponse.status, await rawResponse.clone().text()).toBe(200)
     await expect(rawResponse.json()).resolves.toMatchObject({
@@ -700,7 +732,7 @@ describe('ticketRouter execution setup plan approval routes', () => {
 
   it('rewinds from runtime setup when saving an edited setup plan', async () => {
     const { app, ticket } = await setupExecutionSetupPlanTicket()
-    await moveTicketToRuntimeSetup(app, ticket, 'Approved plan handed to runtime.')
+    const currentRaw = await moveTicketToRuntimeSetup(app, ticket, 'Approved plan handed to runtime.')
     const paths = getTicketPaths(ticket.id)
     expect(paths).toBeDefined()
     mkdirSync(paths!.executionSetupDir, { recursive: true })
@@ -714,6 +746,7 @@ describe('ticketRouter execution setup plan approval routes', () => {
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({
         plan: buildStructuredPlan(ticket.externalId, 'Revised setup plan after runtime rewind.'),
+        expectedContentSha256: contentSha256(currentRaw),
       }),
     })
 

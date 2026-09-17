@@ -42,19 +42,35 @@ export function parseCandidateChangedFiles(nameStatus: string): CandidateChanged
   const files: CandidateChangedFile[] = []
   const seen = new Set<string>()
 
-  for (const rawLine of nameStatus.split('\n')) {
-    const line = rawLine.trim()
-    if (!line) continue
-
-    const parts = line.split(/\t+/).map((part) => part.trim()).filter(Boolean)
-    if (parts.length < 2) continue
-    const status = parts[0] ?? ''
-    const rawPath = parts.at(-1) ?? ''
+  const add = (status: string, rawPath: string) => {
     const path = normalizeCandidateAuditPath(rawPath)
-    if (!path || seen.has(path)) continue
-
+    if (!path || seen.has(path)) return
     seen.add(path)
     files.push({ path, status })
+  }
+
+  // `git diff --name-status -z` emits alternating status/path fields. Unlike
+  // the human form, this preserves quoted, non-ASCII, and whitespace-heavy
+  // names without a hand-rolled C-quote decoder.
+  if (nameStatus.includes('\0')) {
+    const fields = nameStatus.split('\0')
+    for (let index = 0; index + 1 < fields.length; index += 2) {
+      const status = fields[index] ?? ''
+      const path = fields[index + 1] ?? ''
+      if (status && path) add(status, path)
+    }
+    return files
+  }
+
+  for (const rawLine of nameStatus.split('\n')) {
+    const line = rawLine.endsWith('\r') ? rawLine.slice(0, -1) : rawLine
+    if (!line.trim()) continue
+
+    const parts = line.split('\t').filter((part) => part.length > 0)
+    if (parts.length < 2) continue
+    const status = parts[0]?.trim() ?? ''
+    const rawPath = parts.at(-1) ?? ''
+    add(status, rawPath)
   }
 
   return files

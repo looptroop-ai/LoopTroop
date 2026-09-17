@@ -13,6 +13,8 @@ export interface ContainedPathOptions {
   allowMissing?: boolean
   /** Permit a missing tail of directories and the final component. */
   allowMissingParents?: boolean
+  /** Reject a final symlink even when its destination remains inside the root. */
+  rejectFinalSymlink?: boolean
 }
 
 function invalidPath(value: string): boolean {
@@ -67,6 +69,9 @@ export function resolveContainedPath(root: string, candidate: string, options: C
       throw error
     }
     if (stats.isSymbolicLink()) {
+      if (options.rejectFinalSymlink && index === parts.length - 1) {
+        throw new ContainedPathError('Final path must not be a symbolic link')
+      }
       try {
         current = realpathSync.native(current)
       } catch (error) {

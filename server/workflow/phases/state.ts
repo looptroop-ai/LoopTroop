@@ -7,6 +7,7 @@ import { clearTicketSessionContinuations } from '../../opencode/sessionContinuat
 import { releaseInterviewBatch } from './interviewPhase'
 
 export const runningPhases = new Set<string>()
+const cancellationPendingTickets = new Set<string>()
 
 /**
  * The OpenCode adapter, resolved on first use rather than at import.
@@ -64,6 +65,10 @@ export function cleanupTicketState(
   // Clean up interview QA session
   interviewQASessions.delete(ticketId)
 
+  if (!options.preserveRemoteState) {
+    cancellationPendingTickets.delete(ticketId)
+  }
+
   // Every cancel, completion and restart passes through here. The ledger used
   // to be dropped from the cancel route alone, so a restart — which cancels and
   // then continues the *same* ticket id — carried a leftover depth or
@@ -94,6 +99,19 @@ export function cleanupTicketState(
     // primary recovery path.
     releaseInterviewBatch(ticketId)
   }
+}
+
+/** Keep a failed cancel from allowing a local phase to start again. */
+export function markTicketCancellationPending(ticketId: string): void {
+  cancellationPendingTickets.add(ticketId)
+}
+
+export function isTicketCancellationPending(ticketId: string): boolean {
+  return cancellationPendingTickets.has(ticketId)
+}
+
+export function clearTicketCancellationPending(ticketId: string): void {
+  cancellationPendingTickets.delete(ticketId)
 }
 
 /**

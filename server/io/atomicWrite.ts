@@ -162,7 +162,7 @@ export function fsyncDirectory(directory: string): void {
   }
 }
 
-function writeYamlProof(
+function writeAtomicProof(
   proofPath: string,
   content: string,
   assertContained?: (candidate: string, allowMissingParents?: boolean) => void,
@@ -220,12 +220,13 @@ export function safeAtomicWriteWithin(
   const filePath = resolveContainedPath(canonicalRoot, relativePath, {
     allowMissing: true,
     allowMissingParents: true,
+    rejectFinalSymlink: true,
   })
   atomicWrite(filePath, content, options, (candidate, allowMissingParents = false) => {
     if (realpathSync.native(canonicalRoot) !== canonicalRoot) {
       throw new ContainedPathError('Atomic write root changed')
     }
-    if (resolveContainedPath(canonicalRoot, candidate, { allowMissing: true, allowMissingParents }) !== candidate) {
+    if (resolveContainedPath(canonicalRoot, candidate, { allowMissing: true, allowMissingParents, rejectFinalSymlink: true }) !== candidate) {
       throw new ContainedPathError('Atomic write destination changed')
     }
   })
@@ -241,7 +242,10 @@ function atomicWrite(
   const tmpPath = makeAtomicTmpPath(filePath)
   const dir = dirname(filePath)
   const proofPath = atomicProofPath(tmpPath)
-  const needsProof = /\.ya?ml$/i.test(filePath)
+  // Whole-file JSONL writes have the same recovery hazard as YAML: a valid
+  // prefix (including an empty file) is not evidence that the generation
+  // finished. Keep a hash sidecar until the rename makes the bytes visible.
+  const needsProof = /\.(?:ya?ml|jsonl)$/i.test(filePath)
 
   // Captured before the write so replacing a 0600 file cannot silently widen it
   // to the default 0644 that the fresh temp file would carry through rename.
@@ -277,7 +281,7 @@ function atomicWrite(
 
     if (needsProof) {
       try {
-        writeYamlProof(proofPath, content, assertContained)
+        writeAtomicProof(proofPath, content, assertContained)
         proofCreated = true
       } catch (error) {
         try {

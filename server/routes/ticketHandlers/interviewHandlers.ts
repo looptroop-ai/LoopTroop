@@ -31,7 +31,6 @@ import {
   getLatestPhaseArtifact,
   getTicketByRef,
   resolveTicketContainedPath,
-  upsertLatestPhaseArtifact,
 } from '../../storage/tickets'
 import { parseCompiledInterviewArtifact } from '../../phases/interview/compiled'
 import {
@@ -48,13 +47,13 @@ import type { InterviewDocument } from '@shared/interviewArtifact'
 import {
   buildDraftInterviewDocumentFromAnswerUpdates,
   buildDraftInterviewDocumentFromRawContent,
-  invalidateDownstreamPlanningArtifacts,
   readInterviewDocument,
   saveApprovedInterviewDocument,
   saveInterviewDocument,
 } from '../../phases/interview/finalDocument'
 import { isBeforeExecution, isStatusAtOrPast } from '@shared/workflowMeta'
 import { getErrorMessage } from '@shared/typeGuards'
+import { compareAndSetLatestPhaseArtifact } from '../../storage/ticketArtifacts'
 import { assertExpectedContentSha256, StaleArtifactApprovalError } from '../../lib/artifactApproval'
 import { contentSha256 } from '../../lib/contentHash'
 import { writeUserEditReceipt } from '../../workflow/artifactEditReceipts'
@@ -673,7 +672,14 @@ export async function handleAnswerBatch(c: Context) {
     // SYNC path: mock mode or coverage batches (fast, no AI call). Nothing to
     // roll back here — the caller gets the failure directly and the snapshot is
     // left as the batch found it — so no skip receipt is collected.
-    const result = await handleInterviewQABatch(ticketId, parsed.data.answers, parsed.data.selectedOptions, parsed.data.skipReasons)
+    const result = await handleInterviewQABatch(
+      ticketId,
+      parsed.data.answers,
+      parsed.data.selectedOptions,
+      parsed.data.skipReasons,
+      undefined,
+      claimToken,
+    )
     releaseInterviewBatch(ticketId, claimToken)
     ensureActorForTicket(ticketId)
     if (result.isComplete) {
@@ -719,30 +725,37 @@ export async function handleEditAnswer(c: Context) {
       return c.json({ error: 'Invalid payload', details: parsed.error.flatten() }, 400)
     }
 
-    const sessionArt = getLatestPhaseArtifact(ticketId, INTERVIEW_SESSION_ARTIFACT)
-    const session = parseInterviewSessionSnapshot(sessionArt?.content)
-    if (!session) {
-      return c.json({ error: 'No interview session found' }, 404)
-    }
-
-    const { questionId, answer, skipReason } = parsed.data
-    const previous = session.answers[questionId]
-    if (!previous) {
-      return c.json({ error: `No existing answer for question ${questionId}` }, 404)
-    }
-
     editClaimToken = claimInterviewBatch(ticketId)
     if (!editClaimToken) {
       return c.json({ error: 'An interview batch is being processed; try editing again when it finishes' }, 409)
     }
 
+    // Read only after taking the durable claim. The content CAS below then
+    // fences an edit that raced another owner even if both read the same draft.
+    const sessionArt = getLatestPhaseArtifact(ticketId, INTERVIEW_SESSION_ARTIFACT, 'WAITING_INTERVIEW_ANSWERS')
+    const session = parseInterviewSessionSnapshot(sessionArt?.content)
+    if (!session) {
+      return c.json({ error: 'No interview session found' }, 404)
+    }
+
+    const { batchNumber, questionId, answer, skipReason } = parsed.data
+    if (!session.currentBatch || session.currentBatch.batchNumber !== batchNumber) {
+      return c.json({ error: 'Interview batch is stale; refresh before editing' }, 409)
+    }
+    const previous = session.answers[questionId]
+    if (!previous) {
+      return c.json({ error: `No existing answer for question ${questionId}` }, 404)
+    }
+
     const updated = updateInterviewAnswer(session, questionId, answer, skipReason)
-    upsertLatestPhaseArtifact(
+    const saved = sessionArt && compareAndSetLatestPhaseArtifact(
       ticketId,
       INTERVIEW_SESSION_ARTIFACT,
       'WAITING_INTERVIEW_ANSWERS',
+      sessionArt.content,
       serializeInterviewSessionSnapshot(updated),
     )
+    if (!saved) return c.json({ error: 'Interview answers changed while editing; refresh before trying again' }, 409)
 
     // Clearing an answer here is a real skip, and answering a skipped one
     // reverses a real skip. Neither used to reach the trail at all.
@@ -841,16 +854,19 @@ export async function handlePutInterviewAnswers(c: Context) {
       let restart: Awaited<ReturnType<typeof preparePlanningRestart>> | null = null
       let result: ReturnType<typeof saveInterviewDocument>
       if (ticket.status !== 'WAITING_INTERVIEW_APPROVAL') {
-        // The durable content CAS must complete before restart preparation. A
-        // stale concurrent writer must not cancel work, archive attempts, or
-        // invalidate planning artifacts before it is rejected.
-        result = saveApprovedInterviewDocument(ticketId, document, parsed.data.expectedContentSha256!, { skipInvalidation: true })
-        restart = await preparePlanningRestart(ticketId, 'WAITING_INTERVIEW_APPROVAL', planningLock)
+        restart = await preparePlanningRestart(ticketId, 'WAITING_INTERVIEW_APPROVAL', planningLock, () => {
+          const current = readInterviewDocument(ticketId)
+          assertExpectedContentSha256({
+            artifactType: 'interview',
+            currentContent: current.raw,
+            expectedContentSha256: parsed.data.expectedContentSha256!,
+          })
+        })
         assertPlanningEditClaim(ticketId, planningLock)
-        result = {
-          ...result,
-          invalidation: invalidateDownstreamPlanningArtifacts(ticketId),
-        }
+        // The baseline hash was checked before the stop. The durable content
+        // CAS happens only after the restart has confirmed that remote work
+        // stopped, so a failed stop never mutates the reviewed document.
+        result = saveApprovedInterviewDocument(ticketId, document, parsed.data.expectedContentSha256!)
         emitRoutePhaseLog(ticketId, 'WAITING_INTERVIEW_APPROVAL', 'info', 'Interview edit saved and approved. Restarting PRD planning from the edited interview.')
         sendTicketEvent(ticketId, { type: 'APPROVE' })
       } else {
@@ -948,16 +964,16 @@ export async function handlePutInterview(c: Context) {
       let restart: Awaited<ReturnType<typeof preparePlanningRestart>> | null = null
       let result: ReturnType<typeof saveInterviewDocument>
       if (ticket.status !== 'WAITING_INTERVIEW_APPROVAL') {
-        // The durable content CAS must complete before restart preparation. A
-        // stale concurrent writer must not cancel work, archive attempts, or
-        // invalidate planning artifacts before it is rejected.
-        result = saveApprovedInterviewDocument(ticketId, document, parsed.data.expectedContentSha256!, { skipInvalidation: true })
-        restart = await preparePlanningRestart(ticketId, 'WAITING_INTERVIEW_APPROVAL', planningLock)
+        restart = await preparePlanningRestart(ticketId, 'WAITING_INTERVIEW_APPROVAL', planningLock, () => {
+          const current = readInterviewDocument(ticketId)
+          assertExpectedContentSha256({
+            artifactType: 'interview',
+            currentContent: current.raw,
+            expectedContentSha256: parsed.data.expectedContentSha256!,
+          })
+        })
         assertPlanningEditClaim(ticketId, planningLock)
-        result = {
-          ...result,
-          invalidation: invalidateDownstreamPlanningArtifacts(ticketId),
-        }
+        result = saveApprovedInterviewDocument(ticketId, document, parsed.data.expectedContentSha256!)
         emitRoutePhaseLog(ticketId, 'WAITING_INTERVIEW_APPROVAL', 'info', 'Interview edit saved and approved. Restarting PRD planning from the edited interview.')
         sendTicketEvent(ticketId, { type: 'APPROVE' })
       } else {

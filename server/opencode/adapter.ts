@@ -550,7 +550,11 @@ export class OpenCodeSDKAdapter implements OpenCodeAdapter {
       return session
     } catch (err) {
       if (isAbortError(err)) throw err
-      if (this.isSessionNotFoundError(err)) return null
+      // A textual "404" or "session not found" is not enough to prove that
+      // the remote session is gone. SDK transport errors often preserve the
+      // server's message while losing its HTTP status; only the exact status
+      // is safe to treat as an already-stopped session.
+      if (this.isConfirmedSessionNotFoundError(err)) return null
       throw err
     }
   }
@@ -627,18 +631,36 @@ export class OpenCodeSDKAdapter implements OpenCodeAdapter {
 
   async abortSession(sessionId: string): Promise<boolean> {
     try {
-      const directory = await this.requireSessionDirectory(sessionId)
+      // A session may have been removed by OpenCode between the prompt and
+      // cleanup. A confirmed 404 is already the desired terminal state; an
+      // unavailable lookup, an untrusted directory, or any other failure is
+      // not evidence that the remote session stopped.
+      let directory = this.sessionDirectories.get(sessionId)
+      if (!directory) {
+        const session = await this.getSession(sessionId)
+        if (!session) {
+          this.forgetSessionDirectory(sessionId)
+          return true
+        }
+        directory = session.directory
+        if (!directory) return false
+      }
       const res = await this.client.session.abort({
         sessionID: sessionId,
         ...(directory ? { directory } : {}),
       }, this.requestOptions(AbortSignal.timeout(SDK_OPERATION_TIMEOUT_MS)))
-      if (res.data !== true) return false
-      this.sessionDirectories.delete(sessionId)
-      for (const [requestId, ownerSessionId] of this.questionSessions) {
-        if (ownerSessionId === sessionId) this.forgetQuestion(requestId)
+      if (this.isConfirmedSessionNotFoundResponse(res)) {
+        this.forgetSessionDirectory(sessionId)
+        return true
       }
+      if (res.data !== true) return false
+      this.forgetSessionDirectory(sessionId)
       return true
-    } catch {
+    } catch (error) {
+      if (this.isConfirmedSessionNotFoundError(error)) {
+        this.forgetSessionDirectory(sessionId)
+        return true
+      }
       return false
     }
   }
@@ -1846,12 +1868,18 @@ export class OpenCodeSDKAdapter implements OpenCodeAdapter {
     return String(error)
   }
 
-  private isSessionNotFoundError(error: unknown): boolean {
+  private isConfirmedSessionNotFoundResponse(response: unknown): boolean {
+    const record = this.getRecord(response)
+    const sdkResponse = this.getRecord(record?.response)
+    return sdkResponse?.status === 404 || this.isConfirmedSessionNotFoundError(record?.error)
+  }
+
+  private isConfirmedSessionNotFoundError(error: unknown): boolean {
     const record = this.getRecord(error)
     const response = this.getRecord(record?.response)
     const data = this.getRecord(record?.data)
     const body = this.getRecord(response?.body) ?? this.getRecord(response?.data)
-    const status = [
+    return [
       record?.status,
       record?.statusCode,
       response?.status,
@@ -1860,18 +1888,7 @@ export class OpenCodeSDKAdapter implements OpenCodeAdapter {
       data?.statusCode,
       body?.status,
       body?.statusCode,
-    ].find((value) => typeof value === 'number')
-
-    if (status === 404) return true
-
-    const message = [
-      typeof record?.message === 'string' ? record.message : '',
-      typeof data?.message === 'string' ? data.message : '',
-      typeof body?.message === 'string' ? body.message : '',
-      typeof body?.error === 'string' ? body.error : '',
-    ].join('\n').toLowerCase()
-
-    return /\b404\b/.test(message) || /\bsession\b.*\bnot found\b/.test(message)
+    ].some((value) => value === 404)
   }
 
   private extractConnectedModelIds(data: unknown): string[] {

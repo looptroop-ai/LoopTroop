@@ -122,10 +122,8 @@ const isQaOrigin = (value: unknown): boolean =>
  * fully expanded shape here would reject files that work today. This checks
  * what is present; it does not demand what is not.
  *
- * Present, though, means fully formed. A field's *contents* are checked as far
- * as the readers dereference them: an empty `dependencies` object or a
- * `testCommands: [null]` used to pass here and throw somewhere else entirely,
- * which is the failure this table exists to move.
+ * Missing collection members are filled before validation. Present values
+ * still need the right types, including each command and nested QA evidence.
  */
 const BEAD_FIELD_CHECKS: Record<string, (value: unknown) => boolean> = {
   title: (value) => typeof value === 'string',

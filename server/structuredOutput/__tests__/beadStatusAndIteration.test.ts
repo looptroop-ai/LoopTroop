@@ -277,7 +277,7 @@ describe('readBeadsFile', () => {
       .toThrow('at line 1 with field "dependencies" has the wrong type')
   })
 
-  it('rejects a field that is present but not fully formed', async () => {
+  it('fills missing collection members but rejects malformed commands and evidence', async () => {
     const { mkdtempSync, writeFileSync } = await import('node:fs')
     const { tmpdir } = await import('node:os')
     const { join } = await import('node:path')
@@ -285,11 +285,8 @@ describe('readBeadsFile', () => {
 
     const dir = mkdtempSync(join(tmpdir(), 'looptroop-beads-'))
     const path = join(dir, 'beads.jsonl')
-    // Each of these passed the first version of the check and then threw
-    // somewhere else: the scheduler on `dependencies.blocked_by`, the prompt
-    // builder on `contextGuidance.patterns` and on a null test command, and the
-    // evidence loader on `qaOrigin.sourceItems` — the last one outside the try
-    // that turns a bad manifest into a readable error.
+    // Missing collection members have safe empty defaults. Invalid command
+    // entries and incomplete evidence still fail before their consumers run.
     writeFileSync(path, [
       JSON.stringify({ id: 'empty-deps', status: 'pending', dependencies: {} }),
       JSON.stringify({ id: 'empty-guidance', status: 'pending', contextGuidance: {} }),
@@ -300,12 +297,15 @@ describe('readBeadsFile', () => {
 
     const warn = vi.spyOn(console, 'warn').mockImplementation(() => {})
     try {
-      expect(readBeadsFile(path, { malformedEntries: 'skip' }).map((bead) => bead.id)).toEqual(['good'])
+      const beads = readBeadsFile(path, { malformedEntries: 'skip' })
+      expect(beads.map((bead) => bead.id)).toEqual(['empty-deps', 'empty-guidance', 'good'])
+      expect(beads[0]!.dependencies).toEqual({ blocked_by: [], blocks: [] })
+      expect(beads[1]!.contextGuidance).toEqual({ patterns: [], anti_patterns: [] })
     } finally {
       warn.mockRestore()
     }
     expect(() => readBeadsFile(path, { malformedEntries: 'fail' }))
-      .toThrow('field "dependencies" has the wrong type')
+      .toThrow('at line 3 with field "testCommands" has the wrong type')
   })
 
   it('accepts a row that carries only the fields it has reached so far', async () => {

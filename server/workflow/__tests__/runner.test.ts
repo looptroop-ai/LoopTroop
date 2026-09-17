@@ -41,6 +41,7 @@ const {
   emitPhaseLogMock,
   isMockOpenCodeModeMock,
   abortTicketSessionsMock,
+  isTicketCancellationPendingMock,
 } = vi.hoisted(() => ({
   mockLifecyclePhaseMocks: {
     handleMockCouncilDeliberate: vi.fn(),
@@ -65,6 +66,7 @@ const {
   emitPhaseLogMock: vi.fn(),
   isMockOpenCodeModeMock: vi.fn(),
   abortTicketSessionsMock: vi.fn(),
+  isTicketCancellationPendingMock: vi.fn(() => false),
 }))
 
 vi.mock('../../opencode/factory', async () => {
@@ -92,6 +94,7 @@ vi.mock('../phases', async () => {
     handleExecutionSetupPlanGeneration: handleExecutionSetupPlanGenerationMock,
     handleMockExecutionUnsupported: handleMockExecutionUnsupportedMock,
     emitPhaseLog: emitPhaseLogMock,
+    isTicketCancellationPending: isTicketCancellationPendingMock,
   }
 })
 
@@ -120,6 +123,7 @@ describe('attachWorkflowRunner', () => {
     emitPhaseLogMock.mockReset()
     isMockOpenCodeModeMock.mockReset()
     abortTicketSessionsMock.mockReset()
+    isTicketCancellationPendingMock.mockReset().mockReturnValue(false)
     clearAllPendingSessionContinuationsForTests()
     phaseIntermediate.clear()
   })
@@ -347,6 +351,17 @@ describe('attachWorkflowRunner', () => {
     await vi.waitFor(() => {
       expect(handleCodingMock).toHaveBeenCalledTimes(1)
     })
+  })
+
+  it('does not restart restored coding while cancellation is pending', () => {
+    isTicketCancellationPendingMock.mockReturnValue(true)
+    const actor = createSnapshotActor('CODING', { status: 'CODING' })
+    actor.start()
+    attachWorkflowRunner(TEST.ticketId, actor, vi.fn())
+
+    expect(isTicketCancellationPendingMock).toHaveBeenCalledWith(TEST.ticketId)
+    expect(handleCodingMock).not.toHaveBeenCalled()
+    actor.stop()
   })
 
   it('can attach to a restored snapshot without processing it immediately', async () => {

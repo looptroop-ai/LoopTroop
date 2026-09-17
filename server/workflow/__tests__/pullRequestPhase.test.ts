@@ -143,6 +143,41 @@ describe('pull request drafting context', () => {
     }
   }
 
+  function buildMergeCompletionInput(
+    ticket: { id: string; externalId: string },
+    context: { externalId: string },
+    prInfo: { url: string; title: string; body: string; createdAt: string; updatedAt: string },
+    skipRemoteMerge: boolean,
+  ): Parameters<typeof completeMergedPullRequest>[0] {
+    return {
+      skipRemoteMerge,
+      ticketId: ticket.id,
+      externalId: ticket.externalId,
+      projectPath: context.externalId,
+      baseBranch: 'main',
+      headBranch: ticket.externalId,
+      candidateCommitSha: 'candidate123',
+      prReport: {
+        status: 'passed',
+        completedAt: '2026-01-01T00:00:00.000Z',
+        baseBranch: 'main',
+        headBranch: ticket.externalId,
+        candidateCommitSha: 'candidate123',
+        prNumber: 42,
+        prUrl: prInfo.url,
+        prState: 'open',
+        prHeadSha: 'candidate123',
+        title: prInfo.title,
+        body: prInfo.body,
+        createdAt: prInfo.createdAt,
+        updatedAt: prInfo.updatedAt,
+        mergedAt: null,
+        closedAt: null,
+        message: 'Draft PR ready.',
+      },
+    }
+  }
+
   function validCandidateAuditResponse(path = 'src/example.ts') {
     return [
       'files:',
@@ -471,33 +506,12 @@ describe('pull request drafting context', () => {
     mocks.getPullRequestByNumber.mockReturnValue(method === 'app merge' ? prInfo : merged)
     mocks.mergePullRequest.mockReturnValue(merged)
 
-    await completeMergedPullRequest({
-      skipRemoteMerge: method !== 'app merge',
-      ticketId: ticket.id,
-      externalId: ticket.externalId,
-      projectPath: context.externalId,
-      baseBranch: 'main',
-      headBranch: ticket.externalId,
-      candidateCommitSha: 'candidate123',
-      prReport: {
-        status: 'passed',
-        completedAt: '2026-01-01T00:00:00.000Z',
-        baseBranch: 'main',
-        headBranch: ticket.externalId,
-        candidateCommitSha: 'candidate123',
-        prNumber: 42,
-        prUrl: prInfo.url,
-        prState: 'open',
-        prHeadSha: 'candidate123',
-        title: prInfo.title,
-        body: prInfo.body,
-        createdAt: prInfo.createdAt,
-        updatedAt: prInfo.updatedAt,
-        mergedAt: null,
-        closedAt: null,
-        message: 'Draft PR ready.',
-      },
-    })
+    await completeMergedPullRequest(buildMergeCompletionInput(
+      ticket,
+      context,
+      prInfo,
+      method !== 'app merge',
+    ))
 
     expect(mocks.getPullRequestByNumber).toHaveBeenCalledWith(context.externalId, 42)
     expect(mocks.mergePullRequest).toHaveBeenCalledTimes(method === 'app merge' ? 1 : 0)
@@ -683,33 +697,12 @@ describe('pull request drafting context', () => {
     }
     mocks.getPullRequestByNumber.mockReturnValue(prInfo)
 
-    await expect(completeMergedPullRequest({
-      ticketId: ticket.id,
-      externalId: ticket.externalId,
-      projectPath: context.externalId,
-      baseBranch: 'main',
-      headBranch: ticket.externalId,
-      candidateCommitSha: 'candidate123',
-      prReport: {
-        status: 'passed',
-        completedAt: '2026-01-01T00:00:00.000Z',
-        baseBranch: 'main',
-        headBranch: ticket.externalId,
-        candidateCommitSha: 'candidate123',
-        prNumber: 42,
-        prUrl: prInfo.url,
-        prState: 'open',
-        prHeadSha: 'candidate123',
-        title: prInfo.title,
-        body: prInfo.body,
-        createdAt: prInfo.createdAt,
-        updatedAt: prInfo.updatedAt,
-        mergedAt: null,
-        closedAt: null,
-        message: 'Draft PR ready.',
-      },
-      skipRemoteMerge: true,
-    })).rejects.toThrow('does not match candidate candidate123')
+    await expect(completeMergedPullRequest(buildMergeCompletionInput(
+      ticket,
+      context,
+      prInfo,
+      true,
+    ))).rejects.toThrow('does not match candidate candidate123')
 
     expect(readPullRequestReport(ticket.id)).toMatchObject({
       prNumber: 42,

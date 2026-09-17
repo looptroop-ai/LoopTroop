@@ -66,9 +66,9 @@ checked before closing the workflow packet.
 
 | Comment ID | Classification | Disposition |
 | --- | --- | --- |
-| 5714282549 | Accepted owner scope | P12/P13 positional pairing and memoization were explicitly deferred to the later artifact-viewer packet; PR 167 does not reverse that decision. Other parser observations were handled in PR 165 or are scope notes. |
+| 5714282549 | Accepted positional owner decision | P12/P13 positional pairing and memoization remain intentionally accepted for the later artifact-viewer packet; PR 167 does not reverse that owner decision. Other parser observations were handled in PR 165 or are scope notes. |
 | 5714878772 | Correct, fixed in workflow packet | Projection isolation, diagnostic malformed-line handling, cycle identification, and approval hash behavior were addressed by the PR 165 owner packet. The fallback interview normalizer now retains warnings from the rejected batch candidate, with a regression in `server/structuredOutput/__tests__/index.test.ts`; the implementation uses `batchCandidateWarnings` at `server/structuredOutput/interviewOutput.ts:1364`. |
-| 5714892772 | Correct, fixed or superseded per item | Nested collection normalization, diagnostic bead reads, retry-history aliases, and YAML repair behavior belong to the PR 165 parser packet and its owner decisions. The interview snapshot timestamp item is already fixed in `server/phases/interview/snapshotValidation.ts:82-90,172-224,359-386`, with invalid `updatedAt` and `answeredAt` coverage in `server/phases/interview/__tests__/sessionIntegrity.test.ts:196-200`; the positional expansion items remain the accepted later artifact-viewer scope. |
+| 5714892772 | Correct, fixed or superseded per item | Nested collection normalization, diagnostic bead reads, retry-history aliases, and YAML repair behavior belong to the PR 165 parser packet and its owner decisions. The interview snapshot timestamp item is already fixed in `server/phases/interview/snapshotValidation.ts:82-90,172-224,359-386`, with invalid `updatedAt` and `answeredAt` coverage in `server/phases/interview/__tests__/sessionIntegrity.test.ts:196-200`; the positional expansion items remain an accepted owner decision for the later artifact-viewer packet. |
 
 ## Implementation evidence
 

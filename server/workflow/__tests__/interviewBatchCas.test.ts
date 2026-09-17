@@ -84,6 +84,24 @@ async function seedInterviewBatch() {
   return { ticket, original }
 }
 
+async function startInterviewBatch(
+  ticketId: string,
+  original: Parameters<typeof processInterviewBatchAsync>[2],
+) {
+  const claim = claimInterviewBatch(ticketId)
+  expect(claim).toBeTruthy()
+  const processing = processInterviewBatchAsync(
+    ticketId,
+    { Q01: 'The first answer.' },
+    original,
+    {},
+    {},
+    claim ?? undefined,
+  )
+  await vi.waitFor(() => expect(submitBatchToSessionMock).toHaveBeenCalled())
+  return { claim, processing }
+}
+
 describe('interview batch durable CAS', () => {
   beforeEach(() => {
     // Every durable write shares one timestamp so a timestamp-only revision
@@ -112,17 +130,7 @@ describe('interview batch durable CAS', () => {
       rejectModel = reject
     }))
 
-    const claim = claimInterviewBatch(ticket.id)
-    expect(claim).toBeTruthy()
-    const processing = processInterviewBatchAsync(
-      ticket.id,
-      { Q01: 'The first answer.' },
-      original,
-      {},
-      {},
-      claim ?? undefined,
-    )
-    await vi.waitFor(() => expect(submitBatchToSessionMock).toHaveBeenCalled())
+    const { processing } = await startInterviewBatch(ticket.id, original)
 
     const answered = parseInterviewSessionSnapshot(
       getLatestPhaseArtifact(ticket.id, INTERVIEW_SESSION_ARTIFACT)?.content,
@@ -154,17 +162,7 @@ describe('interview batch durable CAS', () => {
       resolveModel = resolve
     }))
 
-    const claim = claimInterviewBatch(ticket.id)
-    expect(claim).toBeTruthy()
-    const processing = processInterviewBatchAsync(
-      ticket.id,
-      { Q01: 'The first answer.' },
-      original,
-      {},
-      {},
-      claim ?? undefined,
-    )
-    await vi.waitFor(() => expect(submitBatchToSessionMock).toHaveBeenCalled())
+    const { claim, processing } = await startInterviewBatch(ticket.id, original)
     resolveModel?.(nextBatch())
     await expect(processing).resolves.toMatchObject({ batchNumber: 2 })
 

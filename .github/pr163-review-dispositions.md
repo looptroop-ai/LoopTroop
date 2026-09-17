@@ -83,3 +83,5 @@ The overflow-UID behavior is the only unresolved implementation choice in this
 packet. All other rows above are either fixed, explicitly deferred to another
 scope, or verified as not applicable; root must update the held row and the
 changelog/ledger if the final security decision changes.
+
+The refreshed comments retain the same dispositions: `5704668841` is a rate-limit notice and non-gating docstring metric; `5704700507` marks both defects resolved; `5704729991` reports no new finding; `4030998332` confirms the legacy inventory fix. `5717159324` reports no Codacy findings. Sonar `5717659102` passes the gate but still identified two `S7773` style warnings; both now use `Number.NaN`, and the embedded installers were regenerated from the shared source. This does not change the held overflow-UID policy.

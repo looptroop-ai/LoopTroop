@@ -1359,7 +1359,7 @@ function trustedOwners(
       && ranges[0] .length === 4_294_967_295
     if (!identity) {
       const overflowText = readOverflowUid()?.trim()
-      const overflow = overflowText !== undefined && /^\d+$/.test(overflowText) ? Number(overflowText) : NaN
+      const overflow = overflowText !== undefined && /^\d+$/.test(overflowText) ? Number(overflowText) : Number.NaN
       if (Number.isSafeInteger(overflow) && overflow >= 0 && !uidIsMapped(overflow, ranges)) owners.add(overflow)
     }
   }

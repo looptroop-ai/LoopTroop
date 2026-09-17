@@ -190,6 +190,18 @@ describe.concurrent('parseYamlOrJsonCandidate', () => {
     expect(repairWarnings.join('\n')).not.toContain('</div>')
   })
 
+  it('converts only non-string free text while preserving a valid folded answer', () => {
+    const parsed = parseYamlOrJsonCandidate([
+      'free_text: false',
+      'other:',
+      '  free_text: first',
+      '    second',
+    ].join('\n')) as { free_text: string; other: { free_text: string } }
+
+    expect(parsed.free_text).toBe('false')
+    expect(parsed.other.free_text).toBe('first second')
+  })
+
   it('does not strip text that only resembles an XML tag', () => {
     const repairWarnings: string[] = []
     expect(() => parseYamlOrJsonCandidate([

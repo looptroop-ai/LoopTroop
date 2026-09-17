@@ -78,24 +78,45 @@ export function CommandSpecListEditor({
                   className="w-full rounded-md border border-input bg-background px-2 py-1 text-xs"
                   onChange={(event) => update(index, { ...command, program: event.target.value })}
                 />
-                <textarea
-                  aria-label={`${itemLabel} arguments`}
-                  value={JSON.stringify(command.args)}
-                  disabled={disabled}
-                  rows={2}
-                  placeholder='Arguments, e.g. ["test"]'
-                  className="w-full rounded-md border border-input bg-background px-2 py-1 font-mono text-xs"
-                  onChange={(event) => {
-                    try {
-                      const args = JSON.parse(event.target.value) as unknown
-                      if (Array.isArray(args) && args.every((arg) => typeof arg === 'string')) {
-                        update(index, { ...command, args })
-                      }
-                    } catch {
-                      // Keep the last valid arguments while editing.
-                    }
-                  }}
-                />
+                <div role="group" aria-label={`${itemLabel} arguments`} className="space-y-1">
+                  {command.args.map((argument, argumentIndex) => (
+                    <div key={argumentIndex} className="flex gap-1">
+                      <textarea
+                        aria-label={`${itemLabel} argument ${argumentIndex + 1}`}
+                        value={argument}
+                        disabled={disabled}
+                        rows={1}
+                        placeholder={`Argument ${argumentIndex + 1}`}
+                        className="flex-1 rounded-md border border-input bg-background px-2 py-1 font-mono text-xs"
+                        onChange={(event) => {
+                          const args = [...command.args]
+                          args[argumentIndex] = event.target.value
+                          update(index, { ...command, args })
+                        }}
+                      />
+                      <Button
+                        type="button"
+                        variant="ghost"
+                        size="sm"
+                        disabled={disabled}
+                        aria-label={`Remove ${itemLabel} argument ${argumentIndex + 1}`}
+                        onClick={() => update(index, { ...command, args: command.args.filter((_, currentIndex) => currentIndex !== argumentIndex) })}
+                      >
+                        ×
+                      </Button>
+                    </div>
+                  ))}
+                  <Button
+                    type="button"
+                    variant="outline"
+                    size="sm"
+                    disabled={disabled}
+                    aria-label={`Add ${itemLabel} argument`}
+                    onClick={() => update(index, { ...command, args: [...command.args, ''] })}
+                  >
+                    + Add argument
+                  </Button>
+                </div>
               </>
             )}
             <input

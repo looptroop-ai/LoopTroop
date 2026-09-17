@@ -202,6 +202,9 @@ describe('readBeadsFile and the top-level spellings', () => {
     ['created_at', 'createdAt', '2026-01-01T00:00:00.000Z'],
     ['bead_start_commit', 'beadStartCommit', 'abc123'],
     ['test_command_reason', 'testCommandReason', 'nothing to run'],
+    ['failed_iteration_notes', 'failedIterationNotes', [{ iteration: 1, timestamp: '2026-01-01T00:00:00.000Z', content: 'failed' }]],
+    ['user_retry_notes', 'userRetryNotes', [{ iteration: 1, timestamp: '2026-01-01T00:00:00.000Z', content: 'retry' }]],
+    ['finalization_failure_notes', 'finalizationFailureNotes', [{ iteration: 1, timestamp: '2026-01-01T00:00:00.000Z', content: 'finalize' }]],
   ])('reads %s as %s', (alias, canonical, value) => {
     const beads = readBeadsFile(writeTracker(bead({ [alias]: value })))
 

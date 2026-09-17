@@ -50,3 +50,30 @@ workspace displays.
 - This part does not claim whole P17 completion. Interview subitem 4 remains pending.
 - Linux and Node execution only. Native Windows and macOS, real-browser accessibility, E2E, full lifecycle, CI, and live external operations remain unverified.
 - Full isolated checks have completed; see `/tmp/looptroop-beads-parser-part-evidence.md` for 6070 passed, 10 skipped across 422 files and all required checks. Root still owns fresh aggregate review of the actual integrated diff and final acceptance.
+
+## Post-review corrections
+
+The PR review pass also covered defects outside the original packet. These are
+kept here so the bounded evidence and the permanent review ledger point at the
+same behaviour:
+
+- Runtime-only `failedIterationNotes`, `userRetryNotes`, and
+  `finalizationFailureNotes` aliases are canonicalised alongside the editable
+  bead fields; `server/phases/beads/__tests__/beadsFile.test.ts` covers each
+  snake_case spelling.
+- An unreadable tracker path is isolated to that ticket's runtime diagnostics;
+  healthy tickets remain visible, while authoritative reads and Manual QA
+  checklist generation retain fail-closed behaviour. The generator therefore
+  does not opt into malformed-entry skipping.
+- The approval request uses the current fetched content hash and does not make
+  optional UI-state failure a prerequisite. `sourceLines` remains body
+  metadata with strict count/order validation; it is not an HTTP header.
+- Persisted Manual QA candidates use schema version 2; version 1 is discarded
+  for regeneration rather than read as a current checklist.
+- `CommandSpecListEditor` edits one argument per literal textarea. It does not
+  split shell text and accepts spaces, newlines, empty strings, and
+  temporarily incomplete JSON-looking values. The focused editor regression
+  exercises sequential changes.
+- Parser repairs keep the prior tag grammar and dash-list whitespace while
+  using bounded/linear scans; selective `free_text` repair changes only
+  non-string values and leaves valid prose untouched.

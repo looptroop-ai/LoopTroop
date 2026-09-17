@@ -774,6 +774,46 @@ describe('Interview approval UI', () => {
     expect(await screen.findByText(/Draft autosave on/)).toBeInTheDocument()
   })
 
+  it('can approve the loaded beads when the optional UI-state request fails', async () => {
+    mockUseTicketUIState.mockReturnValue({
+      isSuccess: false,
+      data: undefined,
+    })
+    const fetchSpy = vi.spyOn(globalThis, 'fetch').mockImplementation((input, init) => {
+      const url = String(input)
+      if (url === `/api/tickets/${encodeURIComponent(TEST.ticketId)}/beads/raw`) {
+        return createBeadsRawResponse([{
+          id: 'bead-1',
+          title: 'Ready to approve',
+          status: 'pending',
+          testCommands: [{ mode: 'process', program: 'npm', args: ['test'], cwd: '.', env: {} }],
+        }], { contentSha256: 'current-hash' })
+      }
+      if (url === `/api/tickets/${encodeURIComponent(TEST.ticketId)}/artifacts`) return createJsonResponse([])
+      if (url === `/api/tickets/${encodeURIComponent(TEST.ticketId)}/approve-beads` && init?.method === 'POST') {
+        return createJsonResponse({ success: true })
+      }
+      throw new Error(`Unexpected fetch: ${url}`)
+    })
+
+    renderApprovalView(makeTicket({ status: 'WAITING_BEADS_APPROVAL' }), 'beads')
+
+    await screen.findByText('Ready to approve')
+    const approve = await screen.findByRole('button', { name: /^Approve$/ })
+    expect(approve).not.toBeDisabled()
+    fireEvent.click(approve)
+
+    await waitFor(() => {
+      expect(fetchSpy).toHaveBeenCalledWith(
+        `/api/tickets/${encodeURIComponent(TEST.ticketId)}/approve-beads`,
+        expect.objectContaining({
+          method: 'POST',
+          body: JSON.stringify({ expectedContentSha256: 'current-hash' }),
+        }),
+      )
+    })
+  })
+
   it('shows unresolved beads coverage gaps as a collapsible warning during approval', async () => {
     mockUseTicketArtifacts.mockReturnValue({
       artifacts: [

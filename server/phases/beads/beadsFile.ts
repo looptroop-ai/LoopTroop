@@ -218,8 +218,10 @@ export function normalizeBeadCollections<T extends object>(bead: T): T {
  * alias-only timestamps resume the wrong bead, and an alias-only `qa_origin`
  * drops the Manual QA evidence with no warning at all.
  *
- * Kept in step with the interface's own table in `src/lib/beadsDocument.ts`,
- * which `beadsFile.test.ts` asserts.
+ * Kept in step with the interface's own table in `src/lib/beadsDocument.ts`
+ * for editable fields, which `beadsFile.test.ts` asserts. Runtime-only retry
+ * and finalisation notes live here as well because older writers persisted
+ * those fields without exposing them in the editor.
  */
 export const BEAD_FIELD_ALIASES: Record<string, string> = {
   prd_refs: 'prdRefs',
@@ -236,6 +238,9 @@ export const BEAD_FIELD_ALIASES: Record<string, string> = {
   started_at: 'startedAt',
   bead_start_commit: 'beadStartCommit',
   context_guidance: 'contextGuidance',
+  failed_iteration_notes: 'failedIterationNotes',
+  user_retry_notes: 'userRetryNotes',
+  finalization_failure_notes: 'finalizationFailureNotes',
   qa_origin: 'qaOrigin',
 }
 

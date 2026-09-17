@@ -531,31 +531,11 @@ describe('SessionManager', () => {
   })
 
   it('forgets directory state when a session reaches a terminal state', async () => {
-    const repoDir = repoManager.createRepo()
-    const project = attachProject({
-      folderPath: repoDir,
-      name: 'LoopTroop',
-      shortname: 'LOOP',
-    })
-    const ticket = createTicket({
-      projectId: project.id,
+    const { ticket, adapter, sessionManager, session } = await createOwnedSessionFixture({
+      phase: 'CODING',
       title: 'Retain uncertain session',
       description: 'An uncertain remote stop remains retryable.',
     })
-    patchTicket(ticket.id, { status: 'CODING' })
-
-    const adapter = new TestOpenCodeAdapter()
-    const sessionManager = new SessionManager(adapter)
-    const session = await sessionManager.createSessionForPhase(
-      ticket.id,
-      'CODING',
-      1,
-      undefined,
-      undefined,
-      undefined,
-      undefined,
-      repoDir,
-    )
     writeTicketFile(ticket.id, 'runtime/opencode-pending-sessions.json', JSON.stringify([{
       sessionId: session.id,
       phase: 'CODING',
@@ -619,31 +599,11 @@ describe('SessionManager', () => {
   })
 
   it('keeps an ownership row active until a remote abort is confirmed', async () => {
-    const repoDir = repoManager.createRepo()
-    const project = attachProject({
-      folderPath: repoDir,
-      name: 'LoopTroop',
-      shortname: 'LOOP',
-    })
-    const ticket = createTicket({
-      projectId: project.id,
+    const { ticket, adapter, sessionManager, session } = await createOwnedSessionFixture({
+      phase: 'CODING',
       title: 'Keep uncertain ownership',
       description: 'A failed stop must remain retryable.',
     })
-    patchTicket(ticket.id, { status: 'CODING' })
-
-    const adapter = new TestOpenCodeAdapter()
-    const sessionManager = new SessionManager(adapter)
-    const session = await sessionManager.createSessionForPhase(
-      ticket.id,
-      'CODING',
-      1,
-      undefined,
-      undefined,
-      undefined,
-      undefined,
-      repoDir,
-    )
     adapter.abortResults = [false, true]
 
     await expect(sessionManager.abortAndAbandonSession(session.id)).resolves.toBe(false)

@@ -923,11 +923,10 @@ describe('ManualQAView recovery behavior', () => {
     expect(screen.getByText(/LoopTroop adjusted this artifact/i)).toBeInTheDocument()
   })
 
-  it('shows the repair trail when generation produced no checklist at all', () => {
-    // The run that used up its retries writes the companion and no checklist,
-    // so the view takes its "not available yet" branch — which is exactly the
-    // run whose failed attempts the operator's next move depends on.
-    mocks.round.mockReturnValue({ data: undefined, isLoading: false, error: null, refetch: mocks.refetchRound })
+  it.each([false, true])('shows failed generation details with checklist present: %s', (hasChecklist) => {
+    if (!hasChecklist) {
+      mocks.round.mockReturnValue({ data: undefined, isLoading: false, error: null, refetch: mocks.refetchRound })
+    }
     mocks.artifacts.mockReturnValue({
       artifacts: [{
         id: 1,
@@ -964,50 +963,12 @@ describe('ManualQAView recovery behavior', () => {
 
     renderWithProviders(<ManualQAView ticket={waitingTicket()} />)
 
-    expect(screen.getByText(/Manual QA artifacts are not available yet/i)).toBeInTheDocument()
+    if (!hasChecklist) {
+      expect(screen.getByText(/Manual QA artifacts are not available yet/i)).toBeInTheDocument()
+    }
     // "Intervention details", not "LoopTroop adjusted" — the companion carries
     // a validationError, and describing a generation that gave up as completed
     // is what this screen and the artifact chip used to disagree about.
-    expect(screen.getByText(/Intervention details for this artifact/i)).toBeInTheDocument()
-  })
-
-  it('does not describe a failed generation as a completed one', () => {
-    // Same companion, but a checklist exists — a repair that succeeded on a
-    // later attempt. This is the success tree, which omitted the status
-    // entirely and so defaulted every generation to "completed".
-    mocks.artifacts.mockReturnValue({
-      artifacts: [{
-        id: 1,
-        phase: 'GENERATING_QA_CHECKLIST',
-        phaseAttempt: 1,
-        artifactType: 'ui_artifact_companion:manual_qa_checklist',
-        content: JSON.stringify({
-          baseArtifactType: 'manual_qa_checklist',
-          generatedAt: '2026-07-14T10:00:00.000Z',
-          payload: {
-            validationError: 'Manual QA checklist generation failed.',
-            structuredOutput: {
-              repairApplied: false,
-              repairWarnings: [],
-              autoRetryCount: 2,
-              validationError: 'Manual QA checklist generation failed.',
-            },
-          },
-        }),
-        filePath: null,
-        createdAt: '2026-07-14T10:00:00.000Z',
-        updatedAt: '2026-07-14T10:00:00.000Z',
-      }],
-      status: 'success',
-      isLoading: false,
-      isFetching: false,
-      isError: false,
-      error: null,
-      refetch: vi.fn(),
-    } as unknown as ReturnType<typeof mocks.artifacts>)
-
-    renderWithProviders(<ManualQAView ticket={waitingTicket()} />)
-
     expect(screen.getByText(/Intervention details for this artifact/i)).toBeInTheDocument()
     expect(screen.queryByText(/LoopTroop adjusted this artifact/i)).not.toBeInTheDocument()
   })

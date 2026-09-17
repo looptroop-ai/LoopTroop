@@ -11,6 +11,8 @@ interface AdapterInternals {
     finalizedPartIds: Set<string>,
     messageRoles: Map<string, string>,
   ): StreamEvent | null
+  isConfirmedSessionNotFoundError(error: unknown): boolean
+  isConfirmedSessionNotFoundResponse(response: unknown): boolean
 }
 
 function createAdapterInternals(): AdapterInternals {
@@ -117,5 +119,23 @@ describe.concurrent('OpenCode diagnostic event mapping', () => {
       },
     })
     expect(JSON.stringify(mapStatus('javascript:alert(1)'))).not.toContain('javascript:')
+  })
+
+  it('requires the actual HTTP status to confirm a missing session', () => {
+    const internal = createAdapterInternals()
+
+    expect(internal.isConfirmedSessionNotFoundError({ statusCode: 404, data: { statusCode: 500 } })).toBe(true)
+    expect(internal.isConfirmedSessionNotFoundError({
+      response: { status: 500 },
+      data: { status: 404 },
+    })).toBe(false)
+    expect(internal.isConfirmedSessionNotFoundResponse({
+      response: { status: 500 },
+      error: { data: { status: 404 } },
+    })).toBe(false)
+    expect(internal.isConfirmedSessionNotFoundResponse({
+      response: { status: 404 },
+      error: { data: { status: 500 } },
+    })).toBe(true)
   })
 })

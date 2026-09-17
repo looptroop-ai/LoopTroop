@@ -24,6 +24,7 @@ export {
   resolveTicketContainedPath,
   writeTicketFile,
   readTicketFile,
+  removeTicketFile,
   findProjectExecutionBandConflict,
   parseLockedCouncilMembers,
   parseLockedCouncilMemberVariants,

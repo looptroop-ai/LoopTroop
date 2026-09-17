@@ -539,10 +539,10 @@ export class OpenCodeSDKAdapter implements OpenCodeAdapter {
       if (!res.data) {
         const status = res.response?.status
         if (status === 404) return null
-        if (res.error) throw res.error
         if (typeof status === 'number') {
           throw new Error(`OpenCode session lookup failed with HTTP ${status}`)
         }
+        if (res.error) throw res.error
         throw new Error('OpenCode returned no session payload')
       }
       const session = this.mapSession(res.data as Record<string, unknown>)
@@ -1871,24 +1871,22 @@ export class OpenCodeSDKAdapter implements OpenCodeAdapter {
   private isConfirmedSessionNotFoundResponse(response: unknown): boolean {
     const record = this.getRecord(response)
     const sdkResponse = this.getRecord(record?.response)
-    return sdkResponse?.status === 404 || this.isConfirmedSessionNotFoundError(record?.error)
+    const responseStatus = this.readHttpStatus(sdkResponse)
+    if (responseStatus !== undefined) return responseStatus === 404
+    return this.isConfirmedSessionNotFoundError(record?.error)
   }
 
   private isConfirmedSessionNotFoundError(error: unknown): boolean {
     const record = this.getRecord(error)
     const response = this.getRecord(record?.response)
-    const data = this.getRecord(record?.data)
-    const body = this.getRecord(response?.body) ?? this.getRecord(response?.data)
-    return [
-      record?.status,
-      record?.statusCode,
-      response?.status,
-      response?.statusCode,
-      data?.status,
-      data?.statusCode,
-      body?.status,
-      body?.statusCode,
-    ].some((value) => value === 404)
+    const status = this.readHttpStatus(response) ?? this.readHttpStatus(record)
+    return status === 404
+  }
+
+  private readHttpStatus(value: Record<string, unknown> | undefined): number | undefined {
+    if (typeof value?.status === 'number') return value.status
+    if (typeof value?.statusCode === 'number') return value.statusCode
+    return undefined
   }
 
   private extractConnectedModelIds(data: unknown): string[] {

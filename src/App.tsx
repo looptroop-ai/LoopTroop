@@ -242,6 +242,12 @@ function App() {
   const [activeModal, setActiveModal] = useState<ModalRoute | null>(
     () => modalForPathname(window.location.pathname),
   )
+  const [modalDirty, setModalDirty] = useState<Record<ModalRoute, boolean>>({
+    profile: false,
+    prompts: false,
+    project: false,
+    ticket: false,
+  })
   const [isAboutOpen, setIsAboutOpen] = useState(false)
   const [isWelcomeOpen, setIsWelcomeOpen] = useState(() => {
     try {
@@ -525,10 +531,12 @@ function App() {
   // follows from the state through the route effect above.
   const openModal = useCallback((modal: ModalRoute) => {
     if (modal === 'profile') clearOpenCodeModelsQuery(queryClient)
+    setModalDirty((current) => current[modal] ? { ...current, [modal]: false } : current)
     setActiveModal(modal)
   }, [queryClient])
   const closeModal = useCallback(() => {
     setActiveModal(null)
+    setModalDirty({ profile: false, prompts: false, project: false, ticket: false })
     // About is opened from inside Configuration; it has nowhere to belong once
     // Configuration is gone.
     setIsAboutOpen(false)
@@ -549,6 +557,7 @@ function App() {
    */
   const navigateHome = useCallback(() => {
     setActiveModal(null)
+    setModalDirty({ profile: false, prompts: false, project: false, ticket: false })
     setIsAboutOpen(false)
     dispatch({ type: 'CLOSE_TICKET' })
     setHasHydratedUrl(true)
@@ -596,15 +605,15 @@ function App() {
             : <KanbanBoard />}
         </AppShell>
 
-        <CenteredModal open={activeModal === 'profile'} onClose={closeModal} title="Configuration" maxWidth="max-w-2xl" closeDisabled={isAboutOpen}>
+        <CenteredModal open={activeModal === 'profile'} onClose={closeModal} title="Configuration" maxWidth="max-w-2xl" closeDisabled={isAboutOpen} isDirty={modalDirty.profile}>
           <Suspense fallback={MODAL_SUSPENSE_FALLBACK}>
-            <ProfileSetup onClose={closeModal} onOpenAbout={openAbout} />
+            <ProfileSetup onClose={closeModal} onOpenAbout={openAbout} onDirtyChange={(dirty) => setModalDirty((current) => current.profile === dirty ? current : { ...current, profile: dirty })} />
           </Suspense>
         </CenteredModal>
 
-        <CenteredModal open={activeModal === 'prompts'} onClose={closeModal} title="Prompts editor" maxWidth="max-w-[80vw]">
+        <CenteredModal open={activeModal === 'prompts'} onClose={closeModal} title="Prompts editor" maxWidth="max-w-[80vw]" isDirty={modalDirty.prompts}>
           <Suspense fallback={MODAL_SUSPENSE_FALLBACK}>
-            <PromptsDialog />
+            <PromptsDialog onDirtyChange={(dirty) => setModalDirty((current) => current.prompts === dirty ? current : { ...current, prompts: dirty })} />
           </Suspense>
         </CenteredModal>
 
@@ -614,15 +623,15 @@ function App() {
           <AboutDialog />
         </CenteredModal>
 
-        <CenteredModal open={activeModal === 'project'} onClose={closeModal} title="Projects" maxWidth="max-w-2xl">
+        <CenteredModal open={activeModal === 'project'} onClose={closeModal} title="Projects" maxWidth="max-w-2xl" isDirty={modalDirty.project}>
           <Suspense fallback={MODAL_SUSPENSE_FALLBACK}>
-            <ProjectsPanel onClose={closeModal} />
+            <ProjectsPanel onClose={closeModal} onDirtyChange={(dirty) => setModalDirty((current) => current.project === dirty ? current : { ...current, project: dirty })} />
           </Suspense>
         </CenteredModal>
 
-        <CenteredModal open={activeModal === 'ticket'} onClose={closeModal} title="New Ticket" maxWidth="max-w-xl">
+        <CenteredModal open={activeModal === 'ticket'} onClose={closeModal} title="New Ticket" maxWidth="max-w-xl" isDirty={modalDirty.ticket}>
           <Suspense fallback={MODAL_SUSPENSE_FALLBACK}>
-            <TicketForm onClose={closeModal} />
+            <TicketForm onClose={closeModal} onDirtyChange={(dirty) => setModalDirty((current) => current.ticket === dirty ? current : { ...current, ticket: dirty })} />
           </Suspense>
         </CenteredModal>
 

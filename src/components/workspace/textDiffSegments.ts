@@ -4,6 +4,8 @@ export interface TextDiffSegment {
 }
 
 const TEXT_DIFF_TOKEN_PATTERN = /(\s+|[A-Za-z0-9_]+|[^A-Za-z0-9_\s]+)/g
+const MAX_TEXT_DIFF_LCS_TOKENS = 2_000
+const MAX_TEXT_DIFF_LCS_CELLS = 250_000
 
 function tokenizeTextDiff(text: string): string[] {
   return text.match(TEXT_DIFF_TOKEN_PATTERN) ?? []
@@ -25,6 +27,16 @@ function mergeTextDiffSegments(segments: TextDiffSegment[]): TextDiffSegment[] {
   return merged
 }
 
+function buildReplacementSegments(before: string, after: string): {
+  before: TextDiffSegment[]
+  after: TextDiffSegment[]
+} {
+  return {
+    before: before ? [{ text: before, changed: true }] : [],
+    after: after ? [{ text: after, changed: true }] : [],
+  }
+}
+
 export function buildTextDiffSegments(before: string | undefined, after: string | undefined): {
   before: TextDiffSegment[]
   after: TextDiffSegment[]
@@ -41,6 +53,15 @@ export function buildTextDiffSegments(before: string | undefined, after: string 
 
   const beforeTokens = tokenizeTextDiff(before)
   const afterTokens = tokenizeTextDiff(after)
+  // ponytail: cap the quadratic word matrix; line replacement keeps large/minified
+  // artifacts responsive, with a line-aware diff available if this ceiling matters.
+  if (
+    beforeTokens.length > MAX_TEXT_DIFF_LCS_TOKENS
+    || afterTokens.length > MAX_TEXT_DIFF_LCS_TOKENS
+    || beforeTokens.length * afterTokens.length > MAX_TEXT_DIFF_LCS_CELLS
+  ) {
+    return buildReplacementSegments(before, after)
+  }
   const lcs: number[][] = Array.from(
     { length: beforeTokens.length + 1 },
     () => Array<number>(afterTokens.length + 1).fill(0),

@@ -97,7 +97,7 @@ function invalidateProjectQueries(queryClient: ReturnType<typeof useQueryClient>
  */
 function ticketIdBelongsToProject(ticketId: string, projectId: number): boolean {
   const separator = ticketId.indexOf(':')
-  return separator > 0 && Number(ticketId.slice(0, separator)) === projectId
+  return separator > 0 && ticketId.slice(0, separator) === String(projectId)
 }
 
 /**

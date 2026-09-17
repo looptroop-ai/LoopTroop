@@ -4,6 +4,8 @@ import type { ManualQaBeadOrigin, Ticket } from '@/hooks/useTickets'
 import { isSystem } from './logFormat'
 
 export interface RenderedBeadSection {
+  /** Stable per-section identity; repeated bead ids can occur across attempts. */
+  sectionKey: string
   beadId: string
   ordinal: number
   total: number
@@ -98,6 +100,7 @@ export function buildBeadSections(
   const discoveryOrdinalMap = new Map(discoveredBeadIds.map((beadId, index) => [beadId, index + 1]))
   const total = runtimeTotal > 0 ? runtimeTotal : discoveredBeadIds.length
   const shouldFilterByRuntimeStatus = runtimeBeadMap.size > 0
+  const sectionKeyCounts = new Map<string, number>()
 
   const visiblePreambleEntries = preambleEntries.filter((entry) => visibleEntryIds.has(getLogEntryIdentity(entry)))
   const beadSections = beadSegments
@@ -115,7 +118,12 @@ export function buildBeadSections(
       }
 
       const ordinal = runtimeBead?.ordinal ?? discoveryOrdinalMap.get(segment.beadId) ?? segmentIndex + 1
+      const firstEntry = segment.entries[0]!
+      const baseKey = getLogEntryIdentity(firstEntry)
+      const occurrence = sectionKeyCounts.get(baseKey) ?? 0
+      sectionKeyCounts.set(baseKey, occurrence + 1)
       return {
+        sectionKey: `${baseKey}:${occurrence}`,
         beadId: segment.beadId,
         ordinal,
         total: total > 0 ? total : ordinal,

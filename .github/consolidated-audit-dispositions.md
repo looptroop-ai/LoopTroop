@@ -279,7 +279,8 @@ The client recovery packet is accepted for this integration checkpoint. Its
 source snapshot is `0c0ec89dab2da492983e4ce1993901288e745f3d`, based on
 `2c6da1c4`; detailed evidence is in
 `/tmp/looptroop-client-recovery-evidence.md`. It covers U24, U25, U26, U29,
-U32, and U33(4,6); U33 remains partial overall. Final source integration, a
+U32, and U33(4,6); U33 was partial at that packet boundary. The combined forms
+and log-history entries below complete the remaining U33 source scope. Final source integration, a
 fresh Astra-low review, and the full application/part gate remain with the root
 worker. No workflow status metadata changed in this packet.
 
@@ -290,8 +291,8 @@ worker. No workflow status metadata changed in this packet.
 | U26 | PASS, final pending | Current ticket metadata is read through a ref, so ten-second ticket-list object replacement does not recreate the question-recovery callback. The recovery effect stays keyed to active-ticket membership, with an immediate poll and a 30-second interval verified by fake timers. | No E2E or full lifecycle run; native Windows/macOS and the complete application/part gate remain unverified. |
 | U29 | PASS, final pending | The persisted-cursor flag triggers one initial cache recovery on `open` without clearing the cursor or reconnecting. An explicit `replay_gap` clears the cursor while retaining the live subscription and refreshes once; after that gap, later reconnects omit the cursor until a new event supplies one. Ordinary transport errors still invalidate the current ticket and ticket list without broad cache recovery, and the SSE tests cover both paths and duplicate-recovery avoidance. | No E2E or full lifecycle run; native Windows/macOS and the complete application/part gate remain unverified. |
 | U32 | PASS, final pending | `useSSE` probes once per failed connection, re-arms after `open`, and leaves a normal 200 response signed in. `probeSessionAfterStreamFailure` uses the five-second backend-health deadline and releases its shared in-flight promise in `finally`; direct and actual-hook tests cover the deadline and next-probe behavior. | No E2E or full lifecycle run; native Windows/macOS and the complete application/part gate remain unverified. |
-| U33(4) | PASS, final pending | Model queries and manual refresh retry only the exact startup response ``OpenCode server is not reachable. Start it with `opencode serve`.``. HTTP 500 failures use the existing normalized error and one request; query tests exercise the real hook retry and the manual-refresh no-retry path. | U33 remains partial overall; no E2E or full lifecycle run. |
-| U33(6) | Partial, final pending | No source change was needed: the existing delivery path is `AIQuestionProvider.getRemainingMs` to `PendingQuestionsPanel`; `useCountdown` is enabled only for a non-null value, and `applyTimer` generation/revision checks accept only current frames. The focused review found no asynchronous stale-null delivery path to change. | U33 remains partial overall; no E2E or full lifecycle run. |
+| U33(4) | PASS, final pending | Model queries and manual refresh retry only the exact startup response ``OpenCode server is not reachable. Start it with `opencode serve`.``. HTTP 500 failures use the existing normalized error and one request; query tests exercise the real hook retry and the manual-refresh no-retry path. | The forms packet below completes the remaining U33 source item; no E2E or full lifecycle run. |
+| U33(6) | PASS, final pending | No source change was needed: the existing delivery path is `AIQuestionProvider.getRemainingMs` to `PendingQuestionsPanel`; `useCountdown` is enabled only for a non-null value, and `applyTimer` generation/revision checks accept only current frames. The focused review found no asynchronous stale-null delivery path to change. | The forms packet below completes the remaining U33 source item; no E2E or full lifecycle run. |
 
 The exact focused Vitest command passed 4 files and 77 tests. Focused ESLint
 reported no issues, `git diff --check` was clean, and `npm run typecheck` passed
@@ -346,6 +347,119 @@ so restart safety is not promised.
 
 The newer W06 and U18 save/log changes remain unaccepted and are intentionally
 outside this packet. Their behavior is not used as source correspondence here.
+
+## Accepted workflow and log-history documentation checkpoint
+
+This prose checkpoint corresponds to accepted source trees
+`c7357fe7eac855492961a7fd3edd7bd1083aa979` (workflow, 25 accepted source
+files) and `64f08125396ef6dd19cb9ef23a8e831d71749f1f` (log history, 15 accepted
+source files), reviewed against app baseline
+`c662309ef80bd23a66b4f6a048e5d694a9b803e0` and website baseline
+`353a36a1cc98d50b5a777c89aba300af3d0f9012`. It updates only the granted app
+prose and website pages. This is a bounded documentation checkpoint: **PASS,
+final pending**. It does not claim whole-repository source acceptance, final
+part-gate acceptance, or delivery acceptance.
+
+| Finding | Status | Evidence and permanent coverage | Limits |
+| --- | --- | --- | --- |
+| W11 | PASS, final pending | Serialized execution-setup regeneration parses before the lock, rereads state under the lock, and preserves commentary plus the structured/raw baseline; the actual route caller is covered by the focused route test. | No E2E or full lifecycle run. |
+| W12 | PASS, final pending | Persisted merge/close decisions resume after interrupted dispatch and fence conflicting actions for the same PR; lifecycle callers and the actual close-completion writer are covered. | No live GitHub or full lifecycle run. |
+| W14 | PASS, final pending | Initial remote refresh failures write typed `refresh_pull_request` receipts with the PR number, error, and null remote state/URL while leaving `WAITING_PR_REVIEW` without a decision; receipt persistence uses the real database writer, with deterministic provider failures in the tests. | Provider failures are mocks; no live GitHub or E2E run. |
+| W15 | PASS, final pending | Recovery UI renders only server-advertised actions; metadata and the actual `ErrorView` DOM caller tests cover setup editing, note retry, and truthful details. | No E2E or full lifecycle run. |
+| W16 | PASS, final pending | Parser and unknown hook-policy warnings remain visible in the approval pane and the real artifact viewer; DOM tests exercise the rendered callers. | No E2E or full lifecycle run. |
+| W19 | PASS, final pending | Observed merged state is persisted before candidate/head rejection, so merged observation remains visible without representing close as success. | No E2E or full lifecycle run. |
+| W23 | PASS, final pending | Skip receipt identity includes action, item, phase, and phase attempt; same-attempt writes are idempotent and later attempts receive new receipts using the existing uniqueness boundary. | No compatibility migration or legacy deduplication is claimed. |
+| W27 | PASS, final pending | Manual QA Submit and Skip capture click-time draft/evidence/round synchronously; a later autosave remains the newer draft and does not replace submitted checks or cancel follow-up generation. Actual DOM and operation callers cover both actions. | Click snapshots are not unload-delivery guarantees; no E2E or full lifecycle run. |
+| W28 | PASS, final pending | Null artifact attempts remain unknown rather than becoming zero, and unknown workflow statuses advertise no actions; route and metadata callers cover both. | No E2E or full lifecycle run. |
+| W29 | PASS, final pending | Close reads live PR state before deciding, preserves generated artifact exclusions, and refuses arbitrary untracked-file exemptions; actual lifecycle callers cover merged and same-PR checkpoint fencing. | No E2E or full lifecycle run. |
+| U20 | PASS, final pending | Historical cache identity keeps `all` distinct from other scopes while the debug wire view remains stable. | No E2E or full lifecycle run. |
+| U21 | PASS, final pending | DEBUG history merges the three durable LoopTroop channels with ticket-session native OpenCode rows, preserving session filtering and mixed-source cursors. | Complete history still depends on available native files; upstream-deleted files cannot be recovered. |
+| U22/U23 | PASS, final pending | Non-AI rows preserve server ordering; AI rows use stable timestamp/mirror/occurrence identity through JSON serialization. | No E2E or full lifecycle run. |
+| U27 | PASS, final pending | Full drains retain native TanStack Query cancellation/refetch semantics, use `cancelRefetch: false` for older pages, and retry canceled or unchanged-cursor work without a global query interception. | No dependency or full lifecycle run. |
+| U30 | PASS, final pending | Attempt-scoped bead identities and occurrence suffixes remain covered by the actual Full Log and Phase Log callers. | No E2E or full lifecycle run. |
+| U31 | PASS, final pending | Action-triggered full drains suppress intermediate growing-array publication/sorts; native page materialization is LIMIT-bounded while lineage visibility work grows with ancestry depth. | No constant total query-work, bounded archive, or memory-free rendering claim. |
+| U33(3) | PASS, final pending | Coding tail identity includes timestamps. | The forms packet below completes the remaining U33 source item. |
+| U33(5) | PASS, final pending | Go-to-top scope and operation tokens retain canceled-owner isolation. | The forms packet below completes the remaining U33 source item. |
+| U33 overall | PASS, final pending | Combined U33(1), U33(3), U33(4), U33(5), and U33(6) coverage across the forms, log-history, and recovery packets; item 2 does not exist. | No E2E or full lifecycle run. |
+
+The workflow evidence reports 9 focused server files and 164 tests, a
+three-file follow-up of 96 tests with 47 overlapping verify tests, four client
+DOM files and 86 tests, one client-node file and 6 tests, passing typecheck,
+focused lint, and diff checks. The log evidence reports 8 files and 234 focused
+tests, four production probes, passing scoped lint and diff checks, and an
+earlier handoff typecheck blocked only by the peer-owned
+`server/workflow/mergeCompletion.ts` error. The current forms checkpoint passed
+both configured TypeScript projects, superseding that historical handoff note
+for this docs checkpoint. These totals are not double-counted. Exact source
+manifests, commands, results, and limits remain in
+`/tmp/looptroop-workflow-merge-evidence.md` and
+`/tmp/looptroop-log-history-evidence.md`; no E2E, lifecycle, destructive,
+staging, commit, or push operation is claimed.
+
+The documented history boundary is deliberate: diagnostic native-log reads
+remain bounded to ten files and 5 MiB per file, while complete DEBUG/history
+actions read the available native set. Four retained snapshots support cursor
+stability; expired cursors return `LOG_CURSOR_EXPIRED` rather than a partial
+page. Cold or unseen sessions still scan the needed prefix, upstream-deleted
+files cannot be recovered, and lineage visibility work grows with ancestry
+depth. Initial mount remains paginated; full drains are action-triggered.
+
+## Accepted client forms documentation checkpoint
+
+This prose checkpoint also corresponds to the accepted forms source tree
+`7575003e2ffb13f297afc35110d080dd14960b5b`, reviewed against app baseline
+`c662309ef80bd23a66b4f6a048e5d694a9b803e0`. The packet covers the owned form,
+model-picker, folder-picker, prompt-editor, diff, artifact-viewer, and routed
+modal callers listed in `/tmp/looptroop-client-forms-evidence.md`. This is a
+bounded documentation checkpoint: **PASS, final pending**. It does not claim
+whole-repository source acceptance, final part-gate acceptance, or delivery
+acceptance.
+
+| Finding | Status | Evidence and permanent coverage | Limits |
+| --- | --- | --- | --- |
+| P12/P13 | PASS, final pending | `ArtifactContentViewer` pairs equal-length plan/refined beads positionally, falls back to IDs when lengths differ, and uses the same pairs for rows and added-field counts; parsed expansion inputs are reused for the displayed sections. | No E2E or full lifecycle run. |
+| U05/U13 | PASS, final pending | `ModelPicker` distinguishes committed selection from keyboard-active option state with `aria-selected` and `aria-activedescendant`, and announces loading and model-query errors through live status/alert regions. | Native browser and assistive-technology verification remain unclaimed. |
+| U08 | PASS, final pending | Prompt editing keeps canonical save echoes, failed-save/revert feedback, later typing, prompt switches, dirty refetches, and preview results fenced to the current prompt and draft; explicit Revert adopts the returned default when the request snapshot is still current, while later edits remain dirty. | No E2E or full lifecycle run. |
+| U09 | PASS, final pending | Folder navigation and Git checks fence out-of-order responses; transient check failures are an error state with Retry, distinct from a valid path that is not a Git repository. | No E2E or full lifecycle run. |
+| U14 | PASS, final pending | The implemented `/` shortcut is board search only. | No E2E or full lifecycle run. |
+| U19 | PASS, final pending | Profile, project, ticket, and prompt forms compare actual snapshots, including custom controls; hydration/refetch does not absorb edits, successful saves acknowledge the submitted snapshot, failed saves retain drafts, and dirty modal close warns only while current values differ. The text diff has a bounded fine-grained fallback that returns full replacement text. | Unsaved in-memory modal drafts are not claimed to persist across reload; no E2E or full lifecycle run. |
+| U33(1) | PASS, final pending | Artifact readers use the current phase log rows through the log context and a stable load action, so structured expansion parsing/counting is not repeated for unrelated streamed log-context updates. | Combined U33 completion is recorded above; no E2E or full lifecycle run. |
+
+Forms evidence reports 8 independent real probes, 12 focused files with 292
+tests, focused lint and diff checks, both TypeScript projects, and the final
+Profile test plus all 22 blob-equality checks. The changed-path manifest is the
+22 source/test paths recorded in `/tmp/looptroop-client-forms-evidence.md`;
+the packet-listed `PromptsDialog` and `ProjectsPanel` test paths are absent in
+this checkout. No source, status metadata, cache implementation, or security
+file was edited.
+The combined accepted count is **141/154 (~92%)** at the forms boundary; the
+cache packet below raises it to **145/154 (~94%)**, leaving only **security (9)**
+unaccepted. The four finished delivery
+PRs are 163, 164, 165, and 166; no future PR number is inferred.
+
+## Accepted client ticket-cache documentation checkpoint
+
+This prose checkpoint also corresponds to the accepted cache source tree
+`3631150064d4e689a227cb5e3a2deaf3601b41e3`, reviewed against app baseline
+`c662309ef80bd23a66b4f6a048e5d694a9b803e0`. The exact source and test manifest
+and bounded results are recorded in `/tmp/looptroop-client-ticket-cache-evidence.md`.
+This is a bounded documentation checkpoint: **PASS, final pending**. It does
+not claim whole-repository source acceptance, final part-gate acceptance, or
+delivery acceptance.
+
+| Finding | Status | Evidence and permanent coverage | Limits |
+| --- | --- | --- | --- |
+| U10 | PASS, final pending | Ticket-list rows are normalized independently, so a malformed row is warned and skipped while valid rows survive; detail responses remain strict. Sparse action patches accept only valid fields, preserve good cached values when a field is invalid, and allow an explicit valid empty array to clear a collection. | No E2E or full lifecycle run. |
+| U11 | PASS, final pending | Patch scalar and occurrence validation is presence-sensitive, and project deletion matches the exact project-id prefix instead of numeric coercion. The direct action test proves invalid title/project data cannot erase a cached value while a valid status still applies. | No E2E or full lifecycle run. |
+| U15 | PASS, final pending | Confirmed ticket/project deletion cancels and removes ticket-keyed query families, clears durable logs, seen notices, UI revisions, rendered state, SSE cursor generations, question-collapse state, pending AI-detail invalidation, and the UI-state deletion fence; lists are retained for their normal refetch and unrelated tickets remain untouched. Reissued ids therefore start without the old cursor or rendered marker. | No E2E or full lifecycle run; cross-tab cleanup is not claimed. |
+| U17 | PASS, final pending | The delete barrier settles pending UI-state saves before DELETE, releases the queue on a failed delete, and fences late responses after confirmed deletion so stale writes cannot recreate state. Direct mocked coverage exercises both failed-delete recovery and same-id reissue. | No E2E or full lifecycle run. |
+
+Cache evidence reports 8 focused files and 100 tests, the supplied Astra-low
+reviewer repro with 1 pass and 5 skips, focused ESLint with no issues, both
+configured TypeScript projects, and a clean manifest diff. The current-tab
+boundary is intentional: no cross-tab deletion broadcast or other untested
+remote cleanup is promised. The combined accepted count is now **145/154
+(~94%)**; only **security (9)** remains unaccepted.
 
 ## Installer foundation
 

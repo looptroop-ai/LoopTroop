@@ -358,6 +358,103 @@ describe('Manual QA submission recovery and integrity', () => {
     expect(readManualQaResults(setup.paths.ticketDir, 1)?.submittedAt).toBe('2026-07-13T12:00:00.000Z')
   })
 
+  it('keeps the submitted snapshot when a newer autosave exists', async () => {
+    const setup = await prepareFixture()
+    insertPhaseArtifact(setup.ticket.id, {
+      phase: 'UI_STATE',
+      artifactType: 'ui_state:manual_qa_draft:v1',
+      content: JSON.stringify({
+        revision: 2,
+        data: {
+          results: {
+            'item-one': { itemId: 'item-one', status: 'pass', note: 'Edited after the click.' },
+          },
+        },
+      }),
+    })
+
+    const summary = await submitManualQa({
+      ticketId: setup.ticket.id,
+      version: 1,
+      draft: setup.draft,
+      guard: setup.guard,
+      sendEvent: vi.fn(),
+    })
+
+    expect(summary.outcome).toBe('passed')
+    expect(readManualQaResults(setup.paths.ticketDir, 1)?.results[0]?.note).toBe('')
+  })
+
+  it('keeps the clicked snapshot through paused fix generation while a newer draft is saved', async () => {
+    const setup = await prepareFixture()
+    setup.draft.results[0] = {
+      ...setup.draft.results[0]!,
+      outcome: 'fail',
+      observation: 'The clicked observation remains the submitted source.',
+    }
+    let releaseGeneration!: () => void
+    const generationPaused = new Promise<void>((resolve) => { releaseGeneration = resolve })
+    const generateFixBeads = vi.fn(async ({ draft }: { draft: ManualQaDraft }) => {
+      expect(draft.results[0]?.observation).toBe('The clicked observation remains the submitted source.')
+      await generationPaused
+      return [{
+        groupId: 'item:item-one',
+        title: 'Repair item one behavior',
+        description: 'Correct the implementation so item one remains usable.',
+        prdRefs: [],
+        contextGuidance: {
+          patterns: ['Follow the existing implementation boundary.'],
+          anti_patterns: ['Do not mask the failure in the UI.'],
+        },
+        acceptanceCriteria: ['Item one works as specified.'],
+        tests: ['Add an automated regression test for item one.'],
+        testCommands: [{ mode: 'process' as const, program: 'npm', args: ['run', 'test:server'], cwd: '.', env: {} }],
+        labels: ['manual-qa'],
+        blockedByGroupIds: [],
+        targetFiles: ['src/item-one.ts'],
+      }]
+    })
+    const submitted = submitManualQa({
+      ticketId: setup.ticket.id,
+      version: 1,
+      draft: setup.draft,
+      guard: setup.guard,
+      sendEvent: vi.fn(),
+      generateFixBeads,
+    })
+
+    await vi.waitFor(() => expect(generateFixBeads).toHaveBeenCalledOnce())
+    const newerDraft = {
+      ...setup.draft,
+      draftRevision: 2,
+      results: setup.draft.results.map((result) => ({
+        ...result,
+        observation: 'A newer autosave made after the click.',
+      })),
+      updatedAt: new Date().toISOString(),
+    }
+    insertPhaseArtifact(setup.ticket.id, {
+      phase: 'UI_STATE',
+      artifactType: 'ui_state:manual_qa_draft:v1',
+      content: JSON.stringify({ revision: 2, data: newerDraft }),
+    })
+    releaseGeneration()
+
+    const summary = await submitted
+    expect(summary.outcome).toBe('created_fixes')
+    expect(readManualQaResults(setup.paths.ticketDir, 1)?.results[0]?.observation)
+      .toBe('The clicked observation remains the submitted source.')
+    const storedDraft = JSON.parse(getLatestPhaseArtifact(
+      setup.ticket.id,
+      'ui_state:manual_qa_draft:v1',
+      'UI_STATE',
+    )!.content) as { revision: number; data: ManualQaDraft }
+    expect(storedDraft).toMatchObject({
+      revision: 2,
+      data: { results: [{ observation: 'A newer autosave made after the click.' }] },
+    })
+  })
+
   it('supports a required waiver without a reason, optional pending, and skip completion paths', async () => {
     const waived = await prepareFixture()
     waived.draft.results[0] = { ...waived.draft.results[0]!, outcome: 'waive', reason: '' }

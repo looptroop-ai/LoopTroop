@@ -35,7 +35,7 @@ interface GitCheckResponse {
     repoRoot?: string
 }
 
-type GitStatus = 'none' | 'checking' | 'valid' | 'invalid'
+type GitStatus = 'none' | 'checking' | 'valid' | 'invalid' | 'error'
 
 export function FolderPicker({ open, onClose, onSelect, initialPath }: FolderPickerProps) {
 
@@ -87,7 +87,7 @@ export function FolderPicker({ open, onClose, onSelect, initialPath }: FolderPic
                 setPerformanceWarning(String(d.performanceWarning ?? ''))
             } catch (err) {
                 if (generation !== requestGenerationRef.current) return
-                setGitStatus('invalid')
+                setGitStatus('error')
                 setGitMessage(describeQueryError(err) ?? 'Git check failed.')
                 setPerformanceWarning('')
             }
@@ -98,6 +98,10 @@ export function FolderPicker({ open, onClose, onSelect, initialPath }: FolderPic
         const generation = ++requestGenerationRef.current
         setIsLoading(true)
         setError(null)
+        setData(null)
+        setGitStatus('none')
+        setGitMessage('')
+        setPerformanceWarning('')
         try {
             const res = await fetch(`/api/projects/ls?path=${encodeURIComponent(pathStr)}`)
             await throwIfNotOk(res, 'Failed to fetch directory contents')
@@ -105,6 +109,7 @@ export function FolderPicker({ open, onClose, onSelect, initialPath }: FolderPic
             if (generation !== requestGenerationRef.current) return
             if (d.error) {
                 setError(d.error)
+                setGitStatus('none')
             } else {
                 setData(d)
                 setInputPath(d.currentPath)
@@ -132,6 +137,8 @@ export function FolderPicker({ open, onClose, onSelect, initialPath }: FolderPic
         ? <CheckCircle2 className="h-5 w-5 text-green-500 shrink-0" />
         : gitStatus === 'invalid'
             ? <XCircle className="h-5 w-5 text-red-500 shrink-0" />
+            : gitStatus === 'error'
+                ? <XCircle className="h-5 w-5 text-amber-500 shrink-0" />
             : <CircleDot className={cn('h-5 w-5 text-orange-500 shrink-0', gitStatus === 'checking' && 'animate-pulse')} />
 
     return (
@@ -171,8 +178,11 @@ export function FolderPicker({ open, onClose, onSelect, initialPath }: FolderPic
                 </div>
 
                 {error && (
-                    <div className="bg-destructive/10 text-destructive px-4 py-3 rounded-md text-sm font-medium">
-                        {error}
+                    <div role="alert" className="flex items-center justify-between gap-3 bg-destructive/10 text-destructive px-4 py-3 rounded-md text-sm font-medium">
+                        <span>{error}</span>
+                        <Button type="button" variant="outline" size="sm" onClick={() => fetchLs(inputPath)} disabled={isLoading}>
+                            Retry
+                        </Button>
                     </div>
                 )}
 
@@ -210,6 +220,7 @@ export function FolderPicker({ open, onClose, onSelect, initialPath }: FolderPic
                                     'text-xs mt-0.5',
                                     gitStatus === 'valid' ? 'text-green-600 dark:text-green-400'
                                         : gitStatus === 'invalid' ? 'text-red-600 dark:text-red-400'
+                                            : gitStatus === 'error' ? 'text-amber-700 dark:text-amber-300'
                                             : 'text-muted-foreground',
                                 )}>
                                     {gitMessage}
@@ -223,6 +234,11 @@ export function FolderPicker({ open, onClose, onSelect, initialPath }: FolderPic
                         </div>
                     </div>
                     <div className="flex gap-2 shrink-0">
+                        {gitStatus === 'error' && (
+                            <Button type="button" variant="outline" onClick={() => fetchLs(inputPath)} disabled={isLoading}>
+                                Retry
+                            </Button>
+                        )}
                         <Button variant="outline" onClick={onClose}>Cancel</Button>
                         <Tooltip>
                           <TooltipTrigger asChild>
@@ -234,7 +250,7 @@ export function FolderPicker({ open, onClose, onSelect, initialPath }: FolderPic
                                                     Select This Folder
                                                 </Button>
                           </TooltipTrigger>
-                          <TooltipContent className="max-w-xs text-center text-balance">{gitStatus === 'invalid' ? 'Selected folder is not a git repository' : gitStatus === 'checking' ? 'Checking git status...' : ''}</TooltipContent>
+                          <TooltipContent className="max-w-xs text-center text-balance">{gitStatus === 'invalid' ? 'Selected folder is not a git repository' : gitStatus === 'error' ? 'Git check failed. Retry the check.' : gitStatus === 'checking' ? 'Checking git status...' : ''}</TooltipContent>
                         </Tooltip>
                     </div>
                 </div>

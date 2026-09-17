@@ -91,6 +91,12 @@ describe.concurrent('workflow metadata', () => {
     expect(getAvailableWorkflowActions('CANCELED')).toEqual([])
   })
 
+  it('offers no actions for unknown workflow statuses', () => {
+    expect(getAvailableWorkflowActions('NOT_A_STATUS')).toEqual([])
+    expect(getAvailableWorkflowActions('')).toEqual([])
+    expect(getAvailableWorkflowActions('toString')).toEqual([])
+  })
+
   it('provides long-form details for every workflow phase', () => {
     for (const phase of WORKFLOW_PHASES) {
       expect(phase.details.overview.trim().length).toBeGreaterThan(0)
@@ -344,6 +350,20 @@ describe.concurrent('workflow metadata', () => {
     expect(interviewPhase?.contextSummary).toEqual(['ticket_details'])
     expect(finalTestPhase?.contextSummary).toEqual(['ticket_details', 'prd', 'beads', 'final_test_notes'])
     expect(pullRequestPhase?.contextSummary).toEqual(['ticket_details', 'prd'])
+  })
+
+  it('documents bounded PR recovery and server-advertised blocked actions', () => {
+    const pullRequestPhase = WORKFLOW_PHASES.find((phase) => phase.id === 'WAITING_PR_REVIEW')
+    const blockedPhase = WORKFLOW_PHASES.find((phase) => phase.id === 'BLOCKED_ERROR')
+    const blockedDetails = blockedPhase?.details
+
+    expect(pullRequestPhase?.description).toContain('durable closed-unmerged report')
+    expect(pullRequestPhase?.details.overview).toContain('fresh remote observation of an already-merged PR')
+    expect(pullRequestPhase?.details.notes?.join(' ')).toContain('stale checkpoint for a different PR')
+    expect(blockedPhase?.description).toContain('advertised by the server')
+    expect(blockedDetails?.overview).toContain('does not invent setup-plan editing')
+    expect(blockedDetails?.steps.join(' ')).toContain('A setup-approval error does not itself grant')
+    expect(blockedDetails?.notes?.join(' ')).toContain('does not imply note-bearing retry')
   })
 
   it('documents confirmed-stop, batch-claim, and bounded-continuation safety', () => {

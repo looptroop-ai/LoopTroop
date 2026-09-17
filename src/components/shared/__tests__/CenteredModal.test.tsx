@@ -116,6 +116,24 @@ describe('CenteredModal — dialog semantics and focus containment', () => {
     const backdrop = screen.getByRole('dialog', { name: 'Configuration' }).parentElement!
     expect(backdrop).toHaveClass('z-[60]')
   })
+
+  it('confirms only when the caller reports an unsaved value', () => {
+    const onClose = vi.fn()
+    const confirm = vi.spyOn(window, 'confirm').mockReturnValue(false)
+    render(
+      <TooltipProvider>
+        <CenteredModal open onClose={onClose} title="Configuration" isDirty>
+          <button type="button">inside</button>
+        </CenteredModal>
+      </TooltipProvider>,
+    )
+
+    fireEvent.keyDown(document, { key: 'Escape' })
+
+    expect(confirm).toHaveBeenCalledWith('You have unsaved changes. Close this window anyway?')
+    expect(onClose).not.toHaveBeenCalled()
+    confirm.mockRestore()
+  })
 })
 
 /**

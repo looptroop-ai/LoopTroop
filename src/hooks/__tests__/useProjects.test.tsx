@@ -111,4 +111,23 @@ describe('useProjects', () => {
     expect(invalidateSpy).toHaveBeenCalledWith({ queryKey: ['projects'] })
     expect(invalidateSpy).toHaveBeenCalledWith({ queryKey: ['tickets'] })
   })
+
+  it('matches project ticket ids without numeric coercion', async () => {
+    vi.stubGlobal('fetch', vi.fn(async () => new Response(JSON.stringify({ success: true }), { status: 200 })))
+
+    const queryClient = createTestQueryClient()
+    queryClient.setQueryData(['ticket', '1:EXACT-1'], { id: '1:EXACT-1' })
+    queryClient.setQueryData(['ticket', '1e0:OTHER-1'], { id: '1e0:OTHER-1' })
+    queryClient.setQueryData(['ticket', ' 1 :OTHER-2'], { id: ' 1 :OTHER-2' })
+
+    const { result } = renderHook(() => useDeleteProject(), {
+      wrapper: createWrapper(queryClient),
+    })
+
+    await act(async () => { await result.current.mutateAsync(1) })
+
+    expect(queryClient.getQueryData(['ticket', '1:EXACT-1'])).toBeUndefined()
+    expect(queryClient.getQueryData(['ticket', '1e0:OTHER-1'])).toEqual({ id: '1e0:OTHER-1' })
+    expect(queryClient.getQueryData(['ticket', ' 1 :OTHER-2'])).toEqual({ id: ' 1 :OTHER-2' })
+  })
 })

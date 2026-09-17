@@ -1,6 +1,12 @@
 import { QueryClient } from '@tanstack/react-query'
-import { describe, expect, it } from 'vitest'
+import { afterEach, describe, expect, it, vi } from 'vitest'
 import { clearTicketCaches } from '../useTickets'
+import {
+  hasTicketRendered,
+  markTicketRendered,
+  getTicketQuestionsCollapsedStorageKey,
+  getTicketSseLastEventIdStorageKey,
+} from '@/components/ticket/renderedTickets'
 import {
   clearTicketUiStateRevisions,
   getTicketUiStateRevision,
@@ -9,6 +15,8 @@ import {
 
 const ticketId = '1:DEL-1'
 const otherTicketId = '1:DEL-2'
+
+afterEach(() => vi.unstubAllGlobals())
 
 /** One entry per query family that keys on a ticket id, as of this change. */
 function seedCache(client: QueryClient) {
@@ -91,5 +99,32 @@ describe('clearTicketCaches module-scope stores', () => {
     await clearTicketCaches(client, ticketId)
 
     expect(client.getQueryData(['artifact', { ticketId }])).toBeUndefined()
+  })
+
+  it('clears rendered, cursor, and question-collapse state without touching another ticket', async () => {
+    const client = new QueryClient()
+    const values = new Map<string, string>()
+    const storage = {
+      getItem: (key: string) => values.get(key) ?? null,
+      setItem: (key: string, value: string) => { values.set(key, value) },
+      removeItem: (key: string) => { values.delete(key) },
+    }
+    vi.stubGlobal('localStorage', storage)
+    vi.stubGlobal('window', { localStorage: storage, dispatchEvent: vi.fn() })
+    markTicketRendered(ticketId)
+    markTicketRendered(otherTicketId)
+    storage.setItem(getTicketSseLastEventIdStorageKey(ticketId), '12')
+    storage.setItem(getTicketQuestionsCollapsedStorageKey(ticketId), '1')
+    storage.setItem(getTicketSseLastEventIdStorageKey(otherTicketId), '8')
+    storage.setItem(getTicketQuestionsCollapsedStorageKey(otherTicketId), '1')
+
+    await clearTicketCaches(client, ticketId)
+
+    expect(hasTicketRendered(ticketId)).toBe(false)
+    expect(hasTicketRendered(otherTicketId)).toBe(true)
+    expect(storage.getItem(getTicketSseLastEventIdStorageKey(ticketId))).toBeNull()
+    expect(storage.getItem(getTicketQuestionsCollapsedStorageKey(ticketId))).toBeNull()
+    expect(storage.getItem(getTicketSseLastEventIdStorageKey(otherTicketId))).toBe('8')
+    expect(storage.getItem(getTicketQuestionsCollapsedStorageKey(otherTicketId))).toBe('1')
   })
 })

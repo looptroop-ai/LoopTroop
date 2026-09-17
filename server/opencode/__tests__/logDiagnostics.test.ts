@@ -1,4 +1,4 @@
-import { writeFileSync } from 'node:fs'
+import { appendFileSync, symlinkSync, utimesSync, writeFileSync } from 'node:fs'
 import { join } from 'node:path'
 import { afterEach, describe, expect, it } from 'vitest'
 import { makeTempDir, removeTempDir } from '../../test/tempDir'
@@ -6,8 +6,14 @@ import {
   enrichGenericOpenCodeProviderError,
   findOpenCodeLogErrorDetails,
   LOOPTROOP_OPENCODE_LOG_DIR,
+  listOpenCodeNativeLogFiles,
+  readOpenCodeNativeLogFile,
+  readOpenCodeNativeLogSnapshot,
   readOpenCodeNativeLogs,
+  type OpenCodeNativeLogReadStats,
 } from '../logDiagnostics'
+import { normalizeLogRecord } from '../../../src/context/logUtils'
+import { foldHistoricalLogPages } from '../../../src/hooks/useTicketHistoricalLogs'
 
 const tempDirs: string[] = []
 
@@ -150,5 +156,104 @@ describe('readOpenCodeNativeLogs', () => {
     ].join('\n'))
 
     expect(readOpenCodeNativeLogs(['ses-1'], { logDirs: [dir] })).toHaveLength(1)
+  })
+
+  it('complete snapshots include old and oversized files beyond diagnostic defaults', () => {
+    const dir = makeLogDir()
+    const now = Date.now() / 1000
+    for (let index = 0; index < 11; index += 1) {
+      const path = join(dir, `new-${index}.log`)
+      writeFileSync(path, `time="2026-05-22T15:16:${String(index).padStart(2, '0')}.000Z" session.id=other msg="new"\n`)
+      utimesSync(path, now + index, now + index)
+    }
+    const oldPath = join(dir, 'old.log')
+    writeFileSync(oldPath, 'time="2026-05-22T15:16:00.000Z" session.id=ses-old msg="old history"\n')
+    utimesSync(oldPath, now - 102, now - 102)
+    const oversizedPath = join(dir, 'oversized.log')
+    writeFileSync(oversizedPath, `${'x'.repeat(5 * 1024 * 1024)}\ntime="2026-05-22T15:17:00.000Z" session.id=ses-old msg="large history"\n`)
+    utimesSync(oversizedPath, now - 101, now - 101)
+
+    expect(readOpenCodeNativeLogs(['ses-old'], { logDirs: [dir] })).toHaveLength(0)
+    const snapshot = readOpenCodeNativeLogSnapshot(['ses-old'], { logDirs: [dir] })
+    expect(snapshot.entries.map(entry => entry.content)).toEqual([
+      expect.stringContaining('large history'),
+      expect.stringContaining('old history'),
+    ])
+    expect(snapshot.snapshotKey).toMatch(/^[a-f0-9]{64}$/)
+  })
+
+  it('serializes stable native identities through the client fold', async () => {
+    const dir = makeLogDir()
+    writeLog(dir, [
+      'time="2026-05-22T15:16:03.000Z" level=INFO session.id=ses-identical msg="same line"',
+      'time="2026-05-22T15:16:03.000Z" level=INFO session.id=ses-identical msg="same line"',
+    ].join('\n'))
+    const [file] = listOpenCodeNativeLogFiles({ logDirs: [dir] })
+    const records = await readOpenCodeNativeLogFile(file!, ['ses-identical'])
+    expect(records).toHaveLength(2)
+    expect(records[0]?.entryId).toMatch(/^native:[a-f0-9]{64}$/)
+    expect(records[0]?.entryId).not.toBe(records[1]?.entryId)
+
+    // This is the actual route boundary: nativeIdentity is intentionally
+    // private, while the stable enumerable entryId must survive JSON.
+    const wireRecords = JSON.parse(JSON.stringify(records)) as Array<Record<string, unknown>>
+    const folded = foldHistoricalLogPages([{
+      entries: wireRecords.map(record => normalizeLogRecord(record, 'opencode_native')),
+      olderCursor: null,
+      hasOlder: false,
+      totalEntries: null,
+      totalTextLines: null,
+      modelIds: null,
+    }], 'overview')
+    expect(folded.entries).toHaveLength(2)
+    expect(new Set(folded.entries.map(entry => entry.entryId)).size).toBe(2)
+  })
+
+  it('reads only the appended byte range and reports bounded indexing work', async () => {
+    const dir = makeLogDir()
+    const path = join(dir, 'append.log')
+    writeLog(dir, 'time="2026-05-22T15:16:03.000Z" session.id=ses-append msg="first"\n', 'append.log')
+    const firstStats = {} as OpenCodeNativeLogReadStats
+    await readOpenCodeNativeLogFile(
+      listOpenCodeNativeLogFiles({ logDirs: [dir] })[0]!,
+      ['ses-append'],
+      { stats: firstStats },
+    )
+    appendFileSync(path, 'time="2026-05-22T15:16:04.000Z" session.id=ses-append msg="second"\n')
+    const candidate = listOpenCodeNativeLogFiles({ logDirs: [dir] })[0]!
+    const secondStats = {} as OpenCodeNativeLogReadStats
+    const appended = await readOpenCodeNativeLogFile(candidate, ['ses-append'], {
+      startOffset: firstStats.indexedOffset,
+      startLine: firstStats.indexedLines,
+      stats: secondStats,
+    })
+
+    expect(firstStats.indexedOffset).toBeLessThan(candidate.size)
+    expect(secondStats.bytesRead).toBe(candidate.size - firstStats.indexedOffset)
+    expect(secondStats.bytesRead).toBeLessThan(candidate.size)
+    expect(secondStats.linesRead).toBe(1)
+    expect(appended.map(entry => entry.content)).toEqual([expect.stringContaining('second')])
+  })
+
+  it('propagates index callback failures instead of treating them as bad log lines', async () => {
+    const dir = makeLogDir()
+    writeLog(dir, 'time="2026-05-22T15:16:03.000Z" session.id=ses-index msg="first"\n')
+    const candidate = listOpenCodeNativeLogFiles({ logDirs: [dir] })[0]!
+
+    await expect(readOpenCodeNativeLogFile(candidate, ['ses-index'], {
+      onEntry: () => { throw new Error('SQLITE_FULL') },
+    })).rejects.toThrow('SQLITE_FULL')
+  })
+
+  it('propagates a complete candidate metadata error instead of omitting it', () => {
+    const dir = makeLogDir()
+    symlinkSync(join(dir, 'missing.log'), join(dir, 'broken.log'))
+    expect(() => listOpenCodeNativeLogFiles({ logDirs: [dir] })).toThrow()
+  })
+
+  it('propagates a complete-reader candidate error instead of caching an empty snapshot', async () => {
+    const dir = makeLogDir()
+    await expect(readOpenCodeNativeLogFile({ path: join(dir, 'missing.log'), mtimeMs: 0, size: 1 }, ['ses-missing']))
+      .rejects.toThrow()
   })
 })

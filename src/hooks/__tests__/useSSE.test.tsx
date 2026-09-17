@@ -7,6 +7,10 @@ import { BACKEND_HEALTH_TIMEOUT_MS, SSE_RECONNECT_DELAY_MS } from '@/lib/constan
 import { __sessionStateForTests, isSignedOut } from '@/lib/sessionState'
 import { getTicketArtifactsQueryKey, useTicketArtifacts, type TicketArtifact } from '../useTicketArtifacts'
 import { getTicketPhaseAttemptsQueryKey } from '../useTicketPhaseAttempts'
+import {
+  clearTicketPersistentState,
+  getTicketSseLastEventIdStorageKey,
+} from '@/components/ticket/renderedTickets'
 
 vi.mock('@/lib/devApi', () => ({
   getApiUrl: (path: string, options?: { directInDevelopment?: boolean }) =>
@@ -783,6 +787,32 @@ describe('useSSE', () => {
     expect(callsAfterDelay).toBe(1)
   })
 
+  it('drops a pending AI details invalidation when the ticket is deleted', async () => {
+    const ticketId = '1:T-deleted-ai-details'
+    const invalidateSpy = vi.spyOn(queryClient, 'invalidateQueries')
+    renderHook(() => useSSE({ ticketId, onEvent: vi.fn<SSEHandler>() }))
+
+    await waitFor(() => expect(MockEventSource.instances).toHaveLength(1))
+
+    await act(async () => {
+      MockEventSource.instances[0]!.emit('ai_metrics', {
+        ticketId,
+        phase: 'CODING',
+        modelId: 'openai/gpt-5.4',
+      }, '')
+    })
+
+    const aiDetailsKey = { queryKey: ['ticket-ai-details', ticketId] }
+    expect(invalidateSpy).not.toHaveBeenCalledWith(aiDetailsKey)
+
+    clearTicketPersistentState(ticketId)
+    await act(async () => {
+      await new Promise((resolve) => setTimeout(resolve, 600))
+    })
+
+    expect(invalidateSpy).not.toHaveBeenCalledWith(aiDetailsKey)
+  })
+
   it('tracks reconnecting state when the live stream drops', async () => {
     const ticketId = '1:T-42'
     const { result } = renderHook(() => useSSE({ ticketId, onEvent: vi.fn<SSEHandler>() }))
@@ -965,6 +995,28 @@ describe('useSSE', () => {
     // belonging to a different ticket, skipping everything before it.
     expect(result.current.lastEventIdRef.current).toBe('0')
     expect(onEvent).not.toHaveBeenCalled()
+  })
+
+  it('fences a cleared cursor from the active and reissued ticket streams', async () => {
+    const ticketId = '1:T-reissued'
+    renderHook(() => useSSE({ ticketId, onEvent: vi.fn<SSEHandler>() }))
+    await waitFor(() => expect(MockEventSource.instances).toHaveLength(1))
+    const oldSource = MockEventSource.instances[0]!
+
+    await act(async () => {
+      oldSource.emit('progress', { ticketId, content: 'old' }, '12')
+    })
+    expect(localStorage.getItem(getTicketSseLastEventIdStorageKey(ticketId))).toBe('12')
+
+    clearTicketPersistentState(ticketId)
+    expect(oldSource.closed).toBe(true)
+    expect(localStorage.getItem(getTicketSseLastEventIdStorageKey(ticketId))).toBeNull()
+
+    oldSource.emitAfterClose('progress', { ticketId, content: 'late old event' }, '99')
+    expect(localStorage.getItem(getTicketSseLastEventIdStorageKey(ticketId))).toBeNull()
+
+    await waitFor(() => expect(MockEventSource.instances).toHaveLength(2))
+    expect(MockEventSource.instances[1]!.url).not.toContain('lastEventId=')
   })
 
   it('opens no stream when the hook unmounts before its queued connect runs', async () => {

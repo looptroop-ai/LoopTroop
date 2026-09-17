@@ -34,6 +34,23 @@ interface ProjectFormProps {
   onClose: () => void
   onBack?: () => void
   project?: Project
+  onDirtyChange?: (isDirty: boolean) => void
+}
+
+function projectDraftSnapshot(values: {
+  name: string
+  shortname: string
+  folder: string
+  icon: string
+  color: string
+  manualQaOverride: ManualQaOverride
+  aiQuestionsOverride: AiQuestionsOverride
+  aiQuestionWindowOverride: AiQuestionWindowOverride
+  gitHookPolicy: GitHookPolicy
+  ignoreMode: IgnoreMode
+  existingStateAction: ExistingStateAction
+}): string {
+  return JSON.stringify(values)
 }
 
 interface GitCheckResponse {
@@ -71,12 +88,12 @@ function formatRelativeTime(dateStr: string) {
   return `${Math.floor(days / 365)} years ago`
 }
 
-export function ProjectForm({ onClose, onBack, project }: ProjectFormProps) {
+export function ProjectForm({ onClose, onBack, project, onDirtyChange }: ProjectFormProps) {
   const createProject = useCreateProject()
   const updateProject = useUpdateProject()
   const deleteProject = useDeleteProject()
   const { addToast } = useToast()
-  const { data: profile } = useProfile()
+  const { data: profile, isLoading: profileLoading } = useProfile()
   const { data: projects = [] } = useProjects()
   const isEditing = !!project
   const [name, setName] = useState(project?.name ?? '')
@@ -112,6 +129,19 @@ export function ProjectForm({ onClose, onBack, project }: ProjectFormProps) {
   const [isAdvancedOpen, setIsAdvancedOpen] = useState(false)
   const restorePrefillKeyRef = useRef<string | null>(null)
   const profileDefaultsAppliedRef = useRef(isEditing || !!profile)
+  const projectBaselineRef = useRef<string | null>(null)
+  const projectInitialDraftRef = useRef<string | null>(null)
+  const pendingHydrationBaselineRef = useRef<string | null>(null)
+  const projectInitialValuesRef = useRef({
+    name,
+    shortname,
+    folder,
+    icon,
+    color,
+    aiQuestionsOverride,
+    aiQuestionWindowOverride,
+    existingStateAction,
+  })
   const closeView = onBack ?? onClose
   const restoreMode = !isEditing
     && !gitInfo.alreadyAttached
@@ -128,6 +158,22 @@ export function ProjectForm({ onClose, onBack, project }: ProjectFormProps) {
     ? projects.find((existingProject) => existingProject.shortname.trim().toUpperCase() === shortname.trim().toUpperCase())
     : undefined
   const hasProjectIdentityConflict = !!duplicateNameProject || !!duplicateShortnameProject
+  const draftSnapshot = projectDraftSnapshot({
+    name,
+    shortname,
+    folder,
+    icon,
+    color,
+    manualQaOverride,
+    aiQuestionsOverride,
+    aiQuestionWindowOverride,
+    gitHookPolicy,
+    ignoreMode,
+    existingStateAction,
+  })
+  const draftSnapshotRef = useRef(draftSnapshot)
+  draftSnapshotRef.current = draftSnapshot
+  if (projectInitialDraftRef.current === null) projectInitialDraftRef.current = draftSnapshot
 
   useEffect(() => {
     if (!folder.trim()) {
@@ -206,11 +252,68 @@ export function ProjectForm({ onClose, onBack, project }: ProjectFormProps) {
 
   useEffect(() => {
     if (profileDefaultsAppliedRef.current || isEditing || !profile || restorePrefillKeyRef.current) return
+    const currentDraftIsDirty = projectBaselineRef.current !== null
+      ? draftSnapshotRef.current !== projectBaselineRef.current
+      : draftSnapshotRef.current !== projectInitialDraftRef.current
+    const nextManualQaOverride = profile.manualQaEnabled
+    const nextGitHookPolicy = profile.gitHookPolicy
+    const nextIgnoreMode = profile.ignoreMode ?? DEFAULT_IGNORE_MODE
     profileDefaultsAppliedRef.current = true
-    setManualQaOverride(profile.manualQaEnabled)
-    setGitHookPolicy(profile.gitHookPolicy)
-    setIgnoreMode(profile.ignoreMode ?? DEFAULT_IGNORE_MODE)
-  }, [isEditing, profile])
+    if (currentDraftIsDirty) {
+      // Keep the draft, but compare it with the values that arrived from the
+      // profile so the modal still explains what would be discarded. Identity
+      // fields and explicit overrides have no profile value: their baseline is
+      // the value present before hydration, never text typed while it raced.
+      projectBaselineRef.current = projectDraftSnapshot({
+        ...projectInitialValuesRef.current,
+        manualQaOverride: nextManualQaOverride,
+        aiQuestionsOverride: projectInitialValuesRef.current.aiQuestionsOverride,
+        aiQuestionWindowOverride: projectInitialValuesRef.current.aiQuestionWindowOverride,
+        gitHookPolicy: nextGitHookPolicy,
+        ignoreMode: nextIgnoreMode,
+        existingStateAction: projectInitialValuesRef.current.existingStateAction,
+      })
+      onDirtyChange?.(true)
+      return
+    }
+    pendingHydrationBaselineRef.current = projectDraftSnapshot({
+      name,
+      shortname,
+      folder,
+      icon,
+      color,
+      manualQaOverride: nextManualQaOverride,
+      aiQuestionsOverride,
+      aiQuestionWindowOverride,
+      gitHookPolicy: nextGitHookPolicy,
+      ignoreMode: nextIgnoreMode,
+      existingStateAction,
+    })
+    setManualQaOverride(nextManualQaOverride)
+    setGitHookPolicy(nextGitHookPolicy)
+    setIgnoreMode(nextIgnoreMode)
+  }, [aiQuestionWindowOverride, aiQuestionsOverride, color, existingStateAction, folder, icon, ignoreMode, isEditing, manualQaOverride, name, onDirtyChange, profile, shortname])
+
+  useEffect(() => {
+    if (pendingHydrationBaselineRef.current && draftSnapshot === pendingHydrationBaselineRef.current) {
+      projectBaselineRef.current = pendingHydrationBaselineRef.current
+      pendingHydrationBaselineRef.current = null
+    } else if (
+      projectBaselineRef.current === null
+      && pendingHydrationBaselineRef.current === null
+    ) {
+      // The first draft is the meaningful baseline even while profile defaults
+      // are still loading. Identity fields have no profile default; if no
+      // profile arrives, never turn a value typed during loading into a clean
+      // baseline.
+      projectBaselineRef.current = projectInitialDraftRef.current ?? draftSnapshot
+    }
+  }, [draftSnapshot, isEditing, profile, profileLoading])
+
+  const isDirty = projectBaselineRef.current !== null && draftSnapshot !== projectBaselineRef.current
+  useEffect(() => {
+    onDirtyChange?.(isDirty)
+  }, [isDirty, onDirtyChange])
 
   const handleBrowseFolder = () => {
     setIsFolderPickerOpen(true)
@@ -222,6 +325,7 @@ export function ProjectForm({ onClose, onBack, project }: ProjectFormProps) {
   }
 
   const createProjectWithSelectedAction = () => {
+    const submittedSnapshot = draftSnapshotRef.current
     createProject.mutate(
       {
         name,
@@ -238,6 +342,8 @@ export function ProjectForm({ onClose, onBack, project }: ProjectFormProps) {
       },
       {
         onSuccess: () => {
+          projectBaselineRef.current = submittedSnapshot
+          onDirtyChange?.(draftSnapshotRef.current !== submittedSnapshot)
           const successMessage = !restoreMode
             ? 'Project created.'
             : existingStateAction === 'clear_tickets'
@@ -246,7 +352,7 @@ export function ProjectForm({ onClose, onBack, project }: ProjectFormProps) {
                 ? 'Fresh project created after removing existing LoopTroop state.'
                 : 'Project restored from existing LoopTroop data.'
           addToast('success', successMessage)
-          closeView()
+          if (draftSnapshotRef.current === submittedSnapshot) closeView()
         },
       },
     )
@@ -255,6 +361,7 @@ export function ProjectForm({ onClose, onBack, project }: ProjectFormProps) {
   const handleSubmit = (e: React.FormEvent) => {
     e.preventDefault()
     if (isEditing) {
+      const submittedSnapshot = draftSnapshotRef.current
       updateProject.mutate(
         {
           id: project.id,
@@ -268,8 +375,10 @@ export function ProjectForm({ onClose, onBack, project }: ProjectFormProps) {
         },
         {
           onSuccess: () => {
+            projectBaselineRef.current = submittedSnapshot
+            onDirtyChange?.(draftSnapshotRef.current !== submittedSnapshot)
             addToast('success', 'Project updated.')
-            closeView()
+            if (draftSnapshotRef.current === submittedSnapshot) closeView()
           },
         },
       )

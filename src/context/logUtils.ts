@@ -23,6 +23,9 @@ export interface LogEntry {
   sessionId?: string
   beadId?: string
   beadIteration?: number
+  /** Server-side AI pagination identity; not shown to users. */
+  _logMirrorKey?: string
+  _logMirrorOccurrence?: number
   timeoutMs?: number
   deadlineAt?: string
   timeoutKind?: PromptTimeoutKind
@@ -114,7 +117,7 @@ const LOG_TYPE_TAGS: Record<string, string> = {
 export const serverLogCache = new Map<string, Array<Record<string, unknown>>>()
 
 function normalizeChannel(channel?: LogChannel): LogChannel {
-  return channel === 'debug' || channel === 'ai' ? channel : 'normal'
+  return channel === 'debug' || channel === 'ai' || channel === 'all' ? channel : 'normal'
 }
 
 export function getServerLogCacheKey(ticketId: string, scope: ServerLogScope = {}): string {
@@ -306,6 +309,10 @@ export function normalizeLogRecord(data: Record<string, unknown>, fallbackPhase:
   const sessionId = typeof data.sessionId === 'string' ? data.sessionId : undefined
   const beadId = typeof data.beadId === 'string' ? data.beadId : undefined
   const beadIteration = normalizePositiveNumber(data.beadIteration ?? nested?.beadIteration)
+  const mirrorKey = typeof data._logMirrorKey === 'string' ? data._logMirrorKey : undefined
+  const mirrorOccurrence = typeof data._logMirrorOccurrence === 'number' && Number.isSafeInteger(data._logMirrorOccurrence)
+    ? data._logMirrorOccurrence
+    : undefined
   const timeoutMs = typeof data.timeoutMs === 'number' && Number.isFinite(data.timeoutMs)
     ? data.timeoutMs
     : undefined
@@ -334,6 +341,8 @@ export function normalizeLogRecord(data: Record<string, unknown>, fallbackPhase:
     ...(sessionId ? { sessionId } : {}),
     ...(beadId ? { beadId } : {}),
     ...(beadIteration !== undefined ? { beadIteration } : {}),
+    ...(mirrorKey ? { _logMirrorKey: mirrorKey } : {}),
+    ...(mirrorOccurrence !== undefined ? { _logMirrorOccurrence: mirrorOccurrence } : {}),
     ...(timeoutMs !== undefined ? { timeoutMs } : {}),
     ...(deadlineAt ? { deadlineAt } : {}),
     ...(timeoutKind ? { timeoutKind } : {}),
@@ -360,6 +369,10 @@ export function normalizeStoredEntry(entry: Partial<LogEntry>, fallbackStatus: s
   const timeoutKind = deriveTimeoutKind(entry as Record<string, unknown>)
   const phaseAttempt = normalizePhaseAttempt(entry.phaseAttempt)
   const beadIteration = normalizePositiveNumber(entry.beadIteration)
+  const mirrorKey = typeof entry._logMirrorKey === 'string' ? entry._logMirrorKey : undefined
+  const mirrorOccurrence = typeof entry._logMirrorOccurrence === 'number' && Number.isSafeInteger(entry._logMirrorOccurrence)
+    ? entry._logMirrorOccurrence
+    : undefined
   const audience = entry.audience === 'all' || entry.audience === 'ai' || entry.audience === 'debug'
     ? entry.audience
     : source === 'debug'
@@ -388,6 +401,8 @@ export function normalizeStoredEntry(entry: Partial<LogEntry>, fallbackStatus: s
     ...(entry.sessionId ? { sessionId: String(entry.sessionId) } : {}),
     ...(entry.beadId ? { beadId: String(entry.beadId) } : {}),
     ...(beadIteration !== undefined ? { beadIteration } : {}),
+    ...(mirrorKey ? { _logMirrorKey: mirrorKey } : {}),
+    ...(mirrorOccurrence !== undefined ? { _logMirrorOccurrence: mirrorOccurrence } : {}),
     ...(timeoutMs !== undefined ? { timeoutMs } : {}),
     ...(deadlineAt ? { deadlineAt } : {}),
     ...(timeoutKind ? { timeoutKind } : {}),
@@ -565,15 +580,60 @@ export function mergeEntry(bucket: LogEntry[], entry: LogEntry): LogEntry[] {
   return next
 }
 
+function compareStableStrings(a: string, b: string): number {
+  return a < b ? -1 : a > b ? 1 : 0
+}
+
 /**
  * Merges a restored page and live rows in one indexed pass. Incoming rows win
  * for canonical upserts/finalization, while the original start timestamp is
  * retained. This function is deliberately side-effect free: restored rows
  * never pass through the live persistence or broadcast path.
  */
-export function mergeEntriesBatch(base: LogEntry[], incoming: LogEntry[]): LogEntry[] {
-  if (base.length === 0) return incoming.slice().sort((a, b) => compareTimestamps(a.timestamp, b.timestamp))
-  if (incoming.length === 0) return base.slice().sort((a, b) => compareTimestamps(a.timestamp, b.timestamp))
+export interface LogMergeStats {
+  baseEntries: number
+  incomingEntries: number
+  accumulatedCopies: number
+  renderedEntries: number
+  comparatorCalls: number
+}
+
+export function mergeEntriesBatch(
+  base: LogEntry[],
+  incoming: LogEntry[],
+  sortByTimestamp = true,
+  stats?: LogMergeStats,
+): LogEntry[] {
+  if (stats) {
+    stats.baseEntries += base.length
+    stats.incomingEntries += incoming.length
+  }
+  const shouldSort = sortByTimestamp && base.some(entry => Boolean(entry._logMirrorKey))
+  const compareForDisplay = (a: LogEntry, b: LogEntry) => {
+    if (!shouldSort) return 0
+    if (stats) stats.comparatorCalls += 1
+    // A live row has no server mirror identity. Keep the server's canonical
+    // order around it instead of timestamp-sorting a mixed historical/live
+    // batch with a made-up fallback key.
+    if (!a._logMirrorKey || !b._logMirrorKey) return 0
+    const timestampOrder = compareTimestamps(a.timestamp, b.timestamp)
+    if (timestampOrder !== 0) return timestampOrder
+    // Server AI rows carry the projection's mirror key. Live rows do not, so
+    // leave their input order intact instead of moving bead-start markers after
+    // their streamed output merely because their fallback ids compare differently.
+    return compareStableStrings(a._logMirrorKey, b._logMirrorKey)
+      || (a._logMirrorOccurrence ?? 0) - (b._logMirrorOccurrence ?? 0)
+  }
+  // Historical pages and live context readers are already canonical. An empty
+  // overlay must be a cheap identity path; sorting the whole archive here was
+  // the cumulative render cost this helper was meant to avoid.
+  if (base.length === 0 || incoming.length === 0) {
+    if (stats) {
+      stats.accumulatedCopies += base.length + incoming.length
+      stats.renderedEntries += base.length + incoming.length
+    }
+    return [...base, ...incoming]
+  }
 
   const result: LogEntry[] = []
   const indexes = new Map<string, number>()
@@ -584,6 +644,7 @@ export function mergeEntriesBatch(base: LogEntry[], incoming: LogEntry[]): LogEn
     if (index === undefined) {
       const nextIndex = result.length
       result.push(entry)
+      if (stats) stats.accumulatedCopies += 1
       for (const key of keys) indexes.set(key, nextIndex)
       return
     }
@@ -596,13 +657,15 @@ export function mergeEntriesBatch(base: LogEntry[], incoming: LogEntry[]): LogEn
       timestamp: existing.timestamp ?? entry.timestamp,
       streaming: entry.op === 'finalize' ? false : entry.streaming,
     }
+    if (stats) stats.accumulatedCopies += 1
     result[index] = merged
     for (const key of aliases(merged)) indexes.set(key, index)
   }
 
   for (const entry of base) add(entry, false)
   for (const entry of incoming) add(entry, true)
-  return result.sort((a, b) => compareTimestamps(a.timestamp, b.timestamp))
+  if (stats) stats.renderedEntries += result.length
+  return shouldSort ? result.sort(compareForDisplay) : result
 }
 
 export function formatLogLine(data: Record<string, unknown>): { line: string; source: string } {

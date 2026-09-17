@@ -375,6 +375,31 @@ successful Save advances the baseline; failed saves and best-effort leaving
 flushes keep the latest draft visibly unsaved so it can be retried. Browser
 unload delivery is not guaranteed.
 
+Configuration, project, ticket, and prompt windows compare their actual current
+values with the saved or initial snapshot. Custom controls count, restoring the
+snapshot clears the warning, and profile hydration or a background refresh does
+not absorb values already being edited. A successful save acknowledges the
+submitted snapshot; a failed save, later edit, or refetch keeps the newer draft
+visible. An unsaved in-memory modal draft is not promised to survive a reload.
+
+While a ticket waits for pull-request review, a verified merge or closed-
+unmerged decision is durable for that pull request and can resume after a
+restart. A failed initial remote refresh leaves the ticket waiting with a
+recovery receipt; it does not record a decision. **Finish Without Merge** never
+merges the pull request, and remote uncertainty is never reported as success.
+Recovery controls are shown only when the server advertises them. Manual QA
+Submit and Skip use the draft, evidence, and round captured at the click; a
+later autosave remains the newer draft, and browser unload delivery is still
+best effort.
+
+Confirmed ticket or project deletion also clears the deleted ticket's current-
+tab cache and persistent markers, including logs, seen notices, UI revisions,
+rendered-ticket state, the live-event cursor, and the pending-question collapse
+preference. The ticket list is refreshed separately, unrelated tickets remain
+untouched, and a failed deletion releases pending saves so the living ticket
+can continue. A ticket id issued again in the same tab starts without the old
+cursor; cleanup in another browser tab is not promised.
+
 Read more: [Ticket Flow](https://www.looptroop.ovh/docs/ticket-flow)
 
 

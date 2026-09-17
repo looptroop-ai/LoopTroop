@@ -16,7 +16,7 @@ function firstPromptId(groups: PromptGroup[]): string | null {
   return null
 }
 
-export function PromptsDialog() {
+export function PromptsDialog({ onDirtyChange }: { onDirtyChange?: (isDirty: boolean) => void }) {
   const { data, isLoading, error } = usePromptCatalog()
   const resetAll = useResetAllPrompts()
   const [selectedPromptId, setSelectedPromptId] = useState<string | null>(null)
@@ -168,6 +168,7 @@ export function PromptsDialog() {
                 promptId={selectedPromptId}
                 wordWrap={wordWrap}
                 onToggleWordWrap={() => setWordWrap((wrap) => !wrap)}
+                onDirtyChange={onDirtyChange}
               />
             )
             : <div className="p-6 text-sm text-muted-foreground">Select a prompt to edit.</div>}

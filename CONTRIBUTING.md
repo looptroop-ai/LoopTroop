@@ -86,6 +86,24 @@ with a dirty draft. Missing baselines are HTTP 428, stale baselines are HTTP
 content over local edits. A failed save or best-effort leaving flush remains
 visibly unsaved and retryable; a browser unload is not a delivery guarantee.
 
+Form documentation must describe dirty state as a comparison of actual current
+values with the saved or initial snapshot, including custom controls. Hydration
+and refetch may establish a baseline but must not mark clean fields dirty or
+replace values already being edited. Successful saves acknowledge only the
+submitted snapshot; failed saves and later edits keep the newer draft, and an
+unsaved in-memory modal draft has no reload-persistence promise. Prompt preview
+errors belong to the current prompt and draft, while stale requests are ignored;
+folder-check failures remain retryable and distinct from a non-Git result.
+
+Workflow recovery documentation must describe only the actions the server
+advertises. Setup approval does not imply setup-plan editing or a note-bearing
+retry; those controls belong to the advertised live blocked-runtime actions.
+Manual QA Submit and Skip capture their click-time draft, evidence, and round;
+a later autosave remains the newer draft, and that snapshot is separate from
+best-effort unload persistence. Complete log history loads are triggered by
+actions such as Go to top, bead navigation, or export, while diagnostic
+native-log collection remains bounded.
+
 **When a release changes an install path, a command, a flag or a channel, the website repository ships in the same batch.** The published documentation lives in `looptroop-ai/LoopTroop-Website`, so nothing in this repository's CI can notice when it falls behind — and it did, for four releases, while every page still opened with `git clone` and `npm run dev`. Two automated guards now catch part of it (`verify:site` requires Getting Started to lead with an install command, and `sync:cli --check` fails when the CLI reference drifts from `USAGE`), but neither knows about a new channel or a changed flag. This repository now also exposes `node scripts/docs-install-catalog.mjs`, which prints the published-smoke install table as JSON so the website can verify its consolidated installation docs against the channels and commands this repository actually ships. Bumping `CLI_SOURCE_REF` in the website's `scripts/sync-cli-reference.mjs` to the new tag, and re-running `npm run sync:cli`, is part of shipping a release.
 
 If website CI must verify that catalog before a release tag exists, use an

@@ -7,6 +7,10 @@ import { useAIQuestions } from '@/context/useAIQuestions'
 import type { AiQuestionInfo, AiQuestionRequest } from '@/context/aiQuestionContextDef'
 import { formatAiQuestionWindow } from '@shared/aiQuestions'
 import { COUNTDOWN_TICK_MS } from '@/lib/constants'
+import {
+  getTicketQuestionsCollapsedStorageKey,
+  TICKET_STATE_CLEARED_EVENT,
+} from '@/components/ticket/renderedTickets'
 import { SkipReasonField } from './SkipReasonField'
 
 /** Ticks once a second only while something is counting down. */
@@ -58,13 +62,9 @@ function isAnswered(answer: string[] | undefined): boolean {
  * Every read and write is guarded — a private window or blocked site data throws
  * on access rather than returning empty.
  */
-function collapseStorageKey(ticketId: string): string {
-  return `ai-questions-collapsed-${ticketId}`
-}
-
 function readCollapsed(ticketId: string): boolean {
   try {
-    return window.localStorage.getItem(collapseStorageKey(ticketId)) === '1'
+    return window.localStorage.getItem(getTicketQuestionsCollapsedStorageKey(ticketId)) === '1'
   } catch {
     return false
   }
@@ -72,8 +72,8 @@ function readCollapsed(ticketId: string): boolean {
 
 function writeCollapsed(ticketId: string, collapsed: boolean): void {
   try {
-    if (collapsed) window.localStorage.setItem(collapseStorageKey(ticketId), '1')
-    else window.localStorage.removeItem(collapseStorageKey(ticketId))
+    if (collapsed) window.localStorage.setItem(getTicketQuestionsCollapsedStorageKey(ticketId), '1')
+    else window.localStorage.removeItem(getTicketQuestionsCollapsedStorageKey(ticketId))
   } catch {
     // A preference that cannot be remembered is not worth failing a render for.
   }
@@ -113,6 +113,15 @@ export function PendingQuestionsPanel({ ticketId }: { ticketId: string }) {
   // Pull once on mount: a question raised while this tab was closed would
   // otherwise wait for the next aggregate poll to appear.
   useEffect(() => { refreshTicket(ticketId) }, [refreshTicket, ticketId])
+
+  useEffect(() => {
+    const onTicketStateCleared = (event: Event) => {
+      const detail = (event as CustomEvent<{ ticketId?: unknown }>).detail
+      if (detail?.ticketId === ticketId) setCollapsed(false)
+    }
+    window.addEventListener(TICKET_STATE_CLEARED_EVENT, onTicketStateCleared)
+    return () => window.removeEventListener(TICKET_STATE_CLEARED_EVENT, onTicketStateCleared)
+  }, [ticketId])
 
   const active = useMemo(
     () => requests.find((request) => request.requestId === activeRequestId) ?? requests[0] ?? null,

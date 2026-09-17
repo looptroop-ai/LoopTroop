@@ -1,6 +1,6 @@
 import type { Context } from 'hono'
 import { lstatSync } from 'node:fs'
-import { ContainedPathError } from '../../lib/containedPath'
+import { TicketWorkspaceNotInitializedError } from '../../lib/workflowErrors'
 import { db as appDb } from '../../db/index'
 import { profiles } from '../../db/schema'
 import {
@@ -191,9 +191,9 @@ function requireExistingTicketWorkspace(ticketId: string): void {
   // getTicketPaths can persist missing base-branch metadata, so check existence first.
   const ticketDir = resolveTicketContainedPath(ticketId, '.')
   if (!ticketDir || !lstatSync(ticketDir, { throwIfNoEntry: false })?.isDirectory()) {
-    throw new ContainedPathError('Ticket workspace not initialized')
+    throw new TicketWorkspaceNotInitializedError('Ticket workspace not initialized')
   }
-  if (!getTicketPaths(ticketId)) throw new Error('Ticket workspace not initialized')
+  if (!getTicketPaths(ticketId)) throw new TicketWorkspaceNotInitializedError('Ticket workspace not initialized')
 }
 
 export async function preparePlanningRestart(

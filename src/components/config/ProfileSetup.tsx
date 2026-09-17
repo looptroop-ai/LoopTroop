@@ -1,4 +1,4 @@
-import { useState, useEffect, useMemo, useCallback } from 'react'
+import { useState, useEffect, useMemo, useCallback, useRef } from 'react'
 import { Button } from '@/components/ui/button'
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card'
 import { Separator } from '@/components/ui/separator'
@@ -54,9 +54,28 @@ import { DEFAULT_IGNORE_MODE } from '@shared/ignoreMode'
 import { cn } from '@/lib/utils'
 import { DEFAULT_GIT_HOOK_POLICY } from '@shared/gitHookPolicy'
 
+function profileDraftSnapshot(
+  formData: CreateProfileInput,
+  rawNumeric: Record<string, string>,
+  councilSlots: string[],
+  mainVariant: string | undefined,
+  councilVariants: Record<string, string>,
+): string {
+  return JSON.stringify({
+    formData: Object.entries(formData).sort(([a], [b]) => a.localeCompare(b)),
+    rawNumeric: Object.entries(rawNumeric).sort(([a], [b]) => a.localeCompare(b)),
+    councilSlots,
+    mainVariant: mainVariant && mainVariant !== 'none' ? mainVariant : null,
+    councilVariants: Object.entries(councilVariants)
+      .filter(([, value]) => value && value !== 'none')
+      .sort(([a], [b]) => a.localeCompare(b)),
+  })
+}
+
 interface ProfileSetupProps {
   onClose: () => void
   onOpenAbout?: () => void
+  onDirtyChange?: (isDirty: boolean) => void
 }
 
 const descriptionDocs = {
@@ -64,8 +83,8 @@ const descriptionDocs = {
   councilMembers: '/configuration#council-members',
 } as const
 
-export function ProfileSetup({ onClose, onOpenAbout = () => undefined }: ProfileSetupProps) {
-  const { data: profile } = useProfile()
+export function ProfileSetup({ onClose, onOpenAbout = () => undefined, onDirtyChange }: ProfileSetupProps) {
+  const { data: profile, isLoading: profileLoading } = useProfile()
   const createProfile = useCreateProfile()
   const updateProfile = useUpdateProfile()
   const { addToast } = useToast()
@@ -108,6 +127,13 @@ export function ProfileSetup({ onClose, onOpenAbout = () => undefined }: Profile
   // Variant state: per-model variant selections
   const [mainVariant, setMainVariant] = useState<string | undefined>(undefined)
   const [councilVariants, setCouncilVariants] = useState<Record<string, string>>({})
+  const profileBaselineRef = useRef<string | null>(null)
+  const profileHydratedRef = useRef(false)
+  const initialDraftRef = useRef<string | null>(null)
+  const draftSnapshot = profileDraftSnapshot(formData, rawNumeric, councilSlots, mainVariant, councilVariants)
+  const draftSnapshotRef = useRef(draftSnapshot)
+  draftSnapshotRef.current = draftSnapshot
+  if (initialDraftRef.current === null) initialDraftRef.current = draftSnapshot
 
   // Models data for variant info
   const {
@@ -127,10 +153,21 @@ export function ProfileSetup({ onClose, onOpenAbout = () => undefined }: Profile
     }
     return map
   }, [models])
-  // Sync form state when profile data loads
+  // Sync form state when profile data loads. Once the user has changed a draft,
+  // later query refreshes update the baseline only after a successful save; they
+  // must not replace the values the user is still editing.
   useEffect(() => {
-    if (!profile) return
-    setFormData({
+    if (!profile) {
+      if (profileBaselineRef.current === null) {
+        // Establish the actual initial form as the baseline while hydration is
+        // pending. A missing profile must not absorb a value typed in the gap.
+        profileBaselineRef.current = initialDraftRef.current ?? draftSnapshotRef.current
+      }
+      return
+    }
+    const isFirstProfileHydration = !profileHydratedRef.current
+    profileHydratedRef.current = true
+    const nextFormData: CreateProfileInput = {
       mainImplementer: profile.mainImplementer ?? '',
       minCouncilQuorum: profile.minCouncilQuorum ?? PROFILE_DEFAULTS.minCouncilQuorum,
       perIterationTimeout: profile.perIterationTimeout ?? PROFILE_DEFAULTS.perIterationTimeout,
@@ -154,8 +191,8 @@ export function ProfileSetup({ onClose, onOpenAbout = () => undefined }: Profile
       aiQuestionWindow: profile.aiQuestionWindow ?? PROFILE_DEFAULTS.aiQuestionWindow,
       gitHookPolicy: profile.gitHookPolicy ?? DEFAULT_GIT_HOOK_POLICY,
       ignoreMode: profile.ignoreMode ?? DEFAULT_IGNORE_MODE,
-    })
-    setRawNumeric(buildInitialRawNumeric({
+    }
+    const nextRawNumeric = buildInitialRawNumeric({
       perIterationTimeout: profile.perIterationTimeout ?? PROFILE_DEFAULTS.perIterationTimeout,
       executionSetupTimeout: profile.executionSetupTimeout ?? PROFILE_DEFAULTS.executionSetupTimeout,
       councilResponseTimeout: profile.councilResponseTimeout ?? PROFILE_DEFAULTS.councilResponseTimeout,
@@ -174,9 +211,8 @@ export function ProfileSetup({ onClose, onOpenAbout = () => undefined }: Profile
       toolInputMaxChars: profile.toolInputMaxChars ?? PROFILE_DEFAULTS.toolInputMaxChars,
       toolOutputMaxChars: profile.toolOutputMaxChars ?? PROFILE_DEFAULTS.toolOutputMaxChars,
       toolErrorMaxChars: profile.toolErrorMaxChars ?? PROFILE_DEFAULTS.toolErrorMaxChars,
-    }))
-    // Restore variant state
-    setMainVariant(profile.mainImplementerVariant || undefined)
+    })
+    const nextMainVariant = profile.mainImplementerVariant || undefined
     // Parsed and validated once, in one place: both fields are JSON strings from
     // the database, and a stored variant that is not a string used to be cast
     // and handed straight to a badge.
@@ -185,9 +221,32 @@ export function ProfileSetup({ onClose, onOpenAbout = () => undefined }: Profile
     for (const [modelId, variant] of Object.entries(council.variants)) {
       cleanedVariants[cleanModelId(modelId)] = variant
     }
+    const nextCouncilSlots = council.members.filter(id => id !== profile.mainImplementer)
+    const nextBaseline = profileDraftSnapshot(nextFormData, nextRawNumeric, nextCouncilSlots, nextMainVariant, cleanedVariants)
+    const currentDraftIsDirty = profileBaselineRef.current !== null
+      ? draftSnapshotRef.current !== profileBaselineRef.current
+      : draftSnapshotRef.current !== initialDraftRef.current
+    if (currentDraftIsDirty) {
+      if (isFirstProfileHydration) {
+        profileBaselineRef.current = nextBaseline
+        onDirtyChange?.(true)
+      }
+      return
+    }
+    if (profileBaselineRef.current === nextBaseline) return
+
+    setFormData(nextFormData)
+    setRawNumeric(nextRawNumeric)
+    setMainVariant(nextMainVariant)
     setCouncilVariants(cleanedVariants)
-    setCouncilSlots(council.members.filter(id => id !== profile.mainImplementer))
-  }, [profile])
+    setCouncilSlots(nextCouncilSlots)
+    profileBaselineRef.current = nextBaseline
+  }, [onDirtyChange, profile, profileLoading])
+
+  const isDirty = profileBaselineRef.current !== null && draftSnapshot !== profileBaselineRef.current
+  useEffect(() => {
+    onDirtyChange?.(isDirty)
+  }, [isDirty, onDirtyChange])
 
   const [isOpenCodeConnected, setIsOpenCodeConnected] = useState<boolean | null>(null)
   const [isRefreshingModels, setIsRefreshingModels] = useState(false)
@@ -273,9 +332,13 @@ export function ProfileSetup({ onClose, onOpenAbout = () => undefined }: Profile
       mainImplementerVariant: mainVariant && mainVariant !== 'none' ? mainVariant : '',
       councilMemberVariants: Object.keys(variantsMap).length > 0 ? JSON.stringify(variantsMap) : '',
     }
+    const submittedSnapshot = draftSnapshotRef.current
     const handleSuccess = () => {
+      profileBaselineRef.current = submittedSnapshot
+      const hasLaterEdits = draftSnapshotRef.current !== submittedSnapshot
+      onDirtyChange?.(hasLaterEdits)
       addToast('success', 'Configuration saved.')
-      onClose()
+      if (!hasLaterEdits) onClose()
     }
     if (profile) {
       updateProfile.mutate(payload, { onSuccess: handleSuccess })

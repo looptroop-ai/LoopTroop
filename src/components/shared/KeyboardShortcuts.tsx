@@ -9,7 +9,7 @@ import { SHORTCUTS_OVERLAY_Z_INDEX } from '@/lib/constants'
 const SHORTCUTS = [
   { key: '?', description: 'Show keyboard shortcuts' },
   { key: 'Escape', description: 'Close current view / modal' },
-  { key: '/', description: 'Focus search' },
+  { key: '/', description: 'Focus board search' },
 ]
 
 export function KeyboardShortcuts() {

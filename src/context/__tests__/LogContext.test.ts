@@ -167,6 +167,30 @@ describe('mergeEntriesBatch', () => {
       }),
     ])
   })
+
+  it('preserves server order for non-AI history when the live overlay is empty', () => {
+    const serverRows = [
+      normalizeLogRecord({ phase: 'CODING', entryId: 'server-first', content: 'first', timestamp: '2026-03-10T00:00:03.000Z' }, 'CODING'),
+      normalizeLogRecord({ phase: 'CODING', entryId: 'server-second', content: 'second', timestamp: '2026-03-10T00:00:01.000Z' }, 'CODING'),
+    ]
+
+    expect(mergeEntriesBatch(serverRows, [], false).map(entry => entry.entryId)).toEqual([
+      'server-first', 'server-second',
+    ])
+  })
+
+  it('preserves non-AI server order while measuring a nonempty live overlay merge', () => {
+    const serverRows = [
+      normalizeLogRecord({ phase: 'CODING', entryId: 'server-first', content: 'first', timestamp: '2026-03-10T00:00:03.000Z' }, 'CODING'),
+      normalizeLogRecord({ phase: 'CODING', entryId: 'server-second', content: 'second', timestamp: '2026-03-10T00:00:01.000Z' }, 'CODING'),
+    ]
+    const live = normalizeLogRecord({ phase: 'CODING', entryId: 'live', content: 'live', timestamp: '2026-03-10T00:00:02.000Z' }, 'CODING')
+    const stats = { baseEntries: 0, incomingEntries: 0, accumulatedCopies: 0, renderedEntries: 0, comparatorCalls: 0 }
+
+    const merged = mergeEntriesBatch(serverRows, [live], true, stats)
+    expect(merged.map(entry => entry.entryId)).toEqual(['server-first', 'server-second', 'live'])
+    expect(stats).toMatchObject({ baseEntries: 2, incomingEntries: 1, renderedEntries: 3, comparatorCalls: 0 })
+  })
 })
 
 describe('LogProvider', () => {
@@ -240,6 +264,44 @@ describe('LogProvider', () => {
     await flushMicrotasks()
     expect(globalThis.fetch).toHaveBeenLastCalledWith('/api/tickets/1%3AT-scope/logs?scope=phase&view=overview&limit=20&phase=DRAFTING_PRD')
     expect(vi.mocked(globalThis.fetch).mock.calls.every(([url]) => !String(url).includes('tail='))).toBe(true)
+  })
+
+  it.each([
+    ['normal then DEBUG', false],
+    ['DEBUG then normal', true],
+  ] as const)('keeps normal and DEBUG loading identities distinct (%s)', async (_label, debugFirst) => {
+    const fetchSpy = vi.spyOn(globalThis, 'fetch').mockImplementation(() => createJsonResponse([]))
+    function ScopeHarness() {
+      const api = useLogs()
+      useEffect(() => { latestLogApi = api }, [api])
+      return null
+    }
+
+    render(createElement(
+      LogProvider,
+      { ticketId: '1:T-cache-scope', currentStatus: 'CODING', children: createElement(ScopeHarness) },
+    ))
+    await flushMicrotasks()
+    await act(async () => {
+      if (debugFirst) {
+        latestLogApi?.loadAllLogs?.({ channel: 'all' })
+        await flushMicrotasks()
+        latestLogApi?.loadAllLogs?.()
+      } else {
+        latestLogApi?.loadAllLogs?.()
+        await flushMicrotasks()
+        latestLogApi?.loadAllLogs?.({ channel: 'all' })
+      }
+      await flushMicrotasks()
+    })
+
+    expect(fetchSpy).toHaveBeenCalledTimes(2)
+    expect(fetchSpy.mock.calls.map(([url]) => String(url))).toEqual(expect.arrayContaining([
+      '/api/tickets/1%3AT-cache-scope/logs?scope=lifecycle&view=overview&limit=20',
+      '/api/tickets/1%3AT-cache-scope/logs?scope=lifecycle&view=debug&limit=20',
+    ]))
+    expect(getServerLogCacheKey('ticket', { lifecycle: true, channel: 'normal' }))
+      .not.toBe(getServerLogCacheKey('ticket', { lifecycle: true, channel: 'all' }))
   })
 
   it('requests phase debug logs through the debug channel only when asked', async () => {

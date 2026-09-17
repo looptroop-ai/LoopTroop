@@ -2,6 +2,7 @@ import type { ReactNode, Ref } from 'react'
 import { render, screen, fireEvent, act, waitFor } from '@testing-library/react'
 import { beforeAll, beforeEach, describe, expect, it, vi } from 'vitest'
 import type { LogEntry } from '@/context/LogContext'
+import { getLogEntryIdentity } from '@/context/logUtils'
 import { TooltipProvider } from '@/components/ui/tooltip'
 import type { Ticket } from '@/hooks/useTickets'
 import { makeRuntimeBead, TEST, type RuntimeBeadInput } from '@/test/factories'
@@ -48,6 +49,7 @@ vi.mock('@/context/useLogContext', () => ({
 }))
 
 import { FullLogView } from '../FullLogView'
+import { buildBeadSections } from '../logGroupingHelpers'
 
 const writeTextMock = vi.fn<(text: string) => Promise<void>>(() => Promise.resolve())
 
@@ -466,6 +468,99 @@ describe('FullLogView', () => {
         expect.stringContaining('before=middle-cursor'),
         expect.stringContaining('before=oldest-cursor'),
       ]))
+    } finally {
+      fetchSpy.mockRestore()
+    }
+  })
+
+  it('lets a new history scope claim Go to top after the previous walk is canceled', async () => {
+    let resolveFirstOlder!: (response: Response) => void
+    const firstTicket = makeTicket()
+    const secondTicket = makeTicket({ id: 'ticket-2' })
+    const fetchSpy = vi.spyOn(globalThis, 'fetch').mockImplementation((input) => {
+      const url = String(input)
+      if (url.includes('before=first-older')) {
+        return new Promise<Response>((resolve) => { resolveFirstOlder = resolve })
+      }
+      if (url.includes('ticket-2') && url.includes('before=second-older')) {
+        return createJsonResponse({ entries: [], olderCursor: null, hasOlder: false })
+      }
+      const isSecondTicket = url.includes('ticket-2')
+      return createJsonResponse({
+        entries: [{
+          type: 'info',
+          phase: 'CODING',
+          status: 'CODING',
+          source: 'system',
+          content: isSecondTicket ? 'Second ticket row.' : 'First ticket row.',
+          entryId: isSecondTicket ? 'second' : 'first',
+          timestamp: '2026-03-13T10:00:03.000Z',
+        }],
+        olderCursor: isSecondTicket ? 'second-older' : 'first-older',
+        hasOlder: true,
+      })
+    })
+
+    try {
+      const rendered = await renderWithTooltipProvider(<FullLogView ticket={firstTicket} />)
+      expect(await screen.findByText('First ticket row.')).toBeInTheDocument()
+
+      const viewport = screen.getByTestId('log-viewport')
+      Object.defineProperty(viewport, 'scrollHeight', { configurable: true, value: 1000 })
+      Object.defineProperty(viewport, 'clientHeight', { configurable: true, value: 100 })
+      viewport.scrollTop = 400
+      fireEvent.scroll(viewport)
+      fireEvent.click(await screen.findByRole('button', { name: 'Go to top' }))
+      await screen.findByRole('status')
+
+      rendered.rerender(<FullLogView ticket={secondTicket} />)
+      expect(await screen.findByText('Second ticket row.')).toBeInTheDocument()
+      const secondGoToTop = await screen.findByRole('button', { name: 'Go to top' })
+      await waitFor(() => expect(secondGoToTop).not.toBeDisabled())
+      fireEvent.click(secondGoToTop)
+
+      await waitFor(() => expect(fetchSpy.mock.calls.map(([input]) => String(input))).toEqual(
+        expect.arrayContaining([expect.stringContaining('before=second-older')]),
+      ))
+      resolveFirstOlder(await createJsonResponse({ entries: [], olderCursor: null, hasOlder: false }))
+    } finally {
+      fetchSpy.mockRestore()
+    }
+  })
+
+  it('shows a recovery error when a populated history cursor keeps expiring', async () => {
+    const fetchSpy = vi.spyOn(globalThis, 'fetch').mockImplementation((input) => {
+      const url = String(input)
+      if (url.includes('before=')) {
+        return createJsonResponse({ code: 'LOG_CURSOR_EXPIRED', error: 'LOG_CURSOR_EXPIRED' }, 409)
+      }
+      const refreshed = fetchSpy.mock.calls.length > 1
+      return createJsonResponse({
+        entries: [{
+          type: 'info',
+          phase: 'CODING',
+          status: 'CODING',
+          source: 'system',
+          content: refreshed ? 'Refreshed row.' : 'Initial row.',
+          entryId: refreshed ? 'refreshed' : 'initial',
+          timestamp: '2026-03-13T10:00:03.000Z',
+        }],
+        olderCursor: refreshed ? 'fresh-older' : 'initial-older',
+        hasOlder: true,
+      })
+    })
+
+    try {
+      await renderWithTooltipProvider(<FullLogView ticket={makeTicket()} />)
+      const viewport = screen.getByTestId('log-viewport')
+      Object.defineProperty(viewport, 'scrollHeight', { configurable: true, value: 1000 })
+      Object.defineProperty(viewport, 'clientHeight', { configurable: true, value: 100 })
+      viewport.scrollTop = 400
+      fireEvent.scroll(viewport)
+      fireEvent.click(await screen.findByRole('button', { name: 'Go to top' }))
+
+      await waitFor(() => expect(screen.getByRole('alert')).toHaveTextContent('complete log history could not be refreshed'))
+      expect(screen.getByText('Refreshed row.')).toBeInTheDocument()
     } finally {
       fetchSpy.mockRestore()
     }
@@ -956,6 +1051,20 @@ describe('FullLogView', () => {
     expect(screen.getAllByText('Implementing')).toHaveLength(2)
     expect(screen.getByText('Bead 1/2')).toBeTruthy()
     expect(screen.getByText('Bead 2/2')).toBeTruthy()
+  })
+
+  it('gives repeated bead sections unique attempt-scoped keys', () => {
+    const first = makeLog('bead-start', '[SYS] Executing bead bead-1: First attempt', 'CODING', {
+      phaseAttempt: 1,
+    })
+    const retry = makeLog('bead-start', '[SYS] Executing bead bead-1: Retry attempt', 'CODING', {
+      phaseAttempt: 2,
+    })
+    const entries = [first, retry]
+    const result = buildBeadSections(entries, new Set(entries.map(getLogEntryIdentity)))
+
+    expect(result?.beadSections).toHaveLength(2)
+    expect(new Set(result?.beadSections.map((section) => section.sectionKey)).size).toBe(2)
   })
 
   it('falls back to an unsplit coding section when no bead-start marker exists', async () => {

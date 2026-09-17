@@ -387,6 +387,55 @@ function recordGitRecoveryReceipt(ticketId: string, receipt: unknown, phase: Wor
   upsertLatestPhaseArtifact(ticketId, GIT_RECOVERY_RECEIPT_ARTIFACT, phase, JSON.stringify(receipt))
 }
 
+/** Keep the latest remote observation visible even when validation rejects it. */
+export function buildObservedPullRequestReport(
+  report: PullRequestReport,
+  pr: PullRequestInfo,
+  message = report.message,
+): PullRequestReport {
+  return {
+    ...report,
+    prNumber: pr.number,
+    prUrl: pr.url,
+    prState: pr.state,
+    prHeadSha: pr.headRefOid,
+    title: pr.title,
+    body: pr.body,
+    createdAt: pr.createdAt,
+    updatedAt: pr.updatedAt,
+    mergedAt: pr.mergedAt,
+    closedAt: pr.closedAt,
+    message,
+  }
+}
+
+/** Persist a failed remote refresh without holding a ticket lock across it. */
+export function recordPullRequestRefreshFailure(input: {
+  ticketId: string
+  projectPath: string
+  baseBranch: string
+  headBranch: string
+  candidateCommitSha: string | null
+  prNumber: number | null
+  error: unknown
+}) {
+  const receipt = captureGitRecoveryReceipt({
+    projectPath: input.projectPath,
+    phase: 'WAITING_PR_REVIEW',
+    step: 'refresh_pull_request',
+    error: getErrorMessage(input.error),
+    branch: input.headBranch,
+    baseBranch: input.baseBranch,
+    candidateSha: input.candidateCommitSha,
+    pr: null,
+  })
+  recordGitRecoveryReceipt(
+    input.ticketId,
+    { ...receipt, prNumber: input.prNumber },
+    'WAITING_PR_REVIEW',
+  )
+}
+
 function readIntegrationArtifact(ticketId: string) {
   const artifact = getLatestPhaseArtifact(ticketId, 'integration_report', 'INTEGRATING_CHANGES')
   if (!artifact?.content) {
@@ -1154,11 +1203,16 @@ export async function completeMergedPullRequest(input: {
   candidateCommitSha: string | null
   prReport: PullRequestReport
   skipRemoteMerge?: boolean
+  /** A caller that already refreshed GitHub outside its ticket lock. */
+  observedPullRequest?: PullRequestInfo
 }): Promise<MergeCompletionReport> {
-  let pr = await refreshPullRequestState(input.projectPath, input.prReport.prNumber)
-  let currentStep = 'verify_pull_request_candidate'
+  let pr: PullRequestInfo | null = input.observedPullRequest ?? null
+  let currentStep = 'refresh_pull_request'
 
   try {
+    if (!pr) pr = await refreshPullRequestState(input.projectPath, input.prReport.prNumber)
+    refreshPullRequestReport(input.ticketId, buildObservedPullRequestReport(input.prReport, pr))
+    currentStep = 'verify_pull_request_candidate'
     assertPullRequestMatchesExpected({
       pr,
       baseBranch: input.baseBranch,
@@ -1171,6 +1225,7 @@ export async function completeMergedPullRequest(input: {
       if (pr.state === 'draft') {
         currentStep = 'mark_pull_request_ready'
         pr = await markPullRequestReady(input.projectPath, pr.number)
+        refreshPullRequestReport(input.ticketId, buildObservedPullRequestReport(input.prReport, pr))
         currentStep = 'verify_pull_request_candidate'
         assertPullRequestMatchesExpected({
           pr,
@@ -1182,6 +1237,7 @@ export async function completeMergedPullRequest(input: {
 
       currentStep = 'merge_pull_request'
       pr = await mergePullRequest(input.projectPath, pr.number, pr.title, input.candidateCommitSha ?? '')
+      refreshPullRequestReport(input.ticketId, buildObservedPullRequestReport(input.prReport, pr))
     }
 
     if (pr.state !== 'merged') {
@@ -1229,34 +1285,24 @@ export async function completeMergedPullRequest(input: {
       artifactType: MERGE_REPORT_ARTIFACT,
       content: JSON.stringify(report),
     })
-    refreshPullRequestReport(input.ticketId, {
-      ...input.prReport,
-      prNumber: pr.number,
-      prUrl: pr.url,
-      prState: pr.state,
-      prHeadSha: pr.headRefOid,
-      createdAt: pr.createdAt,
-      updatedAt: pr.updatedAt,
-      mergedAt: pr.mergedAt,
-      closedAt: pr.closedAt,
-      message: report.message,
-    })
+    refreshPullRequestReport(input.ticketId, buildObservedPullRequestReport(input.prReport, pr, report.message))
 
     return report
   } catch (error) {
     const message = getErrorMessage(error)
+    const receipt = captureGitRecoveryReceipt({
+      projectPath: input.projectPath,
+      phase: 'WAITING_PR_REVIEW',
+      step: currentStep,
+      error: message,
+      branch: input.headBranch,
+      baseBranch: input.baseBranch,
+      candidateSha: input.candidateCommitSha,
+      pr,
+    })
     recordGitRecoveryReceipt(
       input.ticketId,
-      captureGitRecoveryReceipt({
-        projectPath: input.projectPath,
-        phase: 'WAITING_PR_REVIEW',
-        step: currentStep,
-        error: message,
-        branch: input.headBranch,
-        baseBranch: input.baseBranch,
-        candidateSha: input.candidateCommitSha,
-        pr,
-      }),
+      { ...receipt, prNumber: pr?.number ?? input.prReport.prNumber },
       'WAITING_PR_REVIEW',
     )
     throw error

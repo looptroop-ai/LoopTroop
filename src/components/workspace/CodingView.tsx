@@ -1185,6 +1185,7 @@ export function CodingView({ ticket, readOnly }: CodingViewProps) {
     const beadLogs = mergeEntriesBatch(
       historicalBeadLogEntries,
       phaseLogs,
+      true,
     ).filter((entry) => entry.beadId === viewedBead.id)
     return filterBeadLogEntries(beadLogs)
   }, [getLogsForPhase, historicalBeadLogEntries, logPhaseAttempt, phaseForView, viewedBead])
@@ -1338,6 +1339,7 @@ export function CodingView({ ticket, readOnly }: CodingViewProps) {
     return [
       selectedBeadLogEntries.length,
       lastEntry.entryId,
+      lastEntry.timestamp ?? '',
       lastEntry.line.length,
       lastEntry.streaming ? 'streaming' : 'static',
       lastEntry.op,

@@ -4,6 +4,7 @@ import { act, renderHook, waitFor } from '@testing-library/react'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { createJsonResponse, createTestQueryClient } from '@/test/renderHelpers'
 import { useBatchSubmit } from '../useBatchSubmit'
+import type { PersistedInterviewBatch } from '@shared/interviewSession'
 
 /**
  * The cross-ticket surfaces are covered end-to-end in `src/__tests__/ticketSwitchIsolation.test.tsx`
@@ -185,5 +186,50 @@ describe('useBatchSubmit draft restore', () => {
     expect(puts).toHaveLength(1)
     expect(String(puts[0]?.[0])).toBe(`/api/tickets/${encodeURIComponent('1:T-flush')}/ui-state`)
     expect(String(puts[0]?.[1] && (puts[0][1] as RequestInit).body)).toContain('typed just before switching')
+  })
+
+  it('blocks a same-tick skip while a batch submit is still in flight', async () => {
+    const batch: PersistedInterviewBatch = {
+      questions: [{ id: 'Q01', question: 'Why?', phase: 'Foundation', source: 'compiled' }],
+      progress: { current: 1, total: 1 },
+      isComplete: false,
+      isFinalFreeForm: false,
+      aiCommentary: '',
+      batchNumber: 1,
+      source: 'prom4',
+    }
+    let releaseSubmit: (() => void) | undefined
+    const fetchSpy = vi.spyOn(globalThis, 'fetch').mockImplementation((input, init) => {
+      const url = String(input)
+      if (url.includes('/ui-state')) return Promise.resolve(createJsonResponse(makeUiStatePayload({ exists: false, data: null })))
+      if (url.endsWith('/answer-batch')) {
+        return new Promise((resolve) => {
+          releaseSubmit = () => resolve(createJsonResponse({ accepted: true }))
+        })
+      }
+      if (url.endsWith('/skip')) return Promise.resolve(createJsonResponse({ ticketId: '1:T-guard', status: 'WAITING_INTERVIEW_APPROVAL' }))
+      throw new Error(`Unhandled fetch: ${url} ${(init as RequestInit | undefined)?.method ?? ''}`)
+    })
+
+    const { result } = renderBatchSubmit('1:T-guard', queryClient)
+    await act(async () => {
+      await new Promise((resolve) => requestAnimationFrame(() => resolve(null)))
+    })
+
+    let submitPromise: Promise<void> | undefined
+    act(() => {
+      submitPromise = result.current.handleSubmitBatch(batch, BATCH_KEY, { Q01: 'An answer.' })
+      void result.current.handleConfirmSkipAll(batch, BATCH_KEY, { Q01: 'An answer.' })
+    })
+
+    await waitFor(() => {
+      expect(fetchSpy.mock.calls.filter(([input]) => String(input).endsWith('/answer-batch'))).toHaveLength(1)
+    })
+    expect(fetchSpy.mock.calls.filter(([input]) => String(input).endsWith('/skip'))).toHaveLength(0)
+
+    await act(async () => {
+      releaseSubmit?.()
+      await submitPromise
+    })
   })
 })

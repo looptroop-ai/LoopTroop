@@ -342,6 +342,32 @@ describe('pull request drafting context', () => {
     ])
   })
 
+  it('does not continue to git side effects when a draft session stop is unconfirmed', async () => {
+    resetTestDb()
+    const { ticket, context } = await createPullRequestReadyTicket({ structuredRetryCount: 0 })
+
+    mocks.runOpenCodePrompt.mockResolvedValueOnce({
+      session: { id: 'candidate-audit-before-stop-check' },
+      response: validCandidateAuditResponse(),
+      messages: [],
+    })
+    mocks.runOpenCodePrompt.mockImplementationOnce(async (input: {
+      onSessionCreated?: (session: { id: string }) => void
+    }) => {
+      input.onSessionCreated?.({ id: 'pr-draft-paused' })
+      throw new Error('draft transport failed')
+    })
+
+    await expect(handleCreatePullRequest(
+      ticket.id,
+      context,
+      vi.fn(),
+      new AbortController().signal,
+    )).rejects.toThrow('Could not confirm abort of pull request draft session pr-draft-paused')
+    expect(mocks.pushBranchRef).not.toHaveBeenCalled()
+    expect(mocks.createOrUpdateDraftPullRequest).not.toHaveBeenCalled()
+  })
+
   it('does not retry git push side effects after a valid PR draft', async () => {
     resetTestDb()
     const { ticket, context } = await createPullRequestReadyTicket({ structuredRetryCount: 1 })

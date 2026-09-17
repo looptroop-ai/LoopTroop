@@ -882,6 +882,7 @@ export function useSaveTicketUIState() {
 
 async function submitBatch(
   ticketId: string,
+  batchNumber: number,
   answers: Record<string, string>,
   selectedOptions: Record<string, string[]> = {},
   skipReasons: Record<string, string> = {},
@@ -889,7 +890,7 @@ async function submitBatch(
   const res = await fetch(apiTicketPath(ticketId, 'answer-batch'), {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ answers, selectedOptions, skipReasons }),
+    body: JSON.stringify({ batchNumber, answers, selectedOptions, skipReasons }),
   })
   await throwIfNotOk(res, 'Failed to submit batch')
   return res.json()
@@ -911,6 +912,7 @@ async function editInterviewAnswer(
 
 async function skipInterview(
   ticketId: string,
+  batchNumber: number,
   answers: Record<string, string>,
   selectedOptions: Record<string, string[]> = {},
   skipReasons: Record<string, string> = {},
@@ -920,6 +922,7 @@ async function skipInterview(
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({
+      batchNumber,
       answers,
       selectedOptions,
       skipReasons,
@@ -933,12 +936,13 @@ async function skipInterview(
 export function useSubmitBatch() {
   const queryClient = useQueryClient()
   return useMutation({
-    mutationFn: ({ ticketId, answers, selectedOptions, skipReasons }: {
+    mutationFn: ({ ticketId, batchNumber, answers, selectedOptions, skipReasons }: {
       ticketId: string
+      batchNumber: number
       answers: Record<string, string>
       selectedOptions?: Record<string, string[]>
       skipReasons?: Record<string, string>
-    }) => submitBatch(ticketId, answers, selectedOptions ?? {}, skipReasons ?? {}),
+    }) => submitBatch(ticketId, batchNumber, answers, selectedOptions ?? {}, skipReasons ?? {}),
     onSuccess: (_, variables) => {
       queryClient.invalidateQueries({ queryKey: ['tickets'] })
       queryClient.invalidateQueries({ queryKey: ['ticket', variables.ticketId] })
@@ -963,13 +967,14 @@ export function useEditInterviewAnswer() {
 export function useSkipInterview() {
   const queryClient = useQueryClient()
   return useMutation({
-    mutationFn: ({ ticketId, answers, selectedOptions, skipReasons, bulkSkipReason }: {
+    mutationFn: ({ ticketId, batchNumber, answers, selectedOptions, skipReasons, bulkSkipReason }: {
       ticketId: string
+      batchNumber: number
       answers: Record<string, string>
       selectedOptions?: Record<string, string[]>
       skipReasons?: Record<string, string>
       bulkSkipReason?: string
-    }) => skipInterview(ticketId, answers, selectedOptions ?? {}, skipReasons ?? {}, bulkSkipReason),
+    }) => skipInterview(ticketId, batchNumber, answers, selectedOptions ?? {}, skipReasons ?? {}, bulkSkipReason),
     onSuccess: (result, variables) => {
       applyTicketActionResult(queryClient, result.ticketId || variables.ticketId, result)
 

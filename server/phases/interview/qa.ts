@@ -29,6 +29,24 @@ import { normalizeStructuredRetryCount } from '../../lib/structuredRetryPolicy'
 
 export { calculateFollowUpLimit } from './followUpBudget'
 
+async function stopInterviewSession(
+  adapter: OpenCodeAdapter,
+  sessionManager: SessionManager | null,
+  sessionId: string,
+  signal?: AbortSignal,
+): Promise<void> {
+  const stopped = sessionManager
+    ? await sessionManager.abortAndAbandonSession(sessionId)
+    : await adapter.abortSession(sessionId).catch((error) => {
+        console.warn(`[interview] Failed to abort OpenCode session ${sessionId}:`, error)
+        return false
+      })
+  if (!stopped) {
+    throwIfAborted(signal)
+    throw new Error(`Could not confirm abort of OpenCode session ${sessionId}`)
+  }
+}
+
 export interface BatchQuestion {
   id: string
   question: string
@@ -200,66 +218,75 @@ export async function startInterviewSession(
       },
     })
   } catch (error) {
+    if (sessionId) {
+      await stopInterviewSession(adapter, sessionManager, sessionId, signal)
+    }
     throwIfCancelled(error, signal)
     throw error
   }
 
   throwIfAborted(signal)
-  const firstBatch = await parseBatchResponseWithRetry({
-    adapter,
-    sessionId: result.session.id,
-    response: result.response,
-    responseMeta: result.responseMeta,
-    signal,
-    timeoutMs,
-    model: winnerId,
-    onOpenCodeStreamEvent,
-    onPromptDispatched,
-    ticketId,
-    structuredRetryCount,
-    restartSession: async (currentSessionId) => {
-      if (sessionManager) {
-        await sessionManager.abandonSession(currentSessionId)
-      }
-      const restarted = await runOpenCodePrompt({
-        adapter,
-        projectPath,
-        parts: [{ type: 'text', content: fullPrompt }] as PromptPart[],
-        signal,
-        timeoutMs,
-        timeoutKind: 'ai_response',
-        model: winnerId,
-        toolPolicy: PROM4.toolPolicy,
-        ...(ticketId
-          ? {
-              sessionOwnership: {
-                ticketId,
-                phase: 'WAITING_INTERVIEW_ANSWERS',
-                memberId: winnerId,
-                keepActive: true,
-              },
-            }
-          : {}),
-        onSessionCreated: (session) => {
-          sessionId = session.id
-        },
-        onStreamEvent: (event) => {
-          onOpenCodeStreamEvent?.({
-            sessionId,
-            event,
-          })
-        },
-        onPromptDispatched: (event) => {
-          onPromptDispatched?.({
-            sessionId: event.session.id,
-            event,
-          })
-        },
-      })
-      return { sessionId: restarted.session.id, response: restarted.response, responseMeta: restarted.responseMeta }
-    },
-  })
-  return { sessionId: firstBatch.sessionId ?? result.session.id, firstBatch }
+  try {
+    const firstBatch = await parseBatchResponseWithRetry({
+      adapter,
+      sessionId: result.session.id,
+      response: result.response,
+      responseMeta: result.responseMeta,
+      signal,
+      timeoutMs,
+      model: winnerId,
+      onOpenCodeStreamEvent,
+      onPromptDispatched,
+      ticketId,
+      structuredRetryCount,
+      restartSession: async (currentSessionId) => {
+        await stopInterviewSession(adapter, sessionManager, currentSessionId, signal)
+        const restarted = await runOpenCodePrompt({
+          adapter,
+          projectPath,
+          parts: [{ type: 'text', content: fullPrompt }] as PromptPart[],
+          signal,
+          timeoutMs,
+          timeoutKind: 'ai_response',
+          model: winnerId,
+          toolPolicy: PROM4.toolPolicy,
+          ...(ticketId
+            ? {
+                sessionOwnership: {
+                  ticketId,
+                  phase: 'WAITING_INTERVIEW_ANSWERS',
+                  memberId: winnerId,
+                  keepActive: true,
+                },
+              }
+            : {}),
+          onSessionCreated: (session) => {
+            sessionId = session.id
+          },
+          onStreamEvent: (event) => {
+            onOpenCodeStreamEvent?.({
+              sessionId,
+              event,
+            })
+          },
+          onPromptDispatched: (event) => {
+            onPromptDispatched?.({
+              sessionId: event.session.id,
+              event,
+            })
+          },
+        })
+        return { sessionId: restarted.session.id, response: restarted.response, responseMeta: restarted.responseMeta }
+      },
+    })
+    return { sessionId: firstBatch.sessionId ?? result.session.id, firstBatch }
+  } catch (error) {
+    if (sessionId) {
+      await stopInterviewSession(adapter, sessionManager, sessionId, signal)
+    }
+    throwIfCancelled(error, signal)
+    throw error
+  }
 }
 
 /**
@@ -298,11 +325,12 @@ export async function submitBatchToSession(
 
   throwIfAborted(signal)
   const sessionManager = ticketId ? new SessionManager(adapter) : null
+  let currentSessionId = sessionId
   let result: Awaited<ReturnType<typeof runOpenCodeSessionPrompt>>
   try {
     result = await runOpenCodeSessionPrompt({
       adapter,
-      session: { id: sessionId },
+      session: { id: currentSessionId },
       parts: [{ type: 'text', content: message }] as PromptPart[],
       signal,
       timeoutMs,
@@ -311,7 +339,7 @@ export async function submitBatchToSession(
       toolPolicy: PROM4.toolPolicy,
       onStreamEvent: (event) => {
         onOpenCodeStreamEvent?.({
-          sessionId,
+          sessionId: currentSessionId,
           event,
         })
       },
@@ -323,28 +351,28 @@ export async function submitBatchToSession(
       },
     })
   } catch (error) {
+    await stopInterviewSession(adapter, sessionManager, currentSessionId, signal)
     throwIfCancelled(error, signal)
     throw error
   }
 
   throwIfAborted(signal)
-  return await parseBatchResponseWithRetry({
-    adapter,
-    sessionId,
-    response: result.response,
-    responseMeta: result.responseMeta,
-    signal,
-    timeoutMs,
-    model,
-    onOpenCodeStreamEvent,
-    onPromptDispatched,
-    ticketId,
-    structuredRetryCount,
-    restartSession: restartOptions
-      ? async (currentSessionId) => {
-          if (sessionManager) {
-            await sessionManager.abandonSession(currentSessionId)
-          }
+  try {
+    return await parseBatchResponseWithRetry({
+      adapter,
+      sessionId: currentSessionId,
+      response: result.response,
+      responseMeta: result.responseMeta,
+      signal,
+      timeoutMs,
+      model,
+      onOpenCodeStreamEvent,
+      onPromptDispatched,
+      ticketId,
+      structuredRetryCount,
+      restartSession: restartOptions
+      ? async (sessionIdToRestart) => {
+          await stopInterviewSession(adapter, sessionManager, sessionIdToRestart, signal)
           const restarted = await runOpenCodePrompt({
             adapter,
             projectPath: restartOptions.projectPath,
@@ -377,10 +405,16 @@ export async function submitBatchToSession(
               })
             },
           })
+          currentSessionId = restarted.session.id
           return { sessionId: restarted.session.id, response: restarted.response, responseMeta: restarted.responseMeta }
         }
       : undefined,
-  })
+    })
+  } catch (error) {
+    await stopInterviewSession(adapter, sessionManager, currentSessionId, signal)
+    throwIfCancelled(error, signal)
+    throw error
+  }
 }
 
 function toBatchResponse(output: InterviewTurnOutput): BatchResponse {

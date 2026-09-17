@@ -70,6 +70,24 @@ export function isSameSessionQuestion(
     && compatible(existing.options, incoming.options, sameQuestionOptions)
 }
 
+function canRewordUnansweredCompiledQuestion(
+  snapshot: InterviewSessionSnapshot,
+  existing: InterviewSessionQuestion,
+  incoming: InterviewSessionQuestion,
+): boolean {
+  if (snapshot.answers[incoming.id] !== undefined
+    || existing.source !== 'compiled'
+    || incoming.source !== 'compiled') return false
+
+  // Prompt, phase, priority and rationale may be refined before the first
+  // answer. Answer controls are semantics, though: changing them would make
+  // the next payload mean something different even without an answer yet.
+  const compatible = <T>(before: T | undefined, after: T | undefined, equals: (a: T, b: T) => boolean) =>
+    before === undefined || after === undefined || equals(before, after)
+  return compatible(existing.answerType, incoming.answerType, (a, b) => a === b)
+    && compatible(existing.options, incoming.options, sameQuestionOptions)
+}
+
 function describeQuestionRound(question: InterviewSessionQuestion): string {
   return question.roundNumber === undefined ? '' : ` (round ${question.roundNumber})`
 }
@@ -81,7 +99,11 @@ function upsertQuestion(
   const existingIndex = snapshot.questions.findIndex((entry) => entry.id === question.id)
   if (existingIndex >= 0) {
     const existing = snapshot.questions[existingIndex]!
-    if (!isSameSessionQuestion(existing, question)) {
+    // PROM4 may rephrase a compiled question while it is still unanswered.
+    // Once an answer exists, the id is the answer's key and changing the
+    // prompt would make that answer mean something else.
+    if (!isSameSessionQuestion(existing, question)
+      && !canRewordUnansweredCompiledQuestion(snapshot, existing, question)) {
       throw new Error(
         `Interview session question id collision for ${question.id}: cannot replace existing ${existing.source} question`
         + `${describeQuestionRound(existing)}`

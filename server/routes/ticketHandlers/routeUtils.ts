@@ -140,6 +140,14 @@ export function rejectDisplayOnlyMockTicket(c: Context, ticket: Pick<PublicTicke
   return c.json({ error: 'Display-only mock tickets are board-only and cannot run workflow actions' }, 409)
 }
 
+async function cancelAndConfirmTicketSessions(ticketId: string): Promise<void> {
+  cancelTicket(ticketId)
+  const stopped = await abortTicketSessions(ticketId)
+  if (stopped === false) {
+    throw new Error('Could not confirm that active OpenCode sessions stopped')
+  }
+}
+
 export interface PhaseRestartSummary {
   reason: string
   archivedAttempts: PublicTicketPhaseAttemptRow[]
@@ -171,8 +179,7 @@ export async function preparePlanningRestart(
     : PRD_EDIT_RESTART_PHASES
 
   emitRoutePhaseLog(ticketId, restartPhase, 'info', 'Archiving downstream planning attempts and aborting active downstream work.')
-  cancelTicket(ticketId)
-  await abortTicketSessions(ticketId)
+  await cancelAndConfirmTicketSessions(ticketId)
   clearContextCache(ticketId)
   ensureActivePhaseAttempt(ticketId, targetApprovalStatus)
   const archivedAttempts = archiveActivePhaseAttempts(ticketId, phasesToArchive, restartReason)
@@ -197,8 +204,7 @@ export async function prepareExecutionSetupPlanRestart(ticketId: string): Promis
     'info',
     'Archiving the current workspace setup draft and approval attempt for versioned regeneration.',
   )
-  cancelTicket(ticketId)
-  await abortTicketSessions(ticketId)
+  await cancelAndConfirmTicketSessions(ticketId)
   clearContextCache(ticketId)
   ensureActivePhaseAttempt(ticketId, 'GENERATING_EXECUTION_SETUP_PLAN')
   ensureActivePhaseAttempt(ticketId, 'WAITING_EXECUTION_SETUP_APPROVAL')
@@ -218,8 +224,7 @@ export async function prepareExecutionSetupRuntimeRewind(ticketId: string): Prom
   requireExistingTicketWorkspace(ticketId)
   const restartReason = 'execution_setup_runtime_rewind'
   emitRoutePhaseLog(ticketId, 'WAITING_EXECUTION_SETUP_APPROVAL', 'info', 'Stopping workspace runtime setup and returning to setup-plan approval.')
-  cancelTicket(ticketId)
-  await abortTicketSessions(ticketId)
+  await cancelAndConfirmTicketSessions(ticketId)
   clearContextCache(ticketId)
   ensureActivePhaseAttempt(ticketId, 'GENERATING_EXECUTION_SETUP_PLAN')
   ensureActivePhaseAttempt(ticketId, 'WAITING_EXECUTION_SETUP_APPROVAL')
@@ -259,8 +264,7 @@ export async function prepareExecutionSetupRuntimeRegeneration(
     'info',
     'Stopping workspace runtime setup and starting a versioned workspace setup draft.',
   )
-  cancelTicket(ticketId)
-  await abortTicketSessions(ticketId)
+  await cancelAndConfirmTicketSessions(ticketId)
   clearContextCache(ticketId)
   ensureActivePhaseAttempt(ticketId, 'GENERATING_EXECUTION_SETUP_PLAN')
   ensureActivePhaseAttempt(ticketId, 'WAITING_EXECUTION_SETUP_APPROVAL')

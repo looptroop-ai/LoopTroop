@@ -74,6 +74,7 @@ function clearMap<T extends Record<string, unknown>>(current: T): T {
 export function useBatchSubmit(ticketId: string) {
   const { mutateAsync: submitBatchMutation, isPending: isSubmitting } = useSubmitBatch()
   const { mutateAsync: skipInterviewMutation, isPending: isSkipping } = useSkipInterview()
+  const actionInFlightRef = useRef(false)
   const { data: persistedDrafts } = useTicketUIState<PersistedInterviewDrafts>(ticketId, INTERVIEW_DRAFTS_SCOPE)
   const { mutateAsync: saveUiState } = useSaveTicketUIState()
 
@@ -375,6 +376,8 @@ export function useBatchSubmit(ticketId: string) {
     batchAnswers: Record<string, string>,
   ) => {
     if (!currentBatch || !currentBatchKey) return
+    if (actionInFlightRef.current) return
+    actionInFlightRef.current = true
 
     try {
       const skippedQuestionIds = skippedQuestions[currentBatchKey] ?? new Set<string>()
@@ -391,6 +394,7 @@ export function useBatchSubmit(ticketId: string) {
       )
       await submitBatchMutation({
         ticketId,
+        batchNumber: currentBatch.batchNumber,
         answers: batchAnswers,
         selectedOptions,
         skipReasons,
@@ -424,6 +428,8 @@ export function useBatchSubmit(ticketId: string) {
     } catch (err) {
       console.error('Failed to submit interview batch:', err)
       throw err
+    } finally {
+      actionInFlightRef.current = false
     }
   }, [submitBatchMutation, batchSelectedOptions, batchSkipReasons, skippedQuestions, ticketId])
 
@@ -434,6 +440,8 @@ export function useBatchSubmit(ticketId: string) {
     bulkSkipReason?: string,
   ) => {
     if (!currentBatch) return
+    if (actionInFlightRef.current) return
+    actionInFlightRef.current = true
 
     try {
       const batchQuestionIds = new Set(currentBatch.questions.map((question) => question.id))
@@ -457,6 +465,7 @@ export function useBatchSubmit(ticketId: string) {
       )
       await skipInterviewMutation({
         ticketId,
+        batchNumber: currentBatch.batchNumber,
         answers: batchAnswers,
         selectedOptions,
         skipReasons,
@@ -488,6 +497,8 @@ export function useBatchSubmit(ticketId: string) {
       // ticket exactly where it was.
       console.error('Failed to skip remaining interview questions:', err)
       throw err
+    } finally {
+      actionInFlightRef.current = false
     }
   }, [skipInterviewMutation, batchSelectedOptions, batchSkipReasons, skippedQuestions, saveUiState, ticketId])
 

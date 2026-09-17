@@ -852,7 +852,10 @@ export async function handleCreatePullRequest(
         if (state === 'complete') {
           await draftSessionManager.completeSession(sessionId)
         } else {
-          await draftSessionManager.abandonSession(sessionId)
+          const stopped = await draftSessionManager.abortAndAbandonSession(sessionId)
+          if (!stopped) {
+            throw new Error(`Could not confirm abort of pull request draft session ${sessionId}`)
+          }
         }
         draftSessionOpen = false
       }

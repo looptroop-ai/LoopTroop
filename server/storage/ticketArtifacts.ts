@@ -1,4 +1,4 @@
-import { and, desc, eq } from 'drizzle-orm'
+import { and, desc, eq, type SQL } from 'drizzle-orm'
 import { createHash } from 'node:crypto'
 import { phaseArtifacts, ticketPhaseAttempts } from '../db/schema'
 import { broadcaster } from '../sse/broadcaster'
@@ -236,4 +236,59 @@ export function upsertLatestPhaseArtifact(
     updatedAt,
   }).returning().get()
   broadcastArtifactChange(ticketRef, phase, artifactType, inserted)
+}
+
+/**
+ * Replace the latest artifact only when it still contains the caller's
+ * expected content. The phase-attempt check and broadcast stay identical to
+ * the normal artifact writers; callers may add one SQL guard for ownership
+ * that must be evaluated by the same UPDATE.
+ */
+export function compareAndSetLatestPhaseArtifact(
+  ticketRef: string,
+  artifactType: string,
+  phase: ArtifactPhase,
+  expectedContent: string,
+  content: string,
+  phaseAttempt?: number,
+  extraWhere?: SQL<unknown>,
+): boolean {
+  const context = getTicketContext(ticketRef)
+  if (!context) throw new Error(`Ticket not found: ${ticketRef}`)
+  assertCurrentEditablePhaseAttempt({
+    ticketId: ticketRef,
+    phase,
+    requestedPhaseAttempt: phaseAttempt,
+  })
+  const resolvedPhaseAttempt = resolvePhaseAttempt(ticketRef, phase, phaseAttempt)
+  const updatedAt = new Date().toISOString()
+  const updated = context.projectDb.transaction((tx) => {
+    const existing = tx.select().from(phaseArtifacts)
+      .where(and(
+        eq(phaseArtifacts.ticketId, context.localTicketId),
+        eq(phaseArtifacts.artifactType, artifactType),
+        eq(phaseArtifacts.phase, phase),
+        eq(phaseArtifacts.phaseAttempt, resolvedPhaseAttempt),
+      ))
+      .orderBy(desc(phaseArtifacts.id))
+      .get()
+    // The CAS is against the newest row, not the newest row that happens to
+    // contain the expected value. An older matching row must not be revived
+    // after a newer writer has already moved the artifact on.
+    if (!existing || existing.content !== expectedContent) return undefined
+
+    const result = tx.update(phaseArtifacts)
+      .set({ content, updatedAt })
+      .where(and(
+        eq(phaseArtifacts.id, existing.id),
+        eq(phaseArtifacts.content, expectedContent),
+        extraWhere,
+      ))
+      .returning()
+      .get()
+    return result
+  })
+  if (!updated) return false
+  broadcastArtifactChange(ticketRef, phase, artifactType, updated)
+  return true
 }

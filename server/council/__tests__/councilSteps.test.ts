@@ -11,7 +11,7 @@ import { checkMemberResponseQuorum, checkQuorum } from '../quorum'
 import { buildVotePresentationOrder, conductVoting, selectWinner } from '../voter'
 import { refineDraft } from '../refiner'
 import { requireWinnerDraft } from '../draftUtils'
-import type { CouncilMember, DraftResult, MemberOutcome, Vote } from '../types'
+import type { CouncilMember, DraftProgressEvent, DraftResult, MemberOutcome, Vote } from '../types'
 import type { PromptPart } from '../../opencode/types'
 import { deliberateInterview } from '../../phases/interview/deliberate'
 import { normalizeInterviewRefinementOutput } from '../../structuredOutput'
@@ -198,6 +198,64 @@ describe('Council draft, vote and refine steps', () => {
     expect(draftRun.deadlineReached).toBe(true)
     expect(drafts[0]!.outcome).toBe('timed_out')
     expect(drafts[0]!.duration).toBe(5)
+  })
+
+  it('recovers a draft timeout after the first remote stop attempt is unconfirmed', async () => {
+    class StopRetryAdapter extends MockOpenCodeAdapter {
+      readonly abortCalls: string[] = []
+      private abortAttempt = 0
+
+      override async promptSession(_sessionId: string, _parts: PromptPart[], signal?: AbortSignal): Promise<string> {
+        return stalledPrompt(signal)
+      }
+
+      override async abortSession(sessionId: string): Promise<boolean> {
+        this.abortCalls.push(sessionId)
+        this.abortAttempt += 1
+        return this.abortAttempt >= 3
+      }
+    }
+
+    const retryAdapter = new StopRetryAdapter()
+    const draftRun = await generateDrafts(
+      retryAdapter,
+      [members[0]!],
+      [{ type: 'text', content: 'draft prompt' }],
+      '/tmp/test',
+      5,
+    )
+
+    expect(draftRun.drafts[0]?.outcome).toBe('timed_out')
+    expect(retryAdapter.abortCalls.length).toBeGreaterThanOrEqual(3)
+  })
+
+  it('does not report a draft timeout when remote stop remains unconfirmed', async () => {
+    class UnconfirmedStopAdapter extends MockOpenCodeAdapter {
+      readonly finishedEvents: DraftProgressEvent[] = []
+
+      override async promptSession(_sessionId: string, _parts: PromptPart[], signal?: AbortSignal): Promise<string> {
+        return stalledPrompt(signal)
+      }
+
+      override async abortSession(_sessionId: string): Promise<boolean> {
+        return false
+      }
+    }
+
+    const unconfirmedAdapter = new UnconfirmedStopAdapter()
+    await expect(generateDrafts(
+      unconfirmedAdapter,
+      [members[0]!],
+      [{ type: 'text', content: 'draft prompt' }],
+      '/tmp/test',
+      5,
+      undefined,
+      undefined,
+      undefined,
+      (entry) => unconfirmedAdapter.finishedEvents.push(entry),
+    )).rejects.toThrow('Could not confirm abort of OpenCode session mock-session-1')
+
+    expect(unconfirmedAdapter.finishedEvents.filter(entry => entry.status === 'finished')).toEqual([])
   })
 
   it('returns partial draft results at the hard phase deadline', async () => {

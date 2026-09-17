@@ -25,6 +25,32 @@ import { normalizeStructuredRetryCount } from '../lib/structuredRetryPolicy'
 import { appendAcceptedRawAttempt, appendRejectedRawAttempt } from '../lib/structuredRawAttempts'
 import { getErrorMessage } from '@shared/typeGuards'
 import type { WorkflowPhaseId } from '@shared/workflowMeta'
+import { SessionManager } from '../opencode/sessionManager'
+import { shouldPreserveSessionForContinuation } from '../opencode/sessionContinuation'
+
+const COUNCIL_STOP_ATTEMPTS = 2
+
+async function confirmDraftSessionStopped(
+  adapter: OpenCodeAdapter,
+  sessionManager: SessionManager | null,
+  sessionId: string,
+): Promise<boolean> {
+  for (let attempt = 0; attempt < COUNCIL_STOP_ATTEMPTS; attempt += 1) {
+    try {
+      const stopped = sessionManager
+        ? await sessionManager.abortAndAbandonSession(sessionId)
+        : await adapter.abortSession(sessionId)
+      if (stopped) return true
+    } catch (error) {
+      console.warn(`[council/drafter] Failed to abort OpenCode session ${sessionId}:`, error)
+    }
+  }
+  return false
+}
+
+function unconfirmedDraftStopError(sessionId: string): Error {
+  return new Error(`Could not confirm abort of OpenCode session ${sessionId}`)
+}
 
 interface DraftValidationResult {
   questionCount?: number
@@ -94,6 +120,9 @@ export async function generateDrafts(
     ...(timeout > 0 ? { totalMs: timeout } : {}),
     scope: 'council_member',
   })
+  const sessionManager = runtimeOptions?.ticketId && runtimeOptions.phase
+    ? new SessionManager(adapter)
+    : null
   let deadlineReached = false
 
   function recordResult(draft: DraftResult, sessionId?: string): boolean {
@@ -129,7 +158,16 @@ export async function generateDrafts(
     let lastValidationError: string | undefined
     let attemptCount = 0
     let closed = false
+    let promptReturned = false
     let timeoutHandle: ReturnType<typeof setTimeout> | undefined
+    const memberAbortController = new AbortController()
+    const memberSignal = signal
+      ? AbortSignal.any([signal, memberAbortController.signal])
+      : memberAbortController.signal
+    let resolveExecutionSettled: () => void = () => {}
+    const executionSettled = new Promise<void>((resolve) => {
+      resolveExecutionSettled = resolve
+    })
     let lastFailureClass: DraftStructuredOutputMeta['failureClass']
     let rawResponse: string | undefined
     let normalizedResponse: string | undefined
@@ -148,13 +186,11 @@ export async function generateDrafts(
       }
     }
 
-    const markTimedOut = async () => {
+    const markTimedOut = () => {
       if (closed) return
       closed = true
       deadlineReached = true
-      if (sessionId) {
-        await adapter.abortSession(sessionId)
-      }
+      memberAbortController.abort()
     }
 
     const executeDraft = (async () => {
@@ -169,11 +205,12 @@ export async function generateDrafts(
           throw new Error(PHASE_DEADLINE_ERROR)
         }
 
+        promptReturned = false
         result = await runOpenCodePrompt({
           adapter,
           projectPath,
           parts: promptParts,
-          signal,
+          signal: memberSignal,
           workBudget: budget,
           timeoutKind: 'ai_response',
           model: member.modelId,
@@ -190,12 +227,11 @@ export async function generateDrafts(
               }
             : {}),
           onSessionCreated: (session) => {
+            sessionId = session.id
             if (closed) {
-              void adapter.abortSession(session.id)
-              return
+              throw new Error(`OpenCode session ${session.id} was created after the council deadline`)
             }
 
-            sessionId = session.id
             onDraftProgress?.({
               memberId: member.modelId,
               status: 'session_created',
@@ -221,16 +257,12 @@ export async function generateDrafts(
           },
         })
 
-        if (closed) {
-          return {
-            memberId: member.modelId,
-            content: '',
-            outcome: 'timed_out' as const,
-            duration: Date.now() - startTime,
-            error: `AI response timeout reached after ${timeout}ms`,
-          }
+        if (closed || signal?.aborted || memberAbortController.signal.aborted) {
+          if (signal?.aborted && !closed) throw new CancelledError()
+          throw new Error(PHASE_DEADLINE_ERROR)
         }
 
+        promptReturned = true
         content = result.response
         rawResponse = content
 
@@ -327,6 +359,25 @@ export async function generateDrafts(
 
       return draft
     })()
+      .finally(() => {
+        resolveExecutionSettled()
+      })
+
+    const ensureSessionStopped = async (): Promise<boolean> => {
+      await executionSettled
+      if (promptReturned) return true
+      const trackedSessionId = sessionId ?? (
+        runtimeOptions?.ticketId && runtimeOptions.phase
+          ? sessionManager?.getOwnedActiveSession(runtimeOptions.ticketId, runtimeOptions.phase, {
+              phaseAttempt: runtimeOptions.phaseAttempt ?? 1,
+              memberId: member.modelId,
+            })?.sessionId
+          : undefined
+      )
+      if (!trackedSessionId) return true
+      sessionId = trackedSessionId
+      return confirmDraftSessionStopped(adapter, sessionManager, trackedSessionId)
+    }
 
     // Re-armed from the budget rather than set once, so a question wait moves it
     // instead of expiring the member who is waiting for the answer. Cleared
@@ -343,7 +394,7 @@ export async function generateDrafts(
           }
           if (closed || budget.suspended()) return
           timeoutHandle = setTimeout(() => {
-            void markTimedOut()
+            markTimedOut()
             reject(new Error(PHASE_DEADLINE_ERROR))
           }, Math.max(0, budget.remainingMs() ?? 0))
         }
@@ -356,12 +407,17 @@ export async function generateDrafts(
         ? await Promise.race([executeDraft, deadlinePromise])
         : await executeDraft
     } catch (err) {
-      if (signal?.aborted || err instanceof CancelledError || (isAbortError(err) && signal?.aborted)) {
+      const callerCancelled = signal?.aborted || (isAbortError(err) && signal?.aborted)
+      if (callerCancelled || err instanceof CancelledError) {
+        const stopped = await ensureSessionStopped()
+        if (!stopped && sessionId) throw unconfirmedDraftStopError(sessionId)
         throw new CancelledError()
       }
 
       const duration = Date.now() - startTime
       if (isPhaseDeadlineError(err) || isAiResponseTimeoutError(err) || closed) {
+        const stopped = await ensureSessionStopped()
+        if (!stopped && sessionId) throw unconfirmedDraftStopError(sessionId)
         deadlineReached = true
         const draft: DraftResult = {
           memberId: member.modelId,
@@ -378,6 +434,25 @@ export async function generateDrafts(
         }
         recordResult(draft, sessionId)
         return draft
+      }
+
+      const preserveForContinuation = sessionId && runtimeOptions?.ticketId && runtimeOptions.phase
+        ? shouldPreserveSessionForContinuation({
+            error: err,
+            sessionId,
+            modelId: member.modelId,
+            sessionOwnership: {
+              ticketId: runtimeOptions.ticketId,
+              phase: runtimeOptions.phase,
+              phaseAttempt: runtimeOptions.phaseAttempt ?? 1,
+              memberId: member.modelId,
+            },
+            signal: memberSignal,
+          })
+        : false
+      if (!preserveForContinuation) {
+        const stopped = await ensureSessionStopped()
+        if (!stopped && sessionId) throw unconfirmedDraftStopError(sessionId)
       }
 
       const {

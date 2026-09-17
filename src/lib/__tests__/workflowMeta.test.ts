@@ -317,4 +317,21 @@ describe.concurrent('workflow metadata', () => {
     expect(finalTestPhase?.contextSummary).toEqual(['ticket_details', 'prd', 'beads', 'final_test_notes'])
     expect(pullRequestPhase?.contextSummary).toEqual(['ticket_details', 'prd'])
   })
+
+  it('documents confirmed-stop, batch-claim, and bounded-continuation safety', () => {
+    const interview = WORKFLOW_PHASES.find((phase) => phase.id === 'WAITING_INTERVIEW_ANSWERS')
+    const coding = WORKFLOW_PHASES.find((phase) => phase.id === 'CODING')
+    const canceled = WORKFLOW_PHASES.find((phase) => phase.id === 'CANCELED')
+    const blocked = WORKFLOW_PHASES.find((phase) => phase.id === 'BLOCKED_ERROR')
+
+    expect(interview?.description).toContain('positive batch identity')
+    expect(interview?.details.steps.join(' ')).toContain('A durable claim covers generation and answer edits')
+    expect(interview?.details.steps.join(' ')).toContain('Only a confirmed stop can promote the exact pending marker')
+    expect(coding?.description).toContain('`maxIterations` cap')
+    expect(coding?.details.steps.join(' ')).toContain('`0` leaves that automatic continuation cap unlimited')
+    expect(canceled?.description).toContain('active remote work was confirmed stopped')
+    expect(canceled?.details.overview).toContain('If a stop cannot be confirmed')
+    expect(blocked?.details.steps.join(' ')).toContain('If both storage layers are unavailable')
+    expect(blocked?.details.transitions.join(' ')).toContain('only after active remote sessions are confirmed stopped')
+  })
 })

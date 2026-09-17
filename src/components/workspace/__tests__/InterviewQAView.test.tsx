@@ -7,8 +7,8 @@ import { createJsonResponse, renderWithProviders as sharedRenderWithProviders } 
 import { INTERVIEW_BATCH_EVENT } from '@/lib/interviewBatchEvents'
 import { InterviewQAView } from '../InterviewQAView'
 
-let submittedBody: { answers?: Record<string, string>; selectedOptions?: Record<string, string[]>; skipReasons?: Record<string, string> } | null = null
-let skippedBody: { answers?: Record<string, string>; skipReasons?: Record<string, string>; bulkSkipReason?: string } | null = null
+let submittedBody: { batchNumber?: number; answers?: Record<string, string>; selectedOptions?: Record<string, string[]>; skipReasons?: Record<string, string> } | null = null
+let skippedBody: { batchNumber?: number; answers?: Record<string, string>; skipReasons?: Record<string, string>; bulkSkipReason?: string } | null = null
 let savedUiState: { scope?: string; data?: unknown } | null = null
 let preSeededDrafts: { draftAnswers: Record<string, Record<string, string>>; skippedQuestions: Record<string, string[]>; selectedOptions?: Record<string, Record<string, string[]>> } | null = null
 let interviewData: InterviewSessionView = {
@@ -216,11 +216,11 @@ describe('InterviewQAView', () => {
     vi.stubGlobal('fetch', vi.fn(async (input, init) => {
       const url = String(input)
       if (url.endsWith(`/api/tickets/${encodeURIComponent(TEST.ticketId)}/answer-batch`)) {
-        submittedBody = init?.body ? JSON.parse(String(init.body)) as { answers?: Record<string, string>; selectedOptions?: Record<string, string[]> } : null
+        submittedBody = init?.body ? JSON.parse(String(init.body)) as { batchNumber?: number; answers?: Record<string, string>; selectedOptions?: Record<string, string[]> } : null
         return createJsonResponse(makeBatch())
       }
       if (url.endsWith(`/api/tickets/${encodeURIComponent(TEST.ticketId)}/skip`)) {
-        skippedBody = init?.body ? JSON.parse(String(init.body)) as { answers?: Record<string, string> } : null
+        skippedBody = init?.body ? JSON.parse(String(init.body)) as { batchNumber?: number; answers?: Record<string, string> } : null
         return createJsonResponse({
           message: 'Remaining interview questions skipped',
           ticketId: TEST.ticketId,
@@ -280,6 +280,7 @@ describe('InterviewQAView', () => {
     })
 
     expect(submittedBody).toEqual({
+      batchNumber: 2,
       answers: {
         QF01: 'Exercise retries against a flaky upstream fake.',
       },
@@ -309,6 +310,7 @@ describe('InterviewQAView', () => {
     })
 
     expect(skippedBody).toEqual({
+      batchNumber: 2,
       answers: {
         QF01: 'Exercise retries against a flaky upstream fake.',
       },
@@ -441,7 +443,7 @@ describe('InterviewQAView', () => {
         await Promise.resolve()
       })
 
-      expect(submittedBody).toEqual({ answers: { QF01: 'Pre-filled answer' }, selectedOptions: {}, skipReasons: {} })
+      expect(submittedBody).toEqual({ batchNumber: 2, answers: { QF01: 'Pre-filled answer' }, selectedOptions: {}, skipReasons: {} })
 
       await act(async () => {
         await vi.advanceTimersByTimeAsync(350)
@@ -476,6 +478,7 @@ describe('InterviewQAView', () => {
     })
 
     expect(submittedBody).toEqual({
+      batchNumber: 2,
       answers: {
         QF01: '',
         Q03: 'Retry twice before falling back.',
@@ -505,6 +508,7 @@ describe('InterviewQAView', () => {
     })
 
     expect(submittedBody).toEqual({
+      batchNumber: 2,
       answers: {
         Q03: 'Retry twice before falling back.',
       },

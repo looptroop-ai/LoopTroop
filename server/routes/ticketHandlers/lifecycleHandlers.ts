@@ -424,14 +424,32 @@ async function handleCancelTicketLocked(c: Context, options: z.infer<typeof canc
       }
     } else {
       ensureActorForTicket(ticketId)
-      sendTicketEvent(ticketId, { type: 'CANCEL' })
       cancelTicket(ticketId)
       // Before the sessions go, so the receipts say the ticket was cancelled
       // rather than that a session vanished. Tearing the sessions down first
       // would file every outstanding question under `session_lost`, which is
       // true but tells a later reader nothing about why.
-      await clearTicketWindows(ticketId, 'ticket_canceled', 'The ticket was canceled while the question was open.')
-      await abortTicketSessions(ticketId)
+      const windowsClearedBeforeAbort = await clearTicketWindows(
+        ticketId,
+        'ticket_canceled',
+        'The ticket was canceled while the question was open.',
+      )
+      const sessionsStopped = await abortTicketSessions(ticketId)
+      // A question fallback and the session sweep can race each other. If the
+      // sweep confirmed the remote session after the first window attempt, let
+      // the session-ended hook finish the window before deciding cancellation
+      // is unsafe.
+      const windowsCleared = windowsClearedBeforeAbort || await clearTicketWindows(
+        ticketId,
+        'ticket_canceled',
+        'The ticket was canceled while the question was open.',
+      )
+      if (windowsCleared === false || sessionsStopped === false) {
+        return c.json({
+          error: 'Cancellation could not be confirmed while OpenCode work is still active',
+        }, 409)
+      }
+      sendTicketEvent(ticketId, { type: 'CANCEL' })
       if (deleteTicket) {
         stopActor(ticketId)
         clearContextCache(ticketId)
@@ -731,7 +749,12 @@ export async function handleRetryTicket(c: Context) {
 
   try {
     if (ticket.previousStatus === 'PREPARING_EXECUTION_ENV') {
-      await abortTicketSessions(ticketId)
+      const stopped = await abortTicketSessions(ticketId)
+      if (stopped === false) {
+        return c.json({
+          error: 'Retry is not available until the previous OpenCode session stop is confirmed',
+        }, 409)
+      }
     }
     if (isAttemptTrackedPhase(ticket.previousStatus)) {
       ensureActivePhaseAttempt(ticketId, ticket.previousStatus)

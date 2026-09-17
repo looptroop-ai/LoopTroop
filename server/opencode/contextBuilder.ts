@@ -139,6 +139,8 @@ function sortContextParts(parts: ContextSourcePart[]): ContextSourcePart[] {
 
 export interface TicketState {
   ticketId: string
+  /** Project scope for callers that still carry an external id separately. */
+  projectId?: number
   title?: string
   description?: string
   relevantFiles?: string
@@ -161,6 +163,14 @@ export interface TicketState {
   errorContext?: string
 }
 
+function contextTicketKey(ticketState: Pick<TicketState, 'ticketId' | 'projectId'>): string {
+  if (ticketState.projectId === undefined) return ticketState.ticketId
+  const prefix = `${ticketState.projectId}:`
+  return ticketState.ticketId.startsWith(prefix)
+    ? ticketState.ticketId
+    : `${prefix}${ticketState.ticketId}`
+}
+
 export function buildMinimalContext(
   phase: string,
   ticketState: TicketState,
@@ -175,11 +185,18 @@ export function buildMinimalContext(
   logIfVerbose(`[contextBuilder] buildMinimalContext phase=${phase} ticket=${ticketState.ticketId} allowlist=[${allowlist.join(',')}]`)
 
   const parts: ContextSourcePart[] = []
+  const canonicalTicketKey = contextTicketKey(ticketState)
+  // A bare external id has no project owner. Caching it would make two
+  // projects with the same id share bytes, so only the composite adapter key
+  // (or an explicit projectId) is cacheable.
+  const cachePrefix = ticketState.projectId !== undefined || ticketState.ticketId.includes(':')
+    ? `${canonicalTicketKey}:`
+    : null
   let order = 0
 
   // Assemble allowed context sources
   for (const source of allowlist) {
-    const cacheKey = `${ticketState.ticketId}:${source}`
+    const cacheKey = cachePrefix ? `${cachePrefix}${source}` : null
 
     switch (source) {
       case 'ticket_details': {
@@ -194,9 +211,9 @@ export function buildMinimalContext(
         break
       }
       case 'relevant_files': {
-        const cached = getCachedContext(cacheKey)
+        const cached = cacheKey ? getCachedContext(cacheKey) : null
         const content = cached ?? ticketState.relevantFiles ?? ''
-        if (!cached && ticketState.relevantFiles) setCachedContext(cacheKey, content)
+        if (!cached && cacheKey && ticketState.relevantFiles) setCachedContext(cacheKey, content)
         if (content) {
           logIfVerbose(`[contextBuilder] relevant_files: loaded (${content.length} chars, cached=${!!cached})`)
           parts.push({ source, content, order: order++ })
@@ -204,13 +221,13 @@ export function buildMinimalContext(
         break
       }
       case 'interview': {
-        const cached = getCachedContext(cacheKey)
+        const cached = cacheKey ? getCachedContext(cacheKey) : null
         // Every prompt that reads the interview artifact reads it through here,
         // which makes this the one place a skip reason can be kept out of a
         // model's context. PROM10a gets the reasons back deliberately, as a
         // separate fenced part it can read but has no field to write.
         const content = cached ?? (ticketState.interview ? stripSkipReasonsFromInterviewYaml(ticketState.interview) : '')
-        if (!cached && content) setCachedContext(cacheKey, content)
+        if (!cached && cacheKey && content) setCachedContext(cacheKey, content)
         if (content) parts.push({ source, content, order: order++ })
         break
       }
@@ -223,9 +240,9 @@ export function buildMinimalContext(
         break
       }
       case 'prd': {
-        const cached = getCachedContext(cacheKey)
+        const cached = cacheKey ? getCachedContext(cacheKey) : null
         const content = cached ?? ticketState.prd ?? ''
-        if (!cached && ticketState.prd) setCachedContext(cacheKey, content)
+        if (!cached && cacheKey && ticketState.prd) setCachedContext(cacheKey, content)
         if (content) parts.push({ source, content, order: order++ })
         break
       }
@@ -330,12 +347,21 @@ export function buildMinimalContext(
     for (const { key, sources } of TRIM_PRIORITY) {
       if (totalTokens <= DEFAULT_CONTEXT_TOKEN_BUDGET) break
       const matchSources = [key, ...sources]
-      const idx = orderedParts.findIndex((p) => matchSources.includes(p.source))
-      if (idx !== -1) {
+      while (totalTokens > DEFAULT_CONTEXT_TOKEN_BUDGET) {
+        // Ticket details are the mandatory source of the user's requirement;
+        // even an oversized requirement stays intact. Every other source at
+        // this priority is expendable, and there may be several such parts
+        // (drafts, votes, or retry notes), so remove them until the budget is
+        // met before moving to the next priority.
+        const idx = orderedParts.findIndex((p) => p.source !== 'ticket_details' && matchSources.includes(p.source))
+        if (idx === -1) break
         const part = orderedParts[idx]!
         totalTokens -= estimateTokens(part.content)
         orderedParts.splice(idx, 1)
       }
+    }
+    if (totalTokens > DEFAULT_CONTEXT_TOKEN_BUDGET) {
+      warnIfVerbose(`[contextBuilder] mandatory context exceeds token budget: totalTokens=${totalTokens} budget=${DEFAULT_CONTEXT_TOKEN_BUDGET}`)
     }
   }
 
@@ -353,9 +379,13 @@ export function buildMinimalContext(
 }
 
 // Clear cache for a specific ticket
-export function clearContextCache(ticketId: string) {
+export function clearContextCache(ticketId: string, projectId?: number) {
+  const canonicalTicketId = projectId === undefined
+    ? ticketId
+    : ticketId.startsWith(`${projectId}:`) ? ticketId : `${projectId}:${ticketId}`
   for (const key of contextCache.keys()) {
-    if (key.startsWith(`${ticketId}:`)) {
+    if (key.startsWith(`${canonicalTicketId}:`)
+      || (projectId === undefined && key.includes(`:${ticketId}:`))) {
       contextCache.delete(key)
     }
   }

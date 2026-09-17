@@ -18,6 +18,7 @@ import {
   markRequestSkipped,
   readTimerArtifact,
   reconcileAgainstPending,
+  reconcilePendingQuestionsAfterRestart,
   releaseRequestClaim,
   resetAllQuestionWindows,
   stopTicketTimers,
@@ -26,7 +27,7 @@ import { getTicketContext } from '../../storage/ticketQueries'
 import { closeQuestionWait } from '../../storage/questionWaits'
 import { questionWaits } from '../../db/schema'
 import type { OpenCodeQuestionInfo } from '../../opencode/types'
-import { MockOpenCodeAdapter } from '../../opencode/adapter'
+import { MockOpenCodeAdapter, type OpenCodeAdapter } from '../../opencode/adapter'
 
 const adapter = new MockOpenCodeAdapter()
 // The window machinery reaches for the process-wide adapter, so the mock is
@@ -91,6 +92,7 @@ describe('question windows', () => {
   })
 
   afterEach(() => {
+    vi.restoreAllMocks()
     resetAllQuestionWindows()
     resetAllWorkBudgets()
     vi.useRealTimers()
@@ -268,7 +270,9 @@ describe('question windows', () => {
     ask(ticket.id)
     ask(ticket.id, { sessionId: 'ses_b', requestId: 'req_b', memberId: 'openai/gpt' })
 
-    await vi.advanceTimersByTimeAsync(300_001)
+    await vi.advanceTimersByTimeAsync(300_000)
+    await settle()
+    await vi.advanceTimersByTimeAsync(1_500)
     await settle()
 
     // One clock for both, so both go down together.
@@ -304,7 +308,7 @@ describe('question windows', () => {
     expect(getPendingQuestionSummary(ticket.id)?.requestCount).toBe(1)
   })
 
-  it('closes the request out locally when OpenCode will not take the rejection', async () => {
+  it('falls back to a confirmed session abort when OpenCode will not take the rejection', async () => {
     vi.useFakeTimers()
     vi.setSystemTime(new Date('2026-01-01T00:00:00.000Z'))
     const ticket = makeTicket()
@@ -317,13 +321,79 @@ describe('question windows', () => {
     await vi.advanceTimersByTimeAsync(10_000)
     await settle()
 
-    // An expiry that cannot reject would recreate the hang this exists to
-    // prevent, so the record is resolved and the failure recorded either way.
+    // A confirmed abort is the safe fallback: the remote session cannot keep
+    // waiting on the question, so the local receipt can close it out.
     expect(getPendingQuestionSummary(ticket.id)).toBeNull()
     expect(isTicketWorkSuspended(ticket.id)).toBe(false)
     const summary = listSkipEvents(ticket.id)
       .find((event) => event.surface === 'opencode_question' && event.isActionSummary)
     expect(summary?.reason).toMatch(/Could not tell OpenCode/)
+  })
+
+  it('retains a pending question when neither rejection nor session abort is confirmed', async () => {
+    vi.useFakeTimers()
+    vi.setSystemTime(new Date('2026-01-01T00:00:00.000Z'))
+    const ticket = makeTicket()
+    ask(ticket.id)
+    adapter.failRejectQuestion = true
+    vi.spyOn(adapter, 'abortSession').mockResolvedValue(false)
+
+    await vi.advanceTimersByTimeAsync(300_001)
+    await vi.advanceTimersByTimeAsync(10_000)
+    await settle()
+
+    // The model may still be running. Keep the request visible and the work
+    // budget suspended until a later retry can prove the remote stop.
+    expect(getPendingQuestionSummary(ticket.id)?.requestIds).toEqual(['req_a'])
+    expect(isTicketWorkSuspended(ticket.id)).toBe(true)
+    expect(listSkipEvents(ticket.id).filter((event) => event.surface === 'opencode_question')).toHaveLength(0)
+  })
+
+  it('retries an unconfirmed expiry on a future deadline and recovers after the stop confirms', async () => {
+    vi.useFakeTimers()
+    vi.setSystemTime(new Date('2026-01-01T00:00:00.000Z'))
+    const ticket = makeTicket()
+    ask(ticket.id)
+    adapter.failRejectQuestion = true
+    const abort = vi.spyOn(adapter, 'abortSession')
+      .mockResolvedValueOnce(false)
+      .mockResolvedValueOnce(true)
+
+    await vi.advanceTimersByTimeAsync(300_000)
+    await settle()
+    await vi.advanceTimersByTimeAsync(1_500)
+    await settle()
+
+    const retryDeadline = Date.parse(getTicketQuestionState(ticket.id).timer!.deadlineAt)
+    expect(retryDeadline).toBeGreaterThan(Date.now())
+    expect(abort).toHaveBeenCalledTimes(1)
+    expect(getPendingQuestionSummary(ticket.id)?.requestIds).toEqual(['req_a'])
+
+    await vi.advanceTimersByTimeAsync(retryDeadline - Date.now() - 1)
+    await settle()
+    expect(abort).toHaveBeenCalledTimes(1)
+    expect(getPendingQuestionSummary(ticket.id)?.requestIds).toEqual(['req_a'])
+
+    await vi.advanceTimersByTimeAsync(1)
+    await settle()
+    expect(abort).toHaveBeenCalledTimes(1)
+    await vi.advanceTimersByTimeAsync(1_500)
+    await settle()
+    expect(abort).toHaveBeenCalledTimes(2)
+    expect(getPendingQuestionSummary(ticket.id)).toBeNull()
+  })
+
+  it('retains cleanup windows when cancellation cannot confirm the remote stop', async () => {
+    const ticket = makeTicket()
+    ask(ticket.id)
+    adapter.failRejectQuestion = true
+    vi.spyOn(adapter, 'abortSession').mockResolvedValue(false)
+
+    await clearTicketWindows(ticket.id, 'ticket_canceled', 'The ticket was canceled while the question was open.')
+
+    expect(getPendingQuestionSummary(ticket.id)?.requestIds).toEqual(['req_a'])
+    expect(isTicketWorkSuspended(ticket.id)).toBe(true)
+    expect(listSkipEvents(ticket.id).filter((event) => event.surface === 'opencode_question')).toHaveLength(0)
   })
 
   it('clamps a window outside the configurable range', () => {
@@ -441,6 +511,98 @@ describe('question windows', () => {
     // Handing it a fresh full window instead would let a restart loop postpone
     // the expiry for as long as the restarts kept coming.
     expect(adapter.questionRejections.map((entry) => entry.requestId)).toEqual(['req_a'])
+  })
+
+  it('reconciles questions by trusted session directory and only closes confirmed orphans', async () => {
+    const firstTicket = makeTicket()
+    const secondTicket = makeTicket()
+    const firstContext = getTicketContext(firstTicket.id)!
+    const secondContext = getTicketContext(secondTicket.id)!
+    adapter.sessions = [
+      { id: 'ses_active', projectPath: firstContext.projectRoot, directory: '/tmp/worktree-active' },
+      { id: 'ses_orphan', projectPath: secondContext.projectRoot, directory: '/tmp/worktree-orphan' },
+    ]
+    adapter.mockQuestions = [
+      { id: 'req_active', sessionID: 'ses_active', questions: QUESTIONS },
+      { id: 'req_orphan', sessionID: 'ses_orphan', questions: QUESTIONS },
+    ]
+    const listedSessionIds: Array<string | undefined> = []
+    vi.spyOn(adapter as OpenCodeAdapter, 'listPendingQuestions').mockImplementation(async (_projectRoot, _signal, sessionId) => {
+      listedSessionIds.push(sessionId)
+      return adapter.mockQuestions.filter((request) => request.sessionID === sessionId)
+    })
+
+    const result = await reconcilePendingQuestionsAfterRestart({
+      projectRoot: firstContext.projectRoot,
+      owners: [
+        { sessionId: 'ses_active', ticketId: firstTicket.id, memberId: null, phase: 'CODING', phaseAttempt: 1, active: true },
+        { sessionId: 'ses_orphan', ticketId: secondTicket.id, memberId: null, phase: 'CODING', phaseAttempt: 1, active: false },
+      ],
+      windowMsFor: () => 60_000,
+    })
+
+    expect(listedSessionIds).toEqual(['ses_active', 'ses_orphan'])
+    expect(result).toEqual({ reattached: 1, rejected: 1, unverified: 0 })
+    expect(getPendingQuestionSummary(firstTicket.id)?.requestIds).toEqual(['req_active'])
+    expect(adapter.questionRejections.map((entry) => entry.requestId)).toEqual(['req_orphan'])
+  })
+
+  it('reports an unverified owner when restart listing fails', async () => {
+    const ticket = makeTicket()
+    vi.spyOn(adapter as OpenCodeAdapter, 'listPendingQuestions').mockRejectedValueOnce(new Error('ECONNREFUSED'))
+
+    const result = await reconcilePendingQuestionsAfterRestart({
+      projectRoot: getTicketContext(ticket.id)!.projectRoot,
+      owners: [{
+        sessionId: 'ses_unverified',
+        ticketId: ticket.id,
+        memberId: null,
+        phase: 'CODING',
+        phaseAttempt: 1,
+        active: true,
+      }],
+      windowMsFor: () => 60_000,
+    })
+
+    expect(result).toEqual({ reattached: 0, rejected: 0, unverified: 1 })
+  })
+
+  it('retries an unconfirmed restart orphan on the next sweep', async () => {
+    vi.useFakeTimers()
+    const ticket = makeTicket()
+    const request = {
+      id: 'req_restart_orphan',
+      sessionID: 'ses_restart_orphan',
+      questions: QUESTIONS,
+    }
+    adapter.mockQuestions = [request]
+    adapter.failRejectQuestion = true
+    const abort = vi.spyOn(adapter, 'abortSession')
+      .mockResolvedValueOnce(false)
+      .mockResolvedValueOnce(true)
+    const input = {
+      projectRoot: getTicketContext(ticket.id)!.projectRoot,
+      owners: [{
+        sessionId: request.sessionID,
+        ticketId: ticket.id,
+        memberId: null,
+        phase: 'CODING' as const,
+        phaseAttempt: 1,
+        active: false,
+      }],
+      windowMsFor: () => 60_000,
+    }
+
+    const firstPromise = reconcilePendingQuestionsAfterRestart(input)
+    await vi.runAllTimersAsync()
+    await expect(firstPromise).resolves.toEqual({ reattached: 0, rejected: 0, unverified: 1 })
+    expect(abort).toHaveBeenCalledTimes(1)
+    expect(adapter.mockQuestions).toHaveLength(1)
+
+    const secondPromise = reconcilePendingQuestionsAfterRestart(input)
+    await vi.runAllTimersAsync()
+    await expect(secondPromise).resolves.toEqual({ reattached: 0, rejected: 1, unverified: 0 })
+    expect(abort).toHaveBeenCalledTimes(2)
   })
 
   it('opens the wait when the question arrives, not when it is answered', () => {

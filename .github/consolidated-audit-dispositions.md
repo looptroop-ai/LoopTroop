@@ -193,6 +193,53 @@ is called only by `useSSE`, while the fetch session watch remains installed by
 `main.tsx`. OpenCode model queries feed `ModelPicker` and `ProfileSetup`; only
 the explicit startup response retries.
 
+## Accepted workflow safety documentation packet
+
+This packet documents only the jointly accepted OpenCode and interview-core
+source snapshots. The OpenCode source correspondence is tree
+`2fb5495bce14c1019f2fd138e6ba03e6222f3ac4`, the interview-core correspondence
+is tree `f98b6ab1d90889ef2efa5c342ebacea72e338d4b`, and both are based on
+`27d4b28f16cb49fde66b888fa4d9a620b75ad60c`. Evidence is recorded in
+`/tmp/looptroop-opencode-evidence.md` and
+`/tmp/looptroop-interview-core-evidence.md`. This is a bounded documentation
+checkpoint; final source integration and acceptance remain with the root worker.
+
+| Finding | Status | Evidence and permanent coverage | Limits |
+| --- | --- | --- | --- |
+| W01 | PASS, final pending | Accepted interview compilation preserves an unanswered compiled question's stable ID while allowing a compatible reword; answered IDs, source/round, and answer controls remain immutable. | No E2E or full lifecycle run. |
+| W03 | PASS, final pending | Accepted OpenCode context cache uses project-scoped composite ticket keys, external-id read-through, and canonical invalidation. | No E2E or full lifecycle run. |
+| W04 | PASS, final pending | Accepted question and reply paths use the trusted stored session directory and fail closed when it is missing; caller-supplied project paths do not choose ownership. | No E2E or full lifecycle run. |
+| W05 | PASS, final pending | Accepted interview generation and answer-edit paths share a durable claim, content fingerprint, and raw-content CAS. Late results and rollback cannot overwrite a newer edit, batch, completion, or released claim. | No E2E or full lifecycle run. |
+| W07 | PASS, final pending | Foreign interview claims can be reclaimed after ordinary lease expiry—the fallback when liveness cannot be checked—or when a recorded PID is proven gone; a live lease protects live, invalid, or otherwise unverified owners. A pending-stop marker is separate non-expiring safety ownership and cannot be bypassed by lease expiry. | No E2E or full lifecycle run. |
+| W08 | PASS, final pending | Answer and skip payloads require a positive `batchNumber`; stale or missing identity and unknown question, option, or reason IDs are rejected before claim or mutation. | No E2E or full lifecycle run. |
+| W09 | PASS, final pending | The OpenCode and interview seams jointly require confirmed remote stop before cleanup, continuation, skip-all advancement, or exact pending-marker promotion. False, thrown, or unverified stops remain retryable, and delayed timeout recovery is fenced by the exact marker. | SQLite close/reopen is an in-process cache boundary, not a process restart. No live model or lifecycle run. |
+| W10 | PASS, final pending | Prompt callback failures clean up before rethrow; timeout, transport, and context-wipe paths retain the accepted ownership and retry boundaries. | No E2E or full lifecycle run. |
+| W18 | PASS, final pending | Cancellation propagates through session-directory and assistant reads, while health checks honor the cancellation signal. | No E2E or full lifecycle run. |
+| W20 | PASS, final pending | Completed streamed text remains usable when the final assistant read fails, while abort errors still propagate. | No E2E or full lifecycle run. |
+| W21 | PASS, final pending | Terminal completion, confirmed abort, and abandonment release directory maps; terminal abort is not cached by session id, so later prompts require fresh confirmation. | No E2E or full lifecycle run. |
+| W22 | PASS, final pending | Per-session streams omit events without an explicit session ID and do not attribute unrelated global or directory-only events. | No E2E or full lifecycle run. |
+| W24 | PASS, final pending | Context trimming visits all expendable parts at each priority until the budget is satisfied and retains mandatory details. | No E2E or full lifecycle run. |
+| W25 | PASS, final pending | Automatic bead-response continuation within each bead iteration is bounded by finite configured `maxIterations`; `0` remains unlimited for that path. User-facing Continue across phases is separate. Context-wipe prompts use a short bounded timeout and do not swallow cancellation. | No E2E or full lifecycle run. |
+| W26 | PASS, final pending | Mutation-tested seams cover adapter tool state, supervisor child identity, the schema-derived orphan foreign key, and expired-work-budget dispatch refusal. | No E2E or full lifecycle run. |
+| P17(4) | PASS, final pending | Interview snapshot validation requires non-empty parseable timestamps for updated, completed, answer, skip, and submission fields without inventing repairs. | No E2E or full lifecycle run. |
+| U19(3) | PASS, final pending | The client shares one same-tick submit/skip guard, sets it before the first await, and clears it in `finally`. | No E2E or full lifecycle run. |
+
+The accepted OpenCode evidence reports the latest owned surface at 31 files and
+505 tests, plus council boundary and downstream phase suites, with focused lint,
+type checks, and diff checks passing. The accepted interview evidence reports
+2 files and 60 pure tests, 3 files and 24 integration tests, 1 file and 1
+safety test, 2 client files and 20 tests, 3 claim/CAS/storage files and 9
+tests, plus lint, both TypeScript projects, and diff checks passing. Linux and
+local SQLite fixtures were used. No E2E, full lifecycle, live model, native
+Windows or macOS, physical-power-loss, or real process-restart result is
+claimed. The startup marker fixture proves replay from a seeded marker without
+module-map dependence; the SQLite close/reopen fixture is not a process restart.
+If both SQLite and marker storage fail, only the current-process guard remains,
+so restart safety is not promised.
+
+The newer W06 and U18 save/log changes remain unaccepted and are intentionally
+outside this packet. Their behavior is not used as source correspondence here.
+
 ## Installer foundation
 
 | Finding | Status | Evidence and permanent coverage | Limits |

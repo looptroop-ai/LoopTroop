@@ -107,36 +107,56 @@ async function runExecutionCapabilityProbe(
     const summary = summarizeModelErrorForLog(sessionErrorEvent.details ?? sessionErrorEvent.error, sessionErrorEvent.error)
     throw new Error(summary.message)
   }
+  let probeError: unknown
   try {
-    let response: string
-    try {
-      response = await raceWithCancel(
-        adapter.promptSession(
-          session.id,
-          [{ type: 'text', content: buildPromptFromTemplate(PROM_EXECUTION_CAPABILITY_PROBE, []) }],
-          signal,
-          {
-            model: parseModelRef(modelId),
-            variant: preFlightContext.lockedMainImplementerVariant ?? undefined,
-            // The capability probe is a diagnostic, not a workflow step: it
-            // checks that the model answers at all. It must never stop to ask.
-            permission: resolveOpenCodePermissions(PROM_EXECUTION_CAPABILITY_PROBE.toolPolicy, false),
-            autoApprovePermissions: true,
-            onEvent: handleStreamEvent,
-          },
-        ),
+    const response = await raceWithCancel(
+      adapter.promptSession(
+        session.id,
+        [{ type: 'text', content: buildPromptFromTemplate(PROM_EXECUTION_CAPABILITY_PROBE, []) }],
         signal,
-      )
-    } catch (err) {
-      throwSessionErrorIfPresent()
-      throw err
-    }
+        {
+          model: parseModelRef(modelId),
+          variant: preFlightContext.lockedMainImplementerVariant ?? undefined,
+          // The capability probe is a diagnostic, not a workflow step: it
+          // checks that the model answers at all. It must never stop to ask.
+          permission: resolveOpenCodePermissions(PROM_EXECUTION_CAPABILITY_PROBE.toolPolicy, false),
+          autoApprovePermissions: true,
+          onEvent: handleStreamEvent,
+        },
+      ),
+      signal,
+    )
     throwSessionErrorIfPresent()
     if (response.trim() !== 'OK') {
       throw new Error(`Probe returned unexpected response: ${response.trim() || '<empty>'}`)
     }
-  } finally {
-    await adapter.abortSession(session.id).catch(() => false)
+  } catch (err) {
+    probeError = err
+    try {
+      throwSessionErrorIfPresent()
+    } catch (sessionError) {
+      probeError = sessionError
+    }
+  }
+
+  const stopped = await adapter.abortSession(session.id).catch((error) => {
+    console.warn(`[preflight] Failed to abort capability-probe session ${session.id}:`, error)
+    return false
+  })
+  if (stopped) {
+    // The probe has no DB ownership row. Release its trusted directory cache
+    // as soon as the remote stop is confirmed; an unconfirmed stop must keep
+    // that state available for a later cleanup attempt.
+    adapter.forgetSessionDirectory?.(session.id)
+  }
+  if (!stopped) {
+    console.warn(`[preflight] Could not confirm abort of capability-probe session ${session.id}`)
+    if (probeError === undefined) {
+      probeError = new Error(`Could not confirm abort of capability-probe session ${session.id}`)
+    }
+  }
+  if (probeError !== undefined) {
+    throw probeError
   }
 }
 

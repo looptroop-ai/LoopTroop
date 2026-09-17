@@ -77,6 +77,12 @@ or Git state has changed. Process cleanup refuses a signal when the recorded
 process identity is missing, recycled, or otherwise unverifiable. See the
 [CLI Reference](https://www.looptroop.ovh/docs/cli) for the service commands.
 
+If LoopTroop cannot confirm that an OpenCode session stopped remotely, it keeps
+the ticket retryable and leaves the ownership visible. A ticket marker can
+recover that ownership when the project database is unavailable. If both the
+database and marker storage are unavailable, only the current process can guard
+the session, so a restart cannot claim recovery.
+
 Then configure your settings and models (from providers already added in
 OpenCode), attach a local repository with a GitHub origin, create a ticket, and
 start it.

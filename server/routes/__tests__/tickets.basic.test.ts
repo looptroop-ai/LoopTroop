@@ -18,8 +18,13 @@ vi.mock('../../workflow/runner', async () => (await import('../../test/routeMock
 
 vi.mock('../../machines/persistence', async () => (await import('../../test/routeMocks')).machinesPersistenceMock())
 
+vi.mock('../../opencode/sessionManager', () => ({
+  abortTicketSessions: vi.fn(async () => true),
+}))
+
 import { ensureActorForTicket, sendTicketEvent } from '../../machines/persistence'
 import { claimInterviewBatch, handleInterviewQABatch, processInterviewBatchAsync, releaseInterviewBatch } from '../../workflow/runner'
+import { abortTicketSessions } from '../../opencode/sessionManager'
 import { ticketRouter } from '../tickets'
 
 const repoManager = createFixtureRepoManager({
@@ -235,6 +240,25 @@ describe('ticketRouter basic ticket routes', () => {
   it('submits an interview answer batch through the synchronous mock route path', async () => {
     const { ticket } = createBasicTicket()
     patchTicket(ticket.id, { status: 'WAITING_INTERVIEW_ANSWERS' })
+    const base = createInterviewSessionSnapshot({
+      winnerId: 'openai/gpt-5-mini',
+      compiledQuestions: [{ id: 'Q01', phase: 'Foundation', question: 'Why?' }],
+      maxInitialQuestions: 1,
+    })
+    const batch = buildPersistedBatch({
+      questions: [{ id: 'Q01', phase: 'Foundation', question: 'Why?' }],
+      progress: { current: 1, total: 1 },
+      isComplete: false,
+      isFinalFreeForm: false,
+      aiCommentary: 'One question.',
+      batchNumber: 1,
+    }, 'prom4', base)
+    upsertLatestPhaseArtifact(
+      ticket.id,
+      INTERVIEW_SESSION_ARTIFACT,
+      'WAITING_INTERVIEW_ANSWERS',
+      serializeInterviewSessionSnapshot(recordPreparedBatch(base, batch)),
+    )
     vi.mocked(handleInterviewQABatch).mockResolvedValue({
       questions: [
         {
@@ -254,11 +278,9 @@ describe('ticketRouter basic ticket routes', () => {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({
+        batchNumber: 1,
         answers: {
           Q01: 'Keep the route behavior unchanged.',
-        },
-        selectedOptions: {
-          Q01: ['preserve'],
         },
       }),
     })
@@ -281,14 +303,14 @@ describe('ticketRouter basic ticket routes', () => {
     expect(handleInterviewQABatch).toHaveBeenCalledWith(
       ticket.id,
       { Q01: 'Keep the route behavior unchanged.' },
-      { Q01: ['preserve'] },
+      {},
       {},
     )
     expect(ensureActorForTicket).toHaveBeenCalledWith(ticket.id)
     expect(sendTicketEvent).toHaveBeenCalledWith(ticket.id, {
       type: 'BATCH_ANSWERED',
       batchAnswers: { Q01: 'Keep the route behavior unchanged.' },
-      selectedOptions: { Q01: ['preserve'] },
+      selectedOptions: {},
     })
     // Held for the synchronous path too, and given back when it finishes.
     expect(claimInterviewBatch).toHaveBeenCalledWith(ticket.id, expect.any(Number))
@@ -298,12 +320,31 @@ describe('ticketRouter basic ticket routes', () => {
   it('refuses a second answer batch while one is already being processed', async () => {
     const { ticket } = createBasicTicket()
     patchTicket(ticket.id, { status: 'WAITING_INTERVIEW_ANSWERS' })
+    const base = createInterviewSessionSnapshot({
+      winnerId: 'openai/gpt-5-mini',
+      compiledQuestions: [{ id: 'Q01', phase: 'Foundation', question: 'Why?' }],
+      maxInitialQuestions: 1,
+    })
+    const batch = buildPersistedBatch({
+      questions: [{ id: 'Q01', phase: 'Foundation', question: 'Why?' }],
+      progress: { current: 1, total: 1 },
+      isComplete: false,
+      isFinalFreeForm: false,
+      aiCommentary: 'One question.',
+      batchNumber: 1,
+    }, 'prom4', base)
+    upsertLatestPhaseArtifact(
+      ticket.id,
+      INTERVIEW_SESSION_ARTIFACT,
+      'WAITING_INTERVIEW_ANSWERS',
+      serializeInterviewSessionSnapshot(recordPreparedBatch(base, batch)),
+    )
     vi.mocked(claimInterviewBatch).mockReturnValueOnce(null)
 
     const response = await app.request(`/api/tickets/${ticket.id}/answer-batch`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ answers: { Q01: 'A duplicate submission.' } }),
+      body: JSON.stringify({ batchNumber: 1, answers: { Q01: 'A duplicate submission.' } }),
     })
 
     // The synchronous path used to skip the claim entirely, so a coverage or
@@ -313,7 +354,52 @@ describe('ticketRouter basic ticket routes', () => {
     expect(handleInterviewQABatch).not.toHaveBeenCalled()
   })
 
-  it('gives the batch claim back when the asynchronous processing times out', async () => {
+  it('rejects stale and unknown answer-batch identities before claiming the ticket', async () => {
+    const { ticket } = createBasicTicket()
+    patchTicket(ticket.id, { status: 'WAITING_INTERVIEW_ANSWERS' })
+    const base = createInterviewSessionSnapshot({
+      winnerId: 'openai/gpt-5-mini',
+      compiledQuestions: [{ id: 'Q01', phase: 'Foundation', question: 'Why?' }],
+      maxInitialQuestions: 2,
+    })
+    const batch = buildPersistedBatch({
+      questions: [{ id: 'Q01', phase: 'Foundation', question: 'Why?' }],
+      progress: { current: 1, total: 2 },
+      isComplete: false,
+      isFinalFreeForm: false,
+      aiCommentary: 'One question.',
+      batchNumber: 2,
+    }, 'prom4', base)
+    upsertLatestPhaseArtifact(
+      ticket.id,
+      INTERVIEW_SESSION_ARTIFACT,
+      'WAITING_INTERVIEW_ANSWERS',
+      serializeInterviewSessionSnapshot(recordPreparedBatch(base, batch)),
+    )
+
+    const stale = await app.request(`/api/tickets/${ticket.id}/answer-batch`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ batchNumber: 1, answers: { Q01: 'Old answer.' } }),
+    })
+    expect(stale.status).toBe(409)
+    expect(claimInterviewBatch).not.toHaveBeenCalled()
+
+    const unknown = await app.request(`/api/tickets/${ticket.id}/answer-batch`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        batchNumber: 2,
+        answers: { Q99: 'Unknown answer.' },
+        selectedOptions: { Q99: ['unknown'] },
+        skipReasons: { Q99: 'Unknown reason.' },
+      }),
+    })
+    expect(unknown.status).toBe(400)
+    expect(claimInterviewBatch).not.toHaveBeenCalled()
+  })
+
+  it('keeps a timeout claim when mocked processing cannot provide durable state', async () => {
     // The suite runs in mock mode, where every batch takes the synchronous
     // path. The asynchronous path is the one with the timeout arm.
     const previousMode = process.env.LOOPTROOP_OPENCODE_MODE
@@ -342,20 +428,70 @@ describe('ticketRouter basic ticket routes', () => {
         serializeInterviewSessionSnapshot(recordPreparedBatch(base, batch)),
       )
       // Never settles, which is what a background task that ignores the abort
-      // looks like. The claim has no expiry, so before this the ticket answered
-      // 409 to every later submission for the life of the process.
+      // looks like. The safety route test covers confirmed cleanup with a real
+      // process; this mock supplies no persisted receipt to restore here.
       vi.mocked(processInterviewBatchAsync).mockReturnValue(new Promise(() => {}))
 
       const response = await app.request(`/api/tickets/${ticket.id}/answer-batch`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ answers: { Q01: 'An answer that will hang.' } }),
+        body: JSON.stringify({ batchNumber: 1, answers: { Q01: 'An answer that will hang.' } }),
       })
       expect(response.status).toBe(202)
       expect(releaseInterviewBatch).not.toHaveBeenCalled()
 
       await vi.advanceTimersByTimeAsync(60 * 60 * 1000)
-      expect(releaseInterviewBatch).toHaveBeenCalledWith(ticket.id, expect.any(String))
+      expect(releaseInterviewBatch).not.toHaveBeenCalled()
+    } finally {
+      vi.useRealTimers()
+      if (previousMode === undefined) delete process.env.LOOPTROOP_OPENCODE_MODE
+      else process.env.LOOPTROOP_OPENCODE_MODE = previousMode
+    }
+  })
+
+  it('keeps a timeout claim when mocked processing cannot prove restoration', async () => {
+    const previousMode = process.env.LOOPTROOP_OPENCODE_MODE
+    delete process.env.LOOPTROOP_OPENCODE_MODE
+    vi.useFakeTimers()
+    try {
+      const { ticket } = createBasicTicket()
+      patchTicket(ticket.id, { status: 'WAITING_INTERVIEW_ANSWERS' })
+      const base = createInterviewSessionSnapshot({
+        winnerId: 'openai/gpt-5-mini',
+        compiledQuestions: [{ id: 'Q01', phase: 'Foundation', question: 'Why?' }],
+        maxInitialQuestions: 1,
+      })
+      const batch = buildPersistedBatch({
+        questions: [{ id: 'Q01', phase: 'Foundation', question: 'Why?' }],
+        progress: { current: 1, total: 1 },
+        isComplete: false,
+        isFinalFreeForm: false,
+        aiCommentary: 'One question.',
+        batchNumber: 1,
+      }, 'prom4', base)
+      upsertLatestPhaseArtifact(
+        ticket.id,
+        INTERVIEW_SESSION_ARTIFACT,
+        'WAITING_INTERVIEW_ANSWERS',
+        serializeInterviewSessionSnapshot(recordPreparedBatch(base, batch)),
+      )
+      vi.mocked(processInterviewBatchAsync).mockReturnValue(new Promise(() => {}))
+
+      const request = () => app.request(`/api/tickets/${ticket.id}/answer-batch`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ batchNumber: 1, answers: { Q01: 'An answer that will hang.' } }),
+      })
+
+      expect((await request()).status).toBe(202)
+      await vi.advanceTimersByTimeAsync(60 * 60 * 1000)
+      expect(abortTicketSessions).not.toHaveBeenCalled()
+      expect(releaseInterviewBatch).not.toHaveBeenCalled()
+
+      expect((await request()).status).toBe(202)
+      await vi.advanceTimersByTimeAsync(60 * 60 * 1000)
+      expect(abortTicketSessions).not.toHaveBeenCalled()
+      expect(releaseInterviewBatch).not.toHaveBeenCalled()
     } finally {
       vi.useRealTimers()
       if (previousMode === undefined) delete process.env.LOOPTROOP_OPENCODE_MODE

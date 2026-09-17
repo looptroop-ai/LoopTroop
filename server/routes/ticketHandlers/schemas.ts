@@ -68,6 +68,8 @@ export const upsertUiStateSchema = z.object({
 })
 
 const interviewAnswerFieldsSchema = {
+  /** Batches are single-use; the server checks this against the active batch. */
+  batchNumber: z.number().int().positive(),
   answers: z.record(z.string(), z.string()).default({}),
   selectedOptions: z.record(z.string(), z.array(z.string())).optional().default({}),
   /** Keyed by question id. Validated against the questions the batch actually skips. */

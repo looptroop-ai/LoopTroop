@@ -1842,8 +1842,8 @@ export function isStatusAtOrPast(currentStatus: string, targetStatus: string): b
 /**
  * Returns the statically-known available workflow actions for a given status.
  *
- * NOTE: The server may dynamically add `'continue'` to BLOCKED_ERROR actions
- * when a resumable OpenCode session is available — see
+ * NOTE: The server may dynamically add `'continue'` for a resumable OpenCode
+ * session or `'edit_execution_setup_plan'` after a runtime-setup failure — see
  * `server/storage/ticketQueries.ts`. Final-test local-only files are resolved
  * automatically and do not add recovery actions.
  */

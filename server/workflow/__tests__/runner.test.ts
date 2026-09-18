@@ -3,6 +3,7 @@ import { afterEach, describe, expect, it, vi } from 'vitest'
 import type { TicketContext } from '../../machines/types'
 import { ticketMachine } from '../../machines/ticketMachine'
 import { attachWorkflowRunner } from '../runner'
+import * as questionWindows from '../questionWindows'
 import { phaseIntermediate, runningPhases, ticketAbortControllers } from '../phases'
 import { OpenCodeUnavailableError, TicketWorkspaceNotInitializedError } from '../../lib/workflowErrors'
 import { TEST, makeTicketContext } from '../../test/factories'
@@ -486,6 +487,7 @@ describe('attachWorkflowRunner', () => {
   it('does not send stale CANCEL after explicit Retry clears the marker during cleanup', async () => {
     vi.useFakeTimers()
     try {
+      const clearWindows = vi.spyOn(questionWindows, 'clearTicketWindows')
       let cancellationPending = true
       isTicketCancellationPendingMock.mockImplementation(() => cancellationPending)
       abortTicketSessionsMock.mockImplementationOnce(async () => {
@@ -504,6 +506,7 @@ describe('attachWorkflowRunner', () => {
       await vi.advanceTimersByTimeAsync(250)
       await vi.waitFor(() => expect(abortTicketSessionsMock).toHaveBeenCalledOnce())
       expect(sendEvent).not.toHaveBeenCalledWith({ type: 'CANCEL' })
+      expect(clearWindows).not.toHaveBeenCalled()
       expect(actor.getSnapshot().value).toBe('CODING')
       actor.stop()
     } finally {

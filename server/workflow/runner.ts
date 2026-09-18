@@ -251,6 +251,13 @@ async function attemptCancellationCleanup(
   let dispatchedCancel = false
   try {
     const sessionsStopped = await abortTicketSessions(ticketId)
+    // Retry can supersede this pass during the awaited remote stop. Do not
+    // clear question windows belonging to that newer run either.
+    if (resolveSnapshotState(actor.getSnapshot()) !== 'CANCELED'
+      && !isTicketCancellationPending(ticketId)) {
+      clearCancellationCleanupRetry(ticketId)
+      return
+    }
     const windowsCleared = sessionsStopped
       ? await clearTicketWindows(ticketId, 'ticket_canceled', 'The ticket was canceled while the question was open.')
       : false

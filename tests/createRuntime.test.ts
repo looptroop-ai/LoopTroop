@@ -1,5 +1,5 @@
 import { describe, it, expect, afterEach, vi } from 'vitest'
-import { mkdtempSync, existsSync, readdirSync } from 'node:fs'
+import { mkdtempSync, existsSync, readFileSync, readdirSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { removeTempDir } from '../server/test/tempDir'
@@ -115,6 +115,53 @@ describe('createRuntime side-effect freedom', () => {
     const result = await command
     expect(result.ok).toBe(false)
     expect(result.timedOut).toBe(false)
+  })
+
+  it.skipIf(process.platform === 'win32')('retries a failed close without reusing an already-closed server blocker', async () => {
+    const configDir = makeConfigDir()
+    const marker = join(configDir, 'descendant.pid')
+    const { createRuntime } = await import('../server/createRuntime')
+    const { runCommand } = await import('../server/git/runCommand')
+    const runtime = createRuntime({ skipStartupSequence: true, port: 0, hostname: '127.0.0.1' })
+    await runtime.start()
+
+    const descendant = [
+      'setTimeout(() => {}, 60000)',
+    ].join(';')
+    const leader = [
+      "const { spawn } = require('node:child_process')",
+      "const { writeFileSync } = require('node:fs')",
+      `const child = spawn(process.execPath, ['-e', ${JSON.stringify(descendant)}], { stdio: 'ignore' }); child.unref(); writeFileSync(${JSON.stringify(marker)}, String(child.pid))`,
+    ].join(';')
+    const command = await runCommand(process.execPath, ['-e', leader], { timeoutMs: 10_000, log: false })
+    expect(command.ok).toBe(true)
+
+    let descendantPid: number | undefined
+    try {
+      descendantPid = Number(readFileSync(marker, 'utf8'))
+      await expect(runtime.close()).rejects.toThrow('shutdown is incomplete')
+      // The listener was already closed by the first attempt. A retry must
+      // reach the retained-child drain rather than reject on ERR_SERVER_NOT_RUNNING.
+      await expect(runtime.close()).rejects.toThrow('shutdown is incomplete')
+
+      try { process.kill(descendantPid, 'SIGKILL') } catch { /* it already exited */ }
+      let closed = false
+      for (let attempt = 0; attempt < 20 && !closed; attempt += 1) {
+        try {
+          await runtime.close()
+          closed = true
+        } catch {
+          await new Promise((resolve) => setTimeout(resolve, 25))
+        }
+      }
+      expect(closed).toBe(true)
+      expect(runtime.address).toBeNull()
+    } finally {
+      if (descendantPid !== undefined) {
+        try { process.kill(descendantPid, 'SIGKILL') } catch { /* it already exited */ }
+      }
+      await runtime.close().catch(() => undefined)
+    }
   })
 
   it('binds no socket until start() runs, then reports the real port', async () => {

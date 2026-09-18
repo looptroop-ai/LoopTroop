@@ -575,7 +575,7 @@ function targetContainsSource(sourceFd: number, source: FileIdentity, targetFd: 
     && targetContainsSourcePrefix(sourceFd, source, targetFd, target)
 }
 
-type ResumeResult = 'promoted' | 'unmarked'
+type ResumeResult = 'promoted' | 'unmarked' | 'retry'
 
 function resumeMarkedCopy(fd: number, tmpPath: string, targetPath: string, deps: RecoveryDeps, guard: RecoveryPathGuard): ResumeResult {
   if (!hasRecoveryMarker(tmpPath)) return 'unmarked'
@@ -608,17 +608,25 @@ function resumeMarkedCopy(fd: number, tmpPath: string, targetPath: string, deps:
     let targetFd: number | undefined
     let target: FileIdentity | undefined
     let complete = false
+    let targetMissing = false
     try {
       guard(targetPath)
       targetFd = openFileNoFollowSync(targetPath)
       target = fstatSync(targetFd)
       complete = targetContainsSource(fd, source, targetFd, target)
         && sameEntryIdentity(lstatSync(targetPath), target)
-    } catch {
+    } catch (error) {
+      // A source-only marker is durable ownership of the validated temp. If
+      // the destination disappeared before this check, retry the exclusive
+      // publication with that same source instead of discarding it. An
+      // existing but incomplete destination remains blocked below because its
+      // ownership cannot be proved from the source-only marker.
+      targetMissing = (error as NodeJS.ErrnoException).code === 'ENOENT'
       complete = false
     } finally {
       if (targetFd !== undefined) closeSync(targetFd)
     }
+    if (targetMissing) return 'retry'
     if (!complete) {
       return blockRecovery(
         targetPath,
@@ -736,8 +744,18 @@ function promoteTmpFile(fd: number, tmpPath: string, targetPath: string, deps: R
     guard(tmpPath)
     guard(targetPath, true)
     const source = fstatSync(fd)
-    const markerPresent = hasRecoveryMarker(tmpPath)
-    const existingMarker = markerPresent ? readRecoveryMarker(tmpPath) : null
+    let markerPresent = hasRecoveryMarker(tmpPath)
+    let existingMarker = markerPresent ? readRecoveryMarker(tmpPath) : null
+    if (markerPresent && !existingMarker && !pathIsTaken(targetPath)) {
+      // A torn marker beside a validated temp cannot authorize overwriting an
+      // existing destination when the destination is absent. Retire that
+      // unusable sidecar and let the exclusive publication recreate the
+      // target; if a writer occupies the name during this check, the normal
+      // identity guard below keeps the artifact blocked.
+      cleanupSidecar(markerPath)
+      markerPresent = hasRecoveryMarker(tmpPath)
+      existingMarker = markerPresent ? readRecoveryMarker(tmpPath) : null
+    }
     if (markerPresent && (!existingMarker
       || existingMarker.targetPath !== targetPath
       || !sameFileIdentity(existingMarker.source, source))) {
@@ -962,6 +980,8 @@ export function recoverOrphanTmpFiles(
             if (resumed === 'promoted') recovered.push(reportedPath(targetPath))
             else if (resumed === 'unmarked') {
               discardTmpFile(fullPath, 'its target already exists', fstatSync(fd), deps)
+            } else if (promoteTmpFile(fd, fullPath, targetPath, deps, guard)) {
+              recovered.push(reportedPath(targetPath))
             }
           } catch (error) {
             if (error instanceof RecoveryBlockedError) throw error

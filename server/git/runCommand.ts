@@ -55,11 +55,33 @@ const TIMEOUT_ABANDON_GRACE_MS = 2_000
 
 /** Async commands outlive their caller unless shutdown owns their child too. */
 const activeAsyncChildren = new Set<ChildProcess>()
+const closedAsyncChildren = new WeakSet<ChildProcess>()
+type WindowsTreeCleanup = 'pending' | 'succeeded' | 'failed'
+const windowsTreeCleanup = new WeakMap<ChildProcess, WindowsTreeCleanup>()
 let stoppingActiveChildren: Promise<void> | null = null
 
 function childHasExited(child: ChildProcess): boolean {
-  return child.exitCode !== null && child.exitCode !== undefined
+  return closedAsyncChildren.has(child)
+    || child.exitCode !== null && child.exitCode !== undefined
     || child.signalCode !== null && child.signalCode !== undefined
+}
+
+function signalProcessTree(child: ChildProcess, signal: NodeJS.Signals): void {
+  const taskkill = terminateProcessTree(child, signal)
+  if (process.platform !== 'win32') return
+  if (!taskkill) {
+    windowsTreeCleanup.set(child, 'failed')
+    return
+  }
+  windowsTreeCleanup.set(child, 'pending')
+  taskkill.once('error', () => windowsTreeCleanup.set(child, 'failed'))
+  taskkill.once('close', (status) => windowsTreeCleanup.set(child, status === 0 ? 'succeeded' : 'failed'))
+}
+
+function childCleanupConfirmed(child: ChildProcess): boolean {
+  if (!childHasExited(child)) return false
+  if (process.platform === 'win32') return windowsTreeCleanup.get(child) === 'succeeded'
+  return !processGroupHasMembers(child)
 }
 
 function waitForChildClose(child: ChildProcess, timeoutMs: number): Promise<boolean> {
@@ -75,11 +97,41 @@ function waitForChildClose(child: ChildProcess, timeoutMs: number): Promise<bool
       resolveWait(exited)
     }
     const onClose = () => finish(true)
-    const onError = () => finish(true)
+    const onError = () => {
+      // An error from a live child can mean signalling or pipe failure; it is
+      // not proof that the process (or its descendants) has closed. A failed
+      // spawn has no pid and is the only error that can prove absence here.
+      if (!child.pid) finish(true)
+    }
     const timer = setTimeout(() => finish(false), timeoutMs)
     child.once('close', onClose)
     child.once('error', onError)
   })
+}
+
+/**
+ * On POSIX, a detached child owns a process group. A close event only proves
+ * that the group leader exited; checking the group lets a plain child settle
+ * promptly while keeping a hook/filter descendant owned for reconciliation.
+ * Windows has no equivalent that is safe to probe here, so it keeps the
+ * conservative bounded wait.
+ */
+type ProcessGroupState = 'alive' | 'gone' | 'unknown'
+
+function processGroupState(child: ChildProcess): ProcessGroupState {
+  if (process.platform === 'win32' || !child.pid) return 'unknown'
+  try {
+    process.kill(-child.pid, 0)
+    return 'alive'
+  } catch (error) {
+    // ESRCH proves that no member remains. EPERM and any unexpected platform
+    // error do not prove absence, so keep the child owned by shutdown.
+    return (error as NodeJS.ErrnoException).code === 'ESRCH' ? 'gone' : 'unknown'
+  }
+}
+
+function processGroupHasMembers(child: ChildProcess): boolean {
+  return processGroupState(child) !== 'gone'
 }
 
 async function stopActiveChildrenNow(): Promise<void> {
@@ -88,18 +140,39 @@ async function stopActiveChildrenNow(): Promise<void> {
 
   const terminations = children.map((child) => waitForChildClose(child, TIMEOUT_KILL_GRACE_MS))
   for (const child of children) {
-    try { terminateProcessTree(child, 'SIGTERM') } catch { /* process already exited */ }
+    // Once the leader has closed, its numeric pid can be reused. Do not send
+    // a group signal without the start-token proof owned by the CLI layer.
+    if (childHasExited(child)) continue
+    try { signalProcessTree(child, 'SIGTERM') } catch { /* process already exited */ }
   }
   const exitedAfterTerm = await Promise.all(terminations)
   const survivors = children.filter((child, index) => !exitedAfterTerm[index] && activeAsyncChildren.has(child))
-  if (!survivors.length) return
+  if (!survivors.length) {
+    for (const child of children) {
+      if (activeAsyncChildren.has(child) && childCleanupConfirmed(child)) activeAsyncChildren.delete(child)
+    }
+    if (activeAsyncChildren.size > 0) {
+      throw new Error(`Git command shutdown is incomplete: ${activeAsyncChildren.size} child process remains unverified.`)
+    }
+    return
+  }
 
   const forceTerminations = survivors.map((child) => waitForChildClose(child, TIMEOUT_KILL_GRACE_MS))
   for (const child of survivors) {
-    try { terminateProcessTree(child, 'SIGKILL') } catch { /* process already exited */ }
+    if (childHasExited(child)) continue
+    try { signalProcessTree(child, 'SIGKILL') } catch { /* process already exited */ }
   }
   await Promise.all(forceTerminations)
-  for (const child of survivors) child.unref()
+  for (const child of survivors) {
+    // A missing `close` is not proof that the process group is gone. Keep an
+    // unresolved child owned by the shutdown drain so a later drain can retry
+    // the group check instead of forgetting a possibly-live descendant.
+    if (childCleanupConfirmed(child)) activeAsyncChildren.delete(child)
+    child.unref()
+  }
+  if (activeAsyncChildren.size > 0) {
+    throw new Error(`Git command shutdown is incomplete: ${activeAsyncChildren.size} child process remains unverified.`)
+  }
 }
 
 /** Stop every detached async command currently owned by the daemon. */
@@ -172,6 +245,16 @@ export type RunCommandResult = RunOutcome<string>
 /** `stdout` left undecoded, for callers reading binary output such as `diff --binary`. */
 export type RunCommandBinaryResult = RunOutcome<Buffer>
 
+/** A mutation timed out before its process state was verified. */
+export class RunCommandTimeoutError extends Error {
+  readonly timedOut = true
+
+  constructor(detail: string | undefined) {
+    super(detail ?? 'The command timed out before its process state was verified.')
+    this.name = 'RunCommandTimeoutError'
+  }
+}
+
 // Tolerates partial vi.mock() factories that omit logCommand.
 function logCmd(
   bin: string,
@@ -198,6 +281,14 @@ function buildEnv(extra: NodeJS.ProcessEnv | undefined, preserveCoreSshCommand =
     env.GIT_SSH_COMMAND = 'ssh -o BatchMode=yes'
   }
   return env
+}
+
+function hasExplicitSshOverride(options: RunCommandOptions | undefined): boolean {
+  const explicitEnvironment = options?.env
+  return typeof explicitEnvironment?.GIT_SSH_COMMAND === 'string'
+    || typeof explicitEnvironment?.GIT_SSH === 'string'
+    || typeof process.env.GIT_SSH_COMMAND === 'string'
+    || typeof process.env.GIT_SSH === 'string'
 }
 
 function timeoutMessage(bin: string, args: string[], timeoutMs: number): string {
@@ -389,13 +480,8 @@ function gitInvocation(directory: string, args: string[], options: RunCommandOpt
   displayArgs: string[]
   options: RunCommandOptions
 } {
-  const explicitEnvironment = options?.env
-  const hasExplicitSsh = typeof explicitEnvironment?.GIT_SSH_COMMAND === 'string'
-    || typeof explicitEnvironment?.GIT_SSH === 'string'
-    || typeof process.env.GIT_SSH_COMMAND === 'string'
-    || typeof process.env.GIT_SSH === 'string'
   let preserveCoreSshCommand = false
-  if (!hasExplicitSsh) {
+  if (!hasExplicitSshOverride(options)) {
     // GIT_SSH_COMMAND takes precedence over every Git config scope. Inspect
     // the effective config before adding our non-interactive fallback so a
     // repository's configured key, wrapper, or agent remains authoritative.
@@ -407,6 +493,36 @@ function gitInvocation(directory: string, args: string[], options: RunCommandOpt
       preserveCoreSshCommand: false,
     })
     preserveCoreSshCommand = configured.status === 0 && configured.stdout.toString('utf8').trim().length > 0
+  }
+  return {
+    args,
+    displayArgs: ['-C', directory, ...args],
+    options: { ...options, cwd: directory, preserveCoreSshCommand },
+  }
+}
+
+/** Async counterpart to `gitInvocation`; config lookup must not block the event loop. */
+async function gitInvocationAsync(directory: string, args: string[], options: RunCommandOptions | undefined): Promise<{
+  args: string[]
+  displayArgs: string[]
+  options: RunCommandOptions
+}> {
+  let preserveCoreSshCommand = false
+  if (!hasExplicitSshOverride(options)) {
+    // GIT_SSH_COMMAND takes precedence over every Git config scope. Inspect
+    // the effective config before adding our non-interactive fallback so a
+    // repository's configured key, wrapper, or agent remains authoritative.
+    // This is intentionally a fresh probe for every async invocation: config
+    // can change while the daemon is running and a forever cache would turn a
+    // later update into a silent transport failure.
+    const configured = await runAsyncRaw('git', ['config', '--get', 'core.sshCommand'], {
+      env: options?.env,
+      cwd: directory,
+      log: false,
+      timeoutMs: Math.min(options?.timeoutMs ?? GIT_DEFAULT_TIMEOUT_MS, COMMAND_AVAILABILITY_TIMEOUT_MS),
+      preserveCoreSshCommand: false,
+    })
+    preserveCoreSshCommand = configured.status === 0 && configured.stdout.trim().length > 0
   }
   return {
     args,
@@ -519,7 +635,10 @@ export function runGitMutation(projectPath: string, args: string[], options?: Ru
 
 export async function runGitMutationOrThrow(projectPath: string, args: string[], options?: RunCommandOptions): Promise<string> {
   const result = await runGitMutation(projectPath, args, options)
-  if (!result.ok) throw new Error(result.errorDetail)
+  if (!result.ok) {
+    if (result.timedOut) throw new RunCommandTimeoutError(result.errorDetail)
+    throw new Error(result.errorDetail)
+  }
   return result.stdout
 }
 
@@ -563,9 +682,6 @@ function runAsyncRaw(bin: string, args: string[], options: RunCommandOptions | u
     }
 
     activeAsyncChildren.add(child)
-    const untrack = () => { activeAsyncChildren.delete(child) }
-    child.once('close', untrack)
-    child.once('error', untrack)
 
     const stdoutChunks: Buffer[] = []
     const stderrChunks: Buffer[] = []
@@ -574,7 +690,10 @@ function runAsyncRaw(bin: string, args: string[], options: RunCommandOptions | u
     let timedOut = false
     let overranBuffer = false
     let settled = false
+    let closeObserved = false
     let timeoutCleanupComplete = false
+    let processStateUnverified = false
+    let childError: Error | undefined
     let pendingTimeoutOutcome: RawOutcome<string> | undefined
     let forceKillSent = false
 
@@ -585,7 +704,7 @@ function runAsyncRaw(bin: string, args: string[], options: RunCommandOptions | u
       if (next > maxBuffer) {
         if (!overranBuffer) {
           overranBuffer = true
-          terminateProcessTree(child, 'SIGKILL')
+          if (!closeObserved && !childHasExited(child)) signalProcessTree(child, 'SIGKILL')
           // The same abandon the timeout path carries, for the same reason: a
           // grandchild holding the pipes means `close` never fires, and an
           // overrun that waits for it hangs the caller exactly as a timeout
@@ -604,6 +723,7 @@ function runAsyncRaw(bin: string, args: string[], options: RunCommandOptions | u
     /** Settles the overrun without `close`, once the kill has had its chance. */
     const abandonOverrun = () => {
       const timer = setTimeout(() => {
+        if (processGroupHasMembers(child)) processStateUnverified = true
         child.unref()
         settle({
           status: null,
@@ -634,21 +754,48 @@ function runAsyncRaw(bin: string, args: string[], options: RunCommandOptions | u
     let abandonTimer: ReturnType<typeof setTimeout> | undefined
     let overrunTimer: ReturnType<typeof setTimeout> | undefined
     const forceKill = () => {
-      if (forceKillSent) return
+      // A close event ends the leader's ownership of this numeric process
+      // group. The later CLI shutdown layer can reconcile a surviving
+      // descendant with its start token; this runner must not signal a reused
+      // pid merely because the old leader timed out.
+      if (forceKillSent || closeObserved || childHasExited(child)) return
       forceKillSent = true
-      terminateProcessTree(child, 'SIGKILL')
+      signalProcessTree(child, 'SIGKILL')
+    }
+    const retainDescendantAfterClose = (): boolean => {
+      // A normal Windows close is authoritative for this runner: taskkill is
+      // only a best-effort tree operation and there is no portable liveness
+      // probe to turn a known close into a permanent unknown state. POSIX can
+      // prove a surviving detached group and keeps it owned for reconciliation.
+      if (process.platform === 'win32') {
+        const cleanup = windowsTreeCleanup.get(child)
+        if (!cleanup || cleanup === 'succeeded') return false
+        processStateUnverified = true
+        return true
+      }
+      if (!child.pid || processGroupState(child) === 'gone') return false
+      processStateUnverified = true
+      // Do not signal here. The leader has already exited and its numeric pid
+      // may belong to a different process group now. Keep ownership visible
+      // to stopActiveCommands, which reports the unresolved descendant until
+      // a caller with start-token evidence can reconcile it.
+      return true
     }
     const timer = setTimeout(() => {
       // An output overrun already owns termination and its diagnostic. Do not
       // race it into a timeout while waiting for the bounded overrun fallback.
       if (overranBuffer) return
       timedOut = true
-      terminateProcessTree(child, 'SIGTERM')
+      if (!closeObserved && !childHasExited(child)) signalProcessTree(child, 'SIGTERM')
       killTimer = setTimeout(forceKill, TIMEOUT_KILL_GRACE_MS)
       abandonTimer = setTimeout(() => {
         // Nothing here can reap the child, so it must not be what keeps the
         // process alive either.
         timeoutCleanupComplete = true
+        const windowsCleanupConfirmed = process.platform === 'win32'
+          && windowsTreeCleanup.get(child) === 'succeeded'
+          && closeObserved
+        if (!windowsCleanupConfirmed && processGroupHasMembers(child)) processStateUnverified = true
         child.unref()
         settle(pendingTimeoutOutcome ?? {
           status: null,
@@ -676,22 +823,49 @@ function runAsyncRaw(bin: string, args: string[], options: RunCommandOptions | u
         // abandonment window alive; otherwise this direct close would clear
         // the SIGKILL timer and return while that descendant can still mutate.
         pendingTimeoutOutcome ??= outcome
-        forceKill()
+        const windowsCleanupConfirmed = process.platform === 'win32'
+          && windowsTreeCleanup.get(child) === 'succeeded'
+          && closeObserved
+        if (windowsCleanupConfirmed || !processGroupHasMembers(child)) {
+          // No descendant remains in the detached group, so the close event
+          // (or a successful Windows taskkill tree walk) is sufficient
+          // evidence that termination completed. Avoid making every ordinary
+          // timeout pay the full SIGKILL/abandon grace.
+          timeoutCleanupComplete = true
+          processStateUnverified = false
+          settle(pendingTimeoutOutcome)
+        } else {
+          forceKill()
+          // The returned promise is still pending while close waits for the
+          // bounded tree cleanup. Keep these timers referenced so a short-lived
+          // CLI cannot exit before the promised timeout result is settled.
+          killTimer?.ref?.()
+          abandonTimer?.ref?.()
+        }
         return
       }
+      const retainedDescendant = closeObserved && !timedOut
+        ? retainDescendantAfterClose()
+        : false
       settled = true
+      if (!retainedDescendant && !processStateUnverified) activeAsyncChildren.delete(child)
       clearTimeout(timer)
-      if (killTimer) clearTimeout(killTimer)
-      if (abandonTimer) clearTimeout(abandonTimer)
+      if (killTimer && !retainedDescendant) clearTimeout(killTimer)
+      if (abandonTimer && !retainedDescendant) clearTimeout(abandonTimer)
       if (overrunTimer) clearTimeout(overrunTimer)
       settleWith(outcome)
     }
 
     child.on('error', (error) => {
-      settle({ status: null, signal: null, timedOut, stdout: '', stderr: '', spawnError: error })
+      childError = error
+      if (!child.pid) {
+        settle({ status: null, signal: null, timedOut, stdout: '', stderr: '', spawnError: error })
+      }
     })
 
     child.on('close', (status, signal) => {
+      closeObserved = true
+      closedAsyncChildren.add(child)
       const timeoutError: NodeJS.ErrnoException | undefined = timedOut
         ? Object.assign(new Error(`spawn ${bin} ETIMEDOUT`), { code: 'ETIMEDOUT' })
         : undefined
@@ -702,6 +876,7 @@ function runAsyncRaw(bin: string, args: string[], options: RunCommandOptions | u
         stdout: decode(Buffer.concat(stdoutChunks), options),
         stderr: Buffer.concat(stderrChunks).toString('utf8').trim(),
         spawnError: timeoutError
+          ?? childError
           ?? (overranBuffer ? new Error(`${bin} output exceeded ${maxBuffer} bytes`) : undefined),
       })
     })
@@ -732,20 +907,22 @@ export async function runCommand(bin: string, args: string[], options?: RunComma
 export function runGit(projectPath: string, args: string[], options?: RunCommandOptions): Promise<RunCommandResult> {
   const directory = gitWorkingDirectory(projectPath)
   if (directory.path === undefined) return Promise.resolve(finish(unresolvedOutcome(directory.failure, ''), 'git', args, options))
-  const call = gitInvocation(directory.path, args, options)
-  return runAsyncRaw('git', call.args, call.options)
+  return gitInvocationAsync(directory.path, args, options).then((call) => runAsyncRaw('git', call.args, call.options)
     .then((raw) => finish(
       explainTimedOutGit(explainMissingDirectory(raw, directory.path), directory.path),
       'git',
       call.displayArgs,
       options,
-    ))
+    )))
 }
 
 /** Throwing wrapper for the async callers whose contract is "throw on failure". */
 export async function runGitOrThrow(projectPath: string, args: string[], options?: RunCommandOptions): Promise<string> {
   const result = await runGit(projectPath, args, options)
-  if (!result.ok) throw new Error(result.errorDetail)
+  if (!result.ok) {
+    if (result.timedOut) throw new RunCommandTimeoutError(result.errorDetail)
+    throw new Error(result.errorDetail)
+  }
   return result.stdout
 }
 

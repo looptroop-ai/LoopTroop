@@ -1,7 +1,7 @@
 import * as jsYaml from 'js-yaml'
 import { createHash } from 'node:crypto'
 import type { PromptPart } from '../opencode/types'
-import { BLOCK_SCALAR_HEADER, MAPPING_BLOCK_SCALAR_HEADER, repairYamlDoubleQuotedInvalidEscapes, repairYamlDoubleQuotedScalarInnerQuotes, repairYamlDuplicateKeys, repairYamlFreeTextScalars, repairYamlIndentation, repairYamlInlineKeys, repairYamlInlineSequenceParents, repairYamlListDashSpace, repairYamlMappingKeyColonSpace, repairYamlNestedMappingChildren, repairYamlPlainScalarColons, repairYamlQuotedScalarFragments, repairYamlReservedIndicatorScalars, repairYamlSequenceEntryIndent, repairYamlSequenceItemPrimaryKeys, repairYamlTypeUnionScalars, repairYamlUnclosedQuotes, repairYamlWrappedPlainListScalars, stripCodeFences, type YamlSequenceItemPrimaryKeyOptions, type YamlSequenceItemPrimaryKeyRepair } from '@shared/yamlRepair'
+import { isBlockScalarHeaderLine, MAPPING_BLOCK_SCALAR_HEADER, repairYamlDoubleQuotedInvalidEscapes, repairYamlDoubleQuotedScalarInnerQuotes, repairYamlDuplicateKeys, repairYamlFreeTextScalars, repairYamlIndentation, repairYamlInlineKeys, repairYamlInlineSequenceParents, repairYamlListDashSpace, repairYamlMappingKeyColonSpace, repairYamlNestedMappingChildren, repairYamlPlainScalarColons, repairYamlQuotedScalarFragments, repairYamlReservedIndicatorScalars, repairYamlSequenceEntryIndent, repairYamlSequenceItemPrimaryKeys, repairYamlTypeUnionScalars, repairYamlUnclosedQuotes, repairYamlWrappedPlainListScalars, stripCodeFences, type YamlSequenceItemPrimaryKeyOptions, type YamlSequenceItemPrimaryKeyRepair } from '@shared/yamlRepair'
 import { isRecord } from '@shared/typeGuards'
 import { stripTranscriptPrefixes as stripSharedTranscriptPrefixes } from '@shared/transcriptPrefix'
 import { cacheParse, getCachedParse } from './parseCache'
@@ -170,7 +170,14 @@ function isSpuriousXmlTagLine(line: string): boolean {
 
 function getXmlBlockScalarBaseIndent(line: string): number {
   const indent = line.match(/^(\s*)/)?.[1]?.length ?? 0
-  if (!MAPPING_BLOCK_SCALAR_HEADER.test(line.trim())) return indent
+  const withoutComment = line.replace(/\s+#.*$/, '')
+  const trimmed = withoutComment.trim()
+  if (!MAPPING_BLOCK_SCALAR_HEADER.test(trimmed)) {
+    if (/^(?:-\s+)+[>|]/.test(trimmed) && /^-\s+-/.test(trimmed)) {
+      return line.lastIndexOf('-') + 1
+    }
+    return indent
+  }
   return line.match(/^(\s*-\s+)/)?.[1]?.length ?? indent
 }
 
@@ -207,7 +214,7 @@ function scanSpuriousXmlTags(content: string): SpuriousXmlTagScan {
       continue
     }
 
-    if (BLOCK_SCALAR_HEADER.test(trimmed)) {
+    if (isBlockScalarHeaderLine(line)) {
       blockScalarBaseIndent = getXmlBlockScalarBaseIndent(line)
       keptLines.push(line)
       continue
@@ -628,7 +635,7 @@ function applyInlineRepairPipeline(candidate: string, options?: ParseYamlOrJsonC
 // The test suite hashes the complete yamlRepair/yamlUtils sources after
 // normalising this literal. Keeping only the resulting marker at runtime
 // makes cache invalidation work in bundled builds without reading source files.
-export const REPAIR_PIPELINE_VERSION = 'acac2738d520c92e82ce22d6490be0a7b4328477c215e56e2fc09e94ce65a876'
+export const REPAIR_PIPELINE_VERSION = '37b6ce17f123c5bf980811b3e6ca6246a14921f646210ef32925fa3ef1d5283d'
 
 /** Parse or reuse a candidate while preserving per-call repairs and mutable result ownership. */
 export function parseYamlOrJsonCandidate(
@@ -736,6 +743,7 @@ function parseYamlOrJsonCandidateUncached(
         freeTextScalar?: boolean
         listDashSpace?: boolean
         duplicateKeys?: boolean
+        reservedIndicator?: boolean
         xmlStyleTags?: string[]
       },
     ): unknown => {
@@ -768,6 +776,9 @@ function parseYamlOrJsonCandidateUncached(
       }
       if (appliedRepairs?.duplicateKeys) {
         appendRepairWarningOnce(options?.repairWarnings, DUPLICATE_KEYS_WARNING)
+      }
+      if (appliedRepairs?.reservedIndicator) {
+        appendRepairWarningOnce(options?.repairWarnings, RESERVED_INDICATOR_SCALAR_WARNING)
       }
       if (appliedRepairs?.xmlStyleTags && appliedRepairs.xmlStyleTags.length > 0) {
         appendRepairWarningOnce(options?.repairWarnings, buildXmlStyleTagsWarning(appliedRepairs.xmlStyleTags))
@@ -808,6 +819,23 @@ function parseYamlOrJsonCandidateUncached(
         plainScalarColonPreRepaired,
         options?.sequenceItemPrimaryKeys,
       )
+      // Repair unrelated reserved-indicator scalars before touching free_text.
+      // A valid folded free_text value must stay folded when another sibling
+      // (for example `owner: @team`) needs quoting; converting it to a literal
+      // scalar would change the value's whitespace semantics.
+      const reservedIndicatorPreRepaired = repairYamlReservedIndicatorScalars(sequenceItemPrimaryKeyPreRepaired.yaml)
+      if (reservedIndicatorPreRepaired !== sequenceItemPrimaryKeyPreRepaired.yaml) {
+        try {
+          return finalizeParsedCandidate(jsYaml.load(reservedIndicatorPreRepaired), {
+            inlineYaml: inlineSequencePreRepaired !== candidate || inlineKeyPreRepaired !== inlineSequencePreRepaired,
+            mappingKeyColonSpace: mappingKeyColonSpacePreRepaired !== inlineKeyPreRepaired,
+            wrappedPlainListScalar: wrappedPlainListScalarPreRepaired !== mappingKeyColonSpacePreRepaired,
+            plainScalarColon: plainScalarColonPreRepaired !== wrappedPlainListScalarPreRepaired,
+            sequenceItemPrimaryKey: sequenceItemPrimaryKeyPreRepaired.repairs,
+            reservedIndicator: true,
+          })
+        } catch { /* free_text and later repairs may still be needed */ }
+      }
       const freeTextPreRepaired = repairYamlFreeTextScalars(sequenceItemPrimaryKeyPreRepaired.yaml)
       const preParseRepaired = applyNestedMappingRepair(freeTextPreRepaired)
 

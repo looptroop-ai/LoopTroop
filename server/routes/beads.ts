@@ -334,6 +334,11 @@ beadsRouter.put('/tickets/:id/beads', async (c) => {
       ...(input ?? {}),
       ...result.data,
       dependencies: result.data.dependencies,
+      // Zod validates command shape but intentionally strips unknown command
+      // metadata. Commands are an extensible wire contract, so retain the
+      // submitted objects after validation just as we retain unknown bead and
+      // dependency fields.
+      ...(Array.isArray(input?.testCommands) ? { testCommands: input.testCommands } : {}),
     }) as Record<string, unknown>
     const shapeProblem = describeBeadShapeProblem(canonical)
     if (shapeProblem) {
@@ -457,13 +462,24 @@ beadsRouter.put('/tickets/:id/beads', async (c) => {
       },
     })
     syncTicketRuntimeProjection(ticketId)
-    c.header('X-Content-Sha256', contentSha256(jsonl))
+    const savedContentSha256 = contentSha256(jsonl)
+    c.header('X-Content-Sha256', savedContentSha256)
+    return c.json({
+      success: true,
+      // The client caches this exact tuple. Returning the canonical bytes and
+      // records together keeps aliases, derived dependency edges, and the
+      // concurrency hash aligned after a save.
+      beads: storedBeads,
+      rawContent: jsonl,
+      contentSha256: savedContentSha256,
+      malformedLines: [],
+      unrepresentableLines: [],
+    })
   } catch (error) {
     if (error instanceof ContainedPathError) throw error
     return c.json({ error: 'Failed to write file' }, 500)
   }
 
-  return c.json({ success: true })
 })
 
 const BEAD_ID_PATTERN = /^[A-Za-z0-9][A-Za-z0-9-]*[A-Za-z0-9]$/

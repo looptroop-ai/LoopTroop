@@ -300,7 +300,7 @@ A bead acts as a small, isolated implementation unit, allowing the execution age
 
 Read more: [Beads](https://www.looptroop.ovh/docs/beads)
 
-Bead approval preserves unknown stored statuses for JSONL repair instead of silently changing them to `pending`. Known aliases still normalize to supported statuses. Editing waits for the loaded artifact's content hash, so every save can check that it is replacing the version you read. YAML repair keeps valid answers and literal block text unchanged.
+Bead approval preserves unknown stored statuses for JSONL repair instead of silently changing them to `pending`. Known aliases still normalize to supported statuses. Executable beads must include their acceptance criteria, tests, and target-file lists, and each test command is a structured command or has an explicit reason for being omitted. Editing waits for the loaded artifact's content hash, so every save can check that it is replacing the version you read; saves return the canonical JSONL and hash that the server wrote. Duplicate bead IDs and malformed nested Manual QA evidence are rejected on authoritative reads. YAML repair keeps valid answers and literal block text unchanged.
 
 ### Execution & Ralph-style recovery
 

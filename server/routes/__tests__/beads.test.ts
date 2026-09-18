@@ -145,6 +145,38 @@ describe('beadsRouter flow validation', () => {
     expect(stored).toMatchObject(bead)
   })
 
+  it('preserves unknown test command metadata and returns the canonical saved tuple', async () => {
+    const { ticket, paths } = createBeadsRouteTicket()
+    patchTicket(ticket.id, { status: 'WAITING_BEADS_APPROVAL' })
+    const bead = {
+      id: 'B-1',
+      title: 'Editable bead',
+      status: 'pending',
+      priority: 1,
+      dependencies: { blocked_by: [], blocks: [] },
+      testCommands: [{ mode: 'process', program: 'npm', args: ['test'], note: 'keep this metadata' }],
+    }
+
+    const response = await app.request(`/api/tickets/${encodeURIComponent(ticket.id)}/beads`, {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify([bead]),
+    })
+
+    expect(response.status).toBe(200)
+    const payload = await response.json() as {
+      beads: Array<Record<string, unknown>>
+      rawContent: string
+      contentSha256: string
+    }
+    const stored = JSON.parse(readFileSync(paths.beadsPath, 'utf8').trim()) as Record<string, unknown>
+    expect(stored.testCommands).toEqual(bead.testCommands)
+    expect(payload.beads[0]).toMatchObject(stored)
+    expect(payload.rawContent).toBe(`${JSON.stringify(stored)}\n`)
+    expect(payload.contentSha256).toBe(contentSha256(payload.rawContent))
+    expect(response.headers.get('X-Content-Sha256')).toBe(payload.contentSha256)
+  })
+
   it('explains the source line and field for invalid bead input', async () => {
     const { ticket } = createBeadsRouteTicket()
     patchTicket(ticket.id, { status: 'WAITING_BEADS_APPROVAL' })

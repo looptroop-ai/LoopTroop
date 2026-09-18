@@ -543,20 +543,47 @@ function BeadsApprovalPane({
       staleResponse = response.status === 409
       await throwIfNotOk(response, 'Failed to save beads')
 
-      // Update cache with the saved array (API returns { success: true })
-      const nextContentSha256 = typeof response.headers?.get === 'function'
+      // Cache only the server's canonical tuple. The route derives dependency
+      // inverses and applies alias precedence before writing, so the submitted
+      // array can differ from the file. Pairing the draft with the response
+      // hash would make that mismatch look like a clean save.
+      let parsedPayload: unknown = null
+      try {
+        parsedPayload = await response.json() as unknown
+      } catch {
+        // A successful response without JSON is malformed for this protocol.
+        // The invalidation below will reload the canonical file instead.
+      }
+      const savedPayload = isRecord(parsedPayload)
+        && Array.isArray(parsedPayload.beads)
+        && typeof parsedPayload.rawContent === 'string'
+        && typeof parsedPayload.contentSha256 === 'string'
+        && Array.isArray(parsedPayload.malformedLines)
+        && Array.isArray(parsedPayload.unrepresentableLines)
+        ? parsedPayload as unknown as BeadsArtifactResponse
+        : null
+      const responseContentSha256 = typeof response.headers?.get === 'function'
         ? response.headers.get('X-Content-Sha256')
         : null
+      if (!savedPayload || (responseContentSha256 && responseContentSha256 !== savedPayload.contentSha256)) {
+        await Promise.all([
+          queryClient.invalidateQueries({ queryKey: ['artifact', ticket.id, 'beads', 'approval'] }),
+          queryClient.invalidateQueries({ queryKey: ['artifact', ticket.id, 'beads'] }),
+          queryClient.invalidateQueries({ queryKey: ['ticket', ticket.id] }),
+        ])
+        throw new Error('Save succeeded but did not return canonical bead content; reload to verify the saved tracker.')
+      }
+      const savedBeads = savedPayload.beads
+      const savedRawContent = savedPayload.rawContent
+      const nextContentSha256 = savedPayload.contentSha256
       queryClient.setQueryData(['artifact', ticket.id, 'beads', 'approval'], {
-        beads: beadsToSave,
+        beads: savedBeads,
         contentSha256: nextContentSha256,
-        // What was just written is the file now, and it parses by construction:
-        // the save is what repairs a tracker that had damaged lines.
-        rawContent: beadsArrayToJsonl(beadsToSave),
-        malformedLines: [],
-        unrepresentableLines: [],
+        rawContent: savedRawContent,
+        malformedLines: savedPayload.malformedLines,
+        unrepresentableLines: savedPayload.unrepresentableLines,
       } satisfies BeadsArtifactResponse)
-      queryClient.setQueryData(['artifact', ticket.id, 'beads'], beadsToSave)
+      queryClient.setQueryData(['artifact', ticket.id, 'beads'], savedBeads)
       queryClient.invalidateQueries({ queryKey: ['artifact', ticket.id, 'beads', 'approval'] })
       queryClient.invalidateQueries({ queryKey: ['artifact', ticket.id, 'beads'] })
       queryClient.invalidateQueries({ queryKey: ['ticket', ticket.id] })
@@ -565,7 +592,7 @@ function BeadsApprovalPane({
       // What was just written is the file now. Left as they were, the drafts
       // are autosaved again a moment later and a reload restores them as
       // "unsaved changes" against a file that already has them.
-      setJsonlDraft(beadsArrayToJsonl(beadsToSave))
+      setJsonlDraft(savedRawContent)
       setStructuredDraft(null)
       setDraftBaseSha256(nextContentSha256)
       setIsEditMode(false)

@@ -190,6 +190,33 @@ describe.concurrent('parseYamlOrJsonCandidate', () => {
     expect(repairWarnings.join('\n')).not.toContain('</div>')
   })
 
+  it('preserves literal content in a compact nested sequence block scalar', () => {
+    expect(parseYamlOrJsonCandidate([
+      'owner: @team',
+      'items:',
+      '  - - |',
+      '      <div>',
+      '      hello',
+      '      </div>',
+    ].join('\n'))).toEqual({
+      owner: '@team',
+      items: [['<div>\nhello\n</div>\n']],
+    })
+  })
+
+  it('preserves literal content in a standalone block scalar', () => {
+    expect(parseYamlOrJsonCandidate([
+      'owner: @team',
+      'body:',
+      '  |',
+      '    x: same',
+      '    x: same',
+    ].join('\n'))).toEqual({
+      owner: '@team',
+      body: 'x: same\nx: same\n',
+    })
+  })
+
   it('converts only non-string free text while preserving a valid folded answer', () => {
     const parsed = parseYamlOrJsonCandidate([
       'free_text: false',
@@ -200,6 +227,18 @@ describe.concurrent('parseYamlOrJsonCandidate', () => {
 
     expect(parsed.free_text).toBe('false')
     expect(parsed.other.free_text).toBe('first second')
+  })
+
+  it('keeps a valid folded free_text value when an unrelated sibling needs repair', () => {
+    expect(parseYamlOrJsonCandidate([
+      'owner: @team',
+      'answer:',
+      '  free_text: first',
+      '    second',
+    ].join('\n'))).toEqual({
+      owner: '@team',
+      answer: { free_text: 'first second' },
+    })
   })
 
   it.each([false, true])('preserves distinct canonical and alias answers (alias first: %s)', (aliasFirst) => {

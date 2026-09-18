@@ -30,6 +30,9 @@ export class BeadPlanValidationError extends Error {}
 
 const BEADS_APPROVAL_SNAPSHOT_ARTIFACT = 'approval_snapshot:beads'
 
+/** Arrays the coding prompt and execution contract dereference without guards. */
+const APPROVAL_REQUIRED_ARRAY_FIELDS = ['acceptanceCriteria', 'tests', 'targetFiles'] as const
+
 function resolveBeadsPaths(ticketId: string) {
   const paths = getTicketPaths(ticketId)
   if (!paths) {
@@ -100,6 +103,7 @@ export function approveBeadsDocument(ticketId: string, expectedContentSha256: st
     parsedRecords.push(canonical)
   }
 
+  const firstLineById = new Map<string, number>()
   for (const [index, record] of parsedRecords.entries()) {
     // The file's line, like every other number reported about this file. The
     // record's position counts only what parsed, so with a blank line above it
@@ -112,6 +116,17 @@ export function approveBeadsDocument(ticketId: string, expectedContentSha256: st
     }
     if (typeof record.title !== 'string' || !record.title.trim()) {
       throw new BeadPlanValidationError(`Bead at line ${line} is missing a valid "title" field`)
+    }
+    const firstLine = firstLineById.get(record.id as string)
+    if (firstLine !== undefined) {
+      throw new BeadPlanValidationError(`Bead at line ${line} has duplicate id ${JSON.stringify(record.id)} (first seen at line ${firstLine})`)
+    }
+    firstLineById.set(record.id as string, line)
+    for (const field of APPROVAL_REQUIRED_ARRAY_FIELDS) {
+      const value = record[field]
+      if (!Array.isArray(value) || value.some((item) => typeof item !== 'string')) {
+        throw new BeadPlanValidationError(`Bead ${record.id} is missing a valid ${field} list`)
+      }
     }
     if (!Array.isArray(record.testCommands)) {
       throw new BeadPlanValidationError(`Bead ${record.id} is missing the testCommands list`)

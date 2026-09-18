@@ -85,9 +85,9 @@ describe('OpenCode Manual QA file parts', () => {
       id: 'qa-fix', status: 'pending',
       qaOrigin: {
         version: 1, imageDelivery: 'attached',
-        sourceItems: [{ itemId: 'one', evidence: [{
+        sourceItems: [{ itemId: 'one', lineageId: 'lineage-one', behavior: 'Open the page', observation: 'The page opens.', expectedResult: 'The page is usable.', links: [], evidence: [{
           id: 'screen', mediaType: 'image/png', originalName: 'screen.png',
-          relativePath: 'manual-qa/v1/evidence/item-one/screen.png',
+          relativePath: 'manual-qa/v1/evidence/item-one/screen.png', size: 5, sha256: '0'.repeat(64),
         }] }],
       },
     }) + '\n')

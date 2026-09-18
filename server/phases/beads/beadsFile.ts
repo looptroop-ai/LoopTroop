@@ -98,13 +98,32 @@ const isCommandArray = (value: unknown): boolean =>
 const isQaOrigin = (value: unknown): boolean =>
   isRecord(value)
   && Array.isArray(value.sourceItems)
-  // Down to the lists the loader itself walks: it does
-  // `sourceItems.flatMap(item => item.evidence.flatMap(...))`, all of it after
-  // the try that turns a bad manifest into a readable error, so an item without
-  // `evidence` threw a TypeError from somewhere the operator cannot place.
+  // Down to the lists and scalar values the loader and formatter actually
+  // walk: `sourceItems.flatMap(item => item.evidence.flatMap(...))`, followed
+  // by `evidence.mediaType.toLowerCase()` and path resolution. A shallow
+  // object check let malformed nested values throw after the manifest had
+  // already passed the reader.
   && value.sourceItems.every((item) => isRecord(item)
+    && typeof item.itemId === 'string'
+    && typeof item.lineageId === 'string'
+    && typeof item.behavior === 'string'
+    && typeof item.observation === 'string'
+    && typeof item.expectedResult === 'string'
     && Array.isArray(item.evidence)
-    && item.evidence.every((entry) => isRecord(entry)))
+    && item.evidence.every((entry) => isRecord(entry)
+      && typeof entry.id === 'string'
+      && typeof entry.originalName === 'string'
+      && typeof entry.mediaType === 'string'
+      && typeof entry.size === 'number'
+      && Number.isFinite(entry.size)
+      && entry.size >= 0
+      && typeof entry.sha256 === 'string'
+      && typeof entry.relativePath === 'string')
+    && Array.isArray(item.links)
+    && item.links.every((link) => isRecord(link)
+      && typeof link.id === 'string'
+      && typeof link.url === 'string'
+      && (link.label === undefined || typeof link.label === 'string')))
 
 /**
  * The type each known bead field has to have if it is there at all.
@@ -337,6 +356,7 @@ export function readBeadsFileWithDiagnostics(path: string, options: ReadBeadsFil
     unrepresentableLines: [],
   }
   const beads: Bead[] = []
+  const firstLineById = new Map<string, number>()
   items.forEach((entry, index) => {
     // The line in the file, not the position among the entries that parsed:
     // blank and malformed lines sit between them, so the index named the wrong
@@ -358,6 +378,17 @@ export function readBeadsFileWithDiagnostics(path: string, options: ReadBeadsFil
       return
     }
     const bead = canonical as unknown as Bead
+    const firstLine = firstLineById.get(bead.id)
+    if (firstLine !== undefined) {
+      const message = `duplicate id "${bead.id}" (first seen at line ${firstLine})`
+      if (failClosed) {
+        throw new Error(`Bead file ${path} has ${message} at line ${line}.`)
+      }
+      diagnostics.unrepresentableLines.push(line)
+      console.warn(`[beads] Ignored the entry at line ${line} of ${path}: ${message}.`)
+      return
+    }
+    firstLineById.set(bead.id, line)
     const reconciled = reconcileStoredBeadStatus(bead.status, bead.id)
     if (!reconciled.warning) {
       beads.push(bead)

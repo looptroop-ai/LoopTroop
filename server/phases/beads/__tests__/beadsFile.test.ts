@@ -8,6 +8,7 @@ import {
   deriveBeadBlocks,
   inspectBeadDependencyGraph,
   readBeadsFile,
+  readBeadsFileWithDiagnostics,
   validateBeadDependencyGraph,
 } from '../beadsFile'
 import {
@@ -62,6 +63,16 @@ describe('readBeadsFile and the nested spellings', () => {
     const beads = readBeadsFile(writeTracker('not json', bead({ id: 'B-2' })), { malformedEntries: 'skip' })
 
     expect(beads.map((entry) => entry.id)).toEqual(['B-2'])
+  })
+
+  it('rejects duplicate IDs on authoritative reads and reports later duplicates in diagnostics', () => {
+    const path = writeTracker(bead({ id: 'B-2' }), bead({ id: 'B-2', title: 'Duplicate' }))
+
+    expect(() => readBeadsFile(path)).toThrow(/duplicate id "B-2".*first seen at line 1.*line 2/)
+    expect(readBeadsFileWithDiagnostics(path, { malformedEntries: 'skip' })).toMatchObject({
+      beads: [{ id: 'B-2', title: 'One' }],
+      diagnostics: { unrepresentableLines: [2] },
+    })
   })
 
   it('reads a bead whose dependencies use the camelCase spelling', () => {
@@ -221,6 +232,19 @@ describe('readBeadsFile and the top-level spellings', () => {
 
     expect(beads[0]!.contextGuidance).toEqual({ patterns: ['p'], anti_patterns: ['a'] })
     expect(beads[0]!.qaOrigin).toEqual({ sourceItems: [] })
+  })
+
+  it('rejects QA origins whose nested values the adapter dereferences are malformed', () => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {})
+    const malformed = {
+      sourceItems: [{
+        itemId: 'one', lineageId: 'lineage-one', behavior: 'Open', observation: 'Opened', expectedResult: 'Usable',
+        links: [], evidence: [{ id: 'screen', mediaType: 42, relativePath: 'screen.png' }],
+      }],
+    }
+
+    expect(readBeadsFile(writeTracker(bead({ qaOrigin: malformed })), { malformedEntries: 'skip' })).toEqual([])
+    expect(warn).toHaveBeenCalledWith(expect.stringContaining('field "qaOrigin" has the wrong type'))
   })
 
   it('keeps the canonical value when a record carries both spellings', () => {

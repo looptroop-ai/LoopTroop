@@ -21,11 +21,17 @@
 /** `key: |`, at the end of a mapping line. */
 export const MAPPING_BLOCK_SCALAR_HEADER = /:\s*(?:(?:&[^\s]+|![^\s]+)\s+){0,2}[>|](?:[+-][1-9]?|[1-9][+-]?)?(?:\s+#.*)?\s*$/
 /** `- |`, a block scalar as a sequence entry, which carries no key. */
-export const LIST_BLOCK_SCALAR_HEADER = /^-\s*(?:(?:&[^\s]+|![^\s]+)\s+){0,2}[>|](?:[+-][1-9]?|[1-9][+-]?)?(?:\s+#.*)?\s*$/
+export const LIST_BLOCK_SCALAR_HEADER = /^(?:-\s+)+(?:(?:&[^\s]+|![^\s]+)\s+){0,2}[>|](?:[+-][1-9]?|[1-9][+-]?)?(?:\s+#.*)?\s*$/
 /** Either form. Most repairs walk lines and need both. */
 export const BLOCK_SCALAR_HEADER = /(?::|^-)\s*(?:(?:&[^\s]+|![^\s]+)\s+){0,2}[>|](?:[+-][1-9]?|[1-9][+-]?)?(?:\s+#.*)?\s*$/
 /** The indicator alone, as a value: `foo:` on one line and `|` on the next. */
 export const BLOCK_SCALAR_VALUE = /^\s*([>|](?:[+-][1-9]?|[1-9][+-]?)?)(?:\s+#.*)?\s*$/
+
+/** A same-line header or an indented standalone scalar indicator. */
+export function isBlockScalarHeaderLine(line: string): boolean {
+  const trimmed = line.trim()
+  return BLOCK_SCALAR_HEADER.test(trimmed) || BLOCK_SCALAR_VALUE.test(trimmed)
+}
 
 /**
  * Repair YAML list items where the dash is not followed by a space.
@@ -54,7 +60,7 @@ export function repairYamlListDashSpace(yaml: string): string {
       }
       blockScalarBaseIndent = -1
     }
-    if (BLOCK_SCALAR_HEADER.test(trimmed)) {
+    if (isBlockScalarHeaderLine(line)) {
       blockScalarBaseIndent = getBlockScalarBaseIndent(line)
       result.push(line)
       continue
@@ -77,7 +83,6 @@ export function repairYamlListDashSpace(yaml: string): string {
 export function repairYamlIndentation(yaml: string): string {
   const lines = yaml.split('\n')
   const result: string[] = []
-  const BLOCK_SCALAR_PATTERN = BLOCK_SCALAR_HEADER
 
   // Track the expected indent for properties inside the current list item.
   // Set when we see `- key:` and cleared when we leave that indent context.
@@ -99,7 +104,7 @@ export function repairYamlIndentation(yaml: string): string {
       dashIndent = dashPrefix.length
       expectedPropertyIndent = dashIndent + 2
       activeNestedIndent = -1
-      activeBlockScalarIndent = BLOCK_SCALAR_PATTERN.test(dashRest.trimEnd())
+      activeBlockScalarIndent = isBlockScalarHeaderLine(dashRest)
         ? getBlockScalarBaseIndent(line)
         : -1
       result.push(line)
@@ -130,7 +135,7 @@ export function repairYamlIndentation(yaml: string): string {
 
       const propMatch = line.match(/^(\s*)([a-z_]+\s*:.*)$/i)
       if (propMatch) {
-        const isBlockScalar = BLOCK_SCALAR_PATTERN.test(propMatch[2]!.trimEnd())
+        const isBlockScalar = isBlockScalarHeaderLine(propMatch[2]!)
         if (actualIndent === expectedPropertyIndent && propMatch[2]!.trimEnd().endsWith(':')) {
           activeNestedIndent = actualIndent + 2
           result.push(line)
@@ -385,7 +390,7 @@ export function repairYamlSequenceItemPrimaryKeys(
     }
 
     result.push(line)
-    if (SEQUENCE_PRIMARY_KEY_BLOCK_SCALAR_PATTERN.test(trimmed)) {
+    if (isBlockScalarHeaderLine(line)) {
       blockScalarBaseIndent = getBlockScalarBaseIndent(line)
     }
   }
@@ -504,7 +509,7 @@ export function repairYamlInlineSequenceParents(yaml: string): string {
       }
       blockScalarBaseIndent = -1
     }
-    if (BLOCK_SCALAR_HEADER.test(trimmed)) {
+    if (isBlockScalarHeaderLine(line)) {
       blockScalarBaseIndent = getBlockScalarBaseIndent(line)
       result.push(line)
       continue
@@ -543,7 +548,6 @@ export function repairYamlMappingKeyColonSpace(
 ): string {
   const lines = yaml.split('\n')
   const result: string[] = []
-  const BLOCK_SCALAR_PATTERN = BLOCK_SCALAR_HEADER
   const BARE_COLLECTION_KEY = /^(\s*)([A-Za-z_][\w-]*)\s*:\s*(?:#.*)?$/
   const normalizedSequenceOptions = normalizeSequenceItemPrimaryKeyOptions(options?.sequenceItemPrimaryKeys)
   const parentStack: YamlSequenceParentContext[] = []
@@ -602,7 +606,7 @@ export function repairYamlMappingKeyColonSpace(
       if (shouldRepair) {
         const repaired = `${match[1]}${match[2]}: ${match[3]}`
         result.push(repaired)
-        if (BLOCK_SCALAR_PATTERN.test(repaired.trimEnd())) {
+        if (isBlockScalarHeaderLine(repaired)) {
           blockScalarBaseIndent = getBlockScalarBaseIndent(repaired)
         }
         continue
@@ -618,7 +622,7 @@ export function repairYamlMappingKeyColonSpace(
         indent: parentMatch[1]!.length,
       })
     }
-    if (BLOCK_SCALAR_PATTERN.test(trimmed)) {
+    if (isBlockScalarHeaderLine(line)) {
       blockScalarBaseIndent = getBlockScalarBaseIndent(line)
     }
   }
@@ -639,7 +643,16 @@ function getLineIndent(line: string): number {
  */
 function getBlockScalarBaseIndent(line: string): number {
   const indent = getLineIndent(line)
-  if (!MAPPING_BLOCK_SCALAR_HEADER.test(line.trim())) return indent
+  const withoutComment = line.replace(/\s+#.*$/, '')
+  const trimmed = withoutComment.trim()
+  if (!MAPPING_BLOCK_SCALAR_HEADER.test(trimmed)) {
+    // A compact nested sequence (`- - |`) owns its body at the final dash,
+    // while a plain `- |` keeps the sequence indentation as its base.
+    if (LIST_BLOCK_SCALAR_HEADER.test(trimmed) && /^-\s+-/.test(trimmed)) {
+      return line.lastIndexOf('-') + 1
+    }
+    return indent
+  }
   return line.match(/^(\s*-\s+)/)?.[1]?.length ?? indent
 }
 
@@ -716,8 +729,6 @@ function isValidYamlDoubleQuotedEscape(value: string, slashIndex: number): boole
 export function repairYamlDoubleQuotedInvalidEscapes(yaml: string): string {
   const lines = yaml.split('\n')
   const result: string[] = []
-  const MAPPING_BLOCK_SCALAR_PATTERN = MAPPING_BLOCK_SCALAR_HEADER
-  const LIST_BLOCK_SCALAR_PATTERN = LIST_BLOCK_SCALAR_HEADER
 
   let insideSingleQuote = false
   let insideDoubleQuote = false
@@ -775,8 +786,7 @@ export function repairYamlDoubleQuotedInvalidEscapes(yaml: string): string {
     result.push(repairedLine)
 
     if (!insideSingleQuote && !insideDoubleQuote) {
-      const repairedTrimmed = repairedLine.trim()
-      if (MAPPING_BLOCK_SCALAR_PATTERN.test(repairedTrimmed) || LIST_BLOCK_SCALAR_PATTERN.test(repairedTrimmed)) {
+      if (isBlockScalarHeaderLine(repairedLine)) {
         blockScalarBaseIndent = getBlockScalarBaseIndent(repairedLine)
       }
     }
@@ -800,7 +810,6 @@ export function repairYamlDoubleQuotedInvalidEscapes(yaml: string): string {
 export function repairYamlDoubleQuotedScalarInnerQuotes(yaml: string): string {
   const lines = yaml.split('\n')
   const result: string[] = []
-  const BLOCK_SCALAR_PATTERN = BLOCK_SCALAR_HEADER
   let blockScalarBaseIndent = -1
 
   const repairValue = (value: string): string | null => {
@@ -848,7 +857,7 @@ export function repairYamlDoubleQuotedScalarInnerQuotes(yaml: string): string {
 
     const mappingMatch = line.match(/^(\s*(?:-\s+)?[A-Za-z_][\w_-]*\s*:\s*)(.+)$/)
     if (mappingMatch) {
-      if (BLOCK_SCALAR_PATTERN.test(trimmed)) {
+      if (isBlockScalarHeaderLine(line)) {
         blockScalarBaseIndent = getBlockScalarBaseIndent(line)
         result.push(line)
         continue
@@ -870,7 +879,7 @@ export function repairYamlDoubleQuotedScalarInnerQuotes(yaml: string): string {
       }
     }
 
-    if (BLOCK_SCALAR_PATTERN.test(trimmed)) {
+    if (isBlockScalarHeaderLine(line)) {
       blockScalarBaseIndent = getBlockScalarBaseIndent(line)
     }
 
@@ -959,7 +968,7 @@ export function repairYamlNestedMappingChildren(
     const nodeValue = (line.match(/^\s*(?:-\s+)?[A-Za-z_][\w_-]*\s*:(.*)$/)?.[1]
       ?? (/^-\s/.test(trimmed) ? trimmed.slice(2).trimStart() : undefined))?.trim()
     if (nodeValue !== undefined && hasUncertainYamlScalarExtent(nodeValue)) return yaml
-    if (BLOCK_SCALAR_HEADER.test(trimmed)) {
+    if (isBlockScalarHeaderLine(line)) {
       blockScalarBaseIndent = getBlockScalarBaseIndent(line)
       result.push(line)
       continue
@@ -1100,7 +1109,6 @@ export function repairYamlNestedMappingChildren(
 export function repairYamlSequenceEntryIndent(yaml: string): string {
   const lines = yaml.split('\n')
   const result: string[] = []
-  const BLOCK_SCALAR_PATTERN = BLOCK_SCALAR_HEADER
   const DASH_LINE = /^(\s*)-(\s+.*)$/
   const BARE_KEY = /^[a-z_][\w_-]*\s*:\s*$/i
   const MAX_SIBLING_DELTA = 3
@@ -1175,7 +1183,7 @@ export function repairYamlSequenceEntryIndent(yaml: string): string {
       // than the text after the dash: for a bare `- |` the indicator *is* that
       // text, so a header test expecting a key before it never matched and the
       // body was re-indented as sibling sequence entries — a value change.
-      if (BLOCK_SCALAR_PATTERN.test(trimmed)) {
+      if (isBlockScalarHeaderLine(line)) {
         const emittedLine = bestAnchor !== null ? `${' '.repeat(bestAnchor)}-${rest}` : line
         blockScalarBaseIndent = getBlockScalarBaseIndent(emittedLine)
       }
@@ -1183,7 +1191,7 @@ export function repairYamlSequenceEntryIndent(yaml: string): string {
     }
 
     // Non-dash line — track block scalars
-    if (BLOCK_SCALAR_PATTERN.test(trimmed)) {
+    if (isBlockScalarHeaderLine(line)) {
       blockScalarBaseIndent = getBlockScalarBaseIndent(line)
     }
 
@@ -1238,7 +1246,7 @@ export function repairYamlDuplicateKeys(yaml: string): string {
       : sequenceHeader !== null
         ? sequenceHeader.trim()
         : header.slice(header.indexOf(':') + 1).trim()
-    const scalar = DUPLICATE_KEYS_BLOCK_SCALAR_PATTERN.test(header.trim())
+    const scalar = isBlockScalarHeaderLine(header)
     if (!scalar && hasUncertainYamlScalarExtent(value)) {
       // A flow/quoted node can contain lines that look like mapping entries.
       // Only preserve it when its own closing token proves the extent. A
@@ -1298,7 +1306,7 @@ export function repairYamlDuplicateKeys(yaml: string): string {
       }
       separatorStart = -1
       separatorLines = 0
-      if (DUPLICATE_KEYS_BLOCK_SCALAR_PATTERN.test(trimmed)) {
+      if (isBlockScalarHeaderLine(line)) {
         scalarIndent = getDuplicateKeysBlockScalarBaseIndent(line)
       }
       entryLines.push(line)
@@ -1358,7 +1366,7 @@ export function repairYamlDuplicateKeys(yaml: string): string {
         // mapping blocks. Preserve this line and keep scanning.
         result.push(line)
         if (!preserveUncertainEntry()) return yaml
-        if (DUPLICATE_KEYS_BLOCK_SCALAR_PATTERN.test(trimmed)) {
+        if (isBlockScalarHeaderLine(line)) {
           blockScalarBaseIndent = getDuplicateKeysBlockScalarBaseIndent(line)
         }
         continue
@@ -1380,7 +1388,7 @@ export function repairYamlDuplicateKeys(yaml: string): string {
       seenByIndent.set(effectiveIndent, map)
 
       result.push(line)
-      if (DUPLICATE_KEYS_BLOCK_SCALAR_PATTERN.test(trimmed)) {
+      if (isBlockScalarHeaderLine(line)) {
         blockScalarBaseIndent = getDuplicateKeysBlockScalarBaseIndent(line)
       }
       continue
@@ -1390,7 +1398,7 @@ export function repairYamlDuplicateKeys(yaml: string): string {
     if (sequenceValue !== undefined && hasUncertainYamlScalarExtent(sequenceValue)) {
       result.push(line)
       if (!preserveUncertainEntry()) return yaml
-      if (DUPLICATE_KEYS_BLOCK_SCALAR_PATTERN.test(trimmed)) {
+      if (isBlockScalarHeaderLine(line)) {
         blockScalarBaseIndent = getDuplicateKeysBlockScalarBaseIndent(line)
       }
       continue
@@ -1407,7 +1415,7 @@ export function repairYamlDuplicateKeys(yaml: string): string {
         // duplicate entries in this and later blocks to be compared.
         result.push(line)
         if (!preserveUncertainEntry()) return yaml
-        if (DUPLICATE_KEYS_BLOCK_SCALAR_PATTERN.test(trimmed)) {
+        if (isBlockScalarHeaderLine(line)) {
           blockScalarBaseIndent = getDuplicateKeysBlockScalarBaseIndent(line)
         }
         continue
@@ -1441,7 +1449,7 @@ export function repairYamlDuplicateKeys(yaml: string): string {
     }
 
     result.push(line)
-    if (DUPLICATE_KEYS_BLOCK_SCALAR_PATTERN.test(trimmed)) {
+    if (isBlockScalarHeaderLine(line)) {
       blockScalarBaseIndent = getDuplicateKeysBlockScalarBaseIndent(line)
     }
   }
@@ -1462,7 +1470,6 @@ export function repairYamlDuplicateKeys(yaml: string): string {
 export function repairYamlFreeTextScalars(yaml: string): string {
   const lines = yaml.split('\n')
   const result: string[] = []
-  const BLOCK_SCALAR_PATTERN = BLOCK_SCALAR_HEADER
   const BLOCK_SCALAR_VALUE_PATTERN = BLOCK_SCALAR_VALUE
   // Valid block scalar headers are handled before this plain-value guard.
   const SAFE_VALUE_START = /^["'&*!#]/
@@ -1487,7 +1494,7 @@ export function repairYamlFreeTextScalars(yaml: string): string {
     }
 
     const freeTextMatch = line.match(/^(\s*(?:-\s+)?free_text\s*:\s*)(.+)$/)
-    if (!freeTextMatch && BLOCK_SCALAR_PATTERN.test(trimmed)) {
+    if (!freeTextMatch && isBlockScalarHeaderLine(line)) {
       blockScalarBaseIndent = getBlockScalarBaseIndent(line)
       result.push(line)
       continue
@@ -1973,7 +1980,6 @@ function repairQuotedBlockScalarIndicatorMapping(
 export function repairYamlQuotedScalarFragments(yaml: string): string {
   const lines = yaml.split('\n')
   const result: string[] = []
-  const BLOCK_SCALAR_PATTERN = BLOCK_SCALAR_HEADER
   let blockScalarBaseIndent = -1
 
   for (let index = 0; index < lines.length; index += 1) {
@@ -2021,7 +2027,7 @@ export function repairYamlQuotedScalarFragments(yaml: string): string {
       }
     }
 
-    if (BLOCK_SCALAR_PATTERN.test(trimmed)) {
+    if (isBlockScalarHeaderLine(line)) {
       blockScalarBaseIndent = getBlockScalarBaseIndent(line)
     }
 
@@ -2043,7 +2049,6 @@ export function repairYamlQuotedScalarFragments(yaml: string): string {
 export function repairYamlTypeUnionScalars(yaml: string): string {
   const lines = yaml.split('\n')
   const result: string[] = []
-  const BLOCK_SCALAR_PATTERN = BLOCK_SCALAR_HEADER
   let blockScalarBaseIndent = -1
 
   for (const line of lines) {
@@ -2083,7 +2088,7 @@ export function repairYamlTypeUnionScalars(yaml: string): string {
       }
     }
 
-    if (BLOCK_SCALAR_PATTERN.test(trimmed)) {
+    if (isBlockScalarHeaderLine(line)) {
       blockScalarBaseIndent = getBlockScalarBaseIndent(line)
     }
 
@@ -2106,8 +2111,6 @@ export function repairYamlTypeUnionScalars(yaml: string): string {
 export function repairYamlReservedIndicatorScalars(yaml: string): string {
   const lines = yaml.split('\n')
   const result: string[] = []
-  const MAPPING_BLOCK_SCALAR_PATTERN = MAPPING_BLOCK_SCALAR_HEADER
-  const LIST_BLOCK_SCALAR_PATTERN = LIST_BLOCK_SCALAR_HEADER
   const RESERVED_INDICATOR_START = /^[`@]/
   let blockScalarBaseIndent = -1
 
@@ -2128,7 +2131,7 @@ export function repairYamlReservedIndicatorScalars(yaml: string): string {
       blockScalarBaseIndent = -1
     }
 
-    if (MAPPING_BLOCK_SCALAR_PATTERN.test(trimmed) || LIST_BLOCK_SCALAR_PATTERN.test(trimmed)) {
+    if (isBlockScalarHeaderLine(line)) {
       blockScalarBaseIndent = getBlockScalarBaseIndent(line)
       result.push(line)
       continue
@@ -2258,7 +2261,6 @@ interface YamlInlineKeyRepairOptions {
 export function repairYamlInlineKeys(yaml: string, options?: YamlInlineKeyRepairOptions): string {
   const lines = yaml.split('\n')
   const result: string[] = []
-  const BLOCK_SCALAR_PATTERN = BLOCK_SCALAR_HEADER
   const nestedMappingChildren = buildNormalizedNestedMappingChildren(options?.nestedMappingChildren)
   let blockScalarBaseIndent = -1
 
@@ -2283,7 +2285,7 @@ export function repairYamlInlineKeys(yaml: string, options?: YamlInlineKeyRepair
     }
 
     // Skip block scalar indicators
-    if (BLOCK_SCALAR_PATTERN.test(trimmed)) {
+    if (isBlockScalarHeaderLine(line)) {
       blockScalarBaseIndent = getBlockScalarBaseIndent(line)
       result.push(line)
       continue
@@ -2790,7 +2792,7 @@ export function repairYamlWrappedPlainListScalars(yaml: string): string {
       continue
     }
 
-    if (BLOCK_SCALAR_HEADER.test(trimmed)) {
+    if (isBlockScalarHeaderLine(line)) {
       blockScalarBaseIndent = getBlockScalarBaseIndent(line)
       result.push(line)
       continue
@@ -2860,7 +2862,6 @@ export function repairYamlPlainScalarColons(yaml: string): string {
   const lines = yaml.split('\n')
   const result: string[] = []
 
-  const BLOCK_SCALAR_PATTERN = BLOCK_SCALAR_HEADER
   // Skip values that are already safe: quoted, block scalar, flow, anchor, tag, or comment
   const SAFE_VALUE_START = /^["'[{>|&*!#]/
   let blockScalarBaseIndent = -1
@@ -2893,7 +2894,7 @@ export function repairYamlPlainScalarColons(yaml: string): string {
       const value = mappingMatch[3]!
 
       // Detect block scalar indicator on this line
-      if (BLOCK_SCALAR_PATTERN.test(line.trimEnd())) {
+      if (isBlockScalarHeaderLine(line)) {
         blockScalarBaseIndent = getBlockScalarBaseIndent(line)
         result.push(line)
         continue
@@ -2934,7 +2935,7 @@ export function repairYamlPlainScalarColons(yaml: string): string {
       // so this line was pushed and skipped — and the arming at the bottom of
       // the loop was skipped with it, leaving the body to be quoted line by
       // line. Recognising the header was not enough; it has to arm here too.
-      if (BLOCK_SCALAR_HEADER.test(trimmed)) {
+      if (isBlockScalarHeaderLine(line)) {
         blockScalarBaseIndent = getBlockScalarBaseIndent(line)
         result.push(line)
         continue
@@ -2962,7 +2963,7 @@ export function repairYamlPlainScalarColons(yaml: string): string {
     }
 
     // Bare `key:` with block scalar on next line
-    if (BLOCK_SCALAR_PATTERN.test(trimmed)) {
+    if (isBlockScalarHeaderLine(line)) {
       blockScalarBaseIndent = getBlockScalarBaseIndent(line)
     }
 
@@ -2985,7 +2986,6 @@ export function repairYamlPlainScalarColons(yaml: string): string {
 export function repairYamlUnclosedQuotes(yaml: string): string {
   const lines = yaml.split('\n')
   const result: string[] = []
-  const BLOCK_SCALAR_PATTERN = BLOCK_SCALAR_HEADER
   // Match `key: "value` with optional leading `- ` for list item first keys
   const QUOTED_VALUE_PATTERN = /^(\s*(?:-\s+)?[A-Za-z_][\w_-]*\s*:\s+)"(.*)$/
   const LIST_QUOTED_VALUE_PATTERN = /^(\s*-\s+)"(.*)$/
@@ -3013,7 +3013,7 @@ export function repairYamlUnclosedQuotes(yaml: string): string {
     }
 
     // Detect block scalar indicator — skip these lines from quote repair
-    if (BLOCK_SCALAR_PATTERN.test(trimmed)) {
+    if (isBlockScalarHeaderLine(line)) {
       blockScalarBaseIndent = getBlockScalarBaseIndent(line)
       result.push(line)
       continue

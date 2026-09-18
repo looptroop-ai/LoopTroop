@@ -27,10 +27,16 @@ function fixture() {
   return { ticketDir, beadsPath }
 }
 
+const approvalArrays = {
+  acceptanceCriteria: ['The bead is complete.'],
+  tests: ['Run the focused test.'],
+  targetFiles: ['src/example.ts'],
+}
+
 describe('contained bead approval document', () => {
   it('atomically stamps the document while retaining the reviewed hash and updated snapshot', () => {
     const { beadsPath } = fixture()
-    const content = JSON.stringify({ id: 'one', title: 'A bead', testCommands: [], testCommandReason: 'Manual verification.' }) + '\n'
+    const content = JSON.stringify({ id: 'one', title: 'A bead', ...approvalArrays, testCommands: [], testCommandReason: 'Manual verification.' }) + '\n'
     writeFileSync(beadsPath, content)
     const reviewedHash = contentSha256(content)
     const approved = approveBeadsDocument('1:DEMO-1', reviewedHash)
@@ -59,11 +65,13 @@ describe('contained bead approval document', () => {
     const content = [
       {
         id: 'root', title: 'Root', status: 'pending', priority: 1,
+        ...approvalArrays,
         testCommands: [{ mode: 'shell', shell: 'posix', script: 'npm test' }],
         dependencies: { blocked_by: [], blocks: ['stale'] },
       },
       {
         id: 'child', title: 'Child', status: 'pending', priority: 2,
+        ...approvalArrays,
         test_commands: [{ mode: 'shell', shell: 'posix', script: 'npm test' }],
         dependencies: { blockedBy: ['root'] },
         dependency_metadata: { keep: true },
@@ -87,6 +95,7 @@ describe('contained bead approval document', () => {
     const { beadsPath } = fixture()
     const invalid = JSON.stringify({
       id: 'one', title: 'A bead', status: 'pending', priority: 'high',
+      ...approvalArrays,
       testCommands: ['npm test'],
       dependencies: { blocked_by: ['missing'], blocks: [] },
     }) + '\n'
@@ -97,9 +106,35 @@ describe('contained bead approval document', () => {
     expect(writeTicketFile).not.toHaveBeenCalled()
   })
 
+  it('rejects an executable bead that omits prompt-required arrays', () => {
+    const { beadsPath } = fixture()
+    const content = JSON.stringify({
+      id: 'one', title: 'A bead', status: 'pending', priority: 1,
+      testCommands: [{ mode: 'shell', shell: 'posix', script: 'npm test' }],
+      dependencies: { blocked_by: [], blocks: [] },
+    }) + '\n'
+    writeFileSync(beadsPath, content)
+
+    expect(() => approveBeadsDocument('1:DEMO-1', contentSha256(content))).toThrow(/acceptanceCriteria list/)
+    expect(readFileSync(beadsPath, 'utf8')).toBe(content)
+    expect(writeTicketFile).not.toHaveBeenCalled()
+  })
+
+  it('rejects duplicate IDs before writing an approval stamp', () => {
+    const { beadsPath } = fixture()
+    const content = [
+      { id: 'one', title: 'One', status: 'pending', priority: 1, ...approvalArrays, testCommands: [], testCommandReason: 'Manual check.', dependencies: { blocked_by: [], blocks: [] } },
+      { id: 'one', title: 'Again', status: 'pending', priority: 2, ...approvalArrays, testCommands: [], testCommandReason: 'Manual check.', dependencies: { blocked_by: [], blocks: [] } },
+    ].map((bead) => JSON.stringify(bead)).join('\n') + '\n'
+    writeFileSync(beadsPath, content)
+
+    expect(() => approveBeadsDocument('1:DEMO-1', contentSha256(content))).toThrow(/line 2.*duplicate id "one".*line 1/)
+    expect(writeTicketFile).not.toHaveBeenCalled()
+  })
+
   it('rejects an unknown stored status without rewriting the tracker', () => {
     const { beadsPath } = fixture()
-    const content = JSON.stringify({ id: 'one', title: 'One', status: 'todo', testCommands: [], testCommandReason: 'Manual check.' }) + '\n'
+    const content = JSON.stringify({ id: 'one', title: 'One', status: 'todo', ...approvalArrays, testCommands: [], testCommandReason: 'Manual check.' }) + '\n'
     writeFileSync(beadsPath, content)
     expect(() => approveBeadsDocument('1:DEMO-1', contentSha256(content))).toThrow(/unrecognised status "todo"/)
     expect(readFileSync(beadsPath, 'utf8')).toBe(content)
@@ -111,11 +146,13 @@ describe('contained bead approval document', () => {
     const content = [
       {
         id: 'one', title: 'One', status: 'pending', priority: 1,
+        ...approvalArrays,
         testCommands: [{ mode: 'shell', shell: 'posix', script: 'npm test' }],
         dependencies: { blocked_by: ['two'], blocks: [] },
       },
       {
         id: 'two', title: 'Two', status: 'pending', priority: 2,
+        ...approvalArrays,
         testCommands: [{ mode: 'shell', shell: 'posix', script: 'npm test' }],
         dependencies: { blocked_by: ['one'], blocks: [] },
       },

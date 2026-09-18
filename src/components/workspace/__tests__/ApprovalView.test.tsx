@@ -132,6 +132,38 @@ function createBeadsRawResponse(
   ))
 }
 
+function createBeadsSaveResponse(
+  beads: unknown[],
+  options: { rawContent?: string; contentSha256?: string } = {},
+) {
+  const rawContent = options.rawContent ?? (beads.length > 0
+    ? `${beads.map((item) => JSON.stringify(item)).join('\n')}\n`
+    : '')
+  const contentSha256 = options.contentSha256 ?? 'saved-hash'
+  return Promise.resolve(new Response(
+    JSON.stringify({
+      success: true,
+      beads,
+      rawContent,
+      contentSha256,
+      malformedLines: [],
+      unrepresentableLines: [],
+    }),
+    {
+      status: 200,
+      headers: {
+        'Content-Type': 'application/json',
+        'X-Content-Sha256': contentSha256,
+      },
+    },
+  ))
+}
+
+function createBeadsSaveResponseFromRequest(init?: RequestInit) {
+  const body = JSON.parse(String(init?.body ?? '{}')) as { beads?: unknown[] }
+  return createBeadsSaveResponse(Array.isArray(body.beads) ? body.beads : [])
+}
+
 function renderApprovalView(ticket: Ticket, artifactType: 'interview' | 'prd' | 'beads' | 'execution_setup_plan' = 'interview') {
   return renderWithProviders(<ApprovalView ticket={ticket} artifactType={artifactType} />)
 }
@@ -1097,7 +1129,7 @@ describe('Approval surfaces on a failed request', () => {
         if (url === `/api/tickets/${encodeURIComponent(TEST.ticketId)}/artifacts`) return createJsonResponse([])
         if (url.endsWith('/attempts')) return createJsonResponse([])
         if (url === `/api/tickets/${encodeURIComponent(TEST.ticketId)}/beads` && requestInit?.method === 'PUT') {
-          return createJsonResponse({ success: true })
+          return createBeadsSaveResponseFromRequest(requestInit)
         }
         throw new Error(`Unexpected fetch: ${url}`)
       })
@@ -1190,7 +1222,7 @@ describe('Approval surfaces on a failed request', () => {
       if (url === `/api/tickets/${encodeURIComponent(TEST.ticketId)}/artifacts`) return createJsonResponse([])
       if (url.endsWith('/attempts')) return createJsonResponse([])
       if (url === `/api/tickets/${encodeURIComponent(TEST.ticketId)}/beads` && init?.method === 'PUT') {
-        return createJsonResponse({ success: true })
+        return createBeadsSaveResponseFromRequest(init)
       }
       throw new Error(`Unexpected fetch: ${url}`)
     })
@@ -1209,6 +1241,64 @@ describe('Approval surfaces on a failed request', () => {
       // Without it the route refuses the write: a save built on a stale read
       // would otherwise overwrite whatever landed in between.
       expect((put![1] as RequestInit).headers).toMatchObject({ 'X-Content-Sha256': 'c'.repeat(64) })
+    })
+  })
+
+  it('caches the canonical bead response when save normalization changes the draft', async () => {
+    mockUseTicketUIState.mockReturnValue({
+      isSuccess: true,
+      data: {
+        scope: 'approval_beads',
+        exists: true,
+        data: { isEditMode: true, editTab: 'jsonl' },
+        updatedAt: TEST.timestamp,
+      },
+    })
+    const submittedRaw = '{"id":"B-1","title":"Submitted","status":"pending","acceptanceCriteria":["keep"],"acceptance_criteria":[]}\n'
+    const canonicalBead = {
+      id: 'B-1',
+      title: 'Canonical',
+      status: 'pending',
+      acceptanceCriteria: [],
+    }
+    const canonicalRaw = `${JSON.stringify(canonicalBead)}\n`
+    let stored = false
+    const fetchSpy = vi.spyOn(globalThis, 'fetch').mockImplementation((input, init) => {
+      const url = String(input)
+      if (url === `/api/tickets/${encodeURIComponent(TEST.ticketId)}/beads/raw`) {
+        return createBeadsRawResponse(
+          stored ? [canonicalBead] : [{ id: 'B-1', title: 'Original', status: 'pending' }],
+          {
+            content: stored ? canonicalRaw : '{"id":"B-1","title":"Original","status":"pending"}\n',
+            contentSha256: stored ? 'canonical-hash' : 'initial-hash',
+          },
+        )
+      }
+      if (url === `/api/tickets/${encodeURIComponent(TEST.ticketId)}/artifacts`) return createJsonResponse([])
+      if (url.endsWith('/attempts')) return createJsonResponse([])
+      if (url === `/api/tickets/${encodeURIComponent(TEST.ticketId)}/beads` && init?.method === 'PUT') {
+        stored = true
+        return createBeadsSaveResponse([canonicalBead], {
+          rawContent: canonicalRaw,
+          contentSha256: 'canonical-hash',
+        })
+      }
+      throw new Error(`Unexpected fetch: ${url}`)
+    })
+
+    const { queryClient } = renderApprovalView(makeTicket({ status: 'WAITING_BEADS_APPROVAL' }), 'beads')
+    const editor = await screen.findByLabelText('YAML editor')
+    fireEvent.change(editor, { target: { value: submittedRaw } })
+    fireEvent.click(screen.getByRole('button', { name: /^Save$/ }))
+
+    await waitFor(() => {
+      expect(fetchSpy.mock.calls.some(([, requestInit]) => (requestInit as RequestInit | undefined)?.method === 'PUT'))
+        .toBe(true)
+      expect(queryClient.getQueryData(['artifact', TEST.ticketId, 'beads', 'approval'])).toMatchObject({
+        beads: [canonicalBead],
+        rawContent: canonicalRaw,
+        contentSha256: 'canonical-hash',
+      })
     })
   })
 
@@ -1484,7 +1574,7 @@ describe('Approval surfaces on a failed request', () => {
         if (url === `/api/tickets/${encodeURIComponent(TEST.ticketId)}/artifacts`) return createJsonResponse([])
         if (url.endsWith('/attempts')) return createJsonResponse([])
         if (url === `/api/tickets/${encodeURIComponent(TEST.ticketId)}/beads` && init?.method === 'PUT') {
-          return createJsonResponse({ success: true })
+          return createBeadsSaveResponseFromRequest(init)
         }
         throw new Error(`Unexpected fetch: ${url}`)
       })

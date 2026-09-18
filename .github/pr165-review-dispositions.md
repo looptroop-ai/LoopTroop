@@ -94,3 +94,32 @@ in `ee1efc34` (the indexed assertions, navigator guard, and editor callbacks).
 It also reports a block-scoped function declaration in `dependencyGraph.ts`.
 The cycle walker is now a block-scoped function expression, retaining the same
 closure and recursion without widening its scope. No suppression was added.
+
+## Round 2 dispositions and implementation
+
+The second-pass comments below were correlated with the current source before
+editing. This section includes the review comments, provider summaries, and
+tooling noise captured after the prior ledger section; no external review
+comment was dismissed by this change.
+
+| ID | Disposition | Evidence and action |
+| --- | --- | --- |
+| 5719012357 | Not applicable — quality gate summary | Sonar's captured gate was green; its summary supplied no new correctness finding. The final branch still needs the external rerun owned by the root agent. |
+| 5719175022 | Mixed — fixed or accepted design | The missing approval array checks and command metadata concern are fixed below. P12 remains the accepted equal-length positional expansion mapping, and the low source-tree cache-test concern remains covered by the existing source-fingerprint regression. |
+| 5719176400 | Correct — fixed | Block-scalar ownership now recognises compact nested sequence headers, standalone indicators, quoted sequence keys, and header comments; literal bodies remain outside formatting repairs. |
+| 5719224699 | Correct — fixed | Nested sequence literal HTML and standalone duplicate-looking literal lines now survive unrelated repair. Valid folded `free_text` keeps its folded value when a sibling needs reserved-indicator repair. |
+| 5719265936 | Mixed — fixed or accepted design | The client now caches the canonical response tuple and matching hash. The server's explicit canonical-empty precedence remains authoritative, so a canonical empty list still clears a populated alias. Test fixtures also isolate the priority assertion. |
+| 5719271096 | Mixed — fixed or accepted design | Unknown command metadata survives validated PUT saves, and the canonical response is returned to the editor. The JSONL-only damaged-row gate is documented; fail-closed authoritative reads and legacy bare-command handling remain deliberate contracts. Raw internal read errors and the optional details-shape compatibility concern are outside this scoped fix. |
+| 5719612344 | Mixed — fixed or accepted design | Duplicate-key standalone scalar tracking and the nested block-scalar gaps are fixed with focused regressions. The no-slot failure tracker and missing lower-priority tests are not correctness blockers for this parser change. |
+| 5720123441 | Not applicable — resolved/low-risk follow-up | P13 is already resolved and P12 remains the owner-approved positional mapping. The duplicated helper/performance and non-record normalization observations are low-risk follow-ups with no behavior change here. |
+| 5720939642 | Correct — fixed or accepted design | Approval now requires prompt-executed arrays, QA provenance validates the nested values the adapter dereferences, and authoritative reads reject duplicate IDs. The low 409 presentation wording concern remains protocol-compatible and outside this fix. |
+| 5716828825 | Not applicable — stale provider summary | The Codacy summary counted findings; the concrete annotations and their dispositions are recorded in the prior ledger. |
+| 5716846598 | Not applicable — provider status noise | Gitar's pause acknowledgement supplied no source finding. |
+| 105297465626 | Correct — fixed; rerun pending | The captured Codacy annotations were already fixed in `ee1efc34`/`bca91e58`; a fresh provider run is still required on the final branch. |
+| 105307286454 | Not applicable — stale provider annotations | The follow-up repeated old locations already fixed by the indexed assertions, navigator guard, editor callbacks, and scoped cycle-walker change. |
+| 105296249091 | Not applicable — cancelled tool run | Kilo was cancelled with no annotations after a newer commit superseded it; it supplied no code failure. |
+| 5229770199 | Not applicable — rate/diff-size tool noise | Sourcery skipped review because the diff exceeded its configured size; it supplied no source finding. |
+
+The shared CI note for this pass is recorded in `CHANGELOG.md`: native
+canonical paths and isolated integration tests cover the fixture-sensitive
+routes without changing the shared `node_modules` symlink.

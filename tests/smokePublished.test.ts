@@ -275,7 +275,7 @@ describe('planMatrix', () => {
     const shell = process.platform === 'win32' ? 'powershell.exe' : 'pwsh'
     const command = installedChannel('installer-ps1-binary').install({ version: '9.9.9', pin: true }).display
     const result = spawnSync(shell, ['-NoProfile', '-NonInteractive', '-Command', `
-function curl.exe {
+function Invoke-MockCurl {
   $global:LASTEXITCODE = ${exitCode}
   if (${empty ? '$true' : '$false'}) { return }
   'param([switch]$Binary, [string]$Version)'
@@ -284,6 +284,7 @@ function curl.exe {
   '"@'
   'Write-Output "$message $Binary $Version"'
 }
+Set-Alias -Name curl.exe -Value Invoke-MockCurl
 ${command}
 `], { encoding: 'utf8', timeout: 30_000 })
     expect(result.error).toBeUndefined()

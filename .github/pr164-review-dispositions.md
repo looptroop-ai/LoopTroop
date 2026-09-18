@@ -106,7 +106,10 @@ The second-pass corpus and CI were reread after the first intake. Every new
 comment is classified below, including observations that were withdrawn after
 verification. The four confirmed source defects are fixed in this branch; the
 conservative ignored-file guard is also shared by `removeWorktree` for the
-root-owned cleanup preview to call.
+root-owned cleanup preview to call. Real Git worktrees use Git's ignored-file
+listing; pre-start ticket skeletons are inspected directly so parent-repository
+ignored files cannot block them, while unknown skeleton entries still fail
+closed.
 
 | ID | Observation(s) | Disposition |
 | --- | --- | --- |
@@ -168,6 +171,9 @@ Focused checks on this branch included:
 - The latest focused rerun covered five files and 90 tests: worktree removal
   16, recovery 22, and the run-command, runtime-close, and Manual QA
   checkpoint regressions; all passed.
+- The cleanup follow-up reran worktree removal with 19 passing tests, the
+  project-router read-only-cache regression (1/1), and project storage cleanup
+  (4/4), including parent-ignored and skeleton-owned `.env` cases.
 - Earlier packet checks also covered path normalization, atomic IO, project
   routes, and Manual QA operations. Those results remain in the initial
   intake record; they are not repeated as evidence for the final source

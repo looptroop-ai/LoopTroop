@@ -1,5 +1,5 @@
 import { execFileSync } from 'node:child_process'
-import { chmodSync, existsSync, lstatSync, mkdirSync, readFileSync, renameSync, symlinkSync, writeFileSync } from 'node:fs'
+import { appendFileSync, chmodSync, existsSync, lstatSync, mkdirSync, readFileSync, renameSync, rmSync, symlinkSync, writeFileSync } from 'node:fs'
 import { resolve } from 'node:path'
 import { makeTempDir, pinGitLineEndings, removeTempDir } from '../../test/tempDir'
 import { afterEach, describe, expect, it } from 'vitest'
@@ -12,12 +12,12 @@ function git(cwd: string, args: string[]): string {
   return execFileSync('git', ['-C', cwd, ...args], { encoding: 'utf8' }).trim()
 }
 
-function createRepoWithWorktree() {
+function createRepoWithWorktree(worktreeName = 'TEST-1') {
   const root = makeTempDir('looptroop-worktree-removal-')
   roots.push(root)
   const projectRoot = resolve(root, 'project')
   const worktreesRoot = resolve(projectRoot, '.looptroop', 'worktrees')
-  const worktreePath = resolve(worktreesRoot, 'TEST-1')
+  const worktreePath = resolve(worktreesRoot, worktreeName)
 
   mkdirSync(projectRoot, { recursive: true })
   git(projectRoot, ['init', '--initial-branch=main'])
@@ -171,6 +171,49 @@ describe('removeWorktree', () => {
     await removeWorktree({ projectRoot, worktreesRoot, worktreePath, preserveIgnoredFiles: true })
 
     expect(existsSync(worktreePath)).toBe(false)
+  })
+
+  it('preserves a trailing space in an actual Git worktree root', () => {
+    const { worktreePath } = createRepoWithWorktree('TEST-1 ')
+
+    expect(() => assertNoIgnoredWorktreeFiles(worktreePath)).not.toThrow()
+  })
+
+  it('allows a non-Git ticket skeleton without inspecting parent ignored files', async () => {
+    const { projectRoot, worktreesRoot, worktreePath } = createRepoWithWorktree()
+    rmSync(worktreePath, { recursive: true, force: true })
+    mkdirSync(resolve(worktreePath, '.ticket/runtime'), { recursive: true })
+    appendFileSync(resolve(projectRoot, '.git/info/exclude'), '*.env\n')
+    writeFileSync(resolve(projectRoot, 'parent.env'), 'outside the skeleton\n')
+
+    await removeWorktree({
+      projectRoot,
+      worktreesRoot,
+      worktreePath,
+      preserveIgnoredFiles: true,
+      runGit: async (args) => {
+        if (args[1] === 'remove') throw new Error('simulated Git failure')
+      },
+    })
+
+    expect(existsSync(worktreePath)).toBe(false)
+  })
+
+  it('blocks a non-Git ticket skeleton containing its own file', async () => {
+    const { projectRoot, worktreesRoot, worktreePath } = createRepoWithWorktree()
+    rmSync(worktreePath, { recursive: true, force: true })
+    mkdirSync(resolve(worktreePath, '.ticket/runtime'), { recursive: true })
+    writeFileSync(resolve(worktreePath, '.env'), 'keep me\n')
+
+    await expect(removeWorktree({
+      projectRoot,
+      worktreesRoot,
+      worktreePath,
+      preserveIgnoredFiles: true,
+      runGit: async () => { throw new Error('must not run Git') },
+    })).rejects.toThrow('non-Git worktree containing files outside its .ticket skeleton')
+
+    expect(readFileSync(resolve(worktreePath, '.env'), 'utf8')).toBe('keep me\n')
   })
 
   it('fails closed when ignored-file inspection cannot run', () => {

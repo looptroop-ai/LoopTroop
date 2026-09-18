@@ -243,6 +243,8 @@ export interface OpenCodeNativeLogReadStats {
   indexedLines: number
   /** SHA-256 of the complete bytes through indexedOffset, excluding a partial tail. */
   indexedHash?: string
+  /** SHA-256 of an unterminated tail, when one was read. */
+  tailHash?: string
   tailOffset: number
   endedWithNewline: boolean
   entriesRead: number
@@ -475,6 +477,9 @@ export async function readOpenCodeNativeLogFile(
     stats.indexedLines = startLine + completedLines
     stats.indexedOffset = carry.length > 0 ? carryOffset : readOffset
     stats.indexedHash = indexedHash.digest('hex')
+    stats.tailHash = carry.length > 0
+      ? createHash('sha256').update(carry).digest('hex')
+      : undefined
     stats.tailOffset = carry.length > 0 ? carryOffset : stats.indexedOffset
     stats.endedWithNewline = carry.length === 0
   }

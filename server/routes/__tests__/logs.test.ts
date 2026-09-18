@@ -589,6 +589,53 @@ describe('ticket log projection API', () => {
     expect(response.status).toBe(500)
   })
 
+  it('fails closed when an unterminated native tail is rewritten during indexing', async () => {
+    const { ticket, repoDir } = await createInitializedTestTicket(repoManager)
+    appendLogEvent(ticket.id, 'info', 'CODING', 'ticket session', {
+      sessionId: 'session-tail-rewrite', timestamp: '2026-01-01T00:00:01.000Z',
+    }, 'system', 'CODING')
+    const prefix = 'p'.repeat(100)
+    const oldTail = 'old-tail'
+    const newTail = 'new-tail'
+    const nativePath = join(repoDir, 'partial-tail-rewrite.log')
+    await fsPromises.writeFile(nativePath, prefix + oldTail)
+    const candidate = nativeCandidate(nativePath)
+    listOpenCodeNativeLogFilesMock.mockReturnValue([candidate])
+    readOpenCodeNativeLogFileMock.mockImplementation(async (_file, _sessions, options) => {
+      options?.onEntry?.({
+        timestamp: '2026-01-01T00:00:02.000Z', type: 'debug', source: 'debug', audience: 'debug',
+        kind: 'session', op: 'append', phase: 'opencode_native', phaseAttempt: 1,
+        status: 'opencode_native', message: 'stale tail', content: 'stale tail',
+        sessionId: 'session-tail-rewrite', data: {}, nativeIdentity: 'partial-tail-rewrite.log:1',
+      }, {
+        lineNumber: 1, byteOffset: prefix.length, byteLength: oldTail.length, complete: false,
+      })
+      if (options?.stats) {
+        options.stats.bytesRead = candidate.size
+        options.stats.linesRead = 1
+        options.stats.indexedOffset = prefix.length
+        options.stats.indexedLines = 1
+        options.stats.indexedHash = createHash('sha256').update(prefix).digest('hex')
+        options.stats.tailOffset = prefix.length
+        options.stats.tailHash = createHash('sha256').update(oldTail).digest('hex')
+        options.stats.endedWithNewline = false
+        options.stats.entriesRead = 1
+      }
+      await fsPromises.writeFile(nativePath, prefix + newTail)
+      return []
+    })
+
+    const response = await app.request(`/api/tickets/${encodeURIComponent(ticket.id)}/logs?scope=phase&phase=CODING&view=debug`)
+    expect(response.status).toBe(500)
+    const context = getTicketContext(ticket.id)
+    const rows = getProjectDatabase(repoDir).sqlite.prepare(`
+      SELECT COUNT(*) AS count
+      FROM execution_log_native_index_entries
+      WHERE ticket_id = ? AND path = ?
+    `).get(context!.localTicketId, nativePath) as { count: number }
+    expect(rows.count).toBe(0)
+  })
+
   it('refreshes same-size native rewrites while keeping an older cursor immutable', async () => {
     const { ticket, repoDir } = await createInitializedTestTicket(repoManager)
     appendLogEvent(ticket.id, 'info', 'CODING', 'ticket session', {

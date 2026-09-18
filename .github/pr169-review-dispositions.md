@@ -20,6 +20,12 @@ prefix rewrite still fails closed. Focused route and native-reader regressions
 cover growth success, rewrite failure, bounded-tail hashing, retained cursors,
 and append/history behavior.
 
+The later Greptile P1 (`4045461220`) found that the excluded partial tail was
+still inserted without a digest. The native reader now records `tailHash`, and
+projection ingestion verifies the exact captured tail range before publishing;
+a same-size tail rewrite deletes the provisional generation instead of exposing
+stale history.
+
 The fresh-alpha decision remains unchanged: no native-index compatibility
 migration or `ALTER TABLE` backfill is added. The edited Greptile shutdown note
 is inherited runtime work in `server/createRuntime.ts`, not a PR169 source

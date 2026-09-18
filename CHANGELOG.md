@@ -10,7 +10,7 @@ Unreleased changes appear first and represent commits that have not yet been inc
 > Changes merged since the last versioned release that have not yet shipped in a tagged version.
 
 ### Summary
-- Native log indexing now respects captured file boundaries, accepts normal same-file appends after a scan starts, and detects rewrites including changed indexed prefixes, while partial ticket patches preserve nested cached state.
+- Native log indexing now respects captured file boundaries, accepts normal same-file appends after a scan starts, and detects rewrites including changed indexed prefixes and unterminated tails, while partial ticket patches preserve nested cached state.
 - New ticket and project forms keep edits made during creation and save them on the item the server returned.
 - Resetting all prompts refreshes the active editor, advances its baseline on success, and replaces the draft only when no edits were typed after reset began.
 - Ticket workspaces now preserve the right draft, live history and cache state as forms, streams and deletions race.
@@ -273,6 +273,7 @@ Unreleased changes appear first and represent commits that have not yet been inc
 
 ### Fixed
 - Native DEBUG history now accepts same-identity log growth beyond a captured scan boundary, hashes the complete bytes it indexed (without an unterminated tail), and fails closed when an indexed range or reused parent prefix changes during the read.
+- Native DEBUG history now hashes an unterminated tail too, so a partial line rewritten during indexing cannot be published from stale bytes.
 - The directory picker now appears above the Projects dialog, and unrelated Radix tooltips no longer block Escape. The Free Disk Space confirmation explains that ignored configuration, dependency folders and build output are preserved.
 - Native DEBUG history refreshes same-size and larger rewrites with changed indexed prefixes without changing retained cursors, and indexed reads stay within their captured file boundaries.
 - Client history drains, including unmount cancellation, model discovery retries, routed-modal draft guards, and folder selection now stay scoped to the current view when requests finish out of order; malformed full-ticket action patches retain validated optional metadata.

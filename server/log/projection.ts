@@ -872,6 +872,9 @@ async function ingestNativeFilesOnce(
       startOffset: number
       indexedOffset: number
       indexedHash?: string
+      tailOffset: number
+      tailEndOffset: number
+      tailHash?: string
     }> = []
     let sessionSet = new Set<string>()
     const insertVersion = sqlite.prepare(`
@@ -957,6 +960,9 @@ async function ingestNativeFilesOnce(
           startOffset: planStats.startOffset,
           indexedOffset: planStats.indexedOffset,
           indexedHash: planStats.indexedHash,
+          tailOffset: planStats.tailOffset,
+          tailEndOffset: planStats.startOffset + planStats.bytesRead,
+          tailHash: planStats.tailHash,
         })
         Object.assign(stats, planStats)
       }
@@ -973,6 +979,18 @@ async function ingestNativeFilesOnce(
           )
           if (currentHash === null || currentHash !== verification.indexedHash) {
             throw new Error('Native log bytes changed while it was being indexed')
+          }
+        }
+        for (const verification of readVerifications) {
+          if (verification.tailHash === undefined) continue
+          const currentHash = await readNativeRangeHash(
+            candidate.path,
+            verification.tailOffset,
+            verification.tailEndOffset,
+            expectedIdentity,
+          )
+          if (currentHash === null || currentHash !== verification.tailHash) {
+            throw new Error('Native log partial tail changed while it was being indexed')
           }
         }
       }

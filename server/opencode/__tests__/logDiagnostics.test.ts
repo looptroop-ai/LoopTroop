@@ -271,6 +271,7 @@ describe('readOpenCodeNativeLogs', () => {
     expect(stats.bytesRead).toBe(Buffer.byteLength(first + tail))
     expect(stats.indexedOffset).toBe(Buffer.byteLength(first))
     expect(stats.indexedHash).toBe(createHash('sha256').update(first).digest('hex'))
+    expect(stats.tailHash).toBe(createHash('sha256').update(tail).digest('hex'))
   })
 
   it('yields while parsing a large complete native file', async () => {

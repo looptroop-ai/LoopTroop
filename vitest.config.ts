@@ -138,6 +138,7 @@ const clientNodeTests = [
 // commands and failed on CI while passing locally, purely on file order.
 // Reproduce with `--sequence.shuffle.files --sequence.seed=N`.
 const serverIntegrationTests = [
+  'server/council/__tests__/sessionOwnershipStop.test.ts',
   'server/__tests__/startupArtifacts.test.ts',
   'server/git/__tests__/runCommandFallback.test.ts',
   // Real Git/database work and module mocks require isolated workers.

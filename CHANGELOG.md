@@ -267,6 +267,7 @@ Unreleased changes appear first and represent commits that have not yet been inc
 - Three aliases re-exported for a question-diff type that no longer exists, the three helpers behind them, an execution-setup runtime-path list with no reader, and an execution-setup barrel re-exporting three artifact names every caller already imports from their own module.
 
 ### Fixed
+- Council ownership regression tests now run in the isolated integration pool, keeping their prompt mock and real Git/database setup out of shared pure-test workers.
 - A superseded cancellation retry leaves the newer run's question windows intact after awaiting the old remote stop.
 - Failed cancellation cleanup now redrives from its durable, non-expiring marker across non-terminal and restart snapshots, sends `CANCEL` only after session and question-window cleanup is confirmed, and lets a confirmed CODING Retry clear the marker before resuming. Pending beads with a recorded reset anchor are safely reset even when their status update was interrupted; interview skip receipts roll back with failed CAS or canonical writes; and council cleanup remains unresolved while ticket-scoped session ownership is unreadable, pending, unpersisted, or otherwise not durably proven stopped.
 - Initial coding records the bead's reset commit before publishing `in_progress`; a failed checkpoint read or cancellation during that read leaves the bead pending and starts no model session.

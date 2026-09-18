@@ -1088,6 +1088,8 @@ function windowsPathExtensions(env                   )           {
     .map((value) => value.trim())
     .filter(Boolean)
     .map((value) => value.startsWith('.') ? value : `.${value}`)
+    // Other PATHEXT scripts require interpreters that our launch plan does not provide.
+    .filter((value) => /^\.(?:exe|com|cmd|bat)$/i.test(value))
 }
 
 /**

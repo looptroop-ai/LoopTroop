@@ -246,6 +246,9 @@ a container.
   absolute directory that contains them. Separate multiple directories with
   `:` on macOS/Linux or `;` on Windows; only the directories you name are
   opted in, and a child process cannot change this setting.
+- Windows tool discovery uses the supported `.exe`, `.com`, `.cmd` and `.bat`
+  entries in `PATHEXT`. It skips script types that need another interpreter,
+  such as `.ps1` and `.vbs`, rather than selecting a tool it cannot launch.
 
 ## What is LoopTroop?
 

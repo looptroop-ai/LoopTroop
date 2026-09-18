@@ -470,6 +470,8 @@ jobs:
           inventory_status=$?
           set -e
           if [ "${inventory_status}" -eq 42 ]; then
+            rm -f "${inventory}"
+            inventory="image-package-inventory-unavailable-${ARCH}.txt"
             printf 'legacy image: package-version inventory was not produced by this tag\n' > "${inventory}"
             echo 'Legacy image has no package-version inventory; retaining the repair evidence without applying the current strict check.'
           elif [ "${inventory_status}" -ne 0 ]; then
@@ -495,7 +497,7 @@ jobs:
             printf -- '- revision: `%s`\n' "${REVISION}"
             printf -- '- digest: `%s`\n\n' "${digest}"
             echo '```'
-            cat "image-package-versions-${ARCH}.txt"
+            cat "${inventory}"
             echo '```'
           } >> "$GITHUB_STEP_SUMMARY"
 
@@ -506,6 +508,7 @@ jobs:
           path: |
             digest-${{ matrix.arch }}.txt
             image-package-versions-${{ matrix.arch }}.txt
+            image-package-inventory-unavailable-${{ matrix.arch }}.txt
           if-no-files-found: error
           retention-days: 14
 

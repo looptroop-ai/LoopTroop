@@ -10,6 +10,7 @@ Unreleased changes appear first and represent commits that have not yet been inc
 > Changes merged since the last versioned release that have not yet shipped in a tagged version.
 
 ### Summary
+- Windows tool discovery skips script types it cannot launch; container repair reports distinguish missing inventories from recorded package versions.
 - Release-candidate verification stops on npm registry errors instead of assuming the stable tag is unchanged.
 - Standalone release binaries now use Node `26.9.0`'s native single-executable builder while application and package channels retain the Node `24.18.1` floor.
 - Canonical OpenCode installation directories (`~/.opencode/bin`) are now trusted by default for the `opencode` binary across platforms, preventing execution refusals when OpenCode release archives are unpacked under root while preserving directory ownership and file write-permission checks.
@@ -276,6 +277,8 @@ Unreleased changes appear first and represent commits that have not yet been inc
 - Three aliases re-exported for a question-diff type that no longer exists, the three helpers behind them, an execution-setup runtime-path list with no reader, and an execution-setup barrel re-exporting three artifact names every caller already imports from their own module.
 
 ### Fixed
+- Windows `PATHEXT` lookup skips interpreter-only scripts while preserving supported executable and command-script order. Generated installers use the same rule.
+- Legacy container repairs store an explicit missing-inventory note separately from package-version evidence. Container smoke diagnostics check the reported channel and upgrade command independently, and the audit ledger links to committed coverage.
 
 - npm publishing and verification preserve registry lookup failures when checking the stable `latest` tag. Only a successful lookup with an empty tag is treated as absent; authentication, transport, and package-not-found failures stop the workflow.
 - Installer daemon-port probes now treat every child exit other than a connection or refusal as unknown, so an unexpected probe failure cannot authorize executable replacement.

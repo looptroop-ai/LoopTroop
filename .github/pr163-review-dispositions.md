@@ -1,6 +1,28 @@
 # PR163 review dispositions
 
-## Third review: registry tag verification
+## Third review
+
+The third intake read all captured comments, inline reviews and CI logs before
+implementation. The first-party checks were green at intake. These additional
+findings were checked against the implementation and the owner's decisions:
+
+| Review comment(s) | Disposition | Evidence and scope |
+| --- | --- | --- |
+| `5245202820` | Correct — fixed | Custom `PATHEXT` entries requiring unsupported interpreters no longer shadow supported executables. Resolver tests and regenerated installers share the rule; explicit executable paths retain their existing contract. |
+| `5720131869` (inventory note and duplicate smoke assertion) | Correct — fixed | Legacy repairs upload a separate inventory-unavailable note. The container smoke checks channel and upgrade-command facts independently. Workflow policy and doctor smoke contract tests cover both changes without running a container lifecycle. |
+| `4039974518` (remaining evidence links) | Correct — fixed | The consolidated ledger now names committed tests and workflow files instead of absent packet documents. |
+| `5727030279`, `4044603686` (curl redirects) | Incorrect security claim | `--proto '=https'` already forbids HTTP redirects; `--proto-redir` cannot re-enable a denied protocol. See the [curl protocol documentation](https://curl.se/docs/manpage.html#--proto-redir). No behavior change needed. |
+| `5726582397`, `4044015221`, `5239592541` (unverifiable owners) | Intentional policy | Missing namespace evidence stays fail-closed and requires an exact trusted directory. This preserves the owner's explicit choice and existing resolver coverage. |
+| `5726582397` (missing daemon evidence) | Intentional policy | Missing or malformed ownership evidence does not establish that a daemon stopped; damaged-binary repair remains blocked. |
+| `5720131869` (legacy Dockerfile lockfile) | Not applicable | Repair builds the released tag's Dockerfile. The legacy tag has no lockfile input, while current releases provide one. |
+
+The download-artifact `DEP0005` warning remains an upstream issue in the latest
+pinned release ([issue 484](https://github.com/actions/download-artifact/issues/484)).
+The newer Renovate package still uses the deprecated transitive dependencies;
+an unrelated version bump would not fix those warnings. Node/npm early-warning
+telemetry and GitHub's runner-image migration notice are recorded, not hidden.
+
+### Registry tag verification
 
 Codex comment `5726963161` is correct. Both `latest` probes now preserve npm's
 failure status under `set -e`; they no longer convert registry errors into an

@@ -276,6 +276,8 @@ describe('release workflow policy', () => {
     expect(repair).toContain('image-package-versions-${ARCH}.txt')
     expect(repair).toContain('inventory_status')
     expect(repair).toContain("[ \"${inventory_status}\" -eq 42 ]")
+    expect(repair).toContain('rm -f "${inventory}"\n            inventory="image-package-inventory-unavailable-${ARCH}.txt"')
+    expect(repair).toContain('cat "${inventory}"')
   })
 
   it('logs in each finished-image attestation job and disables storage records', () => {

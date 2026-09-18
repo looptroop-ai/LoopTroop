@@ -319,13 +319,13 @@ try {
   } catch {
     inspection = { check: null, facts: null, matches: false }
   }
-  check('doctor reports the container channel', inspection.matches,
+  check('doctor reports the container channel', inspection.facts?.channel === 'container',
     inspection.facts?.channel ?? 'no install facts in the report')
   // From the structured facts rather than the prose: `detail` is written for a
   // person and may be reworded, and matching on it made a display change look
   // like a broken container.
   check('the upgrade command is the docker one',
-    inspection.matches,
+    inspection.facts?.upgradeCommand === 'docker pull looptroopai/looptroop:latest',
     inspection.facts?.upgradeCommand ?? 'no install facts in the report')
   const rewritten = runOnce(['-c', 'cat "$LOOPTROOP_CONFIG_DIR/config.json"'], { entrypoint: 'sh' })
   const rewrittenRecord = rewritten.code === 0

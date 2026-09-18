@@ -457,6 +457,18 @@ describe('Windows resolution', () => {
     })).toBe(exe)
   })
 
+  it('skips unsupported PATHEXT interpreters before a launchable executable', () => {
+    const root = tempRoot()
+    makeExecutable(join(root, 'bin'), 'tool.PS1')
+    makeExecutable(join(root, 'bin'), 'tool.VBS')
+    const exe = makeExecutable(join(root, 'bin'), 'tool.EXE')
+    expect(findTrustedExecutablePath('tool', {
+      ...windowsOptions(root, { PATHEXT: '.PS1;.VBS;EXE;.CMD' }),
+      platform: 'win32',
+      cache: freshCache(),
+    })).toBe(exe)
+  })
+
   it('returns an npm-style .cmd shim rather than pretending npm is missing', () => {
     // npm ships as npm.cmd. Callers decide how to launch a command script; a
     // resolver that refused it here is why `doctor` once called npm missing on

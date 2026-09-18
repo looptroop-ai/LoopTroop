@@ -195,7 +195,13 @@ describe('doctor install facts consumed by package smokes', () => {
     }
   })
 
-  it('wires every smoke consumer to structured facts and consumes matches', () => {
+  it('reports container channel and upgrade-command mismatches separately', () => {
+    const source = readFileSync(join(process.cwd(), 'scripts/smoke-container.mjs'), 'utf8')
+    expect(source).toContain("check('doctor reports the container channel', inspection.facts?.channel === 'container'")
+    expect(source).toContain("check('the upgrade command is the docker one',\n    inspection.facts?.upgradeCommand === 'docker pull looptroopai/looptroop:latest'")
+  })
+
+  it('wires every smoke consumer to structured facts and consumes matches or individual facts', () => {
     for (const contract of wiringContracts) {
       const source = parseSource(contract.file)
       const { calls, properties } = collectNodes(source)
@@ -237,7 +243,7 @@ describe('doctor install facts consumed by package smokes', () => {
 
       const matchesTargets = new Set(
         properties
-          .filter((property) => property.name.text === 'matches')
+          .filter((property) => property.name.text === 'matches' || property.name.text === 'facts')
           .map((property) => rootIdentifier(property.expression)),
       )
       for (const target of contract.targets) {

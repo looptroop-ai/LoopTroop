@@ -64,7 +64,7 @@ Instead of trusting a single, endless AI chat session - where the conversation h
 ## Quick start
 
 ```bash
-curl -fsSL https://www.looptroop.ovh/install | sh
+curl --proto '=https' --tlsv1.2 -fsSL https://www.looptroop.ovh/install | sh
 looptroop open
 ```
 
@@ -81,7 +81,7 @@ start it.
 <summary><b>curl / irm</b> — the one-line installer (shown above)</summary>
 
 ```bash
-curl -fsSL https://www.looptroop.ovh/install | sh
+curl --proto '=https' --tlsv1.2 -fsSL https://www.looptroop.ovh/install | sh
 ```
 
 ```powershell

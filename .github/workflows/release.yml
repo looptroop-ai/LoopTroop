@@ -933,7 +933,11 @@ jobs:
           # Captured before publishing so the RC assertions can prove `latest`
           # did not move. npm tags a publish `latest` unless --tag is given; it
           # does not infer a prerelease from `-rc.N`.
-          latest_before=$(npm view looptroop dist-tags.latest)
+          latest_before=''
+          if ! latest_before=$(npm view looptroop dist-tags.latest); then
+            echo "::error::Unable to read npm's latest dist-tag before publishing." >&2
+            exit 1
+          fi
           latest_before=${latest_before:-none}
           echo "latest before publish: ${latest_before}"
           echo "LATEST_BEFORE=${latest_before}" >> "$GITHUB_ENV"
@@ -994,7 +998,11 @@ jobs:
             exit 1
           }
 
-          latest_now=$(npm view looptroop dist-tags.latest)
+          latest_now=''
+          if ! latest_now=$(npm view looptroop dist-tags.latest); then
+            echo "::error::Unable to read npm's latest dist-tag after publishing." >&2
+            exit 1
+          fi
           latest_now=${latest_now:-none}
           if [ "${DIST_TAG}" = "latest" ]; then
             [ "${latest_now}" = "${VERSION}" ] || {

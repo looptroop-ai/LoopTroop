@@ -68,12 +68,18 @@ describe('release workflow policy', () => {
     const release = source.get('release.yml')!
     const { version } = JSON.parse(readFileSync(join(repo, 'package.json'), 'utf8')) as { version: string }
     for (const variable of ['latest_before', 'latest_now']) {
-      const probe = release.match(new RegExp(`^\\s*${variable}=\\$\\(npm view looptroop dist-tags\\.latest[^\\n]*\\n[^\\n]*`, 'm'))?.[0]
+      const lines = release.split('\n')
+      const probeStart = lines.findIndex((line) =>
+        line.includes(`${variable}=$(npm view looptroop dist-tags.latest`),
+      )
+      const probeEnd = lines.findIndex((line, index) => index >= probeStart && line.trim() === 'fi')
+      const probe = probeStart >= 0 && probeEnd >= probeStart ? lines.slice(probeStart, probeEnd + 1).join('\n') : undefined
       expect(probe).toBeDefined()
       for (const [status, output] of [[0, version], [0, ''], [1, ''], [1, 'none']] as const) {
         const result = spawnSync('bash', ['-euo', 'pipefail', '-c', [
           'npm() { printf "%s" "$PROBE_OUTPUT"; return "$PROBE_STATUS"; }',
           probe!,
+          `${variable}=\${${variable}:-none}`,
           `printf '%s' "\${${variable}}"`,
         ].join('\n')], {
           encoding: 'utf8',

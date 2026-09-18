@@ -266,6 +266,7 @@ Unreleased changes appear first and represent commits that have not yet been inc
 - Three aliases re-exported for a question-diff type that no longer exists, the three helpers behind them, an execution-setup runtime-path list with no reader, and an execution-setup barrel re-exporting three artifact names every caller already imports from their own module.
 
 ### Fixed
+- The directory picker now appears above the Projects dialog, and unrelated Radix tooltips no longer block Escape. The Free Disk Space confirmation explains that ignored configuration, dependency folders and build output are preserved.
 - Native DEBUG history refreshes same-size file rewrites without changing retained cursors.
 - Client history drains, model discovery retries, routed-modal draft guards, and folder selection now stay scoped to the current view when requests finish out of order; malformed full-ticket action patches retain validated optional metadata.
 - Routed dialogs now layer above the ticket dashboard and mobile navigation, while About remains above the dialog that opened it.

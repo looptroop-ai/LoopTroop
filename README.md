@@ -95,6 +95,9 @@ appears only when a form's current values differ from its saved or initial
 values. Loading, refetching, or a failed save does not silently replace an
 edit that you are still making.
 
+The directory picker opens above the Projects dialog. An unrelated tooltip
+does not prevent Escape from closing the active dialog.
+
 If you keep typing while a new ticket or project is being created, the form
 keeps those later edits and switches to editing the item the server just
 created; the next save updates that item.

@@ -1,5 +1,20 @@
 # PR169 review dispositions
 
+## Nested overlays and housekeeping confirmation (2026-09-18)
+
+The directory-picker stacking and unrelated-tooltip Escape observations are
+correct. The only `FullScreenModal` caller is the directory picker; its existing
+portal now layers above the Projects modal without a new stacking abstraction.
+The shared Escape guard excludes informational tooltip wrappers while keeping
+dialogs and interactive popups protected. Folder-picker and centered-modal
+regressions cover both cases.
+
+The owner also chose to preserve ignored files in CLI cleanup and Free Disk
+Space, while explicit ticket/project deletion remains destructive. PR164 owns
+the shared removal guard and housekeeping consumer; this branch updates the
+confirmation text to explain that ignored dependencies and build output block
+cleanup along with configuration files.
+
 This ledger records every review record in the refreshed PR169 snapshot (`169-refresh.json`), including automated summaries, inline comments, and empty review records. The consolidated audit dispositions and `169-handoff.md` remain the authority for work assigned to another PR. The owner chose to retain edits made during creation and transition the mounted form to the item returned by the server; PR169 implements that choice for tickets and projects.
 
 ## Evidence

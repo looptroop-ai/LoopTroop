@@ -45,6 +45,15 @@ describe('FolderPicker', () => {
     })
   }
 
+  it('layers its portaled dialog above the Projects modal', () => {
+    render(
+      <TooltipProvider>
+        <FolderPicker open onClose={() => undefined} onSelect={() => undefined} initialPath="/project" />
+      </TooltipProvider>,
+    )
+    expect(screen.getByRole('dialog', { name: 'Select Directory' })).toHaveClass('z-[80]')
+  })
+
   it('ignores a git verdict for a folder the user has already navigated away from', async () => {
     // Both requests are debounced but neither was cancelled, so a slow git check
     // for the previous folder could land last and decide whether "Select This

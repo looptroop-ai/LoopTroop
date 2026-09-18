@@ -236,6 +236,23 @@ describe('CenteredModal — Escape ownership', () => {
     fireEvent.keyDown(screen.getByRole('button', { name: 'Confirm' }), { key: 'Escape' })
     expect(onClose).toHaveBeenCalledTimes(1)
   })
+
+  it('does not let an unrelated Radix tooltip claim Escape', () => {
+    const onClose = renderWithNestedOverlay('group')
+    const wrapper = document.createElement('div')
+    wrapper.setAttribute('data-radix-popper-content-wrapper', '')
+    const tooltip = document.createElement('span')
+    tooltip.setAttribute('role', 'tooltip')
+    tooltip.textContent = 'Unrelated hint'
+    wrapper.appendChild(tooltip)
+    document.body.appendChild(wrapper)
+    try {
+      fireEvent.keyDown(screen.getByRole('button', { name: 'Confirm' }), { key: 'Escape' })
+      expect(onClose).toHaveBeenCalledTimes(1)
+    } finally {
+      wrapper.remove()
+    }
+  })
 })
 
 /**

@@ -40,7 +40,7 @@ export function FullScreenModal({ open, onClose, title, children }: FullScreenMo
       aria-labelledby={titleId}
       tabIndex={-1}
       onKeyDown={handleTrapKeyDown}
-      className="fixed inset-0 z-[60] bg-background flex flex-col outline-none"
+      className="fixed inset-0 z-[80] bg-background flex flex-col outline-none"
     >
       <Tooltip>
             <TooltipTrigger asChild>

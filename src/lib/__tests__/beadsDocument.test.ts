@@ -8,6 +8,7 @@ import {
   readBeadNumber,
   readBeadString,
   readBeadStringList,
+  readBeadCommands,
   readBeadValue,
   hasUnrepresentableBeadCommands,
   hasUnstructuredBeadGuidance,
@@ -157,6 +158,14 @@ describe('the bead field readers', () => {
     expect(readBeadStringList({ prd_references: ['c'] }, 'prdRefs', 'display')).toEqual(['c'])
   })
 
+  it('keeps an explicit empty canonical value over a populated alias', () => {
+    expect(readBeadStringList({ prdRefs: [], prd_refs: ['from-alias'] }, 'prdRefs', 'display'))
+      .toEqual([])
+    expect(readBeadString({ issueType: '', issue_type: 'bug' }, 'issueType', 'display')).toBe('')
+    expect(readBeadCommands({ testCommands: [], test_commands: [{ mode: 'shell', shell: 'posix', script: 'npm test', cwd: '.', env: {} }] }, 'testCommands'))
+      .toEqual([])
+  })
+
   it('reads the camelCase dependency spelling, which only the editor used to accept', () => {
     // The divergence this table exists to end: a bead written with `blockedBy`
     // showed its dependencies on the approval screen and none in the artifact
@@ -275,6 +284,23 @@ describe('normalizeBead', () => {
     expect(normalized.somethingNew).toEqual({ kept: true })
   })
 
+  it('keeps unknown dependency metadata alongside the canonical edges', () => {
+    const normalized = normalizeBead({
+      id: 'B-1',
+      dependencies: {
+        blocked_by: [],
+        blocks: [],
+        related: ['B-2'],
+      },
+    } as never, 'verbatim')
+
+    expect(normalized.dependencies).toMatchObject({
+      blocked_by: [],
+      blocks: [],
+      related: ['B-2'],
+    })
+  })
+
   it('omits a test command reason that is not there', () => {
     expect(normalizeBead({ id: 'B-1' }, 'display').testCommandReason).toBeUndefined()
   })
@@ -336,6 +362,17 @@ describe('the superseded spellings', () => {
     })
   })
 
+  it('drops a superseded alias when the canonical value is an explicit empty list', () => {
+    expect(stripSupersededBeadAliases({
+      id: 'B-1',
+      prdRefs: [],
+      prd_refs: ['stale'],
+    } as unknown as RawBead)).toEqual({
+      id: 'B-1',
+      prdRefs: [],
+    })
+  })
+
   it('keeps a spelling that is the only copy of its value', () => {
     // The editor normalizes the fields it edits and nothing else, so a record
     // storing only `started_at`, `bead_start_commit` or `qa_origin` has no
@@ -360,20 +397,31 @@ describe('hasUnstructuredBeadGuidance', () => {
     expect(hasUnstructuredBeadGuidance(bead as RawBead)).toBe(true)
   })
 
+  it('does not report an alias hidden by an explicit canonical command clear', () => {
+    expect(hasUnrepresentableBeadCommands({
+      id: 'B-1',
+      testCommands: [],
+      test_commands: ['npm test'],
+    } as never)).toBe(false)
+  })
+
   it.each([
     ['a list of guidance strings', { contextGuidance: ['a', 'b'] }],
     ['a record whose lists are not lists', { contextGuidance: { patterns: 'do X' } }],
     ['a record holding a key the editor has no field for', { contextGuidance: { rationale: 'because' } }],
     ['a list holding something that is not a string', { contextGuidance: { patterns: [1] } }],
-    ['free text under the other spelling of a structured record', {
-      contextGuidance: { patterns: [], anti_patterns: [] },
-      context_guidance: 'free text',
-    }],
   ])('reports %s', (_, bead) => {
     // Everything here reads as empty pattern lists in the editor and is written
     // back as empty lists on save: the same silent replacement, one shape deeper
     // each time.
     expect(hasUnstructuredBeadGuidance(bead as RawBead)).toBe(true)
+  })
+
+  it('does not report an alias hidden by an explicit canonical guidance object', () => {
+    expect(hasUnstructuredBeadGuidance({
+      contextGuidance: { patterns: [], anti_patterns: [] },
+      context_guidance: 'free text',
+    } as unknown as RawBead)).toBe(false)
   })
 
   it.each([
@@ -416,6 +464,7 @@ describe('what a structured save writes back', () => {
   /** The save path, as `ApprovalView.buildBeadForSave` composes it. */
   function buildBeadForSave(bead: NormalizedBead): Record<string, unknown> {
     const { contextGuidance, dependencies, acceptanceCriteria, testCommands, testCommandReason, targetFiles, prdRefs, ...rest } = bead
+    const { blocked_by, blocks, ...unknownDependencies } = dependencies
     return stripSupersededBeadAliases({
       ...rest,
       acceptanceCriteria,
@@ -424,7 +473,7 @@ describe('what a structured save writes back', () => {
       targetFiles,
       prdRefs,
       contextGuidance: { patterns: contextGuidance.patterns, anti_patterns: contextGuidance.anti_patterns },
-      dependencies: { blocked_by: dependencies.blocked_by, blocks: dependencies.blocks },
+      dependencies: { ...unknownDependencies, blocked_by, blocks },
     } as NormalizedBead) as Record<string, unknown>
   }
 
@@ -448,6 +497,15 @@ describe('what a structured save writes back', () => {
 
     expect(saved.prdRefs).toEqual(['OLD'])
     expect(saved).not.toHaveProperty('prd_refs')
+  })
+
+  it('keeps unknown dependency metadata through a structured save', () => {
+    const saved = buildBeadForSave(normalizeBead({
+      id: 'B-1',
+      dependencies: { blocked_by: [], blocks: [], related: ['B-2'] },
+    } as never, 'verbatim'))
+
+    expect(saved.dependencies).toEqual({ blocked_by: [], blocks: [], related: ['B-2'] })
   })
 
   it('adds no empty metadata to a bead that carried none', () => {

@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { rmSync, symlinkSync } from 'node:fs'
+import { readFileSync, rmSync, symlinkSync, writeFileSync } from 'node:fs'
 import { makeTempDir, removeTempDir } from '../../../test/tempDir'
 import { getManualQaStoragePaths } from '../storage'
 import {
@@ -12,7 +12,6 @@ import {
 } from '../fixBeads'
 import type { ManualQaChecklist, ManualQaDraft, ManualQaModelCapabilitySnapshot } from '../types'
 import type { Message } from '../../../opencode/types'
-import { detectHostContext } from '../../../lib/hostContext'
 
 const checklist: ManualQaChecklist = {
   schemaVersion: 1,
@@ -72,7 +71,7 @@ beads:
       anti_patterns: ["Do not add a second storage mechanism."]
     acceptanceCriteria: ["Reloading preserves the selected value."]
     tests: ["Add a regression test for save and reload."]
-    testCommands: ["npm run test:client"]
+    testCommands: [{mode: "process", program: "npm", args: ["run", "test:client"], cwd: ".", env: {}}]
     labels: ["preferences"]
     blockedByGroupIds: []
     targetFiles: ["src/preferences/store.ts", "src/preferences/store.test.ts"]
@@ -87,9 +86,12 @@ describe('Manual QA fix-bead generation contracts', () => {
     try {
       const groups = buildManualQaFixGroups(checklist, draft)
       const candidates = parseManualQaFixBeadsOutput(validResponse, groups)
-      persistManualQaFixBeadCandidates(ticketDir, 1, candidates)
+      const persisted = persistManualQaFixBeadCandidates(ticketDir, 1, candidates)
+      expect(persisted).toContain('schemaVersion: 2')
       expect(readManualQaFixBeadCandidates(ticketDir, 1, groups)).toEqual(candidates)
       const path = getManualQaStoragePaths(ticketDir, 1).fixBeadsPath
+      writeFileSync(path, readFileSync(path, 'utf8').replace('schemaVersion: 2', 'schemaVersion: 1'))
+      expect(readManualQaFixBeadCandidates(ticketDir, 1, groups)).toBeNull()
       rmSync(path)
       symlinkSync(outside, path, process.platform === 'win32' ? 'junction' : 'dir')
       expect(() => readManualQaFixBeadCandidates(ticketDir, 1, groups)).toThrow('escapes root')
@@ -226,11 +228,9 @@ describe('Manual QA fix-bead generation contracts', () => {
       status: 'pending',
       externalRef: 'TEST-1',
       testCommands: [{
-        mode: 'shell',
-        // Legacy string commands are repaired onto the current host's shell,
-        // which is powershell on Windows.
-        shell: detectHostContext().preferredShell,
-        script: 'npm run test:client',
+        mode: 'process',
+        program: 'npm',
+        args: ['run', 'test:client'],
         cwd: '.',
         env: {},
       }],
@@ -239,6 +239,16 @@ describe('Manual QA fix-bead generation contracts', () => {
       qaOrigin: { actionId: 'manual-qa-submit:one', sourceItems: [{ itemId: 'qa-v1-001' }] },
     })
     expect(bead?.id).toMatch(/^qa-v1-[a-f0-9]{12}$/)
+  })
+
+  it('rejects bare test command text instead of assigning a host shell', () => {
+    const groups = buildManualQaFixGroups(checklist, draft)
+    const response = validResponse.replace(
+      'testCommands: [{mode: "process", program: "npm", args: ["run", "test:client"], cwd: ".", env: {}}]',
+      'testCommands: ["npm run test:client"]',
+    )
+
+    expect(() => parseManualQaFixBeadsOutput(response, groups)).toThrow('testCommands')
   })
 
   it('drops a dependency on a merge group that does not exist', () => {
@@ -280,7 +290,7 @@ describe('Manual QA fix-bead generation contracts', () => {
   it('accepts a zero-command fix bead with a reason and preserves it during hydration', () => {
     const groups = buildManualQaFixGroups(checklist, draft)
     const response = validResponse.replace(
-      '    testCommands: ["npm run test:client"]',
+      '    testCommands: [{mode: "process", program: "npm", args: ["run", "test:client"], cwd: ".", env: {}}]',
       '    testCommands: []\n    testCommandReason: "This repair has only an interactive Manual QA check."',
     )
     const candidates = parseManualQaFixBeadsOutput(response, groups)
@@ -318,13 +328,13 @@ describe('Manual QA fix-bead generation contracts', () => {
   it('rejects zero-command fix beads without a reason and reasons alongside commands', () => {
     const groups = buildManualQaFixGroups(checklist, draft)
     expect(() => parseManualQaFixBeadsOutput(
-      validResponse.replace('    testCommands: ["npm run test:client"]', '    testCommands: []'),
+      validResponse.replace('    testCommands: [{mode: "process", program: "npm", args: ["run", "test:client"], cwd: ".", env: {}}]', '    testCommands: []'),
       groups,
     )).toThrow('testCommandReason')
     expect(() => parseManualQaFixBeadsOutput(
       validResponse.replace(
-        '    testCommands: ["npm run test:client"]',
-        '    testCommands: ["npm run test:client"]\n    testCommandReason: "Not allowed with commands."',
+        '    testCommands: [{mode: "process", program: "npm", args: ["run", "test:client"], cwd: ".", env: {}}]',
+        '    testCommands: [{mode: "process", program: "npm", args: ["run", "test:client"], cwd: ".", env: {}}]\n    testCommandReason: "Not allowed with commands."',
       ),
       groups,
     )).toThrow('testCommandReason')

@@ -8,6 +8,15 @@ import { contentSha256 } from '../../lib/contentHash'
 import { nowIso } from '../../lib/dateUtils'
 import { commandSpecSchema } from '@shared/commandSpec'
 import { parseJsonlContent } from '../../io/jsonl'
+import {
+  canonicalizeBeadAliases,
+  describeBeadShapeProblem,
+  deriveBeadBlocks,
+  normalizeBeadCollections,
+  validateBeadDependencyGraph,
+} from './beadsFile'
+import { isRecord } from '@shared/typeGuards'
+import { resolveBeadStatus } from './types'
 
 /**
  * The plan cannot be approved as written, and a person has to edit it.
@@ -20,6 +29,9 @@ import { parseJsonlContent } from '../../io/jsonl'
 export class BeadPlanValidationError extends Error {}
 
 const BEADS_APPROVAL_SNAPSHOT_ARTIFACT = 'approval_snapshot:beads'
+
+/** Arrays the coding prompt and execution contract dereference without guards. */
+const APPROVAL_REQUIRED_ARRAY_FIELDS = ['acceptanceCriteria', 'tests', 'targetFiles'] as const
 
 function resolveBeadsPaths(ticketId: string) {
   const paths = getTicketPaths(ticketId)
@@ -53,7 +65,9 @@ export function approveBeadsDocument(ticketId: string, expectedContentSha256: st
   try {
     content = readFileNoFollowSync(beadsPath)
   } catch (error) {
-    if ((error as NodeJS.ErrnoException).code === 'ENOENT') throw new Error('Beads artifact not found')
+    if ((error as NodeJS.ErrnoException).code === 'ENOENT') {
+      throw new BeadPlanValidationError('Beads artifact not found')
+    }
     throw error
   }
   const reviewedContentSha256 = assertExpectedContentSha256({
@@ -85,19 +99,40 @@ export function approveBeadsDocument(ticketId: string, expectedContentSha256: st
     if (typeof parsed !== 'object' || parsed === null || Array.isArray(parsed)) {
       throw new BeadPlanValidationError(`Bead at line ${line} is not a JSON object`)
     }
-    parsedRecords.push(parsed as Record<string, unknown>)
+    const canonical = normalizeBeadCollections(canonicalizeBeadAliases(parsed as Record<string, unknown>))
+    parsedRecords.push(canonical)
   }
 
+  const firstLineById = new Map<string, number>()
   for (const [index, record] of parsedRecords.entries()) {
     // The file's line, like every other number reported about this file. The
     // record's position counts only what parsed, so with a blank line above it
     // approval named a line the operator's editor does not hold that bead on.
     const line = itemLines[index] ?? index + 1
-    if (typeof record.id !== 'string' || !record.id.trim()) {
-      throw new BeadPlanValidationError(`Bead at line ${line} is missing a valid "id" field`)
+    const shapeProblem = describeBeadShapeProblem(record)
+    if (shapeProblem) throw new BeadPlanValidationError(`Bead at line ${line} ${shapeProblem}`)
+    if (typeof record.status !== 'string' || !resolveBeadStatus(record.status)) {
+      if (record.status === undefined) {
+        throw new BeadPlanValidationError(`Bead at line ${line} is missing a valid "status" field`)
+      }
+      throw new BeadPlanValidationError(`Bead at line ${line} has an unrecognised status ${JSON.stringify(record.status)}`)
+    }
+    if (record.priority === undefined) {
+      throw new BeadPlanValidationError(`Bead at line ${line} is missing a valid "priority" field`)
     }
     if (typeof record.title !== 'string' || !record.title.trim()) {
       throw new BeadPlanValidationError(`Bead at line ${line} is missing a valid "title" field`)
+    }
+    const firstLine = firstLineById.get(record.id as string)
+    if (firstLine !== undefined) {
+      throw new BeadPlanValidationError(`Bead at line ${line} has duplicate id ${JSON.stringify(record.id)} (first seen at line ${firstLine})`)
+    }
+    firstLineById.set(record.id as string, line)
+    for (const field of APPROVAL_REQUIRED_ARRAY_FIELDS) {
+      const value = record[field]
+      if (!Array.isArray(value) || value.some((item) => typeof item !== 'string')) {
+        throw new BeadPlanValidationError(`Bead ${record.id} is missing a valid ${field} list`)
+      }
     }
     if (!Array.isArray(record.testCommands)) {
       throw new BeadPlanValidationError(`Bead ${record.id} is missing the testCommands list`)
@@ -119,12 +154,36 @@ export function approveBeadsDocument(ticketId: string, expectedContentSha256: st
     }
   }
 
+  // blocked_by is the scheduler's authoritative edge. Rebuild the inverse
+  // rather than trusting a stale `blocks` list from a human edit, then run the
+  // same dangling/self/cycle checks the pre-flight contract reports.
+  const normalizedRecords = parsedRecords.map((record) => {
+    if (typeof record.status !== 'string') return record
+    return { ...record, status: resolveBeadStatus(record.status) }
+  })
+  const graphRecords = deriveBeadBlocks(normalizedRecords)
+  const graphErrors = validateBeadDependencyGraph(graphRecords.flatMap((record) => {
+    if (!isRecord(record.dependencies) || !Array.isArray(record.dependencies.blocked_by) || !Array.isArray(record.dependencies.blocks)) {
+      return []
+    }
+    return [{
+      id: String(record.id),
+      dependencies: {
+        blocked_by: record.dependencies.blocked_by.filter((dependency): dependency is string => typeof dependency === 'string'),
+        blocks: record.dependencies.blocks.filter((dependency): dependency is string => typeof dependency === 'string'),
+      },
+    }]
+  }))
+  if (graphErrors.length > 0) {
+    throw new BeadPlanValidationError(graphErrors.join('; '))
+  }
+
   // Stamp createdAt on all beads at approval time
   const approvedAt = nowIso()
   // Rewritten from the records already parsed above rather than re-parsing the
   // text: two passes over the same lines is two chances to disagree about what
   // the file holds.
-  const updatedLines = parsedRecords.map((record) => JSON.stringify({ ...record, createdAt: approvedAt }))
+  const updatedLines = graphRecords.map((record) => JSON.stringify({ ...record, createdAt: approvedAt }))
 
   const updatedContent = updatedLines.join('\n') + '\n'
   writeTicketFile(ticketId, relative(paths.ticketDir, beadsPath), updatedContent)

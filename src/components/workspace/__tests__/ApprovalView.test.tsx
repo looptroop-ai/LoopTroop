@@ -132,6 +132,38 @@ function createBeadsRawResponse(
   ))
 }
 
+function createBeadsSaveResponse(
+  beads: unknown[],
+  options: { rawContent?: string; contentSha256?: string } = {},
+) {
+  const rawContent = options.rawContent ?? (beads.length > 0
+    ? `${beads.map((item) => JSON.stringify(item)).join('\n')}\n`
+    : '')
+  const contentSha256 = options.contentSha256 ?? 'saved-hash'
+  return Promise.resolve(new Response(
+    JSON.stringify({
+      success: true,
+      beads,
+      rawContent,
+      contentSha256,
+      malformedLines: [],
+      unrepresentableLines: [],
+    }),
+    {
+      status: 200,
+      headers: {
+        'Content-Type': 'application/json',
+        'X-Content-Sha256': contentSha256,
+      },
+    },
+  ))
+}
+
+function createBeadsSaveResponseFromRequest(init?: RequestInit) {
+  const body = JSON.parse(String(init?.body ?? '{}')) as { beads?: unknown[] }
+  return createBeadsSaveResponse(Array.isArray(body.beads) ? body.beads : [])
+}
+
 function renderApprovalView(ticket: Ticket, artifactType: 'interview' | 'prd' | 'beads' | 'execution_setup_plan' = 'interview') {
   return renderWithProviders(<ApprovalView ticket={ticket} artifactType={artifactType} />)
 }
@@ -685,6 +717,24 @@ describe('Interview approval UI', () => {
     expect(screen.getByText(/^pending$/i)).toBeInTheDocument()
   }, 30_000)
 
+  it('explains why approval is blocked when a bead has no command or reason', async () => {
+    vi.spyOn(globalThis, 'fetch').mockImplementation((input) => {
+      const url = String(input)
+      if (url === `/api/tickets/${encodeURIComponent(TEST.ticketId)}/beads/raw`) {
+        return createBeadsRawResponse([
+          { id: 'B-1', title: 'Missing test rationale', status: 'pending', testCommands: [] },
+        ], { contentSha256: 'r'.repeat(64) })
+      }
+      if (url === `/api/tickets/${encodeURIComponent(TEST.ticketId)}/artifacts`) return createJsonResponse([])
+      throw new Error(`Unexpected fetch: ${url}`)
+    })
+
+    renderApprovalView(makeTicket({ status: 'WAITING_BEADS_APPROVAL' }), 'beads')
+
+    expect(await screen.findByText(/no planned test command or reason/i)).toBeInTheDocument()
+    expect(screen.getByRole('button', { name: /^Approve$/ })).toBeDisabled()
+  }, 30_000)
+
   it('shows draft autosave status and retains Save in beads edit mode', async () => {
     mockUseTicketUIState.mockReturnValue({
       isSuccess: true,
@@ -756,6 +806,62 @@ describe('Interview approval UI', () => {
     expect(await screen.findByText(/Draft autosave on/)).toBeInTheDocument()
   })
 
+  it('keeps editing disabled until the artifact hash loads even when optional UI state fails', async () => {
+    mockUseTicketUIState.mockReturnValue({ isSuccess: false, isError: true, data: undefined })
+    let finishRead!: (response: Response) => void
+    const pending = new Promise<Response>((resolve) => { finishRead = resolve })
+    vi.spyOn(globalThis, 'fetch').mockImplementation((input) => {
+      const url = String(input)
+      if (url.endsWith('/beads/raw')) return pending
+      if (url.endsWith('/artifacts') || url.endsWith('/attempts')) return createJsonResponse([])
+      throw new Error(`Unexpected fetch: ${url}`)
+    })
+    renderApprovalView(makeTicket({ status: 'WAITING_BEADS_APPROVAL' }), 'beads')
+    expect(screen.getByRole('button', { name: /^Edit$/ })).toBeDisabled()
+    finishRead(await createBeadsRawResponse([{ id: 'one', title: 'Loaded bead', status: 'pending' }]))
+    await waitFor(() => expect(screen.getByRole('button', { name: /^Edit$/ })).not.toBeDisabled())
+  })
+
+  it('can approve the loaded beads when the optional UI-state request fails', async () => {
+    mockUseTicketUIState.mockReturnValue({
+      isSuccess: false,
+      data: undefined,
+    })
+    const fetchSpy = vi.spyOn(globalThis, 'fetch').mockImplementation((input, init) => {
+      const url = String(input)
+      if (url === `/api/tickets/${encodeURIComponent(TEST.ticketId)}/beads/raw`) {
+        return createBeadsRawResponse([{
+          id: 'bead-1',
+          title: 'Ready to approve',
+          status: 'pending',
+          testCommands: [{ mode: 'process', program: 'npm', args: ['test'], cwd: '.', env: {} }],
+        }], { contentSha256: 'current-hash' })
+      }
+      if (url === `/api/tickets/${encodeURIComponent(TEST.ticketId)}/artifacts`) return createJsonResponse([])
+      if (url === `/api/tickets/${encodeURIComponent(TEST.ticketId)}/approve-beads` && init?.method === 'POST') {
+        return createJsonResponse({ success: true })
+      }
+      throw new Error(`Unexpected fetch: ${url}`)
+    })
+
+    renderApprovalView(makeTicket({ status: 'WAITING_BEADS_APPROVAL' }), 'beads')
+
+    await screen.findByText('Ready to approve')
+    const approve = await screen.findByRole('button', { name: /^Approve$/ })
+    expect(approve).not.toBeDisabled()
+    fireEvent.click(approve)
+
+    await waitFor(() => {
+      expect(fetchSpy).toHaveBeenCalledWith(
+        `/api/tickets/${encodeURIComponent(TEST.ticketId)}/approve-beads`,
+        expect.objectContaining({
+          method: 'POST',
+          body: JSON.stringify({ expectedContentSha256: 'current-hash' }),
+        }),
+      )
+    })
+  })
+
   it('shows unresolved beads coverage gaps as a collapsible warning during approval', async () => {
     mockUseTicketArtifacts.mockReturnValue({
       artifacts: [
@@ -785,7 +891,12 @@ describe('Interview approval UI', () => {
       const url = String(input)
       if (url === `/api/tickets/${encodeURIComponent(TEST.ticketId)}/beads/raw`) {
         return createBeadsRawResponse(
-          [{ id: 'proj-1-coverage-warning', title: 'Render coverage warning state' }],
+          [{
+            id: 'proj-1-coverage-warning',
+            title: 'Render coverage warning state',
+            testCommands: [],
+            testCommandReason: 'Coverage warning is verified manually in the browser.',
+          }],
           { contentSha256: 'a'.repeat(64) },
         )
       }
@@ -1018,7 +1129,7 @@ describe('Approval surfaces on a failed request', () => {
         if (url === `/api/tickets/${encodeURIComponent(TEST.ticketId)}/artifacts`) return createJsonResponse([])
         if (url.endsWith('/attempts')) return createJsonResponse([])
         if (url === `/api/tickets/${encodeURIComponent(TEST.ticketId)}/beads` && requestInit?.method === 'PUT') {
-          return createJsonResponse({ success: true })
+          return createBeadsSaveResponseFromRequest(requestInit)
         }
         throw new Error(`Unexpected fetch: ${url}`)
       })
@@ -1111,7 +1222,7 @@ describe('Approval surfaces on a failed request', () => {
       if (url === `/api/tickets/${encodeURIComponent(TEST.ticketId)}/artifacts`) return createJsonResponse([])
       if (url.endsWith('/attempts')) return createJsonResponse([])
       if (url === `/api/tickets/${encodeURIComponent(TEST.ticketId)}/beads` && init?.method === 'PUT') {
-        return createJsonResponse({ success: true })
+        return createBeadsSaveResponseFromRequest(init)
       }
       throw new Error(`Unexpected fetch: ${url}`)
     })
@@ -1131,6 +1242,116 @@ describe('Approval surfaces on a failed request', () => {
       // would otherwise overwrite whatever landed in between.
       expect((put![1] as RequestInit).headers).toMatchObject({ 'X-Content-Sha256': 'c'.repeat(64) })
     })
+  })
+
+  it('caches the canonical bead response when save normalization changes the draft', async () => {
+    mockUseTicketUIState.mockReturnValue({
+      isSuccess: true,
+      data: {
+        scope: 'approval_beads',
+        exists: true,
+        data: { isEditMode: true, editTab: 'jsonl' },
+        updatedAt: TEST.timestamp,
+      },
+    })
+    const submittedRaw = '{"id":"B-1","title":"Submitted","status":"pending","acceptanceCriteria":["keep"],"acceptance_criteria":[]}\n'
+    const canonicalBead = {
+      id: 'B-1',
+      title: 'Canonical',
+      status: 'pending',
+      acceptanceCriteria: [],
+    }
+    const canonicalRaw = `${JSON.stringify(canonicalBead)}\n`
+    let stored = false
+    const fetchSpy = vi.spyOn(globalThis, 'fetch').mockImplementation((input, init) => {
+      const url = String(input)
+      if (url === `/api/tickets/${encodeURIComponent(TEST.ticketId)}/beads/raw`) {
+        return createBeadsRawResponse(
+          stored ? [canonicalBead] : [{ id: 'B-1', title: 'Original', status: 'pending' }],
+          {
+            content: stored ? canonicalRaw : '{"id":"B-1","title":"Original","status":"pending"}\n',
+            contentSha256: stored ? 'canonical-hash' : 'initial-hash',
+          },
+        )
+      }
+      if (url === `/api/tickets/${encodeURIComponent(TEST.ticketId)}/artifacts`) return createJsonResponse([])
+      if (url.endsWith('/attempts')) return createJsonResponse([])
+      if (url === `/api/tickets/${encodeURIComponent(TEST.ticketId)}/beads` && init?.method === 'PUT') {
+        stored = true
+        return createBeadsSaveResponse([canonicalBead], {
+          rawContent: canonicalRaw,
+          contentSha256: 'canonical-hash',
+        })
+      }
+      throw new Error(`Unexpected fetch: ${url}`)
+    })
+
+    const { queryClient } = renderApprovalView(makeTicket({ status: 'WAITING_BEADS_APPROVAL' }), 'beads')
+    const editor = await screen.findByLabelText('YAML editor')
+    fireEvent.change(editor, { target: { value: submittedRaw } })
+    fireEvent.click(screen.getByRole('button', { name: /^Save$/ }))
+
+    await waitFor(() => {
+      expect(fetchSpy.mock.calls.some(([, requestInit]) => (requestInit as RequestInit | undefined)?.method === 'PUT'))
+        .toBe(true)
+      expect(queryClient.getQueryData(['artifact', TEST.ticketId, 'beads', 'approval'])).toMatchObject({
+        beads: [canonicalBead],
+        rawContent: canonicalRaw,
+        contentSha256: 'canonical-hash',
+      })
+    })
+  })
+
+  it('sends original JSONL positions when a blank line precedes an invalid row', async () => {
+    mockUseTicketUIState.mockReturnValue({
+      isSuccess: true,
+      data: {
+        scope: 'approval_beads',
+        exists: true,
+        data: { isEditMode: true, editTab: 'jsonl' },
+        updatedAt: TEST.timestamp,
+      },
+    })
+    const source = [
+      '{"id":"B-1","title":"One","status":"pending"}',
+      '',
+      '{"id":"B-2","title":"Two","status":"pending"}',
+      '{"id":"B-3","title":"Three","status":"pending","priority":1}',
+      '',
+    ].join('\n')
+    const fetchSpy = vi.spyOn(globalThis, 'fetch').mockImplementation((input, init) => {
+      const url = String(input)
+      if (url === `/api/tickets/${encodeURIComponent(TEST.ticketId)}/beads/raw`) {
+        return createBeadsRawResponse(
+          [
+            { id: 'B-1', title: 'One', status: 'pending' },
+            { id: 'B-2', title: 'Two', status: 'pending' },
+            { id: 'B-3', title: 'Three', status: 'pending', priority: 1 },
+          ],
+          { content: source, contentSha256: 'l'.repeat(64) },
+        )
+      }
+      if (url === `/api/tickets/${encodeURIComponent(TEST.ticketId)}/artifacts`) return createJsonResponse([])
+      if (url.endsWith('/attempts')) return createJsonResponse([])
+      if (url === `/api/tickets/${encodeURIComponent(TEST.ticketId)}/beads` && init?.method === 'PUT') {
+        return createJsonResponse({ error: 'Invalid bead item(s)', details: 'Line 4: priority: Expected number' }, 400)
+      }
+      throw new Error(`Unexpected fetch: ${url}`)
+    })
+    renderApprovalView(makeTicket({ status: 'WAITING_BEADS_APPROVAL' }), 'beads')
+
+    const editor = await screen.findByLabelText('YAML editor')
+    fireEvent.change(editor, {
+      target: {
+        value: source.replace('"priority":1', '"priority":"high"'),
+      },
+    })
+    fireEvent.click(screen.getByRole('button', { name: /^Save$/ }))
+
+    expect(await screen.findByText('Failed to save beads (HTTP 400: Invalid bead item(s): Line 4: priority: Expected number)')).toBeInTheDocument()
+    const put = fetchSpy.mock.calls.find(([, init]) => (init as RequestInit | undefined)?.method === 'PUT')
+    expect(put).toBeDefined()
+    expect(JSON.parse(String((put![1] as RequestInit).body))).toMatchObject({ sourceLines: [1, 3, 4] })
   })
   /**
    * The other two shapes the structured editor cannot hold.
@@ -1174,8 +1395,9 @@ describe('Approval surfaces on a failed request', () => {
           updatedAt: TEST.timestamp,
         },
       })
-      // The bare-string form older trackers carry. The runtime accepts it; the
-      // editor's reader drops it, so a save from there would delete it.
+      // The bare-string form older trackers carry. Neither approval nor the
+      // structured editor can identify its shell, so it must be repaired in
+      // the JSONL tab rather than guessed or dropped.
       stub({}, [{ id: 'B-1', title: 'Legacy commands', status: 'pending', testCommands: ['npm test'] }])
 
       expect(await screen.findByText(/cannot read every test command on B-1/)).toBeInTheDocument()
@@ -1226,7 +1448,7 @@ describe('Approval surfaces on a failed request', () => {
       if (url.endsWith('/attempts')) return createJsonResponse([])
       if (url === `/api/tickets/${encodeURIComponent(TEST.ticketId)}/beads` && init?.method === 'PUT') {
         return Promise.resolve(new Response(
-          JSON.stringify({ error: 'Bead plan changed since it was read' }),
+          JSON.stringify({ error: 'Conflict', details: 'A newer beads revision is already stored.' }),
           { status: 409, headers: { 'Content-Type': 'application/json' } },
         ))
       }
@@ -1317,6 +1539,60 @@ describe('Approval surfaces on a failed request', () => {
       })
       expect((screen.getByLabelText('YAML editor') as HTMLTextAreaElement).value)
         .not.toContain('From an older visit')
+    })
+
+    it('keeps the draft base hash when the live query refetches another writer\'s file', async () => {
+      mockUseTicketUIState.mockReturnValue({
+        isSuccess: true,
+        data: {
+          scope: 'approval_beads',
+          exists: true,
+          data: {
+            isEditMode: true,
+            editTab: 'jsonl',
+            jsonlDraft: '{"id":"B-1","title":"Draft from H1","status":"pending"}\n',
+            contentSha256: 'h'.repeat(64),
+          },
+          updatedAt: TEST.timestamp,
+        },
+      })
+      let reads = 0
+      const fetchSpy = vi.spyOn(globalThis, 'fetch').mockImplementation((input, init) => {
+        const url = String(input)
+        if (url === `/api/tickets/${encodeURIComponent(TEST.ticketId)}/beads/raw`) {
+          reads += 1
+          return reads === 1
+            ? createBeadsRawResponse(
+              [{ id: 'B-1', title: 'On H1', status: 'pending' }],
+              { content: '{"id":"B-1","title":"On H1","status":"pending"}\n', contentSha256: 'h'.repeat(64) },
+            )
+            : createBeadsRawResponse(
+              [{ id: 'B-2', title: 'Other writer', status: 'pending' }],
+              { content: '{"id":"B-2","title":"Other writer","status":"pending"}\n', contentSha256: 'j'.repeat(64) },
+            )
+        }
+        if (url === `/api/tickets/${encodeURIComponent(TEST.ticketId)}/artifacts`) return createJsonResponse([])
+        if (url.endsWith('/attempts')) return createJsonResponse([])
+        if (url === `/api/tickets/${encodeURIComponent(TEST.ticketId)}/beads` && init?.method === 'PUT') {
+          return createBeadsSaveResponseFromRequest(init)
+        }
+        throw new Error(`Unexpected fetch: ${url}`)
+      })
+
+      const { queryClient } = renderApprovalView(makeTicket({ status: 'WAITING_BEADS_APPROVAL' }), 'beads')
+      const editor = await screen.findByLabelText('YAML editor')
+      expect(editor).toHaveValue('{"id":"B-1","title":"Draft from H1","status":"pending"}\n')
+
+      await queryClient.invalidateQueries({ queryKey: ['artifact', TEST.ticketId, 'beads', 'approval'] })
+      await waitFor(() => expect(reads).toBe(2))
+      fireEvent.click(screen.getByRole('button', { name: /^Save$/ }))
+
+      await waitFor(() => {
+        const put = fetchSpy.mock.calls.find(([, init]) => (init as RequestInit | undefined)?.method === 'PUT')
+        expect(put).toBeDefined()
+        expect((put![1] as RequestInit).headers).toMatchObject({ 'X-Content-Sha256': 'h'.repeat(64) })
+        expect(String((put![1] as RequestInit).body)).toContain('Draft from H1')
+      })
     })
   })
 })

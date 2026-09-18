@@ -1058,7 +1058,7 @@ function normalizeInterviewBatchQuestion(value: unknown, index: number): {
   const phase = normalizeInterviewBatchPhase(getValueByAliases(value, ['phase', 'category', 'stage', 'section']))
   const priority = normalizeInterviewBatchPriority(getValueByAliases(value, ['priority']))
   const rationale = toOptionalString(getValueByAliases(value, ['rationale', 'reason']))
-  const rawAnswerType = getValueByAliases(value, ['answertype', 'answer_type', 'type', 'inputtype', 'input_type'])
+  const rawAnswerType = getValueByAliases(value, ['answer_type', 'answerType', 'answertype', 'type', 'input_type', 'inputType', 'inputtype'])
   const rawNormAnswerType = normalizeInterviewBatchAnswerType(rawAnswerType)
   const rawOptions = getValueByAliases(value, ['options', 'choices', 'answers'])
   const parsedOptions = normalizeInterviewBatchOptions(rawOptions)
@@ -1137,7 +1137,7 @@ function normalizeInterviewBatchPayload(value: unknown): {
   const progressRecord = getNestedRecord(parsed, ['progress'])
   const current = toInteger(getValueByAliases(progressRecord, ['current']))
   const total = toInteger(getValueByAliases(progressRecord, ['total']))
-  const batchNumber = toInteger(getValueByAliases(parsed, ['batchnumber', 'batch_number']))
+  const batchNumber = toInteger(getValueByAliases(parsed, ['batch_number', 'batchNumber', 'batchnumber']))
 
   if (batchNumber === null || batchNumber < 1) {
     throw new Error('Interview batch output is missing a valid batch_number')
@@ -1176,8 +1176,8 @@ function normalizeInterviewBatchPayload(value: unknown): {
     batch: {
       batchNumber,
       progress: { current, total },
-      isFinalFreeForm: toBoolean(getValueByAliases(parsed, ['isfinalfreeform', 'is_final_free_form'])) ?? false,
-      aiCommentary: toOptionalString(getValueByAliases(parsed, ['aicommentary', 'ai_commentary', 'commentary', 'notes'])) ?? '',
+      isFinalFreeForm: toBoolean(getValueByAliases(parsed, ['is_final_free_form', 'isFinalFreeForm', 'isfinalfreeform'])) ?? false,
+      aiCommentary: toOptionalString(getValueByAliases(parsed, ['ai_commentary', 'aiCommentary', 'aicommentary', 'commentary', 'notes'])) ?? '',
       questions,
     },
     repairWarnings,
@@ -1361,7 +1361,7 @@ export function normalizeInterviewTurnOutput(rawContent: string): StructuredOutp
     } catch (error) {
       lastError = getErrorMessage(error)
       lastErrorCause = error
-      lastCandidateWarnings = candidateWarnings
+      lastCandidateWarnings = batchCandidateWarnings
     } finally {
       releaseAliasConflicts()
     }
@@ -1751,7 +1751,7 @@ export function normalizeCoverageFollowUpQuestions(value: unknown, defaults?: Co
           : ''
 
     // Normalize answer type and options for coverage follow-ups
-    const rawAnswerType = getValueByAliases(record, ['answertype', 'answer_type', 'type', 'inputtype', 'input_type'])
+    const rawAnswerType = getValueByAliases(record, ['answer_type', 'answerType', 'answertype', 'type', 'input_type', 'inputType', 'inputtype'])
     const rawNormAnswerType = normalizeInterviewBatchAnswerType(rawAnswerType)
     const rawOptions = getValueByAliases(record, ['options', 'choices', 'answers'])
     const parsedOptions = normalizeInterviewBatchOptions(rawOptions)
@@ -1829,7 +1829,7 @@ function parseCoverageResultCandidateFields(candidate: string, parseRepairWarnin
   const rawStatus = getStringByAliases(parsed, ['status'])?.trim().toLowerCase() ?? ''
   const gaps = toStringArray(getValueByAliases(parsed, ['gaps', 'issues']))
   const normalizedFollowUps = normalizeCoverageFollowUpQuestions(
-    getValueByAliases(parsed, ['followupquestions', 'follow_up_questions']),
+    getValueByAliases(parsed, ['follow_up_questions', 'followupquestions']),
   )
   const followUpQuestions = normalizedFollowUps.questions
 

@@ -43,4 +43,20 @@ describe('TicketCard progress', () => {
     expect(screen.getByText(/Implementing \(Bead 3\/5\)/).parentElement).toHaveAttribute('style', expect.stringContaining('40%'))
     expect(screen.getByText('~15m')).toBeInTheDocument()
   })
+
+  it('warns about damaged tracker rows and hides an untrustworthy completion value', () => {
+    const base = makeTicket()
+    renderCard(makeTicket({
+      status: 'CODING',
+      runtime: {
+        ...base.runtime,
+        totalBeads: 2,
+        percentComplete: 100,
+        beadsDiagnostics: { malformedLines: [3], unrepresentableLines: [] },
+      },
+    }))
+
+    expect(screen.getByRole('alert', { name: /bead tracker needs repair/i })).toBeInTheDocument()
+    expect(screen.getByText(/Implementing/).closest('[data-ticket-card]')).not.toHaveAttribute('style', expect.stringContaining('100%'))
+  })
 })

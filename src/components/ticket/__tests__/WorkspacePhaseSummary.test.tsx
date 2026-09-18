@@ -197,6 +197,23 @@ describe('WorkspacePhaseSummary', () => {
     expect(screen.getByText(/LoopTroop is implementing the ticket one bead at a time/)).toBeInTheDocument()
   })
 
+  it('shows a visible warning when the bead tracker has unreadable lines', () => {
+    const ticket = makeTicket({
+      status: 'CODING',
+      runtime: {
+        ...makeTicket().runtime,
+        beadsDiagnostics: { malformedLines: [4], unrepresentableLines: [] },
+      },
+    })
+
+    renderWithProviders(
+      <WorkspacePhaseSummary phase="CODING" ticket={ticket} />,
+    )
+
+    expect(screen.getByRole('alert')).toHaveTextContent(/bead tracker needs repair/i)
+    expect(screen.getByRole('alert')).toHaveTextContent(/progress may be incomplete/i)
+  })
+
   it('shows live coding bead and iteration progress in the main title', () => {
     const ticket = makeTicket({
       status: 'CODING',

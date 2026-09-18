@@ -37,7 +37,11 @@ describe('draftBeads', () => {
       '    tests:',
       '      - Theme reducer tests cover the pink path.',
       '    testCommands:',
-      '      - npm run test:server',
+      '      - mode: "process"',
+      '        program: "npm"',
+      '        args: ["run", "test:server"]',
+      '        cwd: "."',
+      '        env: {}',
     ].join('\n'))
 
     const result = await draftBeads(
@@ -97,7 +101,11 @@ describe('draftBeads', () => {
       '    tests:',
       '      - Structured retry recovers the malformed indicator.',
       '    testCommands:',
-      '      - npm run test:server',
+      '      - mode: "process"',
+      '        program: "npm"',
+      '        args: ["run", "test:server"]',
+      '        cwd: "."',
+      '        env: {}',
     ].join('\n'))
 
     const result = await draftBeads(

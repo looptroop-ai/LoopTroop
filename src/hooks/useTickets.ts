@@ -35,6 +35,12 @@ export interface TicketEta {
   basis: 'history' | 'current' | 'default'
 }
 
+export interface BeadsRuntimeDiagnostics {
+  malformedLines: number[]
+  unrepresentableLines: number[]
+  readError?: string
+}
+
 export interface ManualQaOriginEvidenceRef {
   id: string
   originalName: string
@@ -105,6 +111,7 @@ interface TicketRuntime {
   activeBeadIteration: number | null
   lastFailedBeadId: string | null
   artifactRoot: string
+  beadsDiagnostics?: BeadsRuntimeDiagnostics | null
   beads?: Array<{
     id: string
     title: string

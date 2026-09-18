@@ -61,7 +61,6 @@ import {
 } from '../../git/worktreeChanges'
 import { isMockOpenCodeMode } from '../../opencode/factory'
 import { executeCommand } from '../../lib/commandExecutor'
-import { existsSync } from 'node:fs'
 import { readBeadsFile } from '../../phases/beads/beadsFile'
 import { discoverGitHooks } from '../../git/hookDiscovery'
 import type { ExecutionSetupCommandReceiptPayload } from '../../structuredOutput/types'
@@ -185,16 +184,14 @@ function summarizeSetupCommandFailure(input: {
 }
 
 function hasDeclaredBeadTestCommands(beadsPath: string): boolean {
-  if (!existsSync(beadsPath)) return false
   try {
-    // Per line, not one `.some` around a throwing parse: an unreadable line
-    // earlier in the file used to abort the whole scan and answer "no bead
-    // declares test commands", which lets execution setup accept a profile with
-    // only version probes while a later bead does declare them.
     return readBeadsFile(beadsPath).some((bead) =>
       Array.isArray(bead.testCommands) && bead.testCommands.length > 0)
-  } catch {
-    return false
+  } catch (error) {
+    // A missing tracker is equivalent to having no bead test commands yet;
+    // every other read failure is actionable and must reach the setup report.
+    if (error && typeof error === 'object' && 'code' in error && error.code === 'ENOENT') return false
+    throw error
   }
 }
 
@@ -286,8 +283,15 @@ async function validateExecutionSetupRuntimeProfile(input: {
     }
   }
 
+  let declaresBeadTestCommands = false
+  try {
+    declaresBeadTestCommands = hasDeclaredBeadTestCommands(input.beadsPath)
+  } catch (error) {
+    errors.push(`Execution setup could not inspect bead test commands: ${error instanceof Error ? error.message : 'unknown beads read failure'}`)
+    return resultWithReceipts()
+  }
   const requiresWorkspaceProbe = hasExecutionSetupProjectCommands(input.profile)
-    || hasDeclaredBeadTestCommands(input.beadsPath)
+    || declaresBeadTestCommands
   const functionalWorkspaceProbes = input.profile.workspaceProbes.filter(
     (probe) => !isVersionOnlyWorkspaceProbeCommand(probe.command),
   )

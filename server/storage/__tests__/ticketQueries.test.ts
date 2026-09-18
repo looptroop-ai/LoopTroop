@@ -1,6 +1,6 @@
 import { afterAll, beforeEach, describe, expect, it, vi } from 'vitest'
 import { eq } from 'drizzle-orm'
-import { mkdirSync, renameSync, symlinkSync, writeFileSync } from 'node:fs'
+import { mkdirSync, renameSync, rmSync, symlinkSync, writeFileSync } from 'node:fs'
 import { join } from 'node:path'
 import { createInitializedTestTicket, createTestRepoManager, resetTestDb } from '../../test/integration'
 import { writeJsonl } from '../../io/jsonl'
@@ -174,6 +174,79 @@ describe('runtime Manual QA bead origin projection', () => {
     const runtimeBeads = getTicketByRef(setup.ticket.id)?.runtime.beads
     expect(runtimeBeads?.[0]?.qaOrigin).toEqual(origin)
     expect(runtimeBeads?.[1]?.qaOrigin).toBeNull()
+  })
+
+  it('projects snake_case bead fields through the canonical reader', async () => {
+    const setup = await createInitializedTestTicket(runtimeRepoManager, { title: 'Runtime bead aliases' })
+    const origin = {
+      schemaVersion: 1,
+      actionId: 'manual-qa-submit-aliases',
+      sourceTicketId: setup.ticket.id,
+      sourceTicketExternalId: setup.ticket.externalId,
+      version: 1,
+      modelId: null,
+      modelSupportsImages: null,
+      createdFromManualQaAt: '2026-07-14T12:00:00.000Z',
+      sourceItems: [{
+        itemId: 'qa-alias-001',
+        lineageId: 'alias-lineage',
+        behavior: 'The board shows alias metadata.',
+        observation: 'The board showed the metadata.',
+        expectedResult: 'The metadata remains visible.',
+        evidence: [],
+        links: [],
+      }],
+    }
+    writeJsonl(setup.paths.beadsPath, [{
+      id: 'alias-bead',
+      title: 'Alias bead',
+      status: 'pending',
+      iteration: 1,
+      qa_origin: origin,
+      started_at: '2026-07-14T12:01:00.000Z',
+      updated_at: '2026-07-14T12:02:00.000Z',
+      completed_at: '2026-07-14T12:03:00.000Z',
+    }])
+
+    expect(getTicketByRef(setup.ticket.id)?.runtime.beads[0]).toMatchObject({
+      id: 'alias-bead',
+      startedAt: '2026-07-14T12:01:00.000Z',
+      updatedAt: '2026-07-14T12:02:00.000Z',
+      completedAt: '2026-07-14T12:03:00.000Z',
+      qaOrigin: origin,
+    })
+  })
+
+  it('keeps valid runtime beads and exposes damaged tracker lines', async () => {
+    const setup = await createInitializedTestTicket(runtimeRepoManager, { title: 'Runtime bead diagnostics' })
+    writeFileSync(setup.paths.beadsPath, '{"id":"valid-bead","status":"pending"}\nnot-json\n')
+
+    const runtime = getTicketByRef(setup.ticket.id)?.runtime
+    expect(runtime?.beads.map((bead) => bead.id)).toEqual(['valid-bead'])
+    expect(runtime?.beadsDiagnostics).toEqual({ malformedLines: [2], unrepresentableLines: [] })
+  })
+
+  it('isolates an unreadable tracker and keeps a healthy ticket visible', async () => {
+    const broken = await createInitializedTestTicket(runtimeRepoManager, { title: 'Unreadable tracker', shortname: 'BROKE' })
+    const healthy = await createInitializedTestTicket(runtimeRepoManager, { title: 'Healthy tracker', shortname: 'HEALTH' })
+    rmSync(broken.paths.beadsPath, { force: true })
+    mkdirSync(broken.paths.beadsPath, { recursive: true })
+    const warning = vi.spyOn(console, 'warn').mockImplementation(() => {})
+
+    try {
+      const projected = listTickets()
+      expect(projected.find((ticket) => ticket.id === healthy.ticket.id)?.title).toBe('Healthy tracker')
+      const brokenProjection = projected.find((ticket) => ticket.id === broken.ticket.id)
+      expect(brokenProjection?.runtime.beads).toEqual([])
+      expect(brokenProjection?.runtime.beadsDiagnostics).toMatchObject({
+        malformedLines: [],
+        unrepresentableLines: [],
+        readError: expect.any(String),
+      })
+      expect(warning).toHaveBeenCalledWith(expect.stringContaining(broken.ticket.externalId))
+    } finally {
+      warning.mockRestore()
+    }
   })
 
   it('preserves the bead update timestamp used to time the active iteration', async () => {

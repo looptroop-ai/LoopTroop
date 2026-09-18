@@ -21,7 +21,10 @@ type PrdRefinementItemType = 'epic' | 'user_story'
 type PrdEpic = PrdDocument['epics'][number]
 type PrdUserStory = PrdEpic['user_stories'][number]
 
-export const PRD_MISSING_CHANGES_WARNING = 'PRD refinement returned no changes list while the document differed from the winning draft; accounted for the difference from the two drafts.'
+export const PRD_MISSING_CHANGES_WARNING = 'PRD refinement returned no changes list while the document differed from the winning draft.'
+
+const PRD_RECONSTRUCTED_ITEM_CHANGES_WARNING = `${PRD_MISSING_CHANGES_WARNING} Reconstructed omitted item-level changes from the winning and refined drafts; document-level edits, if any, are not listed in the change set.`
+const PRD_DOCUMENT_ONLY_CHANGES_WARNING = `${PRD_MISSING_CHANGES_WARNING} The difference is limited to document-level fields; no item-level changes were reconstructed.`
 
 /**
  * Everything a refinement is allowed to author, in one comparable form.
@@ -611,7 +614,7 @@ export function validatePrdRefinementOutput(
   // accounting below runs on the empty list: synthesis covers what it can and
   // validateChangeCoverage rejects the rest. A coverage revision accounts for
   // its edits in gap_resolutions instead, so it opts out.
-  const missingChangesWarnings: string[] = []
+  let missingChangesDetected = false
   if (changes.length === 0) {
     const documentsDiffer = options.missingChangesPolicy !== 'accounted_elsewhere'
       && prdDocumentsDiffer(winnerResult.value, refinedDocument)
@@ -626,7 +629,7 @@ export function validatePrdRefinementOutput(
         repairWarnings: [...refinementResult.repairWarnings],
       }
     }
-    missingChangesWarnings.push(PRD_MISSING_CHANGES_WARNING)
+    missingChangesDetected = true
   }
 
   const winnerDocument = winnerResult.value
@@ -647,10 +650,12 @@ export function validatePrdRefinementOutput(
   const usedAfterIdentityKeys = new Set<string>()
   const usedBeforeContentKeys = new Set<string>()
   const usedAfterContentKeys = new Set<string>()
-  const repairWarnings = [...refinementResult.repairWarnings, ...missingChangesWarnings, ...idStabilityRepair.repairWarnings]
+  const repairWarnings = [...refinementResult.repairWarnings, ...idStabilityRepair.repairWarnings]
   const preparedChanges: PreparedPrdRefinementChange[] = []
   const validatedChanges: RefinementChange[] = []
-  let repairApplied = refinementResult.repairApplied || idStabilityRepair.repairApplied
+  let repairApplied = refinementResult.repairApplied
+    || missingChangesDetected
+    || idStabilityRepair.repairApplied
 
   for (const [index, change] of changes.entries()) {
     let itemType = normalizePrdItemType(change.itemType)
@@ -793,6 +798,13 @@ export function validatePrdRefinementOutput(
     repairApplied = true
     repairWarnings.push(...synthesizedChanges.repairWarnings)
     validatedChanges.push(...synthesizedChanges.changes)
+  }
+  if (missingChangesDetected) {
+    repairWarnings.push(
+      synthesizedChanges.changes.length > 0
+        ? PRD_RECONSTRUCTED_ITEM_CHANGES_WARNING
+        : PRD_DOCUMENT_ONLY_CHANGES_WARNING,
+    )
   }
 
   validateChangeCoverage(winnerItems, finalItems, usedBeforeContentKeys, usedAfterContentKeys)

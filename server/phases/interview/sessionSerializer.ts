@@ -267,7 +267,7 @@ function parseCoverageYamlQuestions(response: string): {
     // question type depending on whether the structured envelope or the raw
     // response was the thing that carried it.
     const normalized = normalizeCoverageFollowUpQuestions(
-      getValueByAliases(parsed, ['followupquestions', 'follow_up_questions']),
+      getValueByAliases(parsed, ['follow_up_questions', 'followupquestions']),
       COVERAGE_SESSION_DEFAULTS,
     )
 

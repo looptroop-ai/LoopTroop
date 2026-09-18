@@ -1,8 +1,16 @@
 import { afterEach, describe, expect, it, vi } from 'vitest'
-import { mkdtempSync, rmSync, writeFileSync } from 'node:fs'
+import { mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
-import { BEAD_FIELD_ALIASES, NESTED_BEAD_FIELD_ALIASES, readBeadsFile } from '../beadsFile'
+import {
+  BEAD_FIELD_ALIASES,
+  NESTED_BEAD_FIELD_ALIASES,
+  deriveBeadBlocks,
+  inspectBeadDependencyGraph,
+  readBeadsFile,
+  readBeadsFileWithDiagnostics,
+  validateBeadDependencyGraph,
+} from '../beadsFile'
 import {
   BEAD_FIELD_ALIASES as CLIENT_BEAD_FIELD_ALIASES,
 } from '../../../../src/lib/beadsDocument'
@@ -43,6 +51,30 @@ afterEach(() => {
  * was then dropped here with a console warning nobody reads.
  */
 describe('readBeadsFile and the nested spellings', () => {
+  it('fails closed by default without changing malformed file bytes', () => {
+    const filePath = writeTracker('not json', bead({ id: 'B-2' }))
+    const before = readFileSync(filePath, 'utf8')
+
+    expect(() => readBeadsFile(filePath)).toThrow(/unparseable JSON at line/)
+    expect(readFileSync(filePath, 'utf8')).toBe(before)
+  })
+
+  it('keeps valid rows for an explicit diagnostic read', () => {
+    const beads = readBeadsFile(writeTracker('not json', bead({ id: 'B-2' })), { malformedEntries: 'skip' })
+
+    expect(beads.map((entry) => entry.id)).toEqual(['B-2'])
+  })
+
+  it('rejects duplicate IDs on authoritative reads and reports later duplicates in diagnostics', () => {
+    const path = writeTracker(bead({ id: 'B-2' }), bead({ id: 'B-2', title: 'Duplicate' }))
+
+    expect(() => readBeadsFile(path)).toThrow(/duplicate id "B-2".*first seen at line 1.*line 2/)
+    expect(readBeadsFileWithDiagnostics(path, { malformedEntries: 'skip' })).toMatchObject({
+      beads: [{ id: 'B-2', title: 'One' }],
+      diagnostics: { unrepresentableLines: [2] },
+    })
+  })
+
   it('reads a bead whose dependencies use the camelCase spelling', () => {
     const beads = readBeadsFile(writeTracker(bead({ dependencies: { blockedBy: ['B-0'], blocks: [] } })))
 
@@ -66,10 +98,32 @@ describe('readBeadsFile and the nested spellings', () => {
     expect(beads[0]!.dependencies.blocked_by).toEqual(['canonical'])
   })
 
+  it('preserves an explicit empty canonical list over a populated alias', () => {
+    const beads = readBeadsFile(writeTracker(bead({
+      acceptanceCriteria: [],
+      acceptance_criteria: ['from alias'],
+    })))
+
+    expect(beads[0]!.acceptanceCriteria).toEqual([])
+  })
+
+  it('fills only missing nested collection keys before validating the bead', () => {
+    const beads = readBeadsFile(writeTracker(bead({
+      dependencies: { blocked_by: ['B-0'] },
+      contextGuidance: { patterns: ['keep'] },
+    })))
+
+    expect(beads[0]!.dependencies).toEqual({ blocked_by: ['B-0'], blocks: [] })
+    expect(beads[0]!.contextGuidance).toEqual({ patterns: ['keep'], anti_patterns: [] })
+  })
+
   it('still rejects a dependency list that is the wrong type under either spelling', () => {
     const warn = vi.spyOn(console, 'warn').mockImplementation(() => {})
 
-    expect(readBeadsFile(writeTracker(bead({ dependencies: { blockedBy: 'B-0', blocks: [] } })))).toEqual([])
+    expect(readBeadsFile(
+      writeTracker(bead({ dependencies: { blockedBy: 'B-0', blocks: [] } })),
+      { malformedEntries: 'skip' },
+    )).toEqual([])
     expect(warn).toHaveBeenCalledWith(expect.stringContaining('field "dependencies" has the wrong type'))
   })
 
@@ -78,6 +132,59 @@ describe('readBeadsFile and the nested spellings', () => {
       writeTracker(bead({ dependencies: { blockedBy: 'B-0', blocks: [] } })),
       { malformedEntries: 'fail' },
     )).toThrow(/field "dependencies" has the wrong type/)
+  })
+})
+
+describe('bead dependency integrity', () => {
+  it('derives symmetric blocks from blocked_by and keeps unknown dependency keys', () => {
+    const records = deriveBeadBlocks([
+      {
+        id: 'B-0',
+        dependencies: { blocked_by: [], blocks: ['stale'], custom: { keep: true } },
+      },
+      {
+        id: 'B-1',
+        dependencies: { blocked_by: ['B-0'], blocks: [] },
+      },
+    ])
+
+    expect(records).toEqual([
+      {
+        id: 'B-0',
+        dependencies: { blocked_by: [], blocks: ['B-1'], custom: { keep: true } },
+        contextGuidance: { patterns: [], anti_patterns: [] },
+      },
+      {
+        id: 'B-1',
+        dependencies: { blocked_by: ['B-0'], blocks: [] },
+        contextGuidance: { patterns: [], anti_patterns: [] },
+      },
+    ])
+    expect(validateBeadDependencyGraph(records.map((record) => ({
+      id: record.id as string,
+      dependencies: record.dependencies as { blocked_by: string[]; blocks: string[] },
+    })))).toEqual([])
+  })
+
+  it('reports dangling and circular authoritative dependencies', () => {
+    expect(validateBeadDependencyGraph([
+      { id: 'B-1', dependencies: { blocked_by: ['missing'], blocks: [] } },
+    ])).toEqual(expect.arrayContaining([expect.stringContaining('dangling blocked_by')]))
+    expect(validateBeadDependencyGraph([
+      { id: 'B-1', dependencies: { blocked_by: ['B-2'], blocks: ['B-2'] } },
+      { id: 'B-2', dependencies: { blocked_by: ['B-1'], blocks: ['B-1'] } },
+    ])).toContain('Circular dependency detected in bead graph: B-1 -> B-2 -> B-1')
+  })
+
+  it('reports one-sided edges separately from structural graph validity', () => {
+    const validation = inspectBeadDependencyGraph([
+      { id: 'B-1', dependencies: { blocked_by: [], blocks: ['B-2'] } },
+      { id: 'B-2', dependencies: { blocked_by: [], blocks: [] } },
+    ])
+
+    expect(validation.graphValid).toBe(true)
+    expect(validation.edgesConsistent).toBe(false)
+    expect(validation.errors).toContain('Bead B-1 declares it blocks B-2, but B-2 does not list B-1 in blocked_by')
   })
 })
 
@@ -97,7 +204,7 @@ describe('readBeadsFile and the top-level spellings', () => {
     ['acceptance_criteria', 'acceptanceCriteria', ['AC-1']],
     ['target_files', 'targetFiles', ['src/app.ts']],
     ['prd_refs', 'prdRefs', ['E01']],
-    ['test_commands', 'testCommands', ['npm test']],
+    ['test_commands', 'testCommands', [{ mode: 'shell', shell: 'posix', script: 'npm test' }]],
     ['issue_type', 'issueType', 'bug'],
     ['external_ref', 'externalRef', 'LOO-9'],
     ['started_at', 'startedAt', '2026-01-01T00:00:00.000Z'],
@@ -106,6 +213,9 @@ describe('readBeadsFile and the top-level spellings', () => {
     ['created_at', 'createdAt', '2026-01-01T00:00:00.000Z'],
     ['bead_start_commit', 'beadStartCommit', 'abc123'],
     ['test_command_reason', 'testCommandReason', 'nothing to run'],
+    ['failed_iteration_notes', 'failedIterationNotes', [{ iteration: 1, timestamp: '2026-01-01T00:00:00.000Z', content: 'failed' }]],
+    ['user_retry_notes', 'userRetryNotes', [{ iteration: 1, timestamp: '2026-01-01T00:00:00.000Z', content: 'retry' }]],
+    ['finalization_failure_notes', 'finalizationFailureNotes', [{ iteration: 1, timestamp: '2026-01-01T00:00:00.000Z', content: 'finalize' }]],
   ])('reads %s as %s', (alias, canonical, value) => {
     const beads = readBeadsFile(writeTracker(bead({ [alias]: value })))
 
@@ -122,6 +232,19 @@ describe('readBeadsFile and the top-level spellings', () => {
 
     expect(beads[0]!.contextGuidance).toEqual({ patterns: ['p'], anti_patterns: ['a'] })
     expect(beads[0]!.qaOrigin).toEqual({ sourceItems: [] })
+  })
+
+  it('rejects QA origins whose nested values the adapter dereferences are malformed', () => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {})
+    const malformed = {
+      sourceItems: [{
+        itemId: 'one', lineageId: 'lineage-one', behavior: 'Open', observation: 'Opened', expectedResult: 'Usable',
+        links: [], evidence: [{ id: 'screen', mediaType: 42, relativePath: 'screen.png' }],
+      }],
+    }
+
+    expect(readBeadsFile(writeTracker(bead({ qaOrigin: malformed })), { malformedEntries: 'skip' })).toEqual([])
+    expect(warn).toHaveBeenCalledWith(expect.stringContaining('field "qaOrigin" has the wrong type'))
   })
 
   it('keeps the canonical value when a record carries both spellings', () => {
@@ -148,7 +271,10 @@ describe('readBeadsFile and the top-level spellings', () => {
   it('still applies the type checks after canonicalising', () => {
     const warn = vi.spyOn(console, 'warn').mockImplementation(() => {})
 
-    expect(readBeadsFile(writeTracker(bead({ acceptance_criteria: 'not a list' })))).toEqual([])
+    expect(readBeadsFile(
+      writeTracker(bead({ acceptance_criteria: 'not a list' })),
+      { malformedEntries: 'skip' },
+    )).toEqual([])
     expect(warn).toHaveBeenCalledWith(expect.stringContaining('field "acceptanceCriteria" has the wrong type'))
   })
 })

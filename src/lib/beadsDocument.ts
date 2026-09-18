@@ -54,6 +54,7 @@ export interface RawBead {
   // Both spellings, like every other field: `BEAD_FIELD_ALIASES` reads them
   // and a stored row can carry either.
   dependencies?: {
+    [key: string]: unknown
     blocked_by?: string[]
     blockedBy?: string[]
     blocks?: string[]
@@ -129,6 +130,22 @@ export type BeadField = keyof typeof BEAD_FIELD_ALIASES
 export const SUPERSEDED_BEAD_FIELD_ALIASES: readonly string[] =
   Object.entries(BEAD_FIELD_ALIASES).flatMap(([field, aliases]) => aliases.filter((alias) => alias !== field))
 
+/** Whether a value has content for representability checks. */
+function carriesBeadValue(value: unknown): boolean {
+  if (!carriesValue(value)) return false
+  if (typeof value === 'string') return value.trim().length > 0
+  if (Array.isArray(value)) return value.length > 0
+  if (isRecord(value)) return Object.values(value).some(carriesBeadValue)
+  return true
+}
+
+function firstMeaningfulValue(values: unknown[]): unknown {
+  // Nullish values are absent. Empty strings and lists are explicit clears, so
+  // a canonical empty value still wins over a populated legacy alias. This
+  // matches the server canonicalisation contract.
+  return values.find(carriesValue)
+}
+
 /**
  * Drops a superseded spelling only where the canonical one carries the value.
  *
@@ -150,11 +167,9 @@ export function stripSupersededBeadAliases<T extends RawBead>(bead: T): T {
   return Object.fromEntries(
     Object.entries(bead).filter(([key]) => {
       const canonical = canonicalFor.get(key)
-      // Kept unless the canonical name carries the value: an alias that is the
-      // only copy there is is not superseded by anything. `null` carries
-      // nothing — it is what a writer leaves when it clears a field, and every
-      // reader treats it as absent — so `qaOrigin: null` must not delete the
-      // origin stored under the other spelling.
+      // Kept unless the canonical name is absent or nullish. Empty strings and
+      // lists are explicit clears and must delete a stale alias as the server
+      // does, rather than resurrecting its old value in the editor.
       return canonical === undefined || !carriesValue(bead[canonical])
     }),
   ) as T
@@ -164,19 +179,16 @@ export function stripSupersededBeadAliases<T extends RawBead>(bead: T): T {
  * Whether the structured editor can represent this bead's test commands.
  *
  * The editor reads them through the command schema and drops whatever it
- * refuses — including the bare-string form older trackers carry, which the
- * runtime still accepts and migrates when it knows the host's shell. Saving
- * from the editor then wrote the bead back without commands the operator never
- * touched. The browser cannot pick a shell for them, so it declines to edit
- * the bead rather than guessing or deleting.
+ * refuses — including the bare-string form older trackers carry. The browser
+ * cannot identify its shell, so it declines to edit the bead rather than
+ * guessing or deleting it; the approval contract likewise rejects an implicit
+ * shell command.
  */
 export function hasUnrepresentableBeadCommands(bead: RawBead): boolean {
-  return BEAD_FIELD_ALIASES.testCommands.some((key) => {
-    const value = bead[key]
-    if (!carriesValue(value)) return false
-    if (!Array.isArray(value)) return true
-    return value.some((command) => !commandSpecSchema.safeParse(command).success)
-  })
+  const value = firstMeaningfulValue(candidates(bead, 'testCommands'))
+  if (!carriesValue(value)) return false
+  if (!Array.isArray(value)) return true
+  return value.some((command) => !commandSpecSchema.safeParse(command).success)
 }
 
 /**
@@ -188,25 +200,20 @@ export function hasUnrepresentableBeadCommands(bead: RawBead): boolean {
  * malformed-line handling exists to prevent.
  */
 export function hasUnstructuredBeadGuidance(bead: RawBead): boolean {
-  // Every spelling, not the first one present: a record carrying a structured
-  // `contextGuidance` and free text under `context_guidance` reported
-  // structured, and the save then deleted the text.
-  return BEAD_FIELD_ALIASES.contextGuidance.some((key) => {
-    const value = bead[key]
-    if (!carriesValue(value)) return false
-    // Free text, or a list of guidance strings: both read as empty lists and
-    // save as them.
-    if (!isRecord(value)) return true
-    // A record is only representable if the editor's two fields are all it
-    // holds and both are lists of strings. `{ patterns: 'text' }` and
-    // `{ rationale: '…' }` are read as empty and written back as empty, which
-    // is the same silent replacement one shape deeper.
-    return Object.entries(value).some(([nested, nestedValue]) => {
-      const known = GUIDANCE_ALIASES.patterns.includes(nested as never)
-        || GUIDANCE_ALIASES.anti_patterns.includes(nested as never)
-      if (!known) return true
-      return !Array.isArray(nestedValue) || nestedValue.some((item) => typeof item !== 'string')
-    })
+  const value = firstMeaningfulValue(candidates(bead, 'contextGuidance'))
+  if (!carriesBeadValue(value)) return false
+  // Free text, or a list of guidance strings: both read as empty lists and
+  // save as them.
+  if (!isRecord(value)) return true
+  // A record is only representable if the editor's two fields are all it
+  // holds and both are lists of strings. `{ patterns: 'text' }` and
+  // `{ rationale: '…' }` are read as empty and written back as empty, which
+  // is the same silent replacement one shape deeper.
+  return Object.entries(value).some(([nested, nestedValue]) => {
+    const known = GUIDANCE_ALIASES.patterns.includes(nested as never)
+      || GUIDANCE_ALIASES.anti_patterns.includes(nested as never)
+    if (!known) return true
+    return !Array.isArray(nestedValue) || nestedValue.some((item) => typeof item !== 'string')
   })
 }
 
@@ -233,19 +240,24 @@ const GUIDANCE_ALIASES = {
  */
 export type BeadReadPolicy = 'display' | 'verbatim'
 
+export interface BeadDependencies {
+  [key: string]: unknown
+  blocked_by: string[]
+  blocks: string[]
+}
+
 function candidates(bead: RawBead, field: BeadField): unknown[] {
   return BEAD_FIELD_ALIASES[field].map((key) => bead[key])
 }
 
 function readStringList(values: unknown[], policy: BeadReadPolicy): string[] {
-  for (const value of values) {
-    if (!Array.isArray(value)) continue
-    const strings = value.filter((item): item is string => typeof item === 'string')
-    return policy === 'verbatim'
-      ? strings
-      : strings.map((item) => item.trim()).filter(Boolean)
-  }
-  return []
+  const arrays = values.filter((value): value is unknown[] => Array.isArray(value))
+  const value = arrays[0]
+  if (!value) return []
+  const strings = value.filter((item): item is string => typeof item === 'string')
+  return policy === 'verbatim'
+    ? strings
+    : strings.map((item) => item.trim()).filter(Boolean)
 }
 
 /**
@@ -256,10 +268,7 @@ function readStringList(values: unknown[], policy: BeadReadPolicy): string[] {
  * renderer of their own that decides what an unusable value looks like.
  */
 export function readBeadValue(bead: RawBead, field: BeadField): unknown {
-  for (const value of candidates(bead, field)) {
-    if (value !== undefined && value !== null) return value
-  }
-  return undefined
+  return firstMeaningfulValue(candidates(bead, field))
 }
 
 export function readBeadStringList(bead: RawBead, field: BeadField, policy: BeadReadPolicy): string[] {
@@ -267,12 +276,10 @@ export function readBeadStringList(bead: RawBead, field: BeadField, policy: Bead
 }
 
 export function readBeadString(bead: RawBead, field: BeadField, policy: BeadReadPolicy): string {
-  for (const value of candidates(bead, field)) {
-    if (typeof value !== 'string') continue
-    if (policy === 'verbatim') return value
-    if (value.trim()) return value.trim()
-  }
-  return ''
+  const values = candidates(bead, field).filter((value): value is string => typeof value === 'string')
+  const value = values[0]
+  if (value === undefined) return ''
+  return policy === 'verbatim' ? value : value.trim()
 }
 
 export function readBeadNumber(bead: RawBead, field: BeadField): number | null {
@@ -288,14 +295,12 @@ export function readBeadNumber(bead: RawBead, field: BeadField): number | null {
  * not this reader's decision to make.
  */
 export function readBeadCommands(bead: RawBead, field: BeadField): CommandSpec[] {
-  for (const value of candidates(bead, field)) {
-    if (!Array.isArray(value)) continue
-    return value.flatMap((command) => {
-      const parsed = commandSpecSchema.safeParse(command)
-      return parsed.success ? [parsed.data] : []
-    })
-  }
-  return []
+  const value = firstMeaningfulValue(candidates(bead, field))
+  if (!Array.isArray(value)) return []
+  return value.flatMap((command) => {
+    const parsed = commandSpecSchema.safeParse(command)
+    return parsed.success ? [parsed.data] : []
+  })
 }
 
 function readNested(
@@ -311,15 +316,17 @@ function readNested(
   return result
 }
 
-export function readBeadDependencies(bead: RawBead, policy: BeadReadPolicy): { blocked_by: string[]; blocks: string[] } {
+export function readBeadDependencies(bead: RawBead, policy: BeadReadPolicy): BeadDependencies {
+  const source = isRecord(bead.dependencies) && !Array.isArray(bead.dependencies) ? bead.dependencies : {}
   const read = readNested(bead.dependencies, DEPENDENCY_ALIASES, policy)
-  return { blocked_by: read.blocked_by ?? [], blocks: read.blocks ?? [] }
+  const known = new Set(['blocked_by', 'blockedBy', 'blocks'])
+  const unknown = Object.fromEntries(Object.entries(source).filter(([key]) => !known.has(key)))
+  return { ...unknown, blocked_by: read.blocked_by ?? [], blocks: read.blocks ?? [] }
 }
 
 export function readBeadGuidance(bead: RawBead, policy: BeadReadPolicy): { patterns: string[]; anti_patterns: string[] } {
-  const source = BEAD_FIELD_ALIASES.contextGuidance
-    .map((key) => bead[key])
-    .find((value) => isRecord(value))
+  const value = firstMeaningfulValue(candidates(bead, 'contextGuidance'))
+  const source = isRecord(value) ? value : undefined
   const read = readNested(source, GUIDANCE_ALIASES, policy)
   return { patterns: read.patterns ?? [], anti_patterns: read.anti_patterns ?? [] }
 }
@@ -345,7 +352,7 @@ export interface NormalizedBead extends RawBead {
   testCommandReason?: string
   targetFiles: string[]
   contextGuidance: { patterns: string[]; anti_patterns: string[] }
-  dependencies: { blocked_by: string[]; blocks: string[] }
+  dependencies: BeadDependencies
 }
 
 /**

@@ -515,10 +515,10 @@ const WORKFLOW_PHASE_DETAILS = {
     ],
   },
   DRAFTING_BEADS: {
-    overview: 'The council is breaking the approved PRD into competing semantic bead plans. These drafts describe the work, dependencies, and verification intent, but they do not lock file targets or runtime metadata yet.',
+    overview: 'The council is breaking the approved PRD into competing semantic bead plans. These drafts describe the work, dependencies, and verification intent, including explicit structured CommandSpec values when a command is needed, but they do not lock file targets or runtime metadata yet.',
     steps: [
       'Context loading: Each council member receives the approved PRD, ticket details, and relevant-files context. It may inspect a small repository area read-only when the supplied context does not prove a repository-specific claim.',
-      'Independent blueprint drafting: Every model proposes its own semantic bead breakdown, including task descriptions, acceptance criteria, dependencies, and test intent.',
+      'Independent blueprint drafting: Every model proposes its own semantic bead breakdown, including task descriptions, acceptance criteria, dependencies, test intent, and explicit CommandSpec values when verification commands are needed. A producer never turns a bare command string into a shell invocation.',
       'Decomposition strategy: Models decide how much work belongs in each bead and how those beads should depend on each other. Different models may arrive at very different task shapes.',
       'Validation and metrics: LoopTroop validates the blueprint structure, records task and graph metrics, keeps accepted drafts for the vote, and stores rejected attempts and diagnostics in Raw history.',
     ],
@@ -534,6 +534,7 @@ const WORKFLOW_PHASE_DETAILS = {
     notes: [
       'Context available: Relevant Files, Ticket Details, and PRD, with focused read-only repository inspection only when needed.',
       'These blueprints stay semantic. Exact file targets and runtime metadata are added later during expansion.',
+      'Command lists use explicit process or shell records. An empty list carries a visible reason instead of inviting a command guess.',
       'Malformed blueprint output stays diagnostic-only. It does not appear as a usable draft.',
       'Different models often spot different natural task boundaries, which is why the workflow drafts several plans before voting.',
     ],
@@ -543,11 +544,11 @@ const WORKFLOW_PHASE_DETAILS = {
     ],
   },
   COUNCIL_VOTING_BEADS: {
-    overview: 'The council is choosing the most credible blueprint. Each model scores every plan against an architecture rubric that focuses on decomposition quality, feasibility, dependencies, and testability.',
+    overview: 'The council is choosing the most credible blueprint. Each model scores every plan against an architecture rubric that focuses on decomposition quality, feasibility, dependency integrity, explicit command structure, and testability.',
     steps: [
       'Anonymization: LoopTroop strips authorship from the blueprints and assigns neutral labels.',
       'Random order: Each voter sees the blueprints in a different order to reduce position bias.',
-      'Independent scoring: Every council member scores every blueprint with the architecture rubric and writes a short justification.',
+      'Independent scoring: Every council member scores every blueprint with the architecture rubric and writes a short justification, including whether verification commands and dependency edges are explicit.',
       'Validation and retries: Vote payloads are validated, and malformed votes are retried in fresh sessions while rejected attempts stay in Raw diagnostics.',
       'Winner selection: The resolver totals the scores, applies tie-break rules when needed, and records the winner plus the audit trail.',
     ],
@@ -563,6 +564,7 @@ const WORKFLOW_PHASE_DETAILS = {
     notes: [
       'Context available: Relevant Files, Ticket Details, PRD, and anonymized competing drafts.',
       'This rubric is more architecture-focused than the interview and PRD voting rubrics.',
+      'Voting evaluates the structured command and dependency fields that the winning plan must preserve. It does not infer a shell command from bare text.',
       'Voting Raw views show the validated blueprints that were actually scored.',
       'The winning blueprint is not the final plan. It still goes through refinement, coverage, and expansion.',
     ],
@@ -572,10 +574,10 @@ const WORKFLOW_PHASE_DETAILS = {
     ],
   },
   REFINING_BEADS: {
-    overview: 'LoopTroop keeps the winning blueprint as the backbone and pulls in the strongest missing tasks, tests, constraints, and edge cases from the others. This is still semantic planning. File targets and runtime metadata come later during expansion.',
+    overview: 'LoopTroop keeps the winning blueprint as the backbone and pulls in the strongest missing tasks, tests, constraints, edge cases, and explicit command records from the others. This is still semantic planning. File targets and runtime metadata come later during expansion.',
     steps: [
       'Context assembly: The winning model receives the winning blueprint plus all losing blueprints, clearly labeled, and keeps the winning structure as the backbone.',
-      'Selective merging: The model adds missing tasks, stronger acceptance criteria, useful edge cases, or dependency insights from the losing blueprints without breaking the graph.',
+      'Selective merging: The model adds missing tasks, stronger acceptance criteria, useful edge cases, dependency insights, or structured command records from the losing blueprints without breaking the graph or replacing an explicit no-command reason with a guess.',
       'Validation and retries: LoopTroop validates bead structure and dependency integrity, keeps the accepted result as the refined candidate, and stores rejected attempts in Raw history.',
       'Diff artifacts: The workflow records what changed between the winning blueprint and the refined candidate so later review can show the impact clearly.',
       'Verification restraint: The refined candidate keeps human-readable verification without forcing a command for every scenario. Broader integration and interactive checks stay for Final Testing or Manual QA.',
@@ -590,7 +592,7 @@ const WORKFLOW_PHASE_DETAILS = {
       'Failure → Blocked Error: If the blueprint cannot be refined safely, the ticket pauses for recovery.',
     ],
     notes: [
-      'This phase still works on the semantic plan, including minimal planned checks or an explanation when no automated command is appropriate.',
+      'This phase still works on the semantic plan, including structured planned checks or an explanation when no automated command is appropriate.',
       'Context available: Relevant Files, Ticket Details, PRD, and competing drafts, with focused read-only repository inspection only when needed.',
       'Raw draft views stay aligned to the validated content used by refinement.',
       'Refining before expansion is cheaper and easier than redoing execution-specific metadata later.',
@@ -601,10 +603,10 @@ const WORKFLOW_PHASE_DETAILS = {
     ],
   },
   VERIFYING_BEADS_COVERAGE: {
-    overview: 'LoopTroop is checking the semantic blueprint against the approved PRD. If required work is missing, it revises the blueprint before anything is expanded into execution-ready beads. The loop stays semantic and capped.',
+    overview: 'LoopTroop is checking the semantic blueprint against the approved PRD. If required work is missing, it revises the blueprint before anything is expanded into execution-ready beads. Structured command entries and explicit no-command reasons remain part of the plan, but command absence alone is not a coverage gap. The loop stays semantic and capped.',
     steps: [
       'Coverage evaluation: The winning beads model compares the current semantic blueprint against the PRD and reports either a clean result or concrete gaps.',
-      'Gap resolution: When gaps exist, LoopTroop asks for a targeted revision that adds missing work or strengthens necessary acceptance and verification guidance. Command absence by itself is not a gap.',
+      'Gap resolution: When gaps exist, LoopTroop asks for a targeted revision that adds missing work or strengthens necessary acceptance and verification guidance, including structured command entries or an explicit no-command reason when the PRD requires it. Command absence by itself is not a gap.',
       'Version tracking: Every coverage pass and revision is stored so you can follow how the blueprint changed over time.',
       'Finalization: Once the blueprint is clean enough, or the configured cap is reached, the workflow moves to expansion and preserves any remaining warnings for later review.',
     ],
@@ -632,10 +634,10 @@ const WORKFLOW_PHASE_DETAILS = {
     ],
   },
   EXPANDING_BEADS: {
-    overview: 'LoopTroop turns the approved semantic blueprint into the execution-ready bead records the coding loop will consume. Expansion keeps the approved acceptance and planned verification, then adds file targets, dependency ordering, labels, and runtime metadata.',
+    overview: 'LoopTroop turns the approved semantic blueprint into the execution-ready bead records the coding loop will consume. Expansion keeps the approved acceptance, structured command entries, and explicit no-command reasons, then adds file targets, dependency ordering, labels, and runtime metadata.',
     steps: [
       'Blueprint loading: LoopTroop loads the latest semantic blueprint from the coverage phase.',
-      'Expansion: The model receives the semantic blueprint, relevant files, ticket details, and the approved PRD. It preserves the accepted verification guidance and adds only the execution-specific fields the coding loop needs.',
+      'Expansion: The model receives the semantic blueprint, relevant files, ticket details, and the approved PRD. It preserves the accepted verification guidance and structured CommandSpec values, then adds only the execution-specific fields the coding loop needs.',
       'Bead record writing: The expanded bead records are written to the ticket workspace as the canonical beads data file.',
       'Approval candidate: The expanded output is also stored as the artifact you review in the beads approval screen.',
     ],
@@ -659,9 +661,9 @@ const WORKFLOW_PHASE_DETAILS = {
     ],
   },
   WAITING_BEADS_APPROVAL: {
-    overview: 'The final bead plan is ready for review before coding starts. Here you review task descriptions, dependencies, acceptance criteria, human-readable tests, and planned commands. After approval, the coding loop consumes one bead at a time.',
+    overview: 'The final bead plan is ready for review before coding starts. Here you review task descriptions, dependencies, acceptance criteria, human-readable tests, structured CommandSpec entries or no-command reasons, and JSONL repair diagnostics. Dependency edges are authoritative and validated before approval. After approval, the coding loop consumes one bead at a time.',
     steps: [
-      'Execution plan review: LoopTroop shows each bead\'s description, acceptance criteria, dependency chain, file targets, planned test commands or no-command explanation, and execution ordering.',
+      'Execution plan review: LoopTroop shows each bead\'s description, acceptance criteria, authoritative blocked_by dependency chain, file targets, structured test commands or no-command explanation, source-line diagnostics, and execution ordering.',
       'Dependency view: The plan makes the dependency chain visible so you can check that the execution order makes sense before coding begins.',
       'Editing And Draft Autosave: You can review the plan in structured form or edit the raw representation before approving. Draft changes autosave between view switches and reloads. The visible Draft autosave on indicator reports pending, saving, saved, conflict, or failure state plus the last server-acknowledged save time. Draft autosave does not update the authoritative beads artifact; explicit Save applies the draft and records a user-edit receipt.',
       'Coverage warnings and extra fixes: If the pass cap was hit before the plan became fully clean, the approval screen shows the unresolved gaps. You can edit manually, approve with gaps, or run a targeted AI fix that revises the semantic blueprint and rechecks coverage. Approving with gaps takes an optional reason, which is stored on the approval receipt and in the skip trail.',
@@ -683,6 +685,8 @@ const WORKFLOW_PHASE_DETAILS = {
     notes: [
       'This is the last approval gate before automated code execution begins.',
       'The content-hash check protects against approving a stale tab.',
+      'The draft base hash remains tied to the content first loaded. Refetching or autosaving cannot retag an open draft, and a stale write returns a typed conflict for reload.',
+      'Malformed and unrepresentable rows stay visible with repair guidance, while board and workspace completion summaries remain suppressed until the tracker is trustworthy.',
       'No AI work runs just because this screen is open. AI sees this context only when you click Fix gaps with AI.',
       'Dependency mistakes are expensive here because they affect the order the coding loop will follow.',
       'Clear acceptance criteria matter because the coding loop uses them to decide whether a bead is done.',
@@ -1392,7 +1396,7 @@ const BASE_WORKFLOW_PHASES = [
   {
     id: 'DRAFTING_BEADS',
     label: 'Council Drafting Blueprint',
-    description: 'The council is breaking the approved PRD into competing semantic bead plans with tasks, dependencies, and verification intent. These drafts stay at the planning level, so exact file targets and runtime metadata are added later.',
+    description: 'The council is breaking the approved PRD into competing semantic bead plans with tasks, dependencies, and explicit structured verification commands when needed. These drafts stay at the planning level, so exact file targets and runtime metadata are added later.',
     details: WORKFLOW_PHASE_DETAILS.DRAFTING_BEADS,
     kanbanPhase: 'in_progress',
     groupId: 'beads',
@@ -1404,7 +1408,7 @@ const BASE_WORKFLOW_PHASES = [
   {
     id: 'COUNCIL_VOTING_BEADS',
     label: 'Voting on Blueprint',
-    description: 'The council is scoring the blueprint drafts and choosing the most credible implementation plan before refinement and coverage. The vote focuses on decomposition quality, dependency logic, feasibility, and testability.',
+    description: 'The council is scoring the blueprint drafts and choosing the most credible implementation plan before refinement and coverage. The vote focuses on decomposition quality, explicit dependency and command fields, feasibility, and testability.',
     details: WORKFLOW_PHASE_DETAILS.COUNCIL_VOTING_BEADS,
     kanbanPhase: 'in_progress',
     groupId: 'beads',
@@ -1416,7 +1420,7 @@ const BASE_WORKFLOW_PHASES = [
   {
     id: 'REFINING_BEADS',
     label: 'Refining Blueprint',
-    description: 'LoopTroop is improving the winning semantic blueprint with stronger tasks, tests, and constraints from the other drafts, using focused read-only repository inspection when needed. This still stays at the semantic layer, before execution-specific metadata is added.',
+    description: 'LoopTroop is improving the winning semantic blueprint with stronger tasks, tests, constraints, and structured command guidance from the other drafts, using focused read-only repository inspection when needed. This still stays at the semantic layer, before execution-specific metadata is added.',
     details: WORKFLOW_PHASE_DETAILS.REFINING_BEADS,
     kanbanPhase: 'in_progress',
     groupId: 'beads',
@@ -1428,7 +1432,7 @@ const BASE_WORKFLOW_PHASES = [
   {
     id: 'VERIFYING_BEADS_COVERAGE',
     label: 'Coverage Check (Beads)',
-    description: 'LoopTroop checks the semantic beads blueprint against the approved PRD, using focused read-only inspection when required. It revises the blueprint until the required work is covered or the pass cap is reached, while keeping this stage semantic before expansion adds execution metadata.',
+    description: 'LoopTroop checks the semantic beads blueprint against the approved PRD, using focused read-only inspection when required. It preserves structured command entries and explicit no-command reasons, and revises the blueprint until required work is covered or the pass cap is reached, while keeping this stage semantic before expansion adds execution metadata.',
     details: WORKFLOW_PHASE_DETAILS.VERIFYING_BEADS_COVERAGE,
     kanbanPhase: 'in_progress',
     groupId: 'beads',
@@ -1441,7 +1445,7 @@ const BASE_WORKFLOW_PHASES = [
   {
     id: 'EXPANDING_BEADS',
     label: 'Expanding Blueprint',
-    description: 'LoopTroop transforms the coverage-validated semantic blueprint into execution-ready bead records with the concrete fields the coding loop needs. This adds file targets, dependency ordering, labels, and runtime metadata without redesigning the approved plan.',
+    description: 'LoopTroop transforms the coverage-validated semantic blueprint into execution-ready bead records with the concrete fields the coding loop needs, preserving structured commands and explicit no-command reasons. This adds file targets, dependency ordering, labels, and runtime metadata without redesigning the approved plan.',
     details: WORKFLOW_PHASE_DETAILS.EXPANDING_BEADS,
     kanbanPhase: 'in_progress',
     groupId: 'beads',
@@ -1454,7 +1458,7 @@ const BASE_WORKFLOW_PHASES = [
   {
     id: 'WAITING_BEADS_APPROVAL',
     label: 'Approving Blueprint',
-    description: 'Review and approve the execution-ready bead plan before coding starts. Draft edits autosave with visible state and last-save time, but explicit Save is required to update the authoritative artifact. Approving with known coverage gaps takes an optional reason, and this is the last planning checkpoint before automated code changes begin.',
+    description: 'Review and approve the execution-ready bead plan before coding starts. Inspect structured commands, dependency and JSONL diagnostics, and visible repair guidance. Draft edits autosave with visible state and last-save time, but explicit Save is required to update the authoritative artifact. Approving with known coverage gaps takes an optional reason, and this is the last planning checkpoint before automated code changes begin.',
     details: WORKFLOW_PHASE_DETAILS.WAITING_BEADS_APPROVAL,
     kanbanPhase: 'needs_input',
     groupId: 'beads',

@@ -26,8 +26,7 @@ import type {
   ManualQaEvidenceRef,
   ManualQaModelCapabilitySnapshot,
 } from './types'
-import { normalizeCommandSpec } from '@shared/commandSpec'
-import { detectHostContext } from '../../lib/hostContext'
+import { commandSpecSchema } from '@shared/commandSpec'
 import { getManualQaEvidenceRelativePath, getManualQaStoragePaths, readManualQaText, writeManualQaText } from './storage'
 import { readManualQaPrd } from './prd'
 import { getErrorMessage } from '@shared/typeGuards'
@@ -36,6 +35,7 @@ import { STRUCTURED_CORRECTION_ECHO_LENGTH } from '../../lib/constants'
 import { PROTOCOL_TAGS } from '@shared/protocolTags'
 
 export const MANUAL_QA_FIX_BEADS_TAG = PROTOCOL_TAGS.MANUAL_QA_FIX_BEADS
+const MANUAL_QA_FIX_BEADS_SCHEMA_VERSION = 2
 
 const CandidateSchema = z.object({
   groupId: z.string().trim().min(1).max(200),
@@ -48,7 +48,7 @@ const CandidateSchema = z.object({
   }).strict(),
   acceptanceCriteria: z.array(z.string().trim().min(1)).min(1),
   tests: z.array(z.string().trim().min(1)).min(1),
-  testCommands: z.array(z.string().trim().min(1)),
+  testCommands: z.array(commandSpecSchema),
   testCommandReason: z.string().trim().min(1).optional(),
   labels: z.array(z.string().trim().min(1)).min(1),
   blockedByGroupIds: z.array(z.string().trim().min(1)).default([]),
@@ -67,7 +67,7 @@ const CandidateDocumentSchema = z.object({
 }).strict()
 
 const PersistedCandidateDocumentSchema = z.object({
-  schemaVersion: z.literal(1),
+  schemaVersion: z.literal(MANUAL_QA_FIX_BEADS_SCHEMA_VERSION),
   artifact: z.literal('manual_qa_fix_beads'),
   version: z.number().int().positive(),
   beads: z.array(CandidateSchema).min(1),
@@ -453,7 +453,7 @@ export function persistManualQaFixBeadCandidates(
 ): string {
   const path = getManualQaStoragePaths(ticketDir, version).fixBeadsPath
   const content = buildYamlDocument({
-    schemaVersion: 1,
+    schemaVersion: MANUAL_QA_FIX_BEADS_SCHEMA_VERSION,
     artifact: 'manual_qa_fix_beads',
     version,
     beads: candidates,
@@ -470,7 +470,12 @@ export function readManualQaFixBeadCandidates(
   const path = getManualQaStoragePaths(ticketDir, version).fixBeadsPath
   const content = readManualQaText(ticketDir, path)
   if (content === null) return null
-  const parsed = PersistedCandidateDocumentSchema.parse(jsYaml.load(content))
+  const loaded: unknown = jsYaml.load(content)
+  // Version 1 persisted command strings. The current contract stores
+  // structured command specs, so an old document must be regenerated rather
+  // than being treated as a resumable candidate and rejected later.
+  if (isRecord(loaded) && loaded.schemaVersion === 1) return null
+  const parsed = PersistedCandidateDocumentSchema.parse(loaded)
   if (parsed.version !== version) throw new Error('Persisted Manual QA fix beads belong to a different version.')
   validateManualQaFixBeadCandidates(parsed.beads, groups)
   return parsed.beads
@@ -552,9 +557,7 @@ export function hydrateManualQaFixBeads(input: {
       contextGuidance: candidate.contextGuidance,
       acceptanceCriteria: candidate.acceptanceCriteria,
       tests: candidate.tests,
-      testCommands: candidate.testCommands.map(
-        (command) => normalizeCommandSpec(command, detectHostContext()).command,
-      ),
+      testCommands: candidate.testCommands,
       ...(candidate.testCommandReason ? { testCommandReason: candidate.testCommandReason } : {}),
       priority: maxPriority + index + 1,
       status: 'pending',

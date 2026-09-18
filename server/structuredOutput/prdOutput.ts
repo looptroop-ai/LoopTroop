@@ -67,7 +67,7 @@ function normalizeVerification(
   repairWarnings: string[],
 ): { required_commands: CommandSpec[] } {
   const verification = getNestedRecord(record, ['verification'])
-  const rawCommands = getValueByAliases(verification, ['requiredcommands', 'required_commands', 'commands'])
+  const rawCommands = getValueByAliases(verification, ['required_commands', 'requiredcommands', 'commands'])
   const commands = Array.isArray(rawCommands) ? rawCommands : []
   const host = detectHostContext()
   return {
@@ -153,8 +153,8 @@ function normalizeUserStory(
   return {
     id,
     title: getRequiredString(value, ['title', 'name'], `user story title at index ${storyIndex}`),
-    acceptance_criteria: toStringArray(getValueByAliases(value, ['acceptancecriteria', 'acceptance_criteria'])),
-    implementation_steps: toStringArray(getValueByAliases(value, ['implementationsteps', 'implementation_steps', 'steps'])),
+    acceptance_criteria: toStringArray(getValueByAliases(value, ['acceptance_criteria', 'acceptancecriteria'])),
+    implementation_steps: toStringArray(getValueByAliases(value, ['implementation_steps', 'implementationsteps', 'steps'])),
     verification: normalizeVerification(value, repairWarnings),
   }
 }
@@ -168,7 +168,7 @@ function normalizeEpic(
 ): PrdDocument['epics'][number] {
   if (!isRecord(value)) throw new Error(`Epic at index ${index} is not an object`)
 
-  const rawStories = getValueByAliases(value, ['userstories', 'user_stories', 'stories'])
+  const rawStories = getValueByAliases(value, ['user_stories', 'userstories', 'stories'])
   const userStories = Array.isArray(rawStories)
     ? rawStories.map((story, storyIndex) => normalizeUserStory(story, index, storyIndex, usedStoryIds, repairWarnings))
     : []
@@ -191,7 +191,7 @@ function normalizeEpic(
     id,
     title: getRequiredString(value, ['title', 'name'], `epic title at index ${index}`),
     objective: getRequiredString(value, ['objective', 'goal'], `epic objective at index ${index}`),
-    implementation_steps: toStringArray(getValueByAliases(value, ['implementationsteps', 'implementation_steps', 'steps'])),
+    implementation_steps: toStringArray(getValueByAliases(value, ['implementation_steps', 'implementationsteps', 'steps'])),
     user_stories: userStories,
   }
 }
@@ -287,8 +287,8 @@ export function normalizePrdYamlOutput(
 
       const product = getNestedRecord(parsed, ['product'])
       const scope = getNestedRecord(parsed, ['scope'])
-      const technicalRequirements = getNestedRecord(parsed, ['technicalrequirements', 'technical_requirements'])
-      const sourceInterview = getNestedRecord(parsed, ['sourceinterview', 'source_interview'])
+      const technicalRequirements = getNestedRecord(parsed, ['technical_requirements', 'technicalrequirements'])
+      const sourceInterview = getNestedRecord(parsed, ['source_interview', 'sourceinterview'])
       const approval = getNestedRecord(parsed, ['approval'])
       const rawEpics = getValueByAliases(parsed, ['epics'])
       const usedEpicIds = new Set<string>()
@@ -303,8 +303,8 @@ export function normalizePrdYamlOutput(
 
       const normalizedInterviewContent = ensureInterviewArtifactForPrd(options.interviewContent, options.ticketId)
       const runtimeInterviewHash = contentSha256(normalizedInterviewContent ?? '')
-      const providedTicketId = readOptionalString(parsed, ['ticketid', 'ticket_id'])
-      const providedInterviewHash = readOptionalString(sourceInterview, ['contentsha256', 'content_sha256'])
+      const providedTicketId = readOptionalString(parsed, ['ticket_id', 'ticketid'])
+      const providedInterviewHash = readOptionalString(sourceInterview, ['content_sha256', 'contentsha256'])
       const runtimeTicketId = options.ticketId.trim()
       const canonicalTicketId = runtimeTicketId || providedTicketId
       if (!providedTicketId) {
@@ -317,7 +317,7 @@ export function normalizePrdYamlOutput(
       }
 
       const document: PrdDocument = {
-        schema_version: normalizeSchemaVersion(getValueByAliases(parsed, ['schemaversion', 'schema_version']), repairWarnings),
+        schema_version: normalizeSchemaVersion(getValueByAliases(parsed, ['schema_version', 'schemaversion']), repairWarnings),
         ticket_id: canonicalTicketId,
         artifact: 'prd',
         status: normalizeStatus(getValueByAliases(parsed, ['status']), repairWarnings),
@@ -325,28 +325,28 @@ export function normalizePrdYamlOutput(
           content_sha256: runtimeInterviewHash,
         },
         product: {
-          problem_statement: getRequiredString(product, ['problemstatement', 'problem_statement'], 'product.problem_statement'),
-          target_users: toStringArray(getValueByAliases(product, ['targetusers', 'target_users'])),
+          problem_statement: getRequiredString(product, ['problem_statement', 'problemstatement'], 'product.problem_statement'),
+          target_users: toStringArray(getValueByAliases(product, ['target_users', 'targetusers'])),
         },
         scope: {
-          in_scope: toStringArray(getValueByAliases(scope, ['inscope', 'in_scope'])),
-          out_of_scope: toStringArray(getValueByAliases(scope, ['outofscope', 'out_of_scope'])),
+          in_scope: toStringArray(getValueByAliases(scope, ['in_scope', 'inscope'])),
+          out_of_scope: toStringArray(getValueByAliases(scope, ['out_of_scope', 'outofscope'])),
         },
         technical_requirements: {
-          architecture_constraints: toStringArray(getValueByAliases(technicalRequirements, ['architectureconstraints', 'architecture_constraints'])),
-          data_model: toStringArray(getValueByAliases(technicalRequirements, ['datamodel', 'data_model'])),
-          api_contracts: toStringArray(getValueByAliases(technicalRequirements, ['apicontracts', 'api_contracts'])),
-          security_constraints: toStringArray(getValueByAliases(technicalRequirements, ['securityconstraints', 'security_constraints'])),
-          performance_constraints: toStringArray(getValueByAliases(technicalRequirements, ['performanceconstraints', 'performance_constraints'])),
-          reliability_constraints: toStringArray(getValueByAliases(technicalRequirements, ['reliabilityconstraints', 'reliability_constraints'])),
-          error_handling_rules: toStringArray(getValueByAliases(technicalRequirements, ['errorhandlingrules', 'error_handling_rules'])),
-          tooling_assumptions: toStringArray(getValueByAliases(technicalRequirements, ['toolingassumptions', 'tooling_assumptions'])),
+          architecture_constraints: toStringArray(getValueByAliases(technicalRequirements, ['architecture_constraints', 'architectureconstraints'])),
+          data_model: toStringArray(getValueByAliases(technicalRequirements, ['data_model', 'datamodel'])),
+          api_contracts: toStringArray(getValueByAliases(technicalRequirements, ['api_contracts', 'apicontracts'])),
+          security_constraints: toStringArray(getValueByAliases(technicalRequirements, ['security_constraints', 'securityconstraints'])),
+          performance_constraints: toStringArray(getValueByAliases(technicalRequirements, ['performance_constraints', 'performanceconstraints'])),
+          reliability_constraints: toStringArray(getValueByAliases(technicalRequirements, ['reliability_constraints', 'reliabilityconstraints'])),
+          error_handling_rules: toStringArray(getValueByAliases(technicalRequirements, ['error_handling_rules', 'errorhandlingrules'])),
+          tooling_assumptions: toStringArray(getValueByAliases(technicalRequirements, ['tooling_assumptions', 'toolingassumptions'])),
         },
         epics,
         risks: toStringArray(getValueByAliases(parsed, ['risks'])),
         approval: {
-          approved_by: readOptionalString(approval, ['approvedby', 'approved_by']),
-          approved_at: readOptionalString(approval, ['approvedat', 'approved_at']),
+          approved_by: readOptionalString(approval, ['approved_by', 'approvedby']),
+          approved_at: readOptionalString(approval, ['approved_at', 'approvedat']),
         },
       }
 

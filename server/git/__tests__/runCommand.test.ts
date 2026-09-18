@@ -71,6 +71,10 @@ describe('server/git/runCommand', () => {
 
   it('stops detached async commands during daemon shutdown', async () => {
     const command = runCommand(node, script('setTimeout(() => {}, 60000)'), { timeoutMs: 60_000, log: false })
+    // Let the spawned process reach the OS before shutdown asks Windows to
+    // terminate its tree. Without this turn, taskkill can race process
+    // creation and leave the child owned but unverified on a loaded runner.
+    await new Promise<void>((resolve) => setImmediate(resolve))
     await stopActiveCommands()
     const result = await command
 

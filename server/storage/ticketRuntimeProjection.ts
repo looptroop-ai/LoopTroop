@@ -26,6 +26,7 @@ function buildRuntimeProjection(ticket: PublicTicket) {
       activeBeadId: ticket.runtime.activeBeadId,
       activeBeadIteration: ticket.runtime.activeBeadIteration,
       lastFailedBeadId: ticket.runtime.lastFailedBeadId,
+      beadsDiagnostics: ticket.runtime.beadsDiagnostics,
       candidateCommitSha: ticket.runtime.candidateCommitSha,
       preSquashHead: ticket.runtime.preSquashHead,
       finalTestStatus: ticket.runtime.finalTestStatus,

@@ -8,18 +8,41 @@ import { ContainedPathError } from '../lib/containedPath'
 import { syncTicketRuntimeProjection } from '../storage/ticketRuntimeProjection'
 import { clearExecutionSetupState } from '../phases/executionSetup/storage'
 import { upsertBeadsApprovalSnapshot } from '../phases/beads/document'
-import { canonicalizeBeadAliases, describeBeadShapeProblem } from '../phases/beads/beadsFile'
+import {
+  canonicalizeBeadAliases,
+  describeBeadShapeProblem,
+  deriveBeadBlocks,
+  normalizeBeadCollections,
+  validateBeadDependencyGraph,
+} from '../phases/beads/beadsFile'
 import { contentSha256 } from '../lib/contentHash'
 import { parseJsonlContent } from '../io/jsonl'
 import { isRecord } from '@shared/typeGuards'
+import { commandSpecSchema } from '@shared/commandSpec'
+import { resolveBeadStatus } from '../phases/beads/types'
 import { writeUserEditReceipt } from '../workflow/artifactEditReceipts'
 
 // Minimum schema for fields required by the scheduler and execution engine.
 // Other fields pass through without strict validation for forward-compatibility.
+const beadStatusSchema = z.string().transform((value, ctx) => {
+  const folded = value.trim().toLowerCase()
+  const mapped = resolveBeadStatus(value)
+  if (mapped) return mapped
+  if (!folded) {
+    ctx.addIssue({ code: z.ZodIssueCode.custom, message: 'status must be a non-empty string' })
+    return z.NEVER
+  }
+  ctx.addIssue({
+    code: z.ZodIssueCode.custom,
+    message: `status "${value}" is invalid; expected pending, in_progress, done, or error`,
+  })
+  return z.NEVER
+})
+
 const beadItemSchema = z.object({
   id: z.string().min(1),
   title: z.string().min(1),
-  status: z.enum(['pending', 'in_progress', 'done', 'error']),
+  status: beadStatusSchema,
   priority: z.number().int().min(1),
   // Both spellings in, one spelling out. The interface accepts `blockedBy`
   // because older trackers carry it; refusing it here made a repair typed in
@@ -28,13 +51,22 @@ const beadItemSchema = z.object({
   dependencies: z.object({
     blocked_by: z.array(z.string()).optional(),
     blockedBy: z.array(z.string()).optional(),
-    blocks: z.array(z.string()),
-  })
+    blocks: z.array(z.string()).optional(),
+  }).passthrough()
     .refine((value) => value.blocked_by !== undefined || value.blockedBy !== undefined, {
       message: 'dependencies must include blocked_by',
     })
-    .transform(({ blocked_by, blockedBy, blocks }) => ({ blocked_by: blocked_by ?? blockedBy ?? [], blocks })),
-})
+    .transform(({ blocked_by, blockedBy, blocks, ...unknownDependencies }) => ({
+      ...unknownDependencies,
+      blocked_by: blocked_by ?? blockedBy ?? [],
+      // `blocks` is derived from the authoritative `blocked_by` edges below;
+      // an editor or JSONL repair need not carry a stale inverse at all.
+      blocks: blocks ?? [],
+    })),
+  // Commands are deliberately structured. A bare string does not identify its
+  // shell, so approval cannot turn it into an implicit shell command safely.
+  testCommands: z.array(commandSpecSchema).optional(),
+}).passthrough()
 
 const beadsRouter = new Hono()
 beadsRouter.onError((error, c) => {
@@ -86,11 +118,21 @@ const MALFORMED_LINE_HEADER_LIMIT = 50
  * fields the reader will actually find.
  */
 function findUnrepresentableLines(items: unknown[], itemLines: number[]): number[] {
-  return items.flatMap((item, index) => (
-    describeBeadShapeProblem(isRecord(item) ? canonicalizeBeadAliases(item) : item) === null
-      ? []
-      : [itemLines[index] ?? index + 1]
-  ))
+  return items.flatMap((item, index) => {
+    const canonical = isRecord(item) ? normalizeBeadCollections(canonicalizeBeadAliases(item)) : item
+    const unknownStatus = isRecord(canonical) && canonical.status !== undefined && !resolveBeadStatus(canonical.status)
+    return describeBeadShapeProblem(canonical) === null && !unknownStatus ? [] : [itemLines[index] ?? index + 1]
+  })
+}
+
+/** Canonical fields for the parsed projection; the raw endpoint keeps bytes separately. */
+function canonicalizeParsedItems(items: unknown[]): unknown[] {
+  return items.map((item) => {
+    if (!isRecord(item)) return item
+    const canonical = normalizeBeadCollections(canonicalizeBeadAliases(item))
+    if (typeof canonical.status !== 'string' || typeof canonical.id !== 'string' || !canonical.id.trim()) return canonical
+    return { ...canonical, status: resolveBeadStatus(canonical.status) ?? canonical.status }
+  })
 }
 
 /**
@@ -155,6 +197,38 @@ function countJsonlItems(content: string | null): number | null {
   return content.split('\n').filter((line) => line.trim() !== '').length
 }
 
+interface BeadValidationError {
+  index: number
+  line: number
+  issues: string[]
+}
+
+function readClientSourceLines(raw: unknown, itemCount: number): number[] | null {
+  if (raw === undefined) return null
+  if (!Array.isArray(raw) || raw.length !== itemCount || raw.some((line) => (
+    typeof line !== 'number' || !Number.isSafeInteger(line) || line < 1
+  ))) {
+    throw new Error(
+      'sourceLines must contain exactly '
+      + itemCount
+      + ' positive line number'
+      + (itemCount === 1 ? '' : 's')
+      + '.',
+    )
+  }
+  const lines = raw as number[]
+  for (let index = 1; index < lines.length; index++) {
+    if (lines[index]! <= lines[index - 1]!) {
+      throw new Error('sourceLines must be strictly increasing.')
+    }
+  }
+  return lines
+}
+
+function formatBeadValidationDetails(errors: readonly BeadValidationError[]): string {
+  return errors.flatMap(({ line, issues }) => issues.map((issue) => `Line ${line}: ${issue}`)).join('; ')
+}
+
 beadsRouter.get('/tickets/:id/beads', (c) => {
   const ticketId = c.req.param('id')
   if (!getTicketByRef(ticketId)) return c.json({ error: 'Ticket not found' }, 404)
@@ -172,8 +246,9 @@ beadsRouter.get('/tickets/:id/beads', (c) => {
   // The lines that did parse are returned; the ones that did not are named in
   // a header, by their line number in the file.
   const { items, itemLines, malformedLines } = parseJsonlContent(content, filePath)
-  setMalformedLineHeaders(c, malformedLines, findUnrepresentableLines(items, itemLines))
-  return c.json(items)
+  const canonicalItems = canonicalizeParsedItems(items)
+  setMalformedLineHeaders(c, malformedLines, findUnrepresentableLines(canonicalItems, itemLines))
+  return c.json(canonicalItems)
 })
 
 /**
@@ -195,10 +270,11 @@ beadsRouter.get('/tickets/:id/beads/raw', (c) => {
   const content = readBeadsContent(filePath)
   c.header('X-Content-Sha256', contentSha256(content))
   const { items, itemLines, malformedLines } = parseJsonlContent(content, filePath)
-  const unrepresentableLines = findUnrepresentableLines(items, itemLines)
+  const canonicalItems = canonicalizeParsedItems(items)
+  const unrepresentableLines = findUnrepresentableLines(canonicalItems, itemLines)
   setMalformedLineHeaders(c, malformedLines, unrepresentableLines)
 
-  return c.json({ content, items, malformedLines, unrepresentableLines })
+  return c.json({ content, items: canonicalItems, malformedLines, unrepresentableLines })
 })
 
 beadsRouter.put('/tickets/:id/beads', async (c) => {
@@ -213,34 +289,98 @@ beadsRouter.put('/tickets/:id/beads', async (c) => {
   }
 
   const flow = c.req.query('flow')
-  const body = await c.req.json()
+  let rawBody: unknown
+  try {
+    rawBody = await c.req.json()
+  } catch {
+    return c.json({ error: 'Invalid JSON body' }, 400)
+  }
+  const body = isRecord(rawBody) && Array.isArray(rawBody.beads) ? rawBody.beads : rawBody
   if (!Array.isArray(body)) {
     return c.json({ error: 'Request body must be a JSON array' }, 400)
   }
+  let sourceLines: number[] | null
+  try {
+    sourceLines = readClientSourceLines(isRecord(rawBody) ? rawBody.sourceLines : undefined, body.length)
+  } catch (error) {
+    return c.json({ error: error instanceof Error ? error.message : 'Invalid sourceLines' }, 400)
+  }
 
-  // Validate each bead item has the fields required by the scheduler/execution engine
-  const validationErrors: Array<{ index: number; issues: z.ZodIssue[] }> = []
-  // What gets written: the record as sent, with the dependency spelling the
-  // runtime reads. Storing the request verbatim would leave `blockedBy` in the
-  // file for the authoritative reader to canonicalise on every read.
-  const canonicalBeads: unknown[] = []
+  // Validate each bead item has the fields required by the scheduler/execution engine.
+  // JSONL clients send sourceLines in the request body for each parsed row;
+  // structured clients have no source file positions, so their output line is
+  // its array position.
+  const validationErrors: BeadValidationError[] = []
+  // What gets written: the record as sent, with aliases canonicalised and the
+  // dependency spelling the runtime reads. Unknown top-level and dependency
+  // keys remain on the record for newer readers.
+  const canonicalBeads: Array<Record<string, unknown>> = []
   for (let i = 0; i < body.length; i++) {
-    const result = beadItemSchema.safeParse(body[i])
+    // Validate the submitted dependency spelling before filling derived
+    // collections. A user edit must still include the authoritative
+    // `blocked_by`/`blockedBy` list; only the derived `blocks` inverse may be
+    // absent and filled below.
+    const input = isRecord(body[i])
+      ? canonicalizeBeadAliases(body[i])
+      : null
+    const result = beadItemSchema.safeParse(input)
     if (!result.success) {
-      validationErrors.push({ index: i, issues: result.error.issues })
+      validationErrors.push({
+        index: i,
+        line: sourceLines?.[i] ?? i + 1,
+        issues: result.error.issues.map((issue) => {
+          const field = issue.path.length > 0 ? issue.path.join('.') : 'bead'
+          return `${field}: ${issue.message}`
+        }),
+      })
       continue
     }
-    canonicalBeads.push({ ...(body[i] as Record<string, unknown>), dependencies: result.data.dependencies })
+    const canonical = normalizeBeadCollections({
+      ...(input ?? {}),
+      ...result.data,
+      dependencies: result.data.dependencies,
+      // Zod validates command shape but intentionally strips unknown command
+      // metadata. Commands are an extensible wire contract, so retain the
+      // submitted objects after validation just as we retain unknown bead and
+      // dependency fields.
+      ...(Array.isArray(input?.testCommands) ? { testCommands: input.testCommands } : {}),
+    }) as Record<string, unknown>
+    const shapeProblem = describeBeadShapeProblem(canonical)
+    if (shapeProblem) {
+      validationErrors.push({ index: i, line: sourceLines?.[i] ?? i + 1, issues: [shapeProblem] })
+      continue
+    }
+    canonicalBeads.push(canonical)
   }
   if (validationErrors.length > 0) {
-    return c.json({ error: 'Invalid bead item(s)', details: validationErrors }, 400)
+    return c.json({
+      error: 'Invalid bead item(s)',
+      details: formatBeadValidationDetails(validationErrors),
+      validationErrors,
+    }, 400)
   }
 
-  // Check for duplicate IDs
-  const ids = body.map((item: { id: string }) => item.id)
-  const duplicateIds = ids.filter((id: string, index: number) => ids.indexOf(id) !== index)
+  // Check for duplicate IDs after aliases and field validation have produced
+  // the exact records that would be stored.
+  const ids = canonicalBeads.map((item) => item.id as string)
+  const duplicateIds = ids.filter((id, index) => ids.indexOf(id) !== index)
   if (duplicateIds.length > 0) {
     return c.json({ error: 'Duplicate bead IDs', details: [...new Set(duplicateIds)] }, 400)
+  }
+
+  // blocked_by is authoritative. A user edit may omit or carry a stale blocks
+  // list; derive the inverse from the edges the scheduler actually follows,
+  // while retaining unknown dependency metadata.
+  const storedBeads = deriveBeadBlocks(canonicalBeads)
+  const graphErrors = validateBeadDependencyGraph(storedBeads.map((bead) => ({
+    id: bead.id as string,
+    dependencies: bead.dependencies as { blocked_by: string[]; blocks: string[] },
+  })))
+  if (graphErrors.length > 0) {
+    return c.json({
+      error: 'Invalid bead dependency graph',
+      details: graphErrors.join('; '),
+    }, 400)
   }
 
   const resolved = resolveBeadsPath(ticketId, flow)
@@ -278,9 +418,26 @@ beadsRouter.put('/tickets/:id/beads', async (c) => {
     }
   }
 
+  // The structured editor is built from rows it can represent. Refuse that
+  // surface while the stored file has damaged rows, even when a direct client
+  // supplies the current hash; only the JSONL repair surface can carry those
+  // rows without silently dropping them.
+  if (beforeRaw !== null && c.req.header('X-Edit-Surface') !== 'jsonl') {
+    const { items, itemLines, malformedLines } = parseJsonlContent(beforeRaw, filePath)
+    const unrepresentableLines = findUnrepresentableLines(canonicalizeParsedItems(items), itemLines)
+    if (malformedLines.length > 0 || unrepresentableLines.length > 0) {
+      return c.json({
+        error: 'Damaged bead plan must be repaired in JSONL mode',
+        details: 'The structured editor cannot preserve every stored row.',
+        malformedLines,
+        unrepresentableLines,
+      }, 422)
+    }
+  }
+
   try {
     // createdAt is set at approval time, not save time
-    const jsonl = canonicalBeads.map((item: unknown) => JSON.stringify(item)).join('\n') + '\n'
+    const jsonl = storedBeads.map((item) => JSON.stringify(item)).join('\n') + '\n'
     writeTicketFile(ticketId, resolved.relativePath, jsonl)
     upsertBeadsApprovalSnapshot(ticketId, jsonl)
     const executionSetupInvalidation = clearExecutionSetupState(ticketId)
@@ -298,7 +455,7 @@ beadsRouter.put('/tickets/:id/beads', async (c) => {
       beforeRaw,
       afterRaw: jsonl,
       beforeItemCount: countJsonlItems(beforeRaw),
-      afterItemCount: body.length,
+      afterItemCount: storedBeads.length,
       invalidation: {
         ...executionSetupInvalidation,
         invalidatedPhases: [
@@ -310,13 +467,24 @@ beadsRouter.put('/tickets/:id/beads', async (c) => {
       },
     })
     syncTicketRuntimeProjection(ticketId)
-    c.header('X-Content-Sha256', contentSha256(jsonl))
+    const savedContentSha256 = contentSha256(jsonl)
+    c.header('X-Content-Sha256', savedContentSha256)
+    return c.json({
+      success: true,
+      // The client caches this exact tuple. Returning the canonical bytes and
+      // records together keeps aliases, derived dependency edges, and the
+      // concurrency hash aligned after a save.
+      beads: storedBeads,
+      rawContent: jsonl,
+      contentSha256: savedContentSha256,
+      malformedLines: [],
+      unrepresentableLines: [],
+    })
   } catch (error) {
     if (error instanceof ContainedPathError) throw error
     return c.json({ error: 'Failed to write file' }, 500)
   }
 
-  return c.json({ success: true })
 })
 
 const BEAD_ID_PATTERN = /^[A-Za-z0-9][A-Za-z0-9-]*[A-Za-z0-9]$/

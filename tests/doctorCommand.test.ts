@@ -112,6 +112,7 @@ describe('doctor command', () => {
 
       expect(check?.status).toBe(status)
       expect(check?.detail).toContain(version)
+      expect(check?.node?.version).toBe(version)
     })
 
     it('names the floor and a way to install it when the runtime is too old', async () => {

@@ -160,6 +160,9 @@ export function runTool(
 
 export function stallGuard(idleMs: number, what: string): StallGuard
 
+/** Returns whether an endpoint is open, closed, or could not be checked. */
+export function probePort(host: string, port: number): true | false | null
+
 /** GET metadata or bytes through HTTPS redirects, allowing only an explicit local API fixture over HTTP. */
 export function fetchInstallerUrl(
   url: string,

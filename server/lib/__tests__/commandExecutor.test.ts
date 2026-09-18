@@ -146,7 +146,11 @@ describe('resolveCommandProgram', () => {
   it('refuses an absolute path that is not an executable file', () => {
     const repository = makeRepo()
 
-    expect(resolveCommandProgram(join(repository, 'nothing-here'), {
+    // An extensionless Windows path is a name lookup and reports a missing
+    // PATHEXT sibling before it can reach the file check. Name an explicit
+    // executable path so this test exercises the intended absent-file reason
+    // on every platform.
+    expect(resolveCommandProgram(join(repository, 'nothing-here.exe'), {
       env: { PATH: '' },
       cwd: repository,
       repoRoot: repository,

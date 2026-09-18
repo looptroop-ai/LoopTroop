@@ -25,7 +25,7 @@ import { createReadStream, existsSync, mkdtempSync, readFileSync, readdirSync, r
 import { createServer } from 'node:http'
 import { tmpdir } from 'node:os'
 import { basename, dirname, join, resolve } from 'node:path'
-import { removeWorkDirectory } from './smoke-lib.mjs'
+import { inspectDoctorInstall, removeWorkDirectory } from './smoke-lib.mjs'
 import { fileURLToPath } from 'node:url'
 import { spawnProgram } from './tool-path.ts'
 
@@ -229,17 +229,28 @@ async function main() {
   log('  no staging files and no lock left behind')
 
   const doctor = await invoke(installed, ['doctor', '--json'], { env: childEnv, allowFailure: true })
-  let checks
+  let inspection
   try {
-    checks = JSON.parse(doctor.stdout).checks
+    inspection = inspectDoctorInstall(doctor.stdout, {
+      channel: 'binary',
+      upgradeCommand: IS_WINDOWS
+        ? '$script = curl.exe --proto "=https" --proto-redir "=https" --tlsv1.2 -fsSL https://www.looptroop.ovh/install.ps1; if ($LASTEXITCODE -ne 0 -or !$script) { throw "Installer download failed" }; & ([scriptblock]::Create(($script -join "`n"))) -Binary'
+        : 'curl --proto "=https" --proto-redir "=https" --tlsv1.2 -fsSL https://www.looptroop.ovh/install | sh -s -- --binary',
+    })
   } catch {
     fail('`doctor --json` did not produce parseable JSON.', `${doctor.stdout}${doctor.stderr}`.slice(0, 2000))
   }
-  const detail = checks.find((check) => check.name === 'install')?.detail ?? ''
-  if (!/^binary\b/.test(detail)) {
-    fail('`doctor` does not report this as a binary install.', `It reports: ${detail || '(no install check)'}`)
+  if (inspection.check === null) {
+    fail('`doctor` reports no install check at all.', `${doctor.stdout}${doctor.stderr}`.slice(0, 2000))
   }
-  log(`  \`doctor\` reports the binary channel: ${detail}`)
+  if (!inspection.matches) {
+    fail(
+      '`doctor` does not report this as a binary install.',
+      `It reports channel ${inspection.facts?.channel ?? '(none)'} and upgrade ${inspection.facts?.upgradeCommand ?? '(none)'}.`,
+      'That means the upgrade command shown to the user is the wrong one.',
+    )
+  }
+  log(`  \`doctor\` reports the binary channel (upgrade: ${inspection.facts?.upgradeCommand ?? '(none)'})`)
 
   // --- an upgrade, over a running daemon ---------------------------------
   //

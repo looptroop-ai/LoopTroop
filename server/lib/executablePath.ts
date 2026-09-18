@@ -32,13 +32,15 @@
  * on is not a control, it is an outage.
  *
  * For OpenCode in canonical directories (`~/.opencode/bin`, `OPENCODE_INSTALL_DIR`,
- * `OPENCODE_DIR`), an exception allows the binary to carry a foreign UID (such as
- * the runner UID 1001 preserved when GNU tar extracts official release archives
- * as root). In this specific exception, permission bits are strictly judged: the
- * binary and its directory chain must not be writable by group or others, and the
- * binary must be protected inside a private directory (denying group and other
- * traversal, like `/root` or `~` with mode `0700`) so foreign users cannot reach
- * or rewrite it. Traversable or sticky/shared directories (like `/tmp`) are refused.
+ * `OPENCODE_DIR`), an exception allows a known foreign UID (such as the runner UID
+ * 1001 preserved when GNU tar extracts official release archives as root). In this
+ * specific exception, permission bits are strictly judged: the binary and its
+ * directory chain must not be writable by group or others, and the binary must be
+ * protected inside a private directory (denying group and other traversal, like
+ * `/root` or `~` with mode `0700`) so foreign users cannot reach or rewrite it.
+ * Traversable or sticky/shared directories (like `/tmp`) are refused. A Linux
+ * kernel overflow UID is not a known owner, even in this canonical location; it
+ * needs an explicit `LOOPTROOP_TRUSTED_EXECUTABLE_DIRS` entry.
  *
  * On Windows there is no ownership check either: `fs.stat` reports mode `0777`
  * and uid `0` for everything on NTFS, so neither means anything. Windows gets
@@ -123,6 +125,10 @@ export interface TrustedExecutableOptions {
   platform?: NodeJS.Platform
   /** Test seam: the mount table consulted to recognise a Windows drive mount under WSL. */
   readMountTable?: () => string
+  /** Test seam: the process UID map used to identify unverifiable overflow ownership. */
+  readUidMap?: () => string | null
+  /** Test seam: the kernel UID used when a host UID is not mapped into this namespace. */
+  readOverflowUid?: () => string | null
   /** Test seam: `null` bypasses the process-wide cache entirely. */
   cache?: Map<string, CachedResolution> | null
   /** Test seam: stat implementation for deterministic file metadata in tests. */
@@ -288,10 +294,10 @@ function searchEntries(entries: readonly string[], platform: NodeJS.Platform): s
  * LoopTroop orchestrates OpenCode, whose official installer unpacks into
  * `~/.opencode/bin`. On Linux, release archives built on GitHub Actions runners
  * are packed with `runner:runner` (uid 1001), and when extracted as root by GNU
- * `tar` (which defaults to `--same-owner`), the resulting binary retains uid 1001
- * while its parent directory is owned by root. Excusing OpenCode's canonical
- * install directory spares operators and container users from having to supply
- * an explicit `LOOPTROOP_TRUSTED_EXECUTABLE_DIRS` override.
+ * `tar` (which defaults to `--same-owner`), the resulting binary retains that
+ * known foreign uid while its parent directory is owned by root. A kernel
+ * overflow UID is different: it means the real owner is not mapped into this
+ * namespace, so the canonical directory is not enough to vouch for it.
  */
 export function canonicalTrustedDirectories(platform: NodeJS.Platform, policyEnv: NodeJS.ProcessEnv): string[] {
   let home: string | undefined
@@ -423,9 +429,23 @@ function realpathOrNull(path: string): string | null {
  */
 function candidateExtensions(name: string, platform: NodeJS.Platform, env: NodeJS.ProcessEnv): string[] {
   if (platform !== 'win32') return ['']
-  if (/\.[^\\/.]+$/.test(name)) return ['']
-  // `||`, not `??`: an empty PATHEXT would leave no extensions to try at all.
-  return (env.PATHEXT || DEFAULT_PATHEXT).split(';').map((value) => value.trim()).filter(Boolean)
+  if (windowsNameHasExtension(name)) return ['']
+  // An empty PATHEXT falls back to the standard Windows extension set.
+  return windowsPathExtensions(env)
+}
+
+function windowsNameHasExtension(name: string): boolean {
+  return /\.[^\\/.]+$/.test(name)
+}
+
+function windowsPathExtensions(env: NodeJS.ProcessEnv): string[] {
+  return (env.PATHEXT || DEFAULT_PATHEXT)
+    .split(';')
+    .map((value) => value.trim())
+    .filter(Boolean)
+    .map((value) => value.startsWith('.') ? value : `.${value}`)
+    // Other PATHEXT scripts require interpreters that our launch plan does not provide.
+    .filter((value) => /^\.(?:exe|com|cmd|bat)$/i.test(value))
 }
 
 /**
@@ -533,6 +553,90 @@ function readMountTableFromProc(): string {
   }
 }
 
+function readUidMapFromProc(): string | null {
+  try {
+    return trustedFs.readFileSync('/proc/self/uid_map', 'utf8')
+  } catch {
+    return null
+  }
+}
+
+function readOverflowUidFromProc(): string | null {
+  try {
+    return trustedFs.readFileSync('/proc/sys/kernel/overflowuid', 'utf8')
+  } catch {
+    return null
+  }
+}
+
+interface UidMapRange {
+  inside: number
+  outside: number
+  length: number
+}
+
+interface OverflowOwnership {
+  uid?: number
+  unverifiable: boolean
+  /** When known, only these namespace UIDs can describe a mapped owner. */
+  isMapped?: (uid: number) => boolean
+}
+
+/** Parses the namespace UID ranges needed to keep the overflow exception narrow. */
+function parseUidMap(value: string | null): UidMapRange[] | null {
+  if (value === null) return null
+  const ranges = value.trim().split(/\r?\n/).filter(Boolean).map((line) => {
+    const fields = line.trim().split(/\s+/)
+    if (fields.length !== 3 || fields.some((field) => !/^\d+$/.test(field))) return null
+    const inside = Number(fields[0])
+    const outside = Number(fields[1])
+    const length = Number(fields[2])
+    if (!Number.isSafeInteger(inside) || !Number.isSafeInteger(outside) || !Number.isSafeInteger(length) || length <= 0) return null
+    return { inside, outside, length }
+  })
+  return ranges.length > 0 && ranges.every((range): range is UidMapRange => range !== null) ? ranges : null
+}
+
+function uidIsMapped(uid: number, ranges: UidMapRange[]): boolean {
+  return ranges.some(({ inside, length }) => uid >= inside && uid - inside < length)
+}
+
+/** Whether Linux ownership may be the namespace-wide unmapped-owner value. */
+function overflowOwnership(
+  readUidMap: () => string | null,
+  readOverflowUid: () => string | null,
+): OverflowOwnership {
+  const ranges = parseUidMap(readUidMap())
+  const isMapped = ranges === null ? undefined : (uid: number) => uidIsMapped(uid, ranges)
+  if (ranges === null) return { unverifiable: true }
+
+  const identity = ranges.length === 1
+    && ranges[0]!.inside === 0
+    && ranges[0]!.outside === 0
+    && ranges[0]!.length === 4_294_967_295
+  if (identity) return { unverifiable: false, isMapped }
+
+  const overflowText = readOverflowUid()?.trim()
+  const overflow = overflowText !== undefined && /^\d+$/.test(overflowText) ? Number(overflowText) : Number.NaN
+  if (!Number.isSafeInteger(overflow) || overflow < 0) return { unverifiable: true, isMapped }
+  // `from_kuid_munged` returns overflowuid whenever the original uid is not
+  // mapped. The placeholder can itself be inside this namespace's numeric map,
+  // so mapping the number does not prove that it identifies the file owner.
+  return { uid: overflow, unverifiable: true, isMapped }
+}
+
+function uidIsUnverifiable(uid: number | undefined, ownership: OverflowOwnership): boolean {
+  return uid !== undefined
+    && ownership.unverifiable
+    && (ownership.uid === undefined || ownership.uid === uid)
+}
+
+function ownerIsTrusted(uid: number | undefined, ownership: OverflowOwnership): boolean {
+  return uid !== undefined
+    && (ownership.isMapped === undefined || ownership.isMapped(uid))
+    && !uidIsUnverifiable(uid, ownership)
+}
+
 /**
  * The uids whose files LoopTroop may run: root, this process, and whoever owns
  * the Node binary running it.
@@ -542,14 +646,22 @@ function readMountTableFromProc(): string {
  * refusing the user's `/opt/hostedtoolcache/.../npm` refused the Node it was
  * itself running from. Trusting that owner widens nothing that matters: whoever
  * can replace the interpreter already controls every line this process runs.
+ * In a user namespace, the UID map must also prove that each owner is mapped;
+ * a numeric root or interpreter UID that is only an overflow placeholder is not
+ * an identity this process can safely trust.
  */
-function trustedOwners(): Set<number> {
-  const owners = new Set<number>([0])
+function trustedOwners(ownership: OverflowOwnership, stat: (path: string) => trustedFs.Stats | null): Set<number> {
+  const owners = new Set<number>()
+  const add = (uid: number | undefined): void => {
+    if (uid === undefined || !ownerIsTrusted(uid, ownership)) return
+    owners.add(uid)
+  }
+  add(0)
   const uid = process.getuid?.()
-  if (uid !== undefined) owners.add(uid)
+  add(uid)
   const interpreter = realpathOrNull(process.execPath)
-  const interpreterOwner = interpreter === null ? undefined : statOrNull(interpreter)?.uid
-  if (interpreterOwner !== undefined) owners.add(interpreterOwner)
+  const interpreterOwner = interpreter === null ? undefined : stat(interpreter)?.uid
+  add(interpreterOwner)
   return owners
 }
 
@@ -567,6 +679,8 @@ interface TrustContext {
   isOpencode: boolean
   /** Computed once per resolution: it costs a `realpath` and a `stat` of the Node binary. */
   owners: Set<number>
+  /** Linux ownership reported as the namespace-wide unmapped-owner value. */
+  overflowOwnership: OverflowOwnership
 }
 
 /**
@@ -658,7 +772,8 @@ function foreignFileRefusal(
 ): string | null {
   if (isTrusted) return null
 
-  if (context.isOpencode && context.canonicalOpenCodeDir && isExactOpencode(filePath, context.platform)) {
+  if (ownerIsTrusted(stats.uid, context.overflowOwnership)
+    && context.isOpencode && context.canonicalOpenCodeDir && isExactOpencode(filePath, context.platform)) {
     if (!isEnclosedInPrivateDirectory(filePath, context)) {
       return `its ${label} is owned by uid ${stats.uid} and is writable by its foreign owner`
     }
@@ -804,7 +919,10 @@ export function resolveTrustedExecutable(
   const readMountTable = options.readMountTable ?? readMountTableFromProc
   const stat = options.stat ?? statOrNull
   const lstat = options.lstat ?? lstatOrNull
-  const owners = trustedOwners()
+  const overflow = platform === 'linux'
+    ? overflowOwnership(options.readUidMap ?? readUidMapFromProc, options.readOverflowUid ?? readOverflowUidFromProc)
+    : { unverifiable: false }
+  const owners = trustedOwners(overflow, stat)
 
   if (name === '') return { reason: 'An empty program name cannot be resolved.' }
   if (/[\\/]/.test(name) || p.isAbsolute(name)) {
@@ -843,6 +961,7 @@ export function resolveTrustedExecutable(
       canonicalOpenCodeDir: isOpencode && inCanonicalDir,
       isOpencode,
       owners,
+      overflowOwnership: overflow,
     }
     if (cachedResolutionHolds(cached, name, directories, extensions, platform, context)) {
       return { path: cached.candidate, target: cached.path }
@@ -870,6 +989,7 @@ export function resolveTrustedExecutable(
         canonicalOpenCodeDir: isOpencode && inCanonicalDir,
         isOpencode,
         owners,
+        overflowOwnership: overflow,
       }
       const refusal = target === null
         ? 'it could not be resolved to a real file'
@@ -926,6 +1046,10 @@ export function findTrustedExecutablePath(name: string, options: TrustedExecutab
  * The path is returned as named, for the same reason a `PATH` entry is: a tool
  * may work out where it lives from how it was started.
  *
+ * On Windows, an extensionless absolute path is resolved by trying its
+ * `PATHEXT` siblings in policy order; the extensionless file itself is never
+ * run.
+ *
  * A *relative* path is refused rather than resolved. Which directory it is
  * relative to is the caller's decision and differs per call site: the daemon's
  * working directory is a checkout, and quietly picking that would be the
@@ -938,18 +1062,28 @@ export function resolveTrustedProgram(
   const platform = options.platform ?? process.platform
   const p = pathFor(platform)
   if (!p.isAbsolute(program)) return resolveTrustedExecutable(program, options)
+  const policyEnv = options.policyEnv ?? process.env
+  if (platform === 'win32' && !windowsNameHasExtension(program)) {
+    for (const extension of windowsPathExtensions(policyEnv)) {
+      const candidate = `${program}${extension}`
+      if (isExecutableFile(candidate, platform)) return resolveTrustedProgram(candidate, options)
+    }
+    return { reason: `${program} has no executable sibling listed in PATHEXT.`, refusedAt: program }
+  }
   if (!isExecutableFile(program, platform)) return { reason: `${program} is not an executable file.` }
   const target = isWindowsAppAlias(program, platform) ? program : realpathOrNull(program)
   if (target === null) return { reason: `${program} could not be resolved to a real path.` }
   const stat = options.stat ?? statOrNull
   const lstat = options.lstat ?? lstatOrNull
-  const policyEnv = options.policyEnv ?? process.env
   const named = trustedOperatorDirectories(policyEnv, platform)
   const canonicalDirs = canonicalTrustedDirectorySet(platform, policyEnv)
   const directory = p.dirname(program)
   const isOpencode = isExactOpencode(program, platform)
   const inCanonicalDir = directoryMatches(directory, canonicalDirs)
     || directoryMatches(p.dirname(target), canonicalDirs)
+  const overflow = platform === 'linux'
+    ? overflowOwnership(options.readUidMap ?? readUidMapFromProc, options.readOverflowUid ?? readOverflowUidFromProc)
+    : { unverifiable: false }
   const context: TrustContext = {
     platform,
     readMountTable: options.readMountTable ?? readMountTableFromProc,
@@ -958,7 +1092,8 @@ export function resolveTrustedProgram(
     namedByOperator: directoryMatches(directory, named),
     canonicalOpenCodeDir: isOpencode && inCanonicalDir,
     isOpencode,
-    owners: trustedOwners(),
+    owners: trustedOwners(overflow, stat),
+    overflowOwnership: overflow,
   }
   // The path as named is judged as well as the real one: it is what gets
   // spawned, so a link on the way to it is followed again at spawn time.
@@ -1091,10 +1226,14 @@ function readsItsLineAgain(script: string): boolean {
 }
 
 /** What goes inside `cmd.exe /c "…"`: the script's path, then its arguments. */
-function commandLineForCmd(program: string, args: readonly string[]): string {
+function commandLineParts(program: string, args: readonly string[]): string[] {
   const script = trustedPath.win32.normalize(program)
   const escapeTwice = readsItsLineAgain(script)
-  return [escapeForCmd(script), ...args.map((arg) => quoteArgumentForCmd(arg, escapeTwice))].join(' ')
+  return [escapeForCmd(script), ...args.map((arg) => quoteArgumentForCmd(arg, escapeTwice))]
+}
+
+function commandLineForCmd(program: string, args: readonly string[]): string {
+  return commandLineParts(program, args).join(' ')
 }
 
 /**
@@ -1152,6 +1291,35 @@ function expandableReference(line: string, env: NodeJS.ProcessEnv): string | nul
   return null
 }
 
+/** Checks only a percent pair that crosses an actual command-line part boundary. */
+function expandableReferenceAcrossParts(parts: readonly string[], env: NodeJS.ProcessEnv): string | null {
+  const defined = new Set(Object.keys(env).map((name) => name.toLowerCase()))
+
+  for (let openingPart = 0; openingPart < parts.length; openingPart += 1) {
+    const part = parts[openingPart]!
+    const opening = part.lastIndexOf('%')
+    if (opening === -1) continue
+
+    let closingPart = openingPart + 1
+    while (closingPart < parts.length && !parts[closingPart]!.includes('%')) closingPart += 1
+    if (closingPart === parts.length) continue
+
+    const closing = parts[closingPart]!.indexOf('%')
+    const suffix = part.slice(opening + 1)
+    const content = [suffix, ...parts.slice(openingPart + 1, closingPart), parts[closingPart]!.slice(0, closing)].join(' ')
+    const colon = content.indexOf(':')
+    // A colon in a later quoted argument is ordinary text for an undefined
+    // name; an explicitly defined name can still include that text.
+    const colonInOpeningPart = colon >= 0 && colon < suffix.length
+    const name = colon === -1 ? content : content.slice(0, colon)
+    if ((colonInOpeningPart && !name.endsWith('^')) || defined.has(name.toLowerCase())) {
+      return `%${content.replace(/\^/g, '')}%`
+    }
+  }
+
+  return null
+}
+
 /**
  * Whether cmd.exe, reading `quoted` a second time, would find a metacharacter
  * outside quotes.
@@ -1165,13 +1333,15 @@ function expandableReference(line: string, env: NodeJS.ProcessEnv): string | nul
  * argument is refused. One with a quote and nothing else to act on is left
  * alone.
  */
-function exposedOnSecondRead(value: string): boolean {
+function exposedOnSecondRead(values: readonly string[]): string | null {
   let inQuotes = false
-  for (const character of quoteForArgv(value)) {
-    if (character === '"') inQuotes = !inQuotes
-    else if (!inQuotes && '&|<>^()'.includes(character)) return true
+  for (const value of values) {
+    for (const character of quoteForArgv(value)) {
+      if (character === '"') inQuotes = !inQuotes
+      else if (!inQuotes && '&|<>^()'.includes(character)) return value
+    }
   }
-  return false
+  return null
 }
 
 /** Why cmd.exe cannot be trusted to pass `args` to `program` unchanged, or `null`. */
@@ -1180,12 +1350,19 @@ function commandLineRefusal(program: string, args: readonly string[], env: NodeJ
   // after it without a word.
   if (args.some((arg) => /[\r\n]/.test(arg))) return 'cannot pass it an argument that contains a line break'
   if (!readsItsLineAgain(trustedPath.win32.normalize(program))) {
-    const exposed = args.find(exposedOnSecondRead)
-    if (exposed !== undefined) {
+    const exposed = exposedOnSecondRead(args)
+    if (exposed !== null) {
       return `would read ${JSON.stringify(exposed)} a second time with part of it outside quotes, where \`&\`, \`|\`, \`<\`, \`>\`, \`^\` and parentheses act`
     }
   }
-  const expanded = expandableReference(commandLineForCmd(program, args), env)
+  const parts = commandLineParts(program, args)
+  // Check each argument independently first. A percent in one quoted argument
+  // must not pair with a percent in another quoted argument merely because the
+  // full command line joins them with spaces. The final check handles a pair
+  // crossing a part boundary: an undefined edit colon must be in the opening
+  // part, while an explicitly defined name is checked wherever the colon is.
+  const expanded = parts.map((part) => expandableReference(part, env)).find((value) => value !== null)
+    ?? expandableReferenceAcrossParts(parts, env)
   return expanded === null ? null : `would expand ${expanded} in its arguments, and no escaping prevents that`
 }
 

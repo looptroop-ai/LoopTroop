@@ -64,6 +64,33 @@ For user-visible changes, add a concise entry under `## Unreleased` in `CHANGELO
 
 **When a release changes an install path, a command, a flag or a channel, the website repository ships in the same batch.** The published documentation lives in `looptroop-ai/LoopTroop-Website`, so nothing in this repository's CI can notice when it falls behind — and it did, for four releases, while every page still opened with `git clone` and `npm run dev`. Two automated guards now catch part of it (`verify:site` requires Getting Started to lead with an install command, and `sync:cli --check` fails when the CLI reference drifts from `USAGE`), but neither knows about a new channel or a changed flag. This repository now also exposes `node scripts/docs-install-catalog.mjs`, which prints the published-smoke install table as JSON so the website can verify its consolidated installation docs against the channels and commands this repository actually ships. Bumping `CLI_SOURCE_REF` in the website's `scripts/sync-cli-reference.mjs` to the new tag, and re-running `npm run sync:cli`, is part of shipping a release.
 
+If website CI must verify that catalog before a release tag exists, use an
+immutable app commit that contains the catalog, check out that same ref in the
+website job, and fail closed when the catalog is missing. Do not replace the
+source pin with a branch or silently fall back to a reduced catalog.
+
+Release jobs verify the npm tarball, the matching `package-lock.json`, the
+managed-channel bundle, installer scripts, binaries, and checksums as one
+manifest. Container builds install the released tarball with its lockfile using
+`npm ci --ignore-scripts --omit=dev`; the finished multi-architecture index is
+attested and each image records its installed package versions. Registry fetches
+use three retries bounded to 10 to 60 seconds. Dependency and build jobs that do
+not publish lack attestation and OIDC permissions; the container build-and-push
+job retains the release environment, `packages: write` permission and registry
+login needed to publish images. Finished-index attestation runs in a separate
+download-only job. Git and package-feed credentials are scoped to the single
+invocation that needs them. Release scripts reject unknown flags and positional
+arguments, while published smoke checks read `doctor --json`'s structured
+`checks[].install.channel` and `checks[].install.upgradeCommand` fields instead
+of display prose.
+
+Standalone binary jobs use Node `v26.9.0`'s native `--build-sea` builder. This is
+an embedded-runtime pin only: application, package and container jobs keep the
+Node `24.18.1` floor. If that embedded runtime changes, review Node's release
+schedule and security maintenance separately, and preserve the CommonJS asset
+bundle, disabled code cache and disabled snapshot settings across all four
+binary target lanes.
+
 ## Issues
 
 Before opening an issue, please check whether a similar issue already exists.

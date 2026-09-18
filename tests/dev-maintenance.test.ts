@@ -536,6 +536,31 @@ describe('npm outdated probe outcomes', () => {
     expect(classifyOutdatedProbe({ status: 1, stdout: '{"vite":{}}', stderr: '' }).outcome).toBe('listed')
   })
 
+  it('reads npm 12 JSON errors as unavailable', () => {
+    const probe = classifyOutdatedProbe({
+      status: 1,
+      stdout: JSON.stringify({
+        error: {
+          code: 'ECONNREFUSED',
+          summary: 'FetchError: request to http://127.0.0.1:9/example failed',
+          detail: 'connect ECONNREFUSED 127.0.0.1:9',
+        },
+      }),
+      stderr: '',
+    })
+
+    expect(probe).toEqual({
+      outcome: 'unavailable',
+      message: 'ECONNREFUSED: FetchError: request to http://127.0.0.1:9/example failed',
+    })
+  })
+
+  it('does not treat a failing empty dependency result as current', () => {
+    const probe = classifyOutdatedProbe({ status: 1, stdout: '{}', stderr: '' })
+
+    expect(probe.outcome).toBe('unavailable')
+  })
+
   it('does not read whitespace as a report', () => {
     expect(classifyOutdatedProbe({ status: 0, stdout: '\n', stderr: '' })).toEqual({ outcome: 'current' })
   })

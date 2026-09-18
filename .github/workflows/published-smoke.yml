@@ -89,6 +89,9 @@ concurrency:
 env:
   NPM_CONFIG_FUND: 'false'
   NPM_CONFIG_AUDIT: 'false'
+  NPM_CONFIG_FETCH_RETRIES: '3'
+  NPM_CONFIG_FETCH_RETRY_MINTIMEOUT: '10000'
+  NPM_CONFIG_FETCH_RETRY_MAXTIMEOUT: '60000'
 
 jobs:
   plan:
@@ -130,8 +133,24 @@ jobs:
             echo "::error::Could not resolve a version to test."
             exit 1
           fi
+          if [[ ! "${version}" =~ ^[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z-]+(\.[0-9A-Za-z-]+)*)?$ ]]; then
+            echo "::error::${version} is not a valid released version."
+            exit 1
+          fi
           echo "Testing ${version}"
           echo "version=${version}" >> "$GITHUB_OUTPUT"
+
+      # A scheduled run resolves the newest published release while still on
+      # the default branch. Run the driver from that release's tag so a later
+      # main change cannot alter what an older release is being asked to prove.
+      - name: Check out the tested release
+        env:
+          VERSION: ${{ steps.resolve.outputs.version }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          git fetch --force --quiet origin "refs/tags/v${VERSION}:refs/tags/v${VERSION}"
+          git checkout --detach "refs/tags/v${VERSION}"
 
       # The matrix comes from the recipe table in the driver, so the workflow
       # and the recipes cannot disagree about which legs exist.
@@ -159,9 +178,11 @@ jobs:
       # "setup failed" rather than silently omitting them.
       - name: Record the expected legs
         shell: bash
+        env:
+          MATRIX: ${{ steps.plan.outputs.matrix }}
         run: |
           set -euo pipefail
-          echo '${{ steps.plan.outputs.matrix }}' > expected.json
+          printf '%s' "${MATRIX}" > expected.json
           node -e "
             const legs = JSON.parse(require('node:fs').readFileSync('expected.json','utf8')).include
             console.log(\`\${legs.length} leg(s) expected\`)
@@ -192,6 +213,7 @@ jobs:
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
         with:
+          ref: refs/tags/v${{ needs.plan.outputs.version }}
           persist-credentials: false
 
       - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7
@@ -303,7 +325,7 @@ jobs:
         shell: pwsh
         run: |
           $ErrorActionPreference = 'Stop'
-          iex "& {$(irm get.scoop.sh)} -RunAsAdmin"
+          iex "& {$(irm https://get.scoop.sh)} -RunAsAdmin"
           # The installer adds the shim directory to the *user* PATH, which this
           # process has already read; without this `scoop` is not a command in
           # the next step.
@@ -332,6 +354,9 @@ jobs:
       # rather than an error. Without it the install reports success and the
       # next step — `opencode --version` — is what fails, naming neither npm nor
       # the blocked script. Legal here only because the install is global.
+      # Coverage limitation: the npm path is pinned to a reviewed OpenCode
+      # version; this workflow does not assert the moving official installer
+      # path, whose GitHub API lookup is rate-limited on shared runners.
       - name: Install OpenCode
         if: matrix.opencode == 'npm' || matrix.opencode == 'adopt'
         shell: bash

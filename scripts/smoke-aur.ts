@@ -46,6 +46,7 @@ import { createServer } from 'node:http'
 import type { AddressInfo } from 'node:net'
 import { basename, join, resolve } from 'node:path'
 import { renderAurPackage, AUR_PACKAGE_NAME } from './package-manifests.ts'
+import { inspectDoctorInstall } from './smoke-lib.mjs'
 import { spawnProgram } from './tool-path.ts'
 
 class SmokeError extends Error {
@@ -204,22 +205,27 @@ async function main(): Promise<void> {
     // check itself instead of searching output for two words that could
     // co-occur in an unrelated remedy line.
     const doctor = await invoke('/usr/bin/looptroop', ['doctor', '--json'], { env: childEnv, allowFailure: true })
-    let checks: { name?: string, detail?: string }[]
+    let inspection: ReturnType<typeof inspectDoctorInstall>
     try {
-      checks = JSON.parse(doctor.stdout).checks
+      inspection = inspectDoctorInstall(doctor.stdout, {
+        channel: 'aur',
+        upgradeCommand: 'yay -Syu looptroop-bin   (or your AUR helper of choice)',
+      })
     } catch {
       fail('`doctor --json` did not produce parseable JSON.', `${doctor.stdout}${doctor.stderr}`.slice(0, 2000))
     }
 
-    const install = checks.find((check) => check.name === 'install')
-    if (!/^aur\b/.test(install?.detail ?? '')) {
+    if (inspection.check === null) {
+      fail('`doctor --json` reports no install check at all.', `${doctor.stdout}${doctor.stderr}`.slice(0, 2000))
+    }
+    if (!inspection.matches) {
       fail(
         '`doctor` does not report this as an AUR install.',
-        `It reports: ${install?.detail ?? '(no install check)'}`,
+        `It reports channel ${inspection.facts?.channel ?? '(none)'} and upgrade ${inspection.facts?.upgradeCommand ?? '(none)'}.`,
         'That means the upgrade command shown to the user is the wrong one.',
       )
     }
-    log(`  \`doctor\` reports the aur channel: ${install?.detail}`)
+    log(`  \`doctor\` reports the aur channel (upgrade: ${inspection.facts?.upgradeCommand ?? '(none)'})`)
   } finally {
     log('\nRemoving...')
     await invoke('pacman', ['-R', '--noconfirm', AUR_PACKAGE_NAME], { allowFailure: true })

@@ -1,7 +1,10 @@
 import { describe, it, expect } from 'vitest'
-import { readFileSync } from 'node:fs'
+import { chmodSync, mkdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
 import { spawnSync } from 'node:child_process'
-import { planMatrix, CHANNELS, binaryPrefix, validatePublishedVersion } from '../scripts/smoke-published.mjs'
+import { tmpdir } from 'node:os'
+import { join } from 'node:path'
+import { makeTempDir, removeTempDir } from '../server/test/tempDir'
+import { planMatrix, CHANNELS, binaryPrefix, validatePublishedVersion, whichLooptroop } from '../scripts/smoke-published.mjs'
 import type { ChannelRecipe, InstalledChannel } from '../scripts/smoke-published.mjs'
 
 /**
@@ -272,7 +275,7 @@ describe('planMatrix', () => {
     const shell = process.platform === 'win32' ? 'powershell.exe' : 'pwsh'
     const command = installedChannel('installer-ps1-binary').install({ version: '9.9.9', pin: true }).display
     const result = spawnSync(shell, ['-NoProfile', '-NonInteractive', '-Command', `
-function curl.exe {
+function Invoke-MockCurl {
   $global:LASTEXITCODE = ${exitCode}
   if (${empty ? '$true' : '$false'}) { return }
   'param([switch]$Binary, [string]$Version)'
@@ -281,6 +284,7 @@ function curl.exe {
   '"@'
   'Write-Output "$message $Binary $Version"'
 }
+Set-Alias -Name curl.exe -Value Invoke-MockCurl
 ${command}
 `], { encoding: 'utf8', timeout: 30_000 })
     expect(result.error).toBeUndefined()
@@ -335,7 +339,7 @@ ${command}
     // form. One string here would fail on one of the two operating systems.
     const { upgradeCommand } = installedChannel('installer-sh-binary').expect
     expect(upgradeCommand('win32')).toContain('scriptblock')
-    expect(upgradeCommand('linux')).toBe('curl -fsSL https://www.looptroop.ovh/install | sh -s -- --binary')
+    expect(upgradeCommand('linux')).toBe('curl --proto "=https" --proto-redir "=https" --tlsv1.2 -fsSL https://www.looptroop.ovh/install | sh -s -- --binary')
     expect(upgradeCommand('win32')).not.toBe(upgradeCommand('linux'))
   })
 
@@ -415,6 +419,57 @@ describe('workflow dispatch wiring', () => {
     const release = readFileSync('.github/workflows/release.yml', 'utf8')
     const job = release.slice(release.indexOf('published-smoke-dispatch:'))
     expect(job.slice(0, job.indexOf('steps:'))).toContain("dist_tag == 'latest'")
+  })
+
+  it('resolves the Windows launcher with PATHEXT-aware code', () => {
+    const driver = readFileSync('scripts/smoke-published.mjs', 'utf8')
+    // The Windows gate runs the resolver fixture with an extensionless shim
+    // before npm.cmd. Keep this driver on that same path rather than accepting
+    // the first line printed by `where`, which is not CreateProcess semantics.
+    expect(driver).toContain("import { findToolPath, launchTool, planToolLaunch } from './tool-path.ts'")
+    expect(driver).not.toContain("run('where', ['looptroop']")
+  })
+
+  it('uses the parent PATH when no launcher hint is supplied', () => {
+    const root = makeTempDir('looptroop-smoke-path-')
+    const previousPath = process.env.PATH
+    const previousPathExt = process.env.PATHEXT
+    const name = process.platform === 'win32' ? 'looptroop.CMD' : 'looptroop'
+    const launcher = join(root, name)
+    mkdirSync(root, { recursive: true })
+    writeFileSync(launcher, process.platform === 'win32' ? '@echo off\r\n' : '#!/bin/sh\nexit 0\n')
+    chmodSync(launcher, 0o755)
+    process.env.PATH = root
+    if (process.platform === 'win32') process.env.PATHEXT = '.CMD'
+    try {
+      expect(whichLooptroop()).toBe(launcher)
+    } finally {
+      if (previousPath === undefined) delete process.env.PATH
+      else process.env.PATH = previousPath
+      if (previousPathExt === undefined) delete process.env.PATHEXT
+      else process.env.PATHEXT = previousPathExt
+      removeTempDir(root)
+    }
+  })
+
+  it('keeps the resolved launch target and errno when a child cannot start', async () => {
+    // This is the production run helper, imported from the driver itself. A
+    // real executable plus a missing cwd makes spawnSync return ENOENT after
+    // resolution, which is the case a PATH-only message misdiagnoses.
+    const driver = await import('../scripts/smoke-published.mjs') as unknown as {
+      run: (command: string, args: string[], options?: { cwd?: string }) => {
+        code: number | null
+        combined: string
+      }
+    }
+    const missingCwd = join(tmpdir(), `looptroop-published-missing-cwd-${process.pid}`)
+    rmSync(missingCwd, { recursive: true, force: true })
+
+    const result = driver.run(process.execPath, ['--version'], { cwd: missingCwd })
+
+    expect(result.code).toBeNull()
+    expect(result.combined).toContain(`${process.execPath}: ENOENT:`)
+    expect(result.combined).not.toContain('process.execPath is not on PATH')
   })
 
   it('gives every gh step a token as well as a permission', () => {

@@ -31,9 +31,9 @@
 # after. So the draft can hold the notes and artefacts while npm — the one step
 # that cannot be undone — still has a clean way to refuse.
 #
-# Every job pins Node and npm. Trusted publishing needs npm >= 11.5.1, and an
-# unpinned client is exactly the kind of drift that surfaces on the one blocking
-# job, mid-release.
+# Every job pins Node. The publish job deliberately uses the runner's bundled npm
+# so its OIDC credential boundary remains publish-only; trusted publishing needs
+# npm >= 11.5.1, which the pinned Node 24 runner supplies.
 name: Release
 
 on:
@@ -68,6 +68,9 @@ permissions:
 env:
   DH_IMAGE: docker.io/looptroopai/looptroop
   GHCR_IMAGE: ghcr.io/looptroop-ai/looptroop
+  NPM_CONFIG_FETCH_RETRIES: '3'
+  NPM_CONFIG_FETCH_RETRY_MINTIMEOUT: '10000'
+  NPM_CONFIG_FETCH_RETRY_MAXTIMEOUT: '60000'
 
 # Never cancel a release in flight. Cancelling between the npm publish and the
 # tag would leave exactly the half-finished state the resume logic exists for,
@@ -205,8 +208,8 @@ jobs:
   # ---------------------------------------------------------------------------
   # The standalone binaries, before anything is packed.
   # ---------------------------------------------------------------------------
-  # Each target is built on the runner that matches it: a single-file build
-  # embeds the running Node, so a cross-built one would carry the wrong runtime.
+  # Each target is built on the runner that matches it: native SEA embeds the
+  # selected Node runtime, so a cross-built one would carry the wrong runtime.
   # macOS x64 is absent because Node supports single-executable applications on
   # arm64 only there; Intel Macs keep Homebrew and npm.
   #
@@ -218,9 +221,9 @@ jobs:
   #
   # The macOS runner is pinned rather than floating so the OS the binary is
   # built on is a decision rather than something that moves underneath it. It is
-  # not what decides the binary's minimum macOS version — the build copies the
-  # running Node executable and re-signs it, so that comes from Node, which
-  # `setup-node` pins. Bump this deliberately when the image is retired;
+  # not what decides the binary's minimum macOS version — the native builder
+  # writes the executable from the Node runtime `setup-node` pins. Bump this
+  # deliberately when the image is retired;
   # `macos-14` was withdrawn on 2 Nov 2026.
   binary:
     name: Binary (${{ matrix.target }})
@@ -230,8 +233,6 @@ jobs:
     timeout-minutes: 40
     permissions:
       contents: read
-      id-token: write
-      attestations: write
     strategy:
       fail-fast: false
       matrix:
@@ -249,7 +250,9 @@ jobs:
       - name: Set up Node
         uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7
         with:
-          node-version: 24.18.1
+          # Standalone binaries use the maintained native SEA builder in Node
+          # 26.9.0. The release/package jobs retain the Node 24.18.1 floor.
+          node-version: 26.9.0
           cache: npm
 
       - name: Pin npm to the declared version
@@ -274,6 +277,36 @@ jobs:
       # With `node` shadowed, which is the only thing that proves the artefact:
       # every runner has Node, so a binary that quietly used it would pass any
       # weaker check and fail for the user this exists for.
+      - name: Run blocking application checks on the embedded runtime
+        shell: bash
+        run: |
+          set -euo pipefail
+          binary=$(find "${RUNNER_TEMP}/binary" -maxdepth 1 -type f \
+            -name 'looptroop-*-${{ matrix.target }}*' \
+            ! -name '*.tar.gz' ! -name '*.zip' | head -1)
+          if [ -z "${binary}" ]; then
+            echo "::error::The binary build produced no executable for ${{ matrix.target }}."
+            exit 1
+          fi
+          test "$("${binary}" --version)" = "$(node -p 'require("./package.json").version')"
+          doctor_dir="${RUNNER_TEMP}/embedded-doctor"
+          mkdir -p "${doctor_dir}"
+          doctor_status=0
+          doctor=$(LOOPTROOP_CONFIG_DIR="${doctor_dir}" \
+            LOOPTROOP_OPENCODE_MODE=mock "${binary}" doctor --json) || doctor_status=$?
+          if [ "${doctor_status}" -ne 0 ]; then
+            echo "Doctor reported environment status ${doctor_status}; checking the embedded runtime field."
+          fi
+          printf '%s' "${doctor}" | EXPECTED_NODE_VERSION="$(node -p 'process.versions.node')" node -e '
+            const report = JSON.parse(require("node:fs").readFileSync(0, "utf8"))
+            const nodeCheck = report.checks?.find((check) => check?.name === "node")
+            const expected = process.env.EXPECTED_NODE_VERSION
+            if (nodeCheck?.node?.version !== expected) {
+              throw new Error(`doctor node.version=${nodeCheck?.node?.version ?? "missing"}; expected ${expected}`)
+            }
+          '
+          echo "Embedded runtime application checks passed."
+
       - name: Drive it with no Node available
         shell: bash
         run: |
@@ -285,20 +318,6 @@ jobs:
           fi
           node scripts/smoke-binary.mjs --archive "${archive}"
 
-      # Provenance: a signed statement that these bytes came from this workflow,
-      # this repository and this commit. It is what we ship instead of code
-      # signing, which was declined, and it is free.
-      #
-      # `contents: read` is listed alongside the two the action needs because a
-      # job-level block *replaces* the workflow default rather than adding to
-      # it — anything unlisted becomes `none`, and the checkout would fail.
-      - name: Attest the archive
-        uses: actions/attest-build-provenance@4d101475d8b20a2381f78447822ac1eab6504dd8 # v4.2.2
-        with:
-          subject-path: |
-            ${{ runner.temp }}/binary/*.tar.gz
-            ${{ runner.temp }}/binary/*.zip
-
       - name: Upload the archive
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
         with:
@@ -308,6 +327,37 @@ jobs:
             ${{ runner.temp }}/binary/*.zip
           if-no-files-found: error
           retention-days: 14
+
+  # Attestation has OIDC and write permission by design, so it runs after the
+  # build matrix in a job that downloads bytes only. Keeping it out of `binary`
+  # means a branch's install/build code never runs beside those credentials.
+  attest-binaries:
+    name: Attest standalone binaries
+    needs: [detect, binary]
+    if: >-
+      always()
+      && needs.detect.outputs.proceed == 'true'
+      && needs.detect.outputs.skip_binaries != 'true'
+      && needs.binary.result == 'success'
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    permissions:
+      contents: read
+      id-token: write
+      attestations: write
+    steps:
+      - name: Download the binary archives
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8
+        with:
+          pattern: release-binary-*
+          merge-multiple: true
+
+      - name: Attest the binary archives
+        uses: actions/attest-build-provenance@4d101475d8b20a2381f78447822ac1eab6504dd8 # v4.2.2
+        with:
+          subject-path: |
+            looptroop-*.tar.gz
+            looptroop-*.zip
 
   # ---------------------------------------------------------------------------
   # Pack exactly once. Everything downstream consumes these bytes.
@@ -326,14 +376,10 @@ jobs:
           || (needs.binary.result == 'skipped' && needs.detect.outputs.skip_binaries == 'true'))
     runs-on: ubuntu-latest
     timeout-minutes: 25
-    # Same three as the binary job, and for the same reason: attestation needs
-    # an OIDC token to sign with and the attestations scope to store the result.
-    # A job-level block replaces the workflow default rather than adding to it,
-    # so `contents: read` is listed or the checkout loses its read access.
+    # Build is read-only. Attestation is isolated in its own download-only jobs
+    # below, so this job does not carry their write permissions.
     permissions:
       contents: read
-      id-token: write
-      attestations: write
     outputs:
       tarball: ${{ steps.manifest.outputs.tarball }}
       sha256: ${{ steps.manifest.outputs.sha256 }}
@@ -414,13 +460,15 @@ jobs:
       # somebody on that platform tries to install and gets a 404.
       - name: Require every target's archive
         if: needs.detect.outputs.skip_binaries != 'true'
+        env:
+          VERSION: ${{ needs.detect.outputs.version }}
         run: |
           set -euo pipefail
           missing=""
           for target in linux-x64 linux-arm64 darwin-arm64 win-x64; do
             case "${target}" in
-              win-x64) name="looptroop-${{ needs.detect.outputs.version }}-${target}.zip" ;;
-              *) name="looptroop-${{ needs.detect.outputs.version }}-${target}.tar.gz" ;;
+              win-x64) name="looptroop-${VERSION}-${target}.zip" ;;
+              *) name="looptroop-${VERSION}-${target}.tar.gz" ;;
             esac
             [ -f "${name}" ] || missing="${missing} ${name}"
           done
@@ -435,12 +483,13 @@ jobs:
         id: manifest
         env:
           SKIP_BINARIES: ${{ needs.detect.outputs.skip_binaries }}
+          VERSION: ${{ needs.detect.outputs.version }}
         run: |
           set -euo pipefail
-          tarball="looptroop-${{ needs.detect.outputs.version }}.tgz"
+          tarball="looptroop-${VERSION}.tgz"
           # What Homebrew, Scoop and Chocolatey fetch. WinGet does not: its
           # portable installer takes the standalone Windows binary instead.
-          bundle="looptroop-${{ needs.detect.outputs.version }}-bundle.tar.gz"
+          bundle="looptroop-${VERSION}-bundle.tar.gz"
           # The binaries are named per target and there is one manifest, so they
           # are collected by glob rather than listed: a target added later must
           # not need this line edited, and a target that failed to upload must
@@ -457,7 +506,8 @@ jobs:
             echo "::warning::Writing a manifest with no standalone binaries, by operator request."
           fi
           npm run release:manifest -- "${tarball}" \
-            --asset "${bundle}" --asset install.sh --asset install.ps1 \
+            --asset "${bundle}" --asset package-lock.json \
+            --asset install.sh --asset install.ps1 \
             "${binaries[@]}"
           node -e '
             const m = JSON.parse(require("node:fs").readFileSync("release-manifest.json","utf8"))
@@ -471,28 +521,6 @@ jobs:
             out.end()
           '
 
-      # The binaries are attested where they are built, one job per target. The
-      # rest of what a user can install is attested here, because this is the
-      # only job that has all of it in one place.
-      #
-      # `install.sh` and `install.ps1` matter most: they are fetched over the
-      # network and piped straight into a shell, which is the one asset where a
-      # substitution would execute rather than merely install. The manifest and
-      # checksums are attested too — they are what a repair job trusts months
-      # later to decide which bytes a release published.
-      #
-      # Verified with: gh attestation verify <file> --repo looptroop-ai/LoopTroop
-      - name: Attest the release assets
-        uses: actions/attest-build-provenance@4d101475d8b20a2381f78447822ac1eab6504dd8 # v4.2.2
-        with:
-          subject-path: |
-            looptroop-*.tgz
-            looptroop-*-bundle.tar.gz
-            install.sh
-            install.ps1
-            release-manifest.json
-            checksums.sha256
-
       - name: Upload the release artefacts
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
         with:
@@ -503,12 +531,51 @@ jobs:
             looptroop-*-linux-*.tar.gz
             looptroop-*-darwin-*.tar.gz
             looptroop-*-win-*.zip
+            package-lock.json
             install.sh
             install.ps1
             release-manifest.json
             checksums.sha256
           if-no-files-found: error
           retention-days: 14
+
+  # The attestation action has OIDC and artifact-write permission, so it gets a
+  # dependency-free job of its own. The release build above remains the only job
+  # that runs package install/build code and never sees those credentials.
+  attest-release-assets:
+    name: Attest release assets
+    needs: [detect, build]
+    if: >-
+      always()
+      && needs.detect.outputs.proceed == 'true'
+      && needs.build.result == 'success'
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    permissions:
+      contents: read
+      id-token: write
+      attestations: write
+    steps:
+      - name: Download the release artefacts
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8
+        with:
+          name: release-artefacts
+
+      # Verified with: gh attestation verify <file> --repo looptroop-ai/LoopTroop
+      - name: Attest the release assets
+        uses: actions/attest-build-provenance@4d101475d8b20a2381f78447822ac1eab6504dd8 # v4.2.2
+        with:
+          subject-path: |
+            looptroop-*.tgz
+            looptroop-*-bundle.tar.gz
+            looptroop-*-linux-*.tar.gz
+            looptroop-*-darwin-*.tar.gz
+            looptroop-*-win-*.zip
+            package-lock.json
+            install.sh
+            install.ps1
+            release-manifest.json
+            checksums.sha256
 
   # ---------------------------------------------------------------------------
   # The last gate before anything is public.
@@ -558,20 +625,26 @@ jobs:
       # something other than npm, and a bundle that travelled with the wrong
       # manifest would otherwise be caught by whoever installed it.
       - name: Verify every artefact matches the manifest
+        env:
+          VERSION: ${{ needs.detect.outputs.version }}
         run: >
           npm run release:verify-artifact --
-          "looptroop-${{ needs.detect.outputs.version }}.tgz" release-manifest.json --assets-dir .
+          "looptroop-${VERSION}.tgz" release-manifest.json --assets-dir .
 
       - name: Install the tarball and exercise the CLI
-        run: node scripts/smoke-install.mjs --tarball "looptroop-${{ needs.detect.outputs.version }}.tgz"
+        env:
+          VERSION: ${{ needs.detect.outputs.version }}
+        run: node scripts/smoke-install.mjs --tarball "looptroop-${VERSION}.tgz"
 
       # The bundle is built once, on Linux, and unpacked on macOS and Windows.
       # This matrix is the only place before publication where it is executed on
       # a platform other than the one that made it.
       - name: Unpack the bundle and drive the CLI
+        env:
+          VERSION: ${{ needs.detect.outputs.version }}
         run: >
           node scripts/smoke-bundle.mjs
-          --bundle "looptroop-${{ needs.detect.outputs.version }}-bundle.tar.gz"
+          --bundle "looptroop-${VERSION}-bundle.tar.gz"
 
   # A read-only install prefix is how a lot of real installs look (a global
   # prefix owned by root, a container image with a read-only layer). Linux only:
@@ -609,7 +682,7 @@ jobs:
       - name: Verify the artefact matches the manifest
         env:
           VERSION: ${{ needs.detect.outputs.version }}
-        run: npm run release:verify-artifact -- "looptroop-${VERSION}.tgz" release-manifest.json
+        run: npm run release:verify-artifact -- "looptroop-${VERSION}.tgz" release-manifest.json --assets-dir .
 
       # The artefact, not a fresh pack. Repacking here would test bytes nobody
       # ships and let a difference between the two pass unnoticed.
@@ -635,13 +708,16 @@ jobs:
   # ---------------------------------------------------------------------------
   draft-release:
     name: Draft the GitHub release
-    needs: [detect, build, verify-artifact, verify-readonly]
+    needs: [detect, build, attest-binaries, attest-release-assets, verify-artifact, verify-readonly]
     # Every predecessor named explicitly, because `always()` removes the default
     # that would have stopped here on a failure.
     if: >-
       always()
       && needs.detect.outputs.proceed == 'true'
       && needs.build.result == 'success'
+      && needs.attest-release-assets.result == 'success'
+      && (needs.attest-binaries.result == 'success'
+          || (needs.attest-binaries.result == 'skipped' && needs.detect.outputs.skip_binaries == 'true'))
       && needs.verify-artifact.result == 'success'
       && needs.verify-readonly.result == 'success'
     runs-on: ubuntu-latest
@@ -673,12 +749,16 @@ jobs:
       # here would run third-party install scripts in the job that can create
       # releases and, at the finalize stage, push tags.
       - name: Render the release notes
-        run: npm run release:notes -- "${{ needs.detect.outputs.version }}" > /tmp/notes.md
+        env:
+          VERSION: ${{ needs.detect.outputs.version }}
+        run: npm run release:notes -- "${VERSION}" > /tmp/notes.md
 
       - name: Dry run — show what would be drafted
         if: needs.detect.outputs.dry_run == 'true'
+        env:
+          VERSION: ${{ needs.detect.outputs.version }}
         run: |
-          echo "### Dry run: would draft v${{ needs.detect.outputs.version }}" >> "$GITHUB_STEP_SUMMARY"
+          echo "### Dry run: would draft v${VERSION}" >> "$GITHUB_STEP_SUMMARY"
           echo "" >> "$GITHUB_STEP_SUMMARY"
           cat /tmp/notes.md >> "$GITHUB_STEP_SUMMARY"
 
@@ -794,10 +874,8 @@ jobs:
           node-version: 24.18.1
           registry-url: https://registry.npmjs.org
 
-      - name: Pin npm
-        run: |
-          npm install --global --ignore-scripts npm@12.0.2
-          npm --version
+      - name: Check the bundled npm client
+        run: npm --version
 
       - name: Download the release artefacts
         uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8
@@ -855,7 +933,12 @@ jobs:
           # Captured before publishing so the RC assertions can prove `latest`
           # did not move. npm tags a publish `latest` unless --tag is given; it
           # does not infer a prerelease from `-rc.N`.
-          latest_before=$(npm view looptroop dist-tags.latest 2>/dev/null || echo 'none')
+          latest_before=''
+          if ! latest_before=$(npm view looptroop dist-tags.latest); then
+            echo "::error::Unable to read npm's latest dist-tag before publishing." >&2
+            exit 1
+          fi
+          latest_before=${latest_before:-none}
           echo "latest before publish: ${latest_before}"
           echo "LATEST_BEFORE=${latest_before}" >> "$GITHUB_ENV"
           npm publish "looptroop-${VERSION}.tgz" --access public --tag "${DIST_TAG}"
@@ -893,11 +976,10 @@ jobs:
           # base64 SRI on both sides — npm's dist.shasum is SHA-1 and could
           # never be compared to this.
           #
-          # Done inline with bare node rather than `npm run release:verify-artifact`
+          # Done inline with bare node rather than the release verifier command
           # because this job has no checkout: it publishes a downloaded tarball,
-          # so it needs no source tree, and giving it one would mean `npm ci`
-          # running third-party install scripts in the one job that holds
-          # publish credentials. The same comparison, no dependencies.
+          # so it needs no source tree or dependency install beside publish
+          # credentials. The same comparison, with no dependencies.
           PUBLISHED_INTEGRITY="${published}" node -e '
             const m = JSON.parse(require("node:fs").readFileSync("release-manifest.json", "utf8"))
             const published = process.env.PUBLISHED_INTEGRITY.trim()
@@ -916,7 +998,12 @@ jobs:
             exit 1
           }
 
-          latest_now=$(npm view looptroop dist-tags.latest 2>/dev/null || echo 'none')
+          latest_now=''
+          if ! latest_now=$(npm view looptroop dist-tags.latest); then
+            echo "::error::Unable to read npm's latest dist-tag after publishing." >&2
+            exit 1
+          fi
+          latest_now=${latest_now:-none}
           if [ "${DIST_TAG}" = "latest" ]; then
             [ "${latest_now}" = "${VERSION}" ] || {
               echo "::error::A stable release must hold 'latest'; it resolves to ${latest_now}."
@@ -1167,7 +1254,7 @@ jobs:
       - name: Verify the artefact matches the manifest
         env:
           VERSION: ${{ needs.detect.outputs.version }}
-        run: npm run release:verify-artifact -- "looptroop-${VERSION}.tgz" release-manifest.json
+        run: npm run release:verify-artifact -- "looptroop-${VERSION}.tgz" release-manifest.json --assets-dir .
 
       # Both tokens read from stdin through a shell builtin, so neither ever
       # appears in an argument vector. A missing environment *variable* is an
@@ -1226,6 +1313,7 @@ jobs:
       - name: Build the image and push it by digest
         env:
           TARBALL: ${{ needs.build.outputs.tarball }}
+          LOCKFILE: package-lock.json
           VERSION: ${{ needs.detect.outputs.version }}
           PLATFORM: linux/${{ matrix.arch }}
         run: |
@@ -1242,9 +1330,10 @@ jobs:
             exit 1
           fi
 
-          tar -cf - Dockerfile "${TARBALL}" | docker buildx build \
+          tar -cf - Dockerfile "${LOCKFILE}" "${TARBALL}" | docker buildx build \
             --platform "${PLATFORM}" \
             --build-arg TARBALL="${TARBALL}" \
+            --build-arg LOCKFILE="${LOCKFILE}" \
             --build-arg VERSION="${VERSION}" \
             --build-arg REVISION="${REVISION}" \
             --provenance=false \
@@ -1302,13 +1391,49 @@ jobs:
             echo "${image} serves ${digest}"
           done
 
+      # The digest and the installed-version record are captured together. The
+      # record is read from the GHCR image by digest, so it cannot describe a
+      # different tag or a current-main rebuild by accident.
+      - name: Record installed package versions from the image
+        env:
+          ARCH: ${{ matrix.arch }}
+          PLATFORM: linux/${{ matrix.arch }}
+          REVISION: ${{ github.sha }}
+          TARBALL: ${{ needs.build.outputs.tarball }}
+          VERSION: ${{ needs.detect.outputs.version }}
+        run: |
+          set -euo pipefail
+          digest=$(cat "digest-${ARCH}.txt")
+          docker run --rm --platform "${PLATFORM}" --entrypoint /bin/cat \
+            "${GHCR_IMAGE}@${digest}" /usr/share/looptroop/image-package-versions.txt \
+            > "image-package-versions-${ARCH}.txt"
+          test -s "image-package-versions-${ARCH}.txt"
+          if ! grep -F -- "$(printf 'looptroop\t%s' "${VERSION}")" "image-package-versions-${ARCH}.txt" >/dev/null; then
+            echo "::error::The image does not record LoopTroop ${VERSION} as its installed package version."
+            cat "image-package-versions-${ARCH}.txt"
+            exit 1
+          fi
+          {
+            printf '### Container input and provenance (%s)\n\n' "${ARCH}"
+            printf -- '- tarball: `%s`\n' "${TARBALL}"
+            printf -- '- lockfile: `%s`\n' "package-lock.json"
+            printf -- '- platform: `%s`\n' "${PLATFORM}"
+            printf -- '- revision: `%s`\n' "${REVISION}"
+            printf -- '- digest: `%s`\n\n' "${digest}"
+            echo '```'
+            cat "image-package-versions-${ARCH}.txt"
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
+
       # Per architecture, because the legs of a matrix share one `outputs` map
       # and the last leg to finish would be the only one whose digest survived.
       - name: Upload the digest
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
         with:
           name: container-digest-${{ matrix.arch }}
-          path: digest-${{ matrix.arch }}.txt
+          path: |
+            digest-${{ matrix.arch }}.txt
+            image-package-versions-${{ matrix.arch }}.txt
           if-no-files-found: error
           retention-days: 14
 
@@ -1428,6 +1553,50 @@ jobs:
             --digest "$(cat digest-amd64.txt)" \
             --digest "$(cat digest-arm64.txt)"
 
+  # Buildx intentionally emits plain per-architecture manifests above so the
+  # deterministic index assembly remains compatible. Attest the finished
+  # multi-architecture GHCR index here, after that index has one stable digest.
+  container-attest:
+    name: Attest finished container image
+    needs: [detect, container-manifest]
+    if: >-
+      always()
+      && needs.detect.outputs.proceed == 'true'
+      && needs.detect.outputs.dry_run == 'false'
+      && needs.container-manifest.result == 'success'
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    environment: release
+    permissions:
+      contents: read
+      id-token: write
+      attestations: write
+      packages: write
+    steps:
+      # `push-to-registry` makes the pinned actions/attest implementation read
+      # Docker's credential store on this fresh runner before it can attach the
+      # bundle to GHCR. Keep the token scoped to this one login step.
+      - name: Log in to GHCR for attestation
+        env:
+          GHCR_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          printf '%s' "${GHCR_TOKEN}" | docker login ghcr.io \
+            --username "${GITHUB_ACTOR}" --password-stdin
+
+      # Official pattern: subject-name is the registry/repository without a
+      # tag, subject-digest is the finished index digest, and push-to-registry
+      # stores the attestation alongside the image.
+      - name: Attest the finished GHCR index
+        uses: actions/attest-build-provenance@4d101475d8b20a2381f78447822ac1eab6504dd8 # v4.2.2
+        with:
+          subject-name: ${{ env.GHCR_IMAGE }}
+          subject-digest: ${{ needs.container-manifest.outputs.index_digest }}
+          push-to-registry: true
+          # This release does not use Artifact Metadata storage records. The
+          # attestation only needs attestations:write and packages:write.
+          create-storage-record: false
+
   # ---------------------------------------------------------------------------
   # Does the image the registries actually serve work?
   # ---------------------------------------------------------------------------
@@ -1441,7 +1610,7 @@ jobs:
   # third approval to perform checks that change nothing.
   container-verify:
     name: Verify container image (${{ matrix.arch }})
-    needs: [detect, container-manifest]
+    needs: [detect, container-manifest, container-attest]
     # `always()` with every predecessor named, because the skip from a
     # deliberately absent binary matrix propagates down the whole graph —
     # even past jobs that ran via `always()` themselves. Without this the
@@ -1452,6 +1621,7 @@ jobs:
       && needs.detect.outputs.proceed == 'true'
       && needs.detect.outputs.dry_run == 'false'
       && needs.container-manifest.result == 'success'
+      && needs.container-attest.result == 'success'
     runs-on: ${{ matrix.runner }}
     timeout-minutes: 30
     permissions:
@@ -1641,19 +1811,16 @@ jobs:
   # and a repair cannot point a channel at an artefact this release never had.
   # That is the property worth protecting, and it holds.
   #
-  # What is not pinned is the renderer. A repair runs from the default branch,
-  # so a descriptor rebuilt in six months carries whatever the template says
-  # then — a changed dependency, a changed caveat — rather than what this
-  # release shipped. For a formula that is usually the point (it is how a
-  # packaging bug gets fixed for an old version) and occasionally not.
+  # The renderer is pinned too. `channel-republish.yml` verifies the manifest's
+  # commit against the version tag and checks out that commit before rendering,
+  # so a repair months later does not silently adopt today's templates. A
+  # deliberate template change therefore belongs in reviewed release code,
+  # rather than behind a dispatch checkbox.
   #
-  # Attaching the descriptors would close that, at the cost of three more
-  # release assets and a Windows job before `finalize`. Still not done, and the
-  # original condition for revisiting — "once a stable release has published to
-  # all three channels" — has not been met: Homebrew and Scoop publish, while
-  # Chocolatey and WinGet are still awaiting first acceptance upstream. Until a
-  # release has actually landed on all of them there is no repair history to
-  # judge the drift against, so revisit when that is true rather than on a date.
+  # Attaching the descriptors would make the release self-contained, but buys
+  # no reproducibility while the repair already has both the release bytes and
+  # the exact rendering commit. Keeping them derived also avoids three more
+  # release assets and another pre-finalize packaging job.
   #
   # The nupkg is separate: it is not byte-reproducible, but a Chocolatey version
   # is immutable once accepted — there is no such thing as re-pushing the same
@@ -1718,21 +1885,28 @@ jobs:
       # notice that the formula points at something that is not there. Before
       # the push, because the tap has no CI of its own.
       - name: Audit the formula Homebrew will serve
+        env:
+          VERSION: ${{ steps.inputs.outputs.version }}
+          BUNDLE_URL: ${{ steps.inputs.outputs.url }}
+          BUNDLE_SHA256: ${{ steps.inputs.outputs.sha256 }}
         run: >
           node scripts/audit-formula.ts --online
-          --version "${{ steps.inputs.outputs.version }}"
-          --url "${{ steps.inputs.outputs.url }}"
-          --sha256 "${{ steps.inputs.outputs.sha256 }}"
+          --version "${VERSION}"
+          --url "${BUNDLE_URL}"
+          --sha256 "${BUNDLE_SHA256}"
 
       - name: Push the formula
         env:
           GH_TOKEN: ${{ secrets.TAP_BUCKET_TOKEN }}
+          VERSION: ${{ steps.inputs.outputs.version }}
+          BUNDLE_URL: ${{ steps.inputs.outputs.url }}
+          BUNDLE_SHA256: ${{ steps.inputs.outputs.sha256 }}
         run: >
           node scripts/channel-push.ts --channel homebrew
           --repo looptroop-ai/homebrew-tap
-          --version "${{ steps.inputs.outputs.version }}"
-          --url "${{ steps.inputs.outputs.url }}"
-          --sha256 "${{ steps.inputs.outputs.sha256 }}"
+          --version "${VERSION}"
+          --url "${BUNDLE_URL}"
+          --sha256 "${BUNDLE_SHA256}"
 
   publish-scoop:
     name: Publish to Scoop
@@ -1775,12 +1949,15 @@ jobs:
       - name: Push the manifest
         env:
           GH_TOKEN: ${{ secrets.TAP_BUCKET_TOKEN }}
+          VERSION: ${{ steps.inputs.outputs.version }}
+          BUNDLE_URL: ${{ steps.inputs.outputs.url }}
+          BUNDLE_SHA256: ${{ steps.inputs.outputs.sha256 }}
         run: >
           node scripts/channel-push.ts --channel scoop
           --repo looptroop-ai/scoop-bucket
-          --version "${{ steps.inputs.outputs.version }}"
-          --url "${{ steps.inputs.outputs.url }}"
-          --sha256 "${{ steps.inputs.outputs.sha256 }}"
+          --version "${VERSION}"
+          --url "${BUNDLE_URL}"
+          --sha256 "${BUNDLE_SHA256}"
 
   # windows-latest because `choco pack` and `choco push` need the Chocolatey
   # CLI, which no ubuntu runner has.
@@ -1833,12 +2010,17 @@ jobs:
       # other before whatever is here becomes what Chocolatey users get.
       - name: Pack the package
         shell: bash
+        env:
+          BUNDLE: ${{ steps.inputs.outputs.bundle }}
+          BUNDLE_URL: ${{ steps.inputs.outputs.url }}
+          VERSION: ${{ steps.inputs.outputs.version }}
+          BUNDLE_SHA256: ${{ steps.inputs.outputs.sha256 }}
         run: >
           node scripts/build-choco.ts
-          --bundle "${{ steps.inputs.outputs.bundle }}"
-          --url "${{ steps.inputs.outputs.url }}"
-          --version "${{ steps.inputs.outputs.version }}"
-          --expect-sha256 "${{ steps.inputs.outputs.sha256 }}"
+          --bundle "${BUNDLE}"
+          --url "${BUNDLE_URL}"
+          --version "${VERSION}"
+          --expect-sha256 "${BUNDLE_SHA256}"
           --out dist-choco
 
       # The exact nupkg that is about to be pushed, installed and run first.
@@ -1846,20 +2028,23 @@ jobs:
       # not run is discovered by whoever installs it.
       - name: Install it locally before submitting it
         shell: bash
+        env:
+          VERSION: ${{ steps.inputs.outputs.version }}
         run: >
           node scripts/smoke-choco.ts
-          --nupkg "dist-choco/looptroop.${{ steps.inputs.outputs.version }}.nupkg"
-          --version "${{ steps.inputs.outputs.version }}"
+          --nupkg "dist-choco/looptroop.${VERSION}.nupkg"
+          --version "${VERSION}"
 
       - name: Push to the community feed
         id: push
         shell: bash
         env:
           CHOCOLATEY_API_KEY: ${{ secrets.CHOCOLATEY_API_KEY }}
+          VERSION: ${{ steps.inputs.outputs.version }}
         run: >
           node scripts/choco-push.ts
-          --nupkg "dist-choco/looptroop.${{ steps.inputs.outputs.version }}.nupkg"
-          --version "${{ steps.inputs.outputs.version }}"
+          --nupkg "dist-choco/looptroop.${VERSION}.nupkg"
+          --version "${VERSION}"
 
   # ---------------------------------------------------------------------------
   # WinGet, which is a pull request into somebody else's repository.
@@ -2113,6 +2298,8 @@ jobs:
     needs:
       - detect
       - build
+      - attest-binaries
+      - attest-release-assets
       - verify-artifact
       - verify-readonly
       - draft-release
@@ -2121,6 +2308,7 @@ jobs:
       - finalize
       - container-build
       - container-manifest
+      - container-attest
       - container-verify
       - container-notes
       - publish-homebrew
@@ -2148,6 +2336,8 @@ jobs:
           DRY_RUN: ${{ needs.detect.outputs.dry_run }}
           STATE: ${{ needs.detect.outputs.state }}
           R_BUILD: ${{ needs.build.result }}
+          R_ATTEST_BIN: ${{ needs.attest-binaries.result }}
+          R_ATTEST_ASSETS: ${{ needs.attest-release-assets.result }}
           R_VERIFY: ${{ needs.verify-artifact.result }}
           R_READONLY: ${{ needs.verify-readonly.result }}
           R_DRAFT: ${{ needs.draft-release.result }}
@@ -2157,6 +2347,7 @@ jobs:
           R_FINAL: ${{ needs.finalize.result }}
           R_CBUILD: ${{ needs.container-build.result }}
           R_CMANIFEST: ${{ needs.container-manifest.result }}
+          R_CATT: ${{ needs.container-attest.result }}
           R_CVERIFY: ${{ needs.container-verify.result }}
           R_CNOTES: ${{ needs.container-notes.result }}
           R_BREW: ${{ needs.publish-homebrew.result }}
@@ -2193,6 +2384,8 @@ jobs:
             printf '%s\n' '──────────────────────────────────────────────'
             printf 'state      %s\n' "${STATE}"
             printf 'build      %s  sha256 %s\n' "${R_BUILD}" "${SHA256:0:12}"
+            printf 'attest bin %s\n' "${R_ATTEST_BIN}"
+            printf 'attest pkg %s\n' "${R_ATTEST_ASSETS}"
             printf 'verify     %s\n' "${R_VERIFY}"
             printf 'readonly   %s\n' "${R_READONLY}"
             printf 'draft      %s\n' "${R_DRAFT}"
@@ -2202,6 +2395,7 @@ jobs:
             printf 'finalize   %s\n' "${R_FINAL}"
             printf 'image      %s  (amd64 + arm64)\n' "${R_CBUILD}"
             printf 'image tag  %s  index %s\n' "${R_CMANIFEST}" "${index_short}"
+            printf 'image att  %s\n' "${R_CATT}"
             printf 'image pull %s\n' "${R_CVERIFY}"
             printf 'notes      %s\n' "${R_CNOTES}"
             printf 'homebrew   %s\n' "${R_BREW}"
@@ -2229,14 +2423,18 @@ jobs:
           # a failed target never opened the issue.
           BINARY_FOR_ISSUE="${R_BINARY}"
           if [ "${SKIP_BINARIES}" = "true" ]; then BINARY_FOR_ISSUE=success; fi
+          ATTEST_BIN_FOR_ISSUE="${R_ATTEST_BIN}"
+          if [ "${SKIP_BINARIES}" = "true" ]; then ATTEST_BIN_FOR_ISSUE=success; fi
 
           failed=""
-          for pair in "build:${R_BUILD}" "verify-artifact:${R_VERIFY}" \
+          for pair in "build:${R_BUILD}" "attest-binaries:${ATTEST_BIN_FOR_ISSUE}" \
+                      "attest-release-assets:${R_ATTEST_ASSETS}" "verify-artifact:${R_VERIFY}" \
                       "verify-readonly:${R_READONLY}" "draft-release:${R_DRAFT}" \
                       "npm:${R_NPM}" "smoke:${R_SMOKE}" "finalize:${R_FINAL}" \
                       "published-smoke-dispatch:${R_PUBSMOKE}" \
                       "container-build:${R_CBUILD}" "container-manifest:${R_CMANIFEST}" \
-                      "container-verify:${R_CVERIFY}" "container-notes:${R_CNOTES}" \
+                      "container-attest:${R_CATT}" "container-verify:${R_CVERIFY}" \
+                      "container-notes:${R_CNOTES}" \
                       "publish-homebrew:${R_BREW}" "publish-scoop:${R_SCOOP}" \
                       "publish-chocolatey:${R_CHOCO}" \
                       "publish-winget:${R_WINGET}" \
@@ -2309,7 +2507,8 @@ jobs:
 
       - name: Fail the run if any stage failed
         if: steps.compose.outputs.failed != ''
+        env:
+          FAILED: ${{ steps.compose.outputs.failed }}
         run: |
-          echo "::error::Release stages failed:${{ steps.compose.outputs.failed }}"
+          echo "::error::Release stages failed:${FAILED}"
           exit 1
-

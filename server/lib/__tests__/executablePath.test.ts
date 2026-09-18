@@ -6,19 +6,51 @@ import { makeTempDir, removeTempDir } from '../../test/tempDir'
 import {
   bareNameSearchReachesWorkingDirectory,
   canonicalTrustedDirectories,
-  findTrustedExecutablePath,
+  findTrustedExecutablePath as findTrustedExecutablePathImpl,
   launchThroughInterpreter,
   needsCommandInterpreter,
   planProgramLaunch,
-  requireTrustedExecutablePath,
-  resolveCommandInterpreter,
-  resolveTrustedExecutable,
-  resolveTrustedProgram,
+  requireTrustedExecutablePath as requireTrustedExecutablePathImpl,
+  resolveCommandInterpreter as resolveCommandInterpreterImpl,
+  resolveTrustedExecutable as resolveTrustedExecutableImpl,
+  resolveTrustedProgram as resolveTrustedProgramImpl,
   trustedSearchDirectories,
   TRUSTED_EXECUTABLE_DIRS_ENV,
   type CachedResolution,
   type TrustedExecutableOptions,
 } from '../executablePath'
+
+/** A Linux identity map for tests that describe Linux on a non-Linux host. */
+const linuxTestIdentity: Pick<TrustedExecutableOptions, 'readUidMap' | 'readOverflowUid'> = {
+  readUidMap: () => '0 0 4294967295\n',
+  readOverflowUid: () => '65534',
+}
+
+function testOptions(options: TrustedExecutableOptions = {}): TrustedExecutableOptions {
+  return process.platform !== 'linux' && options.platform === 'linux'
+    ? { ...linuxTestIdentity, ...options }
+    : options
+}
+
+function findTrustedExecutablePath(name: string, options: TrustedExecutableOptions = {}) {
+  return findTrustedExecutablePathImpl(name, testOptions(options))
+}
+
+function requireTrustedExecutablePath(name: string, options: TrustedExecutableOptions = {}) {
+  return requireTrustedExecutablePathImpl(name, testOptions(options))
+}
+
+function resolveCommandInterpreter(options: TrustedExecutableOptions = {}) {
+  return resolveCommandInterpreterImpl(testOptions(options))
+}
+
+function resolveTrustedExecutable(name: string, options: TrustedExecutableOptions = {}) {
+  return resolveTrustedExecutableImpl(name, testOptions(options))
+}
+
+function resolveTrustedProgram(program: string, options: TrustedExecutableOptions = {}) {
+  return resolveTrustedProgramImpl(program, testOptions(options))
+}
 
 /**
  * Every case here injects `env`, `platform` and `cache`.
@@ -425,6 +457,18 @@ describe('Windows resolution', () => {
     })).toBe(exe)
   })
 
+  it('skips unsupported PATHEXT interpreters before a launchable executable', () => {
+    const root = tempRoot()
+    makeExecutable(join(root, 'bin'), 'tool.PS1')
+    makeExecutable(join(root, 'bin'), 'tool.VBS')
+    const exe = makeExecutable(join(root, 'bin'), 'tool.EXE')
+    expect(findTrustedExecutablePath('tool', {
+      ...windowsOptions(root, { PATHEXT: '.PS1;.VBS;EXE;.CMD' }),
+      platform: 'win32',
+      cache: freshCache(),
+    })).toBe(exe)
+  })
+
   it('returns an npm-style .cmd shim rather than pretending npm is missing', () => {
     // npm ships as npm.cmd. Callers decide how to launch a command script; a
     // resolver that refused it here is why `doctor` once called npm missing on
@@ -579,6 +623,54 @@ describe('Windows resolution', () => {
     // to the name resolver and refused as "a path, not a program name".
     expect(resolveTrustedProgram('C:\\nonexistent\\tool.exe', { platform: 'win32', policyEnv: { SystemRoot: NO_WINDOWS } }).reason)
       .toBe('C:\\nonexistent\\tool.exe is not an executable file.')
+  })
+
+  it('resolves an extensionless Windows path through PATHEXT siblings in policy order', () => {
+    const root = tempRoot()
+    const bin = join(root, 'project', 'node_modules', '.bin')
+    const program = join(bin, 'vitest')
+    const cmd = makeExecutable(bin, 'vitest.CMD')
+    const exe = makeExecutable(bin, 'vitest.EXE')
+
+    // The command resolver turns `node_modules/.bin/vitest` into this absolute
+    // path against its approved cwd before calling this function; this resolver
+    // must not choose a relative path against process.cwd().
+    expect(resolveTrustedProgram(program, {
+      platform: 'win32',
+      policyEnv: { PATHEXT: '.CMD;.EXE', SystemRoot: NO_WINDOWS },
+    })).toEqual({ path: cmd, target: cmd })
+
+    expect(resolveTrustedProgram(program, {
+      platform: 'win32',
+      policyEnv: { PATHEXT: '.EXE;.CMD', SystemRoot: NO_WINDOWS },
+    })).toEqual({ path: exe, target: exe })
+  })
+
+  it('accepts an explicit Windows executable even when PATHEXT omits its extension', () => {
+    const root = tempRoot()
+    const program = makeExecutable(join(root, 'bin'), 'tool.EXE')
+
+    // PATHEXT controls how a bare name is expanded. A caller that already
+    // named `tool.EXE` has made that choice explicitly, so a custom PATHEXT
+    // containing only script extensions must not turn the path into "missing".
+    expect(resolveTrustedProgram(program, {
+      platform: 'win32',
+      policyEnv: { PATHEXT: '.CMD', SystemRoot: NO_WINDOWS },
+    })).toEqual({ path: program, target: program })
+  })
+
+  it('refuses an extensionless Windows path when no PATHEXT sibling is executable', () => {
+    const root = tempRoot()
+    const program = makeExecutable(join(root, 'bin'), 'vitest')
+
+    const resolution = resolveTrustedProgram(program, {
+      platform: 'win32',
+      policyEnv: { PATHEXT: '.EXE;.CMD', SystemRoot: NO_WINDOWS },
+    })
+
+    expect(resolution.path).toBeUndefined()
+    expect(resolution.refusedAt).toBe(program)
+    expect(resolution.reason).toContain('no executable sibling listed in PATHEXT')
   })
 })
 
@@ -857,6 +949,125 @@ describe('resolveTrustedProgram', () => {
 })
 
 describe('round-2 trust rules', () => {
+  itPosix('requires an explicit trusted directory for unverifiable overflow ownership', () => {
+    const root = tempRoot()
+    const trusted = join(root, 'trusted')
+    const arbitrary = join(root, 'arbitrary')
+    const tool = makeExecutable(trusted, 'looptool')
+    const outside = makeExecutable(arbitrary, 'other-tool')
+    const fakeNode = makeExecutable(join(root, 'node-home'), 'node')
+    const owner = 65534
+    const foreignPaths = new Set([tool, outside, fakeNode])
+    const withOverflow = (reader: (path: string) => Stats | null) => (path: string): Stats | null => {
+      const stats = reader(path)
+      if (stats === null || !foreignPaths.has(path)) return stats
+      return Object.assign(Object.create(Object.getPrototypeOf(stats)), stats, { uid: owner })
+    }
+    const options = {
+      platform: 'linux' as const,
+      cache: null,
+      stat: withOverflow(statOrNull),
+      lstat: withOverflow(lstatOrNull),
+      // The overflow number is inside this map. Linux can still report it for
+      // an unmapped host uid, so the numeric collision must remain unknown.
+      readUidMap: () => '0 1000 65535\n',
+      readOverflowUid: () => String(owner),
+    }
+    const originalExecPath = process.execPath
+    process.execPath = fakeNode
+    try {
+      expect(resolveTrustedExecutable('looptool', { ...options, env: { PATH: trusted } }).reason)
+        .toContain('neither root, you, nor the owner of the Node')
+
+      expect(resolveTrustedExecutable('looptool', {
+        ...options,
+        env: { PATH: trusted },
+        policyEnv: { [TRUSTED_EXECUTABLE_DIRS_ENV]: trusted },
+      }).path).toBe(tool)
+
+      expect(resolveTrustedExecutable('other-tool', {
+        ...options,
+        env: { PATH: arbitrary },
+        policyEnv: { [TRUSTED_EXECUTABLE_DIRS_ENV]: trusted },
+      }).reason).toContain('neither root, you, nor the owner of the Node')
+    } finally {
+      process.execPath = originalExecPath
+    }
+  })
+
+  itPosix('does not treat a canonical OpenCode directory as proof for an overflow-owned binary', () => {
+    const root = tempRoot()
+    chmodSync(root, 0o700)
+    const dir = join(root, '.opencode', 'bin')
+    const outside = join(root, 'outside')
+    const tool = makeExecutable(dir, 'opencode')
+    const outsideTool = makeExecutable(outside, 'other-tool')
+    const owner = 65534
+    const foreignPaths = new Set([tool, outsideTool])
+    const withOverflow = (reader: (path: string) => Stats | null) => (path: string): Stats | null => {
+      const stats = reader(path)
+      if (stats === null || !foreignPaths.has(path)) return stats
+      return Object.assign(Object.create(Object.getPrototypeOf(stats)), stats, { uid: owner })
+    }
+    const options = {
+      platform: 'linux' as const,
+      cache: null,
+      stat: withOverflow(statOrNull),
+      lstat: withOverflow(lstatOrNull),
+      readUidMap: () => '0 1000 1\n',
+      readOverflowUid: () => String(owner),
+    }
+    try {
+      expect(resolveTrustedExecutable('opencode', {
+        ...options,
+        env: { PATH: dir },
+        policyEnv: { HOME: root },
+      }).path).toBeUndefined()
+
+      expect(resolveTrustedExecutable('opencode', {
+        ...options,
+        env: { PATH: dir },
+        policyEnv: { HOME: root, [TRUSTED_EXECUTABLE_DIRS_ENV]: dir },
+      }).path).toBe(tool)
+
+      expect(resolveTrustedProgram(outsideTool, {
+        ...options,
+        policyEnv: { HOME: root, [TRUSTED_EXECUTABLE_DIRS_ENV]: dir },
+      }).path).toBeUndefined()
+    } finally {
+      chmodSync(root, 0o755)
+    }
+  })
+
+  itPosix('does not trust numeric root when the overflow UID is unmapped', () => {
+    const root = tempRoot()
+    const bin = join(root, 'bin')
+    const tool = makeExecutable(bin, 'looptool')
+    const fakeNode = makeExecutable(join(root, 'node-home'), 'node')
+    const withOverflow = (reader: (path: string) => Stats | null) => (path: string): Stats | null => {
+      const stats = reader(path)
+      if (stats === null || ![tool, fakeNode].includes(path)) return stats
+      return Object.assign(Object.create(Object.getPrototypeOf(stats)), stats, { uid: 0 })
+    }
+    const originalExecPath = process.execPath
+    process.execPath = fakeNode
+    try {
+      const resolution = resolveTrustedExecutable('looptool', {
+        platform: 'linux',
+        env: { PATH: bin },
+        cache: null,
+        stat: withOverflow(statOrNull),
+        lstat: withOverflow(lstatOrNull),
+        readUidMap: () => '1000 1000 1\n',
+        readOverflowUid: () => '0',
+      })
+      expect(resolution.path).toBeUndefined()
+      expect(resolution.reason).toContain('neither root, you, nor the owner of the Node')
+    } finally {
+      process.execPath = originalExecPath
+    }
+  })
+
   itPosix('trusts whoever owns the Node running LoopTroop', () => {
     // Under `sudo "$(which node)"` this process is root and the toolchain
     // belongs to the invoking user; root refusing it refused the Node it was
@@ -1680,6 +1891,9 @@ describe('the cmd.exe launcher', () => {
     // The edit forms look the name up before the colon, where no caret lands,
     // and dynamic names such as CD are in no environment at all.
     expect(plan(['%PATH:a=b%'], {}).reason).toContain('would expand %PATH:a=b%')
+    // Windows permits spaces in environment-variable names; the edit-form
+    // check must not narrow the name syntax and accidentally let this through.
+    expect(plan(['%MY VAR:a=b%'], { 'MY VAR': 'value' }).reason).toContain('would expand %MY VAR:a=b%')
     expect(plan(['%CD:~0,2%'], {}).reason).toContain('would expand %CD:~0,2%')
     // Across arguments too: cmd.exe pairs the `%` wherever they are.
     expect(plan(['x%PATH:', 'a=b%'], {}).reason).toContain('would expand')
@@ -1703,6 +1917,30 @@ describe('the cmd.exe launcher', () => {
     expect(plan('C:\\Users\\dev\\AppData\\Roaming\\npm\\tool.cmd', ['description="hello"']).reason).toBeUndefined()
     // A `node_modules\\.bin` shim is escaped twice instead, so it is not refused.
     expect(plan('C:\\repo\\node_modules\\.bin\\tool.cmd', ['say "hi & bye"']).reason).toBeUndefined()
+  })
+
+  it('carries second-read quote state across arguments', () => {
+    const plan = (args: string[]) => planProgramLaunch('C:\\x\\npm.cmd', args, {
+      platform: 'win32',
+      env: {},
+      resolveInterpreter: () => ({ path: 'C:\\Windows\\System32\\cmd.exe' }),
+    })
+
+    expect(plan(['foo"bar', '& calc']).reason).toContain('a second time with part of it outside quotes')
+  })
+
+  it('does not pair percent signs from independent quoted arguments', () => {
+    const plan = (args: string[], env: NodeJS.ProcessEnv = {}) => planProgramLaunch('C:\\x\\npm.cmd', args, {
+      platform: 'win32',
+      env,
+      resolveInterpreter: () => ({ path: 'C:\\Windows\\System32\\cmd.exe' }),
+    })
+
+    expect(plan(['--coverage.lines=50%', '--reporter=https://example.com', '--x=10%']).reason).toBeUndefined()
+    // A defined variable name still wins when the edit-form colon is in a
+    // later argument, after cmd.exe joins the command-line parts.
+    expect(plan(['%A', 'B:x=y%'], { 'A^" ^"B': 'x' }).reason)
+      .toContain('would expand %A" "B:x=y% in its arguments')
   })
 
   const onWindows = process.platform === 'win32' ? it : it.skip

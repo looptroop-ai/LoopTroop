@@ -23,7 +23,7 @@ import { createServer } from 'node:http'
 import type { AddressInfo } from 'node:net'
 import { tmpdir } from 'node:os'
 import { basename, join, resolve } from 'node:path'
-import { removeWorkDirectory } from './smoke-lib.mjs'
+import { inspectDoctorInstall, removeWorkDirectory } from './smoke-lib.mjs'
 import { renderWingetManifests } from './package-manifests.ts'
 import { spawnProgram } from './tool-path.ts'
 
@@ -174,22 +174,27 @@ async function main(): Promise<void> {
   // check itself instead of searching the output for two words that could
   // co-occur in an unrelated remedy line.
   const doctor = await invoke(linkPath, ['doctor', '--json'], { env: childEnv, allowFailure: true })
-  let checks: { name?: string, detail?: string }[]
+  let inspection: ReturnType<typeof inspectDoctorInstall>
   try {
-    checks = JSON.parse(doctor.stdout).checks
+    inspection = inspectDoctorInstall(doctor.stdout, {
+      channel: 'winget',
+      upgradeCommand: 'winget upgrade LoopTroopAI.LoopTroop',
+    })
   } catch {
     fail('`doctor --json` did not produce parseable JSON.', `${doctor.stdout}${doctor.stderr}`.slice(0, 2000))
   }
 
-  const install = checks.find((check) => check.name === 'install')
-  if (!/^winget\b/.test(install?.detail ?? '')) {
+  if (inspection.check === null) {
+    fail('`doctor --json` reports no install check at all.', `${doctor.stdout}${doctor.stderr}`.slice(0, 2000))
+  }
+  if (!inspection.matches) {
     fail(
       '`doctor` does not report this as a winget install.',
-      `It reports: ${install?.detail ?? '(no install check)'}`,
+      `It reports channel ${inspection.facts?.channel ?? '(none)'} and upgrade ${inspection.facts?.upgradeCommand ?? '(none)'}.`,
       'That means the upgrade command shown to the user is the wrong one.',
     )
   }
-  log(`  \`doctor\` reports the winget channel: ${install?.detail}`)
+  log(`  \`doctor\` reports the winget channel (upgrade: ${inspection.facts?.upgradeCommand ?? '(none)'})`)
 
   log('\nUninstalling...')
   // By manifest, symmetrically with the install, rather than by identifier.

@@ -86,6 +86,8 @@ interface Check {
   schema?: SchemaFacts
   /** Present on the install check only. */
   install?: InstallFacts
+  /** Present on the Node check for machine-readable embedded-runtime probes. */
+  node?: { version: string }
 }
 
 const REQUIRED_NODE_LABEL = formatNodeVersion(NODE_FLOOR)
@@ -255,14 +257,16 @@ function timedOutCheck(name: string, command: string, timeoutMs: number): Omit<C
  */
 function checkNode(latest: string | null = null): Check {
   const supported = satisfiesNodeFloor(parseNodeVersion(process.versions.node), NODE_FLOOR)
+  const node = { version: process.versions.node }
 
   return supported
-    ? { name: 'node', status: 'ok', detail: withLatest(`v${process.versions.node}`, latest) }
+    ? { name: 'node', status: 'ok', detail: withLatest(`v${process.versions.node}`, latest), node }
     : {
         name: 'node',
         status: 'fail',
         detail: withLatest(`v${process.versions.node}`, latest),
         remedy: `LoopTroop needs Node ${REQUIRED_NODE_LABEL} or newer. ${nodeInstallHint()}`,
+        node,
       }
 }
 

@@ -142,6 +142,9 @@ export const CHANNELS: Record<string, ChannelRecipe>
 /** Where `--binary` puts the standalone executable. */
 export function binaryPrefix(): string
 
+/** Resolves the installed launcher from PATH, optionally with a prepended directory. */
+export function whichLooptroop(pathHint?: string): string | null
+
 export function planMatrix(options?: {
   tier?: string
   only?: string[]

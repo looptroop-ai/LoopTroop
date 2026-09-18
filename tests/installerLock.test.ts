@@ -17,10 +17,10 @@ function directory() {
   return dir
 }
 
-function oldLock(dir: string, owner = `${process.pid}-live-owner`) {
+function oldLock(dir: string, owner = `${process.pid}-live-owner`, ageMs = 3 * 60 * 60 * 1000) {
   const lock = join(dir, '.install.lock')
   writeFileSync(lock, `${owner} timestamp\n`)
-  const old = new Date(Date.now() - 3 * 60 * 60 * 1000)
+  const old = new Date(Date.now() - ageMs)
   utimesSync(lock, old, old)
   return lock
 }
@@ -45,6 +45,17 @@ describe('installer lock ownership and recovery', () => {
     expect(existsSync(lock)).toBe(true)
   })
 
+  it('clears a lock immediately when its owner is confirmed dead', () => {
+    const dir = directory()
+    const lock = oldLock(dir, '999999-dead-owner', 0)
+    vi.spyOn(process, 'kill').mockImplementation(() => {
+      throw Object.assign(new Error('gone'), { code: 'ESRCH' })
+    })
+
+    expect(withInstallLock(dir, () => 'installed')).toBe('installed')
+    expect(existsSync(lock)).toBe(false)
+  })
+
   it('keeps a malformed old lock whose owner cannot be established', () => {
     const dir = directory()
     const lock = oldLock(dir, 'missing-owner')
@@ -58,7 +69,8 @@ describe('installer lock ownership and recovery', () => {
     const dir = directory()
     const lock = oldLock(dir, '999999-dead-owner')
     vi.spyOn(process.stdout, 'write').mockImplementation(() => true)
-    vi.spyOn(process, 'kill').mockImplementation(() => {
+    vi.spyOn(process, 'kill').mockImplementation((pid) => {
+      if (pid === process.pid) return true
       expect(() => withInstallLock(dir, () => { throw new Error('overlap') })).toThrow('acquiring or recovering')
       throw Object.assign(new Error('gone'), { code: 'ESRCH' })
     })

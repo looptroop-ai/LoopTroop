@@ -85,7 +85,7 @@ const MAX_ASSET_BYTES = 512 * 1024 * 1024
 function nodeHelp(platform) {
   if (platform === 'darwin') return 'brew install node   (or download from https://nodejs.org/)'
   if (platform === 'win32') return 'winget install OpenJS.NodeJS.LTS   (or download from https://nodejs.org/)'
-  return 'Use your distribution\'s package or https://github.com/nvm-sh/nvm'
+  return 'nvm install 24   (https://github.com/nvm-sh/nvm)'
 }
 
 /**
@@ -676,13 +676,15 @@ async function download(url, destination) {
  * on is not a control, it is an outage.
  *
  * For OpenCode in canonical directories (`~/.opencode/bin`, `OPENCODE_INSTALL_DIR`,
- * `OPENCODE_DIR`), an exception allows the binary to carry a foreign UID (such as
- * the runner UID 1001 preserved when GNU tar extracts official release archives
- * as root). In this specific exception, permission bits are strictly judged: the
- * binary and its directory chain must not be writable by group or others, and the
- * binary must be protected inside a private directory (denying group and other
- * traversal, like `/root` or `~` with mode `0700`) so foreign users cannot reach
- * or rewrite it. Traversable or sticky/shared directories (like `/tmp`) are refused.
+ * `OPENCODE_DIR`), an exception allows a known foreign UID (such as the runner UID
+ * 1001 preserved when GNU tar extracts official release archives as root). In this
+ * specific exception, permission bits are strictly judged: the binary and its
+ * directory chain must not be writable by group or others, and the binary must be
+ * protected inside a private directory (denying group and other traversal, like
+ * `/root` or `~` with mode `0700`) so foreign users cannot reach or rewrite it.
+ * Traversable or sticky/shared directories (like `/tmp`) are refused. A Linux
+ * kernel overflow UID is not a known owner, even in this canonical location; it
+ * needs an explicit `LOOPTROOP_TRUSTED_EXECUTABLE_DIRS` entry.
  *
  * On Windows there is no ownership check either: `fs.stat` reports mode `0777`
  * and uid `0` for everything on NTFS, so neither means anything. Windows gets
@@ -748,6 +750,10 @@ const DEFAULT_PATHEXT = '.COM;.EXE;.BAT;.CMD'
  * will not run it from. Falling back to the bare name after a refusal would
  * spawn the very file this module exists to refuse.
  */
+
+
+
+
 
 
 
@@ -932,10 +938,10 @@ function searchEntries(entries                   , platform                 )   
  * LoopTroop orchestrates OpenCode, whose official installer unpacks into
  * `~/.opencode/bin`. On Linux, release archives built on GitHub Actions runners
  * are packed with `runner:runner` (uid 1001), and when extracted as root by GNU
- * `tar` (which defaults to `--same-owner`), the resulting binary retains uid 1001
- * while its parent directory is owned by root. Excusing OpenCode's canonical
- * install directory spares operators and container users from having to supply
- * an explicit `LOOPTROOP_TRUSTED_EXECUTABLE_DIRS` override.
+ * `tar` (which defaults to `--same-owner`), the resulting binary retains that
+ * known foreign uid while its parent directory is owned by root. A kernel
+ * overflow UID is different: it means the real owner is not mapped into this
+ * namespace, so the canonical directory is not enough to vouch for it.
  */
 export function canonicalTrustedDirectories(platform                 , policyEnv                   )           {
   let home
@@ -1067,9 +1073,23 @@ function realpathOrNull(path        )                {
  */
 function candidateExtensions(name        , platform                 , env                   )           {
   if (platform !== 'win32') return ['']
-  if (/\.[^\\/.]+$/.test(name)) return ['']
-  // `||`, not `??`: an empty PATHEXT would leave no extensions to try at all.
-  return (env.PATHEXT || DEFAULT_PATHEXT).split(';').map((value) => value.trim()).filter(Boolean)
+  if (windowsNameHasExtension(name)) return ['']
+  // An empty PATHEXT falls back to the standard Windows extension set.
+  return windowsPathExtensions(env)
+}
+
+function windowsNameHasExtension(name        )          {
+  return /\.[^\\/.]+$/.test(name)
+}
+
+function windowsPathExtensions(env                   )           {
+  return (env.PATHEXT || DEFAULT_PATHEXT)
+    .split(';')
+    .map((value) => value.trim())
+    .filter(Boolean)
+    .map((value) => value.startsWith('.') ? value : `.${value}`)
+    // Other PATHEXT scripts require interpreters that our launch plan does not provide.
+    .filter((value) => /^\.(?:exe|com|cmd|bat)$/i.test(value))
 }
 
 /**
@@ -1177,6 +1197,90 @@ function readMountTableFromProc()         {
   }
 }
 
+function readUidMapFromProc()                {
+  try {
+    return trustedFs.readFileSync('/proc/self/uid_map', 'utf8')
+  } catch {
+    return null
+  }
+}
+
+function readOverflowUidFromProc()                {
+  try {
+    return trustedFs.readFileSync('/proc/sys/kernel/overflowuid', 'utf8')
+  } catch {
+    return null
+  }
+}
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+/** Parses the namespace UID ranges needed to keep the overflow exception narrow. */
+function parseUidMap(value               )                       {
+  if (value === null) return null
+  const ranges = value.trim().split(/\r?\n/).filter(Boolean).map((line) => {
+    const fields = line.trim().split(/\s+/)
+    if (fields.length !== 3 || fields.some((field) => !/^\d+$/.test(field))) return null
+    const inside = Number(fields[0])
+    const outside = Number(fields[1])
+    const length = Number(fields[2])
+    if (!Number.isSafeInteger(inside) || !Number.isSafeInteger(outside) || !Number.isSafeInteger(length) || length <= 0) return null
+    return { inside, outside, length }
+  })
+  return ranges.length > 0 && ranges.every((range)                       => range !== null) ? ranges : null
+}
+
+function uidIsMapped(uid        , ranges               )          {
+  return ranges.some(({ inside, length }) => uid >= inside && uid - inside < length)
+}
+
+/** Whether Linux ownership may be the namespace-wide unmapped-owner value. */
+function overflowOwnership(
+  readUidMap                     ,
+  readOverflowUid                     ,
+)                    {
+  const ranges = parseUidMap(readUidMap())
+  const isMapped = ranges === null ? undefined : (uid        ) => uidIsMapped(uid, ranges)
+  if (ranges === null) return { unverifiable: true }
+
+  const identity = ranges.length === 1
+    && ranges[0] .inside === 0
+    && ranges[0] .outside === 0
+    && ranges[0] .length === 4_294_967_295
+  if (identity) return { unverifiable: false, isMapped }
+
+  const overflowText = readOverflowUid()?.trim()
+  const overflow = overflowText !== undefined && /^\d+$/.test(overflowText) ? Number(overflowText) : Number.NaN
+  if (!Number.isSafeInteger(overflow) || overflow < 0) return { unverifiable: true, isMapped }
+  // `from_kuid_munged` returns overflowuid whenever the original uid is not
+  // mapped. The placeholder can itself be inside this namespace's numeric map,
+  // so mapping the number does not prove that it identifies the file owner.
+  return { uid: overflow, unverifiable: true, isMapped }
+}
+
+function uidIsUnverifiable(uid                    , ownership                   )          {
+  return uid !== undefined
+    && ownership.unverifiable
+    && (ownership.uid === undefined || ownership.uid === uid)
+}
+
+function ownerIsTrusted(uid                    , ownership                   )          {
+  return uid !== undefined
+    && (ownership.isMapped === undefined || ownership.isMapped(uid))
+    && !uidIsUnverifiable(uid, ownership)
+}
+
 /**
  * The uids whose files LoopTroop may run: root, this process, and whoever owns
  * the Node binary running it.
@@ -1186,18 +1290,28 @@ function readMountTableFromProc()         {
  * refusing the user's `/opt/hostedtoolcache/.../npm` refused the Node it was
  * itself running from. Trusting that owner widens nothing that matters: whoever
  * can replace the interpreter already controls every line this process runs.
+ * In a user namespace, the UID map must also prove that each owner is mapped;
+ * a numeric root or interpreter UID that is only an overflow placeholder is not
+ * an identity this process can safely trust.
  */
-function trustedOwners()              {
-  const owners = new Set        ([0])
+function trustedOwners(ownership                   , stat                                          )              {
+  const owners = new Set        ()
+  const add = (uid                    )       => {
+    if (uid === undefined || !ownerIsTrusted(uid, ownership)) return
+    owners.add(uid)
+  }
+  add(0)
   const uid = process.getuid?.()
-  if (uid !== undefined) owners.add(uid)
+  add(uid)
   const interpreter = realpathOrNull(process.execPath)
-  const interpreterOwner = interpreter === null ? undefined : statOrNull(interpreter)?.uid
-  if (interpreterOwner !== undefined) owners.add(interpreterOwner)
+  const interpreterOwner = interpreter === null ? undefined : stat(interpreter)?.uid
+  add(interpreterOwner)
   return owners
 }
 
 /** What the ownership rule needs to know about the call it is judging. */
+
+
 
 
 
@@ -1302,7 +1416,8 @@ function foreignFileRefusal(
 )                {
   if (isTrusted) return null
 
-  if (context.isOpencode && context.canonicalOpenCodeDir && isExactOpencode(filePath, context.platform)) {
+  if (ownerIsTrusted(stats.uid, context.overflowOwnership)
+    && context.isOpencode && context.canonicalOpenCodeDir && isExactOpencode(filePath, context.platform)) {
     if (!isEnclosedInPrivateDirectory(filePath, context)) {
       return `its ${label} is owned by uid ${stats.uid} and is writable by its foreign owner`
     }
@@ -1448,7 +1563,10 @@ export function resolveTrustedExecutable(
   const readMountTable = options.readMountTable ?? readMountTableFromProc
   const stat = options.stat ?? statOrNull
   const lstat = options.lstat ?? lstatOrNull
-  const owners = trustedOwners()
+  const overflow = platform === 'linux'
+    ? overflowOwnership(options.readUidMap ?? readUidMapFromProc, options.readOverflowUid ?? readOverflowUidFromProc)
+    : { unverifiable: false }
+  const owners = trustedOwners(overflow, stat)
 
   if (name === '') return { reason: 'An empty program name cannot be resolved.' }
   if (/[\\/]/.test(name) || p.isAbsolute(name)) {
@@ -1487,6 +1605,7 @@ export function resolveTrustedExecutable(
       canonicalOpenCodeDir: isOpencode && inCanonicalDir,
       isOpencode,
       owners,
+      overflowOwnership: overflow,
     }
     if (cachedResolutionHolds(cached, name, directories, extensions, platform, context)) {
       return { path: cached.candidate, target: cached.path }
@@ -1514,6 +1633,7 @@ export function resolveTrustedExecutable(
         canonicalOpenCodeDir: isOpencode && inCanonicalDir,
         isOpencode,
         owners,
+        overflowOwnership: overflow,
       }
       const refusal = target === null
         ? 'it could not be resolved to a real file'
@@ -1570,6 +1690,10 @@ export function findTrustedExecutablePath(name        , options                 
  * The path is returned as named, for the same reason a `PATH` entry is: a tool
  * may work out where it lives from how it was started.
  *
+ * On Windows, an extensionless absolute path is resolved by trying its
+ * `PATHEXT` siblings in policy order; the extensionless file itself is never
+ * run.
+ *
  * A *relative* path is refused rather than resolved. Which directory it is
  * relative to is the caller's decision and differs per call site: the daemon's
  * working directory is a checkout, and quietly picking that would be the
@@ -1582,18 +1706,28 @@ export function resolveTrustedProgram(
   const platform = options.platform ?? process.platform
   const p = pathFor(platform)
   if (!p.isAbsolute(program)) return resolveTrustedExecutable(program, options)
+  const policyEnv = options.policyEnv ?? process.env
+  if (platform === 'win32' && !windowsNameHasExtension(program)) {
+    for (const extension of windowsPathExtensions(policyEnv)) {
+      const candidate = `${program}${extension}`
+      if (isExecutableFile(candidate, platform)) return resolveTrustedProgram(candidate, options)
+    }
+    return { reason: `${program} has no executable sibling listed in PATHEXT.`, refusedAt: program }
+  }
   if (!isExecutableFile(program, platform)) return { reason: `${program} is not an executable file.` }
   const target = isWindowsAppAlias(program, platform) ? program : realpathOrNull(program)
   if (target === null) return { reason: `${program} could not be resolved to a real path.` }
   const stat = options.stat ?? statOrNull
   const lstat = options.lstat ?? lstatOrNull
-  const policyEnv = options.policyEnv ?? process.env
   const named = trustedOperatorDirectories(policyEnv, platform)
   const canonicalDirs = canonicalTrustedDirectorySet(platform, policyEnv)
   const directory = p.dirname(program)
   const isOpencode = isExactOpencode(program, platform)
   const inCanonicalDir = directoryMatches(directory, canonicalDirs)
     || directoryMatches(p.dirname(target), canonicalDirs)
+  const overflow = platform === 'linux'
+    ? overflowOwnership(options.readUidMap ?? readUidMapFromProc, options.readOverflowUid ?? readOverflowUidFromProc)
+    : { unverifiable: false }
   const context               = {
     platform,
     readMountTable: options.readMountTable ?? readMountTableFromProc,
@@ -1602,7 +1736,8 @@ export function resolveTrustedProgram(
     namedByOperator: directoryMatches(directory, named),
     canonicalOpenCodeDir: isOpencode && inCanonicalDir,
     isOpencode,
-    owners: trustedOwners(),
+    owners: trustedOwners(overflow, stat),
+    overflowOwnership: overflow,
   }
   // The path as named is judged as well as the real one: it is what gets
   // spawned, so a link on the way to it is followed again at spawn time.
@@ -1735,10 +1870,14 @@ function readsItsLineAgain(script        )          {
 }
 
 /** What goes inside `cmd.exe /c "…"`: the script's path, then its arguments. */
-function commandLineForCmd(program        , args                   )         {
+function commandLineParts(program        , args                   )           {
   const script = trustedPath.win32.normalize(program)
   const escapeTwice = readsItsLineAgain(script)
-  return [escapeForCmd(script), ...args.map((arg) => quoteArgumentForCmd(arg, escapeTwice))].join(' ')
+  return [escapeForCmd(script), ...args.map((arg) => quoteArgumentForCmd(arg, escapeTwice))]
+}
+
+function commandLineForCmd(program        , args                   )         {
+  return commandLineParts(program, args).join(' ')
 }
 
 /**
@@ -1796,6 +1935,35 @@ function expandableReference(line        , env                   )              
   return null
 }
 
+/** Checks only a percent pair that crosses an actual command-line part boundary. */
+function expandableReferenceAcrossParts(parts                   , env                   )                {
+  const defined = new Set(Object.keys(env).map((name) => name.toLowerCase()))
+
+  for (let openingPart = 0; openingPart < parts.length; openingPart += 1) {
+    const part = parts[openingPart]
+    const opening = part.lastIndexOf('%')
+    if (opening === -1) continue
+
+    let closingPart = openingPart + 1
+    while (closingPart < parts.length && !parts[closingPart] .includes('%')) closingPart += 1
+    if (closingPart === parts.length) continue
+
+    const closing = parts[closingPart] .indexOf('%')
+    const suffix = part.slice(opening + 1)
+    const content = [suffix, ...parts.slice(openingPart + 1, closingPart), parts[closingPart] .slice(0, closing)].join(' ')
+    const colon = content.indexOf(':')
+    // A colon in a later quoted argument is ordinary text for an undefined
+    // name; an explicitly defined name can still include that text.
+    const colonInOpeningPart = colon >= 0 && colon < suffix.length
+    const name = colon === -1 ? content : content.slice(0, colon)
+    if ((colonInOpeningPart && !name.endsWith('^')) || defined.has(name.toLowerCase())) {
+      return `%${content.replace(/\^/g, '')}%`
+    }
+  }
+
+  return null
+}
+
 /**
  * Whether cmd.exe, reading `quoted` a second time, would find a metacharacter
  * outside quotes.
@@ -1809,13 +1977,15 @@ function expandableReference(line        , env                   )              
  * argument is refused. One with a quote and nothing else to act on is left
  * alone.
  */
-function exposedOnSecondRead(value        )          {
+function exposedOnSecondRead(values                   )                {
   let inQuotes = false
-  for (const character of quoteForArgv(value)) {
-    if (character === '"') inQuotes = !inQuotes
-    else if (!inQuotes && '&|<>^()'.includes(character)) return true
+  for (const value of values) {
+    for (const character of quoteForArgv(value)) {
+      if (character === '"') inQuotes = !inQuotes
+      else if (!inQuotes && '&|<>^()'.includes(character)) return value
+    }
   }
-  return false
+  return null
 }
 
 /** Why cmd.exe cannot be trusted to pass `args` to `program` unchanged, or `null`. */
@@ -1824,12 +1994,19 @@ function commandLineRefusal(program        , args                   , env       
   // after it without a word.
   if (args.some((arg) => /[\r\n]/.test(arg))) return 'cannot pass it an argument that contains a line break'
   if (!readsItsLineAgain(trustedPath.win32.normalize(program))) {
-    const exposed = args.find(exposedOnSecondRead)
-    if (exposed !== undefined) {
+    const exposed = exposedOnSecondRead(args)
+    if (exposed !== null) {
       return `would read ${JSON.stringify(exposed)} a second time with part of it outside quotes, where \`&\`, \`|\`, \`<\`, \`>\`, \`^\` and parentheses act`
     }
   }
-  const expanded = expandableReference(commandLineForCmd(program, args), env)
+  const parts = commandLineParts(program, args)
+  // Check each argument independently first. A percent in one quoted argument
+  // must not pair with a percent in another quoted argument merely because the
+  // full command line joins them with spaces. The final check handles a pair
+  // crossing a part boundary: an undefined edit colon must be in the opening
+  // part, while an explicitly defined name is checked wherever the colon is.
+  const expanded = parts.map((part) => expandableReference(part, env)).find((value) => value !== null)
+    ?? expandableReferenceAcrossParts(parts, env)
   return expanded === null ? null : `would expand ${expanded} in its arguments, and no escaping prevents that`
 }
 
@@ -2085,11 +2262,21 @@ function extractArchive(archive, into) {
   )
 }
 
+/** Releases install state before re-raising an interrupt signal. */
+export function installSignalHandlers(workDir) {
+  for (const signal of ['SIGINT', 'SIGTERM', 'SIGHUP']) {
+    process.on(signal, () => {
+      discard(workDir)
+      process.removeAllListeners(signal)
+      process.kill(process.pid, signal)
+    })
+  }
+}
+
 /** Runs a synchronous install while holding its directory lock. */
 export function withInstallLock(dir, action) {
   const lock = join(dir, '.install.lock')
   const claim = `${lock}.claim`
-  const STALE_AFTER = 15 * 60 * 1000
   const token = `${process.pid}-${randomUUID()}`
   const take = () => {
     writeFileSync(lock, `${token} ${new Date().toISOString()}\n`, { flag: 'wx' })
@@ -2126,15 +2313,17 @@ export function withInstallLock(dir, action) {
         alive = error.code !== 'ESRCH'
       }
     }
-    if (age < STALE_AFTER || alive) {
+    if (alive) {
       fail(
         'Another install is already running in this directory, or its owner cannot be checked (the recorded PID may have been reused).',
         `Its lock is at ${lock}.`,
         'Wait for it to finish, or delete that file if you are sure nothing is running.',
       )
     }
+    // Age is diagnostic only. An ESRCH result is the sole proof this process
+    // has that the recorded owner is gone; every other result stays blocked.
     say(`Clearing a stale install lock (${Math.round(age / 60000)} minutes old).`)
-    rmSync(lock)
+    rmSync(lock, { force: true })
   }
 
   // Every acquisition holds this claim while inspecting/removing the old lock
@@ -2225,10 +2414,97 @@ function daemonAnswering(binary) {
   return daemonStatus(binary)?.answering ?? null
 }
 
-
 /** True when the executable at `binary` runs at all. */
 function executableRuns(binary) {
   return spawnSync(binary, ['--version'], { encoding: 'utf8', timeout: 60_000 }).status === 0
+}
+
+function configDirectory(env = process.env) {
+  const configured = env.LOOPTROOP_CONFIG_DIR?.trim()
+  if (configured) return resolve(configured)
+  if (process.platform === 'win32') {
+    return resolve(env.APPDATA?.trim() || resolve(homedir(), 'AppData', 'Roaming'), 'looptroop')
+  }
+  return resolve(env.XDG_CONFIG_HOME?.trim() || resolve(homedir(), '.config'), 'looptroop')
+}
+
+function validPort(value) {
+  const port = typeof value === 'number' ? value : Number(String(value).trim())
+  return Number.isSafeInteger(port) && port > 0 && port <= 65_535 ? port : null
+}
+
+/** Reads only a complete live-daemon record; a partial one is uncertainty. */
+function daemonRecord(configDir) {
+  let parsed
+  try {
+    parsed = JSON.parse(readFileSync(join(configDir, 'daemon.json'), 'utf8'))
+  } catch (error) {
+    return error?.code === 'ENOENT' ? { kind: 'missing' } : { kind: 'unknown' }
+  }
+  if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) return { kind: 'unknown' }
+  const candidate = parsed
+  if (typeof candidate.instanceId !== 'string' || candidate.instanceId.length === 0
+    || !Number.isSafeInteger(candidate.pid) || candidate.pid <= 0
+    || !Number.isSafeInteger(candidate.port) || validPort(candidate.port) === null
+    || typeof candidate.host !== 'string' || candidate.host.trim().length === 0
+    || typeof candidate.apiToken !== 'string' || candidate.apiToken.length === 0) {
+    return { kind: 'unknown' }
+  }
+  return { kind: 'state', state: candidate }
+}
+
+/** Local loopback endpoints that can reach a wildcard listener. */
+function probeHosts(host) {
+  const normalized = host.trim().replace(/^\[|\]$/g, '')
+  if (normalized === '0.0.0.0') return ['127.0.0.1']
+  if (normalized === '::') return ['::1', '127.0.0.1']
+  return [normalized]
+}
+
+/**
+ * Checks a daemon port in a short-lived Node child. ECONNREFUSED proves that
+ * endpoint is closed; routing, DNS and timeout errors remain inconclusive.
+ */
+export function probePort(host, port) {
+  const script = `const net=require('node:net');const [host,port]=process.argv.slice(1);const socket=net.createConnection({host,port:Number(port)});const done=(code)=>{socket.destroy();process.exit(code)};socket.once('connect',()=>done(0));socket.once('error',(error)=>done(error.code==='ECONNREFUSED'?1:2));setTimeout(()=>done(2),2500)`
+  let uncertain = false
+  for (const endpoint of probeHosts(host)) {
+    const result = spawnSync(process.execPath, ['-e', script, endpoint, String(port)], { encoding: 'utf8', timeout: 3_000 })
+    if (result.error || result.signal !== null || result.status === null || (result.status !== 0 && result.status !== 1)) {
+      uncertain = true
+      continue
+    }
+    if (result.status === 0) return true
+  }
+  return uncertain ? null : false
+}
+
+/**
+ * Establishes daemon absence without invoking the installed executable.
+ *
+ * A complete daemon record supplies the exact endpoint and PID. Without one,
+ * there is no authoritative endpoint to probe: CLI and environment settings
+ * can override the config file, and the untouched default may relocate to an
+ * OS-assigned port, so a closed 3000 (or any guessed port) is not proof of
+ * absence.
+ */
+function independentDaemonState() {
+  const directory = configDirectory()
+  const record = daemonRecord(directory)
+  if (record.kind !== 'state') return { kind: 'unknown' }
+
+  const { state } = record
+  const occupied = probePort(state.host, state.port)
+  let alive = null
+  try {
+    process.kill(state.pid, 0)
+    alive = true
+  } catch (error) {
+    alive = error?.code === 'ESRCH' ? false : null
+  }
+  if (alive === true || occupied === true) return { kind: 'present', pid: state.pid, port: state.port }
+  if (alive === false && occupied === false) return { kind: 'absent', port: state.port }
+  return { kind: 'unknown', pid: state.pid, port: state.port }
 }
 
 /**
@@ -2260,14 +2536,12 @@ function stopDaemon(binary) {
  * live daemon and then not restart it, leaving the old version serving while
  * `looptroop --version` reported the new one.
  *
- * The unknown case is resolved rather than refused. Refusing would be the
- * strictest reading, but it wedges the one person who most needs to reinstall —
- * somebody whose installed executable is broken can never make it answer a
- * probe, and so could never install over it. So: an executable that cannot even
- * print its own version is not serving anything and is replaced; one that runs
- * but will not report is asked to stop and must then *confirm* it is stopped,
- * and is started again afterwards because this may well have taken a live
- * service down.
+ * The unknown case has two safe paths. A damaged executable cannot establish
+ * whether a daemon from that executable is still serving, so an independent
+ * closed endpoint plus dead recorded PID may authorize replacement; missing,
+ * malformed or inconclusive evidence leaves it alone. A runnable copy can be
+ * asked to stop and must then confirm that it did; if it may have been serving,
+ * it is started again afterwards.
  */
 function settleDaemon(installed) {
   const state = daemonPresent(installed)
@@ -2287,8 +2561,21 @@ function settleDaemon(installed) {
   if (state === false) return { wasRunning: false }
 
   if (!executableRuns(installed)) {
-    say('The installed copy does not run, so there is no daemon of its to stop.')
-    return { wasRunning: false }
+    const independent = independentDaemonState()
+    if (independent.kind === 'absent') {
+      say(`The installed copy is damaged, but no daemon is using port ${independent.port}; replacing it.`)
+      return { wasRunning: false }
+    }
+    const pidAdvice = independent.pid === undefined
+      ? 'No usable daemon PID was recorded.'
+      : `If PID ${independent.pid} is still the daemon, terminate that PID before retrying.`
+    fail(
+      'The installed copy will not say whether its daemon is running, so the executable was left alone.',
+      'It may be damaged, but a live daemon could still be serving it.',
+      pidAdvice,
+      `Remove the damaged executable at ${installed} (or its install directory) after confirming no daemon is running, then retry.`,
+      'Nothing was installed.',
+    )
   }
 
   say('The installed copy would not report whether its daemon is running; stopping it to be sure...')
@@ -2337,6 +2624,7 @@ function settleDaemon(installed) {
   // well have been serving. Starting it again is the outcome that cannot leave
   // an outage behind.
   return { wasRunning: true }
+
 }
 
 /**
@@ -2623,13 +2911,7 @@ async function main(argv) {
   // Re-raised rather than exited, with the listener removed first so the second
   // delivery takes the default action. A caller that sent a signal expects the
   // 128+signal status back, not an ordinary exit code chosen here.
-  for (const signal of ['SIGINT', 'SIGTERM', 'SIGHUP']) {
-    process.on(signal, () => {
-      discard(workDir)
-      process.removeAllListeners(signal)
-      process.kill(process.pid, signal)
-    })
-  }
+  installSignalHandlers(workDir)
   // What we resolved and installed, so the closing message can be checked
   // against it. Stays null for `--tarball`, where a local file is taken on
   // trust and there is no release to name a version.

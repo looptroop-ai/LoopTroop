@@ -18,6 +18,7 @@ import { writeFileSync } from 'node:fs'
 import { join } from 'node:path'
 import { renderHomebrewFormula } from './package-manifests.ts'
 import { createLocalTap, removeLocalTap } from './brew-local-tap.ts'
+import { ArgumentError, parseArgs, requireNoPositional } from './cli-args.ts'
 import { toolPath } from './tool-path.ts'
 
 const AUDIT_TAP = 'looptroop-ai/audit' as const
@@ -28,10 +29,26 @@ function fail(message: string, ...detail: string[]): never {
   process.exit(1)
 }
 
+const USAGE = 'Usage: node scripts/audit-formula.ts --version X.Y.Z --url <url> --sha256 <hex> [--online]'
+const args = (() => {
+  try {
+    const parsed = parseArgs(process.argv.slice(2), {
+      version: 'value',
+      url: 'value',
+      sha256: 'value',
+      online: 'switch',
+    })
+    requireNoPositional(parsed)
+    return parsed
+  } catch (error) {
+    if (!(error instanceof ArgumentError)) throw error
+    fail(error.message, USAGE)
+  }
+})()
+
 function flag(name: string): string {
-  const index = process.argv.indexOf(`--${name}`)
-  const value = index === -1 ? undefined : process.argv[index + 1]
-  if (value === undefined || value.startsWith('--')) fail(`--${name} is required.`)
+  const value = args.value(name)
+  if (value === null) fail(`--${name} is required.`, USAGE)
   return value
 }
 
@@ -59,7 +76,7 @@ try {
   process.stdout.write('brew audit --strict...\n')
   process.stdout.write(brew([
     'audit', '--strict', '--formula',
-    ...(process.argv.includes('--online') ? ['--online'] : []),
+    ...(args.switch('online') ? ['--online'] : []),
     `${AUDIT_TAP}/looptroop`,
   ]))
 

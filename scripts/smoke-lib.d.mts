@@ -11,3 +11,20 @@ export function waitForHealth(baseUrl: string, timeoutMs: number): Promise<unkno
 
 /** Removes a directory with retries, returning what stopped it or null. */
 export function removeWorkDirectory(path: string): Error | null
+
+export interface DoctorInstallFacts {
+  channel?: string
+  upgradeCommand?: string
+}
+
+export interface DoctorInstallInspection {
+  check: { name?: string, detail?: string, install?: DoctorInstallFacts } | null
+  facts: DoctorInstallFacts | null
+  matches: boolean
+}
+
+/** Reads structured install facts and compares them with the expected channel. */
+export function inspectDoctorInstall(
+  stdout: string,
+  expected: { channel: string, upgradeCommand: string },
+): DoctorInstallInspection

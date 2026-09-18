@@ -98,16 +98,18 @@ describe('dependency install script policy', () => {
     expect(install?.run).toContain('exit 1')
   })
 
-  it('pins the Renovate validator and keeps npm bootstraps script-free', () => {
+  it('pins the Renovate validator and centralizes script-free npm bootstraps', () => {
     const commands = workflows.flatMap(({ document }) => Object.values(document.jobs)
       .flatMap(({ steps = [] }) => steps.map(({ run = '' }) => run)))
     const validators = commands.filter((run) => run.includes('renovate-config-validator'))
     expect(validators).toHaveLength(1)
     expect(validators[0]).toMatch(/^npx --yes --package renovate@\d+\.\d+\.\d+ renovate-config-validator --strict$/)
-    const bootstraps = commands.filter((run) => /npm install --global .*npm@/.test(run))
-    expect(bootstraps).toHaveLength(1)
-    for (const run of bootstraps) expect(run).toContain(`npm install --global --ignore-scripts ${manifest.packageManager}`)
-    expect(readFileSync(join(repo, 'scripts/pin-npm.mjs'), 'utf8')).toContain("npm(['install', '--global', '--ignore-scripts', `npm@${declared}`])")
+    const lines = commands.flatMap((run) => run.split('\n').map((line) => line.trim()))
+    expect(lines.filter((line) => /^npm install --global .*npm@/.test(line))).toHaveLength(0)
+    expect(lines.filter((line) => /^node scripts\/pin-npm\.mjs(?: --prefer-bundled)?$/.test(line)).length).toBeGreaterThan(0)
+    const pinScript = readFileSync(join(repo, 'scripts/pin-npm.mjs'), 'utf8')
+    expect(pinScript).toContain("npm(['install', '--global', '--ignore-scripts', `npm@${declared}`])")
+    expect(pinScript).not.toContain("npm(['install', '--global', `npm@${declared}`])")
   })
 
   it('executes an approved registry hook and blocks an unapproved one offline', async () => {

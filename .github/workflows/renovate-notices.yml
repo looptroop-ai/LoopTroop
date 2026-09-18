@@ -37,6 +37,11 @@ on:
 permissions:
   contents: read
 
+env:
+  NPM_CONFIG_FETCH_RETRIES: '3'
+  NPM_CONFIG_FETCH_RETRY_MINTIMEOUT: '10000'
+  NPM_CONFIG_FETCH_RETRY_MAXTIMEOUT: '60000'
+
 concurrency:
   group: renovate-notices-${{ github.head_ref }}
   cancel-in-progress: true
@@ -124,15 +129,6 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 10
     steps:
-      - name: Fail early when the token is absent
-        env:
-          RELEASE_TOKEN: ${{ secrets.RELEASE_PR_TOKEN }}
-        run: |
-          if [ -z "${RELEASE_TOKEN}" ]; then
-            echo "::error::RELEASE_PR_TOKEN is not set. Add it as a repository secret."
-            exit 1
-          fi
-
       # RELEASE_PR_TOKEN rather than GITHUB_TOKEN: a push made with
       # GITHUB_TOKEN does not start workflow runs, so the required checks would
       # never re-run and the pull request would sit at "expected" forever.
@@ -143,42 +139,101 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
         with:
           ref: ${{ github.event.pull_request.head.sha }}
-          token: ${{ secrets.RELEASE_PR_TOKEN }}
+          persist-credentials: false
 
       - name: Download the regenerated notices
         uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8
         with:
           name: third-party-notices
+          path: ${{ runner.temp }}/third-party-notices-artifact
+
+      # Keep the artifact outside the checkout until it has been reduced to the
+      # one regular file this workflow expects. A directory, symlink or extra
+      # entry must not become a path that a later command writes or commits.
+      - name: Validate and copy the notices artifact
+        shell: bash
+        run: |
+          set -euo pipefail
+          artifact_dir="${RUNNER_TEMP}/third-party-notices-artifact"
+          destination="${GITHUB_WORKSPACE}/THIRD-PARTY-NOTICES.md"
+          mapfile -t entries < <(find "${artifact_dir}" -mindepth 1 -print)
+          mapfile -t files < <(find "${artifact_dir}" -mindepth 1 -maxdepth 1 -type f -print)
+          if [ "${#entries[@]}" -ne 1 ] || [ "${#files[@]}" -ne 1 ]; then
+            echo "::error::The notices artifact must contain exactly one top-level regular file."
+            exit 1
+          fi
+          source="${files[0]}"
+          if [ "$(basename "${source}")" != 'THIRD-PARTY-NOTICES.md' ] \
+            || [ "$(dirname "${source}")" != "${artifact_dir}" ] \
+            || [ ! -f "${source}" ] || [ -L "${source}" ]; then
+            echo "::error::The notices artifact contains an unexpected path or file type."
+            exit 1
+          fi
+          artifact_real=$(realpath -e -- "${artifact_dir}")
+          source_real=$(realpath -e -- "${source}")
+          case "${source_real}" in
+            "${artifact_real}"/*) ;;
+            *) echo "::error::The notices artifact resolved outside its download directory."; exit 1 ;;
+          esac
+          if [ -d "${destination}" ] || [ -L "${destination}" ]; then
+            echo "::error::The checkout destination is not a regular file."
+            exit 1
+          fi
+          install -m 0644 -- "${source_real}" "${destination}"
 
       # A no-op push would retrigger this workflow through `synchronize`, so the
       # commit is conditional here as well as in the job that produced the file.
-      #
-      # And the branch has to still be where the artifact came from. Both jobs
-      # check out the pinned head SHA, so this commit is built on the right
-      # tree; what it must not do is *move* a branch that has since advanced,
-      # which would revert whatever Renovate pushed in the meantime. Checked
-      # explicitly, and the push stays non-force as the final guard.
-      - name: Commit and push when the notices changed
+      # This step has no write token: checkout, diff, and the commit hook cannot
+      # read a credential even if a runner has a global hook configured.
+      - name: Commit the regenerated notices
+        id: commit
         run: |
           set -euo pipefail
           if git diff --quiet -- THIRD-PARTY-NOTICES.md; then
+            echo "committed=false" >> "$GITHUB_OUTPUT"
             echo "THIRD-PARTY-NOTICES.md is already current; nothing to push."
             exit 0
           fi
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add THIRD-PARTY-NOTICES.md
+          git -c core.hooksPath=/dev/null commit -m "chore(deps): regenerate third-party notices"
+          echo "committed=true" >> "$GITHUB_OUTPUT"
+        shell: bash
 
-          remote=$(git ls-remote origin "refs/heads/${HEAD_REF}" | cut -f1)
+      # The branch has to still be where the artifact came from. Both jobs
+      # check out the pinned head SHA, so this commit is built on the right
+      # tree; what it must not do is *move* a branch that has since advanced,
+      # which would revert whatever Renovate pushed in the meantime. Checked
+      # explicitly, and the push stays non-force as the final guard. The token
+      # is reduced to an extraHeader for these two git invocations only, then
+      # removed from the shell before either command runs.
+      - name: Push the regenerated notices
+        if: steps.commit.outputs.committed == 'true'
+        env:
+          HEAD_REF: ${{ github.head_ref }}
+          SOURCE_SHA: ${{ github.event.pull_request.head.sha }}
+          RELEASE_TOKEN: ${{ secrets.RELEASE_PR_TOKEN }}
+        run: |
+          set -euo pipefail
+          if [ -z "${RELEASE_TOKEN}" ]; then
+            echo "::error::RELEASE_PR_TOKEN is not set. Add it as a repository secret."
+            exit 1
+          fi
+          credential=$(printf 'x-access-token:%s' "${RELEASE_TOKEN}" | base64 | tr -d '\n')
+          unset RELEASE_TOKEN
+          remote=$(GIT_CONFIG_COUNT=1 \
+            GIT_CONFIG_KEY_0='http.https://github.com/.extraHeader' \
+            GIT_CONFIG_VALUE_0="AUTHORIZATION: basic ${credential}" \
+            git -c core.hooksPath=/dev/null ls-remote origin "refs/heads/${HEAD_REF}" | cut -f1)
           if [ "${remote}" != "${SOURCE_SHA}" ]; then
             echo "::notice::${HEAD_REF} has moved to ${remote:-(gone)} since ${SOURCE_SHA} was built."
             echo "::notice::Leaving it alone; the run for that commit will regenerate the notices."
             exit 0
           fi
 
-          git config user.name "github-actions[bot]"
-          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-          git add THIRD-PARTY-NOTICES.md
-          git commit -m "chore(deps): regenerate third-party notices"
-          git push origin "HEAD:${HEAD_REF}"
-        env:
-          HEAD_REF: ${{ github.head_ref }}
-          SOURCE_SHA: ${{ github.event.pull_request.head.sha }}
+          GIT_CONFIG_COUNT=1 \
+          GIT_CONFIG_KEY_0='http.https://github.com/.extraHeader' \
+          GIT_CONFIG_VALUE_0="AUTHORIZATION: basic ${credential}" \
+            git -c core.hooksPath=/dev/null push origin "HEAD:${HEAD_REF}"
         shell: bash

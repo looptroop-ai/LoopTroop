@@ -1,10 +1,10 @@
-import { describe, it, expect, afterEach } from 'vitest'
+import { describe, it, expect, afterEach, vi } from 'vitest'
 import { spawn, type ChildProcess } from 'node:child_process'
 import { mkdtempSync, existsSync, readFileSync, writeFileSync } from 'node:fs'
 import { tmpdir, hostname } from 'node:os'
 import { join } from 'node:path'
-import { abandonFailedStart } from '../server/cli/commands'
-import { getDaemonLockPath, getDaemonStatePath } from '../server/lib/daemonPaths'
+import { abandonFailedStart, waitForReady } from '../server/cli/commands'
+import { getDaemonLockPath, getDaemonStatePath, writeDaemonState } from '../server/lib/daemonPaths'
 import { readProcessStartToken } from '../server/lib/processIdentity'
 import { isProcessAlive } from '../server/cli/processControl'
 import { removeTempDir } from '../server/test/tempDir'
@@ -25,6 +25,7 @@ describe('abandoning a start that never reported ready', () => {
   const children: ChildProcess[] = []
 
   afterEach(() => {
+    vi.restoreAllMocks()
     for (const child of children.splice(0)) {
       try { child.kill('SIGKILL') } catch { /* already gone */ }
     }
@@ -63,6 +64,115 @@ describe('abandoning a start that never reported ready', () => {
       ...(startToken === null ? {} : { startToken }),
     }))
   }
+
+  it.each([
+    { label: 'another concurrent start', pidOffset: 1, expected: 'other-instance' },
+    { label: 'an unverified same-pid state', pidOffset: 0, expected: 'unverifiable' },
+  ])('does not adopt $label', async ({ pidOffset, expected }) => {
+    const configDir = makeConfigDir()
+    writeDaemonState({
+      instanceId: 'winner',
+      pid: process.pid,
+      host: '127.0.0.1',
+      port: 4317,
+      startedAt: new Date().toISOString(),
+      version: '0.0.0-test',
+      apiToken: 'test-token',
+    }, configDir)
+    vi.spyOn(globalThis, 'fetch').mockResolvedValue(new Response(JSON.stringify({ instanceId: 'winner' }), {
+      status: 200,
+      headers: { 'Content-Type': 'application/json' },
+    }))
+
+    // The winner is ready while this invocation is still waiting on its own
+    // child. A PID mismatch must take the loser through failure cleanup rather
+    // than returning the winner's state as if it belonged to this child.
+    expect((await waitForReady(configDir, process.pid + pidOffset, null)).kind).toBe(expected)
+  })
+
+  it('accepts a live direct child when the start-token probe is temporarily unavailable', async () => {
+    const configDir = makeConfigDir()
+    const child = spawnHungChild()
+    const pid = child.pid ?? 0
+    writeDaemonState({
+      instanceId: 'direct-child',
+      pid,
+      host: '127.0.0.1',
+      port: 4317,
+      startedAt: new Date().toISOString(),
+      version: '0.0.0-test',
+      apiToken: 'test-token',
+    }, configDir)
+    vi.spyOn(globalThis, 'fetch').mockResolvedValue(new Response(JSON.stringify({ instanceId: 'direct-child' }), {
+      status: 200,
+      headers: { 'Content-Type': 'application/json' },
+    }))
+
+    // The direct ChildProcess handle proves this is the process this invocation
+    // spawned even when Windows cannot answer its start-time query yet.
+    expect((await waitForReady(configDir, pid, null, child)).kind).toBe('ready')
+  })
+
+  it('accepts its live child when the daemon publishes without a start token', async () => {
+    const configDir = makeConfigDir()
+    const child = spawnHungChild()
+    const pid = child.pid ?? 0
+    const token = readProcessStartToken(pid)
+    expect(token).not.toBeNull()
+    writeDaemonState({
+      instanceId: 'published-without-token',
+      pid,
+      host: '127.0.0.1',
+      port: 4317,
+      startedAt: new Date().toISOString(),
+      version: '0.0.0-test',
+      apiToken: 'test-token',
+    }, configDir)
+    vi.spyOn(globalThis, 'fetch').mockResolvedValue(new Response(JSON.stringify({ instanceId: 'published-without-token' }), {
+      status: 200,
+      headers: { 'Content-Type': 'application/json' },
+    }))
+
+    // The parent captured a token, but the daemon's own probe can still be
+    // unavailable at publication time. The live direct-child handle closes
+    // that inverse readiness case without adopting a successor.
+    expect((await waitForReady(configDir, pid, token, child)).kind).toBe('ready')
+  })
+
+  it('refuses a recycled pid represented by an exited direct-child handle', async () => {
+    const configDir = makeConfigDir()
+    const child = spawnHungChild()
+    const pid = child.pid ?? 0
+    const recycled = { pid, exitCode: 0, signalCode: null } as unknown as ChildProcess
+    writeDaemonState({
+      instanceId: 'recycled-pid',
+      pid,
+      host: '127.0.0.1',
+      port: 4317,
+      startedAt: new Date().toISOString(),
+      version: '0.0.0-test',
+      apiToken: 'test-token',
+    }, configDir)
+    vi.spyOn(globalThis, 'fetch').mockResolvedValue(new Response(JSON.stringify({ instanceId: 'recycled-pid' }), {
+      status: 200,
+      headers: { 'Content-Type': 'application/json' },
+    }))
+
+    // A numeric pid that remains live after the original handle exited is not
+    // evidence for this launch, even when its health endpoint looks right.
+    expect((await waitForReady(configDir, pid, null, recycled)).kind).toBe('unverifiable')
+  })
+
+  it('waits for a pending child-exit notification before signalling tokenless cleanup', async () => {
+    const configDir = makeConfigDir()
+    const pid = process.pid + 1
+    const kill = vi.fn()
+    const child = { pid, exitCode: null, signalCode: null, kill } as unknown as ChildProcess
+    setImmediate(() => { (child as ChildProcess & { exitCode: number | null }).exitCode = 0 })
+
+    expect(await abandonFailedStart(configDir, child, null)).toBeNull()
+    expect(kill).not.toHaveBeenCalled()
+  })
 
   async function waitForDeath(pid: number, timeoutMs = 5_000): Promise<boolean> {
     const deadline = Date.now() + timeoutMs
@@ -132,19 +242,30 @@ describe('abandoning a start that never reported ready', () => {
     expect(isProcessAlive(pid)).toBe(true)
   })
 
-  it('reports rather than guesses when the platform cannot confirm identity', async () => {
+  it('uses its direct child handle when the platform cannot confirm identity', async () => {
     const configDir = makeConfigDir()
     const child = spawnHungChild()
     const pid = child.pid ?? 0
 
-    // No token recorded: an older platform, or one that cannot report start
-    // times. Killing on the pid alone is the recycled-pid bug, so the process is
-    // left alone and the user is told where to look.
+    // No token recorded: the numeric pid is unverifiable, but the live handle
+    // still proves this invocation owns the direct child.
+    writeLockFor(configDir, pid, null)
+    writeDaemonState({
+      instanceId: 'tokenless-start',
+      pid,
+      host: '127.0.0.1',
+      port: 4317,
+      startedAt: new Date().toISOString(),
+      version: '0.0.0-test',
+      apiToken: 'test-token',
+    }, configDir)
     const message = await abandonFailedStart(configDir, child, null)
 
-    expect(isProcessAlive(pid)).toBe(true)
+    expect(await waitForDeath(pid)).toBe(true)
     expect(message).toContain(String(pid))
-    expect(message).toMatch(/may still be running/)
+    expect(message).toMatch(/Stopped the daemon/)
+    expect(existsSync(getDaemonLockPath(configDir))).toBe(false)
+    expect(existsSync(getDaemonStatePath(configDir))).toBe(false)
   })
 
   it('leaves the state file of a daemon that started while this one was timing out', async () => {

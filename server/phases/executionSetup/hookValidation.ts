@@ -11,17 +11,24 @@ import {
   type RuntimeEnvironment,
 } from '@shared/commandSpec'
 import { createHash } from 'node:crypto'
-import { copyFileSync, existsSync, mkdtempSync, rmSync } from 'node:fs'
+import { closeSync, existsSync, lstatSync, mkdtempSync, realpathSync, renameSync, rmSync, unlinkSync, readFileSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { isAbsolute, relative, resolve } from 'node:path'
 import { snapshotGitIndex, type GitIndexSnapshot } from '../../git/indexSnapshot'
+import { safeAtomicWriteWithin } from '../../io/atomicWrite'
+import { openFileNoFollowSync, readFileNoFollowSync } from '../../io/readFile'
+import { resolveContainedPath } from '../../lib/containedPath'
+import { ensureSecureDir, resolveAppConfigDir } from '../../lib/appConfigDir'
 import { REPO_SCOPE_PATHSPECS } from '../../git/pathspecs'
-import { runGitBinarySync, runGitSync } from '../../git/runCommand'
+import { runGitBinarySync, runGitMutation, runGitSync } from '../../git/runCommand'
 import { getExecutionSetupCommitExcludedRoots, summarizeWorktreeChanges } from '../../git/worktreeChanges'
-import { getErrorMessage } from '@shared/typeGuards'
+import { getErrorMessage, isRecord } from '@shared/typeGuards'
 import { COMMAND_OUTPUT_EXCERPT_LENGTH } from '../../lib/constants'
 
 const HOOK_VALIDATION_TIMEOUT_MS = 30_000
+const HOOK_VALIDATION_RESTORE_MARKER_OWNER = 'looptroop/git-hook-validation'
+const HOOK_VALIDATION_RESTORE_MARKER_SCHEMA_VERSION = 2
+const HOOK_VALIDATION_RESTORE_MARKER_DIRECTORY = 'hook-validation'
 
 export interface ValidationCommand {
   id: string
@@ -31,6 +38,11 @@ export interface ValidationCommand {
 
 interface WorktreeSnapshot {
   tree: string
+  indexTree: string
+  /** Exact index bytes for crash recovery, including intent-to-add flags. */
+  indexBase64: string | null
+  worktreePath: string
+  gitDirectory: string
   temporaryDirectory: string
   untrackedPaths: Set<string>
   /**
@@ -40,6 +52,19 @@ interface WorktreeSnapshot {
    * still staged — the validation was undone on disk and not in the index.
    */
   index: GitIndexSnapshot
+}
+
+interface PersistedWorktreeSnapshot {
+  schemaVersion: typeof HOOK_VALIDATION_RESTORE_MARKER_SCHEMA_VERSION
+  owner: typeof HOOK_VALIDATION_RESTORE_MARKER_OWNER
+  worktreePath: string
+  gitDirectory: string
+  tree: string
+  indexTree: string
+  /** Exact index bytes, including flags not represented by a tree object. */
+  indexBase64: string | null
+  untrackedPaths: string[]
+  createdAt: string
 }
 
 export interface GitHookValidationFileAudit {
@@ -89,31 +114,256 @@ function listUntrackedPaths(worktreePath: string): Set<string> | null {
   return new Set(result.stdout.toString('utf8').split('\0').filter(Boolean))
 }
 
-function snapshotWorktree(worktreePath: string): WorktreeSnapshot | null {
-  const gitDirectoryResult = runGitSync(worktreePath, ['rev-parse', '--absolute-git-dir'])
-  if (!gitDirectoryResult.ok) return null
+function canonicalPath(path: string): string {
+  try {
+    return realpathSync.native(path)
+  } catch {
+    return resolve(path)
+  }
+}
+
+/** Git prints one line ending; preserve every other byte of a valid path. */
+function removeFinalLineEnding(value: string): string {
+  return value.endsWith('\n') ? value.slice(0, -1).replace(/\r$/, '') : value
+}
+
+/**
+ * A hook runs in the project directory and is allowed to remove project files.
+ * Keeping the crash marker there meant the hook could remove the only record of
+ * the snapshot it was about to need. The marker is app state, so keep it in the
+ * owner-only application directory instead.
+ */
+export function getHookValidationRestoreMarkerPath(worktreePath: string): string {
+  const name = `${createHash('sha256').update(canonicalPath(worktreePath)).digest('hex')}.json`
+  return resolve(resolveAppConfigDir(), HOOK_VALIDATION_RESTORE_MARKER_DIRECTORY, name)
+}
+
+function equivalentPath(left: string, right: string): boolean {
+  const leftPath = canonicalPath(left)
+  const rightPath = canonicalPath(right)
+  if (process.platform !== 'win32') return leftPath === rightPath
+  const normalize = (value: string) => value.replace(/\\/g, '/').replace(/\/$/, '').toLowerCase()
+  return normalize(leftPath) === normalize(rightPath)
+}
+
+function markerLocation(worktreePath: string): { configDir: string; markerPath: string; relativePath: string } {
+  const configDir = resolveAppConfigDir()
+  const marker = getHookValidationRestoreMarkerPath(worktreePath)
+  return { configDir, markerPath: marker, relativePath: relative(configDir, marker) }
+}
+
+function gitIdentity(worktreePath: string): { worktreePath: string; gitDirectory: string } | null {
+  const root = runGitSync(worktreePath, ['rev-parse', '--show-toplevel'], { trimOutput: false })
+  const directory = runGitSync(worktreePath, ['rev-parse', '--absolute-git-dir'], { trimOutput: false })
+  if (!root.ok || !directory.ok) return null
+  return {
+    worktreePath: canonicalPath(removeFinalLineEnding(root.stdout)),
+    gitDirectory: canonicalPath(removeFinalLineEnding(directory.stdout)),
+  }
+}
+
+function isSafeSnapshotPath(worktreePath: string, path: string): boolean {
+  if (!path || isAbsolute(path)) return false
+  const absolute = resolve(worktreePath, path)
+  const relativePath = relative(resolve(worktreePath), absolute)
+  return relativePath !== '..'
+    && !relativePath.startsWith('../')
+    && !relativePath.startsWith('..\\')
+    && !path.includes('\0')
+}
+
+function readPersistedWorktreeSnapshot(worktreePath: string):
+  | { kind: 'absent' }
+  | { kind: 'snapshot'; snapshot: PersistedWorktreeSnapshot }
+  | { kind: 'invalid'; reason: string } {
+  const location = markerLocation(worktreePath)
+  let containedMarkerPath: string
+  try {
+    // Validate every ancestor before the no-follow read. The app directory is
+    // trusted state, but it can be deleted between starts and is recreated by
+    // the writer only when a snapshot is successfully persisted.
+    if (!existsSync(location.configDir)) return { kind: 'absent' }
+    containedMarkerPath = resolveContainedPath(location.configDir, location.relativePath, { allowMissingParents: true, rejectFinalSymlink: true })
+  } catch (error) {
+    return { kind: 'invalid', reason: `the restore marker path is not contained by the application directory (${getErrorMessage(error)})` }
+  }
+
+  let content: string
+  try {
+    content = readFileNoFollowSync(containedMarkerPath)
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === 'ENOENT') return { kind: 'absent' }
+    return { kind: 'invalid', reason: `the restore marker could not be read (${getErrorMessage(error)})` }
+  }
+
+  try {
+    const parsed: unknown = JSON.parse(content)
+    if (!isRecord(parsed)
+      || parsed.schemaVersion !== HOOK_VALIDATION_RESTORE_MARKER_SCHEMA_VERSION
+      || parsed.owner !== HOOK_VALIDATION_RESTORE_MARKER_OWNER
+      || typeof parsed.worktreePath !== 'string'
+      || parsed.worktreePath.length === 0
+      || typeof parsed.gitDirectory !== 'string'
+      || parsed.gitDirectory.length === 0
+      || typeof parsed.tree !== 'string'
+      || typeof parsed.indexTree !== 'string'
+      || !(parsed.indexBase64 === null
+        || (typeof parsed.indexBase64 === 'string'
+          && /^[A-Za-z0-9+/]*={0,2}$/.test(parsed.indexBase64)))
+      || !/^[0-9a-f]{40,64}$/.test(parsed.tree)
+      || !/^[0-9a-f]{40,64}$/.test(parsed.indexTree)
+      || !Array.isArray(parsed.untrackedPaths)
+      || typeof parsed.createdAt !== 'string'
+      || !parsed.untrackedPaths.every((path): path is string => typeof path === 'string' && isSafeSnapshotPath(worktreePath, path))) {
+      return { kind: 'invalid', reason: 'the restore marker is malformed' }
+    }
+    return {
+      kind: 'snapshot',
+      snapshot: {
+        schemaVersion: HOOK_VALIDATION_RESTORE_MARKER_SCHEMA_VERSION,
+        owner: HOOK_VALIDATION_RESTORE_MARKER_OWNER,
+        worktreePath: parsed.worktreePath,
+        gitDirectory: parsed.gitDirectory,
+        tree: parsed.tree,
+        indexTree: parsed.indexTree,
+        indexBase64: parsed.indexBase64,
+        untrackedPaths: parsed.untrackedPaths,
+        createdAt: parsed.createdAt,
+      },
+    }
+  } catch {
+    return { kind: 'invalid', reason: 'the restore marker is not valid JSON' }
+  }
+}
+
+function removePersistedWorktreeSnapshot(worktreePath: string): string | null {
+  const location = markerLocation(worktreePath)
+  let containedMarkerPath: string
+  try {
+    if (!existsSync(location.configDir)) return null
+    containedMarkerPath = resolveContainedPath(location.configDir, location.relativePath, { allowMissingParents: true, rejectFinalSymlink: true })
+  } catch (error) {
+    return `the restore marker path is not contained by the application directory (${getErrorMessage(error)})`
+  }
+
+  try {
+    const stats = lstatSync(containedMarkerPath)
+    if (!stats.isFile()) return 'the restore marker is not a regular file'
+    unlinkSync(containedMarkerPath)
+    return null
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === 'ENOENT') return null
+    return `the restore marker could not be removed (${getErrorMessage(error)})`
+  }
+}
+
+function persistWorktreeSnapshot(worktreePath: string, snapshot: WorktreeSnapshot): string | null {
+  const location = markerLocation(worktreePath)
+  const marker: PersistedWorktreeSnapshot = {
+    schemaVersion: HOOK_VALIDATION_RESTORE_MARKER_SCHEMA_VERSION,
+    owner: HOOK_VALIDATION_RESTORE_MARKER_OWNER,
+    worktreePath: snapshot.worktreePath,
+    gitDirectory: snapshot.gitDirectory,
+    tree: snapshot.tree,
+    indexTree: snapshot.indexTree,
+    indexBase64: snapshot.indexBase64,
+    untrackedPaths: [...snapshot.untrackedPaths],
+    createdAt: new Date().toISOString(),
+  }
+  try {
+    ensureSecureDir(location.configDir)
+    safeAtomicWriteWithin(
+      location.configDir,
+      location.relativePath,
+      `${JSON.stringify(marker, null, 2)}\n`,
+      { mode: 0o600 },
+    )
+    return null
+  } catch (error) {
+    return `the restore marker could not be written (${getErrorMessage(error)})`
+  }
+}
+
+function decodePersistedIndex(indexBase64: string | null): { bytes: Buffer | null; error: string | null } {
+  if (indexBase64 === null) return { bytes: null, error: null }
+  // Buffer.from(..., 'base64') accepts malformed input by silently dropping
+  // bytes. Require canonical padding and a round trip before trusting marker
+  // data as an index replacement.
+  if (indexBase64.length === 0
+    || !/^(?:[A-Za-z0-9+/]{4})*(?:[A-Za-z0-9+/]{2}==|[A-Za-z0-9+/]{3}=)?$/.test(indexBase64)) {
+    return { bytes: null, error: 'the persisted index is not valid base64' }
+  }
+  const bytes = Buffer.from(indexBase64, 'base64')
+  return bytes.toString('base64') === indexBase64
+    ? { bytes, error: null }
+    : { bytes: null, error: 'the persisted index is not canonical base64' }
+}
+
+function validatePersistedIndex(worktreePath: string, bytes: Buffer | null): string | null {
+  if (bytes === null) return null
+  let temporaryDirectory: string | null = null
+  try {
+    temporaryDirectory = mkdtempSync(resolve(tmpdir(), 'looptroop-hook-index-validate-'))
+    const temporaryIndex = resolve(temporaryDirectory, 'index')
+    writeFileSync(temporaryIndex, bytes, { flag: 'wx', mode: 0o600 })
+    const result = runGitSync(worktreePath, ['ls-files', '--cached'], {
+      env: { GIT_INDEX_FILE: temporaryIndex },
+      log: false,
+    })
+    return result.ok ? null : `the persisted index is not a valid Git index (${result.errorDetail})`
+  } catch (error) {
+    return `the persisted index could not be validated (${getErrorMessage(error)})`
+  } finally {
+    if (temporaryDirectory !== null) rmSync(temporaryDirectory, { recursive: true, force: true })
+  }
+}
+
+function readGitIndex(gitDirectory: string): { bytes: Buffer | null; error: string | null } {
+  const indexPath = resolve(gitDirectory, 'index')
+  let fd: number | undefined
+  try {
+    fd = openFileNoFollowSync(indexPath)
+    return { bytes: readFileSync(fd), error: null }
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === 'ENOENT') return { bytes: null, error: null }
+    return { bytes: null, error: `the Git index could not be read (${getErrorMessage(error)})` }
+  } finally {
+    if (fd !== undefined) closeSync(fd)
+  }
+}
+
+async function snapshotWorktree(worktreePath: string): Promise<WorktreeSnapshot | null> {
+  const identity = gitIdentity(worktreePath)
+  if (!identity) return null
+  const indexTreeResult = await runGitMutation(worktreePath, ['write-tree'])
+  if (!indexTreeResult.ok) return null
 
   const temporaryDirectory = mkdtempSync(resolve(tmpdir(), 'looptroop-hook-snapshot-'))
   const temporaryIndex = resolve(temporaryDirectory, 'index')
-  const sourceIndex = resolve(gitDirectoryResult.stdout, 'index')
+  let indexBase64: string | null = null
   // A copy that throws has to look like a snapshot that could not be taken —
   // the caller's answer to that is `refused`, not an exception — and it must
   // not leave the temporary directory behind on the way out.
   try {
-    if (existsSync(sourceIndex)) copyFileSync(sourceIndex, temporaryIndex)
+    const sourceIndex = readGitIndex(identity.gitDirectory)
+    if (sourceIndex.error) throw new Error(sourceIndex.error)
+    if (sourceIndex.bytes !== null) {
+      writeFileSync(temporaryIndex, sourceIndex.bytes, { flag: 'wx', mode: 0o600 })
+      indexBase64 = sourceIndex.bytes.toString('base64')
+    }
   } catch {
     rmSync(temporaryDirectory, { recursive: true, force: true })
     return null
   }
   const env = { GIT_INDEX_FILE: temporaryIndex }
   if (!existsSync(temporaryIndex)) {
-    if (!runGitSync(worktreePath, ['read-tree', '--empty'], { env }).ok) {
+    if (!(await runGitMutation(worktreePath, ['read-tree', '--empty'], { env })).ok) {
       rmSync(temporaryDirectory, { recursive: true, force: true })
       return null
     }
   }
-  const staged = runGitSync(worktreePath, ['add', '-A', '--', '.'], { env })
-  const tree = staged.ok ? runGitSync(worktreePath, ['write-tree'], { env }) : null
+  const staged = await runGitMutation(worktreePath, ['add', '-A', '--', '.'], { env })
+  const tree = staged.ok ? await runGitMutation(worktreePath, ['write-tree'], { env }) : null
   const treeId = tree?.ok ? tree.stdout : ''
   if (!treeId) {
     rmSync(temporaryDirectory, { recursive: true, force: true })
@@ -134,10 +384,133 @@ function snapshotWorktree(worktreePath: string): WorktreeSnapshot | null {
 
   return {
     tree: treeId,
+    indexTree: indexTreeResult.stdout.trim(),
+    indexBase64,
+    worktreePath: identity.worktreePath,
+    gitDirectory: identity.gitDirectory,
     temporaryDirectory,
     untrackedPaths,
     index,
   }
+}
+
+/** Restores the complete index, not only the tree it currently describes. */
+function restorePersistedIndex(gitDirectory: string, indexBytes: Buffer | null): string | null {
+  const indexPath = resolve(gitDirectory, 'index')
+  try {
+    if (indexBytes === null) {
+      rmSync(indexPath, { force: true })
+      return null
+    }
+    const current = lstatSync(indexPath)
+    if (!current.isFile() || current.isSymbolicLink()) return 'the Git index is not a regular file'
+    const temporaryDirectory = mkdtempSync(resolve(gitDirectory, '.looptroop-hook-index-'))
+    const temporaryIndex = resolve(temporaryDirectory, 'index')
+    try {
+      writeFileSync(temporaryIndex, indexBytes, { flag: 'wx', mode: 0o600 })
+      renameSync(temporaryIndex, indexPath)
+    } finally {
+      rmSync(temporaryDirectory, { recursive: true, force: true })
+    }
+    return null
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === 'ENOENT' && indexBytes !== null) {
+      return 'the Git index could not be found'
+    }
+    return `the exact Git index could not be restored (${getErrorMessage(error)})`
+  }
+}
+
+/**
+ * Replays a snapshot left by a process that died while a hook was running.
+ * New untracked paths have no durable owner after a crash, so they stay on
+ * disk and the next validation is refused until the ambiguity is resolved.
+ */
+async function recoverPersistedWorktreeSnapshot(worktreePath: string): Promise<string | null> {
+  const persisted = readPersistedWorktreeSnapshot(worktreePath)
+  if (persisted.kind === 'absent') return null
+  if (persisted.kind === 'invalid') return persisted.reason
+
+  const identity = gitIdentity(worktreePath)
+  if (!identity) return 'the worktree identity could not be read'
+  if (!equivalentPath(persisted.snapshot.worktreePath, identity.worktreePath)
+    || !equivalentPath(persisted.snapshot.gitDirectory, identity.gitDirectory)) {
+    return 'the restore marker belongs to a different worktree'
+  }
+
+  const persistedIndex = decodePersistedIndex(persisted.snapshot.indexBase64)
+  if (persistedIndex.error) return persistedIndex.error
+  const invalidPersistedIndex = validatePersistedIndex(worktreePath, persistedIndex.bytes)
+  if (invalidPersistedIndex) return invalidPersistedIndex
+  const currentIndex = readGitIndex(identity.gitDirectory)
+  if (currentIndex.error) return currentIndex.error
+
+  const failures: string[] = []
+  const currentUntracked = listUntrackedPaths(worktreePath)
+  if (!currentUntracked) {
+    return 'untracked cleanup could not be attributed safely because the worktree could not be listed'
+  }
+  const known = new Set(persisted.snapshot.untrackedPaths)
+  const additions = [...currentUntracked].filter((path) => !known.has(path))
+  if (additions.length > 0) {
+    return `untracked paths could not be attributed safely: ${additions.join(', ')}; remove or resolve them before retrying recovery`
+  }
+
+  // Never restore a durable snapshot over edits made after the process that
+  // created it died. The old order restored first and checked for unknown files
+  // afterwards, which could silently discard both tracked edits and staged
+  // intent. A non-zero diff is an ambiguity, not permission to overwrite.
+  const currentIndexTree = runGitSync(worktreePath, [
+    'diff',
+    '--cached',
+    '--quiet',
+    persisted.snapshot.indexTree,
+    '--',
+    ...REPO_SCOPE_PATHSPECS,
+  ])
+  if (!currentIndexTree.ok && currentIndexTree.status !== 1) {
+    failures.push(`index snapshot comparison failed: ${currentIndexTree.errorDetail}`)
+  } else if (currentIndexTree.status === 1) {
+    failures.push('the index changed after the restore marker was written')
+  }
+  const indexMatches = persistedIndex.bytes === null
+    ? currentIndex.bytes === null
+    : currentIndex.bytes !== null && currentIndex.bytes.equals(persistedIndex.bytes)
+  if (!indexMatches) failures.push('the exact index bytes changed after the restore marker was written')
+  const currentWorktree = runGitSync(worktreePath, [
+    'diff',
+    '--quiet',
+    persisted.snapshot.tree,
+    '--',
+    ...REPO_SCOPE_PATHSPECS,
+  ])
+  if (!currentWorktree.ok && currentWorktree.status !== 1) {
+    failures.push(`worktree snapshot comparison failed: ${currentWorktree.errorDetail}`)
+  } else if (currentWorktree.status === 1) {
+    failures.push('tracked worktree files changed after the restore marker was written')
+  }
+  if (failures.length > 0) {
+    return `${failures.join('; ')}; the restore marker was retained and no files were changed`
+  }
+
+  const restoredIndex = await runGitMutation(worktreePath, ['read-tree', persisted.snapshot.indexTree])
+  if (!restoredIndex.ok) failures.push(`index restore failed: ${restoredIndex.errorDetail}`)
+  const exactIndexFailure = restorePersistedIndex(identity.gitDirectory, persistedIndex.bytes)
+  if (exactIndexFailure) failures.push(`exact index restore failed: ${exactIndexFailure}`)
+  const restoredWorktree = await runGitMutation(worktreePath, [
+    'restore',
+    '--source',
+    persisted.snapshot.tree,
+    '--worktree',
+    '--',
+    '.',
+  ])
+  if (!restoredWorktree.ok) failures.push(`worktree restore failed: ${restoredWorktree.errorDetail}`)
+
+  if (failures.length > 0) {
+    return failures.join('; ')
+  }
+  return removePersistedWorktreeSnapshot(worktreePath)
 }
 
 /**
@@ -147,7 +520,7 @@ function snapshotWorktree(worktreePath: string): WorktreeSnapshot | null {
  * cancellation, and an exception there would replace the error the operator
  * actually needs to read with one about the cleanup.
  */
-function restoreWorktreeSnapshot(worktreePath: string, snapshot: WorktreeSnapshot): string | null {
+async function restoreWorktreeSnapshot(worktreePath: string, snapshot: WorktreeSnapshot): Promise<string | null> {
   const failures: string[] = []
   try {
     try {
@@ -157,7 +530,7 @@ function restoreWorktreeSnapshot(worktreePath: string, snapshot: WorktreeSnapsho
     }
     // Attempted even when the index restore failed: half a restore is better
     // than none, and both failures are reported.
-    const restored = runGitSync(worktreePath, ['restore', '--source', snapshot.tree, '--worktree', '--', '.'])
+    const restored = await runGitMutation(worktreePath, ['restore', '--source', snapshot.tree, '--worktree', '--', '.'])
     if (!restored.ok) failures.push(`worktree restore failed: ${restored.errorDetail}`)
     // A listing that fails here means the same thing it means at snapshot time:
     // we cannot tell what a hook added from what was already there. Removing
@@ -182,6 +555,15 @@ function restoreWorktreeSnapshot(worktreePath: string, snapshot: WorktreeSnapsho
   } catch (error) {
     failures.push(`worktree cleanup failed: ${getErrorMessage(error)}`)
   } finally {
+    // Once the worktree and index are restored, the durable marker no longer
+    // protects anything. Remove it before best-effort temporary cleanup: a
+    // harmless temp-directory error must not make a later start replay an old
+    // snapshot over edits made after this run.
+    const restoreFailureCount = failures.length
+    if (restoreFailureCount === 0) {
+      const markerFailure = removePersistedWorktreeSnapshot(worktreePath)
+      if (markerFailure) failures.push(markerFailure)
+    }
     // Cleanup is reported, never thrown: this runs over a validation failure or
     // an abort, and an exception here would replace the error the operator
     // needs with one about a temporary directory.
@@ -347,6 +729,8 @@ export interface GitHookValidationRun {
   fileAudit: GitHookValidationFileAudit
   /** What went wrong putting the worktree back, or null. */
   restoreFailure: string | null
+  /** Why a durable snapshot could not be recovered, or null. */
+  recoveryFailure: string | null
   /** True when `protectWorktree` was asked for and could not be arranged. */
   refused: boolean
 }
@@ -364,11 +748,44 @@ export async function runGitHookValidationCommands(
   const receipts: ExecutionSetupCommandReceiptPayload[] = []
   const outcomes: GitHookValidationCommandRunResult[] = []
 
-  const beforeFingerprint = options.auditFileMutation ? worktreeFingerprint(options.worktreePath) : null
-  const snapshot = options.protectWorktree ? snapshotWorktree(options.worktreePath) : null
-  if (options.protectWorktree && !snapshot) {
-    return { receipts, outcomes, fileAudit: NO_MUTATION, restoreFailure: null, refused: true }
+  const recoveryFailure = await recoverPersistedWorktreeSnapshot(options.worktreePath)
+  if (recoveryFailure) {
+    const markerPath = getHookValidationRestoreMarkerPath(options.worktreePath)
+    const reason = `Could not recover the previous Git hook validation snapshot: ${recoveryFailure}. The restore marker was retained at ${markerPath}; resolve the listed worktree changes or restore them to the marker's snapshot, then retry hook validation.`
+    return {
+      receipts,
+      outcomes,
+      fileAudit: NO_MUTATION,
+      restoreFailure: null,
+      recoveryFailure: reason,
+      refused: true,
+    }
   }
+
+  const snapshot = options.protectWorktree ? await snapshotWorktree(options.worktreePath) : null
+  if (options.protectWorktree && !snapshot) {
+    return { receipts, outcomes, fileAudit: NO_MUTATION, restoreFailure: null, recoveryFailure: null, refused: true }
+  }
+
+  if (snapshot) {
+    const markerFailure = persistWorktreeSnapshot(options.worktreePath, snapshot)
+    if (markerFailure) {
+      try {
+        snapshot.index.dispose()
+      } catch {
+        // The refusal below is the actionable failure; the temp is best effort.
+      }
+      try {
+        rmSync(snapshot.temporaryDirectory, { recursive: true, force: true })
+      } catch {
+        // The marker was never written, so no durable recovery state is lost.
+      }
+      return { receipts, outcomes, fileAudit: NO_MUTATION, restoreFailure: markerFailure, recoveryFailure: null, refused: true }
+    }
+  }
+  // The marker is LoopTroop's own protected state, not a hook mutation. Take
+  // the audit baseline after it is durable so a no-op run remains a no-op.
+  const beforeFingerprint = options.auditFileMutation ? worktreeFingerprint(options.worktreePath) : null
 
   let fileAudit: GitHookValidationFileAudit = NO_MUTATION
   let restoreFailure: string | null = null
@@ -406,10 +823,10 @@ export async function runGitHookValidationCommands(
         // leaves the worktree usable.
       }
     }
-    if (snapshot) restoreFailure = restoreWorktreeSnapshot(options.worktreePath, snapshot)
+    if (snapshot) restoreFailure = await restoreWorktreeSnapshot(options.worktreePath, snapshot)
   }
 
-  return { receipts, outcomes, fileAudit, restoreFailure, refused: false }
+  return { receipts, outcomes, fileAudit, restoreFailure, recoveryFailure: null, refused: false }
 }
 
 export async function runExplicitGitHookValidation(input: {
@@ -475,6 +892,24 @@ export async function runExplicitGitHookValidation(input: {
     // whatever they touch is put back. Without a snapshot it used to run
     // anyway, so a hook that writes files left them in the worktree with
     // nothing able to undo it.
+    if (run.recoveryFailure) {
+      return {
+        policy,
+        receipts: [{
+          id: 'git-hook-policy',
+          status: 'skipped',
+          exitCode: null,
+          durationMs: 0,
+          outputExcerpt: run.recoveryFailure,
+        }],
+        // An unproved prior hook mutation is a safety boundary under both
+        // policies. Advisory means an ordinary command failure is a warning;
+        // it does not permit validation to continue from unknown bytes.
+        errors: [`Explicit Git hook validation was refused: ${run.recoveryFailure}`],
+        warnings: [],
+        fileAudit: noMutation,
+      }
+    }
     return {
       policy,
       receipts: [{

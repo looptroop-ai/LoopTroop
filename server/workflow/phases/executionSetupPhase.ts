@@ -357,6 +357,13 @@ async function validateExecutionSetupRuntimeProfile(input: {
       },
     })
     hookValidationReceipts.push(...run.receipts)
+    if (run.recoveryFailure) {
+      // A prior protected hook run left an unproved worktree state. This is a
+      // hard safety boundary even for an advisory policy: continuing would
+      // validate bytes we cannot attribute to the current setup attempt.
+      errors.push(`Git hook validation was refused: ${run.recoveryFailure}`)
+      return resultWithReceipts()
+    }
     for (const outcome of run.outcomes) {
       if (outcome.status === 'passed') continue
       const failure = summarizeSetupCommandFailure({

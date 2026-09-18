@@ -2,7 +2,7 @@ import { createInterface } from 'node:readline/promises'
 import { basename } from 'node:path'
 import { resolveAppConfigDir } from '../lib/appConfigDir'
 import { getSettingsPath } from '../lib/appSettings'
-import { getDaemonLogPath, getDaemonStatePath, type DaemonState } from '../lib/daemonPaths'
+import { daemonOrigin, getDaemonLogPath, getDaemonStatePath, type DaemonState } from '../lib/daemonPaths'
 import { resolveAppDbPath } from '../db/appDbPath'
 import { mintBootstrapUrl, openInBrowser, readRunningDaemon, startCommand, type BrowserLaunch } from './commands'
 import { isIgnoreMode, type IgnoreMode } from '@shared/ignoreMode'
@@ -131,7 +131,7 @@ async function stepDaemon(
 
   const running = await readRunningDaemon(configDir)
   if (running) {
-    out(`   Already running on http://${running.host}:${running.port} (pid ${running.pid}).\n\n`)
+    out(`   Already running on ${daemonOrigin(running.host, running.port)} (pid ${running.pid}).\n\n`)
     return { state: running, problem: null }
   }
 
@@ -313,7 +313,7 @@ async function stepBrowser(
 
   // The origin, never the URL: the nonce in it is a credential, and this line
   // ends up in scrollback, in screenshots and in pasted bug reports.
-  out(`   Opened http://${daemon.host}:${daemon.port}\n`)
+  out(`   Opened ${daemonOrigin(daemon.host, daemon.port)}\n`)
   return null
 }
 
@@ -324,7 +324,7 @@ async function api<T>(
   init: RequestInit = {},
 ): Promise<{ ok: boolean; status: number; body: T | null }> {
   try {
-    const response = await fetch(`http://${daemon.host}:${daemon.port}${path}`, {
+    const response = await fetch(`${daemonOrigin(daemon.host, daemon.port)}${path}`, {
       ...init,
       headers: { ...init.headers, Authorization: `Bearer ${daemon.apiToken}` },
       signal: AbortSignal.timeout(30_000),

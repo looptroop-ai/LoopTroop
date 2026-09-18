@@ -2,6 +2,7 @@ import { isEntryPoint } from './entryPoint'
 import { APP_VERSION } from '../lib/appVersion'
 import { startDaemon, installShutdownHandlers } from '../daemon/startDaemon'
 import { startDaemonLogRotation } from '../lib/daemonLog'
+import { daemonOrigin } from '../lib/daemonPaths'
 import { resolveSettings } from '../lib/appSettings'
 import { getErrorMessage } from '@shared/typeGuards'
 import { LOOPTROOP_OPENCODE_LOGS_ENV } from '@shared/opencodeLogMode'
@@ -56,7 +57,7 @@ export async function runDaemonProcess(options: DaemonProcessOptions = {}): Prom
     version: APP_VERSION,
     ...(opencodeLogs === undefined ? {} : { opencodeLogs }),
     onReady: (state) => {
-      console.log(`[daemon] Serving on http://${state.host}:${state.port} (pid ${state.pid}).`)
+      console.log(`[daemon] Serving on ${daemonOrigin(state.host, state.port)} (pid ${state.pid}).`)
     },
   })
 

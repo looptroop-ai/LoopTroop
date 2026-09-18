@@ -6,6 +6,8 @@ import { uniqueRepoScopedPaths } from '../../git/repoScopedPath'
 import { parseGitPathListZ } from '../../git/statusPorcelain'
 import { runGit, runGitMutationOrThrow } from '../../git/runCommand'
 import { getErrorMessage } from '@shared/typeGuards'
+import { hasPendingOpencodeStepsRestore, isRootOpencodeConfigPath } from '../execution/opencodeStepsConfig'
+import { join } from 'node:path'
 
 /**
  * The one runner for this file.
@@ -56,6 +58,12 @@ function parseNameStatus(output: string): Array<{ status: string; path: string }
   return entries
 }
 
+function excludePendingOpencodeConfig(worktreePath: string, files: readonly string[]): string[] {
+  const ticketDir = join(worktreePath, '.ticket')
+  if (!hasPendingOpencodeStepsRestore(ticketDir, worktreePath)) return [...files]
+  return files.filter((file) => !isRootOpencodeConfigPath(file, worktreePath))
+}
+
 export async function prepareSquashCandidate(
   worktreePath: string,
   baseBranch: string,
@@ -82,10 +90,10 @@ export async function prepareSquashCandidate(
       ...REPO_SCOPE_PATHSPECS,
     ])))
     const explicitFiles = uniqueCandidatePaths(worktreePath, extraFilesToStage)
-    const candidateFiles = uniqueCandidatePaths(worktreePath, [
+    const candidateFiles = excludePendingOpencodeConfig(worktreePath, uniqueCandidatePaths(worktreePath, [
       ...committedCandidateFiles,
       ...explicitFiles,
-    ])
+    ]))
 
     if (candidateFiles.length === 0) {
       return {
@@ -169,7 +177,7 @@ export async function rewriteCandidateCommitWithFiles(
 
   try {
     preRewriteHead = await runGit(['rev-parse', 'HEAD'])
-    const candidateFiles = uniqueCandidatePaths(worktreePath, includedFiles)
+    const candidateFiles = excludePendingOpencodeConfig(worktreePath, uniqueCandidatePaths(worktreePath, includedFiles))
 
     if (candidateFiles.length === 0) {
       return {

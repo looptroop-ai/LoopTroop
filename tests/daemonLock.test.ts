@@ -929,7 +929,8 @@ describe('daemon lock', () => {
       const results = await race(makeConfigDir())
 
       assertExclusive(results)
-      expect(results.filter((line) => line === 'DaemonLockedError')).toHaveLength(CONTENDERS - 1)
+      const lockErrors = results.filter((line) => line.split(/\r?\n/).some((entry) => entry.trim() === 'DaemonLockedError'))
+      expect(lockErrors, `expected every loser to report DaemonLockedError\n${results.join('\n')}`).toHaveLength(CONTENDERS - 1)
     }, 60_000)
 
     it('hands a crashed run\'s lock to exactly one of several simultaneous starts', async () => {

@@ -4,6 +4,7 @@ import { isLoopbackHost } from '../shared/appConfig'
 import { isEntryPoint } from './cli/entryPoint'
 import { getErrorMessage } from '@shared/typeGuards'
 import { SHUTDOWN_FORCE_EXIT_MS } from './lib/constants'
+import { daemonOrigin } from './lib/daemonPaths'
 
 /**
  * Starts the backend as a process: signal handlers, exit codes, the lot.
@@ -21,7 +22,7 @@ export async function main(): Promise<void> {
 
   try {
     const address = await runtime.start()
-    console.log(`[server] LoopTroop backend running on http://${address.hostname}:${address.port}`)
+    console.log(`[server] LoopTroop backend running on ${daemonOrigin(address.hostname, address.port)}`)
   } catch (error) {
     const message = getErrorMessage(error)
     console.error(`[server] LoopTroop backend failed to start: ${message}`)

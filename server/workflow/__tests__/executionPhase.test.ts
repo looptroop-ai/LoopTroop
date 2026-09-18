@@ -1,6 +1,7 @@
 import { afterAll, beforeEach, describe, expect, it, vi } from 'vitest'
-import { existsSync, readFileSync, writeFileSync } from 'fs'
-import { join } from 'path'
+import { execFileSync } from 'node:child_process'
+import { existsSync, readFileSync, rmSync, writeFileSync } from 'fs'
+import { join, resolve } from 'path'
 import type { Bead } from '../../phases/beads/types'
 import { makeTicketContextFromTicket } from '../../test/factories'
 import { createInitializedTestTicket, createTestRepoManager, resetTestDb } from '../../test/integration'
@@ -8,6 +9,7 @@ import { getLatestPhaseArtifact, getTicketByRef, getTicketContext, getTicketPath
 import { opencodeSessions, profiles } from '../../db/schema'
 import { db as appDatabase } from '../../db/index'
 import { listOpenCodeSessionsForTicket } from '../../opencode/sessionManager'
+import { applyOpencodeStepsConfig, restoreOpencodeStepsConfig } from '../../phases/execution/opencodeStepsConfig'
 import {
   readTicketBeads,
   recoverCodingBeadWithReset,
@@ -30,7 +32,6 @@ const {
   isMockOpenCodeModeMock,
   broadcastMock,
   abortSessionMock,
-  ensureLocalGitExcludeMock,
 } = vi.hoisted(() => ({
   executeBeadMock: vi.fn(),
   recordBeadStartCommitMock: vi.fn(),
@@ -41,13 +42,7 @@ const {
   isMockOpenCodeModeMock: vi.fn(),
   broadcastMock: vi.fn(),
   abortSessionMock: vi.fn(),
-  ensureLocalGitExcludeMock: vi.fn(),
 }))
-
-vi.mock('../../git/repository', async () => {
-  const actual = await vi.importActual<typeof import('../../git/repository')>('../../git/repository')
-  return { ...actual, ensureLocalGitExclude: ensureLocalGitExcludeMock }
-})
 
 vi.mock('../../opencode/factory', () => ({
   getOpenCodeAdapter: () => ({}),
@@ -145,7 +140,6 @@ describe('handleCoding', () => {
     isMockOpenCodeModeMock.mockReset()
     broadcastMock.mockReset()
     abortSessionMock.mockReset()
-    ensureLocalGitExcludeMock.mockReset()
 
     // Deterministic defaults
     isMockOpenCodeModeMock.mockReturnValue(false)
@@ -1021,7 +1015,7 @@ describe('handleCoding', () => {
 
   // --- recordBeadStartCommit failure branch ---
 
-  it('proceeds with execution when recordBeadStartCommit throws', async () => {
+  it('leaves a bead pending when recordBeadStartCommit throws so retry can start it', async () => {
     recordBeadStartCommitMock.mockImplementation(() => {
       throw new Error('git rev-parse failed')
     })
@@ -1039,14 +1033,31 @@ describe('handleCoding', () => {
       errors: [],
     })
 
+    await expect(handleCoding(ticket.id, context, sendEvent, new AbortController().signal))
+      .rejects.toThrow(/Could not record bead start commit for bead-1/)
+
+    expect(readTicketBeads(ticket.id).find((bead) => bead.id === 'bead-1')).toMatchObject({
+      status: 'pending',
+      beadStartCommit: null,
+    })
+    expect(executeBeadMock).not.toHaveBeenCalled()
+    expect(sendEvent).not.toHaveBeenCalled()
+
+    recordBeadStartCommitMock.mockReturnValueOnce('retry-sha')
+    executeBeadMock.mockResolvedValueOnce({
+      success: true,
+      beadId: 'bead-1',
+      iteration: 1,
+      output: 'done',
+      errors: [],
+    })
     await handleCoding(ticket.id, context, sendEvent, new AbortController().signal)
 
-    expect(sendEvent).toHaveBeenCalledWith({ type: 'ALL_BEADS_DONE' })
-    // With no beadStartCommit recorded, the success path should still avoid reset attempts.
-    expect(resetToBeadStartMock).not.toHaveBeenCalled()
-    // bead_diff requires beadStartCommit, so it should not be inserted
-    const diffArtifact = getLatestPhaseArtifact(ticket.id, 'bead_diff:bead-1', 'CODING')
-    expect(diffArtifact).toBeUndefined()
+    expect(executeBeadMock).toHaveBeenCalledTimes(1)
+    expect(readTicketBeads(ticket.id).find((bead) => bead.id === 'bead-1')).toMatchObject({
+      status: 'done',
+      beadStartCommit: 'retry-sha',
+    })
   })
 
   // --- Git error recovery ---
@@ -1477,6 +1488,87 @@ describe('handleCoding', () => {
       )
     })
 
+    it('keeps a conflicted restore sidecar excluded for the next bead', async () => {
+      setStepCap(25)
+      const { ticket, context } = await createInitializedTestTicket(repoManager, { title: 'Step cap conflict recovery' })
+      const paths = getTicketPaths(ticket.id)!
+      const configPath = join(paths.worktreePath, 'opencode.json')
+      // No project config exists before this run: the cap creates it, so this
+      // exercises the ownership marker's originalType:'absent' path.
+      writeTicketBeads(ticket.id, [makePendingBead('bead-1', 1), makePendingBead('bead-2', 2)])
+
+      executeBeadMock.mockImplementationOnce(async () => {
+        writeFileSync(configPath, '{"mcp": {}, "modelEdit": true}\n', 'utf8')
+        return { success: true, beadId: 'bead-1', iteration: 1, output: 'done', errors: [], rawAttempts: [] }
+      })
+
+      await handleCoding(ticket.id, context, vi.fn(), new AbortController().signal)
+
+      expect(existsSync(join(paths.ticketDir, 'opencode-steps-restore.json'))).toBe(true)
+      succeedOnce('bead-2')
+      await handleCoding(ticket.id, context, vi.fn(), new AbortController().signal)
+
+      expect(commitBeadChangesMock).toHaveBeenNthCalledWith(
+        1,
+        paths.worktreePath,
+        'bead-1',
+        expect.any(String),
+        { excludePaths: ['opencode.json'] },
+      )
+      expect(commitBeadChangesMock).toHaveBeenNthCalledWith(
+        2,
+        paths.worktreePath,
+        'bead-2',
+        expect.any(String),
+        { excludePaths: ['opencode.json'] },
+      )
+      expect(readFileSync(configPath, 'utf8')).toContain('modelEdit')
+      expect(existsSync(join(paths.ticketDir, 'opencode-steps-restore.json'))).toBe(true)
+    })
+
+    it.each([
+      ['tracked', true],
+      ['untracked', false],
+    ] as const)('refuses interrupted %s config recovery without deleting the edit', async (_label, tracked) => {
+      setStepCap(25)
+      const { ticket, context } = await createInitializedTestTicket(repoManager, { title: `Step cap ${_label} reset guard` })
+      const paths = getTicketPaths(ticket.id)!
+      const configPath = join(paths.worktreePath, 'opencode.json')
+      if (tracked) {
+        const original = '{"mcp": {}}\n'
+        writeFileSync(configPath, original, 'utf8')
+        execFileSync('git', ['-C', paths.worktreePath, 'add', 'opencode.json'], { stdio: 'pipe' })
+        execFileSync('git', ['-C', paths.worktreePath, 'commit', '-m', 'track OpenCode config'], { stdio: 'pipe' })
+      }
+      const applied = applyOpencodeStepsConfig({
+        ticketDir: paths.ticketDir,
+        worktreePath: paths.worktreePath,
+        steps: 25,
+      })
+      if (!applied.applied) throw new Error('expected the step cap to apply')
+      writeFileSync(configPath, '{"mcp": {}, "edited": true}\n', 'utf8')
+      expect(restoreOpencodeStepsConfig(applied.handle)).toBe('conflict')
+      writeTicketBeads(ticket.id, [makePendingBead('bead-1', 1, {
+        status: 'in_progress',
+        beadStartCommit: 'start-sha',
+      })])
+      resetToBeadStartMock.mockImplementationOnce((_worktreePath: string, _beadStartCommit: string, options: { preservePaths?: string[] }) => {
+        expect(options.preservePaths).toContain('/opencode.json')
+        throw new Error('Cannot reset while an OpenCode steps configuration restore is unresolved')
+      })
+
+      await expect(handleCoding(ticket.id, context, vi.fn(), new AbortController().signal))
+        .rejects.toThrow(/restore is unresolved/)
+
+      expect(readFileSync(configPath, 'utf8')).toContain('"edited": true')
+      expect(existsSync(join(paths.ticketDir, 'opencode-steps-restore.json'))).toBe(true)
+      expect(readTicketBeads(ticket.id).find((bead) => bead.id === 'bead-1')).toMatchObject({
+        status: 'in_progress',
+        beadStartCommit: 'start-sha',
+      })
+      expect(executeBeadMock).not.toHaveBeenCalled()
+    })
+
     it('does not touch opencode.json at all when no cap is set', async () => {
       setStepCap(0)
       const { ticket, context } = await createInitializedTestTicket(repoManager, { title: 'No step cap' })
@@ -1534,23 +1626,29 @@ describe('handleCoding', () => {
       expect(readFileSync(configPath, 'utf8')).toBe(original)
     })
 
-    /**
-     * The restore has to happen even when the step that hides a created file
-     * from git fails — it runs after the file is already written.
-     */
-    it('restores when hiding a created configuration from git fails', async () => {
+    it('does not add the temporary config to shared git excludes', async () => {
       setStepCap(25)
-      const { ticket, context } = await createInitializedTestTicket(repoManager, { title: 'Step cap exclude failure' })
+      const { ticket, context, repoDir } = await createInitializedTestTicket(repoManager, { title: 'Step cap local visibility' })
       const paths = getTicketPaths(ticket.id)!
-      const configPath = join(paths.worktreePath, 'opencode.json')
-      ensureLocalGitExcludeMock.mockImplementationOnce(() => { throw new Error('git exclude is unavailable') })
       writeTicketBeads(ticket.id, [makePendingBead('bead-1', 1)])
+      succeedOnce('bead-1')
 
-      await expect(handleCoding(ticket.id, context, vi.fn(), new AbortController().signal))
-        .rejects.toThrow(/git exclude is unavailable/)
+      await handleCoding(ticket.id, context, vi.fn(), new AbortController().signal)
 
-      expect(existsSync(configPath)).toBe(false)
-      expect(existsSync(join(paths.ticketDir, 'opencode-steps-restore.json'))).toBe(false)
+      const excludePath = resolve(paths.worktreePath, execFileSync(
+        'git',
+        ['-C', paths.worktreePath, 'rev-parse', '--git-path', 'info/exclude'],
+        { encoding: 'utf8' },
+      ).trim())
+      expect(readFileSync(excludePath, 'utf8')).not.toContain('/opencode.json')
+
+      // The ticket is a linked worktree. A common info/exclude rule would
+      // silently hide this new config from the parent checkout too.
+      const parentConfigPath = join(repoDir, 'opencode.json')
+      writeFileSync(parentConfigPath, '{"parent": true}\n', 'utf8')
+      expect(execFileSync('git', ['-C', repoDir, 'status', '--porcelain', '--', 'opencode.json'], { encoding: 'utf8' }))
+        .toContain('?? opencode.json')
+      rmSync(parentConfigPath)
     })
   })
 })

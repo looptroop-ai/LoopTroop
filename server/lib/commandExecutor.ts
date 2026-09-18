@@ -6,7 +6,8 @@ import type { CommandShellKind, HostPlatform } from '../../shared/hostContext'
 import { createBoundedOutputCollector } from './commandOutput'
 import { planProgramLaunch, resolveTrustedExecutable, resolveTrustedProgram, type TrustedExecutableResolution } from './executablePath'
 import { FORCE_KILL_DELAY_MS, PROCESS_ABANDON_GRACE_MS } from './constants'
-import { terminateProcessTreeWithEscalation } from './processTree'
+import { captureProcessGroup, refreshProcessGroup, terminateProcessTreeWithEscalation, type ProcessGroupSnapshot } from './processTree'
+import { readProcessStartToken } from './processIdentity'
 import { escapesRoot, resolveContainedPath } from './containedPath'
 
 // Guarded with Test-Path so an unset $LASTEXITCODE cannot turn a clean cmdlet
@@ -14,6 +15,17 @@ import { escapesRoot, resolveContainedPath } from './containedPath'
 // phases/executionSetup/runtimeLauncher.ts.
 const POWERSHELL_EXIT_CODE_SUFFIX =
   '\nif (Test-Path -LiteralPath variable:\\LASTEXITCODE) { exit $LASTEXITCODE }'
+
+/**
+ * ponytail: bounded refresh for a short-lived launcher race. It runs only while the
+ * captured leader is still verified and stops when that child exits or the
+ * five-second window closes; a descendant created between scans, after that
+ * window, or after leader exit remains unproven. A platform job/container would
+ * be needed for complete descendant ownership beyond this window.
+ */
+const PROCESS_GROUP_REFRESH_INTERVAL_MS = 1_000
+/** Keep the short-lived-launcher scan bounded for long-running commands. */
+const PROCESS_GROUP_REFRESH_WINDOW_MS = 3_000
 
 export interface CommandInvocation {
   bin: string
@@ -37,6 +49,8 @@ export interface CommandExecutorOptions {
   shellBinaries?: Partial<Record<CommandShellKind, string>>
   pathExists?: (path: string) => boolean
   spawnProcess?: typeof spawn
+  /** Identity seam for tests with invented child pids. */
+  readProcessStartToken?: (pid: number) => string | null
   /**
    * Injected by tests, which describe what a command *does* rather than which
    * tools the machine running the suite happens to have installed.
@@ -305,18 +319,30 @@ export async function executeCommand(
       stdio: ['ignore', 'pipe', 'pipe'],
       detached: platform !== 'windows',
     })
+    // Capture identity at the spawn boundary only for commands that have a
+    // timeout. Ordinary commands never enter the termination path, so a
+    // synchronous platform lookup must not delay their first output or error.
+    // The deadline and all handlers are installed before this bounded lookup;
+    // if the leader exits before escalation, the captured group still proves
+    // ownership of any surviving descendants.
+    let childStartToken: string | null = null
+    let capturedGroup: ProcessGroupSnapshot | null = null
     const stdoutCollector = createBoundedOutputCollector()
     const stderrCollector = createBoundedOutputCollector()
     let settled = false
     let timedOut = false
     let timeoutHandle: ReturnType<typeof setTimeout> | undefined
     let abandonHandle: ReturnType<typeof setTimeout> | undefined
+    let groupRefreshHandle: ReturnType<typeof setInterval> | undefined
+    let groupRefreshStopHandle: ReturnType<typeof setTimeout> | undefined
 
     const finish = (exitCode: number | null, signal: NodeJS.Signals | null) => {
       if (settled) return
       settled = true
       if (timeoutHandle) clearTimeout(timeoutHandle)
       if (abandonHandle) clearTimeout(abandonHandle)
+      if (groupRefreshHandle) clearInterval(groupRefreshHandle)
+      if (groupRefreshStopHandle) clearTimeout(groupRefreshStopHandle)
       resolveExecution({
         command,
         cwd,
@@ -342,7 +368,6 @@ export async function executeCommand(
     if (command.timeoutMs) {
       timeoutHandle = setTimeout(() => {
         timedOut = true
-        terminateProcessTreeWithEscalation(child, platform)
         // Killing the tree is a request, not a guarantee, so the timeout has to
         // be able to end without one. `close` fires only once every pipe is
         // closed, and a grandchild that outlives `taskkill` keeps them open —
@@ -353,7 +378,45 @@ export async function executeCommand(
           finish(null, 'SIGKILL')
         }, FORCE_KILL_DELAY_MS + PROCESS_ABANDON_GRACE_MS)
         abandonHandle.unref?.()
+        if (capturedGroup !== null) capturedGroup = refreshProcessGroup(capturedGroup)
+        if (capturedGroup === null) {
+          terminateProcessTreeWithEscalation(child, platform, childStartToken)
+        } else {
+          terminateProcessTreeWithEscalation(child, platform, childStartToken, capturedGroup)
+        }
       }, command.timeoutMs)
+
+      if (child.pid !== undefined) {
+        // An injected spawn seam carries invented pids in tests. Do not ask the
+        // host identity helper about them; production uses the real child path.
+        // PowerShell-backed identity is a synchronous, 20-second-bounded
+        // operation on Windows. A live ChildProcess handle already proves the
+        // direct target, and the Windows tree-kill path can walk that handle's
+        // descendants, so defer the expensive identity probe rather than
+        // blocking every timed command at spawn.
+        childStartToken = input.readProcessStartToken
+          ? input.readProcessStartToken(child.pid)
+          : (input.spawnProcess === undefined && platform !== 'windows'
+              ? readProcessStartToken(child.pid)
+              : null)
+        if (childStartToken !== null) {
+          capturedGroup = captureProcessGroup(child.pid, platform, childStartToken)
+          if (capturedGroup !== null) {
+            groupRefreshHandle = setInterval(() => {
+              if (capturedGroup !== null) capturedGroup = refreshProcessGroup(capturedGroup)
+            }, PROCESS_GROUP_REFRESH_INTERVAL_MS)
+            groupRefreshHandle.unref?.()
+            groupRefreshStopHandle = setTimeout(() => {
+              if (groupRefreshHandle) clearInterval(groupRefreshHandle)
+            }, PROCESS_GROUP_REFRESH_WINDOW_MS)
+            groupRefreshStopHandle.unref?.()
+            child.once('exit', () => {
+              if (groupRefreshHandle) clearInterval(groupRefreshHandle)
+              if (groupRefreshStopHandle) clearTimeout(groupRefreshStopHandle)
+            })
+          }
+        }
+      }
     }
   })
 }

@@ -8,6 +8,7 @@ import {
   rotateDaemonLog,
   rotateRunningDaemonLog,
   startDaemonLogRotation,
+  readDaemonLogGeneration,
 } from '../server/lib/daemonLog'
 import { getDaemonLogPath } from '../server/lib/daemonPaths'
 import { removeTempDir } from '../server/test/tempDir'
@@ -125,6 +126,7 @@ describe('daemon log rotation', () => {
       const fd = openAsDaemon(logPath)
 
       expect(rotateRunningDaemonLog(configDir)).toBe(true)
+      expect(readDaemonLogGeneration(logPath)).toMatch(/^ready:[0-9a-f-]{36}$/)
       writeSync(fd, 'after rotation\n')
 
       // A rename would have left this descriptor writing into the rotated file
@@ -145,6 +147,16 @@ describe('daemon log rotation', () => {
       // some platforms, which would recreate the size it was meant to reclaim
       // as a sparse file.
       expect(statSync(logPath).size).toBe(0)
+    })
+
+    it('settles an interrupted generation at startup', () => {
+      const configDir = makeConfigDir()
+      const logPath = writeLog(configDir, 1024)
+      writeFileSync(`${logPath}.rotation`, 'pending:interrupted')
+      expect(readDaemonLogGeneration(logPath)).toBeNull()
+      rotateDaemonLog(configDir)
+      expect(readDaemonLogGeneration(logPath)).toMatch(/^ready:[0-9a-f-]{36}$/)
+      expect(statSync(logPath).size).toBe(1024)
     })
 
     it('leaves a log that is still under the limit alone', () => {

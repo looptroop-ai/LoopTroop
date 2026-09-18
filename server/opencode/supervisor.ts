@@ -2,6 +2,8 @@ import { spawn, type ChildProcess } from 'node:child_process'
 import { setTimeout as delay } from 'node:timers/promises'
 import { isProcessAlive, killProcessTree } from '../cli/processControl'
 import { planProgramLaunch, resolveTrustedExecutable } from '../lib/executablePath'
+import { matchProcess, readProcessStartToken } from '../lib/processIdentity'
+import { captureProcessGroup, hasCapturedProcessGroupMember, refreshProcessGroup, terminateProcessTree, type ProcessGroupSnapshot } from '../lib/processTree'
 import { getErrorMessage } from '@shared/typeGuards'
 
 /** Attempts after a crash before the daemon stops trying and reports degraded. */
@@ -23,6 +25,53 @@ const RESTART_BACKOFF_MS = 1_000
  */
 const GRACEFUL_EXIT_MS = 5_000
 const FORCE_EXIT_MS = 5_000
+
+/**
+ * Windows has no process-group probe. A leader that disappeared is therefore
+ * not enough to prove that its descendants are gone; only a successful,
+ * completed taskkill tree operation supplies that boundary.
+ */
+const windowsTreeTermination = new Map<string, boolean>()
+const windowsHandleTreeProof = new WeakSet<ChildProcess>()
+
+function windowsTreeKey(pid: number, expectedStartToken: string): string {
+  return `${pid}\u0000${expectedStartToken}`
+}
+
+function childHasExited(child: ChildProcess): boolean {
+  return (child.exitCode !== null && child.exitCode !== undefined)
+    || (child.signalCode !== null && child.signalCode !== undefined)
+}
+
+async function waitForChildExit(child: ChildProcess, timeoutMs: number): Promise<boolean> {
+  const deadline = Date.now() + timeoutMs
+  while (Date.now() < deadline) {
+    if (childHasExited(child)) return true
+    await delay(50)
+  }
+  return childHasExited(child)
+}
+
+async function waitForTreeCommand(command: ChildProcess, timeoutMs: number): Promise<boolean> {
+  if (command.exitCode !== null && command.exitCode !== undefined) return command.exitCode === 0
+  return new Promise<boolean>((resolve) => {
+    let settled = false
+    const timer = setTimeout(() => {
+      if (settled) return
+      settled = true
+      try { command.kill() } catch { /* already gone */ }
+      resolve(false)
+    }, timeoutMs)
+    const finish = (success: boolean): void => {
+      if (settled) return
+      settled = true
+      clearTimeout(timer)
+      resolve(success)
+    }
+    command.once('exit', (code) => finish(code === 0))
+    command.once('error', () => finish(false))
+  })
+}
 
 export type OpenCodeStatus =
   | { kind: 'adopted'; baseUrl: string }
@@ -61,34 +110,153 @@ export class OpenCodeMissingError extends Error {
 export interface ProcessTermination {
   /**
    * Asks the tree to exit. False when this platform cannot ask — Windows has no
-   * SIGTERM — which sends the caller straight to `force`.
+   * SIGTERM — or the identity no longer proves a live target, which sends the
+   * caller straight to `force`; an already-gone leader is stopped only when
+   * the platform also proves that its owned tree is gone.
    */
-  request(pid: number): boolean
+  request(pid: number, expectedStartToken: string | null): boolean
   /** Ends the tree outright. */
-  force(pid: number): Promise<void>
+  force(pid: number, expectedStartToken: string | null): Promise<void>
   /** Whether the process is gone. */
-  hasExited(pid: number): boolean
+  hasExited(pid: number, expectedStartToken: string | null): boolean
+}
+
+function matchesExpectedProcess(pid: number, expectedStartToken: string | null): boolean {
+  if (expectedStartToken === null || !isProcessAlive(pid)) return false
+  return matchProcess(pid, expectedStartToken).kind === 'same'
+}
+
+/** Signal 0 probes whether a POSIX process group still has a member. */
+function isProcessGroupAlive(pid: number): boolean {
+  if (process.platform === 'win32') return false
+  try {
+    process.kill(-pid, 0)
+    return true
+  } catch (error) {
+    // Only ESRCH proves that the group is gone. EPERM and every unexpected
+    // probe failure leave ownership unknown, so shutdown must keep the lock.
+    return (error as NodeJS.ErrnoException).code !== 'ESRCH'
+  }
+}
+
+const capturedGroups = new Map<string, ProcessGroupSnapshot>()
+
+function capturedGroupKey(pid: number, expectedStartToken: string): string {
+  return `${pid}\u0000${expectedStartToken}`
 }
 
 export const defaultTermination: ProcessTermination = {
-  request(pid) {
-    if (process.platform === 'win32') return false
+  request(pid, expectedStartToken) {
+    if (process.platform === 'win32' || expectedStartToken === null) return false
+    if (!matchesExpectedProcess(pid, expectedStartToken)) return false
+    const key = capturedGroupKey(pid, expectedStartToken)
+    const captured = captureProcessGroup(pid, 'linux', expectedStartToken)
+    if (captured !== null) capturedGroups.set(key, captured)
     try {
       // Negative pid signals the group, so OpenCode's own children go too.
       process.kill(-pid, 'SIGTERM')
       return true
     } catch {
+      // The group may not exist for a foreground launch. Revalidate the
+      // original process before falling back to a direct signal: the pid may
+      // have exited and been reused while the group signal was attempted.
+      if (!matchesExpectedProcess(pid, expectedStartToken)) return false
       try {
         process.kill(pid, 'SIGTERM')
         return true
       } catch {
-        // Already gone, which is the outcome the caller wanted.
-        return true
+        return false
       }
     }
   },
-  force: killProcessTree,
-  hasExited: (pid) => !isProcessAlive(pid),
+  async force(pid, expectedStartToken) {
+    if (expectedStartToken !== null) {
+      const key = capturedGroupKey(pid, expectedStartToken)
+      const captured = capturedGroups.get(key)
+      if (captured !== undefined && !isProcessAlive(pid)) {
+        if (hasCapturedProcessGroupMember(captured)) {
+          try { process.kill(-captured.groupId, 'SIGKILL') } catch { /* best effort */ }
+        }
+        return
+      }
+    }
+    const proven = await killProcessTree(pid, expectedStartToken)
+    if (process.platform === 'win32' && expectedStartToken !== null) {
+      windowsTreeTermination.set(windowsTreeKey(pid, expectedStartToken), proven)
+    }
+  },
+  hasExited: (pid, expectedStartToken) => {
+    if (isProcessAlive(pid)) {
+      // A live replacement is no longer ours. Treat it as exited from this
+      // supervisor's point of view; force() is still guarded and will refuse it.
+      // An unknown identity is not confirmation: shutdown reports that stop was
+      // unverified instead of silently claiming the process is gone.
+      if (expectedStartToken === null) return false
+      const kind = matchProcess(pid, expectedStartToken).kind
+      if (kind === 'different') {
+        const key = capturedGroupKey(pid, expectedStartToken)
+        const captured = capturedGroups.get(key)
+        if (process.platform === 'win32') {
+          const key = windowsTreeKey(pid, expectedStartToken)
+          const proven = windowsTreeTermination.get(key) === true
+          if (proven) windowsTreeTermination.delete(key)
+          capturedGroups.delete(key)
+          return proven
+        }
+        // A recycled leader proves only that the original leader is gone. If
+        // a detached group was captured, require its own absence; otherwise
+        // there is no evidence that surviving descendants are not still ours.
+        if (captured !== undefined) {
+          try {
+            process.kill(-captured.groupId, 0)
+            return false
+          } catch (error) {
+            if ((error as NodeJS.ErrnoException).code === 'ESRCH') {
+              capturedGroups.delete(key)
+              return true
+            }
+            return false
+          }
+        }
+        return false
+      }
+      const captured = capturedGroups.get(capturedGroupKey(pid, expectedStartToken))
+      if (kind === 'same' && captured !== undefined) {
+        capturedGroups.set(capturedGroupKey(pid, expectedStartToken), refreshProcessGroup(captured))
+      }
+      return false
+    }
+
+    // A detached POSIX child can exit while its descendants keep the process
+    // group alive. Do not release the daemon lock until that group is gone.
+    // Tokenless cleanup owns only the direct ChildProcess handle, so it cannot
+    // safely infer ownership of a numeric group here.
+    if (expectedStartToken === null) return false
+    if (process.platform === 'win32') {
+      const key = windowsTreeKey(pid, expectedStartToken)
+      const proven = windowsTreeTermination.get(key) === true
+      if (proven) windowsTreeTermination.delete(key)
+      return proven
+    }
+    const key = capturedGroupKey(pid, expectedStartToken)
+    const captured = capturedGroups.get(key)
+    const alive = captured === undefined
+      ? isProcessGroupAlive(pid)
+      : hasCapturedProcessGroupMember(captured)
+    if (!alive) capturedGroups.delete(key)
+    return !alive
+  },
+}
+
+interface ManagedChild {
+  process: ChildProcess
+  pid: number
+  startToken: string | null
+}
+
+export interface OwnedOpenCodeProcess {
+  pid: number
+  startToken: string | null
 }
 
 export interface OpenCodeSupervisorOptions {
@@ -147,7 +315,7 @@ export async function probeOpenCode(baseUrl: string): Promise<boolean> {
  * this supervisor started is ours to terminate.
  */
 export class OpenCodeSupervisor {
-  private child: ChildProcess | null = null
+  private child: ManagedChild | null = null
   private status: OpenCodeStatus
   private restartAttempts = 0
   private stopping = false
@@ -160,6 +328,17 @@ export class OpenCodeSupervisor {
 
   get current(): OpenCodeStatus {
     return this.status
+  }
+
+  /**
+   * The direct handle still held for an owned process. This is deliberately a
+   * small identity record rather than the ChildProcess itself: startup failure
+   * evidence may outlive this supervisor, but it must never turn into a raw-pid
+   * permission to signal an unrelated process.
+   */
+  get ownedProcess(): OwnedOpenCodeProcess | null {
+    if (this.child === null) return null
+    return { pid: this.child.pid, startToken: this.child.startToken }
   }
 
   private get probe(): (baseUrl: string) => Promise<boolean> {
@@ -200,6 +379,17 @@ export class OpenCodeSupervisor {
   }
 
   private async spawnAndWait(): Promise<OpenCodeStatus> {
+    // A failed launch keeps its handle until termination is confirmed. Do not
+    // overwrite that ownership with a restart attempt while the old process
+    // may still hold the port.
+    if (this.child) {
+      const previous = this.child
+      if (!await this.terminate(previous.process, previous.startToken)) {
+        throw new Error(`OpenCode process ${previous.pid} is still running at ${this.options.baseUrl}.`)
+      }
+      if (this.child?.process === previous.process) this.child = null
+    }
+
     const url = new URL(this.options.baseUrl)
     const host = url.hostname === 'localhost' ? '127.0.0.1' : url.hostname
     const port = url.port || (url.protocol === 'https:' ? '443' : '80')
@@ -260,6 +450,15 @@ export class OpenCodeSupervisor {
       detached: process.platform !== 'win32',
       windowsVerbatimArguments: launch.windowsVerbatimArguments,
     })
+    const pid = child.pid
+    // Capture the identity at spawn time. A pid alone can be recycled while a
+    // health wait or shutdown is in progress, so every later termination check
+    // must compare against this original token rather than infer one late.
+    // A supplied spawn seam is test-only; its invented pids must never reach a
+    // real PowerShell/ps identity probe (or a real termination target).
+    const startToken = pid === undefined || this.options.spawnProcess === undefined
+      ? (pid === undefined ? null : readProcessStartToken(pid))
+      : null
 
     const spawnFailed = new Promise<never>((_, reject) => {
       child.once('error', () => reject(new OpenCodeMissingError(this.options.baseUrl)))
@@ -278,7 +477,7 @@ export class OpenCodeSupervisor {
     // Assigned before the wait, so a stop() arriving mid-launch still finds the
     // child. Everything that can go wrong from here leaves a process running
     // that nobody has a handle to unless this is cleaned up on the way out.
-    this.child = child
+    this.child = pid === undefined ? null : { process: child, pid, startToken }
 
     try {
       await Promise.race([this.waitForHealth(), spawnFailed, exitedEarly])
@@ -287,16 +486,18 @@ export class OpenCodeSupervisor {
       // and unresponsive, and the throw unwinds past every caller that could
       // have stopped it. `opencode serve` also holds the port, so the next
       // start would adopt this broken process rather than replace it.
-      this.child = null
-      await this.terminate(child)
+      const terminated = await this.terminate(child, startToken)
+      if (terminated && this.child?.process === child) this.child = null
       throw error
     }
 
     child.removeAllListeners('exit')
     child.once('exit', () => {
-      // Dropped so a later stop() cannot signal a pid this process no longer
-      // owns; a restart assigns its own child.
-      if (this.child === child) this.child = null
+      // Keep the handle until terminate() proves the whole tree is gone. A
+      // healthy leader can exit while a descendant still owns the port;
+      // dropping it here would make stop() report success and release the
+      // daemon lock on leader exit alone. The restart path uses the same
+      // retained handle and either proves cleanup or stays degraded.
       void this.handleUnexpectedExit()
     })
 
@@ -309,13 +510,13 @@ export class OpenCodeSupervisor {
     // A child with no pid never started. Recording 0 produced a status that
     // claimed a live managed server, while `isProcessAlive(0)` is false and no
     // stop path could ever reach it.
-    if (child.pid === undefined) {
+    if (pid === undefined) {
       this.child = null
       child.kill('SIGKILL')
       throw new Error('OpenCode process was started but reported no process id.')
     }
 
-    return { kind: 'managed', baseUrl: this.options.baseUrl, pid: child.pid }
+    return { kind: 'managed', baseUrl: this.options.baseUrl, pid }
   }
 
   private async waitForHealth(): Promise<void> {
@@ -401,42 +602,99 @@ export class OpenCodeSupervisor {
    * same treatment: it is a real `opencode serve`, holding the port, and by then
    * the status says `degraded` rather than `managed`.
    */
-  private async terminate(child: ChildProcess): Promise<void> {
+  private async terminate(child: ChildProcess, expectedStartToken: string | null): Promise<boolean> {
     const pid = child.pid
-    if (pid === undefined || child.exitCode !== null) return
+    if (pid === undefined) return true
 
     const termination = this.options.termination ?? defaultTermination
     const budgets = this.options.exitBudgets ?? { gracefulMs: GRACEFUL_EXIT_MS, forceMs: FORCE_EXIT_MS }
 
-    if (termination.request(pid) && await this.waitForExit(termination, pid, budgets.gracefulMs)) return
+    // A tokenless handle is not proof for a numeric pid once its leader has
+    // exited. Let the injected termination seam answer in tests; the default
+    // implementation remains conservative when no tree proof exists.
+    if (expectedStartToken === null && childHasExited(child)) {
+      if (windowsHandleTreeProof.has(child)) return true
+      return termination.hasExited(pid, null)
+    }
 
-    await termination.force(pid)
-    if (await this.waitForExit(termination, pid, budgets.forceMs)) return
+    // A null token is not proof for a numeric pid, but this ChildProcess is a
+    // handle to the process this supervisor spawned. On Windows the returned
+    // taskkill handle must finish successfully before leader exit is accepted
+    // as tree cleanup; a direct kill alone can orphan descendants.
+    if (expectedStartToken === null && process.platform === 'win32'
+      && termination === defaultTermination && typeof child.kill === 'function') {
+      const gracefulTree = terminateProcessTree(child, 'SIGTERM', 'windows')
+      if (gracefulTree !== undefined && await waitForTreeCommand(gracefulTree, budgets.gracefulMs)) {
+        windowsHandleTreeProof.add(child)
+        if (await waitForChildExit(child, budgets.gracefulMs)) return true
+      }
 
-    // Reported rather than thrown: shutdown continues either way, and the one
-    // thing worse than a surviving OpenCode is a daemon that will not exit.
+      const forceTree = terminateProcessTree(child, 'SIGKILL', 'windows')
+      if (forceTree !== undefined && await waitForTreeCommand(forceTree, budgets.forceMs)) {
+        windowsHandleTreeProof.add(child)
+        if (await waitForChildExit(child, budgets.forceMs)) return true
+      }
+
+      console.error(`[opencode] pid ${pid} did not exit; it may still be holding ${this.options.baseUrl}.`)
+      return false
+    }
+
+    if (expectedStartToken === null && typeof child.kill === 'function') {
+      try {
+        if (process.platform === 'win32') terminateProcessTree(child, 'SIGTERM', 'windows')
+        else child.kill('SIGTERM')
+      } catch { /* best effort; the guarded path below may still know it is gone */ }
+      if (await this.waitForExit(termination, pid, null, budgets.gracefulMs)) return true
+      try {
+        if (process.platform === 'win32') terminateProcessTree(child, 'SIGKILL', 'windows')
+        else child.kill('SIGKILL')
+      } catch { /* best effort */ }
+      if (await this.waitForExit(termination, pid, null, budgets.forceMs)) return true
+      console.error(`[opencode] pid ${pid} did not exit; it may still be holding ${this.options.baseUrl}.`)
+      return false
+    }
+
+    if (termination.request(pid, expectedStartToken)
+      && await this.waitForExit(termination, pid, expectedStartToken, budgets.gracefulMs)) return true
+
+    await termination.force(pid, expectedStartToken)
+    if (await this.waitForExit(termination, pid, expectedStartToken, budgets.forceMs)) return true
+
+    // Reported rather than thrown here: the daemon owns the handle and must
+    // retain its lock when the tree could not be verified as gone.
     console.error(`[opencode] pid ${pid} did not exit; it may still be holding ${this.options.baseUrl}.`)
+    return false
   }
 
-  private async waitForExit(termination: ProcessTermination, pid: number, timeoutMs: number): Promise<boolean> {
+  private async waitForExit(
+    termination: ProcessTermination,
+    pid: number,
+    expectedStartToken: string | null,
+    timeoutMs: number,
+  ): Promise<boolean> {
     const deadline = Date.now() + timeoutMs
     while (Date.now() < deadline) {
-      if (termination.hasExited(pid)) return true
+      if (termination.hasExited(pid, expectedStartToken)) return true
       await delay(50)
     }
-    return termination.hasExited(pid)
+    return termination.hasExited(pid, expectedStartToken)
   }
 
   /** Only ever stops a server this supervisor started. */
-  async stop(): Promise<void> {
+  async stop(): Promise<boolean> {
     this.stopping = true
     const child = this.child
-    this.child = null
+
+    if (child === null) return true
 
     // Ownership is the child handle, not the status. A launch that timed out
     // or a restart that failed leaves the status `degraded` while the process
     // is still running — gating on `managed` orphaned exactly those. An adopted
     // server never sets a child in the first place, so it stays out of reach.
-    if (child) await this.terminate(child)
+    if (await this.terminate(child.process, child.startToken)
+      && this.child?.process === child.process) {
+      this.child = null
+    }
+    return this.child?.process !== child.process
   }
 }

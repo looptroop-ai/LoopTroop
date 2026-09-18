@@ -1,10 +1,15 @@
-import { describe, it, expect, afterEach } from 'vitest'
-import { mkdtempSync, readFileSync, statSync, writeFileSync } from 'node:fs'
-import { tmpdir } from 'node:os'
+import { describe, it, expect, afterEach, vi } from 'vitest'
+import { existsSync, mkdtempSync, readFileSync, statSync, writeFileSync } from 'node:fs'
+import { hostname, tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { removeTempDir } from '../../test/tempDir'
+import { acquireDaemonLock } from '../daemonLock'
 import {
+  clearDaemonStartFailure,
+  clearDaemonState,
   clearStaleDaemonState,
+  daemonOrigin,
+  getDaemonLockPath,
   getDaemonStatePath,
   readDaemonStartFailure,
   readDaemonState,
@@ -13,6 +18,8 @@ import {
   type DaemonStartFailure,
   type DaemonState,
 } from '../daemonPaths'
+
+const readFileSyncMock = vi.hoisted(() => vi.fn())
 
 /**
  * 2.16 contract: daemon.json answers "what is LoopTroop doing?" in both
@@ -56,6 +63,18 @@ describe('daemon.json', () => {
     },
   }
 
+  const blockedFailure: DaemonStartFailure = {
+    reason: 'startup-cleanup-incomplete',
+    at: '2026-01-02T03:04:05.000Z',
+    version: '1.2.3',
+    message: 'OpenCode did not stop during startup cleanup.',
+    openCode: {
+      baseUrl: 'http://127.0.0.1:4096',
+      pid: 4242,
+      startToken: 'child-start',
+    },
+  }
+
   it('round-trips a refusal with the numbers a later command needs', () => {
     const configDir = makeConfigDir()
 
@@ -75,12 +94,31 @@ describe('daemon.json', () => {
     expect(readDaemonState(configDir)).toBeNull()
   })
 
+  it('clears only the matching retained startup owner', () => {
+    const configDir = makeConfigDir()
+    writeDaemonStartFailure(blockedFailure, configDir)
+
+    expect(clearDaemonStartFailure({ ...blockedFailure, openCode: { ...blockedFailure.openCode, pid: 4343 } }, configDir)).toBe(false)
+    expect(readDaemonStartFailure(configDir)).toEqual(blockedFailure)
+    expect(clearDaemonStartFailure(blockedFailure, configDir)).toBe(true)
+    expect(readDaemonStartFailure(configDir)).toBeNull()
+    expect(existsSync(getDaemonLockPath(configDir))).toBe(false)
+  })
+
   it('reports no refusal when the file records a running daemon', () => {
     const configDir = makeConfigDir()
     writeDaemonState(state, configDir)
 
     expect(readDaemonStartFailure(configDir)).toBeNull()
     expect(readDaemonState(configDir)?.apiToken).toBe('token-value')
+  })
+
+  it('round-trips a shutdown-pending retry guard', () => {
+    const configDir = makeConfigDir()
+    writeDaemonState({ ...state, shutdownPending: true }, configDir)
+
+    expect(readDaemonState(configDir)?.shutdownPending).toBe(true)
+    expect(readDaemonStartFailure(configDir)).toBeNull()
   })
 
   it('replaces a stale daemon record with the refusal', () => {
@@ -90,7 +128,9 @@ describe('daemon.json', () => {
     writeDaemonStartFailure(failure, configDir)
 
     expect(readDaemonState(configDir)).toBeNull()
-    expect(readDaemonStartFailure(configDir)?.schema.found).toBe(9)
+    const stored = readDaemonStartFailure(configDir)
+    expect(stored?.reason).toBe('schema-incompatible')
+    if (stored?.reason === 'schema-incompatible') expect(stored.schema.found).toBe(9)
     // The token from the previous occupant must not survive in the file.
     expect(readFileSync(getDaemonStatePath(configDir), 'utf8')).not.toContain('token-value')
   })
@@ -104,6 +144,95 @@ describe('daemon.json', () => {
     clearStaleDaemonState(configDir)
 
     expect(readDaemonStartFailure(configDir)).toEqual(failure)
+  })
+
+  it('clears only the instance that asked to be cleared', () => {
+    const configDir = makeConfigDir()
+    writeDaemonState({ ...state, instanceId: 'first' }, configDir)
+    writeDaemonState({ ...state, instanceId: 'successor' }, configDir)
+
+    clearDaemonState('first', configDir)
+
+    expect(readDaemonState(configDir)?.instanceId).toBe('successor')
+  })
+
+  it('does not remove a successor published during the state read', async () => {
+    const configDir = makeConfigDir()
+    const statePath = getDaemonStatePath(configDir)
+    writeDaemonState({ ...state, instanceId: 'old' }, configDir)
+    const originalReadFileSync = readFileSync
+    let published = false
+    readFileSyncMock.mockImplementation((path: Parameters<typeof readFileSync>[0], options: Parameters<typeof readFileSync>[1]) => {
+      const content = originalReadFileSync(path, options)
+      if (!published && String(path) === statePath) {
+        published = true
+        writeDaemonState({ ...state, instanceId: 'successor' }, configDir)
+      }
+      return content
+    })
+
+    try {
+      vi.doMock('node:fs', async () => {
+        const actual = await vi.importActual<typeof import('node:fs')>('node:fs')
+        return { ...actual, readFileSync: readFileSyncMock }
+      })
+      vi.resetModules()
+      const { clearDaemonState: clearWithMock } = await import('../daemonPaths')
+      clearWithMock('old', configDir)
+    } finally {
+      vi.doUnmock('node:fs')
+      vi.resetModules()
+      readFileSyncMock.mockReset()
+    }
+
+    expect(readDaemonState(configDir)?.instanceId).toBe('successor')
+  })
+
+  it('leaves state alone while a live daemon owns the lock', () => {
+    const configDir = makeConfigDir()
+    writeDaemonState({ ...state, instanceId: 'live' }, configDir)
+    const lock = acquireDaemonLock(configDir)
+
+    try {
+      clearDaemonState('live', configDir)
+      expect(readDaemonState(configDir)?.instanceId).toBe('live')
+    } finally {
+      lock.release()
+    }
+  })
+
+  it('clears stale state after taking over a stale lock generation', () => {
+    const configDir = makeConfigDir()
+    writeDaemonState({ ...state, instanceId: 'stale' }, configDir)
+    writeFileSync(getDaemonLockPath(configDir), JSON.stringify({
+      nonce: 'dead-owner',
+      pid: 2_147_483_647,
+      host: hostname(),
+      startedAt: '2026-01-01T00:00:00.000Z',
+      heartbeatAt: '2026-01-01T00:00:00.000Z',
+    }))
+
+    clearDaemonState('stale', configDir)
+
+    expect(readDaemonState(configDir)).toBeNull()
+    expect(existsSync(getDaemonLockPath(configDir))).toBe(false)
+  })
+
+  it('does not clear shutdown-pending ownership as generic stale state', () => {
+    const configDir = makeConfigDir()
+    writeDaemonState({ ...state, shutdownPending: true }, configDir)
+
+    clearStaleDaemonState(configDir)
+
+    expect(readDaemonState(configDir)?.shutdownPending).toBe(true)
+  })
+
+  it('does not create a lock when there is no state to clear', () => {
+    const configDir = makeConfigDir()
+
+    clearDaemonState('missing', configDir)
+
+    expect(existsSync(getDaemonLockPath(configDir))).toBe(false)
   })
 
   it('clears state describing a daemon that is not running', () => {
@@ -138,5 +267,13 @@ describe('daemon.json', () => {
       expect(readDaemonState(configDir)).toBeNull()
       expect(readDaemonStartFailure(configDir)).toBeNull()
     }
+  })
+})
+
+describe('daemon origin', () => {
+  it('brackets bare and already-bracketed IPv6 hosts', () => {
+    expect(daemonOrigin('::1', 3000)).toBe('http://[::1]:3000')
+    expect(daemonOrigin('[::1]', 3000)).toBe('http://[::1]:3000')
+    expect(daemonOrigin('127.0.0.1', 3000)).toBe('http://127.0.0.1:3000')
   })
 })

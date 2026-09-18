@@ -4,21 +4,26 @@ import { createRuntime, type LoopTroopRuntime } from '../createRuntime'
 import { IncompatibleSchemaVersionError } from '../db/schemaVersion'
 import { acquireDaemonLock, type AcquiredLock } from '../lib/daemonLock'
 import {
+  clearDaemonState,
+  daemonOrigin,
   getDaemonStatePath,
   writeDaemonStartFailure,
   writeDaemonState,
   type DaemonStartFailure,
   type DaemonState,
+  readDaemonState,
+  readDaemonStartFailure,
 } from '../lib/daemonPaths'
 import { resolveSettings, type ResolvedSettings } from '../lib/appSettings'
 import { readProcessStartToken } from '../lib/processIdentity'
 import { createSessionCredentials, BootstrapNonceStore, type SessionCredentials } from '../middleware/sessionAuth'
 import { OpenCodeSupervisor, type OpenCodeStatus } from '../opencode/supervisor'
 import { getErrorMessage } from '@shared/typeGuards'
-import { SHUTDOWN_FORCE_EXIT_MS } from '../lib/constants'
 
 /** Keeps the lock's heartbeat ahead of the staleness window. */
 const HEARTBEAT_INTERVAL_MS = 15_000
+const SHUTDOWN_RETRY_DELAY_MS = 500
+const SHUTDOWN_RETRY_MAX_DELAY_MS = 10_000
 
 export interface DaemonHandle {
   state: DaemonState
@@ -39,6 +44,36 @@ export interface DaemonHandle {
    */
   onShutdownRequest(listener: (reason: string) => void): void
   stop(): Promise<void>
+}
+
+/** Shutdown could not prove that an owned OpenCode tree has gone away. */
+export class DaemonShutdownIncompleteError extends Error {
+  constructor() {
+    super('Daemon shutdown is incomplete: the owned OpenCode process may still be running; retry shutdown before releasing the daemon lock.')
+    this.name = 'DaemonShutdownIncompleteError'
+  }
+}
+
+/** A previous start retained an owned OpenCode process for an explicit retry. */
+export class DaemonStartBlockedError extends Error {
+  constructor(readonly failure: Extract<DaemonStartFailure, { reason: 'startup-cleanup-incomplete' }>) {
+    super(
+      `LoopTroop cannot start while its previous startup still owns OpenCode at ${failure.openCode.baseUrl} `
+      + `(pid ${failure.openCode.pid}). Run \`looptroop stop\` and retry the start.`,
+    )
+    this.name = 'DaemonStartBlockedError'
+  }
+}
+
+/** A prior runtime close retained ownership for an explicit retry. */
+export class DaemonShutdownPendingError extends Error {
+  constructor(readonly state: DaemonState) {
+    super(
+      `LoopTroop cannot start while its previous daemon shutdown is incomplete `
+      + `(pid ${state.pid}). Run \`looptroop stop\` and retry the start.`,
+    )
+    this.name = 'DaemonShutdownPendingError'
+  }
 }
 
 export interface StartDaemonOptions {
@@ -112,7 +147,38 @@ export function describeStartFailure(
  * or nothing at all. Recording is best effort, because the start failure is the
  * error worth reporting and must not be replaced by a failure to write it down.
  */
-function recordStartFailure(error: unknown, version: string, configDir?: string): void {
+function recordStartFailure(
+  error: unknown,
+  version: string,
+  configDir?: string,
+  retainedOpenCode?: { baseUrl: string; pid: number; startToken: string | null },
+): void {
+  // Retained process ownership is stronger than the original startup error:
+  // never replace recovery evidence with a schema diagnosis that cannot name
+  // the still-live child.
+  if (retainedOpenCode !== undefined) {
+    try {
+      writeDaemonStartFailure({
+        reason: 'startup-cleanup-incomplete',
+        at: new Date().toISOString(),
+        version,
+        message: getErrorMessage(error),
+        openCode: {
+          baseUrl: retainedOpenCode.baseUrl,
+          pid: retainedOpenCode.pid,
+          ...(retainedOpenCode.startToken === null ? {} : { startToken: retainedOpenCode.startToken }),
+        },
+      }, configDir)
+      return
+    } catch {
+      // Never clear an existing state or failure record when the recovery
+      // witness could not be persisted. The child is still ours to account for;
+      // the original startup error remains the only safe thing to surface.
+      console.error('[daemon] Could not persist retained OpenCode startup ownership; leaving existing state untouched.')
+      return
+    }
+  }
+
   const failure = describeStartFailure(error, { version, at: new Date().toISOString() })
   if (failure) {
     try {
@@ -163,16 +229,44 @@ export function describeOpenCode(
 /**
  * Brings up the daemon in the order a supervisor can trust: the lock is taken
  * before any port is bound, and state is durable before ready is reported. A
- * failure at any step unwinds everything that already succeeded, so a crashed
- * start never leaves a lock or a state file describing a daemon that is not
- * running.
+ * normal failure unwinds everything that already succeeded. If an owned
+ * OpenCode child cannot be proven stopped, startup leaves durable ownership
+ * evidence instead of allowing a later run to adopt that child.
  */
 export async function startDaemon(options: StartDaemonOptions): Promise<DaemonHandle> {
   const settings = options.settings ?? resolveSettings({ configDir: options.configDir })
 
+  // A previous startup may have exited while its owned OpenCode child was
+  // still live. Keep that durable ownership boundary ahead of lock recovery:
+  // reclaiming the stale daemon lock alone would let a new daemon adopt the
+  // old server and strand it outside any supervisor.
+  const blockedStart = readDaemonStartFailure(options.configDir)
+  if (blockedStart?.reason === 'startup-cleanup-incomplete') {
+    throw new DaemonStartBlockedError(blockedStart)
+  }
+  const pendingShutdown = readDaemonState(options.configDir)
+  if (pendingShutdown?.shutdownPending) {
+    throw new DaemonShutdownPendingError(pendingShutdown)
+  }
+
   // First, so a second daemon is refused before it can bind a port or touch
   // the database that the running one owns.
   const lock: AcquiredLock = acquireDaemonLock(options.configDir)
+
+  // Recheck while this generation owns the lock. Another failed startup may
+  // have published its retained child after the cheap pre-lock read above;
+  // releasing our provisional lock here prevents us from starting alongside
+  // that durable owner.
+  const blockedAfterLock = readDaemonStartFailure(options.configDir)
+  if (blockedAfterLock?.reason === 'startup-cleanup-incomplete') {
+    lock.release()
+    throw new DaemonStartBlockedError(blockedAfterLock)
+  }
+  const pendingShutdownAfterLock = readDaemonState(options.configDir)
+  if (pendingShutdownAfterLock?.shutdownPending) {
+    lock.release()
+    throw new DaemonShutdownPendingError(pendingShutdownAfterLock)
+  }
 
   let runtime: LoopTroopRuntime | null = null
   let heartbeat: NodeJS.Timeout | null = null
@@ -223,7 +317,9 @@ export async function startDaemon(options: StartDaemonOptions): Promise<DaemonHa
     // With no listener there is no process to exit — an embedder gets its
     // runtime closed rather than a request that silently does nothing.
     if (shutdownListeners.size === 0) {
-      void stopRuntime()
+      void stopRuntime().catch((error: unknown) => {
+        console.error(`[daemon] Shutdown failed: ${getErrorMessage(error)}`)
+      })
       return
     }
     for (const listener of shutdownListeners) listener(reason)
@@ -278,7 +374,7 @@ export async function startDaemon(options: StartDaemonOptions): Promise<DaemonHa
     // is minted per call: a nonce is single-use and expires, so a URL captured
     // once cannot be replayed or reused later.
     const bootstrapUrl = (): string =>
-      `http://${address.hostname}:${address.port}/#bootstrap=${bootstrapNonces.issue()}`
+      `${daemonOrigin(address.hostname, address.port)}/#bootstrap=${bootstrapNonces.issue()}`
 
     heartbeat = setInterval(() => lock.heartbeat(), HEARTBEAT_INTERVAL_MS)
     // The daemon's own timer must not be the reason the process stays alive.
@@ -287,22 +383,56 @@ export async function startDaemon(options: StartDaemonOptions): Promise<DaemonHa
     options.onReady?.(state)
 
     let stopping: Promise<void> | null = null
+    const markShutdownPending = (): void => {
+      if (recordedState === null || recordedState.shutdownPending) return
+      const pending = { ...recordedState, shutdownPending: true }
+      try {
+        writeDaemonState(pending, options.configDir)
+        recordedState = pending
+      } catch (error) {
+        // Do not close the runtime without first publishing the retry guard:
+        // once the listener closes, the CLI must know not to force-kill this
+        // generation when runtime cleanup is still unresolved.
+        throw new Error(`Could not record pending daemon shutdown: ${getErrorMessage(error)}`)
+      }
+    }
     const stop = (): Promise<void> => {
-      stopping ??= (async () => {
-        if (heartbeat) clearInterval(heartbeat)
-        // Before anything else: stopping OpenCode is what makes it change status,
-        // and a refresh landing after the rmSync below would leave daemon.json
-        // describing a daemon that has exited.
+      if (stopping !== null) return stopping
+      const attempt = (async () => {
+        // An incomplete stop must keep a referenced event-loop handle. The
+        // normal heartbeat is unref'd so an idle daemon can exit naturally;
+        // during shutdown it is the retry anchor if runtime.close later drops
+        // the HTTP listener before the owned process is proven gone.
+        heartbeat?.ref()
+        markShutdownPending()
+        // Keep the heartbeat and daemon.json while either half of shutdown is
+        // unresolved. A failed OpenCode stop is retried by the same handle and
+        // must not leave a successor free to adopt its still-live server.
+        // Only stops a server this daemon started; an adopted one is left alone.
+        const stopped = await opencode?.stop() ?? true
+        if (!stopped) throw new DaemonShutdownIncompleteError()
+
+        await runtime?.close()
+
+        // Before releasing the lock, prevent a final status callback from
+        // recreating daemon.json after the cleanup below.
         stateFileReleased = true
-        try {
-          await runtime?.close()
-        } finally {
-          // Only stops a server this daemon started; an adopted one is left alone.
-          await opencode?.stop()
-          rmSync(getDaemonStatePath(options.configDir), { force: true })
-          lock.release()
+        if (heartbeat) {
+          clearInterval(heartbeat)
+          heartbeat = null
         }
+        // The state cleanup takes the existing lock itself. Release this
+        // generation first so a successor can never be mistaken for it.
+        lock.release()
+        clearDaemonState(instanceId, options.configDir, { confirmedShutdown: true })
       })()
+      // A failed attempt must not poison the retry path. In particular, a
+      // caller may receive the failure after the HTTP listener has closed and
+      // then retry through the signal handler or the returned handle.
+      stopping = attempt.catch((error: unknown) => {
+        stopping = null
+        throw error
+      })
       return stopping
     }
     stopRuntime = stop
@@ -316,21 +446,40 @@ export async function startDaemon(options: StartDaemonOptions): Promise<DaemonHa
       stop,
     }
   } catch (error) {
-    if (heartbeat) clearInterval(heartbeat)
-    // Nothing from here on may write daemon.json: the record below is the last
-    // word on this start, and a status refresh would overwrite it with a state
-    // file for a daemon that is unwinding.
+    // Nothing from here on may write daemon.json after cleanup has completed.
+    // If an owned OpenCode tree cannot be stopped, retain the lock and the
+    // ownership boundary instead of claiming that startup fully unwound.
     stateFileReleased = true
+    let cleanupComplete = true
     try {
       await runtime?.close()
-      await opencode?.stop()
     } catch {
+      cleanupComplete = false
       // The start failure is the useful error; a close failure would mask it.
     }
+    try {
+      if (opencode !== null && !await opencode.stop()) cleanupComplete = false
+    } catch {
+      cleanupComplete = false
+      // The start failure is the useful error; a close failure would mask it.
+    }
+    const retainedOpenCode = opencode?.ownedProcess
     // The daemon is about to exit, taking the reason with it. A refusal that
     // will recur on every start is left behind for `status` and `doctor`.
-    recordStartFailure(error, options.version, options.configDir)
-    lock.release()
+    recordStartFailure(
+      error,
+      options.version,
+      options.configDir,
+      cleanupComplete || retainedOpenCode === null || retainedOpenCode === undefined
+        ? undefined
+        : { baseUrl: settings.opencodeBaseUrl, ...retainedOpenCode },
+    )
+    if (cleanupComplete) {
+      if (heartbeat) clearInterval(heartbeat)
+      lock.release()
+    } else {
+      console.error('[daemon] Startup cleanup was incomplete; the daemon lock was retained for stale-owner recovery.')
+    }
     throw error
   }
 }
@@ -347,19 +496,27 @@ export function installShutdownHandlers(handle: DaemonHandle): void {
     shuttingDown = true
     console.log(`[daemon] Shutting down (${reason}).`)
 
-    const forceExit = setTimeout(() => {
-      console.error('[daemon] Graceful shutdown timed out; forcing exit.')
-      process.exit(1)
-    }, SHUTDOWN_FORCE_EXIT_MS)
-    forceExit.unref()
-
-    handle.stop().then(() => {
-      clearTimeout(forceExit)
-      process.exit(0)
-    }).catch((error: unknown) => {
-      console.error(`[daemon] Shutdown failed: ${getErrorMessage(error)}`)
-      process.exit(1)
-    })
+    let attempts = 0
+    const attempt = (): void => {
+      attempts += 1
+      handle.stop().then(() => {
+        process.exit(0)
+      }).catch((error: unknown) => {
+        // Keep retrying with a capped backoff: the user's shutdown intent must
+        // survive a closed Windows listener until the runtime drain settles,
+        // without flooding logs or spinning the event loop.
+        const delayMs = Math.min(
+          SHUTDOWN_RETRY_MAX_DELAY_MS,
+          SHUTDOWN_RETRY_DELAY_MS * (2 ** Math.min(attempts - 1, 5)),
+        )
+        console.error(
+          `[daemon] Shutdown attempt ${attempts} failed: ${getErrorMessage(error)}; retrying in ${delayMs}ms.`,
+        )
+        const timer = setTimeout(attempt, delayMs)
+        timer.unref()
+      })
+    }
+    attempt()
   }
 
   // `looptroop stop` asks over HTTP first, which works on Windows where there

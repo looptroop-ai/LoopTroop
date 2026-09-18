@@ -1,7 +1,7 @@
 import { afterAll, beforeAll, describe, expect, it } from 'vitest'
 import { execFileSync } from 'node:child_process'
-import { chmodSync, copyFileSync, mkdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
-import { join } from 'node:path'
+import { chmodSync, copyFileSync, existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
+import { dirname, join, resolve } from 'node:path'
 import { makeTempDir, pinGitLineEndings, removeTempDir } from '../../../test/tempDir'
 import {
   captureBeadDiff,
@@ -10,6 +10,13 @@ import {
   recordBeadStartCommit,
   resetToBeadStart,
 } from '../gitOps'
+import {
+  applyOpencodeStepsConfig,
+  getOpencodeStepsRestoreMarkerPath,
+  hasPendingOpencodeStepsRestore,
+  isRootOpencodeConfigPath,
+  restoreOpencodeStepsConfig,
+} from '../opencodeStepsConfig'
 import { TEST } from '../../../test/factories'
 
 const BRANCH = TEST.externalId
@@ -71,6 +78,7 @@ describe('recordBeadStartCommit', () => {
 
 describe('resetToBeadStart', () => {
   const repoDirs: string[] = []
+  const externalMarkers: string[] = []
 
   function makeFreshRepo(): [dir: string, sha: string] {
     const dir = createGitRepo()
@@ -80,6 +88,7 @@ describe('resetToBeadStart', () => {
 
   afterAll(() => {
     for (const dir of repoDirs) removeTempDir(dir)
+    for (const marker of externalMarkers) rmSync(marker, { force: true })
   })
 
   it('reverts uncommitted file changes to tracked files', async () => {
@@ -170,6 +179,59 @@ describe('resetToBeadStart', () => {
     expect(readFileSync(join(dir, '.ticket', 'runtime', 'execution-setup', 'cache.txt'), 'utf8')).toBe('warm\n')
     expect(() => readFileSync(join(dir, 'scratch.ts'), 'utf8')).toThrow()
   })
+
+  it('preserves only the root config when clean uses a root-anchored exclusion', async () => {
+    const [dir] = makeFreshRepo()
+    writeFileSync(join(dir, 'opencode.json'), '{}\n')
+    mkdirSync(join(dir, 'nested'), { recursive: true })
+    writeFileSync(join(dir, 'nested', 'opencode.json'), '{}\n')
+
+    await resetToBeadStart(dir, headSha(dir), { preservePaths: ['/opencode.json'] })
+
+    expect(readFileSync(join(dir, 'opencode.json'), 'utf8')).toBe('{}\n')
+    expect(() => readFileSync(join(dir, 'nested', 'opencode.json'), 'utf8')).toThrow()
+  })
+
+  it('refuses to reset a tracked config with an unresolved cap restore', async () => {
+    const [dir] = makeFreshRepo()
+    const configPath = join(dir, 'opencode.json')
+    writeFileSync(configPath, '{"agent":{"build":{"steps":25}},"edited":true}\n')
+    execFileSync('git', ['-C', dir, 'add', 'opencode.json'], { stdio: 'pipe' })
+    execFileSync('git', ['-C', dir, 'commit', '-m', 'track OpenCode config'], { stdio: 'pipe' })
+    mkdirSync(join(dir, '.ticket'), { recursive: true })
+    const markerPath = getOpencodeStepsRestoreMarkerPath(join(dir, '.ticket'))
+    externalMarkers.push(markerPath)
+    mkdirSync(dirname(markerPath), { recursive: true })
+    writeFileSync(markerPath, `${JSON.stringify({
+      schemaVersion: 1,
+      owner: 'looptroop/opencode-steps',
+      configPath: resolve(dir, 'opencode.json'),
+      createdAt: new Date().toISOString(),
+      pid: process.pid,
+      originalType: 'file',
+      originalContent: '{}\n',
+      writtenSha256: '0'.repeat(64),
+    }, null, 2)}\n`)
+
+    await expect(resetToBeadStart(dir, headSha(dir))).rejects.toThrow(/restore is unresolved/)
+    expect(readFileSync(configPath, 'utf8')).toContain('"edited":true')
+  })
+
+  it('refuses to reset an edited config created by a real cap application', async () => {
+    const [dir] = makeFreshRepo()
+    const ticketDir = join(dir, '.ticket')
+    mkdirSync(ticketDir, { recursive: true })
+    const applied = applyOpencodeStepsConfig({ ticketDir, worktreePath: dir, steps: 25 })
+    externalMarkers.push(getOpencodeStepsRestoreMarkerPath(ticketDir))
+    if (!applied.applied) throw new Error('expected the step cap to apply')
+    writeFileSync(join(dir, 'opencode.json'), '{"edited":true}\n')
+
+    expect(restoreOpencodeStepsConfig(applied.handle)).toBe('conflict')
+    expect(existsSync(join(ticketDir, 'opencode-steps-restore.json'))).toBe(true)
+    expect(hasPendingOpencodeStepsRestore(ticketDir, dir)).toBe(true)
+    await expect(resetToBeadStart(dir, headSha(dir))).rejects.toThrow(/restore is unresolved/)
+    expect(readFileSync(join(dir, 'opencode.json'), 'utf8')).toBe('{"edited":true}\n')
+  })
 })
 
 // ---------------------------------------------------------------------------
@@ -242,6 +304,7 @@ describe('captureBeadDiff', () => {
 
 describe('commitBeadChanges', () => {
   const repoDirs: string[] = []
+  const externalMarkers: string[] = []
 
   function makeFreshRepo(): string {
     const dir = createGitRepo()
@@ -251,6 +314,7 @@ describe('commitBeadChanges', () => {
 
   afterAll(() => {
     for (const dir of repoDirs) removeTempDir(dir)
+    for (const marker of externalMarkers) rmSync(marker, { force: true })
   })
 
   function status(dir: string): string {
@@ -399,6 +463,62 @@ describe('commitBeadChanges', () => {
       committed: false,
       pushed: false,
     })
+  })
+
+  it('excludes the root config without excluding nested copies', async () => {
+    const dir = makeFreshRepo()
+    const ticketDir = join(dir, '.ticket')
+    mkdirSync(ticketDir, { recursive: true })
+    const applied = applyOpencodeStepsConfig({ ticketDir, worktreePath: dir, steps: 25 })
+    externalMarkers.push(getOpencodeStepsRestoreMarkerPath(ticketDir))
+    if (!applied.applied) throw new Error('expected the step cap to apply')
+    writeFileSync(join(dir, 'opencode.json'), '{"edited":true}\n')
+    expect(restoreOpencodeStepsConfig(applied.handle)).toBe('conflict')
+    expect(hasPendingOpencodeStepsRestore(ticketDir, dir)).toBe(true)
+    mkdirSync(join(dir, 'nested'), { recursive: true })
+    writeFileSync(join(dir, 'nested', 'opencode.json'), '{"nested": true}\n')
+
+    const result = await commitBeadChanges(dir, 'bead-root-config', 'Exclude root config', {
+      excludePaths: hasPendingOpencodeStepsRestore(ticketDir, dir) ? ['opencode.json'] : [],
+    })
+
+    expect(result.committed).toBe(true)
+    const committedFiles = execFileSync('git', [
+      '-C',
+      dir,
+      'diff-tree',
+      '--no-commit-id',
+      '--name-only',
+      '-r',
+      'HEAD',
+    ], { encoding: 'utf8' })
+    expect(committedFiles).toContain('nested/opencode.json')
+    expect(committedFiles).not.toContain('\nopencode.json\n')
+    expect(status(dir)).toContain('opencode.json')
+  })
+
+  it.runIf(process.platform !== 'win32' && process.platform !== 'darwin')('keeps legal Linux config casing distinct', () => {
+    expect(isRootOpencodeConfigPath('opencode.json')).toBe(true)
+    expect(isRootOpencodeConfigPath('Opencode.json')).toBe(false)
+    expect(isRootOpencodeConfigPath('nested/opencode.json')).toBe(false)
+  })
+
+  it('follows actual root filesystem casing without treating nested paths as root', () => {
+    const dir = makeFreshRepo()
+    const rootPath = resolve(dir, 'opencode.json')
+    const alternatePath = resolve(dir, 'Opencode.json')
+    writeFileSync(rootPath, 'root spelling\n')
+    writeFileSync(alternatePath, 'alternate spelling\n')
+    // This observes the filesystem without repeating the implementation's
+    // canonical-path comparison: an equivalent case spelling overwrites the
+    // first file, while a distinct spelling leaves its bytes intact.
+    const equivalent = readFileSync(rootPath, 'utf8') === 'alternate spelling\n'
+    mkdirSync(join(dir, 'nested'), { recursive: true })
+    writeFileSync(join(dir, 'nested', 'Opencode.json'), 'nested spelling\n')
+
+    expect(isRootOpencodeConfigPath('opencode.json', dir)).toBe(true)
+    expect(isRootOpencodeConfigPath('Opencode.json', dir)).toBe(equivalent)
+    expect(isRootOpencodeConfigPath('nested/Opencode.json', dir)).toBe(false)
   })
 
   it('commits allowed files and reports committed:true, pushed:false when no remote', async () => {

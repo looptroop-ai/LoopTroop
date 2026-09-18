@@ -304,6 +304,7 @@ Unreleased changes appear first and represent commits that have not yet been inc
 - Three aliases re-exported for a question-diff type that no longer exists, the three helpers behind them, an execution-setup runtime-path list with no reader, and an execution-setup barrel re-exporting three artifact names every caller already imports from their own module.
 
 ### Fixed
+- Workflow phase details now match the structured bead-command, checkpoint, and marker-recovery guarantees enforced by the runtime.
 - Skip All interview finalization now rolls back its snapshot, receipts, and coverage artifacts after a post-CAS failure, so the action can be retried safely.
 - Council member completion now checks only that member's session ownership, so another member's active session cannot block an otherwise confirmed stop.
 - Retry now confirms and clears a retained cancellation fence for every retryable workflow phase before dispatching the phase again.

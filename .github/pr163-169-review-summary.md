@@ -1,5 +1,102 @@
 # Review of PRs 163–169
 
+## Third review, 2026-09-18
+
+All seven PRs' CI results, paginated issue comments, review bodies, inline
+comments, and bot notices were read before implementation. One GPT-5.6 Luna
+max agent handled each PR; the root agent correlated findings and checked
+shared behavior. The earlier passes below are historical results.
+
+This pass preserves the accepted HTTPS-origin, executable-trust, trusted SSH,
+create-to-edit, ignored-file protection, unlimited continuation, positional
+expansion, and conservative recovery decisions. The owner additionally chose:
+
+- Reject startup when a public HTTPS origin is set without remote API mode.
+- Clean eligible worktrees and report skipped ones in Free Disk Space.
+- Keep daemon ownership and permit another stop attempt when OpenCode's stop
+  cannot be confirmed.
+
+Corrections by PR:
+
+- **163:** registry failures no longer masquerade as a missing stable npm tag;
+  Windows discovery skips unsupported interpreter-only PATHEXT entries;
+  legacy container inventory absence is reported separately from evidence;
+  container smoke assertions independently check both doctor facts.
+- **164:** async Git configuration probes avoid blocking and stale caches;
+  timed-out removals do not fall back to recursive deletion; final cleanup
+  checks preserve unknown skeleton files and exact filesystem identity;
+  shutdown retains unverified children and retries its final drain; deleted
+  rename/copy destinations and source-only recovery retries are covered. Live
+  browser streams close during shutdown and late stream admission is refused.
+- **165:** approval rejects missing executable-bead fields and malformed JSON;
+  scalar repairs preserve compact nested and quoted YAML content; explicit
+  canonical clears remain authoritative over aliases. Derived inverse
+  dependencies keep their documented server contract.
+- **166:** process ownership now requires tree-stop proof and retries incomplete
+  stops; external step-cap markers remain authoritative; structured
+  hook-recovery refusals, final CLI cleanup checks, and completed copytruncate
+  generation tracking are implemented together.
+- **167:** cancellation retries cover nonterminal/restart states; a superseding
+  Retry protects the new run and its question windows; checkpointed pending
+  beads remain recoverable; receipt rollback and council stop proofs retain
+  their durable ownership boundaries.
+- **168:** daemon and embedded-runtime startup reject incomplete public-origin
+  configuration; computed promisify/child-process accesses are covered by the
+  existing lint boundary; browser authentication is not documented as arbitrary
+  cross-origin access. Reserved SSE slots respect the shared shutdown fence
+  while keeping transport-abort cleanup and the public-origin guard.
+- **169:** bounded native scans accept ordinary appends after capture, verify
+  the bytes actually indexed and reused parent prefixes, exclude partial tails
+  from fingerprints, and retain old cursor snapshots while rejecting rewrites.
+
+The initial Windows failures traced to a trailing-space real-Git fixture and
+three session-manager test paths. The former is now POSIX-only; the latter use
+the canonical project database key. Linux-shaped tests are not claimed as
+Windows execution. External analyzer dispositions remain in each PR ledger;
+no report was dismissed or suppressed. Upstream action/validator deprecations
+and bot capacity failures are recorded rather than hidden or called green.
+
+Combined verification is complete at detached checkpoint `257a77ac`.
+The full four-project run at `8ca133cc` covered 445 files: 6,695 tests passed,
+13 were skipped, and one outdated tracked-config fixture failed because it
+still forged the old ticket-local recovery marker. The fixture now creates
+ownership evidence through the production helper. A test assertion also now
+narrows the startup-failure union before reading schema details. These final
+changes touch only two test files and the changelog, not production code.
+The corrected startup, execution-phase, and workflow-metadata suites pass all
+116 tests together at the final checkpoint. The full run was not repeated
+after this test-only correction; there are no known remaining test failures.
+
+An earlier server run exposed a council mock/Git/database suite incorrectly
+assigned to the shared pure-test pool. Moving it to the existing isolated
+integration pool produced a green full server run: 317 files, 5,066 tests,
+13 skips. No timeout was increased or global test setup added. Focused source
+and merge checks also passed: 134 SSE/security/Git tests, 223 PR166 tests,
+30 executor tests with one skip, 130 merged PR166 tests, and 116 merged PR168
+tests. The earlier full client run passed 128 files and 1,613 tests.
+
+Full ESLint and application type checking pass; the final test-type check and
+touched-test ESLint also pass. The production client/server build passes.
+Installer synchronization, all 57 native type-stripped scripts, version checks
+across 1,246 tracked files, and Actionlint with the repository's ShellCheck
+warning level pass. The rebuilt package passes its 82-entry contents check;
+notices match 80 redistributed packages. The native-addon gate checks 18
+installed top-level entries and finds no platform-gated production packages.
+No dependency or additional recovery framework was introduced.
+
+All seven implementation heads are pushed: PR163 `e921828d`, PR164 `f67920f`,
+PR165 `589f3b6c`, PR166 `1d8171c6` (source `00737bb9`), PR167 `8739ab5f`,
+PR168 `dffc8d80`, and PR169 `b377abdc`. This summary is a final documentation-only
+follow-up on PR163. The combined worktree was used only for verification;
+GitHub PRs remain separate and unmerged. New pushes are not claimed CI-green,
+and no final CI wait was performed.
+
+Website documentation is pushed to `main` at `22e7ff7`. It labels upcoming
+behavior and retains the released CLI source pin
+`f784f055b45854016c245a2d902d6799b7e8265c`. All 88 website tests, build,
+site/reference checks (15 outputs), and notices (242 packages) passed.
+No E2E/full lifecycle tests or GitHub PR merges were performed.
+
 ## Second review, 2026-09-18
 
 All seven PRs' refreshed CI results, issue comments, reviews, inline comments,

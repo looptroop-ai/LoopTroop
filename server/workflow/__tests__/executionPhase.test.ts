@@ -1067,7 +1067,7 @@ describe('handleCoding', () => {
 
   // --- recordBeadStartCommit failure branch ---
 
-  it('proceeds with execution when recordBeadStartCommit throws', async () => {
+  it('keeps a new bead pending and starts no execution when its checkpoint cannot be read', async () => {
     recordBeadStartCommitMock.mockImplementation(() => {
       throw new Error('git rev-parse failed')
     })
@@ -1085,14 +1085,35 @@ describe('handleCoding', () => {
       errors: [],
     })
 
-    await handleCoding(ticket.id, context, sendEvent, new AbortController().signal)
+    await expect(handleCoding(ticket.id, context, sendEvent, new AbortController().signal))
+      .rejects.toThrow('git rev-parse failed')
 
-    expect(sendEvent).toHaveBeenCalledWith({ type: 'ALL_BEADS_DONE' })
-    // With no beadStartCommit recorded, the success path should still avoid reset attempts.
+    expect(executeBeadMock).not.toHaveBeenCalled()
+    expect(sendEvent).not.toHaveBeenCalled()
+    expect(readTicketBeads(ticket.id)[0]).toMatchObject({ status: 'pending', beadStartCommit: null, startedAt: '' })
     expect(resetToBeadStartMock).not.toHaveBeenCalled()
     // bead_diff requires beadStartCommit, so it should not be inserted
     const diffArtifact = getLatestPhaseArtifact(ticket.id, 'bead_diff:bead-1', 'CODING')
     expect(diffArtifact).toBeUndefined()
+
+    recordBeadStartCommitMock.mockReturnValueOnce('retry-sha')
+    await handleCoding(ticket.id, context, sendEvent, new AbortController().signal)
+    expect(executeBeadMock).toHaveBeenCalledTimes(1)
+    expect(readTicketBeads(ticket.id)[0]).toMatchObject({ status: 'done', beadStartCommit: 'retry-sha' })
+  })
+
+  it('does not publish a new bead as active if canceled while reading its checkpoint', async () => {
+    const { ticket, context } = await createInitializedTestTicket(repoManager, { title: 'Canceled checkpoint' })
+    writeTicketBeads(ticket.id, [makePendingBead('bead-1', 1)])
+    const controller = new AbortController()
+    recordBeadStartCommitMock.mockImplementationOnce(() => {
+      controller.abort()
+      return 'abc123'
+    })
+
+    await expect(handleCoding(ticket.id, context, vi.fn(), controller.signal)).rejects.toThrow()
+    expect(readTicketBeads(ticket.id)[0]).toMatchObject({ status: 'pending', beadStartCommit: null, startedAt: '' })
+    expect(executeBeadMock).not.toHaveBeenCalled()
   })
 
   // --- Git error recovery ---

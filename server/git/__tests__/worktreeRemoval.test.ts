@@ -1,9 +1,9 @@
 import { execFileSync } from 'node:child_process'
-import { chmodSync, existsSync, lstatSync, mkdirSync, readFileSync, renameSync, symlinkSync, writeFileSync } from 'node:fs'
+import { appendFileSync, chmodSync, existsSync, lstatSync, mkdirSync, readFileSync, renameSync, rmSync, symlinkSync, writeFileSync } from 'node:fs'
 import { resolve } from 'node:path'
 import { makeTempDir, pinGitLineEndings, removeTempDir } from '../../test/tempDir'
 import { afterEach, describe, expect, it } from 'vitest'
-import { removeWorktree } from '../worktreeRemoval'
+import { assertNoIgnoredWorktreeFiles, removeWorktree } from '../worktreeRemoval'
 import { getTicketWorktreePath } from '../../storage/paths'
 
 const roots: string[] = []
@@ -12,12 +12,12 @@ function git(cwd: string, args: string[]): string {
   return execFileSync('git', ['-C', cwd, ...args], { encoding: 'utf8' }).trim()
 }
 
-function createRepoWithWorktree() {
+function createRepoWithWorktree(worktreeName = 'TEST-1') {
   const root = makeTempDir('looptroop-worktree-removal-')
   roots.push(root)
   const projectRoot = resolve(root, 'project')
   const worktreesRoot = resolve(projectRoot, '.looptroop', 'worktrees')
-  const worktreePath = resolve(worktreesRoot, 'TEST-1')
+  const worktreePath = resolve(worktreesRoot, worktreeName)
 
   mkdirSync(projectRoot, { recursive: true })
   git(projectRoot, ['init', '--initial-branch=main'])
@@ -108,6 +108,8 @@ describe('removeWorktree', () => {
   it('falls back to filesystem removal and prunes after Git removal fails', async () => {
     const { projectRoot, worktreesRoot, worktreePath } = createRepoWithWorktree()
     const commands: string[][] = []
+    writeFileSync(resolve(worktreePath, '.gitignore'), '*.env\n')
+    writeFileSync(resolve(worktreePath, 'local.env'), 'keep only when requested\n')
 
     await removeWorktree({
       projectRoot,
@@ -124,6 +126,99 @@ describe('removeWorktree', () => {
       ['worktree', 'remove', '--force', worktreePath],
       ['worktree', 'prune'],
     ])
+  })
+
+  it('blocks conservative cleanup before Git removal when ignored files exist', async () => {
+    const { projectRoot, worktreesRoot, worktreePath } = createRepoWithWorktree()
+    writeFileSync(resolve(worktreePath, '.gitignore'), '*.env\n')
+    writeFileSync(resolve(worktreePath, 'local.env'), 'keep me\n')
+    const commands: string[][] = []
+
+    await expect(removeWorktree({
+      projectRoot,
+      worktreesRoot,
+      worktreePath,
+      preserveIgnoredFiles: true,
+      runGit: async (args) => { commands.push(args) },
+    })).rejects.toThrow('ignored files outside LoopTroop roots')
+
+    expect(commands).toEqual([])
+    expect(readFileSync(resolve(worktreePath, 'local.env'), 'utf8')).toBe('keep me\n')
+  })
+
+  it('blocks conservative fallback cleanup when Git leaves a new ignored file', async () => {
+    const { projectRoot, worktreesRoot, worktreePath } = createRepoWithWorktree()
+    writeFileSync(resolve(worktreePath, '.gitignore'), '*.env\n')
+
+    await expect(removeWorktree({
+      projectRoot,
+      worktreesRoot,
+      worktreePath,
+      preserveIgnoredFiles: true,
+      runGit: async (args) => {
+        if (args[1] !== 'remove') return
+        writeFileSync(resolve(worktreePath, 'local.env'), 'keep me\n')
+        throw new Error('simulated Git failure')
+      },
+    })).rejects.toThrow('ignored files outside LoopTroop roots')
+
+    expect(readFileSync(resolve(worktreePath, 'local.env'), 'utf8')).toBe('keep me\n')
+  })
+
+  it('allows conservative cleanup after Git removes the target', async () => {
+    const { projectRoot, worktreesRoot, worktreePath } = createRepoWithWorktree()
+
+    await removeWorktree({ projectRoot, worktreesRoot, worktreePath, preserveIgnoredFiles: true })
+
+    expect(existsSync(worktreePath)).toBe(false)
+  })
+
+  it('preserves a trailing space in an actual Git worktree root', () => {
+    const { worktreePath } = createRepoWithWorktree('TEST-1 ')
+
+    expect(() => assertNoIgnoredWorktreeFiles(worktreePath)).not.toThrow()
+  })
+
+  it('allows a non-Git ticket skeleton without inspecting parent ignored files', async () => {
+    const { projectRoot, worktreesRoot, worktreePath } = createRepoWithWorktree()
+    rmSync(worktreePath, { recursive: true, force: true })
+    mkdirSync(resolve(worktreePath, '.ticket/runtime'), { recursive: true })
+    appendFileSync(resolve(projectRoot, '.git/info/exclude'), '*.env\n')
+    writeFileSync(resolve(projectRoot, 'parent.env'), 'outside the skeleton\n')
+
+    await removeWorktree({
+      projectRoot,
+      worktreesRoot,
+      worktreePath,
+      preserveIgnoredFiles: true,
+      runGit: async (args) => {
+        if (args[1] === 'remove') throw new Error('simulated Git failure')
+      },
+    })
+
+    expect(existsSync(worktreePath)).toBe(false)
+  })
+
+  it('blocks a non-Git ticket skeleton containing its own file', async () => {
+    const { projectRoot, worktreesRoot, worktreePath } = createRepoWithWorktree()
+    rmSync(worktreePath, { recursive: true, force: true })
+    mkdirSync(resolve(worktreePath, '.ticket/runtime'), { recursive: true })
+    writeFileSync(resolve(worktreePath, '.env'), 'keep me\n')
+
+    await expect(removeWorktree({
+      projectRoot,
+      worktreesRoot,
+      worktreePath,
+      preserveIgnoredFiles: true,
+      runGit: async () => { throw new Error('must not run Git') },
+    })).rejects.toThrow('non-Git worktree containing files outside its .ticket skeleton')
+
+    expect(readFileSync(resolve(worktreePath, '.env'), 'utf8')).toBe('keep me\n')
+  })
+
+  it('fails closed when ignored-file inspection cannot run', () => {
+    expect(() => assertNoIgnoredWorktreeFiles(resolve('/tmp', 'looptroop-not-a-repository')))
+      .toThrow('Failed to inspect ignored worktree files')
   })
 
   it('revalidates the managed parent before fallback removal after Git yields', async () => {
@@ -145,6 +240,27 @@ describe('removeWorktree', () => {
 
     expect(existsSync(resolve(movedRoot, 'TEST-1', 'README.md'))).toBe(true)
     expect(existsSync(resolve(outside, 'TEST-1'))).toBe(false)
+  })
+
+  it('preserves a replacement target after Git yields', async () => {
+    const { root, projectRoot, worktreesRoot, worktreePath } = createRepoWithWorktree()
+    const held = resolve(root, 'worktree-held')
+
+    await expect(removeWorktree({
+      projectRoot,
+      worktreesRoot,
+      worktreePath,
+      runGit: async (args) => {
+        if (args[1] !== 'remove') return
+        renameSync(worktreePath, held)
+        mkdirSync(worktreePath, { recursive: true })
+        writeFileSync(resolve(worktreePath, 'replacement.txt'), 'keep\n')
+        throw new Error('simulated Git failure')
+      },
+    })).rejects.toThrow('Worktree target changed during removal')
+
+    expect(readFileSync(resolve(worktreePath, 'replacement.txt'), 'utf8')).toBe('keep\n')
+    expect(readFileSync(resolve(held, 'README.md'), 'utf8')).toBe('fixture\n')
   })
 
   it('rejects targets outside the managed worktrees root', async () => {

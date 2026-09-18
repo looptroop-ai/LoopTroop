@@ -11,6 +11,7 @@ import { resolveSettings, type ResolvedSettings, type SettingSource } from './li
 import { configureOpenCodeRuntime } from './opencode/runtimeConfig'
 import { resetOpenCodeAdapter } from './opencode/factory'
 import { startMergePoller } from './workflow/mergePoller'
+import { stopActiveCommands } from './git/runCommand'
 
 export interface RuntimeConfig extends CreateAppOptions {
   /** Overrides the resolved settings. Use 0 to let the OS assign a free port. */
@@ -192,16 +193,26 @@ export function createRuntime(config: RuntimeConfig = {}): LoopTroopRuntime {
   async function close(): Promise<void> {
     closing ??= (async () => {
       if (starting) await starting.catch(() => undefined)
-      const pollerStopped = stopMergePoller?.()
-      stopMergePoller = null
+      let serverClosed: Promise<void> | undefined
       if (handle && typeof handle.close === 'function') {
-        await new Promise<void>((resolveClose) => {
-          handle?.close(() => resolveClose())
+        const currentHandle = handle
+        serverClosed = new Promise<void>((resolveClose) => {
+          currentHandle.close(() => resolveClose())
         })
       }
+      const pollerStopped = stopMergePoller?.()
+      stopMergePoller = null
+      // Git and gh are detached so their hooks and descendants share the
+      // timeout process group. Runtime shutdown owns those children too;
+      // otherwise a daemon close can return while a mutation still writes.
+      await stopActiveCommands()
+      await pollerStopped
+      // A request already admitted before the listener closed may start one
+      // last child while its handler unwinds; drain that generation too.
+      await stopActiveCommands()
+      await serverClosed
       handle = null
       address = null
-      await pollerStopped
       teardownStartedResources()
     })()
 

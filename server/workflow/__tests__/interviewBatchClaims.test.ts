@@ -11,6 +11,7 @@ import {
   claimInterviewBatchAfterConfirmedStop,
   getPendingInterviewBatchStop,
   getPendingInterviewBatchStopToken,
+  hasInFlightInterviewBatch,
   markInterviewBatchStopPending,
   renewInterviewBatchClaim,
   releaseInterviewBatch,
@@ -58,6 +59,7 @@ describe('interview batch claim ownership across daemon boots', () => {
         expiresAt: '2099-09-17T01:00:00.000Z',
       }).run()
 
+      expect(hasInFlightInterviewBatch(ticket)).toBe(false)
       const reclaimed = claimInterviewBatch(ticket)
       expect(reclaimed).toBeTruthy()
       expect(kill).toHaveBeenCalledWith(424242, 0)

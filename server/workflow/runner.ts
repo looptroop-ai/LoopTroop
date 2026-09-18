@@ -16,6 +16,11 @@ const ERR_DELIBERATION_DATA_LOST = 'Council data lost after restart. Retry to re
 const ERR_PRD_DATA_LOST = 'Council data lost after restart. Retry to re-run PRD drafting.'
 const ERR_BEADS_DATA_LOST = 'Council data lost after restart. Retry to re-run beads drafting.'
 const cancellationCleanupInFlight = new Set<string>()
+const cancellationCleanupRetryTimers = new Map<string, ReturnType<typeof setTimeout>>()
+const cancellationCleanupRetryAttempts = new Map<string, number>()
+const CANCELLATION_CLEANUP_RETRY_BASE_MS = 250
+const CANCELLATION_CLEANUP_RETRY_MAX_MS = 30_000
+const MAX_CANCELLATION_CLEANUP_RETRIES = 8
 
 // Import from phase modules
 import {
@@ -200,6 +205,40 @@ function buildWorkflowErrorEvent(
   }
 }
 
+function scheduleCancellationCleanupRetry(
+  ticketId: string,
+  actor: ReturnType<typeof createActor<typeof ticketMachine>>,
+  processSnapshot: (snapshot: ReturnType<typeof actor.getSnapshot>) => void,
+) {
+  if (cancellationCleanupRetryTimers.has(ticketId)) return
+  const attempt = (cancellationCleanupRetryAttempts.get(ticketId) ?? 0) + 1
+  if (attempt > MAX_CANCELLATION_CLEANUP_RETRIES) {
+    cancellationCleanupRetryAttempts.delete(ticketId)
+    console.warn(`[workflow] Giving up automatic cancellation cleanup retries for ticket ${ticketId}; manual retry remains available`)
+    return
+  }
+  cancellationCleanupRetryAttempts.set(ticketId, attempt)
+  const delay = Math.min(
+    CANCELLATION_CLEANUP_RETRY_BASE_MS * (2 ** (attempt - 1)),
+    CANCELLATION_CLEANUP_RETRY_MAX_MS,
+  )
+  const timer = setTimeout(() => {
+    cancellationCleanupRetryTimers.delete(ticketId)
+    if (resolveSnapshotState(actor.getSnapshot()) === 'CANCELED') {
+      processSnapshot(actor.getSnapshot())
+    }
+  }, delay)
+  timer.unref?.()
+  cancellationCleanupRetryTimers.set(ticketId, timer)
+}
+
+function clearCancellationCleanupRetry(ticketId: string) {
+  const timer = cancellationCleanupRetryTimers.get(ticketId)
+  if (timer) clearTimeout(timer)
+  cancellationCleanupRetryTimers.delete(ticketId)
+  cancellationCleanupRetryAttempts.delete(ticketId)
+}
+
 function startCodingPhase(
   ticketId: string,
   actor: ReturnType<typeof createActor<typeof ticketMachine>>,
@@ -247,7 +286,7 @@ export function attachWorkflowRunner(
     // When the ticket reaches CANCELED, abort all running work
     if (state === 'CANCELED') {
       cancelTicket(ticketId)
-      if (!cancellationCleanupInFlight.has(ticketId)) {
+      if (!cancellationCleanupInFlight.has(ticketId) && !cancellationCleanupRetryTimers.has(ticketId)) {
         cancellationCleanupInFlight.add(ticketId)
         void (async () => {
           const sessionsStopped = await abortTicketSessions(ticketId)
@@ -256,22 +295,15 @@ export function attachWorkflowRunner(
             : false
           if (!sessionsStopped || !windowsCleared) {
             console.warn(`[workflow] Could not confirm cancellation cleanup for ticket ${ticketId}; retaining remote-session state`)
-            setTimeout(() => {
-              if (resolveSnapshotState(actor.getSnapshot()) === 'CANCELED') {
-                processSnapshot(actor.getSnapshot())
-              }
-            }, 250)
+            scheduleCancellationCleanupRetry(ticketId, actor, processSnapshot)
             return
           }
+          clearCancellationCleanupRetry(ticketId)
           cleanupTicketState(ticketId)
         })()
           .catch((err: unknown) => {
             console.warn(`[workflow] Cancellation cleanup failed for ticket ${ticketId}; retaining remote-session state:`, err)
-            setTimeout(() => {
-              if (resolveSnapshotState(actor.getSnapshot()) === 'CANCELED') {
-                processSnapshot(actor.getSnapshot())
-              }
-            }, 250)
+            scheduleCancellationCleanupRetry(ticketId, actor, processSnapshot)
           })
           .finally(() => {
             cancellationCleanupInFlight.delete(ticketId)
@@ -281,9 +313,12 @@ export function attachWorkflowRunner(
     }
 
     if (state === 'COMPLETED') {
+      clearCancellationCleanupRetry(ticketId)
       cleanupTicketState(ticketId)
       return
     }
+
+    if (isWorkflowPhaseId(state) && isTicketCancellationPending(ticketId)) return
 
     if (runningPhases.has(key)) return
 

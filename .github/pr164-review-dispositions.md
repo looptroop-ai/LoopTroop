@@ -20,6 +20,10 @@ Disposition labels:
 - **wrong** — the reported data flow or security premise does not hold.
 - **not-applicable** — a status summary, duplicate, an accepted decision, or
   work owned by another stacked packet.
+- **deferred** — a real observation outside this packet's owned changes, kept
+  visible for the owner or a later packet.
+- **withdrawn** — targeted verification found that the proposed defect does not
+  apply to the current platform or writer contract.
 
 ## Captured comments
 
@@ -96,6 +100,59 @@ Disposition labels:
 | AaCwCm3mYG7j__vPWQCn | `server/git/runCommand.ts` | wrong | Reading the linked-worktree `.git` file and resolving its `gitdir` is required to name a lock in the repository Git is already operating on. The value is diagnostic-only and is never used as a command or mutation target. |
 | AaCwCm3mYG7j__vPWQCm | `server/git/runCommand.ts` | wrong | The lock existence probe only enriches a timeout error for the caller's selected repository. It does not reveal an unrelated path and cannot be used to choose a later filesystem operation. |
 
+## Round 2 captured comments and CI
+
+The second-pass corpus and CI were reread after the first intake. Every new
+comment is classified below, including observations that were withdrawn after
+verification. The four confirmed source defects are fixed in this branch; the
+conservative ignored-file guard is also shared by `removeWorktree` for the
+root-owned cleanup preview to call. Real Git worktrees use Git's ignored-file
+listing; pre-start ticket skeletons are inspected directly so parent-repository
+ignored files cannot block them, while unknown skeleton entries still fail
+closed.
+
+| ID | Observation(s) | Disposition |
+| --- | --- | --- |
+| 5718956696 | Sonar quality-gate status with no new source claim. | not-applicable — status only; concrete analyzer keys remain classified below. |
+| 5719140396.1 | Detached async Git/GitHub children survive daemon shutdown. | correct — fixed with an active child set, awaited SIGTERM/SIGKILL cleanup, and runtime-close integration coverage. |
+| 5719140396.2, .10 | Synchronous `core.sshCommand`/`gh` availability probes add per-call latency. | deferred — genuine performance work, outside this packet's four correctness fixes. |
+| 5719140396.3 | Hook-validation mutations still use the sync runner. | not-applicable — owned by PR 166. |
+| 5719140396.4 | The G-03 regression mock can pass with the source fix reverted. | deferred — test-quality follow-up; the source boundary and alias tests remain intact. |
+| 5719140396.5 | Darwin case folding should match Windows. | withdrawn — case-sensitive APFS is valid; no blanket lowercasing is safe without a platform-volume probe. |
+| 5719140396.6 | Symlink-ancestor refusal is absent from some Manual QA callers. | deferred — the supplied-root fail-closed policy is intentional and caller-wide normalization belongs to its owning packet. |
+| 5719140396.7 | Manual QA tail repair is outside the append lock. | withdrawn — one daemon owns this synchronous repair/read/dedupe/append sequence and no supported cross-process writer exists. |
+| 5719140396.8, .9, .11, .12 | Dead sync restore path, lock-file documentation, mutation-command heuristic, and unrelated `.gitignore` change. | not-applicable — cleanup/documentation follow-ups or unrelated scope, not this packet's filesystem defects. |
+| 5719140396.13 | `RECOVERY_BLOCKED` needs an operator path. | correct — README and the recovery ledger now say that preserved files require manual inspection/reconciliation before restart. |
+| 5719152175.1 | Preserved final quarantine symlinks fail before collision handling. | correct — parent-only containment plus no-follow final-entry checks allow a retry copy without touching the link target. |
+| 5719152175.2 | Quarantine comparison needs stable descriptor snapshots. | correct — existing descriptor/path identity checks and bounded comparison regressions cover replacement during reads. |
+| 5719152175.3 | Manual QA repair/read/dedupe/append needs a cross-process lock. | withdrawn — same single-daemon writer contract as 5719140396.7. |
+| 5719152175.4 | Fallback cleanup can delete a replacement worktree target. | correct — target device/inode/birthtime generation is rechecked after Git yields. |
+| 5719152175.5 | Completed fallback markers can rewind later appends. | correct — markers distinguish incomplete from complete publication; completed targets are never recopied over newer bytes. |
+| 5719164166 | Mutation-argument heuristic, SSH probe cost, and trailing-slash behavior. | deferred/withdrawn — heuristic and probe are low-risk follow-ups; trailing slashes are valid POSIX distinctions. |
+| 5719164166.O-1/O-2 | Startup remains blocked on unresolved recovery; cleanup timers stay referenced. | correct/not-applicable — fail-closed recovery and awaited timer cleanup are intentional; README records the manual recovery path. |
+| 5719170844.1 | Timeout path may wait for the full abandon grace after a fast child exit. | deferred — lifecycle/timing redesign is outside this focused fix and remains bounded. |
+| 5719170844.2 | Symlinked repository roots are rejected by candidate filtering. | not-applicable — supplied-root symlink refusal is the accepted fail-closed policy. |
+| 5719170844.3-.5, .8-.9 | Recovery allowlist additions, Windows signature normalization, staged deletion, parser consolidation, and marker-rename retry. | deferred — separate artifact/Git packets; no ownership assigned here. |
+| 5719170844.6 | Windows ADS path handling. | correct — already fixed by the shared contained-path and repo-path guards. |
+| 5719170844.7 | Windows `ino: 0` weakens parent/target generation checks. | correct — portable birthtime is now part of the worktree entry identity. |
+| 5719265675 | Append final-symlink, index snapshot, candidate fallback, and SSH-probe concerns. | deferred — separate atomic/index/integration/performance work; Darwin case-fold item withdrawn for the reason above. |
+| 5719612146.1 | Preserved quarantine symlink retry is unreachable. | correct — fixed by the quarantine-path helper and regression. |
+| 5719612146.2-.4 | Project attach error mapping, human-vs-NUL candidate display, and launcher allowlist. | deferred — other route/integration/recovery ownership. |
+| 5719612146.open-1 | Symlinked root aliases are rejected by candidate filtering. | not-applicable — intentional supplied-root policy. |
+| 5719612146.open-2 | A source-only torn marker with no target blocks startup. | deferred — fail-closed recovery policy remains; no safe automatic owner can be inferred. |
+| 5720118916.1, .5 | SSH probe overhead and allowlist maintenance. | deferred/not-applicable — performance/documentation follow-ups. |
+| 5720118916.2 | Synchronous append locking can block under contention. | not-applicable — bounded, near-zero-contention path; no new cross-process writer contract. |
+| 5720118916.3-.4 | Missing `@{` test and relative-folder-path behavior. | deferred/correct — test gap is separate; relative paths intentionally fail closed and routes map them. |
+| 5720118916.6 | Duplicate marker publication. | correct — completion markers now publish an explicit incomplete state before copy and complete state after fsync. |
+| 5720937325.1-.5, .8, .10, .12 | Bead projection, stale cleanup plan, OpenCode conflict, revision validation, index rollback, ignore-rule ownership, and nested config recovery. | deferred/not-applicable — separate owners or later packets; root owns cleanup-plan revalidation. |
+| 5720937325.3 | Recursive fallback can race an abandoned Git child. | deferred — requires lifecycle/process-confirmation work beyond this cleanup-generation fix. |
+| 5720937325.6 | Manual QA dedupe outside append lock. | withdrawn — no supported cross-process writer; same verified contract as 5719140396.7. |
+| 5720937325.7, .11 | Sync lock contention and SSH probe latency. | not-applicable/deferred — bounded current behavior and separate performance follow-up. |
+| 4039445727 | Sonar log-injection key duplicates the already encoded project diagnostic. | wrong — no new unescaped sink. |
+| 4039492795 | Sonar log-injection key is the same encoded diagnostic under a new analysis. | wrong — duplicate of 4039445727. |
+| 4039872942 | First target-identity marker publication needs recovery evidence. | correct — fallback writes an identity-bearing incomplete marker before copy and a complete marker after publication. |
+| 4039872956 | Quarantine copy should fsync before source discard. | deferred — physical power-loss durability is unclaimed in this packet and remains in the audit limits. |
+
 ## Verification
 
 ### Additional refreshed envelopes
@@ -111,16 +168,19 @@ preservation of a later same-sized change at its recorded retry destination.
 
 Focused checks on this branch included:
 
-- `vitest` pure path/Git tests: path normalization 16 passed, 3 skipped;
-  worktree removal 11 passed; related pure tests were rerun after each fix.
-- `vitest` integration recovery: 20 passed; atomic IO: 60 passed; project
-  routes: 27 passed; Manual QA operations/checkpoint: 26 passed. The latest
-  focused reruns passed project routes 27/27 and checkpoint 12/12, including
-  the replacement-during-comparison regression.
-- `tsc --noEmit --pretty false` passed after the final route and checkpoint
+- The latest focused rerun covered five files and 90 tests: worktree removal
+  16, recovery 22, and the run-command, runtime-close, and Manual QA
+  checkpoint regressions; all passed.
+- The cleanup follow-up reran worktree removal with 19 passing tests, the
+  project-router read-only-cache regression (1/1), and project storage cleanup
+  (4/4), including parent-ignored and skeleton-owned `.env` cases.
+- Earlier packet checks also covered path normalization, atomic IO, project
+  routes, and Manual QA operations. Those results remain in the initial
+  intake record; they are not repeated as evidence for the final source
+  changes here.
+- `npm run typecheck` passed after the final recovery and runtime-close
   changes, and the touched-file ESLint check passed.
-- `git diff --check` passed before the final documentation and disposition
-  edits; it is rerun before commit.
+- `git diff --check` is rerun after this ledger update and before commit.
 
 Native macOS/Windows runs, physical power-loss recovery, live remote
 authentication, E2E, and full lifecycle tests remain unclaimed. Website

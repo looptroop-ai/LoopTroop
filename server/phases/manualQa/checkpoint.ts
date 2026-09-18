@@ -130,6 +130,22 @@ function assertContainedEntry(root: string, target: string): string {
   }
 }
 
+/** Keep quarantine parents canonical while allowing an existing final entry to be a link. */
+function assertQuarantinePath(root: string, target: string, canonicalRoot: string): void {
+  try {
+    const parent = dirname(target)
+    const resolvedParent = resolveContainedPath(root, parent, { allowMissingParents: true })
+    const expectedParent = resolve(canonicalRoot, relative(root, parent))
+    if (resolvedParent !== expectedParent) throw new Error('redirect')
+    assertContainedEntry(root, target)
+  } catch (error) {
+    if (error instanceof Error && error.message === 'redirect') {
+      throw new Error('Manual QA quarantine path redirects outside its intended directory.')
+    }
+    throw new Error(`Manual QA path escapes its contained root: ${target}`)
+  }
+}
+
 /**
  * Baseline and drift receipts are what a manual QA session is reconstructed
  * from after a crash, so they go through the same writer as every other durable
@@ -280,13 +296,10 @@ function quarantineFiles(
   for (const file of uniqueProjectPaths(files)) {
     const source = resolve(worktreePath, file)
     const destination = resolve(quarantineRoot, file)
-    const expectedDestination = resolve(canonicalTicketDir, relative(ticketDir, destination))
     assertContainedEntry(worktreePath, source)
     // A link to another ticket artifact is contained but is not quarantine:
     // copying there could overwrite that artifact before discarding the source.
-    if (assertContained(ticketDir, destination) !== expectedDestination) {
-      throw new Error('Manual QA quarantine path redirects outside its intended directory.')
-    }
+    assertQuarantinePath(ticketDir, destination, canonicalTicketDir)
     const sourceEntry = lstatSafe(source)
     if (!existsSync(source) && !sourceEntry) continue
     let destinationPath = destination
@@ -299,9 +312,7 @@ function quarantineFiles(
       }
       const suffix = createHash('sha256').update(actionId, 'utf8').digest('hex').slice(0, 16)
       destinationPath = resolve(quarantineRoot, `${file}.attempt-${suffix}`)
-      if (assertContained(ticketDir, destinationPath) !== resolve(canonicalTicketDir, relative(ticketDir, destinationPath))) {
-        throw new Error('Manual QA quarantine retry path redirects outside its intended directory.')
-      }
+      assertQuarantinePath(ticketDir, destinationPath, canonicalTicketDir)
       if (lstatSafe(destinationPath) && !sameQuarantineEntry(source, destinationPath)) {
         throw new Error(`Manual QA quarantine destination already exists: ${destinationPath}`)
       }
@@ -312,9 +323,7 @@ function quarantineFiles(
       }
     }
     mkdirSync(dirname(destinationPath), { recursive: true })
-    if (assertContained(ticketDir, destinationPath) !== resolve(canonicalTicketDir, relative(ticketDir, destinationPath))) {
-      throw new Error('Manual QA quarantine path redirects outside its intended directory.')
-    }
+    assertQuarantinePath(ticketDir, destinationPath, canonicalTicketDir)
     if (sourceEntry?.isSymbolicLink()) {
       // `cpSync` still stats a dangling link on some Node/filesystem pairs.
       // Copy its directory entry directly so neither an outward nor a broken

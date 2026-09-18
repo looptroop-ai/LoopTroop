@@ -18,8 +18,10 @@ import {
   claimInterviewBatchAfterConfirmedStop,
   getPendingInterviewBatchStop,
   getPendingInterviewBatchStopToken,
+  InterviewBatchChangedError,
   markInterviewBatchStopPending,
   restoreInterviewBatchAfterFailure,
+  snapshotFingerprint,
   type InterviewBatchSkipReceipt,
 } from '../../workflow/phases/interviewPhase'
 import { abortTicketWork } from '../../workflow/phases/state'
@@ -404,10 +406,15 @@ export async function handleSkipTicket(c: Context) {
       selectedOptions: parsed.data.selectedOptions,
       skipReasons: parsed.data.skipReasons,
       bulkReason: parsed.data.bulkSkipReason ?? null,
+      claimToken: skipClaimToken ?? undefined,
+      expectedSnapshotFingerprint: snapshotFingerprint(skipAllSession),
     })
 
     sendTicketEvent(ticketId, { type: 'SKIP_ALL_TO_APPROVAL' })
   } catch (err) {
+    if (err instanceof InterviewBatchChangedError) {
+      return c.json({ error: err.message }, 409)
+    }
     logTicketOperationError(ticketId, 'Failed to skip remaining interview questions for ticket', err)
     return c.json({ error: 'Failed to skip remaining interview questions', details: getErrorMessage(err) }, 500)
   } finally {

@@ -613,10 +613,10 @@ export function hasInFlightInterviewBatch(ticketId: string): boolean {
     .from(interviewBatchClaims)
     .where(eq(interviewBatchClaims.ticketId, context.localTicketId))
     .get()
-  return Boolean(existing && Date.parse(existing.expiresAt) > Date.now())
+  return Boolean(existing && !isClaimOwnerProvablyDead(existing.token) && Date.parse(existing.expiresAt) > Date.now())
 }
 
-function snapshotFingerprint(snapshot: InterviewSessionSnapshot): string {
+export function snapshotFingerprint(snapshot: InterviewSessionSnapshot): string {
   const canonicalize = (value: unknown): unknown => {
     if (Array.isArray(value)) return value.map(canonicalize)
     if (!value || typeof value !== 'object') return value
@@ -627,6 +627,13 @@ function snapshotFingerprint(snapshot: InterviewSessionSnapshot): string {
     )
   }
   return JSON.stringify(canonicalize(snapshot))
+}
+
+export class InterviewBatchChangedError extends Error {
+  constructor() {
+    super('Interview batch changed or its claim expired before processing completed')
+    this.name = 'InterviewBatchChangedError'
+  }
 }
 
 function persistInterviewSessionIfCurrent(
@@ -767,11 +774,16 @@ export function skipAllInterviewQuestionsToApproval(
     selectedOptions?: Record<string, string[]>
     skipReasons?: Record<string, string>
     bulkReason?: string | null
+    claimToken?: string
+    expectedSnapshotFingerprint?: string
   } = {},
 ): { snapshot: InterviewSessionSnapshot; canonicalInterview: string } {
   const snapshot = readInterviewSessionSnapshotArtifact(ticketId)
   if (!snapshot) {
     throw new Error('No normalized interview session snapshot found for this ticket')
+  }
+  if (options.claimToken && !options.expectedSnapshotFingerprint) {
+    throw new InterviewBatchChangedError()
   }
 
   const ticket = getTicketByRef(ticketId)
@@ -802,8 +814,18 @@ export function skipAllInterviewQuestionsToApproval(
   const canonicalInterview = buildCanonicalInterviewYaml(externalId, finalizedSnapshot)
   const interviewPath = resolve(paths.ticketDir, 'interview.yaml')
 
+  if (options.claimToken) {
+    const persisted = persistInterviewSessionIfCurrent(
+      ticketId,
+      options.expectedSnapshotFingerprint!,
+      finalizedSnapshot,
+      options.claimToken,
+    )
+    if (!persisted) throw new InterviewBatchChangedError()
+  } else {
+    persistInterviewSession(ticketId, finalizedSnapshot)
+  }
   writeTicketFile(ticketId, 'interview.yaml', canonicalInterview)
-  persistInterviewSession(ticketId, finalizedSnapshot)
   recordInterviewSkipReceipts({
     ticketId,
     externalId,
@@ -891,7 +913,8 @@ export function buildCoverageFollowUpCommentary(response: string): string {
     : 'Coverage follow-up questions generated to close remaining gaps.'
 }
 
-export async function restoreInterviewQASession(ticketId: string) {
+export async function restoreInterviewQASession(ticketId: string, signal?: AbortSignal) {
+  throwIfAborted(signal, ticketId)
   const cached = interviewQASessions.get(ticketId)
   const persisted = cached ?? readInterviewQASessionArtifact(ticketId)
   if (!persisted) return null
@@ -903,7 +926,8 @@ export async function restoreInterviewQASession(ticketId: string) {
   const ownership = listOpenCodeSessionsForTicket(ticketId, ['active', 'abandoned'])
     .find((row) => row.sessionId === persisted.sessionId)
   if (ownership?.state === 'abandoned') {
-    const remote = await adapter.getSession(persisted.sessionId)
+    const remote = await adapter.getSession(persisted.sessionId, signal)
+    throwIfAborted(signal, ticketId)
     if (!remote || !reactivateOpenCodeSessionForContinuation(
       ticketId,
       'WAITING_INTERVIEW_ANSWERS',
@@ -914,6 +938,7 @@ export async function restoreInterviewQASession(ticketId: string) {
     }
   }
 
+  throwIfAborted(signal, ticketId)
   // After server restart the in-memory map is empty. Reload from DB and trust
   // the persisted session ID — adapter.listSessions() silently returns [] on
   // transient errors, causing valid sessions to be abandoned. The actual
@@ -1608,7 +1633,7 @@ export async function handleInterviewQAStart(
     return
   }
 
-  const restoredSession = await restoreInterviewQASession(ticketId)
+  const restoredSession = await restoreInterviewQASession(ticketId, signal)
   if (restoredSession) {
     emitModelSystemLog(
       ticketId,
@@ -1909,7 +1934,8 @@ export async function handleInterviewQABatch(
 
   // Get session info from memory or reload from DB
   const persistedSessionInfo = readInterviewQASessionArtifact(ticketId)
-  let sessionInfo = await restoreInterviewQASession(ticketId)
+  const signal = getOrCreateAbortSignal(ticketId)
+  let sessionInfo = await restoreInterviewQASession(ticketId, signal)
   if (!sessionInfo) {
     if (persistedSessionInfo?.sessionId === 'mock-session') {
       const paths = getTicketPaths(ticketId)
@@ -1959,7 +1985,6 @@ export async function handleInterviewQABatch(
 
   }
 
-  const signal = getOrCreateAbortSignal(ticketId)
   const streamState = createOpenCodeStreamState()
   const formattedAnswers = buildFormattedBatchAnswers(currentBatch.questions, batchAnswers, selectedOptions)
   const paths = getTicketPaths(ticketId)

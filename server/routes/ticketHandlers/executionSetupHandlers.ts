@@ -203,12 +203,20 @@ export async function handlePutExecutionSetupPlan(c: Context) {
     let beforeRaw: string | null = null
     let beforeCommandCount: number | null = null
     let beforePlan: ReturnType<typeof readExecutionSetupPlan> | null = null
+    let beforePlanReadError: unknown = null
     try {
       beforePlan = readExecutionSetupPlan(ticketId)
       beforeRaw = beforePlan.raw
       beforeCommandCount = countPlanCommands(beforePlan.plan)
-    } catch {
+    } catch (err) {
+      beforePlanReadError = err
       beforeRaw = null
+    }
+    if (beforePlanReadError) {
+      return c.json({
+        error: 'Current execution setup plan could not be read; reload before saving',
+        details: getErrorMessage(beforePlanReadError),
+      }, 409)
     }
 
     const body = await c.req.json().catch(() => ({}))

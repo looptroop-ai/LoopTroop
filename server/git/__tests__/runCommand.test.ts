@@ -10,6 +10,7 @@ import {
   runGitBinarySync,
   runGitMutation,
   runGitSync,
+  stopActiveCommands,
 } from '../runCommand'
 import { chmodSync, existsSync, mkdirSync, writeFileSync } from 'node:fs'
 import { execFileSync } from 'node:child_process'
@@ -66,6 +67,16 @@ describe('server/git/runCommand', () => {
     const result = await runCommand(node, script('setTimeout(() => {}, 60000)'), { timeoutMs: 200, log: false })
     expect(result.ok).toBe(false)
     expect(result.timedOut).toBe(true)
+  })
+
+  it('stops detached async commands during daemon shutdown', async () => {
+    const command = runCommand(node, script('setTimeout(() => {}, 60000)'), { timeoutMs: 60_000, log: false })
+    await stopActiveCommands()
+    const result = await command
+
+    expect(result.ok).toBe(false)
+    expect(result.timedOut).toBe(false)
+    expect(result.status === 0).toBe(false)
   })
 
   it('kills a child that ignores SIGTERM instead of waiting on it forever', async () => {

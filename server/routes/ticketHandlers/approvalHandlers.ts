@@ -625,7 +625,7 @@ function approveExecutionSetupPlanForRoute(c: Context, ticketId: string, expecte
       detected: plan.gitHooks.detected,
     })
     if (evidenceChanged) {
-      const refreshed = saveExecutionSetupPlan(ticketId, refreshedPlan)
+      const refreshed = saveExecutionSetupPlan(ticketId, refreshedPlan, expectedContentSha256)
       emitRoutePhaseLog(
         ticketId,
         'WAITING_EXECUTION_SETUP_APPROVAL',

@@ -469,9 +469,22 @@ export async function handleCoding(
         throw new Error('No runnable bead found; unresolved dependencies remain')
       }
 
+      // A runnable bead must have its reset checkpoint before publishing it as
+      // active. A failed HEAD read leaves it pending and starts no session.
+      try {
+        beadStartCommit = await withCommandLoggingFieldsAsync(
+          { beadId: nextBead.id },
+          async () => recordBeadStartCommit(paths.worktreePath),
+        )
+      } catch (err) {
+        const message = `Could not record bead start commit for ${nextBead.id}: ${err instanceof Error ? err.message : 'Unknown error'}`
+        emitPhaseLog(ticketId, context.externalId, 'CODING', 'error', message, { source: 'system', modelId: codingModelId, beadId: nextBead.id })
+        throw new Error(message)
+      }
+      throwIfAborted(signal, ticketId)
       const now = new Date().toISOString()
-      const inProgressBeads = beads.map(bead => bead.id === nextBead.id
-        ? { ...bead, status: 'in_progress' as const, updatedAt: now, startedAt: bead.startedAt || now }
+      const inProgressBeads = readTicketBeads(ticketId).map(bead => bead.id === nextBead.id
+        ? { ...bead, beadStartCommit, status: 'in_progress' as const, updatedAt: now, startedAt: bead.startedAt || now }
         : bead)
       writeTicketBeads(ticketId, inProgressBeads)
       updateTicketProgressFromBeads(ticketId, inProgressBeads)
@@ -484,18 +497,6 @@ export async function handleCoding(
 
       emitPhaseLog(ticketId, context.externalId, 'CODING', 'info', `Executing bead ${executingBead.id}: ${executingBead.title}`, { source: 'system', modelId: codingModelId, beadId: executingBead.id })
 
-      // Record bead start commit for potential reset on context wipe
-      beadStartCommit = null
-      try {
-        beadStartCommit = await withCommandLoggingFieldsAsync({ beadId: executingBead.id }, async () => recordBeadStartCommit(paths.worktreePath))
-        const beadsWithCommit = readTicketBeads(ticketId).map(b =>
-          b.id === executingBead.id ? { ...b, beadStartCommit } : b)
-        writeTicketBeads(ticketId, beadsWithCommit)
-        activeBead = beadsWithCommit.find(bead => bead.id === executingBead.id) ?? activeBead
-        executingBead = activeBead ?? executingBead
-      } catch (err) {
-        emitPhaseLog(ticketId, context.externalId, 'CODING', 'info', `Could not record bead start commit: ${err instanceof Error ? err.message : 'Unknown error'}`, { source: 'system', modelId: codingModelId, beadId: executingBead.id })
-      }
     }
 
     throwIfAborted(signal, ticketId)

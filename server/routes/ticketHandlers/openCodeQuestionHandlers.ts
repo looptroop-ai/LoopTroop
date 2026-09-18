@@ -126,6 +126,7 @@ async function getTicketPendingOpenCodeQuestions(ticketId: string) {
     const listed = await Promise.allSettled(
       sessions.map((session) => adapter.listPendingQuestions(undefined, undefined, session.sessionId)),
     )
+    const listingFailed = listed.some((result) => result.status === 'rejected')
     const pending = listed.flatMap((result, index) => {
       if (result.status === 'fulfilled') return result.value
       const session = sessions[index]
@@ -133,7 +134,12 @@ async function getTicketPendingOpenCodeQuestions(ticketId: string) {
       return []
     })
     const live = pending.filter((request) => sessionsById.has(request.sessionID))
-    reconcileAgainstPending(ticketId, new Set(live.map((request) => request.id)))
+    // A partial listing is not evidence that the missing session resolved its
+    // questions. Keep every local row until all session listings succeed; the
+    // next complete poll can still prune genuinely resolved questions.
+    if (!listingFailed) {
+      reconcileAgainstPending(ticketId, new Set(live.map((request) => request.id)))
+    }
 
     // Anything OpenCode has that no window covers arrived while this process was
     // not listening — a restart, or a stream frame that never landed. Arm it now

@@ -613,7 +613,10 @@ export async function deleteProjectWorktrees(projectRoot: string): Promise<{ fre
     // to resolve. removeWorktree validates the parent and direct-child shape.
     const worktreePath = getTicketWorktreeEntryPath(projectRoot, externalId)
     freedBytes += await calcDirSize(worktreePath)
-    await removeWorktree({ projectRoot, worktreesRoot, worktreePath })
+    // Terminal-ticket housekeeping is conservative: a user may have left an
+    // ignored project file in the checkout, so let the shared remover inspect
+    // it before Git or its filesystem fallback can delete the worktree.
+    await removeWorktree({ projectRoot, worktreesRoot, worktreePath, preserveIgnoredFiles: true })
   }
 
   await runGitMutation(projectRoot, ['worktree', 'prune'])

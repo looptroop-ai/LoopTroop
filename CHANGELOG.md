@@ -281,6 +281,7 @@ Unreleased changes appear first and represent commits that have not yet been inc
 - Legacy container repairs store an explicit missing-inventory note separately from package-version evidence. Container smoke diagnostics check the reported channel and upgrade command independently, and the audit ledger links to committed coverage.
 
 - npm publishing and verification preserve registry lookup failures when checking the stable `latest` tag. Only a successful lookup with an empty tag is treated as absent; authentication, transport, and package-not-found failures stop the workflow.
+- Release-policy fixtures read the package version from its single source, so version checks remain valid after a release bump.
 - Installer daemon-port probes now treat every child exit other than a connection or refusal as unknown, so an unexpected probe failure cannot authorize executable replacement.
 - Published install-catalog recipes now match the HTTPS-only commands exercised by the release smoke.
 - The Windows affected-file gate now fails when it cannot compute the pull request diff instead of silently skipping its checks.

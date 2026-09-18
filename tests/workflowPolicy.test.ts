@@ -66,10 +66,11 @@ function executeWindowsScope(run: string, changedPaths: string[], diffStatus = 0
 describe('release workflow policy', () => {
   it('fails release tag verification on registry errors while accepting a confirmed missing tag', () => {
     const release = source.get('release.yml')!
+    const { version } = JSON.parse(readFileSync(join(repo, 'package.json'), 'utf8')) as { version: string }
     for (const variable of ['latest_before', 'latest_now']) {
       const probe = release.match(new RegExp(`^\\s*${variable}=\\$\\(npm view looptroop dist-tags\\.latest[^\\n]*\\n[^\\n]*`, 'm'))?.[0]
       expect(probe).toBeDefined()
-      for (const [status, output] of [[0, '0.5.9'], [0, ''], [1, ''], [1, 'none']] as const) {
+      for (const [status, output] of [[0, version], [0, ''], [1, ''], [1, 'none']] as const) {
         const result = spawnSync('bash', ['-euo', 'pipefail', '-c', [
           'npm() { printf "%s" "$PROBE_OUTPUT"; return "$PROBE_STATUS"; }',
           probe!,

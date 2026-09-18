@@ -126,20 +126,25 @@ async function getTicketPendingOpenCodeQuestions(ticketId: string) {
     const listed = await Promise.allSettled(
       sessions.map((session) => adapter.listPendingQuestions(undefined, undefined, session.sessionId)),
     )
-    const listingFailed = listed.some((result) => result.status === 'rejected')
+    const successfullyListedSessionIds = new Set<string>()
     const pending = listed.flatMap((result, index) => {
-      if (result.status === 'fulfilled') return result.value
       const session = sessions[index]
+      if (result.status === 'fulfilled') {
+        if (session) successfullyListedSessionIds.add(session.sessionId)
+        return result.value
+      }
       console.warn(`[questions] Could not list pending questions for session ${session?.sessionId ?? 'unknown'}:`, result.reason)
       return []
     })
     const live = pending.filter((request) => sessionsById.has(request.sessionID))
-    // A partial listing is not evidence that the missing session resolved its
-    // questions. Keep every local row until all session listings succeed; the
-    // next complete poll can still prune genuinely resolved questions.
-    if (!listingFailed) {
-      reconcileAgainstPending(ticketId, new Set(live.map((request) => request.id)))
-    }
+    // A failed listing is not evidence that that session resolved its questions,
+    // but successful sessions are still authoritative for their own rows. With
+    // no active sessions, preserve the previous all-prune behavior.
+    reconcileAgainstPending(
+      ticketId,
+      new Set(live.map((request) => request.id)),
+      sessions.length > 0 ? successfullyListedSessionIds : undefined,
+    )
 
     // Anything OpenCode has that no window covers arrived while this process was
     // not listening — a restart, or a stream frame that never landed. Arm it now

@@ -1159,11 +1159,16 @@ export function getPendingQuestionSummary(ticketId: string): PendingQuestionSumm
  * not list was answered or rejected somewhere else — another client, a restart,
  * OpenCode itself — and keeping it would show a question nobody can resolve.
  */
-export function reconcileAgainstPending(ticketId: string, liveRequestIds: Set<string>): void {
+export function reconcileAgainstPending(
+  ticketId: string,
+  liveRequestIds: Set<string>,
+  verifiedSessionIds?: ReadonlySet<string>,
+): void {
   const timers = timersByTicket.get(ticketId)
   if (!timers) return
   for (const timer of [...timers.values()]) {
     for (const record of pendingRequests(timer)) {
+      if (verifiedSessionIds && !verifiedSessionIds.has(record.sessionId)) continue
       if (liveRequestIds.has(record.requestId)) continue
       if (record.state !== 'pending') continue
       record.state = 'resolving'

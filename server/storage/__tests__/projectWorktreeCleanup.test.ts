@@ -1,7 +1,8 @@
 import { afterAll, afterEach, beforeEach, describe, expect, it } from 'vitest'
-import { existsSync, mkdirSync, readFileSync, rmSync, symlinkSync, writeFileSync } from 'node:fs'
+import { appendFileSync, existsSync, mkdirSync, readFileSync, rmSync, symlinkSync, writeFileSync } from 'node:fs'
+import { execFileSync } from 'node:child_process'
 import { resolve } from 'node:path'
-import { attachProject, deleteAllProjectWorktrees, getProjectWorktreesSize } from '../projects'
+import { attachProject, deleteAllProjectWorktrees, deleteProjectWorktrees, getProjectWorktreesSize } from '../projects'
 import { getTicketWorktreeEntryPath } from '../paths'
 import { createTicket, patchTicket } from '../tickets'
 import { initializeDatabase } from '../../db/init'
@@ -66,5 +67,29 @@ describe('project worktree cleanup containment', () => {
     }
     await expect(getProjectWorktreesSize(project.folderPath)).resolves.toBe(0)
     expect(readFileSync(resolve(outside, 'keep.txt'), 'utf8')).toBe('not managed bytes')
+  })
+
+  it('preserves ignored terminal-worktree files while allowing LoopTroop runtime data', async () => {
+    const project = attachProject({
+      folderPath: repositories.createRepo(),
+      name: 'Conservative cleanup',
+      shortname: 'CON',
+    })
+    const ticket = createTicket({ projectId: project.id, title: 'Terminal cleanup ticket' })
+    patchTicket(ticket.id, { status: 'COMPLETED' })
+    const worktreePath = getTicketWorktreeEntryPath(project.folderPath, ticket.externalId)
+    rmSync(worktreePath, { recursive: true, force: true })
+    execFileSync('git', ['-C', project.folderPath, 'worktree', 'add', '-b', ticket.externalId, worktreePath], { stdio: 'ignore' })
+    appendFileSync(resolve(project.folderPath, '.git', 'info', 'exclude'), '*.env\n.ticket/\n')
+    writeFileSync(resolve(worktreePath, 'blocked.env'), 'keep me\n')
+    mkdirSync(resolve(worktreePath, '.ticket/runtime'), { recursive: true })
+    writeFileSync(resolve(worktreePath, '.ticket/runtime/state.json'), '{}\n')
+
+    await expect(deleteProjectWorktrees(project.folderPath)).rejects.toThrow('ignored files outside LoopTroop roots')
+    expect(readFileSync(resolve(worktreePath, 'blocked.env'), 'utf8')).toBe('keep me\n')
+
+    rmSync(resolve(worktreePath, 'blocked.env'))
+    await expect(deleteProjectWorktrees(project.folderPath)).resolves.toEqual({ freedBytes: expect.any(Number) })
+    expect(existsSync(worktreePath)).toBe(false)
   })
 })

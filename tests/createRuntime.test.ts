@@ -101,6 +101,22 @@ describe('createRuntime side-effect freedom', () => {
     }
   })
 
+  it('stops active async commands before close resolves', async () => {
+    const { createRuntime } = await import('../server/createRuntime')
+    const { runCommand } = await import('../server/git/runCommand')
+    const runtime = createRuntime({ skipStartupSequence: true, port: 0, hostname: '127.0.0.1' })
+    await runtime.start()
+    const command = runCommand(process.execPath, ['-e', 'setTimeout(() => {}, 60000)'], {
+      timeoutMs: 10_000,
+      log: false,
+    })
+
+    await runtime.close()
+    const result = await command
+    expect(result.ok).toBe(false)
+    expect(result.timedOut).toBe(false)
+  })
+
   it('binds no socket until start() runs, then reports the real port', async () => {
     const configDir = makeConfigDir()
     const previous = process.env.LOOPTROOP_CONFIG_DIR

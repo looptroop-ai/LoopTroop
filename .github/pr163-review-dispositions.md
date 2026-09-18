@@ -1,5 +1,15 @@
 # PR163 review dispositions
 
+## Third review: registry tag verification
+
+Codex comment `5726963161` is correct. Both `latest` probes now preserve npm's
+failure status under `set -e`; they no longer convert registry errors into an
+absent-tag sentinel. A successful lookup with an empty field still means that
+the tag is absent. An explicit package-not-found error also blocks publishing
+until the registry can establish the package state. `tests/workflowPolicy.test.ts`
+executes both probes with successful, empty, and failed npm responses. All 14
+workflow policy tests pass locally; final aggregate checks follow this change.
+
 This is the permanent disposition record for the substantive PR163 review
 comments and inline findings. Evidence names committed tests or checks; no
 temporary `/tmp` report is treated as proof. A previously held overflow-UID

@@ -64,6 +64,26 @@ function executeWindowsScope(run: string, changedPaths: string[], diffStatus = 0
 }
 
 describe('release workflow policy', () => {
+  it('fails release tag verification on registry errors while accepting a confirmed missing tag', () => {
+    const release = source.get('release.yml')!
+    for (const variable of ['latest_before', 'latest_now']) {
+      const probe = release.match(new RegExp(`^\\s*${variable}=\\$\\(npm view looptroop dist-tags\\.latest[^\\n]*\\n[^\\n]*`, 'm'))?.[0]
+      expect(probe).toBeDefined()
+      for (const [status, output] of [[0, '0.5.9'], [0, ''], [1, ''], [1, 'none']] as const) {
+        const result = spawnSync('bash', ['-euo', 'pipefail', '-c', [
+          'npm() { printf "%s" "$PROBE_OUTPUT"; return "$PROBE_STATUS"; }',
+          probe!,
+          `printf '%s' "\${${variable}}"`,
+        ].join('\n')], {
+          encoding: 'utf8',
+          env: { ...process.env, PROBE_STATUS: String(status), PROBE_OUTPUT: output },
+        })
+        expect(result.status).toBe(status)
+        expect(result.stdout).toBe(status === 0 ? output || 'none' : '')
+      }
+    }
+  })
+
   it('treats quoted and shorthand Node selectors as concrete patch values', () => {
     const floor = parseNodeFloor('>=24.18.1')
     expect(satisfiesNodeFloor(parseNodeVersion('24.18'), floor)).toBe(false)

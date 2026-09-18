@@ -10,6 +10,7 @@ Unreleased changes appear first and represent commits that have not yet been inc
 > Changes merged since the last versioned release that have not yet shipped in a tagged version.
 
 ### Summary
+- Release-candidate verification stops on npm registry errors instead of assuming the stable tag is unchanged.
 - Standalone release binaries now use Node `26.9.0`'s native single-executable builder while application and package channels retain the Node `24.18.1` floor.
 - Canonical OpenCode installation directories (`~/.opencode/bin`) are now trusted by default for the `opencode` binary across platforms, preventing execution refusals when OpenCode release archives are unpacked under root while preserving directory ownership and file write-permission checks.
 - Linux user-namespace tools with unverifiable overflow ownership now require explicit trusted-directory opt-in, including the Node interpreter owner and canonical OpenCode binaries.
@@ -275,6 +276,8 @@ Unreleased changes appear first and represent commits that have not yet been inc
 - Three aliases re-exported for a question-diff type that no longer exists, the three helpers behind them, an execution-setup runtime-path list with no reader, and an execution-setup barrel re-exporting three artifact names every caller already imports from their own module.
 
 ### Fixed
+
+- npm publishing and verification preserve registry lookup failures when checking the stable `latest` tag. Only a successful lookup with an empty tag is treated as absent; authentication, transport, and package-not-found failures stop the workflow.
 - Installer daemon-port probes now treat every child exit other than a connection or refusal as unknown, so an unexpected probe failure cannot authorize executable replacement.
 - Published install-catalog recipes now match the HTTPS-only commands exercised by the release smoke.
 - The Windows affected-file gate now fails when it cannot compute the pull request diff instead of silently skipping its checks.

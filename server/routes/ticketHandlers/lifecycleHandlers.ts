@@ -17,7 +17,13 @@ import { clearContextCache } from '../../opencode/contextBuilder'
 import { getOpenCodeAdapter } from '../../opencode/factory'
 import { normalizeStructuredRetryCount } from '../../lib/structuredRetryPolicy'
 import { isGitHookPolicy } from '../../git/hookPolicy'
-import { cancelTicket, markTicketCancellationPending } from '../../workflow/runner'
+import {
+  cancelTicket,
+  clearTicketCancellationPending,
+  isTicketCancellationPending,
+  markTicketCancellationPending,
+  schedulePendingCancellationCleanupRetry,
+} from '../../workflow/runner'
 import { TicketInitializationError, initializeTicket } from '../../ticket/initialize'
 import { withCommandLoggingAsync } from '../../log/commandLogger'
 import { validateModelSelection } from '../../opencode/modelValidation'
@@ -429,7 +435,7 @@ async function handleCancelTicketLocked(c: Context, options: z.infer<typeof canc
         })
       }
     } else {
-      ensureActorForTicket(ticketId)
+      const actor = ensureActorForTicket(ticketId)
       markTicketCancellationPending(ticketId)
       cancelTicket(ticketId)
       // Before the sessions go, so the receipts say the ticket was cancelled
@@ -452,6 +458,7 @@ async function handleCancelTicketLocked(c: Context, options: z.infer<typeof canc
         'The ticket was canceled while the question was open.',
       )
       if (windowsCleared === false || sessionsStopped === false) {
+        schedulePendingCancellationCleanupRetry(ticketId, actor, event => sendTicketEvent(ticketId, event))
         return c.json({
           error: 'Cancellation could not be confirmed while OpenCode work is still active',
         }, 409)
@@ -879,6 +886,12 @@ export async function handleRetryTicket(c: Context) {
       return c.json({
         error: 'Retry is not available because the failed bead could not be safely reset',
         details: getErrorMessage(err),
+      }, 409)
+    }
+
+    if (isTicketCancellationPending(ticketId) && !clearTicketCancellationPending(ticketId)) {
+      return c.json({
+        error: 'Retry is not available until the previous cancellation cleanup marker can be cleared',
       }, 409)
     }
   }

@@ -272,7 +272,7 @@ describe('SessionManager', () => {
     const sessionManager = new SessionManager(adapter)
     const context = getTicketContext(ticket.id)
     expect(context).toBeDefined()
-    const projectDatabase = getExistingProjectDatabase(repoDir)
+    const projectDatabase = getExistingProjectDatabase(context!.projectRoot)
     expect(projectDatabase).toBeDefined()
     projectDatabase!.sqlite.pragma('query_only = ON')
 
@@ -367,7 +367,7 @@ describe('SessionManager', () => {
       return lateAbortCount > 1
     })
     const factorySpy = vi.spyOn(opencodeFactory, 'getOpenCodeAdapter').mockReturnValue(adapter)
-    const projectDatabase = getExistingProjectDatabase(repoDir)
+    const projectDatabase = getExistingProjectDatabase(getTicketContext(ticket.id)!.projectRoot)
     expect(projectDatabase).toBeDefined()
 
     try {
@@ -492,7 +492,7 @@ describe('SessionManager', () => {
     adapter.abortResults = [false, false, true]
     const sessionManager = new SessionManager(adapter)
     const context = getTicketContext(ticket.id)!
-    const projectDatabase = getExistingProjectDatabase(repoDir)
+    const projectDatabase = getExistingProjectDatabase(context.projectRoot)
     expect(projectDatabase).toBeDefined()
     const insert = vi.spyOn(context.projectDb, 'insert').mockImplementation(() => {
       throw new Error('drizzle insert unavailable')

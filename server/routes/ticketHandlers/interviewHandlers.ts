@@ -676,9 +676,8 @@ export async function handleAnswerBatch(c: Context) {
       return c.json({ accepted: true }, 202)
     }
 
-    // SYNC path: mock mode or coverage batches (fast, no AI call). Nothing to
-    // roll back here — the caller gets the failure directly and the snapshot is
-    // left as the batch found it — so no skip receipt is collected.
+    // SYNC path: mock mode or coverage batches (fast, no AI call). The phase
+    // helper owns its CAS and canonical-write rollback, including skip receipts.
     const result = await handleInterviewQABatch(
       ticketId,
       parsed.data.answers,

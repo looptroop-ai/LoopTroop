@@ -30,7 +30,7 @@ standalone-binary validation is claimed here.
 | 5713279809 | Correct, fixed | Council cleanup now starts remote stop confirmation from the tracked session before waiting for prompt settlement. If session publication is late, the bounded wait fails closed and `runOpenCodePrompt` aborts the published session before rethrowing the closed callback; `server/workflow/__tests__/runOpenCodePrompt.test.ts` covers that late-publication path. |
 | 5713289616 | Correct CI evidence, no local claim | macOS and Windows CI reported path/recovery assertion failures. Those native jobs cannot be reproduced in this environment; no native-platform pass is claimed. The root worker owns the aggregate CI follow-up. |
 | 5713303250 | Correct quality signal, owner follow-up | Sonar reported 6% duplicated new lines. The council helper duplication was removed here; remaining aggregate Sonar analysis belongs to the root worker and any later cleanup packet. No exclusion hides the finding. |
-| 5713304944 | Correct, fixed | Greptile identified planning saves committed before restart confirmation and failed Cancel allowing coding re-entry. Planning writes now occur after confirmed stop and a second baseline check; cancellation writes the private `.ticket/runtime/cancellation-pending.json` marker before cleanup, retries failed cleanup without re-entering coding, and removes the marker through the contained ticket-file boundary only after terminal cleanup. |
+| 5713304944 | Correct, fixed | Greptile identified planning saves committed before restart confirmation and failed Cancel allowing coding re-entry. Planning writes now occur after confirmed stop and a second baseline check; cancellation writes the private `.ticket/runtime/cancellation-pending.json` marker before cleanup, retries failed cleanup without re-entering coding, and removes the marker through the contained ticket-file boundary after terminal cleanup or an explicit CODING Retry whose previous stop and bead recovery are confirmed. |
 | 5714109940 | Mixed; fixed or accepted per item | (1) Exact missing-session 404 is confirmed stopped, while message-only 404 and transport errors are not; a transport 500 cannot be masked by nested business data that says 404. (2) Confirmed planning restarts clear budget/question/continuation state. (3) CANCELED cleanup retries and persists its pending-stop marker. (4) Setup action projection is fixed by the root worker and retained. (5) Planning save ordering and post-stop recheck are fixed. (6) Manual QA uses strict route-entry revision semantics while preserving the click snapshot. (7) Claim tokens include a process-boot ID. (8) Close-unmerged resume writes its idempotent receipt. (9) Missing-PID supervisor coverage is fixed. (10) Unlimited `maxIterations: 0` remains an explicit owner decision. (11) Council stop confirmation is shared and bounded. |
 | 5714191386 | Correct, fixed or superseded | The close race is fixed by the later PR164 parent and retained for propagation. Planning save ordering and strict Manual QA entry checks are fixed in this branch. |
 | 5714217398 | Mixed; fixed or not applicable | History reattachment removes the phantom batch entry; exact remote 404 handling, planning post-stop revalidation, interview edit claim/CAS, setup-plan hash/claim/CAS, and synchronous coverage claim/CAS are fixed. The setup-action projection is root-owned and retained. The mock-session replay observation was unreachable under the actual restore contract and required no production change. |
@@ -39,7 +39,7 @@ standalone-binary validation is claimed here.
 | 5714273172 | Mixed; superseded or fixed | The W17 branch-delete race is covered by the later PR164 parent. Receipt identity is attempt-scoped and the existing owner decision accepts the current W23 behavior. The council helper duplication is fixed. The remaining suggestions are non-blocking observations or belong to another packet. |
 | 5714283723 | Correct, fixed | Interview retries revalidate the stored session. An abandoned remote session is reactivated only after liveness and durable ownership are confirmed; if it is gone, a replacement session resumes from the normalized answered snapshot. |
 | 5714330582 | Mixed; fixed or accepted design | W13 is fixed across the packets: the checkpoint is recorded before `in_progress`, and this branch lets Retry recover a runnable pending bead that never started without inventing a reset anchor. The non-expiring `.ticket/runtime/cancellation-pending.json` marker is a private known runtime artifact: absent means no pending stop, while malformed or unreadable content fails closed and blocks coding. Cleanup uses the contained ticket-file removal helper, and no arbitrary project file supplies ownership. Boot identity, strict QA semantics, and the supervisor missing-PID test are fixed. Unlimited question/continuation windows remain owner-accepted decisions. |
-| 5714614713 | Mixed; fixed or accepted design | The edit route now requires a positive `batchNumber`. Setup recovery action projection is root-owned and retained. Pending-stop markers survive until confirmed terminal cleanup, supervisor missing-PID coverage is present, and Manual QA keeps the intentional click-time snapshot contract. |
+| 5714614713 | Mixed; fixed or accepted design | The edit route now requires a positive `batchNumber`. Setup recovery action projection is root-owned and retained. Pending-stop markers survive until confirmed terminal cleanup or a confirmed CODING Retry, supervisor missing-PID coverage is present, and Manual QA keeps the intentional click-time snapshot contract. |
 | 5714879351 | Mixed; fixed or superseded | Setup recovery projection remains root-owned; boot identity, per-session question isolation, and missing-PID supervisor coverage are fixed. |
 | 5714893207 | Accepted design | Question windows and `maxIterations: 0` are intentionally unlimited for their documented paths. The product decision is not reversed by this review; the UI and status descriptions make the behavior explicit. |
 | 5716501887 | Correct CI evidence, superseded | Gitar reported five atomic-I/O orphan-recovery failures. The refreshed report was read; the later PR164 parent contains the bounded quarantine/recovery corrections and tests. No local native or aggregate pass is claimed here. |
@@ -105,8 +105,9 @@ apply. All 63 atomic-I/O regressions pass, including interrupted writes of each
 marker. Remaining duplicate session and Manual QA test setup now reuses the
 existing fixture or a parameterized case; all 53 focused tests pass without
 production abstractions or analyzer exclusions. Runner tests explicitly mock
-the durable query and verify that a pending cancellation blocks restored coding
-(56 passing tests).
+the durable query and verify that a pending cancellation blocks restored coding,
+that bounded retries redrive non-terminal failures, and that an explicit Retry
+cannot be overtaken by a stale cleanup pass (59 passing tests).
 
 The later Codacy check `105311021642` reports one possible user-input path at
 `server/io/__tests__/atomicIO.test.ts:477`. This is a false positive: `filename`
@@ -135,3 +136,21 @@ question-list failure isolation, setup-plan read failure, dead-PID claims,
 skip-all CAS, coding retry, and the existing interview recovery paths. Full
 aggregate lint, type, test, website, and CI verification remains a root-owned
 integration step.
+
+## Round-three implementation follow-up (2026-09-18)
+
+The round-three findings are now resolved in this branch:
+
+| Comment or finding | Classification | Disposition |
+| --- | --- | --- |
+| 5726588217 | Correct, fixed | A failed 409 Cancel keeps the non-expiring, fail-closed marker and now schedules the same bounded, unref'd cleanup retry for non-terminal and restart snapshots. The runner confirms session and question-window cleanup before sending `CANCEL`; terminal cleanup or a confirmed CODING Retry after stop and bead recovery clears the marker. No TTL or destructive override was added. |
+| 5726661218 | Correct, fixed | CODING Retry clears the pending cancellation marker only after the previous session stop and bead recovery have succeeded. A failed stop or marker removal remains a 409 and stays fenced. |
+| 5726962900 | Correct, fixed | Recovery accepts a pending bead whose start checkpoint already has `startedAt` and a usable `beadStartCommit`, while preserving the existing never-started/no-anchor path and fail-closed missing-anchor behavior. |
+| 5726963548 and inline 4044195555 | Correct, fixed | Interview skip receipts are deferred until the matching snapshot CAS commits. Coverage canonical-write failure restores the prior snapshot and deletes only that action's receipts; Skip All also restores its prior snapshot when canonical publication fails. |
+| 5726963548 (council/session ownership) | Correct, fixed | Drafter and voter cleanup no longer treats local execution settlement as proof when ownership persistence failed. With no tracked id, cleanup remains unresolved while any canonical ticket-scoped active, pending, unpersisted, unreadable, or in-flight ownership remains. |
+| Windows session-manager failures in CI | Correct CI evidence, fixed in tests | The three session-manager fixtures now toggle `query_only` on the ticket context's canonical project root, matching the production project-cache key. No production ownership fallback was weakened. The trailing-space worktree fixture remains PR164-owned and untouched. |
+
+Focused tests and local type/lint results are recorded in the handoff; no
+native Windows pass, E2E, lifecycle, live-provider, or aggregate CI claim is
+made here. Root owns aggregate checks, website propagation, and the PR164 base
+fixture. There is no remaining functional ambiguity in this packet.

@@ -367,6 +367,30 @@ describe('ticketRouter execution setup plan approval routes', () => {
       .toBe(raw)
   })
 
+  it('fails closed when the persisted setup plan cannot be read', async () => {
+    const { app, ticket } = await setupExecutionSetupPlanTicket()
+    const unreadable = 'not a valid execution setup plan'
+    upsertLatestPhaseArtifact(
+      ticket.id,
+      'execution_setup_plan',
+      'WAITING_EXECUTION_SETUP_APPROVAL',
+      unreadable,
+    )
+
+    const response = await app.request(`/api/tickets/${ticket.id}/execution-setup-plan`, {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ plan: buildStructuredPlan(ticket.externalId, 'Must not overwrite unreadable state') }),
+    })
+
+    expect(response.status).toBe(409)
+    expect(await response.json()).toMatchObject({
+      error: 'Current execution setup plan could not be read; reload before saving',
+    })
+    expect(getLatestPhaseArtifact(ticket.id, 'execution_setup_plan', 'WAITING_EXECUTION_SETUP_APPROVAL')?.content)
+      .toBe(unreadable)
+  })
+
   it('reimposes the project hook policy on structured and raw saves while preserving validation commands', async () => {
     const { app, ticket } = await setupExecutionSetupPlanTicket()
     const validationCommand = {

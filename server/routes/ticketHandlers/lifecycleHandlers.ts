@@ -844,6 +844,21 @@ export async function handleRetryTicket(c: Context) {
   }
 
   if (ticket.previousStatus === 'CODING') {
+    let stopped: boolean
+    try {
+      stopped = await abortTicketSessions(ticketId)
+    } catch (err) {
+      return c.json({
+        error: 'Retry is not available until the previous OpenCode session stop is confirmed',
+        details: getErrorMessage(err),
+      }, 409)
+    }
+    if (!stopped) {
+      return c.json({
+        error: 'Retry is not available until the previous OpenCode session stop is confirmed',
+      }, 409)
+    }
+
     const paths = getTicketPaths(ticketId)
     if (!paths) {
       return c.json({ error: 'Retry is not available because the ticket workspace could not be resolved' }, 409)

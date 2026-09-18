@@ -396,6 +396,12 @@ export async function submitBatchToSession(
                   },
                 }
               : {}),
+            onSessionCreated: (session) => {
+              // A replacement can publish its ownership row and then fail
+              // before runOpenCodePrompt resolves. Keep cleanup pointed at the
+              // replacement rather than the session it just stopped.
+              currentSessionId = session.id
+            },
             onStreamEvent: (event) => {
               onOpenCodeStreamEvent?.({
                 sessionId: event.sessionId,

@@ -113,3 +113,24 @@ The later Codacy check `105311021642` reports one possible user-input path at
 comes only from the three literal artifact names in the adjacent `it.each`
 table, joined under the test-owned temporary root. No request or repository
 input enters this fixture. The annotation was not dismissed externally.
+
+## Second-review implementation follow-up
+
+The second-review candidates were rechecked against the current branch and the
+following fixes landed in this packet: partial OpenCode question listings no
+longer reconcile away rows owned by a failed session; every workflow phase is
+fenced while a ticket cancellation marker is pending; PROM4 restoration checks
+the abort signal after an awaited remote lookup and replacement sessions update
+cleanup ownership; Coding Retry confirms a remote stop before resetting a bead;
+skip-all persists through claim-and-snapshot CAS; unreadable setup plans fail
+closed before save; dead-PID interview claims are not reported in flight; and
+cancellation cleanup retries are bounded and unref'd. Existing intentional
+choices remain unchanged: unlimited `0` iteration/question windows, click-time
+Manual QA snapshots, positional P12/P13 expansion pairing, and cancellation's
+explicit retry ownership.
+
+Focused regressions passed for runner cancellation fencing and cleanup,
+question-list failure isolation, setup-plan read failure, dead-PID claims,
+skip-all CAS, coding retry, and the existing interview recovery paths. Full
+aggregate lint, type, test, website, and CI verification remains a root-owned
+integration step.

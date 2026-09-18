@@ -364,6 +364,19 @@ describe('attachWorkflowRunner', () => {
     actor.stop()
   })
 
+  it('does not start any restored workflow phase while cancellation is pending', () => {
+    isMockOpenCodeModeMock.mockReturnValue(false)
+    isTicketCancellationPendingMock.mockReturnValue(true)
+    const actor = createSnapshotActor('COUNCIL_DELIBERATING', { status: 'COUNCIL_DELIBERATING' })
+
+    actor.start()
+    attachWorkflowRunner(TEST.ticketId, actor, vi.fn())
+
+    expect(isTicketCancellationPendingMock).toHaveBeenCalledWith(TEST.ticketId)
+    expect(handleInterviewDeliberateMock).not.toHaveBeenCalled()
+    actor.stop()
+  })
+
   it('can attach to a restored snapshot without processing it immediately', async () => {
     isMockOpenCodeModeMock.mockReturnValue(true)
 

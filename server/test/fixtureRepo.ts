@@ -1,29 +1,14 @@
 import { execFileSync } from 'node:child_process'
-import { cpSync, mkdirSync, mkdtempSync, realpathSync, rmSync, writeFileSync } from 'node:fs'
-import { tmpdir } from 'node:os'
+import { cpSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs'
 import { dirname, join, resolve } from 'node:path'
 import { clearProjectDatabaseCache } from '../db/project'
+import { canonicalTmpdir } from './tempDir'
 
 function closeProjectDatabases() {
   try {
     clearProjectDatabaseCache()
   } catch {
     // Nothing was opened, which is the common case for pure tests.
-  }
-}
-
-/**
- * Temp root as the product will see it.
- *
- * `tmpdir()` is a symlink on macOS (/var -> /private/var) and an 8.3 short name
- * on Windows (RUNNER~1 -> runneradmin). The product canonicalises paths, so a
- * fixture that records the raw form compares unequal to itself on both.
- */
-function canonicalTmpdir(): string {
-  try {
-    return realpathSync(tmpdir())
-  } catch {
-    return tmpdir()
   }
 }
 

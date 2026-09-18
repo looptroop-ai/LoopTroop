@@ -371,7 +371,10 @@ export async function generateDrafts(
         if (!trackedSessionId) {
           if (waitOutcome !== 'execution_settled') return false
           return runtimeOptions?.ticketId && sessionManager
-            ? !sessionManager.hasUnresolvedSessionOwnership(runtimeOptions.ticketId)
+            ? !sessionManager.hasUnresolvedSessionOwnershipForScope(runtimeOptions.ticketId, runtimeOptions.phase!, {
+                phaseAttempt: runtimeOptions.phaseAttempt ?? 1,
+                memberId: member.modelId,
+              })
             : true
         }
       }

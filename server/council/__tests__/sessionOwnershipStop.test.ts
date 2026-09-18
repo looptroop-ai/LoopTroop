@@ -26,6 +26,22 @@ async function makeUnrecoverableOwnershipTicket() {
   return { ticket, paths }
 }
 
+async function makeSiblingOwnershipTicket(phase: string) {
+  const { ticket, paths } = await createInitializedTestTicket(repoManager, {
+    title: 'Sibling council ownership',
+  })
+  writeTicketFile(ticket.id, 'runtime/opencode-pending-sessions.json', JSON.stringify([{
+    sessionId: 'sibling-session',
+    phase,
+    phaseAttempt: 1,
+    memberId: 'model-b',
+    beadId: null,
+    iteration: null,
+    step: null,
+  }]))
+  return { ticket, paths }
+}
+
 describe('council session ownership cleanup', () => {
   beforeEach(() => {
     resetTestDb()
@@ -79,5 +95,56 @@ describe('council session ownership cleanup', () => {
         phase: 'COUNCIL_VOTING_INTERVIEW',
       },
     )).rejects.toThrow('Could not confirm abort of an OpenCode session that was still being created')
+  })
+
+  it('does not treat a sibling drafter as this member\'s unresolved session', async () => {
+    const { ticket, paths } = await makeSiblingOwnershipTicket('COUNCIL_DELIBERATING')
+
+    await expect(generateDrafts(
+      adapter,
+      [member],
+      [{ type: 'text', content: 'Draft interview questions.' }],
+      paths.worktreePath,
+      300_000,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      {
+        ticketId: ticket.id,
+        phase: 'COUNCIL_DELIBERATING',
+      },
+    )).resolves.toMatchObject({
+      deadlineReached: false,
+      memberOutcomes: { 'model-a': 'failed' },
+    })
+  })
+
+  it('does not treat a sibling voter as this member\'s unresolved session', async () => {
+    const { ticket, paths } = await makeSiblingOwnershipTicket('COUNCIL_VOTING_INTERVIEW')
+
+    await expect(conductVoting(
+      adapter,
+      [member],
+      [{ memberId: 'model-b', content: 'Draft.', outcome: 'completed', duration: 1 }],
+      [{ type: 'text', content: 'Vote on the draft.' }],
+      paths.worktreePath,
+      'interview_draft',
+      300_000,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      {
+        ticketId: ticket.id,
+        phase: 'COUNCIL_VOTING_INTERVIEW',
+      },
+    )).resolves.toMatchObject({
+      deadlineReached: false,
+      memberOutcomes: { 'model-a': 'failed' },
+    })
   })
 })

@@ -30,6 +30,8 @@ interface PendingSessionOwnershipRecord {
   step: string | null
 }
 
+type SessionOwnershipScope = Omit<PendingSessionOwnershipRecord, 'sessionId'>
+
 interface PendingSessionOwnershipRead {
   records: PendingSessionOwnershipRecord[]
   readable: boolean
@@ -38,25 +40,45 @@ interface PendingSessionOwnershipRead {
 // This map is only a fail-closed guard for the exceptional case where both
 // SQLite and the ticket's atomic marker are unavailable. It is deliberately
 // not used as ownership recovery: a restart cannot discover these entries.
-const unpersistedSessionOwnership = new Map<string, Set<string>>()
+const unpersistedSessionOwnership = new Map<string, Map<string, SessionOwnershipScope>>()
 
 // A remote create has to stay in the ticket's cleanup accounting before it
 // has returned a session id. Otherwise a cancellation can observe no row and
 // no marker while that create is still able to publish a new remote session.
-const pendingSessionCreations = new Map<string, number>()
+const pendingSessionCreations = new Map<string, SessionOwnershipScope[]>()
 
-function beginSessionCreation(ticketId: string): void {
-  pendingSessionCreations.set(ticketId, (pendingSessionCreations.get(ticketId) ?? 0) + 1)
+function sameSessionOwnershipScope(left: SessionOwnershipScope, right: SessionOwnershipScope): boolean {
+  return left.phase === right.phase
+    && left.phaseAttempt === right.phaseAttempt
+    && left.memberId === right.memberId
+    && left.beadId === right.beadId
+    && left.iteration === right.iteration
+    && left.step === right.step
 }
 
-function endSessionCreation(ticketId: string): void {
-  const remaining = (pendingSessionCreations.get(ticketId) ?? 1) - 1
-  if (remaining > 0) pendingSessionCreations.set(ticketId, remaining)
-  else pendingSessionCreations.delete(ticketId)
+function beginSessionCreation(ticketId: string, ownership: SessionOwnershipScope): void {
+  const pending = pendingSessionCreations.get(ticketId) ?? []
+  pending.push(ownership)
+  pendingSessionCreations.set(ticketId, pending)
+}
+
+function endSessionCreation(ticketId: string, ownership: SessionOwnershipScope): void {
+  const pending = pendingSessionCreations.get(ticketId)
+  if (!pending) return
+  const index = pending.findIndex((candidate) => sameSessionOwnershipScope(candidate, ownership))
+  if (index >= 0) pending.splice(index, 1)
+  if (pending.length === 0) pendingSessionCreations.delete(ticketId)
 }
 
 function countPendingSessionCreations(ticketId: string): number {
-  return pendingSessionCreations.get(ticketId) ?? 0
+  return pendingSessionCreations.get(ticketId)?.length ?? 0
+}
+
+function hasPendingSessionCreation(ticketId: string, ownership?: SessionOwnershipScope): boolean {
+  const pending = pendingSessionCreations.get(ticketId) ?? []
+  return ownership === undefined
+    ? pending.length > 0
+    : pending.some((candidate) => sameSessionOwnershipScope(candidate, ownership))
 }
 
 function canonicalOwnershipTicketId(
@@ -72,6 +94,17 @@ export interface SessionOwnership {
   beadId?: string | null
   iteration?: number | null
   step?: string | null
+}
+
+function normalizeSessionOwnership(phase: string, ownership: SessionOwnership): SessionOwnershipScope {
+  return {
+    phase,
+    phaseAttempt: ownership.phaseAttempt ?? 1,
+    memberId: ownership.memberId ?? null,
+    beadId: ownership.beadId ?? null,
+    iteration: ownership.iteration ?? null,
+    step: ownership.step ?? null,
+  }
 }
 
 export type OpenCodeSessionRecord = typeof opencodeSessions.$inferSelect
@@ -184,9 +217,13 @@ function forgetPendingSessionOwnership(ticketId: string, sessionId: string): boo
   return writePendingSessionOwnership(ticketId, remaining)
 }
 
-function markUnpersistedSessionOwnership(ticketId: string, sessionId: string): void {
-  const sessions = unpersistedSessionOwnership.get(ticketId) ?? new Set<string>()
-  sessions.add(sessionId)
+function markUnpersistedSessionOwnership(
+  ticketId: string,
+  sessionId: string,
+  ownership: SessionOwnershipScope,
+): void {
+  const sessions = unpersistedSessionOwnership.get(ticketId) ?? new Map<string, SessionOwnershipScope>()
+  sessions.set(sessionId, ownership)
   unpersistedSessionOwnership.set(ticketId, sessions)
 }
 
@@ -198,7 +235,15 @@ function clearUnpersistedSessionOwnership(ticketId: string, sessionId: string): 
 }
 
 function listUnpersistedSessionOwnership(ticketId: string): string[] {
-  return [...(unpersistedSessionOwnership.get(ticketId) ?? [])]
+  return [...(unpersistedSessionOwnership.get(ticketId)?.keys() ?? [])]
+}
+
+function hasUnpersistedSessionOwnership(ticketId: string, ownership?: SessionOwnershipScope): boolean {
+  const sessions = unpersistedSessionOwnership.get(ticketId)
+  if (!sessions) return false
+  return ownership === undefined
+    ? sessions.size > 0
+    : [...sessions.values()].some((candidate) => sameSessionOwnershipScope(candidate, ownership))
 }
 
 function hasCurrentSessionOwnership(
@@ -214,8 +259,34 @@ function hasCurrentSessionOwnership(
   return activeRows.length > 0
     || !pending.readable
     || pending.records.length > 0
-    || listUnpersistedSessionOwnership(ticketId).length > 0
+    || hasUnpersistedSessionOwnership(ticketId)
     || countPendingSessionCreations(ticketId) > 0
+}
+
+function hasScopedSessionOwnership(
+  ticketId: string,
+  context: NonNullable<ReturnType<typeof getTicketContext>>,
+  ownership: SessionOwnershipScope,
+): boolean {
+  const activeRows = context.projectDb
+    .select()
+    .from(opencodeSessions)
+    .where(and(eq(opencodeSessions.ticketId, context.localTicketId), eq(opencodeSessions.state, 'active')))
+    .all()
+  if (activeRows.some((row) => sameSessionOwnershipScope({
+    phase: row.phase,
+    phaseAttempt: row.phaseAttempt ?? 1,
+    memberId: row.memberId,
+    beadId: row.beadId,
+    iteration: row.iteration,
+    step: row.step,
+  }, ownership))) return true
+
+  const pending = readPendingSessionOwnership(ticketId)
+  if (!pending.readable) return true
+  return pending.records.some((record) => sameSessionOwnershipScope(record, ownership))
+    || hasUnpersistedSessionOwnership(ticketId, ownership)
+    || hasPendingSessionCreation(ticketId, ownership)
 }
 
 /**
@@ -229,6 +300,20 @@ export function hasUnresolvedSessionOwnership(ticketId: string): boolean {
   const context = getTicketContext(ticketId)
   if (!context) return true
   return hasCurrentSessionOwnership(canonicalOwnershipTicketId(context), context)
+}
+
+export function hasUnresolvedSessionOwnershipForScope(
+  ticketId: string,
+  phase: string,
+  ownership: SessionOwnership,
+): boolean {
+  const context = getTicketContext(ticketId)
+  if (!context) return true
+  return hasScopedSessionOwnership(
+    canonicalOwnershipTicketId(context),
+    context,
+    normalizeSessionOwnership(phase, ownership),
+  )
 }
 
 /**
@@ -403,6 +488,14 @@ export class SessionManager {
     return hasUnresolvedSessionOwnership(ticketId)
   }
 
+  hasUnresolvedSessionOwnershipForScope(
+    ticketId: string,
+    phase: string,
+    ownership: SessionOwnership,
+  ): boolean {
+    return hasUnresolvedSessionOwnershipForScope(ticketId, phase, ownership)
+  }
+
   async createSessionForPhase(
     ticketId: string,
     phase: WorkflowPhaseId,
@@ -418,8 +511,15 @@ export class SessionManager {
     const context = getTicketContext(ticketId)
     if (!context) throw new Error(`Ticket not found: ${ticketId}`)
     const ownershipTicketId = canonicalOwnershipTicketId(context)
+    const ownership = normalizeSessionOwnership(phase, {
+      phaseAttempt,
+      memberId: memberId ?? null,
+      beadId: beadId ?? null,
+      iteration: iteration ?? null,
+      step: step ?? null,
+    })
 
-    beginSessionCreation(ownershipTicketId)
+    beginSessionCreation(ownershipTicketId, ownership)
     try {
       const session = await createOpenCodeSessionWithRetry(
         this.adapter,
@@ -471,7 +571,7 @@ export class SessionManager {
           step: step ?? null,
         })
         if (!pendingOwnershipPersisted) {
-          markUnpersistedSessionOwnership(ownershipTicketId, session.id)
+          markUnpersistedSessionOwnership(ownershipTicketId, session.id, ownership)
           console.warn(
             `[sessionManager] OpenCode session ${session.id} has no durable ownership; `
             + 'cleanup will fail closed in this process, but a restart cannot discover it',
@@ -514,7 +614,7 @@ export class SessionManager {
 
       return session
     } finally {
-      endSessionCreation(ownershipTicketId)
+      endSessionCreation(ownershipTicketId, ownership)
     }
   }
 

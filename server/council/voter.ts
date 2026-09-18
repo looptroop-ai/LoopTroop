@@ -473,7 +473,10 @@ export async function conductVoting(
         if (!trackedSessionId) {
           if (waitOutcome !== 'execution_settled') return false
           return sessionOwnership && sessionManager
-            ? !sessionManager.hasUnresolvedSessionOwnership(sessionOwnership.ticketId)
+            ? !sessionManager.hasUnresolvedSessionOwnershipForScope(sessionOwnership.ticketId, sessionOwnership.phase, {
+                phaseAttempt: sessionOwnership.phaseAttempt ?? 1,
+                memberId: voter.modelId,
+              })
             : true
         }
       }

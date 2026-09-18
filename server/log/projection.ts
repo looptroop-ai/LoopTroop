@@ -552,37 +552,37 @@ function nativeFileIdentity(value: { dev?: number; ino?: number }): string | und
     : undefined
 }
 
-function nativeFileStatsMatch(
-  expected: { size: number; mtimeMs: number; dev?: number; ino?: number },
-  actual: { size: number; mtimeMs: number; dev?: number; ino?: number },
+function nativeFileIdentityMatches(
+  expected: { dev?: number; ino?: number },
+  actual: { dev?: number; ino?: number },
   expectedIdentity?: string,
 ): boolean {
-  return actual.size === expected.size
-    && actual.mtimeMs === expected.mtimeMs
-    && (expectedIdentity === undefined || nativeFileIdentity(actual) === expectedIdentity)
+  return (expectedIdentity === undefined || nativeFileIdentity(actual) === expectedIdentity)
     && (nativeFileIdentity(expected) === undefined
       || nativeFileIdentity(actual) === nativeFileIdentity(expected))
 }
 
-async function readNativePrefixHash(
+async function readNativeRangeHash(
   path: string,
+  startOffset: number,
   endOffset: number,
   expectedIdentity?: string,
 ): Promise<string | null> {
-  const limit = Math.max(0, endOffset)
+  const start = Math.max(0, startOffset)
+  const end = Math.max(start, endOffset)
   const hash = createHash('sha256')
   let handle: Awaited<ReturnType<typeof open>> | null = null
   try {
     const before = await stat(path)
-    if (before.size < limit) return null
+    if (before.size < end) return null
     if (expectedIdentity !== undefined && nativeFileIdentity(before) !== expectedIdentity) return null
     handle = await open(path, 'r')
     const opened = await handle.stat()
-    if (!nativeFileStatsMatch(before, opened, expectedIdentity)) return null
-    const buffer = Buffer.allocUnsafe(Math.min(PROJECTION_READ_CHUNK_BYTES, Math.max(1, limit)))
-    let offset = 0
-    while (offset < limit) {
-      const length = Math.min(buffer.length, limit - offset)
+    if (!nativeFileIdentityMatches(before, opened, expectedIdentity) || opened.size < end) return null
+    const buffer = Buffer.allocUnsafe(Math.min(PROJECTION_READ_CHUNK_BYTES, Math.max(1, end - start)))
+    let offset = start
+    while (offset < end) {
+      const length = Math.min(buffer.length, end - offset)
       const { bytesRead } = await handle.read(buffer, 0, length, offset)
       if (bytesRead === 0) break
       hash.update(buffer.subarray(0, bytesRead))
@@ -590,9 +590,10 @@ async function readNativePrefixHash(
     }
     const descriptorAfter = await handle.stat()
     const after = await stat(path)
-    if (!nativeFileStatsMatch(before, descriptorAfter, expectedIdentity)
-      || !nativeFileStatsMatch(before, after, expectedIdentity)) return null
-    return offset === limit ? hash.digest('hex') : null
+    if (!nativeFileIdentityMatches(before, descriptorAfter, expectedIdentity)
+      || !nativeFileIdentityMatches(before, after, expectedIdentity)
+      || after.size < end) return null
+    return offset === end ? hash.digest('hex') : null
   } catch {
     return null
   } finally {
@@ -600,13 +601,20 @@ async function readNativePrefixHash(
   }
 }
 
+async function readNativePrefixHash(
+  path: string,
+  endOffset: number,
+  expectedIdentity?: string,
+): Promise<string | null> {
+  return readNativeRangeHash(path, 0, endOffset, expectedIdentity)
+}
+
 async function nativeFileMatchesCandidate(
   candidate: { path: string; size: number; mtimeMs: number },
   fileIdentity?: string,
 ): Promise<boolean> {
   const current = await stat(candidate.path)
-  return current.size === candidate.size
-    && current.mtimeMs === candidate.mtimeMs
+  return current.size >= candidate.size
     && (fileIdentity === undefined || nativeFileIdentity(current) === fileIdentity)
 }
 
@@ -860,6 +868,11 @@ async function ingestNativeFilesOnce(
     `).get(context.localTicketId, candidate.path) as { generation?: number }
     const generation = Math.max(Number(maxGeneration.generation ?? -1) + 1, (previous?.generation ?? -1) + 1)
     const stats = createNativeReadStats()
+    const readVerifications: Array<{
+      startOffset: number
+      indexedOffset: number
+      indexedHash?: string
+    }> = []
     let sessionSet = new Set<string>()
     const insertVersion = sqlite.prepare(`
       INSERT INTO execution_log_native_index_versions (
@@ -921,6 +934,7 @@ async function ingestNativeFilesOnce(
     try {
       for (const plan of readPlans) {
         sessionSet = new Set(plan.sessionIds)
+        const planStats = createNativeReadStats()
         const entries = await readOpenCodeNativeLogFile(candidate, plan.sessionIds, {
           startOffset: plan.startOffset,
           startLine: plan.startLine,
@@ -929,7 +943,7 @@ async function ingestNativeFilesOnce(
             if (plan.endOffset !== undefined && location.byteOffset >= plan.endOffset) return
             insertRaw(raw, location)
           },
-          stats,
+          stats: planStats,
         })
         // Test doubles and older integrations may not implement the streaming
         // callback. They still feed the same generation without retaining the
@@ -939,9 +953,39 @@ async function ingestNativeFilesOnce(
           if (plan.endLine !== undefined && fallbackLine >= plan.endLine) continue
           insertRaw(raw, undefined, fallbackLine)
         }
+        readVerifications.push({
+          startOffset: planStats.startOffset,
+          indexedOffset: planStats.indexedOffset,
+          indexedHash: planStats.indexedHash,
+        })
+        Object.assign(stats, planStats)
       }
       const sourceMatchesCandidate = await nativeFileMatchesCandidate(candidate, expectedIdentity)
       if (!sourceMatchesCandidate) throw new Error('Native log changed while it was being indexed')
+      const verifyReadRanges = async () => {
+        for (const verification of readVerifications) {
+          if (verification.indexedHash === undefined) continue
+          const currentHash = await readNativeRangeHash(
+            candidate.path,
+            verification.startOffset,
+            verification.indexedOffset,
+            expectedIdentity,
+          )
+          if (currentHash === null || currentHash !== verification.indexedHash) {
+            throw new Error('Native log bytes changed while it was being indexed')
+          }
+        }
+      }
+      const verifyParentPrefix = async () => {
+        if (previous && !fullReplacement && previous.prefix_hash !== null) {
+          const previousPrefixHash = await readNativePrefixHash(candidate.path, previous.indexed_offset, expectedIdentity)
+          if (previousPrefixHash === null || previousPrefixHash !== previous.prefix_hash) {
+            throw new Error('Native log indexed prefix changed while it was being indexed')
+          }
+        }
+      }
+      await verifyReadRanges()
+      await verifyParentPrefix()
       const canReusePrefixHash = Boolean(previous
         && !appended
         && !rewritten
@@ -950,12 +994,19 @@ async function ingestNativeFilesOnce(
         && previous.mtime_ms === candidate.mtimeMs
         && previous.indexed_offset === stats.indexedOffset
         && previous.prefix_hash !== null)
+      const capturedPrefixHash = readVerifications.length === 1
+        && readVerifications[0]?.startOffset === 0
+        && readVerifications[0]?.indexedOffset === stats.indexedOffset
+        ? readVerifications[0]?.indexedHash
+        : undefined
       const prefixHash = canReusePrefixHash
         ? previous?.prefix_hash ?? null
-        : await readNativePrefixHash(candidate.path, stats.indexedOffset, expectedIdentity)
+        : capturedPrefixHash ?? await readNativePrefixHash(candidate.path, stats.indexedOffset, expectedIdentity)
       if (prefixHash === null) {
         throw new Error('Native log prefix hash could not be captured')
       }
+      await verifyReadRanges()
+      await verifyParentPrefix()
       if (!(await nativeFileMatchesCandidate(candidate, expectedIdentity))) {
         throw new Error('Native log changed while its index was being finalized')
       }

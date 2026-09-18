@@ -241,6 +241,8 @@ export interface OpenCodeNativeLogReadStats {
   linesRead: number
   indexedOffset: number
   indexedLines: number
+  /** SHA-256 of the complete bytes through indexedOffset, excluding a partial tail. */
+  indexedHash?: string
   tailOffset: number
   endedWithNewline: boolean
   entriesRead: number
@@ -403,12 +405,12 @@ export async function readOpenCodeNativeLogFile(
   const results: OpenCodeNativeLogEntry[] = []
   let unreadableLines = 0
   let lineNumber = startLine
-  let carry = ''
+  let carry: Buffer<ArrayBufferLike> = Buffer.alloc(0)
   let carryOffset = startOffset
   let readOffset = startOffset
   let completedLines = 0
+  const indexedHash = createHash('sha256')
   const stream = createReadStream(file.path, {
-    encoding: 'utf8',
     start: startOffset,
     ...(endOffset !== undefined ? { end: endOffset - 1 } : {}),
   })
@@ -437,31 +439,31 @@ export async function readOpenCodeNativeLogFile(
   }
 
   for await (const chunk of stream) {
-    const text = String(chunk)
-    const chunkBytes = Buffer.byteLength(text)
-    readOffset += chunkBytes
-    carry += text
-    let newline = carry.indexOf('\n')
+    const bytes = Buffer.isBuffer(chunk) ? chunk : Buffer.from(String(chunk))
+    readOffset += bytes.length
+    carry = carry.length === 0 ? bytes : Buffer.concat([carry, bytes])
+    let newline = carry.indexOf(0x0a)
     while (newline >= 0) {
-      const line = carry.slice(0, newline)
-      const consumed = Buffer.byteLength(carry.slice(0, newline + 1))
+      const consumed = newline + 1
+      const line = carry.subarray(0, newline).toString('utf8')
       parseLine(line, {
         lineNumber,
         byteOffset: carryOffset,
         byteLength: consumed,
         complete: true,
       })
-      carry = carry.slice(newline + 1)
+      indexedHash.update(carry.subarray(0, consumed))
+      carry = carry.subarray(consumed)
       carryOffset += consumed
       completedLines += 1
       if (completedLines % 500 === 0) {
         await new Promise<void>(resolveYield => setImmediate(resolveYield))
       }
-      newline = carry.indexOf('\n')
+      newline = carry.indexOf(0x0a)
     }
   }
   if (carry.length > 0) {
-    parseLine(carry, {
+    parseLine(carry.toString('utf8'), {
       lineNumber,
       byteOffset: carryOffset,
       byteLength: Buffer.byteLength(carry),
@@ -472,6 +474,7 @@ export async function readOpenCodeNativeLogFile(
     stats.bytesRead = readOffset - startOffset
     stats.indexedLines = startLine + completedLines
     stats.indexedOffset = carry.length > 0 ? carryOffset : readOffset
+    stats.indexedHash = indexedHash.digest('hex')
     stats.tailOffset = carry.length > 0 ? carryOffset : stats.indexedOffset
     stats.endedWithNewline = carry.length === 0
   }

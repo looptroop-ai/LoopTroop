@@ -1,5 +1,6 @@
 import { afterAll, beforeEach, describe, expect, it, vi } from 'vitest'
 import { Hono } from 'hono'
+import { createHash } from 'node:crypto'
 import { appendFileSync, statSync } from 'node:fs'
 import * as fsPromises from 'node:fs/promises'
 import { join } from 'node:path'
@@ -523,21 +524,65 @@ describe('ticket log projection API', () => {
     expect(response.status).toBe(500)
   })
 
-  it('fails complete native ingestion when the source changes during indexing', async () => {
+  it('accepts native growth after the captured boundary during indexing', async () => {
     const { ticket, repoDir } = await createInitializedTestTicket(repoManager)
     appendLogEvent(ticket.id, 'info', 'CODING', 'ticket session', {
       sessionId: 'session-source-change', timestamp: '2026-01-01T00:00:01.000Z',
     }, 'system', 'CODING')
     const nativePath = await writeNativeFixture(repoDir, 'source-change.log', 2)
     listOpenCodeNativeLogFilesMock.mockReturnValue([nativeCandidate(nativePath)])
-    readOpenCodeNativeLogFileMock.mockImplementation(async () => {
+    readOpenCodeNativeLogFileMock.mockImplementation(async (file, _sessions, options) => {
       await fsPromises.appendFile(nativePath, 'y')
-      return [{
+      const entry = {
         timestamp: '2026-01-01T00:00:02.000Z', type: 'debug', source: 'debug', audience: 'debug',
         kind: 'session', op: 'append', phase: 'opencode_native', phaseAttempt: 1,
         status: 'opencode_native', message: 'native row', content: 'native row',
         sessionId: 'session-source-change', data: {}, nativeIdentity: 'source-change.log:1',
-      }]
+      } satisfies OpenCodeNativeLogEntry
+      options?.onEntry?.(entry, { lineNumber: 0, byteOffset: 0, byteLength: file.size, complete: true })
+      if (options?.stats) {
+        options.stats.bytesRead = file.size
+        options.stats.linesRead = 1
+        options.stats.indexedOffset = file.size
+        options.stats.indexedLines = 1
+        options.stats.indexedHash = createHash('sha256').update('xx').digest('hex')
+        options.stats.tailOffset = file.size
+        options.stats.endedWithNewline = true
+        options.stats.entriesRead = 1
+      }
+      return []
+    })
+
+    const response = await app.request('/api/tickets/' + encodeURIComponent(ticket.id) + '/logs?scope=phase&phase=CODING&view=debug')
+    expect(response.status).toBe(200)
+    expect((await response.json()).entries.map((entry: { content: string }) => entry.content)).toContain('native row')
+  })
+
+  it('fails closed when indexed native bytes are rewritten during indexing', async () => {
+    const { ticket, repoDir } = await createInitializedTestTicket(repoManager)
+    appendLogEvent(ticket.id, 'info', 'CODING', 'ticket session', {
+      sessionId: 'session-source-rewrite', timestamp: '2026-01-01T00:00:01.000Z',
+    }, 'system', 'CODING')
+    const nativePath = await writeNativeFixture(repoDir, 'source-rewrite.log', 2)
+    listOpenCodeNativeLogFilesMock.mockReturnValue([nativeCandidate(nativePath)])
+    readOpenCodeNativeLogFileMock.mockImplementation(async (file, _sessions, options) => {
+      await fsPromises.writeFile(nativePath, 'zx')
+      const entry = {
+        timestamp: '2026-01-01T00:00:02.000Z', type: 'debug', source: 'debug', audience: 'debug',
+        kind: 'session', op: 'append', phase: 'opencode_native', phaseAttempt: 1,
+        status: 'opencode_native', message: 'native row', content: 'native row',
+        sessionId: 'session-source-rewrite', data: {}, nativeIdentity: 'source-rewrite.log:1',
+      } satisfies OpenCodeNativeLogEntry
+      options?.onEntry?.(entry, { lineNumber: 0, byteOffset: 0, byteLength: file.size, complete: true })
+      if (options?.stats) {
+        options.stats.indexedOffset = file.size
+        options.stats.indexedLines = 1
+        options.stats.indexedHash = createHash('sha256').update('xx').digest('hex')
+        options.stats.tailOffset = file.size
+        options.stats.endedWithNewline = true
+        options.stats.entriesRead = 1
+      }
+      return []
     })
 
     const response = await app.request('/api/tickets/' + encodeURIComponent(ticket.id) + '/logs?scope=phase&phase=CODING&view=debug')

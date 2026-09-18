@@ -122,7 +122,8 @@ partial updates cannot erase valid cached values, and malformed detail
 responses remain visible as errors.
 
 Native DEBUG logs refresh when a file is rewritten without changing its size or
-with a changed indexed prefix, and each indexed read stays within the file size
+with a changed indexed prefix, and normal growth after a bounded read begins is
+picked up on the next pass. Each indexed read stays within the file size
 captured for that snapshot; older cursors still read their original snapshot.
 
 ### Every way to install it

@@ -1,5 +1,30 @@
 # PR169 review dispositions
 
+## Third-review live native append follow-up (2026-09-18)
+
+The two independent round-three reviews (`5726618521` and `5726963063`) found
+the same real defect: an OpenCode native log can grow normally while a bounded
+scan is parsing it, but the old exact size/mtime checks turned that append into
+a 500 for DEBUG history and export. This is separate from the accepted
+same-size rewrite, captured-boundary, identity, fairness, and parent-generation
+work in `89e8c485`.
+
+The reader now records a digest of complete bytes through its committed
+`indexedOffset`, excluding a partial tail. Projection ingestion accepts
+same-identity growth beyond the captured `endOffset`, verifies each parsed
+range against that digest, verifies a reused parent prefix, and rechecks both
+after any full-prefix hash before publishing the generation. A single
+start-at-zero read uses its captured digest as the persisted prefix hash; the
+missing-session plus append two-plan case retains separate range checks. A
+prefix rewrite still fails closed. Focused route and native-reader regressions
+cover growth success, rewrite failure, bounded-tail hashing, retained cursors,
+and append/history behavior.
+
+The fresh-alpha decision remains unchanged: no native-index compatibility
+migration or `ALTER TABLE` backfill is added. The edited Greptile shutdown note
+is inherited runtime work in `server/createRuntime.ts`, not a PR169 source
+change; root owns its cross-PR drain ordering.
+
 ## Nested overlays and housekeeping confirmation (2026-09-18)
 
 The directory-picker stacking and unrelated-tooltip Escape observations are

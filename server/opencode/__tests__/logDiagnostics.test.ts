@@ -1,4 +1,5 @@
 import { appendFileSync, symlinkSync, utimesSync, writeFileSync } from 'node:fs'
+import { createHash } from 'node:crypto'
 import { join } from 'node:path'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import { makeTempDir, removeTempDir } from '../../test/tempDir'
@@ -251,6 +252,25 @@ describe('readOpenCodeNativeLogs', () => {
     expect(stats.bytesRead).toBe(capturedSize)
     expect(stats.indexedOffset).toBe(capturedSize)
     expect(stats.linesRead).toBe(1)
+    expect(stats.indexedHash).toBe(createHash('sha256').update(first).digest('hex'))
+  })
+
+  it('hashes complete indexed bytes without including an unterminated tail', async () => {
+    const dir = makeLogDir()
+    const first = 'time="2026-05-22T15:16:03.000Z" session.id=ses-tail-hash msg="first"\n'
+    const tail = 'time="2026-05-22T15:16:04.000Z" session.id=ses-tail-hash msg="partial"'
+    writeLog(dir, first + tail, 'tail-hash.log')
+    const candidate = listOpenCodeNativeLogFiles({ logDirs: [dir] })[0]!
+    const stats = {} as OpenCodeNativeLogReadStats
+
+    await readOpenCodeNativeLogFile(candidate, ['ses-tail-hash'], {
+      endOffset: Buffer.byteLength(first + tail),
+      stats,
+    })
+
+    expect(stats.bytesRead).toBe(Buffer.byteLength(first + tail))
+    expect(stats.indexedOffset).toBe(Buffer.byteLength(first))
+    expect(stats.indexedHash).toBe(createHash('sha256').update(first).digest('hex'))
   })
 
   it('yields while parsing a large complete native file', async () => {

@@ -9,7 +9,7 @@ import { dirname, join, resolve, win32 } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import {
   binaryAssetName, binaryTarget, defaultPrefix, detectLibc, INSTALL_OPTIONS, onPath, planProgramLaunch,
-  findTrustedExecutablePath, runTool, stallGuard, streamBody,
+  findTrustedExecutablePath, probePort, runTool, stallGuard, streamBody,
 } from '../scripts/installer-core.mjs'
 import { removeTempDir } from '../server/test/tempDir'
 
@@ -544,6 +544,21 @@ describe('installer core', () => {
     beforeEach(() => {
       archive = canInstallBinary ? buildArchive('0.5.9', stubProgram('0.5.9')) : null
       omitArchiveDigest = false
+    })
+
+    it.runIf(process.platform !== 'win32')('keeps unexpected daemon probe exits uncertain', () => {
+      const dir = realpathSync(mkdtempSync(join(tmpdir(), 'looptroop-probe-')))
+      tempDirs.push(dir)
+      const fakeNode = join(dir, 'node')
+      writeFileSync(fakeNode, '#!/bin/sh\nexit 3\n')
+      chmodSync(fakeNode, 0o755)
+      const originalExecPath = process.execPath
+      process.execPath = fakeNode
+      try {
+        expect(probePort('127.0.0.1', 1)).toBeNull()
+      } finally {
+        process.execPath = originalExecPath
+      }
     })
 
     afterEach(() => {

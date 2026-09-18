@@ -1261,7 +1261,9 @@ function overflowOwnership(
   const overflowText = readOverflowUid()?.trim()
   const overflow = overflowText !== undefined && /^\d+$/.test(overflowText) ? Number(overflowText) : Number.NaN
   if (!Number.isSafeInteger(overflow) || overflow < 0) return { unverifiable: true, isMapped }
-  if (uidIsMapped(overflow, ranges)) return { uid: overflow, unverifiable: false, isMapped }
+  // `from_kuid_munged` returns overflowuid whenever the original uid is not
+  // mapped. The placeholder can itself be inside this namespace's numeric map,
+  // so mapping the number does not prove that it identifies the file owner.
   return { uid: overflow, unverifiable: true, isMapped }
 }
 
@@ -2461,12 +2463,12 @@ function probeHosts(host) {
  * Checks a daemon port in a short-lived Node child. ECONNREFUSED proves that
  * endpoint is closed; routing, DNS and timeout errors remain inconclusive.
  */
-function probePort(host, port) {
+export function probePort(host, port) {
   const script = `const net=require('node:net');const [host,port]=process.argv.slice(1);const socket=net.createConnection({host,port:Number(port)});const done=(code)=>{socket.destroy();process.exit(code)};socket.once('connect',()=>done(0));socket.once('error',(error)=>done(error.code==='ECONNREFUSED'?1:2));setTimeout(()=>done(2),2500)`
   let uncertain = false
   for (const endpoint of probeHosts(host)) {
     const result = spawnSync(process.execPath, ['-e', script, endpoint, String(port)], { encoding: 'utf8', timeout: 3_000 })
-    if (result.error || result.signal !== null || result.status === null || result.status === 2) {
+    if (result.error || result.signal !== null || result.status === null || (result.status !== 0 && result.status !== 1)) {
       uncertain = true
       continue
     }

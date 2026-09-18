@@ -617,7 +617,9 @@ function overflowOwnership(
   const overflowText = readOverflowUid()?.trim()
   const overflow = overflowText !== undefined && /^\d+$/.test(overflowText) ? Number(overflowText) : Number.NaN
   if (!Number.isSafeInteger(overflow) || overflow < 0) return { unverifiable: true, isMapped }
-  if (uidIsMapped(overflow, ranges)) return { uid: overflow, unverifiable: false, isMapped }
+  // `from_kuid_munged` returns overflowuid whenever the original uid is not
+  // mapped. The placeholder can itself be inside this namespace's numeric map,
+  // so mapping the number does not prove that it identifies the file owner.
   return { uid: overflow, unverifiable: true, isMapped }
 }
 

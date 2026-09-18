@@ -13,6 +13,8 @@ Unreleased changes appear first and represent commits that have not yet been inc
 - Standalone release binaries now use Node `26.9.0`'s native single-executable builder while application and package channels retain the Node `24.18.1` floor.
 - Canonical OpenCode installation directories (`~/.opencode/bin`) are now trusted by default for the `opencode` binary across platforms, preventing execution refusals when OpenCode release archives are unpacked under root while preserving directory ownership and file write-permission checks.
 - Linux user-namespace tools with unverifiable overflow ownership now require explicit trusted-directory opt-in, including the Node interpreter owner and canonical OpenCode binaries.
+- Installer daemon probes keep unexpected child exits unknown, and published POSIX recipes use HTTPS-only curl flags.
+- Cross-platform resolver tests inject a Linux UID-map fixture when they emulate Linux on macOS, while production ownership checks remain fail-closed.
 - The repository now exposes its documented install-channel catalog as JSON, so the website can verify consolidated installation docs against the same channel table the published-release smoke uses.
 - Windows tool lookup now follows `PATHEXT` sibling order before trust checks and refuses ambiguous ownership mappings.
 - Windows command-script argument checks now track quote state across arguments and reject percent expansions whose delimiters cross argument boundaries.
@@ -273,6 +275,9 @@ Unreleased changes appear first and represent commits that have not yet been inc
 - Three aliases re-exported for a question-diff type that no longer exists, the three helpers behind them, an execution-setup runtime-path list with no reader, and an execution-setup barrel re-exporting three artifact names every caller already imports from their own module.
 
 ### Fixed
+- Installer daemon-port probes now treat every child exit other than a connection or refusal as unknown, so an unexpected probe failure cannot authorize executable replacement.
+- Published install-catalog recipes now match the HTTPS-only commands exercised by the release smoke.
+- The Windows affected-file gate now fails when it cannot compute the pull request diff instead of silently skipping its checks.
 - Executable ownership checks and their generated installer copies use the same explicit numeric sentinel, clearing the remaining Sonar style warnings without changing trust policy.
 - Container repair closes its lockfile-detection shell expression correctly. The Windows workflow-scope test uses a shell-local Git fixture, and installer safety tests share setup while retaining each daemon-evidence case.
 - Trusted program resolution automatically trusts OpenCode's canonical binary directory (`~/.opencode/bin`) and paths specified via `OPENCODE_INSTALL_DIR` or `OPENCODE_DIR`. When OpenCode is installed or updated on Linux as root, official release archives unpacked with GNU `tar` preserve the build runner's UID (`1001`), which previously caused LoopTroop's ancestor ownership security check to refuse the binary on startup.

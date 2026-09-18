@@ -37,6 +37,21 @@ choice is now resolved by the explicit trusted-directory policy recorded below.
 | `5714117602` (`--force` damaged-binary override) | not-applicable | An override would weaken the fail-closed installer boundary; independent state/port evidence is the safer repair path. |
 | `5704664935`, `5704668841`, `5704683795`, `5704688436`, `5705733968`, `5705774805` | not-applicable / no additional action | These summaries, quality-gate notices, and review-limit/deprecation notices supplied no distinct owned fix beyond the findings above; CI/workflow policy and focused tests retain their relevant checks. |
 
+## Round-2 and later review updates
+
+| Review comment(s) | Disposition | Evidence and resulting scope |
+| --- | --- | --- |
+| `5719147080`, `5719155772`, `5719157462`, `5719611934` (mapped overflow ownership) | correct — fixed | A non-identity UID map now keeps the configured overflow number unverifiable even when that number lies inside a mapped numeric range. The resolver regression uses an in-range overflow number and `npm run installers:check` covers the generated installer copies. |
+| `5719187718` (unexpected `probePort` exit) | correct — fixed | `probePort()` now treats every child status except `0` (connected) and `1` (connection refused) as uncertain. `tests/installer.test.ts` runs a probe child that exits `3` and requires `null`. |
+| `5719147080` (documented POSIX recipes) | correct — fixed | The two `documented` POSIX recipes in `scripts/smoke-published.mjs` now use the HTTPS-only curl flags, and `tests/fixtures/install-catalog.json` was regenerated and checked by `tests/docsInstallCatalog.test.ts`. Website prose and its source pin remain root-owned. |
+| `5719611934` (Windows affected-file scope) | correct — fixed | `.github/workflows/ci.yml` captures `git diff` in a command substitution visible to `set -e` before iterating it; `tests/workflowPolicy.test.ts` requires that form and rejects the silent process-substitution form. |
+| `5719147080`, `5719157462`, `5239592541` (unreadable procfs) | policy-correct — no change | Missing or unreadable UID-map/overflow evidence remains fail-closed by the explicit namespace policy. No numeric `65534` fallback or automatic trust was added; exact-directory opt-in remains the documented operator choice. |
+| `5719147080`, `5719157462` (missing daemon evidence) | not-applicable after verification | Damaged-install replacement still requires independent, complete daemon evidence; missing or malformed records remain blocked. No lifecycle or E2E behavior was added, and `tests/installer.test.ts` retains the refusal cases. |
+| `5719265471`, `5720131869` (legacy container repair) | not-applicable after verification | The republish job checks out the requested released tag for its Dockerfile and conditionally supplies the lockfile/inventory expected by that tag. Existing workflow-policy and packaging tests cover the contract; no current-Dockerfile-only change was made. |
+| `5719265471` (signal, naming, and prose suggestions) | not-applicable / no additional action | The signal path is synchronous and releases its lock in `finally`; the runtime floor and existing operator guidance are deliberate current contracts. No behavior change was justified by these suggestions. |
+| `5720932555` (PR168, release checks, and registry observations) | deferred or outside this branch | R23 remains owned by PR168 as recorded above. Other release/registry observations are separate workflow or website scope and are not claimed as PR163 fixes. |
+| `4039974501`, `4039974509`, `4039974518` | tracked — root-owned ledger follow-up | The R23, S01 and stale-evidence corrections target `.github/consolidated-audit-dispositions.md`; this PR-specific ledger records the decisions and evidence without duplicating edits to the shared consolidated file. |
+
 ## Review contract retained
 
 Root's post-push CI review found and fixed a missing command-substitution

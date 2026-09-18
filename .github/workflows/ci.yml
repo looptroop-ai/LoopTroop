@@ -244,6 +244,7 @@ jobs:
         run: |
           set -euo pipefail
           affected=false
+          changed="$(git diff --name-only "${BASE_SHA}" "${HEAD_SHA}")"
           while IFS= read -r path; do
             case "${path}" in
               .github/workflows/*|package.json|package-lock.json|install.sh|install.ps1|\
@@ -254,7 +255,7 @@ jobs:
                 break
                 ;;
             esac
-          done < <(git diff --name-only "${BASE_SHA}" "${HEAD_SHA}")
+          done <<< "${changed}"
           echo "affected=${affected}" >> "$GITHUB_OUTPUT"
           echo "Windows gate affected: ${affected}"
 

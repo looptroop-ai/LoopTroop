@@ -1,4 +1,4 @@
-import { mkdtempSync, readFileSync, readdirSync, rmSync } from 'node:fs'
+import { existsSync, mkdtempSync, readFileSync, readdirSync, rmSync } from 'node:fs'
 import { join } from 'node:path'
 import { spawnSync } from 'node:child_process'
 import { tmpdir } from 'node:os'
@@ -31,7 +31,7 @@ function runs(job: Job): string {
   return (job.steps ?? []).map((step) => typeof step.run === 'string' ? step.run : '').join('\n')
 }
 
-function executeWindowsScope(run: string, changedPaths: string[]): {
+function executeWindowsScope(run: string, changedPaths: string[], diffStatus = 0): {
   status: number | null
   stdout: string
   output: string
@@ -40,7 +40,7 @@ function executeWindowsScope(run: string, changedPaths: string[]): {
   try {
     // A shell function overrides Git identically in POSIX shells and Git Bash,
     // without relying on Windows-to-POSIX PATH conversion for an extensionless fixture.
-    const fixture = 'git() { if [ "$1" = diff ] && [ "$2" = --name-only ]; then printf \'%s\\n\' "$CHANGED_PATHS"; else return 1; fi; }\n'
+    const fixture = 'git() { if [ "$1" = diff ] && [ "$2" = --name-only ]; then if [ "$GIT_DIFF_STATUS" -ne 0 ]; then return "$GIT_DIFF_STATUS"; fi; printf \'%s\\n\' "$CHANGED_PATHS"; else return 1; fi; }\n'
     const outputPath = join(directory, 'github-output')
     const result = spawnSync('bash', ['-euo', 'pipefail', '-c', fixture + run], {
       encoding: 'utf8',
@@ -48,6 +48,7 @@ function executeWindowsScope(run: string, changedPaths: string[]): {
         ...process.env,
         BASE_SHA: 'base-sha',
         CHANGED_PATHS: changedPaths.join('\n'),
+        GIT_DIFF_STATUS: String(diffStatus),
         GITHUB_OUTPUT: outputPath,
         HEAD_SHA: 'head-sha',
       },
@@ -55,7 +56,7 @@ function executeWindowsScope(run: string, changedPaths: string[]): {
     return {
       status: result.status,
       stdout: result.stdout ?? '',
-      output: readFileSync(outputPath, 'utf8'),
+      output: existsSync(outputPath) ? readFileSync(outputPath, 'utf8') : '',
     }
   } finally {
     rmSync(directory, { recursive: true, force: true })
@@ -182,6 +183,9 @@ describe('release workflow policy', () => {
     const windowsGate = workflows.get('ci.yml')!.jobs?.['windows-gate']
     const scope = windowsGate?.steps?.find((step) => step.name === 'Check whether the Windows profile is affected')?.run
     if (typeof scope !== 'string') throw new Error('Windows gate scope script missing')
+    expect(scope).toContain('changed="$(git diff --name-only "${BASE_SHA}" "${HEAD_SHA}")"')
+    expect(scope).toContain('done <<< "${changed}"')
+    expect(scope).not.toContain('< <(git diff')
 
     const affected = executeWindowsScope(scope, ['scripts/smoke-lib.mjs'])
     expect(affected.status).toBe(0)
@@ -192,6 +196,10 @@ describe('release workflow policy', () => {
     expect(unrelated.status).toBe(0)
     expect(unrelated.output).toBe('affected=false\n')
     expect(unrelated.stdout).toContain('Windows gate affected: false')
+
+    const gitFailure = executeWindowsScope(scope, ['scripts/smoke-lib.mjs'], 128)
+    expect(gitFailure.status).toBe(128)
+    expect(gitFailure.output).toBe('')
   })
 
   it('keeps release pushes free of token-bearing URLs and pins Scoop fetches', () => {

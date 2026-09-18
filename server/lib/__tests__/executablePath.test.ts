@@ -6,19 +6,51 @@ import { makeTempDir, removeTempDir } from '../../test/tempDir'
 import {
   bareNameSearchReachesWorkingDirectory,
   canonicalTrustedDirectories,
-  findTrustedExecutablePath,
+  findTrustedExecutablePath as findTrustedExecutablePathImpl,
   launchThroughInterpreter,
   needsCommandInterpreter,
   planProgramLaunch,
-  requireTrustedExecutablePath,
-  resolveCommandInterpreter,
-  resolveTrustedExecutable,
-  resolveTrustedProgram,
+  requireTrustedExecutablePath as requireTrustedExecutablePathImpl,
+  resolveCommandInterpreter as resolveCommandInterpreterImpl,
+  resolveTrustedExecutable as resolveTrustedExecutableImpl,
+  resolveTrustedProgram as resolveTrustedProgramImpl,
   trustedSearchDirectories,
   TRUSTED_EXECUTABLE_DIRS_ENV,
   type CachedResolution,
   type TrustedExecutableOptions,
 } from '../executablePath'
+
+/** A Linux identity map for tests that describe Linux on a non-Linux host. */
+const linuxTestIdentity: Pick<TrustedExecutableOptions, 'readUidMap' | 'readOverflowUid'> = {
+  readUidMap: () => '0 0 4294967295\n',
+  readOverflowUid: () => '65534',
+}
+
+function testOptions(options: TrustedExecutableOptions = {}): TrustedExecutableOptions {
+  return process.platform !== 'linux' && options.platform === 'linux'
+    ? { ...linuxTestIdentity, ...options }
+    : options
+}
+
+function findTrustedExecutablePath(name: string, options: TrustedExecutableOptions = {}) {
+  return findTrustedExecutablePathImpl(name, testOptions(options))
+}
+
+function requireTrustedExecutablePath(name: string, options: TrustedExecutableOptions = {}) {
+  return requireTrustedExecutablePathImpl(name, testOptions(options))
+}
+
+function resolveCommandInterpreter(options: TrustedExecutableOptions = {}) {
+  return resolveCommandInterpreterImpl(testOptions(options))
+}
+
+function resolveTrustedExecutable(name: string, options: TrustedExecutableOptions = {}) {
+  return resolveTrustedExecutableImpl(name, testOptions(options))
+}
+
+function resolveTrustedProgram(program: string, options: TrustedExecutableOptions = {}) {
+  return resolveTrustedProgramImpl(program, testOptions(options))
+}
 
 /**
  * Every case here injects `env`, `platform` and `cache`.
@@ -924,7 +956,9 @@ describe('round-2 trust rules', () => {
       cache: null,
       stat: withOverflow(statOrNull),
       lstat: withOverflow(lstatOrNull),
-      readUidMap: () => '0 1000 1\n',
+      // The overflow number is inside this map. Linux can still report it for
+      // an unmapped host uid, so the numeric collision must remain unknown.
+      readUidMap: () => '0 1000 65535\n',
       readOverflowUid: () => String(owner),
     }
     const originalExecPath = process.execPath

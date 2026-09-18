@@ -7,7 +7,7 @@ import { broadcaster } from './sse/broadcaster'
 import { closeDatabase, ensureStorageDirs } from './db/index'
 import { clearProjectDatabaseCache } from './db/project'
 import { assertAllowedBackendHost, getAllowedBackendHost } from '../shared/appConfig'
-import { resolveSettings, type ResolvedSettings, type SettingSource } from './lib/appSettings'
+import { assertPublicOriginRemoteAccess, resolveSettings, type ResolvedSettings, type SettingSource } from './lib/appSettings'
 import { configureOpenCodeRuntime } from './opencode/runtimeConfig'
 import { resetOpenCodeAdapter } from './opencode/factory'
 import { startMergePoller } from './workflow/mergePoller'
@@ -60,8 +60,19 @@ function describeBindFailure(error: unknown, port: number, source: SettingSource
  * its own process lifecycle hijacked.
  */
 export function createRuntime(config: RuntimeConfig = {}): LoopTroopRuntime {
+  const settings = config.settings ?? resolveSettings()
+  // The daemon passes this option explicitly, but embedders commonly provide
+  // pre-resolved settings instead. Preserve an explicit top-level null while
+  // forwarding the resolved origin when no override was supplied.
+  const publicOrigin = config.publicOrigin !== undefined
+    ? config.publicOrigin
+    : settings.publicOrigin
   const sseScope = config.sseScope ?? broadcaster.createScope()
-  const app = createApp({ ...config, sseScope })
+  const app = createApp({
+    ...config,
+    ...(publicOrigin === undefined ? {} : { publicOrigin }),
+    sseScope,
+  })
   let handle: ReturnType<typeof serve> | null = null
   let address: RuntimeAddress | null = null
   let closing: Promise<void> | null = null
@@ -127,7 +138,7 @@ export function createRuntime(config: RuntimeConfig = {}): LoopTroopRuntime {
   }
 
   async function runStart(): Promise<RuntimeAddress> {
-    const settings = config.settings ?? resolveSettings()
+    assertPublicOriginRemoteAccess(publicOrigin)
     sseScope.startAcceptingClients()
 
     // Before the startup sequence, which health-checks OpenCode through the

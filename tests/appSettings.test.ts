@@ -6,6 +6,7 @@ import { removeTempDir } from '../server/test/tempDir'
 import {
   DEFAULT_SETTINGS,
   getSettingsPath,
+  parsePublicOrigin,
   readSettingsFile,
   resolveSettings,
   writeSettingsFile,
@@ -13,7 +14,8 @@ import {
 
 /**
  * 2.4 contract: settings resolve flag > env > file > default, unknown keys in
- * config.json survive a write, and no host setting exists at all.
+ * config.json survive a write, and no host setting exists at all. The public
+ * browser origin is an explicit HTTPS origin, not a bind address.
  */
 describe('appSettings', () => {
   const tempDirs: string[] = []
@@ -50,6 +52,16 @@ describe('appSettings', () => {
 
       expect(settings.port).toBe(4002)
       expect(settings.sources.port).toBe('env')
+    })
+
+    it('resolves the public browser origin from the environment before the file', () => {
+      const settings = resolveSettings({
+        env: { LOOPTROOP_PUBLIC_ORIGIN: 'https://public.example' },
+        file: { publicOrigin: 'https://other.example' },
+      })
+
+      expect(settings.publicOrigin).toBe('https://public.example')
+      expect(settings.sources.publicOrigin).toBe('env')
     })
 
     it('prefers the file over the default', () => {
@@ -96,6 +108,31 @@ describe('appSettings', () => {
       })
 
       expect(settings.opencodeBaseUrl).toBe('http://127.0.0.1:4096')
+    })
+
+    it('accepts one HTTPS public origin and strips its default port', () => {
+      const settings = resolveSettings({
+        env: { LOOPTROOP_PUBLIC_ORIGIN: ' HTTPS://PUBLIC.EXAMPLE:443 ' },
+        file: {},
+      })
+
+      expect(settings.publicOrigin).toBe('https://public.example')
+    })
+
+    it.each([
+      'http://public.example',
+      'https://public.example/path',
+      'https://public.example/foo/..',
+      'https://public.example/.',
+      'https://public.example?query=1',
+      'https://user:password@public.example',
+      'https://*.public.example',
+      'https://2130706433',
+      'https://public.example:0',
+    ])('rejects a non-origin public URL: %s', (value) => {
+      expect(parsePublicOrigin(value)).toBeNull()
+      expect(resolveSettings({ env: { LOOPTROOP_PUBLIC_ORIGIN: value }, file: {} }).publicOrigin)
+        .toBe(DEFAULT_SETTINGS.publicOrigin)
     })
 
     it('accepts only known enum values', () => {

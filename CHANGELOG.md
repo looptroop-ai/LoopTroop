@@ -10,6 +10,8 @@ Unreleased changes appear first and represent commits that have not yet been inc
 > Changes merged since the last versioned release that have not yet shipped in a tagged version.
 
 ### Summary
+- Remote browser access now uses one explicitly configured HTTPS origin, rejects incomplete remote-mode setup at startup, and keeps plain-HTTP remote clients token-only.
+- SSE connections reserve per-ticket and process-wide capacity before setup, while child processes no longer inherit LoopTroop daemon credentials.
 - Bead approval and YAML recovery now reject incomplete input and preserve explicit clears and scalar text across the editor and server.
 - Cancellation recovery, anchored pending-bead retries, interview receipt commits, and council session-stop proofs now remain safe across failed writes and restarts.
 - Git cleanup preserves uncertain process ownership and user files, while interrupted recovery can retry an absent destination safely.
@@ -135,6 +137,9 @@ Unreleased changes appear first and represent commits that have not yet been inc
 - Added download history to the installation documentation. The chart records public npm, Docker Hub and GitHub release counters every hour, can show new downloads or cumulative totals, and separates installer-script fetches from the sources included in the download total. History begins when tracking is enabled; the chart does not fill earlier periods with estimates or npm-only data.
 
 ### Security
+- Remote browser sessions require one explicit HTTPS public origin; startup rejects a public origin without remote API mode, and plain-HTTP remote access remains bearer-only without trusting forwarded headers.
+- SSE admission reserves both per-ticket and process-wide capacity before asynchronous setup, and releases reservations on every failure or disconnect path.
+- Managed child processes receive a filtered environment so LoopTroop daemon credentials are not inherited by project, Git, hook, or OpenCode commands.
 - A direct child handle is now the only fallback for a tokenless readiness probe during the same `start` invocation. Exited handles, recycled PIDs, and persisted records without a verifiable identity remain refused and cannot be adopted or signalled by numeric PID alone.
 - Project discovery diagnostics encode user-selected paths before logging them, so POSIX control characters cannot create forged log records.
 - Linux user namespaces no longer treat the kernel overflow UID as root, the current user, or the Node interpreter owner. Unreadable mappings fail closed, while `LOOPTROOP_TRUSTED_EXECUTABLE_DIRS` remains an explicit exact-directory opt-in for deliberate operator-owned tools; the shared source and generated installers enforce the same rule.

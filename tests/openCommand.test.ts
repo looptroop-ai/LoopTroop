@@ -139,6 +139,21 @@ describe('opening the interface', () => {
     expect(opened[0]).toBe(`http://127.0.0.1:${port}/#bootstrap=nonce-under-test`)
   })
 
+  it('uses the daemon public origin for browser links while minting internally', async () => {
+    const configDir = useConfigDir()
+    const pid = spawnStandIn()
+    const port = await startFakeDaemon({ instanceId: 'instance-under-test', apiToken: 'test-api-token' })
+    writeState(configDir, makeState({ pid, port, publicOrigin: 'https://public.example' }))
+
+    const opened: string[] = []
+    const code = await openCommand({
+      open: (url) => { opened.push(url); return { opened: true } },
+    })
+
+    expect(code).toBe(0)
+    expect(opened).toEqual(['https://public.example/#bootstrap=nonce-under-test'])
+  })
+
   it('explains that all-log mode needs a restart when the daemon is already running', async () => {
     const configDir = useConfigDir()
     const pid = spawnStandIn()

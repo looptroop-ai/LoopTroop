@@ -1,7 +1,7 @@
 import { spawn, type ChildProcess } from 'node:child_process'
 import { openSync } from 'node:fs'
 import { setTimeout as delay } from 'node:timers/promises'
-import { readDaemonState, getDaemonLogPath, getDaemonLogDir, clearDaemonState, clearDaemonStartFailure, clearStaleDaemonState, readDaemonStartFailure, redactDaemonState, daemonOrigin, type DaemonState, type DaemonStartFailure } from '../lib/daemonPaths'
+import { readDaemonState, getDaemonLogPath, getDaemonLogDir, clearDaemonState, clearDaemonStartFailure, clearStaleDaemonState, readDaemonStartFailure, redactDaemonState, daemonBrowserOrigin, daemonOrigin, type DaemonState, type DaemonStartFailure } from '../lib/daemonPaths'
 import { resolveTrustedExecutable } from '../lib/executablePath'
 import { resolveAppConfigDir, ensureSecureDir } from '../lib/appConfigDir'
 import { rotateDaemonLog } from '../lib/daemonLog'
@@ -149,9 +149,9 @@ export interface BootstrapLink {
  * whether a browser ever spent it; see `waitForSignIn`.
  */
 export async function mintBootstrapUrl(state: DaemonState): Promise<BootstrapLink | null> {
-  const origin = daemonOrigin(state.host, state.port)
+  const apiOrigin = daemonOrigin(state.host, state.port)
   try {
-    const response = await fetch(`${origin}/api/auth/bootstrap`, {
+    const response = await fetch(`${apiOrigin}/api/auth/bootstrap`, {
       method: 'POST',
       headers: { Authorization: `Bearer ${state.apiToken}` },
       signal: AbortSignal.timeout(5_000),
@@ -162,7 +162,7 @@ export async function mintBootstrapUrl(state: DaemonState): Promise<BootstrapLin
     if (typeof body.nonce !== 'string' || !body.nonce) return null
     // The fragment is never sent to the server as part of the request line, so
     // the nonce cannot reach an access log on the way in.
-    return { url: `${origin}/#bootstrap=${body.nonce}`, nonce: body.nonce }
+    return { url: `${daemonBrowserOrigin(state)}/#bootstrap=${body.nonce}`, nonce: body.nonce }
   } catch {
     return null
   }

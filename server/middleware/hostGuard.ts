@@ -1,6 +1,7 @@
 import type { Context, Next } from 'hono'
 import { canonicalIpv6Host, isLoopbackHost } from '../../shared/appConfig'
-import { API_TOKEN_HEADER, SESSION_COOKIE_NAME, readCookie } from './sessionAuth'
+import { parsePublicOrigin } from '../lib/appSettings'
+import { SESSION_COOKIE_NAME, readCookie } from './sessionAuth'
 
 /** Parses one authority, sharing host canonicalization and port validation. */
 function parseAuthority(authority: string): { hostname: string, port: string | null } | null {
@@ -24,7 +25,7 @@ function parseAuthority(authority: string): { hostname: string, port: string | n
       port = trimmed.slice(colon + 1) || null
     }
   }
-  if (!hostname || (port !== null && (!/^\d+$/.test(port) || Number(port) > 65535))) return null
+  if (!hostname || (port !== null && (!/^\d+$/.test(port) || Number(port) < 1 || Number(port) > 65535))) return null
   return { hostname, port }
 }
 
@@ -45,8 +46,8 @@ export function portFromAuthority(authority: string): string | null {
 
 /**
  * `host:port` for an authority, with the implied port filled in so `127.0.0.1`
- * and `127.0.0.1:80` compare equal. The daemon speaks http, so a Host header
- * with no port means 80. Invalid authorities return an empty string.
+ * and `127.0.0.1:80` compare equal. Callers can supply the request scheme's
+ * default port; invalid authorities return an empty string.
  */
 export function canonicalAuthority(authority: string, defaultPort = '80'): string {
   const parsed = parseAuthority(authority)
@@ -57,7 +58,7 @@ export function canonicalAuthority(authority: string, defaultPort = '80'): strin
  * The hostname and canonical authority of an Origin header, or null when it is
  * not an http(s) origin this daemon could have served.
  */
-export function parseOrigin(origin: string): { hostname: string, authority: string } | null {
+export function parseOrigin(origin: string): { hostname: string, authority: string, scheme: 'http:' | 'https:' } | null {
   // A sandboxed iframe and a file:// page both send `null`, and neither is a
   // page this daemon has any reason to answer.
   if (origin === 'null') return null
@@ -66,11 +67,21 @@ export function parseOrigin(origin: string): { hostname: string, authority: stri
     const parsed = new URL(origin)
     if (parsed.protocol !== 'http:' && parsed.protocol !== 'https:') return null
 
+    // WHATWG URL accepts alternate IPv4 spellings and rewrites them to dotted
+    // decimal. Keep that normalization from making a literal attacker spelling
+    // equivalent to a loopback origin; ordinary host case-folding and IPv6
+    // canonicalization remain valid.
+    const rawHostname = /^https?:\/\/(\[[^\]]+\]|[^/?#:]+)(?::\d*)?(?:[/?#]|$)/i.exec(origin)?.[1]
+    if (!rawHostname) return null
+
     // URL keeps IPv6 brackets in `hostname`; authorities here are compared
     // unbracketed so `[::1]:3000` and `::1:3000` are the same thing.
     const hostname = parsed.hostname.replace(/^\[/, '').replace(/\]$/, '')
     const port = parsed.port === '' ? (parsed.protocol === 'https:' ? '443' : '80') : parsed.port
-    return { hostname, authority: `${hostname}:${port}` }
+    if (!rawHostname.startsWith('[') && rawHostname.toLowerCase() !== hostname.toLowerCase()) return null
+    if (Number(port) < 1) return null
+    const scheme = parsed.protocol === 'https:' ? 'https:' : 'http:'
+    return { hostname, authority: `${hostname}:${port}`, scheme }
   } catch {
     return null
   }
@@ -96,18 +107,32 @@ export function requestAuthority(c: Context): string | undefined {
   }
 }
 
+/** Uses the actual request URL; forwarded scheme headers are caller-controlled. */
+function requestDefaultPort(c: Context): string {
+  try {
+    return new URL(c.req.url).protocol === 'https:' ? '443' : '80'
+  } catch {
+    return '80'
+  }
+}
+
+/** Uses only the actual request URL when comparing an Origin scheme. */
+function requestScheme(c: Context): 'http:' | 'https:' | null {
+  try {
+    const protocol = new URL(c.req.url).protocol
+    return protocol === 'http:' || protocol === 'https:' ? protocol : null
+  } catch {
+    return null
+  }
+}
+
 /**
- * Whether this request is leaning on the ambient session cookie rather than a
- * token. A caller that presents its own credential (the CLI, any script) is
- * never driven by the browser and needs no origin proof; the cookie is the only
- * credential the browser carries for us, and it is the one any other loopback
- * page can be made to forward, so it is the one that must prove where it came
- * from.
+ * Whether this request carries the ambient session cookie. Authentication checks
+ * the cookie before bearer credentials, so a cookie must prove same-origin even
+ * when a caller also supplies an invalid or unrelated token header.
  */
 function usesAmbientCookie(c: Context): boolean {
-  if (readCookie(c.req.header('cookie'), SESSION_COOKIE_NAME) === null) return false
-  return c.req.header('authorization') === undefined
-    && c.req.header(API_TOKEN_HEADER) === undefined
+  return readCookie(c.req.header('cookie'), SESSION_COOKIE_NAME) !== null
 }
 
 export interface HostGuardOptions {
@@ -116,6 +141,8 @@ export interface HostGuardOptions {
    * port is the only real case, and production passes none.
    */
   additionalOrigins?: string[]
+  /** One configured HTTPS origin exposed by a reverse proxy. */
+  publicOrigin?: string | null
 }
 
 /**
@@ -140,8 +167,9 @@ export interface HostGuardOptions {
  * no-cors fetch, a `window.open` — none of them send Origin, and all of them
  * send this daemon's cookie, because cookies have no port scope. Such a request
  * is now required to carry `Sec-Fetch-Site: same-origin` whenever the cookie is
- * the only credential it has. Scripts are unaffected: they present a token, and
- * a caller holding the token never needed the browser's word for anything.
+ * the only credential it has. Scripts without a cookie are unaffected: they
+ * present a token and need no browser headers. A supplied Origin is still
+ * checked: bearer authentication does not enable arbitrary browser CORS.
  *
  * That closes the browser-driven half. A local process that already reads the
  * cookie out of the browser's store can still forge every header, so the cookie
@@ -149,37 +177,71 @@ export interface HostGuardOptions {
  * distinct hostname or a non-ambient credential can remove.
  *
  * Binding to a non-loopback address already demands LOOPTROOP_ALLOW_REMOTE_API
- * and a token, so that same variable is what turns this off: a deployment that
- * is deliberately reachable by name would otherwise reject every request.
+ * and a token, so that same variable turns off only the loopback check: a
+ * deployment that is deliberately reachable by name still keeps its origin and
+ * cookie protections.
  */
 export function createHostGuardMiddleware(options: HostGuardOptions = {}) {
-  const extraAuthorities = new Set(
+  const extraOrigins = new Set(
     (options.additionalOrigins ?? [])
-      .map((origin) => parseOrigin(origin)?.authority)
-      .filter((authority): authority is string => authority !== undefined),
+      .map((origin) => {
+        const parsed = parseOrigin(origin)
+        return parsed ? `${parsed.scheme}//${parsed.authority}` : null
+      })
+      .filter((origin): origin is string => origin !== null),
   )
+  // Parse the raw value first. Calling only the settings normalizer would let
+  // WHATWG URL rewrite an alternate IPv4 spelling before the strict origin
+  // parser gets a chance to reject it.
+  const configuredPublicOrigin = options.publicOrigin === undefined || options.publicOrigin === null
+    ? null
+    : parsePublicOrigin(options.publicOrigin) === null
+      ? null
+      : parseOrigin(options.publicOrigin)
+  const configuredPublicOriginKey = configuredPublicOrigin === null
+    ? null
+    : `${configuredPublicOrigin.scheme}//${configuredPublicOrigin.authority}`
+  const configuredPublicAuthority = configuredPublicOrigin?.authority ?? null
+  const configuredPublicDefaultPort = configuredPublicOrigin?.scheme === 'https:' ? '443' : '80'
 
   return async (c: Context, next: Next) => {
-    if (process.env.LOOPTROOP_ALLOW_REMOTE_API === '1') {
-      await next()
-      return
+    const remoteApi = process.env.LOOPTROOP_ALLOW_REMOTE_API === '1'
+    const authority = requestAuthority(c)
+    // Local mode requires a loopback authority; remote mode opts out of only
+    // that binding check and keeps the origin and cookie checks below.
+    const requestAuthorityCanonical = canonicalAuthority(authority ?? '', requestDefaultPort(c))
+    if (!requestAuthorityCanonical || (!remoteApi && !isLoopbackAuthority(authority))) {
+      return c.json({ error: 'Forbidden: this API answers only on loopback.' }, 403)
     }
 
-    const authority = requestAuthority(c)
-    // A request whose authority is not a loopback name did not come from here.
-    if (!isLoopbackAuthority(authority)) {
-      return c.json({ error: 'Forbidden: this API answers only on loopback.' }, 403)
+    // A remote HTTP deployment has no trustworthy browser origin and must stay
+    // bearer-only. In particular, a bearer header cannot turn an ambient cookie
+    // into an accepted credential on a plain-HTTP request.
+    if (remoteApi && configuredPublicOriginKey === null && usesAmbientCookie(c)) {
+      return c.json(
+        { error: 'Forbidden: remote browser sessions require a configured HTTPS public origin.' },
+        403,
+      )
     }
 
     const origin = c.req.header('origin')
     if (origin !== undefined) {
       const parsed = parseOrigin(origin)
+      const scheme = requestScheme(c)
+      const originKey = parsed === null ? null : `${parsed.scheme}//${parsed.authority}`
+      const sameRequestOrigin = parsed !== null
+        && parsed.authority === requestAuthorityCanonical
+        && parsed.scheme === scheme
+      const hasCookie = usesAmbientCookie(c)
       // Same authority as the request itself: no knowledge of the bound port is
       // needed, because the Host header is the port the browser connected to.
       const permitted = parsed !== null
-        && isLoopbackHost(parsed.hostname)
-        && (parsed.authority === canonicalAuthority(authority ?? '')
-          || extraAuthorities.has(parsed.authority))
+        && (hasCookie && configuredPublicOriginKey !== null
+          ? configuredPublicOriginKey === originKey
+          : sameRequestOrigin
+            || extraOrigins.has(originKey ?? '')
+            || configuredPublicOriginKey === originKey)
+        && (remoteApi || isLoopbackHost(parsed.hostname))
 
       if (!permitted) {
         return c.json({ error: 'Forbidden: cross-origin requests are not accepted.' }, 403)
@@ -195,8 +257,22 @@ export function createHostGuardMiddleware(options: HostGuardOptions = {}) {
     // `<img>` tag or a no-cors fetch. Sec-Fetch-Site is what separates the two:
     // the browser sets it, page script cannot (it is a forbidden header name),
     // and unlike a site it counts the port, so another localhost port gets
-    // `same-site` rather than `same-origin`.
-    if (usesAmbientCookie(c) && c.req.header('sec-fetch-site') !== 'same-origin') {
+    // `same-site` rather than `same-origin`. A configured public origin adds
+    // one more requirement here: the proxy must preserve that public Host,
+    // because no forwarded host header is trusted for a request with no Origin.
+    const noOriginCookie = usesAmbientCookie(c)
+    const hostMatchesConfiguredPublicOrigin = configuredPublicAuthority !== null
+      && canonicalAuthority(authority ?? '', configuredPublicDefaultPort) === configuredPublicAuthority
+    if (
+      noOriginCookie
+      && (
+        c.req.header('sec-fetch-site') !== 'same-origin'
+        // A browser omits Origin for some same-origin navigations and streams.
+        // With a configured proxy origin, the proxy must preserve its public
+        // Host for those requests; forwarded host headers are not trusted.
+        || (configuredPublicOriginKey !== null && !hostMatchesConfiguredPublicOrigin)
+      )
+    ) {
       return c.json(
         { error: 'Forbidden: the session cookie is accepted only on same-origin requests.' },
         403,

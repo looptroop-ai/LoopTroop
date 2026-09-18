@@ -1,5 +1,5 @@
 import { Hono } from 'hono'
-import * as fs from 'node:fs'
+import { createReadStream, type ReadStream } from 'node:fs'
 import * as readline from 'node:readline'
 import { getTicketByRef, resolveTicketContainedPath } from '../storage/tickets'
 import { listAttachedProjectRoots } from '../storage/projects'
@@ -21,10 +21,10 @@ filesRouter.onError((error, c) => {
   throw error
 })
 
-function openLogStream(logPath: string): fs.ReadStream | null {
+function openLogStream(logPath: string): ReadStream | null {
   try {
     const fd = openFileNoFollowSync(logPath)
-    return fs.createReadStream(logPath, { fd, encoding: 'utf-8', autoClose: true })
+    return createReadStream(logPath, { fd, encoding: 'utf-8', autoClose: true })
   } catch (error) {
     if ((error as NodeJS.ErrnoException).code === 'ENOENT') return null
     throw error

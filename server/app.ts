@@ -27,6 +27,7 @@ import {
   serializeSessionCookie,
   type SessionCredentials,
 } from './middleware/sessionAuth'
+import { parsePublicOrigin } from './lib/appSettings'
 import { getFrontendOrigin } from '../shared/appConfig'
 
 export interface CreateAppOptions {
@@ -48,6 +49,8 @@ export interface CreateAppOptions {
   bootstrapNonces?: BootstrapNonceStore
   /** Reported by /api/health so a client can verify it reached this daemon. */
   instanceId?: string
+  /** Browser-visible HTTPS origin when a proxy fronts the internal daemon. */
+  publicOrigin?: string | null
   /**
    * Mounts an authenticated shutdown endpoint. Omitted, no route exists at all:
    * an embedding host must never have its process stopped through this API.
@@ -167,6 +170,7 @@ export function wantsSpaDocument(path: string, accept: string | undefined): bool
  */
 export function createApp(options: CreateAppOptions = {}): Hono {
   const mode = options.mode ?? (process.env.NODE_ENV === 'production' ? 'production' : 'development')
+  const publicOrigin = parsePublicOrigin(options.publicOrigin)
   const app = new Hono()
 
   if (mode === 'development') {
@@ -195,7 +199,10 @@ export function createApp(options: CreateAppOptions = {}): Hono {
   // from this machine is refused whatever credential it carries. In development
   // the Vite server is a genuinely different origin, and the only one.
   app.use('/api/*', createHostGuardMiddleware(
-    mode === 'development' ? { additionalOrigins: [getFrontendOrigin()] } : {},
+    {
+      ...(mode === 'development' ? { additionalOrigins: [getFrontendOrigin()] } : {}),
+      publicOrigin,
+    },
   ))
 
   if (mode === 'development') {
@@ -215,6 +222,16 @@ export function createApp(options: CreateAppOptions = {}): Hono {
     // Mounted before the auth middleware: exchanging the nonce is how a browser
     // gets the cookie, so it cannot itself require one.
     app.post('/api/auth/exchange', async (c) => {
+      if (
+        process.env.LOOPTROOP_ALLOW_REMOTE_API === '1'
+        && publicOrigin === null
+      ) {
+        return c.json(
+          { error: 'Remote browser sessions require LOOPTROOP_PUBLIC_ORIGIN configured as HTTPS.' },
+          403,
+        )
+      }
+
       const body = await c.req.json().catch(() => null) as { nonce?: unknown } | null
       const candidate = typeof body?.nonce === 'string' ? body.nonce : ''
 
@@ -222,7 +239,12 @@ export function createApp(options: CreateAppOptions = {}): Hono {
         return c.json({ error: 'Invalid or expired bootstrap nonce' }, 401)
       }
 
-      c.header('Set-Cookie', serializeSessionCookie(credentials.sessionToken, 12 * 60 * 60))
+      c.header(
+        'Set-Cookie',
+        serializeSessionCookie(credentials.sessionToken, 12 * 60 * 60, {
+          secure: publicOrigin !== null,
+        }),
+      )
       return c.json({ ok: true })
     })
 

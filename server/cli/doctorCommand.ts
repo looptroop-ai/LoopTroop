@@ -15,6 +15,7 @@ import { getErrorMessage } from '@shared/typeGuards'
 import { formatNodeVersion, parseNodeVersion, satisfiesNodeFloor } from '@shared/nodeFloor'
 import { NODE_FLOOR } from '../lib/nodeFloor'
 import { NON_INTERACTIVE_GIT_ENV } from '../git/runCommand'
+import { createChildEnvironment } from '../lib/childEnvironment'
 
 type Status = 'ok' | 'warn' | 'fail'
 
@@ -204,7 +205,7 @@ export function runProbe(command: string, args: string[], timeoutMs: number): Pr
   // runner deliberately does not do. It carries its own timeout; what it was
   // missing is the non-interactive environment, so a `git`/`gh` probe cannot
   // stop on a credential prompt.
-  const env = { ...process.env, ...NON_INTERACTIVE_GIT_ENV }
+  const env = createChildEnvironment({ ...process.env, ...NON_INTERACTIVE_GIT_ENV })
   const launch = planProgramLaunch(resolution.path, args, { env })
   if (launch.reason !== undefined) return { kind: 'unavailable', refusal: launch.reason }
   const started = Date.now()

@@ -8,7 +8,7 @@ import { attachProject } from '../../storage/projects'
 import { createTicket } from '../../storage/tickets'
 import { createFixtureRepoManager } from '../../test/fixtureRepo'
 import { broadcaster } from '../../sse/broadcaster'
-import { MAX_SSE_CONNECTIONS_PER_TICKET, streamRouter } from '../stream'
+import { MAX_SSE_CONNECTIONS_PER_TICKET, MAX_SSE_CONNECTIONS_TOTAL, streamRouter } from '../stream'
 
 const repoManager = createFixtureRepoManager({
   templatePrefix: 'looptroop-stream-route-',
@@ -110,6 +110,211 @@ describe('streamRouter', () => {
 
     expect(response.status).toBe(429)
     broadcaster.clearTicket(ticket.id)
+  })
+
+  it('reserves per-ticket slots before opening a concurrent burst and releases them on abort', async () => {
+    const ticket = createStreamRouteTicket()
+    const responses = await Promise.all(Array.from({ length: 10 }, () =>
+      app.request(`/api/stream?ticketId=${encodeURIComponent(ticket.id)}`),
+    ))
+
+    expect(responses.filter(response => response.status === 200)).toHaveLength(MAX_SSE_CONNECTIONS_PER_TICKET)
+    expect(responses.filter(response => response.status === 429)).toHaveLength(4)
+    expect(broadcaster.getClientCount(ticket.id)).toBe(MAX_SSE_CONNECTIONS_PER_TICKET)
+    expect(broadcaster.getTotalClientCount()).toBe(MAX_SSE_CONNECTIONS_PER_TICKET)
+
+    await Promise.all(responses
+      .filter(response => response.status === 200)
+      .map(async response => {
+        const reader = response.body!.getReader()
+        await reader.read()
+        await reader.cancel()
+      }))
+
+    expect(broadcaster.getClientCount(ticket.id)).toBe(0)
+    expect(broadcaster.getTotalClientCount()).toBe(0)
+  })
+
+  it('enforces the global stream cap from the same broadcaster registry', async () => {
+    const ticket = createStreamRouteTicket()
+    const seededTicketIds = Array.from({ length: MAX_SSE_CONNECTIONS_TOTAL }, (_, index) => `seed-${index}`)
+    for (const [index, seededTicketId] of seededTicketIds.entries()) {
+      broadcaster.addClient(seededTicketId, {
+        id: `client-${index}`,
+        send: vi.fn(),
+        close: vi.fn(),
+      })
+    }
+
+    try {
+      const response = await app.request(`/api/stream?ticketId=${encodeURIComponent(ticket.id)}`)
+      expect(response.status).toBe(429)
+      expect(await response.json()).toMatchObject({ error: 'Too many active streams' })
+      expect(broadcaster.getTotalClientCount()).toBe(MAX_SSE_CONNECTIONS_TOTAL)
+    } finally {
+      for (const seededTicketId of seededTicketIds) broadcaster.clearTicket(seededTicketId)
+      broadcaster.clearTicket(ticket.id)
+    }
+
+    expect(broadcaster.getTotalClientCount()).toBe(0)
+  })
+
+  it('enforces the global cap for 120 concurrent HTTP streams', async () => {
+    const tickets = Array.from({ length: 20 }, () => createStreamRouteTicket())
+    const responses = await Promise.all(tickets.flatMap(ticket =>
+      Array.from({ length: MAX_SSE_CONNECTIONS_PER_TICKET }, () =>
+        app.request(`/api/stream?ticketId=${encodeURIComponent(ticket.id)}`),
+      ),
+    ))
+
+    expect(responses.filter(response => response.status === 200)).toHaveLength(MAX_SSE_CONNECTIONS_TOTAL)
+    expect(responses.filter(response => response.status === 429)).toHaveLength(20)
+
+    try {
+      await Promise.all(responses
+        .filter(response => response.status === 200)
+        .map(async response => {
+          const reader = response.body!.getReader()
+          await reader.read()
+          await reader.cancel()
+        }))
+    } finally {
+      for (const ticket of tickets) broadcaster.clearTicket(ticket.id)
+    }
+
+    expect(broadcaster.getTotalClientCount()).toBe(0)
+  })
+
+  it('releases a reserved slot when the initial SSE write fails', async () => {
+    const ticket = createStreamRouteTicket()
+    vi.spyOn(SSEStreamingApi.prototype, 'writeSSE').mockRejectedValueOnce(new Error('Failed to open stream'))
+    vi.spyOn(console, 'error').mockImplementation(() => undefined)
+
+    const response = await app.request(`/api/stream?ticketId=${encodeURIComponent(ticket.id)}`)
+    await response.body?.cancel()
+    await Promise.resolve()
+
+    expect(broadcaster.getClientCount(ticket.id)).toBe(0)
+    expect(broadcaster.getTotalClientCount()).toBe(0)
+  })
+
+  it('settles queued writes when activation loses the reservation race', async () => {
+    const ticket = createStreamRouteTicket()
+    vi.spyOn(broadcaster, 'activateClient').mockReturnValueOnce(false)
+    // A canceled transport can leave a write pending. The activation-failure
+    // path must release the slot without waiting for that promise, while still
+    // observing a later rejection through its allSettled observer.
+    vi.spyOn(SSEStreamingApi.prototype, 'writeSSE').mockReturnValueOnce(new Promise<void>(() => {}))
+
+    try {
+      const response = await app.request(`/api/stream?ticketId=${encodeURIComponent(ticket.id)}`)
+      await response.body?.cancel()
+      await Promise.resolve()
+
+      expect(broadcaster.getClientCount(ticket.id)).toBe(0)
+      expect(broadcaster.getTotalClientCount()).toBe(0)
+    } finally {
+      vi.restoreAllMocks()
+      broadcaster.clearTicket(ticket.id)
+    }
+  })
+
+  it('releases a reservation when the request aborts during the opening handshake', async () => {
+    const ticket = createStreamRouteTicket()
+    const controller = new AbortController()
+    let releaseWrite!: () => void
+    const pendingWrite = new Promise<void>((resolve) => { releaseWrite = resolve })
+    vi.spyOn(SSEStreamingApi.prototype, 'writeSSE').mockImplementationOnce(() => {
+      controller.abort()
+      return pendingWrite
+    })
+
+    try {
+      const response = await app.request(`/api/stream?ticketId=${encodeURIComponent(ticket.id)}`, { signal: controller.signal })
+      await Promise.resolve()
+
+      // The abort fires after reserveClient but before the handshake can
+      // activate the broadcaster entry. It must release the placeholder on
+      // its own; canceling the response below is only final cleanup.
+      expect(broadcaster.getClientCount(ticket.id)).toBe(0)
+      expect(broadcaster.getTotalClientCount()).toBe(0)
+
+      releaseWrite()
+      await response.body?.cancel()
+    } finally {
+      vi.restoreAllMocks()
+      broadcaster.clearTicket(ticket.id)
+    }
+  })
+
+  it('aborts a backpressured opening write before ticket cleanup releases its slot', async () => {
+    const ticket = createStreamRouteTicket()
+    let releaseWrite!: () => void
+    const pendingWrite = new Promise<void>((resolve) => { releaseWrite = resolve })
+    const write = vi.spyOn(SSEStreamingApi.prototype, 'writeSSE').mockReturnValueOnce(pendingWrite)
+    const abort = vi.spyOn(SSEStreamingApi.prototype, 'abort')
+
+    try {
+      const response = await app.request(`/api/stream?ticketId=${encodeURIComponent(ticket.id)}`)
+      expect(write).toHaveBeenCalledTimes(1)
+      expect(broadcaster.getClientCount(ticket.id)).toBe(1)
+
+      broadcaster.clearTicket(ticket.id)
+
+      expect(abort).toHaveBeenCalledTimes(1)
+      expect(broadcaster.getClientCount(ticket.id)).toBe(0)
+      releaseWrite()
+      await response.body?.cancel()
+    } finally {
+      releaseWrite?.()
+      vi.restoreAllMocks()
+      broadcaster.clearTicket(ticket.id)
+    }
+  })
+
+  it('releases a reservation when the request is already aborted before opening', async () => {
+    const ticket = createStreamRouteTicket()
+    const controller = new AbortController()
+    controller.abort()
+
+    const response = await app.request(`/api/stream?ticketId=${encodeURIComponent(ticket.id)}`, { signal: controller.signal })
+
+    expect(response.status).toBe(499)
+    expect(broadcaster.getClientCount(ticket.id)).toBe(0)
+    expect(broadcaster.getTotalClientCount()).toBe(0)
+  })
+
+  it('keeps a deferred reservation counted until the broadcaster client activates', async () => {
+    const ticket = createStreamRouteTicket()
+    const clientId = 'deferred-open'
+    expect(broadcaster.reserveClient(ticket.id, clientId, MAX_SSE_CONNECTIONS_PER_TICKET, MAX_SSE_CONNECTIONS_TOTAL)).toBe(true)
+    expect(broadcaster.getClientCount(ticket.id)).toBe(1)
+
+    await Promise.resolve()
+    expect(broadcaster.getClientCount(ticket.id)).toBe(1)
+    expect(broadcaster.activateClient(ticket.id, {
+      id: clientId,
+      send: vi.fn(),
+      close: vi.fn(),
+    })).toBe(true)
+
+    broadcaster.removeClient(ticket.id, clientId)
+    expect(broadcaster.getClientCount(ticket.id)).toBe(0)
+  })
+
+  it('releases a reservation when opening throws synchronously', async () => {
+    const ticket = createStreamRouteTicket()
+    vi.spyOn(SSEStreamingApi.prototype, 'writeSSE').mockImplementationOnce(() => {
+      throw new Error('Synchronous open failure')
+    })
+    vi.spyOn(console, 'error').mockImplementation(() => undefined)
+
+    const response = await app.request(`/api/stream?ticketId=${encodeURIComponent(ticket.id)}`)
+    await response.body?.cancel()
+    await Promise.resolve()
+
+    expect(broadcaster.getClientCount(ticket.id)).toBe(0)
+    expect(broadcaster.getTotalClientCount()).toBe(0)
   })
 
   it('signals an unavailable replay cursor, resets the native cursor, and keeps delivering live events', async () => {

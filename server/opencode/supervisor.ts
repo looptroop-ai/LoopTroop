@@ -2,6 +2,7 @@ import { spawn, type ChildProcess } from 'node:child_process'
 import { setTimeout as delay } from 'node:timers/promises'
 import { isProcessAlive, killProcessTree } from '../cli/processControl'
 import { planProgramLaunch, resolveTrustedExecutable } from '../lib/executablePath'
+import { createChildEnvironment } from '../lib/childEnvironment'
 import { matchProcess, readProcessStartToken } from '../lib/processIdentity'
 import { captureProcessGroup, hasCapturedProcessGroupMember, refreshProcessGroup, terminateProcessTree, type ProcessGroupSnapshot } from '../lib/processTree'
 import { getErrorMessage } from '@shared/typeGuards'
@@ -445,6 +446,7 @@ export class OpenCodeSupervisor {
     if (launch.reason !== undefined) throw new OpenCodeMissingError(this.options.baseUrl, launch.reason)
     const child = spawnProcess(launch.file, launch.args, {
       stdio: ['ignore', 'inherit', 'inherit'],
+      env: createChildEnvironment(process.env),
       // Its own group, so terminating the daemon can take the whole tree down
       // rather than orphaning children of OpenCode.
       detached: process.platform !== 'win32',

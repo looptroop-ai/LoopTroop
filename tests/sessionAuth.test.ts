@@ -115,6 +115,75 @@ describe('daemon session auth', () => {
     expect(setCookie).toContain('Path=/api')
   })
 
+  it('marks the session cookie Secure for a configured HTTPS public origin', async () => {
+    const credentials = createSessionCredentials()
+    const app = createApp({
+      mode: 'production',
+      credentials,
+      publicOrigin: 'https://public.example',
+      clientDir: makeClientDir(),
+    })
+
+    const exchange = await app.request('/api/auth/exchange', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ nonce: await issueNonce(app, credentials) }),
+    })
+
+    expect(exchange.status).toBe(200)
+    expect(exchange.headers.get('Set-Cookie')).toContain('Secure')
+  })
+
+  it('refuses remote browser exchange without an HTTPS public origin', async () => {
+    const original = process.env.LOOPTROOP_ALLOW_REMOTE_API
+    process.env.LOOPTROOP_ALLOW_REMOTE_API = '1'
+    try {
+      const credentials = createSessionCredentials()
+      const app = createApp({ mode: 'production', credentials, clientDir: makeClientDir() })
+      const response = await app.request('/api/auth/exchange', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ nonce: await issueNonce(app, credentials) }),
+      })
+
+      expect(response.status).toBe(403)
+      expect(await response.json()).toMatchObject({ error: expect.stringContaining('HTTPS') })
+    } finally {
+      if (original === undefined) delete process.env.LOOPTROOP_ALLOW_REMOTE_API
+      else process.env.LOOPTROOP_ALLOW_REMOTE_API = original
+    }
+  })
+
+  it('exchanges a cookie through the configured public origin while the backend stays HTTP', async () => {
+    const original = process.env.LOOPTROOP_ALLOW_REMOTE_API
+    process.env.LOOPTROOP_ALLOW_REMOTE_API = '1'
+    try {
+      const credentials = createSessionCredentials()
+      const app = createApp({
+        mode: 'production',
+        credentials,
+        publicOrigin: 'https://public.example',
+        clientDir: makeClientDir(),
+      })
+      const nonce = await issueNonce(app, credentials)
+      const exchange = await app.request('http://127.0.0.1:3000/api/auth/exchange', {
+        method: 'POST',
+        headers: {
+          Host: 'looptroop.internal:3000',
+          Origin: 'https://public.example',
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify({ nonce }),
+      })
+
+      expect(exchange.status).toBe(200)
+      expect(exchange.headers.get('Set-Cookie')).toContain('Secure')
+    } finally {
+      if (original === undefined) delete process.env.LOOPTROOP_ALLOW_REMOTE_API
+      else process.env.LOOPTROOP_ALLOW_REMOTE_API = original
+    }
+  })
+
   it('lets the cookie authenticate subsequent requests', async () => {
     const credentials = createSessionCredentials()
     const app = createApp({

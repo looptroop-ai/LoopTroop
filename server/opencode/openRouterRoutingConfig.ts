@@ -1,20 +1,16 @@
 import { existsSync, readFileSync } from 'node:fs'
 import { LOOPTROOP_OPENCODE_ROUTING_CONFIG, isOpenRouterRoutingModel } from '../../shared/openRouterRouting'
 import { safeAtomicWrite } from '../io/atomicWrite'
+import { isRecord } from '@shared/typeGuards'
 
 type JsonObject = Record<string, unknown>
-
-function asObject(value: unknown): JsonObject | null {
-  return typeof value === 'object' && value !== null && !Array.isArray(value)
-    ? value as JsonObject
-    : null
-}
 
 function readConfig(configPath: string): JsonObject {
   if (!existsSync(configPath)) return {}
 
   try {
-    return asObject(JSON.parse(readFileSync(configPath, 'utf8'))) ?? {}
+    const parsed: unknown = JSON.parse(readFileSync(configPath, 'utf8'))
+    return isRecord(parsed) ? parsed : {}
   } catch {
     return {}
   }
@@ -32,9 +28,9 @@ export function registerOpenRouterRoutingModels(modelIds: readonly string[]): bo
   if (routingModels.length === 0) return false
 
   const config = readConfig(configPath)
-  const providers = asObject(config.provider) ?? {}
-  const openRouter = asObject(providers.openrouter) ?? {}
-  const models = asObject(openRouter.models) ?? {}
+  const providers = isRecord(config.provider) ? config.provider : {}
+  const openRouter = isRecord(providers.openrouter) ? providers.openrouter : {}
+  const models = isRecord(openRouter.models) ? openRouter.models : {}
   let changed = false
 
   for (const modelId of routingModels) {

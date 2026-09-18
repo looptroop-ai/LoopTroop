@@ -154,6 +154,7 @@ function ensureProjectionSchema(ticketId: string): ProjectionStorage | null {
       indexed_offset INTEGER NOT NULL,
       indexed_lines INTEGER NOT NULL,
       tail_offset INTEGER NOT NULL,
+      prefix_hash TEXT,
       PRIMARY KEY (ticket_id, path)
     );
     CREATE INDEX IF NOT EXISTS idx_execution_log_native_index_files_ticket
@@ -545,6 +546,70 @@ function nativeEntryIdentity(entry: OpenCodeNativeLogEntry): string {
   return `content:${createHash('sha256').update(JSON.stringify(entry)).digest('hex')}`
 }
 
+function nativeFileIdentity(value: { dev?: number; ino?: number }): string | undefined {
+  return typeof value.dev === 'number' && typeof value.ino === 'number'
+    ? `${value.dev}:${value.ino}`
+    : undefined
+}
+
+function nativeFileStatsMatch(
+  expected: { size: number; mtimeMs: number; dev?: number; ino?: number },
+  actual: { size: number; mtimeMs: number; dev?: number; ino?: number },
+  expectedIdentity?: string,
+): boolean {
+  return actual.size === expected.size
+    && actual.mtimeMs === expected.mtimeMs
+    && (expectedIdentity === undefined || nativeFileIdentity(actual) === expectedIdentity)
+    && (nativeFileIdentity(expected) === undefined
+      || nativeFileIdentity(actual) === nativeFileIdentity(expected))
+}
+
+async function readNativePrefixHash(
+  path: string,
+  endOffset: number,
+  expectedIdentity?: string,
+): Promise<string | null> {
+  const limit = Math.max(0, endOffset)
+  const hash = createHash('sha256')
+  let handle: Awaited<ReturnType<typeof open>> | null = null
+  try {
+    const before = await stat(path)
+    if (before.size < limit) return null
+    if (expectedIdentity !== undefined && nativeFileIdentity(before) !== expectedIdentity) return null
+    handle = await open(path, 'r')
+    const opened = await handle.stat()
+    if (!nativeFileStatsMatch(before, opened, expectedIdentity)) return null
+    const buffer = Buffer.allocUnsafe(Math.min(PROJECTION_READ_CHUNK_BYTES, Math.max(1, limit)))
+    let offset = 0
+    while (offset < limit) {
+      const length = Math.min(buffer.length, limit - offset)
+      const { bytesRead } = await handle.read(buffer, 0, length, offset)
+      if (bytesRead === 0) break
+      hash.update(buffer.subarray(0, bytesRead))
+      offset += bytesRead
+    }
+    const descriptorAfter = await handle.stat()
+    const after = await stat(path)
+    if (!nativeFileStatsMatch(before, descriptorAfter, expectedIdentity)
+      || !nativeFileStatsMatch(before, after, expectedIdentity)) return null
+    return offset === limit ? hash.digest('hex') : null
+  } catch {
+    return null
+  } finally {
+    await handle?.close().catch(() => undefined)
+  }
+}
+
+async function nativeFileMatchesCandidate(
+  candidate: { path: string; size: number; mtimeMs: number },
+  fileIdentity?: string,
+): Promise<boolean> {
+  const current = await stat(candidate.path)
+  return current.size === candidate.size
+    && current.mtimeMs === candidate.mtimeMs
+    && (fileIdentity === undefined || nativeFileIdentity(current) === fileIdentity)
+}
+
 interface NativeFileIndexRow {
   path: string
   file_identity: string
@@ -555,6 +620,7 @@ interface NativeFileIndexRow {
   indexed_offset: number
   indexed_lines: number
   tail_offset: number
+  prefix_hash: string | null
 }
 
 interface NativeGenerationRow {
@@ -686,7 +752,7 @@ async function ingestNativeFilesOnce(
   const candidatePaths = new Set(candidates.map(candidate => candidate.path))
   const existingRows = sqlite.prepare(`
     SELECT path, file_identity, mtime_ms, size, scanned_sessions, generation,
-      indexed_offset, indexed_lines, tail_offset
+      indexed_offset, indexed_lines, tail_offset, prefix_hash
     FROM execution_log_native_index_files
     WHERE ticket_id = ?
   `).all(context.localTicketId) as unknown as NativeFileIndexRow[]
@@ -708,12 +774,24 @@ async function ingestNativeFilesOnce(
     const scannedSessions = previous ? parseNativeFileSessions(previous.scanned_sessions) : []
     const needsSessionScan = sessionIds.some(sessionId => !scannedSessions.includes(sessionId))
     const candidateIdentity = candidate.fileIdentity ?? ''
+    const expectedIdentity = candidate.fileIdentity
     const identityChanged = Boolean(previous && previous.file_identity && candidateIdentity
       && previous.file_identity !== candidateIdentity)
     const truncated = Boolean(previous && candidate.size < previous.size)
-    const appended = Boolean(previous && !identityChanged && !truncated && candidate.size > previous.size)
+    let prefixMatches: boolean | null = null
+    if (previous && !identityChanged && !truncated && candidate.size > previous.size) {
+      if (!previous.prefix_hash || candidate.size < previous.indexed_offset) {
+        prefixMatches = false
+      } else {
+        const currentPrefixHash = await readNativePrefixHash(candidate.path, previous.indexed_offset, expectedIdentity)
+        prefixMatches = currentPrefixHash !== null && currentPrefixHash === previous.prefix_hash
+      }
+    }
+    const appended = Boolean(previous && !identityChanged && !truncated && candidate.size > previous.size
+      && prefixMatches === true)
     const rewritten = Boolean(previous && !appended
-      && candidate.mtimeMs !== previous.mtime_ms)
+      && (candidate.mtimeMs !== previous.mtime_ms
+        || (candidate.size > previous.size && prefixMatches === false)))
     const changed = !previous || identityChanged || truncated || appended || rewritten
     if (!changed && !needsSessionScan) {
       if (previous && (previous.mtime_ms !== candidate.mtimeMs || previous.file_identity !== candidateIdentity)) {
@@ -746,7 +824,7 @@ async function ingestNativeFilesOnce(
       endOffset?: number
       endLine?: number
     }> = fullReplacement
-      ? [{ sessionIds: scanSessions, startOffset: 0, startLine: 0 }]
+      ? [{ sessionIds: scanSessions, startOffset: 0, startLine: 0, endOffset: candidate.size }]
       : appended && missingSessions.length > 0
         ? [
             {
@@ -756,12 +834,18 @@ async function ingestNativeFilesOnce(
               endOffset: appendStartOffset,
               endLine: appendStartLine,
             },
-            { sessionIds: scanSessions, startOffset: appendStartOffset, startLine: appendStartLine },
+            {
+              sessionIds: scanSessions,
+              startOffset: appendStartOffset,
+              startLine: appendStartLine,
+              endOffset: candidate.size,
+            },
           ]
         : [{
             sessionIds: appended ? scanSessions : missingSessions,
             startOffset: appended ? appendStartOffset : 0,
             startLine: appended ? appendStartLine : 0,
+            endOffset: candidate.size,
           }]
     const parentGeneration = fullReplacement ? null : previous?.generation ?? null
     const replaceFromLine = fullReplacement
@@ -840,6 +924,7 @@ async function ingestNativeFilesOnce(
         const entries = await readOpenCodeNativeLogFile(candidate, plan.sessionIds, {
           startOffset: plan.startOffset,
           startLine: plan.startLine,
+          endOffset: plan.endOffset,
           onEntry: (raw, location) => {
             if (plan.endOffset !== undefined && location.byteOffset >= plan.endOffset) return
             insertRaw(raw, location)
@@ -854,6 +939,25 @@ async function ingestNativeFilesOnce(
           if (plan.endLine !== undefined && fallbackLine >= plan.endLine) continue
           insertRaw(raw, undefined, fallbackLine)
         }
+      }
+      const sourceMatchesCandidate = await nativeFileMatchesCandidate(candidate, expectedIdentity)
+      if (!sourceMatchesCandidate) throw new Error('Native log changed while it was being indexed')
+      const canReusePrefixHash = Boolean(previous
+        && !appended
+        && !rewritten
+        && !truncated
+        && previous.size === candidate.size
+        && previous.mtime_ms === candidate.mtimeMs
+        && previous.indexed_offset === stats.indexedOffset
+        && previous.prefix_hash !== null)
+      const prefixHash = canReusePrefixHash
+        ? previous?.prefix_hash ?? null
+        : await readNativePrefixHash(candidate.path, stats.indexedOffset, expectedIdentity)
+      if (prefixHash === null) {
+        throw new Error('Native log prefix hash could not be captured')
+      }
+      if (!(await nativeFileMatchesCandidate(candidate, expectedIdentity))) {
+        throw new Error('Native log changed while its index was being finalized')
       }
       sqlite.transaction(() => {
         sqlite.prepare(`
@@ -876,13 +980,14 @@ async function ingestNativeFilesOnce(
         sqlite.prepare(`
           INSERT INTO execution_log_native_index_files (
             ticket_id, path, file_identity, mtime_ms, size, scanned_sessions,
-            generation, indexed_offset, indexed_lines, tail_offset
-          ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            generation, indexed_offset, indexed_lines, tail_offset, prefix_hash
+          ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
           ON CONFLICT(ticket_id, path) DO UPDATE SET
             file_identity = excluded.file_identity, mtime_ms = excluded.mtime_ms,
             size = excluded.size, scanned_sessions = excluded.scanned_sessions,
             generation = excluded.generation, indexed_offset = excluded.indexed_offset,
-            indexed_lines = excluded.indexed_lines, tail_offset = excluded.tail_offset
+            indexed_lines = excluded.indexed_lines, tail_offset = excluded.tail_offset,
+            prefix_hash = excluded.prefix_hash
         `).run(
           context.localTicketId,
           candidate.path,
@@ -894,6 +999,7 @@ async function ingestNativeFilesOnce(
           stats.indexedOffset,
           stats.indexedLines,
           stats.tailOffset,
+          prefixHash,
         )
       })()
     } catch (error) {
@@ -907,7 +1013,7 @@ async function ingestNativeFilesOnce(
 
   const rows = sqlite.prepare(`
     SELECT path, file_identity, mtime_ms, size, scanned_sessions, generation,
-      indexed_offset, indexed_lines, tail_offset
+      indexed_offset, indexed_lines, tail_offset, prefix_hash
     FROM execution_log_native_index_files
     WHERE ticket_id = ?
     ORDER BY path
@@ -948,7 +1054,7 @@ function sqliteNativeFilesForSessions(
 ): NativeFileIndexRow[] {
   return (storage.sqlite.prepare(`
     SELECT path, file_identity, mtime_ms, size, scanned_sessions, generation,
-      indexed_offset, indexed_lines, tail_offset
+      indexed_offset, indexed_lines, tail_offset, prefix_hash
     FROM execution_log_native_index_files
     WHERE ticket_id = ?
     ORDER BY path

@@ -251,6 +251,8 @@ export interface OpenCodeNativeLogReadOptions {
   startOffset?: number
   /** Physical line number corresponding to startOffset. */
   startLine?: number
+  /** Stop at this absolute byte offset; useful when the file grows mid-scan. */
+  endOffset?: number
   /** Consume records without accumulating the complete file in memory. */
   onEntry?: (entry: OpenCodeNativeLogEntry, location: OpenCodeNativeLogReadLocation) => void
   stats?: OpenCodeNativeLogReadStats
@@ -380,6 +382,9 @@ export async function readOpenCodeNativeLogFile(
 ): Promise<OpenCodeNativeLogEntry[]> {
   const startOffset = Math.max(0, options.startOffset ?? 0)
   const startLine = Math.max(0, options.startLine ?? 0)
+  const endOffset = options.endOffset === undefined
+    ? undefined
+    : Math.max(startOffset, options.endOffset)
   const stats = options.stats
   if (stats) {
     stats.startOffset = startOffset
@@ -393,6 +398,7 @@ export async function readOpenCodeNativeLogFile(
     stats.entriesRead = 0
   }
   if (sessionIds.length === 0) return []
+  if (endOffset !== undefined && endOffset === startOffset) return []
   const sessionIdSet = new Set(sessionIds)
   const results: OpenCodeNativeLogEntry[] = []
   let unreadableLines = 0
@@ -401,7 +407,11 @@ export async function readOpenCodeNativeLogFile(
   let carryOffset = startOffset
   let readOffset = startOffset
   let completedLines = 0
-  const stream = createReadStream(file.path, { encoding: 'utf8', start: startOffset })
+  const stream = createReadStream(file.path, {
+    encoding: 'utf8',
+    start: startOffset,
+    ...(endOffset !== undefined ? { end: endOffset - 1 } : {}),
+  })
   const parseLine = (line: string, location: OpenCodeNativeLogReadLocation) => {
     const currentLine = lineNumber
     lineNumber += 1
@@ -444,10 +454,10 @@ export async function readOpenCodeNativeLogFile(
       carry = carry.slice(newline + 1)
       carryOffset += consumed
       completedLines += 1
+      if (completedLines % 500 === 0) {
+        await new Promise<void>(resolveYield => setImmediate(resolveYield))
+      }
       newline = carry.indexOf('\n')
-    }
-    if (lineNumber > 0 && lineNumber % 500 === 0) {
-      await new Promise<void>(resolveYield => setImmediate(resolveYield))
     }
   }
   if (carry.length > 0) {

@@ -1,7 +1,8 @@
 import { afterAll, beforeEach, describe, expect, it, vi } from 'vitest'
 import { Hono } from 'hono'
-import { appendFileSync } from 'node:fs'
+import { appendFileSync, statSync } from 'node:fs'
 import * as fsPromises from 'node:fs/promises'
+import { join } from 'node:path'
 import { clearProjectDatabaseCache, getProjectDatabase } from '../../db/project'
 import { sqlite } from '../../db/index'
 import { appendLogEvent } from '../../log/executionLog'
@@ -51,6 +52,24 @@ beforeEach(() => {
   readOpenCodeNativeLogFileMock.mockReset()
   readOpenCodeNativeLogFileMock.mockResolvedValue([])
 })
+
+function nativeCandidate(path: string): OpenCodeNativeLogFile {
+  const stats = statSync(path)
+  return {
+    path,
+    mtimeMs: stats.mtimeMs,
+    size: stats.size,
+    fileIdentity: typeof stats.dev === 'number' && typeof stats.ino === 'number'
+      ? `${stats.dev}:${stats.ino}`
+      : undefined,
+  }
+}
+
+async function writeNativeFixture(repoDir: string, name: string, size: number): Promise<string> {
+  const path = join(repoDir, name)
+  await fsPromises.writeFile(path, 'x'.repeat(size))
+  return path
+}
 
 afterAll(() => {
   clearProjectDatabaseCache()
@@ -296,7 +315,7 @@ describe('ticket log projection API', () => {
   })
 
   it('makes historical DEBUG a four-source ticket-scoped union', async () => {
-    const { ticket } = await createInitializedTestTicket(repoManager)
+    const { ticket, repoDir } = await createInitializedTestTicket(repoManager)
     appendLogEvent(ticket.id, 'info', 'CODING', 'system row', {
       sessionId: 'session-debug', phaseAttempt: 2, timestamp: '2026-01-01T00:00:01.000Z',
     }, 'system', 'CODING')
@@ -307,7 +326,8 @@ describe('ticket log projection API', () => {
     appendLogEvent(ticket.id, 'debug', 'CODING', 'debug row', {
       phaseAttempt: 2, timestamp: '2026-01-01T00:00:03.000Z',
     }, 'debug', 'CODING')
-    listOpenCodeNativeLogFilesMock.mockReturnValue([{ path: 'debug.log', mtimeMs: 1, size: 2 }])
+    const nativePath = await writeNativeFixture(repoDir, 'debug.log', 2)
+    listOpenCodeNativeLogFilesMock.mockReturnValue([nativeCandidate(nativePath)])
     readOpenCodeNativeLogFileMock.mockResolvedValue([
       {
         timestamp: '2026-01-01T00:00:04.000Z', type: 'debug', source: 'debug', audience: 'debug',
@@ -340,7 +360,7 @@ describe('ticket log projection API', () => {
     ])
     expect(new Set(pages.flatMap(page => page.map(entry => entry.content))).size).toBe(4)
     expect(readOpenCodeNativeLogFileMock).toHaveBeenCalledWith(
-      { path: 'debug.log', mtimeMs: 1, size: 2 },
+      nativeCandidate(nativePath),
       ['session-debug'],
       expect.objectContaining({ startOffset: 0, startLine: 0 }),
     )
@@ -357,7 +377,8 @@ describe('ticket log projection API', () => {
       phase: 'opencode_native', phaseAttempt: 1, status: 'opencode_native', message: entryId, content: entryId,
       sessionId: 'session-plan', data: {}, nativeIdentity: 'native.log:' + entryId,
     })
-    listOpenCodeNativeLogFilesMock.mockReturnValue([{ path: 'native.log', mtimeMs: 1, size: 2 }])
+    const nativePath = await writeNativeFixture(repoDir, 'native-plan.log', 2)
+    listOpenCodeNativeLogFilesMock.mockReturnValue([nativeCandidate(nativePath)])
     readOpenCodeNativeLogFileMock.mockResolvedValue([
       nativeEntry('native-new', '2026-01-01T00:00:03.000Z'),
       nativeEntry('native-old', '2026-01-01T00:00:02.000Z'),
@@ -458,7 +479,7 @@ describe('ticket log projection API', () => {
   })
 
   it('reports an expired native cursor instead of returning a partial page', async () => {
-    const { ticket } = await createInitializedTestTicket(repoManager)
+    const { ticket, repoDir } = await createInitializedTestTicket(repoManager)
     appendLogEvent(ticket.id, 'info', 'CODING', 'ticket session', {
       sessionId: 'session-expiry', timestamp: '2026-01-01T00:00:01.000Z',
     }, 'system', 'CODING')
@@ -467,14 +488,16 @@ describe('ticket log projection API', () => {
       phase: 'opencode_native', phaseAttempt: 1, status: 'opencode_native', message: entryId, content: entryId,
       sessionId: 'session-expiry', data: {}, nativeIdentity: 'native.log:' + entryId,
     })
-    listOpenCodeNativeLogFilesMock.mockReturnValue([{ path: 'native.log', mtimeMs: 1, size: 2 }])
+    const nativePath = await writeNativeFixture(repoDir, 'native-expiry.log', 2)
+    listOpenCodeNativeLogFilesMock.mockReturnValue([nativeCandidate(nativePath)])
     readOpenCodeNativeLogFileMock.mockResolvedValue([nativeEntry('rotation-1'), nativeEntry('rotation-2')])
     const first = await app.request('/api/tickets/' + encodeURIComponent(ticket.id) + '/logs?scope=phase&phase=CODING&view=debug&limit=1')
     const firstBody = await first.json() as { olderCursor: string }
     expect(firstBody.olderCursor).toEqual(expect.any(String))
 
     for (let rotation = 3; rotation <= 7; rotation += 1) {
-      listOpenCodeNativeLogFilesMock.mockReturnValue([{ path: 'native.log', mtimeMs: rotation, size: rotation + 1 }])
+      await fsPromises.writeFile(nativePath, 'x'.repeat(rotation + 1))
+      listOpenCodeNativeLogFilesMock.mockReturnValue([nativeCandidate(nativePath)])
       readOpenCodeNativeLogFileMock.mockResolvedValue([nativeEntry('rotation-' + rotation)])
       const response = await app.request('/api/tickets/' + encodeURIComponent(ticket.id) + '/logs?scope=phase&phase=CODING&view=debug&limit=1')
       expect(response.status).toBe(200)
@@ -488,26 +511,48 @@ describe('ticket log projection API', () => {
   })
 
   it('does not cache an empty complete history when a native candidate read fails', async () => {
-    const { ticket } = await createInitializedTestTicket(repoManager)
+    const { ticket, repoDir } = await createInitializedTestTicket(repoManager)
     appendLogEvent(ticket.id, 'info', 'CODING', 'ticket session', {
       sessionId: 'session-read-error', timestamp: '2026-01-01T00:00:01.000Z',
     }, 'system', 'CODING')
-    listOpenCodeNativeLogFilesMock.mockReturnValue([{ path: 'unreadable.log', mtimeMs: 1, size: 2 }])
+    const nativePath = await writeNativeFixture(repoDir, 'unreadable.log', 2)
+    listOpenCodeNativeLogFilesMock.mockReturnValue([nativeCandidate(nativePath)])
     readOpenCodeNativeLogFileMock.mockRejectedValue(new Error('EACCES'))
 
     const response = await app.request('/api/tickets/' + encodeURIComponent(ticket.id) + '/logs?scope=phase&phase=CODING&view=debug')
     expect(response.status).toBe(500)
   })
 
+  it('fails complete native ingestion when the source changes during indexing', async () => {
+    const { ticket, repoDir } = await createInitializedTestTicket(repoManager)
+    appendLogEvent(ticket.id, 'info', 'CODING', 'ticket session', {
+      sessionId: 'session-source-change', timestamp: '2026-01-01T00:00:01.000Z',
+    }, 'system', 'CODING')
+    const nativePath = await writeNativeFixture(repoDir, 'source-change.log', 2)
+    listOpenCodeNativeLogFilesMock.mockReturnValue([nativeCandidate(nativePath)])
+    readOpenCodeNativeLogFileMock.mockImplementation(async () => {
+      await fsPromises.appendFile(nativePath, 'y')
+      return [{
+        timestamp: '2026-01-01T00:00:02.000Z', type: 'debug', source: 'debug', audience: 'debug',
+        kind: 'session', op: 'append', phase: 'opencode_native', phaseAttempt: 1,
+        status: 'opencode_native', message: 'native row', content: 'native row',
+        sessionId: 'session-source-change', data: {}, nativeIdentity: 'source-change.log:1',
+      }]
+    })
+
+    const response = await app.request('/api/tickets/' + encodeURIComponent(ticket.id) + '/logs?scope=phase&phase=CODING&view=debug')
+    expect(response.status).toBe(500)
+  })
+
   it('refreshes same-size native rewrites while keeping an older cursor immutable', async () => {
-    const { ticket } = await createInitializedTestTicket(repoManager)
+    const { ticket, repoDir } = await createInitializedTestTicket(repoManager)
     appendLogEvent(ticket.id, 'info', 'CODING', 'ticket session', {
       sessionId: 'session-rewrite', timestamp: '2026-01-01T00:00:01.000Z',
     }, 'system', 'CODING')
+    const nativePath = await writeNativeFixture(repoDir, 'same-size-rewrite.log', 100)
+    await fsPromises.utimes(nativePath, 100, 100)
     let revision = 1
-    listOpenCodeNativeLogFilesMock.mockImplementation(() => [{
-      path: 'native.log', mtimeMs: revision, size: 100, fileIdentity: 'dev:same-inode',
-    }])
+    listOpenCodeNativeLogFilesMock.mockImplementation(() => [nativeCandidate(nativePath)])
     readOpenCodeNativeLogFileMock.mockImplementation(async () => [2, 3].map(second => ({
       timestamp: `2026-01-01T00:00:0${second}.000Z`, type: 'debug', source: 'debug', audience: 'debug',
       kind: 'session', op: 'append', phase: 'opencode_native', phaseAttempt: 1, status: 'opencode_native',
@@ -517,6 +562,8 @@ describe('ticket log projection API', () => {
     const query = { scope: 'phase', phase: 'CODING', view: 'debug', limit: 1 } as const
     const first = await queryLogPage(ticket.id, query)
     expect(first?.entries.map(entry => entry.content)).toEqual(['revision-1-3'])
+    await fsPromises.writeFile(nativePath, 'y'.repeat(100))
+    await fsPromises.utimes(nativePath, 200, 200)
     revision = 2
     const fresh = await queryLogPage(ticket.id, query)
     expect(fresh?.entries.map(entry => entry.content)).toEqual(['revision-2-3'])
@@ -525,23 +572,79 @@ describe('ticket log projection API', () => {
     expect(readOpenCodeNativeLogFileMock).toHaveBeenCalledTimes(2)
   })
 
+  it('replaces a same-inode native file when a growing rewrite changes the indexed prefix', async () => {
+    const { ticket, repoDir } = await createInitializedTestTicket(repoManager)
+    appendLogEvent(ticket.id, 'info', 'CODING', 'ticket session', {
+      sessionId: 'session-growing-rewrite', timestamp: '2026-01-01T00:00:01.000Z',
+    }, 'system', 'CODING')
+    const nativePath = join(repoDir, 'growing-rewrite.log')
+    await fsPromises.writeFile(nativePath, 'x'.repeat(100))
+    let revision = 1
+    listOpenCodeNativeLogFilesMock.mockImplementation(() => {
+      return [nativeCandidate(nativePath)]
+    })
+    readOpenCodeNativeLogFileMock.mockImplementation(async (file, _sessions, options) => {
+      const records = [2, 3].map(second => ({
+        timestamp: `2026-01-01T00:00:0${second}.000Z`, type: 'debug', source: 'debug', audience: 'debug',
+        kind: 'session', op: 'append', phase: 'opencode_native', phaseAttempt: 1, status: 'opencode_native',
+        message: `revision-${revision}-${second}`, content: `revision-${revision}-${second}`,
+        sessionId: 'session-growing-rewrite', data: {}, nativeIdentity: `growing-rewrite.log:${second}`,
+      } satisfies OpenCodeNativeLogEntry))
+      const startOffset = options?.startOffset ?? 0
+      const startLine = options?.startLine ?? 0
+      records.forEach((record, index) => options?.onEntry?.(record, {
+        lineNumber: startLine + index,
+        byteOffset: startOffset + index * 50,
+        byteLength: 50,
+        complete: true,
+      }))
+      if (options?.stats) {
+        options.stats.linesRead = records.length
+        options.stats.indexedOffset = file.size
+        options.stats.indexedLines = startLine + records.length
+        options.stats.tailOffset = file.size
+        options.stats.endedWithNewline = true
+        options.stats.entriesRead = records.length
+      }
+      return []
+    })
+
+    const query = { scope: 'phase', phase: 'CODING', view: 'debug', limit: 20 } as const
+    const first = await queryLogPage(ticket.id, query)
+    expect(first?.entries.map(entry => entry.content)).toEqual([
+      'ticket session', 'revision-1-2', 'revision-1-3',
+    ])
+
+    await fsPromises.writeFile(nativePath, 'y'.repeat(130))
+    revision = 2
+    const fresh = await queryLogPage(ticket.id, query)
+    expect(fresh?.entries.map(entry => entry.content)).toEqual([
+      'ticket session', 'revision-2-2', 'revision-2-3',
+    ])
+    expect(readOpenCodeNativeLogFileMock.mock.calls[1]?.[2]).toEqual(expect.objectContaining({
+      startOffset: 0,
+      startLine: 0,
+    }))
+  })
+
   it('indexes an append from the saved byte offset and snapshots one generation pointer', async () => {
     const { ticket, repoDir } = await createInitializedTestTicket(repoManager)
     appendLogEvent(ticket.id, 'info', 'CODING', 'ticket session', {
       sessionId: 'session-append', timestamp: '2026-01-01T00:00:01.000Z',
     }, 'system', 'CODING')
-    let fileSize = 100
+    const nativePath = join(repoDir, 'native.log')
+    await fsPromises.writeFile(nativePath, 'x'.repeat(100))
+    let appended = false
     const nativeEntry = (entryId: string, timestamp: string): OpenCodeNativeLogEntry => ({
       timestamp, type: 'debug', source: 'debug', audience: 'debug', kind: 'session', op: 'append',
       phase: 'opencode_native', phaseAttempt: 1, status: 'opencode_native', message: entryId, content: entryId,
       sessionId: 'session-append', data: {}, nativeIdentity: `native.log:${entryId}`,
     })
-    listOpenCodeNativeLogFilesMock.mockImplementation(() => [{
-      path: 'native.log', mtimeMs: fileSize, size: fileSize, fileIdentity: 'dev:1',
-    }])
-    readOpenCodeNativeLogFileMock.mockImplementation(async (_file, _sessions, options) => {
-      const appending = fileSize === 130
-      const records = appending
+    listOpenCodeNativeLogFilesMock.mockImplementation(() => {
+      return [nativeCandidate(nativePath)]
+    })
+    readOpenCodeNativeLogFileMock.mockImplementation(async (file, _sessions, options) => {
+      const records = appended
         ? [nativeEntry('third', '2026-01-01T00:00:04.000Z')]
         : [nativeEntry('first', '2026-01-01T00:00:02.000Z'), nativeEntry('second', '2026-01-01T00:00:03.000Z')]
       const startOffset = options?.startOffset ?? 0
@@ -554,9 +657,9 @@ describe('ticket log projection API', () => {
       }))
       if (options?.stats) {
         options.stats.linesRead = records.length
-        options.stats.indexedOffset = fileSize
+        options.stats.indexedOffset = file.size
         options.stats.indexedLines = startLine + records.length
-        options.stats.tailOffset = fileSize
+        options.stats.tailOffset = file.size
         options.stats.endedWithNewline = true
         options.stats.entriesRead = records.length
       }
@@ -567,7 +670,8 @@ describe('ticket log projection API', () => {
       scope: 'phase', phase: 'CODING', view: 'debug', limit: 20,
     })
     expect(first?.entries.map(entry => entry.content)).toEqual(['ticket session', 'first', 'second'])
-    fileSize = 130
+    await fsPromises.appendFile(nativePath, 'x'.repeat(30))
+    appended = true
     const second = await queryLogPage(ticket.id, {
       scope: 'phase', phase: 'CODING', view: 'debug', limit: 20,
     })
@@ -582,13 +686,17 @@ describe('ticket log projection API', () => {
     const generations = sqlite.prepare(`
       SELECT COUNT(*) AS count
       FROM execution_log_native_index_versions
-      WHERE ticket_id = ? AND path = 'native.log'
-    `).get(ticketContext!.localTicketId) as { count: number }
+      WHERE ticket_id = ? AND path = ?
+    `).get(ticketContext!.localTicketId, nativePath) as { count: number }
     const indexed = sqlite.prepare(`
       SELECT COUNT(*) AS count
       FROM execution_log_native_index_entries
-      WHERE ticket_id = ? AND path = 'native.log'
-    `).get(ticketContext!.localTicketId) as { count: number }
+      WHERE ticket_id = ? AND path = ?
+    `).get(ticketContext!.localTicketId, nativePath) as { count: number }
+    const prefix = sqlite.prepare(`
+      SELECT prefix_hash FROM execution_log_native_index_files
+      WHERE ticket_id = ? AND path = ?
+    `).get(ticketContext!.localTicketId, nativePath) as { prefix_hash: string | null }
     const snapshotPointers = sqlite.prepare(`
       SELECT COUNT(*) AS count
       FROM execution_log_native_snapshot_files
@@ -596,6 +704,7 @@ describe('ticket log projection API', () => {
     `).get(ticketContext!.localTicketId) as { count: number }
     expect(generations.count).toBe(2)
     expect(indexed.count).toBe(3)
+    expect(prefix.prefix_hash).toEqual(expect.any(String))
     expect(snapshotPointers.count).toBe(2)
     const exported = await exportLogEntries(ticket.id, {
       scope: 'phase', phase: 'CODING', view: 'debug',
@@ -604,11 +713,12 @@ describe('ticket log projection API', () => {
   })
 
   it('bounds a missing-session prefix before appending the suffix for every session', async () => {
-    const { ticket } = await createInitializedTestTicket(repoManager)
+    const { ticket, repoDir } = await createInitializedTestTicket(repoManager)
     appendLogEvent(ticket.id, 'info', 'CODING', 'session A', {
       sessionId: 'session-a', timestamp: '2026-01-01T00:00:01.000Z',
     }, 'system', 'CODING')
     let fileSize = 200
+    const nativePath = await writeNativeFixture(repoDir, 'missing-session.log', fileSize)
     const records = [
       ['session-a', 'A old'],
       ['session-b', 'B old'],
@@ -620,9 +730,7 @@ describe('ticket log projection API', () => {
       kind: 'session', op: 'append', phase: 'opencode_native', phaseAttempt: 1, status: 'opencode_native',
       message: content, content, sessionId, data: {}, nativeIdentity: `native.log:${index}`,
     })
-    listOpenCodeNativeLogFilesMock.mockImplementation(() => [{
-      path: 'native.log', mtimeMs: fileSize, size: fileSize, fileIdentity: 'dev:missing-session',
-    }])
+    listOpenCodeNativeLogFilesMock.mockImplementation(() => [nativeCandidate(nativePath)])
     readOpenCodeNativeLogFileMock.mockImplementation(async (_file, sessions, options) => {
       const start = (options?.startOffset ?? 0) >= 200 ? 2 : 0
       const end = fileSize === 200 ? 2 : records.length
@@ -650,6 +758,7 @@ describe('ticket log projection API', () => {
       sessionId: 'session-b', timestamp: '2026-01-01T00:00:02.000Z',
     }, 'system', 'CODING')
     fileSize = 400
+    await fsPromises.appendFile(nativePath, 'x'.repeat(200))
     const second = await queryLogPage(ticket.id, { scope: 'phase', phase: 'CODING', view: 'debug', limit: 20 })
     const nativeContents = second?.entries
       .filter(entry => entry.source === 'debug' && entry.phase === 'opencode_native')
@@ -659,19 +768,18 @@ describe('ticket log projection API', () => {
   })
 
   it('replaces an existing unterminated tail while adding a newly requested session', async () => {
-    const { ticket } = await createInitializedTestTicket(repoManager)
+    const { ticket, repoDir } = await createInitializedTestTicket(repoManager)
     appendLogEvent(ticket.id, 'info', 'CODING', 'session A', {
       sessionId: 'session-tail-a', timestamp: '2026-01-01T00:00:01.000Z',
     }, 'system', 'CODING')
     let appended = false
+    const nativePath = await writeNativeFixture(repoDir, 'tail.log', 100)
     const nativeEntry = (sessionId: string, content: string, index: number): OpenCodeNativeLogEntry => ({
       timestamp: `2026-01-01T00:00:0${index}.000Z`, type: 'debug', source: 'debug', audience: 'debug',
       kind: 'session', op: 'append', phase: 'opencode_native', phaseAttempt: 1, status: 'opencode_native',
       message: content, content, sessionId, data: {}, nativeIdentity: `tail.log:${index}`,
     })
-    listOpenCodeNativeLogFilesMock.mockImplementation(() => [{
-      path: 'tail.log', mtimeMs: appended ? 2 : 1, size: appended ? 200 : 100, fileIdentity: 'dev:tail',
-    }])
+    listOpenCodeNativeLogFilesMock.mockImplementation(() => [nativeCandidate(nativePath)])
     readOpenCodeNativeLogFileMock.mockImplementation(async (_file, sessions, options) => {
       const records: Array<[string, string]> = appended
         ? [['session-tail-a', 'A tail'], ['session-tail-b', 'B new']]
@@ -693,6 +801,7 @@ describe('ticket log projection API', () => {
     const first = await queryLogPage(ticket.id, { scope: 'phase', phase: 'CODING', view: 'debug', limit: 20 })
     expect(first?.entries.map(entry => entry.content)).toContain('A tail')
     appended = true
+    await fsPromises.appendFile(nativePath, 'x'.repeat(100))
     appendLogEvent(ticket.id, 'info', 'CODING', 'session B', {
       sessionId: 'session-tail-b', timestamp: '2026-01-01T00:00:02.000Z',
     }, 'system', 'CODING')
@@ -709,10 +818,9 @@ describe('ticket log projection API', () => {
       sessionId: 'session-clock', timestamp: '2026-01-01T00:00:01.000Z',
     }, 'system', 'CODING')
     let rotation = 0
+    const nativePath = await writeNativeFixture(repoDir, 'clock.log', 100)
     const clock = vi.spyOn(Date, 'now').mockImplementation(() => rotation < 6 ? 1000 : 500)
-    listOpenCodeNativeLogFilesMock.mockImplementation(() => [{
-      path: 'clock.log', mtimeMs: rotation, size: rotation + 100, fileIdentity: `dev:clock-${rotation}`,
-    }])
+    listOpenCodeNativeLogFilesMock.mockImplementation(() => [nativeCandidate(nativePath)])
     readOpenCodeNativeLogFileMock.mockImplementation(async (_file, _sessions, options) => {
       const content = `rotation-${rotation}`
       options?.onEntry?.({
@@ -730,6 +838,7 @@ describe('ticket log projection API', () => {
     try {
       let lastPage
       for (rotation = 0; rotation < 12; rotation += 1) {
+        await fsPromises.writeFile(nativePath, 'x'.repeat(rotation + 100))
         lastPage = await queryLogPage(ticket.id, { scope: 'phase', phase: 'CODING', view: 'debug', limit: 1 })
         expect(lastPage?.entries).toEqual(expect.any(Array))
       }
@@ -738,12 +847,12 @@ describe('ticket log projection API', () => {
       const context = getTicketContext(ticket.id)
       const current = db.prepare(`
         SELECT generation FROM execution_log_native_index_files
-        WHERE ticket_id = ? AND path = 'clock.log'
-      `).get(context!.localTicketId) as { generation: number }
+        WHERE ticket_id = ? AND path = ?
+      `).get(context!.localTicketId, nativePath) as { generation: number }
       const currentPointer = db.prepare(`
         SELECT generation FROM execution_log_native_snapshot_files
-        WHERE ticket_id = ? AND snapshot_key = ? AND path = 'clock.log'
-      `).get(context!.localTicketId, cursor.nativeSnapshot) as { generation: number }
+        WHERE ticket_id = ? AND snapshot_key = ? AND path = ?
+      `).get(context!.localTicketId, cursor.nativeSnapshot, nativePath) as { generation: number }
       expect(currentPointer.generation).toBe(current.generation)
       const snapshots = db.prepare(`
         SELECT COUNT(*) AS count FROM execution_log_native_snapshots WHERE ticket_id = ?
@@ -755,7 +864,7 @@ describe('ticket log projection API', () => {
   })
 
   it('keeps unrelated native rotation out of the ticket snapshot and ingests it separately', async () => {
-    const { ticket } = await createInitializedTestTicket(repoManager)
+    const { ticket, repoDir } = await createInitializedTestTicket(repoManager)
     appendLogEvent(ticket.id, 'info', 'CODING', 'ticket session', {
       sessionId: 'session-incremental', timestamp: '2026-01-01T00:00:01.000Z',
     }, 'system', 'CODING')
@@ -764,33 +873,34 @@ describe('ticket log projection API', () => {
       phase: 'opencode_native', phaseAttempt: 1, status: 'opencode_native', message: 'ticket native', content: 'ticket native',
       sessionId: 'session-incremental', data: {}, nativeIdentity: 'relevant.log:1',
     })
-    let unrelatedMtime = 1
+    const relevantPath = await writeNativeFixture(repoDir, 'relevant.log', 2)
+    const unrelatedPath = await writeNativeFixture(repoDir, 'unrelated.log', 2)
     listOpenCodeNativeLogFilesMock.mockImplementation(() => [
-      { path: 'relevant.log', mtimeMs: 1, size: 2 },
-      { path: 'unrelated.log', mtimeMs: unrelatedMtime, size: 2 },
+      nativeCandidate(relevantPath),
+      nativeCandidate(unrelatedPath),
     ])
-    readOpenCodeNativeLogFileMock.mockImplementation(async file => file.path === 'relevant.log' ? [nativeEntry()] : [])
+    readOpenCodeNativeLogFileMock.mockImplementation(async file => file.path === relevantPath ? [nativeEntry()] : [])
 
     const first = await queryLogPage(ticket.id, {
       scope: 'phase', phase: 'CODING', view: 'debug', limit: 20,
     })
     expect(first?.entries.map(entry => entry.content)).toContain('ticket native')
     readOpenCodeNativeLogFileMock.mockClear()
-    unrelatedMtime = 2
+    await fsPromises.writeFile(unrelatedPath, 'y'.repeat(3))
     const second = await queryLogPage(ticket.id, {
       scope: 'phase', phase: 'CODING', view: 'debug', limit: 20,
     })
     expect(second?.entries.map(entry => entry.content)).toContain('ticket native')
     expect(readOpenCodeNativeLogFileMock).toHaveBeenCalledTimes(1)
     expect(readOpenCodeNativeLogFileMock).toHaveBeenCalledWith(
-      { path: 'unrelated.log', mtimeMs: 2, size: 2 },
+      nativeCandidate(unrelatedPath),
       ['session-incremental'],
       expect.objectContaining({ startOffset: 0, startLine: 0 }),
     )
   })
 
   it('serializes native ingestion across concurrent phase session scopes', async () => {
-    const { ticket } = await createInitializedTestTicket(repoManager)
+    const { ticket, repoDir } = await createInitializedTestTicket(repoManager)
     appendLogEvent(ticket.id, 'info', 'CODING', 'attempt one', {
       sessionId: 'session-one', phaseAttempt: 1, timestamp: '2026-01-01T00:00:01.000Z',
     }, 'system', 'CODING')
@@ -803,7 +913,8 @@ describe('ticket log projection API', () => {
       status: 'opencode_native', message: sessionId, content: sessionId, sessionId,
       data: {}, nativeIdentity: `native.log:${sessionId}`,
     })
-    listOpenCodeNativeLogFilesMock.mockReturnValue([{ path: 'native.log', mtimeMs: 1, size: 2 }])
+    const nativePath = await writeNativeFixture(repoDir, 'native-concurrent.log', 2)
+    listOpenCodeNativeLogFilesMock.mockReturnValue([nativeCandidate(nativePath)])
     let readCount = 0
     let releaseFirst!: () => void
     let firstReadStarted!: () => void
@@ -837,7 +948,7 @@ describe('ticket log projection API', () => {
   })
 
   it('keeps a native cursor on its indexed snapshot when files rotate between pages', async () => {
-    const { ticket } = await createInitializedTestTicket(repoManager)
+    const { ticket, repoDir } = await createInitializedTestTicket(repoManager)
     appendLogEvent(ticket.id, 'info', 'CODING', 'ticket session', {
       sessionId: 'session-stable', timestamp: '2026-01-01T00:00:01.000Z',
     }, 'system', 'CODING')
@@ -846,7 +957,8 @@ describe('ticket log projection API', () => {
       phase: 'opencode_native', phaseAttempt: 1, status: 'opencode_native', message: entryId, content: entryId,
       sessionId: 'session-stable', data: {}, nativeIdentity: `native.log:${entryId}`,
     })
-    listOpenCodeNativeLogFilesMock.mockReturnValue([{ path: 'native.log', mtimeMs: 1, size: 2 }])
+    const nativePath = await writeNativeFixture(repoDir, 'native-cursor.log', 2)
+    listOpenCodeNativeLogFilesMock.mockReturnValue([nativeCandidate(nativePath)])
     readOpenCodeNativeLogFileMock.mockResolvedValue([
       nativeEntry('native-new', '2026-01-01T00:00:03.000Z'),
       nativeEntry('native-old', '2026-01-01T00:00:02.000Z'),
@@ -857,7 +969,8 @@ describe('ticket log projection API', () => {
     expect(first.entries.map(entry => entry.content)).toEqual(['native-new'])
     expect(first.olderCursor).toEqual(expect.any(String))
 
-    listOpenCodeNativeLogFilesMock.mockReturnValue([{ path: 'native.log', mtimeMs: 2, size: 3 }])
+    await fsPromises.appendFile(nativePath, 'x')
+    listOpenCodeNativeLogFilesMock.mockReturnValue([nativeCandidate(nativePath)])
     readOpenCodeNativeLogFileMock.mockResolvedValue([nativeEntry('rotated-new', '2026-01-01T00:00:04.000Z')])
     const olderResponse = await app.request(
       `/api/tickets/${encodeURIComponent(ticket.id)}/logs?scope=phase&phase=CODING&view=debug&limit=1&before=${encodeURIComponent(first.olderCursor!)}`,

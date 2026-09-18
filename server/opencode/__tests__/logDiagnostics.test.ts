@@ -1,6 +1,6 @@
 import { appendFileSync, symlinkSync, utimesSync, writeFileSync } from 'node:fs'
 import { join } from 'node:path'
-import { afterEach, describe, expect, it } from 'vitest'
+import { afterEach, describe, expect, it, vi } from 'vitest'
 import { makeTempDir, removeTempDir } from '../../test/tempDir'
 import {
   enrichGenericOpenCodeProviderError,
@@ -231,6 +231,43 @@ describe('readOpenCodeNativeLogs', () => {
     expect(secondStats.bytesRead).toBeLessThan(candidate.size)
     expect(secondStats.linesRead).toBe(1)
     expect(appended.map(entry => entry.content)).toEqual([expect.stringContaining('second')])
+  })
+
+  it('does not read bytes appended after the captured file size', async () => {
+    const dir = makeLogDir()
+    const first = 'time="2026-05-22T15:16:03.000Z" session.id=ses-bound msg="first"\n'
+    const second = 'time="2026-05-22T15:16:04.000Z" session.id=ses-bound msg="second"\n'
+    writeLog(dir, first + second, 'bounded.log')
+    const candidate = listOpenCodeNativeLogFiles({ logDirs: [dir] })[0]!
+    const capturedSize = Buffer.byteLength(first)
+    const stats = {} as OpenCodeNativeLogReadStats
+
+    const entries = await readOpenCodeNativeLogFile(candidate, ['ses-bound'], {
+      endOffset: capturedSize,
+      stats,
+    })
+
+    expect(entries.map(entry => entry.content)).toEqual([expect.stringContaining('first')])
+    expect(stats.bytesRead).toBe(capturedSize)
+    expect(stats.indexedOffset).toBe(capturedSize)
+    expect(stats.linesRead).toBe(1)
+  })
+
+  it('yields while parsing a large complete native file', async () => {
+    const dir = makeLogDir()
+    writeLog(dir, Array.from({ length: 1_001 }, (_, index) =>
+      `time="2026-05-22T15:16:${String(index % 60).padStart(2, '0')}.000Z" session.id=ses-fair msg="row-${index}"`,
+    ).join('\n') + '\n', 'fairness.log')
+    const immediate = vi.spyOn(globalThis, 'setImmediate')
+
+    const entries = await readOpenCodeNativeLogFile(
+      listOpenCodeNativeLogFiles({ logDirs: [dir] })[0]!,
+      ['ses-fair'],
+    )
+
+    expect(entries).toHaveLength(1_001)
+    expect(immediate).toHaveBeenCalledTimes(2)
+    immediate.mockRestore()
   })
 
   it('propagates index callback failures instead of treating them as bad log lines', async () => {

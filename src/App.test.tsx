@@ -978,6 +978,76 @@ describe('App route ownership', () => {
     expect(window.location.pathname).toBe('/ticket/LT-1')
   })
 
+  it('releases a pending ticket pop after an initial error for modal navigation', async () => {
+    mockState.tickets = [
+      { id: 'ticket-1', externalId: 'LT-1' },
+      { id: 'ticket-2', externalId: 'LT-2' },
+    ]
+    mockState.ticketsFetched = false
+    mockState.ticketsLoading = true
+    window.history.pushState(null, '', '/ticket/LT-1')
+
+    const queryClient = createTestQueryClient()
+    const { rerender } = renderAppElement(queryClient)
+
+    window.history.pushState(null, '', '/ticket/LT-2')
+    await act(async () => {
+      window.dispatchEvent(new PopStateEvent('popstate'))
+    })
+    expect(window.location.pathname).toBe('/ticket/LT-2')
+
+    mockState.ticketsFetched = true
+    mockState.ticketsLoading = false
+    mockState.ticketsError = true
+    rerenderAppElement(rerender, queryClient)
+
+    // The failed list cannot resolve the ticket, but it must not leave the
+    // route effect fenced behind the unresolved pop forever.
+    fireEvent.click(screen.getByRole('button', { name: 'Open Configuration' }))
+    await waitFor(() => {
+      expect(window.location.pathname).toBe('/config')
+    })
+
+    expect(await screen.findByText('Profile Setup')).toBeInTheDocument()
+    expect(window.location.pathname).toBe('/config')
+  })
+
+  it('keeps a pending ticket pop available for hydration after the list recovers', async () => {
+    mockState.tickets = [
+      { id: 'ticket-1', externalId: 'LT-1' },
+      { id: 'ticket-2', externalId: 'LT-2' },
+    ]
+    mockState.ticketsFetched = false
+    mockState.ticketsLoading = true
+    window.history.pushState(null, '', '/ticket/LT-1')
+
+    const queryClient = createTestQueryClient()
+    const { rerender } = renderAppElement(queryClient)
+
+    window.history.pushState(null, '', '/ticket/LT-2')
+    await act(async () => {
+      window.dispatchEvent(new PopStateEvent('popstate'))
+    })
+
+    mockState.ticketsFetched = true
+    mockState.ticketsLoading = false
+    mockState.ticketsError = true
+    rerenderAppElement(rerender, queryClient)
+
+    await waitFor(() => {
+      expect(screen.getByText('Kanban Board')).toBeInTheDocument()
+      expect(window.location.pathname).toBe('/ticket/LT-2')
+    })
+
+    mockState.ticketsError = false
+    rerenderAppElement(rerender, queryClient)
+
+    await waitFor(() => {
+      expect(screen.getByText('Ticket Dashboard')).toBeInTheDocument()
+      expect(window.location.pathname).toBe('/ticket/LT-2')
+    })
+  })
+
   it('does not reopen the restored ticket when Back reaches the board before the list settles', async () => {
     persistTicketSelection('ticket-2', 'LT-2')
     mockState.tickets = [

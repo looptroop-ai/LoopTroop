@@ -117,4 +117,39 @@ describe.concurrent('mergeTicketInCache with a partial payload', () => {
     expect(queryClient.getQueryData<TestTicket>(['ticket', cached.id]))
       .toEqual({ id: cached.id, status: 'WAITING_PR_REVIEW', title: 'Keep me' })
   })
+
+  it('merges partial nested patches without clobbering cached siblings', () => {
+    const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } })
+    const cached = {
+      id: '1:T-42',
+      status: 'CODING',
+      runtime: { currentBead: 1, totalBeads: 4, beads: [{ id: 'bead-1' }] },
+      pendingQuestions: { requestCount: 1, questionCount: 2, deadlineAt: 'later', stoppedAt: null },
+      manualQa: {
+        completedRoundCount: 2,
+        artifactAvailability: { checklist: false, results: true, coverage: true, summary: false },
+      },
+      implementationTiming: { activeDurationMs: 10, startedAt: 'before' },
+    }
+    queryClient.setQueryData(['ticket', cached.id], cached)
+
+    mergeTicketInCache(queryClient, {
+      id: cached.id,
+      runtime: { currentBead: 2 },
+      pendingQuestions: { requestCount: 3 },
+      manualQa: { artifactAvailability: { checklist: true } },
+      implementationTiming: { activeDurationMs: 20 },
+    })
+
+    expect(queryClient.getQueryData(['ticket', cached.id])).toEqual({
+      ...cached,
+      runtime: { currentBead: 2, totalBeads: 4, beads: [{ id: 'bead-1' }] },
+      pendingQuestions: { requestCount: 3, questionCount: 2, deadlineAt: 'later', stoppedAt: null },
+      manualQa: {
+        completedRoundCount: 2,
+        artifactAvailability: { checklist: true, results: true, coverage: true, summary: false },
+      },
+      implementationTiming: { activeDurationMs: 20, startedAt: 'before' },
+    })
+  })
 })

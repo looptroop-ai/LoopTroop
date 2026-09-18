@@ -489,6 +489,11 @@ export function useSSE({ ticketId, onEvent }: SSEOptions) {
           queryClient.invalidateQueries({ queryKey: ['ticket', currentTicketId] })
         }
         queryClient.invalidateQueries({ queryKey: ['tickets'] })
+        // A zero cursor is deliberately omitted from the handshake because it
+        // is not an event the server can replay. Recover all ticket-scoped
+        // snapshots on the next open in that case; a non-zero cursor still
+        // bridges the outage quietly through the server's replay buffer.
+        recoverOnOpenRef.current = lastEventIdRef.current === '0'
         scheduleReconnect()
       }
     })()

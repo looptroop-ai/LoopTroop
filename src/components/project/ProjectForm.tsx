@@ -53,6 +53,27 @@ function projectDraftSnapshot(values: {
   return JSON.stringify(values)
 }
 
+function projectRestoreSnapshot(snapshot: string | null): string | null {
+  if (snapshot === null) return null
+  try {
+    const values = JSON.parse(snapshot) as Record<string, unknown>
+    delete values.folder
+    return JSON.stringify(values)
+  } catch {
+    return snapshot
+  }
+}
+
+function projectSnapshotWithFolder(snapshot: string, folder: string): string {
+  try {
+    const values = JSON.parse(snapshot) as Record<string, unknown>
+    values.folder = folder
+    return JSON.stringify(values)
+  } catch {
+    return snapshot
+  }
+}
+
 interface GitCheckResponse {
   isGit: boolean
   status: 'none' | 'checking' | 'valid' | 'invalid'
@@ -207,33 +228,40 @@ export function ProjectForm({ onClose, onBack, project, onDirtyChange }: Project
             && data.repoRoot
             && restorePrefillKeyRef.current !== data.repoRoot
           ) {
-            profileDefaultsAppliedRef.current = true
-            setName(data.existingProject.name)
-            setShortname(data.existingProject.shortname)
-            setIcon(data.existingProject.icon ?? '📁')
-            setColor(data.existingProject.color ?? '#3b82f6')
-            if (data.existingProject.manualQaOverride !== undefined) {
-              setManualQaOverride(data.existingProject.manualQaOverride ?? profile?.manualQaEnabled ?? PROFILE_DEFAULTS.manualQaEnabled)
+            const currentRestoreDraft = projectRestoreSnapshot(draftSnapshotRef.current)
+            const baselineRestoreDraft = projectRestoreSnapshot(
+              projectBaselineRef.current ?? projectInitialDraftRef.current,
+            )
+            const currentDraftIsDirty = currentRestoreDraft !== baselineRestoreDraft
+            if (!currentDraftIsDirty) {
+              profileDefaultsAppliedRef.current = true
+              setName(data.existingProject.name)
+              setShortname(data.existingProject.shortname)
+              setIcon(data.existingProject.icon ?? '📁')
+              setColor(data.existingProject.color ?? '#3b82f6')
+              if (data.existingProject.manualQaOverride !== undefined) {
+                setManualQaOverride(data.existingProject.manualQaOverride ?? profile?.manualQaEnabled ?? PROFILE_DEFAULTS.manualQaEnabled)
+              }
+              if (data.existingProject.aiQuestionsOverride !== undefined) {
+                setAiQuestionsOverride(data.existingProject.aiQuestionsOverride)
+              }
+              if (data.existingProject.aiQuestionWindowOverride !== undefined) {
+                setAiQuestionWindowOverride(data.existingProject.aiQuestionWindowOverride)
+              }
+              if (data.existingProject.gitHookPolicy !== undefined) {
+                setGitHookPolicy(
+                  normalizeGitHookPolicySetting(data.existingProject.gitHookPolicy)
+                    ?? normalizeGitHookPolicySetting(profile?.gitHookPolicy)
+                    ?? DEFAULT_GIT_HOOK_POLICY,
+                )
+              }
+              if (data.existingProject.ignoreMode !== undefined) {
+                setIgnoreMode(normalizeIgnoreMode(data.existingProject.ignoreMode) ?? DEFAULT_IGNORE_MODE)
+              }
+              setExistingStateAction('restore')
+              setIsExistingStateConfirmOpen(false)
+              restorePrefillKeyRef.current = data.repoRoot
             }
-            if (data.existingProject.aiQuestionsOverride !== undefined) {
-              setAiQuestionsOverride(data.existingProject.aiQuestionsOverride)
-            }
-            if (data.existingProject.aiQuestionWindowOverride !== undefined) {
-              setAiQuestionWindowOverride(data.existingProject.aiQuestionWindowOverride)
-            }
-            if (data.existingProject.gitHookPolicy !== undefined) {
-              setGitHookPolicy(
-                normalizeGitHookPolicySetting(data.existingProject.gitHookPolicy)
-                  ?? normalizeGitHookPolicySetting(profile?.gitHookPolicy)
-                  ?? DEFAULT_GIT_HOOK_POLICY,
-              )
-            }
-            if (data.existingProject.ignoreMode !== undefined) {
-              setIgnoreMode(normalizeIgnoreMode(data.existingProject.ignoreMode) ?? DEFAULT_IGNORE_MODE)
-            }
-            setExistingStateAction('restore')
-            setIsExistingStateConfirmOpen(false)
-            restorePrefillKeyRef.current = data.repoRoot
           }
           setGitInfo(data)
         })
@@ -344,8 +372,14 @@ export function ProjectForm({ onClose, onBack, project, onDirtyChange }: Project
       {
         onSuccess: (created: Project) => {
           setCreatedProject(created)
-          projectBaselineRef.current = submittedSnapshot
-          onDirtyChange?.(draftSnapshotRef.current !== submittedSnapshot)
+          // The server stores the repository root even when the form started
+          // from a subfolder. Treat that canonical identity as part of the
+          // submitted snapshot while preserving any later editable fields.
+          const canonicalSubmittedSnapshot = projectSnapshotWithFolder(submittedSnapshot, created.folderPath)
+          const canonicalCurrentSnapshot = projectSnapshotWithFolder(draftSnapshotRef.current, created.folderPath)
+          projectBaselineRef.current = canonicalSubmittedSnapshot
+          setFolder(created.folderPath)
+          onDirtyChange?.(canonicalCurrentSnapshot !== canonicalSubmittedSnapshot)
           const successMessage = !restoreMode
             ? 'Project created.'
             : existingStateAction === 'clear_tickets'
@@ -354,7 +388,7 @@ export function ProjectForm({ onClose, onBack, project, onDirtyChange }: Project
                 ? 'Fresh project created after removing existing LoopTroop state.'
                 : 'Project restored from existing LoopTroop data.'
           addToast('success', successMessage)
-          if (draftSnapshotRef.current === submittedSnapshot) closeView()
+          if (canonicalCurrentSnapshot === canonicalSubmittedSnapshot) closeView()
         },
       },
     )

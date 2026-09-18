@@ -201,18 +201,39 @@ describe('TicketForm', () => {
     expect(mutate).toHaveBeenCalledTimes(1)
   })
 
+  it('confirms before Cancel discards a dirty ticket draft', () => {
+    const onClose = vi.fn()
+    const confirm = vi.spyOn(window, 'confirm').mockReturnValue(false)
+    renderWithProviders(
+      <UIContext.Provider value={makeUIValue()}>
+        <TicketForm onClose={onClose} />
+      </UIContext.Provider>,
+    )
+
+    fireEvent.change(screen.getByPlaceholderText('Brief summary of the work'), { target: { value: 'Unsaved ticket' } })
+    fireEvent.click(screen.getByRole('button', { name: 'Cancel' }))
+    expect(confirm).toHaveBeenCalledWith('Discard your unsaved ticket changes?')
+    expect(onClose).not.toHaveBeenCalled()
+
+    confirm.mockReturnValue(true)
+    fireEvent.click(screen.getByRole('button', { name: 'Cancel' }))
+    expect(onClose).toHaveBeenCalledTimes(1)
+    confirm.mockRestore()
+  })
+
   it('saves supported edits by ID after create-and-start without sending locked settings', async () => {
     let resolveCreate!: (ticket: Ticket) => void
     let resolveStart!: (result: { status: string }) => void
     const createPromise = new Promise<Ticket>((resolve) => { resolveCreate = resolve })
     const startPromise = new Promise<{ status: string }>((resolve) => { resolveStart = resolve })
     const update = vi.fn()
+    const ui = makeUIValue()
     mockUseCreateTicket.mockReturnValue({ mutate: vi.fn(), mutateAsync: vi.fn(() => createPromise), isPending: false })
     mockUseUpdateTicket.mockReturnValue({ mutate: update, isPending: false })
     mockUseTicketAction.mockReturnValue({ mutateAsync: vi.fn(() => startPromise), isPending: false })
 
     renderWithProviders(
-      <UIContext.Provider value={makeUIValue()}>
+      <UIContext.Provider value={ui}>
         <TicketForm onClose={vi.fn()} />
       </UIContext.Provider>,
     )
@@ -230,6 +251,21 @@ describe('TicketForm', () => {
       expect.any(Object),
     )
     expect(update.mock.calls[0]?.[0]).not.toHaveProperty('manualQaOverride')
+
+    const updated = { id: '1:ACME-3', externalId: 'ACME-3', status: 'IN_PROGRESS' } as Ticket
+    act(() => (update.mock.calls[0]?.[1] as { onSuccess: (ticket: Ticket) => void }).onSuccess(updated))
+    expect(ui.dispatch).toHaveBeenCalledWith({
+      type: 'SELECT_TICKET',
+      ticketId: updated.id,
+      externalId: updated.externalId,
+    })
+
+    vi.mocked(ui.dispatch).mockClear()
+    fireEvent.change(screen.getByPlaceholderText('Brief summary of the work'), { target: { value: 'Save in flight' } })
+    fireEvent.click(screen.getByRole('button', { name: 'Save Ticket' }))
+    fireEvent.change(screen.getByPlaceholderText('Brief summary of the work'), { target: { value: 'Typed after save' } })
+    act(() => (update.mock.calls[1]?.[1] as { onSuccess: (ticket: Ticket) => void }).onSuccess(updated))
+    expect(ui.dispatch).not.toHaveBeenCalled()
   })
 
   it('keeps a created draft editable when create-and-start cannot start it', async () => {

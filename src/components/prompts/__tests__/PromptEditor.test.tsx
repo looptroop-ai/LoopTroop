@@ -1,6 +1,6 @@
 import { act, cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
-import { PromptEditor } from '../PromptEditor'
+import { PromptEditor, type PromptResetRequest } from '../PromptEditor'
 
 const state = vi.hoisted(() => ({
   prompt: {
@@ -42,6 +42,18 @@ vi.mock('@/components/editor/YamlDiffEditor', () => ({
 
 function renderEditor(onDirtyChange?: (isDirty: boolean) => void) {
   return render(<PromptEditor promptId="interview" wordWrap={false} onToggleWordWrap={vi.fn()} onDirtyChange={onDirtyChange} />)
+}
+
+function renderEditorWithReset(resetRequest: PromptResetRequest | null, onDirtyChange?: (isDirty: boolean) => void) {
+  return render(
+    <PromptEditor
+      promptId="interview"
+      wordWrap={false}
+      onToggleWordWrap={vi.fn()}
+      onDirtyChange={onDirtyChange}
+      resetRequest={resetRequest}
+    />,
+  )
 }
 
 /** What the server sends back after a save, which the query then republishes. */
@@ -301,5 +313,30 @@ describe('PromptEditor save feedback — canonicalized and failed saves', () => 
     })
 
     expect(screen.getByLabelText('Prompt source')).toHaveValue('later draft\n')
+  })
+
+  it('applies reset-all server state only when no later edit exists', async () => {
+    state.prompt = { ...state.prompt, current: 'saved copy\n', modified: true }
+    const { rerender } = renderEditorWithReset(null)
+
+    fireEvent.change(screen.getByLabelText('Prompt source'), { target: { value: 'first draft\n' } })
+    rerender(<PromptEditor promptId="interview" wordWrap={false} onToggleWordWrap={vi.fn()} resetRequest={{ id: 1, status: 'pending' }} />)
+    fireEvent.change(screen.getByLabelText('Prompt source'), { target: { value: 'later draft\n' } })
+
+    state.prompt = { ...state.prompt, current: 'original: yes\n', modified: false }
+    rerender(<PromptEditor promptId="interview" wordWrap={false} onToggleWordWrap={vi.fn()} resetRequest={{ id: 1, status: 'success' }} />)
+
+    expect(screen.getByLabelText('Prompt source')).toHaveValue('later draft\n')
+  })
+
+  it('preserves the draft when reset-all fails', async () => {
+    state.prompt = { ...state.prompt, current: 'saved copy\n', modified: true }
+    const { rerender } = renderEditorWithReset(null)
+
+    fireEvent.change(screen.getByLabelText('Prompt source'), { target: { value: 'still editing\n' } })
+    rerender(<PromptEditor promptId="interview" wordWrap={false} onToggleWordWrap={vi.fn()} resetRequest={{ id: 2, status: 'pending' }} />)
+    rerender(<PromptEditor promptId="interview" wordWrap={false} onToggleWordWrap={vi.fn()} resetRequest={{ id: 2, status: 'failure' }} />)
+
+    expect(screen.getByLabelText('Prompt source')).toHaveValue('still editing\n')
   })
 })

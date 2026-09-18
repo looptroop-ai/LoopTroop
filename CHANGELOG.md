@@ -10,7 +10,9 @@ Unreleased changes appear first and represent commits that have not yet been inc
 > Changes merged since the last versioned release that have not yet shipped in a tagged version.
 
 ### Summary
+- Native log indexing now respects captured file boundaries and detects same-file rewrites, including changed indexed prefixes, while partial ticket patches preserve nested cached state.
 - New ticket and project forms keep edits made during creation and save them on the item the server returned.
+- Resetting all prompts refreshes the active editor, advances its baseline on success, and replaces the draft only when no edits were typed after reset began.
 - Ticket workspaces now preserve the right draft, live history and cache state as forms, streams and deletions race.
 - Canonical OpenCode installation directories (`~/.opencode/bin`) are now trusted by default for the `opencode` binary across platforms, preventing execution refusals when OpenCode release archives are unpacked under root while preserving directory ownership and file write-permission checks.
 - The repository now exposes its documented install-channel catalog as JSON, so the website can verify consolidated installation docs against the same channel table the published-release smoke uses.
@@ -267,11 +269,14 @@ Unreleased changes appear first and represent commits that have not yet been inc
 
 ### Fixed
 - The directory picker now appears above the Projects dialog, and unrelated Radix tooltips no longer block Escape. The Free Disk Space confirmation explains that ignored configuration, dependency folders and build output are preserved.
-- Native DEBUG history refreshes same-size file rewrites without changing retained cursors.
-- Client history drains, model discovery retries, routed-modal draft guards, and folder selection now stay scoped to the current view when requests finish out of order; malformed full-ticket action patches retain validated optional metadata.
+- Native DEBUG history refreshes same-size and larger rewrites with changed indexed prefixes without changing retained cursors, and indexed reads stay within their captured file boundaries.
+- Client history drains, including unmount cancellation, model discovery retries, routed-modal draft guards, and folder selection now stay scoped to the current view when requests finish out of order; malformed full-ticket action patches retain validated optional metadata.
 - Routed dialogs now layer above the ticket dashboard and mobile navigation, while About remains above the dialog that opened it.
 - Routed forms now warn only when their current values differ from the saved or hydrated baseline. Hydration, failed saves, refetches and later edits no longer overwrite or clear a draft that is still in progress; successful saves acknowledge only the snapshot they actually saved.
-- Live stream recovery now refreshes the ticket broadly only for an initial stored cursor or an explicit replay gap. Confirmed deletion fences late responses, pending AI-detail invalidations, question collapse state, UI revisions and SSE cursors so a reissued ticket identifier starts clean while unrelated tickets remain untouched.
+- Reset-all prompt requests wait for active prompt refetches and apply the new server baseline only when the editor still has the request-start draft; failed resets leave that draft intact. Projects created from a repository subfolder now display the canonical root returned by the server while keeping later editable changes.
+- Dirty routed modal backdrop clicks now use the same confirmation as Escape and the close button.
+- An initial ticket-list error no longer strands a deferred browser navigation; the route can recover and explicit modal or board navigation remains available.
+- Live stream recovery now refreshes the ticket broadly for an initial stored cursor, an explicit replay gap, or a later reconnect with no replayable cursor; non-zero reconnect cursors remain quiet. Confirmed deletion fences late responses, pending AI-detail invalidations, question collapse state, UI revisions and SSE cursors so a reissued ticket identifier starts clean while unrelated tickets remain untouched.
 - Full Log history refreshes from the newest page, retains loaded snapshots and model tabs, and uses explicit complete-history drains for navigation and export instead of mounting the whole archive. Cursor expiry produces a typed retry path, while diagnostics distinguish bounded reads from complete history.
 - Client normalization now isolates malformed list rows, keeps strict detail failures visible, and ignores invalid partial updates instead of erasing valid cached values. Model selection, folder checks, prompt previews and artifact pairing keep their current accessible and stale-result safeguards.
 - Council and planning recovery no longer waits on a settling promise before stopping remote work, allows an HTTP 500 with nested 404 data to masquerade as a missing session, treats message-only 404 text as confirmed, or archives a document before rechecking its baseline. Failed cancellation cleanup retries while keeping coding ownership closed across a restart through its non-expiring runtime marker; missing marker content is distinct from malformed or unreadable content, which fails closed. A late-created session is stopped before its closed callback error escapes. Interview retries recover interrupted batches and abandoned sessions; Manual QA and interview edits keep their click or batch snapshot; and a checkpoint failure leaves its bead pending so Retry can safely try again.

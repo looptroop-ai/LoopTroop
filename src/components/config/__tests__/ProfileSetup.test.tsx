@@ -211,6 +211,22 @@ describe('ProfileSetup', () => {
     expect(onDirtyChange).toHaveBeenLastCalledWith(true)
   })
 
+  it('confirms before Cancel discards a dirty profile draft', async () => {
+    const onClose = vi.fn()
+    const confirm = vi.spyOn(window, 'confirm').mockReturnValue(false)
+    await renderProfileSetup(undefined, undefined, onClose)
+
+    fireEvent.change(screen.getByLabelText('AI Question Wait'), { target: { value: '301' } })
+    fireEvent.click(screen.getByRole('button', { name: 'Cancel' }))
+    expect(confirm).toHaveBeenCalledWith('Discard your unsaved profile changes?')
+    expect(onClose).not.toHaveBeenCalled()
+
+    confirm.mockReturnValue(true)
+    fireEvent.click(screen.getByRole('button', { name: 'Cancel' }))
+    expect(onClose).toHaveBeenCalledTimes(1)
+    confirm.mockRestore()
+  })
+
   it('keeps single-member quorum profiles editable and shows a Save action', async () => {
     const queryClient = new QueryClient({
       defaultOptions: {

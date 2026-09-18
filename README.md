@@ -100,14 +100,19 @@ does not prevent Escape from closing the active dialog.
 
 If you keep typing while a new ticket or project is being created, the form
 keeps those later edits and switches to editing the item the server just
-created; the next save updates that item.
+created; a project created from a subfolder displays the repository root the
+server returned, and the next save updates the returned item. Reset all
+prompts waits for the active editor's refreshed server copy, keeps typing that
+started after the reset request, and reports a failed reset without discarding
+the draft.
 
 Live ticket streams recover an initial stored cursor and refresh ticket data
-when the server reports a replay gap. Ordinary reconnects do not trigger a
-whole-ticket refresh, and a confirmed deletion clears the deleted ticket's
-browser state—including logs, pending-question UI, saved UI revisions and the
-stream cursor—before that identifier can be used again. A different ticket is
-not cleared as a side effect.
+when the server reports a replay gap. If a reconnect has no replayable cursor,
+it refreshes ticket-scoped snapshots after that connection opens; a non-zero
+cursor bridges an ordinary outage quietly. A confirmed deletion clears the
+deleted ticket's browser state—including logs, pending-question UI, saved UI
+revisions and the stream cursor—before that identifier can be used again. A
+different ticket is not cleared as a side effect.
 
 The Full Log loads older history when you ask for it and can drain complete
 history for an action such as export or navigation without eagerly mounting
@@ -116,8 +121,9 @@ distinct from complete-history work. Malformed list rows are isolated, invalid
 partial updates cannot erase valid cached values, and malformed detail
 responses remain visible as errors.
 
-Native DEBUG logs refresh when a file is rewritten without changing its size;
-older cursors still read their original snapshot.
+Native DEBUG logs refresh when a file is rewritten without changing its size or
+with a changed indexed prefix, and each indexed read stays within the file size
+captured for that snapshot; older cursors still read their original snapshot.
 
 ### Every way to install it
 

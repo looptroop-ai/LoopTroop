@@ -248,6 +248,11 @@ export function ProfileSetup({ onClose, onOpenAbout = () => undefined, onDirtyCh
     onDirtyChange?.(isDirty)
   }, [isDirty, onDirtyChange])
 
+  const handleClose = () => {
+    if (isDirty && !window.confirm('Discard your unsaved profile changes?')) return
+    onClose()
+  }
+
   const [isOpenCodeConnected, setIsOpenCodeConnected] = useState<boolean | null>(null)
   const [isRefreshingModels, setIsRefreshingModels] = useState(false)
 
@@ -724,7 +729,7 @@ export function ProfileSetup({ onClose, onOpenAbout = () => undefined, onDirtyCh
           About
         </Button>
         <div className="flex items-center gap-2.5">
-          <Button type="button" variant="outline" onClick={onClose} className="rounded-lg">
+          <Button type="button" variant="outline" onClick={handleClose} className="rounded-lg">
             Cancel
           </Button>
           <Button

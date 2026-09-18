@@ -637,7 +637,7 @@ export function mergeEntriesBatch(
     return [...base, ...incoming]
   }
 
-  const result: LogEntry[] = []
+  let result: LogEntry[] = []
   const indexes = new Map<string, number>()
   const aliases = getLogEntryAliases
   const add = (entry: LogEntry, incomingRow: boolean) => {
@@ -665,7 +665,31 @@ export function mergeEntriesBatch(
   }
 
   for (const entry of base) add(entry, false)
+  const historicalCount = result.length
   for (const entry of incoming) add(entry, true)
+  if (!sortByTimestamp && historicalCount > 0 && result.length > historicalCount) {
+    // Non-AI history keeps the server's ordinal order, but the live overlay is
+    // timestamp-sorted and can retain rows older than the newest historical
+    // page. Put only those unmatched old rows before the page; never reorder
+    // the historical rows themselves or newer live rows.
+    const firstHistoricalTimestamp = result
+      .slice(0, historicalCount)
+      .map(entry => entry.timestamp)
+      .find(timestamp => timestamp !== undefined)
+    if (firstHistoricalTimestamp) {
+      const historical = result.slice(0, historicalCount)
+      const overlay = result.slice(historicalCount)
+      const olderOverlay: LogEntry[] = []
+      const newerOverlay: LogEntry[] = []
+      for (const entry of overlay) {
+        if (compareTimestamps(entry.timestamp, firstHistoricalTimestamp) < 0) olderOverlay.push(entry)
+        else newerOverlay.push(entry)
+      }
+      if (olderOverlay.length > 0) {
+        result = [...olderOverlay, ...historical, ...newerOverlay]
+      }
+    }
+  }
   if (stats) stats.renderedEntries += result.length
   return shouldSort ? result.sort(compareForDisplay) : result
 }

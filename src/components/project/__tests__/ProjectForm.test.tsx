@@ -130,6 +130,35 @@ describe('ProjectForm', () => {
     expect(dirty).toHaveBeenLastCalledWith(true)
   })
 
+  it('does not replace edits made while the restore check is pending', async () => {
+    let resolveCheck!: (response: Response) => void
+    const checkResponse = new Promise<Response>((resolve) => { resolveCheck = resolve })
+    const fetchMock = vi.fn(() => checkResponse)
+    vi.stubGlobal('fetch', fetchMock)
+    render(<ProjectForm onClose={vi.fn()} />, { wrapper: Wrapper })
+
+    fireEvent.change(screen.getByLabelText(/Project Folder/i), { target: { value: '/work/meili' } })
+    await waitFor(() => expect(fetchMock).toHaveBeenCalled())
+    fireEvent.change(screen.getByLabelText(/Project Name/i), { target: { value: 'My draft' } })
+
+    resolveCheck(new Response(JSON.stringify({
+      isGit: true,
+      status: 'valid',
+      repoRoot: '/work/meili',
+      hasLoopTroopState: true,
+      existingProject: {
+        name: 'Saved project',
+        shortname: 'SAVE',
+        icon: '📦',
+        color: '#a855f7',
+      },
+    }), { status: 200, headers: { 'Content-Type': 'application/json' } }))
+
+    await waitFor(() => expect(screen.getByLabelText(/Project Name/i)).toHaveValue('My draft'))
+    expect(screen.queryByDisplayValue('Saved project')).not.toBeInTheDocument()
+    expect(screen.getByText('Existing LoopTroop project detected')).toBeInTheDocument()
+  })
+
   it('guards Back to list and Cancel while the project form is dirty', () => {
     const onBack = vi.fn()
     const onClose = vi.fn()
@@ -159,14 +188,14 @@ describe('ProjectForm', () => {
 
     fireEvent.change(screen.getByLabelText(/Project Name/i), { target: { value: 'Saved project' } })
     fireEvent.change(screen.getByLabelText(/Short Name/i), { target: { value: 'SAVE' } })
-    fireEvent.change(screen.getByLabelText(/Project Folder/i), { target: { value: '/work/saved' } })
+    fireEvent.change(screen.getByLabelText(/Project Folder/i), { target: { value: '/work/subfolder' } })
     fireEvent.submit(screen.getByRole('button', { name: 'Create Project' }).closest('form')!)
 
     fireEvent.change(screen.getByLabelText(/Project Name/i), { target: { value: 'Later project' } })
     const createdProject = makeCreatedProject({
       name: 'Saved project',
       shortname: 'SAVE',
-      folderPath: '/work/saved',
+      folderPath: '/work/repository',
     })
     const options = mockProjectMutations.create.mutate.mock.calls[0]?.[1] as { onSuccess: (created: Project) => void }
     act(() => options.onSuccess(createdProject))
@@ -174,6 +203,7 @@ describe('ProjectForm', () => {
     expect(onClose).not.toHaveBeenCalled()
     expect(dirty).toHaveBeenLastCalledWith(true)
     expect(screen.getByRole('button', { name: 'Save Changes' })).toBeInTheDocument()
+    expect(screen.getByText('/work/repository')).toBeInTheDocument()
 
     fireEvent.click(screen.getByRole('button', { name: 'Save Changes' }))
     expect(mockProjectMutations.update.mutate).toHaveBeenCalledWith(

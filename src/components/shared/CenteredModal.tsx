@@ -58,7 +58,7 @@ export function CenteredModal({
       onClick={(e) => {
         if (e.target !== e.currentTarget) return
         if (closeDisabled) return
-        if (isDirty) return
+        if (isDirty && !window.confirm('You have unsaved changes. Close this window anyway?')) return
         onClose()
       }}
     >

@@ -16,6 +16,12 @@ interface PromptEditorProps {
   wordWrap: boolean
   onToggleWordWrap: () => void
   onDirtyChange?: (isDirty: boolean) => void
+  resetRequest?: PromptResetRequest | null
+}
+
+export interface PromptResetRequest {
+  id: number
+  status: 'pending' | 'success' | 'failure'
 }
 
 /**
@@ -25,7 +31,7 @@ interface PromptEditorProps {
  */
 type ViewMode = 'edit' | 'diff' | 'preview'
 
-export function PromptEditor({ promptId, wordWrap, onToggleWordWrap, onDirtyChange }: PromptEditorProps) {
+export function PromptEditor({ promptId, wordWrap, onToggleWordWrap, onDirtyChange, resetRequest = null }: PromptEditorProps) {
   const { data: prompt, isLoading, error } = usePrompt(promptId)
   const savePrompt = useSavePrompt()
   const revertPrompt = useRevertPrompt()
@@ -74,6 +80,44 @@ export function PromptEditor({ promptId, wordWrap, onToggleWordWrap, onDirtyChan
   const lastPromptIdRef = useRef<string | undefined>(undefined)
   const previewRequestRef = useRef<{ promptId: string; source: string } | null>(null)
   const revertRequestRef = useRef<{ promptId: string; source: string } | null>(null)
+  const resetRequestRef = useRef<{ id: number; promptId: string; source: string } | null>(null)
+  const handledResetRequestRef = useRef<number | null>(null)
+
+  // Reset all is an explicit destructive action, but its catalog refetch is still
+  // asynchronous. Capture the draft when the request starts, then adopt the
+  // returned server copy only if the user did not type after that point. This is
+  // the same request-scoped rule used by single-prompt Revert.
+  useEffect(() => {
+    if (!resetRequest || handledResetRequestRef.current === resetRequest.id) return
+    let request = resetRequestRef.current
+    if (!request || request.id !== resetRequest.id) {
+      request = { id: resetRequest.id, promptId, source: draftRef.current }
+      resetRequestRef.current = request
+    }
+    if (resetRequest.status === 'pending') return
+    if (resetRequest.status === 'failure') {
+      resetRequestRef.current = null
+      handledResetRequestRef.current = resetRequest.id
+      return
+    }
+    if (promptCurrent === undefined) return
+    resetRequestRef.current = null
+    handledResetRequestRef.current = resetRequest.id
+    if (request.promptId !== promptId) return
+    const hasLaterEdit = draftRef.current !== request.source
+    promptBaselineRef.current = promptCurrent
+    if (hasLaterEdit) return
+    setDraft(promptCurrent)
+    setMode('edit')
+    setErrors([])
+    setWarnings([])
+    setSavedAt(null)
+    previewRequestRef.current = null
+    setPreviewText('')
+    setPreviewError(null)
+    setPreviewPending(false)
+    previewResetRef.current()
+  }, [promptCurrent, promptId, resetRequest])
 
   // Reset local editing state whenever a different prompt is selected or the server
   // copy changes underneath the editor (a revert, or another writer).

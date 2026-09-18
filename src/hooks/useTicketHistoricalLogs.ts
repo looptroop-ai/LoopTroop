@@ -56,6 +56,50 @@ export interface HistoricalLogFoldCache {
   entries: LogEntry[]
 }
 
+interface HistoricalLogFoldCacheInternal extends HistoricalLogFoldCache {
+  displayGroups: HistoricalLogNode[][]
+  entriesVersion: number
+  materializedVersion: number
+  materializedEntries: LogEntry[]
+  materializationStats?: HistoricalLogFoldStats
+}
+
+function createHistoricalLogFoldCache(
+  view: HistoricalLogView,
+  pages: HistoricalLogPage[],
+  nodes: HistoricalLogNode[],
+  aliases: Map<string, HistoricalLogNode>,
+  displayGroups: HistoricalLogNode[][],
+  materializationStats?: HistoricalLogFoldStats,
+): HistoricalLogFoldCache {
+  const cache = {
+    view,
+    pages,
+    nodes,
+    aliases,
+    entries: [],
+    displayGroups,
+    entriesVersion: 0,
+    materializedVersion: -1,
+    materializedEntries: [],
+    materializationStats,
+  } as HistoricalLogFoldCacheInternal
+  Object.defineProperty(cache, 'entries', {
+    enumerable: true,
+    get() {
+      if (cache.materializedVersion !== cache.entriesVersion) {
+        cache.materializedEntries = cache.displayGroups.flatMap(group => group.map(node => node.entry))
+        cache.materializedVersion = cache.entriesVersion
+        if (cache.materializationStats) {
+          cache.materializationStats.materializedEntries = (cache.materializationStats.materializedEntries ?? 0) + cache.materializedEntries.length
+        }
+      }
+      return cache.materializedEntries
+    },
+  })
+  return cache
+}
+
 export const HISTORICAL_LOG_CURSOR_EXPIRED_CODE = 'LOG_CURSOR_EXPIRED'
 
 export class HistoricalLogCursorExpiredError extends Error {
@@ -206,23 +250,31 @@ export function foldHistoricalLogPages(
   if (!canPrepend) {
     const nodes: HistoricalLogNode[] = []
     const aliases = new Map<string, HistoricalLogNode>()
+    const displayGroups: HistoricalLogNode[][] = []
     for (const page of oldestFirstPages) {
       if (stats) stats.pagesVisited += 1
-      for (const entry of page.entries) addHistoricalEntry(entry, nodes, aliases, true, stats)
+      const pageNodes: HistoricalLogNode[] = []
+      for (const entry of page.entries) {
+        const node = addHistoricalEntry(entry, nodes, aliases, true, stats)
+        if (node) pageNodes.push(node)
+      }
+      if (view !== 'ai') displayGroups.push(pageNodes)
     }
     if (view === 'ai') nodes.sort((a, b) => compareNodes(a, b, view, stats))
-    if (stats) stats.materializedEntries = (stats.materializedEntries ?? 0) + nodes.length
-    return {
+    return createHistoricalLogFoldCache(
       view,
-      pages: [...oldestFirstPages],
+      [...oldestFirstPages],
       nodes,
       aliases,
-      entries: nodes.map(node => node.entry),
-    }
+      view === 'ai' ? [nodes] : displayGroups,
+      stats,
+    )
   }
 
+  const internalPrevious = previous as HistoricalLogFoldCacheInternal
   const addedPages = oldestFirstPages.slice(0, oldestFirstPages.length - previous!.pages.length)
   const newNodes: HistoricalLogNode[] = []
+  const addedGroups: HistoricalLogNode[][] = []
   for (const page of addedPages) {
     if (stats) stats.pagesVisited += 1
     const pageNodes: HistoricalLogNode[] = []
@@ -243,6 +295,7 @@ export function foldHistoricalLogPages(
         }
       }
     }
+    if (view !== 'ai') addedGroups.push(pageNodes)
   }
 
   if (newNodes.length > 0) {
@@ -257,15 +310,18 @@ export function foldHistoricalLogPages(
         for (const node of newNodes) insertSortedNode(previous!.nodes, node, view, stats)
       }
     } else {
-      if (stats) stats.nodeCopies = (stats.nodeCopies ?? 0) + newNodes.length + previous!.nodes.length
-      previous!.nodes = [...newNodes, ...previous!.nodes]
+      if (stats) stats.nodeCopies = (stats.nodeCopies ?? 0) + newNodes.length
+      previous!.nodes.push(...newNodes)
+      for (let index = addedGroups.length - 1; index >= 0; index -= 1) {
+        internalPrevious.displayGroups.unshift(addedGroups[index]!)
+      }
     }
   }
   if (addedPages.length > 0) {
-    if (stats) stats.materializedEntries = (stats.materializedEntries ?? 0) + previous!.nodes.length
-    previous!.entries = previous!.nodes.map(node => node.entry)
+    if (view === 'ai') internalPrevious.displayGroups = [previous!.nodes]
+    internalPrevious.entriesVersion += 1
   }
-  previous!.pages = [...oldestFirstPages]
+  previous!.pages = oldestFirstPages
   return previous!
 }
 
@@ -469,6 +525,7 @@ export function useTicketHistoricalLogs(ticketId: string | undefined, scope: His
     // run look current again. The state identity is the actual ownership fence.
     const runIsCancelled = () => drainStateRef.current !== state
       || activeScopeKeyRef.current !== state.key
+      || !mountedRef.current
       || (state.cancellationChecks.size > 0 && [...state.cancellationChecks].every(check => check()))
     let unchangedCursor: string | null | undefined
     let cursorRecoveryUsed = false

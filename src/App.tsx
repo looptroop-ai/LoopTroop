@@ -531,7 +531,15 @@ function App() {
   }, [dispatch])
 
   useEffect(() => {
-    if (!hasHydratedUrl || popPathname === null || !ticketsQuery.isSuccess) return
+    if (popPathname === null) return
+    if (ticketsQuery.isError) {
+      // A failed first load cannot classify the popped ticket. Release only
+      // this transient navigation fence: hydration must stay successful-load
+      // gated so the entry URL is still reconciled when the list recovers.
+      setPopPathname(null)
+      return
+    }
+    if (!hasHydratedUrl || !ticketsQuery.isSuccess) return
     const match = matchTicketRoute(popPathname, tickets)
     if (match.kind === 'pending') return
 
@@ -548,7 +556,7 @@ function App() {
       dispatch({ type: 'CLOSE_TICKET' })
       setRouteRepairToken(token => token + 1)
     }
-  }, [dispatch, hasHydratedUrl, popPathname, tickets, ticketsQuery.isSuccess])
+  }, [dispatch, hasHydratedUrl, popPathname, tickets, ticketsQuery.isError, ticketsQuery.isSuccess])
 
   // One open and one close transition, shared by every routed modal. The URL
   // follows from the state through the route effect above.

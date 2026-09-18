@@ -407,9 +407,15 @@ export function normalizeTicketListResponse(payload: unknown): Ticket[] {
   return tickets
 }
 
-/** A ticket patch: only what the response carried, with a partial runtime. */
+/** A ticket patch: only what the response carried, with partial nested objects. */
 export type TicketPatch =
-  Partial<Omit<Ticket, 'runtime'>> & { id: string; runtime?: Partial<TicketRuntime> }
+  Partial<Omit<Ticket, 'runtime' | 'implementationTiming' | 'pendingQuestions' | 'manualQa'>> & {
+    id: string
+    runtime?: Partial<TicketRuntime> & { beadsDiagnostics?: Record<string, unknown> | null }
+    implementationTiming?: Partial<Ticket['implementationTiming']>
+    pendingQuestions?: Partial<NonNullable<Ticket['pendingQuestions']>> | null
+    manualQa?: Partial<NonNullable<Ticket['manualQa']>>
+  }
 
 /**
  * The runtime fields a response actually carried, normalised, and no others.
@@ -421,10 +427,35 @@ export type TicketPatch =
  * the bead list, the PR state and the ETA until the follow-up refetch landed.
  */
 function normalizeRuntimePatch(rawRuntime: Record<string, unknown>): Partial<TicketRuntime> {
-  const complete = getTicketRuntime({ runtime: rawRuntime } as unknown as RawTicketResponse)
-  const patch: Partial<TicketRuntime> = {}
-  for (const key of Object.keys(rawRuntime) as Array<keyof TicketRuntime>) {
-    if (Object.hasOwn(complete, key)) (patch as Record<string, unknown>)[key] = complete[key]
+  const patch: Record<string, unknown> = {}
+  for (const key of ['baseBranch', 'artifactRoot'] as const) {
+    if (typeof rawRuntime[key] === 'string') patch[key] = rawRuntime[key]
+  }
+  for (const key of ['activeBeadId', 'lastFailedBeadId', 'candidateCommitSha', 'preSquashHead'] as const) {
+    if (rawRuntime[key] === null || typeof rawRuntime[key] === 'string') patch[key] = rawRuntime[key]
+  }
+  for (const key of ['prUrl', 'prHeadSha'] as const) {
+    if (rawRuntime[key] === null || typeof rawRuntime[key] === 'string') patch[key] = rawRuntime[key]
+  }
+  for (const key of ['currentBead', 'completedBeads', 'totalBeads', 'percentComplete', 'iterationCount'] as const) {
+    copyPatchNumber(rawRuntime, patch, key)
+  }
+  for (const key of ['maxIterations', 'maxIterationsPerBead', 'perIterationTimeoutMs', 'executionSetupTimeoutMs', 'activeBeadIteration', 'prNumber'] as const) {
+    copyPatchNullableNumber(rawRuntime, patch, key)
+  }
+  if (Array.isArray(rawRuntime.beads)) patch.beads = normalizeRuntimeBeads(rawRuntime.beads)
+  if (rawRuntime.finalTestStatus === 'passed' || rawRuntime.finalTestStatus === 'failed' || rawRuntime.finalTestStatus === 'pending') {
+    patch.finalTestStatus = rawRuntime.finalTestStatus
+  }
+  if (Object.hasOwn(rawRuntime, 'prState')) {
+    if (rawRuntime.prState === null || rawRuntime.prState === 'draft' || rawRuntime.prState === 'open'
+      || rawRuntime.prState === 'merged' || rawRuntime.prState === 'closed') {
+      patch.prState = rawRuntime.prState
+    }
+  }
+  if (Object.hasOwn(rawRuntime, 'eta')) {
+    const eta = normalizeRuntimeEtaPatch(rawRuntime.eta)
+    if (eta !== undefined) patch.eta = eta
   }
   // PR165 adds this optional diagnostic object to the runtime. Keep its error
   // string when that cross-PR shape is present, even while this branch is
@@ -438,19 +469,24 @@ function normalizeRuntimePatch(rawRuntime: Record<string, unknown>): Partial<Tic
       const values = value.filter((entry): entry is number => typeof entry === 'number' && Number.isInteger(entry) && entry >= 0)
       return values.length === value.length ? values : null
     }
+    const diagnostics: Record<string, unknown> = {}
     const malformedLines = numberList(rawBeadsDiagnostics.malformedLines)
     const unrepresentableLines = numberList(rawBeadsDiagnostics.unrepresentableLines)
-    if (malformedLines && unrepresentableLines) {
-      (patch as Record<string, unknown>).beadsDiagnostics = {
-        malformedLines,
-        unrepresentableLines,
-        ...(typeof rawBeadsDiagnostics.readError === 'string'
-          ? { readError: rawBeadsDiagnostics.readError }
-          : {}),
-      }
-    }
+    if (malformedLines) diagnostics.malformedLines = malformedLines
+    if (unrepresentableLines) diagnostics.unrepresentableLines = unrepresentableLines
+    if (typeof rawBeadsDiagnostics.readError === 'string') diagnostics.readError = rawBeadsDiagnostics.readError
+    if (Object.keys(diagnostics).length > 0) patch.beadsDiagnostics = diagnostics
   }
   return patch
+}
+
+function normalizeRuntimeEtaPatch(value: unknown): TicketRuntime['eta'] | Partial<NonNullable<TicketRuntime['eta']>> | undefined {
+  if (value === null) return null
+  if (!isRecord(value)) return undefined
+  const patch: Record<string, unknown> = {}
+  for (const key of ['bestMs', 'likelyMs', 'worstMs'] as const) copyPatchNumber(value, patch, key)
+  if (value.basis === 'history' || value.basis === 'current' || value.basis === 'default') patch.basis = value.basis
+  return Object.keys(patch).length > 0 ? patch as Partial<NonNullable<TicketRuntime['eta']>> : undefined
 }
 
 function copyPatchString(raw: Record<string, unknown>, patch: Record<string, unknown>, key: string): void {
@@ -473,43 +509,47 @@ function copyPatchBoolean(raw: Record<string, unknown>, patch: Record<string, un
   if (typeof raw[key] === 'boolean') patch[key] = raw[key]
 }
 
-function normalizePendingQuestions(value: unknown): Ticket['pendingQuestions'] | undefined {
-  if (value === null) return null
-  if (!isRecord(value)) return undefined
-  const requestIds = Array.isArray(value.requestIds)
-    && value.requestIds.every((requestId) => typeof requestId === 'string')
-    ? value.requestIds as string[]
-    : undefined
-  return {
-    requestCount: numberOrFallback(value.requestCount, 0),
-    questionCount: numberOrFallback(value.questionCount, 0),
-    deadlineAt: nullableString(value.deadlineAt),
-    stoppedAt: nullableString(value.stoppedAt),
-    ...(requestIds ? { requestIds } : {}),
+function normalizeImplementationTimingPatch(value: Record<string, unknown>): Partial<Ticket['implementationTiming']> | undefined {
+  const patch: Record<string, unknown> = {}
+  for (const key of ['activeDurationMs', 'manualQaFixDurationMs', 'workspacePreparationDurationMs', 'finalTestingDurationMs', 'questionWaitingMs']) {
+    copyPatchNumber(value, patch, key)
   }
+  for (const key of ['startedAt', 'lastPlannedBeadFinishedAt', 'manualQaFixStartedAt', 'workspacePreparationStartedAt', 'finalTestingStartedAt']) {
+    copyPatchNullableString(value, patch, key)
+  }
+  return Object.keys(patch).length > 0 ? patch as Partial<Ticket['implementationTiming']> : undefined
 }
 
-function normalizeManualQa(value: unknown): Ticket['manualQa'] | undefined {
+function normalizePendingQuestions(value: unknown): TicketPatch['pendingQuestions'] | undefined {
+  if (value === null) return null
   if (!isRecord(value)) return undefined
-  const artifactAvailability = isRecord(value.artifactAvailability) ? value.artifactAvailability : {}
-  const latestOutcome = value.latestOutcome === 'passed'
-    || value.latestOutcome === 'waived_through'
-    || value.latestOutcome === 'skipped'
-    || value.latestOutcome === 'failed'
-    || value.latestOutcome === 'created_fixes'
-    ? value.latestOutcome
-    : null
-  return {
-    activeVersion: nullableNumber(value.activeVersion),
-    completedRoundCount: numberOrFallback(value.completedRoundCount, 0),
-    latestOutcome,
-    artifactAvailability: {
-      checklist: artifactAvailability.checklist === true,
-      results: artifactAvailability.results === true,
-      coverage: artifactAvailability.coverage === true,
-      summary: artifactAvailability.summary === true,
-    },
+  const patch: Record<string, unknown> = {}
+  for (const key of ['requestCount', 'questionCount']) copyPatchNumber(value, patch, key)
+  for (const key of ['deadlineAt', 'stoppedAt']) copyPatchNullableString(value, patch, key)
+  if (Array.isArray(value.requestIds) && value.requestIds.every((requestId) => typeof requestId === 'string')) {
+    patch.requestIds = value.requestIds
   }
+  return Object.keys(patch).length > 0 ? patch as TicketPatch['pendingQuestions'] : undefined
+}
+
+function normalizeManualQa(value: unknown): TicketPatch['manualQa'] | undefined {
+  if (!isRecord(value)) return undefined
+  const patch: Record<string, unknown> = {}
+  if (Object.hasOwn(value, 'activeVersion')) copyPatchNullableNumber(value, patch, 'activeVersion')
+  copyPatchNumber(value, patch, 'completedRoundCount')
+  if (value.latestOutcome === null || value.latestOutcome === 'passed'
+    || value.latestOutcome === 'waived_through' || value.latestOutcome === 'skipped'
+    || value.latestOutcome === 'failed' || value.latestOutcome === 'created_fixes') {
+    patch.latestOutcome = value.latestOutcome
+  }
+  if (isRecord(value.artifactAvailability)) {
+    const availability: Record<string, boolean> = {}
+    for (const key of ['checklist', 'results', 'coverage', 'summary']) {
+      if (typeof value.artifactAvailability[key] === 'boolean') availability[key] = value.artifactAvailability[key]
+    }
+    if (Object.keys(availability).length > 0) patch.artifactAvailability = availability
+  }
+  return Object.keys(patch).length > 0 ? patch as TicketPatch['manualQa'] : undefined
 }
 
 function normalizeManualQaOrigin(value: unknown): Ticket['manualQaOrigin'] | undefined {
@@ -580,7 +620,10 @@ function normalizePatchScalars(raw: Record<string, unknown>): Record<string, unk
   if (raw.completionDisposition === null || raw.completionDisposition === 'merged' || raw.completionDisposition === 'closed_unmerged') {
     patch.completionDisposition = raw.completionDisposition
   }
-  if (isRecord(raw.implementationTiming)) patch.implementationTiming = normalizeImplementationTiming(raw.implementationTiming)
+  if (isRecord(raw.implementationTiming)) {
+    const implementationTiming = normalizeImplementationTimingPatch(raw.implementationTiming)
+    if (implementationTiming) patch.implementationTiming = implementationTiming
+  }
   if (Array.isArray(raw.visitedStatuses) && raw.visitedStatuses.every((value) => typeof value === 'string')) {
     patch.visitedStatuses = raw.visitedStatuses
   }

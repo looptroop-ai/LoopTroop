@@ -1,6 +1,6 @@
 import { StrictMode, type ReactNode } from 'react'
 import { act, renderHook, waitFor } from '@testing-library/react'
-import { QueryClientProvider } from '@tanstack/react-query'
+import { CancelledError, QueryClientProvider } from '@tanstack/react-query'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import { createJsonResponse, createTestQueryClient } from '@/test/renderHelpers'
 import { foldHistoricalLogPages, useTicketHistoricalLogs, type HistoricalLogPage, type HistoricalLogScope } from '../useTicketHistoricalLogs'
@@ -724,11 +724,9 @@ describe('useTicketHistoricalLogs', () => {
     expect(stats.comparatorCalls).toBe(0)
     expect(stats.materializedEntries).toBe(400)
 
-    // The same production fold API also exposes the cost that would result from
-    // publishing every page. This is the regression guard against accidentally
-    // moving the fold back into each automatic observer update: 8,200 growing
-    // materialized entries and 8,190 accumulated-array copies, not a fake row
-    // counter based only on the final length.
+    // Incremental callers retain page-sized node groups and materialize the
+    // display array only when it is read. Full-history draining therefore does
+    // not copy every accumulated row on every page.
     const incrementalStats = {
       pagesVisited: 0, entriesVisited: 0, comparatorCalls: 0,
       nodeCopies: 0, materializedEntries: 0, aliasRegistrations: 0,
@@ -737,9 +735,10 @@ describe('useTicketHistoricalLogs', () => {
     for (let count = 1; count <= pages.length; count += 1) {
       incrementalCache = foldHistoricalLogPages(pages.slice(0, count), 'overview', incrementalCache, incrementalStats)
     }
+    expect(incrementalCache?.entries).toHaveLength(400)
     expect(incrementalStats.entriesVisited).toBe(400)
-    expect(incrementalStats.materializedEntries).toBe(8200)
-    expect(incrementalStats.nodeCopies).toBe(8190)
+    expect(incrementalStats.materializedEntries).toBe(400)
+    expect(incrementalStats.nodeCopies).toBe(390)
   })
 
   it('publishes one final fold while the automatic 40-page drain is active', async () => {
@@ -905,6 +904,39 @@ describe('useTicketHistoricalLogs', () => {
     })
 
     expect(fetchSpy.mock.calls.length).toBe(callsBeforeDrain + 1)
+  })
+
+  it('stops an uncancellable drain after the hook unmounts', async () => {
+    let olderCalls = 0
+    let rejectOlder!: (error: unknown) => void
+    const fetchSpy = vi.spyOn(globalThis, 'fetch').mockImplementation(input => {
+      if (!String(input).includes('before=')) {
+        return historyPage('new', 'new', 'cursor-older', true)
+      }
+      olderCalls += 1
+      if (olderCalls === 1) {
+        return new Promise<Response>((_, reject) => { rejectOlder = reject })
+      }
+      return historyPage('unexpected', 'unexpected', null, false)
+    })
+    const { result, unmount } = renderHistoricalLogs({ scope: 'lifecycle', view: 'overview' })
+
+    await waitFor(() => expect(result.current.hasOlder).toBe(true))
+    let drain!: Promise<void>
+    await act(async () => {
+      drain = result.current.fetchAllOlder()
+      await Promise.resolve()
+    })
+    await waitFor(() => expect(olderCalls).toBe(1))
+
+    unmount()
+    await act(async () => {
+      rejectOlder(new CancelledError())
+      await drain
+    })
+
+    expect(olderCalls).toBe(1)
+    expect(fetchSpy).toHaveBeenCalledTimes(2)
   })
 
   it('keeps one identity while it pages, so a caller can own a walk across it', async () => {

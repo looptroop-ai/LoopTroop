@@ -588,7 +588,7 @@ describe('useSSE', () => {
     unmount()
   })
 
-  it('refreshes once for initial recovery and does not refresh a replay-bridged reconnect', async () => {
+  it('refreshes after a replay gap and again after a later cursorless reconnect', async () => {
     const ticketId = '1:T-gap-reconnect'
     localStorage.setItem(`looptroop-sse-last-event-id:${ticketId}`, '99')
     const invalidateSpy = vi.spyOn(queryClient, 'invalidateQueries')
@@ -609,7 +609,7 @@ describe('useSSE', () => {
         await vi.advanceTimersByTimeAsync(SSE_RECONNECT_DELAY_MS)
       })
       await act(async () => MockEventSource.instances[1]!.emitOpen())
-      expect(recoveries()).toHaveLength(1)
+      expect(recoveries()).toHaveLength(2)
     } finally {
       unmount()
       vi.useRealTimers()
@@ -640,6 +640,29 @@ describe('useSSE', () => {
         reconnected.emit('replay_gap', { ticketId, reason: 'cursor_unavailable' }, '')
       })
       expect(recoveries()).toHaveLength(2)
+    } finally {
+      unmount()
+      vi.useRealTimers()
+    }
+  })
+
+  it('recovers ticket snapshots after a cursorless transport failure', async () => {
+    const ticketId = '1:T-zero-cursor'
+    const invalidateSpy = vi.spyOn(queryClient, 'invalidateQueries')
+    const { unmount } = renderHook(() => useSSE({ ticketId }))
+    await waitFor(() => expect(MockEventSource.instances).toHaveLength(1))
+
+    const recoveries = () => invalidateSpy.mock.calls.filter(([filters]) => typeof filters?.predicate === 'function')
+    vi.useFakeTimers()
+    try {
+      await act(async () => {
+        MockEventSource.instances[0]!.emitTransportError()
+        await vi.advanceTimersByTimeAsync(SSE_RECONNECT_DELAY_MS)
+      })
+      const reconnected = MockEventSource.instances[1]!
+      expect(new URL(reconnected.url).searchParams.has('lastEventId')).toBe(false)
+      await act(async () => reconnected.emitOpen())
+      expect(recoveries()).toHaveLength(1)
     } finally {
       unmount()
       vi.useRealTimers()

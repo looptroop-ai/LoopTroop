@@ -192,6 +192,18 @@ describe('mergeEntriesBatch', () => {
     expect(stats).toMatchObject({ baseEntries: 2, incomingEntries: 1, renderedEntries: 3, comparatorCalls: 0 })
   })
 
+  it('places an older unmatched live row before the loaded non-AI page', () => {
+    const historical = [
+      normalizeLogRecord({ phase: 'CODING', entryId: 'historical-oldest', content: 'historical', timestamp: '2026-03-10T00:00:10.000Z' }, 'CODING'),
+      normalizeLogRecord({ phase: 'CODING', entryId: 'historical-newest', content: 'newest', timestamp: '2026-03-10T00:00:11.000Z' }, 'CODING'),
+    ]
+    const live = normalizeLogRecord({ phase: 'CODING', entryId: 'live-before-page', content: 'live old', timestamp: '2026-03-10T00:00:09.000Z' }, 'CODING')
+
+    expect(mergeEntriesBatch(historical, [live], false).map(entry => entry.entryId)).toEqual([
+      'live-before-page', 'historical-oldest', 'historical-newest',
+    ])
+  })
+
   it('interleaves an older live AI row without a mirror key', () => {
     const historical = [
       normalizeLogRecord({ phase: 'CODING', entryId: 'server-first', content: 'first', timestamp: '2026-03-10T00:00:02.000Z', _logMirrorKey: 'mirror:first' }, 'CODING'),

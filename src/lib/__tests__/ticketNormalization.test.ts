@@ -261,14 +261,41 @@ describe('normalizeTicketPatch runtime', () => {
     expect(patch?.runtime && 'prState' in patch.runtime).toBe(false)
   })
 
+  it('keeps nullable pull-request runtime fields when a patch carries them', () => {
+    const patch = normalizeTicketPatch({
+      id: '1:NORM-1',
+      runtime: { prUrl: 'https://github.com/example/repo/pull/4', prHeadSha: null },
+    })
+
+    expect(patch?.runtime).toEqual({
+      prUrl: 'https://github.com/example/repo/pull/4',
+      prHeadSha: null,
+    })
+  })
+
   it('still normalises the values of the keys it keeps', () => {
     const patch = normalizeTicketPatch({
       id: '1:NORM-1',
       runtime: { totalBeads: 'four', beads: [{ id: 'b1', title: 'One', status: 'done', iteration: 1 }] },
     })
 
-    expect(patch?.runtime?.totalBeads).toBe(0)
+    expect(patch?.runtime && 'totalBeads' in patch.runtime).toBe(false)
     expect(patch?.runtime?.beads).toHaveLength(1)
+  })
+
+  it('keeps valid nested patch fields without inventing defaults', () => {
+    const patch = normalizeTicketPatch({
+      id: '1:NORM-1',
+      runtime: { currentBead: 2, totalBeads: 'four' },
+      pendingQuestions: { requestCount: 3 },
+      manualQa: { artifactAvailability: { checklist: true } },
+      implementationTiming: { activeDurationMs: 120 },
+    })
+
+    expect(patch?.runtime).toEqual({ currentBead: 2 })
+    expect(patch?.pendingQuestions).toEqual({ requestCount: 3 })
+    expect(patch?.manualQa).toEqual({ artifactAvailability: { checklist: true } })
+    expect(patch?.implementationTiming).toEqual({ activeDurationMs: 120 })
   })
 })
 

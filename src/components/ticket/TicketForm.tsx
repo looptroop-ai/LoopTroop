@@ -61,6 +61,7 @@ export function TicketForm({ onClose, onDirtyChange, onEditingChange }: TicketFo
   const [aiQuestionWindowOverride, setAiQuestionWindowOverride] = useState<AiQuestionWindowOverride>(null)
   const [createdTicket, setCreatedTicket] = useState<Ticket | null>(null)
   const [isCreatingAndStarting, setIsCreatingAndStarting] = useState(false)
+  const startedCreatedTicketRef = useRef(false)
   const ticketBaselineRef = useRef<string | null>(null)
   const ticketProjectsHydratedRef = useRef(projects.length > 0)
   const isEditing = createdTicket !== null
@@ -136,6 +137,7 @@ export function TicketForm({ onClose, onDirtyChange, onEditingChange }: TicketFo
       ticketBaselineRef.current = submittedSnapshot
       onDirtyChange?.(draftSnapshotRef.current !== submittedSnapshot)
       const started = await startTicket({ id: created.id, action: 'start' })
+      startedCreatedTicketRef.current = true
       setCreatedTicket(current => current
         ? { ...current, status: started?.status ?? started?.state ?? current.status }
         : current)
@@ -180,6 +182,9 @@ export function TicketForm({ onClose, onDirtyChange, onEditingChange }: TicketFo
             ticketBaselineRef.current = submittedSnapshot
             const hasLaterEdits = draftSnapshotRef.current !== submittedSnapshot
             onDirtyChange?.(hasLaterEdits)
+            if (startedCreatedTicketRef.current && !hasLaterEdits) {
+              dispatch({ type: 'SELECT_TICKET', ticketId: updated.id, externalId: updated.externalId })
+            }
             if (!hasLaterEdits) onClose()
           },
           onError: (err) => {
@@ -207,6 +212,11 @@ export function TicketForm({ onClose, onDirtyChange, onEditingChange }: TicketFo
         },
       },
     )
+  }
+
+  const handleClose = () => {
+    if (isDirty && !window.confirm('Discard your unsaved ticket changes?')) return
+    onClose()
   }
 
   return (
@@ -464,7 +474,7 @@ export function TicketForm({ onClose, onDirtyChange, onEditingChange }: TicketFo
       <div className="flex justify-end gap-2.5 pt-2">
         <Tooltip>
           <TooltipTrigger asChild>
-            <Button type="button" variant="outline" onClick={onClose} className="rounded-lg border-border/70 bg-muted/40 text-muted-foreground hover:bg-muted/70 hover:text-foreground active:scale-[0.98] font-mono text-xs font-medium transition-all">
+            <Button type="button" variant="outline" onClick={handleClose} className="rounded-lg border-border/70 bg-muted/40 text-muted-foreground hover:bg-muted/70 hover:text-foreground active:scale-[0.98] font-mono text-xs font-medium transition-all">
               Cancel
             </Button>
           </TooltipTrigger>

@@ -1,4 +1,4 @@
-import { afterAll, beforeEach, describe, expect, it } from 'vitest'
+import { afterAll, beforeEach, describe, expect, it, vi } from 'vitest'
 import { readFileSync } from 'node:fs'
 import { initializeDatabase } from '../../db/init'
 import { sqlite } from '../../db/index'
@@ -17,7 +17,9 @@ import {
   createTicket,
   getLatestPhaseArtifact,
   getTicketPaths,
+  readTicketFile,
   upsertLatestPhaseArtifact,
+  writeTicketFile,
 } from '../../storage/tickets'
 import { createFixtureRepoManager } from '../../test/fixtureRepo'
 import { initializeTicket } from '../../ticket/initialize'
@@ -28,6 +30,8 @@ import {
   releaseInterviewBatch,
   snapshotFingerprint,
 } from '../phases/interviewPhase'
+import { listSkipEvents } from '../skipReceipts'
+import * as atomicWrite from '../../io/atomicWrite'
 
 const repoManager = createFixtureRepoManager({
   templatePrefix: 'looptroop-skip-all-',
@@ -35,6 +39,39 @@ const repoManager = createFixtureRepoManager({
     'README.md': '# LoopTroop Skip All Test\n',
   },
 })
+
+async function makeActiveSkipAllTicket() {
+  const repoDir = repoManager.createRepo()
+  const project = attachProject({ folderPath: repoDir, name: 'LoopTroop', shortname: 'LOOP' })
+  const ticket = createTicket({
+    projectId: project.id,
+    title: 'Skip rollback',
+    description: 'Retry Skip All after a partial commit.',
+  })
+  await initializeTicket({ projectFolder: repoDir, externalId: ticket.externalId })
+
+  const base = createInterviewSessionSnapshot({
+    winnerId: 'openai/gpt-5-mini',
+    compiledQuestions: [{ id: 'Q01', phase: 'Foundation', question: 'What matters?' }],
+    maxInitialQuestions: 1,
+  })
+  const batch = buildPersistedBatch({
+    questions: [{ id: 'Q01', phase: 'Foundation', question: 'What matters?' }],
+    progress: { current: 1, total: 1 },
+    isComplete: false,
+    isFinalFreeForm: false,
+    aiCommentary: 'One question.',
+    batchNumber: 1,
+  }, 'prom4', base)
+  const activeSnapshot = recordPreparedBatch(base, batch)
+  upsertLatestPhaseArtifact(
+    ticket.id,
+    INTERVIEW_SESSION_ARTIFACT,
+    'WAITING_INTERVIEW_ANSWERS',
+    serializeInterviewSessionSnapshot(activeSnapshot),
+  )
+  return { ticket, activeSnapshot }
+}
 
 describe('skipAllInterviewQuestionsToApproval', () => {
   beforeEach(() => {
@@ -219,5 +256,65 @@ describe('skipAllInterviewQuestionsToApproval', () => {
     } finally {
       releaseInterviewBatch(ticket.id, claim ?? undefined)
     }
+  })
+
+  it('restores the snapshot and canonical file when Skip All canonical writing fails', async () => {
+    const { ticket, activeSnapshot } = await makeActiveSkipAllTicket()
+    writeTicketFile(ticket.id, 'interview.yaml', 'previous canonical\n')
+    const originalSafeWrite = atomicWrite.safeAtomicWriteWithin
+    let calls = 0
+    const canonicalWrite = vi.spyOn(atomicWrite, 'safeAtomicWriteWithin').mockImplementation((...args) => {
+      calls += 1
+      if (calls === 1) throw new Error('injected canonical write failure')
+      return originalSafeWrite(...args)
+    })
+
+    try {
+      expect(() => skipAllInterviewQuestionsToApproval(ticket.id, { Q01: '' }))
+        .toThrow('injected canonical write failure')
+    } finally {
+      canonicalWrite.mockRestore()
+    }
+
+    expect(getLatestPhaseArtifact(ticket.id, INTERVIEW_SESSION_ARTIFACT)?.content)
+      .toBe(serializeInterviewSessionSnapshot(activeSnapshot))
+    expect(readTicketFile(ticket.id, 'interview.yaml')).toBe('previous canonical\n')
+    expect(listSkipEvents(ticket.id)).toHaveLength(0)
+    expect(getLatestPhaseArtifact(ticket.id, 'interview_coverage', 'VERIFYING_INTERVIEW_COVERAGE')).toBeUndefined()
+
+    const retry = skipAllInterviewQuestionsToApproval(ticket.id, { Q01: '' })
+    expect(retry.snapshot.completedAt).toBeTruthy()
+  })
+
+  it('rolls back receipts and coverage artifacts when a later Skip All write fails', async () => {
+    const { ticket, activeSnapshot } = await makeActiveSkipAllTicket()
+    writeTicketFile(ticket.id, 'interview.yaml', 'previous canonical\n')
+    const originalSafeWrite = atomicWrite.safeAtomicWriteWithin
+    let calls = 0
+    const coverageWrite = vi.spyOn(atomicWrite, 'safeAtomicWriteWithin').mockImplementation((...args) => {
+      calls += 1
+      // Canonical interview.yaml is first; the coverage-input mirror is next.
+      if (calls === 2) throw new Error('injected coverage mirror failure')
+      return originalSafeWrite(...args)
+    })
+
+    try {
+      expect(() => skipAllInterviewQuestionsToApproval(ticket.id, { Q01: '' }))
+        .toThrow('injected coverage mirror failure')
+    } finally {
+      coverageWrite.mockRestore()
+    }
+
+    expect(getLatestPhaseArtifact(ticket.id, INTERVIEW_SESSION_ARTIFACT)?.content)
+      .toBe(serializeInterviewSessionSnapshot(activeSnapshot))
+    expect(readTicketFile(ticket.id, 'interview.yaml')).toBe('previous canonical\n')
+    expect(readTicketFile(ticket.id, 'ui/artifact-companions/interview_coverage_input.json')).toBeNull()
+    expect(listSkipEvents(ticket.id)).toHaveLength(0)
+    expect(getLatestPhaseArtifact(ticket.id, 'ui_artifact_companion:interview_coverage_input', 'VERIFYING_INTERVIEW_COVERAGE')).toBeUndefined()
+    expect(getLatestPhaseArtifact(ticket.id, 'interview_coverage', 'VERIFYING_INTERVIEW_COVERAGE')).toBeUndefined()
+    expect(getLatestPhaseArtifact(ticket.id, 'ui_artifact_companion:interview_coverage', 'VERIFYING_INTERVIEW_COVERAGE')).toBeUndefined()
+
+    const retry = skipAllInterviewQuestionsToApproval(ticket.id, { Q01: '' })
+    expect(retry.snapshot.completedAt).toBeTruthy()
   })
 })

@@ -34,7 +34,7 @@ import { buildPromptFromTemplate, PROM2, PROM3 } from '../../prompts/index'
 import { randomUUID } from 'node:crypto'
 import { and, eq, exists, gt, lte } from 'drizzle-orm'
 import { interviewBatchClaims, phaseArtifacts } from '../../db/schema'
-import { getLatestPhaseArtifact, getTicketByRef, getTicketContext, getTicketPaths, insertPhaseArtifact, upsertLatestPhaseArtifact, countPhaseArtifacts, writeTicketFile } from '../../storage/tickets'
+import { getLatestPhaseArtifact, getTicketByRef, getTicketContext, getTicketPaths, insertPhaseArtifact, upsertLatestPhaseArtifact, countPhaseArtifacts, readTicketFile, removeTicketFile, writeTicketFile } from '../../storage/tickets'
 import { compareAndSetLatestPhaseArtifact } from '../../storage/ticketArtifacts'
 import { isMockOpenCodeMode } from '../../opencode/factory'
 import { safeAtomicWriteWithin } from '../../io/atomicWrite'
@@ -56,6 +56,7 @@ import {
   deleteSkipReceiptsForAction,
   deriveSkipActionId,
   formatSkipReceiptLogLines,
+  listSkipEvents,
   writeSkipReceipts,
 } from '../skipReceipts'
 import { raceWithCancel, throwIfCancelled } from '../../lib/abort'
@@ -235,6 +236,7 @@ function recordInterviewSkipReceipts(input: {
   /** Passed in: `recordBatchAnswers` clears `currentBatch` as it commits. */
   batchNumber: number | null
   bulkReason?: string | null
+  onRecorded?: (actionId: string) => void
 }): string | null {
   const skipped = input.questionIds
     .map((questionId) => ({ questionId, answer: input.snapshot.answers[questionId] }))
@@ -267,6 +269,9 @@ function recordInterviewSkipReceipts(input: {
       : null,
   })
 
+  // Tell the caller before emitting the human-readable log lines. If a log
+  // sink fails, the durable receipt still needs to be part of its rollback.
+  input.onRecorded?.(actionId)
   for (const line of formatSkipReceiptLogLines(receipts)) {
     emitPhaseLog(input.ticketId, input.externalId, 'WAITING_INTERVIEW_ANSWERS', 'info', line)
   }
@@ -814,6 +819,121 @@ export function skipAllInterviewQuestionsToApproval(
   const canonicalInterview = buildCanonicalInterviewYaml(externalId, finalizedSnapshot)
   const interviewPath = resolve(paths.ticketDir, 'interview.yaml')
 
+  // Skip All spans several durable stores. Keep the exact pre-action values so
+  // a failure after the snapshot CAS can put the ticket back into a retryable
+  // state instead of leaving a completed session with half its artifacts.
+  const canonicalBefore = readTicketFile(ticketId, 'interview.yaml')
+  const coverageArtifactDefinitions = [
+    {
+      artifactType: 'ui_artifact_companion:interview_coverage_input',
+      mirrorPath: 'ui/artifact-companions/interview_coverage_input.json',
+    },
+    {
+      artifactType: 'interview_coverage',
+      mirrorPath: null,
+    },
+    {
+      artifactType: 'ui_artifact_companion:interview_coverage',
+      mirrorPath: 'ui/artifact-companions/interview_coverage.json',
+    },
+  ] as const
+  const coverageArtifactsBefore = new Map(
+    coverageArtifactDefinitions.map(({ artifactType }) => [
+      artifactType,
+      getLatestPhaseArtifact(ticketId, artifactType, 'VERIFYING_INTERVIEW_COVERAGE'),
+    ] as const),
+  )
+  const coverageMirrorsBefore = new Map(
+    coverageArtifactDefinitions
+      .filter((definition): definition is typeof coverageArtifactDefinitions[number] & { mirrorPath: string } => (
+        definition.mirrorPath !== null
+      ))
+      .map(({ mirrorPath }) => [mirrorPath, readTicketFile(ticketId, mirrorPath)] as const),
+  )
+  const skipActionIdsBefore = new Set(listSkipEvents(ticketId).map((event) => event.actionId))
+  let recordedSkipActionId: string | null = null
+
+  const rollbackSkipAll = (originalError: unknown): never => {
+    const rollbackErrors: string[] = []
+    let snapshotRestored = false
+    try {
+      const restored = options.claimToken
+        ? persistInterviewSessionIfCurrent(
+          ticketId,
+          snapshotFingerprint(finalizedSnapshot),
+          snapshot,
+          options.claimToken,
+        )
+        : (persistInterviewSession(ticketId, snapshot), true)
+      if (!restored) throw new InterviewBatchChangedError()
+      snapshotRestored = true
+    } catch (error) {
+      rollbackErrors.push(`session snapshot: ${getErrorMessage(error)}`)
+    }
+
+    // If ownership changed while the action was failing, do not overwrite the
+    // successor's files or artifacts. A failed rollback is surfaced instead.
+    if (snapshotRestored) {
+      const attempt = (label: string, action: () => void) => {
+        try {
+          action()
+        } catch (error) {
+          rollbackErrors.push(`${label}: ${getErrorMessage(error)}`)
+        }
+      }
+
+      if (recordedSkipActionId && !skipActionIdsBefore.has(recordedSkipActionId)) {
+        attempt('skip receipts', () => {
+          deleteSkipReceiptsForAction(ticketId, recordedSkipActionId!)
+        })
+      }
+
+      attempt('coverage artifacts', () => {
+        const context = getTicketContext(ticketId)
+        if (!context) throw new Error(`Ticket not found: ${ticketId}`)
+        for (const { artifactType } of coverageArtifactDefinitions) {
+          const before = coverageArtifactsBefore.get(artifactType)
+          const current = getLatestPhaseArtifact(ticketId, artifactType, 'VERIFYING_INTERVIEW_COVERAGE')
+          if (!before) {
+            if (current) {
+              context.projectDb.delete(phaseArtifacts).where(eq(phaseArtifacts.id, current.id)).run()
+            }
+            continue
+          }
+          if (!current || current.id !== before.id) {
+            if (current) context.projectDb.delete(phaseArtifacts).where(eq(phaseArtifacts.id, current.id)).run()
+            context.projectDb.insert(phaseArtifacts).values({ ...before }).run()
+            continue
+          }
+          context.projectDb.update(phaseArtifacts)
+            .set({ content: before.content, updatedAt: before.updatedAt })
+            .where(eq(phaseArtifacts.id, before.id))
+            .run()
+        }
+      })
+
+      attempt('canonical interview', () => {
+        if (canonicalBefore === null) removeTicketFile(ticketId, 'interview.yaml')
+        else writeTicketFile(ticketId, 'interview.yaml', canonicalBefore)
+      })
+
+      for (const [mirrorPath, content] of coverageMirrorsBefore) {
+        attempt(`coverage mirror ${mirrorPath}`, () => {
+          if (content === null) removeTicketFile(ticketId, mirrorPath)
+          else writeTicketFile(ticketId, mirrorPath, content)
+        })
+      }
+    }
+
+    if (rollbackErrors.length > 0) {
+      throw new Error(
+        `Skip All interview finalization failed and rollback was incomplete; retry may be required. `
+        + `${rollbackErrors.join('; ')} Original error: ${getErrorMessage(originalError)}`,
+      )
+    }
+    throw originalError
+  }
+
   if (options.claimToken) {
     const persisted = persistInterviewSessionIfCurrent(
       ticketId,
@@ -825,91 +945,87 @@ export function skipAllInterviewQuestionsToApproval(
   } else {
     persistInterviewSession(ticketId, finalizedSnapshot)
   }
+  let coverageRunNumber = 1
+  let followUpBudgetTotal = 0
+  let followUpBudgetUsed = 0
   try {
     writeTicketFile(ticketId, 'interview.yaml', canonicalInterview)
+    recordInterviewSkipReceipts({
+      ticketId,
+      externalId,
+      ticketStatusBefore: ticket?.status ?? 'WAITING_INTERVIEW_ANSWERS',
+      surface: 'interview_all',
+      snapshot: finalizedSnapshot,
+      questionIds: [...skippedByThisAction],
+      batchNumber: snapshot.currentBatch?.batchNumber ?? null,
+      bulkReason: options.bulkReason ?? null,
+      onRecorded: (actionId) => {
+        recordedSkipActionId = actionId
+      },
+    })
+
+    const userAnswers = buildInterviewAnswerSummary(finalizedSnapshot)
+    coverageRunNumber = Math.max(1, countPhaseArtifacts(ticketId, 'interview_coverage', 'VERIFYING_INTERVIEW_COVERAGE') || 1)
+    followUpBudgetTotal = calculateFollowUpLimit(finalizedSnapshot.maxInitialQuestions, coverageFollowUpBudgetPercent)
+    followUpBudgetUsed = countCoverageFollowUpQuestions(finalizedSnapshot)
+    persistUiArtifactCompanionArtifact(ticketId, 'VERIFYING_INTERVIEW_COVERAGE', 'interview_coverage_input', {
+      interview: canonicalInterview,
+      userAnswers,
+    })
+    upsertLatestPhaseArtifact(
+      ticketId,
+      'interview_coverage',
+      'VERIFYING_INTERVIEW_COVERAGE',
+      JSON.stringify({
+        winnerId: finalizedSnapshot.winnerId,
+        hasGaps: false,
+        coverageRunNumber,
+        maxCoveragePasses,
+        limitReached: false,
+        terminationReason: 'clean',
+      }),
+    )
+    persistUiArtifactCompanionArtifact(ticketId, 'VERIFYING_INTERVIEW_COVERAGE', 'interview_coverage', {
+      response: SKIP_ALL_INTERVIEW_COVERAGE_RESPONSE,
+      normalizedContent: [
+        'status: clean',
+        'gaps: []',
+        'follow_up_questions: []',
+      ].join('\n'),
+      parsed: {
+        status: 'clean',
+        gaps: [],
+        followUpQuestions: [],
+      },
+      followUpBudgetPercent: coverageFollowUpBudgetPercent,
+      followUpBudgetTotal,
+      followUpBudgetUsed,
+      followUpBudgetRemaining: Math.max(0, followUpBudgetTotal - followUpBudgetUsed),
+      structuredOutput: {
+        repairApplied: false,
+        repairWarnings: [],
+        autoRetryCount: 0,
+      },
+    })
+
+    emitPhaseLog(
+      ticketId,
+      externalId,
+      'WAITING_INTERVIEW_ANSWERS',
+      'info',
+      'User skipped all remaining interview questions. Preserving existing answers and finalizing the normalized interview state.',
+    )
+    emitPhaseLog(
+      ticketId,
+      externalId,
+      'VERIFYING_INTERVIEW_COVERAGE',
+      'info',
+      `${SKIP_ALL_INTERVIEW_COVERAGE_RESPONSE} Canonical interview.yaml refreshed at ${interviewPath}.`,
+    )
   } catch (error) {
-    if (options.claimToken) {
-      persistInterviewSessionIfCurrent(
-        ticketId,
-        snapshotFingerprint(finalizedSnapshot),
-        snapshot,
-        options.claimToken,
-      )
-    } else {
-      persistInterviewSession(ticketId, snapshot)
-    }
-    throw error
+    rollbackSkipAll(error)
   }
-  recordInterviewSkipReceipts({
-    ticketId,
-    externalId,
-    ticketStatusBefore: ticket?.status ?? 'WAITING_INTERVIEW_ANSWERS',
-    surface: 'interview_all',
-    snapshot: finalizedSnapshot,
-    questionIds: [...skippedByThisAction],
-    batchNumber: snapshot.currentBatch?.batchNumber ?? null,
-    bulkReason: options.bulkReason ?? null,
-  })
   interviewQASessions.delete(ticketId)
-
-  const userAnswers = buildInterviewAnswerSummary(finalizedSnapshot)
-  const coverageRunNumber = Math.max(1, countPhaseArtifacts(ticketId, 'interview_coverage', 'VERIFYING_INTERVIEW_COVERAGE') || 1)
-  const followUpBudgetTotal = calculateFollowUpLimit(finalizedSnapshot.maxInitialQuestions, coverageFollowUpBudgetPercent)
-  const followUpBudgetUsed = countCoverageFollowUpQuestions(finalizedSnapshot)
-  persistUiArtifactCompanionArtifact(ticketId, 'VERIFYING_INTERVIEW_COVERAGE', 'interview_coverage_input', {
-    interview: canonicalInterview,
-    userAnswers,
-  })
-  upsertLatestPhaseArtifact(
-    ticketId,
-    'interview_coverage',
-    'VERIFYING_INTERVIEW_COVERAGE',
-    JSON.stringify({
-      winnerId: finalizedSnapshot.winnerId,
-      hasGaps: false,
-      coverageRunNumber,
-      maxCoveragePasses,
-      limitReached: false,
-      terminationReason: 'clean',
-    }),
-  )
-  persistUiArtifactCompanionArtifact(ticketId, 'VERIFYING_INTERVIEW_COVERAGE', 'interview_coverage', {
-    response: SKIP_ALL_INTERVIEW_COVERAGE_RESPONSE,
-    normalizedContent: [
-      'status: clean',
-      'gaps: []',
-      'follow_up_questions: []',
-    ].join('\n'),
-    parsed: {
-      status: 'clean',
-      gaps: [],
-      followUpQuestions: [],
-    },
-    followUpBudgetPercent: coverageFollowUpBudgetPercent,
-    followUpBudgetTotal,
-    followUpBudgetUsed,
-    followUpBudgetRemaining: Math.max(0, followUpBudgetTotal - followUpBudgetUsed),
-    structuredOutput: {
-      repairApplied: false,
-      repairWarnings: [],
-      autoRetryCount: 0,
-    },
-  })
-
-  emitPhaseLog(
-    ticketId,
-    externalId,
-    'WAITING_INTERVIEW_ANSWERS',
-    'info',
-    'User skipped all remaining interview questions. Preserving existing answers and finalizing the normalized interview state.',
-  )
-  emitPhaseLog(
-    ticketId,
-    externalId,
-    'VERIFYING_INTERVIEW_COVERAGE',
-    'info',
-    `${SKIP_ALL_INTERVIEW_COVERAGE_RESPONSE} Canonical interview.yaml refreshed at ${interviewPath}.`,
-  )
 
   return {
     snapshot: finalizedSnapshot,

@@ -163,6 +163,17 @@ describe('abandoning a start that never reported ready', () => {
     expect((await waitForReady(configDir, pid, null, recycled)).kind).toBe('unverifiable')
   })
 
+  it('waits for a pending child-exit notification before signalling tokenless cleanup', async () => {
+    const configDir = makeConfigDir()
+    const pid = process.pid + 1
+    const kill = vi.fn()
+    const child = { pid, exitCode: null, signalCode: null, kill } as unknown as ChildProcess
+    setImmediate(() => { (child as ChildProcess & { exitCode: number | null }).exitCode = 0 })
+
+    expect(await abandonFailedStart(configDir, child, null)).toBeNull()
+    expect(kill).not.toHaveBeenCalled()
+  })
+
   async function waitForDeath(pid: number, timeoutMs = 5_000): Promise<boolean> {
     const deadline = Date.now() + timeoutMs
     while (Date.now() < deadline) {

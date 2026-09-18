@@ -398,10 +398,9 @@ export async function abandonFailedStart(
   // A live ChildProcess handle is proof of this invocation's direct child even
   // when the platform could not provide a start token. Use that proof for the
   // bounded cleanup; the numeric-pid tree helpers remain token-gated.
-  const directChildIsLive = child.pid === pid
-    && child.exitCode === null
-    && child.signalCode === null
-    && typeof child.kill === 'function'
+  const directChildIsLive = childToken === null
+    ? await isDirectChildLive(child, pid)
+    : false
   if (childToken === null && directChildIsLive) {
     try { child.kill('SIGTERM') } catch { /* fall through to force */ }
     if (await waitForChildExit(child, DEFAULT_STOP_BUDGETS.signalMs)) {
@@ -481,6 +480,18 @@ async function waitForChildExit(child: ChildProcess, timeoutMs: number): Promise
   return exited()
 }
 
+/**
+ * Lets Node deliver a pending child-exit notification before using the handle
+ * as liveness proof. `exitCode` and `signalCode` stay null until that
+ * notification is observed; signalling in the same turn could otherwise send
+ * a recycled pid's signal to an unrelated process.
+ */
+async function isDirectChildLive(child: ChildProcess | undefined, pid: number): Promise<boolean> {
+  if (child?.pid !== pid || typeof child.kill !== 'function') return false
+  await new Promise<void>((resolve) => setImmediate(resolve))
+  return child.pid === pid && child.exitCode === null && child.signalCode === null
+}
+
 /** Clears only artifacts that still name the failed child generation. */
 function clearFailedStartArtifacts(configDir: string, pid: number, childToken: string | null): void {
   clearLockOwnedBy(pid, configDir)
@@ -534,9 +545,7 @@ export async function waitForReady(
         // token. This branch is intentionally unavailable to callers that only
         // have a numeric pid; an exited handle cannot prove a recycled pid.
         if (childToken === null) {
-          const directChildIsLive = child?.pid === childPid
-            && child.exitCode === null
-            && child.signalCode === null
+          const directChildIsLive = await isDirectChildLive(child, childPid)
           if (directChildIsLive) return { kind: 'ready', state }
           return { kind: 'unverifiable', state }
         }

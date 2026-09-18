@@ -304,6 +304,9 @@ Unreleased changes appear first and represent commits that have not yet been inc
 - Three aliases re-exported for a question-diff type that no longer exists, the three helpers behind them, an execution-setup runtime-path list with no reader, and an execution-setup barrel re-exporting three artifact names every caller already imports from their own module.
 
 ### Fixed
+- Skip All interview finalization now rolls back its snapshot, receipts, and coverage artifacts after a post-CAS failure, so the action can be retried safely.
+- Council member completion now checks only that member's session ownership, so another member's active session cannot block an otherwise confirmed stop.
+- Retry now confirms and clears a retained cancellation fence for every retryable workflow phase before dispatching the phase again.
 - Tokenless startup cleanup now yields for pending child-exit notifications before treating a direct handle as live, preventing a recycled PID from receiving a cleanup signal.
 - Windows Git-shutdown coverage now yields after process creation before requesting tree termination, avoiding a runner scheduling race that could leave a test child unverified.
 - Fixed bead approval accepting records without a status or priority, and fixed malformed bead JSON bodies surfacing as server errors instead of a stable 400 response. The client now gives canonical non-nullish empty fields precedence over legacy aliases, so an explicit clear is not resurrected during editing.

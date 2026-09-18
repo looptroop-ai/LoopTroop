@@ -9,6 +9,10 @@ interface TicketStatusRecord {
 
 interface TicketRecord {
   id: string
+  runtime?: unknown
+  implementationTiming?: unknown
+  pendingQuestions?: unknown
+  manualQa?: unknown
 }
 
 /**
@@ -19,7 +23,12 @@ interface TicketRecord {
  * it is what keeps the rest of the cached runtime alive.
  */
 type IncomingTicket<T extends TicketRecord> =
-  Partial<Omit<T, 'runtime'>> & TicketRecord & { runtime?: Record<string, unknown> }
+  Partial<Omit<T, 'runtime' | 'implementationTiming' | 'pendingQuestions' | 'manualQa'>> & TicketRecord & {
+    runtime?: Record<string, unknown>
+    implementationTiming?: Record<string, unknown>
+    pendingQuestions?: Record<string, unknown> | null
+    manualQa?: Record<string, unknown> | null
+  }
 
 function patchTicketStatus<T extends TicketStatusRecord>(
   ticket: T,
@@ -43,14 +52,21 @@ function mergeTicket<T extends TicketRecord>(
   if (ticket.id !== incomingTicket.id) return ticket
 
   const merged = { ...ticket, ...incomingTicket }
-  // `runtime` is merged one level down rather than replaced. A response that
-  // answered with part of it — a bead count and nothing else — would otherwise
-  // take the bead list, the PR state and the ETA with it until the follow-up
-  // refetch landed. The cast holds because the cached runtime was complete and
-  // this only overwrites the keys the patch named.
-  const cachedRuntime = (ticket as { runtime?: unknown }).runtime
-  if (isRecord(cachedRuntime) && isRecord(incomingTicket.runtime)) {
-    ;(merged as { runtime?: unknown }).runtime = { ...cachedRuntime, ...incomingTicket.runtime }
+  const mergePatchValue = (cached: unknown, incoming: unknown): unknown => {
+    if (!isRecord(cached) || !isRecord(incoming)) return incoming
+    const next: Record<string, unknown> = { ...cached }
+    for (const [key, value] of Object.entries(incoming)) {
+      next[key] = Object.hasOwn(cached, key)
+        ? mergePatchValue(cached[key], value)
+        : value
+    }
+    return next
+  }
+  for (const key of ['runtime', 'implementationTiming', 'pendingQuestions', 'manualQa'] as const) {
+    const incomingValue = incomingTicket[key]
+    if (incomingValue === undefined) continue
+    const cachedValue = ticket[key]
+    ;(merged as Record<string, unknown>)[key] = mergePatchValue(cachedValue, incomingValue)
   }
   return merged as T
 }

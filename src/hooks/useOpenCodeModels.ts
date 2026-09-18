@@ -13,6 +13,19 @@ interface ModelsApiResponse {
   connectedProviders: string[]
   defaultModels: Record<string, string>
   message?: string
+  code?: 'OPENCODE_UNREACHABLE' | 'OPENCODE_DISCOVERY_FAILED'
+}
+
+export type OpenCodeModelsErrorCode = 'OPENCODE_UNREACHABLE' | 'OPENCODE_DISCOVERY_FAILED'
+
+export class OpenCodeModelsError extends Error {
+  readonly code?: OpenCodeModelsErrorCode
+
+  constructor(message: string, code?: OpenCodeModelsErrorCode) {
+    super(message)
+    this.name = 'OpenCodeModelsError'
+    this.code = code
+  }
 }
 
 export type OpenCodeModel = OpenCodeCatalogModel
@@ -37,7 +50,7 @@ async function requestModelsApi(
   // When the backend cannot reach OpenCode it returns a `message` with an empty
   // model list (HTTP 200). Treat this as a retriable error so react-query retries
   // during the startup window while OpenCode is still initialising.
-  if (data.message) throw new Error(data.message)
+  if (data.message) throw new OpenCodeModelsError(data.message, data.code)
   return data
 }
 
@@ -53,6 +66,12 @@ function refreshModelsApi(signal?: AbortSignal): Promise<ModelsApiResponse> {
   return requestModelsApi('/api/models/refresh', 'POST', signal)
 }
 
+function shouldRetryModelFetch(failureCount: number, error: Error): boolean {
+  const code = (error as OpenCodeModelsError).code
+  return failureCount < MODEL_FETCH_RETRY_COUNT
+    && (code === 'OPENCODE_UNREACHABLE' || code === 'OPENCODE_DISCOVERY_FAILED')
+}
+
 export function clearOpenCodeModelsQuery(queryClient: Pick<QueryClient, 'removeQueries'>) {
   queryClient.removeQueries({
     queryKey: ['opencode-models'],
@@ -65,6 +84,8 @@ export function refreshOpenCodeModelsQuery(queryClient: Pick<QueryClient, 'remov
     queryKey: OPENCODE_MODELS_QUERY_KEY,
     queryFn: ({ signal }) => refreshModelsApi(signal),
     staleTime: QUERY_STALE_TIME_5M,
+    retry: shouldRetryModelFetch,
+    retryDelay: MODEL_FETCH_RETRY_DELAY_MS,
   })
 }
 
@@ -81,7 +102,7 @@ export function useOpenCodeModels() {
     queryKey: OPENCODE_MODELS_QUERY_KEY,
     queryFn: ({ signal }) => fetchModelsApi(signal),
     staleTime: QUERY_STALE_TIME_5M,
-    retry: MODEL_FETCH_RETRY_COUNT,
+    retry: shouldRetryModelFetch,
     retryDelay: MODEL_FETCH_RETRY_DELAY_MS,
     select: (data) => data.models,
   })
@@ -93,7 +114,7 @@ export function useAllOpenCodeModels(enabled = false) {
     queryKey: ALL_OPENCODE_MODELS_QUERY_KEY,
     queryFn: ({ signal }) => fetchAllModelsApi(signal),
     staleTime: QUERY_STALE_TIME_5M,
-    retry: MODEL_FETCH_RETRY_COUNT,
+    retry: shouldRetryModelFetch,
     retryDelay: MODEL_FETCH_RETRY_DELAY_MS,
     select: (data) => data.models,
     enabled,

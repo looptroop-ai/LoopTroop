@@ -1,22 +1,129 @@
-import type { ReactNode } from 'react'
+import { StrictMode, type ReactNode } from 'react'
 import { act, renderHook, waitFor } from '@testing-library/react'
-import { QueryClientProvider } from '@tanstack/react-query'
+import { CancelledError, QueryClientProvider } from '@tanstack/react-query'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import { createJsonResponse, createTestQueryClient } from '@/test/renderHelpers'
-import { useTicketHistoricalLogs, type HistoricalLogScope } from '../useTicketHistoricalLogs'
+import { foldHistoricalLogPages, useTicketHistoricalLogs, type HistoricalLogPage, type HistoricalLogScope } from '../useTicketHistoricalLogs'
 import { SERVER_LOG_REFRESH_EVENT } from '@/context/logUtils'
 
 /** Mounts the hook against a fresh query client — every test needs the same scaffolding. */
-function renderHistoricalLogs(scope: HistoricalLogScope) {
+function renderHistoricalLogs(scope: HistoricalLogScope, strictMode = false) {
   const client = createTestQueryClient()
-  const wrapper = ({ children }: { children: ReactNode }) => (
-    <QueryClientProvider client={client}>{children}</QueryClientProvider>
-  )
-  return renderHook(() => useTicketHistoricalLogs('ticket-1', scope), { wrapper })
+  const wrapper = ({ children }: { children: ReactNode }) => {
+    const content = <QueryClientProvider client={client}>{children}</QueryClientProvider>
+    return strictMode ? <StrictMode>{content}</StrictMode> : content
+  }
+  return { ...renderHook(() => useTicketHistoricalLogs('ticket-1', scope), { wrapper }), client }
+}
+
+function historyPage(entryId: string | null, content: string, olderCursor: string | null, hasOlder: boolean) {
+  return createJsonResponse({
+    entries: entryId ? [{ phase: 'CODING', entryId, content }] : [],
+    olderCursor,
+    hasOlder,
+  })
+}
+
+function historyRequestUrl(input: RequestInfo | URL): URL {
+  return new URL(String(input), 'http://localhost')
 }
 
 describe('useTicketHistoricalLogs', () => {
   afterEach(() => vi.restoreAllMocks())
+
+  it('publishes a completed automatic drain after StrictMode replays the mount effect', async () => {
+    let page = 0
+    const fetchSpy = vi.spyOn(globalThis, 'fetch').mockImplementation(() => {
+      const currentPage = page++
+      return createJsonResponse({
+        entries: [{ phase: 'CODING', entryId: currentPage === 0 ? 'new' : 'old', content: currentPage === 0 ? 'new' : 'old' }],
+        olderCursor: currentPage === 0 ? 'older' : null,
+        hasOlder: currentPage === 0,
+      })
+    })
+    const { result } = renderHistoricalLogs({ scope: 'lifecycle', view: 'overview' }, true)
+
+    await waitFor(() => expect(result.current.hasOlder).toBe(true))
+    await act(async () => { await result.current.fetchAllOlder() })
+
+    await waitFor(() => expect(result.current.entries.map(entry => entry.entryId)).toEqual(['old', 'new']))
+    expect(fetchSpy).toHaveBeenCalledTimes(2)
+  })
+
+  it('does not share an in-flight older-page drain with a new query scope', async () => {
+    let resolveAttemptOne!: (response: Response | PromiseLike<Response>) => void
+    const fetchSpy = vi.spyOn(globalThis, 'fetch').mockImplementation(input => {
+      const url = historyRequestUrl(input)
+      const attempt = url.searchParams.get('phaseAttempt')
+      if (url.searchParams.has('before')) {
+        if (attempt === '1') return new Promise<Response>(resolve => { resolveAttemptOne = resolve })
+        return historyPage('old-attempt-two', 'old attempt two', null, false)
+      }
+      return historyPage(`new-attempt-${attempt}`, `new attempt ${attempt}`, `cursor-${attempt}`, true)
+    })
+    const client = createTestQueryClient()
+    const { result, rerender } = renderHook(
+      ({ scope }: { scope: HistoricalLogScope }) => useTicketHistoricalLogs('ticket-1', scope),
+      {
+        initialProps: { scope: { scope: 'phase', phase: 'CODING', phaseAttempt: 1, view: 'overview' } },
+        wrapper: ({ children }: { children: ReactNode }) => <QueryClientProvider client={client}>{children}</QueryClientProvider>,
+      },
+    )
+
+    await waitFor(() => expect(result.current.entries.map(entry => entry.entryId)).toEqual(['new-attempt-1']))
+    let firstDrain!: Promise<void>
+    await act(async () => {
+      firstDrain = result.current.fetchAllOlder()
+      await Promise.resolve()
+    })
+    await waitFor(() => expect(fetchSpy).toHaveBeenCalledTimes(2))
+
+    rerender({ scope: { scope: 'phase', phase: 'CODING', phaseAttempt: 2, view: 'overview' } })
+    await waitFor(() => expect(result.current.entries.map(entry => entry.entryId)).toEqual(['new-attempt-2']))
+    await act(async () => { await result.current.fetchAllOlder() })
+
+    expect(result.current.entries.map(entry => entry.entryId)).toEqual(['old-attempt-two', 'new-attempt-2'])
+    expect(fetchSpy).toHaveBeenCalledTimes(4)
+
+    await act(async () => {
+      resolveAttemptOne(historyPage(null, '', null, false))
+      await firstDrain
+    })
+  })
+
+  it('does not cancel a drain when an uncancellable caller joins a cancelled caller', async () => {
+    const olderResolvers: Array<(response: Response | PromiseLike<Response>) => void> = []
+    const fetchSpy = vi.spyOn(globalThis, 'fetch').mockImplementation(input => {
+      const url = historyRequestUrl(input)
+      if (url.searchParams.has('before')) {
+        return new Promise<Response>(resolve => { olderResolvers.push(resolve) })
+      }
+      return historyPage('new', 'new', 'cursor-one', true)
+    })
+    const { result } = renderHistoricalLogs({ scope: 'lifecycle', view: 'overview' })
+
+    await waitFor(() => expect(result.current.hasOlder).toBe(true))
+    let uncancellableDrain!: Promise<void>
+    await act(async () => {
+      uncancellableDrain = result.current.fetchAllOlder()
+      // The second caller belongs to a view that is already gone. It may cancel
+      // its own work, but it must not cancel the first caller's drain.
+      result.current.fetchAllOlder(() => true)
+      await Promise.resolve()
+    })
+    await waitFor(() => expect(fetchSpy).toHaveBeenCalledTimes(2))
+
+    await act(async () => {
+      olderResolvers.shift()!(await historyPage('old-one', 'old one', 'cursor-two', true))
+    })
+    await waitFor(() => expect(fetchSpy).toHaveBeenCalledTimes(3))
+
+    await act(async () => {
+      olderResolvers.shift()!(await historyPage('old-two', 'old two', null, false))
+      await uncancellableDrain
+    })
+    await waitFor(() => expect(result.current.entries.map(entry => entry.entryId)).toEqual(['old-two', 'old-one', 'new']))
+  })
 
   it('preserves the model array reference when fresh responses contain the same catalog', async () => {
     const fetchSpy = vi.spyOn(globalThis, 'fetch').mockImplementation(() => createJsonResponse({
@@ -175,6 +282,268 @@ describe('useTicketHistoricalLogs', () => {
     expect(result.current.totalTextLines).toBe(4822)
   })
 
+  it('lets a native refresh supersede an older request and lets the full drain retry it', async () => {
+    let resolveOlder!: (response: Response) => void
+    let olderSignal: AbortSignal | null | undefined
+    const fetchSpy = vi.spyOn(globalThis, 'fetch').mockImplementation((input, init) => {
+      const url = String(input)
+      if (url.includes('before=')) {
+        olderSignal = init?.signal
+        return new Promise<Response>((resolve) => { resolveOlder = resolve })
+      }
+      return createJsonResponse({
+        entries: [{ phase: 'CODING', entryId: 'new', content: 'new' }],
+        olderCursor: 'cursor-older',
+        hasOlder: true,
+      })
+    })
+    const { result } = renderHistoricalLogs({ scope: 'lifecycle', view: 'overview' })
+
+    await waitFor(() => expect(result.current.hasOlder).toBe(true))
+    await act(async () => {
+      void result.current.fetchOlder()
+      await Promise.resolve()
+    })
+    await waitFor(() => expect(fetchSpy).toHaveBeenCalledTimes(2))
+    await act(async () => {
+      window.dispatchEvent(new CustomEvent(SERVER_LOG_REFRESH_EVENT, { detail: { ticketId: 'ticket-1' } }))
+      await Promise.resolve()
+    })
+
+    await waitFor(() => expect(fetchSpy).toHaveBeenCalledTimes(3))
+    expect(olderSignal?.aborted).toBe(true)
+    let drain!: Promise<void>
+    await act(async () => {
+      drain = result.current.fetchAllOlder()
+      await Promise.resolve()
+    })
+    await waitFor(() => expect(fetchSpy).toHaveBeenCalledTimes(4))
+    await act(async () => {
+      resolveOlder(await createJsonResponse({
+        entries: [{ phase: 'CODING', entryId: 'old', content: 'old' }],
+        olderCursor: null,
+        hasOlder: false,
+      }))
+      await drain
+    })
+    await waitFor(() => expect(result.current.entries.map(entry => entry.entryId)).toEqual(['old', 'new']))
+  })
+
+  it('uses native refetch cancellation and retries the older cursor during a full drain', async () => {
+    let olderSignal: AbortSignal | null | undefined
+    const fetchSpy = vi.spyOn(globalThis, 'fetch').mockImplementation((input, init) => {
+      const url = String(input)
+      if (url.includes('before=')) {
+        if (fetchSpy.mock.calls.length > 2) {
+          return createJsonResponse({
+            entries: [{ phase: 'CODING', entryId: 'old', content: 'old' }],
+            olderCursor: null, hasOlder: false,
+          })
+        }
+        olderSignal = init?.signal
+        return new Promise<Response>(() => {})
+      }
+      if (fetchSpy.mock.calls.length === 1) {
+        return createJsonResponse({
+          entries: [{ phase: 'CODING', entryId: 'new', content: 'new' }],
+          olderCursor: 'cursor-older', hasOlder: true,
+        })
+      }
+      return createJsonResponse({
+        entries: [{ phase: 'CODING', entryId: 'recovered', content: 'recovered' }],
+        olderCursor: 'fresh-older', hasOlder: true,
+      })
+    })
+    const { result } = renderHistoricalLogs({ scope: 'lifecycle', view: 'overview' })
+
+    await waitFor(() => expect(result.current.hasOlder).toBe(true))
+    await act(async () => {
+      void result.current.fetchOlder()
+      await Promise.resolve()
+    })
+    await waitFor(() => expect(fetchSpy).toHaveBeenCalledTimes(2))
+    let refresh!: ReturnType<typeof result.current.refetch>
+    await act(async () => {
+      refresh = result.current.refetch()
+      await Promise.resolve()
+    })
+    expect(olderSignal?.aborted).toBe(true)
+    await waitFor(() => expect(fetchSpy).toHaveBeenCalledTimes(3))
+
+    await act(async () => {
+      await refresh
+    })
+
+    let drain!: Promise<void>
+    await act(async () => {
+      drain = result.current.fetchAllOlder()
+      await Promise.resolve()
+    })
+    await waitFor(() => expect(fetchSpy).toHaveBeenCalledTimes(4))
+    await act(async () => {
+      await drain
+    })
+    await waitFor(() => expect(result.current.entries.map(entry => entry.entryId)).toEqual(['old', 'recovered']))
+    expect(result.current.data?.pages).toHaveLength(2)
+  })
+
+  it('shares an active native refetch with an older request, then drains its settled cursor', async () => {
+    let resolveRefresh!: (response: Response) => void
+    let refreshSignal: AbortSignal | null | undefined
+    let resolveOlder!: (response: Response) => void
+    const fetchSpy = vi.spyOn(globalThis, 'fetch').mockImplementation((input, init) => {
+      const url = String(input)
+      if (url.includes('before=')) {
+        return new Promise<Response>(resolve => { resolveOlder = resolve })
+      }
+      if (fetchSpy.mock.calls.length === 1) {
+        return createJsonResponse({
+          entries: [{ phase: 'CODING', entryId: 'new', content: 'new' }],
+          olderCursor: 'cursor-older', hasOlder: true,
+        })
+      }
+      refreshSignal = init?.signal
+      return new Promise<Response>(resolve => { resolveRefresh = resolve })
+    })
+    const { result } = renderHistoricalLogs({ scope: 'lifecycle', view: 'overview' })
+
+    await waitFor(() => expect(result.current.hasOlder).toBe(true))
+    let refresh!: ReturnType<typeof result.current.refetch>
+    let drain!: Promise<void>
+    await act(async () => {
+      refresh = result.current.refetch()
+      drain = result.current.fetchAllOlder()
+      await Promise.resolve()
+    })
+    await waitFor(() => expect(fetchSpy).toHaveBeenCalledTimes(2))
+    expect(fetchSpy.mock.calls.some(([url]) => String(url).includes('before='))).toBe(false)
+
+    await act(async () => {
+      resolveRefresh(await createJsonResponse({
+        entries: [{ phase: 'CODING', entryId: 'recovered', content: 'recovered' }],
+        olderCursor: 'fresh-older', hasOlder: true,
+      }))
+      await refresh
+    })
+    await waitFor(() => expect(fetchSpy).toHaveBeenCalledTimes(3))
+    expect(refreshSignal?.aborted).toBe(false)
+
+    await act(async () => {
+      resolveOlder(await createJsonResponse({
+        entries: [{ phase: 'CODING', entryId: 'old', content: 'old' }],
+        olderCursor: null, hasOlder: false,
+      }))
+      await drain
+    })
+    await waitFor(() => expect(result.current.entries.map(entry => entry.entryId)).toEqual(['old', 'recovered']))
+  })
+
+  it('preserves refetchType none during an older-page request', async () => {
+    let resolveOlder!: (response: Response) => void
+    let olderSignal: AbortSignal | null | undefined
+    const fetchSpy = vi.spyOn(globalThis, 'fetch').mockImplementation((input, init) => {
+      const url = String(input)
+      if (url.includes('before=')) {
+        olderSignal = init?.signal
+        return new Promise<Response>(resolve => { resolveOlder = resolve })
+      }
+      if (fetchSpy.mock.calls.length === 1) {
+        return createJsonResponse({
+          entries: [{ phase: 'CODING', entryId: 'new', content: 'new' }],
+          olderCursor: 'cursor-older', hasOlder: true,
+        })
+      }
+      return createJsonResponse({ entries: [{ phase: 'CODING', entryId: 'new', content: 'new' }], olderCursor: 'cursor-older', hasOlder: true })
+    })
+    const { result, client } = renderHistoricalLogs({ scope: 'lifecycle', view: 'overview' })
+
+    await waitFor(() => expect(result.current.hasOlder).toBe(true))
+    await act(async () => {
+      void result.current.fetchOlder()
+      await Promise.resolve()
+    })
+    await waitFor(() => expect(fetchSpy).toHaveBeenCalledTimes(2))
+    const invalidation = client.invalidateQueries({
+      predicate: query => query.queryKey.includes('ticket-1'),
+      refetchType: 'none',
+    })
+    expect(olderSignal?.aborted).toBe(false)
+    expect(fetchSpy).toHaveBeenCalledTimes(2)
+
+    await act(async () => {
+      resolveOlder(await createJsonResponse({
+        entries: [{ phase: 'CODING', entryId: 'old', content: 'old' }],
+        olderCursor: null, hasOlder: false,
+      }))
+      await invalidation
+    })
+    await waitFor(() => expect(result.current.entries.map(entry => entry.entryId)).toEqual(['old', 'new']))
+    expect(fetchSpy).toHaveBeenCalledTimes(2)
+  })
+
+  it('restarts a full drain after the server expires its cursor and clears the visible error', async () => {
+    const fetchSpy = vi.spyOn(globalThis, 'fetch').mockImplementation((input) => {
+      const url = String(input)
+      if (!url.includes('before=')) {
+        if (fetchSpy.mock.calls.length === 1) {
+          return createJsonResponse({
+            entries: [{ phase: 'CODING', entryId: 'new', content: 'new' }],
+            olderCursor: 'expired-cursor', hasOlder: true,
+          })
+        }
+        return createJsonResponse({
+          entries: [{ phase: 'CODING', entryId: 'fresh', content: 'fresh' }],
+          olderCursor: 'fresh-cursor', hasOlder: true,
+        })
+      }
+      if (fetchSpy.mock.calls.length === 2) {
+        return createJsonResponse({ code: 'LOG_CURSOR_EXPIRED', error: 'LOG_CURSOR_EXPIRED' }, 409)
+      }
+      return createJsonResponse({
+        entries: [{ phase: 'CODING', entryId: 'old', content: 'old' }],
+        olderCursor: null, hasOlder: false,
+      })
+    })
+    const { result } = renderHistoricalLogs({ scope: 'lifecycle', view: 'overview' })
+
+    await waitFor(() => expect(result.current.hasOlder).toBe(true))
+    await act(async () => { await result.current.fetchAllOlder() })
+    await waitFor(() => expect(result.current.entries.map(entry => entry.entryId)).toEqual(['old', 'fresh']))
+    expect(result.current.isError).toBe(false)
+    expect(result.current.data?.pages).toHaveLength(2)
+    expect(fetchSpy).toHaveBeenCalledTimes(4)
+    expect(fetchSpy.mock.calls[3]?.[0]).toContain('before=fresh-cursor')
+  })
+
+  it('fails loudly when an older cursor repeats instead of truncating the drain', async () => {
+    const fetchSpy = vi.spyOn(globalThis, 'fetch').mockImplementation(input => {
+      const url = String(input)
+      if (!url.includes('before=')) {
+        return createJsonResponse({
+          entries: [{ phase: 'CODING', entryId: 'new', content: 'new' }],
+          olderCursor: 'cursor-older', hasOlder: true,
+        })
+      }
+      return createJsonResponse({
+        entries: [{ phase: 'CODING', entryId: 'same-page', content: 'same page' }],
+        olderCursor: 'cursor-older', hasOlder: true,
+      })
+    })
+    const { result } = renderHistoricalLogs({ scope: 'lifecycle', view: 'overview' })
+
+    await waitFor(() => expect(result.current.hasOlder).toBe(true))
+    let drain!: Promise<void>
+    await act(async () => {
+      drain = result.current.fetchAllOlder()
+      await Promise.resolve()
+    })
+    await act(async () => {
+      await expect(drain).rejects.toThrow('cursor did not advance')
+    })
+    expect(fetchSpy).toHaveBeenCalledTimes(3)
+    await waitFor(() => expect(result.current.entries.map(entry => entry.entryId)).toEqual(['same-page', 'new']))
+  })
+
   it('loads every older cursor page for explicit navigation to the true beginning', async () => {
     const fetchSpy = vi.spyOn(globalThis, 'fetch')
       .mockImplementationOnce(() => createJsonResponse({
@@ -209,6 +578,196 @@ describe('useTicketHistoricalLogs', () => {
       '/api/tickets/ticket-1/logs?scope=lifecycle&view=overview&limit=250&before=cursor-1',
       expect.objectContaining({ signal: expect.any(AbortSignal) }),
     )
+  })
+
+  it('keeps non-AI history in the server page order', async () => {
+    vi.spyOn(globalThis, 'fetch')
+      .mockImplementationOnce(() => createJsonResponse({
+        entries: [
+          { phase: 'CODING', entryId: 'newer', content: 'newer', timestamp: '2026-03-10T00:00:01.000Z' },
+          { phase: 'CODING', entryId: 'newer-undated', content: 'newer undated', timestamp: 'not-a-date' },
+        ],
+        olderCursor: 'cursor-older', hasOlder: true,
+      }))
+      .mockImplementationOnce(() => createJsonResponse({
+        entries: [
+          { phase: 'CODING', entryId: 'older-undated', content: 'older undated', timestamp: 'still-not-a-date' },
+          { phase: 'CODING', entryId: 'older-dated', content: 'older dated', timestamp: '2026-03-10T00:00:03.000Z' },
+        ],
+        olderCursor: null, hasOlder: false,
+      }))
+    const { result } = renderHistoricalLogs({ scope: 'lifecycle', view: 'overview' })
+
+    await waitFor(() => expect(result.current.hasOlder).toBe(true))
+    await act(async () => { await result.current.fetchAllOlder() })
+
+    // The server's non-AI cursor is file/order based. Timestamps are display data,
+    // not permission to reorder rows that arrived out of timestamp order.
+    await waitFor(() => expect(result.current.entries.map(entry => entry.entryId)).toEqual([
+      'older-undated', 'older-dated', 'newer', 'newer-undated',
+    ]))
+  })
+
+  it('uses a total AI comparator with undated rows last', async () => {
+    vi.spyOn(globalThis, 'fetch').mockImplementationOnce(() => createJsonResponse({
+      entries: [
+        { phase: 'CODING', entryId: 'undated', content: 'undated', timestamp: 'not-a-date', type: 'model_output', source: 'opencode', audience: 'ai', kind: 'text' },
+        { phase: 'CODING', entryId: 'same-b', content: 'same b', timestamp: '2026-03-10T00:00:02.000Z', type: 'model_output', source: 'opencode', audience: 'ai', kind: 'text' },
+        { phase: 'CODING', entryId: 'same-a', content: 'same a', timestamp: '2026-03-10T00:00:02.000Z', type: 'model_output', source: 'opencode', audience: 'ai', kind: 'text' },
+        { phase: 'CODING', entryId: 'early', content: 'early', timestamp: '2026-03-10T00:00:01.000Z', type: 'model_output', source: 'opencode', audience: 'ai', kind: 'text' },
+      ],
+      olderCursor: null, hasOlder: false,
+    }))
+    const { result } = renderHistoricalLogs({ scope: 'phase', phase: 'CODING', view: 'ai' })
+
+    await waitFor(() => expect(result.current.entries).toHaveLength(4))
+    expect(result.current.entries.map(entry => entry.entryId)).toEqual(['early', 'same-a', 'same-b', 'undated'])
+  })
+
+  it('repositions an aliased older append when an incremental fold learns its start time', () => {
+    const newerPage: HistoricalLogPage = {
+      entries: [
+        {
+          id: 'b', entryId: 'b', line: 'b', source: 'opencode', status: 'CODING',
+          audience: 'ai', kind: 'text', streaming: false, op: 'append',
+          timestamp: '2026-03-10T00:00:02.000Z',
+        },
+        {
+          id: 'a-final', entryId: 'a-final', fingerprint: 'alias-a', line: 'a final', source: 'opencode', status: 'CODING',
+          audience: 'ai', kind: 'text', streaming: false, op: 'finalize',
+          timestamp: '2026-03-10T00:00:03.000Z',
+        },
+      ],
+      olderCursor: 'cursor-older', hasOlder: true, totalEntries: null, totalTextLines: null, modelIds: null,
+    }
+    const olderPage: HistoricalLogPage = {
+      entries: [{
+        id: 'a-append', entryId: 'a-append', fingerprint: 'alias-a', line: 'a original', source: 'opencode', status: 'CODING',
+        audience: 'ai', kind: 'text', streaming: true, op: 'append',
+        timestamp: '2026-03-10T00:00:01.000Z',
+      }],
+      olderCursor: null, hasOlder: false, totalEntries: null, totalTextLines: null, modelIds: null,
+    }
+
+    const initial = foldHistoricalLogPages([newerPage], 'ai')
+    const folded = foldHistoricalLogPages([newerPage, olderPage], 'ai', initial)
+    expect(folded.entries.map(entry => entry.entryId)).toEqual(['a-final', 'b'])
+    expect(folded.entries[0]).toMatchObject({ timestamp: '2026-03-10T00:00:01.000Z', streaming: false })
+  })
+
+  it('retains aliases introduced by a middle page when the newest payload already won', () => {
+    const newest: HistoricalLogPage = {
+      entries: [{
+        id: 'new', entryId: 'new', fingerprint: 'fp', line: 'final', source: 'opencode', status: 'CODING',
+        audience: 'ai', kind: 'text', streaming: false, op: 'finalize', timestamp: '2026-03-10T00:00:03.000Z',
+      }],
+      olderCursor: 'middle', hasOlder: true, totalEntries: null, totalTextLines: null, modelIds: null,
+    }
+    const middle: HistoricalLogPage = {
+      entries: [{
+        id: 'old', entryId: 'old', fingerprint: 'fp', line: 'append', source: 'opencode', status: 'CODING',
+        audience: 'ai', kind: 'text', streaming: true, op: 'append', timestamp: '2026-03-10T00:00:02.000Z',
+      }],
+      olderCursor: 'oldest', hasOlder: true, totalEntries: null, totalTextLines: null, modelIds: null,
+    }
+    const oldest: HistoricalLogPage = {
+      entries: [{
+        id: 'old', entryId: 'old', line: 'original', source: 'opencode', status: 'CODING',
+        audience: 'ai', kind: 'text', streaming: true, op: 'append', timestamp: '2026-03-10T00:00:01.000Z',
+      }],
+      olderCursor: null, hasOlder: false, totalEntries: null, totalTextLines: null, modelIds: null,
+    }
+
+    const fresh = foldHistoricalLogPages([newest, middle, oldest], 'ai')
+    const incremental = foldHistoricalLogPages([newest], 'ai')
+    foldHistoricalLogPages([newest, middle], 'ai', incremental)
+    const folded = foldHistoricalLogPages([newest, middle, oldest], 'ai', incremental)
+    expect(fresh.entries).toHaveLength(1)
+    expect(folded.entries).toHaveLength(1)
+    expect(folded.entries[0]).toMatchObject({ entryId: 'new', timestamp: '2026-03-10T00:00:01.000Z', streaming: false })
+  })
+
+  it('folds many older pages with linear row visits after the first page', () => {
+    const stats = {
+      pagesVisited: 0, entriesVisited: 0, comparatorCalls: 0,
+      nodeCopies: 0, materializedEntries: 0, aliasRegistrations: 0,
+    }
+    const pages: HistoricalLogPage[] = []
+    for (let page = 0; page < 40; page += 1) {
+      const next: HistoricalLogPage = {
+        entries: Array.from({ length: 10 }, (_, index) => ({
+          id: `row-${page}-${index}`,
+          entryId: `row-${page}-${index}`,
+          line: `row ${page}-${index}`,
+          source: 'system',
+          status: 'CODING',
+          audience: 'all',
+          kind: 'milestone',
+          streaming: false,
+          op: 'append',
+        })),
+        olderCursor: page < 39 ? `cursor-${page}` : null,
+        hasOlder: page < 39,
+        totalEntries: null,
+        totalTextLines: null,
+        modelIds: null,
+      }
+      pages.push(next)
+    }
+
+    // The automatic drain batches query updates and performs this one canonical
+    // fold, so its actual publication work is one 400-row materialization.
+    const cache = foldHistoricalLogPages(pages, 'overview', null, stats)
+    expect(cache.entries).toHaveLength(400)
+    expect(stats.entriesVisited).toBe(400)
+    expect(stats.pagesVisited).toBe(40)
+    expect(stats.comparatorCalls).toBe(0)
+    expect(stats.materializedEntries).toBe(400)
+
+    // Incremental callers retain page-sized node groups and materialize the
+    // display array only when it is read. Full-history draining therefore does
+    // not copy every accumulated row on every page.
+    const incrementalStats = {
+      pagesVisited: 0, entriesVisited: 0, comparatorCalls: 0,
+      nodeCopies: 0, materializedEntries: 0, aliasRegistrations: 0,
+    }
+    let incrementalCache: ReturnType<typeof foldHistoricalLogPages> | null = null
+    for (let count = 1; count <= pages.length; count += 1) {
+      incrementalCache = foldHistoricalLogPages(pages.slice(0, count), 'overview', incrementalCache, incrementalStats)
+    }
+    expect(incrementalCache?.entries).toHaveLength(400)
+    expect(incrementalStats.entriesVisited).toBe(400)
+    expect(incrementalStats.materializedEntries).toBe(400)
+    expect(incrementalStats.nodeCopies).toBe(390)
+  })
+
+  it('publishes one final fold while the automatic 40-page drain is active', async () => {
+    let page = 0
+    const publishedLengths: number[] = []
+    const fetchSpy = vi.spyOn(globalThis, 'fetch').mockImplementation(() => {
+      const currentPage = page++
+      return createJsonResponse({
+        entries: Array.from({ length: 10 }, (_, index) => ({
+          phase: 'CODING', entryId: `drain-${currentPage}-${index}`, content: `row ${currentPage}-${index}`,
+        })),
+        olderCursor: currentPage < 39 ? `cursor-${currentPage + 1}` : null,
+        hasOlder: currentPage < 39,
+      })
+    })
+    const client = createTestQueryClient()
+    const { result } = renderHook(() => {
+      const current = useTicketHistoricalLogs('ticket-1', { scope: 'lifecycle', view: 'overview' })
+      publishedLengths.push(current.entries.length)
+      return current
+    }, {
+      wrapper: ({ children }: { children: ReactNode }) => <QueryClientProvider client={client}>{children}</QueryClientProvider>,
+    })
+
+    await waitFor(() => expect(result.current.hasOlder).toBe(true))
+    await act(async () => { await result.current.fetchAllOlder() })
+    await waitFor(() => expect(result.current.entries).toHaveLength(400))
+    expect(fetchSpy).toHaveBeenCalledTimes(40)
+    expect(publishedLengths.filter(length => length > 10)).toEqual([400])
   })
 
   it('keeps two archived attempts apart when they reuse one milestone id', async () => {
@@ -345,6 +904,39 @@ describe('useTicketHistoricalLogs', () => {
     })
 
     expect(fetchSpy.mock.calls.length).toBe(callsBeforeDrain + 1)
+  })
+
+  it('stops an uncancellable drain after the hook unmounts', async () => {
+    let olderCalls = 0
+    let rejectOlder!: (error: unknown) => void
+    const fetchSpy = vi.spyOn(globalThis, 'fetch').mockImplementation(input => {
+      if (!String(input).includes('before=')) {
+        return historyPage('new', 'new', 'cursor-older', true)
+      }
+      olderCalls += 1
+      if (olderCalls === 1) {
+        return new Promise<Response>((_, reject) => { rejectOlder = reject })
+      }
+      return historyPage('unexpected', 'unexpected', null, false)
+    })
+    const { result, unmount } = renderHistoricalLogs({ scope: 'lifecycle', view: 'overview' })
+
+    await waitFor(() => expect(result.current.hasOlder).toBe(true))
+    let drain!: Promise<void>
+    await act(async () => {
+      drain = result.current.fetchAllOlder()
+      await Promise.resolve()
+    })
+    await waitFor(() => expect(olderCalls).toBe(1))
+
+    unmount()
+    await act(async () => {
+      rejectOlder(new CancelledError())
+      await drain
+    })
+
+    expect(olderCalls).toBe(1)
+    expect(fetchSpy).toHaveBeenCalledTimes(2)
   })
 
   it('keeps one identity while it pages, so a caller can own a walk across it', async () => {

@@ -8,7 +8,7 @@ import { LOG_LEGEND_TOOLTIP_CLASS, LOG_LEGEND_TOOLTIP_STACK_CLASS } from './logT
 import { cn } from '@/lib/utils'
 import { useLogs } from '@/context/useLogContext'
 import type { LogEntry } from '@/context/LogContext'
-import { compareTimestamps, getLogEntryIdentity, isDebugLogEntry, mergeEntriesBatch } from '@/context/logUtils'
+import { compareLogEntriesByTimestamp, getLogEntryIdentity, isDebugLogEntry, mergeEntriesBatch } from '@/context/logUtils'
 import { getStatusUserLabel } from '@/lib/workflowMeta'
 import { isTerminalWorkflowStatus } from '@shared/workflowMeta'
 import { LoadingText } from '@/components/ui/LoadingText'
@@ -184,18 +184,19 @@ export function PhaseLogPanel({
         return [
           ...propLogs,
           ...debugEntries.filter((entry) => !seenIdentities.has(getLogEntryIdentity(entry))),
-        ].sort((a, b) => compareTimestamps(a.timestamp, b.timestamp))
+        ].sort(compareLogEntriesByTimestamp)
       }
       if (shouldLoadHistoricalLogs) {
         if (logMode === 'snapshot') return historicalLogs.entries
         return mergeEntriesBatch(
           historicalLogs.entries,
           getLogsForPhase?.(phase, liveLogOptions) ?? [],
+          historicalView === 'ai',
         )
       }
       return getLogsForPhase?.(phase, liveLogOptions) ?? []
     },
-    [activeTab, getLogsForPhase, historicalLogs.entries, liveLogOptions, logMode, phase, propLogs, shouldLoadHistoricalLogs],
+    [activeTab, getLogsForPhase, historicalLogs.entries, historicalView, liveLogOptions, logMode, phase, propLogs, shouldLoadHistoricalLogs],
   )
   // A ticket that has finished is not running anything, so its last phase is not live
   // even though the panel's phase still matches its status — otherwise a cancelled or
@@ -370,7 +371,7 @@ export function PhaseLogPanel({
     if (phase === 'CODING' && hasBeadSections && beadSectionsResult) {
       for (const entry of beadSectionsResult.preambleEntries) items.push({ type: 'entry', key: getLogEntryIdentity(entry), entry })
       for (const section of beadSectionsResult.beadSections) {
-        items.push({ type: 'bead', key: `${section.beadId}-${section.ordinal}`, ordinal: section.ordinal, total: section.total, title: section.title })
+        items.push({ type: 'bead', key: section.sectionKey, ordinal: section.ordinal, total: section.total, title: section.title })
         for (const entry of section.entries) items.push({ type: 'entry', key: getLogEntryIdentity(entry), entry })
       }
     } else {
@@ -678,6 +679,14 @@ export function PhaseLogPanel({
         enabled={currentActivityEnabled}
         activeStatus={ticket?.status ?? phase}
       />
+      {shouldLoadHistoricalLogs && historicalLogs.isError && hasLogs ? (
+        <QueryErrorNotice
+          title="The complete log history could not be refreshed."
+          error={historicalLogs.error}
+          onRetry={() => void historicalLogs.retryHistoricalLogs()}
+          className="shrink-0 border-b border-destructive/20 bg-destructive/5"
+        />
+      ) : null}
       <div className="relative flex-1 min-h-0 flex flex-col">
         <ScrollArea className="flex-1 min-h-0 h-full" viewportRef={setViewportRef}>
           <div ref={setContentRef} className="font-mono text-xs bg-muted/60 rounded-lg border border-border/30 p-3 min-h-[100px] w-full max-w-full">
@@ -725,7 +734,7 @@ export function PhaseLogPanel({
                     />
                   ))}
                   {beadSectionsResult.beadSections.map((section) => (
-                    <Fragment key={`bead-${section.beadId}-${section.ordinal}`}>
+                    <Fragment key={section.sectionKey}>
                       <BeadDelimiter ordinal={section.ordinal} total={section.total} title={section.title} />
                       {section.entries.map((entry) => (
                         <LogEntryRow
@@ -751,7 +760,7 @@ export function PhaseLogPanel({
               <QueryErrorNotice
                 title="The log history could not be loaded."
                 error={historicalLogs.error}
-                onRetry={() => void historicalLogs.refetch()}
+                onRetry={() => void historicalLogs.retryHistoricalLogs()}
               />
             ) : (
               <span className="text-muted-foreground/50 italic">

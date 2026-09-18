@@ -8,6 +8,12 @@ import { probeSessionAfterStreamFailure } from '@/lib/sessionState'
 import { patchTicketStatusInCache } from './ticketStatusCache'
 import { getTicketArtifactsQueryKey } from './useTicketArtifacts'
 import { getTicketAiDetailsQueryKey } from './useTicketAiDetails'
+import { collectQueryKeyStrings } from './useTickets'
+import {
+  getTicketSseCursorGeneration,
+  getTicketSseLastEventIdStorageKey,
+  TICKET_STATE_CLEARED_EVENT,
+} from '@/components/ticket/renderedTickets'
 
 interface SSEOptions {
   ticketId: string | null
@@ -16,20 +22,15 @@ interface SSEOptions {
 
 export type SSEConnectionState = 'connecting' | 'connected' | 'reconnecting'
 
-const LAST_EVENT_ID_STORAGE_PREFIX = 'looptroop-sse-last-event-id:'
 const AI_DETAILS_INVALIDATION_DELAY_MS = 400
 const aiDetailsInvalidationTimers = new Map<string, ReturnType<typeof setTimeout>>()
-
-function getLastEventIdStorageKey(ticketId: string) {
-  return `${LAST_EVENT_ID_STORAGE_PREFIX}${ticketId}`
-}
 
 function readPersistedLastEventId(ticketId: string): string {
   if (typeof window === 'undefined') return '0'
   try {
-    const stored = localStorage.getItem(getLastEventIdStorageKey(ticketId))
+    const stored = localStorage.getItem(getTicketSseLastEventIdStorageKey(ticketId))
     if (stored && /^(0|[1-9]\d{0,15})$/.test(stored) && Number.isSafeInteger(Number(stored))) return stored
-    localStorage.removeItem(getLastEventIdStorageKey(ticketId))
+    localStorage.removeItem(getTicketSseLastEventIdStorageKey(ticketId))
     return '0'
   } catch {
     return '0'
@@ -39,7 +40,7 @@ function readPersistedLastEventId(ticketId: string): string {
 function persistLastEventId(ticketId: string, lastEventId: string) {
   if (!lastEventId || lastEventId === '0' || typeof window === 'undefined') return
   try {
-    localStorage.setItem(getLastEventIdStorageKey(ticketId), lastEventId)
+    localStorage.setItem(getTicketSseLastEventIdStorageKey(ticketId), lastEventId)
   } catch {
     // Best-effort only.
   }
@@ -67,16 +68,10 @@ function invalidateManualQaQueries(ticketId: string) {
 }
 
 function recoverTicketAfterStreamGap(ticketId: string) {
-  queryClient.invalidateQueries({ queryKey: ['ticket', ticketId] })
   queryClient.invalidateQueries({ queryKey: ['tickets'] })
-  queryClient.invalidateQueries({ queryKey: ['ticket-artifacts', ticketId] })
-  queryClient.invalidateQueries({ queryKey: ['interview', ticketId] })
-  queryClient.invalidateQueries({ queryKey: ['ticket-beads', ticketId] })
-  queryClient.invalidateQueries({ queryKey: ['ticket-skips', ticketId] })
-  queryClient.invalidateQueries({ queryKey: ['artifact', ticketId] })
-  queryClient.invalidateQueries({ queryKey: ['bead-diff', ticketId] })
-  invalidateManualQaQueries(ticketId)
-  queryClient.invalidateQueries({ queryKey: getTicketAiDetailsQueryKey(ticketId) })
+  queryClient.invalidateQueries({
+    predicate: (query) => collectQueryKeyStrings(query.queryKey).includes(ticketId),
+  })
   dispatchServerLogRefresh(ticketId)
 }
 
@@ -109,6 +104,13 @@ function flushAiDetailsInvalidation(ticketId: string) {
   queryClient.invalidateQueries({ queryKey: getTicketAiDetailsQueryKey(ticketId) })
 }
 
+function discardAiDetailsInvalidation(ticketId: string) {
+  const timer = aiDetailsInvalidationTimers.get(ticketId)
+  if (!timer) return
+  clearTimeout(timer)
+  aiDetailsInvalidationTimers.delete(ticketId)
+}
+
 export function useSSE({ ticketId, onEvent }: SSEOptions) {
   const eventSourceRef = useRef<EventSource | null>(null)
   const lastEventIdRef = useRef<string>('0')
@@ -117,6 +119,7 @@ export function useSSE({ ticketId, onEvent }: SSEOptions) {
   const reconnectTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
   const connectAbortControllerRef = useRef<AbortController | null>(null)
   const connectTokenRef = useRef(0)
+  const cursorGenerationRef = useRef(0)
   // `connect` is queued as a microtask, so it can still run after the cleanup that was
   // meant to stop it. Without this it would open an EventSource nobody closes.
   const mountedRef = useRef(true)
@@ -149,6 +152,7 @@ export function useSSE({ ticketId, onEvent }: SSEOptions) {
       return
     }
 
+    cursorGenerationRef.current = getTicketSseCursorGeneration(ticketId)
     const persistedLastEventId = readPersistedLastEventId(ticketId)
     lastEventIdRef.current = persistedLastEventId
     recoverOnOpenRef.current = persistedLastEventId !== '0'
@@ -162,6 +166,12 @@ export function useSSE({ ticketId, onEvent }: SSEOptions) {
 
   const connect = useCallback(() => {
     if (!ticketId || !mountedRef.current) return
+    const cursorGeneration = getTicketSseCursorGeneration(ticketId)
+    if (cursorGeneration !== cursorGenerationRef.current) {
+      cursorGenerationRef.current = cursorGeneration
+      lastEventIdRef.current = '0'
+      recoverOnOpenRef.current = false
+    }
     const connectToken = ++connectTokenRef.current
     const connectAbortController = new AbortController()
     connectAbortControllerRef.current?.abort()
@@ -210,6 +220,7 @@ export function useSSE({ ticketId, onEvent }: SSEOptions) {
       const isCurrentConnection = () => mountedRef.current
         && es === eventSourceRef.current
         && connectToken === connectTokenRef.current
+        && cursorGenerationRef.current === getTicketSseCursorGeneration(ticketId)
 
       es.addEventListener('open', () => {
         if (!isCurrentConnection()) return
@@ -234,7 +245,7 @@ export function useSSE({ ticketId, onEvent }: SSEOptions) {
         if (!isCurrentConnection()) return
         lastEventIdRef.current = '0'
         try {
-          localStorage.removeItem(getLastEventIdStorageKey(ticketId))
+          localStorage.removeItem(getTicketSseLastEventIdStorageKey(ticketId))
         } catch {
           // The in-memory cursor still resets when storage is unavailable.
         }
@@ -463,7 +474,6 @@ export function useSSE({ ticketId, onEvent }: SSEOptions) {
         if (!isCurrentConnection()) return
         es.close()
         eventSourceRef.current = null
-        recoverOnOpenRef.current = true
         setConnectionState('reconnecting')
         // The stream cannot report a 401 — `onerror` carries no status — so the
         // first failure of a connection asks an ordinary route instead. Only
@@ -479,6 +489,11 @@ export function useSSE({ ticketId, onEvent }: SSEOptions) {
           queryClient.invalidateQueries({ queryKey: ['ticket', currentTicketId] })
         }
         queryClient.invalidateQueries({ queryKey: ['tickets'] })
+        // A zero cursor is deliberately omitted from the handshake because it
+        // is not an event the server can replay. Recover all ticket-scoped
+        // snapshots on the next open in that case; a non-zero cursor still
+        // bridges the outage quietly through the server's replay buffer.
+        recoverOnOpenRef.current = lastEventIdRef.current === '0'
         scheduleReconnect()
       }
     })()
@@ -487,6 +502,27 @@ export function useSSE({ ticketId, onEvent }: SSEOptions) {
   useEffect(() => {
     reconnectRef.current = connect
   }, [connect])
+
+  useEffect(() => {
+    if (!ticketId || typeof window === 'undefined') return
+    const onTicketStateCleared = (event: Event) => {
+      const detail = (event as CustomEvent<{ ticketId?: unknown }>).detail
+      if (detail?.ticketId !== ticketId || !mountedRef.current) return
+      discardAiDetailsInvalidation(ticketId)
+      cursorGenerationRef.current = getTicketSseCursorGeneration(ticketId)
+      lastEventIdRef.current = '0'
+      recoverOnOpenRef.current = false
+      if (reconnectTimerRef.current) clearTimeout(reconnectTimerRef.current)
+      connectTokenRef.current += 1
+      connectAbortControllerRef.current?.abort()
+      connectAbortControllerRef.current = null
+      eventSourceRef.current?.close()
+      eventSourceRef.current = null
+      queueMicrotask(connect)
+    }
+    window.addEventListener(TICKET_STATE_CLEARED_EVENT, onTicketStateCleared)
+    return () => window.removeEventListener(TICKET_STATE_CLEARED_EVENT, onTicketStateCleared)
+  }, [connect, ticketId])
 
   // Deliberately keyed on the ticket rather than folded into the connect cleanup below: that one
   // also runs on every reconnect, and settling a pending invalidation there would turn every

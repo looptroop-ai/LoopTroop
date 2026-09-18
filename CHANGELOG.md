@@ -10,6 +10,8 @@ Unreleased changes appear first and represent commits that have not yet been inc
 > Changes merged since the last versioned release that have not yet shipped in a tagged version.
 
 ### Summary
+- Model-filtered debug history now retains native OpenCode rows when session ownership metadata differs.
+- Ticket drafts and log history now survive deletion races, pagination gaps, native-log rewrites, and incomplete tail records without restoring stale state.
 - Remote browser access now uses one explicitly configured HTTPS origin, rejects incomplete remote-mode setup at startup, and keeps plain-HTTP remote clients token-only.
 - SSE connections reserve per-ticket and process-wide capacity before setup, while child processes no longer inherit LoopTroop daemon credentials.
 - Bead approval and YAML recovery now reject incomplete input and preserve explicit clears and scalar text across the editor and server.
@@ -26,6 +28,11 @@ Unreleased changes appear first and represent commits that have not yet been inc
 - Managed OpenCode shutdown now retains daemon ownership and a retryable control path when its process tree cannot be confirmed gone; a persisted shutdown-pending guard prevents CLI force escalation, and the daemon retries with capped backoff even after its listener closes. Failed startup cleanup leaves durable owned-child evidence so a successor cannot adopt it.
 - OpenCode step-cap recovery keeps its authoritative marker in owner-only app configuration, preserving edited or unverified configs instead of trusting a mutable ticket copy; active retries stop when the cap cannot be re-applied safely.
 - Protected hook validation reports structured recovery refusals with the retained marker path and manual remedy, while CLI cleanup keeps ignored files and strict non-Git skeleton checks at the final removal boundary.
+
+### Fixed
+- Native debug history no longer hides a session's rows when its persisted owner row has missing or different model metadata.
+- Ticket UI-state writes are fenced across deletion epochs so late responses cannot repopulate deleted-ticket caches or revisions.
+- Historical log pages recover expired cursors, preserve loaded model and milestone sections, and publish native log tails only after their boundaries are verified.
 - Log follow now witnesses completed copytruncate generations, retries the initial tail within a bound, and drops read windows that rotate before their captured generation is verified.
 - The repository now exposes its documented install-channel catalog as JSON, so the website can verify consolidated installation docs against the same channel table the published-release smoke uses.
 - Windows tool lookup now follows `PATHEXT` sibling order before trust checks and refuses ambiguous ownership mappings.

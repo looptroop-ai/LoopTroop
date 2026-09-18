@@ -1,4 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
+import { BACKEND_HEALTH_TIMEOUT_MS } from '@/lib/constants'
 import {
   __sessionStateForTests,
   installSessionWatch,
@@ -224,6 +225,39 @@ describe('probeSessionAfterStreamFailure', () => {
 
     // A reconnect storm is one question, not twenty.
     expect(mock).toHaveBeenCalledTimes(1)
+  })
+
+  it('aborts a hung probe and lets the next failure probe start', async () => {
+    vi.useFakeTimers()
+    const timeoutSpy = vi.spyOn(AbortSignal, 'timeout').mockImplementation((timeoutMs) => {
+      const controller = new AbortController()
+      setTimeout(() => controller.abort(new DOMException('The operation timed out', 'TimeoutError')), timeoutMs)
+      return controller.signal
+    })
+    try {
+      const firstFetch = vi.fn((_: RequestInfo | URL, init?: RequestInit) => new Promise<Response>((_, reject) => {
+        const signal = init?.signal
+        signal?.addEventListener('abort', () => reject(signal.reason), { once: true })
+      }))
+      window.fetch = firstFetch as unknown as typeof window.fetch
+
+      const first = probeSessionAfterStreamFailure()
+      const second = probeSessionAfterStreamFailure()
+      expect(second).toBe(first)
+
+      await vi.advanceTimersByTimeAsync(BACKEND_HEALTH_TIMEOUT_MS)
+      await expect(first).resolves.toBeUndefined()
+      expect(firstFetch).toHaveBeenCalledTimes(1)
+      expect(firstFetch.mock.calls[0]?.[1]?.signal?.aborted).toBe(true)
+
+      const nextFetch = vi.fn().mockResolvedValue(new Response(null, { status: 200 }))
+      window.fetch = nextFetch as unknown as typeof window.fetch
+      await probeSessionAfterStreamFailure()
+      expect(nextFetch).toHaveBeenCalledTimes(1)
+    } finally {
+      timeoutSpy.mockRestore()
+      vi.useRealTimers()
+    }
   })
 
   it('asks an authenticated route, not the unauthenticated health probe', async () => {

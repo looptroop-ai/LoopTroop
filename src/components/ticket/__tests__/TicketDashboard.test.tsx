@@ -1283,11 +1283,49 @@ describe('TicketDashboard', () => {
       // selects inside this view; a focused control owns the key.
       const select = document.createElement('select')
       document.body.appendChild(select)
+      select.focus()
 
       fireEvent.keyDown(select, { key: 'Escape' })
 
       expect(closedTicket()).toBe(false)
       document.body.removeChild(select)
+    })
+
+    it('closes on body Escape with only an unfocused select and closed combobox', async () => {
+      renderLoadedDashboard()
+      renderDashboard()
+      await screen.findByTestId('active-workspace')
+
+      const select = document.createElement('select')
+      const combobox = document.createElement('button')
+      combobox.setAttribute('role', 'combobox')
+      combobox.setAttribute('aria-expanded', 'false')
+      document.body.append(select, combobox)
+
+      fireEvent.keyDown(document.body, { key: 'Escape' })
+
+      expect(closedTicket()).toBe(true)
+      document.body.removeChild(select)
+      document.body.removeChild(combobox)
+    })
+
+    it('keeps the ticket open for a live popup above an inert overlay', async () => {
+      renderLoadedDashboard()
+      renderDashboard()
+      await screen.findByTestId('active-workspace')
+
+      const underlying = document.createElement('div')
+      underlying.setAttribute('role', 'dialog')
+      underlying.setAttribute('inert', '')
+      const popup = document.createElement('div')
+      popup.setAttribute('role', 'listbox')
+      document.body.append(underlying, popup)
+
+      fireEvent.keyDown(document.body, { key: 'Escape' })
+
+      expect(closedTicket()).toBe(false)
+      document.body.removeChild(underlying)
+      document.body.removeChild(popup)
     })
 
     it('leaves the ticket open when something else already handled Escape', async () => {
@@ -1304,6 +1342,119 @@ describe('TicketDashboard', () => {
 
       expect(closedTicket()).toBe(false)
       document.body.removeChild(handled)
+    })
+
+    it('treats the mobile navigation as a dialog and restores focus on close', async () => {
+      renderLoadedDashboard()
+      renderDashboard()
+      await screen.findByTestId('active-workspace')
+
+      const opener = screen.getByRole('button', { name: 'Open navigation' })
+      opener.focus()
+      fireEvent.click(opener)
+
+      const drawer = screen.getByRole('dialog', { name: 'Navigation' })
+      expect(drawer).toHaveAttribute('aria-modal', 'true')
+      expect(document.activeElement).toBe(drawer)
+
+      const buttons = Array.from(drawer.querySelectorAll('button'))
+      const first = buttons[0]!
+      const last = buttons[buttons.length - 1]!
+      last.focus()
+      fireEvent.keyDown(last, { key: 'Tab' })
+      expect(document.activeElement).toBe(first)
+
+      fireEvent.keyDown(drawer, { key: 'Escape' })
+
+      expect(screen.queryByRole('dialog', { name: 'Navigation' })).not.toBeInTheDocument()
+      expect(document.activeElement).toBe(opener)
+    })
+
+    it('closes the mobile navigation when the desktop breakpoint appears', async () => {
+      let desktopBreakpointListener: ((event: MediaQueryListEvent) => void) | undefined
+      const desktopQuery = {
+        matches: false,
+        media: '(min-width: 768px)',
+        onchange: null,
+        addEventListener: vi.fn((_type: string, listener: (event: MediaQueryListEvent) => void) => {
+          desktopBreakpointListener = listener
+        }),
+        removeEventListener: vi.fn(),
+      }
+      vi.spyOn(window, 'matchMedia').mockReturnValue(desktopQuery as unknown as MediaQueryList)
+
+      renderLoadedDashboard()
+      renderDashboard()
+      await screen.findByTestId('active-workspace')
+
+      const opener = screen.getByRole('button', { name: 'Open navigation' })
+      opener.focus()
+      fireEvent.click(opener)
+
+      const drawer = screen.getByRole('dialog', { name: 'Navigation' })
+      expect(document.querySelector('[inert]')).toBeInTheDocument()
+      expect(desktopBreakpointListener).toBeDefined()
+
+      await act(async () => {
+        desktopQuery.matches = true
+        desktopBreakpointListener?.({ matches: true } as MediaQueryListEvent)
+      })
+
+      await waitFor(() => {
+        expect(screen.queryByRole('dialog', { name: 'Navigation' })).not.toBeInTheDocument()
+        expect(document.querySelector('[inert]')).not.toBeInTheDocument()
+      })
+      expect(document.activeElement).not.toBe(drawer)
+      expect(desktopQuery.removeEventListener).toHaveBeenCalledWith('change', desktopBreakpointListener)
+    })
+
+    it('cleans up focus containment when ticket data disappears', async () => {
+      renderLoadedDashboard()
+      const { rerender } = renderDashboard()
+      await screen.findByTestId('active-workspace')
+
+      const opener = screen.getByRole('button', { name: 'Open navigation' })
+      opener.focus()
+      fireEvent.click(opener)
+
+      const drawer = screen.getByRole('dialog', { name: 'Navigation' })
+      expect(document.querySelector('[inert]')).toBeInTheDocument()
+
+      mockTicketQuery.override = { data: undefined }
+      rerender(renderDashboardElement())
+
+      await waitFor(() => {
+        expect(screen.queryByRole('dialog', { name: 'Navigation' })).not.toBeInTheDocument()
+        expect(document.querySelector('[inert]')).not.toBeInTheDocument()
+      })
+      expect(document.activeElement).not.toBe(drawer)
+    })
+
+    it('closes the mobile navigation on body Escape without closing the ticket or a higher dialog', async () => {
+      renderLoadedDashboard()
+      renderDashboard()
+      await screen.findByTestId('active-workspace')
+
+      const opener = screen.getByRole('button', { name: 'Open navigation' })
+      fireEvent.click(opener)
+      expect(screen.getByRole('dialog', { name: 'Navigation' })).toBeInTheDocument()
+
+      fireEvent.keyDown(document.body, { key: 'Escape' })
+
+      expect(screen.queryByRole('dialog', { name: 'Navigation' })).not.toBeInTheDocument()
+      expect(closedTicket()).toBe(false)
+
+      fireEvent.click(opener)
+      const higherDialog = document.createElement('div')
+      higherDialog.setAttribute('role', 'dialog')
+      higherDialog.setAttribute('aria-label', 'Higher dialog')
+      document.body.appendChild(higherDialog)
+
+      fireEvent.keyDown(document.body, { key: 'Escape' })
+
+      expect(screen.getByRole('dialog', { name: 'Navigation' })).toBeInTheDocument()
+      expect(closedTicket()).toBe(false)
+      document.body.removeChild(higherDialog)
     })
   })
 })

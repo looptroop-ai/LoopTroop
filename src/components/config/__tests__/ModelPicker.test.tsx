@@ -106,6 +106,39 @@ describe('ModelPicker', () => {
     expect(useAllOpenCodeModels).toHaveBeenLastCalledWith(true)
   })
 
+  it('announces model discovery loading and errors without changing the picker role', () => {
+    vi.mocked(useOpenCodeModels).mockReturnValue({
+      data: undefined,
+      isLoading: true,
+      isError: false,
+      error: null,
+      isFetching: true,
+    } as ReturnType<typeof useOpenCodeModels>)
+    vi.mocked(useAllOpenCodeModels).mockReturnValue({
+      data: undefined,
+      isLoading: false,
+      isError: false,
+      error: null,
+      isFetching: false,
+    } as ReturnType<typeof useAllOpenCodeModels>)
+    render(<ModelPicker value="" onChange={vi.fn()} />)
+    fireEvent.click(screen.getByRole('button', { name: /^Pick a model/ }))
+    expect(screen.getByRole('status')).toHaveTextContent('Loading models from OpenCode…')
+
+    vi.mocked(useOpenCodeModels).mockReturnValue({
+      data: undefined,
+      isLoading: false,
+      isError: true,
+      error: new Error('OpenCode not reachable'),
+      isFetching: false,
+    } as ReturnType<typeof useOpenCodeModels>)
+    // Re-rendering with the failed query keeps the disclosure open and exposes the
+    // error through the live-region contract used by the real query observer.
+    fireEvent.click(screen.getByRole('button', { name: /^Pick a model/ }))
+    fireEvent.click(screen.getByRole('button', { name: /^Pick a model/ }))
+    expect(screen.getByRole('alert')).toHaveTextContent('could not reach OpenCode')
+  })
+
   it('shows the stored full id in parentheses beside the pretty name in the open list', () => {
     render(<ModelPicker value="openai/gpt-alpha" onChange={vi.fn()} />)
 
@@ -347,7 +380,7 @@ describe('ModelPicker — combobox', () => {
     fireEvent.keyDown(search, { key: 'ArrowDown' })
     const first = screen.getByRole('option', { name: /GPT Alpha/ })
     expect(search).toHaveAttribute('aria-activedescendant', first.id)
-    expect(first).toHaveAttribute('aria-selected', 'true')
+    expect(first).toHaveAttribute('aria-selected', 'false')
     expect(search).toHaveFocus()
     fireEvent.keyDown(search, { key: 'ArrowDown' })
     const last = screen.getByRole('option', { name: /local\/same-name/ })

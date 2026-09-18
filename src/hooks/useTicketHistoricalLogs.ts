@@ -1,11 +1,12 @@
-import { useCallback, useEffect, useMemo } from 'react'
-import { skipToken, useInfiniteQuery, useQuery, useQueryClient } from '@tanstack/react-query'
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
+import { isCancelledError, skipToken, useInfiniteQuery, useQuery, useQueryClient } from '@tanstack/react-query'
 import {
   getLogEntryAliases,
   INITIAL_LOG_PAGE_LIMIT,
   normalizeLogRecord,
   OLDER_LOG_PAGE_LIMIT,
   SERVER_LOG_REFRESH_EVENT,
+  compareTimestamps,
   type LogEntry,
 } from '@/context/logUtils'
 import { throwIfNotOk } from '@/lib/fetchError'
@@ -23,7 +24,7 @@ export interface HistoricalLogScope {
   beadId?: string
 }
 
-interface HistoricalLogPage {
+export interface HistoricalLogPage {
   entries: LogEntry[]
   olderCursor: string | null
   hasOlder: boolean
@@ -34,11 +35,309 @@ interface HistoricalLogPage {
   boundary?: Record<string, unknown>
 }
 
+export interface HistoricalLogFoldStats {
+  pagesVisited: number
+  entriesVisited: number
+  comparatorCalls: number
+  nodeCopies?: number
+  materializedEntries?: number
+  aliasRegistrations?: number
+}
+
+interface HistoricalLogNode {
+  entry: LogEntry
+}
+
+export interface HistoricalLogFoldCache {
+  view: HistoricalLogView
+  pages: HistoricalLogPage[]
+  nodes: HistoricalLogNode[]
+  aliases: Map<string, HistoricalLogNode>
+  entries: LogEntry[]
+}
+
+interface HistoricalLogFoldCacheInternal extends HistoricalLogFoldCache {
+  displayGroups: HistoricalLogNode[][]
+  entriesVersion: number
+  materializedVersion: number
+  materializedEntries: LogEntry[]
+  materializationStats?: HistoricalLogFoldStats
+}
+
+function createHistoricalLogFoldCache(
+  view: HistoricalLogView,
+  pages: HistoricalLogPage[],
+  nodes: HistoricalLogNode[],
+  aliases: Map<string, HistoricalLogNode>,
+  displayGroups: HistoricalLogNode[][],
+  materializationStats?: HistoricalLogFoldStats,
+): HistoricalLogFoldCache {
+  const cache = {
+    view,
+    pages,
+    nodes,
+    aliases,
+    entries: [],
+    displayGroups,
+    entriesVersion: 0,
+    materializedVersion: -1,
+    materializedEntries: [],
+    materializationStats,
+  } as HistoricalLogFoldCacheInternal
+  Object.defineProperty(cache, 'entries', {
+    enumerable: true,
+    get() {
+      if (cache.materializedVersion !== cache.entriesVersion) {
+        cache.materializedEntries = cache.displayGroups.flatMap(group => group.map(node => node.entry))
+        cache.materializedVersion = cache.entriesVersion
+        if (cache.materializationStats) {
+          cache.materializationStats.materializedEntries = (cache.materializationStats.materializedEntries ?? 0) + cache.materializedEntries.length
+        }
+      }
+      return cache.materializedEntries
+    },
+  })
+  return cache
+}
+
+export const HISTORICAL_LOG_CURSOR_EXPIRED_CODE = 'LOG_CURSOR_EXPIRED'
+
+export class HistoricalLogCursorExpiredError extends Error {
+  readonly code = HISTORICAL_LOG_CURSOR_EXPIRED_CODE
+
+  constructor() {
+    super('The log history changed while it was loading. Retry to start a fresh history walk.')
+    this.name = 'HistoricalLogCursorExpiredError'
+  }
+}
+
+export function isHistoricalLogCursorExpiredError(error: unknown): error is HistoricalLogCursorExpiredError {
+  return error instanceof HistoricalLogCursorExpiredError
+    || (Boolean(error) && typeof error === 'object'
+      && (error as { code?: unknown }).code === HISTORICAL_LOG_CURSOR_EXPIRED_CODE)
+}
+
+async function throwIfHistoricalCursorExpired(response: Response): Promise<void> {
+  if (response.status !== 409) return
+  try {
+    const payload = await response.clone().json() as { code?: unknown }
+    if (payload.code === HISTORICAL_LOG_CURSOR_EXPIRED_CODE) {
+      throw new HistoricalLogCursorExpiredError()
+    }
+  } catch (error) {
+    if (isHistoricalLogCursorExpiredError(error)) throw error
+  }
+}
+
+function compareStableStrings(a: string, b: string): number {
+  return a < b ? -1 : a > b ? 1 : 0
+}
+
+/** The server's AI order is timestamp, mirror identity, then occurrence. */
+export function compareHistoricalLogEntries(a: LogEntry, b: LogEntry, view: HistoricalLogView): number {
+  if (view !== 'ai') return 0
+  return compareTimestamps(a.timestamp, b.timestamp)
+    || compareStableStrings(
+      a._logMirrorKey ?? (a.op === 'append' && a.fingerprint
+        ? `fingerprint:${a.status}:${a.phaseAttempt ?? 1}:${a.fingerprint}`
+        : `entry:${a.status}:${a.phaseAttempt ?? 1}:${a.entryId}`),
+      b._logMirrorKey ?? (b.op === 'append' && b.fingerprint
+        ? `fingerprint:${b.status}:${b.phaseAttempt ?? 1}:${b.fingerprint}`
+        : `entry:${b.status}:${b.phaseAttempt ?? 1}:${b.entryId}`),
+    )
+    || (a._logMirrorOccurrence ?? 0) - (b._logMirrorOccurrence ?? 0)
+    || compareStableStrings(a.entryId, b.entryId)
+}
+
+function addHistoricalEntry(
+  entry: LogEntry,
+  nodes: HistoricalLogNode[],
+  aliases: Map<string, HistoricalLogNode>,
+  mergeExisting: boolean,
+  stats?: HistoricalLogFoldStats,
+): HistoricalLogNode | null {
+  if (stats) stats.entriesVisited += 1
+  const entryAliases = getLogEntryAliases(entry)
+  const existing = entryAliases.map(alias => aliases.get(alias)).find(Boolean)
+  if (existing) {
+    if (mergeExisting || nodes.includes(existing)) {
+      existing.entry = {
+        ...existing.entry,
+        ...entry,
+        timestamp: existing.entry.timestamp ?? entry.timestamp,
+        streaming: entry.op === 'finalize' ? false : entry.streaming,
+      }
+      for (const alias of getLogEntryAliases(existing.entry)) {
+        aliases.set(alias, existing)
+        if (stats) stats.aliasRegistrations = (stats.aliasRegistrations ?? 0) + 1
+      }
+    } else if (compareTimestamps(entry.timestamp, existing.entry.timestamp) < 0 || existing.entry.op === 'finalize') {
+      // An older page can carry the original append for a newer-page finalize.
+      // Keep the newer payload, but retain the true start time for the row.
+      existing.entry = {
+        ...existing.entry,
+        timestamp: entry.timestamp,
+        streaming: existing.entry.op === 'finalize' ? false : existing.entry.streaming,
+      }
+    }
+    // A page can introduce the fingerprint only after a newer finalize has
+    // already won the payload. Keep every incoming alias in the graph even
+    // when that payload is deliberately retained; otherwise an oldest-first
+    // fold and an incremental fold disagree about whether this is one row.
+    for (const alias of entryAliases) {
+      aliases.set(alias, existing)
+      if (stats) stats.aliasRegistrations = (stats.aliasRegistrations ?? 0) + 1
+    }
+    return null
+  }
+  const node = { entry }
+  nodes.push(node)
+  for (const alias of entryAliases) {
+    aliases.set(alias, node)
+    if (stats) stats.aliasRegistrations = (stats.aliasRegistrations ?? 0) + 1
+  }
+  return node
+}
+
+function compareNodes(
+  a: HistoricalLogNode,
+  b: HistoricalLogNode,
+  view: HistoricalLogView,
+  stats?: HistoricalLogFoldStats,
+): number {
+  if (stats) stats.comparatorCalls += 1
+  return compareHistoricalLogEntries(a.entry, b.entry, view)
+}
+
+function insertSortedNode(
+  nodes: HistoricalLogNode[],
+  node: HistoricalLogNode,
+  view: HistoricalLogView,
+  stats?: HistoricalLogFoldStats,
+) {
+  let low = 0
+  let high = nodes.length
+  while (low < high) {
+    const middle = (low + high) >>> 1
+    if (compareNodes(nodes[middle]!, node, view, stats) <= 0) low = middle + 1
+    else high = middle
+  }
+  nodes.splice(low, 0, node)
+}
+
+/**
+ * Folds page-immutable query data incrementally. Older pages are prepended, so a
+ * full drain visits each newly arrived row once instead of rebuilding and sorting
+ * the complete archive after every request.
+ */
+export function foldHistoricalLogPages(
+  pages: readonly HistoricalLogPage[],
+  view: HistoricalLogView,
+  previous: HistoricalLogFoldCache | null = null,
+  stats?: HistoricalLogFoldStats,
+): HistoricalLogFoldCache {
+  const oldestFirstPages = pages.toReversed()
+
+  const samePages = previous?.view === view
+    && previous.pages.length === oldestFirstPages.length
+    && previous.pages.every((page, index) => page === oldestFirstPages[index])
+  if (samePages) return previous!
+
+  const canPrepend = previous?.view === view
+    && previous.pages.length <= oldestFirstPages.length
+    && previous.pages.every((page, index) => page === oldestFirstPages[oldestFirstPages.length - previous.pages.length + index])
+
+  if (!canPrepend) {
+    const nodes: HistoricalLogNode[] = []
+    const aliases = new Map<string, HistoricalLogNode>()
+    const displayGroups: HistoricalLogNode[][] = []
+    for (const page of oldestFirstPages) {
+      if (stats) stats.pagesVisited += 1
+      const pageNodes: HistoricalLogNode[] = []
+      for (const entry of page.entries) {
+        const node = addHistoricalEntry(entry, nodes, aliases, true, stats)
+        if (node) pageNodes.push(node)
+      }
+      if (view !== 'ai') displayGroups.push(pageNodes)
+    }
+    if (view === 'ai') nodes.sort((a, b) => compareNodes(a, b, view, stats))
+    return createHistoricalLogFoldCache(
+      view,
+      [...oldestFirstPages],
+      nodes,
+      aliases,
+      view === 'ai' ? [nodes] : displayGroups,
+      stats,
+    )
+  }
+
+  const internalPrevious = previous as HistoricalLogFoldCacheInternal
+  const addedPages = oldestFirstPages.slice(0, oldestFirstPages.length - previous!.pages.length)
+  const newNodes: HistoricalLogNode[] = []
+  const addedGroups: HistoricalLogNode[][] = []
+  for (const page of addedPages) {
+    if (stats) stats.pagesVisited += 1
+    const pageNodes: HistoricalLogNode[] = []
+    for (const entry of page.entries) {
+      const existing = getLogEntryAliases(entry)
+        .map(alias => previous!.aliases.get(alias))
+        .find((node): node is HistoricalLogNode => Boolean(node))
+      const node = addHistoricalEntry(entry, pageNodes, previous!.aliases, false, stats)
+      if (node) newNodes.push(node)
+      // An older append can supply the true start timestamp for a newer-page
+      // finalize. Reinsert the canonical node after that update; leaving it in
+      // place silently breaks the AI ordering invariant.
+      if (view === 'ai' && existing) {
+        const index = previous!.nodes.indexOf(existing)
+        if (index >= 0) {
+          previous!.nodes.splice(index, 1)
+          insertSortedNode(previous!.nodes, existing, view, stats)
+        }
+      }
+    }
+    if (view !== 'ai') addedGroups.push(pageNodes)
+  }
+
+  if (newNodes.length > 0) {
+    if (view === 'ai') {
+      newNodes.sort((a, b) => compareNodes(a, b, view, stats))
+      const currentFirst = previous!.nodes[0]
+      const addedLast = newNodes.at(-1)
+      if (!currentFirst || !addedLast || compareNodes(addedLast, currentFirst, view, stats) <= 0) {
+        if (stats) stats.nodeCopies = (stats.nodeCopies ?? 0) + newNodes.length + previous!.nodes.length
+        previous!.nodes = [...newNodes, ...previous!.nodes]
+      } else {
+        for (const node of newNodes) insertSortedNode(previous!.nodes, node, view, stats)
+      }
+    } else {
+      if (stats) stats.nodeCopies = (stats.nodeCopies ?? 0) + newNodes.length
+      previous!.nodes.push(...newNodes)
+      for (let index = addedGroups.length - 1; index >= 0; index -= 1) {
+        internalPrevious.displayGroups.unshift(addedGroups[index]!)
+      }
+    }
+  }
+  if (addedPages.length > 0) {
+    if (view === 'ai') internalPrevious.displayGroups = [previous!.nodes]
+    internalPrevious.entriesVersion += 1
+  }
+  previous!.pages = oldestFirstPages
+  return previous!
+}
+
 interface ModelCatalog {
   modelIds: string[] | null
   nextRevision: number
   appliedRevision: number
 }
+
+type DrainState = {
+  key: string
+  promise: Promise<void>
+  cancellationChecks: Set<() => boolean>
+}
+
+const NEVER_CANCELLED = () => false
 
 function normalizeCount(value: unknown): number | null {
   return typeof value === 'number' && Number.isFinite(value) && value >= 0 ? value : null
@@ -93,6 +392,7 @@ export function useTicketHistoricalLogs(ticketId: string | undefined, scope: His
   const queryKey = useMemo(() => [
     'ticket-log-history', ticketId ?? '__missing__', scope.scope, scope.phase ?? '', scope.phaseAttempt ?? '', scope.view, scope.modelId ?? '', scope.beadId ?? '',
   ], [scope.beadId, scope.modelId, scope.phase, scope.phaseAttempt, scope.scope, scope.view, ticketId])
+  const queryScopeKey = JSON.stringify(queryKey)
 
   const query = useInfiniteQuery({
     queryKey,
@@ -111,6 +411,7 @@ export function useTicketHistoricalLogs(ticketId: string | undefined, scope: His
           }))!.nextRevision
         : 0
       const response = await fetch(getQuery(ticketId!, scope, pageParam ?? undefined), { signal })
+      await throwIfHistoricalCursorExpired(response)
       await throwIfNotOk(response, 'Unable to load logs')
       const page = normalizePage(await response.json(), scope.phase)
       if (pageParam === null && page.modelIds !== null && !signal.aborted) {
@@ -126,51 +427,32 @@ export function useTicketHistoricalLogs(ticketId: string | undefined, scope: His
     staleTime: QUERY_STALE_TIME_30S,
   })
 
+  const foldCacheRef = useRef<HistoricalLogFoldCache | null>(null)
+  const activeScopeKeyRef = useRef(queryScopeKey)
+  activeScopeKeyRef.current = queryScopeKey
+  const foldScopeKeyRef = useRef<string | null>(null)
+  const drainStateRef = useRef<DrainState | null>(null)
+  const mountedRef = useRef(true)
+  const [foldRevision, setFoldRevision] = useState(0)
+  const [drainError, setDrainError] = useState<unknown>(null)
+  useEffect(() => {
+    // StrictMode replays effects with a cleanup between setups. Re-arm the
+    // guard during the second setup so a completed automatic drain can publish
+    // its final fold instead of treating the replay as an unmount forever.
+    mountedRef.current = true
+    return () => { mountedRef.current = false }
+  }, [])
   const entries = useMemo(() => {
-    // Folded on every key the live overlay folds on — attempt-scoped id and
-    // fingerprint. Entry ids are unique only within one attempt, so a retried phase
-    // re-emitting `milestone:<phase>:started` used to collapse two archived attempts
-    // into one row; and a row re-emitted under a fresh id is still the same row.
-    //
-    // Fold oldest pages first, reversing the cache's newest-first page order.
-    // This lets a newer finalize replace an older append across page boundaries.
-    // One slot per row, with every alias pointing at the slot rather than at the row, so
-    // a row that arrives under a second alias updates the slot instead of leaving the
-    // first alias holding the copy from before the merge.
-    const rows: LogEntry[] = []
-    const slotByAlias = new Map<string, number>()
-    for (const page of (query.data?.pages ?? []).toReversed()) {
-      for (const entry of page.entries) {
-        const aliases = getLogEntryAliases(entry)
-        const slot = aliases.map(alias => slotByAlias.get(alias)).find((value): value is number => value !== undefined)
-        if (slot === undefined) {
-          const nextSlot = rows.length
-          rows.push(entry)
-          for (const alias of aliases) slotByAlias.set(alias, nextSlot)
-          continue
-        }
-        // Merged on the live overlay's terms, which is the point of sharing the identity:
-        // a row is shown from when it first appeared, not from when its last delivery
-        // landed, and a finalize ends the streaming state. Taking the newer timestamp
-        // would move a row that streamed for a minute to the moment it finished, past
-        // everything that happened while it was running.
-        const existing = rows[slot]!
-        rows[slot] = {
-          ...existing,
-          ...entry,
-          timestamp: existing.timestamp ?? entry.timestamp,
-          streaming: entry.op === 'finalize' ? false : entry.streaming,
-        }
-        for (const alias of getLogEntryAliases(rows[slot]!)) slotByAlias.set(alias, slot)
-      }
+    void foldRevision
+    if (foldScopeKeyRef.current !== queryScopeKey) {
+      foldScopeKeyRef.current = queryScopeKey
+      foldCacheRef.current = null
     }
-    return rows.sort((a, b) => {
-      const aTime = a.timestamp ? Date.parse(a.timestamp) : Number.NaN
-      const bTime = b.timestamp ? Date.parse(b.timestamp) : Number.NaN
-      if (Number.isNaN(aTime) || Number.isNaN(bTime)) return 0
-      return aTime - bTime
-    })
-  }, [query.data?.pages])
+    if (drainStateRef.current?.key === queryScopeKey && foldCacheRef.current) return foldCacheRef.current.entries
+    const folded = foldHistoricalLogPages(query.data?.pages ?? [], scope.view, foldCacheRef.current)
+    foldCacheRef.current = folded
+    return folded.entries
+  }, [foldRevision, query.data?.pages, queryScopeKey, scope.view])
   const refetch = query.refetch
   const countPage = query.data?.pages.find(page => page.totalEntries !== null || page.totalTextLines !== null)
 
@@ -187,6 +469,30 @@ export function useTicketHistoricalLogs(ticketId: string | undefined, scope: His
   }, [scope, ticketId])
 
   const fetchNextPage = query.fetchNextPage
+  const queryDataRef = useRef(query.data)
+  queryDataRef.current = query.data
+
+  const olderRequestRef = useRef<{
+    key: string
+    promise: Promise<Awaited<ReturnType<typeof fetchNextPage>>>
+  } | null>(null)
+  const requestOlderPage = useCallback(() => {
+    const existing = olderRequestRef.current
+    if (existing?.key === queryScopeKey) return existing.promise
+    const request = (async () => {
+      // Native TanStack semantics keep a refresh alive when an older request
+      // arrives. A fresh refresh may still supersede this request; the full
+      // drain below sees the settled cursor and retries rather than truncating.
+      return fetchNextPage({ cancelRefetch: false })
+    })()
+    const state = { key: queryScopeKey, promise: request }
+    olderRequestRef.current = state
+    void request.then(
+      () => { if (olderRequestRef.current === state) olderRequestRef.current = null },
+      () => { if (olderRequestRef.current === state) olderRequestRef.current = null },
+    )
+    return request
+  }, [fetchNextPage, queryScopeKey])
   /**
    * Walks every older page in one go. Callers pass `isCancelled` and flip it when the
    * scope they started the walk for is gone — a different bead, a different attempt, an
@@ -199,15 +505,105 @@ export function useTicketHistoricalLogs(ticketId: string | undefined, scope: His
    * is how a failure ends up looking like a cancellation and never latches. The entry
    * condition is gone with it: `fetchNextPage` on a query with no older page is a
    * no-op that reports `hasNextPage: false`, and both callers already gate on it.
-   */
-  const fetchAllOlder = useCallback(async (isCancelled?: () => boolean): Promise<void> => {
-    for (;;) {
-      if (isCancelled?.()) return
-      const result = await fetchNextPage()
-      if (result.isError) throw result.error
-      if (isCancelled?.() || !result.hasNextPage) return
+  */
+  const fetchAllOlder = useCallback((isCancelled?: () => boolean): Promise<void> => {
+    const existing = drainStateRef.current
+    if (existing?.key === queryScopeKey) {
+      existing.cancellationChecks.add(isCancelled ?? NEVER_CANCELLED)
+      return existing.promise
     }
-  }, [fetchNextPage])
+    const cancellationChecks = new Set<() => boolean>()
+    cancellationChecks.add(isCancelled ?? NEVER_CANCELLED)
+    const state: DrainState = {
+      key: queryScopeKey,
+      promise: Promise.resolve(),
+      cancellationChecks,
+    }
+    drainStateRef.current = state
+    setDrainError(null)
+    // The serialized key is not a generation: A -> B -> A can make an old A
+    // run look current again. The state identity is the actual ownership fence.
+    const runIsCancelled = () => drainStateRef.current !== state
+      || activeScopeKeyRef.current !== state.key
+      || !mountedRef.current
+      || (state.cancellationChecks.size > 0 && [...state.cancellationChecks].every(check => check()))
+    let unchangedCursor: string | null | undefined
+    let cursorRecoveryUsed = false
+    const recoverExpiredCursor = async () => {
+      await queryClient.resetQueries({ queryKey, exact: true })
+      queryDataRef.current = queryClient.getQueryData(queryKey) as typeof queryDataRef.current
+      unchangedCursor = undefined
+    }
+    const run = (async () => {
+      for (;;) {
+        if (runIsCancelled()) return
+        const beforeCursor = queryDataRef.current?.pages.at(-1)?.olderCursor ?? null
+        let result: Awaited<ReturnType<typeof fetchNextPage>>
+        try {
+          result = await requestOlderPage()
+        } catch (error) {
+          if (isCancelledError(error)) continue
+          if (isHistoricalLogCursorExpiredError(error) && !cursorRecoveryUsed) {
+            cursorRecoveryUsed = true
+            await recoverExpiredCursor()
+            continue
+          }
+          throw error
+        }
+        if (result.isError) {
+          if (isCancelledError(result.error)) continue
+          if (isHistoricalLogCursorExpiredError(result.error) && !cursorRecoveryUsed) {
+            cursorRecoveryUsed = true
+            await recoverExpiredCursor()
+            continue
+          }
+          throw result.error
+        }
+        if (runIsCancelled() || !result.hasNextPage) return
+        // A non-cancelling request may have shared a newest-page refresh. Never
+        // silently stop on that unchanged cursor: retry once from the settled
+        // query, then surface a broken server cursor instead of truncating.
+        const nextCursor = result.data?.pages.at(-1)?.olderCursor ?? queryDataRef.current?.pages.at(-1)?.olderCursor ?? null
+        if (nextCursor === beforeCursor) {
+          if (unchangedCursor === beforeCursor) {
+            throw new Error('Historical log cursor did not advance while loading older pages')
+          }
+          unchangedCursor = beforeCursor
+          continue
+        }
+        unchangedCursor = undefined
+      }
+    })()
+    state.promise = run
+    const finish = (error?: unknown) => {
+      if (drainStateRef.current !== state) return
+      const cancelled = runIsCancelled()
+      drainStateRef.current = null
+      if (error && mountedRef.current && !cancelled) setDrainError(error)
+      // A cancelled walk may still have received a page before it observed
+      // cancellation. Publish that page for the scope that is still mounted;
+      // otherwise the cache remains frozen until an unrelated render.
+      if (mountedRef.current && activeScopeKeyRef.current === state.key) {
+        setFoldRevision(revision => revision + 1)
+      }
+    }
+    run.then(() => finish(), finish)
+    return run
+  }, [queryClient, queryKey, queryScopeKey, requestOlderPage])
+
+  const retryHistoricalLogs = useCallback(async () => {
+    if (drainError) {
+      await queryClient.resetQueries({ queryKey, exact: true })
+      queryDataRef.current = queryClient.getQueryData(queryKey) as typeof queryDataRef.current
+      await fetchAllOlder()
+      return
+    }
+    await refetch()
+  }, [drainError, fetchAllOlder, queryClient, queryKey, refetch])
+
+  useEffect(() => {
+    setDrainError(null)
+  }, [queryScopeKey])
 
   useEffect(() => {
     if (!ticketId || !enabled) return
@@ -226,10 +622,13 @@ export function useTicketHistoricalLogs(ticketId: string | undefined, scope: His
     totalEntries: countPage?.totalEntries ?? null,
     totalTextLines: countPage?.totalTextLines ?? null,
     modelIds: modelCatalog.data ?? null,
-    fetchOlder: query.fetchNextPage,
+    fetchOlder: requestOlderPage,
     fetchAllOlder,
     hasOlder: query.hasNextPage,
     isFetchingOlder: query.isFetchingNextPage,
+    error: query.error ?? drainError,
+    isError: query.isError || Boolean(drainError),
+    retryHistoricalLogs,
     exportLogs,
   }
 }

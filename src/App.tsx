@@ -220,6 +220,7 @@ function App() {
    * push the ticket route on top of a Back that had not finished.
    */
   const awaitingOwnBackRef = useRef(false)
+  const ownBackTargetRef = useRef<string | null>(null)
   /**
    * Bumped whenever the app learns the pathname now in the bar is not one it
    * can honour, so the route effect overwrites that entry instead of pushing
@@ -241,6 +242,17 @@ function App() {
   const [activeModal, setActiveModal] = useState<ModalRoute | null>(
     () => modalForPathname(window.location.pathname),
   )
+  const [modalDirty, setModalDirty] = useState<Record<ModalRoute, boolean>>({
+    profile: false,
+    prompts: false,
+    project: false,
+    ticket: false,
+  })
+  const [ticketModalEditing, setTicketModalEditing] = useState(false)
+  const activeModalRef = useRef(activeModal)
+  activeModalRef.current = activeModal
+  const modalDirtyRef = useRef(modalDirty)
+  modalDirtyRef.current = modalDirty
   const [isAboutOpen, setIsAboutOpen] = useState(false)
   const [isWelcomeOpen, setIsWelcomeOpen] = useState(() => {
     try {
@@ -255,6 +267,10 @@ function App() {
     && startupStatus?.storage.kind === 'restored'
     && startupStatus.ui.restoreNotice.shouldShow === true
   const isModalOpen = activeModal !== null || isAboutOpen || isWelcomeOpen || isRestorePopupOpen
+
+  useEffect(() => {
+    if (activeModal !== 'ticket') setTicketModalEditing(false)
+  }, [activeModal])
 
   useEffect(() => {
     if (openedWithModalRef.current === 'profile') {
@@ -382,12 +398,9 @@ function App() {
     const previousModal = previousModalRef.current
     const closedModal = previousModal !== null && activeModal === null
     const openedModal = previousModal === null && activeModal !== null
-    previousModalRef.current = activeModal
 
-    if (awaitingOwnBackRef.current) {
-      if (!activeModal) return
-      awaitingOwnBackRef.current = false
-    }
+    if (awaitingOwnBackRef.current || popPathname !== null) return
+    previousModalRef.current = activeModal
 
     // With no modal and no settled ticket list the pathname is still the user's
     // request rather than anything derived from state, so there is nothing yet
@@ -431,34 +444,59 @@ function App() {
 
     const target = baseRoute
     if (closedModal && modalWasPushedRef.current) {
-      modalWasPushedRef.current = false
-      const before = window.location.pathname
+      ownBackTargetRef.current = target
+      awaitingOwnBackRef.current = true
       window.history.back()
-      if (window.location.pathname === before) {
-        window.history.replaceState(null, '', target)
-      } else if (window.location.pathname !== target) {
-        awaitingOwnBackRef.current = true
-      }
       return
     }
 
     if (closedModal) modalWasPushedRef.current = false
     if (window.location.pathname === target) return
     window.history[(closedModal || repairs) ? 'replaceState' : 'pushState'](null, '', target)
-  }, [activeModal, baseRoute, hasHydratedUrl, routeRepairToken])
+  }, [activeModal, baseRoute, hasHydratedUrl, popPathname, routeRepairToken])
 
   // Handle back/forward navigation
   useEffect(() => {
     const handlePop = () => {
       popOccurredRef.current = true
-      awaitingOwnBackRef.current = false
       const pathname = window.location.pathname
+
+      if (awaitingOwnBackRef.current) {
+        awaitingOwnBackRef.current = false
+        modalWasPushedRef.current = false
+        const target = ownBackTargetRef.current
+        ownBackTargetRef.current = null
+        setPopPathname(null)
+        // The pop can be the only event after the route effect paused. Reuse the
+        // repair token to reconcile any state changes made while Back was queued.
+        setRouteRepairToken(token => token + 1)
+        if (target && window.location.pathname !== target) {
+          window.history.replaceState(null, '', target)
+        }
+        return
+      }
+
+      modalWasPushedRef.current = false
+      const previousModal = activeModalRef.current
+      const nextModal = modalForPathname(pathname)
+      if (previousModal && previousModal !== nextModal && modalDirtyRef.current[previousModal]) {
+        if (!window.confirm('Discard your unsaved changes?')) {
+          // The browser has already moved to the previous entry. Restore the
+          // routed modal as a new app-owned entry so the user's edits remain
+          // visible and closing it can still return to the page behind it.
+          window.history.pushState(null, '', MODAL_ROUTES[previousModal])
+          modalWasPushedRef.current = true
+          setPopPathname(null)
+          return
+        }
+        setModalDirty((current) => ({ ...current, [previousModal]: false }))
+      }
       setPopPathname(pathname)
       // About has no route of its own and sits above everything else, so a Back that
       // reconciles the routed overlays would otherwise close Configuration underneath
       // it and leave About floating over the board with nothing behind it.
       setIsAboutOpen(false)
-      setActiveModal(modalForPathname(pathname))
+      setActiveModal(nextModal)
 
       const match = matchTicketRoute(pathname, ticketsRef.current)
       if (match.kind === 'pending') {
@@ -467,6 +505,7 @@ function App() {
         // mount-time snapshot instead of the page Back just landed on.
         return
       }
+      setPopPathname(null)
       if (match.kind === 'ticket') {
         dispatch({ type: 'SELECT_TICKET', ticketId: match.ticketId, externalId: match.externalId })
         if (!match.exact) setRouteRepairToken(token => token + 1)
@@ -491,14 +530,46 @@ function App() {
     return () => window.removeEventListener('popstate', handlePop)
   }, [dispatch])
 
+  useEffect(() => {
+    if (popPathname === null) return
+    if (ticketsQuery.isError) {
+      // A failed first load cannot classify the popped ticket. Release only
+      // this transient navigation fence: hydration must stay successful-load
+      // gated so the entry URL is still reconciled when the list recovers.
+      setPopPathname(null)
+      return
+    }
+    if (!hasHydratedUrl || !ticketsQuery.isSuccess) return
+    const match = matchTicketRoute(popPathname, tickets)
+    if (match.kind === 'pending') return
+
+    setPopPathname(null)
+    if (match.kind === 'ticket') {
+      dispatch({ type: 'SELECT_TICKET', ticketId: match.ticketId, externalId: match.externalId })
+      if (!match.exact) setRouteRepairToken(token => token + 1)
+    } else if (match.kind === 'unresolved') {
+      dispatch({ type: 'CLOSE_TICKET' })
+      setRouteRepairToken(token => token + 1)
+    } else if (canonicalizePathname(popPathname) === ROUTE_ROOT || popPathname === '') {
+      dispatch({ type: 'CLOSE_TICKET' })
+    } else if (isUnownedPathname(popPathname)) {
+      dispatch({ type: 'CLOSE_TICKET' })
+      setRouteRepairToken(token => token + 1)
+    }
+  }, [dispatch, hasHydratedUrl, popPathname, tickets, ticketsQuery.isError, ticketsQuery.isSuccess])
+
   // One open and one close transition, shared by every routed modal. The URL
   // follows from the state through the route effect above.
   const openModal = useCallback((modal: ModalRoute) => {
     if (modal === 'profile') clearOpenCodeModelsQuery(queryClient)
+    if (modal === 'ticket') setTicketModalEditing(false)
+    setModalDirty((current) => current[modal] ? { ...current, [modal]: false } : current)
     setActiveModal(modal)
   }, [queryClient])
   const closeModal = useCallback(() => {
     setActiveModal(null)
+    setTicketModalEditing(false)
+    setModalDirty({ profile: false, prompts: false, project: false, ticket: false })
     // About is opened from inside Configuration; it has nowhere to belong once
     // Configuration is gone.
     setIsAboutOpen(false)
@@ -519,6 +590,7 @@ function App() {
    */
   const navigateHome = useCallback(() => {
     setActiveModal(null)
+    setModalDirty({ profile: false, prompts: false, project: false, ticket: false })
     setIsAboutOpen(false)
     dispatch({ type: 'CLOSE_TICKET' })
     setHasHydratedUrl(true)
@@ -566,31 +638,32 @@ function App() {
             : <KanbanBoard />}
         </AppShell>
 
-        <CenteredModal open={activeModal === 'profile'} onClose={closeModal} title="Configuration" maxWidth="max-w-2xl" closeDisabled={isAboutOpen}>
+        <CenteredModal open={activeModal === 'profile'} onClose={closeModal} title="Configuration" maxWidth="max-w-2xl" closeDisabled={isAboutOpen} isDirty={modalDirty.profile}>
           <Suspense fallback={MODAL_SUSPENSE_FALLBACK}>
-            <ProfileSetup onClose={closeModal} onOpenAbout={openAbout} />
+            <ProfileSetup onClose={closeModal} onOpenAbout={openAbout} onDirtyChange={(dirty) => setModalDirty((current) => current.profile === dirty ? current : { ...current, profile: dirty })} />
           </Suspense>
         </CenteredModal>
 
-        <CenteredModal open={activeModal === 'prompts'} onClose={closeModal} title="Prompts editor" maxWidth="max-w-[80vw]">
+        <CenteredModal open={activeModal === 'prompts'} onClose={closeModal} title="Prompts editor" maxWidth="max-w-[80vw]" isDirty={modalDirty.prompts}>
           <Suspense fallback={MODAL_SUSPENSE_FALLBACK}>
-            <PromptsDialog />
+            <PromptsDialog onDirtyChange={(dirty) => setModalDirty((current) => current.prompts === dirty ? current : { ...current, prompts: dirty })} />
           </Suspense>
         </CenteredModal>
 
-        <CenteredModal open={isAboutOpen} onClose={closeAbout} title="About" maxWidth="max-w-2xl" zIndexClass="z-[60]">
+        {/* About renders above the routed modal it was opened from. */}
+        <CenteredModal open={isAboutOpen} onClose={closeAbout} title="About" maxWidth="max-w-2xl" zIndexClass="z-[80]">
           <AboutDialog />
         </CenteredModal>
 
-        <CenteredModal open={activeModal === 'project'} onClose={closeModal} title="Projects" maxWidth="max-w-2xl">
+        <CenteredModal open={activeModal === 'project'} onClose={closeModal} title="Projects" maxWidth="max-w-2xl" isDirty={modalDirty.project}>
           <Suspense fallback={MODAL_SUSPENSE_FALLBACK}>
-            <ProjectsPanel onClose={closeModal} />
+            <ProjectsPanel onClose={closeModal} onDirtyChange={(dirty) => setModalDirty((current) => current.project === dirty ? current : { ...current, project: dirty })} />
           </Suspense>
         </CenteredModal>
 
-        <CenteredModal open={activeModal === 'ticket'} onClose={closeModal} title="New Ticket" maxWidth="max-w-xl">
+        <CenteredModal open={activeModal === 'ticket'} onClose={closeModal} title={ticketModalEditing ? 'Edit Ticket' : 'New Ticket'} maxWidth="max-w-xl" isDirty={modalDirty.ticket}>
           <Suspense fallback={MODAL_SUSPENSE_FALLBACK}>
-            <TicketForm onClose={closeModal} />
+            <TicketForm onClose={closeModal} onEditingChange={setTicketModalEditing} onDirtyChange={(dirty) => setModalDirty((current) => current.ticket === dirty ? current : { ...current, ticket: dirty })} />
           </Suspense>
         </CenteredModal>
 

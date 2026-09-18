@@ -1,9 +1,10 @@
 import type { ReactNode } from 'react'
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
-import { fireEvent, render, screen, waitFor } from '@testing-library/react'
+import { act, fireEvent, render, screen, waitFor } from '@testing-library/react'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { ProjectForm } from '../ProjectForm'
 import { TooltipProvider } from '@/components/ui/tooltip'
+import type { Project } from '@/hooks/useProjects'
 
 const mockProjectMutations = vi.hoisted(() => ({
   create: {
@@ -27,6 +28,10 @@ const mockAddToast = vi.hoisted(() => vi.fn())
 const mockProjectList = vi.hoisted(() => ({
   data: [] as Array<{ name: string; shortname: string }>,
 }))
+const mockProfileState = vi.hoisted(() => ({
+  data: undefined as { manualQaEnabled: boolean; gitHookPolicy: string; ignoreMode: string } | undefined,
+  isLoading: false,
+}))
 
 vi.mock('@/hooks/useProjects', () => ({
   useCreateProject: () => mockProjectMutations.create,
@@ -49,7 +54,7 @@ vi.mock('@/components/shared/useToast', () => ({
 }))
 
 vi.mock('@/hooks/useProfile', () => ({
-  useProfile: () => ({ data: { manualQaEnabled: false, gitHookPolicy: 'validate_advisory', ignoreMode: 'local' } }),
+  useProfile: () => mockProfileState,
 }))
 
 vi.mock('../FolderPicker', () => ({
@@ -78,6 +83,18 @@ function Wrapper({ children }: { children: ReactNode }) {
   )
 }
 
+function makeCreatedProject(overrides: Partial<Project> = {}): Project {
+  return {
+    id: 7,
+    name: 'Created project',
+    shortname: 'CREA',
+    folderPath: '/work/created',
+    createdAt: '2026-01-01T00:00:00.000Z',
+    updatedAt: '2026-01-01T00:00:00.000Z',
+    ...overrides,
+  } as Project
+}
+
 describe('ProjectForm', () => {
   afterEach(() => {
     vi.unstubAllGlobals()
@@ -94,6 +111,106 @@ describe('ProjectForm', () => {
     mockProjectMutations.remove.isPending = false
     mockAddToast.mockReset()
     mockProjectList.data = []
+    mockProfileState.data = { manualQaEnabled: false, gitHookPolicy: 'validate_advisory', ignoreMode: 'local' }
+    mockProfileState.isLoading = false
+  })
+
+  it('keeps a name typed during profile hydration dirty after defaults arrive', async () => {
+    mockProfileState.data = undefined
+    mockProfileState.isLoading = true
+    const dirty = vi.fn()
+    const view = render(<ProjectForm onClose={vi.fn()} onDirtyChange={dirty} />, { wrapper: Wrapper })
+
+    fireEvent.change(screen.getByLabelText(/Project Name/i), { target: { value: 'Unsaved project' } })
+    mockProfileState.data = { manualQaEnabled: true, gitHookPolicy: 'validate_advisory', ignoreMode: 'local' }
+    mockProfileState.isLoading = false
+    view.rerender(<ProjectForm onClose={vi.fn()} onDirtyChange={dirty} />)
+
+    await waitFor(() => expect(screen.getByLabelText(/Project Name/i)).toHaveValue('Unsaved project'))
+    expect(dirty).toHaveBeenLastCalledWith(true)
+  })
+
+  it('does not replace edits made while the restore check is pending', async () => {
+    let resolveCheck!: (response: Response) => void
+    const checkResponse = new Promise<Response>((resolve) => { resolveCheck = resolve })
+    const fetchMock = vi.fn(() => checkResponse)
+    vi.stubGlobal('fetch', fetchMock)
+    render(<ProjectForm onClose={vi.fn()} />, { wrapper: Wrapper })
+
+    fireEvent.change(screen.getByLabelText(/Project Folder/i), { target: { value: '/work/meili' } })
+    await waitFor(() => expect(fetchMock).toHaveBeenCalled())
+    fireEvent.change(screen.getByLabelText(/Project Name/i), { target: { value: 'My draft' } })
+
+    resolveCheck(new Response(JSON.stringify({
+      isGit: true,
+      status: 'valid',
+      repoRoot: '/work/meili',
+      hasLoopTroopState: true,
+      existingProject: {
+        name: 'Saved project',
+        shortname: 'SAVE',
+        icon: '📦',
+        color: '#a855f7',
+      },
+    }), { status: 200, headers: { 'Content-Type': 'application/json' } }))
+
+    await waitFor(() => expect(screen.getByLabelText(/Project Name/i)).toHaveValue('My draft'))
+    expect(screen.queryByDisplayValue('Saved project')).not.toBeInTheDocument()
+    expect(screen.getByText('Existing LoopTroop project detected')).toBeInTheDocument()
+  })
+
+  it('guards Back to list and Cancel while the project form is dirty', () => {
+    const onBack = vi.fn()
+    const onClose = vi.fn()
+    const confirm = vi.spyOn(window, 'confirm').mockReturnValue(false)
+    const view = render(<ProjectForm onClose={onClose} onBack={onBack} />, { wrapper: Wrapper })
+
+    fireEvent.change(screen.getByLabelText(/Project Name/i), { target: { value: 'Unsaved project' } })
+    fireEvent.click(screen.getByRole('button', { name: 'Back to list' }))
+    expect(confirm).toHaveBeenCalledWith('Discard your unsaved project changes?')
+    expect(onBack).not.toHaveBeenCalled()
+
+    confirm.mockReturnValue(true)
+    fireEvent.click(screen.getByRole('button', { name: 'Back to list' }))
+    expect(onBack).toHaveBeenCalledTimes(1)
+
+    view.unmount()
+    render(<ProjectForm onClose={onClose} />, { wrapper: Wrapper })
+    fireEvent.change(screen.getByLabelText(/Project Name/i), { target: { value: 'Another unsaved project' } })
+    fireEvent.click(screen.getByRole('button', { name: 'Cancel' }))
+    expect(onClose).toHaveBeenCalledTimes(1)
+  })
+
+  it('keeps the form open when a create finishes after a later edit', () => {
+    const onClose = vi.fn()
+    const dirty = vi.fn()
+    render(<ProjectForm onClose={onClose} onDirtyChange={dirty} />, { wrapper: Wrapper })
+
+    fireEvent.change(screen.getByLabelText(/Project Name/i), { target: { value: 'Saved project' } })
+    fireEvent.change(screen.getByLabelText(/Short Name/i), { target: { value: 'SAVE' } })
+    fireEvent.change(screen.getByLabelText(/Project Folder/i), { target: { value: '/work/subfolder' } })
+    fireEvent.submit(screen.getByRole('button', { name: 'Create Project' }).closest('form')!)
+
+    fireEvent.change(screen.getByLabelText(/Project Name/i), { target: { value: 'Later project' } })
+    const createdProject = makeCreatedProject({
+      name: 'Saved project',
+      shortname: 'SAVE',
+      folderPath: '/work/repository',
+    })
+    const options = mockProjectMutations.create.mutate.mock.calls[0]?.[1] as { onSuccess: (created: Project) => void }
+    act(() => options.onSuccess(createdProject))
+
+    expect(onClose).not.toHaveBeenCalled()
+    expect(dirty).toHaveBeenLastCalledWith(true)
+    expect(screen.getByRole('button', { name: 'Save Changes' })).toBeInTheDocument()
+    expect(screen.getByText('/work/repository')).toBeInTheDocument()
+
+    fireEvent.click(screen.getByRole('button', { name: 'Save Changes' }))
+    expect(mockProjectMutations.update.mutate).toHaveBeenCalledWith(
+      expect.objectContaining({ id: 7, name: 'Later project' }),
+      expect.any(Object),
+    )
+    expect(mockProjectMutations.create.mutate).toHaveBeenCalledTimes(1)
   })
 
   it('warns and blocks adding a directory that is already attached', async () => {
@@ -409,7 +526,11 @@ describe('ProjectForm', () => {
       }),
       expect.any(Object),
     )
-    mockProjectMutations.create.mutate.mock.calls[0]?.[1]?.onSuccess()
+    act(() => mockProjectMutations.create.mutate.mock.calls[0]?.[1]?.onSuccess(makeCreatedProject({
+      name: 'MeiliSearch',
+      shortname: 'MESE',
+      folderPath: '/work/meili',
+    })))
     expect(mockAddToast).toHaveBeenCalledWith('success', 'Project restored from existing LoopTroop data.')
   })
 
@@ -461,7 +582,11 @@ describe('ProjectForm', () => {
       }),
       expect.any(Object),
     )
-    mockProjectMutations.create.mutate.mock.calls[0]?.[1]?.onSuccess()
+    act(() => mockProjectMutations.create.mutate.mock.calls[0]?.[1]?.onSuccess(makeCreatedProject({
+      name: 'MeiliSearch',
+      shortname: 'MESE',
+      folderPath: '/work/meili',
+    })))
     expect(mockAddToast).toHaveBeenCalledWith('success', 'Project attached with its settings and a clean ticket list.')
   })
 
@@ -509,7 +634,11 @@ describe('ProjectForm', () => {
       }),
       expect.any(Object),
     )
-    mockProjectMutations.create.mutate.mock.calls[0]?.[1]?.onSuccess()
+    act(() => mockProjectMutations.create.mutate.mock.calls[0]?.[1]?.onSuccess(makeCreatedProject({
+      name: 'MeiliSearch',
+      shortname: 'NEW',
+      folderPath: '/work/meili',
+    })))
     expect(mockAddToast).toHaveBeenCalledWith('success', 'Fresh project created after removing existing LoopTroop state.')
   })
 

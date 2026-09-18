@@ -12,6 +12,8 @@
  * the ordinary end of a tab left open overnight, not an edge case.
  */
 
+import { BACKEND_HEALTH_TIMEOUT_MS } from './constants'
+
 let signedOut = false
 let watchInstalled = false
 const listeners = new Set<() => void>()
@@ -122,7 +124,10 @@ export function probeSessionAfterStreamFailure(): Promise<void> {
 
   probeInFlight = (async () => {
     try {
-      const response = await fetch(SESSION_PROBE_PATH, { cache: 'no-store' })
+      const response = await fetch(SESSION_PROBE_PATH, {
+        cache: 'no-store',
+        signal: AbortSignal.timeout(BACKEND_HEALTH_TIMEOUT_MS),
+      })
       if (response.status === 401) reportSignedOut()
     } catch {
       // Unreachable is not unauthenticated.

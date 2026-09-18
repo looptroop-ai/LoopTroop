@@ -3,8 +3,14 @@ import { QueryClientProvider, useQuery } from '@tanstack/react-query'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { queryClient } from '@/lib/queryClient'
 import { serverLogCache, SERVER_LOG_REFRESH_EVENT } from '@/context/logUtils'
-import { SSE_RECONNECT_DELAY_MS } from '@/lib/constants'
+import { BACKEND_HEALTH_TIMEOUT_MS, SSE_RECONNECT_DELAY_MS } from '@/lib/constants'
+import { __sessionStateForTests, isSignedOut } from '@/lib/sessionState'
 import { getTicketArtifactsQueryKey, useTicketArtifacts, type TicketArtifact } from '../useTicketArtifacts'
+import { getTicketPhaseAttemptsQueryKey } from '../useTicketPhaseAttempts'
+import {
+  clearTicketPersistentState,
+  getTicketSseLastEventIdStorageKey,
+} from '@/components/ticket/renderedTickets'
 
 vi.mock('@/lib/devApi', () => ({
   getApiUrl: (path: string, options?: { directInDevelopment?: boolean }) =>
@@ -86,6 +92,7 @@ describe('useSSE', () => {
   beforeEach(() => {
     queryClient.clear()
     MockEventSource.instances = []
+    __sessionStateForTests.reset()
 
     Object.defineProperty(globalThis, 'EventSource', {
       configurable: true,
@@ -97,6 +104,7 @@ describe('useSSE', () => {
   afterEach(() => {
     queryClient.clear()
     MockEventSource.instances = []
+    __sessionStateForTests.reset()
     vi.restoreAllMocks()
   })
 
@@ -580,19 +588,19 @@ describe('useSSE', () => {
     unmount()
   })
 
-  it('refreshes once for an open plus replay gap, but refreshes again after a later disconnect', async () => {
+  it('refreshes after a replay gap and again after a later cursorless reconnect', async () => {
     const ticketId = '1:T-gap-reconnect'
     localStorage.setItem(`looptroop-sse-last-event-id:${ticketId}`, '99')
     const invalidateSpy = vi.spyOn(queryClient, 'invalidateQueries')
     const { unmount } = renderHook(() => useSSE({ ticketId }))
     await waitFor(() => expect(MockEventSource.instances).toHaveLength(1))
     const source = MockEventSource.instances[0]!
-    const skipRefreshes = () => invalidateSpy.mock.calls.filter(([filters]) => filters?.queryKey?.[0] === 'ticket-skips')
+    const recoveries = () => invalidateSpy.mock.calls.filter(([filters]) => typeof filters?.predicate === 'function')
     await act(async () => {
       source.emitOpen()
       source.emit('replay_gap', { ticketId, reason: 'cursor_unavailable' }, '')
     })
-    expect(skipRefreshes()).toHaveLength(1)
+    expect(recoveries()).toHaveLength(1)
     expect(localStorage.getItem(`looptroop-sse-last-event-id:${ticketId}`)).toBeNull()
     vi.useFakeTimers()
     try {
@@ -601,7 +609,60 @@ describe('useSSE', () => {
         await vi.advanceTimersByTimeAsync(SSE_RECONNECT_DELAY_MS)
       })
       await act(async () => MockEventSource.instances[1]!.emitOpen())
-      expect(skipRefreshes()).toHaveLength(2)
+      expect(recoveries()).toHaveLength(2)
+    } finally {
+      unmount()
+      vi.useRealTimers()
+    }
+  })
+
+  it('refreshes after an explicit replay gap on a later connection', async () => {
+    const ticketId = '1:T-gap-reported'
+    localStorage.setItem(`looptroop-sse-last-event-id:${ticketId}`, '99')
+    const invalidateSpy = vi.spyOn(queryClient, 'invalidateQueries')
+    const { unmount } = renderHook(() => useSSE({ ticketId }))
+    await waitFor(() => expect(MockEventSource.instances).toHaveLength(1))
+    const source = MockEventSource.instances[0]!
+    const recoveries = () => invalidateSpy.mock.calls.filter(([filters]) => typeof filters?.predicate === 'function')
+
+    await act(async () => source.emitOpen())
+    expect(recoveries()).toHaveLength(1)
+
+    vi.useFakeTimers()
+    try {
+      await act(async () => {
+        source.emitTransportError()
+        await vi.advanceTimersByTimeAsync(SSE_RECONNECT_DELAY_MS)
+      })
+      const reconnected = MockEventSource.instances[1]!
+      await act(async () => {
+        reconnected.emitOpen()
+        reconnected.emit('replay_gap', { ticketId, reason: 'cursor_unavailable' }, '')
+      })
+      expect(recoveries()).toHaveLength(2)
+    } finally {
+      unmount()
+      vi.useRealTimers()
+    }
+  })
+
+  it('recovers ticket snapshots after a cursorless transport failure', async () => {
+    const ticketId = '1:T-zero-cursor'
+    const invalidateSpy = vi.spyOn(queryClient, 'invalidateQueries')
+    const { unmount } = renderHook(() => useSSE({ ticketId }))
+    await waitFor(() => expect(MockEventSource.instances).toHaveLength(1))
+
+    const recoveries = () => invalidateSpy.mock.calls.filter(([filters]) => typeof filters?.predicate === 'function')
+    vi.useFakeTimers()
+    try {
+      await act(async () => {
+        MockEventSource.instances[0]!.emitTransportError()
+        await vi.advanceTimersByTimeAsync(SSE_RECONNECT_DELAY_MS)
+      })
+      const reconnected = MockEventSource.instances[1]!
+      expect(new URL(reconnected.url).searchParams.has('lastEventId')).toBe(false)
+      await act(async () => reconnected.emitOpen())
+      expect(recoveries()).toHaveLength(1)
     } finally {
       unmount()
       vi.useRealTimers()
@@ -630,9 +691,27 @@ describe('useSSE', () => {
     unmount()
   })
 
-  it('recovers ticket, artifact, interview, setup, bead, and log data when opening after a persisted stream gap', async () => {
+  it('recovers every cached family for only the ticket opening after a persisted stream gap', async () => {
     const ticketId = '1:T-42'
+    const otherTicketId = '1:T-43'
     localStorage.setItem(`looptroop-sse-last-event-id:${ticketId}`, '99')
+
+    const ticketKeys = [
+      ['ticket', ticketId],
+      ['ticket-artifacts', ticketId],
+      ['interview', ticketId],
+      ['ticket-beads', ticketId],
+      ['ticket-skips', ticketId],
+      ['artifact', ticketId],
+      ['bead-diff', ticketId],
+      ['manual-qa', ticketId, 'index'],
+      ['ticket-ai-details', ticketId, 'phase', 'CODING', 1, 'model-a'],
+      getTicketPhaseAttemptsQueryKey(ticketId, 'CODING'),
+      ['ticket-ui-state', ticketId, 'interview-drafts'],
+      ['ticket-log-history', ticketId, 'phase', 'CODING', '', 'overview', '', ''],
+    ] as const
+    for (const key of ticketKeys) queryClient.setQueryData(key, { ticketId })
+    queryClient.setQueryData(['ticket', otherTicketId], { ticketId: otherTicketId })
 
     const invalidateSpy = vi.spyOn(queryClient, 'invalidateQueries')
     const logRefreshSpy = vi.fn()
@@ -650,19 +729,11 @@ describe('useSSE', () => {
       })
 
       await waitFor(() => {
-        expect(invalidateSpy).toHaveBeenCalledWith({ queryKey: ['ticket', ticketId] })
         expect(invalidateSpy).toHaveBeenCalledWith({ queryKey: ['tickets'] })
-        expect(invalidateSpy).toHaveBeenCalledWith({ queryKey: ['ticket-artifacts', ticketId] })
-        expect(invalidateSpy).toHaveBeenCalledWith({ queryKey: ['interview', ticketId] })
-        expect(invalidateSpy).toHaveBeenCalledWith({ queryKey: ['artifact', ticketId] })
-        expect(invalidateSpy).toHaveBeenCalledWith({ queryKey: ['ticket-beads', ticketId] })
-        expect(invalidateSpy).toHaveBeenCalledWith({ queryKey: ['ticket-skips', ticketId] })
-        expect(invalidateSpy).toHaveBeenCalledWith({ queryKey: ['bead-diff', ticketId] })
-        expect(invalidateSpy).toHaveBeenCalledWith({ queryKey: ['manual-qa', ticketId] })
-        expect(logRefreshSpy).toHaveBeenCalledWith(expect.objectContaining({
-          detail: { ticketId },
-        }))
+        expect(logRefreshSpy).toHaveBeenCalledWith(expect.objectContaining({ detail: { ticketId } }))
       })
+      for (const key of ticketKeys) expect(queryClient.getQueryState(key)?.isInvalidated).toBe(true)
+      expect(queryClient.getQueryState(['ticket', otherTicketId])?.isInvalidated).not.toBe(true)
     } finally {
       window.removeEventListener(SERVER_LOG_REFRESH_EVENT, logRefreshSpy)
     }
@@ -739,6 +810,32 @@ describe('useSSE', () => {
     expect(callsAfterDelay).toBe(1)
   })
 
+  it('drops a pending AI details invalidation when the ticket is deleted', async () => {
+    const ticketId = '1:T-deleted-ai-details'
+    const invalidateSpy = vi.spyOn(queryClient, 'invalidateQueries')
+    renderHook(() => useSSE({ ticketId, onEvent: vi.fn<SSEHandler>() }))
+
+    await waitFor(() => expect(MockEventSource.instances).toHaveLength(1))
+
+    await act(async () => {
+      MockEventSource.instances[0]!.emit('ai_metrics', {
+        ticketId,
+        phase: 'CODING',
+        modelId: 'openai/gpt-5.4',
+      }, '')
+    })
+
+    const aiDetailsKey = { queryKey: ['ticket-ai-details', ticketId] }
+    expect(invalidateSpy).not.toHaveBeenCalledWith(aiDetailsKey)
+
+    clearTicketPersistentState(ticketId)
+    await act(async () => {
+      await new Promise((resolve) => setTimeout(resolve, 600))
+    })
+
+    expect(invalidateSpy).not.toHaveBeenCalledWith(aiDetailsKey)
+  })
+
   it('tracks reconnecting state when the live stream drops', async () => {
     const ticketId = '1:T-42'
     const { result } = renderHook(() => useSSE({ ticketId, onEvent: vi.fn<SSEHandler>() }))
@@ -788,6 +885,85 @@ describe('useSSE', () => {
       expect(invalidateSpy).toHaveBeenCalledWith({ queryKey: ['ticket', ticketId] })
       expect(invalidateSpy).toHaveBeenCalledWith({ queryKey: ['tickets'] })
     })
+  })
+
+  it('probes the session once per failed connection and re-arms after a real open', async () => {
+    const ticketId = '1:T-probe-wiring'
+    const probeFetch = vi.spyOn(globalThis, 'fetch').mockResolvedValue(new Response(null, { status: 200 }))
+    const { unmount } = renderHook(() => useSSE({ ticketId }))
+    await waitFor(() => expect(MockEventSource.instances).toHaveLength(1))
+
+    vi.useFakeTimers()
+    try {
+      const first = MockEventSource.instances[0]!
+      await act(async () => {
+        first.emitTransportError()
+        first.emitTransportError()
+        await Promise.resolve()
+        await Promise.resolve()
+      })
+      expect(probeFetch).toHaveBeenCalledTimes(1)
+      expect(isSignedOut()).toBe(false)
+
+      await act(async () => { await vi.advanceTimersByTimeAsync(SSE_RECONNECT_DELAY_MS) })
+      const second = MockEventSource.instances[1]!
+      await act(async () => {
+        second.emitOpen()
+        second.emitTransportError()
+        await Promise.resolve()
+        await Promise.resolve()
+      })
+      expect(probeFetch).toHaveBeenCalledTimes(2)
+      expect(isSignedOut()).toBe(false)
+    } finally {
+      unmount()
+      vi.useRealTimers()
+    }
+  })
+
+  it('releases a hung probe before the next connection asks again', async () => {
+    const ticketId = '1:T-probe-timeout'
+    let firstSignal: AbortSignal | undefined
+    const probeFetch = vi.spyOn(globalThis, 'fetch').mockImplementation((_input, init) => {
+      if (!firstSignal) {
+        firstSignal = init?.signal ?? undefined
+        return new Promise<Response>((_, reject) => {
+          firstSignal?.addEventListener('abort', () => reject(firstSignal?.reason), { once: true })
+        })
+      }
+      return Promise.resolve(new Response(null, { status: 200 }))
+    })
+    vi.spyOn(AbortSignal, 'timeout').mockImplementation((timeoutMs) => {
+      const controller = new AbortController()
+      setTimeout(() => controller.abort(new DOMException('The operation timed out', 'TimeoutError')), timeoutMs)
+      return controller.signal
+    })
+    const { unmount } = renderHook(() => useSSE({ ticketId }))
+    await waitFor(() => expect(MockEventSource.instances).toHaveLength(1))
+
+    vi.useFakeTimers()
+    try {
+      await act(async () => {
+        MockEventSource.instances[0]!.emitTransportError()
+        await vi.advanceTimersByTimeAsync(BACKEND_HEALTH_TIMEOUT_MS)
+        await Promise.resolve()
+        await Promise.resolve()
+      })
+      expect(firstSignal?.aborted).toBe(true)
+      expect(MockEventSource.instances).toHaveLength(2)
+
+      await act(async () => {
+        MockEventSource.instances[1]!.emitOpen()
+        MockEventSource.instances[1]!.emitTransportError()
+        await Promise.resolve()
+        await Promise.resolve()
+      })
+      expect(probeFetch).toHaveBeenCalledTimes(2)
+      expect(isSignedOut()).toBe(false)
+    } finally {
+      unmount()
+      vi.useRealTimers()
+    }
   })
 
   it('ignores a transport error from the stream a ticket switch left behind', async () => {
@@ -842,6 +1018,28 @@ describe('useSSE', () => {
     // belonging to a different ticket, skipping everything before it.
     expect(result.current.lastEventIdRef.current).toBe('0')
     expect(onEvent).not.toHaveBeenCalled()
+  })
+
+  it('fences a cleared cursor from the active and reissued ticket streams', async () => {
+    const ticketId = '1:T-reissued'
+    renderHook(() => useSSE({ ticketId, onEvent: vi.fn<SSEHandler>() }))
+    await waitFor(() => expect(MockEventSource.instances).toHaveLength(1))
+    const oldSource = MockEventSource.instances[0]!
+
+    await act(async () => {
+      oldSource.emit('progress', { ticketId, content: 'old' }, '12')
+    })
+    expect(localStorage.getItem(getTicketSseLastEventIdStorageKey(ticketId))).toBe('12')
+
+    clearTicketPersistentState(ticketId)
+    expect(oldSource.closed).toBe(true)
+    expect(localStorage.getItem(getTicketSseLastEventIdStorageKey(ticketId))).toBeNull()
+
+    oldSource.emitAfterClose('progress', { ticketId, content: 'late old event' }, '99')
+    expect(localStorage.getItem(getTicketSseLastEventIdStorageKey(ticketId))).toBeNull()
+
+    await waitFor(() => expect(MockEventSource.instances).toHaveLength(2))
+    expect(MockEventSource.instances[1]!.url).not.toContain('lastEventId=')
   })
 
   it('opens no stream when the hook unmounts before its queued connect runs', async () => {

@@ -18,6 +18,7 @@ import {
   normalizeTicketResponse,
   type RawTicketResponse,
 } from '@/lib/ticketNormalization'
+import { clearTicketPersistentState } from '@/components/ticket/renderedTickets'
 import type { TicketErrorOccurrence } from '@/lib/errorOccurrences'
 import {
   clearTicketUiStateRevisions,
@@ -448,6 +449,7 @@ const uiStateSaveQueues = new Map<string, Promise<SaveTicketUIStateResponse>>()
  * transport and lifecycle coordination.
  */
 const uiStateWriteGenerations = new Map<string, number>()
+const uiStateDeletionEpochs = new Map<string, number>()
 
 function uiStateWriteKey(ticketId: string, scope: string): string {
   return `${ticketId}\u0000${scope}`
@@ -462,6 +464,18 @@ export function beginTicketUiStateWrite(ticketId: string, scope: string): number
 
 export function isCurrentTicketUiStateWrite(ticketId: string, scope: string, generation: number): boolean {
   return uiStateWriteGenerations.get(uiStateWriteKey(ticketId, scope)) === generation
+}
+
+function getTicketUiStateDeletionEpoch(ticketId: string): number {
+  return uiStateDeletionEpochs.get(ticketId) ?? 0
+}
+
+function fenceTicketUiStateWrites(ticketId: string): void {
+  uiStateDeletionEpochs.set(ticketId, getTicketUiStateDeletionEpoch(ticketId) + 1)
+  const prefix = `${ticketId}\u0000`
+  for (const [key, generation] of uiStateWriteGenerations) {
+    if (key.startsWith(prefix)) uiStateWriteGenerations.set(key, generation + 1)
+  }
 }
 
 async function fetchTicketUIState<T = unknown>(
@@ -481,6 +495,7 @@ async function saveTicketUIState(
   scope: string,
   data: unknown,
   fetchImpl: typeof fetch = fetch,
+  deletionEpoch = getTicketUiStateDeletionEpoch(ticketId),
 ): Promise<SaveTicketUIStateResponse> {
   const expectedRevision = getTicketUiStateRevision(ticketId, scope)
   const res = await fetchImpl(apiTicketPath(ticketId, 'ui-state'), {
@@ -502,7 +517,9 @@ async function saveTicketUIState(
   }
   // This runs before the queued promise settles, so the next save sends the
   // revision returned by this request rather than the predecessor's value.
-  rememberTicketUiStateRevision(ticketId, scope, result.revision)
+  if (getTicketUiStateDeletionEpoch(ticketId) === deletionEpoch) {
+    rememberTicketUiStateRevision(ticketId, scope, result.revision)
+  }
   return result
 }
 
@@ -545,6 +562,7 @@ function enqueueTicketUIStateSave(
 ): Promise<SaveTicketUIStateResponse> {
   const key = `${ticketId}\u0000${scope}`
   const sequence = ++uiStateSaveSequence
+  const deletionEpoch = getTicketUiStateDeletionEpoch(ticketId)
   const previous = uiStateSaveQueues.get(key)
   const pending = (previous ? previous.catch(() => undefined) : Promise.resolve())
     .then(() => {
@@ -555,13 +573,22 @@ function enqueueTicketUIStateSave(
       if (sequence <= (abandonedSaveSequence.get(ticketId) ?? 0)) {
         throw new Error('Ticket was deleted while this save was queued')
       }
-      return saveTicketUIState(ticketId, scope, data, fetchImpl)
+      return saveTicketUIState(ticketId, scope, data, fetchImpl, deletionEpoch)
     })
   uiStateSaveQueues.set(key, pending)
   void pending.finally(() => {
-    if (uiStateSaveQueues.get(key) === pending) uiStateSaveQueues.delete(key)
+    if (uiStateSaveQueues.get(key) !== pending) return
+    uiStateSaveQueues.delete(key)
+    if (!closingTickets.has(ticketId) && !hasPendingTicketUiStateSaves(ticketId)) {
+      abandonedSaveSequence.delete(ticketId)
+    }
   }).catch(() => undefined)
   return pending
+}
+
+function hasPendingTicketUiStateSaves(ticketId: string): boolean {
+  const prefix = `${ticketId}\u0000`
+  return [...uiStateSaveQueues.keys()].some((key) => key.startsWith(prefix))
 }
 
 /**
@@ -606,6 +633,7 @@ async function settleTicketUiStateSaves(ticketId: string): Promise<void> {
  */
 export function releaseClosingTicket(ticketId: string): void {
   closingTickets.delete(ticketId)
+  abandonedSaveSequence.delete(ticketId)
 }
 
 /**
@@ -656,6 +684,9 @@ export async function settleTicketUiStateSavesForDelete(ticketId: string): Promi
 export async function clearTicketCaches(queryClient: QueryClient, ticketId: string): Promise<void> {
   const predicate = (query: { queryKey: readonly unknown[] }) => queryKeyNamesTicket(query.queryKey, ticketId)
 
+  // A late save response must not recreate a query or revision after this
+  // confirmed deletion. New writes for a reissued id begin in the next epoch.
+  fenceTicketUiStateWrites(ticketId)
   await queryClient.cancelQueries({ predicate })
   queryClient.removeQueries({ predicate })
 
@@ -671,6 +702,8 @@ export async function clearTicketCaches(queryClient: QueryClient, ticketId: stri
   // ticket that no longer exists — and every one of its autosaves is refused as
   // a conflict.
   clearTicketUiStateRevisions(ticketId)
+  clearTicketPersistentState(ticketId)
+  if (!hasPendingTicketUiStateSaves(ticketId)) abandonedSaveSequence.delete(ticketId)
   closingTickets.delete(ticketId)
 }
 
@@ -878,7 +911,16 @@ export function useTicketUIState<T = unknown>(ticketId: string, scope: string, e
     // would send the previous revision as `expectedRevision` and lose the write
     // to a false conflict.
     queryFn: async ({ signal }) => {
+      const deletionEpoch = getTicketUiStateDeletionEpoch(ticketId)
       const payload = await fetchTicketUIState<T>(ticketId, scope, signal)
+      // Query cancellation aborts the fetch, but a response can already have
+      // crossed that boundary while its JSON body is still being read. Do not
+      // let that late body restore a deleted ticket's revision or cache entry.
+      if (signal.aborted || getTicketUiStateDeletionEpoch(ticketId) !== deletionEpoch) {
+        const error = new Error('Ticket UI-state request was superseded')
+        error.name = 'AbortError'
+        throw error
+      }
       const cached = queryClient.getQueryData<TicketUIStateResponse<T>>(queryKey)
       // A failed or still-pending unload flush is the only remaining copy of a
       // draft when its pane has unmounted. Keep it across the completed GET;

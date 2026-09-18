@@ -2,7 +2,7 @@ import type { ReactNode } from 'react'
 import { renderHook, waitFor } from '@testing-library/react'
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import { afterEach, describe, expect, it, vi } from 'vitest'
-import { useSavePrompt } from '../usePrompts'
+import { useResetAllPrompts, useSavePrompt } from '../usePrompts'
 
 function setup() {
   const client = new QueryClient({ defaultOptions: { queries: { retry: false }, mutations: { retry: false } } })
@@ -62,5 +62,38 @@ describe('useSavePrompt', () => {
 
     await waitFor(() => expect(result.current.isError).toBe(true))
     expect(result.current.error?.message).toBe('Failed to save prompt (HTTP 502: Bad Gateway)')
+  })
+})
+
+describe('useResetAllPrompts', () => {
+  it('waits for active prompt refetches before resolving success', async () => {
+    vi.stubGlobal('fetch', vi.fn(async () => jsonResponse(200, { reset: true, templatesDir: '/templates' })))
+    const { invalidate, wrapper } = setup()
+    let release!: () => void
+    const refetch = new Promise<void>((resolve) => { release = resolve })
+    invalidate.mockReturnValue(refetch)
+    const { result } = renderHook(() => useResetAllPrompts(), { wrapper })
+
+    result.current.mutate()
+    await waitFor(() => expect(invalidate).toHaveBeenCalledTimes(2))
+    expect(result.current.isPending).toBe(true)
+
+    release()
+    await waitFor(() => expect(result.current.isSuccess).toBe(true))
+    expect(invalidate).toHaveBeenCalledWith({ queryKey: ['prompts'] })
+    expect(invalidate).toHaveBeenCalledWith({ queryKey: ['prompt'] }, { throwOnError: true })
+  })
+
+  it('reports an active prompt refetch failure after the reset request succeeds', async () => {
+    vi.stubGlobal('fetch', vi.fn(async () => jsonResponse(200, { reset: true, templatesDir: '/templates' })))
+    const { invalidate, wrapper } = setup()
+    invalidate.mockImplementation(async (filters) => {
+      if (filters?.queryKey?.[0] === 'prompt') throw new Error('Prompt refresh failed')
+    })
+    const { result } = renderHook(() => useResetAllPrompts(), { wrapper })
+
+    result.current.mutate()
+    await waitFor(() => expect(result.current.isError).toBe(true))
+    expect(result.current.error?.message).toBe('Prompt refresh failed')
   })
 })

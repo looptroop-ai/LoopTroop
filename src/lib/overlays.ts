@@ -57,6 +57,20 @@ export function isPortalOwnedBy(portal: Element, container: HTMLElement): boolea
   return owner !== null && container.contains(owner)
 }
 
+function isEffectivelyInert(element: Element): boolean {
+  return element.hasAttribute('inert') || element.closest('[inert]') !== null
+}
+
+function isEscapeActiveOverlay(element: Element, target: Element | null): boolean {
+  if (isEffectivelyInert(element)) return false
+  // Radix also uses popper wrappers for informational tooltips. Their mere
+  // presence elsewhere must not prevent the active dialog from closing.
+  if (element.matches('[data-radix-popper-content-wrapper]') && element.querySelector('[role="tooltip"]')) return false
+  if (element.matches('select')) return target === element && document.activeElement === element
+  if (element.matches('[role="combobox"]')) return element.getAttribute('aria-expanded') === 'true'
+  return true
+}
+
 /**
  * Whether an Escape keypress has already been claimed by something nested inside
  * `self` — or, when `self` is null, by any overlay at all.
@@ -72,6 +86,14 @@ export function isEscapeClaimedByNestedOverlay(
   if (event.defaultPrevented) return true
   const target = event.target as Element | null
   const overlay = target?.closest?.(OVERLAY_SELECTOR) ?? null
-  if (!overlay) return false
-  return overlay !== self
+  const activeOverlays = Array.from(document.querySelectorAll<Element>(OVERLAY_SELECTOR))
+    .filter(candidate => isEscapeActiveOverlay(candidate, null))
+
+  // A nested surface owns the key only while it is part of the live overlay
+  // stack. An older surface can remain mounted underneath a newer modal, but
+  // `useDialogFocus` marks it inert; letting it claim Escape would dismiss the
+  // wrong window when focus has fallen back to the body.
+  if (overlay && overlay !== self) return isEscapeActiveOverlay(overlay, target)
+  if (self && isEffectivelyInert(self)) return true
+  return activeOverlays.some(candidate => candidate !== self)
 }

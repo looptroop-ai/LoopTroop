@@ -125,9 +125,11 @@ export function useResetAllPrompts() {
       await throwIfNotOk(res, 'Failed to reset prompts')
       return await res.json() as { reset: boolean; templatesDir: string }
     },
-    onSuccess: () => {
-      void queryClient.invalidateQueries({ queryKey: CATALOG_KEY })
-      void queryClient.invalidateQueries({ queryKey: ['prompt'] })
+    onSuccess: async () => {
+      await Promise.all([
+        queryClient.invalidateQueries({ queryKey: CATALOG_KEY }),
+        queryClient.invalidateQueries({ queryKey: ['prompt'] }, { throwOnError: true }),
+      ])
     },
   })
 }

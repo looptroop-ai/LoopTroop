@@ -91,6 +91,12 @@ export function DeleteWorktreesDialog({ open, onClose, projectId, projectName }:
                   the <strong>Completed</strong> or <strong>Canceled</strong> column are affected.
                 </p>
                 <p className="text-xs text-amber-800/90 dark:text-amber-200/80">
+                  Worktrees with ignored files outside LoopTroop's runtime folders are kept,
+                  including .env files, dependencies, and build output. Move or remove those
+                  files yourself before retrying. Explicit ticket or project deletion is
+                  still destructive.
+                </p>
+                <p className="text-xs text-amber-800/90 dark:text-amber-200/80">
                   Your project's source code and all other files in the repository are
                   <strong> not touched</strong>. Active and queued tickets continue to work normally.
                   Tickets remain visible in the dashboard with their descriptions and status, but

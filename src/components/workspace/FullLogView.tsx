@@ -180,8 +180,8 @@ export function FullLogView({ ticket }: FullLogViewProps) {
     modelId: historicalModelId,
   }, Boolean(ticket?.id))
   const combinedLogs = useMemo(
-    () => ticket?.id ? mergeEntriesBatch(historicalLogs.entries, allLogs) : allLogs,
-    [allLogs, historicalLogs.entries, ticket?.id],
+    () => ticket?.id ? mergeEntriesBatch(historicalLogs.entries, allLogs, historicalView === 'ai') : allLogs,
+    [allLogs, historicalLogs.entries, historicalView, ticket?.id],
   )
 
   useEffect(() => {
@@ -419,7 +419,7 @@ export function FullLogView({ ticket }: FullLogViewProps) {
     if (group.phase === 'CODING' && group.beadSections !== undefined) {
       for (const entry of group.preambleEntries ?? []) items.push({ type: 'entry', key: getLogEntryIdentity(entry), entry })
       for (const section of group.beadSections) {
-        items.push({ type: 'bead', key: `${group.phase}-${groupIndex}-${section.beadId}-${section.ordinal}`, section })
+        items.push({ type: 'bead', key: section.sectionKey, section })
         for (const entry of section.entries) items.push({ type: 'entry', key: getLogEntryIdentity(entry), entry })
       }
     } else {
@@ -442,17 +442,27 @@ export function FullLogView({ ticket }: FullLogViewProps) {
   // The scope is the whole history query, not just the ticket. `fetchOlder` is
   // bound to the observer, so it follows whichever query the observer holds — switch to
   // DEBUG or a model tab mid-walk and the remaining pages land against the new tab.
-  const topNavigationOwnerRef = useRef({ cancelled: false })
+  const topNavigationOwnerRef = useRef<{ cancelled: boolean } | null>(null)
+  const topNavigationRunRef = useRef<{ owner: { cancelled: boolean } } | null>(null)
   useEffect(() => {
     const owner = { cancelled: false }
     topNavigationOwnerRef.current = owner
     return () => {
       owner.cancelled = true
+      if (topNavigationOwnerRef.current === owner) topNavigationOwnerRef.current = null
+      if (topNavigationRunRef.current?.owner === owner) {
+        topNavigationRunRef.current = null
+        explicitTopNavigationRef.current = false
+        setIsNavigatingToTop(false)
+      }
     }
   }, [historicalModelId, historicalView, ticket?.id])
   const handleGoToTop = useCallback(async () => {
-    if (isNavigatingToTop) return
+    if (isNavigatingToTop || topNavigationRunRef.current) return
     const owner = topNavigationOwnerRef.current
+    if (!owner) return
+    const run = { owner }
+    topNavigationRunRef.current = run
     explicitTopNavigationRef.current = true
     clearOlderPageAnchor()
     disableAutoScroll()
@@ -471,8 +481,11 @@ export function FullLogView({ ticket }: FullLogViewProps) {
       // again. Swallowed here because the caller discards this promise, and an
       // unhandled rejection is the one outcome that helps nobody.
     } finally {
-      explicitTopNavigationRef.current = false
-      setIsNavigatingToTop(false)
+      if (topNavigationRunRef.current === run) {
+        topNavigationRunRef.current = null
+        explicitTopNavigationRef.current = false
+        setIsNavigatingToTop(false)
+      }
     }
   }, [clearOlderPageAnchor, disableAutoScroll, historicalLogs, isNavigatingToTop, viewportRef])
   const handleGoToBottom = useCallback(() => {
@@ -738,6 +751,14 @@ export function FullLogView({ ticket }: FullLogViewProps) {
         enabled={!isTerminalTicket}
         activeStatus={ticket?.status ?? null}
       />
+      {ticket?.id && historicalLogs.isError && hasLogs ? (
+        <QueryErrorNotice
+          title="The complete log history could not be refreshed."
+          error={historicalLogs.error}
+          onRetry={() => void historicalLogs.retryHistoricalLogs()}
+          className="shrink-0 border-b border-destructive/20 bg-destructive/5"
+        />
+      ) : null}
       <div className="relative flex-1 min-h-0 flex flex-col">
         <ScrollArea className="h-full flex-1 min-h-0" viewportRef={setViewportRef} type="always">
           <div ref={setContentRef} className="font-mono text-xs bg-muted/60 rounded-lg border border-border/30 p-3 min-h-[100px] w-full max-w-full">
@@ -812,7 +833,7 @@ export function FullLogView({ ticket }: FullLogViewProps) {
                         />
                       ))}
                       {group.beadSections.map((section) => (
-                        <Fragment key={`${group.phase}-${groupIdx}-${section.beadId}-${section.ordinal}`}>
+                        <Fragment key={section.sectionKey}>
                           <BeadDelimiter ordinal={section.ordinal} total={section.total} title={section.title} qaOrigin={section.qaOrigin} />
                           {section.entries.map((entry) => (
                             <LogEntryRow
@@ -845,7 +866,7 @@ export function FullLogView({ ticket }: FullLogViewProps) {
               <QueryErrorNotice
                 title="The log history could not be loaded."
                 error={historicalLogs.error}
-                onRetry={() => void historicalLogs.refetch()}
+                onRetry={() => void historicalLogs.retryHistoricalLogs()}
               />
             ) : (
               <span className="text-muted-foreground/50 italic">

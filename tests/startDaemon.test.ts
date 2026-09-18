@@ -4,12 +4,15 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { request as httpRequest } from 'node:http'
 import {
+  DaemonStartBlockedError,
+  DaemonShutdownPendingError,
   startDaemon,
   describeOpenCode,
   nextStateForOpenCode,
   type DaemonHandle,
 } from '../server/daemon/startDaemon'
-import { getDaemonLockPath, getDaemonStatePath, type DaemonState } from '../server/lib/daemonPaths'
+import { OpenCodeSupervisor } from '../server/opencode/supervisor'
+import { getDaemonLockPath, getDaemonStatePath, writeDaemonStartFailure, writeDaemonState, type DaemonState } from '../server/lib/daemonPaths'
 import { resolveSettings } from '../server/lib/appSettings'
 import { APP_SCHEMA_VERSION } from '../server/db/schemaVersion'
 import { removeTempDir } from '../server/test/tempDir'
@@ -115,6 +118,28 @@ describe('daemon startup and shutdown', () => {
     await expect(handle.stop()).resolves.toBeUndefined()
   })
 
+  it('retains the runtime and ownership when OpenCode shutdown is incomplete', async () => {
+    const configDir = makeConfigDir()
+    const stopSpy = vi.spyOn(OpenCodeSupervisor.prototype, 'stop')
+      .mockResolvedValueOnce(false)
+      .mockResolvedValueOnce(true)
+    try {
+      const handle = await start(configDir)
+
+      await expect(handle.stop()).rejects.toThrow(/shutdown is incomplete/i)
+      expect(existsSync(getDaemonLockPath(configDir))).toBe(true)
+      expect(existsSync(getDaemonStatePath(configDir))).toBe(true)
+      expect((await fetch(`http://${handle.state.host}:${handle.state.port}/api/health`)).ok).toBe(true)
+
+      await expect(handle.stop()).resolves.toBeUndefined()
+      expect(existsSync(getDaemonLockPath(configDir))).toBe(false)
+      expect(existsSync(getDaemonStatePath(configDir))).toBe(false)
+      expect(stopSpy).toHaveBeenCalledTimes(2)
+    } finally {
+      stopSpy.mockRestore()
+    }
+  })
+
   it('leaves no lock behind when the port cannot be bound', async () => {
     const configDir = makeConfigDir()
     const { createServer } = await import('node:net')
@@ -158,6 +183,51 @@ describe('daemon startup and shutdown', () => {
     if (process.platform !== 'win32') {
       expect(statSync(getDaemonStatePath(configDir)).mode & 0o777).toBe(0o600)
     }
+  })
+
+  it('does not reclaim a lock while startup cleanup still owns OpenCode', async () => {
+    const configDir = makeConfigDir()
+    writeDaemonStartFailure({
+      reason: 'startup-cleanup-incomplete',
+      at: '2026-01-02T03:04:05.000Z',
+      version: '0.0.0-test',
+      message: 'OpenCode did not stop during startup cleanup.',
+      openCode: {
+        baseUrl: 'http://127.0.0.1:4096',
+        pid: 4242,
+        startToken: 'child-start',
+      },
+    }, configDir)
+
+    await expect(startDaemon({
+      configDir,
+      settings: ephemeralSettings(),
+      version: '0.0.0-test',
+    })).rejects.toBeInstanceOf(DaemonStartBlockedError)
+    expect(existsSync(getDaemonLockPath(configDir))).toBe(false)
+  })
+
+  it('does not replace a daemon state retained for an incomplete close', async () => {
+    const configDir = makeConfigDir()
+    const pending: DaemonState = {
+      instanceId: 'pending-instance',
+      pid: process.pid,
+      port: 4096,
+      host: '127.0.0.1',
+      startedAt: '2026-01-02T03:04:05.000Z',
+      version: '0.0.0-test',
+      apiToken: 'pending-token',
+      shutdownPending: true,
+    }
+    writeDaemonState(pending, configDir)
+
+    await expect(startDaemon({
+      configDir,
+      settings: ephemeralSettings(),
+      version: '0.0.0-test',
+    })).rejects.toBeInstanceOf(DaemonShutdownPendingError)
+    expect(JSON.parse(readFileSync(getDaemonStatePath(configDir), 'utf8'))).toMatchObject(pending)
+    expect(existsSync(getDaemonLockPath(configDir))).toBe(false)
   })
 
   it('persists a token that authenticates a CLI which did not start the daemon', async () => {
@@ -313,6 +383,7 @@ describe('daemon startup and shutdown', () => {
       const { readDaemonStartFailure } = await import('../server/lib/daemonPaths')
       const failure = readDaemonStartFailure(configDir)
       expect(failure?.reason).toBe('schema-incompatible')
+      if (failure?.reason !== 'schema-incompatible') throw new Error('Expected schema-incompatible failure')
       expect(failure?.version).toBe('0.0.0-test')
       // Which database, what it reports, and what this build accepts — enough
       // for a later command to re-check without parsing the message.

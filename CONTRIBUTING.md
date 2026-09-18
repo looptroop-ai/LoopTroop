@@ -60,6 +60,11 @@ from the `.d.mts` file beside it; keep the two in step.
 
 For code changes, run the relevant linting, typechecking, and tests for the area you touched.
 
+Changes to CLI or process behavior also belong in the website's CLI and
+operations docs. Keep process-safety notes explicit about identity checks,
+forceful Windows termination, and platform limits; do not promise lifecycle
+behavior that was not verified.
+
 ## Documentation and changelog
 
 Keep documentation updated with behavior changes. Published documentation lives in the public [LoopTroop-Website repository](https://github.com/looptroop-ai/LoopTroop-Website), while the canonical application changelog lives in `CHANGELOG.md`.
@@ -67,6 +72,15 @@ Keep documentation updated with behavior changes. Published documentation lives 
 For user-visible changes, add a concise entry under `## Unreleased` in `CHANGELOG.md`. Use the existing Summary and Detailed Changes structure. Documentation changes should be submitted to the website repository as a companion update when relevant.
 
 When reporting interrupted writes, startup recovery, or Manual QA evidence issues, keep the diagnostic and owning artifact paths, and preserve the relevant `.proof`, `.recovery`, `.recovery.write-*`, retained `.remove-*`, or SQLite lock sidecars until their role is known. An orphan YAML or whole-file JSONL temp without a matching proof, including an empty JSONL temp, is warned about and left unpromoted; only an in-progress fallback whose `.recovery` ownership or completeness cannot be verified raises `RECOVERY_BLOCKED` and stops startup. The persistent SQLite lock database is outside transient cleanup, while selected runtime/temp roots and explicit worktree deletion have their own removal scope.
+
+OpenCode step-cap conflicts preserve the edited root config and restore
+sidecar, refusing only a destructive reset that would overwrite them; a later
+bead may continue without a fresh cap when no reset is needed, with valid marker
+evidence excluding the root config from delivery. Protected Git-hook validation
+uses an identity-bound marker; invalid or escaped markers fail before recovery
+writes, and unknown untracked additions remain until attribution is resolved.
+Do not claim native-platform or lifecycle verification beyond the evidence for
+the change.
 
 **When a release changes an install path, a command, a flag or a channel, the website repository ships in the same batch.** The published documentation lives in `looptroop-ai/LoopTroop-Website`, so nothing in this repository's CI can notice when it falls behind — and it did, for four releases, while every page still opened with `git clone` and `npm run dev`. Two automated guards now catch part of it (`verify:site` requires Getting Started to lead with an install command, and `sync:cli --check` fails when the CLI reference drifts from `USAGE`), but neither knows about a new channel or a changed flag. This repository now also exposes `node scripts/docs-install-catalog.mjs`, which prints the published-smoke install table as JSON so the website can verify its consolidated installation docs against the channels and commands this repository actually ships. Bumping `CLI_SOURCE_REF` in the website's `scripts/sync-cli-reference.mjs` to the new tag, and re-running `npm run sync:cli`, is part of shipping a release.
 

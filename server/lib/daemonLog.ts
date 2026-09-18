@@ -1,6 +1,24 @@
-import { copyFileSync, existsSync, renameSync, rmSync, statSync, truncateSync } from 'node:fs'
+import { copyFileSync, existsSync, readFileSync, renameSync, rmSync, statSync, truncateSync } from 'node:fs'
+import { randomUUID } from 'node:crypto'
 import { getDaemonLogDir, getDaemonLogPath } from './daemonPaths'
 import { ensureSecureDir, secureFile } from './appConfigDir'
+import { safeAtomicWrite } from '../io/atomicWrite'
+
+export const LOG_ROTATION_SUFFIX = '.rotation'
+
+/** Null means copytruncate is in progress or its completion is unverified. */
+export function readDaemonLogGeneration(logPath: string): string | null {
+  try {
+    const generation = readFileSync(`${logPath}${LOG_ROTATION_SUFFIX}`, 'utf8')
+    return generation.startsWith('ready:') ? generation : null
+  } catch (error) {
+    return (error as NodeJS.ErrnoException).code === 'ENOENT' ? 'ready:initial' : null
+  }
+}
+
+function writeGeneration(logPath: string, generation: string): void {
+  safeAtomicWrite(`${logPath}${LOG_ROTATION_SUFFIX}`, generation, { mode: 0o600 })
+}
 
 /** Rotated once the live log passes this size. */
 export const MAX_LOG_BYTES = 5 * 1024 * 1024
@@ -52,6 +70,10 @@ export function rotateDaemonLog(configDir?: string): void {
   const logPath = getDaemonLogPath(configDir)
   ensureSecureDir(getDaemonLogDir(configDir))
 
+  // Startup has no writer yet. Settle an interrupted rotation conservatively
+  // as a new generation rather than leaving followers waiting forever.
+  if (readDaemonLogGeneration(logPath) === null) writeGeneration(logPath, `ready:${randomUUID()}`)
+
   if (!existsSync(logPath)) return
   if (!isOversized(logPath)) return
 
@@ -87,14 +109,25 @@ export function rotateRunningDaemonLog(configDir?: string): boolean {
   if (!existsSync(logPath)) return false
   if (!isOversized(logPath)) return false
 
+  const previousGeneration = readDaemonLogGeneration(logPath)
+  const generation = randomUUID()
+  let truncated = false
   try {
+    // Announce before touching the live bytes. Followers must not mistake a
+    // quickly regrown same-inode file for an ordinary append.
+    writeGeneration(logPath, `pending:${generation}`)
     shiftGenerations(logPath)
     copyFileSync(logPath, rotatedPath(logPath, 1))
     // The copy holds whatever the live log held, and that is owner-only.
     secureFile(rotatedPath(logPath, 1))
     truncateSync(logPath, 0)
+    truncated = true
+    writeGeneration(logPath, `ready:${generation}`)
     return true
   } catch {
+    try {
+      writeGeneration(logPath, truncated ? `ready:${generation}` : previousGeneration ?? `ready:${generation}`)
+    } catch { /* Keep the pending witness rather than claim a verified boundary. */ }
     // A daemon must not exit because it could not rotate its own log. The file
     // keeps growing, which is the state this whole function improves on but is
     // not worse than what a failure here would replace it with.

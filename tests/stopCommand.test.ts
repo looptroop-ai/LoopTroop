@@ -6,13 +6,13 @@ import { mkdtempSync, existsSync, writeFileSync } from 'node:fs'
 import { tmpdir, hostname } from 'node:os'
 import { join } from 'node:path'
 import { readRunningDaemon, stopRunningDaemon, type StopBudgets } from '../server/cli/commands'
-import { getDaemonLockPath, getDaemonStatePath, type DaemonState } from '../server/lib/daemonPaths'
+import { getDaemonLockPath, getDaemonStatePath, readDaemonState, readDaemonStartFailure, writeDaemonStartFailure, writeDaemonState, type DaemonState } from '../server/lib/daemonPaths'
 import { removeTempDir } from '../server/test/tempDir'
 
 /**
- * 2.7 contract: `stop` asks the daemon over HTTP, escalates only as far as it
- * must, and every rung is bounded. A daemon that ignores the request must still
- * end, and a daemon that never existed must never be signalled in its place.
+ * 2.7 contract: `stop` asks the daemon over HTTP, escalates only when that
+ * request was not accepted, and every fallback rung is bounded. An accepted
+ * request that cannot prove owned cleanup retains the retry boundary.
  */
 describe('stopping a running daemon', () => {
   const tempDirs: string[] = []
@@ -63,6 +63,7 @@ describe('stopping a running daemon', () => {
   async function startFakeDaemon(options: {
     instanceId: string
     apiToken: string
+    includeInstanceId?: boolean
     onShutdown?: () => void
   }): Promise<FakeDaemon> {
     const fake: FakeDaemon = { port: 0, shutdownRequests: 0 }
@@ -70,7 +71,10 @@ describe('stopping a running daemon', () => {
     const server = createServer((req, res) => {
       if (req.url === '/api/health') {
         res.writeHead(200, { 'Content-Type': 'application/json' })
-        res.end(JSON.stringify({ status: 'ok', instanceId: options.instanceId }))
+        res.end(JSON.stringify({
+          status: 'ok',
+          ...(options.includeInstanceId === false ? {} : { instanceId: options.instanceId }),
+        }))
         return
       }
 
@@ -120,34 +124,155 @@ describe('stopping a running daemon', () => {
     expect(fake.shutdownRequests).toBe(1)
   })
 
-  it('kills a daemon that accepts the request and then ignores it', async () => {
+  it('retains ownership when a daemon accepts shutdown but does not finish', async () => {
     const configDir = makeConfigDir()
     const pid = spawnStandIn(true)
+    const startToken = readProcessStartToken(pid)
+    expect(startToken).not.toBeNull()
     const fake = await startFakeDaemon({ instanceId: 'instance-under-test', apiToken: 'test-api-token' })
     writeLock(configDir, pid)
-    writeFileSync(getDaemonStatePath(configDir), JSON.stringify(makeState({ pid, port: fake.port })))
+    writeFileSync(getDaemonStatePath(configDir), JSON.stringify(makeState({
+      pid,
+      port: fake.port,
+      startToken: startToken ?? undefined,
+    })))
 
     const outcome = await stopRunningDaemon(
-      makeState({ pid, port: fake.port }),
+      makeState({ pid, port: fake.port, startToken: startToken ?? undefined }),
       { configDir, budgets: FAST_BUDGETS },
     )
 
-    expect(outcome).toEqual({ kind: 'stopped', forced: true })
-    expect(isAlive(pid)).toBe(false)
-    // A killed daemon runs no cleanup of its own, so the next start would be
-    // blocked for the full stale window if these were left behind.
-    expect(existsSync(getDaemonLockPath(configDir))).toBe(false)
-    expect(existsSync(getDaemonStatePath(configDir))).toBe(false)
+    expect(outcome).toEqual({ kind: 'incomplete', pid })
+    expect(isAlive(pid)).toBe(true)
+    // The daemon may still be draining an owned OpenCode tree. Its lock and
+    // state remain the authenticated retry boundary rather than being cleared
+    // under a surviving process.
+    expect(existsSync(getDaemonLockPath(configDir))).toBe(true)
+    expect(existsSync(getDaemonStatePath(configDir))).toBe(true)
   })
 
-  it('stops a daemon whose HTTP endpoint is unreachable', async () => {
+  it('never force-kills a generation whose runtime close is already pending', async () => {
+    const configDir = makeConfigDir()
+    const pid = spawnStandIn(true)
+    const startToken = readProcessStartToken(pid)
+    expect(startToken).not.toBeNull()
+    const fake = await startFakeDaemon({ instanceId: 'instance-under-test', apiToken: 'test-api-token' })
+    writeLock(configDir, pid)
+    writeFileSync(getDaemonStatePath(configDir), JSON.stringify(makeState({
+      pid,
+      port: fake.port,
+      startToken: startToken ?? undefined,
+      shutdownPending: true,
+    })))
+
+    const outcome = await stopRunningDaemon(
+      makeState({ pid, port: fake.port, startToken: startToken ?? undefined, shutdownPending: true }),
+      { configDir, budgets: FAST_BUDGETS },
+    )
+
+    expect(outcome).toEqual({ kind: 'incomplete', pid, context: 'shutdown-pending' })
+    expect(isAlive(pid)).toBe(true)
+    expect(existsSync(getDaemonLockPath(configDir))).toBe(true)
+    expect(existsSync(getDaemonStatePath(configDir))).toBe(true)
+  })
+
+  it('refreshes shutdown-pending state before any force escalation', async () => {
+    const configDir = makeConfigDir()
+    const pid = spawnStandIn(true)
+    const startToken = readProcessStartToken(pid)
+    expect(startToken).not.toBeNull()
+    const fake = await startFakeDaemon({
+      instanceId: 'instance-under-test',
+      apiToken: 'test-api-token',
+      onShutdown: () => {
+        writeDaemonState(makeState({
+          pid,
+          port: fake.port,
+          startToken: startToken ?? undefined,
+          shutdownPending: true,
+        }), configDir)
+      },
+    })
+    writeLock(configDir, pid)
+    const state = makeState({ pid, port: fake.port, startToken: startToken ?? undefined })
+    writeDaemonState(state, configDir)
+
+    const outcome = await stopRunningDaemon(state, { configDir, budgets: FAST_BUDGETS })
+
+    expect(outcome).toEqual({ kind: 'incomplete', pid, context: 'shutdown-pending' })
+    // Windows force escalation may race the leader's exit; the retained
+    // lock/state, not a momentary liveness observation, is the retry boundary.
+    if (process.platform !== 'win32') expect(isAlive(pid)).toBe(true)
+    expect(existsSync(getDaemonLockPath(configDir))).toBe(true)
+    expect(existsSync(getDaemonStatePath(configDir))).toBe(true)
+  })
+
+  it('refreshes shutdown-pending state immediately before force escalation', async () => {
+    const configDir = makeConfigDir()
+    const pid = spawnStandIn(true)
+    const startToken = readProcessStartToken(pid)
+    expect(startToken).not.toBeNull()
+    writeLock(configDir, pid)
+    const state = makeState({ pid, port: 1, startToken: startToken ?? undefined })
+    writeDaemonState(state, configDir)
+    // Let the stand-in install its SIGTERM handler before the escalation
+    // begins; otherwise the test could observe ordinary startup timing rather
+    // than the final pending-state refresh.
+    await new Promise((resolve) => setTimeout(resolve, 100))
+    const pendingState = makeState({ pid, port: 1, shutdownPending: true })
+    const pendingTimer = setTimeout(() => writeDaemonState(pendingState, configDir), 50)
+    pendingTimer.unref()
+
+    const outcome = await stopRunningDaemon(state, { configDir, budgets: FAST_BUDGETS })
+
+    expect(outcome).toEqual({ kind: 'incomplete', pid, context: 'shutdown-pending' })
+    // The Windows taskkill tree may finish before this assertion or just after
+    // it. POSIX keeps the stronger leader-liveness check.
+    if (process.platform !== 'win32') expect(isAlive(pid)).toBe(true)
+    expect(readDaemonState(configDir)?.shutdownPending).toBe(true)
+    expect(existsSync(getDaemonLockPath(configDir))).toBe(true)
+  })
+
+  it('retries a retained startup owner using its recorded identity', async () => {
+    const configDir = makeConfigDir()
+    const previous = process.env.LOOPTROOP_CONFIG_DIR
+    process.env.LOOPTROOP_CONFIG_DIR = configDir
     const pid = spawnStandIn(false)
-    // Port 1 is reserved and nothing answers there, so every rung above the
-    // signal must fail before the daemon is stopped.
+    const startToken = readProcessStartToken(pid)
+    expect(startToken).not.toBeNull()
+    writeDaemonStartFailure({
+      reason: 'startup-cleanup-incomplete',
+      at: '2026-01-02T03:04:05.000Z',
+      version: '0.0.0-test',
+      message: 'OpenCode did not stop during startup cleanup.',
+      openCode: {
+        baseUrl: 'http://127.0.0.1:4096',
+        pid,
+        startToken: startToken ?? undefined,
+      },
+    }, configDir)
+
+    try {
+      const { stopCommand } = await import('../server/cli/commands')
+      expect(await stopCommand()).toBe(0)
+    } finally {
+      if (previous === undefined) delete process.env.LOOPTROOP_CONFIG_DIR
+      else process.env.LOOPTROOP_CONFIG_DIR = previous
+    }
+
+    expect(isAlive(pid)).toBe(false)
+    expect(readDaemonStartFailure(configDir)).toBeNull()
+    expect(existsSync(getDaemonLockPath(configDir))).toBe(false)
+  })
+
+  it('does not stop an unreachable daemon whose identity was not recorded', async () => {
+    const pid = spawnStandIn(false)
+    // Port 1 is reserved and nothing answers there. Without a start token the
+    // live pid is unverifiable, so every destructive rung must refuse it.
     const outcome = await stopRunningDaemon(makeState({ pid, port: 1 }), { budgets: FAST_BUDGETS })
 
-    expect(outcome.kind).toBe('stopped')
-    expect(isAlive(pid)).toBe(false)
+    expect(outcome.kind).toBe('not-ours')
+    expect(isAlive(pid)).toBe(true)
   })
 
   it('leaves a lock belonging to another daemon alone', async () => {
@@ -187,6 +312,20 @@ describe('stopping a running daemon', () => {
     writeFileSync(getDaemonStatePath(configDir), JSON.stringify(makeState({ pid, port: fake.port })))
 
     expect(await readRunningDaemon(configDir)).toMatchObject({ pid, instanceId: 'instance-under-test' })
+  })
+
+  it('does not adopt a successful health response without the recorded instance id', async () => {
+    const configDir = makeConfigDir()
+    const pid = spawnStandIn(false)
+    const fake = await startFakeDaemon({
+      instanceId: 'instance-under-test',
+      apiToken: 'test-api-token',
+      includeInstanceId: false,
+    })
+    writeFileSync(getDaemonStatePath(configDir), JSON.stringify(makeState({ pid, port: fake.port })))
+
+    expect(await readRunningDaemon(configDir)).toBeNull()
+    expect(isAlive(pid)).toBe(true)
   })
 
   /**
@@ -232,7 +371,9 @@ describe('stopping a running daemon', () => {
     expect(written.join('')).toContain('not running')
     // The lock still blocks the next start; the diagnosis does not.
     expect(existsSync(getDaemonLockPath(configDir))).toBe(false)
-    expect(readDaemonStartFailure(configDir)?.schema.found).toBe(99)
+    const failure = readDaemonStartFailure(configDir)
+    expect(failure?.reason).toBe('schema-incompatible')
+    if (failure?.reason === 'schema-incompatible') expect(failure.schema.found).toBe(99)
   })
 
   /**

@@ -21,9 +21,9 @@ import {
 } from '../../opencode/sessionContinuation'
 import { listOpenCodeSessionsForTicket, SessionManager } from '../../opencode/sessionManager'
 import { clearOpenCodePromptDispatchCount } from '../runOpenCodePrompt'
-import { ensureLocalGitExclude } from '../../git/repository'
 import {
   applyOpencodeStepsConfig,
+  hasPendingOpencodeStepsRestore,
   OPENCODE_CONFIG_FILENAME,
   reapplyOpencodeStepsConfig,
   restoreOpencodeStepsConfig,
@@ -324,8 +324,8 @@ export async function handleCoding(
    * the run is holding a modified copy of. Preserving it is what makes the
    * restore afterwards possible at all.
    */
-  const resetPreservePaths = () => (stepsConfig
-    ? [...WORKTREE_RESET_PRESERVE_PATHS, OPENCODE_CONFIG_FILENAME]
+  const resetPreservePaths = () => (stepsConfig || hasPendingOpencodeStepsRestore(paths.ticketDir, paths.worktreePath)
+    ? [...WORKTREE_RESET_PRESERVE_PATHS, `/${OPENCODE_CONFIG_FILENAME}`]
     : [...WORKTREE_RESET_PRESERVE_PATHS])
 
   /** A reset returns a tracked config to its committed state, cap and all. */
@@ -345,12 +345,6 @@ export async function handleCoding(
       })
       if (outcome.applied) {
         stepsConfig = outcome.handle
-        // Only a file this run created is ours to hide from git. A project that
-        // ships its own `opencode.json` has already decided how it is tracked —
-        // it is kept out of the bead commit instead, at the commit itself.
-        if (outcome.handle.created) {
-          ensureLocalGitExclude(paths.worktreePath, ['/' + OPENCODE_CONFIG_FILENAME])
-        }
       }
     }
 
@@ -448,9 +442,25 @@ export async function handleCoding(
         throw new Error('No runnable bead found; unresolved dependencies remain')
       }
 
+      // Record the reset anchor before publishing in_progress. A failed HEAD
+      // read leaves the bead pending and therefore startable on the next try.
+      try {
+        beadStartCommit = await withCommandLoggingFieldsAsync({ beadId: nextBead.id }, async () => recordBeadStartCommit(paths.worktreePath))
+      } catch (err) {
+        const message = `Could not record bead start commit for ${nextBead.id}: ${err instanceof Error ? err.message : 'Unknown error'}`
+        emitPhaseLog(ticketId, context.externalId, 'CODING', 'error', message, { source: 'system', modelId: codingModelId, beadId: nextBead.id })
+        throw new Error(message)
+      }
+
       const now = new Date().toISOString()
       const inProgressBeads = beads.map(bead => bead.id === nextBead.id
-        ? { ...bead, status: 'in_progress' as const, updatedAt: now, startedAt: bead.startedAt || now }
+        ? {
+            ...bead,
+            status: 'in_progress' as const,
+            updatedAt: now,
+            startedAt: bead.startedAt || now,
+            beadStartCommit,
+          }
         : bead)
       writeTicketBeads(ticketId, inProgressBeads)
       updateTicketProgressFromBeads(ticketId, inProgressBeads)
@@ -462,19 +472,6 @@ export async function handleCoding(
       activeBead = executingBead
 
       emitPhaseLog(ticketId, context.externalId, 'CODING', 'info', `Executing bead ${executingBead.id}: ${executingBead.title}`, { source: 'system', modelId: codingModelId, beadId: executingBead.id })
-
-      // Record bead start commit for potential reset on context wipe
-      beadStartCommit = null
-      try {
-        beadStartCommit = await withCommandLoggingFieldsAsync({ beadId: executingBead.id }, async () => recordBeadStartCommit(paths.worktreePath))
-        const beadsWithCommit = readTicketBeads(ticketId).map(b =>
-          b.id === executingBead.id ? { ...b, beadStartCommit } : b)
-        writeTicketBeads(ticketId, beadsWithCommit)
-        activeBead = beadsWithCommit.find(bead => bead.id === executingBead.id) ?? activeBead
-        executingBead = activeBead ?? executingBead
-      } catch (err) {
-        emitPhaseLog(ticketId, context.externalId, 'CODING', 'info', `Could not record bead start commit: ${err instanceof Error ? err.message : 'Unknown error'}`, { source: 'system', modelId: codingModelId, beadId: executingBead.id })
-      }
     }
 
     throwIfAborted(signal, ticketId)
@@ -692,7 +689,9 @@ export async function handleCoding(
       // The step cap is LoopTroop's, not the project's, and a commit cannot be
       // taken back by restoring the file afterwards.
       async () => commitBeadChanges(paths.worktreePath, finalizingBead.id, finalizingBead.title, {
-        excludePaths: stepsConfig ? [OPENCODE_CONFIG_FILENAME] : [],
+        excludePaths: stepsConfig || hasPendingOpencodeStepsRestore(paths.ticketDir, paths.worktreePath)
+          ? [OPENCODE_CONFIG_FILENAME]
+          : [],
       }),
     )
   } catch (err) {

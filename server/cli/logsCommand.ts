@@ -1,5 +1,9 @@
-import { createReadStream, existsSync, statSync, watch } from 'node:fs'
+import { createReadStream, existsSync, statSync, watch, type Stats } from 'node:fs'
+import { StringDecoder } from 'node:string_decoder'
+import { basename, dirname } from 'node:path'
+import { setTimeout as delay } from 'node:timers/promises'
 import { getDaemonLogPath } from '../lib/daemonPaths'
+import { LOG_ROTATION_SUFFIX, readDaemonLogGeneration } from '../lib/daemonLog'
 
 export interface LogsOptions {
   follow: boolean
@@ -11,17 +15,36 @@ const DEFAULT_LINES = 50
 const TAIL_CHUNK_BYTES = 64 * 1024
 const NEWLINE_BYTE = 0x0a
 
+interface TailRead {
+  generation: string | null
+  text: string
+  offset: number
+  identity: Pick<Stats, 'dev' | 'ino' | 'birthtimeMs'>
+  /** Bytes held by the initial decoder until the first follow window arrives. */
+  decoderSeed: Buffer
+  /** Whether the original tail ended with a complete newline. */
+  endsWithNewline: boolean
+}
+
 /**
  * The last `lines` lines, read backwards from the end of the file.
  *
  * Reading the whole file and slicing loaded a long-running daemon's entire log
  * into memory to print fifty lines of it.
  */
-async function readTail(logPath: string, lines: number): Promise<string> {
+async function readTail(logPath: string, lines: number, attempt = 0): Promise<TailRead> {
+  const retry = async (): Promise<TailRead> => {
+    if (attempt >= 10) throw new Error('Log rotation has not settled; retry the logs command.')
+    await delay(50)
+    return readTail(logPath, lines, attempt + 1)
+  }
+  const generation = readDaemonLogGeneration(logPath)
+  if (generation === null) return retry()
   const { open } = await import('node:fs/promises')
   const handle = await open(logPath, 'r')
   try {
-    const size = (await handle.stat()).size
+    const identity = await handle.stat()
+    const size = identity.size
     let position = size
     const chunks: Buffer[] = []
     let newlines = 0
@@ -39,13 +62,50 @@ async function readTail(logPath: string, lines: number): Promise<string> {
       chunks.unshift(buffer)
       newlines += countNewlines(buffer)
     }
-    const all = Buffer.concat(chunks).toString('utf8').split('\n')
+    const raw = Buffer.concat(chunks)
+    const decoderSeed = incompleteUtf8Suffix(raw)
+    const complete = decoderSeed.length === 0 ? raw : raw.subarray(0, -decoderSeed.length)
+    const all = complete.toString('utf8').split('\n')
     // A trailing newline yields an empty final element that would print as a blank line.
     if (all.at(-1) === '') all.pop()
-    return all.slice(-lines).join('\n')
+    if (readDaemonLogGeneration(logPath) !== generation) return retry()
+    return {
+      generation,
+      text: all.slice(-lines).join('\n'),
+      offset: size,
+      identity,
+      decoderSeed,
+      // A complete newline may precede an incomplete character on the next
+      // line. Preserve that separator before the seeded decoder emits the
+      // character; only the incomplete bytes themselves are withheld.
+      endsWithNewline: complete.at(-1) === NEWLINE_BYTE,
+    }
   } finally {
     await handle.close()
   }
+}
+
+/** Returns a valid, incomplete UTF-8 sequence at the end of a byte window. */
+function incompleteUtf8Suffix(buffer: Buffer): Buffer {
+  let continuationBytes = 0
+  let index = buffer.length - 1
+  while (index >= 0 && (buffer[index]! & 0xc0) === 0x80) {
+    continuationBytes += 1
+    index -= 1
+  }
+  if (index < 0) return Buffer.alloc(0)
+
+  const lead = buffer[index]!
+  const expectedBytes = lead >= 0xc2 && lead <= 0xdf
+    ? 2
+    : lead >= 0xe0 && lead <= 0xef
+      ? 3
+      : lead >= 0xf0 && lead <= 0xf4
+        ? 4
+        : 0
+  return expectedBytes > 0 && continuationBytes + 1 < expectedBytes
+    ? buffer.subarray(index)
+    : Buffer.alloc(0)
 }
 
 /**
@@ -71,11 +131,12 @@ export async function logsCommand(options: LogsOptions): Promise<number> {
     : DEFAULT_LINES
 
   const tail = await readTail(logPath, lines)
-  if (tail) process.stdout.write(`${tail}\n`)
+  if (tail.text) process.stdout.write(tail.text)
+  if (tail.endsWithNewline) process.stdout.write('\n')
 
   if (!options.follow) return 0
 
-  await followLog(logPath)
+  await followLog(logPath, tail)
   return 0
 }
 
@@ -84,32 +145,53 @@ export async function logsCommand(options: LogsOptions): Promise<number> {
  * a long-running daemon's log is not read from the start on every change, and
  * resets when the file shrinks so rotation does not leave us reading past the end.
  */
-function followLog(logPath: string): Promise<void> {
+function followLog(logPath: string, tail: TailRead): Promise<void> {
   return new Promise((resolveFollow) => {
-    let offset = statSync(logPath).size
+    // The tail reader recorded its file size before decoding. Register the
+    // watcher before draining that offset so bytes written in the handoff gap
+    // are read once rather than silently skipped.
+    let offset = tail.offset
+    let identity = tail.identity
+    let generation = tail.generation
     let reading = false
+    let decoder = new StringDecoder('utf8')
+    // `readTail` may have ended on the first byte(s) of a character. Feed the
+    // incomplete sequence into the same decoder that will consume follow-up
+    // bytes; decoding the two windows independently would print replacements.
+    if (tail.decoderSeed.length > 0) decoder.write(tail.decoderSeed)
 
     const drain = (): void => {
       if (reading) return
-      let size: number
+      const currentGeneration = readDaemonLogGeneration(logPath)
+      if (currentGeneration === null) return
+      let current: Stats
       try {
-        size = statSync(logPath).size
+        current = statSync(logPath)
       } catch {
         return
       }
 
-      if (size < offset) offset = 0
+      const size = current.size
+      if (currentGeneration !== generation || current.dev !== identity.dev || current.ino !== identity.ino
+        || current.birthtimeMs !== identity.birthtimeMs || size < offset) {
+        offset = 0
+        decoder = new StringDecoder('utf8')
+      }
+      identity = current
+      generation = currentGeneration
       if (size === offset) return
 
       reading = true
-      // Bytes straight through, no decoding. Each `drain` opened its own
-      // stream, so a decoder could only ever see one window of the file, and a
-      // multi-byte character split across two windows came out as replacement
-      // characters. stdout wants bytes anyway.
       const stream = createReadStream(logPath, { start: offset, end: size - 1 })
-      stream.on('data', (chunk) => process.stdout.write(chunk))
+      // Keep one decoder across watcher windows. A writer can split a UTF-8
+      // character across appends, and each stream is only one such window.
+      stream.on('data', (chunk) => {
+        if (readDaemonLogGeneration(logPath) === currentGeneration) {
+          process.stdout.write(decoder.write(chunk))
+        }
+      })
       stream.on('end', () => {
-        offset = size
+        if (readDaemonLogGeneration(logPath) === currentGeneration) offset = size
         reading = false
         // Watch events that arrived while this read was in flight were dropped
         // by the guard above, so without this the bytes they were about to
@@ -121,7 +203,19 @@ function followLog(logPath: string): Promise<void> {
       stream.on('error', () => { reading = false })
     }
 
-    const watcher = watch(logPath, { persistent: true }, drain)
+    // Startup rotation renames the old file before opening a new one at the
+    // same path. Watching the file binds to the old inode, so follow would go
+    // silent after that rename. Watch the directory and re-drain only for the
+    // live basename or the completed copytruncate generation witness.
+    const watcher = watch(dirname(logPath), { persistent: true }, (_event, filename) => {
+      // Some platforms omit the filename. In that case inspect the live path.
+      if (filename && filename.toString() !== basename(logPath)
+        && filename.toString() !== `${basename(logPath)}${LOG_ROTATION_SUFFIX}`) return
+      // Generation changes are applied by drain(), after any old-inode read
+      // ends. Duplicate rename events cannot reset a new stream mid-read.
+      drain()
+    })
+    drain()
 
     const stop = (): void => {
       watcher.close()

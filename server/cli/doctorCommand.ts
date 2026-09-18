@@ -8,7 +8,7 @@ import { summarizeUpdateStatus, type UpdateStatus } from '../lib/updateCheck'
 import { getLatestToolVersions } from '../lib/toolVersions'
 import { isDevStackRunning } from '../lib/devStack'
 import { probePort } from '../lib/portProbe'
-import { readDaemonStartFailure, type DaemonState } from '../lib/daemonPaths'
+import { daemonOrigin, readDaemonStartFailure, type DaemonState } from '../lib/daemonPaths'
 import type { SchemaCompatibility } from '../db/schemaVersion'
 import { readRunningDaemon } from './commands'
 import { getErrorMessage } from '@shared/typeGuards'
@@ -565,7 +565,7 @@ async function checkDaemon(daemon: DaemonState | null): Promise<Check> {
     return {
       name: 'daemon',
       status: 'ok',
-      detail: `running on http://${daemon.host}:${daemon.port} (pid ${daemon.pid})`,
+      detail: `running on ${daemonOrigin(daemon.host, daemon.port)} (pid ${daemon.pid})`,
     }
   }
 
@@ -745,6 +745,16 @@ async function checkLastStart(): Promise<Check> {
     // — and calling it "last start" invited the reasonable reading that it would
     // show when LoopTroop last started, which it cannot.
     return { name: 'last start', label: 'start failures', status: 'ok', detail: 'none recorded' }
+  }
+
+  if (failure.reason === 'startup-cleanup-incomplete') {
+    return {
+      name: 'last start',
+      label: 'start cleanup',
+      status: 'fail',
+      detail: `refused at ${failure.at}: OpenCode at ${failure.openCode.baseUrl} (pid ${failure.openCode.pid}) was not proven stopped`,
+      remedy: 'Run `looptroop stop` to retry the owned cleanup before starting again.',
+    }
   }
 
   // The versions the refusal was about, not what the file says now: this check

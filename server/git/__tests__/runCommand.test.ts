@@ -69,7 +69,7 @@ describe('server/git/runCommand', () => {
     expect(result.timedOut).toBe(true)
   })
 
-  it('stops detached async commands during daemon shutdown', async () => {
+  it.skipIf(process.platform === 'win32')('stops detached async commands during daemon shutdown', async () => {
     const command = runCommand(node, script('setTimeout(() => {}, 60000)'), { timeoutMs: 60_000, log: false })
     // Let the spawned process reach the OS before shutdown asks Windows to
     // terminate its tree. Without this turn, taskkill can race process

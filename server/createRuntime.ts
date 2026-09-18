@@ -100,7 +100,6 @@ export function createRuntime(config: RuntimeConfig = {}): LoopTroopRuntime {
    * about it — so the rejection is absorbed here rather than surfaced twice.
    */
   async function start(): Promise<RuntimeAddress> {
-    if (starting) return starting
     if (closing) {
       await closing.catch(() => undefined)
       // Re-checked, because the await is a place another caller can get in.
@@ -110,6 +109,7 @@ export function createRuntime(config: RuntimeConfig = {}): LoopTroopRuntime {
       // `starting` — two startup sequences, two bound sockets, one runtime.
       if (starting) return starting
     }
+    if (starting) return starting
     if (address) return address
     // A new generation gets its own shutdown. Keeping the settled promise is
     // what made a runtime that had been closed once impossible to close again.

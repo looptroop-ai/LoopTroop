@@ -1,7 +1,7 @@
 import { spawn, type ChildProcess } from 'node:child_process'
 import { openSync } from 'node:fs'
 import { setTimeout as delay } from 'node:timers/promises'
-import { readDaemonState, getDaemonLogPath, getDaemonLogDir, clearDaemonState, clearStaleDaemonState, readDaemonStartFailure, redactDaemonState, type DaemonState } from '../lib/daemonPaths'
+import { readDaemonState, getDaemonLogPath, getDaemonLogDir, clearDaemonState, clearDaemonStartFailure, clearStaleDaemonState, readDaemonStartFailure, redactDaemonState, daemonOrigin, type DaemonState, type DaemonStartFailure } from '../lib/daemonPaths'
 import { resolveTrustedExecutable } from '../lib/executablePath'
 import { resolveAppConfigDir, ensureSecureDir } from '../lib/appConfigDir'
 import { rotateDaemonLog } from '../lib/daemonLog'
@@ -10,6 +10,7 @@ import { isDevStackRunning } from '../lib/devStack'
 import { LOOPTROOP_OPENCODE_LOGS_ENV } from '@shared/opencodeLogMode'
 import { clearLockOwnedBy, releaseStaleLock } from '../lib/daemonLock'
 import { matchProcess, readProcessStartToken } from '../lib/processIdentity'
+import { captureProcessGroup, hasCapturedProcessGroupMember, refreshProcessGroup, terminateCapturedProcessGroupAfterLeaderExit, type ProcessGroupSnapshot } from '../lib/processTree'
 import { daemonArgv } from './daemonHandoff'
 import { isProcessAlive, killProcessTree, signalTermination, waitForExit } from './processControl'
 import { getErrorMessage } from '@shared/typeGuards'
@@ -18,8 +19,9 @@ import { getErrorMessage } from '@shared/typeGuards'
 const READY_TIMEOUT_MS = 60_000
 
 /**
- * Budget for each rung of the stop escalation. Every rung is bounded, so a
- * daemon that ignores all of them still returns control to the shell.
+ * Budget for each rung of the stop escalation. Unanswered daemons are bounded;
+ * an authenticated daemon that reports incomplete owned-process cleanup keeps
+ * its records for a later retry instead of entering this escalation.
  */
 export interface StopBudgets {
   /** Waiting on the daemon's own graceful shutdown. */
@@ -84,18 +86,19 @@ export async function probeRecordedDaemon(configDir?: string): Promise<DaemonPro
   if (!isProcessAlive(state.pid)) return { kind: 'not-running' }
 
   try {
-    const response = await fetch(`http://${state.host}:${state.port}/api/health`, {
+    const response = await fetch(`${daemonOrigin(state.host, state.port)}/api/health`, {
       signal: AbortSignal.timeout(HEALTH_PROBE_MS),
     })
     if (response.ok) {
       const body = await response.json() as { instanceId?: unknown }
-      // An older daemon reports no id at all; a different one reports its own.
-      // Only a mismatch is disqualifying.
-      if (typeof body.instanceId === 'string' && body.instanceId !== state.instanceId) {
+      // A successful response from an unrelated local service is not proof that
+      // the recorded daemon answered. Requiring the id also keeps bootstrap and
+      // shutdown credentials away from whatever happens to own the port.
+      if (body.instanceId !== state.instanceId) {
         return {
           kind: 'different',
           state,
-          reason: 'the daemon answering on that port reports a different instance',
+          reason: 'the daemon answering on that port did not report the recorded instance',
         }
       }
       return { kind: 'running', state }
@@ -146,7 +149,7 @@ export interface BootstrapLink {
  * whether a browser ever spent it; see `waitForSignIn`.
  */
 export async function mintBootstrapUrl(state: DaemonState): Promise<BootstrapLink | null> {
-  const origin = `http://${state.host}:${state.port}`
+  const origin = daemonOrigin(state.host, state.port)
   try {
     const response = await fetch(`${origin}/api/auth/bootstrap`, {
       method: 'POST',
@@ -171,6 +174,11 @@ interface LaunchedDaemon {
   logPath: string
 }
 
+interface AlreadyRunningDaemon {
+  alreadyRunning: true
+  state: DaemonState
+}
+
 /**
  * Spawns the daemon and waits for it to report ready, printing nothing on
  * success.
@@ -184,7 +192,7 @@ interface LaunchedDaemon {
  * Returns null when the daemon did not come up; the caller only has to choose
  * an exit code.
  */
-async function launchDaemon(configDir: string, options: CliOptions): Promise<LaunchedDaemon | null> {
+async function launchDaemon(configDir: string, options: CliOptions): Promise<LaunchedDaemon | AlreadyRunningDaemon | null> {
   ensureSecureDir(getDaemonLogDir(configDir))
   // Rotated here rather than while the daemon runs: it holds an append handle
   // for its whole lifetime, and renaming underneath that handle would either
@@ -210,8 +218,13 @@ async function launchDaemon(configDir: string, options: CliOptions): Promise<Lau
   // else", and by then there is nothing else left that can tell them apart.
   const childToken = readProcessStartToken(child.pid ?? 0)
 
-  const state = await waitForReady(configDir, child.pid ?? 0)
-  if (!state) {
+  const ready = await waitForReady(configDir, child.pid ?? 0, childToken, child)
+  if (ready.kind === 'other-instance') {
+    const abandoned = await abandonFailedStart(configDir, child, childToken)
+    if (abandoned !== null) process.stderr.write(`\n${abandoned}\n`)
+    return { alreadyRunning: true, state: ready.state }
+  }
+  if (ready.kind !== 'ready') {
     // A start that timed out leaves a real process running: it holds the daemon
     // lock, and it may still finish booting seconds after the CLI reported
     // failure — at which point there is a daemon nobody was told about, on a
@@ -232,7 +245,7 @@ async function launchDaemon(configDir: string, options: CliOptions): Promise<Lau
     return null
   }
 
-  return { state, logPath }
+  return { state: ready.state, logPath }
 }
 
 export async function startCommand(options: CliOptions = {}): Promise<number> {
@@ -240,7 +253,7 @@ export async function startCommand(options: CliOptions = {}): Promise<number> {
   const existing = await probeRecordedDaemon(configDir)
   if (existing.kind === 'running') {
     process.stdout.write(
-      `LoopTroop is already running on http://${existing.state.host}:${existing.state.port} ` +
+      `LoopTroop is already running on ${daemonOrigin(existing.state.host, existing.state.port)} ` +
       `(pid ${existing.state.pid}).\n` +
       'Run `looptroop open` for a signed-in link.\n',
     )
@@ -253,11 +266,29 @@ export async function startCommand(options: CliOptions = {}): Promise<number> {
   // here names the actual situation instead of reporting a refused start.
   if (existing.kind === 'not-answering' || existing.kind === 'unverifiable') {
     process.stderr.write(
-      `LoopTroop is already running on http://${existing.state.host}:${existing.state.port} ` +
+      `LoopTroop is already running on ${daemonOrigin(existing.state.host, existing.state.port)} ` +
       `(pid ${existing.state.pid}) but is not answering` +
       `${existing.kind === 'unverifiable' ? `, and ${existing.reason}` : ''}. ` +
       'Nothing was started. Run `looptroop stop` and try again, or `looptroop doctor` to see ' +
       'what that process is.\n',
+    )
+    return 1
+  }
+
+  const pendingStart = readDaemonStartFailure(configDir)
+  if (pendingStart?.reason === 'startup-cleanup-incomplete') {
+    process.stderr.write(
+      `LoopTroop cannot start while its previous startup still owns OpenCode at ${pendingStart.openCode.baseUrl} `
+      + `(pid ${pendingStart.openCode.pid}). Run \`looptroop stop\` and retry.\n`,
+    )
+    return 1
+  }
+
+  const pendingShutdown = readDaemonState(configDir)
+  if (pendingShutdown?.shutdownPending) {
+    process.stderr.write(
+      `LoopTroop cannot start while the previous daemon shutdown is still incomplete (pid ${pendingShutdown.pid}). `
+      + 'Run `looptroop stop` again when its control plane is reachable.\n',
     )
     return 1
   }
@@ -274,6 +305,15 @@ export async function startCommand(options: CliOptions = {}): Promise<number> {
 
   const launched = await launchDaemon(configDir, options)
   if (!launched) return 1
+  if ('alreadyRunning' in launched) {
+    process.stdout.write(
+      `LoopTroop is already running on ${daemonOrigin(launched.state.host, launched.state.port)} ` +
+      `(pid ${launched.state.pid}).\n` +
+      'Run `looptroop open` for a signed-in link.\n',
+    )
+    if (options.opencodeLogs === 'all') writeAllLogsRequiresRestart()
+    return 0
+  }
   const { state, logPath } = launched
 
   // Without a nonce the browser has no credential and every request 401s, so
@@ -282,7 +322,7 @@ export async function startCommand(options: CliOptions = {}): Promise<number> {
 
   process.stdout.write(
     'LoopTroop is running in the background.\n' +
-    `  URL:   ${bootstrapUrl?.url ?? `http://${state.host}:${state.port}`}\n` +
+    `  URL:   ${bootstrapUrl?.url ?? daemonOrigin(state.host, state.port)}\n` +
     `  PID:   ${state.pid}\n` +
     `  Logs:  ${logPath}\n` +
     '  Follow: looptroop logs --follow\n' +
@@ -308,7 +348,7 @@ export async function startCommand(options: CliOptions = {}): Promise<number> {
  */
 async function hintFirstRun(state: DaemonState): Promise<void> {
   try {
-    const response = await fetch(`http://${state.host}:${state.port}/api/projects`, {
+    const response = await fetch(`${daemonOrigin(state.host, state.port)}/api/projects`, {
       headers: { Authorization: `Bearer ${state.apiToken}` },
       signal: AbortSignal.timeout(2_000),
     })
@@ -331,9 +371,9 @@ async function hintFirstRun(state: DaemonState): Promise<void> {
 /**
  * Ends a daemon that never reported ready, and removes only what it left.
  *
- * `waitForReady` returning null means one of two very different things. The
- * child may already be gone, which is the ordinary failed start and needs no
- * termination. Or it may still be running — booting slowly, wedged on a
+ * A non-ready `waitForReady` result means one of two very different things.
+ * The child may already be gone, which is the ordinary failed start and needs
+ * no termination. Or it may still be running — booting slowly, wedged on a
  * database, stuck opening a port — in which case the CLI is about to tell the
  * user that nothing started while a process holding the daemon lock says
  * otherwise. That one has to be ended here, because after this function returns
@@ -341,9 +381,9 @@ async function hintFirstRun(state: DaemonState): Promise<void> {
  *
  * Identity is re-checked against the token taken at spawn before anything is
  * signalled. The pid may have been released and reissued during the timeout, and
- * a start that failed is no licence to kill a stranger's process. Where identity
- * cannot be established the process is left alone and the user is told what to
- * look at, which is worse than cleaning up and much better than the alternative.
+ * a start that failed is no licence to kill a stranger's process. If the token
+ * is unavailable, only the still-live direct-child handle can prove ownership;
+ * otherwise the process is left alone and the user is told what to look at.
  *
  * Returns a line to show the user, or null when there was nothing to clean up.
  */
@@ -353,7 +393,45 @@ export async function abandonFailedStart(
   childToken: string | null,
 ): Promise<string | null> {
   const pid = child.pid
-  if (pid === undefined || pid <= 0 || !isProcessAlive(pid)) return null
+  if (pid === undefined || pid <= 0) return null
+
+  // A live ChildProcess handle is proof of this invocation's direct child even
+  // when the platform could not provide a start token. Use that proof for the
+  // bounded cleanup; the numeric-pid tree helpers remain token-gated.
+  const directChildIsLive = child.pid === pid
+    && child.exitCode === null
+    && child.signalCode === null
+    && typeof child.kill === 'function'
+  if (childToken === null && directChildIsLive) {
+    try { child.kill('SIGTERM') } catch { /* fall through to force */ }
+    if (await waitForChildExit(child, DEFAULT_STOP_BUDGETS.signalMs)) {
+      clearFailedStartArtifacts(configDir, pid, childToken)
+      return `Stopped the daemon that never finished starting (pid ${pid}).`
+    }
+
+    try { child.kill('SIGKILL') } catch { /* report below if it survives */ }
+    if (await waitForChildExit(child, DEFAULT_STOP_BUDGETS.forceMs)) {
+      clearFailedStartArtifacts(configDir, pid, childToken)
+      return `Stopped the daemon that never finished starting (pid ${pid}).`
+    }
+    return `A daemon that never finished starting (pid ${pid}) could not be stopped. ` +
+      'It may still hold the single-instance lock.'
+  }
+
+  // A completed direct handle is also enough to know this invocation's child
+  // is gone. Avoid a numeric liveness probe for tokenless handles: on Windows
+  // that probe is an unnecessary native query, and a test seam may carry an
+  // invented pid that must never reach it.
+  if (childToken === null && child.pid === pid
+    && (child.exitCode !== null || child.signalCode !== null)) {
+    clearFailedStartArtifacts(configDir, pid, childToken)
+    return null
+  }
+
+  if (!isProcessAlive(pid)) {
+    clearFailedStartArtifacts(configDir, pid, childToken)
+    return null
+  }
 
   const match = matchProcess(pid, childToken ?? undefined)
   if (match.kind === 'different') return null
@@ -365,8 +443,20 @@ export async function abandonFailedStart(
   // Same escalation as `stop`, and bounded for the same reason: a start that
   // already failed must not also hang. The tree, not the pid — the daemon may
   // have spawned an OpenCode of its own before it wedged.
-  if (!(signalTermination(pid) && await waitForExit(pid, DEFAULT_STOP_BUDGETS.signalMs))) {
-    await killProcessTree(pid)
+  if (matchProcess(pid, childToken ?? undefined).kind !== 'same') {
+    clearFailedStartArtifacts(configDir, pid, childToken)
+    return null
+  }
+
+  if (!(signalTermination(pid, childToken) && await waitForExit(pid, DEFAULT_STOP_BUDGETS.signalMs))) {
+    // The grace period is long enough for this pid to be released and reused.
+    // Recheck before the forceful signal so a losing start cannot kill the
+    // daemon that won the lock after it.
+    if (matchProcess(pid, childToken ?? undefined).kind !== 'same') {
+      clearFailedStartArtifacts(configDir, pid, childToken)
+      return null
+    }
+    await killProcessTree(pid, childToken)
     if (!await waitForExit(pid, DEFAULT_STOP_BUDGETS.forceMs)) {
       return `A daemon that never finished starting (pid ${pid}) could not be stopped. ` +
         'It may still hold the single-instance lock.'
@@ -376,15 +466,36 @@ export async function abandonFailedStart(
   // Scoped to this pid and this instance, so a daemon that started in the
   // meantime keeps both. `clearLockOwnedBy` re-checks identity itself, and by
   // now the process is gone, which is the case it is written for.
-  clearLockOwnedBy(pid, configDir)
-  // A state file naming somebody else is somebody else's: two `start` calls can
-  // race, and the one that succeeded must not have its record deleted by the one
-  // that timed out. A recorded start failure is kept by clearStaleDaemonState
-  // itself, since it is the only account of why there is no daemon.
-  const recorded = readDaemonState(configDir)
-  if (recorded === null || recorded.pid === pid) clearStaleDaemonState(configDir)
+  clearFailedStartArtifacts(configDir, pid, childToken)
 
   return `Stopped the daemon that never finished starting (pid ${pid}).`
+}
+
+async function waitForChildExit(child: ChildProcess, timeoutMs: number): Promise<boolean> {
+  const deadline = Date.now() + timeoutMs
+  const exited = () => child.exitCode !== null || child.signalCode !== null
+  while (Date.now() < deadline) {
+    if (exited()) return true
+    await delay(100)
+  }
+  return exited()
+}
+
+/** Clears only artifacts that still name the failed child generation. */
+function clearFailedStartArtifacts(configDir: string, pid: number, childToken: string | null): void {
+  clearLockOwnedBy(pid, configDir)
+  if (childToken === null) {
+    // The direct child handle proves this generation, but a tokenless state
+    // record cannot be cleared by matching identity. Limit stale-state cleanup
+    // to the same pid and let the state writer's lock/recheck serialize it.
+    if (readDaemonState(configDir)?.pid === pid) clearStaleDaemonState(configDir)
+    return
+  }
+
+  const recorded = readDaemonState(configDir)
+  if (recorded?.pid === pid && recorded.startToken === childToken) {
+    clearDaemonState(recorded.instanceId, configDir)
+  }
 }
 
 /**
@@ -392,17 +503,61 @@ export async function abandonFailedStart(
  * serving. Also watches the child, so a start that dies immediately fails fast
  * instead of waiting out the full timeout.
  */
-async function waitForReady(configDir: string, childPid: number): Promise<DaemonState | null> {
+export type WaitForReadyResult =
+  | { kind: 'ready'; state: DaemonState }
+  | { kind: 'other-instance'; state: DaemonState }
+  | { kind: 'unverifiable'; state: DaemonState }
+  | { kind: 'not-ready' }
+
+/** Token-aware wait used by `start`; it does not adopt a concurrent launch. */
+export async function waitForReady(
+  configDir: string,
+  childPid: number,
+  childToken: string | null,
+  child?: ChildProcess,
+): Promise<WaitForReadyResult> {
   const deadline = Date.now() + READY_TIMEOUT_MS
 
   while (Date.now() < deadline) {
     const state = await readRunningDaemon(configDir)
-    if (state) return state
-    if (childPid > 0 && !isProcessAlive(childPid)) return null
+    // A different start can publish its ready state while this child is still
+    // waiting for the single-instance lock. The pid alone is not enough: a
+    // recycled pid could make the loser adopt the winner's state. Only a
+    // token captured at this spawn boundary proves this launch owns the
+    // record; when that probe is unavailable, the live direct-child handle is
+    // the narrower proof used below.
+    if (state) {
+      if (state.pid === childPid) {
+        // Windows can briefly fail the PowerShell/CIM start-time probe. The
+        // ChildProcess handle is still a direct ownership proof while that
+        // child is live, so a state written by it is safe to accept without a
+        // token. This branch is intentionally unavailable to callers that only
+        // have a numeric pid; an exited handle cannot prove a recycled pid.
+        if (childToken === null) {
+          const directChildIsLive = child?.pid === childPid
+            && child.exitCode === null
+            && child.signalCode === null
+          if (directChildIsLive) return { kind: 'ready', state }
+          return { kind: 'unverifiable', state }
+        }
+        // The daemon can publish before its own identity probe succeeds. A
+        // live direct-child handle still proves this invocation owns the
+        // record, but only when the record did not claim a conflicting token.
+        if (state.startToken === childToken
+          || (state.startToken === undefined
+            && child?.pid === childPid
+            && child.exitCode === null
+            && child.signalCode === null)) {
+          return { kind: 'ready', state }
+        }
+      }
+      return { kind: 'other-instance', state }
+    }
+    if (childPid > 0 && !isProcessAlive(childPid)) return { kind: 'not-ready' }
     await delay(150)
   }
 
-  return null
+  return { kind: 'not-ready' }
 }
 
 async function tailLog(logPath: string, lines: number): Promise<string> {
@@ -418,6 +573,8 @@ async function tailLog(logPath: string, lines: number): Promise<string> {
 export type StopOutcome =
   | { kind: 'not-running' }
   | { kind: 'stopped'; forced: boolean }
+  /** The daemon accepted shutdown but retained ownership for a retry. */
+  | { kind: 'incomplete'; pid: number; context?: 'daemon' | 'startup' | 'shutdown-pending' }
   | { kind: 'failed'; pid: number }
   /** The pid is alive but is no longer the daemon, so nothing was signalled. */
   | { kind: 'not-ours'; pid: number; reason: string }
@@ -439,54 +596,222 @@ function stillTheDaemon(state: DaemonState): 'gone' | 'ours' | { reason: string 
   const match = matchProcess(state.pid, state.startToken)
   if (match.kind === 'same') return 'ours'
   if (match.kind === 'different') return { reason: 'the pid now belongs to a different process' }
-  // Older daemons recorded no token. Reaching here at all means the daemon
-  // answered over HTTP when this call began — a tokenless record that never
-  // answered is stopped by nobody, because `probeRecordedDaemon` reports it as
-  // `unverifiable` and the escalation is never entered. Refusing these as well
-  // would leave no way to stop an old daemon that is working perfectly.
-  return state.startToken === undefined ? 'ours' : { reason: match.reason }
+  // A tokenless record cannot prove that this live pid is the daemon. HTTP may
+  // have answered earlier in the run, but that is not durable process identity;
+  // refuse the destructive fallback once the daemon stops answering.
+  return { reason: match.reason }
 }
 
 /**
- * Asks the daemon to shut itself down, and escalates only as far as it must.
+ * Finishes a startup that exited while its owned OpenCode child was still
+ * live. The record carries a start token, so a later CLI can prove the child
+ * before signalling it; a missing token is preserved rather than guessed.
+ */
+async function stopIncompleteStart(
+  failure: Extract<DaemonStartFailure, { reason: 'startup-cleanup-incomplete' }>,
+  configDir: string,
+): Promise<StopOutcome> {
+  const { pid, startToken } = failure.openCode
+  const groupGone = (targetPid: number): boolean => {
+    if (process.platform === 'win32') return false
+    try {
+      process.kill(-targetPid, 0)
+      return false
+    } catch (error) {
+      return (error as NodeJS.ErrnoException).code === 'ESRCH'
+    }
+  }
+  const treeGone = (snapshot: ProcessGroupSnapshot | null, windowsTreeProven = false): boolean => {
+    if (isProcessAlive(pid)) return false
+    if (process.platform === 'win32') return windowsTreeProven
+    if (snapshot !== null && hasCapturedProcessGroupMember(snapshot)) return false
+    // A detached POSIX child uses its own pid as the group id. ESRCH is the
+    // only proof that no member remains; leader exit alone is not enough.
+    return groupGone(pid)
+  }
+  const clearIfProven = (snapshot: ProcessGroupSnapshot | null, forced: boolean, windowsTreeProven = false): StopOutcome | null => {
+    if (!treeGone(snapshot, windowsTreeProven)) return null
+    return clearDaemonStartFailure(failure, configDir)
+      ? { kind: 'stopped', forced }
+      : { kind: 'incomplete', pid, context: 'startup' }
+  }
+
+  if (startToken === undefined) {
+    // A tokenless record has no durable proof once the original ChildProcess
+    // handle is gone. Keep it blocked even when the numeric leader disappeared.
+    return { kind: 'incomplete', pid, context: 'startup' }
+  }
+
+  if (!isProcessAlive(pid)) return clearIfProven(null, false) ?? { kind: 'incomplete', pid, context: 'startup' }
+
+  const match = matchProcess(pid, startToken)
+  if (match.kind !== 'same') {
+    // A recycled or unverifiable leader is never a reason to discard detached
+    // descendants. Leave the retained record until a safe group-absence probe.
+    return { kind: 'incomplete', pid, context: 'startup' }
+  }
+
+  // Capture the detached Linux group while the token-proven leader is live;
+  // refresh it immediately before escalation to include late descendants.
+  let snapshot = process.platform === 'linux'
+    ? captureProcessGroup(pid, 'linux', startToken)
+    : null
+
+  if (signalTermination(pid, startToken) && await waitForExit(pid, DEFAULT_STOP_BUDGETS.signalMs)) {
+    const settled = clearIfProven(snapshot, false)
+    if (settled !== null) return settled
+  }
+
+  if (snapshot !== null && isProcessAlive(pid) && matchProcess(pid, startToken).kind === 'same') {
+    snapshot = refreshProcessGroup(snapshot)
+  }
+
+  // This is an explicitly requested cleanup of a token-proven child from a
+  // failed startup, not the accepted-but-incomplete live-daemon shutdown path.
+  // The token is checked again inside killProcessTree before it can signal.
+  const killed = await killProcessTree(pid, startToken)
+  if (!await waitForExit(pid, DEFAULT_STOP_BUDGETS.forceMs)) {
+    return { kind: 'incomplete', pid, context: 'startup' }
+  }
+
+  // If the leader exited before the force call, use only the captured Linux
+  // group provenance; never recreate ownership from the old numeric pid.
+  if (snapshot !== null && hasCapturedProcessGroupMember(snapshot)) {
+    terminateCapturedProcessGroupAfterLeaderExit(snapshot, 'SIGKILL')
+  }
+  return clearIfProven(snapshot, killed, killed) ?? { kind: 'incomplete', pid, context: 'startup' }
+}
+
+/**
+ * Asks the daemon to shut itself down, escalating only when that request was
+ * not accepted. An accepted request that cannot prove completion is returned
+ * as retryable incomplete so its ownership boundary is not destroyed.
  *
  * The HTTP request is first because it is the only rung that works everywhere:
- * it reaches the daemon's own graceful path, which closes the server, stops an
- * OpenCode it owns and releases the lock, and Windows has no SIGTERM to fall
- * back on. Each later rung is bounded, so an unresponsive daemon still ends, and
- * each is preceded by a fresh identity check because a pid freed by the previous
- * rung can be reissued before the next one runs.
+ * it reaches the daemon's own graceful path, which stops an OpenCode it owns
+ * and releases the lock only after that is proven. Each fallback rung is
+ * bounded and preceded by a fresh identity check because a pid freed by the
+ * previous rung can be reissued before the next one runs.
  */
 export async function stopRunningDaemon(
   state: DaemonState,
   options: { configDir?: string; budgets?: StopBudgets } = {},
 ): Promise<StopOutcome> {
   const budgets = options.budgets ?? DEFAULT_STOP_BUDGETS
+  const hasFreshPendingRecord = (): boolean => {
+    const fresh = readDaemonState(options.configDir)
+    return fresh?.instanceId === state.instanceId && fresh.shutdownPending === true
+  }
 
   const accepted = await requestShutdown(state)
-  if (accepted && await waitForExit(state.pid, budgets.gracefulMs)) {
-    return finishStop(state, options.configDir, false)
+  if (accepted) {
+    if (await waitForExit(state.pid, budgets.gracefulMs)) {
+      // A close can have dropped the listener after marking this generation
+      // pending but before its owned Git/process cleanup finished. Leader exit
+      // alone is not proof that those descendants are gone, so preserve the
+      // retry boundary instead of clearing the records here.
+      const fresh = readDaemonState(options.configDir)
+      if (fresh?.instanceId === state.instanceId && fresh.shutdownPending) {
+        return { kind: 'incomplete', pid: state.pid, context: 'shutdown-pending' }
+      }
+      // A successful in-process retry clears daemon.json itself. Do not let a
+      // stale input snapshot turn that success back into an incomplete result.
+      if (state.shutdownPending && fresh === null) return { kind: 'stopped', forced: false }
+      return finishStop(state, options.configDir, false)
+    }
+    // The daemon acknowledged the authenticated request and is still alive.
+    // Its supervisor may be retaining an OpenCode child deliberately; do not
+    // escalate to a blind SIGKILL or clear the records that make retry safe.
+    const fresh = readDaemonState(options.configDir)
+    const shutdownPending = fresh?.instanceId === state.instanceId
+      ? fresh.shutdownPending === true
+      : state.shutdownPending === true
+    return shutdownPending
+      ? { kind: 'incomplete', pid: state.pid, context: 'shutdown-pending' }
+      : { kind: 'incomplete', pid: state.pid }
+  }
+
+  const freshAfterFailedRequest = readDaemonState(options.configDir)
+  const shutdownPending = freshAfterFailedRequest?.instanceId === state.instanceId
+    ? freshAfterFailedRequest.shutdownPending === true
+    : state.shutdownPending === true
+  if (shutdownPending) {
+    // This generation already began an in-process shutdown. Once its listener
+    // is gone, force escalation would destroy the only retry boundary. POSIX
+    // can give the daemon's own signal handler one bounded retry when its
+    // recorded identity still matches; Windows has no graceful signal, so it
+    // remains incomplete until the authenticated control plane is reachable.
+    if (process.platform !== 'win32') {
+      const identity = stillTheDaemon(state)
+      if (identity === 'ours') {
+        const signalled = signalTermination(state.pid, state.startToken ?? null)
+        if (signalled && await waitForExit(state.pid, budgets.signalMs)) {
+          // Only the daemon itself can clear this record after proving its
+          // complete runtime drain. A vanished leader is not enough here.
+          if (readDaemonState(options.configDir)?.instanceId !== state.instanceId) {
+            return { kind: 'stopped', forced: false }
+          }
+        }
+      } else if (identity !== 'gone') {
+        return { kind: 'not-ours', pid: state.pid, reason: identity.reason }
+      }
+    }
+    return { kind: 'incomplete', pid: state.pid, context: 'shutdown-pending' }
   }
 
   const beforeSignal = stillTheDaemon(state)
-  if (beforeSignal === 'gone') return finishStop(state, options.configDir, false)
+  if (beforeSignal === 'gone') {
+    return hasFreshPendingRecord()
+      ? { kind: 'incomplete', pid: state.pid, context: 'shutdown-pending' }
+      : finishStop(state, options.configDir, false)
+  }
   if (beforeSignal !== 'ours') {
     return { kind: 'not-ours', pid: state.pid, reason: beforeSignal.reason }
   }
 
-  if (signalTermination(state.pid) && await waitForExit(state.pid, budgets.signalMs)) {
-    return finishStop(state, options.configDir, false)
+  const expectedStartToken = state.startToken ?? null
+  if (signalTermination(state.pid, expectedStartToken) && await waitForExit(state.pid, budgets.signalMs)) {
+    return hasFreshPendingRecord()
+      ? { kind: 'incomplete', pid: state.pid, context: 'shutdown-pending' }
+      : finishStop(state, options.configDir, false)
   }
 
   const beforeKill = stillTheDaemon(state)
-  if (beforeKill === 'gone') return finishStop(state, options.configDir, false)
+  if (beforeKill === 'gone') {
+    return hasFreshPendingRecord()
+      ? { kind: 'incomplete', pid: state.pid, context: 'shutdown-pending' }
+      : finishStop(state, options.configDir, false)
+  }
   if (beforeKill !== 'ours') {
     return { kind: 'not-ours', pid: state.pid, reason: beforeKill.reason }
   }
 
-  await killProcessTree(state.pid)
+  // SIGTERM may have reached the daemon just after the earlier state read;
+  // re-read immediately before the destructive rung so its new shutdown
+  // boundary wins over this CLI's old escalation plan.
+  // Yield once so a same-process embedder can publish that boundary after a
+  // synchronous identity probe (the normal daemon publishes from another
+  // process, but the ordering guarantee is the same).
+  await new Promise<void>((resolve) => setImmediate(resolve))
+  const pendingBeforeForce = readDaemonState(options.configDir)
+  if (pendingBeforeForce?.instanceId === state.instanceId && pendingBeforeForce.shutdownPending) {
+    return { kind: 'incomplete', pid: state.pid, context: 'shutdown-pending' }
+  }
+
+  const killed = await killProcessTree(state.pid, expectedStartToken)
+  if (!killed) {
+    // A leader can disappear while a Windows taskkill request fails or times
+    // out. Its absence is not proof that the descendant tree is gone, so keep
+    // the ownership records for a retry instead of clearing them here.
+    return { kind: 'incomplete', pid: state.pid }
+  }
   if (!await waitForExit(state.pid, budgets.forceMs)) {
-    return { kind: 'failed', pid: state.pid }
+    return { kind: 'incomplete', pid: state.pid }
+  }
+
+  const pendingAfterForce = readDaemonState(options.configDir)
+  if (pendingAfterForce?.instanceId === state.instanceId && pendingAfterForce.shutdownPending) {
+    return { kind: 'incomplete', pid: state.pid, context: 'shutdown-pending' }
   }
 
   return finishStop(state, options.configDir, true)
@@ -515,7 +840,7 @@ function finishStop(state: DaemonState, configDir: string | undefined, forced: b
 /** True when the daemon accepted the request; false for any failure to reach it. */
 async function requestShutdown(state: DaemonState): Promise<boolean> {
   try {
-    const response = await fetch(`http://${state.host}:${state.port}/api/daemon/shutdown`, {
+    const response = await fetch(`${daemonOrigin(state.host, state.port)}/api/daemon/shutdown`, {
       method: 'POST',
       headers: { Authorization: `Bearer ${state.apiToken}` },
       signal: AbortSignal.timeout(5_000),
@@ -528,6 +853,15 @@ async function requestShutdown(state: DaemonState): Promise<boolean> {
 
 export async function stopCommand(): Promise<number> {
   const configDir = resolveAppConfigDir()
+  const pendingShutdown = readDaemonState(configDir)
+  if (pendingShutdown?.shutdownPending) {
+    return reportStopOutcome(await stopRunningDaemon(pendingShutdown, { configDir }))
+  }
+  const pendingStart = readDaemonStartFailure(configDir)
+  if (pendingStart?.reason === 'startup-cleanup-incomplete') {
+    return reportStopOutcome(await stopIncompleteStart(pendingStart, configDir))
+  }
+  const recordedBeforeProbe = readDaemonState(configDir)
   const probe = await probeRecordedDaemon(configDir)
 
   // Alive, and provably still ours: stop it. That the health probe timed out
@@ -561,7 +895,9 @@ export async function stopCommand(): Promise<number> {
   // Clear debris so the next start is not blocked by a lock whose owner died.
   // A recorded start failure survives: `stop` is what someone runs after a
   // start that did not take, and it is the only account of why.
-  clearStaleDaemonState(configDir)
+  if (recordedBeforeProbe !== null) {
+    clearDaemonState(recordedBeforeProbe.instanceId, configDir)
+  }
   const lock = releaseStaleLock(configDir)
 
   if (lock.kind === 'held') {
@@ -594,6 +930,27 @@ export async function stopCommand(): Promise<number> {
 
 /** Turns the escalation's outcome into what the user sees and the shell reads. */
 function reportStopOutcome(outcome: StopOutcome): number {
+  if (outcome.kind === 'incomplete') {
+    if (outcome.context === 'startup') {
+      process.stderr.write(
+        `LoopTroop retained ownership of its previous startup (OpenCode pid ${outcome.pid}) `
+        + 'because that process was not proven stopped. Retry `looptroop stop`; no new daemon will start alongside it.\n',
+      )
+      return 1
+    }
+    if (outcome.context === 'shutdown-pending') {
+      process.stderr.write(
+        `LoopTroop is retrying a shutdown for pid ${outcome.pid}, but its runtime cleanup is still incomplete. `
+        + 'Ownership records were retained; retry `looptroop stop` when the daemon control plane is reachable again.\n',
+      )
+      return 1
+    }
+    process.stderr.write(
+      `LoopTroop (pid ${outcome.pid}) accepted the shutdown request but has not finished stopping. ` +
+      'Its ownership records were retained; retry `looptroop stop` after the owned process has settled.\n',
+    )
+    return 1
+  }
   if (outcome.kind === 'failed') {
     process.stderr.write(
       `LoopTroop (pid ${outcome.pid}) did not stop and could not be killed. ` +
@@ -652,6 +1009,8 @@ export async function statusCommand(json: boolean, update?: UpdateStatus): Promi
   const configDir = resolveAppConfigDir()
   const probe = await probeRecordedDaemon(configDir)
   const state = probe.kind === 'running' ? probe.state : null
+  const recorded = state === null ? readDaemonState(configDir) : null
+  const pendingShutdown = recorded?.shutdownPending === true ? recorded : null
   // Only meaningful when nothing is running: a live daemon overwrote the record
   // when it started, so anything still there describes an earlier attempt.
   const failure = state ? null : readDaemonStartFailure(configDir)
@@ -669,6 +1028,7 @@ export async function statusCommand(json: boolean, update?: UpdateStatus): Promi
       running: state !== null,
       daemon: state ? redactDaemonState(state) : null,
       notAnswering: unresponsive,
+      shutdownPending: pendingShutdown !== null,
       lastStartFailure: failure,
       ...(update === undefined ? {} : { update: summarizeUpdateStatus(update) }),
     }, null, 2)}\n`)
@@ -687,7 +1047,21 @@ export async function statusCommand(json: boolean, update?: UpdateStatus): Promi
   }
 
   if (!state) {
+    if (pendingShutdown !== null) {
+      process.stdout.write(
+        'LoopTroop is not running.\n\n' +
+        `A previous daemon shutdown retained ownership (pid ${pendingShutdown.pid}) but did not finish. ` +
+        'Run `looptroop stop` again before starting.\n',
+      )
+      return 1
+    }
     if (failure) {
+      if (failure.reason === 'startup-cleanup-incomplete') {
+        process.stdout.write('LoopTroop is not running.\n\n' +
+          `A previous startup still owns OpenCode at ${failure.openCode.baseUrl} (pid ${failure.openCode.pid}) `
+          + 'and was not proven stopped. Run `looptroop stop` before starting again.\n')
+        return 1
+      }
       process.stdout.write('LoopTroop is not running.\n\n' +
         `The last start was refused at ${failure.at}:\n${failure.message}\n\n` +
         'Run `looptroop doctor` to check whether that is still the case.\n')
@@ -709,7 +1083,7 @@ export async function statusCommand(json: boolean, update?: UpdateStatus): Promi
   const uptimeMs = Date.now() - Date.parse(state.startedAt)
   process.stdout.write(
     'LoopTroop is running.\n' +
-    `  URL:      http://${state.host}:${state.port}\n` +
+    `  URL:      ${daemonOrigin(state.host, state.port)}\n` +
     `  PID:      ${state.pid}\n` +
     `  Version:  ${state.version}\n` +
     `  Uptime:   ${formatDuration(uptimeMs)}\n` +
@@ -871,7 +1245,7 @@ const SIGN_IN_WAIT_MS = 8_000
  * sign-in link solves.
  */
 async function waitForSignIn(state: DaemonState, nonce: string, waitMs: number): Promise<boolean> {
-  const origin = `http://${state.host}:${state.port}`
+  const origin = daemonOrigin(state.host, state.port)
   const deadline = Date.now() + waitMs
 
   while (Date.now() < deadline) {
@@ -952,7 +1326,7 @@ export async function openCommand(options: OpenOptions = {}): Promise<number> {
   } else if (await waitForSignIn(state, link.nonce, options.waitMs ?? SIGN_IN_WAIT_MS)) {
     // The origin, not the URL: the nonce belongs in the browser, not in a
     // terminal scrollback or a shell history file.
-    process.stdout.write(`Opened http://${state.host}:${state.port}\n`)
+    process.stdout.write(`Opened ${daemonOrigin(state.host, state.port)}\n`)
   } else {
     // A browser was launched and never arrived. It happens on a machine with no
     // default browser, over SSH, in WSL, and in a fresh VM whose browser is

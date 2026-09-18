@@ -71,6 +71,25 @@ looptroop open
 `open` starts LoopTroop in the background if it is not already running. Use
 `looptroop start` if you want the service without a browser.
 
+For maintenance, `clean --apply` rechecks each abandoned worktree immediately
+before removal and keeps it when ownership, activity, registration, or Git
+state has changed. If Git cannot list registered worktrees, cleanup keeps the
+directories in place, including when that check fails after the preview.
+Both CLI cleanup and **Free Disk Space** keep worktrees containing ignored
+files such as `.env`, dependency folders, or build output, except LoopTroop's
+own runtime files. Explicit ticket and project deletion remains destructive.
+Process cleanup refuses a signal when the recorded process
+identity is missing, recycled, or otherwise unverifiable. See the
+[CLI Reference](https://www.looptroop.ovh/docs/cli) for service commands.
+
+When `start` launches a daemon itself, it can still accept that live direct
+child if Windows temporarily cannot report its start time. A persisted record
+without a verifiable identity is never adopted or signalled by PID alone.
+Health checks must return the recorded instance ID. Failed starts can stop
+their own live child through the retained process handle, even when the
+start-time probe is unavailable. Log follow watches the containing directory
+so rename-and-create rotation resumes at the start of the replacement file.
+
 Then configure your settings and models (from providers already added in
 OpenCode), attach a local repository with a GitHub origin, create a ticket, and
 start it.
@@ -334,21 +353,58 @@ Bead approval preserves unknown stored statuses for JSONL repair instead of sile
 
 ### Execution & Ralph-style recovery
 
-The actual implementation is carried out by an AI coding agent (OpenCode) running in an isolated workspace. If the agent struggles, continuing the same conversation can make things worse. LoopTroop's retry mechanism (the "Ralph Loop") preserves a highly compact error trace from the failure, resets the worktree, discards the contaminated session, and begins a fresh run with clean context-plus a note from previous failures.
+The actual implementation is carried out by an AI coding agent (OpenCode) running in an isolated workspace. If the agent struggles, continuing the same conversation can make things worse. LoopTroop's retry mechanism (the "Ralph Loop") preserves a highly compact error trace from the failure, attempts a safe worktree reset, discards the contaminated session, and begins a fresh run with clean context plus a note from previous failures. A conflicting OpenCode step-cap marker can refuse that destructive reset while preserving the edited config and sidecar; a later bead may continue without a fresh cap when no reset is needed.
 
 ```text
-fail ──> log failure trace ──> reset worktree ──> retry fresh
+fail ──> log failure trace ──> safe reset ──> retry fresh
 ```
 
 This cycle repeats until all tests pass or retry limits are reached. **This can take hours (sometimes 10+ hours) by design.** It is built to run unattended (e.g., overnight).
 
-If startup finds an orphan YAML or whole-file JSONL temp without its matching proof, including an empty JSONL temp, it warns and leaves the temp unpromoted for inspection. Recovery blocks startup only when an in-progress fallback's `.recovery` ownership or completeness cannot be verified; that typed diagnostic appears before projections, ticket hydration, or execution timers, with the affected files preserved. LoopTroop does not guess or silently promote an uncertain write.
+When `OpenCode Max Steps` is set, LoopTroop keeps the authoritative restore
+marker in its owner-only app configuration at
+`<app-config>/opencode-steps/<ticket-directory-hash>.json`, outside the mutable
+worktree. A ticket-side `opencode-steps-restore.json` is only a convenient copy
+for inspection. If the capped root `opencode.json` is edited, the edited bytes
+and authoritative marker stay in place and a destructive reset that would
+overwrite them is refused. Ordinary capped runs still retry normally; a later
+bead can continue without applying a fresh cap when no reset is needed, and
+valid marker evidence keeps the root config out of bead and final commits. A
+missing local copy does not erase valid external evidence. A missing marker
+after a restart provides no attributable restore operation, so LoopTroop does
+not infer ownership from the local copy or from absence; malformed existing
+authority likewise stays visible and is not overwritten.
+If a live retry loses that marker or cannot reapply the cap after a reset, the
+retry stops with the exact marker path and a manual remedy instead of running
+uncapped.
+Applying the cap does not add a common Git exclude rule.
+Filesystem-equivalent casing follows the actual worktree paths; native
+Windows/macOS equivalent-case behavior is not claimed here.
+
+Managed OpenCode shutdown keeps its direct process handle until the complete
+owned tree is proven gone. On Windows, a leader exit alone is not that proof:
+the `/T` taskkill operation must finish successfully as well, so failed or
+interrupted cleanup keeps the daemon ownership records available for retry.
+
+Protected Git-hook validation keeps its crash-recovery marker in LoopTroop's
+owner-only application data rather than inside the project, so a hook cannot
+delete the only record needed to undo its changes. Recovery compares the
+current tracked and staged state with that marker before restoring anything;
+new or edited files remain untouched until the ambiguity is resolved.
+
+If startup finds an orphan YAML or whole-file JSONL temp without its matching
+proof, including an empty JSONL temp, it warns and leaves the temp unpromoted
+for inspection. Recovery blocks startup only when an in-progress fallback's
+`.recovery` ownership or completeness cannot be verified; that typed diagnostic
+appears before projections, ticket hydration, or execution timers, with the
+affected files preserved. LoopTroop does not guess or silently promote an
+uncertain write.
 
 Read more: [Beads & Execution](https://www.looptroop.ovh/docs/beads)
 
 ### Worktree isolation
 
-LoopTroop runs execution steps inside isolated Git worktrees rather than modifying your active branch. This keeps your working copy clean and ensures reliable, inspectable diffs. Git mutations and resets have bounded process cleanup, unusual filenames stay intact when diffs are read, and generated runtime files stay out of candidate commits. Note that worktrees provide workspace isolation, not sandboxed host security.
+LoopTroop runs execution steps inside isolated Git worktrees rather than modifying your active branch. This keeps your working copy clean and ensures reliable, inspectable diffs. Git mutations and resets have bounded process cleanup, unusual filenames stay intact when diffs are read, and generated runtime files stay out of candidate commits. Protected Git-hook validation uses an identity-bound restore marker for the worktree and index; invalid or escaped markers fail before recovery writes, and unknown untracked additions stay intact when attribution is unclear. Note that worktrees provide workspace isolation, not sandboxed host security.
 
 When cleanup is run in its conservative mode, LoopTroop asks Git for ignored
 untracked entries in a real worktree and preserves user files; only its own

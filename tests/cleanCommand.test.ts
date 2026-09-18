@@ -1,4 +1,4 @@
-import { describe, it, expect, afterEach, beforeEach } from 'vitest'
+import { describe, it, expect, afterEach, beforeEach, vi } from 'vitest'
 import { execFileSync, spawn, type ChildProcess } from 'node:child_process'
 import {
   existsSync,
@@ -16,12 +16,14 @@ import {
   cleanCommand,
   inspectOrphanedOpenCode,
   planWorktreeCleanup,
+  recheckWorktreeCleanupCandidate,
 } from '../server/cli/cleanCommand'
 import { initializeDatabase } from '../server/db/init'
 import { sqlite } from '../server/db/index'
 import { clearProjectDatabaseCache, getProjectDatabase } from '../server/db/project'
 import { projects, tickets } from '../server/db/schema'
 import { applyIgnoreMode } from '../server/git/repository'
+import * as commandRunner from '../server/git/runCommand'
 import { getDaemonStatePath, type DaemonState } from '../server/lib/daemonPaths'
 import { readProcessStartToken } from '../server/lib/processIdentity'
 import { normalizeFolderPath } from '../server/storage/paths'
@@ -57,6 +59,7 @@ describe('clean command', () => {
   })
 
   afterEach(() => {
+    vi.restoreAllMocks()
     for (const child of children.splice(0)) {
       try { child.kill('SIGKILL') } catch { /* already gone */ }
     }
@@ -88,11 +91,11 @@ describe('clean command', () => {
    * own ignore rules committed exactly as attaching a project writes them —
    * without those, `.ticket/` reads as untracked work in every worktree.
    */
-  function makeProject(): string {
+  function makeProject(rootLabel = 'project'): string {
     const remote = makeTempDir('remote')
     git(remote, ['init', '--bare', '--initial-branch=main'])
 
-    const root = makeTempDir('project')
+    const root = makeTempDir(rootLabel)
     git(root, ['init', '--initial-branch=main'])
     git(root, ['config', 'user.email', 'test@example.com'])
     git(root, ['config', 'user.name', 'Test'])
@@ -181,6 +184,14 @@ describe('clean command', () => {
     it('leaves a live registered worktree out of the plan entirely', () => {
       const project = makeProject()
       addWorktree(project, 'ticket-live')
+
+      expect(planFor(project)).toEqual([])
+    })
+
+    it.skipIf(process.platform === 'win32')('preserves registration when the project path contains a newline', () => {
+      const project = makeProject('project\nwith-newline')
+      const worktree = addWorktree(project, 'ticket-live')
+      git(worktree, ['push', '-u', 'origin', 'ticket-live'])
 
       expect(planFor(project)).toEqual([])
     })
@@ -342,6 +353,86 @@ describe('clean command', () => {
   })
 
   describe('applying the plan', () => {
+    it.each(['.env', 'node_modules/private/data'])('preserves ignored %s during preview and apply', async (ignoredPath) => {
+      const project = makeProject()
+      const attached = attach(project)
+      const worktree = addWorktree(project, 'ticket-ignored')
+      git(worktree, ['push', '-u', 'origin', 'ticket-ignored'])
+      finishTicket(project, attached, 'ticket-ignored')
+      writeFileSync(resolve(project, '.git', 'info', 'exclude'), '.env\nnode_modules/\n')
+      backdate(worktree)
+      const [candidate] = planFor(project, ['ticket-ignored'])
+      expect(candidate?.removable).toBe(true)
+
+      mkdirSync(resolve(worktree, ignoredPath, '..'), { recursive: true })
+      writeFileSync(resolve(worktree, ignoredPath), 'keep ignored contents\n')
+      backdate(worktree)
+      expect(recheckWorktreeCleanupCandidate(candidate!, ['ticket-ignored'])).toMatchObject({
+        removable: false,
+        reason: expect.stringContaining('ignored files'),
+      })
+      expect(planFor(project, ['ticket-ignored'])).toMatchObject([{ removable: false }])
+
+      const output = await runClean({ apply: true, configDir: makeTempDir('config') })
+      expect(output).toContain('ignored files')
+      expect(readFileSync(resolve(worktree, ignoredPath), 'utf8')).toBe('keep ignored contents\n')
+    })
+
+    it('does not inspect ignored project files when removing a runtime-only skeleton', async () => {
+      const project = makeProject()
+      attach(project)
+      writeFileSync(resolve(project, '.git', 'info', 'exclude'), '.env\n')
+      writeFileSync(resolve(project, '.env'), 'project-only secret\n')
+      const skeleton = addSkeleton(project, 'ticket-skeleton')
+      backdate(skeleton)
+
+      const output = await runClean({ apply: true, configDir: makeTempDir('config') })
+      expect(output).toContain('Removed 1 worktree(s)')
+      expect(existsSync(skeleton)).toBe(false)
+      expect(readFileSync(resolve(project, '.env'), 'utf8')).toBe('project-only secret\n')
+    })
+
+    it.each([0, 1])('keeps worktrees when Git enumeration fails after %i successful listings', async (successfulListings) => {
+      const project = makeProject()
+      const attached = attach(project)
+      const worktree = addWorktree(project, 'ticket-finished')
+      git(worktree, ['push', '-u', 'origin', 'ticket-finished'])
+      finishTicket(project, attached, 'ticket-finished')
+      backdate(worktree)
+
+      const originalRun = commandRunner.runCommandSync
+      let listings = 0
+      vi.spyOn(commandRunner, 'runCommandSync').mockImplementation((bin, args, options) => {
+        if (bin === 'git' && args[0] === 'worktree' && args[1] === 'list' && listings++ >= successfulListings) {
+          return { ok: false, status: 128, signal: null, timedOut: false, stdout: '', stderr: 'listing failed' }
+        }
+        return originalRun(bin, args, options)
+      })
+
+      const output = await runClean({ apply: true, configDir: makeTempDir('config') })
+
+      expect(existsSync(worktree)).toBe(true)
+      expect(output).toContain('cannot read registered worktrees')
+      expect(output).not.toContain('Removed 1 worktree')
+    })
+
+    it('rechecks ownership and dirtiness before removal', () => {
+      const project = makeProject()
+      const worktree = addWorktree(project, 'ticket-raced')
+      git(worktree, ['push', '-u', 'origin', 'ticket-raced'])
+      backdate(worktree)
+      const [candidate] = planFor(project, ['ticket-raced'])
+      expect(candidate?.removable).toBe(true)
+
+      writeFileSync(resolve(worktree, 'changed-after-scan.txt'), 'keep this\n')
+      backdate(worktree)
+
+      const rechecked = recheckWorktreeCleanupCandidate(candidate!, ['ticket-raced'])
+      expect(rechecked.removable).toBe(false)
+      expect(rechecked.reason).toContain('uncommitted')
+      expect(existsSync(worktree)).toBe(true)
+    })
+
     it('deletes nothing without --apply', async () => {
       const project = makeProject()
       const worktree = addSkeleton(project, 'ticket-listed')

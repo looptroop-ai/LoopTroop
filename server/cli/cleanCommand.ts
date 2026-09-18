@@ -1,7 +1,7 @@
 import { existsSync, readdirSync, statSync, type Dirent } from 'node:fs'
-import { resolve } from 'node:path'
-import { inspectDaemonLock } from '../lib/daemonLock'
-import { clearStaleDaemonState, readDaemonState } from '../lib/daemonPaths'
+import { basename, resolve } from 'node:path'
+import { acquireDaemonLock, inspectDaemonLock, type AcquiredLock } from '../lib/daemonLock'
+import { clearDaemonState, readDaemonState } from '../lib/daemonPaths'
 import { matchProcess } from '../lib/processIdentity'
 import { getProjectWorktreesRoot, normalizeFolderPath } from '../storage/paths'
 import { markerVouchesFor, readWorktreeOwnerMarker } from '../storage/worktreeOwnership'
@@ -9,7 +9,7 @@ import { isProcessAlive, killProcessTree, waitForExit } from './processControl'
 import { readRunningDaemon } from './commands'
 import { getErrorMessage } from '@shared/typeGuards'
 import { runCommandSync } from '../git/runCommand'
-import { assertManagedWorktreesRoot } from '../git/worktreeRemoval'
+import { assertManagedWorktreesRoot, assertNoIgnoredWorktreeFiles } from '../git/worktreeRemoval'
 
 export interface CleanOptions {
   apply: boolean
@@ -69,16 +69,18 @@ function git(cwd: string, args: string[]): string | null {
  * because git prints its own realpath — on macOS a stored /var path and git's
  * /private/var answer are the same directory and must not read as two.
  */
-function readRegisteredWorktrees(projectRoot: string): Set<string> {
-  const listed = git(projectRoot, ['worktree', 'list', '--porcelain'])
-  if (listed === null) return new Set()
+function readRegisteredWorktrees(projectRoot: string): Set<string> | null {
+  const listed = git(projectRoot, ['worktree', 'list', '--porcelain', '-z'])
+  if (listed === null) return null
 
   const registered = new Set<string>()
-  for (const line of listed.split('\n')) {
+  for (const line of listed.split('\0')) {
     if (!line.startsWith('worktree ')) continue
     registered.add(normalizeFolderPath(line.slice('worktree '.length)))
   }
-  return registered
+  // A valid repository always lists at least its main worktree. Empty output
+  // is not proof that every managed directory was abandoned.
+  return registered.size > 0 ? registered : null
 }
 
 function modifiedAt(path: string): number {
@@ -107,7 +109,7 @@ function lastActivityAt(worktreePath: string, createdAt: string): number {
 function holdsOnlyTicketSkeleton(worktreePath: string): boolean {
   try {
     return readdirSync(worktreePath, { withFileTypes: true })
-      .every((entry) => entry.name === '.ticket')
+      .every((entry) => entry.name === '.ticket' && entry.isDirectory() && !entry.isSymbolicLink())
   } catch {
     return false
   }
@@ -115,7 +117,7 @@ function holdsOnlyTicketSkeleton(worktreePath: string): boolean {
 
 /**
  * Refuses to delete work that may not exist anywhere else. Uncommitted changes,
- * unpushed commits, and untracked files are all unrecoverable once a worktree is
+ * unpushed commits, and untracked or ignored user files are unrecoverable once a worktree is
  * removed, so any of them blocks automatic cleanup.
  *
  * The first question is which repository the directory belongs to, and it has to
@@ -143,6 +145,11 @@ function classifyGitState(worktreePath: string): { blocker: string | null } {
   const status = git(worktreePath, ['status', '--porcelain'])
   if (status === null) return { blocker: 'cannot read its git status' }
   if (status !== '') return { blocker: 'has uncommitted or untracked changes' }
+  try {
+    assertNoIgnoredWorktreeFiles(worktreePath)
+  } catch (error) {
+    return { blocker: getErrorMessage(error) }
+  }
 
   const upstream = git(worktreePath, ['rev-parse', '--abbrev-ref', '--symbolic-full-name', '@{upstream}'])
   if (upstream === null) return { blocker: 'branch has no upstream, so commits exist only here' }
@@ -200,12 +207,16 @@ export function planWorktreeCleanup(
       if (!entry.isDirectory()) continue
 
       const worktreePath = resolve(worktreesRoot, entry.name)
+      const base = { path: worktreePath, projectRoot, worktreesRoot }
+      if (registered === null) {
+        candidates.push({ ...base, removable: false, reason: 'cannot read registered worktrees' })
+        continue
+      }
       const isRegistered = registered.has(normalizeFolderPath(worktreePath))
       const isClosed = closed.has(entry.name)
       // Registered and not finished: git still knows it and so might a ticket.
       if (isRegistered && !isClosed) continue
 
-      const base = { path: worktreePath, projectRoot, worktreesRoot }
       const found = isRegistered ? 'its ticket is finished' : 'not registered with git'
 
       // Ownership first: without proof LoopTroop made this directory, no later
@@ -293,9 +304,16 @@ export function inspectOrphanedOpenCode(configDir?: string): OpenCodeVerdict {
  */
 async function stopOpenCode(pid: number, startToken: string | undefined): Promise<boolean> {
   if (process.platform !== 'win32') {
+    const beforeGroup = matchProcess(pid, startToken)
+    if (beforeGroup.kind !== 'same') return !isProcessAlive(pid)
+
     try {
       process.kill(-pid, 'SIGTERM')
     } catch {
+      // A group can disappear while the leader is still present. Recheck the
+      // leader before falling back to a direct signal, because the pid may
+      // have been reused in that gap.
+      if (matchProcess(pid, startToken).kind !== 'same') return !isProcessAlive(pid)
       try {
         process.kill(pid, 'SIGTERM')
       } catch {
@@ -306,20 +324,85 @@ async function stopOpenCode(pid: number, startToken: string | undefined): Promis
   }
 
   if (matchProcess(pid, startToken).kind !== 'same') return !isProcessAlive(pid)
-  await killProcessTree(pid)
+  await killProcessTree(pid, startToken ?? null)
   return await waitForExit(pid, OPENCODE_GRACEFUL_MS)
 }
 
-async function removeCandidates(candidates: WorktreeCandidate[]): Promise<number> {
+export function recheckWorktreeCleanupCandidate(
+  candidate: WorktreeCandidate,
+  closedTicketIds: readonly string[],
+): WorktreeCandidate {
+  const base = { ...candidate, removable: false }
+  if (!assertManagedWorktreesRoot(candidate.projectRoot, candidate.worktreesRoot)) {
+    return { ...base, reason: 'its project is no longer available' }
+  }
+
+  const marker = readWorktreeOwnerMarker(candidate.path)
+  if (marker === null) return { ...base, reason: NO_MARKER_REASON }
+  if (!markerVouchesFor(marker, {
+    projectRoot: candidate.projectRoot,
+    externalId: basename(candidate.path),
+  })) {
+    return { ...base, reason: 'its ownership marker describes a different worktree' }
+  }
+
+  const idleMs = Date.now() - lastActivityAt(candidate.path, marker.createdAt)
+  if (idleMs < LIVE_WINDOW_MS) {
+    return {
+      ...base,
+      reason: `changed ${Math.max(0, Math.round(idleMs / 1_000))}s ago, so it may still be in use`,
+    }
+  }
+
+  // A stillborn directory may become a real worktree while the preview is on
+  // screen. Treat that as live work, even when its ticket is already closed.
+  const registered = readRegisteredWorktrees(candidate.projectRoot)
+  if (registered === null) return { ...base, reason: 'cannot read registered worktrees' }
+  if (candidate.reason === 'not registered with git'
+    && registered.has(normalizeFolderPath(candidate.path))) {
+    return { ...base, reason: 'became registered with git while cleanup was waiting' }
+  }
+
+  // Keep the closed-ticket snapshot as an additional guard for a registered
+  // worktree. If its ticket was reopened, it is live work again.
+  if (candidate.reason === 'its ticket is finished'
+    && !closedTicketIds.includes(basename(candidate.path))) {
+    return { ...base, reason: 'its ticket is no longer finished' }
+  }
+
+  const { blocker } = classifyGitState(candidate.path)
+  return blocker === null
+    ? { ...candidate, removable: true }
+    : { ...base, reason: blocker }
+}
+
+async function removeCandidates(
+  candidates: WorktreeCandidate[],
+  closedByProject: ReadonlyMap<string, () => readonly string[]>,
+): Promise<number> {
   const { removeWorktree } = await import('../git/worktreeRemoval')
   let removed = 0
 
   for (const candidate of candidates) {
+    const rechecked = recheckWorktreeCleanupCandidate(
+      candidate,
+      closedByProject.get(normalizeFolderPath(candidate.projectRoot))?.() ?? [],
+    )
+    if (!rechecked.removable) {
+      process.stdout.write(`  keeping   ${candidate.path}  (${rechecked.reason})\n`)
+      continue
+    }
+
     try {
       await removeWorktree({
         projectRoot: candidate.projectRoot,
         worktreesRoot: candidate.worktreesRoot,
         worktreePath: candidate.path,
+        // The shared guard distinguishes an owned Git worktree from a
+        // stillborn ticket skeleton. It must run again at the destructive
+        // boundary so a file or symlink added after the preview cannot turn a
+        // non-Git directory into an unconditional recursive delete.
+        preserveIgnoredFiles: true,
       })
       removed += 1
     } catch (error) {
@@ -382,10 +465,12 @@ export async function cleanCommand(options: CleanOptions): Promise<number> {
   // where the app has never booted, and hydration reads tables that only exist
   // after startup has created them.
   const { listAttachedProjectRoots, listClosedTicketIds } = await import('../storage/projects')
-  const candidates = planWorktreeCleanup(listAttachedProjectRoots().map((projectRoot) => ({
-    projectRoot,
-    closedTicketIds: listClosedTicketIds(projectRoot),
-  })))
+  const closedByProject = new Map<string, () => readonly string[]>()
+  const candidates = planWorktreeCleanup(listAttachedProjectRoots().map((projectRoot) => {
+    const closedTicketIds = listClosedTicketIds(projectRoot)
+    closedByProject.set(normalizeFolderPath(projectRoot), () => listClosedTicketIds(projectRoot))
+    return { projectRoot, closedTicketIds }
+  }))
   const orphan = inspectOrphanedOpenCode(options.configDir)
 
   if (candidates.length === 0 && orphan.kind === 'nothing') {
@@ -422,26 +507,46 @@ export async function cleanCommand(options: CleanOptions): Promise<number> {
     return 0
   }
 
-  const removed = await removeCandidates(removable)
-  process.stdout.write(`\nRemoved ${removed} worktree(s).\n`)
-
-  let orphanSurvived = false
-  if (orphan.kind === 'stoppable') {
-    const stop = options.stopProcess ?? stopOpenCode
-    const stopped = await stop(orphan.pid, recorded?.opencode?.startToken)
-    if (stopped) {
-      process.stdout.write(`Stopped the orphaned OpenCode server (pid ${orphan.pid}).\n`)
-      // The record described a daemon that is gone and a server that is now gone
-      // with it, so leaving it would point the next run at a recycled pid.
-      clearStaleDaemonState(options.configDir)
-    } else {
-      orphanSurvived = true
-      process.stderr.write(
-        `Could not stop the orphaned OpenCode server (pid ${orphan.pid}). ` +
-        'It still holds its port, so the next `looptroop start` may not get one.\n',
-      )
-    }
+  // The preview can take long enough for a daemon to start after the initial
+  // liveness checks. Serialize the destructive half with daemon startup so a
+  // newly adopted OpenCode process or worktree cannot be removed underneath it.
+  let cleanupLock: AcquiredLock
+  try {
+    cleanupLock = acquireDaemonLock(options.configDir)
+  } catch {
+    process.stderr.write('LoopTroop started while cleanup was waiting. Nothing was cleaned; try again after it stops.\n')
+    return 1
   }
+
+  let removed = 0
+  let orphanSurvived = false
+  let stoppedOrphan = false
+  try {
+    removed = await removeCandidates(removable, closedByProject)
+    process.stdout.write(`\nRemoved ${removed} worktree(s).\n`)
+
+    if (orphan.kind === 'stoppable') {
+      const stop = options.stopProcess ?? stopOpenCode
+      const stopped = await stop(orphan.pid, recorded?.opencode?.startToken)
+      if (stopped) {
+        stoppedOrphan = true
+        process.stdout.write(`Stopped the orphaned OpenCode server (pid ${orphan.pid}).\n`)
+      } else {
+        orphanSurvived = true
+        process.stderr.write(
+          `Could not stop the orphaned OpenCode server (pid ${orphan.pid}). ` +
+          'It still holds its port, so the next `looptroop start` may not get one.\n',
+        )
+      }
+    }
+  } finally {
+    cleanupLock.release()
+  }
+
+  // The record may have been replaced while stopping the orphan. Only clear
+  // the generation inspected at the start, and do that through the same lock
+  // after releasing the cleanup lock so a successor can start normally.
+  if (stoppedOrphan && recorded !== null) clearDaemonState(recorded.instanceId, options.configDir)
 
   // A server LoopTroop set out to stop and could not is a failed cleanup, and
   // this used to be decided by the worktree count alone: `clean --apply` in a

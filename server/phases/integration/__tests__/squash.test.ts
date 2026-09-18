@@ -1,8 +1,9 @@
 import { execFileSync } from 'node:child_process'
 import { afterAll, describe, expect, it } from 'vitest'
-import { mkdirSync, readFileSync, unlinkSync, writeFileSync } from 'node:fs'
+import { existsSync, mkdirSync, readFileSync, unlinkSync, writeFileSync } from 'node:fs'
 import { resolve } from 'node:path'
 import { createFixtureRepoManager } from '../../../test/fixtureRepo'
+import { applyOpencodeStepsConfig, restoreOpencodeStepsConfig } from '../../execution/opencodeStepsConfig'
 import { prepareSquashCandidate, rewriteCandidateCommitWithFiles } from '../squash'
 import { TEST } from '../../../test/factories'
 
@@ -161,6 +162,29 @@ describe('prepareSquashCandidate', () => {
 
     const commitMsg = git(repoDir, ['log', '-1', '--pretty=%s'])
     expect(commitMsg).toBe(`${BRANCH}: Single change`)
+  })
+
+  it('keeps a pending capped root config out of final candidate staging', async () => {
+    const repoDir = repoManager.createRepo()
+    const ticketDir = resolve(repoDir, '.ticket')
+    mkdirSync(ticketDir, { recursive: true })
+    const applied = applyOpencodeStepsConfig({ ticketDir, worktreePath: repoDir, steps: 25 })
+    if (!applied.applied) throw new Error('expected the step cap to apply')
+    writeFileSync(resolve(repoDir, 'opencode.json'), '{"edited":true}\n')
+    expect(restoreOpencodeStepsConfig(applied.handle)).toBe('conflict')
+    expect(existsSync(resolve(ticketDir, 'opencode-steps-restore.json'))).toBe(true)
+    git(repoDir, ['checkout', '-b', BRANCH])
+    writeFileSync(resolve(repoDir, 'feature.ts'), 'export const feature = true\n')
+    git(repoDir, ['add', 'opencode.json', 'feature.ts'])
+    git(repoDir, ['commit', '-m', 'candidate with temporary cap'])
+
+    const result = await prepareSquashCandidate(repoDir, 'main', 'Filtered cap', BRANCH)
+
+    expect(result.success).toBe(true)
+    const committedFiles = git(repoDir, ['show', '--pretty=', '--name-only', 'HEAD'])
+    expect(committedFiles).toContain('feature.ts')
+    expect(committedFiles).not.toContain('opencode.json')
+    expect(readFileSync(resolve(repoDir, 'opencode.json'), 'utf8')).toBe('{"edited":true}\n')
   })
 
   it('stages committed bead files plus explicit final-test files without sweeping unrelated worktree changes', async () => {

@@ -318,6 +318,13 @@ Read more: [Beads & Execution](https://www.looptroop.ovh/docs/beads)
 
 LoopTroop runs execution steps inside isolated Git worktrees rather than modifying your active branch. This keeps your working copy clean and ensures reliable, inspectable diffs. Git mutations and resets have bounded process cleanup, unusual filenames stay intact when diffs are read, and generated runtime files stay out of candidate commits. Note that worktrees provide workspace isolation, not sandboxed host security.
 
+When cleanup is run in its conservative mode, LoopTroop asks Git for ignored
+untracked entries first and preserves user files; only its own `.ticket/` and
+`.looptroop/` roots are eligible for removal. If Git yields while a worktree is
+being removed, a replacement directory is left alone. The daemon also waits for
+detached Git and GitHub children during shutdown, and startup recovery refuses to
+overwrite a target that has advanced since a completed fallback copy.
+
 Only select repositories you trust. LoopTroop preserves repository-local Git
 configuration, including `core.sshCommand`, so custom SSH wrappers keep working.
 Git may execute those wrappers with your account's permissions during remote

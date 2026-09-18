@@ -28,7 +28,7 @@
  * one rather than removing it.
  */
 
-import { spawn, spawnSync } from 'node:child_process'
+import { spawn, spawnSync, type ChildProcess } from 'node:child_process'
 import { existsSync, lstatSync, readFileSync, statSync } from 'node:fs'
 import { isAbsolute, resolve } from 'node:path'
 import { resolveTrustedProgram } from '../lib/executablePath'
@@ -52,6 +52,61 @@ const TIMEOUT_KILL_GRACE_MS = 2_000
 
 /** How long after SIGKILL to wait for `close` before settling without it. */
 const TIMEOUT_ABANDON_GRACE_MS = 2_000
+
+/** Async commands outlive their caller unless shutdown owns their child too. */
+const activeAsyncChildren = new Set<ChildProcess>()
+let stoppingActiveChildren: Promise<void> | null = null
+
+function childHasExited(child: ChildProcess): boolean {
+  return child.exitCode !== null && child.exitCode !== undefined
+    || child.signalCode !== null && child.signalCode !== undefined
+}
+
+function waitForChildClose(child: ChildProcess, timeoutMs: number): Promise<boolean> {
+  if (childHasExited(child)) return Promise.resolve(true)
+  return new Promise((resolveWait) => {
+    let settled = false
+    const finish = (exited: boolean) => {
+      if (settled) return
+      settled = true
+      clearTimeout(timer)
+      child.removeListener('close', onClose)
+      child.removeListener('error', onError)
+      resolveWait(exited)
+    }
+    const onClose = () => finish(true)
+    const onError = () => finish(true)
+    const timer = setTimeout(() => finish(false), timeoutMs)
+    child.once('close', onClose)
+    child.once('error', onError)
+  })
+}
+
+async function stopActiveChildrenNow(): Promise<void> {
+  const children = [...activeAsyncChildren]
+  if (!children.length) return
+
+  const terminations = children.map((child) => waitForChildClose(child, TIMEOUT_KILL_GRACE_MS))
+  for (const child of children) {
+    try { terminateProcessTree(child, 'SIGTERM') } catch { /* process already exited */ }
+  }
+  const exitedAfterTerm = await Promise.all(terminations)
+  const survivors = children.filter((child, index) => !exitedAfterTerm[index] && activeAsyncChildren.has(child))
+  if (!survivors.length) return
+
+  const forceTerminations = survivors.map((child) => waitForChildClose(child, TIMEOUT_KILL_GRACE_MS))
+  for (const child of survivors) {
+    try { terminateProcessTree(child, 'SIGKILL') } catch { /* process already exited */ }
+  }
+  await Promise.all(forceTerminations)
+  for (const child of survivors) child.unref()
+}
+
+/** Stop every detached async command currently owned by the daemon. */
+export function stopActiveCommands(): Promise<void> {
+  stoppingActiveChildren ??= stopActiveChildrenNow().finally(() => { stoppingActiveChildren = null })
+  return stoppingActiveChildren
+}
 
 /**
  * Keeps git from blocking on interactive input.
@@ -506,6 +561,11 @@ function runAsyncRaw(bin: string, args: string[], options: RunCommandOptions | u
       })
       return
     }
+
+    activeAsyncChildren.add(child)
+    const untrack = () => { activeAsyncChildren.delete(child) }
+    child.once('close', untrack)
+    child.once('error', untrack)
 
     const stdoutChunks: Buffer[] = []
     const stderrChunks: Buffer[] = []

@@ -292,6 +292,26 @@ describe('Manual QA workspace checkpoints', () => {
     expect(readFileSync(resolve(protectedArtifacts, 'README.md'), 'utf8')).toBe('original artifact')
   })
 
+  it('keeps an existing final quarantine symlink and writes a retry copy', async () => {
+    const setup = await prepareFixture()
+    await prepareManualQaCheckpoint(setup.ticket.id, 1)
+    const source = resolve(setup.paths.worktreePath, 'README.md')
+    const protectedTarget = resolve(setup.paths.ticketDir, 'quarantine-target.txt')
+    const destination = resolve(setup.paths.ticketDir, 'manual-qa/v1/quarantine/README.md')
+    writeFileSync(source, '# Keep this drift\n')
+    writeFileSync(protectedTarget, 'protected target\n')
+    mkdirSync(resolve(setup.paths.ticketDir, 'manual-qa/v1/quarantine'), { recursive: true })
+    symlinkSync(protectedTarget, destination)
+
+    const result = await discardManualQaWorkspaceDrift(setup.ticket.id, 1, ['README.md'], 'symlink-retry')
+    const retryPath = result.quarantinePaths?.['README.md']
+
+    expect(retryPath).toContain(`${destination}.attempt-`)
+    expect(lstatSync(destination).isSymbolicLink()).toBe(true)
+    expect(readFileSync(protectedTarget, 'utf8')).toBe('protected target\n')
+    expect(readFileSync(retryPath!, 'utf8')).toBe('# Keep this drift\n')
+  })
+
   it('rejects escaped baseline storage before committing the candidate', async () => {
     const setup = await prepareFixture()
     const outside = resolve(setup.paths.worktreePath, 'outside-receipts')

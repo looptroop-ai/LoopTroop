@@ -60,6 +60,8 @@ interface RecoveryMarker {
   targetPath: string
   source: FileIdentity
   target?: FileIdentity
+  /** True only after the fallback target contains the complete source bytes. */
+  complete?: boolean
 }
 
 export interface RecoveryDeps {
@@ -351,6 +353,7 @@ function readRecoveryMarker(tmpPath: string): RecoveryMarker | null {
     const value = JSON.parse(readFileNoFollowSync(recoveryMarkerPath(tmpPath))) as Partial<RecoveryMarker>
     if (value.version !== 1 || typeof value.targetPath !== 'string' || !isMarkerIdentity(value.source)) return null
     if (value.target !== undefined && !isMarkerIdentity(value.target)) return null
+    if (value.complete !== undefined && typeof value.complete !== 'boolean') return null
     return value as RecoveryMarker
   } catch {
     return null
@@ -536,15 +539,16 @@ function copyValidatedSource(sourceFd: number, source: FileIdentity, targetFd: n
   fsyncSync(targetFd)
 }
 
-function targetContainsSource(sourceFd: number, source: FileIdentity, targetFd: number, target: FileIdentity): boolean {
+function targetContainsSourcePrefix(sourceFd: number, source: FileIdentity, targetFd: number, target: FileIdentity): boolean {
   const sourceSize = typeof source.size === 'bigint' ? Number(source.size) : source.size
   const targetSize = typeof target.size === 'bigint' ? Number(target.size) : target.size
-  if (!Number.isSafeInteger(sourceSize) || sourceSize < 0 || sourceSize !== targetSize) return false
+  if (!Number.isSafeInteger(sourceSize) || sourceSize < 0
+    || !Number.isSafeInteger(targetSize) || targetSize < 0 || targetSize > sourceSize) return false
   const sourceBuffer = Buffer.allocUnsafe(64 * 1024)
   const targetBuffer = Buffer.allocUnsafe(64 * 1024)
   let position = 0
-  while (position < sourceSize) {
-    const length = Math.min(sourceBuffer.length, sourceSize - position)
+  while (position < targetSize) {
+    const length = Math.min(sourceBuffer.length, targetSize - position)
     let sourceRead = 0
     while (sourceRead < length) {
       const count = readSync(sourceFd, sourceBuffer, sourceRead, length - sourceRead, position + sourceRead)
@@ -561,6 +565,14 @@ function targetContainsSource(sourceFd: number, source: FileIdentity, targetFd: 
     position += length
   }
   return sameFileIdentity(fstatSync(sourceFd), source)
+}
+
+function targetContainsSource(sourceFd: number, source: FileIdentity, targetFd: number, target: FileIdentity): boolean {
+  const sourceSize = typeof source.size === 'bigint' ? Number(source.size) : source.size
+  const targetSize = typeof target.size === 'bigint' ? Number(target.size) : target.size
+  return Number.isSafeInteger(sourceSize) && sourceSize >= 0
+    && sourceSize === targetSize
+    && targetContainsSourcePrefix(sourceFd, source, targetFd, target)
 }
 
 type ResumeResult = 'promoted' | 'unmarked'
@@ -632,7 +644,7 @@ function resumeMarkedCopy(fd: number, tmpPath: string, targetPath: string, deps:
   let targetFd: number | undefined
   try {
     guard(targetPath)
-    targetFd = openSync(targetPath, fsConstants.O_WRONLY | (fsConstants.O_NOFOLLOW ?? 0))
+    targetFd = openSync(targetPath, fsConstants.O_RDWR | (fsConstants.O_NOFOLLOW ?? 0))
     const target = fstatSync(targetFd)
     if (!sameEntryIdentity(target, marker.target)) {
       return blockRecovery(
@@ -641,8 +653,37 @@ function resumeMarkedCopy(fd: number, tmpPath: string, targetPath: string, deps:
         'its fallback target identity no longer matches the ownership marker',
       )
     }
-    copyValidatedSource(fd, source, targetFd, true)
-    if (!sameEntryIdentity(lstatSync(targetPath), target)) {
+    if (marker.complete === true) {
+      if (!sameFileIdentity(target, marker.target)) {
+        return blockRecovery(
+          targetPath,
+          tmpPath,
+          'its completed fallback target changed after publication',
+        )
+      }
+    } else {
+      const sourceSize = typeof source.size === 'bigint' ? Number(source.size) : source.size
+      const targetSize = typeof target.size === 'bigint' ? Number(target.size) : target.size
+      if (!Number.isSafeInteger(sourceSize) || !Number.isSafeInteger(targetSize) || targetSize > sourceSize) {
+        return blockRecovery(
+          targetPath,
+          tmpPath,
+          'its incomplete fallback target contains newer data',
+        )
+      }
+      if (!targetContainsSourcePrefix(fd, source, targetFd, target)) {
+        return blockRecovery(
+          targetPath,
+          tmpPath,
+          'its incomplete fallback target changed before recovery resumed',
+        )
+      }
+      copyValidatedSource(fd, source, targetFd, true)
+    }
+    const currentTarget = lstatSync(targetPath)
+    if (marker.complete === true
+      ? !sameFileIdentity(currentTarget, target)
+      : !sameEntryIdentity(currentTarget, target)) {
       return blockRecovery(
         targetPath,
         tmpPath,
@@ -752,10 +793,12 @@ function promoteTmpFile(fd: number, tmpPath: string, targetPath: string, deps: R
       // verify this exact inode and resume it instead of seeing a marker with
       // no target identity and blocking forever.
       guard(markerPath, true)
-      writeRecoveryMarkerWithDeps(markerPath, { version: 1, targetPath, source, target }, true, deps, guard)
+      writeRecoveryMarkerWithDeps(markerPath, { version: 1, targetPath, source, target, complete: false }, true, deps, guard)
       copyValidatedSource(fd, source, targetFd!, false)
       copyCompleted = true
-      if (!sameEntryIdentity(lstatSync(targetPath), target)) {
+      const completedTarget = fstatSync(targetFd!)
+      publishedIdentity = completedTarget
+      if (!sameEntryIdentity(lstatSync(targetPath), completedTarget)) {
         throw new Error('Recovery target changed during promotion')
       }
       fsyncDirectory(dirname(targetPath))
@@ -763,7 +806,13 @@ function promoteTmpFile(fd: number, tmpPath: string, targetPath: string, deps: R
       // fsynced bytes. A crash before this atomic marker replacement therefore
       // leaves a complete target beside the prepared marker, never an empty
       // final artifact with no durable ownership record.
-      writeRecoveryMarkerWithDeps(markerPath, { version: 1, targetPath, source, target }, true, deps, guard)
+      writeRecoveryMarkerWithDeps(markerPath, {
+        version: 1,
+        targetPath,
+        source,
+        target: completedTarget,
+        complete: true,
+      }, true, deps, guard)
     }
   } catch (error) {
     if (error instanceof RecoveryBlockedError) throw error

@@ -78,6 +78,29 @@ entry itself instead of its external target. Existing quarantine files are
 reused only when the compared descriptors still belong to both pathnames; a
 replacement is retained at its action-specific retry destination.
 
+## Round-two verification
+
+The second review pass added four confirmed filesystem/process defects and one
+shared cleanup guard. Worktree fallback removal now verifies the original target
+generation as well as its managed parent after the awaited Git call. Conservative
+callers can ask the shared remover to enumerate ignored untracked entries with a
+NUL-delimited Git listing; inspection failures are fatal, and only `.ticket/` or
+`.looptroop/` entries are treated as LoopTroop-owned. Recovery markers now say
+whether the fallback target is complete, so a later boot preserves a target that
+received newer appends. Manual QA contains quarantine parents without following
+an existing final symlink, and runtime shutdown drains tracked detached Git/GitHub
+children before closing the server.
+
+The second-pass ledger classifies the remaining observations as deferred or
+owned by their relevant packets: timeout/probe performance, the sync index
+helper, parser consolidation, recovery allowlist expansion, and power-loss fsync
+suggestions were not part of this fix. Hook-validation mutations and the cleanup
+preview belong to PR 166/root. Darwin case folding and cross-process Manual QA
+append repair were withdrawn after tracing the current platform and writer
+contracts. Sonar path/log annotations remain false positives or duplicates of
+the earlier dispositions. Shared CI now uses native temporary paths and the
+isolated database-test bucket; this review did not alter those root-owned files.
+
 Native Windows, physical power loss, unsupported directory fsync behavior, E2E,
 full lifecycle runs, and live remote operations are not claimed here. The
 documentation integration notes and source traces are in

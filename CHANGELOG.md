@@ -36,6 +36,7 @@ Unreleased changes appear first and represent commits that have not yet been inc
 - The names your scripts read — API routes, live-event names, and the check names in `doctor --json` — are now written down in a test. None of them can be renamed without that showing up as a deliberate edit in review.
 - A project that ships its own `opencode.json` keeps it — in git as well as on disk. Setting a step cap used to replace that file for the whole coding run, commit LoopTroop's version onto your branch, and delete the file afterwards, taking the project's MCP servers, providers and other agents with it.
 - Git mutations and delivery now preserve opaque paths, validate ref names, clean up process trees within bounded time, and require an expected remote head before deleting a branch.
+- Worktree cleanup preserves replacement generations and user-owned ignored files when requested; recovery protects newer appends, quarantine retries preserve final symlinks, and daemon shutdown waits for detached Git commands.
 - Startup recovery now promotes only known, proof-backed complete artifacts. Unproved orphan YAML and whole-file JSONL, including empty files, stay unpromoted with warnings, while unresolved in-progress fallback ownership stops startup with the affected files preserved.
 - Manual QA baselines, drift receipts, evidence indexes, and event history now use durable, symlink-safe writes; invalid event lines stay visible with diagnostics, and locking survives process restarts.
 - Manual QA quarantine preserves a file replaced during comparison, and project-path diagnostics keep control bytes from becoming forged log records.
@@ -259,6 +260,8 @@ Unreleased changes appear first and represent commits that have not yet been inc
 - Three aliases re-exported for a question-diff type that no longer exists, the three helpers behind them, an execution-setup runtime-path list with no reader, and an execution-setup barrel re-exporting three artifact names every caller already imports from their own module.
 
 ### Fixed
+- Worktree fallback cleanup now rechecks the target generation after Git yields, and conservative cleanup refuses ignored files outside LoopTroop-owned roots before either Git removal or filesystem fallback. Startup recovery records whether a fallback copy is complete and blocks rather than rewinding a target that received newer appends. Manual QA preserves an existing final quarantine symlink and writes a retry copy beside it, while runtime shutdown terminates tracked detached Git and GitHub children before returning.
+- Shared test fixtures now use native temporary-directory paths and the isolated Vitest bucket for real-database tests, avoiding Windows path aliases and cross-worker timeouts.
 - Recovery regression checks accept Windows' canonical spelling of a temporary path while still requiring diagnostics to identify the exact preserved file.
 - Manual QA compares existing quarantine copies in bounded chunks, preserving distinct retry backups without loading entire files into memory.
 - Quarantine comparison now rechecks device/inode identity and metadata after reading, preserving a replacement that arrives while an existing backup is being compared.

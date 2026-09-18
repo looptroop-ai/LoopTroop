@@ -1,4 +1,4 @@
-import { existsSync, lstatSync, mkdirSync, readFileSync, readdirSync, renameSync, symlinkSync, writeFileSync } from 'node:fs'
+import { appendFileSync, existsSync, lstatSync, mkdirSync, readFileSync, readdirSync, renameSync, symlinkSync, writeFileSync } from 'node:fs'
 import * as fs from 'fs'
 import { join } from 'node:path'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
@@ -252,6 +252,32 @@ describe('recovery descriptor containment', () => {
     expect(existsSync(`${tmp}.recovery`)).toBe(false)
   })
 
+  it('preserves an edited incomplete fallback target instead of overwriting it', () => {
+    const target = join(directory, 'runtime', 'owner.json')
+    const tmp = makeAtomicTmpPath(target)
+    writeFileSync(tmp, '{"generation":"old-copy"}')
+    writeFileSync(target, '{"generation":"new"}')
+    const identity = (stats: NonNullable<ReturnType<typeof lstatSync>>) => ({
+      dev: Number(stats.dev),
+      ino: Number(stats.ino),
+      size: Number(stats.size),
+      mtimeMs: Number(stats.mtimeMs),
+      birthtimeMs: Number(stats.birthtimeMs),
+    })
+    writeFileSync(`${tmp}.recovery`, JSON.stringify({
+      version: 1,
+      targetPath: target,
+      source: identity(lstatSync(tmp)),
+      target: identity(lstatSync(target)),
+      complete: false,
+    }))
+
+    expect(() => recoverOrphanTmpFiles(directory)).toThrow(RecoveryBlockedError)
+    expect(readFileSync(target, 'utf8')).toBe('{"generation":"new"}')
+    expect(existsSync(tmp)).toBe(true)
+    expect(existsSync(`${tmp}.recovery`)).toBe(true)
+  })
+
   it('recovers a complete fallback when final marker publication is interrupted after copying', () => {
     const target = join(directory, 'runtime', 'execution-setup-profile.json')
     const content = JSON.stringify({ payload: 'marker boundary' })
@@ -283,6 +309,29 @@ describe('recovery descriptor containment', () => {
     expect(recoverOrphanTmpFiles(directory)).toEqual([target])
     expect(existsSync(tmp)).toBe(false)
     expect(existsSync(`${tmp}.recovery`)).toBe(false)
+  })
+
+  it('blocks a completed fallback after a newer append', () => {
+    const target = join(directory, 'runtime', 'owner.json')
+    const tmp = makeAtomicTmpPath(target)
+    writeFileSync(tmp, '{"generation":"old"}')
+    const deps = {
+      link: () => { throw Object.assign(new Error('unsupported'), { code: 'ENOSYS' }) },
+      rename: (from: string, to: string) => {
+        if (from === tmp) throw Object.assign(new Error('cleanup denied'), { code: 'EACCES' })
+        renameSync(from, to)
+      },
+    }
+
+    expect(recoverOrphanTmpFiles(directory, 'ticket', deps)).toEqual([target])
+    expect(JSON.parse(readFileSync(`${tmp}.recovery`, 'utf8'))).toMatchObject({ complete: true })
+    appendFileSync(target, '\n{"generation":"new"}')
+    const newer = readFileSync(target, 'utf8')
+
+    expect(() => recoverOrphanTmpFiles(directory)).toThrow(RecoveryBlockedError)
+    expect(readFileSync(target, 'utf8')).toBe(newer)
+    expect(existsSync(tmp)).toBe(true)
+    expect(existsSync(`${tmp}.recovery`)).toBe(true)
   })
 
   it('fails closed across boots when a torn marker sits beside a newer target', () => {

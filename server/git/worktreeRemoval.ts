@@ -1,6 +1,6 @@
-import { lstatSync, realpathSync, rmSync, unlinkSync, type Stats } from 'node:fs'
+import { lstatSync, realpathSync, readdirSync, rmSync, unlinkSync, type Stats } from 'node:fs'
 import { GIT_MUTATION_TIMEOUT_MS, runGitMutationOrThrow, runGitSync } from './runCommand'
-import { dirname, resolve } from 'node:path'
+import { dirname, join, resolve } from 'node:path'
 import { makeOwnerWritableRecursive } from '../io/removal'
 import { ContainedPathError, resolveContainedPath } from '../lib/containedPath'
 import { classifyWorktreePath, normalizeRepoPath } from './worktreeChanges'
@@ -53,8 +53,40 @@ export interface RemoveWorktreeOptions {
   preserveIgnoredFiles?: boolean
 }
 
-/** Read ignored, untracked entries without losing filenames to line parsing. */
-export function getIgnoredWorktreePaths(worktreePath: string): string[] {
+/** A pre-start ticket path has no `.git`; only its own `.ticket` skeleton is safe. */
+function isOwnGitWorktree(worktreePath: string): boolean {
+  let gitEntry: Stats
+  try {
+    gitEntry = lstatSync(join(worktreePath, '.git'))
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === 'ENOENT') return false
+    throw error
+  }
+  if (gitEntry.isSymbolicLink()) {
+    throw new Error(`Refusing to inspect a worktree whose .git entry is a symbolic link: ${worktreePath}`)
+  }
+  const result = runGitSync(worktreePath, ['rev-parse', '--show-toplevel'], { log: false, trimOutput: false })
+  if (!result.ok) throw new Error(`Failed to verify the worktree root: ${result.errorDetail}`)
+  let reportedRoot = result.stdout
+  if (reportedRoot.endsWith('\n')) reportedRoot = reportedRoot.slice(0, -1)
+  if (process.platform === 'win32' && reportedRoot.endsWith('\r')) reportedRoot = reportedRoot.slice(0, -1)
+  if (realpathSync.native(reportedRoot) !== realpathSync.native(worktreePath)) {
+    throw new Error(`Refusing to inspect a Git repository nested at another path: ${worktreePath}`)
+  }
+  return true
+}
+
+function holdsOnlyTicketSkeleton(worktreePath: string): boolean {
+  let entries
+  try {
+    entries = readdirSync(worktreePath, { withFileTypes: true })
+  } catch (error) {
+    throw new Error(`Failed to inspect ignored worktree files: ${error instanceof Error ? error.message : String(error)}`)
+  }
+  return entries.every((entry) => entry.name === '.ticket' && entry.isDirectory() && !entry.isSymbolicLink())
+}
+
+function readIgnoredWorktreePaths(worktreePath: string): string[] {
   const result = runGitSync(worktreePath, [
     'ls-files',
     '--others',
@@ -70,9 +102,21 @@ export function getIgnoredWorktreePaths(worktreePath: string): string[] {
     .map(normalizeRepoPath)
 }
 
+/** Read ignored, untracked entries without losing filenames to line parsing. */
+export function getIgnoredWorktreePaths(worktreePath: string): string[] {
+  if (!isOwnGitWorktree(worktreePath)) {
+    throw new Error(`Refusing to inspect ignored files outside an owned Git worktree: ${worktreePath}`)
+  }
+  return readIgnoredWorktreePaths(worktreePath)
+}
+
 /** Refuse conservative cleanup when ignored user files would otherwise be deleted. */
 export function assertNoIgnoredWorktreeFiles(worktreePath: string): void {
-  const unsafe = getIgnoredWorktreePaths(worktreePath)
+  if (!isOwnGitWorktree(worktreePath)) {
+    if (holdsOnlyTicketSkeleton(worktreePath)) return
+    throw new Error(`Refusing to remove a non-Git worktree containing files outside its .ticket skeleton: ${worktreePath}`)
+  }
+  const unsafe = readIgnoredWorktreePaths(worktreePath)
     .filter((path) => classifyWorktreePath(path, { untracked: true }).category !== 'looptroopExcluded')
   if (unsafe.length > 0) {
     throw new Error(`Refusing to remove a worktree with ignored files outside LoopTroop roots: ${unsafe.join(', ')}`)

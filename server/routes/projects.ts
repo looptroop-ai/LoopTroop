@@ -432,7 +432,7 @@ projectRouter.delete('/projects/:id/worktrees', async (c) => {
 
   try {
     const result = await deleteProjectWorktrees(projectRoot)
-    return c.json({ success: true, freedBytes: result.freedBytes })
+    return c.json({ success: true, ...result })
   } catch (err) {
     return c.json({ error: 'Failed to delete worktrees', details: getErrorMessage(err) }, 500)
   }

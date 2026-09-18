@@ -13,6 +13,7 @@ import { DEFAULT_IGNORE_MODE, isIgnoreMode, type IgnoreMode } from '@shared/igno
 import { isGitHookPolicy } from '../git/hookPolicy'
 import type { GitHookPolicy } from '../structuredOutput/types'
 import { assertManagedWorktreesRoot, removeWorktree } from '../git/worktreeRemoval'
+import { getErrorMessage } from '@shared/typeGuards'
 import {
   ensureProjectStorageDirs,
   getProjectLoopTroopDir,
@@ -599,29 +600,37 @@ export async function getProjectWorktreesSize(projectRoot: string): Promise<numb
   return sum
 }
 
-export async function deleteProjectWorktrees(projectRoot: string): Promise<{ freedBytes: number }> {
+export async function deleteProjectWorktrees(projectRoot: string): Promise<{
+  freedBytes: number
+  skipped: Array<{ externalId: string; reason: string }>
+}> {
+  const result = { freedBytes: 0, skipped: [] as Array<{ externalId: string; reason: string }> }
   const worktreesRoot = getProjectWorktreesRoot(projectRoot)
-  if (!assertManagedWorktreesRoot(projectRoot, worktreesRoot)) return { freedBytes: 0 }
-  if (!(await existsAsync(worktreesRoot))) return { freedBytes: 0 }
+  if (!assertManagedWorktreesRoot(projectRoot, worktreesRoot)) return result
+  if (!(await existsAsync(worktreesRoot))) return result
 
   const externalIds = getTerminalTicketExternalIds(projectRoot)
-  if (externalIds.length === 0) return { freedBytes: 0 }
+  if (externalIds.length === 0) return result
 
-  let freedBytes = 0
   for (const externalId of externalIds) {
     // Final aliases (including dangling ones) are entries to unlink, not roots
     // to resolve. removeWorktree validates the parent and direct-child shape.
     const worktreePath = getTicketWorktreeEntryPath(projectRoot, externalId)
-    freedBytes += await calcDirSize(worktreePath)
     // Terminal-ticket housekeeping is conservative: a user may have left an
     // ignored project file in the checkout, so let the shared remover inspect
     // it before Git or its filesystem fallback can delete the worktree.
-    await removeWorktree({ projectRoot, worktreesRoot, worktreePath, preserveIgnoredFiles: true })
+    try {
+      const bytes = await calcDirSize(worktreePath)
+      await removeWorktree({ projectRoot, worktreesRoot, worktreePath, preserveIgnoredFiles: true })
+      result.freedBytes += bytes
+    } catch (error) {
+      result.skipped.push({ externalId, reason: getErrorMessage(error) })
+    }
   }
 
   await runGitMutation(projectRoot, ['worktree', 'prune'])
 
-  return { freedBytes }
+  return result
 }
 
 /**

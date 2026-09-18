@@ -82,10 +82,12 @@ replacement is retained at its action-specific retry destination.
 
 The second review pass added four confirmed filesystem/process defects and one
 shared cleanup guard. Worktree fallback removal now verifies the original target
-generation as well as its managed parent after the awaited Git call. Conservative
-callers can ask the shared remover to enumerate ignored untracked entries with a
-NUL-delimited Git listing; inspection failures are fatal, and only `.ticket/` or
-`.looptroop/` entries are treated as LoopTroop-owned. Recovery markers now say
+generation as well as its managed parent after the awaited Git call. The Free
+Disk Space terminal-ticket path opts into the shared remover's conservative
+ignored-file check; explicit deletion APIs remain destructive. The guard
+enumerates ignored untracked entries with a NUL-delimited Git listing; inspection
+failures are fatal, and only `.ticket/` or `.looptroop/` entries are treated as
+LoopTroop-owned. Recovery markers now say
 whether the fallback target is complete, so a later boot preserves a target that
 received newer appends. Manual QA contains quarantine parents without following
 an existing final symlink, and runtime shutdown drains tracked detached Git/GitHub

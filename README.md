@@ -320,10 +320,13 @@ LoopTroop runs execution steps inside isolated Git worktrees rather than modifyi
 
 When cleanup is run in its conservative mode, LoopTroop asks Git for ignored
 untracked entries first and preserves user files; only its own `.ticket/` and
-`.looptroop/` roots are eligible for removal. If Git yields while a worktree is
-being removed, a replacement directory is left alone. The daemon also waits for
-detached Git and GitHub children during shutdown, and startup recovery refuses to
-overwrite a target that has advanced since a completed fallback copy.
+`.looptroop/` roots are eligible for removal. The Free Disk Space action uses
+this mode for completed and canceled ticket worktrees, so an ignored file such
+as a local environment file stops that cleanup and remains in place. If Git
+yields while a worktree is being removed, a replacement directory is left
+alone. The daemon also waits for detached Git and GitHub children during
+shutdown, and startup recovery refuses to overwrite a target that has advanced
+since a completed fallback copy.
 
 Only select repositories you trust. LoopTroop preserves repository-local Git
 configuration, including `core.sshCommand`, so custom SSH wrappers keep working.

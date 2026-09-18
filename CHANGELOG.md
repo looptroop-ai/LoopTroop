@@ -10,6 +10,7 @@ Unreleased changes appear first and represent commits that have not yet been inc
 > Changes merged since the last versioned release that have not yet shipped in a tagged version.
 
 ### Summary
+- Bead approval and YAML recovery now reject incomplete input and preserve explicit clears and scalar text across the editor and server.
 - Canonical OpenCode installation directories (`~/.opencode/bin`) are now trusted by default for the `opencode` binary across platforms, preventing execution refusals when OpenCode release archives are unpacked under root while preserving directory ownership and file write-permission checks.
 - The repository now exposes its documented install-channel catalog as JSON, so the website can verify consolidated installation docs against the same channel table the published-release smoke uses.
 - Log history refreshes loaded pages and keeps model tabs and milestones available; model selection and setup disclosures are accessible, and refused clipboard copies show a visible error.
@@ -258,6 +259,8 @@ Unreleased changes appear first and represent commits that have not yet been inc
 - Three aliases re-exported for a question-diff type that no longer exists, the three helpers behind them, an execution-setup runtime-path list with no reader, and an execution-setup barrel re-exporting three artifact names every caller already imports from their own module.
 
 ### Fixed
+- Fixed bead approval accepting records without a status or priority, and fixed malformed bead JSON bodies surfacing as server errors instead of a stable 400 response. The client now gives canonical non-nullish empty fields precedence over legacy aliases, so an explicit clear is not resurrected during editing.
+- Fixed compact nested YAML block scalars, quoted sequence keys, and reserved-indicator recovery rewriting literal or folded text. Repair warnings still describe the formatting repair while the scalar payload remains unchanged.
 - Fixed bead saves caching the draft before server canonicalization. The response now carries the exact records and JSONL that were written, including derived dependency edges and preserved command metadata, with the matching content hash; explicit canonical empty values still clear their aliases.
 - Fixed approval accepting executable beads without `acceptanceCriteria`, `tests` or `targetFiles`, and fixed malformed nested Manual QA evidence reaching the adapter's unguarded dereferences. Authoritative bead reads now reject duplicate IDs instead of letting scheduler updates address several rows at once.
 - Fixed YAML repair rewriting literal content in compact nested-sequence and standalone block scalars, and changing valid folded `free_text` when an unrelated sibling needed repair. Repairs still change formatting only; the emitted scalar text is retained.

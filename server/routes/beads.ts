@@ -289,7 +289,12 @@ beadsRouter.put('/tickets/:id/beads', async (c) => {
   }
 
   const flow = c.req.query('flow')
-  const rawBody: unknown = await c.req.json()
+  let rawBody: unknown
+  try {
+    rawBody = await c.req.json()
+  } catch {
+    return c.json({ error: 'Invalid JSON body' }, 400)
+  }
   const body = isRecord(rawBody) && Array.isArray(rawBody.beads) ? rawBody.beads : rawBody
   if (!Array.isArray(body)) {
     return c.json({ error: 'Request body must be a JSON array' }, 400)

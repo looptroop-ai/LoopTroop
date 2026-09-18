@@ -174,7 +174,10 @@ function getXmlBlockScalarBaseIndent(line: string): number {
   const trimmed = withoutComment.trim()
   if (!MAPPING_BLOCK_SCALAR_HEADER.test(trimmed)) {
     if (/^(?:-\s+)+[>|]/.test(trimmed) && /^-\s+-/.test(trimmed)) {
-      return line.lastIndexOf('-') + 1
+      const sequencePrefix = withoutComment.match(/^(\s*(?:-\s+)+)/)?.[1]
+      return sequencePrefix?.lastIndexOf('-') !== undefined
+        ? sequencePrefix.lastIndexOf('-') + 1
+        : indent
     }
     return indent
   }
@@ -635,7 +638,7 @@ function applyInlineRepairPipeline(candidate: string, options?: ParseYamlOrJsonC
 // The test suite hashes the complete yamlRepair/yamlUtils sources after
 // normalising this literal. Keeping only the resulting marker at runtime
 // makes cache invalidation work in bundled builds without reading source files.
-export const REPAIR_PIPELINE_VERSION = '37b6ce17f123c5bf980811b3e6ca6246a14921f646210ef32925fa3ef1d5283d'
+export const REPAIR_PIPELINE_VERSION = '093261e71104cd599ed4a852b81954222396505307fb76efe808d0adc8d4e197'
 
 /** Parse or reuse a candidate while preserving per-call repairs and mutable result ownership. */
 export function parseYamlOrJsonCandidate(
@@ -824,19 +827,7 @@ function parseYamlOrJsonCandidateUncached(
       // (for example `owner: @team`) needs quoting; converting it to a literal
       // scalar would change the value's whitespace semantics.
       const reservedIndicatorPreRepaired = repairYamlReservedIndicatorScalars(sequenceItemPrimaryKeyPreRepaired.yaml)
-      if (reservedIndicatorPreRepaired !== sequenceItemPrimaryKeyPreRepaired.yaml) {
-        try {
-          return finalizeParsedCandidate(jsYaml.load(reservedIndicatorPreRepaired), {
-            inlineYaml: inlineSequencePreRepaired !== candidate || inlineKeyPreRepaired !== inlineSequencePreRepaired,
-            mappingKeyColonSpace: mappingKeyColonSpacePreRepaired !== inlineKeyPreRepaired,
-            wrappedPlainListScalar: wrappedPlainListScalarPreRepaired !== mappingKeyColonSpacePreRepaired,
-            plainScalarColon: plainScalarColonPreRepaired !== wrappedPlainListScalarPreRepaired,
-            sequenceItemPrimaryKey: sequenceItemPrimaryKeyPreRepaired.repairs,
-            reservedIndicator: true,
-          })
-        } catch { /* free_text and later repairs may still be needed */ }
-      }
-      const freeTextPreRepaired = repairYamlFreeTextScalars(sequenceItemPrimaryKeyPreRepaired.yaml)
+      const freeTextPreRepaired = repairYamlFreeTextScalars(reservedIndicatorPreRepaired)
       const preParseRepaired = applyNestedMappingRepair(freeTextPreRepaired)
 
       // A valid YAML document is authoritative. Some repairs are deliberately
@@ -849,11 +840,20 @@ function parseYamlOrJsonCandidateUncached(
         rawParsed = jsYaml.load(candidate)
         rawParsedSuccessfully = true
       } catch { /* the repair cascade below handles malformed YAML */ }
+      let reservedParsed: unknown
+      let reservedParsedSuccessfully = false
+      if (reservedIndicatorPreRepaired !== sequenceItemPrimaryKeyPreRepaired.yaml) {
+        try {
+          reservedParsed = jsYaml.load(reservedIndicatorPreRepaired)
+          reservedParsedSuccessfully = true
+        } catch { /* nested/free_text repairs may still rescue the candidate */ }
+      }
 
       if (rawParsedSuccessfully) {
         const inlineYamlRepaired = inlineSequencePreRepaired !== candidate
           || inlineKeyPreRepaired !== inlineSequencePreRepaired
         const schemaRepairNeeded = inlineYamlRepaired
+          || reservedIndicatorPreRepaired !== sequenceItemPrimaryKeyPreRepaired.yaml
           || (preParseRepaired !== candidate && hasHeaderStyleListScalar(candidate))
           || (preParseRepaired !== candidate && hasNonStringFreeText(rawParsed))
         if (!schemaRepairNeeded) return rawParsed
@@ -861,7 +861,10 @@ function parseYamlOrJsonCandidateUncached(
         if (preParseRepaired !== candidate) {
           try {
             const repairedParsed = jsYaml.load(preParseRepaired)
-            preserveRawFreeTextValues(rawParsed, repairedParsed)
+            preserveRawFreeTextValues(
+              reservedParsedSuccessfully ? reservedParsed : rawParsed,
+              repairedParsed,
+            )
             return finalizeParsedCandidate(repairedParsed, {
               inlineYaml: inlineYamlRepaired,
               mappingKeyColonSpace: mappingKeyColonSpacePreRepaired !== inlineKeyPreRepaired,
@@ -869,7 +872,8 @@ function parseYamlOrJsonCandidateUncached(
               plainScalarColon: plainScalarColonPreRepaired !== wrappedPlainListScalarPreRepaired,
               sequenceItemPrimaryKey: sequenceItemPrimaryKeyPreRepaired.repairs,
               nestedMappingChildren: preParseRepaired !== freeTextPreRepaired,
-              freeTextScalar: freeTextPreRepaired !== sequenceItemPrimaryKeyPreRepaired.yaml,
+              freeTextScalar: freeTextPreRepaired !== reservedIndicatorPreRepaired,
+              reservedIndicator: reservedIndicatorPreRepaired !== sequenceItemPrimaryKeyPreRepaired.yaml,
             })
           } catch { /* preserve the valid raw parse if a schema repair is unsafe */ }
         }
@@ -878,14 +882,20 @@ function parseYamlOrJsonCandidateUncached(
 
       if (preParseRepaired !== candidate) {
         try {
-          return finalizeParsedCandidate(jsYaml.load(preParseRepaired), {
+          const repairedParsed = jsYaml.load(preParseRepaired)
+          preserveRawFreeTextValues(
+            reservedParsedSuccessfully ? reservedParsed : rawParsed,
+            repairedParsed,
+          )
+          return finalizeParsedCandidate(repairedParsed, {
             inlineYaml: inlineSequencePreRepaired !== candidate || inlineKeyPreRepaired !== inlineSequencePreRepaired,
             mappingKeyColonSpace: mappingKeyColonSpacePreRepaired !== inlineKeyPreRepaired,
             wrappedPlainListScalar: wrappedPlainListScalarPreRepaired !== mappingKeyColonSpacePreRepaired,
             plainScalarColon: plainScalarColonPreRepaired !== wrappedPlainListScalarPreRepaired,
             sequenceItemPrimaryKey: sequenceItemPrimaryKeyPreRepaired.repairs,
             nestedMappingChildren: preParseRepaired !== freeTextPreRepaired,
-            freeTextScalar: freeTextPreRepaired !== sequenceItemPrimaryKeyPreRepaired.yaml,
+            freeTextScalar: freeTextPreRepaired !== reservedIndicatorPreRepaired,
+            reservedIndicator: reservedIndicatorPreRepaired !== sequenceItemPrimaryKeyPreRepaired.yaml,
           })
         } catch { /* fall through to the original input and later repairs */ }
       }

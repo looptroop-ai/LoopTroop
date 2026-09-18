@@ -191,17 +191,23 @@ describe.concurrent('parseYamlOrJsonCandidate', () => {
   })
 
   it('preserves literal content in a compact nested sequence block scalar', () => {
+    const repairWarnings: string[] = []
     expect(parseYamlOrJsonCandidate([
       'owner: @team',
       'items:',
-      '  - - |',
-      '      <div>',
-      '      hello',
-      '      </div>',
-    ].join('\n'))).toEqual({
+      '  - - |- # sub-task',
+      '      title: hello: world',
+      '      command: 1',
+      '      command: 1',
+      'after: 1',
+      'after: 1',
+    ].join('\n'), { repairWarnings })).toEqual({
       owner: '@team',
-      items: [['<div>\nhello\n</div>\n']],
+      items: [['title: hello: world\ncommand: 1\ncommand: 1']],
+      after: 1,
     })
+    expect(repairWarnings).toContain('Removed duplicate YAML mapping keys before parsing.')
+    expect(repairWarnings).toContain('Quoted plain YAML scalars that began with reserved indicator characters (` or @) before reparsing.')
   })
 
   it('preserves literal content in a standalone block scalar', () => {
@@ -219,14 +225,42 @@ describe.concurrent('parseYamlOrJsonCandidate', () => {
 
   it('converts only non-string free text while preserving a valid folded answer', () => {
     const parsed = parseYamlOrJsonCandidate([
+      'owner: @team',
       'free_text: false',
       'other:',
       '  free_text: first',
       '    second',
     ].join('\n')) as { free_text: string; other: { free_text: string } }
 
+    expect(parsed).toMatchObject({ owner: '@team' })
     expect(parsed.free_text).toBe('false')
     expect(parsed.other.free_text).toBe('first second')
+  })
+
+  it('repairs same-indent nested mappings and free text after reserved-indicator quoting', () => {
+    const repairWarnings: string[] = []
+    expect(parseYamlOrJsonCandidate([
+      'generated_by:',
+      'winner_model: model',
+      'generated_at: today',
+      'canonicalization: normalized',
+      'owner: @team',
+      'free_text: false',
+    ].join('\n'), {
+      nestedMappingChildren: interviewNestedMappingChildren,
+      repairWarnings,
+    })).toEqual({
+      generated_by: {
+        winner_model: 'model',
+        generated_at: 'today',
+        canonicalization: 'normalized',
+      },
+      owner: '@team',
+      free_text: 'false',
+    })
+    expect(repairWarnings).toContain('Quoted plain YAML scalars that began with reserved indicator characters (` or @) before reparsing.')
+    expect(repairWarnings).toContain('Repaired inconsistent YAML indentation for nested mapping children.')
+    expect(repairWarnings).toContain('Repaired YAML free_text scalar formatting before parsing.')
   })
 
   it('keeps a valid folded free_text value when an unrelated sibling needs repair', () => {

@@ -111,8 +111,14 @@ export function approveBeadsDocument(ticketId: string, expectedContentSha256: st
     const line = itemLines[index] ?? index + 1
     const shapeProblem = describeBeadShapeProblem(record)
     if (shapeProblem) throw new BeadPlanValidationError(`Bead at line ${line} ${shapeProblem}`)
-    if (record.status !== undefined && !resolveBeadStatus(record.status)) {
+    if (typeof record.status !== 'string' || !resolveBeadStatus(record.status)) {
+      if (record.status === undefined) {
+        throw new BeadPlanValidationError(`Bead at line ${line} is missing a valid "status" field`)
+      }
       throw new BeadPlanValidationError(`Bead at line ${line} has an unrecognised status ${JSON.stringify(record.status)}`)
+    }
+    if (record.priority === undefined) {
+      throw new BeadPlanValidationError(`Bead at line ${line} is missing a valid "priority" field`)
     }
     if (typeof record.title !== 'string' || !record.title.trim()) {
       throw new BeadPlanValidationError(`Bead at line ${line} is missing a valid "title" field`)

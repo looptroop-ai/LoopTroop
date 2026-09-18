@@ -123,3 +123,27 @@ comment was dismissed by this change.
 The shared CI note for this pass is recorded in `CHANGELOG.md`: native
 canonical paths and isolated integration tests cover the fixture-sensitive
 routes without changing the shared `node_modules` symlink.
+
+## Round 3 dispositions and implementation
+
+The fresh round-3 comments were rechecked against this branch. The following
+items are implemented here unless explicitly marked as an accepted contract or
+root-owned website work. No E2E or full lifecycle test is claimed.
+
+| ID | Disposition | Evidence and action |
+| --- | --- | --- |
+| 5726611317 | Accepted contract; client fixed | Canonical non-nullish values, including explicit empty strings, lists, and records, remain authoritative over aliases. Client readers, guidance/command checks, and alias stripping now match the server; conflicting-alias rejection is not added. |
+| 5726634915 | Mixed — parser fixed; website root-owned | Compact nested sequence headers enter the shared block-scalar guard before list fast paths, structural dash detection ignores comment/chomping hyphens, and the exact scalar body survives colon/dedup repairs. The JSONL-only PUT 422 and `X-Edit-Surface` documentation remains root-owned. The exact 422 payload is `{ error: "Damaged bead plan must be repaired in JSONL mode", details: "The structured editor cannot preserve every stored row.", malformedLines: number[], unrepresentableLines: number[] }`. |
+| 5726705885 | Fixed or accepted design | Quoted sequence mapping keys now retain their block body boundary; approval rejects missing status or priority without defaults; client canonical-empty precedence is covered by focused tests. |
+| 5726962772 | Fixed | Reserved-indicator repair no longer returns before nested-mapping and `free_text` repairs. Valid folded text is restored from the successful reserved-only parse, while non-string `free_text` receives the schema-directed string repair; warning regressions cover both paths. |
+| 5727030583 | Fixed | Malformed or empty JSON bodies return HTTP 400 with `{ error: "Invalid JSON body" }` and do not write a ticket file; valid non-array JSON keeps its existing 400 response. |
+| 5725459146 | Fixed; external rerun pending | Codacy action-required annotations from the captured review are addressed by the branch fixes; the provider must rerun on the final commit. |
+| 5725705604 | Assessed; no expansion | Sonar's two regex-complexity warnings are non-gating. The compact-header changes use bounded literal regexes and a comment-stripped structural prefix; no broad refactor or suppression was added. |
+
+Focused verification on this branch:
+
+- `npx vitest run shared/__tests__/yamlRepair.test.ts server/structuredOutput/__tests__/yamlUtils.test.ts src/lib/__tests__/beadsDocument.test.ts server/phases/beads/__tests__/document.test.ts server/routes/__tests__/beads.test.ts` — 5 files, 504 tests passed.
+- `git diff --check` — passed.
+
+The root integrator owns the full aggregate checks, website docs, shared CI, and
+the final external review reruns.

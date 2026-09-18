@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest'
 import * as jsYaml from 'js-yaml'
-import { BLOCK_SCALAR_HEADER, BLOCK_SCALAR_VALUE, LIST_BLOCK_SCALAR_HEADER, MAPPING_BLOCK_SCALAR_HEADER, repairYamlDoubleQuotedInvalidEscapes, repairYamlDoubleQuotedScalarInnerQuotes, repairYamlDuplicateKeys, repairYamlFreeTextScalars, repairYamlIndentation, repairYamlInlineKeys, repairYamlInlineSequenceParents, repairYamlListDashSpace, repairYamlMappingKeyColonSpace, repairYamlNestedMappingChildren, repairYamlPlainScalarColons, repairYamlQuotedScalarFragments, repairYamlReservedIndicatorScalars, repairYamlSequenceEntryIndent, repairYamlSequenceItemPrimaryKeys, repairYamlTypeUnionScalars, repairYamlUnclosedQuotes, repairYamlWrappedPlainListScalars, stripCodeFences } from '../yamlRepair'
+import { BLOCK_SCALAR_HEADER, BLOCK_SCALAR_VALUE, isBlockScalarHeaderLine, LIST_BLOCK_SCALAR_HEADER, MAPPING_BLOCK_SCALAR_HEADER, repairYamlDoubleQuotedInvalidEscapes, repairYamlDoubleQuotedScalarInnerQuotes, repairYamlDuplicateKeys, repairYamlFreeTextScalars, repairYamlIndentation, repairYamlInlineKeys, repairYamlInlineSequenceParents, repairYamlListDashSpace, repairYamlMappingKeyColonSpace, repairYamlNestedMappingChildren, repairYamlPlainScalarColons, repairYamlQuotedScalarFragments, repairYamlReservedIndicatorScalars, repairYamlSequenceEntryIndent, repairYamlSequenceItemPrimaryKeys, repairYamlTypeUnionScalars, repairYamlUnclosedQuotes, repairYamlWrappedPlainListScalars, stripCodeFences } from '../yamlRepair'
 
 describe.concurrent('repairYamlListDashSpace', () => {
   it.each([
@@ -1648,6 +1648,46 @@ describe.concurrent('repairYamlDuplicateKeys — block scalars', () => {
     expect(jsYaml.load(expected)).toEqual([{ t: 'name: a\nname: a\n', z: 9 }])
   })
 
+  it('leaves duplicate-looking text inside a compact nested sequence scalar alone', () => {
+    const input = [
+      'items:',
+      '  - - |- # sub-task',
+      '      title: hello: world',
+      '      command: 1',
+      '      command: 1',
+      '    status: done',
+      'status: done',
+      'status: done',
+    ].join('\n')
+
+    expect(repairYamlDuplicateKeys(input)).toBe([
+      'items:',
+      '  - - |- # sub-task',
+      '      title: hello: world',
+      '      command: 1',
+      '      command: 1',
+      '    status: done',
+      'status: done',
+    ].join('\n'))
+  })
+
+  it('resumes duplicate-key repair after a quoted sequence mapping scalar', () => {
+    const input = [
+      'items:',
+      '  - "script": |',
+      '      echo one',
+      '    status: done',
+      '    status: done',
+    ].join('\n')
+
+    expect(repairYamlDuplicateKeys(input)).toBe([
+      'items:',
+      '  - "script": |',
+      '      echo one',
+      '    status: done',
+    ].join('\n'))
+  })
+
   it.each(['# keep me\nz: 9', '# keep me'])('preserves external comments after a duplicate scalar before %s', (tail) => {
     const input = `t: |\n  one\nt: |\n  one\n${tail}`
 
@@ -1897,6 +1937,11 @@ describe.concurrent('block scalar headers YAML allows', () => {
     expect(BLOCK_SCALAR_HEADER.test('description: |2')).toBe(true)
     expect(BLOCK_SCALAR_HEADER.test('- |2')).toBe(true)
     expect(BLOCK_SCALAR_HEADER.test('description: not a block')).toBe(false)
+  })
+
+  it.each(['- - |', '- - |- # nested body'])('recognizes compact nested sequence headers through the shared guard: %s', (header) => {
+    expect(LIST_BLOCK_SCALAR_HEADER.test(header)).toBe(true)
+    expect(isBlockScalarHeaderLine(header)).toBe(true)
   })
 
   it.each([

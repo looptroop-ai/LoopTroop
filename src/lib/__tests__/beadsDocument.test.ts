@@ -158,12 +158,12 @@ describe('the bead field readers', () => {
     expect(readBeadStringList({ prd_references: ['c'] }, 'prdRefs', 'display')).toEqual(['c'])
   })
 
-  it('does not let an empty canonical value hide a populated alias', () => {
+  it('keeps an explicit empty canonical value over a populated alias', () => {
     expect(readBeadStringList({ prdRefs: [], prd_refs: ['from-alias'] }, 'prdRefs', 'display'))
-      .toEqual(['from-alias'])
-    expect(readBeadString({ title: '', issue_type: 'bug' }, 'issueType', 'display')).toBe('bug')
+      .toEqual([])
+    expect(readBeadString({ issueType: '', issue_type: 'bug' }, 'issueType', 'display')).toBe('')
     expect(readBeadCommands({ testCommands: [], test_commands: [{ mode: 'shell', shell: 'posix', script: 'npm test', cwd: '.', env: {} }] }, 'testCommands'))
-      .toEqual([expect.objectContaining({ mode: 'shell', script: 'npm test' })])
+      .toEqual([])
   })
 
   it('reads the camelCase dependency spelling, which only the editor used to accept', () => {
@@ -343,7 +343,6 @@ describe('the superseded spellings', () => {
       id: 'B-1',
       prdRefs: ['NEW'],
       contextGuidance: { patterns: [], anti_patterns: [] },
-      context_guidance: { patterns: ['stale'] },
       somethingUnknown: { kept: true },
     })
   })
@@ -360,6 +359,17 @@ describe('the superseded spellings', () => {
       id: 'B-1',
       qaOrigin: null,
       qa_origin: { sourceItems: [] },
+    })
+  })
+
+  it('drops a superseded alias when the canonical value is an explicit empty list', () => {
+    expect(stripSupersededBeadAliases({
+      id: 'B-1',
+      prdRefs: [],
+      prd_refs: ['stale'],
+    } as unknown as RawBead)).toEqual({
+      id: 'B-1',
+      prdRefs: [],
     })
   })
 
@@ -387,12 +397,12 @@ describe('hasUnstructuredBeadGuidance', () => {
     expect(hasUnstructuredBeadGuidance(bead as RawBead)).toBe(true)
   })
 
-  it('reports an unrepresentable alias when the canonical command list is empty', () => {
+  it('does not report an alias hidden by an explicit canonical command clear', () => {
     expect(hasUnrepresentableBeadCommands({
       id: 'B-1',
       testCommands: [],
       test_commands: ['npm test'],
-    } as never)).toBe(true)
+    } as never)).toBe(false)
   })
 
   it.each([
@@ -400,15 +410,18 @@ describe('hasUnstructuredBeadGuidance', () => {
     ['a record whose lists are not lists', { contextGuidance: { patterns: 'do X' } }],
     ['a record holding a key the editor has no field for', { contextGuidance: { rationale: 'because' } }],
     ['a list holding something that is not a string', { contextGuidance: { patterns: [1] } }],
-    ['free text under the other spelling of a structured record', {
-      contextGuidance: { patterns: [], anti_patterns: [] },
-      context_guidance: 'free text',
-    }],
   ])('reports %s', (_, bead) => {
     // Everything here reads as empty pattern lists in the editor and is written
     // back as empty lists on save: the same silent replacement, one shape deeper
     // each time.
     expect(hasUnstructuredBeadGuidance(bead as RawBead)).toBe(true)
+  })
+
+  it('does not report an alias hidden by an explicit canonical guidance object', () => {
+    expect(hasUnstructuredBeadGuidance({
+      contextGuidance: { patterns: [], anti_patterns: [] },
+      context_guidance: 'free text',
+    } as unknown as RawBead)).toBe(false)
   })
 
   it.each([

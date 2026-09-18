@@ -9,14 +9,14 @@ does not imply that an unreviewed finding is complete.
 
 | Finding | Status | Evidence and permanent coverage | Limits |
 | --- | --- | --- | --- |
-| P02 | PASS, final pending | `/tmp/looptroop-parser-evidence.md`; block scalar bodies, including list-item bodies, remain byte-identical through repair. | No E2E or full lifecycle run. |
+| P02 | PASS, final pending | `/tmp/looptroop-parser-evidence.md`; block scalar bodies, including compact nested sequence bodies and list-item bodies, remain byte-identical through repair even when headers carry comments or chomping indicators. | No E2E or full lifecycle run. |
 | P03 | PASS, final pending | `/tmp/looptroop-parser-evidence.md`; raw valid YAML has authority and nested sequence entries stay nested during sibling repair. | No E2E or full lifecycle run. |
 | P05 | PASS, final pending | `/tmp/looptroop-parser-evidence.md`; Double-quoted escape repair recognizes block-scalar headers with trailing comments and preserves their bodies. | No E2E or full lifecycle run. |
 | P06 | PASS, final pending | `/tmp/looptroop-parser-evidence.md`; uncertain flow, quoted, anchor, and tag nodes remain byte-for-byte unchanged. | No E2E or full lifecycle run. |
 | P07 | PASS, final pending | `/tmp/looptroop-parser-evidence.md`; CRLF and lone CR normalize before parsing and cache-key creation. | No E2E or full lifecycle run. |
 | P08 | PASS, final pending | `/tmp/looptroop-parser-evidence.md`; canonical alias precedence is preserved across buckets and payload order, with one conflict warning. | No E2E or full lifecycle run. |
 | P09 | PASS, final pending | `/tmp/looptroop-parser-evidence.md`; XML-looking lines are stripped only outside literal blocks and warnings name only removed tags. | No E2E or full lifecycle run. |
-| P10 | PASS, final pending | `/tmp/looptroop-parser-evidence.md`; list-item block-scalar indentation uses the mapping key column and preserves siblings. | No E2E or full lifecycle run. |
+| P10 | PASS, final pending | `/tmp/looptroop-parser-evidence.md`; list-item and compact nested block-scalar indentation uses the owning key/sequence column, quoted sequence keys resume sibling tracking, and duplicate-looking body lines stay inside the scalar. | No E2E or full lifecycle run. |
 | P16.1 | PASS, final pending | `/tmp/looptroop-parser-evidence.md`; fallback interview batch attempts retain candidate warnings. | No E2E or full lifecycle run. |
 | P16.2 | PASS, final pending | `/tmp/looptroop-parser-evidence.md`; PRD warnings distinguish reconstructed item changes from document-only changes. | No E2E or full lifecycle run. |
 | P17.1 | PASS, final pending | `/tmp/looptroop-parser-evidence.md`; YAML and JSON fence labels are case-insensitive. | No E2E or full lifecycle run. |
@@ -34,7 +34,7 @@ workspace displays.
 | Finding | Status | Evidence and permanent coverage | Limits |
 | --- | --- | --- | --- |
 | G02 | PASS, final pending | `/tmp/looptroop-beads-evidence.md`; authoritative tracker reads fail closed before mutation or false `ALL_BEADS_DONE`, while valid rows, `runtime.beadsDiagnostics`, and board/workspace repair warnings remain visible. | No E2E or full lifecycle run. |
-| W02 | PASS, final pending | `/tmp/looptroop-beads-evidence.md`; bead route, document, and graph tests treat `blocked_by` as authoritative and derive inverse `blocks` edges on approval and save. | No E2E or full lifecycle run. |
+| W02 | PASS, final pending | `/tmp/looptroop-beads-evidence.md`; bead route, document, and graph tests treat `blocked_by` as authoritative and derive inverse `blocks` edges on approval and save. Explicit stale inverse entries remain an intentional accepted input contract and are not rejected by this PR. | No E2E or full lifecycle run. |
 | P01 | PASS, final pending | `/tmp/looptroop-beads-evidence.md`; approval and editor tests validate structured `CommandSpec` entries, do not infer shell commands from bare strings, and show repair reasons for unrepresentable commands or damaged rows. | No E2E or full lifecycle run. |
 | P04/P14 | PASS, final pending | `/tmp/looptroop-beads-evidence.md`; the immutable original draft baseline hash survives refetch, edit, autosave, reload, save, restore, and approve; stale writes return a typed `409` conflict. | No E2E or full lifecycle run. |
 | P11 | PASS, final pending | `/tmp/looptroop-beads-evidence.md`; unknown top-level and dependency metadata survives canonicalization, and JSONL `sourceLines` metadata in the PUT body remains strictly increasing positive safe integers with the exact item count, alongside original JSONL source lines and field diagnostics. | No E2E or full lifecycle run. |
@@ -77,3 +77,16 @@ same behaviour:
 - Parser repairs keep the prior tag grammar and dash-list whitespace while
   using bounded/linear scans; selective `free_text` repair changes only
   non-string values and leaves valid prose untouched.
+
+Round 3 implementation follow-up: compact nested headers now enter the shared
+block-scalar guard before list fast paths, structural dashes are found without
+confusing a chomping `-` or comment hyphen, quoted sequence keys retain their
+body boundary, and reserved-indicator repairs continue through nested-mapping
+and non-string `free_text` handling while preserving valid folded strings.
+Approval requires a recognized status and present priority; malformed PUT JSON
+returns `{ error: "Invalid JSON body" }` with HTTP 400. Client readers and alias
+stripping use canonical non-nullish values, including explicit empty strings,
+lists, and records. The submitted `blocked_by`/derived `blocks` contract is
+unchanged: stale explicit inverse data is tolerated intentionally. Website
+documentation for the JSONL-only 422 repair gate and edit-surface header is
+owned by the root integrator.

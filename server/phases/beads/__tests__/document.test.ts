@@ -36,7 +36,7 @@ const approvalArrays = {
 describe('contained bead approval document', () => {
   it('atomically stamps the document while retaining the reviewed hash and updated snapshot', () => {
     const { beadsPath } = fixture()
-    const content = JSON.stringify({ id: 'one', title: 'A bead', ...approvalArrays, testCommands: [], testCommandReason: 'Manual verification.' }) + '\n'
+    const content = JSON.stringify({ id: 'one', title: 'A bead', status: 'pending', priority: 1, ...approvalArrays, testCommands: [], testCommandReason: 'Manual verification.' }) + '\n'
     writeFileSync(beadsPath, content)
     const reviewedHash = contentSha256(content)
     const approved = approveBeadsDocument('1:DEMO-1', reviewedHash)
@@ -103,6 +103,24 @@ describe('contained bead approval document', () => {
 
     expect(() => approveBeadsDocument('1:DEMO-1', contentSha256(invalid))).toThrow(/priority|testCommands|dependency/i)
     expect(readFileSync(beadsPath, 'utf8')).toBe(invalid)
+    expect(writeTicketFile).not.toHaveBeenCalled()
+  })
+
+  it.each([
+    ['priority', { status: 'pending' }],
+    ['status', { priority: 1 }],
+  ])('rejects a bead missing %s before approval writes', (field, missing) => {
+    const { beadsPath } = fixture()
+    const content = JSON.stringify({
+      id: 'one', title: 'A bead', ...missing,
+      ...approvalArrays,
+      testCommands: [], testCommandReason: 'Manual verification.',
+      dependencies: { blocked_by: [], blocks: [] },
+    }) + '\n'
+    writeFileSync(beadsPath, content)
+
+    expect(() => approveBeadsDocument('1:DEMO-1', contentSha256(content))).toThrow(new RegExp(`missing a valid "${field}" field`))
+    expect(readFileSync(beadsPath, 'utf8')).toBe(content)
     expect(writeTicketFile).not.toHaveBeenCalled()
   })
 

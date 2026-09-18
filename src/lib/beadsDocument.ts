@@ -130,15 +130,7 @@ export type BeadField = keyof typeof BEAD_FIELD_ALIASES
 export const SUPERSEDED_BEAD_FIELD_ALIASES: readonly string[] =
   Object.entries(BEAD_FIELD_ALIASES).flatMap(([field, aliases]) => aliases.filter((alias) => alias !== field))
 
-/**
- * A nullish value is absent, and an empty scalar/list is a cleared field.
- *
- * The shared guard intentionally only answers the JSON question (nullish or
- * not). Bead aliases need the editor question too: a canonical `[]` from a
- * partial writer must not hide a populated `prd_refs` value that the next
- * reader would otherwise show. Keeping this policy local avoids changing the
- * meaning of the guard for unrelated artifacts.
- */
+/** Whether a value has content for representability checks. */
 function carriesBeadValue(value: unknown): boolean {
   if (!carriesValue(value)) return false
   if (typeof value === 'string') return value.trim().length > 0
@@ -148,8 +140,10 @@ function carriesBeadValue(value: unknown): boolean {
 }
 
 function firstMeaningfulValue(values: unknown[]): unknown {
-  return values.find(carriesBeadValue)
-    ?? values.find(carriesValue)
+  // Nullish values are absent. Empty strings and lists are explicit clears, so
+  // a canonical empty value still wins over a populated legacy alias. This
+  // matches the server canonicalisation contract.
+  return values.find(carriesValue)
 }
 
 /**
@@ -173,11 +167,10 @@ export function stripSupersededBeadAliases<T extends RawBead>(bead: T): T {
   return Object.fromEntries(
     Object.entries(bead).filter(([key]) => {
       const canonical = canonicalFor.get(key)
-      // Kept unless the canonical name carries the value: an alias that is the
-      // only copy there is is not superseded by anything. `null`, blank strings
-      // and empty lists carry nothing — they are what a partial writer leaves
-      // when it clears a field — so they must not delete a populated alias.
-      return canonical === undefined || !carriesBeadValue(bead[canonical])
+      // Kept unless the canonical name is absent or nullish. Empty strings and
+      // lists are explicit clears and must delete a stale alias as the server
+      // does, rather than resurrecting its old value in the editor.
+      return canonical === undefined || !carriesValue(bead[canonical])
     }),
   ) as T
 }
@@ -207,21 +200,20 @@ export function hasUnrepresentableBeadCommands(bead: RawBead): boolean {
  * malformed-line handling exists to prevent.
  */
 export function hasUnstructuredBeadGuidance(bead: RawBead): boolean {
-  return candidates(bead, 'contextGuidance').some((value) => {
-    if (!carriesBeadValue(value)) return false
-    // Free text, or a list of guidance strings: both read as empty lists and
-    // save as them.
-    if (!isRecord(value)) return true
-    // A record is only representable if the editor's two fields are all it
-    // holds and both are lists of strings. `{ patterns: 'text' }` and
-    // `{ rationale: '…' }` are read as empty and written back as empty, which
-    // is the same silent replacement one shape deeper.
-    return Object.entries(value).some(([nested, nestedValue]) => {
-      const known = GUIDANCE_ALIASES.patterns.includes(nested as never)
-        || GUIDANCE_ALIASES.anti_patterns.includes(nested as never)
-      if (!known) return true
-      return !Array.isArray(nestedValue) || nestedValue.some((item) => typeof item !== 'string')
-    })
+  const value = firstMeaningfulValue(candidates(bead, 'contextGuidance'))
+  if (!carriesBeadValue(value)) return false
+  // Free text, or a list of guidance strings: both read as empty lists and
+  // save as them.
+  if (!isRecord(value)) return true
+  // A record is only representable if the editor's two fields are all it
+  // holds and both are lists of strings. `{ patterns: 'text' }` and
+  // `{ rationale: '…' }` are read as empty and written back as empty, which
+  // is the same silent replacement one shape deeper.
+  return Object.entries(value).some(([nested, nestedValue]) => {
+    const known = GUIDANCE_ALIASES.patterns.includes(nested as never)
+      || GUIDANCE_ALIASES.anti_patterns.includes(nested as never)
+    if (!known) return true
+    return !Array.isArray(nestedValue) || nestedValue.some((item) => typeof item !== 'string')
   })
 }
 
@@ -260,7 +252,7 @@ function candidates(bead: RawBead, field: BeadField): unknown[] {
 
 function readStringList(values: unknown[], policy: BeadReadPolicy): string[] {
   const arrays = values.filter((value): value is unknown[] => Array.isArray(value))
-  const value = arrays.find((items) => items.length > 0) ?? arrays[0]
+  const value = arrays[0]
   if (!value) return []
   const strings = value.filter((item): item is string => typeof item === 'string')
   return policy === 'verbatim'
@@ -285,7 +277,7 @@ export function readBeadStringList(bead: RawBead, field: BeadField, policy: Bead
 
 export function readBeadString(bead: RawBead, field: BeadField, policy: BeadReadPolicy): string {
   const values = candidates(bead, field).filter((value): value is string => typeof value === 'string')
-  const value = values.find((candidate) => candidate.trim().length > 0) ?? values[0]
+  const value = values[0]
   if (value === undefined) return ''
   return policy === 'verbatim' ? value : value.trim()
 }

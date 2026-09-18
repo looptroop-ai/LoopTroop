@@ -30,7 +30,9 @@ export const BLOCK_SCALAR_VALUE = /^\s*([>|](?:[+-][1-9]?|[1-9][+-]?)?)(?:\s+#.*
 /** A same-line header or an indented standalone scalar indicator. */
 export function isBlockScalarHeaderLine(line: string): boolean {
   const trimmed = line.trim()
-  return BLOCK_SCALAR_HEADER.test(trimmed) || BLOCK_SCALAR_VALUE.test(trimmed)
+  return BLOCK_SCALAR_HEADER.test(trimmed)
+    || LIST_BLOCK_SCALAR_HEADER.test(trimmed)
+    || BLOCK_SCALAR_VALUE.test(trimmed)
 }
 
 /**
@@ -649,7 +651,10 @@ function getBlockScalarBaseIndent(line: string): number {
     // A compact nested sequence (`- - |`) owns its body at the final dash,
     // while a plain `- |` keeps the sequence indentation as its base.
     if (LIST_BLOCK_SCALAR_HEADER.test(trimmed) && /^-\s+-/.test(trimmed)) {
-      return line.lastIndexOf('-') + 1
+      const sequencePrefix = withoutComment.match(/^(\s*(?:-\s+)+)/)?.[1]
+      return sequencePrefix?.lastIndexOf('-') !== undefined
+        ? sequencePrefix.lastIndexOf('-') + 1
+        : indent
     }
     return indent
   }
@@ -1208,7 +1213,7 @@ const DUPLICATE_KEYS_BLOCK_SCALAR_PATTERN = BLOCK_SCALAR_HEADER
 function getDuplicateKeysBlockScalarBaseIndent(line: string): number {
   const indent = getLineIndent(line)
   if (!DUPLICATE_KEYS_BLOCK_SCALAR_PATTERN.test(line.trim())) return indent
-  return /^-\s+[A-Za-z_][\w_-]*\s*:/.test(line.trim())
+  return /^-\s*(?:[A-Za-z_][\w_-]*|"[^"]*"|'[^']*')\s*:/.test(line.trim())
     ? line.match(/^(\s*-\s+)/)?.[1]?.length ?? indent
     : indent
 }
@@ -2922,6 +2927,15 @@ export function repairYamlPlainScalarColons(yaml: string): string {
       const prefix = listScalarMatch[1]!
       const value = listScalarMatch[2]!
 
+      // A block scalar opened as a sequence entry. Arm this before the nested
+      // sequence fast path, because `- - |` is both a nested sequence and a
+      // scalar header.
+      if (isBlockScalarHeaderLine(line)) {
+        blockScalarBaseIndent = getBlockScalarBaseIndent(line)
+        result.push(line)
+        continue
+      }
+
       // A nested sequence is already valid YAML. Treating its inner scalar as
       // prose would flatten `- - 'a: b'` into one string.
       if (/^-\s+/.test(value)) {
@@ -2930,16 +2944,6 @@ export function repairYamlPlainScalarColons(yaml: string): string {
       }
 
       const looksLikeListItemMapping = /^[A-Za-z_][\w_-]*\s*:\s+/.test(value)
-
-      // A block scalar opened as a sequence entry. `|` is a safe value start,
-      // so this line was pushed and skipped — and the arming at the bottom of
-      // the loop was skipped with it, leaving the body to be quoted line by
-      // line. Recognising the header was not enough; it has to arm here too.
-      if (isBlockScalarHeaderLine(line)) {
-        blockScalarBaseIndent = getBlockScalarBaseIndent(line)
-        result.push(line)
-        continue
-      }
 
       if (SAFE_VALUE_START.test(value)) {
         result.push(line)

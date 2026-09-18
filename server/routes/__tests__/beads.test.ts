@@ -122,6 +122,21 @@ describe('beadsRouter flow validation', () => {
     })
   })
 
+  it.each(['{not json', ''])('returns 400 for a malformed JSON body: %j', async (body) => {
+    const { ticket, paths } = createBeadsRouteTicket()
+    patchTicket(ticket.id, { status: 'WAITING_BEADS_APPROVAL' })
+
+    const response = await app.request(`/api/tickets/${encodeURIComponent(ticket.id)}/beads`, {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json' },
+      body,
+    })
+
+    expect(response.status).toBe(400)
+    expect(await response.json()).toEqual({ error: 'Invalid JSON body' })
+    expect(existsSync(paths.beadsPath)).toBe(false)
+  })
+
   it('preserves unknown bead and dependency fields when saving', async () => {
     const { ticket, paths } = createBeadsRouteTicket()
     patchTicket(ticket.id, { status: 'WAITING_BEADS_APPROVAL' })

@@ -1,5 +1,110 @@
 # Review of PRs 163–169
 
+## Second review, 2026-09-18
+
+All seven PRs' refreshed CI results, issue comments, reviews, inline comments,
+and bot notices were collected and read before implementation. One GPT-5.6 Luna
+max agent was assigned to each PR; the root agent correlated findings and
+verified the combined result. The earlier review below is retained as history,
+not presented as this pass's test results.
+
+The second pass adds these corrections:
+
+- PR163: Linux overflow ownership remains unverifiable even when the numeric
+  overflow ID is also mapped. Installer probes fail closed on unexpected exits,
+  Windows affected-file discovery fails closed, and published POSIX download
+  recipes require HTTPS. Linux-only resolver fixtures are deterministic on macOS.
+- PR164: ignored-file protection for Free Disk Space, target-generation checks
+  after awaited Git removal, recovery-copy completion evidence, preservation of
+  later appends and quarantine symlinks, detached Git shutdown, and native
+  temporary-path fixtures for Windows.
+- PR165: complete executable-bead validation, duplicate authoritative-ID checks,
+  canonical server responses after saves, retained command metadata, and YAML
+  repairs that preserve nested, standalone, and folded scalar text.
+- PR166: ignored-file protection in CLI preview and final removal, failed Git
+  enumeration handling, exact daemon health identity, direct-child readiness and
+  cleanup, verified descendant retention, log rotation across active reads, and
+  asynchronous protected-hook Git mutations.
+- PR167: partial question-poll isolation, cancellation fences and bounded cleanup
+  retries, cancellation-aware PROM4 restoration, replacement-session ownership,
+  confirmed stop before Coding Retry, skip-all compare-and-set, initial coding
+  checkpoint ordering, and setup-evidence refresh compare-and-set.
+- PR168: runtime forwarding of the explicit public HTTPS origin, transport abort
+  before releasing SSE admission, wildcard-origin rejection, and computed-literal
+  coverage in the existing static security rules.
+- PR169: retained create-to-edit drafts, dirty Cancel guards, stale restore-response
+  protection, validated nested ticket patches, cursorless reconnect recovery,
+  lazy history folding, corrected overlay order, and native prefix verification
+  with bounded reads and fail-closed source checks. Follow-up checks also cover
+  explicit prompt resets, canonical created-project folders, failed initial-load
+  navigation, and stopping history drains when their panel unmounts.
+
+The additional owner choice is implemented in both housekeeping paths:
+ignored user files, including `.env`, dependencies, and build output, block
+automatic removal. LoopTroop-owned runtime artifacts are exempt. Explicit
+ticket and project deletion stays destructive. The four earlier owner choices
+remain unchanged.
+
+The initial refreshed CI included a PR164 Ubuntu installer child killed with
+`SIGKILL` after 23 seconds (run `35255493436`). Its cause is not established;
+the duration was below both relevant timeout limits. The complete local
+installer fixture suite passed 92 tests with two platform skips. No timeout
+increase or retry was added to conceal the failure. Upstream artifact-download
+and Renovate validator deprecation warnings remain recorded, as do external
+analyzer false positives and bot capacity failures. New pushes are not claimed
+green, and there is no final CI wait.
+
+A later status read still showed queued/running GitHub jobs. PR164's CodeQL
+check `105506101343` repeats the integrity-hash and fixed-command-fixture
+reports already assessed in its ledger. Sonar check `105506931825` repeats
+the same five Git path/oracle reports and the JSON-encoded project diagnostic
+(`AaCwTSgwT2w_qkSFC5HS`). Their annotations were re-read; no new source finding
+was identified, and no analyzer report was dismissed or suppressed.
+
+Codacy annotations were also fetched directly on the pushed heads. Check
+`105494762069` (PR165) repeats ten style locations whose assertions, callback
+bodies, and header guard are already corrected; its remaining HTML-to-`expect`
+report is a test assertion, not an HTML execution sink. Check `105506184140`
+(PR166) flags intentional CLI requests to the locally configured daemon,
+public process-start identity comparisons rather than secrets, root-config
+identity checks, and fixed-path test fixtures. Check `105506335092` (PR167)
+flags a table-driven atomic-write test whose filenames are fixed literals.
+These concrete annotations do not establish additional production defects.
+
+The final native/server integration checkpoint is `e2581640` in the detached
+combined worktree. Both server Vitest projects passed: 316 files, 5,032 tests
+passed, and 13 platform/conditional skips. This includes the native prefix,
+captured-boundary, and source-identity changes in `89e8c485`.
+
+The final client integration checkpoint is `92fcd030`. Both client Vitest
+projects passed: 127 files and 1,610 tests. There is no server, shared, root-test,
+package, or Vitest configuration diff from the server checkpoint. Together,
+the four projects pass 443 files and 6,642 tests, with 13 skips.
+
+Full ESLint, application/test type checks, and the production client/server
+build pass at the client checkpoint. Version validation checks 1,244 tracked
+files; all 57 TypeScript scripts pass the native type-stripping check.
+Installer synchronization and the no-native-addon gate pass. The latter
+checks 18 installed top-level entries and finds no platform-gated production
+packages in the lockfile. Workflow lint passed with the repository's configured
+shellcheck warning level. No new dependency was needed.
+The rebuilt npm package passes its 82-entry contents check, and third-party
+notices match all 80 redistributed packages.
+
+Implementation checkpoints are `51550a3b` (163), `f4b422aa` (164), `a7dacb3a`
+(165), `9c7e5872` (166), `2b1591d1` (167), `74acb444` (168), and `85a6145e`
+(169). All seven existing PR branches were pushed; this summary is the final
+documentation-only follow-up on PR163. Existing helpers were reused and no
+dependency or new recovery framework was added.
+
+Website changes label unreleased behavior and retain the published CLI source
+pin `f784f055b45854016c245a2d902d6799b7e8265c`. The first documentation update is
+`67410a3` on website `main`, followed by the final behavior documentation in
+`ea30c87`; 88 tests, build, site/reference verification, and third-party notices
+passed. No E2E/full lifecycle tests or GitHub PR merges were performed.
+
+## Earlier review, 2026-09-17
+
 Review date: 2026-09-17. Changes stay on the seven existing PR branches. No PR
 was merged, and no E2E or full lifecycle test was run.
 

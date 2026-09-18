@@ -10,6 +10,7 @@ Unreleased changes appear first and represent commits that have not yet been inc
 > Changes merged since the last versioned release that have not yet shipped in a tagged version.
 
 ### Summary
+- Git cleanup preserves uncertain process ownership and user files, while interrupted recovery can retry an absent destination safely.
 - Canonical OpenCode installation directories (`~/.opencode/bin`) are now trusted by default for the `opencode` binary across platforms, preventing execution refusals when OpenCode release archives are unpacked under root while preserving directory ownership and file write-permission checks.
 - The repository now exposes its documented install-channel catalog as JSON, so the website can verify consolidated installation docs against the same channel table the published-release smoke uses.
 - Log history refreshes loaded pages and keeps model tabs and milestones available; model selection and setup disclosures are accessible, and refused clipboard copies show a visible error.
@@ -261,6 +262,8 @@ Unreleased changes appear first and represent commits that have not yet been inc
 - Three aliases re-exported for a question-diff type that no longer exists, the three helpers behind them, an execution-setup runtime-path list with no reader, and an execution-setup barrel re-exporting three artifact names every caller already imports from their own module.
 
 ### Fixed
+- Async Git commands inspect repository SSH configuration without blocking the event loop. Shutdown waits for admitted requests and polling before its final command drain, and worktree removal does not fall back to recursive deletion after a Git timeout.
+- Non-Git cleanup rechecks the ticket-only skeleton at removal boundaries. Worktree identity comparisons retain integer precision, staged rename/copy destinations deleted before commit no longer leave invalid pathspecs, and atomic recovery can retry a source-owned publication when its destination is absent.
 
 - Free Disk Space continues past protected or failed worktrees, returns each skipped ticket and reason, and keeps that report visible in the dialog. Ignored environment files, dependencies, and build output remain protected. The size preview shows total worktree size, and the result counts only successfully removed worktrees.
 - Worktree fallback cleanup now rechecks the target generation after Git yields, and Free Disk Space cleanup for completed or canceled tickets refuses ignored files outside LoopTroop-owned roots before either Git removal or filesystem fallback. Pre-start ticket skeletons are checked without inheriting the parent repository's ignored files, while unknown skeleton entries still fail closed. Startup recovery records whether a fallback copy is complete and blocks rather than rewinding a target that received newer appends. Manual QA preserves an existing final quarantine symlink and writes a retry copy beside it, while runtime shutdown terminates tracked detached Git and GitHub children before returning.

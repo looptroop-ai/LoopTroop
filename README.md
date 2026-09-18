@@ -329,8 +329,10 @@ An ignored file such as a local environment file therefore remains in place
 without preventing other cleanup. If
 Git yields while a worktree is being removed, a replacement directory is left
 alone. The daemon also waits for detached Git and GitHub children during
-shutdown, and startup recovery refuses to overwrite a target that has advanced
-since a completed fallback copy.
+shutdown and closes active SSE streams before waiting for its HTTP server, so a
+connected browser cannot hold graceful shutdown open indefinitely. Startup
+recovery refuses to overwrite a target that has advanced since a completed
+fallback copy.
 
 Only select repositories you trust. LoopTroop preserves repository-local Git
 configuration, including `core.sshCommand`, so custom SSH wrappers keep working.

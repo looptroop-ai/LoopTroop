@@ -117,6 +117,64 @@ describe('createRuntime side-effect freedom', () => {
     expect(result.timedOut).toBe(false)
   })
 
+  it('closes a live SSE response before awaiting the HTTP server', async () => {
+    const { createRuntime } = await import('../server/createRuntime')
+    const { broadcaster } = await import('../server/sse/broadcaster')
+    const { streamSSE } = await import('hono/streaming')
+    const ticketId = `runtime-sse-${Date.now()}`
+    const runtime = createRuntime({
+      apiToken: 'runtime-test-token',
+      skipStartupSequence: true,
+      port: 0,
+      hostname: '127.0.0.1',
+    })
+    let release!: () => void
+    const streamClosed = new Promise<void>((resolve) => { release = resolve })
+
+    runtime.app.get('/api/runtime-sse-test', (c) => streamSSE(c, async (stream) => {
+      await stream.writeSSE({ event: 'ready', data: 'ok' })
+      const clientId = `${ticketId}-client`
+      const registered = broadcaster.addClient(ticketId, {
+        id: clientId,
+        send: (event, data, id) => { void stream.writeSSE({ event, data, id }) },
+        close: () => {
+          release()
+          void stream.close().catch(() => undefined)
+        },
+      })
+      if (!registered) {
+        await stream.close()
+        return
+      }
+      try {
+        await streamClosed
+      } finally {
+        broadcaster.removeClient(ticketId, clientId)
+      }
+    }))
+
+    await runtime.start()
+    const address = runtime.address
+    expect(address).not.toBeNull()
+    const response = await fetch(`http://${address!.hostname}:${address!.port}/api/runtime-sse-test`, {
+      headers: { Authorization: 'Bearer runtime-test-token' },
+    })
+    const reader = response.body!.getReader()
+    try {
+      expect(new TextDecoder().decode((await reader.read()).value)).toContain('event: ready')
+      expect(broadcaster.getClientCount(ticketId)).toBe(1)
+      await expect(runtime.close()).resolves.toBeUndefined()
+      expect(broadcaster.getClientCount(ticketId)).toBe(0)
+      expect((await reader.read()).done).toBe(true)
+    } finally {
+      release()
+      await reader.cancel().catch(() => undefined)
+      broadcaster.clearTicket(ticketId)
+      broadcaster.startAcceptingClients()
+      await runtime.close().catch(() => undefined)
+    }
+  })
+
   it.skipIf(process.platform === 'win32')('retries a failed close without reusing an already-closed server blocker', async () => {
     const configDir = makeConfigDir()
     const marker = join(configDir, 'descendant.pid')

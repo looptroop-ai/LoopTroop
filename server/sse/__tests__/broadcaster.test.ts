@@ -37,6 +37,21 @@ describe('SSEBroadcaster', () => {
     expect(JSON.parse(payload)).toMatchObject({ timestamp })
   })
 
+  it('rejects late stream admission until a runtime starts again', () => {
+    const isolated = new SSEBroadcaster()
+    const close = vi.fn()
+    const client = { id: 'client-1', send: vi.fn(), close }
+
+    expect(isolated.addClient('1:T-42', client)).toBe(true)
+    isolated.closeAllClients()
+    expect(close).toHaveBeenCalledOnce()
+    expect(isolated.addClient('1:T-42', { ...client, id: 'client-2' })).toBe(false)
+
+    isolated.startAcceptingClients()
+    expect(isolated.addClient('1:T-42', { ...client, id: 'client-3' })).toBe(true)
+    isolated.clearTicket('1:T-42')
+  })
+
   it('keeps only the latest streaming upsert per entry in the replay buffer', () => {
     const broadcaster = new SSEBroadcaster()
     const cursor = markReplayStart(broadcaster)

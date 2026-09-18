@@ -1095,6 +1095,11 @@ describe('handleCoding', () => {
     // bead_diff requires beadStartCommit, so it should not be inserted
     const diffArtifact = getLatestPhaseArtifact(ticket.id, 'bead_diff:bead-1', 'CODING')
     expect(diffArtifact).toBeUndefined()
+
+    recordBeadStartCommitMock.mockReturnValueOnce('retry-sha')
+    await handleCoding(ticket.id, context, sendEvent, new AbortController().signal)
+    expect(executeBeadMock).toHaveBeenCalledTimes(1)
+    expect(readTicketBeads(ticket.id)[0]).toMatchObject({ status: 'done', beadStartCommit: 'retry-sha' })
   })
 
   it('does not publish a new bead as active if canceled while reading its checkpoint', async () => {

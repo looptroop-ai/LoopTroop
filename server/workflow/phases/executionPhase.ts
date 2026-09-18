@@ -471,10 +471,16 @@ export async function handleCoding(
 
       // A runnable bead must have its reset checkpoint before publishing it as
       // active. A failed HEAD read leaves it pending and starts no session.
-      beadStartCommit = await withCommandLoggingFieldsAsync(
-        { beadId: nextBead.id },
-        async () => recordBeadStartCommit(paths.worktreePath),
-      )
+      try {
+        beadStartCommit = await withCommandLoggingFieldsAsync(
+          { beadId: nextBead.id },
+          async () => recordBeadStartCommit(paths.worktreePath),
+        )
+      } catch (err) {
+        const message = `Could not record bead start commit for ${nextBead.id}: ${err instanceof Error ? err.message : 'Unknown error'}`
+        emitPhaseLog(ticketId, context.externalId, 'CODING', 'error', message, { source: 'system', modelId: codingModelId, beadId: nextBead.id })
+        throw new Error(message)
+      }
       throwIfAborted(signal, ticketId)
       const now = new Date().toISOString()
       const inProgressBeads = readTicketBeads(ticketId).map(bead => bead.id === nextBead.id

@@ -119,7 +119,7 @@ describe('contained bead approval document', () => {
     }) + '\n'
     writeFileSync(beadsPath, content)
 
-    expect(() => approveBeadsDocument('1:DEMO-1', contentSha256(content))).toThrow(new RegExp(`missing a valid "${field}" field`))
+    expect(() => approveBeadsDocument('1:DEMO-1', contentSha256(content))).toThrow(`missing a valid "${field}" field`)
     expect(readFileSync(beadsPath, 'utf8')).toBe(content)
     expect(writeTicketFile).not.toHaveBeenCalled()
   })

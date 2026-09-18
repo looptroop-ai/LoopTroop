@@ -50,7 +50,22 @@ choice is now resolved by the explicit trusted-directory policy recorded below.
 | `5719265471`, `5720131869` (legacy container repair) | not-applicable after verification | The republish job checks out the requested released tag for its Dockerfile and conditionally supplies the lockfile/inventory expected by that tag. Existing workflow-policy and packaging tests cover the contract; no current-Dockerfile-only change was made. |
 | `5719265471` (signal, naming, and prose suggestions) | not-applicable / no additional action | The signal path is synchronous and releases its lock in `finally`; the runtime floor and existing operator guidance are deliberate current contracts. No behavior change was justified by these suggestions. |
 | `5720932555` (PR168, release checks, and registry observations) | deferred or outside this branch | R23 remains owned by PR168 as recorded above. Other release/registry observations are separate workflow or website scope and are not claimed as PR163 fixes. |
-| `4039974501`, `4039974509`, `4039974518` | tracked — root-owned ledger follow-up | The R23, S01 and stale-evidence corrections target `.github/consolidated-audit-dispositions.md`; this PR-specific ledger records the decisions and evidence without duplicating edits to the shared consolidated file. |
+| `4039974501`, `4039974509`, `4039974518` | correct — reconciled | `.github/consolidated-audit-dispositions.md` now records the approved explicit-directory policy for S01, permanent resolver tests, R23's PR168 ownership, and the release-only website pin update rule. |
+
+### Refreshed CI checkpoint (2026-09-18)
+
+The macOS executable-resolution failures came from Linux-injected fixtures
+reading the host's missing procfs. Those fixtures now supply explicit Linux
+namespace evidence. Stateful suites use the integration project, and repository
+fixtures reuse the native-realpath temporary-directory helper to avoid Windows
+8.3 aliases opening two independent database connections.
+
+The PR164 Ubuntu run `35255493436` also killed an installer rollback child with
+`SIGKILL` after 23 seconds. That is below its 120-second test timeout and before
+the 30-second readiness deadline, so the log does not prove a timeout cause.
+The complete fixture installer suite passed locally after this review's fixes
+(92 passed, 2 platform skips); the external kill has not been reproduced. No
+timeout increase, retry, or swallowed failure was added.
 
 ## Review contract retained
 

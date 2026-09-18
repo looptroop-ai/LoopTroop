@@ -244,6 +244,45 @@ describe('ManualQAView recovery behavior', () => {
     })
   })
 
+  it('submits the click snapshot while a later edit remains in the newer draft', async () => {
+    let finishSave!: (value: { conflict: boolean; revision: number; updatedAt: string }) => void
+    mocks.save.mockImplementationOnce(() => new Promise(resolve => { finishSave = resolve }))
+    renderWithProviders(<ManualQAView ticket={waitingTicket()} />)
+
+    fireEvent.click(screen.getByRole('button', { name: 'Pass' }))
+    fireEvent.click(screen.getByRole('button', { name: 'Submit QA' }))
+    await waitFor(() => expect(mocks.save).toHaveBeenCalledOnce())
+
+    const notes = screen.getByText('Notes').parentElement?.querySelector('textarea')
+    expect(notes).toBeTruthy()
+    fireEvent.change(notes!, { target: { value: 'Edited after submitting.' } })
+    finishSave({ conflict: false, revision: 1, updatedAt: new Date().toISOString() })
+
+    await waitFor(() => expect(mocks.submit).toHaveBeenCalledOnce())
+    expect(mocks.submit.mock.calls[0]![0].draft.results[0]).toMatchObject({ outcome: 'pass', note: '' })
+    expect(notes).toHaveValue('Edited after submitting.')
+  })
+
+  it('skips the click snapshot while a later edit remains in the newer draft', async () => {
+    let finishSave!: (value: { conflict: boolean; revision: number; updatedAt: string }) => void
+    mocks.save.mockImplementationOnce(() => new Promise(resolve => { finishSave = resolve }))
+    renderWithProviders(<ManualQAView ticket={waitingTicket()} />)
+
+    fireEvent.click(screen.getByRole('button', { name: 'Pass' }))
+    fireEvent.click(screen.getByRole('button', { name: 'Skip Manual QA…' }))
+    fireEvent.click(screen.getByRole('button', { name: 'Skip and integrate' }))
+    await waitFor(() => expect(mocks.save).toHaveBeenCalledOnce())
+
+    const notes = screen.getByText('Notes').parentElement?.querySelector('textarea')
+    expect(notes).toBeTruthy()
+    fireEvent.change(notes!, { target: { value: 'Edited after skipping.' } })
+    finishSave({ conflict: false, revision: 1, updatedAt: new Date().toISOString() })
+
+    await waitFor(() => expect(mocks.skip).toHaveBeenCalledOnce())
+    expect(mocks.skip.mock.calls[0]![0].draft.results[0]).toMatchObject({ outcome: 'pass', note: '' })
+    expect(notes).toHaveValue('Edited after skipping.')
+  })
+
   it('keeps PRD coverage collapsed by default', () => {
     mocks.round.mockReturnValue({
       data: {
@@ -884,11 +923,10 @@ describe('ManualQAView recovery behavior', () => {
     expect(screen.getByText(/LoopTroop adjusted this artifact/i)).toBeInTheDocument()
   })
 
-  it('shows the repair trail when generation produced no checklist at all', () => {
-    // The run that used up its retries writes the companion and no checklist,
-    // so the view takes its "not available yet" branch — which is exactly the
-    // run whose failed attempts the operator's next move depends on.
-    mocks.round.mockReturnValue({ data: undefined, isLoading: false, error: null, refetch: mocks.refetchRound })
+  it.each([false, true])('shows failed generation details with checklist present: %s', (hasChecklist) => {
+    if (!hasChecklist) {
+      mocks.round.mockReturnValue({ data: undefined, isLoading: false, error: null, refetch: mocks.refetchRound })
+    }
     mocks.artifacts.mockReturnValue({
       artifacts: [{
         id: 1,
@@ -925,50 +963,12 @@ describe('ManualQAView recovery behavior', () => {
 
     renderWithProviders(<ManualQAView ticket={waitingTicket()} />)
 
-    expect(screen.getByText(/Manual QA artifacts are not available yet/i)).toBeInTheDocument()
+    if (!hasChecklist) {
+      expect(screen.getByText(/Manual QA artifacts are not available yet/i)).toBeInTheDocument()
+    }
     // "Intervention details", not "LoopTroop adjusted" — the companion carries
     // a validationError, and describing a generation that gave up as completed
     // is what this screen and the artifact chip used to disagree about.
-    expect(screen.getByText(/Intervention details for this artifact/i)).toBeInTheDocument()
-  })
-
-  it('does not describe a failed generation as a completed one', () => {
-    // Same companion, but a checklist exists — a repair that succeeded on a
-    // later attempt. This is the success tree, which omitted the status
-    // entirely and so defaulted every generation to "completed".
-    mocks.artifacts.mockReturnValue({
-      artifacts: [{
-        id: 1,
-        phase: 'GENERATING_QA_CHECKLIST',
-        phaseAttempt: 1,
-        artifactType: 'ui_artifact_companion:manual_qa_checklist',
-        content: JSON.stringify({
-          baseArtifactType: 'manual_qa_checklist',
-          generatedAt: '2026-07-14T10:00:00.000Z',
-          payload: {
-            validationError: 'Manual QA checklist generation failed.',
-            structuredOutput: {
-              repairApplied: false,
-              repairWarnings: [],
-              autoRetryCount: 2,
-              validationError: 'Manual QA checklist generation failed.',
-            },
-          },
-        }),
-        filePath: null,
-        createdAt: '2026-07-14T10:00:00.000Z',
-        updatedAt: '2026-07-14T10:00:00.000Z',
-      }],
-      status: 'success',
-      isLoading: false,
-      isFetching: false,
-      isError: false,
-      error: null,
-      refetch: vi.fn(),
-    } as unknown as ReturnType<typeof mocks.artifacts>)
-
-    renderWithProviders(<ManualQAView ticket={waitingTicket()} />)
-
     expect(screen.getByText(/Intervention details for this artifact/i)).toBeInTheDocument()
     expect(screen.queryByText(/LoopTroop adjusted this artifact/i)).not.toBeInTheDocument()
   })

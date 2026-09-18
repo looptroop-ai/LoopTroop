@@ -147,6 +147,7 @@ describe('handleCoding', () => {
     commitBeadChangesMock.mockReturnValue({ committed: true, pushed: false })
     captureBeadDiffMock.mockReturnValue({ ok: true, diff: 'diff --git a/file.ts b/file.ts' })
     assembleBeadContextMock.mockResolvedValue([])
+    abortSessionMock.mockResolvedValue(true)
   })
 
   afterAll(() => {
@@ -718,6 +719,41 @@ describe('handleCoding', () => {
     expect(sendEvent).toHaveBeenCalledWith({ type: 'ALL_BEADS_DONE' })
   })
 
+  it('withholds interrupted-bead reset when the remote session stop is unconfirmed', async () => {
+    const { ticket, context } = await createInitializedTestTicket(repoManager, {
+      title: 'Do not reset while interrupted session may still run',
+    })
+    writeTicketBeads(ticket.id, [
+      makePendingBead('bead-1', 1, {
+        status: 'in_progress',
+        iteration: 2,
+        beadStartCommit: 'start-sha',
+      }),
+    ])
+    const ticketContext = getTicketContext(ticket.id)
+    if (!ticketContext) throw new Error('Expected ticket context')
+    ticketContext.projectDb.insert(opencodeSessions).values({
+      sessionId: 'ses-unconfirmed-stop',
+      ticketId: ticketContext.localTicketId,
+      phase: 'CODING',
+      phaseAttempt: 1,
+      beadId: 'bead-1',
+      iteration: 2,
+      state: 'active',
+    }).run()
+    abortSessionMock.mockResolvedValue(false)
+    const sendEvent = vi.fn()
+
+    await expect(handleCoding(ticket.id, context, sendEvent, new AbortController().signal))
+      .rejects.toThrow(/Could not safely recover bead bead-1/)
+
+    expect(resetToBeadStartMock).not.toHaveBeenCalled()
+    expect(executeBeadMock).not.toHaveBeenCalled()
+    expect(listOpenCodeSessionsForTicket(ticket.id, ['active']).map((session) => session.sessionId))
+      .toEqual(['ses-unconfirmed-stop'])
+    expect(sendEvent).not.toHaveBeenCalledWith({ type: 'ALL_BEADS_DONE' })
+  })
+
   it('continues an interrupted in-progress bead without resetting when a session continuation is pending', async () => {
     const { ticket, context } = await createInitializedTestTicket(repoManager, {
       title: 'Continue interrupted in-progress bead',
@@ -878,6 +914,60 @@ describe('handleCoding', () => {
     ).rejects.toThrow('missing bead start commit')
 
     expect(executeBeadMock).not.toHaveBeenCalled()
+  })
+
+  it('recovers a pending bead whose checkpoint failed before it started', async () => {
+    const { ticket, paths } = await createInitializedTestTicket(repoManager, {
+      title: 'Pending bead checkpoint retry',
+    })
+    writeTicketBeads(ticket.id, [
+      makePendingBead('bead-1', 1),
+    ])
+
+    const recovered = await recoverCodingBeadWithReset(ticket.id, {
+      worktreePath: paths.worktreePath,
+      requireReset: true,
+      userRetryNote: 'Retry after recording the checkpoint.',
+    })
+
+    expect(recovered).toMatchObject({
+      id: 'bead-1',
+      status: 'pending',
+      beadStartCommit: null,
+      userRetryNotes: [expect.objectContaining({
+        content: 'Retry after recording the checkpoint.',
+      })],
+    })
+    expect(resetToBeadStartMock).not.toHaveBeenCalled()
+  })
+
+  it('resets a pending bead when its start checkpoint landed before the status update', async () => {
+    const { ticket, paths } = await createInitializedTestTicket(repoManager, {
+      title: 'Pending bead with checkpoint anchor',
+    })
+    writeTicketBeads(ticket.id, [
+      makePendingBead('bead-1', 1, {
+        startedAt: '2026-01-01T00:00:00.000Z',
+        beadStartCommit: 'start-sha',
+      }),
+    ])
+
+    const recovered = await recoverCodingBeadWithReset(ticket.id, {
+      worktreePath: paths.worktreePath,
+      requireReset: true,
+    })
+
+    expect(resetToBeadStartMock).toHaveBeenCalledWith(
+      paths.worktreePath,
+      'start-sha',
+      expect.objectContaining({ preservePaths: expect.arrayContaining(['.ticket']) }),
+    )
+    expect(recovered).toMatchObject({
+      id: 'bead-1',
+      status: 'pending',
+      startedAt: '2026-01-01T00:00:00.000Z',
+      beadStartCommit: 'start-sha',
+    })
   })
 
   it('throws when lockedMainImplementer is missing', async () => {
@@ -1058,6 +1148,20 @@ describe('handleCoding', () => {
       status: 'done',
       beadStartCommit: 'retry-sha',
     })
+  })
+
+  it('does not publish a new bead as active if canceled while reading its checkpoint', async () => {
+    const { ticket, context } = await createInitializedTestTicket(repoManager, { title: 'Canceled checkpoint' })
+    writeTicketBeads(ticket.id, [makePendingBead('bead-1', 1)])
+    const controller = new AbortController()
+    recordBeadStartCommitMock.mockImplementationOnce(() => {
+      controller.abort()
+      return 'abc123'
+    })
+
+    await expect(handleCoding(ticket.id, context, vi.fn(), controller.signal)).rejects.toThrow()
+    expect(readTicketBeads(ticket.id)[0]).toMatchObject({ status: 'pending', beadStartCommit: null, startedAt: '' })
+    expect(executeBeadMock).not.toHaveBeenCalled()
   })
 
   // --- Git error recovery ---

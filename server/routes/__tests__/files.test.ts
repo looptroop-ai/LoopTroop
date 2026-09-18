@@ -215,6 +215,39 @@ describe('filesRouter GET /files/:ticketId/logs', () => {
     expect(aiPayload.every((entry) => entry.audience === 'ai')).toBe(true)
   })
 
+  it('keeps an explicit null phase attempt unknown instead of treating it as attempt one', async () => {
+    const { ticket, paths } = createProjectTicket()
+    writeJsonl(paths.executionLogPath, [
+      {
+        timestamp: '2026-03-13T12:00:00.000Z',
+        type: 'info',
+        phase: 'CODING',
+        status: 'CODING',
+        phaseAttempt: null,
+        message: 'unscoped row',
+        content: 'unscoped row',
+      },
+      {
+        timestamp: '2026-03-13T12:00:01.000Z',
+        type: 'info',
+        phase: 'CODING',
+        status: 'CODING',
+        phaseAttempt: 1,
+        message: 'attempt one row',
+        content: 'attempt one row',
+      },
+    ])
+
+    const response = await app.request(`/api/files/${encodeURIComponent(ticket.id)}/logs?phase=CODING&phaseAttempt=1`)
+    expect(response.status).toBe(200)
+    expect((await response.json() as Array<Record<string, unknown>>).map((entry) => entry.content))
+      .toEqual(['attempt one row'])
+
+    const all = await app.request(`/api/files/${encodeURIComponent(ticket.id)}/logs?phase=CODING`)
+    const payload = await all.json() as Array<Record<string, unknown>>
+    expect(payload.find((entry) => entry.content === 'unscoped row')?.phaseAttempt).toBeNull()
+  })
+
   it('filters native OpenCode entries on channel=all like every other source', async () => {
     const { ticket, paths } = createProjectTicket()
     writeJsonl(paths.aiLogPath, [

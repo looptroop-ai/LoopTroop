@@ -2,6 +2,7 @@ import { TicketWorkspaceNotInitializedError } from '../lib/workflowErrors'
 import { and, asc, desc, eq, isNull, ne, or } from 'drizzle-orm'
 import { z } from 'zod'
 import { readFileNoFollowSync } from '../io/readFile'
+import { removeFile } from '../io/removal'
 import { ContainedPathError } from '../lib/containedPath'
 import { db as appDb } from '../db/index'
 import { PROFILE_DEFAULTS } from '../db/defaults'
@@ -965,6 +966,13 @@ export function toPublicTicket(projectId: number, ticket: LocalTicketRow): Publi
           source: 'profile' as const,
         }
 
+  const availableActions = isMockTicket
+    ? getDisplayOnlyMockTicketActions(ticket.status)
+    : addContinueActionWhenAvailable(getAvailableWorkflowActions(ticket.status), continuationCandidate)
+  if (!isMockTicket && ticket.status === 'BLOCKED_ERROR' && previousStatus === 'PREPARING_EXECUTION_ENV') {
+    availableActions.push('edit_execution_setup_plan')
+  }
+
   return {
     ...ticket,
     id: buildTicketRef(projectId, ticket.externalId),
@@ -993,12 +1001,7 @@ export function toPublicTicket(projectId: number, ticket: LocalTicketRow): Publi
     visitedStatuses,
     manualQa,
     manualQaOrigin,
-    availableActions: isMockTicket
-      ? getDisplayOnlyMockTicketActions(ticket.status)
-      : addContinueActionWhenAvailable(
-        getAvailableWorkflowActions(ticket.status),
-        continuationCandidate,
-      ),
+    availableActions,
     previousStatus,
     reviewCutoffStatus,
     errorOccurrences,
@@ -1454,6 +1457,13 @@ export function writeTicketFile(ticketRef: string, relativePath: string, content
   const storage = getTicketStorageContext(ticketRef)
   if (!storage) throw new TicketWorkspaceNotInitializedError('Ticket workspace not initialized')
   writeProjectTicketFile(storage.projectRoot, storage.externalId, relativePath, content)
+}
+
+export function removeTicketFile(ticketRef: string, relativePath: string): boolean {
+  const path = resolveTicketContainedPath(ticketRef, relativePath, 'remove')
+  if (!path) return false
+  removeFile(path)
+  return true
 }
 
 /** Unknown tickets and absent artifacts are empty; unsafe or unreadable files are errors. */

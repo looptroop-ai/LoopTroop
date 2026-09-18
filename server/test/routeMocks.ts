@@ -24,6 +24,10 @@ import { vi } from 'vitest'
 export function workflowRunnerMock() {
   return {
     cancelTicket: vi.fn(),
+    clearTicketCancellationPending: vi.fn(() => true),
+    isTicketCancellationPending: vi.fn(() => false),
+    markTicketCancellationPending: vi.fn(),
+    schedulePendingCancellationCleanupRetry: vi.fn(),
     // Both answer-batch submission paths take the claim, so the double offers
     // it. The real one answers with the acquisition's token, or null.
     claimInterviewBatch: vi.fn(() => 'test-batch-claim-token'),

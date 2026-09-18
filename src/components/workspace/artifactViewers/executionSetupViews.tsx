@@ -14,7 +14,7 @@ import { RawContentWithCopy } from '../RawTextDisplay'
 import { CollapsibleSection } from './CollapsibleSection'
 import { ArtifactListSection, MetadataCard } from './MetadataCard'
 import { WithRawTab } from './WithRawTab'
-import { ArtifactProcessingNotice } from './ArtifactProcessingNotice'
+import { ArtifactProcessingNotice, CollapsibleWarningNotice } from './ArtifactProcessingNotice'
 import {
   buildRawAttemptVariants,
   dedupeRawContentVariants,
@@ -83,6 +83,22 @@ function labelExecutionSetupReadiness(status: 'ready' | 'partial' | 'missing'): 
   }
 }
 
+function ExecutionSetupPlanParserWarnings({ warnings }: { warnings: string[] }) {
+  if (warnings.length === 0) return null
+  return (
+    <CollapsibleWarningNotice
+      title="Plan parser warnings"
+      summary={`${warnings.length} warning${warnings.length === 1 ? '' : 's'}; the displayed plan uses safe fallback values.`}
+      defaultOpen
+      body={(
+        <ul className="list-disc space-y-1 pl-4 text-[11px]">
+          {warnings.map((warning) => <li key={warning}>{warning}</li>)}
+        </ul>
+      )}
+    />
+  )
+}
+
 export function ExecutionSetupPlanView({
   content,
   reportContent,
@@ -92,11 +108,17 @@ export function ExecutionSetupPlanView({
   reportContent?: string | null
   header?: React.ReactNode
 }) {
-  const { plan, error } = parseExecutionSetupPlanContent(content)
+  const parsedContent = parseExecutionSetupPlanContent(content)
+  const { plan, error, warnings } = parsedContent
   const report: ExecutionSetupPlanReportData | null = reportContent ? parseExecutionSetupPlanReport(reportContent) : null
 
   if (!plan || error) {
-    return <RawContentWithCopy content={content} />
+    return (
+      <div className="space-y-3">
+        <ExecutionSetupPlanParserWarnings warnings={warnings} />
+        <RawContentWithCopy content={content} />
+      </div>
+    )
   }
 
   const stepCount = plan.steps.length
@@ -218,6 +240,7 @@ export function ExecutionSetupPlanView({
       rawSources={rawSources}
     >
       <div className="space-y-4">
+        <ExecutionSetupPlanParserWarnings warnings={warnings} />
         <div className={cn('rounded-md border px-3 py-3', statusTone)}>
           <div className="flex items-start gap-2">
             {report?.ready === false || report?.status === 'failed'

@@ -532,7 +532,8 @@ export async function handleExecutionSetup(
       }
 
       const runtimeSettings = resolveExecutionSetupRuntimeSettings(context)
-      const approvedPlan = readExecutionSetupPlan(ticketId).plan
+      const approvedPlanArtifact = readExecutionSetupPlan(ticketId)
+      const approvedPlan = approvedPlanArtifact.plan
       if (!approvedPlan) {
         throw new Error('Approved execution setup plan is missing')
       }
@@ -547,7 +548,7 @@ export async function handleExecutionSetup(
         detected: approvedPlan.gitHooks.detected,
       })
       if (evidenceChanged) {
-        saveExecutionSetupPlan(ticketId, refreshedPlan)
+        saveExecutionSetupPlan(ticketId, refreshedPlan, approvedPlanArtifact.contentSha256 ?? undefined)
         emitPhaseLog(
           ticketId,
           context.externalId,
@@ -886,7 +887,10 @@ export async function handleExecutionSetup(
           },
           beforeRetry: async ({ generation, nextAttempt }) => {
             if (generation.session) {
-              await sessionManager.abandonSession(generation.session.id)
+              const stopped = await sessionManager.abortAndAbandonSession(generation.session.id)
+              if (!stopped) {
+                throw new Error(`Could not confirm abort of execution setup session ${generation.session.id}`)
+              }
             }
             await resetWorktreeToCommit(paths.worktreePath, phaseStartCommit, {
               preservePaths: [...WORKTREE_RESET_PRESERVE_PATHS],

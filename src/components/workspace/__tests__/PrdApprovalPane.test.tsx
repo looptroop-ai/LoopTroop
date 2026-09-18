@@ -12,6 +12,10 @@ const mockUseTicketArtifacts = vi.fn()
 const INITIAL_CONTENT_HASH = 'a'.repeat(64)
 const SAVED_CONTENT_HASH = 'b'.repeat(64)
 let coverageFixRequestHandler: (() => Promise<Response>) | null = null
+let persistedUiStateData: unknown = null
+let persistedUiStateMeta: Record<string, unknown> = {}
+let holdPrdSave: ((resolve: (response: Response) => void) => void) | null = null
+let holdPrdLoad: ((resolve: (response: Response) => void) => void) | null = null
 
 function buildPrdCoverageArtifact(content: Record<string, unknown>): TicketArtifact {
   return {
@@ -33,7 +37,7 @@ vi.mock('@/hooks/useTickets', async () => {
     ...actual,
     useTicketUIState: () => ({
       isSuccess: true,
-      data: { scope: 'approval_prd', exists: false, data: null, updatedAt: null },
+      data: { scope: 'approval_prd', exists: false, data: null, updatedAt: null, ...persistedUiStateMeta, ...(persistedUiStateData ? { data: persistedUiStateData } : {}) },
     }),
     useSaveTicketUIState: () => ({ mutate: mockSaveUiState, mutateAsync: mockSaveUiState }),
   }
@@ -105,11 +109,16 @@ describe('PrdApprovalPane', () => {
     mockUseTicketArtifacts.mockReset()
     mockUseTicketArtifacts.mockReturnValue({ artifacts: [], isLoading: false })
     coverageFixRequestHandler = null
+    persistedUiStateData = null
+    persistedUiStateMeta = {}
+    holdPrdSave = null
+    holdPrdLoad = null
 
     vi.spyOn(globalThis, 'fetch').mockImplementation((input, init) => {
       const url = String(input)
 
       if (url === `/api/files/${encodeURIComponent(TEST.ticketId)}/prd` && (!init?.method || init.method === 'GET')) {
+        if (holdPrdLoad) return new Promise<Response>((resolve) => holdPrdLoad?.(resolve))
         return Promise.resolve(
           new Response(JSON.stringify({ content: currentContent, contentSha256: currentContentSha256 }), {
             status: 200,
@@ -119,6 +128,7 @@ describe('PrdApprovalPane', () => {
       }
 
       if (url === `/api/files/${encodeURIComponent(TEST.ticketId)}/prd` && init?.method === 'PUT') {
+        if (holdPrdSave) return new Promise<Response>((resolve) => holdPrdSave?.(resolve))
         const body = JSON.parse(String(init.body)) as { content?: string; document?: ReturnType<typeof makePrdDocument> }
         currentContent = body.document ? buildPrdDocumentYaml(body.document) : body.content ?? currentContent
         currentContentSha256 = SAVED_CONTENT_HASH
@@ -128,6 +138,13 @@ describe('PrdApprovalPane', () => {
             headers: { 'Content-Type': 'application/json' },
           }),
         )
+      }
+
+      if (url === `/api/tickets/${encodeURIComponent(TEST.ticketId)}/ui-state` && init?.method === 'PUT') {
+        return Promise.resolve(new Response(JSON.stringify({ success: true, conflict: false, updatedAt: null }), {
+          status: 200,
+          headers: { 'Content-Type': 'application/json' },
+        }))
       }
 
       if (url === `/api/tickets/${encodeURIComponent(TEST.ticketId)}/approve-prd` && init?.method === 'POST') {
@@ -168,6 +185,113 @@ describe('PrdApprovalPane', () => {
     expect(screen.queryByRole('button', { name: /Foundation Answers/i })).not.toBeInTheDocument()
     expect(screen.queryByRole('button', { name: /Structure Answers/i })).not.toBeInTheDocument()
     expect(screen.queryByRole('button', { name: /Full Answers/i })).not.toBeInTheDocument()
+  })
+
+  it('keeps a restored dirty YAML draft tied to its original content hash', async () => {
+    const originalRaw = currentContent
+    currentContent = originalRaw.replace('Test problem statement.', 'Remote changed statement.')
+    currentContentSha256 = SAVED_CONTENT_HASH
+    persistedUiStateData = {
+      isEditMode: true,
+      editTab: 'yaml',
+      yamlDraft: originalRaw.replace('Test problem statement.', 'Local edit based on A.'),
+      contentSha256: INITIAL_CONTENT_HASH,
+    }
+
+    renderWithProviders(<PrdApprovalPane ticket={makeTicket({ status: 'WAITING_PRD_APPROVAL' })} />)
+    await screen.findByLabelText('YAML editor')
+
+    fireEvent.click(screen.getByRole('button', { name: 'Save' }))
+    await waitFor(() => {
+      const call = vi.mocked(fetch).mock.calls.find((entry) => entry[1]?.method === 'PUT')
+      expect(call).toBeDefined()
+      expect(JSON.parse(String(call?.[1]?.body)).expectedContentSha256).toBe(INITIAL_CONTENT_HASH)
+    })
+  })
+
+  it('shows a failed unmount flush in the real approval editor', async () => {
+    renderWithProviders(<PrdApprovalPane ticket={makeTicket({ status: 'WAITING_PRD_APPROVAL' })} />)
+    await screen.findByText('Test problem statement.')
+    fireEvent.click(screen.getByRole('button', { name: 'Edit' }))
+    await screen.findByLabelText('structured-prd-editor')
+
+    window.dispatchEvent(new CustomEvent('looptroop:ui-state-flush-error', {
+      detail: {
+        ticketId: TEST.ticketId,
+        scope: 'approval_prd',
+        message: 'The latest draft could not be saved while leaving the ticket.',
+      },
+    }))
+
+    await waitFor(() => expect(screen.getByText(/Autosave failed/)).toBeInTheDocument())
+  })
+
+  it('restores a failed retained flush as recoverable dirty state', async () => {
+    persistedUiStateMeta = { flushFailed: true }
+    persistedUiStateData = {
+      isEditMode: true,
+      editTab: 'yaml',
+      yamlDraft: currentContent.replace('Test problem statement.', 'Retained after leaving.'),
+      contentSha256: INITIAL_CONTENT_HASH,
+    }
+
+    renderWithProviders(<PrdApprovalPane ticket={makeTicket({ status: 'WAITING_PRD_APPROVAL' })} />)
+    await screen.findByLabelText('YAML editor')
+
+    await waitFor(() => expect(screen.getByText(/Autosave failed/)).toBeInTheDocument())
+    expect(mockSaveUiState).not.toHaveBeenCalled()
+  })
+
+  it('restores a failed retained draft after the PRD artifact finishes loading', async () => {
+    persistedUiStateMeta = { flushFailed: true }
+    persistedUiStateData = {
+      isEditMode: true,
+      editTab: 'yaml',
+      yamlDraft: currentContent.replace('Test problem statement.', 'Retained while the artifact loads.'),
+      contentSha256: INITIAL_CONTENT_HASH,
+    }
+    let releasePrdLoad!: (response: Response) => void
+    holdPrdLoad = (resolve) => { releasePrdLoad = resolve }
+
+    renderWithProviders(<PrdApprovalPane ticket={makeTicket({ status: 'WAITING_PRD_APPROVAL' })} />)
+    await waitFor(() => expect(releasePrdLoad).toBeDefined())
+    expect(screen.queryByLabelText('YAML editor')).not.toBeInTheDocument()
+
+    holdPrdLoad = null
+    releasePrdLoad(new Response(JSON.stringify({ content: currentContent, contentSha256: INITIAL_CONTENT_HASH }), {
+      status: 200,
+      headers: { 'Content-Type': 'application/json' },
+    }))
+
+    const editor = await screen.findByLabelText<HTMLTextAreaElement>('YAML editor')
+    expect(editor.value).toContain('Retained while the artifact loads.')
+    await waitFor(() => expect(screen.getByText(/Autosave failed/)).toBeInTheDocument())
+    expect(mockSaveUiState).not.toHaveBeenCalled()
+  })
+
+  it('keeps later PRD YAML edits visible when the earlier save resolves', async () => {
+    persistedUiStateData = {
+      isEditMode: true,
+      editTab: 'yaml',
+      yamlDraft: currentContent.replace('Test problem statement.', 'First local text.'),
+      contentSha256: INITIAL_CONTENT_HASH,
+    }
+    let release: ((response: Response) => void) | undefined
+    holdPrdSave = (resolve) => { release = resolve }
+
+    renderWithProviders(<PrdApprovalPane ticket={makeTicket({ status: 'WAITING_PRD_APPROVAL' })} />)
+    const editor = await screen.findByLabelText('YAML editor')
+    fireEvent.click(screen.getByRole('button', { name: 'Save' }))
+    await waitFor(() => expect(release).toBeDefined())
+
+    const later = currentContent.replace('Test problem statement.', 'Later local text.')
+    fireEvent.change(editor, { target: { value: later } })
+    release?.(new Response(JSON.stringify({ content: currentContent, contentSha256: SAVED_CONTENT_HASH }), {
+      status: 200,
+      headers: { 'Content-Type': 'application/json' },
+    }))
+
+    await waitFor(() => expect(screen.getByLabelText<HTMLTextAreaElement>('YAML editor').value).toContain('Later local text.'))
   })
 
   it('shows the winning model full answers artifact as a compact read-only chip', async () => {

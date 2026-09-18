@@ -303,15 +303,43 @@ describe('ErrorView', () => {
     noRetryTicket.availableActions = ['cancel']
     renderWithProviders(<ErrorView ticket={noRetryTicket} />)
     expect(screen.queryByRole('button', { name: 'Retry with extra note...' })).not.toBeInTheDocument()
+    expect(screen.queryByRole('button', { name: 'Retry' })).not.toBeInTheDocument()
   })
 
-  it('offers setup recovery actions for a live workspace runtime setup error', () => {
+  it('does not invent recovery controls for setup approval errors', () => {
+    const ticket = makeTicket({
+      status: 'BLOCKED_ERROR',
+      previousStatus: 'WAITING_EXECUTION_SETUP_APPROVAL',
+      availableActions: ['cancel'],
+      activeErrorOccurrenceId: 'setup-approval-error',
+      errorOccurrences: [{
+        id: 'setup-approval-error',
+        occurrenceNumber: 1,
+        blockedFromStatus: 'WAITING_EXECUTION_SETUP_APPROVAL',
+        errorMessage: 'Setup approval could not continue.',
+        errorCodes: ['EXECUTION_SETUP_FAILED'],
+        occurredAt: '2026-01-01T00:00:00.000Z',
+        resolvedAt: null,
+        resolutionStatus: null,
+        resumedToStatus: null,
+      }],
+    })
+
+    renderWithProviders(<ErrorView ticket={ticket} />)
+
+    expect(screen.queryByRole('button', { name: 'Retry' })).not.toBeInTheDocument()
+    expect(screen.queryByRole('button', { name: 'Edit setup plan...' })).not.toBeInTheDocument()
+    expect(screen.queryByRole('button', { name: 'Retry with extra note...' })).not.toBeInTheDocument()
+    expect(screen.getByText(/use an available recovery action/i)).toBeInTheDocument()
+  })
+
+  it.each([true, false])('offers setup-plan editing only when advertised (%s)', (canEditPlan) => {
     const mutate = vi.fn()
     mockUseTicketAction.mockReturnValue({ mutate, isPending: false })
     const ticket = makeTicket({
       status: 'BLOCKED_ERROR',
       previousStatus: 'PREPARING_EXECUTION_ENV',
-      availableActions: ['retry', 'cancel'],
+      availableActions: canEditPlan ? ['retry', 'cancel', 'edit_execution_setup_plan'] : ['retry', 'cancel'],
       activeErrorOccurrenceId: 'setup-error',
       errorOccurrences: [{
         id: 'setup-error',
@@ -328,17 +356,16 @@ describe('ErrorView', () => {
 
     renderWithProviders(<ErrorView ticket={ticket} />)
 
-    const editSetupPlanButton = screen.getByRole('button', { name: 'Edit setup plan...' })
-    const retryWithNoteButton = screen.getByRole('button', { name: 'Retry with extra note...' })
     const retryButton = screen.getByRole('button', { name: 'Retry' })
-    expect(editSetupPlanButton.compareDocumentPosition(retryWithNoteButton) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy()
-    expect(retryWithNoteButton.compareDocumentPosition(retryButton) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy()
-
-    fireEvent.click(retryWithNoteButton)
+    fireEvent.click(screen.getByRole('button', { name: 'Retry with extra note...' }))
     expect(screen.getByRole('dialog', { name: 'Retry workspace setup with an extra note' })).toBeInTheDocument()
-    expect(screen.getByText(/sends only this note and runs one extra attempt/i)).toBeInTheDocument()
-    expect(mutate).not.toHaveBeenCalled()
     fireEvent.click(screen.getByRole('button', { name: 'Cancel' }))
+    if (!canEditPlan) {
+      expect(screen.queryByRole('button', { name: 'Edit setup plan...' })).not.toBeInTheDocument()
+      return
+    }
+    const editSetupPlanButton = screen.getByRole('button', { name: 'Edit setup plan...' })
+    expect(editSetupPlanButton.compareDocumentPosition(retryButton) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy()
 
     fireEvent.click(editSetupPlanButton)
     expect(screen.getByRole('dialog', { name: 'Edit workspace setup plan?' })).toBeInTheDocument()

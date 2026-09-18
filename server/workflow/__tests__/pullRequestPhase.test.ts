@@ -143,6 +143,41 @@ describe('pull request drafting context', () => {
     }
   }
 
+  function buildMergeCompletionInput(
+    ticket: { id: string; externalId: string },
+    context: { externalId: string },
+    prInfo: { url: string; title: string; body: string; createdAt: string; updatedAt: string },
+    skipRemoteMerge: boolean,
+  ): Parameters<typeof completeMergedPullRequest>[0] {
+    return {
+      skipRemoteMerge,
+      ticketId: ticket.id,
+      externalId: ticket.externalId,
+      projectPath: context.externalId,
+      baseBranch: 'main',
+      headBranch: ticket.externalId,
+      candidateCommitSha: 'candidate123',
+      prReport: {
+        status: 'passed',
+        completedAt: '2026-01-01T00:00:00.000Z',
+        baseBranch: 'main',
+        headBranch: ticket.externalId,
+        candidateCommitSha: 'candidate123',
+        prNumber: 42,
+        prUrl: prInfo.url,
+        prState: 'open',
+        prHeadSha: 'candidate123',
+        title: prInfo.title,
+        body: prInfo.body,
+        createdAt: prInfo.createdAt,
+        updatedAt: prInfo.updatedAt,
+        mergedAt: null,
+        closedAt: null,
+        message: 'Draft PR ready.',
+      },
+    }
+  }
+
   function validCandidateAuditResponse(path = 'src/example.ts') {
     return [
       'files:',
@@ -342,6 +377,32 @@ describe('pull request drafting context', () => {
     ])
   })
 
+  it('does not continue to git side effects when a draft session stop is unconfirmed', async () => {
+    resetTestDb()
+    const { ticket, context } = await createPullRequestReadyTicket({ structuredRetryCount: 0 })
+
+    mocks.runOpenCodePrompt.mockResolvedValueOnce({
+      session: { id: 'candidate-audit-before-stop-check' },
+      response: validCandidateAuditResponse(),
+      messages: [],
+    })
+    mocks.runOpenCodePrompt.mockImplementationOnce(async (input: {
+      onSessionCreated?: (session: { id: string }) => void
+    }) => {
+      input.onSessionCreated?.({ id: 'pr-draft-paused' })
+      throw new Error('draft transport failed')
+    })
+
+    await expect(handleCreatePullRequest(
+      ticket.id,
+      context,
+      vi.fn(),
+      new AbortController().signal,
+    )).rejects.toThrow('Could not confirm abort of pull request draft session pr-draft-paused')
+    expect(mocks.pushBranchRef).not.toHaveBeenCalled()
+    expect(mocks.createOrUpdateDraftPullRequest).not.toHaveBeenCalled()
+  })
+
   it('does not retry git push side effects after a valid PR draft', async () => {
     resetTestDb()
     const { ticket, context } = await createPullRequestReadyTicket({ structuredRetryCount: 1 })
@@ -445,33 +506,12 @@ describe('pull request drafting context', () => {
     mocks.getPullRequestByNumber.mockReturnValue(method === 'app merge' ? prInfo : merged)
     mocks.mergePullRequest.mockReturnValue(merged)
 
-    await completeMergedPullRequest({
-      skipRemoteMerge: method !== 'app merge',
-      ticketId: ticket.id,
-      externalId: ticket.externalId,
-      projectPath: context.externalId,
-      baseBranch: 'main',
-      headBranch: ticket.externalId,
-      candidateCommitSha: 'candidate123',
-      prReport: {
-        status: 'passed',
-        completedAt: '2026-01-01T00:00:00.000Z',
-        baseBranch: 'main',
-        headBranch: ticket.externalId,
-        candidateCommitSha: 'candidate123',
-        prNumber: 42,
-        prUrl: prInfo.url,
-        prState: 'open',
-        prHeadSha: 'candidate123',
-        title: prInfo.title,
-        body: prInfo.body,
-        createdAt: prInfo.createdAt,
-        updatedAt: prInfo.updatedAt,
-        mergedAt: null,
-        closedAt: null,
-        message: 'Draft PR ready.',
-      },
-    })
+    await completeMergedPullRequest(buildMergeCompletionInput(
+      ticket,
+      context,
+      prInfo,
+      method !== 'app merge',
+    ))
 
     expect(mocks.getPullRequestByNumber).toHaveBeenCalledWith(context.externalId, 42)
     expect(mocks.mergePullRequest).toHaveBeenCalledTimes(method === 'app merge' ? 1 : 0)
@@ -632,6 +672,95 @@ describe('pull request drafting context', () => {
     expect(JSON.parse(receipt!.content)).toMatchObject({
       step: 'verify_remote_merge',
       error: expectedError,
+    })
+  })
+
+  it('records the merged observation before rejecting an approved-head mismatch', async () => {
+    resetTestDb()
+    const { ticket, context } = await createInitializedTestTicket(repoManager, {
+      title: 'Persist merged observation',
+    })
+    const prInfo = {
+      number: 42,
+      url: 'https://github.example/pulls/42',
+      title: 'Persist merged observation',
+      body: 'Body',
+      state: 'merged' as const,
+      mergeCommitSha: 'landed123',
+      baseRefName: 'main',
+      headRefName: ticket.externalId,
+      headRefOid: 'unexpected-head',
+      createdAt: '2026-01-01T00:00:00.000Z',
+      updatedAt: '2026-01-01T00:05:00.000Z',
+      closedAt: '2026-01-01T00:05:00.000Z',
+      mergedAt: '2026-01-01T00:05:00.000Z',
+    }
+    mocks.getPullRequestByNumber.mockReturnValue(prInfo)
+
+    await expect(completeMergedPullRequest(buildMergeCompletionInput(
+      ticket,
+      context,
+      prInfo,
+      true,
+    ))).rejects.toThrow('does not match candidate candidate123')
+
+    expect(readPullRequestReport(ticket.id)).toMatchObject({
+      prNumber: 42,
+      prState: 'merged',
+      prHeadSha: 'unexpected-head',
+      mergedAt: prInfo.mergedAt,
+      closedAt: prInfo.closedAt,
+    })
+    const receipt = getLatestPhaseArtifact(ticket.id, 'git_recovery_receipt', 'WAITING_PR_REVIEW')
+    expect(JSON.parse(receipt!.content)).toMatchObject({
+      step: 'verify_pull_request_candidate',
+      prNumber: 42,
+      pr: prInfo,
+    })
+  })
+
+  it('records an initial pull request refresh failure as a durable recovery receipt', async () => {
+    resetTestDb()
+    const { ticket, context } = await createInitializedTestTicket(repoManager, {
+      title: 'Record refresh failure',
+    })
+    mocks.getPullRequestByNumber.mockImplementation(() => {
+      throw new Error('GitHub unavailable')
+    })
+
+    await expect(completeMergedPullRequest({
+      ticketId: ticket.id,
+      externalId: ticket.externalId,
+      projectPath: context.externalId,
+      baseBranch: 'main',
+      headBranch: ticket.externalId,
+      candidateCommitSha: 'candidate123',
+      prReport: {
+        status: 'passed',
+        completedAt: '2026-01-01T00:00:00.000Z',
+        baseBranch: 'main',
+        headBranch: ticket.externalId,
+        candidateCommitSha: 'candidate123',
+        prNumber: 42,
+        prUrl: 'https://github.example/pulls/42',
+        prState: 'open',
+        prHeadSha: 'candidate123',
+        title: 'Record refresh failure',
+        body: 'Body',
+        createdAt: '2026-01-01T00:00:00.000Z',
+        updatedAt: '2026-01-01T00:00:00.000Z',
+        mergedAt: null,
+        closedAt: null,
+        message: 'Draft PR ready.',
+      },
+    })).rejects.toThrow('GitHub unavailable')
+
+    const receipt = getLatestPhaseArtifact(ticket.id, 'git_recovery_receipt', 'WAITING_PR_REVIEW')
+    expect(JSON.parse(receipt!.content)).toMatchObject({
+      step: 'refresh_pull_request',
+      error: 'GitHub unavailable',
+      prNumber: 42,
+      pr: null,
     })
   })
 })

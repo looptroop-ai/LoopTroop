@@ -1,4 +1,4 @@
-import { completeTicketMerge, hasVerifiedMergeReport, withTicketMergeLock } from '../../workflow/mergeCompletion'
+import { completeTicketMerge, hasClosedUnmergedReport, hasVerifiedMergeReport, withTicketMergeLock } from '../../workflow/mergeCompletion'
 import type { Context } from 'hono'
 import type { z } from 'zod'
 import { PROFILE_DEFAULTS } from '../../db/defaults'
@@ -17,7 +17,13 @@ import { clearContextCache } from '../../opencode/contextBuilder'
 import { getOpenCodeAdapter } from '../../opencode/factory'
 import { normalizeStructuredRetryCount } from '../../lib/structuredRetryPolicy'
 import { isGitHookPolicy } from '../../git/hookPolicy'
-import { cancelTicket } from '../../workflow/runner'
+import {
+  cancelTicket,
+  clearTicketCancellationPending,
+  isTicketCancellationPending,
+  markTicketCancellationPending,
+  schedulePendingCancellationCleanupRetry,
+} from '../../workflow/runner'
 import { TicketInitializationError, initializeTicket } from '../../ticket/initialize'
 import { withCommandLoggingAsync } from '../../log/commandLogger'
 import { validateModelSelection } from '../../opencode/modelValidation'
@@ -40,9 +46,14 @@ import {
   resolveTicketContinuationCandidate,
 } from '../../storage/tickets'
 import {
+  buildObservedPullRequestReport,
   completeCloseUnmerged,
+  recordPullRequestRefreshFailure,
   readPullRequestReport,
+  refreshPullRequestReport,
+  refreshPullRequestState,
 } from '../../workflow/phases/pullRequestPhase'
+import type { PullRequestInfo } from '../../git/github'
 import { recoverCodingBeadWithReset } from '../../workflow/phases/beadsPhase'
 import { recoverSuccessfulExecutionCheckpointForFinalization } from '../../workflow/phases/executionPhase'
 import { isExecutionBandStatus } from '../../workflow/executionBand'
@@ -401,7 +412,8 @@ async function handleCancelTicketLocked(c: Context, options: z.infer<typeof canc
     return c.json({ error: 'Cannot cancel a terminal ticket' }, 409)
   }
   if (!getAvailableWorkflowActions(ticket.status).includes('cancel')
-    || (ticket.status === 'WAITING_PR_REVIEW' && hasVerifiedMergeReport(ticket))) {
+    || (ticket.status === 'WAITING_PR_REVIEW'
+      && (hasVerifiedMergeReport(ticket) || hasClosedUnmergedReport(ticket)))) {
     return c.json({ error: 'Cannot cancel a ticket after completion has started' }, 409)
   }
 
@@ -423,15 +435,35 @@ async function handleCancelTicketLocked(c: Context, options: z.infer<typeof canc
         })
       }
     } else {
-      ensureActorForTicket(ticketId)
-      sendTicketEvent(ticketId, { type: 'CANCEL' })
+      const actor = ensureActorForTicket(ticketId)
+      markTicketCancellationPending(ticketId)
       cancelTicket(ticketId)
       // Before the sessions go, so the receipts say the ticket was cancelled
       // rather than that a session vanished. Tearing the sessions down first
       // would file every outstanding question under `session_lost`, which is
       // true but tells a later reader nothing about why.
-      await clearTicketWindows(ticketId, 'ticket_canceled', 'The ticket was canceled while the question was open.')
-      await abortTicketSessions(ticketId)
+      const windowsClearedBeforeAbort = await clearTicketWindows(
+        ticketId,
+        'ticket_canceled',
+        'The ticket was canceled while the question was open.',
+      )
+      const sessionsStopped = await abortTicketSessions(ticketId)
+      // A question fallback and the session sweep can race each other. If the
+      // sweep confirmed the remote session after the first window attempt, let
+      // the session-ended hook finish the window before deciding cancellation
+      // is unsafe.
+      const windowsCleared = windowsClearedBeforeAbort || await clearTicketWindows(
+        ticketId,
+        'ticket_canceled',
+        'The ticket was canceled while the question was open.',
+      )
+      if (windowsCleared === false || sessionsStopped === false) {
+        schedulePendingCancellationCleanupRetry(ticketId, actor, event => sendTicketEvent(ticketId, event))
+        return c.json({
+          error: 'Cancellation could not be confirmed while OpenCode work is still active',
+        }, 409)
+      }
+      sendTicketEvent(ticketId, { type: 'CANCEL' })
       if (deleteTicket) {
         stopActor(ticketId)
         clearContextCache(ticketId)
@@ -483,17 +515,15 @@ async function handleCancelTicketLocked(c: Context, options: z.infer<typeof canc
   return respondWithState(c, ticketId, 'Cancel action accepted')
 }
 
-export function handleMergeTicket(c: Context) {
-  const ticketId = getTicketParam(c)
-  return withTicketMergeLock(ticketId, () => handleMergeTicketLocked(c))
-}
-
-async function handleMergeTicketLocked(c: Context) {
+export async function handleMergeTicket(c: Context) {
   const ticketId = getTicketParam(c)
   const ticket = getTicketByRef(ticketId)
   if (!ticket) return c.json({ error: 'Ticket not found' }, 404)
   const mockResponse = rejectDisplayOnlyMockTicket(c, ticket)
   if (mockResponse) return mockResponse
+  if (hasClosedUnmergedReport(ticket)) {
+    return c.json({ error: 'The pull request was already recorded as closed without merge; completion is pending. Try again to resume it.' }, 409)
+  }
   if ((ticket.status === 'CLEANING_ENV' || ticket.status === 'COMPLETED') && hasVerifiedMergeReport(ticket)) {
     return respondWithState(c, ticketId, 'Merge complete')
   }
@@ -504,14 +534,66 @@ async function handleMergeTicketLocked(c: Context) {
   const ticketContext = getTicketContext(ticketId)
   if (!ticketContext) return c.json({ error: 'Ticket not found' }, 404)
   const prReport = readPullRequestReport(ticketId)
-  if (!prReport) {
+  if (!prReport || prReport.prNumber == null) {
+    return c.json({ error: 'Pull request report not found' }, 409)
+  }
+
+  // The provider read is deliberately outside the ticket lock. The locked
+  // phase rechecks the report identity before committing any merge result.
+  let observed: PullRequestInfo
+  try {
+    observed = await refreshPullRequestState(ticketContext.projectRoot, prReport.prNumber)
+  } catch (error) {
+    try {
+      recordPullRequestRefreshFailure({
+        ticketId,
+        projectPath: ticketContext.projectRoot,
+        baseBranch: ticket.runtime.baseBranch,
+        headBranch: ticket.branchName?.trim() || ticket.externalId,
+        candidateCommitSha: ticket.runtime.candidateCommitSha,
+        prNumber: prReport.prNumber,
+        error,
+      })
+    } catch (receiptError) {
+      logTicketOperationError(ticketId, 'Failed to persist pull request refresh receipt', receiptError)
+    }
+    return c.json({
+      error: 'Could not verify the pull request before merging. No merge decision was recorded.',
+      details: getErrorMessage(error),
+    }, 502)
+  }
+
+  return withTicketMergeLock(ticketId, () => handleMergeTicketLocked(c, observed))
+}
+
+async function handleMergeTicketLocked(c: Context, observed: PullRequestInfo) {
+  const ticketId = getTicketParam(c)
+  const ticket = getTicketByRef(ticketId)
+  if (!ticket) return c.json({ error: 'Ticket not found' }, 404)
+  const mockResponse = rejectDisplayOnlyMockTicket(c, ticket)
+  if (mockResponse) return mockResponse
+  if (hasClosedUnmergedReport(ticket)) {
+    return c.json({ error: 'The pull request was already recorded as closed without merge; completion is pending. Try again to resume it.' }, 409)
+  }
+  if ((ticket.status === 'CLEANING_ENV' || ticket.status === 'COMPLETED') && hasVerifiedMergeReport(ticket)) {
+    return respondWithState(c, ticketId, 'Merge complete')
+  }
+  if (ticket.status !== 'WAITING_PR_REVIEW') {
+    return c.json({ error: 'Ticket is not waiting for pull request review' }, 409)
+  }
+
+  const ticketContext = getTicketContext(ticketId)
+  if (!ticketContext) return c.json({ error: 'Ticket not found' }, 404)
+  const prReport = readPullRequestReport(ticketId)
+  if (!prReport || prReport.prNumber !== observed.number
+    || (prReport.prUrl !== null && prReport.prUrl !== observed.url)) {
     return c.json({ error: 'Pull request report not found' }, 409)
   }
 
   const phase = 'WAITING_PR_REVIEW'
 
   try {
-    await completeTicketMerge(ticket, ticketContext.projectRoot, prReport)
+    await completeTicketMerge(ticket, ticketContext.projectRoot, prReport, false, observed)
   } catch (err) {
     const current = getTicketByRef(ticketId)
     if (current && hasVerifiedMergeReport(current)) {
@@ -553,10 +635,58 @@ export async function handleCloseUnmergedTicket(c: Context) {
     return c.json({ error: 'Invalid close payload', details: parsed.error.flatten() }, 400)
   }
   const ticketId = getTicketParam(c)
-  return withTicketMergeLock(ticketId, () => handleCloseUnmergedTicketLocked(c, parsed.data))
+  const ticket = getTicketByRef(ticketId)
+  if (!ticket) return c.json({ error: 'Ticket not found' }, 404)
+  const mockResponse = rejectDisplayOnlyMockTicket(c, ticket)
+  if (mockResponse) return mockResponse
+  if (ticket.status !== 'WAITING_PR_REVIEW') {
+    return c.json({ error: 'Ticket is not waiting for pull request review' }, 409)
+  }
+  if (hasVerifiedMergeReport(ticket)) {
+    return c.json({ error: 'The pull request merge is already verified; completion is pending. Try Merge again.' }, 409)
+  }
+  if (hasClosedUnmergedReport(ticket)) {
+    return c.json({ error: 'The pull request was already recorded as closed without merge; completion is pending. Try again to resume it.' }, 409)
+  }
+
+  const context = getTicketContext(ticketId)
+  const prReport = readPullRequestReport(ticketId)
+  if (!context || !prReport || prReport.prNumber == null) {
+    return c.json({ error: 'Pull request report not found; the ticket cannot be finished without verifying its current pull request.' }, 409)
+  }
+
+  // Do not hold the ticket lock while asking the remote provider. The observed
+  // state is passed into the locked write phase and checked again there.
+  let observed: PullRequestInfo
+  try {
+    observed = await refreshPullRequestState(context.projectRoot, prReport.prNumber)
+  } catch (error) {
+    try {
+      recordPullRequestRefreshFailure({
+        ticketId,
+        projectPath: context.projectRoot,
+        baseBranch: ticket.runtime.baseBranch,
+        headBranch: ticket.branchName?.trim() || ticket.externalId,
+        candidateCommitSha: ticket.runtime.candidateCommitSha,
+        prNumber: prReport.prNumber,
+        error,
+      })
+    } catch (receiptError) {
+      logTicketOperationError(ticketId, 'Failed to persist pull request refresh receipt', receiptError)
+    }
+    return c.json({
+      error: 'Could not verify the pull request before finishing without merge. No close decision was recorded.',
+      details: getErrorMessage(error),
+    }, 502)
+  }
+  return withTicketMergeLock(ticketId, () => handleCloseUnmergedTicketLocked(c, parsed.data, observed))
 }
 
-async function handleCloseUnmergedTicketLocked(c: Context, options: z.infer<typeof closeUnmergedSchema>) {
+async function handleCloseUnmergedTicketLocked(
+  c: Context,
+  options: z.infer<typeof closeUnmergedSchema>,
+  observed: PullRequestInfo,
+) {
   const ticketId = getTicketParam(c)
   const ticket = getTicketByRef(ticketId)
   if (!ticket) return c.json({ error: 'Ticket not found' }, 404)
@@ -569,6 +699,22 @@ async function handleCloseUnmergedTicketLocked(c: Context, options: z.infer<type
   if (hasVerifiedMergeReport(ticket)) {
     return c.json({ error: 'The pull request merge is already verified; completion is pending. Try Merge again.' }, 409)
   }
+  if (hasClosedUnmergedReport(ticket)) {
+    return c.json({ error: 'The pull request was already recorded as closed without merge; completion is pending. Try again to resume it.' }, 409)
+  }
+
+  const currentPrReport = readPullRequestReport(ticketId)
+  if (!currentPrReport || currentPrReport.prNumber !== observed.number
+    || (currentPrReport.prUrl !== null && currentPrReport.prUrl !== observed.url)) {
+    return c.json({ error: 'The pull request changed while it was being verified. Reload and try again.' }, 409)
+  }
+
+  if (observed.state === 'merged') {
+    // Keep the review projection honest before refusing a contradictory close
+    // decision. The next request can use Merge to write the verified checkpoint.
+    refreshPullRequestReport(ticketId, buildObservedPullRequestReport(currentPrReport, observed))
+    return c.json({ error: 'The pull request is already merged; use Merge to finish completion.' }, 409)
+  }
 
   const closeReason = normalizeSkipReason(options.reason)
   const statusBeforeClose = ticket.status
@@ -579,7 +725,7 @@ async function handleCloseUnmergedTicketLocked(c: Context, options: z.infer<type
       baseBranch: ticket.runtime.baseBranch,
       headBranch: ticket.branchName?.trim() || ticket.externalId,
       candidateCommitSha: ticket.runtime.candidateCommitSha,
-      prReport: readPullRequestReport(ticketId),
+      prReport: buildObservedPullRequestReport(currentPrReport, observed),
       reason: closeReason,
     })
 
@@ -705,6 +851,21 @@ export async function handleRetryTicket(c: Context) {
   }
 
   if (ticket.previousStatus === 'CODING') {
+    let stopped: boolean
+    try {
+      stopped = await abortTicketSessions(ticketId)
+    } catch (err) {
+      return c.json({
+        error: 'Retry is not available until the previous OpenCode session stop is confirmed',
+        details: getErrorMessage(err),
+      }, 409)
+    }
+    if (!stopped) {
+      return c.json({
+        error: 'Retry is not available until the previous OpenCode session stop is confirmed',
+      }, 409)
+    }
+
     const paths = getTicketPaths(ticketId)
     if (!paths) {
       return c.json({ error: 'Retry is not available because the ticket workspace could not be resolved' }, 409)
@@ -727,11 +888,22 @@ export async function handleRetryTicket(c: Context) {
         details: getErrorMessage(err),
       }, 409)
     }
+
+    if (isTicketCancellationPending(ticketId) && !clearTicketCancellationPending(ticketId)) {
+      return c.json({
+        error: 'Retry is not available until the previous cancellation cleanup marker can be cleared',
+      }, 409)
+    }
   }
 
   try {
     if (ticket.previousStatus === 'PREPARING_EXECUTION_ENV') {
-      await abortTicketSessions(ticketId)
+      const stopped = await abortTicketSessions(ticketId)
+      if (stopped === false) {
+        return c.json({
+          error: 'Retry is not available until the previous OpenCode session stop is confirmed',
+        }, 409)
+      }
     }
     if (isAttemptTrackedPhase(ticket.previousStatus)) {
       ensureActivePhaseAttempt(ticketId, ticket.previousStatus)

@@ -164,6 +164,18 @@ export async function generateExecutionSetup(
   let activeSessionId: string | null = null
   let activeSession: Session | null = null
   const sessionManager = callbacks?.ticketId ? new SessionManager(adapter) : null
+  const stopActiveSession = async (sessionIdToStop: string): Promise<void> => {
+    const stopped = sessionManager
+      ? await sessionManager.abortAndAbandonSession(sessionIdToStop)
+      : await adapter.abortSession(sessionIdToStop).catch((error) => {
+          console.warn(`[executionSetup] Failed to abort OpenCode session ${sessionIdToStop}:`, error)
+          return false
+        })
+    if (!stopped) {
+      throwIfAborted(signal)
+      throw new Error(`Could not confirm abort of OpenCode session ${sessionIdToStop}`)
+    }
+  }
   throwIfAborted(signal)
 
   const runMainSetupPrompt = async () => await runOpenCodePrompt({
@@ -210,10 +222,16 @@ export async function generateExecutionSetup(
   try {
     result = await runMainSetupPrompt()
   } catch (error) {
+    const failedSession = activeSession
+    if (activeSessionId) {
+      await stopActiveSession(activeSessionId)
+      activeSessionId = null
+      activeSession = null
+    }
     throwIfCancelled(error, signal)
     if (setupExpired()) {
       return buildPromptFailureGeneration(
-        activeSession,
+        failedSession,
         normalizeExecutionSetupPromptError(error, setupExpired()),
         [],
         [],
@@ -221,26 +239,27 @@ export async function generateExecutionSetup(
       )
     }
     if (callbacks?.manualContinuation) throw error
-    if (activeSessionId && sessionManager) {
-      await sessionManager.abandonSession(activeSessionId)
-      activeSessionId = null
-      activeSession = null
-    }
 
     try {
       result = await runMainSetupPrompt()
     } catch (retryError) {
+      const failedRetrySession = activeSession
+      if (activeSessionId) {
+        await stopActiveSession(activeSessionId)
+        activeSessionId = null
+        activeSession = null
+      }
       throwIfCancelled(retryError, signal)
       if (setupExpired()) {
         return buildPromptFailureGeneration(
-          activeSession,
+          failedRetrySession,
           normalizeExecutionSetupPromptError(retryError, setupExpired()),
           [],
           [],
           initialInput,
         )
       }
-      if (!activeSession) {
+      if (!failedRetrySession) {
         throw retryError
       }
       const promptFailureAttempts: RawAttempt[] = []
@@ -251,7 +270,7 @@ export async function generateExecutionSetup(
         failureClass: classifyStructuredFailureFromError(error),
       })
       return buildPromptFailureGeneration(
-        activeSession,
+        failedRetrySession,
         retryError,
         [
           resolveStructuredRetryDiagnostic({
@@ -347,12 +366,18 @@ export async function generateExecutionSetup(
         })
         continue
       } catch (error) {
+        const failedProgressSession = activeSession
+        if (activeSessionId) {
+          await stopActiveSession(activeSessionId)
+          activeSessionId = null
+          activeSession = null
+        }
         throwIfCancelled(error, signal)
-        if (!activeSession) {
+        if (!failedProgressSession) {
           throw error
         }
         return buildPromptFailureGeneration(
-          activeSession,
+          failedProgressSession,
           normalizeExecutionSetupPromptError(error, setupExpired()),
           retryDiagnostics,
           rawAttempts,
@@ -404,8 +429,8 @@ export async function generateExecutionSetup(
         result = retryResult
         response = retryResult.response
       } else {
-        if (activeSessionId && sessionManager) {
-          await sessionManager.abandonSession(activeSessionId)
+        if (activeSessionId) {
+          await stopActiveSession(activeSessionId)
           activeSessionId = null
           activeSession = null
         }
@@ -454,12 +479,18 @@ export async function generateExecutionSetup(
         response = result.response
       }
     } catch (error) {
+      const failedRetrySession = activeSession
+      if (activeSessionId) {
+        await stopActiveSession(activeSessionId)
+        activeSessionId = null
+        activeSession = null
+      }
       throwIfCancelled(error, signal)
-      if (!activeSession) {
+      if (!failedRetrySession) {
         throw error
       }
       return buildPromptFailureGeneration(
-        activeSession,
+        failedRetrySession,
         normalizeExecutionSetupPromptError(error, setupExpired()),
         retryDiagnostics,
         rawAttempts,
@@ -494,6 +525,10 @@ export async function generateExecutionSetup(
       rawResponse: response,
       initialInput,
     })
+  }
+
+  if (parsed.errors.length > 0 && activeSessionId) {
+    await stopActiveSession(activeSessionId)
   }
 
   if (!activeSession) {

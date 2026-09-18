@@ -5,7 +5,7 @@ import { createIndexes } from './db/indexes'
 import { initPromptTemplates } from './prompts/templateStore'
 import { hydrateAllTickets } from './machines/persistence'
 import { getOpenCodeAdapter } from './opencode/factory'
-import { SessionManager } from './opencode/sessionManager'
+import { recoverPendingOpenCodeSessionOwnership, SessionManager } from './opencode/sessionManager'
 import { opencodeSessions, tickets } from './db/schema'
 import { getProjectContextById, listProjects } from './storage/projects'
 import { buildTicketRef, getTicketPaths, listTickets } from './storage/tickets'
@@ -87,6 +87,23 @@ export async function reconcileOpenCodeSessions(
   for (const project of attachedProjects) {
     const context = getProjectContextById(project.id)
     if (!context) continue
+
+    // A remote session can be created just before its normal ownership INSERT
+    // fails. Recover the contained marker before scanning the durable rows so
+    // a restart can reconcile that session instead of treating the database as
+    // proof that no remote work exists. A read-only database leaves the marker
+    // in place for the normal ticket cleanup sweep to retry later.
+    const ticketRefs = context.projectDb
+      .select({ externalId: tickets.externalId })
+      .from(tickets)
+      .all()
+    for (const ticket of ticketRefs) {
+      const ticketRef = buildTicketRef(project.id, ticket.externalId)
+      if (!recoverPendingOpenCodeSessionOwnership(ticketRef)) {
+        console.warn(`[startup] Could not recover pending OpenCode ownership for ticket ${ticketRef}; retaining it for cleanup`)
+      }
+    }
+
     const activeDbSessions = context.projectDb
       .select()
       .from(opencodeSessions)
@@ -123,6 +140,16 @@ export async function reconcileOpenCodeSessions(
         continue
       }
 
+      // A stale row means the local ticket/status/ownership no longer proves
+      // which remote work it belongs to. The remote session was not looked up,
+      // so treating it as stopped would let startup clean or replace a
+      // worktree while OpenCode is still editing it. Only an exact lookup that
+      // returns no session is safe to abandon here.
+      if (result.state === 'stale') {
+        preserved++
+        continue
+      }
+
       context.projectDb.update(opencodeSessions)
         .set({ state: 'abandoned', updatedAt: new Date().toISOString() })
         .where(eq(opencodeSessions.id, session.id))
@@ -143,12 +170,13 @@ export async function reconcileOpenCodeSessions(
  * decided what came back: a request whose session reconnected is re-armed, and
  * one whose session did not is refused, because nothing will ever answer it.
  *
- * Enumerated once per *project*, because that is the scope OpenCode answers in.
- * Walking ticket by ticket meant each pass saw the whole project's pending
- * requests but only one ticket's sessions, so a sibling ticket's live question
- * looked ownerless and was rejected — and a ticket whose sessions had all been
- * abandoned was never visited at all, leaving its questions hanging in OpenCode
- * with no trail. One ownership map over the project fixes both.
+ * Enumerated once per *project*, with one trusted session-directory lookup per
+ * owner. Walking ticket by ticket meant each pass saw the whole project's
+ * pending requests but only one ticket's sessions, so a sibling ticket's live
+ * question looked ownerless and was rejected — and a ticket whose sessions had
+ * all been abandoned was never visited at all, leaving its questions hanging
+ * in OpenCode with no trail. One ownership map over the project fixes both
+ * without falling back to an arbitrary project path.
  */
 export async function reconcileOpenCodeQuestions(
   attachedProjects = listProjects(),
@@ -217,6 +245,7 @@ export async function reconcileOpenCodeQuestions(
       }]
     })
 
+    let questionReconciliationVerified = true
     try {
       const result = await reconcilePendingQuestionsAfterRestart({
         projectRoot: project.folderPath,
@@ -225,7 +254,9 @@ export async function reconcileOpenCodeQuestions(
       })
       reattached += result.reattached
       rejected += result.rejected
+      if (result.unverified > 0) questionReconciliationVerified = false
     } catch (err) {
+      questionReconciliationVerified = false
       console.warn(`[startup] Failed to reconcile AI questions for ${project.name}:`, err)
     }
 
@@ -237,6 +268,7 @@ export async function reconcileOpenCodeQuestions(
     // closed here. Closing at now rather than guessing an end during the
     // downtime: the daemon was not working either, and an open row is far worse
     // than a slightly long one.
+    if (!questionReconciliationVerified) continue
     for (const localTicketId of listOpenQuestionWaitTicketIds(context.projectDb)) {
       const externalId = externalIds.get(localTicketId)?.externalId
         ?? allTicketExternalIds.get(localTicketId)

@@ -94,6 +94,19 @@ Then configure your settings and models (from providers already added in
 OpenCode), attach a local repository with a GitHub origin, create a ticket, and
 start it.
 
+If LoopTroop cannot confirm that an OpenCode session stopped remotely, it keeps
+the ticket retryable and leaves the ownership visible. The durable session-
+ownership marker, `runtime/opencode-pending-sessions.json`, can recover those
+session IDs when the project database is unavailable. Cancellation separately
+writes the private `.ticket/runtime/cancellation-pending.json` marker before
+cleanup; missing means no pending stop, while malformed or unreadable content
+fails closed and blocks coding. This cancellation marker records the stop
+request but does not identify or recover a remote session. Cleanup removes it
+only after terminal cleanup through the contained ticket-file boundary, or
+after a CODING Retry has confirmed the previous stop and safely recovered its
+bead. If both the database and ownership marker storage are unavailable, only
+the current process can guard the session, so a restart cannot claim recovery.
+
 ### Every way to install it
 
 <details>
@@ -399,6 +412,12 @@ for inspection. Recovery blocks startup only when an in-progress fallback's
 appears before projections, ticket hydration, or execution timers, with the
 affected files preserved. LoopTroop does not guess or silently promote an
 uncertain write.
+A new bead stays pending until its reset commit has been recorded. If that read
+fails or the ticket is canceled while it runs, no coding session starts; Retry
+can attempt the checkpoint again without inventing a reset target. If the
+checkpoint was recorded but the status write was interrupted, Retry can also
+safely reset that still-pending bead from its recorded anchor; a pending bead
+without either marker remains untouched.
 
 Read more: [Beads & Execution](https://www.looptroop.ovh/docs/beads)
 

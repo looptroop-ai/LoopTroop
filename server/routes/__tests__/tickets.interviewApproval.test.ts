@@ -107,6 +107,13 @@ function approvalPayload(raw: string) {
   }
 }
 
+function interviewEditPayload<T extends Record<string, unknown>>(raw: string, payload: T) {
+  return {
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ expectedContentSha256: contentSha256(raw), ...payload }),
+  }
+}
+
 describe('ticketRouter interview approval routes', () => {
   beforeEach(() => {
     clearProjectDatabaseCache()
@@ -128,8 +135,7 @@ describe('ticketRouter interview approval routes', () => {
 
     const response = await app.request(`/api/tickets/${ticket.id}/interview-answers`, {
       method: 'PUT',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({
+      ...interviewEditPayload(raw, {
         questions: [
           {
             id: 'Q01',
@@ -218,8 +224,7 @@ describe('ticketRouter interview approval routes', () => {
 
     const response = await app.request(`/api/tickets/${ticket.id}/interview-answers`, {
       method: 'PUT',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({
+      ...interviewEditPayload(raw, {
         questions: [
           {
             id: 'Q01',
@@ -301,14 +306,13 @@ describe('ticketRouter interview approval routes', () => {
   })
 
   it('does not archive attempts when a post-approval interview edit is invalid', async () => {
-    const { app, ticket } = await setupApprovalTicket()
+    const { app, ticket, raw } = await setupApprovalTicket()
     patchTicket(ticket.id, { status: 'REFINING_PRD' })
     createFreshPhaseAttempts(ticket.id, INTERVIEW_EDIT_RESTART_PHASES)
 
     const response = await app.request(`/api/tickets/${ticket.id}/interview`, {
       method: 'PUT',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({
+      ...interviewEditPayload(raw, {
         content: 'artifact: interview\nquestions: [',
       }),
     })
@@ -325,13 +329,12 @@ describe('ticketRouter interview approval routes', () => {
   })
 
   it('rejects interview answer edits at pre-flight or later', async () => {
-    const { app, ticket } = await setupApprovalTicket()
+    const { app, ticket, raw } = await setupApprovalTicket()
     patchTicket(ticket.id, { status: 'PRE_FLIGHT_CHECK' })
 
     const response = await app.request(`/api/tickets/${ticket.id}/interview-answers`, {
       method: 'PUT',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({
+      ...interviewEditPayload(raw, {
         questions: [
           {
             id: 'Q01',
@@ -354,8 +357,7 @@ describe('ticketRouter interview approval routes', () => {
 
     const response = await app.request(`/api/tickets/${ticket.id}/interview`, {
       method: 'PUT',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({
+      ...interviewEditPayload(raw, {
         content: raw,
       }),
     })
@@ -368,8 +370,7 @@ describe('ticketRouter interview approval routes', () => {
 
     const response = await app.request(`/api/tickets/${ticket.id}/interview-answers`, {
       method: 'PUT',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({
+      ...interviewEditPayload(raw, {
         questions: [
           {
             id: 'Q01',
@@ -389,13 +390,86 @@ describe('ticketRouter interview approval routes', () => {
     expect(getLatestPhaseArtifact(ticket.id, 'user_edit_receipt:interview', 'WAITING_INTERVIEW_APPROVAL')).toBeUndefined()
   })
 
-  it('validates raw interview YAML, canonicalizes it, and forces draft status', async () => {
-    const { app, ticket, paths } = await setupApprovalTicket()
+  it('requires the loaded interview hash before an answer edit can invalidate planning work', async () => {
+    const { app, ticket, paths, raw } = await setupApprovalTicket()
+    upsertLatestPhaseArtifact(ticket.id, 'prd', 'WAITING_PRD_APPROVAL', 'artifact: prd\n')
 
-    const response = await app.request(`/api/tickets/${ticket.id}/interview`, {
+    const response = await app.request(`/api/tickets/${ticket.id}/interview-answers`, {
       method: 'PUT',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({
+        questions: [{
+          id: 'Q01',
+          answer: { skipped: false, selected_option_ids: [], free_text: 'Missing baseline.' },
+        }],
+      }),
+    })
+
+    expect(response.status).toBe(428)
+    expect(readFileSync(`${paths.ticketDir}/interview.yaml`, 'utf-8')).toBe(raw)
+    expect(getLatestPhaseArtifact(ticket.id, 'prd', 'WAITING_PRD_APPROVAL')).toBeDefined()
+  })
+
+  it('rejects a stale answer-edit hash before writing or invalidating planning work', async () => {
+    const { app, ticket, paths, raw } = await setupApprovalTicket()
+    const remoteRaw = raw.replace('Protect the import pipeline', 'Protect the remote pipeline')
+    safeAtomicWrite(`${paths.ticketDir}/interview.yaml`, remoteRaw)
+    upsertLatestPhaseArtifact(ticket.id, 'prd', 'WAITING_PRD_APPROVAL', 'artifact: prd\n')
+
+    const response = await app.request(`/api/tickets/${ticket.id}/interview-answers`, {
+      method: 'PUT',
+      ...interviewEditPayload(raw, {
+        questions: [{
+          id: 'Q01',
+          answer: { skipped: false, selected_option_ids: [], free_text: 'Stale baseline.' },
+        }],
+      }),
+    })
+
+    expect(response.status).toBe(409)
+    expect(await response.json()).toMatchObject({
+      error: 'Stale approval',
+      artifactType: 'interview',
+      expectedContentSha256: contentSha256(raw),
+      currentContentSha256: contentSha256(remoteRaw),
+    })
+    expect(readFileSync(`${paths.ticketDir}/interview.yaml`, 'utf-8')).toBe(remoteRaw)
+    expect(getLatestPhaseArtifact(ticket.id, 'prd', 'WAITING_PRD_APPROVAL')).toBeDefined()
+  })
+
+  it('requires and validates the loaded interview hash on raw saves', async () => {
+    const { app, ticket, paths, raw } = await setupApprovalTicket()
+
+    const missing = await app.request(`/api/tickets/${ticket.id}/interview`, {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ content: raw }),
+    })
+    expect(missing.status).toBe(428)
+    expect(readFileSync(`${paths.ticketDir}/interview.yaml`, 'utf-8')).toBe(raw)
+
+    const remoteRaw = raw.replace('Protect the import pipeline', 'Protect the remote pipeline')
+    safeAtomicWrite(`${paths.ticketDir}/interview.yaml`, remoteRaw)
+    const stale = await app.request(`/api/tickets/${ticket.id}/interview`, {
+      method: 'PUT',
+      ...interviewEditPayload(raw, { content: raw }),
+    })
+    expect(stale.status).toBe(409)
+    expect(await stale.json()).toMatchObject({
+      error: 'Stale approval',
+      artifactType: 'interview',
+      expectedContentSha256: contentSha256(raw),
+      currentContentSha256: contentSha256(remoteRaw),
+    })
+    expect(readFileSync(`${paths.ticketDir}/interview.yaml`, 'utf-8')).toBe(remoteRaw)
+  })
+
+  it('validates raw interview YAML, canonicalizes it, and forces draft status', async () => {
+    const { app, ticket, paths, raw } = await setupApprovalTicket()
+
+    const response = await app.request(`/api/tickets/${ticket.id}/interview`, {
+      method: 'PUT',
+      ...interviewEditPayload(raw, {
         content: [
           'schema_version: 1',
           'ticket_id: WRONG-ID',
@@ -464,8 +538,7 @@ describe('ticketRouter interview approval routes', () => {
 
     const response = await app.request(`/api/tickets/${ticket.id}/interview`, {
       method: 'PUT',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({
+      ...interviewEditPayload(raw, {
         content: 'artifact: interview\nquestions: [',
       }),
     })
@@ -533,11 +606,12 @@ describe('ticketRouter interview approval routes', () => {
 
   it('records a reason when an answer is marked skipped at approval, and again only when it changes', async () => {
     const { app, ticket, paths } = await setupApprovalTicket()
+    let currentRaw = readFileSync(paths.ticketDir + '/interview.yaml', 'utf-8')
 
-    const markSkipped = (reason: string | null) => app.request(`/api/tickets/${ticket.id}/interview-answers`, {
+    const markSkipped = async (reason: string | null) => {
+      const response = await app.request(`/api/tickets/${ticket.id}/interview-answers`, {
       method: 'PUT',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({
+      ...interviewEditPayload(currentRaw, {
         questions: [
           {
             id: 'Q01',
@@ -558,7 +632,10 @@ describe('ticketRouter interview approval routes', () => {
           },
         ],
       }),
-    })
+      })
+      if (response.status === 200) currentRaw = readFileSync(paths.ticketDir + '/interview.yaml', 'utf-8')
+      return response
+    }
 
     expect((await markSkipped('Answered in the ticket description.')).status).toBe(200)
 
@@ -587,7 +664,7 @@ describe('ticketRouter interview approval routes', () => {
   })
 
   it('records a skip introduced through the raw YAML tab', async () => {
-    const { app, ticket, document } = await setupApprovalTicket()
+    const { app, ticket, document, paths } = await setupApprovalTicket()
 
     const skippedDocument: InterviewDocument = {
       ...document,
@@ -610,8 +687,9 @@ describe('ticketRouter interview approval routes', () => {
 
     const response = await app.request(`/api/tickets/${ticket.id}/interview`, {
       method: 'PUT',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ content: buildInterviewDocumentYaml(skippedDocument) }),
+      ...interviewEditPayload(readFileSync(`${paths.ticketDir}/interview.yaml`, 'utf-8'), {
+        content: buildInterviewDocumentYaml(skippedDocument),
+      }),
     })
 
     expect(response.status).toBe(200)
@@ -625,12 +703,13 @@ describe('ticketRouter interview approval routes', () => {
   })
 
   it('records a resolution when a skipped answer is answered after all', async () => {
-    const { app, ticket } = await setupApprovalTicket()
+    const { app, ticket, paths } = await setupApprovalTicket()
+    let currentRaw = readFileSync(paths.ticketDir + '/interview.yaml', 'utf-8')
 
-    const save = (skipped: boolean, reason: string | null) => app.request(`/api/tickets/${ticket.id}/interview-answers`, {
+    const save = async (skipped: boolean, reason: string | null) => {
+      const response = await app.request(`/api/tickets/${ticket.id}/interview-answers`, {
       method: 'PUT',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({
+      ...interviewEditPayload(currentRaw, {
         questions: [
           {
             id: 'Q01',
@@ -644,7 +723,10 @@ describe('ticketRouter interview approval routes', () => {
           },
         ],
       }),
-    })
+      })
+      if (response.status === 200) currentRaw = readFileSync(paths.ticketDir + '/interview.yaml', 'utf-8')
+      return response
+    }
 
     expect((await save(true, 'Out of scope.')).status).toBe(200)
     expect((await save(false, null)).status).toBe(200)

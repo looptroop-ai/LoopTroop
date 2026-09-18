@@ -25,12 +25,14 @@ import {
   useDebouncedApprovalUiState,
   useApprovalPaneState,
   useApprovalEditMode,
+  useLoadedContentHash,
 } from './approvalHooks'
 import { requestWorkspacePhaseNavigation } from '@/lib/workspaceNavigation'
 import { apiTicketPath } from '@/lib/apiPaths'
 import { throwIfNotOk } from '@/lib/fetchError'
 import { QueryErrorNotice } from '@/components/shared/QueryErrorNotice'
 import { ApprovalEditToolbar } from './ApprovalEditToolbar'
+import { CollapsibleWarningNotice } from './artifactViewers/ArtifactProcessingNotice'
 
 type EditTab = 'structured' | 'raw'
 type RuntimeRewindTarget = 'edit' | 'regenerate' | null
@@ -49,6 +51,8 @@ interface ExecutionSetupPlanApprovalUiState {
   rawDraft?: string
   structuredDraft?: ExecutionSetupPlan | null
   commentary?: string
+  /** The file hash the dirty draft was loaded from, not the latest refetch. */
+  contentSha256?: string | null
 }
 
 interface ExecutionSetupApprovalReceipt {
@@ -73,6 +77,22 @@ function parseExecutionSetupApprovalReceipt(content?: string | null): ExecutionS
   } catch {
     return null
   }
+}
+
+function ExecutionSetupPlanParserWarnings({ warnings }: { warnings: string[] }) {
+  if (warnings.length === 0) return null
+  return (
+    <CollapsibleWarningNotice
+      title="Plan parser warnings"
+      summary={`${warnings.length} warning${warnings.length === 1 ? '' : 's'}; the displayed plan uses safe fallback values.`}
+      defaultOpen
+      body={(
+        <ul className="list-disc space-y-1 pl-4 text-[11px]">
+          {warnings.map((warning) => <li key={warning}>{warning}</li>)}
+        </ul>
+      )}
+    />
+  )
 }
 
 function formatReviewTimestamp(value?: string | null): string | null {
@@ -335,6 +355,15 @@ export function ExecutionSetupPlanApprovalPane({
   const { mutateAsync: saveUiState } = useSaveTicketUIState()
   const uiStateScope = 'approval_execution_setup'
   const { data: persistedUiState, isSuccess: isUiStateSuccess, isError: isUiStateError } = useTicketUIState<ExecutionSetupPlanApprovalUiState>(ticket.id, uiStateScope, true)
+  const persistedUiStateFlushMeta = persistedUiState as typeof persistedUiState & {
+    flushPending?: boolean
+    flushFailed?: boolean
+  }
+  const uiStateFlushState = persistedUiStateFlushMeta?.flushFailed
+    ? 'failed' as const
+    : persistedUiStateFlushMeta?.flushPending
+      ? 'pending' as const
+      : null
   const isArchivedAttempt = phaseAttempt != null
   const effectiveLogMode = logMode ?? (isArchivedAttempt ? 'snapshot' : 'live')
   const isRuntimeSetupRewindMode = !readOnly && !isArchivedAttempt && ticket.status === 'PREPARING_EXECUTION_ENV'
@@ -366,6 +395,7 @@ export function ExecutionSetupPlanApprovalPane({
   })
 
   const rawContent = fetchedPlan?.raw ?? ''
+  const parsedRawContent = useMemo(() => parseExecutionSetupPlanContent(rawContent), [rawContent])
   const currentContentSha256 = fetchedPlan?.contentSha256 ?? null
   const plan = fetchedPlan?.plan ?? null
   const isPlanLoading = !fetchedPlan && (isLoading || isFetching)
@@ -420,6 +450,7 @@ export function ExecutionSetupPlanApprovalPane({
   const [approveError, setApproveError] = useState<string | null>(null)
   const [runtimeRewindTarget, setRuntimeRewindTarget] = useState<RuntimeRewindTarget>(null)
   const restoredDraftRef = useRef(false)
+  const restoredSnapshotRef = useRef<string | null>(null)
   const lastSavedSnapshotRef = useRef('')
   const skipRestoreRef = useRef(false)
   const containerRef = useRef<HTMLDivElement>(null)
@@ -430,9 +461,14 @@ export function ExecutionSetupPlanApprovalPane({
   )
   const hasRawChanges = rawDraft !== rawContent
   const hasUnsavedChanges = editTab === 'structured' ? hasStructuredChanges : hasRawChanges
-  const rawValidation = editTab === 'raw' && rawDraft.trim().length > 0 ? parseExecutionSetupPlanContent(rawDraft).error : null
+  const loadedContentHashRef = useLoadedContentHash(ticket.id, currentContentSha256, hasUnsavedChanges)
+  const rawDraftParse = useMemo(
+    () => rawDraft.trim().length > 0 ? parseExecutionSetupPlanContent(rawDraft) : null,
+    [rawDraft],
+  )
+  const rawValidation = editTab === 'raw' ? rawDraftParse?.error ?? null : null
 
-  useApprovalDraftReset(ticket.id, restoredDraftRef, lastSavedSnapshotRef)
+  useApprovalDraftReset(ticket.id, restoredDraftRef, lastSavedSnapshotRef, restoredSnapshotRef)
 
   // Re-arm the one-shot restore when a read-only view ends.
   //
@@ -473,14 +509,23 @@ export function ExecutionSetupPlanApprovalPane({
     ready: isUiStateSuccess && !readOnly,
     persisted: persistedUiState?.data,
     restoredDraftRef,
+    restoredSnapshotRef,
     lastSavedSnapshotRef,
     skipRestoreRef,
+    flushState: uiStateFlushState,
     restore: (persisted, document) => {
       const nextEditMode = Boolean(persisted?.isEditMode)
       const nextEditTab: EditTab = persisted?.editTab === 'raw' ? 'raw' : 'structured'
       const nextStructuredDraft = persisted?.structuredDraft ?? document.plan
       const nextRawDraft = typeof persisted?.rawDraft === 'string' ? persisted.rawDraft : (document.raw ?? '')
       const nextCommentary = typeof persisted?.commentary === 'string' ? persisted.commentary : ''
+      // Keep a restored dirty draft tied to the bytes it was edited from. A
+      // background refresh must not silently rebase that draft onto newer
+      // remote bytes; an unstamped draft fails closed at the save boundary.
+      const nextContentSha256 = nextEditMode
+        ? (typeof persisted?.contentSha256 === 'string' ? persisted.contentSha256 : null)
+        : currentContentSha256
+      loadedContentHashRef.current = nextContentSha256
 
       setIsEditMode(nextEditMode)
       setEditTab(nextEditTab)
@@ -494,6 +539,7 @@ export function ExecutionSetupPlanApprovalPane({
         rawDraft: nextRawDraft,
         structuredDraft: nextStructuredDraft,
         commentary: nextCommentary,
+        contentSha256: nextContentSha256,
       }
     },
   })
@@ -517,12 +563,17 @@ export function ExecutionSetupPlanApprovalPane({
       rawDraft,
       structuredDraft,
       commentary,
+      contentSha256: loadedContentHashRef.current,
     },
     ticketId: ticket.id,
     scope: uiStateScope,
     saveUiState,
     lastSavedSnapshotRef,
+    queryClient,
     initialUpdatedAt: persistedUiState?.updatedAt,
+    initialFlushState: uiStateFlushState,
+    restoredDraftRef,
+    restoredSnapshotRef,
   })
 
   function resetDraftsFromSaved(nextTab: EditTab = 'structured') {
@@ -530,6 +581,7 @@ export function ExecutionSetupPlanApprovalPane({
       setStructuredDraft(plan)
       setRawDraft(rawContent)
       setEditTab(nextTab)
+      loadedContentHashRef.current = currentContentSha256
       setSaveError(null)
       setApproveError(null)
       setRegenerateError(null)
@@ -551,12 +603,13 @@ export function ExecutionSetupPlanApprovalPane({
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify(
           editTab === 'structured' && structuredDraft
-            ? { plan: structuredDraft }
-            : { content: rawDraft },
+            ? { plan: structuredDraft, expectedContentSha256: loadedContentHashRef.current ?? undefined }
+            : { content: rawDraft, expectedContentSha256: loadedContentHashRef.current ?? undefined },
         ),
       })
       await throwIfNotOk(response, 'Failed to save execution setup plan')
       const payload = await response.json() as { raw?: string; contentSha256?: string | null; plan?: ExecutionSetupPlan }
+      loadedContentHashRef.current = payload.contentSha256 ?? null
 
       const nextData: ExecutionSetupPlanApprovalResponse = {
         exists: Boolean(payload.plan),
@@ -874,6 +927,8 @@ export function ExecutionSetupPlanApprovalPane({
 
           <RegenerateCommentaryPanel notes={regenerateNotes} />
 
+          <ExecutionSetupPlanParserWarnings warnings={parsedRawContent.warnings} />
+
           {/* Beside the plan, not instead of it: a failed refresh must not hide
               content the operator is about to approve, only mark it as stale. */}
           {isPlanError && fetchedPlan ? (
@@ -926,6 +981,7 @@ export function ExecutionSetupPlanApprovalPane({
                     Raw mode lets you edit the full readiness-and-setup artifact as JSON or YAML.
                   </div>
                   <YamlEditor value={rawDraft} onChange={setRawDraft} className="min-h-[520px] rounded-xl border border-border bg-background" />
+                  <ExecutionSetupPlanParserWarnings warnings={rawDraftParse?.warnings ?? []} />
                   {rawValidation ? (
                     <div className="rounded-md border border-red-200 bg-red-50/70 px-3 py-2 text-xs text-red-700 dark:border-red-900/60 dark:bg-red-950/20 dark:text-red-200">
                       {rawValidation}

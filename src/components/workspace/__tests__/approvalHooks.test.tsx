@@ -1,14 +1,22 @@
 import { act, renderHook } from '@testing-library/react'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import { useRef } from 'react'
-import { useApprovalDraftRestore, useApprovalEditMode, useDebouncedApprovalUiState } from '../approvalHooks'
+import type { QueryClient } from '@tanstack/react-query'
+import {
+  flushTicketUiStateSnapshot,
+  useApprovalDraftRestore,
+  useApprovalEditMode,
+  useDebouncedApprovalUiState,
+} from '../approvalHooks'
+import { createTestQueryClient } from '@/test/renderHelpers'
 
 interface HarnessProps {
   snapshot: { value: string }
   saveUiState: (input: { ticketId: string; scope: string; data: { value: string } }) => Promise<unknown>
+  queryClient?: QueryClient
 }
 
-function useHarness({ snapshot, saveUiState }: HarnessProps) {
+function useHarness({ snapshot, saveUiState, queryClient }: HarnessProps) {
   const lastSavedSnapshotRef = useRef('')
 
   const autosave = useDebouncedApprovalUiState({
@@ -18,6 +26,7 @@ function useHarness({ snapshot, saveUiState }: HarnessProps) {
     scope: 'approval_prd',
     saveUiState,
     lastSavedSnapshotRef,
+    queryClient,
     delayMs: 10,
   })
 
@@ -158,6 +167,114 @@ describe('useDebouncedApprovalUiState', () => {
       expectedRevision: expect.any(Number),
       actionId: expect.any(String),
     })
+  })
+
+  it('flushes the latest unsaved snapshot once when the hook unmounts', () => {
+    const fetchSpy = vi.spyOn(globalThis, 'fetch').mockResolvedValue(new Response('{}'))
+    const saveUiState = vi.fn().mockResolvedValue({ success: true })
+    const hook = renderHook(
+      (props: HarnessProps) => useHarness(props),
+      { initialProps: { snapshot: { value: 'leaving' }, saveUiState } },
+    )
+
+    hook.unmount()
+
+    expect(fetchSpy).toHaveBeenCalledTimes(1)
+  })
+
+  it('keeps the latest flushed draft in the restoring cache when responses finish out of order', async () => {
+    const queryClient = createTestQueryClient()
+    const first = { value: 'first' }
+    const second = { value: 'second' }
+    let resolveFirst: ((response: Response) => void) | undefined
+    let resolveSecond: ((response: Response) => void) | undefined
+    vi.spyOn(globalThis, 'fetch')
+      .mockImplementationOnce(() => new Promise((resolve) => { resolveFirst = resolve }))
+      .mockImplementationOnce(() => new Promise((resolve) => { resolveSecond = resolve }))
+
+    expect(flushTicketUiStateSnapshot('1:T-42', 'approval_prd', first, { queryClient })).toBe(true)
+    expect(flushTicketUiStateSnapshot('1:T-42', 'approval_prd', second, { queryClient })).toBe(true)
+
+    await act(async () => {
+      resolveSecond?.(new Response(JSON.stringify({ conflict: false, revision: 5, updatedAt: '2026-09-17T10:00:00.000Z' })))
+      await Promise.resolve()
+    })
+    await act(async () => {
+      resolveFirst?.(new Response(JSON.stringify({ conflict: false, revision: 4, updatedAt: '2026-09-17T09:59:00.000Z' })))
+      await Promise.resolve()
+    })
+
+    expect(queryClient.getQueryData<{ data?: unknown }>(['ticket-ui-state', '1:T-42', 'approval_prd'])?.data).toEqual(second)
+  })
+
+  it('does not let an older response body overwrite a newer flush after json resolves', async () => {
+    const queryClient = createTestQueryClient()
+    let releaseOldBody: ((value: unknown) => void) | undefined
+    const oldBody = new Promise((resolve) => { releaseOldBody = resolve })
+    vi.spyOn(globalThis, 'fetch')
+      .mockResolvedValueOnce({ ok: true, json: () => oldBody } as Response)
+      .mockResolvedValueOnce(new Response(JSON.stringify({ revision: 9, conflict: false })))
+
+    flushTicketUiStateSnapshot('1:T-body-order', 'approval_prd', { value: 'old' }, { queryClient })
+    await act(async () => { await Promise.resolve() })
+    flushTicketUiStateSnapshot('1:T-body-order', 'approval_prd', { value: 'new' }, { queryClient })
+    await act(async () => { await Promise.resolve() })
+    await act(async () => {
+      releaseOldBody?.({ revision: 8, conflict: false })
+      await Promise.resolve()
+    })
+
+    expect(queryClient.getQueryData<{ data?: unknown; revision?: number }>(['ticket-ui-state', '1:T-body-order', 'approval_prd'])).toMatchObject({
+      data: { value: 'new' },
+      revision: 9,
+    })
+  })
+
+  it('does not acknowledge a flushed snapshot after a later local edit', async () => {
+    const queryClient = createTestQueryClient()
+    let releaseBody!: (value: unknown) => void
+    const oldBody = new Promise(resolve => { releaseBody = resolve })
+    vi.spyOn(globalThis, 'fetch').mockResolvedValue({
+      ok: true,
+      json: () => oldBody,
+    } as Response)
+    const saveUiState = vi.fn().mockResolvedValue({ success: true })
+    const hook = renderHook(
+      (props: HarnessProps) => useHarness(props),
+      { initialProps: { snapshot: { value: 'first' }, saveUiState, queryClient } },
+    )
+
+    act(() => window.dispatchEvent(new Event('pagehide')))
+    hook.rerender({ snapshot: { value: 'later' }, saveUiState, queryClient })
+
+    await act(async () => {
+      releaseBody({ conflict: false, revision: 8 })
+      await Promise.resolve()
+    })
+
+    expect(hook.result.current.lastSavedSnapshotRef.current).not.toBe(JSON.stringify({ value: 'first' }))
+    expect(hook.result.current.autosave.state).not.toBe('saved')
+    hook.unmount()
+  })
+
+  it('reports a keepalive failure through the autosave error channel', async () => {
+    const fetchSpy = vi.spyOn(globalThis, 'fetch').mockRejectedValue(new TypeError('keepalive body is too large'))
+    const errors: unknown[] = []
+    const listener = (event: Event) => errors.push((event as CustomEvent).detail)
+    window.addEventListener('looptroop:ui-state-flush-error', listener)
+    try {
+      expect(flushTicketUiStateSnapshot('1:T-42', 'approval_prd', { value: 'large' })).toBe(true)
+      await act(async () => { await Promise.resolve() })
+      expect(fetchSpy).toHaveBeenCalledTimes(1)
+      expect(errors).toEqual([{
+        ticketId: '1:T-42',
+        scope: 'approval_prd',
+        message: 'The latest draft could not be saved while leaving the ticket.',
+        writeGeneration: expect.any(Number),
+      }])
+    } finally {
+      window.removeEventListener('looptroop:ui-state-flush-error', listener)
+    }
   })
 })
 

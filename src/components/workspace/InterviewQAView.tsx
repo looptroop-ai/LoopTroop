@@ -188,11 +188,12 @@ export function InterviewQAView({ ticket }: InterviewQAViewProps) {
   }, [])
 
   const handleSaveEdit = useCallback(async () => {
-    if (!editingQuestionId) return
+    if (!editingQuestionId || !currentBatch) return
     setEditAnswerError(null)
     try {
       await editAnswerMutation({
         ticketId: ticket.id,
+        batchNumber: currentBatch.batchNumber,
         questionId: editingQuestionId,
         answer: editingText,
       })
@@ -204,7 +205,7 @@ export function InterviewQAView({ ticket }: InterviewQAViewProps) {
     }
     setEditingQuestionId(null)
     setEditingText('')
-  }, [editingQuestionId, editingText, editAnswerMutation, ticket.id])
+  }, [currentBatch, editingQuestionId, editingText, editAnswerMutation, ticket.id])
 
   if (isLoading && !currentBatch) {
     return (
@@ -306,7 +307,7 @@ export function InterviewQAView({ ticket }: InterviewQAViewProps) {
           onToggleHistory={() => setIsHistoryOpen(v => !v)}
           editingQuestionId={editingQuestionId}
           editingText={editingText}
-          isEditingAnswer={isEditingAnswer}
+          isEditingAnswer={isEditingAnswer || isSubmitting || isSkipping}
           editError={editAnswerError}
           onEditingTextChange={setEditingText}
           onStartEdit={handleStartEdit}

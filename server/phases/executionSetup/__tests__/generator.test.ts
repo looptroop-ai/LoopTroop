@@ -1,4 +1,4 @@
-import { describe, expect, it } from 'vitest'
+import { describe, expect, it, vi } from 'vitest'
 import { MockOpenCodeAdapter } from '../../../opencode/adapter'
 import { SILENT_EXECUTION_SETUP_ONLINE_PERMISSIONS } from '../../../opencode/toolPolicy'
 import { generateExecutionSetup } from '../generator'
@@ -147,6 +147,30 @@ describe('generateExecutionSetup', () => {
     )).rejects.toThrow('manual continuation prompt failed')
 
     expect(adapter.sessions).toHaveLength(1)
+    expect(adapter.promptCalls).toHaveLength(1)
+  })
+
+  it('retains both prompt failures for attempt evaluation after confirming the retry session stopped', async () => {
+    const adapter = new FailingPromptAdapter()
+    const abort = vi.spyOn(adapter, 'abortSession')
+    const result = await generateExecutionSetup(adapter, [], '/tmp/test')
+
+    expect(adapter.promptCalls).toHaveLength(2)
+    expect(abort).toHaveBeenCalledWith('mock-session-1')
+    expect(abort).toHaveBeenCalledWith('mock-session-2')
+    expect(result.session?.id).toBe('mock-session-2')
+    expect(result.result).toBeNull()
+    expect(result.rawAttempts).toHaveLength(2)
+    expect(result.structuredOutput.retryDiagnostics).toHaveLength(2)
+    expect(result.parse.errors).toEqual(['Execution setup prompt failed: manual continuation prompt failed'])
+  })
+
+  it('does not evaluate a prompt failure when its remote stop remains unconfirmed', async () => {
+    const adapter = new FailingPromptAdapter()
+    vi.spyOn(adapter, 'abortSession').mockResolvedValue(false)
+
+    await expect(generateExecutionSetup(adapter, [], '/tmp/test'))
+      .rejects.toThrow('Could not confirm abort of OpenCode session mock-session-1')
     expect(adapter.promptCalls).toHaveLength(1)
   })
 

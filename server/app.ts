@@ -10,7 +10,8 @@ import { health } from './routes/health'
 import { profileRouter } from './routes/profiles'
 import { projectRouter } from './routes/projects'
 import { ticketRouter } from './routes/tickets'
-import { streamRouter } from './routes/stream'
+import { createStreamRouter } from './routes/stream'
+import type { SSEBroadcasterScope } from './sse/broadcaster'
 import { modelsRouter } from './routes/models'
 import { filesRouter } from './routes/files'
 import { beadsRouter } from './routes/beads'
@@ -54,6 +55,8 @@ export interface CreateAppOptions {
   onShutdownRequest?: () => void
   /** Defaults to the `dist/client` beside the bundled server. */
   clientDir?: string
+  /** Owns SSE clients for this embedded runtime without isolating broadcasts. */
+  sseScope?: SSEBroadcasterScope
 }
 
 /**
@@ -272,7 +275,7 @@ export function createApp(options: CreateAppOptions = {}): Hono {
   app.route('/api', profileRouter)
   app.route('/api', projectRouter)
   app.route('/api', ticketRouter)
-  app.route('/api', streamRouter)
+  app.route('/api', createStreamRouter(options.sseScope))
   app.route('/api', modelsRouter)
   app.route('/api', filesRouter)
   app.route('/api', beadsRouter)

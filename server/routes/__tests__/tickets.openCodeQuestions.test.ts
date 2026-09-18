@@ -114,6 +114,26 @@ describe('ticketRouter OpenCode questions', () => {
     expect(isTicketWorkSuspended(ticket.id)).toBe(false)
   })
 
+  it('keeps a local question when a later session listing fails', async () => {
+    const { ticket } = await createTicketWithQuestion('req_partial_listing')
+    const questionsPath = `/api/tickets/${encodeURIComponent(ticket.id)}/opencode/questions`
+    await app.request(questionsPath)
+    expect(getPendingQuestionSummary(ticket.id)?.requestCount).toBe(1)
+
+    adapter.mockQuestions = []
+    const listPendingQuestions = vi.spyOn(adapter, 'listPendingQuestions')
+      .mockRejectedValueOnce(new Error('OpenCode question listing unavailable'))
+    try {
+      const res = await app.request(questionsPath)
+      expect(res.status).toBe(200)
+      const body = await res.json() as { questions?: Array<{ requestId?: string }> }
+      expect(body.questions?.[0]?.requestId).toBe('req_partial_listing')
+      expect(getPendingQuestionSummary(ticket.id)?.requestCount).toBe(1)
+    } finally {
+      listPendingQuestions.mockRestore()
+    }
+  })
+
   it('skips the question, resumes the clocks and files a receipt', async () => {
     const { ticket } = await createTicketWithQuestion()
     await app.request(`/api/tickets/${encodeURIComponent(ticket.id)}/opencode/questions`)

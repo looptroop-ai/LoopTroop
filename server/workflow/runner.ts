@@ -9,10 +9,18 @@ import {
   mergeErrorCodes,
 } from '../opencode/blockedErrorDiagnostics'
 import { getErrorMessage } from '@shared/typeGuards'
+import { abortTicketSessions } from '../opencode/sessionManager'
+import { clearTicketWindows } from './questionWindows'
 
 const ERR_DELIBERATION_DATA_LOST = 'Council data lost after restart. Retry to re-run deliberation.'
 const ERR_PRD_DATA_LOST = 'Council data lost after restart. Retry to re-run PRD drafting.'
 const ERR_BEADS_DATA_LOST = 'Council data lost after restart. Retry to re-run beads drafting.'
+const cancellationCleanupInFlight = new Set<string>()
+const cancellationCleanupRetryTimers = new Map<string, ReturnType<typeof setTimeout>>()
+const cancellationCleanupRetryAttempts = new Map<string, number>()
+const CANCELLATION_CLEANUP_RETRY_BASE_MS = 250
+const CANCELLATION_CLEANUP_RETRY_MAX_MS = 30_000
+const MAX_CANCELLATION_CLEANUP_RETRIES = 8
 
 // Import from phase modules
 import {
@@ -22,6 +30,10 @@ import {
   phaseIntermediate,
   cancelTicket,
   cleanupTicketState,
+  markTicketCancellationPending,
+  clearTicketCancellationPending,
+  getTicketCancellationGeneration,
+  isTicketCancellationPending,
   getOrCreateAbortSignal,
 
   // Helpers
@@ -34,6 +46,7 @@ import {
   handleInterviewCompile,
   handleInterviewQAStart,
   claimInterviewBatch,
+  renewInterviewBatchClaim,
   handleInterviewQABatch,
   processInterviewBatchAsync,
   releaseInterviewBatch,
@@ -88,7 +101,12 @@ import { OpenCodeUnavailableError, TicketWorkspaceNotInitializedError } from '..
 // Re-export public API for external callers
 export {
   cancelTicket,
+  markTicketCancellationPending,
+  clearTicketCancellationPending,
+  getTicketCancellationGeneration,
+  isTicketCancellationPending,
   claimInterviewBatch,
+  renewInterviewBatchClaim,
   handleInterviewQABatch,
   processInterviewBatchAsync,
   releaseInterviewBatch,
@@ -192,6 +210,158 @@ function buildWorkflowErrorEvent(
   }
 }
 
+function scheduleCancellationCleanupRetry(ticketId: string, retry: () => void) {
+  if (cancellationCleanupRetryTimers.has(ticketId)) return
+  const attempt = (cancellationCleanupRetryAttempts.get(ticketId) ?? 0) + 1
+  if (attempt > MAX_CANCELLATION_CLEANUP_RETRIES) {
+    cancellationCleanupRetryAttempts.delete(ticketId)
+    console.warn(`[workflow] Giving up automatic cancellation cleanup retries for ticket ${ticketId}; manual retry remains available`)
+    return
+  }
+  cancellationCleanupRetryAttempts.set(ticketId, attempt)
+  const delay = Math.min(
+    CANCELLATION_CLEANUP_RETRY_BASE_MS * (2 ** (attempt - 1)),
+    CANCELLATION_CLEANUP_RETRY_MAX_MS,
+  )
+  const timer = setTimeout(() => {
+    cancellationCleanupRetryTimers.delete(ticketId)
+    retry()
+  }, delay)
+  timer.unref?.()
+  cancellationCleanupRetryTimers.set(ticketId, timer)
+}
+
+function clearCancellationCleanupRetry(ticketId: string) {
+  const timer = cancellationCleanupRetryTimers.get(ticketId)
+  if (timer) clearTimeout(timer)
+  cancellationCleanupRetryTimers.delete(ticketId)
+  cancellationCleanupRetryAttempts.delete(ticketId)
+}
+
+type WorkflowActor = ReturnType<typeof createActor<typeof ticketMachine>>
+
+async function attemptCancellationCleanup(
+  ticketId: string,
+  actor: WorkflowActor,
+  sendEvent: (event: TicketEvent) => void,
+): Promise<void> {
+  const state = resolveSnapshotState(actor.getSnapshot())
+  if (state !== 'CANCELED' && !isTicketCancellationPending(ticketId)) return
+  if (cancellationCleanupInFlight.has(ticketId)) return
+
+  cancellationCleanupInFlight.add(ticketId)
+  let dispatchedCancel = false
+  const cancellationGeneration = getTicketCancellationGeneration(ticketId)
+  const isCancellationStillOwned = () => (
+    getTicketCancellationGeneration(ticketId) === cancellationGeneration
+    && (resolveSnapshotState(actor.getSnapshot()) === 'CANCELED'
+      || isTicketCancellationPending(ticketId))
+  )
+  try {
+    const sessionsStopped = await abortTicketSessions(ticketId)
+    // Retry can supersede this pass during the awaited remote stop. Do not
+    // clear question windows belonging to that newer run either.
+    if (resolveSnapshotState(actor.getSnapshot()) !== 'CANCELED'
+      && !isTicketCancellationPending(ticketId)) {
+      clearCancellationCleanupRetry(ticketId)
+      return
+    }
+    const windowsCleared = sessionsStopped
+      ? await clearTicketWindows(
+        ticketId,
+        'ticket_canceled',
+        'The ticket was canceled while the question was open.',
+        isCancellationStillOwned,
+      )
+      : false
+    if (!sessionsStopped || !windowsCleared) {
+      // An explicit Retry may have completed while the remote stop was in
+      // flight. Do not leave a stale retry timer behind after that newer run
+      // has cleared the durable cancellation fence.
+      if (resolveSnapshotState(actor.getSnapshot()) !== 'CANCELED'
+        && !isTicketCancellationPending(ticketId)) {
+        clearCancellationCleanupRetry(ticketId)
+        return
+      }
+      console.warn(`[workflow] Could not confirm cancellation cleanup for ticket ${ticketId}; retaining remote-session state`)
+      scheduleCancellationCleanupRetry(ticketId, () => {
+        void attemptCancellationCleanup(ticketId, actor, sendEvent)
+      })
+      return
+    }
+
+    const cleanupState = resolveSnapshotState(actor.getSnapshot())
+    if (cleanupState === 'CANCELED') {
+      clearCancellationCleanupRetry(ticketId)
+      cleanupTicketState(ticketId)
+      return
+    }
+    if (!isTicketCancellationPending(ticketId)) {
+      // The explicit Retry path owns the new run once it clears this marker;
+      // the old cancellation pass must not send CANCEL into that run.
+      clearCancellationCleanupRetry(ticketId)
+      return
+    }
+
+    // The marker remains in force until the actor accepts CANCEL. Keep the
+    // in-flight guard across actor.send: subscriptions notify the runner
+    // synchronously, and the finally block below starts the one terminal pass
+    // after this attempt has released the guard.
+    try {
+      // Keep the check adjacent to the event dispatch as well as immediately
+      // after the awaited cleanup. This is the hand-off point where an
+      // explicit Retry could otherwise be superseded by a stale CANCEL.
+      const dispatchState = resolveSnapshotState(actor.getSnapshot())
+      if (dispatchState === 'CANCELED') {
+        clearCancellationCleanupRetry(ticketId)
+        cleanupTicketState(ticketId)
+        return
+      }
+      if (!isTicketCancellationPending(ticketId)) {
+        clearCancellationCleanupRetry(ticketId)
+        return
+      }
+      dispatchedCancel = true
+      sendEvent({ type: 'CANCEL' })
+      if (resolveSnapshotState(actor.getSnapshot()) !== 'CANCELED') {
+        scheduleCancellationCleanupRetry(ticketId, () => {
+          void attemptCancellationCleanup(ticketId, actor, sendEvent)
+        })
+      }
+    } catch (error) {
+      console.warn(`[workflow] Could not send CANCEL after confirmed cleanup for ticket ${ticketId}; retaining pending marker:`, error)
+      scheduleCancellationCleanupRetry(ticketId, () => {
+        void attemptCancellationCleanup(ticketId, actor, sendEvent)
+      })
+    }
+  } catch (error) {
+    console.warn(`[workflow] Cancellation cleanup failed for ticket ${ticketId}; retaining remote-session state:`, error)
+    scheduleCancellationCleanupRetry(ticketId, () => {
+      void attemptCancellationCleanup(ticketId, actor, sendEvent)
+    })
+  } finally {
+    cancellationCleanupInFlight.delete(ticketId)
+    if (dispatchedCancel
+      && resolveSnapshotState(actor.getSnapshot()) === 'CANCELED'
+      && !cancellationCleanupRetryTimers.has(ticketId)) {
+      void attemptCancellationCleanup(ticketId, actor, sendEvent)
+    }
+  }
+}
+
+/** Redrive a durable failed-cancel marker while the actor is still non-terminal. */
+export function schedulePendingCancellationCleanupRetry(
+  ticketId: string,
+  actor: WorkflowActor,
+  sendEvent: (event: TicketEvent) => void,
+): void {
+  if (!isTicketCancellationPending(ticketId)) return
+  if (cancellationCleanupInFlight.has(ticketId) || cancellationCleanupRetryTimers.has(ticketId)) return
+  scheduleCancellationCleanupRetry(ticketId, () => {
+    void attemptCancellationCleanup(ticketId, actor, sendEvent)
+  })
+}
+
 function startCodingPhase(
   ticketId: string,
   actor: ReturnType<typeof createActor<typeof ticketMachine>>,
@@ -201,7 +371,7 @@ function startCodingPhase(
   const state = resolveSnapshotState(snapshot)
   const key = `${ticketId}:CODING`
 
-  if (state !== 'CODING' || runningPhases.has(key)) return
+  if (state !== 'CODING' || runningPhases.has(key) || isTicketCancellationPending(ticketId)) return
 
   const signal = getOrCreateAbortSignal(ticketId)
   const context = snapshot.context
@@ -239,11 +409,23 @@ export function attachWorkflowRunner(
     // When the ticket reaches CANCELED, abort all running work
     if (state === 'CANCELED') {
       cancelTicket(ticketId)
+      if (!cancellationCleanupInFlight.has(ticketId) && !cancellationCleanupRetryTimers.has(ticketId)) {
+        void attemptCancellationCleanup(ticketId, actor, sendEvent)
+      }
       return
     }
 
     if (state === 'COMPLETED') {
+      clearCancellationCleanupRetry(ticketId)
       cleanupTicketState(ticketId)
+      return
+    }
+
+    // A failed cancel can leave the actor in its original live phase. The
+    // durable marker is itself the restart-safe work queue: retry cleanup
+    // before the phase gate so no planning or coding handler can start again.
+    if (isTicketCancellationPending(ticketId)) {
+      schedulePendingCancellationCleanupRetry(ticketId, actor, sendEvent)
       return
     }
 

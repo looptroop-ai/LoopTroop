@@ -74,6 +74,18 @@ export async function generateFinalTests(
   let sessionId = ''
   let activeSessionId: string | null = null
   const sessionManager = callbacks?.ticketId ? new SessionManager(adapter) : null
+  const stopActiveSession = async (sessionIdToStop: string): Promise<void> => {
+    const stopped = sessionManager
+      ? await sessionManager.abortAndAbandonSession(sessionIdToStop)
+      : await adapter.abortSession(sessionIdToStop).catch((error) => {
+          console.warn(`[finalTest] Failed to abort OpenCode session ${sessionIdToStop}:`, error)
+          return false
+        })
+    if (!stopped) {
+      throwIfAborted(signal)
+      throw new Error(`Could not confirm abort of OpenCode session ${sessionIdToStop}`)
+    }
+  }
   throwIfAborted(signal)
   let result: Awaited<ReturnType<typeof runOpenCodePrompt>>
   try {
@@ -125,8 +137,8 @@ export async function generateFinalTests(
       },
     })
   } catch (error) {
-    if (activeSessionId && sessionManager) {
-      await sessionManager.abandonSession(activeSessionId)
+    if (activeSessionId) {
+      await stopActiveSession(activeSessionId)
     }
     throwIfCancelled(error, signal)
     throw error
@@ -216,8 +228,8 @@ export async function generateFinalTests(
         result = retryResult
         response = retryResult.response
       } else {
-        if (activeSessionId && sessionManager) {
-          await sessionManager.abandonSession(activeSessionId)
+        if (activeSessionId) {
+          await stopActiveSession(activeSessionId)
           activeSessionId = null
         }
         result = await runOpenCodePrompt({
@@ -272,8 +284,8 @@ export async function generateFinalTests(
         response = result.response
       }
     } catch (error) {
-      if (activeSessionId && sessionManager) {
-        await sessionManager.abandonSession(activeSessionId)
+      if (activeSessionId) {
+        await stopActiveSession(activeSessionId)
         activeSessionId = null
       }
       throwIfCancelled(error, signal)
@@ -296,8 +308,16 @@ export async function generateFinalTests(
     })
   }
 
-  if (activeSessionId && sessionManager) {
-    await sessionManager.completeSession(activeSessionId)
+  if (activeSessionId) {
+    if (commandPlan.errors.length === 0) {
+      if (sessionManager) {
+        await sessionManager.completeSession(activeSessionId)
+      } else {
+        adapter.forgetSessionDirectory?.(activeSessionId)
+      }
+    } else {
+      await stopActiveSession(activeSessionId)
+    }
   }
 
   return {

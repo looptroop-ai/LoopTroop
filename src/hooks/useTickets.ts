@@ -409,6 +409,13 @@ interface TicketUIStateResponse<T = unknown> {
   revision: number
   clientRevision: number | null
   /**
+   * Client-only provenance for a draft that has not been confirmed by the
+   * server. A remount must not let a completed GET replace this copy before a
+   * retry has a chance to save it.
+   */
+  flushPending?: boolean
+  flushFailed?: boolean
+  /**
    * The ticket this payload was loaded for. Stamped client-side — the server answers with the
    * scope only, so without it a consumer holding a payload cannot tell whose state it is. A
    * restore effect that applies a payload to whatever ticket is on screen writes one ticket's
@@ -429,6 +436,33 @@ interface SaveTicketUIStateResponse<T = unknown> {
 }
 
 const uiStateSaveQueues = new Map<string, Promise<SaveTicketUIStateResponse>>()
+
+/**
+ * One ordering fence for both ordinary UI-state mutations and unload flushes.
+ *
+ * The normal mutation queue serializes its requests, but a keepalive request is
+ * deliberately sent directly so it can leave during unload. A response from
+ * that older request must not put an older body back in the QueryClient after a
+ * later ordinary mutation has completed. The generation is only a cache/write
+ * fence; the existing per-scope request queue and delete barrier remain the
+ * transport and lifecycle coordination.
+ */
+const uiStateWriteGenerations = new Map<string, number>()
+
+function uiStateWriteKey(ticketId: string, scope: string): string {
+  return `${ticketId}\u0000${scope}`
+}
+
+export function beginTicketUiStateWrite(ticketId: string, scope: string): number {
+  const key = uiStateWriteKey(ticketId, scope)
+  const generation = (uiStateWriteGenerations.get(key) ?? 0) + 1
+  uiStateWriteGenerations.set(key, generation)
+  return generation
+}
+
+export function isCurrentTicketUiStateWrite(ticketId: string, scope: string, generation: number): boolean {
+  return uiStateWriteGenerations.get(uiStateWriteKey(ticketId, scope)) === generation
+}
 
 async function fetchTicketUIState<T = unknown>(
   ticketId: string,
@@ -459,9 +493,17 @@ async function saveTicketUIState(
       actionId: createTicketUiStateActionId(),
     }),
   })
-  if (res.status === 409) return res.json()
-  await throwIfNotOk(res, 'Failed to save ticket UI state')
-  return res.json()
+  let result: SaveTicketUIStateResponse
+  if (res.status === 409) {
+    result = await res.json() as SaveTicketUIStateResponse
+  } else {
+    await throwIfNotOk(res, 'Failed to save ticket UI state')
+    result = await res.json() as SaveTicketUIStateResponse
+  }
+  // This runs before the queued promise settles, so the next save sends the
+  // revision returned by this request rather than the predecessor's value.
+  rememberTicketUiStateRevision(ticketId, scope, result.revision)
+  return result
 }
 
 /**
@@ -824,8 +866,10 @@ export function useInterviewQuestions(ticketId: string, options?: { enabled?: bo
 }
 
 export function useTicketUIState<T = unknown>(ticketId: string, scope: string, enabled: boolean = true) {
+  const queryClient = useQueryClient()
+  const queryKey = ['ticket-ui-state', ticketId, scope] as const
   return useQuery({
-    queryKey: ['ticket-ui-state', ticketId, scope],
+    queryKey,
     // The revision is remembered where the payload is produced, not in `select`.
     // `select` must be pure: it runs per observer and again on every re-render
     // that changes its identity, so StrictMode's extra observer alone was enough
@@ -835,8 +879,21 @@ export function useTicketUIState<T = unknown>(ticketId: string, scope: string, e
     // to a false conflict.
     queryFn: async ({ signal }) => {
       const payload = await fetchTicketUIState<T>(ticketId, scope, signal)
+      const cached = queryClient.getQueryData<TicketUIStateResponse<T>>(queryKey)
+      // A failed or still-pending unload flush is the only remaining copy of a
+      // draft when its pane has unmounted. Keep it across the completed GET;
+      // otherwise an absent (or older) server row erases the draft and falsely
+      // acknowledges the remote payload as the new baseline.
+      const retained = cached
+        && cached.ticketId === ticketId
+        && cached.data !== null
+        && (cached.flushPending === true || cached.flushFailed === true)
+      // The server revision is still useful even when its document is not: a
+      // later retry must fence against what the GET observed, while the
+      // unconfirmed local payload remains the editor's source of truth.
       rememberTicketUiStateRevision(ticketId, scope, payload.revision)
-      return payload
+      const next = retained ? cached : payload
+      return next
     },
     enabled,
   })
@@ -848,7 +905,11 @@ export function useSaveTicketUIState() {
   return useMutation({
     mutationFn: ({ ticketId, scope, data }: { ticketId: string; scope: string; data: unknown }) =>
       enqueueTicketUIStateSave(ticketId, scope, data, fetchImpl),
-    onSuccess: (result, variables) => {
+    onMutate: (variables) => ({
+      generation: beginTicketUiStateWrite(variables.ticketId, variables.scope),
+    }),
+    onSuccess: (result, variables, context) => {
+      if (!context || !isCurrentTicketUiStateWrite(variables.ticketId, variables.scope, context.generation)) return
       rememberTicketUiStateRevision(variables.ticketId, variables.scope, result.revision)
       if (result.conflict) {
         queryClient.setQueryData<TicketUIStateResponse<unknown>>(
@@ -883,6 +944,7 @@ export function useSaveTicketUIState() {
 
 async function submitBatch(
   ticketId: string,
+  batchNumber: number,
   answers: Record<string, string>,
   selectedOptions: Record<string, string[]> = {},
   skipReasons: Record<string, string> = {},
@@ -890,7 +952,7 @@ async function submitBatch(
   const res = await fetch(apiTicketPath(ticketId, 'answer-batch'), {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ answers, selectedOptions, skipReasons }),
+    body: JSON.stringify({ batchNumber, answers, selectedOptions, skipReasons }),
   })
   await throwIfNotOk(res, 'Failed to submit batch')
   return res.json()
@@ -898,13 +960,14 @@ async function submitBatch(
 
 async function editInterviewAnswer(
   ticketId: string,
+  batchNumber: number,
   questionId: string,
   answer: string,
 ): Promise<{ success: boolean; questions: unknown[] }> {
   const res = await fetch(apiTicketPath(ticketId, 'edit-answer'), {
     method: 'PATCH',
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ questionId, answer }),
+    body: JSON.stringify({ batchNumber, questionId, answer }),
   })
   await throwIfNotOk(res, 'Failed to edit answer')
   return res.json()
@@ -912,6 +975,7 @@ async function editInterviewAnswer(
 
 async function skipInterview(
   ticketId: string,
+  batchNumber: number,
   answers: Record<string, string>,
   selectedOptions: Record<string, string[]> = {},
   skipReasons: Record<string, string> = {},
@@ -921,6 +985,7 @@ async function skipInterview(
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({
+      batchNumber,
       answers,
       selectedOptions,
       skipReasons,
@@ -934,12 +999,13 @@ async function skipInterview(
 export function useSubmitBatch() {
   const queryClient = useQueryClient()
   return useMutation({
-    mutationFn: ({ ticketId, answers, selectedOptions, skipReasons }: {
+    mutationFn: ({ ticketId, batchNumber, answers, selectedOptions, skipReasons }: {
       ticketId: string
+      batchNumber: number
       answers: Record<string, string>
       selectedOptions?: Record<string, string[]>
       skipReasons?: Record<string, string>
-    }) => submitBatch(ticketId, answers, selectedOptions ?? {}, skipReasons ?? {}),
+    }) => submitBatch(ticketId, batchNumber, answers, selectedOptions ?? {}, skipReasons ?? {}),
     onSuccess: (_, variables) => {
       queryClient.invalidateQueries({ queryKey: ['tickets'] })
       queryClient.invalidateQueries({ queryKey: ['ticket', variables.ticketId] })
@@ -952,8 +1018,8 @@ export function useSubmitBatch() {
 export function useEditInterviewAnswer() {
   const queryClient = useQueryClient()
   return useMutation({
-    mutationFn: ({ ticketId, questionId, answer }: { ticketId: string; questionId: string; answer: string }) =>
-      editInterviewAnswer(ticketId, questionId, answer),
+    mutationFn: ({ ticketId, batchNumber, questionId, answer }: { ticketId: string; batchNumber: number; questionId: string; answer: string }) =>
+      editInterviewAnswer(ticketId, batchNumber, questionId, answer),
     onSuccess: (_, variables) => {
       queryClient.invalidateQueries({ queryKey: ['interview', variables.ticketId] })
       queryClient.invalidateQueries({ queryKey: ['ticket-skips', variables.ticketId] })
@@ -964,13 +1030,14 @@ export function useEditInterviewAnswer() {
 export function useSkipInterview() {
   const queryClient = useQueryClient()
   return useMutation({
-    mutationFn: ({ ticketId, answers, selectedOptions, skipReasons, bulkSkipReason }: {
+    mutationFn: ({ ticketId, batchNumber, answers, selectedOptions, skipReasons, bulkSkipReason }: {
       ticketId: string
+      batchNumber: number
       answers: Record<string, string>
       selectedOptions?: Record<string, string[]>
       skipReasons?: Record<string, string>
       bulkSkipReason?: string
-    }) => skipInterview(ticketId, answers, selectedOptions ?? {}, skipReasons ?? {}, bulkSkipReason),
+    }) => skipInterview(ticketId, batchNumber, answers, selectedOptions ?? {}, skipReasons ?? {}, bulkSkipReason),
     onSuccess: (result, variables) => {
       applyTicketActionResult(queryClient, result.ticketId || variables.ticketId, result)
 

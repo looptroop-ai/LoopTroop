@@ -82,10 +82,18 @@ export interface OpenCodeAdapter {
   listSessions(signal?: AbortSignal): Promise<Session[]>
   getSessionMessages(sessionId: string, signal?: AbortSignal): Promise<Message[]>
   subscribeToEvents(sessionId: string, signal?: AbortSignal, stepFinishSafetyMs?: number): AsyncGenerator<StreamEvent>
-  listPendingQuestions(projectPath?: string, signal?: AbortSignal): Promise<OpenCodeQuestionRequest[]>
-  replyQuestion(requestId: string, answers: OpenCodeQuestionAnswer[], projectPath?: string, signal?: AbortSignal): Promise<void>
-  rejectQuestion(requestId: string, projectPath?: string, signal?: AbortSignal): Promise<void>
+  listPendingQuestions(projectPath?: string, signal?: AbortSignal, sessionId?: string): Promise<OpenCodeQuestionRequest[]>
+  replyQuestion(
+    requestId: string,
+    answers: OpenCodeQuestionAnswer[],
+    projectPath?: string,
+    signal?: AbortSignal,
+    sessionId?: string,
+  ): Promise<void>
+  rejectQuestion(requestId: string, projectPath?: string, signal?: AbortSignal, sessionId?: string): Promise<void>
   abortSession(sessionId: string): Promise<boolean>
+  /** Drops local directory state after the owning DB row reaches a terminal state. */
+  forgetSessionDirectory?(sessionId: string): void
   assembleBeadContext(ticketId: string, beadId: string): Promise<PromptPart[]>
   assembleCouncilContext(ticketId: string, phase: string): Promise<PromptPart[]>
   /**
@@ -161,7 +169,8 @@ function formatBeadContext(bead: Bead): string {
 export class OpenCodeSDKAdapter implements OpenCodeAdapter {
   private client: ReturnType<typeof createOpencodeClient>
   private sessionDirectories = new Map<string, string>()
-  private recentDirectoryEventKeys = new Map<string, number>()
+  private questionDirectories = new Map<string, string>()
+  private questionSessions = new Map<string, string>()
 
   constructor(baseUrlOrPort: string | number = getOpenCodeBaseUrl(), client?: ReturnType<typeof createOpencodeClient>) {
     const baseUrl = typeof baseUrlOrPort === 'number'
@@ -189,7 +198,7 @@ export class OpenCodeSDKAdapter implements OpenCodeAdapter {
       )
       if (!res.data) throw new Error('OpenCode returned no session payload')
       const session = this.mapSession(res.data as Record<string, unknown>)
-      this.sessionDirectories.set(session.id, projectPath)
+      this.sessionDirectories.set(session.id, session.directory ?? session.projectPath ?? projectPath)
       return session
     } catch (err) {
       if (err instanceof Error && (err.name === 'AbortError' || signal?.aborted)) throw err
@@ -345,11 +354,15 @@ export class OpenCodeSDKAdapter implements OpenCodeAdapter {
         }
         if (event.type !== 'done' || streamDoneObserved) return
         streamDoneObserved = true
-        void this.readAssistantSnapshotWithRetry(sessionId)
+        void this.readAssistantSnapshotWithRetry(sessionId, undefined, 4, 75, promptSignal)
           .then((snapshot) => {
             resolveStreamDoneResponse?.(snapshot.responseText || buildStreamedTextResponse() || null)
           })
           .catch((err) => {
+            if (isAbortError(err)) {
+              resolveStreamDoneResponse?.(null)
+              return
+            }
             warnIfVerbose('[adapter] Snapshot retry failed after stream done, falling back to streamed text', err)
             resolveStreamDoneResponse?.(buildStreamedTextResponse() || null)
           })
@@ -365,9 +378,10 @@ export class OpenCodeSDKAdapter implements OpenCodeAdapter {
         return (await streamDoneResponse)?.trim() ?? ''
       }
       try {
-        const snapshot = await this.readAssistantSnapshotWithRetry(sessionId)
+        const snapshot = await this.readAssistantSnapshotWithRetry(sessionId, undefined, 4, 75, promptSignal)
         return (snapshot.responseText || buildStreamedTextResponse()).trim()
       } catch (err) {
+        if (isAbortError(err)) throw err
         warnIfVerbose('[adapter] Snapshot retry failed after stream close, falling back to streamed text', err)
         return buildStreamedTextResponse().trim()
       }
@@ -392,7 +406,17 @@ export class OpenCodeSDKAdapter implements OpenCodeAdapter {
           const preferredMessageId = typeof this.getRecord(res.data?.info)?.id === 'string'
             ? String(this.getRecord(res.data?.info)?.id)
             : undefined
-          responseText = (await this.readAssistantSnapshotWithRetry(sessionId, preferredMessageId)).responseText
+          try {
+            responseText = (await this.readAssistantSnapshotWithRetry(sessionId, preferredMessageId, 4, 75, promptSignal)).responseText
+          } catch (error) {
+            // A completed stream is already a usable response. A transient
+            // failure reading the final message must not turn that response
+            // into a failed prompt; cancellation still propagates so callers
+            // do not continue after their signal was withdrawn.
+            if (isAbortError(error)) throw error
+            warnIfVerbose('[adapter] Snapshot read failed after prompt, falling back to streamed text', error)
+            responseText = buildStreamedTextResponse()
+          }
         }
         if (!responseText) {
           responseText = buildStreamedTextResponse()
@@ -515,17 +539,22 @@ export class OpenCodeSDKAdapter implements OpenCodeAdapter {
       if (!res.data) {
         const status = res.response?.status
         if (status === 404) return null
-        if (res.error) throw res.error
         if (typeof status === 'number') {
           throw new Error(`OpenCode session lookup failed with HTTP ${status}`)
         }
+        if (res.error) throw res.error
         throw new Error('OpenCode returned no session payload')
       }
       const session = this.mapSession(res.data as Record<string, unknown>)
       if (session.directory) this.sessionDirectories.set(session.id, session.directory)
       return session
     } catch (err) {
-      if (this.isSessionNotFoundError(err)) return null
+      if (isAbortError(err)) throw err
+      // A textual "404" or "session not found" is not enough to prove that
+      // the remote session is gone. SDK transport errors often preserve the
+      // server's message while losing its HTTP status; only the exact status
+      // is safe to treat as an already-stopped session.
+      if (this.isConfirmedSessionNotFoundError(err)) return null
       throw err
     }
   }
@@ -555,52 +584,96 @@ export class OpenCodeSDKAdapter implements OpenCodeAdapter {
     }
   }
 
-  async listPendingQuestions(projectPath?: string, signal?: AbortSignal): Promise<OpenCodeQuestionRequest[]> {
+  async listPendingQuestions(projectPath?: string, signal?: AbortSignal, sessionId?: string): Promise<OpenCodeQuestionRequest[]> {
+    const directory = sessionId
+      ? await this.requireSessionDirectory(sessionId, signal)
+      : projectPath
     const res = await this.client.question.list(
-      projectPath ? { directory: projectPath } : undefined,
+      directory ? { directory } : undefined,
       this.requestOptions(this.withSdkOperationTimeout(signal)),
     )
-    return Array.isArray(res.data)
+    const requests = Array.isArray(res.data)
       ? res.data.map((request) => this.mapQuestionRequest(request)).filter((request): request is OpenCodeQuestionRequest => Boolean(request))
       : []
+    for (const request of requests) {
+      this.questionSessions.set(request.id, request.sessionID)
+      if (sessionId && directory) this.questionDirectories.set(request.id, directory)
+    }
+    return requests
   }
 
   async replyQuestion(
     requestId: string,
     answers: OpenCodeQuestionAnswer[],
-    projectPath?: string,
+    _projectPath?: string,
     signal?: AbortSignal,
+    sessionId?: string,
   ): Promise<void> {
-    await this.client.question.reply({
+    const directory = await this.resolveQuestionDirectory(requestId, sessionId, signal)
+    const res = await this.client.question.reply({
       requestID: requestId,
-      ...(projectPath ? { directory: projectPath } : {}),
+      ...(directory ? { directory } : {}),
       answers,
     }, this.requestOptions(this.withSdkOperationTimeout(signal)))
+    if (res.data !== true) throw new Error(`OpenCode did not confirm reply ${requestId}`)
+    this.forgetQuestion(requestId)
   }
 
-  async rejectQuestion(requestId: string, projectPath?: string, signal?: AbortSignal): Promise<void> {
-    await this.client.question.reject({
+  async rejectQuestion(requestId: string, _projectPath?: string, signal?: AbortSignal, sessionId?: string): Promise<void> {
+    const directory = await this.resolveQuestionDirectory(requestId, sessionId, signal)
+    const res = await this.client.question.reject({
       requestID: requestId,
-      ...(projectPath ? { directory: projectPath } : {}),
+      ...(directory ? { directory } : {}),
     }, this.requestOptions(this.withSdkOperationTimeout(signal)))
+    if (res.data !== true) throw new Error(`OpenCode did not confirm rejection ${requestId}`)
+    this.forgetQuestion(requestId)
   }
 
   async abortSession(sessionId: string): Promise<boolean> {
     try {
-      const directory = await this.resolveSessionDirectory(sessionId)
-      await this.client.session.abort({
+      // A session may have been removed by OpenCode between the prompt and
+      // cleanup. A confirmed 404 is already the desired terminal state; an
+      // unavailable lookup, an untrusted directory, or any other failure is
+      // not evidence that the remote session stopped.
+      let directory = this.sessionDirectories.get(sessionId)
+      if (!directory) {
+        const session = await this.getSession(sessionId)
+        if (!session) {
+          this.forgetSessionDirectory(sessionId)
+          return true
+        }
+        directory = session.directory
+        if (!directory) return false
+      }
+      const res = await this.client.session.abort({
         sessionID: sessionId,
         ...(directory ? { directory } : {}),
       }, this.requestOptions(AbortSignal.timeout(SDK_OPERATION_TIMEOUT_MS)))
-      this.sessionDirectories.delete(sessionId)
+      if (this.isConfirmedSessionNotFoundResponse(res)) {
+        this.forgetSessionDirectory(sessionId)
+        return true
+      }
+      if (res.data !== true) return false
+      this.forgetSessionDirectory(sessionId)
       return true
-    } catch {
+    } catch (error) {
+      if (this.isConfirmedSessionNotFoundError(error)) {
+        this.forgetSessionDirectory(sessionId)
+        return true
+      }
       return false
     }
   }
 
+  forgetSessionDirectory(sessionId: string): void {
+    this.sessionDirectories.delete(sessionId)
+    for (const [requestId, ownerSessionId] of this.questionSessions) {
+      if (ownerSessionId === sessionId) this.forgetQuestion(requestId)
+    }
+  }
+
   async *subscribeToEvents(sessionId: string, signal?: AbortSignal, stepFinishSafetyMs?: number): AsyncGenerator<StreamEvent> {
-    const directory = await this.resolveSessionDirectory(sessionId, signal)
+    await this.resolveSessionDirectory(sessionId, signal)
     const eventStream = await this.client.global.event(this.requestOptions(signal))
 
     const partCache = new Map<string, GenericMessagePart>()
@@ -646,7 +719,7 @@ export class OpenCodeSDKAdapter implements OpenCodeAdapter {
       const rawEvent = this.unwrapRawEvent(result.value)
       if (!rawEvent) continue
 
-      if (!this.eventBelongsToSession(rawEvent, sessionId, directory)) continue
+      if (!this.eventBelongsToSession(rawEvent, sessionId)) continue
 
       const normalized = this.normalizeStreamEvent(rawEvent, sessionId, partCache, finalizedPartIds, messageRoles)
       if (!normalized) continue
@@ -700,6 +773,10 @@ export class OpenCodeSDKAdapter implements OpenCodeAdapter {
 
     const ticket = getTicketContext(ticketId)
     if (ticket) {
+      state.projectId = ticket.projectId
+      // Keep one composite key in contextBuilder even when a caller reached
+      // this adapter with an external id alias.
+      state.ticketId = ticket.ticketRef
       state.title = ticket.localTicket.title
       state.description = ticket.localTicket.description ?? undefined
     } else {
@@ -937,15 +1014,21 @@ export class OpenCodeSDKAdapter implements OpenCodeAdapter {
     preferredMessageId?: string,
     maxAttempts = 4,
     delayMs = 75,
+    signal?: AbortSignal,
   ): Promise<ReturnType<typeof analyzeAssistantMessages>> {
     // A read that fails is retried like an empty one, but if every attempt
     // fails the failure is surfaced rather than reported as a completed turn
     // with no output.
     let lastReadError: unknown = null
     for (let attempt = 1; attempt <= maxAttempts; attempt += 1) {
+      if (signal?.aborted) {
+        throw signal.reason instanceof Error
+          ? signal.reason
+          : new DOMException('The operation was aborted', 'AbortError')
+      }
       let messages: Message[]
       try {
-        messages = await this.getSessionMessages(sessionId)
+        messages = await this.getSessionMessages(sessionId, signal)
         lastReadError = null
       } catch (err) {
         if (isAbortError(err)) throw err
@@ -1001,14 +1084,61 @@ export class OpenCodeSDKAdapter implements OpenCodeAdapter {
   }
 
   private async resolveSessionDirectory(sessionId: string, signal?: AbortSignal): Promise<string | undefined> {
+    if (signal?.aborted) {
+      throw signal.reason instanceof Error
+        ? signal.reason
+        : new DOMException('The operation was aborted', 'AbortError')
+    }
     const cached = this.sessionDirectories.get(sessionId)
     if (cached) return cached
 
     try {
       return (await this.getSession(sessionId, signal))?.directory
-    } catch {
+    } catch (error) {
+      if (signal?.aborted || isAbortError(error)) throw error
       return undefined
     }
+  }
+
+  private async requireSessionDirectory(sessionId: string, signal?: AbortSignal): Promise<string> {
+    const directory = await this.resolveSessionDirectory(sessionId, signal)
+    if (!directory) throw new Error(`OpenCode session ${sessionId} has no trusted worktree directory`)
+    return directory
+  }
+
+  private rememberQuestion(requestId: string, sessionId: string, directory?: string): void {
+    this.questionSessions.set(requestId, sessionId)
+    const trustedDirectory = directory ?? this.sessionDirectories.get(sessionId)
+    if (trustedDirectory) this.questionDirectories.set(requestId, trustedDirectory)
+  }
+
+  private forgetQuestion(requestId: string): void {
+    this.questionSessions.delete(requestId)
+    this.questionDirectories.delete(requestId)
+  }
+
+  private async resolveQuestionDirectory(
+    requestId: string,
+    sessionId: string | undefined,
+    signal?: AbortSignal,
+  ): Promise<string> {
+    if (sessionId) {
+      const directory = await this.requireSessionDirectory(sessionId, signal)
+      this.rememberQuestion(requestId, sessionId, directory)
+      return directory
+    }
+
+    const cachedDirectory = this.questionDirectories.get(requestId)
+    if (cachedDirectory) return cachedDirectory
+
+    const ownerSessionId = this.questionSessions.get(requestId)
+    if (ownerSessionId) {
+      const directory = await this.requireSessionDirectory(ownerSessionId, signal)
+      this.questionDirectories.set(requestId, directory)
+      return directory
+    }
+
+    throw new Error(`OpenCode question ${requestId} has no trusted session directory`)
   }
 
   private async consumeStreamEvents(
@@ -1043,8 +1173,7 @@ export class OpenCodeSDKAdapter implements OpenCodeAdapter {
     ])
   }
 
-  private eventBelongsToSession(event: RawEvent, sessionId: string, sessionDirectory?: string): boolean {
-    this.pruneRecentDirectoryEventKeys()
+  private eventBelongsToSession(event: RawEvent, sessionId: string): boolean {
     const props = event.properties ?? {}
     const part = this.getRecord(props.part)
     const info = this.getRecord(props.info)
@@ -1060,13 +1189,12 @@ export class OpenCodeSDKAdapter implements OpenCodeAdapter {
             : undefined
 
     if (eventSessionId) return eventSessionId === sessionId
-    if (!this.isSessionAgnosticDebugEvent(event.type)) return false
-    if (sessionDirectory && event.directory && event.directory !== sessionDirectory) return false
 
-    const dedupeKey = `${event.directory ?? ''}:${event.workspace ?? ''}:${event.type}:${this.safeStableStringify(props)}`
-    if (this.recentDirectoryEventKeys.has(dedupeKey)) return false
-    this.recentDirectoryEventKeys.set(dedupeKey, Date.now())
-    return true
+    // Global events have no session owner. Assigning one to whichever ticket
+    // happened to be consuming the shared stream makes unrelated work appear
+    // to belong to that ticket, so the per-session stream intentionally omits
+    // them. Events with an explicit session ID remain eligible above.
+    return false
   }
 
   private normalizeStreamEvent(
@@ -1170,6 +1298,7 @@ export class OpenCodeSDKAdapter implements OpenCodeAdapter {
       case 'question.asked': {
         const request = this.mapQuestionRequest(props)
         if (!request) return null
+        this.rememberQuestion(request.id, request.sessionID, event.directory)
         return {
           type: 'question',
           action: 'asked',
@@ -1717,32 +1846,6 @@ export class OpenCodeSDKAdapter implements OpenCodeAdapter {
     }
   }
 
-  private isSessionAgnosticDebugEvent(eventName: string): boolean {
-    return eventName === 'workspace.ready'
-      || eventName === 'workspace.failed'
-      || eventName === 'workspace.status'
-      || eventName === 'server.connected'
-      || eventName === 'server.instance.disposed'
-      || eventName === 'global.disposed'
-      || eventName === 'vcs.branch.updated'
-      || eventName === 'file.edited'
-  }
-
-  private pruneRecentDirectoryEventKeys() {
-    const now = Date.now()
-    for (const [key, seenAt] of this.recentDirectoryEventKeys.entries()) {
-      if (now - seenAt > 2_000) this.recentDirectoryEventKeys.delete(key)
-    }
-  }
-
-  private safeStableStringify(value: unknown): string {
-    try {
-      return JSON.stringify(value)
-    } catch {
-      return String(value)
-    }
-  }
-
   private truncateInline(value: string, maxChars: number): string {
     const normalized = value.replace(/\s+/g, ' ').trim()
     return normalized.length > maxChars ? `${normalized.slice(0, maxChars)}…` : normalized
@@ -1765,32 +1868,25 @@ export class OpenCodeSDKAdapter implements OpenCodeAdapter {
     return String(error)
   }
 
-  private isSessionNotFoundError(error: unknown): boolean {
+  private isConfirmedSessionNotFoundResponse(response: unknown): boolean {
+    const record = this.getRecord(response)
+    const sdkResponse = this.getRecord(record?.response)
+    const responseStatus = this.readHttpStatus(sdkResponse)
+    if (responseStatus !== undefined) return responseStatus === 404
+    return this.isConfirmedSessionNotFoundError(record?.error)
+  }
+
+  private isConfirmedSessionNotFoundError(error: unknown): boolean {
     const record = this.getRecord(error)
     const response = this.getRecord(record?.response)
-    const data = this.getRecord(record?.data)
-    const body = this.getRecord(response?.body) ?? this.getRecord(response?.data)
-    const status = [
-      record?.status,
-      record?.statusCode,
-      response?.status,
-      response?.statusCode,
-      data?.status,
-      data?.statusCode,
-      body?.status,
-      body?.statusCode,
-    ].find((value) => typeof value === 'number')
+    const status = this.readHttpStatus(response) ?? this.readHttpStatus(record)
+    return status === 404
+  }
 
-    if (status === 404) return true
-
-    const message = [
-      typeof record?.message === 'string' ? record.message : '',
-      typeof data?.message === 'string' ? data.message : '',
-      typeof body?.message === 'string' ? body.message : '',
-      typeof body?.error === 'string' ? body.error : '',
-    ].join('\n').toLowerCase()
-
-    return /\b404\b/.test(message) || /\bsession\b.*\bnot found\b/.test(message)
+  private readHttpStatus(value: Record<string, unknown> | null | undefined): number | undefined {
+    if (typeof value?.status === 'number') return value.status
+    if (typeof value?.statusCode === 'number') return value.statusCode
+    return undefined
   }
 
   private extractConnectedModelIds(data: unknown): string[] {

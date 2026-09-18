@@ -22,6 +22,12 @@ import {
 import { createFixtureRepoManager } from '../../test/fixtureRepo'
 import { initializeTicket } from '../../ticket/initialize'
 import { skipAllInterviewQuestionsToApproval } from '../runner'
+import {
+  claimInterviewBatch,
+  InterviewBatchChangedError,
+  releaseInterviewBatch,
+  snapshotFingerprint,
+} from '../phases/interviewPhase'
 
 const repoManager = createFixtureRepoManager({
   templatePrefix: 'looptroop-skip-all-',
@@ -160,5 +166,58 @@ describe('skipAllInterviewQuestionsToApproval', () => {
     expect(coverageCompanion).toMatchObject({
       response: 'Coverage skipped by user shortcut after marking remaining questions skipped.',
     })
+  })
+
+  it('does not overwrite a newer session snapshot after claiming skip-all', async () => {
+    const repoDir = repoManager.createRepo()
+    const project = attachProject({ folderPath: repoDir, name: 'LoopTroop', shortname: 'LOOP' })
+    const ticket = createTicket({
+      projectId: project.id,
+      title: 'Skip CAS',
+      description: 'Do not overwrite a newer interview answer.',
+    })
+    await initializeTicket({ projectFolder: repoDir, externalId: ticket.externalId })
+
+    const base = createInterviewSessionSnapshot({
+      winnerId: 'openai/gpt-5-mini',
+      compiledQuestions: [{ id: 'Q01', phase: 'Foundation', question: 'What matters?' }],
+      maxInitialQuestions: 1,
+    })
+    const batch = buildPersistedBatch({
+      questions: [{ id: 'Q01', phase: 'Foundation', question: 'What matters?' }],
+      progress: { current: 1, total: 1 },
+      isComplete: false,
+      isFinalFreeForm: false,
+      aiCommentary: 'One question.',
+      batchNumber: 1,
+    }, 'prom4', base)
+    const active = recordPreparedBatch(base, batch)
+    upsertLatestPhaseArtifact(
+      ticket.id,
+      INTERVIEW_SESSION_ARTIFACT,
+      'WAITING_INTERVIEW_ANSWERS',
+      serializeInterviewSessionSnapshot(active),
+    )
+
+    const claim = claimInterviewBatch(ticket.id)
+    expect(claim).toBeTruthy()
+    try {
+      const newer = { ...active, updatedAt: '2099-09-17T00:00:00.000Z' }
+      upsertLatestPhaseArtifact(
+        ticket.id,
+        INTERVIEW_SESSION_ARTIFACT,
+        'WAITING_INTERVIEW_ANSWERS',
+        serializeInterviewSessionSnapshot(newer),
+      )
+
+      expect(() => skipAllInterviewQuestionsToApproval(ticket.id, { Q01: '' }, {
+        claimToken: claim ?? undefined,
+        expectedSnapshotFingerprint: snapshotFingerprint(active),
+      })).toThrow(InterviewBatchChangedError)
+      expect(getLatestPhaseArtifact(ticket.id, INTERVIEW_SESSION_ARTIFACT)?.content)
+        .toBe(serializeInterviewSessionSnapshot(newer))
+    } finally {
+      releaseInterviewBatch(ticket.id, claim ?? undefined)
+    }
   })
 })

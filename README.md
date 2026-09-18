@@ -449,6 +449,64 @@ what a wrapper can do on the host.
 
 Read more: [System Architecture](https://www.looptroop.ovh/docs/system-architecture)
 
+## Security boundaries
+
+LoopTroop runs coding agents with your local user permissions. Worktrees keep
+repository changes separate, but they do not sandbox the host. Use a disposable
+VM or another isolated development environment for unattended runs.
+
+Session cookies require same-origin proof; a bearer header cannot bypass checks
+on an accompanying cookie. Local mode requires a loopback Host, and an Origin
+matching the request's scheme, hostname, and effective port. Without Origin,
+cookie-bearing requests require `Sec-Fetch-Site: same-origin`. Origin parsing
+rejects alternate IPv4 spellings and explicit port `0`; configured development
+origins remain a separate development-mode exception. For a browser behind a TLS
+terminating proxy, set `LOOPTROOP_PUBLIC_ORIGIN` (or `publicOrigin` in
+`config.json`) to the one HTTPS origin users open. The backend may remain HTTP;
+the setting does not change its bind address, and `LOOPTROOP_ALLOW_REMOTE_API=1`
+is still required for remote browser access or when the backend itself is
+reachable off loopback, even if the proxy connects to a loopback bind. The
+cookie-bearing requests with an Origin must match the configured HTTPS origin
+exactly, and their cookies use `Secure`. Without Origin they still require
+`Sec-Fetch-Site: same-origin`, and the proxy must preserve the public `Host`;
+forwarded host and scheme headers are never trusted. A remote deployment
+without the setting is bearer-token only, and the browser session cookie is
+rejected even when a bearer header is also present. CLI sign-in links use the
+configured public origin while daemon API calls continue to use the internal
+address.
+
+Startup rejects a configured public origin unless remote API mode is enabled.
+Bearer tokens do not enable browser CORS: a browser request from an unconfigured
+origin remains forbidden, while token-only scripts without an Origin can connect.
+
+Server-sent events reserve a connection slot before asynchronous setup begins.
+The limits are six connections per ticket and 100 across the daemon. Failed
+opens, aborted streams, replay errors, and ticket cleanup release the same
+reservation safely; terminal ticket cleanup aborts a pending handshake or
+replay write before releasing its slot. Manual QA action IDs use letters,
+numbers, `.`, `_`, `:` and `-`, start with a letter or number, and are
+limited to 160 characters.
+
+Project commands, Git and hook commands, managed or development OpenCode
+launches, and `doctor` probes remove `LOOPTROOP_API_TOKEN` and
+`LOOPTROOP_DEV_EVENT_TOKEN` from the child environment after all intended
+overrides are merged. Provider and Git credentials stay available where their
+caller needs them, and the trusted CLI handoff keeps its configured daemon
+environment. This filtering controls credential propagation; it is not a
+process sandbox. `LOOPTROOP_API_TOKEN` authorizes the wider bind; it is not the
+live API or browser-session token minted by the daemon and recorded in
+owner-only daemon state.
+
+Static checks keep process launches and raw filesystem operations at their
+approved boundaries. They reject the ordinary static spellings of built-in
+loads too: namespace destructuring, direct or zero-expression-template
+`require`/`import`, computed string-literal `child_process` methods,
+`process.getBuiltinModule`, and re-exports, including computed filesystem
+methods, nested `fs.promises`, shell options, and directory APIs. Runtime
+callers still rely on contained, no-follow, managed-root, and ticket-root
+helpers. The checks use exact filenames and operation allowlists; they do not
+provide whole-program alias or dataflow analysis.
+
 ### Human approval gates
 
 LoopTroop keeps you in control of critical state transitions. You actively review and sign off on planning specs, execution blueprints, and final pull request deliverables. *(Note: Human approval gates will become optional in future releases).*

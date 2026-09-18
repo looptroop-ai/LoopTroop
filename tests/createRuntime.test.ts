@@ -3,6 +3,7 @@ import { mkdtempSync, existsSync, readFileSync, readdirSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { removeTempDir } from '../server/test/tempDir'
+import { BootstrapNonceStore, createSessionCredentials } from '../server/middleware/sessionAuth'
 
 /**
  * 2.1 contract: importing the runtime module and constructing a runtime must not
@@ -255,6 +256,102 @@ describe('createRuntime side-effect freedom', () => {
       if (previous === undefined) delete process.env.LOOPTROOP_CONFIG_DIR
       else process.env.LOOPTROOP_CONFIG_DIR = previous
     }
+  })
+})
+
+describe('createRuntime public origin', () => {
+  const originalRemoteApi = process.env.LOOPTROOP_ALLOW_REMOTE_API
+  const originalPublicOrigin = process.env.LOOPTROOP_PUBLIC_ORIGIN
+
+  afterEach(() => {
+    if (originalRemoteApi === undefined) delete process.env.LOOPTROOP_ALLOW_REMOTE_API
+    else process.env.LOOPTROOP_ALLOW_REMOTE_API = originalRemoteApi
+    if (originalPublicOrigin === undefined) delete process.env.LOOPTROOP_PUBLIC_ORIGIN
+    else process.env.LOOPTROOP_PUBLIC_ORIGIN = originalPublicOrigin
+  })
+
+  it('rejects an embedded public origin before starting resources without remote mode', async () => {
+    delete process.env.LOOPTROOP_ALLOW_REMOTE_API
+    const { createRuntime } = await import('../server/createRuntime')
+    const { resolveSettings } = await import('../server/lib/appSettings')
+    for (const options of [
+      { publicOrigin: 'https://public.example' },
+      { settings: { ...resolveSettings({ env: {}, file: {} }), publicOrigin: 'https://public.example' } },
+    ]) {
+      const runtime = createRuntime({ skipStartupSequence: true, ...options })
+      await expect(runtime.start()).rejects.toThrow('LOOPTROOP_ALLOW_REMOTE_API=1')
+      expect(runtime.address).toBeNull()
+      await runtime.close()
+    }
+  })
+
+  async function exchange(runtimeOptions: { publicOrigin?: string | null }) {
+    const { createRuntime } = await import('../server/createRuntime')
+    const { resolveSettings } = await import('../server/lib/appSettings')
+    const credentials = createSessionCredentials()
+    const bootstrapNonces = new BootstrapNonceStore()
+    const runtime = createRuntime({
+      mode: 'production',
+      skipStartupSequence: true,
+      credentials,
+      bootstrapNonces,
+      settings: { ...resolveSettings({ env: {}, file: {} }), publicOrigin: 'https://settings.example' },
+      ...runtimeOptions,
+    })
+    const response = await runtime.app.request('http://127.0.0.1:3000/api/auth/exchange', {
+      method: 'POST',
+      headers: {
+        Host: 'public.example',
+        Origin: 'https://settings.example',
+        'Content-Type': 'application/json',
+      },
+      body: JSON.stringify({ nonce: bootstrapNonces.issue() }),
+    })
+    return response
+  }
+
+  it('forwards a pre-resolved settings public origin into the app', async () => {
+    process.env.LOOPTROOP_ALLOW_REMOTE_API = '1'
+
+    const response = await exchange({})
+
+    expect(response.status).toBe(200)
+    expect(response.headers.get('Set-Cookie')).toContain('Secure')
+  })
+
+  it('resolves the public origin before building an app without supplied settings', async () => {
+    process.env.LOOPTROOP_ALLOW_REMOTE_API = '1'
+    process.env.LOOPTROOP_PUBLIC_ORIGIN = 'https://settings.example'
+    const { createRuntime } = await import('../server/createRuntime')
+    const credentials = createSessionCredentials()
+    const bootstrapNonces = new BootstrapNonceStore()
+    const runtime = createRuntime({
+      mode: 'production',
+      skipStartupSequence: true,
+      credentials,
+      bootstrapNonces,
+    })
+    const response = await runtime.app.request('http://127.0.0.1:3000/api/auth/exchange', {
+      method: 'POST',
+      headers: {
+        Host: 'public.example',
+        Origin: 'https://settings.example',
+        'Content-Type': 'application/json',
+      },
+      body: JSON.stringify({ nonce: bootstrapNonces.issue() }),
+    })
+
+    expect(response.status).toBe(200)
+    expect(response.headers.get('Set-Cookie')).toContain('Secure')
+  })
+
+  it('honors an explicit null public-origin override', async () => {
+    process.env.LOOPTROOP_ALLOW_REMOTE_API = '1'
+
+    const response = await exchange({ publicOrigin: null })
+
+    expect(response.status).toBe(403)
+    expect(await response.json()).toMatchObject({ error: 'Forbidden: cross-origin requests are not accepted.' })
   })
 })
 

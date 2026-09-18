@@ -18,7 +18,7 @@
  * includes Windows: `bash` steps are not portable there, and a smoke test that
  * silently skips the platform most likely to break is not worth having.
  */
-import { spawnSync } from 'node:child_process'
+import { spawn, spawnSync } from 'node:child_process'
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, statSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join, resolve } from 'node:path'
@@ -673,7 +673,6 @@ try {
     heading('The foreground daemon starts and shuts down on SIGTERM')
     const foreground = join(scratch, 'fg-config')
     mkdirSync(foreground, { recursive: true })
-    const { spawn } = await import('node:child_process')
     const child = spawn(bin, ['start', '--foreground', '--port', String(PORT + 1)], {
       cwd: elsewhere,
       env: { ...process.env, ...CHILD_ENV, LOOPTROOP_CONFIG_DIR: foreground },

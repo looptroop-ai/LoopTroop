@@ -11,6 +11,7 @@ export const DEFAULT_SETTINGS = {
   opencodeBaseUrl: DEFAULT_OPENCODE_BASE_URL,
   opencodeMode: 'live' as const,
   logLevel: 'info' as const,
+  publicOrigin: null,
 } satisfies Omit<ResolvedSettings, 'portIsExplicit' | 'sources'>
 
 const LOG_LEVELS = ['error', 'warn', 'info', 'debug'] as const
@@ -27,12 +28,14 @@ export interface ResolvedSettings {
   opencodeBaseUrl: string
   opencodeMode: OpenCodeMode
   logLevel: LogLevel
+  /** Exact HTTPS origin browsers may use when a proxy fronts the daemon. */
+  publicOrigin: string | null
   /**
    * True when the user named a port. An explicit port must fail loudly if taken;
    * only the default may quietly fall back to an OS-assigned one.
    */
   portIsExplicit: boolean
-  sources: Record<'port' | 'opencodeBaseUrl' | 'opencodeMode' | 'logLevel', SettingSource>
+  sources: Record<'port' | 'opencodeBaseUrl' | 'opencodeMode' | 'logLevel' | 'publicOrigin', SettingSource>
 }
 
 /** Only these keys are interpreted; anything else is preserved untouched. */
@@ -41,6 +44,7 @@ export interface SettingsFile {
   opencodeBaseUrl?: unknown
   opencodeMode?: unknown
   logLevel?: unknown
+  publicOrigin?: unknown
   [key: string]: unknown
 }
 
@@ -76,6 +80,46 @@ function parseOrigin(value: unknown): string | null {
     return new URL(value.trim()).origin
   } catch {
     return null
+  }
+}
+
+/**
+ * Accepts one browser-visible HTTPS origin, not a URL with a route or query.
+ * The backend may still listen over HTTP behind the proxy; this value names
+ * the origin the browser actually sees and is never inferred from headers.
+ */
+export function parsePublicOrigin(value: unknown): string | null {
+  if (typeof value !== 'string' || value.trim() === '') return null
+
+  try {
+    const raw = value.trim()
+    // Check the source text before URL normalization: `/foo/..` would become
+    // `/` in `pathname` and otherwise masquerade as an origin-only value.
+    if (!/^https:\/\/(?:\[[^\]]+\]|[^/?#:]+)(?::\d+)?\/?$/i.test(raw)) return null
+    const parsed = new URL(raw)
+    if (parsed.protocol !== 'https:') return null
+    if (parsed.username || parsed.password || parsed.pathname !== '/' || parsed.search || parsed.hash) return null
+    if (parsed.port !== '' && (Number(parsed.port) < 1 || Number(parsed.port) > 65535)) return null
+
+    // Do not let WHATWG URL's alternate IPv4 normalization turn a literal
+    // attacker spelling into an accepted configured origin. Hostname case
+    // folding and IPv6 bracket syntax remain valid canonical forms.
+    const rawHostname = /^https?:\/\/(\[[^\]]+\]|[^/?#:]+)(?::\d*)?(?:[/?#]|$)/i.exec(raw)?.[1]
+    if (!rawHostname) return null
+    if (rawHostname.includes('*')) return null
+    const normalizedHostname = parsed.hostname.replace(/^\[/, '').replace(/\]$/, '')
+    if (!rawHostname.startsWith('[') && rawHostname.toLowerCase() !== normalizedHostname.toLowerCase()) return null
+
+    return parsed.origin
+  } catch {
+    return null
+  }
+}
+
+/** Public browser access must be an explicit remote-API deployment. */
+export function assertPublicOriginRemoteAccess(publicOrigin: string | null | undefined): void {
+  if (publicOrigin && process.env.LOOPTROOP_ALLOW_REMOTE_API !== '1') {
+    throw new Error('A public HTTPS origin requires LOOPTROOP_ALLOW_REMOTE_API=1. Enable remote API mode or remove LOOPTROOP_PUBLIC_ORIGIN/publicOrigin.')
   }
 }
 
@@ -129,6 +173,10 @@ export function writeSettingsFile(patch: SettingsFile, configDir = resolveAppCon
  * Deliberately has no `host`: the control API binds loopback only, and a
  * persistent file value or casual flag must not be able to expose it. Container
  * deployments opt in through LOOPTROOP_ALLOW_REMOTE_API, which also demands a token.
+ * `publicOrigin` is intentionally configured through the environment or file,
+ * not a CLI flag. It only names the one HTTPS origin a reverse proxy exposes; it
+ * never changes the address the daemon binds to and never trusts forwarding
+ * headers.
  */
 export function resolveSettings(input: ResolveSettingsInput = {}): ResolvedSettings {
   const env = input.env ?? process.env
@@ -175,18 +223,27 @@ export function resolveSettings(input: ResolveSettingsInput = {}): ResolvedSetti
     DEFAULT_SETTINGS.logLevel,
     (value) => parseEnum(value, LOG_LEVELS),
   )
+  const publicOrigin = pick(
+    undefined,
+    env.LOOPTROOP_PUBLIC_ORIGIN,
+    file.publicOrigin,
+    DEFAULT_SETTINGS.publicOrigin,
+    parsePublicOrigin,
+  )
 
   return {
     port: port.value,
     opencodeBaseUrl: opencodeBaseUrl.value,
     opencodeMode: opencodeMode.value,
     logLevel: logLevel.value,
+    publicOrigin: publicOrigin.value,
     portIsExplicit: port.source !== 'default',
     sources: {
       port: port.source,
       opencodeBaseUrl: opencodeBaseUrl.source,
       opencodeMode: opencodeMode.source,
       logLevel: logLevel.source,
+      publicOrigin: publicOrigin.source,
     },
   }
 }

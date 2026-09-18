@@ -568,5 +568,27 @@ describe('doctor command', () => {
       expect(result.kind).toBe('ok')
       if (result.kind === 'ok') expect(result.output).toContain('v')
     })
+
+    it('does not pass daemon credentials to a probe child', () => {
+      const ambientApiToken = process.env.LOOPTROOP_API_TOKEN
+      const ambientDevEventToken = process.env.LOOPTROOP_DEV_EVENT_TOKEN
+      process.env.LOOPTROOP_API_TOKEN = 'doctor-test-api-token'
+      process.env.LOOPTROOP_DEV_EVENT_TOKEN = 'doctor-test-event-token'
+      try {
+        const result = runProbe(
+          process.execPath,
+          ['-e', 'process.stdout.write(JSON.stringify({ api: process.env.LOOPTROOP_API_TOKEN, event: process.env.LOOPTROOP_DEV_EVENT_TOKEN }))'],
+          5_000,
+        )
+
+        expect(result.kind).toBe('ok')
+        if (result.kind === 'ok') expect(JSON.parse(result.output)).toEqual({})
+      } finally {
+        if (ambientApiToken === undefined) delete process.env.LOOPTROOP_API_TOKEN
+        else process.env.LOOPTROOP_API_TOKEN = ambientApiToken
+        if (ambientDevEventToken === undefined) delete process.env.LOOPTROOP_DEV_EVENT_TOKEN
+        else process.env.LOOPTROOP_DEV_EVENT_TOKEN = ambientDevEventToken
+      }
+    })
   })
 })

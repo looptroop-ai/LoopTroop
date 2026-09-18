@@ -34,7 +34,16 @@ const sharedHelperRedeclarationRules = Object.entries(SHARED_HELPER_HOMES).flatM
     { selector: `FunctionExpression[id.name='${name}']`, message },
     // `{ isRecord() {} }` and `class X { isRecord() {} }`
     { selector: `Property[key.name='${name}'][value.type=/FunctionExpression|ArrowFunctionExpression/]`, message },
+    // `{ ['isRecord']() {} }` / `{ ['isRecord']: () => {} }`
+    { selector: `Property[key.value='${name}'][value.type=/FunctionExpression|ArrowFunctionExpression/]`, message },
     { selector: `MethodDefinition[key.name='${name}']`, message },
+    { selector: `MethodDefinition[key.value='${name}']`, message },
+    // `class X { isRecord = () => {} }` (including a quoted field name).
+    { selector: `PropertyDefinition[key.name='${name}'][value.type=/FunctionExpression|ArrowFunctionExpression/]`, message },
+    { selector: `PropertyDefinition[key.value='${name}'][value.type=/FunctionExpression|ArrowFunctionExpression/]`, message },
+    // `declare function isRecord(...)` and `let isRecord; isRecord = () => {}`.
+    { selector: `TSDeclareFunction[id.name='${name}']`, message },
+    { selector: `AssignmentExpression[left.name='${name}'][right.type=/FunctionExpression|ArrowFunctionExpression/]`, message },
   ]
 })
 
@@ -119,10 +128,23 @@ const ambientProgramRules = [
     // which is how a rule earns suppressions. A namespace under any other name
     // is refused below, so this list is the whole set.
     {
-      selector: `CallExpression[callee.object.name=/^(${CHILD_PROCESS_NAMESPACES})$/][callee.property.name=/^(${SPAWN_METHODS}|exec|execSync)$/]${shape}`,
+      selector:
+        `CallExpression[callee.object.name=/^(${CHILD_PROCESS_NAMESPACES})$/]`
+        + `:matches([callee.property.name=/^(${SPAWN_METHODS}|exec|execSync)$/], [callee.property.value=/^(${SPAWN_METHODS}|exec|execSync)$/])${shape}`,
       message: RESOLVE_MESSAGE,
     },
   ]),
+  {
+    // Destructuring a known child_process namespace under arbitrary local names
+    // hides its launchers from the namespace-call rule. Keep the guard static:
+    // a namespace itself is already forbidden under an unexpected alias, and
+    // this catches the ordinary destructuring form without pretending to be a
+    // whole-program data-flow analysis.
+    selector:
+      `VariableDeclarator[id.type='ObjectPattern'][init.type='Identifier'][init.name=/^(${CHILD_PROCESS_NAMESPACES})$/]`
+      + `, AssignmentExpression[left.type='ObjectPattern'][right.type='Identifier'][right.name=/^(${CHILD_PROCESS_NAMESPACES})$/]`,
+    message: 'Do not destructure child_process: standard ESM keeps process-launch imports visible to the resolver guard.',
+  },
   {
     // `import * as proc from 'node:child_process'` hides every `proc.exec(…)`
     // from the clause above, which knows the namespace by name.
@@ -139,8 +161,8 @@ const ambientProgramRules = [
     // names.
     selector:
       "VariableDeclarator[init.type='CallExpression']"
-      + ":matches([init.callee.name='promisify'], [init.callee.property.name='promisify'])"
-      + `:matches([init.arguments.0.name=/^(${SPAWN_CALLEES})$/], [init.arguments.0.property.name=/^(${SPAWN_CALLEES})$/])`
+      + ":matches([init.callee.name='promisify'], [init.callee.property.name='promisify'], [init.callee.property.value='promisify'])"
+      + `:matches([init.arguments.0.name=/^(${SPAWN_CALLEES})$/], [init.arguments.0.property.name=/^(${SPAWN_CALLEES})$/], [init.arguments.0.property.value=/^(${SPAWN_CALLEES})$/])`
       + '[id.name!=/^(execFileAsync|execAsync)$/]',
     message: 'Name a promisified child_process launcher execFileAsync or execAsync, so the ambient-program rule can see its calls.',
   },
@@ -158,14 +180,218 @@ const ambientProgramRules = [
   {
     selector:
       `CallExpression[callee.name=/^(${SPAWN_CALLEES})$/][arguments.0.type='Literal']`
-      + " ObjectExpression > Property[key.name='shell'][value.value=true]",
+      + " ObjectExpression > Property:matches([key.name='shell'], [key.value='shell'])[value.value=true]",
     message:
       'A shell resolves the command through PATH itself, so a literal command with `shell: true` is the same hole.'
       + ' Resolve the program and start it with planProgramLaunch (launchTool in scripts), which is also how a'
       + ' Windows .cmd shim is started: through a resolved cmd.exe, with every argument escaped.',
   },
+  ...[
+    "ImportDeclaration[source.value=/^(node:)?child_process$/] > ImportDefaultSpecifier",
+    "ImportExpression[source.value=/^(node:)?child_process$/]",
+    "ImportExpression[source.type='TemplateLiteral'][source.expressions.length=0][source.quasis.0.value.cooked=/^(node:)?child_process$/]",
+    "ImportExpression[source.value=/^(node:)?module$/]",
+    "ImportExpression[source.type='TemplateLiteral'][source.expressions.length=0][source.quasis.0.value.cooked=/^(node:)?module$/]",
+    "ImportDeclaration[source.value=/^(node:)?module$/] > ImportSpecifier[imported.name='createRequire']",
+    "ImportDeclaration[source.value=/^(node:)?module$/] > ImportDefaultSpecifier",
+    "ImportDeclaration[source.value=/^(node:)?module$/] > ImportNamespaceSpecifier",
+    "CallExpression[callee.name='createRequire']",
+    "CallExpression[callee.property.name='createRequire']",
+    "CallExpression[callee.property.value='createRequire']",
+    "CallExpression[callee.name='require'][arguments.0.type='Literal'][arguments.0.value=/^(node:)?child_process$/]",
+    "CallExpression[callee.name='require'][arguments.0.type='TemplateLiteral'][arguments.0.expressions.length=0][arguments.0.quasis.0.value.cooked=/^(node:)?child_process$/]",
+    "CallExpression[callee.name='require'][arguments.0.type='Literal'][arguments.0.value=/^(node:)?module$/], CallExpression[callee.name='require'][arguments.0.type='TemplateLiteral'][arguments.0.expressions.length=0][arguments.0.quasis.0.value.cooked=/^(node:)?module$/]",
+    "CallExpression[callee.object.name='process']:matches([callee.property.name='getBuiltinModule'], [callee.property.value='getBuiltinModule'])[arguments.0.type='Literal'][arguments.0.value=/^(node:)?child_process$/]",
+    "CallExpression[callee.object.name='process']:matches([callee.property.name='getBuiltinModule'], [callee.property.value='getBuiltinModule'])[arguments.0.type='TemplateLiteral'][arguments.0.expressions.length=0][arguments.0.quasis.0.value.cooked=/^(node:)?child_process$/]",
+    "CallExpression[callee.object.name='process']:matches([callee.property.name='getBuiltinModule'], [callee.property.value='getBuiltinModule'])[arguments.0.type='Literal'][arguments.0.value=/^(node:)?module$/], CallExpression[callee.object.name='process']:matches([callee.property.name='getBuiltinModule'], [callee.property.value='getBuiltinModule'])[arguments.0.type='TemplateLiteral'][arguments.0.expressions.length=0][arguments.0.quasis.0.value.cooked=/^(node:)?module$/]",
+    "ExportNamedDeclaration[source.value=/^(node:)?child_process$/], ExportAllDeclaration[source.value=/^(node:)?child_process$/]",
+    "ExportNamedDeclaration[source.value=/^(node:)?module$/], ExportAllDeclaration[source.value=/^(node:)?module$/]",
+    "TSImportEqualsDeclaration[moduleReference.type='TSExternalModuleReference'][moduleReference.expression.value=/^(node:)?child_process$/]",
+  ].map(selector => ({
+    selector,
+    message: 'Use standard ESM child_process imports; alternate loaders, re-exports and createRequire hide process launches from the resolver guard.',
+  })),
 ]
 
+const RAW_FILE_SYSTEM_IMPORT_NAMES = [
+  'default', 'promises',
+  'readFile', 'readFileSync', 'writeFile', 'writeFileSync',
+  'appendFile', 'appendFileSync', 'open', 'openSync',
+  'createReadStream', 'createWriteStream', 'read', 'readSync', 'write', 'writeSync',
+  'readdir', 'readdirSync', 'rm', 'rmSync', 'unlink', 'unlinkSync',
+  'rename', 'renameSync', 'mkdir', 'mkdirSync', 'copyFile', 'copyFileSync', 'cp', 'cpSync',
+  'truncate', 'truncateSync', 'chmod', 'chmodSync', 'chown', 'chownSync',
+  'utimes', 'utimesSync', 'rmdir', 'rmdirSync', 'mkdtemp', 'mkdtempSync',
+  'symlink', 'symlinkSync', 'link', 'linkSync',
+  'opendir', 'opendirSync',
+]
+const RAW_FILE_SYSTEM_METHODS = RAW_FILE_SYSTEM_IMPORT_NAMES
+  .filter((name) => name !== 'default' && name !== 'promises')
+  .join('|')
+const RAW_FILE_SYSTEM_NAMESPACES = 'fs|fsPromises|promises'
+const RAW_FILE_SYSTEM_MODULES = ['fs', 'node:fs', 'fs/promises', 'node:fs/promises']
+const RAW_FILE_SYSTEM_MESSAGE =
+  'Use the contained or ticket-scoped filesystem helper. Raw content, directory, or destructive I/O bypasses the boundary.'
+const ATOMIC_FILE_IMPORT_PATTERNS = [{
+  group: ['**/io/atomicWrite', '**/io/atomicWrite.*'],
+  importNames: ['safeAtomicWrite'],
+  message: 'Use writeTicketFile, or safeAtomicWriteWithin with a validated root, for workflow artifacts.',
+}, {
+  group: ['**/io/jsonl', '**/io/jsonl.*'],
+  importNames: ['writeJsonl', 'appendJsonl'],
+  message: 'Use writeTicketFile or appendJsonlWithin with a validated root for workflow artifacts.',
+}, {
+  group: ['**/io/atomicAppend', '**/io/atomicAppend.*'],
+  importNames: ['safeAtomicAppend'],
+  message: 'Use safeAtomicAppendWithin with a validated root for workflow artifacts.',
+}]
+
+/**
+ * Raw filesystem is allowed only one operation at a time at a named boundary.
+ * The import and call selectors use the same denylist, so adding a boundary
+ * cannot silently turn that whole file into an I/O exemption. Namespace
+ * imports stay forbidden: a namespace alias would hide which operation is
+ * being used without requiring an alias/dataflow tracker.
+ */
+const rawFileSystemRulesFor = (allowedNames = []) => {
+  const forbiddenNames = RAW_FILE_SYSTEM_IMPORT_NAMES
+    .filter((name) => !allowedNames.includes(name))
+  const forbiddenMethods = forbiddenNames
+    .filter((name) => name !== 'default' && name !== 'promises')
+    .join('|')
+  const rules = [
+    {
+      selector: "ImportExpression[source.value=/^(node:)?fs(?:\\/promises)?$/]",
+      message: RAW_FILE_SYSTEM_MESSAGE,
+    },
+    {
+      selector: "ImportExpression[source.type='TemplateLiteral'][source.expressions.length=0][source.quasis.0.value.cooked=/^(node:)?fs(?:\\/promises)?$/]",
+      message: RAW_FILE_SYSTEM_MESSAGE,
+    },
+    {
+      selector: "ImportDeclaration[source.value=/^(node:)?fs(?:\\/promises)?$/] > ImportNamespaceSpecifier",
+      message: 'Import named filesystem operations so the containment guard can see exactly what is allowed.',
+    },
+  ]
+  if (forbiddenMethods) {
+    rules.push(
+      {
+        selector: `CallExpression[callee.name=/^(${forbiddenMethods})$/]`,
+        message: RAW_FILE_SYSTEM_MESSAGE,
+      },
+      {
+        selector:
+          `CallExpression[callee.object.name=/^(${RAW_FILE_SYSTEM_NAMESPACES})$/]`
+          + `:matches([callee.property.name=/^(${forbiddenMethods})$/], [callee.property.value=/^(${forbiddenMethods})$/])`,
+        message: RAW_FILE_SYSTEM_MESSAGE,
+      },
+      {
+        selector: `CallExpression[callee.object.type='MemberExpression'][callee.object.object.name=/^(${RAW_FILE_SYSTEM_NAMESPACES})$/][callee.object.property.name='promises'][callee.property.name=/^(${forbiddenMethods})$/]`,
+        message: RAW_FILE_SYSTEM_MESSAGE,
+      },
+      {
+        selector: `CallExpression[callee.object.type='MemberExpression'][callee.object.object.name=/^(${RAW_FILE_SYSTEM_NAMESPACES})$/][callee.object.property.value='promises'][callee.property.name=/^(${forbiddenMethods})$/]`,
+        message: RAW_FILE_SYSTEM_MESSAGE,
+      },
+      {
+        selector: `CallExpression[callee.object.type='MemberExpression'][callee.object.object.name=/^(${RAW_FILE_SYSTEM_NAMESPACES})$/][callee.object.property.name='promises'][callee.property.value=/^(${forbiddenMethods})$/]`,
+        message: RAW_FILE_SYSTEM_MESSAGE,
+      },
+      {
+        selector: `CallExpression[callee.object.type='MemberExpression'][callee.object.object.name=/^(${RAW_FILE_SYSTEM_NAMESPACES})$/][callee.object.property.value='promises'][callee.property.value=/^(${forbiddenMethods})$/]`,
+        message: RAW_FILE_SYSTEM_MESSAGE,
+      },
+      {
+        selector: `CallExpression[callee.name='require'][arguments.0.type='Literal'][arguments.0.value=/^(node:)?fs(?:\\/promises)?$/]`,
+        message: RAW_FILE_SYSTEM_MESSAGE,
+      },
+      {
+        selector: `CallExpression[callee.name='require'][arguments.0.type='TemplateLiteral'][arguments.0.expressions.length=0][arguments.0.quasis.0.value.cooked=/^(node:)?fs(?:\\/promises)?$/]`,
+        message: RAW_FILE_SYSTEM_MESSAGE,
+      },
+      {
+        selector: `CallExpression[callee.object.name='process']:matches([callee.property.name='getBuiltinModule'], [callee.property.value='getBuiltinModule'])[arguments.0.type='Literal'][arguments.0.value=/^(node:)?fs(?:\\/promises)?$/]`,
+        message: RAW_FILE_SYSTEM_MESSAGE,
+      },
+      {
+        selector: `CallExpression[callee.object.name='process']:matches([callee.property.name='getBuiltinModule'], [callee.property.value='getBuiltinModule'])[arguments.0.type='TemplateLiteral'][arguments.0.expressions.length=0][arguments.0.quasis.0.value.cooked=/^(node:)?fs(?:\\/promises)?$/]`,
+        message: RAW_FILE_SYSTEM_MESSAGE,
+      },
+      {
+        selector: "ExportNamedDeclaration[source.value=/^(node:)?fs(?:\\/promises)?$/], ExportAllDeclaration[source.value=/^(node:)?fs(?:\\/promises)?$/]",
+        message: RAW_FILE_SYSTEM_MESSAGE,
+      },
+      {
+        selector: "TSImportEqualsDeclaration[moduleReference.type='TSExternalModuleReference'][moduleReference.expression.value=/^(node:)?fs(?:\\/promises)?$/]",
+        message: RAW_FILE_SYSTEM_MESSAGE,
+      },
+    )
+  }
+  return rules
+}
+
+const rawFileSystemRules = rawFileSystemRulesFor()
+
+const RAW_FILE_SYSTEM_BOUNDARY_OPERATIONS = {
+  // Worktree/ticket skeleton creation and cleanup are rooted by the ticket
+  // initializer's managed worktree checks.
+  'server/ticket/initialize.ts': ['cpSync', 'mkdirSync', 'mkdtempSync', 'readdirSync', 'rmSync'],
+  // Artifact size browsing uses contained paths and metadata-only traversal.
+  'server/routes/ticketHandlers/artifactHandlers.ts': ['readdir'],
+  // Manual QA streams openFileNoFollowSync-validated files only.
+  'server/routes/ticketHandlers/manualQaHandlers.ts': ['createReadStream'],
+  // This is the explicit project-folder browser: directory enumeration only.
+  'server/routes/projects.ts': ['readdir'],
+  // Ticket log streaming uses openFileNoFollowSync before the stream starts.
+  'server/routes/files.ts': ['createReadStream'],
+  // Project/worktree helpers own managed-root discovery and cleanup.
+  'server/storage/projects.ts': ['readdir', 'rmSync'],
+  'server/storage/paths.ts': ['mkdirSync'],
+  'server/storage/ticketMutations.ts': ['rmSync'],
+  'server/storage/ticketRuntimeProjection.ts': ['rmSync'],
+  // Phase cleanup receives paths from ticket containment/root helpers.
+  'server/phases/cleanup/cleaner.ts': ['rmSync'],
+  'server/phases/prd/document.ts': ['rmSync'],
+  'server/phases/executionSetup/workspaceInputs.ts': ['copyFileSync', 'mkdirSync', 'readdirSync'],
+  'server/phases/executionSetup/storage.ts': ['readdirSync', 'rmSync'],
+  // Exact Git-index snapshots read a no-follow descriptor and write only owned
+  // temporary files before a validated index replacement.
+  'server/phases/executionSetup/hookValidation.ts': ['mkdtempSync', 'readFileSync', 'renameSync', 'rmSync', 'unlinkSync', 'writeFileSync'],
+  'server/phases/manualQa/operations.ts': ['cpSync', 'mkdirSync', 'readFileSync'],
+  'server/phases/manualQa/storage.ts': ['createReadStream', 'mkdirSync', 'open', 'readdirSync', 'renameSync', 'rmSync'],
+  'server/phases/manualQa/generator.ts': ['readdirSync'],
+  // Quarantine comparison enumerates contained directories and reads bounded
+  // chunks through openFileNoFollowSync-validated descriptors.
+  'server/phases/manualQa/checkpoint.ts': ['cpSync', 'mkdirSync', 'readdirSync', 'readSync', 'rmSync', 'symlinkSync'],
+  'server/phases/interview/finalDocument.ts': ['rmSync'],
+  'server/phases/execution/opencodeStepsConfig.ts': ['readdirSync', 'rmSync', 'unlinkSync'],
+}
+
+const boundaryFileSystemRules = (allowedNames) => ({
+  'no-restricted-imports': ['error', {
+    paths: RAW_FILE_SYSTEM_MODULES.map((name) => ({
+      name,
+      importNames: RAW_FILE_SYSTEM_IMPORT_NAMES.filter((rawName) => !allowedNames.includes(rawName)),
+      message: RAW_FILE_SYSTEM_MESSAGE,
+    })),
+    patterns: ATOMIC_FILE_IMPORT_PATTERNS,
+  }],
+  'no-restricted-syntax': ['error', ...sharedHelperRedeclarationRules, ...ambientProgramRules, ...rawFileSystemRulesFor(allowedNames)],
+})
+
+const RAW_FILE_SYSTEM_SCOPE = [
+  'server/workflow/**/*.ts',
+  'server/storage/**/*.ts',
+  'server/routes/**/*.ts',
+  'server/phases/**/*.ts',
+  'server/ticket/**/*.ts',
+]
+
+/**
+ * Existing low-level boundaries. Each path has its own containment or browser
+ * contract; retaining the ambient and shared-helper rules here keeps this
+ * list from becoming a file-wide lint hole.
+ */
 export default tseslint.config(
   { ignores: ['dist', 'site', 'docs/.vitepress', 'node_modules', '.looptroop'] },
   {
@@ -197,35 +423,20 @@ export default tseslint.config(
     },
   },
   {
-    // Workflow and storage artifacts must keep using ticket-scoped I/O. Metadata operations
-    // remain available; low-level descriptor/binary exceptions need a local,
-    // documented suppression rather than weakening the artifact boundary.
-    files: ['server/workflow/**/*.ts', 'server/storage/**/*.ts'],
+    // Ticket/workflow content and filesystem mutations must stay behind a
+    // contained helper. Metadata-only operations remain available; the exact
+    // low-level boundaries below retain their own documented contracts.
+    files: RAW_FILE_SYSTEM_SCOPE,
     ignores: ['**/__tests__/**', '**/*.test.ts'],
     rules: {
+      'no-restricted-syntax': ['error', ...sharedHelperRedeclarationRules, ...ambientProgramRules, ...rawFileSystemRules],
       'no-restricted-imports': ['error', {
-        paths: ['fs', 'node:fs', 'fs/promises', 'node:fs/promises'].map((name) => ({
+        paths: RAW_FILE_SYSTEM_MODULES.map((name) => ({
           name,
-          importNames: [
-            'default', 'promises', 'readFile', 'readFileSync', 'writeFile', 'writeFileSync',
-            'appendFile', 'appendFileSync', 'open', 'openSync', 'createReadStream', 'createWriteStream',
-            'read', 'readSync', 'write', 'writeSync',
-          ],
-          message: 'Use readTicketFile/writeTicketFile, or contained no-follow I/O for a validated root. Raw content I/O bypasses artifact containment.',
+          importNames: RAW_FILE_SYSTEM_IMPORT_NAMES,
+          message: RAW_FILE_SYSTEM_MESSAGE,
         })),
-        patterns: [{
-          group: ['**/io/atomicWrite', '**/io/atomicWrite.*'],
-          importNames: ['safeAtomicWrite'],
-          message: 'Use writeTicketFile, or safeAtomicWriteWithin with a validated root, for workflow artifacts.',
-        }, {
-          group: ['**/io/jsonl', '**/io/jsonl.*'],
-          importNames: ['writeJsonl', 'appendJsonl'],
-          message: 'Use writeTicketFile or appendJsonlWithin with a validated root for workflow artifacts.',
-        }, {
-          group: ['**/io/atomicAppend', '**/io/atomicAppend.*'],
-          importNames: ['safeAtomicAppend'],
-          message: 'Use safeAtomicAppendWithin with a validated root for workflow artifacts.',
-        }],
+        patterns: ATOMIC_FILE_IMPORT_PATTERNS,
       }],
     },
   },
@@ -273,6 +484,12 @@ export default tseslint.config(
       'no-restricted-syntax': ['error', ...sharedHelperRedeclarationRules],
     },
   },
+  ...Object.entries(RAW_FILE_SYSTEM_BOUNDARY_OPERATIONS).map(([file, allowedNames]) => ({
+    // Each low-level boundary retains process/shared-helper and atomic-import
+    // guards while allowing only the raw operation it actually owns.
+    files: [file],
+    rules: boundaryFileSystemRules(allowedNames),
+  })),
   {
     // The canonical definitions themselves, and the two documented exceptions.
     // Nothing else belongs here: an exemption is a hole in the guard, and this
@@ -286,7 +503,7 @@ export default tseslint.config(
       'server/git/github.ts',
     ],
     rules: {
-      'no-restricted-syntax': 'off',
+      'no-restricted-syntax': ['error', ...ambientProgramRules],
     },
   },
 )

@@ -5,7 +5,7 @@ import { IncompatibleSchemaVersionError } from '../db/schemaVersion'
 import { acquireDaemonLock, type AcquiredLock } from '../lib/daemonLock'
 import {
   clearDaemonState,
-  daemonOrigin,
+  daemonBrowserOrigin,
   getDaemonStatePath,
   writeDaemonStartFailure,
   writeDaemonState,
@@ -14,7 +14,7 @@ import {
   readDaemonState,
   readDaemonStartFailure,
 } from '../lib/daemonPaths'
-import { resolveSettings, type ResolvedSettings } from '../lib/appSettings'
+import { assertPublicOriginRemoteAccess, resolveSettings, type ResolvedSettings } from '../lib/appSettings'
 import { readProcessStartToken } from '../lib/processIdentity'
 import { createSessionCredentials, BootstrapNonceStore, type SessionCredentials } from '../middleware/sessionAuth'
 import { OpenCodeSupervisor, type OpenCodeStatus } from '../opencode/supervisor'
@@ -235,6 +235,7 @@ export function describeOpenCode(
  */
 export async function startDaemon(options: StartDaemonOptions): Promise<DaemonHandle> {
   const settings = options.settings ?? resolveSettings({ configDir: options.configDir })
+  assertPublicOriginRemoteAccess(settings.publicOrigin)
 
   // A previous startup may have exited while its owned OpenCode child was
   // still live. Keep that durable ownership boundary ahead of lock recovery:
@@ -342,6 +343,7 @@ export async function startDaemon(options: StartDaemonOptions): Promise<DaemonHa
       credentials,
       bootstrapNonces,
       instanceId,
+      publicOrigin: settings.publicOrigin,
       onShutdownRequest: () => requestShutdown('an API request'),
     })
     const address = await runtime.start()
@@ -355,6 +357,7 @@ export async function startDaemon(options: StartDaemonOptions): Promise<DaemonHa
       pid: process.pid,
       port: address.port,
       host: address.hostname,
+      ...(settings.publicOrigin === null ? {} : { publicOrigin: settings.publicOrigin }),
       startedAt: new Date().toISOString(),
       version: options.version,
       ...(startToken === null ? {} : { startToken }),
@@ -374,7 +377,7 @@ export async function startDaemon(options: StartDaemonOptions): Promise<DaemonHa
     // is minted per call: a nonce is single-use and expires, so a URL captured
     // once cannot be replayed or reused later.
     const bootstrapUrl = (): string =>
-      `${daemonOrigin(address.hostname, address.port)}/#bootstrap=${bootstrapNonces.issue()}`
+      `${daemonBrowserOrigin({ ...state, host: address.hostname, port: address.port })}/#bootstrap=${bootstrapNonces.issue()}`
 
     heartbeat = setInterval(() => lock.heartbeat(), HEARTBEAT_INTERVAL_MS)
     // The daemon's own timer must not be the reason the process stays alive.

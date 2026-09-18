@@ -31,6 +31,7 @@ describe('daemon startup and shutdown', () => {
     for (const dir of tempDirs.splice(0)) {
       removeTempDir(dir)
     }
+    vi.unstubAllEnvs()
   })
 
   function makeConfigDir(): string {
@@ -260,6 +261,35 @@ describe('daemon startup and shutdown', () => {
 
     // A URL that stayed constant would be a reusable secret; it must not be.
     expect(handle.bootstrapUrl()).not.toBe(handle.bootstrapUrl())
+  })
+
+  it('persists the public browser origin and uses it for bootstrap links', async () => {
+    vi.stubEnv('LOOPTROOP_ALLOW_REMOTE_API', '1')
+    const configDir = makeConfigDir()
+    const handle = await startDaemon({
+      configDir,
+      settings: { ...ephemeralSettings(), publicOrigin: 'https://public.example' },
+      version: '0.0.0-test',
+    })
+    running.push(handle)
+
+    expect(handle.state.publicOrigin).toBe('https://public.example')
+    expect(handle.bootstrapUrl()).toMatch(/^https:\/\/public\.example\/#bootstrap=/)
+    expect(JSON.parse(readFileSync(getDaemonStatePath(configDir), 'utf8'))).toMatchObject({
+      publicOrigin: 'https://public.example',
+    })
+  })
+
+  it('rejects a public origin without remote mode before acquiring ownership', async () => {
+    vi.stubEnv('LOOPTROOP_ALLOW_REMOTE_API', '0')
+    const configDir = makeConfigDir()
+    await expect(startDaemon({
+      configDir,
+      settings: { ...ephemeralSettings(), publicOrigin: 'https://public.example' },
+      version: '0.0.0-test',
+    })).rejects.toThrow('LOOPTROOP_ALLOW_REMOTE_API=1')
+    expect(existsSync(getDaemonLockPath(configDir))).toBe(false)
+    expect(existsSync(getDaemonStatePath(configDir))).toBe(false)
   })
 
   it('routes an authenticated shutdown request to the process that owns the exit', async () => {

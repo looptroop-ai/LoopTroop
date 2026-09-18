@@ -43,7 +43,11 @@ export function readCookie(header: string | undefined, name: string): string | n
   return null
 }
 
-export function serializeSessionCookie(value: string, maxAgeSeconds: number): string {
+export function serializeSessionCookie(
+  value: string,
+  maxAgeSeconds: number,
+  options: { secure?: boolean } = {},
+): string {
   // HttpOnly keeps the value out of reach of any script on the page.
   // Path=/api keeps the cookie off requests for the static bundle, which need
   // no credential: a secret is not attached to traffic that cannot use it.
@@ -54,12 +58,15 @@ export function serializeSessionCookie(value: string, maxAgeSeconds: number): st
   // site, and cookies carry no port scope of their own. Every other local
   // service therefore shares this cookie jar, which is why the host guard makes
   // the browser prove same-origin before this cookie authenticates anything.
+  // The app adds `Secure` only for an explicitly configured HTTPS public origin;
+  // local HTTP development keeps the cookie usable.
   return [
     `${SESSION_COOKIE_NAME}=${encodeURIComponent(value)}`,
     'Path=/api',
     'HttpOnly',
     'SameSite=Strict',
     `Max-Age=${maxAgeSeconds}`,
+    ...(options.secure ? ['Secure'] : []),
   ].join('; ')
 }
 

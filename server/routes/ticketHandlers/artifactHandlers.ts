@@ -1,4 +1,6 @@
 import type { Context } from 'hono'
+import { lstat, readdir, stat } from 'node:fs/promises'
+import { basename, join } from 'node:path'
 import {
   getTicketByRef,
   getPhaseArtifactById,
@@ -23,18 +25,15 @@ export async function handleGetTicketSize(c: Context) {
 
   const { projectRoot, worktreePath, ticketDir, executionLogPath, debugLogPath, aiLogPath } = paths
 
-  const fsPromises = await import('node:fs/promises')
-  const path = await import('node:path')
-
   async function getDirectorySize(dirPath: string): Promise<number> {
     let size = 0
     try {
-      const entries = await fsPromises.readdir(resolveContainedPath(projectRoot, dirPath), { withFileTypes: true })
+      const entries = await readdir(resolveContainedPath(projectRoot, dirPath), { withFileTypes: true })
       const results = await Promise.all(
         entries.map(async (entry) => {
-          const fullPath = path.join(dirPath, entry.name)
+          const fullPath = join(dirPath, entry.name)
           try {
-            const stats = await fsPromises.lstat(fullPath)
+            const stats = await lstat(fullPath)
             if (stats.isDirectory()) {
               return getDirectorySize(fullPath)
             } else if (stats.isFile()) {
@@ -55,7 +54,7 @@ export async function handleGetTicketSize(c: Context) {
 
   async function getFileSize(filePath: string): Promise<number> {
     try {
-      const stats = await fsPromises.lstat(resolveContainedPath(projectRoot, filePath))
+      const stats = await lstat(resolveContainedPath(projectRoot, filePath))
       return stats.isFile() ? stats.size : 0
     } catch {
       return 0
@@ -74,16 +73,16 @@ export async function handleGetTicketSize(c: Context) {
     excludeNames: string[] = []
   ): Promise<SizeNode[]> {
     try {
-      const entries = await fsPromises.readdir(resolveContainedPath(projectRoot, dirPath), { withFileTypes: true })
+      const entries = await readdir(resolveContainedPath(projectRoot, dirPath), { withFileTypes: true })
       const children = await Promise.all(
         entries.map(async (entry) => {
           if (excludeNames.includes(entry.name)) return null
-          const fullPath = path.join(dirPath, entry.name)
+          const fullPath = join(dirPath, entry.name)
           const isDirectory = entry.isDirectory()
           let size = 0
           let nestedChildren: SizeNode[] | undefined
           try {
-            const stats = await fsPromises.lstat(fullPath)
+            const stats = await lstat(fullPath)
             if (stats.isDirectory()) {
               size = await getDirectorySize(fullPath)
               nestedChildren = await getDirectoryChildren(fullPath)
@@ -113,19 +112,19 @@ export async function handleGetTicketSize(c: Context) {
     if (!ticketDir) return []
     const list: SizeNode[] = []
     try {
-      const topEntries = await fsPromises.readdir(resolveContainedPath(projectRoot, ticketDir), { withFileTypes: true })
+      const topEntries = await readdir(resolveContainedPath(projectRoot, ticketDir), { withFileTypes: true })
       for (const entry of topEntries) {
-        const fullPath = path.join(ticketDir, entry.name)
+        const fullPath = join(ticketDir, entry.name)
         if (entry.name === 'runtime') {
           try {
-            const runtimeEntries = await fsPromises.readdir(resolveContainedPath(projectRoot, fullPath), { withFileTypes: true })
+            const runtimeEntries = await readdir(resolveContainedPath(projectRoot, fullPath), { withFileTypes: true })
             const runtimeChildren: SizeNode[] = []
             for (const rEntry of runtimeEntries) {
-              const rFullPath = path.join(fullPath, rEntry.name)
+              const rFullPath = join(fullPath, rEntry.name)
               const excludeLogs = [
-                executionLogPath ? path.basename(executionLogPath) : 'execution-log.jsonl',
-                debugLogPath ? path.basename(debugLogPath) : 'execution-log.debug.jsonl',
-                aiLogPath ? path.basename(aiLogPath) : 'execution-log.ai.jsonl',
+                executionLogPath ? basename(executionLogPath) : 'execution-log.jsonl',
+                debugLogPath ? basename(debugLogPath) : 'execution-log.debug.jsonl',
+                aiLogPath ? basename(aiLogPath) : 'execution-log.ai.jsonl',
               ]
               if (excludeLogs.includes(rEntry.name)) {
                 continue
@@ -173,7 +172,7 @@ export async function handleGetTicketSize(c: Context) {
     return list.sort((a, b) => b.size - a.size)
   }
 
-  const exists = await fsPromises.stat(worktreePath).then(() => true).catch(() => false)
+  const exists = await stat(worktreePath).then(() => true).catch(() => false)
   if (!exists) {
     return c.json({ size: 0, exists: false })
   }

@@ -3,6 +3,7 @@ import { closeSync, existsSync, openSync, readFileSync, rmSync } from 'node:fs'
 import { CONFIG_FILE_MODE, ensureSecureDir, resolveAppConfigDir, secureFile } from './appConfigDir'
 import { safeAtomicWrite } from '../io/atomicWrite'
 import { acquireDaemonLock, type AcquiredLock } from './daemonLock'
+import { parsePublicOrigin } from './appSettings'
 
 /**
  * Informational record of the running daemon. Never the locking primitive:
@@ -14,6 +15,8 @@ export interface DaemonState {
   pid: number
   port: number
   host: string
+  /** Browser-visible HTTPS origin configured for a reverse proxy, when any. */
+  publicOrigin?: string
   startedAt: string
   version: string
   /** Set before runtime shutdown starts; retained while a close retry is needed. */
@@ -144,6 +147,11 @@ export function daemonOrigin(host: string, port: number): string {
   return `http://${address.includes(':') ? `[${address}]` : address}:${port}`
 }
 
+/** Origin to put in a browser link; API calls still use `daemonOrigin`. */
+export function daemonBrowserOrigin(state: Pick<DaemonState, 'host' | 'port' | 'publicOrigin'>): string {
+  return state.publicOrigin ?? daemonOrigin(state.host, state.port)
+}
+
 function isDaemonState(value: unknown): value is DaemonState {
   if (typeof value !== 'object' || value === null) return false
   const candidate = value as Record<string, unknown>
@@ -151,6 +159,8 @@ function isDaemonState(value: unknown): value is DaemonState {
     && typeof candidate.pid === 'number'
     && typeof candidate.port === 'number'
     && typeof candidate.apiToken === 'string'
+    && (candidate.publicOrigin === undefined
+      || (typeof candidate.publicOrigin === 'string' && parsePublicOrigin(candidate.publicOrigin) !== null))
     && (candidate.shutdownPending === undefined || typeof candidate.shutdownPending === 'boolean')
 }
 

@@ -1,7 +1,7 @@
 import { createHash } from 'crypto'
 import { lstatSync, readdirSync, realpathSync, rmSync, unlinkSync } from 'fs'
-import { dirname, join, relative, resolve } from 'path'
-import { parseAtomicTmpPath, safeAtomicWrite, safeAtomicWriteWithin } from '../../io/atomicWrite'
+import { basename, dirname, join, relative, resolve } from 'path'
+import { parseAtomicTmpPath, safeAtomicWriteWithin } from '../../io/atomicWrite'
 import { readFileNoFollowSync } from '../../io/readFile'
 import { ensureSecureDir, resolveAppConfigDir } from '../../lib/appConfigDir'
 import { resolveContainedPath } from '../../lib/containedPath'
@@ -264,6 +264,10 @@ function serializeConfig(value: Record<string, unknown>): string {
   return `${JSON.stringify(value, null, 2)}\n`
 }
 
+function safeWriteConfig(configPath: string, content: string): void {
+  safeAtomicWriteWithin(dirname(configPath), basename(configPath), content)
+}
+
 /**
  * Applies the step cap, preserving whatever configuration the project already had.
  *
@@ -351,7 +355,7 @@ export function applyOpencodeStepsConfig(params: {
       `${JSON.stringify(sidecar, null, 2)}\n`,
       { mode: RESTORE_SIDECAR_FILE_MODE },
     )
-    safeAtomicWrite(configPath, content)
+    safeWriteConfig(configPath, content)
   } catch (error) {
     const reason = `Could not apply the OpenCode step limit: ${getErrorMessage(error)}. ${OPENCODE_CONFIG_FILENAME} is unchanged.`
     report(reason)
@@ -408,7 +412,7 @@ export function reapplyOpencodeStepsConfig(handle: OpencodeStepsConfigHandle, re
     return fail(`${OPENCODE_CONFIG_FILENAME} was ${current.kind === 'absent' ? 'removed' : 'edited'} after this run wrote it.`)
   }
   try {
-    safeAtomicWrite(handle.configPath, handle.appliedContent)
+    safeWriteConfig(handle.configPath, handle.appliedContent)
   } catch (error) {
     return fail(`putting it back failed: ${getErrorMessage(error)}.`)
   }
@@ -612,7 +616,7 @@ function restoreFromSidecar(ticketDir: string, sidecar: RestoreSidecar, report: 
       removeSidecar(ticketDir, sidecar.configPath)
       return 'removed'
     }
-    safeAtomicWrite(sidecar.configPath, sidecar.originalContent ?? '')
+    safeWriteConfig(sidecar.configPath, sidecar.originalContent ?? '')
     removeSidecar(ticketDir, sidecar.configPath)
     return 'restored'
   } catch (error) {

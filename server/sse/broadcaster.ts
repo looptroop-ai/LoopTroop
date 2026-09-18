@@ -37,6 +37,8 @@ interface SSEBroadcasterOptions {
 export interface SSEBroadcasterLike {
   addClient: (ticketId: string, client: SSEClient) => boolean
   removeClient: (ticketId: string, clientId: string) => void
+  reserveClient: (ticketId: string, clientId: string, maxPerTicket: number, maxTotal: number) => boolean
+  activateClient: (ticketId: string, client: SSEClient) => boolean
   getClientCount: (ticketId: string) => number
   getTotalClientCount: () => number
   getEventsSince: (ticketId: string, lastEventId: string) =>
@@ -104,6 +106,8 @@ class SSEBroadcaster {
     return {
       addClient: (ticketId, client) => this.addClientInScope(scopeId, ticketId, client),
       removeClient: (ticketId, clientId) => this.removeClientInScope(scopeId, ticketId, clientId),
+      reserveClient: (ticketId, clientId, maxPerTicket, maxTotal) => this.reserveClientInScope(scopeId, ticketId, clientId, maxPerTicket, maxTotal),
+      activateClient: (ticketId, client) => this.activateClientInScope(scopeId, ticketId, client),
       getClientCount: (ticketId) => this.getClientCountInScope(scopeId, ticketId),
       // The total stream cap is process-wide even when admission is scoped to
       // an embedded runtime; otherwise each runtime could independently admit
@@ -126,6 +130,27 @@ class SSEBroadcaster {
     const existing = this.clients.get(ticketId) ?? []
     existing.push({ ...client, scopeId })
     this.clients.set(ticketId, existing)
+    return true
+  }
+
+  reserveClient(ticketId: string, clientId: string, maxPerTicket: number, maxTotal: number): boolean {
+    return this.reserveClientInScope(this.defaultScope, ticketId, clientId, maxPerTicket, maxTotal)
+  }
+
+  private reserveClientInScope(scopeId: symbol, ticketId: string, clientId: string, maxPerTicket: number, maxTotal: number): boolean {
+    if (this.getClientCountInScope(scopeId, ticketId) >= maxPerTicket || this.getTotalClientCount() >= maxTotal) return false
+    return this.addClientInScope(scopeId, ticketId, { id: clientId, send: () => undefined, close: () => undefined })
+  }
+
+  activateClient(ticketId: string, client: SSEClient): boolean {
+    return this.activateClientInScope(this.defaultScope, ticketId, client)
+  }
+
+  private activateClientInScope(scopeId: symbol, ticketId: string, client: SSEClient): boolean {
+    const existing = this.clients.get(ticketId)
+    const index = existing?.findIndex(candidate => candidate.id === client.id && candidate.scopeId === scopeId) ?? -1
+    if (!existing || index < 0) return false
+    existing[index] = { ...client, scopeId }
     return true
   }
 

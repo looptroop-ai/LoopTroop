@@ -85,11 +85,24 @@ describe('project worktree cleanup containment', () => {
     mkdirSync(resolve(worktreePath, '.ticket/runtime'), { recursive: true })
     writeFileSync(resolve(worktreePath, '.ticket/runtime/state.json'), '{}\n')
 
-    await expect(deleteProjectWorktrees(project.folderPath)).rejects.toThrow('ignored files outside LoopTroop roots')
+    const skipped = [{
+      externalId: ticket.externalId,
+      reason: expect.stringContaining('ignored files outside LoopTroop roots'),
+    }]
+    await expect(deleteProjectWorktrees(project.folderPath)).resolves.toEqual({ freedBytes: 0, skipped })
+    expect(readFileSync(resolve(worktreePath, 'blocked.env'), 'utf8')).toBe('keep me\n')
+
+    const eligible = createTicket({ projectId: project.id, title: 'Eligible terminal ticket' })
+    patchTicket(eligible.id, { status: 'CANCELED' })
+    const eligiblePath = getTicketWorktreeEntryPath(project.folderPath, eligible.externalId)
+    const partial = await deleteProjectWorktrees(project.folderPath)
+    expect(partial.skipped).toEqual(skipped)
+    expect(partial.freedBytes).toBeGreaterThan(0)
+    expect(existsSync(eligiblePath)).toBe(false)
     expect(readFileSync(resolve(worktreePath, 'blocked.env'), 'utf8')).toBe('keep me\n')
 
     rmSync(resolve(worktreePath, 'blocked.env'))
-    await expect(deleteProjectWorktrees(project.folderPath)).resolves.toEqual({ freedBytes: expect.any(Number) })
+    await expect(deleteProjectWorktrees(project.folderPath)).resolves.toEqual({ freedBytes: expect.any(Number), skipped: [] })
     expect(existsSync(worktreePath)).toBe(false)
   })
 })

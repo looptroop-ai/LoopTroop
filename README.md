@@ -83,9 +83,10 @@ writes the private `.ticket/runtime/cancellation-pending.json` marker before
 cleanup; missing means no pending stop, while malformed or unreadable content
 fails closed and blocks coding. This cancellation marker records the stop
 request but does not identify or recover a remote session. Cleanup removes it
-only after terminal cleanup through the contained ticket-file boundary. If
-both the database and ownership marker storage are unavailable, only the
-current process can guard the session, so a restart cannot claim recovery.
+only after terminal cleanup through the contained ticket-file boundary, or
+after a CODING Retry has confirmed the previous stop and safely recovered its
+bead. If both the database and ownership marker storage are unavailable, only
+the current process can guard the session, so a restart cannot claim recovery.
 
 ### Client state and history
 
@@ -363,7 +364,10 @@ This cycle repeats until all tests pass or retry limits are reached. **This can 
 
 A new bead stays pending until its reset commit has been recorded. If that read
 fails or the ticket is canceled while it runs, no coding session starts; Retry
-can attempt the checkpoint again without inventing a reset target.
+can attempt the checkpoint again without inventing a reset target. If the
+checkpoint was recorded but the status write was interrupted, Retry can also
+safely reset that still-pending bead from its recorded anchor; a pending bead
+without either marker remains untouched.
 
 If startup finds an orphan YAML or whole-file JSONL temp without its matching proof, including an empty JSONL temp, it warns and leaves the temp unpromoted for inspection. Recovery blocks startup only when an in-progress fallback's `.recovery` ownership or completeness cannot be verified; that typed diagnostic appears before projections, ticket hydration, or execution timers, with the affected files preserved. LoopTroop does not guess or silently promote an uncertain write.
 
@@ -378,8 +382,10 @@ untracked entries in a real worktree and preserves user files; only its own
 `.ticket/` and `.looptroop/` roots are eligible for removal. A pre-start ticket
 skeleton is checked directly instead of inheriting ignore rules from the parent
 repository, and only its `.ticket/` root is eligible. The Free Disk Space action
-uses this mode for completed and canceled ticket worktrees, so an ignored file
-such as a local environment file stops that cleanup and remains in place. If
+uses this mode for completed and canceled ticket worktrees: protected worktrees
+are skipped and reported with the reason, while eligible worktrees are removed.
+An ignored file such as a local environment file therefore remains in place
+without preventing other cleanup. If
 Git yields while a worktree is being removed, a replacement directory is left
 alone. The daemon also waits for detached Git and GitHub children during
 shutdown, and startup recovery refuses to overwrite a target that has advanced

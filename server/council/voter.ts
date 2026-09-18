@@ -470,7 +470,12 @@ export async function conductVoting(
       if (!trackedSessionId) {
         const waitOutcome = await waitForCouncilSession(sessionReady, executionSettled)
         trackedSessionId = findTrackedSession()
-        if (!trackedSessionId) return waitOutcome === 'execution_settled'
+        if (!trackedSessionId) {
+          if (waitOutcome !== 'execution_settled') return false
+          return sessionOwnership && sessionManager
+            ? !sessionManager.hasUnresolvedSessionOwnership(sessionOwnership.ticketId)
+            : true
+        }
       }
       sessionId = trackedSessionId
       return confirmCouncilSessionStopped(adapter, sessionManager, trackedSessionId, 'voter')

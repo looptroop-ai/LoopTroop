@@ -1,22 +1,22 @@
 import { lstatSync, realpathSync, readdirSync, rmSync, unlinkSync, type Stats } from 'node:fs'
-import { GIT_MUTATION_TIMEOUT_MS, runGitMutationOrThrow, runGitSync } from './runCommand'
+import { GIT_MUTATION_TIMEOUT_MS, RunCommandTimeoutError, runGitMutationOrThrow, runGitSync } from './runCommand'
 import { dirname, join, resolve } from 'node:path'
 import { makeOwnerWritableRecursive } from '../io/removal'
 import { ContainedPathError, resolveContainedPath } from '../lib/containedPath'
 import { classifyWorktreePath, normalizeRepoPath } from './worktreeChanges'
 
-type EntryIdentity = { dev: number; ino: number; birthtimeMs: number }
+type EntryIdentity = { dev: bigint; ino: bigint; birthtimeNs: bigint }
 
-function entryIdentity(stats: Stats): EntryIdentity {
+function entryIdentity(stats: { dev: bigint; ino: bigint; birthtimeNs: bigint }): EntryIdentity {
   return {
-    dev: Number(stats.dev),
-    ino: Number(stats.ino),
-    birthtimeMs: Number(stats.birthtimeMs),
+    dev: stats.dev,
+    ino: stats.ino,
+    birthtimeNs: stats.birthtimeNs,
   }
 }
 
 function readDirectoryIdentity(path: string): EntryIdentity {
-  const stats = lstatSync(path)
+  const stats = lstatSync(path, { bigint: true })
   if (!stats.isDirectory()) throw new ContainedPathError(`Managed worktrees root is not a directory: ${path}`)
   return entryIdentity(stats)
 }
@@ -24,7 +24,7 @@ function readDirectoryIdentity(path: string): EntryIdentity {
 function sameEntryIdentity(left: EntryIdentity, right: EntryIdentity): boolean {
   return left.dev === right.dev
     && left.ino === right.ino
-    && left.birthtimeMs === right.birthtimeMs
+    && left.birthtimeNs === right.birthtimeNs
 }
 
 /** Cleanup must not enumerate an alias for either managed directory. */
@@ -86,6 +86,13 @@ function holdsOnlyTicketSkeleton(worktreePath: string): boolean {
   return entries.every((entry) => entry.name === '.ticket' && entry.isDirectory() && !entry.isSymbolicLink())
 }
 
+/** Shared fail-closed guard for non-Git ticket skeleton cleanup. */
+export function requireSkeletonOnly(worktreePath: string): void {
+  if (!holdsOnlyTicketSkeleton(worktreePath)) {
+    throw new Error(`Refusing to remove a non-Git worktree containing files outside its .ticket skeleton: ${worktreePath}`)
+  }
+}
+
 function readIgnoredWorktreePaths(worktreePath: string): string[] {
   const result = runGitSync(worktreePath, [
     'ls-files',
@@ -113,8 +120,8 @@ export function getIgnoredWorktreePaths(worktreePath: string): string[] {
 /** Refuse conservative cleanup when ignored user files would otherwise be deleted. */
 export function assertNoIgnoredWorktreeFiles(worktreePath: string): void {
   if (!isOwnGitWorktree(worktreePath)) {
-    if (holdsOnlyTicketSkeleton(worktreePath)) return
-    throw new Error(`Refusing to remove a non-Git worktree containing files outside its .ticket skeleton: ${worktreePath}`)
+    requireSkeletonOnly(worktreePath)
+    return
   }
   const unsafe = readIgnoredWorktreePaths(worktreePath)
     .filter((path) => classifyWorktreePath(path, { untracked: true }).category !== 'looptroopExcluded')
@@ -125,6 +132,13 @@ export function assertNoIgnoredWorktreeFiles(worktreePath: string): void {
 
 async function runGitCommand(projectRoot: string, args: string[]): Promise<void> {
   await runGitMutationOrThrow(projectRoot, args, { timeoutMs: GIT_MUTATION_TIMEOUT_MS })
+}
+
+function isUnverifiedTimeout(error: unknown): boolean {
+  if (error instanceof RunCommandTimeoutError) return true
+  if (typeof error !== 'object' || error === null) return false
+  const candidate = error as { code?: unknown; timedOut?: unknown }
+  return candidate.code === 'ETIMEDOUT' || candidate.timedOut === true
 }
 
 /**
@@ -160,10 +174,17 @@ export async function removeWorktree({
     return
   }
   resolveContainedPath(projectRoot, worktreePath)
-  const worktreeIdentity = entryIdentity(stats)
+  const initialIdentityStats = lstatSync(worktreePath, { bigint: true })
+  if (initialIdentityStats.isSymbolicLink()) {
+    // The path changed between the first lstat and identity capture. It is
+    // still safe to remove this alias, never its destination.
+    unlinkSync(worktreePath)
+    return
+  }
+  const worktreeIdentity = entryIdentity(initialIdentityStats)
   if (preserveIgnoredFiles) {
     try {
-      const currentStats = lstatSync(worktreePath)
+      const currentStats = lstatSync(worktreePath, { bigint: true })
       if (!sameEntryIdentity(worktreeIdentity, entryIdentity(currentStats))) {
         throw new ContainedPathError('Worktree target changed during removal')
       }
@@ -175,10 +196,25 @@ export async function removeWorktree({
 
   makeOwnerWritableRecursive(worktreePath)
 
+  // chmod/chown should not change the generation identity. Keep comparing the
+  // original precise birth time instead of refreshing it after our own
+  // mutation: accepting a changed birth time would let an inode-reused
+  // replacement become the generation this cleanup is allowed to delete.
+  const writableStats = lstatSync(worktreePath, { bigint: true })
+  if (writableStats.isSymbolicLink()) throw new ContainedPathError('Worktree target changed during removal')
+  const writableIdentity = entryIdentity(writableStats)
+  if (!sameEntryIdentity(worktreeIdentity, writableIdentity)) {
+    throw new ContainedPathError('Worktree target changed during removal')
+  }
+
   let gitRemovalFailed = false
   try {
     await runGit(['worktree', 'remove', '--force', worktreePath])
-  } catch {
+  } catch (error) {
+    // A timeout does not prove whether Git removed the registered worktree or
+    // whether a hook/filter is still mutating it. Preserve the target and let
+    // the caller retry after it has verified process state.
+    if (isUnverifiedTimeout(error)) throw error
     gitRemovalFailed = true
   }
 
@@ -191,7 +227,7 @@ export async function removeWorktree({
   }
   if (preserveIgnoredFiles) {
     try {
-      const currentStats = lstatSync(worktreePath)
+      const currentStats = lstatSync(worktreePath, { bigint: true })
       if (!sameEntryIdentity(worktreeIdentity, entryIdentity(currentStats))) {
         throw new ContainedPathError('Worktree target changed during removal')
       }
@@ -202,7 +238,7 @@ export async function removeWorktree({
   }
 
   try {
-    const currentStats = lstatSync(worktreePath)
+    const currentStats = lstatSync(worktreePath, { bigint: true })
     if (!sameEntryIdentity(worktreeIdentity, entryIdentity(currentStats))) {
       throw new ContainedPathError('Worktree target changed during removal')
     }

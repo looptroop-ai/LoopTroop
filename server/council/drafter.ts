@@ -368,7 +368,12 @@ export async function generateDrafts(
         // prompt itself before attempting the remote stop.
         const waitOutcome = await waitForCouncilSession(sessionReady, executionSettled)
         trackedSessionId = findTrackedSession()
-        if (!trackedSessionId) return waitOutcome === 'execution_settled'
+        if (!trackedSessionId) {
+          if (waitOutcome !== 'execution_settled') return false
+          return runtimeOptions?.ticketId && sessionManager
+            ? !sessionManager.hasUnresolvedSessionOwnership(runtimeOptions.ticketId)
+            : true
+        }
       }
       sessionId = trackedSessionId
       return confirmCouncilSessionStopped(adapter, sessionManager, trackedSessionId, 'drafter')

@@ -219,6 +219,19 @@ function hasCurrentSessionOwnership(
 }
 
 /**
+ * Fail closed when council cleanup has no session id to abort.
+ *
+ * A prompt can finish its local promise while its session-create callback is
+ * still publishing ownership. The absence of a tracked id is therefore proof
+ * of nothing until every ticket-scoped ownership store is readable and empty.
+ */
+export function hasUnresolvedSessionOwnership(ticketId: string): boolean {
+  const context = getTicketContext(ticketId)
+  if (!context) return true
+  return hasCurrentSessionOwnership(canonicalOwnershipTicketId(context), context)
+}
+
+/**
  * Keep remote ownership discoverable when the normal Drizzle insert itself
  * failed. The project database is already the restart source of truth, so a
  * direct SQLite retry is deliberately limited to the same existing table — it
@@ -385,6 +398,10 @@ export function reactivateOpenCodeSessionForContinuation(
 
 export class SessionManager {
   constructor(private adapter: OpenCodeAdapter) {}
+
+  hasUnresolvedSessionOwnership(ticketId: string): boolean {
+    return hasUnresolvedSessionOwnership(ticketId)
+  }
 
   async createSessionForPhase(
     ticketId: string,

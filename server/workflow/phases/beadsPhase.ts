@@ -907,8 +907,15 @@ export async function recoverCodingBeadWithReset(
     ? getNextBead(beads)
     : null
   const failedBead = [...candidates].sort(compareBeadRecoveryOrder)[0] ?? (
-    pendingUnstartedBead && !pendingUnstartedBead.startedAt
-      && (pendingUnstartedBead.beadStartCommit === null || pendingUnstartedBead.beadStartCommit === undefined)
+    pendingUnstartedBead && (
+      // A checkpoint can be persisted after the bead has acquired its
+      // startedAt but before the status flips to in_progress. A usable anchor
+      // makes that pending bead just as safely resettable as an interrupted
+      // in-progress bead; only the never-started/no-anchor case skips reset.
+      Boolean(pendingUnstartedBead.beadStartCommit)
+      || (!pendingUnstartedBead.startedAt
+        && (pendingUnstartedBead.beadStartCommit === null || pendingUnstartedBead.beadStartCommit === undefined))
+    )
       ? pendingUnstartedBead
       : undefined
   )

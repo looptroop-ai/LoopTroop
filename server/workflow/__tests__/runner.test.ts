@@ -3,6 +3,7 @@ import { afterEach, describe, expect, it, vi } from 'vitest'
 import type { TicketContext } from '../../machines/types'
 import { ticketMachine } from '../../machines/ticketMachine'
 import { attachWorkflowRunner } from '../runner'
+import * as questionWindows from '../questionWindows'
 import { phaseIntermediate, runningPhases, ticketAbortControllers } from '../phases'
 import { OpenCodeUnavailableError, TicketWorkspaceNotInitializedError } from '../../lib/workflowErrors'
 import { TEST, makeTicketContext } from '../../test/factories'
@@ -447,13 +448,70 @@ describe('attachWorkflowRunner', () => {
     await vi.waitFor(() => expect(abortTicketSessionsMock).toHaveBeenCalledTimes(1))
     await vi.waitFor(() => expect(hasPendingSessionContinuationForTicketPhase(TEST.ticketId, 'CODING')).toBe(true))
 
-    // Let the first cleanup promise clear its in-flight guard before asking
-    // the runner to process the same terminal snapshot again.
-    await new Promise((resolve) => setTimeout(resolve, 0))
-    attachWorkflowRunner(TEST.ticketId, actor, vi.fn())
+    // The retry timer owns the next attempt; a repeated terminal snapshot must
+    // not bypass its bounded backoff while that timer is still armed.
     await vi.waitFor(() => expect(abortTicketSessionsMock).toHaveBeenCalledTimes(2))
     await vi.waitFor(() => expect(hasPendingSessionContinuationForTicketPhase(TEST.ticketId, 'CODING')).toBe(false))
     actor.stop()
+  })
+
+  it('redrives a failed cancel marker before sending CANCEL from a live phase', async () => {
+    vi.useFakeTimers()
+    try {
+      isTicketCancellationPendingMock.mockReturnValue(true)
+      abortTicketSessionsMock
+        .mockResolvedValueOnce(false)
+        .mockResolvedValueOnce(true)
+        .mockResolvedValue(true)
+      const actor = createSnapshotActor('CODING', { status: 'CODING' })
+      const sendEvent = vi.fn((event) => actor.send(event))
+
+      actor.start()
+      attachWorkflowRunner(TEST.ticketId, actor, sendEvent)
+      expect(handleCodingMock).not.toHaveBeenCalled()
+
+      await vi.advanceTimersByTimeAsync(250)
+      expect(abortTicketSessionsMock).toHaveBeenCalledTimes(1)
+      expect(actor.getSnapshot().value).toBe('CODING')
+
+      await vi.advanceTimersByTimeAsync(500)
+      await vi.waitFor(() => expect(abortTicketSessionsMock).toHaveBeenCalledTimes(3))
+      expect(sendEvent).toHaveBeenCalledWith({ type: 'CANCEL' })
+      expect(actor.getSnapshot().value).toBe('CANCELED')
+      actor.stop()
+    } finally {
+      vi.useRealTimers()
+    }
+  })
+
+  it('does not send stale CANCEL after explicit Retry clears the marker during cleanup', async () => {
+    vi.useFakeTimers()
+    try {
+      const clearWindows = vi.spyOn(questionWindows, 'clearTicketWindows')
+      let cancellationPending = true
+      isTicketCancellationPendingMock.mockImplementation(() => cancellationPending)
+      abortTicketSessionsMock.mockImplementationOnce(async () => {
+        // Model the explicit Retry route finishing its stop/reset hand-off
+        // while this older cleanup pass is still awaiting the session stop.
+        cancellationPending = false
+        return true
+      })
+      const actor = createSnapshotActor('CODING', { status: 'CODING' })
+      const sendEvent = vi.fn((event) => actor.send(event))
+
+      actor.start()
+      attachWorkflowRunner(TEST.ticketId, actor, sendEvent)
+      expect(handleCodingMock).not.toHaveBeenCalled()
+
+      await vi.advanceTimersByTimeAsync(250)
+      await vi.waitFor(() => expect(abortTicketSessionsMock).toHaveBeenCalledOnce())
+      expect(sendEvent).not.toHaveBeenCalledWith({ type: 'CANCEL' })
+      expect(clearWindows).not.toHaveBeenCalled()
+      expect(actor.getSnapshot().value).toBe('CODING')
+      actor.stop()
+    } finally {
+      vi.useRealTimers()
+    }
   })
 
   it('continues CODING after a bead-complete self-transition', async () => {

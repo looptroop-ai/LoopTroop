@@ -825,7 +825,21 @@ export function skipAllInterviewQuestionsToApproval(
   } else {
     persistInterviewSession(ticketId, finalizedSnapshot)
   }
-  writeTicketFile(ticketId, 'interview.yaml', canonicalInterview)
+  try {
+    writeTicketFile(ticketId, 'interview.yaml', canonicalInterview)
+  } catch (error) {
+    if (options.claimToken) {
+      persistInterviewSessionIfCurrent(
+        ticketId,
+        snapshotFingerprint(finalizedSnapshot),
+        snapshot,
+        options.claimToken,
+      )
+    } else {
+      persistInterviewSession(ticketId, snapshot)
+    }
+    throw error
+  }
   recordInterviewSkipReceipts({
     ticketId,
     externalId,
@@ -1808,21 +1822,24 @@ export async function handleInterviewQABatch(
   const currentBatch = snapshot.currentBatch
   const answeredSnapshot = recordBatchAnswers(snapshot, batchAnswers, selectedOptions, skipReasons)
 
-  // The batch is committed the moment its answers land in the snapshot, so this
-  // is where the skips become history — including the implicit ones, where the
-  // person submitted a question blank rather than clicking Skip.
-  const batchSkipActionId = recordInterviewSkipReceipts({
-    ticketId,
-    externalId,
-    ticketStatusBefore: ticket?.status ?? 'WAITING_INTERVIEW_ANSWERS',
-    surface: 'interview_question',
-    snapshot: answeredSnapshot,
-    questionIds: currentBatch.questions.map((question) => question.id),
-    batchNumber: currentBatch.batchNumber,
-  })
-  if (skipReceipt) {
-    if (batchSkipActionId) skipReceipt.actionId = batchSkipActionId
-    else delete skipReceipt.actionId
+  // Record receipts immediately after the matching snapshot commit. Keeping
+  // the write behind the CAS means a rejected coverage submission cannot leave
+  // skip history for an answer state that never became authoritative.
+  const recordBatchSkipReceipt = () => {
+    const actionId = recordInterviewSkipReceipts({
+      ticketId,
+      externalId,
+      ticketStatusBefore: ticket?.status ?? 'WAITING_INTERVIEW_ANSWERS',
+      surface: 'interview_question',
+      snapshot: answeredSnapshot,
+      questionIds: currentBatch.questions.map((question) => question.id),
+      batchNumber: currentBatch.batchNumber,
+    })
+    if (skipReceipt) {
+      if (actionId) skipReceipt.actionId = actionId
+      else delete skipReceipt.actionId
+    }
+    return actionId
   }
 
   if (isMockOpenCodeMode()) {
@@ -1847,6 +1864,7 @@ export async function handleInterviewQABatch(
       )
       const updatedSnapshot = recordPreparedBatch(answeredSnapshot, followUpBatch)
       persistInterviewSession(ticketId, updatedSnapshot)
+      recordBatchSkipReceipt()
       return followUpBatch
     }
 
@@ -1856,6 +1874,7 @@ export async function handleInterviewQABatch(
       writeCanonicalInterview(ticket?.externalId ?? ticketId, paths.ticketDir, completedSnapshot)
     }
     persistInterviewSession(ticketId, completedSnapshot)
+    recordBatchSkipReceipt()
     return {
       questions: [],
       progress: currentBatch.progress,
@@ -1876,10 +1895,14 @@ export async function handleInterviewQABatch(
     if (!claimToken || !persistInterviewSessionIfCurrent(ticketId, expectedFingerprint, completedSnapshot, claimToken)) {
       throw new Error('Coverage interview batch changed or its claim expired before processing completed')
     }
+    let batchSkipActionId: string | null = null
     try {
+      batchSkipActionId = recordBatchSkipReceipt()
       writeCanonicalInterview(externalId, paths.ticketDir, completedSnapshot)
     } catch (error) {
       persistInterviewSessionIfCurrent(ticketId, snapshotFingerprint(completedSnapshot), snapshot, claimToken)
+      if (batchSkipActionId) deleteSkipReceiptsForAction(ticketId, batchSkipActionId)
+      if (skipReceipt) delete skipReceipt.actionId
       throw error
     }
     // Clean up stale PROM4 session for the coverage loop re-entry
@@ -1928,6 +1951,7 @@ export async function handleInterviewQABatch(
   if (!needsClaimedPersistence) {
     persistInterviewSession(ticketId, answeredSnapshot)
   }
+  recordBatchSkipReceipt()
   if (skipReceipt) skipReceipt.persistedUpdatedAt = answeredSnapshot.updatedAt
   if (skipReceipt) skipReceipt.persistedSnapshotFingerprint = snapshotFingerprint(answeredSnapshot)
   if (skipReceipt) onPersisted?.(skipReceipt)

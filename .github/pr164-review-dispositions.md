@@ -139,7 +139,7 @@ closed.
 | 5719612146.1 | Preserved quarantine symlink retry is unreachable. | correct — fixed by the quarantine-path helper and regression. |
 | 5719612146.2-.4 | Project attach error mapping, human-vs-NUL candidate display, and launcher allowlist. | deferred — other route/integration/recovery ownership. |
 | 5719612146.open-1 | Symlinked root aliases are rejected by candidate filtering. | not-applicable — intentional supplied-root policy. |
-| 5719612146.open-2 | A source-only torn marker with no target blocks startup. | deferred — fail-closed recovery policy remains; no safe automatic owner can be inferred. |
+| 5719612146.open-2 | A source-only torn marker with no target blocks startup. | correct — when the target is absent, recovery retires the unusable marker and republishes the already validated temp with an exclusive create; an existing target still remains blocked because no owner can be inferred. Regression coverage exercises both cases. |
 | 5720118916.1, .5 | SSH probe overhead and allowlist maintenance. | deferred/not-applicable — performance/documentation follow-ups. |
 | 5720118916.2 | Synchronous append locking can block under contention. | not-applicable — bounded, near-zero-contention path; no new cross-process writer contract. |
 | 5720118916.3-.4 | Missing `@{` test and relative-folder-path behavior. | deferred/correct — test gap is separate; relative paths intentionally fail closed and routes map them. |
@@ -168,9 +168,10 @@ preservation of a later same-sized change at its recorded retry destination.
 
 Focused checks on this branch included:
 
-- The latest focused rerun covered five files and 90 tests: worktree removal
-  16, recovery 22, and the run-command, runtime-close, and Manual QA
-  checkpoint regressions; all passed.
+- The latest focused rerun covered six files and 127 tests: run-command and
+  fallback (28), worktree removal, recovery, GitOps, and runtime-close; all
+  passed. It includes the Windows-shaped taskkill cleanup and already-closed
+  server retry regressions.
 - The cleanup follow-up reran worktree removal with 19 passing tests, the
   project-router read-only-cache regression (1/1), and project storage cleanup
   (4/4), including parent-ignored and skeleton-owned `.env` cases.

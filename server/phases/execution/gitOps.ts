@@ -116,7 +116,16 @@ export async function commitBeadChanges(
   // `AD` means a staged scratch file was deleted from disk. `git add` is still
   // needed to clear its stale index entry, but there is no path left for the
   // commit pathspec to name.
-  const commitEntries = committableEntries.filter(entry => !(entry.indexStatus === 'A' && entry.worktreeStatus === 'D'))
+  // `RD`/`CD` are the other path-with-no-bytes cases: a staged rename or copy
+  // destination was deleted before the bead commit. For a rename, the parser
+  // also emits the source as a staged deletion, which is the path the commit
+  // must name; for a copy there is no source deletion. The missing destination
+  // still stays in `filesToStage` below so Git clears its stale index entry.
+  const isDeletedStagedRenameOrCopyDestination = (entry: typeof committableEntries[number]) =>
+    (entry.indexStatus === 'R' || entry.indexStatus === 'C') && entry.worktreeStatus === 'D'
+  const commitEntries = committableEntries.filter(entry =>
+    !(entry.indexStatus === 'A' && entry.worktreeStatus === 'D')
+    && !isDeletedStagedRenameOrCopyDestination(entry))
   const committableFiles = commitEntries.map(entry => entry.path)
   // A path git already records as deleted in the index — the source half of a
   // staged rename, or a `git rm` — exists in neither the worktree nor the

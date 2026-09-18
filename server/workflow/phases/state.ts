@@ -139,13 +139,15 @@ export function isTicketCancellationPending(ticketId: string): boolean {
   }
 }
 
-function clearTicketCancellationPending(ticketId: string): void {
+export function clearTicketCancellationPending(ticketId: string): boolean {
   try {
-    removeTicketFile(ticketId, CANCELLATION_PENDING_ARTIFACT)
+    if (!removeTicketFile(ticketId, CANCELLATION_PENDING_ARTIFACT)) return false
   } catch (error) {
     console.warn(`[workflow] Could not clear cancellation pending marker for ticket ${ticketId}:`, error)
+    return false
   }
   cancellationPendingTickets.delete(ticketId)
+  return true
 }
 
 /**

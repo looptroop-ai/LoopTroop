@@ -1,4 +1,4 @@
-import { afterAll, beforeEach, describe, expect, it } from 'vitest'
+import { afterAll, beforeEach, describe, expect, it, vi } from 'vitest'
 import { readFileSync } from 'node:fs'
 import { initializeDatabase } from '../../db/init'
 import { sqlite } from '../../db/index'
@@ -14,12 +14,27 @@ import {
   serializeInterviewSessionSnapshot,
 } from '../../phases/interview/sessionState'
 import { attachProject } from '../../storage/projects'
-import { createTicket, getTicketPaths, upsertLatestPhaseArtifact } from '../../storage/tickets'
+import { createTicket, getLatestPhaseArtifact, getTicketPaths, upsertLatestPhaseArtifact } from '../../storage/tickets'
 import { createFixtureRepoManager } from '../../test/fixtureRepo'
 import { initializeTicket } from '../../ticket/initialize'
-import { skipAllInterviewQuestionsToApproval } from '../runner'
+import {
+  claimInterviewBatch,
+  handleInterviewQABatch,
+  releaseInterviewBatch,
+  skipAllInterviewQuestionsToApproval,
+} from '../runner'
 import { listSkipEvents } from '../skipReceipts'
 import { countSkipEvents } from '@shared/skipReceipt'
+import * as atomicWrite from '../../io/atomicWrite'
+
+const { isMockOpenCodeModeMock } = vi.hoisted(() => ({
+  isMockOpenCodeModeMock: vi.fn(() => false),
+}))
+
+vi.mock('../../opencode/factory', async (importOriginal) => ({
+  ...await importOriginal<typeof import('../../opencode/factory')>(),
+  isMockOpenCodeMode: isMockOpenCodeModeMock,
+}))
 
 const repoManager = createFixtureRepoManager({
   templatePrefix: 'looptroop-interview-skip-reason-',
@@ -69,6 +84,22 @@ function buildSnapshotWithSecondBatch() {
   }, 'prom4', answered)
 
   return recordPreparedBatch(answered, secondBatch)
+}
+
+function buildCoverageBatchSnapshot() {
+  const base = createInterviewSessionSnapshot({
+    winnerId: 'openai/gpt-5-mini',
+    compiledQuestions: [{ id: 'Q01', phase: 'Foundation', question: 'What outcome matters most?' }],
+    maxInitialQuestions: 1,
+  })
+  return recordPreparedBatch(base, buildPersistedBatch({
+    questions: [{ id: 'CFU1', phase: 'Foundation', question: 'What outcome matters most?' }],
+    progress: { current: 1, total: 1 },
+    isComplete: false,
+    isFinalFreeForm: false,
+    aiCommentary: 'Coverage follow-up.',
+    batchNumber: 1,
+  }, 'coverage', base))
 }
 
 async function makeStartedTicket() {
@@ -231,5 +262,62 @@ describe('interview skip reasons', () => {
     skipAllInterviewQuestionsToApproval(ticket.id, { Q03: '' }, { bulkReason: 'Shipping before the demo.' })
 
     expect(listSkipEvents(ticket.id)).toHaveLength(afterFirst)
+  })
+
+  it('does not write coverage skip receipts when the snapshot CAS is rejected', async () => {
+    const ticket = await makeStartedTicket()
+    const snapshot = buildCoverageBatchSnapshot()
+    upsertLatestPhaseArtifact(
+      ticket.id,
+      INTERVIEW_SESSION_ARTIFACT,
+      'WAITING_INTERVIEW_ANSWERS',
+      serializeInterviewSessionSnapshot(snapshot),
+    )
+
+    await expect(handleInterviewQABatch(
+      ticket.id,
+      { CFU1: '' },
+      {},
+      { CFU1: 'Not needed.' },
+      undefined,
+      'stale-claim-token',
+    )).rejects.toThrow('changed or its claim expired')
+    expect(listSkipEvents(ticket.id)).toHaveLength(0)
+    expect(getLatestPhaseArtifact(ticket.id, INTERVIEW_SESSION_ARTIFACT)?.content)
+      .toBe(serializeInterviewSessionSnapshot(snapshot))
+  })
+
+  it('rolls back the coverage snapshot and receipts when canonical writing fails', async () => {
+    const ticket = await makeStartedTicket()
+    const snapshot = buildCoverageBatchSnapshot()
+    upsertLatestPhaseArtifact(
+      ticket.id,
+      INTERVIEW_SESSION_ARTIFACT,
+      'WAITING_INTERVIEW_ANSWERS',
+      serializeInterviewSessionSnapshot(snapshot),
+    )
+    const claimToken = claimInterviewBatch(ticket.id)
+    expect(claimToken).toBeTruthy()
+    const canonicalWrite = vi.spyOn(atomicWrite, 'safeAtomicWriteWithin').mockImplementation(() => {
+      throw new Error('canonical write failed')
+    })
+
+    try {
+      await expect(handleInterviewQABatch(
+        ticket.id,
+        { CFU1: '' },
+        {},
+        { CFU1: 'Not needed.' },
+        undefined,
+        claimToken!,
+      )).rejects.toThrow('canonical write failed')
+    } finally {
+      canonicalWrite.mockRestore()
+      releaseInterviewBatch(ticket.id, claimToken!)
+    }
+
+    expect(listSkipEvents(ticket.id)).toHaveLength(0)
+    expect(getLatestPhaseArtifact(ticket.id, INTERVIEW_SESSION_ARTIFACT)?.content)
+      .toBe(serializeInterviewSessionSnapshot(snapshot))
   })
 })

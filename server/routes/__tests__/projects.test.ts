@@ -857,6 +857,28 @@ describe('projectRouter project cleanup', () => {
     expect(payload.success).toBe(true)
   })
 
+  it('reports skipped terminal worktrees while cleaning eligible ones', async () => {
+    const repoDir = repoManager.createRepo()
+    const app = new Hono()
+    app.route('/api', projectRouter)
+    const project = attachProject({ folderPath: repoDir, name: 'Partial Cleanup', shortname: 'PC' })
+    const protectedTicket = createTicket({ projectId: project.id, title: 'Protected skeleton' })
+    const eligibleTicket = createTicket({ projectId: project.id, title: 'Eligible skeleton' })
+    for (const ticket of [protectedTicket, eligibleTicket]) patchTicket(ticket.id, { status: 'COMPLETED' })
+    const protectedPath = resolve(repoDir, '.looptroop', 'worktrees', protectedTicket.externalId)
+    writeFileSync(resolve(protectedPath, '.env'), 'keep this file\n')
+
+    const response = await app.request(`/api/projects/${project.id}/worktrees`, { method: 'DELETE' })
+    expect(response.status).toBe(200)
+    expect(await response.json()).toEqual({
+      success: true,
+      freedBytes: expect.any(Number),
+      skipped: [{ externalId: protectedTicket.externalId, reason: expect.any(String) }],
+    })
+    expect(readFileSync(resolve(protectedPath, '.env'), 'utf8')).toBe('keep this file\n')
+    expect(existsSync(resolve(repoDir, '.looptroop', 'worktrees', eligibleTicket.externalId))).toBe(false)
+  })
+
   it.runIf(process.platform !== 'win32')('deletes terminal worktrees containing read-only cache directories', async () => {
     const repoDir = repoManager.createRepo()
     addGithubOrigin(repoDir)

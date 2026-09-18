@@ -22,8 +22,8 @@ export function terminateProcessTree(
   child: ChildProcess,
   signal: NodeJS.Signals,
   platform: HostPlatform = currentPlatform(),
-): void {
-  if (!child.pid) return
+): ChildProcess | undefined {
+  if (!child.pid) return undefined
 
   if (platform === 'windows') {
     // `taskkill` lives in `%SystemRoot%\system32`; resolving it means the tree
@@ -33,12 +33,11 @@ export function terminateProcessTree(
     // caller's own liveness check is what reports that.
     const taskkill = findTrustedExecutablePath('taskkill')
     if (taskkill !== null) {
-      spawn(taskkill, ['/pid', String(child.pid), '/T', '/F'], { stdio: 'ignore' })
+      return spawn(taskkill, ['/pid', String(child.pid), '/T', '/F'], { stdio: 'ignore' })
         .on('error', () => undefined)
-      return
     }
     child.kill(signal)
-    return
+    return undefined
   }
 
   try {
@@ -46,6 +45,7 @@ export function terminateProcessTree(
   } catch {
     child.kill(signal)
   }
+  return undefined
 }
 
 /**

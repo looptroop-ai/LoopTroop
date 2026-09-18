@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest'
 import {
+  GIT_MUTATION_TIMEOUT_MS,
   GIT_DEFAULT_TIMEOUT_MS,
   NON_INTERACTIVE_GIT_ENV,
   runCommand,
@@ -7,9 +8,12 @@ import {
   runCommandSync,
   runGit,
   runGitBinarySync,
+  runGitMutation,
   runGitSync,
+  stopActiveCommands,
 } from '../runCommand'
-import { chmodSync, mkdirSync, writeFileSync } from 'node:fs'
+import { chmodSync, existsSync, mkdirSync, writeFileSync } from 'node:fs'
+import { execFileSync } from 'node:child_process'
 import { join } from 'node:path'
 import { makeTempDir, removeTempDir } from '../../test/tempDir'
 
@@ -63,6 +67,16 @@ describe('server/git/runCommand', () => {
     const result = await runCommand(node, script('setTimeout(() => {}, 60000)'), { timeoutMs: 200, log: false })
     expect(result.ok).toBe(false)
     expect(result.timedOut).toBe(true)
+  })
+
+  it('stops detached async commands during daemon shutdown', async () => {
+    const command = runCommand(node, script('setTimeout(() => {}, 60000)'), { timeoutMs: 60_000, log: false })
+    await stopActiveCommands()
+    const result = await command
+
+    expect(result.ok).toBe(false)
+    expect(result.timedOut).toBe(false)
+    expect(result.status === 0).toBe(false)
   })
 
   it('kills a child that ignores SIGTERM instead of waiting on it forever', async () => {
@@ -131,6 +145,59 @@ describe('server/git/runCommand', () => {
     expect(result.stdout).toBe('set:0')
   })
 
+  it('adds SSH BatchMode when SSH overrides are absent or undefined, preserving real overrides', () => {
+    const read = script('process.stdout.write(`${process.env.GIT_SSH_COMMAND ?? "<unset>"}:${process.env.GIT_SSH ?? "<unset>"}`)')
+    const defaultResult = runCommandSync(node, read, {
+      env: { GIT_SSH_COMMAND: undefined, GIT_SSH: undefined },
+      log: false,
+    })
+    expect(defaultResult.stdout).toContain('ssh -o BatchMode=yes')
+
+    expect(runCommandSync(node, read, {
+      env: { GIT_SSH_COMMAND: 'custom-ssh --identity', GIT_SSH: undefined },
+      log: false,
+    }).stdout).toBe('custom-ssh --identity:<unset>')
+    expect(runCommandSync(node, read, {
+      env: { GIT_SSH_COMMAND: undefined, GIT_SSH: 'custom-ssh', },
+      log: false,
+    }).stdout).toBe('<unset>:custom-ssh')
+  })
+
+  it.runIf(process.platform !== 'win32')('does not replace a repository core.sshCommand', () => {
+    const root = makeTempDir('run-command-ssh-config-')
+    try {
+      execFileSync('git', ['-C', root, 'init'], { stdio: 'pipe' })
+      const marker = join(root, 'ssh-wrapper-used')
+      const wrapper = join(root, 'ssh-wrapper.sh')
+      writeFileSync(wrapper, `#!/bin/sh\nprintf configured > "${marker}"\nexit 1\n`, { mode: 0o755 })
+      execFileSync('git', ['-C', root, 'config', 'core.sshCommand', `${wrapper} --configured`], { stdio: 'pipe' })
+
+      runGitSync(root, ['ls-remote', 'ssh://example.invalid/unused.git'], { log: false })
+
+      expect(existsSync(marker)).toBe(true)
+    } finally {
+      removeTempDir(root)
+    }
+  })
+
+  it.runIf(process.platform !== 'win32')('does not block the async runner while reading core.sshCommand', async () => {
+    const root = makeTempDir('run-command-async-ssh-config-')
+    try {
+      execFileSync('git', ['-C', root, 'init'], { stdio: 'pipe' })
+      const marker = join(root, 'ssh-wrapper-used')
+      const wrapper = join(root, 'ssh-wrapper.sh')
+      writeFileSync(wrapper, `#!/bin/sh\nprintf configured > "${marker}"\nexit 1\n`, { mode: 0o755 })
+      execFileSync('git', ['-C', root, 'config', 'core.sshCommand', `${wrapper} --configured`], { stdio: 'pipe' })
+
+      const result = await runGit(root, ['ls-remote', 'ssh://example.invalid/unused.git'], { log: false })
+
+      expect(result.ok).toBe(false)
+      expect(existsSync(marker)).toBe(true)
+    } finally {
+      removeTempDir(root)
+    }
+  })
+
   it('writes stdin and closes it', async () => {
     const echo = script('let d = ""; process.stdin.on("data", (c) => { d += c }); process.stdin.on("end", () => process.stdout.write(d))')
     expect((await runCommand(node, echo, { input: 'from-stdin', log: false })).stdout).toBe('from-stdin')
@@ -145,6 +212,97 @@ describe('server/git/runCommand', () => {
 
   it('defaults to the timeout the established runner used', () => {
     expect(GIT_DEFAULT_TIMEOUT_MS).toBe(30_000)
+    expect(GIT_MUTATION_TIMEOUT_MS).toBe(300_000)
+  })
+
+  it('turns a NUL git argv into a failure result instead of throwing', () => {
+    const root = makeTempDir('run-command-nul-')
+    try {
+      const result = runGitSync(root, ['show', `bad\0ref`], { log: false })
+      expect(result.ok).toBe(false)
+      expect(result.spawnError).toBeDefined()
+    } finally {
+      removeTempDir(root)
+    }
+  })
+
+  it.runIf(process.platform !== 'win32')('kills hook descendants before returning from a timed-out mutation', async () => {
+    const root = makeTempDir('run-command-mutation-')
+    try {
+      execFileSync('git', ['-C', root, 'init'], { stdio: 'pipe' })
+      execFileSync('git', ['-C', root, 'config', 'user.email', 'test@example.com'], { stdio: 'pipe' })
+      execFileSync('git', ['-C', root, 'config', 'user.name', 'Test'], { stdio: 'pipe' })
+      writeFileSync(join(root, 'file.txt'), 'initial\n')
+      execFileSync('git', ['-C', root, 'add', 'file.txt'], { stdio: 'pipe' })
+      execFileSync('git', ['-C', root, 'commit', '-m', 'initial'], { stdio: 'pipe' })
+      writeFileSync(join(root, 'file.txt'), 'changed\n')
+      const marker = join(root, 'hook-survived')
+      writeFileSync(
+        join(root, '.git', 'hooks', 'pre-commit'),
+        '#!/bin/sh\n(sleep 0.5; printf survived > "$LOOPTROOP_HOOK_MARKER") &\nsleep 60\n',
+        { mode: 0o755 },
+      )
+
+      const result = await runGitMutation(root, ['commit', '-m', 'slow hook'], {
+        timeoutMs: 100,
+        env: { LOOPTROOP_HOOK_MARKER: marker },
+        log: false,
+      })
+
+      expect(result.ok).toBe(false)
+      expect(result.timedOut).toBe(true)
+      expect(result.signal).toMatch(/SIGTERM|SIGKILL/)
+      expect(result.errorDetail).toContain('timed out after 0.1s')
+      expect(existsSync(join(root, '.git', 'index.lock'))).toBe(false)
+
+      // The old runner killed only Git, returned after its abandon grace, and
+      // let the background hook write this marker afterwards. Wait past the
+      // fixture's short delay so that regression is observable, while keeping
+      // the test bounded and isolated to its temporary repository.
+      await new Promise((resolve) => setTimeout(resolve, 800))
+      expect(existsSync(marker)).toBe(false)
+    } finally {
+      removeTempDir(root)
+    }
+  })
+
+  it.runIf(process.platform !== 'win32')('kills a redirected descendant while the timed-out leader remains live', async () => {
+    const root = makeTempDir('run-command-redirected-child-')
+    try {
+      const marker = join(root, 'redirected-child-survived')
+      const descendant = [
+        'const fs = require("node:fs")',
+        'process.on("SIGTERM", () => {})',
+        `setTimeout(() => fs.writeFileSync(${JSON.stringify(marker)}, 'survived'), 3000)`,
+      ].join(';')
+      const leader = [
+        "const { spawn } = require('node:child_process')",
+        `const child = spawn(${JSON.stringify(node)}, ['-e', ${JSON.stringify(descendant)}], { stdio: 'ignore' }); child.unref()`,
+        'process.on("SIGTERM", () => {})',
+        'setTimeout(() => {}, 60000)',
+      ].join(';')
+
+      const started = Date.now()
+      const result = await runCommand(node, ['-e', leader], {
+        timeoutMs: 300,
+        log: false,
+      })
+      const elapsed = Date.now() - started
+
+      expect(result.ok).toBe(false)
+      expect(result.timedOut).toBe(true)
+      expect(result.errorDetail).toContain('timed out after 0.3s')
+      expect(elapsed).toBeGreaterThanOrEqual(2_000)
+      await new Promise((resolve) => setTimeout(resolve, 1_000))
+
+      // The leader deliberately remains alive after SIGTERM, so its numeric
+      // process-group ownership is still fresh when escalation sends SIGKILL.
+      // A descendant that writes with redirected stdio must not survive that
+      // pre-close tree termination.
+      expect(existsSync(marker)).toBe(false)
+    } finally {
+      removeTempDir(root)
+    }
   })
 
   it.runIf(process.platform !== 'win32')('resolves the program against the environment the child gets', () => {

@@ -2,10 +2,12 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { appendLogEvent, clearTicketFingerprints, createLogEvent, shouldSkipLogEmission } from '../executionLog'
 import * as ticketsModule from '../../storage/tickets'
 import * as atomicAppendModule from '../../io/atomicAppend'
+import { mkdirSync, rmSync, symlinkSync, unlinkSync } from 'node:fs'
 import { resolve } from 'node:path'
+import { makeTempDir } from '../../test/tempDir'
 
-const mockGetTicketPaths = vi.spyOn(ticketsModule, 'getTicketPaths').mockReturnValue({
-  projectRoot: resolve('/tmp/test-project'),
+const defaultTicketPaths = {
+  projectRoot: resolve(process.cwd()),
   executionLogPath: resolve('/tmp/test-execution-log.jsonl'),
   debugLogPath: resolve('/tmp/test-execution-log.debug.jsonl'),
   aiLogPath: resolve('/tmp/test-execution-log.ai.jsonl'),
@@ -15,7 +17,8 @@ const mockGetTicketPaths = vi.spyOn(ticketsModule, 'getTicketPaths').mockReturnV
   executionSetupProfilePath: resolve('/tmp/test-ticket-dir/.ticket/runtime/execution-setup-profile.json'),
   baseBranch: 'main',
   beadsPath: resolve('/tmp/test-beads.jsonl'),
-})
+}
+const mockGetTicketPaths = vi.spyOn(ticketsModule, 'getTicketPaths').mockReturnValue(defaultTicketPaths)
 
 const mockAppend = vi.fn((_path: string, line: string) => ({
   offset: 0,
@@ -51,6 +54,7 @@ describe('appendLogEvent', () => {
 
   afterEach(() => {
     vi.useRealTimers()
+    if (defaultTicketPaths) mockGetTicketPaths.mockReturnValue(defaultTicketPaths)
   })
 
   it('does not persist streaming upserts to disk', () => {
@@ -202,6 +206,29 @@ describe('appendLogEvent', () => {
 
     expect(mockAppend).toHaveBeenCalledOnce()
     expect(mockAppend.mock.calls[0]?.[0]).toBe(resolve('/tmp/test-execution-log.jsonl'))
+  })
+
+  it('canonicalizes a symlinked project root before deriving the contained log path', () => {
+    const realRoot = makeTempDir('looptroop-execution-log-root-')
+    const aliasRoot = `${realRoot}-alias`
+    const runtime = resolve(realRoot, 'runtime')
+    mkdirSync(runtime, { recursive: true })
+    symlinkSync(realRoot, aliasRoot, process.platform === 'win32' ? 'junction' : 'dir')
+    const logPath = resolve(runtime, 'execution-log.jsonl')
+    mockGetTicketPaths.mockReturnValue({
+      ...defaultTicketPaths!,
+      projectRoot: aliasRoot,
+      executionLogPath: logPath,
+    })
+
+    try {
+      appendLogEvent('1:T-42', 'info', 'CODING', 'canonical root', { timestamp: '2026-03-13T12:00:00.000Z' })
+      expect(mockAppend).toHaveBeenCalledOnce()
+      expect(mockAppend.mock.calls[0]?.[0]).toBe(logPath)
+    } finally {
+      unlinkSync(aliasRoot)
+      rmSync(realRoot, { recursive: true, force: true })
+    }
   })
 
   it('persists direct debug events to the debug log with raw payload fields', () => {

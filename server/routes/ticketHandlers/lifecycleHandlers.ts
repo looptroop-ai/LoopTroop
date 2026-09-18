@@ -414,7 +414,7 @@ async function handleCancelTicketLocked(c: Context, options: z.infer<typeof canc
   try {
     if (isDisplayOnlyMockTicket(ticket)) {
       if (deleteTicket) {
-        deleteStoredTicket(ticketId)
+        await deleteStoredTicket(ticketId)
       } else {
         patchTicket(ticketId, {
           status: 'CANCELED',
@@ -436,7 +436,7 @@ async function handleCancelTicketLocked(c: Context, options: z.infer<typeof canc
         stopActor(ticketId)
         clearContextCache(ticketId)
         emitRoutePhaseLog(ticketId, resolveStoredWorkflowPhase(ticket.status), 'info', `Deleting ticket ${ticket.externalId}: removing worktree, branch, and database records.`)
-        deleteStoredTicket(ticketId)
+        await deleteStoredTicket(ticketId)
       }
     }
     if (!deleteTicket && cancelReason) {
@@ -474,7 +474,7 @@ async function handleCancelTicketLocked(c: Context, options: z.infer<typeof canc
 
   if (deleteContent || deleteLog) {
     try {
-      cleanupCanceledTicketData(ticketId, { deleteContent, deleteLog })
+      await cleanupCanceledTicketData(ticketId, { deleteContent, deleteLog })
     } catch (err) {
       logTicketOperationError(ticketId, 'Failed to cleanup canceled ticket', err)
     }
@@ -713,7 +713,7 @@ export async function handleRetryTicket(c: Context) {
       const recoveredBead = (userRetryNote === undefined
         ? recoverSuccessfulExecutionCheckpointForFinalization(ticketId)
         : null)
-        ?? recoverCodingBeadWithReset(ticketId, {
+        ?? await recoverCodingBeadWithReset(ticketId, {
           worktreePath: paths.worktreePath,
           requireReset: true,
           userRetryNote,

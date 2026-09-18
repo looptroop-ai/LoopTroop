@@ -1,5 +1,6 @@
-import { beforeEach, describe, expect, it, vi } from 'vitest'
+import { afterAll, beforeEach, describe, expect, it, vi } from 'vitest'
 import { resolve } from 'node:path'
+import { makeTempDir, removeTempDir } from '../../test/tempDir'
 
 vi.mock('../../sse/broadcaster', () => ({
   broadcaster: {
@@ -11,17 +12,24 @@ import * as ticketsModule from '../../storage/tickets'
 import * as atomicAppendModule from '../../io/atomicAppend'
 import { broadcaster } from '../../sse/broadcaster'
 
+const projectRoot = makeTempDir('looptroop-opencode-log-canonicalization-')
+const executionLogPath = resolve(projectRoot, 'execution-log.jsonl')
+const debugLogPath = resolve(projectRoot, 'execution-log.debug.jsonl')
+const aiLogPath = resolve(projectRoot, 'execution-log.ai.jsonl')
+
+afterAll(() => removeTempDir(projectRoot))
+
 vi.spyOn(ticketsModule, 'getTicketPaths').mockReturnValue({
-  projectRoot: resolve('/tmp/test-project'),
-  executionLogPath: resolve('/tmp/test-execution-log.jsonl'),
-  debugLogPath: resolve('/tmp/test-execution-log.debug.jsonl'),
-  aiLogPath: resolve('/tmp/test-execution-log.ai.jsonl'),
-  worktreePath: resolve('/tmp/test-worktree'),
-  ticketDir: resolve('/tmp/test-ticket-dir'),
-  executionSetupDir: resolve('/tmp/test-ticket-dir/.ticket/runtime/execution-setup'),
-  executionSetupProfilePath: resolve('/tmp/test-ticket-dir/.ticket/runtime/execution-setup-profile.json'),
+  projectRoot,
+  executionLogPath,
+  debugLogPath,
+  aiLogPath,
+  worktreePath: resolve(projectRoot, 'worktree'),
+  ticketDir: resolve(projectRoot, 'ticket-dir'),
+  executionSetupDir: resolve(projectRoot, 'ticket-dir/.ticket/runtime/execution-setup'),
+  executionSetupProfilePath: resolve(projectRoot, 'ticket-dir/.ticket/runtime/execution-setup-profile.json'),
   baseBranch: 'main',
-  beadsPath: resolve('/tmp/test-beads.jsonl'),
+  beadsPath: resolve(projectRoot, 'beads.jsonl'),
 })
 
 const mockAppend = vi.fn((_path: string, line: string) => ({
@@ -43,13 +51,13 @@ function getPersistedEntries() {
 
 function getNormalPersistedEntries() {
   return mockAppend.mock.calls
-    .filter(([logPath]) => logPath === resolve('/tmp/test-execution-log.jsonl'))
+    .filter(([logPath]) => logPath === executionLogPath)
     .map(([, payload]) => JSON.parse(payload))
 }
 
 function getAiPersistedEntries() {
   return mockAppend.mock.calls
-    .filter(([logPath]) => logPath === resolve('/tmp/test-execution-log.ai.jsonl'))
+    .filter(([logPath]) => logPath === aiLogPath)
     .map(([, payload]) => JSON.parse(payload))
 }
 

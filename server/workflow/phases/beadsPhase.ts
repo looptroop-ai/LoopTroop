@@ -876,7 +876,7 @@ export function writeTicketBeads(ticketId: string, beads: Bead[]) {
   syncTicketRuntimeProjection(ticketId)
 }
 
-export function recoverCodingBeadWithReset(
+export async function recoverCodingBeadWithReset(
   ticketId: string,
   options: {
     worktreePath: string
@@ -888,7 +888,7 @@ export function recoverCodingBeadWithReset(
       failureNote: string
     }
   },
-): Bead | null {
+): Promise<Bead | null> {
   const beads = readTicketBeads(ticketId)
   const candidates = options.onlyInProgress
     ? beads.filter((bead) => bead.status === 'in_progress')
@@ -904,7 +904,7 @@ export function recoverCodingBeadWithReset(
       throw new Error(`Cannot safely recover bead ${failedBead.id}: missing bead start commit`)
     }
   } else {
-    resetToBeadStart(options.worktreePath, failedBead.beadStartCommit, {
+    await resetToBeadStart(options.worktreePath, failedBead.beadStartCommit, {
       preservePaths: options.preservePaths ?? [...WORKTREE_RESET_PRESERVE_PATHS],
     })
   }

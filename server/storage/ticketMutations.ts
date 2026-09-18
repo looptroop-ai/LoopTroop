@@ -1,7 +1,8 @@
 import { and, desc, eq, isNull } from 'drizzle-orm'
 import { existsSync, rmSync } from 'fs'
 import { resolve } from 'node:path'
-import { runGitSyncOrThrow } from '../git/runCommand'
+import { runGitMutationOrThrow } from '../git/runCommand'
+import { assertSafeRefName } from '../git/ref'
 import { z } from 'zod'
 import { getProjectContextById } from './projects'
 import { manualQaImprovementTickets, opencodeSessions, phaseArtifacts, projects, ticketErrorOccurrences, ticketPhaseAttempts, ticketStatusHistory, tickets } from '../db/schema'
@@ -337,11 +338,11 @@ function assertLockedGitHookConfigurationMutable(
   }
 }
 
-function runGit(projectRoot: string, args: string[]) {
-  runGitSyncOrThrow(projectRoot, args)
+async function runGit(projectRoot: string, args: string[]): Promise<void> {
+  await runGitMutationOrThrow(projectRoot, args)
 }
 
-function removeTicketFilesystem(projectRoot: string, externalId: string, branchName?: string | null) {
+async function removeTicketFilesystem(projectRoot: string, externalId: string, branchName?: string | null): Promise<void> {
   const worktreesRoot = getProjectWorktreesRoot(projectRoot)
   if (!assertManagedWorktreesRoot(projectRoot, worktreesRoot)) return
   // Removal validates the parent and unlinks final aliases, including dangling ones.
@@ -355,7 +356,7 @@ function removeTicketFilesystem(projectRoot: string, externalId: string, branchN
   }
   const resolvedBranchName = branchName?.trim() || externalId
 
-  removeWorktree({
+  await removeWorktree({
     projectRoot,
     worktreesRoot,
     worktreePath,
@@ -364,7 +365,8 @@ function removeTicketFilesystem(projectRoot: string, externalId: string, branchN
 
   if (resolvedBranchName !== baseBranch) {
     try {
-      runGit(projectRoot, ['branch', '-D', resolvedBranchName])
+      assertSafeRefName(resolvedBranchName, 'Ticket branch')
+      await runGit(projectRoot, ['branch', '-D', resolvedBranchName])
     } catch {
       // Ignore missing/already-removed branches.
     }
@@ -710,7 +712,7 @@ export function lockTicketStartConfiguration(
   return toPublicTicket(context.projectId, updated)
 }
 
-export function deleteTicket(ticketRef: string): boolean {
+export async function deleteTicket(ticketRef: string): Promise<boolean> {
   const context = getTicketContext(ticketRef)
   if (!context) return false
 
@@ -730,7 +732,7 @@ export function deleteTicket(ticketRef: string): boolean {
   // If it fails, the DB is the source of truth and the orphaned
   // filesystem can be cleaned up later.
   try {
-    removeTicketFilesystem(projectRoot, externalId, branchName)
+    await removeTicketFilesystem(projectRoot, externalId, branchName)
   } catch (err) {
     console.warn(`[ticketMutations] Filesystem cleanup failed for ${ticketRef} after DB deletion:`, err)
   }
@@ -738,10 +740,10 @@ export function deleteTicket(ticketRef: string): boolean {
   return true
 }
 
-export function cleanupCanceledTicketData(
+export async function cleanupCanceledTicketData(
   ticketRef: string,
   opts: { deleteContent?: boolean; deleteLog?: boolean },
-): boolean {
+): Promise<boolean> {
   const context = getTicketContext(ticketRef)
   if (!context) return false
 
@@ -749,7 +751,7 @@ export function cleanupCanceledTicketData(
   const branchName = context.localTicket.branchName
 
   if (opts.deleteContent) {
-    removeTicketFilesystem(projectRoot, externalId, branchName)
+    await removeTicketFilesystem(projectRoot, externalId, branchName)
     projectDb.transaction((tx) => {
       tx.delete(phaseArtifacts).where(eq(phaseArtifacts.ticketId, localTicketId)).run()
       tx.delete(opencodeSessions).where(eq(opencodeSessions.ticketId, localTicketId)).run()

@@ -5,6 +5,7 @@ import { resolvePhaseAttempt } from '../storage/ticketPhaseAttempts'
 import { queueProjectionAppend, type PersistedLogChannel } from './projection'
 import type { WorkflowPhaseId } from '@shared/workflowMeta'
 import { relative } from 'node:path'
+import { resolveContainedPath } from '../lib/containedPath'
 
 type StructuredLogFields = Omit<LogEvent, 'timestamp' | 'type' | 'ticketId' | 'phase' | 'message' | 'source' | 'status' | 'data'>
 
@@ -198,7 +199,8 @@ function appendEventToChannel(
   }
 
   const serialized = JSON.stringify(event)
-  const range = safeAtomicAppendWithin(projectRoot, relative(projectRoot, logPath), serialized)
+  const canonicalRoot = resolveContainedPath(projectRoot, '.')
+  const range = safeAtomicAppendWithin(canonicalRoot, relative(canonicalRoot, logPath), serialized)
   queueProjectionAppend(ticketId, channel, event as unknown as Record<string, unknown>, range.offset, range.length)
   if (fingerprint) {
     rememberPersistedFingerprint(ticketId, channel, phase, phaseAttempt, fingerprint)

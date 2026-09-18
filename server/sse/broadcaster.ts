@@ -38,6 +38,7 @@ class SSEBroadcaster {
   private readonly maxBufferBytes: number
   private readonly bufferTtlMs: number
   private cleanupInterval: ReturnType<typeof setInterval> | null = null
+  private acceptingClients = true
 
   constructor(options: SSEBroadcasterOptions = {}) {
     this.maxBufferSize = options.maxBufferSize ?? MAX_SSE_BUFFER_SIZE
@@ -61,10 +62,17 @@ class SSEBroadcaster {
     }
   }
 
-  addClient(ticketId: string, client: SSEClient) {
+  addClient(ticketId: string, client: SSEClient): boolean {
+    if (!this.acceptingClients) return false
     const existing = this.clients.get(ticketId) ?? []
     existing.push(client)
     this.clients.set(ticketId, existing)
+    return true
+  }
+
+  /** Opens stream admission for a newly started runtime. */
+  startAcceptingClients() {
+    this.acceptingClients = true
   }
 
   removeClient(ticketId: string, clientId: string) {
@@ -151,6 +159,24 @@ class SSEBroadcaster {
 
     this.clients.delete(ticketId)
     this.eventBuffer.delete(ticketId)
+  }
+
+  /** Closes every live stream without discarding replay buffers. */
+  closeAllClients() {
+    this.acceptingClients = false
+    for (const [ticketId, clients] of this.clients) {
+      for (const client of clients) {
+        if (client.interval) {
+          clearInterval(client.interval)
+        }
+        try {
+          client.close()
+        } catch {
+          // Ignore close errors during runtime shutdown.
+        }
+      }
+      this.clients.delete(ticketId)
+    }
   }
 
   // Cleanup expired buffer entries

@@ -1,9 +1,11 @@
-import { describe, it, expect, beforeEach, afterEach } from 'vitest'
-import { mkdirSync, readFileSync, writeFileSync, existsSync, readdirSync, renameSync, statSync, lstatSync, truncateSync, symlinkSync, unlinkSync } from 'fs'
+import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest'
+import { createHash } from 'node:crypto'
+import { mkdirSync, readFileSync, writeFileSync, existsSync, readdirSync, renameSync, statSync, lstatSync, truncateSync, symlinkSync, unlinkSync, writeSync, realpathSync } from 'fs'
 import { tmpdir } from 'os'
 import { basename, dirname, join } from 'path'
-import { makeAtomicTmpPath, parseAtomicTmpPath, safeAtomicWrite, safeAtomicWriteWithin } from '../atomicWrite'
+import { atomicProofPath, makeAtomicTmpPath, parseAtomicTmpPath, safeAtomicWrite, safeAtomicWriteWithin } from '../atomicWrite'
 import { ContainedPathError } from '../../lib/containedPath'
+import * as containedPaths from '../../lib/containedPath'
 import { safeAtomicAppend, safeAtomicAppendWithin } from '../atomicAppend'
 import { readFileNoFollowSync } from '../readFile'
 import { recoverOrphanTmpFiles, fixTrailingLineCorruption } from '../recovery'
@@ -319,15 +321,31 @@ describe('safeAtomicWriteWithin', () => {
   })
 
   describe.skipIf(process.platform === 'win32')('file symlinks', () => {
-    it('writes through a contained file link and preserves the link', () => {
+    it('rejects a final link introduced when canonical destination resolution begins', () => {
+      const target = join(TEST_DIR, 'target.txt')
+      const alias = join(TEST_DIR, 'alias.txt')
+      writeFileSync(target, 'keep')
+      const resolvePath = containedPaths.resolveContainedPath
+      const spy = vi.spyOn(containedPaths, 'resolveContainedPath').mockImplementationOnce((...args) => {
+        symlinkSync(target, alias)
+        return resolvePath(...args)
+      })
+      try {
+        expect(() => safeAtomicWriteWithin(TEST_DIR, 'alias.txt', 'replacement')).toThrow(ContainedPathError)
+        expect(readFileSync(target, 'utf8')).toBe('keep')
+      } finally {
+        spy.mockRestore()
+      }
+    })
+
+    it('rejects a contained final file link instead of replacing its destination', () => {
       const target = join(TEST_DIR, 'target.txt')
       const alias = join(TEST_DIR, 'alias.txt')
       writeFileSync(target, 'original', { mode: 0o600 })
       symlinkSync(target, alias)
-      safeAtomicWriteWithin(TEST_DIR, 'alias.txt', 'replacement')
-      expect(readFileSync(target, 'utf8')).toBe('replacement')
+      expect(() => safeAtomicWriteWithin(TEST_DIR, 'alias.txt', 'replacement')).toThrow(ContainedPathError)
+      expect(readFileSync(target, 'utf8')).toBe('original')
       expect(lstatSync(alias).isSymbolicLink()).toBe(true)
-      expect(statSync(target).mode & 0o777).toBe(0o600)
     })
 
     it('rejects target symlinks without touching the destination or its mode', () => {
@@ -371,6 +389,31 @@ describe('safeAtomicWriteWithin', () => {
 })
 
 describe('safeAtomicAppend', () => {
+  it('loops through short writes before reporting the byte range', () => {
+    const filePath = join(TEST_DIR, 'short-write.jsonl')
+    const original = (fd: number, buffer: Uint8Array, offset: number, length: number) => writeSync(fd, buffer, offset, length)
+    let first = true
+    const write = (fd: number, buffer: Uint8Array, offset: number, length: number) => {
+      if (first && length > 1) {
+        first = false
+        return original(fd, buffer, offset, 1)
+      }
+      return original(fd, buffer, offset, length)
+    }
+
+    const range = safeAtomicAppend(filePath, 'café', { write })
+
+    expect(range).toEqual({ offset: 0, length: Buffer.byteLength('café\n') })
+    expect(readFileSync(filePath, 'utf8')).toBe('café\n')
+  })
+
+  it('throws on a zero-progress write without projecting a range', () => {
+    const filePath = join(TEST_DIR, 'zero-write.jsonl')
+
+    expect(() => safeAtomicAppend(filePath, 'never complete', { write: () => 0 })).toThrow('made no progress')
+    expect(readFileSync(filePath, 'utf8')).toBe('')
+  })
+
   it('appends to a new file', () => {
     const filePath = join(TEST_DIR, 'append.txt')
     safeAtomicAppend(filePath, 'line 1')
@@ -408,8 +451,26 @@ describe('recoverOrphanTmpFiles', () => {
     return tmpPath
   }
 
+  function orphanYaml(targetPath: string, content: string): string {
+    const tmpPath = orphan(targetPath, content)
+    writeFileSync(atomicProofPath(tmpPath), JSON.stringify({
+      byteLength: Buffer.byteLength(content),
+      sha256: createHash('sha256').update(content).digest('hex'),
+    }))
+    return tmpPath
+  }
+
+  function orphanJsonl(targetPath: string, content: string): string {
+    const tmpPath = orphan(targetPath, content)
+    writeFileSync(atomicProofPath(tmpPath), JSON.stringify({
+      byteLength: Buffer.byteLength(content),
+      sha256: createHash('sha256').update(content).digest('hex'),
+    }))
+    return tmpPath
+  }
+
   it('promotes an interrupted write under its real name', () => {
-    const target = join(TEST_DIR, 'data.json')
+    const target = join(TEST_DIR, 'runtime', 'execution-setup-profile.json')
     const tmpFile = orphan(target, '{"key": "value"}')
 
     const recovered = recoverOrphanTmpFiles(TEST_DIR)
@@ -420,13 +481,13 @@ describe('recoverOrphanTmpFiles', () => {
   })
 
   it('handles nested .tmp files', () => {
-    const target = join(TEST_DIR, 'sub', 'file.txt')
-    orphan(target, 'content')
+    const target = join(TEST_DIR, 'runtime', 'owner.json')
+    orphan(target, '"content"')
 
     const recovered = recoverOrphanTmpFiles(TEST_DIR)
 
     expect(recovered).toContain(target)
-    expect(readFileSync(target, 'utf-8')).toBe('content')
+    expect(readFileSync(target, 'utf-8')).toBe('"content"')
   })
 
   /**
@@ -448,7 +509,8 @@ describe('recoverOrphanTmpFiles', () => {
   })
 
   it('never replaces a target that already exists', () => {
-    const target = join(TEST_DIR, 'data.json')
+    const target = join(TEST_DIR, 'runtime', 'execution-setup-profile.json')
+    mkdirSync(dirname(target), { recursive: true })
     writeFileSync(target, '{"complete": true}', 'utf-8')
     const tmpFile = orphan(target, '{"partial": true}')
 
@@ -461,7 +523,7 @@ describe('recoverOrphanTmpFiles', () => {
   })
 
   it('discards a temp file whose JSON never finished being written', () => {
-    const target = join(TEST_DIR, 'ticket.meta.json')
+    const target = join(TEST_DIR, 'meta', 'ticket.meta.json')
     const tmpFile = orphan(target, '{"id": "abc", "titl')
 
     const recovered = recoverOrphanTmpFiles(TEST_DIR)
@@ -473,7 +535,7 @@ describe('recoverOrphanTmpFiles', () => {
 
   it('discards a temp file that is not a readable YAML document', () => {
     const target = join(TEST_DIR, 'prd.yaml')
-    const tmpFile = orphan(target, 'artifact: prd\n  broken: [unclosed\n')
+    const tmpFile = orphanYaml(target, 'artifact: prd\n  broken: [unclosed\n')
 
     const recovered = recoverOrphanTmpFiles(TEST_DIR)
 
@@ -484,22 +546,31 @@ describe('recoverOrphanTmpFiles', () => {
 
   it('promotes a YAML temp file that reads back as a document', () => {
     const target = join(TEST_DIR, 'interview.yaml')
-    orphan(target, 'artifact: interview\nquestions: []\n')
+    orphanYaml(target, 'artifact: interview\nquestions: []\n')
 
     expect(recoverOrphanTmpFiles(TEST_DIR)).toContain(target)
   })
 
   it('discards a YAML temp file that got no further than its header comment', () => {
     const target = join(TEST_DIR, 'prd.yaml')
-    const tmpFile = orphan(target, '# Generated by LoopTroop\n# ticket: PRJ-1\n')
+    const tmpFile = orphanYaml(target, '# Generated by LoopTroop\n# ticket: PRJ-1\n')
 
     expect(recoverOrphanTmpFiles(TEST_DIR)).toEqual([])
     expect(existsSync(target)).toBe(false)
     expect(existsSync(tmpFile)).toBe(false)
   })
 
+  it('leaves a YAML mapping without complete-write proof unpromoted', () => {
+    const target = join(TEST_DIR, 'prd.yaml')
+    const tmpFile = orphan(target, 'artifact: prd\nquestions: []\n')
+
+    expect(recoverOrphanTmpFiles(TEST_DIR)).toEqual([])
+    expect(existsSync(target)).toBe(false)
+    expect(existsSync(tmpFile)).toBe(true)
+  })
+
   it('discards an empty temp file', () => {
-    const target = join(TEST_DIR, 'notes.txt')
+    const target = join(TEST_DIR, 'runtime', 'execution-setup-profile.json')
     const tmpFile = orphan(target, '')
 
     expect(recoverOrphanTmpFiles(TEST_DIR)).toEqual([])
@@ -509,14 +580,34 @@ describe('recoverOrphanTmpFiles', () => {
 
   /**
    * A half-written final line is the expected shape of an interrupted append,
-   * and repairing it is `fixTrailingLineCorruption`'s job — which
-   * `recoverTicketRuntimeArtifacts` runs immediately after this, on these files.
+   * and repairing it is `fixTrailingLineCorruption`'s job on the actual append
+   * file, not on this whole-file atomic temp.
    */
-  it('promotes a JSONL temp file with a truncated last line', () => {
-    const target = join(TEST_DIR, 'execution.jsonl')
-    orphan(target, '{"a":1}\n{"b":2}\n{"c":')
+  it('leaves a JSONL temp file with a truncated last line for inspection', () => {
+    const target = join(TEST_DIR, 'runtime', 'execution-log.jsonl')
+    const tmpFile = orphan(target, '{"a":1}\n{"b":2}\n{"c":')
 
-    expect(recoverOrphanTmpFiles(TEST_DIR)).toContain(target)
+    expect(recoverOrphanTmpFiles(TEST_DIR)).toEqual([])
+    expect(existsSync(target)).toBe(false)
+    expect(existsSync(tmpFile)).toBe(true)
+  })
+
+  it('recovers an empty JSONL whole-file artifact as an empty collection', () => {
+    const target = join(TEST_DIR, 'beads', 'feature', '.beads', 'issues.jsonl')
+    const tmpFile = orphanJsonl(target, '')
+
+    expect(recoverOrphanTmpFiles(TEST_DIR)).toEqual([target])
+    expect(readFileSync(target, 'utf8')).toBe('')
+    expect(existsSync(tmpFile)).toBe(false)
+  })
+
+  it('leaves an empty JSONL temp without a complete-write proof', () => {
+    const target = join(TEST_DIR, 'beads', 'feature', '.beads', 'issues.jsonl')
+    const tmpFile = orphan(target, '')
+
+    expect(recoverOrphanTmpFiles(TEST_DIR)).toEqual([])
+    expect(existsSync(target)).toBe(false)
+    expect(existsSync(tmpFile)).toBe(true)
   })
 
   /**
@@ -537,20 +628,20 @@ describe('recoverOrphanTmpFiles', () => {
     }
 
     expect(existsSync(legacy)).toBe(true)
-    expect(warnings.join(' ')).toContain(legacy)
+    expect(warnings.join(' ')).toContain(realpathSync.native(legacy))
   })
 
   /**
    * The interrupted append and the repair that finishes it are two halves of
    * one story, and they run one after the other on the same files at boot.
    */
-  it('promotes a torn JSONL log that fixTrailingLineCorruption then trims', () => {
-    const target = join(TEST_DIR, 'execution.jsonl')
-    orphan(target, '{"a":1}\n{"b":2}\n{"c":')
+  it('does not trim a torn atomic JSONL temp', () => {
+    const target = join(TEST_DIR, 'runtime', 'execution-log.jsonl')
+    const tmpFile = orphan(target, '{"a":1}\n{"b":2}\n{"c":')
 
-    expect(recoverOrphanTmpFiles(TEST_DIR)).toContain(target)
-    expect(fixTrailingLineCorruption(target)).toBe(true)
-    expect(readFileSync(target, 'utf-8')).toBe('{"a":1}\n{"b":2}\n')
+    expect(recoverOrphanTmpFiles(TEST_DIR)).toEqual([])
+    expect(fixTrailingLineCorruption(target)).toBe(false)
+    expect(existsSync(tmpFile)).toBe(true)
   })
 
   /**
@@ -558,17 +649,41 @@ describe('recoverOrphanTmpFiles', () => {
    * would make an occupied name look free.
    */
   it.skipIf(process.platform === 'win32')('treats a symlink pointing nowhere as an occupied name', () => {
-    const target = join(TEST_DIR, 'data.json')
+    const target = join(TEST_DIR, 'runtime', 'execution-setup-profile.json')
+    mkdirSync(dirname(target), { recursive: true })
     symlinkSync(join(TEST_DIR, 'missing.json'), target)
     const tmpFile = orphan(target, '{"key": "value"}')
 
     expect(recoverOrphanTmpFiles(TEST_DIR)).toEqual([])
-    expect(existsSync(tmpFile)).toBe(false)
+    expect(existsSync(tmpFile)).toBe(true)
     expect(lstatSync(target).isSymbolicLink()).toBe(true)
   })
 
+  it.skipIf(process.platform === 'win32')('warns and leaves a symbolic-link temp without touching its target', () => {
+    const target = join(TEST_DIR, 'runtime', 'execution-setup-profile.json')
+    const tmpFile = makeAtomicTmpPath(target)
+    const outside = join(TEST_DIR, 'outside.json')
+    mkdirSync(dirname(tmpFile), { recursive: true })
+    mkdirSync(dirname(outside), { recursive: true })
+    writeFileSync(outside, '{"outside":true}')
+    symlinkSync(outside, tmpFile)
+
+    expect(recoverOrphanTmpFiles(TEST_DIR)).toEqual([])
+    expect(lstatSync(tmpFile).isSymbolicLink()).toBe(true)
+    expect(readFileSync(outside, 'utf8')).toBe('{"outside":true}')
+  })
+
+  it('leaves a temp whose target is not a known LoopTroop artifact', () => {
+    const target = join(TEST_DIR, 'notes.txt')
+    const tmpFile = orphan(target, 'user content')
+
+    expect(recoverOrphanTmpFiles(TEST_DIR)).toEqual([])
+    expect(existsSync(tmpFile)).toBe(true)
+    expect(existsSync(target)).toBe(false)
+  })
+
   it('leaves a temp file it cannot read rather than deleting it unseen', () => {
-    const target = join(TEST_DIR, 'huge.json')
+    const target = join(TEST_DIR, 'runtime', 'execution-setup-profile.json')
     const tmpFile = orphan(target, '{"partial":')
     // Stands in for a file past the size this can hold in memory to check.
     truncateSync(tmpFile, 300 * 1024 * 1024)
@@ -579,7 +694,7 @@ describe('recoverOrphanTmpFiles', () => {
   })
 
   it('recognises the suffix case-insensitively, for Windows', () => {
-    const target = join(TEST_DIR, 'data.json')
+    const target = join(TEST_DIR, 'runtime', 'execution-setup-profile.json')
     const tmpFile = orphan(target, '{"key": "value"}')
     const upperCased = `${tmpFile.slice(0, -4)}.TMP`
     renameSync(tmpFile, upperCased)

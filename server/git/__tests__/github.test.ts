@@ -139,6 +139,13 @@ describe('server/git/github', () => {
     expect(spawnMock.mock.calls.some(([, args]) => (args as string[]).includes('PUT'))).toBe(true)
   })
 
+  it('rejects unsafe diff refs before they can become a Git option', async () => {
+    const github = await import('../github')
+
+    expect(() => github.readGitDiff('/repo', '--output=outside', 'HEAD')).toThrow('Diff base ref is not a safe Git ref')
+    expect(spawnSyncMock).not.toHaveBeenCalled()
+  })
+
   it('propagates a GitHub head conflict without refreshing or retrying the merge', async () => {
     spawnSyncMock.mockImplementation((command: string) => command === 'git'
       ? makeSpawnResult({ stdout: 'https://github.com/looptroop-ai/LoopTroop.git' })
@@ -198,6 +205,24 @@ describe('server/git/github', () => {
     const repo = github.parseGitHubRemoteUrl('git@company-git:looptroop-ai/pocketbase-master.git')
 
     expect(repo).toBeNull()
+  })
+
+  it('does not cache a transient SSH alias probe failure', async () => {
+    let probes = 0
+    spawnSyncMock.mockImplementation((_command: string) => {
+      probes += 1
+      return probes === 1
+        ? makeSpawnResult({ status: 1, stderr: 'temporary ssh config failure' })
+        : makeSpawnResult({ stdout: 'hostname github.com\n' })
+    })
+
+    const github = await import('../github')
+    expect(github.parseGitHubRemoteUrl('git@company-git:owner/repo.git')).toBeNull()
+    expect(github.parseGitHubRemoteUrl('git@company-git:owner/repo.git')).toMatchObject({
+      owner: 'owner',
+      repo: 'repo',
+    })
+    expect(probes).toBe(2)
   })
 
   it('treats gh auth as ready when an active GitHub account succeeds even if another account fails', async () => {
@@ -379,7 +404,7 @@ describe('server/git/github', () => {
   it('allows untracked files during explicit local base sync until Git reports an overwrite conflict', async () => {
     spawnSyncMock.mockImplementation((_command: string, args: readonly string[]) => {
       if (args.includes('fetch')) return makeSpawnResult()
-      if (args.includes('status')) return makeSpawnResult({ stdout: '?? scratch.log\n' })
+      if (args.includes('status')) return makeSpawnResult({ stdout: '?? scratch.log\0' })
       if (args.includes('rev-parse') && args.includes('--abbrev-ref')) {
         return makeSpawnResult({ stdout: 'main\n' })
       }
@@ -399,7 +424,7 @@ describe('server/git/github', () => {
     expect(result.remoteBaseHead).toBe('remote-sha')
     expect(spawnSyncMock.mock.calls.some(([, args, options]) => (
       Array.isArray(args)
-      && args.join(' ') === 'status --porcelain=1 --untracked-files=all -- . :(top,exclude).looptroop'
+      && args.join(' ') === 'status --porcelain=1 -z --untracked-files=all -- . :(top,exclude).looptroop'
       && (options as { cwd?: string } | undefined)?.cwd === '/repo'
     ))).toBe(true)
   })
@@ -408,11 +433,7 @@ describe('server/git/github', () => {
     spawnSyncMock.mockImplementation((_command: string, args: readonly string[]) => {
       if (args.includes('status')) {
         return makeSpawnResult({
-          stdout: [
-            'M  staged.ts',
-            ' D deleted.ts',
-            '?? scratch.log',
-          ].join('\n'),
+          stdout: 'M  staged.ts\0 D deleted.ts\0?? scratch.log\0',
         })
       }
       return makeSpawnResult()
@@ -423,6 +444,16 @@ describe('server/git/github', () => {
     expect(() => github.ensureWorktreeClean('/repo')).toThrow(
       'Checked path: /repo Tracked staged files: staged.ts Tracked unstaged files: deleted.ts Untracked files: scratch.log',
     )
+  })
+
+  it('allows the same known generated noise that bead commits leave local', async () => {
+    spawnSyncMock.mockImplementation((_command: string, args: readonly string[]) => {
+      if (args.includes('status')) return makeSpawnResult({ stdout: '?? dist/bundle.js\0' })
+      return makeSpawnResult()
+    })
+    const github = await import('../github')
+
+    expect(() => github.ensureWorktreeClean('/repo')).not.toThrow()
   })
 
   it('verifies a remote base contains the merged commit without touching the checkout', async () => {
@@ -467,5 +498,36 @@ describe('server/git/github', () => {
     await expect(github.verifyRemoteBaseContainsCommit('/repo', 'main', 'candidate123')).rejects.toThrow(
       'Remote origin/main does not contain commit candidate123. Latest remote base is remote-base-sha.',
     )
+  })
+
+  it('deletes a remote branch only with the verified expected-head lease', async () => {
+    spawnSyncMock.mockReturnValue(makeSpawnResult())
+    const github = await import('../github')
+    const expectedSha = 'a'.repeat(40)
+
+    await expect(github.tryDeleteRemoteBranch('/repo', 'ticket-1', expectedSha)).resolves.toEqual({
+      deleted: true,
+      warning: null,
+    })
+
+    const pushCall = spawnSyncMock.mock.calls.find(([, args]) => (
+      Array.isArray(args) && args[0] === 'push'
+    ))
+    expect(pushCall?.[1]).toEqual([
+      'push',
+      'origin',
+      `--force-with-lease=refs/heads/ticket-1:${expectedSha}`,
+      ':refs/heads/ticket-1',
+    ])
+  })
+
+  it('skips remote branch deletion when no expected head SHA is available', async () => {
+    const github = await import('../github')
+
+    await expect(github.tryDeleteRemoteBranch('/repo', 'ticket-1', '')).resolves.toEqual({
+      deleted: false,
+      warning: 'Remote branch deletion was skipped because its expected head SHA was unavailable.',
+    })
+    expect(spawnSyncMock).not.toHaveBeenCalled()
   })
 })

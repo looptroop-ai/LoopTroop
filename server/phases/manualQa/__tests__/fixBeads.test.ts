@@ -93,7 +93,7 @@ describe('Manual QA fix-bead generation contracts', () => {
       rmSync(path)
       symlinkSync(outside, path, process.platform === 'win32' ? 'junction' : 'dir')
       expect(() => readManualQaFixBeadCandidates(ticketDir, 1, groups)).toThrow('escapes root')
-      expect(() => persistManualQaFixBeadCandidates(ticketDir, 1, candidates)).toThrow('escapes root')
+      expect(() => persistManualQaFixBeadCandidates(ticketDir, 1, candidates)).toThrow('must not be a symbolic link')
     } finally {
       removeTempDir(ticketDir)
       removeTempDir(outside)

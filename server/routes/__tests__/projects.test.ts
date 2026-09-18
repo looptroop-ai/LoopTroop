@@ -82,6 +82,22 @@ function detachFromAppRegistry() {
 }
 
 describe('projectRouter project cleanup', () => {
+  it('reports invalid project paths without turning them into server errors', async () => {
+    const app = new Hono()
+    app.route('/api', projectRouter)
+
+    const checkGit = await app.request('/api/projects/check-git?path=relative/path')
+    expect(checkGit.status).toBe(200)
+    expect(await checkGit.json()).toMatchObject({
+      isGit: false,
+      status: 'invalid',
+    })
+
+    const listing = await app.request('/api/projects/ls?path=relative/path')
+    expect(listing.status).toBe(400)
+    expect(await listing.json()).toMatchObject({ error: expect.stringContaining('absolute') })
+  })
+
   it('persists concrete project Manual QA choices', () => {
     const repoDir = repoManager.createRepo()
     const project = attachProject({ folderPath: repoDir, name: 'QA project', shortname: 'MQA' })
@@ -839,6 +855,28 @@ describe('projectRouter project cleanup', () => {
     expect(deleteResponse.status).toBe(200)
     const payload = await deleteResponse.json() as { success: boolean; freedBytes: number }
     expect(payload.success).toBe(true)
+  })
+
+  it('reports skipped terminal worktrees while cleaning eligible ones', async () => {
+    const repoDir = repoManager.createRepo()
+    const app = new Hono()
+    app.route('/api', projectRouter)
+    const project = attachProject({ folderPath: repoDir, name: 'Partial Cleanup', shortname: 'PC' })
+    const protectedTicket = createTicket({ projectId: project.id, title: 'Protected skeleton' })
+    const eligibleTicket = createTicket({ projectId: project.id, title: 'Eligible skeleton' })
+    for (const ticket of [protectedTicket, eligibleTicket]) patchTicket(ticket.id, { status: 'COMPLETED' })
+    const protectedPath = resolve(repoDir, '.looptroop', 'worktrees', protectedTicket.externalId)
+    writeFileSync(resolve(protectedPath, '.env'), 'keep this file\n')
+
+    const response = await app.request(`/api/projects/${project.id}/worktrees`, { method: 'DELETE' })
+    expect(response.status).toBe(200)
+    expect(await response.json()).toEqual({
+      success: true,
+      freedBytes: expect.any(Number),
+      skipped: [{ externalId: protectedTicket.externalId, reason: expect.any(String) }],
+    })
+    expect(readFileSync(resolve(protectedPath, '.env'), 'utf8')).toBe('keep this file\n')
+    expect(existsSync(resolve(repoDir, '.looptroop', 'worktrees', eligibleTicket.externalId))).toBe(false)
   })
 
   it.runIf(process.platform !== 'win32')('deletes terminal worktrees containing read-only cache directories', async () => {

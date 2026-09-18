@@ -1,10 +1,18 @@
 import { describe, expect, it } from 'vitest'
-import { parseGitStatusPorcelainZ } from '../statusPorcelain'
+import { parseGitPathListZ, parseGitStatusPorcelainZ } from '../statusPorcelain'
 
 // The field separator, written as an escape so the file stays greppable.
 const NUL = '\u0000'
 
 describe('parseGitStatusPorcelainZ', () => {
+  it('preserves tabs, newlines, trailing spaces, backslashes and non-ASCII bytes', () => {
+    const paths = ['a\tb', 'line\nfeed', 'sp ace ', 'back\\slash', 'ünï']
+    expect(parseGitPathListZ(paths.join(NUL) + NUL)).toEqual(paths)
+    expect(parseGitStatusPorcelainZ(`?? ${paths[0]}${NUL}`)).toEqual([
+      { indexStatus: '?', worktreeStatus: '?', path: paths[0] },
+    ])
+  })
+
   it('reads a plain worktree modification, leading space and all', () => {
     expect(parseGitStatusPorcelainZ(` M src/app.ts${NUL}`)).toEqual([
       { indexStatus: ' ', worktreeStatus: 'M', path: 'src/app.ts' },
@@ -27,7 +35,7 @@ describe('parseGitStatusPorcelainZ', () => {
     // path, so the source was neither staged nor audited.
     expect(parseGitStatusPorcelainZ(` R new.ts${NUL}old.ts${NUL}`)).toEqual([
       { indexStatus: ' ', worktreeStatus: 'R', path: 'new.ts', originalPath: 'old.ts' },
-      { indexStatus: 'D', worktreeStatus: ' ', path: 'old.ts' },
+      { indexStatus: ' ', worktreeStatus: 'D', path: 'old.ts' },
     ])
   })
 

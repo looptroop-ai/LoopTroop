@@ -340,11 +340,35 @@ fail ──> log failure trace ──> reset worktree ──> retry fresh
 
 This cycle repeats until all tests pass or retry limits are reached. **This can take hours (sometimes 10+ hours) by design.** It is built to run unattended (e.g., overnight).
 
+If startup finds an orphan YAML or whole-file JSONL temp without its matching proof, including an empty JSONL temp, it warns and leaves the temp unpromoted for inspection. Recovery blocks startup only when an in-progress fallback's `.recovery` ownership or completeness cannot be verified; that typed diagnostic appears before projections, ticket hydration, or execution timers, with the affected files preserved. LoopTroop does not guess or silently promote an uncertain write.
+
 Read more: [Beads & Execution](https://www.looptroop.ovh/docs/beads)
 
 ### Worktree isolation
 
-LoopTroop runs execution steps inside isolated Git worktrees rather than modifying your active branch. This keeps your working copy clean and ensures reliable, inspectable diffs. Note that worktrees provide workspace isolation, not sandboxed host security.
+LoopTroop runs execution steps inside isolated Git worktrees rather than modifying your active branch. This keeps your working copy clean and ensures reliable, inspectable diffs. Git mutations and resets have bounded process cleanup, unusual filenames stay intact when diffs are read, and generated runtime files stay out of candidate commits. Note that worktrees provide workspace isolation, not sandboxed host security.
+
+When cleanup is run in its conservative mode, LoopTroop asks Git for ignored
+untracked entries in a real worktree and preserves user files; only its own
+`.ticket/` and `.looptroop/` roots are eligible for removal. A pre-start ticket
+skeleton is checked directly instead of inheriting ignore rules from the parent
+repository, and only its `.ticket/` root is eligible. The Free Disk Space action
+uses this mode for completed and canceled ticket worktrees: protected worktrees
+are skipped and reported with the reason, while eligible worktrees are removed.
+An ignored file such as a local environment file therefore remains in place
+without preventing other cleanup. If
+Git yields while a worktree is being removed, a replacement directory is left
+alone. The daemon also waits for detached Git and GitHub children during
+shutdown and closes active SSE streams before waiting for its HTTP server, so a
+connected browser cannot hold graceful shutdown open indefinitely. Startup
+recovery refuses to overwrite a target that has advanced since a completed
+fallback copy.
+
+Only select repositories you trust. LoopTroop preserves repository-local Git
+configuration, including `core.sshCommand`, so custom SSH wrappers keep working.
+Git may execute those wrappers with your account's permissions during remote
+operations, including connection checks. Worktree isolation does not restrict
+what a wrapper can do on the host.
 
 Read more: [System Architecture](https://www.looptroop.ovh/docs/system-architecture)
 

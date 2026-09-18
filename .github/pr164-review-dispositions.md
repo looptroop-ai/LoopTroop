@@ -172,6 +172,9 @@ Focused checks on this branch included:
   fallback (28), worktree removal, recovery, GitOps, and runtime-close; all
   passed. It includes the Windows-shaped taskkill cleanup and already-closed
   server retry regressions.
+- The SSE shutdown follow-up reran the real stream route, broadcaster, and
+  runtime HTTP tests (63 passing), including active-stream closure before
+  `server.close()` and rejection of late stream admission during shutdown.
 - The cleanup follow-up reran worktree removal with 19 passing tests, the
   project-router read-only-cache regression (1/1), and project storage cleanup
   (4/4), including parent-ignored and skeleton-owned `.env` cases.

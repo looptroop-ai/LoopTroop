@@ -184,4 +184,23 @@ describe('streamRouter', () => {
       vi.useRealTimers()
     }
   })
+
+  it('closes every live stream when the broadcaster shuts down', async () => {
+    const ticket = createStreamRouteTicket()
+    const response = await app.request(`/api/stream?ticketId=${encodeURIComponent(ticket.id)}`)
+    const reader = response.body!.getReader()
+    try {
+      await reader.read()
+      expect(broadcaster.getClientCount(ticket.id)).toBe(1)
+
+      broadcaster.closeAllClients()
+
+      await expect(reader.read()).resolves.toMatchObject({ done: true })
+      expect(broadcaster.getClientCount(ticket.id)).toBe(0)
+    } finally {
+      await reader.cancel()
+      broadcaster.clearTicket(ticket.id)
+      broadcaster.startAcceptingClients()
+    }
+  })
 })

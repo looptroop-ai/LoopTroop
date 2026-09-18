@@ -127,6 +127,7 @@ export function createRuntime(config: RuntimeConfig = {}): LoopTroopRuntime {
 
   async function runStart(): Promise<RuntimeAddress> {
     const settings = config.settings ?? resolveSettings()
+    broadcaster.startAcceptingClients()
 
     // Before the startup sequence, which health-checks OpenCode through the
     // adapter: resolved later, `opencodeBaseUrl` from config.json would arrive
@@ -209,6 +210,10 @@ export function createRuntime(config: RuntimeConfig = {}): LoopTroopRuntime {
           }
         })
       }
+      // Stop accepting requests before closing active SSE responses. Otherwise
+      // a request admitted between client cleanup and server.close could add a
+      // new long-lived stream that the listener then waits for forever.
+      broadcaster.closeAllClients()
       const pollerStopped = stopMergePoller?.()
       stopMergePoller = null
       // Git and gh are detached so their hooks and descendants share the

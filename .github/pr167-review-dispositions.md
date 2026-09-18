@@ -123,7 +123,8 @@ fenced while a ticket cancellation marker is pending; PROM4 restoration checks
 the abort signal after an awaited remote lookup and replacement sessions update
 cleanup ownership; Coding Retry confirms a remote stop before resetting a bead;
 skip-all persists through claim-and-snapshot CAS; unreadable setup plans fail
-closed before save; dead-PID interview claims are not reported in flight; and
+closed before save; approval and runtime setup evidence refreshes use the loaded
+plan hash for CAS; dead-PID interview claims are not reported in flight; and
 cancellation cleanup retries are bounded and unref'd. Existing intentional
 choices remain unchanged: unlimited `0` iteration/question windows, click-time
 Manual QA snapshots, positional P12/P13 expansion pairing, and cancellation's

@@ -23,6 +23,7 @@ import { ticketRouter } from '../tickets'
 import { contentSha256 } from '../../lib/contentHash'
 import { revertTicketToApprovalStatus, sendTicketEvent } from '../../machines/persistence'
 import { lockExecutionSetupPlanDetectedHooks } from '../../phases/executionSetupPlan/hookEvidence'
+import * as hookEvidence from '../../phases/executionSetupPlan/hookEvidence'
 import { saveExecutionSetupPlan } from '../../phases/executionSetupPlan/document'
 import { serializeExecutionSetupPlan } from '../../phases/executionSetupPlan/types'
 import { prepareExecutionSetupPlanRestart, prepareExecutionSetupRuntimeRegeneration, prepareExecutionSetupRuntimeRewind, preparePlanningRestart } from '../ticketHandlers/routeUtils'
@@ -954,6 +955,53 @@ describe('ticketRouter execution setup plan approval routes', () => {
       message: 'Execution setup plan approved',
       status: 'PREPARING_EXECUTION_ENV',
     })
+  })
+
+  it('does not overwrite a concurrent plan edit while refreshing approval evidence', async () => {
+    const { app, ticket } = await setupExecutionSetupPlanTicket()
+    const originalRaw = serializePlan(ticket.externalId, 'Original approved draft')
+    const concurrentRaw = serializePlan(ticket.externalId, 'Concurrent user edit')
+    upsertLatestPhaseArtifact(
+      ticket.id,
+      'execution_setup_plan',
+      'WAITING_EXECUTION_SETUP_APPROVAL',
+      originalRaw,
+    )
+
+    const originalLock = hookEvidence.lockExecutionSetupPlanDetectedHooks
+    const lockSpy = vi.spyOn(hookEvidence, 'lockExecutionSetupPlanDetectedHooks')
+      .mockImplementationOnce((ticketId, plan) => {
+        upsertLatestPhaseArtifact(
+          ticketId,
+          'execution_setup_plan',
+          'WAITING_EXECUTION_SETUP_APPROVAL',
+          concurrentRaw,
+        )
+        return {
+          ...plan,
+          hostContext: { ...plan.hostContext, arch: `${plan.hostContext.arch}-refreshed` },
+        }
+      })
+      .mockImplementation(originalLock)
+
+    try {
+      const response = await app.request(`/api/tickets/${ticket.id}/approve-execution-setup-plan`, {
+        method: 'POST',
+        ...approvalPayload(originalRaw),
+      })
+
+      expect(response.status).toBe(409)
+      expect(await response.json()).toMatchObject({
+        error: 'Stale approval',
+        artifactType: 'execution_setup_plan',
+        expectedContentSha256: contentSha256(originalRaw),
+        currentContentSha256: contentSha256(concurrentRaw),
+      })
+      expect(getLatestPhaseArtifact(ticket.id, 'execution_setup_plan', 'WAITING_EXECUTION_SETUP_APPROVAL')?.content)
+        .toBe(concurrentRaw)
+    } finally {
+      lockSpy.mockRestore()
+    }
   })
 
   it('dispatches execution setup plan approval through the generic approve route', async () => {

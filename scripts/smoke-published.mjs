@@ -34,7 +34,7 @@ import { createServer } from 'node:net'
 import { homedir, tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { removeWorkDirectory, waitForHealth } from './smoke-lib.mjs'
-import { launchTool, planToolLaunch } from './tool-path.ts'
+import { findToolPath, launchTool, planToolLaunch } from './tool-path.ts'
 
 const IS_WINDOWS = process.platform === 'win32'
 
@@ -60,7 +60,7 @@ const HEALTH_TIMEOUT_MS = 60_000
  */
 const binaryUpgradeCommand = (platform) => (platform === 'win32'
   ? powershellInstaller('https://www.looptroop.ovh/install.ps1', ' -Binary')
-  : 'curl -fsSL https://www.looptroop.ovh/install | sh -s -- --binary')
+  : 'curl --proto "=https" --proto-redir "=https" --tlsv1.2 -fsSL https://www.looptroop.ovh/install | sh -s -- --binary')
 
 const REPO = process.env.LOOPTROOP_INSTALL_REPO || 'looptroop-ai/LoopTroop'
 const API = process.env.LOOPTROOP_INSTALL_API || 'https://api.github.com'
@@ -152,7 +152,7 @@ export const CHANNELS = {
   // against a real release". This is that proof, and until now it existed only
   // for PowerShell.
   'installer-sh': {
-    documented: 'curl -fsSL https://www.looptroop.ovh/install | sh',
+    documented: 'curl --proto "=https" --proto-redir "=https" --tlsv1.2 -fsSL https://www.looptroop.ovh/install | sh',
     legs: [
       { os: 'ubuntu-latest', tier: 'release', opencode: 'npm' },
       { os: 'macos-latest', tier: 'release', opencode: 'npm' },
@@ -214,7 +214,7 @@ export const CHANNELS = {
   // Node runtime — into `~/.looptroop`. Documented as a way to *install*, not
   // only to upgrade.
   'installer-sh-binary': {
-    documented: 'curl -fsSL https://www.looptroop.ovh/install | sh -s -- --binary',
+    documented: 'curl --proto "=https" --proto-redir "=https" --tlsv1.2 -fsSL https://www.looptroop.ovh/install | sh -s -- --binary',
     legs: [{ os: 'ubuntu-latest', tier: 'weekly', opencode: 'npm' }],
     daemon: true,
     pinnable: true,
@@ -692,7 +692,7 @@ function redact(text) {
 // inside a packaging change would touch all eleven.
 // ---------------------------------------------------------------------------
 
-function run(command, args, options = {}) {
+export function run(command, args, options = {}) {
   // Resolved against the environment the child gets, and started the way the
   // daemon starts a program: a Windows command script — npm.cmd, yarn.cmd, the
   // installed looptroop.cmd — through a resolved cmd.exe with every argument
@@ -708,17 +708,20 @@ function run(command, args, options = {}) {
     env,
     windowsVerbatimArguments: launch.windowsVerbatimArguments,
   })
-  // A null status means the process never started — almost always because the
-  // command is not on PATH. Left as `exit null: ` with empty output it reads as
-  // a mysterious failure of the thing being tested; `spawnSync` puts the real
-  // reason in `error`, so surface it.
+  // A null status means the process never started. The resolved file can still
+  // exist: a missing cwd, interpreter or loader also reports ENOENT. Keep the
+  // launch target and the operating-system error together so this cannot be
+  // mistaken for a resolver miss.
   const combined = `${result.stdout ?? ''}${result.stderr ?? ''}`
+  const launchFailure = result.error
+    ? `${launch.file}: ${result.error.code ?? 'launch failed'}: ${result.error.message ?? String(result.error)}`
+    : ''
   return {
     code: result.status,
     stdout: result.stdout ?? '',
     stderr: result.stderr ?? '',
     combined: result.status === null && result.error
-      ? `${combined}${result.error.code === 'ENOENT' ? `${command} is not on PATH` : String(result.error.message)}`
+      ? `${combined}${launchFailure}`
       : combined,
   }
 }
@@ -758,19 +761,16 @@ function readJson(text, name) {
  * has not been told about: the standalone installer writes into `~/.looptroop`
  * and edits a shell profile, which this process never sources.
  *
- * On Windows `where` prints every match, one per line, and the first is the one
- * that would run.
+ * On Windows this goes through the same PATHEXT-aware resolver as every other
+ * tool launch. A `where` result is only text and can choose an extensionless
+ * shim that CreateProcess would not run.
  */
-function whichLooptroop(pathHint) {
+export function whichLooptroop(pathHint) {
   const env = pathHint
     ? { PATH: `${pathHint}${IS_WINDOWS ? ';' : ':'}${process.env.PATH ?? ''}` }
-    : {}
-  const probe = IS_WINDOWS
-    ? run('where', ['looptroop'], { env })
-    : run('sh', ['-c', 'command -v looptroop'], { env })
-  if (probe.code !== 0) return null
-  const first = probe.stdout.split('\n').map((line) => line.trim()).find(Boolean)
-  return first && existsSync(first) ? first : null
+    : undefined
+  const resolved = findToolPath('looptroop', pathHint ? { env } : undefined)
+  return resolved && existsSync(resolved) ? resolved : null
 }
 
 /**

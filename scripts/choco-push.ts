@@ -17,6 +17,7 @@ import { spawnSync } from 'node:child_process'
 import { appendFileSync, existsSync } from 'node:fs'
 import { resolve } from 'node:path'
 import { classifyChocoPush } from './channel-state.ts'
+import { ArgumentError, parseArgs, requireNoPositional } from './cli-args.ts'
 import { resolveTrustedTool } from './trusted-tool.ts'
 
 const PUSH_SOURCE = 'https://push.chocolatey.org/'
@@ -31,10 +32,21 @@ function log(message: string): void {
   process.stdout.write(`${message}\n`)
 }
 
+const USAGE = 'Usage: node scripts/choco-push.ts --nupkg <path> --version X.Y.Z'
+const args = (() => {
+  try {
+    const parsed = parseArgs(process.argv.slice(2), { nupkg: 'value', version: 'value' })
+    requireNoPositional(parsed)
+    return parsed
+  } catch (error) {
+    if (!(error instanceof ArgumentError)) throw error
+    fail(error.message, USAGE)
+  }
+})()
+
 function flag(name: string): string {
-  const index = process.argv.indexOf(`--${name}`)
-  const value = index === -1 ? undefined : process.argv[index + 1]
-  if (value === undefined || value.startsWith('--')) fail(`--${name} is required.`)
+  const value = args.value(name)
+  if (value === null) fail(`--${name} is required.`, USAGE)
   return value
 }
 

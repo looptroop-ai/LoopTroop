@@ -1,3 +1,4 @@
-# Build with the tar context shown in Dockerfile: Dockerfile and the selected
-# release tarball only. A checkout context excludes all files by default.
+# Build with the tar context shown in Dockerfile: Dockerfile, the matching
+# release lockfile, and the selected release tarball only. A checkout context
+# excludes all files by default.
 *

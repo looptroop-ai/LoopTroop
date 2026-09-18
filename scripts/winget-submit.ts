@@ -103,9 +103,8 @@ function redact(text: string): string {
 /**
  * `gh` and `git`, resolved once each from a directory the runner owns.
  *
- * Every child of this script receives the credential through its environment,
- * so which program runs is which program receives the credential. Resolved on
- * first use and remembered, since `run` is called for both tools many times.
+ * Each child gets only the credential it needs through its environment. Resolved
+ * on first use and remembered, since `run` is called for both tools many times.
  */
 const resolvedTools = new Map<string, string>()
 function resolveTool(command: string): string {
@@ -118,24 +117,28 @@ function resolveTool(command: string): string {
 }
 
 /**
- * `GH_TOKEN` is set from `WINGET_TOKEN` for every child, because `gh` reads
- * that name and this job deliberately does not have the workflow's own token:
- * the pull request is opened against a repository we do not own, by a
- * credential that exists for exactly that purpose.
+ * `GH_TOKEN` is set from `WINGET_TOKEN` for `gh`, because `gh` reads that name
+ * and this job deliberately does not have the workflow's own token: the pull
+ * request is opened against a repository we do not own, by a credential that
+ * exists for exactly that purpose. Git gets only its per-invocation extraHeader;
+ * ambient GitHub CLI tokens and the source publish token are removed from its
+ * copied environment.
  */
 function run(command: string, args: string[], options: { cwd?: string, allowFailure?: boolean, quiet: true }): string | null
 function run(command: string, args: string[], options?: { cwd?: string, allowFailure?: boolean }): string
 function run(command: string, args: string[], options: { cwd?: string, allowFailure?: boolean, quiet?: true } = {}): string | null {
   try {
+    const env = { ...process.env }
+    delete env.GH_TOKEN
+    delete env.GITHUB_TOKEN
+    delete env.WINGET_TOKEN
+    if (command === 'gh') env.GH_TOKEN = token
+    if (command === 'git') Object.assign(env, gitAuth)
     return execFileSync(resolveTool(command), args, {
       cwd: options.cwd,
       encoding: 'utf8',
       stdio: ['ignore', 'pipe', 'pipe'],
-      env: {
-        ...process.env,
-        GH_TOKEN: token,
-        ...(command === 'git' ? gitAuth : {}),
-      },
+      env,
     })
   } catch (error) {
     // `quiet` distinguishes "this failed" from "this produced nothing", which
@@ -280,7 +283,7 @@ try {
       'installer URL and checksum come from one source of truth.',
       '',
       'The installer is a portable executable in a zip; it carries its own Node',
-      'runtime, so only git is declared as a dependency.',
+      'runtime, so Git and GitHub CLI are declared as dependencies.',
     ].join('\n'),
   ], { cwd: repo })?.trim()
 

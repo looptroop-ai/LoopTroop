@@ -288,6 +288,7 @@ Unreleased changes appear first and represent commits that have not yet been inc
 - Three aliases re-exported for a question-diff type that no longer exists, the three helpers behind them, an execution-setup runtime-path list with no reader, and an execution-setup barrel re-exporting three artifact names every caller already imports from their own module.
 
 ### Fixed
+- Windows Git-shutdown coverage now yields after process creation before requesting tree termination, avoiding a runner scheduling race that could leave a test child unverified.
 - Fixed bead approval accepting records without a status or priority, and fixed malformed bead JSON bodies surfacing as server errors instead of a stable 400 response. The client now gives canonical non-nullish empty fields precedence over legacy aliases, so an explicit clear is not resurrected during editing.
 - Fixed compact nested YAML block scalars, quoted sequence keys, and reserved-indicator recovery rewriting literal or folded text. Repair warnings still describe the formatting repair while the scalar payload remains unchanged.
 - Fixed bead saves caching the draft before server canonicalization. The response now carries the exact records and JSONL that were written, including derived dependency edges and preserved command metadata, with the matching content hash; explicit canonical empty values still clear their aliases.

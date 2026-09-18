@@ -335,6 +335,23 @@ describe('ticketRouter POST /tickets/:id/retry', () => {
     expect(sendTicketEvent).toHaveBeenCalledWith(ticket.id, { type: 'RETRY' })
   })
 
+  it('clears a confirmed cancellation fence before resuming another phase', async () => {
+    const { app, ticket } = setupRetryTicketApp()
+    ensureActivePhaseAttempt(ticket.id, 'REFINING_PRD')
+    patchTicket(ticket.id, {
+      status: 'BLOCKED_ERROR',
+      xstateSnapshot: JSON.stringify({ context: { previousStatus: 'REFINING_PRD' } }),
+      errorMessage: 'Refinement failed after cancellation cleanup was interrupted',
+    })
+    markTicketCancellationPending(ticket.id)
+
+    const response = await app.request(`/api/tickets/${ticket.id}/retry`, { method: 'POST' })
+
+    expect(response.status).toBe(200)
+    expect(isTicketCancellationPending(ticket.id)).toBe(false)
+    expect(sendTicketEvent).toHaveBeenCalledWith(ticket.id, { type: 'RETRY' })
+  })
+
   it('passes a verbatim user note into CODING recovery before retrying', async () => {
     const { app, ticket } = setupRetryTicketApp()
     patchTicket(ticket.id, {

@@ -760,6 +760,23 @@ export function handleVerifyTicket(c: Context) {
   return handleMergeTicket(c)
 }
 
+async function clearPendingCancellationForRetry(ticketId: string): Promise<boolean> {
+  if (!isTicketCancellationPending(ticketId)) return true
+  let stopped = false
+  try {
+    stopped = await abortTicketSessions(ticketId)
+  } catch {
+    return false
+  }
+  if (!stopped) return false
+  const windowsCleared = await clearTicketWindows(
+    ticketId,
+    'ticket_canceled',
+    'The ticket was canceled while the question was open.',
+  )
+  return windowsCleared && clearTicketCancellationPending(ticketId)
+}
+
 export async function handleRetryTicket(c: Context) {
   const ticketId = getTicketParam(c)
   const ticket = getTicketByRef(ticketId)
@@ -787,6 +804,14 @@ export async function handleRetryTicket(c: Context) {
   const userRetryNote = parsedBody.data.note
   if (userRetryNote !== undefined && ticket.previousStatus !== 'CODING' && ticket.previousStatus !== 'PREPARING_EXECUTION_ENV') {
     return c.json({ error: 'Retry notes are only available for implementation or workspace runtime setup errors' }, 409)
+  }
+
+  if (userRetryNote !== undefined && ticket.previousStatus === 'PREPARING_EXECUTION_ENV') {
+    if (!await clearPendingCancellationForRetry(ticketId)) {
+      return c.json({
+        error: 'Retry is not available until the previous cancellation cleanup is confirmed',
+      }, 409)
+    }
   }
 
   if (isExecutionBandStatus(ticket.previousStatus)) {
@@ -889,9 +914,9 @@ export async function handleRetryTicket(c: Context) {
       }, 409)
     }
 
-    if (isTicketCancellationPending(ticketId) && !clearTicketCancellationPending(ticketId)) {
+    if (!await clearPendingCancellationForRetry(ticketId)) {
       return c.json({
-        error: 'Retry is not available until the previous cancellation cleanup marker can be cleared',
+        error: 'Retry is not available until the previous cancellation cleanup is confirmed',
       }, 409)
     }
   }
@@ -904,6 +929,11 @@ export async function handleRetryTicket(c: Context) {
           error: 'Retry is not available until the previous OpenCode session stop is confirmed',
         }, 409)
       }
+    }
+    if (!await clearPendingCancellationForRetry(ticketId)) {
+      return c.json({
+        error: 'Retry is not available until the previous cancellation cleanup is confirmed',
+      }, 409)
     }
     if (isAttemptTrackedPhase(ticket.previousStatus)) {
       ensureActivePhaseAttempt(ticketId, ticket.previousStatus)

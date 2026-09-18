@@ -38,10 +38,11 @@ const existingProfile = {
   createdAt: '2026-03-08T14:28:53.309Z',
   updatedAt: '2026-03-11T10:49:38.623Z',
 }
-let profileForTest = existingProfile
+let profileForTest: typeof existingProfile | null | undefined = existingProfile
+let profileLoadingForTest = false
 
 vi.mock('@/hooks/useProfile', () => ({
-  useProfile: () => ({ data: profileForTest }),
+  useProfile: () => ({ data: profileForTest, isLoading: profileLoadingForTest }),
   useCreateProfile: () => ({
     mutate: createProfileMutate,
     isPending: false,
@@ -70,18 +71,23 @@ vi.mock('@/components/shared/DropdownPicker', () => ({
   DropdownPicker: ({ trigger }: { trigger: ReactNode }) => <>{trigger}</>,
 }))
 
-async function renderProfileSetup(queryClient: QueryClient = new QueryClient({
+async function renderProfileSetup(
+  queryClient: QueryClient = new QueryClient({
   defaultOptions: {
     queries: { retry: false, gcTime: Infinity },
     mutations: { retry: false, gcTime: Infinity },
   },
-})) {
+  }),
+  onDirtyChange?: (isDirty: boolean) => void,
+  onClose: () => void = () => undefined,
+) {
+  let rendered: ReturnType<typeof render>
   await act(async () => {
-    render(
+    rendered = render(
       <QueryClientProvider client={queryClient}>
         <TooltipProvider>
           <ToastProvider>
-            <ProfileSetup onClose={() => undefined} />
+            <ProfileSetup onClose={onClose} onDirtyChange={onDirtyChange} />
           </ToastProvider>
         </TooltipProvider>
       </QueryClientProvider>,
@@ -89,7 +95,7 @@ async function renderProfileSetup(queryClient: QueryClient = new QueryClient({
     await Promise.resolve()
   })
 
-  return queryClient
+  return { queryClient, rendered: rendered! }
 }
 
 describe('ProfileSetup', () => {
@@ -97,6 +103,7 @@ describe('ProfileSetup', () => {
     updateProfileMutate.mockReset()
     createProfileMutate.mockReset()
     profileForTest = existingProfile
+    profileLoadingForTest = false
     vi.stubGlobal('fetch', vi.fn(async (input: RequestInfo | URL) => {
       const url = typeof input === 'string'
         ? input
@@ -124,6 +131,100 @@ describe('ProfileSetup', () => {
 
   afterEach(() => {
     vi.unstubAllGlobals()
+  })
+
+  it('reports profile values as dirty only while they differ from the hydrated baseline', async () => {
+    const onDirtyChange = vi.fn()
+    await renderProfileSetup(undefined, onDirtyChange)
+
+    await waitFor(() => expect(onDirtyChange).toHaveBeenLastCalledWith(false))
+    const waitField = screen.getByLabelText('AI Question Wait')
+    fireEvent.change(waitField, { target: { value: '301' } })
+    await waitFor(() => expect(onDirtyChange).toHaveBeenLastCalledWith(true))
+
+    fireEvent.change(waitField, { target: { value: '300' } })
+    await waitFor(() => expect(onDirtyChange).toHaveBeenLastCalledWith(false))
+  })
+
+  it('keeps edits dirty when profile hydration resolves without a saved profile', async () => {
+    profileForTest = undefined
+    profileLoadingForTest = true
+    const onDirtyChange = vi.fn()
+    const view = await renderProfileSetup(undefined, onDirtyChange)
+
+    const waitField = screen.getByLabelText('AI Question Wait')
+    fireEvent.change(waitField, { target: { value: '301' } })
+    await waitFor(() => expect(onDirtyChange).toHaveBeenLastCalledWith(true))
+
+    profileForTest = null
+    profileLoadingForTest = false
+    view.rendered.rerender(
+      <QueryClientProvider client={view.queryClient}>
+        <TooltipProvider>
+          <ToastProvider>
+            <ProfileSetup onClose={() => undefined} onDirtyChange={onDirtyChange} />
+          </ToastProvider>
+        </TooltipProvider>
+      </QueryClientProvider>,
+    )
+    await waitFor(() => expect(onDirtyChange).toHaveBeenLastCalledWith(true))
+  })
+
+  it('keeps a pre-hydration edit when saved profile data arrives', async () => {
+    profileForTest = undefined
+    profileLoadingForTest = true
+    const onDirtyChange = vi.fn()
+    const view = await renderProfileSetup(undefined, onDirtyChange)
+
+    const waitField = screen.getByLabelText('AI Question Wait')
+    fireEvent.change(waitField, { target: { value: '301' } })
+    profileForTest = existingProfile
+    profileLoadingForTest = false
+    view.rendered.rerender(
+      <QueryClientProvider client={view.queryClient}>
+        <TooltipProvider>
+          <ToastProvider>
+            <ProfileSetup onClose={() => undefined} onDirtyChange={onDirtyChange} />
+          </ToastProvider>
+        </TooltipProvider>
+      </QueryClientProvider>,
+    )
+
+    expect(screen.getByLabelText('AI Question Wait')).toHaveValue(301)
+    await waitFor(() => expect(onDirtyChange).toHaveBeenLastCalledWith(true))
+  })
+
+  it('keeps the form open and dirty when edits follow an in-flight save', async () => {
+    const onClose = vi.fn()
+    const onDirtyChange = vi.fn()
+    await renderProfileSetup(undefined, onDirtyChange, onClose)
+
+    const waitField = screen.getByLabelText('AI Question Wait')
+    fireEvent.change(waitField, { target: { value: '301' } })
+    fireEvent.click(screen.getByRole('button', { name: 'Save' }))
+    fireEvent.change(waitField, { target: { value: '302' } })
+
+    const options = updateProfileMutate.mock.calls.at(-1)?.[1] as { onSuccess: () => void }
+    await act(async () => { options.onSuccess() })
+
+    expect(onClose).not.toHaveBeenCalled()
+    expect(onDirtyChange).toHaveBeenLastCalledWith(true)
+  })
+
+  it('confirms before Cancel discards a dirty profile draft', async () => {
+    const onClose = vi.fn()
+    const confirm = vi.spyOn(window, 'confirm').mockReturnValue(false)
+    await renderProfileSetup(undefined, undefined, onClose)
+
+    fireEvent.change(screen.getByLabelText('AI Question Wait'), { target: { value: '301' } })
+    fireEvent.click(screen.getByRole('button', { name: 'Cancel' }))
+    expect(confirm).toHaveBeenCalledWith('Discard your unsaved profile changes?')
+    expect(onClose).not.toHaveBeenCalled()
+
+    confirm.mockReturnValue(true)
+    fireEvent.click(screen.getByRole('button', { name: 'Cancel' }))
+    expect(onClose).toHaveBeenCalledTimes(1)
+    confirm.mockRestore()
   })
 
   it('keeps single-member quorum profiles editable and shows a Save action', async () => {

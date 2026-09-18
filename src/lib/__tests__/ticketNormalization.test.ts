@@ -1,4 +1,4 @@
-import { describe, expect, it } from 'vitest'
+import { describe, expect, it, vi } from 'vitest'
 import {
   normalizeTicketListResponse,
   normalizeTicketPatch,
@@ -147,6 +147,16 @@ describe('normalizeTicketListResponse', () => {
     expect(tickets).toHaveLength(2)
     expect(tickets[1]?.runtime.baseBranch).toBe('unknown')
   })
+
+  it('skips one malformed row and keeps the valid rows', () => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => undefined)
+
+    expect(normalizeTicketListResponse([wirePayload(), { id: '1:BROKEN' }, wirePayload({ id: '1:NORM-2' })]).map((ticket) => ticket.id))
+      .toEqual(['1:NORM-1', '1:NORM-2'])
+    expect(warn).toHaveBeenCalledWith(expect.stringContaining('Skipping malformed ticket at index 1'), expect.any(Error))
+
+    warn.mockRestore()
+  })
 })
 
 describe('normalizeTicketPatch', () => {
@@ -176,6 +186,82 @@ describe('normalizeTicketPatch', () => {
     expect(patch?.runtime?.totalBeads).toBe(4)
   })
 
+  it('retains optional ticket metadata carried by a full mutation response', () => {
+    const patch = normalizeTicketPatch({
+      id: '1:NORM-1',
+      pendingQuestions: {
+        requestCount: 1,
+        requestIds: ['session:req'],
+        questionCount: 2,
+        deadlineAt: null,
+        stoppedAt: null,
+      },
+      manualQa: {
+        activeVersion: 2,
+        completedRoundCount: 1,
+        latestOutcome: 'passed',
+        artifactAvailability: { checklist: true, results: true, coverage: false, summary: true },
+      },
+      manualQaOrigin: {
+        schemaVersion: 1,
+        source: 'manual_qa_improvement',
+        originId: 'origin-1',
+        actionId: 'action-1',
+        sourceTicketId: '1:SOURCE-1',
+        sourceTicketExternalId: 'SOURCE-1',
+        sourceProjectId: 1,
+        sourceVersion: 2,
+        sourceItemIds: ['item-1'],
+        sourceItemTitles: ['Check one'],
+        resultType: 'improvement',
+        relatedPrdRefs: [],
+        relatedBeadRefs: [],
+        evidenceRefs: [],
+        omittedEvidence: [],
+        titleSha256: 'hash',
+        descriptionSha256: 'hash',
+        omittedFields: [],
+        imageEvidenceMode: 'references_only',
+        createdAt: '2026-09-01T00:00:00.000Z',
+      },
+      effectiveGitHookPolicy: 'validate_required',
+      effectiveGitHookPolicySource: 'project',
+      lockedCouncilMemberVariants: { 'openai/gpt-5': 'high' },
+      runtime: {
+        beadsDiagnostics: { malformedLines: [3], unrepresentableLines: [7], readError: 'beads file unreadable' },
+      },
+    })
+
+    expect(patch).toMatchObject({
+      pendingQuestions: { requestCount: 1, requestIds: ['session:req'], questionCount: 2 },
+      manualQa: { activeVersion: 2, latestOutcome: 'passed' },
+      manualQaOrigin: { originId: 'origin-1', sourceVersion: 2 },
+      effectiveGitHookPolicy: 'validate_required',
+      effectiveGitHookPolicySource: 'project',
+      lockedCouncilMemberVariants: { 'openai/gpt-5': 'high' },
+    })
+    expect((patch?.runtime as Record<string, unknown>)?.beadsDiagnostics).toEqual({
+      malformedLines: [3],
+      unrepresentableLines: [7],
+      readError: 'beads file unreadable',
+    })
+  })
+
+  it('does not replace cached arrays with malformed partial values', () => {
+    const patch = normalizeTicketPatch({
+      id: '1:NORM-1',
+      availableActions: null,
+      lockedCouncilMembers: 'not-an-array',
+    })
+
+    expect(patch && 'availableActions' in patch).toBe(false)
+    expect(patch && 'lockedCouncilMembers' in patch).toBe(false)
+    expect(normalizeTicketPatch({ id: '1:NORM-1', availableActions: ['future_action'], lockedCouncilMembers: [42] }))
+      .toEqual({ id: '1:NORM-1' })
+    expect(normalizeTicketPatch({ id: '1:NORM-1', availableActions: [], lockedCouncilMembers: [] }))
+      .toMatchObject({ availableActions: [], lockedCouncilMembers: [] })
+  })
+
   it('refuses a payload with no id, which cannot address a cache entry', () => {
     expect(normalizeTicketPatch(undefined)).toBeNull()
     expect(normalizeTicketPatch({ status: 'CODING' })).toBeNull()
@@ -195,14 +281,41 @@ describe('normalizeTicketPatch runtime', () => {
     expect(patch?.runtime && 'prState' in patch.runtime).toBe(false)
   })
 
+  it('keeps nullable pull-request runtime fields when a patch carries them', () => {
+    const patch = normalizeTicketPatch({
+      id: '1:NORM-1',
+      runtime: { prUrl: 'https://github.com/example/repo/pull/4', prHeadSha: null },
+    })
+
+    expect(patch?.runtime).toEqual({
+      prUrl: 'https://github.com/example/repo/pull/4',
+      prHeadSha: null,
+    })
+  })
+
   it('still normalises the values of the keys it keeps', () => {
     const patch = normalizeTicketPatch({
       id: '1:NORM-1',
       runtime: { totalBeads: 'four', beads: [{ id: 'b1', title: 'One', status: 'done', iteration: 1 }] },
     })
 
-    expect(patch?.runtime?.totalBeads).toBe(0)
+    expect(patch?.runtime && 'totalBeads' in patch.runtime).toBe(false)
     expect(patch?.runtime?.beads).toHaveLength(1)
+  })
+
+  it('keeps valid nested patch fields without inventing defaults', () => {
+    const patch = normalizeTicketPatch({
+      id: '1:NORM-1',
+      runtime: { currentBead: 2, totalBeads: 'four' },
+      pendingQuestions: { requestCount: 3 },
+      manualQa: { artifactAvailability: { checklist: true } },
+      implementationTiming: { activeDurationMs: 120 },
+    })
+
+    expect(patch?.runtime).toEqual({ currentBead: 2 })
+    expect(patch?.pendingQuestions).toEqual({ requestCount: 3 })
+    expect(patch?.manualQa).toEqual({ artifactAvailability: { checklist: true } })
+    expect(patch?.implementationTiming).toEqual({ activeDurationMs: 120 })
   })
 })
 
@@ -267,5 +380,29 @@ describe('normalizeTicketPatch validation', () => {
     const patch = normalizeTicketPatch({ id: '1:NORM-1', previousStatus: null })
 
     expect(patch?.previousStatus).toBeNull()
+  })
+
+  it('drops invalid patch scalars without dropping valid fields', () => {
+    const patch = normalizeTicketPatch({ id: '1:NORM-1', status: 'CODING', title: 42, projectId: 'one' })
+
+    expect(patch).toEqual({ id: '1:NORM-1', status: 'CODING' })
+  })
+
+  it('preserves cached values when a partial array has no valid entries', () => {
+    const patch = normalizeTicketPatch({
+      id: '1:NORM-1',
+      status: '',
+      errorOccurrences: [{ id: { value: 7 } }],
+    })
+
+    expect(patch).toEqual({ id: '1:NORM-1' })
+  })
+
+  it('does not coerce an object into an active occurrence id', () => {
+    const ticket = normalizeTicketResponse(wirePayload({ activeErrorOccurrenceId: { id: 7 } }))
+    const patch = normalizeTicketPatch({ id: '1:NORM-1', activeErrorOccurrenceId: { id: 7 } })
+
+    expect(ticket.activeErrorOccurrenceId).toBeNull()
+    expect(patch && 'activeErrorOccurrenceId' in patch).toBe(false)
   })
 })

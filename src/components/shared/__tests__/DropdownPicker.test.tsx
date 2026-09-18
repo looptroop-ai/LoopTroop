@@ -88,6 +88,18 @@ describe('DropdownPicker', () => {
     }
   })
 
+  it('closes when Escape starts on the body after the popup loses focus', () => {
+    render(<ControlledPicker />)
+    const trigger = screen.getByRole('button', { name: 'Pick a project' })
+    fireEvent.click(trigger)
+
+    document.body.focus()
+    fireEvent.keyDown(document.body, { key: 'Escape' })
+
+    expect(screen.queryByRole('button', { name: 'Project one' })).not.toBeInTheDocument()
+    expect(trigger).toHaveAttribute('aria-expanded', 'false')
+  })
+
   it('asks a caller that holds it open to close, without touching the selection', () => {
     const onOpenChange = vi.fn()
     const onSelect = vi.fn()
@@ -123,6 +135,26 @@ describe('DropdownPicker — focus follows the popup', () => {
     fireEvent.click(screen.getByRole('button', { name: 'Pick a project' }))
 
     expect(document.activeElement).toBe(screen.getByRole('button', { name: 'Project one' }))
+  })
+
+  it('moves focus only after the popup becomes visible', () => {
+    const originalFocus = HTMLElement.prototype.focus
+    const visibilityAtFocus: string[] = []
+    const focusSpy = vi.spyOn(HTMLElement.prototype, 'focus').mockImplementation(function (this: HTMLElement) {
+      if (this.textContent === 'Project one') {
+        visibilityAtFocus.push((this.parentElement as HTMLElement).style.visibility)
+      }
+      originalFocus.call(this)
+    })
+
+    try {
+      render(<ControlledPicker />)
+      fireEvent.click(screen.getByRole('button', { name: 'Pick a project' }))
+
+      expect(visibilityAtFocus).toEqual(['visible'])
+    } finally {
+      focusSpy.mockRestore()
+    }
   })
 
   it('hands focus back to the trigger when the popup goes away', () => {

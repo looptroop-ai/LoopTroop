@@ -1,4 +1,4 @@
-import { useState, useEffect, useCallback, useMemo } from 'react'
+import { useState, useEffect, useCallback, useMemo, useRef } from 'react'
 import { useSaveTicketUIState, useTicket } from '@/hooks/useTickets'
 import { useSSE, type SSEConnectionState } from '@/hooks/useSSE'
 import { useUI } from '@/context/useUI'
@@ -30,6 +30,7 @@ import { DataUnavailableBanner } from '@/components/shared/DataUnavailableBanner
 import { useRecoveryAutoReload } from '@/hooks/useRecoveryAutoReload'
 import { isEscapeClaimedByNestedOverlay } from '@/lib/overlays'
 import { useAttentionAck } from '@/hooks/useAttentionAck'
+import { useDialogFocus } from '@/hooks/useDialogFocus'
 
 function toDebugJson(data: Record<string, unknown>) {
   if (import.meta.env.PROD) return '[debug]'
@@ -233,6 +234,10 @@ export function TicketDashboard() {
     workflowRevision: null,
   })
   const [isMobileNavOpen, setIsMobileNavOpen] = useState(false)
+  const mobileNavRef = useRef<HTMLDivElement>(null)
+  const canRenderMobileNav = Boolean(ticketId && ticket)
+  const isMobileNavFocusOpen = isMobileNavOpen && canRenderMobileNav
+  const handleMobileNavTrapKeyDown = useDialogFocus(isMobileNavFocusOpen, mobileNavRef)
   const [liveUpdatesState, setLiveUpdatesState] = useState<SSEConnectionState>('connecting')
   const isRecoverableTicketLoading = Boolean(ticketId && !ticket && hasTicketRendered(ticketId))
   useRecoveryAutoReload(`ticket-loading:${ticketId ?? 'none'}`, isRecoverableTicketLoading)
@@ -249,6 +254,27 @@ export function TicketDashboard() {
   const snapshotReviewCutoffStatus = ticket?.reviewCutoffStatus ?? undefined
 
   const closeMobileNav = useCallback(() => setIsMobileNavOpen(false), [])
+
+  useEffect(() => {
+    if (!canRenderMobileNav && isMobileNavOpen) closeMobileNav()
+  }, [canRenderMobileNav, closeMobileNav, isMobileNavOpen])
+
+  useEffect(() => {
+    if (!isMobileNavFocusOpen) return
+
+    const desktopQuery = window.matchMedia('(min-width: 768px)')
+    const closeOnDesktop = (event: MediaQueryListEvent) => {
+      if (event.matches) closeMobileNav()
+    }
+
+    if (desktopQuery.matches) {
+      closeMobileNav()
+      return
+    }
+
+    desktopQuery.addEventListener('change', closeOnDesktop)
+    return () => desktopQuery.removeEventListener('change', closeOnDesktop)
+  }, [closeMobileNav, isMobileNavFocusOpen])
 
   const handleNavResize = useCallback((width: number) => {
     setNavWidth(width)
@@ -502,7 +528,7 @@ export function TicketDashboard() {
       // without this the same keypress that dismissed "Cancel ticket?" also left the
       // ticket. Radix menus, selects and hover cards are not dialogs, which is why
       // this cannot be a `role="dialog"` check alone.
-      if (isEscapeClaimedByNestedOverlay(e, null)) return
+      if (isEscapeClaimedByNestedOverlay(e, isMobileNavOpen ? mobileNavRef.current : null)) return
 
       if (isMobileNavOpen) {
         setIsMobileNavOpen(false)
@@ -636,7 +662,23 @@ export function TicketDashboard() {
 
           {/* Mobile nav overlay */}
           {isMobileNavOpen && (
-            <div className="md:hidden fixed inset-0 z-[70]">
+            <div
+              ref={mobileNavRef}
+              role="dialog"
+              aria-modal="true"
+              aria-label="Navigation"
+              tabIndex={-1}
+              onKeyDown={(event) => {
+                if (event.key === 'Escape') {
+                  if (isEscapeClaimedByNestedOverlay(event.nativeEvent, mobileNavRef.current)) return
+                  event.stopPropagation()
+                  closeMobileNav()
+                  return
+                }
+                handleMobileNavTrapKeyDown(event)
+              }}
+              className="md:hidden fixed inset-0 z-[70] outline-none"
+            >
               <div className="fixed inset-0 bg-black/50" onClick={closeMobileNav} />
               <div className="fixed left-0 top-0 bottom-0 z-[71] w-72 bg-background border-r border-border shadow-xl flex flex-col">
                 <div className="flex items-center justify-end p-2">

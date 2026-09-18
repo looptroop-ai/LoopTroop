@@ -1449,6 +1449,57 @@ items:
     expect(rawPre.className).not.toContain('overflow-x-auto')
   })
 
+  it('pairs equal-length expansion rows by position when execution ids are renamed', () => {
+    const semanticPlanContent = JSON.stringify([
+      { id: 'plan-first', title: 'First expansion' },
+      { id: 'plan-second', title: 'Second expansion' },
+    ])
+    const expandedContent = JSON.stringify([
+      { id: 'run-first', title: 'First expansion', issueType: 'task', labels: ['first'], targetFiles: ['src/first.ts'], priority: 1, status: 'pending' },
+      { id: 'run-second', title: 'Second expansion', issueType: 'task', labels: ['second'], targetFiles: ['src/second.ts'], priority: 2, status: 'pending' },
+    ])
+
+    render(
+      <ArtifactContent
+        artifactId="refined-beads"
+        phase="EXPANDING_BEADS"
+        content={JSON.stringify({ semanticPlanContent, refinedContent: expandedContent })}
+      />,
+    )
+
+    fireEvent.click(screen.getByRole('button', { name: 'Diff vs Plan' }))
+
+    expect(screen.getByText('plan-first -> run-first')).toBeInTheDocument()
+    expect(screen.getByText('plan-second -> run-second')).toBeInTheDocument()
+    expect(screen.getByText(/Expansion added 12 execution fields across 2 beads\./)).toBeInTheDocument()
+  })
+
+  it('shares expansion bead parsing between the count and sections view', () => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => undefined)
+    const semanticPlanContent = JSON.stringify([
+      { id: 'plan-one', title: 'One' },
+      { title: 'Malformed plan entry' },
+    ])
+    const expandedContent = JSON.stringify([
+      { id: 'run-one', title: 'One', issueType: 'task', priority: 1, status: 'pending' },
+      { title: 'Malformed expanded entry' },
+    ])
+    const content = JSON.stringify({ semanticPlanContent, refinedContent: expandedContent })
+
+    const view = render(
+      <ArtifactContent artifactId="refined-beads" phase="EXPANDING_BEADS" content={content} />,
+    )
+    view.rerender(
+      <TooltipProvider>
+        <ArtifactContent artifactId="refined-beads" phase="EXPANDING_BEADS" content={content} />
+      </TooltipProvider>,
+    )
+
+    // One warning per independently malformed source, not a second warning when
+    // the sections view parses the same expanded source for its cards.
+    expect(warn).toHaveBeenCalledTimes(2)
+  })
+
   it('hides persisted no-op beads ui diff entries in rendered bead diffs', () => {
     const beadsContent = buildBeadsDraftContent({
       title: 'Keep the switcher bead unchanged',

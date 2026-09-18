@@ -91,6 +91,32 @@ describe('useTicketAction cache patching', () => {
       availableActions: ['cancel'],
     })
   })
+
+  it('keeps malformed patch scalars out of the detail and board caches', async () => {
+    vi.stubGlobal('fetch', vi.fn(async () => jsonResponse({
+      message: 'Retrying',
+      ticketId,
+      ticket: { id: ticketId, status: 'CODING', title: 42, projectId: '1' },
+    })))
+    const cached = { id: ticketId, status: 'WAITING_PR_REVIEW', title: 'Keep this title', projectId: 1 }
+    const { client, wrapper } = setup(cached)
+    client.setQueryData(['tickets'], [cached])
+    const { result } = renderHook(() => useTicketAction(), { wrapper })
+
+    result.current.mutate({ id: ticketId, action: 'retry' })
+
+    await waitFor(() => expect(result.current.isSuccess).toBe(true))
+    expect(client.getQueryData<Ticket>(['ticket', ticketId])).toMatchObject({
+      status: 'CODING',
+      title: 'Keep this title',
+      projectId: 1,
+    })
+    expect(client.getQueryData<Ticket[]>(['tickets'])).toEqual([expect.objectContaining({
+      status: 'CODING',
+      title: 'Keep this title',
+      projectId: 1,
+    })])
+  })
 })
 
 describe('useCancelTicket with deleteTicket', () => {

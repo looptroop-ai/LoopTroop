@@ -48,6 +48,7 @@ function getFocusable(roots: HTMLElement[]): HTMLElement[] {
       if (element.hasAttribute('inert') || element.hasAttribute('hidden')) continue
       if (element.tabIndex < 0) continue
       if (element.closest('[inert]')) continue
+      if (element.closest('[hidden]')) continue
       found.push(element)
     }
   }

@@ -34,6 +34,44 @@ interface ProjectFormProps {
   onClose: () => void
   onBack?: () => void
   project?: Project
+  onDirtyChange?: (isDirty: boolean) => void
+}
+
+function projectDraftSnapshot(values: {
+  name: string
+  shortname: string
+  folder: string
+  icon: string
+  color: string
+  manualQaOverride: ManualQaOverride
+  aiQuestionsOverride: AiQuestionsOverride
+  aiQuestionWindowOverride: AiQuestionWindowOverride
+  gitHookPolicy: GitHookPolicy
+  ignoreMode: IgnoreMode
+  existingStateAction: ExistingStateAction
+}): string {
+  return JSON.stringify(values)
+}
+
+function projectRestoreSnapshot(snapshot: string | null): string | null {
+  if (snapshot === null) return null
+  try {
+    const values = JSON.parse(snapshot) as Record<string, unknown>
+    delete values.folder
+    return JSON.stringify(values)
+  } catch {
+    return snapshot
+  }
+}
+
+function projectSnapshotWithFolder(snapshot: string, folder: string): string {
+  try {
+    const values = JSON.parse(snapshot) as Record<string, unknown>
+    values.folder = folder
+    return JSON.stringify(values)
+  } catch {
+    return snapshot
+  }
 }
 
 interface GitCheckResponse {
@@ -71,14 +109,16 @@ function formatRelativeTime(dateStr: string) {
   return `${Math.floor(days / 365)} years ago`
 }
 
-export function ProjectForm({ onClose, onBack, project }: ProjectFormProps) {
+export function ProjectForm({ onClose, onBack, project, onDirtyChange }: ProjectFormProps) {
   const createProject = useCreateProject()
   const updateProject = useUpdateProject()
   const deleteProject = useDeleteProject()
   const { addToast } = useToast()
-  const { data: profile } = useProfile()
+  const { data: profile, isLoading: profileLoading } = useProfile()
   const { data: projects = [] } = useProjects()
-  const isEditing = !!project
+  const [createdProject, setCreatedProject] = useState<Project | null>(null)
+  const editingProject = project ?? createdProject
+  const isEditing = !!editingProject
   const [name, setName] = useState(project?.name ?? '')
   const [shortname, setShortname] = useState(project?.shortname ?? '')
   const [folder, setFolder] = useState(project?.folderPath ?? '')
@@ -112,7 +152,20 @@ export function ProjectForm({ onClose, onBack, project }: ProjectFormProps) {
   const [isAdvancedOpen, setIsAdvancedOpen] = useState(false)
   const restorePrefillKeyRef = useRef<string | null>(null)
   const profileDefaultsAppliedRef = useRef(isEditing || !!profile)
+  const projectBaselineRef = useRef<string | null>(null)
+  const projectInitialDraftRef = useRef<string | null>(null)
+  const projectInitialValuesRef = useRef({
+    name,
+    shortname,
+    folder,
+    icon,
+    color,
+    aiQuestionsOverride,
+    aiQuestionWindowOverride,
+    existingStateAction,
+  })
   const closeView = onBack ?? onClose
+  const projectIdentityLocked = isEditing || createProject.isPending
   const restoreMode = !isEditing
     && !gitInfo.alreadyAttached
     && gitInfo.hasLoopTroopState === true
@@ -128,6 +181,22 @@ export function ProjectForm({ onClose, onBack, project }: ProjectFormProps) {
     ? projects.find((existingProject) => existingProject.shortname.trim().toUpperCase() === shortname.trim().toUpperCase())
     : undefined
   const hasProjectIdentityConflict = !!duplicateNameProject || !!duplicateShortnameProject
+  const draftSnapshot = projectDraftSnapshot({
+    name,
+    shortname,
+    folder,
+    icon,
+    color,
+    manualQaOverride,
+    aiQuestionsOverride,
+    aiQuestionWindowOverride,
+    gitHookPolicy,
+    ignoreMode,
+    existingStateAction,
+  })
+  const draftSnapshotRef = useRef(draftSnapshot)
+  draftSnapshotRef.current = draftSnapshot
+  if (projectInitialDraftRef.current === null) projectInitialDraftRef.current = draftSnapshot
 
   useEffect(() => {
     if (!folder.trim()) {
@@ -159,33 +228,40 @@ export function ProjectForm({ onClose, onBack, project }: ProjectFormProps) {
             && data.repoRoot
             && restorePrefillKeyRef.current !== data.repoRoot
           ) {
-            profileDefaultsAppliedRef.current = true
-            setName(data.existingProject.name)
-            setShortname(data.existingProject.shortname)
-            setIcon(data.existingProject.icon ?? '📁')
-            setColor(data.existingProject.color ?? '#3b82f6')
-            if (data.existingProject.manualQaOverride !== undefined) {
-              setManualQaOverride(data.existingProject.manualQaOverride ?? profile?.manualQaEnabled ?? PROFILE_DEFAULTS.manualQaEnabled)
+            const currentRestoreDraft = projectRestoreSnapshot(draftSnapshotRef.current)
+            const baselineRestoreDraft = projectRestoreSnapshot(
+              projectBaselineRef.current ?? projectInitialDraftRef.current,
+            )
+            const currentDraftIsDirty = currentRestoreDraft !== baselineRestoreDraft
+            if (!currentDraftIsDirty) {
+              profileDefaultsAppliedRef.current = true
+              setName(data.existingProject.name)
+              setShortname(data.existingProject.shortname)
+              setIcon(data.existingProject.icon ?? '📁')
+              setColor(data.existingProject.color ?? '#3b82f6')
+              if (data.existingProject.manualQaOverride !== undefined) {
+                setManualQaOverride(data.existingProject.manualQaOverride ?? profile?.manualQaEnabled ?? PROFILE_DEFAULTS.manualQaEnabled)
+              }
+              if (data.existingProject.aiQuestionsOverride !== undefined) {
+                setAiQuestionsOverride(data.existingProject.aiQuestionsOverride)
+              }
+              if (data.existingProject.aiQuestionWindowOverride !== undefined) {
+                setAiQuestionWindowOverride(data.existingProject.aiQuestionWindowOverride)
+              }
+              if (data.existingProject.gitHookPolicy !== undefined) {
+                setGitHookPolicy(
+                  normalizeGitHookPolicySetting(data.existingProject.gitHookPolicy)
+                    ?? normalizeGitHookPolicySetting(profile?.gitHookPolicy)
+                    ?? DEFAULT_GIT_HOOK_POLICY,
+                )
+              }
+              if (data.existingProject.ignoreMode !== undefined) {
+                setIgnoreMode(normalizeIgnoreMode(data.existingProject.ignoreMode) ?? DEFAULT_IGNORE_MODE)
+              }
+              setExistingStateAction('restore')
+              setIsExistingStateConfirmOpen(false)
+              restorePrefillKeyRef.current = data.repoRoot
             }
-            if (data.existingProject.aiQuestionsOverride !== undefined) {
-              setAiQuestionsOverride(data.existingProject.aiQuestionsOverride)
-            }
-            if (data.existingProject.aiQuestionWindowOverride !== undefined) {
-              setAiQuestionWindowOverride(data.existingProject.aiQuestionWindowOverride)
-            }
-            if (data.existingProject.gitHookPolicy !== undefined) {
-              setGitHookPolicy(
-                normalizeGitHookPolicySetting(data.existingProject.gitHookPolicy)
-                  ?? normalizeGitHookPolicySetting(profile?.gitHookPolicy)
-                  ?? DEFAULT_GIT_HOOK_POLICY,
-              )
-            }
-            if (data.existingProject.ignoreMode !== undefined) {
-              setIgnoreMode(normalizeIgnoreMode(data.existingProject.ignoreMode) ?? DEFAULT_IGNORE_MODE)
-            }
-            setExistingStateAction('restore')
-            setIsExistingStateConfirmOpen(false)
-            restorePrefillKeyRef.current = data.repoRoot
           }
           setGitInfo(data)
         })
@@ -206,11 +282,67 @@ export function ProjectForm({ onClose, onBack, project }: ProjectFormProps) {
 
   useEffect(() => {
     if (profileDefaultsAppliedRef.current || isEditing || !profile || restorePrefillKeyRef.current) return
+    const currentDraftIsDirty = projectBaselineRef.current !== null
+      ? draftSnapshotRef.current !== projectBaselineRef.current
+      : draftSnapshotRef.current !== projectInitialDraftRef.current
+    const nextManualQaOverride = profile.manualQaEnabled
+    const nextGitHookPolicy = profile.gitHookPolicy
+    const nextIgnoreMode = profile.ignoreMode ?? DEFAULT_IGNORE_MODE
     profileDefaultsAppliedRef.current = true
-    setManualQaOverride(profile.manualQaEnabled)
-    setGitHookPolicy(profile.gitHookPolicy)
-    setIgnoreMode(profile.ignoreMode ?? DEFAULT_IGNORE_MODE)
-  }, [isEditing, profile])
+    if (currentDraftIsDirty) {
+      // Keep the draft, but compare it with the values that arrived from the
+      // profile so the modal still explains what would be discarded. Identity
+      // fields and explicit overrides have no profile value: their baseline is
+      // the value present before hydration, never text typed while it raced.
+      projectBaselineRef.current = projectDraftSnapshot({
+        ...projectInitialValuesRef.current,
+        manualQaOverride: nextManualQaOverride,
+        aiQuestionsOverride: projectInitialValuesRef.current.aiQuestionsOverride,
+        aiQuestionWindowOverride: projectInitialValuesRef.current.aiQuestionWindowOverride,
+        gitHookPolicy: nextGitHookPolicy,
+        ignoreMode: nextIgnoreMode,
+        existingStateAction: projectInitialValuesRef.current.existingStateAction,
+      })
+      onDirtyChange?.(true)
+      return
+    }
+    projectBaselineRef.current = projectDraftSnapshot({
+      name,
+      shortname,
+      folder,
+      icon,
+      color,
+      manualQaOverride: nextManualQaOverride,
+      aiQuestionsOverride,
+      aiQuestionWindowOverride,
+      gitHookPolicy: nextGitHookPolicy,
+      ignoreMode: nextIgnoreMode,
+      existingStateAction,
+    })
+    setManualQaOverride(nextManualQaOverride)
+    setGitHookPolicy(nextGitHookPolicy)
+    setIgnoreMode(nextIgnoreMode)
+  }, [aiQuestionWindowOverride, aiQuestionsOverride, color, existingStateAction, folder, icon, ignoreMode, isEditing, manualQaOverride, name, onDirtyChange, profile, shortname])
+
+  useEffect(() => {
+    if (projectBaselineRef.current === null) {
+      // The first draft is the meaningful baseline even while profile defaults
+      // are still loading. Identity fields have no profile default; if no
+      // profile arrives, never turn a value typed during loading into a clean
+      // baseline.
+      projectBaselineRef.current = projectInitialDraftRef.current ?? draftSnapshot
+    }
+  }, [draftSnapshot, isEditing, profile, profileLoading])
+
+  const isDirty = projectBaselineRef.current !== null && draftSnapshot !== projectBaselineRef.current
+  useEffect(() => {
+    onDirtyChange?.(isDirty)
+  }, [isDirty, onDirtyChange])
+
+  const handleCloseView = () => {
+    if (isDirty && !window.confirm('Discard your unsaved project changes?')) return
+    closeView()
+  }
 
   const handleBrowseFolder = () => {
     setIsFolderPickerOpen(true)
@@ -222,6 +354,7 @@ export function ProjectForm({ onClose, onBack, project }: ProjectFormProps) {
   }
 
   const createProjectWithSelectedAction = () => {
+    const submittedSnapshot = draftSnapshotRef.current
     createProject.mutate(
       {
         name,
@@ -237,7 +370,16 @@ export function ProjectForm({ onClose, onBack, project }: ProjectFormProps) {
         ...(restoreMode ? { existingStateAction } : {}),
       },
       {
-        onSuccess: () => {
+        onSuccess: (created: Project) => {
+          setCreatedProject(created)
+          // The server stores the repository root even when the form started
+          // from a subfolder. Treat that canonical identity as part of the
+          // submitted snapshot while preserving any later editable fields.
+          const canonicalSubmittedSnapshot = projectSnapshotWithFolder(submittedSnapshot, created.folderPath)
+          const canonicalCurrentSnapshot = projectSnapshotWithFolder(draftSnapshotRef.current, created.folderPath)
+          projectBaselineRef.current = canonicalSubmittedSnapshot
+          setFolder(created.folderPath)
+          onDirtyChange?.(canonicalCurrentSnapshot !== canonicalSubmittedSnapshot)
           const successMessage = !restoreMode
             ? 'Project created.'
             : existingStateAction === 'clear_tickets'
@@ -246,7 +388,7 @@ export function ProjectForm({ onClose, onBack, project }: ProjectFormProps) {
                 ? 'Fresh project created after removing existing LoopTroop state.'
                 : 'Project restored from existing LoopTroop data.'
           addToast('success', successMessage)
-          closeView()
+          if (canonicalCurrentSnapshot === canonicalSubmittedSnapshot) closeView()
         },
       },
     )
@@ -254,10 +396,11 @@ export function ProjectForm({ onClose, onBack, project }: ProjectFormProps) {
 
   const handleSubmit = (e: React.FormEvent) => {
     e.preventDefault()
-    if (isEditing) {
+    if (editingProject) {
+      const submittedSnapshot = draftSnapshotRef.current
       updateProject.mutate(
         {
-          id: project.id,
+          id: editingProject.id,
           name,
           icon,
           color,
@@ -267,9 +410,12 @@ export function ProjectForm({ onClose, onBack, project }: ProjectFormProps) {
           aiQuestionWindowOverride,
         },
         {
-          onSuccess: () => {
+          onSuccess: (updated: Project) => {
+            if (!project) setCreatedProject(updated)
+            projectBaselineRef.current = submittedSnapshot
+            onDirtyChange?.(draftSnapshotRef.current !== submittedSnapshot)
             addToast('success', 'Project updated.')
-            closeView()
+            if (draftSnapshotRef.current === submittedSnapshot) closeView()
           },
         },
       )
@@ -293,9 +439,9 @@ export function ProjectForm({ onClose, onBack, project }: ProjectFormProps) {
   }
 
   const handleDelete = () => {
-    if (!project) return
+    if (!editingProject) return
     if (!confirm('Are you sure you want to delete this project? This will remove its local .looptroop state from the repo and cannot be undone.')) return
-    deleteProject.mutate(project.id, {
+    deleteProject.mutate(editingProject.id, {
       onSuccess: () => {
         addToast('success', 'Project deleted and local LoopTroop state removed.')
         closeView()
@@ -322,7 +468,7 @@ export function ProjectForm({ onClose, onBack, project }: ProjectFormProps) {
     <>
     <form onSubmit={handleSubmit} className="max-w-2xl mx-auto space-y-6">
       {onBack && (
-        <Button type="button" variant="ghost" size="sm" onClick={onBack}>
+        <Button type="button" variant="ghost" size="sm" onClick={handleCloseView}>
           <ArrowLeft className="h-4 w-4 mr-1" />
           Back to list
         </Button>
@@ -355,7 +501,7 @@ export function ProjectForm({ onClose, onBack, project }: ProjectFormProps) {
             </div>
             <div className="w-32">
               <label htmlFor="project-shortname" className="text-sm font-medium block mb-1">Short Name</label>
-              {isEditing || isSavedShortnameLocked ? (
+              {projectIdentityLocked || isSavedShortnameLocked ? (
                 <span className="inline-block px-3 py-2 text-sm font-mono text-muted-foreground uppercase">{shortname}</span>
               ) : (
                 <input
@@ -527,7 +673,7 @@ export function ProjectForm({ onClose, onBack, project }: ProjectFormProps) {
               </div>
             )}
           </div>
-          {isEditing ? (
+          {editingProject ? (
             <div className="space-y-4">
               <div>
                 <label className="text-sm font-medium block mb-1">Project Folder</label>
@@ -561,10 +707,10 @@ export function ProjectForm({ onClose, onBack, project }: ProjectFormProps) {
                                           <span 
                                                           className="text-sm font-medium cursor-help"
                                                         >
-                                                          {formatRelativeTime(project.createdAt)}
+                                                          {formatRelativeTime(editingProject.createdAt)}
                                                         </span>
                                         </TooltipTrigger>
-                                        <TooltipContent className="max-w-xs text-center text-balance">{new Date(project.createdAt).toLocaleString()}</TooltipContent>
+                                        <TooltipContent className="max-w-xs text-center text-balance">{new Date(editingProject.createdAt).toLocaleString()}</TooltipContent>
                                       </Tooltip>
                 </div>
                 <div>
@@ -574,15 +720,15 @@ export function ProjectForm({ onClose, onBack, project }: ProjectFormProps) {
                                           <span 
                                                           className="text-sm font-medium cursor-help"
                                                         >
-                                                          {formatRelativeTime(project.updatedAt)}
-                                                          {project.latestActivityTicketExternalId && (
+                                                          {formatRelativeTime(editingProject.updatedAt)}
+                                                          {editingProject.latestActivityTicketExternalId && (
                                                             <span className="ml-1 text-muted-foreground font-normal">
-                                                              ({project.latestActivityTicketExternalId})
+                                                              ({editingProject.latestActivityTicketExternalId})
                                                             </span>
                                                           )}
                                                         </span>
                                         </TooltipTrigger>
-                                        <TooltipContent className="max-w-xs text-center text-balance">{`${new Date(project.updatedAt).toLocaleString()}${project.latestActivityTicketExternalId ? ` - Ticket ${project.latestActivityTicketExternalId}` : ''}`}</TooltipContent>
+                                        <TooltipContent className="max-w-xs text-center text-balance">{`${new Date(editingProject.updatedAt).toLocaleString()}${editingProject.latestActivityTicketExternalId ? ` - Ticket ${editingProject.latestActivityTicketExternalId}` : ''}`}</TooltipContent>
                                       </Tooltip>
                 </div>
               </div>
@@ -603,12 +749,13 @@ export function ProjectForm({ onClose, onBack, project }: ProjectFormProps) {
                     type="text"
                     value={folder}
                     onChange={e => setFolder(e.target.value)}
+                    disabled={createProject.isPending}
                     className="w-full rounded-md border border-input bg-background px-3 py-2 text-sm font-mono"
                     placeholder="Choose a folder or type a path"
                     autoComplete="off"
                     required
                   />
-                  <Button type="button" variant="outline" onClick={handleBrowseFolder}>
+                  <Button type="button" variant="outline" onClick={handleBrowseFolder} disabled={createProject.isPending}>
                     Browse...
                   </Button>
                 </div>
@@ -809,7 +956,7 @@ export function ProjectForm({ onClose, onBack, project }: ProjectFormProps) {
           </div>
         )}
         <div className="flex gap-2.5 ml-auto">
-          <Button type="button" variant="outline" onClick={closeView} className="rounded-lg">Cancel</Button>
+          <Button type="button" variant="outline" onClick={handleCloseView} className="rounded-lg">Cancel</Button>
           <Button
             type="submit"
             disabled={isBusy || (!isEditing && (gitStatus !== 'valid' || gitInfo.alreadyAttached || hasProjectIdentityConflict))}
@@ -836,12 +983,12 @@ export function ProjectForm({ onClose, onBack, project }: ProjectFormProps) {
       initialPath={folder}
     />
 
-    {isEditing && project && (
+    {editingProject && (
       <DeleteWorktreesDialog
         open={isWorktreesDialogOpen}
         onClose={() => setIsWorktreesDialogOpen(false)}
-        projectId={project.id}
-        projectName={project.name}
+        projectId={editingProject.id}
+        projectName={editingProject.name}
       />
     )}
     {restoreMode && gitInfo.existingProject && existingStateAction !== 'restore' && (

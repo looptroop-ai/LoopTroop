@@ -66,7 +66,7 @@ function ModelRow({ model, selected, disabled, onSelect, id, active }: {
       type="button"
       id={id}
       role="option"
-      aria-selected={active ?? selected}
+      aria-selected={selected}
       aria-disabled={disabled || undefined}
       tabIndex={-1}
       onMouseDown={event => event.preventDefault()}
@@ -459,14 +459,14 @@ export function ModelPicker({ id, label, value, onChange, placeholder = 'Search 
           {/* Results */}
           <div className="overflow-y-auto scroll-pt-8 flex-1">
             {isError && !isFetching && (
-              <div className="flex items-center gap-2 px-4 py-6 text-sm text-destructive">
+              <div role="alert" aria-live="assertive" className="flex items-center gap-2 px-4 py-6 text-sm text-destructive">
                 <AlertCircle className="h-4 w-4 shrink-0" aria-hidden="true" />
                 {errorCopy.detail}
               </div>
             )}
 
             {(isLoading || (isError && isFetching)) && (
-              <div className="flex items-center justify-center gap-2 px-4 py-6 text-sm text-muted-foreground">
+              <div role="status" aria-live="polite" className="flex items-center justify-center gap-2 px-4 py-6 text-sm text-muted-foreground">
                 <Loader2 className="h-4 w-4 animate-spin" aria-hidden="true" />
                 {isError ? 'Connecting to OpenCode…' : 'Loading models from OpenCode…'}
               </div>

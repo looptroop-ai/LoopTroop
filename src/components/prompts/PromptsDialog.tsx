@@ -1,10 +1,10 @@
-import { useEffect, useMemo, useState } from 'react'
+import { useEffect, useMemo, useRef, useState } from 'react'
 import { AlertTriangle, ChevronRight, PanelLeftClose, PanelLeftOpen, RotateCcw } from 'lucide-react'
 import { Button } from '@/components/ui/button'
 import { Badge } from '@/components/ui/badge'
 import { cn } from '@/lib/utils'
 import { usePromptCatalog, useResetAllPrompts, type PromptGroup } from '@/hooks/usePrompts'
-import { PromptEditor } from './PromptEditor'
+import { PromptEditor, type PromptResetRequest } from './PromptEditor'
 
 function firstPromptId(groups: PromptGroup[]): string | null {
   for (const group of groups) {
@@ -16,10 +16,14 @@ function firstPromptId(groups: PromptGroup[]): string | null {
   return null
 }
 
-export function PromptsDialog() {
+export function PromptsDialog({ onDirtyChange }: { onDirtyChange?: (isDirty: boolean) => void }) {
   const { data, isLoading, error } = usePromptCatalog()
   const resetAll = useResetAllPrompts()
   const [selectedPromptId, setSelectedPromptId] = useState<string | null>(null)
+  const [editorDirty, setEditorDirty] = useState(false)
+  const [resetRequest, setResetRequest] = useState<PromptResetRequest | null>(null)
+  const resetRequestIdRef = useRef(0)
+  const [resetError, setResetError] = useState<string | null>(null)
   const [confirmReset, setConfirmReset] = useState(false)
   const [sidebarCollapsed, setSidebarCollapsed] = useState(false)
   const [wordWrap, setWordWrap] = useState(false)
@@ -39,6 +43,34 @@ export function PromptsDialog() {
       else next.add(groupId)
       return next
     })
+  }
+
+  const selectPrompt = (promptId: string) => {
+    if (promptId === selectedPromptId) return
+    if (editorDirty && !window.confirm('Discard your unsaved prompt changes?')) return
+    setEditorDirty(false)
+    onDirtyChange?.(false)
+    setSelectedPromptId(promptId)
+  }
+
+  const handleResetAll = async () => {
+    const requestId = ++resetRequestIdRef.current
+    setResetError(null)
+    setResetRequest({ id: requestId, status: 'pending' })
+    try {
+      await resetAll.mutateAsync()
+      setResetRequest({ id: requestId, status: 'success' })
+      setConfirmReset(false)
+    } catch (error) {
+      // The editor keeps its request-start snapshot when the reset fails.
+      setResetRequest({ id: requestId, status: 'failure' })
+      setResetError(error instanceof Error ? error.message : 'Failed to reset prompts.')
+    }
+  }
+
+  const openResetConfirmation = () => {
+    setResetError(null)
+    setConfirmReset(true)
   }
 
   if (isLoading) {
@@ -104,7 +136,7 @@ export function PromptsDialog() {
                             return (
                               <button
                                 key={status.status}
-                                onClick={() => setSelectedPromptId(prompt.id)}
+                                onClick={() => selectPrompt(prompt.id)}
                                 title={prompt.description}
                                 className={cn(
                                   'flex w-full flex-col rounded-md px-2.5 py-1 text-left transition-colors cursor-pointer',
@@ -135,7 +167,7 @@ export function PromptsDialog() {
                               {status.prompts.map((prompt) => (
                                 <button
                                   key={prompt.id}
-                                  onClick={() => setSelectedPromptId(prompt.id)}
+                                  onClick={() => selectPrompt(prompt.id)}
                                   title={prompt.description}
                                   className={cn(
                                     'ml-2 flex w-full items-center gap-2 rounded-md px-2.5 py-1.5 text-left text-xs transition-colors cursor-pointer',
@@ -168,6 +200,11 @@ export function PromptsDialog() {
                 promptId={selectedPromptId}
                 wordWrap={wordWrap}
                 onToggleWordWrap={() => setWordWrap((wrap) => !wrap)}
+                resetRequest={resetRequest}
+                onDirtyChange={(dirty) => {
+                  setEditorDirty(dirty)
+                  onDirtyChange?.(dirty)
+                }}
               />
             )
             : <div className="p-6 text-sm text-muted-foreground">Select a prompt to edit.</div>}
@@ -200,15 +237,13 @@ export function PromptsDialog() {
               {confirmReset ? (
                 <div className="flex items-center gap-2">
                   <span className="text-xs text-muted-foreground">Discard all prompt edits?</span>
+                  {resetError && <span role="alert" className="text-xs text-destructive">{resetError}</span>}
                   <Button variant="ghost" size="sm" onClick={() => setConfirmReset(false)}>Cancel</Button>
                   <Button
                     variant="destructive"
                     size="sm"
                     disabled={resetAll.isPending}
-                    onClick={async () => {
-                      await resetAll.mutateAsync()
-                      setConfirmReset(false)
-                    }}
+                    onClick={() => void handleResetAll()}
                   >
                     Reset all
                   </Button>
@@ -218,7 +253,7 @@ export function PromptsDialog() {
                   variant="ghost"
                   size="sm"
                   disabled={data.modifiedCount === 0}
-                  onClick={() => setConfirmReset(true)}
+                  onClick={openResetConfirmation}
                 >
                   <RotateCcw className="mr-1.5 h-3.5 w-3.5" />
                   Reset all to defaults
@@ -248,15 +283,13 @@ export function PromptsDialog() {
             {confirmReset ? (
               <div className="flex items-center gap-2">
                 <span className="text-xs text-muted-foreground">Discard all prompt edits?</span>
+                {resetError && <span role="alert" className="text-xs text-destructive">{resetError}</span>}
                 <Button variant="ghost" size="sm" onClick={() => setConfirmReset(false)}>Cancel</Button>
                 <Button
                   variant="destructive"
                   size="sm"
                   disabled={resetAll.isPending}
-                  onClick={async () => {
-                    await resetAll.mutateAsync()
-                    setConfirmReset(false)
-                  }}
+                  onClick={() => void handleResetAll()}
                 >
                   Reset all
                 </Button>
@@ -266,7 +299,7 @@ export function PromptsDialog() {
                 variant="ghost"
                 size="sm"
                 disabled={data.modifiedCount === 0}
-                onClick={() => setConfirmReset(true)}
+                onClick={openResetConfirmation}
               >
                 <RotateCcw className="mr-1.5 h-3.5 w-3.5" />
                 Reset all to defaults

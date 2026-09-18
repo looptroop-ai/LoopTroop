@@ -7,6 +7,7 @@ import type {
 } from '@/hooks/useTickets'
 import { isRecord } from '@shared/typeGuards'
 import { isWorkflowAction } from '@shared/workflowMeta'
+import { isGitHookPolicy } from '@shared/gitHookPolicy'
 
 type TicketRuntime = Ticket['runtime']
 
@@ -283,31 +284,48 @@ function getTicketAvailableActions(ticket: Ticket | RawTicketResponse): Ticket['
  * signature on this side is a string, so the conversion happens once, here,
  * rather than as a `String(...)` at each reader.
  */
-function normalizeErrorOccurrenceIds(raw: Record<string, unknown>): Pick<Ticket, 'errorOccurrences' | 'activeErrorOccurrenceId'> {
+function normalizeOccurrenceId(value: unknown): string | null {
+  if (typeof value === 'string') return value.length > 0 ? value : null
+  return typeof value === 'number' && Number.isFinite(value) ? String(value) : null
+}
+
+function normalizeErrorOccurrenceIds(
+  raw: Record<string, unknown>,
+  preserveInvalidActive = true,
+): Pick<Ticket, 'errorOccurrences' | 'activeErrorOccurrenceId'> {
   const rawOccurrences = Array.isArray(raw.errorOccurrences) ? raw.errorOccurrences : null
-  const activeId = raw.activeErrorOccurrenceId
+  const activeId = normalizeOccurrenceId(raw.activeErrorOccurrenceId)
+  const errorOccurrences = (rawOccurrences ?? []).flatMap((occurrence) => {
+    if (!isRecord(occurrence)) return []
+    const id = normalizeOccurrenceId(occurrence.id)
+    return id === null ? [] : [{ ...occurrence, id }]
+  }) as NonNullable<Ticket['errorOccurrences']>
 
   return {
-    ...(rawOccurrences
+    ...(rawOccurrences && (errorOccurrences.length > 0 || rawOccurrences.length === 0)
       ? {
-          errorOccurrences: rawOccurrences
-            .filter((occurrence): occurrence is Record<string, unknown> => isRecord(occurrence))
-            .map((occurrence) => ({
-              ...occurrence,
-              ...(occurrence.id != null ? { id: String(occurrence.id) } : {}),
-            })) as Ticket['errorOccurrences'],
+          errorOccurrences,
         }
       : {}),
-    ...(activeId != null ? { activeErrorOccurrenceId: String(activeId) } : {}),
+    ...('activeErrorOccurrenceId' in raw
+      ? raw.activeErrorOccurrenceId === null
+        ? { activeErrorOccurrenceId: null }
+        : activeId !== null || preserveInvalidActive
+          ? { activeErrorOccurrenceId: activeId }
+          : {}
+      : {}),
   }
 }
 
 function normalizeTicketForRender(ticket: Ticket | RawTicketResponse): Ticket {
   const raw = asRawTicket(ticket)
   const cleanup = isRecord(raw.cleanup) ? raw.cleanup : null
+  const normalized = { ...(ticket as Ticket) }
+  if ('errorOccurrences' in raw) delete normalized.errorOccurrences
+  if ('activeErrorOccurrenceId' in raw) delete normalized.activeErrorOccurrenceId
 
   return {
-    ...(ticket as Ticket),
+    ...normalized,
     runtime: getTicketRuntime(ticket),
     lockedCouncilMembers: getTicketCouncilMembers(ticket),
     availableActions: getTicketAvailableActions(ticket),
@@ -400,12 +418,26 @@ function normalizeImplementationTiming(value: unknown): Ticket['implementationTi
 
 export function normalizeTicketListResponse(payload: unknown): Ticket[] {
   if (!Array.isArray(payload)) throw new Error('Ticket list response was not an array')
-  return payload.map(normalizeTicketResponse)
+  const tickets: Ticket[] = []
+  payload.forEach((entry, index) => {
+    try {
+      tickets.push(normalizeTicketResponse(entry))
+    } catch (error) {
+      console.warn(`Skipping malformed ticket at index ${index}`, error)
+    }
+  })
+  return tickets
 }
 
-/** A ticket patch: only what the response carried, with a partial runtime. */
+/** A ticket patch: only what the response carried, with partial nested objects. */
 export type TicketPatch =
-  Partial<Omit<Ticket, 'runtime'>> & { id: string; runtime?: Partial<TicketRuntime> }
+  Partial<Omit<Ticket, 'runtime' | 'implementationTiming' | 'pendingQuestions' | 'manualQa'>> & {
+    id: string
+    runtime?: Partial<TicketRuntime> & { beadsDiagnostics?: Record<string, unknown> | null }
+    implementationTiming?: Partial<Ticket['implementationTiming']>
+    pendingQuestions?: Partial<NonNullable<Ticket['pendingQuestions']>> | null
+    manualQa?: Partial<NonNullable<Ticket['manualQa']>>
+  }
 
 /**
  * The runtime fields a response actually carried, normalised, and no others.
@@ -417,10 +449,238 @@ export type TicketPatch =
  * the bead list, the PR state and the ETA until the follow-up refetch landed.
  */
 function normalizeRuntimePatch(rawRuntime: Record<string, unknown>): Partial<TicketRuntime> {
-  const complete = getTicketRuntime({ runtime: rawRuntime } as unknown as RawTicketResponse)
-  const patch: Partial<TicketRuntime> = {}
-  for (const key of Object.keys(rawRuntime) as Array<keyof TicketRuntime>) {
-    if (key in complete) (patch as Record<string, unknown>)[key] = complete[key]
+  const patch: Record<string, unknown> = {}
+  for (const key of ['baseBranch', 'artifactRoot'] as const) {
+    if (typeof rawRuntime[key] === 'string') patch[key] = rawRuntime[key]
+  }
+  for (const key of ['activeBeadId', 'lastFailedBeadId', 'candidateCommitSha', 'preSquashHead'] as const) {
+    if (rawRuntime[key] === null || typeof rawRuntime[key] === 'string') patch[key] = rawRuntime[key]
+  }
+  for (const key of ['prUrl', 'prHeadSha'] as const) {
+    if (rawRuntime[key] === null || typeof rawRuntime[key] === 'string') patch[key] = rawRuntime[key]
+  }
+  for (const key of ['currentBead', 'completedBeads', 'totalBeads', 'percentComplete', 'iterationCount'] as const) {
+    copyPatchNumber(rawRuntime, patch, key)
+  }
+  for (const key of ['maxIterations', 'maxIterationsPerBead', 'perIterationTimeoutMs', 'executionSetupTimeoutMs', 'activeBeadIteration', 'prNumber'] as const) {
+    copyPatchNullableNumber(rawRuntime, patch, key)
+  }
+  if (Array.isArray(rawRuntime.beads)) patch.beads = normalizeRuntimeBeads(rawRuntime.beads)
+  if (rawRuntime.finalTestStatus === 'passed' || rawRuntime.finalTestStatus === 'failed' || rawRuntime.finalTestStatus === 'pending') {
+    patch.finalTestStatus = rawRuntime.finalTestStatus
+  }
+  if (Object.hasOwn(rawRuntime, 'prState')) {
+    if (rawRuntime.prState === null || rawRuntime.prState === 'draft' || rawRuntime.prState === 'open'
+      || rawRuntime.prState === 'merged' || rawRuntime.prState === 'closed') {
+      patch.prState = rawRuntime.prState
+    }
+  }
+  if (Object.hasOwn(rawRuntime, 'eta')) {
+    const eta = normalizeRuntimeEtaPatch(rawRuntime.eta)
+    if (eta !== undefined) patch.eta = eta
+  }
+  // PR165 adds this optional diagnostic object to the runtime. Keep its error
+  // string when that cross-PR shape is present, even while this branch is
+  // merged independently from the runtime type change.
+  const rawBeadsDiagnostics = rawRuntime.beadsDiagnostics
+  if (rawBeadsDiagnostics === null) {
+    (patch as Record<string, unknown>).beadsDiagnostics = null
+  } else if (isRecord(rawBeadsDiagnostics)) {
+    const numberList = (value: unknown): number[] | null => {
+      if (!Array.isArray(value)) return null
+      const values = value.filter((entry): entry is number => typeof entry === 'number' && Number.isInteger(entry) && entry >= 0)
+      return values.length === value.length ? values : null
+    }
+    const diagnostics: Record<string, unknown> = {}
+    const malformedLines = numberList(rawBeadsDiagnostics.malformedLines)
+    const unrepresentableLines = numberList(rawBeadsDiagnostics.unrepresentableLines)
+    if (malformedLines) diagnostics.malformedLines = malformedLines
+    if (unrepresentableLines) diagnostics.unrepresentableLines = unrepresentableLines
+    if (typeof rawBeadsDiagnostics.readError === 'string') diagnostics.readError = rawBeadsDiagnostics.readError
+    if (Object.keys(diagnostics).length > 0) patch.beadsDiagnostics = diagnostics
+  }
+  return patch
+}
+
+function normalizeRuntimeEtaPatch(value: unknown): TicketRuntime['eta'] | Partial<NonNullable<TicketRuntime['eta']>> | undefined {
+  if (value === null) return null
+  if (!isRecord(value)) return undefined
+  const patch: Record<string, unknown> = {}
+  for (const key of ['bestMs', 'likelyMs', 'worstMs'] as const) copyPatchNumber(value, patch, key)
+  if (value.basis === 'history' || value.basis === 'current' || value.basis === 'default') patch.basis = value.basis
+  return Object.keys(patch).length > 0 ? patch as Partial<NonNullable<TicketRuntime['eta']>> : undefined
+}
+
+function copyPatchString(raw: Record<string, unknown>, patch: Record<string, unknown>, key: string): void {
+  if (typeof raw[key] === 'string') patch[key] = raw[key]
+}
+
+function copyPatchNullableString(raw: Record<string, unknown>, patch: Record<string, unknown>, key: string): void {
+  if (raw[key] === null || typeof raw[key] === 'string') patch[key] = raw[key]
+}
+
+function copyPatchNumber(raw: Record<string, unknown>, patch: Record<string, unknown>, key: string): void {
+  if (typeof raw[key] === 'number' && Number.isFinite(raw[key])) patch[key] = raw[key]
+}
+
+function copyPatchNullableNumber(raw: Record<string, unknown>, patch: Record<string, unknown>, key: string): void {
+  if (raw[key] === null || (typeof raw[key] === 'number' && Number.isFinite(raw[key]))) patch[key] = raw[key]
+}
+
+function copyPatchBoolean(raw: Record<string, unknown>, patch: Record<string, unknown>, key: string): void {
+  if (typeof raw[key] === 'boolean') patch[key] = raw[key]
+}
+
+function normalizeImplementationTimingPatch(value: Record<string, unknown>): Partial<Ticket['implementationTiming']> | undefined {
+  const patch: Record<string, unknown> = {}
+  for (const key of ['activeDurationMs', 'manualQaFixDurationMs', 'workspacePreparationDurationMs', 'finalTestingDurationMs', 'questionWaitingMs']) {
+    copyPatchNumber(value, patch, key)
+  }
+  for (const key of ['startedAt', 'lastPlannedBeadFinishedAt', 'manualQaFixStartedAt', 'workspacePreparationStartedAt', 'finalTestingStartedAt']) {
+    copyPatchNullableString(value, patch, key)
+  }
+  return Object.keys(patch).length > 0 ? patch as Partial<Ticket['implementationTiming']> : undefined
+}
+
+function normalizePendingQuestions(value: unknown): TicketPatch['pendingQuestions'] | undefined {
+  if (value === null) return null
+  if (!isRecord(value)) return undefined
+  const patch: Record<string, unknown> = {}
+  for (const key of ['requestCount', 'questionCount']) copyPatchNumber(value, patch, key)
+  for (const key of ['deadlineAt', 'stoppedAt']) copyPatchNullableString(value, patch, key)
+  if (Array.isArray(value.requestIds) && value.requestIds.every((requestId) => typeof requestId === 'string')) {
+    patch.requestIds = value.requestIds
+  }
+  return Object.keys(patch).length > 0 ? patch as TicketPatch['pendingQuestions'] : undefined
+}
+
+function normalizeManualQa(value: unknown): TicketPatch['manualQa'] | undefined {
+  if (!isRecord(value)) return undefined
+  const patch: Record<string, unknown> = {}
+  if (Object.hasOwn(value, 'activeVersion')) copyPatchNullableNumber(value, patch, 'activeVersion')
+  copyPatchNumber(value, patch, 'completedRoundCount')
+  if (value.latestOutcome === null || value.latestOutcome === 'passed'
+    || value.latestOutcome === 'waived_through' || value.latestOutcome === 'skipped'
+    || value.latestOutcome === 'failed' || value.latestOutcome === 'created_fixes') {
+    patch.latestOutcome = value.latestOutcome
+  }
+  if (isRecord(value.artifactAvailability)) {
+    const availability: Record<string, boolean> = {}
+    for (const key of ['checklist', 'results', 'coverage', 'summary']) {
+      if (typeof value.artifactAvailability[key] === 'boolean') availability[key] = value.artifactAvailability[key]
+    }
+    if (Object.keys(availability).length > 0) patch.artifactAvailability = availability
+  }
+  return Object.keys(patch).length > 0 ? patch as TicketPatch['manualQa'] : undefined
+}
+
+function normalizeManualQaOrigin(value: unknown): Ticket['manualQaOrigin'] | undefined {
+  if (value === null) return null
+  if (!isRecord(value)) return undefined
+  const sourceTicketId = nullableString(value.sourceTicketId)
+  const sourceTicketExternalId = nullableString(value.sourceTicketExternalId)
+  const originId = nullableString(value.originId)
+  const actionId = nullableString(value.actionId)
+  const sourceProjectId = nullableNumber(value.sourceProjectId)
+  const sourceVersion = nullableNumber(value.sourceVersion)
+  if (value.schemaVersion !== 1 || value.source !== 'manual_qa_improvement'
+    || !sourceTicketId || !sourceTicketExternalId || !originId || !actionId
+    || sourceProjectId === null || !Number.isInteger(sourceProjectId) || sourceProjectId < 1
+    || sourceVersion === null || !Number.isInteger(sourceVersion) || sourceVersion < 1) {
+    return undefined
+  }
+  const sourceItemIds = stringList(value.sourceItemIds)
+  const sourceItemTitles = stringList(value.sourceItemTitles)
+  if (sourceItemIds.length === 0 || sourceItemTitles.length === 0) return undefined
+  const evidenceRefs = normalizeEvidenceRefs(value.evidenceRefs)
+  const omittedEvidence = Array.isArray(value.omittedEvidence)
+    ? value.omittedEvidence
+      .filter((entry): entry is Record<string, unknown> => isRecord(entry))
+      .filter((entry) => typeof entry.id === 'string' && typeof entry.reason === 'string')
+      .map((entry) => ({ id: entry.id as string, reason: entry.reason as string }))
+    : []
+  if (value.resultType !== 'improvement') return undefined
+  const imageEvidenceMode = value.imageEvidenceMode
+  if (imageEvidenceMode !== 'attached' && imageEvidenceMode !== 'references_only') return undefined
+  if (typeof value.createdAt !== 'string') return undefined
+  return {
+    schemaVersion: 1,
+    source: 'manual_qa_improvement',
+    originId,
+    actionId,
+    sourceTicketId,
+    sourceTicketExternalId,
+    sourceProjectId,
+    sourceVersion,
+    sourceItemIds,
+    sourceItemTitles,
+    resultType: 'improvement',
+    relatedPrdRefs: stringList(value.relatedPrdRefs),
+    relatedBeadRefs: stringList(value.relatedBeadRefs),
+    evidenceRefs,
+    omittedEvidence,
+    titleSha256: stringOrFallback(value.titleSha256, ''),
+    descriptionSha256: stringOrFallback(value.descriptionSha256, ''),
+    omittedFields: stringList(value.omittedFields),
+    imageEvidenceMode,
+    createdAt: value.createdAt,
+  }
+}
+
+function normalizePatchScalars(raw: Record<string, unknown>): Record<string, unknown> {
+  const patch: Record<string, unknown> = {}
+  for (const key of ['externalId', 'title', 'createdAt', 'updatedAt']) copyPatchString(raw, patch, key)
+  if (typeof raw.status === 'string' && raw.status.length > 0) patch.status = raw.status
+  for (const key of ['description', 'xstateSnapshot', 'branchName', 'errorMessage', 'cancelReason', 'errorSeenSignature', 'needsInputSeenSignature', 'previousStatus', 'reviewCutoffStatus', 'startedAt', 'plannedDate', 'lockedMainImplementer', 'lockedMainImplementerVariant']) {
+    copyPatchNullableString(raw, patch, key)
+  }
+  for (const key of ['projectId', 'priority', 'workflowRevision']) copyPatchNumber(raw, patch, key)
+  for (const key of ['currentBead', 'totalBeads', 'percentComplete', 'aiQuestionWindowOverride', 'lockedInterviewQuestions', 'lockedCoverageFollowUpBudgetPercent', 'lockedMaxCoveragePasses', 'lockedMaxPrdCoveragePasses', 'lockedMaxBeadsCoveragePasses', 'lockedStructuredRetryCount']) {
+    copyPatchNullableNumber(raw, patch, key)
+  }
+  for (const key of ['isDisplayOnlyMock', 'hasPastErrors', 'manualQaOverride', 'aiQuestionsOverride']) copyPatchBoolean(raw, patch, key)
+  if (raw.completionDisposition === null || raw.completionDisposition === 'merged' || raw.completionDisposition === 'closed_unmerged') {
+    patch.completionDisposition = raw.completionDisposition
+  }
+  if (isRecord(raw.implementationTiming)) {
+    const implementationTiming = normalizeImplementationTimingPatch(raw.implementationTiming)
+    if (implementationTiming) patch.implementationTiming = implementationTiming
+  }
+  if (Array.isArray(raw.visitedStatuses) && raw.visitedStatuses.every((value) => typeof value === 'string')) {
+    patch.visitedStatuses = raw.visitedStatuses
+  }
+  if (Object.hasOwn(raw, 'pendingQuestions')) {
+    const pendingQuestions = normalizePendingQuestions(raw.pendingQuestions)
+    if (pendingQuestions !== undefined) patch.pendingQuestions = pendingQuestions
+  }
+  if (Object.hasOwn(raw, 'manualQa')) {
+    const manualQa = normalizeManualQa(raw.manualQa)
+    if (manualQa !== undefined) patch.manualQa = manualQa
+  }
+  if (Object.hasOwn(raw, 'manualQaOrigin')) {
+    const manualQaOrigin = normalizeManualQaOrigin(raw.manualQaOrigin)
+    if (manualQaOrigin !== undefined) patch.manualQaOrigin = manualQaOrigin
+  }
+  for (const key of ['effectiveGitHookPolicy', 'lockedGitHookPolicy']) {
+    if (raw[key] === null && key === 'lockedGitHookPolicy') patch[key] = null
+    else if (isGitHookPolicy(raw[key])) patch[key] = raw[key]
+  }
+  for (const key of ['effectiveGitHookPolicySource', 'lockedGitHookPolicySource', 'effectiveManualQaSource', 'lockedManualQaSource', 'effectiveAiQuestionsSource', 'effectiveAiQuestionWindowSource']) {
+    if (raw[key] === null && key.startsWith('locked')) patch[key] = null
+    else if (raw[key] === 'profile' || raw[key] === 'project' || raw[key] === 'ticket') patch[key] = raw[key]
+  }
+  if (raw.effectiveManualQaEnabled === true || raw.effectiveManualQaEnabled === false) patch.effectiveManualQaEnabled = raw.effectiveManualQaEnabled
+  if (raw.lockedManualQaEnabled === null || raw.lockedManualQaEnabled === true || raw.lockedManualQaEnabled === false) patch.lockedManualQaEnabled = raw.lockedManualQaEnabled
+  if (raw.effectiveAiQuestionsEnabled === true || raw.effectiveAiQuestionsEnabled === false) patch.effectiveAiQuestionsEnabled = raw.effectiveAiQuestionsEnabled
+  if (raw.effectiveAiQuestionWindow !== undefined) copyPatchNumber(raw, patch, 'effectiveAiQuestionWindow')
+  if (Object.hasOwn(raw, 'lockedCouncilMemberVariants')) {
+    if (raw.lockedCouncilMemberVariants === null) patch.lockedCouncilMemberVariants = null
+    else if (isRecord(raw.lockedCouncilMemberVariants)) {
+      const variants = Object.fromEntries(Object.entries(raw.lockedCouncilMemberVariants).filter(([, variant]) => typeof variant === 'string'))
+      if (Object.keys(variants).length > 0 || Object.keys(raw.lockedCouncilMemberVariants).length === 0) {
+        patch.lockedCouncilMemberVariants = variants
+      }
+    }
   }
   return patch
 }
@@ -441,18 +701,26 @@ export function normalizeTicketPatch(payload: unknown): TicketPatch | null {
 
   const raw = payload
   const cleanup = isRecord(raw.cleanup) ? raw.cleanup : null
+  const rawAvailableActions = Array.isArray(raw.availableActions) ? raw.availableActions : null
+  const rawLockedCouncilMembers = Array.isArray(raw.lockedCouncilMembers) ? raw.lockedCouncilMembers : null
+  const availableActions = rawAvailableActions
+    ? getTicketAvailableActions(raw as unknown as RawTicketResponse)
+    : null
+  const lockedCouncilMembers = rawLockedCouncilMembers
+    ? getTicketCouncilMembers(raw as unknown as RawTicketResponse)
+    : null
 
   const patch: Record<string, unknown> = {
-    ...(raw as unknown as Partial<Ticket>),
     id: payload.id,
+    ...normalizePatchScalars(raw),
     ...(isRecord(raw.runtime) ? { runtime: normalizeRuntimePatch(raw.runtime) } : {}),
-    ...('availableActions' in raw
-      ? { availableActions: getTicketAvailableActions(raw as unknown as RawTicketResponse) }
+    ...(availableActions && (availableActions.length > 0 || rawAvailableActions?.length === 0)
+      ? { availableActions }
       : {}),
-    ...('lockedCouncilMembers' in raw
-      ? { lockedCouncilMembers: getTicketCouncilMembers(raw as unknown as RawTicketResponse) }
+    ...(lockedCouncilMembers && (lockedCouncilMembers.length > 0 || rawLockedCouncilMembers?.length === 0)
+      ? { lockedCouncilMembers }
       : {}),
-    ...normalizeErrorOccurrenceIds(raw),
+    ...normalizeErrorOccurrenceIds(raw, false),
     ...(cleanup
       ? {
           cleanup: {
@@ -463,20 +731,6 @@ export function normalizeTicketPatch(payload: unknown): TicketPatch | null {
           },
         }
       : {}),
-  }
-
-  // The spread above copies the payload wholesale, and the conditional keys
-  // only ever *add*. So anything the response got wrong survives unless it is
-  // removed here: a numeric `status` reaches `getStatusBadgeClasses`, which
-  // calls `startsWith` on it, and a `runtime` that is not an object replaces a
-  // complete cached one.
-  for (const [key, isValid] of [
-    ['status', typeof raw.status === 'string'],
-    ['previousStatus', raw.previousStatus === null || typeof raw.previousStatus === 'string'],
-    ['runtime', isRecord(raw.runtime)],
-    ['errorOccurrences', Array.isArray(raw.errorOccurrences)],
-  ] as const) {
-    if (key in patch && !isValid) delete patch[key]
   }
 
   return patch as TicketPatch

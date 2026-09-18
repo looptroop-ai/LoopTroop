@@ -22,9 +22,10 @@ const sortOptions: { value: SortOption; label: string; icon: React.ElementType }
 
 interface ProjectsPanelProps {
   onClose: () => void
+  onDirtyChange?: (isDirty: boolean) => void
 }
 
-export function ProjectsPanel({ onClose }: ProjectsPanelProps) {
+export function ProjectsPanel({ onClose, onDirtyChange }: ProjectsPanelProps) {
   const { data: projects, isLoading } = useProjects()
   const [view, setView] = useState<View>({ mode: 'list' })
   const [sortBy, setSortBy] = useState<SortOption>('name')
@@ -53,7 +54,11 @@ export function ProjectsPanel({ onClose }: ProjectsPanelProps) {
     return (
       <ProjectForm
         onClose={onClose}
-        onBack={() => setView({ mode: 'list' })}
+        onBack={() => {
+          onDirtyChange?.(false)
+          setView({ mode: 'list' })
+        }}
+        onDirtyChange={onDirtyChange}
       />
     )
   }
@@ -62,8 +67,12 @@ export function ProjectsPanel({ onClose }: ProjectsPanelProps) {
     return (
       <ProjectForm
         onClose={onClose}
-        onBack={() => setView({ mode: 'list' })}
+        onBack={() => {
+          onDirtyChange?.(false)
+          setView({ mode: 'list' })
+        }}
         project={view.project}
+        onDirtyChange={onDirtyChange}
       />
     )
   }

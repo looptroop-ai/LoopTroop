@@ -6,7 +6,7 @@ import { Trophy, Lightbulb } from 'lucide-react'
 import { getModelDisplayName } from '@/components/shared/modelBadgeUtils'
 import { ModelBadge, ModelIcon } from '@/components/shared/ModelBadge'
 import { cn } from '@/lib/utils'
-import { useLogs } from '@/context/useLogContext'
+import { useLogActions, useLogState } from '@/context/useLogContext'
 import type {
   ArtifactStructuredOutputData,
   CoverageArtifactData,
@@ -1691,20 +1691,21 @@ function buildExpansionAddedGroups(planBead: RawBead | undefined, expandedBead: 
   ].filter((group) => group.fields.length > 0)
 }
 
-function countExpansionAddedFields(content: string): number {
-  const parsed = parseRefinementArtifact(content)
-  if (!parsed?.semanticPlanContent || !parsed.refinedContent) return 0
+function pairExpansionBeads(planBeads: RawBead[], expandedBeads: RawBead[]): Array<{ planBead?: RawBead; expandedBead: RawBead }> {
+  if (planBeads.length === expandedBeads.length) {
+    return expandedBeads.map((expandedBead, index) => ({ planBead: planBeads[index], expandedBead }))
+  }
 
-  const planBeads = parseBeadsArtifact(parsed.semanticPlanContent)
-  const expandedBeads = parseBeadsArtifact(parsed.refinedContent)
-  if (!planBeads || !expandedBeads) return 0
+  const planById = new Map(planBeads.map((bead) => [getBeadStringValue(bead, 'id'), bead]))
+  return expandedBeads.map((expandedBead) => ({
+    planBead: planById.get(getBeadStringValue(expandedBead, 'id')),
+    expandedBead,
+  }))
+}
 
-  // Paired by id, not position. Each side is filtered independently, so one
-  // malformed entry in the plan shifts every later bead against its refinement
-  // and reports another bead's fields as this one's additions.
-  const planById = new Map(planBeads.map((bead) => [bead.id, bead]))
-  return expandedBeads.reduce((count, bead, index) => {
-    const groups = buildExpansionAddedGroups(planById.get(bead.id), bead, index)
+function countExpansionAddedFieldsForPairs(pairs: Array<{ planBead?: RawBead; expandedBead: RawBead }>): number {
+  return pairs.reduce((count, { planBead, expandedBead }, index) => {
+    const groups = buildExpansionAddedGroups(planBead, expandedBead, index)
     return count + groups.reduce((sum, group) => sum + group.fields.length, 0)
   }, 0)
 }
@@ -1728,24 +1729,28 @@ function ExpansionAddedValue({ values, mono }: { values: string[]; mono?: boolea
   )
 }
 
-function ExpandedPlanDiffView({ content }: { content: string }) {
+function ExpandedPlanDiffView({ content, initialPlanBeads, initialExpandedBeads }: {
+  content: string
+  initialPlanBeads?: RawBead[] | null
+  initialExpandedBeads?: RawBead[] | null
+}) {
   // Memoised because the parser warns about every entry it drops: called from
   // the render body it repeats those warnings on every re-render, which for a
   // ticket receiving live updates is a console full of the same line.
   const parsed = useMemo(() => parseRefinementArtifact(content), [content])
   const planBeads = useMemo(
-    () => (parsed?.semanticPlanContent ? parseBeadsArtifact(parsed.semanticPlanContent) : null),
-    [parsed?.semanticPlanContent],
+    () => initialPlanBeads ?? (parsed?.semanticPlanContent ? parseBeadsArtifact(parsed.semanticPlanContent) : null),
+    [initialPlanBeads, parsed?.semanticPlanContent],
   )
   const expandedBeads = useMemo(
-    () => (parsed?.refinedContent ? parseBeadsArtifact(parsed.refinedContent) : null),
-    [parsed?.refinedContent],
+    () => initialExpandedBeads ?? (parsed?.refinedContent ? parseBeadsArtifact(parsed.refinedContent) : null),
+    [initialExpandedBeads, parsed?.refinedContent],
   )
-  const addedFieldCount = useMemo(() => countExpansionAddedFields(content), [content])
-  const planBeadsById = useMemo(
-    () => new Map((planBeads ?? []).map((bead) => [getBeadStringValue(bead, 'id'), bead])),
-    [planBeads],
+  const pairs = useMemo(
+    () => planBeads && expandedBeads ? pairExpansionBeads(planBeads, expandedBeads) : [],
+    [expandedBeads, planBeads],
   )
+  const addedFieldCount = useMemo(() => countExpansionAddedFieldsForPairs(pairs), [pairs])
 
   if (!planBeads || !expandedBeads) {
     return <RawContentWithCopy content={content} />
@@ -1756,10 +1761,7 @@ function ExpandedPlanDiffView({ content }: { content: string }) {
       <div className="rounded-md border border-green-200 bg-green-50 px-3 py-2 text-xs text-green-900 dark:border-green-900/60 dark:bg-green-950/30 dark:text-green-200">
         Expansion added {addedFieldCount} execution field{addedFieldCount === 1 ? '' : 's'} across {expandedBeads.length} bead{expandedBeads.length === 1 ? '' : 's'}.
       </div>
-      {expandedBeads.map((expandedBead, index) => {
-        // By id, for the same reason as the count above: the two lists are
-        // filtered independently, so positions do not correspond.
-        const planBead = planBeadsById.get(getBeadStringValue(expandedBead, 'id'))
+      {pairs.map(({ planBead, expandedBead }, index) => {
         const title = getBeadStringValue(expandedBead, 'title') || getBeadStringValue(planBead ?? {}, 'title') || `Bead ${index + 1}`
         const planId = getBeadStringValue(planBead ?? {}, 'id')
         const expandedId = getBeadStringValue(expandedBead, 'id')
@@ -1984,10 +1986,13 @@ export function PrdDraftView({ content }: { content: string }) {
   )
 }
 
-export function BeadsDraftView({ content }: { content: string }) {
+export function BeadsDraftView({ content, parsedBeads }: { content: string; parsedBeads?: RawBead[] | null }) {
   // See `ExpandedPlanDiffView`: the parser warns per dropped entry, so parsing
   // in the render body repeats those warnings on every re-render.
-  const beadsArray = useMemo(() => parseBeadsArtifact(content), [content])
+  const beadsArray = useMemo(
+    () => parsedBeads !== undefined ? parsedBeads : parseBeadsArtifact(content),
+    [content, parsedBeads],
+  )
   if (Array.isArray(beadsArray)) {
     return (
       <div className="space-y-2">
@@ -2504,11 +2509,37 @@ export function ArtifactContent({
   phase?: string
   reportContent?: string | null
 }) {
-  const logCtx = useLogs()
-  const loadLogsForPhase = logCtx?.loadLogsForPhase
+  const logState = useLogState()
+  const logActions = useLogActions()
+  const getLogsForPhase = logState?.getLogsForPhase
+  const loadLogsForPhase = logActions?.loadLogsForPhase
   const phaseLogs = useMemo(
-    () => (phase && logCtx ? logCtx.getLogsForPhase(phase) : []),
-    [logCtx, phase],
+    () => (phase && getLogsForPhase ? getLogsForPhase(phase) : []),
+    [getLogsForPhase, phase],
+  )
+  const expansionParsed = useMemo(
+    () => phase === 'EXPANDING_BEADS' && artifactId === 'refined-beads'
+      ? parseRefinementArtifact(content)
+      : null,
+    [artifactId, content, phase],
+  )
+  const expansionPlanBeads = useMemo(
+    () => expansionParsed?.semanticPlanContent ? parseBeadsArtifact(expansionParsed.semanticPlanContent) : null,
+    [expansionParsed?.semanticPlanContent],
+  )
+  const expansionExpandedBeads = useMemo(
+    () => expansionParsed?.refinedContent ? parseBeadsArtifact(expansionParsed.refinedContent) : null,
+    [expansionParsed?.refinedContent],
+  )
+  const expansionPairs = useMemo(
+    () => expansionPlanBeads && expansionExpandedBeads
+      ? pairExpansionBeads(expansionPlanBeads, expansionExpandedBeads)
+      : [],
+    [expansionExpandedBeads, expansionPlanBeads],
+  )
+  const expansionDiffCount = useMemo(
+    () => countExpansionAddedFieldsForPairs(expansionPairs),
+    [expansionPairs],
   )
   const hasStructuredRetryInContent = useMemo(
     () => content.includes('autoRetryCount') || content.includes('retryDiagnostics'),
@@ -2685,8 +2716,7 @@ export function ArtifactContent({
     const diffEntries = buildRefinementDiffEntries(content, 'beads')
     const parsedRefinement = parseRefinementArtifact(content)
     const coverageResult = parseCoverageArtifact(content)
-    const expansionDiffCount = phase === 'EXPANDING_BEADS' ? countExpansionAddedFields(content) : 0
-    const hasExpansionDiff = expansionDiffCount > 0
+    const hasExpansionDiff = phase === 'EXPANDING_BEADS' && expansionDiffCount > 0
     const hasRefinementChanges = diffEntries.length > 0 || Boolean(parsedRefinement?.winnerDraftContent) || Boolean(parsedRefinement?.coverageBaselineContent)
     const hasChanges = hasExpansionDiff || (phase !== 'EXPANDING_BEADS' && hasRefinementChanges)
     const defaultBeadsTab = phase === 'VERIFYING_BEADS_COVERAGE' || phase === 'EXPANDING_BEADS' || phase === 'WAITING_BEADS_APPROVAL'
@@ -2727,13 +2757,27 @@ export function ArtifactContent({
             {(parsedCoverageInput.refinedContent || parsedCoverageInput.beads) && (
               <div>
                 <div className="text-[10px] font-semibold text-muted-foreground uppercase tracking-wider mb-2">Beads</div>
-                <BeadsDraftView content={parsedCoverageInput.refinedContent || parsedCoverageInput.beads!} />
+                {(() => {
+                  const beadsContent = parsedCoverageInput.refinedContent || parsedCoverageInput.beads!
+                  return (
+                    <BeadsDraftView
+                      content={beadsContent}
+                      parsedBeads={phase === 'EXPANDING_BEADS' && beadsContent === expansionParsed?.refinedContent
+                        ? expansionExpandedBeads
+                        : undefined}
+                    />
+                  )
+                })()}
               </div>
             )}
           </div>
         )}
         diffContent={hasExpansionDiff
-          ? <ExpandedPlanDiffView content={content} />
+          ? <ExpandedPlanDiffView
+              content={content}
+              initialPlanBeads={expansionPlanBeads}
+              initialExpandedBeads={expansionExpandedBeads}
+            />
           : hasRefinementChanges
             ? <RefinementDiffView content={content} domain={'beads'} phase={phase} />
             : undefined}

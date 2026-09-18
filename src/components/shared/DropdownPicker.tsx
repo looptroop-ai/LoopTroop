@@ -1,7 +1,7 @@
 import { useEffect, useId, useRef, useState, useCallback, type KeyboardEvent as ReactKeyboardEvent, type ReactNode } from 'react'
 import { createPortal } from 'react-dom'
 import { DROPDOWN_MARGIN, DROPDOWN_OFFSET, DROPDOWN_MAX_HEIGHT } from '@/lib/constants'
-import { PORTAL_ATTRIBUTE } from '@/lib/overlays'
+import { OVERLAY_SELECTOR, PORTAL_ATTRIBUTE } from '@/lib/overlays'
 
 export interface DropdownPickerProps {
   trigger: ReactNode
@@ -73,7 +73,7 @@ export function DropdownPicker({ trigger, children, open, onOpenChange }: Dropdo
    * dropping the keyboard user at the top of the page.
    */
   useEffect(() => {
-    if (!open) return
+    if (!open || !isPositioned) return
     // Captured while it is live: the trigger outlives the popup, but the cleanup runs
     // after the commit that removed the popup, when reading a ref is no longer safe.
     const triggerWrapper = triggerRef.current
@@ -86,7 +86,7 @@ export function DropdownPicker({ trigger, children, open, onOpenChange }: Dropdo
       if (active && active !== document.body) return
       triggerWrapper?.querySelector<HTMLElement>(TRIGGER_SELECTOR)?.focus()
     }
-  }, [open])
+  }, [isPositioned, open])
 
   useEffect(() => {
     if (!open) { setIsPositioned(false); return }
@@ -113,6 +113,26 @@ export function DropdownPicker({ trigger, children, open, onOpenChange }: Dropdo
       document.removeEventListener('mousedown', handler)
     }
   }, [open, onOpenChange, updatePosition])
+
+  useEffect(() => {
+    if (!open) return
+    const handler = (event: KeyboardEvent) => {
+      if (event.key !== 'Escape' || event.defaultPrevented) return
+      const popup = dropdownRef.current
+      if (!popup || popup.closest('[inert]')) return
+
+      const target = event.target as Element | null
+      if (target?.closest?.(OVERLAY_SELECTOR) && !popup.contains(target)) return
+      if (target && (ref.current?.contains(target) || popup.contains(target))) return
+
+      event.preventDefault()
+      event.stopImmediatePropagation()
+      onOpenChange(false)
+      triggerRef.current?.querySelector<HTMLElement>(TRIGGER_SELECTOR)?.focus()
+    }
+    document.addEventListener('keydown', handler, true)
+    return () => document.removeEventListener('keydown', handler, true)
+  }, [onOpenChange, open])
 
   /**
    * Escape closes the popup and nothing else. The popup is portaled to `document.body`

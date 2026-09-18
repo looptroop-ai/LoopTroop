@@ -23,6 +23,9 @@ export interface LogEntry {
   sessionId?: string
   beadId?: string
   beadIteration?: number
+  /** Server-side AI pagination identity; not shown to users. */
+  _logMirrorKey?: string
+  _logMirrorOccurrence?: number
   timeoutMs?: number
   deadlineAt?: string
   timeoutKind?: PromptTimeoutKind
@@ -114,7 +117,7 @@ const LOG_TYPE_TAGS: Record<string, string> = {
 export const serverLogCache = new Map<string, Array<Record<string, unknown>>>()
 
 function normalizeChannel(channel?: LogChannel): LogChannel {
-  return channel === 'debug' || channel === 'ai' ? channel : 'normal'
+  return channel === 'debug' || channel === 'ai' || channel === 'all' ? channel : 'normal'
 }
 
 export function getServerLogCacheKey(ticketId: string, scope: ServerLogScope = {}): string {
@@ -306,6 +309,10 @@ export function normalizeLogRecord(data: Record<string, unknown>, fallbackPhase:
   const sessionId = typeof data.sessionId === 'string' ? data.sessionId : undefined
   const beadId = typeof data.beadId === 'string' ? data.beadId : undefined
   const beadIteration = normalizePositiveNumber(data.beadIteration ?? nested?.beadIteration)
+  const mirrorKey = typeof data._logMirrorKey === 'string' ? data._logMirrorKey : undefined
+  const mirrorOccurrence = typeof data._logMirrorOccurrence === 'number' && Number.isSafeInteger(data._logMirrorOccurrence)
+    ? data._logMirrorOccurrence
+    : undefined
   const timeoutMs = typeof data.timeoutMs === 'number' && Number.isFinite(data.timeoutMs)
     ? data.timeoutMs
     : undefined
@@ -334,6 +341,8 @@ export function normalizeLogRecord(data: Record<string, unknown>, fallbackPhase:
     ...(sessionId ? { sessionId } : {}),
     ...(beadId ? { beadId } : {}),
     ...(beadIteration !== undefined ? { beadIteration } : {}),
+    ...(mirrorKey ? { _logMirrorKey: mirrorKey } : {}),
+    ...(mirrorOccurrence !== undefined ? { _logMirrorOccurrence: mirrorOccurrence } : {}),
     ...(timeoutMs !== undefined ? { timeoutMs } : {}),
     ...(deadlineAt ? { deadlineAt } : {}),
     ...(timeoutKind ? { timeoutKind } : {}),
@@ -360,6 +369,10 @@ export function normalizeStoredEntry(entry: Partial<LogEntry>, fallbackStatus: s
   const timeoutKind = deriveTimeoutKind(entry as Record<string, unknown>)
   const phaseAttempt = normalizePhaseAttempt(entry.phaseAttempt)
   const beadIteration = normalizePositiveNumber(entry.beadIteration)
+  const mirrorKey = typeof entry._logMirrorKey === 'string' ? entry._logMirrorKey : undefined
+  const mirrorOccurrence = typeof entry._logMirrorOccurrence === 'number' && Number.isSafeInteger(entry._logMirrorOccurrence)
+    ? entry._logMirrorOccurrence
+    : undefined
   const audience = entry.audience === 'all' || entry.audience === 'ai' || entry.audience === 'debug'
     ? entry.audience
     : source === 'debug'
@@ -388,6 +401,8 @@ export function normalizeStoredEntry(entry: Partial<LogEntry>, fallbackStatus: s
     ...(entry.sessionId ? { sessionId: String(entry.sessionId) } : {}),
     ...(entry.beadId ? { beadId: String(entry.beadId) } : {}),
     ...(beadIteration !== undefined ? { beadIteration } : {}),
+    ...(mirrorKey ? { _logMirrorKey: mirrorKey } : {}),
+    ...(mirrorOccurrence !== undefined ? { _logMirrorOccurrence: mirrorOccurrence } : {}),
     ...(timeoutMs !== undefined ? { timeoutMs } : {}),
     ...(deadlineAt ? { deadlineAt } : {}),
     ...(timeoutKind ? { timeoutKind } : {}),
@@ -403,6 +418,12 @@ export function compareTimestamps(a?: string, b?: string): number {
   if (Number.isNaN(at)) return 1
   if (Number.isNaN(bt)) return -1
   return at - bt
+}
+
+/** A total display order for the one live overlay that intentionally interleaves rows. */
+export function compareLogEntriesByTimestamp(a: LogEntry, b: LogEntry): number {
+  return compareTimestamps(a.timestamp, b.timestamp)
+    || compareStableStrings(getLogEntryIdentity(a), getLogEntryIdentity(b))
 }
 
 function timestampDistanceMs(a?: string, b?: string): number | null {
@@ -565,17 +586,58 @@ export function mergeEntry(bucket: LogEntry[], entry: LogEntry): LogEntry[] {
   return next
 }
 
+function compareStableStrings(a: string, b: string): number {
+  return a < b ? -1 : a > b ? 1 : 0
+}
+
 /**
  * Merges a restored page and live rows in one indexed pass. Incoming rows win
  * for canonical upserts/finalization, while the original start timestamp is
  * retained. This function is deliberately side-effect free: restored rows
  * never pass through the live persistence or broadcast path.
  */
-export function mergeEntriesBatch(base: LogEntry[], incoming: LogEntry[]): LogEntry[] {
-  if (base.length === 0) return incoming.slice().sort((a, b) => compareTimestamps(a.timestamp, b.timestamp))
-  if (incoming.length === 0) return base.slice().sort((a, b) => compareTimestamps(a.timestamp, b.timestamp))
+export interface LogMergeStats {
+  baseEntries: number
+  incomingEntries: number
+  accumulatedCopies: number
+  renderedEntries: number
+  comparatorCalls: number
+}
 
-  const result: LogEntry[] = []
+export function mergeEntriesBatch(
+  base: LogEntry[],
+  incoming: LogEntry[],
+  sortByTimestamp = true,
+  stats?: LogMergeStats,
+): LogEntry[] {
+  if (stats) {
+    stats.baseEntries += base.length
+    stats.incomingEntries += incoming.length
+  }
+  const shouldSort = sortByTimestamp && base.some(entry => Boolean(entry._logMirrorKey))
+  const compareForDisplay = (a: LogEntry, b: LogEntry) => {
+    if (!shouldSort) return 0
+    if (stats) stats.comparatorCalls += 1
+    const timestampOrder = compareTimestamps(a.timestamp, b.timestamp)
+    if (timestampOrder !== 0) return timestampOrder
+    const aKey = a._logMirrorKey ?? getLogEntryIdentity(a)
+    const bKey = b._logMirrorKey ?? getLogEntryIdentity(b)
+    return compareStableStrings(aKey, bKey)
+      || (a._logMirrorOccurrence ?? 0) - (b._logMirrorOccurrence ?? 0)
+      || compareStableStrings(getLogEntryIdentity(a), getLogEntryIdentity(b))
+  }
+  // Historical pages and live context readers are already canonical. An empty
+  // overlay must be a cheap identity path; sorting the whole archive here was
+  // the cumulative render cost this helper was meant to avoid.
+  if (base.length === 0 || incoming.length === 0) {
+    if (stats) {
+      stats.accumulatedCopies += base.length + incoming.length
+      stats.renderedEntries += base.length + incoming.length
+    }
+    return [...base, ...incoming]
+  }
+
+  let result: LogEntry[] = []
   const indexes = new Map<string, number>()
   const aliases = getLogEntryAliases
   const add = (entry: LogEntry, incomingRow: boolean) => {
@@ -584,6 +646,7 @@ export function mergeEntriesBatch(base: LogEntry[], incoming: LogEntry[]): LogEn
     if (index === undefined) {
       const nextIndex = result.length
       result.push(entry)
+      if (stats) stats.accumulatedCopies += 1
       for (const key of keys) indexes.set(key, nextIndex)
       return
     }
@@ -596,13 +659,39 @@ export function mergeEntriesBatch(base: LogEntry[], incoming: LogEntry[]): LogEn
       timestamp: existing.timestamp ?? entry.timestamp,
       streaming: entry.op === 'finalize' ? false : entry.streaming,
     }
+    if (stats) stats.accumulatedCopies += 1
     result[index] = merged
     for (const key of aliases(merged)) indexes.set(key, index)
   }
 
   for (const entry of base) add(entry, false)
+  const historicalCount = result.length
   for (const entry of incoming) add(entry, true)
-  return result.sort((a, b) => compareTimestamps(a.timestamp, b.timestamp))
+  if (!sortByTimestamp && historicalCount > 0 && result.length > historicalCount) {
+    // Non-AI history keeps the server's ordinal order, but the live overlay is
+    // timestamp-sorted and can retain rows older than the newest historical
+    // page. Put only those unmatched old rows before the page; never reorder
+    // the historical rows themselves or newer live rows.
+    const firstHistoricalTimestamp = result
+      .slice(0, historicalCount)
+      .map(entry => entry.timestamp)
+      .find(timestamp => timestamp !== undefined)
+    if (firstHistoricalTimestamp) {
+      const historical = result.slice(0, historicalCount)
+      const overlay = result.slice(historicalCount)
+      const olderOverlay: LogEntry[] = []
+      const newerOverlay: LogEntry[] = []
+      for (const entry of overlay) {
+        if (compareTimestamps(entry.timestamp, firstHistoricalTimestamp) < 0) olderOverlay.push(entry)
+        else newerOverlay.push(entry)
+      }
+      if (olderOverlay.length > 0) {
+        result = [...olderOverlay, ...historical, ...newerOverlay]
+      }
+    }
+  }
+  if (stats) stats.renderedEntries += result.length
+  return shouldSort ? result.sort(compareForDisplay) : result
 }
 
 export function formatLogLine(data: Record<string, unknown>): { line: string; source: string } {

@@ -23,16 +23,18 @@ const mockState = vi.hoisted(() => ({
 const MISSING_TICKET_EXTERNAL_ID = 'test-ticket-1'
 
 vi.mock('@/components/layout/AppShell', () => ({
-  AppShell: ({ children, onNavigateHome, onOpenProfile }: {
+  AppShell: ({ children, onNavigateHome, onOpenProfile, onOpenTicket }: {
     children: ReactNode
     onNavigateHome?: () => void
     onOpenProfile?: () => void
+    onOpenTicket?: () => void
   }) => (
     <div data-testid="app-shell">
       {/* Stand-ins for the shell's navigation controls: the logo, and one of
           the four buttons that open a routed modal. */}
       <button type="button" onClick={onNavigateHome}>Logo</button>
       <button type="button" onClick={onOpenProfile}>Open Configuration</button>
+      <button type="button" onClick={onOpenTicket}>New Ticket</button>
       {children}
     </div>
   ),
@@ -77,7 +79,23 @@ vi.mock('@/components/project/ProjectsPanel', () => ({
 }))
 
 vi.mock('@/components/ticket/TicketForm', () => ({
-  TicketForm: () => <div>Ticket Form</div>,
+  TicketForm: ({ onClose }: { onClose?: () => void }) => {
+    const { dispatch } = useUI()
+    return (
+      <>
+        <div>Ticket Form</div>
+        <button
+          type="button"
+          onClick={() => {
+            dispatch({ type: 'SELECT_TICKET', ticketId: 'ticket-2', externalId: 'LT-2' })
+            onClose?.()
+          }}
+        >
+          Create &amp; start
+        </button>
+      </>
+    )
+  },
 }))
 
 vi.mock('@/components/shared/KeyboardShortcuts', () => ({
@@ -235,6 +253,12 @@ function SelectionProbe() {
       >
         Select LT-1
       </button>
+      <button
+        type="button"
+        onClick={() => dispatch({ type: 'SELECT_TICKET', ticketId: 'ticket-2', externalId: 'LT-2' })}
+      >
+        Select LT-2
+      </button>
       <button type="button" onClick={() => dispatch({ type: 'CLOSE_TICKET' })}>Close ticket</button>
     </>
   )
@@ -277,6 +301,20 @@ function persistTicketSelection(ticketId: string, externalId: string) {
     filters: { projectId: null, status: null, search: '' },
     theme: 'system',
   }))
+}
+
+async function waitForActualPopstate(action: () => void) {
+  await act(async () => {
+    const popstate = new Promise<void>((resolve) => {
+      window.addEventListener('popstate', () => resolve(), { once: true })
+    })
+    action()
+    await popstate
+  })
+}
+
+async function waitForActualHistoryBack() {
+  await waitForActualPopstate(() => window.history.back())
 }
 
 /**
@@ -331,6 +369,21 @@ describe('App route ownership', () => {
     await waitFor(() => {
       expect(window.location.pathname).toBe('/ticket/LT-1')
     })
+  })
+
+  it('takes the board home when the logo closes a modal opened over a ticket', async () => {
+    mockState.tickets = [{ id: 'ticket-1', externalId: 'LT-1' }]
+    renderAppWithProbe()
+
+    fireEvent.click(screen.getByRole('button', { name: 'Select LT-1' }))
+    await waitFor(() => expect(window.location.pathname).toBe('/ticket/LT-1'))
+    fireEvent.click(screen.getByRole('button', { name: 'Open Configuration' }))
+    await waitFor(() => expect(window.location.pathname).toBe('/config'))
+
+    await waitForActualPopstate(() => fireEvent.click(screen.getByRole('button', { name: 'Logo' })))
+
+    await expectBoardAt('/')
+    expect(screen.queryByText('Ticket Dashboard')).not.toBeInTheDocument()
   })
 
   /**
@@ -799,12 +852,103 @@ describe('App route ownership', () => {
     })
     expect(screen.getByText('Ticket Dashboard')).toBeInTheDocument()
 
-    await act(async () => {
-      window.history.back()
-      window.dispatchEvent(new PopStateEvent('popstate'))
-    })
+    await waitForActualHistoryBack()
     await expectBoardAt('/')
     rerenderApp()
+  })
+
+  it('resyncs after a queued modal Back when ticket selection changes before traversal', async () => {
+    mockState.tickets = [
+      { id: 'ticket-1', externalId: 'LT-1' },
+      { id: 'ticket-2', externalId: 'LT-2' },
+    ]
+    renderAppWithProbe()
+
+    fireEvent.click(screen.getByRole('button', { name: 'Select LT-1' }))
+    await waitFor(() => expect(window.location.pathname).toBe('/ticket/LT-1'))
+    fireEvent.click(screen.getByRole('button', { name: 'Open Configuration' }))
+    await waitFor(() => expect(window.location.pathname).toBe('/config'))
+
+    const back = vi.spyOn(window.history, 'back').mockImplementation(() => undefined)
+    fireEvent.click(screen.getByRole('button', { name: 'Close Configuration' }))
+    await waitFor(() => expect(back).toHaveBeenCalledTimes(1))
+
+    fireEvent.click(screen.getByRole('button', { name: 'Select LT-2' }))
+    expect(window.location.pathname).toBe('/config')
+
+    window.history.replaceState(null, '', '/ticket/LT-1')
+    await act(async () => {
+      window.dispatchEvent(new PopStateEvent('popstate'))
+    })
+
+    await waitFor(() => expect(window.location.pathname).toBe('/ticket/LT-2'))
+    window.history.replaceState(null, '', '/')
+  })
+
+  it('keeps a newly started ticket after closing the pushed New Ticket dialog', async () => {
+    mockState.tickets = [{ id: 'ticket-2', externalId: 'LT-2' }]
+
+    renderApp()
+
+    fireEvent.click(screen.getByRole('button', { name: 'New Ticket' }))
+    expect(await screen.findByText('Ticket Form')).toBeInTheDocument()
+    fireEvent.click(screen.getByRole('button', { name: 'Create & start' }))
+
+    await waitFor(() => {
+      expect(window.location.pathname).toBe('/ticket/LT-2')
+      expect(screen.getByText('Ticket Dashboard')).toBeInTheDocument()
+    })
+
+    await waitForActualHistoryBack()
+    await expectBoardAt('/')
+  })
+
+  it('handles browser Back from a pushed dialog with one more Back to the board', async () => {
+    mockState.tickets = [{ id: 'ticket-1', externalId: 'LT-1' }]
+    renderAppWithProbe()
+
+    fireEvent.click(screen.getByRole('button', { name: 'Select LT-1' }))
+    await waitFor(() => expect(window.location.pathname).toBe('/ticket/LT-1'))
+    fireEvent.click(screen.getByRole('button', { name: 'Open Configuration' }))
+    await waitFor(() => expect(window.location.pathname).toBe('/config'))
+
+    await waitForActualHistoryBack()
+    expect(window.location.pathname).toBe('/ticket/LT-1')
+    expect(screen.queryByText('Profile Setup')).not.toBeInTheDocument()
+    expect(screen.getByText('Ticket Dashboard')).toBeInTheDocument()
+
+    await waitForActualHistoryBack()
+    await expectBoardAt('/')
+  })
+
+  it('reconciles Back after the logo while the ticket list is still loading', async () => {
+    persistTicketSelection('ticket-2', 'LT-2')
+    mockState.tickets = [
+      { id: 'ticket-1', externalId: 'LT-1' },
+      { id: 'ticket-2', externalId: 'LT-2' },
+    ]
+    mockState.ticketsFetched = false
+    mockState.ticketsLoading = true
+    window.history.pushState(null, '', '/ticket/LT-1')
+
+    const queryClient = createTestQueryClient()
+    const { rerender } = renderAppElement(queryClient)
+
+    fireEvent.click(screen.getByRole('button', { name: 'Logo' }))
+    await waitFor(() => expect(window.location.pathname).toBe('/'))
+
+    await waitForActualHistoryBack()
+    expect(window.location.pathname).toBe('/ticket/LT-1')
+    expect(screen.getByText('Kanban Board')).toBeInTheDocument()
+
+    mockState.ticketsFetched = true
+    mockState.ticketsLoading = false
+    rerenderAppElement(rerender, queryClient)
+
+    await waitFor(() => {
+      expect(window.location.pathname).toBe('/ticket/LT-1')
+      expect(screen.getByText('Ticket Dashboard')).toBeInTheDocument()
+    })
   })
 
   it('honours Back onto a ticket while the list is still loading', async () => {
@@ -832,6 +976,76 @@ describe('App route ownership', () => {
       expect(screen.getByText('Ticket Dashboard')).toBeInTheDocument()
     })
     expect(window.location.pathname).toBe('/ticket/LT-1')
+  })
+
+  it('releases a pending ticket pop after an initial error for modal navigation', async () => {
+    mockState.tickets = [
+      { id: 'ticket-1', externalId: 'LT-1' },
+      { id: 'ticket-2', externalId: 'LT-2' },
+    ]
+    mockState.ticketsFetched = false
+    mockState.ticketsLoading = true
+    window.history.pushState(null, '', '/ticket/LT-1')
+
+    const queryClient = createTestQueryClient()
+    const { rerender } = renderAppElement(queryClient)
+
+    window.history.pushState(null, '', '/ticket/LT-2')
+    await act(async () => {
+      window.dispatchEvent(new PopStateEvent('popstate'))
+    })
+    expect(window.location.pathname).toBe('/ticket/LT-2')
+
+    mockState.ticketsFetched = true
+    mockState.ticketsLoading = false
+    mockState.ticketsError = true
+    rerenderAppElement(rerender, queryClient)
+
+    // The failed list cannot resolve the ticket, but it must not leave the
+    // route effect fenced behind the unresolved pop forever.
+    fireEvent.click(screen.getByRole('button', { name: 'Open Configuration' }))
+    await waitFor(() => {
+      expect(window.location.pathname).toBe('/config')
+    })
+
+    expect(await screen.findByText('Profile Setup')).toBeInTheDocument()
+    expect(window.location.pathname).toBe('/config')
+  })
+
+  it('keeps a pending ticket pop available for hydration after the list recovers', async () => {
+    mockState.tickets = [
+      { id: 'ticket-1', externalId: 'LT-1' },
+      { id: 'ticket-2', externalId: 'LT-2' },
+    ]
+    mockState.ticketsFetched = false
+    mockState.ticketsLoading = true
+    window.history.pushState(null, '', '/ticket/LT-1')
+
+    const queryClient = createTestQueryClient()
+    const { rerender } = renderAppElement(queryClient)
+
+    window.history.pushState(null, '', '/ticket/LT-2')
+    await act(async () => {
+      window.dispatchEvent(new PopStateEvent('popstate'))
+    })
+
+    mockState.ticketsFetched = true
+    mockState.ticketsLoading = false
+    mockState.ticketsError = true
+    rerenderAppElement(rerender, queryClient)
+
+    await waitFor(() => {
+      expect(screen.getByText('Kanban Board')).toBeInTheDocument()
+      expect(window.location.pathname).toBe('/ticket/LT-2')
+    })
+
+    mockState.ticketsError = false
+    rerenderAppElement(rerender, queryClient)
+
+    await waitFor(() => {
+      expect(screen.getByText('Ticket Dashboard')).toBeInTheDocument()
+      expect(window.location.pathname).toBe('/ticket/LT-2')
+    })
   })
 
   it('does not reopen the restored ticket when Back reaches the board before the list settles', async () => {

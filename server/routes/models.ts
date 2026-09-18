@@ -16,11 +16,13 @@ function serializeCatalog(catalog: OpenCodeCatalogResponse, scope: 'connected' |
 async function modelDiscoveryFailure() {
   const adapter = getOpenCodeAdapter()
   const health = await adapter.checkHealth()
+  const available = health.available
   return {
     models: [],
     connectedProviders: [],
     defaultModels: {},
-    message: health.available
+    code: available ? 'OPENCODE_DISCOVERY_FAILED' as const : 'OPENCODE_UNREACHABLE' as const,
+    message: available
       ? 'OpenCode is connected, but model discovery failed.'
       : 'OpenCode server is not reachable. Start it with `opencode serve`.',
   }

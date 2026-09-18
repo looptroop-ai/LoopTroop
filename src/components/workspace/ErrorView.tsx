@@ -154,8 +154,16 @@ interface BlockedErrorExplanation {
 function explainBlockedError(
   blockedFromStatus: string | undefined,
   errorCodes: string[],
+  availableActions: WorkflowAction[],
 ): BlockedErrorExplanation {
   const codes = new Set(errorCodes)
+  const canRetry = availableActions.includes('retry')
+  const canRetryWithNote = blockedFromStatus === 'CODING' && canRetry
+  const retryRecommendation = canRetryWithNote
+    ? 'Retry with an extra note that clarifies the approach or the remaining problem.'
+    : canRetry
+      ? 'Retry the failed workflow step after reviewing the technical details.'
+      : 'Review the technical details and use an available recovery action.'
 
   if (codes.has(BEAD_FINALIZATION_FAILED)) {
     return {
@@ -168,14 +176,18 @@ function explainBlockedError(
     return {
       title: 'Agent response incomplete',
       description: 'The coding agent did not provide the required completion result, so LoopTroop could not confirm the bead finished.',
-      recommendation: 'Retry with an extra note that asks the agent to finish with the required result.',
+      recommendation: canRetryWithNote
+        ? 'Retry with an extra note that asks the agent to finish with the required result.'
+        : retryRecommendation,
     }
   }
   if (codes.has(BEAD_ITERATION_TIMEOUT)) {
     return {
       title: 'Implementation attempt timed out',
       description: 'The coding attempt exceeded its configured time limit before it could finish.',
-      recommendation: 'Retry the bead. Add a note if the work should be split or approached differently.',
+      recommendation: canRetryWithNote
+        ? 'Retry the bead with an extra note if the work should be split or approached differently.'
+        : retryRecommendation,
     }
   }
   if (codes.has(OPENCODE_PROVIDER_AUTH_FAILED) || codes.has(OPENCODE_PROVIDER_ERROR)) {
@@ -196,7 +208,7 @@ function explainBlockedError(
     return {
       title: 'Implementation retries exhausted',
       description: 'The coding agent used every configured attempt without completing this bead.',
-      recommendation: 'Retry with an extra note that clarifies the approach or the remaining problem.',
+      recommendation: retryRecommendation,
     }
   }
   if (blockedFromStatus === 'GENERATING_EXECUTION_SETUP_PLAN') {
@@ -207,10 +219,17 @@ function explainBlockedError(
     }
   }
   if (blockedFromStatus === 'PREPARING_EXECUTION_ENV' || blockedFromStatus === 'WAITING_EXECUTION_SETUP_APPROVAL') {
+    const canEdit = blockedFromStatus === 'PREPARING_EXECUTION_ENV'
+      && availableActions.includes('edit_execution_setup_plan')
+    const canRetry = availableActions.includes('retry')
     return {
       title: 'Workspace setup failed',
       description: 'LoopTroop could not prepare the repository environment needed for implementation.',
-      recommendation: 'Edit the setup plan when it is incorrect, or retry after fixing the environment.',
+      recommendation: canEdit
+        ? 'Edit the setup plan when it is incorrect, or retry after fixing the environment.'
+        : canRetry
+          ? 'Retry the workspace setup after fixing the reported environment problem.'
+          : 'Review the technical details and use an available recovery action.',
     }
   }
 
@@ -290,19 +309,21 @@ export function ErrorView({ ticket, occurrence, readOnly = false }: ErrorViewPro
     && ticket.status === 'BLOCKED_ERROR'
     && Boolean(visibleOccurrence)
     && visibleOccurrence?.resolvedAt === null
-  // Gated on the occurrence, not on `ticket.previousStatus`: the surrounding copy
-  // already reads `visibleOccurrence.blockedFromStatus`, and `explainBlockedError`
-  // already treats both setup statuses as setup — so "Edit setup plan" was
-  // missing after a failure that blocked from `WAITING_EXECUTION_SETUP_APPROVAL`,
-  // and after any error whose occurrence disagreed with `previousStatus`.
+  // The server advertises the recovery actions it can safely execute for this
+  // occurrence. The error view must not invent a setup-plan edit or a coding
+  // retry-note flow just because the failure happened near setup.
   const isSetupRuntimeError = isLiveError
     && (visibleOccurrence?.blockedFromStatus === 'PREPARING_EXECUTION_ENV'
       || visibleOccurrence?.blockedFromStatus === 'WAITING_EXECUTION_SETUP_APPROVAL')
   const canContinue = isLiveError && ticket.availableActions.includes('continue')
+  const canRetry = isLiveError && ticket.availableActions.includes('retry')
   const canRetryWithNote = isLiveError
-    && (visibleOccurrence?.blockedFromStatus === 'CODING' || isSetupRuntimeError)
+    && (visibleOccurrence?.blockedFromStatus === 'CODING'
+      || visibleOccurrence?.blockedFromStatus === 'PREPARING_EXECUTION_ENV')
     && ticket.availableActions.includes('retry')
   const canEditExecutionSetupPlan = isSetupRuntimeError
+    && visibleOccurrence?.blockedFromStatus === 'PREPARING_EXECUTION_ENV'
+    && ticket.availableActions.includes('edit_execution_setup_plan')
   const pausedCodingBead = isLiveError
     && visibleOccurrence?.blockedFromStatus === 'CODING'
     && activeRuntimeBead?.status === 'in_progress'
@@ -318,6 +339,7 @@ export function ErrorView({ ticket, occurrence, readOnly = false }: ErrorViewPro
   const errorExplanation = explainBlockedError(
     visibleOccurrence?.blockedFromStatus ?? ticket.previousStatus ?? undefined,
     visibleOccurrence?.errorCodes ?? [],
+    ticket.availableActions,
   )
   const statusLabelOptions = {
     currentBead: ticket.runtime.currentBead ?? ticket.currentBead,
@@ -587,14 +609,16 @@ export function ErrorView({ ticket, occurrence, readOnly = false }: ErrorViewPro
                       Retry with extra note...
                     </Button>
                   )}
-                  <Button
-                    size="sm"
-                    onClick={() => handleAction('retry')}
-                    disabled={isPending}
-                    className="h-7 text-xs font-mono font-semibold rounded-lg bg-brand-500 text-brand-50 hover:bg-brand-600 active:scale-[0.98] shadow-xs transition-all"
-                  >
-                    {retryActionLabel}
-                  </Button>
+                  {canRetry && (
+                    <Button
+                      size="sm"
+                      onClick={() => handleAction('retry')}
+                      disabled={isPending}
+                      className="h-7 text-xs font-mono font-semibold rounded-lg bg-brand-500 text-brand-50 hover:bg-brand-600 active:scale-[0.98] shadow-xs transition-all"
+                    >
+                      {retryActionLabel}
+                    </Button>
+                  )}
                 </div>
                 {actionError && (
                   <p role="alert" className="text-right text-[11px] leading-snug text-destructive">
@@ -629,10 +653,10 @@ export function ErrorView({ ticket, occurrence, readOnly = false }: ErrorViewPro
         <DialogContent>
           <DialogHeader>
             <DialogTitle>
-              {canEditExecutionSetupPlan ? 'Retry workspace setup with an extra note' : 'Retry implementation with an extra note'}
+              {isSetupRuntimeError ? 'Retry workspace setup with an extra note' : 'Retry implementation with an extra note'}
             </DialogTitle>
             <DialogDescription id="retry-note-description">
-              {canEditExecutionSetupPlan
+              {isSetupRuntimeError
                 ? 'Send guidance to the current workspace setup session. LoopTroop sends only this note and runs one extra attempt beyond the configured retry limit.'
                 : 'Add guidance for the next fresh implementation attempt. The note will be appended to User Retry Notes; nothing already there will be replaced.'}
             </DialogDescription>

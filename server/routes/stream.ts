@@ -1,23 +1,30 @@
 import { randomBytes } from 'node:crypto'
 import { Hono } from 'hono'
 import { streamSSE } from 'hono/streaming'
-import { broadcaster } from '../sse/broadcaster'
+import { broadcaster, type SSEBroadcasterLike } from '../sse/broadcaster'
 import { warnIfVerbose } from '../runtime'
 import { getTicketByRef } from '../storage/tickets'
 
-const streamRouter = new Hono()
 const STREAM_CONNECTED_EVENT = 'connected'
 const STREAM_HEARTBEAT_EVENT = 'heartbeat'
 const STREAM_HEARTBEAT_INTERVAL_MS = 30_000
 export const MAX_SSE_CONNECTIONS_PER_TICKET = 6
 export const MAX_SSE_CONNECTIONS_TOTAL = 100
 
-export function cleanupStreamClient(ticketId: string, clientId: string, interval?: ReturnType<typeof setInterval>): void {
+export function cleanupStreamClient(
+  ticketId: string,
+  clientId: string,
+  interval?: ReturnType<typeof setInterval>,
+  streamBroadcaster: SSEBroadcasterLike = broadcaster,
+): void {
   if (interval) {
     clearInterval(interval)
   }
-  broadcaster.removeClient(ticketId, clientId)
+  streamBroadcaster.removeClient(ticketId, clientId)
 }
+
+export function createStreamRouter(streamBroadcaster: SSEBroadcasterLike = broadcaster): Hono {
+const streamRouter = new Hono()
 
 streamRouter.get('/stream', (c) => {
   const ticketId = c.req.query('ticketId')
@@ -38,10 +45,10 @@ streamRouter.get('/stream', (c) => {
   if (!ticket) {
     return c.json({ error: 'Ticket not found' }, 404)
   }
-  if (broadcaster.getClientCount(ticket.id) >= MAX_SSE_CONNECTIONS_PER_TICKET) {
+  if (streamBroadcaster.getClientCount(ticket.id) >= MAX_SSE_CONNECTIONS_PER_TICKET) {
     return c.json({ error: 'Too many streams for this ticket' }, 429)
   }
-  if (broadcaster.getTotalClientCount() >= MAX_SSE_CONNECTIONS_TOTAL) {
+  if (streamBroadcaster.getTotalClientCount() >= MAX_SSE_CONNECTIONS_TOTAL) {
     return c.json({ error: 'Too many active streams' }, 429)
   }
 
@@ -56,7 +63,7 @@ streamRouter.get('/stream', (c) => {
     function safeCleanup() {
       if (isCleanedUp) return
       isCleanedUp = true
-      cleanupStreamClient(safeTicketId, clientId, interval ?? undefined)
+      cleanupStreamClient(safeTicketId, clientId, interval ?? undefined, streamBroadcaster)
       resolveStream()
       void stream.close().catch(() => undefined)
     }
@@ -71,7 +78,7 @@ streamRouter.get('/stream', (c) => {
       data: JSON.stringify({ ticketId: safeTicketId, clientId, timestamp: new Date().toISOString() }),
     })]
     if (lastEventId !== undefined) {
-      const replay = broadcaster.getEventsSince(safeTicketId, lastEventId)
+      const replay = streamBroadcaster.getEventsSince(safeTicketId, lastEventId)
       if (replay.gap) {
         initialWrites.push(stream.writeSSE({
           event: 'replay_gap',
@@ -97,7 +104,7 @@ streamRouter.get('/stream', (c) => {
     }, STREAM_HEARTBEAT_INTERVAL_MS)
 
     // Register client with broadcaster
-    const registered = broadcaster.addClient(safeTicketId, {
+    const registered = streamBroadcaster.addClient(safeTicketId, {
       id: clientId,
       send: (event: string, data: string, id: string) => {
         stream.writeSSE({ event, data, id }).catch((err) => {
@@ -125,4 +132,7 @@ streamRouter.get('/stream', (c) => {
   })
 })
 
-export { streamRouter }
+return streamRouter
+}
+
+export const streamRouter = createStreamRouter()

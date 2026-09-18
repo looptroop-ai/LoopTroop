@@ -1,6 +1,11 @@
-import { chmodSync, lstatSync, readdirSync } from 'node:fs'
+import { chmodSync, lstatSync, readdirSync, rmSync } from 'node:fs'
 import type { Stats } from 'node:fs'
 import { resolve } from 'node:path'
+
+/** Remove one already-resolved file entry; callers must perform containment checks first. */
+export function removeFile(targetPath: string): void {
+  rmSync(targetPath, { force: true })
+}
 
 /**
  * Restores the owner permissions required to traverse and remove a tree.

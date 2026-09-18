@@ -11,6 +11,8 @@ interface AdapterInternals {
     finalizedPartIds: Set<string>,
     messageRoles: Map<string, string>,
   ): StreamEvent | null
+  isConfirmedSessionNotFoundError(error: unknown): boolean
+  isConfirmedSessionNotFoundResponse(response: unknown): boolean
 }
 
 function createAdapterInternals(): AdapterInternals {
@@ -18,6 +20,19 @@ function createAdapterInternals(): AdapterInternals {
 }
 
 describe.concurrent('OpenCode diagnostic event mapping', () => {
+  it('ignores a tool part that arrives before OpenCode supplies its state', () => {
+    const event = createAdapterInternals().mapPartUpdate({
+      id: 'part-pending',
+      sessionID: 'session-1',
+      messageID: 'message-1',
+      type: 'tool',
+      callID: 'call-1',
+      tool: 'bash',
+    } as GenericMessagePart)
+
+    expect(event).toBeNull()
+  })
+
   it('maps tool duration, compaction time, and safe attachment metadata without payload URLs', () => {
     const event = createAdapterInternals().mapPartUpdate({
       id: 'part-1',
@@ -104,5 +119,23 @@ describe.concurrent('OpenCode diagnostic event mapping', () => {
       },
     })
     expect(JSON.stringify(mapStatus('javascript:alert(1)'))).not.toContain('javascript:')
+  })
+
+  it('requires the actual HTTP status to confirm a missing session', () => {
+    const internal = createAdapterInternals()
+
+    expect(internal.isConfirmedSessionNotFoundError({ statusCode: 404, data: { statusCode: 500 } })).toBe(true)
+    expect(internal.isConfirmedSessionNotFoundError({
+      response: { status: 500 },
+      data: { status: 404 },
+    })).toBe(false)
+    expect(internal.isConfirmedSessionNotFoundResponse({
+      response: { status: 500 },
+      error: { data: { status: 404 } },
+    })).toBe(false)
+    expect(internal.isConfirmedSessionNotFoundResponse({
+      response: { status: 404 },
+      error: { data: { status: 500 } },
+    })).toBe(true)
   })
 })

@@ -140,6 +140,7 @@ const clientNodeTests = [
 const serverIntegrationTests = [
   'server/lib/__tests__/processTree.test.ts',
   'server/opencode/__tests__/supervisor.test.ts',
+  'server/council/__tests__/sessionOwnershipStop.test.ts',
   'server/__tests__/startupArtifacts.test.ts',
   'server/git/__tests__/runCommandFallback.test.ts',
   // Real Git/database work and module mocks require isolated workers.
@@ -287,6 +288,8 @@ const serverIntegrationTests = [
   'server/storage/__tests__/projectWorktreeCleanup.test.ts',
   'server/workflow/__tests__/executionSetupPhase.test.ts',
   'server/workflow/__tests__/interviewVotePhase.test.ts',
+  'server/workflow/__tests__/interviewBatchCas.test.ts',
+  'server/workflow/__tests__/interviewBatchClaims.test.ts',
 ] as const
 
 export default defineConfig({

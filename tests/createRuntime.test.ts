@@ -124,12 +124,14 @@ describe('createRuntime side-effect freedom', () => {
     const { createRuntime } = await import('../server/createRuntime')
     const { broadcaster } = await import('../server/sse/broadcaster')
     const { streamSSE } = await import('hono/streaming')
+    const streamScope = broadcaster.createScope()
     const ticketId = `runtime-sse-${Date.now()}`
     const runtime = createRuntime({
       apiToken: 'runtime-test-token',
       skipStartupSequence: true,
       port: 0,
       hostname: '127.0.0.1',
+      sseScope: streamScope,
     })
     let release!: () => void
     const streamClosed = new Promise<void>((resolve) => { release = resolve })
@@ -137,7 +139,7 @@ describe('createRuntime side-effect freedom', () => {
     runtime.app.get('/api/runtime-sse-test', (c) => streamSSE(c, async (stream) => {
       await stream.writeSSE({ event: 'ready', data: 'ok' })
       const clientId = `${ticketId}-client`
-      const registered = broadcaster.addClient(ticketId, {
+      const registered = streamScope.addClient(ticketId, {
         id: clientId,
         send: (event, data, id) => { void stream.writeSSE({ event, data, id }) },
         close: () => {
@@ -152,7 +154,7 @@ describe('createRuntime side-effect freedom', () => {
       try {
         await streamClosed
       } finally {
-        broadcaster.removeClient(ticketId, clientId)
+        streamScope.removeClient(ticketId, clientId)
       }
     }))
 
@@ -165,15 +167,14 @@ describe('createRuntime side-effect freedom', () => {
     const reader = response.body!.getReader()
     try {
       expect(new TextDecoder().decode((await reader.read()).value)).toContain('event: ready')
-      expect(broadcaster.getClientCount(ticketId)).toBe(1)
+      expect(streamScope.getClientCount(ticketId)).toBe(1)
       await expect(runtime.close()).resolves.toBeUndefined()
-      expect(broadcaster.getClientCount(ticketId)).toBe(0)
+      expect(streamScope.getClientCount(ticketId)).toBe(0)
       expect((await reader.read()).done).toBe(true)
     } finally {
       release()
       await reader.cancel().catch(() => undefined)
-      broadcaster.clearTicket(ticketId)
-      broadcaster.startAcceptingClients()
+      streamScope.closeAllClients()
       await runtime.close().catch(() => undefined)
     }
   })

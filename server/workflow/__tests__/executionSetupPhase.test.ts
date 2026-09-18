@@ -13,6 +13,7 @@ import {
   clearAllPendingSessionContinuationsForTests,
   requestSessionContinuation,
 } from '../../opencode/sessionContinuation'
+import { SessionManager } from '../../opencode/sessionManager'
 import { createShellCommandSpec } from '@shared/commandSpec'
 
 /**
@@ -526,6 +527,57 @@ describe('handleExecutionSetup', () => {
     expect(existsSync(join(paths.executionSetupDir, 'run'))).toBe(false)
     expect(existsSync(paths.executionSetupProfilePath)).toBe(true)
     expect(sendEvent).toHaveBeenCalledWith({ type: 'EXECUTION_SETUP_READY' })
+  })
+
+  it('withholds the execution-setup reset until a paused session stop is confirmed', async () => {
+    const { ticket, context, paths } = await createInitializedTestTicket(repoManager, {
+      title: 'Execution setup remote stop confirmation',
+    })
+    writeExecutionSetupPlan(ticket.id, ticket.externalId)
+    const stopSession = vi.spyOn(SessionManager.prototype, 'abortAndAbandonSession')
+      .mockResolvedValueOnce(false)
+      .mockResolvedValueOnce(true)
+
+    const invokeRetry = async () => {
+      executeExecutionSetupWithRetriesMock.mockImplementationOnce(async (...args: unknown[]) => {
+        const callbacks = args[5] as {
+          beforeRetry: (entry: {
+            attempt: number
+            nextAttempt: number
+            report: unknown
+            generation: { session: { id: string } }
+            note: string
+            notes: string[]
+          }) => Promise<void>
+        }
+        await callbacks.beforeRetry({
+          attempt: 1,
+          nextAttempt: 2,
+          report: { ready: false },
+          generation: { session: { id: 'ses-setup-paused' } },
+          note: 'retry after remote stop check',
+          notes: ['retry after remote stop check'],
+        })
+        return readyExecutionSetupReport(ticket.externalId)
+      })
+      return handleExecutionSetup(
+        ticket.id,
+        { ...context, lockedMainImplementer: TEST.implementer },
+        vi.fn(),
+        new AbortController().signal,
+      )
+    }
+
+    await expect(invokeRetry()).rejects.toThrow('Could not confirm abort of execution setup session ses-setup-paused')
+    expect(resetWorktreeToCommitMock).not.toHaveBeenCalled()
+
+    await invokeRetry()
+    expect(stopSession).toHaveBeenCalledTimes(2)
+    expect(resetWorktreeToCommitMock).toHaveBeenCalledWith(
+      paths.worktreePath,
+      'setup-start-sha',
+      expect.objectContaining({ preservePaths: expect.arrayContaining(['.ticket']) }),
+    )
   })
 
   it('rejects a schema-compatible setup result when tooling checks fail', async () => {

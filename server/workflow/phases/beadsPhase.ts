@@ -69,6 +69,7 @@ import { runOpenCodePrompt, type OpenCodePromptDispatchEvent } from '../runOpenC
 import { syncTicketRuntimeProjection } from '../../storage/ticketRuntimeProjection'
 import { upsertBeadsApprovalSnapshot } from '../../phases/beads/document'
 import { resetToBeadStart, WORKTREE_RESET_PRESERVE_PATHS } from '../../phases/execution/gitOps'
+import { getNextBead } from '../../phases/execution/scheduler'
 import { isBeforeExecution } from '@shared/workflowMeta'
 import type { WorkflowPhaseId } from '@shared/workflowMeta'
 
@@ -896,11 +897,35 @@ export async function recoverCodingBeadWithReset(
         ...beads.filter((bead) => bead.status === 'error'),
         ...beads.filter((bead) => bead.status === 'in_progress'),
       ]
-  const failedBead = [...candidates].sort(compareBeadRecoveryOrder)[0]
+  // A checkpoint failure happens before the bead is published as
+  // `in_progress`. It needs no worktree reset, but it still needs to pass
+  // through the normal recovery writer so a retry note is not lost. Only the
+  // next runnable bead qualifies; an unrelated future bead must not be
+  // consumed by a retry for a different failure.
+  const pendingUnstartedBead = !options.onlyInProgress
+    && (options.requireReset || options.consumeInterruptedIteration)
+    ? getNextBead(beads)
+    : null
+  const failedBead = [...candidates].sort(compareBeadRecoveryOrder)[0] ?? (
+    pendingUnstartedBead && (
+      // A checkpoint can be persisted after the bead has acquired its
+      // startedAt but before the status flips to in_progress. A usable anchor
+      // makes that pending bead just as safely resettable as an interrupted
+      // in-progress bead; only the never-started/no-anchor case skips reset.
+      Boolean(pendingUnstartedBead.beadStartCommit)
+      || (!pendingUnstartedBead.startedAt
+        && (pendingUnstartedBead.beadStartCommit === null || pendingUnstartedBead.beadStartCommit === undefined))
+    )
+      ? pendingUnstartedBead
+      : undefined
+  )
   if (!failedBead) return null
 
   if (!failedBead.beadStartCommit) {
-    if (options.requireReset || options.consumeInterruptedIteration) {
+    const isPendingBeforeCheckpoint = failedBead.status === 'pending'
+      && !failedBead.startedAt
+      && (failedBead.beadStartCommit === null || failedBead.beadStartCommit === undefined)
+    if ((options.requireReset || options.consumeInterruptedIteration) && !isPendingBeforeCheckpoint) {
       throw new Error(`Cannot safely recover bead ${failedBead.id}: missing bead start commit`)
     }
   } else {

@@ -28,6 +28,15 @@ import { PHASE_DEADLINE_ERROR, isPhaseDeadlineError, isAiResponseTimeoutError } 
 import { isAbortError } from '../lib/abort'
 import { getErrorMessage } from '@shared/typeGuards'
 import type { WorkflowPhaseId } from '@shared/workflowMeta'
+import { SessionManager } from '../opencode/sessionManager'
+import { shouldPreserveSessionForContinuation } from '../opencode/sessionContinuation'
+import { confirmCouncilSessionStopped, waitForCouncilSession } from './sessionStop'
+
+function unconfirmedVoterStopError(sessionId?: string): Error {
+  return new Error(sessionId
+    ? `Could not confirm abort of OpenCode session ${sessionId}`
+    : 'Could not confirm abort of an OpenCode session that was still being created')
+}
 
 function buildStrictVoteSchemaReminder(rubric: typeof VOTING_RUBRIC): string {
   return [
@@ -164,6 +173,7 @@ export async function conductVoting(
     ...(timeoutMs && timeoutMs > 0 ? { totalMs: timeoutMs } : {}),
     scope: 'council_member',
   })
+  const sessionManager = sessionOwnership ? new SessionManager(adapter) : null
   let deadlineReached = false
 
   function buildStructuredOutputMeta(
@@ -234,17 +244,28 @@ export async function conductVoting(
     const voterVotes: Vote[] = []
     let sessionId = ''
     let closed = false
+    let promptReturned = false
     let timeoutHandle: ReturnType<typeof setTimeout> | undefined
     let response = ''
     const rawAttempts: RawAttempt[] = []
+    const memberAbortController = new AbortController()
+    const memberSignal = signal
+      ? AbortSignal.any([signal, memberAbortController.signal])
+      : memberAbortController.signal
+    let resolveExecutionSettled: () => void = () => {}
+    const executionSettled = new Promise<void>((resolve) => {
+      resolveExecutionSettled = resolve
+    })
+    let resolveSessionReady: () => void = () => {}
+    const sessionReady = new Promise<void>((resolve) => {
+      resolveSessionReady = resolve
+    })
 
-    const markTimedOut = async () => {
+    const markTimedOut = () => {
       if (closed) return
       closed = true
       deadlineReached = true
-      if (sessionId) {
-        await adapter.abortSession(sessionId)
-      }
+      memberAbortController.abort()
     }
 
     const executeVote = (async () => {
@@ -277,11 +298,12 @@ export async function conductVoting(
           throw new Error(PHASE_DEADLINE_ERROR)
         }
 
+        promptReturned = false
         result = await runOpenCodePrompt({
           adapter,
           projectPath,
           parts: promptParts,
-          signal,
+          signal: memberSignal,
           workBudget: budget,
           timeoutKind: 'ai_response',
           model: voter.modelId,
@@ -298,12 +320,12 @@ export async function conductVoting(
               }
             : {}),
           onSessionCreated: (session) => {
+            sessionId = session.id
+            resolveSessionReady()
             if (closed) {
-              void adapter.abortSession(session.id)
-              return
+              throw new Error(`OpenCode session ${session.id} was created after the council deadline`)
             }
 
-            sessionId = session.id
           },
           onStreamEvent: (event) => {
             if (closed) return
@@ -324,10 +346,12 @@ export async function conductVoting(
           },
         })
 
-        if (closed) {
-          return voterVotes
+        if (closed || signal?.aborted || memberAbortController.signal.aborted) {
+          if (signal?.aborted && !closed) throw new CancelledError()
+          throw new Error(PHASE_DEADLINE_ERROR)
         }
 
+        promptReturned = true
         response = result.response
 
         onOpenCodeSessionLog?.({
@@ -428,6 +452,37 @@ export async function conductVoting(
 
       return voterVotes
     })()
+      .finally(() => {
+        resolveExecutionSettled()
+      })
+
+    const ensureSessionStopped = async (): Promise<boolean> => {
+      if (promptReturned) return true
+      const findTrackedSession = () => sessionId || (
+        sessionOwnership
+          ? sessionManager?.getOwnedActiveSession(sessionOwnership.ticketId, sessionOwnership.phase, {
+              phaseAttempt: sessionOwnership.phaseAttempt ?? 1,
+              memberId: voter.modelId,
+            })?.sessionId
+          : undefined
+      )
+      let trackedSessionId = findTrackedSession()
+      if (!trackedSessionId) {
+        const waitOutcome = await waitForCouncilSession(sessionReady, executionSettled)
+        trackedSessionId = findTrackedSession()
+        if (!trackedSessionId) {
+          if (waitOutcome !== 'execution_settled') return false
+          return sessionOwnership && sessionManager
+            ? !sessionManager.hasUnresolvedSessionOwnershipForScope(sessionOwnership.ticketId, sessionOwnership.phase, {
+                phaseAttempt: sessionOwnership.phaseAttempt ?? 1,
+                memberId: voter.modelId,
+              })
+            : true
+        }
+      }
+      sessionId = trackedSessionId
+      return confirmCouncilSessionStopped(adapter, sessionManager, trackedSessionId, 'voter')
+    }
 
     // Cleared while suspended and re-armed on resume, so a question wait moves
     // the round's deadline instead of expiring the voter waiting on the answer.
@@ -442,7 +497,7 @@ export async function conductVoting(
           }
           if (closed || budget.suspended()) return
           timeoutHandle = setTimeout(() => {
-            void markTimedOut()
+            markTimedOut()
             reject(new Error(PHASE_DEADLINE_ERROR))
           }, Math.max(0, budget.remainingMs() ?? 0))
         }
@@ -455,14 +510,39 @@ export async function conductVoting(
         ? await Promise.race([executeVote, deadlinePromise])
         : await executeVote
     } catch (error) {
-      if (signal?.aborted || error instanceof CancelledError || (isAbortError(error) && signal?.aborted)) {
+      const callerCancelled = signal?.aborted || (isAbortError(error) && signal?.aborted)
+      if (callerCancelled || error instanceof CancelledError) {
+        const stopped = await ensureSessionStopped()
+        if (!stopped) throw unconfirmedVoterStopError(sessionId)
         throw new CancelledError()
       }
 
       const errorDetail = getErrorMessage(error)
       const timedOut = isPhaseDeadlineError(error) || isAiResponseTimeoutError(error) || closed
       if (timedOut) {
+        const stopped = await ensureSessionStopped()
+        if (!stopped) throw unconfirmedVoterStopError(sessionId)
         deadlineReached = true
+      }
+      if (!timedOut) {
+        const preserveForContinuation = sessionId && sessionOwnership
+          ? shouldPreserveSessionForContinuation({
+              error,
+              sessionId,
+              modelId: voter.modelId,
+              sessionOwnership: {
+                ticketId: sessionOwnership.ticketId,
+                phase: sessionOwnership.phase,
+                phaseAttempt: sessionOwnership.phaseAttempt ?? 1,
+                memberId: voter.modelId,
+              },
+              signal: memberSignal,
+            })
+          : false
+        if (!preserveForContinuation) {
+          const stopped = await ensureSessionStopped()
+          if (!stopped) throw unconfirmedVoterStopError(sessionId)
+        }
       }
       const outcome: MemberOutcome = timedOut
         ? 'timed_out'

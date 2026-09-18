@@ -5,7 +5,7 @@ import {
   upsertLatestPhaseArtifact,
 } from '../../storage/tickets'
 import { nowIso } from '../../lib/dateUtils'
-import { assertExpectedContentSha256 } from '../../lib/artifactApproval'
+import { assertExpectedContentSha256, StaleArtifactApprovalError } from '../../lib/artifactApproval'
 import { contentSha256 } from '../../lib/contentHash'
 import { normalizeExecutionSetupPlanOutput } from '../../structuredOutput'
 import type { ExecutionSetupPlan } from './types'
@@ -23,6 +23,7 @@ import {
   serializeExecutionSetupPlan,
   serializeExecutionSetupPlanNotes,
 } from './types'
+import { compareAndSetLatestPhaseArtifact } from '../../storage/ticketArtifacts'
 
 export const EXECUTION_SETUP_PLAN_GENERATION_PHASE = 'GENERATING_EXECUTION_SETUP_PLAN'
 export const EXECUTION_SETUP_PLAN_APPROVAL_PHASE = 'WAITING_EXECUTION_SETUP_APPROVAL'
@@ -81,7 +82,11 @@ export function readExecutionSetupPlan(ticketId: string, phaseAttempt?: number):
   }
 }
 
-export function saveExecutionSetupPlan(ticketId: string, plan: ExecutionSetupPlan): {
+export function saveExecutionSetupPlan(
+  ticketId: string,
+  plan: ExecutionSetupPlan,
+  expectedContentSha256?: string,
+): {
   raw: string
   contentSha256: string
   plan: ExecutionSetupPlan
@@ -96,12 +101,37 @@ export function saveExecutionSetupPlan(ticketId: string, plan: ExecutionSetupPla
     throw new Error(normalized.error)
   }
   const canonicalRaw = serializeExecutionSetupPlan(normalized.value)
-  upsertLatestPhaseArtifact(
-    ticketId,
-    EXECUTION_SETUP_PLAN_ARTIFACT_TYPE,
-    EXECUTION_SETUP_PLAN_APPROVAL_PHASE,
-    canonicalRaw,
-  )
+  if (expectedContentSha256 !== undefined) {
+    const current = readExecutionSetupPlan(ticketId)
+    if (!current.raw) {
+      throw new StaleArtifactApprovalError('execution_setup_plan', expectedContentSha256, '')
+    }
+    assertExpectedContentSha256({
+      artifactType: 'execution_setup_plan',
+      currentContent: current.raw,
+      expectedContentSha256,
+    })
+    if (!compareAndSetLatestPhaseArtifact(
+      ticketId,
+      EXECUTION_SETUP_PLAN_ARTIFACT_TYPE,
+      EXECUTION_SETUP_PLAN_APPROVAL_PHASE,
+      current.raw,
+      canonicalRaw,
+    )) {
+      throw new StaleArtifactApprovalError(
+        'execution_setup_plan',
+        expectedContentSha256,
+        contentSha256(current.raw),
+      )
+    }
+  } else {
+    upsertLatestPhaseArtifact(
+      ticketId,
+      EXECUTION_SETUP_PLAN_ARTIFACT_TYPE,
+      EXECUTION_SETUP_PLAN_APPROVAL_PHASE,
+      canonicalRaw,
+    )
+  }
   return { raw: canonicalRaw, contentSha256: contentSha256(canonicalRaw), plan: normalized.value }
 }
 

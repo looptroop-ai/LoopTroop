@@ -38,6 +38,7 @@ import {
   requestSessionContinuation,
 } from '../../opencode/sessionContinuation'
 import { WorkflowDeadlineTimeoutError } from '../../lib/deadlineErrors'
+import { createWorkBudget } from '../workBudget'
 import { removeTempDir } from '../../test/tempDir'
 
 type OpenCodeSDKClient = NonNullable<ConstructorParameters<typeof OpenCodeSDKAdapter>[1]>
@@ -82,6 +83,7 @@ class TestOpenCodeAdapter implements OpenCodeAdapter {
     options?: PromptSessionOptions
   }> = []
   public readonly abortCalls: string[] = []
+  private readonly confirmedAbortSessions = new Set<string>()
   public listSessionsCalls = 0
   public healthCalls = 0
   private readonly sessions: Session[] = []
@@ -99,6 +101,8 @@ class TestOpenCodeAdapter implements OpenCodeAdapter {
       }
   >, private readonly options: {
     listSessions?: () => Session[]
+    getSession?: (sessionId: string) => Session | null
+    createSession?: () => Promise<Session>
     createFailures?: Error[]
     healthStatus?: HealthStatus
   } = {}) {
@@ -111,6 +115,11 @@ class TestOpenCodeAdapter implements OpenCodeAdapter {
     options?: OpenCodeSessionCreateOptions,
   ): Promise<Session> {
     this.sessionCreateCalls.push({ projectPath, signal, options })
+    if (this.options.createSession) {
+      const session = await this.options.createSession()
+      this.sessions.push(session)
+      return session
+    }
     const failure = this.options.createFailures?.shift()
     if (failure) throw failure
     this.sessionCounter += 1
@@ -205,6 +214,7 @@ class TestOpenCodeAdapter implements OpenCodeAdapter {
   }
 
   async getSession(sessionId: string): Promise<Session | null> {
+    if (this.options.getSession) return this.options.getSession(sessionId)
     return this.sessions.find((session) => session.id === sessionId) ?? null
   }
 
@@ -229,7 +239,9 @@ class TestOpenCodeAdapter implements OpenCodeAdapter {
   }
 
   async abortSession(sessionId: string): Promise<boolean> {
+    if (this.confirmedAbortSessions.has(sessionId)) return true
     this.abortCalls.push(sessionId)
+    this.confirmedAbortSessions.add(sessionId)
     return true
   }
 
@@ -268,6 +280,9 @@ describe('runOpenCodePrompt', () => {
     eventSubscribe?: (...args: unknown[]) => Promise<{ stream: AsyncIterable<unknown> }>
     globalEvent?: (...args: unknown[]) => Promise<{ stream: AsyncIterable<unknown> }>
     get?: (...args: unknown[]) => Promise<unknown>
+    questionList?: (...args: unknown[]) => Promise<unknown>
+    questionReply?: (...args: unknown[]) => Promise<unknown>
+    questionReject?: (...args: unknown[]) => Promise<unknown>
   } = {}) {
     const defaultSubscribe = async () => ({
       stream: (async function* () {
@@ -283,11 +298,16 @@ describe('runOpenCodePrompt', () => {
         list: overrides.list ?? (async () => ({ data: [] })),
         prompt: overrides.prompt ?? (async () => ({ data: { parts: [] } })),
         messages: overrides.messages ?? (async () => ({ data: [] })),
-        abort: overrides.abort ?? (async () => ({ data: {} })),
+        abort: overrides.abort ?? (async () => ({ data: true })),
         get: overrides.get ?? (async () => ({ data: { directory: '/tmp/project' } })),
       },
       permission: {
         reply: overrides.permissionReply ?? (async () => ({ data: true })),
+      },
+      question: {
+        list: overrides.questionList ?? (async () => ({ data: [] })),
+        reply: overrides.questionReply ?? (async () => ({ data: true })),
+        reject: overrides.questionReject ?? (async () => ({ data: true })),
       },
       event: {
         subscribe: eventSubscribe,
@@ -536,10 +556,214 @@ describe('runOpenCodePrompt', () => {
     const unavailableAdapter = new OpenCodeSDKAdapter('http://localhost:4096', unavailableClient as unknown as OpenCodeSDKClient)
 
     await expect(missingAdapter.getSession('ses-missing')).resolves.toBeNull()
-    await expect(unavailableAdapter.getSession('ses-preserve')).rejects.toMatchObject({
-      name: 'InternalServerError',
-      message: 'OpenCode unavailable',
+    await expect(unavailableAdapter.getSession('ses-preserve')).rejects.toThrow(
+      'OpenCode session lookup failed with HTTP 500',
+    )
+  })
+
+  it('uses each session worktree for question list, reply, and reject operations', async () => {
+    const questionListCalls: unknown[][] = []
+    const questionReplyCalls: unknown[][] = []
+    const questionRejectCalls: unknown[][] = []
+    let createCount = 0
+    const fakeClient = createFakeSdkClient({
+      create: async () => {
+        createCount += 1
+        return { data: { id: `ses-${createCount}`, directory: `/tmp/worktree-${createCount}` } }
+      },
+      questionList: async (...args: unknown[]) => {
+        questionListCalls.push(args)
+        const directory = (args[0] as { directory?: string } | undefined)?.directory
+        const sessionID = directory === '/tmp/worktree-1' ? 'ses-1' : 'ses-2'
+        return {
+          data: [{
+            id: sessionID === 'ses-1' ? 'question-1' : 'question-2',
+            sessionID,
+            questions: [{ question: 'Continue?', header: 'Confirm', options: [] }],
+          }],
+        }
+      },
+      questionReply: async (...args: unknown[]) => {
+        questionReplyCalls.push(args)
+        return { data: true }
+      },
+      questionReject: async (...args: unknown[]) => {
+        questionRejectCalls.push(args)
+        return { data: true }
+      },
     })
+    const adapter = new OpenCodeSDKAdapter('http://localhost:4096', fakeClient as unknown as OpenCodeSDKClient)
+    const first = await adapter.createSession('/tmp/project-a')
+    const second = await adapter.createSession('/tmp/project-b')
+
+    await adapter.listPendingQuestions(undefined, undefined, first.id)
+    await adapter.listPendingQuestions(undefined, undefined, second.id)
+    await adapter.replyQuestion('question-1', [['yes']], '/tmp/attacker-controlled', undefined, first.id)
+    await adapter.rejectQuestion('question-2', '/tmp/attacker-controlled', undefined, second.id)
+
+    expect(questionListCalls.map((args) => args[0])).toEqual([
+      { directory: '/tmp/worktree-1' },
+      { directory: '/tmp/worktree-2' },
+    ])
+    expect(questionReplyCalls[0]?.[0]).toMatchObject({
+      requestID: 'question-1',
+      directory: '/tmp/worktree-1',
+    })
+    expect(questionRejectCalls[0]?.[0]).toMatchObject({
+      requestID: 'question-2',
+      directory: '/tmp/worktree-2',
+    })
+  })
+
+  it('requires a trusted session directory before answering a question', async () => {
+    const questionReply = vi.fn(async () => ({ data: true }))
+    const fakeClient = createFakeSdkClient({
+      get: async () => ({ data: { id: 'ses-no-directory' } }),
+      questionReply,
+    })
+    const adapter = new OpenCodeSDKAdapter('http://localhost:4096', fakeClient as unknown as OpenCodeSDKClient)
+
+    await expect(adapter.replyQuestion(
+      'question-1',
+      [['yes']],
+      '/tmp/attacker-controlled',
+      undefined,
+      'ses-no-directory',
+    )).rejects.toThrow('no trusted worktree directory')
+    expect(questionReply).not.toHaveBeenCalled()
+  })
+
+  it('reports only confirmed aborts and retries an unconfirmed one', async () => {
+    const abortCalls: unknown[][] = []
+    let abortCount = 0
+    const fakeClient = createFakeSdkClient({
+      abort: async (...args: unknown[]) => {
+        abortCalls.push(args)
+        abortCount += 1
+        return { data: abortCount > 1 }
+      },
+    })
+    const adapter = new OpenCodeSDKAdapter('http://localhost:4096', fakeClient as unknown as OpenCodeSDKClient)
+    await adapter.createSession('/tmp/project')
+
+    await expect(adapter.abortSession('ses-1')).resolves.toBe(false)
+    await expect(adapter.abortSession('ses-1')).resolves.toBe(true)
+    await expect(adapter.abortSession('ses-1')).resolves.toBe(true)
+
+    // Confirmation is per remote operation. A later abort must still reach
+    // OpenCode because the same session id may have been prompted again.
+    expect(abortCalls).toHaveLength(3)
+    expect(abortCalls[0]?.[0]).toMatchObject({ sessionID: 'ses-1', directory: '/tmp/project' })
+  })
+
+  it('treats an exact remote 404 as an already-stopped session', async () => {
+    const abort = vi.fn(async () => ({
+      error: { name: 'NotFoundError', message: 'Session not found' },
+      response: { status: 404 },
+    }))
+    const get = vi.fn(async () => ({
+      error: { name: 'NotFoundError', message: 'Session not found' },
+      response: { status: 404 },
+    }))
+    const fakeClient = createFakeSdkClient({ abort, get })
+    const adapter = new OpenCodeSDKAdapter('http://localhost:4096', fakeClient as unknown as OpenCodeSDKClient)
+
+    await expect(adapter.abortSession('ses-gone')).resolves.toBe(true)
+    expect(get).toHaveBeenCalledOnce()
+    expect(abort).not.toHaveBeenCalled()
+  })
+
+  it('keeps an unconfirmed session lookup as a failed stop', async () => {
+    const abort = vi.fn(async () => ({ data: true }))
+    const get = vi.fn(async () => ({
+      error: { name: 'InternalServerError', message: 'OpenCode unavailable' },
+      response: { status: 500 },
+    }))
+    const fakeClient = createFakeSdkClient({ abort, get })
+    const adapter = new OpenCodeSDKAdapter('http://localhost:4096', fakeClient as unknown as OpenCodeSDKClient)
+
+    await expect(adapter.abortSession('ses-unknown')).resolves.toBe(false)
+    expect(abort).not.toHaveBeenCalled()
+  })
+
+  it('does not treat a message-only 404 lookup failure as a confirmed stop', async () => {
+    const abort = vi.fn(async () => ({ data: true }))
+    const get = vi.fn(async () => ({
+      error: { name: 'TransportError', message: 'request failed with status 404' },
+    }))
+    const fakeClient = createFakeSdkClient({ abort, get })
+    const adapter = new OpenCodeSDKAdapter('http://localhost:4096', fakeClient as unknown as OpenCodeSDKClient)
+
+    await expect(adapter.abortSession('ses-ambiguous')).resolves.toBe(false)
+    expect(abort).not.toHaveBeenCalled()
+  })
+
+  it('rechecks a session after a new prompt follows a confirmed abort', async () => {
+    const abortCalls: unknown[][] = []
+    let promptCalls = 0
+    const fakeClient = createFakeSdkClient({
+      abort: async (...args: unknown[]) => {
+        abortCalls.push(args)
+        return { data: true }
+      },
+      prompt: async (...args: unknown[]) => {
+        promptCalls += 1
+        expect(promptCalls).toBe(1)
+        const signal = (args[1] as { signal?: AbortSignal } | undefined)?.signal
+        return await new Promise<never>((_, reject) => {
+          const abort = () => {
+            const error = new DOMException('The operation was aborted', 'AbortError')
+            reject(error)
+          }
+          if (signal?.aborted) {
+            abort()
+            return
+          }
+          signal?.addEventListener('abort', abort, { once: true })
+        })
+      },
+      subscribe: async (...args: unknown[]) => {
+        const signal = (args[0] as { signal?: AbortSignal } | undefined)?.signal
+        return {
+          stream: (async function* () {
+            await new Promise<void>((resolve) => {
+              if (signal?.aborted) {
+                resolve()
+                return
+              }
+              signal?.addEventListener('abort', () => resolve(), { once: true })
+            })
+            yield* []
+          })(),
+        }
+      },
+    })
+    const adapter = new OpenCodeSDKAdapter('http://localhost:4096', fakeClient as unknown as OpenCodeSDKClient)
+    await adapter.createSession('/tmp/project')
+
+    await expect(adapter.abortSession('ses-1')).resolves.toBe(true)
+    const controller = new AbortController()
+    const prompt = adapter.promptSession('ses-1', [{ type: 'text', content: 'Recovery note' }], controller.signal)
+    await vi.waitFor(() => expect(promptCalls).toBe(1))
+    controller.abort()
+    await expect(prompt).rejects.toMatchObject({ name: 'AbortError' })
+
+    // A previous confirmed stop must not be reused after the session has been
+    // prompted again: the second call is the only proof for the new remote
+    // work, even though it has the same session id.
+    await expect(adapter.abortSession('ses-1')).resolves.toBe(true)
+    expect(abortCalls).toHaveLength(2)
+  })
+
+  it('propagates cancellation before resolving a session directory', async () => {
+    const get = vi.fn(async () => ({ data: { id: 'ses-1', directory: '/tmp/project' } }))
+    const fakeClient = createFakeSdkClient({ get })
+    const adapter = new OpenCodeSDKAdapter('http://localhost:4096', fakeClient as unknown as OpenCodeSDKClient)
+    const controller = new AbortController()
+    controller.abort()
+
+    await expect(adapter.getSessionMessages('ses-1', controller.signal)).rejects.toMatchObject({ name: 'AbortError' })
+    expect(get).not.toHaveBeenCalled()
   })
 
   it('dispatches prompt metadata before the prompt completes', async () => {
@@ -941,6 +1165,106 @@ describe('runOpenCodePrompt', () => {
     expect(listOpenCodeSessionsForTicket(ticket.id, ['completed'])).toHaveLength(1)
   })
 
+  it('cleans up an owned session when its creation callback throws', async () => {
+    resetTestDb()
+    const { ticket } = await createInitializedTestTicket(repoManager, {
+      title: 'Owned session callback failure',
+    })
+    patchTicket(ticket.id, { status: 'COUNCIL_DELIBERATING' })
+    const adapter = new TestOpenCodeAdapter(['assistant response'])
+    const callbackError = new Error('milestone persistence failed')
+
+    await expect(runOpenCodePrompt({
+      adapter,
+      projectPath: '/tmp/project',
+      parts: [{ type: 'text', content: 'Prompt body' }],
+      sessionOwnership: {
+        ticketId: ticket.id,
+        phase: 'COUNCIL_DELIBERATING',
+      },
+      onSessionCreated: () => {
+        throw callbackError
+      },
+    })).rejects.toBe(callbackError)
+
+    expect(adapter.abortCalls).toEqual(['ses-1'])
+    expect(listOpenCodeSessionsForTicket(ticket.id, ['active'])).toEqual([])
+    expect(listOpenCodeSessionsForTicket(ticket.id, ['abandoned']).map((session) => session.sessionId))
+      .toEqual(['ses-1'])
+  })
+
+  it('aborts a session published after the acquisition deadline when its callback is closed', async () => {
+    const deferredSession = createDeferred<Session>()
+    const adapter = new TestOpenCodeAdapter(['assistant response'], {
+      createSession: () => deferredSession.promise,
+    })
+    const callbackError = new Error('session creation completed after cancellation')
+    let acquisitionClosed = false
+
+    const runPromise = runOpenCodePrompt({
+      adapter,
+      projectPath: '/tmp/project',
+      parts: [{ type: 'text', content: 'Prompt body' }],
+      timeoutMs: 25,
+      onSessionCreated: () => {
+        if (acquisitionClosed) throw callbackError
+      },
+    })
+
+    await new Promise((resolve) => setTimeout(resolve, 50))
+    acquisitionClosed = true
+    deferredSession.resolve({ id: 'late-session', projectPath: '/tmp/project' })
+
+    await expect(runPromise).rejects.toBe(callbackError)
+    expect(adapter.abortCalls).toEqual(['late-session'])
+    expect(adapter.promptCalls).toEqual([])
+  })
+
+  it('does not create a replacement while an owned session lookup is unverified', async () => {
+    resetTestDb()
+    const { ticket } = await createInitializedTestTicket(repoManager, {
+      title: 'Owned session replacement guard',
+    })
+    patchTicket(ticket.id, { status: 'CODING' })
+    let lookupUnavailable = false
+    let createdSession: Session | undefined
+    const adapter = new TestOpenCodeAdapter(['initial response', 'replacement must not run'], {
+      getSession: (sessionId) => {
+        if (lookupUnavailable) throw new Error('ECONNREFUSED')
+        return createdSession?.id === sessionId ? createdSession : null
+      },
+    })
+
+    await runOpenCodePrompt({
+      adapter,
+      projectPath: '/tmp/project',
+      parts: [{ type: 'text', content: 'Initial prompt' }],
+      sessionOwnership: {
+        ticketId: ticket.id,
+        phase: 'CODING',
+        keepActive: true,
+      },
+      onSessionCreated: (session) => {
+        createdSession = session
+      },
+    })
+    lookupUnavailable = true
+
+    await expect(runOpenCodePrompt({
+      adapter,
+      projectPath: '/tmp/project',
+      parts: [{ type: 'text', content: 'Replacement must not run' }],
+      sessionOwnership: {
+        ticketId: ticket.id,
+        phase: 'CODING',
+      },
+    })).rejects.toThrow(/Could not verify whether OpenCode session ses-1 is still active/)
+
+    expect(adapter.sessionCreateCalls).toHaveLength(1)
+    expect(listOpenCodeSessionsForTicket(ticket.id, ['active']).map((session) => session.sessionId))
+      .toEqual(['ses-1'])
+  })
+
   it('abandons an existing owned active session when forceFresh is requested', async () => {
     resetTestDb()
     const { ticket } = await createInitializedTestTicket(repoManager, {
@@ -1208,6 +1532,23 @@ describe('runOpenCodePrompt', () => {
     expect(promptNumbers).toEqual([1, 2])
   })
 
+  it('refuses to dispatch a prompt when its work budget has already expired', async () => {
+    const adapter = new TestOpenCodeAdapter(['assistant response'])
+    const budget = createWorkBudget({ ticketId: 'expired-prompt', totalMs: 0, scope: 'prompt' })
+    try {
+      await expect(runOpenCodeSessionPrompt({
+        adapter,
+        session: { id: 'expired-session' },
+        parts: [{ type: 'text', content: 'Do not dispatch this prompt' }],
+        workBudget: budget,
+        deadlineScope: 'workflow',
+      })).rejects.toBeInstanceOf(WorkflowDeadlineTimeoutError)
+      expect(adapter.promptCalls).toEqual([])
+    } finally {
+      budget.release()
+    }
+  })
+
   it('sends the shared deny-all permission policy when toolPolicy is disabled', async () => {
     const adapter = new TestOpenCodeAdapter(['assistant response'])
 
@@ -1409,6 +1750,42 @@ describe('runOpenCodePrompt', () => {
     })
 
     expect(result.response).toBe('<RELEVANT_FILES_RESULT>streamed artifact</RELEVANT_FILES_RESULT>')
+  })
+
+  it('keeps streamed text when the final message read fails', async () => {
+    const fakeClient = createFakeSdkClient({
+      prompt: async () => ({ data: { parts: [] } }),
+      messages: async () => {
+        throw new Error('session messages temporarily unavailable')
+      },
+      subscribe: async () => ({
+        stream: (async function* () {
+          yield {
+            type: 'message.part.updated',
+            properties: {
+              part: {
+                id: 'part-1',
+                type: 'text',
+                text: 'stream survived the snapshot failure',
+                sessionID: 'ses-1',
+                messageID: 'msg-1',
+                time: { end: Date.now() },
+              },
+            },
+          }
+          yield { type: 'session.idle', properties: { info: { id: 'ses-1' } } }
+        })(),
+      }),
+    })
+    const adapter = new OpenCodeSDKAdapter('http://localhost:4096', fakeClient as unknown as OpenCodeSDKClient)
+
+    const result = await runOpenCodePrompt({
+      adapter,
+      projectPath: '/tmp/project',
+      parts: [{ type: 'text', content: 'Prompt body' }],
+    })
+
+    expect(result.response).toBe('stream survived the snapshot failure')
   })
 
   it('does not fall back to older assistant text when the latest assistant snapshot is empty', async () => {
@@ -2074,6 +2451,13 @@ describe('runOpenCodePrompt', () => {
             yield {
               directory: '/tmp/project',
               payload: {
+                type: 'file.edited',
+                properties: { file: 'same-directory-but-global.ts' },
+              },
+            }
+            yield {
+              directory: '/tmp/project',
+              payload: {
                 type: 'session.idle',
                 properties: { sessionID: 'ses-1' },
               },
@@ -2100,6 +2484,7 @@ describe('runOpenCodePrompt', () => {
       expect.objectContaining({ type: 'done' }),
     ]))
     expect(events.some((event) => event.type === 'file_edited' && event.file === 'unrelated.ts')).toBe(false)
+    expect(events.some((event) => event.type === 'file_edited' && event.file === 'same-directory-but-global.ts')).toBe(false)
   })
 
   it('subscribeToEvents filters user prompt parts from the OpenCode global event stream', async () => {
@@ -2400,7 +2785,7 @@ describe('runOpenCodePrompt', () => {
           yield {
             payload: {
               type: 'file.edited',
-              properties: { file: 'src/a.ts' },
+              properties: { file: 'src/a.ts', sessionID: 'ses-1' },
             },
             directory: '/tmp/project',
           }

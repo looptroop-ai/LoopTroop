@@ -223,8 +223,15 @@ export interface WriteSkipReceiptsInput {
   allowArchivedPhaseAttempt?: boolean
 }
 
-function buildReceiptId(actionId: string, itemId: string | null): string {
-  return `skip-${createHash('sha256').update(`${actionId} ${itemId ?? ''}`).digest('hex').slice(0, 16)}`
+function buildReceiptId(
+  actionId: string,
+  itemId: string | null,
+  phase = '',
+  phaseAttempt: number | null = null,
+): string {
+  return `skip-${createHash('sha256')
+    .update(`${actionId} ${itemId ?? ''} ${phase} ${phaseAttempt ?? 'unknown'}`)
+    .digest('hex').slice(0, 16)}`
 }
 
 /**
@@ -272,11 +279,17 @@ function readSkipReceiptRows(ticketRef: string): Array<{
     }))
 }
 
-/** True when this action already left a valid receipt on the ticket. */
-export function hasSkipReceiptsForAction(ticketRef: string, actionId: string): boolean {
+/** True when this action already left a valid receipt in the requested scope. */
+export function hasSkipReceiptsForAction(
+  ticketRef: string,
+  actionId: string,
+  scope?: { phase?: string; phaseAttempt?: number | null },
+): boolean {
   return readSkipReceiptRows(ticketRef).some((row) => (
     SKIP_RECEIPT_ARTIFACT_TYPES.includes(row.artifactType)
     && parseStoredReceipt(row.content)?.action_id === actionId
+    && (scope?.phase === undefined || row.phase === scope.phase)
+    && (scope?.phaseAttempt === undefined || row.phaseAttempt === scope.phaseAttempt)
   ))
 }
 
@@ -289,10 +302,6 @@ export function writeSkipReceipts(input: WriteSkipReceiptsInput): SkipReceipt[] 
   const context = getTicketContext(input.ticketId)
   if (!context) throw new Error(`Ticket not found: ${input.ticketId}`)
   if (input.items.length === 0 && !input.summary) return []
-  // Fast replay exit before phase validation. The database independently rejects
-  // duplicate receipt IDs, including writes that bypass this check.
-  if (hasSkipReceiptsForAction(input.ticketId, input.actionId)) return []
-
   const skippedBy = normalizeSkipActor(input.skippedBy)
   if (!(input.allowArchivedPhaseAttempt === true && skippedBy !== 'user')) {
     assertCurrentEditablePhaseAttempt({
@@ -302,6 +311,13 @@ export function writeSkipReceipts(input: WriteSkipReceiptsInput): SkipReceipt[] 
     })
   }
   const phaseAttempt = resolvePhaseAttempt(input.ticketId, input.phase, input.phaseAttempt)
+  // Replay is scoped to the phase attempt that owns this decision. The database
+  // independently rejects duplicate receipt IDs, including writes that bypass
+  // this check.
+  if (hasSkipReceiptsForAction(input.ticketId, input.actionId, {
+    phase: input.phase,
+    phaseAttempt,
+  })) return []
   const skippedAt = input.skippedAt ?? new Date().toISOString()
   const artifactType = buildSkipReceiptArtifactType(input.surface)
 
@@ -339,7 +355,7 @@ export function writeSkipReceipts(input: WriteSkipReceiptsInput): SkipReceipt[] 
     const reason = normalizeSkipReason(input.summary.reason)
     receipts.push({
       ...base,
-      receipt_id: buildReceiptId(input.actionId, null),
+      receipt_id: buildReceiptId(input.actionId, null, input.phase, phaseAttempt),
       item_id: null,
       item_type: input.summary.itemType,
       is_action_summary: true,
@@ -353,7 +369,7 @@ export function writeSkipReceipts(input: WriteSkipReceiptsInput): SkipReceipt[] 
     const reason = normalizeSkipReason(item.reason)
     receipts.push({
       ...base,
-      receipt_id: buildReceiptId(input.actionId, item.itemId),
+      receipt_id: buildReceiptId(input.actionId, item.itemId, input.phase, phaseAttempt),
       item_id: item.itemId,
       item_type: input.itemType,
       // Children of a bulk action point at it. Counting already works from the
@@ -509,7 +525,7 @@ function adaptManualQaArtifact(row: {
     const actionId = typeof record.actionId === 'string' ? record.actionId : null
     if (!actionId) return []
     return [{
-      receiptId: buildReceiptId(actionId, null),
+      receiptId: buildReceiptId(actionId, null, row.phase, row.phaseAttempt),
       actionId,
       parentActionId: null,
       surface: 'manual_qa',
@@ -542,7 +558,7 @@ function adaptManualQaArtifact(row: {
     const itemId = typeof waived.itemId === 'string' ? waived.itemId : null
     if (!itemId) return []
     return [{
-      receiptId: buildReceiptId(actionId, itemId),
+      receiptId: buildReceiptId(actionId, itemId, row.phase, row.phaseAttempt),
       actionId,
       parentActionId: null,
       surface: 'manual_qa_item' as const,

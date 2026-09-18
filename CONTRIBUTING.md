@@ -64,6 +64,22 @@ Changes to CLI or process behavior also belong in the website's CLI and
 operations docs. Keep process-safety notes explicit about identity checks,
 forceful Windows termination, and platform limits; do not promise lifecycle
 behavior that was not verified.
+For workflow recovery documentation, distinguish a local cancellation request
+from confirmed remote stopping. Keep unconfirmed session ownership visible and
+retryable, and say that restart recovery needs the project database or its
+session-ownership marker, `runtime/opencode-pending-sessions.json`. That marker
+contains the durable session IDs; cancellation's separate private runtime marker is
+`.ticket/runtime/cancellation-pending.json`: it is written before cleanup,
+treated as pending when malformed or unreadable, and removed only after
+terminal cleanup through the contained ticket-file helper. It records a stop
+request but does not identify or recover a remote session. If both storage
+layers are unavailable, only the current process guard remains. Interview
+examples must include a positive `batchNumber` and
+explain that missing or invalid values fail schema validation while valid stale
+values are rejected before mutation. Automatic bead-response continuation
+within each bead iteration is bounded by a finite `maxIterations`; `0` means
+unlimited for that path. User-facing Continue across workflow phases is
+separate.
 
 ## Documentation and changelog
 

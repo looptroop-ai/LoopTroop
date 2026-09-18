@@ -1,18 +1,91 @@
+import { rmSync } from 'node:fs'
 import { and, eq, inArray, isNull } from 'drizzle-orm'
 import { opencodeSessions, tickets } from '../db/schema'
 import type { OpenCodeAdapter } from './adapter'
 import type { OpenCodeSessionCreateOptions, Session } from './types'
 import { getOpenCodeAdapter } from './factory'
 import { getProjectContextById, listProjects } from '../storage/projects'
+import { getExistingProjectDatabase } from '../db/project'
 import { buildTicketRef, getTicketByRef, getTicketContext } from '../storage/tickets'
+import { readTicketFile, resolveTicketContainedPath, writeTicketFile } from '../storage/ticketQueries'
 import { emitOpenCodeSessionEnded } from './sessionEvents'
 import { createOpenCodeSessionWithRetry } from './sessionCreation'
 import {
   clearTicketSessionContinuations,
+  clearSessionContinuation,
   getPendingSessionContinuationForTicketPhase,
   isContinuableBlockedError,
 } from './sessionContinuation'
 import type { WorkflowPhaseId } from '@shared/workflowMeta'
+
+const PENDING_SESSION_OWNERSHIP_ARTIFACT = 'runtime/opencode-pending-sessions.json'
+
+interface PendingSessionOwnershipRecord {
+  sessionId: string
+  phase: string
+  phaseAttempt: number
+  memberId: string | null
+  beadId: string | null
+  iteration: number | null
+  step: string | null
+}
+
+type SessionOwnershipScope = Omit<PendingSessionOwnershipRecord, 'sessionId'>
+
+interface PendingSessionOwnershipRead {
+  records: PendingSessionOwnershipRecord[]
+  readable: boolean
+}
+
+// This map is only a fail-closed guard for the exceptional case where both
+// SQLite and the ticket's atomic marker are unavailable. It is deliberately
+// not used as ownership recovery: a restart cannot discover these entries.
+const unpersistedSessionOwnership = new Map<string, Map<string, SessionOwnershipScope>>()
+
+// A remote create has to stay in the ticket's cleanup accounting before it
+// has returned a session id. Otherwise a cancellation can observe no row and
+// no marker while that create is still able to publish a new remote session.
+const pendingSessionCreations = new Map<string, SessionOwnershipScope[]>()
+
+function sameSessionOwnershipScope(left: SessionOwnershipScope, right: SessionOwnershipScope): boolean {
+  return left.phase === right.phase
+    && left.phaseAttempt === right.phaseAttempt
+    && left.memberId === right.memberId
+    && left.beadId === right.beadId
+    && left.iteration === right.iteration
+    && left.step === right.step
+}
+
+function beginSessionCreation(ticketId: string, ownership: SessionOwnershipScope): void {
+  const pending = pendingSessionCreations.get(ticketId) ?? []
+  pending.push(ownership)
+  pendingSessionCreations.set(ticketId, pending)
+}
+
+function endSessionCreation(ticketId: string, ownership: SessionOwnershipScope): void {
+  const pending = pendingSessionCreations.get(ticketId)
+  if (!pending) return
+  const index = pending.findIndex((candidate) => sameSessionOwnershipScope(candidate, ownership))
+  if (index >= 0) pending.splice(index, 1)
+  if (pending.length === 0) pendingSessionCreations.delete(ticketId)
+}
+
+function countPendingSessionCreations(ticketId: string): number {
+  return pendingSessionCreations.get(ticketId)?.length ?? 0
+}
+
+function hasPendingSessionCreation(ticketId: string, ownership?: SessionOwnershipScope): boolean {
+  const pending = pendingSessionCreations.get(ticketId) ?? []
+  return ownership === undefined
+    ? pending.length > 0
+    : pending.some((candidate) => sameSessionOwnershipScope(candidate, ownership))
+}
+
+function canonicalOwnershipTicketId(
+  context: NonNullable<ReturnType<typeof getTicketContext>>,
+): string {
+  return buildTicketRef(context.projectId, context.localTicket.externalId)
+}
 
 export interface SessionOwnership {
   ticketId?: string
@@ -21,6 +94,17 @@ export interface SessionOwnership {
   beadId?: string | null
   iteration?: number | null
   step?: string | null
+}
+
+function normalizeSessionOwnership(phase: string, ownership: SessionOwnership): SessionOwnershipScope {
+  return {
+    phase,
+    phaseAttempt: ownership.phaseAttempt ?? 1,
+    memberId: ownership.memberId ?? null,
+    beadId: ownership.beadId ?? null,
+    iteration: ownership.iteration ?? null,
+    step: ownership.step ?? null,
+  }
 }
 
 export type OpenCodeSessionRecord = typeof opencodeSessions.$inferSelect
@@ -51,6 +135,307 @@ function resolveSessionTicketRef(found: NonNullable<ReturnType<typeof findSessio
     .where(eq(tickets.id, found.record.ticketId))
     .get()
   return owner ? buildTicketRef(found.projectId, owner.externalId) : undefined
+}
+
+function isNullableString(value: unknown): value is string | null {
+  return value === null || typeof value === 'string'
+}
+
+function readPendingSessionOwnership(ticketId: string): PendingSessionOwnershipRead {
+  let raw: string | null
+  try {
+    raw = readTicketFile(ticketId, PENDING_SESSION_OWNERSHIP_ARTIFACT)
+  } catch (error) {
+    console.warn(`[sessionManager] Could not read pending ownership for ticket ${ticketId}:`, error)
+    return { records: [], readable: false }
+  }
+  if (raw === null) return { records: [], readable: true }
+
+  try {
+    const parsed: unknown = JSON.parse(raw)
+    if (!Array.isArray(parsed)) throw new Error('pending ownership must be an array')
+    const records = parsed.map((candidate): PendingSessionOwnershipRecord => {
+      if (typeof candidate !== 'object' || candidate === null) throw new Error('pending ownership entry must be an object')
+      const record = candidate as Record<string, unknown>
+      if (
+        typeof record.sessionId !== 'string' || record.sessionId.trim() === ''
+        || typeof record.phase !== 'string' || record.phase.trim() === ''
+        || typeof record.phaseAttempt !== 'number' || !Number.isInteger(record.phaseAttempt) || record.phaseAttempt < 1
+        || !isNullableString(record.memberId)
+        || !isNullableString(record.beadId)
+        || !isNullableString(record.step)
+        || (record.iteration !== null
+          && (typeof record.iteration !== 'number' || !Number.isInteger(record.iteration)))
+      ) {
+        throw new Error('pending ownership entry has invalid fields')
+      }
+      return {
+        sessionId: record.sessionId,
+        phase: record.phase,
+        phaseAttempt: record.phaseAttempt,
+        memberId: record.memberId,
+        beadId: record.beadId,
+        iteration: record.iteration as number | null,
+        step: record.step,
+      }
+    })
+    return { records, readable: true }
+  } catch (error) {
+    console.warn(`[sessionManager] Could not parse pending ownership for ticket ${ticketId}:`, error)
+    return { records: [], readable: false }
+  }
+}
+
+function writePendingSessionOwnership(ticketId: string, records: PendingSessionOwnershipRecord[]): boolean {
+  try {
+    if (records.length === 0) {
+      const path = resolveTicketContainedPath(ticketId, PENDING_SESSION_OWNERSHIP_ARTIFACT, 'remove')
+      if (!path) return false
+      rmSync(path, { force: true })
+      return true
+    }
+    writeTicketFile(ticketId, PENDING_SESSION_OWNERSHIP_ARTIFACT, `${JSON.stringify(records, null, 2)}\n`)
+    return true
+  } catch (error) {
+    console.warn(`[sessionManager] Could not write pending ownership for ticket ${ticketId}:`, error)
+    return false
+  }
+}
+
+function rememberPendingSessionOwnership(ticketId: string, record: PendingSessionOwnershipRecord): boolean {
+  const current = readPendingSessionOwnership(ticketId)
+  if (!current.readable) return false
+  if (current.records.some(candidate => candidate.sessionId === record.sessionId)) return true
+  return writePendingSessionOwnership(ticketId, [...current.records, record])
+}
+
+function forgetPendingSessionOwnership(ticketId: string, sessionId: string): boolean {
+  const current = readPendingSessionOwnership(ticketId)
+  if (!current.readable) return false
+  const remaining = current.records.filter(record => record.sessionId !== sessionId)
+  if (remaining.length === current.records.length) return true
+  return writePendingSessionOwnership(ticketId, remaining)
+}
+
+function markUnpersistedSessionOwnership(
+  ticketId: string,
+  sessionId: string,
+  ownership: SessionOwnershipScope,
+): void {
+  const sessions = unpersistedSessionOwnership.get(ticketId) ?? new Map<string, SessionOwnershipScope>()
+  sessions.set(sessionId, ownership)
+  unpersistedSessionOwnership.set(ticketId, sessions)
+}
+
+function clearUnpersistedSessionOwnership(ticketId: string, sessionId: string): void {
+  const sessions = unpersistedSessionOwnership.get(ticketId)
+  if (!sessions) return
+  sessions.delete(sessionId)
+  if (sessions.size === 0) unpersistedSessionOwnership.delete(ticketId)
+}
+
+function listUnpersistedSessionOwnership(ticketId: string): string[] {
+  return [...(unpersistedSessionOwnership.get(ticketId)?.keys() ?? [])]
+}
+
+function hasUnpersistedSessionOwnership(ticketId: string, ownership?: SessionOwnershipScope): boolean {
+  const sessions = unpersistedSessionOwnership.get(ticketId)
+  if (!sessions) return false
+  return ownership === undefined
+    ? sessions.size > 0
+    : [...sessions.values()].some((candidate) => sameSessionOwnershipScope(candidate, ownership))
+}
+
+function hasCurrentSessionOwnership(
+  ticketId: string,
+  context: NonNullable<ReturnType<typeof getTicketContext>>,
+): boolean {
+  const activeRows = context.projectDb
+    .select({ sessionId: opencodeSessions.sessionId })
+    .from(opencodeSessions)
+    .where(and(eq(opencodeSessions.ticketId, context.localTicketId), eq(opencodeSessions.state, 'active')))
+    .all()
+  const pending = readPendingSessionOwnership(ticketId)
+  return activeRows.length > 0
+    || !pending.readable
+    || pending.records.length > 0
+    || hasUnpersistedSessionOwnership(ticketId)
+    || countPendingSessionCreations(ticketId) > 0
+}
+
+function hasScopedSessionOwnership(
+  ticketId: string,
+  context: NonNullable<ReturnType<typeof getTicketContext>>,
+  ownership: SessionOwnershipScope,
+): boolean {
+  const activeRows = context.projectDb
+    .select()
+    .from(opencodeSessions)
+    .where(and(eq(opencodeSessions.ticketId, context.localTicketId), eq(opencodeSessions.state, 'active')))
+    .all()
+  if (activeRows.some((row) => sameSessionOwnershipScope({
+    phase: row.phase,
+    phaseAttempt: row.phaseAttempt ?? 1,
+    memberId: row.memberId,
+    beadId: row.beadId,
+    iteration: row.iteration,
+    step: row.step,
+  }, ownership))) return true
+
+  const pending = readPendingSessionOwnership(ticketId)
+  if (!pending.readable) return true
+  return pending.records.some((record) => sameSessionOwnershipScope(record, ownership))
+    || hasUnpersistedSessionOwnership(ticketId, ownership)
+    || hasPendingSessionCreation(ticketId, ownership)
+}
+
+/**
+ * Fail closed when council cleanup has no session id to abort.
+ *
+ * A prompt can finish its local promise while its session-create callback is
+ * still publishing ownership. The absence of a tracked id is therefore proof
+ * of nothing until every ticket-scoped ownership store is readable and empty.
+ */
+export function hasUnresolvedSessionOwnership(ticketId: string): boolean {
+  const context = getTicketContext(ticketId)
+  if (!context) return true
+  return hasCurrentSessionOwnership(canonicalOwnershipTicketId(context), context)
+}
+
+export function hasUnresolvedSessionOwnershipForScope(
+  ticketId: string,
+  phase: string,
+  ownership: SessionOwnership,
+): boolean {
+  const context = getTicketContext(ticketId)
+  if (!context) return true
+  return hasScopedSessionOwnership(
+    canonicalOwnershipTicketId(context),
+    context,
+    normalizeSessionOwnership(phase, ownership),
+  )
+}
+
+/**
+ * Keep remote ownership discoverable when the normal Drizzle insert itself
+ * failed. The project database is already the restart source of truth, so a
+ * direct SQLite retry is deliberately limited to the same existing table — it
+ * does not introduce a memory-only pending-session registry.
+ */
+function persistSessionOwnershipFallback(input: {
+  projectRoot: string
+  ticketId: number
+  sessionId: string
+  phase: WorkflowPhaseId
+  phaseAttempt: number
+  memberId: string | null
+  beadId: string | null
+  iteration: number | null
+  step: string | null
+}): boolean {
+  try {
+    const projectDatabase = getExistingProjectDatabase(input.projectRoot)
+    if (!projectDatabase) return false
+    const existing = projectDatabase.sqlite.prepare(
+      `SELECT id
+         FROM opencode_sessions
+        WHERE session_id = ?
+          AND ticket_id = ?
+          AND state = 'active'
+        LIMIT 1`,
+    ).get(input.sessionId, input.ticketId)
+    if (existing) return true
+
+    projectDatabase.sqlite.prepare(
+      `INSERT INTO opencode_sessions
+        (session_id, ticket_id, phase, phase_attempt, member_id, bead_id, iteration, step, state)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'active')`,
+    ).run(
+      input.sessionId,
+      input.ticketId,
+      input.phase,
+      input.phaseAttempt,
+      input.memberId,
+      input.beadId,
+      input.iteration,
+      input.step,
+    )
+    return true
+  } catch (fallbackError) {
+    console.warn(`[sessionManager] Could not persist fallback ownership for OpenCode session ${input.sessionId}:`, fallbackError)
+    return false
+  }
+}
+
+function persistPendingSessionOwnershipFallback(input: {
+  ticketId: string
+  sessionId: string
+  phase: WorkflowPhaseId
+  phaseAttempt: number
+  memberId: string | null
+  beadId: string | null
+  iteration: number | null
+  step: string | null
+}): boolean {
+  return rememberPendingSessionOwnership(input.ticketId, {
+    sessionId: input.sessionId,
+    phase: input.phase,
+    phaseAttempt: input.phaseAttempt,
+    memberId: input.memberId,
+    beadId: input.beadId,
+    iteration: input.iteration,
+    step: input.step,
+  })
+}
+
+/**
+ * Replays the filesystem ownership marker into the project database after a
+ * restart. The marker stays in place until every row is durable, so a
+ * read-only or otherwise unavailable database cannot turn an owned remote
+ * session into an untracked one.
+ */
+export function recoverPendingOpenCodeSessionOwnership(ticketId: string): boolean {
+  const context = getTicketContext(ticketId)
+  if (!context) return false
+  const ownershipTicketId = canonicalOwnershipTicketId(context)
+  const pending = readPendingSessionOwnership(ownershipTicketId)
+  if (!pending.readable) return false
+  if (pending.records.length === 0) return true
+
+  try {
+    for (const record of pending.records) {
+      const existing = context.projectDb
+        .select({ id: opencodeSessions.id })
+        .from(opencodeSessions)
+        .where(and(
+          eq(opencodeSessions.ticketId, context.localTicketId),
+          eq(opencodeSessions.sessionId, record.sessionId),
+        ))
+        .get()
+      if (!existing) {
+        context.projectDb.insert(opencodeSessions)
+          .values({
+            sessionId: record.sessionId,
+            ticketId: context.localTicketId,
+            phase: record.phase,
+            phaseAttempt: record.phaseAttempt,
+            memberId: record.memberId,
+            beadId: record.beadId,
+            iteration: record.iteration,
+            step: record.step,
+            state: 'active',
+          })
+          .run()
+      }
+    }
+  } catch (error) {
+    console.warn(`[sessionManager] Could not recover pending OpenCode ownership for ticket ${ticketId}:`, error)
+    return false
+  }
+
+  if (!writePendingSessionOwnership(ownershipTicketId, [])) return false
+  for (const record of pending.records) clearUnpersistedSessionOwnership(ownershipTicketId, record.sessionId)
+  return true
 }
 
 export function listOpenCodeSessionsForTicket(ticketId: string, states: string[] = ['active']): OpenCodeSessionRecord[] {
@@ -99,6 +484,18 @@ export function reactivateOpenCodeSessionForContinuation(
 export class SessionManager {
   constructor(private adapter: OpenCodeAdapter) {}
 
+  hasUnresolvedSessionOwnership(ticketId: string): boolean {
+    return hasUnresolvedSessionOwnership(ticketId)
+  }
+
+  hasUnresolvedSessionOwnershipForScope(
+    ticketId: string,
+    phase: string,
+    ownership: SessionOwnership,
+  ): boolean {
+    return hasUnresolvedSessionOwnershipForScope(ticketId, phase, ownership)
+  }
+
   async createSessionForPhase(
     ticketId: string,
     phase: WorkflowPhaseId,
@@ -113,29 +510,112 @@ export class SessionManager {
   ): Promise<Session> {
     const context = getTicketContext(ticketId)
     if (!context) throw new Error(`Ticket not found: ${ticketId}`)
+    const ownershipTicketId = canonicalOwnershipTicketId(context)
+    const ownership = normalizeSessionOwnership(phase, {
+      phaseAttempt,
+      memberId: memberId ?? null,
+      beadId: beadId ?? null,
+      iteration: iteration ?? null,
+      step: step ?? null,
+    })
 
-    const session = await createOpenCodeSessionWithRetry(
-      this.adapter,
-      projectPath ?? context.projectRoot,
-      signal,
-      createOptions,
-    )
+    beginSessionCreation(ownershipTicketId, ownership)
+    try {
+      const session = await createOpenCodeSessionWithRetry(
+        this.adapter,
+        projectPath ?? context.projectRoot,
+        signal,
+        createOptions,
+      )
 
-    context.projectDb.insert(opencodeSessions)
-      .values({
-        sessionId: session.id,
+    try {
+      context.projectDb.insert(opencodeSessions)
+        .values({
+          sessionId: session.id,
+          ticketId: context.localTicketId,
+          phase,
+          phaseAttempt,
+          memberId: memberId ?? null,
+          beadId: beadId ?? null,
+          iteration: iteration ?? null,
+          step: step ?? null,
+          state: 'active',
+        })
+        .run()
+    } catch (error) {
+      // The remote session exists before its local ownership row. If the row
+      // cannot be written through Drizzle, retry the same durable table through
+      // the already-open project connection before stopping the remote object.
+      // A failed confirmation then remains visible to startup and ticket
+      // cleanup rather than disappearing into process memory.
+      const ownershipPersisted = persistSessionOwnershipFallback({
+        projectRoot: context.projectRoot,
         ticketId: context.localTicketId,
+        sessionId: session.id,
         phase,
         phaseAttempt,
         memberId: memberId ?? null,
         beadId: beadId ?? null,
         iteration: iteration ?? null,
         step: step ?? null,
-        state: 'active',
       })
-      .run()
+      if (!ownershipPersisted) {
+        const pendingOwnershipPersisted = persistPendingSessionOwnershipFallback({
+          ticketId: ownershipTicketId,
+          sessionId: session.id,
+          phase,
+          phaseAttempt,
+          memberId: memberId ?? null,
+          beadId: beadId ?? null,
+          iteration: iteration ?? null,
+          step: step ?? null,
+        })
+        if (!pendingOwnershipPersisted) {
+          markUnpersistedSessionOwnership(ownershipTicketId, session.id, ownership)
+          console.warn(
+            `[sessionManager] OpenCode session ${session.id} has no durable ownership; `
+            + 'cleanup will fail closed in this process, but a restart cannot discover it',
+          )
+        }
+      }
+      try {
+        const stopped = await this.adapter.abortSession(session.id)
+        if (!stopped) {
+          console.warn(`[sessionManager] Could not confirm cleanup for untracked OpenCode session ${session.id}`)
+        } else {
+          if (ownershipPersisted) {
+            try {
+              const update = context.projectDb.update(opencodeSessions)
+                .set({ state: 'abandoned', updatedAt: new Date().toISOString() })
+                .where(and(
+                  eq(opencodeSessions.ticketId, context.localTicketId),
+                  eq(opencodeSessions.sessionId, session.id),
+                  eq(opencodeSessions.state, 'active'),
+                ))
+                .run()
+              if (update.changes > 0) {
+                emitOpenCodeSessionEnded({ sessionId: session.id, ticketId, reason: 'aborted' })
+                clearSessionContinuation(session.id)
+              }
+            } catch (recordError) {
+              console.warn(`[sessionManager] Failed to reconcile stopped OpenCode session ${session.id}:`, recordError)
+            }
+          } else {
+              forgetPendingSessionOwnership(ownershipTicketId, session.id)
+              clearUnpersistedSessionOwnership(ownershipTicketId, session.id)
+          }
+          this.adapter.forgetSessionDirectory?.(session.id)
+        }
+      } catch (cleanupError) {
+        console.warn(`[sessionManager] Failed to clean up untracked OpenCode session ${session.id}:`, cleanupError)
+      }
+      throw error
+    }
 
-    return session
+      return session
+    } finally {
+      endSessionCreation(ownershipTicketId, ownership)
+    }
   }
 
   createSessionForOwnership(
@@ -167,6 +647,9 @@ export class SessionManager {
       .set({ state: 'completed', updatedAt: new Date().toISOString() })
       .where(eq(opencodeSessions.sessionId, sessionId))
       .run()
+    const ticketRef = resolveSessionTicketRef(found)
+    if (ticketRef) forgetPendingSessionOwnership(ticketRef, sessionId)
+    this.adapter.forgetSessionDirectory?.(sessionId)
   }
 
   async abandonSession(sessionId: string) {
@@ -176,6 +659,9 @@ export class SessionManager {
       .set({ state: 'abandoned', updatedAt: new Date().toISOString() })
       .where(eq(opencodeSessions.sessionId, sessionId))
       .run()
+    const ticketRef = resolveSessionTicketRef(found)
+    if (ticketRef) forgetPendingSessionOwnership(ticketRef, sessionId)
+    this.adapter.forgetSessionDirectory?.(sessionId)
     // A question window that outlives its session would later reject a request
     // OpenCode no longer has, and its suspended work budget would hold the next
     // run's clocks still.
@@ -184,6 +670,34 @@ export class SessionManager {
       ticketId: resolveSessionTicketRef(found),
       reason: 'abandoned',
     })
+  }
+
+  /**
+   * Stops a tracked remote session before abandoning its local ownership row.
+   * A false result deliberately leaves the row active: callers that reset a
+   * worktree or start a replacement must be able to withhold that work when
+   * OpenCode did not confirm that the old session stopped.
+   */
+  async abortAndAbandonSession(sessionId: string): Promise<boolean> {
+    const found = findSessionRecord(sessionId)
+    if (found) {
+      const current = found.projectDb.select({ state: opencodeSessions.state })
+        .from(opencodeSessions)
+        .where(eq(opencodeSessions.sessionId, sessionId))
+        .get()
+      if (current && current.state !== 'active') return true
+    }
+
+    let stopped = false
+    try {
+      stopped = await this.adapter.abortSession(sessionId)
+    } catch (error) {
+      console.warn(`[sessionManager] Failed to abort OpenCode session ${sessionId}:`, error)
+    }
+    if (!stopped) return false
+
+    await this.abandonSession(sessionId)
+    return true
   }
 
   getActiveSession(ticketId: string, phase: StoredSessionPhase, memberId?: string) {
@@ -264,6 +778,15 @@ export class SessionManager {
     )
     if (result.state === 'reconnected') return result.session
     if (result.state === 'missing') await this.abandonSession(existing.sessionId)
+    if (result.state === 'stale') {
+      const stopped = await this.abortAndAbandonSession(existing.sessionId)
+      if (!stopped) {
+        throw new Error(`Could not confirm abort of stale OpenCode session ${existing.sessionId}`)
+      }
+    }
+    if (result.state === 'unverified') {
+      throw new Error(`Could not verify whether OpenCode session ${existing.sessionId} is still active`)
+    }
     return null
   }
 
@@ -339,40 +862,155 @@ export class SessionManager {
   }
 }
 
-export async function abortTicketSessions(ticketId: string): Promise<void> {
+export async function abortTicketSessions(ticketId: string): Promise<boolean> {
   const context = getTicketContext(ticketId)
-  if (!context) return
+  if (!context) {
+    console.warn(`[sessionManager] Could not resolve ticket ${ticketId}; refusing cleanup success`)
+    return false
+  }
+  const ownershipTicketId = canonicalOwnershipTicketId(context)
 
   const activeSessions = context.projectDb
     .select()
     .from(opencodeSessions)
     .where(and(eq(opencodeSessions.ticketId, context.localTicketId), eq(opencodeSessions.state, 'active')))
     .all()
+  const pendingCreationCount = countPendingSessionCreations(ownershipTicketId)
+  const pendingOwnership = readPendingSessionOwnership(ownershipTicketId)
+  const unpersistedSessionIds = listUnpersistedSessionOwnership(ownershipTicketId)
+  const activeSessionIds = new Set(activeSessions.map(session => session.sessionId))
+  const pendingSessions = pendingOwnership.records.filter(record => !activeSessionIds.has(record.sessionId))
+  const pendingSessionIds = new Set(pendingOwnership.records.map(record => record.sessionId))
+  const unpersistedOnlySessionIds = unpersistedSessionIds.filter(
+    sessionId => !activeSessionIds.has(sessionId) && !pendingSessionIds.has(sessionId),
+  )
 
   // Before the early return: a ticket whose sessions are already abandoned can
   // still hold pending continuations, and those are exactly what the next run
-  // would reapply.
-  clearTicketSessionContinuations(ticketId)
-
-  if (activeSessions.length === 0) return
+  // would reapply. An unreadable marker is also a live uncertainty, not an
+  // empty list.
+  if (
+    activeSessions.length === 0
+    && pendingOwnership.readable
+    && pendingSessions.length === 0
+    && unpersistedOnlySessionIds.length === 0
+    && pendingCreationCount === 0
+  ) {
+    clearTicketSessionContinuations(ownershipTicketId)
+    return true
+  }
 
   const adapter = getOpenCodeAdapter()
+  let confirmedAborts = 0
+  let allConfirmed = pendingOwnership.readable
+    && pendingCreationCount === 0
+  if (!pendingOwnership.readable) {
+    console.warn(`[sessionManager] Pending ownership for ticket ${ticketId} is unreadable; refusing cleanup success`)
+  }
+  if (unpersistedOnlySessionIds.length > 0) {
+    console.warn(`[sessionManager] Ticket ${ticketId} has ownership that was not persisted; refusing cleanup success until this process confirms it`)
+  }
+  if (pendingCreationCount > 0) {
+    console.warn(`[sessionManager] Ticket ${ticketId} has ${pendingCreationCount} OpenCode session creation(s) still in flight; refusing cleanup success`)
+  }
 
   await Promise.allSettled(
     activeSessions.map(async (session: typeof opencodeSessions.$inferSelect) => {
+      let stopped = false
       try {
-        await adapter.abortSession(session.sessionId)
+        stopped = await adapter.abortSession(session.sessionId)
       } catch (err) {
+        allConfirmed = false
         console.warn(`[sessionManager] Failed to abort OpenCode session ${session.sessionId}:`, err)
-      } finally {
-        context.projectDb.update(opencodeSessions)
-          .set({ state: 'abandoned', updatedAt: new Date().toISOString() })
-          .where(eq(opencodeSessions.id, session.id))
-          .run()
-        emitOpenCodeSessionEnded({ sessionId: session.sessionId, ticketId, reason: 'aborted' })
+      }
+      if (stopped) {
+        confirmedAborts += 1
+        try {
+          const update = context.projectDb.update(opencodeSessions)
+            .set({ state: 'abandoned', updatedAt: new Date().toISOString() })
+            .where(and(eq(opencodeSessions.id, session.id), eq(opencodeSessions.state, 'active')))
+            .run()
+          if (update.changes > 0) {
+            if (!forgetPendingSessionOwnership(ownershipTicketId, session.sessionId)) {
+              allConfirmed = false
+              console.warn(`[sessionManager] Could not clear pending ownership for aborted OpenCode session ${session.sessionId}`)
+            }
+            adapter.forgetSessionDirectory?.(session.sessionId)
+            emitOpenCodeSessionEnded({ sessionId: session.sessionId, ticketId, reason: 'aborted' })
+            clearSessionContinuation(session.sessionId)
+          } else {
+            allConfirmed = false
+            console.warn(`[sessionManager] Could not record aborted OpenCode session ${session.sessionId}; retaining cleanup failure`)
+          }
+        } catch (error) {
+          // Remote stop is confirmed, but the local ownership row could not be
+          // reconciled. Report failure so destructive callers do not race a
+          // still-tracked session and a later sweep can finish the row.
+          allConfirmed = false
+          console.warn(`[sessionManager] Failed to record aborted OpenCode session ${session.sessionId}:`, error)
+        }
+      } else {
+        allConfirmed = false
+        console.warn(`[sessionManager] Could not confirm abort for OpenCode session ${session.sessionId}; retaining its active row`)
       }
     }),
   )
 
-  console.log(`[sessionManager] Aborted ${activeSessions.length} active session(s) for ticket ${ticketId}`)
+  for (const pending of pendingSessions) {
+    let stopped = false
+    try {
+      stopped = await adapter.abortSession(pending.sessionId)
+    } catch (error) {
+      console.warn(`[sessionManager] Failed to abort pending OpenCode session ${pending.sessionId}:`, error)
+    }
+    if (!stopped) {
+      allConfirmed = false
+      console.warn(`[sessionManager] Could not confirm abort for pending OpenCode session ${pending.sessionId}; retaining ownership marker`)
+      continue
+    }
+
+    confirmedAborts += 1
+    if (!forgetPendingSessionOwnership(ownershipTicketId, pending.sessionId)) {
+      allConfirmed = false
+      console.warn(`[sessionManager] Could not clear pending ownership for aborted OpenCode session ${pending.sessionId}`)
+      continue
+    }
+    adapter.forgetSessionDirectory?.(pending.sessionId)
+    emitOpenCodeSessionEnded({ sessionId: pending.sessionId, ticketId, reason: 'aborted' })
+    clearSessionContinuation(pending.sessionId)
+  }
+
+  for (const sessionId of unpersistedOnlySessionIds) {
+    let stopped = false
+    try {
+      stopped = await adapter.abortSession(sessionId)
+    } catch (error) {
+      console.warn(`[sessionManager] Failed to abort unpersisted OpenCode session ${sessionId}:`, error)
+    }
+    if (!stopped) {
+      allConfirmed = false
+      console.warn(`[sessionManager] Could not confirm abort for unpersisted OpenCode session ${sessionId}; retaining cleanup failure`)
+      continue
+    }
+
+    confirmedAborts += 1
+    clearUnpersistedSessionOwnership(ownershipTicketId, sessionId)
+    adapter.forgetSessionDirectory?.(sessionId)
+    emitOpenCodeSessionEnded({ sessionId, ticketId, reason: 'aborted' })
+    clearSessionContinuation(sessionId)
+  }
+
+  // A stop can yield while another creation publishes its ownership. Re-read
+  // all ticket-scoped sources after the awaited aborts; the check is the last
+  // asynchronous boundary so no later snapshot can be mistaken for proof that
+  // every managed session stopped.
+  if (hasCurrentSessionOwnership(ownershipTicketId, context)) {
+    console.warn(`[sessionManager] Ticket ${ticketId} gained or retained OpenCode ownership during cleanup; refusing cleanup success`)
+    return false
+  }
+
+  if (confirmedAborts > 0) {
+    console.log(`[sessionManager] Confirmed abort for ${confirmedAborts} session(s) for ticket ${ticketId}`)
+  }
+  return allConfirmed
 }

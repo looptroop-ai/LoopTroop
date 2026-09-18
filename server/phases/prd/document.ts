@@ -82,8 +82,16 @@ export function writePrdDocument(
   document: PrdDocument,
   options?: {
     approvalSnapshotRaw?: string
+    expectedContentSha256?: string
   },
 ): string {
+  if (options?.expectedContentSha256 !== undefined) {
+    assertExpectedContentSha256({
+      artifactType: 'prd',
+      currentContent: readPrdYaml(ticketId),
+      expectedContentSha256: options.expectedContentSha256,
+    })
+  }
   const nextRaw = buildYamlDocument(document)
   writeTicketFile(ticketId, 'prd.yaml', nextRaw)
   const snapshotRaw = options?.approvalSnapshotRaw ?? nextRaw
@@ -164,6 +172,7 @@ export function approvePrdDocument(ticketId: string, expectedContentSha256: stri
   const document = buildApprovedPrdDocument(current.document, approvedAt)
   const raw = writePrdDocument(ticketId, document, {
     approvalSnapshotRaw: current.raw,
+    expectedContentSha256,
   })
   const storedContentSha256 = contentSha256(raw)
   upsertLatestPhaseArtifact(
@@ -260,23 +269,29 @@ export function invalidateDownstreamBeadsArtifacts(ticketId: string): {
 export function savePrdDocument(
   ticketId: string,
   document: PrdDocument,
+  expectedContentSha256: string,
+  options: { skipInvalidation?: boolean } = {},
 ): {
   raw: string
   document: PrdDocument
   invalidation: { removedArtifacts: number; removedFiles: string[]; invalidatedPhases: string[] }
 } {
-  const raw = writePrdDocument(ticketId, document)
-  const invalidation = invalidateDownstreamBeadsArtifacts(ticketId)
+  const raw = writePrdDocument(ticketId, document, { expectedContentSha256 })
+  const invalidation = options.skipInvalidation
+    ? { removedArtifacts: 0, removedFiles: [], invalidatedPhases: [] }
+    : invalidateDownstreamBeadsArtifacts(ticketId)
   return { raw, document, invalidation }
 }
 
 export function saveApprovedPrdDocument(
   ticketId: string,
   document: PrdDocument,
+  expectedContentSha256: string,
+  options: { skipInvalidation?: boolean } = {},
 ): {
   raw: string
   document: PrdDocument
   invalidation: { removedArtifacts: number; removedFiles: string[]; invalidatedPhases: string[] }
 } {
-  return savePrdDocument(ticketId, buildApprovedPrdDocument(document, nowIso()))
+  return savePrdDocument(ticketId, buildApprovedPrdDocument(document, nowIso()), expectedContentSha256, options)
 }

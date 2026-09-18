@@ -5,8 +5,13 @@ import { clearTicketWorkBudget } from '../workBudget'
 import { forgetTicketQuestionMemory } from '../questionWindows'
 import { clearTicketSessionContinuations } from '../../opencode/sessionContinuation'
 import { releaseInterviewBatch } from './interviewPhase'
+import { readTicketFile, removeTicketFile, writeTicketFile } from '../../storage/tickets'
 
 export const runningPhases = new Set<string>()
+const cancellationPendingTickets = new Set<string>()
+let cancellationGenerationSequence = 0
+const cancellationGenerations = new Map<string, number>()
+const CANCELLATION_PENDING_ARTIFACT = 'runtime/cancellation-pending.json'
 
 /**
  * The OpenCode adapter, resolved on first use rather than at import.
@@ -41,7 +46,10 @@ export const phaseIntermediate = new Map<string, PhaseIntermediateData>()
  * Remove in-memory workflow state for a ticket without aborting any active work.
  * Call this when a ticket reaches a terminal state naturally.
  */
-export function cleanupTicketState(ticketId: string) {
+export function cleanupTicketState(
+  ticketId: string,
+  options: { preserveRemoteState?: boolean } = {},
+) {
   ticketAbortControllers.delete(ticketId)
 
   // Clean up runningPhases entries for this ticket
@@ -61,30 +69,98 @@ export function cleanupTicketState(ticketId: string) {
   // Clean up interview QA session
   interviewQASessions.delete(ticketId)
 
+  if (!options.preserveRemoteState) {
+    clearTicketCancellationPending(ticketId)
+  }
+
   // Every cancel, completion and restart passes through here. The ledger used
   // to be dropped from the cancel route alone, so a restart — which cancels and
   // then continues the *same* ticket id — carried a leftover depth or
   // suspension into the next run and held its clocks still.
-  clearTicketWorkBudget(ticketId)
+  if (!options.preserveRemoteState) {
+    clearTicketWorkBudget(ticketId)
+  }
 
-  // Per-ticket question bookkeeping outlives the timers themselves, and a
-  // ticket that completed without an open question never reached the window
-  // teardown that used to be its only clear.
-  forgetTicketQuestionMemory(ticketId)
+  if (!options.preserveRemoteState) {
+    // Per-ticket question bookkeeping outlives the timers themselves, and a
+    // ticket that completed without an open question never reached the window
+    // teardown that used to be its only clear.
+    forgetTicketQuestionMemory(ticketId)
 
-  // Same reasoning, same ticket id. Continuations were cleared only by
-  // `abortTicketSessions`, so a ticket that finished naturally — or was
-  // cancelled through a path that had no sessions left to abort — kept them
-  // for their full thirty-minute life, and a restart of the same ticket
-  // reapplied the finished run's retry attempts.
-  clearTicketSessionContinuations(ticketId)
+    // Same reasoning, same ticket id. Continuations were cleared only by
+    // `abortTicketSessions`, so a ticket that finished naturally — or was
+    // cancelled through a path that had no sessions left to abort — kept them
+    // for their full thirty-minute life, and a restart of the same ticket
+    // reapplied the finished run's retry attempts.
+    clearTicketSessionContinuations(ticketId)
+  }
 
-  // Untokened on purpose: a ticket that has reached a terminal state has no
-  // legitimate batch in flight, so whatever claim is on it belongs to a run
-  // that is over. This is the one caller allowed to take a claim it does not
-  // hold, and it is why the claim's expiry is a backstop rather than the
-  // primary recovery path.
-  releaseInterviewBatch(ticketId)
+  if (!options.preserveRemoteState) {
+    // Untokened on purpose: a ticket that has reached a terminal state has no
+    // legitimate batch in flight, so whatever claim is on it belongs to a run
+    // that is over. This is the one caller allowed to take a claim it does not
+    // hold, and it is why the claim's expiry is a backstop rather than the
+    // primary recovery path.
+    releaseInterviewBatch(ticketId)
+  }
+}
+
+/** Keep a failed cancel from allowing a local phase to start again. */
+export function markTicketCancellationPending(ticketId: string): void {
+  cancellationPendingTickets.add(ticketId)
+  cancellationGenerations.set(ticketId, ++cancellationGenerationSequence)
+  try {
+    writeTicketFile(ticketId, CANCELLATION_PENDING_ARTIFACT, `${JSON.stringify({
+      state: 'pending',
+      requestedAt: new Date().toISOString(),
+    })}\n`)
+  } catch (error) {
+    // Keep the process-local guard even if the ticket workspace is temporarily
+    // unavailable. A restart cannot recover this guard without the marker, so
+    // durable session rows remain the only restart evidence; never infer
+    // ownership from an arbitrary project file.
+    console.warn(`[workflow] Could not persist cancellation pending marker for ticket ${ticketId}:`, error)
+  }
+}
+
+/**
+ * Identifies the cancellation pass currently allowed to mutate a ticket.
+ * Clearing and re-marking a ticket advances the identity, so an older async
+ * cleanup cannot regain ownership merely because a later cancel is pending.
+ */
+export function getTicketCancellationGeneration(ticketId: string): number {
+  return cancellationGenerations.get(ticketId) ?? 0
+}
+
+export function isTicketCancellationPending(ticketId: string): boolean {
+  if (cancellationPendingTickets.has(ticketId)) return true
+  try {
+    const raw = readTicketFile(ticketId, CANCELLATION_PENDING_ARTIFACT)
+    if (raw === null) return false
+    const parsed: unknown = JSON.parse(raw)
+    const pending = typeof parsed === 'object'
+      && parsed !== null
+      && (parsed as Record<string, unknown>).state === 'pending'
+    if (!pending) throw new Error('cancellation pending marker has an invalid state')
+    return true
+  } catch (error) {
+    // A malformed or unreadable marker is uncertainty about an outstanding
+    // cancellation, not evidence that it is safe to start work again.
+    console.warn(`[workflow] Could not read cancellation pending marker for ticket ${ticketId}:`, error)
+    return true
+  }
+}
+
+export function clearTicketCancellationPending(ticketId: string): boolean {
+  try {
+    if (!removeTicketFile(ticketId, CANCELLATION_PENDING_ARTIFACT)) return false
+  } catch (error) {
+    console.warn(`[workflow] Could not clear cancellation pending marker for ticket ${ticketId}:`, error)
+    return false
+  }
+  cancellationPendingTickets.delete(ticketId)
+  cancellationGenerations.delete(ticketId)
+  return true
 }
 
 /**
@@ -97,7 +173,10 @@ export function cancelTicket(ticketId: string) {
     controller.abort()
   }
 
-  cleanupTicketState(ticketId)
+  // The controller is local, but the session can still be editing remotely.
+  // Keep question/continuation bookkeeping until the caller has confirmed the
+  // remote stop; otherwise a reset or replacement can race the old session.
+  cleanupTicketState(ticketId, { preserveRemoteState: true })
 }
 
 export function abortTicketWork(ticketId: string) {

@@ -78,6 +78,7 @@ vi.mock('../../workflow/phases/executionPhase', async (importOriginal) => {
 import { sendTicketEvent } from '../../machines/persistence'
 import { recoverCodingBeadWithReset } from '../../workflow/phases/beadsPhase'
 import { recoverSuccessfulExecutionCheckpointForFinalization } from '../../workflow/phases/executionPhase'
+import { isTicketCancellationPending, markTicketCancellationPending } from '../../workflow/runner'
 import { ticketRouter } from '../tickets'
 
 const repoManager = createFixtureRepoManager({
@@ -315,6 +316,40 @@ describe('ticketRouter POST /tickets/:id/retry', () => {
       state: 'active',
       archivedReason: null,
     })
+  })
+
+  it('clears a confirmed cancellation fence before resuming CODING', async () => {
+    const { app, ticket } = setupRetryTicketApp()
+    patchTicket(ticket.id, {
+      status: 'BLOCKED_ERROR',
+      xstateSnapshot: JSON.stringify({ context: { previousStatus: 'CODING' } }),
+      errorMessage: 'Bead failed after cancellation cleanup was interrupted',
+    })
+    markTicketCancellationPending(ticket.id)
+    expect(isTicketCancellationPending(ticket.id)).toBe(true)
+
+    const response = await app.request(`/api/tickets/${ticket.id}/retry`, { method: 'POST' })
+
+    expect(response.status).toBe(200)
+    expect(isTicketCancellationPending(ticket.id)).toBe(false)
+    expect(sendTicketEvent).toHaveBeenCalledWith(ticket.id, { type: 'RETRY' })
+  })
+
+  it('clears a confirmed cancellation fence before resuming another phase', async () => {
+    const { app, ticket } = setupRetryTicketApp()
+    ensureActivePhaseAttempt(ticket.id, 'REFINING_PRD')
+    patchTicket(ticket.id, {
+      status: 'BLOCKED_ERROR',
+      xstateSnapshot: JSON.stringify({ context: { previousStatus: 'REFINING_PRD' } }),
+      errorMessage: 'Refinement failed after cancellation cleanup was interrupted',
+    })
+    markTicketCancellationPending(ticket.id)
+
+    const response = await app.request(`/api/tickets/${ticket.id}/retry`, { method: 'POST' })
+
+    expect(response.status).toBe(200)
+    expect(isTicketCancellationPending(ticket.id)).toBe(false)
+    expect(sendTicketEvent).toHaveBeenCalledWith(ticket.id, { type: 'RETRY' })
   })
 
   it('passes a verbatim user note into CODING recovery before retrying', async () => {

@@ -13,6 +13,10 @@ interface SSEClient {
   interval?: ReturnType<typeof setInterval>
 }
 
+interface StoredSSEClient extends SSEClient {
+  scopeId: symbol
+}
+
 interface BufferedSSEEvent {
   id: string
   event: string
@@ -30,23 +34,52 @@ interface SSEBroadcasterOptions {
   bufferTtlMs?: number
 }
 
+export interface SSEBroadcasterLike {
+  addClient: (ticketId: string, client: SSEClient) => boolean
+  removeClient: (ticketId: string, clientId: string) => void
+  getClientCount: (ticketId: string) => number
+  getTotalClientCount: () => number
+  getEventsSince: (ticketId: string, lastEventId: string) =>
+    | { events: BufferedSSEEvent[]; gap: null }
+    | { events: []; gap: 'invalid_cursor' | 'cursor_unavailable' }
+}
+
+export interface SSEBroadcasterScope extends SSEBroadcasterLike {
+  startAcceptingClients: () => void
+  closeAllClients: () => void
+  startAutoCleanup: () => void
+  stopAutoCleanup: () => void
+}
+
+interface ScopeState {
+  acceptingClients: boolean
+  cleanupActive: boolean
+}
+
 class SSEBroadcaster {
-  private clients = new Map<string, SSEClient[]>()
+  private clients = new Map<string, StoredSSEClient[]>()
   private eventCounter = Date.now()
   private eventBuffer = new Map<string, BufferedSSEEvent[]>()
   private readonly maxBufferSize: number
   private readonly maxBufferBytes: number
   private readonly bufferTtlMs: number
   private cleanupInterval: ReturnType<typeof setInterval> | null = null
-  private acceptingClients = true
+  private readonly defaultScope = Symbol('default-sse-scope')
+  private readonly scopes = new Map<symbol, ScopeState>()
+  private cleanupOwners = 0
 
   constructor(options: SSEBroadcasterOptions = {}) {
     this.maxBufferSize = options.maxBufferSize ?? MAX_SSE_BUFFER_SIZE
     this.maxBufferBytes = options.maxBufferBytes ?? MAX_SSE_BUFFER_BYTES
     this.bufferTtlMs = options.bufferTtlMs ?? MAX_SSE_BUFFER_TTL_MS
+    this.scopes.set(this.defaultScope, { acceptingClients: true, cleanupActive: false })
   }
 
-  startAutoCleanup() {
+  startAutoCleanup(scopeId = this.defaultScope) {
+    const scope = this.scopes.get(scopeId)
+    if (!scope || scope.cleanupActive) return
+    scope.cleanupActive = true
+    this.cleanupOwners += 1
     if (this.cleanupInterval) return
     this.cleanupInterval = setInterval(() => this.cleanup(), SSE_BUFFER_CLEANUP_INTERVAL_MS)
     // Allow the Node process to exit even if the interval is still active
@@ -55,30 +88,61 @@ class SSEBroadcaster {
     }
   }
 
-  stopAutoCleanup() {
-    if (this.cleanupInterval) {
-      clearInterval(this.cleanupInterval)
-      this.cleanupInterval = null
+  stopAutoCleanup(scopeId = this.defaultScope) {
+    const scope = this.scopes.get(scopeId)
+    if (!scope?.cleanupActive) return
+    scope.cleanupActive = false
+    this.cleanupOwners -= 1
+    if (this.cleanupOwners > 0 || !this.cleanupInterval) return
+    clearInterval(this.cleanupInterval)
+    this.cleanupInterval = null
+  }
+
+  createScope(): SSEBroadcasterScope {
+    const scopeId = Symbol('runtime-sse-scope')
+    this.scopes.set(scopeId, { acceptingClients: true, cleanupActive: false })
+    return {
+      addClient: (ticketId, client) => this.addClientInScope(scopeId, ticketId, client),
+      removeClient: (ticketId, clientId) => this.removeClientInScope(scopeId, ticketId, clientId),
+      getClientCount: (ticketId) => this.getClientCountInScope(scopeId, ticketId),
+      // The total stream cap is process-wide even when admission is scoped to
+      // an embedded runtime; otherwise each runtime could independently admit
+      // the full global limit.
+      getTotalClientCount: () => this.getTotalClientCount(),
+      getEventsSince: (ticketId, lastEventId) => this.getEventsSince(ticketId, lastEventId),
+      startAcceptingClients: () => this.startAcceptingClients(scopeId),
+      closeAllClients: () => this.closeAllClients(scopeId),
+      startAutoCleanup: () => this.startAutoCleanup(scopeId),
+      stopAutoCleanup: () => this.stopAutoCleanup(scopeId),
     }
   }
 
   addClient(ticketId: string, client: SSEClient): boolean {
-    if (!this.acceptingClients) return false
+    return this.addClientInScope(this.defaultScope, ticketId, client)
+  }
+
+  private addClientInScope(scopeId: symbol, ticketId: string, client: SSEClient): boolean {
+    if (!this.scopes.get(scopeId)?.acceptingClients) return false
     const existing = this.clients.get(ticketId) ?? []
-    existing.push(client)
+    existing.push({ ...client, scopeId })
     this.clients.set(ticketId, existing)
     return true
   }
 
   /** Opens stream admission for a newly started runtime. */
-  startAcceptingClients() {
-    this.acceptingClients = true
+  startAcceptingClients(scopeId = this.defaultScope) {
+    const scope = this.scopes.get(scopeId)
+    if (scope) scope.acceptingClients = true
   }
 
   removeClient(ticketId: string, clientId: string) {
+    this.removeClientInScope(this.defaultScope, ticketId, clientId)
+  }
+
+  private removeClientInScope(scopeId: symbol, ticketId: string, clientId: string) {
     const existing = this.clients.get(ticketId)
     if (existing) {
-      const filtered = existing.filter(c => c.id !== clientId)
+      const filtered = existing.filter(c => c.id !== clientId || c.scopeId !== scopeId)
       if (filtered.length === 0) {
         this.clients.delete(ticketId)
       } else {
@@ -109,7 +173,7 @@ class SSEBroadcaster {
       try {
         client.send(event, payload, id)
       } catch {
-        this.removeClient(ticketId, client.id)
+        this.removeClientInScope(client.scopeId, ticketId, client.id)
       }
     }
   }
@@ -133,15 +197,17 @@ class SSEBroadcaster {
   }
 
   getClientCount(ticketId: string): number {
-    return (this.clients.get(ticketId) ?? []).length
+    return this.getClientCountInScope(this.defaultScope, ticketId)
   }
 
   getTotalClientCount(): number {
     let total = 0
-    for (const clients of this.clients.values()) {
-      total += clients.length
-    }
+    for (const clients of this.clients.values()) total += clients.length
     return total
+  }
+
+  private getClientCountInScope(scopeId: symbol, ticketId: string): number {
+    return (this.clients.get(ticketId) ?? []).filter(client => client.scopeId === scopeId).length
   }
 
   clearTicket(ticketId: string) {
@@ -162,10 +228,21 @@ class SSEBroadcaster {
   }
 
   /** Closes every live stream without discarding replay buffers. */
-  closeAllClients() {
-    this.acceptingClients = false
+  closeAllClients(scopeId?: symbol) {
+    if (scopeId === undefined) {
+      for (const scope of this.scopes.values()) scope.acceptingClients = false
+    } else {
+      const scope = this.scopes.get(scopeId)
+      if (scope) scope.acceptingClients = false
+    }
+
     for (const [ticketId, clients] of this.clients) {
+      const remaining: StoredSSEClient[] = []
       for (const client of clients) {
+        if (scopeId !== undefined && client.scopeId !== scopeId) {
+          remaining.push(client)
+          continue
+        }
         if (client.interval) {
           clearInterval(client.interval)
         }
@@ -175,7 +252,8 @@ class SSEBroadcaster {
           // Ignore close errors during runtime shutdown.
         }
       }
-      this.clients.delete(ticketId)
+      if (remaining.length === 0) this.clients.delete(ticketId)
+      else this.clients.set(ticketId, remaining)
     }
   }
 

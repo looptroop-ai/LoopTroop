@@ -52,6 +52,58 @@ describe('SSEBroadcaster', () => {
     isolated.clearTicket('1:T-42')
   })
 
+  it('closes only the clients owned by a runtime scope', () => {
+    const isolated = new SSEBroadcaster()
+    const first = isolated.createScope()
+    const second = isolated.createScope()
+    const firstClose = vi.fn()
+    const secondClose = vi.fn()
+
+    expect(first.addClient('1:T-42', { id: 'first', send: vi.fn(), close: firstClose })).toBe(true)
+    expect(second.addClient('1:T-42', { id: 'second', send: vi.fn(), close: secondClose })).toBe(true)
+
+    first.closeAllClients()
+
+    expect(firstClose).toHaveBeenCalledOnce()
+    expect(secondClose).not.toHaveBeenCalled()
+    expect(first.getClientCount('1:T-42')).toBe(0)
+    expect(second.getClientCount('1:T-42')).toBe(1)
+
+    second.closeAllClients()
+    expect(secondClose).toHaveBeenCalledOnce()
+  })
+
+  it('keeps the total stream limit process-wide across runtime scopes', () => {
+    const isolated = new SSEBroadcaster()
+    const first = isolated.createScope()
+    const second = isolated.createScope()
+
+    expect(first.addClient('1:T-42', { id: 'first', send: vi.fn(), close: vi.fn() })).toBe(true)
+    expect(second.addClient('1:T-42', { id: 'second', send: vi.fn(), close: vi.fn() })).toBe(true)
+
+    expect(first.getClientCount('1:T-42')).toBe(1)
+    expect(second.getClientCount('1:T-42')).toBe(1)
+    expect(first.getTotalClientCount()).toBe(2)
+    expect(second.getTotalClientCount()).toBe(2)
+  })
+
+  it('removes a scoped client when broadcasting to it fails', () => {
+    const isolated = new SSEBroadcaster()
+    const scope = isolated.createScope()
+
+    expect(scope.addClient('1:T-42', {
+      id: 'scoped-client',
+      send: () => {
+        throw new Error('write failed')
+      },
+      close: () => undefined,
+    })).toBe(true)
+
+    isolated.broadcast('1:T-42', 'progress', {})
+
+    expect(scope.getClientCount('1:T-42')).toBe(0)
+  })
+
   it('keeps only the latest streaming upsert per entry in the replay buffer', () => {
     const broadcaster = new SSEBroadcaster()
     const cursor = markReplayStart(broadcaster)

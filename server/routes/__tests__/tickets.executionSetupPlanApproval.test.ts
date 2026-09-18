@@ -12,6 +12,7 @@ import {
   getLatestPhaseArtifact,
   getTicketByRef,
   getTicketPaths,
+  listPhaseArtifacts,
   listPhaseAttempts,
   patchTicket,
   upsertLatestPhaseArtifact,
@@ -20,11 +21,13 @@ import { createFixtureRepoManager } from '../../test/fixtureRepo'
 import { initializeTicket } from '../../ticket/initialize'
 import { ticketRouter } from '../tickets'
 import { contentSha256 } from '../../lib/contentHash'
-import { revertTicketToApprovalStatus } from '../../machines/persistence'
+import { revertTicketToApprovalStatus, sendTicketEvent } from '../../machines/persistence'
 import { lockExecutionSetupPlanDetectedHooks } from '../../phases/executionSetupPlan/hookEvidence'
+import * as hookEvidence from '../../phases/executionSetupPlan/hookEvidence'
 import { saveExecutionSetupPlan } from '../../phases/executionSetupPlan/document'
 import { serializeExecutionSetupPlan } from '../../phases/executionSetupPlan/types'
 import { prepareExecutionSetupPlanRestart, prepareExecutionSetupRuntimeRegeneration, prepareExecutionSetupRuntimeRewind, preparePlanningRestart } from '../ticketHandlers/routeUtils'
+import * as routeUtils from '../ticketHandlers/routeUtils'
 import * as workflowRunner from '../../workflow/runner'
 import * as executionLog from '../../log/executionLog'
 
@@ -335,6 +338,60 @@ describe('ticketRouter execution setup plan approval routes', () => {
     expect(receiptData.after.sha256).toBe(contentSha256(stored!.content))
   })
 
+  it('rejects setup-plan saves without the loaded hash or with a stale hash', async () => {
+    const { app, ticket } = await setupExecutionSetupPlanTicket()
+    const raw = serializePlan(ticket.externalId, 'Existing setup plan')
+    upsertLatestPhaseArtifact(
+      ticket.id,
+      'execution_setup_plan',
+      'WAITING_EXECUTION_SETUP_APPROVAL',
+      raw,
+    )
+
+    const missingHash = await app.request(`/api/tickets/${ticket.id}/execution-setup-plan`, {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ plan: buildStructuredPlan(ticket.externalId, 'Missing hash') }),
+    })
+    expect(missingHash.status).toBe(428)
+
+    const staleHash = await app.request(`/api/tickets/${ticket.id}/execution-setup-plan`, {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        plan: buildStructuredPlan(ticket.externalId, 'Stale hash'),
+        expectedContentSha256: '0'.repeat(64),
+      }),
+    })
+    expect(staleHash.status).toBe(409)
+    expect(getLatestPhaseArtifact(ticket.id, 'execution_setup_plan', 'WAITING_EXECUTION_SETUP_APPROVAL')?.content)
+      .toBe(raw)
+  })
+
+  it('fails closed when the persisted setup plan cannot be read', async () => {
+    const { app, ticket } = await setupExecutionSetupPlanTicket()
+    const unreadable = 'not a valid execution setup plan'
+    upsertLatestPhaseArtifact(
+      ticket.id,
+      'execution_setup_plan',
+      'WAITING_EXECUTION_SETUP_APPROVAL',
+      unreadable,
+    )
+
+    const response = await app.request(`/api/tickets/${ticket.id}/execution-setup-plan`, {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ plan: buildStructuredPlan(ticket.externalId, 'Must not overwrite unreadable state') }),
+    })
+
+    expect(response.status).toBe(409)
+    expect(await response.json()).toMatchObject({
+      error: 'Current execution setup plan could not be read; reload before saving',
+    })
+    expect(getLatestPhaseArtifact(ticket.id, 'execution_setup_plan', 'WAITING_EXECUTION_SETUP_APPROVAL')?.content)
+      .toBe(unreadable)
+  })
+
   it('reimposes the project hook policy on structured and raw saves while preserving validation commands', async () => {
     const { app, ticket } = await setupExecutionSetupPlanTicket()
     const validationCommand = {
@@ -372,11 +429,13 @@ describe('ticketRouter execution setup plan approval routes', () => {
       gitHooks: { ...structuredPlan.gitHooks, policy: 'validate_required' as const },
     }
     const rawContent = serializeExecutionSetupPlan(rawPlan)
+    const current = getLatestPhaseArtifact(ticket.id, 'execution_setup_plan', 'WAITING_EXECUTION_SETUP_APPROVAL')
+    expect(current).toBeDefined()
     expect(rawContent).toContain(`"ticket_id": "${ticket.externalId}"`)
     const rawResponse = await app.request(`/api/tickets/${ticket.id}/execution-setup-plan`, {
       method: 'PUT',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ content: rawContent }),
+      body: JSON.stringify({ content: rawContent, expectedContentSha256: contentSha256(current!.content) }),
     })
     expect(rawResponse.status, await rawResponse.clone().text()).toBe(200)
     await expect(rawResponse.json()).resolves.toMatchObject({
@@ -503,6 +562,65 @@ describe('ticketRouter execution setup plan approval routes', () => {
       'execution_setup_plan',
       'WAITING_EXECUTION_SETUP_APPROVAL',
     )).toBeUndefined()
+  })
+
+  it('serializes concurrent regeneration while restart preparation is paused', async () => {
+    const { app, ticket } = await setupExecutionSetupPlanTicket()
+    upsertLatestPhaseArtifact(
+      ticket.id,
+      'execution_setup_plan',
+      'WAITING_EXECUTION_SETUP_APPROVAL',
+      serializePlan(ticket.externalId, 'Original plan.'),
+    )
+
+    let enteredRestart!: () => void
+    const restartEntered = new Promise<void>((resolve) => { enteredRestart = resolve })
+    let releaseRestart!: () => void
+    const restartReleased = new Promise<void>((resolve) => { releaseRestart = resolve })
+    const originalRestart = routeUtils.prepareExecutionSetupPlanRestart
+    const restartSpy = vi.spyOn(routeUtils, 'prepareExecutionSetupPlanRestart').mockImplementationOnce(async (ticketId) => {
+      enteredRestart()
+      await restartReleased
+      return originalRestart(ticketId)
+    })
+
+    try {
+      const first = app.request(`/api/tickets/${ticket.id}/regenerate-execution-setup-plan`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ commentary: 'Winner commentary.' }),
+      })
+      await restartEntered
+
+      const second = app.request(`/api/tickets/${ticket.id}/regenerate-execution-setup-plan`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ commentary: 'Loser commentary.' }),
+      })
+      releaseRestart()
+
+      const responses = await Promise.all([first, second])
+      expect(responses.map((response) => response.status).sort()).toEqual([200, 409])
+      expect(restartSpy).toHaveBeenCalledOnce()
+      expect(sendTicketEvent).toHaveBeenCalledTimes(1)
+      expect(listPhaseArtifacts(ticket.id, { phase: 'GENERATING_EXECUTION_SETUP_PLAN' })
+        .filter((artifact) => artifact.artifactType === 'execution_setup_plan_regeneration_request'))
+        .toHaveLength(1)
+      expect(getLatestPhaseArtifact(
+        ticket.id,
+        'execution_setup_plan_regeneration_request',
+        'GENERATING_EXECUTION_SETUP_PLAN',
+      )?.content).toContain('Winner commentary.')
+      expect(getLatestPhaseArtifact(
+        ticket.id,
+        'execution_setup_plan_regeneration_request',
+        'GENERATING_EXECUTION_SETUP_PLAN',
+      )?.content).not.toContain('Loser commentary.')
+      expect(listPhaseAttempts(ticket.id, 'WAITING_EXECUTION_SETUP_APPROVAL')).toHaveLength(2)
+      expect(listPhaseAttempts(ticket.id, 'GENERATING_EXECUTION_SETUP_PLAN')).toHaveLength(2)
+    } finally {
+      restartSpy.mockRestore()
+    }
   })
 
   it('archives the current attempt and creates a new one on regenerate', async () => {
@@ -639,7 +757,7 @@ describe('ticketRouter execution setup plan approval routes', () => {
 
   it('rewinds from runtime setup when saving an edited setup plan', async () => {
     const { app, ticket } = await setupExecutionSetupPlanTicket()
-    await moveTicketToRuntimeSetup(app, ticket, 'Approved plan handed to runtime.')
+    const currentRaw = await moveTicketToRuntimeSetup(app, ticket, 'Approved plan handed to runtime.')
     const paths = getTicketPaths(ticket.id)
     expect(paths).toBeDefined()
     mkdirSync(paths!.executionSetupDir, { recursive: true })
@@ -653,6 +771,7 @@ describe('ticketRouter execution setup plan approval routes', () => {
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({
         plan: buildStructuredPlan(ticket.externalId, 'Revised setup plan after runtime rewind.'),
+        expectedContentSha256: contentSha256(currentRaw),
       }),
     })
 
@@ -836,6 +955,53 @@ describe('ticketRouter execution setup plan approval routes', () => {
       message: 'Execution setup plan approved',
       status: 'PREPARING_EXECUTION_ENV',
     })
+  })
+
+  it('does not overwrite a concurrent plan edit while refreshing approval evidence', async () => {
+    const { app, ticket } = await setupExecutionSetupPlanTicket()
+    const originalRaw = serializePlan(ticket.externalId, 'Original approved draft')
+    const concurrentRaw = serializePlan(ticket.externalId, 'Concurrent user edit')
+    upsertLatestPhaseArtifact(
+      ticket.id,
+      'execution_setup_plan',
+      'WAITING_EXECUTION_SETUP_APPROVAL',
+      originalRaw,
+    )
+
+    const originalLock = hookEvidence.lockExecutionSetupPlanDetectedHooks
+    const lockSpy = vi.spyOn(hookEvidence, 'lockExecutionSetupPlanDetectedHooks')
+      .mockImplementationOnce((ticketId, plan) => {
+        upsertLatestPhaseArtifact(
+          ticketId,
+          'execution_setup_plan',
+          'WAITING_EXECUTION_SETUP_APPROVAL',
+          concurrentRaw,
+        )
+        return {
+          ...plan,
+          hostContext: { ...plan.hostContext, arch: `${plan.hostContext.arch}-refreshed` },
+        }
+      })
+      .mockImplementation(originalLock)
+
+    try {
+      const response = await app.request(`/api/tickets/${ticket.id}/approve-execution-setup-plan`, {
+        method: 'POST',
+        ...approvalPayload(originalRaw),
+      })
+
+      expect(response.status).toBe(409)
+      expect(await response.json()).toMatchObject({
+        error: 'Stale approval',
+        artifactType: 'execution_setup_plan',
+        expectedContentSha256: contentSha256(originalRaw),
+        currentContentSha256: contentSha256(concurrentRaw),
+      })
+      expect(getLatestPhaseArtifact(ticket.id, 'execution_setup_plan', 'WAITING_EXECUTION_SETUP_APPROVAL')?.content)
+        .toBe(concurrentRaw)
+    } finally {
+      lockSpy.mockRestore()
+    }
   })
 
   it('dispatches execution setup plan approval through the generic approve route', async () => {

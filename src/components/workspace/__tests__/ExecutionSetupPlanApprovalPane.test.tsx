@@ -1,4 +1,4 @@
-import { fireEvent, screen, waitFor, within } from '@testing-library/react'
+import { act, fireEvent, screen, waitFor, within } from '@testing-library/react'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { makeTicket, TEST } from '@/test/factories'
 import { createTestQueryClient, renderWithProviders } from '@/test/renderHelpers'
@@ -326,6 +326,28 @@ describe('ExecutionSetupPlanApprovalPane', () => {
     })
   })
 
+  it('shows parser warnings in the approval pane when a hook policy falls back', async () => {
+    const raw = buildRawPlan().replace('validate_advisory', 'future_policy')
+    vi.mocked(globalThis.fetch).mockImplementation((input, init) => {
+      const url = String(input)
+      if (url === `/api/tickets/${encodeURIComponent(TEST.ticketId)}/execution-setup-plan` && (!init?.method || init.method === 'GET')) {
+        return Promise.resolve(new Response(JSON.stringify({
+          exists: true,
+          raw,
+          contentSha256: 'a'.repeat(64),
+          plan: buildPlan(),
+          updatedAt: '2026-03-25T10:15:00.000Z',
+        }), { status: 200, headers: { 'Content-Type': 'application/json' } }))
+      }
+      throw new Error(`Unhandled fetch: ${url}`)
+    })
+
+    renderWithProviders(<ExecutionSetupPlanApprovalPane ticket={makeTicket({ status: 'WAITING_EXECUTION_SETUP_APPROVAL' })} />)
+
+    expect(await screen.findByText(/git_hooks\.policy: unknown value/i)).toBeInTheDocument()
+    expect(screen.getByText(/safe fallback values/i)).toBeInTheDocument()
+  })
+
   it('treats a missing approval plan as failed generation with diagnostics and regenerate available', async () => {
     mockUseTicketArtifacts.mockReturnValue({
       artifacts: [
@@ -388,6 +410,71 @@ describe('ExecutionSetupPlanApprovalPane', () => {
     expect(await screen.findByTestId('execution-setup-plan-editor')).toBeInTheDocument()
     expect(screen.getByText(/Draft autosave on/)).toBeInTheDocument()
     expect(screen.getByRole('button', { name: 'Save' })).toBeInTheDocument()
+  })
+
+  it('saves a dirty draft against its persisted baseline after a background refetch', async () => {
+    const baselineHash = 'a'.repeat(64)
+    const refetchedHash = 'b'.repeat(64)
+    let remoteHash = baselineHash
+    let remoteSummary = 'Prepare the workspace runtime.'
+    const persistedRawDraft = buildRawPlan('Persisted draft to save.')
+    mockUseTicketUIState.mockReturnValue({
+      isSuccess: true,
+      data: {
+        scope: 'approval_execution_setup',
+        exists: true,
+        updatedAt: '2026-03-25T10:15:00.000Z',
+        data: {
+          isEditMode: true,
+          editTab: 'raw',
+          rawDraft: persistedRawDraft,
+          structuredDraft: buildPlan('Persisted draft to save.'),
+          commentary: '',
+          contentSha256: baselineHash,
+        },
+      },
+    })
+    mockSaveUiState.mockResolvedValue({ success: true })
+    const queryClient = createTestQueryClient()
+    vi.mocked(globalThis.fetch).mockImplementation((input, init) => {
+      const url = String(input)
+      if (url === `/api/tickets/${encodeURIComponent(TEST.ticketId)}/execution-setup-plan` && (!init?.method || init.method === 'GET')) {
+        return Promise.resolve(new Response(JSON.stringify({
+          exists: true,
+          raw: buildRawPlan(remoteSummary),
+          contentSha256: remoteHash,
+          plan: buildPlan(remoteSummary),
+          updatedAt: '2026-03-25T10:15:00.000Z',
+        }), { status: 200, headers: { 'Content-Type': 'application/json' } }))
+      }
+      if (url === `/api/tickets/${encodeURIComponent(TEST.ticketId)}/execution-setup-plan` && init?.method === 'PUT') {
+        return Promise.resolve(new Response(JSON.stringify({
+          raw: persistedRawDraft,
+          contentSha256: 'c'.repeat(64),
+          plan: buildPlan('Persisted draft to save.'),
+        }), { status: 200, headers: { 'Content-Type': 'application/json' } }))
+      }
+      throw new Error(`Unhandled fetch: ${url}`)
+    })
+
+    renderWithProviders(<ExecutionSetupPlanApprovalPane ticket={makeTicket({ status: 'WAITING_EXECUTION_SETUP_APPROVAL' })} />, {
+      queryClient,
+    })
+
+    expect(await screen.findByLabelText('YAML editor')).toHaveValue(persistedRawDraft)
+
+    remoteHash = refetchedHash
+    remoteSummary = 'Newer remote plan.'
+    await act(async () => {
+      await queryClient.refetchQueries({ queryKey: ['artifact', TEST.ticketId, 'execution-setup-plan'] })
+    })
+
+    fireEvent.click(screen.getByRole('button', { name: 'Save' }))
+    await waitFor(() => {
+      const putCall = vi.mocked(globalThis.fetch).mock.calls.find(([, init]) => init?.method === 'PUT')
+      expect(putCall).toBeDefined()
+      expect(JSON.parse(String(putCall?.[1]?.body)).expectedContentSha256).toBe(baselineHash)
+    })
   })
 
   it('opens regenerate in a modal from the header and submits commentary through the regenerate route', async () => {

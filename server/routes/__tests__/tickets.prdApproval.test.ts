@@ -23,6 +23,7 @@ import { buildInterviewDocumentYaml } from '../../structuredOutput'
 import { buildYamlDocument } from '../../structuredOutput/yamlUtils'
 import { ticketRouter } from '../tickets'
 import { filesRouter } from '../files'
+import * as routeUtils from '../ticketHandlers/routeUtils'
 import { buildInterviewDocument, buildPrdDocument } from '../../test/factories'
 import type { PrdDocument } from '../../structuredOutput/types'
 import { contentSha256 } from '../../lib/contentHash'
@@ -168,12 +169,13 @@ describe('ticketRouter PRD approval routes', () => {
   })
 
   it('validates raw PRD YAML, canonicalizes it, and forces draft status on save', async () => {
-    const { app, ticket, paths } = await setupPrdApprovalTicket()
+    const { app, ticket, paths, prdRaw } = await setupPrdApprovalTicket()
 
     const response = await app.request(`/api/files/${ticket.id}/prd`, {
       method: 'PUT',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({
+        expectedContentSha256: contentSha256(prdRaw),
         content: [
           'schema_version: 1',
           'ticket_id: WRONG-ID',
@@ -240,7 +242,7 @@ describe('ticketRouter PRD approval routes', () => {
   })
 
   it('accepts structured PRD saves, canonicalizes them, and clears approval metadata', async () => {
-    const { app, ticket, paths } = await setupPrdApprovalTicket()
+    const { app, ticket, paths, prdRaw } = await setupPrdApprovalTicket()
 
     const structuredDocument: PrdDocument = {
       ...buildPrdDocument(ticket.externalId, '0000000000000000000000000000000000000000000000000000000000000000'),
@@ -256,6 +258,7 @@ describe('ticketRouter PRD approval routes', () => {
       method: 'PUT',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({
+        expectedContentSha256: contentSha256(prdRaw),
         document: structuredDocument,
       }),
     })
@@ -275,6 +278,47 @@ describe('ticketRouter PRD approval routes', () => {
     expect(savedRaw).toContain("approved_at: ''")
   })
 
+  it('requires the loaded PRD hash before a save can invalidate downstream work', async () => {
+    const { app, ticket, paths, prdRaw } = await setupPrdApprovalTicket()
+    const beadsDir = resolve(paths.ticketDir, 'beads')
+    mkdirSync(beadsDir, { recursive: true })
+    upsertLatestPhaseArtifact(ticket.id, 'beads', 'DRAFTING_BEADS', 'artifact: beads\n')
+
+    const response = await app.request(`/api/files/${ticket.id}/prd`, {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ content: prdRaw }),
+    })
+
+    expect(response.status).toBe(428)
+    expect(readFileSync(`${paths.ticketDir}/prd.yaml`, 'utf-8')).toBe(prdRaw)
+    expect(existsSync(beadsDir)).toBe(true)
+    expect(getLatestPhaseArtifact(ticket.id, 'beads', 'DRAFTING_BEADS')).toBeDefined()
+  })
+
+  it('rejects a stale PRD hash before writing or invalidating downstream work', async () => {
+    const { app, ticket, paths, prdRaw } = await setupPrdApprovalTicket()
+    const remoteRaw = prdRaw.replace('Import pipeline', 'Remote pipeline')
+    safeAtomicWrite(`${paths.ticketDir}/prd.yaml`, remoteRaw)
+    const beadsDir = resolve(paths.ticketDir, 'beads')
+    mkdirSync(beadsDir, { recursive: true })
+    upsertLatestPhaseArtifact(ticket.id, 'beads', 'DRAFTING_BEADS', 'artifact: beads\n')
+
+    const response = await app.request(`/api/files/${ticket.id}/prd`, {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        expectedContentSha256: contentSha256(prdRaw),
+        content: prdRaw,
+      }),
+    })
+
+    expect(response.status).toBe(409)
+    expect(readFileSync(`${paths.ticketDir}/prd.yaml`, 'utf-8')).toBe(remoteRaw)
+    expect(existsSync(beadsDir)).toBe(true)
+    expect(getLatestPhaseArtifact(ticket.id, 'beads', 'DRAFTING_BEADS')).toBeDefined()
+  })
+
   it('rejects invalid raw PRD YAML without overwriting the current artifact', async () => {
     const { app, ticket, prdRaw, paths } = await setupPrdApprovalTicket()
 
@@ -282,6 +326,7 @@ describe('ticketRouter PRD approval routes', () => {
       method: 'PUT',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({
+        expectedContentSha256: contentSha256(prdRaw),
         content: 'artifact: prd\nepics: [',
       }),
     })
@@ -298,6 +343,7 @@ describe('ticketRouter PRD approval routes', () => {
       method: 'PUT',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({
+        expectedContentSha256: contentSha256(prdRaw),
         document: {},
       }),
     })
@@ -315,6 +361,7 @@ describe('ticketRouter PRD approval routes', () => {
       method: 'PUT',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({
+        expectedContentSha256: contentSha256(prdRaw),
         content: prdRaw,
       }),
     })
@@ -332,6 +379,7 @@ describe('ticketRouter PRD approval routes', () => {
       method: 'PUT',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({
+        expectedContentSha256: contentSha256(prdRaw),
         document: buildPrdDocument(ticket.externalId, '0000000000000000000000000000000000000000000000000000000000000000'),
       }),
     })
@@ -355,6 +403,7 @@ describe('ticketRouter PRD approval routes', () => {
       method: 'PUT',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({
+        expectedContentSha256: contentSha256(prdRaw),
         content: [
           'schema_version: 1',
           'artifact: prd',
@@ -456,6 +505,7 @@ describe('ticketRouter PRD approval routes', () => {
       method: 'PUT',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({
+        expectedContentSha256: contentSha256(prdRaw),
         content: [
           'schema_version: 1',
           `ticket_id: ${ticket.externalId}`,
@@ -556,8 +606,114 @@ describe('ticketRouter PRD approval routes', () => {
     ])
   })
 
+  it('rejects a concurrent PRD writer before its restart or invalidation while another restart is paused', async () => {
+    const { app, ticket, paths, prdRaw } = await setupPrdApprovalTicket()
+    patchTicket(ticket.id, { status: 'WAITING_BEADS_APPROVAL' })
+    createFreshPhaseAttempts(ticket.id, PRD_EDIT_RESTART_PHASES)
+    const beadsDir = resolve(paths.ticketDir, 'beads')
+    mkdirSync(beadsDir, { recursive: true })
+    upsertLatestPhaseArtifact(ticket.id, 'beads', 'DRAFTING_BEADS', 'artifact: beads\n')
+
+    let releaseRestart!: () => void
+    let reachedRestart!: () => void
+    const restartPaused = new Promise<void>((resolve) => { releaseRestart = resolve })
+    const restartReached = new Promise<void>((resolve) => { reachedRestart = resolve })
+    const originalPreparePlanningRestart = routeUtils.preparePlanningRestart
+    const prepareRestartSpy = vi.spyOn(routeUtils, 'preparePlanningRestart')
+      .mockImplementation(async (...args) => {
+        if (prepareRestartSpy.mock.calls.length === 1) {
+          reachedRestart()
+          await restartPaused
+        }
+        return originalPreparePlanningRestart(...args)
+      })
+
+    const request = (expectedRaw: string) => app.request(`/api/files/${ticket.id}/prd`, {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        expectedContentSha256: contentSha256(expectedRaw),
+        content: expectedRaw,
+      }),
+    })
+
+    const firstResponsePromise = request(prdRaw)
+    await restartReached
+
+    const remoteRaw = prdRaw.replace('Import pipeline', 'Remote pipeline')
+    safeAtomicWrite(`${paths.ticketDir}/prd.yaml`, remoteRaw)
+    const secondResponse = await request(prdRaw)
+
+    expect(secondResponse.status).toBe(409)
+    expect(await secondResponse.json()).toMatchObject({
+      error: 'A planning edit is already being processed; try again when it finishes',
+    })
+    expect(prepareRestartSpy).toHaveBeenCalledTimes(1)
+    expect(getTicketByRef(ticket.id)?.status).toBe('WAITING_BEADS_APPROVAL')
+    expect(existsSync(beadsDir)).toBe(true)
+    expect(getLatestPhaseArtifact(ticket.id, 'beads', 'DRAFTING_BEADS')).toBeDefined()
+
+    releaseRestart()
+    const firstResponse = await firstResponsePromise
+    prepareRestartSpy.mockRestore()
+    expect(firstResponse.status).toBe(409)
+    expect(readFileSync(`${paths.ticketDir}/prd.yaml`, 'utf-8')).toBe(remoteRaw)
+    expect(getTicketByRef(ticket.id)?.status).toBe('WAITING_BEADS_APPROVAL')
+    expect(getLatestPhaseArtifact(ticket.id, 'beads', 'DRAFTING_BEADS')).toBeDefined()
+  })
+
+  it('fences an expired planning holder before it can invalidate successor work', async () => {
+    const { app, ticket, paths, prdRaw } = await setupPrdApprovalTicket()
+    patchTicket(ticket.id, { status: 'WAITING_BEADS_APPROVAL' })
+    createFreshPhaseAttempts(ticket.id, PRD_EDIT_RESTART_PHASES)
+
+    let releaseRestart!: () => void
+    let reachedRestart!: () => void
+    const restartPaused = new Promise<void>((resolve) => { releaseRestart = resolve })
+    const restartReached = new Promise<void>((resolve) => { reachedRestart = resolve })
+    const originalPreparePlanningRestart = routeUtils.preparePlanningRestart
+    let prepareCalls = 0
+    const prepareRestartSpy = vi.spyOn(routeUtils, 'preparePlanningRestart')
+      .mockImplementation(async (...args) => {
+        prepareCalls += 1
+        if (prepareCalls === 1) {
+          reachedRestart()
+          await restartPaused
+        }
+        return originalPreparePlanningRestart(...args)
+      })
+
+    const request = (expectedRaw: string) => app.request(`/api/files/${ticket.id}/prd`, {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        expectedContentSha256: contentSha256(expectedRaw),
+        content: expectedRaw,
+      }),
+    })
+
+    const firstResponsePromise = request(prdRaw)
+    await restartReached
+
+    const clock = vi.spyOn(Date, 'now').mockReturnValue(Date.now() + 3_600_001)
+    try {
+      const secondResponse = await request(readFileSync(`${paths.ticketDir}/prd.yaml`, 'utf-8'))
+      expect(secondResponse.status).toBe(200)
+      upsertLatestPhaseArtifact(ticket.id, 'beads', 'DRAFTING_BEADS', 'artifact: beads\nnewer: true\n')
+
+      releaseRestart()
+      const firstResponse = await firstResponsePromise
+      expect(firstResponse.status).toBe(409)
+      expect(getLatestPhaseArtifact(ticket.id, 'beads', 'DRAFTING_BEADS')).toBeDefined()
+    } finally {
+      releaseRestart()
+      prepareRestartSpy.mockRestore()
+      clock.mockRestore()
+    }
+  })
+
   it('does not archive attempts when a post-approval PRD edit is invalid', async () => {
-    const { app, ticket } = await setupPrdApprovalTicket()
+    const { app, ticket, prdRaw } = await setupPrdApprovalTicket()
     patchTicket(ticket.id, { status: 'WAITING_BEADS_APPROVAL' })
     createFreshPhaseAttempts(ticket.id, PRD_EDIT_RESTART_PHASES)
 
@@ -565,6 +721,7 @@ describe('ticketRouter PRD approval routes', () => {
       method: 'PUT',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({
+        expectedContentSha256: contentSha256(prdRaw),
         content: 'artifact: prd\nepics: [',
       }),
     })

@@ -17,17 +17,21 @@ import {
 import { lockExecutionSetupPlanDetectedHooks } from '../../phases/executionSetupPlan/hookEvidence'
 import { normalizeExecutionSetupPlanOutput } from '../../structuredOutput'
 import { getErrorMessage } from '@shared/typeGuards'
+import { assertExpectedContentSha256, StaleArtifactApprovalError } from '../../lib/artifactApproval'
 import { writeUserEditReceipt } from '../../workflow/artifactEditReceipts'
 import {
   buildRouteStatePayload,
+  claimPlanningEdit,
   emitRoutePhaseLog,
   getTicketParam,
   prepareExecutionSetupPlanRestart,
   prepareExecutionSetupRuntimeRegeneration,
   prepareExecutionSetupRuntimeRewind,
   rejectDisplayOnlyMockTicket,
+  releasePlanningEdit,
   respondWithState,
 } from './routeUtils'
+import { withTicketMergeLock } from '../../workflow/mergeCompletion'
 import { ensureActorForTicket, sendTicketEvent } from '../../machines/persistence'
 import {
   rawExecutionSetupPlanSaveSchema,
@@ -73,6 +77,30 @@ function validateWorkspaceInputsForTicket(ticketId: string, plan: ExecutionSetup
 function validateRawSetupPlanContent(ticketId: string, rawContent: string): string | null {
   const normalized = normalizeRawSetupPlanContent(rawContent, ticketId)
   return normalized.ok ? null : normalized.error
+}
+
+class MissingSetupPlanSavePreconditionError extends Error {}
+
+function assertSetupPlanBaseline(
+  baseline: ReturnType<typeof readExecutionSetupPlan>,
+  expectedContentSha256: string | undefined,
+): void {
+  if (!baseline.raw) {
+    if (expectedContentSha256) {
+      throw new StaleArtifactApprovalError('execution_setup_plan', expectedContentSha256, '')
+    }
+    return
+  }
+  if (!expectedContentSha256) {
+    throw new MissingSetupPlanSavePreconditionError(
+      'Execution setup plan save requires the hash of the loaded plan',
+    )
+  }
+  assertExpectedContentSha256({
+    artifactType: 'execution_setup_plan',
+    currentContent: baseline.raw,
+    expectedContentSha256,
+  })
 }
 
 export function handleGetExecutionSetupPlan(c: Context) {
@@ -166,20 +194,102 @@ export async function handlePutExecutionSetupPlan(c: Context) {
     }
   }
 
-  let beforeRaw: string | null = null
-  let beforeCommandCount: number | null = null
-  try {
-    const before = readExecutionSetupPlan(ticketId)
-    beforeRaw = before.raw
-    beforeCommandCount = countPlanCommands(before.plan)
-  } catch {
-    beforeRaw = null
+  const planningLock = claimPlanningEdit(ticketId)
+  if (!planningLock) {
+    return c.json({ error: 'A planning edit is already being processed; try again when it finishes' }, 409)
   }
 
-  const body = await c.req.json().catch(() => ({}))
-  const rawParsed = rawExecutionSetupPlanSaveSchema.safeParse(body)
-  if (rawParsed.success) {
-    const validationError = validateRawSetupPlanContent(ticketId, rawParsed.data.content)
+  try {
+    let beforeRaw: string | null = null
+    let beforeCommandCount: number | null = null
+    let beforePlan: ReturnType<typeof readExecutionSetupPlan> | null = null
+    let beforePlanReadError: unknown = null
+    try {
+      beforePlan = readExecutionSetupPlan(ticketId)
+      beforeRaw = beforePlan.raw
+      beforeCommandCount = countPlanCommands(beforePlan.plan)
+    } catch (err) {
+      beforePlanReadError = err
+      beforeRaw = null
+    }
+    if (beforePlanReadError) {
+      return c.json({
+        error: 'Current execution setup plan could not be read; reload before saving',
+        details: getErrorMessage(beforePlanReadError),
+      }, 409)
+    }
+
+    const body = await c.req.json().catch(() => ({}))
+    const respondSaveError = (err: unknown) => {
+      if (err instanceof MissingSetupPlanSavePreconditionError) {
+        return c.json({ error: err.message, artifactType: 'execution_setup_plan' }, 428)
+      }
+      if (err instanceof StaleArtifactApprovalError) {
+        return c.json({
+          error: 'Stale approval',
+          artifactType: err.artifactType,
+          expectedContentSha256: err.expectedContentSha256,
+          currentContentSha256: err.currentContentSha256,
+        }, 409)
+      }
+      return c.json({
+        error: 'Failed to save execution setup plan',
+        details: getErrorMessage(err),
+      }, 400)
+    }
+
+    const rawParsed = rawExecutionSetupPlanSaveSchema.safeParse(body)
+    if (rawParsed.success) {
+      const validationError = validateRawSetupPlanContent(ticketId, rawParsed.data.content)
+      if (validationError) {
+        return c.json({
+          error: 'Failed to save execution setup plan',
+          details: validationError,
+        }, 400)
+      }
+
+      try {
+        if (beforePlan) assertSetupPlanBaseline(beforePlan, rawParsed.data.expectedContentSha256)
+        const normalized = normalizeRawSetupPlanContent(rawParsed.data.content, ticketId)
+        if (!normalized.ok) throw new Error(normalized.error)
+        validateWorkspaceInputsForTicket(ticketId, normalized.value)
+        const restart = rewindsRuntimeSetup
+          ? await prepareExecutionSetupRuntimeRewind(ticketId, () => {
+              const current = readExecutionSetupPlan(ticketId)
+              assertSetupPlanBaseline(current, rawParsed.data.expectedContentSha256)
+            })
+          : null
+        const { raw, contentSha256, plan } = saveExecutionSetupPlan(
+          ticketId,
+          lockExecutionSetupPlanDetectedHooks(ticketId, normalized.value),
+          rewindsRuntimeSetup ? undefined : rawParsed.data.expectedContentSha256,
+        )
+        writeUserEditReceipt({
+          ticketId,
+          artifactType: 'execution_setup_plan',
+          phase: 'WAITING_EXECUTION_SETUP_APPROVAL',
+          action: rewindsRuntimeSetup ? 'save_and_rewind' : 'save',
+          editSurface: 'raw',
+          statusBeforeEdit: ticket.status,
+          statusAfterEdit: getTicketByRef(ticketId)?.status ?? null,
+          beforeRaw,
+          afterRaw: raw,
+          beforeItemCount: beforeCommandCount,
+          afterItemCount: countPlanCommands(plan),
+          restart,
+        })
+        return c.json({ success: true, raw, contentSha256, plan, ...buildRouteStatePayload(ticketId) })
+      } catch (err) {
+        return respondSaveError(err)
+      }
+    }
+
+    const structuredParsed = structuredExecutionSetupPlanSaveSchema.safeParse(body)
+    if (!structuredParsed.success) {
+      return c.json({ error: 'Invalid execution setup plan payload', details: structuredParsed.error.flatten() }, 400)
+    }
+
+    const validationError = validateRawSetupPlanContent(ticketId, serializeExecutionSetupPlan(structuredParsed.data.plan))
     if (validationError) {
       return c.json({
         error: 'Failed to save execution setup plan',
@@ -188,20 +298,25 @@ export async function handlePutExecutionSetupPlan(c: Context) {
     }
 
     try {
-      const normalized = normalizeRawSetupPlanContent(rawParsed.data.content, ticketId)
-      if (!normalized.ok) throw new Error(normalized.error)
-      validateWorkspaceInputsForTicket(ticketId, normalized.value)
-      const restart = rewindsRuntimeSetup ? await prepareExecutionSetupRuntimeRewind(ticketId) : null
+      if (beforePlan) assertSetupPlanBaseline(beforePlan, structuredParsed.data.expectedContentSha256)
+      validateWorkspaceInputsForTicket(ticketId, structuredParsed.data.plan)
+      const restart = rewindsRuntimeSetup
+        ? await prepareExecutionSetupRuntimeRewind(ticketId, () => {
+            const current = readExecutionSetupPlan(ticketId)
+            assertSetupPlanBaseline(current, structuredParsed.data.expectedContentSha256)
+          })
+        : null
       const { raw, contentSha256, plan } = saveExecutionSetupPlan(
         ticketId,
-        lockExecutionSetupPlanDetectedHooks(ticketId, normalized.value),
+        lockExecutionSetupPlanDetectedHooks(ticketId, structuredParsed.data.plan),
+        rewindsRuntimeSetup ? undefined : structuredParsed.data.expectedContentSha256,
       )
       writeUserEditReceipt({
         ticketId,
         artifactType: 'execution_setup_plan',
         phase: 'WAITING_EXECUTION_SETUP_APPROVAL',
         action: rewindsRuntimeSetup ? 'save_and_rewind' : 'save',
-        editSurface: 'raw',
+        editSurface: 'structured',
         statusBeforeEdit: ticket.status,
         statusAfterEdit: getTicketByRef(ticketId)?.status ?? null,
         beforeRaw,
@@ -212,57 +327,28 @@ export async function handlePutExecutionSetupPlan(c: Context) {
       })
       return c.json({ success: true, raw, contentSha256, plan, ...buildRouteStatePayload(ticketId) })
     } catch (err) {
-      return c.json({
-        error: 'Failed to save execution setup plan',
-        details: getErrorMessage(err),
-      }, 400)
+      return respondSaveError(err)
     }
-  }
-
-  const structuredParsed = structuredExecutionSetupPlanSaveSchema.safeParse(body)
-  if (!structuredParsed.success) {
-    return c.json({ error: 'Invalid execution setup plan payload', details: structuredParsed.error.flatten() }, 400)
-  }
-
-  const validationError = validateRawSetupPlanContent(ticketId, serializeExecutionSetupPlan(structuredParsed.data.plan))
-  if (validationError) {
-    return c.json({
-      error: 'Failed to save execution setup plan',
-      details: validationError,
-    }, 400)
-  }
-
-  try {
-    validateWorkspaceInputsForTicket(ticketId, structuredParsed.data.plan)
-    const restart = rewindsRuntimeSetup ? await prepareExecutionSetupRuntimeRewind(ticketId) : null
-    const { raw, contentSha256, plan } = saveExecutionSetupPlan(
-      ticketId,
-      lockExecutionSetupPlanDetectedHooks(ticketId, structuredParsed.data.plan),
-    )
-    writeUserEditReceipt({
-      ticketId,
-      artifactType: 'execution_setup_plan',
-      phase: 'WAITING_EXECUTION_SETUP_APPROVAL',
-      action: rewindsRuntimeSetup ? 'save_and_rewind' : 'save',
-      editSurface: 'structured',
-      statusBeforeEdit: ticket.status,
-      statusAfterEdit: getTicketByRef(ticketId)?.status ?? null,
-      beforeRaw,
-      afterRaw: raw,
-      beforeItemCount: beforeCommandCount,
-      afterItemCount: countPlanCommands(plan),
-      restart,
-    })
-    return c.json({ success: true, raw, contentSha256, plan, ...buildRouteStatePayload(ticketId) })
-  } catch (err) {
-    return c.json({
-      error: 'Failed to save execution setup plan',
-      details: getErrorMessage(err),
-    }, 400)
+  } finally {
+    releasePlanningEdit(ticketId, planningLock)
   }
 }
 
 export async function handleRegenerateExecutionSetupPlan(c: Context) {
+  const ticketId = getTicketParam(c)
+  const body = await c.req.json().catch(() => ({}))
+  const parsed = regenerateExecutionSetupPlanSchema.safeParse(body)
+  if (!parsed.success) {
+    return c.json({ error: 'Invalid regenerate payload', details: parsed.error.flatten() }, 400)
+  }
+
+  return withTicketMergeLock(ticketId, () => handleRegenerateExecutionSetupPlanLocked(c, parsed.data))
+}
+
+async function handleRegenerateExecutionSetupPlanLocked(
+  c: Context,
+  options: { commentary: string; plan?: ExecutionSetupPlan | null; rawContent?: string | null },
+) {
   const ticketId = getTicketParam(c)
   const ticket = getTicketByRef(ticketId)
   if (!ticket) return c.json({ error: 'Ticket not found' }, 404)
@@ -271,18 +357,15 @@ export async function handleRegenerateExecutionSetupPlan(c: Context) {
   if (!isEditableExecutionSetupPlanStatus(ticket.status)) {
     return c.json({ error: 'Ticket is not waiting for execution setup plan approval or preparing workspace runtime' }, 409)
   }
+  // Re-read the status under the per-ticket lock immediately before any
+  // restart, artifact write, or workflow event. A concurrent save/cancel may
+  // have changed the ticket while the request body was being parsed.
   const rewindsRuntimeSetup = shouldRewindRuntimeSetup(ticket.status)
 
-  const body = await c.req.json().catch(() => ({}))
-  const parsed = regenerateExecutionSetupPlanSchema.safeParse(body)
-  if (!parsed.success) {
-    return c.json({ error: 'Invalid regenerate payload', details: parsed.error.flatten() }, 400)
-  }
-
   // Read current plan before archiving (for context in background generation)
-  let currentPlan = parsed.data.plan ?? null
-  if (!currentPlan && parsed.data.rawContent) {
-    const normalized = normalizeRawSetupPlanContent(parsed.data.rawContent, ticketId)
+  let currentPlan = options.plan ?? null
+  if (!currentPlan && options.rawContent) {
+    const normalized = normalizeRawSetupPlanContent(options.rawContent, ticketId)
     if (!normalized.ok) {
       return c.json({ error: 'Invalid raw setup plan draft', details: normalized.error }, 400)
     }
@@ -304,9 +387,9 @@ export async function handleRegenerateExecutionSetupPlan(c: Context) {
   let requestArtifactId: number
   try {
     requestArtifactId = writeExecutionSetupPlanRegenerationRequest(ticketId, {
-      commentary: parsed.data.commentary,
+      commentary: options.commentary,
       currentPlan,
-      notes: [...existingNotes, parsed.data.commentary],
+      notes: [...existingNotes, options.commentary],
     })
     ensureActorForTicket(ticketId)
     sendTicketEvent(ticketId, {

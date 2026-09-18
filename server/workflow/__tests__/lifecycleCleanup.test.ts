@@ -3,9 +3,15 @@ import { initializeDatabase } from '../../db/init'
 import { sqlite } from '../../db/index'
 import { clearProjectDatabaseCache } from '../../db/project'
 import { attachProject } from '../../storage/projects'
-import { createTicket } from '../../storage/tickets'
+import { createTicket, readTicketFile, writeTicketFile } from '../../storage/tickets'
 import { createFixtureRepoManager } from '../../test/fixtureRepo'
-import { cleanupTicketState } from '../phases/state'
+import {
+  cancelTicket,
+  cleanupTicketState,
+  getTicketCancellationGeneration,
+  isTicketCancellationPending,
+  markTicketCancellationPending,
+} from '../phases/state'
 import {
   claimInterviewBatch,
   hasInFlightInterviewBatch,
@@ -173,6 +179,59 @@ describe('cleanupTicketState', () => {
     cleanupTicketState(TICKET)
 
     expect(isTicketWorkSuspended(TICKET)).toBe(false)
+  })
+
+  it('keeps the suspended budget during local cancellation until remote stop is confirmed', () => {
+    suspendTicketWork(TICKET)
+    expect(claimInterviewBatch(TICKET)).toBeTruthy()
+
+    cancelTicket(TICKET)
+
+    expect(isTicketWorkSuspended(TICKET)).toBe(true)
+    expect(hasInFlightInterviewBatch(TICKET)).toBe(true)
+    cleanupTicketState(TICKET)
+    expect(isTicketWorkSuspended(TICKET)).toBe(false)
+    expect(hasInFlightInterviewBatch(TICKET)).toBe(false)
+  })
+
+  it('keeps cancellation ownership after a process restart', () => {
+    writeTicketFile(TICKET, 'runtime/cancellation-pending.json', JSON.stringify({
+      state: 'pending',
+      requestedAt: new Date().toISOString(),
+    }))
+
+    // The marker is the restart source of truth; no in-memory Set entry is
+    // needed for this assertion to represent a newly started daemon.
+    expect(isTicketCancellationPending(TICKET)).toBe(true)
+    expect(readTicketFile(TICKET, 'runtime/cancellation-pending.json')).not.toBeNull()
+
+    cleanupTicketState(TICKET)
+
+    expect(isTicketCancellationPending(TICKET)).toBe(false)
+    expect(readTicketFile(TICKET, 'runtime/cancellation-pending.json')).toBeNull()
+  })
+
+  it('writes a durable marker before cancellation cleanup begins', () => {
+    markTicketCancellationPending(TICKET)
+
+    expect(JSON.parse(readTicketFile(TICKET, 'runtime/cancellation-pending.json') ?? 'null')).toMatchObject({
+      state: 'pending',
+    })
+
+    cleanupTicketState(TICKET)
+  })
+
+  it('invalidates an old cancellation cleanup when a later cancel is marked', () => {
+    markTicketCancellationPending(TICKET)
+    const firstGeneration = getTicketCancellationGeneration(TICKET)
+
+    expect(firstGeneration).toBeGreaterThan(0)
+    cleanupTicketState(TICKET)
+    expect(getTicketCancellationGeneration(TICKET)).not.toBe(firstGeneration)
+
+    markTicketCancellationPending(TICKET)
+    expect(getTicketCancellationGeneration(TICKET)).not.toBe(firstGeneration)
+    cleanupTicketState(TICKET)
   })
 
   it('drops pending session continuations', () => {

@@ -66,28 +66,35 @@ async function abandonInterruptedCodingSessions(
   ticketId: string,
   beadId: string,
   iteration: number,
-): Promise<void> {
+): Promise<boolean> {
   const interruptedSessions = listOpenCodeSessionsForTicket(ticketId, ['active'])
     .filter((session) => session.phase === 'CODING'
       && session.beadId === beadId
       && session.iteration === iteration)
-  if (interruptedSessions.length === 0) return
+  if (interruptedSessions.length === 0) return true
 
   const sessionManager = new SessionManager(adapter)
+  let allStopped = true
   await Promise.all(interruptedSessions.map(async (session) => {
+    let stopped = false
     try {
-      await adapter.abortSession(session.sessionId)
+      stopped = await adapter.abortSession(session.sessionId)
     } catch (err) {
       console.warn(
         `[executionPhase] Failed to abort interrupted OpenCode session ${session.sessionId}:`,
         err,
       )
-    } finally {
-      await sessionManager.abandonSession(session.sessionId)
-      clearSessionContinuation(session.sessionId)
-      clearOpenCodePromptDispatchCount(session.sessionId)
     }
+    if (!stopped) {
+      allStopped = false
+      console.warn(`[executionPhase] Could not confirm abort of interrupted OpenCode session ${session.sessionId}; retaining its active row`)
+      return
+    }
+    await sessionManager.abandonSession(session.sessionId)
+    clearSessionContinuation(session.sessionId)
+    clearOpenCodePromptDispatchCount(session.sessionId)
   }))
+  return allStopped
 }
 
 function getLatestInterruptedInProgressBead(beads: Bead[]): Bead | null {
@@ -406,6 +413,21 @@ export async function handleCoding(
       executingBead = activeBead
       updateTicketProgressFromBeads(ticketId, beads)
     } else {
+      // Recovery resets the worktree, so every session that may still be
+      // writing to this bead must be stopped and locally abandoned first.
+      // Resolve the candidate from the current artifact before recovery bumps
+      // its iteration number.
+      const interruptedCandidate = getLatestInterruptedInProgressBead(readTicketBeads(ticketId))
+      if (interruptedCandidate) {
+        const stopped = await abandonInterruptedCodingSessions(
+          ticketId,
+          interruptedCandidate.id,
+          interruptedCandidate.iteration,
+        )
+        if (!stopped) {
+          throw new Error(`Could not safely recover bead ${interruptedCandidate.id}: an OpenCode session did not confirm abort`)
+        }
+      }
       const interruptedBead = await recoverCodingBeadWithReset(ticketId, {
         worktreePath: paths.worktreePath,
         onlyInProgress: true,
@@ -420,7 +442,6 @@ export async function handleCoding(
         // `opencode.json` back to its committed state — cap and all.
         reapplyStepsConfigAfterReset()
         const interruptedIteration = interruptedBead.iteration - 1
-        await abandonInterruptedCodingSessions(ticketId, interruptedBead.id, interruptedIteration)
         emitPhaseLog(
           ticketId,
           context.externalId,
@@ -442,25 +463,22 @@ export async function handleCoding(
         throw new Error('No runnable bead found; unresolved dependencies remain')
       }
 
-      // Record the reset anchor before publishing in_progress. A failed HEAD
-      // read leaves the bead pending and therefore startable on the next try.
+      // A runnable bead must have its reset checkpoint before publishing it as
+      // active. A failed HEAD read leaves it pending and starts no session.
       try {
-        beadStartCommit = await withCommandLoggingFieldsAsync({ beadId: nextBead.id }, async () => recordBeadStartCommit(paths.worktreePath))
+        beadStartCommit = await withCommandLoggingFieldsAsync(
+          { beadId: nextBead.id },
+          async () => recordBeadStartCommit(paths.worktreePath),
+        )
       } catch (err) {
         const message = `Could not record bead start commit for ${nextBead.id}: ${err instanceof Error ? err.message : 'Unknown error'}`
         emitPhaseLog(ticketId, context.externalId, 'CODING', 'error', message, { source: 'system', modelId: codingModelId, beadId: nextBead.id })
         throw new Error(message)
       }
-
+      throwIfAborted(signal, ticketId)
       const now = new Date().toISOString()
-      const inProgressBeads = beads.map(bead => bead.id === nextBead.id
-        ? {
-            ...bead,
-            status: 'in_progress' as const,
-            updatedAt: now,
-            startedAt: bead.startedAt || now,
-            beadStartCommit,
-          }
+      const inProgressBeads = readTicketBeads(ticketId).map(bead => bead.id === nextBead.id
+        ? { ...bead, beadStartCommit, status: 'in_progress' as const, updatedAt: now, startedAt: bead.startedAt || now }
         : bead)
       writeTicketBeads(ticketId, inProgressBeads)
       updateTicketProgressFromBeads(ticketId, inProgressBeads)

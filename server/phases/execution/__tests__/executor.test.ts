@@ -17,6 +17,7 @@ import {
 class SequencedMockOpenCodeAdapter extends MockOpenCodeAdapter {
   private promptCounts = new Map<string, number>()
   public abortCalls: string[] = []
+  public abortResult = true
   public promptFailures = new Map<string, Error | 'stallUntilAbort'>()
 
   override async promptSession(...args: Parameters<MockOpenCodeAdapter['promptSession']>) {
@@ -72,6 +73,7 @@ class SequencedMockOpenCodeAdapter extends MockOpenCodeAdapter {
 
   override async abortSession(sessionId: string): Promise<boolean> {
     this.abortCalls.push(sessionId)
+    if (!this.abortResult) return false
     return await super.abortSession(sessionId)
   }
 }
@@ -294,6 +296,36 @@ describe('executeBead', () => {
     expect(adapter.promptCalls.map((call) => call.sessionId)).toEqual(['mock-session-1', 'mock-session-1'])
   })
 
+  it('bounds ordinary same-session continuations by finite maxIterations', async () => {
+    const adapter = new SequencedMockOpenCodeAdapter()
+    const incomplete = [
+      '<BEAD_STATUS>',
+      '{"bead_id":"bead-1","status":"error","checks":{"tests":"pass","lint":"pass","typecheck":"pass","qualitative":"pass"},"reason":"still incomplete"}',
+      '</BEAD_STATUS>',
+    ].join('\n')
+    adapter.mockResponses.set('mock-session-1#1', incomplete)
+    adapter.mockResponses.set('mock-session-1#2', incomplete)
+    adapter.mockResponses.set('mock-session-1#3', 'Recovery note')
+
+    const result = await executeBead(
+      adapter,
+      buildBead(),
+      [{ type: 'text', content: 'Bead context' }],
+      '/tmp/test',
+      1,
+      0,
+    )
+
+    expect(result.success).toBe(false)
+    expect(result.errors.some((error) => error.includes('Configured continuation limit reached after 1 attempt'))).toBe(true)
+    expect(adapter.promptCalls.map((call) => call.sessionId)).toEqual([
+      'mock-session-1',
+      'mock-session-1',
+      'mock-session-1',
+    ])
+    expect(adapter.abortCalls).toEqual(['mock-session-1'])
+  })
+
   it('calls onContextWipe when iteration fails and PROM51 generates notes', async () => {
     const adapter = new SequencedMockOpenCodeAdapter()
     adapter.promptFailures.set('mock-session-1#1', new Error('tests still failing'))
@@ -330,6 +362,31 @@ describe('executeBead', () => {
     })
     expect(result.rawAttempts?.[0]?.initialInput).toContain('BEAD_STATUS')
     expect(result.rawAttempts?.[0]?.error).toContain('tests still failing')
+  })
+
+  it('withholds context-wipe cleanup when the remote session abort is unconfirmed', async () => {
+    const adapter = new SequencedMockOpenCodeAdapter()
+    adapter.abortResult = false
+    adapter.promptFailures.set('mock-session-1#1', new Error('tests still failing'))
+    adapter.mockResponses.set('mock-session-1#2', 'Recovery note from the stalled session.')
+    const onContextWipe = vi.fn()
+
+    const result = await executeBead(
+      adapter,
+      buildBead(),
+      [{ type: 'text', content: 'Bead context' }],
+      '/tmp/test',
+      1,
+      PROFILE_DEFAULTS.perIterationTimeout,
+      undefined,
+      { onContextWipe },
+    )
+
+    expect(result.success).toBe(false)
+    expect(adapter.abortCalls).toEqual(['mock-session-1', 'mock-session-1'])
+    expect(onContextWipe).not.toHaveBeenCalled()
+    expect(result.errors).toContain('Could not confirm abort of OpenCode session mock-session-1; worktree reset withheld.')
+    expect(adapter.sessions.map((session) => session.id)).toEqual(['mock-session-1'])
   })
 
   it('preserves usage-limit retry diagnostics when completion markers exhaust the bead window', async () => {
@@ -631,7 +688,9 @@ describe('executeBead', () => {
     )
 
     expect(result.success).toBe(true)
-    expect(adapter.abortCalls).toEqual(['mock-session-1'])
+    // Timeout cleanup, the recovery-note prompt's cleanup, and the context
+    // wipe each need their own remote confirmation for a reused session id.
+    expect(adapter.abortCalls).toEqual(['mock-session-1', 'mock-session-1', 'mock-session-1'])
     expect(adapter.promptCalls.map((call) => call.sessionId)).toEqual([
       'mock-session-1',
       'mock-session-1',
@@ -721,7 +780,9 @@ describe('executeBead', () => {
       { reason: 'iteration_timeout', attempt: 1, nextAttempt: 2, maxAttempts: 2 },
     ])
     expect(preservedTimeouts).toEqual([])
-    expect(adapter.abortCalls).toEqual(['mock-session-1'])
+    // The timed-out continuation and the context-wipe reset both confirm the
+    // same remote session independently.
+    expect(adapter.abortCalls).toEqual(['mock-session-1', 'mock-session-1'])
     expect(adapter.sessions.map((session) => session.id)).toEqual(['mock-session-1', 'mock-session-2'])
   }, 40_000)
 
@@ -808,7 +869,7 @@ describe('executeBead', () => {
       const result = await runPromise
 
       expect(result.success).toBe(false)
-      expect(adapter.abortCalls).toEqual(['mock-session-1'])
+      expect(adapter.abortCalls).toEqual(['mock-session-1', 'mock-session-1', 'mock-session-1'])
     } finally {
       vi.useRealTimers()
     }

@@ -60,7 +60,8 @@ function describeBindFailure(error: unknown, port: number, source: SettingSource
  * its own process lifecycle hijacked.
  */
 export function createRuntime(config: RuntimeConfig = {}): LoopTroopRuntime {
-  const app = createApp(config)
+  const sseScope = config.sseScope ?? broadcaster.createScope()
+  const app = createApp({ ...config, sseScope })
   let handle: ReturnType<typeof serve> | null = null
   let address: RuntimeAddress | null = null
   let closing: Promise<void> | null = null
@@ -120,14 +121,14 @@ export function createRuntime(config: RuntimeConfig = {}): LoopTroopRuntime {
 
   /** Undoes everything `runStart` may have started, without touching `handle`. */
   function teardownStartedResources(): void {
-    broadcaster.stopAutoCleanup()
+    sseScope.stopAutoCleanup()
     clearProjectDatabaseCache()
     closeDatabase()
   }
 
   async function runStart(): Promise<RuntimeAddress> {
     const settings = config.settings ?? resolveSettings()
-    broadcaster.startAcceptingClients()
+    sseScope.startAcceptingClients()
 
     // Before the startup sequence, which health-checks OpenCode through the
     // adapter: resolved later, `opencodeBaseUrl` from config.json would arrive
@@ -151,7 +152,7 @@ export function createRuntime(config: RuntimeConfig = {}): LoopTroopRuntime {
         await startupSequence()
       }
 
-      broadcaster.startAutoCleanup()
+    sseScope.startAutoCleanup()
 
       const hostname = config.hostname === undefined
         ? getAllowedBackendHost()
@@ -213,7 +214,7 @@ export function createRuntime(config: RuntimeConfig = {}): LoopTroopRuntime {
       // Stop accepting requests before closing active SSE responses. Otherwise
       // a request admitted between client cleanup and server.close could add a
       // new long-lived stream that the listener then waits for forever.
-      broadcaster.closeAllClients()
+      sseScope.closeAllClients()
       const pollerStopped = stopMergePoller?.()
       stopMergePoller = null
       // Git and gh are detached so their hooks and descendants share the

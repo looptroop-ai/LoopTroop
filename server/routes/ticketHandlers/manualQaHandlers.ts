@@ -59,7 +59,11 @@ function readManualQaDraftState(ticketId: string, version: number) {
   return readTicketUiState(ticketId, `manual_qa_draft:v${version}`)
 }
 
-function assertServerDraftRevision(ticketId: string, version: number, expectedRevision: number) {
+function assertServerDraftRevision(
+  ticketId: string,
+  version: number,
+  expectedRevision: number,
+) {
   const latest = readManualQaDraftState(ticketId, version)
   const revision = latest?.revision ?? 0
   if (revision !== expectedRevision) {
@@ -501,11 +505,15 @@ export async function handleSubmitManualQa(c: Context) {
       ...parseMutationBody(body),
       operationType: 'submit' as const,
     }
+    // The click snapshot is allowed to outlive a later autosave only after the
+    // route has entered. A stale tab must not enter with a newer server draft
+    // and then submit its old click-time data over it.
     const latest = assertServerDraftRevision(resolved.ticketId, version, guard.expectedDraftRevision)
     const draft = toCanonicalDraft({
-      // Submission snapshots the server-owned autosave revision. Never accept a
-      // parallel client draft that could diverge while reusing the same guard.
-      raw: latest?.data,
+      // The client captures the clicked draft before flushing autosave. A newer
+      // autosave may arrive while generation runs; it must remain newer rather
+      // than replacing the immutable submission snapshot.
+      raw: body.draft ?? latest?.data,
       ticketExternalId: resolved.ticket.externalId,
       ticketDir: resolved.paths.ticketDir,
       version,
@@ -538,9 +546,11 @@ export async function handleSkipManualQa(c: Context) {
     const mutation = parseMutationBody(body)
     const { expectedChecklistHash, expectedDraftRevision } = mutation
     const latest = assertServerDraftRevision(resolved.ticketId, version, expectedDraftRevision)
-    const savedDraft = latest?.data && typeof latest.data === 'object' && !Array.isArray(latest.data)
-      ? latest.data as Record<string, unknown>
-      : {}
+    const savedDraft = body.draft && typeof body.draft === 'object' && !Array.isArray(body.draft)
+      ? body.draft as Record<string, unknown>
+      : latest?.data && typeof latest.data === 'object' && !Array.isArray(latest.data)
+        ? latest.data as Record<string, unknown>
+        : {}
     const draft = toCanonicalDraft({
       raw: savedDraft,
       ticketExternalId: resolved.ticket.externalId,

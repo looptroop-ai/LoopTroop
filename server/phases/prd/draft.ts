@@ -68,6 +68,24 @@ class StructuredStepError extends Error {
   }
 }
 
+async function stopPrdSession(
+  adapter: OpenCodeAdapter,
+  sessionManager: SessionManager | null,
+  sessionId: string,
+  signal?: AbortSignal,
+): Promise<void> {
+  const stopped = sessionManager
+    ? await sessionManager.abortAndAbandonSession(sessionId)
+    : await adapter.abortSession(sessionId).catch((error) => {
+        console.warn(`[prd] Failed to abort OpenCode session ${sessionId}:`, error)
+        return false
+      })
+  if (!stopped) {
+    if (signal?.aborted) throw new CancelledError()
+    throw new Error(`Could not confirm abort of OpenCode session ${sessionId}`)
+  }
+}
+
 export interface PrdDraftPhaseResult extends DraftPhaseResult {
   fullAnswers: DraftResult[]
   fullAnswerOutcomes: Record<string, MemberOutcome>
@@ -595,8 +613,8 @@ async function executeStructuredStep(
 
       attemptCount += 1
       if (!retryDecision.reuseSession) {
-        if (sessionManager && session) {
-          await sessionManager.abandonSession(session.id)
+        if (session) {
+          await stopPrdSession(adapter, sessionManager, session.id, options.signal)
         }
         session = undefined
         promptParts = baseParts
@@ -1035,12 +1053,8 @@ export async function draftPRD(
         prd: prdResult,
       }
     } catch (error) {
-      try {
-        if (currentSession && sessionManager) {
-          await sessionManager.abandonSession(currentSession.id)
-        }
-      } catch {
-        // Best effort cleanup only.
+      if (currentSession) {
+        await stopPrdSession(adapter, sessionManager, currentSession.id, signal)
       }
 
       const failedStep = fullAnswersResult ? 'prd_draft' : 'full_answers'

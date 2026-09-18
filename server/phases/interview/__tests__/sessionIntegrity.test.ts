@@ -53,11 +53,32 @@ describe('question id reuse inside a session', () => {
 
   it('rejects a new question reusing an answered id', () => {
     const snapshot = baseSnapshot()
+    snapshot.answers.Q01 = {
+      answer: 'The existing answer.',
+      skipped: false,
+      answeredAt: '2026-09-01T00:00:00.000Z',
+      batchNumber: 1,
+    }
     const batch = buildPersistedBatch(batchOf([
       { id: 'Q01', question: 'Which platforms should we support?', phase: 'Foundation' },
     ]), 'prom4', snapshot)
 
     expect(() => recordPreparedBatch(snapshot, batch)).toThrow(/id collision for Q01/)
+  })
+
+  it('allows an unanswered compiled question to be reworded through prepared-batch persistence', () => {
+    const snapshot = baseSnapshot()
+    const batch = buildPersistedBatch(batchOf([
+      { id: 'Q01', question: 'Which outcome should this support?', phase: 'Discovery' },
+    ]), 'prom4', snapshot)
+
+    const prepared = recordPreparedBatch(snapshot, batch)
+    const restored = parseInterviewSessionSnapshot(serializeInterviewSessionSnapshot(prepared))
+    expect(restored?.questions[0]).toMatchObject({
+      id: 'Q01',
+      question: 'Which outcome should this support?',
+      phase: 'Discovery',
+    })
   })
 
   it('still lets a batch fill in metadata the compiled question lacks', () => {
@@ -172,6 +193,15 @@ describe('parseInterviewSessionSnapshot', () => {
     ['a batch history entry with an unknown source', (snapshot: InterviewSessionSnapshot) => {
       snapshot.batchHistory.push({ batchNumber: 1, source: 'nope' as never, questionIds: [], isFinalFreeForm: false, submittedAt: '' })
     }],
+    ['a snapshot with an invalid updated timestamp', (snapshot: InterviewSessionSnapshot) => {
+      snapshot.updatedAt = 'not-a-date'
+    }],
+    ['an answer with an invalid answered timestamp', (snapshot: InterviewSessionSnapshot) => {
+      snapshot.answers.Q01 = { answer: 'x', skipped: false, answeredAt: 'not-a-date', batchNumber: 1 }
+    }],
+    ['a history entry with an invalid submitted timestamp', (snapshot: InterviewSessionSnapshot) => {
+      snapshot.batchHistory.push({ batchNumber: 1, source: 'prom4', questionIds: ['Q01'], isFinalFreeForm: false, submittedAt: 'not-a-date' })
+    }],
     ['a follow-up round with a non-integer round number', (snapshot: InterviewSessionSnapshot) => {
       snapshot.followUpRounds.push({ roundNumber: 1.5, source: 'coverage', questionIds: [] })
     }],
@@ -198,6 +228,12 @@ describe('parseInterviewSessionSnapshot', () => {
     // other, so answers normalised against one question were recorded against
     // another asking something else.
     ['a batch question reusing a canonical id for a different question', (snapshot: InterviewSessionSnapshot) => {
+      snapshot.answers.Q01 = {
+        answer: 'The existing answer.',
+        skipped: false,
+        answeredAt: '2026-09-01T00:00:00.000Z',
+        batchNumber: 1,
+      }
       snapshot.currentBatch = {
         questions: [{ ...snapshot.questions[0]!, question: 'Something else entirely?' }],
         progress: { current: 1, total: 1 },

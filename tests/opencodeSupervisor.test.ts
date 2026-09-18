@@ -627,6 +627,27 @@ describe('OpenCode supervision', () => {
     await expect(starting).rejects.toThrow()
   })
 
+  it('does not publish a managed status when the child reports no pid', async () => {
+    const baseUrl = makeBaseUrl()
+    const child = Object.assign(makeChild(), {
+      pid: undefined,
+      kill: () => true,
+    }) as unknown as ReturnType<typeof makeChild> & { pid: number | undefined; kill: () => boolean }
+    let probes = 0
+    const supervisor = new OpenCodeSupervisor({
+      baseUrl,
+      resolveProgram: () => OPENCODE_BIN,
+      spawnProcess: (() => child as never) as never,
+      probe: async () => {
+        probes += 1
+        return probes > 1
+      },
+    })
+
+    await expect(supervisor.start()).rejects.toThrow('reported no process id')
+    expect(supervisor.current.kind).not.toBe('managed')
+  })
+
   it('reports a status change once the supervisor gives up', async () => {
     const baseUrl = makeBaseUrl()
     const changes: string[] = []

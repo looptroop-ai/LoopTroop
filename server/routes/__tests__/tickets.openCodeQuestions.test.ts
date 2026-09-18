@@ -6,7 +6,7 @@ import { clearProjectDatabaseCache } from '../../db/project'
 import { attachProject } from '../../storage/projects'
 import { createTicket } from '../../storage/tickets'
 import { createFixtureRepoManager } from '../../test/fixtureRepo'
-import { MockOpenCodeAdapter } from '../../opencode/adapter'
+import { MockOpenCodeAdapter, type OpenCodeAdapter } from '../../opencode/adapter'
 import { SessionManager } from '../../opencode/sessionManager'
 import { listSkipEvents } from '../../workflow/skipReceipts'
 import {
@@ -112,6 +112,64 @@ describe('ticketRouter OpenCode questions', () => {
     // the ticket's clocks stayed suspended with it.
     expect(getPendingQuestionSummary(ticket.id)).toBeNull()
     expect(isTicketWorkSuspended(ticket.id)).toBe(false)
+  })
+
+  it('keeps a local question when a later session listing fails', async () => {
+    const { ticket } = await createTicketWithQuestion('req_partial_listing')
+    const questionsPath = `/api/tickets/${encodeURIComponent(ticket.id)}/opencode/questions`
+    await app.request(questionsPath)
+    expect(getPendingQuestionSummary(ticket.id)?.requestCount).toBe(1)
+
+    adapter.mockQuestions = []
+    const listPendingQuestions = vi.spyOn(adapter, 'listPendingQuestions')
+      .mockRejectedValueOnce(new Error('OpenCode question listing unavailable'))
+    try {
+      const res = await app.request(questionsPath)
+      expect(res.status).toBe(200)
+      const body = await res.json() as { questions?: Array<{ requestId?: string }> }
+      expect(body.questions?.[0]?.requestId).toBe('req_partial_listing')
+      expect(getPendingQuestionSummary(ticket.id)?.requestCount).toBe(1)
+    } finally {
+      listPendingQuestions.mockRestore()
+    }
+  })
+
+  it('reconciles a healthy session while retaining a failed session listing', async () => {
+    const { ticket, session: failedSession } = await createTicketWithQuestion('req_failed_listing')
+    const healthySession = await new SessionManager(adapter)
+      .createSessionForPhase(ticket.id, 'CODING', 1, 'openai/gpt-5-mini')
+    const failedRequest = adapter.mockQuestions[0]
+    const healthyRequest = {
+      id: 'req_healthy_listing',
+      sessionID: healthySession.id,
+      questions: QUESTIONS,
+    } as (typeof adapter.mockQuestions)[number]
+    adapter.mockQuestions = [failedRequest!, healthyRequest]
+
+    const questionsPath = `/api/tickets/${encodeURIComponent(ticket.id)}/opencode/questions`
+    const listPendingQuestions = vi.spyOn(adapter as OpenCodeAdapter, 'listPendingQuestions')
+      .mockImplementation(async (_projectPath, _signal, sessionId) => {
+        if (sessionId === failedSession.id) return [failedRequest!]
+        if (sessionId === healthySession.id) return [healthyRequest]
+        return []
+      })
+    try {
+      await app.request(questionsPath)
+      expect(getPendingQuestionSummary(ticket.id)?.requestCount).toBe(2)
+
+      listPendingQuestions.mockImplementation(async (_projectPath, _signal, sessionId) => {
+        if (sessionId === failedSession.id) throw new Error('OpenCode question listing unavailable')
+        return []
+      })
+
+      const res = await app.request(questionsPath)
+      expect(res.status).toBe(200)
+      const body = await res.json() as { questions?: Array<{ requestId?: string }> }
+      expect(body.questions?.map((question) => question.requestId)).toEqual(['req_failed_listing'])
+      expect(getPendingQuestionSummary(ticket.id)?.requestIds).toEqual(['req_failed_listing'])
+    } finally {
+      listPendingQuestions.mockRestore()
+    }
   })
 
   it('skips the question, resumes the clocks and files a receipt', async () => {

@@ -35,6 +35,22 @@ describe('runtime Manual QA bead origin projection', () => {
     runtimeRepoManager.cleanup()
   })
 
+  it.each(['PREPARING_EXECUTION_ENV', 'WAITING_EXECUTION_SETUP_APPROVAL', 'CODING'])(
+    'advertises setup-plan recovery only for failed runtime setup, not %s by proximity',
+    async (previousStatus) => {
+      const setup = await createInitializedTestTicket(runtimeRepoManager, { title: 'Setup recovery actions' })
+      const context = getTicketContext(setup.ticket.id)!
+      context.projectDb.update(tickets).set({
+        status: 'BLOCKED_ERROR',
+        xstateSnapshot: JSON.stringify({ context: { previousStatus } }),
+      }).where(eq(tickets.id, context.localTicketId)).run()
+
+      const actions = getTicketByRef(setup.ticket.id)!.availableActions
+      expect(actions).toContain('retry')
+      expect(actions.includes('edit_execution_setup_plan')).toBe(previousStatus === 'PREPARING_EXECUTION_ENV')
+    },
+  )
+
   it('selects only real waiting PR refs across attached projects without projecting tickets', async () => {
     const first = await createInitializedTestTicket(runtimeRepoManager, { title: 'First waiting PR', shortname: 'FIRST' })
     const second = await createInitializedTestTicket(runtimeRepoManager, { title: 'Second waiting PR', shortname: 'SECOND' })

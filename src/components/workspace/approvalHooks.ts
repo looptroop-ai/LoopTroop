@@ -1,7 +1,12 @@
 import { useEffect, useRef, useState, useCallback, type Dispatch, type SetStateAction, type RefObject } from 'react'
-import { createTicketUiStateActionId, getTicketUiStateRevision } from '@/lib/ticketUiStateRevision'
+import {
+  createTicketUiStateActionId,
+  getTicketUiStateRevision,
+  rememberTicketUiStateRevision,
+} from '@/lib/ticketUiStateRevision'
 import type { AutosaveStatusState } from './AutosaveStatus'
 import type { QueryClient } from '@tanstack/react-query'
+import * as ticketUiStateWrites from '@/hooks/useTickets'
 import { apiTicketPath } from '@/lib/apiPaths'
 import { throwIfNotOk } from '@/lib/fetchError'
 import { clearTicketArtifactsCache } from '@/hooks/useTicketArtifacts'
@@ -27,9 +32,15 @@ interface UseDebouncedApprovalUiStateOptions<T> {
    * assigns to keep working. On React 18 typings it would be read-only.
    */
   lastSavedSnapshotRef: RefObject<string>
+  queryClient?: QueryClient
   initialUpdatedAt?: string | null
+  initialFlushState?: UiStateFlushState
+  restoredDraftRef?: RefObject<boolean>
+  restoredSnapshotRef?: RefObject<string | null>
   delayMs?: number
 }
+
+export type UiStateFlushState = 'pending' | 'failed' | null
 
 export interface ApprovalAutosaveStatus {
   state: AutosaveStatusState
@@ -45,9 +56,137 @@ function parseAutosaveResponse(value: unknown): { conflict: boolean; updatedAt: 
   }
 }
 
-export function flushTicketUiStateSnapshot<T>(ticketId: string, scope: string, data: T): boolean {
+export const UI_STATE_FLUSH_ERROR_EVENT = 'looptroop:ui-state-flush-error'
+export const UI_STATE_FLUSH_SUCCESS_EVENT = 'looptroop:ui-state-flush-success'
+const uiStateFlushSequences = new WeakMap<QueryClient, Map<string, number>>()
+const fallbackUiStateWriteGenerations = new Map<string, number>()
+
+function uiStateWriteKey(ticketId: string, scope: string): string {
+  return `${ticketId}\u0000${scope}`
+}
+
+function beginUiStateWrite(ticketId: string, scope: string): number {
+  const sharedBegin = ticketUiStateWrites.beginTicketUiStateWrite
+  if (typeof sharedBegin === 'function') return sharedBegin(ticketId, scope)
+  const key = uiStateWriteKey(ticketId, scope)
+  const generation = (fallbackUiStateWriteGenerations.get(key) ?? 0) + 1
+  fallbackUiStateWriteGenerations.set(key, generation)
+  return generation
+}
+
+function isCurrentUiStateWrite(ticketId: string, scope: string, generation: number): boolean {
+  const sharedCheck = ticketUiStateWrites.isCurrentTicketUiStateWrite
+  if (typeof sharedCheck === 'function') return sharedCheck(ticketId, scope, generation)
+  return fallbackUiStateWriteGenerations.get(uiStateWriteKey(ticketId, scope)) === generation
+}
+
+function reportUiStateFlushError(ticketId: string, scope: string, message: string, writeGeneration: number): void {
+  if (typeof window === 'undefined') return
+  window.dispatchEvent(new CustomEvent(UI_STATE_FLUSH_ERROR_EVENT, {
+    detail: { ticketId, scope, message, writeGeneration },
+  }))
+}
+
+function reportUiStateFlushSuccess(ticketId: string, scope: string, serialized: string, writeGeneration: number): void {
+  if (typeof window === 'undefined') return
+  window.dispatchEvent(new CustomEvent(UI_STATE_FLUSH_SUCCESS_EVENT, {
+    detail: { ticketId, scope, serialized, writeGeneration },
+  }))
+}
+
+function updateUiStateCache<T>(
+  queryClient: QueryClient,
+  queryKey: readonly unknown[],
+  ticketId: string,
+  scope: string,
+  data: T,
+  expectedRevision: number,
+): void {
+  queryClient.setQueryData<Record<string, unknown>>(queryKey, (current) => ({
+    ...(current ?? {}),
+    scope,
+    ticketId,
+    exists: true,
+    data,
+    flushPending: true,
+    flushFailed: false,
+    revision: typeof current?.revision === 'number' ? current.revision : expectedRevision,
+    clientRevision: typeof current?.clientRevision === 'number' ? current.clientRevision : expectedRevision,
+  }))
+}
+
+export function flushTicketUiStateSnapshot<T>(
+  ticketId: string,
+  scope: string,
+  data: T,
+  options: { queryClient?: QueryClient } = {},
+): boolean {
   const expectedRevision = getTicketUiStateRevision(ticketId, scope)
+  const writeGeneration = beginUiStateWrite(ticketId, scope)
   const payload = JSON.stringify({ scope, data, expectedRevision, actionId: createTicketUiStateActionId() })
+  const queryKey = ['ticket-ui-state', ticketId, scope] as const
+  const sequenceMap = options.queryClient
+    ? (uiStateFlushSequences.get(options.queryClient) ?? new Map<string, number>())
+    : null
+  if (options.queryClient && sequenceMap) {
+    uiStateFlushSequences.set(options.queryClient, sequenceMap)
+    const key = `${ticketId}\u0000${scope}`
+    sequenceMap.set(key, (sequenceMap.get(key) ?? 0) + 1)
+    updateUiStateCache(options.queryClient, queryKey, ticketId, scope, data, expectedRevision)
+  }
+  const sequence = sequenceMap?.get(`${ticketId}\u0000${scope}`) ?? 0
+  const isLatest = () => !options.queryClient || sequenceMap?.get(`${ticketId}\u0000${scope}`) === sequence
+  const onFailure = () => {
+    if (!isCurrentUiStateWrite(ticketId, scope, writeGeneration)) return
+    if (options.queryClient && isLatest()) {
+      // Keep the draft in the cache so an immediate remount can restore it and
+      // offer a retry. Restoring the older cache here loses the only copy of a
+      // draft when the component that initiated the keepalive has unmounted.
+      options.queryClient.setQueryData<Record<string, unknown>>(queryKey, (current) => ({
+        ...(current ?? {}),
+        scope,
+        ticketId,
+        exists: true,
+        data,
+        flushPending: false,
+        flushFailed: true,
+      }))
+    }
+    reportUiStateFlushError(ticketId, scope, 'The latest draft could not be saved while leaving the ticket.', writeGeneration)
+  }
+  const onResponse = async (response: Response) => {
+    if (!response.ok) throw new Error(`UI-state flush failed with ${response.status}`)
+    if (!options.queryClient || !isLatest() || !isCurrentUiStateWrite(ticketId, scope, writeGeneration)) return
+    let saved: unknown = null
+    try { saved = await response.json() } catch { /* Some keepalive test doubles have no body. */ }
+    if (!isLatest() || !isCurrentUiStateWrite(ticketId, scope, writeGeneration)) return
+    if (!saved || typeof saved !== 'object') {
+      options.queryClient.setQueryData<Record<string, unknown>>(queryKey, (current) => ({
+        ...(current ?? {}),
+        scope,
+        ticketId,
+        flushPending: false,
+        flushFailed: false,
+      }))
+      reportUiStateFlushSuccess(ticketId, scope, JSON.stringify(data), writeGeneration)
+      return
+    }
+    const result = saved as { conflict?: unknown; data?: unknown; updatedAt?: unknown; revision?: unknown; clientRevision?: unknown }
+    if (typeof result.revision === 'number') rememberTicketUiStateRevision(ticketId, scope, result.revision)
+    options.queryClient.setQueryData<Record<string, unknown>>(queryKey, (current) => ({
+      ...(current ?? {}),
+      scope,
+      ticketId,
+      exists: result.conflict === true ? result.data !== null : true,
+      data: result.conflict === true ? result.data ?? null : data,
+      flushPending: false,
+      flushFailed: false,
+      updatedAt: typeof result.updatedAt === 'string' ? result.updatedAt : current?.updatedAt ?? null,
+      revision: typeof result.revision === 'number' ? result.revision : current?.revision ?? expectedRevision,
+      clientRevision: typeof result.clientRevision === 'number' ? result.clientRevision : current?.clientRevision ?? expectedRevision,
+    }))
+    if (result.conflict !== true) reportUiStateFlushSuccess(ticketId, scope, JSON.stringify(data), writeGeneration)
+  }
 
   if (typeof fetch === 'function') {
     try {
@@ -56,7 +195,7 @@ export function flushTicketUiStateSnapshot<T>(ticketId: string, scope: string, d
         headers: { 'Content-Type': 'application/json' },
         body: payload,
         keepalive: true,
-      }).catch(() => undefined)
+      }).then(onResponse).catch(onFailure)
       return true
     } catch {
       // Fall through to sendBeacon below.
@@ -65,27 +204,49 @@ export function flushTicketUiStateSnapshot<T>(ticketId: string, scope: string, d
 
   if (typeof navigator !== 'undefined' && typeof navigator.sendBeacon === 'function') {
     try {
-      return navigator.sendBeacon(
+      const sent = navigator.sendBeacon(
         apiTicketPath(ticketId, 'ui-state'),
         new Blob([payload], { type: 'application/json' }),
       )
+      if (!sent) onFailure()
+      return sent
     } catch {
+      onFailure()
       return false
     }
   }
 
+  onFailure()
   return false
+}
+
+export function useLoadedContentHash(
+  ticketId: string,
+  currentHash: string | null,
+  hasLocalEdits: boolean,
+): RefObject<string | null> {
+  const baselineRef = useRef<{ ticketId: string; hash: string | null }>({ ticketId, hash: null })
+  if (baselineRef.current.ticketId !== ticketId) {
+    baselineRef.current = { ticketId, hash: null }
+  }
+  if (!hasLocalEdits && currentHash) baselineRef.current.hash = currentHash
+  return {
+    get current() { return baselineRef.current.hash },
+    set current(value: string | null) { baselineRef.current.hash = value },
+  }
 }
 
 export function useApprovalDraftReset(
   ticketId: string,
   restoredDraftRef: RefObject<boolean>,
   lastSavedSnapshotRef: RefObject<string>,
+  restoredSnapshotRef?: RefObject<string | null>,
 ) {
   useEffect(() => {
     restoredDraftRef.current = false
     lastSavedSnapshotRef.current = ''
-  }, [ticketId, lastSavedSnapshotRef, restoredDraftRef])
+    if (restoredSnapshotRef) restoredSnapshotRef.current = null
+  }, [lastSavedSnapshotRef, restoredDraftRef, restoredSnapshotRef, ticketId])
 }
 
 interface UseApprovalDraftRestoreOptions<TPersisted, TDocument> {
@@ -114,6 +275,8 @@ interface UseApprovalDraftRestoreOptions<TPersisted, TDocument> {
   persisted: TPersisted | undefined
   restoredDraftRef: RefObject<boolean>
   lastSavedSnapshotRef: RefObject<string>
+  restoredSnapshotRef?: RefObject<string | null>
+  flushState?: UiStateFlushState
   /**
    * Applies the restored values to the pane's state and returns the object they
    * represent, which becomes the baseline the autosave compares against.
@@ -149,6 +312,8 @@ export function useApprovalDraftRestore<TPersisted, TDocument>({
   lastSavedSnapshotRef,
   restore,
   skipRestoreRef,
+  flushState,
+  restoredSnapshotRef,
 }: UseApprovalDraftRestoreOptions<TPersisted, TDocument>): boolean {
   // Held in a ref rather than in the dependency array: this effect is one-shot,
   // and a `restore` closure that changes identity every render would otherwise
@@ -177,10 +342,12 @@ export function useApprovalDraftRestore<TPersisted, TDocument>({
       setRestored(true)
       return
     }
-    lastSavedSnapshotRef.current = JSON.stringify(restoreRef.current(persisted, document))
+    const restoredSnapshot = JSON.stringify(restoreRef.current(persisted, document))
+    if (restoredSnapshotRef) restoredSnapshotRef.current = restoredSnapshot
+    lastSavedSnapshotRef.current = flushState ? '' : restoredSnapshot
     restoredDraftRef.current = true
     setRestored(true)
-  }, [document, lastSavedSnapshotRef, persisted, ready, restored, restoredDraftRef, skipRestoreRef])
+  }, [document, flushState, lastSavedSnapshotRef, persisted, ready, restored, restoredDraftRef, restoredSnapshotRef, skipRestoreRef])
 
   return restored
 }
@@ -208,10 +375,16 @@ export function useDebouncedApprovalUiState<T>({
   scope,
   saveUiState,
   lastSavedSnapshotRef,
+  queryClient,
   initialUpdatedAt = null,
+  initialFlushState = null,
+  restoredDraftRef,
+  restoredSnapshotRef,
   delayMs = DRAFT_AUTOSAVE_DEBOUNCE_MS,
 }: UseDebouncedApprovalUiStateOptions<T>): ApprovalAutosaveStatus {
-  const [state, setState] = useState<AutosaveStatusState>('pending')
+  const [state, setState] = useState<AutosaveStatusState>(
+    initialFlushState === 'failed' ? 'error' : initialFlushState === 'pending' ? 'saving' : 'pending',
+  )
   const [lastSavedAt, setLastSavedAt] = useState<Date | null>(
     initialUpdatedAt ? new Date(initialUpdatedAt) : null,
   )
@@ -223,17 +396,55 @@ export function useDebouncedApprovalUiState<T>({
     ticketId: string
     scope: string
   } | null>(null)
+  const retainedFlushRef = useRef<{
+    state: Exclude<UiStateFlushState, null>
+    serialized: string
+    restorationSettled: boolean
+  } | null>(null)
+  const lastFlushedSnapshotRef = useRef<string | null>(null)
 
   useEffect(() => {
-    setState('pending')
+    lastFlushedSnapshotRef.current = null
+    retainedFlushRef.current = null
+    setState(initialFlushState === 'failed' ? 'error' : initialFlushState === 'pending' ? 'saving' : 'pending')
     setLastSavedAt(null)
-  }, [scope, ticketId])
+  }, [initialFlushState, scope, ticketId])
 
   useEffect(() => {
     if (!initialUpdatedAt) return
     const parsed = new Date(initialUpdatedAt)
     if (!Number.isNaN(parsed.getTime())) setLastSavedAt(parsed)
   }, [initialUpdatedAt])
+
+  useEffect(() => {
+    const reportFlushError = (event: Event) => {
+      const detail = (event as CustomEvent<{ ticketId?: string; scope?: string; writeGeneration?: number }>).detail
+      if (detail?.ticketId === ticketId && detail.scope === scope
+        && (typeof detail.writeGeneration !== 'number' || isCurrentUiStateWrite(ticketId, scope, detail.writeGeneration))) {
+        // The failed keepalive may be the only persistence attempt made by a
+        // component that just unmounted. Clear the acknowledged baseline so a
+        // later edit or retry cannot silently treat that draft as saved.
+        lastSavedSnapshotRef.current = ''
+        lastFlushedSnapshotRef.current = null
+        setState('error')
+      }
+    }
+    window.addEventListener(UI_STATE_FLUSH_ERROR_EVENT, reportFlushError)
+    const reportFlushSuccess = (event: Event) => {
+      const detail = (event as CustomEvent<{ ticketId?: string; scope?: string; serialized?: string; writeGeneration?: number }>).detail
+      if (detail?.ticketId !== ticketId || detail.scope !== scope || typeof detail.serialized !== 'string') return
+      if (typeof detail.writeGeneration === 'number' && !isCurrentUiStateWrite(ticketId, scope, detail.writeGeneration)) return
+      if (latestSnapshotRef.current?.serialized !== detail.serialized) return
+      lastSavedSnapshotRef.current = detail.serialized
+      retainedFlushRef.current = null
+      setState('saved')
+    }
+    window.addEventListener(UI_STATE_FLUSH_SUCCESS_EVENT, reportFlushSuccess)
+    return () => {
+      window.removeEventListener(UI_STATE_FLUSH_ERROR_EVENT, reportFlushError)
+      window.removeEventListener(UI_STATE_FLUSH_SUCCESS_EVENT, reportFlushSuccess)
+    }
+  }, [lastSavedSnapshotRef, scope, ticketId])
 
   useEffect(() => {
     latestSnapshotRef.current = {
@@ -246,9 +457,35 @@ export function useDebouncedApprovalUiState<T>({
   }, [enabled, scope, serializedSnapshot, snapshot, ticketId])
 
   useEffect(() => {
+    if (!initialFlushState) {
+      retainedFlushRef.current = null
+      return
+    }
+  const current = retainedFlushRef.current
+    if (!current || current.state !== initialFlushState) {
+      retainedFlushRef.current = {
+        state: initialFlushState,
+        serialized: restoredSnapshotRef?.current ?? serializedSnapshot,
+        restorationSettled: enabled && restoredDraftRef?.current === true,
+      }
+      return
+    }
+    if (!current.restorationSettled && restoredDraftRef?.current === true) {
+      current.serialized = restoredSnapshotRef?.current ?? serializedSnapshot
+      current.restorationSettled = true
+    }
+  }, [enabled, initialFlushState, restoredDraftRef, restoredSnapshotRef, scope, serializedSnapshot, ticketId])
+
+  useEffect(() => {
     if (!enabled) return
 
     const serialized = serializedSnapshot
+    const retainedFlush = retainedFlushRef.current
+    if (retainedFlush?.serialized === serialized) {
+      setState(retainedFlush.state === 'failed' ? 'error' : 'saving')
+      return
+    }
+    if (retainedFlush) retainedFlushRef.current = null
     if (serialized === lastSavedSnapshotRef.current) {
       setState('saved')
       return
@@ -295,16 +532,20 @@ export function useDebouncedApprovalUiState<T>({
     const flushLatest = () => {
       const latest = latestSnapshotRef.current
       if (!latest?.enabled || latest.serialized === lastSavedSnapshotRef.current) return
-      flushTicketUiStateSnapshot(latest.ticketId, latest.scope, latest.snapshot)
+      const flushKey = `${latest.ticketId}\u0000${latest.scope}\u0000${latest.serialized}`
+      if (lastFlushedSnapshotRef.current === flushKey) return
+      lastFlushedSnapshotRef.current = flushKey
+      flushTicketUiStateSnapshot(latest.ticketId, latest.scope, latest.snapshot, { queryClient })
     }
 
     window.addEventListener('pagehide', flushLatest)
     window.addEventListener('beforeunload', flushLatest)
     return () => {
+      flushLatest()
       window.removeEventListener('pagehide', flushLatest)
       window.removeEventListener('beforeunload', flushLatest)
     }
-  }, [lastSavedSnapshotRef])
+  }, [lastSavedSnapshotRef, queryClient, scope, ticketId])
 
   return { state, lastSavedAt }
 }

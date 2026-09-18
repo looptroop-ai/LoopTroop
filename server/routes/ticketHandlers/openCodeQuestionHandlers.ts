@@ -119,9 +119,32 @@ async function getTicketPendingOpenCodeQuestions(ticketId: string) {
   const sessionsById = new Map(sessions.map((session) => [session.sessionId, session]))
 
   try {
-    const pending = await getOpenCodeAdapter().listPendingQuestions(ticketContext.projectRoot)
+    const adapter = getOpenCodeAdapter()
+    // The question endpoint is location-scoped. Ask once per active session so
+    // the adapter can resolve OpenCode's trusted session directory; the ticket's
+    // attached project root is not necessarily the session's worktree.
+    const listed = await Promise.allSettled(
+      sessions.map((session) => adapter.listPendingQuestions(undefined, undefined, session.sessionId)),
+    )
+    const successfullyListedSessionIds = new Set<string>()
+    const pending = listed.flatMap((result, index) => {
+      const session = sessions[index]
+      if (result.status === 'fulfilled') {
+        if (session) successfullyListedSessionIds.add(session.sessionId)
+        return result.value
+      }
+      console.warn(`[questions] Could not list pending questions for session ${session?.sessionId ?? 'unknown'}:`, result.reason)
+      return []
+    })
     const live = pending.filter((request) => sessionsById.has(request.sessionID))
-    reconcileAgainstPending(ticketId, new Set(live.map((request) => request.id)))
+    // A failed listing is not evidence that that session resolved its questions,
+    // but successful sessions are still authoritative for their own rows. With
+    // no active sessions, preserve the previous all-prune behavior.
+    reconcileAgainstPending(
+      ticketId,
+      new Set(live.map((request) => request.id)),
+      sessions.length > 0 ? successfullyListedSessionIds : undefined,
+    )
 
     // Anything OpenCode has that no window covers arrived while this process was
     // not listening — a restart, or a stream frame that never landed. Arm it now
@@ -194,6 +217,16 @@ export async function handleListOpenCodeQuestions(c: Context) {
   }
 }
 
+async function resolveQuestionSessionDirectory(
+  adapter: ReturnType<typeof getOpenCodeAdapter>,
+  sessionId: string,
+): Promise<string> {
+  const session = await adapter.getSession(sessionId)
+  const directory = session?.directory ?? session?.projectPath
+  if (!directory) throw new Error(`OpenCode session ${sessionId} has no trusted worktree directory`)
+  return directory
+}
+
 export async function handleListAllOpenCodeQuestions(c: Context) {
   const questions: NonNullable<Awaited<ReturnType<typeof getTicketPendingOpenCodeQuestions>>> = []
   const timers: Record<string, AiQuestionTimerState> = {}
@@ -245,7 +278,9 @@ export async function handleReplyOpenCodeQuestion(c: Context) {
   }
 
   try {
-    await getOpenCodeAdapter().replyQuestion(requestId, parsed.data.answers, ticketContext.projectRoot)
+    const adapter = getOpenCodeAdapter()
+    await resolveQuestionSessionDirectory(adapter, question.sessionId)
+    await adapter.replyQuestion(requestId, parsed.data.answers, undefined, undefined, question.sessionId)
     markRequestReplied(ticketId, question.sessionId, requestId, claimId)
     emitOpenCodeQuestionLog(ticketId, question.phase, '[QUESTION] AI question answered.', {
       requestId,
@@ -301,7 +336,9 @@ export async function handleRejectOpenCodeQuestion(c: Context) {
   }
 
   try {
-    await getOpenCodeAdapter().rejectQuestion(requestId, ticketContext.projectRoot)
+    const adapter = getOpenCodeAdapter()
+    await resolveQuestionSessionDirectory(adapter, question.sessionId)
+    await adapter.rejectQuestion(requestId, undefined, undefined, question.sessionId)
     // Written after the rejection lands, so the trail never records a decision
     // OpenCode was never told about.
     markRequestSkipped(ticketId, question.sessionId, requestId, reason, claimId)

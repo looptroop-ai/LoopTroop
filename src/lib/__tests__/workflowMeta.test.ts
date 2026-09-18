@@ -91,6 +91,12 @@ describe.concurrent('workflow metadata', () => {
     expect(getAvailableWorkflowActions('CANCELED')).toEqual([])
   })
 
+  it('offers no actions for unknown workflow statuses', () => {
+    expect(getAvailableWorkflowActions('NOT_A_STATUS')).toEqual([])
+    expect(getAvailableWorkflowActions('')).toEqual([])
+    expect(getAvailableWorkflowActions('toString')).toEqual([])
+  })
+
   it('provides long-form details for every workflow phase', () => {
     for (const phase of WORKFLOW_PHASES) {
       expect(phase.details.overview.trim().length).toBeGreaterThan(0)
@@ -140,6 +146,68 @@ describe.concurrent('workflow metadata', () => {
     }
   })
 
+  it('documents bounded PR recovery and server-advertised blocked actions', () => {
+    const pullRequestPhase = WORKFLOW_PHASES.find((phase) => phase.id === 'WAITING_PR_REVIEW')
+    const blockedPhase = WORKFLOW_PHASES.find((phase) => phase.id === 'BLOCKED_ERROR')
+    const blockedDetails = blockedPhase?.details
+
+    expect(pullRequestPhase?.description).toContain('durable closed-unmerged report')
+    expect(pullRequestPhase?.details.overview).toContain('fresh remote observation of an already-merged PR')
+    expect(pullRequestPhase?.details.notes?.join(' ')).toContain('stale checkpoint for a different PR')
+    expect(blockedPhase?.description).toContain('recovery actions the server allows')
+    expect(blockedPhase?.description).toContain('Failed runtime setup offers setup-plan editing and an extra-note retry')
+    expect(blockedDetails?.overview).toContain('does not invent setup-plan editing')
+    expect(blockedDetails?.steps.join(' ')).toContain('A setup-approval error does not itself grant')
+    expect(blockedDetails?.steps.join(' ')).toContain('CODING or PREPARING_EXECUTION_ENV failures')
+    expect(blockedDetails?.notes?.join(' ')).toContain('does not imply note-bearing retry')
+    expect(blockedDetails?.notes?.join(' ')).toContain('Retry needs a recorded previous phase.')
+    expect(blockedDetails?.notes?.join(' ')).toContain('same preserved OpenCode session is still recoverable by exact id and durable ownership is available')
+    expect(blockedDetails?.notes?.join(' ')).toContain('If both ownership stores are unavailable, a restart cannot prove recovery.')
+  })
+
+  it('documents durable interview claims, approval baselines, and safe recovery limits', () => {
+    const interview = WORKFLOW_PHASES.find((phase) => phase.id === 'WAITING_INTERVIEW_ANSWERS')
+    const interviewApproval = WORKFLOW_PHASES.find((phase) => phase.id === 'WAITING_INTERVIEW_APPROVAL')
+    const prdApproval = WORKFLOW_PHASES.find((phase) => phase.id === 'WAITING_PRD_APPROVAL')
+    const coding = WORKFLOW_PHASES.find((phase) => phase.id === 'CODING')
+    const manualQa = WORKFLOW_PHASES.find((phase) => phase.id === 'WAITING_MANUAL_QA')
+    const canceled = WORKFLOW_PHASES.find((phase) => phase.id === 'CANCELED')
+    const blocked = WORKFLOW_PHASES.find((phase) => phase.id === 'BLOCKED_ERROR')
+
+    expect(interview?.description).toContain('positive batch identity')
+    expect(interview?.description).toContain('stale or unknown batches are rejected')
+    expect(interview?.details.steps.join(' ')).toContain('durable claim ensures only its owner')
+    expect(interview?.details.steps.join(' ')).toContain('false, thrown, or unverified stop')
+
+    for (const phase of [interviewApproval, prdApproval]) {
+      expect(phase?.description).toContain('loaded content hash')
+      expect(phase?.description).toContain('missing or stale baselines fail closed')
+      expect(phase?.description).toContain('failed saves keep the draft')
+      expect(phase?.description).toContain('queued flushes cannot rebase dirty edits')
+      expect(phase?.details.steps.join(' ')).toContain('Structured and raw saves require that baseline')
+      expect(phase?.details.steps.join(' ')).toContain('certify an unacknowledged save')
+    }
+
+    expect(coding?.description).toContain('finite `maxIterations` cap')
+    expect(coding?.description).toContain('`0` means unlimited for that automatic path')
+    expect(coding?.description).toContain('user-facing Continue across phases is separate')
+    expect(coding?.details.steps.join(' ')).toContain('finite `maxIterations` within each bead iteration')
+    expect(coding?.details.steps.join(' ')).toContain('User-facing Continue across workflow phases is a separate path')
+
+    expect(manualQa?.description).toContain('capture the clicked draft, evidence, checklist round, and revision')
+    expect(manualQa?.description).toContain('later autosaves cannot replace that snapshot')
+    expect(manualQa?.details.steps.join(' ')).toContain('before any await')
+
+    expect(canceled?.description).toContain('If active remote work exists')
+    expect(canceled?.description).toContain('stop to be confirmed')
+    expect(canceled?.description).toContain('false, thrown, or unverified stop')
+    expect(canceled?.details.steps.join(' ')).toContain('cleanup only after the remote stop is confirmed')
+
+    expect(blocked?.description).toContain('both the project database and ticket marker are unavailable')
+    expect(blocked?.description).toContain('a restart cannot claim recovery')
+    expect(blocked?.details.steps.join(' ')).toContain('only the current process guard remains')
+  })
+
   it('describes the Manual QA producer and consumer clearly', () => {
     expect(WORKFLOW_PHASES.find((phase) => phase.id === 'GENERATING_QA_CHECKLIST')?.description).toContain(
       'Manual QA checklist',
@@ -184,7 +252,9 @@ describe.concurrent('workflow metadata', () => {
       const phase = WORKFLOW_PHASES.find((candidate) => candidate.id === phaseId)
 
       expect(phase?.description).toContain('Draft edits autosave with visible state and last-save time')
-      expect(phase?.description).toContain('explicit Save is required to update the authoritative')
+      expect(phase?.description).toContain(phaseId === 'WAITING_EXECUTION_SETUP_APPROVAL'
+        ? 'explicit Save requires the loaded plan hash'
+        : 'explicit Save is required to update the authoritative')
       expect(phase?.details.overview).toContain(
         phaseId === 'WAITING_BEADS_APPROVAL'
           ? 'review task descriptions, dependencies, acceptance criteria'

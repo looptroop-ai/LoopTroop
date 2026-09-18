@@ -322,6 +322,10 @@ fail ──> log failure trace ──> reset worktree ──> retry fresh
 
 This cycle repeats until all tests pass or retry limits are reached. **This can take hours (sometimes 10+ hours) by design.** It is built to run unattended (e.g., overnight).
 
+A new bead stays pending until its reset commit has been recorded. If that read
+fails or the ticket is canceled while it runs, no coding session starts; Retry
+can attempt the checkpoint again without inventing a reset target.
+
 If startup finds an orphan YAML or whole-file JSONL temp without its matching proof, including an empty JSONL temp, it warns and leaves the temp unpromoted for inspection. Recovery blocks startup only when an in-progress fallback's `.recovery` ownership or completeness cannot be verified; that typed diagnostic appears before projections, ticket hydration, or execution timers, with the affected files preserved. LoopTroop does not guess or silently promote an uncertain write.
 
 Read more: [Beads & Execution](https://www.looptroop.ovh/docs/beads)

@@ -1,5 +1,15 @@
 # PR 167 review dispositions
 
+## Initial coding checkpoint follow-up (2026-09-18)
+
+The renewed W13 observation was correct: the initial-selection path still
+published `in_progress` before reading HEAD and swallowed checkpoint failure.
+`executionPhase.ts` now captures the reset commit, rechecks cancellation, and
+persists the commit and active status together. The existing pending-bead retry
+path remains unchanged. `executionPhase.test.ts` covers failed checkpoint reads
+and cancellation during the read; both leave the bead pending and start no
+execution. The earlier cross-packet completion claim did not cover this path.
+
 This is the permanent review record for PR 167. Each observation is classified
 as fixed, accepted design, superseded by a later owner decision, not applicable,
 or informational. The branch owns the implementation and focused regressions;

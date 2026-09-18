@@ -1,6 +1,6 @@
 import { afterAll, beforeAll, describe, expect, it } from 'vitest'
 import { execFileSync } from 'node:child_process'
-import { chmodSync, mkdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
+import { chmodSync, copyFileSync, mkdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
 import { join } from 'node:path'
 import { makeTempDir, pinGitLineEndings, removeTempDir } from '../../../test/tempDir'
 import {
@@ -82,43 +82,43 @@ describe('resetToBeadStart', () => {
     for (const dir of repoDirs) removeTempDir(dir)
   })
 
-  it('reverts uncommitted file changes to tracked files', () => {
+  it('reverts uncommitted file changes to tracked files', async () => {
     const [dir, sha] = makeFreshRepo()
     writeFileSync(join(dir, 'hello.ts'), 'const x = CHANGED\n')
-    resetToBeadStart(dir, sha)
+    await resetToBeadStart(dir, sha)
     expect(readFileSync(join(dir, 'hello.ts'), 'utf8')).toBe('const x = 1\n')
   })
 
-  it('removes untracked files (git clean -fd)', () => {
+  it('removes untracked files (git clean -fd)', async () => {
     const [dir, sha] = makeFreshRepo()
     writeFileSync(join(dir, 'untracked.ts'), 'export const y = 2\n')
-    resetToBeadStart(dir, sha)
+    await resetToBeadStart(dir, sha)
     expect(() => readFileSync(join(dir, 'untracked.ts'), 'utf8')).toThrow()
   })
 
-  it('removes untracked directories created by local bootstrap steps', () => {
+  it('removes untracked directories created by local bootstrap steps', async () => {
     const [dir, sha] = makeFreshRepo()
     mkdirSync(join(dir, '.tools', 'go', 'bin'), { recursive: true })
     mkdirSync(join(dir, '.cache', 'go-mod'), { recursive: true })
     writeFileSync(join(dir, '.tools', 'go', 'bin', 'go'), 'binary\n')
     writeFileSync(join(dir, '.cache', 'go-mod', 'state.txt'), 'cached\n')
-    resetToBeadStart(dir, sha)
+    await resetToBeadStart(dir, sha)
     expect(() => readFileSync(join(dir, '.tools', 'go', 'bin', 'go'), 'utf8')).toThrow()
     expect(() => readFileSync(join(dir, '.cache', 'go-mod', 'state.txt'), 'utf8')).toThrow()
   })
 
-  it('leaves git status clean after reset', () => {
+  it('leaves git status clean after reset', async () => {
     const [dir, sha] = makeFreshRepo()
     writeFileSync(join(dir, 'hello.ts'), 'modified content\n')
     writeFileSync(join(dir, 'extra.ts'), 'extra\n')
-    resetToBeadStart(dir, sha)
+    await resetToBeadStart(dir, sha)
     const status = execFileSync('git', ['-C', dir, 'status', '--porcelain'], {
       encoding: 'utf8',
     }).trim()
     expect(status).toBe('')
   })
 
-  it('preserves ignored files (git clean -fd does NOT remove .gitignore entries)', () => {
+  it('preserves ignored files (git clean -fd does NOT remove .gitignore entries)', async () => {
     // Demonstrates that `clean -fd` (without -x) leaves ignored files intact.
     // Only `clean -fdx` would remove them — a future accidental change to -fdx
     // would cause this test to fail, surfacing the semantic regression.
@@ -132,12 +132,12 @@ describe('resetToBeadStart', () => {
     // Create an ignored file — it should survive resetToBeadStart
     writeFileSync(join(dir, 'debug.log'), 'log content\n')
 
-    resetToBeadStart(dir, shaWithGitignore)
+    await resetToBeadStart(dir, shaWithGitignore)
 
     expect(readFileSync(join(dir, 'debug.log'), 'utf8')).toBe('log content\n')
   })
 
-  it('preserves LoopTroop ticket artifacts when the .ticket exclusion is supplied', () => {
+  it('preserves LoopTroop ticket artifacts when the .ticket exclusion is supplied', async () => {
     const [dir, sha] = makeFreshRepo()
     mkdirSync(join(dir, '.ticket', 'beads', 'master', '.beads'), { recursive: true })
     mkdirSync(join(dir, '.ticket', 'meta'), { recursive: true })
@@ -155,7 +155,7 @@ describe('resetToBeadStart', () => {
     writeFileSync(join(dir, '.ticket', 'runtime', 'execution-setup', 'cache.txt'), 'warm\n')
     writeFileSync(join(dir, 'scratch.ts'), 'throw new Error("remove")\n')
 
-    resetToBeadStart(dir, sha, {
+    await resetToBeadStart(dir, sha, {
       preservePaths: ['.ticket'],
     })
 
@@ -301,6 +301,36 @@ describe('commitBeadChanges', () => {
     expect(tracked).not.toContain('hello.ts')
   })
 
+  it('commits the source deletion when a staged rename destination is deleted', async () => {
+    const dir = makeFreshRepo()
+    execFileSync('git', ['-C', dir, 'mv', 'hello.ts', 'renamed.ts'], { stdio: 'pipe' })
+    rmSync(join(dir, 'renamed.ts'))
+
+    const result = await commitBeadChanges(dir, 'bead-renamed-delete', 'Delete a renamed file')
+
+    expect(result.committed).toBe(true)
+    expect(status(dir)).toBe('')
+    const tracked = execFileSync('git', ['-C', dir, 'ls-tree', '--name-only', '-r', 'HEAD'], { encoding: 'utf8' }).trim()
+    expect(tracked).toBe('')
+  })
+
+  it('clears a staged copy destination deleted before the bead commit', async () => {
+    const dir = makeFreshRepo()
+    execFileSync('git', ['-C', dir, 'config', 'status.renames', 'copies'], { stdio: 'pipe' })
+    copyFileSync(join(dir, 'hello.ts'), join(dir, 'copied.ts'))
+    writeFileSync(join(dir, 'hello.ts'), 'const x = 2\n')
+    execFileSync('git', ['-C', dir, 'add', '--', 'hello.ts', 'copied.ts'], { stdio: 'pipe' })
+    rmSync(join(dir, 'copied.ts'))
+
+    const result = await commitBeadChanges(dir, 'bead-copy-delete', 'Delete a copied file')
+
+    expect(result.committed).toBe(true)
+    expect(status(dir)).toBe('')
+    expect(execFileSync('git', ['-C', dir, 'show', 'HEAD:hello.ts'], { encoding: 'utf8' })).toBe('const x = 2\n')
+    const tracked = execFileSync('git', ['-C', dir, 'ls-tree', '--name-only', '-r', 'HEAD'], { encoding: 'utf8' })
+    expect(tracked).not.toContain('copied.ts')
+  })
+
   it('commits a glob-shaped rename without disturbing an excluded neighbour', async () => {
     const dir = makeFreshRepo()
     // Characterization, not a guard: `[id].tsx` is a dynamic route whose name
@@ -345,6 +375,27 @@ describe('commitBeadChanges', () => {
   it('returns { committed: false, pushed: false } when there are no changes', async () => {
     const dir = makeFreshRepo()
     expect(await commitBeadChanges(dir, 'bead-1', 'No changes')).toEqual({
+      committed: false,
+      pushed: false,
+    })
+  })
+
+  it('clears a staged-then-deleted scratch file without poisoning the real commit', async () => {
+    const dir = makeFreshRepo()
+    writeFileSync(join(dir, 'scratch.tmp'), 'temporary\n')
+    execFileSync('git', ['-C', dir, 'add', '--', 'scratch.tmp'], { stdio: 'pipe' })
+    rmSync(join(dir, 'scratch.tmp'))
+    writeFileSync(join(dir, 'feature.ts'), 'export const feature = true\n')
+
+    const result = await commitBeadChanges(dir, 'bead-ad', 'Clear deleted scratch')
+
+    expect(result.committed).toBe(true)
+    expect(execFileSync('git', ['-C', dir, 'show', '--name-only', '--format=', 'HEAD'], { encoding: 'utf8' }))
+      .toContain('feature.ts')
+    expect(execFileSync('git', ['-C', dir, 'show', '--name-only', '--format=', 'HEAD'], { encoding: 'utf8' }))
+      .not.toContain('scratch.tmp')
+    expect(status(dir)).toBe('')
+    expect(await commitBeadChanges(dir, 'bead-ad-repeat', 'No stale scratch')).toEqual({
       committed: false,
       pushed: false,
     })
@@ -547,6 +598,19 @@ describe('commitBeadChanges', () => {
       'HEAD',
     ], { encoding: 'utf8' }).trim().split('\n').filter(Boolean)
     expect(committedFiles).toEqual(expect.arrayContaining(['asset.bin', 'Makefile']))
+  })
+
+  it.runIf(process.platform !== 'win32')('commits POSIX filenames with tabs, spaces, backslashes and non-ASCII bytes', async () => {
+    const dir = makeFreshRepo()
+    const names = ['a\tb', 'line\nfeed', 'sp ace ', 'back\\slash', 'ünï']
+    for (const name of names) writeFileSync(join(dir, name), `content for ${name}\n`)
+
+    const result = await commitBeadChanges(dir, 'bead-weird-paths', 'Keep opaque paths')
+
+    expect(result.committed).toBe(true)
+    const tree = execFileSync('git', ['-C', dir, 'ls-tree', '-r', '-z', '--name-only', 'HEAD'], { encoding: 'utf8' })
+    for (const name of names) expect(tree).toContain(`${name}\0`)
+    expect(status(dir)).toBe('')
   })
 
   it('commits tracked generated-output changes but skips untracked generated noise', async () => {

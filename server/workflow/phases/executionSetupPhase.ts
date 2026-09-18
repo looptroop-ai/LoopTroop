@@ -881,7 +881,7 @@ export async function handleExecutionSetup(
             if (generation.session) {
               await sessionManager.abandonSession(generation.session.id)
             }
-            resetWorktreeToCommit(paths.worktreePath, phaseStartCommit, {
+            await resetWorktreeToCommit(paths.worktreePath, phaseStartCommit, {
               preservePaths: [...WORKTREE_RESET_PRESERVE_PATHS],
             })
             materializeApprovedInputs()

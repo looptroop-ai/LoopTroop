@@ -100,6 +100,29 @@ export function withGitIndexRollback<T>(
   }
 }
 
+/** Async counterpart for Git mutations that may run hooks or filters. */
+export async function withGitIndexRollbackAsync<T>(
+  worktreePath: string,
+  work: () => Promise<{ keepIndex: boolean; value: T }>,
+): Promise<T> {
+  const snapshot = snapshotGitIndex(worktreePath)
+  if (!snapshot) throw new GitIndexSnapshotUnavailableError(worktreePath)
+  try {
+    const outcome = await work()
+    if (!outcome.keepIndex) restoreQuietly(snapshot, null)
+    return outcome.value
+  } catch (error) {
+    restoreQuietly(snapshot, error)
+    throw error
+  } finally {
+    try {
+      snapshot.dispose()
+    } catch (disposeError) {
+      console.error('[git] Failed to remove the index snapshot directory.', disposeError)
+    }
+  }
+}
+
 /**
  * Restores, and never lets that throw over the failure that caused it.
  *

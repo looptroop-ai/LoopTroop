@@ -58,6 +58,7 @@ streamRouter.get('/stream', (c) => {
       isCleanedUp = true
       cleanupStreamClient(safeTicketId, clientId, interval ?? undefined)
       resolveStream()
+      void stream.close().catch(() => undefined)
     }
 
     const streamPromise = new Promise<void>((resolve) => { resolveStream = resolve })
@@ -96,7 +97,7 @@ streamRouter.get('/stream', (c) => {
     }, STREAM_HEARTBEAT_INTERVAL_MS)
 
     // Register client with broadcaster
-    broadcaster.addClient(safeTicketId, {
+    const registered = broadcaster.addClient(safeTicketId, {
       id: clientId,
       send: (event: string, data: string, id: string) => {
         stream.writeSSE({ event, data, id }).catch((err) => {
@@ -107,6 +108,10 @@ streamRouter.get('/stream', (c) => {
       close: safeCleanup,
       interval,
     })
+    if (!registered) {
+      safeCleanup()
+      return
+    }
 
     try {
       await Promise.all(initialWrites)

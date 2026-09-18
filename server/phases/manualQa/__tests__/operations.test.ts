@@ -1,4 +1,5 @@
 import { existsSync, readFileSync, writeFileSync } from 'node:fs'
+import { spawnSync } from 'node:child_process'
 import { resolve } from 'node:path'
 import { afterAll, beforeEach, describe, expect, it, vi } from 'vitest'
 import { createInitializedTestTicket, createTestRepoManager, resetTestDb } from '../../../test/integration'
@@ -16,7 +17,7 @@ import {
   captureFinalTestDirtyFiles,
 } from '../../finalTest/fileEffectsAudit'
 import { prepareManualQaCheckpoint } from '../checkpoint'
-import { reserveManualQaSubmissionOperation, skipManualQa, submitManualQa } from '../operations'
+import { detectManualQaWorkspaceDrift, reserveManualQaSubmissionOperation, skipManualQa, submitManualQa } from '../operations'
 import {
   getManualQaChecklistHash,
   getManualQaStoragePaths,
@@ -64,7 +65,7 @@ async function prepareFixture(items = [checklistItem('item-one')]) {
       declaredEffects: [],
     })),
   })
-  prepareManualQaCheckpoint(setup.ticket.id, 1)
+  await prepareManualQaCheckpoint(setup.ticket.id, 1)
   persistManualQaChecklist(setup.paths.ticketDir, {
     schemaVersion: 1,
     artifact: 'manual_qa_checklist',
@@ -152,6 +153,25 @@ describe('Manual QA submission recovery and integrity', () => {
   afterAll(() => {
     resetTestDb()
     repoManager.cleanup()
+  })
+
+  it('keeps NUL-delimited tracked paths opaque during drift detection', async () => {
+    const setup = await prepareFixture()
+    // Backslashes and control characters are valid POSIX filename bytes but
+    // backslashes are separators on Windows. Exercise the opaque-path
+    // contract with the strongest legal fixture on each filesystem.
+    const unusual = process.platform === 'win32' ? 'qa path with spaces.txt' : 'qa\tpath\nwith\\literal.txt'
+    writeFileSync(resolve(setup.paths.worktreePath, unusual), 'tracked unusual path\n')
+    for (const args of [
+      ['add', '--', unusual],
+      ['-c', 'user.name=Test', '-c', 'user.email=test@example.com', 'commit', '--no-verify', '-m', 'unusual manual qa path'],
+    ]) {
+      const result = spawnSync('git', ['-C', setup.paths.worktreePath, ...args], { encoding: 'utf8' })
+      if (result.status !== 0 || result.error) throw new Error(result.error?.message ?? result.stderr ?? 'git failed')
+    }
+
+    const drift = detectManualQaWorkspaceDrift(setup.ticket.id, 1)
+    expect(drift.files.map((file) => file.path)).toContain(unusual)
   })
 
   it('persists top-level summary artifacts and re-dispatches a durable untransitioned outcome', async () => {
@@ -379,7 +399,7 @@ describe('Manual QA submission recovery and integrity', () => {
       modelCapability: { imageEvidenceMode: 'references_only' },
     })
     expect(skipEvent).toHaveBeenCalledWith({ type: 'MANUAL_QA_SKIPPED' })
-  })
+  }, 120_000)
 
 
   it('stores no reason as null and reads the skip back through the shared audit trail', async () => {

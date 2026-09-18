@@ -1,6 +1,7 @@
 import { closeSync, constants, fstatSync, fsyncSync, mkdirSync, readSync, writeSync } from 'node:fs'
 import { dirname } from 'node:path'
 import { ContainedPathError, resolveContainedPath } from '../lib/containedPath'
+import { withFileLockSync } from './fileLock'
 import { openFileNoFollowSync } from './readFile'
 
 export interface AtomicAppendRange {
@@ -8,25 +9,45 @@ export interface AtomicAppendRange {
   length: number
 }
 
-/** Appends one JSONL line and returns the exact byte range written. */
-export function safeAtomicAppend(filePath: string, line: string): AtomicAppendRange {
-  return append(filePath, line)
+export interface AtomicAppendDeps {
+  write: (fd: number, buffer: Uint8Array, offset: number, length: number) => number
 }
 
-export function safeAtomicAppendWithin(root: string, relativePath: string, line: string): AtomicAppendRange {
+const defaultDeps: AtomicAppendDeps = {
+  write: (fd, buffer, offset, length) => writeSync(fd, buffer, offset, length),
+}
+
+/** Appends one JSONL line and returns the exact byte range written. */
+export function safeAtomicAppend(filePath: string, line: string, deps: AtomicAppendDeps = defaultDeps): AtomicAppendRange {
+  return append(filePath, line, undefined, deps)
+}
+
+export function safeAtomicAppendWithin(
+  root: string,
+  relativePath: string,
+  line: string,
+  deps: AtomicAppendDeps = defaultDeps,
+): AtomicAppendRange {
   const canonicalRoot = resolveContainedPath(root, '.')
   const target = resolveContainedPath(canonicalRoot, relativePath, { allowMissingParents: true })
-  const check = () => {
-    if (resolveContainedPath(canonicalRoot, target, { allowMissingParents: true }) !== target) {
+  const check = (candidate = target) => {
+    if (resolveContainedPath(canonicalRoot, candidate, { allowMissingParents: true }) !== candidate) {
       throw new ContainedPathError('Append destination changed')
     }
   }
-  return append(target, line, check)
+  return append(target, line, check, deps)
 }
 
-function append(filePath: string, line: string, check?: () => void): AtomicAppendRange {
+function append(filePath: string, line: string, check: ((candidate?: string) => void) | undefined, deps: AtomicAppendDeps): AtomicAppendRange {
   check?.()
   mkdirSync(dirname(filePath), { recursive: true })
+  check?.()
+  const lockPath = `${filePath}.lock`
+  check?.(lockPath)
+  return withFileLockSync(lockPath, () => appendWhileLocked(filePath, line, check, deps))
+}
+
+function appendWhileLocked(filePath: string, line: string, check: ((candidate?: string) => void) | undefined, deps: AtomicAppendDeps): AtomicAppendRange {
   check?.()
   const fd = openFileNoFollowSync(filePath, constants.O_RDWR | constants.O_APPEND | constants.O_CREAT)
   try {
@@ -42,10 +63,15 @@ function append(filePath: string, line: string, check?: () => void): AtomicAppen
       }
     }
 
-    const written = `${prefix}${line}\n`
-    writeSync(fd, written, undefined, 'utf-8')
+    const written = Buffer.from(`${prefix}${line}\n`, 'utf8')
+    let offset = 0
+    while (offset < written.length) {
+      const count = deps.write(fd, written, offset, written.length - offset)
+      if (count === 0) throw new Error('Atomic append made no progress')
+      offset += count
+    }
     fsyncSync(fd)
-    return { offset: stats.size, length: Buffer.byteLength(written) }
+    return { offset: stats.size, length: written.length }
   } finally {
     closeSync(fd)
   }

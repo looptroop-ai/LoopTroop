@@ -1,4 +1,5 @@
-import { writeFileSync, renameSync, openSync, fsyncSync, closeSync, mkdirSync, unlinkSync, fchmodSync, lstatSync, constants, realpathSync } from 'fs'
+import { createHash } from 'node:crypto'
+import { writeFileSync, renameSync, openSync, fsyncSync, closeSync, mkdirSync, unlinkSync, fchmodSync, lstatSync, constants, realpathSync, writeSync } from 'fs'
 import { dirname, isAbsolute, win32 } from 'path'
 import { randomBytes } from 'crypto'
 import { ContainedPathError, resolveContainedPath } from '../lib/containedPath'
@@ -42,6 +43,7 @@ const ATOMIC_TMP_SUFFIX = '.tmp'
 const ATOMIC_TMP_RANDOM_BYTES = 6
 /** Case-insensitive on the suffix and the random half, for Windows. */
 const ATOMIC_TMP_PATTERN = /^(.+)\.(\d+)\.([0-9a-f]{12})\.tmp$/i
+const YAML_PROOF_SUFFIX = '.proof'
 
 /** The temp path `safeAtomicWrite` will write for `target`. */
 export function makeAtomicTmpPath(target: string): string {
@@ -56,6 +58,11 @@ export function makeAtomicTmpPath(target: string): string {
 export function parseAtomicTmpPath(tmpPath: string): string | null {
   const match = ATOMIC_TMP_PATTERN.exec(tmpPath)
   return match?.[1] ?? null
+}
+
+/** The sidecar is only evidence for recovery; it is never part of the file's content. */
+export function atomicProofPath(tmpPath: string): string {
+  return `${tmpPath}${YAML_PROOF_SUFFIX}`
 }
 
 /**
@@ -145,6 +152,46 @@ export interface SafeAtomicWriteOptions {
   deps?: AtomicWriteDeps
 }
 
+/** Best-effort directory durability after a rename or promotion. */
+export function fsyncDirectory(directory: string): void {
+  try {
+    const fd = openSync(directory, constants.O_RDONLY | (constants.O_NOFOLLOW ?? 0))
+    try { fsyncSync(fd) } finally { closeSync(fd) }
+  } catch {
+    // Directory descriptors are not supported by every platform/filesystem.
+  }
+}
+
+function writeAtomicProof(
+  proofPath: string,
+  content: string,
+  assertContained?: (candidate: string, allowMissingParents?: boolean) => void,
+): void {
+  const proof = JSON.stringify({
+    byteLength: Buffer.byteLength(content, 'utf8'),
+    sha256: createHash('sha256').update(content, 'utf8').digest('hex'),
+  })
+  assertContained?.(proofPath, true)
+  const fd = openSync(
+    proofPath,
+    constants.O_WRONLY | constants.O_CREAT | constants.O_EXCL | (constants.O_NOFOLLOW ?? 0),
+    0o600,
+  )
+  try {
+    const bytes = Buffer.from(proof, 'utf8')
+    let offset = 0
+    while (offset < bytes.length) {
+      const written = writeSync(fd, bytes, offset, bytes.length - offset)
+      if (written === 0) throw new Error('Atomic proof write made no progress')
+      offset += written
+    }
+    fsyncSync(fd)
+  } finally {
+    closeSync(fd)
+  }
+  assertContained?.(proofPath)
+}
+
 export function safeAtomicWrite(
   filePath: string,
   content: string,
@@ -173,12 +220,13 @@ export function safeAtomicWriteWithin(
   const filePath = resolveContainedPath(canonicalRoot, relativePath, {
     allowMissing: true,
     allowMissingParents: true,
+    rejectFinalSymlink: true,
   })
   atomicWrite(filePath, content, options, (candidate, allowMissingParents = false) => {
     if (realpathSync.native(canonicalRoot) !== canonicalRoot) {
       throw new ContainedPathError('Atomic write root changed')
     }
-    if (resolveContainedPath(canonicalRoot, candidate, { allowMissing: true, allowMissingParents }) !== candidate) {
+    if (resolveContainedPath(canonicalRoot, candidate, { allowMissing: true, allowMissingParents, rejectFinalSymlink: true }) !== candidate) {
       throw new ContainedPathError('Atomic write destination changed')
     }
   })
@@ -193,6 +241,11 @@ function atomicWrite(
   const deps = options.deps ?? defaultDeps
   const tmpPath = makeAtomicTmpPath(filePath)
   const dir = dirname(filePath)
+  const proofPath = atomicProofPath(tmpPath)
+  // Whole-file JSONL writes have the same recovery hazard as YAML: a valid
+  // prefix (including an empty file) is not evidence that the generation
+  // finished. Keep a hash sidecar until the rename makes the bytes visible.
+  const needsProof = /\.(?:ya?ml|jsonl)$/i.test(filePath)
 
   // Captured before the write so replacing a 0600 file cannot silently widen it
   // to the default 0644 that the fresh temp file would carry through rename.
@@ -205,6 +258,7 @@ function atomicWrite(
   const requestedMode = SUPPORTS_POSIX_MODES ? options.mode : undefined
 
   let tmpCreated = false
+  let proofCreated = false
   try {
     // The mode goes to `open`, so the content is never on disk at the umask —
     // not even under the temp name, which is where a `chmod` afterwards would
@@ -225,6 +279,19 @@ function atomicWrite(
       closeSync(fd)
     }
 
+    if (needsProof) {
+      try {
+        writeAtomicProof(proofPath, content, assertContained)
+        proofCreated = true
+      } catch (error) {
+        try {
+          assertContained?.(proofPath)
+          unlinkSync(proofPath)
+        } catch { /* best-effort cleanup; never follow an escaped parent */ }
+        throw error
+      }
+    }
+
     retryWhileWindowsHoldsTheFile(() => {
       assertContained?.(tmpPath)
       assertContained?.(filePath)
@@ -232,20 +299,28 @@ function atomicWrite(
     }, deps)
     tmpCreated = false
 
-    // Best-effort parent-directory fsync for crash durability on Linux/macOS.
-    // Not all platforms support opening directories; failures are silently ignored.
-    assertContained?.(filePath)
-    try {
-      const dirFd = openSync(dir, constants.O_RDONLY | (constants.O_NOFOLLOW ?? 0))
-      try { fsyncSync(dirFd) } finally { closeSync(dirFd) }
-    } catch {
-      // Ignored — not critical and not supported on all filesystems
+    if (proofCreated) {
+      try {
+        assertContained?.(proofPath)
+        unlinkSync(proofPath)
+      } catch { /* recovery cleans a proof left after a completed rename */ }
+      proofCreated = false
     }
+
+    // Best-effort parent-directory fsync for crash durability on Linux/macOS.
+    assertContained?.(filePath)
+    fsyncDirectory(dir)
   } finally {
     if (tmpCreated) {
       try {
         assertContained?.(tmpPath)
         unlinkSync(tmpPath)
+      } catch { /* best-effort cleanup; never follow an escaped parent */ }
+    }
+    if (proofCreated) {
+      try {
+        assertContained?.(proofPath)
+        unlinkSync(proofPath)
       } catch { /* best-effort cleanup; never follow an escaped parent */ }
     }
   }

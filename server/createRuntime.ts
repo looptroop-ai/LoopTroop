@@ -11,6 +11,7 @@ import { resolveSettings, type ResolvedSettings, type SettingSource } from './li
 import { configureOpenCodeRuntime } from './opencode/runtimeConfig'
 import { resetOpenCodeAdapter } from './opencode/factory'
 import { startMergePoller } from './workflow/mergePoller'
+import { stopActiveCommands } from './git/runCommand'
 
 export interface RuntimeConfig extends CreateAppOptions {
   /** Overrides the resolved settings. Use 0 to let the OS assign a free port. */
@@ -126,6 +127,7 @@ export function createRuntime(config: RuntimeConfig = {}): LoopTroopRuntime {
 
   async function runStart(): Promise<RuntimeAddress> {
     const settings = config.settings ?? resolveSettings()
+    broadcaster.startAcceptingClients()
 
     // Before the startup sequence, which health-checks OpenCode through the
     // adapter: resolved later, `opencodeBaseUrl` from config.json would arrive
@@ -190,20 +192,61 @@ export function createRuntime(config: RuntimeConfig = {}): LoopTroopRuntime {
    * that fails still has to be torn down, so its rejection is absorbed.
    */
   async function close(): Promise<void> {
-    closing ??= (async () => {
+    if (closing) return closing
+    const shutdown = (async () => {
       if (starting) await starting.catch(() => undefined)
-      const pollerStopped = stopMergePoller?.()
-      stopMergePoller = null
+      let serverClosed: Promise<void> | undefined
       if (handle && typeof handle.close === 'function') {
-        await new Promise<void>((resolveClose) => {
-          handle?.close(() => resolveClose())
+        const currentHandle = handle
+        serverClosed = new Promise<void>((resolveClose) => {
+          try {
+            currentHandle.close(() => resolveClose())
+          } catch (error) {
+            // A previous shutdown may have closed the listener before an
+            // unverified child made the drain fail. Retrying that drain must
+            // not turn the already-closed server into a second blocker.
+            if ((error as NodeJS.ErrnoException).code === 'ERR_SERVER_NOT_RUNNING') resolveClose()
+            else throw error
+          }
         })
       }
+      // Stop accepting requests before closing active SSE responses. Otherwise
+      // a request admitted between client cleanup and server.close could add a
+      // new long-lived stream that the listener then waits for forever.
+      broadcaster.closeAllClients()
+      const pollerStopped = stopMergePoller?.()
+      stopMergePoller = null
+      // Git and gh are detached so their hooks and descendants share the
+      // timeout process group. Runtime shutdown owns those children too;
+      // otherwise a daemon close can return while a mutation still writes.
+      let stopError: unknown
+      try {
+        await stopActiveCommands()
+      } catch (error) {
+        stopError = error
+      }
+      await pollerStopped
+      await serverClosed
+      // A request already admitted before the listener closed may start one
+      // last child while its handler unwinds; drain that generation only after
+      // the listener and poller have both stopped admitting work.
+      try {
+        await stopActiveCommands()
+        stopError = undefined
+      } catch (error) {
+        stopError = error
+      }
+      if (stopError) throw stopError
       handle = null
       address = null
-      await pollerStopped
       teardownStartedResources()
     })()
+    closing = shutdown.catch((error) => {
+      // An unverified child keeps daemon ownership. Permit the next close()
+      // call to retry the drain after the process tree has settled.
+      closing = null
+      throw error
+    })
 
     return closing
   }

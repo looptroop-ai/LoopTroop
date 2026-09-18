@@ -266,7 +266,11 @@ export function useDeleteProjectWorktrees() {
     mutationFn: async (id: number) => {
       const res = await fetch(apiProjectPath(id, 'worktrees'), { method: 'DELETE' })
       await throwIfNotOk(res, 'Failed to delete worktrees')
-      return res.json() as Promise<{ success: boolean; freedBytes: number }>
+      return res.json() as Promise<{
+        success: boolean
+        freedBytes: number
+        skipped: Array<{ externalId: string; reason: string }>
+      }>
     },
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ['projects'] })

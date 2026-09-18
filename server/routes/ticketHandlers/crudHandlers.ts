@@ -122,7 +122,7 @@ export async function handleDeleteTicket(c: Context) {
     clearContextCache(ticketId)
 
     emitRoutePhaseLog(ticketId, resolveStoredWorkflowPhase(ticket.status), 'info', `Deleting ticket ${ticket.externalId}: removing worktree, branch, and database records.`)
-    const deleted = deleteStoredTicket(ticketId)
+    const deleted = await deleteStoredTicket(ticketId)
     if (!deleted) return c.json({ error: 'Ticket not found' }, 404)
 
     broadcaster.clearTicket(ticketId)

@@ -47,22 +47,21 @@ describe('server/git/repository', () => {
     const ref = resolveBaseBranchRef('/repo', 'main')
 
     expect(ref).toBe('origin/main')
-    expect(spawnSyncMock).toHaveBeenCalledTimes(1)
+    expect(spawnSyncMock).toHaveBeenCalledTimes(2)
     // The directory is git's working directory, not an argument: a caller's
     // path never enters git's argv.
-    expect(spawnSyncMock.mock.calls[0]?.[1]).toEqual([
+    expect(spawnSyncMock).toHaveBeenCalledWith(expect.any(String), [
       'show-ref',
       '--verify',
       '--quiet',
       'refs/remotes/origin/main',
-    ])
-    expect(spawnSyncMock.mock.calls[0]?.[2]).toEqual(expect.objectContaining({ cwd: '/repo' }))
+    ], expect.objectContaining({ cwd: '/repo' }))
   })
 
   it('falls back to a local base branch when the origin ref is unavailable', async () => {
-    spawnSyncMock
-      .mockReturnValueOnce(makeSpawnResult({ status: 1 }))
-      .mockReturnValueOnce(makeSpawnResult())
+    spawnSyncMock.mockImplementation((_bin: string, args: string[]) => makeSpawnResult({
+      status: args[0] === 'config' || args.includes('refs/remotes/origin/main') ? 1 : 0,
+    }))
 
     const { resolveBaseBranchRef } = await import('../repository')
     const ref = resolveBaseBranchRef('/repo', 'main')
@@ -70,12 +69,23 @@ describe('server/git/repository', () => {
     expect(ref).toBe('main')
     // The directory is git's working directory, not an argument: a caller's
     // path never enters git's argv.
-    expect(spawnSyncMock.mock.calls[1]?.[1]).toEqual([
+    expect(spawnSyncMock).toHaveBeenCalledWith(expect.any(String), [
       'show-ref',
       '--verify',
       '--quiet',
       'refs/heads/main',
-    ])
-    expect(spawnSyncMock.mock.calls[1]?.[2]).toEqual(expect.objectContaining({ cwd: '/repo' }))
+    ], expect.objectContaining({ cwd: '/repo' }))
+  })
+
+  it('gives origin fetches an explicit remote timeout', async () => {
+    spawnSyncMock.mockReturnValue(makeSpawnResult())
+
+    const { GIT_FETCH_TIMEOUT_MS, tryFetchOrigin } = await import('../repository')
+    await expect(tryFetchOrigin('/repo')).resolves.toBe(true)
+
+    expect(spawnSyncMock).toHaveBeenCalledWith(expect.any(String), [
+      'fetch', '--no-progress', '--prune', 'origin',
+    ], expect.objectContaining({ cwd: '/repo' }))
+    expect(GIT_FETCH_TIMEOUT_MS).toBe(120_000)
   })
 })

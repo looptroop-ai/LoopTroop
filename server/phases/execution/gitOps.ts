@@ -3,9 +3,9 @@
 import { getCurrentBranch } from '../../git/repository'
 import { pushBranchRef } from '../../git/push'
 import { readWorktreeGitHookPolicy, shouldBypassGitHooks } from '../../git/hookPolicy'
-import { withGitIndexRollback } from '../../git/indexSnapshot'
+import { withGitIndexRollbackAsync } from '../../git/indexSnapshot'
 import { literalPathspec, REPO_SCOPE_PATHSPECS } from '../../git/pathspecs'
-import { runGitSync, runGitSyncOrThrow } from '../../git/runCommand'
+import { runGitMutation, runGitMutationOrThrow, runGitSync, runGitSyncOrThrow } from '../../git/runCommand'
 import {
   buildGeneratedNoiseWarning,
   getExecutionSetupCommitExcludedRoots,
@@ -32,6 +32,16 @@ function runGitOpSafe(
   args: string[],
 ): { ok: true; stdout: string } | { ok: false; stdout: string; error: string } {
   const result = runGitSync(worktreePath, args)
+  return result.ok
+    ? { ok: true, stdout: result.stdout }
+    : { ok: false, stdout: '', error: result.errorDetail ?? 'Unknown error' }
+}
+
+async function runGitMutationSafe(
+  worktreePath: string,
+  args: string[],
+): Promise<{ ok: true; stdout: string } | { ok: false; stdout: string; error: string }> {
+  const result = await runGitMutation(worktreePath, args)
   return result.ok
     ? { ok: true, stdout: result.stdout }
     : { ok: false, stdout: '', error: result.errorDetail ?? 'Unknown error' }
@@ -103,7 +113,20 @@ export async function commitBeadChanges(
 
   const excluded = new Set((options.excludePaths ?? []).map(normalizeRepoPath))
   const committableEntries = summary.committable.filter(entry => !excluded.has(entry.path))
-  const committableFiles = committableEntries.map(entry => entry.path)
+  // `AD` means a staged scratch file was deleted from disk. `git add` is still
+  // needed to clear its stale index entry, but there is no path left for the
+  // commit pathspec to name.
+  // `RD`/`CD` are the other path-with-no-bytes cases: a staged rename or copy
+  // destination was deleted before the bead commit. For a rename, the parser
+  // also emits the source as a staged deletion, which is the path the commit
+  // must name; for a copy there is no source deletion. The missing destination
+  // still stays in `filesToStage` below so Git clears its stale index entry.
+  const isDeletedStagedRenameOrCopyDestination = (entry: typeof committableEntries[number]) =>
+    (entry.indexStatus === 'R' || entry.indexStatus === 'C') && entry.worktreeStatus === 'D'
+  const commitEntries = committableEntries.filter(entry =>
+    !(entry.indexStatus === 'A' && entry.worktreeStatus === 'D')
+    && !isDeletedStagedRenameOrCopyDestination(entry))
+  const committableFiles = commitEntries.map(entry => entry.path)
   // A path git already records as deleted in the index — the source half of a
   // staged rename, or a `git rm` — exists in neither the worktree nor the
   // index, so `git add` fails on it with "did not match any files". It still
@@ -125,7 +148,7 @@ export async function commitBeadChanges(
     ? buildGeneratedNoiseWarning(summary.generatedNoise)
     : undefined
 
-  if (committableFiles.length === 0) {
+  if (committableFiles.length === 0 && filesToStage.length === 0) {
     return {
       committed: false,
       pushed: false,
@@ -147,12 +170,17 @@ export async function commitBeadChanges(
   // as a throw: every other outcome here is reported, and the caller decides.
   let staged: StageOutcome
   try {
-    staged = withGitIndexRollback<StageOutcome>(worktreePath, () => {
+    staged = await withGitIndexRollbackAsync<StageOutcome>(worktreePath, async () => {
       if (filesToStage.length > 0) {
-        const addResult = runGitOpSafe(worktreePath, ['add', '-v', '--', ...filesToStage.map(literalPathspec)])
+        const addResult = await runGitMutationSafe(worktreePath, ['add', '-v', '--', ...filesToStage.map(literalPathspec)])
         if (!addResult.ok) {
           return { keepIndex: false, value: { error: `git add failed: ${addResult.error}` } }
         }
+      }
+      if (committableFiles.length === 0) {
+        // The only staged paths were deleted scratch files (AD). Keeping the
+        // altered index clears those stale additions for the next call.
+        return { keepIndex: true, value: { hasStagedChanges: false } }
       }
       // Answers "do these paths differ from HEAD", including files git has only
       // just been told about, which `git diff HEAD` cannot report.
@@ -164,7 +192,7 @@ export async function commitBeadChanges(
         return { keepIndex: false, value: { hasStagedChanges: false } }
       }
 
-      const commitResult = runGitOpSafe(worktreePath, [
+      const commitResult = await runGitMutationSafe(worktreePath, [
         'commit',
         ...(bypassHooks ? ['--no-verify'] : []),
         '-m',
@@ -243,19 +271,23 @@ export function captureBeadDiff(
   return result.ok ? { ok: true, diff: result.stdout } : { ok: false, error: result.error }
 }
 
-export function resetWorktreeToCommit(worktreePath: string, commit: string, options?: ResetWorktreeOptions): void {
-  runGitOp(worktreePath, ['reset', '--hard', commit])
+export async function resetWorktreeToCommit(worktreePath: string, commit: string, options?: ResetWorktreeOptions): Promise<void> {
+  await runGitMutationOrThrow(worktreePath, ['reset', '--hard', commit])
   const cleanArgs = ['clean', '-fd']
   for (const path of options?.preservePaths ?? []) {
     cleanArgs.push('-e', path)
   }
-  runGitOp(worktreePath, cleanArgs)
+  await runGitMutationOrThrow(worktreePath, cleanArgs)
 }
 
 /**
  * Reset the worktree to the bead start commit on context wipe / new iteration.
  * This ensures the next retry starts from a clean state.
  */
-export function resetToBeadStart(worktreePath: string, beadStartCommit: string, options?: ResetWorktreeOptions): void {
-  resetWorktreeToCommit(worktreePath, beadStartCommit, options)
+export async function resetToBeadStart(
+  worktreePath: string,
+  beadStartCommit: string,
+  options?: ResetWorktreeOptions,
+): Promise<void> {
+  await resetWorktreeToCommit(worktreePath, beadStartCommit, options)
 }

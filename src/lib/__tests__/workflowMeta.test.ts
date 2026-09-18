@@ -100,6 +100,28 @@ describe.concurrent('workflow metadata', () => {
     }
   })
 
+  it('describes bounded Git, scoped recovery, and durable Manual QA behavior', () => {
+    const preFlight = WORKFLOW_PHASES.find((phase) => phase.id === 'PRE_FLIGHT_CHECK')
+    const coding = WORKFLOW_PHASES.find((phase) => phase.id === 'CODING')
+    const manualQa = WORKFLOW_PHASES.find((phase) => phase.id === 'WAITING_MANUAL_QA')
+    const cleanup = WORKFLOW_PHASES.find((phase) => phase.id === 'CLEANING_ENV')
+    const blocked = WORKFLOW_PHASES.find((phase) => phase.id === 'BLOCKED_ERROR')
+
+    expect(preFlight?.description).toContain('safe Git path and ref inputs')
+    expect(preFlight?.details.steps.join(' ')).toContain('NUL-delimited records')
+    expect(coding?.description).toContain('bounded Git resets and commits')
+    expect(manualQa?.details.steps.join(' ')).toContain('persistent SQLite transaction lock')
+    expect(manualQa?.description).toContain('strict no-symlink policy')
+    expect(manualQa?.details.steps.join(' ')).toContain('copies a symlink itself')
+    expect(manualQa?.details.steps.join(' ')).not.toContain('Final symlinks are inspected')
+    expect(cleanup?.description).toContain('selected transient runtime data recursively')
+    expect(cleanup?.description).not.toContain('recovery sidecars')
+    expect(cleanup?.details.steps.join(' ')).toContain('does not inspect each sidecar')
+    expect(blocked?.description).not.toContain('recovery ownership')
+    expect(blocked?.details.steps.join(' ')).not.toContain('recovery-blocked diagnostics')
+    expect(blocked?.details.notes?.join(' ')).toContain('separate process-level failure')
+  })
+
   it('keeps safe resume guidance in details instead of the top summaries', () => {
     for (const phase of WORKFLOW_PHASES) {
       expect(phase.description).not.toContain('Safe resume:')

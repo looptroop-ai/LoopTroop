@@ -10,6 +10,10 @@ LoopTroop is a local GUI orchestrator for repo-scale AI coding work. It plans ti
 
 Because LoopTroop can run coding agents with broad local permissions, avoid sharing secrets or private repository content in public issues. When testing runtime behavior, use a disposable VM, sandboxed development environment, or a repository you are comfortable modifying.
 
+Selected projects are trusted code, including their local Git configuration.
+Preserve `core.sshCommand` for custom SSH setups; do not describe remote Git
+checks as sandboxed or assume a repository-local wrapper is inert metadata.
+
 ## Ways to contribute
 
 - Report bugs with steps to reproduce and relevant logs.
@@ -61,6 +65,8 @@ For code changes, run the relevant linting, typechecking, and tests for the area
 Keep documentation updated with behavior changes. Published documentation lives in the public [LoopTroop-Website repository](https://github.com/looptroop-ai/LoopTroop-Website), while the canonical application changelog lives in `CHANGELOG.md`.
 
 For user-visible changes, add a concise entry under `## Unreleased` in `CHANGELOG.md`. Use the existing Summary and Detailed Changes structure. Documentation changes should be submitted to the website repository as a companion update when relevant.
+
+When reporting interrupted writes, startup recovery, or Manual QA evidence issues, keep the diagnostic and owning artifact paths, and preserve the relevant `.proof`, `.recovery`, `.recovery.write-*`, retained `.remove-*`, or SQLite lock sidecars until their role is known. An orphan YAML or whole-file JSONL temp without a matching proof, including an empty JSONL temp, is warned about and left unpromoted; only an in-progress fallback whose `.recovery` ownership or completeness cannot be verified raises `RECOVERY_BLOCKED` and stops startup. The persistent SQLite lock database is outside transient cleanup, while selected runtime/temp roots and explicit worktree deletion have their own removal scope.
 
 **When a release changes an install path, a command, a flag or a channel, the website repository ships in the same batch.** The published documentation lives in `looptroop-ai/LoopTroop-Website`, so nothing in this repository's CI can notice when it falls behind — and it did, for four releases, while every page still opened with `git clone` and `npm run dev`. Two automated guards now catch part of it (`verify:site` requires Getting Started to lead with an install command, and `sync:cli --check` fails when the CLI reference drifts from `USAGE`), but neither knows about a new channel or a changed flag. This repository now also exposes `node scripts/docs-install-catalog.mjs`, which prints the published-smoke install table as JSON so the website can verify its consolidated installation docs against the channels and commands this repository actually ships. Bumping `CLI_SOURCE_REF` in the website's `scripts/sync-cli-reference.mjs` to the new tag, and re-running `npm run sync:cli`, is part of shipping a release.
 

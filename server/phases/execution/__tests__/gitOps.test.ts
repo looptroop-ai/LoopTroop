@@ -1,6 +1,6 @@
 import { afterAll, beforeAll, describe, expect, it } from 'vitest'
 import { execFileSync } from 'node:child_process'
-import { chmodSync, mkdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
+import { chmodSync, copyFileSync, mkdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
 import { join } from 'node:path'
 import { makeTempDir, pinGitLineEndings, removeTempDir } from '../../../test/tempDir'
 import {
@@ -299,6 +299,36 @@ describe('commitBeadChanges', () => {
     const tracked = execFileSync('git', ['-C', dir, 'ls-tree', '--name-only', '-r', 'HEAD'], { encoding: 'utf8' }).trim().split('\n')
     expect(tracked).toContain('renamed.ts')
     expect(tracked).not.toContain('hello.ts')
+  })
+
+  it('commits the source deletion when a staged rename destination is deleted', async () => {
+    const dir = makeFreshRepo()
+    execFileSync('git', ['-C', dir, 'mv', 'hello.ts', 'renamed.ts'], { stdio: 'pipe' })
+    rmSync(join(dir, 'renamed.ts'))
+
+    const result = await commitBeadChanges(dir, 'bead-renamed-delete', 'Delete a renamed file')
+
+    expect(result.committed).toBe(true)
+    expect(status(dir)).toBe('')
+    const tracked = execFileSync('git', ['-C', dir, 'ls-tree', '--name-only', '-r', 'HEAD'], { encoding: 'utf8' }).trim()
+    expect(tracked).toBe('')
+  })
+
+  it('clears a staged copy destination deleted before the bead commit', async () => {
+    const dir = makeFreshRepo()
+    execFileSync('git', ['-C', dir, 'config', 'status.renames', 'copies'], { stdio: 'pipe' })
+    copyFileSync(join(dir, 'hello.ts'), join(dir, 'copied.ts'))
+    writeFileSync(join(dir, 'hello.ts'), 'const x = 2\n')
+    execFileSync('git', ['-C', dir, 'add', '--', 'hello.ts', 'copied.ts'], { stdio: 'pipe' })
+    rmSync(join(dir, 'copied.ts'))
+
+    const result = await commitBeadChanges(dir, 'bead-copy-delete', 'Delete a copied file')
+
+    expect(result.committed).toBe(true)
+    expect(status(dir)).toBe('')
+    expect(execFileSync('git', ['-C', dir, 'show', 'HEAD:hello.ts'], { encoding: 'utf8' })).toBe('const x = 2\n')
+    const tracked = execFileSync('git', ['-C', dir, 'ls-tree', '--name-only', '-r', 'HEAD'], { encoding: 'utf8' })
+    expect(tracked).not.toContain('copied.ts')
   })
 
   it('commits a glob-shaped rename without disturbing an excluded neighbour', async () => {

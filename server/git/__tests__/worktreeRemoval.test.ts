@@ -3,6 +3,7 @@ import { appendFileSync, chmodSync, existsSync, lstatSync, mkdirSync, readFileSy
 import { resolve } from 'node:path'
 import { makeTempDir, pinGitLineEndings, removeTempDir } from '../../test/tempDir'
 import { afterEach, describe, expect, it } from 'vitest'
+import { RunCommandTimeoutError } from '../runCommand'
 import { assertNoIgnoredWorktreeFiles, removeWorktree } from '../worktreeRemoval'
 import { getTicketWorktreePath } from '../../storage/paths'
 
@@ -128,6 +129,24 @@ describe('removeWorktree', () => {
     ])
   })
 
+  it('preserves the target when Git removal times out without verified state', async () => {
+    const { projectRoot, worktreesRoot, worktreePath } = createRepoWithWorktree()
+    const commands: string[][] = []
+
+    await expect(removeWorktree({
+      projectRoot,
+      worktreesRoot,
+      worktreePath,
+      runGit: async (args) => {
+        commands.push(args)
+        throw new RunCommandTimeoutError('simulated timeout')
+      },
+    })).rejects.toBeInstanceOf(RunCommandTimeoutError)
+
+    expect(commands).toEqual([['worktree', 'remove', '--force', worktreePath]])
+    expect(readFileSync(resolve(worktreePath, 'README.md'), 'utf8')).toBe('fixture\n')
+  })
+
   it('blocks conservative cleanup before Git removal when ignored files exist', async () => {
     const { projectRoot, worktreesRoot, worktreePath } = createRepoWithWorktree()
     writeFileSync(resolve(worktreePath, '.gitignore'), '*.env\n')
@@ -173,7 +192,7 @@ describe('removeWorktree', () => {
     expect(existsSync(worktreePath)).toBe(false)
   })
 
-  it('preserves a trailing space in an actual Git worktree root', () => {
+  it.runIf(process.platform !== 'win32')('preserves a trailing space in an actual Git worktree root', () => {
     const { worktreePath } = createRepoWithWorktree('TEST-1 ')
 
     expect(() => assertNoIgnoredWorktreeFiles(worktreePath)).not.toThrow()

@@ -191,13 +191,22 @@ export function createRuntime(config: RuntimeConfig = {}): LoopTroopRuntime {
    * that fails still has to be torn down, so its rejection is absorbed.
    */
   async function close(): Promise<void> {
-    closing ??= (async () => {
+    if (closing) return closing
+    const shutdown = (async () => {
       if (starting) await starting.catch(() => undefined)
       let serverClosed: Promise<void> | undefined
       if (handle && typeof handle.close === 'function') {
         const currentHandle = handle
         serverClosed = new Promise<void>((resolveClose) => {
-          currentHandle.close(() => resolveClose())
+          try {
+            currentHandle.close(() => resolveClose())
+          } catch (error) {
+            // A previous shutdown may have closed the listener before an
+            // unverified child made the drain fail. Retrying that drain must
+            // not turn the already-closed server into a second blocker.
+            if ((error as NodeJS.ErrnoException).code === 'ERR_SERVER_NOT_RUNNING') resolveClose()
+            else throw error
+          }
         })
       }
       const pollerStopped = stopMergePoller?.()
@@ -205,16 +214,34 @@ export function createRuntime(config: RuntimeConfig = {}): LoopTroopRuntime {
       // Git and gh are detached so their hooks and descendants share the
       // timeout process group. Runtime shutdown owns those children too;
       // otherwise a daemon close can return while a mutation still writes.
-      await stopActiveCommands()
+      let stopError: unknown
+      try {
+        await stopActiveCommands()
+      } catch (error) {
+        stopError = error
+      }
       await pollerStopped
-      // A request already admitted before the listener closed may start one
-      // last child while its handler unwinds; drain that generation too.
-      await stopActiveCommands()
       await serverClosed
+      // A request already admitted before the listener closed may start one
+      // last child while its handler unwinds; drain that generation only after
+      // the listener and poller have both stopped admitting work.
+      try {
+        await stopActiveCommands()
+        stopError = undefined
+      } catch (error) {
+        stopError = error
+      }
+      if (stopError) throw stopError
       handle = null
       address = null
       teardownStartedResources()
     })()
+    closing = shutdown.catch((error) => {
+      // An unverified child keeps daemon ownership. Permit the next close()
+      // call to retry the drain after the process tree has settled.
+      closing = null
+      throw error
+    })
 
     return closing
   }

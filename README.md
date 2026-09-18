@@ -343,8 +343,10 @@ untracked entries in a real worktree and preserves user files; only its own
 `.ticket/` and `.looptroop/` roots are eligible for removal. A pre-start ticket
 skeleton is checked directly instead of inheriting ignore rules from the parent
 repository, and only its `.ticket/` root is eligible. The Free Disk Space action
-uses this mode for completed and canceled ticket worktrees, so an ignored file
-such as a local environment file stops that cleanup and remains in place. If
+uses this mode for completed and canceled ticket worktrees: protected worktrees
+are skipped and reported with the reason, while eligible worktrees are removed.
+An ignored file such as a local environment file therefore remains in place
+without preventing other cleanup. If
 Git yields while a worktree is being removed, a replacement directory is left
 alone. The daemon also waits for detached Git and GitHub children during
 shutdown, and startup recovery refuses to overwrite a target that has advanced

@@ -11,6 +11,7 @@ Unreleased changes appear first and represent commits that have not yet been inc
 
 ### Summary
 - Cancellation recovery, anchored pending-bead retries, interview receipt commits, and council session-stop proofs now remain safe across failed writes and restarts.
+- Git cleanup preserves uncertain process ownership and user files, while interrupted recovery can retry an absent destination safely.
 - Canonical OpenCode installation directories (`~/.opencode/bin`) are now trusted by default for the `opencode` binary across platforms, preventing execution refusals when OpenCode release archives are unpacked under root while preserving directory ownership and file write-permission checks.
 - The repository now exposes its documented install-channel catalog as JSON, so the website can verify consolidated installation docs against the same channel table the published-release smoke uses.
 - Log history refreshes loaded pages and keeps model tabs and milestones available; model selection and setup disclosures are accessible, and refused clipboard copies show a visible error.
@@ -39,6 +40,7 @@ Unreleased changes appear first and represent commits that have not yet been inc
 - A project that ships its own `opencode.json` keeps it — in git as well as on disk. Setting a step cap used to replace that file for the whole coding run, commit LoopTroop's version onto your branch, and delete the file afterwards, taking the project's MCP servers, providers and other agents with it.
 - Git mutations and delivery now preserve opaque paths, validate ref names, clean up process trees within bounded time, and require an expected remote head before deleting a branch.
 - Worktree cleanup preserves replacement generations and user-owned ignored files when requested; recovery protects newer appends, quarantine retries preserve final symlinks, and daemon shutdown waits for detached Git commands.
+- Free Disk Space removes eligible worktrees and reports protected worktrees without counting their files as freed space.
 - Startup recovery now promotes only known, proof-backed complete artifacts. Unproved orphan YAML and whole-file JSONL, including empty files, stay unpromoted with warnings, while unresolved in-progress fallback ownership stops startup with the affected files preserved.
 - Manual QA baselines, drift receipts, evidence indexes, and event history now use durable, symlink-safe writes; invalid event lines stay visible with diagnostics, and locking survives process restarts.
 - Manual QA quarantine preserves a file replaced during comparison, and project-path diagnostics keep control bytes from becoming forged log records.
@@ -274,6 +276,10 @@ Unreleased changes appear first and represent commits that have not yet been inc
 - Linked dependency directories are ignored alongside ordinary `node_modules` folders, so local worktree checks do not try to read them as source files.
 - A failed workspace-setup fallback prompt now keeps both attempts in its diagnostic report after the remote stop is confirmed, allowing normal attempt evaluation and retry handling.
 - Failed workspace runtime setup now exposes the existing setup-plan editor and extra-note retry, while setup-approval failures keep only their supported recovery controls.
+- Async Git commands inspect repository SSH configuration without blocking the event loop. Shutdown waits for admitted requests and polling before its final command drain, and worktree removal does not fall back to recursive deletion after a Git timeout.
+- Non-Git cleanup rechecks the ticket-only skeleton at removal boundaries. Worktree identity comparisons retain integer precision, staged rename/copy destinations deleted before commit no longer leave invalid pathspecs, and atomic recovery can retry a source-owned publication when its destination is absent.
+
+- Free Disk Space continues past protected or failed worktrees, returns each skipped ticket and reason, and keeps that report visible in the dialog. Ignored environment files, dependencies, and build output remain protected. The size preview shows total worktree size, and the result counts only successfully removed worktrees.
 - Worktree fallback cleanup now rechecks the target generation after Git yields, and Free Disk Space cleanup for completed or canceled tickets refuses ignored files outside LoopTroop-owned roots before either Git removal or filesystem fallback. Pre-start ticket skeletons are checked without inheriting the parent repository's ignored files, while unknown skeleton entries still fail closed. Startup recovery records whether a fallback copy is complete and blocks rather than rewinding a target that received newer appends. Manual QA preserves an existing final quarantine symlink and writes a retry copy beside it, while runtime shutdown terminates tracked detached Git and GitHub children before returning.
 - Shared test fixtures now use native temporary-directory paths and the isolated Vitest bucket for real-database tests, avoiding Windows path aliases and cross-worker timeouts.
 - Recovery regression checks accept Windows' canonical spelling of a temporary path while still requiring diagnostics to identify the exact preserved file.

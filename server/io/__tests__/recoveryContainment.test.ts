@@ -1,4 +1,4 @@
-import { appendFileSync, existsSync, lstatSync, mkdirSync, readFileSync, readdirSync, renameSync, symlinkSync, writeFileSync } from 'node:fs'
+import { appendFileSync, existsSync, lstatSync, mkdirSync, readFileSync, readdirSync, renameSync, rmSync, symlinkSync, writeFileSync } from 'node:fs'
 import * as fs from 'fs'
 import { join } from 'node:path'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
@@ -401,6 +401,49 @@ describe('recovery descriptor containment', () => {
     expect(() => recoverOrphanTmpFiles(directory)).toThrow(RecoveryBlockedError)
     expect(readFileSync(target, 'utf8')).toBe('{"owner":"new"}')
     expect(warning).toHaveBeenCalledWith(expect.stringContaining('incomplete or changed'))
+  })
+
+  it('retries a source-only marker when its destination disappears before inspection', () => {
+    const target = join(directory, 'runtime', 'owner.json')
+    const tmp = makeAtomicTmpPath(target)
+    const content = '{"owner":"validated"}'
+    writeFileSync(tmp, content)
+    writeFileSync(target, content)
+    const source = lstatSync(tmp)
+    writeFileSync(`${tmp}.recovery`, JSON.stringify({
+      version: 1,
+      targetPath: target,
+      source: {
+        dev: Number(source.dev),
+        ino: Number(source.ino),
+        size: Number(source.size),
+        mtimeMs: Number(source.mtimeMs),
+        birthtimeMs: Number(source.birthtimeMs),
+      },
+    }))
+    const open = fileReader.openFileNoFollowSync
+    vi.spyOn(fileReader, 'openFileNoFollowSync').mockImplementation((path, flags) => {
+      const fd = open(path, flags)
+      if (path === tmp) rmSync(target)
+      return fd
+    })
+
+    expect(recoverOrphanTmpFiles(directory)).toEqual([target])
+    expect(readFileSync(target, 'utf8')).toBe(content)
+    expect(existsSync(tmp)).toBe(false)
+    expect(existsSync(`${tmp}.recovery`)).toBe(false)
+  })
+
+  it('replaces a torn marker only when its destination is absent', () => {
+    const target = join(directory, 'runtime', 'owner.json')
+    const tmp = makeAtomicTmpPath(target)
+    writeFileSync(tmp, '{"owner":"validated"}')
+    writeFileSync(`${tmp}.recovery`, '')
+
+    expect(recoverOrphanTmpFiles(directory)).toEqual([target])
+    expect(readFileSync(target, 'utf8')).toBe('{"owner":"validated"}')
+    expect(existsSync(tmp)).toBe(false)
+    expect(existsSync(`${tmp}.recovery`)).toBe(false)
   })
 
   it('copies large temp content in bounded chunks without dropping bytes', () => {

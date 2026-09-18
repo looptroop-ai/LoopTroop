@@ -180,6 +180,24 @@ describe('server/git/runCommand', () => {
     }
   })
 
+  it.runIf(process.platform !== 'win32')('does not block the async runner while reading core.sshCommand', async () => {
+    const root = makeTempDir('run-command-async-ssh-config-')
+    try {
+      execFileSync('git', ['-C', root, 'init'], { stdio: 'pipe' })
+      const marker = join(root, 'ssh-wrapper-used')
+      const wrapper = join(root, 'ssh-wrapper.sh')
+      writeFileSync(wrapper, `#!/bin/sh\nprintf configured > "${marker}"\nexit 1\n`, { mode: 0o755 })
+      execFileSync('git', ['-C', root, 'config', 'core.sshCommand', `${wrapper} --configured`], { stdio: 'pipe' })
+
+      const result = await runGit(root, ['ls-remote', 'ssh://example.invalid/unused.git'], { log: false })
+
+      expect(result.ok).toBe(false)
+      expect(existsSync(marker)).toBe(true)
+    } finally {
+      removeTempDir(root)
+    }
+  })
+
   it('writes stdin and closes it', async () => {
     const echo = script('let d = ""; process.stdin.on("data", (c) => { d += c }); process.stdin.on("end", () => process.stdout.write(d))')
     expect((await runCommand(node, echo, { input: 'from-stdin', log: false })).stdout).toBe('from-stdin')
@@ -248,32 +266,24 @@ describe('server/git/runCommand', () => {
     }
   })
 
-  it.runIf(process.platform !== 'win32')('waits for tree cleanup when Git closes before a redirected descendant', async () => {
-    const root = makeTempDir('run-command-redirected-hook-')
+  it.runIf(process.platform !== 'win32')('kills a redirected descendant while the timed-out leader remains live', async () => {
+    const root = makeTempDir('run-command-redirected-child-')
     try {
-      execFileSync('git', ['-C', root, 'init'], { stdio: 'pipe' })
-      execFileSync('git', ['-C', root, 'config', 'user.email', 'test@example.com'], { stdio: 'pipe' })
-      execFileSync('git', ['-C', root, 'config', 'user.name', 'Test'], { stdio: 'pipe' })
-      const marker = join(root, 'redirected-hook-survived')
+      const marker = join(root, 'redirected-child-survived')
       const descendant = [
         'const fs = require("node:fs")',
         'process.on("SIGTERM", () => {})',
-        `setTimeout(() => fs.writeFileSync(${JSON.stringify(marker)}, 'survived'), 1000)`,
+        `setTimeout(() => fs.writeFileSync(${JSON.stringify(marker)}, 'survived'), 3000)`,
       ].join(';')
-      writeFileSync(
-        join(root, '.git', 'hooks', 'pre-commit'),
-        [
-          '#!/usr/bin/env node',
-          "const { spawn } = require('node:child_process')",
-          `spawn(${JSON.stringify(node)}, ['-e', ${JSON.stringify(descendant)}], { stdio: 'ignore' })`,
-          'setTimeout(() => {}, 60000)',
-          '',
-        ].join('\n'),
-        { mode: 0o755 },
-      )
+      const leader = [
+        "const { spawn } = require('node:child_process')",
+        `const child = spawn(${JSON.stringify(node)}, ['-e', ${JSON.stringify(descendant)}], { stdio: 'ignore' }); child.unref()`,
+        'process.on("SIGTERM", () => {})',
+        'setTimeout(() => {}, 60000)',
+      ].join(';')
 
       const started = Date.now()
-      const result = await runGitMutation(root, ['commit', '--allow-empty', '-m', 'redirected hook'], {
+      const result = await runCommand(node, ['-e', leader], {
         timeoutMs: 300,
         log: false,
       })
@@ -281,17 +291,14 @@ describe('server/git/runCommand', () => {
 
       expect(result.ok).toBe(false)
       expect(result.timedOut).toBe(true)
-      // Git itself closes after SIGTERM, so this is an observed signal rather
-      // than a synthetic SIGKILL assigned by the abandonment fallback.
-      expect(result.signal).toBe('SIGTERM')
       expect(result.errorDetail).toContain('timed out after 0.3s')
       expect(elapsed).toBeGreaterThanOrEqual(2_000)
-      expect(existsSync(join(root, '.git', 'index.lock'))).toBe(false)
+      await new Promise((resolve) => setTimeout(resolve, 1_000))
 
-      // With the old direct-close race, this descendant survived the runner's
-      // return and wrote one second after it. Its stdio is ignored deliberately
-      // so Git can close before the descendant does.
-      await new Promise((resolve) => setTimeout(resolve, 1_300))
+      // The leader deliberately remains alive after SIGTERM, so its numeric
+      // process-group ownership is still fresh when escalation sends SIGKILL.
+      // A descendant that writes with redirected stdio must not survive that
+      // pre-close tree termination.
       expect(existsSync(marker)).toBe(false)
     } finally {
       removeTempDir(root)

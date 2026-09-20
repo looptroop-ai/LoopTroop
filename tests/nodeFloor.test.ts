@@ -111,7 +111,7 @@ describe('the Node floor is stated once', () => {
     expect(read('.nvmrc').trim()).toBe(FLOOR_LABEL)
 
     for (const file of ['README.md', 'CONTRIBUTING.md']) {
-      const versions = [...read(file).matchAll(/\b\d+\.\d+\.\d+\b/g)]
+      const versions = [...read(file).matchAll(/\b\d+\.\d+(?:\.\d+)?\b/g)]
         .map(([version]) => version)
         .filter((version) => version.startsWith(`${FLOOR.major}.`))
       expect(versions, file).toEqual(expect.arrayContaining([FLOOR_LABEL]))

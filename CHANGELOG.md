@@ -10,6 +10,7 @@ Unreleased changes appear first and represent commits that have not yet been inc
 > Changes merged since the last versioned release that have not yet shipped in a tagged version.
 
 ### Summary
+- CLI command help now accepts `--help`, `help`, and `?` after a command.
 - Model-filtered debug history now retains native OpenCode rows when session ownership metadata differs.
 - Ticket drafts and log history now survive deletion races, pagination gaps, native-log rewrites, and incomplete tail records without restoring stale state.
 - Remote browser access now uses one explicitly configured HTTPS origin, rejects incomplete remote-mode setup at startup, and keeps plain-HTTP remote clients token-only.
@@ -123,6 +124,7 @@ Unreleased changes appear first and represent commits that have not yet been inc
 - The countdown on the current step now shows the step you are looking at. Switching between steps kept the previous one's remaining time on screen for up to a second.
 
 ### Added
+- Per-command help accepts `--help`, `help`, and `?` after a command.
 - Durable startup-cleanup ownership records identify the managed OpenCode base URL, pid, and optional start token. A later `looptroop start` stays blocked until `looptroop stop` proves the owned tree is gone; tokenless, recycled, or unverifiable ownership remains preserved.
 - OpenCode step-cap restore authority now lives at `<app-config>/opencode-steps/<ticket-directory-hash>.json`; a ticket-side `opencode-steps-restore.json` is only a convenience copy. Exact-original bytes, or an absent original with an absent current file, can settle the record safely.
 - Active OpenCode step-cap retries verify the authoritative marker before reapplying the cap after a worktree reset and stop with its exact path and manual remedy when the marker or expected file cannot be verified.
@@ -316,6 +318,7 @@ Unreleased changes appear first and represent commits that have not yet been inc
 - Three aliases re-exported for a question-diff type that no longer exists, the three helpers behind them, an execution-setup runtime-path list with no reader, and an execution-setup barrel re-exporting three artifact names every caller already imports from their own module.
 
 ### Fixed
+- Per-command help now rejects inherited object property names as unknown commands instead of trying to print them.
 - Workflow phase details now match the structured bead-command, checkpoint, and marker-recovery guarantees enforced by the runtime.
 - Skip All interview finalization now rolls back its snapshot, receipts, and coverage artifacts after a post-CAS failure, so the action can be retried safely.
 - Council member completion now checks only that member's session ownership, so another member's active session cannot block an otherwise confirmed stop.

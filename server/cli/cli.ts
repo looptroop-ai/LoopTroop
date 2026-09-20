@@ -41,11 +41,13 @@ Options:
   --version      Print the version
   --help         Print this message
 
-Run \`looptroop <command> --help\` for what a single command does and takes.
+Run \`looptroop <command> --help\`, \`looptroop <command> help\`, or
+\`looptroop <command> "?"\` (double quotes keep \`?\` literal in every shell)
+for what a single command does and takes.
 `
 
 /**
- * Per-command help, for `looptroop <command> --help`.
+ * Per-command help, for `looptroop <command> --help`, `help`, or `?`.
  *
  * Separate from USAGE on purpose: USAGE is fetched at a release tag and rewritten
  * into the published CLI reference, so it has to stay a single scannable block.
@@ -256,10 +258,14 @@ export async function main(argv: string[]): Promise<number> {
     return finishWithUpdate(0, checkCliUpdate())
   }
 
-  // `looptroop <command> --help` describes that command; a bare `--help`, or no
-  // command at all, prints the overview rather than doing something unasked.
-  if (values.help) {
-    const help = command === undefined ? undefined : COMMAND_HELP[command]
+  // `looptroop <command> --help` (or `help`/`?`) describes that command; a bare
+  // `--help`, or no command at all, prints the overview rather than doing
+  // something unasked.
+  const helpAlias = positionals[1] === 'help' || positionals[1] === '?'
+  if (values.help || helpAlias) {
+    const help = command === undefined || !Object.hasOwn(COMMAND_HELP, command)
+      ? undefined
+      : COMMAND_HELP[command]
     if (command !== undefined && help === undefined) {
       process.stderr.write(`Unknown command "${command}".\n\n${USAGE}`)
       return 1

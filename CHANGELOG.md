@@ -10,6 +10,7 @@ Unreleased changes appear first and represent commits that have not yet been inc
 > Changes merged since the last versioned release that have not yet shipped in a tagged version.
 
 ### Summary
+- CLI command help now accepts `--help`, `help`, and `?` after a command.
 - Coding and integration recovery now preserve edited project configuration and unknown hook-created files when ownership cannot be proven.
 - Interview and PRD approval saves now keep their loaded baseline and retain failed drafts for safe retry.
 - Standalone release binaries now use Node `26.9.0`'s native single-executable builder while application and package channels retain the Node `24.18.1` floor.
@@ -289,6 +290,7 @@ Unreleased changes appear first and represent commits that have not yet been inc
 - Three aliases re-exported for a question-diff type that no longer exists, the three helpers behind them, an execution-setup runtime-path list with no reader, and an execution-setup barrel re-exporting three artifact names every caller already imports from their own module.
 
 ### Fixed
+- Fixed per-command CLI help requiring `--help`; `help` and `?` now produce the same help output.
 - Fixed interview and PRD approval saves silently rebasing a dirty draft over newer server content. Raw and structured saves now require the loaded content hash, return HTTP 428 when it is missing and HTTP 409 when it is stale, while failed or best-effort leaving flushes keep the latest draft visibly unsaved instead of claiming it was saved.
 - Fixed coding recovery overwriting an edited OpenCode root configuration or losing a cap-created file's restore evidence. A valid sidecar now blocks only a destructive reset that conflicts with the current bytes, preserves the edited file and marker, keeps the root config out of bead and final staging, and allows a later bead to continue without a fresh cap when no reset is needed. Ordinary capped runs still retry normally; a missing sidecar after restart is left unattributed rather than guessed.
 - Fixed interrupted Git-hook validation losing track of untracked additions. Reentry now uses an identity-bound persisted marker, rejects invalid or escaped markers before recovery writes, leaves unknown additions intact, and refuses validation until those paths can be attributed safely.

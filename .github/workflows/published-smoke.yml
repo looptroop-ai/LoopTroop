@@ -443,6 +443,8 @@ jobs:
           VERSION: ${{ needs.plan.outputs.version }}
         run: |
           set -euo pipefail
+          # Embedded JavaScript is single-quoted so the shell cannot expand its template literals.
+          # shellcheck disable=SC2016
           node -e '
             const { readdirSync, readFileSync, existsSync, writeFileSync, appendFileSync } = require("node:fs")
             const { join } = require("node:path")

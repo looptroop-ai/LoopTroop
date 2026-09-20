@@ -117,7 +117,7 @@ curl --proto '=https' --proto-redir '=https' --tlsv1.2 -fsSL https://www.looptro
 ```
 
 ```powershell
-irm https://www.looptroop.ovh/install.ps1 | iex
+curl.exe --proto "=https" --proto-redir "=https" --tlsv1.2 -fsSL https://www.looptroop.ovh/install.ps1 | iex
 ```
 
 Resolves the newest release, checks the download against the checksum that

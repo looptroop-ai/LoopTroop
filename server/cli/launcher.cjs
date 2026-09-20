@@ -30,8 +30,8 @@ function parseVersion(raw) {
   }
 }
 
-// Patch-level, because the floor is a patch release. A major.minor comparison
-// can refuse a runtime while printing the wrong version to install.
+// Compare every numeric component the generated floor declares. A major.minor
+// comparison can refuse a runtime while printing the wrong version to install.
 //
 // A prerelease of the floor is below it, which is how npm reads `engines.node`
 // and what `scripts/installer-core.mjs` already does: 24.21.0-nightly.0 comes

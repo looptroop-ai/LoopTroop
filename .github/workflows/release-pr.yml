@@ -254,6 +254,8 @@ jobs:
         env:
           VERSION: ${{ inputs.version }}
         run: |
-          echo "### Dry run: v${VERSION}" >> "$GITHUB_STEP_SUMMARY"
-          echo "" >> "$GITHUB_STEP_SUMMARY"
-          echo "Every check passed. No branch was pushed and no PR was opened." >> "$GITHUB_STEP_SUMMARY"
+          {
+            echo "### Dry run: v${VERSION}"
+            echo ""
+            echo "Every check passed. No branch was pushed and no PR was opened."
+          } >> "$GITHUB_STEP_SUMMARY"

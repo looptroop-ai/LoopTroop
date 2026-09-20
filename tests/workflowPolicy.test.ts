@@ -20,11 +20,15 @@ const workflows = new Map(files.map((file) => [
   yaml.load(source.get(file)!) as Workflow,
 ]))
 
-/** Exact numeric selectors are comparable; bare major selectors float by design. */
+/** Exact three-part selectors are comparable; bare major selectors float by design. */
 function concreteVersion(value: string) {
   const normalized = value.trim().replace(/^['"]|['"]$/g, '')
   if (!normalized.includes('.')) return null
-  return parseNodeVersion(normalized)
+  const numeric = normalized.replace(/^v/, '')
+  if (!/^\d+\.\d+\.\d+$/.test(numeric)) {
+    throw new Error(`Floating Node selector is not allowed: ${value}`)
+  }
+  return parseNodeVersion(numeric)
 }
 
 function runs(job: Job): string {
@@ -92,11 +96,31 @@ describe('release workflow policy', () => {
   })
 
   it('treats quoted and shorthand Node selectors as concrete patch values', () => {
-    const floor = parseNodeFloor('>=24.21.0')
-    expect(satisfiesNodeFloor(parseNodeVersion('24.18'), floor)).toBe(false)
-    expect(satisfiesNodeFloor(parseNodeVersion('v24.21.0'), floor)).toBe(true)
-    expect(/^\s*node-version:\s*["']?(v?\d+(?:\.\d+){0,2})["']?(?=\s|$)/.exec('node-version: "24.18"')?.[1])
-      .toBe('24.18')
+    const packageJson = JSON.parse(readFileSync(join(repo, 'package.json'), 'utf8')) as { engines: { node: string } }
+    const floor = parseNodeFloor(packageJson.engines.node)
+    const shorthand = `${floor.major}.${floor.minor}`
+    expect(parseNodeVersion(shorthand)).toEqual({ ...floor, patch: 0, prerelease: false })
+    expect(satisfiesNodeFloor(parseNodeVersion(shorthand), { ...floor, patch: floor.patch + 1 })).toBe(false)
+    expect(satisfiesNodeFloor(parseNodeVersion(`v${floor.major}.${floor.minor}.${floor.patch}`), floor)).toBe(true)
+    expect(/^\s*node-version:\s*["']?(v?\d+(?:\.\d+){0,2})["']?(?=\s|$)/.exec(`node-version: "${shorthand}"`)?.[1])
+      .toBe(shorthand)
+  })
+
+  it('keeps OrcaCode review automation gated, authoritative, and bounded', () => {
+    const text = source.get('orcarouter-code-review.yml')!
+
+    expect(text).not.toMatch(/^concurrency:/m)
+    expect(text).toContain('    concurrency:\n      group:')
+    expect(text).toContain('types: [opened, synchronize, reopened, ready_for_review]')
+    expect(text).toContain('!github.event.pull_request.draft')
+    expect(text).toContain('github.event.pull_request.author_association')
+    expect(text).toContain('github.event.comment.author_association')
+    expect(text).toContain('auto-review-authors: OWNER,MEMBER,COLLABORATOR')
+    expect(text).toContain('block-on: "P0,P1"')
+    expect(text).toContain('report: "false"')
+    expect(text).toContain('settings: "false"')
+    expect(text).toMatch(/timeout-minutes:\s+75/)
+    expect(text).toMatch(/uses: Continuum-AI-Corp\/orca-code-review@[0-9a-f]{40}/)
   })
 
   it('keeps every literal workflow and Docker Node runtime at the package floor', () => {

@@ -106,4 +106,15 @@ describe('the Node floor is stated once', () => {
     expect(renderHomebrewFormula(INPUTS)).toContain(`depends_on "node@${FLOOR.major}"`)
     expect(renderAurPackage(INPUTS)['PKGBUILD']).toContain(`nodejs>=${FLOOR.major}`)
   })
+
+  it('keeps the local runtime pin and documentation on the declared floor', () => {
+    expect(read('.nvmrc').trim()).toBe(FLOOR_LABEL)
+
+    const versionPattern = new RegExp(`\\b${FLOOR.major}\\.\\d+\\.\\d+\\b`, 'g')
+    for (const file of ['README.md', 'CONTRIBUTING.md']) {
+      const versions = [...read(file).matchAll(versionPattern)].map(([version]) => version)
+      expect(versions, file).toEqual(expect.arrayContaining([FLOOR_LABEL]))
+      expect(versions.every((version) => version === FLOOR_LABEL), file).toBe(true)
+    }
+  })
 })

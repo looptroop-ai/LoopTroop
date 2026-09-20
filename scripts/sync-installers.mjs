@@ -71,11 +71,11 @@ const engines = JSON.parse(readFileSync(resolve(repoRoot, 'package.json'), 'utf8
 // `24.0.1` — not a lenient floor but a floor every runtime clears, generated
 // into every channel at once, with each copy agreeing with the others.
 const floorMatch = /^\s*(?:>=\s*)?v?(\d+)\.(\d+)\.(\d+)\s*$/.exec(String(engines))
-if (!floorMatch) fail(`package.json engines.node is unreadable as a floor: ${JSON.stringify(engines)}. Expected a form like ">=24.21.0".`)
+if (!floorMatch) fail(`package.json engines.node is unreadable as a floor: ${JSON.stringify(engines)}. Expected a form like ">=X.Y.Z".`)
 const major = Number(floorMatch[1])
 const minor = Number(floorMatch[2])
 const patch = Number(floorMatch[3])
-if (major <= 0) fail(`package.json engines.node is unreadable as a floor: ${JSON.stringify(engines)}. Expected a form like ">=24.21.0".`)
+if (major <= 0) fail(`package.json engines.node is unreadable as a floor: ${JSON.stringify(engines)}. Expected a form like ">=X.Y.Z".`)
 const floorLabel = `${major}.${minor}.${patch}`
 
 /** Replaces everything between a pair of markers, keeping the markers themselves. */

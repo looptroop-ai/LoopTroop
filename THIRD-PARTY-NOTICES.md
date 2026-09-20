@@ -60,8 +60,8 @@ frontend packages inlined into the client bundle.
 | `@radix-ui/react-use-layout-effect` | 1.1.4 | MIT | Copyright (c) 2022 WorkOS |
 | `@radix-ui/react-use-size` | 1.1.4 | MIT | Copyright (c) 2022 WorkOS |
 | `@radix-ui/react-visually-hidden` | 1.2.11 | MIT | Copyright (c) 2022 WorkOS |
-| `@tanstack/query-core` | 5.102.0 | MIT | Copyright (c) 2021-present Tanner Linsley |
-| `@tanstack/react-query` | 5.102.0 | MIT | Copyright (c) 2021-present Tanner Linsley |
+| `@tanstack/query-core` | 5.102.8 | MIT | Copyright (c) 2021-present Tanner Linsley |
+| `@tanstack/react-query` | 5.102.8 | MIT | Copyright (c) 2021-present Tanner Linsley |
 | `argparse` | 2.0.1 | Python-2.0 | Copyright (c) 1991 - 1995, Stichting Mathematisch Centrum Amsterdam, |
 | `aria-hidden` | 1.2.6 | MIT | Copyright (c) 2017 Anton Korzunov |
 | `class-variance-authority` | 0.7.1 | Apache-2.0 | Copyright 2022 Joe Bell |
@@ -70,7 +70,7 @@ frontend packages inlined into the client bundle.
 | `drizzle-orm` | 1.0.0-rc.4 | Apache-2.0 | Drizzle Team |
 | `get-nonce` | 1.0.1 | MIT | Copyright (c) 2020 Anton Korzunov |
 | `gpt-tokenizer` | 4.0.0 | MIT | Copyright (c) 2023-2024 Bazyli Brzoska |
-| `hono` | 4.13.5 | MIT | Copyright (c) 2021 - present, Yusuke Wada and Hono contributors |
+| `hono` | 4.13.7 | MIT | Copyright (c) 2021 - present, Yusuke Wada and Hono contributors |
 | `isexe` | 2.0.0 | ISC | Copyright (c) Isaac Z. Schlueter and Contributors |
 | `js-yaml` | 5.3.0 | MIT | Copyright (C) 2011-2015 by Vitaly Puzrin |
 | `lucide-react` | 1.33.0 | ISC | Copyright (c) 2026 Lucide Icons and Contributors |
@@ -268,7 +268,7 @@ SOFTWARE.
 
 ### MIT
 
-Applies to: `@tanstack/query-core@5.102.0`, `@tanstack/react-query@5.102.0`
+Applies to: `@tanstack/query-core@5.102.8`, `@tanstack/react-query@5.102.8`
 
 ```text
 MIT License
@@ -1032,7 +1032,7 @@ SOFTWARE.
 
 ### MIT
 
-Applies to: `hono@4.13.5`
+Applies to: `hono@4.13.7`
 
 ```text
 MIT License

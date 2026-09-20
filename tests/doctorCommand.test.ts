@@ -93,9 +93,9 @@ describe('doctor command', () => {
   })
 
   /**
-   * §11.5's observable change: `doctor` used to accept anything from 24.15
-   * while the launcher refused to start below 24.21.0, so a machine in between
-   * passed every check the product offered and then could not run it.
+   * §11.5's observable change: `doctor` used to accept an older minor release
+   * while the launcher refused to start below the declared floor, so a machine
+   * in between passed every check the product offered and then could not run it.
    *
    * `runChecks()` reads the real `process.versions.node`, and CI runs a Node
    * well above the floor — so reverting `checkNode` to the old major.minor

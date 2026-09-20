@@ -10,8 +10,9 @@
  * its own, so both halves of the app and the packaging scripts can use the same
  * semantics on a floor each resolves for itself.
  *
- * The comparison is patch-level because the floor is a patch release. Comparing
- * only major.minor can let a runtime one patch below the floor through.
+ * The comparison uses every numeric component the floor declares. Comparing
+ * only major.minor can let a runtime below a patch floor through and print the
+ * wrong version to install.
  */
 
 export interface NodeVersion {
@@ -28,9 +29,10 @@ export interface NodeVersion {
 }
 
 /**
- * Reads `24.21.0`, `v24.21.0` and `24.21.0-nightly.0` alike; a missing or
- * unreadable component is 0, which can only ever *under*-report a runtime and
- * so fails closed against the floor.
+ * Reads complete versions such as `24.21.0`, `v24.21.0` and
+ * `24.21.0-nightly.0`; a missing or unreadable component is 0. Callers that
+ * accept version selectors must reject incomplete two-component values before
+ * comparing them, because a missing patch is not an exact runtime.
  */
 export function parseNodeVersion(raw: string): NodeVersion {
   const text = String(raw).replace(/^v/, '')
@@ -70,7 +72,7 @@ const NODE_FLOOR_PATTERN = /^\s*(?:>=\s*)?v?(\d+)\.(\d+)\.(\d+)\s*$/
 export function parseNodeFloor(engines: string): NodeVersion {
   const match = NODE_FLOOR_PATTERN.exec(String(engines))
   if (!match) {
-    throw new Error(`Unreadable Node floor: ${JSON.stringify(engines)}. Expected a form like ">=24.21.0".`)
+    throw new Error(`Unreadable Node floor: ${JSON.stringify(engines)}. Expected a form like ">=X.Y.Z".`)
   }
   const [, major = '0', minor = '0', patch = '0'] = match
   const floor: NodeVersion = {
@@ -80,7 +82,7 @@ export function parseNodeFloor(engines: string): NodeVersion {
     prerelease: false,
   }
   if (floor.major <= 0) {
-    throw new Error(`Unreadable Node floor: ${JSON.stringify(engines)}. Expected a form like ">=24.21.0".`)
+    throw new Error(`Unreadable Node floor: ${JSON.stringify(engines)}. Expected a form like ">=X.Y.Z".`)
   }
   return floor
 }

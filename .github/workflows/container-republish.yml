@@ -140,6 +140,8 @@ jobs:
 
           # Through the environment rather than argv, so nothing has to be
           # quoted into a program.
+          # Embedded JavaScript is single-quoted so the shell cannot expand its template literals.
+          # shellcheck disable=SC2016
           TAG_COMMIT="${tag_commit}" node -e '
             const manifest = JSON.parse(require("node:fs").readFileSync(`${process.env.ASSET_DIR}/release-manifest.json`, "utf8"))
             const version = process.env.VERSION
@@ -164,6 +166,8 @@ jobs:
 
           # Older manifests predate package-lock.json as a release asset. Keep
           # those repairs on their tag's tarball-only Dockerfile path.
+          # Embedded JavaScript is single-quoted so the shell cannot expand its template literals.
+          # shellcheck disable=SC2016
           lockfile_expected=$(node -e '
             const fs = require("node:fs")
             const manifest = JSON.parse(fs.readFileSync(`${process.env.ASSET_DIR}/release-manifest.json`, "utf8"))
@@ -174,6 +178,8 @@ jobs:
             # The container only needs the tarball and its matching lockfile.
             # This focused check avoids pretending the other release assets are
             # present while retaining strict digest verification when recorded.
+            # Embedded JavaScript is single-quoted so the shell cannot expand its template literals.
+            # shellcheck disable=SC2016
             ASSET_DIR="${ASSET_DIR}" node -e '
               const fs = require("node:fs")
               const crypto = require("node:crypto")
@@ -199,6 +205,8 @@ jobs:
           # check: it accepts `-rc.N` and nothing else, so a prerelease spelling
           # no channel knows how to route is refused here rather than published
           # under a tag chosen by accident.
+          # Embedded JavaScript is single-quoted so the shell cannot expand its template literals.
+          # shellcheck disable=SC2016
           dist_tag=$(node -e '
             import("./scripts/version-bump.ts")
               .then((m) => process.stdout.write(m.distTagFor(process.env.VERSION)))
@@ -331,6 +339,8 @@ jobs:
             release-assets/release-manifest.json
           if [ -n "${LOCKFILE}" ]; then
             test -f "${LOCKFILE}"
+            # Embedded JavaScript is single-quoted so the shell cannot expand its template literals.
+            # shellcheck disable=SC2016
             LOCKFILE="${LOCKFILE}" node -e '
               const fs = require("node:fs")
               const crypto = require("node:crypto")
@@ -412,7 +422,10 @@ jobs:
           ARCH: ${{ matrix.arch }}
         run: |
           set -euo pipefail
-          digest=$(node -e '
+          digest=$(
+            # Embedded JavaScript is single-quoted so the shell cannot expand its template literals.
+            # shellcheck disable=SC2016
+            node -e '
             const meta = JSON.parse(require("node:fs").readFileSync("/tmp/meta.json", "utf8"))
             const found = new Set()
             const walk = (node) => {
@@ -430,10 +443,11 @@ jobs:
               process.exit(1)
             }
             process.stdout.write(digests[0])
-          ')
+            '
+          )
           printf '%s\n' "${digest}" > "digest-${ARCH}.txt"
           echo "${ARCH}: ${digest}"
-          printf -- '- `linux/%s` → `%s`\n' "${ARCH}" "${digest}" >> "$GITHUB_STEP_SUMMARY"
+          printf -- "- \`linux/%s\` → \`%s\`\n" "${ARCH}" "${digest}" >> "$GITHUB_STEP_SUMMARY"
 
       - name: Both registries hold the manifest
         run: |
@@ -490,12 +504,12 @@ jobs:
           fi
           rm -f "${error_log}"
           {
-            printf '### Container input and provenance (%s)\n\n' "${ARCH}"
-            printf -- '- tarball: `%s`\n' "${TARBALL}"
-            printf -- '- lockfile: `%s`\n' "${LOCKFILE}"
-            printf -- '- platform: `%s`\n' "${PLATFORM}"
-            printf -- '- revision: `%s`\n' "${REVISION}"
-            printf -- '- digest: `%s`\n\n' "${digest}"
+            printf "### Container input and provenance (%s)\n\n" "${ARCH}"
+            printf -- "- tarball: \`%s\`\n" "${TARBALL}"
+            printf -- "- lockfile: \`%s\`\n" "${LOCKFILE}"
+            printf -- "- platform: \`%s\`\n" "${PLATFORM}"
+            printf -- "- revision: \`%s\`\n" "${REVISION}"
+            printf -- "- digest: \`%s\`\n\n" "${digest}"
             echo '```'
             cat "${inventory}"
             echo '```'

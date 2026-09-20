@@ -61,7 +61,7 @@ const NODE_FLOOR = parseNodeFloor(
     readFileSync(resolve(dirname(fileURLToPath(import.meta.url)), '..', 'package.json'), 'utf8'),
   ) as { engines: { node: string } }).engines.node,
 )
-/** `24.18.1` — Chocolatey's `nodejs-lts` dependency. */
+/** `24.21.0` — Chocolatey's `nodejs-lts` dependency. */
 export const NODE_FLOOR_EXACT = formatNodeVersion(NODE_FLOOR)
 /** `24` — the Homebrew keg and the Arch `>=` floor. */
 export const NODE_FLOOR_MAJOR = String(NODE_FLOOR.major)

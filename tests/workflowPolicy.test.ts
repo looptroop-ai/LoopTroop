@@ -92,9 +92,9 @@ describe('release workflow policy', () => {
   })
 
   it('treats quoted and shorthand Node selectors as concrete patch values', () => {
-    const floor = parseNodeFloor('>=24.18.1')
+    const floor = parseNodeFloor('>=24.21.0')
     expect(satisfiesNodeFloor(parseNodeVersion('24.18'), floor)).toBe(false)
-    expect(satisfiesNodeFloor(parseNodeVersion('v24.18.1'), floor)).toBe(true)
+    expect(satisfiesNodeFloor(parseNodeVersion('v24.21.0'), floor)).toBe(true)
     expect(/^\s*node-version:\s*["']?(v?\d+(?:\.\d+){0,2})["']?(?=\s|$)/.exec('node-version: "24.18"')?.[1])
       .toBe('24.18')
   })
@@ -140,7 +140,7 @@ describe('release workflow policy', () => {
       const binary = text.slice(start, end)
 
       expect(binary, `${file}: binary runtime`).toContain('node-version: 26.9.0')
-      expect(binary, `${file}: binary runtime`).not.toContain('node-version: 24.18.1')
+      expect(binary, `${file}: binary runtime`).not.toContain('node-version: 24.21.0')
       expect(binary, `${file}: embedded-runtime check`).toContain('Run blocking application checks on the embedded runtime')
       expect(binary, `${file}: embedded-runtime check`).toContain('doctor --json')
       expect(binary, `${file}: embedded-runtime check`).toContain('nodeCheck?.node?.version')

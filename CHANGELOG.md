@@ -10,6 +10,7 @@ Unreleased changes appear first and represent commits that have not yet been inc
 > Changes merged since the last versioned release that have not yet shipped in a tagged version.
 
 ### Summary
+- Security and toolchain updates now ship Hono 4.13.5, Node 24.21.0, React Query 5.102.0, and a pinned OrcaCode review action.
 - CLI command help now accepts `--help`, `help`, and `?` after a command.
 - Model-filtered debug history now retains native OpenCode rows when session ownership metadata differs.
 - Ticket drafts and log history now survive deletion races, pagination gaps, native-log rewrites, and incomplete tail records without restoring stale state.
@@ -20,7 +21,7 @@ Unreleased changes appear first and represent commits that have not yet been inc
 - Git cleanup preserves uncertain process ownership and user files, while interrupted recovery can retry an absent destination safely.
 - Windows tool discovery skips script types it cannot launch; container repair reports distinguish missing inventories from recorded package versions.
 - Release-candidate verification stops on npm registry errors instead of assuming the stable tag is unchanged.
-- Standalone release binaries now use Node `26.9.0`'s native single-executable builder while application and package channels retain the Node `24.18.1` floor.
+- Standalone release binaries now use Node `26.9.0`'s native single-executable builder while application and package channels retain the Node `24.21.0` floor.
 - Canonical OpenCode installation directories (`~/.opencode/bin`) are now trusted by default for the `opencode` binary across platforms, preventing execution refusals when OpenCode release archives are unpacked under root while preserving directory ownership and file write-permission checks.
 - Linux user-namespace tools with unverifiable overflow ownership now require explicit trusted-directory opt-in, including the Node interpreter owner and canonical OpenCode binaries.
 - Installer daemon probes keep unexpected child exits unknown, and published POSIX recipes use HTTPS-only curl flags.
@@ -29,6 +30,14 @@ Unreleased changes appear first and represent commits that have not yet been inc
 - Managed OpenCode shutdown now retains daemon ownership and a retryable control path when its process tree cannot be confirmed gone; a persisted shutdown-pending guard prevents CLI force escalation, and the daemon retries with capped backoff even after its listener closes. Failed startup cleanup leaves durable owned-child evidence so a successor cannot adopt it.
 - OpenCode step-cap recovery keeps its authoritative marker in owner-only app configuration, preserving edited or unverified configs instead of trusting a mutable ticket copy; active retries stop when the cap cannot be re-applied safely.
 - Protected hook validation reports structured recovery refusals with the retained marker path and manual remedy, while CLI cleanup keeps ignored files and strict non-Git skeleton checks at the final removal boundary.
+
+### Changed
+- The application and package toolchain floor is Node 24.21.0, and the CI, release, installer, and documentation copies now agree with it.
+- React Query is updated to 5.102.0.
+
+### Security
+- Hono is updated to 4.13.5 for its released query parsing, static site generation, and form parser fixes.
+- OrcaCode pull-request reviews use an immutable action commit instead of a mutable major tag.
 
 ### Fixed
 - Native debug history no longer hides a session's rows when its persisted owner row has missing or different model metadata.

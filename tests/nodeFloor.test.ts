@@ -55,7 +55,7 @@ describe('the Node floor is stated once', () => {
    * The verifier predicts what the launcher will do when the shim resolves a
    * Node on PATH, so a runtime the two disagree about is the one case it exists
    * to report clearly and the one it used to get wrong: its private comparison
-   * dropped the prerelease suffix, so `24.18.1-rc.1` "met the floor" and the run
+   * dropped the prerelease suffix, so `24.21.0-rc.1` "met the floor" and the run
    * failed later, at `start succeeds`, as a launcher refusal wearing a read-only
    * failure's clothes.
    *

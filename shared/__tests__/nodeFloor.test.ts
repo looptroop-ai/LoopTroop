@@ -10,13 +10,13 @@ import {
   type NodeVersion,
 } from '../nodeFloor'
 
-const FLOOR: NodeVersion = { major: 24, minor: 18, patch: 1, prerelease: false }
+const FLOOR: NodeVersion = { major: 24, minor: 21, patch: 0, prerelease: false }
 const repoRoot = resolve(dirname(fileURLToPath(import.meta.url)), '..', '..')
 
 describe('parseNodeVersion', () => {
   it('reads a plain version, a v-prefixed one and a tagged one', () => {
-    expect(parseNodeVersion('24.18.1')).toEqual(FLOOR)
-    expect(parseNodeVersion('v24.18.1')).toEqual(FLOOR)
+    expect(parseNodeVersion('24.21.0')).toEqual(FLOOR)
+    expect(parseNodeVersion('v24.21.0')).toEqual(FLOOR)
     expect(parseNodeVersion('25.0.0-nightly')).toEqual({ major: 25, minor: 0, patch: 0, prerelease: true })
   })
 
@@ -36,9 +36,9 @@ describe('parseNodeVersion', () => {
 
 describe('parseNodeFloor', () => {
   it('reads the engines form and the bare form the same way', () => {
-    expect(parseNodeFloor('>=24.18.1')).toEqual(FLOOR)
-    expect(parseNodeFloor('24.18.1')).toEqual(FLOOR)
-    expect(parseNodeFloor('>= 24.18.1')).toEqual(FLOOR)
+    expect(parseNodeFloor('>=24.21.0')).toEqual(FLOOR)
+    expect(parseNodeFloor('24.21.0')).toEqual(FLOOR)
+    expect(parseNodeFloor('>= 24.21.0')).toEqual(FLOOR)
   })
 
   /**
@@ -57,14 +57,14 @@ describe('parseNodeFloor', () => {
    * doctor, the installers and the verifier, all agreeing with each other.
    * Matching the whole grammar is what turns a typo into a build failure.
    */
-  it.each(['>=24.bad.1', '>=24.18.x', '>=24.18', '>=24', '>=24.18.1.2', '^24.18.1', '>=24.18.-1'])(
+  it.each(['>=24.bad.1', '>=24.18.x', '>=24.18', '>=24', '>=24.21.0.2', '^24.21.0', '>=24.18.-1'])(
     'throws for the malformed floor %o even though its major reads',
     (range) => {
       expect(() => parseNodeFloor(range)).toThrow(/Unreadable Node floor/)
     },
   )
 
-  it.each(['>=24.18.1-rc.0', '>=24.18.1-nightly.0'])(
+  it.each(['>=24.21.0-rc.0', '>=24.21.0-nightly.0'])(
     'throws for a prerelease floor %o rather than splitting the generated copies',
     (range) => {
       expect(() => parseNodeFloor(range)).toThrow(/Unreadable Node floor/)
@@ -78,18 +78,18 @@ describe('satisfiesNodeFloor', () => {
   })
 
   /**
-   * The patch level is the point. A major.minor comparison accepted 24.18.0,
-   * which is below a floor of 24.18.1 — and the launcher, which used one,
-   * printed `24.18.0` as the version the reader needed.
+   * The patch level is the point. A major.minor comparison accepts a runtime
+   * one patch below the floor and can print the wrong version to install.
    */
   it('rejects the patch just below the floor and accepts the one just above', () => {
-    expect(satisfiesNodeFloor({ ...FLOOR, patch: 0 }, FLOOR)).toBe(false)
-    expect(satisfiesNodeFloor({ ...FLOOR, patch: 2 }, FLOOR)).toBe(true)
+    const patchFloor = { ...FLOOR, patch: FLOOR.patch + 1 }
+    expect(satisfiesNodeFloor(FLOOR, patchFloor)).toBe(false)
+    expect(satisfiesNodeFloor({ ...FLOOR, patch: FLOOR.patch + 2 }, patchFloor)).toBe(true)
   })
 
   it('rejects the minor just below and accepts the one just above', () => {
-    expect(satisfiesNodeFloor({ ...FLOOR, minor: 17, patch: 99 }, FLOOR)).toBe(false)
-    expect(satisfiesNodeFloor({ ...FLOOR, minor: 19, patch: 0 }, FLOOR)).toBe(true)
+    expect(satisfiesNodeFloor({ ...FLOOR, minor: FLOOR.minor - 1, patch: 99 }, FLOOR)).toBe(false)
+    expect(satisfiesNodeFloor({ ...FLOOR, minor: FLOOR.minor + 1, patch: 0 }, FLOOR)).toBe(true)
   })
 
   it('rejects the major just below and accepts the one just above', () => {
@@ -100,24 +100,24 @@ describe('satisfiesNodeFloor', () => {
   /**
    * A prerelease of a version is *below* that version, which is how npm reads
    * `engines` and so the only reading that agrees with the installer that put
-   * the runtime there. `24.18.1-rc.1` is missing whatever 24.18.1 fixed, and the
+   * the runtime there. `24.21.0-rc.1` is missing whatever 24.21.0 fixed, and the
    * comparison used to wave it through because the numbers matched.
    */
   it('rejects a prerelease of the floor and accepts a prerelease above it', () => {
-    expect(satisfiesNodeFloor(parseNodeVersion('24.18.1-rc.1'), FLOOR)).toBe(false)
+    expect(satisfiesNodeFloor(parseNodeVersion('24.21.0-rc.1'), FLOOR)).toBe(false)
     expect(satisfiesNodeFloor(parseNodeVersion('v25.0.0-nightly20260101'), FLOOR)).toBe(true)
   })
 
   /** A prerelease floor is asking for the prereleases too, npm's `includePrerelease`. */
   it('accepts a prerelease when the floor is itself one', () => {
-    const prereleaseFloor = parseNodeVersion('24.18.1-rc.0')
-    expect(satisfiesNodeFloor(parseNodeVersion('24.18.1-rc.1'), prereleaseFloor)).toBe(true)
+    const prereleaseFloor = parseNodeVersion('24.21.0-rc.0')
+    expect(satisfiesNodeFloor(parseNodeVersion('24.21.0-rc.1'), prereleaseFloor)).toBe(true)
   })
 })
 
 describe('formatNodeVersion', () => {
   it('prints the patch level, which is what a user has to install', () => {
-    expect(formatNodeVersion(FLOOR)).toBe('24.18.1')
+    expect(formatNodeVersion(FLOOR)).toBe('24.21.0')
   })
 })
 

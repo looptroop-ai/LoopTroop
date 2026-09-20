@@ -24,8 +24,8 @@
  *   the two wrappers' prerequisite lines and in `server/cli/launcher.cjs`. None
  *   of those three can import it: two are shell, and the launcher must stay ES5
  *   CommonJS with no dependencies so that an old Node parses it and prints a
- *   message rather than a SyntaxError. They said `24 LTS`, `24 LTS` and
- *   `24.18.0` against an `engines` of `>=24.18.1`.
+ *   message rather than a SyntaxError. Those copies now come from the exact
+ *   `engines.node` value.
  */
 import { spawnSync } from 'node:child_process'
 import { mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
@@ -71,11 +71,11 @@ const engines = JSON.parse(readFileSync(resolve(repoRoot, 'package.json'), 'utf8
 // `24.0.1` — not a lenient floor but a floor every runtime clears, generated
 // into every channel at once, with each copy agreeing with the others.
 const floorMatch = /^\s*(?:>=\s*)?v?(\d+)\.(\d+)\.(\d+)\s*$/.exec(String(engines))
-if (!floorMatch) fail(`package.json engines.node is unreadable as a floor: ${JSON.stringify(engines)}. Expected a form like ">=24.18.1".`)
+if (!floorMatch) fail(`package.json engines.node is unreadable as a floor: ${JSON.stringify(engines)}. Expected a form like ">=24.21.0".`)
 const major = Number(floorMatch[1])
 const minor = Number(floorMatch[2])
 const patch = Number(floorMatch[3])
-if (major <= 0) fail(`package.json engines.node is unreadable as a floor: ${JSON.stringify(engines)}. Expected a form like ">=24.18.1".`)
+if (major <= 0) fail(`package.json engines.node is unreadable as a floor: ${JSON.stringify(engines)}. Expected a form like ">=24.21.0".`)
 const floorLabel = `${major}.${minor}.${patch}`
 
 /** Replaces everything between a pair of markers, keeping the markers themselves. */

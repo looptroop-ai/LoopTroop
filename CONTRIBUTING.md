@@ -122,7 +122,7 @@ of display prose.
 
 Standalone binary jobs use Node `v26.9.0`'s native `--build-sea` builder. This is
 an embedded-runtime pin only: application, package and container jobs keep the
-Node `24.18.1` floor. If that embedded runtime changes, review Node's release
+Node `24.21.0` floor. If that embedded runtime changes, review Node's release
 schedule and security maintenance separately, and preserve the CommonJS asset
 bundle, disabled code cache and disabled snapshot settings across all four
 binary target lanes.

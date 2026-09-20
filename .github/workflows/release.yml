@@ -105,7 +105,7 @@ jobs:
       - name: Set up Node
         uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7
         with:
-          node-version: 24.18.1
+          node-version: 24.21.0
 
       - name: Pin npm
         run: node scripts/pin-npm.mjs
@@ -251,7 +251,7 @@ jobs:
         uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7
         with:
           # Standalone binaries use the maintained native SEA builder in Node
-          # 26.9.0. The release/package jobs retain the Node 24.18.1 floor.
+          # 26.9.0. The release/package jobs retain the Node 24.21.0 floor.
           node-version: 26.9.0
           cache: npm
 
@@ -395,7 +395,7 @@ jobs:
       - name: Set up Node
         uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7
         with:
-          node-version: 24.18.1
+          node-version: 24.21.0
 
       - name: Pin npm
         run: node scripts/pin-npm.mjs
@@ -611,7 +611,7 @@ jobs:
       - name: Set up Node
         uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7
         with:
-          node-version: 24.18.1
+          node-version: 24.21.0
 
       - name: Pin npm
         run: node scripts/pin-npm.mjs
@@ -669,7 +669,7 @@ jobs:
       - name: Set up Node
         uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7
         with:
-          node-version: 24.18.1
+          node-version: 24.21.0
 
       - name: Pin npm
         run: node scripts/pin-npm.mjs
@@ -734,7 +734,7 @@ jobs:
       - name: Set up Node
         uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7
         with:
-          node-version: 24.18.1
+          node-version: 24.21.0
 
       - name: Pin npm
         run: node scripts/pin-npm.mjs
@@ -871,7 +871,7 @@ jobs:
       - name: Set up Node
         uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7
         with:
-          node-version: 24.18.1
+          node-version: 24.21.0
           registry-url: https://registry.npmjs.org
 
       - name: Check the bundled npm client
@@ -1062,7 +1062,7 @@ jobs:
       - name: Set up Node
         uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7
         with:
-          node-version: 24.18.1
+          node-version: 24.21.0
 
       - name: Pin npm
         run: node scripts/pin-npm.mjs
@@ -1241,7 +1241,7 @@ jobs:
       - name: Set up Node
         uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7
         with:
-          node-version: 24.18.1
+          node-version: 24.21.0
 
       - name: Pin npm
         run: node scripts/pin-npm.mjs
@@ -1489,7 +1489,7 @@ jobs:
       - name: Set up Node
         uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7
         with:
-          node-version: 24.18.1
+          node-version: 24.21.0
 
       # `merge-multiple` because the two legs uploaded one file each under
       # different artefact names; this flattens both into the working directory.
@@ -1645,7 +1645,7 @@ jobs:
       - name: Set up Node
         uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7
         with:
-          node-version: 24.18.1
+          node-version: 24.21.0
 
       # Read with no credentials at all, which is the point: a private Docker Hub
       # repository is inspectable by the account that pushed to it and by nobody
@@ -1756,7 +1756,7 @@ jobs:
       - name: Set up Node
         uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7
         with:
-          node-version: 24.18.1
+          node-version: 24.21.0
 
       # Read, spliced, written back. Between the two markers is the script's
       # territory and everything outside them is left exactly as the changelog
@@ -1853,7 +1853,7 @@ jobs:
       - name: Set up Node
         uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7
         with:
-          node-version: 24.18.1
+          node-version: 24.21.0
 
       - name: Download the release artefacts
         uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8
@@ -1935,7 +1935,7 @@ jobs:
       - name: Set up Node
         uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7
         with:
-          node-version: 24.18.1
+          node-version: 24.21.0
 
       - name: Download the release artefacts
         uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8
@@ -1991,7 +1991,7 @@ jobs:
       - name: Set up Node
         uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7
         with:
-          node-version: 24.18.1
+          node-version: 24.21.0
 
       - name: Download the release artefacts
         uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8
@@ -2089,7 +2089,7 @@ jobs:
       - name: Set up Node
         uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7
         with:
-          node-version: 24.18.1
+          node-version: 24.21.0
 
       - name: Download the release artefacts
         uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8
@@ -2187,7 +2187,7 @@ jobs:
       - name: Set up Node
         uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7
         with:
-          node-version: 24.18.1
+          node-version: 24.21.0
 
       - name: Download the release artefacts
         uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8

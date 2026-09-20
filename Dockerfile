@@ -127,7 +127,7 @@
 # as by tag: a tag is a mutable pointer, so two builds of the same commit can
 # otherwise disagree about what they were built on. The digest is the multi-arch
 # index, so one value serves both amd64 and arm64. Renovate updates it.
-FROM node:24.18.1-bookworm-slim@sha256:235600a8101ab264e117b1768e925532262668dc9b581ef1dd7d96ced463b8e7 AS build
+FROM node:24.21.0-bookworm-slim@sha256:0e0ff40c39bc087845bfb27465a0df4ea419520094bc35842ff83dd8cbe6f9b6 AS build
 
 ARG TARBALL
 ARG LOCKFILE=package-lock.json
@@ -160,7 +160,7 @@ RUN tar -xzf package.tgz package/package.json \
   && rm -rf /build/package /build/package.tgz
 
 
-FROM node:24.18.1-bookworm-slim@sha256:235600a8101ab264e117b1768e925532262668dc9b581ef1dd7d96ced463b8e7 AS runtime
+FROM node:24.21.0-bookworm-slim@sha256:0e0ff40c39bc087845bfb27465a0df4ea419520094bc35842ff83dd8cbe6f9b6 AS runtime
 
 # Passed by the build so the image can say what it is without a second source of
 # truth for the version. Declared here rather than at the top because build args

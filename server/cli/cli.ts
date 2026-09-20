@@ -42,7 +42,7 @@ Options:
   --help         Print this message
 
 Run \`looptroop <command> --help\`, \`looptroop <command> help\`, or
-\`looptroop <command> '?'\` (quote \`?\` in shells that expand globs)
+\`looptroop <command> "?"\` (double quotes keep \`?\` literal in every shell)
 for what a single command does and takes.
 `
 

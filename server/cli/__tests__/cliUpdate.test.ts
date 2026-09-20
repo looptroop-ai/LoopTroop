@@ -145,7 +145,7 @@ describe('CLI update surfaces', () => {
   it('shows a shell-safe spelling for the question-mark alias', async () => {
     await main(['--help'])
 
-    expect(stdout).toContain("`looptroop <command> '?'`")
+    expect(stdout).toContain('`looptroop <command> "?"`')
   })
 
   it.each(['constructor', 'toString', 'hasOwnProperty', 'valueOf', '__proto__'])('rejects inherited command names for per-command help: %s', async (command) => {

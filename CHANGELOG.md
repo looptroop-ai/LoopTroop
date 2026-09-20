@@ -10,6 +10,7 @@ Unreleased changes appear first and represent commits that have not yet been inc
 > Changes merged since the last versioned release that have not yet shipped in a tagged version.
 
 ### Summary
+- CLI command help now accepts `--help`, `help`, and `?` after a command.
 - Model-filtered debug history now retains native OpenCode rows when session ownership metadata differs.
 - Ticket drafts and log history now survive deletion races, pagination gaps, native-log rewrites, and incomplete tail records without restoring stale state.
 - Remote browser access now uses one explicitly configured HTTPS origin, rejects incomplete remote-mode setup at startup, and keeps plain-HTTP remote clients token-only.
@@ -378,6 +379,7 @@ Unreleased changes appear first and represent commits that have not yet been inc
 - The Windows affected-file gate now fails when it cannot compute the pull request diff instead of silently skipping its checks.
 - Executable ownership checks and their generated installer copies use the same explicit numeric sentinel, clearing the remaining Sonar style warnings without changing trust policy.
 - Container repair closes its lockfile-detection shell expression correctly. The Windows workflow-scope test uses a shell-local Git fixture, and installer safety tests share setup while retaining each daemon-evidence case.
+- Fixed per-command CLI help requiring `--help`; `help` and `?` now produce the same help output.
 - Trusted program resolution automatically trusts OpenCode's canonical binary directory (`~/.opencode/bin`) and paths specified via `OPENCODE_INSTALL_DIR` or `OPENCODE_DIR`. When OpenCode is installed or updated on Linux as root, official release archives unpacked with GNU `tar` preserve the build runner's UID (`1001`), which previously caused LoopTroop's ancestor ownership security check to refuse the binary on startup.
 - Phase and Full Log tabs use complete model metadata for their history scope, including models found only on older pages. Unavailable selections reset both the displayed tab and its history/export query; cached filters and reopened views cannot replace newer model metadata. Scope changes reset selection immediately, failed loads clear unavailable filters, and changing the copy target cancels an unfinished export. Export failures also clear a previous success indicator.
 - Refreshing phase, Full Log, or bead history after loading older pages starts with the newest page, updating totals and model metadata, then follows fresh cursors through the loaded page count or until history ends. It no longer loses the newest page by restarting from an old cursor. New log entries can shift page boundaries, so the exact oldest visible row may change after refresh.

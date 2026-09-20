@@ -128,6 +128,20 @@ describe('CLI update surfaces', () => {
     expect(mocks.openCommand).toHaveBeenCalledWith({ opencodeLogs: 'all' })
   })
 
+  it('accepts --help, help, and ? for per-command help', async () => {
+    const outputs: string[] = []
+
+    for (const alias of ['--help', 'help', '?']) {
+      stdout = ''
+      expect(await main(['open', alias])).toBe(0)
+      outputs.push(stdout)
+    }
+
+    expect(new Set(outputs).size).toBe(1)
+    expect(outputs[0]).toContain('Usage: looptroop open')
+    expect(mocks.openCommand).not.toHaveBeenCalled()
+  })
+
   it('rejects unsupported OpenCode log modes before running a command', async () => {
     const code = await main(['start', '--opencode-logs=debug'])
 

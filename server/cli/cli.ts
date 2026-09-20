@@ -39,9 +39,11 @@ Options:
   --apply        Actually remove what clean would delete
   --yes, -y      Accept every default without asking (setup)
   --version      Print the version
-  --help         Print this message (also help or ? after a command)
+  --help         Print this message
 
-Run \`looptroop <command> --help\` (or \`help\` or \`?\`) for what a single command does and takes.
+Run \`looptroop <command> --help\`, \`looptroop <command> help\`, or
+\`looptroop <command> '?'\` (quote \`?\` in shells that expand globs)
+for what a single command does and takes.
 `
 
 /**
@@ -261,7 +263,9 @@ export async function main(argv: string[]): Promise<number> {
   // something unasked.
   const helpAlias = positionals[1] === 'help' || positionals[1] === '?'
   if (values.help || helpAlias) {
-    const help = command === undefined ? undefined : COMMAND_HELP[command]
+    const help = command === undefined || !Object.hasOwn(COMMAND_HELP, command)
+      ? undefined
+      : COMMAND_HELP[command]
     if (command !== undefined && help === undefined) {
       process.stderr.write(`Unknown command "${command}".\n\n${USAGE}`)
       return 1

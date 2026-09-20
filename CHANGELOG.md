@@ -124,6 +124,7 @@ Unreleased changes appear first and represent commits that have not yet been inc
 - The countdown on the current step now shows the step you are looking at. Switching between steps kept the previous one's remaining time on screen for up to a second.
 
 ### Added
+- Per-command help accepts `--help`, `help`, and `?` after a command.
 - Durable startup-cleanup ownership records identify the managed OpenCode base URL, pid, and optional start token. A later `looptroop start` stays blocked until `looptroop stop` proves the owned tree is gone; tokenless, recycled, or unverifiable ownership remains preserved.
 - OpenCode step-cap restore authority now lives at `<app-config>/opencode-steps/<ticket-directory-hash>.json`; a ticket-side `opencode-steps-restore.json` is only a convenience copy. Exact-original bytes, or an absent original with an absent current file, can settle the record safely.
 - Active OpenCode step-cap retries verify the authoritative marker before reapplying the cap after a worktree reset and stop with its exact path and manual remedy when the marker or expected file cannot be verified.
@@ -317,6 +318,7 @@ Unreleased changes appear first and represent commits that have not yet been inc
 - Three aliases re-exported for a question-diff type that no longer exists, the three helpers behind them, an execution-setup runtime-path list with no reader, and an execution-setup barrel re-exporting three artifact names every caller already imports from their own module.
 
 ### Fixed
+- Per-command help now rejects inherited object property names as unknown commands instead of trying to print them.
 - Workflow phase details now match the structured bead-command, checkpoint, and marker-recovery guarantees enforced by the runtime.
 - Skip All interview finalization now rolls back its snapshot, receipts, and coverage artifacts after a post-CAS failure, so the action can be retried safely.
 - Council member completion now checks only that member's session ownership, so another member's active session cannot block an otherwise confirmed stop.
@@ -379,7 +381,6 @@ Unreleased changes appear first and represent commits that have not yet been inc
 - The Windows affected-file gate now fails when it cannot compute the pull request diff instead of silently skipping its checks.
 - Executable ownership checks and their generated installer copies use the same explicit numeric sentinel, clearing the remaining Sonar style warnings without changing trust policy.
 - Container repair closes its lockfile-detection shell expression correctly. The Windows workflow-scope test uses a shell-local Git fixture, and installer safety tests share setup while retaining each daemon-evidence case.
-- Fixed per-command CLI help requiring `--help`; `help` and `?` now produce the same help output.
 - Trusted program resolution automatically trusts OpenCode's canonical binary directory (`~/.opencode/bin`) and paths specified via `OPENCODE_INSTALL_DIR` or `OPENCODE_DIR`. When OpenCode is installed or updated on Linux as root, official release archives unpacked with GNU `tar` preserve the build runner's UID (`1001`), which previously caused LoopTroop's ancestor ownership security check to refuse the binary on startup.
 - Phase and Full Log tabs use complete model metadata for their history scope, including models found only on older pages. Unavailable selections reset both the displayed tab and its history/export query; cached filters and reopened views cannot replace newer model metadata. Scope changes reset selection immediately, failed loads clear unavailable filters, and changing the copy target cancels an unfinished export. Export failures also clear a previous success indicator.
 - Refreshing phase, Full Log, or bead history after loading older pages starts with the newest page, updating totals and model metadata, then follows fresh cursors through the loaded page count or until history ends. It no longer loses the newest page by restarting from an old cursor. New log entries can shift page boundaries, so the exact oldest visible row may change after refresh.

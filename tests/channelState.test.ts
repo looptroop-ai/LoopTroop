@@ -155,57 +155,96 @@ describe('checking a descriptor URL against its version', () => {
   const asset = (version: string) =>
     `https://github.com/looptroop-ai/LoopTroop/releases/download/v${version}/looptroop-${version}-bundle.tar.gz`
 
-  it('accepts this project\'s release asset for that version', () => {
-    expect(checkDescriptorUrl(asset('1.2.3'), '1.2.3')).toBeNull()
+  it('accepts this project\'s bundle for that version', () => {
+    expect(checkDescriptorUrl(asset('9.9.9'), '9.9.9')).toBeNull()
+  })
+
+  /** `compareVersions` strips a leading `v`, so this has to agree with it. */
+  it('accepts a version written with a leading v', () => {
+    expect(checkDescriptorUrl(asset('9.9.9'), 'v9.9.9')).toBeNull()
   })
 
   /**
    * The exact descriptor a hand-run of channel-push.ts published to the live
    * Scoop bucket on 2026-09-14, taken from that script's own usage line. The
-   * version check could not catch it: 9.9.9 is newer than 1.2.3, so it read as
-   * an ordinary upgrade.
+   * version check could not catch it: 9.9.9 outranked the released version, so
+   * it read as an ordinary upgrade.
    */
   it('refuses the placeholder descriptor that broke the Scoop bucket', () => {
     const refusal = checkDescriptorUrl('https://github.com/owner/name/releases/download/v9.9.9/pwn-bundle.tar.gz', '9.9.9')
 
     expect(refusal).not.toBeNull()
-    expect(refusal).toContain('owner/name')
   })
 
   it('refuses a version that disagrees with the tag in the URL', () => {
-    expect(checkDescriptorUrl(asset('1.2.3'), '1.2.4')).not.toBeNull()
+    expect(checkDescriptorUrl(asset('9.9.9'), '9.9.8')).not.toBeNull()
   })
 
   it.each([
-    ['another host', 'https://example.invalid/looptroop-ai/LoopTroop/releases/download/v1.2.3/looptroop-1.2.3-bundle.tar.gz'],
-    ['plain http', 'http://github.com/looptroop-ai/LoopTroop/releases/download/v1.2.3/looptroop-1.2.3-bundle.tar.gz'],
-    ['another repository', 'https://github.com/someone/LoopTroop/releases/download/v1.2.3/looptroop-1.2.3-bundle.tar.gz'],
-    ['no asset name', 'https://github.com/looptroop-ai/LoopTroop/releases/download/v1.2.3/'],
-    ['not a URL', 'looptroop-1.2.3-bundle.tar.gz'],
+    ['another host', 'https://example.invalid/looptroop-ai/LoopTroop/releases/download/v9.9.9/looptroop-9.9.9-bundle.tar.gz'],
+    ['plain http', 'http://github.com/looptroop-ai/LoopTroop/releases/download/v9.9.9/looptroop-9.9.9-bundle.tar.gz'],
+    ['another repository', 'https://github.com/someone/LoopTroop/releases/download/v9.9.9/looptroop-9.9.9-bundle.tar.gz'],
+    ['no asset name', 'https://github.com/looptroop-ai/LoopTroop/releases/download/v9.9.9/'],
+    ['not a URL', 'looptroop-9.9.9-bundle.tar.gz'],
+    ['a path that traverses out of the release', 'https://github.com/looptroop-ai/LoopTroop/releases/download/v9.9.9/../../../evil.tar.gz'],
   ])('refuses %s', (_label, url) => {
-    expect(checkDescriptorUrl(url, '1.2.3')).not.toBeNull()
+    expect(checkDescriptorUrl(url, '9.9.9')).not.toBeNull()
   })
 
   /**
-   * Every channel this script writes installs the bundle, so another asset of
-   * the correct release is still bytes no package manager can unpack. A prefix
-   * test would have accepted all of these.
+   * Every channel written through the contents API installs the bundle, so
+   * another asset of the correct release is still bytes no package manager can
+   * unpack. A prefix test would have accepted all of these.
    */
   it.each([
     ['the checksums file', 'checksums.sha256'],
-    ['a platform binary', 'looptroop-1.2.3-linux-x64.tar.gz'],
-    ['the npm tarball', 'looptroop-1.2.3.tgz'],
+    ['a platform binary', 'looptroop-9.9.9-linux-x64.tar.gz'],
+    ['the npm tarball', 'looptroop-9.9.9.tgz'],
     ['the release manifest', 'release-manifest.json'],
-    ['a bundle named for another version', 'looptroop-1.2.4-bundle.tar.gz'],
-    ['a nested path', 'nested/looptroop-1.2.3-bundle.tar.gz'],
+    ['a bundle named for another version', 'looptroop-9.9.8-bundle.tar.gz'],
+    ['a nested path', 'nested/looptroop-9.9.9-bundle.tar.gz'],
   ])('refuses %s from the right release', (_label, assetName) => {
-    const url = `https://github.com/looptroop-ai/LoopTroop/releases/download/v1.2.3/${assetName}`
+    const url = `https://github.com/looptroop-ai/LoopTroop/releases/download/v9.9.9/${assetName}`
 
-    expect(checkDescriptorUrl(url, '1.2.3')).not.toBeNull()
+    expect(checkDescriptorUrl(url, '9.9.9')).not.toBeNull()
   })
 
-  /** `new URL` collapses `..`, so the path comparison cannot be walked out of. */
-  it('refuses a path that traverses out of the release', () => {
-    expect(checkDescriptorUrl('https://github.com/looptroop-ai/LoopTroop/releases/download/v1.2.3/../../../evil.tar.gz', '1.2.3')).not.toBeNull()
+  /**
+   * `new URL` moves these out of `pathname`, so a guard comparing protocol,
+   * host and pathname accepted every one of them — and the *raw* string is
+   * what gets rendered, so a fragment became further lines of a Homebrew
+   * formula, which is arbitrary Ruby in a published tap.
+   */
+  it.each([
+    ['userinfo', `https://user:token@github.com/looptroop-ai/LoopTroop/releases/download/v9.9.9/looptroop-9.9.9-bundle.tar.gz`],
+    ['a query', `${asset('9.9.9')}?token=secret`],
+    ['a fragment', `${asset('9.9.9')}#x`],
+    ['an injected formula body', `${asset('9.9.9')}#"\n  sha256 "forged"\n  system "pwn"`],
+    ['trailing whitespace', `${asset('9.9.9')}  `],
+    ['a port', 'https://github.com:443/looptroop-ai/LoopTroop/releases/download/v9.9.9/looptroop-9.9.9-bundle.tar.gz'],
+  ])('refuses a URL carrying %s', (_label, url) => {
+    expect(checkDescriptorUrl(url, '9.9.9')).not.toBeNull()
+  })
+
+  /**
+   * `fail` writes the reason to CI stderr, and a rejected URL is the one most
+   * likely to be carrying a credential. The file already refuses to echo a
+   * failed command's argv for the same reason.
+   */
+  it('never repeats the rejected URL back', () => {
+    const secret = `https://user:hunter2@github.com/looptroop-ai/LoopTroop/releases/download/v9.9.9/looptroop-9.9.9-bundle.tar.gz`
+    const refusal = checkDescriptorUrl(secret, '9.9.9')
+
+    expect(refusal).not.toBeNull()
+    expect(refusal).not.toContain('hunter2')
+    expect(refusal).not.toContain(secret)
+  })
+
+  /** WinGet installs the Windows zip, not the bundle. */
+  it('accepts a different asset when the caller names one', () => {
+    const zip = 'https://github.com/looptroop-ai/LoopTroop/releases/download/v9.9.9/looptroop-9.9.9-win-x64.zip'
+
+    expect(checkDescriptorUrl(zip, '9.9.9', 'looptroop-9.9.9-win-x64.zip')).toBeNull()
+    expect(checkDescriptorUrl(asset('9.9.9'), '9.9.9', 'looptroop-9.9.9-win-x64.zip')).not.toBeNull()
   })
 })

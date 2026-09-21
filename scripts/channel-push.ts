@@ -3,15 +3,22 @@
  * Publishes a descriptor to a package channel's repository.
  *
  *   node scripts/channel-push.ts --channel homebrew \
- *     --repo looptroop-ai/homebrew-looptroop --version 1.2.3 \
- *     --url https://github.com/looptroop-ai/LoopTroop/releases/download/v1.2.3/looptroop-1.2.3-bundle.tar.gz \
+ *     --repo looptroop-ai/homebrew-tap --version X.Y.Z \
+ *     --url https://github.com/looptroop-ai/LoopTroop/releases/download/vX.Y.Z/looptroop-X.Y.Z-bundle.tar.gz \
  *     --sha256 … [--force] [--dry-run]
  *
+ * Every value above is deliberately a placeholder that cannot publish. This
+ * example previously read `--version 9.9.9` against `--repo owner/name`, and on
+ * 2026-09-14 somebody pasted and ran it: those values became the live Scoop
+ * descriptor, whose URL 404s, and the downgrade rule then refused to let
+ * anyone put the real one back. `X.Y.Z` fails the URL check on the first
+ * attempt instead. The tap is also named correctly here now; the old example
+ * pointed at `homebrew-looptroop`, which does not exist.
+ *
  * `--repo` is where the descriptor is *written* — a tap or a bucket. Where the
- * bytes users download come from is not an argument at all; `--url` is checked
- * against this project's release for `--version` and nothing else. The example
- * above used to read `--version 9.9.9` with an elided URL, and on 2026-09-14
- * somebody ran it: those placeholders became the live Scoop descriptor.
+ * bytes users download come from is not an argument at all: `--url` must equal
+ * this project's bundle URL for `--version`, and that release must really
+ * carry the asset.
  *
  * Through the contents API rather than a clone and a push, for one reason: the
  * API takes the blob SHA the file had when it was read and rejects the write if
@@ -25,8 +32,8 @@
  */
 import { execFileSync } from 'node:child_process'
 import type { Channel } from './package-manifests.ts'
-import { DESCRIPTOR_PATH, parseDescriptor, renderDescriptor } from './package-manifests.ts'
-import { checkDescriptorUrl, decideChannelWrite, writes } from './channel-state.ts'
+import { DESCRIPTOR_PATH, bundleFileName, parseDescriptor, renderDescriptor } from './package-manifests.ts'
+import { SOURCE_REPOSITORY, checkDescriptorUrl, decideChannelWrite, writes } from './channel-state.ts'
 import { resolveTrustedTool } from './trusted-tool.ts'
 import { ArgumentError, parseArgs, requireNoPositional } from './cli-args.ts'
 
@@ -71,8 +78,13 @@ function flag(name: string): string {
   return value
 }
 
+// Only the two channels this script actually writes. `DESCRIPTOR_PATH` also
+// carries chocolatey, which is built and pushed by `build-choco.ts` and
+// `choco-push.ts` and never reaches here, so accepting it only made the check
+// disagree with the usage line above it.
+const CHANNELS = ['homebrew', 'scoop'] as const
 const channel = flag('channel') as Channel
-if (!(channel in DESCRIPTOR_PATH)) fail(`--channel must be one of ${Object.keys(DESCRIPTOR_PATH).join(', ')}.`)
+if (!(CHANNELS as readonly string[]).includes(channel)) fail(`--channel must be one of ${CHANNELS.join(', ')}.`)
 
 const repo = flag('repo')
 const version = flag('version')
@@ -81,6 +93,18 @@ const sha256 = flag('sha256')
 const force = args.switch('force')
 const dryRun = args.switch('dry-run')
 const path = DESCRIPTOR_PATH[channel]
+
+// Everything that can be judged from the arguments alone, before the `gh`
+// resolution below and the network calls after it. Both of those can fail for
+// their own reasons, and when the arguments were never publishable that is the
+// wrong reason to report — the operator changes a token or a PATH and runs the
+// same unpublishable command again.
+const badUrl = checkDescriptorUrl(url, version)
+if (badUrl !== null) fail(`Refusing to write ${version} to ${repo}.`, badUrl, 'Nothing was changed.')
+
+// `renderDescriptor` throws on a malformed hash, which reaches the operator as
+// an uncaught stack trace after the network work rather than as a refusal.
+if (!/^[0-9a-f]{64}$/.test(sha256)) fail(`Refusing to write ${version} to ${repo}.`, '--sha256 must be 64 lowercase hex characters.', 'Nothing was changed.')
 
 /**
  * `gh`, resolved once from a directory the runner owns.
@@ -138,6 +162,47 @@ function preflight(): void {
   log('lack of access cannot overwrite anything. A push that is genuinely unauthorised will fail below.')
 }
 
+/**
+ * That the release this descriptor points at actually has the asset.
+ *
+ * `checkDescriptorUrl` proves the URL has the right *shape*; it cannot prove
+ * the bytes exist, because the version and the URL both come from the same
+ * caller and a consistent invented pair satisfies it. That gap is what the
+ * 2026-09-14 incident published: a descriptor whose URL 404s, and which the
+ * downgrade rule then refused to let anyone replace.
+ *
+ * Fail-closed only on a definite answer. A release that resolves and does not
+ * list the asset is a refusal; anything else — `gh` erroring, the API
+ * unreachable, output that will not parse — is a warning and the publish
+ * continues, because this is a last check on a release the workflow has
+ * already built and drafted, and it must not be the thing that strands one.
+ */
+function requireReleaseAsset(): void {
+  const raw = gh(['release', 'view', `v${version.replace(/^v/, '')}`, '--repo', SOURCE_REPOSITORY, '--json', 'assets'], true).trim()
+  if (raw === '') {
+    log(`::warning::Could not read the v${version} release to confirm ${bundleFileName(version)} exists. Continuing.`)
+    return
+  }
+
+  let names: string[]
+  try {
+    names = (JSON.parse(raw) as { assets?: { name?: string }[] }).assets?.map((asset) => asset.name ?? '') ?? []
+  } catch {
+    log(`::warning::Could not parse the v${version} release assets. Continuing.`)
+    return
+  }
+
+  const wanted = bundleFileName(version.replace(/^v/, ''))
+  if (names.includes(wanted)) return
+
+  fail(
+    `Refusing to write ${version} to ${repo}.`,
+    `The v${version} release of ${SOURCE_REPOSITORY} does not carry ${wanted}, so this descriptor would point at a 404.`,
+    `It lists: ${names.join(', ') || '(no assets)'}`,
+    'Nothing was changed.',
+  )
+}
+
 interface RemoteFile { text: string, blobSha: string }
 
 function readRemote(): RemoteFile | null {
@@ -150,16 +215,8 @@ function readRemote(): RemoteFile | null {
   return { text: Buffer.from(parsed.content, 'base64').toString('utf8'), blobSha: parsed.sha }
 }
 
-// Ahead of `preflight`, which is the first thing here that reaches the network:
-// a descriptor pointing somewhere other than this project's bundle for this
-// version is refused whatever is already published and whatever `--force` says,
-// so it should not depend on a token being present or a probe answering. A
-// read-only token or an unreachable API would otherwise fail first and report
-// the wrong reason for a URL that was never publishable.
-const badUrl = checkDescriptorUrl(url, version)
-if (badUrl !== null) fail(`Refusing to write ${version} to ${repo}.`, badUrl, 'Nothing was changed.')
-
 preflight()
+requireReleaseAsset()
 
 const desired = { version, url, sha256 }
 const descriptor = renderDescriptor(channel, desired)

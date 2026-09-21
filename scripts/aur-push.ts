@@ -2,7 +2,7 @@
 /**
  * Publishes this version to the AUR.
  *
- *   node scripts/aur-push.ts --version 1.2.3 --url https://…/looptroop-1.2.3-bundle.tar.gz --sha256 …
+ *   node scripts/aur-push.ts --version X.Y.Z --url https://…/looptroop-X.Y.Z-bundle.tar.gz --sha256 …
  *
  * ## Dormant on purpose
  *
@@ -32,6 +32,7 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { ArgumentError, parseArgs, requireNoPositional } from './cli-args.ts'
 import { renderAurPackage, AUR_PACKAGE_NAME } from './package-manifests.ts'
+import { checkDescriptorUrl } from './channel-state.ts'
 import { spawnProgram } from './tool-path.ts'
 
 const REMOTE = `ssh://aur@aur.archlinux.org/${AUR_PACKAGE_NAME}.git`
@@ -78,6 +79,14 @@ const knownHosts = process.env.AUR_KNOWN_HOSTS ?? fail(
 const version = flag('version')
 const url = flag('url')
 const sha256 = flag('sha256')
+
+// Same guard as `channel-push.ts`, for the same reason: this takes a version
+// and a URL from the same caller and renders them straight into a descriptor
+// other people install from. A hand-run with placeholder values published a
+// 404 to the Scoop bucket on 2026-09-14; nothing about that was specific to
+// Scoop. Checked here, before any network or temporary directory work.
+const badUrl = checkDescriptorUrl(url, version)
+if (badUrl !== null) fail(`Refusing to push ${version} to the AUR.`, badUrl, 'Nothing was changed.')
 
 const work = mkdtempSync(join(tmpdir(), 'looptroop-aur-'))
 const ssh = join(work, 'ssh')

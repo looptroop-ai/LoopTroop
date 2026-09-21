@@ -11,7 +11,7 @@
  * already verified stop matching.
  */
 import type { ParsedDescriptor } from './package-manifests.ts'
-import { bundleFileName } from './package-manifests.ts'
+import { REPOSITORY, bundleFileName } from './package-manifests.ts'
 
 export interface DesiredDescriptor {
   version: string
@@ -66,16 +66,21 @@ export function compareVersions(left: string, right: string): number {
 }
 
 /**
- * The one repository a descriptor is allowed to point at.
+ * Where a release asset of this project lives.
  *
- * Hardcoded rather than taken from an argument, because "which project's
+ * Built from `REPOSITORY` rather than a second copy of the owner and name, so
+ * a rename cannot leave the guard disagreeing with the generator that produced
+ * the URL it is judging. Not taken from an argument either: "which project's
  * releases may this descriptor serve" is not a decision any caller should get
- * to make. `channel-push.ts` already takes a `--repo`, but that is the tap or
- * bucket being *written to*; nothing there constrains where the bytes users
- * download come from.
+ * to make. `channel-push.ts` takes a `--repo`, but that is the tap or bucket
+ * being *written to*; nothing there constrains where users' bytes come from.
  */
-const RELEASE_ASSET_HOST = 'github.com'
-const RELEASE_ASSET_REPO = '/looptroop-ai/LoopTroop/releases/download'
+export function releaseAssetUrl(version: string, assetName: string): string {
+  return `${REPOSITORY}/releases/download/v${version.replace(/^v/, '')}/${assetName}`
+}
+
+/** The same repository as `owner/name`, which is what `gh --repo` takes. */
+export const SOURCE_REPOSITORY = new URL(REPOSITORY).pathname.replace(/^\//, '')
 
 /**
  * Why this descriptor's URL cannot be published, or `null` when it can.
@@ -94,29 +99,31 @@ const RELEASE_ASSET_REPO = '/looptroop-ai/LoopTroop/releases/download'
  * Tying the URL to the version closes both halves. A placeholder version no
  * longer matches the tag in a real asset URL, and a real version cannot be
  * pointed at somebody else's host.
+ *
+ * `assetName` defaults to the bundle, which is what every channel written
+ * through the contents API installs. The publishers that ship a different
+ * asset — WinGet's Windows zip — pass their own.
  */
-export function checkDescriptorUrl(url: string, version: string): string | null {
-  // The whole path, not a prefix. Every channel this script writes installs the
-  // bundle and nothing else, so any other asset of the same release — the
-  // checksums file, a platform binary, the npm tarball — is bytes no package
-  // manager can unpack, and would be accepted by a prefix test.
-  const expected = `${RELEASE_ASSET_REPO}/v${version}/${bundleFileName(version)}`
+export function checkDescriptorUrl(url: string, version: string, assetName?: string): string | null {
+  const release = version.replace(/^v/, '')
+  const expected = releaseAssetUrl(release, assetName ?? bundleFileName(release))
 
-  let parsed: URL
-  try {
-    parsed = new URL(url)
-  } catch {
-    return `--url is not a URL: ${url}`
-  }
+  // The whole string, compared literally, rather than a parsed URL's protocol,
+  // host and pathname. Those three leave `username`, `password`, `search`,
+  // `hash`, `port` and surrounding whitespace unexamined, and the *raw* string
+  // is what gets rendered into the descriptor — so a URL carrying a fragment
+  // passed a component check and emitted the fragment as further lines of a
+  // Homebrew formula, which is arbitrary Ruby in a published tap. An exact
+  // comparison is also simpler than enumerating the parts that must be empty,
+  // and the release pipeline builds this string the same way, so nothing
+  // legitimate is spelled differently.
+  if (url === expected) return null
 
-  // `new URL` collapses `..` before this runs, so a traversal cannot reach a
-  // different path and still compare equal.
-  const ok = parsed.protocol === 'https:'
-    && parsed.host === RELEASE_ASSET_HOST
-    && parsed.pathname === expected
-
-  if (ok) return null
-  return `--url must be this project's v${version} bundle, https://${RELEASE_ASSET_HOST}${expected}, not ${url}`
+  // Deliberately not echoing what was given. `fail` writes to CI stderr, a
+  // rejected URL is the one most likely to carry `user:token@` or a signed
+  // query, and this file already refuses to echo a failed command's argv for
+  // exactly that reason.
+  return `--url must be exactly ${expected}. What was passed did not match and is not repeated here, in case it carries a credential.`
 }
 
 export interface DecideOptions {

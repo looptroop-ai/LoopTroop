@@ -12,7 +12,7 @@ const PUSH = join(repoRoot, 'scripts', 'channel-push.ts')
 
 const SHA = 'a'.repeat(64)
 const OTHER_SHA = 'b'.repeat(64)
-const REPO = 'looptroop-ai/homebrew-looptroop'
+const REPO = 'looptroop-ai/homebrew-tap'
 
 /**
  * The URL carries the version, which is not incidental: the formula states no
@@ -66,6 +66,9 @@ if (joined.includes('.permissions.push')) {
 } else if (args.includes('--method') && args.includes('PUT')) {
   appendFileSync(process.env.GH_STUB_STATE + '.put', JSON.stringify(args) + '\\n')
   process.stdout.write('deadbeef\\n')
+} else if (args[0] === 'release' && args[1] === 'view') {
+  if (state.releaseAssets === null) process.exit(1)
+  process.stdout.write(JSON.stringify({ assets: state.releaseAssets.map((name) => ({ name })) }) + '\\n')
 } else if (joined.includes('/contents/')) {
   if (state.remote === null) process.exit(1)
   process.stdout.write(JSON.stringify({
@@ -85,8 +88,8 @@ if (joined.includes('.permissions.push')) {
     for (const dir of tempDirs.splice(0)) removeTempDir(dir)
   })
 
-  function setState(state: { push?: boolean | 'unknown', remote?: string | null, blobSha?: string }): void {
-    writeFileSync(statePath, JSON.stringify({ push: true, remote: null, blobSha: 'abc123', ...state }))
+  function setState(state: { push?: boolean | 'unknown', remote?: string | null, blobSha?: string, releaseAssets?: string[] | null }): void {
+    writeFileSync(statePath, JSON.stringify({ push: true, remote: null, blobSha: 'abc123', releaseAssets: ['looptroop-9.9.9-bundle.tar.gz'], ...state }))
     rmSync(`${statePath}.put`, { force: true })
   }
 
@@ -98,7 +101,7 @@ if (joined.includes('.permissions.push')) {
     }
   }
 
-  function push(extra: string[] = [], overrides: { url?: string, version?: string } = {}) {
+  function push(extra: string[] = [], overrides: { url?: string, version?: string, sha256?: string } = {}) {
     return new Promise<{ status: number | null, stdout: string, stderr: string }>((done, reject) => {
       const child = spawn(process.execPath, [
         PUSH,
@@ -106,7 +109,7 @@ if (joined.includes('.permissions.push')) {
         '--repo', REPO,
         '--version', overrides.version ?? '9.9.9',
         '--url', overrides.url ?? URL,
-        '--sha256', SHA,
+        '--sha256', overrides.sha256 ?? SHA,
         ...extra,
       ], {
         env: {
@@ -257,7 +260,10 @@ if (joined.includes('.permissions.push')) {
     const result = await push(['--force'], { url: 'https://github.com/owner/name/releases/download/v9.9.9/pwn-bundle.tar.gz' })
 
     expect(result.status).toBe(1)
-    expect(result.stderr).toContain('owner/name')
+    expect(result.stderr).toContain('must be exactly')
+    // The rejected value is never repeated: it is the argument most likely to
+    // be carrying a credential, and this goes to CI stderr.
+    expect(result.stderr).not.toContain('owner/name')
     expect(putCalls()).toHaveLength(0)
   })
 
@@ -273,8 +279,57 @@ if (joined.includes('.permissions.push')) {
     const result = await push([], { url: 'https://github.com/owner/name/releases/download/v9.9.9/pwn-bundle.tar.gz' })
 
     expect(result.status).toBe(1)
-    expect(result.stderr).toContain('owner/name')
+    expect(result.stderr).toContain('must be exactly')
     expect(result.stderr).not.toContain('read-only')
     expect(putCalls()).toHaveLength(0)
+  })
+
+  /**
+   * A URL of the right shape is not proof the bytes exist. The version and the
+   * URL come from the same caller, so a consistent invented pair satisfies
+   * `checkDescriptorUrl` — and publishing one is exactly what left the Scoop
+   * bucket serving a 404 that the downgrade rule then refused to let anyone
+   * replace.
+   */
+  it('refuses when the release does not carry the asset, and writes nothing', async () => {
+    setState({ remote: null, releaseAssets: ['checksums.sha256'] })
+
+    const result = await push()
+
+    expect(result.status).toBe(1)
+    expect(result.stderr).toContain('does not carry')
+    expect(putCalls()).toHaveLength(0)
+  })
+
+  /**
+   * `renderDescriptor` throws on a malformed hash, which reached the operator
+   * as an uncaught stack trace after the network work rather than a refusal.
+   */
+  it('refuses a malformed sha256 cleanly, and writes nothing', async () => {
+    setState({ remote: null })
+
+    const result = await push([], { sha256: 'badhex' })
+
+    expect(result.status).toBe(1)
+    expect(result.stderr).toContain('64 lowercase hex')
+    // Not the raw `Not a sha256:` throw from the renderer, which arrived as an
+    // uncaught stack trace after the network work rather than as a refusal.
+    expect(result.stderr).not.toContain('Not a sha256')
+    expect(putCalls()).toHaveLength(0)
+  })
+
+  /**
+   * Fail-open on an unreadable answer. This is a last check on a release the
+   * workflow has already built and drafted, so an API that will not answer
+   * must not be the thing that strands it.
+   */
+  it('warns and continues when the release cannot be read', async () => {
+    setState({ remote: null, releaseAssets: null })
+
+    const result = await push()
+
+    expect(result.status).toBe(0)
+    expect(result.stdout).toContain('::warning::')
+    expect(putCalls()).toHaveLength(1)
   })
 })

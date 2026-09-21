@@ -1059,8 +1059,8 @@ const CHOCO_FEED = 'https://community.chocolatey.org/api/v2'
  *
  * Exported for its test, and a pure function of the payload because the rule is
  * not the obvious one and this probe had it wrong first: the entity endpoint
- * answers **200 for a version that has only been submitted**. `looptroop 0.5.9`
- * was addressable at `Packages(Id=…,Version=…)` within a minute of the push,
+ * answers **200 for a version that has only been submitted**. A release pushed
+ * to the feed was addressable at `Packages(Id=…,Version=…)` within a minute,
  * carrying `PackageStatus: Submitted`, while `choco install looptroop` still
  * resolved the previously approved version. Presence is not service here;
  * approval is, so approval is what this reads.

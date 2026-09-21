@@ -59,7 +59,7 @@ describe('WinGet submission credentials', () => {
     // this push *introduces* — and GitHub refuses a push that introduces a
     // workflow file unless the token carries the `workflow` scope. A sync after
     // the clone, or no sync at all, leaves that rejection in place: it is what
-    // stopped a correct 0.5.9 submission with the fork 18,821 commits behind.
+    // stopped a correct submission with the fork 18,821 commits behind.
     prepare()
     await import('../scripts/winget-submit.ts')
 

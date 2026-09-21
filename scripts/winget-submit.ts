@@ -205,8 +205,8 @@ try {
   // created, upstream added `.github/workflows/domain-validation-assist.lock.yml`,
   // and an otherwise correct submission was rejected:
   //
-  //   ! [remote rejected] looptroop-0.5.9 -> looptroop-0.5.9 (refusing to allow
-  //     a Personal Access Token to create or update workflow
+  //   ! [remote rejected] looptroop-<version> -> looptroop-<version> (refusing
+  //     to allow a Personal Access Token to create or update workflow
   //     `.github/workflows/domain-validation-assist.lock.yml` without
   //     `workflow` scope)
   //

@@ -35,7 +35,12 @@ function prepare({ differs = true, open = false }: { differs?: boolean, open?: b
     if (command === 'gh' && args?.[1] === 'list') {
       return open ? '[{"number":417030,"url":"https://example.invalid/pr/417030"}]' : '[]'
     }
-    if (command === 'git' && args?.[0] === 'rev-parse') return `${remoteHead}\n`
+    // Only for the fork's tracking ref. Answering every `rev-parse` would let
+    // the script lease `upstream/master` — a value the remote branch never had
+    // — and the test would still pass while every correction was rejected.
+    if (command === 'git' && args?.[0] === 'rev-parse' && args?.[1] === 'origin/looptroop-9.9.9') {
+      return `${remoteHead}\n`
+    }
     if (differs && command === 'git' && args?.[0] === 'diff') {
       throw Object.assign(new Error('exit 1'), { status: 1, stderr: '' })
     }
@@ -114,6 +119,12 @@ describe('WinGet submission credentials', () => {
     expect(fetched?.[1]).toEqual([
       'fetch', '--depth', '1', 'origin', '+refs/heads/looptroop-9.9.9:refs/remotes/origin/looptroop-9.9.9',
     ])
+
+    // The lease has to come from the branch's own tracking ref. Reading any
+    // other ref would lease a value the remote never had, which git rejects as
+    // stale — the failure this whole fix is about.
+    const resolved = calls.find(([command, args]) => command === 'git' && args?.[0] === 'rev-parse')
+    expect(resolved?.[1]).toEqual(['rev-parse', 'origin/looptroop-9.9.9'])
 
     const pushed = calls.find(([command, args]) => command === 'git' && args?.[0] === 'push')
     expect(pushed?.[1]).toEqual(['push', `--force-with-lease=looptroop-9.9.9:${remoteHead}`, 'origin', 'looptroop-9.9.9'])

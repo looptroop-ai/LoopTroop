@@ -8,6 +8,7 @@
       "live": true,
       "documentedInstall": "npm install -g looptroop",
       "stubReason": null,
+      "moderated": null,
       "pinnable": true,
       "doctorChannel": "npm",
       "upgradeCommands": {
@@ -39,6 +40,7 @@
       "live": true,
       "documentedInstall": "curl --proto \"=https\" --proto-redir \"=https\" --tlsv1.2 -fsSL https://www.looptroop.ovh/install | sh",
       "stubReason": null,
+      "moderated": null,
       "pinnable": true,
       "doctorChannel": "npm",
       "upgradeCommands": {
@@ -65,6 +67,7 @@
       "live": true,
       "documentedInstall": "$script = curl.exe --proto \"=https\" --proto-redir \"=https\" --tlsv1.2 -fsSL https://www.looptroop.ovh/install.ps1; if ($LASTEXITCODE -ne 0 -or !$script) { throw \"Installer download failed\" }; & ([scriptblock]::Create(($script -join \"`n\")))",
       "stubReason": null,
+      "moderated": null,
       "pinnable": true,
       "doctorChannel": "npm",
       "upgradeCommands": {
@@ -86,6 +89,7 @@
       "live": true,
       "documentedInstall": "curl --proto \"=https\" --proto-redir \"=https\" --tlsv1.2 -fsSL https://www.looptroop.ovh/install | sh -s -- --binary",
       "stubReason": null,
+      "moderated": null,
       "pinnable": true,
       "doctorChannel": "binary",
       "upgradeCommands": {
@@ -107,6 +111,7 @@
       "live": true,
       "documentedInstall": "brew install looptroop-ai/tap/looptroop",
       "stubReason": null,
+      "moderated": null,
       "pinnable": false,
       "doctorChannel": "homebrew",
       "upgradeCommands": {
@@ -133,6 +138,7 @@
       "live": true,
       "documentedInstall": "scoop bucket add looptroop https://github.com/looptroop-ai/scoop-bucket; scoop install looptroop",
       "stubReason": null,
+      "moderated": null,
       "pinnable": false,
       "doctorChannel": "scoop",
       "upgradeCommands": {
@@ -154,6 +160,10 @@
       "live": true,
       "documentedInstall": "choco install looptroop",
       "stubReason": null,
+      "moderated": {
+        "queue": "Chocolatey community moderation",
+        "graceDays": 14
+      },
       "pinnable": true,
       "doctorChannel": "chocolatey",
       "upgradeCommands": {
@@ -175,6 +185,10 @@
       "live": true,
       "documentedInstall": "winget install LoopTroopAI.LoopTroop",
       "stubReason": null,
+      "moderated": {
+        "queue": "the microsoft/winget-pkgs review queue",
+        "graceDays": 14
+      },
       "pinnable": true,
       "doctorChannel": "winget",
       "upgradeCommands": {
@@ -196,6 +210,7 @@
       "live": true,
       "documentedInstall": "bun add -g looptroop",
       "stubReason": null,
+      "moderated": null,
       "pinnable": true,
       "doctorChannel": "bun",
       "upgradeCommands": {
@@ -217,6 +232,7 @@
       "live": true,
       "documentedInstall": "pnpm add -g looptroop",
       "stubReason": null,
+      "moderated": null,
       "pinnable": true,
       "doctorChannel": "pnpm",
       "upgradeCommands": {
@@ -238,6 +254,7 @@
       "live": true,
       "documentedInstall": "yarn global add looptroop",
       "stubReason": null,
+      "moderated": null,
       "pinnable": true,
       "doctorChannel": "yarn",
       "upgradeCommands": {
@@ -259,6 +276,7 @@
       "live": true,
       "documentedInstall": "download looptroop-<version>-linux-x64 from the releases page",
       "stubReason": null,
+      "moderated": null,
       "pinnable": true,
       "doctorChannel": "binary",
       "upgradeCommands": {
@@ -280,6 +298,7 @@
       "live": true,
       "documentedInstall": "download looptroop-<version>-win-x64 from the releases page",
       "stubReason": null,
+      "moderated": null,
       "pinnable": true,
       "doctorChannel": "binary",
       "upgradeCommands": {
@@ -301,6 +320,7 @@
       "live": true,
       "documentedInstall": "docker pull looptroopai/looptroop:latest",
       "stubReason": null,
+      "moderated": null,
       "pinnable": true,
       "doctorChannel": null,
       "upgradeCommands": null,
@@ -318,6 +338,7 @@
       "live": false,
       "documentedInstall": "yay -S looptroop-bin",
       "stubReason": "AUR registration is closed upstream",
+      "moderated": null,
       "pinnable": null,
       "doctorChannel": null,
       "upgradeCommands": null,
@@ -329,6 +350,7 @@
       "live": true,
       "documentedInstall": "$script = curl.exe --proto \"=https\" --proto-redir \"=https\" --tlsv1.2 -fsSL https://www.looptroop.ovh/install.ps1; if ($LASTEXITCODE -ne 0 -or !$script) { throw \"Installer download failed\" }; & ([scriptblock]::Create(($script -join \"`n\"))) -Binary",
       "stubReason": null,
+      "moderated": null,
       "pinnable": true,
       "doctorChannel": "binary",
       "upgradeCommands": {

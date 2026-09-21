@@ -541,8 +541,14 @@ jobs:
   #
   # Chocolatey and WinGet are excluded on purpose: a push to either is a
   # submission, and the package is not publicly installable until moderation or
-  # a manifest review completes — hours to days later. Dispatching immediately
-  # would report a healthy repair as a failure.
+  # a manifest review completes — hours to days later.
+  #
+  # The smoke no longer reports that as a failure: those channels are
+  # `moderated`, so a version still in its queue comes back as a deliberate
+  # skip, timed from the submission rather than from the release. A dispatch
+  # here would therefore be honest, and still useless — it would spend a Windows
+  # runner to print what the push step already said. The channel is verified by
+  # the weekly run once the queue moves.
   verify-repair:
     name: Verify the repaired channel
     needs: [prepare, push-formula, push-manifest]

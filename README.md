@@ -193,7 +193,9 @@ release usually reaches this channel days after the others.
 
 ```powershell
 winget install LoopTroopAI.LoopTroop
-looptroop stop                    # Windows will not replace a running executable
+
+# upgrade — stop first, because Windows will not replace a running executable
+looptroop stop
 winget upgrade LoopTroopAI.LoopTroop
 ```
 

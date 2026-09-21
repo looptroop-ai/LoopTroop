@@ -11,6 +11,7 @@ interface InstallCatalogChannel {
   live: boolean
   documentedInstall: string
   stubReason: string | null
+  moderated: { queue: string, graceDays: number } | null
   pinnable: boolean | null
   doctorChannel: string | null
   upgradeCommands: {
@@ -80,6 +81,7 @@ describe('docs install catalog', () => {
       documentedInstall: 'choco install looptroop',
       doctorChannel: 'chocolatey',
       upgradeCommands: { win32: 'choco upgrade looptroop' },
+      moderated: { queue: 'Chocolatey community moderation', graceDays: 14 },
     })
     expect(catalog.channels.find((entry) => entry.id === 'winget')).toMatchObject({
       kind: 'installed',
@@ -87,7 +89,13 @@ describe('docs install catalog', () => {
       documentedInstall: 'winget install LoopTroopAI.LoopTroop',
       doctorChannel: 'winget',
       upgradeCommands: { win32: 'winget upgrade LoopTroopAI.LoopTroop' },
+      moderated: { queue: 'the microsoft/winget-pkgs review queue', graceDays: 14 },
     })
+    // Everything else publishes the moment the release does, and the website
+    // renders the delay note from this field rather than from a hand-kept list.
+    for (const id of ['npm', 'homebrew', 'scoop', 'container', 'aur']) {
+      expect(catalog.channels.find((entry) => entry.id === id)?.moderated, id).toBeNull()
+    }
     // The AUR is the one channel still waiting on something, and a stub carries
     // no legs and no pinnable answer — the website renders it as unavailable.
     expect(catalog.channels.find((entry) => entry.id === 'aur')).toMatchObject({
@@ -118,6 +126,7 @@ describe('docs install catalog', () => {
       live: true,
       documentedInstall: 'preview install',
       stubReason: null,
+      moderated: null,
       pinnable: true,
       doctorChannel: null,
       upgradeCommands: null,

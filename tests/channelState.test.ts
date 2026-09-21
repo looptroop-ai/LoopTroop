@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest'
-import { classifyChocoPush, compareVersions, decideChannelWrite, writes } from '../scripts/channel-state.ts'
+import { checkDescriptorUrl, classifyChocoPush, compareVersions, decideChannelWrite, writes } from '../scripts/channel-state.ts'
 import type { ParsedDescriptor } from '../scripts/package-manifests.ts'
 
 const SHA = 'a'.repeat(64)
@@ -148,5 +148,46 @@ describe('what choco push did', () => {
 
   it('fails on anything else', () => {
     expect(classifyChocoPush(1, 'nuspec validation error').state).toBe('failed')
+  })
+})
+
+describe('checking a descriptor URL against its version', () => {
+  const asset = (version: string) =>
+    `https://github.com/looptroop-ai/LoopTroop/releases/download/v${version}/looptroop-${version}-bundle.tar.gz`
+
+  it('accepts this project\'s release asset for that version', () => {
+    expect(checkDescriptorUrl(asset('1.2.3'), '1.2.3')).toBeNull()
+  })
+
+  /**
+   * The exact descriptor a hand-run of channel-push.ts published to the live
+   * Scoop bucket on 2026-09-14, taken from that script's own usage line. The
+   * version check could not catch it: 9.9.9 is newer than 1.2.3, so it read as
+   * an ordinary upgrade.
+   */
+  it('refuses the placeholder descriptor that broke the Scoop bucket', () => {
+    const refusal = checkDescriptorUrl('https://github.com/owner/name/releases/download/v9.9.9/pwn-bundle.tar.gz', '9.9.9')
+
+    expect(refusal).not.toBeNull()
+    expect(refusal).toContain('owner/name')
+  })
+
+  it('refuses a version that disagrees with the tag in the URL', () => {
+    expect(checkDescriptorUrl(asset('1.2.3'), '1.2.4')).not.toBeNull()
+  })
+
+  it.each([
+    ['another host', 'https://example.invalid/looptroop-ai/LoopTroop/releases/download/v1.2.3/b.tar.gz'],
+    ['plain http', 'http://github.com/looptroop-ai/LoopTroop/releases/download/v1.2.3/b.tar.gz'],
+    ['another repository', 'https://github.com/someone/LoopTroop/releases/download/v1.2.3/b.tar.gz'],
+    ['no asset name', 'https://github.com/looptroop-ai/LoopTroop/releases/download/v1.2.3/'],
+    ['not a URL', 'looptroop-1.2.3-bundle.tar.gz'],
+  ])('refuses %s', (_label, url) => {
+    expect(checkDescriptorUrl(url, '1.2.3')).not.toBeNull()
+  })
+
+  /** `new URL` collapses `..`, so the prefix check cannot be walked out of. */
+  it('refuses a path that traverses out of the release', () => {
+    expect(checkDescriptorUrl('https://github.com/looptroop-ai/LoopTroop/releases/download/v1.2.3/../../../evil.tar.gz', '1.2.3')).not.toBeNull()
   })
 })

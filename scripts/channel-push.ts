@@ -3,8 +3,15 @@
  * Publishes a descriptor to a package channel's repository.
  *
  *   node scripts/channel-push.ts --channel homebrew \
- *     --repo looptroop-ai/homebrew-looptroop --version 9.9.9 \
- *     --url https://…/looptroop-9.9.9-bundle.tar.gz --sha256 … [--force] [--dry-run]
+ *     --repo looptroop-ai/homebrew-looptroop --version 1.2.3 \
+ *     --url https://github.com/looptroop-ai/LoopTroop/releases/download/v1.2.3/looptroop-1.2.3-bundle.tar.gz \
+ *     --sha256 … [--force] [--dry-run]
+ *
+ * `--repo` is where the descriptor is *written* — a tap or a bucket. Where the
+ * bytes users download come from is not an argument at all; `--url` is checked
+ * against this project's release for `--version` and nothing else. The example
+ * above used to read `--version 9.9.9` with an elided URL, and on 2026-09-14
+ * somebody ran it: those placeholders became the live Scoop descriptor.
  *
  * Through the contents API rather than a clone and a push, for one reason: the
  * API takes the blob SHA the file had when it was read and rejects the write if
@@ -19,7 +26,7 @@
 import { execFileSync } from 'node:child_process'
 import type { Channel } from './package-manifests.ts'
 import { DESCRIPTOR_PATH, parseDescriptor, renderDescriptor } from './package-manifests.ts'
-import { decideChannelWrite, writes } from './channel-state.ts'
+import { checkDescriptorUrl, decideChannelWrite, writes } from './channel-state.ts'
 import { resolveTrustedTool } from './trusted-tool.ts'
 import { ArgumentError, parseArgs, requireNoPositional } from './cli-args.ts'
 
@@ -33,7 +40,7 @@ function log(message: string): void {
   process.stdout.write(`${message}\n`)
 }
 
-const USAGE = 'Usage: node scripts/channel-push.ts --channel <homebrew|scoop> --repo owner/name --version X.Y.Z --url <url> --sha256 <hex> [--force] [--dry-run]'
+const USAGE = 'Usage: node scripts/channel-push.ts --channel <homebrew|scoop> --repo <tap-or-bucket> --version X.Y.Z --url <release asset URL for that version> --sha256 <hex> [--force] [--dry-run]'
 
 // Through the shared parser, like every other release script. The hand-rolled
 // version ignored unknown flags, so a typo on a job holding a write token ran
@@ -144,6 +151,12 @@ function readRemote(): RemoteFile | null {
 }
 
 preflight()
+
+// Before the network, and before anything is rendered: a descriptor pointing
+// somewhere other than this project's release for this version is refused
+// whatever is already published, and whatever `--force` says.
+const badUrl = checkDescriptorUrl(url, version)
+if (badUrl !== null) fail(`Refusing to write ${version} to ${repo}.`, badUrl, 'Nothing was changed.')
 
 const desired = { version, url, sha256 }
 const descriptor = renderDescriptor(channel, desired)

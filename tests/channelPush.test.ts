@@ -21,7 +21,7 @@ const REPO = 'looptroop-ai/homebrew-looptroop'
  * Homebrew would ever see.
  */
 function urlFor(version: string): string {
-  return `https://example.invalid/looptroop-${version}-bundle.tar.gz`
+  return `https://github.com/looptroop-ai/LoopTroop/releases/download/v${version}/looptroop-${version}-bundle.tar.gz`
 }
 
 const URL = urlFor('9.9.9')
@@ -98,14 +98,14 @@ if (joined.includes('.permissions.push')) {
     }
   }
 
-  function push(extra: string[] = []) {
+  function push(extra: string[] = [], overrides: { url?: string, version?: string } = {}) {
     return new Promise<{ status: number | null, stdout: string, stderr: string }>((done, reject) => {
       const child = spawn(process.execPath, [
         PUSH,
         '--channel', 'homebrew',
         '--repo', REPO,
-        '--version', '9.9.9',
-        '--url', URL,
+        '--version', overrides.version ?? '9.9.9',
+        '--url', overrides.url ?? URL,
         '--sha256', SHA,
         ...extra,
       ], {
@@ -239,6 +239,25 @@ if (joined.includes('.permissions.push')) {
 
     expect(result.status).toBe(0)
     expect(result.stdout).toContain('class Looptroop < Formula')
+    expect(putCalls()).toHaveLength(0)
+  })
+
+  /**
+   * The descriptor URL is checked in `channel-state.ts`, which has its own
+   * tests. This one exists so that deleting the *call* is caught too: the
+   * incident it prevents was a live push, not a wrong return value, and
+   * nothing else here fails if the guard stops being consulted.
+   *
+   * `--force` is passed deliberately. The refusal has to come before anything
+   * that `--force` can talk its way past.
+   */
+  it('refuses a URL that is not a release asset for this version, and writes nothing', async () => {
+    setState({ remote: null })
+
+    const result = await push(['--force'], { url: 'https://github.com/owner/name/releases/download/v9.9.9/pwn-bundle.tar.gz' })
+
+    expect(result.status).toBe(1)
+    expect(result.stderr).toContain('owner/name')
     expect(putCalls()).toHaveLength(0)
   })
 })

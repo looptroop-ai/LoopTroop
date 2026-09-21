@@ -64,6 +64,57 @@ export function compareVersions(left: string, right: string): number {
   return 0
 }
 
+/**
+ * The one repository a descriptor is allowed to point at.
+ *
+ * Hardcoded rather than taken from an argument, because "which project's
+ * releases may this descriptor serve" is not a decision any caller should get
+ * to make. `channel-push.ts` already takes a `--repo`, but that is the tap or
+ * bucket being *written to*; nothing there constrains where the bytes users
+ * download come from.
+ */
+const RELEASE_ASSET_HOST = 'github.com'
+const RELEASE_ASSET_REPO = '/looptroop-ai/LoopTroop/releases/download'
+
+/**
+ * Why this descriptor's URL cannot be published, or `null` when it can.
+ *
+ * `decideChannelWrite` only ever asks whether a version is newer, which is the
+ * one question that cannot catch a descriptor whose version is a placeholder:
+ * a bogus *high* version reads as an ordinary upgrade and publishes, and a
+ * bogus *low* one is refused for the wrong reason. On 2026-09-14 a hand-run of
+ * `channel-push.ts` carrying the example values out of its own usage line
+ * — version `9.9.9`, `--repo owner/name`, a hash of all `c`s — replaced the
+ * live Scoop descriptor for the current release, and `scoop install looptroop`
+ * served a 404 for seven days. Neither the version check nor `--force` could
+ * undo it: restoring the real version over `9.9.9` reads as a downgrade, which
+ * is refused before `force` is consulted.
+ *
+ * Tying the URL to the version closes both halves. A placeholder version no
+ * longer matches the tag in a real asset URL, and a real version cannot be
+ * pointed at somebody else's host.
+ */
+export function checkDescriptorUrl(url: string, version: string): string | null {
+  const expected = `${RELEASE_ASSET_REPO}/v${version}/`
+
+  let parsed: URL
+  try {
+    parsed = new URL(url)
+  } catch {
+    return `--url is not a URL: ${url}`
+  }
+
+  // `new URL` collapses `..` before this runs, so a traversal cannot reach a
+  // different path and still match the prefix.
+  const ok = parsed.protocol === 'https:'
+    && parsed.host === RELEASE_ASSET_HOST
+    && parsed.pathname.startsWith(expected)
+    && parsed.pathname.length > expected.length
+
+  if (ok) return null
+  return `--url must be an asset of this project's v${version} release, https://${RELEASE_ASSET_HOST}${expected}<asset>, not ${url}`
+}
+
 export interface DecideOptions {
   /**
    * Lets a repair overwrite the same version with different bytes.

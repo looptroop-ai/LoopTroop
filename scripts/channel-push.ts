@@ -11,8 +11,11 @@
  * example previously read `--version 9.9.9` against `--repo owner/name`, and on
  * 2026-09-14 somebody pasted and ran it: those values became the live Scoop
  * descriptor, whose URL 404s, and the downgrade rule then refused to let
- * anyone put the real one back. `X.Y.Z` fails the URL check on the first
- * attempt instead. The tap is also named correctly here now; the old example
+ * anyone put the real one back. `X.Y.Z` is refused by the version check
+ * below, before any network call — note that it does *not* fail the URL
+ * check, because that check builds what it expects out of `--version`, so a
+ * placeholder version and a URL built around the same placeholder agree with
+ * each other. The tap is also named correctly here now; the old example
  * pointed at `homebrew-looptroop`, which does not exist.
  *
  * `--repo` is where the descriptor is *written* — a tap or a bucket. Where the
@@ -34,6 +37,7 @@ import { execFileSync } from 'node:child_process'
 import type { Channel } from './package-manifests.ts'
 import { DESCRIPTOR_PATH, bundleFileName, parseDescriptor, renderDescriptor } from './package-manifests.ts'
 import { SOURCE_REPOSITORY, checkDescriptorUrl, decideChannelWrite, writes } from './channel-state.ts'
+import { isGhNotFound } from './release-state.ts'
 import { resolveTrustedTool } from './trusted-tool.ts'
 import { ArgumentError, parseArgs, requireNoPositional } from './cli-args.ts'
 
@@ -99,6 +103,15 @@ const path = DESCRIPTOR_PATH[channel]
 // their own reasons, and when the arguments were never publishable that is the
 // wrong reason to report — the operator changes a token or a PATH and runs the
 // same unpublishable command again.
+// The version first. `checkDescriptorUrl` builds what it expects *from*
+// `--version`, so a placeholder version and a URL built around the same
+// placeholder agree with each other and pass — the usage example above did
+// exactly that, reaching three network calls before `renderDescriptor` threw
+// `Not a version: X.Y.Z` as an uncaught stack trace.
+if (!/^\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?$/.test(version.replace(/^v/, ''))) {
+  fail(`Refusing to write ${version} to ${repo}.`, '--version must be MAJOR.MINOR.PATCH, optionally with a prerelease suffix.', 'Nothing was changed.')
+}
+
 const badUrl = checkDescriptorUrl(url, version)
 if (badUrl !== null) fail(`Refusing to write ${version} to ${repo}.`, badUrl, 'Nothing was changed.')
 
@@ -119,6 +132,24 @@ const ghPath = (() => {
   if ('refusal' in resolved) fail('Cannot run gh safely.', resolved.refusal)
   return resolved.path
 })()
+
+/**
+ * A `gh` run that failed, told apart from one that answered "no".
+ *
+ * `gh(args, true)` collapses every non-zero exit to an empty string, which
+ * makes "this release does not exist" identical to "the API did not answer".
+ * For a probe whose whole purpose is to establish that something exists, those
+ * two must not be the same value: the first has to refuse and the second has
+ * to be survivable.
+ */
+function ghTry(args: string[]): { stdout: string, stderr: string, failed: boolean } {
+  try {
+    return { stdout: execFileSync(ghPath, args, { encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'] }), stderr: '', failed: false }
+  } catch (error) {
+    const stderr = error instanceof Error && 'stderr' in error ? String((error as { stderr?: unknown }).stderr ?? '') : ''
+    return { stdout: '', stderr: stderr.trim(), failed: true }
+  }
+}
 
 function gh(args: string[], allowFailure = false): string {
   try {
@@ -163,44 +194,95 @@ function preflight(): void {
 }
 
 /**
- * That the release this descriptor points at actually has the asset.
+ * That the release this descriptor points at really exists, is one users can
+ * download, and carries these exact bytes.
  *
  * `checkDescriptorUrl` proves the URL has the right *shape*; it cannot prove
- * the bytes exist, because the version and the URL both come from the same
- * caller and a consistent invented pair satisfies it. That gap is what the
- * 2026-09-14 incident published: a descriptor whose URL 404s, and which the
- * downgrade rule then refused to let anyone replace.
+ * anything is behind it, because the version and the URL both come from the
+ * same caller and a consistent invented pair satisfies it. That gap is what
+ * the 2026-09-14 incident published: a descriptor whose URL 404s, and which
+ * the downgrade rule then refused to let anyone replace.
  *
- * Fail-closed only on a definite answer. A release that resolves and does not
- * list the asset is a refusal; anything else — `gh` erroring, the API
- * unreachable, output that will not parse — is a warning and the publish
- * continues, because this is a last check on a release the workflow has
- * already built and drafted, and it must not be the thing that strands one.
+ * The distinction that matters here is "no" versus "cannot tell". An earlier
+ * version of this check asked `gh` through a helper that collapses every
+ * non-zero exit to an empty string, so `release not found` — the one answer
+ * that means the incident is happening again — was indistinguishable from an
+ * unreachable API, and warned and continued. Publishing `--version 99.99.99`
+ * with its canonical URL reproduced the incident end to end.
+ *
+ * So: a definite negative refuses, and only a genuinely unreadable answer
+ * warns and continues. The fallback stays because this runs last against a
+ * release the workflow has already built, and an API that will not answer must
+ * not be the thing that strands one.
  */
 function requireReleaseAsset(): void {
-  const raw = gh(['release', 'view', `v${version.replace(/^v/, '')}`, '--repo', SOURCE_REPOSITORY, '--json', 'assets'], true).trim()
-  if (raw === '') {
-    log(`::warning::Could not read the v${version} release to confirm ${bundleFileName(version)} exists. Continuing.`)
+  const release = version.replace(/^v/, '')
+  const wanted = bundleFileName(release)
+  const probe = ghTry(['release', 'view', `v${release}`, '--repo', SOURCE_REPOSITORY, '--json', 'assets,isDraft,isPrerelease'])
+
+  if (probe.failed) {
+    // `isGhNotFound` is what `release-detect.ts` already uses to tell a missing
+    // release from a broken one.
+    if (isGhNotFound(probe.stderr)) {
+      fail(
+        `Refusing to write ${version} to ${repo}.`,
+        `${SOURCE_REPOSITORY} has no v${release} release, so this descriptor would point at a 404.`,
+        'Nothing was changed.',
+      )
+    }
+    log(`::warning::Could not read the v${release} release to confirm ${wanted} exists. Continuing.`)
     return
   }
 
-  let names: string[]
+  let parsed: { assets?: { name?: string, digest?: string | null }[], isDraft?: boolean, isPrerelease?: boolean }
   try {
-    names = (JSON.parse(raw) as { assets?: { name?: string }[] }).assets?.map((asset) => asset.name ?? '') ?? []
+    parsed = JSON.parse(probe.stdout.trim()) as typeof parsed
   } catch {
-    log(`::warning::Could not parse the v${version} release assets. Continuing.`)
+    log(`::warning::Could not parse the v${release} release. Continuing.`)
     return
   }
 
-  const wanted = bundleFileName(version.replace(/^v/, ''))
-  if (names.includes(wanted)) return
+  // Both refusals the republish workflow already makes, carried into the script
+  // so a hand-run cannot walk around them. A draft's assets are not anonymously
+  // downloadable — `gh` resolves them for an authenticated token and every user
+  // gets a 404 — and `brew upgrade` and `scoop update` have no concept of a
+  // prerelease, so the managed channels only ever carry stable releases.
+  if (parsed.isDraft === true) {
+    fail(`Refusing to write ${version} to ${repo}.`, `v${release} is still a draft; its assets are not downloadable.`, 'Nothing was changed.')
+  }
+  if (parsed.isPrerelease === true) {
+    fail(`Refusing to write ${version} to ${repo}.`, `v${release} is a prerelease; the managed channels only carry stable releases.`, 'Nothing was changed.')
+  }
 
-  fail(
-    `Refusing to write ${version} to ${repo}.`,
-    `The v${version} release of ${SOURCE_REPOSITORY} does not carry ${wanted}, so this descriptor would point at a 404.`,
-    `It lists: ${names.join(', ') || '(no assets)'}`,
-    'Nothing was changed.',
-  )
+  const assets = parsed.assets ?? []
+  const asset = assets.find((candidate) => candidate.name === wanted)
+  if (asset === undefined) {
+    fail(
+      `Refusing to write ${version} to ${repo}.`,
+      `The v${release} release of ${SOURCE_REPOSITORY} does not carry ${wanted}, so this descriptor would point at a 404.`,
+      `It lists: ${assets.map((candidate) => candidate.name ?? '?').join(', ') || '(no assets)'}`,
+      'Nothing was changed.',
+    )
+  }
+
+  // The existence proof turned into a bytes proof. A real URL with an invented
+  // or stale hash breaks installs exactly as a 404 does, and nothing else here
+  // would catch it: `decideChannelWrite` only compares the hash against what is
+  // already published, never against the release. The incident's descriptor
+  // carried a fabricated hash as well as a fabricated URL.
+  const digest = asset.digest ?? ''
+  if (digest === '') {
+    log(`::warning::The v${release} release does not publish a digest for ${wanted}; could not verify --sha256. Continuing.`)
+    return
+  }
+  if (digest !== `sha256:${sha256}`) {
+    fail(
+      `Refusing to write ${version} to ${repo}.`,
+      `--sha256 does not match the ${wanted} asset published in v${release}.`,
+      `The release says ${digest}.`,
+      'Nothing was changed.',
+    )
+  }
 }
 
 interface RemoteFile { text: string, blobSha: string }

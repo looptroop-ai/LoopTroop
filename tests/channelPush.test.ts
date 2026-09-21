@@ -67,8 +67,11 @@ if (joined.includes('.permissions.push')) {
   appendFileSync(process.env.GH_STUB_STATE + '.put', JSON.stringify(args) + '\\n')
   process.stdout.write('deadbeef\\n')
 } else if (args[0] === 'release' && args[1] === 'view') {
-  if (state.releaseAssets === null) process.exit(1)
-  process.stdout.write(JSON.stringify({ assets: state.releaseAssets.map((name) => ({ name })) }) + '\\n')
+  // 'missing' and 'unreadable' both exit non-zero; only the first says so on
+  // stderr. Conflating them is precisely the bug this distinguishes.
+  if (state.release === 'missing') { process.stderr.write('release not found\\n'); process.exit(1) }
+  if (state.release === 'unreadable') { process.stderr.write('could not connect to api.github.com\\n'); process.exit(1) }
+  process.stdout.write(JSON.stringify(state.release) + '\\n')
 } else if (joined.includes('/contents/')) {
   if (state.remote === null) process.exit(1)
   process.stdout.write(JSON.stringify({
@@ -88,8 +91,17 @@ if (joined.includes('.permissions.push')) {
     for (const dir of tempDirs.splice(0)) removeTempDir(dir)
   })
 
-  function setState(state: { push?: boolean | 'unknown', remote?: string | null, blobSha?: string, releaseAssets?: string[] | null }): void {
-    writeFileSync(statePath, JSON.stringify({ push: true, remote: null, blobSha: 'abc123', releaseAssets: ['looptroop-9.9.9-bundle.tar.gz'], ...state }))
+  /** What `gh release view` answers: a release object, or how it failed. */
+  type Release = 'missing' | 'unreadable' | {
+    assets: { name: string, digest?: string | null }[]
+    isDraft?: boolean
+    isPrerelease?: boolean
+  }
+
+  const RELEASE: Release = { assets: [{ name: 'looptroop-9.9.9-bundle.tar.gz', digest: `sha256:${SHA}` }] }
+
+  function setState(state: { push?: boolean | 'unknown', remote?: string | null, blobSha?: string, release?: Release }): void {
+    writeFileSync(statePath, JSON.stringify({ push: true, remote: null, blobSha: 'abc123', release: RELEASE, ...state }))
     rmSync(`${statePath}.put`, { force: true })
   }
 
@@ -292,12 +304,90 @@ if (joined.includes('.permissions.push')) {
    * replace.
    */
   it('refuses when the release does not carry the asset, and writes nothing', async () => {
-    setState({ remote: null, releaseAssets: ['checksums.sha256'] })
+    setState({ remote: null, release: { assets: [{ name: 'checksums.sha256' }] } })
 
     const result = await push()
 
     expect(result.status).toBe(1)
     expect(result.stderr).toContain('does not carry')
+    expect(putCalls()).toHaveLength(0)
+  })
+
+  /**
+   * The incident, reproduced: a version that does not exist, with the
+   * canonical URL built around it. `release not found` is a definite answer
+   * and must refuse — collapsing it into "could not read" is what let a 404
+   * descriptor reach the live bucket.
+   */
+  it('refuses when the release does not exist at all, and writes nothing', async () => {
+    setState({ remote: null, release: 'missing' })
+
+    const result = await push()
+
+    expect(result.status).toBe(1)
+    expect(result.stderr).toContain('no v9.9.9 release')
+    expect(putCalls()).toHaveLength(0)
+  })
+
+  /** A draft's assets are not anonymously downloadable: 404 for every user. */
+  it('refuses a draft release, and writes nothing', async () => {
+    setState({ remote: null, release: { ...RELEASE, isDraft: true } })
+
+    const result = await push()
+
+    expect(result.status).toBe(1)
+    expect(result.stderr).toContain('draft')
+    expect(putCalls()).toHaveLength(0)
+  })
+
+  /** `brew upgrade` and `scoop update` have no concept of a prerelease. */
+  it('refuses a prerelease, and writes nothing', async () => {
+    setState({ remote: null, release: { ...RELEASE, isPrerelease: true } })
+
+    const result = await push()
+
+    expect(result.status).toBe(1)
+    expect(result.stderr).toContain('prerelease')
+    expect(putCalls()).toHaveLength(0)
+  })
+
+  /**
+   * A real URL with an invented hash breaks installs exactly as a 404 does,
+   * and nothing else catches it: the decision only compares the hash against
+   * what is already published, never against the release.
+   */
+  it('refuses a sha256 that is not the published asset digest, and writes nothing', async () => {
+    setState({ remote: null, release: { assets: [{ name: 'looptroop-9.9.9-bundle.tar.gz', digest: `sha256:${OTHER_SHA}` }] } })
+
+    const result = await push()
+
+    expect(result.status).toBe(1)
+    expect(result.stderr).toContain('does not match')
+    expect(putCalls()).toHaveLength(0)
+  })
+
+  /** Older assets carry no digest; that cannot become a reason to fail. */
+  it('warns and publishes when the release asset has no digest', async () => {
+    setState({ remote: null, release: { assets: [{ name: 'looptroop-9.9.9-bundle.tar.gz', digest: null }] } })
+
+    const result = await push()
+
+    expect(result.status).toBe(0)
+    expect(result.stdout).toContain('could not verify --sha256')
+    expect(putCalls()).toHaveLength(1)
+  })
+
+  it('refuses a version that is not a version, before touching the network', async () => {
+    setState({ remote: null })
+
+    const result = await push([], {
+      version: 'X.Y.Z',
+      url: 'https://github.com/looptroop-ai/LoopTroop/releases/download/vX.Y.Z/looptroop-X.Y.Z-bundle.tar.gz',
+    })
+
+    expect(result.status).toBe(1)
+    expect(result.stderr).toContain('MAJOR.MINOR.PATCH')
+    expect(result.stdout).not.toContain('Token can push')
     expect(putCalls()).toHaveLength(0)
   })
 
@@ -324,7 +414,7 @@ if (joined.includes('.permissions.push')) {
    * must not be the thing that strands it.
    */
   it('warns and continues when the release cannot be read', async () => {
-    setState({ remote: null, releaseAssets: null })
+    setState({ remote: null, release: 'unreadable' })
 
     const result = await push()
 

@@ -392,7 +392,26 @@ jobs:
           # `choco search`, not `choco list`: Chocolatey v2 made `list` local-only.
           # It reports only approved packages, which is exactly the distinction
           # that matters — a submission still in moderation is not installable.
-          if choco search looptroop --exact --version "${VERSION}" --limit-output --source https://community.chocolatey.org/api/v2/ | grep -q .; then
+          #
+          # The exit status is read separately from the output, because they
+          # answer different questions and a pipeline inside `if` hides the
+          # first: `set -e` does not fire in a condition, so a search that
+          # *failed* — an unreachable source, a proxy or TLS error, a broken
+          # client — printed nothing, read as "not on the feed", and sent this
+          # job on to repack and resubmit a version that may well be published.
+          # Chocolatey exits 0 for a search that found nothing and sets 2 only
+          # under `useEnhancedExitCodes`, so anything else is an error and this
+          # step stops on it rather than guessing.
+          status=0
+          found=$(choco search looptroop --exact --version "${VERSION}" --limit-output --source https://community.chocolatey.org/api/v2/) || status=$?
+          if [ "${status}" -ne 0 ] && [ "${status}" -ne 2 ]; then
+            echo "::error::choco search exited ${status}, so the feed could not say whether ${VERSION} is published."
+            exit 1
+          fi
+          # Matched against the id, because `--exact` has matched by prefix on
+          # some Chocolatey versions — the same comparison the published smoke
+          # makes of the same output.
+          if printf '%s\n' "${found}" | grep -qE '^looptroop\|'; then
             echo "published=true" >> "$GITHUB_OUTPUT"
             echo "looptroop ${VERSION} is approved and on the feed."
           else
@@ -478,11 +497,15 @@ jobs:
   #
   # Nothing here can make Microsoft merge it. Like Chocolatey moderation, that
   # is a queue this workflow reports into and never waits on.
+  # `ubuntu-latest`, like the Scoop job above: writing a Windows package
+  # manager's descriptor needs no Windows, and this one clones `winget-pkgs`,
+  # which is 689,147 files. On a Windows runner that shallow clone took 16
+  # minutes of the 30 this job has; on Linux it takes under two.
   winget:
     name: Resubmit the WinGet manifests
     needs: [prepare]
     if: inputs.channel == 'winget'
-    runs-on: windows-latest
+    runs-on: ubuntu-latest
     timeout-minutes: 30
     environment: packaging
     steps:
@@ -537,8 +560,14 @@ jobs:
   #
   # Chocolatey and WinGet are excluded on purpose: a push to either is a
   # submission, and the package is not publicly installable until moderation or
-  # a manifest review completes — hours to days later. Dispatching immediately
-  # would report a healthy repair as a failure.
+  # a manifest review completes — hours to days later.
+  #
+  # The smoke no longer reports that as a failure: those channels are
+  # `moderated`, so a version still in its queue comes back as a deliberate
+  # skip, timed from the submission rather than from the release. A dispatch
+  # here would therefore be honest, and still useless — it would spend a Windows
+  # runner to print what the push step already said. The channel is verified by
+  # the weekly run once the queue moves.
   verify-repair:
     name: Verify the repaired channel
     needs: [prepare, push-formula, push-manifest]

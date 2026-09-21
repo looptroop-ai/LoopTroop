@@ -35,6 +35,19 @@ import { homedir, tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { removeWorkDirectory, waitForHealth } from './smoke-lib.mjs'
 import { findToolPath, launchTool, planToolLaunch } from './tool-path.ts'
+// The published identifier, and where its submissions live, from the module
+// that renders the manifests carrying them. `winget-pkgs` derives its directory
+// from the identifier, so it is the same in the submission, in the install
+// command and in what `doctor` prints — and a second copy here would be the one
+// that drifts. The branch name is shared for the same reason: the submitter
+// pushes it, and this asks upstream what became of the pull request on it.
+import {
+  WINGET_FORK,
+  WINGET_IDENTIFIER,
+  WINGET_UPSTREAM,
+  windowsBinaryZipName,
+  wingetSubmissionBranch,
+} from './package-manifests.ts'
 
 const IS_WINDOWS = process.platform === 'win32'
 
@@ -308,6 +321,128 @@ export const CHANNELS = {
     },
   },
 
+  // The community feed, once a moderator has let a version through.
+  //
+  // `publish-chocolatey` submits; it does not publish. Every version is queued
+  // for a human, the queue has no deadline, and the first one here took three
+  // weeks — so this leg is weekly rather than release-tier, and `moderated`
+  // below says what happens when it runs before the queue has moved.
+  chocolatey: {
+    documented: 'choco install looptroop',
+    legs: [{ os: 'windows-latest', tier: 'weekly', opencode: 'npm' }],
+    daemon: true,
+    // Unlike a tap or a bucket, the feed keeps every approved version.
+    pinnable: true,
+    port: 39133,
+    opencodePort: 39633,
+    propagationCapMs: 10 * 60_000,
+    publishJob: 'publish-chocolatey',
+    publishHint: 'Check community.chocolatey.org/packages/looptroop — an approved version is served, a submitted one is not.',
+    moderated: { queue: 'Chocolatey community moderation', graceDays: 14 },
+    // Not `provesOwnRuntime`: the nuspec *depends* on nodejs-lts rather than
+    // carrying a runtime, exactly as the Scoop manifest does, so stripping Node
+    // from PATH would break this correctly.
+    //
+    // Dependencies are resolved for real, unlike `smoke-choco.ts`, which passes
+    // `--ignore-dependencies` because the runner already has Node, git and gh.
+    // That is the right trade for a local package check and the wrong one here:
+    // the documentation promises this channel installs all three for you, and
+    // nothing else ever runs that promise. A wrong dependency id passes every
+    // golden-file test and fails the first user.
+    install: ({ version, pin }) => ({
+      command: 'choco',
+      args: [
+        'install', 'looptroop',
+        ...(pin ? ['--version', version] : []),
+        '--yes', '--no-progress',
+      ],
+      display: pin ? `choco install looptroop --version ${version}` : 'choco install looptroop',
+    }),
+    uninstall: () => ({ command: 'choco', args: ['uninstall', 'looptroop', '--yes', '--no-progress'] }),
+    published: probeChocoVersion,
+    latest: () => probeChocoLatest(),
+    submission: probeChocoSubmission,
+    expect: {
+      channel: 'chocolatey',
+      upgradeCommand: () => 'choco upgrade looptroop',
+      okChecksPre: ['install', 'git', 'opencode cli'],
+      okChecksPost: ['opencode', 'daemon', 'port'],
+    },
+  },
+
+  // The one channel that is a pull request into somebody else's repository, and
+  // the one that installs the standalone executable rather than the bundle:
+  // `winget validate` refuses a portable whose `RelativeFilePath` is not an
+  // `.exe`, which the bundle's `.cmd` shim is not.
+  //
+  // Weekly, and `moderated`, for the same reason as Chocolatey — a submission
+  // is reviewed by people at Microsoft, and a merged manifest still has to
+  // reach the index afterwards.
+  winget: {
+    documented: `winget install ${WINGET_IDENTIFIER}`,
+    legs: [{ os: 'windows-latest', tier: 'weekly', opencode: 'npm' }],
+    daemon: true,
+    // Every version's manifests stay in `winget-pkgs`, so an older one installs.
+    pinnable: true,
+    port: 39134,
+    opencodePort: 39634,
+    propagationCapMs: 10 * 60_000,
+    publishJob: 'publish-winget',
+    publishHint: 'Check the pull request at microsoft/winget-pkgs — merged is not indexed; the publish pipeline runs after the merge.',
+    moderated: { queue: 'the microsoft/winget-pkgs review queue', graceDays: 14 },
+    // The zip carries its own Node, so this must run with none on PATH.
+    provesOwnRuntime: true,
+    // WinGet writes an alias rather than putting the package on PATH, and the
+    // directory it writes it to is only on PATH of a shell started afterwards.
+    pathHint: () => wingetLinks(),
+    // `--scope machine`, symmetrically on both operations, for the reason
+    // `smoke-winget.ts` spells out: an elevated runner cannot uninstall a
+    // user-scope package, which left an earlier job installing something it
+    // could not remove.
+    //
+    // Dependencies are resolved, as they are for Chocolatey. `winget validate`
+    // checks that the manifest *declares* `Git.Git` and `GitHub.cli`; nothing
+    // checked that those identifiers still exist in the index, which is the
+    // half that breaks when an upstream package is renamed. On a hosted runner
+    // both are already installed and WinGet correlates them, so the usual cost
+    // is a lookup; where it does install them, a weekly leg can afford it.
+    install: ({ version, pin }) => ({
+      command: 'winget',
+      args: [
+        'install', '--id', WINGET_IDENTIFIER, '--exact',
+        ...(pin ? ['--version', version] : []),
+        '--source', 'winget', '--scope', 'machine',
+        '--accept-package-agreements', '--accept-source-agreements', '--disable-interactivity',
+      ],
+      display: pin
+        ? `winget install ${WINGET_IDENTIFIER} --version ${version}`
+        : `winget install ${WINGET_IDENTIFIER}`,
+    }),
+    uninstall: () => ({
+      command: 'winget',
+      args: [
+        'uninstall', '--id', WINGET_IDENTIFIER, '--exact', '--scope', 'machine',
+        '--accept-source-agreements', '--disable-interactivity',
+      ],
+    }),
+    published: probeWingetVersion,
+    submission: probeWingetSubmission,
+    // A release cut without binaries has nothing for this channel to carry, and
+    // `publish-winget` skips for exactly that reason. Without this the weekly
+    // leg would go on asking for a version that can never be indexed, once a
+    // week, forever.
+    requiresReleaseAsset: (version) => windowsBinaryZipName(version),
+    // No `latest` probe: asking the client which version it would install is
+    // the same command as installing it. An unpinned install takes the newest
+    // the index carries, and step 4 asserts what arrived — the same guarantee
+    // from the other side, which is how the installer channels handle it too.
+    expect: {
+      channel: 'winget',
+      upgradeCommand: () => `winget upgrade ${WINGET_IDENTIFIER}`,
+      okChecksPre: ['install', 'git', 'opencode cli'],
+      okChecksPost: ['opencode', 'daemon', 'port'],
+    },
+  },
 
   // The same npm package through a different global store. The bug this exists
   // for is real and has shipped: bun and pnpm both reported channel `npm` and
@@ -464,19 +599,15 @@ export const CHANNELS = {
   // fill in a recipe nobody wrote. Whichever way it went, the recipe has to be
   // written when the feed goes live, so the honest arrangement is to say so.
   //
-  // Deliberately not keyed to `vars.PUBLISH_*`. Those mean "submit for
-  // publication", which is days away from "installable": Chocolatey moderates,
-  // WinGet needs a manifest review and an index refresh, and the AUR is closed
-  // to new registrations upstream.
+  // Chocolatey and WinGet were both stubs here until their first submissions
+  // were accepted — `looptroop 0.5.1` on 3 September 2026 and
+  // `LoopTroopAI.LoopTroop 0.5.2` on 19 September 2026 — and each went live in
+  // the commit that wrote its recipe above, which is the arrangement working.
+  // What remains is the AUR, where the obstacle is not a queue: there is no
+  // account to publish from.
   //
-  // When one goes live, the same commit writes its recipe and drops the stub.
-  // `ci.yml` keeps proving the packages themselves in the meantime —
-  // `choco-install`, `winget-install` and `aur-package` all build and install
-  // locally on every change — and `channel-republish.yml` already has a
-  // live-feed path for Chocolatey (`smoke-choco.ts --from-feed`) to wrap when
-  // the time comes.
-  chocolatey: { stub: 'Chocolatey moderation has not accepted a first version', documented: 'choco install looptroop' },
-  winget: { stub: 'the WinGet manifest has not been merged and indexed', documented: 'winget install LoopTroopAI.LoopTroop' },
+  // `ci.yml` keeps proving the package itself in the meantime — `aur-package`
+  // builds and installs it locally on every change.
   aur: { stub: 'AUR registration is closed upstream', documented: 'yay -S looptroop-bin' },
 
   'installer-ps1-binary': {
@@ -518,6 +649,20 @@ export const CHANNELS = {
  */
 export function binaryPrefix() {
   return process.env.LOOPTROOP_INSTALL_DIR || join(homedir(), '.looptroop')
+}
+
+/**
+ * Where WinGet writes the alias for a machine-scope portable package.
+ *
+ * Machine scope because that is the scope the leg installs with — a user-scope
+ * package cannot be uninstalled by an elevated shell, which is what CI is. The
+ * directory is on the PATH of a shell started *afterwards*, so this leg has to
+ * hand it to the resolver rather than trust its own environment.
+ *
+ * `||`, not `??`: a set-but-empty variable would make this a relative path.
+ */
+function wingetLinks() {
+  return join(process.env.ProgramFiles || 'C:\\Program Files', 'WinGet', 'Links')
 }
 
 /**
@@ -927,6 +1072,206 @@ async function probeScoopManifest(_recipe, _version) {
   if (response.status === 404) return null
   if (!response.ok) throw new Error(`scoop manifest -> ${response.status}`)
   return JSON.parse(await response.text()).version ?? null
+}
+
+/** The community feed, as both `choco` and the OData entity address it. */
+const CHOCO_FEED = 'https://community.chocolatey.org/api/v2/'
+
+/**
+ * The version in one `choco search --limit-output` line, or null for none.
+ *
+ * `choco search` prints `id|version` per match, and this is the supported way
+ * to ask the community feed anything: Chocolatey documents the CLI and
+ * `chocolatey.lib` as the query interface and reserves the right to refuse
+ * custom OData queries. It is also the exact question that matters, because the
+ * feed only lists a version a moderator has let through — the entity endpoint
+ * answers 200 for a version that has only been submitted, which is what made an
+ * earlier revision of this probe report a queued release as published.
+ *
+ * `--exact` still matches by prefix on some Chocolatey versions, so the id is
+ * compared rather than assumed.
+ */
+export function chocolateySearchVersion(output) {
+  for (const line of String(output).split(/\r?\n/)) {
+    const [id, version] = line.trim().split('|')
+    if (id === 'looptroop' && version) return version
+  }
+  return null
+}
+
+/**
+ * What Chocolatey's moderation queue says about a version it does not serve.
+ *
+ * The one place a custom OData query is still worth making, and the only place
+ * it can do no harm: this runs when the leg already knows the feed is not
+ * serving the version, and every failure falls back to the release clock. What
+ * it buys is the two facts the CLI cannot give — *when* the submission was made
+ * and whether it was rejected — and both decide whether waiting is reasonable.
+ *
+ * Attributes are tolerated on the elements. The live payload writes
+ * `<d:PackageStatus>` bare and `<d:Created m:type="Edm.DateTime">` with one, and
+ * a proxy or a schema revision may add others.
+ */
+export function chocolateySubmission(payload) {
+  // Two literal patterns rather than one built from a field name. A `RegExp`
+  // assembled from a variable is a pattern no scanner can read, and this one
+  // bought nothing: both call sites are constants.
+  const text = (match) => match?.[1]?.trim() ?? ''
+  const status = text(/<d:PackageStatus\b[^>]*>([^<]*)</.exec(payload))
+  // `Created` is when the push landed; `Published` stays at 1900-01-01 until a
+  // moderator approves, so it cannot time a queue.
+  const created = Date.parse(`${text(/<d:Created\b[^>]*>([^<]*)</.exec(payload))}Z`)
+  const at = Number.isNaN(created) ? null : created
+  if (status === 'Rejected') return { state: 'rejected', at, detail: 'moderation rejected it' }
+  if (status === '') return { state: 'absent', at: null, detail: 'the feed has no entry for it' }
+  if (status === 'Approved' || status === 'Exempted') return { state: 'served', at, detail: `moderation has it as ${status}` }
+  return { state: 'queued', at, detail: `moderation has it as ${status}` }
+}
+
+/**
+ * A `choco search` against the community feed, as an answer or as a failure.
+ *
+ * Chocolatey's exit codes are not what an earlier revision of this assumed.
+ * `ChocolateySearchCommand` exits 0 for a successful search *including one
+ * with no results*, and only sets 2 for "nothing found" when the
+ * `useEnhancedExitCodes` feature is switched on, which it is not by default:
+ *
+ *   if (configuration.Features.UseEnhancedExitCodes && packageResults.Count == 0
+ *       && Environment.ExitCode == 0) { Environment.ExitCode = 2 }
+ *
+ * So every other non-zero exit is an error — an unreachable source, a proxy or
+ * TLS failure, a broken client — and reading those as "the feed does not serve
+ * this version" is how an outage becomes a fortnight of "waiting on
+ * moderation". They throw, which is what `probeNpmRegistry` does with a
+ * registry error and for the same stated reason.
+ *
+ * The rule is exported as a pure function because it is the part that was
+ * wrong, and because `run` cannot be stood up in a unit test.
+ */
+export function chocolateySearchOutcome({ code, stdout, combined }) {
+  // 2 is "no results" under `useEnhancedExitCodes`. Accepted although the
+  // feature is off by default, because if it is ever turned on this reads the
+  // same answer rather than a new failure.
+  if (code === 0 || code === 2) return chocolateySearchVersion(stdout)
+  const first = String(combined ?? '').trim().split('\n')[0] ?? ''
+  if (code === null) throw new Error(`choco could not be started: ${first}`)
+  throw new Error(`choco search exited ${code}: ${first}`)
+}
+
+function chocoSearch(args) {
+  return chocolateySearchOutcome(
+    run('choco', ['search', 'looptroop', '--exact', ...args, '--limit-output', '--source', CHOCO_FEED]),
+  )
+}
+
+/**
+ * Whether Chocolatey serves a version — which is not whether it has one.
+ *
+ * Asked of `choco` rather than over HTTP, both because that is the supported
+ * query path and because it is the same command the republish job already uses
+ * to decide whether a version is on the feed.
+ */
+function probeChocoVersion(_recipe, version) {
+  return chocoSearch(['--version', version])
+}
+
+/** What an unpinned `choco install looptroop` resolves: the feed's latest. */
+function probeChocoLatest() {
+  return chocoSearch([])
+}
+
+/** Chocolatey's queue state for a version, for the moderation decision. */
+async function probeChocoSubmission(version) {
+  const response = await fetch(`${CHOCO_FEED}Packages(Id='looptroop',Version='${version}')`, {
+    headers: { accept: 'application/atom+xml' },
+  })
+  if (response.status === 404) return { state: 'absent', at: null, detail: 'the feed has no entry for it' }
+  if (!response.ok) throw new Error(`Chocolatey feed -> ${response.status}`)
+  return chocolateySubmission(await response.text())
+}
+
+/**
+ * Whether WinGet serves a version, asked of the client rather than of GitHub.
+ *
+ * A merged manifest is not an installable package. `microsoft/winget-pkgs` says
+ * what *will* be indexed; the pipeline that builds the index runs after the
+ * merge, and between the two a contents-API probe reports a package `winget
+ * install` cannot find. Asking `winget` is the only question whose answer is
+ * the one a user gets.
+ *
+ * A failure is not read by its message. WinGet reports a missing version, a
+ * missing package and a source it cannot reach with different hex codes and
+ * localised text, so the second question is asked of the client instead: does
+ * it know the package at all, with no version named? If it does, only this
+ * version is absent, which is exactly what a review in progress looks like. If
+ * it does not, something larger is wrong — a broken runner, an unreachable
+ * source, an identifier that no longer exists — and that must not wear the
+ * moderation skip's clothes for the whole grace period.
+ */
+function probeWingetVersion(_recipe, version) {
+  // `--id` and `--exact`, because a query is matched against several fields and
+  // by prefix: `winget show LoopTroopAI.LoopTroop` is one same-prefix package
+  // away from an ambiguity error, which `--disable-interactivity` turns into a
+  // failure that would read here as "not indexed yet".
+  const query = ['--id', WINGET_IDENTIFIER, '--exact']
+  const source = ['--source', 'winget', '--accept-source-agreements', '--disable-interactivity']
+  const result = run('winget', ['show', ...query, '--version', version, ...source])
+  if (result.code === 0) return version
+  // A `null` code is a child that never started — a resolver miss, a launch
+  // failure — which is not an answer about the feed and must not be read as
+  // one. The caller treats a throw as "could not ask" rather than "not there".
+  if (result.code === null) {
+    throw new Error(`winget could not be started: ${result.combined.trim().split('\n')[0]}`)
+  }
+
+  const known = run('winget', ['show', ...query, ...source])
+  if (known.code !== 0) {
+    throw new Error(
+      `winget cannot find ${WINGET_IDENTIFIER} at all (exit ${known.code}): `
+      + `${known.combined.trim().split('\n').pop()}`,
+    )
+  }
+  log(`  winget knows ${WINGET_IDENTIFIER} but not ${version} yet (exit ${result.code})`)
+  return null
+}
+
+/**
+ * What became of the submission pull request for a version.
+ *
+ * Exported for its test. The states are the ones that change the decision: a
+ * pull request that is open or merged is a queue doing its job — a merge still
+ * waits for the index pipeline — while a closed one was refused and no pull
+ * request at all means the release never submitted, which is a failure of ours
+ * rather than a wait on somebody else.
+ */
+export function wingetSubmission(pulls) {
+  const pull = (Array.isArray(pulls) ? pulls : [])[0]
+  if (!pull) return { state: 'absent', at: null, detail: 'no submission was ever opened for it' }
+  const when = (value) => {
+    const at = Date.parse(String(value ?? ''))
+    return Number.isNaN(at) ? null : at
+  }
+  if (pull.state === 'open') {
+    return { state: 'queued', at: when(pull.created_at), detail: `submitted as #${pull.number}, still open` }
+  }
+  // A merge restarts the clock, because it is where this queue ends and the
+  // next one begins: the index pipeline runs afterwards, and how long the
+  // review took has nothing to do with it. The first submission here was open
+  // for five weeks, so timing the index refresh from the day it was opened
+  // would have failed a merge that was hours old.
+  if (pull.merged_at) {
+    return { state: 'queued', at: when(pull.merged_at), detail: `#${pull.number} merged; the index refresh follows` }
+  }
+  return { state: 'rejected', at: when(pull.created_at), detail: `#${pull.number} was closed without merging` }
+}
+
+/** WinGet's queue state for a version: the submission pull request upstream. */
+async function probeWingetSubmission(version) {
+  const head = `${WINGET_FORK.split('/')[0]}:${wingetSubmissionBranch(version)}`
+  const pulls = await getJson(
+    `${API}/repos/${WINGET_UPSTREAM}/pulls?head=${encodeURIComponent(head)}&state=all&per_page=1`,
+  )
+  return wingetSubmission(pulls)
 }
 
 /**
@@ -1608,6 +1953,31 @@ function parseArgs(argv) {
   return options
 }
 
+/**
+ * Why a moderated channel's leg is not being run, or null when it must run.
+ *
+ * Exported for its test, because the cases that matter are the ones nobody
+ * reaches by hand.
+ *
+ * A skip is a claim that a queue explains the absence, and three things cannot
+ * support that claim. An age nothing could answer for: counting that as inside
+ * the window — which this did first — makes every repeated lookup failure a
+ * successful skip, so a submission rejected months ago stays green for as long
+ * as the failures last. A rejection: that is an answer, not a wait. And a
+ * version with no submission at all, which means the publish never happened and
+ * the queue is not the problem.
+ *
+ * `unknown` — a queue that could not be reached — is treated as a wait, because
+ * it is not evidence either way and the age still bounds it. `served`
+ * contradicts the feed and belongs on the ordinary path, which polls.
+ */
+export function moderationSkipReason({ queue, graceDays }, { version, ageHours, serves, state = 'queued' }) {
+  if (state !== 'queued' && state !== 'unknown') return null
+  if (ageHours === null || ageHours >= graceDays * 24) return null
+  const waiting = `${version} is waiting on ${queue}`
+  return serves === null ? waiting : `${waiting}; the feed serves ${serves}`
+}
+
 /** How long ago a release was published, in hours, or null if unknown. */
 async function releaseAgeHours(version) {
   try {
@@ -1722,6 +2092,116 @@ async function main() {
     }
   }
 
+  // Chocolatey and WinGet publish by joining a queue a human works through, so
+  // a release reaches those feeds days or weeks after it is tagged. Inside that
+  // window the channel is behaving exactly as documented and the assertion that
+  // would fail is a correct one, so the leg reports itself as not run — the
+  // same bargain pnpm's hold makes.
+  //
+  // Bounded, because from here "still in review" and "rejected, and nobody
+  // noticed" look identical unless the queue is asked. `submission` is what
+  // asks: a rejection, or a version nobody ever submitted, stops being a wait
+  // immediately, and the clock runs from when the submission was made rather
+  // than from when the release was tagged. Those are different dates whenever a
+  // channel is repaired after the fact, which is what `channel-republish.yml`
+  // exists for — a submission made today against a month-old release would
+  // otherwise be overdue the moment it was pushed.
+  //
+  // `notServed` carries the verdict out. When the feed is known not to serve
+  // the version, nothing downstream can pass, so the leg fails here with the
+  // reason instead of polling a feed that has nothing for ten minutes and
+  // aborting with a message the report cannot see.
+  let notServed = null
+  if (recipe.moderated) {
+    // A release that carries nothing for this channel is neither a wait nor a
+    // failure. `publish-winget` skips a release cut without binaries, and
+    // without this the leg would ask for a version that can never exist.
+    if (recipe.requiresReleaseAsset) {
+      const asset = recipe.requiresReleaseAsset(version)
+      const carried = await probeReleaseAsset(asset)(recipe, version).catch(() => 'unknown')
+      if (carried === null) {
+        const reason = `v${version} carries no ${asset}, so there is nothing for ${recipe.key} to serve`
+        log(`\n${recipe.key}: not run (${reason})`)
+        writeSkipResult(options, recipe, version, reason)
+        return
+      }
+    }
+
+    let serving = null
+    let answered = true
+    try {
+      serving = await recipe.published(recipe, version)
+    } catch (error) {
+      // A probe that could not answer is not evidence of a queue, and not
+      // evidence against one either. Fall through to the ordinary run, where
+      // `awaitPublished` asks again and a throw there fails loudly.
+      log(`  (could not ask ${recipe.key} what it serves: ${error.message})`)
+      answered = false
+    }
+    if (answered && serving !== version) {
+      // Both of these are optional and both talk to something outside this
+      // process, so both are guarded. `try`/`catch` rather than `.catch`,
+      // because a probe may be synchronous — Chocolatey's now runs `choco` —
+      // and a synchronous throw never reaches a promise handler.
+      let submission = null
+      if (recipe.submission) {
+        try {
+          submission = await recipe.submission(version)
+        } catch (error) {
+          log(`  (could not ask ${recipe.key} about the submission: ${error.message})`)
+        }
+      }
+      // The submission clock where the queue keeps one, the release clock
+      // otherwise. Both are hours, and both can come back unknown.
+      const ageHours = submission?.at != null
+        ? (Date.now() - submission.at) / 3_600_000
+        : await releaseAgeHours(version)
+      // What the feed does serve, for the report. `serving` cannot say: a
+      // presence probe answers about the version it was asked about and returns
+      // null for every other state, so a reason built from it read "the feed
+      // serves (nothing)" even while Chocolatey was serving an earlier release.
+      let serves = null
+      if (recipe.latest) {
+        try {
+          serves = await recipe.latest()
+        } catch (error) {
+          log(`  (could not ask ${recipe.key} what it serves: ${error.message})`)
+        }
+      }
+      const state = submission?.state ?? 'unknown'
+      const reason = moderationSkipReason(recipe.moderated, { version, ageHours, serves, state })
+      if (reason !== null) {
+        log(`\n${recipe.key}: not run (${reason})`)
+        writeSkipResult(options, recipe, version, reason)
+        return
+      }
+      // Only where the queue has actually answered. A submission that is
+      // `served` contradicts the feed — an approval minutes old that the search
+      // index has not caught up with — and one nobody could ask about says
+      // nothing at all; both belong on the ordinary path, where the propagation
+      // poll gives the feed its ten minutes before anyone calls it a failure.
+      const answeredFinally = state === 'rejected' || state === 'absent'
+        || (state === 'queued' && (ageHours === null || ageHours >= recipe.moderated.graceDays * 24))
+      if (answeredFinally) {
+        const days = ageHours === null ? null : Math.round(ageHours / 24)
+        const clauses = [submission.detail]
+        // A rejection is dated but not overdue, and a version nobody submitted
+        // has no clock at all, so only a queued one is measured against the
+        // grace period. Saying "past the grace period" about a rejection would
+        // name the wrong reason for the failure.
+        if (state === 'queued') {
+          clauses.push(days === null
+            ? 'and how long it has been waiting cannot be read'
+            : `for ${days} days, past the ${recipe.moderated.graceDays}-day grace period`)
+        } else if (state === 'rejected' && days !== null) {
+          clauses.push(`${days} days ago`)
+        }
+        if (serves !== null) clauses.push(`the feed serves ${serves}`)
+        notServed = clauses.join('; ')
+      }
+    }
+  }
+
   if (options.pin && recipe.pinnable === false) {
     // Not a failure, and not a silent skip either: without a result file the
     // reporter cannot tell "deliberately not run" from "died before it could
@@ -1738,10 +2218,17 @@ async function main() {
 
   const startedAt = Date.now()
   let result = { ok: false, served: null }
-  try {
-    result = await runChannel(recipe, { version, pin: options.pin, profile: options.profile, opencodeMode })
-  } catch (error) {
-    fail('unexpected error', error?.stack ?? String(error))
+  if (notServed !== null) {
+    // Recorded through `fail` rather than `abort`, which prints to stderr and
+    // leaves `failures` empty — the report renders that array, so an aborted
+    // leg reaches the reader as a FAIL with no reason attached.
+    fail(`${recipe.key} does not serve ${version}`, notServed)
+  } else {
+    try {
+      result = await runChannel(recipe, { version, pin: options.pin, profile: options.profile, opencodeMode })
+    } catch (error) {
+      fail('unexpected error', error?.stack ?? String(error))
+    }
   }
 
   const summary = {

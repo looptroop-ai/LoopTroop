@@ -36,12 +36,23 @@ import { execFileSync } from 'node:child_process'
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
-import { renderWingetManifests, WINGET_IDENTIFIER, wingetManifestDir } from './package-manifests.ts'
+import {
+  renderWingetManifests,
+  WINGET_FORK,
+  WINGET_IDENTIFIER,
+  WINGET_UPSTREAM,
+  wingetManifestDir,
+  wingetSubmissionBranch,
+} from './package-manifests.ts'
 import { resolveTrustedTool } from './trusted-tool.ts'
 import { ArgumentError, parseArgs, requireNoPositional } from './cli-args.ts'
 
-const UPSTREAM = 'microsoft/winget-pkgs'
-const FORK = 'looptroop-ai/winget-pkgs'
+// From the module that renders the manifests, so the repository this submits
+// to, the fork it pushes through and the branch it uses are stated once. The
+// published smoke reads the same branch name to ask upstream what became of a
+// submission, and a rename here alone would leave it asking about nothing.
+const UPSTREAM = WINGET_UPSTREAM
+const FORK = WINGET_FORK
 
 function fail(message: string, ...detail: string[]): never {
   process.stderr.write(`::error::${message}\n`)
@@ -124,9 +135,9 @@ function resolveTool(command: string): string {
  * ambient GitHub CLI tokens and the source publish token are removed from its
  * copied environment.
  */
-function run(command: string, args: string[], options: { cwd?: string, allowFailure?: boolean, quiet: true }): string | null
-function run(command: string, args: string[], options?: { cwd?: string, allowFailure?: boolean }): string
-function run(command: string, args: string[], options: { cwd?: string, allowFailure?: boolean, quiet?: true } = {}): string | null {
+function run(command: string, args: string[], options: { cwd?: string, allowFailure?: boolean, quiet: true, hint?: (detail: string) => string }): string | null
+function run(command: string, args: string[], options?: { cwd?: string, allowFailure?: boolean, hint?: (detail: string) => string }): string
+function run(command: string, args: string[], options: { cwd?: string, allowFailure?: boolean, quiet?: true, hint?: (detail: string) => string } = {}): string | null {
   try {
     const env = { ...process.env }
     delete env.GH_TOKEN
@@ -146,18 +157,28 @@ function run(command: string, args: string[], options: { cwd?: string, allowFail
     if (options.quiet === true) return null
     if (options.allowFailure === true) return ''
     const detail = error instanceof Error && 'stderr' in error ? String((error as { stderr?: unknown }).stderr ?? '') : ''
+    // `hint` turns a diagnostic somebody has to interpret into one that says
+    // what to do. The push is the one that needs it: its refusal names a
+    // workflow file and a missing scope, and neither points at the fix.
     // Git diagnostics may include the encoded authorization header.
-    fail(`${command} ${redact(args.join(' '))} failed.`, redact(detail))
+    fail(`${command} ${redact(args.join(' '))} failed.`, redact(detail), options.hint?.(detail) ?? '')
   }
 }
 
 const version = flag('version')
+// Checked before it is used, rather than where it is rendered. This value
+// reaches `mkdirSync` and a branch name several steps before
+// `renderWingetManifests` inspects it, and a path is the wrong place to find
+// out that an argument was not a version.
+if (!/^(?:0|[1-9]\d*)\.(?:0|[1-9]\d*)\.(?:0|[1-9]\d*)(?:-rc\.[1-9]\d*)?$/.test(version)) {
+  fail(`--version must be a release version, got "${version}".`, USAGE)
+}
 /** `manifests/l/LoopTroopAI/LoopTroop` — the package, without the version. */
 const identifierDir = wingetManifestDir(version).replace(/\/[^/]+$/, '')
 const url = flag('url')
 const sha256 = flag('sha256')
 
-const branch = `looptroop-${version}`
+const branch = wingetSubmissionBranch(version)
 const work = mkdtempSync(join(tmpdir(), 'looptroop-winget-submit-'))
 /** Set once there is nothing further to do, so the `finally` still runs. */
 let done = false
@@ -196,6 +217,68 @@ try {
   const open = existing[0] ?? null
   if (open !== null) log(`A pull request for ${version} is already open: ${open.url}`)
 
+  // The fork's default branch has to carry what upstream carries before a
+  // branch built on `upstream/master` can be pushed to it.
+  //
+  // GitHub refuses a push that *introduces* a workflow file when the credential
+  // has no `workflow` scope, and every file upstream has added since the fork
+  // was last synced counts as introduced. Five weeks after this fork was
+  // created, upstream added `.github/workflows/domain-validation-assist.lock.yml`,
+  // and an otherwise correct submission was rejected:
+  //
+  //   ! [remote rejected] looptroop-<version> -> looptroop-<version> (refusing
+  //     to allow a Personal Access Token to create or update workflow
+  //     `.github/workflows/domain-validation-assist.lock.yml` without
+  //     `workflow` scope)
+  //
+  // Nothing about the submission was wrong; the fork was just 18,821 commits
+  // behind. Syncing first means those files already exist in the fork and the
+  // push introduces nothing but the manifests. It happens server-side, so it
+  // costs one request rather than a second clone of a repository this size.
+  //
+  // `--force` because this fork exists only to carry submissions: its `master`
+  // has no work of its own to protect, and a sync refuses a non-fast-forward
+  // without it. `--source` states the parent rather than letting the API infer
+  // it.
+  //
+  // Not fatal, and deliberately so. An up-to-date fork exits 0, so a failure
+  // here is a real one — but it stops the release only if upstream has added a
+  // workflow file since, and the push a moment later gives that answer
+  // definitively. Failing early would turn a sync outage into a failed release
+  // that would otherwise have succeeded.
+  //
+  // It is also not a cure on its own: `gh repo sync` merges upstream through
+  // the API, and the CLI maps that API's refusal onto the same missing scope
+  // (`Upstream commits contain workflow changes, which require the `workflow`
+  // scope`). A credential that cannot push workflow files cannot merge them
+  // either, which is why the push failure below names the scope as the fix.
+  // What this credential can do, before two minutes are spent cloning.
+  //
+  // A classic token states its scopes in a response header, and `workflow` is
+  // the one this job cannot do without for long: GitHub refuses both a push
+  // and an API merge that introduces a workflow file without it, and upstream
+  // adds workflow files. A fine-grained token sends no such header — there the
+  // equivalent is the repository permission "Workflows: Read and write" — so
+  // an absent header is not an answer and is left alone.
+  //
+  // A warning rather than a failure. The scope is only *needed* when upstream
+  // has added a workflow file since the fork was last synced, and failing a
+  // release that would have published fine is the worse error. The push says
+  // the same thing fatally on the day it matters; this says it early, on every
+  // release, so nobody discovers it then.
+  const identity = run('gh', ['api', '-i', '/user'], { quiet: true })
+  const scopes = /^x-oauth-scopes:(.*)$/im.exec(identity ?? '')?.[1]
+  if (scopes !== undefined && !scopes.split(',').map((scope) => scope.trim()).includes('workflow')) {
+    process.stdout.write('::warning::WINGET_TOKEN has no `workflow` scope, so it cannot carry an upstream workflow change into the fork.\n')
+    log(`  Its scopes are: ${scopes.trim() || '(none)'}. Add \`workflow\` before upstream adds a workflow file.`)
+  }
+
+  log(`Syncing ${FORK} with ${UPSTREAM}...`)
+  if (run('gh', ['repo', 'sync', FORK, '--source', UPSTREAM, '--branch', 'master', '--force'], { quiet: true }) === null) {
+    process.stdout.write(`::warning::Could not sync ${FORK} with ${UPSTREAM}.\n`)
+    log('  Continuing: the push needs the sync only when upstream has added workflow files since.')
+  }
+
   // A shallow clone of the fork's default branch. The repository is enormous —
   // a full history would be gigabytes for a directory of three small files.
   log(`Cloning ${FORK} (shallow)...`)
@@ -228,7 +311,6 @@ try {
    */
   const alreadyPublished = run('git', ['cat-file', '-e', `upstream/master:${identifierDir}`], {
     cwd: repo,
-    allowFailure: true,
     quiet: true,
   }) !== null
   const title = `${alreadyPublished ? 'New version' : 'New package'}: ${WINGET_IDENTIFIER} version ${version}`
@@ -241,7 +323,18 @@ try {
   // `upstream/master` — this working tree was just reset onto master, where these
   // files do not exist yet, so a staged diff there always reports a change and
   // would never detect a no-op.
-  if (open !== null && run('git', ['fetch', 'origin', branch], { cwd: repo, quiet: true }) !== null) {
+  // Fetched into a remote-tracking ref by an explicit refspec, not by name.
+  // `--depth 1` clones single-branch, so `remote.origin.fetch` covers only
+  // `master` and a plain `git fetch origin <branch>` writes `FETCH_HEAD` and
+  // nothing else. Everything downstream then breaks quietly: `git diff
+  // origin/<branch>` cannot resolve the ref, so the no-op check always reports
+  // a change, and `--force-with-lease` has no lease to compare — git rejects
+  // the push as `stale info`. Which means the one path this reconcile exists
+  // for, correcting a submission that is already open, could not push at all.
+  const tracking = `+refs/heads/${branch}:refs/remotes/origin/${branch}`
+  const tracked = open !== null
+    && run('git', ['fetch', '--depth', '1', 'origin', tracking], { cwd: repo, quiet: true }) !== null
+  if (tracked) {
     const unchanged = run('git', [
       'diff', '--quiet', `origin/${branch}`, '--', wingetManifestDir(version),
     ], { cwd: repo, quiet: true }) !== null
@@ -254,9 +347,48 @@ try {
     if (!done) log('The manifests have changed; updating the pull request.')
   }
 
+  // Already merged, with these exact bytes. Nothing is open, so the reconcile
+  // path above never ran, and everything below would fail on a re-run: `git
+  // commit` with nothing staged exits non-zero, and if the bytes did differ,
+  // `gh pr create` would find no commits between the branches. This script is
+  // documented as re-runnable, and a version whose pull request has merged is
+  // the state a re-run is most likely to find.
+  if (!done && open === null && alreadyPublished) {
+    const published = run('git', [
+      'diff', '--quiet', '--cached', 'upstream/master', '--', wingetManifestDir(version),
+    ], { cwd: repo, quiet: true }) !== null
+
+    if (published) {
+      log(`${WINGET_IDENTIFIER} ${version} is already on upstream/master with these manifests. Nothing to do.`)
+      done = true
+    }
+  }
+
   if (!done) {
     run('git', ['commit', '-m', title], { cwd: repo })
-    run('git', ['push', '--force-with-lease', 'origin', branch], { cwd: repo })
+    // The lease names the value this run actually saw, rather than leaving git
+    // to infer one. Its bare form asks the remote-tracking ref what to expect
+    // and refuses the push as `stale info` when it cannot — which it cannot
+    // here, because a branch checked out with `-B` from `upstream/master` has
+    // no upstream configuration for git to follow back to `origin/<branch>`.
+    // Reproduced against a real shallow clone: the bare form is rejected even
+    // with the tracking ref fetched and its reflog in place, and the explicit
+    // form pushes. Nothing is leased for a branch that does not exist upstream
+    // yet, which is every first submission.
+    const expected = tracked ? run('git', ['rev-parse', `origin/${branch}`], { cwd: repo }).trim() : ''
+    run('git', [
+      'push', expected === '' ? '--force-with-lease' : `--force-with-lease=${branch}:${expected}`, 'origin', branch,
+    ], {
+      cwd: repo,
+      // The one refusal whose message names a file rather than a cause. It
+      // means the branch carries a workflow file the fork does not have, which
+      // is a stale fork, a failed sync, or a credential without the scope.
+      hint: (detail) => (/without .?workflows?.? scope/i.test(detail)
+        ? `This branch introduces a workflow file ${FORK} does not have. Sync the fork `
+          + `(gh repo sync ${FORK} --source ${UPSTREAM} --branch master --force), and give `
+          + 'WINGET_TOKEN the `workflow` scope — a credential without it can neither push nor merge one.'
+        : ''),
+    })
   }
 
   // An open pull request is updated by the push above; all that is left is to

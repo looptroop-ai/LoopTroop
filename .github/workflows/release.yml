@@ -1988,7 +1988,6 @@ jobs:
       && needs.detect.outputs.proceed == 'true'
       && needs.detect.outputs.dry_run == 'false'
       && needs.detect.outputs.dist_tag == 'latest'
-      && vars.PUBLISH_CHOCOLATEY == 'true'
       && needs.build.result == 'success'
       && needs.finalize.result == 'success'
     runs-on: windows-latest
@@ -2073,6 +2072,12 @@ jobs:
   #
   # Skipped rather than failed while `WINGET_TOKEN` is unset, so the channel can
   # land before the credential exists without turning every release red.
+  #
+  # `ubuntu-latest`, like `publish-scoop`: writing a Windows package manager's
+  # descriptor needs no Windows, and the difference is not small here. This job
+  # clones `winget-pkgs`, which is 689,147 files, and on a Windows runner the
+  # shallow clone alone took 16 minutes of a 30-minute budget. The same clone on
+  # Linux takes under two.
   publish-winget:
     name: Publish to WinGet
     needs: [detect, build, finalize]
@@ -2086,10 +2091,9 @@ jobs:
       && needs.detect.outputs.proceed == 'true'
       && needs.detect.outputs.dry_run == 'false'
       && needs.detect.outputs.dist_tag == 'latest'
-      && vars.PUBLISH_WINGET == 'true'
       && needs.build.result == 'success'
       && needs.finalize.result == 'success'
-    runs-on: windows-latest
+    runs-on: ubuntu-latest
     timeout-minutes: 30
     environment: packaging
     outputs:
@@ -2127,10 +2131,15 @@ jobs:
           VERSION: ${{ steps.inputs.outputs.version }}
         run: |
           set -euo pipefail
+          # Fatal, where this was a warning and a skip. That bargain was made so
+          # the channel could land before the credential existed; it has landed,
+          # and a documented channel that quietly publishes nothing is the
+          # failure mode the unset `PUBLISH_*` variables already demonstrated.
+          # `channel-republish.yml` has always treated the same absence as fatal.
           if [ -z "${WINGET_TOKEN:-}" ]; then
-            echo "state=skipped" >> "$GITHUB_OUTPUT"
-            echo "::warning::WINGET_TOKEN is not set; the WinGet submission was skipped."
-            exit 0
+            echo "state=failed" >> "$GITHUB_OUTPUT"
+            echo "::error::WINGET_TOKEN is not set in the packaging environment, so this release cannot be submitted to WinGet."
+            exit 1
           fi
           if [ -z "${WIN_BINARY}" ]; then
             # WinGet is the one channel that installs the executable rather than
@@ -2152,20 +2161,20 @@ jobs:
           echo "state=submitted" >> "$GITHUB_OUTPUT"
 
   # ---------------------------------------------------------------------------
-  # Three channels are paused, each behind a repository variable that is unset.
+  # One channel is still paused, behind a repository variable that is unset.
   #
-  # None of them can currently complete, and a job that cannot succeed teaches
-  # everyone to ignore a red release:
+  #   PUBLISH_AUR  registration is closed upstream after a security incident,
+  #                so there is no account to publish from.
   #
-  #   PUBLISH_CHOCOLATEY  the first submission is still in moderation, and
-  #                       Chocolatey answers 403 to a push for a package that
-  #                       has no approved version yet.
-  #   PUBLISH_WINGET      every submission is a pull request reviewed by people
-  #                       at Microsoft, and the first one also needs a CLA.
-  #   PUBLISH_AUR         registration is closed upstream after a security
-  #                       incident, so there is no account to publish from.
+  # A job that cannot succeed teaches everyone to ignore a red release, which is
+  # why it is off rather than failing. Chocolatey and WinGet were paused here
+  # too until their first submissions were accepted — Chocolatey answered 403 to
+  # a push for a package with no approved version, and the first WinGet pull
+  # request needed a CLA — and both now publish on every release like any other
+  # channel. Neither *completes* on release day: each joins a queue somebody
+  # else works through, which is why they report as submitted and gate nothing.
   #
-  # Re-enable one with:  gh variable set PUBLISH_WINGET --body true
+  # Re-enable this one with:  gh variable set PUBLISH_AUR --body true
   # ---------------------------------------------------------------------------
 
   # Dormant until the AUR reopens registration. It skips rather than fails when

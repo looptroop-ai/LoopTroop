@@ -174,6 +174,41 @@ Like Homebrew, it installs the locked bundle built from the release lockfile.
 </details>
 
 <details>
+<summary><b>Chocolatey</b> — Windows</summary>
+
+```powershell
+choco install looptroop
+choco upgrade looptroop           # upgrade
+```
+
+**Needs nothing else.** The package depends on `nodejs-lts`, `git` and `gh`, and
+installs the same locked bundle Homebrew and Scoop do.
+
+A moderator reviews every version before the community feed serves it, so a new
+release usually reaches this channel days after the others.
+</details>
+
+<details>
+<summary><b>WinGet</b> — Windows</summary>
+
+```powershell
+winget install LoopTroopAI.LoopTroop
+
+# upgrade — stop first, because Windows will not replace a running executable
+looptroop stop
+winget upgrade LoopTroopAI.LoopTroop
+```
+
+**Needs nothing else.** This channel installs the standalone executable, which
+carries its own Node runtime; git and `gh` come from the manifest's declared
+dependencies.
+
+Each version is a pull request into `microsoft/winget-pkgs`, reviewed by people
+at Microsoft, so a new release usually reaches this channel days after the
+others.
+</details>
+
+<details>
 <summary><b>bun</b> — everywhere</summary>
 
 ```bash

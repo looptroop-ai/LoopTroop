@@ -30,6 +30,19 @@ function pinnable(recipe) {
   return recipe.pinnable ?? true
 }
 
+/**
+ * The queue a channel's publish joins, for the channels that have one.
+ *
+ * The website tells readers that Chocolatey and WinGet arrive days after the
+ * other channels. That sentence is a promise about how this repository
+ * publishes, so it belongs in the catalog the website verifies against rather
+ * than only in prose either side can edit without the other noticing.
+ */
+function moderated(recipe) {
+  if (!recipe.moderated) return null
+  return { queue: recipe.moderated.queue, graceDays: recipe.moderated.graceDays }
+}
+
 export function buildInstallCatalogChannel(id, recipe) {
   return {
     id,
@@ -37,6 +50,7 @@ export function buildInstallCatalogChannel(id, recipe) {
     live: !recipe.stub,
     documentedInstall: recipe.documented,
     stubReason: recipe.stub ?? null,
+    moderated: moderated(recipe),
     pinnable: pinnable(recipe),
     doctorChannel: recipe.stub || recipe.delegate || !recipe.expect ? null : recipe.expect.channel,
     upgradeCommands: upgradeCommands(recipe),

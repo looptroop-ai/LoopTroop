@@ -239,13 +239,25 @@ function requireReleaseAsset(): void {
 
   if (probe.failed) {
     // `isGhNotFound` is what `release-detect.ts` already uses to tell a missing
-    // release from a broken one.
+    // release from a broken one. It is not enough on its own here: this job
+    // runs with the tap-and-bucket token, which is not the token that made the
+    // release, and GitHub answers 404 rather than 403 for a repository a
+    // credential cannot see. So a 404 alone cannot tell "there is no such
+    // release" — which must refuse — from "this token cannot read the source
+    // repository" — which must not, or a scope change silently fails every
+    // release. Asking whether the repository itself is visible separates them,
+    // and only runs on the 404 path.
     if (isGhNotFound(probe.stderr)) {
-      fail(
-        `Refusing to write ${version} to ${repo}.`,
-        `${SOURCE_REPOSITORY} has no v${release} release, so this descriptor would point at a 404.`,
-        'Nothing was changed.',
-      )
+      const repoVisible = ghTry(['api', `repos/${SOURCE_REPOSITORY}`])
+      if (!repoVisible.failed) {
+        fail(
+          `Refusing to write ${version} to ${repo}.`,
+          `${SOURCE_REPOSITORY} has no v${release} release, so this descriptor would point at a 404.`,
+          'Nothing was changed.',
+        )
+      }
+      log(`::warning::This token cannot read ${SOURCE_REPOSITORY}, so v${release} could not be confirmed. Continuing.`)
+      return
     }
     log(`::warning::Could not read the v${release} release to confirm ${wanted} exists. Continuing.`)
     return

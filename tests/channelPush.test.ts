@@ -66,6 +66,12 @@ if (joined.includes('.permissions.push')) {
 } else if (args.includes('--method') && args.includes('PUT')) {
   appendFileSync(process.env.GH_STUB_STATE + '.put', JSON.stringify(args) + '\\n')
   process.stdout.write('deadbeef\\n')
+} else if (args[0] === 'api' && /repos\\/[^/]+\\/[^/]+$/.test(args[1] ?? '')) {
+  // Whether the SOURCE repository is visible at all. Only reached on the 404
+  // path, and it is what separates "no such release" from "this token cannot
+  // see that repository".
+  if (state.sourceVisible === false) { process.stderr.write('gh: Not Found (HTTP 404)\\n'); process.exit(1) }
+  process.stdout.write('{"full_name":"looptroop-ai/LoopTroop"}\\n')
 } else if (joined.includes('/releases/tags/')) {
   // 'missing' and 'unreadable' both exit non-zero; only the first says so on
   // stderr. Conflating them is precisely the bug this distinguishes.
@@ -100,8 +106,8 @@ if (joined.includes('.permissions.push')) {
 
   const RELEASE: Release = { assets: [{ name: 'looptroop-9.9.9-bundle.tar.gz', digest: `sha256:${SHA}` }] }
 
-  function setState(state: { push?: boolean | 'unknown', remote?: string | null, blobSha?: string, release?: Release }): void {
-    writeFileSync(statePath, JSON.stringify({ push: true, remote: null, blobSha: 'abc123', release: RELEASE, ...state }))
+  function setState(state: { push?: boolean | 'unknown', remote?: string | null, blobSha?: string, release?: Release, sourceVisible?: boolean }): void {
+    writeFileSync(statePath, JSON.stringify({ push: true, remote: null, blobSha: 'abc123', release: RELEASE, sourceVisible: true, ...state }))
     rmSync(`${statePath}.put`, { force: true })
   }
 
@@ -327,6 +333,22 @@ if (joined.includes('.permissions.push')) {
     expect(result.status).toBe(1)
     expect(result.stderr).toContain('no v9.9.9 release')
     expect(putCalls()).toHaveLength(0)
+  })
+
+  /**
+   * The publish job runs with the tap-and-bucket token, not the one that made
+   * the release, and GitHub answers 404 rather than 403 for a repository a
+   * credential cannot see. Treating that 404 as "no such release" would fail
+   * every release the moment a token's scope changed.
+   */
+  it('warns and publishes when the token cannot read the source repository', async () => {
+    setState({ remote: null, release: 'missing', sourceVisible: false })
+
+    const result = await push()
+
+    expect(result.status).toBe(0)
+    expect(result.stdout).toContain('cannot read looptroop-ai/LoopTroop')
+    expect(putCalls()).toHaveLength(1)
   })
 
   /** A draft's assets are not anonymously downloadable: 404 for every user. */

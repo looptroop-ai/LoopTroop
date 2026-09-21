@@ -4,7 +4,7 @@ import { spawnSync } from 'node:child_process'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { makeTempDir, removeTempDir } from '../server/test/tempDir'
-import { planMatrix, CHANNELS, binaryPrefix, chocolateyApprovedVersion, validatePublishedVersion, whichLooptroop } from '../scripts/smoke-published.mjs'
+import { planMatrix, CHANNELS, binaryPrefix, chocolateyApprovedVersion, moderationSkipReason, validatePublishedVersion, whichLooptroop } from '../scripts/smoke-published.mjs'
 import { WINGET_IDENTIFIER } from '../scripts/package-manifests'
 import type { ChannelRecipe, InstalledChannel } from '../scripts/smoke-published.mjs'
 
@@ -231,6 +231,26 @@ describe('planMatrix', () => {
     // No status at all is not an approval. Reading the version regardless would
     // report a queued package as live for as long as the feed stayed quiet.
     expect(chocolateyApprovedVersion('<d:Version>9.9.9</d:Version>')).toBeNull()
+  })
+
+  it('skips a moderated channel only while the wait is known and short', () => {
+    const moderated = { queue: 'Chocolatey community moderation', graceDays: 14 }
+
+    // Inside the window, and saying what the feed does serve — a presence probe
+    // answers only about the version it was asked about, so the served version
+    // has to come from the channel's own latest probe or not be claimed at all.
+    expect(moderationSkipReason(moderated, { version: '9.9.9', ageHours: 48, serves: '9.9.8' }))
+      .toBe('9.9.9 is waiting on Chocolatey community moderation; the feed serves 9.9.8')
+    expect(moderationSkipReason(moderated, { version: '9.9.9', ageHours: 48, serves: null }))
+      .toBe('9.9.9 is waiting on Chocolatey community moderation')
+
+    // Past the window a stalled submission has to be reported, not waited on.
+    expect(moderationSkipReason(moderated, { version: '9.9.9', ageHours: 14 * 24, serves: null })).toBeNull()
+
+    // And an unknown age is not a reason to skip. `releaseAgeHours` returns
+    // null for every GitHub API failure, so counting it as inside the window
+    // lets repeated failures keep a rejected submission green forever.
+    expect(moderationSkipReason(moderated, { version: '9.9.9', ageHours: null, serves: '9.9.8' })).toBeNull()
   })
 
   it('names WinGet by its published identifier everywhere it appears', () => {

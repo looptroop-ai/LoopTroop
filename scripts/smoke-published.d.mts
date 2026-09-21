@@ -162,6 +162,17 @@ export const CHANNELS: Record<string, ChannelRecipe>
  */
 export function chocolateyApprovedVersion(payload: string): string | null
 
+/**
+ * Why a moderated channel's leg is not being run, or null when it must run.
+ *
+ * An unknown age is never a reason to skip: a skip claims the queue explains
+ * the absence, and a release whose age could not be read cannot support it.
+ */
+export function moderationSkipReason(
+  moderated: ModeratedChannel,
+  facts: { version: string, ageHours: number | null, serves: string | null },
+): string | null
+
 /** Where `--binary` puts the standalone executable. */
 export function binaryPrefix(): string
 

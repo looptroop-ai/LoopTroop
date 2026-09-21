@@ -1112,18 +1112,18 @@ async function probeChocoLatest() {
  * install` cannot find. Asking `winget` is the only question whose answer is
  * the one a user gets.
  *
- * Every non-zero exit reads as "not there", rather than only the ones whose
- * message is recognisable. WinGet reports a missing version and a missing
- * package with different hex codes and localised text, and misreading a real
- * client failure as a pending review costs nothing here: `moderated` bounds how
- * long that can stay quiet, and past the grace period this leg runs the install
- * and fails on it like any other stale feed.
+ * A failure is not read by its message. WinGet reports a missing version, a
+ * missing package and a source it cannot reach with different hex codes and
+ * localised text, so the second question is asked of the client instead: does
+ * it know the package at all, with no version named? If it does, only this
+ * version is absent, which is exactly what a review in progress looks like. If
+ * it does not, something larger is wrong — a broken runner, an unreachable
+ * source, an identifier that no longer exists — and that must not wear the
+ * moderation skip's clothes for the whole grace period.
  */
 function probeWingetVersion(_recipe, version) {
-  const result = run('winget', [
-    'show', WINGET_IDENTIFIER, '--version', version,
-    '--source', 'winget', '--accept-source-agreements', '--disable-interactivity',
-  ])
+  const source = ['--source', 'winget', '--accept-source-agreements', '--disable-interactivity']
+  const result = run('winget', ['show', WINGET_IDENTIFIER, '--version', version, ...source])
   if (result.code === 0) return version
   // A `null` code is a child that never started — a resolver miss, a launch
   // failure — which is not an answer about the feed and must not be read as
@@ -1131,7 +1131,15 @@ function probeWingetVersion(_recipe, version) {
   if (result.code === null) {
     throw new Error(`winget could not be started: ${result.combined.trim().split('\n')[0]}`)
   }
-  log(`  winget show exited ${result.code}: ${result.combined.trim().split('\n').pop()}`)
+
+  const known = run('winget', ['show', WINGET_IDENTIFIER, ...source])
+  if (known.code !== 0) {
+    throw new Error(
+      `winget cannot find ${WINGET_IDENTIFIER} at all (exit ${known.code}): `
+      + `${known.combined.trim().split('\n').pop()}`,
+    )
+  }
+  log(`  winget knows ${WINGET_IDENTIFIER} but not ${version} yet (exit ${result.code})`)
   return null
 }
 
@@ -1814,6 +1822,22 @@ function parseArgs(argv) {
   return options
 }
 
+/**
+ * Why a moderated channel's leg is not being run, or null when it must run.
+ *
+ * Exported for its test, because the interesting case is the one that is never
+ * reached by hand: an age the release API could not answer for. Counting that
+ * as inside the window — which this did first — makes every repeated API
+ * failure a successful skip, so a submission that was rejected months ago stays
+ * green for as long as the lookup keeps failing. A skip is a claim that the
+ * queue explains the absence, and an unknown age cannot support it.
+ */
+export function moderationSkipReason({ queue, graceDays }, { version, ageHours, serves }) {
+  if (ageHours === null || ageHours >= graceDays * 24) return null
+  const waiting = `${version} is waiting on ${queue}`
+  return serves === null ? waiting : `${waiting}; the feed serves ${serves}`
+}
+
 /** How long ago a release was published, in hours, or null if unknown. */
 async function releaseAgeHours(version) {
   try {
@@ -1950,18 +1974,22 @@ async function main() {
       answered = false
     }
     if (answered && serving !== version) {
-      const age = await releaseAgeHours(version)
-      const graceHours = recipe.moderated.graceDays * 24
-      // An unknown age counts as inside the window: a release whose age this
-      // could not read is not grounds for calling a queue abandoned.
-      if (age === null || age < graceHours) {
-        const reason = `${version} is waiting on ${recipe.moderated.queue}; the feed serves ${serving ?? '(nothing)'}`
+      const ageHours = await releaseAgeHours(version)
+      // What the feed does serve, for the report. `serving` cannot say: a
+      // presence probe answers about the version it was asked about and returns
+      // null for every other state, so a reason built from it read "the feed
+      // serves (nothing)" even while Chocolatey was serving an earlier release.
+      const serves = recipe.latest ? await recipe.latest().catch(() => null) : null
+      const reason = moderationSkipReason(recipe.moderated, { version, ageHours, serves })
+      if (reason !== null) {
         log(`\n${recipe.key}: not run (${reason})`)
         writeSkipResult(options, recipe, version, reason)
         return
       }
-      log(`\n${recipe.key}: ${version} has been waiting on ${recipe.moderated.queue} for `
-        + `${Math.round(age / 24)} days, past the ${recipe.moderated.graceDays}-day grace period. Running it anyway.`)
+      log(`\n${recipe.key}: ${version} is not on the feed and ${ageHours === null
+        ? 'how long it has been waiting could not be read, so the queue is not an excuse'
+        : `it has been waiting ${Math.round(ageHours / 24)} days, past the ${recipe.moderated.graceDays}-day grace period`
+      }. Running it anyway.`)
     }
   }
 

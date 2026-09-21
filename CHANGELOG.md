@@ -108,6 +108,7 @@ Unreleased changes appear first and represent commits that have not yet been inc
 
 ### Fixed
 - WinGet submissions sync the fork before pushing. A branch built on upstream's `master` introduces every file upstream has added since the fork was last synced, and GitHub refuses a push that introduces a workflow file unless the credential carries the `workflow` scope — which rejected a correct submission with the fork five weeks behind. The sync happens server-side and is not fatal on its own; when it is the sync that was needed, the push message says so.
+- The WinGet publish and republish jobs run on Linux, as the Scoop ones already do. Writing a Windows package manager's descriptor needs no Windows, and cloning a repository of 689,147 files on a Windows runner spent 16 minutes of the job's 30-minute budget where Linux takes under two.
 
 ### Changed
 - Chocolatey and WinGet are documented as live install channels. Both package feeds have accepted their first submission, so `choco install looptroop` and `winget install LoopTroopAI.LoopTroop` install LoopTroop, `choco upgrade` and `winget upgrade` upgrade it, and `looptroop doctor` already reported either channel correctly.

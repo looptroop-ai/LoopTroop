@@ -478,11 +478,15 @@ jobs:
   #
   # Nothing here can make Microsoft merge it. Like Chocolatey moderation, that
   # is a queue this workflow reports into and never waits on.
+  # `ubuntu-latest`, like the Scoop job above: writing a Windows package
+  # manager's descriptor needs no Windows, and this one clones `winget-pkgs`,
+  # which is 689,147 files. On a Windows runner that shallow clone took 16
+  # minutes of the 30 this job has; on Linux it takes under two.
   winget:
     name: Resubmit the WinGet manifests
     needs: [prepare]
     if: inputs.channel == 'winget'
-    runs-on: windows-latest
+    runs-on: ubuntu-latest
     timeout-minutes: 30
     environment: packaging
     steps:

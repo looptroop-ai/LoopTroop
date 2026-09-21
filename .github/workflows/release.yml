@@ -2072,6 +2072,12 @@ jobs:
   #
   # Skipped rather than failed while `WINGET_TOKEN` is unset, so the channel can
   # land before the credential exists without turning every release red.
+  #
+  # `ubuntu-latest`, like `publish-scoop`: writing a Windows package manager's
+  # descriptor needs no Windows, and the difference is not small here. This job
+  # clones `winget-pkgs`, which is 689,147 files, and on a Windows runner the
+  # shallow clone alone took 16 minutes of a 30-minute budget. The same clone on
+  # Linux takes under two.
   publish-winget:
     name: Publish to WinGet
     needs: [detect, build, finalize]
@@ -2087,7 +2093,7 @@ jobs:
       && needs.detect.outputs.dist_tag == 'latest'
       && needs.build.result == 'success'
       && needs.finalize.result == 'success'
-    runs-on: windows-latest
+    runs-on: ubuntu-latest
     timeout-minutes: 30
     environment: packaging
     outputs:

@@ -1115,11 +1115,14 @@ export function chocolateySearchVersion(output) {
  * a proxy or a schema revision may add others.
  */
 export function chocolateySubmission(payload) {
-  const read = (field) => new RegExp(`<d:${field}\\b[^>]*>([^<]*)<`).exec(payload)?.[1]?.trim() ?? ''
-  const status = read('PackageStatus')
+  // Two literal patterns rather than one built from a field name. A `RegExp`
+  // assembled from a variable is a pattern no scanner can read, and this one
+  // bought nothing: both call sites are constants.
+  const text = (match) => match?.[1]?.trim() ?? ''
+  const status = text(/<d:PackageStatus\b[^>]*>([^<]*)</.exec(payload))
   // `Created` is when the push landed; `Published` stays at 1900-01-01 until a
   // moderator approves, so it cannot time a queue.
-  const created = Date.parse(`${read('Created')}Z`)
+  const created = Date.parse(`${text(/<d:Created\b[^>]*>([^<]*)</.exec(payload))}Z`)
   const at = Number.isNaN(created) ? null : created
   if (status === 'Rejected') return { state: 'rejected', at, detail: 'moderation rejected it' }
   if (status === '') return { state: 'absent', at: null, detail: 'the feed has no entry for it' }

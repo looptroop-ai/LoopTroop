@@ -8,6 +8,7 @@ import {
   planMatrix,
   CHANNELS,
   binaryPrefix,
+  chocolateySearchOutcome,
   chocolateySearchVersion,
   chocolateySubmission,
   moderationSkipReason,
@@ -232,6 +233,26 @@ describe('planMatrix', () => {
     expect(chocolateySearchVersion('Chocolatey v2.6.0\n0 packages found.\n')).toBeNull()
   })
 
+  it('tells a Chocolatey search that found nothing from one that failed', () => {
+    // Chocolatey's own source decides this: `ChocolateySearchCommand` exits 0
+    // for a successful search including one with no results, and sets 2 only
+    // when the `useEnhancedExitCodes` feature is on, which it is not by
+    // default. So a non-zero exit is an error — an unreachable source, a proxy
+    // failure, a broken client — and reading it as "the feed does not serve
+    // this version" is how an outage becomes a fortnight of "waiting on
+    // moderation", under the queue's name.
+    expect(chocolateySearchOutcome({ code: 0, stdout: 'looptroop|0.5.1\n', combined: '' })).toBe('0.5.1')
+    expect(chocolateySearchOutcome({ code: 0, stdout: '', combined: '' })).toBeNull()
+    // "No results" under enhanced exit codes, read as the same answer.
+    expect(chocolateySearchOutcome({ code: 2, stdout: '', combined: '' })).toBeNull()
+
+    expect(() => chocolateySearchOutcome({ code: 1, stdout: '', combined: 'Unable to connect to the remote server' }))
+      .toThrow('exited 1')
+    expect(() => chocolateySearchOutcome({ code: -1, stdout: '', combined: 'boom' })).toThrow('exited -1')
+    expect(() => chocolateySearchOutcome({ code: null, stdout: '', combined: 'choco: not found' }))
+      .toThrow('could not be started')
+  })
+
   it('reads a Chocolatey queue state, and when the submission was made', () => {
     // The shapes the live feed returned for an approved version and for one
     // pushed minutes earlier: `Published` stays at 1900-01-01 until approval,
@@ -268,7 +289,19 @@ describe('planMatrix', () => {
     expect(open.at).toBe(Date.parse('2026-09-21T09:06:46Z'))
     expect(open.detail).toContain('438396')
 
-    expect(wingetSubmission([{ number: 1, state: 'closed', created_at: '2026-09-01T00:00:00Z', merged_at: '2026-09-02T00:00:00Z' }]).state).toBe('queued')
+    // A merge restarts the clock. These are the real dates of the first
+    // submission: open for five weeks, then merged, after which the index
+    // pipeline runs. Timing the index refresh from the day the pull request
+    // was opened would fail a merge that is hours old.
+    const merged = wingetSubmission([{
+      number: 417273,
+      state: 'closed',
+      created_at: '2026-08-14T07:42:43Z',
+      merged_at: '2026-09-19T00:15:08Z',
+    }])
+    expect(merged.state).toBe('queued')
+    expect(merged.at).toBe(Date.parse('2026-09-19T00:15:08Z'))
+
     expect(wingetSubmission([{ number: 2, state: 'closed', created_at: '2026-09-01T00:00:00Z', merged_at: null }]).state).toBe('rejected')
     expect(wingetSubmission([]).state).toBe('absent')
     expect(wingetSubmission(null).state).toBe('absent')

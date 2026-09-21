@@ -189,6 +189,18 @@ export const CHANNELS: Record<string, ChannelRecipe>
 /** The version in a `choco search --limit-output` listing, or null for none. */
 export function chocolateySearchVersion(output: string): string | null
 
+/**
+ * What one `choco search` result means: a version, nothing, or a failure.
+ *
+ * Chocolatey exits 0 for a search that found nothing, so a non-zero exit is an
+ * error rather than an absence, and this throws on one.
+ */
+export function chocolateySearchOutcome(result: {
+  code: number | null
+  stdout: string
+  combined?: string
+}): string | null
+
 /** What Chocolatey's moderation queue says, read from one feed entity. */
 export function chocolateySubmission(payload: string): ChannelSubmission
 

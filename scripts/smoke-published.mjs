@@ -400,20 +400,18 @@ export const CHANNELS = {
     // user-scope package, which left an earlier job installing something it
     // could not remove.
     //
-    // `--skip-dependencies` stays here, where the Chocolatey leg drops it. The
-    // two declarations are not alike: Chocolatey's dependencies are Chocolatey
-    // packages it installs in seconds, while WinGet's are Git for Windows and
-    // the GitHub CLI — full third-party installers that the runner already has
-    // from another source, so resolving them re-installs two applications on
-    // every weekly run to prove a declaration that `winget validate` and the
-    // golden manifests already check. The cost is that no run here exercises
-    // WinGet's dependency resolution, which the installation page states.
+    // Dependencies are resolved, as they are for Chocolatey. `winget validate`
+    // checks that the manifest *declares* `Git.Git` and `GitHub.cli`; nothing
+    // checked that those identifiers still exist in the index, which is the
+    // half that breaks when an upstream package is renamed. On a hosted runner
+    // both are already installed and WinGet correlates them, so the usual cost
+    // is a lookup; where it does install them, a weekly leg can afford it.
     install: ({ version, pin }) => ({
       command: 'winget',
       args: [
         'install', '--id', WINGET_IDENTIFIER, '--exact',
         ...(pin ? ['--version', version] : []),
-        '--source', 'winget', '--scope', 'machine', '--skip-dependencies',
+        '--source', 'winget', '--scope', 'machine',
         '--accept-package-agreements', '--accept-source-agreements', '--disable-interactivity',
       ],
       display: pin
@@ -1131,6 +1129,42 @@ export function chocolateySubmission(payload) {
 }
 
 /**
+ * A `choco search` against the community feed, as an answer or as a failure.
+ *
+ * Chocolatey's exit codes are not what an earlier revision of this assumed.
+ * `ChocolateySearchCommand` exits 0 for a successful search *including one
+ * with no results*, and only sets 2 for "nothing found" when the
+ * `useEnhancedExitCodes` feature is switched on, which it is not by default:
+ *
+ *   if (configuration.Features.UseEnhancedExitCodes && packageResults.Count == 0
+ *       && Environment.ExitCode == 0) { Environment.ExitCode = 2 }
+ *
+ * So every other non-zero exit is an error — an unreachable source, a proxy or
+ * TLS failure, a broken client — and reading those as "the feed does not serve
+ * this version" is how an outage becomes a fortnight of "waiting on
+ * moderation". They throw, which is what `probeNpmRegistry` does with a
+ * registry error and for the same stated reason.
+ *
+ * The rule is exported as a pure function because it is the part that was
+ * wrong, and because `run` cannot be stood up in a unit test.
+ */
+export function chocolateySearchOutcome({ code, stdout, combined }) {
+  // 2 is "no results" under `useEnhancedExitCodes`. Accepted although the
+  // feature is off by default, because if it is ever turned on this reads the
+  // same answer rather than a new failure.
+  if (code === 0 || code === 2) return chocolateySearchVersion(stdout)
+  const first = String(combined ?? '').trim().split('\n')[0] ?? ''
+  if (code === null) throw new Error(`choco could not be started: ${first}`)
+  throw new Error(`choco search exited ${code}: ${first}`)
+}
+
+function chocoSearch(args) {
+  return chocolateySearchOutcome(
+    run('choco', ['search', 'looptroop', '--exact', ...args, '--limit-output', '--source', CHOCO_FEED]),
+  )
+}
+
+/**
  * Whether Chocolatey serves a version — which is not whether it has one.
  *
  * Asked of `choco` rather than over HTTP, both because that is the supported
@@ -1138,25 +1172,12 @@ export function chocolateySubmission(payload) {
  * to decide whether a version is on the feed.
  */
 function probeChocoVersion(_recipe, version) {
-  const result = run('choco', [
-    'search', 'looptroop', '--exact', '--version', version, '--limit-output', '--source', CHOCO_FEED,
-  ])
-  // A child that never started is not an answer about the feed. Everything else
-  // — including a non-zero exit with no matches, which is how Chocolatey
-  // reports "nothing found" — is read from the output.
-  if (result.code === null) {
-    throw new Error(`choco could not be started: ${result.combined.trim().split('\n')[0]}`)
-  }
-  return chocolateySearchVersion(result.stdout)
+  return chocoSearch(['--version', version])
 }
 
 /** What an unpinned `choco install looptroop` resolves: the feed's latest. */
 function probeChocoLatest() {
-  const result = run('choco', ['search', 'looptroop', '--exact', '--limit-output', '--source', CHOCO_FEED])
-  if (result.code === null) {
-    throw new Error(`choco could not be started: ${result.combined.trim().split('\n')[0]}`)
-  }
-  return chocolateySearchVersion(result.stdout)
+  return chocoSearch([])
 }
 
 /** Chocolatey's queue state for a version, for the moderation decision. */
@@ -1226,11 +1247,22 @@ function probeWingetVersion(_recipe, version) {
 export function wingetSubmission(pulls) {
   const pull = (Array.isArray(pulls) ? pulls : [])[0]
   if (!pull) return { state: 'absent', at: null, detail: 'no submission was ever opened for it' }
-  const opened = Date.parse(String(pull.created_at ?? ''))
-  const at = Number.isNaN(opened) ? null : opened
-  if (pull.state === 'open') return { state: 'queued', at, detail: `submitted as #${pull.number}, still open` }
-  if (pull.merged_at) return { state: 'queued', at, detail: `#${pull.number} merged; the index refresh follows` }
-  return { state: 'rejected', at, detail: `#${pull.number} was closed without merging` }
+  const when = (value) => {
+    const at = Date.parse(String(value ?? ''))
+    return Number.isNaN(at) ? null : at
+  }
+  if (pull.state === 'open') {
+    return { state: 'queued', at: when(pull.created_at), detail: `submitted as #${pull.number}, still open` }
+  }
+  // A merge restarts the clock, because it is where this queue ends and the
+  // next one begins: the index pipeline runs afterwards, and how long the
+  // review took has nothing to do with it. The first submission here was open
+  // for five weeks, so timing the index refresh from the day it was opened
+  // would have failed a merge that was hours old.
+  if (pull.merged_at) {
+    return { state: 'queued', at: when(pull.merged_at), detail: `#${pull.number} merged; the index refresh follows` }
+  }
+  return { state: 'rejected', at: when(pull.created_at), detail: `#${pull.number} was closed without merging` }
 }
 
 /** WinGet's queue state for a version: the submission pull request upstream. */

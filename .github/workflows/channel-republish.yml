@@ -392,7 +392,26 @@ jobs:
           # `choco search`, not `choco list`: Chocolatey v2 made `list` local-only.
           # It reports only approved packages, which is exactly the distinction
           # that matters — a submission still in moderation is not installable.
-          if choco search looptroop --exact --version "${VERSION}" --limit-output --source https://community.chocolatey.org/api/v2/ | grep -q .; then
+          #
+          # The exit status is read separately from the output, because they
+          # answer different questions and a pipeline inside `if` hides the
+          # first: `set -e` does not fire in a condition, so a search that
+          # *failed* — an unreachable source, a proxy or TLS error, a broken
+          # client — printed nothing, read as "not on the feed", and sent this
+          # job on to repack and resubmit a version that may well be published.
+          # Chocolatey exits 0 for a search that found nothing and sets 2 only
+          # under `useEnhancedExitCodes`, so anything else is an error and this
+          # step stops on it rather than guessing.
+          status=0
+          found=$(choco search looptroop --exact --version "${VERSION}" --limit-output --source https://community.chocolatey.org/api/v2/) || status=$?
+          if [ "${status}" -ne 0 ] && [ "${status}" -ne 2 ]; then
+            echo "::error::choco search exited ${status}, so the feed could not say whether ${VERSION} is published."
+            exit 1
+          fi
+          # Matched against the id, because `--exact` has matched by prefix on
+          # some Chocolatey versions — the same comparison the published smoke
+          # makes of the same output.
+          if printf '%s\n' "${found}" | grep -qE '^looptroop\|'; then
             echo "published=true" >> "$GITHUB_OUTPUT"
             echo "looptroop ${VERSION} is approved and on the feed."
           else

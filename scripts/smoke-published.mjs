@@ -1103,6 +1103,12 @@ function probeWingetVersion(_recipe, version) {
     '--source', 'winget', '--accept-source-agreements', '--disable-interactivity',
   ])
   if (result.code === 0) return version
+  // A `null` code is a child that never started — a resolver miss, a launch
+  // failure — which is not an answer about the feed and must not be read as
+  // one. The caller treats a throw as "could not ask" rather than "not there".
+  if (result.code === null) {
+    throw new Error(`winget could not be started: ${result.combined.trim().split('\n')[0]}`)
+  }
   log(`  winget show exited ${result.code}: ${result.combined.trim().split('\n').pop()}`)
   return null
 }

@@ -117,7 +117,7 @@ curl --proto '=https' --proto-redir '=https' --tlsv1.2 -fsSL https://www.looptro
 ```
 
 ```powershell
-curl.exe --proto "=https" --proto-redir "=https" --tlsv1.2 -fsSL https://www.looptroop.ovh/install.ps1 | iex
+$script = curl.exe --proto "=https" --proto-redir "=https" --tlsv1.2 -fsSL https://www.looptroop.ovh/install.ps1; if ($LASTEXITCODE -ne 0 -or !$script) { throw "Installer download failed" }; & ([scriptblock]::Create(($script -join "`n")))
 ```
 
 Resolves the newest release, checks the download against the checksum that
@@ -298,7 +298,7 @@ Unlike high-speed coding tools that optimize for immediate chat responses, LoopT
 flowchart LR
     A["🎫 Ticket Input"] --> B["🔍 Codebase Discovery"]
     B --> C["🏛️ LLM Council Planning<br/>(Interview, PRD & Beads)"]
-    C --> D["🛑 Human Approval Gate<br/>(optional in future releases)"]
+    C --> D["🛑 Human Approval Gate"]
     D --> E["🧪 Isolated OpenCode Bead Execution<br/>(Git Worktree)"]
     E --> F["✅ Final Tests"]
     F --> H["🧭 Optional Manual QA<br/>(user runs the app)"]
@@ -509,7 +509,7 @@ provide whole-program alias or dataflow analysis.
 
 ### Human approval gates
 
-LoopTroop keeps you in control of critical state transitions. You actively review and sign off on planning specs, execution blueprints, and final pull request deliverables. *(Note: Human approval gates will become optional in future releases).*
+LoopTroop keeps you in control of critical state transitions. You actively review and sign off on planning specs, execution blueprints, and final pull request deliverables.
 
 For tickets with Manual QA enabled, LoopTroop prepares a checklist while you manually control the app and accept/reject/skip/create new tickets from the items.
 

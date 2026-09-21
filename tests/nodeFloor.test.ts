@@ -118,4 +118,13 @@ describe('the Node floor is stated once', () => {
       expect(versions.every((version) => version === FLOOR_LABEL), file).toBe(true)
     }
   })
+
+  it('keeps the README Windows installer recipe aligned with the install catalog', () => {
+    const catalog = JSON.parse(read('tests/fixtures/install-catalog.json')) as {
+      channels: Array<{ id: string; documentedInstall: string }>
+    }
+    const installer = catalog.channels.find(({ id }) => id === 'installer-ps1')
+    if (installer === undefined) throw new Error('PowerShell installer catalog entry missing')
+    expect(read('README.md')).toContain(installer.documentedInstall)
+  })
 })

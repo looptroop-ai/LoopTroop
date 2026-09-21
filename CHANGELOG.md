@@ -11,6 +11,7 @@ Unreleased changes appear first and represent commits that have not yet been inc
 
 ### Summary
 - LoopTroop now requires Node 24.21.0 or newer.
+- Published documentation now describes the latest implemented behavior directly as live guidance.
 - CLI command help now accepts `--help`, `help`, and `?` after a command.
 - Model-filtered debug history now retains native OpenCode rows when session ownership metadata differs.
 - Ticket drafts and log history now survive deletion races, pagination gaps, native-log rewrites, and incomplete tail records without restoring stale state.
@@ -115,7 +116,7 @@ Unreleased changes appear first and represent commits that have not yet been inc
 - Skip receipts now have database-enforced uniqueness per ticket and receipt ID in the existing artifact storage. Bulk skips can share an action ID, repeated receipts are ignored, and failed batches roll back atomically. Ordinary artifact cleanup handles receipt deletion without a separate claim table.
 - Workflow mock dispatch now uses one handler record, so supported phases cannot drift from a separate list. Workspace and OpenCode failures carry internal error types while retaining the existing user messages, phase-specific error codes, and serialized error shape.
 - Kept README installation guidance focused on secure commands and prerequisites; detailed lock recovery remains in the installation guide.
-- Updated user-facing installation and contributor docs for the runtime floors, Bash/zsh Yarn commands, and the served `v0.5.9` installer's unreleased flag mismatch.
+- Updated user-facing installation and contributor docs for the runtime floors, Bash/zsh Yarn commands, and the current installer flag set.
 - Release manifests now carry `package-lock.json` beside the npm tarball and managed-channel bundle. Every release asset is verified against that manifest, and container builds install from the matching lockfile with `npm ci --ignore-scripts --omit=dev`.
 - CI and container release jobs use three npm fetch retries with retry timeouts bounded from 10 to 60 seconds. Container summaries record the tarball, lockfile, platform, revision, image digest, and installed package versions for each architecture.
 - The bare-Node TypeScript check filters only Node's known parser-status advisory, following the installer-sync check. It still uses Node's parser, fails on unsupported syntax, and preserves all other warnings.
@@ -239,7 +240,8 @@ Unreleased changes appear first and represent commits that have not yet been inc
 - Installer recovery now proves lock owners have exited, leaves unverifiable executables untouched, rejects empty PowerShell values, and points Node users to `nvm install 24`.
 - Installer recovery now repairs a damaged executable only with independent daemon evidence, and release repairs retain their legacy lockfile and image-inventory paths.
 - Embedded-runtime checks read the structured `doctor --json` Node version, while published binary upgrade guidance keeps its HTTPS-only curl recipe in sync.
-- Published documentation now records the runtime floors, Bash/zsh Yarn setup, and the served `v0.5.9` installer flag mismatch.
+- Published documentation now records the runtime floors, Bash/zsh Yarn setup, and the current installer flag set.
+- The README Windows installer recipe now captures the complete `curl.exe` response before executing it as one PowerShell script block, matching the tested install catalog.
 - Log history refreshes loaded pages and keeps model tabs and milestones available; model selection and setup disclosures are accessible, and refused clipboard copies show a visible error.
 - Repeated model-output parsing reuses bounded cached results; structured YAML recovery preserves uncertain text, honors canonical aliases, and reports repairs with accurate PRD accounting.
 - Merges made on GitHub, including squash and rebase merges, now finish waiting tickets while the daemon runs, even when the UI is closed.

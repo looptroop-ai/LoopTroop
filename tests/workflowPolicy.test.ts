@@ -111,6 +111,9 @@ describe('release workflow policy', () => {
 
     expect(text).not.toMatch(/^concurrency:/m)
     expect(text).toContain('    concurrency:\n      group:')
+    expect(text).toContain('  pull_request:')
+    expect(text).not.toContain('pull_request_target:')
+    expect(text).toContain('github.event.pull_request.head.repo.full_name == github.repository')
     expect(text).toContain('types: [opened, synchronize, reopened, ready_for_review]')
     expect(text).toContain('!github.event.pull_request.draft')
     expect(text).toContain('github.event.pull_request.author_association')

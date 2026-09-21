@@ -2131,10 +2131,15 @@ jobs:
           VERSION: ${{ steps.inputs.outputs.version }}
         run: |
           set -euo pipefail
+          # Fatal, where this was a warning and a skip. That bargain was made so
+          # the channel could land before the credential existed; it has landed,
+          # and a documented channel that quietly publishes nothing is the
+          # failure mode the unset `PUBLISH_*` variables already demonstrated.
+          # `channel-republish.yml` has always treated the same absence as fatal.
           if [ -z "${WINGET_TOKEN:-}" ]; then
-            echo "state=skipped" >> "$GITHUB_OUTPUT"
-            echo "::warning::WINGET_TOKEN is not set; the WinGet submission was skipped."
-            exit 0
+            echo "state=failed" >> "$GITHUB_OUTPUT"
+            echo "::error::WINGET_TOKEN is not set in the packaging environment, so this release cannot be submitted to WinGet."
+            exit 1
           fi
           if [ -z "${WIN_BINARY}" ]; then
             # WinGet is the one channel that installs the executable rather than

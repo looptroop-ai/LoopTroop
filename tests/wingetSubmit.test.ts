@@ -16,12 +16,26 @@ afterEach(() => {
   vi.resetModules()
 })
 
-function prepare() {
+/**
+ * A run where every command succeeds.
+ *
+ * `differs` is what `git diff --quiet` reports, and it decides which path the
+ * script takes: a non-zero exit means the manifests are not already there,
+ * which is the ordinary submission. Defaulting it to "everything succeeds"
+ * silently turned every test into the already-published no-op.
+ */
+function prepare({ differs = true }: { differs?: boolean } = {}) {
   vi.stubEnv('WINGET_TOKEN', token)
   vi.stubEnv('GIT_CONFIG_COUNT', '0')
   process.argv = ['node', 'winget-submit.ts', '--version', '9.9.9', '--url', 'https://example.invalid/package.zip', '--sha256', 'a'.repeat(64)]
   vi.spyOn(process.stdout, 'write').mockImplementation(() => true)
-  vi.mocked(execFileSync).mockImplementation((command, args) => command === 'gh' && args?.[1] === 'list' ? '[]' : '')
+  vi.mocked(execFileSync).mockImplementation((command, args) => {
+    if (command === 'gh' && args?.[1] === 'list') return '[]'
+    if (differs && command === 'git' && args?.[0] === 'diff') {
+      throw Object.assign(new Error('exit 1'), { status: 1, stderr: '' })
+    }
+    return ''
+  })
 }
 
 describe('WinGet submission credentials', () => {
@@ -67,8 +81,31 @@ describe('WinGet submission credentials', () => {
     const sync = calls.findIndex(([command, args]) => command === 'gh' && args?.[0] === 'repo' && args?.[1] === 'sync')
     const clone = calls.findIndex(([command, args]) => command === 'git' && args?.[0] === 'clone')
     expect(sync, 'the fork is never synced').toBeGreaterThanOrEqual(0)
-    expect(calls[sync]?.[1]).toEqual(['repo', 'sync', 'looptroop-ai/winget-pkgs', '--branch', 'master'])
+    // `--force` because this fork carries no work of its own: without it a
+    // sync refuses a non-fast-forward, which is the other way a stale fork
+    // survives into the push.
+    expect(calls[sync]?.[1]).toEqual([
+      'repo', 'sync', 'looptroop-ai/winget-pkgs', '--source', 'microsoft/winget-pkgs', '--branch', 'master', '--force',
+    ])
     expect(clone, 'the clone does not follow the sync').toBeGreaterThan(sync)
+  })
+
+  it('does nothing when the version is already merged with these manifests', async () => {
+    // The state a re-run is most likely to find: the pull request merged, so
+    // nothing is open, and upstream already carries exactly these bytes. Every
+    // command after this point would fail on that — `git commit` with nothing
+    // staged exits non-zero — and this script is documented as re-runnable.
+    prepare({ differs: false })
+    await import('../scripts/winget-submit.ts')
+
+    const calls = vi.mocked(execFileSync).mock.calls
+    const ran = (command: string, first: string) => calls.some(([cmd, args]) => cmd === command && args?.[0] === first)
+    expect(ran('git', 'commit'), 'committed onto an already-published version').toBe(false)
+    expect(ran('git', 'push'), 'pushed an already-published version').toBe(false)
+    expect(
+      calls.some(([cmd, args]) => cmd === 'gh' && args?.[0] === 'pr' && args?.[1] === 'create'),
+      'opened a second pull request for an already-published version',
+    ).toBe(false)
   })
 
   it('preserves inherited Git configuration when adding authentication', async () => {

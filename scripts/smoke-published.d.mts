@@ -81,6 +81,19 @@ export interface StubChannel extends ChannelCommon {
   publishHint?: undefined
   expect?: undefined
   provesOwnRuntime?: undefined
+  moderated?: undefined
+}
+
+/**
+ * A channel whose publish is a submission to a queue somebody else works.
+ *
+ * Chocolatey moderates every version and WinGet reviews every manifest, so the
+ * feed serving an older release is the expected state for a while after a tag.
+ * `graceDays` is how long that stays a deliberate skip rather than a failure.
+ */
+export interface ModeratedChannel {
+  queue: string
+  graceDays: number
 }
 
 /** Fields shared by the channels that are actually scheduled. */
@@ -94,6 +107,8 @@ interface LiveChannel extends ChannelCommon {
   published?: (version: string) => unknown
   /** Present when the documented command resolves a moving pointer. */
   latest?: () => unknown
+  /** Present when a human reviews the submission before the feed serves it. */
+  moderated?: ModeratedChannel
 }
 
 /**

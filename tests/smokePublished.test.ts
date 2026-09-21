@@ -5,6 +5,7 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { makeTempDir, removeTempDir } from '../server/test/tempDir'
 import { planMatrix, CHANNELS, binaryPrefix, validatePublishedVersion, whichLooptroop } from '../scripts/smoke-published.mjs'
+import { WINGET_IDENTIFIER } from '../scripts/package-manifests'
 import type { ChannelRecipe, InstalledChannel } from '../scripts/smoke-published.mjs'
 
 /**
@@ -67,6 +68,10 @@ const WEEKLY_ONLY_LEGS = [
   'binary-linux-x64 (ubuntu-latest)',
   'binary-win-x64 (windows-latest)',
   'container (ubuntu-latest)',
+  // Weekly rather than release-tier because both publish into a queue: at
+  // release time the feed is still serving the previous version, by design.
+  'chocolatey (windows-latest)',
+  'winget (windows-latest)',
 ]
 
 describe('planMatrix', () => {
@@ -176,15 +181,43 @@ describe('planMatrix', () => {
   })
 
   it('never schedules a stub, but always names it', () => {
-    // Chocolatey, WinGet and the AUR are written down as explicitly uncovered
-    // rather than omitted. A channel nobody mentions is indistinguishable from
-    // a channel nobody covers, and these are the ones most likely to be assumed
-    // done because CI builds their packages on every change.
+    // The AUR is written down as explicitly uncovered rather than omitted. A
+    // channel nobody mentions is indistinguishable from a channel nobody
+    // covers, and this is the one most likely to be assumed done because CI
+    // builds its package on every change.
     const scheduled = planMatrix({ tier: 'weekly' }).map((leg) => leg.channel)
-    for (const key of ['chocolatey', 'winget', 'aur']) {
+    for (const key of ['aur']) {
       expect(channel(key).stub, `${key} has no stated reason`).toBeTruthy()
       expect(scheduled).not.toContain(key)
     }
+  })
+
+  it('schedules a moderated channel weekly, and says which queue it waits in', () => {
+    // A release-tier leg would run minutes after the tag, when the feed is
+    // still serving the previous version because nobody has reviewed this one
+    // yet — a red that means nothing. The weekly run is the first moment the
+    // question "did this release reach the feed" can have a useful answer, and
+    // `moderated` is what keeps an unanswered one from reading as a failure.
+    for (const key of ['chocolatey', 'winget']) {
+      const recipe = installedChannel(key)
+      expect(recipe.moderated?.queue, `${key} names no queue`).toBeTruthy()
+      expect(recipe.moderated?.graceDays, `${key} has no grace period`).toBeGreaterThan(0)
+      expect(recipe.legs.map((leg) => leg.tier)).toEqual(['weekly'])
+      // Both keep every published version, so a pinned run is meaningful.
+      expect(recipe.pinnable).toBe(true)
+    }
+  })
+
+  it('names WinGet by its published identifier everywhere it appears', () => {
+    // `winget-pkgs` derives the manifest directory from this string, so it is
+    // the same in the submission, in the documented command and in what doctor
+    // prints. A second copy is the one that drifts, and the drift is invisible
+    // until a user's `winget install` finds nothing.
+    const recipe = installedChannel('winget')
+    expect(recipe.documented).toBe(`winget install ${WINGET_IDENTIFIER}`)
+    expect(recipe.expect.upgradeCommand('win32')).toBe(`winget upgrade ${WINGET_IDENTIFIER}`)
+    expect(recipe.install({ version: '9.9.9', pin: false }).args).toContain(WINGET_IDENTIFIER)
+    expect(recipe.uninstall({}).args).toContain(WINGET_IDENTIFIER)
   })
 
   it('checks the latest pointer on every channel whose command resolves one', () => {
@@ -193,9 +226,13 @@ describe('planMatrix', () => {
     // of what "this release published correctly" means. A channel that only
     // ever pulled the exact version could stay green with a stale pointer
     // forever, which is the silent failure this whole workflow exists to find.
-    for (const key of ['npm', 'homebrew', 'scoop', 'container']) {
+    for (const key of ['npm', 'homebrew', 'scoop', 'container', 'chocolatey']) {
       expect(typeof channel(key).latest, `${key} has no latest probe`).toBe('function')
     }
+    // WinGet deliberately has none. Asking the client which version it would
+    // install is the install command itself, so the pointer is asserted from
+    // the other side — step 4 checks what actually arrived.
+    expect(channel('winget').latest).toBeUndefined()
   })
 
   it('keeps every recipe shape the driver assumes', () => {

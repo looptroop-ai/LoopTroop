@@ -71,12 +71,31 @@ describe('docs install catalog', () => {
     expect(catalog.channels.find((entry) => entry.id === 'container')).toMatchObject({
       kind: 'delegated',
     })
-    for (const id of ['chocolatey', 'winget', 'aur']) {
-      expect(catalog.channels.find((entry) => entry.id === id)).toMatchObject({
-        legs: [],
-        pinnable: null,
-      })
-    }
+    // The Windows package managers, which the website documents as live. Both
+    // are moderated — a version reaches the feed days after the tag — and that
+    // is a note the docs carry, not a reason to publish them as uncovered.
+    expect(catalog.channels.find((entry) => entry.id === 'chocolatey')).toMatchObject({
+      kind: 'installed',
+      live: true,
+      documentedInstall: 'choco install looptroop',
+      doctorChannel: 'chocolatey',
+      upgradeCommands: { win32: 'choco upgrade looptroop' },
+    })
+    expect(catalog.channels.find((entry) => entry.id === 'winget')).toMatchObject({
+      kind: 'installed',
+      live: true,
+      documentedInstall: 'winget install LoopTroopAI.LoopTroop',
+      doctorChannel: 'winget',
+      upgradeCommands: { win32: 'winget upgrade LoopTroopAI.LoopTroop' },
+    })
+    // The AUR is the one channel still waiting on something, and a stub carries
+    // no legs and no pinnable answer — the website renders it as unavailable.
+    expect(catalog.channels.find((entry) => entry.id === 'aur')).toMatchObject({
+      kind: 'stub',
+      live: false,
+      legs: [],
+      pinnable: null,
+    })
   })
 
   it('defaults omitted live pinnable flags to true to match the published smoke driver', () => {

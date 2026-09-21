@@ -149,6 +149,48 @@
       ]
     },
     {
+      "id": "chocolatey",
+      "kind": "installed",
+      "live": true,
+      "documentedInstall": "choco install looptroop",
+      "stubReason": null,
+      "pinnable": true,
+      "doctorChannel": "chocolatey",
+      "upgradeCommands": {
+        "linux": "choco upgrade looptroop",
+        "darwin": "choco upgrade looptroop",
+        "win32": "choco upgrade looptroop"
+      },
+      "legs": [
+        {
+          "os": "windows-latest",
+          "tier": "weekly",
+          "opencode": "npm"
+        }
+      ]
+    },
+    {
+      "id": "winget",
+      "kind": "installed",
+      "live": true,
+      "documentedInstall": "winget install LoopTroopAI.LoopTroop",
+      "stubReason": null,
+      "pinnable": true,
+      "doctorChannel": "winget",
+      "upgradeCommands": {
+        "linux": "winget upgrade LoopTroopAI.LoopTroop",
+        "darwin": "winget upgrade LoopTroopAI.LoopTroop",
+        "win32": "winget upgrade LoopTroopAI.LoopTroop"
+      },
+      "legs": [
+        {
+          "os": "windows-latest",
+          "tier": "weekly",
+          "opencode": "npm"
+        }
+      ]
+    },
+    {
       "id": "bun",
       "kind": "installed",
       "live": true,
@@ -269,28 +311,6 @@
           "opencode": "none"
         }
       ]
-    },
-    {
-      "id": "chocolatey",
-      "kind": "stub",
-      "live": false,
-      "documentedInstall": "choco install looptroop",
-      "stubReason": "Chocolatey moderation has not accepted a first version",
-      "pinnable": null,
-      "doctorChannel": null,
-      "upgradeCommands": null,
-      "legs": []
-    },
-    {
-      "id": "winget",
-      "kind": "stub",
-      "live": false,
-      "documentedInstall": "winget install LoopTroopAI.LoopTroop",
-      "stubReason": "the WinGet manifest has not been merged and indexed",
-      "pinnable": null,
-      "doctorChannel": null,
-      "upgradeCommands": null,
-      "legs": []
     },
     {
       "id": "aur",

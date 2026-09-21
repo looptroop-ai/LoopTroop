@@ -21,6 +21,7 @@ Unreleased changes appear first and represent commits that have not yet been inc
 - Cancellation recovery, anchored pending-bead retries, interview receipt commits, and council session-stop proofs now remain safe across failed writes and restarts.
 - Git cleanup preserves uncertain process ownership and user files, while interrupted recovery can retry an absent destination safely.
 - Windows tool discovery skips script types it cannot launch; container repair reports distinguish missing inventories from recorded package versions.
+- Chocolatey and WinGet are live install channels: `choco install looptroop` and `winget install LoopTroopAI.LoopTroop` work, and every release publishes to both.
 - Release-candidate verification stops on npm registry errors instead of assuming the stable tag is unchanged.
 - Standalone release binaries now use Node `26.9.0`'s native single-executable builder while application and package channels retain the Node `24.21.0` floor.
 - Canonical OpenCode installation directories (`~/.opencode/bin`) are now trusted by default for the `opencode` binary across platforms, preventing execution refusals when OpenCode release archives are unpacked under root while preserving directory ownership and file write-permission checks.
@@ -106,6 +107,9 @@ Unreleased changes appear first and represent commits that have not yet been inc
 - Closed the two critical and seven high code-scanning findings. Windows opens sign-in links through the URL protocol handler without `cmd.exe`; the published install smoke accepts only the stable and `rc.N` version formats the release tooling can produce; channel checks no longer compile command-line values as regular expressions or mistake uninstall output for an installed channel; ticket links receive URI encoding after protocol validation without changing existing percent escapes; release-note markers and multiline third-party notice cells use context-specific handling; node-manager smoke paths come from fixed manager mappings; and test fixtures no longer use predictable paths under `/tmp`.
 
 ### Changed
+- Chocolatey and WinGet are documented as live install channels. Both package feeds have accepted their first submission, so `choco install looptroop` and `winget install LoopTroopAI.LoopTroop` install LoopTroop, `choco upgrade` and `winget upgrade` upgrade it, and `looptroop doctor` already reported either channel correctly.
+- The release publishes to Chocolatey and WinGet on every stable release. Both jobs previously required a repository variable that was unset, which skipped them silently; the variable now gates only the AUR, where there is still no account to publish from. Neither channel gates a release: each submission joins a review queue and is reported as submitted.
+- The published install smoke installs both channels from their real feeds on its weekly run, driving the daemon the same way it does for Homebrew and Scoop. A version still waiting in review is reported as a deliberate skip rather than a failure, and becomes a failure once it has been waiting longer than two weeks, which is the point at which a submission has probably stalled rather than queued.
 - The application and package toolchain floor is Node 24.21.0, and the CI, release, installer, and documentation copies now agree with it.
 - React Query is updated to 5.102.8.
 - Bead dependency validation keeps its recursive cycle walker block-scoped without a conditional function declaration, satisfying static analysis without changing validation behavior.

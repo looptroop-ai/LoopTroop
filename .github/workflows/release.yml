@@ -1988,7 +1988,6 @@ jobs:
       && needs.detect.outputs.proceed == 'true'
       && needs.detect.outputs.dry_run == 'false'
       && needs.detect.outputs.dist_tag == 'latest'
-      && vars.PUBLISH_CHOCOLATEY == 'true'
       && needs.build.result == 'success'
       && needs.finalize.result == 'success'
     runs-on: windows-latest
@@ -2086,7 +2085,6 @@ jobs:
       && needs.detect.outputs.proceed == 'true'
       && needs.detect.outputs.dry_run == 'false'
       && needs.detect.outputs.dist_tag == 'latest'
-      && vars.PUBLISH_WINGET == 'true'
       && needs.build.result == 'success'
       && needs.finalize.result == 'success'
     runs-on: windows-latest
@@ -2152,20 +2150,20 @@ jobs:
           echo "state=submitted" >> "$GITHUB_OUTPUT"
 
   # ---------------------------------------------------------------------------
-  # Three channels are paused, each behind a repository variable that is unset.
+  # One channel is still paused, behind a repository variable that is unset.
   #
-  # None of them can currently complete, and a job that cannot succeed teaches
-  # everyone to ignore a red release:
+  #   PUBLISH_AUR  registration is closed upstream after a security incident,
+  #                so there is no account to publish from.
   #
-  #   PUBLISH_CHOCOLATEY  the first submission is still in moderation, and
-  #                       Chocolatey answers 403 to a push for a package that
-  #                       has no approved version yet.
-  #   PUBLISH_WINGET      every submission is a pull request reviewed by people
-  #                       at Microsoft, and the first one also needs a CLA.
-  #   PUBLISH_AUR         registration is closed upstream after a security
-  #                       incident, so there is no account to publish from.
+  # A job that cannot succeed teaches everyone to ignore a red release, which is
+  # why it is off rather than failing. Chocolatey and WinGet were paused here
+  # too until their first submissions were accepted — Chocolatey answered 403 to
+  # a push for a package with no approved version, and the first WinGet pull
+  # request needed a CLA — and both now publish on every release like any other
+  # channel. Neither *completes* on release day: each joins a queue somebody
+  # else works through, which is why they report as submitted and gate nothing.
   #
-  # Re-enable one with:  gh variable set PUBLISH_WINGET --body true
+  # Re-enable this one with:  gh variable set PUBLISH_AUR --body true
   # ---------------------------------------------------------------------------
 
   # Dormant until the AUR reopens registration. It skips rather than fails when

@@ -35,6 +35,11 @@ import { homedir, tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { removeWorkDirectory, waitForHealth } from './smoke-lib.mjs'
 import { findToolPath, launchTool, planToolLaunch } from './tool-path.ts'
+// The published identifier, from the module that renders the manifests carrying
+// it. `winget-pkgs` derives its directory from this string, so it is the same
+// in the submission, in the install command and in what `doctor` prints — and
+// a second copy here would be the one that drifts.
+import { WINGET_IDENTIFIER } from './package-manifests.ts'
 
 const IS_WINDOWS = process.platform === 'win32'
 
@@ -308,6 +313,113 @@ export const CHANNELS = {
     },
   },
 
+  // The community feed, once a moderator has let a version through.
+  //
+  // `publish-chocolatey` submits; it does not publish. Every version is queued
+  // for a human, the queue has no deadline, and the first one here took three
+  // weeks — so this leg is weekly rather than release-tier, and `moderated`
+  // below says what happens when it runs before the queue has moved.
+  chocolatey: {
+    documented: 'choco install looptroop',
+    legs: [{ os: 'windows-latest', tier: 'weekly', opencode: 'npm' }],
+    daemon: true,
+    // Unlike a tap or a bucket, the feed keeps every approved version.
+    pinnable: true,
+    port: 39133,
+    opencodePort: 39633,
+    propagationCapMs: 10 * 60_000,
+    publishJob: 'publish-chocolatey',
+    publishHint: 'Check community.chocolatey.org/packages/looptroop — an approved version is served, a submitted one is not.',
+    moderated: { queue: 'Chocolatey community moderation', graceDays: 14 },
+    // Not `provesOwnRuntime`: the nuspec *depends* on nodejs-lts rather than
+    // carrying a runtime, exactly as the Scoop manifest does, so stripping Node
+    // from PATH would break this correctly.
+    //
+    // `--ignore-dependencies` for the same reason `smoke-choco.ts` uses it: the
+    // runner already has Node, git and gh, Chocolatey does not know that and
+    // would install its own copies of all three, and what the declaration says
+    // is covered by the packaging golden files rather than by six minutes here.
+    install: ({ version, pin }) => ({
+      command: 'choco',
+      args: [
+        'install', 'looptroop',
+        ...(pin ? ['--version', version] : []),
+        '--yes', '--no-progress', '--ignore-dependencies',
+      ],
+      display: pin ? `choco install looptroop --version ${version}` : 'choco install looptroop',
+    }),
+    uninstall: () => ({ command: 'choco', args: ['uninstall', 'looptroop', '--yes', '--no-progress'] }),
+    published: probeChocoVersion,
+    latest: () => probeChocoLatest(),
+    expect: {
+      channel: 'chocolatey',
+      upgradeCommand: () => 'choco upgrade looptroop',
+      okChecksPre: ['install', 'git', 'opencode cli'],
+      okChecksPost: ['opencode', 'daemon', 'port'],
+    },
+  },
+
+  // The one channel that is a pull request into somebody else's repository, and
+  // the one that installs the standalone executable rather than the bundle:
+  // `winget validate` refuses a portable whose `RelativeFilePath` is not an
+  // `.exe`, which the bundle's `.cmd` shim is not.
+  //
+  // Weekly, and `moderated`, for the same reason as Chocolatey — a submission
+  // is reviewed by people at Microsoft, and a merged manifest still has to
+  // reach the index afterwards.
+  winget: {
+    documented: `winget install ${WINGET_IDENTIFIER}`,
+    legs: [{ os: 'windows-latest', tier: 'weekly', opencode: 'npm' }],
+    daemon: true,
+    // Every version's manifests stay in `winget-pkgs`, so an older one installs.
+    pinnable: true,
+    port: 39134,
+    opencodePort: 39634,
+    propagationCapMs: 10 * 60_000,
+    publishJob: 'publish-winget',
+    publishHint: 'Check the pull request at microsoft/winget-pkgs — merged is not indexed; the publish pipeline runs after the merge.',
+    moderated: { queue: 'the microsoft/winget-pkgs review queue', graceDays: 14 },
+    // The zip carries its own Node, so this must run with none on PATH.
+    provesOwnRuntime: true,
+    // WinGet writes an alias rather than putting the package on PATH, and the
+    // directory it writes it to is only on PATH of a shell started afterwards.
+    pathHint: () => wingetLinks(),
+    // `--scope machine`, symmetrically on both operations, for the reason
+    // `smoke-winget.ts` spells out: an elevated runner cannot uninstall a
+    // user-scope package, which left an earlier job installing something it
+    // could not remove. `--skip-dependencies` because the runner has git and
+    // gh already; the declaration itself is covered by the golden manifests.
+    install: ({ version, pin }) => ({
+      command: 'winget',
+      args: [
+        'install', WINGET_IDENTIFIER,
+        ...(pin ? ['--version', version] : []),
+        '--source', 'winget', '--scope', 'machine', '--skip-dependencies',
+        '--accept-package-agreements', '--accept-source-agreements', '--disable-interactivity',
+      ],
+      display: pin
+        ? `winget install ${WINGET_IDENTIFIER} --version ${version}`
+        : `winget install ${WINGET_IDENTIFIER}`,
+    }),
+    uninstall: () => ({
+      command: 'winget',
+      args: [
+        'uninstall', WINGET_IDENTIFIER, '--scope', 'machine',
+        '--accept-source-agreements', '--disable-interactivity',
+      ],
+    }),
+    published: probeWingetVersion,
+    // No `latest` probe: asking the client which version it would install is
+    // the same command as installing it. An unpinned install takes the newest
+    // the index carries, and step 4 asserts what arrived — the same guarantee
+    // from the other side, which is how the installer channels handle it too.
+    expect: {
+      channel: 'winget',
+      upgradeCommand: () => `winget upgrade ${WINGET_IDENTIFIER}`,
+      okChecksPre: ['install', 'git', 'opencode cli'],
+      okChecksPost: ['opencode', 'daemon', 'port'],
+    },
+  },
 
   // The same npm package through a different global store. The bug this exists
   // for is real and has shipped: bun and pnpm both reported channel `npm` and
@@ -464,19 +576,15 @@ export const CHANNELS = {
   // fill in a recipe nobody wrote. Whichever way it went, the recipe has to be
   // written when the feed goes live, so the honest arrangement is to say so.
   //
-  // Deliberately not keyed to `vars.PUBLISH_*`. Those mean "submit for
-  // publication", which is days away from "installable": Chocolatey moderates,
-  // WinGet needs a manifest review and an index refresh, and the AUR is closed
-  // to new registrations upstream.
+  // Chocolatey and WinGet were both stubs here until their first submissions
+  // were accepted — `looptroop 0.5.1` on 3 September 2026 and
+  // `LoopTroopAI.LoopTroop 0.5.2` on 19 September 2026 — and each went live in
+  // the commit that wrote its recipe above, which is the arrangement working.
+  // What remains is the AUR, where the obstacle is not a queue: there is no
+  // account to publish from.
   //
-  // When one goes live, the same commit writes its recipe and drops the stub.
-  // `ci.yml` keeps proving the packages themselves in the meantime —
-  // `choco-install`, `winget-install` and `aur-package` all build and install
-  // locally on every change — and `channel-republish.yml` already has a
-  // live-feed path for Chocolatey (`smoke-choco.ts --from-feed`) to wrap when
-  // the time comes.
-  chocolatey: { stub: 'Chocolatey moderation has not accepted a first version', documented: 'choco install looptroop' },
-  winget: { stub: 'the WinGet manifest has not been merged and indexed', documented: 'winget install LoopTroopAI.LoopTroop' },
+  // `ci.yml` keeps proving the package itself in the meantime — `aur-package`
+  // builds and installs it locally on every change.
   aur: { stub: 'AUR registration is closed upstream', documented: 'yay -S looptroop-bin' },
 
   'installer-ps1-binary': {
@@ -518,6 +626,20 @@ export const CHANNELS = {
  */
 export function binaryPrefix() {
   return process.env.LOOPTROOP_INSTALL_DIR || join(homedir(), '.looptroop')
+}
+
+/**
+ * Where WinGet writes the alias for a machine-scope portable package.
+ *
+ * Machine scope because that is the scope the leg installs with — a user-scope
+ * package cannot be uninstalled by an elevated shell, which is what CI is. The
+ * directory is on the PATH of a shell started *afterwards*, so this leg has to
+ * hand it to the resolver rather than trust its own environment.
+ *
+ * `||`, not `??`: a set-but-empty variable would make this a relative path.
+ */
+function wingetLinks() {
+  return join(process.env.ProgramFiles || 'C:\\Program Files', 'WinGet', 'Links')
 }
 
 /**
@@ -927,6 +1049,62 @@ async function probeScoopManifest(_recipe, _version) {
   if (response.status === 404) return null
   if (!response.ok) throw new Error(`scoop manifest -> ${response.status}`)
   return JSON.parse(await response.text()).version ?? null
+}
+
+/** The community feed's OData entity for one version of the package. */
+const CHOCO_FEED = 'https://community.chocolatey.org/api/v2'
+
+/**
+ * Whether Chocolatey serves a version — which is not whether it has one.
+ *
+ * A submitted version is on the site and downloadable by its exact URL long
+ * before a moderator approves it, and is invisible to this endpoint until then.
+ * That is the distinction the whole channel turns on: the feed is what `choco
+ * install` reads, so "not here yet" is precisely "still in the queue".
+ *
+ * The version reaches a URL, so it is the validated one: `validatePublishedVersion`
+ * has already rejected anything that is not a release name by the time a recipe
+ * is asked what it serves.
+ */
+async function probeChocoVersion(_recipe, version) {
+  const response = await fetch(`${CHOCO_FEED}/Packages(Id='looptroop',Version='${version}')`)
+  if (response.status === 404) return null
+  if (!response.ok) throw new Error(`Chocolatey feed -> ${response.status}`)
+  return version
+}
+
+/** What an unpinned `choco install looptroop` resolves: the feed's latest. */
+async function probeChocoLatest() {
+  const filter = encodeURIComponent("Id eq 'looptroop' and IsLatestVersion")
+  const response = await fetch(`${CHOCO_FEED}/Packages()?$filter=${filter}`)
+  if (!response.ok) throw new Error(`Chocolatey feed -> ${response.status}`)
+  return /<d:Version>([^<]+)</.exec(await response.text())?.[1] ?? null
+}
+
+/**
+ * Whether WinGet serves a version, asked of the client rather than of GitHub.
+ *
+ * A merged manifest is not an installable package. `microsoft/winget-pkgs` says
+ * what *will* be indexed; the pipeline that builds the index runs after the
+ * merge, and between the two a contents-API probe reports a package `winget
+ * install` cannot find. Asking `winget` is the only question whose answer is
+ * the one a user gets.
+ *
+ * Every non-zero exit reads as "not there", rather than only the ones whose
+ * message is recognisable. WinGet reports a missing version and a missing
+ * package with different hex codes and localised text, and misreading a real
+ * client failure as a pending review costs nothing here: `moderated` bounds how
+ * long that can stay quiet, and past the grace period this leg runs the install
+ * and fails on it like any other stale feed.
+ */
+function probeWingetVersion(_recipe, version) {
+  const result = run('winget', [
+    'show', WINGET_IDENTIFIER, '--version', version,
+    '--source', 'winget', '--accept-source-agreements', '--disable-interactivity',
+  ])
+  if (result.code === 0) return version
+  log(`  winget show exited ${result.code}: ${result.combined.trim().split('\n').pop()}`)
+  return null
 }
 
 /**
@@ -1719,6 +1897,43 @@ async function main() {
       log(`\n${recipe.key}: not run (${reason})`)
       writeSkipResult(options, recipe, version, reason)
       return
+    }
+  }
+
+  // Chocolatey and WinGet publish by joining a queue a human works through, so
+  // a release reaches those feeds days or weeks after it is tagged. Inside that
+  // window the channel is behaving exactly as documented and the assertion that
+  // would fail is a correct one, so the leg reports itself as not run — the
+  // same bargain pnpm's hold makes.
+  //
+  // Bounded, because from here "still in review" and "rejected, and nobody
+  // noticed" look identical. Past the grace period the leg runs, fails on the
+  // version the feed still serves, and says how long it has been waiting, which
+  // is the point at which somebody has to go and ask.
+  if (recipe.moderated) {
+    let serving = null
+    let answered = true
+    try {
+      serving = await recipe.published(recipe, version)
+    } catch (error) {
+      // A probe that could not answer is not evidence of a queue. Fall through
+      // to `awaitPublished`, which polls and reports the failure it exists for.
+      log(`  (could not ask ${recipe.key} what it serves: ${error.message})`)
+      answered = false
+    }
+    if (answered && serving !== version) {
+      const age = await releaseAgeHours(version)
+      const graceHours = recipe.moderated.graceDays * 24
+      // An unknown age counts as inside the window: a release whose age this
+      // could not read is not grounds for calling a queue abandoned.
+      if (age === null || age < graceHours) {
+        const reason = `${version} is waiting on ${recipe.moderated.queue}; the feed serves ${serving ?? '(nothing)'}`
+        log(`\n${recipe.key}: not run (${reason})`)
+        writeSkipResult(options, recipe, version, reason)
+        return
+      }
+      log(`\n${recipe.key}: ${version} has been waiting on ${recipe.moderated.queue} for `
+        + `${Math.round(age / 24)} days, past the ${recipe.moderated.graceDays}-day grace period. Running it anyway.`)
     }
   }
 

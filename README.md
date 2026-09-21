@@ -64,7 +64,7 @@ Instead of trusting a single, endless AI chat session - where the conversation h
 ## Quick start
 
 ```bash
-curl --proto '=https' --tlsv1.2 -fsSL https://www.looptroop.ovh/install | sh
+curl --proto '=https' --proto-redir '=https' --tlsv1.2 -fsSL https://www.looptroop.ovh/install | sh
 looptroop open
 ```
 
@@ -113,11 +113,11 @@ the current process can guard the session, so a restart cannot claim recovery.
 <summary><b>curl / irm</b> — the one-line installer (shown above)</summary>
 
 ```bash
-curl --proto '=https' --tlsv1.2 -fsSL https://www.looptroop.ovh/install | sh
+curl --proto '=https' --proto-redir '=https' --tlsv1.2 -fsSL https://www.looptroop.ovh/install | sh
 ```
 
 ```powershell
-irm https://www.looptroop.ovh/install.ps1 | iex
+$script = curl.exe --proto "=https" --proto-redir "=https" --tlsv1.2 -fsSL https://www.looptroop.ovh/install.ps1; if ($LASTEXITCODE -ne 0 -or !$script) { throw "Installer download failed" }; & ([scriptblock]::Create(($script -join "`n")))
 ```
 
 Resolves the newest release, checks the download against the checksum that
@@ -127,7 +127,7 @@ exactly as they would have. Pin a version with `--version X.Y.Z` (`-Version` on
 Windows). It installs wherever npm's global prefix points; change that with
 `npm config set prefix`.
 
-**Needs Node 24.18.1 or newer and npm 12.0.2 or newer already installed.** It
+**Needs Node 24.21.0 or newer and npm 12.0.2 or newer already installed.** It
 never installs Node for you, never asks for sudo, and writes nothing outside
 npm's global prefix.
 
@@ -143,7 +143,7 @@ npm install -g looptroop
 npm install -g looptroop@latest   # upgrade
 ```
 
-**Needs Node 24.18.1 or newer and npm 12.0.2 or newer**, plus git and `gh`.
+**Needs Node 24.21.0 or newer and npm 12.0.2 or newer**, plus git and `gh`.
 </details>
 
 <details>
@@ -181,7 +181,7 @@ bun add -g looptroop
 bun add -g looptroop@latest       # upgrade
 ```
 
-**Needs Node 24.18.1 or newer as well as bun** — the launcher is a Node program,
+**Needs Node 24.21.0 or newer as well as bun** — the launcher is a Node program,
 so bun installs it but Node runs it — plus git and `gh`.
 </details>
 
@@ -193,7 +193,7 @@ pnpm add -g looptroop
 pnpm add -g looptroop@latest      # upgrade
 ```
 
-**Needs Node 24.18.1 or newer as well as pnpm**, plus git and `gh`.
+**Needs Node 24.21.0 or newer as well as pnpm**, plus git and `gh`.
 
 pnpm holds a new version back for about a day: it will not resolve a tag to a
 version published in the last 24 hours — a supply-chain protection, on by
@@ -210,7 +210,7 @@ export PATH="$(yarn global bin):$PATH"   # Yarn does not do this for you
 yarn global upgrade looptroop@latest     # upgrade
 ```
 
-**Needs Node 24.18.1 or newer as well as Yarn**, plus git and `gh`.
+**Needs Node 24.21.0 or newer as well as Yarn**, plus git and `gh`.
 
 These commands use Bash or zsh syntax. Yarn Classic also runs on Windows, but a
 PowerShell PATH command is not documented here. Use npm on Windows for the
@@ -248,7 +248,7 @@ server it can reach, and a project mounted at its own absolute path. See the
 
 Standalone release archives carry Node `v26.9.0` in the executable, so a
 downloaded archive runs without Node installed on the host. That embedded
-runtime is separate from the application and package floor: Node `24.18.1+`
+runtime is separate from the application and package floor: Node `24.21.0+`
 remains required for the npm, bun, pnpm and Yarn channels and for the
 container's application runtime.
 
@@ -298,7 +298,7 @@ Unlike high-speed coding tools that optimize for immediate chat responses, LoopT
 flowchart LR
     A["🎫 Ticket Input"] --> B["🔍 Codebase Discovery"]
     B --> C["🏛️ LLM Council Planning<br/>(Interview, PRD & Beads)"]
-    C --> D["🛑 Human Approval Gate<br/>(optional in future releases)"]
+    C --> D["🛑 Human Approval Gate"]
     D --> E["🧪 Isolated OpenCode Bead Execution<br/>(Git Worktree)"]
     E --> F["✅ Final Tests"]
     F --> H["🧭 Optional Manual QA<br/>(user runs the app)"]
@@ -509,7 +509,7 @@ provide whole-program alias or dataflow analysis.
 
 ### Human approval gates
 
-LoopTroop keeps you in control of critical state transitions. You actively review and sign off on planning specs, execution blueprints, and final pull request deliverables. *(Note: Human approval gates will become optional in future releases).*
+LoopTroop keeps you in control of critical state transitions. You actively review and sign off on planning specs, execution blueprints, and final pull request deliverables.
 
 For tickets with Manual QA enabled, LoopTroop prepares a checklist while you manually control the app and accept/reject/skip/create new tickets from the items.
 

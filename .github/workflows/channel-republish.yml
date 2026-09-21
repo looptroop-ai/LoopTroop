@@ -126,7 +126,7 @@ jobs:
       - name: Set up Node
         uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7
         with:
-          node-version: 24.18.1
+          node-version: 24.21.0
 
       # A draft is not a release: its assets are not anonymously downloadable,
       # so a descriptor pointing at one would install for nobody.
@@ -267,7 +267,7 @@ jobs:
       - name: Set up Node
         uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7
         with:
-          node-version: 24.18.1
+          node-version: 24.21.0
 
       # Homebrew is installed on the ubuntu images but deliberately kept off PATH,
       # so `brew` is not a command here until this runs.
@@ -331,7 +331,7 @@ jobs:
       - name: Set up Node
         uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7
         with:
-          node-version: 24.18.1
+          node-version: 24.21.0
 
       - name: Push the manifest
         env:
@@ -380,7 +380,7 @@ jobs:
       - name: Set up Node
         uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7
         with:
-          node-version: 24.18.1
+          node-version: 24.21.0
 
       - name: Is this version on the feed already?
         id: feed
@@ -496,7 +496,7 @@ jobs:
       - name: Set up Node
         uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7
         with:
-          node-version: 24.18.1
+          node-version: 24.21.0
 
       - name: Submit the manifests
         shell: bash

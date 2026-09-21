@@ -70,13 +70,13 @@ const REQUIRED_NODE = parseFloor(NODE_FLOOR_SPEC)
 function parseFloor(spec) {
   const match = /^\s*(?:>=\s*)?v?(\d+)\.(\d+)\.(\d+)\s*$/.exec(String(spec))
   if (!match) {
-    throw new Error(`Unreadable Node floor: ${JSON.stringify(spec)}. Expected a form like ">=24.18.1".`)
+    throw new Error(`Unreadable Node floor: ${JSON.stringify(spec)}. Expected a form like ">=X.Y.Z".`)
   }
   const major = Number(match[1])
   const minor = Number(match[2])
   const patch = Number(match[3])
   if (major <= 0) {
-    throw new Error(`Unreadable Node floor: ${JSON.stringify(spec)}. Expected a form like ">=24.18.1".`)
+    throw new Error(`Unreadable Node floor: ${JSON.stringify(spec)}. Expected a form like ">=X.Y.Z".`)
   }
   return { major, minor, patch, label: `${major}.${minor}.${patch}` }
 }
@@ -621,5 +621,4 @@ function report() {
 
 await main()
 report()
-
 

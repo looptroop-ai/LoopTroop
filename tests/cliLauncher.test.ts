@@ -76,9 +76,8 @@ describe('cli launcher', () => {
     const result = runGuard('22.9.0')
 
     expect(result.exitCode).toBe(1)
-    // The exact floor, patch level included. The guard used to compare major
-    // and minor only and print the floor's major.minor with a zero patch, so a
-    // user on 24.18.0 was refused by a message naming 24.18.0.
+    // The exact floor, patch level included. The guard used to compare only
+    // major and minor and print a zero patch in the version to install.
     expect(result.stderr).toContain(`requires Node.js ${FLOOR_LABEL} or newer`)
     expect(result.stderr).toContain('22.9.0')
   })
@@ -114,9 +113,9 @@ describe('cli launcher', () => {
   /**
    * A prerelease of the floor is below the floor, which is how npm reads
    * `engines.node` and therefore the only reading that agrees with whatever
-   * installed the runtime. The comparison waved `24.18.1-rc.1` through because
-   * the three numbers matched, so a nightly missing the fix the floor exists for
-   * started the app and failed later, somewhere unrelated.
+   * installed the runtime. The comparison waved a prerelease of the floor
+   * through because the three numbers matched, so a nightly missing the fix
+   * the floor exists for started the app and failed later, somewhere unrelated.
    */
   it('rejects a prerelease of the floor', () => {
     expect(runGuard(`${FLOOR_LABEL}-rc.1`).exitCode).toBe(1)

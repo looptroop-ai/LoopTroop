@@ -55,7 +55,7 @@ describe('the Node floor is stated once', () => {
    * The verifier predicts what the launcher will do when the shim resolves a
    * Node on PATH, so a runtime the two disagree about is the one case it exists
    * to report clearly and the one it used to get wrong: its private comparison
-   * dropped the prerelease suffix, so `24.18.1-rc.1` "met the floor" and the run
+   * dropped the prerelease suffix, so `24.21.0-rc.1` "met the floor" and the run
    * failed later, at `start succeeds`, as a launcher refusal wearing a read-only
    * failure's clothes.
    *
@@ -105,5 +105,26 @@ describe('the Node floor is stated once', () => {
     expect(renderNuspec(INPUTS)).toContain(`<dependency id="nodejs-lts" version="${FLOOR_LABEL}" />`)
     expect(renderHomebrewFormula(INPUTS)).toContain(`depends_on "node@${FLOOR.major}"`)
     expect(renderAurPackage(INPUTS)['PKGBUILD']).toContain(`nodejs>=${FLOOR.major}`)
+  })
+
+  it('keeps the local runtime pin and documentation on the declared floor', () => {
+    expect(read('.nvmrc').trim()).toBe(FLOOR_LABEL)
+
+    for (const file of ['README.md', 'CONTRIBUTING.md']) {
+      const versions = [...read(file).matchAll(/\b\d+\.\d+(?:\.\d+)?\b/g)]
+        .map(([version]) => version)
+        .filter((version) => version.startsWith(`${FLOOR.major}.`))
+      expect(versions, file).toEqual(expect.arrayContaining([FLOOR_LABEL]))
+      expect(versions.every((version) => version === FLOOR_LABEL), file).toBe(true)
+    }
+  })
+
+  it('keeps the README Windows installer recipe aligned with the install catalog', () => {
+    const catalog = JSON.parse(read('tests/fixtures/install-catalog.json')) as {
+      channels: Array<{ id: string; documentedInstall: string }>
+    }
+    const installer = catalog.channels.find(({ id }) => id === 'installer-ps1')
+    if (installer === undefined) throw new Error('PowerShell installer catalog entry missing')
+    expect(read('README.md')).toContain(installer.documentedInstall)
   })
 })

@@ -1,0 +1,44 @@
+name: OrcaCode Review
+
+on:
+  pull_request:
+    types: [opened, synchronize, reopened, ready_for_review]
+  issue_comment:
+    types: [created]
+
+permissions:
+  contents: read
+  pull-requests: write
+  issues: write
+
+jobs:
+  review:
+    runs-on: ubuntu-latest
+    timeout-minutes: 75
+    concurrency:
+      group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.event.issue.number || github.ref }}
+      cancel-in-progress: true
+    if: |
+      (github.event_name == 'pull_request' &&
+        github.event.pull_request.head.repo.full_name == github.repository &&
+        !github.event.pull_request.draft &&
+        contains(fromJSON('["OWNER", "MEMBER", "COLLABORATOR"]'), github.event.pull_request.author_association)) ||
+      (github.event_name == 'issue_comment' &&
+        github.event.issue.pull_request &&
+        (startsWith(github.event.comment.body, '/orcacode-review') ||
+          startsWith(github.event.comment.body, '/orcacode review') ||
+          github.event.comment.body == '@orcacode-review' ||
+          github.event.comment.body == '@orcacode review' ||
+          startsWith(github.event.comment.body, '@orcacode-review:') ||
+          startsWith(github.event.comment.body, '@orcacode review:') ||
+          startsWith(github.event.comment.body, '@orcacode-review ') ||
+          startsWith(github.event.comment.body, '@orcacode review ')) &&
+        contains(fromJSON('["OWNER", "MEMBER", "COLLABORATOR"]'), github.event.comment.author_association))
+    steps:
+      - uses: Continuum-AI-Corp/orca-code-review@6d253e0399c84848fedc8801176d6bea77817762 # v1
+        with:
+          auto-review-authors: OWNER,MEMBER,COLLABORATOR
+          block-on: "P0,P1"
+          report: "false"
+          settings: "false"
+          orcarouter-api-key: ${{ secrets.ORCAROUTER_API_KEY }}

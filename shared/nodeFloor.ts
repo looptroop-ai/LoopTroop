@@ -2,19 +2,17 @@
  * The minimum Node runtime, stated once.
  *
  * `package.json`'s `engines.node` is the only place the number is written by
- * hand. It was written by hand in four more, with three different answers: the
- * launcher compared major.minor against 24.18 and printed `24.18.0`, `doctor`
- * accepted anything from 24.15, and the read-only install verifier agreed with
- * `doctor`. A machine on 24.15–24.17 therefore passed every check the product
- * offered and then hit a launcher that refused to start it.
+ * hand. It was written by hand in four more, with three different answers, so
+ * some runtimes passed every check and then hit a launcher that refused to
+ * start them.
  *
  * This module is the comparison, not the value: it has no I/O and no floor of
  * its own, so both halves of the app and the packaging scripts can use the same
  * semantics on a floor each resolves for itself.
  *
- * The comparison is patch-level. The floor really is a patch release — 24.18.1
- * carries fixes the app depends on — and comparing only major.minor is what let
- * the launcher tell a user on 24.18.0 that they needed 24.18.0.
+ * The comparison uses every numeric component the floor declares. Comparing
+ * only major.minor can let a runtime below a patch floor through and print the
+ * wrong version to install.
  */
 
 export interface NodeVersion {
@@ -22,7 +20,7 @@ export interface NodeVersion {
   minor: number
   patch: number
   /**
-   * `24.18.1-nightly.0` is *before* `24.18.1`, which is how npm reads
+   * `24.21.0-nightly.0` is *before* `24.21.0`, which is how npm reads
    * `engines.node` and how the installer already reads a runtime. Carrying the
    * flag rather than discarding the suffix is what lets the comparison agree
    * with both.
@@ -31,9 +29,10 @@ export interface NodeVersion {
 }
 
 /**
- * Reads `24.18.1`, `v24.18.1` and `24.18.1-nightly.0` alike; a missing or
- * unreadable component is 0, which can only ever *under*-report a runtime and
- * so fails closed against the floor.
+ * Reads complete versions such as `24.21.0`, `v24.21.0` and
+ * `24.21.0-nightly.0`; a missing or unreadable component is 0. Callers that
+ * accept version selectors must reject incomplete two-component values before
+ * comparing them, because a missing patch is not an exact runtime.
  */
 export function parseNodeVersion(raw: string): NodeVersion {
   const text = String(raw).replace(/^v/, '')
@@ -47,7 +46,7 @@ export function parseNodeVersion(raw: string): NodeVersion {
 /**
  * The whole floor grammar, matched in one place: an optional `>=`, an optional
  * `v`, three numeric components. A prerelease suffix is refused: the floor is
- * a patch release, and a form like `>=24.18.1-rc.1` is not one we publish.
+ * a patch release, and a form like `>=24.21.0-rc.1` is not one we publish.
  * Accepting it here while the launcher only receives the three integers would
  * split the copies the moment someone used the form the grammar advertised.
  *
@@ -61,7 +60,7 @@ export function parseNodeVersion(raw: string): NodeVersion {
 const NODE_FLOOR_PATTERN = /^\s*(?:>=\s*)?v?(\d+)\.(\d+)\.(\d+)\s*$/
 
 /**
- * `>=24.18.1` and `24.18.1` both read as the same floor.
+ * `>=24.21.0` and `24.21.0` both read as the same floor.
  *
  * Throws rather than returning `0.0.0`. An unreadable floor is not a lenient
  * floor: `satisfiesNodeFloor` would compare every runtime against zero and pass
@@ -73,7 +72,7 @@ const NODE_FLOOR_PATTERN = /^\s*(?:>=\s*)?v?(\d+)\.(\d+)\.(\d+)\s*$/
 export function parseNodeFloor(engines: string): NodeVersion {
   const match = NODE_FLOOR_PATTERN.exec(String(engines))
   if (!match) {
-    throw new Error(`Unreadable Node floor: ${JSON.stringify(engines)}. Expected a form like ">=24.18.1".`)
+    throw new Error(`Unreadable Node floor: ${JSON.stringify(engines)}. Expected a form like ">=X.Y.Z".`)
   }
   const [, major = '0', minor = '0', patch = '0'] = match
   const floor: NodeVersion = {
@@ -83,12 +82,12 @@ export function parseNodeFloor(engines: string): NodeVersion {
     prerelease: false,
   }
   if (floor.major <= 0) {
-    throw new Error(`Unreadable Node floor: ${JSON.stringify(engines)}. Expected a form like ">=24.18.1".`)
+    throw new Error(`Unreadable Node floor: ${JSON.stringify(engines)}. Expected a form like ">=X.Y.Z".`)
   }
   return floor
 }
 
-/** `24.18.1` — the form every message the user reads should print. */
+/** `24.21.0` — the form every message the user reads should print. */
 export function formatNodeVersion(version: NodeVersion): string {
   return `${version.major}.${version.minor}.${version.patch}`
 }

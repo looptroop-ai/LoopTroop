@@ -105,7 +105,7 @@ jobs:
       - name: Set up Node
         uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7
         with:
-          node-version: 24.18.1
+          node-version: 24.21.0
 
       - name: Pin npm
         run: node scripts/pin-npm.mjs
@@ -251,7 +251,7 @@ jobs:
         uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7
         with:
           # Standalone binaries use the maintained native SEA builder in Node
-          # 26.9.0. The release/package jobs retain the Node 24.18.1 floor.
+          # 26.9.0. The release/package jobs retain the Node 24.21.0 floor.
           node-version: 26.9.0
           cache: npm
 
@@ -297,6 +297,8 @@ jobs:
           if [ "${doctor_status}" -ne 0 ]; then
             echo "Doctor reported environment status ${doctor_status}; checking the embedded runtime field."
           fi
+          # Embedded JavaScript is single-quoted so the shell cannot expand its template literals.
+          # shellcheck disable=SC2016
           printf '%s' "${doctor}" | EXPECTED_NODE_VERSION="$(node -p 'process.versions.node')" node -e '
             const report = JSON.parse(require("node:fs").readFileSync(0, "utf8"))
             const nodeCheck = report.checks?.find((check) => check?.name === "node")
@@ -395,7 +397,7 @@ jobs:
       - name: Set up Node
         uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7
         with:
-          node-version: 24.18.1
+          node-version: 24.21.0
 
       - name: Pin npm
         run: node scripts/pin-npm.mjs
@@ -509,6 +511,8 @@ jobs:
             --asset "${bundle}" --asset package-lock.json \
             --asset install.sh --asset install.ps1 \
             "${binaries[@]}"
+          # Embedded JavaScript is single-quoted so the shell cannot expand its template literals.
+          # shellcheck disable=SC2016
           node -e '
             const m = JSON.parse(require("node:fs").readFileSync("release-manifest.json","utf8"))
             const out = require("node:fs").createWriteStream(process.env.GITHUB_OUTPUT,{flags:"a"})
@@ -611,7 +615,7 @@ jobs:
       - name: Set up Node
         uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7
         with:
-          node-version: 24.18.1
+          node-version: 24.21.0
 
       - name: Pin npm
         run: node scripts/pin-npm.mjs
@@ -669,7 +673,7 @@ jobs:
       - name: Set up Node
         uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7
         with:
-          node-version: 24.18.1
+          node-version: 24.21.0
 
       - name: Pin npm
         run: node scripts/pin-npm.mjs
@@ -734,7 +738,7 @@ jobs:
       - name: Set up Node
         uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7
         with:
-          node-version: 24.18.1
+          node-version: 24.21.0
 
       - name: Pin npm
         run: node scripts/pin-npm.mjs
@@ -758,9 +762,11 @@ jobs:
         env:
           VERSION: ${{ needs.detect.outputs.version }}
         run: |
-          echo "### Dry run: would draft v${VERSION}" >> "$GITHUB_STEP_SUMMARY"
-          echo "" >> "$GITHUB_STEP_SUMMARY"
-          cat /tmp/notes.md >> "$GITHUB_STEP_SUMMARY"
+          {
+            echo "### Dry run: would draft v${VERSION}"
+            echo ""
+            cat /tmp/notes.md
+          } >> "$GITHUB_STEP_SUMMARY"
 
       # Snapshot for the postcondition below. A tag may legitimately already
       # exist here: `finalize` pushes the tag before publishing the release, so
@@ -871,7 +877,7 @@ jobs:
       - name: Set up Node
         uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7
         with:
-          node-version: 24.18.1
+          node-version: 24.21.0
           registry-url: https://registry.npmjs.org
 
       - name: Check the bundled npm client
@@ -885,6 +891,8 @@ jobs:
       - name: Verify the bytes before publishing
         run: |
           set -euo pipefail
+          # Embedded JavaScript is single-quoted so the shell cannot expand its template literals.
+          # shellcheck disable=SC2016
           node -e '
             const {readFileSync} = require("node:fs")
             const {createHash} = require("node:crypto")
@@ -980,6 +988,8 @@ jobs:
           # because this job has no checkout: it publishes a downloaded tarball,
           # so it needs no source tree or dependency install beside publish
           # credentials. The same comparison, with no dependencies.
+          # Embedded JavaScript is single-quoted so the shell cannot expand its template literals.
+          # shellcheck disable=SC2016
           PUBLISHED_INTEGRITY="${published}" node -e '
             const m = JSON.parse(require("node:fs").readFileSync("release-manifest.json", "utf8"))
             const published = process.env.PUBLISHED_INTEGRITY.trim()
@@ -1062,7 +1072,7 @@ jobs:
       - name: Set up Node
         uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7
         with:
-          node-version: 24.18.1
+          node-version: 24.21.0
 
       - name: Pin npm
         run: node scripts/pin-npm.mjs
@@ -1241,7 +1251,7 @@ jobs:
       - name: Set up Node
         uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7
         with:
-          node-version: 24.18.1
+          node-version: 24.21.0
 
       - name: Pin npm
         run: node scripts/pin-npm.mjs
@@ -1352,7 +1362,10 @@ jobs:
           ARCH: ${{ matrix.arch }}
         run: |
           set -euo pipefail
-          digest=$(node -e '
+          digest=$(
+            # Embedded JavaScript is single-quoted so the shell cannot expand its template literals.
+            # shellcheck disable=SC2016
+            node -e '
             const meta = JSON.parse(require("node:fs").readFileSync("/tmp/meta.json", "utf8"))
             const found = new Set()
             const walk = (node) => {
@@ -1370,10 +1383,11 @@ jobs:
               process.exit(1)
             }
             process.stdout.write(digests[0])
-          ')
+            '
+          )
           printf '%s\n' "${digest}" > "digest-${ARCH}.txt"
           echo "${ARCH}: ${digest}"
-          printf -- '- `linux/%s` → `%s`\n' "${ARCH}" "${digest}" >> "$GITHUB_STEP_SUMMARY"
+          printf -- "- \`linux/%s\` → \`%s\`\n" "${ARCH}" "${digest}" >> "$GITHUB_STEP_SUMMARY"
 
       # Proves both pushes landed, in the job that did them. Without this a
       # registry that silently accepted nothing surfaces later as an
@@ -1414,12 +1428,12 @@ jobs:
             exit 1
           fi
           {
-            printf '### Container input and provenance (%s)\n\n' "${ARCH}"
-            printf -- '- tarball: `%s`\n' "${TARBALL}"
-            printf -- '- lockfile: `%s`\n' "package-lock.json"
-            printf -- '- platform: `%s`\n' "${PLATFORM}"
-            printf -- '- revision: `%s`\n' "${REVISION}"
-            printf -- '- digest: `%s`\n\n' "${digest}"
+            printf "### Container input and provenance (%s)\n\n" "${ARCH}"
+            printf -- "- tarball: \`%s\`\n" "${TARBALL}"
+            printf -- "- lockfile: \`%s\`\n" "package-lock.json"
+            printf -- "- platform: \`%s\`\n" "${PLATFORM}"
+            printf -- "- revision: \`%s\`\n" "${REVISION}"
+            printf -- "- digest: \`%s\`\n\n" "${digest}"
             echo '```'
             cat "image-package-versions-${ARCH}.txt"
             echo '```'
@@ -1489,7 +1503,7 @@ jobs:
       - name: Set up Node
         uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7
         with:
-          node-version: 24.18.1
+          node-version: 24.21.0
 
       # `merge-multiple` because the two legs uploaded one file each under
       # different artefact names; this flattens both into the working directory.
@@ -1645,7 +1659,7 @@ jobs:
       - name: Set up Node
         uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7
         with:
-          node-version: 24.18.1
+          node-version: 24.21.0
 
       # Read with no credentials at all, which is the point: a private Docker Hub
       # repository is inspectable by the account that pushed to it and by nobody
@@ -1756,7 +1770,7 @@ jobs:
       - name: Set up Node
         uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7
         with:
-          node-version: 24.18.1
+          node-version: 24.21.0
 
       # Read, spliced, written back. Between the two markers is the script's
       # territory and everything outside them is left exactly as the changelog
@@ -1853,7 +1867,7 @@ jobs:
       - name: Set up Node
         uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7
         with:
-          node-version: 24.18.1
+          node-version: 24.21.0
 
       - name: Download the release artefacts
         uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8
@@ -1935,7 +1949,7 @@ jobs:
       - name: Set up Node
         uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7
         with:
-          node-version: 24.18.1
+          node-version: 24.21.0
 
       - name: Download the release artefacts
         uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8
@@ -1991,7 +2005,7 @@ jobs:
       - name: Set up Node
         uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7
         with:
-          node-version: 24.18.1
+          node-version: 24.21.0
 
       - name: Download the release artefacts
         uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8
@@ -2089,7 +2103,7 @@ jobs:
       - name: Set up Node
         uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7
         with:
-          node-version: 24.18.1
+          node-version: 24.21.0
 
       - name: Download the release artefacts
         uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8
@@ -2187,7 +2201,7 @@ jobs:
       - name: Set up Node
         uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7
         with:
-          node-version: 24.18.1
+          node-version: 24.21.0
 
       - name: Download the release artefacts
         uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8

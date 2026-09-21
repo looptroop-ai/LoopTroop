@@ -89,6 +89,8 @@ For user-visible changes, add a concise entry under `## Unreleased` in `CHANGELO
 
 When reporting interrupted writes, startup recovery, or Manual QA evidence issues, keep the diagnostic and owning artifact paths, and preserve the relevant `.proof`, `.recovery`, `.recovery.write-*`, retained `.remove-*`, or SQLite lock sidecars until their role is known. An orphan YAML or whole-file JSONL temp without a matching proof, including an empty JSONL temp, is warned about and left unpromoted; only an in-progress fallback whose `.recovery` ownership or completeness cannot be verified raises `RECOVERY_BLOCKED` and stops startup. The persistent SQLite lock database is outside transient cleanup, while selected runtime/temp roots and explicit worktree deletion have their own removal scope.
 
+Eligible non-draft pull requests from repository owners, members, and collaborators receive an automatic OrcaCode review. Maintainers can request another pass with `/orcacode-review` or `@orcacode review` in a pull-request comment; other comment authors are ignored.
+
 OpenCode step-cap conflicts preserve the edited root config and restore
 sidecar, refusing only a destructive reset that would overwrite them; a later
 bead may continue without a fresh cap when no reset is needed, with valid marker
@@ -122,7 +124,7 @@ of display prose.
 
 Standalone binary jobs use Node `v26.9.0`'s native `--build-sea` builder. This is
 an embedded-runtime pin only: application, package and container jobs keep the
-Node `24.18.1` floor. If that embedded runtime changes, review Node's release
+Node `24.21.0` floor. If that embedded runtime changes, review Node's release
 schedule and security maintenance separately, and preserve the CommonJS asset
 bundle, disabled code cache and disabled snapshot settings across all four
 binary target lanes.

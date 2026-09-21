@@ -82,6 +82,8 @@ export interface StubChannel extends ChannelCommon {
   expect?: undefined
   provesOwnRuntime?: undefined
   moderated?: undefined
+  submission?: undefined
+  requiresReleaseAsset?: undefined
 }
 
 /**
@@ -96,6 +98,21 @@ export interface ModeratedChannel {
   graceDays: number
 }
 
+/**
+ * What a moderation queue says about a version the feed is not serving.
+ *
+ * `queued` is the only state that can excuse the absence. `rejected` and
+ * `absent` are answers rather than waits, and `served` means the question was
+ * asked of a version the feed does carry.
+ */
+export interface ChannelSubmission {
+  state: 'queued' | 'rejected' | 'absent' | 'served'
+  /** When the submission was made, in epoch milliseconds, or null if unknown. */
+  at: number | null
+  /** One clause naming the state, for the skip reason or the failure. */
+  detail: string
+}
+
 /** Fields shared by the channels that are actually scheduled. */
 interface LiveChannel extends ChannelCommon {
   stub?: undefined
@@ -104,11 +121,22 @@ interface LiveChannel extends ChannelCommon {
   propagationCapMs?: number
   publishJob?: string
   publishHint?: string
-  published?: (version: string) => unknown
+  /**
+   * What the feed serves for this version, or null.
+   *
+   * Takes the recipe as well as the version: every probe is called as
+   * `recipe.published(recipe, version)`, and the recipe is how a shared probe
+   * knows which channel it is answering for.
+   */
+  published?: (recipe: ChannelRecipe, version: string) => unknown
   /** Present when the documented command resolves a moving pointer. */
   latest?: () => unknown
   /** Present when a human reviews the submission before the feed serves it. */
   moderated?: ModeratedChannel
+  /** Where a moderated channel's queue state is read from. */
+  submission?: (version: string) => Promise<ChannelSubmission>
+  /** A release asset without which this channel publishes nothing. */
+  requiresReleaseAsset?: (version: string) => string
 }
 
 /**
@@ -126,6 +154,10 @@ export interface DelegatedChannel extends LiveChannel {
   opencodePort?: undefined
   expect?: undefined
   provesOwnRuntime?: undefined
+  // Only the installed-channel flow reads these; a delegate drives its own run.
+  moderated?: undefined
+  submission?: undefined
+  requiresReleaseAsset?: undefined
 }
 
 /** A channel this driver installs, probes and removes itself. */
@@ -154,23 +186,34 @@ export function validatePublishedVersion(value: unknown): string
 
 export const CHANNELS: Record<string, ChannelRecipe>
 
-/**
- * The version a Chocolatey feed entry serves, or null when it serves none.
- *
- * The entity endpoint answers 200 for a version that has only been submitted,
- * so presence is not service: this reads the moderation status.
- */
-export function chocolateyApprovedVersion(payload: string): string | null
+/** The version in a `choco search --limit-output` listing, or null for none. */
+export function chocolateySearchVersion(output: string): string | null
+
+/** What Chocolatey's moderation queue says, read from one feed entity. */
+export function chocolateySubmission(payload: string): ChannelSubmission
+
+/** What became of a WinGet submission, read from upstream's pull requests. */
+export function wingetSubmission(pulls: unknown): ChannelSubmission
 
 /**
  * Why a moderated channel's leg is not being run, or null when it must run.
  *
- * An unknown age is never a reason to skip: a skip claims the queue explains
- * the absence, and a release whose age could not be read cannot support it.
+ * Only a queued submission whose wait is known and short excuses a feed that is
+ * not serving the version: a skip claims the queue explains the absence, and a
+ * rejection, a missing submission or an unreadable age cannot support it.
  */
 export function moderationSkipReason(
   moderated: ModeratedChannel,
-  facts: { version: string, ageHours: number | null, serves: string | null },
+  facts: {
+    version: string
+    ageHours: number | null
+    serves: string | null
+    /**
+     * `unknown` is the caller's, not a probe's: it means the queue could not be
+     * asked, which is treated as a wait because it is evidence of nothing.
+     */
+    state?: ChannelSubmission['state'] | 'unknown'
+  },
 ): string | null
 
 /** Where `--binary` puts the standalone executable. */

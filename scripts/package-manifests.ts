@@ -245,6 +245,25 @@ export const WINGET_IDENTIFIER = 'LoopTroopAI.LoopTroop'
 /** WinGet manifests are versioned by schema; every file must state the same one. */
 export const WINGET_MANIFEST_VERSION = '1.6.0'
 
+/** The repository a WinGet submission is a pull request into. */
+export const WINGET_UPSTREAM = 'microsoft/winget-pkgs'
+
+/** Ours, which that pull request comes from. */
+export const WINGET_FORK = 'looptroop-ai/winget-pkgs'
+
+/**
+ * The fork branch a version's submission lives on.
+ *
+ * Derived from the version so a re-run updates that branch rather than opening
+ * a second pull request, and named here rather than in the submitter because
+ * two things read it: the submitter creates it, and the published smoke asks
+ * upstream what became of the pull request built on it. A rename in one place
+ * would leave the other asking about a branch nobody pushes.
+ */
+export function wingetSubmissionBranch(version: string): string {
+  return `looptroop-${version}`
+}
+
 /**
  * Where these three files go inside a `winget-pkgs` checkout.
  *

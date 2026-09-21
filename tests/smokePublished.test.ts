@@ -4,7 +4,17 @@ import { spawnSync } from 'node:child_process'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { makeTempDir, removeTempDir } from '../server/test/tempDir'
-import { planMatrix, CHANNELS, binaryPrefix, chocolateyApprovedVersion, moderationSkipReason, validatePublishedVersion, whichLooptroop } from '../scripts/smoke-published.mjs'
+import {
+  planMatrix,
+  CHANNELS,
+  binaryPrefix,
+  chocolateySearchVersion,
+  chocolateySubmission,
+  moderationSkipReason,
+  validatePublishedVersion,
+  whichLooptroop,
+  wingetSubmission,
+} from '../scripts/smoke-published.mjs'
 import { WINGET_IDENTIFIER } from '../scripts/package-manifests'
 import type { ChannelRecipe, InstalledChannel } from '../scripts/smoke-published.mjs'
 
@@ -208,49 +218,97 @@ describe('planMatrix', () => {
     }
   })
 
-  it('reads a Chocolatey entry as served only once moderation approves it', () => {
-    // Both payloads are what the community feed actually answered for
-    // `Packages(Id='looptroop',Version=…)`: an approved version and one pushed
-    // minutes earlier and still in the queue. The entity endpoint answers 200
-    // for both, which is the trap — `choco install` served the first and not
-    // the second, so presence cannot be the test.
-    const entry = (version: string, status: string) => `<entry>
+  it('reads the served version out of a choco search listing', () => {
+    // `choco search --limit-output` prints `id|version`, and only for versions
+    // moderation has approved — which is why the feed is asked through the CLI
+    // rather than over OData: the entity endpoint answers 200 for a version
+    // that has only been submitted, and an earlier probe read that as published.
+    expect(chocolateySearchVersion('looptroop|0.5.1\n')).toBe('0.5.1')
+    expect(chocolateySearchVersion('')).toBeNull()
+    // Chocolatey's `--exact` has matched by prefix, so the id is compared.
+    expect(chocolateySearchVersion('looptroop-beta|9.9.9\n')).toBeNull()
+    expect(chocolateySearchVersion('looptroop-beta|9.9.9\nlooptroop|0.5.1\n')).toBe('0.5.1')
+    // A header line from a Chocolatey that ignored --limit-output is not a hit.
+    expect(chocolateySearchVersion('Chocolatey v2.6.0\n0 packages found.\n')).toBeNull()
+  })
+
+  it('reads a Chocolatey queue state, and when the submission was made', () => {
+    // The shapes the live feed returned for an approved version and for one
+    // pushed minutes earlier: `Published` stays at 1900-01-01 until approval,
+    // so `Created` is the only date that can time a queue. Attributes appear on
+    // some elements and not others, which the parser has to tolerate.
+    const entry = (version: string, status: string, created: string) => `<entry>
       <m:properties>
         <d:Version>${version}</d:Version>
         <d:VersionDownloadCount m:type="Edm.Int32">6</d:VersionDownloadCount>
+        <d:Created m:type="Edm.DateTime">${created}</d:Created>
+        <d:Published m:type="Edm.DateTime">1900-01-01T00:00:00</d:Published>
         <d:PackageStatus>${status}</d:PackageStatus>
-        <d:PackageSubmittedStatus>Pending</d:PackageSubmittedStatus>
       </m:properties>
     </entry>`
 
-    expect(chocolateyApprovedVersion(entry('0.5.1', 'Approved'))).toBe('0.5.1')
-    // A package approved without automated verification, which the feed serves.
-    expect(chocolateyApprovedVersion(entry('0.5.1', 'Exempted'))).toBe('0.5.1')
-    expect(chocolateyApprovedVersion(entry('9.9.9', 'Submitted'))).toBeNull()
-    expect(chocolateyApprovedVersion(entry('9.9.9', 'Rejected'))).toBeNull()
-    // No status at all is not an approval. Reading the version regardless would
-    // report a queued package as live for as long as the feed stayed quiet.
-    expect(chocolateyApprovedVersion('<d:Version>9.9.9</d:Version>')).toBeNull()
+    const queued = chocolateySubmission(entry('9.9.9', 'Submitted', '2026-09-21T08:15:27.443'))
+    expect(queued.state).toBe('queued')
+    expect(queued.at).toBe(Date.parse('2026-09-21T08:15:27.443Z'))
+
+    expect(chocolateySubmission(entry('9.9.9', 'Rejected', '2026-09-21T08:15:27.443')).state).toBe('rejected')
+    expect(chocolateySubmission(entry('0.5.1', 'Approved', '2026-08-13T10:17:38.163')).state).toBe('served')
+    // Approved without automated verification; the feed serves those too.
+    expect(chocolateySubmission(entry('0.5.1', 'Exempted', '2026-08-13T10:17:38.163')).state).toBe('served')
+    expect(chocolateySubmission('<entry/>').state).toBe('absent')
   })
 
-  it('skips a moderated channel only while the wait is known and short', () => {
+  it('reads what became of a WinGet submission', () => {
+    // Only these three shapes change the decision: open and merged are a queue
+    // doing its job — a merge still waits for the index pipeline — while closed
+    // without a merge was a refusal, and nothing at all means this release
+    // never submitted, which is not somebody else's queue.
+    const open = wingetSubmission([{ number: 438396, state: 'open', created_at: '2026-09-21T09:06:46Z' }])
+    expect(open.state).toBe('queued')
+    expect(open.at).toBe(Date.parse('2026-09-21T09:06:46Z'))
+    expect(open.detail).toContain('438396')
+
+    expect(wingetSubmission([{ number: 1, state: 'closed', created_at: '2026-09-01T00:00:00Z', merged_at: '2026-09-02T00:00:00Z' }]).state).toBe('queued')
+    expect(wingetSubmission([{ number: 2, state: 'closed', created_at: '2026-09-01T00:00:00Z', merged_at: null }]).state).toBe('rejected')
+    expect(wingetSubmission([]).state).toBe('absent')
+    expect(wingetSubmission(null).state).toBe('absent')
+  })
+
+  it('skips a moderated channel only while the wait is known, short and queued', () => {
     const moderated = { queue: 'Chocolatey community moderation', graceDays: 14 }
+    const queued = { version: '9.9.9', ageHours: 48, serves: '9.9.8', state: 'queued' as const }
 
     // Inside the window, and saying what the feed does serve — a presence probe
     // answers only about the version it was asked about, so the served version
     // has to come from the channel's own latest probe or not be claimed at all.
-    expect(moderationSkipReason(moderated, { version: '9.9.9', ageHours: 48, serves: '9.9.8' }))
+    expect(moderationSkipReason(moderated, queued))
       .toBe('9.9.9 is waiting on Chocolatey community moderation; the feed serves 9.9.8')
-    expect(moderationSkipReason(moderated, { version: '9.9.9', ageHours: 48, serves: null }))
+    expect(moderationSkipReason(moderated, { ...queued, serves: null }))
       .toBe('9.9.9 is waiting on Chocolatey community moderation')
 
     // Past the window a stalled submission has to be reported, not waited on.
-    expect(moderationSkipReason(moderated, { version: '9.9.9', ageHours: 14 * 24, serves: null })).toBeNull()
+    expect(moderationSkipReason(moderated, { ...queued, ageHours: 14 * 24 })).toBeNull()
 
-    // And an unknown age is not a reason to skip. `releaseAgeHours` returns
-    // null for every GitHub API failure, so counting it as inside the window
-    // lets repeated failures keep a rejected submission green forever.
-    expect(moderationSkipReason(moderated, { version: '9.9.9', ageHours: null, serves: '9.9.8' })).toBeNull()
+    // An unknown age is not a reason to skip. `releaseAgeHours` returns null for
+    // every GitHub API failure, so counting it as inside the window lets
+    // repeated failures keep a rejected submission green forever.
+    expect(moderationSkipReason(moderated, { ...queued, ageHours: null })).toBeNull()
+
+    // Neither is a queue that has already answered. A rejection and a version
+    // nobody submitted both look like a wait from the feed alone, and both mean
+    // waiting longer changes nothing.
+    expect(moderationSkipReason(moderated, { ...queued, state: 'rejected' })).toBeNull()
+    expect(moderationSkipReason(moderated, { ...queued, state: 'absent' })).toBeNull()
+    // `served` contradicts the feed — an approval the search index has not
+    // caught up with — so it belongs on the path that polls, not on a skip.
+    expect(moderationSkipReason(moderated, { ...queued, state: 'served' })).toBeNull()
+
+    // A queue that could not be reached is not evidence either way, and the
+    // age still bounds it: this keeps one flaky lookup from turning a release
+    // that is plainly still in review into a weekly failure.
+    expect(moderationSkipReason(moderated, { ...queued, state: 'unknown' }))
+      .toBe('9.9.9 is waiting on Chocolatey community moderation; the feed serves 9.9.8')
+    expect(moderationSkipReason(moderated, { ...queued, state: 'unknown', ageHours: 14 * 24 })).toBeNull()
   })
 
   it('names WinGet by its published identifier everywhere it appears', () => {
@@ -341,6 +399,13 @@ describe('planMatrix', () => {
     expect(installedChannel('homebrew').provesOwnRuntime).toBe(true)
     expect(installedChannel('scoop').provesOwnRuntime).toBeUndefined()
     expect(installedChannel('npm').provesOwnRuntime).toBeUndefined()
+    // The two Windows package managers sit on opposite sides of this, and the
+    // recipes look alike enough to be copied from one another. WinGet installs
+    // the standalone executable, which must run with no Node on PATH;
+    // Chocolatey installs the bundle and declares `nodejs-lts`, so stripping
+    // Node would break it correctly.
+    expect(installedChannel('winget').provesOwnRuntime).toBe(true)
+    expect(installedChannel('chocolatey').provesOwnRuntime).toBeUndefined()
   })
 
   it('runs the documented command verbatim when it is not pinned', () => {

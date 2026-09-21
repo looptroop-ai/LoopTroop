@@ -91,7 +91,14 @@ const channel = flag('channel') as Channel
 if (!(CHANNELS as readonly string[]).includes(channel)) fail(`--channel must be one of ${CHANNELS.join(', ')}.`)
 
 const repo = flag('repo')
-const version = flag('version')
+// Normalised once, here. A leading `v` is accepted because that is how tags
+// are written and how operators paste them, but everything downstream — the
+// URL the guard builds, the tag the release probe queries, and
+// `renderDescriptor`, which throws `Not a version` on anything else — has to
+// see the bare number. Stripping it at each use instead let a `v`-prefixed
+// version pass every check and then die in the renderer with an uncaught
+// stack trace, after three authenticated calls.
+const version = flag('version').replace(/^v/, '')
 const url = flag('url')
 const sha256 = flag('sha256')
 const force = args.switch('force')
@@ -103,12 +110,15 @@ const path = DESCRIPTOR_PATH[channel]
 // their own reasons, and when the arguments were never publishable that is the
 // wrong reason to report — the operator changes a token or a PATH and runs the
 // same unpublishable command again.
-// The version first. `checkDescriptorUrl` builds what it expects *from*
-// `--version`, so a placeholder version and a URL built around the same
-// placeholder agree with each other and pass — the usage example above did
-// exactly that, reaching three network calls before `renderDescriptor` threw
+//
+// The version first, and with the same rule `renderDescriptor` applies, so the
+// refusal here and the throw there can never disagree about what a version is.
+// It has to be checked in its own right: `checkDescriptorUrl` builds what it
+// expects *from* `--version`, so a placeholder version and a URL built around
+// the same placeholder agree with each other and pass. The usage example above
+// did exactly that, reaching three network calls before the renderer threw
 // `Not a version: X.Y.Z` as an uncaught stack trace.
-if (!/^\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?$/.test(version.replace(/^v/, ''))) {
+if (!/^\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?$/.test(version)) {
   fail(`Refusing to write ${version} to ${repo}.`, '--version must be MAJOR.MINOR.PATCH, optionally with a prerelease suffix.', 'Nothing was changed.')
 }
 
@@ -216,9 +226,16 @@ function preflight(): void {
  * not be the thing that strands one.
  */
 function requireReleaseAsset(): void {
-  const release = version.replace(/^v/, '')
+  const release = version
   const wanted = bundleFileName(release)
-  const probe = ghTry(['release', 'view', `v${release}`, '--repo', SOURCE_REPOSITORY, '--json', 'assets,isDraft,isPrerelease'])
+  // The REST endpoint rather than `gh release view --json`. Both expose the
+  // per-asset digest on a current `gh`, but `--json` only returns the fields
+  // that build of `gh` knows about, so an older one on a runner would silently
+  // drop `digest` and quietly turn the checksum comparison below into a
+  // warning — a security check that stops working without saying so. The REST
+  // shape does not depend on the client, and a missing tag answers HTTP 404,
+  // which `isGhNotFound` already matches.
+  const probe = ghTry(['api', `repos/${SOURCE_REPOSITORY}/releases/tags/v${release}`])
 
   if (probe.failed) {
     // `isGhNotFound` is what `release-detect.ts` already uses to tell a missing
@@ -234,7 +251,7 @@ function requireReleaseAsset(): void {
     return
   }
 
-  let parsed: { assets?: { name?: string, digest?: string | null }[], isDraft?: boolean, isPrerelease?: boolean }
+  let parsed: { assets?: { name?: string, digest?: string | null }[], draft?: boolean, prerelease?: boolean }
   try {
     parsed = JSON.parse(probe.stdout.trim()) as typeof parsed
   } catch {
@@ -247,10 +264,10 @@ function requireReleaseAsset(): void {
   // downloadable — `gh` resolves them for an authenticated token and every user
   // gets a 404 — and `brew upgrade` and `scoop update` have no concept of a
   // prerelease, so the managed channels only ever carry stable releases.
-  if (parsed.isDraft === true) {
+  if (parsed.draft === true) {
     fail(`Refusing to write ${version} to ${repo}.`, `v${release} is still a draft; its assets are not downloadable.`, 'Nothing was changed.')
   }
-  if (parsed.isPrerelease === true) {
+  if (parsed.prerelease === true) {
     fail(`Refusing to write ${version} to ${repo}.`, `v${release} is a prerelease; the managed channels only carry stable releases.`, 'Nothing was changed.')
   }
 

@@ -66,10 +66,10 @@ if (joined.includes('.permissions.push')) {
 } else if (args.includes('--method') && args.includes('PUT')) {
   appendFileSync(process.env.GH_STUB_STATE + '.put', JSON.stringify(args) + '\\n')
   process.stdout.write('deadbeef\\n')
-} else if (args[0] === 'release' && args[1] === 'view') {
+} else if (joined.includes('/releases/tags/')) {
   // 'missing' and 'unreadable' both exit non-zero; only the first says so on
   // stderr. Conflating them is precisely the bug this distinguishes.
-  if (state.release === 'missing') { process.stderr.write('release not found\\n'); process.exit(1) }
+  if (state.release === 'missing') { process.stderr.write('gh: Not Found (HTTP 404)\\n'); process.exit(1) }
   if (state.release === 'unreadable') { process.stderr.write('could not connect to api.github.com\\n'); process.exit(1) }
   process.stdout.write(JSON.stringify(state.release) + '\\n')
 } else if (joined.includes('/contents/')) {
@@ -94,8 +94,8 @@ if (joined.includes('.permissions.push')) {
   /** What `gh release view` answers: a release object, or how it failed. */
   type Release = 'missing' | 'unreadable' | {
     assets: { name: string, digest?: string | null }[]
-    isDraft?: boolean
-    isPrerelease?: boolean
+    draft?: boolean
+    prerelease?: boolean
   }
 
   const RELEASE: Release = { assets: [{ name: 'looptroop-9.9.9-bundle.tar.gz', digest: `sha256:${SHA}` }] }
@@ -331,7 +331,7 @@ if (joined.includes('.permissions.push')) {
 
   /** A draft's assets are not anonymously downloadable: 404 for every user. */
   it('refuses a draft release, and writes nothing', async () => {
-    setState({ remote: null, release: { ...RELEASE, isDraft: true } })
+    setState({ remote: null, release: { ...RELEASE, draft: true } })
 
     const result = await push()
 
@@ -342,7 +342,7 @@ if (joined.includes('.permissions.push')) {
 
   /** `brew upgrade` and `scoop update` have no concept of a prerelease. */
   it('refuses a prerelease, and writes nothing', async () => {
-    setState({ remote: null, release: { ...RELEASE, isPrerelease: true } })
+    setState({ remote: null, release: { ...RELEASE, prerelease: true } })
 
     const result = await push()
 
@@ -374,6 +374,22 @@ if (joined.includes('.permissions.push')) {
 
     expect(result.status).toBe(0)
     expect(result.stdout).toContain('could not verify --sha256')
+    expect(putCalls()).toHaveLength(1)
+  })
+
+  /**
+   * Tags carry a leading `v` and operators paste them that way. Normalising it
+   * at each use instead of once let `--version v9.9.9` pass every check and
+   * then die inside `renderDescriptor` with an uncaught `Not a version`, after
+   * three authenticated calls.
+   */
+  it('accepts a version written with a leading v, and renders the bare one', async () => {
+    setState({ remote: null })
+
+    const result = await push([], { version: 'v9.9.9' })
+
+    expect(result.status).toBe(0)
+    expect(result.stderr).not.toContain('Not a version')
     expect(putCalls()).toHaveLength(1)
   })
 

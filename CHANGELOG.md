@@ -10,7 +10,7 @@ Unreleased changes appear first and represent commits that have not yet been inc
 > Changes merged since the last versioned release that have not yet shipped in a tagged version.
 
 ### Summary
-- `scoop install looptroop` works again, and a release can no longer publish a package descriptor pointing anywhere but this project's own release asset.
+- `scoop install looptroop` works again, and a release can only publish install descriptors pointing at its own verified bytes.
 - LoopTroop now requires Node 24.21.0 or newer.
 - Published documentation now describes the latest implemented behavior directly as live guidance.
 - CLI command help now accepts `--help`, `help`, and `?` after a command.

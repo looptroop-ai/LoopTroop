@@ -24,13 +24,18 @@ afterEach(() => {
  * which is the ordinary submission. Defaulting it to "everything succeeds"
  * silently turned every test into the already-published no-op.
  */
-function prepare({ differs = true }: { differs?: boolean } = {}) {
+const remoteHead = 'b'.repeat(40)
+
+function prepare({ differs = true, open = false }: { differs?: boolean, open?: boolean } = {}) {
   vi.stubEnv('WINGET_TOKEN', token)
   vi.stubEnv('GIT_CONFIG_COUNT', '0')
   process.argv = ['node', 'winget-submit.ts', '--version', '9.9.9', '--url', 'https://example.invalid/package.zip', '--sha256', 'a'.repeat(64)]
   vi.spyOn(process.stdout, 'write').mockImplementation(() => true)
   vi.mocked(execFileSync).mockImplementation((command, args) => {
-    if (command === 'gh' && args?.[1] === 'list') return '[]'
+    if (command === 'gh' && args?.[1] === 'list') {
+      return open ? '[{"number":417030,"url":"https://example.invalid/pr/417030"}]' : '[]'
+    }
+    if (command === 'git' && args?.[0] === 'rev-parse') return `${remoteHead}\n`
     if (differs && command === 'git' && args?.[0] === 'diff') {
       throw Object.assign(new Error('exit 1'), { status: 1, stderr: '' })
     }
@@ -88,6 +93,43 @@ describe('WinGet submission credentials', () => {
       'repo', 'sync', 'looptroop-ai/winget-pkgs', '--source', 'microsoft/winget-pkgs', '--branch', 'master', '--force',
     ])
     expect(clone, 'the clone does not follow the sync').toBeGreaterThan(sync)
+  })
+
+  it('gives the open branch a tracking ref and an explicit lease', async () => {
+    // Both halves of one defect, reproduced against a real shallow clone
+    // before it was fixed here. `--depth 1` clones single-branch, so
+    // `remote.origin.fetch` covers `master` alone: a plain `git fetch origin
+    // <branch>` writes FETCH_HEAD and no remote-tracking ref, which makes the
+    // no-op diff unresolvable *and* leaves `--force-with-lease` with nothing to
+    // compare. Git then rejects the push as `stale info` — so correcting a
+    // submission that is already open, the case this whole reconcile exists
+    // for, could not push at all. The bare lease stays rejected even once the
+    // ref is fetched, because the branch has no upstream configuration; naming
+    // the value this run saw is what makes it work.
+    prepare({ open: true })
+    await import('../scripts/winget-submit.ts')
+
+    const calls = vi.mocked(execFileSync).mock.calls
+    const fetched = calls.find(([command, args]) => command === 'git' && args?.[0] === 'fetch' && args?.includes('origin'))
+    expect(fetched?.[1]).toEqual([
+      'fetch', '--depth', '1', 'origin', '+refs/heads/looptroop-9.9.9:refs/remotes/origin/looptroop-9.9.9',
+    ])
+
+    const pushed = calls.find(([command, args]) => command === 'git' && args?.[0] === 'push')
+    expect(pushed?.[1]).toEqual(['push', `--force-with-lease=looptroop-9.9.9:${remoteHead}`, 'origin', 'looptroop-9.9.9'])
+  })
+
+  it('leases nothing when the branch does not exist upstream yet', async () => {
+    // A first submission has no remote branch to lose, and asking for the
+    // value of a ref that was never fetched would be a lie about what this run
+    // saw. The bare form is correct there, and is what pushed the first
+    // manifests this project ever submitted.
+    prepare()
+    await import('../scripts/winget-submit.ts')
+
+    const pushed = vi.mocked(execFileSync).mock.calls
+      .find(([command, args]) => command === 'git' && args?.[0] === 'push')
+    expect(pushed?.[1]).toEqual(['push', '--force-with-lease', 'origin', 'looptroop-9.9.9'])
   })
 
   it('does nothing when the version is already merged with these manifests', async () => {

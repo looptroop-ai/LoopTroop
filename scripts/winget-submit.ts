@@ -252,6 +252,27 @@ try {
   // (`Upstream commits contain workflow changes, which require the `workflow`
   // scope`). A credential that cannot push workflow files cannot merge them
   // either, which is why the push failure below names the scope as the fix.
+  // What this credential can do, before two minutes are spent cloning.
+  //
+  // A classic token states its scopes in a response header, and `workflow` is
+  // the one this job cannot do without for long: GitHub refuses both a push
+  // and an API merge that introduces a workflow file without it, and upstream
+  // adds workflow files. A fine-grained token sends no such header — there the
+  // equivalent is the repository permission "Workflows: Read and write" — so
+  // an absent header is not an answer and is left alone.
+  //
+  // A warning rather than a failure. The scope is only *needed* when upstream
+  // has added a workflow file since the fork was last synced, and failing a
+  // release that would have published fine is the worse error. The push says
+  // the same thing fatally on the day it matters; this says it early, on every
+  // release, so nobody discovers it then.
+  const identity = run('gh', ['api', '-i', '/user'], { quiet: true })
+  const scopes = /^x-oauth-scopes:(.*)$/im.exec(identity ?? '')?.[1]
+  if (scopes !== undefined && !scopes.split(',').map((scope) => scope.trim()).includes('workflow')) {
+    process.stdout.write('::warning::WINGET_TOKEN has no `workflow` scope, so it cannot carry an upstream workflow change into the fork.\n')
+    log(`  Its scopes are: ${scopes.trim() || '(none)'}. Add \`workflow\` before upstream adds a workflow file.`)
+  }
+
   log(`Syncing ${FORK} with ${UPSTREAM}...`)
   if (run('gh', ['repo', 'sync', FORK, '--source', UPSTREAM, '--branch', 'master', '--force'], { quiet: true }) === null) {
     process.stdout.write(`::warning::Could not sync ${FORK} with ${UPSTREAM}.\n`)
@@ -302,7 +323,18 @@ try {
   // `upstream/master` — this working tree was just reset onto master, where these
   // files do not exist yet, so a staged diff there always reports a change and
   // would never detect a no-op.
-  if (open !== null && run('git', ['fetch', 'origin', branch], { cwd: repo, quiet: true }) !== null) {
+  // Fetched into a remote-tracking ref by an explicit refspec, not by name.
+  // `--depth 1` clones single-branch, so `remote.origin.fetch` covers only
+  // `master` and a plain `git fetch origin <branch>` writes `FETCH_HEAD` and
+  // nothing else. Everything downstream then breaks quietly: `git diff
+  // origin/<branch>` cannot resolve the ref, so the no-op check always reports
+  // a change, and `--force-with-lease` has no lease to compare — git rejects
+  // the push as `stale info`. Which means the one path this reconcile exists
+  // for, correcting a submission that is already open, could not push at all.
+  const tracking = `+refs/heads/${branch}:refs/remotes/origin/${branch}`
+  const tracked = open !== null
+    && run('git', ['fetch', '--depth', '1', 'origin', tracking], { cwd: repo, quiet: true }) !== null
+  if (tracked) {
     const unchanged = run('git', [
       'diff', '--quiet', `origin/${branch}`, '--', wingetManifestDir(version),
     ], { cwd: repo, quiet: true }) !== null
@@ -334,7 +366,19 @@ try {
 
   if (!done) {
     run('git', ['commit', '-m', title], { cwd: repo })
-    run('git', ['push', '--force-with-lease', 'origin', branch], {
+    // The lease names the value this run actually saw, rather than leaving git
+    // to infer one. Its bare form asks the remote-tracking ref what to expect
+    // and refuses the push as `stale info` when it cannot — which it cannot
+    // here, because a branch checked out with `-B` from `upstream/master` has
+    // no upstream configuration for git to follow back to `origin/<branch>`.
+    // Reproduced against a real shallow clone: the bare form is rejected even
+    // with the tracking ref fetched and its reflog in place, and the explicit
+    // form pushes. Nothing is leased for a branch that does not exist upstream
+    // yet, which is every first submission.
+    const expected = tracked ? run('git', ['rev-parse', `origin/${branch}`], { cwd: repo }).trim() : ''
+    run('git', [
+      'push', expected === '' ? '--force-with-lease' : `--force-with-lease=${branch}:${expected}`, 'origin', branch,
+    ], {
       cwd: repo,
       // The one refusal whose message names a file rather than a cause. It
       // means the branch carries a workflow file the fork does not have, which

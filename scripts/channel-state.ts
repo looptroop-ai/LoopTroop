@@ -11,6 +11,7 @@
  * already verified stop matching.
  */
 import type { ParsedDescriptor } from './package-manifests.ts'
+import { REPOSITORY, bundleFileName } from './package-manifests.ts'
 
 export interface DesiredDescriptor {
   version: string
@@ -62,6 +63,67 @@ export function compareVersions(left: string, right: string): number {
   }
 
   return 0
+}
+
+/**
+ * Where a release asset of this project lives.
+ *
+ * Built from `REPOSITORY` rather than a second copy of the owner and name, so
+ * a rename cannot leave the guard disagreeing with the generator that produced
+ * the URL it is judging. Not taken from an argument either: "which project's
+ * releases may this descriptor serve" is not a decision any caller should get
+ * to make. `channel-push.ts` takes a `--repo`, but that is the tap or bucket
+ * being *written to*; nothing there constrains where users' bytes come from.
+ */
+export function releaseAssetUrl(version: string, assetName: string): string {
+  return `${REPOSITORY}/releases/download/v${version.replace(/^v/, '')}/${assetName}`
+}
+
+/** The same repository as `owner/name`, which is what `gh --repo` takes. */
+export const SOURCE_REPOSITORY = new URL(REPOSITORY).pathname.replace(/^\//, '')
+
+/**
+ * Why this descriptor's URL cannot be published, or `null` when it can.
+ *
+ * `decideChannelWrite` only ever asks whether a version is newer, which is the
+ * one question that cannot catch a descriptor whose version is a placeholder:
+ * a bogus *high* version reads as an ordinary upgrade and publishes, and a
+ * bogus *low* one is refused for the wrong reason. On 2026-09-14 a hand-run of
+ * `channel-push.ts` carrying the example values out of its own usage line
+ * — version `9.9.9`, `--repo owner/name`, a hash of all `c`s — replaced the
+ * live Scoop descriptor for the current release, and `scoop install looptroop`
+ * served a 404 for seven days. Neither the version check nor `--force` could
+ * undo it: restoring the real version over `9.9.9` reads as a downgrade, which
+ * is refused before `force` is consulted.
+ *
+ * Tying the URL to the version closes both halves. A placeholder version no
+ * longer matches the tag in a real asset URL, and a real version cannot be
+ * pointed at somebody else's host.
+ *
+ * `assetName` defaults to the bundle, which is what every channel written
+ * through the contents API installs. The publishers that ship a different
+ * asset — WinGet's Windows zip — pass their own.
+ */
+export function checkDescriptorUrl(url: string, version: string, assetName?: string): string | null {
+  const release = version.replace(/^v/, '')
+  const expected = releaseAssetUrl(release, assetName ?? bundleFileName(release))
+
+  // The whole string, compared literally, rather than a parsed URL's protocol,
+  // host and pathname. Those three leave `username`, `password`, `search`,
+  // `hash`, `port` and surrounding whitespace unexamined, and the *raw* string
+  // is what gets rendered into the descriptor — so a URL carrying a fragment
+  // passed a component check and emitted the fragment as further lines of a
+  // Homebrew formula, which is arbitrary Ruby in a published tap. An exact
+  // comparison is also simpler than enumerating the parts that must be empty,
+  // and the release pipeline builds this string the same way, so nothing
+  // legitimate is spelled differently.
+  if (url === expected) return null
+
+  // Deliberately not echoing what was given. `fail` writes to CI stderr, a
+  // rejected URL is the one most likely to carry `user:token@` or a signed
+  // query, and this file already refuses to echo a failed command's argv for
+  // exactly that reason.
+  return `--url must be exactly ${expected}. What was passed did not match and is not repeated here, in case it carries a credential.`
 }
 
 export interface DecideOptions {

@@ -12,7 +12,7 @@ const PUSH = join(repoRoot, 'scripts', 'channel-push.ts')
 
 const SHA = 'a'.repeat(64)
 const OTHER_SHA = 'b'.repeat(64)
-const REPO = 'looptroop-ai/homebrew-looptroop'
+const REPO = 'looptroop-ai/homebrew-tap'
 
 /**
  * The URL carries the version, which is not incidental: the formula states no
@@ -21,7 +21,7 @@ const REPO = 'looptroop-ai/homebrew-looptroop'
  * Homebrew would ever see.
  */
 function urlFor(version: string): string {
-  return `https://example.invalid/looptroop-${version}-bundle.tar.gz`
+  return `https://github.com/looptroop-ai/LoopTroop/releases/download/v${version}/looptroop-${version}-bundle.tar.gz`
 }
 
 const URL = urlFor('9.9.9')
@@ -66,6 +66,19 @@ if (joined.includes('.permissions.push')) {
 } else if (args.includes('--method') && args.includes('PUT')) {
   appendFileSync(process.env.GH_STUB_STATE + '.put', JSON.stringify(args) + '\\n')
   process.stdout.write('deadbeef\\n')
+} else if (args[0] === 'api' && /repos\\/[^/]+\\/[^/]+$/.test(args[1] ?? '')) {
+  // Whether the SOURCE repository is visible at all. Only reached on the 404
+  // path, and it is what separates "no such release" from "this token cannot
+  // see that repository".
+  if (state.sourceVisible === false) { process.stderr.write('gh: Not Found (HTTP 404)\\n'); process.exit(1) }
+  if (state.sourceVisible === 'unreadable') { process.stderr.write('API rate limit exceeded\\n'); process.exit(1) }
+  process.stdout.write('{"full_name":"looptroop-ai/LoopTroop"}\\n')
+} else if (joined.includes('/releases/tags/')) {
+  // 'missing' and 'unreadable' both exit non-zero; only the first says so on
+  // stderr. Conflating them is precisely the bug this distinguishes.
+  if (state.release === 'missing') { process.stderr.write('gh: Not Found (HTTP 404)\\n'); process.exit(1) }
+  if (state.release === 'unreadable') { process.stderr.write('could not connect to api.github.com\\n'); process.exit(1) }
+  process.stdout.write(JSON.stringify(state.release) + '\\n')
 } else if (joined.includes('/contents/')) {
   if (state.remote === null) process.exit(1)
   process.stdout.write(JSON.stringify({
@@ -85,8 +98,17 @@ if (joined.includes('.permissions.push')) {
     for (const dir of tempDirs.splice(0)) removeTempDir(dir)
   })
 
-  function setState(state: { push?: boolean | 'unknown', remote?: string | null, blobSha?: string }): void {
-    writeFileSync(statePath, JSON.stringify({ push: true, remote: null, blobSha: 'abc123', ...state }))
+  /** What `gh release view` answers: a release object, or how it failed. */
+  type Release = 'missing' | 'unreadable' | {
+    assets: { name: string, digest?: string | null }[]
+    draft?: boolean
+    prerelease?: boolean
+  }
+
+  const RELEASE: Release = { assets: [{ name: 'looptroop-9.9.9-bundle.tar.gz', digest: `sha256:${SHA}` }] }
+
+  function setState(state: { push?: boolean | 'unknown', remote?: string | null, blobSha?: string, release?: Release, sourceVisible?: boolean | 'unreadable' }): void {
+    writeFileSync(statePath, JSON.stringify({ push: true, remote: null, blobSha: 'abc123', release: RELEASE, sourceVisible: true, ...state }))
     rmSync(`${statePath}.put`, { force: true })
   }
 
@@ -98,15 +120,15 @@ if (joined.includes('.permissions.push')) {
     }
   }
 
-  function push(extra: string[] = []) {
+  function push(extra: string[] = [], overrides: { url?: string, version?: string, sha256?: string } = {}) {
     return new Promise<{ status: number | null, stdout: string, stderr: string }>((done, reject) => {
       const child = spawn(process.execPath, [
         PUSH,
         '--channel', 'homebrew',
         '--repo', REPO,
-        '--version', '9.9.9',
-        '--url', URL,
-        '--sha256', SHA,
+        '--version', overrides.version ?? '9.9.9',
+        '--url', overrides.url ?? URL,
+        '--sha256', overrides.sha256 ?? SHA,
         ...extra,
       ], {
         env: {
@@ -240,5 +262,220 @@ if (joined.includes('.permissions.push')) {
     expect(result.status).toBe(0)
     expect(result.stdout).toContain('class Looptroop < Formula')
     expect(putCalls()).toHaveLength(0)
+  })
+
+  /**
+   * The descriptor URL is checked in `channel-state.ts`, which has its own
+   * tests. This one exists so that deleting the *call* is caught too: the
+   * incident it prevents was a live push, not a wrong return value, and
+   * nothing else here fails if the guard stops being consulted.
+   *
+   * `--force` is passed deliberately. The refusal has to come before anything
+   * that `--force` can talk its way past.
+   */
+  it('refuses a URL that is not a release asset for this version, and writes nothing', async () => {
+    setState({ remote: null })
+
+    const result = await push(['--force'], { url: 'https://github.com/owner/name/releases/download/v9.9.9/pwn-bundle.tar.gz' })
+
+    expect(result.status).toBe(1)
+    expect(result.stderr).toContain('must be exactly')
+    // The rejected value is never repeated: it is the argument most likely to
+    // be carrying a credential, and this goes to CI stderr.
+    expect(result.stderr).not.toContain('owner/name')
+    expect(putCalls()).toHaveLength(0)
+  })
+
+  /**
+   * The refusal has to come before `preflight`, which is the first thing that
+   * reaches the network. A read-only token makes `preflight` fail too, so if it
+   * ran first this would stop on the token and report a reason that has nothing
+   * to do with why the URL was never publishable.
+   */
+  it('reports the URL, not the token, when both are wrong', async () => {
+    setState({ push: false, remote: null })
+
+    const result = await push([], { url: 'https://github.com/owner/name/releases/download/v9.9.9/pwn-bundle.tar.gz' })
+
+    expect(result.status).toBe(1)
+    expect(result.stderr).toContain('must be exactly')
+    expect(result.stderr).not.toContain('read-only')
+    expect(putCalls()).toHaveLength(0)
+  })
+
+  /**
+   * A URL of the right shape is not proof the bytes exist. The version and the
+   * URL come from the same caller, so a consistent invented pair satisfies
+   * `checkDescriptorUrl` — and publishing one is exactly what left the Scoop
+   * bucket serving a 404 that the downgrade rule then refused to let anyone
+   * replace.
+   */
+  it('refuses when the release does not carry the asset, and writes nothing', async () => {
+    setState({ remote: null, release: { assets: [{ name: 'checksums.sha256' }] } })
+
+    const result = await push()
+
+    expect(result.status).toBe(1)
+    expect(result.stderr).toContain('does not carry')
+    expect(putCalls()).toHaveLength(0)
+  })
+
+  /**
+   * The incident, reproduced: a version that does not exist, with the
+   * canonical URL built around it. `release not found` is a definite answer
+   * and must refuse — collapsing it into "could not read" is what let a 404
+   * descriptor reach the live bucket.
+   */
+  it('refuses when the release does not exist at all, and writes nothing', async () => {
+    setState({ remote: null, release: 'missing' })
+
+    const result = await push()
+
+    expect(result.status).toBe(1)
+    expect(result.stderr).toContain('no v9.9.9 release')
+    expect(putCalls()).toHaveLength(0)
+  })
+
+  /**
+   * The publish job runs with the tap-and-bucket token, not the one that made
+   * the release, and GitHub answers 404 rather than 403 for a repository a
+   * credential cannot see. Treating that 404 as "no such release" would fail
+   * every release the moment a token's scope changed.
+   */
+  it('warns and publishes when the token cannot read the source repository', async () => {
+    setState({ remote: null, release: 'missing', sourceVisible: false })
+
+    const result = await push()
+
+    expect(result.status).toBe(0)
+    expect(result.stdout).toContain('cannot read looptroop-ai/LoopTroop')
+    expect(putCalls()).toHaveLength(1)
+  })
+
+  /**
+   * Only a positively established "cannot see that repository" may carry on.
+   * A rate limit or an outage on the follow-up leaves an unexplained 404 on
+   * the release itself, and continuing there would publish the very
+   * descriptor this check exists to stop. A wrong refusal costs a re-run; a
+   * wrong publish is a 404 on a live channel nothing can replace.
+   */
+  it('refuses when it cannot establish why the release lookup 404d', async () => {
+    setState({ remote: null, release: 'missing', sourceVisible: 'unreadable' })
+
+    const result = await push()
+
+    expect(result.status).toBe(1)
+    expect(result.stderr).toContain('could not be established')
+    expect(putCalls()).toHaveLength(0)
+  })
+
+  /** A draft's assets are not anonymously downloadable: 404 for every user. */
+  it('refuses a draft release, and writes nothing', async () => {
+    setState({ remote: null, release: { ...RELEASE, draft: true } })
+
+    const result = await push()
+
+    expect(result.status).toBe(1)
+    expect(result.stderr).toContain('draft')
+    expect(putCalls()).toHaveLength(0)
+  })
+
+  /** `brew upgrade` and `scoop update` have no concept of a prerelease. */
+  it('refuses a prerelease, and writes nothing', async () => {
+    setState({ remote: null, release: { ...RELEASE, prerelease: true } })
+
+    const result = await push()
+
+    expect(result.status).toBe(1)
+    expect(result.stderr).toContain('prerelease')
+    expect(putCalls()).toHaveLength(0)
+  })
+
+  /**
+   * A real URL with an invented hash breaks installs exactly as a 404 does,
+   * and nothing else catches it: the decision only compares the hash against
+   * what is already published, never against the release.
+   */
+  it('refuses a sha256 that is not the published asset digest, and writes nothing', async () => {
+    setState({ remote: null, release: { assets: [{ name: 'looptroop-9.9.9-bundle.tar.gz', digest: `sha256:${OTHER_SHA}` }] } })
+
+    const result = await push()
+
+    expect(result.status).toBe(1)
+    expect(result.stderr).toContain('does not match')
+    expect(putCalls()).toHaveLength(0)
+  })
+
+  /** Older assets carry no digest; that cannot become a reason to fail. */
+  it('warns and publishes when the release asset has no digest', async () => {
+    setState({ remote: null, release: { assets: [{ name: 'looptroop-9.9.9-bundle.tar.gz', digest: null }] } })
+
+    const result = await push()
+
+    expect(result.status).toBe(0)
+    expect(result.stdout).toContain('could not verify --sha256')
+    expect(putCalls()).toHaveLength(1)
+  })
+
+  /**
+   * Tags carry a leading `v` and operators paste them that way. Normalising it
+   * at each use instead of once let `--version v9.9.9` pass every check and
+   * then die inside `renderDescriptor` with an uncaught `Not a version`, after
+   * three authenticated calls.
+   */
+  it('accepts a version written with a leading v, and renders the bare one', async () => {
+    setState({ remote: null })
+
+    const result = await push([], { version: 'v9.9.9' })
+
+    expect(result.status).toBe(0)
+    expect(result.stderr).not.toContain('Not a version')
+    expect(putCalls()).toHaveLength(1)
+  })
+
+  it('refuses a version that is not a version, before touching the network', async () => {
+    setState({ remote: null })
+
+    const result = await push([], {
+      version: 'X.Y.Z',
+      url: 'https://github.com/looptroop-ai/LoopTroop/releases/download/vX.Y.Z/looptroop-X.Y.Z-bundle.tar.gz',
+    })
+
+    expect(result.status).toBe(1)
+    expect(result.stderr).toContain('MAJOR.MINOR.PATCH')
+    expect(result.stdout).not.toContain('Token can push')
+    expect(putCalls()).toHaveLength(0)
+  })
+
+  /**
+   * `renderDescriptor` throws on a malformed hash, which reached the operator
+   * as an uncaught stack trace after the network work rather than a refusal.
+   */
+  it('refuses a malformed sha256 cleanly, and writes nothing', async () => {
+    setState({ remote: null })
+
+    const result = await push([], { sha256: 'badhex' })
+
+    expect(result.status).toBe(1)
+    expect(result.stderr).toContain('64 lowercase hex')
+    // Not the raw `Not a sha256:` throw from the renderer, which arrived as an
+    // uncaught stack trace after the network work rather than as a refusal.
+    expect(result.stderr).not.toContain('Not a sha256')
+    expect(putCalls()).toHaveLength(0)
+  })
+
+  /**
+   * Fail-open on an unreadable answer. This is a last check on a release the
+   * workflow has already built and drafted, so an API that will not answer
+   * must not be the thing that strands it.
+   */
+  it('warns and continues when the release cannot be read', async () => {
+    setState({ remote: null, release: 'unreadable' })
+
+    const result = await push()
+
+    expect(result.status).toBe(0)
+    expect(result.stdout).toContain('::warning::')
+    expect(putCalls()).toHaveLength(1)
   })
 })

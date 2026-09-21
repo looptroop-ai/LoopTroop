@@ -29,7 +29,7 @@ const remoteHead = 'b'.repeat(40)
 function prepare({ differs = true, open = false }: { differs?: boolean, open?: boolean } = {}) {
   vi.stubEnv('WINGET_TOKEN', token)
   vi.stubEnv('GIT_CONFIG_COUNT', '0')
-  process.argv = ['node', 'winget-submit.ts', '--version', '9.9.9', '--url', 'https://example.invalid/package.zip', '--sha256', 'a'.repeat(64)]
+  process.argv = ['node', 'winget-submit.ts', '--version', '9.9.9', '--url', 'https://github.com/looptroop-ai/LoopTroop/releases/download/v9.9.9/looptroop-9.9.9-win-x64.zip', '--sha256', 'a'.repeat(64)]
   vi.spyOn(process.stdout, 'write').mockImplementation(() => true)
   vi.mocked(execFileSync).mockImplementation((command, args) => {
     if (command === 'gh' && args?.[1] === 'list') {
@@ -218,5 +218,23 @@ describe('WinGet submission credentials', () => {
     expect(output).toContain('[redacted]')
     expect(output).not.toContain(token)
     expect(output).not.toContain(credential)
+  })
+
+  /**
+   * WinGet installs the standalone Windows zip rather than the bundle, so the
+   * guard is given that asset name. A manifest submitted to Microsoft pointing
+   * at a URL that does not exist is the same failure the Scoop bucket carried
+   * for seven days, with a review queue in front of it.
+   */
+  it('refuses a URL that is not this version\'s Windows archive, before touching git', async () => {
+    prepare()
+    process.argv = ['node', 'winget-submit.ts', '--version', '9.9.9', '--url', 'https://github.com/owner/name/releases/download/v9.9.9/pwn.zip', '--sha256', 'a'.repeat(64)]
+    const stderr = vi.spyOn(process.stderr, 'write').mockImplementation(() => true)
+    vi.spyOn(process, 'exit').mockImplementation(() => { throw new Error('exit') })
+
+    await expect(import('../scripts/winget-submit.ts')).rejects.toThrow('exit')
+
+    expect(stderr.mock.calls.flat().join('')).toContain('must be exactly')
+    expect(vi.mocked(execFileSync).mock.calls.filter(([command]) => command === 'git')).toHaveLength(0)
   })
 })

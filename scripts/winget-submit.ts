@@ -3,7 +3,7 @@
  * Submits this version's WinGet manifests as a pull request into
  * `microsoft/winget-pkgs`.
  *
- *   node scripts/winget-submit.ts --version 1.2.3 --url https://…/looptroop-1.2.3-win-x64.zip --sha256 …
+ *   node scripts/winget-submit.ts --version X.Y.Z --url https://…/looptroop-X.Y.Z-win-x64.zip --sha256 …
  *
  * Unlike Homebrew, Scoop and Chocolatey, this is not a write we control. It is
  * a pull request into a repository Microsoft owns, reviewed by people on their
@@ -41,9 +41,11 @@ import {
   WINGET_FORK,
   WINGET_IDENTIFIER,
   WINGET_UPSTREAM,
+  windowsBinaryZipName,
   wingetManifestDir,
   wingetSubmissionBranch,
 } from './package-manifests.ts'
+import { checkDescriptorUrl } from './channel-state.ts'
 import { resolveTrustedTool } from './trusted-tool.ts'
 import { ArgumentError, parseArgs, requireNoPositional } from './cli-args.ts'
 
@@ -177,6 +179,14 @@ if (!/^(?:0|[1-9]\d*)\.(?:0|[1-9]\d*)\.(?:0|[1-9]\d*)(?:-rc\.[1-9]\d*)?$/.test(v
 const identifierDir = wingetManifestDir(version).replace(/\/[^/]+$/, '')
 const url = flag('url')
 const sha256 = flag('sha256')
+
+// Same guard as `channel-push.ts`, with WinGet's own asset: its portable
+// installer takes the standalone Windows zip, not the bundle the other
+// channels install. A hand-run with placeholder values published a 404 to the
+// Scoop bucket on 2026-09-14, and nothing about that was specific to Scoop —
+// here it would reach a manifest submitted to Microsoft.
+const badUrl = checkDescriptorUrl(url, version, windowsBinaryZipName(version.replace(/^v/, '')))
+if (badUrl !== null) fail(`Refusing to submit ${version} to WinGet.`, badUrl, 'Nothing was changed.')
 
 const branch = wingetSubmissionBranch(version)
 const work = mkdtempSync(join(tmpdir(), 'looptroop-winget-submit-'))

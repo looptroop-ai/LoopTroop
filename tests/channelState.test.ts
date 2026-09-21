@@ -177,16 +177,34 @@ describe('checking a descriptor URL against its version', () => {
   })
 
   it.each([
-    ['another host', 'https://example.invalid/looptroop-ai/LoopTroop/releases/download/v1.2.3/b.tar.gz'],
-    ['plain http', 'http://github.com/looptroop-ai/LoopTroop/releases/download/v1.2.3/b.tar.gz'],
-    ['another repository', 'https://github.com/someone/LoopTroop/releases/download/v1.2.3/b.tar.gz'],
+    ['another host', 'https://example.invalid/looptroop-ai/LoopTroop/releases/download/v1.2.3/looptroop-1.2.3-bundle.tar.gz'],
+    ['plain http', 'http://github.com/looptroop-ai/LoopTroop/releases/download/v1.2.3/looptroop-1.2.3-bundle.tar.gz'],
+    ['another repository', 'https://github.com/someone/LoopTroop/releases/download/v1.2.3/looptroop-1.2.3-bundle.tar.gz'],
     ['no asset name', 'https://github.com/looptroop-ai/LoopTroop/releases/download/v1.2.3/'],
     ['not a URL', 'looptroop-1.2.3-bundle.tar.gz'],
   ])('refuses %s', (_label, url) => {
     expect(checkDescriptorUrl(url, '1.2.3')).not.toBeNull()
   })
 
-  /** `new URL` collapses `..`, so the prefix check cannot be walked out of. */
+  /**
+   * Every channel this script writes installs the bundle, so another asset of
+   * the correct release is still bytes no package manager can unpack. A prefix
+   * test would have accepted all of these.
+   */
+  it.each([
+    ['the checksums file', 'checksums.sha256'],
+    ['a platform binary', 'looptroop-1.2.3-linux-x64.tar.gz'],
+    ['the npm tarball', 'looptroop-1.2.3.tgz'],
+    ['the release manifest', 'release-manifest.json'],
+    ['a bundle named for another version', 'looptroop-1.2.4-bundle.tar.gz'],
+    ['a nested path', 'nested/looptroop-1.2.3-bundle.tar.gz'],
+  ])('refuses %s from the right release', (_label, assetName) => {
+    const url = `https://github.com/looptroop-ai/LoopTroop/releases/download/v1.2.3/${assetName}`
+
+    expect(checkDescriptorUrl(url, '1.2.3')).not.toBeNull()
+  })
+
+  /** `new URL` collapses `..`, so the path comparison cannot be walked out of. */
   it('refuses a path that traverses out of the release', () => {
     expect(checkDescriptorUrl('https://github.com/looptroop-ai/LoopTroop/releases/download/v1.2.3/../../../evil.tar.gz', '1.2.3')).not.toBeNull()
   })

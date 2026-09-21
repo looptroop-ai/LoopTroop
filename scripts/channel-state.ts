@@ -11,6 +11,7 @@
  * already verified stop matching.
  */
 import type { ParsedDescriptor } from './package-manifests.ts'
+import { bundleFileName } from './package-manifests.ts'
 
 export interface DesiredDescriptor {
   version: string
@@ -95,7 +96,11 @@ const RELEASE_ASSET_REPO = '/looptroop-ai/LoopTroop/releases/download'
  * pointed at somebody else's host.
  */
 export function checkDescriptorUrl(url: string, version: string): string | null {
-  const expected = `${RELEASE_ASSET_REPO}/v${version}/`
+  // The whole path, not a prefix. Every channel this script writes installs the
+  // bundle and nothing else, so any other asset of the same release — the
+  // checksums file, a platform binary, the npm tarball — is bytes no package
+  // manager can unpack, and would be accepted by a prefix test.
+  const expected = `${RELEASE_ASSET_REPO}/v${version}/${bundleFileName(version)}`
 
   let parsed: URL
   try {
@@ -105,14 +110,13 @@ export function checkDescriptorUrl(url: string, version: string): string | null 
   }
 
   // `new URL` collapses `..` before this runs, so a traversal cannot reach a
-  // different path and still match the prefix.
+  // different path and still compare equal.
   const ok = parsed.protocol === 'https:'
     && parsed.host === RELEASE_ASSET_HOST
-    && parsed.pathname.startsWith(expected)
-    && parsed.pathname.length > expected.length
+    && parsed.pathname === expected
 
   if (ok) return null
-  return `--url must be an asset of this project's v${version} release, https://${RELEASE_ASSET_HOST}${expected}<asset>, not ${url}`
+  return `--url must be this project's v${version} bundle, https://${RELEASE_ASSET_HOST}${expected}, not ${url}`
 }
 
 export interface DecideOptions {

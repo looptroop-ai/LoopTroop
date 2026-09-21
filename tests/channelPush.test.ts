@@ -260,4 +260,21 @@ if (joined.includes('.permissions.push')) {
     expect(result.stderr).toContain('owner/name')
     expect(putCalls()).toHaveLength(0)
   })
+
+  /**
+   * The refusal has to come before `preflight`, which is the first thing that
+   * reaches the network. A read-only token makes `preflight` fail too, so if it
+   * ran first this would stop on the token and report a reason that has nothing
+   * to do with why the URL was never publishable.
+   */
+  it('reports the URL, not the token, when both are wrong', async () => {
+    setState({ push: false, remote: null })
+
+    const result = await push([], { url: 'https://github.com/owner/name/releases/download/v9.9.9/pwn-bundle.tar.gz' })
+
+    expect(result.status).toBe(1)
+    expect(result.stderr).toContain('owner/name')
+    expect(result.stderr).not.toContain('read-only')
+    expect(putCalls()).toHaveLength(0)
+  })
 })

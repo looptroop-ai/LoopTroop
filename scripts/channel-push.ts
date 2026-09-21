@@ -150,13 +150,16 @@ function readRemote(): RemoteFile | null {
   return { text: Buffer.from(parsed.content, 'base64').toString('utf8'), blobSha: parsed.sha }
 }
 
-preflight()
-
-// Before the network, and before anything is rendered: a descriptor pointing
-// somewhere other than this project's release for this version is refused
-// whatever is already published, and whatever `--force` says.
+// Ahead of `preflight`, which is the first thing here that reaches the network:
+// a descriptor pointing somewhere other than this project's bundle for this
+// version is refused whatever is already published and whatever `--force` says,
+// so it should not depend on a token being present or a probe answering. A
+// read-only token or an unreachable API would otherwise fail first and report
+// the wrong reason for a URL that was never publishable.
 const badUrl = checkDescriptorUrl(url, version)
 if (badUrl !== null) fail(`Refusing to write ${version} to ${repo}.`, badUrl, 'Nothing was changed.')
+
+preflight()
 
 const desired = { version, url, sha256 }
 const descriptor = renderDescriptor(channel, desired)

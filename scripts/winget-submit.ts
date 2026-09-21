@@ -196,6 +196,35 @@ try {
   const open = existing[0] ?? null
   if (open !== null) log(`A pull request for ${version} is already open: ${open.url}`)
 
+  // The fork's default branch has to carry what upstream carries before a
+  // branch built on `upstream/master` can be pushed to it.
+  //
+  // GitHub refuses a push that *introduces* a workflow file when the credential
+  // has no `workflow` scope, and every file upstream has added since the fork
+  // was last synced counts as introduced. Five weeks after this fork was
+  // created, upstream added `.github/workflows/domain-validation-assist.lock.yml`,
+  // and an otherwise correct submission was rejected:
+  //
+  //   ! [remote rejected] looptroop-0.5.9 -> looptroop-0.5.9 (refusing to allow
+  //     a Personal Access Token to create or update workflow
+  //     `.github/workflows/domain-validation-assist.lock.yml` without
+  //     `workflow` scope)
+  //
+  // Nothing about the submission was wrong; the fork was just 18,821 commits
+  // behind. Syncing first means those files already exist in the fork and the
+  // push introduces nothing but the manifests. It happens server-side, so it
+  // costs one request rather than a second clone of a repository this size.
+  //
+  // Not fatal on its own. A sync can fail for reasons that do not stop the
+  // push — a fork already up to date is the common one — and when it is the
+  // sync that was needed, the push says so in the message above. The other
+  // answer, if a sync can never work here, is to give `WINGET_TOKEN` the
+  // `workflow` scope.
+  log(`Syncing ${FORK} with ${UPSTREAM}...`)
+  if (run('gh', ['repo', 'sync', FORK, '--branch', 'master'], { quiet: true }) === null) {
+    log(`  could not sync ${FORK}; continuing, since the push needs it only when upstream has added workflow files.`)
+  }
+
   // A shallow clone of the fork's default branch. The repository is enormous —
   // a full history would be gigabytes for a directory of three small files.
   log(`Cloning ${FORK} (shallow)...`)

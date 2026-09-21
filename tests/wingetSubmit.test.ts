@@ -53,6 +53,24 @@ describe('WinGet submission credentials', () => {
     }
   })
 
+  it('syncs the fork before building a branch on upstream', async () => {
+    // Ordering is the whole fix. The branch is built on `upstream/master`, so
+    // every file upstream has added since the fork was last synced is a file
+    // this push *introduces* — and GitHub refuses a push that introduces a
+    // workflow file unless the token carries the `workflow` scope. A sync after
+    // the clone, or no sync at all, leaves that rejection in place: it is what
+    // stopped a correct 0.5.9 submission with the fork 18,821 commits behind.
+    prepare()
+    await import('../scripts/winget-submit.ts')
+
+    const calls = vi.mocked(execFileSync).mock.calls
+    const sync = calls.findIndex(([command, args]) => command === 'gh' && args?.[0] === 'repo' && args?.[1] === 'sync')
+    const clone = calls.findIndex(([command, args]) => command === 'git' && args?.[0] === 'clone')
+    expect(sync, 'the fork is never synced').toBeGreaterThanOrEqual(0)
+    expect(calls[sync]?.[1]).toEqual(['repo', 'sync', 'looptroop-ai/winget-pkgs', '--branch', 'master'])
+    expect(clone, 'the clone does not follow the sync').toBeGreaterThan(sync)
+  })
+
   it('preserves inherited Git configuration when adding authentication', async () => {
     prepare()
     vi.stubEnv('GIT_CONFIG_COUNT', '1')

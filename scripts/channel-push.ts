@@ -248,16 +248,28 @@ function requireReleaseAsset(): void {
     // release. Asking whether the repository itself is visible separates them,
     // and only runs on the 404 path.
     if (isGhNotFound(probe.stderr)) {
-      const repoVisible = ghTry(['api', `repos/${SOURCE_REPOSITORY}`])
-      if (!repoVisible.failed) {
-        fail(
-          `Refusing to write ${version} to ${repo}.`,
-          `${SOURCE_REPOSITORY} has no v${release} release, so this descriptor would point at a 404.`,
-          'Nothing was changed.',
-        )
+      const repoProbe = ghTry(['api', `repos/${SOURCE_REPOSITORY}`])
+
+      // The *only* reason to carry on from here is a positively established
+      // "this credential cannot see that repository". Anything else — a rate
+      // limit, an outage, a socket closed mid-request — leaves an unexplained
+      // 404 on the release itself, and continuing would publish exactly the
+      // descriptor this check exists to stop. The asymmetry settles it: a
+      // wrong refusal costs a re-run of a repair job, while a wrong publish is
+      // a 404 on a live channel that the downgrade rule then refuses to let
+      // anyone replace.
+      if (repoProbe.failed && isGhNotFound(repoProbe.stderr)) {
+        log(`::warning::This token cannot read ${SOURCE_REPOSITORY}, so v${release} could not be confirmed. Continuing.`)
+        return
       }
-      log(`::warning::This token cannot read ${SOURCE_REPOSITORY}, so v${release} could not be confirmed. Continuing.`)
-      return
+
+      fail(
+        `Refusing to write ${version} to ${repo}.`,
+        repoProbe.failed
+          ? `${SOURCE_REPOSITORY} answered 404 for v${release}, and whether it has that release could not be established.`
+          : `${SOURCE_REPOSITORY} has no v${release} release, so this descriptor would point at a 404.`,
+        'Nothing was changed.',
+      )
     }
     log(`::warning::Could not read the v${release} release to confirm ${wanted} exists. Continuing.`)
     return

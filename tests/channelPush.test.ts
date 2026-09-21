@@ -71,6 +71,7 @@ if (joined.includes('.permissions.push')) {
   // path, and it is what separates "no such release" from "this token cannot
   // see that repository".
   if (state.sourceVisible === false) { process.stderr.write('gh: Not Found (HTTP 404)\\n'); process.exit(1) }
+  if (state.sourceVisible === 'unreadable') { process.stderr.write('API rate limit exceeded\\n'); process.exit(1) }
   process.stdout.write('{"full_name":"looptroop-ai/LoopTroop"}\\n')
 } else if (joined.includes('/releases/tags/')) {
   // 'missing' and 'unreadable' both exit non-zero; only the first says so on
@@ -106,7 +107,7 @@ if (joined.includes('.permissions.push')) {
 
   const RELEASE: Release = { assets: [{ name: 'looptroop-9.9.9-bundle.tar.gz', digest: `sha256:${SHA}` }] }
 
-  function setState(state: { push?: boolean | 'unknown', remote?: string | null, blobSha?: string, release?: Release, sourceVisible?: boolean }): void {
+  function setState(state: { push?: boolean | 'unknown', remote?: string | null, blobSha?: string, release?: Release, sourceVisible?: boolean | 'unreadable' }): void {
     writeFileSync(statePath, JSON.stringify({ push: true, remote: null, blobSha: 'abc123', release: RELEASE, sourceVisible: true, ...state }))
     rmSync(`${statePath}.put`, { force: true })
   }
@@ -349,6 +350,23 @@ if (joined.includes('.permissions.push')) {
     expect(result.status).toBe(0)
     expect(result.stdout).toContain('cannot read looptroop-ai/LoopTroop')
     expect(putCalls()).toHaveLength(1)
+  })
+
+  /**
+   * Only a positively established "cannot see that repository" may carry on.
+   * A rate limit or an outage on the follow-up leaves an unexplained 404 on
+   * the release itself, and continuing there would publish the very
+   * descriptor this check exists to stop. A wrong refusal costs a re-run; a
+   * wrong publish is a 404 on a live channel nothing can replace.
+   */
+  it('refuses when it cannot establish why the release lookup 404d', async () => {
+    setState({ remote: null, release: 'missing', sourceVisible: 'unreadable' })
+
+    const result = await push()
+
+    expect(result.status).toBe(1)
+    expect(result.stderr).toContain('could not be established')
+    expect(putCalls()).toHaveLength(0)
   })
 
   /** A draft's assets are not anonymously downloadable: 404 for every user. */

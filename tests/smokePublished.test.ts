@@ -4,7 +4,7 @@ import { spawnSync } from 'node:child_process'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { makeTempDir, removeTempDir } from '../server/test/tempDir'
-import { planMatrix, CHANNELS, binaryPrefix, validatePublishedVersion, whichLooptroop } from '../scripts/smoke-published.mjs'
+import { planMatrix, CHANNELS, binaryPrefix, chocolateyApprovedVersion, validatePublishedVersion, whichLooptroop } from '../scripts/smoke-published.mjs'
 import { WINGET_IDENTIFIER } from '../scripts/package-manifests'
 import type { ChannelRecipe, InstalledChannel } from '../scripts/smoke-published.mjs'
 
@@ -206,6 +206,31 @@ describe('planMatrix', () => {
       // Both keep every published version, so a pinned run is meaningful.
       expect(recipe.pinnable).toBe(true)
     }
+  })
+
+  it('reads a Chocolatey entry as served only once moderation approves it', () => {
+    // Both payloads are what the community feed actually answered for
+    // `Packages(Id='looptroop',Version=…)`: an approved version and one pushed
+    // minutes earlier and still in the queue. The entity endpoint answers 200
+    // for both, which is the trap — `choco install` served the first and not
+    // the second, so presence cannot be the test.
+    const entry = (version: string, status: string) => `<entry>
+      <m:properties>
+        <d:Version>${version}</d:Version>
+        <d:VersionDownloadCount m:type="Edm.Int32">6</d:VersionDownloadCount>
+        <d:PackageStatus>${status}</d:PackageStatus>
+        <d:PackageSubmittedStatus>Pending</d:PackageSubmittedStatus>
+      </m:properties>
+    </entry>`
+
+    expect(chocolateyApprovedVersion(entry('0.5.1', 'Approved'))).toBe('0.5.1')
+    // A package approved without automated verification, which the feed serves.
+    expect(chocolateyApprovedVersion(entry('0.5.1', 'Exempted'))).toBe('0.5.1')
+    expect(chocolateyApprovedVersion(entry('9.9.9', 'Submitted'))).toBeNull()
+    expect(chocolateyApprovedVersion(entry('9.9.9', 'Rejected'))).toBeNull()
+    // No status at all is not an approval. Reading the version regardless would
+    // report a queued package as live for as long as the feed stayed quiet.
+    expect(chocolateyApprovedVersion('<d:Version>9.9.9</d:Version>')).toBeNull()
   })
 
   it('names WinGet by its published identifier everywhere it appears', () => {

@@ -154,6 +154,14 @@ export function validatePublishedVersion(value: unknown): string
 
 export const CHANNELS: Record<string, ChannelRecipe>
 
+/**
+ * The version a Chocolatey feed entry serves, or null when it serves none.
+ *
+ * The entity endpoint answers 200 for a version that has only been submitted,
+ * so presence is not service: this reads the moderation status.
+ */
+export function chocolateyApprovedVersion(payload: string): string | null
+
 /** Where `--binary` puts the standalone executable. */
 export function binaryPrefix(): string
 

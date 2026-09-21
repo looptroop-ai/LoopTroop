@@ -1055,12 +1055,28 @@ async function probeScoopManifest(_recipe, _version) {
 const CHOCO_FEED = 'https://community.chocolatey.org/api/v2'
 
 /**
- * Whether Chocolatey serves a version — which is not whether it has one.
+ * The version a Chocolatey feed entry serves, or null when it serves none.
  *
- * A submitted version is on the site and downloadable by its exact URL long
- * before a moderator approves it, and is invisible to this endpoint until then.
- * That is the distinction the whole channel turns on: the feed is what `choco
- * install` reads, so "not here yet" is precisely "still in the queue".
+ * Exported for its test, and a pure function of the payload because the rule is
+ * not the obvious one and this probe had it wrong first: the entity endpoint
+ * answers **200 for a version that has only been submitted**. `looptroop 0.5.9`
+ * was addressable at `Packages(Id=…,Version=…)` within a minute of the push,
+ * carrying `PackageStatus: Submitted`, while `choco install looptroop` still
+ * resolved the previously approved version. Presence is not service here;
+ * approval is, so approval is what this reads.
+ *
+ * `Exempted` counts too. It is what a package approved without automated
+ * verification carries, and the feed serves those exactly as it serves an
+ * ordinary approval.
+ */
+export function chocolateyApprovedVersion(payload) {
+  const status = /<d:PackageStatus>([^<]*)</.exec(payload)?.[1]?.trim() ?? ''
+  if (status !== 'Approved' && status !== 'Exempted') return null
+  return /<d:Version>([^<]*)</.exec(payload)?.[1]?.trim() || null
+}
+
+/**
+ * Whether Chocolatey serves a version — which is not whether it has one.
  *
  * The version reaches a URL, so it is the validated one: `validatePublishedVersion`
  * has already rejected anything that is not a release name by the time a recipe
@@ -1070,7 +1086,13 @@ async function probeChocoVersion(_recipe, version) {
   const response = await fetch(`${CHOCO_FEED}/Packages(Id='looptroop',Version='${version}')`)
   if (response.status === 404) return null
   if (!response.ok) throw new Error(`Chocolatey feed -> ${response.status}`)
-  return version
+  const payload = await response.text()
+  const served = chocolateyApprovedVersion(payload)
+  if (served === null) {
+    const status = /<d:PackageStatus>([^<]*)</.exec(payload)?.[1]?.trim() ?? '(no status)'
+    log(`  ${version} is on the feed, and moderation has it as ${status}`)
+  }
+  return served
 }
 
 /** What an unpinned `choco install looptroop` resolves: the feed's latest. */

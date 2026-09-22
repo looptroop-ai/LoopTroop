@@ -21,12 +21,15 @@ const FLOOR_LABEL = formatNodeVersion(FLOOR)
 
 /**
  * The runtime this repository is developed, built and shipped on, which is not
- * the runtime users are held to. `engines.node` is the first LTS of the line —
- * the oldest Node someone plausibly already has, and the only number a package
- * feed can be relied on to offer. `.nvmrc` is the newest patch. They were one
- * number until a release demanded a Node that had existed for nine days.
+ * the runtime users are held to. `engines.node` is the oldest Node the suite
+ * can run on — npm 12, which the dependency install needs, declares
+ * `^24.15.0` — and `.nvmrc` is the newest patch. They were one number until a
+ * release demanded a Node fourteen days old that a package feed did not offer.
+ *
+ * Normalised through the same parser as everything else, so a `v`-prefixed
+ * `.nvmrc`, which nvm accepts, reads as the version it names.
  */
-const DEV_PIN = read('.nvmrc').trim()
+const DEV_PIN = formatNodeVersion(parseNodeVersion(read('.nvmrc').trim()))
 
 const INPUTS = {
   version: '9.9.9',
@@ -45,6 +48,19 @@ const INPUTS = {
  * runs in the release workflow.
  */
 describe('the Node floor is stated once', () => {
+  /**
+   * Node is the only runtime LoopTroop asks users for. `engines.npm` was
+   * removed because the value it carried was one no Node release has ever
+   * bundled, and the installer now reads past any npm floor a release records
+   * — it has to, to keep releases that recorded one installable. A new
+   * `engines.npm` would therefore be enforced by nothing but npm's own warning,
+   * and would say something to readers the installer does not check.
+   */
+  it('declares a Node floor and nothing else', () => {
+    const declared = (JSON.parse(read('package.json')) as { engines: Record<string, unknown> }).engines
+    expect(Object.keys(declared)).toEqual(['node'])
+  })
+
   it('is a patch-level floor, so every consumer has something to compare', () => {
     expect(engines).toMatch(/^>=\d+\.\d+\.\d+$/)
   })
@@ -127,15 +143,19 @@ describe('the Node floor is stated once', () => {
   })
 
   /**
-   * Each document states one of the two numbers, and may not invent a third.
-   * README is read by someone deciding whether they can install this, so it
-   * states the floor. CONTRIBUTING is read by someone setting up a checkout, so
-   * it may state the pin as well.
+   * Each document states the number its reader needs, and may not invent a
+   * third. README is read by someone deciding whether they can install this,
+   * so it states the floor and nothing else. CONTRIBUTING is read by someone
+   * setting up a checkout, so it must state the pin, and may state the floor.
+   *
+   * A version is read with an optional `v`, and never from inside another
+   * number: without that, `v24.21.0` reads as `21.0`, falls outside the filter,
+   * and a stray version escapes in exactly the form this repository writes.
    */
   it('states the floor in the README and no stray version in either document', () => {
     const declared = (file: string) =>
-      [...read(file).matchAll(/\b\d+\.\d+(?:\.\d+)?\b/g)]
-        .map(([version]) => version)
+      [...read(file).matchAll(/(?<![\w.])v?(\d+\.\d+(?:\.\d+)?)\b/g)]
+        .map(([, version]) => version ?? '')
         .filter((version) => version.startsWith(`${FLOOR.major}.`))
 
     const readme = declared('README.md')

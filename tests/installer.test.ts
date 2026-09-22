@@ -421,6 +421,38 @@ describe('installer core', () => {
     }
   })
 
+  /**
+   * Reading past an npm floor must not read past the Node floor beside it. A
+   * check that returned early whenever `engines.npm` was present would pass the
+   * test above and install onto any Node at all.
+   */
+  it('still enforces the Node floor when the release also records an npm floor', async () => {
+    engines = { node: '>=99.0.0', npm: '>=999.0.0' }
+    try {
+      const result = await runInstaller(['--dry-run'])
+
+      expectExit(result, 1)
+      expect(result.stderr).toContain('needs Node >=99.0.0')
+    } finally {
+      engines = null
+    }
+  })
+
+  /** Only npm's version stopped mattering. The install itself is `npm install -g`. */
+  it('still refuses when npm is not on PATH at all', async () => {
+    const empty = mkdtempSync(join(tmpdir(), 'looptroop-no-npm-'))
+    tempDirs.push(empty)
+    engines = { node: '>=1.0.0' }
+    try {
+      const result = await runInstaller(['--dry-run'], { PATH: empty })
+
+      expectExit(result, 1)
+      expect(result.stderr).toContain('npm is not on PATH')
+    } finally {
+      engines = null
+    }
+  })
+
   it('installs from a manifest written before the floor was recorded', async () => {
     // The manifest shipped by the release before this one has no `engines`.
     // Treating that as a failed check would make the installer unable to install

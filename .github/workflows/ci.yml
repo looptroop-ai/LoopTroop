@@ -81,7 +81,9 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
       - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7
         with:
-          # Exact floor from engines.node and .nvmrc, not floating "24".
+          # The toolchain pin from .nvmrc, exact rather than floating "24". Not
+          # engines.node: the floor users are held to is lower on purpose, and
+          # the "declared floor" lanes of the test matrix are what exercise it.
           node-version: 24.21.0
           cache: npm
 
@@ -179,10 +181,11 @@ jobs:
       fail-fast: false
       matrix:
         include:
-          # Exact floor, not "24": `node-version: 24` resolves to the newest
-          # patch, so the version `engines` actually promises stays untested.
-          # Every platform runs it, because the floor is a promise on all three
-          # and a macOS-only regression at 24.21.0 would otherwise reach users.
+          # The runtime this repository builds and ships on, from `.nvmrc`. Exact,
+          # not a floating "24": a range resolves to whatever shipped this week,
+          # so nothing would be pinned to what the container and the release
+          # binaries actually run. Every platform runs it, because a macOS-only
+          # regression would otherwise reach users.
           - os: ubuntu-latest
             node: 24.21.0
             label: toolchain floor
@@ -192,15 +195,20 @@ jobs:
           - os: windows-latest
             node: 24.21.0
             label: toolchain floor
-          # Newest 24, so a patch release that breaks us is seen early. Advisory:
-          # a required check must fail only for something this repository can fix.
+          # The oldest Node `engines.node` promises, which is below the lanes
+          # above on purpose and is the only place the promise is exercised.
+          # Without it the floor could name a release this code does not run on
+          # — the shipped `node:sea` import needs 24.8 and nothing else says so.
+          # `tests/workflowPolicy.test.ts` holds this number to `engines.node`.
+          # Advisory: a required check must fail only for something this commit
+          # can fix, and an old runtime breaking is news about the floor itself.
           - os: ubuntu-latest
-            node: 24
-            label: Node 24
+            node: 24.11.0
+            label: declared floor
             optional: true
           - os: windows-latest
-            node: 24
-            label: Node 24
+            node: 24.11.0
+            label: declared floor
             optional: true
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
@@ -1021,6 +1029,64 @@ jobs:
       - name: Validate the manifests, install, run, and uninstall
         shell: bash
         run: node scripts/smoke-winget.ts --archive "$(ls "${RUNNER_TEMP}"/binary/*.zip)"
+
+  # The one job that runs no `pin-npm.mjs`, and the only reason it exists.
+  #
+  # Every other job installs the npm named by `packageManager` before it does
+  # anything, and the container does the same from its own Dockerfile. That is
+  # correct for building this repository and wrong for judging what a user has:
+  # it meant `engines.npm` could name — and for several releases did name — an
+  # npm no Node has ever bundled, while every lane went green because each had
+  # quietly installed it first. The published install smoke was repairing the
+  # precondition it existed to test.
+  #
+  # So this job installs nothing. `tests/installScriptPolicy.test.ts` requires
+  # `pin-npm.mjs` before a dependency install, and there is no dependency
+  # install here to require it before.
+  install-floor:
+    name: Install floor (ubuntu)
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+
+      - name: Read the declared floor
+        id: floor
+        shell: bash
+        run: |
+          node -e "const e=require('./package.json').engines;const m=/^>=\s*v?(\d+\.\d+\.\d+)$/.exec(e.node);if(!m)throw new Error('engines.node is not an exact floor: '+e.node);console.log('node='+m[1])" >> "$GITHUB_OUTPUT"
+
+      # The exact label, never a range. A range resolves to the newest matching
+      # release, which is the toolchain pin again and proves nothing. This step
+      # also fails outright when the floor names a version Node never published
+      # or a runner cannot fetch, which is the other half of the promise.
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7
+        with:
+          node-version: ${{ steps.floor.outputs.node }}
+
+      - name: Every declared floor is met by that runtime and the npm it bundles
+        shell: bash
+        run: |
+          node --input-type=module -e '
+            import { satisfiesFloor } from "./scripts/installer-core.mjs"
+            import { execFileSync } from "node:child_process"
+            import { readFileSync } from "node:fs"
+
+            const engines = JSON.parse(readFileSync("package.json", "utf8")).engines
+            const have = {
+              node: process.versions.node,
+              npm: execFileSync("npm", ["--version"], { encoding: "utf8" }).trim(),
+            }
+
+            for (const [tool, floor] of Object.entries(engines)) {
+              if (!(tool in have)) throw new Error(`engines.${tool} names a tool this job cannot check`)
+              if (!satisfiesFloor(have[tool], floor)) {
+                throw new Error(`engines.${tool} is ${floor}, but the declared Node floor ships ${tool} ${have[tool]}`)
+              }
+            }
+
+            console.log(`node ${have.node} with npm ${have.npm} meets ${JSON.stringify(engines)}`)
+          '
 
   # Sufficient rather than merely cheaper: the defect this catches is code
   # choosing to write inside its own installation directory, and the code making

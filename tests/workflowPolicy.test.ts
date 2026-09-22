@@ -4,7 +4,7 @@ import { spawnSync } from 'node:child_process'
 import { tmpdir } from 'node:os'
 import * as yaml from 'js-yaml'
 import { describe, expect, it } from 'vitest'
-import { parseNodeFloor, parseNodeVersion, satisfiesNodeFloor } from '../shared/nodeFloor'
+import { formatNodeVersion, parseNodeFloor, parseNodeVersion, satisfiesNodeFloor } from '../shared/nodeFloor'
 
 const repo = process.cwd()
 const workflowDir = join(repo, '.github/workflows')
@@ -155,6 +155,24 @@ describe('release workflow policy', () => {
       if (parsed === null) continue
       expect(satisfiesNodeFloor(parsed, floor), `Dockerfile: node ${found}`).toBe(true)
     }
+  })
+
+  /**
+   * The floor is a promise, and the only lanes that keep it are the ones
+   * running the exact version `engines.node` names. A literal here that drifted
+   * above the floor would leave the promise untested while still looking like
+   * it was covered, which is the whole failure this pair of lanes exists to
+   * prevent — so the literal is held to `engines.node` rather than trusted.
+   */
+  it('runs the declared floor, exactly, in the lanes named for it', () => {
+    const packageJson = JSON.parse(readFileSync(join(repo, 'package.json'), 'utf8')) as { engines: { node: string } }
+    const label = formatNodeVersion(parseNodeFloor(packageJson.engines.node))
+    const ci = readFileSync(join(repo, '.github', 'workflows', 'ci.yml'), 'utf8')
+
+    const lanes = [...ci.matchAll(/^\s*node:\s*(\S+)\n\s*label:\s*declared floor$/gm)].map(([, node]) => node)
+
+    expect(lanes.length, 'declared floor lanes in ci.yml').toBeGreaterThan(0)
+    for (const node of lanes) expect(node).toBe(label)
   })
 
   it('pins only standalone binary jobs to Node 26.9.0 and blocks embedded-runtime app checks', () => {

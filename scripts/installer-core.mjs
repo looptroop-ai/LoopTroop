@@ -2118,11 +2118,16 @@ function checkRuntime(engines) {
     )
   }
 
-  const npm = npmVersion()
-  if (npm === null) fail('npm is not on PATH, and installing needs it.', 'It ships with Node; reinstall Node.')
-  if (engines.npm && !satisfiesFloor(npm, engines.npm)) {
-    fail(`LoopTroop needs npm ${engines.npm}; this is ${npm}.`, `Upgrade with: npm install -g npm@${engines.npm.replace(/^[^\d]*/, '')}`)
-  }
+  // Only the Node floor. An `engines.npm` the manifest records is read past,
+  // not enforced: this file is downloaded fresh for every install, so the copy
+  // a user runs also installs the releases made before the field was dropped,
+  // every one of which records an npm floor no Node release has ever bundled.
+  // Comparing against it refused every machine with a stock Node, and because
+  // those manifests are published and cannot be edited, removing the field
+  // from `package.json` alone would have left them uninstallable for good.
+  //
+  // Presence is still required. The install itself is `npm install -g`.
+  if (npmVersion() === null) fail('npm is not on PATH, and installing needs it.', 'It ships with Node; reinstall Node.')
 }
 
 /**

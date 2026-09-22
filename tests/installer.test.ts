@@ -405,13 +405,17 @@ describe('installer core', () => {
     }
   })
 
-  it('stops when npm is below the floor the release records', async () => {
+  /**
+   * The mirror of the test above, and the reason it is not symmetrical. Every
+   * manifest published up to 0.5.9 records `npm: ">=12.0.2"`, which no Node
+   * release has ever bundled — so an installer that enforced it refused every
+   * machine with a stock Node, and would go on refusing them for those
+   * releases however the field is spelled today. The floor is read past.
+   */
+  it('installs even when the release records an npm floor', async () => {
     engines = { npm: '>=999.0.0' }
     try {
-      const result = await runInstaller(['--dry-run'])
-
-      expectExit(result, 1)
-      expect(result.stderr).toContain('needs npm >=999.0.0')
+      expectExit(await runInstaller(['--dry-run']), 0)
     } finally {
       engines = null
     }

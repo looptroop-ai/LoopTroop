@@ -194,8 +194,13 @@ jobs:
             label: toolchain floor
           # The oldest Node `engines.node` promises, which is below the lanes
           # above on purpose and is the only place the promise is exercised.
-          # Without it the floor could name a release this code does not run on
-          # — the shipped `node:sea` import needs 24.8 and nothing else says so.
+          # It earned its place on its first run: at a floor of 24.11.0 it went
+          # red on a real defect, not a test artefact. `rmSync(path,
+          # { recursive: true, force: true })` silently fails to remove a
+          # dangling symlink before Node 24.14.0, so
+          # `clearExecutionSetupRuntimeArtifacts` left stale aliases behind on
+          # every runtime the floor then allowed. Nothing else in this
+          # repository would have noticed.
           # `tests/workflowPolicy.test.ts` holds these numbers to `engines.node`
           # and holds this lane to both platforms.
           #

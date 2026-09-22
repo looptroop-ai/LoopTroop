@@ -378,10 +378,28 @@ jobs:
 
       # The script mocks OpenCode itself, packs into its own scratch tree, and
       # tears the whole thing down in a `finally`.
+      #
+      # npm's launcher runs whichever npm is installed in the global prefix, if
+      # there is one, instead of the npm beside its Node. On Linux and macOS
+      # that prefix is the Node install itself, so switching Node switches npm.
+      # On Windows it is %APPDATA%\npm, shared by every Node, so the npm 12
+      # pinned for the build above still won: this step once reported "bundled
+      # npm 12.0.2" on a Node that ships 11.12.1. An empty prefix leaves the
+      # launcher nothing to prefer. The smoke installs with its own `--prefix`,
+      # which npm's launcher deliberately does not read, so the install itself
+      # is unaffected. The comparison below fails the job if it ever leaks again.
       - name: Pack, install globally, and drive the CLI
         shell: bash
+        env:
+          npm_config_prefix: ${{ runner.temp }}/floor-npm-prefix
         run: |
-          echo "Installing on node $(node --version) with its bundled npm $(npm --version)"
+          bundled=$(node -p "const p=require('node:path'),f=require('node:fs'),d=p.dirname(process.execPath);JSON.parse(f.readFileSync([p.join(d,'node_modules','npm','package.json'),p.join(d,'..','lib','node_modules','npm','package.json')].find(f.existsSync),'utf8')).version")
+          actual=$(npm --version)
+          echo "Installing on node $(node --version) with npm ${actual} (bundled with it: ${bundled})"
+          if [ "${actual}" != "${bundled}" ]; then
+            echo "::error::npm ${actual} is not the npm ${bundled} this Node ships, so this would not test what a user runs."
+            exit 1
+          fi
           node scripts/smoke-install.mjs
 
   # The image is a release channel like the tarball, and nothing above ever

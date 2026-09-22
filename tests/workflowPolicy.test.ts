@@ -225,6 +225,15 @@ describe('release workflow policy', () => {
 
     const smoke = steps.findIndex((step) => text(step).includes('node scripts/smoke-install.mjs'))
     expect(smoke, 'the smoke runs on the floor runtime').toBeGreaterThan(floor)
+
+    // Step order is not enough on Windows, where npm's launcher prefers any npm
+    // in the shared global prefix — and the build step pinned npm 12 there. The
+    // prefix is emptied for the smoke, and the step proves the npm it runs is
+    // the one its Node ships before running anything.
+    expect(steps[smoke]?.env?.npm_config_prefix, 'smoke empties the global npm prefix').toEqual(expect.any(String))
+    expect(text(steps[smoke]!), 'smoke checks npm against the Node it ships with').toMatch(
+      /node_modules['",\s]+npm['",\s]+package\.json[\s\S]*npm --version[\s\S]*exit 1[\s\S]*smoke-install\.mjs/,
+    )
   })
 
   it('pins only standalone binary jobs to Node 26.9.0 and blocks embedded-runtime app checks', () => {

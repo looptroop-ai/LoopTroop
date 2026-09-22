@@ -7,7 +7,8 @@
  *
  * Two sources, three destination files, five generated blocks:
  *
- * - `scripts/installer-core.mjs` is copied into `install.sh` and `install.ps1`.
+ * - `scripts/installer-core.mjs` is copied into `scripts/install.sh` and
+ *   `scripts/install.ps1`.
  *   The wrappers have to be standalone single files — `curl … | sh` cannot fetch
  *   a second one — so the core exists three times. Generating two of those
  *   copies from the third makes drift impossible to introduce by hand, and the
@@ -213,7 +214,7 @@ const targets = [
   // the copy inside the core was stale.
   { path: CORE_PATH, content: coreNext },
   {
-    path: resolve(repoRoot, 'scripts/install.sh'),
+    path: join(repoRoot, 'scripts', 'install.sh'),
     blocks: [
       {
         begin: BEGIN,
@@ -244,7 +245,7 @@ const targets = [
     ],
   },
   {
-    path: resolve(repoRoot, 'scripts/install.ps1'),
+    path: join(repoRoot, 'scripts', 'install.ps1'),
     blocks: [
       {
         begin: BEGIN,
@@ -304,5 +305,5 @@ if (check && stale.length > 0) {
 }
 
 process.stdout.write(check
-  ? 'PASS: installer-core.mjs, install.sh, install.ps1 and launcher.cjs match executablePath.ts and engines.node.\n'
-  : 'Synced installer-core.mjs, install.sh, install.ps1 and launcher.cjs from executablePath.ts and engines.node.\n')
+  ? 'PASS: scripts/installer-core.mjs, scripts/install.sh, scripts/install.ps1 and launcher.cjs match executablePath.ts and engines.node.\n'
+  : 'Synced scripts/installer-core.mjs, scripts/install.sh, scripts/install.ps1 and launcher.cjs from executablePath.ts and engines.node.\n')

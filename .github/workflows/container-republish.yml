@@ -403,7 +403,10 @@ jobs:
           else
             dockerfile=Dockerfile
           fi
-          test -f "${dockerfile}"
+          if ! test -f "${dockerfile}"; then
+            echo "::error::No Dockerfile at scripts/Dockerfile or Dockerfile in the released tag."
+            exit 1
+          fi
           test -f "${TARBALL}"
           context_files=("${dockerfile}" "${TARBALL}")
           build_args=(--build-arg "TARBALL=${TARBALL}")

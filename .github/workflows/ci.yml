@@ -248,6 +248,7 @@ jobs:
           while IFS= read -r path; do
             case "${path}" in
               .github/workflows/*|package.json|package-lock.json|scripts/install.sh|scripts/install.ps1|\
+              scripts/installer-core.mjs|scripts/installer-core.d.mts|scripts/smoke-installer.mjs|\
               scripts/smoke-lib.mjs|scripts/smoke-lib.d.mts|scripts/smoke-published.mjs|scripts/smoke-published.d.mts|scripts/tool-path.ts|\
               server/lib/executablePath.ts|server/lib/__tests__/executablePath.test.ts|\
               tests/installer.test.ts|tests/smokePublished.test.ts)

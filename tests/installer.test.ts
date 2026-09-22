@@ -1231,8 +1231,8 @@ describe('bounded transfers', () => {
  * The resolver **as it is generated into the installer**, not as it is written.
  *
  * `scripts/sync-installers.mjs` strips `server/lib/executablePath.ts` into
- * `scripts/installer-core.mjs`, which then goes verbatim into `install.sh` and
- * `install.ps1`. These import from the core, so what is exercised is the copy
+ * `scripts/installer-core.mjs`, which then goes verbatim into `scripts/install.sh`
+ * and `scripts/install.ps1`. These import from the core, so what is exercised is the copy
  * that ships — the previous hand-written copy passed its own tests for four
  * releases while disagreeing with the daemon about which `npm` to run.
  *

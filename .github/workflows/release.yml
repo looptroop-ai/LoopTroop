@@ -527,18 +527,31 @@ jobs:
             out.end()
           '
 
-          mkdir -p release-assets
+          rm -rf release-assets && mkdir -p release-assets
           cp "${tarball}" "${bundle}" package-lock.json scripts/install.sh scripts/install.ps1 release-manifest.json checksums.sha256 release-assets/
           find . -maxdepth 1 -type f \( -name 'looptroop-*-linux-*.tar.gz' -o -name 'looptroop-*-darwin-*.tar.gz' -o -name 'looptroop-*-win-*.zip' \) -exec cp {} release-assets/ \;
+          node -e '
+            const fs = require("node:fs")
+            const manifest = JSON.parse(fs.readFileSync("release-manifest.json", "utf8"))
+            const expected = [...Object.keys(manifest.assets), "release-manifest.json"].sort()
+            const actual = fs.readdirSync("release-assets").sort()
+            const missing = expected.filter((name) => !actual.includes(name))
+            const extra = actual.filter((name) => !expected.includes(name))
+            if (missing.length || extra.length) {
+              if (missing.length) console.error(`::error::release-assets is missing: ${missing.join(", ")}`)
+              if (extra.length) console.error(`::error::release-assets has unexpected files: ${extra.join(", ")}`)
+              process.exit(1)
+            }
+          '
 
       - name: Upload the release artefacts
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
         with:
           name: release-artefacts
-          # Directory contents are stored relative to release-assets. Downloads
-          # therefore restore these files at the workspace root for consumers below.
+          # The wildcard makes release-assets the archive root. Downloads restore
+          # these files at the workspace root, matching consumers below.
           path: |
-            release-assets
+            release-assets/*
           if-no-files-found: error
           retention-days: 14
 

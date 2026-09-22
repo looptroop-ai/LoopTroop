@@ -29,14 +29,14 @@ describe.skipIf(process.platform === 'win32')('container build context', () => {
     const source = readFileSync(new URL(`../.github/workflows/${workflow}.yml`, import.meta.url), 'utf8')
     const command = workflow === 'container-republish'
       ? source.match(/if \[ -f scripts\/Dockerfile \]; then[\s\S]*?tar -cf - "\$\{context_files\[@\]\}" \| docker buildx build[^\n]*\\\n(?:[^\n]*\\\n)*\s+-(?=\n)/)?.[0]
-      : source.match(/tar -cf - scripts\/Dockerfile[^\n]*\| docker (?:buildx )?build[^\n]*\\\n(?:[^\n]*\\\n)*\s+-(?=\n)/)?.[0]
+      : source.match(/tar -cf - scripts\/Dockerfile[^\n]*\| docker (?:buildx )?build -f scripts\/Dockerfile[^\n]*\\\n(?:[^\n]*\\\n)*\s+-(?=\n)/)?.[0]
     expect(command).toBeDefined()
     const dockerfiles = workflow === 'container-republish'
       ? ['scripts/Dockerfile', 'Dockerfile']
       : ['scripts/Dockerfile']
     for (const dockerfile of dockerfiles) {
       const directory = freshDir()
-      mkdirSync(join(directory, 'scripts'), { recursive: true })
+      if (dockerfile === 'scripts/Dockerfile') mkdirSync(join(directory, 'scripts'), { recursive: true })
       writeFileSync(join(directory, dockerfile), 'FROM scratch\n')
       writeFileSync(join(directory, 'package-lock.json'), '{"lockfileVersion": 3}\n')
       writeFileSync(join(directory, 'looptroop-selected.tgz'), 'selected')
@@ -53,6 +53,24 @@ describe.skipIf(process.platform === 'win32')('container build context', () => {
       expect(result.stdout.trim().split('\n').sort()).toEqual([dockerfile, 'package-lock.json', 'looptroop-selected.tgz'].sort())
       expect(statSync(join(directory, 'context.tar')).size).toBeLessThan(32 * 1024)
     }
+  })
+
+  it('rejects a released tag with neither Dockerfile layout', () => {
+    const source = readFileSync(new URL('../.github/workflows/container-republish.yml', import.meta.url), 'utf8')
+    const command = source.match(/if \[ -f scripts\/Dockerfile \]; then[\s\S]*?tar -cf - "\$\{context_files\[@\]\}" \| docker buildx build[^\n]*\\\n(?:[^\n]*\\\n)*\s+-(?=\n)/)?.[0]
+    expect(command).toBeDefined()
+
+    const directory = freshDir()
+    writeFileSync(join(directory, 'package-lock.json'), '{"lockfileVersion": 3}\n')
+    writeFileSync(join(directory, 'looptroop-selected.tgz'), 'selected')
+    const result = spawnSync('bash', ['-euo', 'pipefail', '-c', `docker() { cat > context.tar; }; ${command}`], {
+      cwd: directory,
+      encoding: 'utf8',
+      env: { ...process.env, TARBALL: 'looptroop-selected.tgz', LOCKFILE: 'package-lock.json', VERSION: 'test', REVISION: 'test', GITHUB_SHA: 'test', PLATFORM: 'linux/amd64', DH_IMAGE: 'test', GHCR_IMAGE: 'test' },
+    })
+
+    expect(result.status).not.toBe(0)
+    expect(result.stdout).toContain('No Dockerfile at scripts/Dockerfile or Dockerfile in the released tag.')
   })
 })
 

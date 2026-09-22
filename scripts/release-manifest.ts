@@ -112,6 +112,7 @@ const assets: Record<string, { bytes: number, sha256: string, integrity?: string
   [basename(tarballPath)]: { bytes: bytes.length, sha256, integrity },
 }
 for (const path of extraAssets) {
+  // Manifest keys are public release basenames; source directories are not published names.
   const name = basename(path)
   if (name in assets) fail(`Two assets are both named ${name}; a release cannot attach either.`)
   assets[name] = digest(path)

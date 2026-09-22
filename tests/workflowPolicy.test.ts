@@ -221,10 +221,12 @@ describe('release workflow policy', () => {
     expect(scope).toContain('done <<< "${changed}"')
     expect(scope).not.toContain('< <(git diff')
 
-    const affected = executeWindowsScope(scope, ['scripts/smoke-lib.mjs'])
-    expect(affected.status).toBe(0)
-    expect(affected.output).toBe('affected=true\n')
-    expect(affected.stdout).toContain('Windows gate affected: true')
+    for (const path of ['scripts/smoke-lib.mjs', 'scripts/installer-core.mjs', 'scripts/smoke-installer.mjs']) {
+      const affected = executeWindowsScope(scope, [path])
+      expect(affected.status).toBe(0)
+      expect(affected.output).toBe('affected=true\n')
+      expect(affected.stdout).toContain('Windows gate affected: true')
+    }
 
     const unrelated = executeWindowsScope(scope, ['server/README.md'])
     expect(unrelated.status).toBe(0)
@@ -270,8 +272,14 @@ describe('release workflow policy', () => {
     expect(docker).toContain('chmod 0755 /opt/looptroop/lib/node_modules/looptroop/dist/server/cli/launcher.cjs')
     expect(docker).toContain('/usr/share/looptroop/image-package-versions.txt')
     const release = source.get('release.yml')!
+    const releaseBuild = release.slice(release.indexOf('  build:'), release.indexOf('  attest-release-assets:'))
+    expect(releaseBuild).toContain('rm -rf release-assets && mkdir -p release-assets')
+    expect(releaseBuild).toContain('release-assets is missing')
+    expect(releaseBuild).toContain('release-assets has unexpected files')
+    expect(releaseBuild).toContain('release-assets/*')
     const releaseContainer = release.slice(release.indexOf('  container-build:'), release.indexOf('  container-manifest:'))
     expect(releaseContainer).toContain('tar -cf - scripts/Dockerfile "${LOCKFILE}" "${TARBALL}"')
+    expect(releaseContainer).toContain('docker buildx build -f scripts/Dockerfile')
     expect(releaseContainer).toContain('image-package-versions-${ARCH}.txt')
     expect(releaseContainer).toContain('--assets-dir .')
     expect(release).toContain('subject-digest: ${{ needs.container-manifest.outputs.index_digest }}')
@@ -284,7 +292,8 @@ describe('release workflow policy', () => {
     expect(repairBuild).toContain('path: release-assets')
     expect(repairBuild).toContain('LOCKFILE: ${{ needs.prepare.outputs.lockfile }}')
     expect(repairBuild).toContain('if [ -f scripts/Dockerfile ]; then')
-    expect(repairBuild).toContain('test -f "${dockerfile}"')
+    expect(repairBuild).toContain('if ! test -f "${dockerfile}"; then')
+    expect(repairBuild).toContain('No Dockerfile at scripts/Dockerfile or Dockerfile in the released tag.')
     expect(repairBuild).toContain('context_files=("${dockerfile}" "${TARBALL}")')
     expect(repairBuild).toContain('context_files+=("${LOCKFILE}")')
     expect(repairBuild).toContain('build_args+=(--build-arg "LOCKFILE=${LOCKFILE}")')
@@ -296,6 +305,38 @@ describe('release workflow policy', () => {
     expect(repair).toContain("[ \"${inventory_status}\" -eq 42 ]")
     expect(repair).toContain('rm -f "${inventory}"\n            inventory="image-package-inventory-unavailable-${ARCH}.txt"')
     expect(repair).toContain('cat "${inventory}"')
+  })
+
+  it('keeps moved sources in their existing destination folders', () => {
+    const relocated = [
+      ['Dockerfile', 'scripts/Dockerfile'],
+      ['install.sh', 'scripts/install.sh'],
+      ['install.ps1', 'scripts/install.ps1'],
+      ['renovate.json', '.github/renovate.json'],
+      ['CONTRIBUTING.md', '.github/CONTRIBUTING.md'],
+      ['CODE_OF_CONDUCT.md', '.github/CODE_OF_CONDUCT.md'],
+      ['SECURITY.md', '.github/SECURITY.md'],
+      ['drizzle.app.config.ts', 'server/db/app.config.ts'],
+      ['drizzle.project.config.ts', 'server/db/project.config.ts'],
+    ] as const
+
+    for (const [oldPath, newPath] of relocated) {
+      expect(existsSync(join(repo, oldPath)), oldPath).toBe(false)
+      expect(existsSync(join(repo, newPath)), newPath).toBe(true)
+    }
+    for (const removed of ['drizzle.config.ts', 'tsconfig.node.json']) {
+      expect(existsSync(join(repo, removed)), removed).toBe(false)
+    }
+  })
+
+  it('keeps every Drizzle script config path valid', () => {
+    const packageJson = JSON.parse(readFileSync(join(repo, 'package.json'), 'utf8')) as {
+      scripts: Record<string, string>
+    }
+    for (const [name, command] of Object.entries(packageJson.scripts)) {
+      const config = command.match(/--config=(\S+)/)?.[1]
+      if (config) expect(existsSync(join(repo, config)), `${name}: ${config}`).toBe(true)
+    }
   })
 
   it('logs in each finished-image attestation job and disables storage records', () => {

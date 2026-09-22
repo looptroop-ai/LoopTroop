@@ -10,7 +10,7 @@
     "* 0-5 * * *"
   ],
   "prConcurrentLimit": 5,
-  "prHourlyLimit": 1,
+  "prHourlyLimit": 0,
   "labels": [
     "dependencies"
   ],
@@ -212,6 +212,15 @@
       ],
       "allowedVersions": "<25",
       "groupName": "node types",
+      "automerge": false
+    },
+    {
+      "description": "HOW TO REMOVE THIS CEILING: run `npm view typescript-eslint peerDependencies.typescript`. While it reads `>=4.8.4 <6.1.0`, the whole lint stack refuses any TypeScript at or above 6.1 and `npm ci` fails on the peer range, so Renovate must not offer one. The day that range widens, delete this rule — the ceiling exists only because of that peer, not because of anything in this repository. TypeScript 7 was already tried and reverted for exactly this reason (#101, closed 2026-08-25), and closing that pull request told Renovate to ignore every future 7.x, so 7 needs the dashboard's blocked entry ticked as well once the lint stack is ready. Without the ceiling the next ordinary minor is the problem, not the next major: this project is on 6.0.x and the peer stops below 6.1, so TypeScript 6.1 would arrive as a routine grouped update and break installation. Kept out of the dev tooling group so holding it back cannot stall unrelated updates.",
+      "matchPackageNames": [
+        "typescript"
+      ],
+      "allowedVersions": "<6.1.0",
+      "groupName": "typescript",
       "automerge": false
     },
     {

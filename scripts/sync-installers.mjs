@@ -213,7 +213,7 @@ const targets = [
   // the copy inside the core was stale.
   { path: CORE_PATH, content: coreNext },
   {
-    path: resolve(repoRoot, 'install.sh'),
+    path: resolve(repoRoot, 'scripts/install.sh'),
     blocks: [
       {
         begin: BEGIN,
@@ -244,7 +244,7 @@ const targets = [
     ],
   },
   {
-    path: resolve(repoRoot, 'install.ps1'),
+    path: resolve(repoRoot, 'scripts/install.ps1'),
     blocks: [
       {
         begin: BEGIN,

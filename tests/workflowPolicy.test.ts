@@ -127,7 +127,7 @@ describe('release workflow policy', () => {
       }
     }
 
-    const docker = readFileSync(join(repo, 'Dockerfile'), 'utf8')
+    const docker = readFileSync(join(repo, 'scripts', 'Dockerfile'), 'utf8')
     for (const match of docker.matchAll(/^\s*FROM\s+node:(\d+(?:\.\d+){0,2})(?=[-@])/gm)) {
       const found = match[1]
       if (!found) throw new Error('Dockerfile: Node version capture missing')
@@ -262,7 +262,7 @@ describe('release workflow policy', () => {
   })
 
   it('retains the release lockfile and image package-version evidence', () => {
-    const docker = readFileSync(join(repo, 'Dockerfile'), 'utf8')
+    const docker = readFileSync(join(repo, 'scripts', 'Dockerfile'), 'utf8')
     expect(docker).toContain('COPY ${LOCKFILE} ./package-lock.json')
     expect(docker).toContain('tar -xzf package.tgz --strip-components=1 -C /opt/looptroop/lib/node_modules/looptroop')
     expect(docker).toContain('npm ci --ignore-scripts --omit=dev')
@@ -271,7 +271,7 @@ describe('release workflow policy', () => {
     expect(docker).toContain('/usr/share/looptroop/image-package-versions.txt')
     const release = source.get('release.yml')!
     const releaseContainer = release.slice(release.indexOf('  container-build:'), release.indexOf('  container-manifest:'))
-    expect(releaseContainer).toContain('tar -cf - Dockerfile "${LOCKFILE}" "${TARBALL}"')
+    expect(releaseContainer).toContain('tar -cf - scripts/Dockerfile "${LOCKFILE}" "${TARBALL}"')
     expect(releaseContainer).toContain('image-package-versions-${ARCH}.txt')
     expect(releaseContainer).toContain('--assets-dir .')
     expect(release).toContain('subject-digest: ${{ needs.container-manifest.outputs.index_digest }}')

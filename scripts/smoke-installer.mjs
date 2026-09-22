@@ -88,10 +88,10 @@ try {
           // 5.1 defaults to a policy that refuses to run a script from a file;
           // pwsh accepts the flag too, so one argument list serves both.
           '-ExecutionPolicy', 'Bypass',
-          '-File', join(repoRoot, 'install.ps1'),
+          '-File', join(repoRoot, 'scripts', 'install.ps1'),
           ...options,
         ]]
-      : [toolPath('sh'), [join(repoRoot, 'install.sh'), ...options]]
+      : [toolPath('sh'), [join(repoRoot, 'scripts', 'install.sh'), ...options]]
   }
 
   /**

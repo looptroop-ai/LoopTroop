@@ -28,11 +28,12 @@ describe.skipIf(process.platform === 'win32')('container build context', () => {
   it.each(['ci', 'release', 'container-republish'])('%s sends only the selected tarball, lockfile and Dockerfile', (workflow) => {
     const source = readFileSync(new URL(`../.github/workflows/${workflow}.yml`, import.meta.url), 'utf8')
     const command = workflow === 'container-republish'
-      ? source.match(/context_files=\(Dockerfile[\s\S]*?tar -cf - "\$\{context_files\[@\]\}" \| docker buildx build \\\n(?:[^\n]*\\\n)*\s+-(?=\n)/)?.[0]
-      : source.match(/tar -cf - Dockerfile[^\n]*\| docker (?:buildx )?build \\\n(?:[^\n]*\\\n)*\s+-(?=\n)/)?.[0]
+      ? source.match(/context_files=\(scripts\/Dockerfile[\s\S]*?tar -cf - "\$\{context_files\[@\]\}" \| docker buildx build[^\n]*\\\n(?:[^\n]*\\\n)*\s+-(?=\n)/)?.[0]
+      : source.match(/tar -cf - scripts\/Dockerfile[^\n]*\| docker (?:buildx )?build[^\n]*\\\n(?:[^\n]*\\\n)*\s+-(?=\n)/)?.[0]
     expect(command).toBeDefined()
     const directory = freshDir()
-    writeFileSync(join(directory, 'Dockerfile'), 'FROM scratch\n')
+    mkdirSync(join(directory, 'scripts'), { recursive: true })
+    writeFileSync(join(directory, 'scripts', 'Dockerfile'), 'FROM scratch\n')
     writeFileSync(join(directory, 'package-lock.json'), '{"lockfileVersion": 3}\n')
     writeFileSync(join(directory, 'looptroop-selected.tgz'), 'selected')
     writeFileSync(join(directory, 'looptroop-old.tgz'), Buffer.alloc(1024 * 1024))
@@ -45,7 +46,7 @@ describe.skipIf(process.platform === 'win32')('container build context', () => {
     expect(result.error).toBeUndefined()
     expect(result.stderr).toBe('')
     expect(result.status).toBe(0)
-    expect(result.stdout.trim().split('\n').sort()).toEqual(['Dockerfile', 'package-lock.json', 'looptroop-selected.tgz'].sort())
+    expect(result.stdout.trim().split('\n').sort()).toEqual(['scripts/Dockerfile', 'package-lock.json', 'looptroop-selected.tgz'].sort())
     expect(statSync(join(directory, 'context.tar')).size).toBeLessThan(32 * 1024)
   })
 })

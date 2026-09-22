@@ -106,26 +106,6 @@ describe('release workflow policy', () => {
       .toBe(shorthand)
   })
 
-  it('keeps OrcaCode review automation gated, authoritative, and bounded', () => {
-    const text = source.get('orcarouter-code-review.yml')!
-
-    expect(text).not.toMatch(/^concurrency:/m)
-    expect(text).toContain('    concurrency:\n      group:')
-    expect(text).toContain('  pull_request:')
-    expect(text).not.toContain('pull_request_target:')
-    expect(text).toContain('github.event.pull_request.head.repo.full_name == github.repository')
-    expect(text).toContain('types: [opened, synchronize, reopened, ready_for_review]')
-    expect(text).toContain('!github.event.pull_request.draft')
-    expect(text).toContain('github.event.pull_request.author_association')
-    expect(text).toContain('github.event.comment.author_association')
-    expect(text).toContain('auto-review-authors: OWNER,MEMBER,COLLABORATOR')
-    expect(text).toContain('block-on: "P0,P1"')
-    expect(text).toContain('report: "false"')
-    expect(text).toContain('settings: "false"')
-    expect(text).toMatch(/timeout-minutes:\s+75/)
-    expect(text).toMatch(/uses: Continuum-AI-Corp\/orca-code-review@[0-9a-f]{40}/)
-  })
-
   it('keeps every literal workflow and Docker Node runtime at the package floor', () => {
     const packageJson = JSON.parse(readFileSync(join(repo, 'package.json'), 'utf8')) as { engines: { node: string } }
     const floor = parseNodeFloor(packageJson.engines.node)

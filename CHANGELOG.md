@@ -10,7 +10,7 @@ Unreleased changes appear first and represent commits that have not yet been inc
 > Changes merged since the last versioned release that have not yet shipped in a tagged version.
 
 ### Summary
-- Repository tooling and release sources now live under existing project folders while public installer and container contracts remain unchanged.
+- Repository tooling and release sources now live under existing project folders while historical release repair and public installer and container contracts remain unchanged.
 - `scoop install looptroop` works again, and a release now checks an install descriptor against the release it claims to ship before publishing it.
 - LoopTroop now requires Node 24.21.0 or newer.
 - Published documentation now describes the latest implemented behavior directly as live guidance.
@@ -260,6 +260,7 @@ Unreleased changes appear first and represent commits that have not yet been inc
 - Windows command-script argument checks now track quote state across arguments and reject percent expansions whose delimiters cross argument boundaries.
 - Installer recovery now proves lock owners have exited, leaves unverifiable executables untouched, rejects empty PowerShell values, and points Node users to `nvm install 24`.
 - Installer recovery now repairs a damaged executable only with independent daemon evidence, and release repairs retain their legacy lockfile and image-inventory paths.
+- Container image repair now selects the Dockerfile layout present in the released tag, so pre-layout releases remain repairable after the source moved under `scripts/`.
 - Embedded-runtime checks read the structured `doctor --json` Node version, while published binary upgrade guidance keeps its HTTPS-only curl recipe in sync.
 - Published documentation now records the runtime floors, Bash/zsh Yarn setup, and the current installer flag set.
 - The README Windows installer recipe now captures the complete `curl.exe` response before executing it as one PowerShell script block, matching the tested install catalog.

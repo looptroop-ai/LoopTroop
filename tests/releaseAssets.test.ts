@@ -37,6 +37,8 @@ function attachedFrom(source: ReleaseManifest) {
 
 describe('what a release is made of', () => {
   it('lists every asset that must be attached, the manifest included', () => {
+    // Manifest asset keys are basenames by contract; source files may move
+    // without changing the names users download from a release.
     expect(requiredAssets(manifest())).toEqual(
       ['install.ps1', 'install.sh', BUNDLE, TARBALL, MANIFEST_ASSET].sort(),
     )

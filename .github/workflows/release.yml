@@ -507,6 +507,8 @@ jobs:
           if [ "${#binaries[@]}" -eq 0 ]; then
             echo "::warning::Writing a manifest with no standalone binaries, by operator request."
           fi
+          # release:manifest stores asset keys by basename, so these source paths
+          # still publish the public installer names install.sh and install.ps1.
           npm run release:manifest -- "${tarball}" \
             --asset "${bundle}" --asset package-lock.json \
             --asset scripts/install.sh --asset scripts/install.ps1 \
@@ -533,6 +535,8 @@ jobs:
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
         with:
           name: release-artefacts
+          # Directory contents are stored relative to release-assets. Downloads
+          # therefore restore these files at the workspace root for consumers below.
           path: |
             release-assets
           if-no-files-found: error

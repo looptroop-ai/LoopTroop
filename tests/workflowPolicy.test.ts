@@ -139,20 +139,33 @@ describe('release workflow policy', () => {
 
   /**
    * The floor is a promise, and the only lanes that keep it are the ones
-   * running the exact version `engines.node` names. A literal here that drifted
-   * above the floor would leave the promise untested while still looking like
-   * it was covered, which is the whole failure this pair of lanes exists to
-   * prevent — so the literal is held to `engines.node` rather than trusted.
+   * running the exact version `engines.node` names. Three ways that promise
+   * can quietly stop being kept, so three assertions.
+   *
+   * The version can drift above the floor, leaving it untested while still
+   * looking covered. A platform can be dropped, which counting lanes would not
+   * notice — so the operating systems are asserted as a set rather than by
+   * number. And the lanes can be made advisory, which is worse than deleting
+   * them: `continue-on-error` reports success however the job went, so a
+   * required check pointed at one says nothing while still looking green.
    */
-  it('runs the declared floor, exactly, in the lanes named for it', () => {
+  it('runs the declared floor, exactly, on every platform, and blocks on it', () => {
     const packageJson = JSON.parse(readFileSync(join(repo, 'package.json'), 'utf8')) as { engines: { node: string } }
     const label = formatNodeVersion(parseNodeFloor(packageJson.engines.node))
     const ci = readFileSync(join(repo, '.github', 'workflows', 'ci.yml'), 'utf8')
 
-    const lanes = [...ci.matchAll(/^\s*node:\s*(\S+)\n\s*label:\s*declared floor$/gm)].map(([, node]) => node)
+    const lanes = [...ci.matchAll(/^\s*- os:\s*(\S+)\n\s*node:\s*(\S+)\n\s*label:\s*declared floor\n(\s*optional:\s*(\S+)\n)?/gm)]
+      .map(([, os, node, , optional]) => ({ os, node, optional }))
 
-    expect(lanes.length, 'declared floor lanes in ci.yml').toBeGreaterThan(0)
-    for (const node of lanes) expect(node).toBe(label)
+    expect(lanes.map((lane) => lane.os).sort(), 'declared floor platforms').toEqual([
+      'ubuntu-latest',
+      'windows-latest',
+    ])
+
+    for (const lane of lanes) {
+      expect(lane.node, `${lane.os}: declared floor version`).toBe(label)
+      expect(lane.optional, `${lane.os}: declared floor must block`).toBeUndefined()
+    }
   })
 
   it('pins only standalone binary jobs to Node 26.9.0 and blocks embedded-runtime app checks', () => {

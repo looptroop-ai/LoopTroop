@@ -159,24 +159,21 @@ jobs:
         run: npm audit --omit=dev || true
 
   test-matrix:
-    # The advisory marker is part of the name because the name is what branch
-    # protection matches on. A required check pointed at a continue-on-error job
-    # reports success however the job went, so the two must never be able to
-    # collide: "Test (windows-latest, Node 24)" naming a blocking lane in one
-    # commit and an advisory one in the next is a required check that quietly
-    # stops meaning anything.
+    # Every lane here blocks. There is deliberately no advisory lane and no
+    # `continue-on-error`: a required check pointed at a continue-on-error job
+    # reports success however the job went, so a lane that is blocking in one
+    # commit and advisory in the next is a required check that quietly stops
+    # meaning anything. `tests/workflowPolicy.test.ts` refuses an `optional`
+    # flag on the declared-floor lanes for that reason.
     #
-    # `matrix.label` rather than `matrix.node` for the same reason the required
-    # lanes no longer carry a version: a name branch protection matches on must
-    # not change when the thing it describes is bumped. The floor lanes are
-    # required and now keep one stable name across every floor move; the
-    # advisory lanes keep the version, because nothing requires them and a name
-    # that moves costs nothing there.
-    name: Test (${{ matrix.os }}, ${{ matrix.label }})${{ matrix.optional && ' [advisory]' || '' }}
+    # `matrix.label` rather than `matrix.node`: a name branch protection matches
+    # on must not change when the thing it describes is bumped. Both labels
+    # survive a version move — "toolchain floor" for the runtime this
+    # repository builds on, "declared floor" for the one `engines.node`
+    # promises to users.
+    name: Test (${{ matrix.os }}, ${{ matrix.label }})
     runs-on: ${{ matrix.os }}
     timeout-minutes: 30
-    # The floating lanes are compatibility news, not a defect in this commit.
-    continue-on-error: ${{ matrix.optional || false }}
     strategy:
       fail-fast: false
       matrix:
@@ -199,17 +196,19 @@ jobs:
           # above on purpose and is the only place the promise is exercised.
           # Without it the floor could name a release this code does not run on
           # — the shipped `node:sea` import needs 24.8 and nothing else says so.
-          # `tests/workflowPolicy.test.ts` holds this number to `engines.node`.
-          # Advisory: a required check must fail only for something this commit
-          # can fix, and an old runtime breaking is news about the floor itself.
+          # `tests/workflowPolicy.test.ts` holds these numbers to `engines.node`
+          # and holds this lane to both platforms.
+          #
+          # Blocking, not advisory. The floor is a promise made to users in
+          # `engines.node`, and a promise nothing can fail on is not one: a
+          # change that stopped working on the declared floor would otherwise
+          # merge green and reach exactly the people the floor was chosen for.
           - os: ubuntu-latest
-            node: 24.11.0
+            node: 24.15.0
             label: declared floor
-            optional: true
           - os: windows-latest
-            node: 24.11.0
+            node: 24.15.0
             label: declared floor
-            optional: true
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
       - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7

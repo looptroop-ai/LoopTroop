@@ -398,15 +398,24 @@ jobs:
           PLATFORM: linux/${{ matrix.arch }}
         run: |
           set -euo pipefail
+          if [ -f scripts/Dockerfile ]; then
+            dockerfile=scripts/Dockerfile
+          else
+            dockerfile=Dockerfile
+          fi
+          if ! test -f "${dockerfile}"; then
+            echo "::error::No Dockerfile at scripts/Dockerfile or Dockerfile in the released tag."
+            exit 1
+          fi
           test -f "${TARBALL}"
-          context_files=(Dockerfile "${TARBALL}")
+          context_files=("${dockerfile}" "${TARBALL}")
           build_args=(--build-arg "TARBALL=${TARBALL}")
           if [ -n "${LOCKFILE}" ]; then
             test -f "${LOCKFILE}"
             context_files+=("${LOCKFILE}")
             build_args+=(--build-arg "LOCKFILE=${LOCKFILE}")
           fi
-          tar -cf - "${context_files[@]}" | docker buildx build \
+          tar -cf - "${context_files[@]}" | docker buildx build -f "${dockerfile}" \
             --platform "${PLATFORM}" \
             "${build_args[@]}" \
             --build-arg VERSION="${VERSION}" \

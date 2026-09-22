@@ -43,12 +43,12 @@ describe('the Node floor is stated once', () => {
   // The launcher is covered by `cliLauncher.test.ts`, which runs its guard.
 
   it('is what both installer wrappers tell a reader to install', () => {
-    expect(read('install.sh')).toContain(`LoopTroop needs Node.js ${FLOOR_LABEL} or newer`)
-    expect(read('install.ps1')).toContain(`LoopTroop needs Node.js ${FLOOR_LABEL} or newer`)
-    expect(read('install.sh')).toContain('brew install node')
+    expect(read('scripts/install.sh')).toContain(`LoopTroop needs Node.js ${FLOOR_LABEL} or newer`)
+    expect(read('scripts/install.ps1')).toContain(`LoopTroop needs Node.js ${FLOOR_LABEL} or newer`)
+    expect(read('scripts/install.sh')).toContain('brew install node')
     // Not `node@<major>`: that formula is keg-only, so it installs Node without
     // putting it on PATH and the reader lands back on the same message.
-    expect(read('install.sh')).not.toContain(`brew install node@${FLOOR.major}`)
+    expect(read('scripts/install.sh')).not.toContain(`brew install node@${FLOOR.major}`)
   })
 
   /**
@@ -110,7 +110,7 @@ describe('the Node floor is stated once', () => {
   it('keeps the local runtime pin and documentation on the declared floor', () => {
     expect(read('.nvmrc').trim()).toBe(FLOOR_LABEL)
 
-    for (const file of ['README.md', 'CONTRIBUTING.md']) {
+    for (const file of ['README.md', '.github/CONTRIBUTING.md']) {
       const versions = [...read(file).matchAll(/\b\d+\.\d+(?:\.\d+)?\b/g)]
         .map(([version]) => version)
         .filter((version) => version.startsWith(`${FLOOR.major}.`))

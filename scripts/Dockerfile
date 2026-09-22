@@ -8,7 +8,7 @@
 # Build locally in a POSIX shell (bash, sh or similar):
 #   npm pack
 #   version="$(node -p 'require("./package.json").version')"
-#   tar -cf - Dockerfile package-lock.json "looptroop-${version}.tgz" | docker build \
+#   tar -cf - scripts/Dockerfile package-lock.json "looptroop-${version}.tgz" | docker build -f scripts/Dockerfile \
 #     --build-arg TARBALL="looptroop-${version}.tgz" \
 #     --build-arg LOCKFILE=package-lock.json \
 #     --build-arg VERSION="${version}" \

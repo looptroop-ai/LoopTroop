@@ -1,4 +1,8 @@
 import { describe, it, expect } from 'vitest'
+import { readFileSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs'
+import { spawnSync } from 'node:child_process'
+import { join } from 'node:path'
+import { tmpdir } from 'node:os'
 import {
   digestedAssets,
   manifestDifferences,
@@ -36,7 +40,32 @@ function attachedFrom(source: ReleaseManifest) {
 }
 
 describe('what a release is made of', () => {
+  it('records nested source assets under their public basename', () => {
+    const directory = mkdtempSync(join(tmpdir(), 'looptroop-release-manifest-'))
+    try {
+      const tarball = join(directory, TARBALL)
+      const source = join(directory, 'nested', 'install.sh')
+      const output = join(directory, 'release-manifest.json')
+      mkdirSync(join(directory, 'nested'))
+      writeFileSync(tarball, 'tarball')
+      writeFileSync(source, 'installer')
+
+      const result = spawnSync(process.execPath, [
+        'scripts/release-manifest.ts', tarball, '--asset', source, '--out', output,
+      ], { cwd: process.cwd(), encoding: 'utf8' })
+
+      expect(result.status).toBe(0)
+      const generated = JSON.parse(readFileSync(output, 'utf8')) as ReleaseManifest
+      expect(generated.assets).toHaveProperty('install.sh')
+      expect(generated.assets).not.toHaveProperty('nested/install.sh')
+    } finally {
+      rmSync(directory, { recursive: true, force: true })
+    }
+  })
+
   it('lists every asset that must be attached, the manifest included', () => {
+    // Manifest asset keys are basenames by contract; source files may move
+    // without changing the names users download from a release.
     expect(requiredAssets(manifest())).toEqual(
       ['install.ps1', 'install.sh', BUNDLE, TARBALL, MANIFEST_ASSET].sort(),
     )

@@ -15,6 +15,7 @@ looptroop-*-bundle.tar.gz
 dist-bundle/
 # Default --out of scripts/build-binary.mjs.
 dist-binary/
+release-assets/
 
 # Runtime/state for this app
 .looptroop/

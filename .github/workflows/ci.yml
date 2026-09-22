@@ -247,7 +247,8 @@ jobs:
           changed="$(git diff --name-only "${BASE_SHA}" "${HEAD_SHA}")"
           while IFS= read -r path; do
             case "${path}" in
-              .github/workflows/*|package.json|package-lock.json|install.sh|install.ps1|\
+              .github/workflows/*|package.json|package-lock.json|scripts/install.sh|scripts/install.ps1|\
+              scripts/installer-core.mjs|scripts/installer-core.d.mts|scripts/smoke-installer.mjs|\
               scripts/smoke-lib.mjs|scripts/smoke-lib.d.mts|scripts/smoke-published.mjs|scripts/smoke-published.d.mts|scripts/tool-path.ts|\
               server/lib/executablePath.ts|server/lib/__tests__/executablePath.test.ts|\
               tests/installer.test.ts|tests/smokePublished.test.ts)
@@ -407,7 +408,7 @@ jobs:
         run: |
           set -euo pipefail
           LOCKFILE=package-lock.json
-          tar -cf - Dockerfile "${LOCKFILE}" "${TARBALL}" | docker build \
+          tar -cf - scripts/Dockerfile "${LOCKFILE}" "${TARBALL}" | docker build -f scripts/Dockerfile \
             --build-arg TARBALL="${TARBALL}" \
             --build-arg LOCKFILE="${LOCKFILE}" \
             --build-arg VERSION="${VERSION}" \

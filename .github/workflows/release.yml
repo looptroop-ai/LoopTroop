@@ -507,9 +507,11 @@ jobs:
           if [ "${#binaries[@]}" -eq 0 ]; then
             echo "::warning::Writing a manifest with no standalone binaries, by operator request."
           fi
+          # release:manifest stores asset keys by basename, so these source paths
+          # still publish the public installer names install.sh and install.ps1.
           npm run release:manifest -- "${tarball}" \
             --asset "${bundle}" --asset package-lock.json \
-            --asset install.sh --asset install.ps1 \
+            --asset scripts/install.sh --asset scripts/install.ps1 \
             "${binaries[@]}"
           # Embedded JavaScript is single-quoted so the shell cannot expand its template literals.
           # shellcheck disable=SC2016
@@ -525,21 +527,31 @@ jobs:
             out.end()
           '
 
+          rm -rf release-assets && mkdir -p release-assets
+          cp "${tarball}" "${bundle}" package-lock.json scripts/install.sh scripts/install.ps1 release-manifest.json checksums.sha256 release-assets/
+          find . -maxdepth 1 -type f \( -name 'looptroop-*-linux-*.tar.gz' -o -name 'looptroop-*-darwin-*.tar.gz' -o -name 'looptroop-*-win-*.zip' \) -exec cp {} release-assets/ \;
+          node -e '
+            const fs = require("node:fs")
+            const manifest = JSON.parse(fs.readFileSync("release-manifest.json", "utf8"))
+            const expected = [...Object.keys(manifest.assets), "release-manifest.json"].sort()
+            const actual = fs.readdirSync("release-assets").sort()
+            const missing = expected.filter((name) => !actual.includes(name))
+            const extra = actual.filter((name) => !expected.includes(name))
+            if (missing.length || extra.length) {
+              if (missing.length) console.error(`::error::release-assets is missing: ${missing.join(", ")}`)
+              if (extra.length) console.error(`::error::release-assets has unexpected files: ${extra.join(", ")}`)
+              process.exit(1)
+            }
+          '
+
       - name: Upload the release artefacts
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
         with:
           name: release-artefacts
+          # The wildcard makes release-assets the archive root. Downloads restore
+          # these files at the workspace root, matching consumers below.
           path: |
-            looptroop-*.tgz
-            looptroop-*-bundle.tar.gz
-            looptroop-*-linux-*.tar.gz
-            looptroop-*-darwin-*.tar.gz
-            looptroop-*-win-*.zip
-            package-lock.json
-            install.sh
-            install.ps1
-            release-manifest.json
-            checksums.sha256
+            release-assets/*
           if-no-files-found: error
           retention-days: 14
 
@@ -564,22 +576,13 @@ jobs:
         uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8
         with:
           name: release-artefacts
+          path: release-assets
 
       # Verified with: gh attestation verify <file> --repo looptroop-ai/LoopTroop
       - name: Attest the release assets
         uses: actions/attest-build-provenance@4d101475d8b20a2381f78447822ac1eab6504dd8 # v4.2.2
         with:
-          subject-path: |
-            looptroop-*.tgz
-            looptroop-*-bundle.tar.gz
-            looptroop-*-linux-*.tar.gz
-            looptroop-*-darwin-*.tar.gz
-            looptroop-*-win-*.zip
-            package-lock.json
-            install.sh
-            install.ps1
-            release-manifest.json
-            checksums.sha256
+          subject-path: release-assets/*
 
   # ---------------------------------------------------------------------------
   # The last gate before anything is public.
@@ -1340,7 +1343,7 @@ jobs:
             exit 1
           fi
 
-          tar -cf - Dockerfile "${LOCKFILE}" "${TARBALL}" | docker buildx build \
+          tar -cf - scripts/Dockerfile "${LOCKFILE}" "${TARBALL}" | docker buildx build -f scripts/Dockerfile \
             --platform "${PLATFORM}" \
             --build-arg TARBALL="${TARBALL}" \
             --build-arg LOCKFILE="${LOCKFILE}" \

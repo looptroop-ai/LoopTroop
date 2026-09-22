@@ -19,6 +19,15 @@ const engines = (JSON.parse(read('package.json')) as { engines: { node: string }
 const FLOOR = parseNodeFloor(engines)
 const FLOOR_LABEL = formatNodeVersion(FLOOR)
 
+/**
+ * The runtime this repository is developed, built and shipped on, which is not
+ * the runtime users are held to. `engines.node` is the first LTS of the line —
+ * the oldest Node someone plausibly already has, and the only number a package
+ * feed can be relied on to offer. `.nvmrc` is the newest patch. They were one
+ * number until a release demanded a Node that had existed for nine days.
+ */
+const DEV_PIN = read('.nvmrc').trim()
+
 const INPUTS = {
   version: '9.9.9',
   url: 'https://github.com/looptroop-ai/LoopTroop/releases/download/v9.9.9/looptroop-9.9.9-bundle.tar.gz',
@@ -107,16 +116,38 @@ describe('the Node floor is stated once', () => {
     expect(renderAurPackage(INPUTS)['PKGBUILD']).toContain(`nodejs>=${FLOOR.major}`)
   })
 
-  it('keeps the local runtime pin and documentation on the declared floor', () => {
-    expect(read('.nvmrc').trim()).toBe(FLOOR_LABEL)
+  /**
+   * The direction is the invariant, not equality. A pin below the floor means
+   * nothing in CI ever ran the runtime users are promised, which is how a
+   * container built on 24.18.1 came up refusing its own launcher. A pin above
+   * it is the arrangement this repository wants.
+   */
+  it('keeps the local runtime pin at or above the declared floor', () => {
+    expect(satisfiesNodeFloor(parseNodeVersion(DEV_PIN), FLOOR)).toBe(true)
+  })
 
-    for (const file of ['README.md', 'CONTRIBUTING.md']) {
-      const versions = [...read(file).matchAll(/\b\d+\.\d+(?:\.\d+)?\b/g)]
+  /**
+   * Each document states one of the two numbers, and may not invent a third.
+   * README is read by someone deciding whether they can install this, so it
+   * states the floor. CONTRIBUTING is read by someone setting up a checkout, so
+   * it may state the pin as well.
+   */
+  it('states the floor in the README and no stray version in either document', () => {
+    const declared = (file: string) =>
+      [...read(file).matchAll(/\b\d+\.\d+(?:\.\d+)?\b/g)]
         .map(([version]) => version)
         .filter((version) => version.startsWith(`${FLOOR.major}.`))
-      expect(versions, file).toEqual(expect.arrayContaining([FLOOR_LABEL]))
-      expect(versions.every((version) => version === FLOOR_LABEL), file).toBe(true)
-    }
+
+    const readme = declared('README.md')
+    expect(readme, 'README.md').toEqual(expect.arrayContaining([FLOOR_LABEL]))
+    expect(readme.every((version) => version === FLOOR_LABEL), 'README.md').toBe(true)
+
+    const contributing = declared('CONTRIBUTING.md')
+    expect(contributing, 'CONTRIBUTING.md').toEqual(expect.arrayContaining([DEV_PIN]))
+    expect(
+      contributing.every((version) => version === DEV_PIN || version === FLOOR_LABEL),
+      'CONTRIBUTING.md',
+    ).toBe(true)
   })
 
   it('keeps the README Windows installer recipe aligned with the install catalog', () => {

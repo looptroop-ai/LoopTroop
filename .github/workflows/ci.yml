@@ -1100,7 +1100,7 @@ jobs:
     name: AUR package (arch)
     needs: [bundle]
     runs-on: ubuntu-latest
-    container: archlinux:latest
+    container: archlinux:latest@sha256:f3691b4dde62ba4c4b6f0ae2c1fbf28e8c0c8c4b9a35c7e06dc1f70e21aa29f6
     timeout-minutes: 20
     steps:
       # `--needed` so a re-run does not reinstall, and `nodejs` from Arch rather

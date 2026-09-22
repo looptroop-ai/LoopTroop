@@ -34,8 +34,8 @@ function parseVersion(raw) {
 // comparison can refuse a runtime while printing the wrong version to install.
 //
 // A prerelease of the floor is below it, which is how npm reads `engines.node`
-// and what `scripts/installer-core.mjs` already does: 24.21.0-nightly.0 comes
-// before 24.21.0 and does not carry its fixes.
+// and what `scripts/installer-core.mjs` already does: X.Y.Z-nightly.0 comes
+// before X.Y.Z and does not carry its fixes.
 function isSupported(raw) {
   var version = parseVersion(raw)
   if (version.major !== REQUIRED_MAJOR) return version.major > REQUIRED_MAJOR

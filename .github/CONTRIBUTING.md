@@ -121,12 +121,24 @@ arguments, while published smoke checks read `doctor --json`'s structured
 of display prose.
 
 Standalone binary jobs use Node `v26.9.0`'s native `--build-sea` builder. This is
-an embedded-runtime pin only: application, package and container jobs run the
-Node `24.21.0` toolchain pin from `.nvmrc`, which is above the `engines.node`
-floor users are held to rather than equal to it. If that embedded runtime changes, review Node's release
+an embedded-runtime pin only. Application, package and container jobs run the
+Node `24.21.0` toolchain pin from `.nvmrc`, which sits above the `engines.node`
+floor users are held to. If that embedded runtime changes, review Node's release
 schedule and security maintenance separately, and preserve the CommonJS asset
 bundle, disabled code cache and disabled snapshot settings across all four
 binary target lanes.
+
+Renovate never moves `engines.node`; it changes by hand, with a changelog entry.
+Before raising it, check that every place a user gets Node from already offers
+the new version:
+[winget](https://github.com/microsoft/winget-pkgs/tree/master/manifests/o/OpenJS/NodeJS/LTS),
+[Chocolatey](https://community.chocolatey.org/packages/nodejs-lts),
+[Scoop](https://github.com/ScoopInstaller/Main/blob/master/bucket/nodejs-lts.json)
+and [Homebrew](https://formulae.brew.sh/formula/node@24). winget can trail a Node
+release by weeks, and a floor above what it offers breaks the Windows install
+instructions. The floor cannot go below the oldest Node the npm in
+`packageManager` supports either, because the declared-floor test lanes install
+dependencies on it.
 
 ## Issues
 

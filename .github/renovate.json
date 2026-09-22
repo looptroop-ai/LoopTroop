@@ -251,7 +251,7 @@
       "automerge": false
     },
     {
-      "description": "A digest bump is the same Node on a rebuilt base and lands as an ordinary PR. A version bump is not: the base image is pinned to the floor in engines.node, and moving it alone would ship users a runtime nothing in CI ran. It has to travel with engines.node and .nvmrc on one branch.",
+      "description": "A digest bump is the same Node on a rebuilt base and lands as an ordinary PR. A version bump is not: the base image runs the toolchain pin in .nvmrc, and moving it alone would ship a runtime nothing in CI ran. It has to travel with .nvmrc and the workflow node-version literals on one branch; tests/workflowPolicy.test.ts holds all of them to .nvmrc. It does not travel with engines.node, which is the floor users are held to and deliberately lower.",
       "matchManagers": [
         "dockerfile"
       ],
@@ -266,7 +266,7 @@
       ]
     },
     {
-      "description": "The toolchain floor moves as one change or not at all. node and npm are each pinned in more than one place — .nvmrc, packageManager and the Dockerfile base image — and Renovate's managers treat those as unrelated dependencies. Without this they arrive as five separate pull requests, none of which is mergeable on its own: each ships a runtime or a package manager that nothing else in the repository agrees with. The version is also asserted across the workflows, packaging manifests and tests, so the grouped PR is still a starting point rather than a complete change. Digest-only refreshes of the base image are excluded: those are the same version on a rebuilt base and belong with the container group.",
+      "description": "The toolchain floor moves as one change or not at all. node and npm are each pinned in more than one place — .nvmrc, packageManager and the Dockerfile base image — and Renovate's managers treat those as unrelated dependencies. Without this they arrive as three separate pull requests, none of which is mergeable on its own: each ships a runtime or a package manager that nothing else in the repository agrees with. The Node version is also written as a literal in every workflow, which no Renovate manager edits, and tests/workflowPolicy.test.ts fails until those match .nvmrc, so the grouped PR is still a starting point rather than a complete change. engines.node is not part of this group: see the last rule. Digest-only refreshes of the base image are excluded: those are the same version on a rebuilt base and belong with the container group.",
       "matchPackageNames": [
         "node",
         "npm"
@@ -289,7 +289,10 @@
       ]
     },
     {
-      "description": "engines.node is the floor users are held to, not the runtime this repository develops on, and it is deliberately below .nvmrc, the Dockerfile base and every workflow. Grouping it with the toolchain is how it came to name a Node released fourteen days earlier: a package feed had not published that version yet, so the install command the documentation prints could not satisfy the requirement the installer then enforced. A user runs whatever Node their distribution, nvm or winget hands them. The floor moves by hand, when a Node major is dropped, with a release note. Later rules win, so this sits last; .nvmrc and packageManager are a different depType and keep flowing.",
+      "description": "engines.node is the floor users are held to, not the runtime this repository develops on, and it is deliberately below .nvmrc, the Dockerfile base and every workflow. Grouping it with the toolchain is how it came to name a Node released fourteen days earlier: a package feed had not published that version yet, so the install command the documentation prints could not satisfy the requirement the installer then enforced. A user runs whatever Node their distribution, nvm or winget hands them. The floor moves by hand, deliberately and with a release note: when a Node major is dropped, or when the oldest supported runtime can no longer build or run LoopTroop. Every engines entry is disabled, not only node, because any of them is a promise to users; an engines.npm left to this group was raised to an npm no Node release bundles. Later rules win, so this sits last; .nvmrc and packageManager are a different depType and keep flowing.",
+      "matchManagers": [
+        "npm"
+      ],
       "matchDepTypes": [
         "engines"
       ],

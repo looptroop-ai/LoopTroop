@@ -52,12 +52,12 @@ describe('the Node floor is stated once', () => {
   // The launcher is covered by `cliLauncher.test.ts`, which runs its guard.
 
   it('is what both installer wrappers tell a reader to install', () => {
-    expect(read('install.sh')).toContain(`LoopTroop needs Node.js ${FLOOR_LABEL} or newer`)
-    expect(read('install.ps1')).toContain(`LoopTroop needs Node.js ${FLOOR_LABEL} or newer`)
-    expect(read('install.sh')).toContain('brew install node')
+    expect(read('scripts/install.sh')).toContain(`LoopTroop needs Node.js ${FLOOR_LABEL} or newer`)
+    expect(read('scripts/install.ps1')).toContain(`LoopTroop needs Node.js ${FLOOR_LABEL} or newer`)
+    expect(read('scripts/install.sh')).toContain('brew install node')
     // Not `node@<major>`: that formula is keg-only, so it installs Node without
     // putting it on PATH and the reader lands back on the same message.
-    expect(read('install.sh')).not.toContain(`brew install node@${FLOOR.major}`)
+    expect(read('scripts/install.sh')).not.toContain(`brew install node@${FLOOR.major}`)
   })
 
   /**
@@ -142,11 +142,11 @@ describe('the Node floor is stated once', () => {
     expect(readme, 'README.md').toEqual(expect.arrayContaining([FLOOR_LABEL]))
     expect(readme.every((version) => version === FLOOR_LABEL), 'README.md').toBe(true)
 
-    const contributing = declared('CONTRIBUTING.md')
-    expect(contributing, 'CONTRIBUTING.md').toEqual(expect.arrayContaining([DEV_PIN]))
+    const contributing = declared('.github/CONTRIBUTING.md')
+    expect(contributing, '.github/CONTRIBUTING.md').toEqual(expect.arrayContaining([DEV_PIN]))
     expect(
       contributing.every((version) => version === DEV_PIN || version === FLOOR_LABEL),
-      'CONTRIBUTING.md',
+      '.github/CONTRIBUTING.md',
     ).toBe(true)
   })
 

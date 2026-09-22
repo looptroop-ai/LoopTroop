@@ -15,3 +15,10 @@ For app schema changes:
   npm run db:generate:app
   ```
   Then verify the output against `schema.ts` before committing.
+
+If you invoke Drizzle Kit directly, pass the config explicitly from the repository root, for example:
+
+```bash
+npx drizzle-kit check --config=server/db/app.config.ts
+npx drizzle-kit check --config=server/db/project.config.ts
+```

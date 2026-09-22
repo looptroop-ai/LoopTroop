@@ -11,10 +11,10 @@
 # never installs Node and never elevates.
 #
 # All of the actual work is in `scripts/installer-core.mjs`, copied verbatim
-# into the block at the bottom of this file — see install.sh for why.
+# into the block at the bottom of this file — see scripts/install.sh for why.
 # Every option `scripts/installer-core.mjs` accepts, in PowerShell's spelling.
 # -DryRun and -Help were missing, so two options the core has always parsed were
-# reachable through install.sh and simply absent here.
+# reachable through scripts/install.sh and simply absent here.
 param(
   [string]$Version,
   [string]$Tarball,
@@ -83,8 +83,9 @@ $core = @'
  *   node installer-core.mjs [--version X.Y.Z] [--tarball PATH] [--dry-run]
  *   node installer-core.mjs --binary [--prefix DIR]
  *
- * This is the whole installer. `install.sh` and `install.ps1` are wrappers that
- * find Node, write this file to a temporary directory and run it — everything
+ * This is the whole installer. `scripts/install.sh` and `scripts/install.ps1` are
+ * repository wrappers that publish as `install.sh` and `install.ps1`; they find
+ * Node, write this file to a temporary directory and run it — everything
  * that could get a decision wrong lives here, once, where it can be tested,
  * rather than twice in two shell dialects. `scripts/sync-installers.mjs`
  * copies this file into both wrappers and CI fails if a copy has drifted.
@@ -709,7 +710,7 @@ async function download(url, destination) {
  *
  * The body below is **generated** from `server/lib/executablePath.ts` by
  * `scripts/sync-installers.mjs`, with its TypeScript types stripped. This file
- * is embedded verbatim into `install.sh` and `install.ps1`, which run with no
+ * is embedded verbatim into `scripts/install.sh` and `scripts/install.ps1`, which run with no
  * repository present and so cannot import anything — and the previous answer to
  * that, a hand-written second copy, is exactly what drifted: the installer
  * searched `PATH` only and ignored the operator override, so the daemon and the

@@ -1235,8 +1235,8 @@ describe('bounded transfers', () => {
  * The resolver **as it is generated into the installer**, not as it is written.
  *
  * `scripts/sync-installers.mjs` strips `server/lib/executablePath.ts` into
- * `scripts/installer-core.mjs`, which then goes verbatim into `install.sh` and
- * `install.ps1`. These import from the core, so what is exercised is the copy
+ * `scripts/installer-core.mjs`, which then goes verbatim into `scripts/install.sh`
+ * and `scripts/install.ps1`. These import from the core, so what is exercised is the copy
  * that ships — the previous hand-written copy passed its own tests for four
  * releases while disagreeing with the daemon about which `npm` to run.
  *
@@ -1414,7 +1414,7 @@ describe('installer wrappers', () => {
    */
   it.runIf(process.platform !== 'win32')('parse as shell scripts', () => {
     for (const shell of ['sh', 'bash']) {
-      const result = spawnSync(shell, ['-n', join(repoRoot, 'install.sh')], { encoding: 'utf8' })
+      const result = spawnSync(shell, ['-n', join(repoRoot, 'scripts', 'install.sh')], { encoding: 'utf8' })
 
       expect(`${shell}: ${result.stderr}`).toBe(`${shell}: `)
       expect(`${shell}: ${result.status}`).toBe(`${shell}: 0`)
@@ -1429,7 +1429,7 @@ describe('installer wrappers', () => {
    */
   it('keep one delimited region per generated block, with balanced braces', () => {
     for (const wrapper of ['install.sh', 'install.ps1']) {
-      const source = readFileSync(join(repoRoot, wrapper), 'utf8')
+      const source = readFileSync(join(repoRoot, 'scripts', wrapper), 'utf8')
       const begins = source.match(/--- BEGIN [a-z-]+ \(generated/g) ?? []
       const ends = source.match(/--- END [a-z-]+ ---/g) ?? []
 
@@ -1454,8 +1454,8 @@ describe('installer wrappers', () => {
    * Windows for as long as both have existed.
    */
   it('forward every option the core accepts', () => {
-    const ps1 = readFileSync(join(repoRoot, 'install.ps1'), 'utf8')
-    const sh = readFileSync(join(repoRoot, 'install.sh'), 'utf8')
+    const ps1 = readFileSync(join(repoRoot, 'scripts', 'install.ps1'), 'utf8')
+    const sh = readFileSync(join(repoRoot, 'scripts', 'install.sh'), 'utf8')
     const forwardingStart = ps1.indexOf('  $forwarded = @()')
     const forwardingEnd = ps1.indexOf('  # So `-Help`')
     expect(forwardingStart).toBeGreaterThanOrEqual(0)
@@ -1502,7 +1502,7 @@ describe('installer wrappers', () => {
       'System32', 'WindowsPowerShell', 'v1.0', 'powershell.exe',
     )
     const run = (args: string[]) => spawnSync(powershell, [
-      '-NoProfile', '-NonInteractive', '-File', join(repoRoot, 'install.ps1'),
+      '-NoProfile', '-NonInteractive', '-File', join(repoRoot, 'scripts', 'install.ps1'),
       ...args,
     ], {
       cwd: repoRoot,
@@ -1543,7 +1543,7 @@ describe('installer wrappers', () => {
       ['install.sh', 'https://www.looptroop.ovh/install'],
       ['install.ps1', 'https://www.looptroop.ovh/install.ps1'],
     ]) {
-      const source = readFileSync(join(repoRoot, wrapper!), 'utf8')
+      const source = readFileSync(join(repoRoot, 'scripts', wrapper!), 'utf8')
       const guard = source.slice(source.indexOf('truncated in transit'))
 
       expect(`${wrapper}: ${guard.slice(0, 400).includes(url!)}`).toBe(`${wrapper}: true`)
@@ -1585,7 +1585,7 @@ describe('installer wrappers', () => {
 
     it('skips a relative entry and runs the real node', () => {
       const cwd = plantedDirectory()
-      const result = spawnSync('/bin/sh', [join(repoRoot, 'install.sh'), '--help'], {
+      const result = spawnSync('/bin/sh', [join(repoRoot, 'scripts', 'install.sh'), '--help'], {
         cwd,
         encoding: 'utf8',
         env: { HOME: cwd, PATH: `.:${dirname(process.execPath)}:/usr/bin:/bin`, LOOPTROOP_INSTALL_STYLE: 'ps1' },
@@ -1598,7 +1598,7 @@ describe('installer wrappers', () => {
 
     it('reports node missing when no PATH entry is absolute, rather than searching the current directory', () => {
       const cwd = plantedDirectory()
-      const result = spawnSync('/bin/sh', [join(repoRoot, 'install.sh'), '--help'], {
+      const result = spawnSync('/bin/sh', [join(repoRoot, 'scripts', 'install.sh'), '--help'], {
         cwd,
         encoding: 'utf8',
         env: { HOME: cwd, PATH: 'relative:.' },
@@ -1632,7 +1632,7 @@ describe('installer wrappers', () => {
         chmodSync(join(bin, name), 0o755)
       }
 
-      const child = spawn('sh', [join(repoRoot, 'install.sh'), ...args], {
+      const child = spawn('sh', [join(repoRoot, 'scripts', 'install.sh'), ...args], {
         env: { ...process.env, TMPDIR: temp, PATH: `${bin}:${process.env.PATH ?? ''}` },
         // Its own process group, so a signal aimed at the wrapper's pid is
         // aimed at the wrapper alone — which is the case `exec` used to cover

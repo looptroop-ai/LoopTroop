@@ -93,12 +93,12 @@
     "test:watch": "vitest",
     "typecheck": "tsc --noEmit && tsc --noEmit -p tsconfig.tests.json",
     "lint": "eslint .",
-    "db:generate": "drizzle-kit generate --config=drizzle.app.config.ts",
-    "db:generate:app": "drizzle-kit generate --config=drizzle.app.config.ts",
-    "db:generate:project": "drizzle-kit generate --config=drizzle.project.config.ts",
-    "db:push": "drizzle-kit push --config=drizzle.app.config.ts",
-    "db:push:app": "drizzle-kit push --config=drizzle.app.config.ts",
-    "db:push:project": "drizzle-kit push --config=drizzle.project.config.ts"
+    "db:generate": "drizzle-kit generate --config=server/db/app.config.ts",
+    "db:generate:app": "drizzle-kit generate --config=server/db/app.config.ts",
+    "db:generate:project": "drizzle-kit generate --config=server/db/project.config.ts",
+    "db:push": "drizzle-kit push --config=server/db/app.config.ts",
+    "db:push:app": "drizzle-kit push --config=server/db/app.config.ts",
+    "db:push:project": "drizzle-kit push --config=server/db/project.config.ts"
   },
   "dependencies": {
     "@hono/node-server": "^2.1.1",

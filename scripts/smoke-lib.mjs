@@ -8,8 +8,8 @@
  * four slightly different failure messages.
  *
  * What is *not* shared: `scripts/installer-core.mjs` carries its own copies of
- * some of this and keeps them. It is embedded verbatim into `install.sh` and
- * `install.ps1`, which have to be standalone single files — `curl … | sh`
+ * some of this and keeps them. It is embedded verbatim into `scripts/install.sh`
+ * and `scripts/install.ps1`, which have to be standalone single files — `curl … | sh`
  * cannot fetch a second one — so it can import nothing at all.
  *
  * Policy stays with the caller. Neither helper here chooses a timeout or

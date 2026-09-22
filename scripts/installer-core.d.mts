@@ -1,5 +1,5 @@
 /**
- * Types for `installer-core.mjs`, which is plain ESM because `install.sh`
+ * Types for `installer-core.mjs`, which is plain ESM because `scripts/install.sh`
  * downloads and runs it with nothing but Node — no build step, no loader.
  *
  * The tests import it as a module, so without this the whole file is `any` and
@@ -24,7 +24,7 @@ export interface Release {
   assets?: ReleaseAsset[]
 }
 
-/** What `install.sh` was asked to do. */
+/** What `scripts/install.sh` was asked to do. */
 export interface InstallerOptions {
   version: string | null
   tarball: string | null
@@ -47,9 +47,9 @@ export type Libc = 'glibc' | 'musl'
 
 /** One option, in the spelling each wrapper takes. */
 export interface InstallOption {
-  /** As the core parses it, and as `install.sh` forwards it. */
+  /** As the core parses it, and as `scripts/install.sh` forwards it. */
   sh: string
-  /** As `install.ps1` declares it in its `param` block. */
+  /** As `scripts/install.ps1` declares it in its `param` block. */
   ps: string
   /** The value placeholder, or null for a switch. */
   value: string | null
@@ -106,11 +106,11 @@ export interface StallGuard {
 }
 
 /**
- * The resolver generated into the core from `server/lib/executablePath.ts`.
+ * The resolver generated into `scripts/installer-core.mjs` from `server/lib/executablePath.ts`.
  *
  * Declared here rather than re-exported from the source module on purpose: what
  * these types describe is the *generated copy*, and a test that imports it is
- * exercising the code that ships inside `install.sh` rather than the code it was
+ * exercising the code that ships inside `scripts/install.sh` rather than the code it was
  * made from. `env`, `policyEnv` and `platform` are injectable so the Windows
  * rules can be tested off Windows.
  */

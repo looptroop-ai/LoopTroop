@@ -1,6 +1,6 @@
 import { defineConfig } from 'drizzle-kit'
 import { isAbsolute, resolve } from 'node:path'
-import { resolveAppConfigDir } from './server/lib/appConfigDir.js'
+import { resolveAppConfigDir } from '../lib/appConfigDir.js'
 
 function resolveAppDbPath(): string {
   const configuredDbPath = process.env.LOOPTROOP_APP_DB_PATH?.trim()

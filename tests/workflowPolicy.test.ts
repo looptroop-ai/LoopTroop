@@ -277,6 +277,13 @@ describe('release workflow policy', () => {
     expect(releaseBuild).toContain('release-assets is missing')
     expect(releaseBuild).toContain('release-assets has unexpected files')
     expect(releaseBuild).toContain('release-assets/*')
+    const releaseAttestation = release.slice(
+      release.indexOf('  attest-release-assets:'),
+      release.indexOf('  verify-artifact:'),
+    )
+    expect(releaseAttestation).toContain('path: release-assets')
+    expect(releaseAttestation).toContain('subject-path: release-assets/*')
+    expect(releaseAttestation).not.toContain('looptroop-*.tgz')
     const releaseContainer = release.slice(release.indexOf('  container-build:'), release.indexOf('  container-manifest:'))
     expect(releaseContainer).toContain('tar -cf - scripts/Dockerfile "${LOCKFILE}" "${TARBALL}"')
     expect(releaseContainer).toContain('docker buildx build -f scripts/Dockerfile')

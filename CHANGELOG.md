@@ -262,7 +262,7 @@ Unreleased changes appear first and represent commits that have not yet been inc
 - Installer recovery now proves lock owners have exited, leaves unverifiable executables untouched, rejects empty PowerShell values, and points Node users to `nvm install 24`.
 - Installer recovery now repairs a damaged executable only with independent daemon evidence, and release repairs retain their legacy lockfile and image-inventory paths.
 - Container image repair now selects the Dockerfile layout present in the released tag, so pre-layout releases remain repairable after the source moved under `scripts/`.
-- Release artefact staging now uploads a flat, manifest-checked set of files, so verification and publication jobs continue to consume the existing root-relative paths.
+- Release artefact staging now uploads a flat, manifest-checked set of files, and release attestation covers that complete staged set, so verification and publication jobs continue to consume the existing root-relative paths.
 - Embedded-runtime checks read the structured `doctor --json` Node version, while published binary upgrade guidance keeps its HTTPS-only curl recipe in sync.
 - Published documentation now records the runtime floors, Bash/zsh Yarn setup, and the current installer flag set.
 - The README Windows installer recipe now captures the complete `curl.exe` response before executing it as one PowerShell script block, matching the tested install catalog.

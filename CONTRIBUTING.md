@@ -123,8 +123,9 @@ arguments, while published smoke checks read `doctor --json`'s structured
 of display prose.
 
 Standalone binary jobs use Node `v26.9.0`'s native `--build-sea` builder. This is
-an embedded-runtime pin only: application, package and container jobs keep the
-Node `24.21.0` floor. If that embedded runtime changes, review Node's release
+an embedded-runtime pin only: application, package and container jobs run the
+Node `24.21.0` toolchain pin from `.nvmrc`, which is above the `engines.node`
+floor users are held to rather than equal to it. If that embedded runtime changes, review Node's release
 schedule and security maintenance separately, and preserve the CommonJS asset
 bundle, disabled code cache and disabled snapshot settings across all four
 binary target lanes.

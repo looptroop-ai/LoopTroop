@@ -31,6 +31,22 @@ function concreteVersion(value: string) {
   return parseNodeVersion(numeric)
 }
 
+const FLOOR = formatNodeVersion(parseNodeFloor((JSON.parse(readFileSync(join(repo, 'package.json'), 'utf8')) as {
+  engines: { node: string }
+}).engines.node))
+const TOOLCHAIN = formatNodeVersion(parseNodeVersion(readFileSync(join(repo, '.nvmrc'), 'utf8').trim()))
+/** The standalone builder's embedded runtime. Confined to binary jobs by the test that pins it. */
+const EMBEDDED_BUILDER = '26.9.0'
+const PLATFORMS = ['macos-latest', 'ubuntu-latest', 'windows-latest']
+
+type MatrixEntry = Record<string, unknown>
+
+/** The `include` entries of a job's matrix, as the parser reads them. */
+function matrixEntries(job: Job): MatrixEntry[] {
+  const include = (job as { strategy?: { matrix?: { include?: unknown } } }).strategy?.matrix?.include
+  return Array.isArray(include) ? include as MatrixEntry[] : []
+}
+
 function runs(job: Job): string {
   return (job.steps ?? []).map((step) => typeof step.run === 'string' ? step.run : '').join('\n')
 }
@@ -106,9 +122,20 @@ describe('release workflow policy', () => {
       .toBe(shorthand)
   })
 
-  it('keeps every literal workflow and Docker Node runtime at the package floor', () => {
-    const packageJson = JSON.parse(readFileSync(join(repo, 'package.json'), 'utf8')) as { engines: { node: string } }
-    const floor = parseNodeFloor(packageJson.engines.node)
+  /**
+   * The toolchain is stated once, in `.nvmrc`, and every other copy is held to
+   * it. That used to happen for free: the pin and `engines.node` were one
+   * number, so holding the copies to the floor held them to each other. Split
+   * apart, a lower bound would let the container, the toolchain lanes and the
+   * release jobs each drift to a different runtime while every test passed —
+   * Renovate moves `.nvmrc` and the Dockerfile, and nothing moves these.
+   *
+   * The only exceptions are named: the declared-floor lanes, which run the
+   * floor, and the standalone builder's embedded runtime, which the binary-job
+   * test below confines to those jobs.
+   */
+  it('holds every Node runtime literal to the toolchain pin, or to the floor where it says so', () => {
+    const toolchain = formatNodeVersion(parseNodeVersion(readFileSync(join(repo, '.nvmrc'), 'utf8').trim()))
 
     for (const [file, text] of source) {
       for (const match of text.matchAll(/^\s*node-version:\s*["']?(v?\d+(?:\.\d+){0,2})["']?(?=\s|$)/gm)) {
@@ -116,56 +143,88 @@ describe('release workflow policy', () => {
         if (!found) throw new Error(`${file}: node-version capture missing`)
         const parsed = concreteVersion(found)
         if (parsed === null) continue
-        expect(satisfiesNodeFloor(parsed, floor), `${file}: node-version ${found}`).toBe(true)
+        expect([toolchain, EMBEDDED_BUILDER], `${file}: node-version ${found}`).toContain(formatNodeVersion(parsed))
       }
-      for (const match of text.matchAll(/^\s*node:\s*["']?(v?\d+(?:\.\d+){0,2})["']?(?=\s|$)/gm)) {
-        const found = match[1]
-        if (!found) throw new Error(`${file}: matrix node capture missing`)
-        const parsed = concreteVersion(found)
-        if (parsed === null) continue
-        expect(satisfiesNodeFloor(parsed, floor), `${file}: matrix node ${found}`).toBe(true)
+    }
+
+    for (const [file, workflow] of workflows) {
+      for (const [name, job] of Object.entries(workflow.jobs ?? {})) {
+        for (const entry of matrixEntries(job)) {
+          if (entry.node === undefined) continue
+          const parsed = concreteVersion(String(entry.node))
+          if (parsed === null) continue
+          const expected = entry.label === 'declared floor' ? FLOOR : toolchain
+          expect(formatNodeVersion(parsed), `${file}: ${name} matrix node (${String(entry.label)})`).toBe(expected)
+        }
       }
     }
 
     const docker = readFileSync(join(repo, 'scripts', 'Dockerfile'), 'utf8')
-    for (const match of docker.matchAll(/^\s*FROM\s+node:(\d+(?:\.\d+){0,2})(?=[-@])/gm)) {
-      const found = match[1]
-      if (!found) throw new Error('Dockerfile: Node version capture missing')
-      const parsed = concreteVersion(found)
-      if (parsed === null) continue
-      expect(satisfiesNodeFloor(parsed, floor), `Dockerfile: node ${found}`).toBe(true)
-    }
+    const bases = [...docker.matchAll(/^\s*FROM\s+node:(\d+\.\d+\.\d+)(?=[-@])/gm)].map(([, version]) => version)
+    expect(bases.length, 'Dockerfile Node base images').toBeGreaterThan(0)
+    for (const base of bases) expect(base, 'Dockerfile FROM node:').toBe(toolchain)
   })
 
   /**
    * The floor is a promise, and the only lanes that keep it are the ones
-   * running the exact version `engines.node` names. Three ways that promise
-   * can quietly stop being kept, so three assertions.
+   * running the exact version `engines.node` names. Four ways that promise can
+   * quietly stop being kept.
    *
-   * The version can drift above the floor, leaving it untested while still
-   * looking covered. A platform can be dropped, which counting lanes would not
-   * notice — so the operating systems are asserted as a set rather than by
-   * number. And the lanes can be made advisory, which is worse than deleting
-   * them: `continue-on-error` reports success however the job went, so a
-   * required check pointed at one says nothing while still looking green.
+   * The version can drift, leaving the floor untested while still looking
+   * covered. A platform can be dropped, which counting lanes would not notice,
+   * so the operating systems are asserted as a set. And the lanes can be made
+   * advisory in two places — an `optional` entry or a job-level
+   * `continue-on-error` — which is worse than deleting them: `continue-on-error`
+   * reports success however the job went. Read from the parsed workflow, so no
+   * key order or inserted key can hide either.
    */
   it('runs the declared floor, exactly, on every platform, and blocks on it', () => {
-    const packageJson = JSON.parse(readFileSync(join(repo, 'package.json'), 'utf8')) as { engines: { node: string } }
-    const label = formatNodeVersion(parseNodeFloor(packageJson.engines.node))
-    const ci = readFileSync(join(repo, '.github', 'workflows', 'ci.yml'), 'utf8')
+    const job = workflows.get('ci.yml')?.jobs?.['test-matrix']
+    if (!job) throw new Error('ci.yml: test-matrix job missing')
+    expect(Object.hasOwn(job, 'continue-on-error'), 'test-matrix continue-on-error').toBe(false)
 
-    const lanes = [...ci.matchAll(/^\s*- os:\s*(\S+)\n\s*node:\s*(\S+)\n\s*label:\s*declared floor\n(\s*optional:\s*(\S+)\n)?/gm)]
-      .map(([, os, node, , optional]) => ({ os, node, optional }))
-
-    expect(lanes.map((lane) => lane.os).sort(), 'declared floor platforms').toEqual([
-      'ubuntu-latest',
-      'windows-latest',
-    ])
+    const lanes = matrixEntries(job).filter((entry) => entry.label === 'declared floor')
+    expect(lanes.map((lane) => String(lane.os)).sort(), 'declared floor platforms').toEqual(PLATFORMS)
 
     for (const lane of lanes) {
-      expect(lane.node, `${lane.os}: declared floor version`).toBe(label)
-      expect(lane.optional, `${lane.os}: declared floor must block`).toBeUndefined()
+      const version = concreteVersion(String(lane.node))
+      expect(version && formatNodeVersion(version), `${String(lane.os)}: declared floor version`).toBe(FLOOR)
+      expect(Object.hasOwn(lane, 'optional'), `${String(lane.os)}: declared floor must block`).toBe(false)
     }
+  })
+
+  /**
+   * The only job that installs LoopTroop the way a user does: built with the
+   * toolchain, then packed and installed on the floor with the npm that Node
+   * ships. Its value is entirely in the order of its steps. A `pin-npm.mjs`
+   * after the switch would quietly install the repository's npm again — which
+   * is exactly how an `engines.npm` no Node bundles once passed every lane.
+   */
+  it('installs the package on the declared floor with the npm that Node ships, on every platform', () => {
+    const job = workflows.get('ci.yml')?.jobs?.['smoke-install'] as (Job & {
+      'continue-on-error'?: unknown
+      strategy?: { matrix?: { os?: unknown } }
+    }) | undefined
+    if (!job) throw new Error('ci.yml: smoke-install job missing')
+    expect(Object.hasOwn(job, 'continue-on-error'), 'smoke-install continue-on-error').toBe(false)
+    expect([...(job.strategy?.matrix?.os as string[] ?? [])].sort(), 'smoke-install platforms').toEqual(PLATFORMS)
+
+    const steps = (job.steps ?? []) as Array<Step & { id?: unknown; with?: Record<string, unknown> }>
+    const text = (step: Step) => typeof step.run === 'string' ? step.run : ''
+    const setups = steps.flatMap((step, index) => String(step.uses ?? '').startsWith('actions/setup-node@') ? [index] : [])
+    expect(setups.length, 'smoke-install setup-node steps').toBe(2)
+    const [build, floor] = setups as [number, number]
+
+    expect(String(steps[build]?.with?.['node-version'])).not.toContain('steps.floor')
+    expect(steps.findIndex((step) => step.id === 'floor'), 'floor is read before switching to it').toBeLessThan(floor)
+    expect(steps[floor]?.with?.['node-version']).toBe('${{ steps.floor.outputs.node }}')
+
+    const pins = steps.flatMap((step, index) => text(step).includes('scripts/pin-npm.mjs') ? [index] : [])
+    expect(pins.length, 'pin-npm before the dependency install').toBeGreaterThan(0)
+    for (const pin of pins) expect(pin, 'no npm pin after switching to the floor').toBeLessThan(floor)
+
+    const smoke = steps.findIndex((step) => text(step).includes('node scripts/smoke-install.mjs'))
+    expect(smoke, 'the smoke runs on the floor runtime').toBeGreaterThan(floor)
   })
 
   it('pins only standalone binary jobs to Node 26.9.0 and blocks embedded-runtime app checks', () => {
@@ -178,7 +237,7 @@ describe('release workflow policy', () => {
       const binary = text.slice(start, end)
 
       expect(binary, `${file}: binary runtime`).toContain('node-version: 26.9.0')
-      expect(binary, `${file}: binary runtime`).not.toContain('node-version: 24.21.0')
+      expect(binary, `${file}: binary runtime`).not.toContain(`node-version: ${TOOLCHAIN}`)
       expect(binary, `${file}: embedded-runtime check`).toContain('Run blocking application checks on the embedded runtime')
       expect(binary, `${file}: embedded-runtime check`).toContain('doctor --json')
       expect(binary, `${file}: embedded-runtime check`).toContain('nodeCheck?.node?.version')

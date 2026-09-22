@@ -192,23 +192,26 @@ jobs:
           - os: windows-latest
             node: 24.21.0
             label: toolchain floor
-          # The oldest Node `engines.node` promises, which is below the lanes
-          # above on purpose and is the only place the promise is exercised.
-          # It earned its place on its first run: at a floor of 24.11.0 it went
-          # red on a real defect, not a test artefact. `rmSync(path,
-          # { recursive: true, force: true })` silently fails to remove a
-          # dangling symlink before Node 24.14.0, so
-          # `clearExecutionSetupRuntimeArtifacts` left stale aliases behind on
-          # every runtime the floor then allowed. Nothing else in this
-          # repository would have noticed.
-          # `tests/workflowPolicy.test.ts` holds these numbers to `engines.node`
-          # and holds this lane to both platforms.
+          # The oldest Node `engines.node` promises, below the lanes above on
+          # purpose. These and the install smoke are the only jobs that run it.
+          # Every platform, for the same reason as the toolchain lanes.
           #
-          # Blocking, not advisory. The floor is a promise made to users in
-          # `engines.node`, and a promise nothing can fail on is not one: a
-          # change that stopped working on the declared floor would otherwise
-          # merge green and reach exactly the people the floor was chosen for.
+          # It cannot go lower than 24.15.0 while this repository needs npm 12:
+          # npm 12 declares `^24.15.0`, so dependencies cannot be installed on
+          # anything older. The application itself is not the limit. Running
+          # the suite on 24.11.0 by hand found one real defect there, fixed in
+          # Node 24.13.1: `rmSync(path, { recursive: true, force: true })` did
+          # not remove a dangling symlink, so `clearExecutionSetupRuntimeArtifacts`
+          # left stale aliases behind.
+          #
+          # No `continue-on-error`, so a failure here is reported as one. It
+          # blocks merging once these names are in the required checks for
+          # `main`. `tests/workflowPolicy.test.ts` holds the versions to
+          # `engines.node` and the platforms to all three.
           - os: ubuntu-latest
+            node: 24.15.0
+            label: declared floor
+          - os: macos-latest
             node: 24.15.0
             label: declared floor
           - os: windows-latest
@@ -331,11 +334,15 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        # Exact floor everywhere: a global install is exactly where the oldest
-        # Node the package claims to support has to work.
+        # A global install is exactly where the oldest Node the package claims
+        # to support has to work, and on every platform: it is the path the
+        # install scripts and `npm install -g` both take.
         os: [ubuntu-latest, macos-latest, windows-latest]
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+
+      # Built the way every other job builds — the toolchain Node and npm 12 —
+      # so the dependency install keeps its install-script policy.
       - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7
         with:
           node-version: 24.21.0
@@ -351,10 +358,31 @@ jobs:
       - name: Build application
         run: npm run build
 
+      - name: Read the declared floor
+        id: floor
+        shell: bash
+        run: >-
+          node --input-type=module -e "import { formatNodeVersion, parseNodeFloor } from './shared/nodeFloor.ts';
+          import { readFileSync } from 'node:fs';
+          console.log('node=' + formatNodeVersion(parseNodeFloor(JSON.parse(readFileSync('package.json', 'utf8')).engines.node)))"
+          >> "$GITHUB_OUTPUT"
+
+      # Then installed the way a user installs it: the oldest Node `engines.node`
+      # accepts, with the npm that Node ships. Nothing after this point may pin
+      # npm. Every job used to, which is how `engines.npm` came to name an npm no
+      # Node release has ever bundled while every lane stayed green.
+      # `tests/workflowPolicy.test.ts` holds this job to that order.
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7
+        with:
+          node-version: ${{ steps.floor.outputs.node }}
+
       # The script mocks OpenCode itself, packs into its own scratch tree, and
       # tears the whole thing down in a `finally`.
       - name: Pack, install globally, and drive the CLI
-        run: node scripts/smoke-install.mjs
+        shell: bash
+        run: |
+          echo "Installing on node $(node --version) with its bundled npm $(npm --version)"
+          node scripts/smoke-install.mjs
 
   # The image is a release channel like the tarball, and nothing above ever
   # builds it. Without this job a Dockerfile that stopped building, or an image
@@ -862,7 +890,8 @@ jobs:
       - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7
         with:
           # Node 26.9.0 is the standalone builder runtime. Package, npm and
-          # container jobs deliberately keep the Node 24.21.0 application floor.
+          # container jobs keep the `.nvmrc` toolchain pin, which is above the
+          # `engines.node` floor users are held to.
           node-version: 26.9.0
           cache: npm
 
@@ -1034,64 +1063,6 @@ jobs:
       - name: Validate the manifests, install, run, and uninstall
         shell: bash
         run: node scripts/smoke-winget.ts --archive "$(ls "${RUNNER_TEMP}"/binary/*.zip)"
-
-  # The one job that runs no `pin-npm.mjs`, and the only reason it exists.
-  #
-  # Every other job installs the npm named by `packageManager` before it does
-  # anything, and the container does the same from its own Dockerfile. That is
-  # correct for building this repository and wrong for judging what a user has:
-  # it meant `engines.npm` could name — and for several releases did name — an
-  # npm no Node has ever bundled, while every lane went green because each had
-  # quietly installed it first. The published install smoke was repairing the
-  # precondition it existed to test.
-  #
-  # So this job installs nothing. `tests/installScriptPolicy.test.ts` requires
-  # `pin-npm.mjs` before a dependency install, and there is no dependency
-  # install here to require it before.
-  install-floor:
-    name: Install floor (ubuntu)
-    runs-on: ubuntu-latest
-    timeout-minutes: 10
-    steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
-
-      - name: Read the declared floor
-        id: floor
-        shell: bash
-        run: |
-          node -e "const e=require('./package.json').engines;const m=/^>=\s*v?(\d+\.\d+\.\d+)$/.exec(e.node);if(!m)throw new Error('engines.node is not an exact floor: '+e.node);console.log('node='+m[1])" >> "$GITHUB_OUTPUT"
-
-      # The exact label, never a range. A range resolves to the newest matching
-      # release, which is the toolchain pin again and proves nothing. This step
-      # also fails outright when the floor names a version Node never published
-      # or a runner cannot fetch, which is the other half of the promise.
-      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7
-        with:
-          node-version: ${{ steps.floor.outputs.node }}
-
-      - name: Every declared floor is met by that runtime and the npm it bundles
-        shell: bash
-        run: |
-          node --input-type=module -e '
-            import { satisfiesFloor } from "./scripts/installer-core.mjs"
-            import { execFileSync } from "node:child_process"
-            import { readFileSync } from "node:fs"
-
-            const engines = JSON.parse(readFileSync("package.json", "utf8")).engines
-            const have = {
-              node: process.versions.node,
-              npm: execFileSync("npm", ["--version"], { encoding: "utf8" }).trim(),
-            }
-
-            for (const [tool, floor] of Object.entries(engines)) {
-              if (!(tool in have)) throw new Error(`engines.${tool} names a tool this job cannot check`)
-              if (!satisfiesFloor(have[tool], floor)) {
-                throw new Error(`engines.${tool} is ${floor}, but the declared Node floor ships ${tool} ${have[tool]}`)
-              }
-            }
-
-            console.log(`node ${have.node} with npm ${have.npm} meets ${JSON.stringify(engines)}`)
-          '
 
   # Sufficient rather than merely cheaper: the defect this catches is code
   # choosing to write inside its own installation directory, and the code making

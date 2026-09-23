@@ -400,6 +400,8 @@ describe('installer core', () => {
       expectExit(result, 1)
       expect(result.stderr).toContain('needs Node >=99.0.0')
       expect(result.stderr).toContain('will not install Node for you')
+      // The install hint names the floor's own major, not a literal one.
+      if (process.platform === 'linux') expect(result.stderr).toContain('nvm install 99 ')
     } finally {
       engines = null
     }

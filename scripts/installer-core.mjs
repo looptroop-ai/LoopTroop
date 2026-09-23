@@ -83,10 +83,14 @@ const MAX_ASSET_BYTES = 512 * 1024 * 1024
  * PATH" message with Node installed. `brew install node` is linked, and is
  * always at or above a floor that names a released major.
  */
-function nodeHelp(platform) {
+function nodeHelp(platform, floor) {
   if (platform === 'darwin') return 'brew install node   (or download from https://nodejs.org/)'
   if (platform === 'win32') return 'winget install OpenJS.NodeJS.LTS   (or download from https://nodejs.org/)'
-  return 'nvm install 24   (https://github.com/nvm-sh/nvm)'
+  // The major the release's own floor names, not one written here: after the
+  // floor moved to a new major, a literal would send readers to install a Node
+  // the release then refuses. `--lts` only if the floor cannot be read at all.
+  const major = /^\s*(?:>=\s*)?v?(\d+)\./.exec(String(floor))?.[1]
+  return `nvm install ${major ?? '--lts'}   (https://github.com/nvm-sh/nvm)`
 }
 
 /**
@@ -2114,7 +2118,7 @@ function checkRuntime(engines) {
   if (engines.node && !satisfiesFloor(process.versions.node, engines.node)) {
     fail(
       `LoopTroop needs Node ${engines.node}; this is ${process.versions.node}.`,
-      nodeHelp(process.platform),
+      nodeHelp(process.platform, engines.node),
       'LoopTroop will not install Node for you.',
     )
   }

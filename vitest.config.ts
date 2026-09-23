@@ -302,6 +302,10 @@ export default defineConfig({
   },
   test: {
     globals: true,
+    // Every mock's call history is cleared before each test, so no test can
+    // pass or fail on calls an earlier one recorded. Vitest 5 made this the
+    // default; it is stated here so the choice survives the next default.
+    clearMocks: true,
     projects: [
       {
         extends: true,

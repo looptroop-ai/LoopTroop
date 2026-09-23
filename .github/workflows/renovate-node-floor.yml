@@ -20,6 +20,11 @@
 # a floor winget did not have yet). That covers a floor moved by hand as well,
 # and a required check is the only kind that can stop a merge.
 #
+# Renovate merges the pull request itself once every required check passes, so
+# nobody has to remember it. That needs one more thing: when a feed catches up,
+# nothing about the pull request changes, so nothing would run Verify again.
+# `recheck` does, every day, until the pull request is green or gone.
+#
 # Nothing here installs dependencies. Both scripts use Node built-ins only, so
 # no dependency's install script runs in these jobs either.
 #
@@ -30,12 +35,17 @@ name: Renovate node floor
 on:
   pull_request:
     types: [opened, synchronize, reopened]
+  # For `recheck`: after Renovate's own run, which .github/renovate.json
+  # schedules for 00:00-05:59 in Bucharest.
+  schedule:
+    - cron: '17 7 * * *'
+  workflow_dispatch:
 
 permissions:
   contents: read
 
 concurrency:
-  group: renovate-node-floor-${{ github.head_ref }}
+  group: renovate-node-floor-${{ github.head_ref || github.event_name }}
   cancel-in-progress: true
 
 jobs:
@@ -272,3 +282,43 @@ jobs:
           GIT_CONFIG_KEY_0='http.https://github.com/.extraHeader' \
           GIT_CONFIG_VALUE_0="AUTHORIZATION: basic ${credential}" \
             git -c core.hooksPath=/dev/null push origin "HEAD:${HEAD_REF}"
+
+  # Re-runs whatever failed on the open floor pull request's head, in any
+  # workflow: Verify while a feed was late, and a flaky lane just the same,
+  # since either one holds up the automatic merge. A check that fails for a real
+  # reason fails again, and the pull request stays open; nothing merges red.
+  # No checkout and no secret: it reads run results and asks for re-runs.
+  recheck:
+    name: Re-run what failed on the floor pull request
+    if: github.event_name != 'pull_request'
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      actions: write
+      contents: read
+      pull-requests: read
+    steps:
+      - name: Re-run the failed runs
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          head=$(gh pr list --head renovate/node-floor --state open \
+            --json headRefOid,isCrossRepository,author \
+            --jq '[.[] | select((.isCrossRepository | not) and (.author.login == "app/renovate" or .author.login == "renovate[bot]"))][0].headRefOid // empty')
+          if [ -z "${head}" ]; then
+            echo "No open Node floor pull request."
+            exit 0
+          fi
+          failed=$(gh run list --commit "${head}" --limit 100 --json databaseId,status,conclusion \
+            --jq '.[] | select(.status == "completed" and (.conclusion == "failure" or .conclusion == "timed_out")) | .databaseId')
+          if [ -z "${failed}" ]; then
+            echo "Nothing has failed on ${head}."
+            exit 0
+          fi
+          for run in ${failed}; do
+            echo "Re-running the failed jobs of run ${run} on ${head}."
+            gh run rerun "${run}" --failed || echo "::warning::Could not re-run run ${run}."
+          done

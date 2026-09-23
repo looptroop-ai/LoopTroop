@@ -18,6 +18,9 @@
   "rangeStrategy": "bump",
   "minimumReleaseAge": "7 days",
   "internalChecksFilter": "strict",
+  "gitIgnoredAuthors": [
+    "41898282+github-actions[bot]@users.noreply.github.com"
+  ],
   "postUpdateOptions": [
     "npmDedupe"
   ],
@@ -289,7 +292,7 @@
       ]
     },
     {
-      "description": "The Node floor users are held to follows the newest Node release that has been out for 90 days, within the same major. It is not the toolchain: .nvmrc and the Dockerfile base take a release after seven days, while engines.node promises the oldest Node a user may run, and raising it refuses everyone below the new number on their next upgrade. Tying the two together is how the floor once named a Node fourteen days old that winget did not offer (#135). 90 days sits above the ~50 days winget has trailed Node, and the required Verify check in ci.yml refuses any pull request that changes the floor until every install feed offers it. .github/workflows/renovate-node-floor.yml writes the floor into its other copies, which this rule cannot. internalChecksFilter is strict, so a release younger than 90 days is skipped in favour of the newest one that is old enough. Later rules win, so this sits after the toolchain group.",
+      "description": "The Node floor users are held to follows the newest Node release that has been out for 90 days, within the same major. It is not the toolchain: .nvmrc and the Dockerfile base take a release after seven days, while engines.node promises the oldest Node a user may run, and raising it refuses everyone below the new number on their next upgrade. Tying the two together is how the floor once named a Node fourteen days old that winget did not offer (#135). 90 days sits above the ~50 days winget has trailed Node, and the required Verify check in ci.yml refuses any pull request that changes the floor until every install feed offers it. .github/workflows/renovate-node-floor.yml writes the floor into its other copies, which this rule cannot, and re-runs a red check on the pull request every day, so a feed that was late is looked at again without anyone remembering to. The pull request merges itself once every required check passes: the floor is a policy already decided, and the checks are what make a given floor safe. It gets no CHANGELOG line, like any other non-major update. The website follows main on its own. gitIgnoredAuthors names the account the workflow commits as; without it Renovate would treat the branch as edited by hand after the first commit, and stop rebasing it or moving it to a newer release. internalChecksFilter is strict, so a release younger than 90 days is skipped in favour of the newest one that is old enough. Later rules win, so this sits after the toolchain group.",
       "matchManagers": [
         "npm"
       ],
@@ -306,13 +309,13 @@
       "minimumReleaseAge": "90 days",
       "groupName": "node floor",
       "groupSlug": "node-floor",
-      "automerge": false,
+      "automerge": true,
       "labels": [
         "dependencies",
         "node-floor"
       ],
       "prBodyNotes": [
-        "This raises the oldest Node that LoopTroop accepts. Verify stays red until winget, Chocolatey, Scoop and Homebrew all offer it; re-run it once they have. Before merging, add a line to CHANGELOG.md. After merging, update the website's docs, web.html and CLI_SOURCE_REF (see .github/CONTRIBUTING.md)."
+        "This raises the oldest Node that LoopTroop accepts, and merges itself once every required check passes. Nothing here needs doing by hand. Verify stays red until winget, Chocolatey, Scoop and Homebrew all offer the new version, and a daily job re-runs it until they do. The website picks up the new minimum within a day of the merge."
       ]
     },
     {

@@ -129,7 +129,7 @@ bundle, disabled code cache and disabled snapshot settings across all four
 binary target lanes.
 
 Renovate raises `engines.node` on its own, to the newest Node release that has
-been out for 90 days within the same major, and
+been out for 90 days within the same major, and none of it needs doing by hand.
 `.github/workflows/renovate-node-floor.yml` writes the new floor into every file
 that states it. Any pull request that changes the floor, Renovate's or yours,
 fails the required Verify check until
@@ -138,10 +138,11 @@ fails the required Verify check until
 [Scoop](https://github.com/ScoopInstaller/Main/blob/master/bucket/nodejs-lts.json)
 and [Homebrew](https://formulae.brew.sh/formula/node@24) all offer the new
 version, because winget can trail a Node release by weeks and a floor above it
-breaks the Windows install instructions. Re-run Verify once they have caught up.
-Before merging, add a changelog line. After merging, update the website's docs
-and `web.html`, and point its `CLI_SOURCE_REF` at the merge commit, so the site
-describes the floor `main` enforces.
+breaks the Windows install instructions. The same workflow re-runs whatever
+failed on Renovate's pull request once a day, and Renovate merges it when every
+required check passes. It gets no changelog line, like any other non-major
+update. Within a day of the merge, the website's *Follow LoopTroop main*
+workflow writes the new floor into its pages and publishes them.
 
 A new major is never raised automatically, because moving to one drops every
 user still on the previous line. Do it by hand: change `engines.node`, then run
@@ -150,6 +151,9 @@ user still on the previous line. Do it by hand: change `engines.node`, then run
 node scripts/sync-node-floor.ts
 node scripts/check-node-feeds.ts
 ```
+
+The website follows the new number on its own, but not sentences that name the
+old major in words, so read its pages for those.
 
 The floor cannot go below the oldest Node the npm in `packageManager` supports,
 because the declared-floor test lanes install dependencies on it.

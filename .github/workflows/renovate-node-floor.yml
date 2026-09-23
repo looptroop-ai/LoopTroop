@@ -340,7 +340,9 @@ jobs:
           if [[ "${body}" == *"${ticked}"* ]]; then
             echo "Renovate has already been asked to rebase #${number}."
           elif [[ "${body}" == *"${unticked}"* ]]; then
-            gh api --method PATCH "repos/${GH_REPO}/pulls/${number}" -f "body=${body/"${unticked}"/"${ticked}"}" > /dev/null
+            # The replacement stays unquoted: bash 3.2, macOS's, keeps quotes
+            # there as literal text, and it contains no `&` for bash 5.2 to expand.
+            gh api --method PATCH "repos/${GH_REPO}/pulls/${number}" -f "body=${body/"${unticked}"/${ticked}}" > /dev/null
             echo "::notice::A run on #${number} could not be re-run, so Renovate has been asked to rebase it."
           else
             echo "::error::A run on #${number} could not be re-run, and its text has no rebase box to tick."

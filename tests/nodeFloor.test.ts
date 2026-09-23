@@ -1,4 +1,5 @@
 import { describe, it, expect } from 'vitest'
+import { spawnSync } from 'node:child_process'
 import { readFileSync } from 'node:fs'
 import { dirname, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
@@ -21,10 +22,10 @@ const FLOOR_LABEL = formatNodeVersion(FLOOR)
 
 /**
  * The runtime this repository is developed, built and shipped on, which is not
- * the runtime users are held to. `engines.node` is the oldest Node the suite
- * can run on — npm 12, which the dependency install needs, declares
- * `^24.15.0` — and `.nvmrc` is the newest patch. They were one number until a
- * release demanded a Node fourteen days old that a package feed did not offer.
+ * the runtime users are held to. `engines.node` is the newest Node release that
+ * has been out for 90 days, and `.nvmrc` the newest patch; Renovate moves the
+ * two on different schedules. They were one number until a release demanded a
+ * Node fourteen days old that a package feed did not offer.
  *
  * Normalised through the same parser as everything else, so a `v`-prefixed
  * `.nvmrc`, which nvm accepts, reads as the version it names.
@@ -59,6 +60,21 @@ describe('the Node floor is stated once', () => {
   it('declares a Node floor and nothing else', () => {
     const declared = (JSON.parse(read('package.json')) as { engines: Record<string, unknown> }).engines
     expect(Object.keys(declared)).toEqual(['node'])
+  })
+
+  /**
+   * Every copy of the floor, checked the way the Renovate floor workflow writes
+   * them — including `package-lock.json`'s root entry, which no other test
+   * reads. A floor change that skipped the script fails here rather than on the
+   * next `npm install`, in someone else's unrelated diff.
+   */
+  it('has been written into every copy by scripts/sync-node-floor.ts', () => {
+    const result = spawnSync(process.execPath, [resolve(repoRoot, 'scripts', 'sync-node-floor.ts'), '--check'], {
+      cwd: repoRoot,
+      encoding: 'utf8',
+    })
+    expect(`${result.stdout}${result.stderr}`).toContain(`PASS: every copy states the Node floor ${FLOOR_LABEL}.`)
+    expect(result.status).toBe(0)
   })
 
   it('is a patch-level floor, so every consumer has something to compare', () => {

@@ -531,6 +531,7 @@ jobs:
           rm -rf release-assets && mkdir -p release-assets
           cp "${tarball}" "${bundle}" package-lock.json scripts/install.sh scripts/install.ps1 release-manifest.json checksums.sha256 release-assets/
           find . -maxdepth 1 -type f \( -name 'looptroop-*-linux-*.tar.gz' -o -name 'looptroop-*-darwin-*.tar.gz' -o -name 'looptroop-*-win-*.zip' \) -exec cp {} release-assets/ \;
+          # shellcheck disable=SC2016
           node -e '
             const fs = require("node:fs")
             const manifest = JSON.parse(fs.readFileSync("release-manifest.json", "utf8"))

@@ -538,17 +538,26 @@ describe('release workflow policy', () => {
     expect(String(withToken[0]?.run)).toContain('unset RELEASE_TOKEN')
 
     const apply = steps.find((step) => step.name === 'Validate and apply the patch')
-    expect(apply?.env).toBeUndefined()
+    // The base SHA to read the old floor from, and no credential.
+    expect(Object.keys(apply?.env ?? {})).toEqual(['BASE_SHA'])
+    expect(JSON.stringify(apply)).not.toContain('secrets.')
     for (const path of ['package-lock.json', 'README.md', 'scripts/install.ps1', 'scripts/install.sh', 'server/cli/launcher.cjs', 'tests/fixtures/channels/looptroop.nuspec']) {
       expect(String(apply?.run), `the patch may edit ${path}`).toContain(` ${path} `)
     }
     expect(String(apply?.run)).toContain('git apply --summary')
-    // A floor move changes numbers only, so nothing else may reach install.sh.
+    // A floor move changes the floor and nothing else. Masking every number is
+    // not that rule — `exit 1` to `exit 0` changes digits alone — so the lines
+    // are compared with the old and new floor written out, and nothing more.
+    const validate = String(apply?.run)
     for (const side of ['removed', 'added']) {
-      expect(String(apply?.run), `${side} lines are compared with their numbers masked`)
-        .toContain(`line = substr($0, 2); gsub(/[0-9]+/, "#", line); print line > ${side}; next }`)
+      expect(validate, `${side} lines are compared with the floor written out`)
+        .toContain(`print floorless(substr($0, 2)) > ${side}; next }`)
     }
-    expect(String(apply?.run)).toContain('cmp -s -- "${removed}" "${added}"')
+    expect(validate).toContain('git show FETCH_HEAD:package.json | jq -r .engines.node')
+    expect(validate).toContain('jq -r .engines.node package.json')
+    expect(validate).toContain('cmp -s -- "${removed_lines}" "${added_lines}"')
+    expect(validate, 'no rule that lets any digit change').not.toContain('gsub(/[0-9]+/')
+    expect(apply?.env?.BASE_SHA).toBe('${{ github.event.pull_request.base.sha }}')
     expect(text).toContain('persist-credentials: false')
     expect(text).not.toContain('persist-credentials: true')
   })

@@ -110,13 +110,18 @@ jobs:
       # it as anything but text: exactly one regular file; an edit to files the
       # floor lives in and nothing else — no new, deleted or renamed file, no
       # mode change (a symlink is a mode), no binary content; and a change to
-      # numbers only. A floor move changes a version and nothing else, so any
-      # other edit — a line added to `install.sh`, which `curl … | sh` runs — is
-      # refused however it is dressed. Changed lines are read from inside the
-      # hunks, where git reads them, so a line made to look like a `+++` header
-      # cannot hide from the comparison.
+      # the floor and nothing else. Every changed line must match its
+      # replacement once the old and new floor are written out of both: the
+      # version itself, the Homebrew keg's major, and the launcher's three
+      # constants. Masking every number would not do — `exit 1` to `exit 0` in
+      # `install.sh`, or a lockfile integrity hash, changes digits alone — so
+      # any other edit is refused however it is dressed. Changed lines are read
+      # from inside the hunks, where git reads them, so a line made to look like
+      # a `+++` header cannot hide from the comparison.
       - name: Validate and apply the patch
         shell: bash
+        env:
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
         run: |
           set -euo pipefail
           artifact_dir="${RUNNER_TEMP}/node-floor-artifact"
@@ -130,24 +135,53 @@ jobs:
             echo "::error::The patch creates, deletes, renames or changes the mode of a file."
             exit 1
           fi
-          removed="${RUNNER_TEMP}/node-floor-removed"
-          added="${RUNNER_TEMP}/node-floor-added"
-          : > "${removed}"
-          : > "${added}"
-          awk -v removed="${removed}" -v added="${added}" '
+          # The floor before and after, read as data with jq: nothing from the
+          # branch runs here. Before is the pull request's base.
+          floor_of() {
+            if [[ "$1" =~ ^[[:space:]]*(\>=[[:space:]]*)?v?(([0-9]+)\.[0-9]+\.[0-9]+)[[:space:]]*$ ]]; then
+              printf '%s %s\n' "${BASH_REMATCH[2]}" "${BASH_REMATCH[3]}"
+            else
+              echo "::error::engines.node is not an exact floor: $1" >&2
+              exit 1
+            fi
+          }
+          git fetch --no-tags --depth=1 origin "${BASE_SHA}"
+          read -r old_floor old_major < <(floor_of "$(git show FETCH_HEAD:package.json | jq -r .engines.node)")
+          read -r new_floor new_major < <(floor_of "$(jq -r .engines.node package.json)")
+          removed_lines="${RUNNER_TEMP}/node-floor-removed"
+          added_lines="${RUNNER_TEMP}/node-floor-added"
+          : > "${removed_lines}"
+          : > "${added_lines}"
+          awk -v removed="${removed_lines}" -v added="${added_lines}" \
+            -v old_floor="${old_floor}" -v new_floor="${new_floor}" \
+            -v old_keg="node@${old_major}" -v new_keg="node@${new_major}" '
+            function without(text, word,    at, out) {
+              out = ""
+              while ((at = index(text, word)) > 0) {
+                out = out substr(text, 1, at - 1) "<floor>"
+                text = substr(text, at + length(word))
+              }
+              return out text
+            }
+            function floorless(text) {
+              text = without(without(text, old_floor), new_floor)
+              text = without(without(text, old_keg), new_keg)
+              if (text ~ /^var REQUIRED_(MAJOR|MINOR|PATCH) = [0-9]+$/) sub(/= [0-9]+$/, "= <floor>", text)
+              return text
+            }
             /^diff --git / { hunk = 0; next }
             /^@@ / { hunk = 1; next }
             !hunk { next }
-            /^-/ { line = substr($0, 2); gsub(/[0-9]+/, "#", line); print line > removed; next }
-            /^\+/ { line = substr($0, 2); gsub(/[0-9]+/, "#", line); print line > added; next }
+            /^-/ { print floorless(substr($0, 2)) > removed; next }
+            /^\+/ { print floorless(substr($0, 2)) > added; next }
           ' "${patch}"
-          if ! cmp -s -- "${removed}" "${added}"; then
-            echo "::error::The patch changes more than numbers, and a floor move changes nothing else."
+          if ! cmp -s -- "${removed_lines}" "${added_lines}"; then
+            echo "::error::The patch changes more than the Node floor (${old_floor} to ${new_floor})."
             exit 1
           fi
           allowed=' package-lock.json README.md scripts/install.ps1 scripts/install.sh server/cli/launcher.cjs tests/fixtures/channels/looptroop.nuspec '
-          while IFS=$'\t' read -r added removed path; do
-            if [ "${added}" = '-' ] || [ "${removed}" = '-' ]; then
+          while IFS=$'\t' read -r lines_added lines_removed path; do
+            if [ "${lines_added}" = '-' ] || [ "${lines_removed}" = '-' ]; then
               echo "::error::The patch changes ${path} as binary."
               exit 1
             fi

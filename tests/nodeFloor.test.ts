@@ -151,7 +151,7 @@ describe('the Node floor is stated once', () => {
   /**
    * The direction is the invariant, not equality. A pin below the floor means
    * nothing in CI ever ran the runtime users are promised, which is how a
-   * container built on 24.18.1 came up refusing its own launcher. A pin above
+   * container built on a Node below the floor came up refusing its own launcher. A pin above
    * it is the arrangement this repository wants.
    */
   it('keeps the local runtime pin at or above the declared floor', () => {
@@ -164,26 +164,33 @@ describe('the Node floor is stated once', () => {
    * so it states the floor and nothing else. CONTRIBUTING is read by someone
    * setting up a checkout, so it must state the pin, and may state the floor.
    *
-   * A version is read with an optional `v`, and never from inside another
-   * number: without that, `v24.21.0` reads as `21.0`, falls outside the filter,
-   * and a stray version escapes in exactly the form this repository writes.
+   * Every version of the floor's or the pin's major is read — they need not be
+   * the same major, and the toolchain moving to a new major while the floor
+   * stays is the ordinary case. A `v` prefix is how these files name a runtime
+   * rather than a requirement: the standalone builder's `v26.9.0` is not a
+   * floor, and would read as a stray one the day the floor reached Node 26.
+   * `scripts/sync-node-floor.ts` rewrites exactly the forms this accepts.
    */
-  it('states the floor in the README and no stray version in either document', () => {
-    const declared = (file: string) =>
-      [...read(file).matchAll(/(?<![\w.])v?(\d+\.\d+(?:\.\d+)?)\b/g)]
-        .map(([, version]) => version ?? '')
-        .filter((version) => version.startsWith(`${FLOOR.major}.`))
+  it('states the floor in the README, the pin in CONTRIBUTING, and no stray version in either', () => {
+    const majors = new Set([FLOOR.major, parseNodeVersion(DEV_PIN).major].map(String))
+    const stated = (file: string) =>
+      [...read(file).matchAll(/(?<![\w.])(v?)(\d+\.\d+(?:\.\d+)?)\b/g)]
+        .filter(([, prefix]) => prefix === '')
+        .map(([, , version]) => version ?? '')
+        .filter((version) => majors.has(version.split('.')[0] ?? ''))
 
-    const readme = declared('README.md')
+    const readme = stated('README.md')
     expect(readme, 'README.md').toEqual(expect.arrayContaining([FLOOR_LABEL]))
-    expect(readme.every((version) => version === FLOOR_LABEL), 'README.md').toBe(true)
+    expect(readme.filter((version) => version !== FLOOR_LABEL), 'README.md stray versions').toEqual([])
+    const kegs = [...read('README.md').matchAll(/`node@(\d+)`/g)].map(([, major]) => major)
+    expect(kegs.every((major) => major === String(FLOOR.major)), 'README.md Homebrew keg').toBe(true)
 
-    const contributing = declared('.github/CONTRIBUTING.md')
+    const contributing = stated('.github/CONTRIBUTING.md')
     expect(contributing, '.github/CONTRIBUTING.md').toEqual(expect.arrayContaining([DEV_PIN]))
     expect(
-      contributing.every((version) => version === DEV_PIN || version === FLOOR_LABEL),
-      '.github/CONTRIBUTING.md',
-    ).toBe(true)
+      contributing.filter((version) => version !== DEV_PIN && version !== FLOOR_LABEL),
+      '.github/CONTRIBUTING.md stray versions',
+    ).toEqual([])
   })
 
   it('keeps the README Windows installer recipe aligned with the install catalog', () => {

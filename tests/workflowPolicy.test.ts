@@ -166,31 +166,43 @@ describe('release workflow policy', () => {
   })
 
   /**
-   * The floor is a promise, and the only lanes that keep it are the ones
-   * running the exact version `engines.node` names. Four ways that promise can
-   * quietly stop being kept.
+   * The floor is a promise, and the only lanes that keep it are the ones that
+   * switch to the exact version `engines.node` names. They read it at run time,
+   * so a floor change never has to edit this workflow — which the job that
+   * finishes Renovate's floor pull requests could not push anyway.
    *
-   * The version can drift, leaving the floor untested while still looking
-   * covered. A platform can be dropped, which counting lanes would not notice,
-   * so the operating systems are asserted as a set. And the lanes can be made
-   * advisory in two places — an `optional` entry or a job-level
-   * `continue-on-error` — which is worse than deleting them: `continue-on-error`
-   * reports success however the job went. Read from the parsed workflow, so no
-   * key order or inserted key can hide either.
+   * Four ways the promise can quietly stop being kept. The switch can stop
+   * reading the floor. A platform can be dropped, so the operating systems are
+   * asserted as a set, and an `include` or `exclude` could add or remove a
+   * combination unseen, so neither is allowed. And the job can be made
+   * advisory — `continue-on-error` reports success however the job went.
    */
-  it('runs the declared floor, exactly, on every platform, and blocks on it', () => {
-    const job = workflows.get('ci.yml')?.jobs?.['test-matrix']
+  it('runs the declared floor, read from engines.node, on every platform, and blocks on it', () => {
+    const job = workflows.get('ci.yml')?.jobs?.['test-matrix'] as (Job & {
+      'continue-on-error'?: unknown
+      strategy?: { matrix?: Record<string, unknown> }
+    }) | undefined
     if (!job) throw new Error('ci.yml: test-matrix job missing')
     expect(Object.hasOwn(job, 'continue-on-error'), 'test-matrix continue-on-error').toBe(false)
 
-    const lanes = matrixEntries(job).filter((entry) => entry.label === 'declared floor')
-    expect(lanes.map((lane) => String(lane.os)).sort(), 'declared floor platforms').toEqual(PLATFORMS)
+    const matrix = job.strategy?.matrix ?? {}
+    expect(Object.keys(matrix).sort(), 'test-matrix axes').toEqual(['label', 'os'])
+    expect([...(matrix.os as string[])].sort(), 'test-matrix platforms').toEqual(PLATFORMS)
+    expect([...(matrix.label as string[])].sort(), 'test-matrix lanes').toEqual(['declared floor', 'toolchain floor'])
 
-    for (const lane of lanes) {
-      const version = concreteVersion(String(lane.node))
-      expect(version && formatNodeVersion(version), `${String(lane.os)}: declared floor version`).toBe(FLOOR)
-      expect(Object.hasOwn(lane, 'optional'), `${String(lane.os)}: declared floor must block`).toBe(false)
-    }
+    const steps = (job.steps ?? []) as Array<Step & { id?: unknown; if?: unknown; with?: Record<string, unknown> }>
+    const floorOnly = "matrix.label == 'declared floor'"
+    const read = steps.findIndex((step) => step.id === 'floor')
+    const switchTo = steps.findIndex((step) =>
+      String(step.uses ?? '').startsWith('actions/setup-node@') && step.with?.['node-version'] === '${{ steps.floor.outputs.node }}')
+    expect(read, 'the floor is read from engines.node').toBeGreaterThan(-1)
+    expect(switchTo, 'the floor is read before switching to it').toBeGreaterThan(read)
+    expect(steps[read]?.if).toBe(floorOnly)
+    expect(steps[switchTo]?.if).toBe(floorOnly)
+    expect(String(steps[read]?.run), 'the floor is parsed by the shared parser').toContain('parseNodeFloor')
+
+    const test = steps.findIndex((step) => step.run === 'npm run test')
+    expect(test, 'the suite runs after the switch').toBeGreaterThan(switchTo)
   })
 
   /**
@@ -455,6 +467,44 @@ describe('release workflow policy', () => {
     const repairAttest = repair.slice(repair.indexOf('  attest:'), repair.indexOf('  verify:'))
     expect(repairAttest).toContain('docker login ghcr.io')
     expect(repairAttest).toContain('create-storage-record: false')
+  })
+
+  /**
+   * The floor workflow commits to Renovate's branch with a write token, from a
+   * patch that code on that branch produced. The token must never share a job
+   * with that code, and the patch must be confined to the files the floor lives
+   * in before git applies it.
+   */
+  it('finishes Renovate floor pull requests without giving the branch a token', () => {
+    const workflow = workflows.get('renovate-node-floor.yml')
+    const text = source.get('renovate-node-floor.yml')
+    if (!workflow || !text) throw new Error('renovate-node-floor.yml missing')
+    const jobs = workflow.jobs ?? {}
+    expect(Object.keys(jobs).sort()).toEqual(['feeds', 'push', 'regenerate'])
+
+    for (const name of ['feeds', 'regenerate']) {
+      const job = jobs[name] as Job & { if?: unknown }
+      expect(String(job.if), `${name} runs only on Renovate's floor branch`).toContain("github.head_ref == 'renovate/node-floor'")
+      expect(String(job.if), `${name} runs only for Renovate's own pull request`).toContain("user.login == 'renovate[bot]'")
+      expect(JSON.stringify(job), `${name} never sees a secret`).not.toContain('secrets.')
+      expect(runs(job), `${name} installs nothing`).not.toMatch(/npm (ci|install)/)
+    }
+
+    const push = jobs.push as Job
+    const steps = (push.steps ?? []) as Array<Step & { env?: Record<string, unknown> }>
+    expect(runs(push), 'push runs no code from the branch').not.toMatch(/(^|[\s;&|($])(node|npm|npx)\s/m)
+    const withToken = steps.filter((step) => JSON.stringify(step).includes('secrets.RELEASE_PR_TOKEN'))
+    expect(withToken.map((step) => step.name)).toEqual(['Push the Node floor'])
+    expect(String(withToken[0]?.run)).toContain('unset RELEASE_TOKEN')
+
+    const apply = steps.find((step) => step.name === 'Validate and apply the patch')
+    expect(apply?.env).toBeUndefined()
+    for (const path of ['package-lock.json', 'README.md', 'scripts/install.ps1', 'scripts/install.sh', 'server/cli/launcher.cjs', 'tests/fixtures/channels/looptroop.nuspec']) {
+      expect(String(apply?.run), `the patch may edit ${path}`).toContain(` ${path} `)
+    }
+    expect(String(apply?.run)).toContain('git apply --summary')
+    expect(text).toContain('persist-credentials: false')
+    expect(text).not.toContain('persist-credentials: true')
   })
 
   it('downloads Renovate notices outside checkout and gives the token only to push', () => {

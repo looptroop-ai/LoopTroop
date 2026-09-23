@@ -163,10 +163,9 @@ jobs:
     # `continue-on-error`: a required check pointed at a continue-on-error job
     # reports success however the job went, so a lane that is blocking in one
     # commit and advisory in the next is a required check that quietly stops
-    # meaning anything. `tests/workflowPolicy.test.ts` refuses an `optional`
-    # flag on the declared-floor lanes for that reason.
+    # meaning anything. `tests/workflowPolicy.test.ts` refuses both.
     #
-    # `matrix.label` rather than `matrix.node`: a name branch protection matches
+    # `matrix.label` rather than a version: a name branch protection matches
     # on must not change when the thing it describes is bumped. Both labels
     # survive a version move — "toolchain floor" for the runtime this
     # repository builds on, "declared floor" for the one `engines.node`
@@ -177,52 +176,47 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        include:
-          # The runtime this repository builds and ships on, from `.nvmrc`. Exact,
-          # not a floating "24": a range resolves to whatever shipped this week,
-          # so nothing would be pinned to what the container and the release
-          # binaries actually run. Every platform runs it, because a macOS-only
-          # regression would otherwise reach users.
-          - os: ubuntu-latest
-            node: 24.21.0
-            label: toolchain floor
-          - os: macos-latest
-            node: 24.21.0
-            label: toolchain floor
-          - os: windows-latest
-            node: 24.21.0
-            label: toolchain floor
-          # The oldest Node `engines.node` promises, below the lanes above on
-          # purpose. These and the install smoke are the only jobs that run it.
-          # Every platform, for the same reason as the toolchain lanes.
-          #
-          # It cannot go lower than 24.15.0 while this repository needs npm 12:
-          # npm 12 declares `^24.15.0`, so dependencies cannot be installed on
-          # anything older. The application itself is not the limit. Running
-          # the suite on 24.11.0 by hand found one real defect there, fixed in
-          # Node 24.13.1: `rmSync(path, { recursive: true, force: true })` did
-          # not remove a dangling symlink, so `clearExecutionSetupRuntimeArtifacts`
-          # left stale aliases behind.
-          #
-          # No `continue-on-error`, so a failure here is reported as one. It
-          # blocks merging once these names are in the required checks for
-          # `main`. `tests/workflowPolicy.test.ts` holds the versions to
-          # `engines.node` and the platforms to all three.
-          - os: ubuntu-latest
-            node: 24.15.0
-            label: declared floor
-          - os: macos-latest
-            node: 24.15.0
-            label: declared floor
-          - os: windows-latest
-            node: 24.15.0
-            label: declared floor
+        # Every platform runs both, because a macOS-only regression would
+        # otherwise reach users.
+        os: [ubuntu-latest, macos-latest, windows-latest]
+        label: [toolchain floor, declared floor]
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+
+      # The runtime this repository builds and ships on, from `.nvmrc`. Exact,
+      # not a floating "24": a range resolves to whatever shipped this week,
+      # so nothing would be pinned to what the container and the release
+      # binaries actually run.
       - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7
         with:
-          node-version: ${{ matrix.node }}
+          node-version: 24.21.0
           cache: npm
+
+      # The declared-floor lanes then move to the oldest Node `engines.node`
+      # promises. Read from it at run time rather than written here, so that
+      # when Renovate raises the floor — once a Node release is 90 days old —
+      # no workflow file changes: its pull request is finished by a workflow
+      # whose token cannot push to `.github/workflows`.
+      #
+      # The floor cannot go below 24.15.0 while this repository needs npm 12,
+      # which declares `^24.15.0` and has to install the dependencies here.
+      # Below Node 24.13.1 the application itself breaks: `rmSync(path,
+      # { recursive: true, force: true })` does not remove a dangling symlink,
+      # which `clearExecutionSetupRuntimeArtifacts` relies on.
+      - name: Read the declared floor
+        if: matrix.label == 'declared floor'
+        id: floor
+        shell: bash
+        run: >-
+          node --input-type=module -e "import { formatNodeVersion, parseNodeFloor } from './shared/nodeFloor.ts';
+          import { readFileSync } from 'node:fs';
+          console.log('node=' + formatNodeVersion(parseNodeFloor(JSON.parse(readFileSync('package.json', 'utf8')).engines.node)))"
+          >> "$GITHUB_OUTPUT"
+
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7
+        if: matrix.label == 'declared floor'
+        with:
+          node-version: ${{ steps.floor.outputs.node }}
 
       - name: Pin npm to the declared version
         run: node scripts/pin-npm.mjs

@@ -1,0 +1,217 @@
+# Finishes Renovate's Node floor pull requests.
+#
+# Renovate raises `engines.node` once a Node release is 90 days old — the
+# "node floor" rule in .github/renovate.json. That edits one line, but the floor
+# is also stated in the lockfile's root entry, the launcher guard, both install
+# scripts, a Chocolatey test fixture and README, each held to it by a test. So
+# the pull request arrives red, and the hosted Renovate app cannot run
+# postUpgradeTasks to fix it.
+#
+# Two things happen here:
+#
+#   `feeds` checks that every place a user gets Node from already offers the
+#   new floor. #135 was a floor winget did not have yet. When this is red, the
+#   pull request waits: re-run it once the feed has caught up.
+#
+#   `regenerate` writes the floor into every copy, and `push` commits the
+#   result back, so the pull request is otherwise green on arrival.
+#
+# `regenerate` and `push` split for the reason renovate-notices.yml gives:
+# `regenerate` runs code from the branch and has no write credential; `push`
+# has the credential and runs no code from the branch. It applies a patch only
+# after checking that the patch edits nothing but the files the floor lives in.
+#
+# Nothing here installs dependencies. Both scripts use Node built-ins only, so
+# no dependency's install script runs in these jobs either.
+#
+# The CI lanes that test the floor read it from `engines.node` at run time, so a
+# floor change never edits a workflow — which `push` could not commit anyway.
+name: Renovate node floor
+
+on:
+  pull_request:
+    types: [opened, synchronize, reopened]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: renovate-node-floor-${{ github.head_ref }}
+  cancel-in-progress: true
+
+jobs:
+  feeds:
+    name: Node floor is available from every feed
+    # Renovate's floor pull request, and nothing else. The author is trusted
+    # event metadata; the branch name is not, so both are required.
+    if: >-
+      github.head_ref == 'renovate/node-floor'
+      && (github.event.pull_request.user.login == 'renovate[bot]'
+          || github.event.pull_request.user.login == 'renovate-bot')
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          ref: ${{ github.event.pull_request.head.sha }}
+          persist-credentials: false
+
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7
+        with:
+          node-version: 24.21.0
+
+      # The winget listing comes from GitHub's API, which rate-limits anonymous
+      # callers by IP, and runners share IPs. This job's token can only read.
+      - name: Check winget, Chocolatey, Scoop and Homebrew offer the floor
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+        run: node scripts/check-node-feeds.ts
+
+  regenerate:
+    name: Write the Node floor into every copy
+    if: >-
+      github.head_ref == 'renovate/node-floor'
+      && (github.event.pull_request.user.login == 'renovate[bot]'
+          || github.event.pull_request.user.login == 'renovate-bot')
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    outputs:
+      changed: ${{ steps.changed.outputs.changed }}
+    steps:
+      # No token, and no credentials left in `.git/config`. The head SHA rather
+      # than the branch name, so the patch describes the tree it was built from.
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          ref: ${{ github.event.pull_request.head.sha }}
+          persist-credentials: false
+
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7
+        with:
+          node-version: 24.21.0
+
+      - name: Write the floor into every copy
+        run: node scripts/sync-node-floor.ts
+
+      - name: Did anything change?
+        id: changed
+        shell: bash
+        run: |
+          set -euo pipefail
+          if git diff --quiet; then
+            echo "changed=false" >> "$GITHUB_OUTPUT"
+            echo "Every copy already states the floor; nothing to push."
+          else
+            git diff > "${RUNNER_TEMP}/node-floor.patch"
+            echo "changed=true" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Upload the patch
+        if: steps.changed.outputs.changed == 'true'
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        with:
+          name: node-floor-patch
+          path: ${{ runner.temp }}/node-floor.patch
+          if-no-files-found: error
+          retention-days: 1
+
+  push:
+    name: Commit the Node floor
+    needs: [regenerate]
+    if: needs.regenerate.outputs.changed == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          ref: ${{ github.event.pull_request.head.sha }}
+          persist-credentials: false
+
+      - name: Download the patch
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8
+        with:
+          name: node-floor-patch
+          path: ${{ runner.temp }}/node-floor-artifact
+
+      # The patch came from code on the branch, so it is checked before git sees
+      # it as anything but text: exactly one regular file, and an edit to files
+      # the floor lives in and nothing else — no new, deleted or renamed file, no
+      # mode change (a symlink is a mode), no binary content.
+      - name: Validate and apply the patch
+        shell: bash
+        run: |
+          set -euo pipefail
+          artifact_dir="${RUNNER_TEMP}/node-floor-artifact"
+          mapfile -t entries < <(find "${artifact_dir}" -mindepth 1 -print)
+          patch="${artifact_dir}/node-floor.patch"
+          if [ "${#entries[@]}" -ne 1 ] || [ "${entries[0]}" != "${patch}" ] || [ ! -f "${patch}" ] || [ -L "${patch}" ]; then
+            echo "::error::The artifact must be exactly one regular file, node-floor.patch."
+            exit 1
+          fi
+          if [ -n "$(git apply --summary -- "${patch}")" ]; then
+            echo "::error::The patch creates, deletes, renames or changes the mode of a file."
+            exit 1
+          fi
+          allowed=' package-lock.json README.md scripts/install.ps1 scripts/install.sh server/cli/launcher.cjs tests/fixtures/channels/looptroop.nuspec '
+          while IFS=$'\t' read -r added removed path; do
+            if [ "${added}" = '-' ] || [ "${removed}" = '-' ]; then
+              echo "::error::The patch changes ${path} as binary."
+              exit 1
+            fi
+            case "${allowed}" in
+              *" ${path} "*) ;;
+              *) echo "::error::The patch edits ${path}, which is not a copy of the Node floor."; exit 1 ;;
+            esac
+          done < <(git apply --numstat -- "${patch}")
+          git apply -- "${patch}"
+
+      # No token in this step: checkout, diff and commit cannot read one even
+      # if a runner has a global hook configured.
+      - name: Commit the Node floor
+        id: commit
+        shell: bash
+        run: |
+          set -euo pipefail
+          if git diff --quiet; then
+            echo "committed=false" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add -- package-lock.json README.md scripts/install.ps1 scripts/install.sh server/cli/launcher.cjs tests/fixtures/channels/looptroop.nuspec
+          git -c core.hooksPath=/dev/null commit -m "chore(deps): write the new Node floor into every copy"
+          echo "committed=true" >> "$GITHUB_OUTPUT"
+
+      # RELEASE_PR_TOKEN rather than GITHUB_TOKEN, because a push made with
+      # GITHUB_TOKEN starts no workflow runs and the required checks would never
+      # re-run. As in renovate-notices.yml: the branch must still be where the
+      # patch came from, the push is not forced, and the token exists only as an
+      # extraHeader for these two git invocations.
+      - name: Push the Node floor
+        if: steps.commit.outputs.committed == 'true'
+        env:
+          HEAD_REF: ${{ github.head_ref }}
+          SOURCE_SHA: ${{ github.event.pull_request.head.sha }}
+          RELEASE_TOKEN: ${{ secrets.RELEASE_PR_TOKEN }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          if [ -z "${RELEASE_TOKEN}" ]; then
+            echo "::error::RELEASE_PR_TOKEN is not set. Add it as a repository secret."
+            exit 1
+          fi
+          credential=$(printf 'x-access-token:%s' "${RELEASE_TOKEN}" | base64 | tr -d '\n')
+          unset RELEASE_TOKEN
+          remote=$(GIT_CONFIG_COUNT=1 \
+            GIT_CONFIG_KEY_0='http.https://github.com/.extraHeader' \
+            GIT_CONFIG_VALUE_0="AUTHORIZATION: basic ${credential}" \
+            git -c core.hooksPath=/dev/null ls-remote origin "refs/heads/${HEAD_REF}" | cut -f1)
+          if [ "${remote}" != "${SOURCE_SHA}" ]; then
+            echo "::notice::${HEAD_REF} has moved to ${remote:-(gone)} since ${SOURCE_SHA} was built."
+            echo "::notice::Leaving it alone; the run for that commit will write the floor."
+            exit 0
+          fi
+
+          GIT_CONFIG_COUNT=1 \
+          GIT_CONFIG_KEY_0='http.https://github.com/.extraHeader' \
+          GIT_CONFIG_VALUE_0="AUTHORIZATION: basic ${credential}" \
+            git -c core.hooksPath=/dev/null push origin "HEAD:${HEAD_REF}"

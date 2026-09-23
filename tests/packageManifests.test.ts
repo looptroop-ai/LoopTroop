@@ -23,6 +23,7 @@ import {
   renderVerification,
   SHORT_DESCRIPTION,
   AUR_PACKAGE_NAME,
+  NODE_FLOOR_MAJOR,
   type Channel,
 } from '../scripts/package-manifests.ts'
 import { INSTALL_CHANNEL_MARKER } from '../shared/installChannel'
@@ -116,7 +117,7 @@ describe('the Homebrew formula', () => {
     expect(formula).toContain('write_env_script')
     // `formula_opt_bin` rather than `Formula[...].opt_bin`: `brew style`
     // rejects the latter, and the tap has no CI to catch that after a push.
-    expect(formula).toContain('formula_opt_bin("node@24")')
+    expect(formula).toContain(`formula_opt_bin("node@${NODE_FLOOR_MAJOR}")`)
     expect(formula).not.toMatch(/bin\.install_symlink/)
   })
 
@@ -450,7 +451,7 @@ describe('the AUR package', () => {
    * current runtime.
    */
   it('depends on the distribution\'s Node rather than carrying one', () => {
-    expect(rendered().PKGBUILD).toContain("depends=('nodejs>=24' 'git' 'github-cli')")
+    expect(rendered().PKGBUILD).toContain(`depends=('nodejs>=${NODE_FLOOR_MAJOR}' 'git' 'github-cli')`)
   })
 
   /**
@@ -503,7 +504,7 @@ describe('the AUR package', () => {
     expect(PKGBUILD).toContain(`pkgver=${AUR_INPUTS.version}`)
     expect(PKGBUILD).toContain(`sha256sums=('${AUR_INPUTS.sha256}')`)
     // Every dependency the PKGBUILD declares has to appear as its own line.
-    expect(srcinfo).toContain('\tdepends = nodejs>=24')
+    expect(srcinfo).toContain(`\tdepends = nodejs>=${NODE_FLOOR_MAJOR}`)
     expect(srcinfo).toContain('\tdepends = git')
   })
 

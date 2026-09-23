@@ -1,4 +1,5 @@
 import { describe, it, expect } from 'vitest'
+import { spawnSync } from 'node:child_process'
 import { readFileSync } from 'node:fs'
 import { dirname, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
@@ -19,6 +20,18 @@ const engines = (JSON.parse(read('package.json')) as { engines: { node: string }
 const FLOOR = parseNodeFloor(engines)
 const FLOOR_LABEL = formatNodeVersion(FLOOR)
 
+/**
+ * The runtime this repository is developed, built and shipped on, which is not
+ * the runtime users are held to. `engines.node` is the newest Node release that
+ * has been out for 90 days, and `.nvmrc` the newest patch; Renovate moves the
+ * two on different schedules. They were one number until a release demanded a
+ * Node fourteen days old that a package feed did not offer.
+ *
+ * Normalised through the same parser as everything else, so a `v`-prefixed
+ * `.nvmrc`, which nvm accepts, reads as the version it names.
+ */
+const DEV_PIN = formatNodeVersion(parseNodeVersion(read('.nvmrc').trim()))
+
 const INPUTS = {
   version: '9.9.9',
   url: 'https://github.com/looptroop-ai/LoopTroop/releases/download/v9.9.9/looptroop-9.9.9-bundle.tar.gz',
@@ -36,6 +49,34 @@ const INPUTS = {
  * runs in the release workflow.
  */
 describe('the Node floor is stated once', () => {
+  /**
+   * Node is the only runtime LoopTroop asks users for. `engines.npm` was
+   * removed because the value it carried was one no Node release has ever
+   * bundled, and the installer now reads past any npm floor a release records
+   * — it has to, to keep releases that recorded one installable. A new
+   * `engines.npm` would therefore be enforced by nothing but npm's own warning,
+   * and would say something to readers the installer does not check.
+   */
+  it('declares a Node floor and nothing else', () => {
+    const declared = (JSON.parse(read('package.json')) as { engines: Record<string, unknown> }).engines
+    expect(Object.keys(declared)).toEqual(['node'])
+  })
+
+  /**
+   * Every copy of the floor, checked the way the Renovate floor workflow writes
+   * them — including `package-lock.json`'s root entry, which no other test
+   * reads. A floor change that skipped the script fails here rather than on the
+   * next `npm install`, in someone else's unrelated diff.
+   */
+  it('has been written into every copy by scripts/sync-node-floor.ts', () => {
+    const result = spawnSync(process.execPath, [resolve(repoRoot, 'scripts', 'sync-node-floor.ts'), '--check'], {
+      cwd: repoRoot,
+      encoding: 'utf8',
+    })
+    expect(`${result.stdout}${result.stderr}`).toContain(`PASS: every copy states the Node floor ${FLOOR_LABEL}.`)
+    expect(result.status).toBe(0)
+  })
+
   it('is a patch-level floor, so every consumer has something to compare', () => {
     expect(engines).toMatch(/^>=\d+\.\d+\.\d+$/)
   })
@@ -107,16 +148,49 @@ describe('the Node floor is stated once', () => {
     expect(renderAurPackage(INPUTS)['PKGBUILD']).toContain(`nodejs>=${FLOOR.major}`)
   })
 
-  it('keeps the local runtime pin and documentation on the declared floor', () => {
-    expect(read('.nvmrc').trim()).toBe(FLOOR_LABEL)
+  /**
+   * The direction is the invariant, not equality. A pin below the floor means
+   * nothing in CI ever ran the runtime users are promised, which is how a
+   * container built on a Node below the floor came up refusing its own launcher. A pin above
+   * it is the arrangement this repository wants.
+   */
+  it('keeps the local runtime pin at or above the declared floor', () => {
+    expect(satisfiesNodeFloor(parseNodeVersion(DEV_PIN), FLOOR)).toBe(true)
+  })
 
-    for (const file of ['README.md', '.github/CONTRIBUTING.md']) {
-      const versions = [...read(file).matchAll(/\b\d+\.\d+(?:\.\d+)?\b/g)]
-        .map(([version]) => version)
-        .filter((version) => version.startsWith(`${FLOOR.major}.`))
-      expect(versions, file).toEqual(expect.arrayContaining([FLOOR_LABEL]))
-      expect(versions.every((version) => version === FLOOR_LABEL), file).toBe(true)
-    }
+  /**
+   * Each document states the number its reader needs, and may not invent a
+   * third. README is read by someone deciding whether they can install this,
+   * so it states the floor and nothing else. CONTRIBUTING is read by someone
+   * setting up a checkout, so it must state the pin, and may state the floor.
+   *
+   * Every version of the floor's or the pin's major is read — they need not be
+   * the same major, and the toolchain moving to a new major while the floor
+   * stays is the ordinary case. A `v` prefix is how these files name a runtime
+   * rather than a requirement: the standalone builder's `v26.9.0` is not a
+   * floor, and would read as a stray one the day the floor reached Node 26.
+   * `scripts/sync-node-floor.ts` rewrites exactly the forms this accepts.
+   */
+  it('states the floor in the README, the pin in CONTRIBUTING, and no stray version in either', () => {
+    const majors = new Set([FLOOR.major, parseNodeVersion(DEV_PIN).major].map(String))
+    const stated = (file: string) =>
+      [...read(file).matchAll(/(?<![\w.])(v?)(\d+\.\d+(?:\.\d+)?)\b/g)]
+        .filter(([, prefix]) => prefix === '')
+        .map(([, , version]) => version ?? '')
+        .filter((version) => majors.has(version.split('.')[0] ?? ''))
+
+    const readme = stated('README.md')
+    expect(readme, 'README.md').toEqual(expect.arrayContaining([FLOOR_LABEL]))
+    expect(readme.filter((version) => version !== FLOOR_LABEL), 'README.md stray versions').toEqual([])
+    const kegs = [...read('README.md').matchAll(/`node@(\d+)`/g)].map(([, major]) => major)
+    expect(kegs.every((major) => major === String(FLOOR.major)), 'README.md Homebrew keg').toBe(true)
+
+    const contributing = stated('.github/CONTRIBUTING.md')
+    expect(contributing, '.github/CONTRIBUTING.md').toEqual(expect.arrayContaining([DEV_PIN]))
+    expect(
+      contributing.filter((version) => version !== DEV_PIN && version !== FLOOR_LABEL),
+      '.github/CONTRIBUTING.md stray versions',
+    ).toEqual([])
   })
 
   it('keeps the README Windows installer recipe aligned with the install catalog', () => {

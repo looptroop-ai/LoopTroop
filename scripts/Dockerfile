@@ -122,8 +122,10 @@
 # user's, and installing it here would bake a second release train into this
 # one. Point the daemon at one you run, as above.
 
-# Pinned to the floor in `engines` rather than to `24` so the image cannot drift
-# onto a runtime the package has not been tested against, and by digest as well
+# Pinned to the toolchain in `.nvmrc` rather than to `24` so the image cannot
+# drift onto a runtime the package has not been tested against. That is above
+# the `engines.node` floor on purpose, and `tests/workflowPolicy.test.ts` holds
+# this line to `.nvmrc` rather than to the floor. Pinned by digest as well
 # as by tag: a tag is a mutable pointer, so two builds of the same commit can
 # otherwise disagree about what they were built on. The digest is the multi-arch
 # index, so one value serves both amd64 and arm64. Renovate updates it.

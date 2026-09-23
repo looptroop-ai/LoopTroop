@@ -557,6 +557,14 @@ describe('release workflow policy', () => {
     expect(validate).toContain('jq -r .engines.node package.json')
     expect(validate).toContain('cmp -s -- "${removed_lines}" "${added_lines}"')
     expect(validate, 'no rule that lets any digit change').not.toContain('gsub(/[0-9]+/')
+    // The launcher's lines are judged before anything is masked — masking the
+    // version first let REQUIRED_MAJOR = 24.18.1 through as a launcher that
+    // cannot parse — and everywhere else only the phrases a floor move writes
+    // are masked, so a dependency sharing the floor's version cannot move.
+    const floorless = validate.slice(validate.indexOf('function floorless('))
+    expect(floorless.indexOf('if (text ~ /^var REQUIRED_/)'), 'launcher lines judged first')
+      .toBeLessThan(floorless.indexOf('sprintf(phrase[i], old_floor)'))
+    expect(validate).toContain('split("\\">=%s\\"|version=\\"%s\\"|Node %s or newer|Node `%s+`|Node.js %s or newer", phrase, "|")')
     // The launcher's three constants may take only the old or new floor's own
     // component — never any number, which would let REQUIRED_MAJOR = 0 through.
     for (const part of ['MAJOR', 'MINOR', 'PATCH']) {

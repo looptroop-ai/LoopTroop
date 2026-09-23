@@ -158,32 +158,46 @@ jobs:
             -v old_major="${old_major}" -v new_major="${new_major}" \
             -v old_minor="${old_minor}" -v new_minor="${new_minor}" \
             -v old_patch="${old_patch}" -v new_patch="${new_patch}" '
-            function without(text, word,    at, out) {
+            function swap(text, word, replacement,    at, out) {
               out = ""
               while ((at = index(text, word)) > 0) {
-                out = out substr(text, 1, at - 1) "<floor>"
+                out = out substr(text, 1, at - 1) replacement
                 text = substr(text, at + length(word))
               }
               return out text
             }
-            function floorless(text) {
-              text = without(without(text, old_floor), new_floor)
-              text = without(without(text, old_keg), new_keg)
-              # The launcher states the floor as three numbers. Each may be the
-              # matching component of the old or new floor and nothing else:
-              # masking any number here would let REQUIRED_MAJOR = 0 switch
-              # off the version guard in the launcher.
-              if (text ~ /^var REQUIRED_(MAJOR|MINOR|PATCH) = [0-9]+$/) {
-                part = substr(text, 14, 5)
-                value = text
-                sub(/^.* = /, "", value)
-                if ((part == "MAJOR" && (value == old_major || value == new_major)) ||
-                    (part == "MINOR" && (value == old_minor || value == new_minor)) ||
-                    (part == "PATCH" && (value == old_patch || value == new_patch)))
-                  sub(/= [0-9]+$/, "= <floor>", text)
+            # The launcher states the floor as three numbers, and its lines are
+            # judged as they stand, before anything is masked: each may be the
+            # matching component of the old or new floor and nothing else.
+            # Masking any number here would let REQUIRED_MAJOR = 0 switch off
+            # the version guard, and masking the version first would let
+            # REQUIRED_MAJOR = 24.18.1 through as a launcher that cannot parse.
+            #
+            # Everywhere else the floor is written out only where a floor move
+            # writes it: the five phrases below and the Homebrew keg. A version
+            # that happens to equal the floor anywhere else, a dependency in the
+            # lockfile say, is left as it is, so changing it is refused.
+            function floorless(text,    i, part, value) {
+              if (text ~ /^var REQUIRED_/) {
+                if (text ~ /^var REQUIRED_(MAJOR|MINOR|PATCH) = [0-9]+$/) {
+                  part = substr(text, 14, 5)
+                  value = text
+                  sub(/^.* = /, "", value)
+                  if ((part == "MAJOR" && (value == old_major || value == new_major)) ||
+                      (part == "MINOR" && (value == old_minor || value == new_minor)) ||
+                      (part == "PATCH" && (value == old_patch || value == new_patch)))
+                    sub(/= [0-9]+$/, "= <floor>", text)
+                }
+                return text
               }
-              return text
+              for (i = 1; i <= phrases; i++) {
+                text = swap(text, sprintf(phrase[i], old_floor), sprintf(phrase[i], "<floor>"))
+                text = swap(text, sprintf(phrase[i], new_floor), sprintf(phrase[i], "<floor>"))
+              }
+              text = swap(text, "`" old_keg "`", "`<keg>`")
+              return swap(text, "`" new_keg "`", "`<keg>`")
             }
+            BEGIN { phrases = split("\">=%s\"|version=\"%s\"|Node %s or newer|Node `%s+`|Node.js %s or newer", phrase, "|") }
             /^diff --git / { hunk = 0; next }
             /^@@ / { hunk = 1; next }
             !hunk { next }

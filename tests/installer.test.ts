@@ -400,18 +400,56 @@ describe('installer core', () => {
       expectExit(result, 1)
       expect(result.stderr).toContain('needs Node >=99.0.0')
       expect(result.stderr).toContain('will not install Node for you')
+      // The install hint names the floor's own major, not a literal one.
+      if (process.platform === 'linux') expect(result.stderr).toContain('nvm install 99 ')
     } finally {
       engines = null
     }
   })
 
-  it('stops when npm is below the floor the release records', async () => {
+  /**
+   * The mirror of the test above, and the reason it is not symmetrical. Every
+   * manifest published up to 0.5.9 records `npm: ">=12.0.2"`, which no Node
+   * release has ever bundled — so an installer that enforced it refused every
+   * machine with a stock Node, and would go on refusing them for those
+   * releases however the field is spelled today. The floor is read past.
+   */
+  it('installs even when the release records an npm floor', async () => {
     engines = { npm: '>=999.0.0' }
+    try {
+      expectExit(await runInstaller(['--dry-run']), 0)
+    } finally {
+      engines = null
+    }
+  })
+
+  /**
+   * Reading past an npm floor must not read past the Node floor beside it. A
+   * check that returned early whenever `engines.npm` was present would pass the
+   * test above and install onto any Node at all.
+   */
+  it('still enforces the Node floor when the release also records an npm floor', async () => {
+    engines = { node: '>=99.0.0', npm: '>=999.0.0' }
     try {
       const result = await runInstaller(['--dry-run'])
 
       expectExit(result, 1)
-      expect(result.stderr).toContain('needs npm >=999.0.0')
+      expect(result.stderr).toContain('needs Node >=99.0.0')
+    } finally {
+      engines = null
+    }
+  })
+
+  /** Only npm's version stopped mattering. The install itself is `npm install -g`. */
+  it('still refuses when npm is not on PATH at all', async () => {
+    const empty = mkdtempSync(join(tmpdir(), 'looptroop-no-npm-'))
+    tempDirs.push(empty)
+    engines = { node: '>=1.0.0' }
+    try {
+      const result = await runInstaller(['--dry-run'], { PATH: empty })
+
+      expectExit(result, 1)
+      expect(result.stderr).toContain('npm is not on PATH')
     } finally {
       engines = null
     }

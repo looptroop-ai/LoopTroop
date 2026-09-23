@@ -251,7 +251,7 @@
       "automerge": false
     },
     {
-      "description": "A digest bump is the same Node on a rebuilt base and lands as an ordinary PR. A version bump is not: the base image is pinned to the floor in engines.node, and moving it alone would ship users a runtime nothing in CI ran. It has to travel with engines.node and .nvmrc on one branch.",
+      "description": "A digest bump is the same Node on a rebuilt base and lands as an ordinary PR. A version bump is not: the base image runs the toolchain pin in .nvmrc, and moving it alone would ship a runtime nothing in CI ran. It has to travel with .nvmrc and the workflow node-version literals on one branch; tests/workflowPolicy.test.ts holds all of them to .nvmrc. It does not travel with engines.node, which is the floor users are held to and deliberately lower.",
       "matchManagers": [
         "dockerfile"
       ],
@@ -266,7 +266,7 @@
       ]
     },
     {
-      "description": "The toolchain floor moves as one change or not at all. node and npm are each pinned in more than one place — .nvmrc, engines.node, engines.npm, packageManager and the Dockerfile base image — and Renovate's managers treat those as unrelated dependencies. Without this they arrive as five separate pull requests, none of which is mergeable on its own: each ships a runtime or a package manager that nothing else in the repository agrees with. The version is also asserted across the workflows, packaging manifests and tests, so the grouped PR is still a starting point rather than a complete change. Digest-only refreshes of the base image are excluded: those are the same version on a rebuilt base and belong with the container group.",
+      "description": "The toolchain floor moves as one change or not at all. node and npm are each pinned in more than one place — .nvmrc, packageManager and the Dockerfile base image — and Renovate's managers treat those as unrelated dependencies. Without this they arrive as three separate pull requests, none of which is mergeable on its own: each ships a runtime or a package manager that nothing else in the repository agrees with. The Node version is also written as a literal in every workflow, which no Renovate manager edits, and tests/workflowPolicy.test.ts fails until those match .nvmrc, so the grouped PR is still a starting point rather than a complete change. engines.node matches this group's managers but not its schedule: the node floor rule below overrides it with a 90-day age and its own branch. Digest-only refreshes of the base image are excluded: those are the same version on a rebuilt base and belong with the container group.",
       "matchPackageNames": [
         "node",
         "npm"
@@ -287,6 +287,59 @@
         "dependencies",
         "container"
       ]
+    },
+    {
+      "description": "The Node floor users are held to follows the newest Node release that has been out for 90 days, within the same major. It is not the toolchain: .nvmrc and the Dockerfile base take a release after seven days, while engines.node promises the oldest Node a user may run, and raising it refuses everyone below the new number on their next upgrade. Tying the two together is how the floor once named a Node fourteen days old that winget did not offer (#135). 90 days sits above the ~50 days winget has trailed Node, and the required Verify check in ci.yml refuses any pull request that changes the floor until every install feed offers it. .github/workflows/renovate-node-floor.yml writes the floor into its other copies, which this rule cannot. internalChecksFilter is strict, so a release younger than 90 days is skipped in favour of the newest one that is old enough. Later rules win, so this sits after the toolchain group.",
+      "matchManagers": [
+        "npm"
+      ],
+      "matchDepTypes": [
+        "engines"
+      ],
+      "matchPackageNames": [
+        "node"
+      ],
+      "matchUpdateTypes": [
+        "minor",
+        "patch"
+      ],
+      "minimumReleaseAge": "90 days",
+      "groupName": "node floor",
+      "groupSlug": "node-floor",
+      "automerge": false,
+      "labels": [
+        "dependencies",
+        "node-floor"
+      ],
+      "prBodyNotes": [
+        "This raises the oldest Node that LoopTroop accepts. Verify stays red until winget, Chocolatey, Scoop and Homebrew all offer it; re-run it once they have. Before merging, add a line to CHANGELOG.md. After merging, update the website's docs, web.html and CLI_SOURCE_REF (see .github/CONTRIBUTING.md)."
+      ]
+    },
+    {
+      "description": "Never a new Node major automatically. Moving the floor from one major to the next drops every user still on the previous line, which Node supports for up to two more years; that is a decision, made by hand. groupSlug is not set, so a major never lands on the branch the floor workflow finishes.",
+      "matchManagers": [
+        "npm"
+      ],
+      "matchDepTypes": [
+        "engines"
+      ],
+      "matchUpdateTypes": [
+        "major"
+      ],
+      "enabled": false
+    },
+    {
+      "description": "engines names Node alone, and tests/nodeFloor.test.ts holds it to that. Any other entry would be a requirement on users that the installer does not enforce; an engines.npm left to the toolchain group was once raised to an npm no Node release bundles.",
+      "matchManagers": [
+        "npm"
+      ],
+      "matchDepTypes": [
+        "engines"
+      ],
+      "matchPackageNames": [
+        "!node"
+      ],
+      "enabled": false
     }
   ],
   "dependencyDashboard": true

@@ -79,7 +79,8 @@ jobs:
 
       - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7
         with:
-          # Exact floor from engines.node and .nvmrc, not floating "24".
+          # The toolchain pin from .nvmrc, exact rather than floating "24".
+          # Not engines.node, which is lower on purpose.
           node-version: 24.21.0
           cache: npm
 

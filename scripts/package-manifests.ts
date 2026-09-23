@@ -52,16 +52,16 @@ export const LICENSE = 'MIT'
  * Only Chocolatey can state a patch level. Homebrew pins a keg (`node@24`) and
  * Arch has no versioned package at all, so both get the major — a translation,
  * not a second floor: the launcher still refuses anything below the exact one,
- * and a package manager that installed 24.17 would satisfy its own dependency
- * and produce a LoopTroop that will not start. Neither channel offers a way to
- * say more.
+ * so a package manager that installed an older patch of the same major would
+ * satisfy its own dependency and produce a LoopTroop that will not start.
+ * Neither channel offers a way to say more.
  */
 const NODE_FLOOR = parseNodeFloor(
   (JSON.parse(
     readFileSync(resolve(dirname(fileURLToPath(import.meta.url)), '..', 'package.json'), 'utf8'),
   ) as { engines: { node: string } }).engines.node,
 )
-/** `24.21.0` — Chocolatey's `nodejs-lts` dependency. */
+/** The exact floor — Chocolatey's `nodejs-lts` dependency. */
 export const NODE_FLOOR_EXACT = formatNodeVersion(NODE_FLOOR)
 /** `24` — the Homebrew keg and the Arch `>=` floor. */
 export const NODE_FLOOR_MAJOR = String(NODE_FLOOR.major)

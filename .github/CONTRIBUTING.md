@@ -121,11 +121,38 @@ arguments, while published smoke checks read `doctor --json`'s structured
 of display prose.
 
 Standalone binary jobs use Node `v26.9.0`'s native `--build-sea` builder. This is
-an embedded-runtime pin only: application, package and container jobs keep the
-Node `24.21.0` floor. If that embedded runtime changes, review Node's release
+an embedded-runtime pin only. Application, package and container jobs run the
+Node `24.21.0` toolchain pin from `.nvmrc`, which sits above the `engines.node`
+floor users are held to. If that embedded runtime changes, review Node's release
 schedule and security maintenance separately, and preserve the CommonJS asset
 bundle, disabled code cache and disabled snapshot settings across all four
 binary target lanes.
+
+Renovate raises `engines.node` on its own, to the newest Node release that has
+been out for 90 days within the same major, and
+`.github/workflows/renovate-node-floor.yml` writes the new floor into every file
+that states it. Any pull request that changes the floor, Renovate's or yours,
+fails the required Verify check until
+[winget](https://github.com/microsoft/winget-pkgs/tree/master/manifests/o/OpenJS/NodeJS/LTS),
+[Chocolatey](https://community.chocolatey.org/packages/nodejs-lts),
+[Scoop](https://github.com/ScoopInstaller/Main/blob/master/bucket/nodejs-lts.json)
+and [Homebrew](https://formulae.brew.sh/formula/node@24) all offer the new
+version, because winget can trail a Node release by weeks and a floor above it
+breaks the Windows install instructions. Re-run Verify once they have caught up.
+Before merging, add a changelog line. After merging, update the website's docs
+and `web.html`, and point its `CLI_SOURCE_REF` at the merge commit, so the site
+describes the floor `main` enforces.
+
+A new major is never raised automatically, because moving to one drops every
+user still on the previous line. Do it by hand: change `engines.node`, then run
+
+```bash
+node scripts/sync-node-floor.ts
+node scripts/check-node-feeds.ts
+```
+
+The floor cannot go below the oldest Node the npm in `packageManager` supports,
+because the declared-floor test lanes install dependencies on it.
 
 ## Issues
 

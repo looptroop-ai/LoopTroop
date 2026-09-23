@@ -237,9 +237,10 @@ function dumpDaemonContext(cli, configDir, what) {
 
 /**
  * `npm pack --json` reports an array of packed tarballs on npm 11 and an object
- * keyed by package name on npm 12. Both majors are in play — engines names one
- * and a contributor's shell may have the other — so read either, and treat a
- * bare object carrying the fields directly as a third possibility.
+ * keyed by package name on npm 12. Both majors are in play — `packageManager`
+ * names one, and CI runs this smoke on the npm the floor Node bundles, which is
+ * the other — so read either, and treat a bare object carrying the fields
+ * directly as a third possibility.
  */
 function firstPackEntry(parsed) {
   if (Array.isArray(parsed)) return parsed[0]

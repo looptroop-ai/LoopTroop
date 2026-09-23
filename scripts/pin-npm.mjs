@@ -4,7 +4,7 @@
  * --prefer-bundled keeps an already reviewed npm major for the Node Current lane;
  * unsupported bundled versions warn and fall back to the declared version.
  *
- * `package.json` names an npm version in `packageManager` and `engines`, but a
+ * `package.json` names an npm version in `packageManager`, but a
  * runner ships whatever npm came bundled with its Node — ubuntu-24.04 images
  * carry 10.9.8 — so every `npm ci` in CI ran on a version the repository does
  * not claim to support. That is the resolver, the lockfile reader and the

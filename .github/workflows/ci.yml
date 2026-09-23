@@ -81,7 +81,9 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
       - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7
         with:
-          # Exact floor from engines.node and .nvmrc, not floating "24".
+          # The toolchain pin from .nvmrc, exact rather than floating "24". Not
+          # engines.node: the floor users are held to is lower on purpose, and
+          # the "declared floor" lanes of the test matrix are what exercise it.
           node-version: 24.21.0
           cache: npm
 
@@ -141,6 +143,41 @@ jobs:
       - name: Verify third-party notices are current
         run: npm run licenses:check
 
+      # The #135 guard: a floor above what a package feed offers breaks the
+      # install instructions for everyone on that feed. A pull request that
+      # changes `engines.node` merges only once winget, Chocolatey, Scoop and
+      # Homebrew all offer the new floor — Renovate's 90-day floor pull requests
+      # and a floor moved by hand alike. Here rather than in a job of its own,
+      # because this job is required; a new check would gate nothing until
+      # someone added it to the branch ruleset. Every other pull request skips
+      # the network entirely, so no unrelated change waits on a third party.
+      #
+      # On every event, not only pull requests. CI runs twice for each commit
+      # on a branch, once for the push and once for the pull request, and both
+      # runs report under this job's required name — which GitHub documents as
+      # ambiguous. A push run that skipped this step would be a green copy of
+      # the check that a red one could be read past. So a push compares with
+      # the default branch, a pull request with its base, and both reach the
+      # same verdict whichever GitHub reads.
+      - name: Check every feed offers a changed Node floor
+        shell: bash
+        env:
+          BASE_REF: ${{ github.event.pull_request.base.sha || github.event.repository.default_branch }}
+          # Read-only; the winget listing comes from GitHub's API, which
+          # rate-limits anonymous callers by IP.
+          GITHUB_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          git fetch --no-tags --depth=1 origin "${BASE_REF}"
+          before=$(git show FETCH_HEAD:package.json | node -p "JSON.parse(require('node:fs').readFileSync(0, 'utf8')).engines.node")
+          after=$(node -p "require('./package.json').engines.node")
+          if [ "${before}" = "${after}" ]; then
+            echo "engines.node is unchanged (${after}); no feed to check."
+            exit 0
+          fi
+          echo "engines.node changes from ${before} to ${after}."
+          node scripts/check-node-feeds.ts
+
       # Guards against build steps mutating tracked files. Generated output
       # must land in ignored directories so releases are reproducible.
       - name: Verify working tree is clean after build
@@ -157,57 +194,64 @@ jobs:
         run: npm audit --omit=dev || true
 
   test-matrix:
-    # The advisory marker is part of the name because the name is what branch
-    # protection matches on. A required check pointed at a continue-on-error job
-    # reports success however the job went, so the two must never be able to
-    # collide: "Test (windows-latest, Node 24)" naming a blocking lane in one
-    # commit and an advisory one in the next is a required check that quietly
-    # stops meaning anything.
+    # Every lane here blocks. There is deliberately no advisory lane and no
+    # `continue-on-error`: a required check pointed at a continue-on-error job
+    # reports success however the job went, so a lane that is blocking in one
+    # commit and advisory in the next is a required check that quietly stops
+    # meaning anything. `tests/workflowPolicy.test.ts` refuses both.
     #
-    # `matrix.label` rather than `matrix.node` for the same reason the required
-    # lanes no longer carry a version: a name branch protection matches on must
-    # not change when the thing it describes is bumped. The floor lanes are
-    # required and now keep one stable name across every floor move; the
-    # advisory lanes keep the version, because nothing requires them and a name
-    # that moves costs nothing there.
-    name: Test (${{ matrix.os }}, ${{ matrix.label }})${{ matrix.optional && ' [advisory]' || '' }}
+    # `matrix.label` rather than a version: a name branch protection matches
+    # on must not change when the thing it describes is bumped. Both labels
+    # survive a version move — "toolchain floor" for the runtime this
+    # repository builds on, "declared floor" for the one `engines.node`
+    # promises to users.
+    name: Test (${{ matrix.os }}, ${{ matrix.label }})
     runs-on: ${{ matrix.os }}
     timeout-minutes: 30
-    # The floating lanes are compatibility news, not a defect in this commit.
-    continue-on-error: ${{ matrix.optional || false }}
     strategy:
       fail-fast: false
       matrix:
-        include:
-          # Exact floor, not "24": `node-version: 24` resolves to the newest
-          # patch, so the version `engines` actually promises stays untested.
-          # Every platform runs it, because the floor is a promise on all three
-          # and a macOS-only regression at 24.21.0 would otherwise reach users.
-          - os: ubuntu-latest
-            node: 24.21.0
-            label: toolchain floor
-          - os: macos-latest
-            node: 24.21.0
-            label: toolchain floor
-          - os: windows-latest
-            node: 24.21.0
-            label: toolchain floor
-          # Newest 24, so a patch release that breaks us is seen early. Advisory:
-          # a required check must fail only for something this repository can fix.
-          - os: ubuntu-latest
-            node: 24
-            label: Node 24
-            optional: true
-          - os: windows-latest
-            node: 24
-            label: Node 24
-            optional: true
+        # Every platform runs both, because a macOS-only regression would
+        # otherwise reach users.
+        os: [ubuntu-latest, macos-latest, windows-latest]
+        label: [toolchain floor, declared floor]
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+
+      # The runtime this repository builds and ships on, from `.nvmrc`. Exact,
+      # not a floating "24": a range resolves to whatever shipped this week,
+      # so nothing would be pinned to what the container and the release
+      # binaries actually run.
       - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7
         with:
-          node-version: ${{ matrix.node }}
+          node-version: 24.21.0
           cache: npm
+
+      # The declared-floor lanes then move to the oldest Node `engines.node`
+      # promises. Read from it at run time rather than written here, so that
+      # when Renovate raises the floor — once a Node release is 90 days old —
+      # no workflow file changes: its pull request is finished by a workflow
+      # whose token cannot push to `.github/workflows`.
+      #
+      # The floor cannot go below 24.15.0 while this repository needs npm 12,
+      # which declares `^24.15.0` and has to install the dependencies here.
+      # Below Node 24.13.1 the application itself breaks: `rmSync(path,
+      # { recursive: true, force: true })` does not remove a dangling symlink,
+      # which `clearExecutionSetupRuntimeArtifacts` relies on.
+      - name: Read the declared floor
+        if: matrix.label == 'declared floor'
+        id: floor
+        shell: bash
+        run: >-
+          node --input-type=module -e "import { formatNodeVersion, parseNodeFloor } from './shared/nodeFloor.ts';
+          import { readFileSync } from 'node:fs';
+          console.log('node=' + formatNodeVersion(parseNodeFloor(JSON.parse(readFileSync('package.json', 'utf8')).engines.node)))"
+          >> "$GITHUB_OUTPUT"
+
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7
+        if: matrix.label == 'declared floor'
+        with:
+          node-version: ${{ steps.floor.outputs.node }}
 
       - name: Pin npm to the declared version
         run: node scripts/pin-npm.mjs
@@ -319,11 +363,15 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        # Exact floor everywhere: a global install is exactly where the oldest
-        # Node the package claims to support has to work.
+        # A global install is exactly where the oldest Node the package claims
+        # to support has to work, and on every platform: it is the path the
+        # install scripts and `npm install -g` both take.
         os: [ubuntu-latest, macos-latest, windows-latest]
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+
+      # Built the way every other job builds — the toolchain Node and npm 12 —
+      # so the dependency install keeps its install-script policy.
       - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7
         with:
           node-version: 24.21.0
@@ -339,10 +387,49 @@ jobs:
       - name: Build application
         run: npm run build
 
+      - name: Read the declared floor
+        id: floor
+        shell: bash
+        run: >-
+          node --input-type=module -e "import { formatNodeVersion, parseNodeFloor } from './shared/nodeFloor.ts';
+          import { readFileSync } from 'node:fs';
+          console.log('node=' + formatNodeVersion(parseNodeFloor(JSON.parse(readFileSync('package.json', 'utf8')).engines.node)))"
+          >> "$GITHUB_OUTPUT"
+
+      # Then installed the way a user installs it: the oldest Node `engines.node`
+      # accepts, with the npm that Node ships. Nothing after this point may pin
+      # npm. Every job used to, which is how `engines.npm` came to name an npm no
+      # Node release has ever bundled while every lane stayed green.
+      # `tests/workflowPolicy.test.ts` holds this job to that order.
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7
+        with:
+          node-version: ${{ steps.floor.outputs.node }}
+
       # The script mocks OpenCode itself, packs into its own scratch tree, and
       # tears the whole thing down in a `finally`.
+      #
+      # npm's launcher runs whichever npm is installed in the global prefix, if
+      # there is one, instead of the npm beside its Node. On Linux and macOS
+      # that prefix is the Node install itself, so switching Node switches npm.
+      # On Windows it is %APPDATA%\npm, shared by every Node, so the npm 12
+      # pinned for the build above still won: this step once reported "bundled
+      # npm 12.0.2" on a Node that ships 11.12.1. An empty prefix leaves the
+      # launcher nothing to prefer. The smoke installs with its own `--prefix`,
+      # which npm's launcher deliberately does not read, so the install itself
+      # is unaffected. The comparison below fails the job if it ever leaks again.
       - name: Pack, install globally, and drive the CLI
-        run: node scripts/smoke-install.mjs
+        shell: bash
+        env:
+          npm_config_prefix: ${{ runner.temp }}/floor-npm-prefix
+        run: |
+          bundled=$(node -p "const p=require('node:path'),f=require('node:fs'),d=p.dirname(process.execPath);JSON.parse(f.readFileSync([p.join(d,'node_modules','npm','package.json'),p.join(d,'..','lib','node_modules','npm','package.json')].find(f.existsSync),'utf8')).version")
+          actual=$(npm --version)
+          echo "Installing on node $(node --version) with npm ${actual} (bundled with it: ${bundled})"
+          if [ "${actual}" != "${bundled}" ]; then
+            echo "::error::npm ${actual} is not the npm ${bundled} this Node ships, so this would not test what a user runs."
+            exit 1
+          fi
+          node scripts/smoke-install.mjs
 
   # The image is a release channel like the tarball, and nothing above ever
   # builds it. Without this job a Dockerfile that stopped building, or an image
@@ -850,7 +937,8 @@ jobs:
       - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7
         with:
           # Node 26.9.0 is the standalone builder runtime. Package, npm and
-          # container jobs deliberately keep the Node 24.21.0 application floor.
+          # container jobs keep the `.nvmrc` toolchain pin, which is above the
+          # `engines.node` floor users are held to.
           node-version: 26.9.0
           cache: npm
 
@@ -1177,12 +1265,16 @@ jobs:
   # editing a branch ruleset that lives outside the repository — where nobody
   # reviewing a workflow change would think to look.
   #
+  # `test-matrix` is here for the same reason. Its toolchain lanes are required
+  # by name, but its declared-floor lanes are not, and a release whose suite
+  # fails on the Node it promises users is not releasable either.
+  #
   # `always()`, or this is skipped the moment a dependency fails and reports
   # success by never running. A skipped job is a failure here too: these are
   # unconditional, so skipped means a dependency of theirs failed.
   packaging:
     name: Packaging
-    needs: [smoke-installer, node-managers, bundle, bundle-runs, formula-audit, channel-install, choco-install, binary, winget-install, aur-package]
+    needs: [test-matrix, smoke-installer, node-managers, bundle, bundle-runs, formula-audit, channel-install, choco-install, binary, winget-install, aur-package]
     if: always()
     runs-on: ubuntu-latest
     timeout-minutes: 5

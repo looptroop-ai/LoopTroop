@@ -251,7 +251,8 @@ jobs:
         uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7
         with:
           # Standalone binaries use the maintained native SEA builder in Node
-          # 26.9.0. The release/package jobs retain the Node 24.21.0 floor.
+          # 26.9.0. The release/package jobs keep the `.nvmrc` toolchain pin,
+          # which is above the `engines.node` floor users are held to.
           node-version: 26.9.0
           cache: npm
 

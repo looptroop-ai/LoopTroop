@@ -289,10 +289,12 @@ function nodeInstallHint(): string {
 }
 
 /**
- * npm, which the engines floor names and which the npm-channel upgrade command
- * is run with — by the reader, not by LoopTroop, which only ever prints it. A
- * too-old or unreachable npm is worth seeing before that command fails rather
- * than after.
+ * npm, which the npm-channel upgrade command is run with — by the reader, not
+ * by LoopTroop, which only ever prints it. An unreachable npm is worth seeing
+ * before that command fails rather than after.
+ *
+ * No version floor. Nothing declares one: LoopTroop ships no install scripts,
+ * so the npm that came with the reader's Node is the npm it needs.
  */
 function checkNpm(latest: string | null = null): Check {
   const probe = runProbe('npm', ['--version'], PROBE_TIMEOUT_MS)

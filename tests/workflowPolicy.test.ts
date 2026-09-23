@@ -4,7 +4,7 @@ import { spawnSync } from 'node:child_process'
 import { tmpdir } from 'node:os'
 import * as yaml from 'js-yaml'
 import { describe, expect, it } from 'vitest'
-import { parseNodeFloor, parseNodeVersion, satisfiesNodeFloor } from '../shared/nodeFloor'
+import { formatNodeVersion, parseNodeFloor, parseNodeVersion, satisfiesNodeFloor } from '../shared/nodeFloor'
 
 const repo = process.cwd()
 const workflowDir = join(repo, '.github/workflows')
@@ -29,6 +29,22 @@ function concreteVersion(value: string) {
     throw new Error(`Floating Node selector is not allowed: ${value}`)
   }
   return parseNodeVersion(numeric)
+}
+
+const FLOOR = formatNodeVersion(parseNodeFloor((JSON.parse(readFileSync(join(repo, 'package.json'), 'utf8')) as {
+  engines: { node: string }
+}).engines.node))
+const TOOLCHAIN = formatNodeVersion(parseNodeVersion(readFileSync(join(repo, '.nvmrc'), 'utf8').trim()))
+/** The standalone builder's embedded runtime. Confined to binary jobs by the test that pins it. */
+const EMBEDDED_BUILDER = '26.9.0'
+const PLATFORMS = ['macos-latest', 'ubuntu-latest', 'windows-latest']
+
+type MatrixEntry = Record<string, unknown>
+
+/** The `include` entries of a job's matrix, as the parser reads them. */
+function matrixEntries(job: Job): MatrixEntry[] {
+  const include = (job as { strategy?: { matrix?: { include?: unknown } } }).strategy?.matrix?.include
+  return Array.isArray(include) ? include as MatrixEntry[] : []
 }
 
 function runs(job: Job): string {
@@ -106,9 +122,20 @@ describe('release workflow policy', () => {
       .toBe(shorthand)
   })
 
-  it('keeps every literal workflow and Docker Node runtime at the package floor', () => {
-    const packageJson = JSON.parse(readFileSync(join(repo, 'package.json'), 'utf8')) as { engines: { node: string } }
-    const floor = parseNodeFloor(packageJson.engines.node)
+  /**
+   * The toolchain is stated once, in `.nvmrc`, and every other copy is held to
+   * it. That used to happen for free: the pin and `engines.node` were one
+   * number, so holding the copies to the floor held them to each other. Split
+   * apart, a lower bound would let the container, the toolchain lanes and the
+   * release jobs each drift to a different runtime while every test passed —
+   * Renovate moves `.nvmrc` and the Dockerfile, and nothing moves these.
+   *
+   * The only exceptions are named: the declared-floor lanes, which run the
+   * floor, and the standalone builder's embedded runtime, which the binary-job
+   * test below confines to those jobs.
+   */
+  it('holds every Node runtime literal to the toolchain pin, or to the floor where it says so', () => {
+    const toolchain = formatNodeVersion(parseNodeVersion(readFileSync(join(repo, '.nvmrc'), 'utf8').trim()))
 
     for (const [file, text] of source) {
       for (const match of text.matchAll(/^\s*node-version:\s*["']?(v?\d+(?:\.\d+){0,2})["']?(?=\s|$)/gm)) {
@@ -116,25 +143,124 @@ describe('release workflow policy', () => {
         if (!found) throw new Error(`${file}: node-version capture missing`)
         const parsed = concreteVersion(found)
         if (parsed === null) continue
-        expect(satisfiesNodeFloor(parsed, floor), `${file}: node-version ${found}`).toBe(true)
+        expect([toolchain, EMBEDDED_BUILDER], `${file}: node-version ${found}`).toContain(formatNodeVersion(parsed))
       }
-      for (const match of text.matchAll(/^\s*node:\s*["']?(v?\d+(?:\.\d+){0,2})["']?(?=\s|$)/gm)) {
-        const found = match[1]
-        if (!found) throw new Error(`${file}: matrix node capture missing`)
-        const parsed = concreteVersion(found)
-        if (parsed === null) continue
-        expect(satisfiesNodeFloor(parsed, floor), `${file}: matrix node ${found}`).toBe(true)
+    }
+
+    // A bare major floats to whatever shipped this week, and the checks above
+    // skip it. Only the Node 26 early-warning lane may float, on purpose.
+    for (const [file, workflow] of workflows) {
+      for (const [name, job] of Object.entries(workflow.jobs ?? {})) {
+        for (const step of (job.steps ?? []) as Array<Step & { with?: Record<string, unknown> }>) {
+          const selector = step.with?.['node-version']
+          if (typeof selector !== 'string' && typeof selector !== 'number') continue
+          if (String(selector).includes('${{')) continue
+          if (concreteVersion(String(selector)) === null) {
+            expect(`${file}: ${name}`, `${file}: ${name} floats on node-version ${String(selector)}`).toBe('ci.yml: early-warning')
+          }
+        }
+      }
+    }
+
+    for (const [file, workflow] of workflows) {
+      for (const [name, job] of Object.entries(workflow.jobs ?? {})) {
+        for (const entry of matrixEntries(job)) {
+          if (entry.node === undefined) continue
+          const parsed = concreteVersion(String(entry.node))
+          if (parsed === null) continue
+          const expected = entry.label === 'declared floor' ? FLOOR : toolchain
+          expect(formatNodeVersion(parsed), `${file}: ${name} matrix node (${String(entry.label)})`).toBe(expected)
+        }
       }
     }
 
     const docker = readFileSync(join(repo, 'scripts', 'Dockerfile'), 'utf8')
-    for (const match of docker.matchAll(/^\s*FROM\s+node:(\d+(?:\.\d+){0,2})(?=[-@])/gm)) {
-      const found = match[1]
-      if (!found) throw new Error('Dockerfile: Node version capture missing')
-      const parsed = concreteVersion(found)
-      if (parsed === null) continue
-      expect(satisfiesNodeFloor(parsed, floor), `Dockerfile: node ${found}`).toBe(true)
-    }
+    const bases = [...docker.matchAll(/^\s*FROM\s+node:(\d+\.\d+\.\d+)(?=[-@])/gm)].map(([, version]) => version)
+    expect(bases.length, 'Dockerfile Node base images').toBeGreaterThan(0)
+    for (const base of bases) expect(base, 'Dockerfile FROM node:').toBe(toolchain)
+  })
+
+  /**
+   * The floor is a promise, and the only lanes that keep it are the ones that
+   * switch to the exact version `engines.node` names. They read it at run time,
+   * so a floor change never has to edit this workflow — which the job that
+   * finishes Renovate's floor pull requests could not push anyway.
+   *
+   * Four ways the promise can quietly stop being kept. The switch can stop
+   * reading the floor. A platform can be dropped, so the operating systems are
+   * asserted as a set, and an `include` or `exclude` could add or remove a
+   * combination unseen, so neither is allowed. And the job can be made
+   * advisory — `continue-on-error` reports success however the job went.
+   */
+  it('runs the declared floor, read from engines.node, on every platform, and blocks on it', () => {
+    const job = workflows.get('ci.yml')?.jobs?.['test-matrix'] as (Job & {
+      'continue-on-error'?: unknown
+      strategy?: { matrix?: Record<string, unknown> }
+    }) | undefined
+    if (!job) throw new Error('ci.yml: test-matrix job missing')
+    expect(Object.hasOwn(job, 'continue-on-error'), 'test-matrix continue-on-error').toBe(false)
+
+    const matrix = job.strategy?.matrix ?? {}
+    expect(Object.keys(matrix).sort(), 'test-matrix axes').toEqual(['label', 'os'])
+    expect([...(matrix.os as string[])].sort(), 'test-matrix platforms').toEqual(PLATFORMS)
+    expect([...(matrix.label as string[])].sort(), 'test-matrix lanes').toEqual(['declared floor', 'toolchain floor'])
+
+    const steps = (job.steps ?? []) as Array<Step & { id?: unknown; if?: unknown; with?: Record<string, unknown> }>
+    const floorOnly = "matrix.label == 'declared floor'"
+    const read = steps.findIndex((step) => step.id === 'floor')
+    const switchTo = steps.findIndex((step) =>
+      String(step.uses ?? '').startsWith('actions/setup-node@') && step.with?.['node-version'] === '${{ steps.floor.outputs.node }}')
+    expect(read, 'the floor is read from engines.node').toBeGreaterThan(-1)
+    expect(switchTo, 'the floor is read before switching to it').toBeGreaterThan(read)
+    expect(steps[read]?.if).toBe(floorOnly)
+    expect(steps[switchTo]?.if).toBe(floorOnly)
+    expect(String(steps[read]?.run), 'the floor is parsed by the shared parser').toContain('parseNodeFloor')
+
+    const test = steps.findIndex((step) => step.run === 'npm run test')
+    expect(test, 'the suite runs after the switch').toBeGreaterThan(switchTo)
+  })
+
+  /**
+   * The only job that installs LoopTroop the way a user does: built with the
+   * toolchain, then packed and installed on the floor with the npm that Node
+   * ships. Its value is entirely in the order of its steps. A `pin-npm.mjs`
+   * after the switch would quietly install the repository's npm again — which
+   * is exactly how an `engines.npm` no Node bundles once passed every lane.
+   */
+  it('installs the package on the declared floor with the npm that Node ships, on every platform', () => {
+    const job = workflows.get('ci.yml')?.jobs?.['smoke-install'] as (Job & {
+      'continue-on-error'?: unknown
+      strategy?: { matrix?: { os?: unknown } }
+    }) | undefined
+    if (!job) throw new Error('ci.yml: smoke-install job missing')
+    expect(Object.hasOwn(job, 'continue-on-error'), 'smoke-install continue-on-error').toBe(false)
+    expect([...(job.strategy?.matrix?.os as string[] ?? [])].sort(), 'smoke-install platforms').toEqual(PLATFORMS)
+
+    const steps = (job.steps ?? []) as Array<Step & { id?: unknown; with?: Record<string, unknown> }>
+    const text = (step: Step) => typeof step.run === 'string' ? step.run : ''
+    const setups = steps.flatMap((step, index) => String(step.uses ?? '').startsWith('actions/setup-node@') ? [index] : [])
+    expect(setups.length, 'smoke-install setup-node steps').toBe(2)
+    const [build, floor] = setups as [number, number]
+
+    expect(String(steps[build]?.with?.['node-version'])).not.toContain('steps.floor')
+    expect(steps.findIndex((step) => step.id === 'floor'), 'floor is read before switching to it').toBeLessThan(floor)
+    expect(steps[floor]?.with?.['node-version']).toBe('${{ steps.floor.outputs.node }}')
+
+    const pins = steps.flatMap((step, index) => text(step).includes('scripts/pin-npm.mjs') ? [index] : [])
+    expect(pins.length, 'pin-npm before the dependency install').toBeGreaterThan(0)
+    for (const pin of pins) expect(pin, 'no npm pin after switching to the floor').toBeLessThan(floor)
+
+    const smoke = steps.findIndex((step) => text(step).includes('node scripts/smoke-install.mjs'))
+    expect(smoke, 'the smoke runs on the floor runtime').toBeGreaterThan(floor)
+
+    // Step order is not enough on Windows, where npm's launcher prefers any npm
+    // in the shared global prefix — and the build step pinned npm 12 there. The
+    // prefix is emptied for the smoke, and the step proves the npm it runs is
+    // the one its Node ships before running anything.
+    expect(steps[smoke]?.env?.npm_config_prefix, 'smoke empties the global npm prefix').toEqual(expect.any(String))
+    expect(text(steps[smoke]!), 'smoke checks npm against the Node it ships with').toMatch(
+      /node_modules['",\s]+npm['",\s]+package\.json[\s\S]*npm --version[\s\S]*exit 1[\s\S]*smoke-install\.mjs/,
+    )
   })
 
   it('pins only standalone binary jobs to Node 26.9.0 and blocks embedded-runtime app checks', () => {
@@ -147,7 +273,7 @@ describe('release workflow policy', () => {
       const binary = text.slice(start, end)
 
       expect(binary, `${file}: binary runtime`).toContain('node-version: 26.9.0')
-      expect(binary, `${file}: binary runtime`).not.toContain('node-version: 24.21.0')
+      expect(binary, `${file}: binary runtime`).not.toContain(`node-version: ${TOOLCHAIN}`)
       expect(binary, `${file}: embedded-runtime check`).toContain('Run blocking application checks on the embedded runtime')
       expect(binary, `${file}: embedded-runtime check`).toContain('doctor --json')
       expect(binary, `${file}: embedded-runtime check`).toContain('nodeCheck?.node?.version')
@@ -356,6 +482,99 @@ describe('release workflow policy', () => {
     const repairAttest = repair.slice(repair.indexOf('  attest:'), repair.indexOf('  verify:'))
     expect(repairAttest).toContain('docker login ghcr.io')
     expect(repairAttest).toContain('create-storage-record: false')
+  })
+
+  /**
+   * The floor workflow commits to Renovate's branch with a write token, from a
+   * patch that code on that branch produced. The token must never share a job
+   * with that code, and the patch must be confined to the files the floor lives
+   * in before git applies it.
+   */
+  /**
+   * A floor above what a package feed offers breaks the install instructions
+   * for everyone on that feed — #135. The check that prevents it has to sit in
+   * a required job, or a red result merges anyway: a new check name gates
+   * nothing until someone edits the branch ruleset. The same goes for the
+   * declared-floor test lanes, which are not required by name, so the required
+   * Packaging aggregate waits on the whole test matrix.
+   */
+  it('gates a changed Node floor, and the declared-floor lanes, through required jobs', () => {
+    const ci = workflows.get('ci.yml')?.jobs ?? {}
+    const verify = (ci.verify?.steps ?? []) as Array<Step & { if?: unknown }>
+    const gate = verify.find((step) => step.name === 'Check every feed offers a changed Node floor')
+    expect(gate, 'Verify checks the feeds when the floor changes').toBeDefined()
+    // Push and pull request both report this required name for one commit, so
+    // both must reach the same verdict: no event may skip the step.
+    expect(gate?.if, 'the feed gate runs on every event').toBeUndefined()
+    expect(gate?.env?.BASE_REF).toBe('${{ github.event.pull_request.base.sha || github.event.repository.default_branch }}')
+    expect(String(gate?.run)).toContain('node scripts/check-node-feeds.ts')
+    expect(String(gate?.run)).toContain('engines.node')
+    expect(gate?.env?.GITHUB_TOKEN).toBe('${{ github.token }}')
+
+    const packaging = ci.packaging as (Job & { needs?: unknown }) | undefined
+    expect(packaging?.needs, 'Packaging waits on the declared-floor lanes').toContain('test-matrix')
+  })
+
+  it('finishes Renovate floor pull requests without giving the branch a token', () => {
+    const workflow = workflows.get('renovate-node-floor.yml')
+    const text = source.get('renovate-node-floor.yml')
+    if (!workflow || !text) throw new Error('renovate-node-floor.yml missing')
+    const jobs = workflow.jobs ?? {}
+    expect(Object.keys(jobs).sort()).toEqual(['push', 'regenerate'])
+
+    for (const name of ['regenerate']) {
+      const job = jobs[name] as Job & { if?: unknown }
+      expect(String(job.if), `${name} runs only on Renovate's floor branch`).toContain("github.head_ref == 'renovate/node-floor'")
+      expect(String(job.if), `${name} runs only for Renovate's own pull request`).toContain("user.login == 'renovate[bot]'")
+      expect(JSON.stringify(job), `${name} never sees a secret`).not.toContain('secrets.')
+      expect(runs(job), `${name} installs nothing`).not.toMatch(/npm (ci|install)/)
+    }
+
+    const push = jobs.push as Job
+    const steps = (push.steps ?? []) as Array<Step & { env?: Record<string, unknown> }>
+    expect(runs(push), 'push runs no code from the branch').not.toMatch(/(^|[\s;&|($])(node|npm|npx)\s/m)
+    const withToken = steps.filter((step) => JSON.stringify(step).includes('secrets.RELEASE_PR_TOKEN'))
+    expect(withToken.map((step) => step.name)).toEqual(['Push the Node floor'])
+    expect(String(withToken[0]?.run)).toContain('unset RELEASE_TOKEN')
+
+    const apply = steps.find((step) => step.name === 'Validate and apply the patch')
+    // The base SHA to read the old floor from, and no credential.
+    expect(Object.keys(apply?.env ?? {})).toEqual(['BASE_SHA'])
+    expect(JSON.stringify(apply)).not.toContain('secrets.')
+    for (const path of ['package-lock.json', 'README.md', 'scripts/install.ps1', 'scripts/install.sh', 'server/cli/launcher.cjs', 'tests/fixtures/channels/looptroop.nuspec']) {
+      expect(String(apply?.run), `the patch may edit ${path}`).toContain(` ${path} `)
+    }
+    expect(String(apply?.run)).toContain('git apply --summary')
+    // A floor move changes the floor and nothing else. Masking every number is
+    // not that rule — `exit 1` to `exit 0` changes digits alone — so the lines
+    // are compared with the old and new floor written out, and nothing more.
+    const validate = String(apply?.run)
+    for (const side of ['removed', 'added']) {
+      expect(validate, `${side} lines are compared with the floor written out`)
+        .toContain(`print floorless(substr($0, 2)) > ${side}; next }`)
+    }
+    expect(validate).toContain('git show FETCH_HEAD:package.json | jq -r .engines.node')
+    expect(validate).toContain('jq -r .engines.node package.json')
+    expect(validate).toContain('cmp -s -- "${removed_lines}" "${added_lines}"')
+    expect(validate, 'no rule that lets any digit change').not.toContain('gsub(/[0-9]+/')
+    // The launcher's lines are judged before anything is masked — masking the
+    // version first let REQUIRED_MAJOR = 24.18.1 through as a launcher that
+    // cannot parse — and everywhere else only the phrases a floor move writes
+    // are masked, so a dependency sharing the floor's version cannot move.
+    const floorless = validate.slice(validate.indexOf('function floorless('))
+    expect(floorless.indexOf('if (text ~ /^var REQUIRED_/)'), 'launcher lines judged first')
+      .toBeLessThan(floorless.indexOf('sprintf(phrase[i], old_floor)'))
+    expect(validate).toContain('split("\\">=%s\\"|version=\\"%s\\"|Node %s or newer|Node `%s+`|Node.js %s or newer", phrase, "|")')
+    // The launcher's three constants may take only the old or new floor's own
+    // component — never any number, which would let REQUIRED_MAJOR = 0 through.
+    for (const part of ['MAJOR', 'MINOR', 'PATCH']) {
+      const name = part.toLowerCase()
+      expect(validate, `REQUIRED_${part} is held to the floor's ${name}`)
+        .toContain(`part == "${part}" && (value == old_${name} || value == new_${name})`)
+    }
+    expect(apply?.env?.BASE_SHA).toBe('${{ github.event.pull_request.base.sha }}')
+    expect(text).toContain('persist-credentials: false')
+    expect(text).not.toContain('persist-credentials: true')
   })
 
   it('downloads Renovate notices outside checkout and gives the token only to push', () => {

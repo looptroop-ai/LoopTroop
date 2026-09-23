@@ -29,8 +29,22 @@ describe('reading the Node feeds', () => {
     expect(readWinget({ message: 'API rate limit exceeded' })).toBeNull()
   })
 
+  /**
+   * Chocolatey's feed returns a version as soon as it is submitted, before a
+   * moderator has let it through, and only then can `choco install` fetch it.
+   */
+  it('does not count a Chocolatey version still waiting for moderation', () => {
+    const entry = (status: string) =>
+      `<entry><m:properties><d:Version>24.22.0</d:Version><d:PackageStatus>${status}</d:PackageStatus></m:properties></entry>`
+    expect(readChocolatey(entry('Submitted'))).toBeNull()
+    expect(readChocolatey(entry('Rejected'))).toBeNull()
+  })
+
   it('reads Chocolatey, Scoop and Homebrew answers', () => {
-    expect(readChocolatey('<entry><m:properties><d:Version>24.21.0</d:Version></m:properties></entry>')).toBe('24.21.0')
+    const chocolatey = (status: string) =>
+      `<entry><m:properties><d:Version>24.21.0</d:Version><d:PackageStatus>${status}</d:PackageStatus></m:properties></entry>`
+    expect(readChocolatey(chocolatey('Approved'))).toBe('24.21.0')
+    expect(readChocolatey(chocolatey('Exempted'))).toBe('24.21.0')
     expect(readChocolatey('<feed></feed>')).toBeNull()
     expect(readScoop({ version: '24.21.0' })).toBe('24.21.0')
     expect(readScoop(null)).toBeNull()

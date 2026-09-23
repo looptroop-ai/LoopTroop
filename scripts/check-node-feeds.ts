@@ -6,8 +6,9 @@
  * readers to run `winget install OpenJS.NodeJS.LTS`, which gave them a Node the
  * same script then refused. Renovate raises the floor once a Node release is 90
  * days old, and winget has trailed Node by about 50 days — so the margin is
- * real but not guaranteed. This runs on Renovate's floor pull requests and
- * turns "probably fine" into a check.
+ * real but not guaranteed. The required Verify job runs this on every pull
+ * request that changes `engines.node`, Renovate's or a person's, and turns
+ * "probably fine" into a check.
  *
  * Unreadable counts as failing. A feed that cannot be read is not evidence the
  * floor is available there, and the pull request can simply be re-run.
@@ -22,6 +23,7 @@ import {
   satisfiesNodeFloor,
   type NodeVersion,
 } from '../shared/nodeFloor.ts'
+import { chocolateySubmission } from './smoke-published.mjs'
 
 export interface FeedReading {
   feed: string
@@ -46,8 +48,14 @@ export function readWinget(listing: unknown): string | null {
   return newestVersion(listing.map((entry) => String((entry as { name?: unknown }).name ?? '')))
 }
 
-/** Chocolatey's OData feed, filtered to the latest version. */
+/**
+ * Chocolatey's OData feed, filtered to the latest version — counted only when
+ * moderation has let it through. The feed answers for a version that has merely
+ * been submitted, which once had this repository report a queued package as
+ * published; `chocolateySubmission` is where that lesson is written down.
+ */
 export function readChocolatey(xml: string): string | null {
+  if (chocolateySubmission(xml).state !== 'served') return null
   return /<d:Version>([^<]+)<\/d:Version>/.exec(xml)?.[1] ?? null
 }
 
@@ -79,7 +87,8 @@ async function read(feed: string, url: string, parse: (body: string) => string |
   try {
     const response = await fetch(url, { headers, signal: AbortSignal.timeout(30_000) })
     if (!response.ok) return { feed, offers: null, error: `HTTP ${response.status}` }
-    return { feed, offers: parse(await response.text()) }
+    const offers = parse(await response.text())
+    return offers === null ? { feed, offers, error: 'no approved version in the response' } : { feed, offers }
   } catch (error) {
     return { feed, offers: null, error: error instanceof Error ? error.message : String(error) }
   }
@@ -95,7 +104,7 @@ async function main() {
 
   const readings = await Promise.all([
     read('winget OpenJS.NodeJS.LTS', 'https://api.github.com/repos/microsoft/winget-pkgs/contents/manifests/o/OpenJS/NodeJS/LTS', (body) => readWinget(JSON.parse(body)), github),
-    read('Chocolatey nodejs-lts', "https://community.chocolatey.org/api/v2/Packages()?$filter=Id%20eq%20'nodejs-lts'%20and%20IsLatestVersion&$select=Version", readChocolatey),
+    read('Chocolatey nodejs-lts', "https://community.chocolatey.org/api/v2/Packages()?$filter=Id%20eq%20'nodejs-lts'%20and%20IsLatestVersion&$select=Version,PackageStatus", readChocolatey),
     read('Scoop nodejs-lts', 'https://raw.githubusercontent.com/ScoopInstaller/Main/master/bucket/nodejs-lts.json', (body) => readScoop(JSON.parse(body))),
     read(`Homebrew node@${floor.major}`, `https://formulae.brew.sh/api/formula/node@${floor.major}.json`, (body) => readHomebrew(JSON.parse(body))),
   ])

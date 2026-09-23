@@ -138,23 +138,26 @@ jobs:
           # The floor before and after, read as data with jq: nothing from the
           # branch runs here. Before is the pull request's base.
           floor_of() {
-            if [[ "$1" =~ ^[[:space:]]*(\>=[[:space:]]*)?v?(([0-9]+)\.[0-9]+\.[0-9]+)[[:space:]]*$ ]]; then
-              printf '%s %s\n' "${BASH_REMATCH[2]}" "${BASH_REMATCH[3]}"
+            if [[ "$1" =~ ^[[:space:]]*(\>=[[:space:]]*)?v?(([0-9]+)\.([0-9]+)\.([0-9]+))[[:space:]]*$ ]]; then
+              printf '%s %s %s %s\n' "${BASH_REMATCH[2]}" "${BASH_REMATCH[3]}" "${BASH_REMATCH[4]}" "${BASH_REMATCH[5]}"
             else
               echo "::error::engines.node is not an exact floor: $1" >&2
               exit 1
             fi
           }
           git fetch --no-tags --depth=1 origin "${BASE_SHA}"
-          read -r old_floor old_major < <(floor_of "$(git show FETCH_HEAD:package.json | jq -r .engines.node)")
-          read -r new_floor new_major < <(floor_of "$(jq -r .engines.node package.json)")
+          read -r old_floor old_major old_minor old_patch < <(floor_of "$(git show FETCH_HEAD:package.json | jq -r .engines.node)")
+          read -r new_floor new_major new_minor new_patch < <(floor_of "$(jq -r .engines.node package.json)")
           removed_lines="${RUNNER_TEMP}/node-floor-removed"
           added_lines="${RUNNER_TEMP}/node-floor-added"
           : > "${removed_lines}"
           : > "${added_lines}"
           awk -v removed="${removed_lines}" -v added="${added_lines}" \
             -v old_floor="${old_floor}" -v new_floor="${new_floor}" \
-            -v old_keg="node@${old_major}" -v new_keg="node@${new_major}" '
+            -v old_keg="node@${old_major}" -v new_keg="node@${new_major}" \
+            -v old_major="${old_major}" -v new_major="${new_major}" \
+            -v old_minor="${old_minor}" -v new_minor="${new_minor}" \
+            -v old_patch="${old_patch}" -v new_patch="${new_patch}" '
             function without(text, word,    at, out) {
               out = ""
               while ((at = index(text, word)) > 0) {
@@ -166,7 +169,19 @@ jobs:
             function floorless(text) {
               text = without(without(text, old_floor), new_floor)
               text = without(without(text, old_keg), new_keg)
-              if (text ~ /^var REQUIRED_(MAJOR|MINOR|PATCH) = [0-9]+$/) sub(/= [0-9]+$/, "= <floor>", text)
+              # The launcher states the floor as three numbers. Each may be the
+              # matching component of the old or new floor and nothing else:
+              # masking any number here would let REQUIRED_MAJOR = 0 switch
+              # off the version guard in the launcher.
+              if (text ~ /^var REQUIRED_(MAJOR|MINOR|PATCH) = [0-9]+$/) {
+                part = substr(text, 14, 5)
+                value = text
+                sub(/^.* = /, "", value)
+                if ((part == "MAJOR" && (value == old_major || value == new_major)) ||
+                    (part == "MINOR" && (value == old_minor || value == new_minor)) ||
+                    (part == "PATCH" && (value == old_patch || value == new_patch)))
+                  sub(/= [0-9]+$/, "= <floor>", text)
+              }
               return text
             }
             /^diff --git / { hunk = 0; next }

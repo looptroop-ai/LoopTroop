@@ -557,6 +557,13 @@ describe('release workflow policy', () => {
     expect(validate).toContain('jq -r .engines.node package.json')
     expect(validate).toContain('cmp -s -- "${removed_lines}" "${added_lines}"')
     expect(validate, 'no rule that lets any digit change').not.toContain('gsub(/[0-9]+/')
+    // The launcher's three constants may take only the old or new floor's own
+    // component — never any number, which would let REQUIRED_MAJOR = 0 through.
+    for (const part of ['MAJOR', 'MINOR', 'PATCH']) {
+      const name = part.toLowerCase()
+      expect(validate, `REQUIRED_${part} is held to the floor's ${name}`)
+        .toContain(`part == "${part}" && (value == old_${name} || value == new_${name})`)
+    }
     expect(apply?.env?.BASE_SHA).toBe('${{ github.event.pull_request.base.sha }}')
     expect(text).toContain('persist-credentials: false')
     expect(text).not.toContain('persist-credentials: true')

@@ -7,19 +7,18 @@
 # the pull request arrives red, and the hosted Renovate app cannot run
 # postUpgradeTasks to fix it.
 #
-# Two things happen here:
+# `regenerate` writes the floor into every copy, and `push` commits the result
+# back, so the pull request is complete on arrival. They split for the reason
+# renovate-notices.yml gives: `regenerate` runs code from the branch and has no
+# write credential; `push` has the credential and runs no code from the branch,
+# and applies a patch only once it is sure the patch changes nothing but numbers
+# in the files the floor lives in.
 #
-#   `feeds` checks that every place a user gets Node from already offers the
-#   new floor. #135 was a floor winget did not have yet. When this is red, the
-#   pull request waits: re-run it once the feed has caught up.
-#
-#   `regenerate` writes the floor into every copy, and `push` commits the
-#   result back, so the pull request is otherwise green on arrival.
-#
-# `regenerate` and `push` split for the reason renovate-notices.yml gives:
-# `regenerate` runs code from the branch and has no write credential; `push`
-# has the credential and runs no code from the branch. It applies a patch only
-# after checking that the patch edits nothing but the files the floor lives in.
+# Whether the new floor may merge at all is decided elsewhere: the required
+# Verify job in ci.yml refuses any pull request that changes `engines.node`
+# until winget, Chocolatey, Scoop and Homebrew all offer the new floor (#135 was
+# a floor winget did not have yet). That covers a floor moved by hand as well,
+# and a required check is the only kind that can stop a merge.
 #
 # Nothing here installs dependencies. Both scripts use Node built-ins only, so
 # no dependency's install script runs in these jobs either.
@@ -40,35 +39,10 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
-  feeds:
-    name: Node floor is available from every feed
-    # Renovate's floor pull request, and nothing else. The author is trusted
-    # event metadata; the branch name is not, so both are required.
-    if: >-
-      github.head_ref == 'renovate/node-floor'
-      && (github.event.pull_request.user.login == 'renovate[bot]'
-          || github.event.pull_request.user.login == 'renovate-bot')
-    runs-on: ubuntu-latest
-    timeout-minutes: 10
-    steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
-        with:
-          ref: ${{ github.event.pull_request.head.sha }}
-          persist-credentials: false
-
-      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7
-        with:
-          node-version: 24.21.0
-
-      # The winget listing comes from GitHub's API, which rate-limits anonymous
-      # callers by IP, and runners share IPs. This job's token can only read.
-      - name: Check winget, Chocolatey, Scoop and Homebrew offer the floor
-        env:
-          GITHUB_TOKEN: ${{ github.token }}
-        run: node scripts/check-node-feeds.ts
-
   regenerate:
     name: Write the Node floor into every copy
+    # Renovate's floor pull request, and nothing else. The author is trusted
+    # event metadata; the branch name is not, so both are required.
     if: >-
       github.head_ref == 'renovate/node-floor'
       && (github.event.pull_request.user.login == 'renovate[bot]'
@@ -133,9 +107,14 @@ jobs:
           path: ${{ runner.temp }}/node-floor-artifact
 
       # The patch came from code on the branch, so it is checked before git sees
-      # it as anything but text: exactly one regular file, and an edit to files
-      # the floor lives in and nothing else — no new, deleted or renamed file, no
-      # mode change (a symlink is a mode), no binary content.
+      # it as anything but text: exactly one regular file; an edit to files the
+      # floor lives in and nothing else — no new, deleted or renamed file, no
+      # mode change (a symlink is a mode), no binary content; and a change to
+      # numbers only. A floor move changes a version and nothing else, so any
+      # other edit — a line added to `install.sh`, which `curl … | sh` runs — is
+      # refused however it is dressed. Changed lines are read from inside the
+      # hunks, where git reads them, so a line made to look like a `+++` header
+      # cannot hide from the comparison.
       - name: Validate and apply the patch
         shell: bash
         run: |
@@ -149,6 +128,21 @@ jobs:
           fi
           if [ -n "$(git apply --summary -- "${patch}")" ]; then
             echo "::error::The patch creates, deletes, renames or changes the mode of a file."
+            exit 1
+          fi
+          removed="${RUNNER_TEMP}/node-floor-removed"
+          added="${RUNNER_TEMP}/node-floor-added"
+          : > "${removed}"
+          : > "${added}"
+          awk -v removed="${removed}" -v added="${added}" '
+            /^diff --git / { hunk = 0; next }
+            /^@@ / { hunk = 1; next }
+            !hunk { next }
+            /^-/ { line = substr($0, 2); gsub(/[0-9]+/, "#", line); print line > removed; next }
+            /^\+/ { line = substr($0, 2); gsub(/[0-9]+/, "#", line); print line > added; next }
+          ' "${patch}"
+          if ! cmp -s -- "${removed}" "${added}"; then
+            echo "::error::The patch changes more than numbers, and a floor move changes nothing else."
             exit 1
           fi
           allowed=' package-lock.json README.md scripts/install.ps1 scripts/install.sh server/cli/launcher.cjs tests/fixtures/channels/looptroop.nuspec '

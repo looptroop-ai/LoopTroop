@@ -147,6 +147,21 @@ describe('release workflow policy', () => {
       }
     }
 
+    // A bare major floats to whatever shipped this week, and the checks above
+    // skip it. Only the Node 26 early-warning lane may float, on purpose.
+    for (const [file, workflow] of workflows) {
+      for (const [name, job] of Object.entries(workflow.jobs ?? {})) {
+        for (const step of (job.steps ?? []) as Array<Step & { with?: Record<string, unknown> }>) {
+          const selector = step.with?.['node-version']
+          if (typeof selector !== 'string' && typeof selector !== 'number') continue
+          if (String(selector).includes('${{')) continue
+          if (concreteVersion(String(selector)) === null) {
+            expect(`${file}: ${name}`, `${file}: ${name} floats on node-version ${String(selector)}`).toBe('ci.yml: early-warning')
+          }
+        }
+      }
+    }
+
     for (const [file, workflow] of workflows) {
       for (const [name, job] of Object.entries(workflow.jobs ?? {})) {
         for (const entry of matrixEntries(job)) {
@@ -475,14 +490,36 @@ describe('release workflow policy', () => {
    * with that code, and the patch must be confined to the files the floor lives
    * in before git applies it.
    */
+  /**
+   * A floor above what a package feed offers breaks the install instructions
+   * for everyone on that feed — #135. The check that prevents it has to sit in
+   * a required job, or a red result merges anyway: a new check name gates
+   * nothing until someone edits the branch ruleset. The same goes for the
+   * declared-floor test lanes, which are not required by name, so the required
+   * Packaging aggregate waits on the whole test matrix.
+   */
+  it('gates a changed Node floor, and the declared-floor lanes, through required jobs', () => {
+    const ci = workflows.get('ci.yml')?.jobs ?? {}
+    const verify = (ci.verify?.steps ?? []) as Array<Step & { if?: unknown }>
+    const gate = verify.find((step) => step.name === 'Check every feed offers a changed Node floor')
+    expect(gate, 'Verify checks the feeds when the floor changes').toBeDefined()
+    expect(String(gate?.if)).toBe("github.event_name == 'pull_request'")
+    expect(String(gate?.run)).toContain('node scripts/check-node-feeds.ts')
+    expect(String(gate?.run)).toContain('engines.node')
+    expect(gate?.env?.GITHUB_TOKEN).toBe('${{ github.token }}')
+
+    const packaging = ci.packaging as (Job & { needs?: unknown }) | undefined
+    expect(packaging?.needs, 'Packaging waits on the declared-floor lanes').toContain('test-matrix')
+  })
+
   it('finishes Renovate floor pull requests without giving the branch a token', () => {
     const workflow = workflows.get('renovate-node-floor.yml')
     const text = source.get('renovate-node-floor.yml')
     if (!workflow || !text) throw new Error('renovate-node-floor.yml missing')
     const jobs = workflow.jobs ?? {}
-    expect(Object.keys(jobs).sort()).toEqual(['feeds', 'push', 'regenerate'])
+    expect(Object.keys(jobs).sort()).toEqual(['push', 'regenerate'])
 
-    for (const name of ['feeds', 'regenerate']) {
+    for (const name of ['regenerate']) {
       const job = jobs[name] as Job & { if?: unknown }
       expect(String(job.if), `${name} runs only on Renovate's floor branch`).toContain("github.head_ref == 'renovate/node-floor'")
       expect(String(job.if), `${name} runs only for Renovate's own pull request`).toContain("user.login == 'renovate[bot]'")
@@ -503,6 +540,12 @@ describe('release workflow policy', () => {
       expect(String(apply?.run), `the patch may edit ${path}`).toContain(` ${path} `)
     }
     expect(String(apply?.run)).toContain('git apply --summary')
+    // A floor move changes numbers only, so nothing else may reach install.sh.
+    for (const side of ['removed', 'added']) {
+      expect(String(apply?.run), `${side} lines are compared with their numbers masked`)
+        .toContain(`line = substr($0, 2); gsub(/[0-9]+/, "#", line); print line > ${side}; next }`)
+    }
+    expect(String(apply?.run)).toContain('cmp -s -- "${removed}" "${added}"')
     expect(text).toContain('persist-credentials: false')
     expect(text).not.toContain('persist-credentials: true')
   })

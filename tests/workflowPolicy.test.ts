@@ -590,7 +590,7 @@ describe('release workflow policy', () => {
     const recheck = workflow?.jobs?.recheck as (Job & { if?: unknown }) | undefined
     if (!recheck) throw new Error('renovate-node-floor.yml has no recheck job')
     expect(recheck.if).toBe("github.event_name != 'pull_request'")
-    expect(recheck.permissions).toEqual({ actions: 'write', contents: 'read', 'pull-requests': 'read' })
+    expect(recheck.permissions).toEqual({ actions: 'write', contents: 'read', 'pull-requests': 'write' })
     expect(JSON.stringify(recheck), 'recheck never sees a secret').not.toContain('secrets.')
     expect((recheck.steps ?? []).filter((step) => step.uses !== undefined), 'recheck checks nothing out').toEqual([])
     const run = runs(recheck)
@@ -601,6 +601,86 @@ describe('release workflow policy', () => {
     // scheduled run can never reach them.
     expect(String((workflow?.jobs?.regenerate as Job & { if?: unknown }).if)).toContain("github.head_ref == 'renovate/node-floor'")
     expect((workflow?.jobs?.push as Job & { needs?: unknown }).needs).toEqual(['regenerate'])
+  })
+
+  /**
+   * The same script, run against a stand-in `gh`: re-runs while GitHub allows
+   * them, and once it refuses (a run older than 30 days), ticks Renovate's
+   * rebase box, and only that box, so the pull request cannot stay red for good.
+   */
+  it('asks Renovate to rebase the floor pull request once a failed run can no longer be re-run', () => {
+    const recheck = workflows.get('renovate-node-floor.yml')?.jobs?.recheck
+    const script = String(recheck?.steps?.[0]?.run)
+    const box = (mark: string) => `Update node.\n\n - [${mark}] <!-- rebase-check -->If you want to rebase/retry this PR, check this box\n`
+    const stub = [
+      'gh() {',
+      '  printf "%s\\n" "$*" >> "$GH_CALLS"',
+      '  case "$1 $2" in',
+      '    "pr list") printf "%s" "$FIXTURE_PR" ;;',
+      '    "run list") printf "%s" "$FIXTURE_FAILED" ;;',
+      '    "run rerun") [ "$FIXTURE_RERUN" = allowed ] ;;',
+      '    "api --method") printf "%s" "$6" > "$GH_PATCHED" ;;',
+      '    "api repos/"*) printf "%s" "$FIXTURE_BODY" ;;',
+      '  esac',
+      '}',
+      '',
+    ].join('\n')
+    const execute = (fixture: { pr: string; failed?: string; rerun?: 'allowed' | 'refused'; body?: string }) => {
+      const directory = mkdtempSync(join(tmpdir(), 'looptroop-recheck-'))
+      try {
+        const calls = join(directory, 'calls')
+        const patched = join(directory, 'patched')
+        const result = spawnSync('bash', ['-c', stub + script], {
+          encoding: 'utf8',
+          env: {
+            ...process.env,
+            GH_CALLS: calls,
+            GH_PATCHED: patched,
+            GH_REPO: 'looptroop-ai/LoopTroop',
+            FIXTURE_PR: fixture.pr,
+            FIXTURE_FAILED: fixture.failed ?? '',
+            FIXTURE_RERUN: fixture.rerun ?? 'allowed',
+            FIXTURE_BODY: fixture.body ?? '',
+          },
+        })
+        return {
+          status: result.status,
+          output: `${result.stdout}${result.stderr}`,
+          calls: existsSync(calls) ? readFileSync(calls, 'utf8') : '',
+          patched: existsSync(patched) ? readFileSync(patched, 'utf8') : null,
+        }
+      } finally {
+        rmSync(directory, { recursive: true, force: true })
+      }
+    }
+
+    const none = execute({ pr: '' })
+    expect(none.status).toBe(0)
+    expect(none.calls).not.toContain('run list')
+
+    const green = execute({ pr: '42 abc123', failed: '' })
+    expect(green.status).toBe(0)
+    expect(green.calls).toContain('run list --commit abc123')
+    expect(green.calls).not.toContain('run rerun')
+
+    const rerun = execute({ pr: '42 abc123', failed: '101\n102' })
+    expect(rerun.status).toBe(0)
+    expect(rerun.calls).toContain('run rerun 101 --failed')
+    expect(rerun.calls).toContain('run rerun 102 --failed')
+    expect(rerun.calls, 'nothing is edited while re-runs work').not.toContain('api')
+
+    const expired = execute({ pr: '42 abc123', failed: '101', rerun: 'refused', body: box(' ') })
+    expect(expired.status).toBe(0)
+    expect(expired.calls).toContain('api --method PATCH repos/looptroop-ai/LoopTroop/pulls/42 -f')
+    expect(expired.patched, 'only the box changes').toBe(`body=${box('x')}`.replace(/\n$/, ''))
+
+    const asked = execute({ pr: '42 abc123', failed: '101', rerun: 'refused', body: box('x') })
+    expect(asked.status).toBe(0)
+    expect(asked.patched, 'a box already ticked is left alone').toBeNull()
+
+    const boxless = execute({ pr: '42 abc123', failed: '101', rerun: 'refused', body: 'Update node.' })
+    expect(boxless.status).toBe(1)
+    expect(boxless.output).toContain('no rebase box to tick')
   })
 
   /**
@@ -615,10 +695,10 @@ describe('release workflow policy', () => {
       gitIgnoredAuthors?: string[]
       packageRules: Array<{ groupSlug?: string; automerge?: boolean }>
     }
-    const committing = files.filter((file) => file.startsWith('renovate-') && source.get(file)!.includes('git config user.email'))
+    const committing = files.filter((file) => file.startsWith('renovate-') && (source.get(file) ?? '').includes('git config user.email'))
     expect(committing, 'the floor workflow is one of them').toContain('renovate-node-floor.yml')
     for (const file of committing) {
-      const author = /git config user\.email "([^"]+)"/.exec(source.get(file)!)?.[1]
+      const author = /git config user\.email "([^"]+)"/.exec(source.get(file) ?? '')?.[1]
       expect(renovate.gitIgnoredAuthors, `${file} commits as ${author}`).toContain(author)
     }
     expect(renovate.packageRules.find((rule) => rule.groupSlug === 'node-floor')?.automerge).toBe(true)

@@ -287,7 +287,14 @@ jobs:
   # workflow: Verify while a feed was late, and a flaky lane just the same,
   # since either one holds up the automatic merge. A check that fails for a real
   # reason fails again, and the pull request stays open; nothing merges red.
-  # No checkout and no secret: it reads run results and asks for re-runs.
+  #
+  # GitHub re-runs a run only within 30 days of its start, and a feed can stay
+  # behind longer than that. Once a re-run is refused, this ticks the rebase box
+  # in Renovate's own pull request text instead: Renovate rebuilds the branch,
+  # and every workflow starts a fresh run on the new head.
+  #
+  # No checkout and no secret: it reads run results, asks for re-runs, and
+  # edits nothing but that one checkbox.
   recheck:
     name: Re-run what failed on the floor pull request
     if: github.event_name != 'pull_request'
@@ -296,7 +303,7 @@ jobs:
     permissions:
       actions: write
       contents: read
-      pull-requests: read
+      pull-requests: write
     steps:
       - name: Re-run the failed runs
         env:
@@ -305,20 +312,37 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          head=$(gh pr list --head renovate/node-floor --state open \
-            --json headRefOid,isCrossRepository,author \
-            --jq '[.[] | select((.isCrossRepository | not) and (.author.login == "app/renovate" or .author.login == "renovate[bot]"))][0].headRefOid // empty')
-          if [ -z "${head}" ]; then
+          pr=$(gh pr list --head renovate/node-floor --state open \
+            --json number,headRefOid,isCrossRepository,author \
+            --jq '[.[] | select((.isCrossRepository | not) and (.author.login == "app/renovate" or .author.login == "renovate[bot]"))][0] // empty | "\(.number) \(.headRefOid)"')
+          if [ -z "${pr}" ]; then
             echo "No open Node floor pull request."
             exit 0
           fi
+          read -r number head <<< "${pr}"
           failed=$(gh run list --commit "${head}" --limit 100 --json databaseId,status,conclusion \
             --jq '.[] | select(.status == "completed" and (.conclusion == "failure" or .conclusion == "timed_out")) | .databaseId')
           if [ -z "${failed}" ]; then
             echo "Nothing has failed on ${head}."
             exit 0
           fi
+          refused=false
           for run in ${failed}; do
             echo "Re-running the failed jobs of run ${run} on ${head}."
-            gh run rerun "${run}" --failed || echo "::warning::Could not re-run run ${run}."
+            gh run rerun "${run}" --failed || refused=true
           done
+          if [ "${refused}" = false ]; then
+            exit 0
+          fi
+          body=$(gh api "repos/${GH_REPO}/pulls/${number}" --jq .body)
+          unticked='- [ ] <!-- rebase-check -->'
+          ticked='- [x] <!-- rebase-check -->'
+          if [[ "${body}" == *"${ticked}"* ]]; then
+            echo "Renovate has already been asked to rebase #${number}."
+          elif [[ "${body}" == *"${unticked}"* ]]; then
+            gh api --method PATCH "repos/${GH_REPO}/pulls/${number}" -f "body=${body/"${unticked}"/"${ticked}"}" > /dev/null
+            echo "::notice::A run on #${number} could not be re-run, so Renovate has been asked to rebase it."
+          else
+            echo "::error::A run on #${number} could not be re-run, and its text has no rebase box to tick."
+            exit 1
+          fi

@@ -139,8 +139,9 @@ fails the required Verify check until
 and [Homebrew](https://formulae.brew.sh/formula/node@24) all offer the new
 version, because winget can trail a Node release by weeks and a floor above it
 breaks the Windows install instructions. The same workflow re-runs whatever
-failed on Renovate's pull request once a day, and Renovate merges it when every
-required check passes. It gets no changelog line, like any other non-major
+failed on Renovate's pull request once a day, or, once a run is too old for
+GitHub to re-run, ticks the pull request's rebase box so every check starts
+afresh. Renovate merges it when every required check passes. It gets no changelog line, like any other non-major
 update. Within a day of the merge, the website's *Follow LoopTroop main*
 workflow writes the new floor into its pages and publishes them.
 

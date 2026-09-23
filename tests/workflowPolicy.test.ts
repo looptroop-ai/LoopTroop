@@ -596,7 +596,7 @@ describe('release workflow policy', () => {
     const run = runs(recheck)
     expect(run).toContain('gh pr list --head renovate/node-floor --state open')
     expect(run, 'only Renovate\'s own pull request, never a fork\'s').toContain('select((.isCrossRepository | not) and (.author.login == "app/renovate"')
-    expect(run).toContain('gh run rerun "${run}" --failed')
+    expect(run).toMatch(/gh run rerun "\$\{run\}" --failed/)
     // The jobs that write run only on the floor branch's pull request, so a
     // scheduled run can never reach them.
     expect(String((workflow?.jobs?.regenerate as Job & { if?: unknown }).if)).toContain("github.head_ref == 'renovate/node-floor'")
@@ -625,11 +625,13 @@ describe('release workflow policy', () => {
       '}',
       '',
     ].join('\n')
-    const execute = (fixture: { pr: string; failed?: string; rerun?: 'allowed' | 'refused'; body?: string }) => {
+    const readIfWritten = <T,>(path: string, otherwise: T) => (existsSync(path) ? readFileSync(path, 'utf8') : otherwise)
+    const execute = (given: { pr: string; failed?: string; rerun?: 'allowed' | 'refused'; body?: string }) => {
+      const fixture = { failed: '', rerun: 'allowed', body: '', ...given }
       const directory = mkdtempSync(join(tmpdir(), 'looptroop-recheck-'))
+      const calls = join(directory, 'calls')
+      const patched = join(directory, 'patched')
       try {
-        const calls = join(directory, 'calls')
-        const patched = join(directory, 'patched')
         const result = spawnSync('bash', ['-c', stub + script], {
           encoding: 'utf8',
           env: {
@@ -638,16 +640,16 @@ describe('release workflow policy', () => {
             GH_PATCHED: patched,
             GH_REPO: 'looptroop-ai/LoopTroop',
             FIXTURE_PR: fixture.pr,
-            FIXTURE_FAILED: fixture.failed ?? '',
-            FIXTURE_RERUN: fixture.rerun ?? 'allowed',
-            FIXTURE_BODY: fixture.body ?? '',
+            FIXTURE_FAILED: fixture.failed,
+            FIXTURE_RERUN: fixture.rerun,
+            FIXTURE_BODY: fixture.body,
           },
         })
         return {
           status: result.status,
           output: `${result.stdout}${result.stderr}`,
-          calls: existsSync(calls) ? readFileSync(calls, 'utf8') : '',
-          patched: existsSync(patched) ? readFileSync(patched, 'utf8') : null,
+          calls: readIfWritten(calls, ''),
+          patched: readIfWritten(patched, null),
         }
       } finally {
         rmSync(directory, { recursive: true, force: true })

@@ -151,17 +151,24 @@ jobs:
       # because this job is required; a new check would gate nothing until
       # someone added it to the branch ruleset. Every other pull request skips
       # the network entirely, so no unrelated change waits on a third party.
+      #
+      # On every event, not only pull requests. CI runs twice for each commit
+      # on a branch, once for the push and once for the pull request, and both
+      # runs report under this job's required name — which GitHub documents as
+      # ambiguous. A push run that skipped this step would be a green copy of
+      # the check that a red one could be read past. So a push compares with
+      # the default branch, a pull request with its base, and both reach the
+      # same verdict whichever GitHub reads.
       - name: Check every feed offers a changed Node floor
-        if: github.event_name == 'pull_request'
         shell: bash
         env:
-          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          BASE_REF: ${{ github.event.pull_request.base.sha || github.event.repository.default_branch }}
           # Read-only; the winget listing comes from GitHub's API, which
           # rate-limits anonymous callers by IP.
           GITHUB_TOKEN: ${{ github.token }}
         run: |
           set -euo pipefail
-          git fetch --no-tags --depth=1 origin "${BASE_SHA}"
+          git fetch --no-tags --depth=1 origin "${BASE_REF}"
           before=$(git show FETCH_HEAD:package.json | node -p "JSON.parse(require('node:fs').readFileSync(0, 'utf8')).engines.node")
           after=$(node -p "require('./package.json').engines.node")
           if [ "${before}" = "${after}" ]; then

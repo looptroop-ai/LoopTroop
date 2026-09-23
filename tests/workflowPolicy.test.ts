@@ -503,7 +503,10 @@ describe('release workflow policy', () => {
     const verify = (ci.verify?.steps ?? []) as Array<Step & { if?: unknown }>
     const gate = verify.find((step) => step.name === 'Check every feed offers a changed Node floor')
     expect(gate, 'Verify checks the feeds when the floor changes').toBeDefined()
-    expect(String(gate?.if)).toBe("github.event_name == 'pull_request'")
+    // Push and pull request both report this required name for one commit, so
+    // both must reach the same verdict: no event may skip the step.
+    expect(gate?.if, 'the feed gate runs on every event').toBeUndefined()
+    expect(gate?.env?.BASE_REF).toBe('${{ github.event.pull_request.base.sha || github.event.repository.default_branch }}')
     expect(String(gate?.run)).toContain('node scripts/check-node-feeds.ts')
     expect(String(gate?.run)).toContain('engines.node')
     expect(gate?.env?.GITHUB_TOKEN).toBe('${{ github.token }}')

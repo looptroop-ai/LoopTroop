@@ -19,9 +19,9 @@
  * The application and package support Node from the `engines.node` floor
  * up. A standalone executable is different: its embedded runtime is the builder's
  * runtime, so this script refuses every version except Node 26.9.0. The binary
- * CI and release jobs pin that exact runtime; other jobs keep the application
- * floor. This is an explicit binary-toolchain boundary, not a package-engine
- * bump.
+ * CI and release jobs pin that exact runtime; the other jobs run the `.nvmrc`
+ * toolchain pin, which sits above the floor. This is an explicit
+ * binary-toolchain boundary, not a package-engine bump.
  *
  * ## Why CommonJS
  *

@@ -284,8 +284,8 @@ server it can reach, and a project mounted at its own absolute path. See the
 Standalone release archives carry Node `v26.9.0` in the executable, so a
 downloaded archive runs without Node installed on the host. That embedded
 runtime is separate from the application and package floor: Node `24.18.0+`
-remains required for the npm, bun, pnpm and Yarn channels and for the
-container's application runtime.
+remains required for the npm, bun, pnpm and Yarn channels. The container
+carries its own Node, newer than that floor.
 
 Node 26 is currently the Current release line, with its planned Active LTS
 transition on 2026-10-28. Embedded-runtime security maintenance follows

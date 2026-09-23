@@ -127,7 +127,7 @@ exactly as they would have. Pin a version with `--version X.Y.Z` (`-Version` on
 Windows). It installs wherever npm's global prefix points; change that with
 `npm config set prefix`.
 
-**Needs Node 24.15.0 or newer already installed**, with the npm that came with
+**Needs Node 24.18.0 or newer already installed**, with the npm that came with
 it. It never installs Node for you, never asks for sudo, and writes nothing
 outside npm's global prefix.
 
@@ -143,7 +143,7 @@ npm install -g looptroop
 npm install -g looptroop@latest   # upgrade
 ```
 
-**Needs Node 24.15.0 or newer**, plus git and `gh`.
+**Needs Node 24.18.0 or newer**, plus git and `gh`.
 </details>
 
 <details>
@@ -216,7 +216,7 @@ bun add -g looptroop
 bun add -g looptroop@latest       # upgrade
 ```
 
-**Needs Node 24.15.0 or newer as well as bun** — the launcher is a Node program,
+**Needs Node 24.18.0 or newer as well as bun** — the launcher is a Node program,
 so bun installs it but Node runs it — plus git and `gh`.
 </details>
 
@@ -228,7 +228,7 @@ pnpm add -g looptroop
 pnpm add -g looptroop@latest      # upgrade
 ```
 
-**Needs Node 24.15.0 or newer as well as pnpm**, plus git and `gh`.
+**Needs Node 24.18.0 or newer as well as pnpm**, plus git and `gh`.
 
 pnpm holds a new version back for about a day: it will not resolve a tag to a
 version published in the last 24 hours — a supply-chain protection, on by
@@ -245,7 +245,7 @@ export PATH="$(yarn global bin):$PATH"   # Yarn does not do this for you
 yarn global upgrade looptroop@latest     # upgrade
 ```
 
-**Needs Node 24.15.0 or newer as well as Yarn**, plus git and `gh`.
+**Needs Node 24.18.0 or newer as well as Yarn**, plus git and `gh`.
 
 These commands use Bash or zsh syntax. Yarn Classic also runs on Windows, but a
 PowerShell PATH command is not documented here. Use npm on Windows for the
@@ -283,7 +283,7 @@ server it can reach, and a project mounted at its own absolute path. See the
 
 Standalone release archives carry Node `v26.9.0` in the executable, so a
 downloaded archive runs without Node installed on the host. That embedded
-runtime is separate from the application and package floor: Node `24.15.0+`
+runtime is separate from the application and package floor: Node `24.18.0+`
 remains required for the npm, bun, pnpm and Yarn channels and for the
 container's application runtime.
 

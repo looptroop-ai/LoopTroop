@@ -157,7 +157,7 @@
     "typescript": "^6.0.3",
     "typescript-eslint": "^8.67.0",
     "vite": "^8.2.2",
-    "vitest": "^4.1.11"
+    "vitest": "^5.0.1"
   },
   "//allowScripts": "Security decisions and scoped exceptions: .github/security-alert-dispositions.md",
   "allowScripts": {

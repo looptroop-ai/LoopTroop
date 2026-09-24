@@ -1,11 +1,12 @@
-import { writeFileSync } from 'node:fs'
+import { chmodSync, readFileSync, writeFileSync } from 'node:fs'
 import { join } from 'node:path'
-import { afterEach, describe, expect, it } from 'vitest'
+import { afterEach, describe, expect, it, vi } from 'vitest'
 import { makeTempDir, removeTempDir } from '../server/test/tempDir'
 import {
   classifyAuditMaintenanceFailure,
   classifyOutdatedProbe,
   chooseAgedDependencyTarget,
+  chooseSameMajorOpenCodeTarget,
   collectLockfilePackageUpdates,
   decideDailyMaintenanceTask,
   formatDependencyReleasePolicySummaryLines,
@@ -26,6 +27,7 @@ import {
   recordDailyMaintenanceSuccess,
   shouldRetryAuditMaintenanceFailure,
   summarizePeerResolutionFailure,
+  upgradeOpenCodeCli,
   type DailyMaintenanceState,
 } from '../scripts/dev-maintenance'
 
@@ -47,6 +49,7 @@ function makeTempFile(contents = 'x') {
 }
 
 afterEach(() => {
+  vi.unstubAllEnvs()
   while (tempDirs.length > 0) {
     const dir = tempDirs.pop()
     if (dir) {
@@ -54,6 +57,18 @@ afterEach(() => {
     }
   }
 })
+
+function writeFakeTool(binDir: string, name: string, source: string) {
+  const fixture = join(binDir, `${name}-fixture.cjs`)
+  writeFileSync(fixture, source, 'utf8')
+  if (process.platform === 'win32') {
+    writeFileSync(join(binDir, `${name}.cmd`), `@echo off\r\n"${process.execPath}" "${fixture}" %*\r\n`, 'utf8')
+  } else {
+    const executable = join(binDir, name)
+    writeFileSync(executable, `#!/usr/bin/env node\n${source}`, 'utf8')
+    chmodSync(executable, 0o700)
+  }
+}
 
 describe('daily dev maintenance decisions', () => {
   it('runs when the task has never completed before', () => {
@@ -252,6 +267,21 @@ describe('aged dependency update selection', () => {
 
     expect(selection.targetVersion).toBe('1.1.0')
   })
+
+  it('chooses only a published stable target from the installed OpenCode major', () => {
+    expect(chooseSameMajorOpenCodeTarget('1.18.21', {
+      '1.18.21': '2026-05-01T00:00:00.000Z',
+      '1.18.32': '2026-05-10T00:00:00.000Z',
+      '1.19.0-beta.1': '2026-05-11T00:00:00.000Z',
+      '2.0.16': '2026-05-12T00:00:00.000Z',
+      '1.18.33': 'not a timestamp',
+    })).toBe('1.18.32')
+    expect(chooseSameMajorOpenCodeTarget('2.0.15', {
+      '1.18.32': '2026-05-10T00:00:00.000Z',
+      '2.0.15': '2026-05-11T00:00:00.000Z',
+      '2.0.16': '2026-05-12T00:00:00.000Z',
+    })).toBe('2.0.16')
+  })
 })
 
 describe('npm publish-time metadata parsing', () => {
@@ -271,6 +301,119 @@ describe('npm publish-time metadata parsing', () => {
   it('rejects output without publish-time entries', () => {
     expect(parseNpmViewPublishTimes(JSON.stringify([]))).toBeNull()
     expect(parseNpmViewPublishTimes('not json')).toBeNull()
+  })
+})
+
+describe('pinned OpenCode maintenance', () => {
+  it.each([
+    ['1.18.21', 'opencode-ai', '1.18.32', 'npm'],
+    ['1.18.21', 'opencode-ai', '1.18.32', 'bun'],
+    ['1.18.21', 'opencode-ai', '1.18.32', 'curl'],
+    ['2.0.15', '@opencode/cli', '2.0.16', 'npm'],
+    ['2.0.15', '@opencode/cli', '2.0.16', 'bun'],
+    ['2.0.15', '@opencode/cli', '2.0.16', 'curl'],
+  ])('updates v%s through its matching package with an explicit method', (current, packageName, target, method) => {
+    const binDir = makeTempDir('looptroop-opencode-maintenance-bin-')
+    const dataDir = makeTempDir('looptroop-opencode-maintenance-data-')
+    tempDirs.push(binDir, dataDir)
+    const versionPath = join(dataDir, 'version.txt')
+    const upgradeTrace = join(dataDir, 'opencode.jsonl')
+    const npmTrace = join(dataDir, 'npm.jsonl')
+    const source = [
+      "const fs = require('node:fs')",
+      'const args = process.argv.slice(2)',
+      "if (args[0] === '--version') { process.stdout.write('OpenCode ' + (fs.existsSync(process.env.OPENCODE_VERSION_PATH) ? fs.readFileSync(process.env.OPENCODE_VERSION_PATH, 'utf8') : process.env.OPENCODE_FIXTURE_VERSION) + '\\n'); process.exit(0) }",
+      "if (args[0] === 'upgrade') {",
+      "  fs.appendFileSync(process.env.OPENCODE_UPGRADE_TRACE, JSON.stringify(args) + '\\n')",
+      "  if (args.length === 2 && args[1] === process.env.OPENCODE_FIXTURE_VERSION) { process.stdout.write('Using method: ' + process.env.OPENCODE_FIXTURE_METHOD + '\\nOpenCode upgrade skipped: already installed\\n'); process.exit(0) }",
+      "  if (args[2] === '--method' && args[3] === process.env.OPENCODE_FIXTURE_METHOD) { fs.writeFileSync(process.env.OPENCODE_VERSION_PATH, args[1]); process.stdout.write('Upgrade complete\\n'); process.exit(0) }",
+      '}',
+      'process.exit(1)',
+      '',
+    ].join('\n')
+    const npmSource = [
+      "const fs = require('node:fs')",
+      'const args = process.argv.slice(2)',
+      "fs.appendFileSync(process.env.OPENCODE_NPM_TRACE, JSON.stringify(args) + '\\n')",
+      "if (args[0] === 'view' && args[2] === 'time') {",
+      "  process.stdout.write(JSON.stringify([{ '1.18.21': '2026-09-01T00:00:00.000Z', '1.18.32': '2026-09-10T00:00:00.000Z', '2.0.15': '2026-09-01T00:00:00.000Z', '2.0.16': '2026-09-10T00:00:00.000Z' }]))",
+      "  process.exit(0)",
+      '}',
+      'process.exit(1)',
+      '',
+    ].join('\n')
+    writeFakeTool(binDir, 'opencode', source)
+    writeFakeTool(binDir, 'npm', npmSource)
+    vi.stubEnv('PATH', `${binDir}${process.platform === 'win32' ? ';' : ':'}${process.env.PATH ?? ''}`)
+    vi.stubEnv('LOOPTROOP_TRUSTED_EXECUTABLE_DIRS', binDir)
+    vi.stubEnv('OPENCODE_FIXTURE_VERSION', current)
+    vi.stubEnv('OPENCODE_FIXTURE_METHOD', method)
+    vi.stubEnv('OPENCODE_VERSION_PATH', versionPath)
+    vi.stubEnv('OPENCODE_UPGRADE_TRACE', upgradeTrace)
+    vi.stubEnv('OPENCODE_NPM_TRACE', npmTrace)
+
+    const report = upgradeOpenCodeCli({ logPrefix: '' })
+
+    expect(report).toMatchObject({
+      available: true,
+      checked: true,
+      upgraded: true,
+      method,
+      versionAfter: `OpenCode ${target}`,
+      errors: [],
+    })
+    const openCodeCommands = readFileSync(upgradeTrace, 'utf8')
+      .trim()
+      .split('\n')
+      .map((line) => JSON.parse(line) as string[])
+    expect(openCodeCommands).toEqual([
+      ['upgrade', current],
+      ['upgrade', target, '--method', method],
+    ])
+    const npmCommands = readFileSync(npmTrace, 'utf8')
+      .trim()
+      .split('\n')
+      .map((line) => JSON.parse(line) as string[])
+    expect(npmCommands[0]).toEqual(['view', packageName, 'time', '--json'])
+  })
+
+  it('defers Homebrew rather than invoking its unpinned upgrade command', () => {
+    const binDir = makeTempDir('looptroop-opencode-maintenance-bin-')
+    const dataDir = makeTempDir('looptroop-opencode-maintenance-data-')
+    tempDirs.push(binDir, dataDir)
+    const upgradeTrace = join(dataDir, 'opencode.jsonl')
+    const source = [
+      "const fs = require('node:fs')",
+      'const args = process.argv.slice(2)',
+      "if (args[0] === '--version') { process.stdout.write('OpenCode 1.18.21\\n'); process.exit(0) }",
+      "if (args[0] === 'upgrade') { fs.appendFileSync(process.env.OPENCODE_UPGRADE_TRACE, JSON.stringify(args) + '\\n'); process.stdout.write('Using method: brew\\nOpenCode upgrade skipped: already installed\\n'); process.exit(0) }",
+      'process.exit(1)',
+      '',
+    ].join('\n')
+    const npmSource = [
+      "const args = process.argv.slice(2)",
+      "if (args[0] === 'view' && args[2] === 'time') { process.stdout.write(JSON.stringify([{ '1.18.21': '2026-09-01T00:00:00.000Z', '1.18.32': '2026-09-10T00:00:00.000Z' }])); process.exit(0) }",
+      'process.exit(1)',
+      '',
+    ].join('\n')
+    writeFakeTool(binDir, 'opencode', source)
+    writeFakeTool(binDir, 'npm', npmSource)
+    vi.stubEnv('PATH', `${binDir}${process.platform === 'win32' ? ';' : ':'}${process.env.PATH ?? ''}`)
+    vi.stubEnv('LOOPTROOP_TRUSTED_EXECUTABLE_DIRS', binDir)
+    vi.stubEnv('OPENCODE_UPGRADE_TRACE', upgradeTrace)
+
+    const report = upgradeOpenCodeCli({ logPrefix: '' })
+
+    expect(report).toMatchObject({
+      available: true,
+      checked: true,
+      deferred: true,
+      deferredReason: expect.stringContaining('Homebrew does not honor OpenCode version targets'),
+      method: 'brew',
+      upgraded: false,
+    })
+    expect(readFileSync(upgradeTrace, 'utf8').trim().split('\n').map((line) => JSON.parse(line)))
+      .toEqual([['upgrade', '1.18.21']])
   })
 })
 
@@ -368,7 +511,7 @@ describe('held dependency detail formatting', () => {
     expect(formatDependencyReleasePolicySummaryLines()).toEqual([
       'Direct npm dependency updates and npm audit fixes wait until a release has been published for 7 days.',
       'Updates are previewed with npm peer resolution; incompatible releases and registry-tarball policy conflicts are held and never forced.',
-      'OpenCode CLI and @opencode-ai/sdk updates are applied immediately.',
+      'OpenCode CLI upgrades stay on the installed major; @opencode-ai/sdk updates apply immediately.',
     ])
   })
 

@@ -28,7 +28,7 @@
  * AGENTS.md forbids it.
  */
 import { spawnSync, spawn } from 'node:child_process'
-import { createHash } from 'node:crypto'
+import { createHash, randomBytes } from 'node:crypto'
 import { existsSync, mkdirSync, mkdtempSync, openSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
 import { createServer } from 'node:net'
 import { homedir, tmpdir } from 'node:os'
@@ -134,7 +134,7 @@ export const CHANNELS = {
       { os: 'ubuntu-latest', tier: 'release', opencode: 'npm' },
       { os: 'macos-latest', tier: 'release', opencode: 'npm' },
       // The `.cmd` shape, and the reason this is real OpenCode rather than mock.
-      { os: 'windows-latest', tier: 'release', opencode: 'npm' },
+      { os: 'windows-latest', tier: 'release', opencode: 'npm-v1' },
     ],
     daemon: true,
     pinnable: true,
@@ -202,7 +202,7 @@ export const CHANNELS = {
   // installed pwsh.
   'installer-ps1': {
     documented: powershellInstaller('https://www.looptroop.ovh/install.ps1'),
-    legs: [{ os: 'windows-latest', tier: 'release', opencode: 'npm' }],
+    legs: [{ os: 'windows-latest', tier: 'release', opencode: 'npm-v1' }],
     daemon: true,
     pinnable: true,
     port: 39123,
@@ -297,7 +297,7 @@ export const CHANNELS = {
   // Two documented steps, not one: adding the bucket is part of the install.
   scoop: {
     documented: 'scoop bucket add looptroop https://github.com/looptroop-ai/scoop-bucket; scoop install looptroop',
-    legs: [{ os: 'windows-latest', tier: 'release', opencode: 'npm' }],
+    legs: [{ os: 'windows-latest', tier: 'release', opencode: 'npm-v1' }],
     daemon: true,
     pinnable: false,
     port: 39127,
@@ -329,7 +329,7 @@ export const CHANNELS = {
   // below says what happens when it runs before the queue has moved.
   chocolatey: {
     documented: 'choco install looptroop',
-    legs: [{ os: 'windows-latest', tier: 'weekly', opencode: 'npm' }],
+    legs: [{ os: 'windows-latest', tier: 'weekly', opencode: 'npm-v1' }],
     daemon: true,
     // Unlike a tap or a bucket, the feed keeps every approved version.
     pinnable: true,
@@ -380,7 +380,7 @@ export const CHANNELS = {
   // reach the index afterwards.
   winget: {
     documented: `winget install ${WINGET_IDENTIFIER}`,
-    legs: [{ os: 'windows-latest', tier: 'weekly', opencode: 'npm' }],
+    legs: [{ os: 'windows-latest', tier: 'weekly', opencode: 'npm-v1' }],
     daemon: true,
     // Every version's manifests stay in `winget-pkgs`, so an older one installs.
     pinnable: true,
@@ -458,8 +458,8 @@ export const CHANNELS = {
     // against a published release — and the code in this driver that supports
     // it would be dead.
     //
-    // Deliberately not one of the npm legs: those are the spawn coverage, and
-    // the Windows one is the `opencode.cmd` regression guard.
+    // V2 is adopted on Linux; Windows keeps a separate v1 npm leg because v2
+    // package managers are not supported there.
     legs: [{ os: 'ubuntu-latest', tier: 'weekly', opencode: 'adopt' }],
     daemon: true,
     pinnable: true,
@@ -612,7 +612,7 @@ export const CHANNELS = {
 
   'installer-ps1-binary': {
     documented: powershellInstaller('https://www.looptroop.ovh/install.ps1', ' -Binary'),
-    legs: [{ os: 'windows-latest', tier: 'weekly', opencode: 'npm' }],
+    legs: [{ os: 'windows-latest', tier: 'weekly', opencode: 'npm-v1' }],
     daemon: true,
     pinnable: true,
     port: 39125,
@@ -681,7 +681,7 @@ function binaryChannel(target, os, port, opencodePort) {
 
   return {
     documented: `download looptroop-<version>-${target} from the releases page`,
-    legs: [{ os, tier: 'weekly', opencode: 'npm' }],
+    legs: [{ os, tier: 'weekly', opencode: os.startsWith('windows') ? 'npm-v1' : 'npm' }],
     daemon: true,
     pinnable: true,
     port,
@@ -1385,6 +1385,9 @@ async function runChannel(recipe, options) {
   const port = recipe.port
   const opencodePort = recipe.opencodePort
   const baseUrl = `http://127.0.0.1:${port}`
+  const adoptedOpenCodeCredentials = opencodeMode === 'adopt'
+    ? createOpenCodeAdoptCredentials(randomBytes(32).toString('base64url'))
+    : null
 
   // `LOOPTROOP_BACKEND_PORT` as well as `--port`, because doctor resolves the
   // port from settings rather than from the running daemon: without it the
@@ -1404,6 +1407,7 @@ async function runChannel(recipe, options) {
     LOOPTROOP_BACKEND_PORT: String(port),
     LOOPTROOP_OPENCODE_BASE_URL: `http://127.0.0.1:${opencodePort}`,
     ...(opencodeMode === 'mock' ? { LOOPTROOP_OPENCODE_MODE: 'mock' } : {}),
+    ...(adoptedOpenCodeCredentials?.env ?? {}),
   }
 
   let adopted = null
@@ -1625,11 +1629,11 @@ async function runChannel(recipe, options) {
         windowsVerbatimArguments: opencodeLaunch.windowsVerbatimArguments,
         // Somebody else's server. It has no more business holding this
         // workflow's token than the CLI under test does.
-        env: { ...process.env, ...ANONYMOUS },
+        env: { ...process.env, ...ANONYMOUS, ...(adoptedOpenCodeCredentials?.env ?? {}) },
       })
       adopted.unref()
-      const up = await waitForOpenCode(opencodePort)
-      if (!check('adopted OpenCode is listening', up, `nothing on ${opencodePort} after 4 minutes`)) {
+      const up = await waitForOpenCode(opencodePort, adoptedOpenCodeCredentials.headers)
+      if (!check('adopted OpenCode is listening', up, `no verified OpenCode v2 info response on ${opencodePort} after 4 minutes`)) {
         try {
           log(`  --- ${opencodeLog} ---`)
           for (const line of readFileSync(opencodeLog, 'utf8').trim().split('\n').slice(-15)) log(`  ${line}`)
@@ -1758,7 +1762,11 @@ async function runChannel(recipe, options) {
     if (opencodeMode === 'adopt') {
       // A daemon that killed a server it did not start would take a user's own
       // OpenCode down with it.
-      check('adopted OpenCode outlived the daemon', await openCodeAnswers(opencodePort), 'the adopted server was killed')
+      check(
+        'adopted OpenCode outlived the daemon',
+        await openCodeAnswers(opencodePort, adoptedOpenCodeCredentials.headers),
+        'the adopted server was killed or stopped returning valid info',
+      )
     } else if (opencodeMode !== 'mock') {
       check('managed OpenCode stopped with the daemon', await portIsClosed(opencodePort), `${opencodePort} still answers`)
       // The port closing is not the same as the process being gone: a
@@ -1846,11 +1854,11 @@ async function runChannel(recipe, options) {
  * The elapsed time is printed on success as well as failure, so a server that
  * is quietly getting slower is visible before it starts timing out.
  */
-async function waitForOpenCode(port, timeoutMs = 240_000) {
+async function waitForOpenCode(port, headers, timeoutMs = 240_000) {
   const started = Date.now()
   const deadline = started + timeoutMs
   while (Date.now() < deadline) {
-    if (await openCodeAnswers(port)) {
+    if (await openCodeAnswers(port, headers)) {
       log(`  ready after ${Math.round((Date.now() - started) / 1000)}s`)
       return true
     }
@@ -1859,12 +1867,25 @@ async function waitForOpenCode(port, timeoutMs = 240_000) {
   return false
 }
 
-async function openCodeAnswers(port) {
+export function createOpenCodeAdoptCredentials(password) {
+  return {
+    env: { OPENCODE_PASSWORD: password, OPENCODE_SERVER_PASSWORD: password },
+    headers: { Authorization: `Basic ${Buffer.from(`opencode:${password}`).toString('base64')}` },
+  }
+}
+
+export function isOpenCodeInfoReady(status, value) {
+  return status === 200 &&
+    typeof value === 'object' && value !== null && !Array.isArray(value) &&
+    typeof value.version === 'string' && /^v?2\.\d+\.\d+(?:[-+][0-9A-Za-z.-]+)?$/.test(value.version) &&
+    Number.isInteger(value.pid) && value.pid > 0
+}
+
+export async function openCodeAnswers(port, headers, fetchImpl = fetch) {
   try {
-    const response = await fetch(`http://127.0.0.1:${port}/config`)
-    // Any answer proves something is serving; a password-protected server
-    // answers 401 and is still a running OpenCode.
-    return response.status < 500
+    const response = await fetchImpl(`http://127.0.0.1:${port}/api/info`, { headers })
+    if (response.status !== 200) return false
+    return isOpenCodeInfoReady(response.status, await response.json())
   } catch {
     return false
   }

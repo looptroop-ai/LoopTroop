@@ -20,7 +20,7 @@ const workflows = readdirSync(workflowDir).filter((file) => /\.ya?ml$/.test(file
   document: yaml.load(readFileSync(join(workflowDir, file), 'utf8')) as {
     jobs: Record<string, {
       strategy?: { matrix?: { manager?: string[]; include?: { manager: string; package: string }[] } }
-      steps?: { run?: string; env?: Record<string, string> }[]
+      steps?: { name?: string; if?: string; run?: string; env?: Record<string, string> }[]
     }>
   },
 }))
@@ -70,13 +70,28 @@ describe('dependency install script policy', () => {
   it('limits global OpenCode lifecycle approval to the exact installed version', () => {
     const commands = workflows.flatMap(({ document }) => Object.values(document.jobs)
       .flatMap(({ steps = [] }) => steps.map(({ run = '' }) => run)))
-      .filter((run) => /^npm install --global .*opencode-ai@/m.test(run))
-    expect(commands.length).toBeGreaterThan(0)
+      .filter((run) => /^npm install --global .*?(?:opencode-ai@|@opencode\/cli@)/m.test(run))
+    expect(commands).toHaveLength(2)
     for (const command of commands) {
-      const match = /^npm install --global --allow-scripts=(opencode-ai@\d+\.\d+\.\d+) (opencode-ai@\d+\.\d+\.\d+)$/m.exec(command)
+      const match = /^npm install --global --allow-scripts=((?:opencode-ai|@opencode\/cli)@\d+\.\d+\.\d+) ((?:opencode-ai|@opencode\/cli)@\d+\.\d+\.\d+)$/m.exec(command)
       expect(match, command).not.toBeNull()
       expect(match?.[1]).toBe(match?.[2])
     }
+
+    const smoke = workflows.find(({ file }) => file === 'published-smoke.yml')!.document.jobs['smoke']!
+    const opencodeInstallSteps = smoke.steps?.filter(({ name }) => name?.startsWith('Install OpenCode'))
+    expect(opencodeInstallSteps?.map(({ name, if: condition, run }) => ({ name, condition, run }))).toEqual([
+      {
+        name: 'Install OpenCode v2',
+        condition: "matrix.opencode == 'npm' || matrix.opencode == 'adopt'",
+        run: 'npm install --global --allow-scripts=@opencode/cli@2.0.16 @opencode/cli@2.0.16',
+      },
+      {
+        name: 'Install OpenCode v1 on Windows',
+        condition: "matrix.opencode == 'npm-v1'",
+        run: 'npm install --global --allow-scripts=opencode-ai@1.18.32 opencode-ai@1.18.32',
+      },
+    ])
   })
 
   it('keeps global manager approvals version-pinned to the closed manager list', () => {

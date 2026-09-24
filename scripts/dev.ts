@@ -27,6 +27,7 @@ import { getWslLanAccessPlan } from './wsl-lan-access'
 import { getErrorMessage } from '../shared/typeGuards'
 import { LOOPTROOP_OPENCODE_ROUTING_CONFIG } from '../shared/openRouterRouting'
 import { resolveAppConfigDir } from '../server/lib/appConfigDir'
+import { withOpenCodePasswordAliases } from '../shared/opencodeAuth'
 
 const __dirname = dirname(fileURLToPath(import.meta.url))
 const repoRoot = resolve(__dirname, '..')
@@ -105,10 +106,15 @@ if (note) {
   console.log(`[dev] ${note}`)
 }
 
-if (status === 'ready-to-start' && !childEnv.OPENCODE_SERVER_PASSWORD?.trim()) {
-  childEnv.OPENCODE_SERVER_USERNAME = childEnv.OPENCODE_SERVER_USERNAME?.trim() || 'opencode'
-  childEnv.OPENCODE_SERVER_PASSWORD = randomBytes(18).toString('base64url')
-  console.log('[dev] Securing the local OpenCode dev server with ephemeral basic auth.')
+if (status === 'ready-to-start') {
+  if (childEnv.OPENCODE_PASSWORD === undefined && childEnv.OPENCODE_SERVER_PASSWORD === undefined) {
+    const password = randomBytes(32).toString('base64url')
+    childEnv.OPENCODE_PASSWORD = password
+    childEnv.OPENCODE_SERVER_PASSWORD = password
+    console.log('[dev] Securing the local OpenCode dev server with ephemeral basic auth.')
+  } else {
+    withOpenCodePasswordAliases(childEnv)
+  }
 }
 
 if (!childEnv.LOOPTROOP_API_TOKEN?.trim()) {
@@ -334,6 +340,8 @@ printSummaryBlock('Package gate', formatDependencyReleasePolicySummaryLines())
 if (preflightReport) {
   if (preflightReport.opencode.skipped) {
     printSummaryLine('OpenCode CLI', 'Skipped automatic OpenCode upgrade via LOOPTROOP_DEV_SKIP_OPENCODE_UPGRADE=1')
+  } else if (preflightReport.opencode.deferred && preflightReport.opencode.deferredReason) {
+    printSummaryLine('OpenCode CLI', preflightReport.opencode.deferredReason)
   } else if (preflightReport.opencode.deferred) {
     printSummaryLine(
       'OpenCode CLI',

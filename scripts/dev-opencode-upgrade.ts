@@ -20,6 +20,11 @@ if (!report.available) {
   process.exit(0)
 }
 
+if (report.deferred) {
+  console.log(`[opencode:upgrade] ${report.deferredReason ?? 'OpenCode upgrade was deferred.'}`)
+  process.exit(0)
+}
+
 if (report.errors.length > 0) {
   for (const error of report.errors) {
     console.error(`[opencode:upgrade] ${error}`)

@@ -1,8 +1,8 @@
 import { describe, it, expect, afterEach, vi } from 'vitest'
-import { mkdtempSync, chmodSync } from 'node:fs'
+import { mkdtempSync, chmodSync, writeFileSync, readFileSync } from 'node:fs'
 import { createServer } from 'node:net'
 import { tmpdir } from 'node:os'
-import { join } from 'node:path'
+import { delimiter, join } from 'node:path'
 import { doctorCommand, runChecks, isOpenCodeCliLaunchable, judgeOpenCode, runProbe } from '../server/cli/doctorCommand'
 import { NODE_FLOOR as FLOOR } from '../server/lib/nodeFloor'
 import { formatNodeVersion } from '../shared/nodeFloor'
@@ -22,6 +22,7 @@ describe('doctor command', () => {
 
   afterEach(() => {
     vi.restoreAllMocks()
+    vi.unstubAllEnvs()
     for (const dir of tempDirs.splice(0)) {
       try {
         chmodSync(dir, 0o700)
@@ -267,15 +268,60 @@ describe('doctor command', () => {
     expect(opencode?.detail).toContain('mock')
   })
 
-  it('checks OpenCode directly without allowing a redirect to another service', async () => {
+  it('checks OpenCode directly through its verified API without following redirects', async () => {
     useConfigDir()
     process.env.LOOPTROOP_OPENCODE_MODE = 'real'
-    const fetchMock = vi.spyOn(globalThis, 'fetch').mockImplementation(async () => new Response('{}'))
+    const fetchMock = vi.spyOn(globalThis, 'fetch').mockImplementation(async () => new Response(
+      JSON.stringify({ version: '2.0.15', pid: 812 }),
+      { status: 200, headers: { 'content-type': 'application/json' } },
+    ))
 
     const opencode = (await runChecks()).find((check) => check.name === 'opencode')
 
     expect(opencode?.status).toBe('ok')
-    expect(fetchMock).toHaveBeenCalledWith(expect.stringMatching(/\/config$/), expect.objectContaining({ redirect: 'error' }))
+    expect(opencode?.detail).toContain('(v2, 2.0.15)')
+    expect(fetchMock).toHaveBeenCalledWith(expect.stringMatching(/\/api\/info$/), expect.objectContaining({ redirect: 'manual' }))
+  })
+
+  it('uses the authenticated daemon health route and reports model discovery failures', async () => {
+    const configDir = useConfigDir()
+    process.env.LOOPTROOP_OPENCODE_MODE = 'real'
+    writeDaemonState({
+      instanceId: 'health-daemon',
+      pid: process.pid,
+      host: '127.0.0.1',
+      port: 4318,
+      startedAt: new Date().toISOString(),
+      version: '0.0.0-test',
+      apiToken: 'doctor-api-token',
+    }, configDir)
+    const fetchMock = vi.spyOn(globalThis, 'fetch').mockImplementation(async (input, init) => {
+      if (String(input).endsWith('/api/health')) {
+        return new Response(JSON.stringify({ instanceId: 'health-daemon' }), {
+          status: 200,
+          headers: { 'Content-Type': 'application/json' },
+        })
+      }
+      if (String(input).endsWith('/api/health/opencode')) {
+        expect(new Headers(init?.headers).get('authorization')).toBe('Bearer doctor-api-token')
+        return new Response(JSON.stringify({
+          status: 'ok',
+          failureKind: 'model_discovery',
+          error: 'provider configuration is missing',
+        }), { status: 200, headers: { 'content-type': 'application/json' } })
+      }
+      return new Response('{}', { status: 200 })
+    })
+
+    const opencode = (await runChecks()).find((check) => check.name === 'opencode')
+
+    expect(opencode).toMatchObject({
+      name: 'opencode',
+      status: 'fail',
+      detail: expect.stringContaining('model_discovery'),
+    })
+    expect(opencode?.remedy).toContain('provider and model')
+    expect(fetchMock).not.toHaveBeenCalledWith(expect.stringMatching(/\/api\/info$/), expect.anything())
   })
 
   it('prints a human summary without --json', async () => {
@@ -333,6 +379,68 @@ describe('doctor command', () => {
     expect(cli).toBeDefined()
     expect(server).toBeDefined()
     expect(cli?.status).toBe('ok')
+  })
+
+  it('uses one detected OpenCode version to choose and render the matching latest package', async () => {
+    const configDir = useConfigDir()
+    const binDir = mkdtempSync(join(tmpdir(), 'looptroop-doctor-bin-'))
+    tempDirs.push(binDir)
+    const tracePath = join(configDir, 'opencode-probe.txt')
+    const scriptPath = join(binDir, 'opencode-fixture.cjs')
+    const script = [
+      "const fs = require('node:fs')",
+      "fs.appendFileSync(process.env.OPENCODE_PROBE_TRACE, process.argv.slice(2).join(' ') + '\\n')",
+      "if (process.argv[2] === '--version') { process.stdout.write('OpenCode 2.0.15\\n'); process.exit(0) }",
+      'process.exit(1)',
+      '',
+    ].join('\n')
+    writeFileSync(scriptPath, script, 'utf8')
+
+    if (process.platform === 'win32') {
+      writeFileSync(join(binDir, 'opencode.cmd'), `@echo off\r\n"${process.execPath}" "${scriptPath}" %*\r\n`, 'utf8')
+    } else {
+      const executablePath = join(binDir, 'opencode')
+      writeFileSync(executablePath, `#!/usr/bin/env node\n${script}`, 'utf8')
+      chmodSync(executablePath, 0o700)
+    }
+
+    vi.stubEnv('PATH', `${binDir}${delimiter}${process.env.PATH ?? ''}`)
+    vi.stubEnv('LOOPTROOP_TRUSTED_EXECUTABLE_DIRS', binDir)
+    vi.stubEnv('LOOPTROOP_OPENCODE_MODE', 'live')
+    vi.stubEnv('LOOPTROOP_OPENCODE_BASE_URL', 'http://127.0.0.1:4319')
+    vi.stubEnv('OPENCODE_PROBE_TRACE', tracePath)
+
+    const requested: string[] = []
+    vi.spyOn(globalThis, 'fetch').mockImplementation(async (input) => {
+      const url = String(input)
+      requested.push(url)
+      if (url.endsWith('/api/info')) {
+        return new Response(JSON.stringify({ version: '2.0.15', pid: 4319 }), {
+          status: 200,
+          headers: { 'Content-Type': 'application/json' },
+        })
+      }
+      const body = url.endsWith('/@opencode/cli/latest')
+        ? { version: '2.0.16' }
+        : url.endsWith('/repos/cli/cli/releases/latest')
+          ? { tag_name: 'v2.83.0' }
+          : url.endsWith('/repos/git/git/tags?per_page=100')
+            ? [{ name: 'v2.50.1' }]
+            : { version: '24.8.0' }
+      return new Response(JSON.stringify(body), {
+        status: 200,
+        headers: { 'Content-Type': 'application/json' },
+      })
+    })
+
+    const checks = await runChecks()
+    const cli = checks.find((check) => check.name === 'opencode cli')
+
+    expect(cli?.detail).toBe('2.0.15 (latest 2.0.16)')
+    expect(cli).not.toHaveProperty('opencodeMajor')
+    expect(requested).toContain('https://registry.npmjs.org/@opencode/cli/latest')
+    expect(requested).not.toContain('https://registry.npmjs.org/opencode-ai/latest')
+    expect(readFileSync(tracePath, 'utf8').trim().split('\n')).toEqual(['--version'])
   })
 
   async function reservePort(): Promise<number> {

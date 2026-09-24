@@ -159,6 +159,7 @@ export interface DependencyReleaseUpdateDetail extends DependencyUpdateDetail {
 export interface OpenCodeUpgradeReport {
   skipped: boolean
   deferred: boolean
+  deferredReason?: string
   available: boolean
   checked: boolean
   upgraded: boolean
@@ -275,7 +276,7 @@ export function formatDependencyReleasePolicySummaryLines() {
   return [
     `Direct npm dependency updates and npm audit fixes wait until a release has been published for ${DEPENDENCY_RELEASE_DELAY_DAYS} days.`,
     'Updates are previewed with npm peer resolution; incompatible releases and registry-tarball policy conflicts are held and never forced.',
-    'OpenCode CLI and @opencode-ai/sdk updates are applied immediately.',
+    'OpenCode CLI upgrades stay on the installed major; @opencode-ai/sdk updates apply immediately.',
   ]
 }
 
@@ -908,6 +909,44 @@ function compareStableSemver(left: StableSemver, right: StableSemver) {
   if (left.major !== right.major) return left.major - right.major
   if (left.minor !== right.minor) return left.minor - right.minor
   return left.patch - right.patch
+}
+
+function openCodeReleaseVersion(version: string | undefined): string | undefined {
+  const match = version?.trim().match(/(?:^|\s)v?(\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?(?:\+[0-9A-Za-z.-]+)?)(?=$|\s)/)
+  const candidate = match?.[1]?.replace(/^v/, '')
+  return parseStableSemver(candidate) ? candidate : undefined
+}
+
+function openCodePackageForVersion(version: string): string | undefined {
+  const parsed = parseStableSemver(version)
+  if (parsed?.major === 1) return 'opencode-ai'
+  if (parsed?.major === 2) return '@opencode/cli'
+  return undefined
+}
+
+export function chooseSameMajorOpenCodeTarget(
+  currentVersion: string,
+  publishTimes: Record<string, string> | null,
+): string | undefined {
+  const current = parseStableSemver(currentVersion)
+  if (!current || !publishTimes) return undefined
+
+  let target: string | undefined
+  let targetVersion: StableSemver | null = null
+  for (const [version, publishedAt] of Object.entries(publishTimes)) {
+    const parsed = parseStableSemver(version)
+    if (
+      !parsed ||
+      parsed.major !== current.major ||
+      compareStableSemver(parsed, current) <= 0 ||
+      !isFiniteTimestamp(Date.parse(publishedAt))
+    ) continue
+    if (!targetVersion || compareStableSemver(parsed, targetVersion) > 0) {
+      target = version
+      targetVersion = parsed
+    }
+  }
+  return target
 }
 
 function isFiniteTimestamp(timestamp: number) {
@@ -2054,11 +2093,141 @@ export function upgradeOpenCodeCli(
     }
 
     versionBefore = before.version ?? undefined
+    const currentVersion = openCodeReleaseVersion(versionBefore)
+    if (!currentVersion) {
+      return {
+        skipped: false,
+        deferred: true,
+        deferredReason: 'OpenCode did not report a stable version; its upgrade was deferred.',
+        available: true,
+        checked: false,
+        upgraded: false,
+        alreadyCurrent: false,
+        versionBefore,
+        errors: [],
+      }
+    }
+
+    const packageName = openCodePackageForVersion(currentVersion)
+    if (!packageName) {
+      return {
+        skipped: false,
+        deferred: true,
+        deferredReason: `OpenCode ${currentVersion} is outside the supported v1 and v2 package sources; its upgrade was deferred.`,
+        available: true,
+        checked: false,
+        upgraded: false,
+        alreadyCurrent: false,
+        versionBefore,
+        errors: [],
+      }
+    }
+
     if (logPrefix) {
       console.log(`[${logPrefix}] Checking OpenCode CLI for updates.`)
     }
 
-    const result = runExternalCommand('opencode', ['upgrade'], 'opencode upgrade', { verbose })
+    let registry: ReturnType<typeof getPackagePublishTimes>
+    try {
+      registry = getPackagePublishTimes(packageName)
+    } catch (error) {
+      return {
+        skipped: false,
+        deferred: true,
+        deferredReason: `Could not verify npm publish metadata for ${packageName}; OpenCode was left unchanged. ${getErrorMessage(error)}`,
+        available: true,
+        checked: true,
+        upgraded: false,
+        alreadyCurrent: false,
+        versionBefore,
+        errors: [],
+      }
+    }
+    if (!registry.times) {
+      return {
+        skipped: false,
+        deferred: true,
+        deferredReason: `Could not verify npm publish metadata for ${packageName}; OpenCode was left unchanged. ${registry.error ?? ''}`.trim(),
+        available: true,
+        checked: true,
+        upgraded: false,
+        alreadyCurrent: false,
+        versionBefore,
+        errors: [],
+      }
+    }
+    if (!isFiniteTimestamp(Date.parse(registry.times[currentVersion] ?? ''))) {
+      return {
+        skipped: false,
+        deferred: true,
+        deferredReason: `npm publish metadata for ${packageName} does not include installed OpenCode ${currentVersion}; its upgrade was deferred.`,
+        available: true,
+        checked: true,
+        upgraded: false,
+        alreadyCurrent: false,
+        versionBefore,
+        errors: [],
+      }
+    }
+
+    const target = chooseSameMajorOpenCodeTarget(currentVersion, registry.times)
+    if (!target) {
+      return {
+        skipped: false,
+        deferred: false,
+        available: true,
+        checked: true,
+        upgraded: false,
+        alreadyCurrent: true,
+        versionBefore,
+        versionAfter: versionBefore,
+        errors: [],
+      }
+    }
+
+    // Asking OpenCode to upgrade to its installed version is a no-op. Both
+    // supported CLI lines report the detected installer before skipping it.
+    const methodProbe = runExternalCommand('opencode', ['upgrade', currentVersion], `opencode upgrade ${currentVersion}`)
+    const methodOutput = [methodProbe.stdout, methodProbe.stderr].filter(Boolean).join('\n')
+    const method = methodOutput.match(/Using method:\s*([^\r\n]+)/i)?.[1]?.trim().toLowerCase()
+    if (methodProbe.missing || methodProbe.error || methodProbe.status !== 0 || !method) {
+      return {
+        skipped: false,
+        deferred: true,
+        deferredReason: 'OpenCode did not confirm its install method with a no-op version check; its upgrade was deferred.',
+        available: true,
+        checked: true,
+        upgraded: false,
+        alreadyCurrent: false,
+        versionBefore,
+        errors: [],
+      }
+    }
+
+    if (!['npm', 'bun', 'curl'].includes(method)) {
+      const reason = method === 'brew'
+        ? 'Homebrew does not honor OpenCode version targets, so its upgrade was deferred.'
+        : `OpenCode uses ${method}; LoopTroop cannot verify a pinned update for that installer, so it was left unchanged.`
+      return {
+        skipped: false,
+        deferred: true,
+        deferredReason: reason,
+        available: true,
+        checked: true,
+        upgraded: false,
+        alreadyCurrent: false,
+        method,
+        versionBefore,
+        errors: [],
+      }
+    }
+
+    const result = runExternalCommand(
+      'opencode',
+      ['upgrade', target, '--method', method],
+      `opencode upgrade ${target} --method ${method}`,
+      { verbose },
+    )
     if (result.missing) {
       return {
         skipped: false,
@@ -2077,7 +2246,7 @@ export function upgradeOpenCodeCli(
     }
 
     if (result.status !== 0) {
-      const message = result.stderr || result.stdout || `opencode upgrade failed with code ${result.status ?? 'unknown'}`
+      const message = result.stderr || result.stdout || `opencode upgrade ${target} --method ${method} failed with code ${result.status ?? 'unknown'}`
       return {
         skipped: false,
         deferred: false,
@@ -2092,12 +2261,23 @@ export function upgradeOpenCodeCli(
 
     const after = getOpenCodeVersion()
     versionAfter = after.version ?? undefined
+    if (openCodeReleaseVersion(versionAfter) !== target) {
+      return {
+        skipped: false,
+        deferred: false,
+        available: true,
+        checked: true,
+        upgraded: false,
+        alreadyCurrent: false,
+        method,
+        versionBefore,
+        versionAfter,
+        errors: [`OpenCode reported ${versionAfter ?? 'no version'} after the pinned update; expected ${target}.`],
+      }
+    }
 
-    const output = [result.stdout, result.stderr].filter(Boolean).join('\n')
-    const method = output.match(/Using method:\s*(.+)/i)?.[1]?.trim()
-    const alreadyCurrent = /upgrade skipped:/i.test(output) ||
-      (Boolean(versionBefore) && Boolean(versionAfter) && versionBefore === versionAfter)
-    const upgraded = Boolean(versionBefore && versionAfter && versionBefore !== versionAfter)
+    const alreadyCurrent = currentVersion === target
+    const upgraded = !alreadyCurrent && openCodeReleaseVersion(versionBefore) !== openCodeReleaseVersion(versionAfter)
 
     return {
       skipped: false,

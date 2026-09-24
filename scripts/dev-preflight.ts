@@ -428,6 +428,9 @@ const opencodeReport = shouldSkipOpenCodeUpgrade
 for (const error of opencodeReport.errors) {
   console.error(`[dev-preflight] ${error}`)
 }
+if (opencodeReport.deferredReason) {
+  console.warn(`[dev-preflight] ${opencodeReport.deferredReason}`)
+}
 if (opencodeReport.errors.length > 0) {
   process.exit(1)
 }

@@ -239,3 +239,19 @@ export function planMatrix(options?: {
   only?: string[]
   skip?: string[]
 }): MatrixLeg[]
+
+/** Credentials shared by the adopted OpenCode process and the readiness probe. */
+export function createOpenCodeAdoptCredentials(password: string): {
+  env: { OPENCODE_PASSWORD: string, OPENCODE_SERVER_PASSWORD: string }
+  headers: { Authorization: string }
+}
+
+/** Whether `/api/info` proves that the responding server is OpenCode v2. */
+export function isOpenCodeInfoReady(status: number, value: unknown): boolean
+
+/** Authenticates to the adopted server and verifies its OpenCode info response. */
+export function openCodeAnswers(
+  port: number,
+  headers: Record<string, string>,
+  fetchImpl?: typeof fetch,
+): Promise<boolean>

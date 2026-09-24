@@ -161,8 +161,10 @@ describe('the Node floor is stated once', () => {
   /**
    * Each document states the number its reader needs, and may not invent a
    * third. README is read by someone deciding whether they can install this,
-   * so it states the floor and nothing else. CONTRIBUTING is read by someone
-   * setting up a checkout, so it must state the pin, and may state the floor.
+   * so it states the floor and nothing else. CONTRIBUTING points at `.nvmrc`
+   * for the pin instead of repeating it: Renovate's toolchain pull request moves
+   * `.nvmrc` and nothing reads the number out of prose, so a copy there would
+   * turn every such pull request red. It may state the floor.
    *
    * Every version of the floor's or the pin's major is read — they need not be
    * the same major, and the toolchain moving to a new major while the floor
@@ -171,7 +173,7 @@ describe('the Node floor is stated once', () => {
    * floor, and would read as a stray one the day the floor reached Node 26.
    * `scripts/sync-node-floor.ts` rewrites exactly the forms this accepts.
    */
-  it('states the floor in the README, the pin in CONTRIBUTING, and no stray version in either', () => {
+  it('states the floor in the README, leaves the pin to .nvmrc, and has no stray version in either', () => {
     const majors = new Set([FLOOR.major, parseNodeVersion(DEV_PIN).major].map(String))
     const stated = (file: string) =>
       [...read(file).matchAll(/(?<![\w.])(v?)(\d+\.\d+(?:\.\d+)?)\b/g)]
@@ -186,9 +188,9 @@ describe('the Node floor is stated once', () => {
     expect(kegs.every((major) => major === String(FLOOR.major)), 'README.md Homebrew keg').toBe(true)
 
     const contributing = stated('.github/CONTRIBUTING.md')
-    expect(contributing, '.github/CONTRIBUTING.md').toEqual(expect.arrayContaining([DEV_PIN]))
+    expect(read('.github/CONTRIBUTING.md'), '.github/CONTRIBUTING.md names .nvmrc').toContain('`.nvmrc`')
     expect(
-      contributing.filter((version) => version !== DEV_PIN && version !== FLOOR_LABEL),
+      contributing.filter((version) => version !== FLOOR_LABEL),
       '.github/CONTRIBUTING.md stray versions',
     ).toEqual([])
   })

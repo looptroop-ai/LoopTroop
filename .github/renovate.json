@@ -9,8 +9,10 @@
   "schedule": [
     "* 0-5 * * *"
   ],
-  "prConcurrentLimit": 5,
+  "prConcurrentLimit": 10,
   "prHourlyLimit": 0,
+  "automerge": false,
+  "rebaseWhen": "behind-base-branch",
   "labels": [
     "dependencies"
   ],
@@ -34,21 +36,21 @@
     "description": "Weekly, not monthly. Renovate's daily pass only sees the 55 packages declared in package.json; the lockfile holds 514, and the ~459 transitive ones are invisible to it. Security advisories against those get no pull request either, so this refresh is the only response path they have — which makes its cadence the exposure window for a transitive CVE. A monthly run meant up to thirty days, and did: a high-severity brace-expansion advisory sat unfixed until it was refreshed by hand. Weekly caps it at seven. It is not daily because a full re-resolve produces a large diff whenever anything among those 459 publishes, which is most days. Monday to Wednesday is one run with two retries, not three runs: a refresh blocked by prConcurrentLimit is skipped rather than queued, so on a Monday-only schedule every skip cost a full week — four consecutive Mondays were lost that way and this refresh had never run once. minimumReleaseAge is restated here because it does apply on this path rather than being inherited decoration: Renovate converts it to `npm install --before`, so the re-resolve sees the registry as it stood seven days ago and cannot pull in anything published since."
   },
   "vulnerabilityAlerts": {
-    "description": "Renovate's own default here is minimumReleaseAge: null, which opens security PRs immediately. The two-day floor below deliberately overrides that: it means the fixed release must itself be two days old, not that Renovate waits two days after disclosure. automerge is pinned off so a vulnerable package can never inherit an automerge rule from the list below and merge without review.",
+    "description": "Renovate's own default here is minimumReleaseAge: null, which opens security PRs immediately. The two-day floor below deliberately overrides that: it means the fixed release must itself be two days old, not that Renovate waits two days after disclosure. Security pull requests are opened even when prConcurrentLimit is reached, and, like everything else, merged by hand.",
     "enabled": true,
     "minimumReleaseAge": "2 days",
     "schedule": [
       "at any time"
     ],
-    "automerge": false,
     "labels": [
       "dependencies",
       "security"
     ]
   },
+  "osvVulnerabilityAlerts": true,
   "packageRules": [
     {
-      "description": "Frontend packages are declared as devDependencies but Vite inlines them into dist/client, so they ship to users exactly like a runtime dependency. They also carry licence text: every version here is recorded in THIRD-PARTY-NOTICES.md, which `npm run licenses:check` re-derives from dist/client/bundled-packages.json and CI fails when it is stale. Renovate cannot regenerate that file on the hosted app, so each of these pull requests needs `npm run licenses:generate` committed onto the branch by hand. Never automerge.",
+      "description": "Frontend packages are declared as devDependencies but Vite inlines them into dist/client, so they ship to users exactly like a runtime dependency. They also carry licence text: every version is recorded in THIRD-PARTY-NOTICES.md, which `npm run licenses:check` re-derives from dist/client/bundled-packages.json. .github/workflows/renovate-notices.yml regenerates that file on Renovate's branches and commits it, so these pull requests arrive with it current. This rule only labels them; the grouping rule below, placed after the dev tooling group so it wins, puts them with the runtime dependencies.",
       "matchDepTypes": [
         "devDependencies"
       ],
@@ -75,48 +77,24 @@
         "react-virtuoso",
         "tailwind-merge"
       ],
-      "automerge": false,
       "labels": [
         "dependencies",
         "frontend"
       ]
     },
     {
-      "description": "Group the bundled frontend only below a major. A major here still needs the licence regeneration above, but it must arrive on its own so a regression is attributable to one library rather than to a batch of them — which is the same reason majors are ungrouped everywhere else.",
+      "description": "Everything declared as a devDependency, below a major, in one pull request: build and release tooling (vite, typescript, postject, drizzle-kit), lint and test tooling, type packages and Tailwind. The rules after this one take the bundled frontend, esbuild and Drizzle back out, and hold typescript and @types/node below their ceilings, which only limits the version this group offers.",
       "matchDepTypes": [
         "devDependencies"
-      ],
-      "matchPackageNames": [
-        "@codemirror/autocomplete",
-        "@codemirror/lang-yaml",
-        "@codemirror/language",
-        "@codemirror/merge",
-        "@codemirror/state",
-        "@codemirror/view",
-        "@radix-ui/react-dialog",
-        "@radix-ui/react-dropdown-menu",
-        "@radix-ui/react-hover-card",
-        "@radix-ui/react-scroll-area",
-        "@radix-ui/react-separator",
-        "@radix-ui/react-slot",
-        "@radix-ui/react-tooltip",
-        "@tanstack/react-query",
-        "class-variance-authority",
-        "clsx",
-        "lucide-react",
-        "react",
-        "react-dom",
-        "react-virtuoso",
-        "tailwind-merge"
       ],
       "matchUpdateTypes": [
         "patch",
         "minor"
       ],
-      "groupName": "bundled frontend (ships to users)"
+      "groupName": "dev tooling (non-major)"
     },
     {
-      "description": "Runtime dependencies ship to users; group them but always review by hand.",
+      "description": "What reaches users, below a major, in one pull request: runtime dependencies, and the frontend packages Vite inlines into dist/client. The frontend half needs this second rule because those packages are devDependencies, and it has to come after the dev tooling group or that group claims them. Before these two groups shared a name, the bundled frontend group sat above the dev tooling rule and never took effect, so react and codemirror arrived inside dev tooling.",
       "matchDepTypes": [
         "dependencies"
       ],
@@ -124,54 +102,47 @@
         "patch",
         "minor"
       ],
-      "groupName": "runtime dependencies (non-major)",
-      "automerge": false
+      "groupName": "ships to users (non-major)"
     },
     {
-      "description": "Everything else declared as a devDependency. Build and release tooling lands here — vite, typescript, postject, drizzle-kit — and all of it shapes the published artefact even though none of it is inlined into it, so none of it automerges by default. The narrower allowlist below opts specific packages back in.",
+      "description": "The bundled frontend half of the group above.",
       "matchDepTypes": [
         "devDependencies"
+      ],
+      "matchPackageNames": [
+        "@codemirror/autocomplete",
+        "@codemirror/lang-yaml",
+        "@codemirror/language",
+        "@codemirror/merge",
+        "@codemirror/state",
+        "@codemirror/view",
+        "@radix-ui/react-dialog",
+        "@radix-ui/react-dropdown-menu",
+        "@radix-ui/react-hover-card",
+        "@radix-ui/react-scroll-area",
+        "@radix-ui/react-separator",
+        "@radix-ui/react-slot",
+        "@radix-ui/react-tooltip",
+        "@tanstack/react-query",
+        "class-variance-authority",
+        "clsx",
+        "lucide-react",
+        "react",
+        "react-dom",
+        "react-virtuoso",
+        "tailwind-merge"
       ],
       "matchUpdateTypes": [
         "patch",
         "minor"
       ],
-      "groupName": "dev tooling (non-major)",
-      "automerge": false
+      "groupName": "ships to users (non-major)"
     },
     {
-      "description": "The only automerge lane. These are lint, test and type-only packages: none is inlined into dist/client, none runs in the published server bundle, and none emits an artefact users receive, so all eleven required checks passing is sufficient review. Patch only. Stable only — matchCurrentVersion excludes 0.x, where a patch release can still break compatibility, which is what keeps eslint-plugin-react-refresh out.",
-      "matchDepTypes": [
-        "devDependencies"
-      ],
-      "matchPackageNames": [
-        "@eslint/js",
-        "@testing-library/jest-dom",
-        "@testing-library/react",
-        "@types/qrcode",
-        "@types/react",
-        "@types/react-dom",
-        "eslint",
-        "eslint-plugin-react-hooks",
-        "globals",
-        "jsdom",
-        "typescript-eslint",
-        "vitest"
-      ],
-      "matchUpdateTypes": [
-        "patch"
-      ],
-      "matchCurrentVersion": "!/^0\\./",
-      "groupName": "lint and test tooling (patch)",
-      "automerge": true,
-      "automergeStrategy": "squash"
-    },
-    {
-      "description": "Majors land one at a time so a failure is attributable.",
+      "description": "Majors land one at a time so a failure is attributable. The groups above take patch and minor only, so a major is never swept into one; the named pairs below that must move together (Drizzle, Tailwind) are the exception.",
       "matchUpdateTypes": [
         "major"
       ],
-      "automerge": false,
       "labels": [
         "dependencies",
         "major"
@@ -185,19 +156,18 @@
       ],
       "groupName": "drizzle (orm + kit)",
       "followTag": "rc",
-      "rangeStrategy": "pin",
-      "automerge": false
+      "rangeStrategy": "pin"
     },
     {
-      "description": "The SDK talks to an OpenCode CLI that users install separately and that Renovate cannot see, so the risk here is version skew rather than an immature release — no maturity window addresses that, only a person checking the pull request. It takes the ordinary seven days. Update the documented minimum version in the same PR. The OpenCode CLI itself is a local binary outside npm and is invisible to Renovate; `npm run opencode:upgrade` remains its only update path.",
+      "description": "The SDK talks to an OpenCode CLI that users install separately and that Renovate cannot see, so the risk here is version skew rather than an immature release — no maturity window addresses that, only a person checking the pull request. It takes the ordinary seven days. Update the documented minimum version in the same PR. The OpenCode CLI itself is a local binary outside npm and is invisible to Renovate; `npm run opencode:upgrade` remains its only update path. It gets its own pull request so that check cannot be lost inside a group.",
       "matchPackageNames": [
         "@opencode-ai/sdk"
       ],
-      "automerge": false,
       "labels": [
         "dependencies",
         "opencode"
-      ]
+      ],
+      "groupName": "opencode sdk"
     },
     {
       "description": "esbuild is exact-pinned because package.json carries version-keyed allowScripts approvals for it. Update those approvals when esbuild moves, and update the explicit fsevents denial when lockfile maintenance changes fsevents. Renovate does not maintain these policy keys; the install-script policy test checks them against the lockfile before the branch can go green.",
@@ -205,71 +175,57 @@
         "esbuild"
       ],
       "rangeStrategy": "pin",
-      "groupName": "esbuild (needs an allowScripts entry)",
-      "automerge": false
+      "groupName": "esbuild (needs an allowScripts entry)"
     },
     {
-      "description": "Node types must stay on the supported major, never follow the current release. Kept out of the dev tooling group so that holding it back cannot stall an unrelated grouped update.",
+      "description": "Node types must stay on the supported major, never follow the current release.",
       "matchPackageNames": [
         "@types/node"
       ],
-      "allowedVersions": "<25",
-      "groupName": "node types",
-      "automerge": false
+      "allowedVersions": "<25"
     },
     {
-      "description": "HOW TO REMOVE THIS CEILING: run `npm view typescript-eslint peerDependencies.typescript`. While it reads `>=4.8.4 <6.1.0`, the whole lint stack refuses any TypeScript at or above 6.1 and `npm ci` fails on the peer range, so Renovate must not offer one. The day that range widens, delete this rule — the ceiling exists only because of that peer, not because of anything in this repository. TypeScript 7 was already tried and reverted for exactly this reason (#101, closed 2026-08-25), and closing that pull request told Renovate to ignore every future 7.x, so 7 needs the dashboard's blocked entry ticked as well once the lint stack is ready. Without the ceiling the next ordinary minor is the problem, not the next major: this project is on 6.0.x and the peer stops below 6.1, so TypeScript 6.1 would arrive as a routine grouped update and break installation. Kept out of the dev tooling group so holding it back cannot stall unrelated updates.",
+      "description": "HOW TO REMOVE THIS CEILING: run `npm view typescript-eslint peerDependencies.typescript`. While it reads `>=4.8.4 <6.1.0`, the whole lint stack refuses any TypeScript at or above 6.1 and `npm ci` fails on the peer range, so Renovate must not offer one. The day that range widens, delete this rule — the ceiling exists only because of that peer, not because of anything in this repository. TypeScript 7 was already tried and reverted for exactly this reason (#101, closed 2026-08-25), and closing that pull request told Renovate to ignore every future 7.x, so 7 needs the dashboard's blocked entry ticked as well once the lint stack is ready. Without the ceiling the next ordinary minor is the problem, not the next major: this project is on 6.0.x and the peer stops below 6.1, so TypeScript 6.1 would arrive as a routine grouped update and break installation. It travels in the dev tooling group; the ceiling only limits which version that group offers.",
       "matchPackageNames": [
         "typescript"
       ],
-      "allowedVersions": "<6.1.0",
-      "groupName": "typescript",
-      "automerge": false
+      "allowedVersions": "<6.1.0"
     },
     {
-      "description": "Keep Tailwind and its Vite integration aligned. Neither is inlined into the client bundle, but the compiler emits the stylesheet that ships, so this stays a reviewed change.",
+      "description": "Keep Tailwind and its Vite integration aligned across a major. Below a major both travel in the dev tooling group already. Neither is inlined into the client bundle, but the compiler emits the stylesheet that ships.",
       "matchPackageNames": [
         "tailwindcss",
         "@tailwindcss/vite"
       ],
-      "groupName": "tailwindcss",
-      "automerge": false
-    },
-    {
-      "description": "Pin GitHub Actions to commit SHAs for supply-chain integrity.",
-      "matchManagers": [
-        "github-actions"
+      "matchUpdateTypes": [
+        "major"
       ],
-      "groupName": "github actions",
-      "pinDigests": true,
-      "automerge": false
+      "groupName": "tailwindcss (major)"
     },
     {
-      "description": "The Dockerfile pins its base image by digest as well as by tag, so without this the pin would never be refreshed and the image would ship whatever CVEs the base had on the day it was written. The rule above is scoped to github-actions only.",
+      "description": "GitHub Actions and the Dockerfile base image are pinned by commit SHA and image digest for supply-chain integrity. Without the Dockerfile half the digest would never be refreshed, and the image would ship whatever CVEs the base had on the day it was written.",
       "matchManagers": [
+        "github-actions",
         "dockerfile"
       ],
-      "groupName": "container base image",
-      "pinDigests": true,
-      "automerge": false
+      "pinDigests": true
     },
     {
-      "description": "A digest bump is the same Node on a rebuilt base and lands as an ordinary PR. A version bump is not: the base image runs the toolchain pin in .nvmrc, and moving it alone would ship a runtime nothing in CI ran. It has to travel with .nvmrc and the workflow node-version literals on one branch; tests/workflowPolicy.test.ts holds all of them to .nvmrc. It does not travel with engines.node, which is the floor users are held to and deliberately lower.",
+      "description": "Action updates below a major and base-image digest refreshes share one pull request. A digest refresh is the same Node on a rebuilt base. A version change of the base image is not: the toolchain group below takes it, because it has to travel with .nvmrc. An action's major arrives alone, like every other major.",
       "matchManagers": [
+        "github-actions",
         "dockerfile"
       ],
       "matchUpdateTypes": [
-        "major",
         "minor",
-        "patch"
+        "patch",
+        "digest",
+        "pinDigest"
       ],
-      "labels": [
-        "dependencies",
-        "container"
-      ]
+      "groupName": "CI and container"
     },
     {
-      "description": "The toolchain floor moves as one change or not at all. node and npm are each pinned in more than one place — .nvmrc, packageManager and the Dockerfile base image — and Renovate's managers treat those as unrelated dependencies. Without this they arrive as three separate pull requests, none of which is mergeable on its own: each ships a runtime or a package manager that nothing else in the repository agrees with. The Node version is also written as a literal in every workflow, which no Renovate manager edits, and tests/workflowPolicy.test.ts fails until those match .nvmrc, so the grouped PR is still a starting point rather than a complete change. engines.node matches this group's managers but not its schedule: the node floor rule below overrides it with a 90-day age and its own branch. Digest-only refreshes of the base image are excluded: those are the same version on a rebuilt base and belong with the container group.",
+      "description": "The toolchain moves as one change or not at all. node and npm are each pinned in more than one place — .nvmrc, packageManager and the Dockerfile base image — and Renovate's managers treat those as unrelated dependencies. Without this they arrive as separate pull requests, none of which is mergeable on its own: each ships a runtime or a package manager that nothing else in the repository agrees with. Workflows read the Node version from .nvmrc with node-version-file, so this pull request moves them too, and tests/workflowPolicy.test.ts refuses a version typed into a workflow instead. engines.node matches this group's managers but not its schedule: the node floor rule below overrides it with a 90-day age and its own branch. Digest-only refreshes of the base image are excluded: those are the same version on a rebuilt base and belong with the CI and container group.",
       "matchPackageNames": [
         "node",
         "npm"
@@ -284,15 +240,14 @@
         "minor",
         "patch"
       ],
-      "groupName": "toolchain floor (node + npm)",
-      "automerge": false,
+      "groupName": "toolchain (node + npm)",
       "labels": [
         "dependencies",
         "container"
       ]
     },
     {
-      "description": "The Node floor users are held to follows the newest Node release that has been out for 90 days, within the same major. It is not the toolchain: .nvmrc and the Dockerfile base take a release after seven days, while engines.node promises the oldest Node a user may run, and raising it refuses everyone below the new number on their next upgrade. Tying the two together is how the floor once named a Node fourteen days old that winget did not offer (#135). 90 days sits above the ~50 days winget has trailed Node, and the required Verify check in ci.yml refuses any pull request that changes the floor until every install feed offers it. .github/workflows/renovate-node-floor.yml writes the floor into its other copies, which this rule cannot, and re-runs a red check on the pull request every day, so a feed that was late is looked at again without anyone remembering to. The pull request merges itself once every required check passes: the floor is a policy already decided, and the checks are what make a given floor safe. It gets no CHANGELOG line, like any other non-major update. The website follows main on its own. gitIgnoredAuthors names the account the workflow commits as; without it Renovate would treat the branch as edited by hand after the first commit, and stop rebasing it or moving it to a newer release. internalChecksFilter is strict, so a release younger than 90 days is skipped in favour of the newest one that is old enough. Later rules win, so this sits after the toolchain group.",
+      "description": "The Node floor users are held to follows the newest Node release that has been out for 90 days, within the same major. It is not the toolchain: .nvmrc and the Dockerfile base take a release after seven days, while engines.node promises the oldest Node a user may run, and raising it refuses everyone below the new number on their next upgrade. Tying the two together is how the floor once named a Node fourteen days old that winget did not offer (#135). 90 days sits above the ~50 days winget has trailed Node, and the required Verify check in ci.yml refuses any pull request that changes the floor until every install feed offers it. .github/workflows/renovate-node-floor.yml writes the floor into its other copies, which this rule cannot, and re-runs a red check on the pull request every day, so a feed that was late is looked at again without anyone remembering to. Like every Renovate pull request it is merged by hand after review; the daily re-run means it is green by the time someone looks. It gets no CHANGELOG line, like any other non-major update. The website follows main on its own. gitIgnoredAuthors names the account the workflow commits as; without it Renovate would treat the branch as edited by hand after the first commit, and stop rebasing it or moving it to a newer release. internalChecksFilter is strict, so a release younger than 90 days is skipped in favour of the newest one that is old enough. Later rules win, so this sits after the toolchain group.",
       "matchManagers": [
         "npm"
       ],
@@ -309,13 +264,12 @@
       "minimumReleaseAge": "90 days",
       "groupName": "node floor",
       "groupSlug": "node-floor",
-      "automerge": true,
       "labels": [
         "dependencies",
         "node-floor"
       ],
       "prBodyNotes": [
-        "This raises the oldest Node that LoopTroop accepts, and merges itself once every required check passes. Nothing here needs doing by hand. Verify stays red until winget, Chocolatey, Scoop and Homebrew all offer the new version, and a daily job re-runs it until they do. The website picks up the new minimum within a day of the merge."
+        "This raises the oldest Node that LoopTroop accepts. The floor is already written into every other file that states it. Verify stays red until winget, Chocolatey, Scoop and Homebrew all offer the new version, and a daily job re-runs it until they do; merge once every required check passes. The website picks up the new minimum within a day of the merge."
       ]
     },
     {

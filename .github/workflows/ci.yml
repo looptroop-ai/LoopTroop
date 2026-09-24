@@ -84,7 +84,7 @@ jobs:
           # The toolchain pin from .nvmrc, exact rather than floating "24". Not
           # engines.node: the floor users are held to is lower on purpose, and
           # the "declared floor" lanes of the test matrix are what exercise it.
-          node-version: 24.21.0
+          node-version-file: .nvmrc
           cache: npm
 
       - name: Pin npm to the declared version
@@ -224,7 +224,7 @@ jobs:
       # binaries actually run.
       - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7
         with:
-          node-version: 24.21.0
+          node-version-file: .nvmrc
           cache: npm
 
       # The declared-floor lanes then move to the oldest Node `engines.node`
@@ -307,7 +307,7 @@ jobs:
       - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7
         if: steps.scope.outputs.affected == 'true'
         with:
-          node-version: 24.21.0
+          node-version-file: .nvmrc
           cache: npm
 
       - name: Pin npm to the declared version
@@ -374,7 +374,7 @@ jobs:
       # so the dependency install keeps its install-script policy.
       - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7
         with:
-          node-version: 24.21.0
+          node-version-file: .nvmrc
           cache: npm
 
       - name: Pin npm to the declared version
@@ -458,7 +458,7 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
       - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7
         with:
-          node-version: 24.21.0
+          node-version-file: .nvmrc
           cache: npm
 
       - name: Pin npm to the declared version
@@ -545,7 +545,7 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
       - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7
         with:
-          node-version: 24.21.0
+          node-version-file: .nvmrc
           cache: npm
 
       - name: Pin npm to the declared version
@@ -609,7 +609,7 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
       - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7
         with:
-          node-version: 24.21.0
+          node-version-file: .nvmrc
           cache: npm
 
       - name: Pin npm to the declared version
@@ -681,7 +681,7 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
       - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7
         with:
-          node-version: 24.21.0
+          node-version-file: .nvmrc
           cache: npm
 
       - name: Pin npm to the declared version
@@ -736,7 +736,7 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
       - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7
         with:
-          node-version: 24.21.0
+          node-version-file: .nvmrc
 
       - name: Download the bundle
         uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8
@@ -762,7 +762,7 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
       - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7
         with:
-          node-version: 24.21.0
+          node-version-file: .nvmrc
 
       - name: Audit the formula this release would publish
         run: >
@@ -793,7 +793,7 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
       - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7
         with:
-          node-version: 24.21.0
+          node-version-file: .nvmrc
 
       - name: Download the bundle
         uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8
@@ -882,7 +882,7 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
       - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7
         with:
-          node-version: 24.21.0
+          node-version-file: .nvmrc
 
       - name: Download the bundle
         uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8
@@ -1076,7 +1076,7 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
       - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7
         with:
-          node-version: 24.21.0
+          node-version-file: .nvmrc
 
       - name: Download the Windows binary
         uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8
@@ -1124,7 +1124,7 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
       - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7
         with:
-          node-version: 24.21.0
+          node-version-file: .nvmrc
           cache: npm
 
       - name: Pin npm to the declared version

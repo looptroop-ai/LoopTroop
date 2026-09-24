@@ -20,9 +20,9 @@
 # a floor winget did not have yet). That covers a floor moved by hand as well,
 # and a required check is the only kind that can stop a merge.
 #
-# Renovate merges the pull request itself once every required check passes, so
-# nobody has to remember it. That needs one more thing: when a feed catches up,
-# nothing about the pull request changes, so nothing would run Verify again.
+# Nothing merges the pull request but a person, after review, so it should be
+# green by the time they look. That needs one more thing: when a feed catches
+# up, nothing about the pull request changes, so nothing would run Verify again.
 # `recheck` does, every day, until the pull request is green or gone.
 #
 # Nothing here installs dependencies. Both scripts use Node built-ins only, so
@@ -71,7 +71,7 @@ jobs:
 
       - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7
         with:
-          node-version: 24.21.0
+          node-version-file: .nvmrc
 
       - name: Write the floor into every copy
         run: node scripts/sync-node-floor.ts
@@ -285,7 +285,7 @@ jobs:
 
   # Re-runs whatever failed on the open floor pull request's head, in any
   # workflow: Verify while a feed was late, and a flaky lane just the same,
-  # since either one holds up the automatic merge. A check that fails for a real
+  # since either one keeps the pull request red. A check that fails for a real
   # reason fails again, and the pull request stays open; nothing merges red.
   #
   # GitHub re-runs a run only within 30 days of its start, and a feed can stay

@@ -123,42 +123,56 @@ describe('release workflow policy', () => {
   })
 
   /**
-   * The toolchain is stated once, in `.nvmrc`, and every other copy is held to
-   * it. That used to happen for free: the pin and `engines.node` were one
-   * number, so holding the copies to the floor held them to each other. Split
-   * apart, a lower bound would let the container, the toolchain lanes and the
-   * release jobs each drift to a different runtime while every test passed —
-   * Renovate moves `.nvmrc` and the Dockerfile, and nothing moves these.
+   * The toolchain is stated in `.nvmrc`, and every workflow reads it from there
+   * with `node-version-file` instead of repeating it. Renovate moves `.nvmrc`
+   * and the Dockerfile; no Renovate manager edits a number typed into a
+   * workflow, so a typed copy is refused even while it agrees, because the next
+   * toolchain pull request would leave it behind.
    *
-   * The only exceptions are named: the declared-floor lanes, which run the
-   * floor, and the standalone builder's embedded runtime, which the binary-job
-   * test below confines to those jobs.
+   * The only typed versions are named exceptions: the standalone builder's
+   * embedded runtime, which the binary-job test below confines to those jobs;
+   * the declared-floor lanes, which read `engines.node` at run time; and the
+   * Node 26 early-warning lane, which floats on purpose.
    */
-  it('holds every Node runtime literal to the toolchain pin, or to the floor where it says so', () => {
-    const toolchain = formatNodeVersion(parseNodeVersion(readFileSync(join(repo, '.nvmrc'), 'utf8').trim()))
-
+  it('reads the toolchain Node from .nvmrc in every workflow and types no copy of it', () => {
     for (const [file, text] of source) {
       for (const match of text.matchAll(/^\s*node-version:\s*["']?(v?\d+(?:\.\d+){0,2})["']?(?=\s|$)/gm)) {
         const found = match[1]
         if (!found) throw new Error(`${file}: node-version capture missing`)
         const parsed = concreteVersion(found)
         if (parsed === null) continue
-        expect([toolchain, EMBEDDED_BUILDER], `${file}: node-version ${found}`).toContain(formatNodeVersion(parsed))
+        expect(formatNodeVersion(parsed), `${file}: node-version ${found}; read .nvmrc with node-version-file instead`).toBe(EMBEDDED_BUILDER)
       }
     }
 
-    // A bare major floats to whatever shipped this week, and the checks above
-    // skip it. Only the Node 26 early-warning lane may float, on purpose.
     for (const [file, workflow] of workflows) {
       for (const [name, job] of Object.entries(workflow.jobs ?? {})) {
-        for (const step of (job.steps ?? []) as Array<Step & { with?: Record<string, unknown> }>) {
+        const steps = (job.steps ?? []) as Array<Step & { with?: Record<string, unknown> }>
+        steps.forEach((step, index) => {
+          if (!String(step.uses ?? '').startsWith('actions/setup-node@')) return
+          const versionFile = step.with?.['node-version-file']
           const selector = step.with?.['node-version']
-          if (typeof selector !== 'string' && typeof selector !== 'number') continue
-          if (String(selector).includes('${{')) continue
+          if (versionFile !== undefined) {
+            expect(versionFile, `${file}: ${name} reads the toolchain from .nvmrc`).toBe('.nvmrc')
+            expect(selector, `${file}: ${name} sets node-version-file alone`).toBeUndefined()
+            // setup-node reads the file from the workspace, so the checkout
+            // that puts it there has to come first, at the workspace root.
+            const checkout = steps.findIndex((candidate) => String(candidate.uses ?? '').startsWith('actions/checkout@'))
+            expect(checkout, `${file}: ${name} checks out .nvmrc before reading it`).toBeGreaterThan(-1)
+            expect(checkout, `${file}: ${name} checks out .nvmrc before reading it`).toBeLessThan(index)
+            expect(steps[checkout]?.with?.path, `${file}: ${name} checks out at the workspace root`).toBeUndefined()
+            return
+          }
+          if (typeof selector !== 'string' && typeof selector !== 'number') {
+            throw new Error(`${file}: ${name} sets up Node with neither .nvmrc nor a named exception`)
+          }
+          // A bare major floats to whatever shipped this week, and the literal
+          // check above skips it. Only the Node 26 early-warning lane may float.
+          if (String(selector).includes('${{')) return
           if (concreteVersion(String(selector)) === null) {
             expect(`${file}: ${name}`, `${file}: ${name} floats on node-version ${String(selector)}`).toBe('ci.yml: early-warning')
           }
-        }
+        })
       }
     }
 
@@ -168,7 +182,7 @@ describe('release workflow policy', () => {
           if (entry.node === undefined) continue
           const parsed = concreteVersion(String(entry.node))
           if (parsed === null) continue
-          const expected = entry.label === 'declared floor' ? FLOOR : toolchain
+          const expected = entry.label === 'declared floor' ? FLOOR : TOOLCHAIN
           expect(formatNodeVersion(parsed), `${file}: ${name} matrix node (${String(entry.label)})`).toBe(expected)
         }
       }
@@ -177,7 +191,7 @@ describe('release workflow policy', () => {
     const docker = readFileSync(join(repo, 'scripts', 'Dockerfile'), 'utf8')
     const bases = [...docker.matchAll(/^\s*FROM\s+node:(\d+\.\d+\.\d+)(?=[-@])/gm)].map(([, version]) => version)
     expect(bases.length, 'Dockerfile Node base images').toBeGreaterThan(0)
-    for (const base of bases) expect(base, 'Dockerfile FROM node:').toBe(toolchain)
+    for (const base of bases) expect(base, 'Dockerfile FROM node:').toBe(TOOLCHAIN)
   })
 
   /**
@@ -273,7 +287,7 @@ describe('release workflow policy', () => {
       const binary = text.slice(start, end)
 
       expect(binary, `${file}: binary runtime`).toContain('node-version: 26.9.0')
-      expect(binary, `${file}: binary runtime`).not.toContain(`node-version: ${TOOLCHAIN}`)
+      expect(binary, `${file}: binary runtime`).not.toContain('node-version-file')
       expect(binary, `${file}: embedded-runtime check`).toContain('Run blocking application checks on the embedded runtime')
       expect(binary, `${file}: embedded-runtime check`).toContain('doctor --json')
       expect(binary, `${file}: embedded-runtime check`).toContain('nodeCheck?.node?.version')
@@ -578,8 +592,9 @@ describe('release workflow policy', () => {
   })
 
   /**
-   * The floor pull request merges itself, so something has to look at it again
-   * once a late feed catches up: nothing on the pull request changes when that
+   * The floor pull request stays red until every feed offers the new floor, so
+   * something has to look at it again once a late feed catches up, or it is
+   * still red when someone comes to merge it: nothing on it changes when that
    * happens, so no check would run. `recheck` re-runs whatever failed there,
    * daily. It checks out nothing and holds no secret, and the only thing it may
    * write is a request to re-run.
@@ -690,12 +705,11 @@ describe('release workflow policy', () => {
    * rebase, no newer release — unless that author is in gitIgnoredAuthors. Its
    * own workflows commit to its branches, so the author they commit as is an
    * interface: change it without this list and every such pull request freezes,
-   * the self-merging floor with it, and nothing reports an error.
+   * the floor's with it, and nothing reports an error.
    */
   it('lets Renovate keep updating the branches its own workflows commit to', () => {
     const renovate = JSON.parse(readFileSync(join(repo, '.github/renovate.json'), 'utf8')) as {
       gitIgnoredAuthors?: string[]
-      packageRules: Array<{ groupSlug?: string; automerge?: boolean }>
     }
     const committing = files.filter((file) => file.startsWith('renovate-') && (source.get(file) ?? '').includes('git config user.email'))
     expect(committing, 'the floor workflow is one of them').toContain('renovate-node-floor.yml')
@@ -703,7 +717,29 @@ describe('release workflow policy', () => {
       const author = /git config user\.email "([^"]+)"/.exec(source.get(file) ?? '')?.[1]
       expect(renovate.gitIgnoredAuthors, `${file} commits as ${author}`).toContain(author)
     }
-    expect(renovate.packageRules.find((rule) => rule.groupSlug === 'node-floor')?.automerge).toBe(true)
+  })
+
+  /**
+   * Every Renovate pull request is merged by a person, or an agent acting for
+   * one, after review. An `automerge` switched on anywhere, the top level, a
+   * rule or `lockFileMaintenance`, would merge that lane unreviewed the moment
+   * its checks pass, so the whole file is searched rather than known places.
+   */
+  it('lets no Renovate update merge itself', () => {
+    const found: string[] = []
+    const visit = (value: unknown, at: string) => {
+      if (Array.isArray(value)) value.forEach((item, index) => visit(item, `${at}[${index}]`))
+      else if (value !== null && typeof value === 'object') {
+        for (const [key, child] of Object.entries(value)) {
+          if (key === 'automerge' && child !== false) found.push(`${at}.${key}`)
+          visit(child, `${at}.${key}`)
+        }
+      }
+    }
+    const renovate: unknown = JSON.parse(readFileSync(join(repo, '.github/renovate.json'), 'utf8'))
+    visit(renovate, '$')
+    expect(found, 'automerge settings that are not false').toEqual([])
+    expect((renovate as { automerge?: unknown }).automerge, 'the default is stated, not inherited from a preset').toBe(false)
   })
 
   it('downloads Renovate notices outside checkout and gives the token only to push', () => {

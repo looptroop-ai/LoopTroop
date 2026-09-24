@@ -2,6 +2,7 @@ import { afterEach, describe, expect, it, vi } from 'vitest'
 import { createServer } from 'node:http'
 import { once } from 'node:events'
 import { getServeHostname, parseLocalPortFromUrl, resolveOpenCodeBaseUrl } from '../scripts/opencode-dev-base-url'
+import { invalidateOpenCodeConnection } from '../server/opencode/connection'
 
 afterEach(() => {
   vi.unstubAllGlobals()
@@ -19,10 +20,10 @@ describe('resolveOpenCodeBaseUrl', () => {
       requests.push(req.url ?? '')
       if (req.headers.authorization !== authorization) {
         res.writeHead(401).end()
-      } else if (redirect && req.url === '/provider') {
+      } else if (redirect && req.url === '/api/info') {
         res.writeHead(302, { Location: '/redirect-target' }).end()
       } else {
-        res.writeHead(200).end('{}')
+        res.writeHead(200, { 'Content-Type': 'application/json' }).end(JSON.stringify({ version: '2.0.15', pid: 812 }))
       }
     })
     server.listen(0, '127.0.0.1')
@@ -40,8 +41,9 @@ describe('resolveOpenCodeBaseUrl', () => {
       }
       expect((await resolveOpenCodeBaseUrl(options)).status).toBe('already-running')
       redirect = true
-      await expect(resolveOpenCodeBaseUrl(options)).rejects.toThrow('occupied by a non-OpenCode process')
-      expect(requests).toEqual(['/provider', '/provider'])
+      invalidateOpenCodeConnection()
+      await expect(resolveOpenCodeBaseUrl(options)).rejects.toThrow('info probe redirected')
+      expect(requests).toEqual(['/api/info', '/api/info'])
     } finally {
       await new Promise<void>((resolve, reject) => server.close((error) => error ? reject(error) : resolve()))
     }
@@ -76,16 +78,18 @@ describe('resolveOpenCodeBaseUrl', () => {
   })
 
   it.each([
-    ['http://[::1]:4096', 'http://[::1]:4096/provider'],
-    ['http://[::ffff:127.0.0.2]:4096', 'http://[::ffff:7f00:2]:4096/provider'],
-  ])('reuses %s through a valid bracketed provider URL', async (requestedBaseUrl, providerUrl) => {
-    const fetchMock = vi.fn(async () => new Response('{}'))
+    ['http://[::1]:4096', 'http://[::1]:4096/api/info'],
+    ['http://[::ffff:127.0.0.2]:4096', 'http://[::ffff:7f00:2]:4096/api/info'],
+  ])('reuses %s through a valid bracketed API URL', async (requestedBaseUrl, apiUrl) => {
+    const fetchMock = vi.fn(async () => new Response(JSON.stringify({ version: '2.0.15', pid: 812 }), {
+      headers: { 'content-type': 'application/json' },
+    }))
     vi.stubGlobal('fetch', fetchMock)
 
     const result = await resolveOpenCodeBaseUrl({ requestedBaseUrl, hasExplicitBaseUrl: true })
 
     expect(result.status).toBe('already-running')
-    expect(fetchMock).toHaveBeenCalledWith(providerUrl, expect.any(Object))
+    expect(fetchMock).toHaveBeenCalledWith(apiUrl, expect.any(Object))
   })
 
   it('probes the IPv6 loopback when a wildcard listener cannot be reached at ::', async () => {

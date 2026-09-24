@@ -5,6 +5,7 @@ import { createIndexes } from './db/indexes'
 import { initPromptTemplates } from './prompts/templateStore'
 import { hydrateAllTickets } from './machines/persistence'
 import { getOpenCodeAdapter } from './opencode/factory'
+import { getOpenCodeBaseUrl } from './opencode/runtimeConfig'
 import { recoverPendingOpenCodeSessionOwnership, SessionManager } from './opencode/sessionManager'
 import { opencodeSessions, tickets } from './db/schema'
 import { getProjectContextById, listProjects } from './storage/projects'
@@ -317,10 +318,23 @@ export async function startupSequence(): Promise<void> {
   const adapter = getOpenCodeAdapter()
   try {
     const health = await adapter.checkHealth()
-    if (health.available) {
-      console.log(`[startup] OpenCode is reachable (version: ${health.version ?? 'unknown'})`)
+    if (health.failureKind === 'model_discovery') {
+      console.warn(`[startup] ${health.error ?? 'OpenCode is reachable, but model discovery failed.'}`)
+    } else if (health.available) {
+      const protocol = health.protocol ? ` via ${health.protocol}` : ''
+      console.log(`[startup] OpenCode${protocol} is reachable (version: ${health.version ?? 'unknown'}).`)
     } else {
-      console.warn(`[startup] OpenCode is NOT reachable: ${health.error ?? 'unknown error'}. Start it with \`opencode serve\`.`)
+      const reason = health.error ?? 'unknown error'
+      switch (health.failureKind) {
+        case 'authentication':
+          console.warn(`[startup] OpenCode rejected its credentials: ${reason}`)
+          break
+        case 'unsupported_protocol':
+          console.warn(`[startup] OpenCode at ${getOpenCodeBaseUrl()} uses an unsupported API: ${reason}`)
+          break
+        default:
+          console.warn(`[startup] Cannot reach OpenCode at ${getOpenCodeBaseUrl()}: ${reason}`)
+      }
     }
   } catch (err) {
     console.warn(`[startup] OpenCode health check failed: ${getErrorMessage(err)}`)

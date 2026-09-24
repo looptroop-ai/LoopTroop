@@ -18,6 +18,7 @@ import { assertPublicOriginRemoteAccess, resolveSettings, type ResolvedSettings 
 import { readProcessStartToken } from '../lib/processIdentity'
 import { createSessionCredentials, BootstrapNonceStore, type SessionCredentials } from '../middleware/sessionAuth'
 import { OpenCodeSupervisor, type OpenCodeStatus } from '../opencode/supervisor'
+import { resetOpenCodeAdapterTransport } from '../opencode/factory'
 import { getErrorMessage } from '@shared/typeGuards'
 
 /** Keeps the lock's heartbeat ahead of the staleness window. */
@@ -295,6 +296,10 @@ export async function startDaemon(options: StartDaemonOptions): Promise<DaemonHa
    * reachable server for a daemon that could not run a single coding operation.
    */
   const recordOpenCodeStatus = (status: OpenCodeStatus): void => {
+    // A managed restart may launch a different CLI protocol. Drop only the
+    // cached transport so in-flight calls retain theirs and later calls can
+    // resolve the now-ready server again.
+    if (status.kind === 'managed') resetOpenCodeAdapterTransport()
     const next = nextStateForOpenCode(recordedState, status, settings.opencodeBaseUrl, {
       released: stateFileReleased,
     })

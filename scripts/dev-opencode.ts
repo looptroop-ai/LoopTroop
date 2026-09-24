@@ -1,4 +1,5 @@
 import { spawn } from 'node:child_process'
+import { randomBytes } from 'node:crypto'
 import { DEFAULT_OPENCODE_BASE_URL } from '../shared/appConfig'
 import { getErrorMessage } from '../shared/typeGuards'
 import { getServeHostname, resolveOpenCodeBaseUrl } from './opencode-dev-base-url'
@@ -7,6 +8,7 @@ import { withManagedOpenCodeServerEnv } from './opencode-permission-env'
 import { LOOPTROOP_OPENCODE_ROUTING_CONFIG } from '../shared/openRouterRouting'
 import { createChildEnvironment } from '../server/lib/childEnvironment'
 import { launchTool } from './tool-path.ts'
+import { withOpenCodePasswordAliases } from '../shared/opencodeAuth'
 
 const requestedBaseUrl = process.env.LOOPTROOP_OPENCODE_BASE_URL?.trim() || DEFAULT_OPENCODE_BASE_URL
 const hasExplicitBaseUrl = Boolean(process.env.LOOPTROOP_OPENCODE_BASE_URL?.trim())
@@ -49,7 +51,15 @@ if (opencodeLogMode.mode === 'all') {
   console.log('[dev-opencode] Printing managed OpenCode DEBUG logs to stderr.')
 }
 
-const managedServerEnv = withManagedOpenCodeServerEnv(process.env)
+const managedAuthEnv = { ...process.env }
+if (managedAuthEnv.OPENCODE_PASSWORD === undefined && managedAuthEnv.OPENCODE_SERVER_PASSWORD === undefined) {
+  const password = randomBytes(32).toString('base64url')
+  managedAuthEnv.OPENCODE_PASSWORD = password
+  managedAuthEnv.OPENCODE_SERVER_PASSWORD = password
+} else {
+  withOpenCodePasswordAliases(managedAuthEnv)
+}
+const managedServerEnv = withManagedOpenCodeServerEnv(managedAuthEnv)
 if (!managedServerEnv.OPENCODE_CONFIG?.trim()) {
   const routingConfigPath = process.env[LOOPTROOP_OPENCODE_ROUTING_CONFIG]?.trim()
   if (routingConfigPath) {

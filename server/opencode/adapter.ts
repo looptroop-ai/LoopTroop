@@ -1,25 +1,25 @@
-import { createOpencodeClient } from '@opencode-ai/sdk/v2'
 import type {
-  GenericMessagePart,
   HealthStatus,
   Message,
-  MessageInfo,
-  MessagePart,
   OpenCodeQuestionAnswer,
-  OpenCodeQuestionInfo,
   OpenCodeQuestionRequest,
   OpenCodeSessionCreateOptions,
-  OpenCodeTodo,
   PromptPart,
   PromptSessionOptions,
-  ReasoningMessagePart,
   SessionErrorStreamEvent,
   Session,
-  StepFinishMessagePart,
   StreamEvent,
-  TextMessagePart,
-  ToolMessagePart,
 } from './types'
+import type {
+  OpenCodeEventSubscription,
+  OpenCodePromptRequest,
+  OpenCodeTransport,
+  OpenCodeTransportEvent,
+  OpenCodeTransportEventEnvelope,
+  OpenCodeSessionLog,
+  PromptDispatch,
+} from './transport'
+import { OpenCodeV1Transport, type OpenCodeV1Client } from './v1Transport'
 import { parseModelRef } from './types'
 import { isPermissionDeniedByRules } from './toolPolicy'
 import type { TicketState } from './contextBuilder'
@@ -36,39 +36,16 @@ import { parseExecutionSetupPlanNotes } from '../phases/executionSetupPlan/types
 import { parseExecutionSetupRetryNotes } from '../phases/executionSetup/types'
 import { renderCommandSpec } from '@shared/commandSpec'
 import { looksLikePromptEcho } from '../lib/promptEcho'
-import { getOpenCodeBasicAuthHeader } from '../../shared/opencodeAuth'
 import {
   ADAPTER_RETRY_DELAY_MS,
   SDK_OPERATION_TIMEOUT_MS,
-  SESSION_LIST_LIMIT,
-  MESSAGE_LIST_LIMIT,
-  MAX_CATALOG_MODEL_IDS,
 } from '../lib/constants'
-import {
-  analyzeAssistantMessages,
-  extractTextFromMessageParts,
-} from './assistantMessageAnalysis'
+import { analyzeAssistantMessages } from './assistantMessageAnalysis'
 import { summarizeModelErrorForLog } from './errorDetails'
 import { enrichGenericOpenCodeProviderError } from './logDiagnostics'
 import { getErrorMessage } from '@shared/typeGuards'
 import { isAbortError } from '../lib/abort'
-
-interface RawEvent {
-  type: string
-  properties?: Record<string, unknown>
-  directory?: string
-  project?: string
-  workspace?: string
-}
-
-function normalizeSafeHttpUrl(value: string): string | undefined {
-  try {
-    const url = new URL(value)
-    return url.protocol === 'http:' || url.protocol === 'https:' ? url.toString() : undefined
-  } catch {
-    return undefined
-  }
-}
+import { OpenCodeConnectionError } from './connection'
 
 export interface OpenCodeAdapter {
   createSession(projectPath: string, signal?: AbortSignal, options?: OpenCodeSessionCreateOptions): Promise<Session>
@@ -103,6 +80,26 @@ export interface OpenCodeAdapter {
    * timeout.
    */
   checkHealth(signal?: AbortSignal): Promise<HealthStatus>
+}
+
+export type OpenCodeTransportResolver = (
+  baseUrl: string,
+  signal?: AbortSignal,
+) => Promise<OpenCodeTransport>
+
+type AcceptedPromptTerminal = Extract<OpenCodeTransportEvent, { type: 'execution_terminal' }>
+type AcceptedPromptLifecycleResult =
+  | { kind: 'complete'; terminal: AcceptedPromptTerminal }
+  | { kind: 'conflict'; error: string }
+
+function hasCompleteV2LogCoverage(after: number, log: OpenCodeSessionLog): boolean {
+  if (log.coverageComplete === false || !Number.isSafeInteger(log.cursor) || log.cursor! < after) return false
+  let next = after + 1
+  for (const envelope of log.events) {
+    if (!Number.isSafeInteger(envelope.cursor) || envelope.cursor !== next) return false
+    next++
+  }
+  return next === log.cursor! + 1
 }
 
 function formatContextGuidance(guidance: Bead['contextGuidance']): string {
@@ -167,20 +164,66 @@ function formatBeadContext(bead: Bead): string {
 }
 
 export class OpenCodeSDKAdapter implements OpenCodeAdapter {
-  private client: ReturnType<typeof createOpencodeClient>
+  private readonly baseUrl: string
+  private readonly injectedV1Client?: OpenCodeV1Client
+  private readonly transportResolver?: OpenCodeTransportResolver
+  private transport?: OpenCodeTransport
+  private transportInitialization?: Promise<OpenCodeTransport>
+  private transportGeneration = 0
   private sessionDirectories = new Map<string, string>()
   private questionDirectories = new Map<string, string>()
   private questionSessions = new Map<string, string>()
+  private activePromptSessions = new Set<string>()
 
-  constructor(baseUrlOrPort: string | number = getOpenCodeBaseUrl(), client?: ReturnType<typeof createOpencodeClient>) {
-    const baseUrl = typeof baseUrlOrPort === 'number'
+  constructor(
+    baseUrlOrPort: string | number = getOpenCodeBaseUrl(),
+    client?: OpenCodeV1Client,
+    transportResolver?: OpenCodeTransportResolver,
+  ) {
+    this.baseUrl = typeof baseUrlOrPort === 'number'
       ? `http://localhost:${baseUrlOrPort}`
       : baseUrlOrPort
-    const authHeader = getOpenCodeBasicAuthHeader()
-    this.client = client ?? createOpencodeClient({
-      baseUrl,
-      ...(authHeader ? { headers: { Authorization: authHeader } } : {}),
-    })
+    this.injectedV1Client = client
+    this.transportResolver = transportResolver
+  }
+
+  private async getTransport(signal?: AbortSignal): Promise<OpenCodeTransport> {
+    if (this.transport) return this.transport
+    if (!this.transportInitialization) {
+      const generation = this.transportGeneration
+      const initialization = this.createTransport(signal)
+      this.transportInitialization = initialization
+      try {
+        const transport = await initialization
+        if (generation === this.transportGeneration && this.transportInitialization === initialization) {
+          this.transport = transport
+        }
+        return transport
+      } catch (error) {
+        if (this.transportInitialization === initialization) this.transportInitialization = undefined
+        throw error
+      }
+    }
+    return await this.transportInitialization
+  }
+
+  /** Re-resolve the protocol for future calls after an owned server restart. */
+  resetTransportForFutureOperations(): void {
+    this.transportGeneration += 1
+    this.transport = undefined
+    this.transportInitialization = undefined
+  }
+
+  private async createTransport(signal?: AbortSignal): Promise<OpenCodeTransport> {
+    if (this.injectedV1Client) return new OpenCodeV1Transport(this.baseUrl, this.injectedV1Client)
+    if (this.transportResolver) return this.transportResolver(this.baseUrl, signal)
+    const { getOpenCodeConnection } = await import('./connection')
+    const connection = await getOpenCodeConnection(this.baseUrl, signal)
+    if (connection.protocol === 'v2') {
+      const { V2OpenCodeTransport } = await import('./v2Transport')
+      return new V2OpenCodeTransport(this.baseUrl, { headers: connection.headers })
+    }
+    return new OpenCodeV1Transport(this.baseUrl, undefined, connection.headers)
   }
 
   async createSession(
@@ -189,15 +232,7 @@ export class OpenCodeSDKAdapter implements OpenCodeAdapter {
     options?: OpenCodeSessionCreateOptions,
   ): Promise<Session> {
     try {
-      const res = await this.client.session.create(
-        {
-          directory: projectPath,
-          ...(options?.permission ? { permission: options.permission.map((rule) => ({ ...rule })) } : {}),
-        },
-        this.requestOptions(this.withSdkOperationTimeout(signal)),
-      )
-      if (!res.data) throw new Error('OpenCode returned no session payload')
-      const session = this.mapSession(res.data as Record<string, unknown>)
+      const session = await (await this.getTransport(signal)).createSession(projectPath, options, signal)
       this.sessionDirectories.set(session.id, session.directory ?? session.projectPath ?? projectPath)
       return session
     } catch (err) {
@@ -222,257 +257,330 @@ export class OpenCodeSDKAdapter implements OpenCodeAdapter {
     signal?: AbortSignal,
     options?: PromptSessionOptions,
   ): Promise<string> {
+    if (this.activePromptSessions.has(sessionId)) {
+      throw new Error(`OpenCode session ${sessionId} already has a prompt in progress`)
+    }
+    this.activePromptSessions.add(sessionId)
     const promptSignal = options?.signal ?? signal
-    const promptOptions = {
-      ...options,
-      signal: promptSignal,
-    }
-    const sdkPromptAbortController = new AbortController()
-    const sdkPromptSignal = promptSignal
-      ? AbortSignal.any([promptSignal, sdkPromptAbortController.signal])
-      : sdkPromptAbortController.signal
+    // SDK_OPERATION_TIMEOUT_MS bounds individual API calls, not a whole model
+    // generation. The caller owns the workflow deadline for this prompt.
+    const operationSignal = promptSignal
+    const promptOptions = { ...options, signal: operationSignal }
     const model = promptOptions.model ?? parseModelRef(promptOptions.modelRef)
-
-    const directory = await this.resolveSessionDirectory(sessionId, promptSignal)
-    if (promptOptions.permission) {
-      try {
-        const res = await this.client.session.update({
-          sessionID: sessionId,
-          ...(directory ? { directory } : {}),
-          permission: promptOptions.permission.map(rule => ({ ...rule })),
-        }, this.requestOptions(this.withSdkOperationTimeout(promptSignal)))
-        if (!res.data) throw new Error('OpenCode returned no updated session payload')
-      } catch (error) {
-        if (error instanceof Error && (error.name === 'AbortError' || promptSignal?.aborted)) throw error
-        throw new Error(
-          `Failed to apply OpenCode session permissions: ${getErrorMessage(error)}. ` +
-          'Session permission updates require a current OpenCode server; upgrade OpenCode and restart `opencode serve`.',
-        )
-      }
-    }
-    // Manual QA file parts carry a creation-time model-capability snapshot.
-    // If present, forward every part; provider/context failures must surface.
-    const { systemText, promptParts } = this.partitionPromptParts(parts, promptOptions.system, true)
     const streamAbortController = new AbortController()
-    const streamSignal = promptSignal
-      ? AbortSignal.any([promptSignal, streamAbortController.signal])
+    const dispatchAbortController = new AbortController()
+    const streamSignal = operationSignal
+      ? AbortSignal.any([operationSignal, streamAbortController.signal])
       : streamAbortController.signal
-    const streamedTextByMessage = new Map<string, Map<string, string>>()
-    const streamedTextMessageOrder: string[] = []
-    const streamedTextPartIndex = new Map<string, string>()
-    let latestTextMessageId: string | undefined
-    let latestSessionErrorEvent: SessionErrorStreamEvent | undefined
-    const rememberStreamText = (event: StreamEvent) => {
-      if (event.type === 'session_error') {
-        latestSessionErrorEvent = event
-        return
-      }
-
-      if (event.type === 'text') {
-        const messageId = event.messageId ?? '__stream__'
-        const partId = event.partId ?? `${messageId}:text`
-        let messageParts = streamedTextByMessage.get(messageId)
-        if (!messageParts) {
-          messageParts = new Map<string, string>()
-          streamedTextByMessage.set(messageId, messageParts)
-          streamedTextMessageOrder.push(messageId)
-        }
-        messageParts.set(partId, event.text)
-        streamedTextPartIndex.set(partId, messageId)
-        latestTextMessageId = messageId
-        return
-      }
-
-      if (event.type === 'part_removed' && event.partId) {
-        const messageId = streamedTextPartIndex.get(event.partId)
-        if (!messageId) return
-        const messageParts = streamedTextByMessage.get(messageId)
-        if (!messageParts) return
-        messageParts.delete(event.partId)
-        streamedTextPartIndex.delete(event.partId)
-        if (messageParts.size > 0) return
-        streamedTextByMessage.delete(messageId)
-        const orderIndex = streamedTextMessageOrder.lastIndexOf(messageId)
-        if (orderIndex >= 0) streamedTextMessageOrder.splice(orderIndex, 1)
-        latestTextMessageId = streamedTextMessageOrder[streamedTextMessageOrder.length - 1]
-      }
-    }
-    const buildStreamedTextResponse = (): string => {
-      if (!latestTextMessageId) return ''
-      const messageParts = streamedTextByMessage.get(latestTextMessageId)
-      if (!messageParts || messageParts.size === 0) return ''
-      return Array.from(messageParts.values()).join('').trim()
-    }
-    let resolveStreamDoneResponse: ((value: string | null) => void) | null = null
-    let resolveStreamClosed: (() => void) | null = null
-    let streamDoneObserved = false
-    const streamDoneResponse = new Promise<string | null>((resolve) => {
-      resolveStreamDoneResponse = resolve
-    })
-    const streamClosed = new Promise<void>((resolve) => {
-      resolveStreamClosed = resolve
-    })
-    const handledPermissionIds = new Set<string>()
+    const dispatchSignal = operationSignal
+      ? AbortSignal.any([operationSignal, dispatchAbortController.signal])
+      : dispatchAbortController.signal
+    let streamDrain: Promise<{ ended: boolean; error?: unknown }> | undefined
     let permissionReplyFailure: Error | null = null
-    const streamDrain = this.consumeStreamEvents(
-      sessionId,
-      async (event) => {
-        rememberStreamText(event)
-        promptOptions.onEvent?.(event)
-        if (
-          event.type === 'permission'
-          && event.action === 'asked'
-          && promptOptions.autoApprovePermissions
-          && event.permissionId
-          && !handledPermissionIds.has(event.permissionId)
-        ) {
-          handledPermissionIds.add(event.permissionId)
-          // Auto-approval is for keeping an unattended run moving, not for
-          // overriding the policy it was given. A permission the rules deny is
-          // rejected here even so: `question` is denied whenever the operator
-          // has asking turned off, and blanket-approving an ask for it would
-          // quietly hand the model back the thing the setting took away.
-          const deniedByPolicy = isPermissionDeniedByRules(promptOptions.permission, event.permission)
-          try {
-            const result = await this.client.permission.reply({
-              requestID: event.permissionId,
-              ...(directory ? { directory } : {}),
-              reply: deniedByPolicy ? 'reject' : 'always',
-            }, this.requestOptions(this.withSdkOperationTimeout(promptSignal)))
-            if (!result.data) throw new Error('OpenCode did not confirm the permission reply')
-          } catch (error) {
-            permissionReplyFailure = new Error(
-              // Names the reply that failed rather than assuming approval: this
-              // path now rejects too, and "failed to auto-approve" would be a
-              // misleading thing to read in a log about a denied permission.
-              `Failed to ${deniedByPolicy ? 'reject' : 'auto-approve'} OpenCode permission ${event.permission ?? event.permissionId}: ${getErrorMessage(error)}`,
-            )
-            sdkPromptAbortController.abort(permissionReplyFailure)
-            await this.abortSession(sessionId).catch(() => false)
-            throw permissionReplyFailure
-          }
-        }
-        if (event.type !== 'done' || streamDoneObserved) return
-        streamDoneObserved = true
-        void this.readAssistantSnapshotWithRetry(sessionId, undefined, 4, 75, promptSignal)
-          .then((snapshot) => {
-            resolveStreamDoneResponse?.(snapshot.responseText || buildStreamedTextResponse() || null)
-          })
-          .catch((err) => {
-            if (isAbortError(err)) {
-              resolveStreamDoneResponse?.(null)
-              return
-            }
-            warnIfVerbose('[adapter] Snapshot retry failed after stream done, falling back to streamed text', err)
-            resolveStreamDoneResponse?.(buildStreamedTextResponse() || null)
-          })
-      },
-      streamSignal,
-      promptOptions.stepFinishSafetyMs,
-    ).finally(() => {
-      resolveStreamClosed?.()
-    })
-    const readSnapshotAfterStreamClose = async (): Promise<string> => {
-      await streamClosed
-      if (streamDoneObserved) {
-        return (await streamDoneResponse)?.trim() ?? ''
-      }
-      try {
-        const snapshot = await this.readAssistantSnapshotWithRetry(sessionId, undefined, 4, 75, promptSignal)
-        return (snapshot.responseText || buildStreamedTextResponse()).trim()
-      } catch (err) {
-        if (isAbortError(err)) throw err
-        warnIfVerbose('[adapter] Snapshot retry failed after stream close, falling back to streamed text', err)
-        return buildStreamedTextResponse().trim()
-      }
-    }
+    let permissionReplyPending: Promise<void> | undefined
 
     try {
-      const sdkPromptResponse = (async () => {
-        const res = await this.client.session.prompt({
-          sessionID: sessionId,
-          ...(directory ? { directory } : {}),
-          ...(model ? { model } : {}),
-          ...(promptOptions.agent ? { agent: promptOptions.agent } : {}),
-          ...(promptOptions.variant ? { variant: promptOptions.variant } : {}),
-          ...(systemText ? { system: systemText } : {}),
-          ...(typeof promptOptions.noReply === 'boolean' ? { noReply: promptOptions.noReply } : {}),
-          ...('tools' in promptOptions && promptOptions.tools ? { tools: promptOptions.tools as Record<string, boolean> } : {}),
-          parts: promptParts,
-        }, this.requestOptions(sdkPromptSignal))
+      const transport = await this.getTransport(operationSignal)
+      const directory = await this.resolveSessionDirectory(sessionId, operationSignal, transport)
+      await transport.waitForIdle(sessionId, directory, operationSignal)
+      if (promptOptions.permission) {
+        try {
+          await transport.updateSession(sessionId, directory, { permission: promptOptions.permission }, operationSignal)
+        } catch (error) {
+          if (isAbortError(error) || operationSignal?.aborted) throw error
+          throw new Error(
+            `Failed to apply OpenCode session permissions: ${getErrorMessage(error)}. ` +
+            'Session permission updates require a current OpenCode server; upgrade OpenCode and restart `opencode serve`.',
+          )
+        }
+      }
 
-        let responseText = extractTextFromMessageParts(res.data?.parts)
+      const subscription = await transport.subscribeToEvents(
+        sessionId,
+        directory,
+        streamSignal,
+        promptOptions.stepFinishSafetyMs,
+      )
+      const baselineMessages = transport.protocol === 'v2'
+        ? await transport.getSessionMessages(sessionId, directory, operationSignal)
+        : []
+      const baselineMessageIds = new Set(baselineMessages.map(message => message.id).filter(Boolean))
+      const snapshotBaselineIds = transport.protocol === 'v2' ? baselineMessageIds : undefined
+      let lastCursor = subscription.cursor
+      const streamedTextByMessage = new Map<string, Map<string, string>>()
+      const streamedTextMessageOrder: string[] = []
+      const streamedTextPartIndex = new Map<string, string>()
+      let latestSessionErrorEvent: SessionErrorStreamEvent | undefined
+      const rememberStreamText = (event: StreamEvent) => {
+        if (event.type === 'session_error') {
+          latestSessionErrorEvent = event
+          return
+        }
+        if (event.type === 'text') {
+          const messageId = event.messageId ?? '__stream__'
+          if (transport.protocol === 'v2' && baselineMessageIds.has(messageId)) return
+          const partId = event.partId ?? `${messageId}:text`
+          let messageParts = streamedTextByMessage.get(messageId)
+          if (!messageParts) {
+            messageParts = new Map<string, string>()
+            streamedTextByMessage.set(messageId, messageParts)
+            streamedTextMessageOrder.push(messageId)
+          }
+          messageParts.set(partId, event.text)
+          streamedTextPartIndex.set(partId, messageId)
+          return
+        }
+        if (event.type === 'part_removed' && event.partId) {
+          const messageId = streamedTextPartIndex.get(event.partId)
+          if (!messageId) return
+          const messageParts = streamedTextByMessage.get(messageId)
+          if (!messageParts) return
+          messageParts.delete(event.partId)
+          streamedTextPartIndex.delete(event.partId)
+          if (messageParts.size > 0) return
+          streamedTextByMessage.delete(messageId)
+          const orderIndex = streamedTextMessageOrder.lastIndexOf(messageId)
+          if (orderIndex >= 0) streamedTextMessageOrder.splice(orderIndex, 1)
+        }
+      }
+      const buildStreamedTextResponse = (): string => {
+        const messageId = streamedTextMessageOrder[streamedTextMessageOrder.length - 1]
+        if (!messageId) return ''
+        const messageParts = streamedTextByMessage.get(messageId)
+        return messageParts ? Array.from(messageParts.values()).join('').trim() : ''
+      }
+      let streamDoneObserved = false
+      let resolveStreamDoneResponse: ((value: string | null) => void) | undefined
+      const streamDoneResponse = new Promise<string | null>(resolve => { resolveStreamDoneResponse = resolve })
+
+      const lifecycle = {
+        enqueued: new Set<string>(),
+        delivered: new Set<string>(),
+        started: false,
+        terminal: undefined as Extract<OpenCodeTransportEvent, { type: 'execution_terminal' }> | undefined,
+        receiptID: undefined as string | undefined,
+        failure: undefined as string | undefined,
+        resolve: undefined as ((value: { kind: 'complete'; terminal: Extract<OpenCodeTransportEvent, { type: 'execution_terminal' }> } | { kind: 'conflict'; error: string }) => void) | undefined,
+        settled: false,
+      }
+      const lifecycleResult = new Promise<
+        | { kind: 'complete'; terminal: Extract<OpenCodeTransportEvent, { type: 'execution_terminal' }> }
+        | { kind: 'conflict'; error: string }
+      >(resolve => { lifecycle.resolve = resolve })
+      const finishLifecycle = (result: { kind: 'complete'; terminal: Extract<OpenCodeTransportEvent, { type: 'execution_terminal' }> } | { kind: 'conflict'; error: string }) => {
+        if (lifecycle.settled) return
+        lifecycle.settled = true
+        lifecycle.resolve?.(result)
+      }
+      const checkLifecycle = () => {
+        if (lifecycle.receiptID) {
+          const otherInboxes = new Set([...lifecycle.enqueued, ...lifecycle.delivered].filter(id => id !== lifecycle.receiptID))
+          if (otherInboxes.size > 0) {
+            lifecycle.failure = 'Another prompt entered the OpenCode session during result attribution; the response cannot be attributed safely.'
+            finishLifecycle({ kind: 'conflict', error: lifecycle.failure })
+            return
+          }
+          if (lifecycle.delivered.has(lifecycle.receiptID) && lifecycle.started && lifecycle.terminal) {
+            finishLifecycle({ kind: 'complete', terminal: lifecycle.terminal })
+          }
+        }
+      }
+      const handledPermissionIds = new Set<string>()
+      const observeEnvelope = async (envelope: OpenCodeTransportEventEnvelope) => {
+        if (transport.protocol === 'v2' && envelope.coverageGap) {
+          lifecycle.failure = 'OpenCode v2 event history has an unaccounted durable sequence gap; the response cannot be attributed safely.'
+          finishLifecycle({ kind: 'conflict', error: lifecycle.failure })
+          return
+        }
+        if (typeof envelope.cursor === 'number' && (lastCursor === undefined || envelope.cursor > lastCursor)) {
+          lastCursor = envelope.cursor
+        }
+        const event = envelope.event
+        if (event.type === 'inbox_enqueued') lifecycle.enqueued.add(event.inboxID)
+        else if (event.type === 'inbox_delivered') lifecycle.delivered.add(event.inboxID)
+        else if (event.type === 'execution_started') lifecycle.started = true
+        else if (event.type === 'execution_terminal') lifecycle.terminal = event
+        else {
+          const streamEvent = event as StreamEvent
+          rememberStreamText(streamEvent)
+          promptOptions.onEvent?.(streamEvent)
+          if (transport.protocol === 'v1' && streamEvent.type === 'done' && !streamDoneObserved) {
+            streamDoneObserved = true
+            void this.readAssistantSnapshotWithRetry(sessionId, undefined, 4, 75, operationSignal, snapshotBaselineIds, directory, transport)
+              .then(snapshot => resolveStreamDoneResponse?.(snapshot.responseText || buildStreamedTextResponse() || null))
+              .catch(error => {
+                if (isAbortError(error)) {
+                  resolveStreamDoneResponse?.(null)
+                  return
+                }
+                warnIfVerbose('[adapter] Snapshot retry failed after stream done, falling back to streamed text', error)
+                resolveStreamDoneResponse?.(buildStreamedTextResponse() || null)
+              })
+          }
+          if (
+            streamEvent.type === 'permission'
+            && streamEvent.action === 'asked'
+            && promptOptions.autoApprovePermissions
+            && streamEvent.permissionId
+            && !handledPermissionIds.has(streamEvent.permissionId)
+          ) {
+            handledPermissionIds.add(streamEvent.permissionId)
+            const deniedByPolicy = isPermissionDeniedByRules(promptOptions.permission, streamEvent.permission)
+            permissionReplyPending = transport.replyPermission(
+                sessionId,
+                streamEvent.permissionId,
+                deniedByPolicy ? 'reject' : 'always',
+                directory,
+                operationSignal,
+              ).catch(async (error) => {
+              permissionReplyFailure = new Error(
+                `Failed to ${deniedByPolicy ? 'reject' : 'auto-approve'} OpenCode permission ${streamEvent.permission ?? streamEvent.permissionId}: ${getErrorMessage(error)}`,
+              )
+              dispatchAbortController.abort()
+              await transport.interruptSession(sessionId, directory).catch(() => false)
+              throw permissionReplyFailure
+              })
+            await permissionReplyPending
+          }
+        }
+        checkLifecycle()
+      }
+
+      const reconcileAcceptedPromptAfterSnapshot = async () => {
+        if (transport.protocol !== 'v2' || !lifecycle.receiptID) return
+        if (lifecycle.failure) throw new Error(lifecycle.failure)
+        const cursor = lastCursor
+        if (cursor === undefined) {
+          throw new Error('OpenCode accepted the prompt, but its snapshot could not be certified without a durable event cursor')
+        }
+
+        let log
+        try {
+          log = await transport.readSessionLog(sessionId, cursor, operationSignal)
+        } catch (error) {
+          if (operationSignal?.aborted || isAbortError(error)) throw error
+          throw new Error(`OpenCode accepted the prompt, but durable event certification failed: ${getErrorMessage(error)}`)
+        }
+        if (!hasCompleteV2LogCoverage(cursor, log)) {
+          throw new Error('OpenCode accepted the prompt, but durable event history has an unaccounted sequence gap and cannot certify the snapshot')
+        }
+        for (const envelope of log.events) await observeEnvelope(envelope)
+        if (typeof log.cursor === 'number' && (lastCursor === undefined || log.cursor > lastCursor)) {
+          lastCursor = log.cursor
+        }
+        if (lifecycle.failure) throw new Error(lifecycle.failure)
+      }
+
+      streamDrain = this.consumeTransportEvents(
+        subscription,
+        observeEnvelope,
+        streamSignal,
+        transport.protocol === 'v1',
+      )
+
+      const dispatchRequest: OpenCodePromptRequest = {
+        sessionId,
+        directory,
+        parts,
+        ...(model ? { model } : {}),
+        ...(promptOptions.agent ? { agent: promptOptions.agent } : {}),
+        ...(promptOptions.variant ? { variant: promptOptions.variant } : {}),
+        ...(promptOptions.system ? { system: promptOptions.system } : {}),
+        ...(typeof promptOptions.noReply === 'boolean' ? { noReply: promptOptions.noReply } : {}),
+        ...('tools' in promptOptions && promptOptions.tools ? { tools: promptOptions.tools as Record<string, boolean> } : {}),
+      }
+      const dispatchPromise = transport.dispatchPrompt(dispatchRequest, dispatchSignal)
+      let dispatched: PromptDispatch | undefined
+      let responseText = ''
+      if (transport.protocol === 'v1') {
+        const firstResult = await Promise.race([
+          this.raceWithSignal(dispatchPromise, dispatchSignal)
+            .then(value => ({ kind: 'dispatched' as const, value })),
+          streamDoneResponse.then(value => ({ kind: 'stream' as const, value })),
+        ])
+        if (firstResult.kind === 'stream' && firstResult.value) {
+          responseText = firstResult.value
+          dispatchAbortController.abort()
+          void dispatchPromise.catch(() => undefined)
+        } else if (firstResult.kind === 'dispatched') {
+          dispatched = firstResult.value
+        } else {
+          dispatched = await this.raceWithSignal(dispatchPromise, dispatchSignal)
+        }
+      } else {
+        dispatched = await this.raceWithSignal(dispatchPromise, dispatchSignal)
+      }
+      if (permissionReplyPending) await permissionReplyPending
+      if (permissionReplyFailure) throw permissionReplyFailure
+      if (dispatched?.kind === 'accepted') {
+        if (promptOptions.noReply === true) return ''
+        lifecycle.receiptID = dispatched.receipt.inboxID
+        checkLifecycle()
+        const terminal = await this.waitForAcceptedPrompt(
+          transport,
+          sessionId,
+          dispatched,
+          lifecycleResult,
+          streamDrain,
+          observeEnvelope,
+          () => lastCursor,
+          operationSignal,
+        )
+        if (terminal.outcome === 'interrupted') {
+          const error = new Error('OpenCode interrupted the accepted prompt before it completed')
+          error.name = 'OpenCodeSessionInterrupted'
+          throw error
+        }
+        if (terminal.outcome === 'failed') {
+          const summary = summarizeModelErrorForLog(terminal.error, getErrorMessage(terminal.error))
+          const error = new Error(summary.message || 'OpenCode execution failed')
+          Object.assign(error, { details: terminal.error, sessionError: terminal.error, modelErrorDetails: summary.details })
+          error.name = 'OpenCodeSessionError'
+          throw error
+        }
+        const snapshot = await this.readAssistantSnapshotWithRetry(sessionId, undefined, 4, 75, operationSignal, snapshotBaselineIds, directory, transport)
+        // Reconcile durable events after the snapshot too: a dropped SSE stream
+        // can hide another inbox while the newest assistant message changes.
+        await reconcileAcceptedPromptAfterSnapshot()
+        if (snapshot.responseMeta.latestAssistantWasStale) {
+          throw new Error('OpenCode completed the accepted prompt but the newest assistant snapshot is stale')
+        }
+        if (snapshot.responseMeta.latestAssistantHasError) {
+          const error = new Error(snapshot.responseMeta.latestAssistantError ?? 'OpenCode assistant response failed')
+          Object.assign(error, { details: snapshot.responseMeta.latestAssistantErrorInfo })
+          error.name = 'OpenCodeSessionError'
+          throw error
+        }
+        responseText = snapshot.responseText
+      } else if (dispatched) {
+        const completedMessage = dispatched.message
+        if (!completedMessage.id || !baselineMessageIds.has(completedMessage.id)) {
+          responseText = completedMessage.content?.trim() ?? ''
+        }
         if (!responseText) {
-          const preferredMessageId = typeof this.getRecord(res.data?.info)?.id === 'string'
-            ? String(this.getRecord(res.data?.info)?.id)
-            : undefined
           try {
-            responseText = (await this.readAssistantSnapshotWithRetry(sessionId, preferredMessageId, 4, 75, promptSignal)).responseText
+            const snapshot = await this.readAssistantSnapshotWithRetry(
+              sessionId,
+              completedMessage.id || undefined,
+              4,
+              75,
+              operationSignal,
+              snapshotBaselineIds,
+              directory,
+              transport,
+            )
+            responseText = snapshot.responseText
           } catch (error) {
-            // A completed stream is already a usable response. A transient
-            // failure reading the final message must not turn that response
-            // into a failed prompt; cancellation still propagates so callers
-            // do not continue after their signal was withdrawn.
             if (isAbortError(error)) throw error
             warnIfVerbose('[adapter] Snapshot read failed after prompt, falling back to streamed text', error)
             responseText = buildStreamedTextResponse()
           }
         }
-        if (!responseText) {
-          responseText = buildStreamedTextResponse()
-        }
-        return responseText
-      })()
-
-      const streamFirstResponse = streamDoneResponse.then((snapshot) => {
-        if (snapshot) {
-          sdkPromptAbortController.abort()
-          // Suppress the rejection from the now-aborted SDK prompt — the stream
-          // already provided the response so this rejection is expected.
-          void sdkPromptResponse.catch(() => undefined)
-          return snapshot
-        }
-        return sdkPromptResponse
-      })
-
-      // If the caller's signal fires (e.g. deadline timeout), break the race
-      // so promptSession doesn't hang when the SDK client ignores the signal.
-      const signalAbort = promptSignal
-        ? new Promise<string>((_, reject) => {
-            if (promptSignal.aborted) {
-              reject(new DOMException('The operation was aborted', 'AbortError'))
-              return
-            }
-            promptSignal.addEventListener('abort', () => {
-              reject(new DOMException('The operation was aborted', 'AbortError'))
-            }, { once: true })
-          })
-        : null
-
-      let responseText = await Promise.race([
-        sdkPromptResponse,
-        streamFirstResponse,
-        ...(signalAbort ? [signalAbort] : []),
-      ])
-      if (permissionReplyFailure) throw permissionReplyFailure
-      if (responseText && looksLikePromptEcho(responseText) && !streamDoneObserved) {
-        const terminalResponse = await Promise.race([
-          streamDoneResponse.then((snapshot) => snapshot?.trim() ?? ''),
-          readSnapshotAfterStreamClose(),
-          ...(signalAbort ? [signalAbort] : []),
-        ])
-        if (terminalResponse) {
-          responseText = terminalResponse
-        }
+        if (!responseText) responseText = buildStreamedTextResponse()
       }
-      if (!responseText) {
-        responseText = buildStreamedTextResponse()
-      }
+
       if (!responseText && latestSessionErrorEvent) {
-        const summary = summarizeModelErrorForLog(
-          latestSessionErrorEvent.details ?? latestSessionErrorEvent.error,
-          latestSessionErrorEvent.error,
-        )
+        const summary = summarizeModelErrorForLog(latestSessionErrorEvent.details ?? latestSessionErrorEvent.error, latestSessionErrorEvent.error)
         const error = new Error(summary.message)
         Object.assign(error, {
           details: latestSessionErrorEvent.details,
@@ -482,71 +590,65 @@ export class OpenCodeSDKAdapter implements OpenCodeAdapter {
         error.name = 'OpenCodeSessionError'
         throw error
       }
-      if (!responseText) {
-        warnIfVerbose(`[adapter] promptSession: OpenCode returned empty response for session=${sessionId}`)
+      if (responseText && looksLikePromptEcho(responseText)) {
+        if (transport.protocol === 'v1' && !streamDoneObserved) {
+          const streamClose = await this.raceWithSignal(
+            Promise.race([
+              streamDoneResponse.then(value => ({ kind: 'done' as const, value })),
+              streamDrain.then(() => ({ kind: 'closed' as const })),
+            ]),
+            operationSignal,
+          )
+          const terminalText = streamClose.kind === 'done'
+            ? streamClose.value
+            : streamDoneObserved
+              ? await this.raceWithSignal(streamDoneResponse, operationSignal)
+              : await this.readAssistantSnapshotWithRetry(sessionId, undefined, 2, 75, operationSignal, snapshotBaselineIds, directory, transport)
+                .then(snapshot => snapshot.responseText || buildStreamedTextResponse() || null)
+          if (terminalText) responseText = terminalText
+        } else {
+          const snapshot = await this.readAssistantSnapshotWithRetry(sessionId, undefined, 2, 75, operationSignal, snapshotBaselineIds, directory, transport)
+          await reconcileAcceptedPromptAfterSnapshot()
+          if (snapshot.responseText) responseText = snapshot.responseText
+        }
       }
+      if (!responseText) warnIfVerbose(`[adapter] promptSession: OpenCode returned empty response for session=${sessionId}`)
       return responseText
     } catch (err) {
-      // Checked before the AbortError branch. A permission reply that failed
-      // aborts the SDK prompt itself, so the rejection arrives as an
-      // AbortError — and rethrowing that made `isCancellationError` read a real
-      // permission failure as a clean user cancel: no blocked-error
-      // diagnostics, no retry, no sign anything had gone wrong.
       if (permissionReplyFailure) throw permissionReplyFailure
-      // Only a real abort short-circuits. The broader "the signal is aborted,
-      // so rethrow whatever this is" subsumed both the branch above it and the
-      // `OpenCodeSessionError` branch below, so a genuine provider failure that
-      // landed while a ticket was being cancelled skipped enrichment entirely
-      // and reached the operator with no diagnostics at all. Cancellation is
-      // still classified upstream by the signal; this only decides whether the
-      // error keeps its own detail on the way there.
-      if (isAbortError(err)) throw err
-      if (err instanceof Error && err.name === 'OpenCodeSessionError') throw err
+      if (isAbortError(err) || promptSignal?.aborted) throw err
+      if (operationSignal?.aborted && operationSignal.reason instanceof Error) throw operationSignal.reason
+      if (err instanceof Error && (err.name === 'OpenCodeSessionError' || err.name === 'OpenCodeSessionInterrupted')) throw err
       const enriched = enrichGenericOpenCodeProviderError(err, sessionId)
       if (enriched) {
         const error = new Error(`Failed to prompt OpenCode session: ${enriched.message}`)
-        Object.assign(error, {
-          details: enriched.details,
-          modelErrorDetails: enriched.details,
-        })
+        Object.assign(error, { details: enriched.details, modelErrorDetails: enriched.details })
         throw error
       }
-      throw new Error(
-        `Failed to prompt OpenCode session: ${getErrorMessage(err)}`,
-      )
+      throw new Error(`Failed to prompt OpenCode session: ${getErrorMessage(err)}`)
     } finally {
       streamAbortController.abort()
       await this.waitForStreamDrain(streamDrain)
+      this.activePromptSessions.delete(sessionId)
     }
   }
 
   async listSessions(signal?: AbortSignal): Promise<Session[]> {
-    const res = await this.client.session.list(
-      { limit: SESSION_LIST_LIMIT },
-      this.requestOptions(this.withSdkOperationTimeout(signal)),
-    )
-    return Array.isArray(res.data)
-      ? res.data.map(session => this.mapSession(session as Record<string, unknown>))
-      : []
+    return await (await this.getTransport(signal)).listSessions(signal)
   }
 
   async getSession(sessionId: string, signal?: AbortSignal): Promise<Session | null> {
+    return await this.getSessionWithTransport(sessionId, signal, await this.getTransport(signal))
+  }
+
+  private async getSessionWithTransport(
+    sessionId: string,
+    signal: AbortSignal | undefined,
+    transport: OpenCodeTransport,
+  ): Promise<Session | null> {
     try {
-      const res = await this.client.session.get(
-        { sessionID: sessionId },
-        this.requestOptions(this.withSdkOperationTimeout(signal)),
-      )
-      if (!res.data) {
-        const status = res.response?.status
-        if (status === 404) return null
-        if (typeof status === 'number') {
-          throw new Error(`OpenCode session lookup failed with HTTP ${status}`)
-        }
-        if (res.error) throw res.error
-        throw new Error('OpenCode returned no session payload')
-      }
-      const session = this.mapSession(res.data as Record<string, unknown>)
-      if (session.directory) this.sessionDirectories.set(session.id, session.directory)
+      const session = await transport.getSession(sessionId, signal)
+      if (session && session.directory) this.sessionDirectories.set(session.id, session.directory)
       return session
     } catch (err) {
       if (isAbortError(err)) throw err
@@ -560,19 +662,19 @@ export class OpenCodeSDKAdapter implements OpenCodeAdapter {
   }
 
   async getSessionMessages(sessionId: string, signal?: AbortSignal): Promise<Message[]> {
+    const transport = await this.getTransport(signal)
+    const directory = await this.resolveSessionDirectory(sessionId, signal, transport)
+    return await this.getSessionMessagesWithTransport(sessionId, directory, signal, transport)
+  }
+
+  private async getSessionMessagesWithTransport(
+    sessionId: string,
+    directory: string | undefined,
+    signal: AbortSignal | undefined,
+    transport: OpenCodeTransport,
+  ): Promise<Message[]> {
     try {
-      const directory = await this.resolveSessionDirectory(sessionId, signal)
-      const res = await this.client.session.messages(
-        {
-          sessionID: sessionId,
-          ...(directory ? { directory } : {}),
-          limit: MESSAGE_LIST_LIMIT,
-        },
-        this.requestOptions(this.withSdkOperationTimeout(signal)),
-      )
-      return Array.isArray(res.data)
-        ? res.data.map((entry) => this.mapMessageRecord(entry, sessionId))
-        : []
+      return await transport.getSessionMessages(sessionId, directory, signal)
     } catch (err) {
       // `[]` has to mean "the list succeeded and was empty". Swallowing a
       // cancellation or a 5xx here made a failed read look like a completed
@@ -585,16 +687,11 @@ export class OpenCodeSDKAdapter implements OpenCodeAdapter {
   }
 
   async listPendingQuestions(projectPath?: string, signal?: AbortSignal, sessionId?: string): Promise<OpenCodeQuestionRequest[]> {
+    const transport = await this.getTransport(signal)
     const directory = sessionId
-      ? await this.requireSessionDirectory(sessionId, signal)
+      ? await this.requireSessionDirectory(sessionId, signal, transport)
       : projectPath
-    const res = await this.client.question.list(
-      directory ? { directory } : undefined,
-      this.requestOptions(this.withSdkOperationTimeout(signal)),
-    )
-    const requests = Array.isArray(res.data)
-      ? res.data.map((request) => this.mapQuestionRequest(request)).filter((request): request is OpenCodeQuestionRequest => Boolean(request))
-      : []
+    const requests = await transport.listPendingQuestions(projectPath, sessionId, directory, signal)
     for (const request of requests) {
       this.questionSessions.set(request.id, request.sessionID)
       if (sessionId && directory) this.questionDirectories.set(request.id, directory)
@@ -609,35 +706,33 @@ export class OpenCodeSDKAdapter implements OpenCodeAdapter {
     signal?: AbortSignal,
     sessionId?: string,
   ): Promise<void> {
-    const directory = await this.resolveQuestionDirectory(requestId, sessionId, signal)
-    const res = await this.client.question.reply({
-      requestID: requestId,
-      ...(directory ? { directory } : {}),
-      answers,
-    }, this.requestOptions(this.withSdkOperationTimeout(signal)))
-    if (res.data !== true) throw new Error(`OpenCode did not confirm reply ${requestId}`)
+    const transport = await this.getTransport(signal)
+    const directory = await this.resolveQuestionDirectory(requestId, sessionId, signal, transport)
+    const ownerSessionId = sessionId ?? this.questionSessions.get(requestId)
+    if (!ownerSessionId) throw new Error(`OpenCode question ${requestId} has no trusted session owner`)
+    await transport.replyQuestion(ownerSessionId, requestId, answers, directory, signal)
     this.forgetQuestion(requestId)
   }
 
   async rejectQuestion(requestId: string, _projectPath?: string, signal?: AbortSignal, sessionId?: string): Promise<void> {
-    const directory = await this.resolveQuestionDirectory(requestId, sessionId, signal)
-    const res = await this.client.question.reject({
-      requestID: requestId,
-      ...(directory ? { directory } : {}),
-    }, this.requestOptions(this.withSdkOperationTimeout(signal)))
-    if (res.data !== true) throw new Error(`OpenCode did not confirm rejection ${requestId}`)
+    const transport = await this.getTransport(signal)
+    const directory = await this.resolveQuestionDirectory(requestId, sessionId, signal, transport)
+    const ownerSessionId = sessionId ?? this.questionSessions.get(requestId)
+    if (!ownerSessionId) throw new Error(`OpenCode question ${requestId} has no trusted session owner`)
+    await transport.rejectQuestion(ownerSessionId, requestId, directory, signal)
     this.forgetQuestion(requestId)
   }
 
   async abortSession(sessionId: string): Promise<boolean> {
     try {
+      const transport = await this.getTransport()
       // A session may have been removed by OpenCode between the prompt and
       // cleanup. A confirmed 404 is already the desired terminal state; an
       // unavailable lookup, an untrusted directory, or any other failure is
       // not evidence that the remote session stopped.
       let directory = this.sessionDirectories.get(sessionId)
       if (!directory) {
-        const session = await this.getSession(sessionId)
+        const session = await this.getSessionWithTransport(sessionId, undefined, transport)
         if (!session) {
           this.forgetSessionDirectory(sessionId)
           return true
@@ -645,17 +740,12 @@ export class OpenCodeSDKAdapter implements OpenCodeAdapter {
         directory = session.directory
         if (!directory) return false
       }
-      const res = await this.client.session.abort({
-        sessionID: sessionId,
-        ...(directory ? { directory } : {}),
-      }, this.requestOptions(AbortSignal.timeout(SDK_OPERATION_TIMEOUT_MS)))
-      if (this.isConfirmedSessionNotFoundResponse(res)) {
-        this.forgetSessionDirectory(sessionId)
-        return true
-      }
-      if (res.data !== true) return false
-      this.forgetSessionDirectory(sessionId)
-      return true
+      const stopped = await transport.interruptSession(
+        sessionId,
+        directory,
+      )
+      if (stopped) this.forgetSessionDirectory(sessionId)
+      return stopped
     } catch (error) {
       if (this.isConfirmedSessionNotFoundError(error)) {
         this.forgetSessionDirectory(sessionId)
@@ -673,81 +763,19 @@ export class OpenCodeSDKAdapter implements OpenCodeAdapter {
   }
 
   async *subscribeToEvents(sessionId: string, signal?: AbortSignal, stepFinishSafetyMs?: number): AsyncGenerator<StreamEvent> {
-    await this.resolveSessionDirectory(sessionId, signal)
-    const eventStream = await this.client.global.event(this.requestOptions(signal))
-
-    const partCache = new Map<string, GenericMessagePart>()
-    const finalizedPartIds = new Set<string>()
-    const messageRoles = new Map<string, string>()
-    let emittedDone = false
-    let lastStatus: string | undefined
-    let safetyActive = false
-    let shouldEmitSyntheticDone = false
-
-    const rawIterator = (eventStream.stream as AsyncIterable<RawEvent>)[Symbol.asyncIterator]()
-
-    while (true) {
-      if (signal?.aborted) break
-
-      let result: IteratorResult<RawEvent>
-
-      if (safetyActive && stepFinishSafetyMs) {
-        const nextPromise = rawIterator.next()
-        const expired = Symbol('expired')
-        const winner = await Promise.race([
-          nextPromise,
-          new Promise<typeof expired>((resolve) =>
-            setTimeout(() => resolve(expired), stepFinishSafetyMs),
-          ),
-        ])
-        if (winner === expired) {
-          // Stream hung after step-finish — suppress pending iterator rejection
-          void nextPromise.catch(() => undefined)
-          shouldEmitSyntheticDone = true
-          break
-        }
-        result = winner
-      } else {
-        result = await rawIterator.next()
-      }
-
-      if (result.done) {
-        shouldEmitSyntheticDone = safetyActive
-        break
-      }
-
-      const rawEvent = this.unwrapRawEvent(result.value)
-      if (!rawEvent) continue
-
-      if (!this.eventBelongsToSession(rawEvent, sessionId)) continue
-
-      const normalized = this.normalizeStreamEvent(rawEvent, sessionId, partCache, finalizedPartIds, messageRoles)
-      if (!normalized) continue
-
-      if (normalized.type === 'session_status') {
-        if (normalized.status === lastStatus) continue
-        lastStatus = normalized.status
-      }
-
-      yield normalized
-
-      if (normalized.type === 'done') {
-        emittedDone = true
-        break
-      }
-
-      // Activate safety deadline after step-finish with terminal reason
-      if (
-        normalized.type === 'step' &&
-        normalized.step === 'finish' &&
-        (normalized.reason === 'stop' || normalized.reason === 'end_turn')
-      ) {
-        safetyActive = true
-      }
-    }
-
-    if (!emittedDone && !signal?.aborted && shouldEmitSyntheticDone) {
-      yield { type: 'done', sessionId }
+    const transport = await this.getTransport(signal)
+    const directory = await this.resolveSessionDirectory(sessionId, signal, transport)
+    const subscription = await transport.subscribeToEvents(
+      sessionId,
+      directory,
+      signal,
+      stepFinishSafetyMs,
+    )
+    for await (const envelope of subscription.events) {
+      const event = envelope.event
+      if (this.isTransportLifecycleEvent(event)) continue
+      yield event
+      if (event.type === 'done') return
     }
   }
 
@@ -863,108 +891,22 @@ export class OpenCodeSDKAdapter implements OpenCodeAdapter {
   }
 
   async checkHealth(signal?: AbortSignal): Promise<HealthStatus> {
-    // The caller's signal reaches the request itself. Racing it outside only
-    // stopped the waiting; the probe carried on against an unreachable server
-    // for its full timeout after the ticket had already been cancelled.
-    const withTimeout = () => (signal
-      ? AbortSignal.any([signal, AbortSignal.timeout(SDK_OPERATION_TIMEOUT_MS)])
-      : AbortSignal.timeout(SDK_OPERATION_TIMEOUT_MS))
+    const timeoutSignal = AbortSignal.timeout(SDK_OPERATION_TIMEOUT_MS)
+    const operationSignal = signal ? AbortSignal.any([signal, timeoutSignal]) : timeoutSignal
     try {
-      const health = await this.client.global.health(this.requestOptions(withTimeout()))
-      const version = health.data?.version ? String(health.data.version) : 'unknown'
-      // The signal reaches this request too. Racing the promise stopped the
-      // waiting and left the request in flight, which is the same half-cancel
-      // the health probe above was fixed for.
-      const providers = await this.withSdkPromiseTimeout(
-        this.client.config.providers(undefined, this.requestOptions(withTimeout())),
-      )
-      return {
-        available: true,
-        version,
-        models: this.extractConnectedModelIds(providers.data),
-      }
-    } catch {
-      // fall through to session fallback
-    }
-    try {
-      await this.client.session.status(undefined, this.requestOptions(withTimeout()))
-      return { available: true, version: 'unknown', models: [] }
+      return await (await this.getTransport(operationSignal)).checkHealth(operationSignal)
     } catch (err) {
+      if (err instanceof OpenCodeConnectionError) {
+        return {
+          available: false,
+          failureKind: err.failureKind,
+          error: err.message,
+        }
+      }
       return {
         available: false,
         error: err instanceof Error ? err.message : 'Connection failed',
       }
-    }
-  }
-
-  private requestOptions(signal?: AbortSignal) {
-    return signal ? { signal } : undefined
-  }
-
-  private withSdkOperationTimeout(signal?: AbortSignal): AbortSignal {
-    const timeoutSignal = AbortSignal.timeout(SDK_OPERATION_TIMEOUT_MS)
-    return signal ? AbortSignal.any([signal, timeoutSignal]) : timeoutSignal
-  }
-
-  private async withSdkPromiseTimeout<T>(operation: Promise<T>, signal?: AbortSignal): Promise<T> {
-    const timeoutSignal = this.withSdkOperationTimeout(signal)
-    if (timeoutSignal.aborted) {
-      throw timeoutSignal.reason instanceof Error ? timeoutSignal.reason : new Error('OpenCode SDK operation timed out')
-    }
-
-    return await new Promise<T>((resolve, reject) => {
-      const onAbort = () => {
-        reject(timeoutSignal.reason instanceof Error ? timeoutSignal.reason : new Error('OpenCode SDK operation timed out'))
-      }
-      timeoutSignal.addEventListener('abort', onAbort, { once: true })
-      operation
-        .then(resolve, reject)
-        .finally(() => timeoutSignal.removeEventListener('abort', onAbort))
-    })
-  }
-
-  private mapSession(session: Record<string, unknown>): Session {
-    const time = this.getRecord(session.time)
-    return {
-      id: String(session.id),
-      slug: typeof session.slug === 'string' ? session.slug : undefined,
-      projectPath: typeof session.directory === 'string' ? session.directory : undefined,
-      directory: typeof session.directory === 'string' ? session.directory : undefined,
-      createdAt: typeof time?.created === 'number' ? new Date(time.created).toISOString() : undefined,
-      updatedAt: typeof time?.updated === 'number' ? new Date(time.updated).toISOString() : undefined,
-      title: typeof session.title === 'string' ? session.title : undefined,
-      version: typeof session.version === 'string' ? session.version : undefined,
-    }
-  }
-
-  private partitionPromptParts(parts: PromptPart[], fallbackSystem?: string, includeImageFiles = false) {
-    const systemParts = parts
-      .filter(part => part.type === 'system')
-      .map(part => part.content.trim())
-      .filter(Boolean)
-
-    const promptParts: Array<
-      | { type: 'text'; text: string }
-      | { type: 'file'; mime: string; filename?: string; url: string }
-    > = []
-    for (const part of parts) {
-      if (part.type === 'system') continue
-      if (part.type === 'file') {
-        if (!includeImageFiles || !part.url || !part.mime?.toLowerCase().startsWith('image/')) continue
-        promptParts.push({
-          type: 'file',
-          mime: part.mime,
-          ...(part.filename ? { filename: part.filename } : {}),
-          url: part.url,
-        })
-        continue
-      }
-      promptParts.push({ type: 'text', text: part.content })
-    }
-
-    return {
-      systemText: [fallbackSystem?.trim(), ...systemParts].filter(Boolean).join('\n\n'),
-      promptParts: promptParts.length > 0 ? promptParts : [{ type: 'text' as const, text: '' }],
     }
   }
 
@@ -1015,6 +957,9 @@ export class OpenCodeSDKAdapter implements OpenCodeAdapter {
     maxAttempts = 4,
     delayMs = 75,
     signal?: AbortSignal,
+    baselineMessageIds?: ReadonlySet<string>,
+    directory?: string,
+    transport?: OpenCodeTransport,
   ): Promise<ReturnType<typeof analyzeAssistantMessages>> {
     // A read that fails is retried like an empty one, but if every attempt
     // fails the failure is surfaced rather than reported as a completed turn
@@ -1028,7 +973,9 @@ export class OpenCodeSDKAdapter implements OpenCodeAdapter {
       }
       let messages: Message[]
       try {
-        messages = await this.getSessionMessages(sessionId, signal)
+        messages = transport
+          ? await this.getSessionMessagesWithTransport(sessionId, directory, signal, transport)
+          : await this.getSessionMessages(sessionId, signal)
         lastReadError = null
       } catch (err) {
         if (isAbortError(err)) throw err
@@ -1037,7 +984,10 @@ export class OpenCodeSDKAdapter implements OpenCodeAdapter {
         await new Promise<void>((resolve) => setTimeout(resolve, delayMs))
         continue
       }
-      const analysis = analyzeAssistantMessages(messages, preferredMessageId)
+      const relevantMessages = baselineMessageIds
+        ? messages.filter(message => Boolean(message.id) && !baselineMessageIds.has(message.id))
+        : messages
+      const analysis = analyzeAssistantMessages(relevantMessages, preferredMessageId)
       if (analysis.responseText || analysis.responseMeta.latestAssistantHasError || analysis.responseMeta.latestAssistantWasStale) {
         return analysis
       }
@@ -1057,33 +1007,11 @@ export class OpenCodeSDKAdapter implements OpenCodeAdapter {
     }
   }
 
-  private mapMessageRecord(entry: unknown, sessionId?: string): Message {
-    const record = this.getRecord(entry)
-    const rawInfo = this.getRecord(record?.info) as MessageInfo | null
-    const info = rawInfo ? { ...rawInfo } : null
-    if (info?.error) {
-      const enriched = enrichGenericOpenCodeProviderError(info.error, sessionId ?? info.sessionID)
-      if (enriched) info.error = enriched.details
-    }
-    const parts = Array.isArray(record?.parts) ? record.parts as MessagePart[] : []
-    const createdAt = typeof info?.time?.created === 'number'
-      ? new Date(info.time.created).toISOString()
-      : typeof info?.timestamp === 'string'
-        ? info.timestamp
-        : undefined
-    const content = extractTextFromMessageParts(parts)
-
-    return {
-      id: typeof info?.id === 'string' ? info.id : '',
-      role: typeof info?.role === 'string' ? info.role : undefined,
-      content: content || undefined,
-      timestamp: createdAt,
-      info: info ?? undefined,
-      parts,
-    }
-  }
-
-  private async resolveSessionDirectory(sessionId: string, signal?: AbortSignal): Promise<string | undefined> {
+  private async resolveSessionDirectory(
+    sessionId: string,
+    signal?: AbortSignal,
+    transport?: OpenCodeTransport,
+  ): Promise<string | undefined> {
     if (signal?.aborted) {
       throw signal.reason instanceof Error
         ? signal.reason
@@ -1093,15 +1021,22 @@ export class OpenCodeSDKAdapter implements OpenCodeAdapter {
     if (cached) return cached
 
     try {
-      return (await this.getSession(sessionId, signal))?.directory
+      const session = transport
+        ? await this.getSessionWithTransport(sessionId, signal, transport)
+        : await this.getSession(sessionId, signal)
+      return session?.directory
     } catch (error) {
       if (signal?.aborted || isAbortError(error)) throw error
       return undefined
     }
   }
 
-  private async requireSessionDirectory(sessionId: string, signal?: AbortSignal): Promise<string> {
-    const directory = await this.resolveSessionDirectory(sessionId, signal)
+  private async requireSessionDirectory(
+    sessionId: string,
+    signal?: AbortSignal,
+    transport?: OpenCodeTransport,
+  ): Promise<string> {
+    const directory = await this.resolveSessionDirectory(sessionId, signal, transport)
     if (!directory) throw new Error(`OpenCode session ${sessionId} has no trusted worktree directory`)
     return directory
   }
@@ -1121,9 +1056,10 @@ export class OpenCodeSDKAdapter implements OpenCodeAdapter {
     requestId: string,
     sessionId: string | undefined,
     signal?: AbortSignal,
+    transport?: OpenCodeTransport,
   ): Promise<string> {
     if (sessionId) {
-      const directory = await this.requireSessionDirectory(sessionId, signal)
+      const directory = await this.requireSessionDirectory(sessionId, signal, transport)
       this.rememberQuestion(requestId, sessionId, directory)
       return directory
     }
@@ -1133,7 +1069,7 @@ export class OpenCodeSDKAdapter implements OpenCodeAdapter {
 
     const ownerSessionId = this.questionSessions.get(requestId)
     if (ownerSessionId) {
-      const directory = await this.requireSessionDirectory(ownerSessionId, signal)
+      const directory = await this.requireSessionDirectory(ownerSessionId, signal, transport)
       this.questionDirectories.set(requestId, directory)
       return directory
     }
@@ -1141,31 +1077,96 @@ export class OpenCodeSDKAdapter implements OpenCodeAdapter {
     throw new Error(`OpenCode question ${requestId} has no trusted session directory`)
   }
 
-  private async consumeStreamEvents(
-    sessionId: string,
-    onEvent: (event: StreamEvent) => void | Promise<void>,
-    signal?: AbortSignal,
-    stepFinishSafetyMs?: number,
-  ) {
+  private isTransportLifecycleEvent(event: OpenCodeTransportEvent): event is Exclude<OpenCodeTransportEvent, StreamEvent> {
+    return event.type === 'inbox_enqueued'
+      || event.type === 'inbox_delivered'
+      || event.type === 'execution_started'
+      || event.type === 'execution_terminal'
+  }
+
+  private async consumeTransportEvents(
+    subscription: OpenCodeEventSubscription,
+    onEnvelope: (envelope: OpenCodeTransportEventEnvelope) => void | Promise<void>,
+    signal: AbortSignal,
+    stopAfterDone: boolean,
+  ): Promise<{ ended: boolean; error?: unknown }> {
     try {
-      for await (const event of this.subscribeToEvents(sessionId, signal, stepFinishSafetyMs)) {
-        await onEvent(event)
-        if (event.type === 'done') break
+      for await (const envelope of subscription.events) {
+        if (signal.aborted) return { ended: true }
+        await onEnvelope(envelope)
+        if (stopAfterDone && envelope.event.type === 'done') break
       }
+      return { ended: true }
     } catch (error) {
-      if (signal?.aborted || (error instanceof Error && error.name === 'AbortError')) {
-        return
-      }
-      await onEvent({
-        type: 'session_error',
-        sessionId,
-        error: getErrorMessage(error),
-        details: error,
-      })
+      if (signal.aborted || isAbortError(error)) return { ended: true }
+      return { ended: true, error }
     }
   }
 
-  private async waitForStreamDrain(streamDrain: Promise<void> | null) {
+  private async waitForAcceptedPrompt(
+    transport: OpenCodeTransport,
+    sessionId: string,
+    _dispatch: Extract<PromptDispatch, { kind: 'accepted' }>,
+    lifecycleResult: Promise<AcceptedPromptLifecycleResult>,
+    streamDrain: Promise<{ ended: boolean; error?: unknown }>,
+    observeEnvelope: (envelope: OpenCodeTransportEventEnvelope) => void | Promise<void>,
+    getCursor: () => number | undefined,
+    signal?: AbortSignal,
+  ): Promise<AcceptedPromptTerminal> {
+    const first = await Promise.race([
+      lifecycleResult.then(result => ({ kind: 'lifecycle' as const, result })),
+      streamDrain.then(result => ({ kind: 'stream' as const, result })),
+    ])
+    if (first.kind === 'lifecycle') {
+      if (first.result.kind === 'conflict') throw new Error(first.result.error)
+      return first.result.terminal
+    }
+
+    if (first.result.error) {
+      warnIfVerbose('[adapter] OpenCode event stream ended; checking the durable session log', first.result.error)
+    }
+    if (transport.protocol !== 'v2') {
+      throw new Error('OpenCode event stream ended before the accepted prompt completed')
+    }
+
+    let cursor = getCursor()
+    if (cursor === undefined) {
+      throw new Error('OpenCode accepted the prompt, but its event subscription had no durable cursor for recovery')
+    }
+    while (true) {
+      if (signal?.aborted) {
+        throw signal.reason instanceof Error
+          ? signal.reason
+          : new DOMException('The operation was aborted', 'AbortError')
+      }
+      let log
+      try {
+        log = await transport.readSessionLog(sessionId, cursor, signal)
+      } catch (error) {
+        if (signal?.aborted || isAbortError(error)) throw error
+        throw new Error(`OpenCode accepted the prompt, but durable event recovery failed: ${getErrorMessage(error)}`)
+      }
+      if (!hasCompleteV2LogCoverage(cursor, log)) {
+        throw new Error('OpenCode accepted the prompt, but durable event history has an unaccounted sequence gap and cannot certify completion')
+      }
+      for (const envelope of log.events) {
+        await observeEnvelope(envelope)
+        if (typeof envelope.cursor === 'number' && envelope.cursor > cursor) cursor = envelope.cursor
+      }
+      if (typeof log.cursor === 'number' && log.cursor > cursor) cursor = log.cursor
+
+      const outcome = await Promise.race([
+        lifecycleResult,
+        new Promise<null>(resolve => setTimeout(() => resolve(null), 200)),
+      ])
+      if (outcome) {
+        if (outcome.kind === 'conflict') throw new Error(outcome.error)
+        return outcome.terminal
+      }
+    }
+  }
+
+  private async waitForStreamDrain(streamDrain: Promise<{ ended: boolean; error?: unknown }> | null | undefined) {
     if (!streamDrain) return
     await Promise.race([
       streamDrain,
@@ -1173,707 +1174,25 @@ export class OpenCodeSDKAdapter implements OpenCodeAdapter {
     ])
   }
 
-  private eventBelongsToSession(event: RawEvent, sessionId: string): boolean {
-    const props = event.properties ?? {}
-    const part = this.getRecord(props.part)
-    const info = this.getRecord(props.info)
-
-    const eventSessionId = typeof props.sessionID === 'string'
-      ? props.sessionID
-      : typeof info?.sessionID === 'string'
-        ? info.sessionID
-        : typeof part?.sessionID === 'string'
-          ? part.sessionID
-          : event.type.startsWith('session.') && typeof info?.id === 'string'
-            ? info.id
-            : undefined
-
-    if (eventSessionId) return eventSessionId === sessionId
-
-    // Global events have no session owner. Assigning one to whichever ticket
-    // happened to be consuming the shared stream makes unrelated work appear
-    // to belong to that ticket, so the per-session stream intentionally omits
-    // them. Events with an explicit session ID remain eligible above.
-    return false
-  }
-
-  private normalizeStreamEvent(
-    event: RawEvent,
-    sessionId: string,
-    partCache: Map<string, GenericMessagePart>,
-    finalizedPartIds: Set<string>,
-    messageRoles: Map<string, string>,
-  ): StreamEvent | null {
-    const props = event.properties ?? {}
-
-    switch (event.type) {
-      case 'message.updated':
-        this.rememberMessageRole(props.info ?? props.message, messageRoles)
-        return null
-
-      case 'message.part.updated': {
-        const part = this.getRecord(props.part) as GenericMessagePart | null
-        if (!part?.id) return null
-        if (this.isKnownNonAssistantMessagePart(part, messageRoles)) return null
-        const partId = String(part.id)
-        if (finalizedPartIds.has(partId)) return null
-
-        const nextPart = this.clonePart(part)
-        const previousPart = partCache.get(partId)
-        if (previousPart && !this.hasMeaningfulPartUpdate(previousPart, nextPart)) {
-          return null
-        }
-
-        partCache.set(partId, nextPart)
-        const normalized = this.mapPartUpdate(nextPart)
-        if (normalized && 'complete' in normalized && normalized.complete) {
-          finalizedPartIds.add(partId)
-        }
-        return normalized
-      }
-
-      case 'message.part.delta': {
-        const partId = typeof props.partID === 'string' ? props.partID : undefined
-        const delta = typeof props.delta === 'string' ? props.delta : ''
-        if (!partId || !delta) return null
-        if (finalizedPartIds.has(partId)) return null
-        const part = partCache.get(partId)
-        if (!part) return null
-        if (this.isKnownNonAssistantMessagePart(part, messageRoles)) return null
-        return this.mapPartDelta(part, delta)
-      }
-
-      case 'message.part.removed': {
-        const partId = typeof props.partID === 'string' ? props.partID : undefined
-        if (partId) {
-          partCache.delete(partId)
-          finalizedPartIds.delete(partId)
-        }
-        return {
-          type: 'part_removed',
-          sessionId,
-          partId,
-        }
-      }
-
-      case 'session.status': {
-        const status = this.getRecord(props.status)
-        const statusType = typeof status?.type === 'string' ? status.type : 'busy'
-        const rawAction = this.getRecord(status?.action)
-        const actionLink = typeof rawAction?.link === 'string'
-          ? normalizeSafeHttpUrl(rawAction.link)
-          : undefined
-        const action = rawAction
-          ? {
-              ...(typeof rawAction.reason === 'string' ? { reason: rawAction.reason } : {}),
-              ...(typeof rawAction.provider === 'string' ? { provider: rawAction.provider } : {}),
-              ...(typeof rawAction.title === 'string' ? { title: rawAction.title } : {}),
-              ...(typeof rawAction.message === 'string' ? { message: rawAction.message } : {}),
-              ...(typeof rawAction.label === 'string' ? { label: rawAction.label } : {}),
-              ...(actionLink ? { link: actionLink } : {}),
-            }
-          : undefined
-        return {
-          type: 'session_status',
-          sessionId,
-          status: statusType === 'retry' ? 'retry' : (statusType === 'idle' ? 'idle' : 'busy'),
-          attempt: typeof status?.attempt === 'number' ? status.attempt : undefined,
-          message: typeof status?.message === 'string' ? status.message : undefined,
-          next: typeof status?.next === 'number' ? status.next : undefined,
-          ...(action && Object.keys(action).length > 0 ? { action } : {}),
-        }
-      }
-
-      case 'session.error': {
-        const rawError = props.error ?? props
-        const enriched = enrichGenericOpenCodeProviderError(rawError, sessionId)
-        return {
-          type: 'session_error',
-          sessionId,
-          error: enriched?.message ?? this.describeError(rawError),
-          details: enriched?.details ?? rawError,
-        }
-      }
-
-      case 'question.asked': {
-        const request = this.mapQuestionRequest(props)
-        if (!request) return null
-        this.rememberQuestion(request.id, request.sessionID, event.directory)
-        return {
-          type: 'question',
-          action: 'asked',
-          sessionId: request.sessionID,
-          requestId: request.id,
-          questions: request.questions,
-          tool: request.tool,
-        }
-      }
-
-      case 'question.replied': {
-        const requestId = typeof props.requestID === 'string' ? props.requestID : ''
-        const answers = Array.isArray(props.answers)
-          ? props.answers
-              .filter((answer): answer is unknown[] => Array.isArray(answer))
-              .map((answer) => answer.filter((item): item is string => typeof item === 'string'))
-          : undefined
-        return {
-          type: 'question',
-          action: 'replied',
-          sessionId,
-          requestId,
-          ...(answers ? { answers } : {}),
-        }
-      }
-
-      case 'question.rejected':
-        return {
-          type: 'question',
-          action: 'rejected',
-          sessionId,
-          requestId: typeof props.requestID === 'string' ? props.requestID : '',
-        }
-
-      case 'todo.updated': {
-        const todos = this.mapTodos(props.todos)
-        return todos.length > 0
-          ? { type: 'todo', sessionId, todos }
-          : null
-      }
-
-      case 'permission.asked':
-      case 'permission.replied':
-      case 'permission.updated': {
-        const details = this.getRecord(props)
-        return {
-          type: 'permission',
-          action: event.type === 'permission.asked'
-            ? 'asked'
-            : event.type === 'permission.replied'
-              ? 'replied'
-              : 'updated',
-          sessionId,
-          permissionId: typeof details?.id === 'string' ? details.id : '',
-          permission: typeof details?.permission === 'string' ? details.permission : undefined,
-          title: typeof details?.title === 'string' ? details.title : undefined,
-          patterns: Array.isArray(details?.patterns)
-            ? details.patterns.filter((pattern): pattern is string => typeof pattern === 'string')
-            : undefined,
-          details: details ?? undefined,
-        }
-      }
-
-      case 'session.idle':
-        return { type: 'done', sessionId }
-
-      case 'session.compacted':
-      case 'session.created':
-      case 'session.updated':
-      case 'session.deleted':
-      case 'workspace.ready':
-      case 'workspace.restore':
-      case 'workspace.status':
-      case 'server.connected':
-      case 'server.instance.disposed':
-      case 'global.disposed':
-      case 'command.executed':
-      case 'vcs.branch.updated':
-        return this.mapDebugEvent(event, sessionId)
-
-      case 'workspace.failed':
-        return this.mapDebugEvent(event, sessionId, 'error')
-
-      case 'file.edited': {
-        const file = typeof props.file === 'string' ? props.file : ''
-        return file ? { type: 'file_edited', sessionId, file } : null
-      }
-
-      default:
-        return null
+  private async raceWithSignal<T>(operation: Promise<T>, signal?: AbortSignal): Promise<T> {
+    if (!signal) return await operation
+    if (signal.aborted) {
+      throw signal.reason instanceof Error
+        ? signal.reason
+        : new DOMException('The operation was aborted', 'AbortError')
     }
-  }
-
-  private rememberMessageRole(value: unknown, messageRoles: Map<string, string>) {
-    const info = this.getRecord(value)
-    const messageId = typeof info?.id === 'string'
-      ? info.id
-      : typeof info?.messageID === 'string'
-        ? info.messageID
-        : undefined
-    const role = typeof info?.role === 'string' ? info.role : undefined
-    if (messageId && role) messageRoles.set(messageId, role)
-  }
-
-  private isKnownNonAssistantMessagePart(part: GenericMessagePart, messageRoles: Map<string, string>) {
-    const messageId = typeof part.messageID === 'string' ? part.messageID : undefined
-    if (!messageId) return false
-    const role = messageRoles.get(messageId)
-    return role !== undefined && role !== 'assistant'
-  }
-
-  private isToolPart(part: GenericMessagePart): part is GenericMessagePart & ToolMessagePart {
-    return part.type === 'tool'
-  }
-
-  private isStepFinishPart(part: GenericMessagePart): part is GenericMessagePart & StepFinishMessagePart {
-    return part.type === 'step-finish'
-  }
-
-  private mapPartUpdate(part: GenericMessagePart): StreamEvent | null {
-    const sessionId = String(part.sessionID)
-    const messageId = String(part.messageID)
-    const partId = String(part.id)
-
-    if (part.type === 'text') {
-      const textPart = part as TextMessagePart
-      if (!textPart.text && !textPart.time?.end) return null
-      return {
-        type: 'text',
-        sessionId,
-        messageId,
-        partId,
-        text: textPart.text ?? '',
-        streaming: !textPart.time?.end,
-        complete: Boolean(textPart.time?.end),
-      }
+    let onAbort: (() => void) | undefined
+    const aborted = new Promise<never>((_, reject) => {
+      onAbort = () => reject(signal.reason instanceof Error
+        ? signal.reason
+        : new DOMException('The operation was aborted', 'AbortError'))
+      signal.addEventListener('abort', onAbort, { once: true })
+    })
+    try {
+      return await Promise.race([operation, aborted])
+    } finally {
+      if (onAbort) signal.removeEventListener('abort', onAbort)
     }
-
-    if (part.type === 'reasoning') {
-      const reasoningPart = part as ReasoningMessagePart
-      if (!reasoningPart.text && !reasoningPart.time?.end) return null
-      return {
-        type: 'reasoning',
-        sessionId,
-        messageId,
-        partId,
-        text: reasoningPart.text ?? '',
-        streaming: !reasoningPart.time?.end,
-        complete: Boolean(reasoningPart.time?.end),
-      }
-    }
-
-    if (this.isToolPart(part)) {
-      // `isToolPart` only checks the discriminator, and a tool part can arrive
-      // before its state exists. Reading through the missing state threw inside
-      // `subscribeToEvents`, which is not wrapped — so one malformed part turned
-      // into a single `session_error` and the event loop stopped reading.
-      if (!this.getRecord(part.state)) return null
-      const input = this.getRecord(part.state.input)
-      const time = this.getRecord(part.state.time)
-      const start = typeof time?.start === 'number' ? time.start : undefined
-      const end = typeof time?.end === 'number' ? time.end : undefined
-      const attachments = Array.isArray(part.state.attachments)
-        ? part.state.attachments.flatMap((attachment) => {
-            const record = this.getRecord(attachment)
-            if (!record) return []
-            const filename = typeof record.filename === 'string'
-              ? record.filename
-              : typeof record.name === 'string'
-                ? record.name
-                : undefined
-            const mime = typeof record.mime === 'string'
-              ? record.mime
-              : typeof record.mediaType === 'string'
-                ? record.mediaType
-                : undefined
-            return filename || mime
-              ? [{ ...(filename ? { filename } : {}), ...(mime ? { mime } : {}) }]
-              : []
-          })
-        : undefined
-      return {
-        type: 'tool',
-        sessionId,
-        messageId,
-        partId,
-        tool: part.tool,
-        callId: part.callID,
-        status: part.state.status,
-        title: part.state.title,
-        input: input ? { ...input } : undefined,
-        output: typeof part.state.output === 'string' ? part.state.output : undefined,
-        error: typeof part.state.error === 'string' ? part.state.error : undefined,
-        metadata: part.metadata,
-        ...(start !== undefined && end !== undefined && end >= start ? { durationMs: end - start } : {}),
-        ...(typeof time?.compacted === 'number' ? { compactedAt: time.compacted } : {}),
-        ...(attachments && attachments.length > 0 ? { attachments } : {}),
-        complete: part.state.status === 'completed' || part.state.status === 'error',
-      }
-    }
-
-    if (part.type === 'step-start') {
-      return {
-        type: 'step',
-        sessionId,
-        messageId,
-        partId,
-        step: 'start',
-        snapshot: typeof part.snapshot === 'string' ? part.snapshot : undefined,
-        complete: true,
-      }
-    }
-
-    if (this.isStepFinishPart(part)) {
-      return {
-        type: 'step',
-        sessionId,
-        messageId,
-        partId,
-        step: 'finish',
-        reason: part.reason,
-        snapshot: typeof part.snapshot === 'string' ? part.snapshot : undefined,
-        cost: typeof part.cost === 'number' ? part.cost : undefined,
-        tokens: part.tokens,
-        complete: true,
-      }
-    }
-
-    if (this.isCompactPartType(part.type)) {
-      return this.mapCompactPartUpdate(part, sessionId, messageId, partId)
-    }
-
-    return null
-  }
-
-  private mapPartDelta(part: GenericMessagePart, delta: string): StreamEvent | null {
-    const sessionId = String(part.sessionID)
-    const messageId = String(part.messageID)
-    const partId = String(part.id)
-    const nextText = `${typeof part.text === 'string' ? part.text : ''}${delta}`
-    part.text = nextText
-
-    if (part.type === 'reasoning') {
-      return {
-        type: 'reasoning',
-        sessionId,
-        messageId,
-        partId,
-        text: nextText,
-        delta,
-        streaming: true,
-        complete: false,
-      }
-    }
-
-    if (part.type === 'text') {
-      return {
-        type: 'text',
-        sessionId,
-        messageId,
-        partId,
-        text: nextText,
-        delta,
-        streaming: true,
-        complete: false,
-      }
-    }
-
-    return null
-  }
-
-  private clonePart(part: GenericMessagePart): GenericMessagePart {
-    return typeof structuredClone === 'function'
-      ? structuredClone(part)
-      : JSON.parse(JSON.stringify(part)) as GenericMessagePart
-  }
-
-  private isCompactPartType(type: string): type is 'file' | 'patch' | 'snapshot' | 'agent' | 'subtask' | 'retry' | 'compaction' {
-    return type === 'file'
-      || type === 'patch'
-      || type === 'snapshot'
-      || type === 'agent'
-      || type === 'subtask'
-      || type === 'retry'
-      || type === 'compaction'
-  }
-
-  private mapCompactPartUpdate(
-    part: GenericMessagePart,
-    sessionId: string,
-    messageId: string,
-    partId: string,
-  ): StreamEvent | null {
-    const partType = part.type
-    if (!this.isCompactPartType(partType)) return null
-    const summary = this.summarizeCompactPart(part)
-    if (!summary) return null
-    return {
-      type: 'part_summary',
-      sessionId,
-      messageId,
-      partId,
-      partType,
-      summary,
-      details: this.compactPartDetails(part),
-      severity: partType === 'retry' ? 'error' : 'info',
-      complete: true,
-    }
-  }
-
-  private summarizeCompactPart(part: GenericMessagePart): string {
-    switch (part.type) {
-      case 'file': {
-        const filename = typeof part.filename === 'string' ? part.filename : undefined
-        const mime = typeof part.mime === 'string' ? part.mime : undefined
-        const source = this.getRecord(part.source)
-        const sourcePath = typeof source?.path === 'string' ? source.path : undefined
-        return `File attached: ${filename ?? sourcePath ?? 'unnamed file'}${mime ? ` (${mime})` : ''}.`
-      }
-      case 'patch': {
-        const files = Array.isArray(part.files) ? part.files.filter((file): file is string => typeof file === 'string') : []
-        const shown = files.slice(0, 6)
-        const hash = typeof part.hash === 'string' ? part.hash.slice(0, 12) : undefined
-        return `Patch prepared${hash ? ` ${hash}` : ''}: ${files.length} file${files.length === 1 ? '' : 's'}${shown.length ? ` (${shown.join(', ')}${files.length > shown.length ? ', …' : ''})` : ''}.`
-      }
-      case 'snapshot': {
-        const snapshot = typeof part.snapshot === 'string' ? part.snapshot.slice(0, 16) : undefined
-        return `Snapshot captured${snapshot ? `: ${snapshot}` : ''}.`
-      }
-      case 'agent': {
-        const name = typeof part.name === 'string' ? part.name : 'agent'
-        return `Agent context selected: ${name}.`
-      }
-      case 'subtask': {
-        const description = typeof part.description === 'string' ? part.description : undefined
-        const agent = typeof part.agent === 'string' ? part.agent : undefined
-        const command = typeof part.command === 'string' ? part.command : undefined
-        return [
-          `Subtask started${agent ? ` for ${agent}` : ''}${description ? `: ${this.truncateInline(description, 160)}` : '.'}`,
-          command ? `Command: ${this.truncateInline(command, 160)}` : '',
-        ].filter(Boolean).join('\n')
-      }
-      case 'retry': {
-        const attempt = typeof part.attempt === 'number' ? part.attempt : undefined
-        return `Retry requested${attempt !== undefined ? ` (attempt ${attempt})` : ''}: ${this.describeError(part.error)}`
-      }
-      case 'compaction': {
-        const mode = part.auto === true ? 'auto' : 'manual'
-        const overflow = part.overflow === true ? ' after context overflow' : ''
-        return `Context compaction (${mode})${overflow}.`
-      }
-      default:
-        return ''
-    }
-  }
-
-  private compactPartDetails(part: GenericMessagePart): Record<string, unknown> {
-    const details: Record<string, unknown> = { partType: part.type }
-    for (const key of ['filename', 'mime', 'url', 'hash', 'files', 'snapshot', 'name', 'agent', 'command', 'attempt', 'auto', 'overflow', 'tail_start_id']) {
-      if (part[key] !== undefined) details[key] = part[key]
-    }
-    if (part.type === 'retry' && part.error !== undefined) details.error = part.error
-    return details
-  }
-
-  private hasMeaningfulPartUpdate(previous: GenericMessagePart, next: GenericMessagePart) {
-    return this.buildPartStreamKey(previous) !== this.buildPartStreamKey(next)
-  }
-
-  private buildPartStreamKey(part: GenericMessagePart): string {
-    if (part.type === 'text' || part.type === 'reasoning') {
-      return JSON.stringify({
-        type: part.type,
-        text: typeof part.text === 'string' ? part.text : '',
-        end: this.getRecord(part.time)?.end ?? null,
-      })
-    }
-
-    if (this.isToolPart(part)) {
-      return JSON.stringify({
-        type: part.type,
-        callId: part.callID,
-        tool: part.tool,
-        status: part.state?.status ?? null,
-        title: part.state?.title ?? null,
-        input: part.state?.input ?? null,
-        output: part.state?.output ?? null,
-        error: part.state?.error ?? null,
-      })
-    }
-
-    if (part.type === 'step-start') {
-      return JSON.stringify({
-        type: part.type,
-        snapshot: typeof part.snapshot === 'string' ? part.snapshot : null,
-      })
-    }
-
-    if (this.isStepFinishPart(part)) {
-      return JSON.stringify({
-        type: part.type,
-        reason: part.reason,
-        snapshot: typeof part.snapshot === 'string' ? part.snapshot : null,
-        cost: typeof part.cost === 'number' ? part.cost : null,
-        tokens: part.tokens ?? null,
-      })
-    }
-
-    return JSON.stringify(part)
-  }
-
-  private unwrapRawEvent(value: RawEvent | { payload?: unknown; directory?: unknown; project?: unknown; workspace?: unknown }): RawEvent | null {
-    const eventRecord = this.getRecord(value)
-    if (!eventRecord) return null
-
-    const payload = this.getRecord(eventRecord.payload)
-    if (payload && typeof payload.type === 'string') {
-      const payloadProps = this.getRecord(payload.properties)
-      return {
-        type: payload.type,
-        properties: payloadProps ?? {},
-        directory: typeof eventRecord.directory === 'string' ? eventRecord.directory : undefined,
-        project: typeof eventRecord.project === 'string' ? eventRecord.project : undefined,
-        workspace: typeof eventRecord.workspace === 'string' ? eventRecord.workspace : undefined,
-      }
-    }
-
-    if (typeof eventRecord.type !== 'string') return null
-    const properties = this.getRecord(eventRecord.properties)
-    return {
-      type: eventRecord.type,
-      properties: properties ?? {},
-      directory: typeof eventRecord.directory === 'string' ? eventRecord.directory : undefined,
-      project: typeof eventRecord.project === 'string' ? eventRecord.project : undefined,
-      workspace: typeof eventRecord.workspace === 'string' ? eventRecord.workspace : undefined,
-    }
-  }
-
-  private mapQuestionRequest(value: unknown): OpenCodeQuestionRequest | null {
-    const record = this.getRecord(value)
-    if (!record) return null
-    const id = typeof record.id === 'string' ? record.id : undefined
-    const sessionID = typeof record.sessionID === 'string' ? record.sessionID : undefined
-    if (!id || !sessionID) return null
-
-    const questions = Array.isArray(record.questions)
-      ? record.questions.map((question) => this.mapQuestionInfo(question)).filter((question): question is OpenCodeQuestionInfo => Boolean(question))
-      : []
-    const toolRecord = this.getRecord(record.tool)
-    const tool = typeof toolRecord?.messageID === 'string' && typeof toolRecord.callID === 'string'
-      ? { messageID: toolRecord.messageID, callID: toolRecord.callID }
-      : undefined
-
-    return {
-      id,
-      sessionID,
-      questions,
-      ...(tool ? { tool } : {}),
-    }
-  }
-
-  private mapQuestionInfo(value: unknown): OpenCodeQuestionInfo | null {
-    const record = this.getRecord(value)
-    if (!record) return null
-    const question = typeof record.question === 'string' ? record.question : ''
-    const header = typeof record.header === 'string' ? record.header : 'Question'
-    const options = Array.isArray(record.options)
-      ? record.options.map((option) => {
-          const optionRecord = this.getRecord(option)
-          if (!optionRecord || typeof optionRecord.label !== 'string') return null
-          return {
-            label: optionRecord.label,
-            ...(typeof optionRecord.description === 'string' ? { description: optionRecord.description } : {}),
-          }
-        }).filter((option): option is OpenCodeQuestionInfo['options'][number] => Boolean(option))
-      : []
-
-    if (!question && !header && options.length === 0) return null
-    return {
-      question,
-      header,
-      options,
-      ...(typeof record.multiple === 'boolean' ? { multiple: record.multiple } : {}),
-      ...(typeof record.custom === 'boolean' ? { custom: record.custom } : {}),
-    }
-  }
-
-  private mapTodos(value: unknown): OpenCodeTodo[] {
-    if (!Array.isArray(value)) return []
-    return value
-      .map((todo) => {
-        const record = this.getRecord(todo)
-        if (!record || typeof record.content !== 'string') return null
-        return {
-          content: record.content,
-          status: typeof record.status === 'string' ? record.status : 'pending',
-          priority: typeof record.priority === 'string' ? record.priority : 'medium',
-        }
-      })
-      .filter((todo): todo is OpenCodeTodo => Boolean(todo))
-  }
-
-  private mapDebugEvent(event: RawEvent, sessionId: string, severity: 'debug' | 'error' = 'debug'): StreamEvent {
-    const props = event.properties ?? {}
-    return {
-      type: 'debug_event',
-      sessionId,
-      eventName: event.type,
-      summary: this.summarizeDebugEvent(event.type, props),
-      details: props,
-      severity,
-    }
-  }
-
-  private summarizeDebugEvent(eventName: string, props: Record<string, unknown>): string {
-    switch (eventName) {
-      case 'session.compacted':
-        return 'OpenCode session compacted.'
-      case 'session.created':
-        return `OpenCode session created${typeof props.sessionID === 'string' ? `: ${props.sessionID}` : ''}.`
-      case 'session.updated':
-        return `OpenCode session updated${typeof props.sessionID === 'string' ? `: ${props.sessionID}` : ''}.`
-      case 'session.deleted':
-        return `OpenCode session deleted${typeof props.sessionID === 'string' ? `: ${props.sessionID}` : ''}.`
-      case 'workspace.ready':
-        return `Workspace ready${typeof props.name === 'string' ? `: ${props.name}` : ''}.`
-      case 'workspace.failed':
-        return `Workspace failed: ${typeof props.message === 'string' ? props.message : 'unknown failure'}`
-      case 'workspace.restore':
-        return `Workspace restore ${typeof props.step === 'number' && typeof props.total === 'number' ? `${props.step}/${props.total}` : 'started'}.`
-      case 'workspace.status':
-        return `Workspace status: ${typeof props.status === 'string' ? props.status : 'unknown'}.`
-      case 'server.connected':
-        return 'OpenCode server connected.'
-      case 'server.instance.disposed':
-        return `OpenCode server instance disposed${typeof props.directory === 'string' ? `: ${props.directory}` : ''}.`
-      case 'global.disposed':
-        return 'OpenCode global disposed.'
-      case 'command.executed':
-        return `Command executed: ${typeof props.name === 'string' ? props.name : 'unknown'}${typeof props.arguments === 'string' && props.arguments ? ` ${this.truncateInline(props.arguments, 180)}` : ''}.`
-      case 'vcs.branch.updated':
-        return `VCS branch updated${typeof props.branch === 'string' ? `: ${props.branch}` : ''}.`
-      default:
-        return `OpenCode event: ${eventName}.`
-    }
-  }
-
-  private truncateInline(value: string, maxChars: number): string {
-    const normalized = value.replace(/\s+/g, ' ').trim()
-    return normalized.length > maxChars ? `${normalized.slice(0, maxChars)}…` : normalized
-  }
-
-  private describeError(error: unknown): string {
-    if (!error) return 'Unknown OpenCode error'
-    if (typeof error === 'string') return error
-    if (typeof error === 'object') {
-      const record = error as Record<string, unknown>
-      if (typeof record.message === 'string') return record.message
-      const data = this.getRecord(record.data)
-      if (typeof data?.message === 'string') return data.message
-      try {
-        return JSON.stringify(error)
-      } catch {
-        return String(error)
-      }
-    }
-    return String(error)
-  }
-
-  private isConfirmedSessionNotFoundResponse(response: unknown): boolean {
-    const record = this.getRecord(response)
-    const sdkResponse = this.getRecord(record?.response)
-    const responseStatus = this.readHttpStatus(sdkResponse)
-    if (responseStatus !== undefined) return responseStatus === 404
-    return this.isConfirmedSessionNotFoundError(record?.error)
   }
 
   private isConfirmedSessionNotFoundError(error: unknown): boolean {
@@ -1887,24 +1206,6 @@ export class OpenCodeSDKAdapter implements OpenCodeAdapter {
     if (typeof value?.status === 'number') return value.status
     if (typeof value?.statusCode === 'number') return value.statusCode
     return undefined
-  }
-
-  private extractConnectedModelIds(data: unknown): string[] {
-    const record = this.getRecord(data)
-    const providers = Array.isArray(record?.providers) ? record.providers : []
-    const modelIds: string[] = []
-
-    for (const provider of providers) {
-      const providerRecord = this.getRecord(provider)
-      const providerId = typeof providerRecord?.id === 'string' ? providerRecord.id : undefined
-      const models = this.getRecord(providerRecord?.models)
-      if (!providerId || !models) continue
-      for (const modelId of Object.keys(models)) {
-        modelIds.push(`${providerId}/${modelId}`)
-      }
-    }
-
-    return modelIds.slice(0, MAX_CATALOG_MODEL_IDS)
   }
 
   private getRecord(value: unknown): Record<string, unknown> | null {

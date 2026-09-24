@@ -19,8 +19,10 @@ health.get('/health/opencode', async (c) => {
   const result = await adapter.checkHealth()
   return c.json({
     status: result.available ? 'ok' : 'unavailable',
+    ...(result.protocol ? { protocol: result.protocol } : {}),
     version: result.version,
     models: result.models ?? [],
+    ...(result.failureKind ? { failureKind: result.failureKind } : {}),
     ...(result.error ? { error: result.error } : {}),
   })
 })

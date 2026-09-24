@@ -1,4 +1,4 @@
-import { describe, it, expect } from 'vitest'
+import { afterEach, describe, it, expect } from 'vitest'
 import { EventEmitter, once } from 'node:events'
 import { createServer } from 'node:http'
 import {
@@ -8,16 +8,30 @@ import {
   probeOpenCode,
   type ProcessTermination,
 } from '../server/opencode/supervisor'
+import { invalidateOpenCodeConnection } from '../server/opencode/connection'
+
+const originalAuthEnv = {
+  OPENCODE_PASSWORD: process.env.OPENCODE_PASSWORD,
+  OPENCODE_SERVER_PASSWORD: process.env.OPENCODE_SERVER_PASSWORD,
+}
+
+afterEach(() => {
+  for (const [key, value] of Object.entries(originalAuthEnv)) {
+    if (value === undefined) delete process.env[key]
+    else process.env[key] = value
+  }
+  invalidateOpenCodeConnection()
+})
 
 it('accepts a direct health response without ever contacting a redirect target', async () => {
   let redirect = false
   const requests: string[] = []
   const server = createServer((req, res) => {
     requests.push(req.url ?? '')
-    if (redirect && req.url === '/config') {
+    if (redirect && req.url === '/api/info') {
       res.writeHead(302, { Location: '/redirect-target' }).end()
     } else {
-      res.writeHead(200).end('{}')
+      res.writeHead(200, { 'Content-Type': 'application/json' }).end(JSON.stringify({ version: '2.0.15', pid: 812 }))
     }
   })
   server.listen(0, '127.0.0.1')
@@ -29,7 +43,7 @@ it('accepts a direct health response without ever contacting a redirect target',
     expect(await probeOpenCode(baseUrl)).toBe(true)
     redirect = true
     expect(await probeOpenCode(baseUrl)).toBe(false)
-    expect(requests).toEqual(['/config', '/config'])
+    expect(requests).toEqual(['/api/info', '/api/info'])
   } finally {
     await new Promise<void>((resolve, reject) => server.close((error) => error ? reject(error) : resolve()))
   }

@@ -31,6 +31,7 @@ const ENV_NAMES = [
   'LOOPTROOP_OPENCODE_MODE',
   'LOOPTROOP_OPENCODE_PERMISSION_MODE',
   'OPENCODE_PERMISSION',
+  'OPENCODE_PASSWORD',
   'OPENCODE_SERVER_PASSWORD',
   'OPENCODE_ENABLE_EXA',
 ] as const
@@ -50,6 +51,7 @@ describe('development OpenCode launch environment', () => {
 
   it('filters daemon credentials at the actual spawn while retaining managed OpenCode settings', async () => {
     const previous = Object.fromEntries(ENV_NAMES.map((name) => [name, process.env[name]]))
+    delete process.env.OPENCODE_PASSWORD
     Object.assign(process.env, {
       LOOPTROOP_API_TOKEN: 'ambient-daemon-token',
       LOOPTROOP_DEV_EVENT_TOKEN: 'ambient-dev-event-token',
@@ -69,6 +71,7 @@ describe('development OpenCode launch environment', () => {
       const options = spawnMock.mock.calls[0]?.[2] as { env?: NodeJS.ProcessEnv } | undefined
       expect(options?.env).toMatchObject({
         OPENCODE_PERMISSION: '{"bash":"ask"}',
+        OPENCODE_PASSWORD: 'provider-password',
         OPENCODE_SERVER_PASSWORD: 'provider-password',
         OPENCODE_ENABLE_EXA: '1',
       })

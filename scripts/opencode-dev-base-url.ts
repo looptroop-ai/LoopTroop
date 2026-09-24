@@ -4,10 +4,10 @@ import {
   inspectPortOccupants,
   type PortOccupantInspection,
 } from './port-occupants'
-import { getOpenCodeBasicAuthHeader } from '../shared/opencodeAuth'
 import { getErrorMessage } from '../shared/typeGuards'
 import { isLoopbackHost } from '../shared/appConfig'
 import { isWildcardHost } from './dev-host-mode'
+import { probeOpenCodeConnection, OpenCodeConnectionError } from '../server/opencode/connection'
 
 const MAX_PORT_SCAN_ATTEMPTS = 50
 
@@ -99,17 +99,17 @@ async function canConnect(hostname: string, port: number) {
 }
 
 async function isOpenCodeResponding(url: URL, hostname: string, port: number) {
+  const urlHost = hostname.includes(':') ? `[${hostname}]` : hostname
+  const baseUrl = `${url.protocol}//${urlHost}:${port}${url.pathname === '/' ? '' : url.pathname.replace(/\/$/, '')}`
   try {
-    const authHeader = getOpenCodeBasicAuthHeader()
-    const urlHost = hostname.includes(':') ? `[${hostname}]` : hostname
-    const res = await fetch(`${url.protocol}//${urlHost}:${port}/provider`, {
-      redirect: 'error',
-      ...(authHeader ? { headers: { Authorization: authHeader } } : {}),
-      signal: AbortSignal.timeout(1000),
-    })
-    return res.ok
-  } catch {
-    return false
+    await probeOpenCodeConnection(baseUrl, AbortSignal.timeout(1000))
+    return true
+  } catch (error) {
+    if (error instanceof Error && error.name === 'TimeoutError') return false
+    if (error instanceof OpenCodeConnectionError && error.failureKind === 'network' && error.status === undefined) {
+      return false
+    }
+    throw error
   }
 }
 

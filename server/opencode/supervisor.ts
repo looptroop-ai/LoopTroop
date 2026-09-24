@@ -1,4 +1,5 @@
 import { spawn, type ChildProcess } from 'node:child_process'
+import { randomBytes } from 'node:crypto'
 import { setTimeout as delay } from 'node:timers/promises'
 import { isProcessAlive, killProcessTree } from '../cli/processControl'
 import { planProgramLaunch, resolveTrustedExecutable } from '../lib/executablePath'
@@ -6,11 +7,12 @@ import { createChildEnvironment } from '../lib/childEnvironment'
 import { matchProcess, readProcessStartToken } from '../lib/processIdentity'
 import { captureProcessGroup, hasCapturedProcessGroupMember, refreshProcessGroup, terminateProcessTree, type ProcessGroupSnapshot } from '../lib/processTree'
 import { getErrorMessage } from '@shared/typeGuards'
+import { withOpenCodePasswordAliases } from '../../shared/opencodeAuth'
+import { probeOpenCodeConnection, invalidateOpenCodeConnection, OpenCodeConnectionError } from './connection'
 
 /** Attempts after a crash before the daemon stops trying and reports degraded. */
 export const MAX_RESTART_ATTEMPTS = 3
 
-const HEALTH_TIMEOUT_MS = 2_000
 const READY_TIMEOUT_MS = 30_000
 
 /** Backoff between restart attempts, multiplied by the attempt number. */
@@ -301,8 +303,8 @@ export interface OpenCodeSupervisorOptions {
 
 export async function probeOpenCode(baseUrl: string): Promise<boolean> {
   try {
-    const response = await fetch(`${baseUrl}/config`, { redirect: 'error', signal: AbortSignal.timeout(HEALTH_TIMEOUT_MS) })
-    return response.ok
+    await probeOpenCodeConnection(baseUrl)
+    return true
   } catch {
     return false
   }
@@ -342,8 +344,18 @@ export class OpenCodeSupervisor {
     return { pid: this.child.pid, startToken: this.child.startToken }
   }
 
-  private get probe(): (baseUrl: string) => Promise<boolean> {
-    return this.options.probe ?? probeOpenCode
+  private async probeState(): Promise<'ready' | 'absent' | 'starting'> {
+    if (this.options.probe) return await this.options.probe(this.options.baseUrl) ? 'ready' : 'absent'
+    try {
+      await probeOpenCodeConnection(this.options.baseUrl)
+      return 'ready'
+    } catch (error) {
+      if (error instanceof OpenCodeConnectionError && error.failureKind === 'network') {
+        if (error.canStartManagedServer) return 'absent'
+        if (error.status !== undefined) return 'starting'
+      }
+      throw error
+    }
   }
 
   /**
@@ -368,7 +380,18 @@ export class OpenCodeSupervisor {
       return this.status
     }
 
-    if (await this.probe(this.options.baseUrl)) {
+    invalidateOpenCodeConnection(this.options.baseUrl)
+    const initial = await this.probeState()
+    if (initial === 'ready') {
+      this.status = { kind: 'adopted', baseUrl: this.options.baseUrl }
+      this.startReported = true
+      return this.status
+    }
+
+    // An HTTP response proves another process owns the address. Give a server
+    // that is still booting time to become healthy; never launch over it.
+    if (initial === 'starting') {
+      await this.waitForHealth()
       this.status = { kind: 'adopted', baseUrl: this.options.baseUrl }
       this.startReported = true
       return this.status
@@ -380,6 +403,7 @@ export class OpenCodeSupervisor {
   }
 
   private async spawnAndWait(): Promise<OpenCodeStatus> {
+    invalidateOpenCodeConnection(this.options.baseUrl)
     // A failed launch keeps its handle until termination is confirmed. Do not
     // overwrite that ownership with a restart attempt while the old process
     // may still hold the port.
@@ -404,6 +428,8 @@ export class OpenCodeSupervisor {
       throw new Error(`OpenCode's address has a host name LoopTroop will not start a server for: ${JSON.stringify(host)}. Check LOOPTROOP_OPENCODE_BASE_URL.`)
     }
     const spawnProcess = this.options.spawnProcess ?? spawn
+
+    this.ensureManagedAuthentication()
 
     const logArgs = this.options.printLogs ? ['--print-logs', '--log-level', 'DEBUG'] : []
     const serveHost = host.startsWith('[') ? host.slice(1, -1) : host
@@ -525,10 +551,23 @@ export class OpenCodeSupervisor {
     const timeout = this.options.readyTimeoutMs ?? READY_TIMEOUT_MS
     const deadline = Date.now() + timeout
     while (Date.now() < deadline) {
-      if (await this.probe(this.options.baseUrl)) return
+      if (await this.probeState() === 'ready') return
       await delay(250)
     }
     throw new Error(`OpenCode did not become reachable at ${this.options.baseUrl} within ${timeout / 1000}s.`)
+  }
+
+  private ensureManagedAuthentication(): void {
+    const hasPassword = Boolean(
+      process.env.OPENCODE_PASSWORD !== undefined || process.env.OPENCODE_SERVER_PASSWORD !== undefined,
+    )
+    if (!hasPassword) {
+      const password = randomBytes(32).toString('base64url')
+      process.env.OPENCODE_PASSWORD = password
+      process.env.OPENCODE_SERVER_PASSWORD = password
+      return
+    }
+    withOpenCodePasswordAliases(process.env)
   }
 
   /**

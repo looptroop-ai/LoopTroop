@@ -18,3 +18,8 @@ export function getOpenCodeAdapter(): OpenCodeAdapter {
 export function resetOpenCodeAdapter(): void {
   singleton = null
 }
+
+/** Re-resolves the transport without dropping per-session adapter state. */
+export function resetOpenCodeAdapterTransport(): void {
+  if (singleton instanceof OpenCodeSDKAdapter) singleton.resetTransportForFutureOperations()
+}

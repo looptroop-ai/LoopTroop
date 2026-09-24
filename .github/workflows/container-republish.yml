@@ -565,7 +565,9 @@ jobs:
         with:
           ref: refs/tags/v${{ needs.prepare.outputs.version }}
           persist-credentials: false
-          sparse-checkout: scripts
+          sparse-checkout: |
+            .nvmrc
+            scripts
           sparse-checkout-cone-mode: false
 
       - name: Set up Node
@@ -750,7 +752,9 @@ jobs:
         with:
           ref: refs/tags/v${{ needs.prepare.outputs.version }}
           persist-credentials: false
-          sparse-checkout: scripts
+          sparse-checkout: |
+            .nvmrc
+            scripts
           sparse-checkout-cone-mode: false
 
       - name: Set up Node

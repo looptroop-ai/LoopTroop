@@ -36,7 +36,7 @@
     "description": "Weekly, not monthly. Renovate's daily pass only sees the 55 packages declared in package.json; the lockfile holds 514, and the ~459 transitive ones are invisible to it. Security advisories against those get no pull request either, so this refresh is the only response path they have — which makes its cadence the exposure window for a transitive CVE. A monthly run meant up to thirty days, and did: a high-severity brace-expansion advisory sat unfixed until it was refreshed by hand. Weekly caps it at seven. It is not daily because a full re-resolve produces a large diff whenever anything among those 459 publishes, which is most days. Monday to Wednesday is one run with two retries, not three runs: a refresh blocked by prConcurrentLimit is skipped rather than queued, so on a Monday-only schedule every skip cost a full week — four consecutive Mondays were lost that way and this refresh had never run once. minimumReleaseAge is restated here because it does apply on this path rather than being inherited decoration: Renovate converts it to `npm install --before`, so the re-resolve sees the registry as it stood seven days ago and cannot pull in anything published since."
   },
   "vulnerabilityAlerts": {
-    "description": "Renovate's own default here is minimumReleaseAge: null, which opens security PRs immediately. The two-day floor below deliberately overrides that: it means the fixed release must itself be two days old, not that Renovate waits two days after disclosure. Security pull requests are opened even when prConcurrentLimit is reached, and, like everything else, merged by hand.",
+    "description": "Renovate's own default here is minimumReleaseAge: null, which opens security PRs immediately. The two-day floor below deliberately overrides that: it means the fixed release must itself be two days old, not that Renovate waits two days after disclosure. Security pull requests are opened even when prConcurrentLimit is reached, and, like everything else, merged by hand. osvVulnerabilityAlerts adds OSV as a second source for direct dependencies. Renovate still marks it experimental, and when OSV lists the version it would propose as malicious it holds back every update to that dependency, not just that version.",
     "enabled": true,
     "minimumReleaseAge": "2 days",
     "schedule": [
@@ -139,7 +139,7 @@
       "groupName": "ships to users (non-major)"
     },
     {
-      "description": "Majors land one at a time so a failure is attributable. The groups above take patch and minor only, so a major is never swept into one; the named pairs below that must move together (Drizzle, Tailwind) are the exception.",
+      "description": "Majors land one at a time so a failure is attributable. The groups above take patch and minor only, so none of them sweeps a major in. Packages that have to move together still share a major pull request: the Drizzle, Tailwind and toolchain rules below, and the families config:recommended groups through its presets (React with react-dom, CodeMirror, Radix, ESLint, the upload and download artifact actions). This rule deliberately leaves their groupName alone, because splitting those would open pull requests that cannot pass on their own.",
       "matchUpdateTypes": [
         "major"
       ],
@@ -297,6 +297,13 @@
         "!node"
       ],
       "enabled": false
+    },
+    {
+      "description": "Last, so it wins: no update merges itself, whatever an earlier rule or a preset from `extends` says. A preset's packageRules are applied before this file's, and the top-level automerge: false does not override a rule that sets automerge; this does. Every Renovate pull request is merged by a person, or an agent acting for one, after review.",
+      "matchPackageNames": [
+        "*"
+      ],
+      "automerge": false
     }
   ],
   "dependencyDashboard": true

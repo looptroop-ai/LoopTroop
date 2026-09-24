@@ -125,7 +125,7 @@ an embedded-runtime pin only. Application, package and container jobs run the
 toolchain pin in `.nvmrc`, which sits above the `engines.node` floor users are
 held to. Workflows read it with `node-version-file: .nvmrc` rather than typing
 the number, so changing `.nvmrc` moves every one of them; only the Dockerfile's
-`FROM node:` line repeats it. If that embedded runtime changes, review Node's release
+two `FROM node:` lines repeat it. If that embedded runtime changes, review Node's release
 schedule and security maintenance separately, and preserve the CommonJS asset
 bundle, disabled code cache and disabled snapshot settings across all four
 binary target lanes.
@@ -138,7 +138,11 @@ bundles), dev tooling, and CI actions with container base-image digests. Pull
 requests that need a hand edit or move together stay on their own: esbuild,
 Drizzle, the OpenCode SDK, the toolchain (`.nvmrc`, `packageManager` and the
 Dockerfile base), the Node floor, the weekly lockfile refresh and security
-fixes. Every major arrives alone. At most ten are open at once.
+fixes. A major arrives alone unless its packages have to move together: the
+Drizzle pair, Tailwind with its Vite plugin, node with npm, and the families
+Renovate's built-in presets keep together (React with react-dom, CodeMirror,
+Radix, ESLint, and the upload and download artifact actions). At most ten are
+open at once, and security fixes open even past that.
 
 `main` requires a branch to be up to date, so merging one Renovate pull request
 leaves the others behind. Renovate rebases them itself in its nightly window.

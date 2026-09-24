@@ -48,6 +48,11 @@ jobs:
       # persist-credentials: false keeps the checkout token out of .git/config.
       # `npm ci` below runs third-party install scripts, and this job holds a
       # token that can push branches and open PRs.
+      - name: Harden the runner (Audit all outbound calls)
+        uses: step-security/harden-runner@e14015d583714f6e62063499dc959a02595150a1 # v2.21.1
+        with:
+          egress-policy: audit
+
       - name: Checkout main
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
         with:

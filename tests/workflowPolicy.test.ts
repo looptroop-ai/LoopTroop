@@ -54,41 +54,15 @@ type RenovateRule = {
   matchDepTypes?: string[]
   matchPackageNames?: string[]
 }
-type RenovateConfig = { automerge?: unknown; packageRules: RenovateRule[] }
+type RenovateConfig = {
+  automerge?: unknown
+  lockFileMaintenance?: { automerge?: unknown }
+  vulnerabilityAlerts?: { automerge?: unknown }
+  packageRules: RenovateRule[]
+}
 
 type SetupStep = Step & { with?: Record<string, unknown> }
-
-/**
- * A `node-version-file` step reads `.nvmrc` from the workspace, so an earlier
- * checkout has to put it there, at the workspace root. A sparse checkout has to
- * name it: in non-cone mode only the listed patterns reach the disk, which is
- * how four container jobs once asked setup-node for a file they never had.
- */
-function expectReadsNvmrc(where: string, steps: SetupStep[], index: number) {
-  expect(steps[index]?.with?.['node-version-file'], `${where} reads the toolchain from .nvmrc`).toBe('.nvmrc')
-  expect(steps[index]?.with?.['node-version'], `${where} sets node-version-file alone`).toBeUndefined()
-  const checkout = steps.findIndex((candidate) => String(candidate.uses ?? '').startsWith('actions/checkout@'))
-  expect(checkout, `${where} checks out .nvmrc before reading it`).toBeGreaterThan(-1)
-  expect(checkout, `${where} checks out .nvmrc before reading it`).toBeLessThan(index)
-  const options = steps[checkout]?.with ?? {}
-  expect(options.path, `${where} checks out at the workspace root`).toBeUndefined()
-  const sparse = options['sparse-checkout']
-  if (sparse !== undefined) expect(String(sparse).split(/\s+/), `${where} sparse checkout includes .nvmrc`).toContain('.nvmrc')
-}
-
-/**
- * A typed selector must be a named exception. An expression is the floor lane
- * reading `engines.node`; a concrete version is held by the literal check; a
- * bare major floats to whatever shipped this week, which only the Node 26
- * early-warning lane may do.
- */
-function expectNamedNodeSelector(where: string, selector: unknown) {
-  if (typeof selector !== 'string' && typeof selector !== 'number') {
-    throw new Error(`${where} sets up Node with neither .nvmrc nor a named exception`)
-  }
-  if (String(selector).includes('${{') || concreteVersion(String(selector)) !== null) return
-  expect(where, `${where} floats on node-version ${String(selector)}`).toBe('ci.yml: early-warning')
-}
+type SetupNodeStep = { where: string; steps: SetupStep[]; index: number }
 
 function runs(job: Job): string {
   return (job.steps ?? []).map((step) => typeof step.run === 'string' ? step.run : '').join('\n')
@@ -177,38 +151,69 @@ describe('release workflow policy', () => {
    * the declared-floor lanes, which read `engines.node` at run time; and the
    * Node 26 early-warning lane, which floats on purpose.
    */
-  it('reads the toolchain Node from .nvmrc in every workflow and types no copy of it', () => {
-    for (const [file, text] of source) {
-      for (const match of text.matchAll(/^\s*node-version:\s*["']?(v?\d+(?:\.\d+){0,2})["']?(?=\s|$)/gm)) {
-        const found = match[1]
-        if (!found) throw new Error(`${file}: node-version capture missing`)
-        const parsed = concreteVersion(found)
-        if (parsed === null) continue
-        expect(formatNodeVersion(parsed), `${file}: node-version ${found}; read .nvmrc with node-version-file instead`).toBe(EMBEDDED_BUILDER)
-      }
+  it('types no copy of the toolchain Node into any workflow', () => {
+    const typed = [...source].flatMap(([file, text]) =>
+      [...text.matchAll(/^\s*node-version:\s*["']?(v?\d+(?:\.\d+){0,2})["']?(?=\s|$)/gm)].map((match) => ({ file, found: match[1] ?? '' })))
+    expect(typed.length, 'the named exceptions are still typed').toBeGreaterThan(0)
+    for (const { file, found } of typed) {
+      const parsed = concreteVersion(found)
+      if (parsed !== null) expect(formatNodeVersion(parsed), `${file}: node-version ${found}; read .nvmrc with node-version-file instead`).toBe(EMBEDDED_BUILDER)
     }
+  })
 
-    for (const [file, workflow] of workflows) {
-      for (const [name, job] of Object.entries(workflow.jobs ?? {})) {
+  /**
+   * A `node-version-file` step reads `.nvmrc` from the workspace, so an earlier
+   * checkout has to put it there, at the workspace root. A sparse checkout has
+   * to name it: in non-cone mode only the listed patterns reach the disk, which
+   * is how four container jobs once asked setup-node for a file they never had.
+   */
+  function expectReadsNvmrc({ where, steps, index }: SetupNodeStep) {
+    expect(steps[index]?.with?.['node-version-file'], `${where} reads the toolchain from .nvmrc`).toBe('.nvmrc')
+    expect(steps[index]?.with?.['node-version'], `${where} sets node-version-file alone`).toBeUndefined()
+    const checkout = steps.findIndex((candidate) => String(candidate.uses ?? '').startsWith('actions/checkout@'))
+    expect(checkout, `${where} checks out .nvmrc before reading it`).toBeGreaterThan(-1)
+    expect(checkout, `${where} checks out .nvmrc before reading it`).toBeLessThan(index)
+    const options = steps[checkout]?.with ?? {}
+    expect(options.path, `${where} checks out at the workspace root`).toBeUndefined()
+    const sparse = options['sparse-checkout']
+    if (sparse !== undefined) expect(String(sparse).split(/\s+/), `${where} sparse checkout includes .nvmrc`).toContain('.nvmrc')
+  }
+
+  /**
+   * A typed selector must be a named exception. An expression is the floor lane
+   * reading `engines.node`; a concrete version is held by the test above; a
+   * bare major floats to whatever shipped this week, which only the Node 26
+   * early-warning lane may do.
+   */
+  function expectNamedNodeSelector({ where, steps, index }: SetupNodeStep) {
+    const selector = steps[index]?.with?.['node-version']
+    if (typeof selector !== 'string' && typeof selector !== 'number') {
+      throw new Error(`${where} sets up Node with neither .nvmrc nor a named exception`)
+    }
+    if (String(selector).includes('${{') || concreteVersion(String(selector)) !== null) return
+    expect(where, `${where} floats on node-version ${String(selector)}`).toBe('ci.yml: early-warning')
+  }
+
+  it('reads the toolchain Node from .nvmrc in every setup-node step, or names the exception', () => {
+    const setups = [...workflows].flatMap(([file, workflow]) =>
+      Object.entries(workflow.jobs ?? {}).flatMap(([name, job]) => {
         const steps = (job.steps ?? []) as SetupStep[]
-        steps.forEach((step, index) => {
-          if (!String(step.uses ?? '').startsWith('actions/setup-node@')) return
-          if (step.with?.['node-version-file'] === undefined) expectNamedNodeSelector(`${file}: ${name}`, step.with?.['node-version'])
-          else expectReadsNvmrc(`${file}: ${name}`, steps, index)
-        })
-      }
+        return steps.flatMap((step, index) => String(step.uses ?? '').startsWith('actions/setup-node@') ? [{ where: `${file}: ${name}`, steps, index }] : [])
+      }))
+    expect(setups.length, 'setup-node steps').toBeGreaterThan(0)
+    for (const setup of setups) {
+      if (setup.steps[setup.index]?.with?.['node-version-file'] === undefined) expectNamedNodeSelector(setup)
+      else expectReadsNvmrc(setup)
     }
+  })
 
-    for (const [file, workflow] of workflows) {
-      for (const [name, job] of Object.entries(workflow.jobs ?? {})) {
-        for (const entry of matrixEntries(job)) {
-          if (entry.node === undefined) continue
-          const parsed = concreteVersion(String(entry.node))
-          if (parsed === null) continue
-          const expected = entry.label === 'declared floor' ? FLOOR : TOOLCHAIN
-          expect(formatNodeVersion(parsed), `${file}: ${name} matrix node (${String(entry.label)})`).toBe(expected)
-        }
-      }
+  it('holds matrix Node versions and the Dockerfile base image to the toolchain pin', () => {
+    const entries = [...workflows].flatMap(([file, workflow]) =>
+      Object.entries(workflow.jobs ?? {}).flatMap(([name, job]) => matrixEntries(job).map((entry) => ({ where: `${file}: ${name}`, entry }))))
+    for (const { where, entry } of entries) {
+      const parsed = entry.node === undefined ? null : concreteVersion(String(entry.node))
+      const expected = entry.label === 'declared floor' ? FLOOR : TOOLCHAIN
+      if (parsed !== null) expect(formatNodeVersion(parsed), `${where} matrix node (${String(entry.label)})`).toBe(expected)
     }
 
     const docker = readFileSync(join(repo, 'scripts', 'Dockerfile'), 'utf8')
@@ -749,6 +754,9 @@ describe('release workflow policy', () => {
    * its checks pass, so the whole file is searched rather than known places.
    * Presets from `extends` are not in this file, and their rules come first, so
    * the last rule matches every package and switches automerge off after them.
+   * Two lanes escape that rule: a lockfile refresh has no package name to
+   * match, and Renovate forces the security settings after every rule, so both
+   * say `automerge: false` themselves.
    */
   it('lets no Renovate update merge itself', () => {
     const found: string[] = []
@@ -759,6 +767,8 @@ describe('release workflow policy', () => {
     }) as RenovateConfig
     expect(found, 'automerge settings that are not false').toEqual([])
     expect(renovate.automerge, 'the default is stated, not inherited from a preset').toBe(false)
+    expect(renovate.lockFileMaintenance?.automerge, 'the lockfile refresh states it').toBe(false)
+    expect(renovate.vulnerabilityAlerts?.automerge, 'security fixes state it').toBe(false)
     expect(renovate.packageRules.at(-1), 'the last rule switches automerge off for everything').toEqual(
       expect.objectContaining({ matchPackageNames: ['*'], automerge: false }),
     )
@@ -772,7 +782,10 @@ describe('release workflow policy', () => {
    * and CodeMirror shipped inside dev tooling. The frontend list also appears
    * twice, once for its label and once for its group, and the two must agree.
    * The Node floor rule is read by name: renovate-node-floor.yml acts only on
-   * the `renovate/node-floor` branch its groupSlug produces.
+   * the `renovate/node-floor` branch its groupSlug produces. `engines.node`
+   * also matches the toolchain group, so the floor rule has to come after it,
+   * or the floor lands in the toolchain pull request and the workflow never
+   * runs.
    */
   it('keeps the Renovate groups in the order that lets them take effect', () => {
     const rules = (JSON.parse(readFileSync(join(repo, '.github/renovate.json'), 'utf8')) as RenovateConfig).packageRules
@@ -783,6 +796,9 @@ describe('release workflow policy', () => {
     expect(frontendGroup, 'the frontend group comes after the dev tooling group').toBeGreaterThan(devTooling)
     expect(rules[frontendLabel]?.matchPackageNames, 'the frontend label and group name the same packages').toEqual(rules[frontendGroup]?.matchPackageNames)
     expect(rules.filter((rule) => rule.groupSlug === 'node-floor'), 'one Node floor rule').toHaveLength(1)
+    const toolchain = rules.findIndex((rule) => rule.groupName === 'toolchain (node + npm)')
+    expect(toolchain, 'toolchain group').toBeGreaterThan(-1)
+    expect(rules.findIndex((rule) => rule.groupSlug === 'node-floor'), 'the Node floor rule comes after the toolchain group').toBeGreaterThan(toolchain)
   })
 
   it('downloads Renovate notices outside checkout and gives the token only to push', () => {

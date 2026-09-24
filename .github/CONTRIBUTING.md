@@ -138,11 +138,12 @@ bundles), dev tooling, and CI actions with container base-image digests. Pull
 requests that need a hand edit or move together stay on their own: esbuild,
 Drizzle, the OpenCode SDK, the toolchain (`.nvmrc`, `packageManager` and the
 Dockerfile base), the Node floor, the weekly lockfile refresh and security
-fixes. A major arrives alone unless its packages have to move together: the
-Drizzle pair, Tailwind with its Vite plugin, node with npm, and the families
-Renovate's built-in presets keep together (React with react-dom, CodeMirror,
-Radix, ESLint, and the upload and download artifact actions). At most ten are
-open at once, and security fixes open even past that.
+fixes. A major arrives alone unless its packages have to move together: React
+with react-dom and their types, Vite with its React plugin, the Drizzle pair,
+Tailwind with its Vite plugin, node with npm, and the families Renovate's
+built-in presets keep together (CodeMirror, Radix, ESLint, and the upload and
+download artifact actions). At most ten are open at once, and security fixes
+open even past that.
 
 `main` requires a branch to be up to date, so merging one Renovate pull request
 leaves the others behind. Renovate rebases them itself in its nightly window.

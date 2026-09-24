@@ -122,14 +122,38 @@ of display prose.
 
 Standalone binary jobs use Node `v26.9.0`'s native `--build-sea` builder. This is
 an embedded-runtime pin only. Application, package and container jobs run the
-Node `24.21.0` toolchain pin from `.nvmrc`, which sits above the `engines.node`
-floor users are held to. If that embedded runtime changes, review Node's release
+toolchain pin in `.nvmrc`, which sits above the `engines.node` floor users are
+held to. Workflows read it with `node-version-file: .nvmrc` rather than typing
+the number, so changing `.nvmrc` moves every one of them; only the Dockerfile's
+two `FROM node:` lines repeat it. If that embedded runtime changes, review Node's release
 schedule and security maintenance separately, and preserve the CommonJS asset
 bundle, disabled code cache and disabled snapshot settings across all four
 binary target lanes.
 
+Renovate (`.github/renovate.json`) opens every dependency update as a pull
+request, and none of them merges itself: a person, or an agent acting for one,
+reviews and merges each. Updates below a major arrive in a few grouped pull
+requests: what ships to users (runtime dependencies and the frontend Vite
+bundles), dev tooling, and CI actions with container base-image digests. Pull
+requests that need a hand edit or move together stay on their own: esbuild,
+Drizzle, the OpenCode SDK, the toolchain (`.nvmrc`, `packageManager` and the
+Dockerfile base), the Node floor, the weekly lockfile refresh and security
+fixes. A major arrives alone unless its packages have to move together: React
+with react-dom and their types, Vite with its React plugin, the Drizzle pair,
+Tailwind with its Vite plugin, node with npm, and the families Renovate's
+built-in presets keep together (CodeMirror, Radix, ESLint, and the upload and
+download artifact actions). At most ten are open at once, and security fixes
+open even past that.
+
+`main` requires a branch to be up to date, so merging one Renovate pull request
+leaves the others behind. Renovate rebases them itself in its nightly window.
+To have one sooner, tick the rebase box in its description. Do not press
+GitHub's *Update branch*: that commit is yours, not Renovate's, and Renovate
+stops maintaining a branch someone else has committed to.
+
 Renovate raises `engines.node` on its own, to the newest Node release that has
-been out for 90 days within the same major, and none of it needs doing by hand.
+been out for 90 days within the same major. Everything but the merge happens
+without you.
 `.github/workflows/renovate-node-floor.yml` writes the new floor into every file
 that states it. Any pull request that changes the floor, Renovate's or yours,
 fails the required Verify check until
@@ -141,7 +165,8 @@ version, because winget can trail a Node release by weeks and a floor above it
 breaks the Windows install instructions. The same workflow re-runs whatever
 failed on Renovate's pull request once a day, or, once a run is too old for
 GitHub to re-run, ticks the pull request's rebase box so every check starts
-afresh. Renovate merges it when every required check passes. It gets no changelog line, like any other non-major
+afresh, so it is green by the time you look. Merging it is yours, like every
+other Renovate pull request. It gets no changelog line, like any other non-major
 update. Within a day of the merge, the website's *Follow LoopTroop main*
 workflow writes the new floor into its pages and publishes them.
 

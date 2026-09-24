@@ -105,7 +105,7 @@ jobs:
       - name: Set up Node
         uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7
         with:
-          node-version: 24.21.0
+          node-version-file: .nvmrc
 
       - name: Pin npm
         run: node scripts/pin-npm.mjs
@@ -398,7 +398,7 @@ jobs:
       - name: Set up Node
         uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7
         with:
-          node-version: 24.21.0
+          node-version-file: .nvmrc
 
       - name: Pin npm
         run: node scripts/pin-npm.mjs
@@ -620,7 +620,7 @@ jobs:
       - name: Set up Node
         uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7
         with:
-          node-version: 24.21.0
+          node-version-file: .nvmrc
 
       - name: Pin npm
         run: node scripts/pin-npm.mjs
@@ -678,7 +678,7 @@ jobs:
       - name: Set up Node
         uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7
         with:
-          node-version: 24.21.0
+          node-version-file: .nvmrc
 
       - name: Pin npm
         run: node scripts/pin-npm.mjs
@@ -743,7 +743,7 @@ jobs:
       - name: Set up Node
         uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7
         with:
-          node-version: 24.21.0
+          node-version-file: .nvmrc
 
       - name: Pin npm
         run: node scripts/pin-npm.mjs
@@ -879,10 +879,18 @@ jobs:
       # for a public repo publishing a public package, so no --provenance flag.
       id-token: write
     steps:
+      # `.nvmrc` alone, for the Node version. Nothing else from the repository
+      # is on disk, so the publish below can only see the downloaded artefacts.
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          persist-credentials: false
+          sparse-checkout: .nvmrc
+          sparse-checkout-cone-mode: false
+
       - name: Set up Node
         uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7
         with:
-          node-version: 24.21.0
+          node-version-file: .nvmrc
           registry-url: https://registry.npmjs.org
 
       - name: Check the bundled npm client
@@ -990,7 +998,7 @@ jobs:
           # never be compared to this.
           #
           # Done inline with bare node rather than the release verifier command
-          # because this job has no checkout: it publishes a downloaded tarball,
+          # because this job checks out nothing but `.nvmrc`: it publishes a downloaded tarball,
           # so it needs no source tree or dependency install beside publish
           # credentials. The same comparison, with no dependencies.
           # Embedded JavaScript is single-quoted so the shell cannot expand its template literals.
@@ -1077,7 +1085,7 @@ jobs:
       - name: Set up Node
         uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7
         with:
-          node-version: 24.21.0
+          node-version-file: .nvmrc
 
       - name: Pin npm
         run: node scripts/pin-npm.mjs
@@ -1256,7 +1264,7 @@ jobs:
       - name: Set up Node
         uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7
         with:
-          node-version: 24.21.0
+          node-version-file: .nvmrc
 
       - name: Pin npm
         run: node scripts/pin-npm.mjs
@@ -1495,20 +1503,22 @@ jobs:
       digest_amd64: ${{ steps.create.outputs.digest_amd64 }}
       digest_arm64: ${{ steps.create.outputs.digest_arm64 }}
     steps:
-      # Sparse: the script and what it imports, nothing else. This job holds
+      # Sparse: the script, what it imports and `.nvmrc`, nothing else. This job holds
       # `packages: write`, so it gets the smallest tree that can run the script
       # and no `npm ci` — the script has no dependencies.
       - name: Checkout the release scripts
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
         with:
           persist-credentials: false
-          sparse-checkout: scripts
+          sparse-checkout: |
+            .nvmrc
+            scripts
           sparse-checkout-cone-mode: false
 
       - name: Set up Node
         uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7
         with:
-          node-version: 24.21.0
+          node-version-file: .nvmrc
 
       # `merge-multiple` because the two legs uploaded one file each under
       # different artefact names; this flattens both into the working directory.
@@ -1664,7 +1674,7 @@ jobs:
       - name: Set up Node
         uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7
         with:
-          node-version: 24.21.0
+          node-version-file: .nvmrc
 
       # Read with no credentials at all, which is the point: a private Docker Hub
       # repository is inspectable by the account that pushed to it and by nobody
@@ -1763,19 +1773,21 @@ jobs:
     permissions:
       contents: write
     steps:
-      # Sparse, like the other container jobs: the splice script and nothing
-      # else. This job holds `contents: write`.
+      # Sparse, like the other container jobs: the splice script and `.nvmrc`,
+      # nothing else. This job holds `contents: write`.
       - name: Checkout the release scripts
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
         with:
           persist-credentials: false
-          sparse-checkout: scripts
+          sparse-checkout: |
+            .nvmrc
+            scripts
           sparse-checkout-cone-mode: false
 
       - name: Set up Node
         uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7
         with:
-          node-version: 24.21.0
+          node-version-file: .nvmrc
 
       # Read, spliced, written back. Between the two markers is the script's
       # territory and everything outside them is left exactly as the changelog
@@ -1872,7 +1884,7 @@ jobs:
       - name: Set up Node
         uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7
         with:
-          node-version: 24.21.0
+          node-version-file: .nvmrc
 
       - name: Download the release artefacts
         uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8
@@ -1954,7 +1966,7 @@ jobs:
       - name: Set up Node
         uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7
         with:
-          node-version: 24.21.0
+          node-version-file: .nvmrc
 
       - name: Download the release artefacts
         uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8
@@ -2009,7 +2021,7 @@ jobs:
       - name: Set up Node
         uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7
         with:
-          node-version: 24.21.0
+          node-version-file: .nvmrc
 
       - name: Download the release artefacts
         uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8
@@ -2112,7 +2124,7 @@ jobs:
       - name: Set up Node
         uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7
         with:
-          node-version: 24.21.0
+          node-version-file: .nvmrc
 
       - name: Download the release artefacts
         uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8
@@ -2215,7 +2227,7 @@ jobs:
       - name: Set up Node
         uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7
         with:
-          node-version: 24.21.0
+          node-version-file: .nvmrc
 
       - name: Download the release artefacts
         uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8

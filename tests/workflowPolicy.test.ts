@@ -47,6 +47,23 @@ function matrixEntries(job: Job): MatrixEntry[] {
   return Array.isArray(include) ? include as MatrixEntry[] : []
 }
 
+type RenovateRule = {
+  groupName?: string
+  groupSlug?: string
+  labels?: string[]
+  matchDepTypes?: string[]
+  matchPackageNames?: string[]
+}
+type RenovateConfig = {
+  automerge?: unknown
+  lockFileMaintenance?: { automerge?: unknown }
+  vulnerabilityAlerts?: { automerge?: unknown }
+  packageRules: RenovateRule[]
+}
+
+type SetupStep = Step & { with?: Record<string, unknown> }
+type SetupNodeStep = { where: string; steps: SetupStep[]; index: number }
+
 function runs(job: Job): string {
   return (job.steps ?? []).map((step) => typeof step.run === 'string' ? step.run : '').join('\n')
 }
@@ -123,61 +140,86 @@ describe('release workflow policy', () => {
   })
 
   /**
-   * The toolchain is stated once, in `.nvmrc`, and every other copy is held to
-   * it. That used to happen for free: the pin and `engines.node` were one
-   * number, so holding the copies to the floor held them to each other. Split
-   * apart, a lower bound would let the container, the toolchain lanes and the
-   * release jobs each drift to a different runtime while every test passed —
-   * Renovate moves `.nvmrc` and the Dockerfile, and nothing moves these.
+   * The toolchain is stated in `.nvmrc`, and every workflow reads it from there
+   * with `node-version-file` instead of repeating it. Renovate moves `.nvmrc`
+   * and the Dockerfile; no Renovate manager edits a number typed into a
+   * workflow, so a typed copy is refused even while it agrees, because the next
+   * toolchain pull request would leave it behind.
    *
-   * The only exceptions are named: the declared-floor lanes, which run the
-   * floor, and the standalone builder's embedded runtime, which the binary-job
-   * test below confines to those jobs.
+   * The only typed versions are named exceptions: the standalone builder's
+   * embedded runtime, which the binary-job test below confines to those jobs;
+   * the declared-floor lanes, which read `engines.node` at run time; and the
+   * Node 26 early-warning lane, which floats on purpose.
    */
-  it('holds every Node runtime literal to the toolchain pin, or to the floor where it says so', () => {
-    const toolchain = formatNodeVersion(parseNodeVersion(readFileSync(join(repo, '.nvmrc'), 'utf8').trim()))
-
-    for (const [file, text] of source) {
-      for (const match of text.matchAll(/^\s*node-version:\s*["']?(v?\d+(?:\.\d+){0,2})["']?(?=\s|$)/gm)) {
-        const found = match[1]
-        if (!found) throw new Error(`${file}: node-version capture missing`)
-        const parsed = concreteVersion(found)
-        if (parsed === null) continue
-        expect([toolchain, EMBEDDED_BUILDER], `${file}: node-version ${found}`).toContain(formatNodeVersion(parsed))
-      }
+  it('types no copy of the toolchain Node into any workflow', () => {
+    const typed = [...source].flatMap(([file, text]) =>
+      [...text.matchAll(/^\s*node-version:\s*["']?(v?\d+(?:\.\d+){0,2})["']?(?=\s|$)/gm)].map((match) => ({ file, found: match[1] ?? '' })))
+    expect(typed.length, 'the named exceptions are still typed').toBeGreaterThan(0)
+    for (const { file, found } of typed) {
+      const parsed = concreteVersion(found)
+      if (parsed !== null) expect(formatNodeVersion(parsed), `${file}: node-version ${found}; read .nvmrc with node-version-file instead`).toBe(EMBEDDED_BUILDER)
     }
+  })
 
-    // A bare major floats to whatever shipped this week, and the checks above
-    // skip it. Only the Node 26 early-warning lane may float, on purpose.
-    for (const [file, workflow] of workflows) {
-      for (const [name, job] of Object.entries(workflow.jobs ?? {})) {
-        for (const step of (job.steps ?? []) as Array<Step & { with?: Record<string, unknown> }>) {
-          const selector = step.with?.['node-version']
-          if (typeof selector !== 'string' && typeof selector !== 'number') continue
-          if (String(selector).includes('${{')) continue
-          if (concreteVersion(String(selector)) === null) {
-            expect(`${file}: ${name}`, `${file}: ${name} floats on node-version ${String(selector)}`).toBe('ci.yml: early-warning')
-          }
-        }
-      }
+  /**
+   * A `node-version-file` step reads `.nvmrc` from the workspace, so an earlier
+   * checkout has to put it there, at the workspace root. A sparse checkout has
+   * to name it: in non-cone mode only the listed patterns reach the disk, which
+   * is how four container jobs once asked setup-node for a file they never had.
+   */
+  function expectReadsNvmrc({ where, steps, index }: SetupNodeStep) {
+    expect(steps[index]?.with?.['node-version-file'], `${where} reads the toolchain from .nvmrc`).toBe('.nvmrc')
+    expect(steps[index]?.with?.['node-version'], `${where} sets node-version-file alone`).toBeUndefined()
+    const checkout = steps.findIndex((candidate) => String(candidate.uses ?? '').startsWith('actions/checkout@'))
+    expect(checkout, `${where} checks out .nvmrc before reading it`).toBeGreaterThan(-1)
+    expect(checkout, `${where} checks out .nvmrc before reading it`).toBeLessThan(index)
+    const options = steps[checkout]?.with ?? {}
+    expect(options.path, `${where} checks out at the workspace root`).toBeUndefined()
+    const sparse = options['sparse-checkout']
+    if (sparse !== undefined) expect(String(sparse).split(/\s+/), `${where} sparse checkout includes .nvmrc`).toContain('.nvmrc')
+  }
+
+  /**
+   * A typed selector must be a named exception. An expression is the floor lane
+   * reading `engines.node`; a concrete version is held by the test above; a
+   * bare major floats to whatever shipped this week, which only the Node 26
+   * early-warning lane may do.
+   */
+  function expectNamedNodeSelector({ where, steps, index }: SetupNodeStep) {
+    const selector = steps[index]?.with?.['node-version']
+    if (typeof selector !== 'string' && typeof selector !== 'number') {
+      throw new Error(`${where} sets up Node with neither .nvmrc nor a named exception`)
     }
+    if (String(selector).includes('${{') || concreteVersion(String(selector)) !== null) return
+    expect(where, `${where} floats on node-version ${String(selector)}`).toBe('ci.yml: early-warning')
+  }
 
-    for (const [file, workflow] of workflows) {
-      for (const [name, job] of Object.entries(workflow.jobs ?? {})) {
-        for (const entry of matrixEntries(job)) {
-          if (entry.node === undefined) continue
-          const parsed = concreteVersion(String(entry.node))
-          if (parsed === null) continue
-          const expected = entry.label === 'declared floor' ? FLOOR : toolchain
-          expect(formatNodeVersion(parsed), `${file}: ${name} matrix node (${String(entry.label)})`).toBe(expected)
-        }
-      }
+  it('reads the toolchain Node from .nvmrc in every setup-node step, or names the exception', () => {
+    const setups = [...workflows].flatMap(([file, workflow]) =>
+      Object.entries(workflow.jobs ?? {}).flatMap(([name, job]) => {
+        const steps = (job.steps ?? []) as SetupStep[]
+        return steps.flatMap((step, index) => String(step.uses ?? '').startsWith('actions/setup-node@') ? [{ where: `${file}: ${name}`, steps, index }] : [])
+      }))
+    expect(setups.length, 'setup-node steps').toBeGreaterThan(0)
+    for (const setup of setups) {
+      if (setup.steps[setup.index]?.with?.['node-version-file'] === undefined) expectNamedNodeSelector(setup)
+      else expectReadsNvmrc(setup)
+    }
+  })
+
+  it('holds matrix Node versions and the Dockerfile base image to the toolchain pin', () => {
+    const entries = [...workflows].flatMap(([file, workflow]) =>
+      Object.entries(workflow.jobs ?? {}).flatMap(([name, job]) => matrixEntries(job).map((entry) => ({ where: `${file}: ${name}`, entry }))))
+    for (const { where, entry } of entries) {
+      const parsed = entry.node === undefined ? null : concreteVersion(String(entry.node))
+      const expected = entry.label === 'declared floor' ? FLOOR : TOOLCHAIN
+      if (parsed !== null) expect(formatNodeVersion(parsed), `${where} matrix node (${String(entry.label)})`).toBe(expected)
     }
 
     const docker = readFileSync(join(repo, 'scripts', 'Dockerfile'), 'utf8')
     const bases = [...docker.matchAll(/^\s*FROM\s+node:(\d+\.\d+\.\d+)(?=[-@])/gm)].map(([, version]) => version)
     expect(bases.length, 'Dockerfile Node base images').toBeGreaterThan(0)
-    for (const base of bases) expect(base, 'Dockerfile FROM node:').toBe(toolchain)
+    for (const base of bases) expect(base, 'Dockerfile FROM node:').toBe(TOOLCHAIN)
   })
 
   /**
@@ -273,7 +315,7 @@ describe('release workflow policy', () => {
       const binary = text.slice(start, end)
 
       expect(binary, `${file}: binary runtime`).toContain('node-version: 26.9.0')
-      expect(binary, `${file}: binary runtime`).not.toContain(`node-version: ${TOOLCHAIN}`)
+      expect(binary, `${file}: binary runtime`).not.toContain('node-version-file')
       expect(binary, `${file}: embedded-runtime check`).toContain('Run blocking application checks on the embedded runtime')
       expect(binary, `${file}: embedded-runtime check`).toContain('doctor --json')
       expect(binary, `${file}: embedded-runtime check`).toContain('nodeCheck?.node?.version')
@@ -578,8 +620,9 @@ describe('release workflow policy', () => {
   })
 
   /**
-   * The floor pull request merges itself, so something has to look at it again
-   * once a late feed catches up: nothing on the pull request changes when that
+   * The floor pull request stays red until every feed offers the new floor, so
+   * something has to look at it again once a late feed catches up, or it is
+   * still red when someone comes to merge it: nothing on it changes when that
    * happens, so no check would run. `recheck` re-runs whatever failed there,
    * daily. It checks out nothing and holds no secret, and the only thing it may
    * write is a request to re-run.
@@ -690,12 +733,11 @@ describe('release workflow policy', () => {
    * rebase, no newer release — unless that author is in gitIgnoredAuthors. Its
    * own workflows commit to its branches, so the author they commit as is an
    * interface: change it without this list and every such pull request freezes,
-   * the self-merging floor with it, and nothing reports an error.
+   * the floor's with it, and nothing reports an error.
    */
   it('lets Renovate keep updating the branches its own workflows commit to', () => {
     const renovate = JSON.parse(readFileSync(join(repo, '.github/renovate.json'), 'utf8')) as {
       gitIgnoredAuthors?: string[]
-      packageRules: Array<{ groupSlug?: string; automerge?: boolean }>
     }
     const committing = files.filter((file) => file.startsWith('renovate-') && (source.get(file) ?? '').includes('git config user.email'))
     expect(committing, 'the floor workflow is one of them').toContain('renovate-node-floor.yml')
@@ -703,7 +745,60 @@ describe('release workflow policy', () => {
       const author = /git config user\.email "([^"]+)"/.exec(source.get(file) ?? '')?.[1]
       expect(renovate.gitIgnoredAuthors, `${file} commits as ${author}`).toContain(author)
     }
-    expect(renovate.packageRules.find((rule) => rule.groupSlug === 'node-floor')?.automerge).toBe(true)
+  })
+
+  /**
+   * Every Renovate pull request is merged by a person, or an agent acting for
+   * one, after review. An `automerge` switched on anywhere, the top level, a
+   * rule or `lockFileMaintenance`, would merge that lane unreviewed the moment
+   * its checks pass, so the whole file is searched rather than known places.
+   * Presets from `extends` are not in this file, and their rules come first, so
+   * the last rule matches every package and switches automerge off after them.
+   * Two lanes escape that rule: a lockfile refresh has no package name to
+   * match, and Renovate forces the security settings after every rule, so both
+   * say `automerge: false` themselves.
+   */
+  it('lets no Renovate update merge itself', () => {
+    const found: string[] = []
+    const text = readFileSync(join(repo, '.github/renovate.json'), 'utf8')
+    const renovate = JSON.parse(text, (key, value: unknown) => {
+      if (key === 'automerge' && value !== false) found.push(String(value))
+      return value
+    }) as RenovateConfig
+    expect(found, 'automerge settings that are not false').toEqual([])
+    expect(renovate.automerge, 'the default is stated, not inherited from a preset').toBe(false)
+    expect(renovate.lockFileMaintenance?.automerge, 'the lockfile refresh states it').toBe(false)
+    expect(renovate.vulnerabilityAlerts?.automerge, 'security fixes state it').toBe(false)
+    expect(renovate.packageRules.at(-1), 'the last rule switches automerge off for everything').toEqual(
+      expect.objectContaining({ matchPackageNames: ['*'], automerge: false }),
+    )
+    expect(Object.keys(renovate.packageRules.at(-1) ?? {}).sort(), 'and does nothing else').toEqual(['automerge', 'description', 'matchPackageNames'])
+  })
+
+  /**
+   * Renovate applies package rules in order and a later `groupName` replaces
+   * an earlier one. The bundled frontend group once sat above the dev tooling
+   * rule, which matches every devDependency, so it never took effect and React
+   * and CodeMirror shipped inside dev tooling. The frontend list also appears
+   * twice, once for its label and once for its group, and the two must agree.
+   * The Node floor rule is read by name: renovate-node-floor.yml acts only on
+   * the `renovate/node-floor` branch its groupSlug produces. `engines.node`
+   * also matches the toolchain group, so the floor rule has to come after it,
+   * or the floor lands in the toolchain pull request and the workflow never
+   * runs.
+   */
+  it('keeps the Renovate groups in the order that lets them take effect', () => {
+    const rules = (JSON.parse(readFileSync(join(repo, '.github/renovate.json'), 'utf8')) as RenovateConfig).packageRules
+    const devTooling = rules.findIndex((rule) => rule.groupName === 'dev tooling (non-major)')
+    const frontendGroup = rules.findIndex((rule) => rule.groupName === 'ships to users (non-major)' && rule.matchDepTypes?.includes('devDependencies'))
+    const frontendLabel = rules.findIndex((rule) => rule.labels?.includes('frontend'))
+    expect(devTooling, 'dev tooling group').toBeGreaterThan(-1)
+    expect(frontendGroup, 'the frontend group comes after the dev tooling group').toBeGreaterThan(devTooling)
+    expect(rules[frontendLabel]?.matchPackageNames, 'the frontend label and group name the same packages').toEqual(rules[frontendGroup]?.matchPackageNames)
+    expect(rules.filter((rule) => rule.groupSlug === 'node-floor'), 'one Node floor rule').toHaveLength(1)
+    const toolchain = rules.findIndex((rule) => rule.groupName === 'toolchain (node + npm)')
+    expect(toolchain, 'toolchain group').toBeGreaterThan(-1)
+    expect(rules.findIndex((rule) => rule.groupSlug === 'node-floor'), 'the Node floor rule comes after the toolchain group').toBeGreaterThan(toolchain)
   })
 
   it('downloads Renovate notices outside checkout and gives the token only to push', () => {

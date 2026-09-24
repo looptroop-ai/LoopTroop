@@ -81,7 +81,7 @@ jobs:
         with:
           # The toolchain pin from .nvmrc, exact rather than floating "24".
           # Not engines.node, which is lower on purpose.
-          node-version: 24.21.0
+          node-version-file: .nvmrc
           cache: npm
 
       - name: Pin npm to the declared version

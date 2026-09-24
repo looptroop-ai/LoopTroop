@@ -2,8 +2,14 @@ import { existsSync, readFileSync } from 'node:fs'
 import { LOOPTROOP_OPENCODE_ROUTING_CONFIG, isOpenRouterRoutingModel } from '../../shared/openRouterRouting'
 import { safeAtomicWrite } from '../io/atomicWrite'
 import { isRecord } from '@shared/typeGuards'
+import type { OpenCodeProtocol } from './connection'
 
 type JsonObject = Record<string, unknown>
+
+export function needsOpenRouterRoutingConfig(modelIds: readonly string[]): boolean {
+  return Boolean(process.env[LOOPTROOP_OPENCODE_ROUTING_CONFIG]?.trim())
+    && modelIds.some(isOpenRouterRoutingModel)
+}
 
 function readConfig(configPath: string): JsonObject {
   if (!existsSync(configPath)) return {}
@@ -20,15 +26,16 @@ function readConfig(configPath: string): JsonObject {
  * Adds selected OpenRouter routing IDs to the LoopTroop-owned OpenCode config.
  * OpenCode only accepts a routing suffix after that exact model ID is registered.
  */
-export function registerOpenRouterRoutingModels(modelIds: readonly string[]): boolean {
+export function registerOpenRouterRoutingModels(modelIds: readonly string[], protocol: OpenCodeProtocol): boolean {
   const configPath = process.env[LOOPTROOP_OPENCODE_ROUTING_CONFIG]?.trim()
-  if (!configPath) return false
+  if (!configPath || !needsOpenRouterRoutingConfig(modelIds)) return false
 
   const routingModels = Array.from(new Set(modelIds.filter(isOpenRouterRoutingModel)))
   if (routingModels.length === 0) return false
 
   const config = readConfig(configPath)
-  const providers = isRecord(config.provider) ? config.provider : {}
+  const configKey = protocol === 'v2' ? 'providers' : 'provider'
+  const providers = isRecord(config[configKey]) ? config[configKey] as JsonObject : {}
   const openRouter = isRecord(providers.openrouter) ? providers.openrouter : {}
   const models = isRecord(openRouter.models) ? openRouter.models : {}
   let changed = false
@@ -43,7 +50,7 @@ export function registerOpenRouterRoutingModels(modelIds: readonly string[]): bo
 
   if (!changed) return false
 
-  config.provider = {
+  config[configKey] = {
     ...providers,
     openrouter: {
       ...openRouter,

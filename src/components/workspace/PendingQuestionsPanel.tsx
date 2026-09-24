@@ -437,25 +437,26 @@ function QuestionAnswerInput({
   const fieldId = useId()
   const multiple = question.multiple === true
   const allowsCustom = question.custom !== false
-  const optionLabels = useMemo(
-    () => new Set(question.options.map((option) => option.label)),
+  const optionValues = useMemo(
+    () => new Set(question.options.map((option) => option.value ?? option.label)),
     [question.options],
   )
-  const selected = value.filter((entry) => optionLabels.has(entry))
+  const selected = value.filter((entry) => optionValues.has(entry))
   // Seeded once. The component is remounted per question by its `key`, so a
   // draft restored from `value` is picked up on mount and never fought over.
   const [custom, setCustom] = useState(
-    () => value.find((entry) => !optionLabels.has(entry)) ?? '',
+    () => value.find((entry) => !optionValues.has(entry)) ?? '',
   )
 
   const emit = (nextSelected: string[], nextCustom: string) => {
-    onChange([...nextSelected, nextCustom.trim()].filter(Boolean))
+    const customAnswer = nextCustom.trim()
+    onChange([...nextSelected, ...(customAnswer ? [customAnswer] : [])])
   }
 
-  const toggle = (label: string) => {
+  const toggle = (answerValue: string) => {
     const next = multiple
-      ? (selected.includes(label) ? selected.filter((entry) => entry !== label) : [...selected, label])
-      : (selected.includes(label) ? [] : [label])
+      ? (selected.includes(answerValue) ? selected.filter((entry) => entry !== answerValue) : [...selected, answerValue])
+      : (selected.includes(answerValue) ? [] : [answerValue])
     emit(next, custom)
   }
 
@@ -464,7 +465,8 @@ function QuestionAnswerInput({
       {question.options.length > 0 && (
         <div role={multiple ? 'group' : 'radiogroup'} aria-label="Answer options" className="space-y-1.5">
           {question.options.map((option, index) => {
-            const checked = selected.includes(option.label)
+            const answerValue = option.value ?? option.label
+            const checked = selected.includes(answerValue)
             // Keyed by index, not by label: a model can repeat a label in one batch.
             const inputId = `${fieldId}-option-${index}`
             const describedBy = option.description ? `${inputId}-description` : undefined
@@ -485,7 +487,7 @@ function QuestionAnswerInput({
                   checked={checked}
                   disabled={disabled}
                   onFocus={onEngage}
-                  onChange={() => toggle(option.label)}
+                  onChange={() => toggle(answerValue)}
                   {...(describedBy ? { 'aria-describedby': describedBy } : {})}
                 />
                 <span className="min-w-0">

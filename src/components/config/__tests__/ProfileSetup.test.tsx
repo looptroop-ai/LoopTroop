@@ -333,6 +333,36 @@ describe('ProfileSetup', () => {
     ))
   })
 
+  it('keeps server-provided effort variants selectable when reasoning metadata is unknown', async () => {
+    vi.mocked(fetch).mockImplementation(async (input: RequestInfo | URL) => {
+      const url = typeof input === 'string' ? input : input.toString()
+      if (url === '/api/health/opencode') {
+        return { ok: true, json: async () => ({ status: 'ok' }) } as Response
+      }
+      return {
+        ok: true,
+        json: async () => ({
+          models: [{
+            fullId: 'opencode/big-pickle',
+            canReason: null,
+            variants: { 'reasoning-balanced': { settings: { reasoningEffort: 'balanced' } } },
+          }],
+          connectedProviders: ['opencode'],
+          defaultModels: {},
+        }),
+      } as Response
+    })
+
+    await renderProfileSetup()
+    fireEvent.click(await screen.findByRole('button', { name: /reasoning-balanced/ }))
+    fireEvent.click(screen.getByRole('button', { name: 'Save' }))
+
+    await waitFor(() => expect(updateProfileMutate).toHaveBeenCalledWith(
+      expect.objectContaining({ mainImplementerVariant: 'reasoning-balanced' }),
+      expect.anything(),
+    ))
+  })
+
   it('treats an empty saved main variant as None when configuration opens', async () => {
     profileForTest = {
       ...existingProfile,

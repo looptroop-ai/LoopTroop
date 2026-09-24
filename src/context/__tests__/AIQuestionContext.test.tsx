@@ -116,6 +116,32 @@ describe('AIQuestionProvider', () => {
     await waitFor(() => expect(screen.getByText('pending:3 requests:2')).toBeInTheDocument())
   })
 
+  it('preserves option values while normalizing incoming questions', async () => {
+    const ticket = makeTicket({ status: 'CODING' })
+    stubAggregate({ questions: [], timers: {} })
+
+    function OptionValue({ ticketId }: { ticketId: string }) {
+      const { getTicketRequests, ingestSseEvent } = useAIQuestions()
+      return (
+        <>
+          <button type="button" onClick={() => ingestSseEvent(buildQuestion(ticketId, {
+            questions: [{
+              header: 'Mode',
+              question: 'Choose a mode',
+              options: [{ label: 'Fast mode', value: 'fast' }],
+            }],
+          }))}>ingest</button>
+          <div>value:{getTicketRequests(ticketId)[0]?.questions[0]?.options[0]?.value ?? 'missing'}</div>
+        </>
+      )
+    }
+
+    renderProvider([ticket], <OptionValue ticketId={ticket.id} />)
+    fireEvent.click(await screen.findByRole('button', { name: 'ingest' }))
+
+    await waitFor(() => expect(screen.getByText('value:fast')).toBeInTheDocument())
+  })
+
   it('slides a bar in for a question on a ticket you are not looking at', async () => {
     const ticket = makeTicket({ status: 'CODING' })
     stubAggregate({ questions: [buildQuestion(ticket.id)], timers: {} })

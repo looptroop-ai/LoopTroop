@@ -27,8 +27,10 @@ import {
 import { TicketInitializationError, initializeTicket } from '../../ticket/initialize'
 import { withCommandLoggingAsync } from '../../log/commandLogger'
 import { validateModelSelection } from '../../opencode/modelValidation'
-import { registerOpenRouterRoutingModels } from '../../opencode/openRouterRoutingConfig'
+import { needsOpenRouterRoutingConfig, registerOpenRouterRoutingModels } from '../../opencode/openRouterRoutingConfig'
 import { refreshProviderCatalog } from '../../opencode/providerCatalog'
+import { getOpenCodeConnection } from '../../opencode/connection'
+import { getOpenCodeBaseUrl } from '../../opencode/runtimeConfig'
 import {
   archiveActivePhaseAttempts,
   cleanupCanceledTicketData,
@@ -158,9 +160,12 @@ export async function handleStartTicket(c: Context) {
   }
 
   try {
-    if (registerOpenRouterRoutingModels(modelSelection.councilMembers)) {
-      await refreshProviderCatalog()
-      emitRoutePhaseLog(ticketId, startPhase, 'info', 'Registered selected OpenRouter routing variants with OpenCode.')
+    if (needsOpenRouterRoutingConfig(modelSelection.councilMembers)) {
+      const connection = await getOpenCodeConnection(getOpenCodeBaseUrl())
+      if (registerOpenRouterRoutingModels(modelSelection.councilMembers, connection.protocol)) {
+        await refreshProviderCatalog()
+        emitRoutePhaseLog(ticketId, startPhase, 'info', 'Registered selected OpenRouter routing variants with OpenCode.')
+      }
     }
   } catch (err) {
     const message = err instanceof Error ? err.message : 'Unable to register OpenRouter routing models'

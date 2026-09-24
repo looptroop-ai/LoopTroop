@@ -90,9 +90,10 @@ their own live child through the retained process handle, even when the
 start-time probe is unavailable. Log follow watches the containing directory
 so rename-and-create rotation resumes at the start of the replacement file.
 
-Then configure your settings and models (from providers already added in
-OpenCode), attach a local repository with a GitHub origin, create a ticket, and
-start it.
+Configure a provider in OpenCode, then choose an available model in LoopTroop's
+Configuration screen. LoopTroop detects OpenCode v1 or v2 from the authenticated
+server API; it supports both without requiring a major-version change. Attach a
+local repository with a GitHub origin, create a ticket, and start it.
 
 If LoopTroop cannot confirm that an OpenCode session stopped remotely, it keeps
 the ticket retryable and leaves the ownership visible. The durable session-
@@ -303,9 +304,9 @@ a container.
   ticket. Installed for you via Homebrew, Scoop, Chocolatey, WinGet and the AUR;
   **not** installed if you used npm, bun, pnpm, Yarn or the standalone
   executable, which have no way to declare a dependency.
-- **OpenCode**, with at least one configured model provider. LoopTroop will start
-  it if it is already installed, but it will not work without it and it will not
-  install it for you.
+- **OpenCode**, with a configured provider and available model. LoopTroop starts
+  the installed CLI when no server is already reachable, and detects v1 or v2
+  automatically. It does not install OpenCode for you.
 - On Linux user namespaces, a tool whose owner is the kernel's unmapped
   overflow UID is refused by default, including in a canonical OpenCode
   directory. If you deliberately keep tools in such a directory, set

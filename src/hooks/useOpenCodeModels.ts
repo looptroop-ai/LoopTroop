@@ -1,5 +1,5 @@
 import { useQuery, type QueryClient } from '@tanstack/react-query'
-import type { OpenCodeCatalogModel } from '@shared/opencodeCatalog'
+import type { OpenCodeCatalogModel, OpenCodeCatalogScope } from '@shared/opencodeCatalog'
 import {
   MODEL_FETCH_RETRY_COUNT,
   MODEL_FETCH_RETRY_DELAY_MS,
@@ -12,6 +12,7 @@ interface ModelsApiResponse {
   models: OpenCodeCatalogModel[]
   connectedProviders: string[]
   defaultModels: Record<string, string>
+  catalogScope?: OpenCodeCatalogScope
   message?: string
   code?: 'OPENCODE_UNREACHABLE' | 'OPENCODE_DISCOVERY_FAILED'
 }
@@ -96,16 +97,21 @@ export function refetchOpenCodeModelsQuery(queryClient: Pick<QueryClient, 'refet
   })
 }
 
-/** Returns only models from connected (configured) providers */
-export function useOpenCodeModels() {
+/** Returns the response metadata used to describe which model scope OpenCode exposes. */
+export function useOpenCodeModelCatalog() {
   return useQuery({
     queryKey: OPENCODE_MODELS_QUERY_KEY,
     queryFn: ({ signal }) => fetchModelsApi(signal),
     staleTime: QUERY_STALE_TIME_5M,
     retry: shouldRetryModelFetch,
     retryDelay: MODEL_FETCH_RETRY_DELAY_MS,
-    select: (data) => data.models,
   })
+}
+
+/** Returns only models from connected (configured) providers */
+export function useOpenCodeModels() {
+  const query = useOpenCodeModelCatalog()
+  return { ...query, data: query.data?.models }
 }
 
 /** Returns all models from all providers only when explicitly requested. */

@@ -1,7 +1,7 @@
 import { Hono } from 'hono'
 import { getOpenCodeAdapter } from '../opencode/factory'
 import { fetchProviderCatalog, flattenCatalogModels, refreshProviderCatalog } from '../opencode/providerCatalog'
-import type { OpenCodeCatalogResponse } from '../../shared/opencodeCatalog'
+import type { OpenCodeCatalogResponse, OpenCodeCatalogScope } from '../../shared/opencodeCatalog'
 
 const modelsRouter = new Hono()
 
@@ -10,6 +10,7 @@ function serializeCatalog(catalog: OpenCodeCatalogResponse, scope: 'connected' |
     models: flattenCatalogModels(catalog, scope),
     connectedProviders: catalog.connected,
     defaultModels: catalog.default,
+    catalogScope: catalog.supportsAllModels ? scope : 'available' as OpenCodeCatalogScope,
   }
 }
 

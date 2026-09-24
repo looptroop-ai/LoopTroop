@@ -39,7 +39,11 @@ function normalizeQuestion(question: AiQuestionInfo): AiQuestionInfo {
   return {
     question: question.question || question.header || 'AI question',
     header: question.header || 'AI question',
-    options: Array.isArray(question.options) ? question.options : [],
+    options: Array.isArray(question.options) ? question.options.map((option) => ({
+      label: typeof option.label === 'string' ? option.label : '',
+      ...(typeof option.value === 'string' ? { value: option.value } : {}),
+      ...(typeof option.description === 'string' ? { description: option.description } : {}),
+    })) : [],
     ...(typeof question.multiple === 'boolean' ? { multiple: question.multiple } : {}),
     ...(typeof question.custom === 'boolean' ? { custom: question.custom } : {}),
   }

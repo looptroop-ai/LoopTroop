@@ -22,6 +22,7 @@ vi.mock('../../opencode/factory', () => ({
 import { modelsRouter } from '../models'
 
 const catalog = {
+  supportsAllModels: true,
   connected: ['openai'],
   default: { chat: 'openai/connected' },
   all: [
@@ -59,6 +60,7 @@ describe('models routes', () => {
     const body = await response.json()
 
     expect(body.models.map((model: { fullId: string }) => model.fullId)).toEqual(['openai/connected'])
+    expect(body.catalogScope).toBe('connected')
     expect(body).not.toHaveProperty('allModels')
   })
 
@@ -66,6 +68,20 @@ describe('models routes', () => {
     const response = await createApp().request('/api/models?scope=all')
     const body = await response.json()
 
+    expect(body.models.map((model: { fullId: string }) => model.fullId)).toEqual([
+      'google/optional',
+      'openai/connected',
+    ])
+    expect(body.catalogScope).toBe('all')
+  })
+
+  it('reports the v2 available-only scope when all providers are requested', async () => {
+    fetchProviderCatalog.mockResolvedValueOnce({ ...catalog, supportsAllModels: false })
+
+    const response = await createApp().request('/api/models?scope=all')
+    const body = await response.json()
+
+    expect(body.catalogScope).toBe('available')
     expect(body.models.map((model: { fullId: string }) => model.fullId)).toEqual([
       'google/optional',
       'openai/connected',

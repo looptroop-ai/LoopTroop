@@ -182,6 +182,56 @@ describe('PendingQuestionsPanel', () => {
     expect(answerRequest).toHaveBeenCalledWith(TICKET_ID, 'req_a', [['SQLite', 'in ./data']])
   })
 
+  it('displays option labels and submits option values for single-select answers', () => {
+    const answerRequest = vi.fn()
+    renderPanel({
+      getTicketRequests: () => [makeRequest({
+        questions: [{
+          header: 'Mode',
+          question: 'Which mode?',
+          options: [{ label: 'Fast mode', value: 'fast' }],
+          custom: false,
+        }],
+      })],
+      getTimer: () => makeTimer(),
+      getRemainingMs: () => 240_000,
+      answerRequest,
+    })
+
+    fireEvent.click(screen.getByLabelText('Fast mode'))
+    expect(screen.getByText('Fast mode')).toBeInTheDocument()
+    fireEvent.click(screen.getByRole('button', { name: 'Send answer' }))
+
+    expect(answerRequest).toHaveBeenCalledWith(TICKET_ID, 'req_a', [['fast']])
+  })
+
+  it('submits option values for each selected multiselect answer', () => {
+    const answerRequest = vi.fn()
+    renderPanel({
+      getTicketRequests: () => [makeRequest({
+        questions: [{
+          header: 'Targets',
+          question: 'Which targets?',
+          options: [
+            { label: 'Desktop', value: 'desktop-app' },
+            { label: 'Web', value: 'web-app' },
+          ],
+          multiple: true,
+          custom: false,
+        }],
+      })],
+      getTimer: () => makeTimer(),
+      getRemainingMs: () => 240_000,
+      answerRequest,
+    })
+
+    fireEvent.click(screen.getByLabelText('Desktop'))
+    fireEvent.click(screen.getByLabelText('Web'))
+    fireEvent.click(screen.getByRole('button', { name: 'Send answer' }))
+
+    expect(answerRequest).toHaveBeenCalledWith(TICKET_ID, 'req_a', [['desktop-app', 'web-app']])
+  })
+
   it('will not send until every question in the batch has an answer', () => {
     const answerRequest = vi.fn()
     renderPanel({

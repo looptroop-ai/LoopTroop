@@ -32,6 +32,7 @@ export function EffortPicker({ variants, value, onChange, disabled }: EffortPick
     return [
       'none',
       ...EFFORT_ORDER.filter(k => k !== 'none' && k in variants),
+      ...Object.keys(variants).filter(key => !EFFORT_ORDER.some(known => known === key)),
     ]
   }, [variants])
 

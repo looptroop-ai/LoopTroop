@@ -1,12 +1,13 @@
 import { fireEvent, render, screen, within } from '@testing-library/react'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 import { ModelPicker } from '../ModelPicker'
-import { useAllOpenCodeModels, useOpenCodeModels, type OpenCodeModel } from '@/hooks/useOpenCodeModels'
+import { useAllOpenCodeModels, useOpenCodeModelCatalog, useOpenCodeModels, type OpenCodeModel } from '@/hooks/useOpenCodeModels'
 
 vi.mock('@/hooks/useOpenCodeModels', async () => {
   const actual = await vi.importActual<typeof import('@/hooks/useOpenCodeModels')>('@/hooks/useOpenCodeModels')
   return {
     ...actual,
+    useOpenCodeModelCatalog: vi.fn(),
     useOpenCodeModels: vi.fn(),
     useAllOpenCodeModels: vi.fn(),
   }
@@ -58,6 +59,55 @@ const models: OpenCodeModel[] = [
     canUseTools: true,
     status: 'stable',
   },
+  {
+    id: 'unknown-cost',
+    name: 'Unknown Cost',
+    fullId: 'local/unknown-cost',
+    providerID: 'local',
+    providerName: 'Local',
+    family: 'local',
+    costInput: null,
+    costOutput: null,
+    contextWindow: 8_000,
+    canReason: null,
+    canSeeImages: null,
+    canUseTools: null,
+    status: 'stable',
+  },
+  {
+    id: 'output-priced',
+    name: 'Output priced',
+    fullId: 'local/output-priced',
+    providerID: 'local',
+    providerName: 'Local',
+    family: 'local',
+    costInput: 0,
+    costOutput: 1,
+    contextWindow: 8_000,
+    canReason: null,
+    canSeeImages: null,
+    canUseTools: null,
+    status: 'stable',
+  },
+  {
+    id: 'tiered-output',
+    name: 'Tiered output',
+    fullId: 'local/tiered-output',
+    providerID: 'local',
+    providerName: 'Local',
+    family: 'local',
+    costInput: null,
+    costOutput: null,
+    costTiers: [
+      { input: 0, output: 1 },
+      { input: 0, output: 4 },
+    ],
+    contextWindow: 8_000,
+    canReason: null,
+    canSeeImages: null,
+    canUseTools: null,
+    status: 'stable',
+  },
 ]
 
 function mockModelsQuery(data: OpenCodeModel[] = models) {
@@ -70,6 +120,9 @@ function mockModelsQuery(data: OpenCodeModel[] = models) {
   }
 
   vi.mocked(useOpenCodeModels).mockReturnValue(result as ReturnType<typeof useOpenCodeModels>)
+  vi.mocked(useOpenCodeModelCatalog).mockReturnValue({
+    data: { models: data, connectedProviders: ['openai', 'anthropic', 'local'], defaultModels: {}, catalogScope: 'connected' },
+  } as ReturnType<typeof useOpenCodeModelCatalog>)
   vi.mocked(useAllOpenCodeModels).mockReturnValue(result as ReturnType<typeof useAllOpenCodeModels>)
 }
 
@@ -104,6 +157,42 @@ describe('ModelPicker', () => {
     fireEvent.click(screen.getByRole('checkbox', { name: /Show all providers/i }))
 
     expect(useAllOpenCodeModels).toHaveBeenLastCalledWith(true)
+  })
+
+  it('hides the all-provider control when v2 only reports available models', () => {
+    vi.mocked(useOpenCodeModelCatalog).mockReturnValue({
+      data: { models, connectedProviders: ['openai'], defaultModels: {}, catalogScope: 'available' },
+    } as ReturnType<typeof useOpenCodeModelCatalog>)
+    render(<ModelPicker value="" onChange={vi.fn()} />)
+
+    fireEvent.click(screen.getByRole('button', { name: /^Pick a model/ }))
+
+    expect(screen.queryByRole('checkbox', { name: /Show all providers/i })).not.toBeInTheDocument()
+    expect(useAllOpenCodeModels).toHaveBeenLastCalledWith(false)
+  })
+
+  it('hides unknown cost and capability metadata and excludes unknown cost from the free filter', () => {
+    render(<ModelPicker value="" onChange={vi.fn()} />)
+    fireEvent.click(screen.getByRole('button', { name: /^Pick a model/ }))
+
+    const unknownOption = screen.getByRole('option', { name: /Unknown Cost/ })
+    expect(within(unknownOption).queryByText('Free')).not.toBeInTheDocument()
+    expect(within(unknownOption).queryByText('reasoning')).not.toBeInTheDocument()
+    expect(within(unknownOption).queryByText('vision')).not.toBeInTheDocument()
+    expect(within(unknownOption).queryByText('tools')).not.toBeInTheDocument()
+
+    const outputPricedOption = screen.getByRole('option', { name: /Output priced/ })
+    const tieredOutputOption = screen.getByRole('option', { name: /Tiered output/ })
+    expect(within(outputPricedOption).queryByText('Free')).not.toBeInTheDocument()
+    expect(within(outputPricedOption).getByText('$')).toBeInTheDocument()
+    expect(within(tieredOutputOption).queryByText('Free')).not.toBeInTheDocument()
+    expect(within(tieredOutputOption).getByText('$–$$')).toBeInTheDocument()
+
+    fireEvent.click(screen.getByLabelText('Show free models only'))
+    expect(screen.getByRole('option', { name: /local\/same-name/ })).toBeInTheDocument()
+    expect(screen.queryByRole('option', { name: /Unknown Cost/ })).not.toBeInTheDocument()
+    expect(screen.queryByRole('option', { name: /Output priced/ })).not.toBeInTheDocument()
+    expect(screen.queryByRole('option', { name: /Tiered output/ })).not.toBeInTheDocument()
   })
 
   it('announces model discovery loading and errors without changing the picker role', () => {
@@ -345,7 +434,7 @@ describe('ModelPicker — combobox', () => {
     expect(search).toHaveValue('')
     expect(search).toHaveFocus()
     expect(search).not.toHaveAttribute('aria-activedescendant')
-    expect(screen.getAllByRole('option')).toHaveLength(3)
+    expect(screen.getAllByRole('option')).toHaveLength(6)
     expect(onChange).not.toHaveBeenCalled()
   })
 

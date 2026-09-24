@@ -10,6 +10,7 @@ Unreleased changes appear first and represent commits that have not yet been inc
 > Changes merged since the last versioned release that have not yet shipped in a tagged version.
 
 ### Summary
+- OpenCode v2 is the primary integration, with v1 servers still detected and supported automatically.
 - Dependency updates arrive in fewer grouped pull requests and none merges itself; workflows take the build Node version from `.nvmrc` alone.
 - Repository tooling and release sources now live under existing project folders while historical release repair and public installer and container contracts remain unchanged.
 - `scoop install looptroop` works again, and a release now checks an install descriptor against the release it claims to ship before publishing it.
@@ -38,6 +39,7 @@ Unreleased changes appear first and represent commits that have not yet been inc
 - The OrcaCode pull-request review workflow is removed; it reported a failed check on every pull request and never completed a successful run.
 
 ### Added
+- OpenCode v2 servers now use the native HTTP API, while v1 keeps its SDK transport. LoopTroop detects the protocol, uses OpenCode's available provider/model catalog, preserves question answer values, and fails closed when an interrupted v2 event stream leaves history uncertain; it never resends an uncertain prompt. Opt-in CLI maintenance stays within the installed major, and profile edits can save offline when the routing choice is unchanged.
 - `node scripts/sync-node-floor.ts` writes the Node floor from `engines.node` into every copy — the lockfile's root entry, the launcher guard, both install scripts, the Chocolatey fixture and README — and `--check` fails when any of them disagrees, which a test runs. Moving the floor is one line in `package.json` and one command, by hand or on Renovate's branch. `node scripts/check-node-feeds.ts` fails unless winget, Chocolatey, Scoop and Homebrew all offer the floor, counting a Chocolatey version only once moderation has approved it. CI runs it on every pull request that changes the floor.
 - Per-command help accepts `--help`, `help`, and `?` after a command.
 - Durable startup-cleanup ownership records identify the managed OpenCode base URL, pid, and optional start token. A later `looptroop start` stays blocked until `looptroop stop` proves the owned tree is gone; tokenless, recycled, or unverifiable ownership remains preserved.

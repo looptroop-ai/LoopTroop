@@ -49,6 +49,14 @@ vi.mock('../../opencode/factory', () => ({
   isMockOpenCodeMode: isMockOpenCodeModeMock,
 }))
 
+vi.mock('../../opencode/connection', async () => {
+  const actual = await vi.importActual<typeof import('../../opencode/connection')>('../../opencode/connection')
+  return {
+    ...actual,
+    getOpenCodeConnection: vi.fn().mockResolvedValue({ protocol: 'v1', version: '1.0.0', headers: {} }),
+  }
+})
+
 vi.mock('../../phases/execution/executor', () => ({
   executeBead: executeBeadMock,
 }))
@@ -1648,6 +1656,7 @@ describe('handleCoding', () => {
         ticketDir: paths.ticketDir,
         worktreePath: paths.worktreePath,
         steps: 25,
+        protocol: 'v1',
       })
       if (!applied.applied) throw new Error('expected the step cap to apply')
       writeFileSync(configPath, '{"mcp": {}, "edited": true}\n', 'utf8')

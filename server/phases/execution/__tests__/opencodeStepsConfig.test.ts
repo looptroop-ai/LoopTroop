@@ -21,12 +21,13 @@ const WORKTREE_DIR = join(TEST_DIR, 'worktree')
 const CONFIG_PATH = join(WORKTREE_DIR, OPENCODE_CONFIG_FILENAME)
 const SIDECAR_PATH = join(TICKET_DIR, 'opencode-steps-restore.json')
 
-function apply(steps = 25) {
+function apply(steps = 25, protocol: 'v1' | 'v2' = 'v1') {
   const reported: string[] = []
   const outcome = applyOpencodeStepsConfig({
     ticketDir: TICKET_DIR,
     worktreePath: WORKTREE_DIR,
     steps,
+    protocol,
     report: (message) => { reported.push(message) },
   })
   return { outcome, reported }
@@ -91,6 +92,45 @@ describe('applyOpencodeStepsConfig', () => {
       $schema: 'https://opencode.ai/config.json',
       agent: { build: { steps: 25 } },
     })
+  })
+
+  it('writes v2 agents while preserving native, legacy, and unrelated config fields', () => {
+    const original = {
+      provider: { openrouter: { models: { legacy: { options: { keep: true } } } } },
+      providers: { openrouter: { models: { native: { options: { keep: true } } } } },
+      agents: { review: { model: 'openai/gpt-5.4' } },
+      unrelated: { preserve: true },
+    }
+    const originalRaw = `${JSON.stringify(original)}\n`
+    writeFileSync(CONFIG_PATH, originalRaw, 'utf8')
+
+    const { outcome } = apply(40, 'v2')
+
+    expect(outcome.applied).toBe(true)
+    expect(readConfig()).toEqual({
+      provider: { openrouter: { models: { legacy: { options: { keep: true } } } } },
+      providers: { openrouter: { models: { native: { options: { keep: true } } } } },
+      agents: { review: { model: 'openai/gpt-5.4' }, build: { steps: 40 } },
+      unrelated: { preserve: true },
+    })
+    if (outcome.applied) expect(restore(outcome.handle).result).toBe('restored')
+    expect(readFileSync(CONFIG_PATH, 'utf8')).toBe(originalRaw)
+  })
+
+  it('uses the v2 agents key for a new config and refuses malformed native agents', () => {
+    const { outcome: created } = apply(12, 'v2')
+    expect(created.applied).toBe(true)
+    expect(readConfig()).toEqual({
+      $schema: 'https://opencode.ai/config.json',
+      agents: { build: { steps: 12 } },
+    })
+    if (created.applied) restore(created.handle)
+
+    writeFileSync(CONFIG_PATH, JSON.stringify({ agent: { build: { steps: 3 } }, agents: 'invalid' }), 'utf8')
+    const { outcome, reported } = apply(15, 'v2')
+    expect(outcome.applied).toBe(false)
+    expect(readConfig()).toEqual({ agent: { build: { steps: 3 } }, agents: 'invalid' })
+    expect(reported.join(' ')).toMatch(/"agents" section/)
   })
 
   /**

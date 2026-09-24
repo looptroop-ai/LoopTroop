@@ -11,6 +11,7 @@ import {
   fetchModelsApi,
   OPENCODE_MODELS_QUERY_KEY,
   refreshOpenCodeModelsQuery,
+  useOpenCodeModelCatalog,
   useAllOpenCodeModels,
   useOpenCodeModels,
 } from '../useOpenCodeModels'
@@ -37,6 +38,7 @@ describe('useOpenCodeModels', () => {
         models: [{ fullId: 'openai/gpt-5.3-codex' }],
         connectedProviders: ['openai'],
         defaultModels: {},
+        catalogScope: 'connected',
       }),
     })))
   })
@@ -59,8 +61,9 @@ describe('useOpenCodeModels', () => {
     await waitFor(() => {
       expect(queryClient.getQueryData(OPENCODE_MODELS_QUERY_KEY)).toEqual({
         models: [{ fullId: 'openai/gpt-5.3-codex' }],
-        connectedProviders: ['openai'],
-        defaultModels: {},
+      connectedProviders: ['openai'],
+      defaultModels: {},
+      catalogScope: 'connected',
       })
     })
 
@@ -76,6 +79,22 @@ describe('useOpenCodeModels', () => {
       method: 'GET',
       signal: expect.any(AbortSignal),
     })
+  })
+
+  it('exposes the available-only scope from the catalog response', async () => {
+    vi.stubGlobal('fetch', vi.fn(async () => ({
+      ok: true,
+      json: async () => ({
+        models: [{ fullId: 'openai/gpt-5.3-codex' }],
+        connectedProviders: ['openai'],
+        defaultModels: {},
+        catalogScope: 'available',
+      }),
+    })))
+    const queryClient = createTestQueryClient()
+    const { result } = renderHook(() => useOpenCodeModelCatalog(), { wrapper: queryWrapper(queryClient) })
+
+    await waitFor(() => expect(result.current.data?.catalogScope).toBe('available'))
   })
 
   it('treats a response with a message field as an error (opencode not ready)', async () => {

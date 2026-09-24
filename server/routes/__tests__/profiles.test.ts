@@ -1,9 +1,14 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 import { Hono } from 'hono'
+import { existsSync } from 'node:fs'
+import { join } from 'node:path'
 import { initializeDatabase } from '../../db/init'
 import { db } from '../../db/index'
 import { profiles } from '../../db/schema'
 import { profileRouter } from '../profiles'
+import { LOOPTROOP_OPENCODE_ROUTING_CONFIG } from '../../../shared/openRouterRouting'
+import { invalidateOpenCodeConnection } from '../../opencode/connection'
+import { makeTempDir, removeTempDir } from '../../test/tempDir'
 
 vi.mock('../../opencode/modelValidation', () => ({
   validateModelSelection: vi.fn(),
@@ -22,6 +27,7 @@ describe('profileRouter numeric validation', () => {
     initializeDatabase()
     db.delete(profiles).run()
     vi.restoreAllMocks()
+    vi.unstubAllEnvs()
   })
 
   it('accepts PRD, beads, structured retry, and OpenCode retry values at the configured bounds', async () => {
@@ -212,6 +218,35 @@ describe('profileRouter numeric validation', () => {
         'openrouter/openrouter/free:free',
       ]),
     })
+  })
+
+  it('saves unchanged model settings offline without probing or changing routing config', async () => {
+    const directory = makeTempDir('looptroop-profile-offline-')
+    const configPath = join(directory, 'opencode.json')
+    vi.stubEnv(LOOPTROOP_OPENCODE_ROUTING_CONFIG, configPath)
+    invalidateOpenCodeConnection()
+    const fetchSpy = vi.spyOn(globalThis, 'fetch').mockRejectedValue(new Error('offline'))
+    db.insert(profiles).values({
+      mainImplementer: 'openrouter/deepseek/deepseek-v4-flash:floor',
+      councilMembers: JSON.stringify([
+        'openrouter/deepseek/deepseek-v4-flash:floor',
+        'openrouter/openrouter/free:free',
+      ]),
+    }).run()
+
+    try {
+      const response = await createProfileApp().request('/api/profile', {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ opencodeRetryLimit: 5 }),
+      })
+
+      expect(response.status).toBe(200)
+      expect(fetchSpy).not.toHaveBeenCalled()
+      expect(existsSync(configPath)).toBe(false)
+    } finally {
+      removeTempDir(directory)
+    }
   })
 
   it('rejects out-of-range PRD, beads coverage, structured retry, and OpenCode retry values', async () => {

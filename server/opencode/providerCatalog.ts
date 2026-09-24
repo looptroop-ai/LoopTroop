@@ -2,12 +2,14 @@ import { getOpenCodeBaseUrl } from './runtimeConfig'
 import type { OpenCodeCatalogModel, OpenCodeCatalogResponse } from '../../shared/opencodeCatalog'
 import { isMockOpenCodeMode } from './factory'
 import { SDK_OPERATION_TIMEOUT_MS, DEFAULT_CONTEXT_WINDOW_LIMIT } from '../lib/constants'
-import { getOpenCodeBasicAuthHeader } from '../../shared/opencodeAuth'
+import { getOpenCodeConnection, type OpenCodeConnection } from './connection'
+import { isRecord } from '@shared/typeGuards'
 
 type OpenCodeCatalogProvider = OpenCodeCatalogResponse['all'][number]
 
 function buildMockCatalog(): OpenCodeCatalogResponse {
   return {
+    supportsAllModels: true,
     connected: ['openai', 'anthropic', 'google'],
     default: {
       chat: 'openai/codex-mini-latest',
@@ -82,9 +84,12 @@ export async function fetchProviderCatalog(signal?: AbortSignal): Promise<OpenCo
     return buildMockCatalog()
   }
 
-  let response = await fetchCatalogEndpoint('/provider', {}, signal)
+  const connection = await getOpenCodeConnection(getOpenCodeBaseUrl(), signal)
+  if (connection.protocol === 'v2') return fetchV2ProviderCatalog(connection, signal)
+
+  let response = await fetchCatalogEndpoint(connection, '/provider', {}, signal)
   if (response.status === 404) {
-    response = await fetchCatalogEndpoint('/config/providers', {}, signal)
+    response = await fetchCatalogEndpoint(connection, '/config/providers', {}, signal)
   }
   if (!response.ok) {
     throw new Error(`OpenCode provider catalog request failed with ${response.status}`)
@@ -108,20 +113,26 @@ export function flattenCatalogModels(
     const providerId = provider.id
     const entries = provider.models ? Object.values(provider.models) : []
     for (const model of entries) {
-      if ((model.status ?? 'active') !== 'active') continue
+      if (model.enabled !== true && (model.status ?? 'active') !== 'active') continue
+      const inputModalities = model.modalities?.input
+      const outputModalities = model.modalities?.output
       models.push({
         fullId: `${providerId}/${model.id}`,
         id: model.id,
+        ...(model.modelID ? { modelID: model.modelID } : {}),
         name: model.name,
         providerID: providerId,
         providerName,
         family: model.family ?? '',
-        costInput: model.cost?.input ?? 0,
-        costOutput: model.cost?.output ?? 0,
+        costInput: finiteNumber(model.cost?.input) ? model.cost.input : null,
+        costOutput: finiteNumber(model.cost?.output) ? model.cost.output : null,
+        ...(model.cost?.tiers ? { costTiers: model.cost.tiers } : {}),
         contextWindow: model.limit?.context ?? 0,
-        canReason: model.capabilities?.reasoning ?? false,
-        canUseTools: model.capabilities?.toolcall ?? false,
-        canSeeImages: model.capabilities?.input?.image ?? false,
+        canReason: booleanOrNull(model.capabilities?.reasoning),
+        canUseTools: booleanOrNull(model.capabilities?.toolcall ?? model.capabilities?.tools),
+        canSeeImages: imageCapability(model.capabilities?.input?.image, inputModalities),
+        ...(inputModalities ? { inputModalities } : {}),
+        ...(outputModalities ? { outputModalities } : {}),
         status: model.status ?? 'active',
         ...(model.variants && Object.keys(model.variants).length > 0 ? { variants: model.variants } : {}),
       })
@@ -138,20 +149,33 @@ export async function fetchConnectedModelIds(signal?: AbortSignal): Promise<stri
   return flattenCatalogModels(catalog, 'connected').map((model) => model.fullId)
 }
 
-export async function refreshProviderCatalog(): Promise<OpenCodeCatalogResponse> {
-  if (!isMockOpenCodeMode()) {
-    const response = await fetchCatalogEndpoint('/instance/dispose', { method: 'POST' })
+export async function refreshProviderCatalog(signal?: AbortSignal): Promise<OpenCodeCatalogResponse> {
+  if (isMockOpenCodeMode()) return buildMockCatalog()
+
+  const connection = await getOpenCodeConnection(getOpenCodeBaseUrl(), signal)
+  if (connection.protocol === 'v2') {
+    const response = await fetchCatalogEndpoint(connection, '/api/location/reload', { method: 'POST' }, signal)
+    if (response.status !== 204) {
+      throw new Error(`OpenCode provider catalog refresh failed with ${response.status}`)
+    }
+  } else {
+    const response = await fetchCatalogEndpoint(connection, '/instance/dispose', { method: 'POST' }, signal)
     if (!response.ok) {
       throw new Error(`OpenCode provider catalog refresh failed with ${response.status}`)
     }
   }
 
-  return fetchProviderCatalog()
+  return fetchProviderCatalogWithConnection(connection, signal)
 }
 
-function fetchCatalogEndpoint(path: string, init: RequestInit = {}, signal?: AbortSignal) {
-  const authHeader = getOpenCodeBasicAuthHeader()
-  return fetch(`${getOpenCodeBaseUrl()}${path}`, {
+function fetchCatalogEndpoint(
+  connection: OpenCodeConnection,
+  path: string,
+  init: RequestInit = {},
+  signal?: AbortSignal,
+) {
+  const headers = { ...connection.headers, ...Object.fromEntries(new Headers(init.headers).entries()) }
+  return fetch(`${getOpenCodeBaseUrl().replace(/\/+$/, '')}${path}`, {
     ...init,
     // Combined rather than replaced: the operation timeout still applies, and
     // the caller's cancellation now actually reaches the request instead of
@@ -159,10 +183,28 @@ function fetchCatalogEndpoint(path: string, init: RequestInit = {}, signal?: Abo
     signal: signal
       ? AbortSignal.any([signal, AbortSignal.timeout(SDK_OPERATION_TIMEOUT_MS)])
       : AbortSignal.timeout(SDK_OPERATION_TIMEOUT_MS),
-    ...(authHeader
-      ? { headers: { ...Object.fromEntries(new Headers(init.headers).entries()), Authorization: authHeader } }
-      : {}),
+    ...(Object.keys(headers).length > 0 ? { headers } : {}),
   })
+}
+
+async function fetchV2ProviderCatalog(connection: OpenCodeConnection, signal?: AbortSignal): Promise<OpenCodeCatalogResponse> {
+  const [providersResponse, modelsResponse, defaultResponse] = await Promise.all([
+    fetchCatalogEndpoint(connection, '/api/provider', {}, signal),
+    fetchCatalogEndpoint(connection, '/api/model', {}, signal),
+    fetchCatalogEndpoint(connection, '/api/model/default', {}, signal),
+  ])
+  const providers = await readLocationData(providersResponse, 'provider catalog')
+  const models = await readLocationData(modelsResponse, 'model catalog')
+  const defaultModel = await readLocationData(defaultResponse, 'default model', true)
+  return normalizeV2ProviderCatalog(providers, models, defaultModel)
+}
+
+async function fetchProviderCatalogWithConnection(connection: OpenCodeConnection, signal?: AbortSignal) {
+  if (connection.protocol === 'v2') return fetchV2ProviderCatalog(connection, signal)
+  let response = await fetchCatalogEndpoint(connection, '/provider', {}, signal)
+  if (response.status === 404) response = await fetchCatalogEndpoint(connection, '/config/providers', {}, signal)
+  if (!response.ok) throw new Error(`OpenCode provider catalog request failed with ${response.status}`)
+  return normalizeProviderCatalog(await response.json())
 }
 
 function normalizeProviderCatalog(data: unknown): OpenCodeCatalogResponse {
@@ -173,6 +215,7 @@ function normalizeProviderCatalog(data: unknown): OpenCodeCatalogResponse {
       all,
       connected: Array.isArray(record.connected) ? record.connected.filter((item): item is string => typeof item === 'string') : [],
       default: coerceDefaultModels(record.default),
+      supportsAllModels: true,
     }
   }
 
@@ -181,6 +224,114 @@ function normalizeProviderCatalog(data: unknown): OpenCodeCatalogResponse {
     all: providers,
     connected: providers.map((provider) => provider.id),
     default: coerceDefaultModels(record.default),
+    supportsAllModels: true,
+  }
+}
+
+async function readLocationData(response: Response, description: string, allowMissingData = false): Promise<unknown> {
+  if (!response.ok) throw new Error(`OpenCode ${description} request failed with ${response.status}`)
+  const value: unknown = await response.json()
+  if (!isRecord(value) || !('location' in value) || (!allowMissingData && (!('data' in value) || value.data === null))) {
+    throw new Error(`OpenCode ${description} request returned an unexpected response`)
+  }
+  return value.data
+}
+
+function normalizeV2ProviderCatalog(providersValue: unknown, modelsValue: unknown, defaultValue: unknown): OpenCodeCatalogResponse {
+  const providers = Array.isArray(providersValue)
+    ? providersValue.filter(isRecord).filter((provider) => typeof provider.id === 'string' && typeof provider.name === 'string')
+    : []
+  const availableIds = new Set(providers.map((provider) => provider.id as string))
+  const modelsByProvider = new Map<string, OpenCodeCatalogProvider['models']>()
+
+  if (Array.isArray(modelsValue)) {
+    for (const value of modelsValue) {
+      if (!isRecord(value)
+        || value.enabled !== true
+        || typeof value.providerID !== 'string'
+        || typeof value.id !== 'string'
+        || typeof value.modelID !== 'string'
+        || typeof value.name !== 'string'
+        || !availableIds.has(value.providerID)) continue
+      const model = normalizeV2Model(value)
+      const models = modelsByProvider.get(value.providerID) ?? {}
+      models[model.id] = model
+      modelsByProvider.set(value.providerID, models)
+    }
+  }
+
+  const all = providers.map((provider): OpenCodeCatalogProvider => ({
+    id: provider.id as string,
+    name: provider.name as string,
+    models: modelsByProvider.get(provider.id as string) ?? {},
+  }))
+  const defaultModel: Record<string, string> = isRecord(defaultValue) && typeof defaultValue.providerID === 'string' && typeof defaultValue.id === 'string'
+    ? { chat: `${defaultValue.providerID}/${defaultValue.id}` }
+    : {}
+
+  return {
+    all,
+    connected: all.map((provider) => provider.id),
+    default: defaultModel,
+    supportsAllModels: false,
+  }
+}
+
+type OpenCodeCostTier = NonNullable<NonNullable<OpenCodeCatalogProvider['models'][string]['cost']>['tiers']>[number]
+
+function normalizeV2Model(value: Record<string, unknown>): OpenCodeCatalogProvider['models'][string] {
+  const rawCostTiers = Array.isArray(value.cost) ? value.cost : []
+  const hasUnusableCostTier = rawCostTiers.some((tier) =>
+    !isRecord(tier) || !finiteNumber(tier.input) || !finiteNumber(tier.output),
+  )
+  const costTiers = hasUnusableCostTier ? [] : rawCostTiers.flatMap((tier): OpenCodeCostTier[] => {
+    if (!isRecord(tier) || !finiteNumber(tier.input) || !finiteNumber(tier.output)) return []
+    const contextTier = isRecord(tier.tier) && tier.tier.type === 'context' && finiteNumber(tier.tier.size)
+      ? { size: tier.tier.size }
+      : {}
+    const cache = isRecord(tier.cache) ? tier.cache : {}
+    return [{
+      ...contextTier,
+      input: tier.input,
+      output: tier.output,
+      ...(finiteNumber(cache.read) ? { cacheRead: cache.read } : {}),
+      ...(finiteNumber(cache.write) ? { cacheWrite: cache.write } : {}),
+    }]
+  })
+  const inputPrices = new Set(costTiers.map((tier) => tier.input))
+  const outputPrices = new Set(costTiers.map((tier) => tier.output))
+  const capabilities = isRecord(value.capabilities) ? value.capabilities : null
+  const compatibility = isRecord(value.compatibility) ? value.compatibility : null
+  const inputModalities = Array.isArray(capabilities?.input) ? stringArray(capabilities.input) : undefined
+  const outputModalities = Array.isArray(capabilities?.output) ? stringArray(capabilities.output) : undefined
+  const variants = Array.isArray(value.variants)
+    ? Object.fromEntries(value.variants.flatMap((variant) =>
+        isRecord(variant) && typeof variant.id === 'string' ? [[variant.id, variant]] : [],
+      ))
+    : {}
+
+  return {
+    id: value.id as string,
+    modelID: value.modelID as string,
+    name: value.name as string,
+    ...(typeof value.family === 'string' ? { family: value.family } : {}),
+    status: typeof value.status === 'string' ? value.status : 'active',
+    enabled: value.enabled === true,
+    cost: {
+      input: inputPrices.size === 1 ? costTiers[0]?.input ?? null : null,
+      output: outputPrices.size === 1 ? costTiers[0]?.output ?? null : null,
+      tiers: costTiers,
+    },
+    limit: { context: isRecord(value.limit) && finiteNumber(value.limit.context) ? value.limit.context : 0 },
+    capabilities: {
+      reasoning: typeof compatibility?.reasoningField === 'string' ? true : null,
+      tools: typeof capabilities?.tools === 'boolean' ? capabilities.tools : null,
+      input: { image: inputModalities ? inputModalities.some(isImageModality) : null },
+    },
+    ...(inputModalities || outputModalities
+      ? { modalities: { ...(inputModalities ? { input: inputModalities } : {}), ...(outputModalities ? { output: outputModalities } : {}) } }
+      : {}),
+    variants,
   }
 }
 
@@ -215,4 +366,25 @@ function coerceDefaultModels(value: unknown): Record<string, string> {
   return Object.fromEntries(
     Object.entries(value).filter((entry): entry is [string, string] => typeof entry[1] === 'string'),
   )
+}
+
+function finiteNumber(value: unknown): value is number {
+  return typeof value === 'number' && Number.isFinite(value)
+}
+
+function booleanOrNull(value: unknown): boolean | null {
+  return typeof value === 'boolean' ? value : null
+}
+
+function stringArray(value: unknown): string[] {
+  return Array.isArray(value) ? value.filter((item): item is string => typeof item === 'string') : []
+}
+
+function isImageModality(value: string): boolean {
+  return value === 'image' || value === '*/*' || /^image\//i.test(value)
+}
+
+function imageCapability(image: unknown, modalities?: readonly string[]): boolean | null {
+  if (typeof image === 'boolean') return image
+  return modalities ? modalities.some(isImageModality) : null
 }

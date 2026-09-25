@@ -85,7 +85,7 @@ export async function executeBeadsExpandStep(params: {
   ticketState: TicketState
   beadSubsets: BeadSubset[]
   maxStructuredRetries?: number
-  variant?: string
+  modelVariant?: string
   onSessionLog: (entry: {
     memberId: string
     sessionId: string
@@ -117,7 +117,7 @@ export async function executeBeadsExpandStep(params: {
       timeoutMs: params.timeoutMs,
       timeoutKind: 'ai_response',
       model: params.winnerId,
-      variant: params.variant ?? 'refine',
+      variant: params.modelVariant,
       toolPolicy: PROM25.toolPolicy,
       sessionOwnership: {
         ticketId: params.ticketId,

@@ -36,7 +36,7 @@ function isFreeModel(model: OpenCodeModel): boolean {
 function costLabel(model: OpenCodeModel): { label: string; color: string } | null {
   if (isFreeModel(model)) return singleCostLabel(0)
   const prices = model.costTiers?.length
-    ? model.costTiers.map((tier) => Math.max(tier.input, tier.output))
+    ? model.costTiers.map((tier) => Math.max(tier.input, tier.output, tier.cacheRead ?? 0, tier.cacheWrite ?? 0))
     : [model.costInput, model.costOutput].filter((price): price is number => price !== null)
   const paidPrices = prices.filter((price) => price > 0)
   if (paidPrices.length === 0) return null
@@ -63,6 +63,18 @@ function getModelQueryErrorCopy(error: unknown): { trigger: string; detail: stri
     return {
       trigger: 'OpenCode not reachable',
       detail: 'LoopTroop could not reach OpenCode. It starts automatically with npm run dev, so check that the OpenCode process launched successfully.',
+    }
+  }
+  if (message.includes('rejected the configured credentials')) {
+    return {
+      trigger: 'OpenCode credentials rejected',
+      detail: 'Check OPENCODE_PASSWORD for v2 or OPENCODE_SERVER_PASSWORD and OPENCODE_SERVER_USERNAME for v1, then restart OpenCode.',
+    }
+  }
+  if (message.includes('active work') || message.includes('unanswered requests')) {
+    return {
+      trigger: 'OpenCode is busy',
+      detail: 'Wait for OpenCode prompts and questions to finish, then retry refreshing models.',
     }
   }
   if (message.includes('model discovery failed') || message.includes('catalog')) {

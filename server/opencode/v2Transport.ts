@@ -8,6 +8,7 @@ import type {
   OpenCodeTransportEventEnvelope,
   PromptDispatch,
 } from './transport'
+import { OPEN_CODE_V2_EVENT_SYNC_TIMEOUT_MS, OpenCodePromptReceiptUnavailableError } from './transport'
 import {
   createV2EventMappingState,
   isV2QuestionForm,
@@ -19,7 +20,7 @@ import {
   mapV2QuestionAnswer,
   mapV2Session,
 } from './v2Mapping'
-import { fetchProviderCatalog, flattenCatalogModels } from './providerCatalog'
+import { fetchProviderCatalogForV2Server, flattenCatalogModels } from './providerCatalog'
 import { MESSAGE_LIST_LIMIT, SDK_OPERATION_TIMEOUT_MS, SESSION_LIST_LIMIT } from '../lib/constants'
 
 type RecordValue = Record<string, unknown>
@@ -32,7 +33,6 @@ const API_OPERATION_TIMEOUT_MS = SDK_OPERATION_TIMEOUT_MS
 const SESSION_CREATE_TIMEOUT_MS = 180_000
 const EVENT_CONNECT_TIMEOUT_MS = 5_000
 const EVENT_RECONNECT_ATTEMPTS = 3
-const LOG_SYNC_TIMEOUT_MS = 30_000
 const IDLE_WAIT_TIMEOUT_MS = 60_000
 const LIST_PAGE_SIZE = 100
 const MESSAGE_PAGE_SIZE = 100
@@ -57,6 +57,7 @@ interface SessionLogScan {
   cursor: number
   coverageComplete: boolean
   hasWatermark: boolean
+  hasUnmappedEvents: boolean
 }
 
 export class V2OpenCodeTransport implements OpenCodeTransport {
@@ -178,15 +179,15 @@ export class V2OpenCodeTransport implements OpenCodeTransport {
       }
       await Promise.all([...ownedConnections].map(owned => owned.close()))
     }
-    const backlog: OpenCodeTransportEventEnvelope[] = []
-    const mappingState = createV2EventMappingState()
+    let backlog: OpenCodeTransportEventEnvelope[] = []
+    let mappingState = createV2EventMappingState()
     let scan: SessionLogScan
     try {
       scan = await this.scanSessionLog(
         sessionId,
         afterCursor,
         streamSignal,
-        event => backlog.push(event),
+        afterCursor === undefined ? undefined : event => backlog.push(event),
         mappingState,
       )
     } catch (error) {
@@ -194,6 +195,68 @@ export class V2OpenCodeTransport implements OpenCodeTransport {
       throw error
     }
     const cursor = scan.cursor
+    let coverageComplete = scan.coverageComplete && scan.hasWatermark && !scan.hasUnmappedEvents
+    if (afterCursor !== undefined && !coverageComplete && !scan.hasUnmappedEvents && scan.hasWatermark) {
+      // With persist=false the log supplies a watermark but no payloads. The
+      // event stream was opened first, so it can certify that range only when
+      // every session sequence from the requested cursor through that
+      // watermark is observed live before the subscription is returned.
+      const liveEvents: OpenCodeTransportEventEnvelope[] = []
+      const liveState = createV2EventMappingState()
+      let liveCursor = afterCursor
+      let streamGap = false
+      const deadline = Date.now() + OPEN_CODE_V2_EVENT_SYNC_TIMEOUT_MS
+      try {
+        while (liveCursor < cursor) {
+          const remaining = deadline - Date.now()
+          if (remaining <= 0) throw new DOMException('OpenCode v2 live event coverage did not reach log.synced', 'TimeoutError')
+          const result = await connection.next(remaining, 'OpenCode v2 live event coverage did not reach log.synced')
+          if (result.done) throw new Error('OpenCode v2 event stream ended before live coverage reached log.synced')
+          const raw = asRecord(result.value)
+          if (!raw || raw.type === 'server.connected') continue
+
+          const durable = asRecord(raw.durable)
+          const aggregateID = stringValue(durable?.aggregateID)
+          const sequence = numberValue(durable?.seq)
+          const data = asRecord(raw.data)
+          const rawSessionID = stringValue(data?.sessionID)
+            ?? stringValue(asRecord(data?.form)?.sessionID)
+          if (aggregateID === sessionId && sequence !== undefined && Number.isSafeInteger(sequence)) {
+            if (sequence <= liveCursor) continue
+            if (sequence !== liveCursor + 1) {
+              streamGap = true
+              break
+            }
+            const mapped = mapV2Event(raw, sessionId, liveState)
+            if (!mapped) {
+              streamGap = true
+              break
+            }
+            liveEvents.push(mapped)
+            liveCursor = sequence
+          } else if (rawSessionID === sessionId) {
+            const mapped = mapV2Event(raw, sessionId, liveState)
+            if (mapped) liveEvents.push(mapped)
+          }
+        }
+        coverageComplete = !streamGap && liveCursor === cursor
+      } catch {
+        if (signal?.aborted) {
+          await closeConnections()
+          throw signal.reason
+        }
+        coverageComplete = false
+      }
+      if (coverageComplete) {
+        // The ordered live range supersedes any partial persisted replay. It
+        // is the only evidence used for this range, avoiding duplicate stateful
+        // mapping of text/tool frames.
+        backlog = liveEvents
+        mappingState = liveState
+      } else if (streamGap) {
+        backlog = [...liveEvents, { cursor: liveCursor + 1, coverageGap: true }]
+      }
+    }
     const generator = this.followEvents(
       connection,
       sessionId,
@@ -203,12 +266,14 @@ export class V2OpenCodeTransport implements OpenCodeTransport {
       ownedConnections,
       closeConnections,
       mappingState,
-      !scan.coverageComplete || !scan.hasWatermark,
+      afterCursor === undefined ? !scan.hasWatermark : !coverageComplete || !scan.hasWatermark,
     )
     return {
       ...(scan.hasWatermark ? { cursor } : {}),
-      coverageComplete: scan.coverageComplete && scan.hasWatermark,
+      initialEvents: backlog,
+      coverageComplete: afterCursor === undefined ? scan.hasWatermark : coverageComplete,
       events: closeOnIteratorReturn(generator, closeConnections),
+      close: closeConnections,
     }
   }
 
@@ -234,7 +299,18 @@ export class V2OpenCodeTransport implements OpenCodeTransport {
       events,
       ...(scan.hasWatermark ? { cursor: scan.cursor } : after !== undefined ? { cursor: after } : {}),
       coverageComplete: scan.coverageComplete && scan.hasWatermark,
+      ...(scan.hasUnmappedEvents ? { hasUnmappedEvents: true } : {}),
     }
+  }
+
+  async listPendingInboxes(sessionId: string, _directory?: string, signal?: AbortSignal): Promise<readonly string[]> {
+    const response = dataOf(await this.request(`/api/session/${encodeURIComponent(sessionId)}/inbox`, { signal }))
+    if (!Array.isArray(response)) throw new Error('OpenCode v2 returned an invalid pending inbox list')
+    return response.map(item => {
+      const inboxID = stringValue(asRecord(item)?.id)
+      if (!inboxID) throw new Error('OpenCode v2 returned a pending inbox without an id')
+      return inboxID
+    })
   }
 
   async dispatchPrompt(request: OpenCodePromptRequest, signal?: AbortSignal): Promise<PromptDispatch> {
@@ -285,18 +361,27 @@ export class V2OpenCodeTransport implements OpenCodeTransport {
       })
     }
 
-    const body = await this.request(`/api/session/${encodeURIComponent(request.sessionId)}/prompt`, {
-      method: 'POST',
-      signal,
-      body: {
-        text: prompt.text,
-        ...(prompt.files.length > 0 ? { files: prompt.files } : {}),
-        resume: request.noReply !== true,
-      },
-    })
+    let body: unknown
+    try {
+      body = await this.request(`/api/session/${encodeURIComponent(request.sessionId)}/prompt`, {
+        method: 'POST',
+        signal,
+        body: {
+          text: prompt.text,
+          ...(prompt.files.length > 0 ? { files: prompt.files } : {}),
+          resume: request.noReply !== true,
+        },
+      })
+    } catch (error) {
+      // Explicit client rejections prove the prompt was not accepted and must
+      // retain their status for the existing provider retry/billing rules.
+      // A server error or a lost/aborted response can occur after enqueue.
+      if (error instanceof V2OpenCodeHttpError && error.status >= 400 && error.status < 500) throw error
+      throw new OpenCodePromptReceiptUnavailableError(request.sessionId, { cause: error })
+    }
     const accepted = asRecord(dataOf(body))
     const inboxID = stringValue(accepted?.id)
-    if (!inboxID) throw new Error('OpenCode v2 prompt response did not include an inbox receipt')
+    if (!inboxID) throw new OpenCodePromptReceiptUnavailableError(request.sessionId)
     return { kind: 'accepted', receipt: { inboxID } }
   }
 
@@ -396,7 +481,10 @@ export class V2OpenCodeTransport implements OpenCodeTransport {
     }
 
     try {
-      const models = flattenCatalogModels(await fetchProviderCatalog(signal), 'connected').map(model => model.fullId)
+      const models = flattenCatalogModels(
+        await fetchProviderCatalogForV2Server(this.baseUrl.href, Object.fromEntries(this.headers.entries()), signal),
+        'connected',
+      ).map(model => model.fullId)
       return { available: true, protocol: 'v2', ...(version ? { version } : {}), models }
     } catch (error) {
       if (signal?.aborted) throw signal.reason
@@ -574,11 +662,12 @@ export class V2OpenCodeTransport implements OpenCodeTransport {
   ): Promise<SessionLogScan> {
     const query = new URLSearchParams({ follow: 'false' })
     if (after !== undefined) query.set('after', String(after))
-    const deadline = createTimeoutSignal(signal, LOG_SYNC_TIMEOUT_MS, 'OpenCode v2 session log did not reach log.synced')
+    const deadline = createTimeoutSignal(signal, OPEN_CODE_V2_EVENT_SYNC_TIMEOUT_MS, 'OpenCode v2 session log did not reach log.synced')
     let connection: SseConnection | undefined
-    let maxSequence = after ?? 0
-    let lastCoveredSequence = after
+    let maxSequence = after ?? -1
+    let lastCoveredSequence = after ?? -1
     let coverageComplete = true
+    let hasUnmappedEvents = false
     const seen = new Set<number>()
     try {
       connection = await this.openSse(
@@ -602,13 +691,14 @@ export class V2OpenCodeTransport implements OpenCodeTransport {
           }
           const watermark = numberValue(event.seq)
           const hasWatermark = watermark !== undefined && Number.isSafeInteger(watermark)
-          if (!hasWatermark || (after !== undefined && lastCoveredSequence !== watermark)) {
+          if (!hasWatermark || lastCoveredSequence !== watermark) {
             coverageComplete = false
           }
           return {
-            cursor: Math.max(maxSequence, watermark ?? 0),
+            cursor: Math.max(maxSequence, watermark ?? -1),
             coverageComplete,
             hasWatermark,
+            hasUnmappedEvents,
           }
         }
 
@@ -622,17 +712,14 @@ export class V2OpenCodeTransport implements OpenCodeTransport {
         if (after !== undefined && sequence <= after) continue
         if (seen.has(sequence)) continue
         seen.add(sequence)
-        if (after !== undefined) {
-          if (sequence !== lastCoveredSequence! + 1) coverageComplete = false
-          if (sequence > lastCoveredSequence!) lastCoveredSequence = sequence
-        } else if (lastCoveredSequence !== undefined && sequence !== lastCoveredSequence + 1) {
-          coverageComplete = false
-        } else {
-          lastCoveredSequence = sequence
-        }
+        if (sequence !== lastCoveredSequence + 1) coverageComplete = false
+        if (sequence > lastCoveredSequence) lastCoveredSequence = sequence
         const mapped = mapV2Event(event, sessionId, mappingState, true)
         if (mapped) onEvent?.(mapped)
-        else coverageComplete = false
+        else {
+          coverageComplete = false
+          hasUnmappedEvents = true
+        }
       }
     } finally {
       deadline.dispose()

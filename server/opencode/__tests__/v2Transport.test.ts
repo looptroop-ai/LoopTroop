@@ -1,5 +1,5 @@
 import { describe, expect, it, vi } from 'vitest'
-import type { OpenCodePromptRequest } from '../transport'
+import { OpenCodePromptReceiptUnavailableError, type OpenCodePromptRequest } from '../transport'
 import { V2OpenCodeHttpError, V2OpenCodeTransport } from '../v2Transport'
 import { invalidateOpenCodeConnection } from '../connection'
 
@@ -107,6 +107,59 @@ describe('OpenCode v2 fetch transport', () => {
     })
   })
 
+  it('classifies an aborted v2 prompt POST as receipt-unavailable', async () => {
+    const controller = new AbortController()
+    let markPromptStarted: (() => void) | undefined
+    const promptStarted = new Promise<void>(resolve => { markPromptStarted = resolve })
+    const { transport } = createTransport((request, init) => {
+      if (request.url.pathname.endsWith('/model') || request.url.pathname.endsWith('/agent')) return emptyResponse()
+      if (request.url.pathname.endsWith('/instructions/entries/looptroop')) return emptyResponse()
+      if (request.url.pathname.endsWith('/prompt')) {
+        markPromptStarted?.()
+        return new Promise<Response>((_resolve, reject) => {
+          init.signal?.addEventListener('abort', () => reject(init.signal?.reason), { once: true })
+        })
+      }
+      throw new Error(`Unexpected ${request.method} ${request.url}`)
+    })
+
+    const dispatch = transport.dispatchPrompt(promptRequest(), controller.signal)
+    await promptStarted
+    controller.abort(new DOMException('caller cancelled', 'AbortError'))
+
+    const error = await dispatch.catch(value => value)
+    expect(error).toMatchObject({
+      name: 'OpenCodePromptReceiptUnavailableError',
+      cause: { name: 'AbortError', message: 'caller cancelled' },
+    })
+    expect(error).toBeInstanceOf(OpenCodePromptReceiptUnavailableError)
+  })
+
+  it('preserves explicit v2 prompt rejections instead of classifying them as receipt-unknown', async () => {
+    const { transport } = createTransport(request => {
+      if (request.url.pathname.endsWith('/model') || request.url.pathname.endsWith('/agent')) return emptyResponse()
+      if (request.url.pathname.endsWith('/instructions/entries/looptroop')) return emptyResponse()
+      if (request.url.pathname.endsWith('/prompt')) return jsonResponse({ error: { message: 'payment required' } }, 402)
+      throw new Error(`Unexpected ${request.method} ${request.url}`)
+    })
+
+    await expect(transport.dispatchPrompt(promptRequest())).rejects.toMatchObject({
+      name: 'V2OpenCodeHttpError',
+      status: 402,
+    })
+  })
+
+  it('classifies a prompt response without an inbox id as receipt-unavailable', async () => {
+    const { transport } = createTransport(request => {
+      if (request.url.pathname.endsWith('/model') || request.url.pathname.endsWith('/agent')) return emptyResponse()
+      if (request.url.pathname.endsWith('/instructions/entries/looptroop')) return emptyResponse()
+      if (request.url.pathname.endsWith('/prompt')) return jsonResponse({ data: { sessionID: 'session/1' } })
+      throw new Error(`Unexpected ${request.method} ${request.url}`)
+    })
+
+    await expect(transport.dispatchPrompt(promptRequest())).rejects.toBeInstanceOf(OpenCodePromptReceiptUnavailableError)
+  })
+
   it('removes prior instructions when the next prompt has none and rejects unsupported tool overrides', async () => {
     const { transport, requests } = createTransport(request => {
       if (request.url.pathname.endsWith('/instructions/entries/looptroop')) return emptyResponse()
@@ -156,6 +209,31 @@ describe('OpenCode v2 fetch transport', () => {
     expect(requests[0]?.accept).toBe('text/event-stream')
   })
 
+  it('does not replay historical terminal events to subscribers without a cursor', async () => {
+    const terminal = (seq: number) => ({
+      type: 'session.execution.succeeded',
+      data: { sessionID: 'session-1' },
+      durable: { aggregateID: 'session-1', seq },
+    })
+    const { transport } = createTransport(request => {
+      if (request.url.pathname === '/api/event') return eventStream([
+        { type: 'server.connected' },
+        terminal(5),
+        terminal(6),
+      ])
+      if (request.url.pathname.endsWith('/log')) return eventStream([terminal(5), { type: 'log.synced', aggregateID: 'session-1', seq: 5 }])
+      throw new Error(`Unexpected ${request.method} ${request.url}`)
+    })
+
+    const subscription = await transport.subscribeToEvents('session-1', '/workspace')
+    const iterator = subscription.events[Symbol.asyncIterator]()
+    await expect(iterator.next()).resolves.toMatchObject({
+      done: false,
+      value: { cursor: 6, event: { type: 'execution_terminal', outcome: 'succeeded' } },
+    })
+    await iterator.return?.(undefined)
+  })
+
   it('reports complete coverage for unchanged numeric cursors and contiguous history', async () => {
     let zeroCursorReads = 0
     const { transport } = createTransport(request => {
@@ -190,6 +268,48 @@ describe('OpenCode v2 fetch transport', () => {
       cursor: 4,
       coverageComplete: true,
     })
+  })
+
+  it('does not treat a positive watermark as proof that an unpersisted history was replayed', async () => {
+    const { transport } = createTransport(request => {
+      if (!request.url.pathname.endsWith('/log')) throw new Error(`Unexpected ${request.method} ${request.url}`)
+      return eventStream([{ type: 'log.synced', aggregateID: 'session-1', seq: 73 }])
+    })
+
+    await expect(transport.readSessionLog('session-1')).resolves.toMatchObject({
+      events: [],
+      cursor: 73,
+      coverageComplete: false,
+    })
+  })
+
+  it('detects both a missing history prefix and a missing watermark tail', async () => {
+    let reads = 0
+    const { transport } = createTransport(request => {
+      if (!request.url.pathname.endsWith('/log')) throw new Error(`Unexpected ${request.method} ${request.url}`)
+      reads++
+      if (reads === 1) {
+        return eventStream([
+          {
+            type: 'session.execution.succeeded',
+            data: { sessionID: 'session-1' },
+            durable: { aggregateID: 'session-1', seq: 1 },
+          },
+          { type: 'log.synced', aggregateID: 'session-1', seq: 1 },
+        ])
+      }
+      return eventStream([
+        {
+          type: 'session.execution.succeeded',
+          data: { sessionID: 'session-1' },
+          durable: { aggregateID: 'session-1', seq: 0 },
+        },
+        { type: 'log.synced', aggregateID: 'session-1', seq: 1 },
+      ])
+    })
+
+    await expect(transport.readSessionLog('session-1')).resolves.toMatchObject({ cursor: 1, coverageComplete: false })
+    await expect(transport.readSessionLog('session-1')).resolves.toMatchObject({ cursor: 1, coverageComplete: false })
   })
 
   it('preserves known durable no-op cursors in logs and live events', async () => {
@@ -231,6 +351,32 @@ describe('OpenCode v2 fetch transport', () => {
       { cursor: 7 },
       { cursor: 8, event: { type: 'execution_terminal', sessionId: 'session-1', outcome: 'succeeded' } },
     ])
+  })
+
+  it('maps cancellation and delivery changes while covering pinned durable no-op events', async () => {
+    const { transport } = createTransport(request => {
+      if (!request.url.pathname.endsWith('/log')) throw new Error(`Unexpected ${request.method} ${request.url}`)
+      return eventStream([
+        { type: 'session.inbox.cancelled', data: { sessionID: 'session-1', inboxID: 'inbox-1' }, durable: { aggregateID: 'session-1', seq: 5 } },
+        { type: 'session.inbox.delivery.changed', data: { sessionID: 'session-1', inboxID: 'inbox-2', delivery: 'queue' }, durable: { aggregateID: 'session-1', seq: 6 } },
+        { type: 'session.moved', data: { sessionID: 'session-1' }, durable: { aggregateID: 'session-1', seq: 7 } },
+        { type: 'session.compaction.started', data: { sessionID: 'session-1' }, durable: { aggregateID: 'session-1', seq: 8 } },
+        { type: 'session.revert.committed', data: { sessionID: 'session-1' }, durable: { aggregateID: 'session-1', seq: 9 } },
+        { type: 'log.synced', aggregateID: 'session-1', seq: 9 },
+      ])
+    })
+
+    await expect(transport.readSessionLog('session-1', 4)).resolves.toMatchObject({
+      cursor: 9,
+      coverageComplete: true,
+      events: [
+        { cursor: 5, event: { type: 'inbox_cancelled', inboxID: 'inbox-1' } },
+        { cursor: 6, event: { type: 'inbox_delivery_changed', inboxID: 'inbox-2', delivery: 'queue' } },
+        { cursor: 7 },
+        { cursor: 8 },
+        { cursor: 9 },
+      ],
+    })
   })
 
   it('does not certify a numeric cursor when the log omits its watermark', async () => {
@@ -278,7 +424,14 @@ describe('OpenCode v2 fetch transport', () => {
       if (request.url.pathname.endsWith('/log')) {
         if (initialLogRead) {
           initialLogRead = false
-          return eventStream([{ type: 'log.synced', aggregateID: 'session-1', seq: 4 }])
+          return eventStream([
+            ...Array.from({ length: 5 }, (_, seq) => ({
+              type: 'session.instructions.updated',
+              data: { sessionID: 'session-1', delta: {} },
+              durable: { aggregateID: 'session-1', seq },
+            })),
+            { type: 'log.synced', aggregateID: 'session-1', seq: 4 },
+          ])
         }
         expect(request.url.searchParams.get('after')).toBe('4')
         return eventStream([
@@ -347,7 +500,14 @@ describe('OpenCode v2 fetch transport', () => {
       if (request.url.pathname.endsWith('/log')) {
         if (initialLogRead) {
           initialLogRead = false
-          return eventStream([{ type: 'log.synced', aggregateID: 'session-1', seq: 4 }])
+          return eventStream([
+            ...Array.from({ length: 5 }, (_, seq) => ({
+              type: 'session.instructions.updated',
+              data: { sessionID: 'session-1', delta: {} },
+              durable: { aggregateID: 'session-1', seq },
+            })),
+            { type: 'log.synced', aggregateID: 'session-1', seq: 4 },
+          ])
         }
         expect(request.url.searchParams.get('after')).toBe('4')
         expect(competitorEnqueuedDuringPermissionList).toBe(true)
@@ -397,9 +557,15 @@ describe('OpenCode v2 fetch transport', () => {
       }
       if (request.url.pathname.endsWith('/log')) {
         const after = request.url.searchParams.get('after')
-        return after === '4'
-          ? eventStream([{ type: 'log.synced', aggregateID: 'session-1', seq: 6 }])
-          : eventStream([{ type: 'log.synced', aggregateID: 'session-1', seq: after === '6' ? 6 : 4 }])
+        if (after === '4') return eventStream([{ type: 'log.synced', aggregateID: 'session-1', seq: 6 }])
+        return eventStream([
+          ...Array.from({ length: 5 }, (_, seq) => ({
+            type: 'session.instructions.updated',
+            data: { sessionID: 'session-1', delta: {} },
+            durable: { aggregateID: 'session-1', seq },
+          })),
+          { type: 'log.synced', aggregateID: 'session-1', seq: after === '6' ? 6 : 4 },
+        ])
       }
       if (request.url.pathname === '/api/session/session-1/permission') {
         return jsonResponse({ data: [{
@@ -495,7 +661,7 @@ describe('OpenCode v2 fetch transport', () => {
       throw new Error(`Unexpected ${request.method} ${request.url}`)
     })
 
-    const subscription = await transport.subscribeToEvents('session-1', '/workspace')
+    const subscription = await transport.subscribeToEvents('session-1', '/workspace', undefined, undefined, 4)
     expect(subscription.coverageComplete).toBe(false)
     const iterator = subscription.events[Symbol.asyncIterator]()
     const events = [await iterator.next(), await iterator.next()]
@@ -566,10 +732,43 @@ describe('OpenCode v2 fetch transport', () => {
       throw new Error(`Unexpected ${request.method} ${request.url}`)
     })
 
+    vi.stubGlobal('fetch', async (input: RequestInfo | URL) => {
+      const path = new URL(String(input)).pathname
+      const locationResponse = (data: unknown) => jsonResponse({ location: { directory: '/workspace' }, data })
+      if (path === '/api/provider') return locationResponse([
+        { id: 'anthropic', name: 'Anthropic' },
+        { id: 'google', name: 'Google' },
+        { id: 'openai', name: 'OpenAI' },
+      ])
+      if (path === '/api/model') return locationResponse([
+        ['anthropic', 'claude-sonnet-4', 'Claude Sonnet 4'],
+        ['google', 'gemini-2.5-pro', 'Gemini 2.5 Pro'],
+        ['openai', 'codex-mini-latest', 'Codex Mini Latest'],
+        ['openai', 'gpt-5.3-codex', 'GPT-5.3 Codex'],
+      ].map(([providerID, id, name]) => ({
+        providerID,
+        id,
+        modelID: id,
+        name,
+        enabled: true,
+        capabilities: { input: ['text'], output: ['text'] },
+        cost: [],
+        limit: { context: 1_000_000 },
+        variants: [],
+      })))
+      if (path === '/api/model/default') return locationResponse(null)
+      throw new Error(`Unexpected catalog request ${path}`)
+    })
+
     const session = await transport.createSession('/workspace')
     const sessions = await transport.listSessions()
     const messages = await transport.getSessionMessages('session-1')
-    const health = await transport.checkHealth()
+    let health
+    try {
+      health = await transport.checkHealth()
+    } finally {
+      vi.unstubAllGlobals()
+    }
 
     expect(session).toMatchObject({ id: 'session-1', projectPath: '/workspace', directory: '/workspace', title: 'Review' })
     expect(sessions.map(value => value.id)).toEqual(['session-1', 'session-2'])
@@ -644,6 +843,38 @@ describe('OpenCode v2 fetch transport', () => {
       vi.unstubAllGlobals()
       vi.unstubAllEnvs()
       invalidateOpenCodeConnection()
+    }
+  })
+
+  it('discovers health models using its own server URL and authentication headers', async () => {
+    const catalogRequests: { url: URL; authorization: string | null }[] = []
+    vi.stubGlobal('fetch', async (input: RequestInfo | URL, init?: RequestInit) => {
+      const url = input instanceof Request ? new URL(input.url) : new URL(String(input))
+      catalogRequests.push({ url, authorization: new Headers(init?.headers).get('authorization') })
+      if (url.pathname.endsWith('/api/provider')) return jsonResponse({ location: '/providers', data: [] })
+      if (url.pathname.endsWith('/api/model')) return jsonResponse({ location: '/models', data: [] })
+      if (url.pathname.endsWith('/api/model/default')) return jsonResponse({ location: '/default', data: null })
+      throw new Error(`Unexpected catalog request ${url}`)
+    })
+    try {
+      const transport = new V2OpenCodeTransport('http://private-opencode.example:5111', {
+        headers: { Authorization: 'Bearer transport-secret' },
+        fetch: async input => {
+          const url = input instanceof Request ? new URL(input.url) : new URL(String(input))
+          if (url.pathname === '/api/info') return jsonResponse({ version: '2.0.16' })
+          throw new Error(`Unexpected transport request ${url}`)
+        },
+      })
+
+      await expect(transport.checkHealth()).resolves.toMatchObject({ available: true, protocol: 'v2', version: '2.0.16', models: [] })
+      expect(catalogRequests.map(request => request.url.origin)).toEqual([
+        'http://private-opencode.example:5111',
+        'http://private-opencode.example:5111',
+        'http://private-opencode.example:5111',
+      ])
+      expect(catalogRequests.map(request => request.authorization)).toEqual(Array(3).fill('Bearer transport-secret'))
+    } finally {
+      vi.unstubAllGlobals()
     }
   })
 

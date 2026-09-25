@@ -14,10 +14,10 @@ interface ModelsApiResponse {
   defaultModels: Record<string, string>
   catalogScope?: OpenCodeCatalogScope
   message?: string
-  code?: 'OPENCODE_UNREACHABLE' | 'OPENCODE_DISCOVERY_FAILED'
+  code?: 'OPENCODE_UNREACHABLE' | 'OPENCODE_DISCOVERY_FAILED' | 'OPENCODE_BUSY'
 }
 
-export type OpenCodeModelsErrorCode = 'OPENCODE_UNREACHABLE' | 'OPENCODE_DISCOVERY_FAILED'
+export type OpenCodeModelsErrorCode = 'OPENCODE_UNREACHABLE' | 'OPENCODE_DISCOVERY_FAILED' | 'OPENCODE_BUSY'
 
 export class OpenCodeModelsError extends Error {
   readonly code?: OpenCodeModelsErrorCode

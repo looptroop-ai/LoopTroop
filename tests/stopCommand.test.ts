@@ -1,6 +1,7 @@
 import { describe, it, expect, afterEach } from 'vitest'
 import { readProcessStartToken } from '../server/lib/processIdentity'
 import { spawn, type ChildProcess } from 'node:child_process'
+import { once } from 'node:events'
 import { createServer, type Server } from 'node:http'
 import { mkdtempSync, existsSync, writeFileSync } from 'node:fs'
 import { tmpdir, hostname } from 'node:os'
@@ -51,6 +52,18 @@ describe('stopping a running daemon', () => {
     const child = spawn(process.execPath, ['-e', script], { detached: true, stdio: 'ignore' })
     child.unref()
     children.push(child)
+    return child.pid ?? 0
+  }
+
+  async function spawnReadyStandIn(): Promise<number> {
+    const child = spawn(process.execPath, ['-e', 'process.on("SIGTERM", () => {}); process.send("ready"); setInterval(() => {}, 1000)'], {
+      detached: true,
+      stdio: ['ignore', 'ignore', 'ignore', 'ipc'],
+    })
+    children.push(child)
+    await once(child, 'message')
+    child.disconnect()
+    child.unref()
     return child.pid ?? 0
   }
 
@@ -209,16 +222,12 @@ describe('stopping a running daemon', () => {
 
   it('refreshes shutdown-pending state immediately before force escalation', async () => {
     const configDir = makeConfigDir()
-    const pid = spawnStandIn(true)
+    const pid = await spawnReadyStandIn()
     const startToken = readProcessStartToken(pid)
     expect(startToken).not.toBeNull()
     writeLock(configDir, pid)
     const state = makeState({ pid, port: 1, startToken: startToken ?? undefined })
     writeDaemonState(state, configDir)
-    // Let the stand-in install its SIGTERM handler before the escalation
-    // begins; otherwise the test could observe ordinary startup timing rather
-    // than the final pending-state refresh.
-    await new Promise((resolve) => setTimeout(resolve, 100))
     const pendingState = makeState({ pid, port: 1, shutdownPending: true })
     const pendingTimer = setTimeout(() => writeDaemonState(pendingState, configDir), 50)
     pendingTimer.unref()

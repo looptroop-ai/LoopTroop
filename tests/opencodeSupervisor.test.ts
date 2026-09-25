@@ -328,7 +328,7 @@ describe('OpenCode supervision', () => {
     await expect(supervisor.start()).rejects.toBeInstanceOf(OpenCodeMissingError)
   })
 
-  it('prints full DEBUG output only when the all-log mode is requested', async () => {
+  it('requests console log output only when the all-log mode is requested', async () => {
     const baseUrl = makeBaseUrl()
     const child = makeChild()
     let spawned = false
@@ -360,13 +360,59 @@ describe('OpenCode supervision', () => {
       OPENCODE_BIN,
       'serve',
       '--print-logs',
-      '--log-level',
-      'DEBUG',
       '--hostname',
       '127.0.0.1',
       '--port',
       new URL(baseUrl).port,
     ])
+  })
+
+  it('does not restart OpenCode after stop returns during old-child cleanup', async () => {
+    const baseUrl = makeBaseUrl()
+    const firstChild = makeChild()
+    let spawned = 0
+    let enterFirstForce!: () => void
+    let releaseFirstForce!: () => void
+    const firstForceStarted = new Promise<void>((resolve) => { enterFirstForce = resolve })
+    const firstForceGate = new Promise<void>((resolve) => { releaseFirstForce = resolve })
+    const exited = new Set<number>()
+    let forceCalls = 0
+    const termination: ProcessTermination = {
+      request: () => false,
+      force: async (pid) => {
+        forceCalls += 1
+        if (forceCalls === 1) {
+          enterFirstForce()
+          await firstForceGate
+        } else {
+          exited.add(pid)
+        }
+      },
+      hasExited: (pid) => exited.has(pid),
+    }
+    const supervisor = new OpenCodeSupervisor({
+      baseUrl,
+      resolveProgram: () => OPENCODE_BIN,
+      spawnProcess: (() => {
+        spawned += 1
+        return firstChild as never
+      }) as never,
+      probe: async () => spawned > 0,
+      termination,
+      restartBackoffMs: 0,
+      exitBudgets: { gracefulMs: 0, forceMs: 0 },
+    })
+
+    await supervisor.start()
+    firstChild.emit('exit', 1)
+    await firstForceStarted
+
+    await expect(supervisor.stop()).resolves.toBe(true)
+    releaseFirstForce()
+    await new Promise<void>((resolve) => setImmediate(resolve))
+
+    expect(spawned).toBe(1)
+    expect(supervisor.ownedProcess).toBeNull()
   })
 
   it('fails loudly when the binary is missing', async () => {

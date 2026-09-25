@@ -89,6 +89,13 @@ describe('PendingQuestionsPanel', () => {
     expect(screen.getByText('4:00')).toBeInTheDocument()
   })
 
+  it('reloads pending questions when the panel mounts after a reconnect', () => {
+    const refreshTicket = vi.fn()
+    renderPanel({ refreshTicket })
+
+    expect(refreshTicket).toHaveBeenCalledExactlyOnceWith(TICKET_ID)
+  })
+
   it('reopens a mounted collapsed panel on delete without clearing another ticket preference', () => {
     const otherTicketId = 'proj-1:LOOP-2'
     localStorage.setItem(getTicketQuestionsCollapsedStorageKey(TICKET_ID), '1')

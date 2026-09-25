@@ -54,9 +54,10 @@ function transport(protocol: 'v1' | 'v2', overrides: Partial<OpenCodeTransport> 
     getSession: vi.fn(async () => ({ id: 'session-1', directory: '/worktree' })),
     listSessions: vi.fn(async () => []),
     getSessionMessages: vi.fn(async () => []),
-    subscribeToEvents: vi.fn(async () => ({ events: (async function* () {})(), cursor: 0 })),
+    subscribeToEvents: vi.fn(async () => ({ events: (async function* () {})(), cursor: 0, coverageComplete: true })),
     waitForIdle: vi.fn(async () => undefined),
-    readSessionLog: vi.fn(async () => ({ events: [], cursor: 0 })),
+    readSessionLog: vi.fn(async () => ({ events: [], cursor: 0, coverageComplete: true })),
+    listPendingInboxes: vi.fn(async () => []),
     dispatchPrompt: vi.fn(async () => ({ kind: 'accepted' as const, receipt: { inboxID: 'inbox-own' } })),
     listPendingQuestions: vi.fn(async () => []),
     replyQuestion: vi.fn(async () => undefined),
@@ -80,8 +81,16 @@ describe('OpenCode adapter transport refresh', () => {
     let dispatched = false
     const oldTransport = transport('v2', {
       getSessionMessages: vi.fn(async () => dispatched ? [assistantMessage('new-answer', 'current answer')] : []),
-      subscribeToEvents: vi.fn(async () => ({ events: source.events(), cursor: 0 })),
-      readSessionLog: vi.fn(async () => ({ events: [], cursor: 5 })),
+      subscribeToEvents: vi.fn(async (_sessionId, _directory, signal, _safetyMs, afterCursor) => ({
+        events: source.events(signal),
+        cursor: afterCursor,
+        coverageComplete: true,
+      })),
+      readSessionLog: vi.fn(async (_sessionId, after?: number) => ({
+        events: [],
+        cursor: after ?? 0,
+        coverageComplete: after !== undefined,
+      })),
     })
     const restartedTransport = transport('v1')
     let resolutions = 0

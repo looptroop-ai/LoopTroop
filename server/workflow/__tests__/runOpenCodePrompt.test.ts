@@ -920,6 +920,42 @@ describe('runOpenCodePrompt', () => {
     })).rejects.toThrow('OpenCode retry budget exhausted after 2 retry event(s)')
   })
 
+  it('keeps receipt-unknown classification when a retry event raced with the prompt POST', async () => {
+    const adapter = new TestOpenCodeAdapter([])
+    const receiptUnknown = Object.assign(
+      new Error('Failed to prompt OpenCode session: OpenCode may have accepted the v2 prompt, but its inbox receipt could not be verified.'),
+      {
+        name: 'OpenCodePromptReceiptUnavailableError',
+        openCodePromptReceiptUnavailable: true as const,
+        blockedErrorDiagnostics: {
+          kind: 'runtime' as const,
+          source: 'opencode' as const,
+          summary: 'OpenCode may have accepted the v2 prompt, but its inbox receipt could not be verified.',
+          sessionId: 'ses-receipt-unknown',
+        },
+        blockedErrorCodes: [],
+      },
+    )
+    vi.spyOn(adapter, 'promptSession').mockImplementation(async (_sessionId, _parts, _signal, options) => {
+      options?.onEvent?.({
+        type: 'session_status',
+        sessionId: 'ses-receipt-unknown',
+        status: 'retry',
+        attempt: 1,
+        message: 'rate limited',
+      })
+      throw receiptUnknown
+    })
+
+    await expect(runOpenCodeSessionPrompt({
+      adapter,
+      session: { id: 'ses-receipt-unknown', projectPath: '/tmp/project' },
+      parts: [{ type: 'text', content: 'Prompt body' }],
+      opencodeRetryPolicy: { limit: 0, delayMs: 0 },
+    })).rejects.toBe(receiptUnknown)
+    expect(adapter.abortCalls).toEqual(['ses-receipt-unknown'])
+  })
+
   it('blocks when a continuable OpenCode retry state exceeds the configured grace window', async () => {
     vi.useFakeTimers()
     try {
@@ -1649,10 +1685,11 @@ describe('runOpenCodePrompt', () => {
 
   it('returns snapshot content when stream done arrives before SDK prompt resolves', async () => {
     const deferredPrompt = createDeferred<{ data?: { parts?: Array<{ type: string; text: string }> } }>()
+    let messageReads = 0
     const fakeClient = createFakeSdkClient({
       prompt: async () => deferredPrompt.promise,
       messages: async () => ({
-        data: [
+        data: messageReads++ === 0 ? [] : [
           {
             info: { id: 'msg-1', role: 'assistant', time: { created: Date.now() } },
             parts: [
@@ -2115,6 +2152,7 @@ describe('runOpenCodePrompt', () => {
   })
 
   it('waits for the terminal snapshot when the immediate SDK response echoes the prompt', async () => {
+    let messageReads = 0
     let latestAssistantText = [
       'CRITICAL OUTPUT RULE:',
       'Return strict machine-readable output.',
@@ -2136,7 +2174,7 @@ describe('runOpenCodePrompt', () => {
           },
         }),
         messages: async () => ({
-          data: [
+          data: messageReads++ === 0 ? [] : [
             {
               info: { id: 'msg-final', role: 'assistant', time: { created: Date.now() } },
               parts: [
@@ -2569,6 +2607,7 @@ describe('runOpenCodePrompt', () => {
   })
 
   it('uses the final snapshot after early stream close without emitting synthetic done for prompt echoes', async () => {
+    let messageReads = 0
     const fakeClient = createFakeSdkClient({
       get: async () => ({ data: { directory: '/tmp/project' } }),
       prompt: async () => ({
@@ -2589,7 +2628,7 @@ describe('runOpenCodePrompt', () => {
         },
       }),
       messages: async () => ({
-        data: [
+        data: messageReads++ === 0 ? [] : [
           {
             info: { id: 'msg-final', role: 'assistant', time: { created: Date.now() } },
             parts: [

@@ -142,6 +142,16 @@ import { resolveStoredWorkflowPhase, type WorkflowPhaseId } from '@shared/workfl
 
 type OpenCodeDiagnosticResult = ReturnType<typeof buildOpenCodeBlockedErrorDiagnostics>
 
+function getCouncilMemberVariant(context: TicketContext, modelId: string): string | undefined {
+  return resolveCouncilMembers(context).members.find((member) => member.modelId === modelId)?.variant
+}
+
+function getSelectedModelVariant(context: TicketContext, modelId: string): string | undefined {
+  return context.lockedMainImplementer?.trim() === modelId
+    ? context.lockedMainImplementerVariant ?? undefined
+    : getCouncilMemberVariant(context, modelId)
+}
+
 function getSessionRetryMessage(event: unknown): string | undefined {
   if (!event || typeof event !== 'object') return undefined
   const record = event as { type?: unknown; status?: unknown; message?: unknown }
@@ -857,6 +867,7 @@ async function runPrdCoverageAuditPrompt(params: {
   externalId: string
   stateLabel: WorkflowPhaseId
   winnerId: string
+  modelVariant?: string
   worktreePath: string
   promptContent: string
   councilSettings: ReturnType<typeof resolveCouncilRuntimeSettings>
@@ -894,7 +905,7 @@ async function runPrdCoverageAuditPrompt(params: {
         signal: params.signal,
         timeoutMs: params.councilSettings.draftTimeoutMs,
         model: params.winnerId,
-        variant: 'coverage',
+        variant: params.modelVariant,
         erroredSessionPolicy: 'discard_errored_session_output',
         toolPolicy: getCoveragePromptTemplate('prd').toolPolicy,
         sessionOwnership: {
@@ -1110,6 +1121,7 @@ async function runPrdCoverageResolutionPrompt(params: {
   externalId: string
   stateLabel: WorkflowPhaseId
   winnerId: string
+  modelVariant?: string
   worktreePath: string
   promptContent: string
   councilSettings: ReturnType<typeof resolveCouncilRuntimeSettings>
@@ -1146,7 +1158,7 @@ async function runPrdCoverageResolutionPrompt(params: {
         signal: params.signal,
         timeoutMs: params.councilSettings.draftTimeoutMs,
         model: params.winnerId,
-        variant: 'coverage',
+        variant: params.modelVariant,
         erroredSessionPolicy: 'discard_errored_session_output',
         toolPolicy: PROM13b.toolPolicy,
         sessionOwnership: {
@@ -1297,6 +1309,7 @@ async function runBeadsCoverageAuditPrompt(params: {
   externalId: string
   stateLabel: WorkflowPhaseId
   winnerId: string
+  modelVariant?: string
   worktreePath: string
   promptContent: string
   councilSettings: ReturnType<typeof resolveCouncilRuntimeSettings>
@@ -1332,7 +1345,7 @@ async function runBeadsCoverageAuditPrompt(params: {
         signal: params.signal,
         timeoutMs: params.councilSettings.draftTimeoutMs,
         model: params.winnerId,
-        variant: 'coverage',
+        variant: params.modelVariant,
         erroredSessionPolicy: 'discard_errored_session_output',
         toolPolicy: getCoveragePromptTemplate('beads').toolPolicy,
         sessionOwnership: {
@@ -1548,6 +1561,7 @@ async function runBeadsCoverageResolutionPrompt(params: {
   externalId: string
   stateLabel: WorkflowPhaseId
   winnerId: string
+  modelVariant?: string
   worktreePath: string
   promptContent: string
   councilSettings: ReturnType<typeof resolveCouncilRuntimeSettings>
@@ -1583,7 +1597,7 @@ async function runBeadsCoverageResolutionPrompt(params: {
         signal: params.signal,
         timeoutMs: params.councilSettings.draftTimeoutMs,
         model: params.winnerId,
-        variant: 'coverage',
+        variant: params.modelVariant,
         erroredSessionPolicy: 'discard_errored_session_output',
         toolPolicy: PROM24.toolPolicy,
         sessionOwnership: {
@@ -1732,6 +1746,7 @@ async function finalizeBeadsCoverageExpansion(params: {
   externalId: string
   stateLabel: WorkflowPhaseId
   winnerId: string
+  modelVariant?: string
   worktreePath: string
   signal: AbortSignal
   councilSettings: ReturnType<typeof resolveCouncilRuntimeSettings>
@@ -1773,7 +1788,7 @@ async function finalizeBeadsCoverageExpansion(params: {
     },
     beadSubsets,
     maxStructuredRetries: params.structuredRetryCount,
-    variant: 'coverage',
+    modelVariant: params.modelVariant,
     onSessionLog: (entry) => {
       const streamState = streamStates.get(entry.sessionId) ?? createOpenCodeStreamState()
       streamStates.set(entry.sessionId, streamState)
@@ -1860,6 +1875,7 @@ async function handlePrdCoverageVerificationLoop(params: {
   councilSettings: ReturnType<typeof resolveCouncilRuntimeSettings>
   coverageSettings: ReturnType<typeof resolveCoverageRuntimeSettings>
 }) {
+  const winnerVariant = getCouncilMemberVariant(params.context, params.winnerId)
   const prdPath = resolve(params.ticketDir, 'prd.yaml')
   let currentCandidateContent = params.effectivePrdContent.trim()
   const historySnapshot = loadCoverageHistorySnapshot(params.ticketId, 'prd', params.stateLabel)
@@ -1905,6 +1921,7 @@ async function handlePrdCoverageVerificationLoop(params: {
       externalId: params.context.externalId,
       stateLabel: params.stateLabel,
       winnerId: params.winnerId,
+      modelVariant: winnerVariant,
       worktreePath: params.worktreePath,
       promptContent: auditPromptContent,
       councilSettings: params.councilSettings,
@@ -2055,6 +2072,7 @@ async function handlePrdCoverageVerificationLoop(params: {
       externalId: params.context.externalId,
       stateLabel: params.stateLabel,
       winnerId: params.winnerId,
+      modelVariant: winnerVariant,
       worktreePath: params.worktreePath,
       promptContent: revisionPromptContent,
       councilSettings: params.councilSettings,
@@ -2200,6 +2218,7 @@ async function handleBeadsCoverageVerificationLoop(params: {
   councilSettings: ReturnType<typeof resolveCouncilRuntimeSettings>
   coverageSettings: ReturnType<typeof resolveCoverageRuntimeSettings>
 }) {
+  const winnerVariant = getCouncilMemberVariant(params.context, params.winnerId)
   let currentCandidateContent = params.effectiveBeadsContent.trim()
   const historySnapshot = loadCoverageHistorySnapshot(params.ticketId, 'beads', params.stateLabel)
   const maxCoveragePasses = getVersionedCoveragePassLimit('beads', params.coverageSettings.maxBeadsCoveragePasses)
@@ -2245,6 +2264,7 @@ async function handleBeadsCoverageVerificationLoop(params: {
       externalId: params.context.externalId,
       stateLabel: params.stateLabel,
       winnerId: params.winnerId,
+      modelVariant: winnerVariant,
       worktreePath: params.worktreePath,
       promptContent: auditPromptContent,
       councilSettings: params.councilSettings,
@@ -2394,6 +2414,7 @@ async function handleBeadsCoverageVerificationLoop(params: {
       externalId: params.context.externalId,
       stateLabel: params.stateLabel,
       winnerId: params.winnerId,
+      modelVariant: winnerVariant,
       worktreePath: params.worktreePath,
       promptContent: revisionPromptContent,
       councilSettings: params.councilSettings,
@@ -2551,6 +2572,8 @@ async function runPrdCoverageExtraFix(params: {
   coverageSettings: ReturnType<typeof resolveCoverageRuntimeSettings>
   fullAnswersContent: string
 }): Promise<CoverageExtraFixResult> {
+  const fixerVariant = getSelectedModelVariant(params.context, params.fixerId)
+  const auditorVariant = getCouncilMemberVariant(params.context, params.auditorId)
   const stateLabel = 'WAITING_PRD_APPROVAL'
   const extraFixNumber = countExtraFixTransitions(params.history.transitions) + 1
   const previousExtraFixes = buildPreviousExtraFixHistory(params.history.transitions)
@@ -2577,6 +2600,7 @@ async function runPrdCoverageExtraFix(params: {
     externalId: params.context.externalId,
     stateLabel,
     winnerId: params.fixerId,
+    modelVariant: fixerVariant,
     worktreePath: params.worktreePath,
     promptContent: revisionPromptContent,
     councilSettings: params.councilSettings,
@@ -2656,6 +2680,7 @@ async function runPrdCoverageExtraFix(params: {
     externalId: params.context.externalId,
     stateLabel,
     winnerId: params.auditorId,
+    modelVariant: auditorVariant,
     worktreePath: params.worktreePath,
     promptContent: auditPromptContent,
     councilSettings: params.councilSettings,
@@ -2770,6 +2795,8 @@ async function runBeadsCoverageExtraFix(params: {
   councilSettings: ReturnType<typeof resolveCouncilRuntimeSettings>
   coverageSettings: ReturnType<typeof resolveCoverageRuntimeSettings>
 }) {
+  const fixerVariant = getSelectedModelVariant(params.context, params.fixerId)
+  const auditorVariant = getCouncilMemberVariant(params.context, params.auditorId)
   const stateLabel = 'WAITING_BEADS_APPROVAL'
   const extraFixNumber = countExtraFixTransitions(params.history.transitions) + 1
   const previousExtraFixes = buildPreviousExtraFixHistory(params.history.transitions)
@@ -2796,6 +2823,7 @@ async function runBeadsCoverageExtraFix(params: {
     externalId: params.context.externalId,
     stateLabel,
     winnerId: params.fixerId,
+    modelVariant: fixerVariant,
     worktreePath: params.worktreePath,
     promptContent: revisionPromptContent,
     councilSettings: params.councilSettings,
@@ -2874,6 +2902,7 @@ async function runBeadsCoverageExtraFix(params: {
     externalId: params.context.externalId,
     stateLabel,
     winnerId: params.auditorId,
+    modelVariant: auditorVariant,
     worktreePath: params.worktreePath,
     promptContent: auditPromptContent,
     councilSettings: params.councilSettings,
@@ -2887,6 +2916,7 @@ async function runBeadsCoverageExtraFix(params: {
       externalId: params.context.externalId,
       stateLabel,
       winnerId: params.fixerId,
+      modelVariant: fixerVariant,
       worktreePath: params.worktreePath,
       signal: params.signal,
       councilSettings: params.councilSettings,
@@ -3109,6 +3139,7 @@ export async function handleRelevantFilesScan(
     sendEvent({ type: 'ERROR', message: msg, codes: ['RELEVANT_FILES_SCAN_FAILED', 'MAIN_IMPLEMENTER_MISSING'] })
     return
   }
+  const modelVariant = context.lockedMainImplementerVariant ?? undefined
 
   let sessionId = ''
   try {
@@ -3137,7 +3168,7 @@ export async function handleRelevantFilesScan(
       timeoutMs: draftTimeoutMs,
       timeoutKind: 'ai_response',
       model: codingModelId,
-      variant: 'relevant_files_scan',
+      variant: modelVariant,
       erroredSessionPolicy: 'discard_errored_session_output',
       toolPolicy: PROM0.toolPolicy,
       onSessionCreated: (session) => {
@@ -3252,6 +3283,7 @@ export async function handleRelevantFilesScan(
           timeoutMs: draftTimeoutMs,
           timeoutKind: 'ai_response',
           model: codingModelId,
+          variant: modelVariant,
           erroredSessionPolicy: 'discard_errored_session_output',
           toolPolicy: PROM0.toolPolicy,
           onStreamEvent: (event) => {
@@ -3303,7 +3335,7 @@ export async function handleRelevantFilesScan(
           timeoutMs: draftTimeoutMs,
           timeoutKind: 'ai_response',
           model: codingModelId,
-          variant: 'relevant_files_scan',
+          variant: modelVariant,
           erroredSessionPolicy: 'discard_errored_session_output',
           toolPolicy: PROM0.toolPolicy,
           onSessionCreated: (session) => {
@@ -4319,6 +4351,7 @@ export async function handleBeadsExpansion(
     externalId: context.externalId,
     stateLabel,
     winnerId,
+    modelVariant: getCouncilMemberVariant(context, winnerId),
     worktreePath,
     signal,
     councilSettings,

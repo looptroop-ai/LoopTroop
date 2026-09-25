@@ -5,8 +5,13 @@ import { profiles } from '../db/schema'
 import { eq } from 'drizzle-orm'
 import { validateModelSelection } from '../opencode/modelValidation'
 import { parseCouncilMembers } from '../council/members'
-import { needsOpenRouterRoutingConfig, registerOpenRouterRoutingModels } from '../opencode/openRouterRoutingConfig'
-import { refreshProviderCatalog } from '../opencode/providerCatalog'
+import {
+  needsOpenRouterRoutingConfig,
+  openRouterRoutingModelsWouldChangeConfig,
+  registerOpenRouterRoutingModels,
+} from '../opencode/openRouterRoutingConfig'
+import { withProviderCatalogReload } from '../opencode/providerCatalog'
+import { ProviderCatalogBusyError } from '../opencode/providerCatalogReload'
 import { getOpenCodeConnection } from '../opencode/connection'
 import { getOpenCodeBaseUrl } from '../opencode/runtimeConfig'
 import { aiQuestionWindowSchema, gitHookPolicySchema, ignoreModeSchema } from '../lib/settingSchemas'
@@ -62,9 +67,11 @@ function normalizeModelSelection(
 async function registerSelectedRoutingModels(modelIds: readonly string[]): Promise<void> {
   if (!needsOpenRouterRoutingConfig(modelIds)) return
   const connection = await getOpenCodeConnection(getOpenCodeBaseUrl())
-  if (registerOpenRouterRoutingModels(modelIds, connection.protocol)) {
-    await refreshProviderCatalog()
-  }
+  if (!openRouterRoutingModelsWouldChangeConfig(modelIds, connection.protocol)) return
+  await withProviderCatalogReload(async (connection, refresh) => {
+    if (!openRouterRoutingModelsWouldChangeConfig(modelIds, connection.protocol)) return
+    if (registerOpenRouterRoutingModels(modelIds, connection.protocol)) await refresh()
+  })
 }
 
 function hasModelSelectionChange(
@@ -104,7 +111,10 @@ profileRouter.post('/profile', async (c) => {
   try {
     await registerSelectedRoutingModels(validatedModels.councilMembers)
   } catch (err) {
-    return c.json({ error: err instanceof Error ? err.message : 'Unable to register OpenRouter routing models' }, 502)
+    return c.json(
+      { error: err instanceof Error ? err.message : 'Unable to register OpenRouter routing models' },
+      err instanceof ProviderCatalogBusyError ? 409 : 502,
+    )
   }
   const result = db.insert(profiles).values({
     ...parsed.data,
@@ -161,7 +171,10 @@ profileRouter.patch('/profile', async (c) => {
   try {
     if (modelSelectionChanged) await registerSelectedRoutingModels(councilMembersToRegister)
   } catch (err) {
-    return c.json({ error: err instanceof Error ? err.message : 'Unable to register OpenRouter routing models' }, 502)
+    return c.json(
+      { error: err instanceof Error ? err.message : 'Unable to register OpenRouter routing models' },
+      err instanceof ProviderCatalogBusyError ? 409 : 502,
+    )
   }
 
   const result = db.update(profiles)

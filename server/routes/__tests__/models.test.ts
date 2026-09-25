@@ -21,6 +21,7 @@ vi.mock('../../opencode/factory', () => ({
 }))
 
 import { modelsRouter } from '../models'
+import { ProviderCatalogBusyError } from '../../opencode/providerCatalogReload'
 
 const catalog = {
   supportsAllModels: true,
@@ -96,6 +97,18 @@ describe('models routes', () => {
 
     expect(refreshProviderCatalog).toHaveBeenCalledOnce()
     expect(body.models.map((model: { fullId: string }) => model.fullId)).toEqual(['openai/connected'])
+  })
+
+  it('returns a manual-retry conflict when catalog reload is unsafe', async () => {
+    refreshProviderCatalog.mockRejectedValueOnce(new ProviderCatalogBusyError())
+
+    const response = await createApp().request('/api/models/refresh', { method: 'POST' })
+
+    expect(response.status).toBe(409)
+    await expect(response.json()).resolves.toMatchObject({
+      code: 'OPENCODE_BUSY',
+      message: expect.stringContaining('then retry'),
+    })
   })
 
   it('returns a machine-readable retry code when discovery fails after connection', async () => {

@@ -10,7 +10,7 @@ Unreleased changes appear first and represent commits that have not yet been inc
 > Changes merged since the last versioned release that have not yet shipped in a tagged version.
 
 ### Summary
-- OpenCode v2 is the primary integration, with v1 servers still detected and supported automatically; incomplete v2 event history never causes an uncertain prompt to be resent.
+- OpenCode v2 is the primary integration, v1 remains supported, and catalog reloads reject during active work. Verified live observation can attribute v2 turns without replay; uncertainty blocks retry or continuation.
 - Single-choice options and free-text answers are alternatives; model prices show one label per shared range.
 - Dependency updates arrive in fewer grouped pull requests and none merges itself; workflows take the build Node version from `.nvmrc` alone.
 - Repository tooling and release sources now live under existing project folders while historical release repair and public installer and container contracts remain unchanged.
@@ -40,7 +40,7 @@ Unreleased changes appear first and represent commits that have not yet been inc
 - The OrcaCode pull-request review workflow is removed; it reported a failed check on every pull request and never completed a successful run.
 
 ### Added
-- OpenCode v2 servers now use the native HTTP API, while v1 keeps its SDK transport. LoopTroop detects the protocol, uses OpenCode's available provider/model catalog, preserves question answer values, and fails closed when an interrupted v2 event stream leaves history uncertain; it never resends an uncertain prompt. Opt-in CLI maintenance stays within the installed major, and profile edits can save offline when the routing choice is unchanged.
+- OpenCode v2 servers now use the native HTTP API, while v1 keeps its SDK transport. LoopTroop detects the protocol, uses OpenCode's available provider/model catalog, preserves question answer values, and fails closed when an interrupted v2 event stream leaves history uncertain; it never resends an uncertain prompt. A prompt without a verifiable admission receipt is non-continuable because acceptance cannot be proven. Catalog reloads and routing changes that need new OpenRouter entries are rejected before writes while work is active; existing entries remain usable. Opt-in CLI maintenance stays within the installed major, and profile edits can save offline when the routing choice is unchanged.
 - `node scripts/sync-node-floor.ts` writes the Node floor from `engines.node` into every copy — the lockfile's root entry, the launcher guard, both install scripts, the Chocolatey fixture and README — and `--check` fails when any of them disagrees, which a test runs. Moving the floor is one line in `package.json` and one command, by hand or on Renovate's branch. `node scripts/check-node-feeds.ts` fails unless winget, Chocolatey, Scoop and Homebrew all offer the floor, counting a Chocolatey version only once moderation has approved it. CI runs it on every pull request that changes the floor.
 - Per-command help accepts `--help`, `help`, and `?` after a command.
 - Durable startup-cleanup ownership records identify the managed OpenCode base URL, pid, and optional start token. A later `looptroop start` stays blocked until `looptroop stop` proves the owned tree is gone; tokenless, recycled, or unverifiable ownership remains preserved.
@@ -255,8 +255,13 @@ Unreleased changes appear first and represent commits that have not yet been inc
 - The unused `server/db/drizzle.config.ts` alias. Every database script already selects its app or project config explicitly, so keeping a third config that Drizzle Kit cannot discover from the repository root only advertised a command that no longer worked.
 
 ### Fixed
-- OpenCode v2 event handling now advances through known durable events without manufacturing UI events. It attributes a result only after contiguous history is verified; incomplete history remains uncertain and never triggers a snapshot fallback or prompt resend.
+- The shutdown-pending stop-command regression now waits for its stand-in's SIGTERM handler over IPC instead of assuming a fixed startup delay; the process-liveness assertion remains.
+- OpenCode v2 event attribution now supports empty replay by using its watermark only as a starting boundary, then requiring contiguous live observation bracketed by idle and pending-inbox checks. A gap or lost stream leaves the result uncertain; LoopTroop does not guess event ownership, fall back to a snapshot, or resend a prompt.
 - OpenCode v1 now reports stream failures and EOF completion consistently, keeps caller cancellation distinct from cleanup, and closes its stream iterator and timers.
+- Development startup now treats an unrelated HTTP response on the implicit default OpenCode port as a conflict and keeps explicit URLs strict. Managed logging selects only flags the resolved CLI supports, and the supervisor cannot restart a child after stop completes.
+- Catalog reloads reject active prompts and, for v2, active sessions and unanswered requests. Profile and ticket-start routing handlers preflight the config delta, recheck under the busy guard, and leave the config untouched on rejection; already registered routes remain usable.
+- Workflow stages no longer replace a model's saved variant in OpenCode prompts. V2 question fields use descriptions as prompt text and titles as headers, offer custom text only when OpenCode allows it, and preserve pending questions when a ticket panel reconnects.
+- Doctor reports the OpenCode URL recorded by a healthy daemon, and published-smoke health requests stay within the remaining readiness deadline.
 - Managed OpenCode startup treats authentication rejection on the default port as a conflict and reports rejected credentials for explicit URLs. Blank password aliases count as unset. Standalone `dev:opencode` prints a newly generated password for manual sharing and does not print configured passwords.
 - Single-choice answers treat free text as an alternative to the selected option, while multiple-choice answers can keep notes. Model price ranges collapse to one label, and cached-token prices no longer appear free.
 - v2 provider catalogs separate available from connected providers, recognize reasoning variants, and preserve existing provider/agent configuration when applying routing updates.

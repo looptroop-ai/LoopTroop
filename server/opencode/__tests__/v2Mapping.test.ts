@@ -134,8 +134,8 @@ describe('OpenCode v2 wire mappings', () => {
       sessionID: 'session-1',
       tool: { messageID: 'assistant-1', callID: 'call-1' },
       questions: [
-        { question: 'Environment', options: [{ label: 'Production', value: 'prod' }] },
-        { question: 'Regions', multiple: true, options: [{ label: 'North', value: 'north' }, { label: 'South', value: 'south' }] },
+        { question: 'Environment', header: 'Environment', custom: false, options: [{ label: 'Production', value: 'prod' }] },
+        { question: 'Regions', header: 'Regions', custom: false, multiple: true, options: [{ label: 'North', value: 'north' }, { label: 'South', value: 'south' }] },
       ],
     })
     expect(mapV2QuestionAnswer(form, [['prod'], ['north', 'south']]))
@@ -153,6 +153,24 @@ describe('OpenCode v2 wire mappings', () => {
       tool: { messageID: 'assistant-1', callID: 'call-1' },
     })
     expect(mapV2Question({ ...form, metadata: { kind: 'approval' } })).toBeNull()
+  })
+
+  it('maps the question body from description and uses each field title as its header', () => {
+    expect(mapV2Question({
+      id: 'form-2',
+      sessionID: 'session-1',
+      title: 'Questions',
+      metadata: { kind: 'question' },
+      fields: [
+        { key: 'task', type: 'string', title: 'Task', description: 'What should change?' },
+        { key: 'mode', type: 'string', title: 'Mode' },
+        { key: 'fallback', type: 'string', description: 'Fallback prompt' },
+      ],
+    })?.questions).toEqual([
+      { question: 'What should change?', header: 'Task', options: [], custom: false },
+      { question: 'Mode', header: 'Mode', options: [], custom: false },
+      { question: 'Fallback prompt', header: 'Questions', options: [], custom: false },
+    ])
   })
 
   it('maps durable lifecycle and tool events with their cursors and ignores other sessions', () => {
@@ -186,5 +204,45 @@ describe('OpenCode v2 wire mappings', () => {
       type: 'permission.asked',
       data: { sessionID: 'session-1', id: 'permission-1', action: 'shell', resources: ['git status'] },
     }, 'session-1', state)?.event).toMatchObject({ type: 'permission', action: 'asked', permission: 'bash' })
+  })
+
+  it('maps inbox cancellation and delivery changes as lifecycle events', () => {
+    expect(mapV2Event({
+      type: 'session.inbox.cancelled',
+      data: { sessionID: 'session-1', inboxID: 'inbox-1' },
+      durable: { aggregateID: 'session-1', seq: 10 },
+    }, 'session-1')).toEqual({
+      cursor: 10,
+      event: { type: 'inbox_cancelled', sessionId: 'session-1', inboxID: 'inbox-1' },
+    })
+    expect(mapV2Event({
+      type: 'session.inbox.delivery.changed',
+      data: { sessionID: 'session-1', inboxID: 'inbox-1', delivery: 'queue' },
+      durable: { aggregateID: 'session-1', seq: 11 },
+    }, 'session-1')).toEqual({
+      cursor: 11,
+      event: { type: 'inbox_delivery_changed', sessionId: 'session-1', inboxID: 'inbox-1', delivery: 'queue' },
+    })
+  })
+
+  it('accounts for the pinned durable no-op manifest and leaves unknown durable events unmapped', () => {
+    for (const type of [
+      'session.moved',
+      'session.message.content.updated',
+      'session.compaction.started',
+      'session.revert.staged',
+      'session.usage.recorded',
+    ]) {
+      expect(mapV2Event({
+        type,
+        data: { sessionID: 'session-1' },
+        durable: { aggregateID: 'session-1', seq: 12 },
+      }, 'session-1')).toEqual({ cursor: 12 })
+    }
+    expect(mapV2Event({
+      type: 'session.future.unknown',
+      data: { sessionID: 'session-1' },
+      durable: { aggregateID: 'session-1', seq: 13 },
+    }, 'session-1')).toBeNull()
   })
 })

@@ -4,6 +4,7 @@ import { setTimeout as delay } from 'node:timers/promises'
 import { isProcessAlive, killProcessTree } from '../cli/processControl'
 import { planProgramLaunch, resolveTrustedExecutable } from '../lib/executablePath'
 import { createChildEnvironment } from '../lib/childEnvironment'
+import { getOpenCodeServeLogArgs } from '../lib/opencodeServeLogArgs'
 import { matchProcess, readProcessStartToken } from '../lib/processIdentity'
 import { captureProcessGroup, hasCapturedProcessGroupMember, refreshProcessGroup, terminateProcessTree, type ProcessGroupSnapshot } from '../lib/processTree'
 import { getErrorMessage } from '@shared/typeGuards'
@@ -413,6 +414,7 @@ export class OpenCodeSupervisor {
         throw new Error(`OpenCode process ${previous.pid} is still running at ${this.options.baseUrl}.`)
       }
       if (this.child?.process === previous.process) this.child = null
+      if (this.stopping) return this.status
     }
 
     const url = new URL(this.options.baseUrl)
@@ -430,10 +432,9 @@ export class OpenCodeSupervisor {
     const spawnProcess = this.options.spawnProcess ?? spawn
 
     this.ensureManagedAuthentication()
+    const childEnvironment = createChildEnvironment(process.env)
 
-    const logArgs = this.options.printLogs ? ['--print-logs', '--log-level', 'DEBUG'] : []
     const serveHost = host.startsWith('[') ? host.slice(1, -1) : host
-    const argv = ['serve', ...logArgs, '--hostname', serveHost, '--port', port]
 
     // Resolved rather than left to `PATH`. The resolver applies PATHEXT itself,
     // which is what the Windows shell used to be here for: `opencode` is only
@@ -463,16 +464,21 @@ export class OpenCodeSupervisor {
     // LoopTroop uses. On any other platform, and for a real `.exe`, it is a
     // direct spawn. The test seam answers for cmd.exe as well as for OpenCode.
     const seam = this.options.resolveProgram
-    const launch = planProgramLaunch(program, argv, seam === undefined ? {} : {
+    const planLaunch = (args: string[]) => planProgramLaunch(program, args, seam === undefined ? {} : {
       resolveInterpreter: () => {
         const interpreter = seam('cmd.exe')
         return interpreter === null ? { reason: 'cmd.exe was not found.' } : { path: interpreter }
       },
     })
+    const logArgs = this.options.printLogs
+      ? getOpenCodeServeLogArgs('all', planLaunch(['serve', '--help']), childEnvironment)
+      : []
+    const argv = ['serve', ...logArgs, '--hostname', serveHost, '--port', port]
+    const launch = planLaunch(argv)
     if (launch.reason !== undefined) throw new OpenCodeMissingError(this.options.baseUrl, launch.reason)
     const child = spawnProcess(launch.file, launch.args, {
       stdio: ['ignore', 'inherit', 'inherit'],
-      env: createChildEnvironment(process.env),
+      env: childEnvironment,
       // Its own group, so terminating the daemon can take the whole tree down
       // rather than orphaning children of OpenCode.
       detached: process.platform !== 'win32',
@@ -600,7 +606,9 @@ export class OpenCodeSupervisor {
         // Through setStatus, because a restart lands on a new pid: the daemon's
         // record still names the process that just died, which is the one thing
         // `clean` must not go looking for later.
-        this.setStatus(await this.spawnAndWait())
+        const status = await this.spawnAndWait()
+        if (this.stopping) return
+        this.setStatus(status)
         return
       } catch (error) {
         // Reported after every attempt, not only the last: a daemon that spends

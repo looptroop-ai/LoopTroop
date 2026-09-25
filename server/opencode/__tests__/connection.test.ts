@@ -72,6 +72,27 @@ describe('getOpenCodeConnection', () => {
     ])
   })
 
+  it('uses the v2 password alias when authenticating to an external v1 server', async () => {
+    vi.stubEnv('OPENCODE_PASSWORD', 'shared-password')
+    delete process.env.OPENCODE_SERVER_PASSWORD
+    const calls: Array<{ url: string; authorization?: string }> = []
+    vi.stubGlobal('fetch', vi.fn(async (input: string | URL | Request, init?: RequestInit) => {
+      calls.push({
+        url: String(input),
+        authorization: new Headers(init?.headers).get('authorization') ?? undefined,
+      })
+      return String(input).endsWith('/api/info')
+        ? new Response('', { status: 404 })
+        : json({ healthy: true, version: '1.18.18' })
+    }))
+
+    await expect(getOpenCodeConnection(BASE_URL)).resolves.toMatchObject({ protocol: 'v1' })
+    expect(calls).toEqual([
+      { url: `${BASE_URL}/api/info`, authorization: `Basic ${Buffer.from('opencode:shared-password').toString('base64')}` },
+      { url: `${BASE_URL}/global/health`, authorization: `Basic ${Buffer.from('opencode:shared-password').toString('base64')}` },
+    ])
+  })
+
   it('probes v1 health after v2 auth fails even when both auth headers are identical', async () => {
     vi.stubEnv('OPENCODE_PASSWORD', 'same-secret')
     vi.stubEnv('OPENCODE_SERVER_PASSWORD', 'same-secret')
@@ -121,7 +142,7 @@ describe('getOpenCodeConnection', () => {
       status: 401,
       canStartManagedServer: false,
     })
-    expect(fetchMock).toHaveBeenCalledTimes(1)
+    expect(fetchMock).toHaveBeenCalledTimes(2)
   })
 
   it('rejects redirects and unrecognized successful responses', async () => {

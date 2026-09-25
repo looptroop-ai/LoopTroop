@@ -1,6 +1,7 @@
 import { Hono } from 'hono'
 import { getOpenCodeAdapter } from '../opencode/factory'
 import { fetchProviderCatalog, flattenCatalogModels, refreshProviderCatalog } from '../opencode/providerCatalog'
+import { ProviderCatalogBusyError } from '../opencode/providerCatalogReload'
 import type { OpenCodeCatalogResponse, OpenCodeCatalogScope } from '../../shared/opencodeCatalog'
 
 const modelsRouter = new Hono()
@@ -43,7 +44,10 @@ modelsRouter.get('/models', async (c) => {
 modelsRouter.post('/models/refresh', async (c) => {
   try {
     return c.json(serializeCatalog(await refreshProviderCatalog(), 'connected'))
-  } catch {
+  } catch (error) {
+    if (error instanceof ProviderCatalogBusyError) {
+      return c.json({ code: 'OPENCODE_BUSY', message: error.message }, 409)
+    }
     return c.json(await modelDiscoveryFailure())
   }
 })

@@ -386,7 +386,7 @@ function checkConfigDir(): Check {
 
 /** What asking the OpenCode server for its config established. */
 export type OpenCodeReachability =
-  | { kind: 'ok'; protocol?: 'v1' | 'v2'; version?: string }
+  | { kind: 'ok'; protocol?: 'v1' | 'v2'; version?: string; url?: string }
   | { kind: 'unreachable'; error?: string; url?: string }
   | { kind: 'responded'; status: number; url?: string }
   | {
@@ -418,7 +418,7 @@ export function judgeOpenCode(
   const { baseUrl } = context
   if (reachable.kind === 'ok') {
     const protocol = reachable.protocol ? ` (${reachable.protocol}${reachable.version ? `, ${reachable.version}` : ''})` : ''
-    return { name: 'opencode', status: 'ok', detail: `reachable at ${baseUrl}${protocol}` }
+    return { name: 'opencode', status: 'ok', detail: `reachable at ${reachable.url ?? baseUrl}${protocol}` }
   }
 
   if (reachable.kind === 'failed') {
@@ -551,6 +551,7 @@ async function probeDaemonOpenCode(daemon: DaemonState): Promise<OpenCodeReachab
         kind: 'ok',
         ...(health.protocol === 'v1' || health.protocol === 'v2' ? { protocol: health.protocol } : {}),
         ...(typeof health.version === 'string' ? { version: health.version } : {}),
+        ...(daemon.opencode?.baseUrl ? { url: daemon.opencode.baseUrl } : {}),
       }
     }
     return {

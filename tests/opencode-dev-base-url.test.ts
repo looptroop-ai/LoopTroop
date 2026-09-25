@@ -169,6 +169,29 @@ describe('resolveOpenCodeBaseUrl', () => {
 
     expect(result.baseUrl).toBe('http://127.0.0.1:4097')
     expect(result.status).toBe('ready-to-start')
+    expect(result.note).toContain('Configured OpenCode credentials were rejected')
+    expect(result.note).toContain('using http://127.0.0.1:4097')
+    expect(canListen).toHaveBeenCalledWith('127.0.0.1', 4097)
+  })
+
+  it('tries a fallback port after an unrelated HTTP response on the implicit default URL', async () => {
+    const canListen = vi.fn(async (_hostname: string, port: number) => port === 4097)
+    const result = await resolveOpenCodeBaseUrl({
+      requestedBaseUrl: 'http://127.0.0.1:4096',
+      hasExplicitBaseUrl: false,
+      maxPortScanAttempts: 1,
+      deps: {
+        isOpenCodeResponding: async () => {
+          throw new OpenCodeConnectionError('unsupported_protocol', 'Unrelated service returned 404.', 404)
+        },
+        canConnect: async () => false,
+        canListen,
+        inspectPortOccupants: () => ({ port: 4096, occupants: [], rawSocketSnapshot: null }),
+      },
+    })
+
+    expect(result.baseUrl).toBe('http://127.0.0.1:4097')
+    expect(result.status).toBe('ready-to-start')
     expect(canListen).toHaveBeenCalledWith('127.0.0.1', 4097)
   })
 
@@ -186,6 +209,21 @@ describe('resolveOpenCodeBaseUrl', () => {
     })).rejects.toThrow(
       'Configured OpenCode URL http://127.0.0.1:5001 requires valid credentials. Set OPENCODE_PASSWORD for v2 or OPENCODE_SERVER_PASSWORD for v1.',
     )
+    expect(canListen).not.toHaveBeenCalled()
+  })
+
+  it('keeps an explicit URL strict when another HTTP service answers', async () => {
+    const canListen = vi.fn(async () => true)
+    await expect(resolveOpenCodeBaseUrl({
+      requestedBaseUrl: 'http://127.0.0.1:5001',
+      hasExplicitBaseUrl: true,
+      deps: {
+        isOpenCodeResponding: async () => {
+          throw new OpenCodeConnectionError('unsupported_protocol', 'Unrelated service returned 404.', 404)
+        },
+        canListen,
+      },
+    })).rejects.toThrow('Unrelated service returned 404.')
     expect(canListen).not.toHaveBeenCalled()
   })
 

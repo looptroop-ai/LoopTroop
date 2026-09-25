@@ -61,6 +61,7 @@ const IS_WINDOWS = process.platform === 'win32'
  * shared helper, which would give one script's patience to the other two.
  */
 const HEALTH_TIMEOUT_MS = 60_000
+const OPENCODE_PROBE_TIMEOUT_MS = 2_000
 
 /**
  * What `looptroop doctor` tells somebody on the standalone binary to run.
@@ -1854,17 +1855,20 @@ async function runChannel(recipe, options) {
  * The elapsed time is printed on success as well as failure, so a server that
  * is quietly getting slower is visible before it starts timing out.
  */
-async function waitForOpenCode(port, headers, timeoutMs = 240_000) {
+export async function waitForOpenCode(port, headers, timeoutMs = 240_000, fetchImpl = fetch) {
   const started = Date.now()
   const deadline = started + timeoutMs
-  while (Date.now() < deadline) {
-    if (await openCodeAnswers(port, headers)) {
+  while (true) {
+    const remainingMs = deadline - Date.now()
+    if (remainingMs <= 0) return false
+    if (await openCodeAnswers(port, headers, fetchImpl, Math.min(OPENCODE_PROBE_TIMEOUT_MS, remainingMs))) {
       log(`  ready after ${Math.round((Date.now() - started) / 1000)}s`)
       return true
     }
-    await sleep(500)
+    const nextDelayMs = Math.min(500, deadline - Date.now())
+    if (nextDelayMs <= 0) return false
+    await sleep(nextDelayMs)
   }
-  return false
 }
 
 export function createOpenCodeAdoptCredentials(password) {
@@ -1881,9 +1885,12 @@ export function isOpenCodeInfoReady(status, value) {
     Number.isInteger(value.pid) && value.pid > 0
 }
 
-export async function openCodeAnswers(port, headers, fetchImpl = fetch) {
+export async function openCodeAnswers(port, headers, fetchImpl = fetch, timeoutMs = OPENCODE_PROBE_TIMEOUT_MS) {
   try {
-    const response = await fetchImpl(`http://127.0.0.1:${port}/api/info`, { headers })
+    const response = await fetchImpl(`http://127.0.0.1:${port}/api/info`, {
+      headers,
+      signal: AbortSignal.timeout(timeoutMs),
+    })
     if (response.status !== 200) return false
     return isOpenCodeInfoReady(response.status, await response.json())
   } catch {

@@ -276,20 +276,88 @@ export function mapV2Event(
   const cursor = numberValue(asRecord(raw.durable)?.seq)
   const event = mapEventData(raw, data, sessionId, state)
   if (event) return { event, ...(cursor !== undefined ? { cursor } : {}) }
-  return V2_CURSOR_ONLY_EVENTS.has(raw.type) && cursor !== undefined ? { cursor } : null
+  return cursor !== undefined
+    && V2_DURABLE_EVENT_TYPES.has(raw.type)
+    && V2_CURSOR_ONLY_EVENTS.has(raw.type)
+    ? { cursor }
+    : null
 }
+
+// DurableDefinitions in the pinned OpenCode v2.0.16 session-event manifest.
+const V2_DURABLE_EVENT_TYPES = new Set([
+  'session.created',
+  'session.agent.selected',
+  'session.model.selected',
+  'session.moved',
+  'session.renamed',
+  'session.metadata.updated',
+  'session.permissions',
+  'session.viewed',
+  'session.message.content.updated',
+  'session.usage.recorded',
+  'session.deleted',
+  'session.forked',
+  'session.inbox.delivered',
+  'session.inbox.enqueued',
+  'session.inbox.cancelled',
+  'session.inbox.delivery.changed',
+  'session.execution.started',
+  'session.execution.succeeded',
+  'session.execution.failed',
+  'session.execution.interrupted',
+  'session.instructions.updated',
+  'session.synthetic',
+  'session.skill.activated',
+  'session.shell.started',
+  'session.shell.ended',
+  'session.step.started',
+  'session.step.streamed',
+  'session.step.ended',
+  'session.step.failed',
+  'session.text.started',
+  'session.text.ended',
+  'session.reasoning.started',
+  'session.reasoning.ended',
+  'session.tool.input.started',
+  'session.tool.input.ended',
+  'session.tool.called',
+  'session.tool.success',
+  'session.tool.failed',
+  'session.retry.scheduled',
+  'session.compaction.started',
+  'session.compaction.ended',
+  'session.compaction.failed',
+  'session.revert.staged',
+  'session.revert.cleared',
+  'session.revert.committed',
+])
 
 const V2_CURSOR_ONLY_EVENTS = new Set([
   'session.created',
   'session.agent.selected',
   'session.model.selected',
+  'session.moved',
+  'session.renamed',
+  'session.deleted',
+  'session.forked',
   'session.permissions',
   'session.viewed',
   'session.metadata.updated',
-  'session.renamed',
-  'session.instructions.updated',
-  'session.step.streamed',
+  'session.message.content.updated',
   'session.usage.recorded',
+  'session.instructions.updated',
+  'session.synthetic',
+  'session.skill.activated',
+  'session.shell.started',
+  'session.shell.ended',
+  'session.step.streamed',
+  'session.retry.scheduled',
+  'session.compaction.started',
+  'session.compaction.ended',
+  'session.compaction.failed',
+  'session.revert.staged',
+  'session.revert.cleared',
+  'session.revert.committed',
 ])
 
 export function isV2QuestionForm(value: unknown): boolean {
@@ -313,6 +381,17 @@ function mapEventData(
     case 'session.inbox.delivered': {
       const inboxID = stringValue(data.inboxID)
       return inboxID ? { type: type === 'session.inbox.enqueued' ? 'inbox_enqueued' : 'inbox_delivered', sessionId, inboxID } : null
+    }
+    case 'session.inbox.cancelled': {
+      const inboxID = stringValue(data.inboxID)
+      return inboxID ? { type: 'inbox_cancelled', sessionId, inboxID } : null
+    }
+    case 'session.inbox.delivery.changed': {
+      const inboxID = stringValue(data.inboxID)
+      const delivery = data.delivery
+      return inboxID && (delivery === 'steer' || delivery === 'queue')
+        ? { type: 'inbox_delivery_changed', sessionId, inboxID, delivery }
+        : null
     }
     case 'session.execution.started':
       return { type: 'execution_started', sessionId }
@@ -647,6 +726,7 @@ function mapToolEvent(
 function mapQuestionField(value: unknown, header: string): OpenCodeQuestionInfo | null {
   const field = asRecord(value)
   if (!field || field.type === 'external') return null
+  const title = stringValue(field.title)
   const options = arrayValue(field.options).map(option => {
     const rawOption = asRecord(option)
     if (!rawOption) return null
@@ -661,11 +741,11 @@ function mapQuestionField(value: unknown, header: string): OpenCodeQuestionInfo 
   }).filter((option): option is NonNullable<typeof option> => option !== null)
 
   return {
-    question: stringValue(field.title) ?? stringValue(field.description) ?? stringValue(field.key) ?? header,
-    header,
+    question: stringValue(field.description) ?? title ?? stringValue(field.key) ?? header,
+    header: title ?? header,
     options,
     ...(field.type === 'multiselect' ? { multiple: true } : {}),
-    ...(typeof field.custom === 'boolean' ? { custom: field.custom } : {}),
+    custom: field.custom === true,
   }
 }
 

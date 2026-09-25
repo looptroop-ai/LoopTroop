@@ -9,6 +9,7 @@ import { LOOPTROOP_OPENCODE_ROUTING_CONFIG } from '../shared/openRouterRouting'
 import { createChildEnvironment } from '../server/lib/childEnvironment'
 import { launchTool } from './tool-path.ts'
 import { hasOpenCodePassword, withOpenCodePasswordAliases } from '../shared/opencodeAuth'
+import { getOpenCodeServeLogArgs } from '../server/lib/opencodeServeLogArgs'
 
 const requestedBaseUrl = process.env.LOOPTROOP_OPENCODE_BASE_URL?.trim() || DEFAULT_OPENCODE_BASE_URL
 const hasExplicitBaseUrl = Boolean(process.env.LOOPTROOP_OPENCODE_BASE_URL?.trim())
@@ -76,7 +77,9 @@ const childEnvironment = createChildEnvironment(managedServerEnv)
 // BatBadBut hardening — so a command script starts through a resolved cmd.exe
 // with every argument escaped, as the daemon's supervisor starts it, and a
 // real program is spawned directly.
-const opencode = launchTool('opencode', ['serve', ...opencodeLogMode.serveArgs, '--hostname', serveHostname, '--port', String(port)], { env: childEnvironment })
+const logHelp = launchTool('opencode', ['serve', '--help'], { env: childEnvironment })
+const serveLogArgs = getOpenCodeServeLogArgs(opencodeLogMode.mode, logHelp, childEnvironment)
+const opencode = launchTool('opencode', ['serve', ...serveLogArgs, '--hostname', serveHostname, '--port', String(port)], { env: childEnvironment })
 if (generatedPassword) {
   console.log(`[dev-opencode] Generated OpenCode password for the LoopTroop backend: ${generatedPassword}`)
 }

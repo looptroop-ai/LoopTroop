@@ -208,6 +208,8 @@ const serverIntegrationTests = [
   // defeat the vi.mock in a sibling sharing the non-isolated worker.
   'tests/daemonHandoff.test.ts',
   'tests/doctorProbeWindows.test.ts',
+  'tests/dev-opencode.test.ts',
+  'tests/opencodeServeLogArgs.test.ts',
   'tests/seaAssets.test.ts',
   'tests/staticServing.test.ts',
   'tests/sessionAuth.test.ts',

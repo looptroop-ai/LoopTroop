@@ -15,6 +15,7 @@ import {
   isOpenCodeInfoReady,
   moderationSkipReason,
   openCodeAnswers,
+  waitForOpenCode,
   validatePublishedVersion,
   whichLooptroop,
   wingetSubmission,
@@ -597,6 +598,22 @@ describe('adopted OpenCode readiness', () => {
       url: 'http://127.0.0.1:4096/api/info',
       authorization: credentials.headers.Authorization,
     }])
+  })
+
+  it('bounds a hanging OpenCode readiness probe by its overall deadline', async () => {
+    let requestSignal: AbortSignal | undefined
+    const fetchImpl: typeof fetch = async (_input, init) => {
+      requestSignal = init?.signal as AbortSignal
+      return await new Promise<Response>((_resolve, reject) => {
+        requestSignal?.addEventListener('abort', () => reject(requestSignal?.reason), { once: true })
+      })
+    }
+    const started = Date.now()
+
+    await expect(waitForOpenCode(4096, {}, 40, fetchImpl)).resolves.toBe(false)
+
+    expect(requestSignal?.aborted).toBe(true)
+    expect(Date.now() - started).toBeLessThan(1_000)
   })
 
   it.each([204, 401, 404, 500])('rejects HTTP %i from the adopted server', async (status) => {

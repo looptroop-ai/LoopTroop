@@ -424,6 +424,36 @@ describe('pinned OpenCode maintenance', () => {
     }
   })
 
+  it('names the actual npm command when an upgrade fails without output', () => {
+    const binDir = makeTempDir('looptroop-opencode-maintenance-bin-')
+    tempDirs.push(binDir)
+    const opencodeSource = [
+      "const args = process.argv.slice(2)",
+      "if (args[0] === '--version') { process.stdout.write('OpenCode 2.0.15\\n'); process.exit(0) }",
+      "if (args[0] === 'upgrade') { process.stdout.write('Using method: npm\\n'); process.exit(0) }",
+      'process.exit(1)',
+      '',
+    ].join('\n')
+    const npmSource = [
+      'const args = process.argv.slice(2)',
+      "if (args[0] === '--version') { process.stdout.write('12.0.2\\n'); process.exit(0) }",
+      "if (args[0] === 'view') { process.stdout.write(JSON.stringify([{ versions: ['2.0.15', '2.0.16'], time: { '2.0.15': '2026-09-01T00:00:00.000Z', '2.0.16': '2026-09-10T00:00:00.000Z' } }])); process.exit(0) }",
+      "if (args[0] === 'install') process.exit(1)",
+      'process.exit(1)',
+      '',
+    ].join('\n')
+    writeFakeTool(binDir, 'opencode', opencodeSource)
+    writeFakeTool(binDir, 'npm', npmSource)
+    vi.stubEnv('PATH', `${binDir}${process.platform === 'win32' ? ';' : ':'}${process.env.PATH ?? ''}`)
+    vi.stubEnv('LOOPTROOP_TRUSTED_EXECUTABLE_DIRS', binDir)
+
+    const report = upgradeOpenCodeCli({ logPrefix: '' })
+
+    expect(report.errors).toEqual([
+      'npm install --global --allow-scripts=@opencode/cli@2.0.16 @opencode/cli@2.0.16 failed with code 1',
+    ])
+  })
+
   it('defers Homebrew rather than invoking its unpinned upgrade command', () => {
     const binDir = makeTempDir('looptroop-opencode-maintenance-bin-')
     const dataDir = makeTempDir('looptroop-opencode-maintenance-data-')

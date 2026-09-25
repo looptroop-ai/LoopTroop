@@ -27,8 +27,13 @@ import {
 import { TicketInitializationError, initializeTicket } from '../../ticket/initialize'
 import { withCommandLoggingAsync } from '../../log/commandLogger'
 import { validateModelSelection } from '../../opencode/modelValidation'
-import { needsOpenRouterRoutingConfig, registerOpenRouterRoutingModels } from '../../opencode/openRouterRoutingConfig'
-import { refreshProviderCatalog } from '../../opencode/providerCatalog'
+import {
+  needsOpenRouterRoutingConfig,
+  openRouterRoutingModelsWouldChangeConfig,
+  registerOpenRouterRoutingModels,
+} from '../../opencode/openRouterRoutingConfig'
+import { withProviderCatalogReload } from '../../opencode/providerCatalog'
+import { ProviderCatalogBusyError } from '../../opencode/providerCatalogReload'
 import { getOpenCodeConnection } from '../../opencode/connection'
 import { getOpenCodeBaseUrl } from '../../opencode/runtimeConfig'
 import {
@@ -162,15 +167,25 @@ export async function handleStartTicket(c: Context) {
   try {
     if (needsOpenRouterRoutingConfig(modelSelection.councilMembers)) {
       const connection = await getOpenCodeConnection(getOpenCodeBaseUrl())
-      if (registerOpenRouterRoutingModels(modelSelection.councilMembers, connection.protocol)) {
-        await refreshProviderCatalog()
-        emitRoutePhaseLog(ticketId, startPhase, 'info', 'Registered selected OpenRouter routing variants with OpenCode.')
+      if (openRouterRoutingModelsWouldChangeConfig(modelSelection.councilMembers, connection.protocol)) {
+        const registered = await withProviderCatalogReload(async (connection, refresh) => {
+          if (!openRouterRoutingModelsWouldChangeConfig(modelSelection.councilMembers, connection.protocol)) return false
+          if (!registerOpenRouterRoutingModels(modelSelection.councilMembers, connection.protocol)) return false
+          await refresh()
+          return true
+        })
+        if (registered) {
+          emitRoutePhaseLog(ticketId, startPhase, 'info', 'Registered selected OpenRouter routing variants with OpenCode.')
+        }
       }
     }
   } catch (err) {
     const message = err instanceof Error ? err.message : 'Unable to register OpenRouter routing models'
     emitRoutePhaseLog(ticketId, startPhase, 'error', `✗ OpenRouter Routing: ${message}`, { error: message })
-    return c.json({ error: message }, 502)
+    return c.json(
+      { error: message, ...(err instanceof ProviderCatalogBusyError ? { code: 'OPENCODE_BUSY' } : {}) },
+      err instanceof ProviderCatalogBusyError ? 409 : 502,
+    )
   }
 
   emitRoutePhaseLog(ticketId, startPhase, 'info', 'Initializing workspace and ticket directories.')

@@ -1,9 +1,10 @@
 import { describe, expect, it, vi } from 'vitest'
 import { OpenCodeSDKAdapter } from '../adapter'
-import type { OpenCodeTransport, OpenCodeTransportEventEnvelope } from '../transport'
+import type { OpenCodePromptRequest, OpenCodeTransport, OpenCodeTransportEventEnvelope, PromptDispatch } from '../transport'
 import type { Message, StreamEvent } from '../types'
 import { OpenCodeV1Transport, type OpenCodeV1Client } from '../v1Transport'
 import { V2OpenCodeTransport } from '../v2Transport'
+import { OpenCodePromptReceiptUnavailableError } from '../transport'
 
 function message(id: string, content: string): Message {
   return {
@@ -71,9 +72,14 @@ function createV2Transport(overrides: Partial<OpenCodeTransport> = {}) {
     getSession: vi.fn(async () => ({ id: 'session-1', directory: '/worktree' })),
     listSessions: vi.fn(async () => []),
     getSessionMessages: vi.fn(async () => dispatched ? [ ...baseline, message('new-assistant', 'current answer') ] : baseline),
-    subscribeToEvents: vi.fn(async (_sessionId, _directory, signal) => ({ events: source.events(signal), cursor: 50 })),
+    subscribeToEvents: vi.fn(async (_sessionId, _directory, signal) => ({ events: source.events(signal), cursor: 50, coverageComplete: true })),
     waitForIdle: vi.fn(async () => undefined),
-    readSessionLog: vi.fn(async (_sessionId, after = 50) => ({ events: [], cursor: after })),
+    readSessionLog: vi.fn(async (_sessionId, after?: number) => ({
+      events: [],
+      cursor: after ?? 50,
+      coverageComplete: after !== undefined,
+    })),
+    listPendingInboxes: vi.fn(async () => []),
     dispatchPrompt: vi.fn(async () => {
       dispatched = true
       return { kind: 'accepted' as const, receipt: { inboxID: 'inbox-own' } }
@@ -116,6 +122,17 @@ const executionEvent = (type: 'execution_started' | 'execution_terminal', cursor
     : { type, sessionId: 'session-1', outcome: 'succeeded' },
 })
 
+const idleStatusEvent = (cursor: number): OpenCodeTransportEventEnvelope => ({
+  cursor,
+  event: { type: 'session_status', sessionId: 'session-1', status: 'idle' },
+})
+
+function withCertifiedPrefix(events: OpenCodeTransportEventEnvelope[]): OpenCodeTransportEventEnvelope[] {
+  const firstCursor = events[0]?.cursor
+  if (firstCursor === undefined || !Number.isSafeInteger(firstCursor) || firstCursor <= 0) return events
+  return [...Array.from({ length: firstCursor }, (_, cursor) => idleStatusEvent(cursor)), ...events]
+}
+
 describe('OpenCode adapter transport orchestration', () => {
   it('accepts a stock v2 live turn through the HTTP transport when post-snapshot history is empty', async () => {
     const encoder = new TextEncoder()
@@ -139,6 +156,7 @@ describe('OpenCode adapter transport orchestration', () => {
       if (url.pathname === '/api/session/session-1') {
         return jsonResponse({ data: { id: 'session-1', location: { directory: '/workspace' } } })
       }
+      if (url.pathname === '/api/session/session-1/inbox') return jsonResponse({ data: [] })
       if (url.pathname.endsWith('/wait')) return emptyResponse()
       if (url.pathname === '/api/event') {
         if (init.signal) eventSignals.push(init.signal)
@@ -190,7 +208,7 @@ describe('OpenCode adapter transport orchestration', () => {
     await expect(adapter.promptSession('session-1', [{ type: 'text', content: 'prompt' }]))
       .resolves.toBe('real v2 answer')
     expect(promptPostCount).toBe(1)
-    expect(logCursors).toEqual([null, '40', '44'])
+    expect(logCursors).toEqual([null, '40', '40', '40', '40', '40', '44'])
     expect(eventSignals).toHaveLength(1)
     expect(eventSignals[0]?.aborted).toBe(true)
   })
@@ -214,15 +232,16 @@ describe('OpenCode adapter transport orchestration', () => {
     expect(transport.readSessionLog).toHaveBeenCalledWith('session-1', 54, undefined)
   })
 
-  it('captures a v2 cursor before waiting idle and subscribes from that cursor', async () => {
+  it('opens and consumes v2 coverage from the original cursor before waiting idle', async () => {
     const { transport, source, markDispatched } = createV2Transport()
     const order: string[] = []
     vi.mocked(transport.readSessionLog).mockImplementation(async (_sessionId, after) => {
       if (after === undefined) {
         order.push('cursor')
-        return { events: [], cursor: 50 }
+        return { events: [], cursor: 50, coverageComplete: true }
       }
-      return { events: [], cursor: after }
+      order.push(`history:${after}`)
+      return { events: [], cursor: after, coverageComplete: true }
     })
     vi.mocked(transport.waitForIdle).mockImplementation(async () => { order.push('idle') })
     vi.mocked(transport.subscribeToEvents).mockImplementation(async (_sessionId, _directory, signal, _safetyMs, afterCursor) => {
@@ -244,7 +263,109 @@ describe('OpenCode adapter transport orchestration', () => {
     await expect(createAdapter(transport).promptSession('session-1', [{ type: 'text', content: 'prompt' }]))
       .resolves.toBe('current answer')
 
-    expect(order.slice(0, 4)).toEqual(['cursor', 'idle', 'subscribe:50', 'dispatch'])
+    expect(order.slice(0, 4)).toEqual(['cursor', 'subscribe:50', 'history:50', 'idle'])
+    expect(order.filter(entry => entry === 'history:50')).toHaveLength(4)
+    expect(order.indexOf('dispatch')).toBeGreaterThan(order.indexOf('idle'))
+    expect(order).toContain('dispatch')
+  })
+
+  it('keeps a queued competitor after an earlier unrelated terminal across the idle boundary', async () => {
+    const completedPriorTurn = withCertifiedPrefix([
+      inboxEvent('inbox_enqueued', 'inbox-prior', 47),
+      executionEvent('execution_started', 48),
+      inboxEvent('inbox_delivered', 'inbox-prior', 49),
+      executionEvent('execution_terminal', 50),
+    ])
+    const externalInbox = inboxEvent('inbox_enqueued', 'inbox-external', 51)
+    let idleCompleted = false
+    const { transport, source } = createV2Transport({
+      waitForIdle: vi.fn(async () => { source.push(externalInbox); idleCompleted = true }),
+      readSessionLog: vi.fn(async (_sessionId, after) => {
+        if (after === undefined) return { events: completedPriorTurn, cursor: 50, coverageComplete: true }
+        if (!idleCompleted) return { events: [], cursor: after, coverageComplete: true }
+        const events = after! < externalInbox.cursor! ? [externalInbox] : []
+        return { events, cursor: Math.max(after!, externalInbox.cursor!), coverageComplete: true }
+      }),
+    })
+
+    await expect(createAdapter(transport).promptSession('session-1', [{ type: 'text', content: 'prompt' }]))
+      .rejects.toThrow('Another OpenCode inbox remains uncompleted after the prior turn')
+    expect(transport.waitForIdle).toHaveBeenCalledOnce()
+    expect(transport.dispatchPrompt).not.toHaveBeenCalled()
+  })
+
+  it('allows a proven completed old turn to form the new prompt baseline', async () => {
+    const completedOldTurn = withCertifiedPrefix([
+      inboxEvent('inbox_enqueued', 'inbox-old', 47),
+      executionEvent('execution_started', 48),
+      inboxEvent('inbox_delivered', 'inbox-old', 49),
+      executionEvent('execution_terminal', 50),
+    ])
+    const { transport, source, markDispatched } = createV2Transport({
+      readSessionLog: vi.fn(async (_sessionId, after) => after === undefined
+        ? { events: completedOldTurn, cursor: 50, coverageComplete: true }
+        : { events: [], cursor: after, coverageComplete: true }),
+      dispatchPrompt: vi.fn(async () => {
+        markDispatched()
+        source.push(
+          inboxEvent('inbox_enqueued', 'inbox-own', 51),
+          executionEvent('execution_started', 52),
+          inboxEvent('inbox_delivered', 'inbox-own', 53),
+          executionEvent('execution_terminal', 54),
+        )
+        return { kind: 'accepted' as const, receipt: { inboxID: 'inbox-own' } }
+      }),
+    })
+
+    await expect(createAdapter(transport).promptSession('session-1', [{ type: 'text', content: 'prompt' }]))
+      .resolves.toBe('current answer')
+    expect(transport.dispatchPrompt).toHaveBeenCalledOnce()
+  })
+
+  it('does not continue or approve a v2 prompt whose POST has no verifiable receipt', async () => {
+    const { transport, source } = createV2Transport({
+      dispatchPrompt: vi.fn(async () => {
+        source.push({ event: {
+          type: 'permission',
+          sessionId: 'session-1',
+          action: 'asked',
+          permissionId: 'permission-after-uncertain-post',
+          permission: 'read',
+        } })
+        throw new OpenCodePromptReceiptUnavailableError('session-1')
+      }),
+    })
+
+    await expect(createAdapter(transport).promptSession(
+      'session-1',
+      [{ type: 'text', content: 'prompt' }],
+      undefined,
+      { autoApprovePermissions: true },
+    )).rejects.toMatchObject({
+      name: 'OpenCodePromptReceiptUnavailableError',
+      blockedErrorDiagnostics: { kind: 'runtime', summary: expect.stringContaining('receipt') },
+    })
+    expect(transport.dispatchPrompt).toHaveBeenCalledOnce()
+    expect(transport.replyPermission).not.toHaveBeenCalled()
+  })
+
+  it('preserves caller cancellation when an aborted v2 POST has no verifiable receipt', async () => {
+    const controller = new AbortController()
+    const { transport } = createV2Transport({
+      dispatchPrompt: vi.fn((_request: OpenCodePromptRequest, signal?: AbortSignal) => new Promise<PromptDispatch>((_resolve, reject) => {
+        signal?.addEventListener('abort', () => reject(new OpenCodePromptReceiptUnavailableError('session-1')), { once: true })
+      })),
+    })
+    const prompt = createAdapter(transport).promptSession('session-1', [{ type: 'text', content: 'prompt' }], controller.signal)
+    while (!vi.mocked(transport.dispatchPrompt).mock.calls.length) await new Promise(resolve => setTimeout(resolve, 0))
+    controller.abort()
+
+    await expect(prompt).rejects.toMatchObject({
+      name: 'AbortError',
+      openCodePromptReceiptUnavailable: true,
+      blockedErrorDiagnostics: { kind: 'runtime', summary: expect.stringContaining('receipt') },
+    })
+    expect(transport.replyPermission).not.toHaveBeenCalled()
   })
 
   it('opens v2 event coverage before changing permissions and consumes its cursor-only update', async () => {
@@ -283,16 +404,34 @@ describe('OpenCode adapter transport orchestration', () => {
       { permission: [{ permission: 'read', pattern: '*', action: 'allow' }] },
     )).resolves.toBe('current answer')
 
-    expect(order.slice(0, 5)).toEqual(['cursor', 'idle', 'subscribe:50', 'permissions', 'dispatch'])
+    expect(order.slice(0, 8)).toEqual([
+      'cursor',
+      'subscribe:50',
+      'history:50',
+      'idle',
+      'history:50',
+      'history:50',
+      'permissions',
+      'history:51',
+    ])
+    expect(order).toContain('dispatch')
     expect(transport.readSessionLog).toHaveBeenCalledWith('session-1', 55, undefined)
   })
 
-  it('does not finish a new prompt from an earlier execution start and terminal', async () => {
+  it('fails closed when a prior execution has no certified inbox lifecycle', async () => {
     const { transport, source } = createV2Transport()
     source.push(
       executionEvent('execution_started', 51),
       executionEvent('execution_terminal', 52),
     )
+    vi.mocked(transport.readSessionLog).mockImplementation(async (_sessionId, after) => after === undefined
+      ? { events: [], cursor: 50, coverageComplete: false }
+      : { events: [], cursor: after, coverageComplete: true })
+    vi.mocked(transport.subscribeToEvents).mockImplementation(async (_sessionId, _directory, signal, _safetyMs, afterCursor) => ({
+      events: source.events(signal),
+      cursor: afterCursor,
+      coverageComplete: true,
+    }))
     vi.mocked(transport.dispatchPrompt).mockImplementation(async () => {
       source.push(
         inboxEvent('inbox_enqueued', 'inbox-own', 53),
@@ -300,18 +439,11 @@ describe('OpenCode adapter transport orchestration', () => {
       )
       return { kind: 'accepted', receipt: { inboxID: 'inbox-own' } }
     })
-    const controller = new AbortController()
-    const prompt = createAdapter(transport).promptSession(
+    await expect(createAdapter(transport).promptSession(
       'session-1',
       [{ type: 'text', content: 'new prompt' }],
-      controller.signal,
-    )
-    let settled = false
-    void prompt.finally(() => { settled = true }).catch(() => undefined)
-    await new Promise(resolve => setTimeout(resolve, 20))
-    expect(settled).toBe(false)
-    controller.abort()
-    await expect(prompt).rejects.toMatchObject({ name: 'AbortError' })
+    )).rejects.toThrow('execution without a certified inbox enqueue')
+    expect(transport.dispatchPrompt).not.toHaveBeenCalled()
   })
 
   it('refuses to dispatch when the v2 subscription cannot certify its history cursor', async () => {
@@ -367,7 +499,7 @@ describe('OpenCode adapter transport orchestration', () => {
       undefined,
       { autoApprovePermissions: true },
     )).rejects.toThrow('Failed to auto-approve OpenCode permission read: permission endpoint unavailable')
-    expect(transport.readSessionLog).toHaveBeenCalledTimes(1)
+    expect(transport.readSessionLog).toHaveBeenCalledTimes(5)
   })
 
   it('reconciles an ephemeral permission ask after its inbox was accepted', async () => {
@@ -414,8 +546,10 @@ describe('OpenCode adapter transport orchestration', () => {
   })
 
   it('does not auto-approve a pending ask after replay finds a competing inbox', async () => {
+    let dispatched = false
     const { transport, source } = createV2Transport({
       dispatchPrompt: vi.fn(async () => {
+        dispatched = true
         source.push({
           event: {
             type: 'permission',
@@ -430,14 +564,16 @@ describe('OpenCode adapter transport orchestration', () => {
       }),
       readSessionLog: vi.fn(async (_sessionId, after) => {
         if (after === undefined) return { events: [], cursor: 50, coverageComplete: true }
+        if (!dispatched) return { events: [], cursor: after, coverageComplete: true }
         if (after === 50) return {
           events: [
-            inboxEvent('inbox_enqueued', 'inbox-external', 51),
-            executionEvent('execution_started', 52),
-            inboxEvent('inbox_delivered', 'inbox-external', 53),
-            executionEvent('execution_terminal', 54),
-          ],
-          cursor: 54,
+          inboxEvent('inbox_enqueued', 'inbox-prior', 51),
+          executionEvent('execution_started', 52),
+          inboxEvent('inbox_delivered', 'inbox-prior', 53),
+          executionEvent('execution_terminal', 54),
+          inboxEvent('inbox_enqueued', 'inbox-external', 55),
+        ],
+        cursor: 55,
           coverageComplete: true,
         }
         return { events: [], cursor: after, coverageComplete: true }
@@ -523,6 +659,21 @@ describe('OpenCode adapter transport orchestration', () => {
 
     await expect(createAdapter(transport).promptSession('session-1', [{ type: 'text', content: echoedPrompt }]))
       .resolves.toBe('actual streamed answer')
+  })
+
+  it('does not reuse a pre-prompt v1 assistant snapshot as the new response', async () => {
+    const echoedPrompt = 'CRITICAL OUTPUT RULE:\nReturn strict machine-readable output.'
+    const transport = createV1Transport({
+      getSessionMessages: vi.fn(async () => [message('old-assistant', echoedPrompt)]),
+      dispatchPrompt: vi.fn(async () => ({
+        kind: 'completed' as const,
+        message: message('old-assistant', echoedPrompt),
+      })),
+    })
+
+    await expect(createAdapter(transport).promptSession('session-1', [{ type: 'text', content: echoedPrompt }]))
+      .resolves.toBe('')
+    expect(transport.getSessionMessages).toHaveBeenCalled()
   })
 
   it('keeps provider diagnostics when cancellation races with a provider error', async () => {
@@ -752,21 +903,28 @@ describe('OpenCode adapter transport orchestration', () => {
   })
 
   it('recovers an accepted prompt from the durable log without resubmitting it', async () => {
+    let dispatched = false
     const { transport, source, markDispatched } = createV2Transport({
       dispatchPrompt: vi.fn(async () => {
+        dispatched = true
         markDispatched()
         source.fail(new Error('SSE disconnected'))
         return { kind: 'accepted' as const, receipt: { inboxID: 'inbox-own' } }
       }),
-      readSessionLog: vi.fn(async (_sessionId, after) => after === undefined ? ({ events: [], cursor: 50 }) : after < 54 ? ({
-        events: [
-          inboxEvent('inbox_enqueued', 'inbox-own', 51),
-          executionEvent('execution_started', 52),
-          inboxEvent('inbox_delivered', 'inbox-own', 53),
-          executionEvent('execution_terminal', 54),
-        ],
-        cursor: 54,
-      }) : ({ events: [], cursor: after })),
+      readSessionLog: vi.fn(async (_sessionId, after) => {
+        if (after === undefined) return { events: [], cursor: 50, coverageComplete: false }
+        if (!dispatched) return { events: [], cursor: after, coverageComplete: true }
+        return after < 54 ? {
+          events: [
+            inboxEvent('inbox_enqueued', 'inbox-own', 51),
+            executionEvent('execution_started', 52),
+            inboxEvent('inbox_delivered', 'inbox-own', 53),
+            executionEvent('execution_terminal', 54),
+          ],
+          cursor: 54,
+          coverageComplete: true,
+        } : { events: [], cursor: after, coverageComplete: true }
+      }),
     })
     await expect(createAdapter(transport).promptSession('session-1', [{ type: 'text', content: 'prompt' }]))
       .resolves.toBe('current answer')
@@ -814,6 +972,7 @@ describe('OpenCode adapter transport orchestration', () => {
   it('replays the durable log after a recovered snapshot when SSE closed during that snapshot', async () => {
     let reads = 0
     let logReads = 0
+    let dispatched = false
     let snapshotReturned = false
     let markSnapshotStarted: (() => void) | undefined
     let releaseSnapshot: (() => void) | undefined
@@ -832,11 +991,13 @@ describe('OpenCode adapter transport orchestration', () => {
         ]
       }),
       dispatchPrompt: vi.fn(async () => {
+        dispatched = true
         source.fail(new Error('SSE disconnected'))
         return { kind: 'accepted' as const, receipt: { inboxID: 'inbox-own' } }
       }),
       readSessionLog: vi.fn(async (_sessionId, cursor) => {
-        if (cursor === undefined) return { events: [], cursor: 50 }
+        if (cursor === undefined) return { events: [], cursor: 50, coverageComplete: false }
+        if (!dispatched) return { events: [], cursor }
         logReads += 1
         if (logReads === 1) {
           return {
@@ -851,7 +1012,7 @@ describe('OpenCode adapter transport orchestration', () => {
         }
         expect(snapshotReturned).toBe(true)
         expect(cursor).toBe(54)
-        return { events: [inboxEvent('inbox_enqueued', 'inbox-external', 55)], cursor: 55 }
+        return { events: [inboxEvent('inbox_enqueued', 'inbox-external', 55)], cursor: 55, coverageComplete: true }
       }),
     })
 
@@ -866,6 +1027,7 @@ describe('OpenCode adapter transport orchestration', () => {
 
   it('rejects a stable snapshot when the v2 watermark advanced without replayable history', async () => {
     let reads = 0
+    let dispatched = false
     const { transport, source } = createV2Transport({
       getSessionMessages: vi.fn(async () => {
         reads += 1
@@ -874,19 +1036,26 @@ describe('OpenCode adapter transport orchestration', () => {
           : [message('own-answer', 'own answer'), message('external-answer', 'external answer')]
       }),
       dispatchPrompt: vi.fn(async () => {
+        dispatched = true
         source.push(
           inboxEvent('inbox_enqueued', 'inbox-own', 51),
           executionEvent('execution_started', 52),
           inboxEvent('inbox_delivered', 'inbox-own', 53),
           executionEvent('execution_terminal', 54),
         )
+        source.fail(new Error('SSE disconnected before missing sequence recovery'))
         return { kind: 'accepted' as const, receipt: { inboxID: 'inbox-own' } }
       }),
-      readSessionLog: vi.fn(async (_sessionId, after = 50) => ({ events: [], cursor: after + 1 })),
+      readSessionLog: vi.fn(async (_sessionId, after) => {
+        if (after === undefined) return { events: [], cursor: 50, coverageComplete: false }
+        return dispatched
+          ? { events: [], cursor: after + 1, coverageComplete: true }
+          : { events: [], cursor: after, coverageComplete: true }
+      }),
     })
 
     await expect(createAdapter(transport).promptSession('session-1', [{ type: 'text', content: 'own prompt' }]))
-      .rejects.toThrow('history is incomplete')
+      .rejects.toThrow('watermark is unavailable')
     expect(reads).toBe(2)
   })
 
@@ -910,6 +1079,7 @@ describe('OpenCode adapter transport orchestration', () => {
   it('fails closed if an echo-refresh snapshot cannot be certified by durable replay', async () => {
     let reads = 0
     let logReads = 0
+    let dispatched = false
     const { transport, source } = createV2Transport({
       getSessionMessages: vi.fn(async () => {
         reads += 1
@@ -920,6 +1090,7 @@ describe('OpenCode adapter transport orchestration', () => {
         return [message('refreshed', 'refreshed answer')]
       }),
       dispatchPrompt: vi.fn(async () => {
+        dispatched = true
         source.push(
           inboxEvent('inbox_enqueued', 'inbox-own', 51),
           executionEvent('execution_started', 52),
@@ -929,7 +1100,8 @@ describe('OpenCode adapter transport orchestration', () => {
         return { kind: 'accepted' as const, receipt: { inboxID: 'inbox-own' } }
       }),
       readSessionLog: vi.fn(async (_sessionId, cursor) => {
-        if (cursor === undefined) return { events: [], cursor: 50 }
+        if (cursor === undefined) return { events: [], cursor: 50, coverageComplete: false }
+        if (!dispatched) return { events: [], cursor }
         logReads += 1
         if (logReads === 1) return { events: [], cursor }
         throw new Error('session log unavailable')
@@ -939,7 +1111,7 @@ describe('OpenCode adapter transport orchestration', () => {
     await expect(createAdapter(transport).promptSession(
       'session-1',
       [{ type: 'text', content: 'own prompt' }],
-    )).rejects.toThrow('history is unavailable for accepted prompt certification: session log unavailable')
+    )).rejects.toThrow('session log unavailable')
     expect(reads).toBe(3)
     expect(logReads).toBe(2)
   })
@@ -947,6 +1119,7 @@ describe('OpenCode adapter transport orchestration', () => {
   it('fails closed if an echo-refresh snapshot advances past missing durable history', async () => {
     let reads = 0
     let logReads = 0
+    let dispatched = false
     const { transport, source } = createV2Transport({
       getSessionMessages: vi.fn(async () => {
         reads += 1
@@ -955,25 +1128,28 @@ describe('OpenCode adapter transport orchestration', () => {
         return [message('refreshed', 'refreshed answer')]
       }),
       dispatchPrompt: vi.fn(async () => {
+        dispatched = true
         source.push(
           inboxEvent('inbox_enqueued', 'inbox-own', 51),
           executionEvent('execution_started', 52),
           inboxEvent('inbox_delivered', 'inbox-own', 53),
           executionEvent('execution_terminal', 54),
         )
+        source.fail(new Error('SSE disconnected before missing sequence recovery'))
         return { kind: 'accepted' as const, receipt: { inboxID: 'inbox-own' } }
       }),
       readSessionLog: vi.fn(async (_sessionId, after) => {
-        if (after === undefined) return { events: [], cursor: 50 }
+        if (after === undefined) return { events: [], cursor: 50, coverageComplete: false }
+        if (!dispatched) return { events: [], cursor: after }
         logReads += 1
-        return { events: [], cursor: after + (logReads === 1 ? 0 : 1) }
+        return { events: [], cursor: after + (logReads === 1 ? 0 : 1), coverageComplete: false }
       }),
     })
 
     await expect(createAdapter(transport).promptSession(
       'session-1',
       [{ type: 'text', content: 'own prompt' }],
-    )).rejects.toThrow('history is incomplete')
+    )).rejects.toThrow('history and live event stream are incomplete')
     expect(reads).toBe(3)
     expect(logReads).toBe(2)
   })
@@ -1000,10 +1176,10 @@ describe('OpenCode adapter transport orchestration', () => {
     const { transport, source } = createV2Transport({
       dispatchPrompt: vi.fn(async () => {
         source.push(
-          inboxEvent('inbox_enqueued', 'inbox-own', 50),
-          executionEvent('execution_started', 51),
-          inboxEvent('inbox_delivered', 'inbox-own', 52),
-          { cursor: 53, event: { type: 'execution_terminal', sessionId: 'session-1', outcome: 'interrupted' } },
+          inboxEvent('inbox_enqueued', 'inbox-own', 51),
+          executionEvent('execution_started', 52),
+          inboxEvent('inbox_delivered', 'inbox-own', 53),
+          { cursor: 54, event: { type: 'execution_terminal', sessionId: 'session-1', outcome: 'interrupted' } },
         )
         return { kind: 'accepted' as const, receipt: { inboxID: 'inbox-own' } }
       }),

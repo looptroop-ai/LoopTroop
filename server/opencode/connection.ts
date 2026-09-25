@@ -1,5 +1,5 @@
 import { createHash } from 'node:crypto'
-import { getOpenCodeBasicAuthHeader, getOpenCodeV2BasicAuthHeader } from '../../shared/opencodeAuth'
+import { getOpenCodeBasicAuthHeader, getOpenCodeV2BasicAuthHeader, withOpenCodePasswordAliases } from '../../shared/opencodeAuth'
 
 export type OpenCodeProtocol = 'v1' | 'v2'
 export type OpenCodeFailureKind = 'authentication' | 'unsupported_protocol' | 'network'
@@ -27,9 +27,10 @@ const CONNECTION_TIMEOUT_MS = 2_000
 const connectionCache = new Map<string, { origin: string; value: OpenCodeConnection }>()
 
 function credentials(env: NodeJS.ProcessEnv = process.env) {
+  const aliasedEnv = withOpenCodePasswordAliases({ ...env })
   return {
-    v2: getOpenCodeV2BasicAuthHeader(env),
-    v1: getOpenCodeBasicAuthHeader(env),
+    v2: getOpenCodeV2BasicAuthHeader(aliasedEnv),
+    v1: getOpenCodeBasicAuthHeader(aliasedEnv),
   }
 }
 

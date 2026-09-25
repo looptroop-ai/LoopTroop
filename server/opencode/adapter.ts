@@ -19,6 +19,7 @@ import type {
   OpenCodeSessionLog,
   PromptDispatch,
 } from './transport'
+import { OPEN_CODE_V2_EVENT_SYNC_TIMEOUT_MS, OpenCodePromptReceiptUnavailableError } from './transport'
 import { OpenCodeV1Transport, type OpenCodeV1Client } from './v1Transport'
 import { parseModelRef } from './types'
 import { isPermissionDeniedByRules } from './toolPolicy'
@@ -46,6 +47,7 @@ import { enrichGenericOpenCodeProviderError } from './logDiagnostics'
 import { getErrorMessage } from '@shared/typeGuards'
 import { isAbortError } from '../lib/abort'
 import { OpenCodeConnectionError } from './connection'
+import { beginOpenCodePromptActivity } from './providerCatalogReload'
 
 export interface OpenCodeAdapter {
   createSession(projectPath: string, signal?: AbortSignal, options?: OpenCodeSessionCreateOptions): Promise<Session>
@@ -93,13 +95,20 @@ type AcceptedPromptLifecycleResult =
   | { kind: 'conflict'; error: string }
 
 function hasCompleteV2LogCoverage(after: number, log: OpenCodeSessionLog): boolean {
-  if (log.coverageComplete === false || !Number.isSafeInteger(log.cursor) || log.cursor! < after) return false
+  if (log.coverageComplete === false || log.hasUnmappedEvents === true || !Number.isSafeInteger(log.cursor) || log.cursor! < after) return false
   let next = after + 1
   for (const envelope of log.events) {
     if (!Number.isSafeInteger(envelope.cursor) || envelope.cursor !== next) return false
     next++
   }
   return next === log.cursor! + 1
+}
+
+function hasSafeV2LogWatermark(after: number, log: OpenCodeSessionLog): boolean {
+  return log.hasUnmappedEvents !== true
+    && Number.isSafeInteger(log.cursor)
+    && log.cursor! >= after
+    && !log.events.some(envelope => envelope.coverageGap)
 }
 
 function formatContextGuidance(guidance: Bead['contextGuidance']): string {
@@ -260,6 +269,7 @@ export class OpenCodeSDKAdapter implements OpenCodeAdapter {
     if (this.activePromptSessions.has(sessionId)) {
       throw new Error(`OpenCode session ${sessionId} already has a prompt in progress`)
     }
+    const endPromptActivity = beginOpenCodePromptActivity()
     this.activePromptSessions.add(sessionId)
     const promptSignal = options?.signal ?? signal
     // SDK_OPERATION_TIMEOUT_MS bounds individual API calls, not a whole model
@@ -275,7 +285,7 @@ export class OpenCodeSDKAdapter implements OpenCodeAdapter {
     const dispatchSignal = operationSignal
       ? AbortSignal.any([operationSignal, dispatchAbortController.signal])
       : dispatchAbortController.signal
-    let streamDrain: Promise<{ ended: boolean; error?: unknown }> | undefined
+    let streamDrain!: Promise<{ ended: boolean; error?: unknown }>
     let streamDrainWaited = false
     let permissionReplyFailure: Error | null = null
     let permissionReplyPending: Promise<void> | undefined
@@ -284,20 +294,167 @@ export class OpenCodeSDKAdapter implements OpenCodeAdapter {
       const transport = await this.getTransport(operationSignal)
       const directory = await this.resolveSessionDirectory(sessionId, operationSignal, transport)
       let bootstrapCursor: number | undefined
+      let bootstrapHistory: OpenCodeSessionLog | undefined
+      let preWaitLog: OpenCodeSessionLog | undefined
+      let idleLog: OpenCodeSessionLog | undefined
+      let subscription!: OpenCodeEventSubscription
+      let preflightCoverageGap = false
+      let preflightCursor: number | undefined
+      let preflightLifecycleActive = false
+      let v2StreamEnded = false
+      const preflightEnvelopes: OpenCodeTransportEventEnvelope[] = []
+      let initialSubscriptionEnvelopes = new Set<OpenCodeTransportEventEnvelope>()
+      let wakePreflightWaiter: (() => void) | undefined
+      let liveSubscriptionObserver: ((envelope: OpenCodeTransportEventEnvelope) => void | Promise<void>) | undefined
+      const observeSubscriptionEnvelope: (envelope: OpenCodeTransportEventEnvelope) => void | Promise<void> = envelope => {
+        if (initialSubscriptionEnvelopes.has(envelope)) return
+        let forwarded = envelope
+        if (envelope.coverageGap) preflightCoverageGap = true
+        if (typeof envelope.cursor === 'number') {
+          if (preflightCursor !== undefined && envelope.cursor > preflightCursor) {
+            if (envelope.cursor !== preflightCursor + 1) {
+              preflightCoverageGap = true
+              forwarded = { ...envelope, coverageGap: true }
+            }
+            else preflightCursor = envelope.cursor
+          } else if (preflightCursor !== undefined && envelope.cursor <= preflightCursor) {
+            if (!envelope.coverageGap) return
+          }
+        }
+        if (liveSubscriptionObserver) {
+          const result = liveSubscriptionObserver(forwarded)
+          if (result && typeof (result as Promise<void>).then === 'function') {
+            return (result as Promise<void>).finally(() => wakePreflightWaiter?.())
+          }
+          wakePreflightWaiter?.()
+          return
+        }
+        preflightEnvelopes.push(forwarded)
+        wakePreflightWaiter?.()
+      }
+      const waitForV2StreamCoverage = async (target: number, purpose: string) => {
+        const deadline = Date.now() + OPEN_CODE_V2_EVENT_SYNC_TIMEOUT_MS
+        while (preflightCursor === undefined || preflightCursor < target || (preflightLifecycleActive && (lastCursor === undefined || lastCursor < target))) {
+          if (preflightCoverageGap) {
+            throw new Error(`OpenCode v2 event stream lost sequence coverage ${purpose}; refusing to dispatch without certifiable event coverage`)
+          }
+          if (v2StreamEnded) throw new Error(`OpenCode v2 event stream ended before sequence coverage ${purpose}`)
+          if (operationSignal?.aborted) throw operationSignal.reason
+          const remaining = deadline - Date.now()
+          if (remaining <= 0) {
+            throw new Error(`OpenCode v2 event stream did not cover the session watermark ${purpose}; refusing to dispatch without certifiable event coverage`)
+          }
+          await new Promise<void>((resolve, reject) => {
+            let settled = false
+            const finish = (callback: () => void) => {
+              if (settled) return
+              settled = true
+              clearTimeout(timer)
+              operationSignal?.removeEventListener('abort', onAbort)
+              if (wakePreflightWaiter === wake) wakePreflightWaiter = undefined
+              callback()
+            }
+            const timer = setTimeout(() => finish(() => reject(new Error(`OpenCode v2 event stream did not cover the session watermark ${purpose}`))), remaining)
+            const onAbort = () => finish(() => reject(operationSignal?.reason))
+            const wake = () => finish(resolve)
+            wakePreflightWaiter = wake
+            if (operationSignal?.aborted) onAbort()
+            else operationSignal?.addEventListener('abort', onAbort, { once: true })
+          })
+        }
+        if (preflightCoverageGap) {
+          throw new Error(`OpenCode v2 event stream lost sequence coverage ${purpose}; refusing to dispatch without certifiable event coverage`)
+        }
+      }
       if (transport.protocol === 'v2') {
-        let history: OpenCodeSessionLog
+        if (typeof transport.listPendingInboxes !== 'function') {
+          throw new Error('OpenCode v2 pending inbox state is unavailable; refusing to dispatch without a verified inbox boundary')
+        }
         try {
-          history = await transport.readSessionLog(sessionId, undefined, operationSignal)
+          bootstrapHistory = await transport.readSessionLog(sessionId, undefined, operationSignal)
         } catch (error) {
           if (operationSignal?.aborted || isAbortError(error)) throw error
           throw new Error(`OpenCode v2 history is unavailable; cannot establish a safe cursor before waiting for the session: ${getErrorMessage(error)}`)
         }
-        if (typeof history.cursor !== 'number' || !Number.isSafeInteger(history.cursor)) {
-          throw new Error('OpenCode v2 history is unavailable; cannot establish a safe cursor before waiting for the session')
+        const bootstrapCursorIsValid = Number.isSafeInteger(bootstrapHistory.cursor) && bootstrapHistory.cursor! >= 0
+        const bootstrapHasCompleteHistory = bootstrapHistory.coverageComplete === true
+          && !bootstrapHistory.events.some(envelope => envelope.coverageGap)
+        const bootstrapIsBoundaryOnly = bootstrapHistory.coverageComplete === false
+          && bootstrapHistory.events.length === 0
+          && bootstrapHistory.hasUnmappedEvents !== true
+        if (!bootstrapCursorIsValid || bootstrapHistory.hasUnmappedEvents === true || (!bootstrapHasCompleteHistory && !bootstrapIsBoundaryOnly)) {
+          throw new Error('OpenCode v2 history is unavailable or incomplete; cannot establish a trusted boundary before waiting for the session')
         }
-        bootstrapCursor = history.cursor
+        const sessionBootstrapCursor = bootstrapHistory.cursor!
+        bootstrapCursor = sessionBootstrapCursor
+
+        // Establish and start consuming durable coverage before waiting. The
+        // cursor remains the one captured above; the post-wait log below adds
+        // evidence instead of moving the subscription past it.
+        subscription = await transport.subscribeToEvents(
+          sessionId,
+          directory,
+          streamSignal,
+          promptOptions.stepFinishSafetyMs,
+          sessionBootstrapCursor,
+        )
+        if (
+          typeof subscription.cursor !== 'number'
+          || !Number.isSafeInteger(subscription.cursor)
+          || subscription.cursor < bootstrapCursor
+          || subscription.coverageComplete !== true
+        ) {
+          await subscription.close?.()
+          throw new Error('OpenCode v2 history is unavailable or incomplete; refusing to dispatch without a certifiable event cursor')
+        }
+        const certifiedSubscriptionCursor = subscription.cursor!
+        preflightCursor = subscription.cursor
+        const initialEvents = subscription.initialEvents ?? []
+        initialSubscriptionEnvelopes = new Set(initialEvents)
+        preflightEnvelopes.push(...initialEvents)
+        streamDrain = this.consumeTransportEvents(
+          subscription,
+          envelope => observeSubscriptionEnvelope(envelope),
+          streamSignal,
+          transport.protocol,
+          sessionId,
+        )
+        if (transport.protocol === 'v2') {
+          void streamDrain.then(() => {
+            v2StreamEnded = true
+            wakePreflightWaiter?.()
+          })
+        }
+
+        try {
+          preWaitLog = await transport.readSessionLog(sessionId, sessionBootstrapCursor, operationSignal)
+        } catch (error) {
+          if (operationSignal?.aborted || isAbortError(error)) throw error
+          throw new Error(`OpenCode v2 history is unavailable before waiting for the session: ${getErrorMessage(error)}`)
+        }
+        if (!hasSafeV2LogWatermark(sessionBootstrapCursor, preWaitLog) || preWaitLog.cursor! < certifiedSubscriptionCursor) {
+          throw new Error('OpenCode v2 history watermark is unavailable before waiting for the session; refusing to dispatch without certifiable event coverage')
+        }
+        await waitForV2StreamCoverage(preWaitLog.cursor!, 'before waiting for the session')
+        await transport.listPendingInboxes(sessionId, directory, operationSignal)
       }
       await transport.waitForIdle(sessionId, directory, operationSignal)
+      if (transport.protocol === 'v2') {
+        const pendingAfterIdle = await transport.listPendingInboxes!(sessionId, directory, operationSignal)
+        if (pendingAfterIdle.length > 0) {
+          throw new Error('OpenCode v2 still has pending inbox work after the idle boundary; refusing to dispatch into a session with competing work')
+        }
+        try {
+          idleLog = await transport.readSessionLog(sessionId, bootstrapCursor, operationSignal)
+        } catch (error) {
+          if (operationSignal?.aborted || isAbortError(error)) throw error
+          throw new Error(`OpenCode v2 history is unavailable after waiting for the session: ${getErrorMessage(error)}`)
+        }
+        if (!hasSafeV2LogWatermark(bootstrapCursor!, idleLog) || idleLog.cursor! < preWaitLog!.cursor!) {
+          throw new Error('OpenCode v2 history watermark is unavailable after waiting for the session; refusing to dispatch without certifiable event coverage')
+        }
+        await waitForV2StreamCoverage(idleLog.cursor!, 'after waiting for the session')
+      }
       if (promptOptions.permission && transport.protocol === 'v1') {
         try {
           await transport.updateSession(sessionId, directory, { permission: promptOptions.permission }, operationSignal)
@@ -310,26 +467,27 @@ export class OpenCodeSDKAdapter implements OpenCodeAdapter {
         }
       }
 
-      const subscription = await transport.subscribeToEvents(
-        sessionId,
-        directory,
-        streamSignal,
-        promptOptions.stepFinishSafetyMs,
-        bootstrapCursor,
-      )
-      if (transport.protocol === 'v2' && (
-        typeof subscription.cursor !== 'number'
-        || !Number.isSafeInteger(subscription.cursor)
-        || subscription.coverageComplete === false
-      )) {
-        throw new Error('OpenCode v2 history is unavailable or incomplete; refusing to dispatch without a certifiable event cursor')
+      if (transport.protocol === 'v1') {
+        subscription = await transport.subscribeToEvents(
+          sessionId,
+          directory,
+          streamSignal,
+          promptOptions.stepFinishSafetyMs,
+        )
       }
-      const baselineMessages = transport.protocol === 'v2'
-        ? await transport.getSessionMessages(sessionId, directory, operationSignal)
-        : []
+      const idleCursor = transport.protocol === 'v2' ? idleLog!.cursor! : undefined
+      const safeBaselineCursor = idleCursor
+      let baselineMessages: Message[] = []
+      let snapshotBaselineIds: Set<string> | undefined
+      try {
+        baselineMessages = await transport.getSessionMessages(sessionId, directory, operationSignal)
+        snapshotBaselineIds = new Set(baselineMessages.map(message => message.id).filter(Boolean))
+      } catch (error) {
+        if (transport.protocol === 'v2' || operationSignal?.aborted || isAbortError(error)) throw error
+        warnIfVerbose('[adapter] Could not capture a v1 assistant-message baseline; echo recovery will use streamed text only', error)
+      }
       const baselineMessageIds = new Set(baselineMessages.map(message => message.id).filter(Boolean))
-      const snapshotBaselineIds = transport.protocol === 'v2' ? baselineMessageIds : undefined
-      let lastCursor = subscription.cursor
+      let lastCursor = transport.protocol === 'v2' ? bootstrapCursor : undefined
       const streamedTextByMessage = new Map<string, Map<string, string>>()
       const streamedTextMessageOrder: string[] = []
       const streamedTextPartIndex = new Map<string, string>()
@@ -375,16 +533,22 @@ export class OpenCodeSDKAdapter implements OpenCodeAdapter {
       let streamDoneObserved = false
       let resolveStreamDoneResponse: ((value: string | null) => void) | undefined
       const streamDoneResponse = new Promise<string | null>(resolve => { resolveStreamDoneResponse = resolve })
+      let v2DispatchStarted = false
 
+      type InboxLifecycle = {
+        enqueuedOrder?: number
+        deliveredOrder?: number
+        changedOrder?: number
+        cancelledOrder?: number
+        completedOrder?: number
+        terminal?: Extract<OpenCodeTransportEvent, { type: 'execution_terminal' }>
+        lastOrder?: number
+      }
       const lifecycle = {
-        enqueued: new Set<string>(),
-        delivered: new Set<string>(),
+        inboxes: new Map<string, InboxLifecycle>(),
         eventOrder: 0,
-        enqueuedOrder: new Map<string, number>(),
-        deliveredOrder: new Map<string, number>(),
         startedOrder: undefined as number | undefined,
-        terminal: undefined as Extract<OpenCodeTransportEvent, { type: 'execution_terminal' }> | undefined,
-        terminalOrder: undefined as number | undefined,
+        unsafeEvidence: undefined as string | undefined,
         receiptID: undefined as string | undefined,
         failure: undefined as string | undefined,
         resolve: undefined as ((value: { kind: 'complete'; terminal: Extract<OpenCodeTransportEvent, { type: 'execution_terminal' }> } | { kind: 'conflict'; error: string }) => void) | undefined,
@@ -399,27 +563,86 @@ export class OpenCodeSDKAdapter implements OpenCodeAdapter {
         lifecycle.settled = true
         lifecycle.resolve?.(result)
       }
+      const inboxFor = (inboxID: string) => {
+        let inbox = lifecycle.inboxes.get(inboxID)
+        if (!inbox) {
+          inbox = {}
+          lifecycle.inboxes.set(inboxID, inbox)
+        }
+        return inbox
+      }
+      const recordLifecycleEvent = (event: OpenCodeTransportEvent, cursor?: number) => {
+        const order = typeof cursor === 'number' ? cursor : lifecycle.eventOrder + 1
+        lifecycle.eventOrder = Math.max(lifecycle.eventOrder + 1, order)
+        if (event.type === 'inbox_enqueued') {
+          const inbox = inboxFor(event.inboxID)
+          inbox.enqueuedOrder ??= order
+          inbox.lastOrder = order
+        } else if (event.type === 'inbox_delivered') {
+          const inbox = inboxFor(event.inboxID)
+          inbox.deliveredOrder ??= order
+          inbox.lastOrder = order
+          if (inbox.enqueuedOrder === undefined) lifecycle.unsafeEvidence ??= 'OpenCode v2 observed an inbox delivery without its enqueue event; refusing to attribute work across the event boundary.'
+        } else if (event.type === 'inbox_cancelled') {
+          const inbox = inboxFor(event.inboxID)
+          inbox.cancelledOrder ??= order
+          inbox.lastOrder = order
+          if (inbox.enqueuedOrder === undefined) lifecycle.unsafeEvidence ??= 'OpenCode v2 observed an inbox cancellation without its enqueue event; refusing to attribute work across the event boundary.'
+        } else if (event.type === 'inbox_delivery_changed') {
+          const inbox = inboxFor(event.inboxID)
+          inbox.changedOrder = order
+          inbox.lastOrder = order
+          if (inbox.enqueuedOrder === undefined) lifecycle.unsafeEvidence ??= 'OpenCode v2 observed an inbox change without its enqueue event; refusing to attribute work across the event boundary.'
+        } else if (event.type === 'execution_started') {
+          lifecycle.startedOrder = order
+          const hasEnqueuedWork = [...lifecycle.inboxes.values()].some(inbox => inbox.enqueuedOrder !== undefined
+            && inbox.enqueuedOrder < order
+            && inbox.cancelledOrder === undefined
+            && inbox.completedOrder === undefined)
+          if (!hasEnqueuedWork) lifecycle.unsafeEvidence ??= 'OpenCode v2 observed execution without a certified inbox enqueue; refusing to attribute work across the event boundary.'
+        } else if (event.type === 'execution_terminal') {
+          const candidates = [...lifecycle.inboxes.entries()]
+            .filter(([, inbox]) => inbox.completedOrder === undefined && inbox.cancelledOrder === undefined)
+            .filter(([, inbox]) => inbox.enqueuedOrder !== undefined
+              && inbox.deliveredOrder !== undefined
+              && lifecycle.startedOrder !== undefined
+              && lifecycle.startedOrder > inbox.enqueuedOrder
+              && inbox.deliveredOrder > inbox.enqueuedOrder
+              && order > lifecycle.startedOrder!
+              && order > inbox.deliveredOrder!)
+            .sort((left, right) => left[1].enqueuedOrder! - right[1].enqueuedOrder!)
+          const candidate = candidates[0]?.[1]
+          if (candidate) {
+            candidate.completedOrder = order
+            candidate.terminal = event
+          } else lifecycle.unsafeEvidence ??= 'OpenCode v2 observed an execution terminal without its inbox lifecycle; refusing to attribute work across the event boundary.'
+          lifecycle.startedOrder = undefined
+        }
+      }
+      const hasUnsafeCompetingInbox = (beforeOrder?: number) => [...lifecycle.inboxes.entries()].some(([inboxID, inbox]) => {
+        if (inboxID === lifecycle.receiptID) return false
+        const appearedOrder = Math.min(inbox.enqueuedOrder ?? Infinity, inbox.deliveredOrder ?? Infinity, inbox.changedOrder ?? Infinity)
+        if (!Number.isFinite(appearedOrder)) return false
+        const resolvedOrder = Math.min(inbox.completedOrder ?? Infinity, inbox.cancelledOrder ?? Infinity)
+        return !Number.isFinite(resolvedOrder)
+          || resolvedOrder > (beforeOrder ?? -Infinity)
+          || (inbox.lastOrder ?? appearedOrder) > (beforeOrder ?? -Infinity)
+      })
       const checkLifecycle = () => {
+        if (lifecycle.unsafeEvidence) {
+          lifecycle.failure = lifecycle.unsafeEvidence
+          finishLifecycle({ kind: 'conflict', error: lifecycle.failure })
+          return
+        }
         if (lifecycle.receiptID) {
-          const otherInboxes = new Set([...lifecycle.enqueued, ...lifecycle.delivered].filter(id => id !== lifecycle.receiptID))
-          if (otherInboxes.size > 0) {
+          if (hasUnsafeCompetingInbox(safeBaselineCursor)) {
             lifecycle.failure = 'Another prompt entered the OpenCode session during result attribution; the response cannot be attributed safely.'
             finishLifecycle({ kind: 'conflict', error: lifecycle.failure })
             return
           }
-          const enqueuedOrder = lifecycle.enqueuedOrder.get(lifecycle.receiptID)
-          const deliveredOrder = lifecycle.deliveredOrder.get(lifecycle.receiptID)
-          if (
-            lifecycle.terminal
-            && enqueuedOrder !== undefined
-            && deliveredOrder !== undefined
-            && lifecycle.startedOrder !== undefined
-            && lifecycle.terminalOrder !== undefined
-            && lifecycle.startedOrder > enqueuedOrder
-            && deliveredOrder > enqueuedOrder
-            && lifecycle.terminalOrder > deliveredOrder
-          ) {
-            finishLifecycle({ kind: 'complete', terminal: lifecycle.terminal })
+          const ownInbox = lifecycle.inboxes.get(lifecycle.receiptID)
+          if (ownInbox?.completedOrder !== undefined && ownInbox.terminal) {
+            finishLifecycle({ kind: 'complete', terminal: ownInbox.terminal })
           }
         }
       }
@@ -451,7 +674,7 @@ export class OpenCodeSDKAdapter implements OpenCodeAdapter {
         if (transport.protocol !== 'v2' || !lifecycle.receiptID || lifecycle.failure || lifecycle.settled) return
         checkLifecycle()
         if (lifecycle.failure || lifecycle.settled) return
-        const enqueuedOrder = lifecycle.enqueuedOrder.get(lifecycle.receiptID)
+        const enqueuedOrder = lifecycle.inboxes.get(lifecycle.receiptID)?.enqueuedOrder
         if (enqueuedOrder === undefined) return
         for (const [permissionId, pending] of pendingPermissionEvents) {
           if (lifecycle.failure || lifecycle.settled) return
@@ -465,39 +688,46 @@ export class OpenCodeSDKAdapter implements OpenCodeAdapter {
           finishLifecycle({ kind: 'conflict', error: lifecycle.failure })
           return
         }
-        if (typeof envelope.cursor === 'number' && (lastCursor === undefined || envelope.cursor > lastCursor)) {
+        if (transport.protocol === 'v2' && typeof envelope.cursor === 'number') {
+          if (lastCursor !== undefined && envelope.cursor <= lastCursor) return
+          if (lastCursor !== undefined && envelope.cursor !== lastCursor + 1) {
+            lifecycle.failure = 'OpenCode v2 event history has an unaccounted durable sequence gap; the response cannot be attributed safely.'
+            finishLifecycle({ kind: 'conflict', error: lifecycle.failure })
+            return
+          }
+          lastCursor = envelope.cursor
+        } else if (typeof envelope.cursor === 'number' && (lastCursor === undefined || envelope.cursor > lastCursor)) {
           lastCursor = envelope.cursor
         }
         if (!envelope.event) return
         const event = envelope.event
-        const eventOrder = ++lifecycle.eventOrder
-        if (event.type === 'inbox_enqueued') {
-          lifecycle.enqueued.add(event.inboxID)
-          lifecycle.enqueuedOrder.set(event.inboxID, eventOrder)
-        } else if (event.type === 'inbox_delivered') {
-          lifecycle.delivered.add(event.inboxID)
-          lifecycle.deliveredOrder.set(event.inboxID, eventOrder)
-        } else if (event.type === 'execution_started') lifecycle.startedOrder = eventOrder
-        else if (event.type === 'execution_terminal') {
-          lifecycle.terminal = event
-          lifecycle.terminalOrder = eventOrder
-        }
-        else {
+        const eventOrder = typeof envelope.cursor === 'number' ? envelope.cursor : lifecycle.eventOrder + 1
+        if (this.isTransportLifecycleEvent(event)) {
+          recordLifecycleEvent(event, envelope.cursor)
+        } else {
+          lifecycle.eventOrder = Math.max(lifecycle.eventOrder + 1, eventOrder)
           const streamEvent = event as StreamEvent
-          rememberStreamText(streamEvent)
-          promptOptions.onEvent?.(streamEvent)
-          if (transport.protocol === 'v1' && streamEvent.type === 'done' && !streamDoneObserved) {
-            streamDoneObserved = true
-            void this.readAssistantSnapshotWithRetry(sessionId, undefined, 4, 75, operationSignal, snapshotBaselineIds, directory, transport)
-              .then(snapshot => resolveStreamDoneResponse?.(snapshot.responseText || buildStreamedTextResponse() || null))
-              .catch(error => {
-                if (isAbortError(error)) {
-                  resolveStreamDoneResponse?.(null)
-                  return
-                }
-                warnIfVerbose('[adapter] Snapshot retry failed after stream done, falling back to streamed text', error)
+          const beforeV2Dispatch = transport.protocol === 'v2' && !v2DispatchStarted
+          if (!beforeV2Dispatch) {
+            rememberStreamText(streamEvent)
+            promptOptions.onEvent?.(streamEvent)
+            if (transport.protocol === 'v1' && streamEvent.type === 'done' && !streamDoneObserved) {
+              streamDoneObserved = true
+              if (snapshotBaselineIds) {
+                void this.readAssistantSnapshotWithRetry(sessionId, undefined, 4, 75, operationSignal, snapshotBaselineIds, directory, transport)
+                  .then(snapshot => resolveStreamDoneResponse?.(snapshot.responseText || buildStreamedTextResponse() || null))
+                  .catch(error => {
+                    if (isAbortError(error)) {
+                      resolveStreamDoneResponse?.(null)
+                      return
+                    }
+                    warnIfVerbose('[adapter] Snapshot retry failed after stream done, falling back to streamed text', error)
+                    resolveStreamDoneResponse?.(buildStreamedTextResponse() || null)
+                  })
+              } else {
                 resolveStreamDoneResponse?.(buildStreamedTextResponse() || null)
-              })
+              }
+            }
           }
           if (
             streamEvent.type === 'permission'
@@ -506,7 +736,7 @@ export class OpenCodeSDKAdapter implements OpenCodeAdapter {
             && streamEvent.permissionId
             && !handledPermissionIds.has(streamEvent.permissionId)
           ) {
-            if (transport.protocol === 'v2') {
+            if (transport.protocol === 'v2' || beforeV2Dispatch) {
               pendingPermissionEvents.set(streamEvent.permissionId, { event: streamEvent, order: eventOrder })
             } else {
               await replyToPermission(streamEvent)
@@ -515,6 +745,95 @@ export class OpenCodeSDKAdapter implements OpenCodeAdapter {
         }
         checkLifecycle()
         await reconcilePendingPermissionEvents()
+      }
+      let bootstrapLifecycleRecorded = false
+      const activateV2SubscriptionObserver = async () => {
+        if (transport.protocol !== 'v2') return
+        if (!bootstrapLifecycleRecorded && bootstrapHistory?.coverageComplete === true) {
+          const historicalLifecycle = [...bootstrapHistory.events]
+            .sort((left, right) => (left.cursor ?? -Infinity) - (right.cursor ?? -Infinity))
+          for (const envelope of historicalLifecycle) {
+            if (envelope.coverageGap) throw new Error('OpenCode v2 event history has an unaccounted durable sequence gap; the response cannot be attributed safely.')
+            if (envelope.event && this.isTransportLifecycleEvent(envelope.event)) {
+              recordLifecycleEvent(envelope.event, envelope.cursor)
+            }
+          }
+          bootstrapLifecycleRecorded = true
+          checkLifecycle()
+        }
+        preflightLifecycleActive = true
+        while (true) {
+          const queued = preflightEnvelopes.splice(0)
+            .sort((left, right) => (left.cursor ?? -Infinity) - (right.cursor ?? -Infinity))
+          if (queued.length === 0) {
+            liveSubscriptionObserver = observeEnvelope
+            break
+          }
+          for (const envelope of queued) await observeEnvelope(envelope)
+        }
+        if (preflightCoverageGap) {
+          throw new Error('OpenCode v2 event history has an unaccounted durable sequence gap; the response cannot be attributed safely.')
+        }
+      }
+
+      const readCertifiedV2Log = async (after: number, purpose: string): Promise<OpenCodeSessionLog> => {
+        let log: OpenCodeSessionLog
+        try {
+          log = await transport.readSessionLog(sessionId, after, operationSignal)
+        } catch (error) {
+          if (operationSignal?.aborted || isAbortError(error)) throw error
+          throw new Error(`OpenCode v2 history is unavailable ${purpose}: ${getErrorMessage(error)}`)
+        }
+        if (!hasSafeV2LogWatermark(after, log)
+          || (log.coverageComplete === true && !hasCompleteV2LogCoverage(after, log))) {
+          throw new Error(`OpenCode v2 history watermark is unavailable ${purpose}; durable event sequences cannot certify the prompt`)
+        }
+        return log
+      }
+      const syncV2LifecycleLog = async (after: number, purpose: string) => {
+        const log = await readCertifiedV2Log(after, purpose)
+        if (!preflightCoverageGap && lastCursor !== undefined && lastCursor >= log.cursor!) {
+          preflightCursor = Math.max(preflightCursor ?? -Infinity, lastCursor)
+        }
+        if ((lastCursor ?? -Infinity) < log.cursor!) {
+          try {
+            await waitForV2StreamCoverage(log.cursor!, purpose)
+          } catch (error) {
+            if (operationSignal?.aborted || isAbortError(error)) throw error
+            if (preflightCoverageGap || !hasCompleteV2LogCoverage(after, log)) {
+              throw new Error(`OpenCode v2 history and live event stream are incomplete ${purpose}; durable event sequences cannot certify the prompt`)
+            }
+            for (const envelope of log.events) await observeEnvelope(envelope)
+            if (typeof log.cursor === 'number') {
+              preflightCursor = Math.max(preflightCursor ?? -Infinity, log.cursor)
+              lastCursor = Math.max(lastCursor ?? -Infinity, log.cursor)
+            }
+          }
+        }
+        return log
+      }
+
+      if (transport.protocol === 'v2') {
+        await activateV2SubscriptionObserver()
+        await syncV2LifecycleLog(lastCursor ?? safeBaselineCursor!, 'while capturing the post-idle message baseline')
+        if (preflightCoverageGap) {
+          throw new Error('OpenCode v2 event history has an unaccounted durable sequence gap; the response cannot be attributed safely.')
+        }
+        checkLifecycle()
+        if (lifecycle.failure) throw new Error(lifecycle.failure)
+        if (hasUnsafeCompetingInbox(safeBaselineCursor)) {
+          throw new Error('Another OpenCode inbox remains uncompleted after the prior turn; refusing to dispatch into a session with competing work.')
+        }
+      }
+      if (transport.protocol === 'v1') {
+        liveSubscriptionObserver = observeEnvelope
+        streamDrain = this.consumeTransportEvents(
+          subscription,
+          envelope => observeSubscriptionEnvelope(envelope),
+          streamSignal,
+          transport.protocol,
+          sessionId,
+        )
       }
 
       const reconcileAcceptedPromptAfterSnapshot = async () => {
@@ -525,30 +844,9 @@ export class OpenCodeSDKAdapter implements OpenCodeAdapter {
           throw new Error('OpenCode v2 history is unavailable; the accepted prompt snapshot cannot be attributed without a durable event cursor')
         }
 
-        let log
-        try {
-          log = await transport.readSessionLog(sessionId, cursor, operationSignal)
-        } catch (error) {
-          if (operationSignal?.aborted || isAbortError(error)) throw error
-          throw new Error(`OpenCode v2 history is unavailable for accepted prompt certification: ${getErrorMessage(error)}`)
-        }
-        if (!hasCompleteV2LogCoverage(cursor, log)) {
-          throw new Error('OpenCode v2 history is incomplete; durable event sequences cannot certify the accepted prompt snapshot')
-        }
-        for (const envelope of log.events) await observeEnvelope(envelope)
-        if (typeof log.cursor === 'number' && (lastCursor === undefined || log.cursor > lastCursor)) {
-          lastCursor = log.cursor
-        }
+        await syncV2LifecycleLog(cursor, 'while certifying the accepted prompt snapshot')
         if (lifecycle.failure) throw new Error(lifecycle.failure)
       }
-
-      streamDrain = this.consumeTransportEvents(
-        subscription,
-        observeEnvelope,
-        streamSignal,
-        transport.protocol,
-        sessionId,
-      )
 
       if (promptOptions.permission && transport.protocol === 'v2') {
         try {
@@ -559,6 +857,18 @@ export class OpenCodeSDKAdapter implements OpenCodeAdapter {
             `Failed to apply OpenCode session permissions: ${getErrorMessage(error)}. ` +
             'Session permission updates require a current OpenCode server; upgrade OpenCode and restart `opencode serve`.',
           )
+        }
+      }
+      if (transport.protocol === 'v2') {
+        if (lastCursor === undefined) {
+          throw new Error('OpenCode v2 history is unavailable; refusing to dispatch without a durable event cursor')
+        }
+        await syncV2LifecycleLog(lastCursor, 'before dispatch')
+        if (preflightCoverageGap) {
+          throw new Error('OpenCode v2 event history has an unaccounted durable sequence gap; the response cannot be attributed safely.')
+        }
+        if (hasUnsafeCompetingInbox(safeBaselineCursor)) {
+          throw new Error('Another prompt entered the OpenCode session before dispatch; the response cannot be attributed safely.')
         }
       }
       if (permissionReplyFailure) throw permissionReplyFailure
@@ -575,6 +885,7 @@ export class OpenCodeSDKAdapter implements OpenCodeAdapter {
         ...(typeof promptOptions.noReply === 'boolean' ? { noReply: promptOptions.noReply } : {}),
         ...('tools' in promptOptions && promptOptions.tools ? { tools: promptOptions.tools as Record<string, boolean> } : {}),
       }
+      if (transport.protocol === 'v2') v2DispatchStarted = true
       const dispatchPromise = transport.dispatchPrompt(dispatchRequest, dispatchSignal)
       let dispatched: PromptDispatch | undefined
       let responseText = ''
@@ -594,7 +905,10 @@ export class OpenCodeSDKAdapter implements OpenCodeAdapter {
           dispatched = await this.raceWithSignal(dispatchPromise, dispatchSignal)
         }
       } else {
-        dispatched = await this.raceWithSignal(dispatchPromise, dispatchSignal)
+        // The v2 transport marks a failed prompt POST as receipt-unknown. Let
+        // its bounded, signal-aware request settle so that ambiguity cannot be
+        // mistaken for a definite cancellation and retried blindly.
+        dispatched = await dispatchPromise
       }
       if (permissionReplyPending) await permissionReplyPending
       if (permissionReplyFailure) throw permissionReplyFailure
@@ -650,21 +964,25 @@ export class OpenCodeSDKAdapter implements OpenCodeAdapter {
           responseText = completedMessage.content?.trim() ?? ''
         }
         if (!responseText) {
-          try {
-            const snapshot = await this.readAssistantSnapshotWithRetry(
-              sessionId,
-              completedMessage.id || undefined,
-              4,
-              75,
-              operationSignal,
-              snapshotBaselineIds,
-              directory,
-              transport,
-            )
-            responseText = snapshot.responseText
-          } catch (error) {
-            if (isAbortError(error)) throw error
-            warnIfVerbose('[adapter] Snapshot read failed after prompt, falling back to streamed text', error)
+          if (snapshotBaselineIds) {
+            try {
+              const snapshot = await this.readAssistantSnapshotWithRetry(
+                sessionId,
+                completedMessage.id || undefined,
+                4,
+                75,
+                operationSignal,
+                snapshotBaselineIds,
+                directory,
+                transport,
+              )
+              responseText = snapshot.responseText
+            } catch (error) {
+              if (isAbortError(error)) throw error
+              warnIfVerbose('[adapter] Snapshot read failed after prompt, falling back to streamed text', error)
+              responseText = buildStreamedTextResponse()
+            }
+          } else {
             responseText = buildStreamedTextResponse()
           }
         }
@@ -683,7 +1001,10 @@ export class OpenCodeSDKAdapter implements OpenCodeAdapter {
         throw error
       }
       if (responseText && looksLikePromptEcho(responseText)) {
-        if (transport.protocol === 'v1' && !streamDoneObserved) {
+        if (transport.protocol === 'v1' && !snapshotBaselineIds) {
+          const streamedResponse = buildStreamedTextResponse()
+          responseText = streamedResponse && !looksLikePromptEcho(streamedResponse) ? streamedResponse : ''
+        } else if (transport.protocol === 'v1' && !streamDoneObserved) {
           const streamClose = await this.raceWithSignal(
             Promise.race([
               streamDoneResponse.then(value => ({ kind: 'done' as const, value })),
@@ -696,12 +1017,12 @@ export class OpenCodeSDKAdapter implements OpenCodeAdapter {
             : streamDoneObserved
               ? await this.raceWithSignal(streamDoneResponse, operationSignal)
               : await this.readAssistantSnapshotWithRetry(sessionId, undefined, 2, 75, operationSignal, snapshotBaselineIds, directory, transport)
-                .then(snapshot => snapshot.responseText || buildStreamedTextResponse() || null)
-                .catch(error => {
-                  if (operationSignal?.aborted || isAbortError(error)) throw error
-                  warnIfVerbose('[adapter] Snapshot retry failed during v1 echo recovery, falling back to streamed text', error)
-                  return buildStreamedTextResponse() || null
-                })
+                  .then(snapshot => snapshot.responseText || buildStreamedTextResponse() || null)
+                  .catch(error => {
+                    if (operationSignal?.aborted || isAbortError(error)) throw error
+                    warnIfVerbose('[adapter] Snapshot retry failed during v1 echo recovery, falling back to streamed text', error)
+                    return buildStreamedTextResponse() || null
+                  })
           if (terminalText) responseText = terminalText
         } else {
           const snapshot = await this.readAssistantSnapshotWithRetry(sessionId, undefined, 2, 75, operationSignal, snapshotBaselineIds, directory, transport)
@@ -713,6 +1034,27 @@ export class OpenCodeSDKAdapter implements OpenCodeAdapter {
       return responseText
     } catch (err) {
       if (permissionReplyFailure) throw permissionReplyFailure
+      if (err instanceof OpenCodePromptReceiptUnavailableError) {
+        const error = operationSignal?.aborted
+          ? operationSignal.reason instanceof Error
+            ? operationSignal.reason
+            : new DOMException('The operation was aborted', 'AbortError')
+          : new Error(`Failed to prompt OpenCode session: ${err.message}`, { cause: err })
+        Object.assign(error, {
+          ...(!operationSignal?.aborted ? { name: err.name } : {}),
+          openCodePromptReceiptUnavailable: true,
+          blockedErrorDiagnostics: {
+            kind: 'runtime' as const,
+            source: 'opencode' as const,
+            summary: err.message,
+            ...(model ? { modelId: `${model.providerID}/${model.modelID}` } : {}),
+            sessionId,
+          },
+          blockedErrorCodes: [],
+          details: err.cause ?? err,
+        })
+        throw error
+      }
       if (isAbortError(err)) throw err
       if (err instanceof Error && (err.name === 'OpenCodeSessionError' || err.name === 'OpenCodeSessionInterrupted')) throw err
       const enriched = enrichGenericOpenCodeProviderError(err, sessionId)
@@ -728,6 +1070,7 @@ export class OpenCodeSDKAdapter implements OpenCodeAdapter {
       streamAbortController.abort()
       if (!streamDrainWaited) await this.waitForStreamDrain(streamDrain)
       this.activePromptSessions.delete(sessionId)
+      endPromptActivity()
     }
   }
 
@@ -1193,6 +1536,8 @@ export class OpenCodeSDKAdapter implements OpenCodeAdapter {
   private isTransportLifecycleEvent(event: OpenCodeTransportEvent): event is Exclude<OpenCodeTransportEvent, StreamEvent> {
     return event.type === 'inbox_enqueued'
       || event.type === 'inbox_delivered'
+      || event.type === 'inbox_cancelled'
+      || event.type === 'inbox_delivery_changed'
       || event.type === 'execution_started'
       || event.type === 'execution_terminal'
   }

@@ -205,6 +205,7 @@ export async function resolveOpenCodeBaseUrl(options: ResolveOptions): Promise<R
   const port = getPort(url)
   const probeHosts = getProbeHosts(url)
 
+  let occupiedResponseHost: string | undefined
   let authenticationFailureHost: string | undefined
   for (const host of probeHosts) {
     try {
@@ -216,20 +217,24 @@ export async function resolveOpenCodeBaseUrl(options: ResolveOptions): Promise<R
         }
       }
     } catch (error) {
-      if (!(error instanceof OpenCodeConnectionError) || error.failureKind !== 'authentication') throw error
-      if (hasExplicitBaseUrl) {
+      if (!(error instanceof OpenCodeConnectionError)) throw error
+      if (error.failureKind === 'authentication' && hasExplicitBaseUrl) {
         throw new Error(
           `Configured OpenCode URL ${normalizedBaseUrl} requires valid credentials. Set OPENCODE_PASSWORD for v2 or OPENCODE_SERVER_PASSWORD for v1. ${error.message}`,
           { cause: error },
         )
       }
-      authenticationFailureHost = host
+      const responseProvesOccupancy = error.failureKind === 'authentication'
+        || error.failureKind === 'unsupported_protocol'
+      if (hasExplicitBaseUrl || !responseProvesOccupancy) throw error
+      occupiedResponseHost = host
+      if (error.failureKind === 'authentication') authenticationFailureHost = host
       break
     }
   }
 
   for (const host of probeHosts) {
-    if (host !== authenticationFailureHost && !(await deps.canConnect(host, port))) continue
+    if (host !== occupiedResponseHost && !(await deps.canConnect(host, port))) continue
 
     if (hasExplicitBaseUrl) {
       throw new Error(
@@ -260,7 +265,9 @@ export async function resolveOpenCodeBaseUrl(options: ResolveOptions): Promise<R
     return {
       baseUrl: formatBaseUrl(fallbackUrl),
       note: withOccupantDetails(
-        `Port ${port} is occupied on ${host}; using ${formatBaseUrl(fallbackUrl)} for OpenCode instead.`,
+        authenticationFailureHost === host
+          ? `Configured OpenCode credentials were rejected at ${normalizedBaseUrl}; using ${formatBaseUrl(fallbackUrl)} for OpenCode instead.`
+          : `Port ${port} is occupied on ${host}; using ${formatBaseUrl(fallbackUrl)} for OpenCode instead.`,
         port,
         deps,
       ),

@@ -2301,11 +2301,11 @@ export function upgradeOpenCodeCli(
     }
 
     if (result.error) {
-      throw new Error(`Failed to start opencode upgrade: ${result.error.message}`)
+      throw new Error(`Failed to start ${label}: ${result.error.message}`)
     }
 
     if (result.status !== 0) {
-      const message = result.stderr || result.stdout || `opencode upgrade ${target} --method ${method} failed with code ${result.status ?? 'unknown'}`
+      const message = result.stderr || result.stdout || `${label} failed with code ${result.status ?? 'unknown'}`
       return {
         skipped: false,
         deferred: false,

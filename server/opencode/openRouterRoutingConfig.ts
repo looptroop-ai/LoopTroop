@@ -11,29 +11,14 @@ export function needsOpenRouterRoutingConfig(modelIds: readonly string[]): boole
     && modelIds.some(isOpenRouterRoutingModel)
 }
 
-function readConfig(configPath: string): JsonObject {
-  if (!existsSync(configPath)) return {}
-
-  try {
-    const parsed: unknown = JSON.parse(readFileSync(configPath, 'utf8'))
-    return isRecord(parsed) ? parsed : {}
-  } catch {
-    return {}
-  }
-}
-
-/**
- * Adds selected OpenRouter routing IDs to the LoopTroop-owned OpenCode config.
- * OpenCode only accepts a routing suffix after that exact model ID is registered.
- */
-export function registerOpenRouterRoutingModels(modelIds: readonly string[], protocol: OpenCodeProtocol): boolean {
-  const configPath = process.env[LOOPTROOP_OPENCODE_ROUTING_CONFIG]?.trim()
-  if (!configPath || !needsOpenRouterRoutingConfig(modelIds)) return false
+function buildRoutingConfigUpdate(modelIds: readonly string[], protocol: OpenCodeProtocol): { path: string; config: JsonObject } | null {
+  const path = process.env[LOOPTROOP_OPENCODE_ROUTING_CONFIG]?.trim()
+  if (!path || !needsOpenRouterRoutingConfig(modelIds)) return null
 
   const routingModels = Array.from(new Set(modelIds.filter(isOpenRouterRoutingModel)))
-  if (routingModels.length === 0) return false
+  if (routingModels.length === 0) return null
 
-  const config = readConfig(configPath)
+  const config = readConfig(path)
   const configKey = protocol === 'v2' && isRecord(config.provider) && !('providers' in config)
     ? 'provider'
     : protocol === 'v2' ? 'providers' : 'provider'
@@ -50,16 +35,45 @@ export function registerOpenRouterRoutingModels(modelIds: readonly string[], pro
     }
   }
 
-  if (!changed) return false
-
-  config[configKey] = {
-    ...providers,
-    openrouter: {
-      ...openRouter,
-      models,
+  if (!changed) return null
+  return {
+    path,
+    config: {
+      ...config,
+      [configKey]: {
+        ...providers,
+        openrouter: {
+          ...openRouter,
+          models,
+        },
+      },
     },
   }
+}
+
+export function openRouterRoutingModelsWouldChangeConfig(modelIds: readonly string[], protocol: OpenCodeProtocol): boolean {
+  return buildRoutingConfigUpdate(modelIds, protocol) !== null
+}
+
+function readConfig(configPath: string): JsonObject {
+  if (!existsSync(configPath)) return {}
+
+  try {
+    const parsed: unknown = JSON.parse(readFileSync(configPath, 'utf8'))
+    return isRecord(parsed) ? parsed : {}
+  } catch {
+    return {}
+  }
+}
+
+/**
+ * Adds selected OpenRouter routing IDs to the LoopTroop-owned OpenCode config.
+ * OpenCode only accepts a routing suffix after that exact model ID is registered.
+ */
+export function registerOpenRouterRoutingModels(modelIds: readonly string[], protocol: OpenCodeProtocol): boolean {
+  const update = buildRoutingConfigUpdate(modelIds, protocol)
+  if (!update) return false
   // Dirname-relative writing is safe here: trusted startup config fixes this path, not model IDs.
-  safeAtomicWrite(configPath, `${JSON.stringify(config, null, 2)}\n`)
+  safeAtomicWrite(update.path, `${JSON.stringify(update.config, null, 2)}\n`)
   return true
 }

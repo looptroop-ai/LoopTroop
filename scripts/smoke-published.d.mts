@@ -254,4 +254,13 @@ export function openCodeAnswers(
   port: number,
   headers: Record<string, string>,
   fetchImpl?: typeof fetch,
+  timeoutMs?: number,
+): Promise<boolean>
+
+/** Waits for OpenCode info readiness within an overall deadline. */
+export function waitForOpenCode(
+  port: number,
+  headers: Record<string, string>,
+  timeoutMs?: number,
+  fetchImpl?: typeof fetch,
 ): Promise<boolean>

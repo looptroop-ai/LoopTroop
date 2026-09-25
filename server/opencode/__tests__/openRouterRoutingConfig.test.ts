@@ -3,7 +3,10 @@ import { join } from 'node:path'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import { makeTempDir, removeTempDir } from '../../test/tempDir'
 import { LOOPTROOP_OPENCODE_ROUTING_CONFIG } from '../../../shared/openRouterRouting'
-import { registerOpenRouterRoutingModels } from '../openRouterRoutingConfig'
+import {
+  openRouterRoutingModelsWouldChangeConfig,
+  registerOpenRouterRoutingModels,
+} from '../openRouterRoutingConfig'
 
 const temporaryDirectories: string[] = []
 
@@ -21,12 +24,14 @@ describe('registerOpenRouterRoutingModels', () => {
     const configPath = join(directory, 'opencode.json')
     vi.stubEnv(LOOPTROOP_OPENCODE_ROUTING_CONFIG, configPath)
 
+    expect(openRouterRoutingModelsWouldChangeConfig(['openrouter/deepseek/deepseek-v4-flash:floor'], 'v1')).toBe(true)
     expect(registerOpenRouterRoutingModels([
       'openrouter/deepseek/deepseek-v4-flash:floor',
       'openrouter/anthropic/claude-sonnet-4:nitro',
       'openrouter/google/gemini-2.5-pro',
       'openai/gpt-5.4',
     ], 'v1')).toBe(true)
+    expect(openRouterRoutingModelsWouldChangeConfig(['openrouter/deepseek/deepseek-v4-flash:floor'], 'v1')).toBe(false)
     expect(registerOpenRouterRoutingModels(['openrouter/deepseek/deepseek-v4-flash:floor'], 'v1')).toBe(false)
 
     expect(JSON.parse(readFileSync(configPath, 'utf8'))).toEqual({
@@ -58,10 +63,12 @@ describe('registerOpenRouterRoutingModels', () => {
     }
     writeFileSync(configPath, JSON.stringify(original))
 
+    expect(openRouterRoutingModelsWouldChangeConfig(['openrouter/deepseek/deepseek-v4-flash:floor'], 'v2')).toBe(true)
     expect(registerOpenRouterRoutingModels([
       'openrouter/deepseek/deepseek-v4-flash:floor',
       'openai/gpt-5.4',
     ], 'v2')).toBe(true)
+    expect(openRouterRoutingModelsWouldChangeConfig(['openrouter/deepseek/deepseek-v4-flash:floor'], 'v2')).toBe(false)
     expect(registerOpenRouterRoutingModels(['openrouter/deepseek/deepseek-v4-flash:floor'], 'v2')).toBe(false)
 
     expect(JSON.parse(readFileSync(configPath, 'utf8'))).toEqual({

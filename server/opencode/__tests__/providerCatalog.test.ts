@@ -1,9 +1,22 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
 const { getOpenCodeConnection } = vi.hoisted(() => ({ getOpenCodeConnection: vi.fn() }))
+const { listNonTerminalTickets, listOpenCodeSessionsForTicket } = vi.hoisted(() => ({
+  listNonTerminalTickets: vi.fn(),
+  listOpenCodeSessionsForTicket: vi.fn(),
+}))
 vi.mock('../connection', () => ({ getOpenCodeConnection }))
+vi.mock('../../storage/ticketQueries', () => ({ listNonTerminalTickets }))
+vi.mock('../sessionManager', () => ({ listOpenCodeSessionsForTicket }))
 
-import { fetchProviderCatalog, flattenCatalogModels, refreshProviderCatalog } from '../providerCatalog'
+import {
+  fetchProviderCatalog,
+  fetchProviderCatalogForV2Server,
+  flattenCatalogModels,
+  refreshProviderCatalog,
+  withProviderCatalogReload,
+} from '../providerCatalog'
+import { ProviderCatalogBusyError } from '../providerCatalogReload'
 
 function jsonResponse(value: unknown, status = 200) {
   return new Response(JSON.stringify(value), { status, headers: { 'content-type': 'application/json' } })
@@ -20,6 +33,8 @@ describe('fetchProviderCatalog', () => {
     delete process.env.OPENCODE_SERVER_USERNAME
     delete process.env.OPENCODE_SERVER_PASSWORD
     getOpenCodeConnection.mockReset().mockResolvedValue({ protocol: 'v1', version: '1.0.0', headers: {} })
+    listNonTerminalTickets.mockReset().mockReturnValue([])
+    listOpenCodeSessionsForTicket.mockReset().mockReturnValue([])
   })
 
   afterEach(() => {
@@ -30,6 +45,8 @@ describe('fetchProviderCatalog', () => {
     delete process.env.OPENCODE_SERVER_USERNAME
     delete process.env.OPENCODE_SERVER_PASSWORD
     getOpenCodeConnection.mockReset()
+    listNonTerminalTickets.mockReset()
+    listOpenCodeSessionsForTicket.mockReset()
   })
 
   it('includes basic auth when the OpenCode server is protected', async () => {
@@ -97,6 +114,28 @@ describe('fetchProviderCatalog', () => {
     await fetchProviderCatalog()
 
     expect(fetchMock).toHaveBeenCalledWith('http://127.0.0.1:4096/provider', expect.any(Object))
+  })
+
+  it('fetches a v2 catalog from the transport URL and auth supplied by its owner', async () => {
+    const fetchMock = vi.fn((input: RequestInfo | URL) => {
+      const path = new URL(String(input)).pathname
+      if (path.endsWith('/api/provider')) return Promise.resolve(locationResponse([]))
+      if (path.endsWith('/api/model')) return Promise.resolve(locationResponse([]))
+      if (path.endsWith('/api/model/default')) return Promise.resolve(locationResponse(null))
+      throw new Error(`Unexpected v2 catalog request: ${path}`)
+    })
+    vi.stubGlobal('fetch', fetchMock)
+
+    await fetchProviderCatalogForV2Server(
+      'http://custom.example:7000/opencode/',
+      { Authorization: 'Bearer transport-secret' },
+    )
+
+    expect(fetchMock).toHaveBeenCalledWith('http://custom.example:7000/opencode/api/provider', expect.objectContaining({
+      headers: { Authorization: 'Bearer transport-secret' },
+      signal: expect.any(AbortSignal),
+    }))
+    expect(getOpenCodeConnection).not.toHaveBeenCalled()
   })
 
   it('falls back to /config/providers when the legacy /provider endpoint is unavailable', async () => {
@@ -204,6 +243,59 @@ describe('fetchProviderCatalog', () => {
 
     await expect(refreshProviderCatalog()).rejects.toThrow('refresh failed with 500')
     expect(fetchMock).toHaveBeenCalledTimes(1)
+  })
+
+  it('rejects reload when a running OpenCode session exists at any location', async () => {
+    getOpenCodeConnection.mockResolvedValue({ protocol: 'v2', version: '2.0.16', headers: {} })
+    const fetchMock = vi.fn().mockResolvedValue(jsonResponse({ data: { 'external-session': { type: 'running' } } }))
+    vi.stubGlobal('fetch', fetchMock)
+    const writeConfig = vi.fn(async () => 'changed')
+
+    await expect(withProviderCatalogReload(async () => writeConfig())).rejects.toBeInstanceOf(ProviderCatalogBusyError)
+
+    expect(writeConfig).not.toHaveBeenCalled()
+    expect(fetchMock).toHaveBeenCalledOnce()
+    expect(fetchMock).toHaveBeenCalledWith('http://127.0.0.1:4096/api/session/active', expect.objectContaining({
+      signal: expect.any(AbortSignal),
+    }))
+  })
+
+  it('rejects reload for pending forms and permissions in persisted sessions after reconnect', async () => {
+    getOpenCodeConnection.mockResolvedValue({ protocol: 'v2', version: '2.0.16', headers: {} })
+    listNonTerminalTickets.mockReturnValue([{ id: 'project:ticket' }])
+    listOpenCodeSessionsForTicket.mockReturnValue([
+      { sessionId: 'session-with-form' },
+      { sessionId: 'session-with-permission' },
+    ])
+    const fetchMock = vi.fn((input: RequestInfo | URL) => {
+      const path = new URL(String(input)).pathname
+      if (path === '/api/session/active') return Promise.resolve(jsonResponse({ data: {} }))
+      if (path === '/api/session/session-with-form/form') return Promise.resolve(jsonResponse({ data: [{ id: 'form-1' }] }))
+      if (path === '/api/session/session-with-form/permission') return Promise.resolve(jsonResponse({ data: [] }))
+      if (path === '/api/session/session-with-permission/form') return Promise.resolve(jsonResponse({ data: [] }))
+      if (path === '/api/session/session-with-permission/permission') return Promise.resolve(jsonResponse({ data: [{ id: 'permission-1' }] }))
+      throw new Error(`Unexpected reload request: ${path}`)
+    })
+    vi.stubGlobal('fetch', fetchMock)
+    const writeConfig = vi.fn(async () => 'changed')
+
+    await expect(withProviderCatalogReload(async () => writeConfig())).rejects.toBeInstanceOf(ProviderCatalogBusyError)
+
+    expect(writeConfig).not.toHaveBeenCalled()
+    expect(fetchMock).toHaveBeenCalledTimes(5)
+    expect(fetchMock.mock.calls.some(([input]) => new URL(String(input)).pathname === '/api/location/reload')).toBe(false)
+  })
+
+  it('fails closed when it cannot verify whether OpenCode sessions are active', async () => {
+    getOpenCodeConnection.mockResolvedValue({ protocol: 'v2', version: '2.0.16', headers: {} })
+    const fetchMock = vi.fn().mockResolvedValue(jsonResponse({ error: 'unavailable' }, 503))
+    vi.stubGlobal('fetch', fetchMock)
+    const writeConfig = vi.fn(async () => 'changed')
+
+    await expect(withProviderCatalogReload(async () => writeConfig())).rejects.toThrow(/active session list request failed with 503/)
+
+    expect(writeConfig).not.toHaveBeenCalled()
+    expect(fetchMock).toHaveBeenCalledOnce()
   })
 
   it('skips instance disposal in mock mode', async () => {
@@ -407,6 +499,7 @@ describe('fetchProviderCatalog', () => {
   it('reloads the v2 location with an empty POST and refetches the catalog', async () => {
     getOpenCodeConnection.mockResolvedValue({ protocol: 'v2', version: '2.0.15', headers: { Authorization: 'Bearer test' } })
     const fetchMock = vi.fn()
+      .mockResolvedValueOnce(jsonResponse({ data: {} }))
       .mockResolvedValueOnce(new Response(null, { status: 204 }))
       .mockResolvedValueOnce(locationResponse([{ id: 'openai', name: 'OpenAI' }]))
       .mockResolvedValueOnce(locationResponse([]))
@@ -415,13 +508,16 @@ describe('fetchProviderCatalog', () => {
 
     const catalog = await refreshProviderCatalog()
 
-    expect(fetchMock).toHaveBeenNthCalledWith(1, 'http://127.0.0.1:4096/api/location/reload', expect.objectContaining({
+    expect(fetchMock).toHaveBeenNthCalledWith(1, 'http://127.0.0.1:4096/api/session/active', expect.objectContaining({
+      headers: { Authorization: 'Bearer test' },
+    }))
+    expect(fetchMock).toHaveBeenNthCalledWith(2, 'http://127.0.0.1:4096/api/location/reload', expect.objectContaining({
       method: 'POST',
       headers: { Authorization: 'Bearer test' },
       signal: expect.any(AbortSignal),
     }))
-    expect(fetchMock.mock.calls[0]?.[1]).not.toHaveProperty('body')
-    expect(fetchMock.mock.calls.slice(1).map(([input]) => String(input)).sort()).toEqual([
+    expect(fetchMock.mock.calls[1]?.[1]).not.toHaveProperty('body')
+    expect(fetchMock.mock.calls.slice(2).map(([input]) => String(input)).sort()).toEqual([
       'http://127.0.0.1:4096/api/model',
       'http://127.0.0.1:4096/api/model/default',
       'http://127.0.0.1:4096/api/provider',

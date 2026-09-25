@@ -324,6 +324,37 @@ describe('doctor command', () => {
     expect(fetchMock).not.toHaveBeenCalledWith(expect.stringMatching(/\/api\/info$/), expect.anything())
   })
 
+  it('reports the OpenCode URL recorded by the daemon', async () => {
+    const configDir = useConfigDir()
+    process.env.LOOPTROOP_OPENCODE_MODE = 'real'
+    process.env.LOOPTROOP_OPENCODE_BASE_URL = 'http://127.0.0.1:4096'
+    const daemonOpenCodeUrl = 'http://127.0.0.1:4321'
+    writeDaemonState({
+      instanceId: 'actual-opencode-daemon',
+      pid: process.pid,
+      host: '127.0.0.1',
+      port: 4318,
+      startedAt: new Date().toISOString(),
+      version: '0.0.0-test',
+      apiToken: 'doctor-api-token',
+      opencode: { baseUrl: daemonOpenCodeUrl, owned: true, status: 'managed', pid: 4322 },
+    }, configDir)
+    vi.spyOn(globalThis, 'fetch').mockImplementation(async (input) => {
+      if (String(input).endsWith('/api/health')) {
+        return new Response(JSON.stringify({ instanceId: 'actual-opencode-daemon' }), { status: 200 })
+      }
+      if (String(input).endsWith('/api/health/opencode')) {
+        return new Response(JSON.stringify({ status: 'ok', protocol: 'v2', version: '2.0.16' }), { status: 200 })
+      }
+      return new Response('{}', { status: 200 })
+    })
+
+    const opencode = (await runChecks()).find((check) => check.name === 'opencode')
+
+    expect(opencode?.detail).toContain(`reachable at ${daemonOpenCodeUrl}`)
+    expect(opencode?.detail).not.toContain('reachable at http://127.0.0.1:4096')
+  })
+
   it('attributes daemon health HTTP failures to the daemon health URL', async () => {
     const configDir = useConfigDir()
     process.env.LOOPTROOP_OPENCODE_MODE = 'real'

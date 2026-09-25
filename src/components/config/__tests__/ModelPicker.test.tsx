@@ -145,20 +145,21 @@ const models: OpenCodeModel[] = [
   },
 ]
 
-function mockModelsQuery(data: OpenCodeModel[] = models) {
-  const result = {
+function mockModelsQuery(data: OpenCodeModel[] = models, allData = data) {
+  const connectedResult = {
     data,
     isLoading: false,
     isError: false,
     error: null,
     isFetching: false,
   }
+  const allResult = { ...connectedResult, data: allData }
 
-  vi.mocked(useOpenCodeModels).mockReturnValue(result as ReturnType<typeof useOpenCodeModels>)
+  vi.mocked(useOpenCodeModels).mockReturnValue(connectedResult as ReturnType<typeof useOpenCodeModels>)
   vi.mocked(useOpenCodeModelCatalog).mockReturnValue({
     data: { models: data, connectedProviders: ['openai', 'anthropic', 'local'], defaultModels: {}, catalogScope: 'connected' },
   } as ReturnType<typeof useOpenCodeModelCatalog>)
-  vi.mocked(useAllOpenCodeModels).mockReturnValue(result as ReturnType<typeof useAllOpenCodeModels>)
+  vi.mocked(useAllOpenCodeModels).mockReturnValue(allResult as ReturnType<typeof useAllOpenCodeModels>)
 }
 
 describe('ModelPicker', () => {
@@ -194,6 +195,26 @@ describe('ModelPicker', () => {
     expect(useAllOpenCodeModels).toHaveBeenLastCalledWith(true)
   })
 
+  it('selects a model found only in the all-provider catalog', () => {
+    const allProviderModel: OpenCodeModel = {
+      ...models[0]!,
+      id: 'gemini-all-only',
+      name: 'Gemini All Only',
+      fullId: 'google/gemini-all-only',
+      providerID: 'google',
+      providerName: 'Google',
+    }
+    mockModelsQuery(models, [...models, allProviderModel])
+    const onChange = vi.fn()
+    render(<ModelPicker value="" onChange={onChange} />)
+
+    fireEvent.click(screen.getByRole('button', { name: /^Pick a model/ }))
+    fireEvent.click(screen.getByRole('checkbox', { name: /Show all providers/i }))
+    fireEvent.click(screen.getByRole('option', { name: /Gemini All Only/ }))
+
+    expect(onChange).toHaveBeenCalledExactlyOnceWith(allProviderModel.fullId)
+  })
+
   it('hides the all-provider control when v2 only reports available models', () => {
     vi.mocked(useOpenCodeModelCatalog).mockReturnValue({
       data: { models, connectedProviders: ['openai'], defaultModels: {}, catalogScope: 'available' },
@@ -227,6 +248,7 @@ describe('ModelPicker', () => {
     expect(within(sameBucketOption).getByText('Cheap')).toBeInTheDocument()
     expect(within(sameBucketOption).queryByText(/–/)).not.toBeInTheDocument()
     expect(within(cachePricedOption).queryByText('Free')).not.toBeInTheDocument()
+    expect(within(cachePricedOption).getByText('Cheap')).toBeInTheDocument()
 
     fireEvent.click(screen.getByLabelText('Show free models only'))
     expect(screen.getByRole('option', { name: /local\/same-name/ })).toBeInTheDocument()
@@ -267,6 +289,29 @@ describe('ModelPicker', () => {
     fireEvent.click(screen.getByRole('button', { name: /^Pick a model/ }))
     fireEvent.click(screen.getByRole('button', { name: /^Pick a model/ }))
     expect(screen.getByRole('alert')).toHaveTextContent('could not reach OpenCode')
+  })
+
+  it('shows the credential names to check after OpenCode rejects authentication', () => {
+    const error = new Error('OpenCode rejected the configured credentials. Check OPENCODE_PASSWORD.')
+    vi.mocked(useOpenCodeModels).mockReturnValue({
+      data: undefined,
+      isLoading: false,
+      isError: true,
+      error,
+      isFetching: false,
+    } as ReturnType<typeof useOpenCodeModels>)
+    vi.mocked(useAllOpenCodeModels).mockReturnValue({
+      data: undefined,
+      isLoading: false,
+      isError: false,
+      error: null,
+      isFetching: false,
+    } as ReturnType<typeof useAllOpenCodeModels>)
+    render(<ModelPicker value="" onChange={vi.fn()} />)
+    fireEvent.click(screen.getByRole('button', { name: /^Pick a model/ }))
+
+    expect(screen.getByRole('alert')).toHaveTextContent('OPENCODE_PASSWORD')
+    expect(screen.getByRole('alert')).toHaveTextContent('OPENCODE_SERVER_PASSWORD')
   })
 
   it('shows the stored full id in parentheses beside the pretty name in the open list', () => {

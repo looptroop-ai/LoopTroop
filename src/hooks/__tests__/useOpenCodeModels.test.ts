@@ -180,8 +180,17 @@ describe('useOpenCodeModels', () => {
     })
   })
 
-  it('clears and refreshes models through the strong refresh endpoint', async () => {
+  it('refreshes fresh cached models through the strong refresh endpoint', async () => {
     const queryClient = createTestQueryClient()
+    const cachedModels = {
+      models: [{ fullId: 'openai/old-model' }],
+      connectedProviders: ['openai'],
+      defaultModels: {},
+      catalogScope: 'connected',
+    }
+    const cachedAllModels = { models: [{ fullId: 'openai/old-all-model' }] }
+    queryClient.setQueryData(OPENCODE_MODELS_QUERY_KEY, cachedModels)
+    queryClient.setQueryData(ALL_OPENCODE_MODELS_QUERY_KEY, cachedAllModels)
 
     await refreshOpenCodeModelsQuery(queryClient)
 
@@ -189,9 +198,39 @@ describe('useOpenCodeModels', () => {
       method: 'POST',
       signal: expect.any(AbortSignal),
     })
+    expect(fetch).toHaveBeenCalledTimes(1)
     expect(queryClient.getQueryData(OPENCODE_MODELS_QUERY_KEY)).toEqual(expect.objectContaining({
       connectedProviders: ['openai'],
     }))
+    expect(queryClient.getQueryData(ALL_OPENCODE_MODELS_QUERY_KEY)).toEqual(cachedAllModels)
+    expect(queryClient.getQueryState(ALL_OPENCODE_MODELS_QUERY_KEY)?.isInvalidated).toBe(true)
+  })
+
+  it('keeps cached models and does not retry a busy refresh', async () => {
+    const fetchMock = vi.fn().mockResolvedValue(new Response(JSON.stringify({
+      code: 'OPENCODE_BUSY',
+      message: 'OpenCode has active work or unanswered requests. Wait for them to finish, then retry.',
+    }), { status: 409, headers: { 'Content-Type': 'application/json' } }))
+    vi.stubGlobal('fetch', fetchMock)
+    const queryClient = createTestQueryClient()
+    const cachedModels = { models: [{ fullId: 'openai/gpt-5.3-codex' }] }
+    const cachedAllModels = { models: [{ fullId: 'openai/all-model' }] }
+    queryClient.setQueryData(OPENCODE_MODELS_QUERY_KEY, cachedModels)
+    queryClient.setQueryData(ALL_OPENCODE_MODELS_QUERY_KEY, cachedAllModels)
+
+    await expect(refreshOpenCodeModelsQuery(queryClient)).rejects.toMatchObject({
+      name: 'OpenCodeModelsError',
+      code: 'OPENCODE_BUSY',
+    })
+
+    expect(fetchMock).toHaveBeenCalledTimes(1)
+    expect(fetchMock).toHaveBeenCalledWith('/api/models/refresh', {
+      method: 'POST',
+      signal: expect.any(AbortSignal),
+    })
+    expect(queryClient.getQueryData(OPENCODE_MODELS_QUERY_KEY)).toEqual(cachedModels)
+    expect(queryClient.getQueryData(ALL_OPENCODE_MODELS_QUERY_KEY)).toEqual(cachedAllModels)
+    expect(queryClient.getQueryState(ALL_OPENCODE_MODELS_QUERY_KEY)?.isInvalidated).toBe(false)
   })
 
   it('does not retry a failed manual refresh outside the startup condition', async () => {

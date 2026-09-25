@@ -47,7 +47,7 @@ import { enrichGenericOpenCodeProviderError } from './logDiagnostics'
 import { getErrorMessage } from '@shared/typeGuards'
 import { isAbortError } from '../lib/abort'
 import { OpenCodeConnectionError } from './connection'
-import { beginOpenCodePromptActivity } from './providerCatalogReload'
+import { waitForOpenCodePromptActivity } from './providerCatalogReload'
 
 export interface OpenCodeAdapter {
   createSession(projectPath: string, signal?: AbortSignal, options?: OpenCodeSessionCreateOptions): Promise<Session>
@@ -269,28 +269,33 @@ export class OpenCodeSDKAdapter implements OpenCodeAdapter {
     if (this.activePromptSessions.has(sessionId)) {
       throw new Error(`OpenCode session ${sessionId} already has a prompt in progress`)
     }
-    const endPromptActivity = beginOpenCodePromptActivity()
-    this.activePromptSessions.add(sessionId)
     const promptSignal = options?.signal ?? signal
     // SDK_OPERATION_TIMEOUT_MS bounds individual API calls, not a whole model
     // generation. The caller owns the workflow deadline for this prompt.
     const operationSignal = promptSignal
     const promptOptions = { ...options, signal: operationSignal }
-    const model = promptOptions.model ?? parseModelRef(promptOptions.modelRef)
-    const streamAbortController = new AbortController()
-    const dispatchAbortController = new AbortController()
-    const streamSignal = operationSignal
-      ? AbortSignal.any([operationSignal, streamAbortController.signal])
-      : streamAbortController.signal
-    const dispatchSignal = operationSignal
-      ? AbortSignal.any([operationSignal, dispatchAbortController.signal])
-      : dispatchAbortController.signal
-    let streamDrain!: Promise<{ ended: boolean; error?: unknown }>
-    let streamDrainWaited = false
+    let model = promptOptions.model
     let permissionReplyFailure: Error | null = null
     let permissionReplyPending: Promise<void> | undefined
+    let endPromptActivity: (() => void) | undefined
+    let streamAbortController: AbortController | undefined
+    let streamDrain!: Promise<{ ended: boolean; error?: unknown }>
+    let streamDrainWaited = false
+    this.activePromptSessions.add(sessionId)
 
     try {
+      endPromptActivity = await waitForOpenCodePromptActivity(operationSignal)
+      model ??= parseModelRef(promptOptions.modelRef)
+      const activeStreamAbortController = new AbortController()
+      streamAbortController = activeStreamAbortController
+      const dispatchAbortController = new AbortController()
+      const streamSignal = operationSignal
+        ? AbortSignal.any([operationSignal, activeStreamAbortController.signal])
+        : activeStreamAbortController.signal
+      const dispatchSignal = operationSignal
+        ? AbortSignal.any([operationSignal, dispatchAbortController.signal])
+        : dispatchAbortController.signal
+
       const transport = await this.getTransport(operationSignal)
       const directory = await this.resolveSessionDirectory(sessionId, operationSignal, transport)
       let bootstrapCursor: number | undefined
@@ -380,7 +385,6 @@ export class OpenCodeSDKAdapter implements OpenCodeAdapter {
         const bootstrapHasCompleteHistory = bootstrapHistory.coverageComplete === true
           && !bootstrapHistory.events.some(envelope => envelope.coverageGap)
         const bootstrapIsBoundaryOnly = bootstrapHistory.coverageComplete === false
-          && bootstrapHistory.events.length === 0
           && bootstrapHistory.hasUnmappedEvents !== true
         if (!bootstrapCursorIsValid || bootstrapHistory.hasUnmappedEvents === true || (!bootstrapHasCompleteHistory && !bootstrapIsBoundaryOnly)) {
           throw new Error('OpenCode v2 history is unavailable or incomplete; cannot establish a trusted boundary before waiting for the session')
@@ -489,8 +493,13 @@ export class OpenCodeSDKAdapter implements OpenCodeAdapter {
       const baselineMessageIds = new Set(baselineMessages.map(message => message.id).filter(Boolean))
       let lastCursor = transport.protocol === 'v2' ? bootstrapCursor : undefined
       const streamedTextByMessage = new Map<string, Map<string, string>>()
-      const streamedTextMessageOrder: string[] = []
+      const streamedTextMessageUpdateOrder: string[] = []
       const streamedTextPartIndex = new Map<string, string>()
+      const markStreamedTextMessageUpdated = (messageId: string) => {
+        const orderIndex = streamedTextMessageUpdateOrder.lastIndexOf(messageId)
+        if (orderIndex >= 0) streamedTextMessageUpdateOrder.splice(orderIndex, 1)
+        streamedTextMessageUpdateOrder.push(messageId)
+      }
       let latestSessionErrorEvent: SessionErrorStreamEvent | undefined
       const rememberStreamText = (event: StreamEvent) => {
         if (event.type === 'session_error') {
@@ -505,9 +514,9 @@ export class OpenCodeSDKAdapter implements OpenCodeAdapter {
           if (!messageParts) {
             messageParts = new Map<string, string>()
             streamedTextByMessage.set(messageId, messageParts)
-            streamedTextMessageOrder.push(messageId)
           }
           messageParts.set(partId, event.text)
+          markStreamedTextMessageUpdated(messageId)
           streamedTextPartIndex.set(partId, messageId)
           return
         }
@@ -518,14 +527,17 @@ export class OpenCodeSDKAdapter implements OpenCodeAdapter {
           if (!messageParts) return
           messageParts.delete(event.partId)
           streamedTextPartIndex.delete(event.partId)
-          if (messageParts.size > 0) return
+          if (messageParts.size > 0) {
+            markStreamedTextMessageUpdated(messageId)
+            return
+          }
           streamedTextByMessage.delete(messageId)
-          const orderIndex = streamedTextMessageOrder.lastIndexOf(messageId)
-          if (orderIndex >= 0) streamedTextMessageOrder.splice(orderIndex, 1)
+          const orderIndex = streamedTextMessageUpdateOrder.lastIndexOf(messageId)
+          if (orderIndex >= 0) streamedTextMessageUpdateOrder.splice(orderIndex, 1)
         }
       }
       const buildStreamedTextResponse = (): string => {
-        const messageId = streamedTextMessageOrder[streamedTextMessageOrder.length - 1]
+        const messageId = streamedTextMessageUpdateOrder[streamedTextMessageUpdateOrder.length - 1]
         if (!messageId) return ''
         const messageParts = streamedTextByMessage.get(messageId)
         return messageParts ? Array.from(messageParts.values()).join('').trim() : ''
@@ -1067,10 +1079,10 @@ export class OpenCodeSDKAdapter implements OpenCodeAdapter {
       if (operationSignal?.aborted && operationSignal.reason instanceof Error) throw operationSignal.reason
       throw new Error(`Failed to prompt OpenCode session: ${getErrorMessage(err)}`)
     } finally {
-      streamAbortController.abort()
-      if (!streamDrainWaited) await this.waitForStreamDrain(streamDrain)
+      streamAbortController?.abort()
+      if (streamDrain && !streamDrainWaited) await this.waitForStreamDrain(streamDrain)
       this.activePromptSessions.delete(sessionId)
-      endPromptActivity()
+      endPromptActivity?.()
     }
   }
 

@@ -688,16 +688,16 @@ describe('ProfileSetup', () => {
     expect(screen.getByRole('button', { name: 'Save' })).toBeDisabled()
   })
 
-  it('reload button clears cache and strongly refreshes OpenCode models', async () => {
+  it('reload button preserves cached models while strongly refreshing them', async () => {
     const queryClient = new QueryClient({
       defaultOptions: {
         queries: { retry: false, gcTime: Infinity },
         mutations: { retry: false, gcTime: Infinity },
       },
     })
-    const removeQueriesSpy = vi.spyOn(queryClient, 'removeQueries')
     await renderProfileSetup(queryClient)
     await waitFor(() => expect(queryClient.getQueryData(OPENCODE_MODELS_QUERY_KEY)).toBeDefined())
+    const cachedModels = queryClient.getQueryData(OPENCODE_MODELS_QUERY_KEY)
 
     let finishRefresh: (() => void) | undefined
     vi.mocked(fetch).mockImplementation(async (input: RequestInfo | URL) => {
@@ -725,13 +725,11 @@ describe('ProfileSetup', () => {
     expect(reloadBtn).toBeDisabled()
     expect(reloadBtn.querySelector('svg')).toHaveClass('animate-spin')
 
-    expect(removeQueriesSpy).toHaveBeenCalledWith({
-      queryKey: ['opencode-models'],
-    })
     await waitFor(() => expect(fetch).toHaveBeenCalledWith('/api/models/refresh', {
       method: 'POST',
       signal: expect.any(AbortSignal),
     }))
+    expect(queryClient.getQueryData(OPENCODE_MODELS_QUERY_KEY)).toEqual(cachedModels)
     await act(async () => { finishRefresh?.() })
     await waitFor(() => expect(reloadBtn).not.toBeDisabled())
     expect(reloadBtn.querySelector('svg')).not.toHaveClass('animate-spin')

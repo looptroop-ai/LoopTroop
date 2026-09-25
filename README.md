@@ -523,11 +523,15 @@ replay write before releasing its slot. Manual QA action IDs use letters,
 numbers, `.`, `_`, `:` and `-`, start with a letter or number, and are
 limited to 160 characters.
 
-Project commands, Git and hook commands, managed or development OpenCode
-launches, and `doctor` probes remove `LOOPTROOP_API_TOKEN` and
-`LOOPTROOP_DEV_EVENT_TOKEN` from the child environment after all intended
-overrides are merged. Provider and Git credentials stay available where their
-caller needs them, and the trusted CLI handoff keeps its configured daemon
+Project commands, Git and hook commands, tool subprocesses, and `doctor`
+probes remove `LOOPTROOP_API_TOKEN`, `LOOPTROOP_DEV_EVENT_TOKEN`,
+`OPENCODE_PASSWORD`, and `OPENCODE_SERVER_PASSWORD` after their explicit
+environment overrides are merged. The backend retains the OpenCode password
+aliases for authenticated requests, and a managed OpenCode server receives the
+configured aliases it needs. The development web process keeps
+`LOOPTROOP_API_TOKEN` for the Vite proxy but does not receive the OpenCode
+passwords. Provider and Git credentials stay available where their caller
+needs them, and the trusted CLI handoff keeps its configured daemon
 environment. This filtering controls credential propagation; it is not a
 process sandbox. `LOOPTROOP_API_TOKEN` authorizes the wider bind; it is not the
 live API or browser-session token minted by the daemon and recorded in

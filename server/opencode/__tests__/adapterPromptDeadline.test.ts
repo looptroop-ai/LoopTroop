@@ -7,6 +7,7 @@ vi.mock('../../lib/constants', async importOriginal => ({
 
 import { OpenCodeSDKAdapter } from '../adapter'
 import type { OpenCodeV1Client } from '../v1Transport'
+import { withProviderCatalogReload } from '../providerCatalogReload'
 
 function createClient(promptDelayMs: number): OpenCodeV1Client {
   return {
@@ -72,5 +73,57 @@ describe('OpenCode prompt deadlines', () => {
     } finally {
       clearTimeout(timer)
     }
+  })
+
+  it('waits for an in-progress catalog reload while holding the same-session prompt lock', async () => {
+    let finishReload: (() => void) | undefined
+    const reloadGate = new Promise<void>(resolve => { finishReload = resolve })
+    let markReloadStarted: (() => void) | undefined
+    const reloadStarted = new Promise<void>(resolve => { markReloadStarted = resolve })
+    const reload = withProviderCatalogReload(async () => {
+      markReloadStarted?.()
+      await reloadGate
+    }, async () => undefined)
+    await reloadStarted
+
+    const client = createClient(80)
+    const adapter = new OpenCodeSDKAdapter('http://127.0.0.1:4096', client)
+    const controller = new AbortController()
+    const timer = setTimeout(() => controller.abort(), 250)
+    const prompt = adapter.promptSession(
+      'session-1',
+      [{ type: 'text', content: 'wait for catalog reload' }],
+      controller.signal,
+    )
+
+    try {
+      await expect(adapter.promptSession('session-1', [{ type: 'text', content: 'duplicate' }]))
+        .rejects.toThrow('already has a prompt in progress')
+      expect(client.session.prompt).not.toHaveBeenCalled()
+      finishReload?.()
+      await expect(reload).resolves.toBeUndefined()
+      await expect(prompt).resolves.toBe('completed after the short API timeout')
+      expect(client.session.prompt).toHaveBeenCalledTimes(1)
+    } finally {
+      finishReload?.()
+      clearTimeout(timer)
+    }
+  })
+
+  it('releases prompt and catalog leases when signal setup fails synchronously', async () => {
+    const client = createClient(1)
+    const adapter = new OpenCodeSDKAdapter('http://127.0.0.1:4096', client)
+
+    await expect(adapter.promptSession(
+      'session-1',
+      [{ type: 'text', content: 'invalid signal' }],
+      undefined,
+      { signal: {} as AbortSignal },
+    )).rejects.toThrow()
+
+    await expect(withProviderCatalogReload(async () => {}, async () => 'reloaded'))
+      .resolves.toBe('reloaded')
+    await expect(adapter.promptSession('session-1', [{ type: 'text', content: 'retry same session' }]))
+      .resolves.toBe('completed after the short API timeout')
   })
 })

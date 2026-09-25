@@ -10,7 +10,7 @@ Unreleased changes appear first and represent commits that have not yet been inc
 > Changes merged since the last versioned release that have not yet shipped in a tagged version.
 
 ### Summary
-- OpenCode v2 is the primary integration, v1 remains supported, and catalog reloads reject during active work. Verified live observation can attribute v2 turns without replay; uncertainty blocks retry or continuation.
+- OpenCode v2 supports forked sessions from a verified event boundary; v1 remains supported, and prompts wait through catalog reloads under their workflow deadline.
 - Single-choice options and free-text answers are alternatives; model prices show one label per shared range.
 - Dependency updates arrive in fewer grouped pull requests and none merges itself; workflows take the build Node version from `.nvmrc` alone.
 - Repository tooling and release sources now live under existing project folders while historical release repair and public installer and container contracts remain unchanged.
@@ -21,7 +21,7 @@ Unreleased changes appear first and represent commits that have not yet been inc
 - Model-filtered debug history now retains native OpenCode rows when session ownership metadata differs.
 - Ticket drafts and log history now survive deletion races, pagination gaps, native-log rewrites, and incomplete tail records without restoring stale state.
 - Remote browser access now uses one explicitly configured HTTPS origin, rejects incomplete remote-mode setup at startup, and keeps plain-HTTP remote clients token-only.
-- SSE connections reserve per-ticket and process-wide capacity before setup, while child processes no longer inherit LoopTroop daemon credentials.
+- SSE connections reserve per-ticket and process-wide capacity before setup, while tool children no longer inherit daemon tokens or OpenCode passwords.
 - Bead approval and YAML recovery now reject incomplete input and preserve explicit clears and scalar text across the editor and server.
 - Cancellation recovery, anchored pending-bead retries, interview receipt commits, and council session-stop proofs now remain safe across failed writes and restarts.
 - Git cleanup preserves uncertain process ownership and user files, while interrupted recovery can retry an absent destination safely.
@@ -67,7 +67,7 @@ Unreleased changes appear first and represent commits that have not yet been inc
 - Hono is updated to 4.13.7, including its released JSX escaping fix.
 - Remote browser sessions require one explicit HTTPS public origin; startup rejects a public origin without remote API mode, and plain-HTTP remote access remains bearer-only without trusting forwarded headers.
 - SSE admission reserves both per-ticket and process-wide capacity before asynchronous setup, and releases reservations on every failure or disconnect path.
-- Managed child processes receive a filtered environment so LoopTroop daemon credentials are not inherited by project, Git, hook, or OpenCode commands.
+- Project, Git, hook, and tool subprocesses do not inherit LoopTroop daemon tokens or OpenCode server passwords; managed OpenCode servers still receive the configured auth values they need.
 - A direct child handle is now the only fallback for a tokenless readiness probe during the same `start` invocation. Exited handles, recycled PIDs, and persisted records without a verifiable identity remain refused and cannot be adopted or signalled by numeric PID alone.
 - Project discovery diagnostics encode user-selected paths before logging them, so POSIX control characters cannot create forged log records.
 - Linux user namespaces no longer treat the kernel overflow UID as root, the current user, or the Node interpreter owner. Unreadable mappings fail closed, while `LOOPTROOP_TRUSTED_EXECUTABLE_DIRS` remains an explicit exact-directory opt-in for deliberate operator-owned tools; the shared source and generated installers enforce the same rule.
@@ -255,11 +255,10 @@ Unreleased changes appear first and represent commits that have not yet been inc
 - The unused `server/db/drizzle.config.ts` alias. Every database script already selects its app or project config explicitly, so keeping a third config that Drizzle Kit cannot discover from the repository root only advertised a command that no longer worked.
 
 ### Fixed
-- The shutdown-pending stop-command regression now waits for its stand-in's SIGTERM handler over IPC instead of assuming a fixed startup delay; the process-liveness assertion remains.
-- OpenCode v2 event attribution now supports empty replay by using its watermark only as a starting boundary, then requiring contiguous live observation bracketed by idle and pending-inbox checks. A gap or lost stream leaves the result uncertain; LoopTroop does not guess event ownership, fall back to a snapshot, or resend a prompt.
+- OpenCode v2 can use incomplete fork or transfer history only as a starting boundary, then requires contiguous verified events after that boundary across idle and pending-inbox checks. A gap or lost stream leaves the result uncertain; LoopTroop does not guess event ownership, fall back to a snapshot, or resend a prompt.
 - OpenCode v1 now reports stream failures and EOF completion consistently, keeps caller cancellation distinct from cleanup, and closes its stream iterator and timers.
-- Development startup now treats an unrelated HTTP response on the implicit default OpenCode port as a conflict and keeps explicit URLs strict. Managed logging selects only flags the resolved CLI supports, and the supervisor cannot restart a child after stop completes.
-- Catalog reloads reject active prompts and, for v2, active sessions and unanswered requests. Profile and ticket-start routing handlers preflight the config delta, recheck under the busy guard, and leave the config untouched on rejection; already registered routes remain usable.
+- Development startup treats an unrecognized response, including HTTP 5xx, on the implicit default OpenCode port as a conflict and keeps explicit URLs strict. Managed logging uses the debug value advertised by the resolved CLI, and the supervisor cannot restart a child after stop completes.
+- Catalog reloads reject active prompts and, for v2, active sessions and unanswered requests. Prompts that arrive during a reload wait under their existing workflow deadline. Profile and ticket-start routing handlers preflight the config delta, recheck under the busy guard, and leave the config untouched on rejection; busy refreshes preserve cached catalogs and already registered routes remain usable.
 - Workflow stages no longer replace a model's saved variant in OpenCode prompts. V2 question fields use descriptions as prompt text and titles as headers, offer custom text only when OpenCode allows it, and preserve pending questions when a ticket panel reconnects.
 - Doctor reports the OpenCode URL recorded by a healthy daemon, and published-smoke health requests stay within the remaining readiness deadline.
 - Managed OpenCode startup treats authentication rejection on the default port as a conflict and reports rejected credentials for explicit URLs. Blank password aliases count as unset. Standalone `dev:opencode` prints a newly generated password for manual sharing and does not print configured passwords.

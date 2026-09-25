@@ -661,6 +661,26 @@ describe('OpenCode adapter transport orchestration', () => {
       .resolves.toBe('actual streamed answer')
   })
 
+  it('uses the most recently updated v1 message for streamed text fallback', async () => {
+    const transport = createV1Transport({
+      subscribeToEvents: vi.fn(async () => ({
+        events: (async function* () {
+          yield { event: { type: 'text' as const, sessionId: 'session-1', messageId: 'assistant-old', partId: 'old-part', text: 'old initial', streaming: true, complete: false } }
+          yield { event: { type: 'text' as const, sessionId: 'session-1', messageId: 'assistant-new', partId: 'new-part', text: 'newer message', streaming: true, complete: false } }
+          yield { event: { type: 'text' as const, sessionId: 'session-1', messageId: 'assistant-old', partId: 'old-part', text: 'old corrected answer', streaming: false, complete: true } }
+        })(),
+      })),
+      getSessionMessages: vi.fn(async () => []),
+      dispatchPrompt: vi.fn(async () => ({
+        kind: 'completed' as const,
+        message: message('assistant-dispatch', ''),
+      })),
+    })
+
+    await expect(createAdapter(transport).promptSession('session-1', [{ type: 'text', content: 'prompt' }]))
+      .resolves.toBe('old corrected answer')
+  })
+
   it('does not reuse a pre-prompt v1 assistant snapshot as the new response', async () => {
     const echoedPrompt = 'CRITICAL OUTPUT RULE:\nReturn strict machine-readable output.'
     const transport = createV1Transport({
@@ -741,6 +761,72 @@ describe('OpenCode adapter transport orchestration', () => {
     } finally {
       vi.useRealTimers()
     }
+  })
+
+  it('keeps synthetic v1 completion when the iterator close rejects', async () => {
+    let returnCalls = 0
+    let nextCalls = 0
+    const stepFinish = {
+      type: 'message.part.updated',
+      properties: {
+        part: {
+          id: 'step-1',
+          type: 'step-finish',
+          reason: 'stop',
+          sessionID: 'session-1',
+          messageID: 'message-1',
+        },
+      },
+    }
+    const stream = {
+      [Symbol.asyncIterator]() {
+        return {
+          async next() {
+            if (nextCalls++ === 0) return { value: stepFinish, done: false } as const
+            return { value: undefined, done: true } as const
+          },
+          async return() {
+            returnCalls += 1
+            throw new Error('iterator close failed')
+          },
+        }
+      },
+    }
+    const client = {
+      global: { event: vi.fn(async () => ({ stream })) },
+    } as unknown as OpenCodeV1Client
+    const transport = new OpenCodeV1Transport('http://127.0.0.1:4096', client)
+    const subscription = await transport.subscribeToEvents('session-1', undefined)
+    const events = []
+    for await (const envelope of subscription.events) events.push(envelope.event)
+
+    expect(events.map(event => event?.type)).toEqual(['step', 'done'])
+    expect(returnCalls).toBe(1)
+  })
+
+  it('preserves the original v1 stream error when iterator cleanup also rejects', async () => {
+    const streamError = new Error('v1 stream failed')
+    const stream = {
+      [Symbol.asyncIterator]() {
+        return {
+          async next() {
+            throw streamError
+          },
+          async return() {
+            throw new Error('iterator close failed')
+          },
+        }
+      },
+    }
+    const client = {
+      global: { event: vi.fn(async () => ({ stream })) },
+    } as unknown as OpenCodeV1Client
+    const transport = new OpenCodeV1Transport('http://127.0.0.1:4096', client)
+    const subscription = await transport.subscribeToEvents('session-1', undefined)
+
+    await expect((async () => {
+      for await (const _event of subscription.events) { /* consume */ }
+    })()).rejects.toBe(streamError)
   })
 
   it('emits synthetic v1 completion when the safety timer expires and closes the pending iterator', async () => {

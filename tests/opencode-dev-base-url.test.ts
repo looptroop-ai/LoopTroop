@@ -195,6 +195,42 @@ describe('resolveOpenCodeBaseUrl', () => {
     expect(canListen).toHaveBeenCalledWith('127.0.0.1', 4097)
   })
 
+  it('tries a fallback port after a 5xx response on the implicit default URL', async () => {
+    const canListen = vi.fn(async (_hostname: string, port: number) => port === 4097)
+    const result = await resolveOpenCodeBaseUrl({
+      requestedBaseUrl: 'http://127.0.0.1:4096',
+      hasExplicitBaseUrl: false,
+      maxPortScanAttempts: 1,
+      deps: {
+        isOpenCodeResponding: async () => {
+          throw new OpenCodeConnectionError('network', 'OpenCode v2 info probe failed (HTTP 503).', 503)
+        },
+        canConnect: async () => false,
+        canListen,
+        inspectPortOccupants: () => ({ port: 4096, occupants: [], rawSocketSnapshot: null }),
+      },
+    })
+
+    expect(result.baseUrl).toBe('http://127.0.0.1:4097')
+    expect(result.status).toBe('ready-to-start')
+    expect(canListen).toHaveBeenCalledWith('127.0.0.1', 4097)
+  })
+
+  it('keeps an explicit URL strict when its health probe returns 5xx', async () => {
+    const canListen = vi.fn(async () => true)
+    await expect(resolveOpenCodeBaseUrl({
+      requestedBaseUrl: 'http://127.0.0.1:5001',
+      hasExplicitBaseUrl: true,
+      deps: {
+        isOpenCodeResponding: async () => {
+          throw new OpenCodeConnectionError('network', 'OpenCode v2 info probe failed (HTTP 503).', 503)
+        },
+        canListen,
+      },
+    })).rejects.toThrow('OpenCode v2 info probe failed (HTTP 503).')
+    expect(canListen).not.toHaveBeenCalled()
+  })
+
   it('fails clearly on an explicit URL whose server rejects authentication', async () => {
     const canListen = vi.fn(async () => true)
     await expect(resolveOpenCodeBaseUrl({

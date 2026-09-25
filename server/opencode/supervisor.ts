@@ -3,7 +3,7 @@ import { randomBytes } from 'node:crypto'
 import { setTimeout as delay } from 'node:timers/promises'
 import { isProcessAlive, killProcessTree } from '../cli/processControl'
 import { planProgramLaunch, resolveTrustedExecutable } from '../lib/executablePath'
-import { createChildEnvironment } from '../lib/childEnvironment'
+import { createOpenCodeServerEnvironment } from '../lib/childEnvironment'
 import { getOpenCodeServeLogArgs } from '../lib/opencodeServeLogArgs'
 import { matchProcess, readProcessStartToken } from '../lib/processIdentity'
 import { captureProcessGroup, hasCapturedProcessGroupMember, refreshProcessGroup, terminateProcessTree, type ProcessGroupSnapshot } from '../lib/processTree'
@@ -432,7 +432,7 @@ export class OpenCodeSupervisor {
     const spawnProcess = this.options.spawnProcess ?? spawn
 
     this.ensureManagedAuthentication()
-    const childEnvironment = createChildEnvironment(process.env)
+    const childEnvironment = createOpenCodeServerEnvironment(process.env)
 
     const serveHost = host.startsWith('[') ? host.slice(1, -1) : host
 

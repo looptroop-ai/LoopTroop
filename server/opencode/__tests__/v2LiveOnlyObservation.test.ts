@@ -8,6 +8,7 @@ const startCursor = 73
 type LiveEvent = { type: string; seq: number; data: Record<string, unknown> }
 
 interface LiveOnlyServerOptions {
+  historicalEvents?: LiveEvent[]
   onConnect?: (emit: (event: LiveEvent) => void) => void
   onWait?: (emit: (event: LiveEvent) => void, setPending: (ids: string[]) => void) => void
   onPrompt?: (emit: (event: LiveEvent) => void) => void
@@ -124,7 +125,13 @@ function createLiveOnlyServer(options: LiveOnlyServerOptions = {}) {
           },
         }), { headers: { 'content-type': 'text/event-stream' } })
       }
-      const events: unknown[] = []
+      const events: unknown[] = (options.historicalEvents ?? [])
+        .filter(event => after === null || event.seq > Number(after))
+        .map(event => ({
+          type: event.type,
+          data: event.data,
+          durable: { aggregateID: 'session-1', seq: event.seq },
+        }))
       logPayloadCount += events.length
       return sseResponse([
         ...events,
@@ -242,8 +249,41 @@ describe('OpenCode v2 live-only event coverage', () => {
     expect(server.requestOrder).not.toContain('prompt')
   })
 
-  it('refuses a live durable gap through an empty replay instead of dispatching without proof', async () => {
+  it('uses a nonempty reserved historical prefix only as a boundary before continuous live coverage', async () => {
     const server = createLiveOnlyServer({
+      historicalEvents: [
+        { type: 'session.inbox.enqueued', seq: 1, data: { sessionID: 'session-1', inboxID: 'inbox-old-1' } },
+        { type: 'session.inbox.enqueued', seq: 3, data: { sessionID: 'session-1', inboxID: 'inbox-old-2' } },
+      ],
+      onConnect(emit) {
+        emit({ type: 'session.inbox.enqueued', seq: startCursor + 1, data: { sessionID: 'session-1', inboxID: 'inbox-prior' } })
+        emit({ type: 'session.execution.started', seq: startCursor + 2, data: { sessionID: 'session-1' } })
+        emit({ type: 'session.inbox.delivered', seq: startCursor + 3, data: { sessionID: 'session-1', inboxID: 'inbox-prior' } })
+      },
+      onWait(emit) {
+        emit({ type: 'session.execution.succeeded', seq: startCursor + 4, data: { sessionID: 'session-1' } })
+      },
+      onPrompt(emit) {
+        emit({ type: 'session.inbox.enqueued', seq: startCursor + 5, data: { sessionID: 'session-1', inboxID: 'inbox-own' } })
+        emit({ type: 'session.execution.started', seq: startCursor + 6, data: { sessionID: 'session-1' } })
+        emit({ type: 'session.inbox.delivered', seq: startCursor + 7, data: { sessionID: 'session-1', inboxID: 'inbox-own' } })
+        emit({ type: 'session.execution.succeeded', seq: startCursor + 8, data: { sessionID: 'session-1' } })
+      },
+    })
+
+    await expect(server.adapter.promptSession('session-1', promptParts)).resolves.toBe('live answer')
+
+    expect(server.requestOrder).toContain('log:full')
+    expect(server.requestOrder).toContain(`log:${startCursor}`)
+    expect(server.promptPostCount).toBe(1)
+  })
+
+  it('refuses a missing sequence after a nonempty reserved historical boundary', async () => {
+    const server = createLiveOnlyServer({
+      historicalEvents: [
+        { type: 'session.inbox.enqueued', seq: 1, data: { sessionID: 'session-1', inboxID: 'inbox-old-1' } },
+        { type: 'session.inbox.enqueued', seq: 3, data: { sessionID: 'session-1', inboxID: 'inbox-old-2' } },
+      ],
       onConnect(emit) {
         emit({ type: 'session.inbox.enqueued', seq: startCursor + 2, data: { sessionID: 'session-1', inboxID: 'inbox-gap' } })
       },
@@ -252,6 +292,35 @@ describe('OpenCode v2 live-only event coverage', () => {
     await expect(server.adapter.promptSession('session-1', promptParts)).rejects.toThrow()
 
     expect(server.promptPostCount).toBe(0)
+    expect(server.requestOrder).toContain(`log:${startCursor}`)
+    expect(server.requestOrder).toContain('event')
+    expect(server.requestOrder).not.toContain('prompt')
+  })
+
+  it('rejects a malformed post-boundary durable event before posting a prompt', async () => {
+    const server = createLiveOnlyServer({
+      onConnect(emit) {
+        emit({ type: 'session.inbox.enqueued', seq: startCursor + 1, data: { sessionID: 'session-1' } })
+      },
+    })
+
+    await expect(server.adapter.promptSession('session-1', promptParts)).rejects.toThrow()
+
+    expect(server.promptPostCount).toBe(0)
+    expect(server.requestOrder).not.toContain('prompt')
+  })
+
+  it('rejects unmapped old history instead of treating it as a trusted boundary', async () => {
+    const server = createLiveOnlyServer({
+      historicalEvents: [
+        { type: 'session.unrecognized', seq: 1, data: { sessionID: 'session-1' } },
+      ],
+    })
+
+    await expect(server.adapter.promptSession('session-1', promptParts)).rejects.toThrow()
+
+    expect(server.promptPostCount).toBe(0)
+    expect(server.requestOrder).not.toContain('event')
     expect(server.requestOrder).not.toContain('prompt')
   })
 

@@ -28,6 +28,7 @@ import { getErrorMessage } from '../shared/typeGuards'
 import { LOOPTROOP_OPENCODE_ROUTING_CONFIG } from '../shared/openRouterRouting'
 import { resolveAppConfigDir } from '../server/lib/appConfigDir'
 import { hasOpenCodePassword, withOpenCodePasswordAliases } from '../shared/opencodeAuth'
+import { maskOpenCodeCredentials } from '../server/lib/childEnvironment'
 
 const __dirname = dirname(fileURLToPath(import.meta.url))
 const repoRoot = resolve(__dirname, '..')
@@ -464,7 +465,7 @@ const { commands, result } = concurrently(
     name: service.name,
     prefixColor: service.prefixColor,
     env: {
-      ...childEnv,
+      ...(service.name === 'WEB' ? maskOpenCodeCredentials(childEnv) : childEnv),
       LOOPTROOP_OPENCODE_BASE_URL: baseUrl,
     },
   })),

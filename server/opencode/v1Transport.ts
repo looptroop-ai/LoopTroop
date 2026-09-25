@@ -377,7 +377,11 @@ export class OpenCodeV1Transport implements OpenCodeTransport {
           // The safety timeout is terminal even if a stuck source cannot close.
         }
       } else {
-        await rawIterator.return?.()
+        try {
+          await rawIterator.return?.()
+        } catch {
+          // Iterator cleanup must not replace a stream failure or suppress a clean completion.
+        }
       }
     }
     if (!emittedDone && !callerSignal?.aborted && shouldEmitSyntheticDone) yield { event: { type: 'done', sessionId } }

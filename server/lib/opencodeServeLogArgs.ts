@@ -5,7 +5,16 @@ const SERVE_HELP_TIMEOUT_MS = 5_000
 
 export type OpenCodeServeLogMode = 'default' | 'all'
 
-/** Keep the v1 log-level option when the resolved CLI supports it; v2 removed it. */
+function debugLogLevel(help: string): string | undefined {
+  const option = help.split(/\r?\n/).find((line) => /^[ \t]*--log-level(?:[ \t]|=|$)/.test(line))
+  if (!option) return undefined
+
+  const values = option.match(/<([^<>]+)>/)?.[1]?.split('|').map((value) => value.trim())
+  if (!values || (values.length === 1 && values[0]?.toLowerCase() === 'level')) return 'DEBUG'
+  return values.find((value) => value.toLowerCase() === 'debug')
+}
+
+/** Use the debug spelling advertised by the resolved CLI, retaining v1's uppercase default. */
 export function getOpenCodeServeLogArgs(
   mode: OpenCodeServeLogMode,
   helpLaunch: ProgramLaunchPlan,
@@ -21,8 +30,9 @@ export function getOpenCodeServeLogArgs(
     timeout: SERVE_HELP_TIMEOUT_MS,
     windowsVerbatimArguments: helpLaunch.windowsVerbatimArguments,
   })
-  if (!result.error && result.status === 0 && /^\s*--log-level(?:\s|=|$)/m.test(`${result.stdout ?? ''}\n${result.stderr ?? ''}`)) {
-    args.push('--log-level', 'DEBUG')
+  if (!result.error && result.status === 0) {
+    const level = debugLogLevel(`${result.stdout ?? ''}\n${result.stderr ?? ''}`)
+    if (level) args.push('--log-level', level)
   }
   return args
 }

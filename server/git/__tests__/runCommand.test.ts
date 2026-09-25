@@ -149,6 +149,30 @@ describe('server/git/runCommand', () => {
     expect(result.stdout).toBe('set:0')
   })
 
+  it('does not pass daemon or OpenCode credentials to tool subprocesses', async () => {
+    const read = script('process.stdout.write(JSON.stringify([process.env.OPENCODE_PASSWORD ?? null, process.env.OPENCODE_SERVER_PASSWORD ?? null, process.env.LOOPTROOP_API_TOKEN ?? null, process.env.LOOPTROOP_DEV_EVENT_TOKEN ?? null, process.env.GH_TOKEN ?? null, process.env.GIT_TERMINAL_PROMPT]))')
+    const env = {
+      OPENCODE_PASSWORD: 'v2-provider-password',
+      OPENCODE_SERVER_PASSWORD: 'v1-provider-password',
+      LOOPTROOP_API_TOKEN: 'daemon-api-token',
+      LOOPTROOP_DEV_EVENT_TOKEN: 'daemon-event-token',
+      GH_TOKEN: 'github-token',
+    }
+
+    expect(runCommandSync(node, read, { env, log: false }).stdout).toBe('[null,null,null,null,"github-token","0"]')
+    await expect(runCommand(node, read, { env, log: false })).resolves.toMatchObject({
+      stdout: '[null,null,null,null,"github-token","0"]',
+      ok: true,
+    })
+    expect(env).toEqual({
+      OPENCODE_PASSWORD: 'v2-provider-password',
+      OPENCODE_SERVER_PASSWORD: 'v1-provider-password',
+      LOOPTROOP_API_TOKEN: 'daemon-api-token',
+      LOOPTROOP_DEV_EVENT_TOKEN: 'daemon-event-token',
+      GH_TOKEN: 'github-token',
+    })
+  })
+
   it('adds SSH BatchMode when SSH overrides are absent or undefined, preserving real overrides', () => {
     const read = script('process.stdout.write(`${process.env.GIT_SSH_COMMAND ?? "<unset>"}:${process.env.GIT_SSH ?? "<unset>"}`)')
     const defaultResult = runCommandSync(node, read, {

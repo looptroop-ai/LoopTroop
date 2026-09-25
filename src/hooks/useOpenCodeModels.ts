@@ -46,7 +46,21 @@ async function requestModelsApi(
     method,
     signal: signal ? AbortSignal.any([signal, timeout]) : timeout,
   })
-  if (!res.ok) throw await failedResponseError(res, 'Failed to fetch models')
+  if (!res.ok) {
+    if (res.status === 409) {
+      const body: unknown = await res.clone().json().catch(() => null)
+      if (body && typeof body === 'object' && !Array.isArray(body)) {
+        const { code, message } = body as { code?: unknown; message?: unknown }
+        if (code === 'OPENCODE_BUSY') {
+          throw new OpenCodeModelsError(
+            typeof message === 'string' ? message : 'OpenCode has active work or unanswered requests.',
+            code,
+          )
+        }
+      }
+    }
+    throw await failedResponseError(res, 'Failed to fetch models')
+  }
   const data: ModelsApiResponse = await res.json()
   // When the backend cannot reach OpenCode it returns a `message` with an empty
   // model list (HTTP 200). Treat this as a retriable error so react-query retries
@@ -79,15 +93,18 @@ export function clearOpenCodeModelsQuery(queryClient: Pick<QueryClient, 'removeQ
   })
 }
 
-export function refreshOpenCodeModelsQuery(queryClient: Pick<QueryClient, 'removeQueries' | 'fetchQuery'>) {
-  clearOpenCodeModelsQuery(queryClient)
-  return queryClient.fetchQuery({
+export async function refreshOpenCodeModelsQuery(queryClient: Pick<QueryClient, 'cancelQueries' | 'fetchQuery' | 'invalidateQueries'>) {
+  await queryClient.cancelQueries({ queryKey: OPENCODE_MODELS_QUERY_KEY, exact: true })
+  const data = await queryClient.fetchQuery({
     queryKey: OPENCODE_MODELS_QUERY_KEY,
     queryFn: ({ signal }) => refreshModelsApi(signal),
-    staleTime: QUERY_STALE_TIME_5M,
+    // A manual refresh must POST even when the connected catalog is still fresh.
+    staleTime: 0,
     retry: shouldRetryModelFetch,
     retryDelay: MODEL_FETCH_RETRY_DELAY_MS,
   })
+  await queryClient.invalidateQueries({ queryKey: ALL_OPENCODE_MODELS_QUERY_KEY, exact: true })
+  return data
 }
 
 export function refetchOpenCodeModelsQuery(queryClient: Pick<QueryClient, 'refetchQueries'>) {

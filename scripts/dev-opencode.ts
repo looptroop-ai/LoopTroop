@@ -6,7 +6,7 @@ import { getServeHostname, resolveOpenCodeBaseUrl } from './opencode-dev-base-ur
 import { resolveOpenCodeLogMode } from './opencode-log-mode'
 import { withManagedOpenCodeServerEnv } from './opencode-permission-env'
 import { LOOPTROOP_OPENCODE_ROUTING_CONFIG } from '../shared/openRouterRouting'
-import { createChildEnvironment } from '../server/lib/childEnvironment'
+import { createOpenCodeServerEnvironment } from '../server/lib/childEnvironment'
 import { launchTool } from './tool-path.ts'
 import { hasOpenCodePassword, withOpenCodePasswordAliases } from '../shared/opencodeAuth'
 import { getOpenCodeServeLogArgs } from '../server/lib/opencodeServeLogArgs'
@@ -68,7 +68,7 @@ if (!managedServerEnv.OPENCODE_CONFIG?.trim()) {
     managedServerEnv.OPENCODE_CONFIG = routingConfigPath
   }
 }
-const childEnvironment = createChildEnvironment(managedServerEnv)
+const childEnvironment = createOpenCodeServerEnvironment(managedServerEnv)
 
 // Resolved against the environment OpenCode will get, rather than left to
 // `PATH`; an unresolvable OpenCode fails here with the reason instead of as an

@@ -226,6 +226,7 @@ export async function resolveOpenCodeBaseUrl(options: ResolveOptions): Promise<R
       }
       const responseProvesOccupancy = error.failureKind === 'authentication'
         || error.failureKind === 'unsupported_protocol'
+        || (error.failureKind === 'network' && error.status !== undefined)
       if (hasExplicitBaseUrl || !responseProvesOccupancy) throw error
       occupiedResponseHost = host
       if (error.failureKind === 'authentication') authenticationFailureHost = host

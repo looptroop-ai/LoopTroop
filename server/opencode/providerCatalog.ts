@@ -175,7 +175,9 @@ function fetchCatalogEndpoint(
   signal?: AbortSignal,
 ) {
   const headers = { ...connection.headers, ...Object.fromEntries(new Headers(init.headers).entries()) }
-  return fetch(`${getOpenCodeBaseUrl().replace(/\/+$/, '')}${path}`, {
+  let baseUrl = getOpenCodeBaseUrl()
+  while (baseUrl.endsWith('/')) baseUrl = baseUrl.slice(0, -1)
+  return fetch(`${baseUrl}${path}`, {
     ...init,
     // Combined rather than replaced: the operation timeout still applies, and
     // the caller's cancellation now actually reaches the request instead of
@@ -271,7 +273,9 @@ function normalizeV2ProviderCatalog(providersValue: unknown, modelsValue: unknow
 
   return {
     all,
-    connected: all.map((provider) => provider.id),
+    connected: providers
+      .filter((provider) => provider.activation !== 'disabled')
+      .map((provider) => provider.id as string),
     default: defaultModel,
     supportsAllModels: false,
   }
@@ -309,6 +313,11 @@ function normalizeV2Model(value: Record<string, unknown>): OpenCodeCatalogProvid
         isRecord(variant) && typeof variant.id === 'string' ? [[variant.id, variant]] : [],
       ))
     : {}
+  const canReason = typeof compatibility?.reasoningField === 'string'
+    || Object.values(variants).some((variant) => isRecord(variant)
+      && isRecord(variant.settings)
+      && typeof variant.settings.reasoningEffort === 'string'
+      && variant.settings.reasoningEffort.length > 0)
 
   return {
     id: value.id as string,
@@ -324,7 +333,7 @@ function normalizeV2Model(value: Record<string, unknown>): OpenCodeCatalogProvid
     },
     limit: { context: isRecord(value.limit) && finiteNumber(value.limit.context) ? value.limit.context : 0 },
     capabilities: {
-      reasoning: typeof compatibility?.reasoningField === 'string' ? true : null,
+      reasoning: canReason ? true : null,
       tools: typeof capabilities?.tools === 'boolean' ? capabilities.tools : null,
       input: { image: inputModalities ? inputModalities.some(isImageModality) : null },
     },

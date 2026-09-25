@@ -117,6 +117,31 @@ describe('applyOpencodeStepsConfig', () => {
     expect(readFileSync(CONFIG_PATH, 'utf8')).toBe(originalRaw)
   })
 
+  it('merges v2 step caps into an existing legacy agent map when no native map exists', () => {
+    const original = {
+      agent: {
+        review: { model: 'openai/gpt-5.4' },
+        build: { model: 'anthropic/claude-sonnet-4' },
+      },
+      mcp: { docs: { type: 'local' } },
+    }
+    const originalRaw = `${JSON.stringify(original)}\n`
+    writeFileSync(CONFIG_PATH, originalRaw, 'utf8')
+
+    const { outcome } = apply(40, 'v2')
+
+    expect(outcome.applied).toBe(true)
+    expect(readConfig()).toEqual({
+      agent: {
+        review: { model: 'openai/gpt-5.4' },
+        build: { model: 'anthropic/claude-sonnet-4', steps: 40 },
+      },
+      mcp: { docs: { type: 'local' } },
+    })
+    if (outcome.applied) expect(restore(outcome.handle).result).toBe('restored')
+    expect(readFileSync(CONFIG_PATH, 'utf8')).toBe(originalRaw)
+  })
+
   it('uses the v2 agents key for a new config and refuses malformed native agents', () => {
     const { outcome: created } = apply(12, 'v2')
     expect(created.applied).toBe(true)

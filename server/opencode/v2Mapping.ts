@@ -29,6 +29,7 @@ export interface V2EventMappingState {
   toolInputs: Map<string, RecordValue>
   toolInputText: Map<string, string>
   questions: Map<string, OpenCodeQuestionRequest>
+  questionKeys: Map<string, string[]>
 }
 
 const MAX_ATTACHMENT_BYTES = 20 * 1024 * 1024
@@ -41,6 +42,7 @@ export function createV2EventMappingState(): V2EventMappingState {
     toolInputs: new Map(),
     toolInputText: new Map(),
     questions: new Map(),
+    questionKeys: new Map(),
   }
 }
 
@@ -119,6 +121,7 @@ export function mapV2Message(value: unknown, fallbackSessionId?: string): Messag
   const completed = numberValue(time?.completed)
   const timestamp = isoTime(created)
   const model = asRecord(raw.model)
+  const variant = stringValue(model?.variant) ?? stringValue(raw.variant)
   const info: MessageInfo = {
     id: raw.id,
     sessionID,
@@ -126,7 +129,7 @@ export function mapV2Message(value: unknown, fallbackSessionId?: string): Messag
     ...(stringValue(raw.agent) ? { sender: raw.agent as string, author: raw.agent as string } : {}),
     ...(stringValue(model?.providerID) ? { providerID: model?.providerID as string } : {}),
     ...(stringValue(model?.id) ? { modelID: model?.id as string } : {}),
-    ...(stringValue(raw.variant) ? { variant: raw.variant as string } : {}),
+    ...(variant ? { variant } : {}),
     ...(timestamp ? { timestamp } : {}),
     ...(created !== undefined || completed !== undefined
       ? { time: { ...(created !== undefined ? { created } : {}), ...(completed !== undefined ? { completed } : {}) } }
@@ -220,7 +223,7 @@ export function mapV2Question(value: unknown): OpenCodeQuestionRequest | null {
 
   const toolMeta = asRecord(metadata.tool)
   const messageID = stringValue(toolMeta?.messageID)
-  const callID = stringValue(toolMeta?.callID)
+  const callID = stringValue(toolMeta?.id) ?? stringValue(toolMeta?.callID)
   return {
     id: form.id,
     sessionID: form.sessionID,
@@ -272,8 +275,22 @@ export function mapV2Event(
 
   const cursor = numberValue(asRecord(raw.durable)?.seq)
   const event = mapEventData(raw, data, sessionId, state)
-  return event ? { event, ...(cursor !== undefined ? { cursor } : {}) } : null
+  if (event) return { event, ...(cursor !== undefined ? { cursor } : {}) }
+  return V2_CURSOR_ONLY_EVENTS.has(raw.type) && cursor !== undefined ? { cursor } : null
 }
+
+const V2_CURSOR_ONLY_EVENTS = new Set([
+  'session.created',
+  'session.agent.selected',
+  'session.model.selected',
+  'session.permissions',
+  'session.viewed',
+  'session.metadata.updated',
+  'session.renamed',
+  'session.instructions.updated',
+  'session.step.streamed',
+  'session.usage.recorded',
+])
 
 export function isV2QuestionForm(value: unknown): boolean {
   const form = asRecord(value)
@@ -476,9 +493,11 @@ function mapEventData(
         details: { reply: data.reply },
       }
     case 'form.created': {
-      const question = mapV2Question(data.form)
+      const form = data.form
+      const question = mapV2Question(form)
       if (!question) return null
       state.questions.set(question.id, question)
+      state.questionKeys.set(question.id, mapQuestionFieldKeys(form))
       return {
         type: 'question',
         sessionId,
@@ -492,8 +511,9 @@ function mapEventData(
       const requestId = stringValue(data.id)
       if (!requestId) return null
       const question = state.questions.get(requestId)
-      const answers = mapFormEventAnswers(question, data.answer)
+      const answers = mapFormEventAnswers(question, data.answer, state.questionKeys.get(requestId))
       state.questions.delete(requestId)
+      state.questionKeys.delete(requestId)
       return { type: 'question', sessionId, action: 'replied', requestId, answers, tool: question?.tool }
     }
     case 'form.cancelled': {
@@ -501,6 +521,7 @@ function mapEventData(
       if (!requestId) return null
       const question = state.questions.get(requestId)
       state.questions.delete(requestId)
+      state.questionKeys.delete(requestId)
       return { type: 'question', sessionId, action: 'rejected', requestId, tool: question?.tool }
     }
     case 'session.usage.updated':
@@ -651,13 +672,24 @@ function mapQuestionField(value: unknown, header: string): OpenCodeQuestionInfo 
 function mapFormEventAnswers(
   question: OpenCodeQuestionRequest | undefined,
   answerValue: unknown,
+  fieldKeys?: string[],
 ): OpenCodeQuestionAnswer[] | undefined {
   const answer = asRecord(answerValue)
   if (!answer) return undefined
   if (!question) return Object.values(answer).map(value => typeof value === 'string' ? [value] : stringArray(value))
   return question.questions.map((_, index) => {
-    const value = answer[`q${index}`]
+    const key = fieldKeys?.[index] ?? `q${index}`
+    const value = Object.hasOwn(answer, key) ? answer[key] : answer[`q${index}`]
     return typeof value === 'string' ? [value] : stringArray(value)
+  })
+}
+
+function mapQuestionFieldKeys(value: unknown): string[] {
+  const form = asRecord(value)
+  const header = stringValue(form?.title) ?? 'Question'
+  return arrayValue(form?.fields).flatMap((field, index) => {
+    if (!mapQuestionField(field, header)) return []
+    return [stringValue(asRecord(field)?.key) ?? `q${index}`]
   })
 }
 

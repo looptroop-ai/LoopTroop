@@ -387,8 +387,8 @@ function checkConfigDir(): Check {
 /** What asking the OpenCode server for its config established. */
 export type OpenCodeReachability =
   | { kind: 'ok'; protocol?: 'v1' | 'v2'; version?: string }
-  | { kind: 'unreachable'; error?: string }
-  | { kind: 'responded'; status: number }
+  | { kind: 'unreachable'; error?: string; url?: string }
+  | { kind: 'responded'; status: number; url?: string }
   | {
     kind: 'failed'
     failureKind: OpenCodeFailureKind | 'model_discovery'
@@ -438,9 +438,12 @@ export function judgeOpenCode(
     }
   }
 
+  const target = reachable.kind === 'responded' || reachable.kind === 'unreachable'
+    ? reachable.url ?? baseUrl
+    : baseUrl
   const detail = reachable.kind === 'responded'
-    ? `responded ${reachable.status} at ${baseUrl}`
-    : `${reachable.error ? `${reachable.error}; ` : ''}not reachable at ${baseUrl}`
+    ? `responded ${reachable.status} at ${target}`
+    : `${reachable.error ? `${reachable.error}; ` : ''}not reachable at ${target}`
 
   // A daemon that has an OpenCode record is one that needs a server; that it is
   // not answering means every operation LoopTroop exists to perform fails right
@@ -517,16 +520,17 @@ async function probeOpenCodeConfig(baseUrl: string): Promise<OpenCodeReachabilit
 }
 
 async function probeDaemonOpenCode(daemon: DaemonState): Promise<OpenCodeReachability> {
+  const url = `${daemonOrigin(daemon.host, daemon.port)}/api/health/opencode`
   try {
-    const response = await fetch(`${daemonOrigin(daemon.host, daemon.port)}/api/health/opencode`, {
+    const response = await fetch(url, {
       redirect: 'manual',
       headers: { Authorization: `Bearer ${daemon.apiToken}` },
       signal: AbortSignal.timeout(2_000),
     })
-    if (!response.ok) return { kind: 'responded', status: response.status }
+    if (!response.ok) return { kind: 'responded', status: response.status, url }
     const value: unknown = await response.json()
     if (typeof value !== 'object' || value === null || Array.isArray(value)) {
-      return { kind: 'responded', status: response.status }
+      return { kind: 'responded', status: response.status, url }
     }
     const health = value as Record<string, unknown>
     const failureKind = health.failureKind
@@ -555,7 +559,7 @@ async function probeDaemonOpenCode(daemon: DaemonState): Promise<OpenCodeReachab
       error: typeof health.error === 'string' ? health.error : 'OpenCode is unavailable.',
     }
   } catch (error) {
-    return { kind: 'unreachable', error: getErrorMessage(error) }
+    return { kind: 'unreachable', error: getErrorMessage(error), url }
   }
 }
 

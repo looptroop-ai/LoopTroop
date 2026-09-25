@@ -2,7 +2,7 @@ import { afterEach, describe, expect, it, vi } from 'vitest'
 import { createServer } from 'node:http'
 import { once } from 'node:events'
 import { getServeHostname, parseLocalPortFromUrl, resolveOpenCodeBaseUrl } from '../scripts/opencode-dev-base-url'
-import { invalidateOpenCodeConnection } from '../server/opencode/connection'
+import { invalidateOpenCodeConnection, OpenCodeConnectionError } from '../server/opencode/connection'
 
 afterEach(() => {
   vi.unstubAllGlobals()
@@ -149,6 +149,44 @@ describe('resolveOpenCodeBaseUrl', () => {
       note: 'Port 4096 is occupied on 127.0.0.1; using http://127.0.0.1:4097 for OpenCode instead. Occupant: kilo (pid 3251, cmd: kilo serve --port 0, cwd: /mnt/d/tools/kilo).',
       status: 'ready-to-start',
     })
+  })
+
+  it('tries a fallback port after the default server rejects authentication', async () => {
+    const canListen = vi.fn(async (_hostname: string, port: number) => port === 4097)
+    const result = await resolveOpenCodeBaseUrl({
+      requestedBaseUrl: 'http://127.0.0.1:4096',
+      hasExplicitBaseUrl: false,
+      maxPortScanAttempts: 1,
+      deps: {
+        isOpenCodeResponding: async () => {
+          throw new OpenCodeConnectionError('authentication', 'OpenCode rejected the configured credentials.', 401)
+        },
+        canConnect: async () => false,
+        canListen,
+        inspectPortOccupants: () => ({ port: 4096, occupants: [], rawSocketSnapshot: null }),
+      },
+    })
+
+    expect(result.baseUrl).toBe('http://127.0.0.1:4097')
+    expect(result.status).toBe('ready-to-start')
+    expect(canListen).toHaveBeenCalledWith('127.0.0.1', 4097)
+  })
+
+  it('fails clearly on an explicit URL whose server rejects authentication', async () => {
+    const canListen = vi.fn(async () => true)
+    await expect(resolveOpenCodeBaseUrl({
+      requestedBaseUrl: 'http://127.0.0.1:5001',
+      hasExplicitBaseUrl: true,
+      deps: {
+        isOpenCodeResponding: async () => {
+          throw new OpenCodeConnectionError('authentication', 'OpenCode rejected the configured credentials.', 401)
+        },
+        canListen,
+      },
+    })).rejects.toThrow(
+      'Configured OpenCode URL http://127.0.0.1:5001 requires valid credentials. Set OPENCODE_PASSWORD for v2 or OPENCODE_SERVER_PASSWORD for v1.',
+    )
+    expect(canListen).not.toHaveBeenCalled()
   })
 
   it('rejects an explicit conflicting base URL instead of silently moving it', async () => {

@@ -2348,26 +2348,30 @@ describe('runOpenCodePrompt', () => {
 
   it('subscribeToEvents emits synthetic done after step-finish safety timeout', async () => {
     // Test the safety timeout directly on the adapter level with a small value
+    let streamSignal: AbortSignal | undefined
     const fakeClient = createFakeSdkClient({
       get: async () => ({ data: { directory: '/tmp/project' } }),
-      subscribe: async () => ({
-        stream: (async function* () {
-          yield {
-            type: 'message.part.updated',
-            properties: {
-              part: {
-                id: 'part-step-1',
-                type: 'step-finish',
-                reason: 'stop',
-                sessionID: 'ses-1',
-                messageID: 'msg-1',
+      subscribe: async (options: unknown) => {
+        streamSignal = (options as { signal?: AbortSignal }).signal
+        return {
+          stream: (async function* () {
+            yield {
+              type: 'message.part.updated',
+              properties: {
+                part: {
+                  id: 'part-step-1',
+                  type: 'step-finish',
+                  reason: 'stop',
+                  sessionID: 'ses-1',
+                  messageID: 'msg-1',
+                },
               },
-            },
-          }
-          // Hang indefinitely — simulating missing session.idle
-          await new Promise<void>(() => {})
-        })(),
-      }),
+            }
+            // Hang indefinitely — simulating missing session.idle
+            await new Promise<void>(() => {})
+          })(),
+        }
+      },
     })
     const sdkAdapter = new OpenCodeSDKAdapter('http://localhost:4096', fakeClient as unknown as OpenCodeSDKClient)
 
@@ -2379,6 +2383,7 @@ describe('runOpenCodePrompt', () => {
     // Should have: step-finish event + synthetic done from safety timeout
     expect(events.some(e => e.type === 'step' && e.step === 'finish')).toBe(true)
     expect(events[events.length - 1]?.type).toBe('done')
+    expect(streamSignal?.aborted).toBe(true)
   })
 
   it('subscribeToEvents does not synthesize completion when a stream closes before a terminal session event', async () => {

@@ -89,6 +89,16 @@ describe('fetchProviderCatalog', () => {
     })
   })
 
+  it('trims trailing slashes from the configured base URL', async () => {
+    vi.stubEnv('LOOPTROOP_OPENCODE_BASE_URL', 'http://127.0.0.1:4096///')
+    const fetchMock = vi.fn().mockResolvedValue(jsonResponse({ all: [], connected: [], default: {} }))
+    vi.stubGlobal('fetch', fetchMock)
+
+    await fetchProviderCatalog()
+
+    expect(fetchMock).toHaveBeenCalledWith('http://127.0.0.1:4096/provider', expect.any(Object))
+  })
+
   it('falls back to /config/providers when the legacy /provider endpoint is unavailable', async () => {
     const fetchMock = vi.fn()
       .mockResolvedValueOnce({
@@ -212,7 +222,11 @@ describe('fetchProviderCatalog', () => {
     getOpenCodeConnection.mockResolvedValue({ protocol: 'v2', version: '2.0.15', headers: { Authorization: 'Bearer test' } })
     const fetchMock = vi.fn((input: RequestInfo | URL, _init?: RequestInit) => {
       const path = new URL(String(input)).pathname
-      if (path === '/api/provider') return Promise.resolve(locationResponse([{ id: 'openai', name: 'OpenAI' }]))
+      if (path === '/api/provider') return Promise.resolve(locationResponse([
+        { id: 'openai', name: 'OpenAI', activation: 'enabled' },
+        { id: 'disabled-provider', name: 'Disabled Provider', activation: 'disabled' },
+        { id: 'unspecified-provider', name: 'Unspecified Provider' },
+      ]))
       if (path === '/api/model') return Promise.resolve(locationResponse([
         {
           id: 'catalog-model-id',
@@ -230,6 +244,19 @@ describe('fetchProviderCatalog', () => {
           ],
           limit: { context: 1_000_000, output: 64_000 },
           variants: [{ id: 'reasoning-balanced', settings: { reasoningEffort: 'balanced' } }],
+        },
+        {
+          id: 'compatibility-reasoning',
+          modelID: 'compatibility-reasoning',
+          providerID: 'openai',
+          name: 'Compatibility Reasoning',
+          enabled: true,
+          compatibility: { reasoningField: 'reasoning' },
+          capabilities: { tools: false, input: ['text'], output: ['text'] },
+          cost: [],
+          limit: { context: 8_000, output: 1_000 },
+          variants: [],
+          status: 'active',
         },
         {
           id: 'disabled-model',
@@ -287,9 +314,11 @@ describe('fetchProviderCatalog', () => {
     ])
     expect(fetchMock.mock.calls[0]?.[1]).toEqual(expect.objectContaining({ headers: { Authorization: 'Bearer test' }, signal: expect.any(AbortSignal) }))
     expect(catalog.supportsAllModels).toBe(false)
-    expect(catalog.connected).toEqual(['openai'])
+    expect(catalog.all.map((provider) => provider.id)).toEqual(['openai', 'disabled-provider', 'unspecified-provider'])
+    expect(catalog.connected).toEqual(['openai', 'unspecified-provider'])
     expect(catalog.default).toEqual({ chat: 'openai/catalog-model-id' })
     expect(models.map((model) => model.fullId)).toEqual([
+      'openai/compatibility-reasoning',
       'openai/mixed-invalid-cost',
       'openai/unknown-cost',
       'openai/catalog-model-id',
@@ -303,7 +332,7 @@ describe('fetchProviderCatalog', () => {
         { size: 200_000, input: 1, output: 2, cacheRead: 0.2, cacheWrite: 0.4 },
         { size: 1_000_000, input: 3, output: 4 },
       ],
-      canReason: null,
+      canReason: true,
       canUseTools: true,
       canSeeImages: true,
       inputModalities: ['text', 'image/png'],
@@ -311,6 +340,7 @@ describe('fetchProviderCatalog', () => {
       variants: { 'reasoning-balanced': { id: 'reasoning-balanced', settings: { reasoningEffort: 'balanced' } } },
       status: 'beta',
     })
+    expect(models.find((model) => model.id === 'compatibility-reasoning')?.canReason).toBe(true)
     expect(models.find((model) => model.id === 'unknown-cost')).toMatchObject({
       costInput: null,
       costOutput: null,

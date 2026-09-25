@@ -1,9 +1,10 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 import { Hono } from 'hono'
 
-const { fetchProviderCatalog, refreshProviderCatalog } = vi.hoisted(() => ({
+const { fetchProviderCatalog, refreshProviderCatalog, checkHealth } = vi.hoisted(() => ({
   fetchProviderCatalog: vi.fn(),
   refreshProviderCatalog: vi.fn(),
+  checkHealth: vi.fn(),
 }))
 
 vi.mock('../../opencode/providerCatalog', async () => {
@@ -16,7 +17,7 @@ vi.mock('../../opencode/providerCatalog', async () => {
 })
 
 vi.mock('../../opencode/factory', () => ({
-  getOpenCodeAdapter: () => ({ checkHealth: vi.fn(async () => ({ available: true })) }),
+  getOpenCodeAdapter: () => ({ checkHealth }),
 }))
 
 import { modelsRouter } from '../models'
@@ -53,6 +54,7 @@ describe('models routes', () => {
   beforeEach(() => {
     fetchProviderCatalog.mockReset().mockResolvedValue(catalog)
     refreshProviderCatalog.mockReset().mockResolvedValue(catalog)
+    checkHealth.mockReset().mockResolvedValue({ available: true })
   })
 
   it('returns only configured-provider models by default', async () => {
@@ -105,6 +107,19 @@ describe('models routes', () => {
     expect(body).toMatchObject({
       code: 'OPENCODE_DISCOVERY_FAILED',
       message: 'OpenCode is connected, but model discovery failed.',
+    })
+  })
+
+  it('preserves authentication failures in the model discovery message', async () => {
+    checkHealth.mockResolvedValueOnce({ available: false, failureKind: 'authentication', error: 'HTTP 401' })
+    fetchProviderCatalog.mockRejectedValueOnce(new Error('unauthorized'))
+
+    const response = await createApp().request('/api/models')
+    const body = await response.json()
+
+    expect(body).toMatchObject({
+      code: 'OPENCODE_UNREACHABLE',
+      message: expect.stringContaining('OpenCode rejected the configured credentials.'),
     })
   })
 })

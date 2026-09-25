@@ -25,7 +25,9 @@ async function modelDiscoveryFailure() {
     code: available ? 'OPENCODE_DISCOVERY_FAILED' as const : 'OPENCODE_UNREACHABLE' as const,
     message: available
       ? 'OpenCode is connected, but model discovery failed.'
-      : 'OpenCode server is not reachable. Start it with `opencode serve`.',
+      : health.failureKind === 'authentication'
+        ? 'OpenCode rejected the configured credentials. Check OPENCODE_PASSWORD for v2, or OPENCODE_SERVER_PASSWORD and OPENCODE_SERVER_USERNAME for v1.'
+        : 'OpenCode server is not reachable. Start it with `opencode serve`.',
   }
 }
 

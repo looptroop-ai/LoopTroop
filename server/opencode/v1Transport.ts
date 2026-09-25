@@ -159,8 +159,19 @@ export class OpenCodeV1Transport implements OpenCodeTransport {
     stepFinishSafetyMs?: number,
     _afterCursor?: number,
   ): Promise<OpenCodeEventSubscription> {
-    const eventStream = await this.client.global.event(this.requestOptions(signal))
-    return { events: this.readEvents(sessionId, eventStream.stream as AsyncIterable<RawEvent>, signal, stepFinishSafetyMs) }
+    const controller = new AbortController()
+    const streamSignal = signal ? AbortSignal.any([signal, controller.signal]) : controller.signal
+    const eventStream = await this.client.global.event(this.requestOptions(streamSignal))
+    return {
+      events: this.readEvents(
+        sessionId,
+        eventStream.stream as AsyncIterable<RawEvent>,
+        streamSignal,
+        stepFinishSafetyMs,
+        controller,
+        signal,
+      ),
+    }
   }
 
   async readSessionLog(_sessionId: string, _after?: number, _signal?: AbortSignal): Promise<OpenCodeSessionLog> {
@@ -296,6 +307,8 @@ export class OpenCodeV1Transport implements OpenCodeTransport {
     stream: AsyncIterable<RawEvent>,
     signal?: AbortSignal,
     stepFinishSafetyMs?: number,
+    controller?: AbortController,
+    callerSignal?: AbortSignal,
   ): AsyncGenerator<OpenCodeTransportEventEnvelope> {
     const partCache = new Map<string, GenericMessagePart>()
     const finalizedPartIds = new Set<string>()
@@ -304,49 +317,70 @@ export class OpenCodeV1Transport implements OpenCodeTransport {
     let lastStatus: string | undefined
     let safetyActive = false
     let shouldEmitSyntheticDone = false
+    let nextDidNotFinish = false
     const rawIterator = stream[Symbol.asyncIterator]()
 
-    while (true) {
-      if (signal?.aborted) break
-      let result: IteratorResult<RawEvent>
-      if (safetyActive && stepFinishSafetyMs) {
-        const nextPromise = rawIterator.next()
-        const expired = Symbol('expired')
-        const winner = await Promise.race([
-          nextPromise,
-          new Promise<typeof expired>(resolve => setTimeout(() => resolve(expired), stepFinishSafetyMs)),
-        ])
-        if (winner === expired) {
-          void nextPromise.catch(() => undefined)
-          shouldEmitSyntheticDone = true
+    try {
+      while (true) {
+        if (signal?.aborted) break
+        let result: IteratorResult<RawEvent>
+        if (safetyActive && stepFinishSafetyMs) {
+          const nextPromise = rawIterator.next()
+          const expired = Symbol('expired')
+          let timer: ReturnType<typeof setTimeout> | undefined
+          const winner = await Promise.race([
+            nextPromise,
+            new Promise<typeof expired>(resolve => {
+              timer = setTimeout(() => resolve(expired), stepFinishSafetyMs)
+            }),
+          ]).finally(() => {
+            if (timer) clearTimeout(timer)
+          })
+          if (winner === expired) {
+            void nextPromise.catch(() => undefined)
+            shouldEmitSyntheticDone = true
+            nextDidNotFinish = true
+            break
+          }
+          result = winner
+        } else {
+          result = await rawIterator.next()
+        }
+        if (result.done) {
+          shouldEmitSyntheticDone = safetyActive
           break
         }
-        result = winner
+        const rawEvent = this.unwrapRawEvent(result.value)
+        if (!rawEvent || !this.eventBelongsToSession(rawEvent, sessionId)) continue
+        const normalized = this.normalizeStreamEvent(rawEvent, sessionId, partCache, finalizedPartIds, messageRoles)
+        if (!normalized) continue
+        if (normalized.type === 'session_status') {
+          if (normalized.status === lastStatus) continue
+          lastStatus = normalized.status
+        }
+        yield { event: normalized }
+        if (normalized.type === 'done') {
+          emittedDone = true
+          break
+        }
+        if (normalized.type === 'step' && normalized.step === 'finish' && (normalized.reason === 'stop' || normalized.reason === 'end_turn')) {
+          safetyActive = true
+        }
+      }
+    } finally {
+      controller?.abort()
+      if (nextDidNotFinish) {
+        try {
+          const closing = rawIterator.return?.()
+          if (closing) void closing.catch(() => undefined)
+        } catch {
+          // The safety timeout is terminal even if a stuck source cannot close.
+        }
       } else {
-        result = await rawIterator.next()
-      }
-      if (result.done) {
-        shouldEmitSyntheticDone = safetyActive
-        break
-      }
-      const rawEvent = this.unwrapRawEvent(result.value)
-      if (!rawEvent || !this.eventBelongsToSession(rawEvent, sessionId)) continue
-      const normalized = this.normalizeStreamEvent(rawEvent, sessionId, partCache, finalizedPartIds, messageRoles)
-      if (!normalized) continue
-      if (normalized.type === 'session_status') {
-        if (normalized.status === lastStatus) continue
-        lastStatus = normalized.status
-      }
-      yield { event: normalized }
-      if (normalized.type === 'done') {
-        emittedDone = true
-        break
-      }
-      if (normalized.type === 'step' && normalized.step === 'finish' && (normalized.reason === 'stop' || normalized.reason === 'end_turn')) {
-        safetyActive = true
+        await rawIterator.return?.()
       }
     }
-    if (!emittedDone && !signal?.aborted && shouldEmitSyntheticDone) yield { event: { type: 'done', sessionId } }
+    if (!emittedDone && !callerSignal?.aborted && shouldEmitSyntheticDone) yield { event: { type: 'done', sessionId } }
   }
 
   private requestOptions(signal?: AbortSignal) {

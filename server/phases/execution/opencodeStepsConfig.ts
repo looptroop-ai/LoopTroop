@@ -231,8 +231,9 @@ function readExistingConfig(configPath: string): ExistingConfig {
   return { kind: 'file', raw, value: parsed }
 }
 
-function agentKey(protocol: OpenCodeProtocol): 'agent' | 'agents' {
-  return protocol === 'v2' ? 'agents' : 'agent'
+function agentKey(protocol: OpenCodeProtocol, config?: Record<string, unknown>): 'agent' | 'agents' {
+  if (protocol !== 'v2') return 'agent'
+  return config && 'agent' in config && !('agents' in config) ? 'agent' : 'agents'
 }
 
 /** The document written when the project has no `opencode.json` of its own. */
@@ -249,7 +250,7 @@ function minimalConfig(steps: number, protocol: OpenCodeProtocol): Record<string
  * mean discarding it.
  */
 function mergeSteps(existing: Record<string, unknown>, steps: number, protocol: OpenCodeProtocol): Record<string, unknown> | null {
-  const key = agentKey(protocol)
+  const key = agentKey(protocol, existing)
   const agent = existing[key]
   if (agent !== undefined && !isRecord(agent)) return null
   const build = isRecord(agent) ? agent.build : undefined
@@ -322,7 +323,7 @@ export function applyOpencodeStepsConfig(params: {
   }
 
   const created = existing.kind === 'absent'
-  const key = agentKey(params.protocol)
+  const key = agentKey(params.protocol, existing.kind === 'file' ? existing.value : undefined)
   const document = created
     ? minimalConfig(params.steps, params.protocol)
     : mergeSteps(existing.value, params.steps, params.protocol)

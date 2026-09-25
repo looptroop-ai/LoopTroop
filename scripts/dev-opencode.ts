@@ -8,7 +8,7 @@ import { withManagedOpenCodeServerEnv } from './opencode-permission-env'
 import { LOOPTROOP_OPENCODE_ROUTING_CONFIG } from '../shared/openRouterRouting'
 import { createChildEnvironment } from '../server/lib/childEnvironment'
 import { launchTool } from './tool-path.ts'
-import { withOpenCodePasswordAliases } from '../shared/opencodeAuth'
+import { hasOpenCodePassword, withOpenCodePasswordAliases } from '../shared/opencodeAuth'
 
 const requestedBaseUrl = process.env.LOOPTROOP_OPENCODE_BASE_URL?.trim() || DEFAULT_OPENCODE_BASE_URL
 const hasExplicitBaseUrl = Boolean(process.env.LOOPTROOP_OPENCODE_BASE_URL?.trim())
@@ -52,12 +52,13 @@ if (opencodeLogMode.mode === 'all') {
 }
 
 const managedAuthEnv = { ...process.env }
-if (managedAuthEnv.OPENCODE_PASSWORD === undefined && managedAuthEnv.OPENCODE_SERVER_PASSWORD === undefined) {
+withOpenCodePasswordAliases(managedAuthEnv)
+let generatedPassword: string | undefined
+if (!hasOpenCodePassword(managedAuthEnv)) {
   const password = randomBytes(32).toString('base64url')
+  generatedPassword = password
   managedAuthEnv.OPENCODE_PASSWORD = password
   managedAuthEnv.OPENCODE_SERVER_PASSWORD = password
-} else {
-  withOpenCodePasswordAliases(managedAuthEnv)
 }
 const managedServerEnv = withManagedOpenCodeServerEnv(managedAuthEnv)
 if (!managedServerEnv.OPENCODE_CONFIG?.trim()) {
@@ -76,6 +77,9 @@ const childEnvironment = createChildEnvironment(managedServerEnv)
 // with every argument escaped, as the daemon's supervisor starts it, and a
 // real program is spawned directly.
 const opencode = launchTool('opencode', ['serve', ...opencodeLogMode.serveArgs, '--hostname', serveHostname, '--port', String(port)], { env: childEnvironment })
+if (generatedPassword) {
+  console.log(`[dev-opencode] Generated OpenCode password for the LoopTroop backend: ${generatedPassword}`)
+}
 const child = spawn(opencode.file, opencode.args, {
   stdio: 'inherit',
   env: childEnvironment,

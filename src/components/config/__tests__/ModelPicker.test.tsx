@@ -108,6 +108,41 @@ const models: OpenCodeModel[] = [
     canUseTools: null,
     status: 'stable',
   },
+  {
+    id: 'same-bucket-range',
+    name: 'Same bucket range',
+    fullId: 'local/same-bucket-range',
+    providerID: 'local',
+    providerName: 'Local',
+    family: 'local',
+    costInput: null,
+    costOutput: null,
+    costTiers: [
+      { input: 0.1, output: 0.2 },
+      { input: 0.2, output: 0.3 },
+    ],
+    contextWindow: 8_000,
+    canReason: null,
+    canSeeImages: null,
+    canUseTools: null,
+    status: 'stable',
+  },
+  {
+    id: 'cache-priced',
+    name: 'Cache priced',
+    fullId: 'local/cache-priced',
+    providerID: 'local',
+    providerName: 'Local',
+    family: 'local',
+    costInput: null,
+    costOutput: null,
+    costTiers: [{ input: 0, output: 0, cacheRead: 0.1 }],
+    contextWindow: 8_000,
+    canReason: null,
+    canSeeImages: null,
+    canUseTools: null,
+    status: 'stable',
+  },
 ]
 
 function mockModelsQuery(data: OpenCodeModel[] = models) {
@@ -183,16 +218,22 @@ describe('ModelPicker', () => {
 
     const outputPricedOption = screen.getByRole('option', { name: /Output priced/ })
     const tieredOutputOption = screen.getByRole('option', { name: /Tiered output/ })
+    const sameBucketOption = screen.getByRole('option', { name: /Same bucket range/ })
+    const cachePricedOption = screen.getByRole('option', { name: /Cache priced/ })
     expect(within(outputPricedOption).queryByText('Free')).not.toBeInTheDocument()
     expect(within(outputPricedOption).getByText('$')).toBeInTheDocument()
     expect(within(tieredOutputOption).queryByText('Free')).not.toBeInTheDocument()
     expect(within(tieredOutputOption).getByText('$–$$')).toBeInTheDocument()
+    expect(within(sameBucketOption).getByText('Cheap')).toBeInTheDocument()
+    expect(within(sameBucketOption).queryByText(/–/)).not.toBeInTheDocument()
+    expect(within(cachePricedOption).queryByText('Free')).not.toBeInTheDocument()
 
     fireEvent.click(screen.getByLabelText('Show free models only'))
     expect(screen.getByRole('option', { name: /local\/same-name/ })).toBeInTheDocument()
     expect(screen.queryByRole('option', { name: /Unknown Cost/ })).not.toBeInTheDocument()
     expect(screen.queryByRole('option', { name: /Output priced/ })).not.toBeInTheDocument()
     expect(screen.queryByRole('option', { name: /Tiered output/ })).not.toBeInTheDocument()
+    expect(screen.queryByRole('option', { name: /Cache priced/ })).not.toBeInTheDocument()
   })
 
   it('announces model discovery loading and errors without changing the picker role', () => {
@@ -434,7 +475,7 @@ describe('ModelPicker — combobox', () => {
     expect(search).toHaveValue('')
     expect(search).toHaveFocus()
     expect(search).not.toHaveAttribute('aria-activedescendant')
-    expect(screen.getAllByRole('option')).toHaveLength(6)
+    expect(screen.getAllByRole('option')).toHaveLength(8)
     expect(onChange).not.toHaveBeenCalled()
   })
 

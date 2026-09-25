@@ -172,6 +172,12 @@ export interface OpenCodeUpgradeReport {
   nextEligibleAt?: string
 }
 
+export function shouldRecordOpenCodeMaintenanceSuccess(
+  report: Pick<OpenCodeUpgradeReport, 'available' | 'deferred' | 'errors'>,
+): boolean {
+  return report.available && !report.deferred && report.errors.length === 0
+}
+
 export interface DevPreflightReport {
   generatedAt: string
   install: InstallReport
@@ -927,15 +933,18 @@ function openCodePackageForVersion(version: string): string | undefined {
 export function chooseSameMajorOpenCodeTarget(
   currentVersion: string,
   publishTimes: Record<string, string> | null,
+  publishedVersions: string[],
 ): string | undefined {
   const current = parseStableSemver(currentVersion)
   if (!current || !publishTimes) return undefined
 
+  const published = new Set(publishedVersions)
   let target: string | undefined
   let targetVersion: StableSemver | null = null
   for (const [version, publishedAt] of Object.entries(publishTimes)) {
     const parsed = parseStableSemver(version)
     if (
+      !published.has(version) ||
       !parsed ||
       parsed.major !== current.major ||
       compareStableSemver(parsed, current) <= 0 ||
@@ -975,6 +984,36 @@ export function parseNpmViewPublishTimes(text: string): Record<string, string> |
   }
 
   return Object.keys(times).length > 0 ? times : null
+}
+
+export function parseNpmViewPackageMetadata(text: string): { versions: string[]; times: Record<string, string> } | null {
+  const parsed = parseJson<unknown>(text)
+  const value = Array.isArray(parsed) && parsed.length === 1 ? parsed[0] : parsed
+  if (!isRecord(value)) return null
+  const versions = value.versions
+  if (!Array.isArray(versions) || versions.length === 0 || !versions.every((version): version is string => typeof version === 'string') || !isRecord(value.time)) {
+    return null
+  }
+
+  const times = Object.fromEntries(Object.entries(value.time).filter((entry): entry is [string, string] => typeof entry[1] === 'string'))
+  if (Object.keys(times).length === 0) return null
+  return { versions, times }
+}
+
+function getOpenCodePackageMetadata(packageName: string) {
+  const label = `npm view ${packageName} versions time`
+  const result = runCommand(['view', packageName, 'versions', 'time', '--json'], label, { verbose: false })
+  if (result.status !== 0 || !result.stdout) {
+    return {
+      metadata: null,
+      error: result.stderr || result.stdout || `${label} failed with code ${result.status ?? 'unknown'}`,
+    }
+  }
+
+  const metadata = parseNpmViewPackageMetadata(result.stdout)
+  return metadata
+    ? { metadata, error: null }
+    : { metadata: null, error: result.stderr || result.stdout || `Unable to parse npm package metadata for ${packageName}` }
 }
 
 function getPackagePublishTimes(packageName: string) {
@@ -2127,9 +2166,9 @@ export function upgradeOpenCodeCli(
       console.log(`[${logPrefix}] Checking OpenCode CLI for updates.`)
     }
 
-    let registry: ReturnType<typeof getPackagePublishTimes>
+    let registry: ReturnType<typeof getOpenCodePackageMetadata>
     try {
-      registry = getPackagePublishTimes(packageName)
+      registry = getOpenCodePackageMetadata(packageName)
     } catch (error) {
       return {
         skipped: false,
@@ -2143,11 +2182,11 @@ export function upgradeOpenCodeCli(
         errors: [],
       }
     }
-    if (!registry.times) {
+    if (!registry.metadata) {
       return {
         skipped: false,
         deferred: true,
-        deferredReason: `Could not verify npm publish metadata for ${packageName}; OpenCode was left unchanged. ${registry.error ?? ''}`.trim(),
+        deferredReason: `Could not verify npm package metadata for ${packageName}; OpenCode was left unchanged. ${registry.error ?? ''}`.trim(),
         available: true,
         checked: true,
         upgraded: false,
@@ -2156,7 +2195,7 @@ export function upgradeOpenCodeCli(
         errors: [],
       }
     }
-    if (!isFiniteTimestamp(Date.parse(registry.times[currentVersion] ?? ''))) {
+    if (!isFiniteTimestamp(Date.parse(registry.metadata.times[currentVersion] ?? ''))) {
       return {
         skipped: false,
         deferred: true,
@@ -2170,7 +2209,7 @@ export function upgradeOpenCodeCli(
       }
     }
 
-    const target = chooseSameMajorOpenCodeTarget(currentVersion, registry.times)
+    const target = chooseSameMajorOpenCodeTarget(currentVersion, registry.metadata.times, registry.metadata.versions)
     if (!target) {
       return {
         skipped: false,
@@ -2222,12 +2261,32 @@ export function upgradeOpenCodeCli(
       }
     }
 
-    const result = runExternalCommand(
-      'opencode',
-      ['upgrade', target, '--method', method],
-      `opencode upgrade ${target} --method ${method}`,
-      { verbose },
-    )
+    let command = 'opencode'
+    let args = ['upgrade', target, '--method', method]
+    if (method === 'npm') {
+      const npmVersion = runExternalCommand('npm', ['--version'], 'npm --version')
+      const npmMajor = npmVersion.stdout.match(/^v?(\d+)\./)?.[1]
+      if (npmVersion.missing || npmVersion.error || npmVersion.status !== 0 || !npmMajor) {
+        return {
+          skipped: false,
+          deferred: true,
+          deferredReason: 'Could not verify the npm version; OpenCode was left unchanged.',
+          available: true,
+          checked: true,
+          upgraded: false,
+          alreadyCurrent: false,
+          method,
+          versionBefore,
+          errors: [],
+        }
+      }
+      if (Number(npmMajor) >= 12) {
+        command = 'npm'
+        args = ['install', '--global', `--allow-scripts=${packageName}@${target}`, `${packageName}@${target}`]
+      }
+    }
+    const label = `${command} ${args.join(' ')}`
+    const result = runExternalCommand(command, args, label, { verbose })
     if (result.missing) {
       return {
         skipped: false,

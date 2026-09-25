@@ -23,8 +23,10 @@ import {
   getStandaloneAuditExitCode,
   isExpectedAuditFindingsExit,
   isPeerResolutionFailure,
+  parseNpmViewPackageMetadata,
   parseNpmViewPublishTimes,
   recordDailyMaintenanceSuccess,
+  shouldRecordOpenCodeMaintenanceSuccess,
   shouldRetryAuditMaintenanceFailure,
   summarizePeerResolutionFailure,
   upgradeOpenCodeCli,
@@ -131,6 +133,12 @@ describe('daily dev maintenance decisions', () => {
     expect(decision.shouldRun).toBe(true)
     expect(decision.reason).toBe('new-day')
     expect(decision.deferred).toBe(false)
+  })
+
+  it('does not mark a deferred OpenCode upgrade complete', () => {
+    expect(shouldRecordOpenCodeMaintenanceSuccess({ available: true, deferred: true, errors: [] })).toBe(false)
+    expect(shouldRecordOpenCodeMaintenanceSuccess({ available: true, deferred: false, errors: [] })).toBe(true)
+    expect(shouldRecordOpenCodeMaintenanceSuccess({ available: false, deferred: false, errors: [] })).toBe(false)
   })
 })
 
@@ -275,12 +283,13 @@ describe('aged dependency update selection', () => {
       '1.19.0-beta.1': '2026-05-11T00:00:00.000Z',
       '2.0.16': '2026-05-12T00:00:00.000Z',
       '1.18.33': 'not a timestamp',
-    })).toBe('1.18.32')
+    }, ['1.18.21', '1.18.32', '2.0.16'])).toBe('1.18.32')
     expect(chooseSameMajorOpenCodeTarget('2.0.15', {
       '1.18.32': '2026-05-10T00:00:00.000Z',
       '2.0.15': '2026-05-11T00:00:00.000Z',
       '2.0.16': '2026-05-12T00:00:00.000Z',
-    })).toBe('2.0.16')
+      '2.0.17': '2026-05-13T00:00:00.000Z',
+    }, ['1.18.32', '2.0.15', '2.0.16'])).toBe('2.0.16')
   })
 })
 
@@ -302,17 +311,38 @@ describe('npm publish-time metadata parsing', () => {
     expect(parseNpmViewPublishTimes(JSON.stringify([]))).toBeNull()
     expect(parseNpmViewPublishTimes('not json')).toBeNull()
   })
+
+  it('reads npm v12 package versions alongside publish times', () => {
+    expect(parseNpmViewPackageMetadata(JSON.stringify([{
+      versions: ['2.0.15', '2.0.16'],
+      time: {
+        created: '2026-05-01T00:00:00.000Z',
+        '2.0.15': '2026-05-02T00:00:00.000Z',
+        '2.0.16': '2026-05-03T00:00:00.000Z',
+        '2.0.17': '2026-05-04T00:00:00.000Z',
+      },
+    }]))).toEqual({
+      versions: ['2.0.15', '2.0.16'],
+      times: {
+        created: '2026-05-01T00:00:00.000Z',
+        '2.0.15': '2026-05-02T00:00:00.000Z',
+        '2.0.16': '2026-05-03T00:00:00.000Z',
+        '2.0.17': '2026-05-04T00:00:00.000Z',
+      },
+    })
+  })
 })
 
 describe('pinned OpenCode maintenance', () => {
   it.each([
-    ['1.18.21', 'opencode-ai', '1.18.32', 'npm'],
-    ['1.18.21', 'opencode-ai', '1.18.32', 'bun'],
-    ['1.18.21', 'opencode-ai', '1.18.32', 'curl'],
-    ['2.0.15', '@opencode/cli', '2.0.16', 'npm'],
-    ['2.0.15', '@opencode/cli', '2.0.16', 'bun'],
-    ['2.0.15', '@opencode/cli', '2.0.16', 'curl'],
-  ])('updates v%s through its matching package with an explicit method', (current, packageName, target, method) => {
+    ['1.18.21', 'opencode-ai', '1.18.32', 'npm', '12.0.2'],
+    ['1.18.21', 'opencode-ai', '1.18.32', 'bun', '12.0.2'],
+    ['1.18.21', 'opencode-ai', '1.18.32', 'curl', '12.0.2'],
+    ['2.0.15', '@opencode/cli', '2.0.16', 'npm', '12.0.2'],
+    ['2.0.15', '@opencode/cli', '2.0.16', 'bun', '12.0.2'],
+    ['2.0.15', '@opencode/cli', '2.0.16', 'curl', '12.0.2'],
+    ['2.0.15', '@opencode/cli', '2.0.16', 'npm', '11.19.1'],
+  ])('updates v%s of %s to %s through %s with npm %s', (current, packageName, target, method, npmVersion) => {
     const binDir = makeTempDir('looptroop-opencode-maintenance-bin-')
     const dataDir = makeTempDir('looptroop-opencode-maintenance-data-')
     tempDirs.push(binDir, dataDir)
@@ -335,8 +365,15 @@ describe('pinned OpenCode maintenance', () => {
       "const fs = require('node:fs')",
       'const args = process.argv.slice(2)',
       "fs.appendFileSync(process.env.OPENCODE_NPM_TRACE, JSON.stringify(args) + '\\n')",
-      "if (args[0] === 'view' && args[2] === 'time') {",
-      "  process.stdout.write(JSON.stringify([{ '1.18.21': '2026-09-01T00:00:00.000Z', '1.18.32': '2026-09-10T00:00:00.000Z', '2.0.15': '2026-09-01T00:00:00.000Z', '2.0.16': '2026-09-10T00:00:00.000Z' }]))",
+      "if (args[0] === '--version') { process.stdout.write(process.env.OPENCODE_NPM_VERSION + '\\n'); process.exit(0) }",
+      "if (args[0] === 'view' && args[2] === 'versions' && args[3] === 'time') {",
+      "  process.stdout.write(JSON.stringify([{ versions: ['1.18.21', '1.18.32', '2.0.15', '2.0.16'], time: { '1.18.21': '2026-09-01T00:00:00.000Z', '1.18.32': '2026-09-10T00:00:00.000Z', '2.0.15': '2026-09-01T00:00:00.000Z', '2.0.16': '2026-09-10T00:00:00.000Z', '2.0.17': '2026-09-11T00:00:00.000Z' } }]))",
+      "  process.exit(0)",
+      '}',
+      "if (args[0] === 'install' && args.includes('--global')) {",
+      "  if (!args.includes('--allow-scripts=' + process.env.OPENCODE_FIXTURE_PACKAGE + '@' + process.env.OPENCODE_FIXTURE_TARGET) || !args.includes(process.env.OPENCODE_FIXTURE_PACKAGE + '@' + process.env.OPENCODE_FIXTURE_TARGET)) process.exit(1)",
+      "  fs.writeFileSync(process.env.OPENCODE_VERSION_PATH, process.env.OPENCODE_FIXTURE_TARGET)",
+      "  process.stdout.write('Upgrade complete\\n')",
       "  process.exit(0)",
       '}',
       'process.exit(1)',
@@ -348,6 +385,9 @@ describe('pinned OpenCode maintenance', () => {
     vi.stubEnv('LOOPTROOP_TRUSTED_EXECUTABLE_DIRS', binDir)
     vi.stubEnv('OPENCODE_FIXTURE_VERSION', current)
     vi.stubEnv('OPENCODE_FIXTURE_METHOD', method)
+    vi.stubEnv('OPENCODE_NPM_VERSION', npmVersion)
+    vi.stubEnv('OPENCODE_FIXTURE_PACKAGE', packageName)
+    vi.stubEnv('OPENCODE_FIXTURE_TARGET', target)
     vi.stubEnv('OPENCODE_VERSION_PATH', versionPath)
     vi.stubEnv('OPENCODE_UPGRADE_TRACE', upgradeTrace)
     vi.stubEnv('OPENCODE_NPM_TRACE', npmTrace)
@@ -366,15 +406,22 @@ describe('pinned OpenCode maintenance', () => {
       .trim()
       .split('\n')
       .map((line) => JSON.parse(line) as string[])
-    expect(openCodeCommands).toEqual([
-      ['upgrade', current],
-      ['upgrade', target, '--method', method],
-    ])
+    expect(openCodeCommands).toEqual(method === 'npm' && npmVersion.startsWith('12.')
+      ? [['upgrade', current]]
+      : [['upgrade', current], ['upgrade', target, '--method', method]])
     const npmCommands = readFileSync(npmTrace, 'utf8')
       .trim()
       .split('\n')
       .map((line) => JSON.parse(line) as string[])
-    expect(npmCommands[0]).toEqual(['view', packageName, 'time', '--json'])
+    expect(npmCommands[0]).toEqual(['view', packageName, 'versions', 'time', '--json'])
+    if (method === 'npm') {
+      expect(npmCommands).toContainEqual(['--version'])
+      if (npmVersion.startsWith('12.')) {
+        expect(npmCommands).toContainEqual([
+          'install', '--global', `--allow-scripts=${packageName}@${target}`, `${packageName}@${target}`,
+        ])
+      }
+    }
   })
 
   it('defers Homebrew rather than invoking its unpinned upgrade command', () => {
@@ -392,7 +439,7 @@ describe('pinned OpenCode maintenance', () => {
     ].join('\n')
     const npmSource = [
       "const args = process.argv.slice(2)",
-      "if (args[0] === 'view' && args[2] === 'time') { process.stdout.write(JSON.stringify([{ '1.18.21': '2026-09-01T00:00:00.000Z', '1.18.32': '2026-09-10T00:00:00.000Z' }])); process.exit(0) }",
+      "if (args[0] === 'view' && args[2] === 'versions' && args[3] === 'time') { process.stdout.write(JSON.stringify([{ versions: ['1.18.21', '1.18.32'], time: { '1.18.21': '2026-09-01T00:00:00.000Z', '1.18.32': '2026-09-10T00:00:00.000Z' } }])); process.exit(0) }",
       'process.exit(1)',
       '',
     ].join('\n')

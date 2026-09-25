@@ -34,7 +34,9 @@ export function registerOpenRouterRoutingModels(modelIds: readonly string[], pro
   if (routingModels.length === 0) return false
 
   const config = readConfig(configPath)
-  const configKey = protocol === 'v2' ? 'providers' : 'provider'
+  const configKey = protocol === 'v2' && isRecord(config.provider) && !('providers' in config)
+    ? 'provider'
+    : protocol === 'v2' ? 'providers' : 'provider'
   const providers = isRecord(config[configKey]) ? config[configKey] as JsonObject : {}
   const openRouter = isRecord(providers.openrouter) ? providers.openrouter : {}
   const models = isRecord(openRouter.models) ? openRouter.models : {}

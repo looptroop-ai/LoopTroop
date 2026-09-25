@@ -16,6 +16,7 @@ import {
   readDailyMaintenanceState,
   recordDailyMaintenanceSuccess,
   remediateAudit,
+  shouldRecordOpenCodeMaintenanceSuccess,
   syncDirectDependencies,
   upgradeOpenCodeCli,
   writeDailyMaintenanceState,
@@ -434,7 +435,7 @@ if (opencodeReport.deferredReason) {
 if (opencodeReport.errors.length > 0) {
   process.exit(1)
 }
-if (!shouldSkipOpenCodeUpgrade && opencodeDecision.shouldRun && opencodeReport.errors.length === 0 && opencodeReport.available) {
+if (!shouldSkipOpenCodeUpgrade && opencodeDecision.shouldRun && shouldRecordOpenCodeMaintenanceSuccess(opencodeReport)) {
   recordDailyMaintenanceSuccess(maintenanceState, 'opencode')
 }
 

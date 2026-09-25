@@ -9,7 +9,9 @@ import { getLatestPhaseArtifact, getTicketByRef, getTicketContext, getTicketPath
 import { opencodeSessions, profiles } from '../../db/schema'
 import { db as appDatabase } from '../../db/index'
 import { listOpenCodeSessionsForTicket } from '../../opencode/sessionManager'
+import * as opencodeStepsConfig from '../../phases/execution/opencodeStepsConfig'
 import { applyOpencodeStepsConfig, restoreOpencodeStepsConfig } from '../../phases/execution/opencodeStepsConfig'
+import { getOpenCodeConnection } from '../../opencode/connection'
 import {
   readTicketBeads,
   recoverCodingBeadWithReset,
@@ -1576,6 +1578,27 @@ describe('handleCoding', () => {
 
       expect(JSON.parse(duringRun ?? '{}')).toEqual({ mcp: { docs: { type: 'local' } }, agent: { build: { steps: 25 } } })
       expect(readFileSync(configPath, 'utf8')).toBe(original)
+    })
+
+    it('passes workflow cancellation to protocol lookup and propagates configuration write failures', async () => {
+      setStepCap(25)
+      const { ticket, context } = await createInitializedTestTicket(repoManager, { title: 'Step cap protocol failure' })
+      writeTicketBeads(ticket.id, [makePendingBead('bead-1', 1)])
+      const signal = new AbortController().signal
+      const connectionLookup = vi.mocked(getOpenCodeConnection)
+      connectionLookup.mockClear()
+      const apply = vi.spyOn(opencodeStepsConfig, 'applyOpencodeStepsConfig').mockImplementation(() => {
+        throw new Error('configuration write failed')
+      })
+
+      try {
+        await expect(handleCoding(ticket.id, context, vi.fn(), signal)).rejects.toThrow('configuration write failed')
+      } finally {
+        apply.mockRestore()
+      }
+
+      expect(connectionLookup).toHaveBeenCalledWith(expect.any(String), signal)
+      expect(executeBeadMock).not.toHaveBeenCalled()
     })
 
     /**

@@ -346,8 +346,15 @@ export async function handleCoding(
   // exclude included — still reaches the restore in the `finally`.
   try {
     if (executionSettings.opencodeSteps > 0) {
+      let connection: Awaited<ReturnType<typeof getOpenCodeConnection>> | undefined
       try {
-        const connection = await getOpenCodeConnection(getOpenCodeBaseUrl())
+        connection = await getOpenCodeConnection(getOpenCodeBaseUrl(), signal)
+      } catch (error) {
+        throwIfAborted(signal, ticketId)
+        const reason = error instanceof Error ? error.message : String(error)
+        reportStepsConfig(`Could not determine the OpenCode protocol for the step limit: ${reason}. ${OPENCODE_CONFIG_FILENAME} was left unchanged.`)
+      }
+      if (connection) {
         const outcome = applyOpencodeStepsConfig({
           ticketDir: paths.ticketDir,
           worktreePath: paths.worktreePath,
@@ -358,9 +365,6 @@ export async function handleCoding(
         if (outcome.applied) {
           stepsConfig = outcome.handle
         }
-      } catch (error) {
-        const reason = error instanceof Error ? error.message : String(error)
-        reportStepsConfig(`Could not determine the OpenCode protocol for the step limit: ${reason}. ${OPENCODE_CONFIG_FILENAME} was left unchanged.`)
       }
     }
 

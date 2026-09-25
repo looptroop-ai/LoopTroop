@@ -19,6 +19,7 @@ import {
   mapV2QuestionAnswer,
   mapV2Session,
 } from './v2Mapping'
+import { fetchProviderCatalog, flattenCatalogModels } from './providerCatalog'
 import { MESSAGE_LIST_LIMIT, SDK_OPERATION_TIMEOUT_MS, SESSION_LIST_LIMIT } from '../lib/constants'
 
 type RecordValue = Record<string, unknown>
@@ -28,6 +29,7 @@ type FetchOptions = {
 }
 
 const API_OPERATION_TIMEOUT_MS = SDK_OPERATION_TIMEOUT_MS
+const SESSION_CREATE_TIMEOUT_MS = 180_000
 const EVENT_CONNECT_TIMEOUT_MS = 5_000
 const EVENT_RECONNECT_ATTEMPTS = 3
 const LOG_SYNC_TIMEOUT_MS = 30_000
@@ -54,6 +56,7 @@ interface SseConnection {
 interface SessionLogScan {
   cursor: number
   coverageComplete: boolean
+  hasWatermark: boolean
 }
 
 export class V2OpenCodeTransport implements OpenCodeTransport {
@@ -73,6 +76,7 @@ export class V2OpenCodeTransport implements OpenCodeTransport {
     const body = await this.request('/api/session', {
       method: 'POST',
       signal,
+      timeoutMs: SESSION_CREATE_TIMEOUT_MS,
       body: {
         location: { directory: projectPath },
         ...(options?.permission ? { permissions: mapV2PermissionRules(options.permission) } : {}),
@@ -112,7 +116,10 @@ export class V2OpenCodeTransport implements OpenCodeTransport {
     let cursor: string | undefined
 
     while (sessions.length < SESSION_LIST_LIMIT) {
-      const query = new URLSearchParams({ limit: String(Math.min(LIST_PAGE_SIZE, SESSION_LIST_LIMIT - sessions.length)), order: 'desc' })
+      const query = new URLSearchParams({
+        limit: String(Math.min(LIST_PAGE_SIZE, SESSION_LIST_LIMIT - sessions.length)),
+        ...(!cursor ? { order: 'desc' } : {}),
+      })
       if (cursor) query.set('cursor', cursor)
       const page = asRecord(await this.request(`/api/session?${query}`, { signal }))
       for (const session of arrayValue(page?.data)) {
@@ -135,7 +142,7 @@ export class V2OpenCodeTransport implements OpenCodeTransport {
     while (messages.length < MESSAGE_LIST_LIMIT) {
       const query = new URLSearchParams({
         limit: String(Math.min(MESSAGE_PAGE_SIZE, MESSAGE_LIST_LIMIT - messages.length)),
-        order: 'asc',
+        ...(!cursor ? { order: 'desc' } : {}),
       })
       if (cursor) query.set('cursor', cursor)
       const page = asRecord(await this.request(`/api/session/${encodeURIComponent(sessionId)}/message?${query}`, { signal }))
@@ -149,7 +156,7 @@ export class V2OpenCodeTransport implements OpenCodeTransport {
       seenCursors.add(next)
       cursor = next
     }
-    return messages
+    return messages.reverse()
   }
 
   async subscribeToEvents(
@@ -179,7 +186,7 @@ export class V2OpenCodeTransport implements OpenCodeTransport {
         sessionId,
         afterCursor,
         streamSignal,
-        afterCursor === undefined ? undefined : event => backlog.push(event),
+        event => backlog.push(event),
         mappingState,
       )
     } catch (error) {
@@ -196,10 +203,11 @@ export class V2OpenCodeTransport implements OpenCodeTransport {
       ownedConnections,
       closeConnections,
       mappingState,
-      !scan.coverageComplete,
+      !scan.coverageComplete || !scan.hasWatermark,
     )
     return {
-      cursor,
+      ...(scan.hasWatermark ? { cursor } : {}),
+      coverageComplete: scan.coverageComplete && scan.hasWatermark,
       events: closeOnIteratorReturn(generator, closeConnections),
     }
   }
@@ -208,7 +216,7 @@ export class V2OpenCodeTransport implements OpenCodeTransport {
     await this.request(`/api/experimental/session/${encodeURIComponent(sessionId)}/wait`, {
       method: 'POST',
       signal,
-      timeoutMs: signal ? null : IDLE_WAIT_TIMEOUT_MS,
+      timeoutMs: IDLE_WAIT_TIMEOUT_MS,
       expectedStatus: 204,
     })
   }
@@ -222,7 +230,11 @@ export class V2OpenCodeTransport implements OpenCodeTransport {
       event => events.push(event),
       createV2EventMappingState(),
     )
-    return { events, cursor: scan.cursor, coverageComplete: scan.coverageComplete }
+    return {
+      events,
+      ...(scan.hasWatermark ? { cursor: scan.cursor } : after !== undefined ? { cursor: after } : {}),
+      coverageComplete: scan.coverageComplete && scan.hasWatermark,
+    }
   }
 
   async dispatchPrompt(request: OpenCodePromptRequest, signal?: AbortSignal): Promise<PromptDispatch> {
@@ -300,7 +312,7 @@ export class V2OpenCodeTransport implements OpenCodeTransport {
     } else {
       const location = directory ?? projectPath
       const query = new URLSearchParams()
-      if (location) query.set('location', location)
+      if (location) query.set('location[directory]', location)
       const suffix = query.size > 0 ? `?${query}` : ''
       const response = await this.request(`/api/form${suffix}`, { signal })
       const payload = asRecord(response)
@@ -369,21 +381,36 @@ export class V2OpenCodeTransport implements OpenCodeTransport {
   }
 
   async checkHealth(signal?: AbortSignal): Promise<HealthStatus> {
+    let version: string | undefined
     try {
       const payload = asRecord(dataOf(await this.request('/api/info', { signal })))
-      const version = stringValue(payload?.version)
-      return {
-        available: true,
-        protocol: 'v2',
-        ...(version ? { version } : {}),
-      }
+      version = stringValue(payload?.version)
     } catch (error) {
       if (signal?.aborted) throw signal.reason
       return {
         available: false,
         protocol: 'v2',
-        failureKind: error instanceof V2OpenCodeHttpError && error.status === 401 ? 'authentication' : 'network',
+        failureKind: error instanceof V2OpenCodeHttpError && (error.status === 401 || error.status === 403) ? 'authentication' : 'network',
         error: error instanceof Error ? error.message : String(error),
+      }
+    }
+
+    try {
+      const models = flattenCatalogModels(await fetchProviderCatalog(signal), 'connected').map(model => model.fullId)
+      return { available: true, protocol: 'v2', ...(version ? { version } : {}), models }
+    } catch (error) {
+      if (signal?.aborted) throw signal.reason
+      const message = error instanceof Error ? error.message : String(error)
+      const authentication = error instanceof V2OpenCodeHttpError
+        ? error.status === 401 || error.status === 403
+        : /\b(?:401|403)\b/.test(message)
+      return {
+        available: !authentication,
+        protocol: 'v2',
+        ...(version ? { version } : {}),
+        models: [],
+        failureKind: authentication ? 'authentication' : 'model_discovery',
+        error: authentication ? message : `OpenCode is reachable, but model discovery failed: ${message}`,
       }
     }
   }
@@ -414,28 +441,34 @@ export class V2OpenCodeTransport implements OpenCodeTransport {
     const url = this.makeUrl(path, options.query)
     const headers = new Headers(this.headers)
     headers.set('accept', 'application/json')
+    const timeout = options.timeoutMs === null
+      ? undefined
+      : createTimeoutSignal(options.signal, options.timeoutMs ?? API_OPERATION_TIMEOUT_MS, 'OpenCode v2 request timed out')
     const init: RequestInit = {
       method: options.method ?? 'GET',
       headers,
-      signal: options.timeoutMs === null
-        ? options.signal
-        : withTimeout(options.signal, options.timeoutMs ?? API_OPERATION_TIMEOUT_MS),
+      signal: timeout?.signal ?? options.signal,
+      redirect: 'manual',
     }
     if (options.body !== undefined) {
       headers.set('content-type', 'application/json')
       init.body = JSON.stringify(options.body)
     }
 
-    const response = await this.fetcher(url, init)
-    const expectedStatus = options.expectedStatus ?? 200
-    if (response.status !== expectedStatus) {
-      throw new V2OpenCodeHttpError(response.status, await responseBody(response))
+    try {
+      const response = await this.fetcher(url, init)
+      const expectedStatus = options.expectedStatus ?? 200
+      if (response.status !== expectedStatus) {
+        throw new V2OpenCodeHttpError(response.status, await responseBody(response))
+      }
+      if (expectedStatus === 204) {
+        await response.body?.cancel().catch(() => undefined)
+        return undefined
+      }
+      return await responseBody(response)
+    } finally {
+      timeout?.dispose()
     }
-    if (expectedStatus === 204) {
-      await response.body?.cancel().catch(() => undefined)
-      return undefined
-    }
-    return await responseBody(response)
   }
 
   private async openSse(path: string, query: URLSearchParams | undefined, signal?: AbortSignal): Promise<SseConnection> {
@@ -447,23 +480,26 @@ export class V2OpenCodeTransport implements OpenCodeTransport {
     if (signal?.aborted) throw signal.reason
     signal?.addEventListener('abort', abortFromCaller, { once: true })
 
-    let openingTimedOut = false
-    const openTimer = signal ? undefined : setTimeout(() => {
-      openingTimedOut = true
-      controller.abort(new DOMException('OpenCode v2 event stream connection timed out', 'TimeoutError'))
-    }, EVENT_CONNECT_TIMEOUT_MS)
+    const connectTimeout = createTimeoutSignal(signal, EVENT_CONNECT_TIMEOUT_MS, 'OpenCode v2 event stream connection timed out')
+    const fetchSignal = AbortSignal.any([controller.signal, connectTimeout.signal])
 
     let response: Response
     try {
-      response = await this.fetcher(url, { method: 'GET', headers, signal: controller.signal })
+      response = await this.fetcher(url, { method: 'GET', headers, signal: fetchSignal, redirect: 'manual' })
     } catch (error) {
-      if (openTimer) clearTimeout(openTimer)
+      connectTimeout.dispose()
       signal?.removeEventListener('abort', abortFromCaller)
       if (signal?.aborted) throw signal.reason
-      if (openingTimedOut) throw controller.signal.reason
+      if (connectTimeout.timedOut()) throw connectTimeout.signal.reason
       throw error
     }
-    if (openTimer) clearTimeout(openTimer)
+    connectTimeout.dispose()
+
+    if (signal?.aborted || connectTimeout.timedOut()) {
+      await response.body?.cancel().catch(() => undefined)
+      signal?.removeEventListener('abort', abortFromCaller)
+      throw signal?.aborted ? signal.reason : connectTimeout.signal.reason
+    }
 
     if (!response.ok) {
       signal?.removeEventListener('abort', abortFromCaller)
@@ -517,9 +553,7 @@ export class V2OpenCodeTransport implements OpenCodeTransport {
     if (signal?.aborted) throw signal.reason
     const connection = await this.openSse('/api/event', undefined, signal)
     try {
-      const first = signal
-        ? await connection.next()
-        : await connection.next(EVENT_CONNECT_TIMEOUT_MS, 'OpenCode v2 event stream did not send server.connected')
+      const first = await connection.next(EVENT_CONNECT_TIMEOUT_MS, 'OpenCode v2 event stream did not send server.connected')
       if (signal?.aborted) throw signal.reason
       if (first.done || asRecord(first.value)?.type !== 'server.connected') {
         throw new Error('OpenCode v2 event stream did not start with server.connected')
@@ -540,23 +574,22 @@ export class V2OpenCodeTransport implements OpenCodeTransport {
   ): Promise<SessionLogScan> {
     const query = new URLSearchParams({ follow: 'false' })
     if (after !== undefined) query.set('after', String(after))
-    const operationSignal = signal ?? AbortSignal.timeout(LOG_SYNC_TIMEOUT_MS)
-    const connection = await this.openSse(
-      `/api/experimental/session/${encodeURIComponent(sessionId)}/log`,
-      query,
-      operationSignal,
-    )
+    const deadline = createTimeoutSignal(signal, LOG_SYNC_TIMEOUT_MS, 'OpenCode v2 session log did not reach log.synced')
+    let connection: SseConnection | undefined
     let maxSequence = after ?? 0
     let lastCoveredSequence = after
     let coverageComplete = true
     const seen = new Set<number>()
     try {
+      connection = await this.openSse(
+        `/api/experimental/session/${encodeURIComponent(sessionId)}/log`,
+        query,
+        deadline.signal,
+      )
       while (true) {
-        const result = signal
-          ? await connection.next()
-          : await connection.next(LOG_SYNC_TIMEOUT_MS, 'OpenCode v2 session log did not reach log.synced')
+        const result = await connection.next()
         if (result.done) {
-          if (signal?.aborted) throw signal.reason
+          if (deadline.signal.aborted) throw deadline.signal.reason
           throw new Error('OpenCode v2 session log ended before log.synced')
         }
         const event = asRecord(result.value)
@@ -568,12 +601,14 @@ export class V2OpenCodeTransport implements OpenCodeTransport {
             throw new Error('OpenCode v2 session log watermark belongs to another session')
           }
           const watermark = numberValue(event.seq)
-          if (after !== undefined && (watermark === undefined || lastCoveredSequence !== watermark)) {
+          const hasWatermark = watermark !== undefined && Number.isSafeInteger(watermark)
+          if (!hasWatermark || (after !== undefined && lastCoveredSequence !== watermark)) {
             coverageComplete = false
           }
           return {
             cursor: Math.max(maxSequence, watermark ?? 0),
             coverageComplete,
+            hasWatermark,
           }
         }
 
@@ -590,15 +625,18 @@ export class V2OpenCodeTransport implements OpenCodeTransport {
         if (after !== undefined) {
           if (sequence !== lastCoveredSequence! + 1) coverageComplete = false
           if (sequence > lastCoveredSequence!) lastCoveredSequence = sequence
+        } else if (lastCoveredSequence !== undefined && sequence !== lastCoveredSequence + 1) {
+          coverageComplete = false
+        } else {
+          lastCoveredSequence = sequence
         }
-        if (onEvent) {
-          const mapped = mapV2Event(event, sessionId, mappingState, true)
-          if (mapped) onEvent(mapped)
-          else if (after !== undefined) coverageComplete = false
-        }
+        const mapped = mapV2Event(event, sessionId, mappingState, true)
+        if (mapped) onEvent?.(mapped)
+        else coverageComplete = false
       }
     } finally {
-      await connection.close()
+      deadline.dispose()
+      await connection?.close()
     }
   }
 
@@ -621,7 +659,7 @@ export class V2OpenCodeTransport implements OpenCodeTransport {
     const seen = new Set<number>(backlog.flatMap(event => event.cursor === undefined ? [] : [event.cursor]))
 
     try {
-      for (const event of backlog) yield event
+      for (const event of backlog) yield coverageGap ? { ...event, coverageGap: true } : event
       while (true) {
         if (signal?.aborted) throw signal.reason
         try {
@@ -657,6 +695,10 @@ export class V2OpenCodeTransport implements OpenCodeTransport {
 
           const reconnected = await this.openEventStream(signal)
           ownedConnections.add(reconnected)
+          const fetchPendingPermissions = !coverageGap
+          const pendingPermissionsResponse = fetchPendingPermissions
+            ? await this.request(`/api/session/${encodeURIComponent(sessionId)}/permission`, { signal })
+            : undefined
           const replayEvents: OpenCodeTransportEventEnvelope[] = []
           let replay: SessionLogScan
           try {
@@ -674,6 +716,18 @@ export class V2OpenCodeTransport implements OpenCodeTransport {
           if (!replay.coverageComplete) coverageGap = true
           await connection.close()
           connection = reconnected
+          const pendingPermissions: OpenCodeTransportEventEnvelope[] = []
+          if (replay.coverageComplete && !coverageGap && fetchPendingPermissions) {
+            const response = dataOf(pendingPermissionsResponse)
+            if (!Array.isArray(response)) throw new Error('OpenCode v2 returned an invalid pending permission list')
+            for (const request of response) {
+              const event = mapV2Event({ type: 'permission.asked', data: request }, sessionId, state)
+              if (!event?.event || event.event.type !== 'permission') {
+                throw new Error('OpenCode v2 returned an invalid pending permission request')
+              }
+              pendingPermissions.push(event)
+            }
+          }
           for (const event of replayEvents) {
             const sequence = event.cursor
             if (sequence !== undefined && seen.has(sequence)) continue
@@ -683,6 +737,7 @@ export class V2OpenCodeTransport implements OpenCodeTransport {
             }
             yield coverageGap ? { ...event, coverageGap: true } : event
           }
+          for (const permission of pendingPermissions) yield permission
           cursor = Math.max(cursor, replay.cursor)
           coveredThrough = Math.max(coveredThrough, replay.cursor)
         }
@@ -771,9 +826,14 @@ async function* parseSse(body: ReadableStream<Uint8Array>): AsyncGenerator<unkno
   }
 }
 
-function withTimeout(signal: AbortSignal | undefined, timeoutMs: number): AbortSignal {
-  const timeout = AbortSignal.timeout(timeoutMs)
-  return signal ? AbortSignal.any([signal, timeout]) : timeout
+function createTimeoutSignal(signal: AbortSignal | undefined, timeoutMs: number, message: string) {
+  const timeout = new AbortController()
+  const timer = setTimeout(() => timeout.abort(new DOMException(message, 'TimeoutError')), timeoutMs)
+  return {
+    signal: signal ? AbortSignal.any([signal, timeout.signal]) : timeout.signal,
+    timedOut: () => timeout.signal.aborted,
+    dispose: () => clearTimeout(timer),
+  }
 }
 
 async function responseBody(response: Response): Promise<unknown> {

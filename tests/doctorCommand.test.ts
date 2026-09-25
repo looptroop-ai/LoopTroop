@@ -324,6 +324,31 @@ describe('doctor command', () => {
     expect(fetchMock).not.toHaveBeenCalledWith(expect.stringMatching(/\/api\/info$/), expect.anything())
   })
 
+  it('attributes daemon health HTTP failures to the daemon health URL', async () => {
+    const configDir = useConfigDir()
+    process.env.LOOPTROOP_OPENCODE_MODE = 'real'
+    writeDaemonState({
+      instanceId: 'health-status-daemon',
+      pid: process.pid,
+      host: '127.0.0.1',
+      port: 4319,
+      startedAt: new Date().toISOString(),
+      version: '0.0.0-test',
+      apiToken: 'doctor-api-token',
+    }, configDir)
+    vi.spyOn(globalThis, 'fetch').mockImplementation(async (input) => {
+      if (String(input).endsWith('/api/health/opencode')) return new Response('', { status: 503 })
+      if (String(input).endsWith('/api/health')) {
+        return new Response(JSON.stringify({ instanceId: 'health-status-daemon' }), { status: 200 })
+      }
+      return new Response('{}', { status: 200 })
+    })
+
+    const opencode = (await runChecks()).find((check) => check.name === 'opencode')
+
+    expect(opencode?.detail).toContain('responded 503 at http://127.0.0.1:4319/api/health/opencode')
+  })
+
   it('prints a human summary without --json', async () => {
     useConfigDir()
     const stdout = captureStdout()

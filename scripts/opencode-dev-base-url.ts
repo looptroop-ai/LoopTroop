@@ -205,18 +205,31 @@ export async function resolveOpenCodeBaseUrl(options: ResolveOptions): Promise<R
   const port = getPort(url)
   const probeHosts = getProbeHosts(url)
 
+  let authenticationFailureHost: string | undefined
   for (const host of probeHosts) {
-    if (await deps.isOpenCodeResponding(url, host, port)) {
-      return {
-        baseUrl: normalizedBaseUrl,
-        note: `OpenCode already reachable at ${normalizedBaseUrl}; reusing it.`,
-        status: 'already-running',
+    try {
+      if (await deps.isOpenCodeResponding(url, host, port)) {
+        return {
+          baseUrl: normalizedBaseUrl,
+          note: `OpenCode already reachable at ${normalizedBaseUrl}; reusing it.`,
+          status: 'already-running',
+        }
       }
+    } catch (error) {
+      if (!(error instanceof OpenCodeConnectionError) || error.failureKind !== 'authentication') throw error
+      if (hasExplicitBaseUrl) {
+        throw new Error(
+          `Configured OpenCode URL ${normalizedBaseUrl} requires valid credentials. Set OPENCODE_PASSWORD for v2 or OPENCODE_SERVER_PASSWORD for v1. ${error.message}`,
+          { cause: error },
+        )
+      }
+      authenticationFailureHost = host
+      break
     }
   }
 
   for (const host of probeHosts) {
-    if (!(await deps.canConnect(host, port))) continue
+    if (host !== authenticationFailureHost && !(await deps.canConnect(host, port))) continue
 
     if (hasExplicitBaseUrl) {
       throw new Error(

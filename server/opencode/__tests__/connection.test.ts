@@ -72,6 +72,45 @@ describe('getOpenCodeConnection', () => {
     ])
   })
 
+  it('probes v1 health after v2 auth fails even when both auth headers are identical', async () => {
+    vi.stubEnv('OPENCODE_PASSWORD', 'same-secret')
+    vi.stubEnv('OPENCODE_SERVER_PASSWORD', 'same-secret')
+    const calls: Array<{ url: string; authorization?: string }> = []
+    vi.stubGlobal('fetch', vi.fn(async (input: string | URL | Request, init?: RequestInit) => {
+      calls.push({
+        url: String(input),
+        authorization: new Headers(init?.headers).get('authorization') ?? undefined,
+      })
+      return String(input).endsWith('/api/info')
+        ? new Response('', { status: 401 })
+        : json({ healthy: true, version: '1.18.18' })
+    }))
+
+    await expect(getOpenCodeConnection(BASE_URL)).resolves.toMatchObject({
+      protocol: 'v1',
+      version: '1.18.18',
+    })
+    expect(calls).toEqual([
+      { url: `${BASE_URL}/api/info`, authorization: `Basic ${Buffer.from('opencode:same-secret').toString('base64')}` },
+      { url: `${BASE_URL}/global/health`, authorization: `Basic ${Buffer.from('opencode:same-secret').toString('base64')}` },
+    ])
+  })
+
+  it('keeps the v2 authentication diagnosis when its v1 fallback is unsupported', async () => {
+    vi.stubEnv('OPENCODE_PASSWORD', 'same-secret')
+    vi.stubEnv('OPENCODE_SERVER_PASSWORD', 'same-secret')
+    const fetchMock = vi.fn(async (input: string | URL | Request) => String(input).endsWith('/api/info')
+      ? new Response('', { status: 401 })
+      : new Response('', { status: 404 }))
+    vi.stubGlobal('fetch', fetchMock)
+
+    await expect(getOpenCodeConnection(BASE_URL)).rejects.toMatchObject({
+      failureKind: 'authentication',
+      status: 401,
+    })
+    expect(fetchMock).toHaveBeenCalledTimes(2)
+  })
+
   it('does not treat an unauthorized server as an absent protocol', async () => {
     vi.stubEnv('OPENCODE_PASSWORD', 'bad-secret')
     const fetchMock = vi.fn(async () => new Response('', { status: 401 }))
@@ -116,6 +155,15 @@ describe('getOpenCodeConnection', () => {
     await getOpenCodeConnection(BASE_URL)
 
     expect(fetchMock).toHaveBeenCalledTimes(2)
+  })
+
+  it('removes a trailing slash run from a configured base path', async () => {
+    const fetchMock = vi.fn(async () => json({ version: '2.0.15', pid: 812 }))
+    vi.stubGlobal('fetch', fetchMock)
+
+    await getOpenCodeConnection(`${BASE_URL}/opencode///`)
+
+    expect(fetchMock).toHaveBeenCalledWith(`${BASE_URL}/opencode/api/info`, expect.anything())
   })
 
   it('keys cached protocol selection by the exact v2 password bytes', async () => {

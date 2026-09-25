@@ -7,7 +7,7 @@ import { createChildEnvironment } from '../lib/childEnvironment'
 import { matchProcess, readProcessStartToken } from '../lib/processIdentity'
 import { captureProcessGroup, hasCapturedProcessGroupMember, refreshProcessGroup, terminateProcessTree, type ProcessGroupSnapshot } from '../lib/processTree'
 import { getErrorMessage } from '@shared/typeGuards'
-import { withOpenCodePasswordAliases } from '../../shared/opencodeAuth'
+import { hasOpenCodePassword, withOpenCodePasswordAliases } from '../../shared/opencodeAuth'
 import { probeOpenCodeConnection, invalidateOpenCodeConnection, OpenCodeConnectionError } from './connection'
 
 /** Attempts after a crash before the daemon stops trying and reports degraded. */
@@ -551,23 +551,23 @@ export class OpenCodeSupervisor {
     const timeout = this.options.readyTimeoutMs ?? READY_TIMEOUT_MS
     const deadline = Date.now() + timeout
     while (Date.now() < deadline) {
-      if (await this.probeState() === 'ready') return
+      try {
+        if (await this.probeState() === 'ready') return
+      } catch (error) {
+        if (!(error instanceof OpenCodeConnectionError) || error.failureKind !== 'network') throw error
+      }
       await delay(250)
     }
     throw new Error(`OpenCode did not become reachable at ${this.options.baseUrl} within ${timeout / 1000}s.`)
   }
 
   private ensureManagedAuthentication(): void {
-    const hasPassword = Boolean(
-      process.env.OPENCODE_PASSWORD !== undefined || process.env.OPENCODE_SERVER_PASSWORD !== undefined,
-    )
-    if (!hasPassword) {
+    withOpenCodePasswordAliases(process.env)
+    if (!hasOpenCodePassword(process.env)) {
       const password = randomBytes(32).toString('base64url')
       process.env.OPENCODE_PASSWORD = password
       process.env.OPENCODE_SERVER_PASSWORD = password
-      return
     }
-    withOpenCodePasswordAliases(process.env)
   }
 
   /**

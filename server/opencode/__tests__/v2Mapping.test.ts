@@ -17,7 +17,7 @@ describe('OpenCode v2 wire mappings', () => {
       sessionID: 'session-1',
       type: 'assistant',
       agent: 'build',
-      model: { providerID: 'acme', id: 'model-1' },
+      model: { providerID: 'acme', id: 'model-1', variant: 'reasoning_high' },
       time: { created: 1_700_000_000_000, completed: 1_700_000_001_000 },
       content: [
         { type: 'text', text: 'Done.' },
@@ -47,6 +47,7 @@ describe('OpenCode v2 wire mappings', () => {
         sender: 'build',
         providerID: 'acme',
         modelID: 'model-1',
+        variant: 'reasoning_high',
         finish: 'stop',
         cost: 0.012,
         tokens: { input: 10, output: 5, reasoning: 2, cache: { read: 3, write: 1 } },
@@ -121,10 +122,10 @@ describe('OpenCode v2 wire mappings', () => {
       id: 'form-1',
       sessionID: 'session-1',
       title: 'Choose',
-      metadata: { kind: 'question', tool: { messageID: 'assistant-1', callID: 'call-1' } },
+      metadata: { kind: 'question', tool: { messageID: 'assistant-1', id: 'call-1' } },
       fields: [
-        { key: 'q0', type: 'string', title: 'Environment', options: [{ label: 'Production', value: 'prod' }] },
-        { key: 'q1', type: 'multiselect', title: 'Regions', options: [{ label: 'North', value: 'north' }, { label: 'South', value: 'south' }] },
+        { key: 'environment', type: 'string', title: 'Environment', options: [{ label: 'Production', value: 'prod' }] },
+        { key: 'regions', type: 'multiselect', title: 'Regions', options: [{ label: 'North', value: 'north' }, { label: 'South', value: 'south' }] },
       ],
     }
     const question = mapV2Question(form)
@@ -138,7 +139,19 @@ describe('OpenCode v2 wire mappings', () => {
       ],
     })
     expect(mapV2QuestionAnswer(form, [['prod'], ['north', 'south']]))
-      .toEqual({ q0: 'prod', q1: ['north', 'south'] })
+      .toEqual({ environment: 'prod', regions: ['north', 'south'] })
+    const state = createV2EventMappingState()
+    mapV2Event({ type: 'form.created', data: { form } }, 'session-1', state)
+    expect(mapV2Event({
+      type: 'form.replied',
+      data: { id: 'form-1', sessionID: 'session-1', answer: { environment: 'prod', regions: ['north', 'south'] } },
+    }, 'session-1', state)?.event).toMatchObject({
+      type: 'question',
+      action: 'replied',
+      requestId: 'form-1',
+      answers: [['prod'], ['north', 'south']],
+      tool: { messageID: 'assistant-1', callID: 'call-1' },
+    })
     expect(mapV2Question({ ...form, metadata: { kind: 'approval' } })).toBeNull()
   })
 

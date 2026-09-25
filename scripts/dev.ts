@@ -27,7 +27,7 @@ import { getWslLanAccessPlan } from './wsl-lan-access'
 import { getErrorMessage } from '../shared/typeGuards'
 import { LOOPTROOP_OPENCODE_ROUTING_CONFIG } from '../shared/openRouterRouting'
 import { resolveAppConfigDir } from '../server/lib/appConfigDir'
-import { withOpenCodePasswordAliases } from '../shared/opencodeAuth'
+import { hasOpenCodePassword, withOpenCodePasswordAliases } from '../shared/opencodeAuth'
 
 const __dirname = dirname(fileURLToPath(import.meta.url))
 const repoRoot = resolve(__dirname, '..')
@@ -107,13 +107,12 @@ if (note) {
 }
 
 if (status === 'ready-to-start') {
-  if (childEnv.OPENCODE_PASSWORD === undefined && childEnv.OPENCODE_SERVER_PASSWORD === undefined) {
+  withOpenCodePasswordAliases(childEnv)
+  if (!hasOpenCodePassword(childEnv)) {
     const password = randomBytes(32).toString('base64url')
     childEnv.OPENCODE_PASSWORD = password
     childEnv.OPENCODE_SERVER_PASSWORD = password
     console.log('[dev] Securing the local OpenCode dev server with ephemeral basic auth.')
-  } else {
-    withOpenCodePasswordAliases(childEnv)
   }
 }
 

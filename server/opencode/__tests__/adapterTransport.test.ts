@@ -1,8 +1,8 @@
 import { describe, expect, it, vi } from 'vitest'
 import { OpenCodeSDKAdapter } from '../adapter'
 import type { OpenCodeTransport, OpenCodeTransportEventEnvelope } from '../transport'
-import type { Message } from '../types'
-import type { OpenCodeV1Client } from '../v1Transport'
+import type { Message, StreamEvent } from '../types'
+import { OpenCodeV1Transport, type OpenCodeV1Client } from '../v1Transport'
 import { V2OpenCodeTransport } from '../v2Transport'
 
 function message(id: string, content: string): Message {
@@ -87,6 +87,17 @@ function createV2Transport(overrides: Partial<OpenCodeTransport> = {}) {
     ...overrides,
   } as unknown as OpenCodeTransport
   return { transport, source, markDispatched: () => { dispatched = true } }
+}
+
+function createV1Transport(overrides: Partial<OpenCodeTransport> = {}): OpenCodeTransport {
+  return {
+    ...createV2Transport().transport,
+    protocol: 'v1' as const,
+    getSessionMessages: vi.fn(async () => []),
+    subscribeToEvents: vi.fn(async () => ({ events: (async function* () {})() })),
+    dispatchPrompt: vi.fn(async () => ({ kind: 'completed' as const, message: message('assistant-1', '') })),
+    ...overrides,
+  } as unknown as OpenCodeTransport
 }
 
 function createAdapter(transport: OpenCodeTransport): OpenCodeSDKAdapter {
@@ -179,7 +190,7 @@ describe('OpenCode adapter transport orchestration', () => {
     await expect(adapter.promptSession('session-1', [{ type: 'text', content: 'prompt' }]))
       .resolves.toBe('real v2 answer')
     expect(promptPostCount).toBe(1)
-    expect(logCursors).toEqual([null, '44'])
+    expect(logCursors).toEqual([null, '40', '44'])
     expect(eventSignals).toHaveLength(1)
     expect(eventSignals[0]?.aborted).toBe(true)
   })
@@ -201,6 +212,522 @@ describe('OpenCode adapter transport orchestration', () => {
     await expect(createAdapter(transport).promptSession('session-1', [{ type: 'text', content: 'prompt' }]))
       .resolves.toBe('current answer')
     expect(transport.readSessionLog).toHaveBeenCalledWith('session-1', 54, undefined)
+  })
+
+  it('captures a v2 cursor before waiting idle and subscribes from that cursor', async () => {
+    const { transport, source, markDispatched } = createV2Transport()
+    const order: string[] = []
+    vi.mocked(transport.readSessionLog).mockImplementation(async (_sessionId, after) => {
+      if (after === undefined) {
+        order.push('cursor')
+        return { events: [], cursor: 50 }
+      }
+      return { events: [], cursor: after }
+    })
+    vi.mocked(transport.waitForIdle).mockImplementation(async () => { order.push('idle') })
+    vi.mocked(transport.subscribeToEvents).mockImplementation(async (_sessionId, _directory, signal, _safetyMs, afterCursor) => {
+      order.push(`subscribe:${afterCursor}`)
+      return { events: source.events(signal), cursor: afterCursor, coverageComplete: true }
+    })
+    vi.mocked(transport.dispatchPrompt).mockImplementation(async () => {
+      order.push('dispatch')
+      markDispatched()
+      source.push(
+        inboxEvent('inbox_enqueued', 'inbox-own', 51),
+        executionEvent('execution_started', 52),
+        inboxEvent('inbox_delivered', 'inbox-own', 53),
+        executionEvent('execution_terminal', 54),
+      )
+      return { kind: 'accepted', receipt: { inboxID: 'inbox-own' } }
+    })
+
+    await expect(createAdapter(transport).promptSession('session-1', [{ type: 'text', content: 'prompt' }]))
+      .resolves.toBe('current answer')
+
+    expect(order.slice(0, 4)).toEqual(['cursor', 'idle', 'subscribe:50', 'dispatch'])
+  })
+
+  it('opens v2 event coverage before changing permissions and consumes its cursor-only update', async () => {
+    const { transport, source, markDispatched } = createV2Transport()
+    const order: string[] = []
+    vi.mocked(transport.readSessionLog).mockImplementation(async (_sessionId, after) => {
+      order.push(after === undefined ? 'cursor' : `history:${after}`)
+      return { events: [], cursor: after ?? 50, coverageComplete: true }
+    })
+    vi.mocked(transport.waitForIdle).mockImplementation(async () => { order.push('idle') })
+    vi.mocked(transport.subscribeToEvents).mockImplementation(async (_sessionId, _directory, signal, _safetyMs, afterCursor) => {
+      order.push(`subscribe:${afterCursor}`)
+      return { events: source.events(signal), cursor: afterCursor, coverageComplete: true }
+    })
+    vi.mocked(transport.updateSession).mockImplementation(async () => {
+      order.push('permissions')
+      source.push({ cursor: 51 })
+      await new Promise(resolve => setTimeout(resolve, 10))
+    })
+    vi.mocked(transport.dispatchPrompt).mockImplementation(async () => {
+      order.push('dispatch')
+      markDispatched()
+      source.push(
+        inboxEvent('inbox_enqueued', 'inbox-own', 52),
+        executionEvent('execution_started', 53),
+        inboxEvent('inbox_delivered', 'inbox-own', 54),
+        executionEvent('execution_terminal', 55),
+      )
+      return { kind: 'accepted', receipt: { inboxID: 'inbox-own' } }
+    })
+
+    await expect(createAdapter(transport).promptSession(
+      'session-1',
+      [{ type: 'text', content: 'prompt' }],
+      undefined,
+      { permission: [{ permission: 'read', pattern: '*', action: 'allow' }] },
+    )).resolves.toBe('current answer')
+
+    expect(order.slice(0, 5)).toEqual(['cursor', 'idle', 'subscribe:50', 'permissions', 'dispatch'])
+    expect(transport.readSessionLog).toHaveBeenCalledWith('session-1', 55, undefined)
+  })
+
+  it('does not finish a new prompt from an earlier execution start and terminal', async () => {
+    const { transport, source } = createV2Transport()
+    source.push(
+      executionEvent('execution_started', 51),
+      executionEvent('execution_terminal', 52),
+    )
+    vi.mocked(transport.dispatchPrompt).mockImplementation(async () => {
+      source.push(
+        inboxEvent('inbox_enqueued', 'inbox-own', 53),
+        inboxEvent('inbox_delivered', 'inbox-own', 54),
+      )
+      return { kind: 'accepted', receipt: { inboxID: 'inbox-own' } }
+    })
+    const controller = new AbortController()
+    const prompt = createAdapter(transport).promptSession(
+      'session-1',
+      [{ type: 'text', content: 'new prompt' }],
+      controller.signal,
+    )
+    let settled = false
+    void prompt.finally(() => { settled = true }).catch(() => undefined)
+    await new Promise(resolve => setTimeout(resolve, 20))
+    expect(settled).toBe(false)
+    controller.abort()
+    await expect(prompt).rejects.toMatchObject({ name: 'AbortError' })
+  })
+
+  it('refuses to dispatch when the v2 subscription cannot certify its history cursor', async () => {
+    const { transport } = createV2Transport({
+      subscribeToEvents: vi.fn(async () => ({
+        events: (async function* () {})(),
+        cursor: 51,
+        coverageComplete: false,
+      })),
+    })
+
+    await expect(createAdapter(transport).promptSession('session-1', [{ type: 'text', content: 'prompt' }]))
+      .rejects.toThrow('history is unavailable or incomplete')
+    expect(transport.dispatchPrompt).not.toHaveBeenCalled()
+    expect(transport.getSessionMessages).not.toHaveBeenCalled()
+  })
+
+  it('reports unavailable v2 history before waiting idle when it has no trusted cursor', async () => {
+    const { transport } = createV2Transport({
+      readSessionLog: vi.fn(async () => ({ events: [] })),
+    })
+
+    await expect(createAdapter(transport).promptSession('session-1', [{ type: 'text', content: 'prompt' }]))
+      .rejects.toThrow('OpenCode v2 history is unavailable')
+    expect(transport.waitForIdle).not.toHaveBeenCalled()
+    expect(transport.subscribeToEvents).not.toHaveBeenCalled()
+    expect(transport.dispatchPrompt).not.toHaveBeenCalled()
+  })
+
+  it('does not retry durable recovery after an automatic permission reply fails', async () => {
+    const { transport, source } = createV2Transport({
+      replyPermission: vi.fn(async () => { throw new Error('permission endpoint unavailable') }),
+      dispatchPrompt: vi.fn(async () => {
+        source.push(
+          inboxEvent('inbox_enqueued', 'inbox-own', 51),
+          {
+            event: {
+              type: 'permission',
+              sessionId: 'session-1',
+              action: 'asked',
+              permissionId: 'permission-1',
+              permission: 'read',
+            },
+          },
+        )
+        return { kind: 'accepted' as const, receipt: { inboxID: 'inbox-own' } }
+      }),
+    })
+
+    await expect(createAdapter(transport).promptSession(
+      'session-1',
+      [{ type: 'text', content: 'prompt' }],
+      undefined,
+      { autoApprovePermissions: true },
+    )).rejects.toThrow('Failed to auto-approve OpenCode permission read: permission endpoint unavailable')
+    expect(transport.readSessionLog).toHaveBeenCalledTimes(1)
+  })
+
+  it('reconciles an ephemeral permission ask after its inbox was accepted', async () => {
+    const { transport, source, markDispatched } = createV2Transport({
+      dispatchPrompt: vi.fn(async () => {
+        markDispatched()
+        source.push(
+          inboxEvent('inbox_enqueued', 'inbox-own', 51),
+          {
+            event: {
+              type: 'permission',
+              sessionId: 'session-1',
+              action: 'asked',
+              permissionId: 'permission-1',
+              permission: 'read',
+            },
+          },
+        )
+        source.fail(new Error('SSE disconnected'))
+        return { kind: 'accepted' as const, receipt: { inboxID: 'inbox-own' } }
+      }),
+      readSessionLog: vi.fn(async (_sessionId, after) => {
+        if (after === undefined) return { events: [], cursor: 50, coverageComplete: true }
+        if (after === 51) return {
+          events: [
+            executionEvent('execution_started', 52),
+            inboxEvent('inbox_delivered', 'inbox-own', 53),
+            executionEvent('execution_terminal', 54),
+          ],
+          cursor: 54,
+          coverageComplete: true,
+        }
+        return { events: [], cursor: after, coverageComplete: true }
+      }),
+    })
+
+    await expect(createAdapter(transport).promptSession(
+      'session-1',
+      [{ type: 'text', content: 'prompt' }],
+      undefined,
+      { autoApprovePermissions: true },
+    )).resolves.toBe('current answer')
+    expect(transport.replyPermission).toHaveBeenCalledWith('session-1', 'permission-1', 'always', '/worktree', undefined)
+  })
+
+  it('does not auto-approve a pending ask after replay finds a competing inbox', async () => {
+    const { transport, source } = createV2Transport({
+      dispatchPrompt: vi.fn(async () => {
+        source.push({
+          event: {
+            type: 'permission',
+            sessionId: 'session-1',
+            action: 'asked',
+            permissionId: 'permission-1',
+            permission: 'read',
+          },
+        })
+        source.fail(new Error('SSE disconnected'))
+        return { kind: 'accepted' as const, receipt: { inboxID: 'inbox-own' } }
+      }),
+      readSessionLog: vi.fn(async (_sessionId, after) => {
+        if (after === undefined) return { events: [], cursor: 50, coverageComplete: true }
+        if (after === 50) return {
+          events: [
+            inboxEvent('inbox_enqueued', 'inbox-external', 51),
+            executionEvent('execution_started', 52),
+            inboxEvent('inbox_delivered', 'inbox-external', 53),
+            executionEvent('execution_terminal', 54),
+          ],
+          cursor: 54,
+          coverageComplete: true,
+        }
+        return { events: [], cursor: after, coverageComplete: true }
+      }),
+    })
+
+    await expect(createAdapter(transport).promptSession(
+      'session-1',
+      [{ type: 'text', content: 'prompt' }],
+      undefined,
+      { autoApprovePermissions: true },
+    )).rejects.toThrow('Another prompt entered the OpenCode session during result attribution')
+    expect(transport.replyPermission).not.toHaveBeenCalled()
+  })
+
+  it.each([
+    { outcome: 'succeeded' as const, expected: { type: 'done' } },
+    { outcome: 'failed' as const, error: 'provider failed', expected: { type: 'session_error', error: 'provider failed' } },
+    { outcome: 'interrupted' as const, expected: { type: 'session_error', error: 'OpenCode execution was interrupted' } },
+  ])('maps v2 $outcome terminals for public event subscribers', async ({ outcome, error, expected }) => {
+    const transport = createV2Transport({
+      subscribeToEvents: vi.fn(async () => ({
+        events: (async function* () {
+          yield {
+            event: {
+              type: 'execution_terminal' as const,
+              sessionId: 'session-1',
+              outcome,
+              ...(error ? { error } : {}),
+            },
+          }
+        })(),
+      })),
+    }).transport
+    const events: StreamEvent[] = []
+    for await (const event of createAdapter(transport).subscribeToEvents('session-1')) events.push(event)
+
+    expect(events).toHaveLength(1)
+    expect(events[0]).toMatchObject(expected)
+  })
+
+  it('reports a v1 event stream failure as a session error after a completed empty dispatch', async () => {
+    const transport = createV1Transport({
+      subscribeToEvents: vi.fn(async () => ({
+        events: (async function* () {
+          yield { event: { type: 'session_status' as const, sessionId: 'session-1', status: 'idle' as const } }
+          throw new Error('SSE disconnected')
+        })(),
+      })),
+    })
+
+    await expect(createAdapter(transport).promptSession('session-1', [{ type: 'text', content: 'prompt' }]))
+      .rejects.toMatchObject({
+        name: 'OpenCodeSessionError',
+        sessionError: 'SSE disconnected',
+      })
+  })
+
+  it('keeps streamed v1 text when echo recovery cannot read the message snapshot', async () => {
+    const echoedPrompt = 'CRITICAL OUTPUT RULE:\nCONTEXT REFRESH:\nwork the task'
+    const transport = createV1Transport({
+      subscribeToEvents: vi.fn(async () => ({
+        events: (async function* () {
+          yield {
+            event: {
+              type: 'text' as const,
+              sessionId: 'session-1',
+              messageId: 'assistant-1',
+              partId: 'part-1',
+              text: 'actual streamed answer',
+              streaming: false,
+              complete: true,
+            },
+          }
+        })(),
+      })),
+      getSessionMessages: vi.fn(async () => { throw new Error('message snapshot unavailable') }),
+      dispatchPrompt: vi.fn(async () => ({
+        kind: 'completed' as const,
+        message: message('assistant-1', echoedPrompt),
+      })),
+    })
+
+    await expect(createAdapter(transport).promptSession('session-1', [{ type: 'text', content: echoedPrompt }]))
+      .resolves.toBe('actual streamed answer')
+  })
+
+  it('keeps provider diagnostics when cancellation races with a provider error', async () => {
+    const controller = new AbortController()
+    const transport = createV2Transport({
+      dispatchPrompt: vi.fn(async () => {
+        controller.abort()
+        throw new Error('Provider returned error')
+      }),
+    }).transport
+
+    await expect(createAdapter(transport).promptSession(
+      'session-diagnostic-abort',
+      [{ type: 'text', content: 'prompt' }],
+      controller.signal,
+    )).rejects.toMatchObject({
+      message: expect.stringContaining('LOOPTROOP_OPENCODE_LOG_DIR'),
+    })
+  })
+
+  it('emits synthetic v1 completion after event-stream EOF and cleans up the iterator and timer', async () => {
+    vi.useFakeTimers()
+    let iteratorClosed = false
+    let streamSignal: AbortSignal | undefined
+    const client = {
+      global: {
+        event: vi.fn(async (options?: { signal?: AbortSignal }) => {
+          streamSignal = options?.signal
+          return {
+            stream: (async function* () {
+              try {
+                yield {
+                  type: 'message.part.updated',
+                  properties: {
+                    part: {
+                      id: 'step-1',
+                      type: 'step-finish',
+                      reason: 'stop',
+                      sessionID: 'session-1',
+                      messageID: 'message-1',
+                    },
+                  },
+                }
+              } finally {
+                iteratorClosed = true
+              }
+            })(),
+          }
+        }),
+      },
+    } as unknown as OpenCodeV1Client
+    const transport = new OpenCodeV1Transport('http://127.0.0.1:4096', client)
+
+    try {
+      const subscription = await transport.subscribeToEvents('session-1', undefined, undefined, 1_000)
+      const events: NonNullable<OpenCodeTransportEventEnvelope['event']>[] = []
+      for await (const envelope of subscription.events) {
+        if (envelope.event) events.push(envelope.event)
+      }
+
+      expect(events.map(event => event.type)).toEqual(['step', 'done'])
+      expect(iteratorClosed).toBe(true)
+      expect(streamSignal?.aborted).toBe(true)
+      expect(vi.getTimerCount()).toBe(0)
+    } finally {
+      vi.useRealTimers()
+    }
+  })
+
+  it('emits synthetic v1 completion when the safety timer expires and closes the pending iterator', async () => {
+    vi.useFakeTimers()
+    let iteratorClosed = false
+    let streamSignal: AbortSignal | undefined
+    let startSecondNext!: () => void
+    const secondNextStarted = new Promise<void>(resolve => { startSecondNext = resolve })
+    let nextCalls = 0
+    const stepFinish = {
+      type: 'message.part.updated',
+      properties: {
+        part: {
+          id: 'step-1',
+          type: 'step-finish',
+          reason: 'stop',
+          sessionID: 'session-1',
+          messageID: 'message-1',
+        },
+      },
+    }
+    const stream = {
+      [Symbol.asyncIterator]() {
+        return {
+          next() {
+            if (nextCalls++ === 0) return Promise.resolve({ value: stepFinish, done: false } as const)
+            startSecondNext()
+            return new Promise<IteratorResult<typeof stepFinish>>(resolve => {
+              streamSignal?.addEventListener('abort', () => resolve({ value: undefined, done: true }), { once: true })
+            })
+          },
+          async return() {
+            iteratorClosed = true
+            return { value: undefined, done: true } as const
+          },
+        }
+      },
+    }
+    const client = {
+      global: {
+        event: vi.fn(async (options?: { signal?: AbortSignal }) => {
+          streamSignal = options?.signal
+          return { stream }
+        }),
+      },
+    } as unknown as OpenCodeV1Client
+    const transport = new OpenCodeV1Transport('http://127.0.0.1:4096', client)
+
+    try {
+      const subscription = await transport.subscribeToEvents('session-1', undefined, undefined, 1_000)
+      const collectedEvents = (async () => {
+        const events = []
+        for await (const envelope of subscription.events) events.push(envelope.event)
+        return events
+      })()
+      await secondNextStarted
+      expect(vi.getTimerCount()).toBe(1)
+      await vi.advanceTimersByTimeAsync(1_000)
+
+      await expect(collectedEvents).resolves.toEqual([
+        expect.objectContaining({ type: 'step', step: 'finish' }),
+        { type: 'done', sessionId: 'session-1' },
+      ])
+      expect(iteratorClosed).toBe(true)
+      expect(streamSignal?.aborted).toBe(true)
+      expect(vi.getTimerCount()).toBe(0)
+    } finally {
+      vi.useRealTimers()
+    }
+  })
+
+  it('preserves caller cancellation when cleanup aborts the v1 stream signal', async () => {
+    vi.useFakeTimers()
+    let iteratorClosed = false
+    let streamSignal: AbortSignal | undefined
+    let startSecondNext!: () => void
+    const secondNextStarted = new Promise<void>(resolve => { startSecondNext = resolve })
+    let nextCalls = 0
+    const stepFinish = {
+      type: 'message.part.updated',
+      properties: {
+        part: {
+          id: 'step-1',
+          type: 'step-finish',
+          reason: 'stop',
+          sessionID: 'session-1',
+          messageID: 'message-1',
+        },
+      },
+    }
+    const stream = {
+      [Symbol.asyncIterator]() {
+        return {
+          next() {
+            if (nextCalls++ === 0) return Promise.resolve({ value: stepFinish, done: false } as const)
+            startSecondNext()
+            return new Promise<IteratorResult<typeof stepFinish>>(resolve => {
+              streamSignal?.addEventListener('abort', () => resolve({ value: undefined, done: true }), { once: true })
+            })
+          },
+          async return() {
+            iteratorClosed = true
+            return { value: undefined, done: true } as const
+          },
+        }
+      },
+    }
+    const client = {
+      global: {
+        event: vi.fn(async (options?: { signal?: AbortSignal }) => {
+          streamSignal = options?.signal
+          return { stream }
+        }),
+      },
+    } as unknown as OpenCodeV1Client
+    const transport = new OpenCodeV1Transport('http://127.0.0.1:4096', client)
+    const caller = new AbortController()
+
+    try {
+      const subscription = await transport.subscribeToEvents('session-1', undefined, caller.signal, 1_000)
+      const collectedEvents = (async () => {
+        const events = []
+        for await (const envelope of subscription.events) events.push(envelope.event)
+        return events
+      })()
+      await secondNextStarted
+      expect(vi.getTimerCount()).toBe(1)
+      caller.abort()
+
+      await expect(collectedEvents).resolves.toEqual([
+        expect.objectContaining({ type: 'step', step: 'finish' }),
+      ])
+      expect(iteratorClosed).toBe(true)
+      expect(streamSignal?.aborted).toBe(true)
+      expect(vi.getTimerCount()).toBe(0)
+    } finally {
+      vi.useRealTimers()
+    }
   })
 
   it('does not treat idle status or stale streamed output as completion of an accepted prompt', async () => {
@@ -231,7 +758,7 @@ describe('OpenCode adapter transport orchestration', () => {
         source.fail(new Error('SSE disconnected'))
         return { kind: 'accepted' as const, receipt: { inboxID: 'inbox-own' } }
       }),
-      readSessionLog: vi.fn(async (_sessionId, after = 50) => after < 54 ? ({
+      readSessionLog: vi.fn(async (_sessionId, after) => after === undefined ? ({ events: [], cursor: 50 }) : after < 54 ? ({
         events: [
           inboxEvent('inbox_enqueued', 'inbox-own', 51),
           executionEvent('execution_started', 52),
@@ -309,6 +836,7 @@ describe('OpenCode adapter transport orchestration', () => {
         return { kind: 'accepted' as const, receipt: { inboxID: 'inbox-own' } }
       }),
       readSessionLog: vi.fn(async (_sessionId, cursor) => {
+        if (cursor === undefined) return { events: [], cursor: 50 }
         logReads += 1
         if (logReads === 1) {
           return {
@@ -358,7 +886,7 @@ describe('OpenCode adapter transport orchestration', () => {
     })
 
     await expect(createAdapter(transport).promptSession('session-1', [{ type: 'text', content: 'own prompt' }]))
-      .rejects.toThrow('unaccounted sequence gap')
+      .rejects.toThrow('history is incomplete')
     expect(reads).toBe(2)
   })
 
@@ -401,6 +929,7 @@ describe('OpenCode adapter transport orchestration', () => {
         return { kind: 'accepted' as const, receipt: { inboxID: 'inbox-own' } }
       }),
       readSessionLog: vi.fn(async (_sessionId, cursor) => {
+        if (cursor === undefined) return { events: [], cursor: 50 }
         logReads += 1
         if (logReads === 1) return { events: [], cursor }
         throw new Error('session log unavailable')
@@ -410,7 +939,7 @@ describe('OpenCode adapter transport orchestration', () => {
     await expect(createAdapter(transport).promptSession(
       'session-1',
       [{ type: 'text', content: 'own prompt' }],
-    )).rejects.toThrow('durable event certification failed: session log unavailable')
+    )).rejects.toThrow('history is unavailable for accepted prompt certification: session log unavailable')
     expect(reads).toBe(3)
     expect(logReads).toBe(2)
   })
@@ -434,7 +963,8 @@ describe('OpenCode adapter transport orchestration', () => {
         )
         return { kind: 'accepted' as const, receipt: { inboxID: 'inbox-own' } }
       }),
-      readSessionLog: vi.fn(async (_sessionId, after = 50) => {
+      readSessionLog: vi.fn(async (_sessionId, after) => {
+        if (after === undefined) return { events: [], cursor: 50 }
         logReads += 1
         return { events: [], cursor: after + (logReads === 1 ? 0 : 1) }
       }),
@@ -443,7 +973,7 @@ describe('OpenCode adapter transport orchestration', () => {
     await expect(createAdapter(transport).promptSession(
       'session-1',
       [{ type: 'text', content: 'own prompt' }],
-    )).rejects.toThrow('unaccounted sequence gap')
+    )).rejects.toThrow('history is incomplete')
     expect(reads).toBe(3)
     expect(logReads).toBe(2)
   })
@@ -470,6 +1000,7 @@ describe('OpenCode adapter transport orchestration', () => {
     const { transport, source } = createV2Transport({
       dispatchPrompt: vi.fn(async () => {
         source.push(
+          inboxEvent('inbox_enqueued', 'inbox-own', 50),
           executionEvent('execution_started', 51),
           inboxEvent('inbox_delivered', 'inbox-own', 52),
           { cursor: 53, event: { type: 'execution_terminal', sessionId: 'session-1', outcome: 'interrupted' } },

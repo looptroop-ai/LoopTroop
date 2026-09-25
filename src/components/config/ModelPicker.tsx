@@ -26,7 +26,9 @@ function singleCostLabel(input: number): { label: string; color: string } {
 
 function isFreeModel(model: OpenCodeModel): boolean {
   if (model.costTiers?.length) {
-    return model.costTiers.every((tier) => tier.input === 0 && tier.output === 0)
+    return model.costTiers.every((tier) =>
+      tier.input === 0 && tier.output === 0 && (tier.cacheRead ?? 0) === 0 && (tier.cacheWrite ?? 0) === 0,
+    )
   }
   return model.costInput === 0 && model.costOutput === 0
 }
@@ -43,7 +45,7 @@ function costLabel(model: OpenCodeModel): { label: string; color: string } | nul
   const lower = singleCostLabel(min)
   const upper = singleCostLabel(max)
   return {
-    label: min === max ? lower.label : `${lower.label}–${upper.label}`,
+    label: lower.label === upper.label ? lower.label : `${lower.label}–${upper.label}`,
     color: upper.color,
   }
 }

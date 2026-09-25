@@ -79,6 +79,38 @@ describe('registerOpenRouterRoutingModels', () => {
     })
   })
 
+  it('keeps v2 routes in an existing legacy provider map when no native map exists', () => {
+    const directory = makeTempDir('looptroop-routing-config-v2-legacy-')
+    temporaryDirectories.push(directory)
+    const configPath = join(directory, 'opencode.json')
+    vi.stubEnv(LOOPTROOP_OPENCODE_ROUTING_CONFIG, configPath)
+    const original = {
+      provider: {
+        openrouter: {
+          models: { existing: { name: 'existing' } },
+          options: { baseURL: 'https://provider.example' },
+        },
+      },
+      unrelated: { preserve: true },
+    }
+    writeFileSync(configPath, JSON.stringify(original))
+
+    expect(registerOpenRouterRoutingModels(['openrouter/deepseek/deepseek-v4-flash:floor'], 'v2')).toBe(true)
+
+    expect(JSON.parse(readFileSync(configPath, 'utf8'))).toEqual({
+      provider: {
+        openrouter: {
+          models: {
+            existing: { name: 'existing' },
+            'deepseek/deepseek-v4-flash:floor': {},
+          },
+          options: { baseURL: 'https://provider.example' },
+        },
+      },
+      unrelated: { preserve: true },
+    })
+  })
+
   it('does not rewrite ignored legacy routes when native v2 routes already exist', () => {
     const directory = makeTempDir('looptroop-routing-config-v2-native-')
     temporaryDirectories.push(directory)

@@ -13,7 +13,7 @@ function makeEventSource() {
   return {
     push(...events: OpenCodeTransportEventEnvelope[]) {
       queue.push(...events)
-      if (events.some(({ event }) => event.type === 'execution_terminal')) done = true
+      if (events.some(({ event }) => event?.type === 'execution_terminal')) done = true
       wake?.()
     },
     async *events(signal?: AbortSignal): AsyncGenerator<OpenCodeTransportEventEnvelope> {
@@ -141,6 +141,27 @@ describe('OpenCode adapter transport refresh', () => {
     expect(resolver).toHaveBeenCalledTimes(2)
     expect(freshTransport.listSessions).toHaveBeenCalledTimes(2)
     expect(oldTransport.listSessions).toHaveBeenCalledTimes(1)
+  })
+
+  it('isolates shared initialization from each caller cancellation', async () => {
+    let resolveInitialization: ((value: OpenCodeTransport) => void) | undefined
+    const initialization = new Promise<OpenCodeTransport>(resolve => { resolveInitialization = resolve })
+    const resolvedTransport = transport('v2')
+    const resolver = vi.fn(() => initialization)
+    const adapter = new OpenCodeSDKAdapter('http://127.0.0.1:4096', undefined, resolver)
+    const cancelled = new AbortController()
+
+    const cancelledRequest = adapter.listSessions(cancelled.signal)
+    const survivingRequest = adapter.listSessions()
+    cancelled.abort()
+
+    await expect(cancelledRequest).rejects.toMatchObject({ name: 'AbortError' })
+    resolveInitialization?.(resolvedTransport)
+    await expect(survivingRequest).resolves.toEqual([])
+
+    expect(resolver).toHaveBeenCalledTimes(1)
+    expect(resolver).toHaveBeenCalledWith('http://127.0.0.1:4096')
+    expect(resolvedTransport.listSessions).toHaveBeenCalledTimes(1)
   })
 
   it('refreshes the singleton transport without replacing the adapter instance', () => {

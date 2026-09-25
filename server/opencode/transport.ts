@@ -44,7 +44,8 @@ export type OpenCodeTransportEvent =
     }
 
 export interface OpenCodeTransportEventEnvelope {
-  event: OpenCodeTransportEvent
+  /** Absent when a known durable event only advances the session cursor. */
+  event?: OpenCodeTransportEvent
   cursor?: number
   /** A prior durable sequence gap means this and later events cannot certify attribution. */
   coverageGap?: true
@@ -55,6 +56,8 @@ export interface OpenCodeEventSubscription {
   events: AsyncIterable<OpenCodeTransportEventEnvelope>
   /** Durable v2 log sequence captured at the `log.synced` watermark. */
   cursor?: number
+  /** Whether history after the supplied cursor is fully accounted for. */
+  coverageComplete?: boolean
 }
 
 export interface OpenCodeSessionLog {

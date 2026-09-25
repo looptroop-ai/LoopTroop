@@ -1,12 +1,14 @@
-import { describe, expect, it } from 'vitest'
+import { describe, expect, it, vi } from 'vitest'
 import type { OpenCodePromptRequest } from '../transport'
 import { V2OpenCodeHttpError, V2OpenCodeTransport } from '../v2Transport'
+import { invalidateOpenCodeConnection } from '../connection'
 
 interface CapturedRequest {
   url: URL
   method: string
   body?: unknown
   accept?: string
+  redirect?: RequestRedirect
 }
 
 type FetchHandler = (request: CapturedRequest, init: RequestInit) => Response | Promise<Response>
@@ -22,6 +24,7 @@ function createTransport(handler: FetchHandler, baseUrl = 'http://127.0.0.1:4096
       method: init.method ?? 'GET',
       body,
       accept: headers.get('accept') ?? undefined,
+      redirect: init.redirect,
     }
     requests.push(request)
     return handler(request, init)
@@ -46,6 +49,15 @@ function eventStream(events: unknown[]): Response {
     start(controller) {
       for (const event of events) controller.enqueue(encoder.encode(`data: ${JSON.stringify(event)}\n\n`))
       controller.close()
+    },
+  })
+  return new Response(stream, { headers: { 'content-type': 'text/event-stream; charset=utf-8' } })
+}
+
+function hangingEventStream(signal?: AbortSignal | null): Response {
+  const stream = new ReadableStream<Uint8Array>({
+    start(controller) {
+      signal?.addEventListener('abort', () => controller.error(signal.reason), { once: true })
     },
   })
   return new Response(stream, { headers: { 'content-type': 'text/event-stream; charset=utf-8' } })
@@ -173,11 +185,52 @@ describe('OpenCode v2 fetch transport', () => {
       cursor: 1,
       coverageComplete: true,
     })
-    await expect(transport.readSessionLog('session-1', 4)).resolves.toMatchObject({
+    await expect(transport.readSessionLog('session-1', 4)).resolves.toEqual({
       events: [],
       cursor: 4,
       coverageComplete: true,
     })
+  })
+
+  it('preserves known durable no-op cursors in logs and live events', async () => {
+    const { transport } = createTransport(request => {
+      if (request.url.pathname === '/api/event') {
+        return eventStream([
+          { type: 'server.connected' },
+          { type: 'session.instructions.updated', data: { sessionID: 'session-1', delta: {} }, durable: { aggregateID: 'session-1', seq: 7 } },
+          { type: 'session.execution.succeeded', data: { sessionID: 'session-1' }, durable: { aggregateID: 'session-1', seq: 8 } },
+        ])
+      }
+      if (request.url.pathname.endsWith('/log')) {
+        return eventStream([
+          { type: 'session.instructions.updated', data: { sessionID: 'session-1', delta: {} }, durable: { aggregateID: 'session-1', seq: 5 } },
+          { type: 'session.inbox.enqueued', data: { sessionID: 'session-1', inboxID: 'inbox-1' }, durable: { aggregateID: 'session-1', seq: 6 } },
+          { type: 'log.synced', aggregateID: 'session-1', seq: 6 },
+        ])
+      }
+      throw new Error(`Unexpected ${request.method} ${request.url}`)
+    })
+
+    await expect(transport.readSessionLog('session-1', 4)).resolves.toMatchObject({
+      cursor: 6,
+      coverageComplete: true,
+      events: [
+        { cursor: 5 },
+        { cursor: 6, event: { type: 'inbox_enqueued' } },
+      ],
+    })
+
+    const subscription = await transport.subscribeToEvents('session-1', '/workspace', undefined, undefined, 4)
+    const iterator = subscription.events[Symbol.asyncIterator]()
+    const envelopes = [await iterator.next(), await iterator.next(), await iterator.next(), await iterator.next()]
+    await iterator.return?.(undefined)
+
+    expect(envelopes.map(next => next.value)).toEqual([
+      { cursor: 5 },
+      { cursor: 6, event: { type: 'inbox_enqueued', sessionId: 'session-1', inboxID: 'inbox-1' } },
+      { cursor: 7 },
+      { cursor: 8, event: { type: 'execution_terminal', sessionId: 'session-1', outcome: 'succeeded' } },
+    ])
   })
 
   it('does not certify a numeric cursor when the log omits its watermark', async () => {
@@ -186,7 +239,7 @@ describe('OpenCode v2 fetch transport', () => {
       return eventStream([{ type: 'log.synced', aggregateID: 'session-1' }])
     })
 
-    await expect(transport.readSessionLog('session-1', 4)).resolves.toMatchObject({
+    await expect(transport.readSessionLog('session-1', 4)).resolves.toEqual({
       events: [],
       cursor: 4,
       coverageComplete: false,
@@ -236,6 +289,7 @@ describe('OpenCode v2 fetch transport', () => {
           { type: 'log.synced', aggregateID: 'session-1', seq: 8 },
         ])
       }
+      if (request.url.pathname === '/api/session/session-1/permission') return jsonResponse({ data: [] })
       if (request.url.pathname.endsWith('/instructions/entries/looptroop')) return emptyResponse()
       if (request.url.pathname.endsWith('/prompt')) return jsonResponse({ data: { id: 'inbox-1' } })
       throw new Error(`Unexpected ${request.method} ${request.url}`)
@@ -253,8 +307,10 @@ describe('OpenCode v2 fetch transport', () => {
     while (true) {
       const next = await iterator.next()
       if (next.done) break
-      received.push(next.value.event.type)
-      if (next.value.event.type === 'execution_terminal') break
+      const event = next.value.event
+      if (!event) continue
+      received.push(event.type)
+      if (event.type === 'execution_terminal') break
     }
     await iterator.return?.(undefined)
 
@@ -268,9 +324,64 @@ describe('OpenCode v2 fetch transport', () => {
     expect(reconnectEventIndex).toBeLessThan(replayLogIndex)
   })
 
+  it('fetches lost ephemeral permission asks before final replay and yields them after covered competitors', async () => {
+    let initialLogRead = true
+    let startPermissionList!: () => void
+    const permissionListStarted = new Promise<void>(resolve => { startPermissionList = resolve })
+    let finishPermissionList!: () => void
+    const permissionListGate = new Promise<void>(resolve => { finishPermissionList = resolve })
+    let competitorEnqueuedDuringPermissionList = false
+    const { transport, requests } = createTransport(async request => {
+      if (request.url.pathname === '/api/event') return eventStream([{ type: 'server.connected' }])
+      if (request.url.pathname === '/api/session/session-1/permission') {
+        startPermissionList()
+        await permissionListGate
+        return jsonResponse({ data: [{
+          id: 'per-1',
+          sessionID: 'session-1',
+          action: 'read',
+          resources: ['/workspace/file.ts'],
+          message: 'Read file.ts',
+        }] })
+      }
+      if (request.url.pathname.endsWith('/log')) {
+        if (initialLogRead) {
+          initialLogRead = false
+          return eventStream([{ type: 'log.synced', aggregateID: 'session-1', seq: 4 }])
+        }
+        expect(request.url.searchParams.get('after')).toBe('4')
+        expect(competitorEnqueuedDuringPermissionList).toBe(true)
+        return eventStream([
+          { type: 'session.inbox.enqueued', data: { sessionID: 'session-1', inboxID: 'inbox-external' }, durable: { aggregateID: 'session-1', seq: 5 } },
+          { type: 'session.execution.started', data: { sessionID: 'session-1' }, durable: { aggregateID: 'session-1', seq: 6 } },
+          { type: 'log.synced', aggregateID: 'session-1', seq: 6 },
+        ])
+      }
+      throw new Error(`Unexpected ${request.method} ${request.url}`)
+    })
+
+    const subscription = await transport.subscribeToEvents('session-1', '/workspace')
+    const iterator = subscription.events[Symbol.asyncIterator]()
+    const first = iterator.next()
+    await permissionListStarted
+    competitorEnqueuedDuringPermissionList = true
+    finishPermissionList()
+    const received = [await first, await iterator.next(), await iterator.next()]
+    await iterator.return?.(undefined)
+
+    expect(received.map(next => next.value)).toEqual([
+      { cursor: 5, event: { type: 'inbox_enqueued', sessionId: 'session-1', inboxID: 'inbox-external' } },
+      { cursor: 6, event: { type: 'execution_started', sessionId: 'session-1' } },
+      { event: { type: 'permission', sessionId: 'session-1', action: 'asked', permissionId: 'per-1', permission: 'read', patterns: ['/workspace/file.ts'], details: { message: 'Read file.ts' } } },
+    ])
+    const replayLogIndex = requests.findIndex(request => request.url.pathname.endsWith('/log') && request.url.searchParams.get('after') === '4')
+    const permissionListIndex = requests.findIndex(request => request.url.pathname === '/api/session/session-1/permission')
+    expect(permissionListIndex).toBeLessThan(replayLogIndex)
+  })
+
   it('keeps reconnect history gaps sticky on later live events', async () => {
     let eventConnections = 0
-    const { transport } = createTransport(request => {
+    const { transport, requests } = createTransport(request => {
       if (request.url.pathname === '/api/event') {
         eventConnections += 1
         return eventConnections < 3
@@ -290,6 +401,14 @@ describe('OpenCode v2 fetch transport', () => {
           ? eventStream([{ type: 'log.synced', aggregateID: 'session-1', seq: 6 }])
           : eventStream([{ type: 'log.synced', aggregateID: 'session-1', seq: after === '6' ? 6 : 4 }])
       }
+      if (request.url.pathname === '/api/session/session-1/permission') {
+        return jsonResponse({ data: [{
+          id: 'per-1',
+          sessionID: 'session-1',
+          action: 'read',
+          resources: ['/workspace/file.ts'],
+        }] })
+      }
       throw new Error(`Unexpected ${request.method} ${request.url}`)
     })
 
@@ -306,6 +425,7 @@ describe('OpenCode v2 fetch transport', () => {
       },
     })
     await iterator.return?.(undefined)
+    expect(requests.some(request => request.url.pathname === '/api/session/session-1/permission')).toBe(true)
   })
 
   it('marks session history incomplete when a durable event cannot be mapped', async () => {
@@ -318,29 +438,113 @@ describe('OpenCode v2 fetch transport', () => {
             durable: { aggregateID: 'session-1', seq: 5 },
           },
           {
+            type: 'session.instructions.updated',
+            data: { sessionID: 'session-1', delta: {} },
+            durable: { aggregateID: 'session-1', seq: 6 },
+          },
+          {
             type: 'session.future.event',
             data: { sessionID: 'session-1' },
-            durable: { aggregateID: 'session-1', seq: 6 },
+            durable: { aggregateID: 'session-1', seq: 7 },
           },
           {
             type: 'session.execution.succeeded',
             data: { sessionID: 'session-1' },
-            durable: { aggregateID: 'session-1', seq: 7 },
+            durable: { aggregateID: 'session-1', seq: 8 },
           },
-          { type: 'log.synced', aggregateID: 'session-1', seq: 7 },
+          { type: 'log.synced', aggregateID: 'session-1', seq: 8 },
         ])
       }
       throw new Error(`Unexpected ${request.method} ${request.url}`)
     })
 
     await expect(transport.readSessionLog('session-1', 4)).resolves.toMatchObject({
-      cursor: 7,
+      cursor: 8,
       coverageComplete: false,
       events: [
         { cursor: 5, event: { type: 'inbox_enqueued' } },
-        { cursor: 7, event: { type: 'execution_terminal' } },
+        { cursor: 6 },
+        { cursor: 8, event: { type: 'execution_terminal' } },
       ],
     })
+  })
+
+  it('marks every initial backlog event when the initial log scan is incomplete', async () => {
+    const { transport } = createTransport(request => {
+      if (request.url.pathname === '/api/event') return eventStream([{ type: 'server.connected' }])
+      if (request.url.pathname.endsWith('/log')) {
+        return eventStream([
+          {
+            type: 'session.inbox.enqueued',
+            data: { sessionID: 'session-1', inboxID: 'inbox-1' },
+            durable: { aggregateID: 'session-1', seq: 5 },
+          },
+          {
+            type: 'session.future.event',
+            data: { sessionID: 'session-1' },
+            durable: { aggregateID: 'session-1', seq: 7 },
+          },
+          {
+            type: 'session.execution.succeeded',
+            data: { sessionID: 'session-1' },
+            durable: { aggregateID: 'session-1', seq: 8 },
+          },
+          { type: 'log.synced', aggregateID: 'session-1', seq: 8 },
+        ])
+      }
+      throw new Error(`Unexpected ${request.method} ${request.url}`)
+    })
+
+    const subscription = await transport.subscribeToEvents('session-1', '/workspace')
+    expect(subscription.coverageComplete).toBe(false)
+    const iterator = subscription.events[Symbol.asyncIterator]()
+    const events = [await iterator.next(), await iterator.next()]
+    await iterator.return?.(undefined)
+
+    expect(events.map(next => next.value)).toEqual([
+      { cursor: 5, coverageGap: true, event: { type: 'inbox_enqueued', sessionId: 'session-1', inboxID: 'inbox-1' } },
+      { cursor: 8, coverageGap: true, event: { type: 'execution_terminal', sessionId: 'session-1', outcome: 'succeeded' } },
+    ])
+  })
+
+  it.each([
+    {
+      cause: 'a missing durable sequence',
+      logEvents: [
+        { type: 'session.inbox.enqueued', data: { sessionID: 'session-1', inboxID: 'inbox-own' }, durable: { aggregateID: 'session-1', seq: 5 } },
+        { type: 'session.inbox.delivered', data: { sessionID: 'session-1', inboxID: 'inbox-own' }, durable: { aggregateID: 'session-1', seq: 7 } },
+        { type: 'session.execution.succeeded', data: { sessionID: 'session-1' }, durable: { aggregateID: 'session-1', seq: 8 } },
+      ],
+    },
+    {
+      cause: 'an unknown durable event',
+      logEvents: [
+        { type: 'session.inbox.enqueued', data: { sessionID: 'session-1', inboxID: 'inbox-own' }, durable: { aggregateID: 'session-1', seq: 5 } },
+        { type: 'session.future.event', data: { sessionID: 'session-1' }, durable: { aggregateID: 'session-1', seq: 6 } },
+        { type: 'session.inbox.delivered', data: { sessionID: 'session-1', inboxID: 'inbox-own' }, durable: { aggregateID: 'session-1', seq: 7 } },
+        { type: 'session.execution.succeeded', data: { sessionID: 'session-1' }, durable: { aggregateID: 'session-1', seq: 8 } },
+      ],
+    },
+  ])('never certifies delivery and success after $cause in an after-cursor scan', async ({ logEvents }) => {
+    const { transport } = createTransport(request => {
+      if (request.url.pathname === '/api/event') return eventStream([{ type: 'server.connected' }])
+      if (request.url.pathname.endsWith('/log')) {
+        return eventStream([
+          ...logEvents,
+          { type: 'log.synced', aggregateID: 'session-1', seq: 8 },
+        ])
+      }
+      throw new Error(`Unexpected ${request.method} ${request.url}`)
+    })
+
+    const subscription = await transport.subscribeToEvents('session-1', '/workspace', undefined, undefined, 4)
+    expect(subscription.coverageComplete).toBe(false)
+    const iterator = subscription.events[Symbol.asyncIterator]()
+    const events = [await iterator.next(), await iterator.next(), await iterator.next()]
+    await iterator.return?.(undefined)
+
+    expect(events.map(next => next.value?.coverageGap)).toEqual([true, true, true])
+    expect(events.map(next => next.value?.event?.type)).toEqual(['inbox_enqueued', 'inbox_delivered', 'execution_terminal'])
   })
 
   it('maps session, message pages, and health responses from v2 envelopes', async () => {
@@ -348,27 +552,99 @@ describe('OpenCode v2 fetch transport', () => {
       if (request.url.pathname === '/api/session' && request.method === 'POST') {
         return jsonResponse({ data: { id: 'session-1', slug: 'work', title: 'Review', location: { directory: '/workspace' }, time: { created: 1_700_000_000_000, updated: 1_700_000_001_000 } } })
       }
+      if (request.url.pathname === '/api/session' && request.method === 'GET') {
+        const id = request.url.searchParams.has('cursor') ? 'session-2' : 'session-1'
+        return jsonResponse({ data: [{ id, location: { directory: '/workspace' } }], cursor: id === 'session-1' ? { next: 'sessions-2' } : {} })
+      }
       if (request.url.pathname === '/api/session/session-1/message') {
         if (request.url.searchParams.has('cursor')) {
-          return jsonResponse({ data: [{ id: 'assistant-1', type: 'assistant', sessionID: 'session-1', content: [{ type: 'text', text: 'Done.' }], finish: 'stop' }], cursor: {} })
+          return jsonResponse({ data: [{ id: 'user-1', type: 'user', text: 'Review' }], cursor: {} })
         }
-        return jsonResponse({ data: [{ id: 'user-1', type: 'user', text: 'Review' }], cursor: { next: 'page-2' } })
+        return jsonResponse({ data: [{ id: 'assistant-1', type: 'assistant', sessionID: 'session-1', content: [{ type: 'text', text: 'Done.' }], finish: 'stop' }], cursor: { next: 'page-2' } })
       }
       if (request.url.pathname === '/api/info') return jsonResponse({ version: '2.0.15', pid: 1, urls: [], paths: { tmp: '/tmp' } })
       throw new Error(`Unexpected ${request.method} ${request.url}`)
     })
 
     const session = await transport.createSession('/workspace')
+    const sessions = await transport.listSessions()
     const messages = await transport.getSessionMessages('session-1')
     const health = await transport.checkHealth()
 
     expect(session).toMatchObject({ id: 'session-1', projectPath: '/workspace', directory: '/workspace', title: 'Review' })
+    expect(sessions.map(value => value.id)).toEqual(['session-1', 'session-2'])
     expect(messages.map(message => [message.id, message.role])).toEqual([['user-1', 'user'], ['assistant-1', 'assistant']])
     expect(messages[1]?.parts).toContainEqual(expect.objectContaining({ type: 'step-finish', reason: 'stop' }))
-    expect(health).toEqual({ available: true, protocol: 'v2', version: '2.0.15' })
+    expect(health).toEqual({
+      available: true,
+      protocol: 'v2',
+      version: '2.0.15',
+      models: [
+        'anthropic/claude-sonnet-4',
+        'google/gemini-2.5-pro',
+        'openai/codex-mini-latest',
+        'openai/gpt-5.3-codex',
+      ],
+    })
     expect(requests[0]?.body).toEqual({ location: { directory: '/workspace' } })
-    expect(requests[1]?.url.searchParams.get('order')).toBe('asc')
-    expect(requests[2]?.url.searchParams.get('cursor')).toBe('page-2')
+    expect(requests[1]?.url.searchParams.get('order')).toBe('desc')
+    expect(requests[2]?.url.searchParams.get('cursor')).toBe('sessions-2')
+    expect(requests[2]?.url.searchParams.has('order')).toBe(false)
+    expect(requests[3]?.url.searchParams.get('order')).toBe('desc')
+    expect(requests[4]?.url.searchParams.get('cursor')).toBe('page-2')
+    expect(requests[4]?.url.searchParams.has('order')).toBe(false)
+  })
+
+  it('uses manual redirects and classifies forbidden health responses as authentication failures', async () => {
+    const redirected = createTransport(() => new Response(null, {
+      status: 302,
+      headers: { location: 'https://other.example/session' },
+    }))
+    await expect(redirected.transport.getSession('session-1')).rejects.toMatchObject({ status: 302 })
+    expect(redirected.requests).toHaveLength(1)
+    expect(redirected.requests[0]?.redirect).toBe('manual')
+
+    const forbidden = createTransport(() => jsonResponse({ message: 'forbidden' }, 403))
+    await expect(forbidden.transport.checkHealth()).resolves.toMatchObject({
+      available: false,
+      failureKind: 'authentication',
+    })
+    expect(forbidden.requests[0]?.redirect).toBe('manual')
+
+    const eventRedirect = createTransport(() => new Response(null, {
+      status: 302,
+      headers: { location: 'https://other.example/events' },
+    }))
+    await expect(eventRedirect.transport.subscribeToEvents('session-1', '/workspace')).rejects.toMatchObject({ status: 302 })
+    expect(eventRedirect.requests).toHaveLength(1)
+    expect(eventRedirect.requests[0]?.redirect).toBe('manual')
+  })
+
+  it('classifies a forbidden provider catalog as an authentication health failure', async () => {
+    vi.stubEnv('LOOPTROOP_OPENCODE_MODE', 'live')
+    vi.stubEnv('LOOPTROOP_OPENCODE_BASE_URL', 'http://127.0.0.1:4096')
+    invalidateOpenCodeConnection()
+    vi.stubGlobal('fetch', async (input: RequestInfo | URL) => {
+      const url = input instanceof Request ? new URL(input.url) : new URL(String(input))
+      if (url.pathname === '/api/info') return jsonResponse({ version: '2.0.16', pid: 1 })
+      return jsonResponse({ message: 'forbidden' }, 403)
+    })
+    try {
+      const { transport } = createTransport(request => request.url.pathname === '/api/info'
+        ? jsonResponse({ version: '2.0.16', pid: 1 })
+        : jsonResponse({ message: 'forbidden' }, 403))
+
+      await expect(transport.checkHealth()).resolves.toMatchObject({
+        available: false,
+        protocol: 'v2',
+        version: '2.0.16',
+        failureKind: 'authentication',
+      })
+    } finally {
+      vi.unstubAllGlobals()
+      vi.unstubAllEnvs()
+      invalidateOpenCodeConnection()
+    }
   })
 
   it('updates v2 permission rules and confirms an interrupt only after the server is idle', async () => {
@@ -402,6 +678,7 @@ describe('OpenCode v2 fetch transport', () => {
       fields: [{ key: 'q0', type: 'string', title: 'Target', options: [{ label: 'Production', value: 'prod' }] }],
     }
     const { transport, requests } = createTransport(request => {
+      if (request.url.pathname === '/api/form') return jsonResponse({ data: [form] })
       if (request.url.pathname.endsWith('/form') && request.method === 'GET') return jsonResponse({ data: [form] })
       if (request.url.pathname.endsWith('/form/form-1') && request.method === 'GET') return jsonResponse({ data: form })
       if (request.url.pathname.endsWith('/form/form-1/reply')) return emptyResponse()
@@ -410,6 +687,8 @@ describe('OpenCode v2 fetch transport', () => {
       throw new Error(`Unexpected ${request.method} ${request.url}`)
     })
 
+    await expect(transport.listPendingQuestions('/project-root', undefined, '/workspace'))
+      .resolves.toMatchObject([{ id: 'form-1', sessionID: 'session-1' }])
     await expect(transport.listPendingQuestions(undefined, 'session-1'))
       .resolves.toMatchObject([{ id: 'form-1', sessionID: 'session-1', questions: [{ options: [{ label: 'Production', value: 'prod' }] }] }])
     await transport.replyQuestion('session-1', 'form-1', [['prod']], '/workspace')
@@ -417,6 +696,7 @@ describe('OpenCode v2 fetch transport', () => {
     await transport.replyPermission('session-1', 'permission-1', 'always', '/workspace')
 
     expect(requests.map(request => `${request.method} ${request.url.pathname}`)).toEqual([
+      'GET /api/form',
       'GET /api/session/session-1/form',
       'GET /api/session/session-1/form/form-1',
       'POST /api/session/session-1/form/form-1/reply',
@@ -424,8 +704,9 @@ describe('OpenCode v2 fetch transport', () => {
       'DELETE /api/session/session-1/form/form-1',
       'POST /api/session/session-1/permission/permission-1/reply',
     ])
-    expect(requests[2]?.body).toEqual({ answer: { q0: 'prod' } })
-    expect(requests[5]?.body).toEqual({ decision: 'always' })
+    expect(requests[0]?.url.searchParams.get('location[directory]')).toBe('/workspace')
+    expect(requests[3]?.body).toEqual({ answer: { q0: 'prod' } })
+    expect(requests[6]?.body).toEqual({ decision: 'always' })
   })
 
   it('returns null only for the exact tagged session-not-found response', async () => {
@@ -450,5 +731,89 @@ describe('OpenCode v2 fetch transport', () => {
     const { transport, requests } = createTransport((_request, init) => Promise.reject(init.signal?.reason))
     await expect(transport.getSession('session-1', controller.signal)).rejects.toBe(reason)
     expect(requests).toHaveLength(1)
+  })
+
+  it('allows cold session creation longer than the standard request budget', async () => {
+    vi.useFakeTimers()
+    try {
+      let requestSignal: AbortSignal | null | undefined
+      const { transport } = createTransport((_request, init) => new Promise<Response>((_resolve, reject) => {
+        requestSignal = init.signal
+        init.signal?.addEventListener('abort', () => reject(init.signal?.reason), { once: true })
+      }))
+      const creation = transport.createSession('/workspace')
+      const creationResult = expect(creation).rejects.toMatchObject({ name: 'TimeoutError' })
+
+      await vi.advanceTimersByTimeAsync(120_000)
+      expect(requestSignal?.aborted).toBe(false)
+      await vi.advanceTimersByTimeAsync(60_000)
+      await creationResult
+    } finally {
+      vi.useRealTimers()
+    }
+  })
+
+  it('keeps connect, first-event, and log-watermark deadlines with caller signals', async () => {
+    vi.useFakeTimers()
+    try {
+      const controller = new AbortController()
+      const connecting = createTransport((_request, init) => new Promise<Response>((_resolve, reject) => {
+        init.signal?.addEventListener('abort', () => reject(init.signal?.reason), { once: true })
+      }))
+      const open = connecting.transport.subscribeToEvents('session-1', '/workspace', controller.signal)
+      const openResult = expect(open).rejects.toMatchObject({ name: 'TimeoutError' })
+      await vi.advanceTimersByTimeAsync(5_000)
+      await openResult
+
+      const waitingForFirstEvent = createTransport((request, init) => {
+        if (request.url.pathname === '/api/event') return hangingEventStream(init.signal)
+        throw new Error(`Unexpected ${request.method} ${request.url}`)
+      })
+      const firstEvent = waitingForFirstEvent.transport.subscribeToEvents('session-1', '/workspace', new AbortController().signal)
+      const firstEventResult = expect(firstEvent).rejects.toMatchObject({ name: 'TimeoutError' })
+      await vi.advanceTimersByTimeAsync(5_000)
+      await firstEventResult
+
+      const waitingForWatermark = createTransport((request, init) => {
+        if (request.url.pathname === '/api/event') return eventStream([{ type: 'server.connected' }])
+        if (request.url.pathname.endsWith('/log')) return hangingEventStream(init.signal)
+        throw new Error(`Unexpected ${request.method} ${request.url}`)
+      })
+      const logSync = waitingForWatermark.transport.subscribeToEvents('session-1', '/workspace', new AbortController().signal)
+      const logSyncResult = expect(logSync).rejects.toMatchObject({ name: 'TimeoutError' })
+      await vi.advanceTimersByTimeAsync(30_000)
+      await logSyncResult
+    } finally {
+      vi.useRealTimers()
+    }
+  })
+
+  it('keeps the bounded idle deadline when the caller also supplies a signal', async () => {
+    vi.useFakeTimers()
+    try {
+      const caller = new AbortController()
+      let requestSignal: AbortSignal | null | undefined
+      const { transport } = createTransport((_request, init) => new Promise<Response>((_resolve, reject) => {
+        requestSignal = init.signal
+        init.signal?.addEventListener('abort', () => reject(init.signal?.reason), { once: true })
+      }))
+      const idle = transport.waitForIdle('session-1', '/workspace', caller.signal)
+      const idleResult = expect(idle).rejects.toMatchObject({ name: 'TimeoutError' })
+
+      await vi.advanceTimersByTimeAsync(60_000)
+      await idleResult
+      expect(requestSignal?.aborted).toBe(true)
+      expect(caller.signal.aborted).toBe(false)
+
+      const cancelled = new AbortController()
+      const cancellationTransport = createTransport((_request, init) => new Promise<Response>((_resolve, reject) => {
+        init.signal?.addEventListener('abort', () => reject(init.signal?.reason), { once: true })
+      }))
+      const cancelledIdle = cancellationTransport.transport.waitForIdle('session-1', '/workspace', cancelled.signal)
+      cancelled.abort()
+      await expect(cancelledIdle).rejects.toMatchObject({ name: 'AbortError' })
+    } finally {
+      vi.useRealTimers()
+    }
   })
 })

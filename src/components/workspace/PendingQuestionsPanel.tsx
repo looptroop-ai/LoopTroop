@@ -411,8 +411,8 @@ export function PendingQuestionsPanel({ ticketId }: { ticketId: string }) {
  * Radio buttons, checkboxes and free text, per what the model asked for.
  *
  * Options are keyed by index rather than by label because a model can repeat a
- * label across a batch, and the submitted answer is the selected labels *plus*
- * the free text — not free text replacing the selection.
+ * label across a batch. Multiple-choice answers combine selected options and
+ * free text; for single choice, free text replaces the selected option.
  *
  * The free text is held here rather than derived back out of `value`. Deriving
  * it meant round-tripping every keystroke through a trim, which deleted the
@@ -441,7 +441,7 @@ function QuestionAnswerInput({
     () => new Set(question.options.map((option) => option.value ?? option.label)),
     [question.options],
   )
-  const selected = value.filter((entry) => optionValues.has(entry))
+  const [selected, setSelected] = useState(() => value.filter((entry) => optionValues.has(entry)))
   // Seeded once. The component is remounted per question by its `key`, so a
   // draft restored from `value` is picked up on mount and never fought over.
   const [custom, setCustom] = useState(
@@ -457,7 +457,10 @@ function QuestionAnswerInput({
     const next = multiple
       ? (selected.includes(answerValue) ? selected.filter((entry) => entry !== answerValue) : [...selected, answerValue])
       : (selected.includes(answerValue) ? [] : [answerValue])
-    emit(next, custom)
+    const nextCustom = multiple ? custom : ''
+    setSelected(next)
+    setCustom(nextCustom)
+    emit(next, nextCustom)
   }
 
   return (
@@ -515,7 +518,9 @@ function QuestionAnswerInput({
       {allowsCustom && (
         <label className="block space-y-1 text-sm">
           <span className="text-xs font-medium text-muted-foreground">
-            {question.options.length > 0 ? 'Anything to add (optional)' : 'Your answer'}
+            {question.options.length > 0
+              ? multiple ? 'Anything to add (optional)' : 'Or enter your answer'
+              : 'Your answer'}
           </span>
           <textarea
             value={custom}
@@ -523,7 +528,8 @@ function QuestionAnswerInput({
             onFocus={onEngage}
             onChange={(event) => {
               setCustom(event.target.value)
-              emit(selected, event.target.value)
+              if (!multiple) setSelected([])
+              emit(multiple ? selected : [], event.target.value)
             }}
             rows={2}
             className="w-full resize-none rounded-md border border-input bg-background px-3 py-2 text-sm text-foreground outline-none focus:ring-1 focus:ring-ring"

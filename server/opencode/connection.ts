@@ -44,7 +44,9 @@ function cacheIdentity(baseUrl: string, auth: ReturnType<typeof credentials>) {
     throw new OpenCodeConnectionError('unsupported_protocol', 'OpenCode base URL must use HTTP or HTTPS.')
   }
   const origin = parsed.origin
-  const base = `${origin}${parsed.pathname.replace(/\/+$/, '')}`
+  let pathEnd = parsed.pathname.length
+  while (pathEnd > 0 && parsed.pathname[pathEnd - 1] === '/') pathEnd -= 1
+  const base = `${origin}${parsed.pathname.slice(0, pathEnd)}`
   // Hash the exact wire credentials so cache identity follows protocol-specific
   // normalization (including v2 passwords that intentionally preserve spaces).
   const fingerprint = createHash('sha256').update(JSON.stringify({ v1: auth.v1, v2: auth.v2 })).digest('hex')
@@ -169,8 +171,17 @@ async function probe(base: string, auth: ReturnType<typeof credentials>, signal?
   const v2 = await request(`${base}/api/info`, auth.v2, signal)
   if (v2.status === 401 || v2.status === 403) {
     // A v1 server may authenticate before routing and reject v2's fixed-user
-    // attempt. Only the distinct, v1-compatible credentials may establish it.
-    if (auth.v1 && auth.v1 !== auth.v2) return probeV1(base, auth.v1, signal, v2)
+    // attempt. Probe its health route even when both protocol headers match.
+    if (auth.v1) {
+      try {
+        return await probeV1(base, auth.v1, signal, v2)
+      } catch (error) {
+        if (error instanceof OpenCodeConnectionError && error.failureKind === 'unsupported_protocol') {
+          throw authFailure(v2)
+        }
+        throw error
+      }
+    }
     throw authFailure(v2)
   }
   if (v2.status >= 300 && v2.status < 400) {

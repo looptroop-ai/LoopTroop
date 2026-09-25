@@ -191,20 +191,20 @@ export class OpenCodeSDKAdapter implements OpenCodeAdapter {
     if (this.transport) return this.transport
     if (!this.transportInitialization) {
       const generation = this.transportGeneration
-      const initialization = this.createTransport(signal)
+      const initialization = this.createTransport()
       this.transportInitialization = initialization
-      try {
-        const transport = await initialization
-        if (generation === this.transportGeneration && this.transportInitialization === initialization) {
-          this.transport = transport
-        }
-        return transport
-      } catch (error) {
-        if (this.transportInitialization === initialization) this.transportInitialization = undefined
-        throw error
-      }
+      void initialization.then(
+        transport => {
+          if (generation === this.transportGeneration && this.transportInitialization === initialization) {
+            this.transport = transport
+          }
+        },
+        () => {
+          if (this.transportInitialization === initialization) this.transportInitialization = undefined
+        },
+      )
     }
-    return await this.transportInitialization
+    return await this.raceWithSignal(this.transportInitialization, signal)
   }
 
   /** Re-resolve the protocol for future calls after an owned server restart. */
@@ -214,11 +214,11 @@ export class OpenCodeSDKAdapter implements OpenCodeAdapter {
     this.transportInitialization = undefined
   }
 
-  private async createTransport(signal?: AbortSignal): Promise<OpenCodeTransport> {
+  private async createTransport(): Promise<OpenCodeTransport> {
     if (this.injectedV1Client) return new OpenCodeV1Transport(this.baseUrl, this.injectedV1Client)
-    if (this.transportResolver) return this.transportResolver(this.baseUrl, signal)
+    if (this.transportResolver) return this.transportResolver(this.baseUrl)
     const { getOpenCodeConnection } = await import('./connection')
-    const connection = await getOpenCodeConnection(this.baseUrl, signal)
+    const connection = await getOpenCodeConnection(this.baseUrl)
     if (connection.protocol === 'v2') {
       const { V2OpenCodeTransport } = await import('./v2Transport')
       return new V2OpenCodeTransport(this.baseUrl, { headers: connection.headers })
@@ -276,14 +276,29 @@ export class OpenCodeSDKAdapter implements OpenCodeAdapter {
       ? AbortSignal.any([operationSignal, dispatchAbortController.signal])
       : dispatchAbortController.signal
     let streamDrain: Promise<{ ended: boolean; error?: unknown }> | undefined
+    let streamDrainWaited = false
     let permissionReplyFailure: Error | null = null
     let permissionReplyPending: Promise<void> | undefined
 
     try {
       const transport = await this.getTransport(operationSignal)
       const directory = await this.resolveSessionDirectory(sessionId, operationSignal, transport)
+      let bootstrapCursor: number | undefined
+      if (transport.protocol === 'v2') {
+        let history: OpenCodeSessionLog
+        try {
+          history = await transport.readSessionLog(sessionId, undefined, operationSignal)
+        } catch (error) {
+          if (operationSignal?.aborted || isAbortError(error)) throw error
+          throw new Error(`OpenCode v2 history is unavailable; cannot establish a safe cursor before waiting for the session: ${getErrorMessage(error)}`)
+        }
+        if (typeof history.cursor !== 'number' || !Number.isSafeInteger(history.cursor)) {
+          throw new Error('OpenCode v2 history is unavailable; cannot establish a safe cursor before waiting for the session')
+        }
+        bootstrapCursor = history.cursor
+      }
       await transport.waitForIdle(sessionId, directory, operationSignal)
-      if (promptOptions.permission) {
+      if (promptOptions.permission && transport.protocol === 'v1') {
         try {
           await transport.updateSession(sessionId, directory, { permission: promptOptions.permission }, operationSignal)
         } catch (error) {
@@ -300,7 +315,15 @@ export class OpenCodeSDKAdapter implements OpenCodeAdapter {
         directory,
         streamSignal,
         promptOptions.stepFinishSafetyMs,
+        bootstrapCursor,
       )
+      if (transport.protocol === 'v2' && (
+        typeof subscription.cursor !== 'number'
+        || !Number.isSafeInteger(subscription.cursor)
+        || subscription.coverageComplete === false
+      )) {
+        throw new Error('OpenCode v2 history is unavailable or incomplete; refusing to dispatch without a certifiable event cursor')
+      }
       const baselineMessages = transport.protocol === 'v2'
         ? await transport.getSessionMessages(sessionId, directory, operationSignal)
         : []
@@ -356,8 +379,12 @@ export class OpenCodeSDKAdapter implements OpenCodeAdapter {
       const lifecycle = {
         enqueued: new Set<string>(),
         delivered: new Set<string>(),
-        started: false,
+        eventOrder: 0,
+        enqueuedOrder: new Map<string, number>(),
+        deliveredOrder: new Map<string, number>(),
+        startedOrder: undefined as number | undefined,
         terminal: undefined as Extract<OpenCodeTransportEvent, { type: 'execution_terminal' }> | undefined,
+        terminalOrder: undefined as number | undefined,
         receiptID: undefined as string | undefined,
         failure: undefined as string | undefined,
         resolve: undefined as ((value: { kind: 'complete'; terminal: Extract<OpenCodeTransportEvent, { type: 'execution_terminal' }> } | { kind: 'conflict'; error: string }) => void) | undefined,
@@ -380,12 +407,58 @@ export class OpenCodeSDKAdapter implements OpenCodeAdapter {
             finishLifecycle({ kind: 'conflict', error: lifecycle.failure })
             return
           }
-          if (lifecycle.delivered.has(lifecycle.receiptID) && lifecycle.started && lifecycle.terminal) {
+          const enqueuedOrder = lifecycle.enqueuedOrder.get(lifecycle.receiptID)
+          const deliveredOrder = lifecycle.deliveredOrder.get(lifecycle.receiptID)
+          if (
+            lifecycle.terminal
+            && enqueuedOrder !== undefined
+            && deliveredOrder !== undefined
+            && lifecycle.startedOrder !== undefined
+            && lifecycle.terminalOrder !== undefined
+            && lifecycle.startedOrder > enqueuedOrder
+            && deliveredOrder > enqueuedOrder
+            && lifecycle.terminalOrder > deliveredOrder
+          ) {
             finishLifecycle({ kind: 'complete', terminal: lifecycle.terminal })
           }
         }
       }
       const handledPermissionIds = new Set<string>()
+      const pendingPermissionEvents = new Map<string, { event: StreamEvent; order: number }>()
+      const replyToPermission = async (streamEvent: StreamEvent) => {
+        if (streamEvent.type !== 'permission' || !streamEvent.permissionId || handledPermissionIds.has(streamEvent.permissionId)) return
+        handledPermissionIds.add(streamEvent.permissionId)
+        const deniedByPolicy = isPermissionDeniedByRules(promptOptions.permission, streamEvent.permission)
+        permissionReplyPending = transport.replyPermission(
+          sessionId,
+          streamEvent.permissionId,
+          deniedByPolicy ? 'reject' : 'always',
+          directory,
+          operationSignal,
+        ).catch(async (error) => {
+          permissionReplyFailure = new Error(
+            `Failed to ${deniedByPolicy ? 'reject' : 'auto-approve'} OpenCode permission ${streamEvent.permission ?? streamEvent.permissionId}: ${getErrorMessage(error)}`,
+          )
+          lifecycle.failure = permissionReplyFailure.message
+          finishLifecycle({ kind: 'conflict', error: permissionReplyFailure.message })
+          dispatchAbortController.abort()
+          await transport.interruptSession(sessionId, directory).catch(() => false)
+          throw permissionReplyFailure
+        })
+        await permissionReplyPending
+      }
+      const reconcilePendingPermissionEvents = async () => {
+        if (transport.protocol !== 'v2' || !lifecycle.receiptID || lifecycle.failure || lifecycle.settled) return
+        checkLifecycle()
+        if (lifecycle.failure || lifecycle.settled) return
+        const enqueuedOrder = lifecycle.enqueuedOrder.get(lifecycle.receiptID)
+        if (enqueuedOrder === undefined) return
+        for (const [permissionId, pending] of pendingPermissionEvents) {
+          if (lifecycle.failure || lifecycle.settled) return
+          pendingPermissionEvents.delete(permissionId)
+          if (pending.order > enqueuedOrder) await replyToPermission(pending.event)
+        }
+      }
       const observeEnvelope = async (envelope: OpenCodeTransportEventEnvelope) => {
         if (transport.protocol === 'v2' && envelope.coverageGap) {
           lifecycle.failure = 'OpenCode v2 event history has an unaccounted durable sequence gap; the response cannot be attributed safely.'
@@ -395,11 +468,20 @@ export class OpenCodeSDKAdapter implements OpenCodeAdapter {
         if (typeof envelope.cursor === 'number' && (lastCursor === undefined || envelope.cursor > lastCursor)) {
           lastCursor = envelope.cursor
         }
+        if (!envelope.event) return
         const event = envelope.event
-        if (event.type === 'inbox_enqueued') lifecycle.enqueued.add(event.inboxID)
-        else if (event.type === 'inbox_delivered') lifecycle.delivered.add(event.inboxID)
-        else if (event.type === 'execution_started') lifecycle.started = true
-        else if (event.type === 'execution_terminal') lifecycle.terminal = event
+        const eventOrder = ++lifecycle.eventOrder
+        if (event.type === 'inbox_enqueued') {
+          lifecycle.enqueued.add(event.inboxID)
+          lifecycle.enqueuedOrder.set(event.inboxID, eventOrder)
+        } else if (event.type === 'inbox_delivered') {
+          lifecycle.delivered.add(event.inboxID)
+          lifecycle.deliveredOrder.set(event.inboxID, eventOrder)
+        } else if (event.type === 'execution_started') lifecycle.startedOrder = eventOrder
+        else if (event.type === 'execution_terminal') {
+          lifecycle.terminal = event
+          lifecycle.terminalOrder = eventOrder
+        }
         else {
           const streamEvent = event as StreamEvent
           rememberStreamText(streamEvent)
@@ -424,26 +506,15 @@ export class OpenCodeSDKAdapter implements OpenCodeAdapter {
             && streamEvent.permissionId
             && !handledPermissionIds.has(streamEvent.permissionId)
           ) {
-            handledPermissionIds.add(streamEvent.permissionId)
-            const deniedByPolicy = isPermissionDeniedByRules(promptOptions.permission, streamEvent.permission)
-            permissionReplyPending = transport.replyPermission(
-                sessionId,
-                streamEvent.permissionId,
-                deniedByPolicy ? 'reject' : 'always',
-                directory,
-                operationSignal,
-              ).catch(async (error) => {
-              permissionReplyFailure = new Error(
-                `Failed to ${deniedByPolicy ? 'reject' : 'auto-approve'} OpenCode permission ${streamEvent.permission ?? streamEvent.permissionId}: ${getErrorMessage(error)}`,
-              )
-              dispatchAbortController.abort()
-              await transport.interruptSession(sessionId, directory).catch(() => false)
-              throw permissionReplyFailure
-              })
-            await permissionReplyPending
+            if (transport.protocol === 'v2') {
+              pendingPermissionEvents.set(streamEvent.permissionId, { event: streamEvent, order: eventOrder })
+            } else {
+              await replyToPermission(streamEvent)
+            }
           }
         }
         checkLifecycle()
+        await reconcilePendingPermissionEvents()
       }
 
       const reconcileAcceptedPromptAfterSnapshot = async () => {
@@ -451,7 +522,7 @@ export class OpenCodeSDKAdapter implements OpenCodeAdapter {
         if (lifecycle.failure) throw new Error(lifecycle.failure)
         const cursor = lastCursor
         if (cursor === undefined) {
-          throw new Error('OpenCode accepted the prompt, but its snapshot could not be certified without a durable event cursor')
+          throw new Error('OpenCode v2 history is unavailable; the accepted prompt snapshot cannot be attributed without a durable event cursor')
         }
 
         let log
@@ -459,10 +530,10 @@ export class OpenCodeSDKAdapter implements OpenCodeAdapter {
           log = await transport.readSessionLog(sessionId, cursor, operationSignal)
         } catch (error) {
           if (operationSignal?.aborted || isAbortError(error)) throw error
-          throw new Error(`OpenCode accepted the prompt, but durable event certification failed: ${getErrorMessage(error)}`)
+          throw new Error(`OpenCode v2 history is unavailable for accepted prompt certification: ${getErrorMessage(error)}`)
         }
         if (!hasCompleteV2LogCoverage(cursor, log)) {
-          throw new Error('OpenCode accepted the prompt, but durable event history has an unaccounted sequence gap and cannot certify the snapshot')
+          throw new Error('OpenCode v2 history is incomplete; durable event sequences cannot certify the accepted prompt snapshot')
         }
         for (const envelope of log.events) await observeEnvelope(envelope)
         if (typeof log.cursor === 'number' && (lastCursor === undefined || log.cursor > lastCursor)) {
@@ -475,8 +546,23 @@ export class OpenCodeSDKAdapter implements OpenCodeAdapter {
         subscription,
         observeEnvelope,
         streamSignal,
-        transport.protocol === 'v1',
+        transport.protocol,
+        sessionId,
       )
+
+      if (promptOptions.permission && transport.protocol === 'v2') {
+        try {
+          await transport.updateSession(sessionId, directory, { permission: promptOptions.permission }, operationSignal)
+        } catch (error) {
+          if (isAbortError(error) || operationSignal?.aborted) throw error
+          throw new Error(
+            `Failed to apply OpenCode session permissions: ${getErrorMessage(error)}. ` +
+            'Session permission updates require a current OpenCode server; upgrade OpenCode and restart `opencode serve`.',
+          )
+        }
+      }
+      if (permissionReplyFailure) throw permissionReplyFailure
+      if (lifecycle.failure) throw new Error(lifecycle.failure)
 
       const dispatchRequest: OpenCodePromptRequest = {
         sessionId,
@@ -512,10 +598,16 @@ export class OpenCodeSDKAdapter implements OpenCodeAdapter {
       }
       if (permissionReplyPending) await permissionReplyPending
       if (permissionReplyFailure) throw permissionReplyFailure
+      if (transport.protocol === 'v1') {
+        await this.waitForStreamDrain(streamDrain)
+        streamDrainWaited = true
+        if (permissionReplyFailure) throw permissionReplyFailure
+      }
       if (dispatched?.kind === 'accepted') {
         if (promptOptions.noReply === true) return ''
         lifecycle.receiptID = dispatched.receipt.inboxID
         checkLifecycle()
+        await reconcilePendingPermissionEvents()
         const terminal = await this.waitForAcceptedPrompt(
           transport,
           sessionId,
@@ -605,6 +697,11 @@ export class OpenCodeSDKAdapter implements OpenCodeAdapter {
               ? await this.raceWithSignal(streamDoneResponse, operationSignal)
               : await this.readAssistantSnapshotWithRetry(sessionId, undefined, 2, 75, operationSignal, snapshotBaselineIds, directory, transport)
                 .then(snapshot => snapshot.responseText || buildStreamedTextResponse() || null)
+                .catch(error => {
+                  if (operationSignal?.aborted || isAbortError(error)) throw error
+                  warnIfVerbose('[adapter] Snapshot retry failed during v1 echo recovery, falling back to streamed text', error)
+                  return buildStreamedTextResponse() || null
+                })
           if (terminalText) responseText = terminalText
         } else {
           const snapshot = await this.readAssistantSnapshotWithRetry(sessionId, undefined, 2, 75, operationSignal, snapshotBaselineIds, directory, transport)
@@ -616,8 +713,7 @@ export class OpenCodeSDKAdapter implements OpenCodeAdapter {
       return responseText
     } catch (err) {
       if (permissionReplyFailure) throw permissionReplyFailure
-      if (isAbortError(err) || promptSignal?.aborted) throw err
-      if (operationSignal?.aborted && operationSignal.reason instanceof Error) throw operationSignal.reason
+      if (isAbortError(err)) throw err
       if (err instanceof Error && (err.name === 'OpenCodeSessionError' || err.name === 'OpenCodeSessionInterrupted')) throw err
       const enriched = enrichGenericOpenCodeProviderError(err, sessionId)
       if (enriched) {
@@ -625,10 +721,12 @@ export class OpenCodeSDKAdapter implements OpenCodeAdapter {
         Object.assign(error, { details: enriched.details, modelErrorDetails: enriched.details })
         throw error
       }
+      if (promptSignal?.aborted) throw err
+      if (operationSignal?.aborted && operationSignal.reason instanceof Error) throw operationSignal.reason
       throw new Error(`Failed to prompt OpenCode session: ${getErrorMessage(err)}`)
     } finally {
       streamAbortController.abort()
-      await this.waitForStreamDrain(streamDrain)
+      if (!streamDrainWaited) await this.waitForStreamDrain(streamDrain)
       this.activePromptSessions.delete(sessionId)
     }
   }
@@ -772,7 +870,22 @@ export class OpenCodeSDKAdapter implements OpenCodeAdapter {
       stepFinishSafetyMs,
     )
     for await (const envelope of subscription.events) {
+      if (!envelope.event) continue
       const event = envelope.event
+      if (event.type === 'execution_terminal') {
+        if (event.outcome === 'succeeded') yield { type: 'done', sessionId }
+        else {
+          yield {
+            type: 'session_error',
+            sessionId,
+            error: event.outcome === 'failed'
+              ? getErrorMessage(event.error)
+              : 'OpenCode execution was interrupted',
+            details: event.error,
+          }
+        }
+        return
+      }
       if (this.isTransportLifecycleEvent(event)) continue
       yield event
       if (event.type === 'done') return
@@ -1088,17 +1201,27 @@ export class OpenCodeSDKAdapter implements OpenCodeAdapter {
     subscription: OpenCodeEventSubscription,
     onEnvelope: (envelope: OpenCodeTransportEventEnvelope) => void | Promise<void>,
     signal: AbortSignal,
-    stopAfterDone: boolean,
+    protocol: 'v1' | 'v2',
+    sessionId: string,
   ): Promise<{ ended: boolean; error?: unknown }> {
     try {
       for await (const envelope of subscription.events) {
         if (signal.aborted) return { ended: true }
         await onEnvelope(envelope)
-        if (stopAfterDone && envelope.event.type === 'done') break
+        if (protocol === 'v1' && envelope.event?.type === 'done') break
       }
       return { ended: true }
     } catch (error) {
       if (signal.aborted || isAbortError(error)) return { ended: true }
+      if (protocol === 'v1') {
+        try {
+          await onEnvelope({
+            event: { type: 'session_error', sessionId, error: getErrorMessage(error), details: error },
+          })
+        } catch {
+          // Keep the original stream failure as the drain result.
+        }
+      }
       return { ended: true, error }
     }
   }
@@ -1131,7 +1254,7 @@ export class OpenCodeSDKAdapter implements OpenCodeAdapter {
 
     let cursor = getCursor()
     if (cursor === undefined) {
-      throw new Error('OpenCode accepted the prompt, but its event subscription had no durable cursor for recovery')
+      throw new Error('OpenCode v2 history is unavailable; the accepted prompt cannot be attributed without a durable cursor for recovery')
     }
     while (true) {
       if (signal?.aborted) {
@@ -1144,10 +1267,10 @@ export class OpenCodeSDKAdapter implements OpenCodeAdapter {
         log = await transport.readSessionLog(sessionId, cursor, signal)
       } catch (error) {
         if (signal?.aborted || isAbortError(error)) throw error
-        throw new Error(`OpenCode accepted the prompt, but durable event recovery failed: ${getErrorMessage(error)}`)
+        throw new Error(`OpenCode v2 history is unavailable for accepted prompt recovery: ${getErrorMessage(error)}`)
       }
       if (!hasCompleteV2LogCoverage(cursor, log)) {
-        throw new Error('OpenCode accepted the prompt, but durable event history has an unaccounted sequence gap and cannot certify completion')
+        throw new Error('OpenCode v2 history is incomplete; durable event sequences cannot certify accepted prompt completion')
       }
       for (const envelope of log.events) {
         await observeEnvelope(envelope)
@@ -1168,15 +1291,30 @@ export class OpenCodeSDKAdapter implements OpenCodeAdapter {
 
   private async waitForStreamDrain(streamDrain: Promise<{ ended: boolean; error?: unknown }> | null | undefined) {
     if (!streamDrain) return
-    await Promise.race([
-      streamDrain,
-      new Promise<void>(resolve => setTimeout(resolve, ADAPTER_RETRY_DELAY_MS)),
-    ])
+    let timer: ReturnType<typeof setTimeout> | undefined
+    try {
+      await Promise.race([
+        streamDrain,
+        new Promise<void>(resolve => { timer = setTimeout(resolve, ADAPTER_RETRY_DELAY_MS) }),
+      ])
+    } finally {
+      if (timer) clearTimeout(timer)
+    }
   }
 
   private async raceWithSignal<T>(operation: Promise<T>, signal?: AbortSignal): Promise<T> {
     if (!signal) return await operation
     if (signal.aborted) {
+      const settledOperation = operation.then(
+        value => ({ kind: 'value' as const, value }),
+        error => ({ kind: 'error' as const, error }),
+      )
+      const result = await Promise.race([
+        settledOperation,
+        Promise.resolve().then(() => ({ kind: 'aborted' as const })),
+      ])
+      if (result.kind === 'value') return result.value
+      if (result.kind === 'error') throw result.error
       throw signal.reason instanceof Error
         ? signal.reason
         : new DOMException('The operation was aborted', 'AbortError')

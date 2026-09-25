@@ -124,6 +124,23 @@ describe('OpenCodeSupervisor', () => {
     expect(spawnProcess).not.toHaveBeenCalled()
   })
 
+  it('retries transient network responses while an existing server becomes ready', async () => {
+    let probes = 0
+    const fetchMock = vi.fn(async () => {
+      probes += 1
+      return probes < 3
+        ? new Response('', { status: 503 })
+        : new Response(JSON.stringify({ version: '2.0.15', pid: 812 }), {
+            headers: { 'content-type': 'application/json' },
+          })
+    })
+    vi.stubGlobal('fetch', fetchMock)
+    const supervisor = new OpenCodeSupervisor({ baseUrl: 'http://127.0.0.1:4096', readyTimeoutMs: 2_000 })
+
+    await expect(supervisor.start()).resolves.toEqual({ kind: 'adopted', baseUrl: 'http://127.0.0.1:4096' })
+    expect(fetchMock).toHaveBeenCalledTimes(3)
+  })
+
   it('shares an in-memory ephemeral password with a managed child when no password was supplied', async () => {
     delete process.env.OPENCODE_PASSWORD
     delete process.env.OPENCODE_SERVER_PASSWORD
@@ -143,6 +160,30 @@ describe('OpenCodeSupervisor', () => {
     })
 
     await expect(supervisor.start()).resolves.toMatchObject({ kind: 'managed', pid: 4401 })
+    expect(childEnv?.OPENCODE_PASSWORD).toMatch(/^[A-Za-z0-9_-]{40,}$/)
+    expect(childEnv?.OPENCODE_SERVER_PASSWORD).toBe(childEnv?.OPENCODE_PASSWORD)
+    await supervisor.stop()
+  })
+
+  it('generates a password when configured password aliases are blank', async () => {
+    vi.stubEnv('OPENCODE_PASSWORD', '   ')
+    vi.stubEnv('OPENCODE_SERVER_PASSWORD', '')
+    const child = fakeChild(4402)
+    const { termination } = terminationProbe()
+    let probes = 0
+    let childEnv: NodeJS.ProcessEnv | undefined
+    const supervisor = new OpenCodeSupervisor({
+      baseUrl: 'http://127.0.0.1:4096',
+      probe: async () => ++probes > 1,
+      spawnProcess: ((_file: string, _args: string[], options: { env?: NodeJS.ProcessEnv }) => {
+        childEnv = options?.env as NodeJS.ProcessEnv
+        return child
+      }) as never,
+      resolveProgram: () => '/opt/opencode',
+      termination,
+    })
+
+    await expect(supervisor.start()).resolves.toMatchObject({ kind: 'managed', pid: 4402 })
     expect(childEnv?.OPENCODE_PASSWORD).toMatch(/^[A-Za-z0-9_-]{40,}$/)
     expect(childEnv?.OPENCODE_SERVER_PASSWORD).toBe(childEnv?.OPENCODE_PASSWORD)
     await supervisor.stop()

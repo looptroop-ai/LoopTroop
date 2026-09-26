@@ -1019,7 +1019,7 @@ describe('OpenCode v2 fetch transport', () => {
     }
   })
 
-  it('keeps the bounded idle deadline when the caller also supplies a signal', async () => {
+  it('honors a live caller signal beyond the fallback idle timeout and caller cancellation', async () => {
     vi.useFakeTimers()
     try {
       const caller = new AbortController()
@@ -1029,20 +1029,33 @@ describe('OpenCode v2 fetch transport', () => {
         init.signal?.addEventListener('abort', () => reject(init.signal?.reason), { once: true })
       }))
       const idle = transport.waitForIdle('session-1', '/workspace', caller.signal)
+      const idleResult = expect(idle).rejects.toMatchObject({ name: 'AbortError' })
+
+      await vi.advanceTimersByTimeAsync(60_001)
+      expect(requestSignal).toBe(caller.signal)
+      expect(requestSignal?.aborted).toBe(false)
+      caller.abort()
+      await idleResult
+      expect(requestSignal?.aborted).toBe(true)
+    } finally {
+      vi.useRealTimers()
+    }
+  })
+
+  it('keeps idle waits bounded when no caller signal is supplied', async () => {
+    vi.useFakeTimers()
+    try {
+      let requestSignal: AbortSignal | null | undefined
+      const { transport } = createTransport((_request, init) => new Promise<Response>((_resolve, reject) => {
+        requestSignal = init.signal
+        init.signal?.addEventListener('abort', () => reject(init.signal?.reason), { once: true })
+      }))
+      const idle = transport.waitForIdle('session-1', '/workspace')
       const idleResult = expect(idle).rejects.toMatchObject({ name: 'TimeoutError' })
 
       await vi.advanceTimersByTimeAsync(60_000)
       await idleResult
       expect(requestSignal?.aborted).toBe(true)
-      expect(caller.signal.aborted).toBe(false)
-
-      const cancelled = new AbortController()
-      const cancellationTransport = createTransport((_request, init) => new Promise<Response>((_resolve, reject) => {
-        init.signal?.addEventListener('abort', () => reject(init.signal?.reason), { once: true })
-      }))
-      const cancelledIdle = cancellationTransport.transport.waitForIdle('session-1', '/workspace', cancelled.signal)
-      cancelled.abort()
-      await expect(cancelledIdle).rejects.toMatchObject({ name: 'AbortError' })
     } finally {
       vi.useRealTimers()
     }

@@ -279,7 +279,7 @@ export class OpenCodeSDKAdapter implements OpenCodeAdapter {
     let permissionReplyPending: Promise<void> | undefined
     let endPromptActivity: (() => void) | undefined
     let streamAbortController: AbortController | undefined
-    let streamDrain!: Promise<{ ended: boolean; error?: unknown }>
+    let streamDrain: Promise<{ ended: boolean; error?: unknown }> | undefined
     let streamDrainWaited = false
     this.activePromptSessions.add(sessionId)
 
@@ -444,10 +444,6 @@ export class OpenCodeSDKAdapter implements OpenCodeAdapter {
       }
       await transport.waitForIdle(sessionId, directory, operationSignal)
       if (transport.protocol === 'v2') {
-        const pendingAfterIdle = await transport.listPendingInboxes!(sessionId, directory, operationSignal)
-        if (pendingAfterIdle.length > 0) {
-          throw new Error('OpenCode v2 still has pending inbox work after the idle boundary; refusing to dispatch into a session with competing work')
-        }
         try {
           idleLog = await transport.readSessionLog(sessionId, bootstrapCursor, operationSignal)
         } catch (error) {
@@ -458,6 +454,11 @@ export class OpenCodeSDKAdapter implements OpenCodeAdapter {
           throw new Error('OpenCode v2 history watermark is unavailable after waiting for the session; refusing to dispatch without certifiable event coverage')
         }
         await waitForV2StreamCoverage(idleLog.cursor!, 'after waiting for the session')
+        await transport.waitForIdle(sessionId, directory, operationSignal)
+        const pendingAfterIdle = await transport.listPendingInboxes!(sessionId, directory, operationSignal)
+        if (pendingAfterIdle.length > 0) {
+          throw new Error('OpenCode v2 still has pending inbox work after the idle boundary; refusing to dispatch into a session with competing work')
+        }
       }
       if (promptOptions.permission && transport.protocol === 'v1') {
         try {
@@ -609,6 +610,7 @@ export class OpenCodeSDKAdapter implements OpenCodeAdapter {
           lifecycle.startedOrder = order
           const hasEnqueuedWork = [...lifecycle.inboxes.values()].some(inbox => inbox.enqueuedOrder !== undefined
             && inbox.enqueuedOrder < order
+            && (safeBaselineCursor === undefined || order <= safeBaselineCursor || inbox.enqueuedOrder > safeBaselineCursor)
             && inbox.cancelledOrder === undefined
             && inbox.completedOrder === undefined)
           if (!hasEnqueuedWork) lifecycle.unsafeEvidence ??= 'OpenCode v2 observed execution without a certified inbox enqueue; refusing to attribute work across the event boundary.'
@@ -621,7 +623,8 @@ export class OpenCodeSDKAdapter implements OpenCodeAdapter {
               && lifecycle.startedOrder > inbox.enqueuedOrder
               && inbox.deliveredOrder > inbox.enqueuedOrder
               && order > lifecycle.startedOrder!
-              && order > inbox.deliveredOrder!)
+              && order > inbox.deliveredOrder!
+              && (safeBaselineCursor === undefined || order <= safeBaselineCursor || inbox.enqueuedOrder > safeBaselineCursor))
             .sort((left, right) => left[1].enqueuedOrder! - right[1].enqueuedOrder!)
           const candidate = candidates[0]?.[1]
           if (candidate) {
@@ -636,9 +639,10 @@ export class OpenCodeSDKAdapter implements OpenCodeAdapter {
         const appearedOrder = Math.min(inbox.enqueuedOrder ?? Infinity, inbox.deliveredOrder ?? Infinity, inbox.changedOrder ?? Infinity)
         if (!Number.isFinite(appearedOrder)) return false
         const resolvedOrder = Math.min(inbox.completedOrder ?? Infinity, inbox.cancelledOrder ?? Infinity)
-        return !Number.isFinite(resolvedOrder)
-          || resolvedOrder > (beforeOrder ?? -Infinity)
-          || (inbox.lastOrder ?? appearedOrder) > (beforeOrder ?? -Infinity)
+        const baseline = beforeOrder ?? -Infinity
+        return appearedOrder > baseline
+          || (Number.isFinite(resolvedOrder) && resolvedOrder > baseline)
+          || (inbox.lastOrder ?? appearedOrder) > baseline
       })
       const checkLifecycle = () => {
         if (lifecycle.unsafeEvidence) {
@@ -939,7 +943,7 @@ export class OpenCodeSDKAdapter implements OpenCodeAdapter {
           sessionId,
           dispatched,
           lifecycleResult,
-          streamDrain,
+          streamDrain!,
           observeEnvelope,
           () => lastCursor,
           operationSignal,
@@ -1020,7 +1024,7 @@ export class OpenCodeSDKAdapter implements OpenCodeAdapter {
           const streamClose = await this.raceWithSignal(
             Promise.race([
               streamDoneResponse.then(value => ({ kind: 'done' as const, value })),
-              streamDrain.then(() => ({ kind: 'closed' as const })),
+              streamDrain!.then(() => ({ kind: 'closed' as const })),
             ]),
             operationSignal,
           )
@@ -1080,7 +1084,7 @@ export class OpenCodeSDKAdapter implements OpenCodeAdapter {
       throw new Error(`Failed to prompt OpenCode session: ${getErrorMessage(err)}`)
     } finally {
       streamAbortController?.abort()
-      if (streamDrain && !streamDrainWaited) await this.waitForStreamDrain(streamDrain)
+      if (streamDrain !== undefined && !streamDrainWaited) await this.waitForStreamDrain(streamDrain)
       this.activePromptSessions.delete(sessionId)
       endPromptActivity?.()
     }

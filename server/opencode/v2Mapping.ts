@@ -745,7 +745,9 @@ function mapQuestionField(value: unknown, header: string): OpenCodeQuestionInfo 
     header: title ?? header,
     options,
     ...(field.type === 'multiselect' ? { multiple: true } : {}),
-    custom: field.custom === true,
+    custom: field.type === 'string'
+      ? field.options === undefined || field.custom === true
+      : field.custom === true,
   }
 }
 

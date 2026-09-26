@@ -115,6 +115,11 @@ const inboxEvent = (type: 'inbox_enqueued' | 'inbox_delivered', inboxID: string,
   event: { type, sessionId: 'session-1', inboxID },
 })
 
+const inboxChangedEvent = (inboxID: string, cursor: number): OpenCodeTransportEventEnvelope => ({
+  cursor,
+  event: { type: 'inbox_delivery_changed', sessionId: 'session-1', inboxID, delivery: 'steer' },
+})
+
 const executionEvent = (type: 'execution_started' | 'execution_terminal', cursor: number): OpenCodeTransportEventEnvelope => ({
   cursor,
   event: type === 'execution_started'
@@ -263,7 +268,7 @@ describe('OpenCode adapter transport orchestration', () => {
     await expect(createAdapter(transport).promptSession('session-1', [{ type: 'text', content: 'prompt' }]))
       .resolves.toBe('current answer')
 
-    expect(order.slice(0, 4)).toEqual(['cursor', 'subscribe:50', 'history:50', 'idle'])
+    expect(order.slice(0, 6)).toEqual(['cursor', 'subscribe:50', 'history:50', 'idle', 'history:50', 'idle'])
     expect(order.filter(entry => entry === 'history:50')).toHaveLength(4)
     expect(order.indexOf('dispatch')).toBeGreaterThan(order.indexOf('idle'))
     expect(order).toContain('dispatch')
@@ -277,20 +282,142 @@ describe('OpenCode adapter transport orchestration', () => {
       executionEvent('execution_terminal', 50),
     ])
     const externalInbox = inboxEvent('inbox_enqueued', 'inbox-external', 51)
-    let idleCompleted = false
+    let idleWaits = 0
     const { transport, source } = createV2Transport({
-      waitForIdle: vi.fn(async () => { source.push(externalInbox); idleCompleted = true }),
+      waitForIdle: vi.fn(async () => {
+        idleWaits += 1
+        if (idleWaits === 2) source.push(externalInbox)
+      }),
       readSessionLog: vi.fn(async (_sessionId, after) => {
         if (after === undefined) return { events: completedPriorTurn, cursor: 50, coverageComplete: true }
-        if (!idleCompleted) return { events: [], cursor: after, coverageComplete: true }
-        const events = after! < externalInbox.cursor! ? [externalInbox] : []
-        return { events, cursor: Math.max(after!, externalInbox.cursor!), coverageComplete: true }
+        return { events: [], cursor: after, coverageComplete: true }
       }),
     })
 
     await expect(createAdapter(transport).promptSession('session-1', [{ type: 'text', content: 'prompt' }]))
       .rejects.toThrow('Another OpenCode inbox remains uncompleted after the prior turn')
-    expect(transport.waitForIdle).toHaveBeenCalledOnce()
+    expect(transport.waitForIdle).toHaveBeenCalledTimes(2)
+    expect(transport.dispatchPrompt).not.toHaveBeenCalled()
+  })
+
+  it('ignores an unresolved prior inbox contained in the verified idle baseline', async () => {
+    const drainedMultipleInboxes = withCertifiedPrefix([
+      inboxEvent('inbox_enqueued', 'inbox-first', 47),
+      executionEvent('execution_started', 48),
+      inboxEvent('inbox_delivered', 'inbox-first', 49),
+      inboxEvent('inbox_enqueued', 'inbox-steered', 50),
+      inboxEvent('inbox_delivered', 'inbox-steered', 51),
+      executionEvent('execution_terminal', 52),
+    ])
+    const { transport, source, markDispatched } = createV2Transport({
+      subscribeToEvents: vi.fn(async (_sessionId, _directory, signal) => ({
+        events: source.events(signal), cursor: 52, coverageComplete: true,
+      })),
+      readSessionLog: vi.fn(async (_sessionId, after) => after === undefined
+        ? { events: drainedMultipleInboxes, cursor: 52, coverageComplete: true }
+        : { events: [], cursor: after ?? 52, coverageComplete: true }),
+      dispatchPrompt: vi.fn(async () => {
+        markDispatched()
+        source.push(
+          inboxEvent('inbox_enqueued', 'inbox-own', 53),
+          executionEvent('execution_started', 54),
+          inboxEvent('inbox_delivered', 'inbox-own', 55),
+          executionEvent('execution_terminal', 56),
+        )
+        return { kind: 'accepted' as const, receipt: { inboxID: 'inbox-own' } }
+      }),
+    })
+
+    await expect(createAdapter(transport).promptSession('session-1', [{ type: 'text', content: 'prompt' }]))
+      .resolves.toBe('current answer')
+    expect(transport.dispatchPrompt).toHaveBeenCalledOnce()
+  })
+
+  it('rejects activity to an old inbox after the verified idle baseline', async () => {
+    const oldTurn = withCertifiedPrefix([
+      inboxEvent('inbox_enqueued', 'inbox-old', 47),
+      executionEvent('execution_started', 48),
+      inboxEvent('inbox_delivered', 'inbox-old', 49),
+      executionEvent('execution_terminal', 50),
+    ])
+    const activity = inboxChangedEvent('inbox-old', 51)
+    let idleWaits = 0
+    const { transport, source } = createV2Transport({
+      readSessionLog: vi.fn(async (_sessionId, after) => after === undefined
+        ? { events: oldTurn, cursor: 50, coverageComplete: true }
+        : idleWaits < 2
+          ? { events: [], cursor: after ?? 50, coverageComplete: true }
+          : { events: after! < activity.cursor! ? [activity] : [], cursor: Math.max(after!, activity.cursor!), coverageComplete: true }),
+      waitForIdle: vi.fn(async () => {
+        idleWaits += 1
+        if (idleWaits === 2) source.push(activity)
+      }),
+    })
+
+    await expect(createAdapter(transport).promptSession('session-1', [{ type: 'text', content: 'prompt' }]))
+      .rejects.toThrow('Another OpenCode inbox remains uncompleted after the prior turn')
+    expect(transport.dispatchPrompt).not.toHaveBeenCalled()
+  })
+
+  it('rejects a new competing inbox even when its execution finishes before dispatch', async () => {
+    const oldTurn = withCertifiedPrefix([
+      inboxEvent('inbox_enqueued', 'inbox-old', 47),
+      executionEvent('execution_started', 48),
+      inboxEvent('inbox_delivered', 'inbox-old', 49),
+      executionEvent('execution_terminal', 50),
+    ])
+    const competitor = [
+      inboxEvent('inbox_enqueued', 'inbox-competitor', 51),
+      executionEvent('execution_started', 52),
+      inboxEvent('inbox_delivered', 'inbox-competitor', 53),
+      executionEvent('execution_terminal', 54),
+    ]
+    let idleWaits = 0
+    const { transport, source } = createV2Transport({
+      readSessionLog: vi.fn(async (_sessionId, after) => after === undefined
+        ? { events: oldTurn, cursor: 50, coverageComplete: true }
+        : { events: [], cursor: after ?? 50, coverageComplete: true }),
+      waitForIdle: vi.fn(async () => {
+        idleWaits += 1
+        if (idleWaits === 2) source.push(...competitor)
+      }),
+    })
+
+    await expect(createAdapter(transport).promptSession('session-1', [{ type: 'text', content: 'prompt' }]))
+      .rejects.toThrow('Another OpenCode inbox remains uncompleted after the prior turn')
+    expect(transport.dispatchPrompt).not.toHaveBeenCalled()
+  })
+
+  it('rejects execution that starts between the first idle wait and watermark and finishes during the second wait', async () => {
+    const workBeforeWatermark = [
+      inboxEvent('inbox_enqueued', 'inbox-racing', 51),
+      executionEvent('execution_started', 52),
+      inboxEvent('inbox_delivered', 'inbox-racing', 53),
+    ]
+    const terminal = executionEvent('execution_terminal', 54)
+    let logReads = 0
+    let idleWaits = 0
+    const { transport, source } = createV2Transport({
+      readSessionLog: vi.fn(async (_sessionId, after) => {
+        logReads += 1
+        if (after === undefined) return { events: [], cursor: 50, coverageComplete: true }
+        if (logReads === 3) {
+          source.push(...workBeforeWatermark)
+          return { events: workBeforeWatermark, cursor: 53, coverageComplete: true }
+        }
+        if (after === 53) return { events: [terminal], cursor: 54, coverageComplete: true }
+        return { events: [], cursor: after, coverageComplete: true }
+      }),
+      waitForIdle: vi.fn(async () => {
+        idleWaits += 1
+        if (idleWaits === 2) source.push(terminal)
+      }),
+    })
+
+    await expect(createAdapter(transport).promptSession('session-1', [{ type: 'text', content: 'prompt' }]))
+      .rejects.toThrow('execution terminal without its inbox lifecycle')
+    expect(transport.waitForIdle).toHaveBeenCalledTimes(2)
+    expect(transport.listPendingInboxes).toHaveBeenCalledTimes(2)
     expect(transport.dispatchPrompt).not.toHaveBeenCalled()
   })
 
@@ -404,12 +531,13 @@ describe('OpenCode adapter transport orchestration', () => {
       { permission: [{ permission: 'read', pattern: '*', action: 'allow' }] },
     )).resolves.toBe('current answer')
 
-    expect(order.slice(0, 8)).toEqual([
+    expect(order.slice(0, 9)).toEqual([
       'cursor',
       'subscribe:50',
       'history:50',
       'idle',
       'history:50',
+      'idle',
       'history:50',
       'permissions',
       'history:51',

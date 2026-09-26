@@ -167,9 +167,33 @@ describe('OpenCode v2 wire mappings', () => {
         { key: 'fallback', type: 'string', description: 'Fallback prompt' },
       ],
     })?.questions).toEqual([
-      { question: 'What should change?', header: 'Task', options: [], custom: false },
-      { question: 'Mode', header: 'Mode', options: [], custom: false },
-      { question: 'Fallback prompt', header: 'Questions', options: [], custom: false },
+      { question: 'What should change?', header: 'Task', options: [], custom: true },
+      { question: 'Mode', header: 'Mode', options: [], custom: true },
+      { question: 'Fallback prompt', header: 'Questions', options: [], custom: true },
+    ])
+  })
+
+  it('maps string input eligibility using OpenCode form option defaults', () => {
+    const form = {
+      id: 'form-string-input',
+      sessionID: 'session-1',
+      title: 'Strings',
+      metadata: { kind: 'question' },
+      fields: [
+        { key: 'free', type: 'string' },
+        { key: 'free-explicit-false', type: 'string', custom: false },
+        { key: 'closed-by-options-default', type: 'string', options: [{ label: 'Prod', value: 'prod' }] },
+        { key: 'closed-empty-options', type: 'string', options: [] },
+        { key: 'open-options', type: 'string', options: [{ label: 'Prod', value: 'prod' }], custom: true },
+      ],
+    }
+
+    expect(mapV2Question(form)?.questions.map(question => question.custom)).toEqual([
+      true,
+      true,
+      false,
+      false,
+      true,
     ])
   })
 

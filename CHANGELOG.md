@@ -11,6 +11,8 @@ Unreleased changes appear first and represent commits that have not yet been inc
 
 ### Summary
 - OpenCode v2 supports forked sessions from a verified event boundary; v1 remains supported, and prompts wait through catalog reloads under their workflow deadline.
+- OpenCode v2 idle waits honor caller deadlines, and string fields without `options` accept text when `custom` is omitted or false.
+- Startup checks a crashed daemon's retained owned-server record before probing or adopting a still-running OpenCode child.
 - Single-choice options and free-text answers are alternatives; model prices show one label per shared range.
 - Dependency updates arrive in fewer grouped pull requests and none merges itself; workflows take the build Node version from `.nvmrc` alone.
 - Repository tooling and release sources now live under existing project folders while historical release repair and public installer and container contracts remain unchanged.
@@ -35,6 +37,7 @@ Unreleased changes appear first and represent commits that have not yet been inc
 - Cross-platform resolver tests inject a Linux UID-map fixture when they emulate Linux on macOS, while production ownership checks remain fail-closed.
 - Windows daemon starts can accept a still-live child launched by that command when the start-time probe is temporarily unavailable, while stale and tokenless records remain fail-closed.
 - Managed OpenCode shutdown now retains daemon ownership and a retryable control path when its process tree cannot be confirmed gone; a persisted shutdown-pending guard prevents CLI force escalation, and the daemon retries with capped backoff even after its listener closes. Failed startup cleanup leaves durable owned-child evidence so a successor cannot adopt it.
+- A later daemon start checks a crashed daemon's retained owned-server record before probing or adopting OpenCode; a verified live child must be cleaned up before startup can proceed.
 - OpenCode step-cap recovery keeps its authoritative marker in owner-only app configuration, preserving edited or unverified configs instead of trusting a mutable ticket copy; active retries stop when the cap cannot be re-applied safely.
 - Protected hook validation reports structured recovery refusals with the retained marker path and manual remedy, while CLI cleanup keeps ignored files and strict non-Git skeleton checks at the final removal boundary.
 - The OrcaCode pull-request review workflow is removed; it reported a failed check on every pull request and never completed a successful run.
@@ -255,11 +258,12 @@ Unreleased changes appear first and represent commits that have not yet been inc
 - The unused `server/db/drizzle.config.ts` alias. Every database script already selects its app or project config explicitly, so keeping a third config that Drizzle Kit cannot discover from the repository root only advertised a command that no longer worked.
 
 ### Fixed
-- OpenCode v2 can use incomplete fork or transfer history only as a starting boundary, then requires contiguous verified events after that boundary across idle and pending-inbox checks. A gap or lost stream leaves the result uncertain; LoopTroop does not guess event ownership, fall back to a snapshot, or resend a prompt.
+- OpenCode v2 can use incomplete fork or transfer history only as an initial starting boundary, then requires contiguous verified events after it through the idle checks. A later idle watermark lets previously delivered and drained inbox entries be ignored; competing activity after it, an unaccounted sequence gap, or a lost stream still stops dispatch without guessing event ownership or resending.
+- OpenCode v2 idle waits now use the caller's deadline, with a 60-second bound when no caller deadline is supplied.
 - OpenCode v1 now reports stream failures and EOF completion consistently, keeps caller cancellation distinct from cleanup, and closes its stream iterator and timers.
 - Development startup treats an unrecognized response, including HTTP 5xx, on the implicit default OpenCode port as a conflict and keeps explicit URLs strict. Managed logging uses the debug value advertised by the resolved CLI, and the supervisor cannot restart a child after stop completes.
 - Catalog reloads reject active prompts and, for v2, active sessions and unanswered requests. Prompts that arrive during a reload wait under their existing workflow deadline. Profile and ticket-start routing handlers preflight the config delta, recheck under the busy guard, and leave the config untouched on rejection; busy refreshes preserve cached catalogs and already registered routes remain usable.
-- Workflow stages no longer replace a model's saved variant in OpenCode prompts. V2 question fields use descriptions as prompt text and titles as headers, offer custom text only when OpenCode allows it, and preserve pending questions when a ticket panel reconnects.
+- Workflow stages no longer replace a model's saved variant in OpenCode prompts. V2 question fields use descriptions as prompt text and titles as headers. String fields without `options` accept text when `custom` is omitted or false; fields with `options` accept text only when `custom` is true. Pending questions survive a ticket-panel reconnect.
 - Doctor reports the OpenCode URL recorded by a healthy daemon, and published-smoke health requests stay within the remaining readiness deadline.
 - Managed OpenCode startup treats authentication rejection on the default port as a conflict and reports rejected credentials for explicit URLs. Blank password aliases count as unset. Standalone `dev:opencode` prints a newly generated password for manual sharing and does not print configured passwords.
 - Single-choice answers treat free text as an alternative to the selected option, while multiple-choice answers can keep notes. Model price ranges collapse to one label, and cached-token prices no longer appear free.

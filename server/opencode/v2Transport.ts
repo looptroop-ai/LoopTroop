@@ -281,7 +281,7 @@ export class V2OpenCodeTransport implements OpenCodeTransport {
     await this.request(`/api/experimental/session/${encodeURIComponent(sessionId)}/wait`, {
       method: 'POST',
       signal,
-      timeoutMs: IDLE_WAIT_TIMEOUT_MS,
+      timeoutMs: signal ? null : IDLE_WAIT_TIMEOUT_MS,
       expectedStatus: 204,
     })
   }

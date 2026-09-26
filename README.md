@@ -90,6 +90,14 @@ their own live child through the retained process handle, even when the
 start-time probe is unavailable. Log follow watches the containing directory
 so rename-and-create rotation resumes at the start of the replacement file.
 
+If the daemon crashes while its managed OpenCode child is still running, the
+next `start` checks the retained owned-server record before probing or adopting
+OpenCode. When the child identity is verified, run `looptroop stop` and then
+retry `looptroop start`. An unverifiable live identity keeps startup blocked;
+if the recorded OpenCode child is confirmed dead or its PID now belongs to
+another process, startup can proceed. A stored PID alone never authorizes a
+signal.
+
 Configure a provider in OpenCode, then choose an available model in LoopTroop's
 Configuration screen. LoopTroop detects OpenCode v1 or v2 from the authenticated
 server API; it supports both without requiring a major-version change. Attach a

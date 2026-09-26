@@ -31,7 +31,7 @@ if (tool === 'bun' || tool.startsWith('opencode-')) {
   }
   const probe = spawnSync(join(packageRoot, targets[0]), ['--version'], { encoding: 'utf8', timeout: 30_000 })
   if (probe.error || probe.status !== 0) {
-    throw new Error(`${name} --version failed: ${probe.error?.message ?? probe.stderr ?? probe.signal ?? probe.status}`)
+    throw new Error(`${packageName} --version failed: ${probe.error?.message ?? probe.stderr ?? probe.signal ?? probe.status}`)
   }
 }
 

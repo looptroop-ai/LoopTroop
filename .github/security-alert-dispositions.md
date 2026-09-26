@@ -169,6 +169,11 @@ test. The identifier is now `packageName`, redundant console output is removed
 while tool versions remain in the GitHub step summary, and the test predicate
 uses an arrow expression. The next DeepSource scan will verify those changes;
 its Docker, Shell and Secrets checks pass.
+Greptile's incremental review then found that renaming the setup helper's
+package binding had left the native probe error message using the old identifier.
+That error path now reports the package name, and the regression asserts the
+exact package-specific diagnostic so a ReferenceError stack frame cannot satisfy
+the test accidentally.
 
 The next CI run at `44da9d61` failed in both macOS test lanes because the native
 fixture searched every lock entry and selected the OpenCode wrapper package,

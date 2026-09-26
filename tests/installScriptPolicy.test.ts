@@ -188,7 +188,7 @@ describe('dependency install script policy', () => {
       writeFileSync(source, 'invalid executable')
       const invalid = run()
       expect(invalid.status).not.toBe(0)
-      expect(invalid.stderr).toContain('--version failed:')
+      expect(invalid.stderr).toContain(`${name} --version failed:`)
       expect(existsSync(env.GITHUB_PATH)).toBe(false)
       copyFileSync(process.execPath, source)
       const result = run()

@@ -130,7 +130,7 @@ describe('release workflow policy', () => {
     })
     expect((ci.packaging as Job & { needs: string[] }).needs).toContain('dependency-review')
     expect((ci.packaging as Job & { if: string }).if).toBe('always()')
-    const gate = ci.packaging.steps!.find((step) => step.run !== undefined)!
+    const gate = ci.packaging!.steps!.find((step) => step.run !== undefined)!
     for (const result of ['success', 'failure', 'cancelled', 'skipped']) {
       const results = { 'dependency-review': { result }, 'test-matrix': { result: 'success' } }
       const run = spawnSync('bash', ['-euo', 'pipefail', '-c', String(gate.run)], {

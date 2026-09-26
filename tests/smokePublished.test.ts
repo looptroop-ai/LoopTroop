@@ -11,7 +11,11 @@ import {
   chocolateySearchOutcome,
   chocolateySearchVersion,
   chocolateySubmission,
+  createOpenCodeAdoptCredentials,
+  isOpenCodeInfoReady,
   moderationSkipReason,
+  openCodeAnswers,
+  waitForOpenCode,
   validatePublishedVersion,
   whichLooptroop,
   wingetSubmission,
@@ -151,7 +155,7 @@ describe('planMatrix', () => {
     // No `installer`: nothing in the workflow provisions it, so a leg set to it
     // would run with no OpenCode at all and fail for a reason that looks like
     // the release's fault.
-    const allowed = new Set(['npm', 'adopt', 'mock', 'none'])
+    const allowed = new Set(['npm', 'npm-v1', 'adopt', 'mock', 'none'])
     for (const leg of planMatrix({ tier: 'weekly' })) {
       expect(allowed.has(leg.opencode), `${leg.name} has opencode=${leg.opencode}`).toBe(true)
     }
@@ -163,8 +167,25 @@ describe('planMatrix', () => {
     // Mock mode cannot see that class of defect, so at least one Windows leg
     // has to install OpenCode from npm and start a real daemon.
     const windowsNpmOpencode = planMatrix({ tier: 'weekly' })
-      .filter((leg) => leg.os.startsWith('windows') && leg.opencode === 'npm')
+      .filter((leg) => leg.os.startsWith('windows') && ['npm', 'npm-v1'].includes(leg.opencode))
     expect(windowsNpmOpencode.length).toBeGreaterThan(0)
+  })
+
+  it('keeps the published npm channel name while using v2 on supported platforms and v1 on Windows', () => {
+    const npmLegs = planMatrix({ tier: 'weekly', only: ['npm'] })
+    expect(npmLegs.map(({ name, channel, os, opencode }) => ({ name, channel, os, opencode }))).toEqual([
+      { name: 'npm (ubuntu-latest)', channel: 'npm', os: 'ubuntu-latest', opencode: 'npm' },
+      { name: 'npm (macos-latest)', channel: 'npm', os: 'macos-latest', opencode: 'npm' },
+      { name: 'npm (windows-latest)', channel: 'npm', os: 'windows-latest', opencode: 'npm-v1' },
+    ])
+
+    for (const leg of planMatrix({ tier: 'weekly' })) {
+      if (leg.os.startsWith('windows')) expect(leg.opencode, leg.name).toBe('npm-v1')
+      if (leg.opencode === 'npm-v1') expect(leg.os.startsWith('windows'), leg.name).toBe(true)
+      if (leg.opencode === 'npm' || leg.opencode === 'adopt') {
+        expect(['ubuntu-latest', 'macos-latest']).toContain(leg.os)
+      }
+    }
   })
 
   it('never leaves a daemon leg on mock OpenCode', () => {
@@ -548,6 +569,67 @@ ${command}
     // happened to share a machine.
     expect(daemonPorts).not.toContain(39117)
     for (const port of [...daemonPorts, ...opencodePorts]) expect(port).toBeGreaterThan(39117)
+  })
+})
+
+describe('adopted OpenCode readiness', () => {
+  it('shares credentials and requires authenticated v2 info readiness', async () => {
+    const password = 'fixture-password'
+    const credentials = createOpenCodeAdoptCredentials(password)
+    expect(credentials.env).toEqual({
+      OPENCODE_PASSWORD: password,
+      OPENCODE_SERVER_PASSWORD: password,
+    })
+    expect(credentials.headers.Authorization).toBe(
+      `Basic ${Buffer.from(`opencode:${password}`).toString('base64')}`,
+    )
+
+    const requests: Array<{ url: string; authorization: string | null }> = []
+    const fetchImpl: typeof fetch = async (input, init) => {
+      requests.push({ url: String(input), authorization: new Headers(init?.headers).get('authorization') })
+      return new Response(JSON.stringify({ version: '2.0.16', pid: 321 }), {
+        status: 200,
+        headers: { 'Content-Type': 'application/json' },
+      })
+    }
+
+    expect(await openCodeAnswers(4096, credentials.headers, fetchImpl)).toBe(true)
+    expect(requests).toEqual([{
+      url: 'http://127.0.0.1:4096/api/info',
+      authorization: credentials.headers.Authorization,
+    }])
+  })
+
+  it('bounds a hanging OpenCode readiness probe by its overall deadline', async () => {
+    let requestSignal: AbortSignal | undefined
+    const fetchImpl: typeof fetch = async (_input, init) => {
+      requestSignal = init?.signal as AbortSignal
+      return await new Promise<Response>((_resolve, reject) => {
+        requestSignal?.addEventListener('abort', () => reject(requestSignal?.reason), { once: true })
+      })
+    }
+    const started = Date.now()
+
+    await expect(waitForOpenCode(4096, {}, 40, fetchImpl)).resolves.toBe(false)
+
+    expect(requestSignal?.aborted).toBe(true)
+    expect(Date.now() - started).toBeLessThan(1_000)
+  })
+
+  it.each([204, 401, 404, 500])('rejects HTTP %i from the adopted server', async (status) => {
+    const fetchImpl: typeof fetch = async () => new Response(null, { status })
+    expect(await openCodeAnswers(4096, {}, fetchImpl)).toBe(false)
+  })
+
+  it.each([
+    ['v1 info', { version: '1.18.32', pid: 321 }],
+    ['config response', { config: {} }],
+    ['missing pid', { version: '2.0.16' }],
+    ['invalid pid', { version: '2.0.16', pid: 0 }],
+  ])('rejects %s as unverified v2 readiness', async (_label, payload) => {
+    const fetchImpl: typeof fetch = async () => new Response(JSON.stringify(payload), { status: 200 })
+    expect(await openCodeAnswers(4096, {}, fetchImpl)).toBe(false)
+    expect(isOpenCodeInfoReady(200, payload)).toBe(false)
   })
 })
 

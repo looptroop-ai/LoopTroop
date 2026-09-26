@@ -3,6 +3,7 @@ import type { AiQuestionTimerState } from '@shared/aiQuestions'
 
 export interface AiQuestionOption {
   label: string
+  value?: string
   description?: string
 }
 

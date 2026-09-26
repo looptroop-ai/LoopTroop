@@ -1,9 +1,20 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 import { Hono } from 'hono'
+import { existsSync } from 'node:fs'
+import { join } from 'node:path'
 import { initializeDatabase } from '../../db/init'
 import { db } from '../../db/index'
 import { profiles } from '../../db/schema'
 import { profileRouter } from '../profiles'
+import { LOOPTROOP_OPENCODE_ROUTING_CONFIG } from '../../../shared/openRouterRouting'
+const { mockGetOpenCodeConnection } = vi.hoisted(() => ({ mockGetOpenCodeConnection: vi.fn() }))
+vi.mock('../../opencode/connection', async (importOriginal) => ({
+  ...await importOriginal<typeof import('../../opencode/connection')>(),
+  getOpenCodeConnection: mockGetOpenCodeConnection,
+}))
+import { invalidateOpenCodeConnection } from '../../opencode/connection'
+import { beginOpenCodePromptActivity } from '../../opencode/providerCatalogReload'
+import { makeTempDir, removeTempDir } from '../../test/tempDir'
 
 vi.mock('../../opencode/modelValidation', () => ({
   validateModelSelection: vi.fn(),
@@ -22,6 +33,8 @@ describe('profileRouter numeric validation', () => {
     initializeDatabase()
     db.delete(profiles).run()
     vi.restoreAllMocks()
+    vi.unstubAllEnvs()
+    mockGetOpenCodeConnection.mockReset()
   })
 
   it('accepts PRD, beads, structured retry, and OpenCode retry values at the configured bounds', async () => {
@@ -212,6 +225,73 @@ describe('profileRouter numeric validation', () => {
         'openrouter/openrouter/free:free',
       ]),
     })
+  })
+
+  it('saves unchanged model settings offline without probing or changing routing config', async () => {
+    const directory = makeTempDir('looptroop-profile-offline-')
+    const configPath = join(directory, 'opencode.json')
+    vi.stubEnv(LOOPTROOP_OPENCODE_ROUTING_CONFIG, configPath)
+    invalidateOpenCodeConnection()
+    const fetchSpy = vi.spyOn(globalThis, 'fetch').mockRejectedValue(new Error('offline'))
+    db.insert(profiles).values({
+      mainImplementer: 'openrouter/deepseek/deepseek-v4-flash:floor',
+      councilMembers: JSON.stringify([
+        'openrouter/deepseek/deepseek-v4-flash:floor',
+        'openrouter/openrouter/free:free',
+      ]),
+    }).run()
+
+    try {
+      const response = await createProfileApp().request('/api/profile', {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ opencodeRetryLimit: 5 }),
+      })
+
+      expect(response.status).toBe(200)
+      expect(fetchSpy).not.toHaveBeenCalled()
+      expect(existsSync(configPath)).toBe(false)
+    } finally {
+      removeTempDir(directory)
+    }
+  })
+
+  it.each(['POST', 'PATCH'] as const)('rejects %s OpenRouter model changes before config or profile writes while a prompt is active', async (method) => {
+    const directory = makeTempDir('looptroop-profile-busy-')
+    const configPath = join(directory, 'opencode.json')
+    vi.stubEnv(LOOPTROOP_OPENCODE_ROUTING_CONFIG, configPath)
+    mockGetOpenCodeConnection.mockResolvedValue({ protocol: 'v2', version: '2.0.16', headers: {} })
+    vi.mocked(validateModelSelection).mockResolvedValue({
+      mainImplementer: 'openrouter/deepseek/deepseek-v4-flash:floor',
+      councilMembers: ['openrouter/deepseek/deepseek-v4-flash:floor'],
+    })
+    if (method === 'PATCH') {
+      db.insert(profiles).values({
+        mainImplementer: 'openai/gpt-5.4',
+        councilMembers: JSON.stringify(['openai/gpt-5.4']),
+      }).run()
+    }
+    const before = db.select().from(profiles).get()
+    const releasePrompt = beginOpenCodePromptActivity()
+
+    try {
+      const response = await createProfileApp().request('/api/profile', {
+        method,
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          mainImplementer: 'openrouter/deepseek/deepseek-v4-flash:floor',
+          councilMembers: '["openrouter/deepseek/deepseek-v4-flash:floor"]',
+        }),
+      })
+
+      expect(response.status).toBe(409)
+      expect(await response.json()).toMatchObject({ error: expect.stringContaining('active work') })
+      expect(existsSync(configPath)).toBe(false)
+      expect(db.select().from(profiles).get()).toEqual(before)
+    } finally {
+      releasePrompt()
+      removeTempDir(directory)
+    }
   })
 
   it('rejects out-of-range PRD, beads coverage, structured retry, and OpenCode retry values', async () => {

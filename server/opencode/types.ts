@@ -37,6 +37,7 @@ export interface OpenCodeSessionCreateOptions {
 
 export interface OpenCodeQuestionOption {
   label: string
+  value?: string
   description?: string
 }
 
@@ -353,7 +354,9 @@ export type StreamEvent =
 
 export interface HealthStatus {
   available: boolean
+  protocol?: 'v1' | 'v2'
   version?: string
   models?: string[]
+  failureKind?: 'authentication' | 'unsupported_protocol' | 'network' | 'model_discovery'
   error?: string
 }

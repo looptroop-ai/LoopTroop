@@ -4,10 +4,10 @@ import {
   inspectPortOccupants,
   type PortOccupantInspection,
 } from './port-occupants'
-import { getOpenCodeBasicAuthHeader } from '../shared/opencodeAuth'
 import { getErrorMessage } from '../shared/typeGuards'
 import { isLoopbackHost } from '../shared/appConfig'
 import { isWildcardHost } from './dev-host-mode'
+import { probeOpenCodeConnection, OpenCodeConnectionError } from '../server/opencode/connection'
 
 const MAX_PORT_SCAN_ATTEMPTS = 50
 
@@ -99,17 +99,17 @@ async function canConnect(hostname: string, port: number) {
 }
 
 async function isOpenCodeResponding(url: URL, hostname: string, port: number) {
+  const urlHost = hostname.includes(':') ? `[${hostname}]` : hostname
+  const baseUrl = `${url.protocol}//${urlHost}:${port}${url.pathname === '/' ? '' : url.pathname.replace(/\/$/, '')}`
   try {
-    const authHeader = getOpenCodeBasicAuthHeader()
-    const urlHost = hostname.includes(':') ? `[${hostname}]` : hostname
-    const res = await fetch(`${url.protocol}//${urlHost}:${port}/provider`, {
-      redirect: 'error',
-      ...(authHeader ? { headers: { Authorization: authHeader } } : {}),
-      signal: AbortSignal.timeout(1000),
-    })
-    return res.ok
-  } catch {
-    return false
+    await probeOpenCodeConnection(baseUrl, AbortSignal.timeout(1000))
+    return true
+  } catch (error) {
+    if (error instanceof Error && error.name === 'TimeoutError') return false
+    if (error instanceof OpenCodeConnectionError && error.failureKind === 'network' && error.status === undefined) {
+      return false
+    }
+    throw error
   }
 }
 
@@ -205,18 +205,37 @@ export async function resolveOpenCodeBaseUrl(options: ResolveOptions): Promise<R
   const port = getPort(url)
   const probeHosts = getProbeHosts(url)
 
+  let occupiedResponseHost: string | undefined
+  let authenticationFailureHost: string | undefined
   for (const host of probeHosts) {
-    if (await deps.isOpenCodeResponding(url, host, port)) {
-      return {
-        baseUrl: normalizedBaseUrl,
-        note: `OpenCode already reachable at ${normalizedBaseUrl}; reusing it.`,
-        status: 'already-running',
+    try {
+      if (await deps.isOpenCodeResponding(url, host, port)) {
+        return {
+          baseUrl: normalizedBaseUrl,
+          note: `OpenCode already reachable at ${normalizedBaseUrl}; reusing it.`,
+          status: 'already-running',
+        }
       }
+    } catch (error) {
+      if (!(error instanceof OpenCodeConnectionError)) throw error
+      if (error.failureKind === 'authentication' && hasExplicitBaseUrl) {
+        throw new Error(
+          `Configured OpenCode URL ${normalizedBaseUrl} requires valid credentials. Set OPENCODE_PASSWORD for v2 or OPENCODE_SERVER_PASSWORD for v1. ${error.message}`,
+          { cause: error },
+        )
+      }
+      const responseProvesOccupancy = error.failureKind === 'authentication'
+        || error.failureKind === 'unsupported_protocol'
+        || (error.failureKind === 'network' && error.status !== undefined)
+      if (hasExplicitBaseUrl || !responseProvesOccupancy) throw error
+      occupiedResponseHost = host
+      if (error.failureKind === 'authentication') authenticationFailureHost = host
+      break
     }
   }
 
   for (const host of probeHosts) {
-    if (!(await deps.canConnect(host, port))) continue
+    if (host !== occupiedResponseHost && !(await deps.canConnect(host, port))) continue
 
     if (hasExplicitBaseUrl) {
       throw new Error(
@@ -247,7 +266,9 @@ export async function resolveOpenCodeBaseUrl(options: ResolveOptions): Promise<R
     return {
       baseUrl: formatBaseUrl(fallbackUrl),
       note: withOccupantDetails(
-        `Port ${port} is occupied on ${host}; using ${formatBaseUrl(fallbackUrl)} for OpenCode instead.`,
+        authenticationFailureHost === host
+          ? `Configured OpenCode credentials were rejected at ${normalizedBaseUrl}; using ${formatBaseUrl(fallbackUrl)} for OpenCode instead.`
+          : `Port ${port} is occupied on ${host}; using ${formatBaseUrl(fallbackUrl)} for OpenCode instead.`,
         port,
         deps,
       ),

@@ -268,6 +268,34 @@ describe('abandoning a start that never reported ready', () => {
     expect(existsSync(getDaemonStatePath(configDir))).toBe(false)
   })
 
+  it('preserves owned server evidence when the tokenless child reused a daemon pid', async () => {
+    const configDir = makeConfigDir()
+    const child = spawnHungChild()
+    const pid = child.pid ?? 0
+    writeLockFor(configDir, pid, null)
+    writeDaemonState({
+      instanceId: 'prior-owned-server',
+      pid,
+      host: '127.0.0.1',
+      port: 4317,
+      startedAt: new Date().toISOString(),
+      version: '0.0.0-test',
+      apiToken: 'test-token',
+      opencode: { baseUrl: 'http://127.0.0.1:4096', owned: true, pid: pid + 1 },
+    }, configDir)
+
+    const message = await abandonFailedStart(configDir, child, null)
+
+    expect(await waitForDeath(pid)).toBe(true)
+    expect(message).toMatch(/Stopped the daemon/)
+    expect(existsSync(getDaemonLockPath(configDir))).toBe(false)
+    expect(JSON.parse(readFileSync(getDaemonStatePath(configDir), 'utf8'))).toMatchObject({
+      instanceId: 'prior-owned-server',
+      pid,
+      opencode: { owned: true, pid: pid + 1 },
+    })
+  })
+
   it('leaves the state file of a daemon that started while this one was timing out', async () => {
     const configDir = makeConfigDir()
     const child = spawnHungChild()

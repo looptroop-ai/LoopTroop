@@ -12,6 +12,9 @@ import {
   type DaemonHandle,
 } from '../server/daemon/startDaemon'
 import { OpenCodeSupervisor } from '../server/opencode/supervisor'
+import * as daemonPaths from '../server/lib/daemonPaths'
+import * as processControl from '../server/cli/processControl'
+import * as processIdentity from '../server/lib/processIdentity'
 import { getDaemonLockPath, getDaemonStatePath, writeDaemonStartFailure, writeDaemonState, type DaemonState } from '../server/lib/daemonPaths'
 import { resolveSettings } from '../server/lib/appSettings'
 import { APP_SCHEMA_VERSION } from '../server/db/schemaVersion'
@@ -229,6 +232,142 @@ describe('daemon startup and shutdown', () => {
     })).rejects.toBeInstanceOf(DaemonShutdownPendingError)
     expect(JSON.parse(readFileSync(getDaemonStatePath(configDir), 'utf8'))).toMatchObject(pending)
     expect(existsSync(getDaemonLockPath(configDir))).toBe(false)
+  })
+
+  function writeOwnedOrphan(configDir: string): DaemonState {
+    const state: DaemonState = {
+      instanceId: 'previous-daemon',
+      pid: 12_341,
+      port: 4096,
+      host: '127.0.0.1',
+      startedAt: '2026-01-02T03:04:05.000Z',
+      version: '0.0.0-test',
+      startToken: 'previous-daemon-token',
+      apiToken: 'previous-api-token',
+      opencode: {
+        baseUrl: 'http://127.0.0.1:4096',
+        owned: true,
+        status: 'managed',
+        pid: 12_342,
+        startToken: 'previous-opencode-token',
+      },
+    }
+    writeDaemonState(state, configDir)
+    return state
+  }
+
+  function mockPreviousDaemonAndChild(
+    state: DaemonState,
+    childIdentity: { kind: 'same' | 'different' | 'unknown', reason?: string } = { kind: 'same' },
+  ) {
+    const alive = vi.spyOn(processControl, 'isProcessAlive').mockImplementation(pid => pid === state.opencode?.pid)
+    const identity = vi.spyOn(processIdentity, 'matchProcess').mockImplementation((pid) => {
+      if (pid === state.opencode?.pid) {
+        return childIdentity.kind === 'unknown'
+          ? { kind: 'unknown', reason: childIdentity.reason ?? 'the platform cannot read its start token' }
+          : { kind: childIdentity.kind }
+      }
+      return { kind: 'different' }
+    })
+    return () => {
+      identity.mockRestore()
+      alive.mockRestore()
+    }
+  }
+
+  it.each([
+    ['an authentication failure', 'reject' as const],
+    ['a healthy adopted server', 'adopt' as const],
+  ])('blocks an owned orphan before the supervisor can reach %s', async (_description, supervisorOutcome) => {
+    const configDir = makeConfigDir()
+    const previous = writeOwnedOrphan(configDir)
+    const restoreIdentity = mockPreviousDaemonAndChild(previous)
+    const startSpy = vi.spyOn(OpenCodeSupervisor.prototype, 'start')
+    if (supervisorOutcome === 'reject') {
+      startSpy.mockRejectedValue(new Error('OpenCode returned 401 Unauthorized'))
+    } else {
+      startSpy.mockResolvedValue({ kind: 'adopted', baseUrl: previous.opencode!.baseUrl })
+    }
+
+    try {
+      await expect(startDaemon({
+        configDir,
+        settings: ephemeralSettings(),
+        version: '0.0.0-test',
+      })).rejects.toBeInstanceOf(DaemonStartBlockedError)
+
+      expect(startSpy).not.toHaveBeenCalled()
+      expect(JSON.parse(readFileSync(getDaemonStatePath(configDir), 'utf8'))).toMatchObject({
+        startFailure: {
+          reason: 'startup-cleanup-incomplete',
+          openCode: {
+            baseUrl: previous.opencode?.baseUrl,
+            pid: previous.opencode?.pid,
+            startToken: previous.opencode?.startToken,
+          },
+        },
+      })
+      expect(existsSync(getDaemonLockPath(configDir))).toBe(false)
+    } finally {
+      startSpy.mockRestore()
+      restoreIdentity()
+    }
+  })
+
+  it('preserves the old ownership record and releases the lock if orphan recovery cannot be recorded', async () => {
+    const configDir = makeConfigDir()
+    const previous = writeOwnedOrphan(configDir)
+    const restoreIdentity = mockPreviousDaemonAndChild(previous)
+    const writeFailure = vi.spyOn(daemonPaths, 'writeDaemonStartFailure').mockImplementation(() => {
+      throw new Error('disk full')
+    })
+    const startSpy = vi.spyOn(OpenCodeSupervisor.prototype, 'start')
+
+    try {
+      await expect(startDaemon({
+        configDir,
+        settings: ephemeralSettings(),
+        version: '0.0.0-test',
+      })).rejects.toThrow(/could not save its cleanup record/i)
+
+      expect(writeFailure).toHaveBeenCalledOnce()
+      expect(startSpy).not.toHaveBeenCalled()
+      expect(JSON.parse(readFileSync(getDaemonStatePath(configDir), 'utf8'))).toEqual(previous)
+      expect(existsSync(getDaemonLockPath(configDir))).toBe(false)
+    } finally {
+      startSpy.mockRestore()
+      writeFailure.mockRestore()
+      restoreIdentity()
+    }
+  })
+
+  it.each(['previous daemon', 'owned OpenCode child'])('preserves state when the %s identity is unknown', async unknownOwner => {
+    const configDir = makeConfigDir()
+    const previous = writeOwnedOrphan(configDir)
+    const alive = vi.spyOn(processControl, 'isProcessAlive').mockImplementation((pid) => {
+      return unknownOwner === 'previous daemon' ? pid === previous.pid : pid === previous.opencode?.pid
+    })
+    const identity = vi.spyOn(processIdentity, 'matchProcess').mockReturnValue({
+      kind: 'unknown',
+      reason: 'the platform cannot report its start identity',
+    })
+    const startSpy = vi.spyOn(OpenCodeSupervisor.prototype, 'start')
+
+    try {
+      await expect(startDaemon({
+        configDir,
+        settings: ephemeralSettings(),
+        version: '0.0.0-test',
+      })).rejects.toThrow(/identity cannot be verified|alive but the platform cannot report/i)
+
+      expect(startSpy).not.toHaveBeenCalled()
+      expect(JSON.parse(readFileSync(getDaemonStatePath(configDir), 'utf8'))).toEqual(previous)
+      expect(existsSync(getDaemonLockPath(configDir))).toBe(false)
+    } finally {
+      startSpy.mockRestore()
+      identity.mockRestore()
+      alive.mockRestore()
+    }
   })
 
   it('persists a token that authenticates a CLI which did not start the daemon', async () => {

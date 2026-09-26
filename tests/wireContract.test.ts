@@ -236,12 +236,13 @@ describe('wire contract', () => {
     tempDirs.push(dir)
     process.env.LOOPTROOP_CONFIG_DIR = dir
 
-    // An empty config directory means an empty "latest versions" cache, which
-    // is what sends `getLatestToolVersions` to npm and GitHub for all five
-    // tools. Those answers only decorate a `detail` string and cannot move a
-    // check *name*, so live requests here would buy nothing and cost a wait on
-    // `AbortSignal.timeout` on any runner without egress. `fetchVersion`
-    // swallows the rejection and keeps the name, which is all this asserts.
+    // An empty config directory means an empty "latest versions" cache. The
+    // installed OpenCode CLI version chooses its package source; if no supported
+    // version is installed, that lookup is skipped. These answers only decorate
+    // a `detail` string and cannot move a check *name*, so live requests here
+    // would buy nothing and cost a wait on `AbortSignal.timeout` on any runner
+    // without egress. `fetchVersion` swallows the rejection and keeps the name,
+    // which is all this asserts.
     vi.stubGlobal('fetch', () => Promise.reject(new Error('offline by design')))
 
     let captured = ''

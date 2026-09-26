@@ -56,6 +56,11 @@ describe('session continuation eligibility', () => {
     ['HTTP 413', diagnostics({ summary: 'request_too_large: payload exceeds context window', statusCode: 413, isRetryable: true }), []],
     ['HTTP 422', diagnostics({ summary: 'unprocessable entity', statusCode: 422, isRetryable: true }), []],
     ['uncommon 4xx with transient-looking text but no retryable flag', diagnostics({ summary: 'rate limit text on unsupported client error', statusCode: 418, isRetryable: false }), []],
+    ['receipt ambiguity uses the runtime classification', diagnostics({
+      kind: 'runtime',
+      source: 'opencode',
+      summary: 'OpenCode may have accepted the v2 prompt, but its inbox receipt could not be verified.',
+    }), []],
     ['invalid request', diagnostics({ summary: 'invalid_request: payload is invalid', statusCode: 400 }), []],
     ['billing', diagnostics({ summary: 'billing account disabled', isRetryable: true }), []],
     ['insufficient quota', diagnostics({ summary: 'insufficient_quota: quota exhausted', isRetryable: true }), []],

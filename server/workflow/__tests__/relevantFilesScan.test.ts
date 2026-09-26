@@ -84,6 +84,7 @@ describe('handleRelevantFilesScan', () => {
 
   it('retries once in the same session after a prompt echo and succeeds with the corrected artifact', async () => {
     const { ticket, context, paths } = await createInitializedTicket()
+    context.lockedMainImplementerVariant = 'xhigh'
     const sendEvent = vi.fn()
 
     runOpenCodePromptMock.mockResolvedValueOnce({
@@ -127,10 +128,12 @@ describe('handleRelevantFilesScan', () => {
     expect(runOpenCodeSessionPromptMock.mock.calls[0]?.[0]).toMatchObject({
       session: { id: 'ses-1' },
       model: TEST.implementer,
+      variant: 'xhigh',
       toolPolicy: 'default',
     })
     expect(runOpenCodePromptMock.mock.calls[0]?.[0]).toMatchObject({
       model: TEST.implementer,
+      variant: 'xhigh',
       toolPolicy: 'default',
       timeoutKind: 'ai_response',
       timeoutMs: expect.any(Number),
@@ -269,6 +272,7 @@ describe('handleRelevantFilesScan', () => {
 
   it('restarts the scan in a fresh session after an empty response instead of sending a structured retry prompt', async () => {
     const { ticket, context, paths } = await createInitializedTicket()
+    context.lockedMainImplementerVariant = 'high'
     const sendEvent = vi.fn()
 
     runOpenCodePromptMock
@@ -310,6 +314,7 @@ describe('handleRelevantFilesScan', () => {
 
     expect(runOpenCodePromptMock).toHaveBeenCalledTimes(2)
     expect(runOpenCodeSessionPromptMock).not.toHaveBeenCalled()
+    expect(runOpenCodePromptMock.mock.calls.map(([options]) => options.variant)).toEqual(['high', 'high'])
     expect(sendEvent).toHaveBeenCalledWith({ type: 'RELEVANT_FILES_READY' })
     expect(existsSync(`${paths.ticketDir}/relevant-files.yaml`)).toBe(true)
 
@@ -518,6 +523,7 @@ describe('handleRelevantFilesScan', () => {
 
     // Should NOT have retried — normalizer recovered directly
     expect(runOpenCodeSessionPromptMock).not.toHaveBeenCalled()
+    expect(runOpenCodePromptMock.mock.calls[0]?.[0]?.variant).toBeUndefined()
     expect(sendEvent).toHaveBeenCalledWith({ type: 'RELEVANT_FILES_READY' })
 
     const relevantFilesPath = `${paths.ticketDir}/relevant-files.yaml`

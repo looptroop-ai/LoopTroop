@@ -32,6 +32,7 @@ import { spawn, spawnSync, type ChildProcess } from 'node:child_process'
 import { existsSync, lstatSync, readFileSync, statSync } from 'node:fs'
 import { isAbsolute, resolve } from 'node:path'
 import { resolveTrustedProgram } from '../lib/executablePath'
+import { createChildEnvironment } from '../lib/childEnvironment'
 import * as commandLogger from '../log/commandLogger'
 import { terminateProcessTree } from '../lib/processTree'
 
@@ -268,7 +269,7 @@ function logCmd(
 
 function buildEnv(extra: NodeJS.ProcessEnv | undefined, preserveCoreSshCommand = false): NodeJS.ProcessEnv {
   // `gh` shells out to git, so the non-interactive pair is applied to both.
-  const env = { ...process.env, ...NON_INTERACTIVE_GIT_ENV, ...extra }
+  const env = createChildEnvironment({ ...process.env, ...NON_INTERACTIVE_GIT_ENV, ...extra })
   // Preserve an explicitly configured SSH wrapper/command; otherwise make
   // Git's SSH transport fail closed instead of opening /dev/tty for prompts.
   // Check the values rather than property presence: callers sometimes carry

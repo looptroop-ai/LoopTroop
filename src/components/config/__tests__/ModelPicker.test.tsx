@@ -1,12 +1,13 @@
 import { fireEvent, render, screen, within } from '@testing-library/react'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 import { ModelPicker } from '../ModelPicker'
-import { useAllOpenCodeModels, useOpenCodeModels, type OpenCodeModel } from '@/hooks/useOpenCodeModels'
+import { useAllOpenCodeModels, useOpenCodeModelCatalog, useOpenCodeModels, type OpenCodeModel } from '@/hooks/useOpenCodeModels'
 
 vi.mock('@/hooks/useOpenCodeModels', async () => {
   const actual = await vi.importActual<typeof import('@/hooks/useOpenCodeModels')>('@/hooks/useOpenCodeModels')
   return {
     ...actual,
+    useOpenCodeModelCatalog: vi.fn(),
     useOpenCodeModels: vi.fn(),
     useAllOpenCodeModels: vi.fn(),
   }
@@ -58,19 +59,107 @@ const models: OpenCodeModel[] = [
     canUseTools: true,
     status: 'stable',
   },
+  {
+    id: 'unknown-cost',
+    name: 'Unknown Cost',
+    fullId: 'local/unknown-cost',
+    providerID: 'local',
+    providerName: 'Local',
+    family: 'local',
+    costInput: null,
+    costOutput: null,
+    contextWindow: 8_000,
+    canReason: null,
+    canSeeImages: null,
+    canUseTools: null,
+    status: 'stable',
+  },
+  {
+    id: 'output-priced',
+    name: 'Output priced',
+    fullId: 'local/output-priced',
+    providerID: 'local',
+    providerName: 'Local',
+    family: 'local',
+    costInput: 0,
+    costOutput: 1,
+    contextWindow: 8_000,
+    canReason: null,
+    canSeeImages: null,
+    canUseTools: null,
+    status: 'stable',
+  },
+  {
+    id: 'tiered-output',
+    name: 'Tiered output',
+    fullId: 'local/tiered-output',
+    providerID: 'local',
+    providerName: 'Local',
+    family: 'local',
+    costInput: null,
+    costOutput: null,
+    costTiers: [
+      { input: 0, output: 1 },
+      { input: 0, output: 4 },
+    ],
+    contextWindow: 8_000,
+    canReason: null,
+    canSeeImages: null,
+    canUseTools: null,
+    status: 'stable',
+  },
+  {
+    id: 'same-bucket-range',
+    name: 'Same bucket range',
+    fullId: 'local/same-bucket-range',
+    providerID: 'local',
+    providerName: 'Local',
+    family: 'local',
+    costInput: null,
+    costOutput: null,
+    costTiers: [
+      { input: 0.1, output: 0.2 },
+      { input: 0.2, output: 0.3 },
+    ],
+    contextWindow: 8_000,
+    canReason: null,
+    canSeeImages: null,
+    canUseTools: null,
+    status: 'stable',
+  },
+  {
+    id: 'cache-priced',
+    name: 'Cache priced',
+    fullId: 'local/cache-priced',
+    providerID: 'local',
+    providerName: 'Local',
+    family: 'local',
+    costInput: null,
+    costOutput: null,
+    costTiers: [{ input: 0, output: 0, cacheRead: 0.1 }],
+    contextWindow: 8_000,
+    canReason: null,
+    canSeeImages: null,
+    canUseTools: null,
+    status: 'stable',
+  },
 ]
 
-function mockModelsQuery(data: OpenCodeModel[] = models) {
-  const result = {
+function mockModelsQuery(data: OpenCodeModel[] = models, allData = data) {
+  const connectedResult = {
     data,
     isLoading: false,
     isError: false,
     error: null,
     isFetching: false,
   }
+  const allResult = { ...connectedResult, data: allData }
 
-  vi.mocked(useOpenCodeModels).mockReturnValue(result as ReturnType<typeof useOpenCodeModels>)
-  vi.mocked(useAllOpenCodeModels).mockReturnValue(result as ReturnType<typeof useAllOpenCodeModels>)
+  vi.mocked(useOpenCodeModels).mockReturnValue(connectedResult as ReturnType<typeof useOpenCodeModels>)
+  vi.mocked(useOpenCodeModelCatalog).mockReturnValue({
+    data: { models: data, connectedProviders: ['openai', 'anthropic', 'local'], defaultModels: {}, catalogScope: 'connected' },
+  } as ReturnType<typeof useOpenCodeModelCatalog>)
+  vi.mocked(useAllOpenCodeModels).mockReturnValue(allResult as ReturnType<typeof useAllOpenCodeModels>)
 }
 
 describe('ModelPicker', () => {
@@ -106,6 +195,69 @@ describe('ModelPicker', () => {
     expect(useAllOpenCodeModels).toHaveBeenLastCalledWith(true)
   })
 
+  it('selects a model found only in the all-provider catalog', () => {
+    const allProviderModel: OpenCodeModel = {
+      ...models[0]!,
+      id: 'gemini-all-only',
+      name: 'Gemini All Only',
+      fullId: 'google/gemini-all-only',
+      providerID: 'google',
+      providerName: 'Google',
+    }
+    mockModelsQuery(models, [...models, allProviderModel])
+    const onChange = vi.fn()
+    render(<ModelPicker value="" onChange={onChange} />)
+
+    fireEvent.click(screen.getByRole('button', { name: /^Pick a model/ }))
+    fireEvent.click(screen.getByRole('checkbox', { name: /Show all providers/i }))
+    fireEvent.click(screen.getByRole('option', { name: /Gemini All Only/ }))
+
+    expect(onChange).toHaveBeenCalledExactlyOnceWith(allProviderModel.fullId)
+  })
+
+  it('hides the all-provider control when v2 only reports available models', () => {
+    vi.mocked(useOpenCodeModelCatalog).mockReturnValue({
+      data: { models, connectedProviders: ['openai'], defaultModels: {}, catalogScope: 'available' },
+    } as ReturnType<typeof useOpenCodeModelCatalog>)
+    render(<ModelPicker value="" onChange={vi.fn()} />)
+
+    fireEvent.click(screen.getByRole('button', { name: /^Pick a model/ }))
+
+    expect(screen.queryByRole('checkbox', { name: /Show all providers/i })).not.toBeInTheDocument()
+    expect(useAllOpenCodeModels).toHaveBeenLastCalledWith(false)
+  })
+
+  it('hides unknown cost and capability metadata and excludes unknown cost from the free filter', () => {
+    render(<ModelPicker value="" onChange={vi.fn()} />)
+    fireEvent.click(screen.getByRole('button', { name: /^Pick a model/ }))
+
+    const unknownOption = screen.getByRole('option', { name: /Unknown Cost/ })
+    expect(within(unknownOption).queryByText('Free')).not.toBeInTheDocument()
+    expect(within(unknownOption).queryByText('reasoning')).not.toBeInTheDocument()
+    expect(within(unknownOption).queryByText('vision')).not.toBeInTheDocument()
+    expect(within(unknownOption).queryByText('tools')).not.toBeInTheDocument()
+
+    const outputPricedOption = screen.getByRole('option', { name: /Output priced/ })
+    const tieredOutputOption = screen.getByRole('option', { name: /Tiered output/ })
+    const sameBucketOption = screen.getByRole('option', { name: /Same bucket range/ })
+    const cachePricedOption = screen.getByRole('option', { name: /Cache priced/ })
+    expect(within(outputPricedOption).queryByText('Free')).not.toBeInTheDocument()
+    expect(within(outputPricedOption).getByText('$')).toBeInTheDocument()
+    expect(within(tieredOutputOption).queryByText('Free')).not.toBeInTheDocument()
+    expect(within(tieredOutputOption).getByText('$–$$')).toBeInTheDocument()
+    expect(within(sameBucketOption).getByText('Cheap')).toBeInTheDocument()
+    expect(within(sameBucketOption).queryByText(/–/)).not.toBeInTheDocument()
+    expect(within(cachePricedOption).queryByText('Free')).not.toBeInTheDocument()
+    expect(within(cachePricedOption).getByText('Cheap')).toBeInTheDocument()
+
+    fireEvent.click(screen.getByLabelText('Show free models only'))
+    expect(screen.getByRole('option', { name: /local\/same-name/ })).toBeInTheDocument()
+    expect(screen.queryByRole('option', { name: /Unknown Cost/ })).not.toBeInTheDocument()
+    expect(screen.queryByRole('option', { name: /Output priced/ })).not.toBeInTheDocument()
+    expect(screen.queryByRole('option', { name: /Tiered output/ })).not.toBeInTheDocument()
+    expect(screen.queryByRole('option', { name: /Cache priced/ })).not.toBeInTheDocument()
+  })
+
   it('announces model discovery loading and errors without changing the picker role', () => {
     vi.mocked(useOpenCodeModels).mockReturnValue({
       data: undefined,
@@ -137,6 +289,29 @@ describe('ModelPicker', () => {
     fireEvent.click(screen.getByRole('button', { name: /^Pick a model/ }))
     fireEvent.click(screen.getByRole('button', { name: /^Pick a model/ }))
     expect(screen.getByRole('alert')).toHaveTextContent('could not reach OpenCode')
+  })
+
+  it('shows the credential names to check after OpenCode rejects authentication', () => {
+    const error = new Error('OpenCode rejected the configured credentials. Check OPENCODE_PASSWORD.')
+    vi.mocked(useOpenCodeModels).mockReturnValue({
+      data: undefined,
+      isLoading: false,
+      isError: true,
+      error,
+      isFetching: false,
+    } as ReturnType<typeof useOpenCodeModels>)
+    vi.mocked(useAllOpenCodeModels).mockReturnValue({
+      data: undefined,
+      isLoading: false,
+      isError: false,
+      error: null,
+      isFetching: false,
+    } as ReturnType<typeof useAllOpenCodeModels>)
+    render(<ModelPicker value="" onChange={vi.fn()} />)
+    fireEvent.click(screen.getByRole('button', { name: /^Pick a model/ }))
+
+    expect(screen.getByRole('alert')).toHaveTextContent('OPENCODE_PASSWORD')
+    expect(screen.getByRole('alert')).toHaveTextContent('OPENCODE_SERVER_PASSWORD')
   })
 
   it('shows the stored full id in parentheses beside the pretty name in the open list', () => {
@@ -345,7 +520,7 @@ describe('ModelPicker — combobox', () => {
     expect(search).toHaveValue('')
     expect(search).toHaveFocus()
     expect(search).not.toHaveAttribute('aria-activedescendant')
-    expect(screen.getAllByRole('option')).toHaveLength(3)
+    expect(screen.getAllByRole('option')).toHaveLength(8)
     expect(onChange).not.toHaveBeenCalled()
   })
 

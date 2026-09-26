@@ -89,6 +89,13 @@ describe('PendingQuestionsPanel', () => {
     expect(screen.getByText('4:00')).toBeInTheDocument()
   })
 
+  it('reloads pending questions when the panel mounts after a reconnect', () => {
+    const refreshTicket = vi.fn()
+    renderPanel({ refreshTicket })
+
+    expect(refreshTicket).toHaveBeenCalledExactlyOnceWith(TICKET_ID)
+  })
+
   it('reopens a mounted collapsed panel on delete without clearing another ticket preference', () => {
     const otherTicketId = 'proj-1:LOOP-2'
     localStorage.setItem(getTicketQuestionsCollapsedStorageKey(TICKET_ID), '1')
@@ -165,7 +172,7 @@ describe('PendingQuestionsPanel', () => {
     expect(screen.getByText(/waits until you answer or skip/i)).toBeInTheDocument()
   })
 
-  it('submits the selected option together with the free text', () => {
+  it('submits single-choice free text as an alternative to the selected option', () => {
     const answerRequest = vi.fn()
     renderPanel({
       getTicketRequests: () => [makeRequest()],
@@ -176,10 +183,103 @@ describe('PendingQuestionsPanel', () => {
 
     fireEvent.click(screen.getByLabelText('SQLite'))
     fireEvent.change(screen.getByRole('textbox'), { target: { value: 'in ./data' } })
+    expect(screen.getByLabelText('SQLite')).not.toBeChecked()
     fireEvent.click(screen.getByRole('button', { name: 'Send answer' }))
 
-    // Free text adds to the selection rather than replacing it.
-    expect(answerRequest).toHaveBeenCalledWith(TICKET_ID, 'req_a', [['SQLite', 'in ./data']])
+    expect(answerRequest).toHaveBeenCalledWith(TICKET_ID, 'req_a', [['in ./data']])
+  })
+
+  it('clears single-choice free text when an option is selected', () => {
+    const answerRequest = vi.fn()
+    renderPanel({
+      getTicketRequests: () => [makeRequest()],
+      getTimer: () => makeTimer(),
+      getRemainingMs: () => 240_000,
+      answerRequest,
+    })
+
+    fireEvent.change(screen.getByRole('textbox'), { target: { value: 'in ./data' } })
+    fireEvent.click(screen.getByLabelText('SQLite'))
+    expect(screen.getByRole('textbox')).toHaveValue('')
+    expect(screen.getByLabelText('SQLite')).toBeChecked()
+    fireEvent.click(screen.getByRole('button', { name: 'Send answer' }))
+
+    expect(answerRequest).toHaveBeenCalledWith(TICKET_ID, 'req_a', [['SQLite']])
+  })
+
+  it('keeps free text additive for multiple-choice answers', () => {
+    const answerRequest = vi.fn()
+    renderPanel({
+      getTicketRequests: () => [makeRequest({
+        questions: [{
+          header: 'Targets',
+          question: 'Which targets?',
+          options: [{ label: 'Desktop' }, { label: 'Web' }],
+          multiple: true,
+          custom: true,
+        }],
+      })],
+      getTimer: () => makeTimer(),
+      getRemainingMs: () => 240_000,
+      answerRequest,
+    })
+
+    fireEvent.click(screen.getByLabelText('Desktop'))
+    fireEvent.change(screen.getByRole('textbox'), { target: { value: 'in ./data' } })
+    expect(screen.getByLabelText('Desktop')).toBeChecked()
+    fireEvent.click(screen.getByRole('button', { name: 'Send answer' }))
+
+    expect(answerRequest).toHaveBeenCalledWith(TICKET_ID, 'req_a', [['Desktop', 'in ./data']])
+  })
+
+  it('displays option labels and submits option values for single-select answers', () => {
+    const answerRequest = vi.fn()
+    renderPanel({
+      getTicketRequests: () => [makeRequest({
+        questions: [{
+          header: 'Mode',
+          question: 'Which mode?',
+          options: [{ label: 'Fast mode', value: 'fast' }],
+          custom: false,
+        }],
+      })],
+      getTimer: () => makeTimer(),
+      getRemainingMs: () => 240_000,
+      answerRequest,
+    })
+
+    fireEvent.click(screen.getByLabelText('Fast mode'))
+    expect(screen.getByText('Fast mode')).toBeInTheDocument()
+    fireEvent.click(screen.getByRole('button', { name: 'Send answer' }))
+
+    expect(answerRequest).toHaveBeenCalledWith(TICKET_ID, 'req_a', [['fast']])
+  })
+
+  it('submits option values for each selected multiselect answer', () => {
+    const answerRequest = vi.fn()
+    renderPanel({
+      getTicketRequests: () => [makeRequest({
+        questions: [{
+          header: 'Targets',
+          question: 'Which targets?',
+          options: [
+            { label: 'Desktop', value: 'desktop-app' },
+            { label: 'Web', value: 'web-app' },
+          ],
+          multiple: true,
+          custom: false,
+        }],
+      })],
+      getTimer: () => makeTimer(),
+      getRemainingMs: () => 240_000,
+      answerRequest,
+    })
+
+    fireEvent.click(screen.getByLabelText('Desktop'))
+    fireEvent.click(screen.getByLabelText('Web'))
+    fireEvent.click(screen.getByRole('button', { name: 'Send answer' }))
+
+    expect(answerRequest).toHaveBeenCalledWith(TICKET_ID, 'req_a', [['desktop-app', 'web-app']])
   })
 
   it('will not send until every question in the batch has an answer', () => {
@@ -261,7 +361,7 @@ describe('PendingQuestionsPanel', () => {
     expect(answerRequest).toHaveBeenCalledWith(TICKET_ID, 'req_a', [['use the default port']])
   })
 
-  it('keeps free text that happens to match an option label', () => {
+  it('keeps matching single-choice free text distinct from an option', () => {
     const answerRequest = vi.fn()
     renderPanel({
       getTicketRequests: () => [makeRequest()],
@@ -275,9 +375,11 @@ describe('PendingQuestionsPanel', () => {
     // this as a selection and dropped it out of the box as you typed.
     fireEvent.change(screen.getByRole('textbox'), { target: { value: 'Postgres' } })
     expect(screen.getByRole('textbox')).toHaveValue('Postgres')
+    expect(screen.getByRole('radio', { name: 'SQLite' })).not.toBeChecked()
+    expect(screen.getByRole('radio', { name: 'Postgres' })).not.toBeChecked()
 
     fireEvent.click(screen.getByRole('button', { name: 'Send answer' }))
-    expect(answerRequest).toHaveBeenCalledWith(TICKET_ID, 'req_a', [['SQLite', 'Postgres']])
+    expect(answerRequest).toHaveBeenCalledWith(TICKET_ID, 'req_a', [['Postgres']])
   })
 
   it('does not read the countdown out once a second', () => {

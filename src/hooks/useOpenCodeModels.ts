@@ -1,5 +1,5 @@
 import { useQuery, type QueryClient } from '@tanstack/react-query'
-import type { OpenCodeCatalogModel } from '@shared/opencodeCatalog'
+import type { OpenCodeCatalogModel, OpenCodeCatalogScope } from '@shared/opencodeCatalog'
 import {
   MODEL_FETCH_RETRY_COUNT,
   MODEL_FETCH_RETRY_DELAY_MS,
@@ -12,11 +12,12 @@ interface ModelsApiResponse {
   models: OpenCodeCatalogModel[]
   connectedProviders: string[]
   defaultModels: Record<string, string>
+  catalogScope?: OpenCodeCatalogScope
   message?: string
-  code?: 'OPENCODE_UNREACHABLE' | 'OPENCODE_DISCOVERY_FAILED'
+  code?: 'OPENCODE_UNREACHABLE' | 'OPENCODE_DISCOVERY_FAILED' | 'OPENCODE_BUSY'
 }
 
-export type OpenCodeModelsErrorCode = 'OPENCODE_UNREACHABLE' | 'OPENCODE_DISCOVERY_FAILED'
+export type OpenCodeModelsErrorCode = 'OPENCODE_UNREACHABLE' | 'OPENCODE_DISCOVERY_FAILED' | 'OPENCODE_BUSY'
 
 export class OpenCodeModelsError extends Error {
   readonly code?: OpenCodeModelsErrorCode
@@ -45,7 +46,21 @@ async function requestModelsApi(
     method,
     signal: signal ? AbortSignal.any([signal, timeout]) : timeout,
   })
-  if (!res.ok) throw await failedResponseError(res, 'Failed to fetch models')
+  if (!res.ok) {
+    if (res.status === 409) {
+      const body: unknown = await res.clone().json().catch(() => null)
+      if (body && typeof body === 'object' && !Array.isArray(body)) {
+        const { code, message } = body as { code?: unknown; message?: unknown }
+        if (code === 'OPENCODE_BUSY') {
+          throw new OpenCodeModelsError(
+            typeof message === 'string' ? message : 'OpenCode has active work or unanswered requests.',
+            code,
+          )
+        }
+      }
+    }
+    throw await failedResponseError(res, 'Failed to fetch models')
+  }
   const data: ModelsApiResponse = await res.json()
   // When the backend cannot reach OpenCode it returns a `message` with an empty
   // model list (HTTP 200). Treat this as a retriable error so react-query retries
@@ -78,15 +93,18 @@ export function clearOpenCodeModelsQuery(queryClient: Pick<QueryClient, 'removeQ
   })
 }
 
-export function refreshOpenCodeModelsQuery(queryClient: Pick<QueryClient, 'removeQueries' | 'fetchQuery'>) {
-  clearOpenCodeModelsQuery(queryClient)
-  return queryClient.fetchQuery({
+export async function refreshOpenCodeModelsQuery(queryClient: Pick<QueryClient, 'cancelQueries' | 'fetchQuery' | 'invalidateQueries'>) {
+  await queryClient.cancelQueries({ queryKey: OPENCODE_MODELS_QUERY_KEY, exact: true })
+  const data = await queryClient.fetchQuery({
     queryKey: OPENCODE_MODELS_QUERY_KEY,
     queryFn: ({ signal }) => refreshModelsApi(signal),
-    staleTime: QUERY_STALE_TIME_5M,
+    // A manual refresh must POST even when the connected catalog is still fresh.
+    staleTime: 0,
     retry: shouldRetryModelFetch,
     retryDelay: MODEL_FETCH_RETRY_DELAY_MS,
   })
+  await queryClient.invalidateQueries({ queryKey: ALL_OPENCODE_MODELS_QUERY_KEY, exact: true })
+  return data
 }
 
 export function refetchOpenCodeModelsQuery(queryClient: Pick<QueryClient, 'refetchQueries'>) {
@@ -96,16 +114,21 @@ export function refetchOpenCodeModelsQuery(queryClient: Pick<QueryClient, 'refet
   })
 }
 
-/** Returns only models from connected (configured) providers */
-export function useOpenCodeModels() {
+/** Returns the response metadata used to describe which model scope OpenCode exposes. */
+export function useOpenCodeModelCatalog() {
   return useQuery({
     queryKey: OPENCODE_MODELS_QUERY_KEY,
     queryFn: ({ signal }) => fetchModelsApi(signal),
     staleTime: QUERY_STALE_TIME_5M,
     retry: shouldRetryModelFetch,
     retryDelay: MODEL_FETCH_RETRY_DELAY_MS,
-    select: (data) => data.models,
   })
+}
+
+/** Returns only models from connected (configured) providers */
+export function useOpenCodeModels() {
+  const query = useOpenCodeModelCatalog()
+  return { ...query, data: query.data?.models }
 }
 
 /** Returns all models from all providers only when explicitly requested. */

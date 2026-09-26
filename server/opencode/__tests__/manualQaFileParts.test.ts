@@ -2,6 +2,7 @@ import { mkdirSync, rmSync, symlinkSync, writeFileSync } from 'node:fs'
 import { join } from 'node:path'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import { OpenCodeSDKAdapter } from '../adapter'
+import { OpenCodeV1Transport } from '../v1Transport'
 import type { PromptPart } from '../types'
 import { getTicketContext, getTicketPaths, readTicketFile } from '../../storage/tickets'
 import { makeTempDir, removeTempDir } from '../../test/tempDir'
@@ -27,6 +28,9 @@ afterEach(() => {
 interface AdapterPartitionProbe {
   loadTicketState(ticketId: string): Promise<Record<string, unknown>>
   loadQaEvidenceFileParts(ticketId: string, beadId: string): Promise<PromptPart[]>
+}
+
+interface PromptPartitionProbe {
   partitionPromptParts(parts: PromptPart[], fallbackSystem?: string, includeImageFiles?: boolean): {
     systemText: string
     promptParts: Array<{ type: string; text?: string; mime?: string; filename?: string; url?: string }>
@@ -35,6 +39,10 @@ interface AdapterPartitionProbe {
 
 function probe(adapter: OpenCodeSDKAdapter): AdapterPartitionProbe {
   return adapter as unknown as AdapterPartitionProbe
+}
+
+function promptPartitionProbe(): PromptPartitionProbe {
+  return new OpenCodeV1Transport('http://127.0.0.1:9', {} as never) as unknown as PromptPartitionProbe
 }
 
 describe('OpenCode Manual QA file parts', () => {
@@ -103,7 +111,6 @@ describe('OpenCode Manual QA file parts', () => {
   })
 
   it('forwards every snapshotted image file part without an additional count cap', () => {
-    const adapter = new OpenCodeSDKAdapter('http://127.0.0.1:9')
     const images: PromptPart[] = Array.from({ length: 40 }, (_, index) => ({
       type: 'file',
       content: '',
@@ -112,7 +119,7 @@ describe('OpenCode Manual QA file parts', () => {
       filename: `image-${index}.png`,
       url: `file:///contained/image-${index}.png`,
     }))
-    const result = probe(adapter).partitionPromptParts([
+    const result = promptPartitionProbe().partitionPromptParts([
       { type: 'system', content: 'system' },
       { type: 'text', content: 'Manual QA evidence references' },
       ...images,
@@ -125,8 +132,7 @@ describe('OpenCode Manual QA file parts', () => {
   })
 
   it('keeps references-only prompts text-only', () => {
-    const adapter = new OpenCodeSDKAdapter('http://127.0.0.1:9')
-    const result = probe(adapter).partitionPromptParts([
+    const result = promptPartitionProbe().partitionPromptParts([
       { type: 'text', content: 'Evidence: screen.png (references only)' },
       { type: 'file', content: '', mime: 'image/png', filename: 'screen.png', url: 'file:///contained/screen.png' },
     ], undefined, false)

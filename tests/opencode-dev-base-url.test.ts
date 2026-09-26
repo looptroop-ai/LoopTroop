@@ -2,6 +2,7 @@ import { afterEach, describe, expect, it, vi } from 'vitest'
 import { createServer } from 'node:http'
 import { once } from 'node:events'
 import { getServeHostname, parseLocalPortFromUrl, resolveOpenCodeBaseUrl } from '../scripts/opencode-dev-base-url'
+import { invalidateOpenCodeConnection, OpenCodeConnectionError } from '../server/opencode/connection'
 
 afterEach(() => {
   vi.unstubAllGlobals()
@@ -19,10 +20,10 @@ describe('resolveOpenCodeBaseUrl', () => {
       requests.push(req.url ?? '')
       if (req.headers.authorization !== authorization) {
         res.writeHead(401).end()
-      } else if (redirect && req.url === '/provider') {
+      } else if (redirect && req.url === '/api/info') {
         res.writeHead(302, { Location: '/redirect-target' }).end()
       } else {
-        res.writeHead(200).end('{}')
+        res.writeHead(200, { 'Content-Type': 'application/json' }).end(JSON.stringify({ version: '2.0.15', pid: 812 }))
       }
     })
     server.listen(0, '127.0.0.1')
@@ -40,8 +41,9 @@ describe('resolveOpenCodeBaseUrl', () => {
       }
       expect((await resolveOpenCodeBaseUrl(options)).status).toBe('already-running')
       redirect = true
-      await expect(resolveOpenCodeBaseUrl(options)).rejects.toThrow('occupied by a non-OpenCode process')
-      expect(requests).toEqual(['/provider', '/provider'])
+      invalidateOpenCodeConnection()
+      await expect(resolveOpenCodeBaseUrl(options)).rejects.toThrow('info probe redirected')
+      expect(requests).toEqual(['/api/info', '/api/info'])
     } finally {
       await new Promise<void>((resolve, reject) => server.close((error) => error ? reject(error) : resolve()))
     }
@@ -76,16 +78,18 @@ describe('resolveOpenCodeBaseUrl', () => {
   })
 
   it.each([
-    ['http://[::1]:4096', 'http://[::1]:4096/provider'],
-    ['http://[::ffff:127.0.0.2]:4096', 'http://[::ffff:7f00:2]:4096/provider'],
-  ])('reuses %s through a valid bracketed provider URL', async (requestedBaseUrl, providerUrl) => {
-    const fetchMock = vi.fn(async () => new Response('{}'))
+    ['http://[::1]:4096', 'http://[::1]:4096/api/info'],
+    ['http://[::ffff:127.0.0.2]:4096', 'http://[::ffff:7f00:2]:4096/api/info'],
+  ])('reuses %s through a valid bracketed API URL', async (requestedBaseUrl, apiUrl) => {
+    const fetchMock = vi.fn(async () => new Response(JSON.stringify({ version: '2.0.15', pid: 812 }), {
+      headers: { 'content-type': 'application/json' },
+    }))
     vi.stubGlobal('fetch', fetchMock)
 
     const result = await resolveOpenCodeBaseUrl({ requestedBaseUrl, hasExplicitBaseUrl: true })
 
     expect(result.status).toBe('already-running')
-    expect(fetchMock).toHaveBeenCalledWith(providerUrl, expect.any(Object))
+    expect(fetchMock).toHaveBeenCalledWith(apiUrl, expect.any(Object))
   })
 
   it('probes the IPv6 loopback when a wildcard listener cannot be reached at ::', async () => {
@@ -145,6 +149,118 @@ describe('resolveOpenCodeBaseUrl', () => {
       note: 'Port 4096 is occupied on 127.0.0.1; using http://127.0.0.1:4097 for OpenCode instead. Occupant: kilo (pid 3251, cmd: kilo serve --port 0, cwd: /mnt/d/tools/kilo).',
       status: 'ready-to-start',
     })
+  })
+
+  it('tries a fallback port after the default server rejects authentication', async () => {
+    const canListen = vi.fn(async (_hostname: string, port: number) => port === 4097)
+    const result = await resolveOpenCodeBaseUrl({
+      requestedBaseUrl: 'http://127.0.0.1:4096',
+      hasExplicitBaseUrl: false,
+      maxPortScanAttempts: 1,
+      deps: {
+        isOpenCodeResponding: async () => {
+          throw new OpenCodeConnectionError('authentication', 'OpenCode rejected the configured credentials.', 401)
+        },
+        canConnect: async () => false,
+        canListen,
+        inspectPortOccupants: () => ({ port: 4096, occupants: [], rawSocketSnapshot: null }),
+      },
+    })
+
+    expect(result.baseUrl).toBe('http://127.0.0.1:4097')
+    expect(result.status).toBe('ready-to-start')
+    expect(result.note).toContain('Configured OpenCode credentials were rejected')
+    expect(result.note).toContain('using http://127.0.0.1:4097')
+    expect(canListen).toHaveBeenCalledWith('127.0.0.1', 4097)
+  })
+
+  it('tries a fallback port after an unrelated HTTP response on the implicit default URL', async () => {
+    const canListen = vi.fn(async (_hostname: string, port: number) => port === 4097)
+    const result = await resolveOpenCodeBaseUrl({
+      requestedBaseUrl: 'http://127.0.0.1:4096',
+      hasExplicitBaseUrl: false,
+      maxPortScanAttempts: 1,
+      deps: {
+        isOpenCodeResponding: async () => {
+          throw new OpenCodeConnectionError('unsupported_protocol', 'Unrelated service returned 404.', 404)
+        },
+        canConnect: async () => false,
+        canListen,
+        inspectPortOccupants: () => ({ port: 4096, occupants: [], rawSocketSnapshot: null }),
+      },
+    })
+
+    expect(result.baseUrl).toBe('http://127.0.0.1:4097')
+    expect(result.status).toBe('ready-to-start')
+    expect(canListen).toHaveBeenCalledWith('127.0.0.1', 4097)
+  })
+
+  it('tries a fallback port after a 5xx response on the implicit default URL', async () => {
+    const canListen = vi.fn(async (_hostname: string, port: number) => port === 4097)
+    const result = await resolveOpenCodeBaseUrl({
+      requestedBaseUrl: 'http://127.0.0.1:4096',
+      hasExplicitBaseUrl: false,
+      maxPortScanAttempts: 1,
+      deps: {
+        isOpenCodeResponding: async () => {
+          throw new OpenCodeConnectionError('network', 'OpenCode v2 info probe failed (HTTP 503).', 503)
+        },
+        canConnect: async () => false,
+        canListen,
+        inspectPortOccupants: () => ({ port: 4096, occupants: [], rawSocketSnapshot: null }),
+      },
+    })
+
+    expect(result.baseUrl).toBe('http://127.0.0.1:4097')
+    expect(result.status).toBe('ready-to-start')
+    expect(canListen).toHaveBeenCalledWith('127.0.0.1', 4097)
+  })
+
+  it('keeps an explicit URL strict when its health probe returns 5xx', async () => {
+    const canListen = vi.fn(async () => true)
+    await expect(resolveOpenCodeBaseUrl({
+      requestedBaseUrl: 'http://127.0.0.1:5001',
+      hasExplicitBaseUrl: true,
+      deps: {
+        isOpenCodeResponding: async () => {
+          throw new OpenCodeConnectionError('network', 'OpenCode v2 info probe failed (HTTP 503).', 503)
+        },
+        canListen,
+      },
+    })).rejects.toThrow('OpenCode v2 info probe failed (HTTP 503).')
+    expect(canListen).not.toHaveBeenCalled()
+  })
+
+  it('fails clearly on an explicit URL whose server rejects authentication', async () => {
+    const canListen = vi.fn(async () => true)
+    await expect(resolveOpenCodeBaseUrl({
+      requestedBaseUrl: 'http://127.0.0.1:5001',
+      hasExplicitBaseUrl: true,
+      deps: {
+        isOpenCodeResponding: async () => {
+          throw new OpenCodeConnectionError('authentication', 'OpenCode rejected the configured credentials.', 401)
+        },
+        canListen,
+      },
+    })).rejects.toThrow(
+      'Configured OpenCode URL http://127.0.0.1:5001 requires valid credentials. Set OPENCODE_PASSWORD for v2 or OPENCODE_SERVER_PASSWORD for v1.',
+    )
+    expect(canListen).not.toHaveBeenCalled()
+  })
+
+  it('keeps an explicit URL strict when another HTTP service answers', async () => {
+    const canListen = vi.fn(async () => true)
+    await expect(resolveOpenCodeBaseUrl({
+      requestedBaseUrl: 'http://127.0.0.1:5001',
+      hasExplicitBaseUrl: true,
+      deps: {
+        isOpenCodeResponding: async () => {
+          throw new OpenCodeConnectionError('unsupported_protocol', 'Unrelated service returned 404.', 404)
+        },
+        canListen,
+      },
+    })).rejects.toThrow('Unrelated service returned 404.')
+    expect(canListen).not.toHaveBeenCalled()
   })
 
   it('rejects an explicit conflicting base URL instead of silently moving it', async () => {

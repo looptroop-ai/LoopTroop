@@ -1,6 +1,6 @@
 import { afterAll, beforeEach, describe, expect, it, vi } from 'vitest'
 import { Hono } from 'hono'
-import { existsSync, readFileSync } from 'node:fs'
+import { existsSync, readFileSync, writeFileSync } from 'node:fs'
 import { initializeDatabase } from '../../db/init'
 import { sqlite } from '../../db/index'
 import { clearProjectDatabaseCache } from '../../db/project'
@@ -8,6 +8,14 @@ import { broadcaster } from '../../sse/broadcaster'
 import { attachProject, updateProject } from '../../storage/projects'
 import { createTicket, DISPLAY_ONLY_MOCK_BRANCH_NAME, getTicketByRef, getTicketPaths, patchTicket, updateTicket } from '../../storage/tickets'
 import { createFixtureRepoManager } from '../../test/fixtureRepo'
+import { makeTempDir, removeTempDir } from '../../test/tempDir'
+import { LOOPTROOP_OPENCODE_ROUTING_CONFIG } from '../../../shared/openRouterRouting'
+const { mockGetOpenCodeConnection } = vi.hoisted(() => ({ mockGetOpenCodeConnection: vi.fn() }))
+vi.mock('../../opencode/connection', async (importOriginal) => ({
+  ...await importOriginal<typeof import('../../opencode/connection')>(),
+  getOpenCodeConnection: mockGetOpenCodeConnection,
+}))
+import { beginOpenCodePromptActivity } from '../../opencode/providerCatalogReload'
 
 vi.mock('../../machines/persistence', async () => {
   const storage = await import('../../storage/tickets')
@@ -116,6 +124,8 @@ describe('ticketRouter POST /tickets/:id/start', () => {
     initializeDatabase()
     sqlite.exec('DELETE FROM attached_projects; DELETE FROM profiles;')
     vi.restoreAllMocks()
+    vi.unstubAllEnvs()
+    mockGetOpenCodeConnection.mockReset()
 
     vi.mocked(validateModelSelection).mockResolvedValue({
       mainImplementer: 'openai/codex-mini-latest',
@@ -199,6 +209,77 @@ describe('ticketRouter POST /tickets/:id/start', () => {
       status: 'DRAFT',
       branchName: DISPLAY_ONLY_MOCK_BRANCH_NAME,
     })
+  })
+
+  it('rejects ticket start before routing config writes while another prompt is active', async () => {
+    const directory = makeTempDir('looptroop-ticket-start-busy-')
+    const configPath = `${directory}/opencode.json`
+    vi.stubEnv(LOOPTROOP_OPENCODE_ROUTING_CONFIG, configPath)
+    mockGetOpenCodeConnection.mockResolvedValue({ protocol: 'v2', version: '2.0.16', headers: {} })
+    vi.mocked(validateModelSelection).mockResolvedValue({
+      mainImplementer: 'openrouter/deepseek/deepseek-v4-flash:floor',
+      councilMembers: ['openrouter/deepseek/deepseek-v4-flash:floor'],
+    })
+    const { app, ticket } = setupStartTicketApp()
+    const releasePrompt = beginOpenCodePromptActivity()
+
+    try {
+      const response = await app.request(`/api/tickets/${ticket.id}/start`, { method: 'POST' })
+
+      expect(response.status).toBe(409)
+      expect(await response.json()).toMatchObject({
+        code: 'OPENCODE_BUSY',
+        error: expect.stringContaining('active work'),
+      })
+      expect(getTicketByRef(ticket.id)).toMatchObject({ status: 'DRAFT', branchName: null })
+      expect(initializeTicket).not.toHaveBeenCalled()
+      expect(() => readFileSync(configPath, 'utf8')).toThrow()
+    } finally {
+      releasePrompt()
+      removeTempDir(directory)
+    }
+  })
+
+  it('starts with an already registered routing model while another prompt is active', async () => {
+    const directory = makeTempDir('looptroop-ticket-start-routing-present-')
+    const configPath = `${directory}/opencode.json`
+    const originalConfig = {
+      providers: {
+        openrouter: {
+          models: { 'deepseek/deepseek-v4-flash:floor': { keep: true } },
+        },
+      },
+    }
+    writeFileSync(configPath, JSON.stringify(originalConfig))
+    vi.stubEnv(LOOPTROOP_OPENCODE_ROUTING_CONFIG, configPath)
+    mockGetOpenCodeConnection.mockResolvedValue({ protocol: 'v2', version: '2.0.16', headers: {} })
+    vi.mocked(validateModelSelection).mockResolvedValue({
+      mainImplementer: 'openrouter/deepseek/deepseek-v4-flash:floor',
+      councilMembers: ['openrouter/deepseek/deepseek-v4-flash:floor'],
+    })
+    const { app, ticket } = setupStartTicketApp()
+    vi.mocked(initializeTicket).mockResolvedValueOnce({
+      worktreePath: '/worktree',
+      ticketDir: '/ticket',
+      branchName: ticket.externalId,
+      baseBranch: 'main',
+      reused: true,
+    })
+    const fetchSpy = vi.spyOn(globalThis, 'fetch')
+    const releasePrompt = beginOpenCodePromptActivity()
+
+    try {
+      const response = await app.request(`/api/tickets/${ticket.id}/start`, { method: 'POST' })
+
+      expect(response.status).toBe(200)
+      expect(getTicketByRef(ticket.id)?.status).toBe('SCANNING_RELEVANT_FILES')
+      expect(initializeTicket).toHaveBeenCalledOnce()
+      expect(fetchSpy).not.toHaveBeenCalled()
+      expect(JSON.parse(readFileSync(configPath, 'utf8'))).toEqual(originalConfig)
+    } finally {
+      releasePrompt()
+      removeTempDir(directory)
+    }
   })
 
   it('locks the configured structured retry count at ticket start', async () => {

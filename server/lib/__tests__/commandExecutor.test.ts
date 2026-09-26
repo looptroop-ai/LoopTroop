@@ -220,7 +220,7 @@ describe('buildCommandInvocation', () => {
 })
 
 describe('executeCommand', () => {
-  it('strips daemon credentials after environment merges without mutating callers', async () => {
+  it('strips daemon and OpenCode credentials after environment merges without mutating callers', async () => {
     const ambient = process.env.LOOPTROOP_API_TOKEN
     process.env.LOOPTROOP_API_TOKEN = 'ambient-daemon-token'
     const runtimeVariables = {
@@ -230,7 +230,9 @@ describe('executeCommand', () => {
     const commandEnv = {
       LOOPTROOP_API_TOKEN: 'command-daemon-token',
       looptroop_api_token: 'windows-alias-token',
+      OPENCODE_PASSWORD: 'provider-v2-password',
       OPENCODE_SERVER_PASSWORD: 'provider-password',
+      opencode_server_password: 'windows-alias-password',
       GH_TOKEN: 'github-token',
     }
     let seenEnvironment: NodeJS.ProcessEnv | undefined
@@ -259,7 +261,9 @@ describe('executeCommand', () => {
       expect(seenEnvironment?.LOOPTROOP_API_TOKEN).toBeUndefined()
       expect(seenEnvironment?.LOOPTROOP_DEV_EVENT_TOKEN).toBeUndefined()
       expect(seenEnvironment?.looptroop_api_token).toBeUndefined()
-      expect(seenEnvironment?.OPENCODE_SERVER_PASSWORD).toBe('provider-password')
+      expect(seenEnvironment?.OPENCODE_PASSWORD).toBeUndefined()
+      expect(seenEnvironment?.OPENCODE_SERVER_PASSWORD).toBeUndefined()
+      expect(seenEnvironment?.opencode_server_password).toBeUndefined()
       expect(seenEnvironment?.GH_TOKEN).toBe('github-token')
       expect(runtimeVariables).toEqual({
         LOOPTROOP_API_TOKEN: 'runtime-daemon-token',
@@ -268,7 +272,9 @@ describe('executeCommand', () => {
       expect(commandEnv).toEqual({
         LOOPTROOP_API_TOKEN: 'command-daemon-token',
         looptroop_api_token: 'windows-alias-token',
+        OPENCODE_PASSWORD: 'provider-v2-password',
         OPENCODE_SERVER_PASSWORD: 'provider-password',
+        opencode_server_password: 'windows-alias-password',
         GH_TOKEN: 'github-token',
       })
     } finally {

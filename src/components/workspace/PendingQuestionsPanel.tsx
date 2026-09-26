@@ -411,8 +411,8 @@ export function PendingQuestionsPanel({ ticketId }: { ticketId: string }) {
  * Radio buttons, checkboxes and free text, per what the model asked for.
  *
  * Options are keyed by index rather than by label because a model can repeat a
- * label across a batch, and the submitted answer is the selected labels *plus*
- * the free text — not free text replacing the selection.
+ * label across a batch. Multiple-choice answers combine selected options and
+ * free text; for single choice, free text replaces the selected option.
  *
  * The free text is held here rather than derived back out of `value`. Deriving
  * it meant round-tripping every keystroke through a trim, which deleted the
@@ -437,26 +437,30 @@ function QuestionAnswerInput({
   const fieldId = useId()
   const multiple = question.multiple === true
   const allowsCustom = question.custom !== false
-  const optionLabels = useMemo(
-    () => new Set(question.options.map((option) => option.label)),
+  const optionValues = useMemo(
+    () => new Set(question.options.map((option) => option.value ?? option.label)),
     [question.options],
   )
-  const selected = value.filter((entry) => optionLabels.has(entry))
+  const [selected, setSelected] = useState(() => value.filter((entry) => optionValues.has(entry)))
   // Seeded once. The component is remounted per question by its `key`, so a
   // draft restored from `value` is picked up on mount and never fought over.
   const [custom, setCustom] = useState(
-    () => value.find((entry) => !optionLabels.has(entry)) ?? '',
+    () => value.find((entry) => !optionValues.has(entry)) ?? '',
   )
 
   const emit = (nextSelected: string[], nextCustom: string) => {
-    onChange([...nextSelected, nextCustom.trim()].filter(Boolean))
+    const customAnswer = nextCustom.trim()
+    onChange([...nextSelected, ...(customAnswer ? [customAnswer] : [])])
   }
 
-  const toggle = (label: string) => {
+  const toggle = (answerValue: string) => {
     const next = multiple
-      ? (selected.includes(label) ? selected.filter((entry) => entry !== label) : [...selected, label])
-      : (selected.includes(label) ? [] : [label])
-    emit(next, custom)
+      ? (selected.includes(answerValue) ? selected.filter((entry) => entry !== answerValue) : [...selected, answerValue])
+      : (selected.includes(answerValue) ? [] : [answerValue])
+    const nextCustom = multiple ? custom : ''
+    setSelected(next)
+    setCustom(nextCustom)
+    emit(next, nextCustom)
   }
 
   return (
@@ -464,7 +468,8 @@ function QuestionAnswerInput({
       {question.options.length > 0 && (
         <div role={multiple ? 'group' : 'radiogroup'} aria-label="Answer options" className="space-y-1.5">
           {question.options.map((option, index) => {
-            const checked = selected.includes(option.label)
+            const answerValue = option.value ?? option.label
+            const checked = selected.includes(answerValue)
             // Keyed by index, not by label: a model can repeat a label in one batch.
             const inputId = `${fieldId}-option-${index}`
             const describedBy = option.description ? `${inputId}-description` : undefined
@@ -485,7 +490,7 @@ function QuestionAnswerInput({
                   checked={checked}
                   disabled={disabled}
                   onFocus={onEngage}
-                  onChange={() => toggle(option.label)}
+                  onChange={() => toggle(answerValue)}
                   {...(describedBy ? { 'aria-describedby': describedBy } : {})}
                 />
                 <span className="min-w-0">
@@ -513,7 +518,9 @@ function QuestionAnswerInput({
       {allowsCustom && (
         <label className="block space-y-1 text-sm">
           <span className="text-xs font-medium text-muted-foreground">
-            {question.options.length > 0 ? 'Anything to add (optional)' : 'Your answer'}
+            {question.options.length > 0
+              ? multiple ? 'Anything to add (optional)' : 'Or enter your answer'
+              : 'Your answer'}
           </span>
           <textarea
             value={custom}
@@ -521,7 +528,8 @@ function QuestionAnswerInput({
             onFocus={onEngage}
             onChange={(event) => {
               setCustom(event.target.value)
-              emit(selected, event.target.value)
+              if (!multiple) setSelected([])
+              emit(multiple ? selected : [], event.target.value)
             }}
             rows={2}
             className="w-full resize-none rounded-md border border-input bg-background px-3 py-2 text-sm text-foreground outline-none focus:ring-1 focus:ring-ring"

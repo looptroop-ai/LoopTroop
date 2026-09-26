@@ -547,6 +547,7 @@ describe('handlePrdRefine', () => {
     expect(parsedCoverageInput.refinedContent?.trim()).toBe(refinement.refinedContent.trim())
     expect(parsedCoverageInput.changes).toBeUndefined()
     expect(runOpenCodePromptMock).toHaveBeenCalledTimes(1)
+    expect(runOpenCodePromptMock.mock.calls[0]?.[0]?.variant).toBeUndefined()
     expect(sendEvent).toHaveBeenCalledWith({ type: 'COVERAGE_CLEAN' })
   })
 
@@ -733,6 +734,7 @@ describe('handlePrdRefine', () => {
 
   it('revises the PRD in-place during coverage and re-audits the new candidate', async () => {
     const { ticket, context, paths, winnerId } = await setupCoverageTest()
+    context.lockedCouncilMemberVariants = { [winnerId]: 'high' }
     const sendEvent = vi.fn()
     const coverageGap = 'Missing retry-cap approval behavior.'
 
@@ -771,6 +773,7 @@ describe('handlePrdRefine', () => {
     await handleCoverageVerification(ticket.id, context, sendEvent, 'prd', new AbortController().signal)
 
     expect(runOpenCodePromptMock).toHaveBeenCalledTimes(3)
+    expect(runOpenCodePromptMock.mock.calls.map(([options]) => options.variant)).toEqual(['high', 'high', 'high'])
     expect(sendEvent).toHaveBeenCalledWith({ type: 'COVERAGE_CLEAN' })
 
     const coverageArtifact = getLatestPhaseArtifact(ticket.id, 'prd_coverage', 'VERIFYING_PRD_COVERAGE')

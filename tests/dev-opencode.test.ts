@@ -31,6 +31,7 @@ const ENV_NAMES = [
   'LOOPTROOP_OPENCODE_MODE',
   'LOOPTROOP_OPENCODE_PERMISSION_MODE',
   'OPENCODE_PERMISSION',
+  'OPENCODE_PASSWORD',
   'OPENCODE_SERVER_PASSWORD',
   'OPENCODE_ENABLE_EXA',
 ] as const
@@ -46,10 +47,12 @@ describe('development OpenCode launch environment', () => {
   afterEach(() => {
     spawnMock.mockReset()
     launchToolMock.mockClear()
+    vi.restoreAllMocks()
   })
 
   it('filters daemon credentials at the actual spawn while retaining managed OpenCode settings', async () => {
     const previous = Object.fromEntries(ENV_NAMES.map((name) => [name, process.env[name]]))
+    delete process.env.OPENCODE_PASSWORD
     Object.assign(process.env, {
       LOOPTROOP_API_TOKEN: 'ambient-daemon-token',
       LOOPTROOP_DEV_EVENT_TOKEN: 'ambient-dev-event-token',
@@ -59,6 +62,7 @@ describe('development OpenCode launch environment', () => {
       OPENCODE_SERVER_PASSWORD: 'provider-password',
       OPENCODE_ENABLE_EXA: '0',
     })
+    const log = vi.spyOn(console, 'log').mockImplementation(() => undefined)
     const child = fakeChild()
     spawnMock.mockReturnValue(child)
 
@@ -69,6 +73,7 @@ describe('development OpenCode launch environment', () => {
       const options = spawnMock.mock.calls[0]?.[2] as { env?: NodeJS.ProcessEnv } | undefined
       expect(options?.env).toMatchObject({
         OPENCODE_PERMISSION: '{"bash":"ask"}',
+        OPENCODE_PASSWORD: 'provider-password',
         OPENCODE_SERVER_PASSWORD: 'provider-password',
         OPENCODE_ENABLE_EXA: '1',
       })
@@ -76,10 +81,41 @@ describe('development OpenCode launch environment', () => {
       expect(options?.env?.LOOPTROOP_DEV_EVENT_TOKEN).toBeUndefined()
       expect(process.env.LOOPTROOP_API_TOKEN).toBe('ambient-daemon-token')
       expect(process.env.LOOPTROOP_DEV_EVENT_TOKEN).toBe('ambient-dev-event-token')
+      expect(log.mock.calls.flat().join('\n')).not.toContain('provider-password')
       expect(launchToolMock).toHaveBeenCalledWith(
         'opencode',
         expect.arrayContaining(['serve']),
         expect.objectContaining({ env: options?.env }),
+      )
+    } finally {
+      for (const name of ENV_NAMES) {
+        const value = previous[name]
+        if (value === undefined) delete process.env[name]
+        else process.env[name] = value
+      }
+    }
+  })
+
+  it('generates and displays a password when started standalone without a usable alias', async () => {
+    const previous = Object.fromEntries(ENV_NAMES.map((name) => [name, process.env[name]]))
+    Object.assign(process.env, {
+      LOOPTROOP_OPENCODE_BASE_URL: 'http://127.0.0.1:4096',
+      OPENCODE_PASSWORD: ' ',
+      OPENCODE_SERVER_PASSWORD: '',
+    })
+    const log = vi.spyOn(console, 'log').mockImplementation(() => undefined)
+    spawnMock.mockReturnValue(fakeChild())
+
+    try {
+      vi.resetModules()
+      await import('../scripts/dev-opencode')
+
+      const options = spawnMock.mock.calls[0]?.[2] as { env?: NodeJS.ProcessEnv } | undefined
+      const password = options?.env?.OPENCODE_PASSWORD
+      expect(password).toMatch(/^[A-Za-z0-9_-]{40,}$/)
+      expect(options?.env?.OPENCODE_SERVER_PASSWORD).toBe(password)
+      expect(log.mock.calls.flat().join('\n')).toContain(
+        `[dev-opencode] Generated OpenCode password for the LoopTroop backend: ${password}`,
       )
     } finally {
       for (const name of ENV_NAMES) {

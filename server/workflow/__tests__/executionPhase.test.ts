@@ -9,7 +9,9 @@ import { getLatestPhaseArtifact, getTicketByRef, getTicketContext, getTicketPath
 import { opencodeSessions, profiles } from '../../db/schema'
 import { db as appDatabase } from '../../db/index'
 import { listOpenCodeSessionsForTicket } from '../../opencode/sessionManager'
+import * as opencodeStepsConfig from '../../phases/execution/opencodeStepsConfig'
 import { applyOpencodeStepsConfig, restoreOpencodeStepsConfig } from '../../phases/execution/opencodeStepsConfig'
+import { getOpenCodeConnection } from '../../opencode/connection'
 import {
   readTicketBeads,
   recoverCodingBeadWithReset,
@@ -48,6 +50,14 @@ vi.mock('../../opencode/factory', () => ({
   getOpenCodeAdapter: () => ({}),
   isMockOpenCodeMode: isMockOpenCodeModeMock,
 }))
+
+vi.mock('../../opencode/connection', async () => {
+  const actual = await vi.importActual<typeof import('../../opencode/connection')>('../../opencode/connection')
+  return {
+    ...actual,
+    getOpenCodeConnection: vi.fn().mockResolvedValue({ protocol: 'v1', version: '1.0.0', headers: {} }),
+  }
+})
 
 vi.mock('../../phases/execution/executor', () => ({
   executeBead: executeBeadMock,
@@ -1570,6 +1580,27 @@ describe('handleCoding', () => {
       expect(readFileSync(configPath, 'utf8')).toBe(original)
     })
 
+    it('passes workflow cancellation to protocol lookup and propagates configuration write failures', async () => {
+      setStepCap(25)
+      const { ticket, context } = await createInitializedTestTicket(repoManager, { title: 'Step cap protocol failure' })
+      writeTicketBeads(ticket.id, [makePendingBead('bead-1', 1)])
+      const signal = new AbortController().signal
+      const connectionLookup = vi.mocked(getOpenCodeConnection)
+      connectionLookup.mockClear()
+      const apply = vi.spyOn(opencodeStepsConfig, 'applyOpencodeStepsConfig').mockImplementation(() => {
+        throw new Error('configuration write failed')
+      })
+
+      try {
+        await expect(handleCoding(ticket.id, context, vi.fn(), signal)).rejects.toThrow('configuration write failed')
+      } finally {
+        apply.mockRestore()
+      }
+
+      expect(connectionLookup).toHaveBeenCalledWith(expect.any(String), signal)
+      expect(executeBeadMock).not.toHaveBeenCalled()
+    })
+
     /**
      * Restoring the worktree afterwards cannot undo a commit, so the run's own
      * modification has to be kept out of the bead commit in the first place.
@@ -1648,6 +1679,7 @@ describe('handleCoding', () => {
         ticketDir: paths.ticketDir,
         worktreePath: paths.worktreePath,
         steps: 25,
+        protocol: 'v1',
       })
       if (!applied.applied) throw new Error('expected the step cap to apply')
       writeFileSync(configPath, '{"mcp": {}, "edited": true}\n', 'utf8')

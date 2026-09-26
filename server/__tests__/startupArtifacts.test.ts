@@ -15,6 +15,13 @@ const startupFixture = vi.hoisted(() => ({
   formatStartupStorageSummary: vi.fn(() => 'scratch'),
   hydrateAllTickets: vi.fn(() => 0),
   rebuildTicketRuntimeProjections: vi.fn(() => 0),
+  health: null as {
+    available: boolean
+    protocol?: 'v1' | 'v2'
+    version?: string
+    failureKind?: 'authentication' | 'unsupported_protocol' | 'network' | 'model_discovery'
+    error?: string
+  } | null,
 }))
 
 vi.mock('../storage/tickets', async (importOriginal) => {
@@ -36,6 +43,13 @@ vi.mock('../db/index', async (importOriginal) => ({
 vi.mock('../db/indexes', async (importOriginal) => ({
   ...await importOriginal<typeof import('../db/indexes')>(),
   createIndexes: startupFixture.createIndexes,
+}))
+vi.mock('../opencode/factory', () => ({
+  getOpenCodeAdapter: () => ({ checkHealth: async () => startupFixture.health ?? { available: true } }),
+}))
+vi.mock('../storage/projects', async (importOriginal) => ({
+  ...await importOriginal<typeof import('../storage/projects')>(),
+  listProjects: vi.fn(() => []),
 }))
 vi.mock('../startupState', async (importOriginal) => ({
   ...await importOriginal<typeof import('../startupState')>(),
@@ -63,6 +77,8 @@ afterEach(() => {
   startupFixture.formatStartupStorageSummary.mockClear()
   startupFixture.hydrateAllTickets.mockClear()
   startupFixture.rebuildTicketRuntimeProjections.mockClear()
+  startupFixture.health = null
+  vi.restoreAllMocks()
   for (const root of roots.splice(0)) removeTempDir(root)
 })
 
@@ -172,5 +188,32 @@ describe('startup artifact recovery', () => {
     expect(startupFixture.startWalCheckpoint).not.toHaveBeenCalled()
     expect(startupFixture.rebuildTicketRuntimeProjections).not.toHaveBeenCalled()
     expect(startupFixture.hydrateAllTickets).not.toHaveBeenCalled()
+  }, 30_000)
+
+  it('warns for reachable OpenCode model discovery failures and prints protocol names once', async () => {
+    const configDir = makeTempDir('looptroop-startup-opencode-health-')
+    roots.push(configDir)
+    process.env.LOOPTROOP_CONFIG_DIR = configDir
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => undefined)
+    const log = vi.spyOn(console, 'log').mockImplementation(() => undefined)
+    const { startupSequence } = await import('../startup')
+
+    startupFixture.health = {
+      available: true,
+      protocol: 'v1',
+      failureKind: 'model_discovery',
+      error: 'OpenCode is reachable, but model discovery failed: provider configuration is missing',
+    }
+    await startupSequence()
+
+    expect(warn).toHaveBeenCalledWith('[startup] OpenCode is reachable, but model discovery failed: provider configuration is missing')
+    expect(log).not.toHaveBeenCalledWith(expect.stringContaining('OpenCode via v1 is reachable'))
+
+    warn.mockClear()
+    log.mockClear()
+    startupFixture.health = { available: true, protocol: 'v2', version: '2.0.15' }
+    await startupSequence()
+
+    expect(log).toHaveBeenCalledWith('[startup] OpenCode via v2 is reachable (version: 2.0.15).')
   }, 30_000)
 })

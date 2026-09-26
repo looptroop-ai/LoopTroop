@@ -8,7 +8,6 @@ export type OpenCodeLogModeSource = 'npm-config' | 'env'
 export type ResolvedOpenCodeLogMode = {
   mode: OpenCodeLogMode
   requested: boolean
-  serveArgs: string[]
   source?: OpenCodeLogModeSource
 }
 
@@ -46,7 +45,6 @@ export function resolveOpenCodeLogMode({
     return {
       mode: 'all',
       requested: true,
-      serveArgs: ['--print-logs', '--log-level', 'DEBUG'],
       source: 'npm-config',
     }
   }
@@ -57,7 +55,6 @@ export function resolveOpenCodeLogMode({
     return {
       mode: 'all',
       requested: true,
-      serveArgs: ['--print-logs', '--log-level', 'DEBUG'],
       source: 'env',
     }
   }
@@ -65,6 +62,5 @@ export function resolveOpenCodeLogMode({
   return {
     mode: 'default',
     requested: false,
-    serveArgs: ['--log-level', 'DEBUG'],
   }
 }

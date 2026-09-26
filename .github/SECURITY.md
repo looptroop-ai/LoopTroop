@@ -147,4 +147,7 @@ results on pushes to main and weekly, using the workflow token to read rulesets.
 Harden-Runner audits network activity in supported jobs that have read-only
 permissions and no publishing credentials or protected environment. Audit mode
 does not enforce an outbound allowlist. Publishing and other write-capable jobs,
-Linux ARM64 jobs, and jobs running inside containers are excluded.
+jobs running inside containers, and whole job matrices containing Linux ARM64
+are excluded. Harden-Runner starts through an action pre hook, which runs before
+a step condition; excluding the whole matrix also leaves its other platforms
+without runner auditing.

@@ -73,7 +73,6 @@ jobs:
       # The head SHA, not the branch name: Renovate can push again while this
       # job runs, and the notices must describe the tree they were built from.
       - name: Audit runner network activity
-        if: runner.os != 'Linux' || runner.arch != 'ARM64'
         uses: step-security/harden-runner@e14015d583714f6e62063499dc959a02595150a1 # v2.21.1
         with:
           egress-policy: audit

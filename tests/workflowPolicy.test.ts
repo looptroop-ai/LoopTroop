@@ -104,7 +104,7 @@ describe('release workflow policy', () => {
   it('limits runner auditing to supported jobs without publishing credentials', () => {
     for (const [file, workflow] of workflows) {
       for (const [name, job] of Object.entries(workflow.jobs ?? {})) {
-        const audit = (job.steps ?? []).find((step) => String(step.uses).startsWith('step-security/harden-runner@')) as (SetupStep & { if?: string }) | undefined
+        const audit = (job.steps ?? []).find((step) => String(step.uses).startsWith('step-security/harden-runner@')) as SetupStep | undefined
         if (!audit) continue
         const scope = `${file}: ${name}`
         const permissions = job.permissions ?? (workflow as { permissions?: Record<string, unknown> }).permissions ?? {}
@@ -112,7 +112,9 @@ describe('release workflow policy', () => {
         expect(JSON.stringify(job), scope).not.toContain('secrets.')
         expect((job as { container?: unknown }).container, scope).toBeUndefined()
         expect((job as { environment?: unknown }).environment, scope).toBeUndefined()
-        expect(audit.if, scope).toBe("runner.os != 'Linux' || runner.arch != 'ARM64'")
+        // Action pre hooks run before step conditions, so exclude the whole matrix.
+        const runner = job as Job & { 'runs-on'?: unknown; strategy?: unknown }
+        expect(JSON.stringify([runner['runs-on'], runner.strategy]), scope).not.toMatch(/ubuntu[^"]*arm|linux-arm64/i)
         expect(audit.with?.['egress-policy'], scope).toBe('audit')
       }
     }

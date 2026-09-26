@@ -78,7 +78,6 @@ jobs:
       # A dispatch input is free text, and it is about to be interpolated into
       # image references and a git ref. Checked before it is used for anything.
       - name: Audit runner network activity
-        if: runner.os != 'Linux' || runner.arch != 'ARM64'
         uses: step-security/harden-runner@e14015d583714f6e62063499dc959a02595150a1 # v2.21.1
         with:
           egress-policy: audit
@@ -684,12 +683,6 @@ jobs:
           - arch: arm64
             runner: ubuntu-24.04-arm
     steps:
-      - name: Audit runner network activity
-        if: runner.os != 'Linux' || runner.arch != 'ARM64'
-        uses: step-security/harden-runner@e14015d583714f6e62063499dc959a02595150a1 # v2.21.1
-        with:
-          egress-policy: audit
-
       - name: Checkout the released tag
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
         with:

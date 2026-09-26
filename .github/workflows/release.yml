@@ -97,7 +97,6 @@ jobs:
       dist_tag: ${{ steps.state.outputs.dist_tag }}
     steps:
       - name: Audit runner network activity
-        if: runner.os != 'Linux' || runner.arch != 'ARM64'
         uses: step-security/harden-runner@e14015d583714f6e62063499dc959a02595150a1 # v2.21.1
         with:
           egress-policy: audit
@@ -248,12 +247,6 @@ jobs:
           - { os: macos-15, target: darwin-arm64 }
           - { os: windows-latest, target: win-x64 }
     steps:
-      - name: Audit runner network activity
-        if: runner.os != 'Linux' || runner.arch != 'ARM64'
-        uses: step-security/harden-runner@e14015d583714f6e62063499dc959a02595150a1 # v2.21.1
-        with:
-          egress-policy: audit
-
       - name: Checkout
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
         with:
@@ -403,7 +396,6 @@ jobs:
       bundle_sha256: ${{ steps.manifest.outputs.bundle_sha256 }}
     steps:
       - name: Audit runner network activity
-        if: runner.os != 'Linux' || runner.arch != 'ARM64'
         uses: step-security/harden-runner@e14015d583714f6e62063499dc959a02595150a1 # v2.21.1
         with:
           egress-policy: audit
@@ -631,7 +623,6 @@ jobs:
       # The repo is needed for the smoke script itself; the *package* under test
       # comes only from the downloaded tarball.
       - name: Audit runner network activity
-        if: runner.os != 'Linux' || runner.arch != 'ARM64'
         uses: step-security/harden-runner@e14015d583714f6e62063499dc959a02595150a1 # v2.21.1
         with:
           egress-policy: audit
@@ -695,7 +686,6 @@ jobs:
     timeout-minutes: 20
     steps:
       - name: Audit runner network activity
-        if: runner.os != 'Linux' || runner.arch != 'ARM64'
         uses: step-security/harden-runner@e14015d583714f6e62063499dc959a02595150a1 # v2.21.1
         with:
           egress-policy: audit
@@ -1109,7 +1099,6 @@ jobs:
       # "this release installs correctly" rather than two that drift. That needs
       # a checkout, which this job did not previously have.
       - name: Audit runner network activity
-        if: runner.os != 'Linux' || runner.arch != 'ARM64'
         uses: step-security/harden-runner@e14015d583714f6e62063499dc959a02595150a1 # v2.21.1
         with:
           egress-policy: audit
@@ -1702,12 +1691,6 @@ jobs:
             runner: ubuntu-24.04-arm
     steps:
       # For the smoke script. The image comes only from the registry.
-      - name: Audit runner network activity
-        if: runner.os != 'Linux' || runner.arch != 'ARM64'
-        uses: step-security/harden-runner@e14015d583714f6e62063499dc959a02595150a1 # v2.21.1
-        with:
-          egress-policy: audit
-
       - name: Checkout
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
         with:

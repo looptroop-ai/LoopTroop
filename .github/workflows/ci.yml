@@ -30,7 +30,6 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - name: Audit runner network activity
-        if: runner.os != 'Linux' || runner.arch != 'ARM64'
         uses: step-security/harden-runner@e14015d583714f6e62063499dc959a02595150a1 # v2.21.1
         with:
           egress-policy: audit
@@ -62,7 +61,6 @@ jobs:
     timeout-minutes: 10
     steps:
       - name: Audit runner network activity
-        if: runner.os != 'Linux' || runner.arch != 'ARM64'
         uses: step-security/harden-runner@e14015d583714f6e62063499dc959a02595150a1 # v2.21.1
         with:
           egress-policy: audit
@@ -108,7 +106,6 @@ jobs:
     timeout-minutes: 30
     steps:
       - name: Audit runner network activity
-        if: runner.os != 'Linux' || runner.arch != 'ARM64'
         uses: step-security/harden-runner@e14015d583714f6e62063499dc959a02595150a1 # v2.21.1
         with:
           egress-policy: audit
@@ -252,7 +249,6 @@ jobs:
         label: [toolchain floor, declared floor]
     steps:
       - name: Audit runner network activity
-        if: runner.os != 'Linux' || runner.arch != 'ARM64'
         uses: step-security/harden-runner@e14015d583714f6e62063499dc959a02595150a1 # v2.21.1
         with:
           egress-policy: audit
@@ -315,7 +311,6 @@ jobs:
     timeout-minutes: 25
     steps:
       - name: Audit runner network activity
-        if: runner.os != 'Linux' || runner.arch != 'ARM64'
         uses: step-security/harden-runner@e14015d583714f6e62063499dc959a02595150a1 # v2.21.1
         with:
           egress-policy: audit
@@ -416,7 +411,6 @@ jobs:
         os: [ubuntu-latest, macos-latest, windows-latest]
     steps:
       - name: Audit runner network activity
-        if: runner.os != 'Linux' || runner.arch != 'ARM64'
         uses: step-security/harden-runner@e14015d583714f6e62063499dc959a02595150a1 # v2.21.1
         with:
           egress-policy: audit
@@ -508,12 +502,6 @@ jobs:
           - arch: arm64
             runner: ubuntu-24.04-arm
     steps:
-      - name: Audit runner network activity
-        if: runner.os != 'Linux' || runner.arch != 'ARM64'
-        uses: step-security/harden-runner@e14015d583714f6e62063499dc959a02595150a1 # v2.21.1
-        with:
-          egress-policy: audit
-
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
       - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7
         with:
@@ -602,7 +590,6 @@ jobs:
         os: [ubuntu-latest, macos-latest, windows-latest]
     steps:
       - name: Audit runner network activity
-        if: runner.os != 'Linux' || runner.arch != 'ARM64'
         uses: step-security/harden-runner@e14015d583714f6e62063499dc959a02595150a1 # v2.21.1
         with:
           egress-policy: audit
@@ -672,7 +659,6 @@ jobs:
             package: yarn@1.22.22
     steps:
       - name: Audit runner network activity
-        if: runner.os != 'Linux' || runner.arch != 'ARM64'
         uses: step-security/harden-runner@e14015d583714f6e62063499dc959a02595150a1 # v2.21.1
         with:
           egress-policy: audit
@@ -750,7 +736,6 @@ jobs:
     timeout-minutes: 30
     steps:
       - name: Audit runner network activity
-        if: runner.os != 'Linux' || runner.arch != 'ARM64'
         uses: step-security/harden-runner@e14015d583714f6e62063499dc959a02595150a1 # v2.21.1
         with:
           egress-policy: audit
@@ -811,7 +796,6 @@ jobs:
         os: [ubuntu-latest, macos-latest, windows-latest]
     steps:
       - name: Audit runner network activity
-        if: runner.os != 'Linux' || runner.arch != 'ARM64'
         uses: step-security/harden-runner@e14015d583714f6e62063499dc959a02595150a1 # v2.21.1
         with:
           egress-policy: audit
@@ -843,7 +827,6 @@ jobs:
     timeout-minutes: 20
     steps:
       - name: Audit runner network activity
-        if: runner.os != 'Linux' || runner.arch != 'ARM64'
         uses: step-security/harden-runner@e14015d583714f6e62063499dc959a02595150a1 # v2.21.1
         with:
           egress-policy: audit
@@ -880,7 +863,6 @@ jobs:
           - { channel: scoop, os: windows-latest }
     steps:
       - name: Audit runner network activity
-        if: runner.os != 'Linux' || runner.arch != 'ARM64'
         uses: step-security/harden-runner@e14015d583714f6e62063499dc959a02595150a1 # v2.21.1
         with:
           egress-policy: audit
@@ -975,7 +957,6 @@ jobs:
     timeout-minutes: 30
     steps:
       - name: Audit runner network activity
-        if: runner.os != 'Linux' || runner.arch != 'ARM64'
         uses: step-security/harden-runner@e14015d583714f6e62063499dc959a02595150a1 # v2.21.1
         with:
           egress-policy: audit
@@ -1034,12 +1015,6 @@ jobs:
           - { os: macos-15, target: darwin-arm64 }
           - { os: windows-latest, target: win-x64 }
     steps:
-      - name: Audit runner network activity
-        if: runner.os != 'Linux' || runner.arch != 'ARM64'
-        uses: step-security/harden-runner@e14015d583714f6e62063499dc959a02595150a1 # v2.21.1
-        with:
-          egress-policy: audit
-
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
       - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7
         with:
@@ -1181,7 +1156,6 @@ jobs:
     timeout-minutes: 30
     steps:
       - name: Audit runner network activity
-        if: runner.os != 'Linux' || runner.arch != 'ARM64'
         uses: step-security/harden-runner@e14015d583714f6e62063499dc959a02595150a1 # v2.21.1
         with:
           egress-policy: audit
@@ -1235,7 +1209,6 @@ jobs:
     timeout-minutes: 25
     steps:
       - name: Audit runner network activity
-        if: runner.os != 'Linux' || runner.arch != 'ARM64'
         uses: step-security/harden-runner@e14015d583714f6e62063499dc959a02595150a1 # v2.21.1
         with:
           egress-policy: audit
@@ -1277,7 +1250,6 @@ jobs:
     continue-on-error: true
     steps:
       - name: Audit runner network activity
-        if: runner.os != 'Linux' || runner.arch != 'ARM64'
         uses: step-security/harden-runner@e14015d583714f6e62063499dc959a02595150a1 # v2.21.1
         with:
           egress-policy: audit
@@ -1405,7 +1377,6 @@ jobs:
     timeout-minutes: 5
     steps:
       - name: Audit runner network activity
-        if: runner.os != 'Linux' || runner.arch != 'ARM64'
         uses: step-security/harden-runner@e14015d583714f6e62063499dc959a02595150a1 # v2.21.1
         with:
           egress-policy: audit

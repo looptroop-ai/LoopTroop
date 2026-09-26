@@ -105,7 +105,6 @@ jobs:
       version: ${{ steps.resolve.outputs.version }}
     steps:
       - name: Audit runner network activity
-        if: runner.os != 'Linux' || runner.arch != 'ARM64'
         uses: step-security/harden-runner@e14015d583714f6e62063499dc959a02595150a1 # v2.21.1
         with:
           egress-policy: audit
@@ -218,7 +217,6 @@ jobs:
       matrix: ${{ fromJSON(needs.plan.outputs.matrix) }}
     steps:
       - name: Audit runner network activity
-        if: runner.os != 'Linux' || runner.arch != 'ARM64'
         uses: step-security/harden-runner@e14015d583714f6e62063499dc959a02595150a1 # v2.21.1
         with:
           egress-policy: audit

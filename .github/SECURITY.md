@@ -131,3 +131,23 @@ Routine dependency updates are grouped and held behind a seven-day
 release-maturity delay; security advisories shorten that delay to two days. The
 full policy is documented in
 [Operations Guide](https://www.looptroop.ovh/docs/operations#scheduled-dependency-updates).
+
+## Repository security checks
+
+Dependency Review checks pull requests for known vulnerabilities in runtime,
+development, and unknown dependency scopes. The required Packaging check blocks
+failed, cancelled, or skipped reviews on every CI event. Pull requests compare
+their base and head commits. Pushes and manual runs compare the workflow commit
+with the default branch, so a branch-push check cannot bypass the review.
+
+Renovate manages dependency updates. GitHub's CodeQL default setup scans the
+application and workflows. OpenSSF Scorecard publishes repository security
+results on pushes to main and weekly, using the workflow token to read rulesets.
+
+Harden-Runner audits network activity in supported jobs that have read-only
+permissions and no publishing credentials or protected environment. Audit mode
+does not enforce an outbound allowlist. Publishing and other write-capable jobs,
+jobs running inside containers, and whole job matrices containing Linux ARM64
+are excluded. Harden-Runner starts through an action pre hook, which runs before
+a step condition; excluding the whole matrix also leaves its other platforms
+without runner auditing.

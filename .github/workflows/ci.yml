@@ -25,6 +25,28 @@ env:
   NPM_CONFIG_FETCH_RETRY_MAXTIMEOUT: '60000'
 
 jobs:
+  dependency-review:
+    timeout-minutes: 10
+    runs-on: ubuntu-latest
+    steps:
+      - name: Audit runner network activity
+        uses: step-security/harden-runner@e14015d583714f6e62063499dc959a02595150a1 # v2.21.1
+        with:
+          egress-policy: audit
+
+      - name: 'Checkout Repository'
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          persist-credentials: false
+      - name: 'Dependency Review'
+        uses: actions/dependency-review-action@a1d282b36b6f3519aa1f3fc636f609c47dddb294 # v5.0.0
+        with:
+          fail-on-scopes: runtime,development,unknown
+          # Push and manual runs must enforce the same dependency gate as PRs.
+          # Use exact PR commits, or the default branch and head for other events.
+          base-ref: ${{ github.event.pull_request.base.sha || github.event.repository.default_branch }}
+          head-ref: ${{ github.event.pull_request.head.sha || github.sha }}
+
   # 4,400+ lines of workflow YAML, most of it inline bash and PowerShell that no
   # other check reads. `npm run lint` covers the application and never opens
   # `.github/`, so a typo'd expression, an unreachable `if:`, a shell variable
@@ -38,6 +60,11 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 10
     steps:
+      - name: Audit runner network activity
+        uses: step-security/harden-runner@e14015d583714f6e62063499dc959a02595150a1 # v2.21.1
+        with:
+          egress-policy: audit
+
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
 
       - name: Install actionlint
@@ -78,6 +105,11 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 30
     steps:
+      - name: Audit runner network activity
+        uses: step-security/harden-runner@e14015d583714f6e62063499dc959a02595150a1 # v2.21.1
+        with:
+          egress-policy: audit
+
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
       - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7
         with:
@@ -216,6 +248,11 @@ jobs:
         os: [ubuntu-latest, macos-latest, windows-latest]
         label: [toolchain floor, declared floor]
     steps:
+      - name: Audit runner network activity
+        uses: step-security/harden-runner@e14015d583714f6e62063499dc959a02595150a1 # v2.21.1
+        with:
+          egress-policy: audit
+
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
 
       # The runtime this repository builds and ships on, from `.nvmrc`. Exact,
@@ -273,6 +310,11 @@ jobs:
     runs-on: windows-latest
     timeout-minutes: 25
     steps:
+      - name: Audit runner network activity
+        uses: step-security/harden-runner@e14015d583714f6e62063499dc959a02595150a1 # v2.21.1
+        with:
+          egress-policy: audit
+
       - name: Checkout the pull request
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
         with:
@@ -368,6 +410,11 @@ jobs:
         # install scripts and `npm install -g` both take.
         os: [ubuntu-latest, macos-latest, windows-latest]
     steps:
+      - name: Audit runner network activity
+        uses: step-security/harden-runner@e14015d583714f6e62063499dc959a02595150a1 # v2.21.1
+        with:
+          egress-policy: audit
+
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
 
       # Built the way every other job builds — the toolchain Node and npm 12 —
@@ -542,6 +589,11 @@ jobs:
       matrix:
         os: [ubuntu-latest, macos-latest, windows-latest]
     steps:
+      - name: Audit runner network activity
+        uses: step-security/harden-runner@e14015d583714f6e62063499dc959a02595150a1 # v2.21.1
+        with:
+          egress-policy: audit
+
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
       - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7
         with:
@@ -606,6 +658,11 @@ jobs:
           - manager: yarn
             package: yarn@1.22.22
     steps:
+      - name: Audit runner network activity
+        uses: step-security/harden-runner@e14015d583714f6e62063499dc959a02595150a1 # v2.21.1
+        with:
+          egress-policy: audit
+
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
       - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7
         with:
@@ -678,6 +735,11 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 30
     steps:
+      - name: Audit runner network activity
+        uses: step-security/harden-runner@e14015d583714f6e62063499dc959a02595150a1 # v2.21.1
+        with:
+          egress-policy: audit
+
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
       - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7
         with:
@@ -733,6 +795,11 @@ jobs:
       matrix:
         os: [ubuntu-latest, macos-latest, windows-latest]
     steps:
+      - name: Audit runner network activity
+        uses: step-security/harden-runner@e14015d583714f6e62063499dc959a02595150a1 # v2.21.1
+        with:
+          egress-policy: audit
+
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
       - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7
         with:
@@ -759,6 +826,11 @@ jobs:
     runs-on: macos-latest
     timeout-minutes: 20
     steps:
+      - name: Audit runner network activity
+        uses: step-security/harden-runner@e14015d583714f6e62063499dc959a02595150a1 # v2.21.1
+        with:
+          egress-policy: audit
+
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
       - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7
         with:
@@ -790,6 +862,11 @@ jobs:
           - { channel: homebrew, os: macos-latest }
           - { channel: scoop, os: windows-latest }
     steps:
+      - name: Audit runner network activity
+        uses: step-security/harden-runner@e14015d583714f6e62063499dc959a02595150a1 # v2.21.1
+        with:
+          egress-policy: audit
+
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
       - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7
         with:
@@ -879,6 +956,11 @@ jobs:
     runs-on: windows-latest
     timeout-minutes: 30
     steps:
+      - name: Audit runner network activity
+        uses: step-security/harden-runner@e14015d583714f6e62063499dc959a02595150a1 # v2.21.1
+        with:
+          egress-policy: audit
+
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
       - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7
         with:
@@ -1073,6 +1155,11 @@ jobs:
     runs-on: windows-latest
     timeout-minutes: 30
     steps:
+      - name: Audit runner network activity
+        uses: step-security/harden-runner@e14015d583714f6e62063499dc959a02595150a1 # v2.21.1
+        with:
+          egress-policy: audit
+
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
       - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7
         with:
@@ -1121,6 +1208,11 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 25
     steps:
+      - name: Audit runner network activity
+        uses: step-security/harden-runner@e14015d583714f6e62063499dc959a02595150a1 # v2.21.1
+        with:
+          egress-policy: audit
+
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
       - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7
         with:
@@ -1157,6 +1249,11 @@ jobs:
     timeout-minutes: 30
     continue-on-error: true
     steps:
+      - name: Audit runner network activity
+        uses: step-security/harden-runner@e14015d583714f6e62063499dc959a02595150a1 # v2.21.1
+        with:
+          egress-policy: audit
+
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
       - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7
         with:
@@ -1274,11 +1371,16 @@ jobs:
   # unconditional, so skipped means a dependency of theirs failed.
   packaging:
     name: Packaging
-    needs: [test-matrix, smoke-installer, node-managers, bundle, bundle-runs, formula-audit, channel-install, choco-install, binary, winget-install, aur-package]
+    needs: [dependency-review, test-matrix, smoke-installer, node-managers, bundle, bundle-runs, formula-audit, channel-install, choco-install, binary, winget-install, aur-package]
     if: always()
     runs-on: ubuntu-latest
     timeout-minutes: 5
     steps:
+      - name: Audit runner network activity
+        uses: step-security/harden-runner@e14015d583714f6e62063499dc959a02595150a1 # v2.21.1
+        with:
+          egress-policy: audit
+
       - name: Require every packaging job to have succeeded
         env:
           RESULTS: ${{ toJSON(needs) }}

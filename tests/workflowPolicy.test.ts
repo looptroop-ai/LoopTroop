@@ -101,6 +101,48 @@ function executeWindowsScope(run: string, changedPaths: string[], diffStatus = 0
 }
 
 describe('release workflow policy', () => {
+  it('limits runner auditing to supported jobs without publishing credentials', () => {
+    for (const [file, workflow] of workflows) {
+      for (const [name, job] of Object.entries(workflow.jobs ?? {})) {
+        const audit = (job.steps ?? []).find((step) => String(step.uses).startsWith('step-security/harden-runner@')) as SetupStep | undefined
+        if (!audit) continue
+        const scope = `${file}: ${name}`
+        const permissions = job.permissions ?? (workflow as { permissions?: Record<string, unknown> }).permissions ?? {}
+        expect(Object.values(permissions), scope).not.toContain('write')
+        expect(JSON.stringify(job), scope).not.toContain('secrets.')
+        expect((job as { container?: unknown }).container, scope).toBeUndefined()
+        expect((job as { environment?: unknown }).environment, scope).toBeUndefined()
+        // ponytail: pre hooks bypass step conditions; split mixed ARM jobs only if their other legs need auditing.
+        const runner = job as Job & { 'runs-on'?: unknown; strategy?: unknown }
+        expect(JSON.stringify([runner['runs-on'], runner.strategy]), scope).not.toMatch(/ubuntu[^"]*arm|linux-arm64/i)
+        expect(audit.with?.['egress-policy'], scope).toBe('audit')
+      }
+    }
+  })
+
+  it('requires dependency review on every CI event before Packaging can pass', () => {
+    const ci = workflows.get('ci.yml')!.jobs!
+    const review = ci['dependency-review'] as Job & { if?: string }
+    expect(review.if).toBeUndefined()
+    const action = review.steps!.find((step) => String(step.uses).startsWith('actions/dependency-review-action@')) as SetupStep
+    expect(action.with).toMatchObject({
+      'fail-on-scopes': 'runtime,development,unknown',
+      'base-ref': '${{ github.event.pull_request.base.sha || github.event.repository.default_branch }}',
+      'head-ref': '${{ github.event.pull_request.head.sha || github.sha }}',
+    })
+    expect((ci.packaging as Job & { needs: string[] }).needs).toContain('dependency-review')
+    expect((ci.packaging as Job & { if: string }).if).toBe('always()')
+    const gate = ci.packaging!.steps!.find((step) => step.run !== undefined)!
+    for (const result of ['success', 'failure', 'cancelled', 'skipped']) {
+      const results = { 'dependency-review': { result }, 'test-matrix': { result: 'success' } }
+      const run = spawnSync('bash', ['-euo', 'pipefail', '-c', String(gate.run)], {
+        encoding: 'utf8',
+        env: { ...process.env, RESULTS: JSON.stringify(results) },
+      })
+      expect(run.status, `${result}: ${run.stderr}`).toBe(result === 'success' ? 0 : 1)
+    }
+  })
+
   it('fails release tag verification on registry errors while accepting a confirmed missing tag', () => {
     const release = source.get('release.yml')!
     const { version } = JSON.parse(readFileSync(join(repo, 'package.json'), 'utf8')) as { version: string }

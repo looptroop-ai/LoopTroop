@@ -96,6 +96,11 @@ jobs:
       needs_npm: ${{ steps.state.outputs.needs_npm }}
       dist_tag: ${{ steps.state.outputs.dist_tag }}
     steps:
+      - name: Audit runner network activity
+        uses: step-security/harden-runner@e14015d583714f6e62063499dc959a02595150a1 # v2.21.1
+        with:
+          egress-policy: audit
+
       - name: Checkout
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
         with:
@@ -390,6 +395,11 @@ jobs:
       bundle: ${{ steps.manifest.outputs.bundle }}
       bundle_sha256: ${{ steps.manifest.outputs.bundle_sha256 }}
     steps:
+      - name: Audit runner network activity
+        uses: step-security/harden-runner@e14015d583714f6e62063499dc959a02595150a1 # v2.21.1
+        with:
+          egress-policy: audit
+
       - name: Checkout
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
         with:
@@ -612,6 +622,11 @@ jobs:
     steps:
       # The repo is needed for the smoke script itself; the *package* under test
       # comes only from the downloaded tarball.
+      - name: Audit runner network activity
+        uses: step-security/harden-runner@e14015d583714f6e62063499dc959a02595150a1 # v2.21.1
+        with:
+          egress-policy: audit
+
       - name: Checkout
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
         with:
@@ -670,6 +685,11 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 20
     steps:
+      - name: Audit runner network activity
+        uses: step-security/harden-runner@e14015d583714f6e62063499dc959a02595150a1 # v2.21.1
+        with:
+          egress-policy: audit
+
       - name: Checkout
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
         with:
@@ -1078,6 +1098,11 @@ jobs:
       # with the post-release published smoke, so there is one definition of
       # "this release installs correctly" rather than two that drift. That needs
       # a checkout, which this job did not previously have.
+      - name: Audit runner network activity
+        uses: step-security/harden-runner@e14015d583714f6e62063499dc959a02595150a1 # v2.21.1
+        with:
+          egress-policy: audit
+
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
         with:
           persist-credentials: false

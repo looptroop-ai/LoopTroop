@@ -62,9 +62,11 @@ describe('safeAtomicWrite', () => {
     expect(readdirSync(TEST_DIR)).toEqual(['daemon.json'])
   })
 
-  it.each(['artifact.jsonl', 'prd.yaml'])('removes the recovery proof after publishing %s', (filename) => {
-    safeAtomicWrite(join(TEST_DIR, filename), '{}\n')
-    expect(readdirSync(TEST_DIR)).toEqual([filename])
+  it('removes recovery proofs after publishing JSONL and YAML', () => {
+    safeAtomicWrite(join(TEST_DIR, 'artifact.jsonl'), '{}\n')
+    expect(readdirSync(TEST_DIR)).toEqual(['artifact.jsonl'])
+    safeAtomicWrite(join(TEST_DIR, 'prd.yaml'), '{}\n')
+    expect(readdirSync(TEST_DIR).sort()).toEqual(['artifact.jsonl', 'prd.yaml'])
   })
 
   /**

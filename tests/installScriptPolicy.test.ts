@@ -103,8 +103,8 @@ describe('dependency install script policy', () => {
   })
 
   it.each([
-    ['ci.yml', 'node-managers', `Install \${{ matrix.manager }}`, 'scripts', `\${{ matrix.manager }}`],
-    ['published-smoke.yml', 'smoke', 'Install the node manager', '.ci-tools-source/scripts', `\${{ matrix.channel }}`],
+    ['ci.yml', 'node-managers', 'Install ${{ matrix.manager }}', 'scripts', '${{ matrix.manager }}'],
+    ['published-smoke.yml', 'smoke', 'Install the node manager', '.ci-tools-source/scripts', '${{ matrix.channel }}'],
     ['published-smoke.yml', 'smoke', 'Install OpenCode v2', '.ci-tools-source/scripts', 'opencode-v2'],
     ['published-smoke.yml', 'smoke', 'Install OpenCode v1 on Windows', '.ci-tools-source/scripts', 'opencode-v1'],
   ])('installs then prepares the locked tool in %s / %s / %s', (file, job, name, scripts, tool) => {
@@ -143,15 +143,17 @@ describe('dependency install script policy', () => {
       const [name] = Object.keys(toolManifest.dependencies)
       if (!name) throw new Error(`Missing dependency for ${tool}`)
       const lock = JSON.parse(readFileSync(join(original, 'package-lock.json'), 'utf8')) as {
-        packages: Record<string, { os?: string[]; cpu?: string[] }>
+        packages: Record<string, { os?: string[]; cpu?: string[]; optionalDependencies?: Record<string, string> }>
       }
       // Select from published package metadata, independently of the helper's
       // aarch64/arm64 naming conversion and package-scope suffix construction.
-      const nativeEntry = Object.entries(lock.packages).find(([path, entry]) =>
-        entry.os?.includes(process.platform) && entry.cpu?.includes(process.arch)
-        && !path.includes('musl') && (process.arch !== 'x64' || path.endsWith('-baseline')))
-      if (!nativeEntry) throw new Error(`Missing fixture package for ${tool}`)
-      const native = nativeEntry[0].slice('node_modules/'.length)
+      const installed = lock.packages[`node_modules/${name}`]
+      const native = Object.keys(installed?.optionalDependencies ?? {}).find((packageName) => {
+        const entry = lock.packages[`node_modules/${packageName}`]
+        return entry?.os?.includes(process.platform) && entry.cpu?.includes(process.arch)
+          && !packageName.includes('musl') && (process.arch !== 'x64' || packageName.endsWith('-baseline'))
+      })
+      if (!native) throw new Error(`Missing fixture package for ${tool}`)
       const directory = join(root, 'ci-tools', tool)
       const packageRoot = join(directory, 'node_modules', name)
       const nativeBin = join(directory, 'node_modules', native, 'bin')

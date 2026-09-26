@@ -153,11 +153,29 @@ Renovate transitive-package deprecations and its optional RE2 fallback. The
 bundled npm-to-approved-development-npm notice is expected. Runner/cache service
 diagnostics are external to these changes. No action retirement warning or new
 application warning was found; these are recorded rather than hidden.
-The refreshed review contained 13 conversation comments, four submitted reviews
-and nine inline comments. Only SonarCloud's comment changed, reporting a passing
-quality gate. DeepSource parser settings require access to that service; this
-session has GitHub access but no DeepSource credentials.
-No blanket analyzer suppression is added.
+The refreshed review contained 14 conversation comments, six submitted reviews
+and 13 inline comments. CodeRabbit and Kilo found no code defects; Greptile
+reported no blocking issue. The owner repeated the preference for bundled npm;
+that existing decision still applies. SonarCloud reports a passing gate.
+
+The next CI run at `44da9d61` failed in both macOS test lanes because the native
+fixture searched every lock entry and selected the OpenCode wrapper package,
+whose `os`/`cpu` metadata also matches macOS ARM, instead of selecting from the
+wrapper's native optional dependencies. The fixture now filters only the root
+package's optional dependencies and then checks their locked platform metadata.
+The same run's sole Codacy critical flagged a fixed `it.each` filename as
+possible user input to `path.join`; the test now uses static filenames directly.
+The three DeepSource literal-template suggestions now use ordinary string
+literals. The `.mjs` parser report still conflicts with the documented ESM
+default and the repository's executable module configuration; no analyzer
+exclusion was added. Its medium-risk complexity suggestion is confined to the
+native-binary test harness and does not identify a runtime defect.
+The corrected fixture passes all 82 focused atomic-write and install-policy
+tests locally, test TypeScript checking, and ESLint. A platform-metadata check
+also selected the correct locked native package for Bun and both OpenCode lanes
+on macOS ARM64, Linux x64 and Windows x64. The full local suite passed before
+this test-only correction; the next CI run will exercise the corrected fixture
+on macOS.
 
 Follow-up verification: 458 test files passed, with 7,071 tests passed and 13
 existing skips. Full lint, both typecheck projects, build, package contents,

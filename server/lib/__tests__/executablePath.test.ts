@@ -1787,6 +1787,8 @@ const TRICKY_ARGUMENTS = [
   'semi;colon,comma',
   'star*question?',
   'back`tick',
+  '$(printf injected)',
+  'C:\\archive & name\\',
   'C:\\Program Files\\',
   'trailing\\\\',
   'a\\"b',

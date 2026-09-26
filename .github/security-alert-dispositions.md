@@ -1,5 +1,228 @@
 # Reviewed code-scanning dispositions
 
+## September 26 security and quality review
+
+The review started with 24 open GitHub code-scanning findings at
+`88a38cb1a60c9b811b912ac08ea602a550de218c`. The owner requested one new branch,
+a pull request only after implementation and local verification, no merge, and
+no wait for CI. Documentation describes the implemented behavior immediately.
+No backward-compatibility work or end-to-end/lifecycle tests are required.
+
+The owner authorized dismissal of proven false positives with evidence and
+accepted the existing merge policy and absence of an OpenSSF Best Practices
+badge. Required CI and pull requests remain enforced; independent human
+approvals and code-owner reviews are not added. No badge enrollment or
+maintainer attestation is claimed. The owner explicitly chose to keep policy
+alerts #192, #200 and #201 open rather than dismiss them as accepted risk.
+The container uses npm bundled in its digest-pinned Node image, as requested;
+the separate npm download is removed.
+
+### Source findings
+
+| GitHub alert | Resolution and evidence |
+| --- | --- |
+| #174 | The process-tree test passes its marker path and child source through argv. Both programs use fixed source; no path is interpolated into JavaScript. |
+| #163 | False positive. `writeDaemonRecord` writes the API token to owner-only `daemon.json`. Atomic recovery proofs apply only to YAML/JSONL, so this token does not reach the hash. SHA-256 verifies whole-file crash completeness, not a password. A regression inspects the temporary file before rename and asserts no proof exists. |
+| #187 | False positive. The SHA-256 digest identifies exact wire credentials in an in-memory protocol cache. It is not persisted or used as a password verifier. The cache already holds the Basic authorization header required by the connection. Existing tests verify credential changes produce distinct cache entries. |
+| #184 | False positive. The trusted resolver supplies the executable; `spawn` receives a separate argument array. Windows command scripts go through the shared launcher, which escapes arguments and rejects unsafe expansion. A POSIX real-process regression preserves shell metacharacters in an absolute path argument; separate shared-launcher tests cover Windows quoting and unsafe expansion. |
+| #176 | False positive. The authenticated folder picker intentionally lists owner-selected absolute local directories before attachment. There is no single workspace boundary for this operation. |
+| #177 | False positive. Project discovery checks existence of normalized owner-selected local paths. The check is behind Host/Origin and authentication middleware. |
+| #178 | False positive. Timeout diagnosis reads only the selected repository's fixed `.git` metadata file to locate its Git directory. Linked-worktree metadata can legitimately reside outside the worktree. File contents are not returned through the API. |
+| #179 | False positive. The selected project path is the subprocess working directory, not its executable or shell source. `gitWorkingDirectory` rejects empty, relative and NUL-containing paths; the program comes from the trusted resolver. |
+| #180 | False positive. Git timeout diagnosis checks the fixed `.git` entry's type. It does not read arbitrary file content. |
+| #181 | False positive. After a spawn ENOENT/ENOTDIR error, the runner checks the selected working directory to distinguish a missing directory from a missing executable. This is a local-owner diagnostic. |
+| #182 | False positive. Timeout diagnosis checks only the fixed `index.lock` path below the repository's Git metadata. It neither returns file contents nor removes the lock. |
+| #183 | False positive. Both diagnostic paths already use `JSON.stringify`, which escapes CR/LF and ASCII control bytes instead of creating extra log records. |
+
+The project-discovery integration regression proves existing and missing paths
+both return the same unauthorized response without a token, and a valid owner
+token can select folders outside the daemon root. Ticket-artifact containment
+remains separate from the owner's filesystem browsing and command permissions.
+No status, prompt, parser, payload key or ticket lifecycle behavior changes.
+
+### CI tooling and generated inputs
+
+- #190 and #191: OpenCode tooling installs use committed npm integrity locks and
+  disable third-party lifecycle scripts. The setup helper copies the selected
+  optional native binary into the package's declared executable path after npm
+  creates its shims. OpenCode keeps the real npm-generated Windows command shim; Bun exposes its native Windows executable directory. Native binaries must pass a version probe before entering PATH.
+- #193: the container uses the npm already included in its digest-pinned Node
+  image. Production installation retains the release lockfile and disabled
+  lifecycle scripts. It no longer downloads a separate npm package merely to
+  match the development toolchain.
+- #194 through #197: Bun, pnpm, Yarn and both OpenCode tooling versions have
+  isolated lockfiles under `scripts/ci-tools`. This avoids executable-name
+  collisions and installing unrelated tools. Upstream optional dependencies can still include multiple native variants for the selected platform. Renovate maintains these
+  manifests; Yarn remains Classic and each OpenCode lane stays within its major.
+  Bun setup no longer races its postinstall against npm's Windows cleanup.
+- #198: fast-check generates network-trust inputs in the ordinary Vitest suite.
+  Eight thousand generated cases check normalized IPv4 and IPv6 forms, the IPv4 loopback range and mapped IPv6 forms, invalid ports,
+  and hostile hostname suffixes; fixed cases check Host/Origin port parity and rejected URL syntax. The pinned Scorecard v5.5.0 recognizes this
+  integration. It adds only development dependencies and no runtime fuzzer.
+
+Published-feed checks still install LoopTroop from the live feed. Their driver
+comes from the release being tested; their tooling manifests and helper come
+from the workflow's exact source commit, so a weekly check can use maintained
+tooling while testing the current published release. The job summary records the release version, exact tooling commit and installed tool versions. Tools resolve through normal PATH without setting a trusted-directory override.
+No user runtime trust policy is widened.
+
+### SAST coverage (#199)
+
+The [Scorecard run](https://github.com/looptroop-ai/LoopTroop/actions/runs/36231324008)
+reported 21 of 30 recent changes scanned. Its GitHub GraphQL lookup missed the
+check cache and used a REST fallback that reads only the default first page of
+30 check runs. The
+[pinned implementation](https://github.com/ossf/scorecard/blob/c395761df6afe1a69e476bc60a013a94bcbc153f/clients/githubrepo/checkruns.go)
+does not paginate that fallback. These PRs have more than 30 check runs.
+
+Replaying that first page reproduces 21/30 exactly. Reading the full check lists
+finds successful recognized SAST results for eight additional PRs: #193, #192,
+#184, #178, #172, #168, #167 and #166. All 30 changes were scanned; 29 have a
+successful recognized result. [PR #164's CodeQL result](https://github.com/looptroop-ai/LoopTroop/runs/105648887452)
+failed because it reported two findings, not because scanning was absent. That
+historical failure remains a failure. The current default CodeQL setup remains
+configured for the application and Actions, including weekly scans. No duplicate
+scanner or workflow is added. The missing-scanning claim is a false positive;
+this disposition does not claim every historical security check passed.
+
+### Repository policy
+
+- #192 (branch protection) and #200 (human review): accepted limitations at the
+  owner's request. Existing required checks, PR requirement, deletion protection
+  and force-push protection remain in place. AI reviews do not satisfy
+  Scorecard's independent-human-review criterion.
+- #201 (OpenSSF badge): accepted limitation at the owner's request. Earning a
+  badge requires external registration and truthful maintainer attestations;
+  adding a badge image to the repository would not satisfy that requirement.
+
+### Dashboard state and verification
+
+Twelve false positives (#163, #176–#184, #187 and #199) were dismissed with the
+owner's authorization, and their GitHub states were read back. Nine findings
+(#174, #190, #191 and #193–#198) have code or test changes and remain open until
+GitHub scans the merged default branch. The three accepted policy findings
+(#192, #200 and #201) deliberately remain open. No analyzer exclusions or
+blanket suppressions were added. This records GitHub decisions, not separate
+SonarCloud source-dashboard resolutions.
+
+The website operations guide was updated and pushed directly to its main
+branch in [80e7568](https://github.com/looptroop-ai/LoopTroop-Website/commit/80e7568).
+Existing ignore rules cover all nested tool installations and test/build output.
+
+Final local verification passed: 458 test files, 7,027 tests and 13 existing skips;
+full lint, both typecheck projects, production build, package contents,
+production native-addon scan, version consistency, script type stripping,
+installer synchronization and license notices. Actionlint with ShellCheck and
+strict Renovate validation passed. All five tools reported their actual versions
+through the existing trusted launcher on Linux; Windows command-shim generation
+was inspected separately. The website passed 97 tests, its build and site/CLI
+verification. No end-to-end or lifecycle smoke was run; cross-platform runtime
+verification remains with CI, whose completion is not awaited.
+
+### PR #194 review follow-up
+
+Read the complete PR conversation, submitted reviews, inline comments, bot
+reports and the linked local 20-point review together with CI before editing.
+Both [push CI](https://github.com/looptroop-ai/LoopTroop/actions/runs/36243457413)
+and [PR CI](https://github.com/looptroop-ai/LoopTroop/actions/runs/36243464149)
+passed at `6043e07a`, including Windows and macOS tool smokes. SonarCloud and
+DeepSource reported the separate analysis findings below.
+
+| Review finding | Resolution |
+| --- | --- |
+| Job-wide executable trust override masks normal discovery | Removed the override. All five installed tools resolve through the existing trusted launcher on Linux with ordinary PATH. Windows Bun exposes its native bin directory; OpenCode retains its command shim. |
+| Native setup aliases, missing binaries and incompatible executables | Deduplicate declared targets and run a bounded version probe before adding PATH. Tests cover missing and invalid binaries, both OpenCode lanes and Bun, using independent platform metadata from committed locks. No speculative musl runner or package-layout fallback is added. |
+| CI tools grouped with runtime updates; majors lose labels; lock refresh splits | Restrict runtime rules to the root manifest. Apply CI metadata separately from the patch/minor group. Major updates keep their major label and separate PRs; the weekly lock refresh covers root and nested locks together. Yarn Classic and both OpenCode major lanes remain explicit; Bun and pnpm majors remain reviewable. |
+| Weak install-policy assertions | Compare the exact installation commands in each setup step, verify every tooling lock and integrity field, reject local links, and assert the helper cannot write a trust override. Use real interpolation with a computed GitHub-expression prefix in test data so static analysis does not mistake it for JavaScript interpolation. |
+| Broader network and authentication coverage | Add normalized IPv4/IPv6, bracketed dotted mapped IPv6, hostile syntax and Host/Origin port parity. Every private API route in the contract inventory must reject an unauthenticated request before its handler. Fast-check reports the seed and shrink path on failure; a fixed seed would unnecessarily reduce exploration. |
+| JSON proof test and leftover sidecars | Name the JSON check precisely, assert its final directory contents, and verify successful YAML/JSONL writes clean temporary sidecars. Credential hashing behavior is unchanged. |
+| Process quoting coverage overstated | Distinguish POSIX real-process coverage from shared Windows launcher tests; add command substitution and a trailing-backslash path to the latter. |
+| Workflow tooling differs from the release tested | Preserve that intentional separation and record the release version, exact tooling commit and installed tool versions in the job summary. |
+| Restore a separate npm download or enforce npm 12 in the container | Rejected per the owner's explicit choice. Production installation disables all scripts and uses the release lock; the development npm lifecycle allowlist is a separate policy. |
+| SonarCloud S8689 / GitHub #202 | Proven false positive: the log contains the public npm package name, package.json version checked against its committed pin, and CI installation path. No credential reaches it. Dismissed the GitHub import under the owner's authorization. The refreshed SonarCloud bot comment and both Sonar checks now report success with zero new issues. |
+| DeepSource parser and test findings | The standalone CI helper now uses `.cjs`, `require` and `__dirname`, matching the analyzer's script parser without analyzer configuration changes or exclusions. A small metadata predicate keeps the native-fixture test's complexity down; workflow marker assertions use real interpolation with a separately constructed prefix. Non-null assertions and an empty callback were removed earlier. |
+| Unrelated artifacts, hardlinks, extra config guards, exact fixture listing and separate disposition PR | No demonstrated defect warrants changes. Existing cleanup and fixture assertions are intentional; the owner requested one branch and PR. Security notes clarify existing authenticated-owner behavior rather than relaxing runtime controls. |
+
+Codex, Amazon Q, Greptile, Kilo and CodeRabbit supplied no additional actionable
+code findings. Sourcery requested human review, Socket supplied package scores,
+and Gitar did not run a review on its free plan. None changes the owner's
+accepted human-review and badge limitations.
+
+The successful CI logs retain upstream download-artifact Buffer deprecations,
+Renovate transitive-package deprecations and its optional RE2 fallback. The
+bundled npm-to-approved-development-npm notice is expected. Runner/cache service
+diagnostics are external to these changes. No action retirement warning or new
+application warning was found; these are recorded rather than hidden.
+The refreshed review at `ab2f33d` contained 14 conversation comments, eight
+submitted reviews and 17 inline comments. On `78fb340`, the latest refresh had
+14 conversation comments, ten submitted reviews and 23 inline comments.
+Greptile reviewed that head and found no actionable issue; Kilo reports no
+issues, Codacy reports zero new issues, and SonarCloud's gate passes with zero
+new or accepted issues and zero hotspots. CodeRabbit and the latest Copilot note
+again recommend restoring or checking the Docker npm pin. That conflicts
+with the owner's explicit choice to use the npm bundled in the digest-pinned
+image; the script-free production install remains locked by the release
+lockfile. DeepSource's JavaScript check failed at `78fb340` on three newly
+reported findings: the local identifier `name`, a browser-only console rule on
+the Node-only setup helper, and a module-scope function declaration in a Vitest
+test. The identifier is now `packageName`, redundant console output is removed
+while tool versions remain in the GitHub step summary, and the test predicate
+uses an arrow expression. The next DeepSource scan will verify those changes;
+its Docker, Shell and Secrets checks pass.
+Greptile's incremental review then found that renaming the setup helper's
+package binding had left the native probe error message using the old identifier.
+That error path now reports the package name, and the regression asserts the
+exact package-specific diagnostic so a ReferenceError stack frame cannot satisfy
+the test accidentally.
+DeepSource's completed JavaScript run on `7281c99` then exposed a remaining
+medium-risk `JS-R1005` finding: the native setup test callback had complexity
+10. Its target-size assertion now uses `forEach`, preserving the exact checks
+without adding the loop branch to that callback. The next scan will verify the
+complexity change.
+
+The next CI run at `44da9d61` failed in both macOS test lanes because the native
+fixture searched every lock entry and selected the OpenCode wrapper package,
+whose `os`/`cpu` metadata also matches macOS ARM, instead of selecting from the
+wrapper's native optional dependencies. The fixture now filters only the root
+package's optional dependencies and then checks their locked platform metadata.
+The same run's sole Codacy critical flagged a fixed `it.each` filename as
+possible user input to `path.join`; the test now uses static filenames directly.
+Using ordinary quoted strings for literal GitHub expressions caused three new
+DeepSource `Unexpected template string expression` reports at `ab2f33d`. The
+literal-concatenation workaround then caused three minor reports at `b079ade`.
+The regression data now uses real interpolation with a separately constructed
+GitHub-expression prefix, preserving the asserted workflow text without either
+scanner pattern. The `b079ade` analysis also retained the `.mjs` parser report
+and medium-risk complexity report; the standalone helper now uses CommonJS and
+the native metadata predicate is separated from the test callback. No analyzer
+settings, exclusions or suppressions were added.
+The corrected fixture passes all 82 focused atomic-write and install-policy
+tests locally, test TypeScript checking, and ESLint. A platform-metadata check
+also selected the correct locked native package for Bun and both OpenCode lanes
+on macOS ARM64, Linux x64 and Windows x64. The full local suite passed before
+this test-only correction. At the `ab2f33d` CI snapshot, macOS install smoke
+and binary jobs passed while test jobs were still running. The install-policy
+suite now passes all 17 tests, test TypeScript and ESLint pass, and Actionlint
+with ShellCheck passes after updating both workflow paths.
+
+Final review snapshot on `f70aa121` (2026-09-26): DeepSource's JavaScript,
+Docker, Shell, and Secrets analyzers all passed. Push CI run
+[`36252274992`](https://github.com/looptroop-ai/LoopTroop/actions/runs/36252274992)
+and PR CI run
+[`36252278284`](https://github.com/looptroop-ai/LoopTroop/actions/runs/36252278284)
+completed successfully, including every required branch-protection context.
+The conditional Renovate floor and notices workflows were skipped as expected.
+Greptile and Kilo reported no current issues; CodeRabbit had no actionable
+comments; SonarCloud's quality gate passed with no new issues or hotspots;
+Codacy, CodeQL, Semgrep, and Socket checks passed.
+
+Follow-up verification: 458 test files passed, with 7,071 tests passed and 13
+existing skips. Full lint, both typecheck projects, build, package contents,
+production native-addon scan, version consistency, script stripping, installer
+synchronization, license checks, Actionlint/ShellCheck and strict Renovate
+validation passed. Website verification passed 97 tests, build, site/CLI checks
+and license checks. No end-to-end or lifecycle smoke was run.
+
 ## PR18 identifier and test fixes
 
 Rechecked on 2026-09-12 against `fe3d7d4c`: this stage started with 11 open alerts.
@@ -360,23 +583,25 @@ remain visible; this decision does not suppress failures or weaken verification.
   The [GitHub CLI download implementation](https://github.com/cli/cli/blob/trunk/pkg/cmd/run/download/http.go)
   downloads and extracts the archive without that digest comparison. Replacing the action with
   the CLI alone would therefore remove a check we already rely on.
-- **Renovate configuration validation:** [current registry metadata](https://registry.npmjs.org/renovate/latest)
-  still includes global-agent and bunyan. Their dependency chains reach deprecated boolean,
-  and, through bunyan's optional mv dependency, rimraf, glob and inflight. The dependency
-  relationships and deprecation notices were checked in npm's registry. Updating Renovate alone
-  does not remove these chains; changing its installation method or hiding npm output does not
-  repair them. Retain the validator so dependency-update configuration continues to be checked.
+- **Renovate configuration validation:** the validator is pinned to
+  [44.115.10](https://github.com/renovatebot/renovate/releases/tag/44.115.10), the latest
+  release on 2026-09-26. Its resolved dependency graph still includes `global-agent` → `boolean`
+  and `bunyan` → optional `mv` → `rimraf@2` → `glob@6` → `inflight`. The current Google
+  metadata paths also include `gcp-metadata@8.1.4` → `gaxios@7.1.3` → `rimraf@5` → `glob@10`,
+  and `google-auth-library@11.1.0` → `gaxios@7.3.1` → `node-fetch@3` → `fetch-blob@3` →
+  `node-domexception`. These dependency paths and npm's deprecation notices were verified
+  against the current resolved install graph on 2026-09-26. Updating the validator alone does
+  not remove all these upstream chains; changing its installation method or hiding npm output
+  does not repair them. Retain the validator so dependency-update configuration continues to be
+  checked.
   Its optional RE2 native module is also unavailable under the reviewed script policy. Renovate
-  [explicitly falls back to JavaScript RegExp](https://github.com/renovatebot/renovate/blob/44.13.2/lib/util/regex.ts).
+  [explicitly falls back to JavaScript RegExp](https://github.com/renovatebot/renovate/blob/44.115.10/lib/util/regex.ts).
   Schema validation continues; RE2-specific syntax checking is reduced. The current configuration
   uses simple patterns and has no identified engine mismatch. Reassess before adding patterns
   that depend on [RE2-specific behavior](https://docs.renovatebot.com/string-pattern-matching/);
   do not suppress the warning or broadly approve native installation scripts.
-  PR18's CI logs also contain the Google metadata dependency path through gaxios:
-  rimraf brings in a deprecated glob, while node-fetch and fetch-blob bring in node-domexception.
-  These paths still exist in [current Renovate registry metadata](https://registry.npmjs.org/renovate/latest)
-  and [gaxios metadata](https://registry.npmjs.org/gaxios/7.1.3), checked on 2026-09-12.
-  Updating the validator alone therefore does not remove these additional warnings.
+  The CI validator update reduces staleness but leaves these transitive warnings visible; no
+  overrides or output suppression were added.
 - **Linux binary injection:** postject's bundled LIEF emits `Can't find string offset for section name`
   diagnostics for `.note` sections. The [upstream maintainer identifies their source](https://github.com/nodejs/postject/issues/83#issuecomment-1506397578)
   and deliberately retains the diagnostics. The installed postject matches its

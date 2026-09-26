@@ -1,0 +1,7 @@
+{
+  "name": "looptroop-ci-opencode-v1",
+  "private": true,
+  "dependencies": {
+    "opencode-ai": "1.18.32"
+  }
+}

@@ -134,8 +134,14 @@ Renovate (`.github/renovate.json`) opens every dependency update as a pull
 request, and none of them merges itself: a person, or an agent acting for one,
 reviews and merges each. Updates below a major arrive in a few grouped pull
 requests: what ships to users (runtime dependencies and the frontend Vite
-bundles), dev tooling, and CI actions with container base-image digests. Pull
-requests that need a hand edit or move together stay on their own: esbuild,
+bundles), dev tooling, CI actions with container base-image digests, and CI
+tools. Bun, pnpm, Yarn and the two OpenCode test lanes share the CI-tools group
+for patch and minor updates; their major updates stay separate per package.
+Yarn stays on Classic, and each OpenCode lane stays on its tested major. The
+weekly lockfile refresh covers the root lockfile and all five CI-tool lockfiles
+in one pull request.
+
+Pull requests that need a hand edit or move together stay on their own: esbuild,
 Drizzle, the OpenCode SDK, the toolchain (`.nvmrc`, `packageManager` and the
 Dockerfile base), the Node floor, the weekly lockfile refresh and security
 fixes. A major arrives alone unless its packages have to move together: React
@@ -144,6 +150,18 @@ Tailwind with its Vite plugin, node with npm, and the families Renovate's
 built-in presets keep together (CodeMirror, Radix, ESLint, and the upload and
 download artifact actions). At most ten are open at once, and security fixes
 open even past that.
+
+CI tools use exact-pinned manifests and integrity lockfiles, with package
+lifecycle scripts disabled. The setup helper places verified native binaries
+on the normal PATH and checks that they run. Windows Bun uses its native
+binary directory; OpenCode retains its npm shim so the Windows tests exercise
+that launcher. CI does not add trusted-executable directory overrides.
+
+The production container uses the npm bundled in its digest-pinned Node image.
+The root `packageManager` pin declares the npm toolchain for repository
+dependency installs, and `scripts/pin-npm.mjs` enforces its reviewed policy in
+CI. The container install uses the release lockfile with lifecycle scripts
+disabled, so it does not download a second npm version.
 
 `main` requires a branch to be up to date, so merging one Renovate pull request
 leaves the others behind. Renovate rebases them itself in its nightly window.

@@ -168,7 +168,7 @@ jobs:
       # Pinned, not @latest: an unpinned validator makes this check
       # nondeterministic and can fail on a release we never chose.
       - name: Validate Renovate configuration
-        run: npx --yes --package renovate@44.13.2 renovate-config-validator --strict
+        run: npx --yes --package renovate@44.115.10 renovate-config-validator --strict
 
       # A redistributed package must declare a licence. The check also fails
       # when the committed file is out of date.
@@ -646,17 +646,6 @@ jobs:
       matrix:
         manager: [bun, pnpm, yarn]
         os: [ubuntu-latest, windows-latest]
-        # Pinned per manager, so a break in one of them is a change here rather
-        # than a surprise on an unrelated pull request. `yarn@1` deliberately:
-        # Yarn 2 removed `yarn global` and never replaced it, so Yarn Classic is
-        # the only version that can install a CLI globally at all.
-        include:
-          - manager: bun
-            package: bun@1.3.14
-          - manager: pnpm
-            package: pnpm@11.21.0
-          - manager: yarn
-            package: yarn@1.22.22
     steps:
       - name: Audit runner network activity
         uses: step-security/harden-runner@e14015d583714f6e62063499dc959a02595150a1 # v2.21.1
@@ -679,49 +668,13 @@ jobs:
       - name: Build application
         run: npm run build
 
-      # pnpm installs cleanly from npm on both platforms, and so does bun on
-      # Linux. Bun on Windows does not: its npm package's postinstall replaces
-      # its own shim with the native binary, which races npm's cleanup of the
-      # same file and fails with EBUSY on `bun.exe` about half the time. Bun's
-      # own error message names the remedy, so use it — pinned through a
-      # scriptblock so the version stays fixed rather than tracking latest.
-      # `--allow-scripts` because npm 12 blocks dependency install scripts by
-      # default, and bun's npm package downloads its binary from a postinstall.
-      # Without this npm 12 skips it with a warning rather than an error, and
-      # the install "succeeds" with no usable bun — which surfaced as a failed
-      # assertion two steps later rather than as a failed install. Named per
-      # manager rather than blanket-enabled, so this approves exactly the one
-      # package the job installs.
+      # Each manager has its own integrity-locked install. Our setup copies the
+      # native Bun binary after npm finishes, avoiding its Windows shim race.
       - name: Install ${{ matrix.manager }}
-        if: matrix.manager != 'bun' || runner.os != 'Windows'
-        run: npm install -g --allow-scripts=${{ matrix.package }} ${{ matrix.package }}
-
-      # The release archive, checked against the digest bun published for it,
-      # rather than piping bun.sh/install.ps1 into a shell. That script is
-      # fetched live and executed with no integrity check, so pinning the
-      # version it installs still leaves the installer itself mutable — which is
-      # the one thing every other download in this repository refuses to do.
-      - name: Install bun from a verified archive
-        if: matrix.manager == 'bun' && runner.os == 'Windows'
-        shell: pwsh
-        env:
-          BUN_VERSION: 1.3.14
-          BUN_SHA256: 0a0620930b6675d7ba440e81f4e0e00d3cfbe096c4b140d3fff02205e9e18922
+        shell: bash
         run: |
-          $ErrorActionPreference = 'Stop'
-          $zip = Join-Path $env:RUNNER_TEMP 'bun-windows-x64.zip'
-          $dest = Join-Path $env:RUNNER_TEMP 'bun'
-          Invoke-WebRequest -UseBasicParsing -Uri "https://github.com/oven-sh/bun/releases/download/bun-v$env:BUN_VERSION/bun-windows-x64.zip" -OutFile $zip
-          $actual = (Get-FileHash -Path $zip -Algorithm SHA256).Hash.ToLower()
-          if ($actual -ne $env:BUN_SHA256) {
-            throw "bun-windows-x64.zip digest mismatch: expected $env:BUN_SHA256, got $actual"
-          }
-          Expand-Archive -Path $zip -DestinationPath $dest -Force
-          # The archive nests the executable one directory down.
-          $bin = (Get-ChildItem -Path $dest -Filter bun.exe -Recurse | Select-Object -First 1).Directory.FullName
-          if (-not $bin) { throw "bun.exe not found under $dest" }
-          $bin | Out-File -FilePath $env:GITHUB_PATH -Encoding utf8 -Append
-          & (Join-Path $bin 'bun.exe') --version
+          npm ci --ignore-scripts --prefix scripts/ci-tools/${{ matrix.manager }}
+          node scripts/setup-ci-tool.cjs ${{ matrix.manager }}
 
       - name: Install globally with ${{ matrix.manager }} and check what it reports
         run: node scripts/smoke-node-manager.mjs ${{ matrix.manager }}

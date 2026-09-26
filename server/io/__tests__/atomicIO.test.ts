@@ -42,6 +42,33 @@ describe('safeAtomicWrite', () => {
     expect(readFileSync(filePath, 'utf-8')).toBe('nested content')
   })
 
+  it('writes daemon JSON without an atomic recovery proof', () => {
+    const filePath = join(TEST_DIR, 'daemon.json')
+    const content = JSON.stringify({ apiToken: 'test-token' })
+    const wait = vi.fn()
+    safeAtomicWrite(filePath, content, {
+      mode: 0o600,
+      deps: {
+        platform: process.platform,
+        wait,
+        rename: (from, to) => {
+          expect(existsSync(atomicProofPath(from))).toBe(false)
+          expect(readFileSync(from, 'utf8')).toBe(content)
+          renameSync(from, to)
+        },
+      },
+    })
+    expect(readFileSync(filePath, 'utf8')).toBe(content)
+    expect(readdirSync(TEST_DIR)).toEqual(['daemon.json'])
+  })
+
+  it('removes recovery proofs after publishing JSONL and YAML', () => {
+    safeAtomicWrite(join(TEST_DIR, 'artifact.jsonl'), '{}\n')
+    expect(readdirSync(TEST_DIR)).toEqual(['artifact.jsonl'])
+    safeAtomicWrite(join(TEST_DIR, 'prd.yaml'), '{}\n')
+    expect(readdirSync(TEST_DIR).sort()).toEqual(['artifact.jsonl', 'prd.yaml'])
+  })
+
   /**
    * The temp name is a contract with `recoverOrphanTmpFiles`, which has to
    * reverse it to know what an orphan was on its way to becoming. They drifted

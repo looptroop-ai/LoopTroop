@@ -1,7 +1,8 @@
-import { execFile } from 'node:child_process'
+import assert from 'node:assert/strict'
+import { execFile, spawnSync } from 'node:child_process'
 import { createServer } from 'node:http'
 import { promisify } from 'node:util'
-import { existsSync, mkdirSync, readFileSync, readdirSync, writeFileSync } from 'node:fs'
+import { copyFileSync, existsSync, mkdirSync, readFileSync, readdirSync, statSync, writeFileSync } from 'node:fs'
 import { join } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import * as yaml from 'js-yaml'
@@ -15,6 +16,8 @@ const manifest = JSON.parse(readFileSync(join(repo, 'package.json'), 'utf8')) as
   allowScripts: Record<string, boolean>
 }
 const workflowDir = join(repo, '.github/workflows')
+// Spell the GitHub marker without making the source look like JS interpolation.
+const githubExpressionPrefix = String.fromCharCode(36, 123, 123)
 const workflows = readdirSync(workflowDir).filter((file) => /\.ya?ml$/.test(file)).map((file) => ({
   file,
   document: yaml.load(readFileSync(join(workflowDir, file), 'utf8')) as {
@@ -24,6 +27,25 @@ const workflows = readdirSync(workflowDir).filter((file) => /\.ya?ml$/.test(file
     }>
   },
 }))
+
+const isRunnerNativePackage = (
+  packageName: string,
+  metadata: { os?: string[]; cpu?: string[] } | undefined,
+): boolean => metadata?.os?.includes(process.platform) === true
+    && metadata?.cpu?.includes(process.arch) === true
+    && !packageName.includes('musl')
+    && (process.arch !== 'x64' || packageName.endsWith('-baseline'))
+
+const expectedNativeBinPath = (tool: string, packageRoot: string, directory: string): string =>
+  tool === 'bun' && process.platform === 'win32'
+    ? join(packageRoot, 'bin')
+    : join(directory, 'node_modules/.bin')
+
+const nativeToolFixtures: Record<string, { command: string; targets: Record<string, string> }> = {
+  bun: { command: 'bun', targets: { bun: 'bin/bun.exe', bunx: 'bin/bunx.exe' } },
+  'opencode-v1': { command: 'opencode', targets: { opencode: 'bin/opencode.exe', opencode2: 'bin/opencode.exe' } },
+  'opencode-v2': { command: 'opencode', targets: { opencode: 'bin/opencode.exe', opencode2: 'bin/opencode.exe' } },
+}
 
 describe('dependency install script policy', () => {
   it('approves exactly the locked esbuild scripts, with no production install hooks', () => {
@@ -67,50 +89,56 @@ describe('dependency install script policy', () => {
     expect(installs).toBeGreaterThan(0)
   })
 
-  it('limits global OpenCode lifecycle approval to the exact installed version', () => {
-    const commands = workflows.flatMap(({ document }) => Object.values(document.jobs)
-      .flatMap(({ steps = [] }) => steps.map(({ run = '' }) => run)))
-      .filter((run) => /^npm install --global .*?(?:opencode-ai@|@opencode\/cli@)/m.test(run))
-    expect(commands).toHaveLength(2)
-    for (const command of commands) {
-      const match = /^npm install --global --allow-scripts=((?:opencode-ai|@opencode\/cli)@\d+\.\d+\.\d+) ((?:opencode-ai|@opencode\/cli)@\d+\.\d+\.\d+)$/m.exec(command)
-      expect(match, command).not.toBeNull()
-      expect(match?.[1]).toBe(match?.[2])
+  it.each(['bun', 'pnpm', 'yarn', 'opencode-v1', 'opencode-v2'])('locks %s to registry integrity hashes', (tool) => {
+    const directory = join(repo, 'scripts/ci-tools', tool)
+    const toolManifest = JSON.parse(readFileSync(join(directory, 'package.json'), 'utf8')) as {
+      dependencies: Record<string, string>; scripts?: Record<string, string>
     }
-
-    const smoke = workflows.find(({ file }) => file === 'published-smoke.yml')!.document.jobs['smoke']!
-    const opencodeInstallSteps = smoke.steps?.filter(({ name }) => name?.startsWith('Install OpenCode'))
-    expect(opencodeInstallSteps?.map(({ name, if: condition, run }) => ({ name, condition, run }))).toEqual([
-      {
-        name: 'Install OpenCode v2',
-        condition: "matrix.opencode == 'npm' || matrix.opencode == 'adopt'",
-        run: 'npm install --global --allow-scripts=@opencode/cli@2.0.16 @opencode/cli@2.0.16',
-      },
-      {
-        name: 'Install OpenCode v1 on Windows',
-        condition: "matrix.opencode == 'npm-v1'",
-        run: 'npm install --global --allow-scripts=opencode-ai@1.18.32 opencode-ai@1.18.32',
-      },
-    ])
+    const lock = JSON.parse(readFileSync(join(directory, 'package-lock.json'), 'utf8')) as {
+      lockfileVersion: number
+      packages: Record<string, { dependencies?: Record<string, string>; integrity?: string; link?: boolean }>
+    }
+    expect(lock.lockfileVersion).toBe(3)
+    expect(lock.packages['']?.dependencies).toEqual(toolManifest.dependencies)
+    expect(toolManifest.scripts).toBeUndefined()
+    for (const [name, version] of Object.entries(toolManifest.dependencies)) {
+      expect(version, name).toMatch(/^\d+\.\d+\.\d+$/)
+    }
+    for (const [path, entry] of Object.entries(lock.packages)) {
+      if (!path) continue
+      // Local/workspace links would bypass the registry integrity contract.
+      expect(entry.link, `${tool}: ${path}`).not.toBe(true)
+      expect(entry.integrity, `${tool}: ${path}`).toMatch(/^sha512-/)
+    }
   })
 
-  it('keeps global manager approvals version-pinned to the closed manager list', () => {
-    const ci = workflows.find(({ file }) => file === 'ci.yml')!.document
-    const smoke = workflows.find(({ file }) => file === 'published-smoke.yml')!.document
-    const managers = ci.jobs['node-managers']!
-    expect(managers.strategy?.matrix?.manager).toEqual(['bun', 'pnpm', 'yarn'])
-    const pins = managers.strategy!.matrix!.include!
-    expect(pins.map(({ manager }) => manager)).toEqual(['bun', 'pnpm', 'yarn'])
-    for (const { manager, package: spec } of pins) {
-      expect(spec.split('@')[0]).toBe(manager)
-      expect(spec.split('@')[1]).toMatch(/^\d+\.\d+\.\d+$/)
+  it('installs CI tools without global installs, approvals or executable trust overrides', () => {
+    const commands = workflows.flatMap(({ document }) => Object.values(document.jobs)
+      .flatMap(({ steps = [] }) => steps.map(({ run = '' }) => run)))
+    for (const command of commands) {
+      expect(command).not.toMatch(/--allow-scripts=/)
+      expect(command).not.toMatch(/npm (?:i|install)\b[^\n]*(?:bun|pnpm|yarn|opencode-ai|@opencode\/cli)(?:@|\s|$)/)
     }
-    expect(managers.steps?.some(({ run }) => run === 'npm install -g --allow-scripts=${{ matrix.package }} ${{ matrix.package }}')).toBe(true)
-    const install = Object.values(smoke.jobs).flatMap(({ steps = [] }) => steps).find(({ env }) => env?.PINS)
-    expect(install?.env?.PINS).toBe(pins.map(({ manager, package: spec }) => `${manager}=${spec}`).join(' '))
-    expect(install?.run).toContain('npm install --global --allow-scripts="${pin#*=}" "${pin#*=}"')
-    expect(install?.run).toContain('if [ -z "${installed}" ]; then')
-    expect(install?.run).toContain('exit 1')
+    const setup = readFileSync(join(repo, 'scripts/setup-ci-tool.cjs'), 'utf8')
+    expect(setup).not.toContain('LOOPTROOP_TRUSTED_EXECUTABLE_DIRS')
+    expect(setup).not.toContain('GITHUB_ENV')
+  })
+
+  it.each([
+    ['ci.yml', 'node-managers', `Install ${githubExpressionPrefix} matrix.manager }}`, 'scripts', `${githubExpressionPrefix} matrix.manager }}`],
+    ['published-smoke.yml', 'smoke', 'Install the node manager', '.ci-tools-source/scripts', `${githubExpressionPrefix} matrix.channel }}`],
+    ['published-smoke.yml', 'smoke', 'Install OpenCode v2', '.ci-tools-source/scripts', 'opencode-v2'],
+    ['published-smoke.yml', 'smoke', 'Install OpenCode v1 on Windows', '.ci-tools-source/scripts', 'opencode-v1'],
+  ])('installs then prepares the locked tool in %s / %s / %s', (file, job, name, scripts, tool) => {
+    const step = workflows.find((workflow) => workflow.file === file)?.document.jobs[job]?.steps
+      ?.find((step) => step.name === name)
+    expect(step).toBeDefined()
+    const installLines = step?.run?.split('\n').map((line) => line.trim())
+      .filter((line) => /^(?:npm |node .*setup-ci-tool)/.test(line))
+    expect(installLines).toEqual([
+      `npm ci --ignore-scripts --prefix ${scripts}/ci-tools/${tool}`,
+      `node ${scripts}/setup-ci-tool.cjs ${tool}`,
+    ])
   })
 
   it('pins the Renovate validator and centralizes script-free npm bootstraps', () => {
@@ -125,6 +153,66 @@ describe('dependency install script policy', () => {
     const pinScript = readFileSync(join(repo, 'scripts/pin-npm.mjs'), 'utf8')
     expect(pinScript).toContain("npm(['install', '--global', '--ignore-scripts', `npm@${declared}`])")
     expect(pinScript).not.toContain("npm(['install', '--global', `npm@${declared}`])")
+  })
+
+  it.each(Object.keys(nativeToolFixtures))('verifies the %s native binary before publishing PATH', (tool) => {
+    const root = makeTempDir('looptroop-ci-tool-')
+    try {
+      const original = join(repo, 'scripts/ci-tools', tool)
+      const toolManifest = JSON.parse(readFileSync(join(original, 'package.json'), 'utf8')) as {
+        dependencies: Record<string, string>
+      }
+      const [name] = Object.keys(toolManifest.dependencies)
+      assert(name, `Missing dependency for ${tool}`)
+      const lock = JSON.parse(readFileSync(join(original, 'package-lock.json'), 'utf8')) as {
+        packages: Record<string, { os?: string[]; cpu?: string[]; optionalDependencies?: Record<string, string> }>
+      }
+      // Select from published package metadata, independently of the helper's
+      // aarch64/arm64 naming conversion and package-scope suffix construction.
+      const installed = lock.packages[`node_modules/${name}`]
+      const native = Object.keys(installed?.optionalDependencies ?? {}).find((packageName) => {
+        const entry = lock.packages[`node_modules/${packageName}`]
+        return isRunnerNativePackage(packageName, entry)
+      })
+      assert(native, `Missing fixture package for ${tool}`)
+      const fixture = nativeToolFixtures[tool]
+      assert(fixture, `Missing native test fixture for ${tool}`)
+      const { command, targets } = fixture
+      const directory = join(root, 'ci-tools', tool)
+      const packageRoot = join(directory, 'node_modules', name)
+      const nativeBin = join(directory, 'node_modules', native, 'bin')
+      mkdirSync(join(packageRoot, 'bin'), { recursive: true })
+      mkdirSync(nativeBin, { recursive: true })
+      copyFileSync(join(repo, 'scripts/setup-ci-tool.cjs'), join(root, 'setup-ci-tool.cjs'))
+      writeFileSync(join(directory, 'package.json'), JSON.stringify(toolManifest))
+      writeFileSync(join(packageRoot, 'package.json'), JSON.stringify({
+        version: toolManifest.dependencies[name], optionalDependencies: { [native]: toolManifest.dependencies[name] },
+        bin: targets,
+      }))
+      const env = { ...process.env, GITHUB_PATH: join(root, 'path'), GITHUB_ENV: join(root, 'env') }
+      const run = () => spawnSync(process.execPath, [join(root, 'setup-ci-tool.cjs'), tool], { env, encoding: 'utf8' })
+      const absent = run()
+      expect(absent.status).not.toBe(0)
+      expect(absent.stderr).toContain('ENOENT')
+      expect(existsSync(env.GITHUB_PATH)).toBe(false)
+      const source = join(nativeBin, `${command}${process.platform === 'win32' ? '.exe' : ''}`)
+      writeFileSync(source, 'invalid executable')
+      const invalid = run()
+      expect(invalid.status).not.toBe(0)
+      expect(invalid.stderr).toContain(`${name} --version failed:`)
+      expect(existsSync(env.GITHUB_PATH)).toBe(false)
+      copyFileSync(process.execPath, source)
+      const result = run()
+      expect(result.status, result.stderr).toBe(0)
+      new Set(Object.values(targets)).forEach((target) => {
+        expect(statSync(join(packageRoot, target)).size).toBe(statSync(process.execPath).size)
+      })
+      const expectedBin = expectedNativeBinPath(tool, packageRoot, directory)
+      expect(readFileSync(env.GITHUB_PATH, 'utf8')).toBe(`${expectedBin}\n`)
+      expect(existsSync(env.GITHUB_ENV)).toBe(false)
+    } finally {
+      removeTempDir(root)
+    }
   })
 
   it('executes an approved registry hook and blocks an unapproved one offline', async () => {

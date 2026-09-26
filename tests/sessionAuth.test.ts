@@ -1,5 +1,5 @@
 import { describe, it, expect, beforeAll, afterEach } from 'vitest'
-import { mkdtempSync } from 'node:fs'
+import { mkdirSync, mkdtempSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { createApp } from '../server/app'
@@ -51,6 +51,28 @@ describe('daemon session auth', () => {
   it('rejects a request with no credentials', async () => {
     const response = await makeApp().request('/api/projects')
     expect(response.status).toBe(401)
+  })
+
+  it('protects folder discovery before revealing whether a local path exists', async () => {
+    const credentials = createSessionCredentials()
+    const folder = makeClientDir()
+    mkdirSync(join(folder, 'project'))
+    const app = createApp({ mode: 'production', credentials, clientDir: makeClientDir() })
+
+    for (const endpoint of ['ls', 'check-git']) {
+      for (const path of [folder, join(folder, 'missing')]) {
+        const response = await app.request(`/api/projects/${endpoint}?path=${encodeURIComponent(path)}`)
+        expect(response.status).toBe(401)
+        expect(await response.json()).toEqual({ error: 'Unauthorized' })
+      }
+    }
+
+    // The authenticated owner can select folders outside the daemon's root.
+    const response = await app.request(`/api/projects/ls?path=${encodeURIComponent(folder)}`, {
+      headers: { Authorization: `Bearer ${credentials.apiToken}` },
+    })
+    expect(response.status).toBe(200)
+    expect(await response.json()).toMatchObject({ dirs: [expect.objectContaining({ name: 'project' })] })
   })
 
   it('answers a malformed cookie with the ordinary 401, not a 500', async () => {

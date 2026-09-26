@@ -42,6 +42,24 @@ describe('safeAtomicWrite', () => {
     expect(readFileSync(filePath, 'utf-8')).toBe('nested content')
   })
 
+  it('writes daemon credentials without a password-hash sidecar', () => {
+    const filePath = join(TEST_DIR, 'daemon.json')
+    const content = JSON.stringify({ apiToken: 'test-token' })
+    safeAtomicWrite(filePath, content, {
+      mode: 0o600,
+      deps: {
+        platform: process.platform,
+        wait: () => {},
+        rename: (from, to) => {
+          expect(existsSync(atomicProofPath(from))).toBe(false)
+          expect(readFileSync(from, 'utf8')).toBe(content)
+          renameSync(from, to)
+        },
+      },
+    })
+    expect(readFileSync(filePath, 'utf8')).toBe(content)
+  })
+
   /**
    * The temp name is a contract with `recoverOrphanTmpFiles`, which has to
    * reverse it to know what an orphan was on its way to becoming. They drifted

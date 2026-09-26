@@ -285,6 +285,7 @@ describe('executeCommand', () => {
 
   it.runIf(process.platform !== 'win32')('preserves arguments, cwd, environment, spaces, and Unicode', async () => {
     const repository = makeRepo()
+    const literalPath = join(repository, 'archive ; $(printf injected) `printf injected` & name.tgz')
     mkdirSync(join(repository, 'nested folder'))
     const result = await executeCommand({
       mode: 'process',
@@ -294,6 +295,7 @@ describe('executeCommand', () => {
         'process.stdout.write(JSON.stringify({argv:process.argv.slice(1),cwd:process.cwd(),value:process.env.SAMPLE_VALUE,runtime:process.env.RUNTIME_VALUE,path:process.env.PATH}))',
         'two words',
         '✓',
+        literalPath,
       ],
       cwd: 'nested folder',
       env: { SAMPLE_VALUE: 'env ✓' },
@@ -308,7 +310,7 @@ describe('executeCommand', () => {
 
     expect(result.exitCode).toBe(0)
     expect(JSON.parse(result.stdout)).toEqual({
-      argv: ['two words', '✓'],
+      argv: ['two words', '✓', literalPath],
       cwd: join(repository, 'nested folder'),
       value: 'env ✓',
       runtime: 'runtime ✓',

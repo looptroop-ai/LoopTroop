@@ -53,11 +53,15 @@ frontend `Host`. An unrelated page fails those checks and reaches the API host
 guard unchanged. This development path does not make exposing the installed
 daemon a supported configuration.
 
+The authenticated folder picker can browse local directories before a project is
+attached. Its paths are not restricted to a single workspace root. Git discovery
+also reads Git metadata, including linked-worktree metadata outside the selected
+working tree. The API token grants control of these local-machine operations.
+
 Reports that describe LoopTroop running commands or modifying repositories you
 attached to it are describing intended behaviour. Reports that describe a way to
-escape those boundaries — reaching outside attached repositories, escalating
-beyond the local user, or executing commands without user action — are
-vulnerabilities.
+bypass authentication, escape ticket-artifact containment, escalate beyond the
+local user, or execute commands without user action are vulnerabilities.
 
 ### Known limit: the loopback cookie jar
 
@@ -78,7 +82,7 @@ same-host mechanism can exclude, and the hostname costs a URL people have to
 trust and a DNS path that corporate resolvers interfere with. This is a
 reviewed position rather than an oversight.
 
-### Filesystem containment in the development branch
+### Filesystem containment
 
 Ticket artifact access validates canonical paths from the attached project
 through its worktree and ticket directory. Ordinary internal links remain

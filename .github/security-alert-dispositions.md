@@ -1,5 +1,71 @@
 # Reviewed code-scanning dispositions
 
+## September 26 security and quality review
+
+The review started with 24 open GitHub code-scanning findings at
+`88a38cb1a60c9b811b912ac08ea602a550de218c`. The owner requested one new branch,
+a pull request only after implementation and local verification, no merge, and
+no wait for CI. Documentation describes the implemented behavior immediately.
+No backward-compatibility work or end-to-end/lifecycle tests are required.
+
+The owner authorized dismissal of proven false positives with evidence and
+accepted the existing merge policy and absence of an OpenSSF Best Practices
+badge. Required CI and pull requests remain enforced; independent human
+approvals and code-owner reviews are not added. No badge enrollment or
+maintainer attestation is claimed.
+
+### Source findings
+
+| GitHub alert | Resolution and evidence |
+| --- | --- |
+| #174 | The process-tree test passes its marker path and child source through argv. Both programs use fixed source; no path is interpolated into JavaScript. |
+| #163 | False positive. `writeDaemonRecord` writes the API token to owner-only `daemon.json`. Atomic recovery proofs apply only to YAML/JSONL, so this token does not reach the hash. SHA-256 verifies whole-file crash completeness, not a password. A regression inspects the temporary file before rename and asserts no proof exists. |
+| #187 | False positive. The SHA-256 digest identifies exact wire credentials in an in-memory protocol cache. It is not persisted or used as a password verifier. The cache already holds the Basic authorization header required by the connection. Existing tests verify credential changes produce distinct cache entries. |
+| #184 | False positive. The trusted resolver supplies the executable; `spawn` receives a separate argument array. Windows command scripts go through the shared launcher, which escapes arguments and rejects unsafe expansion. A real-process regression preserves shell metacharacters in an absolute path argument. |
+| #176 | False positive. The authenticated folder picker intentionally lists owner-selected absolute local directories before attachment. There is no single workspace boundary for this operation. |
+| #177 | False positive. Project discovery checks existence of normalized owner-selected local paths. The check is behind Host/Origin and authentication middleware. |
+| #178 | False positive. Timeout diagnosis reads only the selected repository's fixed `.git` metadata file to locate its Git directory. Linked-worktree metadata can legitimately reside outside the worktree. File contents are not returned through the API. |
+| #179 | False positive. The selected project path is the subprocess working directory, not its executable or shell source. `gitWorkingDirectory` rejects empty, relative and NUL-containing paths; the program comes from the trusted resolver. |
+| #180 | False positive. Git timeout diagnosis checks the fixed `.git` entry's type. It does not read arbitrary file content. |
+| #181 | False positive. After a spawn ENOENT/ENOTDIR error, the runner checks the selected working directory to distinguish a missing directory from a missing executable. This is a local-owner diagnostic. |
+| #182 | False positive. Timeout diagnosis checks only the fixed `index.lock` path below the repository's Git metadata. It neither returns file contents nor removes the lock. |
+| #183 | False positive. Both diagnostic paths already use `JSON.stringify`, which escapes CR/LF and ASCII control bytes instead of creating extra log records. |
+
+The project-discovery integration regression proves existing and missing paths
+both return the same unauthorized response without a token, and a valid owner
+token can select folders outside the daemon root. Ticket-artifact containment
+remains separate from the owner's filesystem browsing and command permissions.
+No status, prompt, parser, payload key or ticket lifecycle behavior changes.
+
+### SAST coverage (#199)
+
+The [Scorecard run](https://github.com/looptroop-ai/LoopTroop/actions/runs/36231324008)
+reported 21 of 30 recent changes scanned. Its GitHub GraphQL lookup missed the
+check cache and used a REST fallback that reads only the default first page of
+30 check runs. The
+[pinned implementation](https://github.com/ossf/scorecard/blob/c395761df6afe1a69e476bc60a013a94bcbc153f/clients/githubrepo/checkruns.go)
+does not paginate that fallback. These PRs have more than 30 check runs.
+
+Replaying that first page reproduces 21/30 exactly. Reading the full check lists
+finds successful recognized SAST results for eight additional PRs: #193, #192,
+#184, #178, #172, #168, #167 and #166. All 30 changes were scanned; 29 have a
+successful recognized result. [PR #164's CodeQL result](https://github.com/looptroop-ai/LoopTroop/runs/105648887452)
+failed because it reported two findings, not because scanning was absent. That
+historical failure remains a failure. The current default CodeQL setup remains
+configured for the application and Actions, including weekly scans. No duplicate
+scanner or workflow is added. The missing-scanning claim is a false positive;
+this disposition does not claim every historical security check passed.
+
+### Repository policy
+
+- #192 (branch protection) and #200 (human review): accepted limitations at the
+  owner's request. Existing required checks, PR requirement, deletion protection
+  and force-push protection remain in place. AI reviews do not satisfy
+  Scorecard's independent-human-review criterion.
+- #201 (OpenSSF badge): accepted limitation at the owner's request. Earning a
+  badge requires external registration and truthful maintainer attestations;
+  adding a badge image to the repository would not satisfy that requirement.
+
 ## PR18 identifier and test fixes
 
 Rechecked on 2026-09-12 against `fe3d7d4c`: this stage started with 11 open alerts.

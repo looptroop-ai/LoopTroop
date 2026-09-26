@@ -301,17 +301,17 @@ describe('server/git/runCommand', () => {
       const descendant = [
         'const fs = require("node:fs")',
         'process.on("SIGTERM", () => {})',
-        `setTimeout(() => fs.writeFileSync(${JSON.stringify(marker)}, 'survived'), 3000)`,
+        "setTimeout(() => fs.writeFileSync(process.argv[1], 'survived'), 3000)",
       ].join(';')
       const leader = [
         "const { spawn } = require('node:child_process')",
-        `const child = spawn(${JSON.stringify(node)}, ['-e', ${JSON.stringify(descendant)}], { stdio: 'ignore' }); child.unref()`,
+        "const child = spawn(process.execPath, ['-e', process.argv[1], process.argv[2]], { stdio: 'ignore' }); child.unref()",
         'process.on("SIGTERM", () => {})',
         'setTimeout(() => {}, 60000)',
       ].join(';')
 
       const started = Date.now()
-      const result = await runCommand(node, ['-e', leader], {
+      const result = await runCommand(node, ['-e', leader, descendant, marker], {
         timeoutMs: 300,
         log: false,
       })

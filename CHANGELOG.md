@@ -10,7 +10,7 @@ Unreleased changes appear first and represent commits that have not yet been inc
 > Changes merged since the last versioned release that have not yet shipped in a tagged version.
 
 ### Summary
-- Security findings now have verified dispositions and regression coverage for authenticated folder discovery, credential-file writes, and literal process arguments.
+- CI tools install from integrity lockfiles without third-party lifecycle scripts, network boundaries gain generated-input tests, and security findings have verified dispositions.
 - Pull requests block vulnerable dependency changes, supported read-only CI jobs audit network activity, and OpenSSF Scorecard reports repository security checks.
 - OpenCode v2 supports forked sessions from a verified event boundary; v1 remains supported, and prompts wait through catalog reloads under their workflow deadline.
 - OpenCode v2 idle waits honor caller deadlines, and string fields without `options` accept text when `custom` is omitted or false.
@@ -45,6 +45,7 @@ Unreleased changes appear first and represent commits that have not yet been inc
 - The OrcaCode pull-request review workflow is removed; it reported a failed check on every pull request and never completed a successful run.
 
 ### Added
+- Generated-input tests cover loopback recognition, IPv4-mapped IPv6, invalid ports, and hostile hostname suffixes through fast-check. CI-only Bun, pnpm, Yarn and OpenCode installations have separate integrity lockfiles maintained by Renovate; published-feed checks preserve the release driver while loading tools from the workflow commit.
 - CI Dependency Review checks runtime, development, and unknown dependency scopes; the required Packaging check blocks failed, cancelled, or skipped reviews on every CI event. Branch pushes and manual runs compare their commit with the default branch so their checks cannot bypass pull-request review.
 - Harden-Runner audits supported jobs without write permissions, publishing credentials, or protected environments. Job containers and whole matrices containing Linux ARM64 are excluded because the action pre hook runs before step conditions; audit mode records network activity without enforcing an outbound allowlist.
 - OpenSSF Scorecard publishes repository security results with explicit permissions and current action runtimes, while Renovate and GitHub CodeQL default setup remain the sole update and CodeQL paths.
@@ -263,6 +264,7 @@ Unreleased changes appear first and represent commits that have not yet been inc
 - The unused `server/db/drizzle.config.ts` alias. Every database script already selects its app or project config explicitly, so keeping a third config that Drizzle Kit cannot discover from the repository root only advertised a command that no longer worked.
 
 ### Fixed
+- Container builds use npm bundled in the digest-pinned Node image, removing a separate unverified npm download while retaining the release lockfile and disabled install scripts.
 - The process-tree test passes child-program inputs through arguments instead of interpolating paths into JavaScript. Security regressions verify folder-discovery authentication, credential-file proof exclusions, and literal shell metacharacters in process arguments. Reviewed false positives and accepted repository-policy limitations are recorded with their evidence.
 - Kanban preset tests open menus through the keyboard so focus changes in jsdom do not dismiss them during persistence and accessibility checks.
 - OpenCode v2 can use incomplete fork or transfer history only as an initial starting boundary, then requires contiguous verified events after it through the idle checks. A later idle watermark lets previously delivered and drained inbox entries be ignored; competing activity after it, an unaccounted sequence gap, or a lost stream still stops dispatch without guessing event ownership or resending.

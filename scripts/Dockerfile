@@ -142,24 +142,19 @@ RUN test -n "$LOCKFILE" || (echo "ERROR: --build-arg LOCKFILE=<file> is required
 COPY ${TARBALL} ./package.tgz
 COPY ${LOCKFILE} ./package-lock.json
 
-# Read npm's pin from the release itself. Global installs do not use the
-# project's allowScripts policy; neither install here needs lifecycle scripts.
-# Pinning also keeps build-stage dependency resolution on the supported npm.
+# The image digest pins its bundled npm as well as Node. Lifecycle scripts are
+# disabled, so this production install does not need npm 12's approval policy.
 # Extract into the established runtime prefix, then let the matching release
 # lockfile be the sole source of application dependencies. The runtime stage
 # takes only this installed tree, leaving npm's cache behind.
-RUN tar -xzf package.tgz package/package.json \
-  && npm_version="$(node -p 'const pin = require("./package/package.json").packageManager; const match = /^npm@(\d+\.\d+\.\d+)$/.exec(pin); if (!match) throw new Error("packageManager must pin an exact npm version"); match[1]')" \
-  && npm install --global --ignore-scripts --fetch-retries=3 --fetch-retry-mintimeout=10000 --fetch-retry-maxtimeout=60000 "npm@${npm_version}" \
-  && test "$(npm --version)" = "$npm_version" \
-  && mkdir -p /opt/looptroop/lib/node_modules/looptroop /opt/looptroop/bin \
+RUN mkdir -p /opt/looptroop/lib/node_modules/looptroop /opt/looptroop/bin \
   && tar -xzf package.tgz --strip-components=1 -C /opt/looptroop/lib/node_modules/looptroop \
   && cp package-lock.json /opt/looptroop/lib/node_modules/looptroop/package-lock.json \
   && cd /opt/looptroop/lib/node_modules/looptroop \
   && npm ci --ignore-scripts --omit=dev --no-audit --no-fund --fetch-retries=3 --fetch-retry-mintimeout=10000 --fetch-retry-maxtimeout=60000 \
   && chmod 0755 /opt/looptroop/lib/node_modules/looptroop/dist/server/cli/launcher.cjs \
   && ln -s ../lib/node_modules/looptroop/dist/server/cli/launcher.cjs /opt/looptroop/bin/looptroop \
-  && rm -rf /build/package /build/package.tgz
+  && rm /build/package.tgz
 
 
 FROM node:24.21.0-bookworm-slim@sha256:0e0ff40c39bc087845bfb27465a0df4ea419520094bc35842ff83dd8cbe6f9b6 AS runtime

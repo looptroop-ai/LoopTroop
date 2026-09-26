@@ -1,0 +1,7 @@
+{
+  "name": "looptroop-ci-bun",
+  "private": true,
+  "dependencies": {
+    "bun": "1.3.14"
+  }
+}

@@ -142,6 +142,7 @@
     "eslint": "^10.11.0",
     "eslint-plugin-react-hooks": "^7.1.1",
     "eslint-plugin-react-refresh": "^0.5.7",
+    "fast-check": "4.10.2",
     "globals": "^17.12.0",
     "jsdom": "^30.1.0",
     "lucide-react": "^1.47.0",

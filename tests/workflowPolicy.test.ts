@@ -478,6 +478,7 @@ describe('release workflow policy', () => {
     expect(docker).toContain('COPY ${LOCKFILE} ./package-lock.json')
     expect(docker).toContain('tar -xzf package.tgz --strip-components=1 -C /opt/looptroop/lib/node_modules/looptroop')
     expect(docker).toContain('npm ci --ignore-scripts --omit=dev')
+    expect(docker).not.toMatch(/npm install --global/)
     expect(docker).not.toMatch(/npm install[^\n]*\.\/package\.tgz/)
     expect(docker).toContain('chmod 0755 /opt/looptroop/lib/node_modules/looptroop/dist/server/cli/launcher.cjs')
     expect(docker).toContain('/usr/share/looptroop/image-package-versions.txt')

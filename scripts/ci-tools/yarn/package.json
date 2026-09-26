@@ -1,0 +1,7 @@
+{
+  "name": "looptroop-ci-yarn",
+  "private": true,
+  "dependencies": {
+    "yarn": "1.22.22"
+  }
+}

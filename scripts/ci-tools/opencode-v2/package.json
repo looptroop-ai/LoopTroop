@@ -1,0 +1,7 @@
+{
+  "name": "looptroop-ci-opencode-v2",
+  "private": true,
+  "dependencies": {
+    "@opencode/cli": "2.0.16"
+  }
+}

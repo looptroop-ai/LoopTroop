@@ -1,0 +1,7 @@
+{
+  "name": "looptroop-ci-pnpm",
+  "private": true,
+  "dependencies": {
+    "pnpm": "11.21.0"
+  }
+}

@@ -1,7 +1,7 @@
-import { execFile } from 'node:child_process'
+import { execFile, spawnSync } from 'node:child_process'
 import { createServer } from 'node:http'
 import { promisify } from 'node:util'
-import { existsSync, mkdirSync, readFileSync, readdirSync, writeFileSync } from 'node:fs'
+import { copyFileSync, existsSync, mkdirSync, readFileSync, readdirSync, writeFileSync } from 'node:fs'
 import { join } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import * as yaml from 'js-yaml'
@@ -67,50 +67,33 @@ describe('dependency install script policy', () => {
     expect(installs).toBeGreaterThan(0)
   })
 
-  it('limits global OpenCode lifecycle approval to the exact installed version', () => {
-    const commands = workflows.flatMap(({ document }) => Object.values(document.jobs)
-      .flatMap(({ steps = [] }) => steps.map(({ run = '' }) => run)))
-      .filter((run) => /^npm install --global .*?(?:opencode-ai@|@opencode\/cli@)/m.test(run))
-    expect(commands).toHaveLength(2)
-    for (const command of commands) {
-      const match = /^npm install --global --allow-scripts=((?:opencode-ai|@opencode\/cli)@\d+\.\d+\.\d+) ((?:opencode-ai|@opencode\/cli)@\d+\.\d+\.\d+)$/m.exec(command)
-      expect(match, command).not.toBeNull()
-      expect(match?.[1]).toBe(match?.[2])
+  it('installs CI tools with integrity locks and no third-party lifecycle scripts', () => {
+    for (const tool of ['bun', 'pnpm', 'yarn', 'opencode-v1', 'opencode-v2']) {
+      const directory = join(repo, 'scripts/ci-tools', tool)
+      const toolManifest = JSON.parse(readFileSync(join(directory, 'package.json'), 'utf8')) as { dependencies: Record<string, string> }
+      const lock = JSON.parse(readFileSync(join(directory, 'package-lock.json'), 'utf8')) as {
+        packages: Record<string, { dependencies?: Record<string, string>; integrity?: string }>
+      }
+      expect(lock.packages['']?.dependencies).toEqual(toolManifest.dependencies)
+      for (const [name, version] of Object.entries(toolManifest.dependencies)) {
+        expect(version, name).toMatch(/^\d+\.\d+\.\d+$/)
+      }
+      for (const [path, entry] of Object.entries(lock.packages)) {
+        if (path) expect(entry.integrity, `${tool}: ${path}`).toMatch(/^sha512-/)
+      }
     }
-
+    const ci = workflows.find(({ file }) => file === 'ci.yml')!.document.jobs['node-managers']!
+    expect(ci.strategy?.matrix?.manager).toEqual(['bun', 'pnpm', 'yarn'])
+    expect(ci.steps?.find(({ name }) => name === 'Install ${{ matrix.manager }}')?.run)
+      .toContain('npm ci --ignore-scripts --prefix scripts/ci-tools/${{ matrix.manager }}')
     const smoke = workflows.find(({ file }) => file === 'published-smoke.yml')!.document.jobs['smoke']!
-    const opencodeInstallSteps = smoke.steps?.filter(({ name }) => name?.startsWith('Install OpenCode'))
-    expect(opencodeInstallSteps?.map(({ name, if: condition, run }) => ({ name, condition, run }))).toEqual([
-      {
-        name: 'Install OpenCode v2',
-        condition: "matrix.opencode == 'npm' || matrix.opencode == 'adopt'",
-        run: 'npm install --global --allow-scripts=@opencode/cli@2.0.16 @opencode/cli@2.0.16',
-      },
-      {
-        name: 'Install OpenCode v1 on Windows',
-        condition: "matrix.opencode == 'npm-v1'",
-        run: 'npm install --global --allow-scripts=opencode-ai@1.18.32 opencode-ai@1.18.32',
-      },
-    ])
-  })
-
-  it('keeps global manager approvals version-pinned to the closed manager list', () => {
-    const ci = workflows.find(({ file }) => file === 'ci.yml')!.document
-    const smoke = workflows.find(({ file }) => file === 'published-smoke.yml')!.document
-    const managers = ci.jobs['node-managers']!
-    expect(managers.strategy?.matrix?.manager).toEqual(['bun', 'pnpm', 'yarn'])
-    const pins = managers.strategy!.matrix!.include!
-    expect(pins.map(({ manager }) => manager)).toEqual(['bun', 'pnpm', 'yarn'])
-    for (const { manager, package: spec } of pins) {
-      expect(spec.split('@')[0]).toBe(manager)
-      expect(spec.split('@')[1]).toMatch(/^\d+\.\d+\.\d+$/)
+    for (const [name, tool] of [['Install OpenCode v2', 'opencode-v2'], ['Install OpenCode v1 on Windows', 'opencode-v1']]) {
+      const step = smoke.steps?.find((step) => step.name === name)
+      expect(step?.run).toContain(`npm ci --ignore-scripts --prefix .ci-tools-source/scripts/ci-tools/${tool}`)
+      expect(step?.run).toContain(`node .ci-tools-source/scripts/setup-ci-tool.mjs ${tool}`)
     }
-    expect(managers.steps?.some(({ run }) => run === 'npm install -g --allow-scripts=${{ matrix.package }} ${{ matrix.package }}')).toBe(true)
-    const install = Object.values(smoke.jobs).flatMap(({ steps = [] }) => steps).find(({ env }) => env?.PINS)
-    expect(install?.env?.PINS).toBe(pins.map(({ manager, package: spec }) => `${manager}=${spec}`).join(' '))
-    expect(install?.run).toContain('npm install --global --allow-scripts="${pin#*=}" "${pin#*=}"')
-    expect(install?.run).toContain('if [ -z "${installed}" ]; then')
-    expect(install?.run).toContain('exit 1')
+    expect(smoke.steps?.find(({ name }) => name === 'Install the node manager')?.run)
+      .toContain('npm ci --ignore-scripts --prefix .ci-tools-source/scripts/ci-tools/${{ matrix.channel }}')
   })
 
   it('pins the Renovate validator and centralizes script-free npm bootstraps', () => {
@@ -125,6 +108,41 @@ describe('dependency install script policy', () => {
     const pinScript = readFileSync(join(repo, 'scripts/pin-npm.mjs'), 'utf8')
     expect(pinScript).toContain("npm(['install', '--global', '--ignore-scripts', `npm@${declared}`])")
     expect(pinScript).not.toContain("npm(['install', '--global', `npm@${declared}`])")
+  })
+
+  it('copies only the installed native CI binary and fails when that binary is absent', () => {
+    const root = makeTempDir('looptroop-ci-tool-')
+    try {
+      const directory = join(root, 'ci-tools/bun')
+      const packageRoot = join(directory, 'node_modules/bun')
+      const platform = process.platform === 'win32' ? 'windows' : process.platform
+      const arch = process.arch === 'arm64' ? 'aarch64' : process.arch
+      const native = `@oven/bun-${platform}-${arch}${process.arch === 'x64' ? '-baseline' : ''}`
+      const nativeBin = join(directory, 'node_modules', native, 'bin')
+      mkdirSync(join(packageRoot, 'bin'), { recursive: true })
+      mkdirSync(nativeBin, { recursive: true })
+      copyFileSync(join(repo, 'scripts/setup-ci-tool.mjs'), join(root, 'setup-ci-tool.mjs'))
+      writeFileSync(join(directory, 'package.json'), JSON.stringify({ dependencies: { bun: '1.0.0' } }))
+      writeFileSync(join(packageRoot, 'package.json'), JSON.stringify({
+        version: '1.0.0', optionalDependencies: { [native]: '1.0.0' },
+        bin: { bun: 'bin/bun.exe', bunx: 'bin/bunx.exe' },
+        scripts: { postinstall: 'exit 99' },
+      }))
+      const env = { ...process.env, GITHUB_PATH: join(root, 'path'), GITHUB_ENV: join(root, 'env') }
+      const run = () => spawnSync(process.execPath, [join(root, 'setup-ci-tool.mjs'), 'bun'], { env, encoding: 'utf8' })
+      expect(run().status).not.toBe(0)
+      expect(existsSync(env.GITHUB_PATH)).toBe(false)
+      writeFileSync(join(nativeBin, process.platform === 'win32' ? 'bun.exe' : 'bun'), 'verified native bytes')
+      const result = run()
+      expect(result.status, result.stderr).toBe(0)
+      for (const command of ['bun', 'bunx']) {
+        expect(readFileSync(join(packageRoot, 'bin', `${command}.exe`), 'utf8')).toBe('verified native bytes')
+      }
+      expect(readFileSync(env.GITHUB_PATH, 'utf8')).toBe(`${join(directory, 'node_modules/.bin')}\n`)
+      expect(readFileSync(env.GITHUB_ENV, 'utf8')).toContain(join(packageRoot, 'bin'))
+    } finally {
+      removeTempDir(root)
+    }
   })
 
   it('executes an approved registry hook and blocks an unapproved one offline', async () => {

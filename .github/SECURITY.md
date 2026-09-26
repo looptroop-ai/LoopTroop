@@ -138,6 +138,12 @@ full policy is documented in
 
 ## Repository security checks
 
+CI-only Bun, pnpm, Yarn and OpenCode installs use committed integrity lockfiles
+with third-party lifecycle scripts disabled. The setup helper selects already
+verified native binaries; live-feed tests still install LoopTroop from the feed
+under test. Generated-input tests exercise network trust boundaries through
+fast-check in the ordinary test suite.
+
 Dependency Review checks pull requests for known vulnerabilities in runtime,
 development, and unknown dependency scopes. The required Packaging check blocks
 failed, cancelled, or skipped reviews on every CI event. Pull requests compare
@@ -147,6 +153,9 @@ with the default branch, so a branch-push check cannot bypass the review.
 Renovate manages dependency updates. GitHub's CodeQL default setup scans the
 application and workflows. OpenSSF Scorecard publishes repository security
 results on pushes to main and weekly, using the workflow token to read rulesets.
+The maintainer accepts the current lack of required independent human approvals
+and an OpenSSF Best Practices badge. Per-alert evidence and dashboard decisions
+are recorded in [security-alert-dispositions.md](security-alert-dispositions.md).
 
 Harden-Runner audits network activity in supported jobs that have read-only
 permissions and no publishing credentials or protected environment. Audit mode

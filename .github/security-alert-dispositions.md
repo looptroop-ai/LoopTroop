@@ -12,7 +12,10 @@ The owner authorized dismissal of proven false positives with evidence and
 accepted the existing merge policy and absence of an OpenSSF Best Practices
 badge. Required CI and pull requests remain enforced; independent human
 approvals and code-owner reviews are not added. No badge enrollment or
-maintainer attestation is claimed.
+maintainer attestation is claimed. The owner explicitly chose to keep policy
+alerts #192, #200 and #201 open rather than dismiss them as accepted risk.
+The container uses npm bundled in its digest-pinned Node image, as requested;
+the separate npm download is removed.
 
 ### Source findings
 
@@ -36,6 +39,33 @@ both return the same unauthorized response without a token, and a valid owner
 token can select folders outside the daemon root. Ticket-artifact containment
 remains separate from the owner's filesystem browsing and command permissions.
 No status, prompt, parser, payload key or ticket lifecycle behavior changes.
+
+### CI tooling and generated inputs
+
+- #190 and #191: OpenCode tooling installs use committed npm integrity locks and
+  disable third-party lifecycle scripts. The setup helper copies the selected
+  optional native binary into the package's declared executable path after npm
+  creates its shims. Windows keeps the real npm-generated command shim.
+- #193: the container uses the npm already included in its digest-pinned Node
+  image. Production installation retains the release lockfile and disabled
+  lifecycle scripts. It no longer downloads a separate npm package merely to
+  match the development toolchain.
+- #194 through #197: Bun, pnpm, Yarn and both OpenCode tooling versions have
+  isolated lockfiles under `scripts/ci-tools`. This avoids executable-name
+  collisions and installing unrelated native binaries. Renovate maintains these
+  manifests; Yarn remains Classic and each OpenCode lane stays within its major.
+  Bun setup no longer races its postinstall against npm's Windows cleanup.
+- #198: fast-check generates network-trust inputs in the ordinary Vitest suite.
+  Properties check the IPv4 loopback range and mapped IPv6 forms, invalid ports,
+  and hostile hostname suffixes. The pinned Scorecard v5.5.0 recognizes this
+  integration. It adds only development dependencies and no runtime fuzzer.
+
+Published-feed checks still install LoopTroop from the live feed. Their driver
+comes from the release being tested; their tooling manifests and helper come
+from the workflow's exact source commit, so a weekly check can use maintained
+tooling while testing the current published release. Additional trusted
+executable directories are limited to those integrity-locked CI tool installs.
+No user runtime trust policy is widened.
 
 ### SAST coverage (#199)
 
@@ -65,6 +95,30 @@ this disposition does not claim every historical security check passed.
 - #201 (OpenSSF badge): accepted limitation at the owner's request. Earning a
   badge requires external registration and truthful maintainer attestations;
   adding a badge image to the repository would not satisfy that requirement.
+
+### Dashboard state and verification
+
+Twelve false positives (#163, #176–#184, #187 and #199) were dismissed with the
+owner's authorization, and their GitHub states were read back. Nine findings
+(#174, #190, #191 and #193–#198) have code or test changes and remain open until
+GitHub scans the merged default branch. The three accepted policy findings
+(#192, #200 and #201) deliberately remain open. No analyzer exclusions or
+blanket suppressions were added. This records GitHub decisions, not separate
+SonarCloud source-dashboard resolutions.
+
+The website operations guide was updated and pushed directly to its main
+branch in [80e7568](https://github.com/looptroop-ai/LoopTroop-Website/commit/80e7568).
+Existing ignore rules cover all nested tool installations and test/build output.
+
+Final local verification passed: 458 test files, 7,027 tests and 13 existing skips;
+full lint, both typecheck projects, production build, package contents,
+production native-addon scan, version consistency, script type stripping,
+installer synchronization and license notices. Actionlint with ShellCheck and
+strict Renovate validation passed. All five tools reported their actual versions
+through the existing trusted launcher on Linux; Windows command-shim generation
+was inspected separately. The website passed 97 tests, its build and site/CLI
+verification. No end-to-end or lifecycle smoke was run; cross-platform runtime
+verification remains with CI, whose completion is not awaited.
 
 ## PR18 identifier and test fixes
 

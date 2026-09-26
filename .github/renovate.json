@@ -161,7 +161,7 @@
       "rangeStrategy": "pin"
     },
     {
-      "description": "The SDK talks to an OpenCode CLI that users install separately and that Renovate cannot see, so the risk here is version skew rather than an immature release — no maturity window addresses that, only a person checking the pull request. It takes the ordinary seven days. Update the documented minimum version in the same PR. The OpenCode CLI itself is a local binary outside npm and is invisible to Renovate; `npm run opencode:upgrade` remains its only update path. It gets its own pull request so that check cannot be lost inside a group.",
+      "description": "The SDK talks to an OpenCode CLI that users install separately and that Renovate cannot see, so the risk here is version skew rather than an immature release — no maturity window addresses that, only a person checking the pull request. It takes the ordinary seven days. Update the documented minimum version in the same PR. User-installed OpenCode CLIs remain outside Renovate; `npm run opencode:upgrade` updates them. CI CLI versions are tracked separately in scripts/ci-tools with integrity locks. It gets its own pull request so that check cannot be lost inside a group.",
       "matchPackageNames": [
         "@opencode-ai/sdk"
       ],
@@ -323,6 +323,44 @@
         "!node"
       ],
       "enabled": false
+    },
+    {
+      "description": "Keep CI-only tool manifests and their integrity locks together. Yarn Classic is required for yarn global; OpenCode v1 preserves the Windows npm shim regression.",
+      "matchFileNames": [
+        "scripts/ci-tools/**/package.json"
+      ],
+      "groupName": "CI tools",
+      "labels": [
+        "dependencies",
+        "ci"
+      ]
+    },
+    {
+      "matchFileNames": [
+        "scripts/ci-tools/yarn/package.json"
+      ],
+      "matchPackageNames": [
+        "yarn"
+      ],
+      "allowedVersions": "<2"
+    },
+    {
+      "matchFileNames": [
+        "scripts/ci-tools/opencode-v1/package.json"
+      ],
+      "matchPackageNames": [
+        "opencode-ai"
+      ],
+      "allowedVersions": "<2"
+    },
+    {
+      "matchFileNames": [
+        "scripts/ci-tools/opencode-v2/package.json"
+      ],
+      "matchPackageNames": [
+        "@opencode/cli"
+      ],
+      "allowedVersions": ">=2 <3"
     },
     {
       "description": "Last, so it wins: no update merges itself, whatever an earlier rule or a preset from `extends` says. A preset's packageRules are applied before this file's, and the top-level automerge: false does not override a rule that sets automerge; this does. Every Renovate pull request is merged by a person, or an agent acting for one, after review.",

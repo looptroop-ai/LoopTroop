@@ -10,6 +10,7 @@ Unreleased changes appear first and represent commits that have not yet been inc
 > Changes merged since the last versioned release that have not yet shipped in a tagged version.
 
 ### Summary
+- Pull requests block vulnerable dependency changes, supported read-only CI jobs audit network activity, and OpenSSF Scorecard reports repository security checks.
 - OpenCode v2 supports forked sessions from a verified event boundary; v1 remains supported, and prompts wait through catalog reloads under their workflow deadline.
 - OpenCode v2 idle waits honor caller deadlines, and string fields without `options` accept text when `custom` is omitted or false.
 - Startup checks a crashed daemon's retained owned-server record before probing or adopting a still-running OpenCode child.
@@ -43,6 +44,9 @@ Unreleased changes appear first and represent commits that have not yet been inc
 - The OrcaCode pull-request review workflow is removed; it reported a failed check on every pull request and never completed a successful run.
 
 ### Added
+- CI Dependency Review checks runtime, development, and unknown dependency scopes; the required Packaging check blocks failed, cancelled, or skipped reviews on every CI event. Branch pushes and manual runs compare their commit with the default branch so their checks cannot bypass pull-request review.
+- Harden-Runner audits supported jobs without write permissions, publishing credentials, or protected environments. Linux ARM64 and job containers are excluded; audit mode records network activity without enforcing an outbound allowlist.
+- OpenSSF Scorecard publishes repository security results with explicit permissions and current action runtimes, while Renovate and GitHub CodeQL default setup remain the sole update and CodeQL paths.
 - OpenCode v2 servers now use the native HTTP API, while v1 keeps its SDK transport. LoopTroop detects the protocol, uses OpenCode's available provider/model catalog, preserves question answer values, and fails closed when an interrupted v2 event stream leaves history uncertain; it never resends an uncertain prompt. A prompt without a verifiable admission receipt is non-continuable because acceptance cannot be proven. Catalog reloads and routing changes that need new OpenRouter entries are rejected before writes while work is active; existing entries remain usable. Opt-in CLI maintenance stays within the installed major, and profile edits can save offline when the routing choice is unchanged.
 - `node scripts/sync-node-floor.ts` writes the Node floor from `engines.node` into every copy — the lockfile's root entry, the launcher guard, both install scripts, the Chocolatey fixture and README — and `--check` fails when any of them disagrees, which a test runs. Moving the floor is one line in `package.json` and one command, by hand or on Renovate's branch. `node scripts/check-node-feeds.ts` fails unless winget, Chocolatey, Scoop and Homebrew all offer the floor, counting a Chocolatey version only once moderation has approved it. CI runs it on every pull request that changes the floor.
 - Per-command help accepts `--help`, `help`, and `?` after a command.

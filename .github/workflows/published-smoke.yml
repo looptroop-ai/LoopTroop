@@ -104,7 +104,8 @@ jobs:
       matrix: ${{ steps.plan.outputs.matrix }}
       version: ${{ steps.resolve.outputs.version }}
     steps:
-      - name: Harden the runner (Audit all outbound calls)
+      - name: Audit runner network activity
+        if: runner.os != 'Linux' || runner.arch != 'ARM64'
         uses: step-security/harden-runner@e14015d583714f6e62063499dc959a02595150a1 # v2.21.1
         with:
           egress-policy: audit
@@ -216,7 +217,8 @@ jobs:
       max-parallel: 6
       matrix: ${{ fromJSON(needs.plan.outputs.matrix) }}
     steps:
-      - name: Harden the runner (Audit all outbound calls)
+      - name: Audit runner network activity
+        if: runner.os != 'Linux' || runner.arch != 'ARM64'
         uses: step-security/harden-runner@e14015d583714f6e62063499dc959a02595150a1 # v2.21.1
         with:
           egress-policy: audit
@@ -429,11 +431,6 @@ jobs:
     outputs:
       failed: ${{ steps.compose.outputs.failed }}
     steps:
-      - name: Harden the runner (Audit all outbound calls)
-        uses: step-security/harden-runner@e14015d583714f6e62063499dc959a02595150a1 # v2.21.1
-        with:
-          egress-policy: audit
-
       - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8
         with:
           pattern: published-smoke-*

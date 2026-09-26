@@ -393,7 +393,7 @@ const RAW_FILE_SYSTEM_SCOPE = [
  * list from becoming a file-wide lint hole.
  */
 export default tseslint.config(
-  { ignores: ['dist', 'site', 'docs/.vitepress', 'node_modules', '.looptroop'] },
+  { ignores: ['dist', 'site', 'coverage', 'docs/.vitepress', 'node_modules', '.looptroop'] },
   {
     extends: [js.configs.recommended, ...tseslint.configs.recommended],
     files: ['**/*.{ts,tsx}'],

@@ -25,6 +25,35 @@ Expect an acknowledgement within a few days. This is a small project, so
 timelines are best-effort rather than contractual. You will be credited in the
 advisory unless you ask otherwise.
 
+## Research authorization and Safe Harbor
+
+LoopTroop maintainers authorize source review and testing of a local copy only
+on systems, accounts, and data you control or have explicit permission from
+their owner to use. This policy does not authorize active testing of
+`looptroop.ovh`, hosted or provider services, or another person's LoopTroop
+installation. Reports about those assets are still welcome.
+
+Use the minimum proof needed to explain a finding. Do not disrupt services,
+access another person's data, or modify or destroy data. Stop and report
+privately if you encounter real user data or affect a real user or service.
+Give the maintainer a reasonable time to remediate before public disclosure.
+There is no bounty; response and remediation are best-effort.
+
+For good-faith research within this scope, the maintainers authorize testing
+with respect to applicable anti-hacking laws, waive relevant terms of service,
+acceptable-use restrictions, and anti-circumvention claims they control, and
+will not initiate or support legal action for policy-compliant research,
+including accidental, good-faith violations of this policy. If a third party
+brings legal action, the maintainers will clarify the authorization they gave,
+to the extent they control the relevant claims. This Safe Harbor does not bind
+independent third parties; researchers remain responsible for laws that apply
+to them.
+
+The maintainers consider research conducted under this policy lawful, helpful
+to security, and conducted in good faith.
+
+See the full [vulnerability disclosure policy](https://www.looptroop.ovh/docs/operations#vulnerability-disclosure).
+
 ## Threat Model
 
 LoopTroop is a local developer tool. Understanding what it is designed to do

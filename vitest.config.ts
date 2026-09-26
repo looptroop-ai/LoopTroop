@@ -310,6 +310,24 @@ export default defineConfig({
     // pass or fail on calls an earlier one recorded. Vitest 5 made this the
     // default; it is stated here so the choice survives the next default.
     clearMocks: true,
+    coverage: {
+      provider: 'v8',
+      include: ['{src,server,shared}/**/*.{ts,tsx,js,jsx,mjs,cjs}'],
+      exclude: [
+        '**/*.test.*',
+        '**/*.spec.*',
+        '**/__tests__/**',
+        '**/{test,tests}/**',
+        '**/{helper,helpers,fixture,fixtures}/**',
+        '**/*.d.{ts,cts,mts}',
+        '**/*.config.*',
+        '**/generated/**',
+        '**/*.generated.*',
+      ],
+      reporter: ['lcov', 'text', 'json-summary'],
+      // Deliberately stopped or detached children leave incomplete profiles and add filesystem I/O.
+      autoAttachSubprocess: false,
+    },
     projects: [
       {
         extends: true,

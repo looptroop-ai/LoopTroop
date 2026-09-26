@@ -1,3 +1,4 @@
+import assert from 'node:assert/strict'
 import { execFile, spawnSync } from 'node:child_process'
 import { createServer } from 'node:http'
 import { promisify } from 'node:util'
@@ -34,6 +35,17 @@ const isRunnerNativePackage = (
     && metadata?.cpu?.includes(process.arch) === true
     && !packageName.includes('musl')
     && (process.arch !== 'x64' || packageName.endsWith('-baseline'))
+
+const expectedNativeBinPath = (tool: string, packageRoot: string, directory: string): string =>
+  tool === 'bun' && process.platform === 'win32'
+    ? join(packageRoot, 'bin')
+    : join(directory, 'node_modules/.bin')
+
+const nativeToolFixtures: Record<string, { command: string; targets: Record<string, string> }> = {
+  bun: { command: 'bun', targets: { bun: 'bin/bun.exe', bunx: 'bin/bunx.exe' } },
+  'opencode-v1': { command: 'opencode', targets: { opencode: 'bin/opencode.exe', opencode2: 'bin/opencode.exe' } },
+  'opencode-v2': { command: 'opencode', targets: { opencode: 'bin/opencode.exe', opencode2: 'bin/opencode.exe' } },
+}
 
 describe('dependency install script policy', () => {
   it('approves exactly the locked esbuild scripts, with no production install hooks', () => {
@@ -143,7 +155,7 @@ describe('dependency install script policy', () => {
     expect(pinScript).not.toContain("npm(['install', '--global', `npm@${declared}`])")
   })
 
-  it.each(['bun', 'opencode-v1', 'opencode-v2'])('verifies the %s native binary before publishing PATH', (tool) => {
+  it.each(Object.keys(nativeToolFixtures))('verifies the %s native binary before publishing PATH', (tool) => {
     const root = makeTempDir('looptroop-ci-tool-')
     try {
       const original = join(repo, 'scripts/ci-tools', tool)
@@ -151,7 +163,7 @@ describe('dependency install script policy', () => {
         dependencies: Record<string, string>
       }
       const [name] = Object.keys(toolManifest.dependencies)
-      if (!name) throw new Error(`Missing dependency for ${tool}`)
+      assert(name, `Missing dependency for ${tool}`)
       const lock = JSON.parse(readFileSync(join(original, 'package-lock.json'), 'utf8')) as {
         packages: Record<string, { os?: string[]; cpu?: string[]; optionalDependencies?: Record<string, string> }>
       }
@@ -162,14 +174,13 @@ describe('dependency install script policy', () => {
         const entry = lock.packages[`node_modules/${packageName}`]
         return isRunnerNativePackage(packageName, entry)
       })
-      if (!native) throw new Error(`Missing fixture package for ${tool}`)
+      assert(native, `Missing fixture package for ${tool}`)
+      const fixture = nativeToolFixtures[tool]
+      assert(fixture, `Missing native test fixture for ${tool}`)
+      const { command, targets } = fixture
       const directory = join(root, 'ci-tools', tool)
       const packageRoot = join(directory, 'node_modules', name)
       const nativeBin = join(directory, 'node_modules', native, 'bin')
-      const command = tool === 'bun' ? 'bun' : 'opencode'
-      const targets = tool === 'bun'
-        ? { bun: 'bin/bun.exe', bunx: 'bin/bunx.exe' }
-        : { opencode: 'bin/opencode.exe', opencode2: 'bin/opencode.exe' }
       mkdirSync(join(packageRoot, 'bin'), { recursive: true })
       mkdirSync(nativeBin, { recursive: true })
       copyFileSync(join(repo, 'scripts/setup-ci-tool.cjs'), join(root, 'setup-ci-tool.cjs'))
@@ -196,8 +207,7 @@ describe('dependency install script policy', () => {
       new Set(Object.values(targets)).forEach((target) => {
         expect(statSync(join(packageRoot, target)).size).toBe(statSync(process.execPath).size)
       })
-      const expectedBin = tool === 'bun' && process.platform === 'win32'
-        ? join(packageRoot, 'bin') : join(directory, 'node_modules/.bin')
+      const expectedBin = expectedNativeBinPath(tool, packageRoot, directory)
       expect(readFileSync(env.GITHUB_PATH, 'utf8')).toBe(`${expectedBin}\n`)
       expect(existsSync(env.GITHUB_ENV)).toBe(false)
     } finally {

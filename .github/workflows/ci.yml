@@ -674,7 +674,7 @@ jobs:
         shell: bash
         run: |
           npm ci --ignore-scripts --prefix scripts/ci-tools/${{ matrix.manager }}
-          node scripts/setup-ci-tool.mjs ${{ matrix.manager }}
+          node scripts/setup-ci-tool.cjs ${{ matrix.manager }}
 
       - name: Install globally with ${{ matrix.manager }} and check what it reports
         run: node scripts/smoke-node-manager.mjs ${{ matrix.manager }}

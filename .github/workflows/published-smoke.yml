@@ -235,7 +235,7 @@ jobs:
           persist-credentials: false
           sparse-checkout: |
             scripts/ci-tools
-            scripts/setup-ci-tool.mjs
+            scripts/setup-ci-tool.cjs
           sparse-checkout-cone-mode: false
 
       - name: Record release and tooling revisions
@@ -266,7 +266,7 @@ jobs:
         run: |
           set -euo pipefail
           npm ci --ignore-scripts --prefix .ci-tools-source/scripts/ci-tools/${{ matrix.channel }}
-          node .ci-tools-source/scripts/setup-ci-tool.mjs ${{ matrix.channel }}
+          node .ci-tools-source/scripts/setup-ci-tool.cjs ${{ matrix.channel }}
 
           # Each manager keeps its global installs somewhere of its own, and
           # only puts that directory on PATH as part of its *own* installer —
@@ -349,7 +349,7 @@ jobs:
           GH_TOKEN: ''
         run: |
           npm ci --ignore-scripts --prefix .ci-tools-source/scripts/ci-tools/opencode-v2
-          node .ci-tools-source/scripts/setup-ci-tool.mjs opencode-v2
+          node .ci-tools-source/scripts/setup-ci-tool.cjs opencode-v2
 
       # V2 docs do not support Windows package managers. Keep the Windows .cmd
       # launch regression on the latest stable v1 npm package instead.
@@ -361,7 +361,7 @@ jobs:
           GH_TOKEN: ''
         run: |
           npm ci --ignore-scripts --prefix .ci-tools-source/scripts/ci-tools/opencode-v1
-          node .ci-tools-source/scripts/setup-ci-tool.mjs opencode-v1
+          node .ci-tools-source/scripts/setup-ci-tool.cjs opencode-v1
 
       - name: Confirm OpenCode is on PATH
         if: matrix.opencode != 'mock' && matrix.opencode != 'none'

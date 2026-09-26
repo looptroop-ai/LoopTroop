@@ -15,6 +15,8 @@ const manifest = JSON.parse(readFileSync(join(repo, 'package.json'), 'utf8')) as
   allowScripts: Record<string, boolean>
 }
 const workflowDir = join(repo, '.github/workflows')
+// Spell the GitHub marker without making the source look like JS interpolation.
+const githubExpressionPrefix = String.fromCharCode(36, 123, 123)
 const workflows = readdirSync(workflowDir).filter((file) => /\.ya?ml$/.test(file)).map((file) => ({
   file,
   document: yaml.load(readFileSync(join(workflowDir, file), 'utf8')) as {
@@ -24,6 +26,16 @@ const workflows = readdirSync(workflowDir).filter((file) => /\.ya?ml$/.test(file
     }>
   },
 }))
+
+function isRunnerNativePackage(
+  packageName: string,
+  metadata: { os?: string[]; cpu?: string[] } | undefined,
+): boolean {
+  return metadata?.os?.includes(process.platform) === true
+    && metadata?.cpu?.includes(process.arch) === true
+    && !packageName.includes('musl')
+    && (process.arch !== 'x64' || packageName.endsWith('-baseline'))
+}
 
 describe('dependency install script policy', () => {
   it('approves exactly the locked esbuild scripts, with no production install hooks', () => {
@@ -97,14 +109,14 @@ describe('dependency install script policy', () => {
       expect(command).not.toMatch(/--allow-scripts=/)
       expect(command).not.toMatch(/npm (?:i|install)\b[^\n]*(?:bun|pnpm|yarn|opencode-ai|@opencode\/cli)(?:@|\s|$)/)
     }
-    const setup = readFileSync(join(repo, 'scripts/setup-ci-tool.mjs'), 'utf8')
+    const setup = readFileSync(join(repo, 'scripts/setup-ci-tool.cjs'), 'utf8')
     expect(setup).not.toContain('LOOPTROOP_TRUSTED_EXECUTABLE_DIRS')
     expect(setup).not.toContain('GITHUB_ENV')
   })
 
   it.each([
-    ['ci.yml', 'node-managers', 'Install $' + '{{ matrix.manager }}', 'scripts', '$' + '{{ matrix.manager }}'],
-    ['published-smoke.yml', 'smoke', 'Install the node manager', '.ci-tools-source/scripts', '$' + '{{ matrix.channel }}'],
+    ['ci.yml', 'node-managers', `Install ${githubExpressionPrefix} matrix.manager }}`, 'scripts', `${githubExpressionPrefix} matrix.manager }}`],
+    ['published-smoke.yml', 'smoke', 'Install the node manager', '.ci-tools-source/scripts', `${githubExpressionPrefix} matrix.channel }}`],
     ['published-smoke.yml', 'smoke', 'Install OpenCode v2', '.ci-tools-source/scripts', 'opencode-v2'],
     ['published-smoke.yml', 'smoke', 'Install OpenCode v1 on Windows', '.ci-tools-source/scripts', 'opencode-v1'],
   ])('installs then prepares the locked tool in %s / %s / %s', (file, job, name, scripts, tool) => {
@@ -115,7 +127,7 @@ describe('dependency install script policy', () => {
       .filter((line) => /^(?:npm |node .*setup-ci-tool)/.test(line))
     expect(installLines).toEqual([
       `npm ci --ignore-scripts --prefix ${scripts}/ci-tools/${tool}`,
-      `node ${scripts}/setup-ci-tool.mjs ${tool}`,
+      `node ${scripts}/setup-ci-tool.cjs ${tool}`,
     ])
   })
 
@@ -150,8 +162,7 @@ describe('dependency install script policy', () => {
       const installed = lock.packages[`node_modules/${name}`]
       const native = Object.keys(installed?.optionalDependencies ?? {}).find((packageName) => {
         const entry = lock.packages[`node_modules/${packageName}`]
-        return entry?.os?.includes(process.platform) && entry.cpu?.includes(process.arch)
-          && !packageName.includes('musl') && (process.arch !== 'x64' || packageName.endsWith('-baseline'))
+        return isRunnerNativePackage(packageName, entry)
       })
       if (!native) throw new Error(`Missing fixture package for ${tool}`)
       const directory = join(root, 'ci-tools', tool)
@@ -163,14 +174,14 @@ describe('dependency install script policy', () => {
         : { opencode: 'bin/opencode.exe', opencode2: 'bin/opencode.exe' }
       mkdirSync(join(packageRoot, 'bin'), { recursive: true })
       mkdirSync(nativeBin, { recursive: true })
-      copyFileSync(join(repo, 'scripts/setup-ci-tool.mjs'), join(root, 'setup-ci-tool.mjs'))
+      copyFileSync(join(repo, 'scripts/setup-ci-tool.cjs'), join(root, 'setup-ci-tool.cjs'))
       writeFileSync(join(directory, 'package.json'), JSON.stringify(toolManifest))
       writeFileSync(join(packageRoot, 'package.json'), JSON.stringify({
         version: toolManifest.dependencies[name], optionalDependencies: { [native]: toolManifest.dependencies[name] },
         bin: targets,
       }))
       const env = { ...process.env, GITHUB_PATH: join(root, 'path'), GITHUB_ENV: join(root, 'env') }
-      const run = () => spawnSync(process.execPath, [join(root, 'setup-ci-tool.mjs'), tool], { env, encoding: 'utf8' })
+      const run = () => spawnSync(process.execPath, [join(root, 'setup-ci-tool.cjs'), tool], { env, encoding: 'utf8' })
       const absent = run()
       expect(absent.status).not.toBe(0)
       expect(absent.stderr).toContain('ENOENT')

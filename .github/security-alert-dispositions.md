@@ -133,14 +133,14 @@ DeepSource reported the separate analysis findings below.
 | Job-wide executable trust override masks normal discovery | Removed the override. All five installed tools resolve through the existing trusted launcher on Linux with ordinary PATH. Windows Bun exposes its native bin directory; OpenCode retains its command shim. |
 | Native setup aliases, missing binaries and incompatible executables | Deduplicate declared targets and run a bounded version probe before adding PATH. Tests cover missing and invalid binaries, both OpenCode lanes and Bun, using independent platform metadata from committed locks. No speculative musl runner or package-layout fallback is added. |
 | CI tools grouped with runtime updates; majors lose labels; lock refresh splits | Restrict runtime rules to the root manifest. Apply CI metadata separately from the patch/minor group. Major updates keep their major label and separate PRs; the weekly lock refresh covers root and nested locks together. Yarn Classic and both OpenCode major lanes remain explicit; Bun and pnpm majors remain reviewable. |
-| Weak install-policy assertions | Compare the exact installation commands in each setup step, verify every tooling lock and integrity field, reject local links, and assert the helper cannot write a trust override. Build literal workflow expressions from separate string pieces in test data so static analysis does not mistake them for JavaScript interpolation. |
+| Weak install-policy assertions | Compare the exact installation commands in each setup step, verify every tooling lock and integrity field, reject local links, and assert the helper cannot write a trust override. Use real interpolation with a computed GitHub-expression prefix in test data so static analysis does not mistake it for JavaScript interpolation. |
 | Broader network and authentication coverage | Add normalized IPv4/IPv6, bracketed dotted mapped IPv6, hostile syntax and Host/Origin port parity. Every private API route in the contract inventory must reject an unauthenticated request before its handler. Fast-check reports the seed and shrink path on failure; a fixed seed would unnecessarily reduce exploration. |
 | JSON proof test and leftover sidecars | Name the JSON check precisely, assert its final directory contents, and verify successful YAML/JSONL writes clean temporary sidecars. Credential hashing behavior is unchanged. |
 | Process quoting coverage overstated | Distinguish POSIX real-process coverage from shared Windows launcher tests; add command substitution and a trailing-backslash path to the latter. |
 | Workflow tooling differs from the release tested | Preserve that intentional separation and record the release version, exact tooling commit and installed tool versions in the job summary. |
 | Restore a separate npm download or enforce npm 12 in the container | Rejected per the owner's explicit choice. Production installation disables all scripts and uses the release lock; the development npm lifecycle allowlist is a separate policy. |
 | SonarCloud S8689 / GitHub #202 | Proven false positive: the log contains the public npm package name, package.json version checked against its committed pin, and CI installation path. No credential reaches it. Dismissed the GitHub import under the owner's authorization. The refreshed SonarCloud bot comment and both Sonar checks now report success with zero new issues. |
-| DeepSource ESM parse error and small test findings | Escaped literal workflow expressions, removed non-null assertions and replaced the empty callback with a test spy. Node executes the `.mjs` helper and ESLint explicitly parses it as a module. [DeepSource's documented module default](https://docs.deepsource.com/docs/platform/reference/core-analyzers) is also ES modules; its source-type error is an external parser/configuration issue, not a reason to rewrite valid ESM or exclude the file. Small test loops remain where they express the policy directly. |
+| DeepSource parser and test findings | The standalone CI helper now uses `.cjs`, `require` and `__dirname`, matching the analyzer's script parser without analyzer configuration changes or exclusions. A small metadata predicate keeps the native-fixture test's complexity down; workflow marker assertions use real interpolation with a separately constructed prefix. Non-null assertions and an empty callback were removed earlier. |
 | Unrelated artifacts, hardlinks, extra config guards, exact fixture listing and separate disposition PR | No demonstrated defect warrants changes. Existing cleanup and fixture assertions are intentional; the owner requested one branch and PR. Security notes clarify existing authenticated-owner behavior rather than relaxing runtime controls. |
 
 Codex, Amazon Q, Greptile, Kilo and CodeRabbit supplied no additional actionable
@@ -157,7 +157,8 @@ The refreshed review at `ab2f33d` contained 14 conversation comments, eight
 submitted reviews and 17 inline comments. Kilo found no code defects and
 Greptile reported no blocker. CodeRabbit repeated its suggestion to restore the
 Docker npm download; the owner's explicit choice to use the pinned image's
-bundled npm still applies. SonarCloud reports a passing gate.
+bundled npm still applies. SonarCloud reports a passing gate. The `b079ade`
+DeepSource run added three style comments, bringing the inline count to 20.
 
 The next CI run at `44da9d61` failed in both macOS test lanes because the native
 fixture searched every lock entry and selected the OpenCode wrapper package,
@@ -168,20 +169,23 @@ The same run's sole Codacy critical flagged a fixed `it.each` filename as
 possible user input to `path.join`; the test now uses static filenames directly.
 Using ordinary quoted strings for literal GitHub expressions caused three new
 DeepSource `Unexpected template string expression` reports at `ab2f33d`. The
-regression data now builds those strings from separate `$` and `{{ ... }}`
-pieces, preserving the exact workflow expressions without looking like a JS
-template. The `.mjs` parser report still conflicts with the documented ESM
-default and the repository's executable module configuration; no analyzer
-exclusion was added. Its medium-risk complexity suggestion is confined to the
-native-binary test harness and does not identify a runtime defect.
+literal-concatenation workaround then caused three minor reports at `b079ade`.
+The regression data now uses real interpolation with a separately constructed
+GitHub-expression prefix, preserving the asserted workflow text without either
+scanner pattern. The `b079ade` analysis also retained the `.mjs` parser report
+and medium-risk complexity report; the standalone helper now uses CommonJS and
+the native metadata predicate is separated from the test callback. No analyzer
+settings, exclusions or suppressions were added.
 The corrected fixture passes all 82 focused atomic-write and install-policy
 tests locally, test TypeScript checking, and ESLint. A platform-metadata check
 also selected the correct locked native package for Bun and both OpenCode lanes
 on macOS ARM64, Linux x64 and Windows x64. The full local suite passed before
-this test-only correction. In the latest checks at this audit, macOS install
-smoke and binary jobs passed while test jobs were still running; DeepSource
-JavaScript still reported the findings from `ab2f33d`, and the new test-only
-correction awaits its next analysis run.
+this test-only correction. At the `ab2f33d` CI snapshot, macOS install smoke
+and binary jobs passed while test jobs were still running. The install-policy
+suite now passes all 17 tests, test TypeScript and ESLint pass, and Actionlint
+with ShellCheck passes after updating both workflow paths. The latest
+DeepSource result at `b079ade` remained failed on the findings described above;
+the current analyzer run will assess these final test-only and helper changes.
 
 Follow-up verification: 458 test files passed, with 7,071 tests passed and 13
 existing skips. Full lint, both typecheck projects, build, package contents,

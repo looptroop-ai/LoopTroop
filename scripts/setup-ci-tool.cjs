@@ -1,7 +1,6 @@
-import { appendFileSync, chmodSync, copyFileSync, readFileSync } from 'node:fs'
-import { spawnSync } from 'node:child_process'
-import { dirname, join } from 'node:path'
-import { fileURLToPath } from 'node:url'
+const { appendFileSync, chmodSync, copyFileSync, readFileSync } = require('node:fs')
+const { spawnSync } = require('node:child_process')
+const { join } = require('node:path')
 
 // npm ci verifies the committed integrity hashes and creates the platform shims.
 // Only the native-binary copy normally performed by postinstall is needed here.
@@ -9,7 +8,7 @@ const tool = process.argv[2]
 if (!['bun', 'pnpm', 'yarn', 'opencode-v1', 'opencode-v2'].includes(tool)) {
   throw new Error(`Unknown CI tool: ${tool}`)
 }
-const root = join(dirname(fileURLToPath(import.meta.url)), 'ci-tools', tool)
+const root = join(__dirname, 'ci-tools', tool)
 const manifest = JSON.parse(readFileSync(join(root, 'package.json'), 'utf8'))
 const [name] = Object.keys(manifest.dependencies)
 const packageRoot = join(root, 'node_modules', name)

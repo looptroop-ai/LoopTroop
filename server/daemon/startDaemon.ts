@@ -15,9 +15,11 @@ import {
   readDaemonStartFailure,
 } from '../lib/daemonPaths'
 import { assertPublicOriginRemoteAccess, resolveSettings, type ResolvedSettings } from '../lib/appSettings'
-import { readProcessStartToken } from '../lib/processIdentity'
+import { isProcessAlive } from '../cli/processControl'
+import { matchProcess, readProcessStartToken } from '../lib/processIdentity'
 import { createSessionCredentials, BootstrapNonceStore, type SessionCredentials } from '../middleware/sessionAuth'
 import { OpenCodeSupervisor, type OpenCodeStatus } from '../opencode/supervisor'
+import { resetOpenCodeAdapterTransport } from '../opencode/factory'
 import { getErrorMessage } from '@shared/typeGuards'
 
 /** Keeps the lock's heartbeat ahead of the staleness window. */
@@ -269,6 +271,75 @@ export async function startDaemon(options: StartDaemonOptions): Promise<DaemonHa
     throw new DaemonShutdownPendingError(pendingShutdownAfterLock)
   }
 
+  // A dead daemon may have left its owned OpenCode child behind. Reconcile the
+  // old record before the new supervisor can adopt that child and lose the
+  // only identity-safe route to clean it up.
+  const previousState = readDaemonState(options.configDir)
+  if (previousState !== null) {
+    if (isProcessAlive(previousState.pid)) {
+      const daemonIdentity = matchProcess(previousState.pid, previousState.startToken)
+      if (daemonIdentity.kind !== 'different') {
+        lock.release()
+        const detail = daemonIdentity.kind === 'same'
+          ? 'the previous daemon is still running'
+          : `its process identity cannot be verified because ${daemonIdentity.reason}`
+        throw new Error(
+          `LoopTroop cannot safely replace its previous daemon record (pid ${previousState.pid}; ${detail}). ` +
+          'The record was preserved. Run `looptroop stop` or `looptroop doctor` before retrying.',
+        )
+      }
+    }
+
+    const previousOpenCode = previousState.opencode
+    if (previousOpenCode?.owned) {
+      if (previousOpenCode.pid === undefined) {
+        lock.release()
+        throw new Error(
+          'LoopTroop cannot safely replace its previous daemon record because its owned OpenCode server has no recorded pid. ' +
+          'The record was preserved; inspect it with `looptroop doctor` before retrying.',
+        )
+      }
+
+      if (isProcessAlive(previousOpenCode.pid)) {
+        const childIdentity = matchProcess(previousOpenCode.pid, previousOpenCode.startToken)
+        if (childIdentity.kind === 'unknown') {
+          lock.release()
+          throw new Error(
+            `LoopTroop cannot safely replace its previous daemon record because OpenCode pid ${previousOpenCode.pid} ` +
+            `is alive but ${childIdentity.reason}. The record was preserved and nothing was signalled; ` +
+            'run `looptroop doctor` to inspect it before retrying.',
+          )
+        }
+
+        if (childIdentity.kind === 'same') {
+          const failure: Extract<DaemonStartFailure, { reason: 'startup-cleanup-incomplete' }> = {
+            reason: 'startup-cleanup-incomplete',
+            at: new Date().toISOString(),
+            version: options.version,
+            message: 'The previous daemon ended while its owned OpenCode server was still running.',
+            openCode: {
+              baseUrl: previousOpenCode.baseUrl,
+              pid: previousOpenCode.pid,
+              ...(previousOpenCode.startToken === undefined ? {} : { startToken: previousOpenCode.startToken }),
+            },
+          }
+          try {
+            writeDaemonStartFailure(failure, options.configDir)
+          } catch (error) {
+            lock.release()
+            throw new Error(
+              `LoopTroop found its previous owned OpenCode server (pid ${previousOpenCode.pid}) but could not save its cleanup record: ` +
+              `${getErrorMessage(error)}. The previous daemon record was left untouched; run ` +
+              '`looptroop doctor` to inspect it before retrying.',
+            )
+          }
+          lock.release()
+          throw new DaemonStartBlockedError(failure)
+        }
+      }
+    }
+  }
+
   let runtime: LoopTroopRuntime | null = null
   let heartbeat: NodeJS.Timeout | null = null
   let opencode: OpenCodeSupervisor | null = null
@@ -295,6 +366,10 @@ export async function startDaemon(options: StartDaemonOptions): Promise<DaemonHa
    * reachable server for a daemon that could not run a single coding operation.
    */
   const recordOpenCodeStatus = (status: OpenCodeStatus): void => {
+    // A managed restart may launch a different CLI protocol. Drop only the
+    // cached transport so in-flight calls retain theirs and later calls can
+    // resolve the now-ready server again.
+    if (status.kind === 'managed') resetOpenCodeAdapterTransport()
     const next = nextStateForOpenCode(recordedState, status, settings.opencodeBaseUrl, {
       released: stateFileReleased,
     })

@@ -168,7 +168,7 @@ describe('prepareSquashCandidate', () => {
     const repoDir = repoManager.createRepo()
     const ticketDir = resolve(repoDir, '.ticket')
     mkdirSync(ticketDir, { recursive: true })
-    const applied = applyOpencodeStepsConfig({ ticketDir, worktreePath: repoDir, steps: 25 })
+    const applied = applyOpencodeStepsConfig({ ticketDir, worktreePath: repoDir, steps: 25, protocol: 'v1' })
     if (!applied.applied) throw new Error('expected the step cap to apply')
     writeFileSync(resolve(repoDir, 'opencode.json'), '{"edited":true}\n')
     expect(restoreOpencodeStepsConfig(applied.handle)).toBe('conflict')

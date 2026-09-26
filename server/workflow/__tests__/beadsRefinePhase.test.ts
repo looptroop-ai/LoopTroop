@@ -478,6 +478,7 @@ describe('handleBeadsRefine', () => {
     })
     const sendEvent = vi.fn()
     const winnerId = TEST.councilMembers[0]
+    context.lockedCouncilMemberVariants = { [winnerId]: 'high' }
     const coverageGap = 'Missing a bead that surfaces unresolved coverage warnings during approval.'
     const initialBlueprint = buildBeadSubsetContent({ includeSecondBead: true })
 
@@ -532,6 +533,7 @@ describe('handleBeadsRefine', () => {
     await handleBeadsExpansion(ticket.id, context, sendEvent, new AbortController().signal)
 
     expect(runOpenCodePromptMock).toHaveBeenCalledTimes(4)
+    expect(runOpenCodePromptMock.mock.calls.map(([options]) => options.variant)).toEqual(['high', 'high', 'high', 'high'])
     expect(sendEvent).toHaveBeenCalledWith({ type: 'COVERAGE_CLEAN' })
 
     const coverageInput = getLatestPhaseArtifact(ticket.id, 'beads_coverage_input', 'VERIFYING_BEADS_COVERAGE')
@@ -1076,6 +1078,7 @@ describe('handleBeadsExpansion', () => {
     await handleBeadsExpansion(ticket.id, context, sendEvent, new AbortController().signal)
 
     expect(runOpenCodePromptMock).toHaveBeenCalledTimes(1)
+    expect(runOpenCodePromptMock.mock.calls[0]?.[0]?.variant).toBeUndefined()
     expect(sendEvent).toHaveBeenCalledWith({ type: 'EXPANDED' })
 
     const expandedArtifact = getLatestPhaseArtifact(ticket.id, 'beads_expanded', 'EXPANDING_BEADS')

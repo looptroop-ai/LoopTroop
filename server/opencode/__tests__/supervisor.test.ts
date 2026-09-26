@@ -1,11 +1,27 @@
 import { EventEmitter } from 'node:events'
 import type { ChildProcess } from 'node:child_process'
-import { describe, expect, it, vi } from 'vitest'
+import { afterEach, describe, expect, it, vi } from 'vitest'
 import {
   defaultTermination,
   OpenCodeSupervisor,
   type ProcessTermination,
 } from '../supervisor'
+import { invalidateOpenCodeConnection } from '../connection'
+
+const originalAuthEnv = {
+  OPENCODE_PASSWORD: process.env.OPENCODE_PASSWORD,
+  OPENCODE_SERVER_PASSWORD: process.env.OPENCODE_SERVER_PASSWORD,
+}
+
+afterEach(() => {
+  vi.unstubAllGlobals()
+  vi.unstubAllEnvs()
+  for (const [key, value] of Object.entries(originalAuthEnv)) {
+    if (value === undefined) delete process.env[key]
+    else process.env[key] = value
+  }
+  invalidateOpenCodeConnection()
+})
 
 function fakeChild(pid: number, exitCode: number | null = null): EventEmitter & {
   pid: number
@@ -77,6 +93,100 @@ describe('OpenCodeSupervisor', () => {
     expect(spawnProcess).not.toHaveBeenCalled()
     expect(termination.request).not.toHaveBeenCalled()
     expect(termination.force).not.toHaveBeenCalled()
+  })
+
+  it('does not launch over a server that rejects authentication', async () => {
+    vi.stubEnv('OPENCODE_PASSWORD', 'wrong-password')
+    const spawnProcess = vi.fn()
+    vi.stubGlobal('fetch', vi.fn(async () => new Response('', { status: 401 })))
+    const supervisor = new OpenCodeSupervisor({
+      baseUrl: 'http://127.0.0.1:4096',
+      spawnProcess: spawnProcess as never,
+      resolveProgram: () => '/opt/opencode',
+    })
+
+    await expect(supervisor.start()).rejects.toMatchObject({ failureKind: 'authentication', status: 401 })
+    expect(spawnProcess).not.toHaveBeenCalled()
+  })
+
+  it('does not launch over an occupied port serving an unsupported protocol', async () => {
+    const spawnProcess = vi.fn()
+    vi.stubGlobal('fetch', vi.fn(async () => new Response('<html>other service</html>', {
+      headers: { 'content-type': 'text/html' },
+    })))
+    const supervisor = new OpenCodeSupervisor({
+      baseUrl: 'http://127.0.0.1:4096',
+      spawnProcess: spawnProcess as never,
+      resolveProgram: () => '/opt/opencode',
+    })
+
+    await expect(supervisor.start()).rejects.toMatchObject({ failureKind: 'unsupported_protocol' })
+    expect(spawnProcess).not.toHaveBeenCalled()
+  })
+
+  it('retries transient network responses while an existing server becomes ready', async () => {
+    let probes = 0
+    const fetchMock = vi.fn(async () => {
+      probes += 1
+      return probes < 3
+        ? new Response('', { status: 503 })
+        : new Response(JSON.stringify({ version: '2.0.15', pid: 812 }), {
+            headers: { 'content-type': 'application/json' },
+          })
+    })
+    vi.stubGlobal('fetch', fetchMock)
+    const supervisor = new OpenCodeSupervisor({ baseUrl: 'http://127.0.0.1:4096', readyTimeoutMs: 2_000 })
+
+    await expect(supervisor.start()).resolves.toEqual({ kind: 'adopted', baseUrl: 'http://127.0.0.1:4096' })
+    expect(fetchMock).toHaveBeenCalledTimes(3)
+  })
+
+  it('shares an in-memory ephemeral password with a managed child when no password was supplied', async () => {
+    delete process.env.OPENCODE_PASSWORD
+    delete process.env.OPENCODE_SERVER_PASSWORD
+    const child = fakeChild(4401)
+    const { termination } = terminationProbe()
+    let probes = 0
+    let childEnv: NodeJS.ProcessEnv | undefined
+    const supervisor = new OpenCodeSupervisor({
+      baseUrl: 'http://127.0.0.1:4096',
+      probe: async () => ++probes > 1,
+      spawnProcess: ((_file: string, _args: string[], options: { env?: NodeJS.ProcessEnv }) => {
+        childEnv = options?.env as NodeJS.ProcessEnv
+        return child
+      }) as never,
+      resolveProgram: () => '/opt/opencode',
+      termination,
+    })
+
+    await expect(supervisor.start()).resolves.toMatchObject({ kind: 'managed', pid: 4401 })
+    expect(childEnv?.OPENCODE_PASSWORD).toMatch(/^[A-Za-z0-9_-]{40,}$/)
+    expect(childEnv?.OPENCODE_SERVER_PASSWORD).toBe(childEnv?.OPENCODE_PASSWORD)
+    await supervisor.stop()
+  })
+
+  it('generates a password when configured password aliases are blank', async () => {
+    vi.stubEnv('OPENCODE_PASSWORD', '   ')
+    vi.stubEnv('OPENCODE_SERVER_PASSWORD', '')
+    const child = fakeChild(4402)
+    const { termination } = terminationProbe()
+    let probes = 0
+    let childEnv: NodeJS.ProcessEnv | undefined
+    const supervisor = new OpenCodeSupervisor({
+      baseUrl: 'http://127.0.0.1:4096',
+      probe: async () => ++probes > 1,
+      spawnProcess: ((_file: string, _args: string[], options: { env?: NodeJS.ProcessEnv }) => {
+        childEnv = options?.env as NodeJS.ProcessEnv
+        return child
+      }) as never,
+      resolveProgram: () => '/opt/opencode',
+      termination,
+    })
+
+    await expect(supervisor.start()).resolves.toMatchObject({ kind: 'managed', pid: 4402 })
+    expect(childEnv?.OPENCODE_PASSWORD).toMatch(/^[A-Za-z0-9_-]{40,}$/)
+    expect(childEnv?.OPENCODE_SERVER_PASSWORD).toBe(childEnv?.OPENCODE_PASSWORD)
+    await supervisor.stop()
   })
 
   it('cleans up a child when health never becomes ready', async () => {

@@ -2,6 +2,8 @@ import { TicketWorkspaceNotInitializedError } from '../../lib/workflowErrors'
 import type { TicketContext, TicketEvent } from '../../machines/types'
 import { getLatestPhaseArtifact, getTicketPaths, upsertLatestPhaseArtifact } from '../../storage/tickets'
 import { isMockOpenCodeMode } from '../../opencode/factory'
+import { getOpenCodeConnection } from '../../opencode/connection'
+import { getOpenCodeBaseUrl } from '../../opencode/runtimeConfig'
 import { executeBead, type ExecutionResult } from '../../phases/execution/executor'
 import { getNextBead, isAllComplete } from '../../phases/execution/scheduler'
 import type { Bead } from '../../phases/beads/types'
@@ -344,14 +346,25 @@ export async function handleCoding(
   // exclude included — still reaches the restore in the `finally`.
   try {
     if (executionSettings.opencodeSteps > 0) {
-      const outcome = applyOpencodeStepsConfig({
-        ticketDir: paths.ticketDir,
-        worktreePath: paths.worktreePath,
-        steps: executionSettings.opencodeSteps,
-        report: reportStepsConfig,
-      })
-      if (outcome.applied) {
-        stepsConfig = outcome.handle
+      let connection: Awaited<ReturnType<typeof getOpenCodeConnection>> | undefined
+      try {
+        connection = await getOpenCodeConnection(getOpenCodeBaseUrl(), signal)
+      } catch (error) {
+        throwIfAborted(signal, ticketId)
+        const reason = error instanceof Error ? error.message : String(error)
+        reportStepsConfig(`Could not determine the OpenCode protocol for the step limit: ${reason}. ${OPENCODE_CONFIG_FILENAME} was left unchanged.`)
+      }
+      if (connection) {
+        const outcome = applyOpencodeStepsConfig({
+          ticketDir: paths.ticketDir,
+          worktreePath: paths.worktreePath,
+          steps: executionSettings.opencodeSteps,
+          protocol: connection.protocol,
+          report: reportStepsConfig,
+        })
+        if (outcome.applied) {
+          stepsConfig = outcome.handle
+        }
       }
     }
 

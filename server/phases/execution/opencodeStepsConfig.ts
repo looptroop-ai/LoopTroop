@@ -5,6 +5,7 @@ import { parseAtomicTmpPath, safeAtomicWriteWithin } from '../../io/atomicWrite'
 import { readFileNoFollowSync } from '../../io/readFile'
 import { ensureSecureDir, resolveAppConfigDir } from '../../lib/appConfigDir'
 import { resolveContainedPath } from '../../lib/containedPath'
+import type { OpenCodeProtocol } from '../../opencode/connection'
 import { getErrorMessage, isRecord } from '@shared/typeGuards'
 
 /**
@@ -230,11 +231,16 @@ function readExistingConfig(configPath: string): ExistingConfig {
   return { kind: 'file', raw, value: parsed }
 }
 
+function agentKey(protocol: OpenCodeProtocol, config?: Record<string, unknown>): 'agent' | 'agents' {
+  if (protocol !== 'v2') return 'agent'
+  return config && 'agent' in config && !('agents' in config) ? 'agent' : 'agents'
+}
+
 /** The document written when the project has no `opencode.json` of its own. */
-function minimalConfig(steps: number): Record<string, unknown> {
+function minimalConfig(steps: number, protocol: OpenCodeProtocol): Record<string, unknown> {
   return {
     $schema: 'https://opencode.ai/config.json',
-    agent: { build: { steps } },
+    [agentKey(protocol)]: { build: { steps } },
   }
 }
 
@@ -243,14 +249,15 @@ function minimalConfig(steps: number): Record<string, unknown> {
  * `agent` or `agent.build` is something other than an object and merging would
  * mean discarding it.
  */
-function mergeSteps(existing: Record<string, unknown>, steps: number): Record<string, unknown> | null {
-  const agent = existing.agent
+function mergeSteps(existing: Record<string, unknown>, steps: number, protocol: OpenCodeProtocol): Record<string, unknown> | null {
+  const key = agentKey(protocol, existing)
+  const agent = existing[key]
   if (agent !== undefined && !isRecord(agent)) return null
   const build = isRecord(agent) ? agent.build : undefined
   if (build !== undefined && !isRecord(build)) return null
   return {
     ...existing,
-    agent: {
+    [key]: {
       ...(isRecord(agent) ? agent : {}),
       build: {
         ...(isRecord(build) ? build : {}),
@@ -280,6 +287,7 @@ export function applyOpencodeStepsConfig(params: {
   ticketDir: string
   worktreePath: string
   steps: number
+  protocol: OpenCodeProtocol
   report?: Report
 }): OpencodeStepsConfigOutcome {
   const report = notifier(params.report)
@@ -315,9 +323,12 @@ export function applyOpencodeStepsConfig(params: {
   }
 
   const created = existing.kind === 'absent'
-  const document = created ? minimalConfig(params.steps) : mergeSteps(existing.value, params.steps)
+  const key = agentKey(params.protocol, existing.kind === 'file' ? existing.value : undefined)
+  const document = created
+    ? minimalConfig(params.steps, params.protocol)
+    : mergeSteps(existing.value, params.steps, params.protocol)
   if (document === null) {
-    const reason = `Left ${OPENCODE_CONFIG_FILENAME} untouched because its "agent" section is not shaped the way a step limit can be merged into. The OpenCode step limit is not applied for this run.`
+    const reason = `Left ${OPENCODE_CONFIG_FILENAME} untouched because its "${key}" section is not shaped the way a step limit can be merged into. The OpenCode step limit is not applied for this run.`
     report(reason)
     return { applied: false, reason }
   }

@@ -1,4 +1,4 @@
-import { describe, it, expect } from 'vitest'
+import { afterEach, describe, it, expect } from 'vitest'
 import { EventEmitter, once } from 'node:events'
 import { createServer } from 'node:http'
 import {
@@ -8,16 +8,30 @@ import {
   probeOpenCode,
   type ProcessTermination,
 } from '../server/opencode/supervisor'
+import { invalidateOpenCodeConnection } from '../server/opencode/connection'
+
+const originalAuthEnv = {
+  OPENCODE_PASSWORD: process.env.OPENCODE_PASSWORD,
+  OPENCODE_SERVER_PASSWORD: process.env.OPENCODE_SERVER_PASSWORD,
+}
+
+afterEach(() => {
+  for (const [key, value] of Object.entries(originalAuthEnv)) {
+    if (value === undefined) delete process.env[key]
+    else process.env[key] = value
+  }
+  invalidateOpenCodeConnection()
+})
 
 it('accepts a direct health response without ever contacting a redirect target', async () => {
   let redirect = false
   const requests: string[] = []
   const server = createServer((req, res) => {
     requests.push(req.url ?? '')
-    if (redirect && req.url === '/config') {
+    if (redirect && req.url === '/api/info') {
       res.writeHead(302, { Location: '/redirect-target' }).end()
     } else {
-      res.writeHead(200).end('{}')
+      res.writeHead(200, { 'Content-Type': 'application/json' }).end(JSON.stringify({ version: '2.0.15', pid: 812 }))
     }
   })
   server.listen(0, '127.0.0.1')
@@ -29,7 +43,7 @@ it('accepts a direct health response without ever contacting a redirect target',
     expect(await probeOpenCode(baseUrl)).toBe(true)
     redirect = true
     expect(await probeOpenCode(baseUrl)).toBe(false)
-    expect(requests).toEqual(['/config', '/config'])
+    expect(requests).toEqual(['/api/info', '/api/info'])
   } finally {
     await new Promise<void>((resolve, reject) => server.close((error) => error ? reject(error) : resolve()))
   }
@@ -314,7 +328,7 @@ describe('OpenCode supervision', () => {
     await expect(supervisor.start()).rejects.toBeInstanceOf(OpenCodeMissingError)
   })
 
-  it('prints full DEBUG output only when the all-log mode is requested', async () => {
+  it('requests console log output only when the all-log mode is requested', async () => {
     const baseUrl = makeBaseUrl()
     const child = makeChild()
     let spawned = false
@@ -346,13 +360,59 @@ describe('OpenCode supervision', () => {
       OPENCODE_BIN,
       'serve',
       '--print-logs',
-      '--log-level',
-      'DEBUG',
       '--hostname',
       '127.0.0.1',
       '--port',
       new URL(baseUrl).port,
     ])
+  })
+
+  it('does not restart OpenCode after stop returns during old-child cleanup', async () => {
+    const baseUrl = makeBaseUrl()
+    const firstChild = makeChild()
+    let spawned = 0
+    let enterFirstForce!: () => void
+    let releaseFirstForce!: () => void
+    const firstForceStarted = new Promise<void>((resolve) => { enterFirstForce = resolve })
+    const firstForceGate = new Promise<void>((resolve) => { releaseFirstForce = resolve })
+    const exited = new Set<number>()
+    let forceCalls = 0
+    const termination: ProcessTermination = {
+      request: () => false,
+      force: async (pid) => {
+        forceCalls += 1
+        if (forceCalls === 1) {
+          enterFirstForce()
+          await firstForceGate
+        } else {
+          exited.add(pid)
+        }
+      },
+      hasExited: (pid) => exited.has(pid),
+    }
+    const supervisor = new OpenCodeSupervisor({
+      baseUrl,
+      resolveProgram: () => OPENCODE_BIN,
+      spawnProcess: (() => {
+        spawned += 1
+        return firstChild as never
+      }) as never,
+      probe: async () => spawned > 0,
+      termination,
+      restartBackoffMs: 0,
+      exitBudgets: { gracefulMs: 0, forceMs: 0 },
+    })
+
+    await supervisor.start()
+    firstChild.emit('exit', 1)
+    await firstForceStarted
+
+    await expect(supervisor.stop()).resolves.toBe(true)
+    releaseFirstForce()
+    await new Promise<void>((resolve) => setImmediate(resolve))
+
+    expect(spawned).toBe(1)
+    expect(supervisor.ownedProcess).toBeNull()
   })
 
   it('fails loudly when the binary is missing', async () => {

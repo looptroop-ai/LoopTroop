@@ -41,4 +41,21 @@ describe('EffortPicker', () => {
     expect(onChange).toHaveBeenNthCalledWith(1, 'low')
     expect(onChange).toHaveBeenNthCalledWith(2, undefined)
   })
+
+  it('keeps variants with provider-specific ids available', () => {
+    const onChange = vi.fn()
+    render(
+      <TooltipProvider>
+        <EffortPicker
+          variants={{ 'reasoning-balanced': { settings: { reasoningEffort: 'balanced' } } }}
+          value={undefined}
+          onChange={onChange}
+        />
+      </TooltipProvider>,
+    )
+
+    fireEvent.click(screen.getByRole('button', { name: /reasoning-balanced/ }))
+
+    expect(onChange).toHaveBeenCalledWith('reasoning-balanced')
+  })
 })

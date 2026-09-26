@@ -364,6 +364,17 @@ function isPromptTransportFailure(error: unknown): boolean {
     error.message.startsWith('Failed to prompt OpenCode session')
 }
 
+function isUnverifiedPromptDispatchError(error: unknown): error is Error & {
+  blockedErrorDiagnostics?: unknown
+  blockedErrorCodes?: string[]
+  openCodePromptReceiptUnavailable?: true
+} {
+  return error instanceof Error && (
+    error.name === 'OpenCodePromptReceiptUnavailableError'
+    || (error as Error & { openCodePromptReceiptUnavailable?: true }).openCodePromptReceiptUnavailable === true
+  )
+}
+
 function isOpenCodeRetryProgressEvent(event: StreamEvent): boolean {
   switch (event.type) {
     case 'session_status':
@@ -821,7 +832,7 @@ export async function runOpenCodeSessionPrompt({
       throw buildDeadlineTimeoutError(deadlineScope, timeoutMs, sessionOwnership)
     }
   } catch (error) {
-    if (openCodeRetryError) {
+    if (openCodeRetryError && !isUnverifiedPromptDispatchError(error)) {
       const preserveForContinuation = shouldPreserveSessionForContinuation({
         error: openCodeRetryError,
         sessionId: resolvedSession.id,
@@ -843,7 +854,15 @@ export async function runOpenCodeSessionPrompt({
       const timeoutError = deadlineScope === 'workflow' || !(error instanceof Error && error.message === TIMEOUT_ERROR_MESSAGE)
         ? buildDeadlineTimeoutError(deadlineScope, timeoutMs, sessionOwnership)
         : error
-      const preserveForContinuation = !isWorkflowDeadlineTimeoutError(timeoutError) && shouldPreserveSessionForContinuation({
+      const unverifiedDispatch = isUnverifiedPromptDispatchError(error)
+      if (unverifiedDispatch && timeoutError instanceof Error) {
+        Object.assign(timeoutError, {
+          blockedErrorDiagnostics: error.blockedErrorDiagnostics,
+          blockedErrorCodes: error.blockedErrorCodes ?? [],
+          openCodePromptReceiptUnavailable: true,
+        })
+      }
+      const preserveForContinuation = !unverifiedDispatch && !isWorkflowDeadlineTimeoutError(timeoutError) && shouldPreserveSessionForContinuation({
         error: timeoutError,
         sessionId: resolvedSession.id,
         modelId: model,

@@ -4,7 +4,7 @@ import { ChevronDown, Search, Zap, Eye, Wrench, Brain, AlertCircle, Loader2 } fr
 import { cn } from '@/lib/utils'
 import { DROPDOWN_MAX_HEIGHT, DROPDOWN_OFFSET, DROPDOWN_PADDING, DROPDOWN_FOCUS_DELAY_MS, DROPDOWN_Z_INDEX } from '@/lib/constants'
 import { PORTAL_ATTRIBUTE, PORTAL_SELECTOR } from '@/lib/overlays'
-import { useOpenCodeModels, useAllOpenCodeModels } from '@/hooks/useOpenCodeModels'
+import { useOpenCodeModelCatalog, useOpenCodeModels, useAllOpenCodeModels } from '@/hooks/useOpenCodeModels'
 import type { OpenCodeModel } from '@/hooks/useOpenCodeModels'
 
 interface ModelPickerProps {
@@ -16,12 +16,38 @@ interface ModelPickerProps {
   disabledValues?: string[]
 }
 
-function costLabel(input: number): { label: string; color: string } {
+function singleCostLabel(input: number): { label: string; color: string } {
   if (input === 0) return { label: 'Free', color: 'text-emerald-700 dark:text-emerald-300 bg-emerald-50 dark:bg-emerald-950/60' }
   if (input < 0.5) return { label: 'Cheap', color: 'text-green-700 dark:text-green-300 bg-green-50 dark:bg-green-950/60' }
   if (input < 2) return { label: '$', color: 'text-amber-800 dark:text-amber-300 bg-yellow-50 dark:bg-amber-950/60' }
   if (input < 8) return { label: '$$', color: 'text-orange-800 dark:text-orange-300 bg-orange-50 dark:bg-orange-950/60' }
   return { label: '$$$', color: 'text-red-800 dark:text-red-300 bg-red-50 dark:bg-red-950/60' }
+}
+
+function isFreeModel(model: OpenCodeModel): boolean {
+  if (model.costTiers?.length) {
+    return model.costTiers.every((tier) =>
+      tier.input === 0 && tier.output === 0 && (tier.cacheRead ?? 0) === 0 && (tier.cacheWrite ?? 0) === 0,
+    )
+  }
+  return model.costInput === 0 && model.costOutput === 0
+}
+
+function costLabel(model: OpenCodeModel): { label: string; color: string } | null {
+  if (isFreeModel(model)) return singleCostLabel(0)
+  const prices = model.costTiers?.length
+    ? model.costTiers.map((tier) => Math.max(tier.input, tier.output, tier.cacheRead ?? 0, tier.cacheWrite ?? 0))
+    : [model.costInput, model.costOutput].filter((price): price is number => price !== null)
+  const paidPrices = prices.filter((price) => price > 0)
+  if (paidPrices.length === 0) return null
+  const min = Math.min(...paidPrices)
+  const max = Math.max(...paidPrices)
+  const lower = singleCostLabel(min)
+  const upper = singleCostLabel(max)
+  return {
+    label: lower.label === upper.label ? lower.label : `${lower.label}–${upper.label}`,
+    color: upper.color,
+  }
 }
 
 function ctxLabel(ctx: number): string {
@@ -37,6 +63,18 @@ function getModelQueryErrorCopy(error: unknown): { trigger: string; detail: stri
     return {
       trigger: 'OpenCode not reachable',
       detail: 'LoopTroop could not reach OpenCode. It starts automatically with npm run dev, so check that the OpenCode process launched successfully.',
+    }
+  }
+  if (message.includes('rejected the configured credentials')) {
+    return {
+      trigger: 'OpenCode credentials rejected',
+      detail: 'Check OPENCODE_PASSWORD for v2 or OPENCODE_SERVER_PASSWORD and OPENCODE_SERVER_USERNAME for v1, then restart OpenCode.',
+    }
+  }
+  if (message.includes('active work') || message.includes('unanswered requests')) {
+    return {
+      trigger: 'OpenCode is busy',
+      detail: 'Wait for OpenCode prompts and questions to finish, then retry refreshing models.',
     }
   }
   if (message.includes('model discovery failed') || message.includes('catalog')) {
@@ -59,7 +97,7 @@ function ModelRow({ model, selected, disabled, onSelect, id, active }: {
   id: string
   active: boolean | undefined
 }) {
-  const cost = costLabel(model.costInput)
+  const cost = costLabel(model)
   const showFullId = model.name !== model.fullId
   return (
     <button
@@ -98,9 +136,11 @@ function ModelRow({ model, selected, disabled, onSelect, id, active }: {
           )}
         </div>
         <div className="flex items-center gap-1.5 mt-0.5 flex-wrap">
-          <span className={cn('text-[10px] font-medium px-1.5 py-0.5 rounded-full', cost.color)}>
-            {cost.label}
-          </span>
+          {cost && (
+            <span className={cn('text-[10px] font-medium px-1.5 py-0.5 rounded-full', cost.color)}>
+              {cost.label}
+            </span>
+          )}
           {model.contextWindow > 0 && (
             <span className="text-[10px] text-muted-foreground font-mono">
               {ctxLabel(model.contextWindow)} ctx
@@ -136,18 +176,21 @@ export function ModelPicker({ id, label, value, onChange, placeholder = 'Search 
     error: connectedError,
     isFetching: fetchingConnected,
   } = useOpenCodeModels()
+  const { data: catalog } = useOpenCodeModelCatalog()
+  const supportsAllModels = catalog?.catalogScope === 'connected' || catalog?.catalogScope === 'all'
   const {
     data: allModels,
     isLoading: loadingAll,
     isError: hasAllError,
     error: allError,
     isFetching: fetchingAll,
-  } = useAllOpenCodeModels(isShowingAll)
-  const models = isShowingAll ? allModels : connectedModels
-  const isLoading = isShowingAll ? loadingAll : loadingConnected
-  const isError = isShowingAll ? hasAllError : hasConnectedError
-  const isFetching = isShowingAll ? fetchingAll : fetchingConnected
-  const activeError = isShowingAll ? allError : connectedError
+  } = useAllOpenCodeModels(isShowingAll && supportsAllModels)
+  const showingAll = isShowingAll && supportsAllModels
+  const models = showingAll ? allModels : connectedModels
+  const isLoading = showingAll ? loadingAll : loadingConnected
+  const isError = showingAll ? hasAllError : hasConnectedError
+  const isFetching = showingAll ? fetchingAll : fetchingConnected
+  const activeError = showingAll ? allError : connectedError
   const errorCopy = useMemo(() => getModelQueryErrorCopy(activeError), [activeError])
   const [isOpen, setIsOpen] = useState(false)
   // Names this picker to the list it portals away; see `PORTAL_ATTRIBUTE`.
@@ -257,7 +300,7 @@ export function ModelPicker({ id, label, value, onChange, placeholder = 'Search 
     if (!models) return []
     let result = models
     if (isShowingOnlyFree) {
-      result = result.filter(m => m.costInput === 0)
+      result = result.filter(isFreeModel)
     }
     const q = query.trim().toLowerCase()
     if (!q) return result
@@ -523,18 +566,19 @@ export function ModelPicker({ id, label, value, onChange, placeholder = 'Search 
             </div>
           </div>
 
-          {/* Show all providers toggle */}
-          <label className="flex items-center gap-2 px-3 py-2 border-t border-border/40 cursor-pointer shrink-0">
-            <input
-              type="checkbox"
-              checked={isShowingAll}
-              onChange={e => setIsShowingAll(e.target.checked)}
-              className="rounded border-input"
-            />
-            <span className="text-xs text-muted-foreground">
-              Show all providers {allModels ? `(${allModels.length} models)` : ''} — currently showing {connectedModels?.length ?? 0} connected
-            </span>
-          </label>
+          {supportsAllModels && (
+            <label className="flex items-center gap-2 px-3 py-2 border-t border-border/40 cursor-pointer shrink-0">
+              <input
+                type="checkbox"
+                checked={isShowingAll}
+                onChange={e => setIsShowingAll(e.target.checked)}
+                className="rounded border-input"
+              />
+              <span className="text-xs text-muted-foreground">
+                Show all providers {allModels ? `(${allModels.length} models)` : ''} — currently showing {connectedModels?.length ?? 0} connected
+              </span>
+            </label>
+          )}
         </div>,
         document.body
       )}

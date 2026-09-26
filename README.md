@@ -90,9 +90,18 @@ their own live child through the retained process handle, even when the
 start-time probe is unavailable. Log follow watches the containing directory
 so rename-and-create rotation resumes at the start of the replacement file.
 
-Then configure your settings and models (from providers already added in
-OpenCode), attach a local repository with a GitHub origin, create a ticket, and
-start it.
+If the daemon crashes while its managed OpenCode child is still running, the
+next `start` checks the retained owned-server record before probing or adopting
+OpenCode. When the child identity is verified, run `looptroop stop` and then
+retry `looptroop start`. An unverifiable live identity keeps startup blocked;
+if the recorded OpenCode child is confirmed dead or its PID now belongs to
+another process, startup can proceed. A stored PID alone never authorizes a
+signal.
+
+Configure a provider in OpenCode, then choose an available model in LoopTroop's
+Configuration screen. LoopTroop detects OpenCode v1 or v2 from the authenticated
+server API; it supports both without requiring a major-version change. Attach a
+local repository with a GitHub origin, create a ticket, and start it.
 
 If LoopTroop cannot confirm that an OpenCode session stopped remotely, it keeps
 the ticket retryable and leaves the ownership visible. The durable session-
@@ -303,9 +312,9 @@ a container.
   ticket. Installed for you via Homebrew, Scoop, Chocolatey, WinGet and the AUR;
   **not** installed if you used npm, bun, pnpm, Yarn or the standalone
   executable, which have no way to declare a dependency.
-- **OpenCode**, with at least one configured model provider. LoopTroop will start
-  it if it is already installed, but it will not work without it and it will not
-  install it for you.
+- **OpenCode**, with a configured provider and available model. LoopTroop starts
+  the installed CLI when no server is already reachable, and detects v1 or v2
+  automatically. It does not install OpenCode for you.
 - On Linux user namespaces, a tool whose owner is the kernel's unmapped
   overflow UID is refused by default, including in a canonical OpenCode
   directory. If you deliberately keep tools in such a directory, set
@@ -522,11 +531,15 @@ replay write before releasing its slot. Manual QA action IDs use letters,
 numbers, `.`, `_`, `:` and `-`, start with a letter or number, and are
 limited to 160 characters.
 
-Project commands, Git and hook commands, managed or development OpenCode
-launches, and `doctor` probes remove `LOOPTROOP_API_TOKEN` and
-`LOOPTROOP_DEV_EVENT_TOKEN` from the child environment after all intended
-overrides are merged. Provider and Git credentials stay available where their
-caller needs them, and the trusted CLI handoff keeps its configured daemon
+Project commands, Git and hook commands, tool subprocesses, and `doctor`
+probes remove `LOOPTROOP_API_TOKEN`, `LOOPTROOP_DEV_EVENT_TOKEN`,
+`OPENCODE_PASSWORD`, and `OPENCODE_SERVER_PASSWORD` after their explicit
+environment overrides are merged. The backend retains the OpenCode password
+aliases for authenticated requests, and a managed OpenCode server receives the
+configured aliases it needs. The development web process keeps
+`LOOPTROOP_API_TOKEN` for the Vite proxy but does not receive the OpenCode
+passwords. Provider and Git credentials stay available where their caller
+needs them, and the trusted CLI handoff keeps its configured daemon
 environment. This filtering controls credential propagation; it is not a
 process sandbox. `LOOPTROOP_API_TOKEN` authorizes the wider bind; it is not the
 live API or browser-session token minted by the daemon and recorded in

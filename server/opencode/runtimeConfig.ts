@@ -1,5 +1,6 @@
 import { DEFAULT_OPENCODE_BASE_URL } from '../../shared/appConfig'
 import type { ResolvedSettings } from '../lib/appSettings'
+import { invalidateOpenCodeConnection } from './connection'
 
 /**
  * OpenCode settings for this process, once a host has resolved them.
@@ -26,11 +27,13 @@ let configured: { baseUrl: string; mock: boolean } | null = null
  * land on an adapter that already has its client.
  */
 export function configureOpenCodeRuntime(settings: Pick<ResolvedSettings, 'opencodeBaseUrl' | 'opencodeMode'>): void {
+  invalidateOpenCodeConnection()
   configured = { baseUrl: settings.opencodeBaseUrl, mock: settings.opencodeMode === 'mock' }
 }
 
 /** Drops the resolved config so a second runtime in-process starts clean. */
 export function resetOpenCodeRuntimeConfig(): void {
+  invalidateOpenCodeConnection()
   configured = null
 }
 

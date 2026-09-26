@@ -16,6 +16,7 @@ import {
   readDailyMaintenanceState,
   recordDailyMaintenanceSuccess,
   remediateAudit,
+  shouldRecordOpenCodeMaintenanceSuccess,
   syncDirectDependencies,
   upgradeOpenCodeCli,
   writeDailyMaintenanceState,
@@ -428,10 +429,13 @@ const opencodeReport = shouldSkipOpenCodeUpgrade
 for (const error of opencodeReport.errors) {
   console.error(`[dev-preflight] ${error}`)
 }
+if (opencodeReport.deferredReason) {
+  console.warn(`[dev-preflight] ${opencodeReport.deferredReason}`)
+}
 if (opencodeReport.errors.length > 0) {
   process.exit(1)
 }
-if (!shouldSkipOpenCodeUpgrade && opencodeDecision.shouldRun && opencodeReport.errors.length === 0 && opencodeReport.available) {
+if (!shouldSkipOpenCodeUpgrade && opencodeDecision.shouldRun && shouldRecordOpenCodeMaintenanceSuccess(opencodeReport)) {
   recordDailyMaintenanceSuccess(maintenanceState, 'opencode')
 }
 

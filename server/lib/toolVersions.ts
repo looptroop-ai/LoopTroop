@@ -28,7 +28,6 @@ const REQUEST_TIMEOUT_MS = 3_000
 const SOURCES = {
   node: 'https://registry.npmjs.org/node/latest',
   npm: 'https://registry.npmjs.org/npm/latest',
-  opencode: 'https://registry.npmjs.org/opencode-ai/latest',
   /** `gh` publishes GitHub releases, so the newest one is the answer. */
   gh: 'https://api.github.com/repos/cli/cli/releases/latest',
   /**
@@ -39,7 +38,9 @@ const SOURCES = {
   git: 'https://api.github.com/repos/git/git/tags?per_page=100',
 } as const
 
-export type ToolName = keyof typeof SOURCES
+const TOOL_NAMES = ['node', 'npm', 'opencode', 'gh', 'git'] as const
+
+export type ToolName = typeof TOOL_NAMES[number]
 
 export type LatestToolVersions = Record<ToolName, string | null>
 
@@ -63,6 +64,7 @@ function newestStableTag(tags: unknown): string | null {
 
 interface ToolCache {
   lastAttemptAt: string
+  opencodeSource?: string | null
   versions?: Partial<LatestToolVersions>
 }
 
@@ -81,11 +83,14 @@ function readCache(configDir?: string): ToolCache | null {
     if (typeof candidate.lastAttemptAt !== 'string') return null
 
     const versions: Partial<LatestToolVersions> = {}
-    for (const name of Object.keys(SOURCES) as ToolName[]) {
+    for (const name of TOOL_NAMES) {
       const value = candidate.versions?.[name]
       if (typeof value === 'string' && value !== '') versions[name] = value
     }
-    return { lastAttemptAt: candidate.lastAttemptAt, versions }
+    const opencodeSource = typeof candidate.opencodeSource === 'string' || candidate.opencodeSource === null
+      ? candidate.opencodeSource
+      : undefined
+    return { lastAttemptAt: candidate.lastAttemptAt, opencodeSource, versions }
   } catch {
     return null
   }
@@ -136,6 +141,14 @@ export interface LatestToolVersionOptions {
   configDir?: string
   fetchImpl?: typeof globalThis.fetch
   now?: () => number
+  opencodeVersion?: string
+}
+
+function opencodeSourceFor(version?: string): string | null {
+  const major = /^v?(\d+)\./.exec(version?.trim() ?? '')?.[1]
+  if (major === '1') return 'https://registry.npmjs.org/opencode-ai/latest'
+  if (major === '2') return 'https://registry.npmjs.org/@opencode/cli/latest'
+  return null
 }
 
 /** Never rejects, and never takes longer than one request timeout. */
@@ -146,14 +159,21 @@ export async function getLatestToolVersions(
   const fetchImpl = options.fetchImpl ?? globalThis.fetch
   const cached = readCache(options.configDir)
   const known: LatestToolVersions = { ...EMPTY, ...cached?.versions }
+  const opencodeSource = opencodeSourceFor(options.opencodeVersion)
+  const cacheMatchesSource = cached?.opencodeSource === opencodeSource
+  if (!cacheMatchesSource) known.opencode = null
 
-  const lastAttempt = cached ? Date.parse(cached.lastAttemptAt) : Number.NaN
+  const lastAttempt = cached && cacheMatchesSource ? Date.parse(cached.lastAttemptAt) : Number.NaN
   if (Number.isFinite(lastAttempt) && now - lastAttempt <= TOOL_CHECK_INTERVAL_MS) return known
 
-  const names = Object.keys(SOURCES) as ToolName[]
+  const names = TOOL_NAMES.filter((name) => name !== 'opencode' || opencodeSource !== null)
   // In parallel: independent endpoints, and one being slow should not add its
   // timeout to the others.
-  const results = await Promise.all(names.map((name) => fetchVersion(name, SOURCES[name], fetchImpl)))
+  const results = await Promise.all(names.map((name) => fetchVersion(
+    name,
+    name === 'opencode' ? opencodeSource! : SOURCES[name],
+    fetchImpl,
+  )))
 
   const versions: LatestToolVersions = { ...known }
   names.forEach((name, index) => {
@@ -163,6 +183,6 @@ export async function getLatestToolVersions(
     if (fetched !== null && fetched !== undefined) versions[name] = fetched
   })
 
-  writeCache({ lastAttemptAt: new Date(now).toISOString(), versions }, options.configDir)
+  writeCache({ lastAttemptAt: new Date(now).toISOString(), opencodeSource, versions }, options.configDir)
   return versions
 }

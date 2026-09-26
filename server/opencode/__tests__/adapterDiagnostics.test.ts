@@ -1,5 +1,7 @@
 import { describe, expect, it } from 'vitest'
 import { OpenCodeSDKAdapter } from '../adapter'
+import { OpenCodeV1Transport } from '../v1Transport'
+import { OpenCodeConnectionError } from '../connection'
 import type { GenericMessagePart, StreamEvent } from '../types'
 
 interface AdapterInternals {
@@ -16,10 +18,25 @@ interface AdapterInternals {
 }
 
 function createAdapterInternals(): AdapterInternals {
-  return new OpenCodeSDKAdapter('http://localhost:4096', {} as never) as unknown as AdapterInternals
+  return new OpenCodeV1Transport('http://localhost:4096', {} as never) as unknown as AdapterInternals
 }
 
 describe.concurrent('OpenCode diagnostic event mapping', () => {
+  it.each(['authentication', 'unsupported_protocol', 'network'] as const)(
+    'preserves connection failure category %s for health consumers',
+    async (failureKind) => {
+      const adapter = new OpenCodeSDKAdapter('http://127.0.0.1:4096', undefined, async () => {
+        throw new OpenCodeConnectionError(failureKind, 'probe failed')
+      })
+
+      await expect(adapter.checkHealth()).resolves.toMatchObject({
+        available: false,
+        failureKind,
+        error: 'probe failed',
+      })
+    },
+  )
+
   it('ignores a tool part that arrives before OpenCode supplies its state', () => {
     const event = createAdapterInternals().mapPartUpdate({
       id: 'part-pending',

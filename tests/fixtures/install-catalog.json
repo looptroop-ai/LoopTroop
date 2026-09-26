@@ -30,7 +30,7 @@
         {
           "os": "windows-latest",
           "tier": "release",
-          "opencode": "npm"
+          "opencode": "npm-v1"
         }
       ]
     },
@@ -79,7 +79,7 @@
         {
           "os": "windows-latest",
           "tier": "release",
-          "opencode": "npm"
+          "opencode": "npm-v1"
         }
       ]
     },
@@ -150,7 +150,7 @@
         {
           "os": "windows-latest",
           "tier": "release",
-          "opencode": "npm"
+          "opencode": "npm-v1"
         }
       ]
     },
@@ -175,7 +175,7 @@
         {
           "os": "windows-latest",
           "tier": "weekly",
-          "opencode": "npm"
+          "opencode": "npm-v1"
         }
       ]
     },
@@ -200,7 +200,7 @@
         {
           "os": "windows-latest",
           "tier": "weekly",
-          "opencode": "npm"
+          "opencode": "npm-v1"
         }
       ]
     },
@@ -310,7 +310,7 @@
         {
           "os": "windows-latest",
           "tier": "weekly",
-          "opencode": "npm"
+          "opencode": "npm-v1"
         }
       ]
     },
@@ -362,7 +362,7 @@
         {
           "os": "windows-latest",
           "tier": "weekly",
-          "opencode": "npm"
+          "opencode": "npm-v1"
         }
       ]
     }

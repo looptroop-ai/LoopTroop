@@ -1,16 +1,19 @@
 import { spawn, type ChildProcess } from 'node:child_process'
+import { randomBytes } from 'node:crypto'
 import { setTimeout as delay } from 'node:timers/promises'
 import { isProcessAlive, killProcessTree } from '../cli/processControl'
 import { planProgramLaunch, resolveTrustedExecutable } from '../lib/executablePath'
-import { createChildEnvironment } from '../lib/childEnvironment'
+import { createOpenCodeServerEnvironment } from '../lib/childEnvironment'
+import { getOpenCodeServeLogArgs } from '../lib/opencodeServeLogArgs'
 import { matchProcess, readProcessStartToken } from '../lib/processIdentity'
 import { captureProcessGroup, hasCapturedProcessGroupMember, refreshProcessGroup, terminateProcessTree, type ProcessGroupSnapshot } from '../lib/processTree'
 import { getErrorMessage } from '@shared/typeGuards'
+import { hasOpenCodePassword, withOpenCodePasswordAliases } from '../../shared/opencodeAuth'
+import { probeOpenCodeConnection, invalidateOpenCodeConnection, OpenCodeConnectionError } from './connection'
 
 /** Attempts after a crash before the daemon stops trying and reports degraded. */
 export const MAX_RESTART_ATTEMPTS = 3
 
-const HEALTH_TIMEOUT_MS = 2_000
 const READY_TIMEOUT_MS = 30_000
 
 /** Backoff between restart attempts, multiplied by the attempt number. */
@@ -301,8 +304,8 @@ export interface OpenCodeSupervisorOptions {
 
 export async function probeOpenCode(baseUrl: string): Promise<boolean> {
   try {
-    const response = await fetch(`${baseUrl}/config`, { redirect: 'error', signal: AbortSignal.timeout(HEALTH_TIMEOUT_MS) })
-    return response.ok
+    await probeOpenCodeConnection(baseUrl)
+    return true
   } catch {
     return false
   }
@@ -342,8 +345,18 @@ export class OpenCodeSupervisor {
     return { pid: this.child.pid, startToken: this.child.startToken }
   }
 
-  private get probe(): (baseUrl: string) => Promise<boolean> {
-    return this.options.probe ?? probeOpenCode
+  private async probeState(): Promise<'ready' | 'absent' | 'starting'> {
+    if (this.options.probe) return await this.options.probe(this.options.baseUrl) ? 'ready' : 'absent'
+    try {
+      await probeOpenCodeConnection(this.options.baseUrl)
+      return 'ready'
+    } catch (error) {
+      if (error instanceof OpenCodeConnectionError && error.failureKind === 'network') {
+        if (error.canStartManagedServer) return 'absent'
+        if (error.status !== undefined) return 'starting'
+      }
+      throw error
+    }
   }
 
   /**
@@ -368,7 +381,18 @@ export class OpenCodeSupervisor {
       return this.status
     }
 
-    if (await this.probe(this.options.baseUrl)) {
+    invalidateOpenCodeConnection(this.options.baseUrl)
+    const initial = await this.probeState()
+    if (initial === 'ready') {
+      this.status = { kind: 'adopted', baseUrl: this.options.baseUrl }
+      this.startReported = true
+      return this.status
+    }
+
+    // An HTTP response proves another process owns the address. Give a server
+    // that is still booting time to become healthy; never launch over it.
+    if (initial === 'starting') {
+      await this.waitForHealth()
       this.status = { kind: 'adopted', baseUrl: this.options.baseUrl }
       this.startReported = true
       return this.status
@@ -380,6 +404,7 @@ export class OpenCodeSupervisor {
   }
 
   private async spawnAndWait(): Promise<OpenCodeStatus> {
+    invalidateOpenCodeConnection(this.options.baseUrl)
     // A failed launch keeps its handle until termination is confirmed. Do not
     // overwrite that ownership with a restart attempt while the old process
     // may still hold the port.
@@ -389,6 +414,7 @@ export class OpenCodeSupervisor {
         throw new Error(`OpenCode process ${previous.pid} is still running at ${this.options.baseUrl}.`)
       }
       if (this.child?.process === previous.process) this.child = null
+      if (this.stopping) return this.status
     }
 
     const url = new URL(this.options.baseUrl)
@@ -405,9 +431,10 @@ export class OpenCodeSupervisor {
     }
     const spawnProcess = this.options.spawnProcess ?? spawn
 
-    const logArgs = this.options.printLogs ? ['--print-logs', '--log-level', 'DEBUG'] : []
+    this.ensureManagedAuthentication()
+    const childEnvironment = createOpenCodeServerEnvironment(process.env)
+
     const serveHost = host.startsWith('[') ? host.slice(1, -1) : host
-    const argv = ['serve', ...logArgs, '--hostname', serveHost, '--port', port]
 
     // Resolved rather than left to `PATH`. The resolver applies PATHEXT itself,
     // which is what the Windows shell used to be here for: `opencode` is only
@@ -437,16 +464,21 @@ export class OpenCodeSupervisor {
     // LoopTroop uses. On any other platform, and for a real `.exe`, it is a
     // direct spawn. The test seam answers for cmd.exe as well as for OpenCode.
     const seam = this.options.resolveProgram
-    const launch = planProgramLaunch(program, argv, seam === undefined ? {} : {
+    const planLaunch = (args: string[]) => planProgramLaunch(program, args, seam === undefined ? {} : {
       resolveInterpreter: () => {
         const interpreter = seam('cmd.exe')
         return interpreter === null ? { reason: 'cmd.exe was not found.' } : { path: interpreter }
       },
     })
+    const logArgs = this.options.printLogs
+      ? getOpenCodeServeLogArgs('all', planLaunch(['serve', '--help']), childEnvironment)
+      : []
+    const argv = ['serve', ...logArgs, '--hostname', serveHost, '--port', port]
+    const launch = planLaunch(argv)
     if (launch.reason !== undefined) throw new OpenCodeMissingError(this.options.baseUrl, launch.reason)
     const child = spawnProcess(launch.file, launch.args, {
       stdio: ['ignore', 'inherit', 'inherit'],
-      env: createChildEnvironment(process.env),
+      env: childEnvironment,
       // Its own group, so terminating the daemon can take the whole tree down
       // rather than orphaning children of OpenCode.
       detached: process.platform !== 'win32',
@@ -525,10 +557,23 @@ export class OpenCodeSupervisor {
     const timeout = this.options.readyTimeoutMs ?? READY_TIMEOUT_MS
     const deadline = Date.now() + timeout
     while (Date.now() < deadline) {
-      if (await this.probe(this.options.baseUrl)) return
+      try {
+        if (await this.probeState() === 'ready') return
+      } catch (error) {
+        if (!(error instanceof OpenCodeConnectionError) || error.failureKind !== 'network') throw error
+      }
       await delay(250)
     }
     throw new Error(`OpenCode did not become reachable at ${this.options.baseUrl} within ${timeout / 1000}s.`)
+  }
+
+  private ensureManagedAuthentication(): void {
+    withOpenCodePasswordAliases(process.env)
+    if (!hasOpenCodePassword(process.env)) {
+      const password = randomBytes(32).toString('base64url')
+      process.env.OPENCODE_PASSWORD = password
+      process.env.OPENCODE_SERVER_PASSWORD = password
+    }
   }
 
   /**
@@ -561,7 +606,9 @@ export class OpenCodeSupervisor {
         // Through setStatus, because a restart lands on a new pid: the daemon's
         // record still names the process that just died, which is the one thing
         // `clean` must not go looking for later.
-        this.setStatus(await this.spawnAndWait())
+        const status = await this.spawnAndWait()
+        if (this.stopping) return
+        this.setStatus(status)
         return
       } catch (error) {
         // Reported after every attempt, not only the last: a daemon that spends

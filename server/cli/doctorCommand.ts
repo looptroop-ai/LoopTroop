@@ -9,6 +9,7 @@ import { getLatestToolVersions } from '../lib/toolVersions'
 import { isDevStackRunning } from '../lib/devStack'
 import { probePort } from '../lib/portProbe'
 import { daemonOrigin, readDaemonStartFailure, type DaemonState } from '../lib/daemonPaths'
+import { OpenCodeConnectionError, probeOpenCodeConnection, type OpenCodeFailureKind } from '../opencode/connection'
 import type { SchemaCompatibility } from '../db/schemaVersion'
 import { readRunningDaemon } from './commands'
 import { getErrorMessage } from '@shared/typeGuards'
@@ -385,9 +386,15 @@ function checkConfigDir(): Check {
 
 /** What asking the OpenCode server for its config established. */
 export type OpenCodeReachability =
-  | { kind: 'ok' }
-  | { kind: 'unreachable' }
-  | { kind: 'responded'; status: number }
+  | { kind: 'ok'; protocol?: 'v1' | 'v2'; version?: string; url?: string }
+  | { kind: 'unreachable'; error?: string; url?: string }
+  | { kind: 'responded'; status: number; url?: string }
+  | {
+    kind: 'failed'
+    failureKind: OpenCodeFailureKind | 'model_discovery'
+    error: string
+    status?: number
+  }
 
 /**
  * Whether this machine can run a coding operation, from the three facts that
@@ -410,12 +417,33 @@ export function judgeOpenCode(
 ): Check {
   const { baseUrl } = context
   if (reachable.kind === 'ok') {
-    return { name: 'opencode', status: 'ok', detail: `reachable at ${baseUrl}` }
+    const protocol = reachable.protocol ? ` (${reachable.protocol}${reachable.version ? `, ${reachable.version}` : ''})` : ''
+    return { name: 'opencode', status: 'ok', detail: `reachable at ${reachable.url ?? baseUrl}${protocol}` }
   }
 
+  if (reachable.kind === 'failed') {
+    const details = reachable.error
+    const remedy = reachable.failureKind === 'authentication'
+      ? 'Check OPENCODE_PASSWORD for v2, or OPENCODE_SERVER_PASSWORD and OPENCODE_SERVER_USERNAME for v1.'
+      : reachable.failureKind === 'unsupported_protocol'
+        ? 'Point LOOPTROOP_OPENCODE_BASE_URL at an OpenCode v1 or v2 server.'
+        : reachable.failureKind === 'model_discovery'
+          ? 'Check the OpenCode provider and model configuration.'
+          : 'Check that the OpenCode server is ready and reachable at this address.'
+    return {
+      name: 'opencode',
+      status: 'fail',
+      detail: `${reachable.failureKind}: ${details}`,
+      remedy,
+    }
+  }
+
+  const target = reachable.kind === 'responded' || reachable.kind === 'unreachable'
+    ? reachable.url ?? baseUrl
+    : baseUrl
   const detail = reachable.kind === 'responded'
-    ? `responded ${reachable.status} at ${baseUrl}`
-    : `not reachable at ${baseUrl}`
+    ? `responded ${reachable.status} at ${target}`
+    : `${reachable.error ? `${reachable.error}; ` : ''}not reachable at ${target}`
 
   // A daemon that has an OpenCode record is one that needs a server; that it is
   // not answering means every operation LoopTroop exists to perform fails right
@@ -427,7 +455,7 @@ export function judgeOpenCode(
       name: 'opencode',
       status: 'fail',
       detail: gaveUp ? `${detail}; LoopTroop gave up on it: ${gaveUp}` : `${detail}, while LoopTroop is running`,
-      remedy: 'Run `looptroop restart`. If that does not fix it, run `opencode serve` yourself to see why.',
+      remedy: 'Run `looptroop restart` after checking the OpenCode server logs.',
     }
   }
 
@@ -439,6 +467,15 @@ export function judgeOpenCode(
       // refused before it binds a port, rather than launching a server.
       detail: `${detail}, and \`opencode\` cannot be launched`,
       remedy: 'Install it from https://opencode.ai, or point LOOPTROOP_OPENCODE_BASE_URL at a running server.',
+    }
+  }
+
+  if (reachable.kind === 'responded') {
+    return {
+      name: 'opencode',
+      status: 'warn',
+      detail: `${detail}; the address is occupied by a server that is still responding`,
+      remedy: "Check that server's readiness before starting LoopTroop.",
     }
   }
 
@@ -456,16 +493,74 @@ async function checkOpenCode(daemon: DaemonState | null, cliAvailable: boolean):
     return { name: 'opencode', status: 'ok', detail: 'mock mode' }
   }
 
-  const reachable = await probeOpenCodeConfig(settings.opencodeBaseUrl)
+  const reachable = daemon
+    ? await probeDaemonOpenCode(daemon)
+    : await probeOpenCodeConfig(settings.opencodeBaseUrl)
   return judgeOpenCode(reachable, { baseUrl: settings.opencodeBaseUrl, daemon, cliAvailable })
 }
 
 async function probeOpenCodeConfig(baseUrl: string): Promise<OpenCodeReachability> {
   try {
-    const response = await fetch(`${baseUrl}/config`, { redirect: 'error', signal: AbortSignal.timeout(2_000) })
-    return response.ok ? { kind: 'ok' } : { kind: 'responded', status: response.status }
-  } catch {
-    return { kind: 'unreachable' }
+    const connection = await probeOpenCodeConnection(baseUrl, AbortSignal.timeout(2_000))
+    return { kind: 'ok', protocol: connection.protocol, version: connection.version }
+  } catch (error) {
+    if (error instanceof OpenCodeConnectionError) {
+      if (error.failureKind === 'network' && error.status === undefined) {
+        return { kind: 'unreachable', error: error.message }
+      }
+      return {
+        kind: 'failed',
+        failureKind: error.failureKind,
+        error: error.message,
+        ...(error.status === undefined ? {} : { status: error.status }),
+      }
+    }
+    return { kind: 'unreachable', error: getErrorMessage(error) }
+  }
+}
+
+async function probeDaemonOpenCode(daemon: DaemonState): Promise<OpenCodeReachability> {
+  const url = `${daemonOrigin(daemon.host, daemon.port)}/api/health/opencode`
+  try {
+    const response = await fetch(url, {
+      redirect: 'manual',
+      headers: { Authorization: `Bearer ${daemon.apiToken}` },
+      signal: AbortSignal.timeout(2_000),
+    })
+    if (!response.ok) return { kind: 'responded', status: response.status, url }
+    const value: unknown = await response.json()
+    if (typeof value !== 'object' || value === null || Array.isArray(value)) {
+      return { kind: 'responded', status: response.status, url }
+    }
+    const health = value as Record<string, unknown>
+    const failureKind = health.failureKind
+    if (
+      failureKind === 'authentication'
+      || failureKind === 'unsupported_protocol'
+      || failureKind === 'network'
+      || failureKind === 'model_discovery'
+    ) {
+      return {
+        kind: 'failed',
+        failureKind,
+        error: typeof health.error === 'string' ? health.error : 'OpenCode health check failed.',
+      }
+    }
+    if (health.status === 'ok') {
+      return {
+        kind: 'ok',
+        ...(health.protocol === 'v1' || health.protocol === 'v2' ? { protocol: health.protocol } : {}),
+        ...(typeof health.version === 'string' ? { version: health.version } : {}),
+        ...(daemon.opencode?.baseUrl ? { url: daemon.opencode.baseUrl } : {}),
+      }
+    }
+    return {
+      kind: 'failed',
+      failureKind: 'network',
+      error: typeof health.error === 'string' ? health.error : 'OpenCode is unavailable.',
+    }
+  } catch (error) {
+    return { kind: 'unreachable', error: getErrorMessage(error), url }
   }
 }
 
@@ -487,18 +582,36 @@ export function isOpenCodeCliLaunchable(check: Check): boolean {
   return check.missing !== true
 }
 
-function checkOpenCodeVersion(latest: string | null = null): Check {
+type OpenCodeCliProbe =
+  | { kind: 'mock' }
+  | { kind: 'ok'; version: string }
+  | { kind: 'timed-out' }
+  | { kind: 'unavailable'; probe: Extract<ProbeResult, { kind: 'unavailable' }> }
+
+function probeOpenCodeCliVersion(): OpenCodeCliProbe {
   if (resolveSettings().opencodeMode === 'mock') {
-    return { name: 'opencode cli', status: 'ok', detail: 'not needed in mock mode' }
+    return { kind: 'mock' }
   }
 
   const probe = runProbe('opencode', ['--version'], PROBE_TIMEOUT_MS)
   if (probe.kind === 'ok') {
     const line = probe.output.trim().split('\n')[0] || 'present'
     const found = versionIn(line) ?? line
-    return { name: 'opencode cli', status: 'ok', detail: withLatest(found, latest) }
+    return { kind: 'ok', version: found }
   }
 
+  if (probe.kind === 'timed-out') {
+    return { kind: 'timed-out' }
+  }
+
+  return { kind: 'unavailable', probe }
+}
+
+function checkOpenCodeVersion(probe: OpenCodeCliProbe, latest: string | null = null): Check {
+  if (probe.kind === 'mock') return { name: 'opencode cli', status: 'ok', detail: 'not needed in mock mode' }
+  if (probe.kind === 'ok') {
+    return { name: 'opencode cli', status: 'ok', detail: withLatest(probe.version, latest) }
+  }
   if (probe.kind === 'timed-out') {
     return { status: 'warn', ...timedOutCheck('opencode cli', 'opencode --version', PROBE_TIMEOUT_MS) }
   }
@@ -510,7 +623,7 @@ function checkOpenCodeVersion(latest: string | null = null): Check {
     // A server that is already running can still serve LoopTroop, so a missing
     // binary is only a problem for starting one. Whether that is survivable is
     // decided by `judgeOpenCode`, which can see both facts at once.
-    ...unavailable(probe, 'not found on PATH', 'Install it from https://opencode.ai, or point LOOPTROOP_OPENCODE_BASE_URL at a running server.'),
+    ...unavailable(probe.probe, 'not found on PATH', 'Install it from https://opencode.ai, or point LOOPTROOP_OPENCODE_BASE_URL at a running server.'),
   }
 }
 
@@ -887,15 +1000,17 @@ export async function runChecks(): Promise<Check[]> {
   // holding the port is our own daemon, and probing twice would be two more
   // HTTP requests for an answer that cannot have changed in between.
   const daemon = await readRunningDaemon()
-  // Started first and awaited late: it is a cached network read, and the local
-  // probes below should not queue behind it. It never rejects and never blocks
-  // longer than one timeout, so the worst case is versions shown without a
-  // "latest" beside them.
-  const latest = getLatestToolVersions()
+  // The one local version probe chooses the matching OpenCode package source;
+  // the result also supplies the check below, so it is never run twice.
+  const opencodeProbe = probeOpenCodeCliVersion()
+  // This cached network read never rejects or blocks longer than one timeout.
+  const latest = getLatestToolVersions({
+    opencodeVersion: opencodeProbe.kind === 'ok' ? opencodeProbe.version : undefined,
+  })
   const resolved = await latest
   // Run before the server check, which needs its verdict: an unreachable
   // OpenCode is survivable only when there is a binary left to start one.
-  const opencodeCli = checkOpenCodeVersion(resolved.opencode)
+  const opencodeCli = checkOpenCodeVersion(opencodeProbe, resolved.opencode)
 
   return [
     checkNode(resolved.node),

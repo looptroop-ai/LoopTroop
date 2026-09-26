@@ -3,11 +3,10 @@ import { NPM_CONFIG_OPENCODE_LOGS, resolveOpenCodeLogMode } from '../scripts/ope
 import { LOOPTROOP_OPENCODE_LOGS_ENV } from '../shared/opencodeLogMode'
 
 describe('resolveOpenCodeLogMode', () => {
-  it('uses full DEBUG OpenCode serve args by default (no console printing)', () => {
+  it('uses default mode without console printing', () => {
     expect(resolveOpenCodeLogMode({ env: {} })).toEqual({
       mode: 'default',
       requested: false,
-      serveArgs: ['--log-level', 'DEBUG'],
     })
   })
 
@@ -17,7 +16,6 @@ describe('resolveOpenCodeLogMode', () => {
     })).toEqual({
       mode: 'all',
       requested: true,
-      serveArgs: ['--print-logs', '--log-level', 'DEBUG'],
       source: 'npm-config',
     })
   })
@@ -28,7 +26,6 @@ describe('resolveOpenCodeLogMode', () => {
     })).toEqual({
       mode: 'all',
       requested: true,
-      serveArgs: ['--print-logs', '--log-level', 'DEBUG'],
       source: 'env',
     })
   })

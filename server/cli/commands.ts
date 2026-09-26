@@ -1,7 +1,7 @@
 import { spawn, type ChildProcess } from 'node:child_process'
 import { openSync } from 'node:fs'
 import { setTimeout as delay } from 'node:timers/promises'
-import { readDaemonState, getDaemonLogPath, getDaemonLogDir, clearDaemonState, clearDaemonStartFailure, clearStaleDaemonState, readDaemonStartFailure, redactDaemonState, daemonBrowserOrigin, daemonOrigin, type DaemonState, type DaemonStartFailure } from '../lib/daemonPaths'
+import { readDaemonState, getDaemonLogPath, getDaemonLogDir, clearDaemonState, clearDaemonStartFailure, readDaemonStartFailure, redactDaemonState, daemonBrowserOrigin, daemonOrigin, type DaemonState, type DaemonStartFailure } from '../lib/daemonPaths'
 import { resolveTrustedExecutable } from '../lib/executablePath'
 import { resolveAppConfigDir, ensureSecureDir } from '../lib/appConfigDir'
 import { rotateDaemonLog } from '../lib/daemonLog'
@@ -496,10 +496,14 @@ async function isDirectChildLive(child: ChildProcess | undefined, pid: number): 
 function clearFailedStartArtifacts(configDir: string, pid: number, childToken: string | null): void {
   clearLockOwnedBy(pid, configDir)
   if (childToken === null) {
-    // The direct child handle proves this generation, but a tokenless state
-    // record cannot be cleared by matching identity. Limit stale-state cleanup
-    // to the same pid and let the state writer's lock/recheck serialize it.
-    if (readDaemonState(configDir)?.pid === pid) clearStaleDaemonState(configDir)
+    // The direct child handle proves this generation, not a prior managed
+    // OpenCode child whose daemon pid was reused. Keep that ownership evidence
+    // when the daemon's start token is unavailable; the instance-id cleanup
+    // recheck protects a replacement state written after this read.
+    const recorded = readDaemonState(configDir)
+    if (recorded?.pid === pid && recorded.opencode?.owned !== true) {
+      clearDaemonState(recorded.instanceId, configDir)
+    }
     return
   }
 

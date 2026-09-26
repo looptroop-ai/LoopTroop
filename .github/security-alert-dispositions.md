@@ -203,9 +203,18 @@ on macOS ARM64, Linux x64 and Windows x64. The full local suite passed before
 this test-only correction. At the `ab2f33d` CI snapshot, macOS install smoke
 and binary jobs passed while test jobs were still running. The install-policy
 suite now passes all 17 tests, test TypeScript and ESLint pass, and Actionlint
-with ShellCheck passes after updating both workflow paths. The latest
-DeepSource result at `b079ade` remained failed on the findings described above;
-the current analyzer run will assess these final test-only and helper changes.
+with ShellCheck passes after updating both workflow paths.
+
+Final review snapshot on `f70aa121` (2026-09-26): DeepSource's JavaScript,
+Docker, Shell, and Secrets analyzers all passed. Push CI run
+[`36252274992`](https://github.com/looptroop-ai/LoopTroop/actions/runs/36252274992)
+and PR CI run
+[`36252278284`](https://github.com/looptroop-ai/LoopTroop/actions/runs/36252278284)
+completed successfully, including every required branch-protection context.
+The conditional Renovate floor and notices workflows were skipped as expected.
+Greptile and Kilo reported no current issues; CodeRabbit had no actionable
+comments; SonarCloud's quality gate passed with no new issues or hotspots;
+Codacy, CodeQL, Semgrep, and Socket checks passed.
 
 Follow-up verification: 458 test files passed, with 7,071 tests passed and 13
 existing skips. Full lint, both typecheck projects, build, package contents,
@@ -574,23 +583,25 @@ remain visible; this decision does not suppress failures or weaken verification.
   The [GitHub CLI download implementation](https://github.com/cli/cli/blob/trunk/pkg/cmd/run/download/http.go)
   downloads and extracts the archive without that digest comparison. Replacing the action with
   the CLI alone would therefore remove a check we already rely on.
-- **Renovate configuration validation:** [current registry metadata](https://registry.npmjs.org/renovate/latest)
-  still includes global-agent and bunyan. Their dependency chains reach deprecated boolean,
-  and, through bunyan's optional mv dependency, rimraf, glob and inflight. The dependency
-  relationships and deprecation notices were checked in npm's registry. Updating Renovate alone
-  does not remove these chains; changing its installation method or hiding npm output does not
-  repair them. Retain the validator so dependency-update configuration continues to be checked.
+- **Renovate configuration validation:** the validator is pinned to
+  [44.115.10](https://github.com/renovatebot/renovate/releases/tag/44.115.10), the latest
+  release on 2026-09-26. Its resolved dependency graph still includes `global-agent` → `boolean`
+  and `bunyan` → optional `mv` → `rimraf@2` → `glob@6` → `inflight`. The current Google
+  metadata paths also include `gcp-metadata@8.1.4` → `gaxios@7.1.3` → `rimraf@5` → `glob@10`,
+  and `google-auth-library@11.1.0` → `gaxios@7.3.1` → `node-fetch@3` → `fetch-blob@3` →
+  `node-domexception`. These dependency paths and npm's deprecation notices were verified
+  against the current resolved install graph on 2026-09-26. Updating the validator alone does
+  not remove all these upstream chains; changing its installation method or hiding npm output
+  does not repair them. Retain the validator so dependency-update configuration continues to be
+  checked.
   Its optional RE2 native module is also unavailable under the reviewed script policy. Renovate
-  [explicitly falls back to JavaScript RegExp](https://github.com/renovatebot/renovate/blob/44.13.2/lib/util/regex.ts).
+  [explicitly falls back to JavaScript RegExp](https://github.com/renovatebot/renovate/blob/44.115.10/lib/util/regex.ts).
   Schema validation continues; RE2-specific syntax checking is reduced. The current configuration
   uses simple patterns and has no identified engine mismatch. Reassess before adding patterns
   that depend on [RE2-specific behavior](https://docs.renovatebot.com/string-pattern-matching/);
   do not suppress the warning or broadly approve native installation scripts.
-  PR18's CI logs also contain the Google metadata dependency path through gaxios:
-  rimraf brings in a deprecated glob, while node-fetch and fetch-blob bring in node-domexception.
-  These paths still exist in [current Renovate registry metadata](https://registry.npmjs.org/renovate/latest)
-  and [gaxios metadata](https://registry.npmjs.org/gaxios/7.1.3), checked on 2026-09-12.
-  Updating the validator alone therefore does not remove these additional warnings.
+  The CI validator update reduces staleness but leaves these transitive warnings visible; no
+  overrides or output suppression were added.
 - **Linux binary injection:** postject's bundled LIEF emits `Can't find string offset for section name`
   diagnostics for `.note` sections. The [upstream maintainer identifies their source](https://github.com/nodejs/postject/issues/83#issuecomment-1506397578)
   and deliberately retains the diagnostics. The installed postject matches its

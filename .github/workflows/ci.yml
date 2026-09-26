@@ -168,7 +168,7 @@ jobs:
       # Pinned, not @latest: an unpinned validator makes this check
       # nondeterministic and can fail on a release we never chose.
       - name: Validate Renovate configuration
-        run: npx --yes --package renovate@44.13.2 renovate-config-validator --strict
+        run: npx --yes --package renovate@44.115.10 renovate-config-validator --strict
 
       # A redistributed package must declare a licence. The check also fails
       # when the committed file is out of date.

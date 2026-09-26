@@ -174,6 +174,11 @@ package binding had left the native probe error message using the old identifier
 That error path now reports the package name, and the regression asserts the
 exact package-specific diagnostic so a ReferenceError stack frame cannot satisfy
 the test accidentally.
+DeepSource's completed JavaScript run on `7281c99` then exposed a remaining
+medium-risk `JS-R1005` finding: the native setup test callback had complexity
+10. Its target-size assertion now uses `forEach`, preserving the exact checks
+without adding the loop branch to that callback. The next scan will verify the
+complexity change.
 
 The next CI run at `44da9d61` failed in both macOS test lanes because the native
 fixture searched every lock entry and selected the OpenCode wrapper package,

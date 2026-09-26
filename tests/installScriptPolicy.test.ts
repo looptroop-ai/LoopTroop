@@ -193,9 +193,9 @@ describe('dependency install script policy', () => {
       copyFileSync(process.execPath, source)
       const result = run()
       expect(result.status, result.stderr).toBe(0)
-      for (const target of new Set(Object.values(targets))) {
+      new Set(Object.values(targets)).forEach((target) => {
         expect(statSync(join(packageRoot, target)).size).toBe(statSync(process.execPath).size)
-      }
+      })
       const expectedBin = tool === 'bun' && process.platform === 'win32'
         ? join(packageRoot, 'bin') : join(directory, 'node_modules/.bin')
       expect(readFileSync(env.GITHUB_PATH, 'utf8')).toBe(`${expectedBin}\n`)

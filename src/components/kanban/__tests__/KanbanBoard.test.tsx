@@ -1,5 +1,5 @@
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest'
-import { fireEvent, screen, within } from '@testing-library/react'
+import { act, fireEvent, screen, within } from '@testing-library/react'
 import { UIProvider } from '@/context/UIContext'
 import { UIContext, type UIContextValue } from '@/context/uiContextDef'
 import { KanbanBoard } from '../KanbanBoard'
@@ -22,6 +22,14 @@ vi.mock('@/hooks/useProjects', () => ({
 
 function renderWithProviders(ui: React.ReactElement) {
   return sharedRenderWithProviders(<UIProvider>{ui}</UIProvider>)
+}
+
+function openPresetsMenu() {
+  const trigger = screen.getByRole('button', { name: /presets/i })
+  // Re-enter the document before opening: jsdom emits window blur when focus
+  // returns after a focused node was removed, which Radix treats as dismissal.
+  act(() => trigger.focus())
+  fireEvent.keyDown(trigger, { key: 'ArrowDown' })
 }
 
 function makeFilters(search = ''): UIContextValue['state']['filters'] {
@@ -469,10 +477,7 @@ describe('KanbanBoard', () => {
       </UIContext.Provider>,
     )
 
-    fireEvent.pointerDown(screen.getByRole('button', { name: /presets/i }), {
-      button: 0,
-      ctrlKey: false,
-    })
+    openPresetsMenu()
     fireEvent.focus(await screen.findByRole('button', { name: 'Night ops' }))
 
     const tooltip = await screen.findByRole('tooltip')
@@ -504,10 +509,7 @@ describe('KanbanBoard', () => {
 
     const { unmount } = renderWithProviders(<KanbanBoard />)
 
-    fireEvent.pointerDown(screen.getByRole('button', { name: /presets/i }), {
-      button: 0,
-      ctrlKey: false,
-    })
+    openPresetsMenu()
     fireEvent.change(screen.getByPlaceholderText('New preset...'), {
       target: { value: 'Night ops' },
     })
@@ -524,10 +526,7 @@ describe('KanbanBoard', () => {
     unmount()
     renderWithProviders(<KanbanBoard />)
 
-    fireEvent.pointerDown(screen.getByRole('button', { name: /presets/i }), {
-      button: 0,
-      ctrlKey: false,
-    })
+    openPresetsMenu()
     expect(screen.getByRole('button', { name: 'Night ops' })).toBeInTheDocument()
   })
 
@@ -554,10 +553,7 @@ describe('KanbanBoard', () => {
 
     const { unmount } = renderWithProviders(<KanbanBoard />)
 
-    fireEvent.pointerDown(screen.getByRole('button', { name: /presets/i }), {
-      button: 0,
-      ctrlKey: false,
-    })
+    openPresetsMenu()
     fireEvent.change(screen.getByPlaceholderText('New preset...'), {
       target: { value: 'Project ops' },
     })
@@ -572,10 +568,7 @@ describe('KanbanBoard', () => {
     unmount()
     renderWithProviders(<KanbanBoard />)
 
-    fireEvent.pointerDown(screen.getByRole('button', { name: /presets/i }), {
-      button: 0,
-      ctrlKey: false,
-    })
+    openPresetsMenu()
     expect(screen.getByRole('button', { name: 'Project ops' })).toBeInTheDocument()
   })
 
@@ -652,7 +645,7 @@ describe('KanbanBoard', () => {
       }))
 
       renderWithProviders(<KanbanBoard />)
-      fireEvent.pointerDown(screen.getByRole('button', { name: /presets/i }), { button: 0, ctrlKey: false })
+      openPresetsMenu()
 
       expect(screen.getByRole('button', { name: 'Delete preset Night ops' })).toBeInTheDocument()
     })

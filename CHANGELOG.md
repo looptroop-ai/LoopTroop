@@ -262,6 +262,7 @@ Unreleased changes appear first and represent commits that have not yet been inc
 - The unused `server/db/drizzle.config.ts` alias. Every database script already selects its app or project config explicitly, so keeping a third config that Drizzle Kit cannot discover from the repository root only advertised a command that no longer worked.
 
 ### Fixed
+- Kanban preset tests open menus through the keyboard so focus changes in jsdom do not dismiss them during persistence and accessibility checks.
 - OpenCode v2 can use incomplete fork or transfer history only as an initial starting boundary, then requires contiguous verified events after it through the idle checks. A later idle watermark lets previously delivered and drained inbox entries be ignored; competing activity after it, an unaccounted sequence gap, or a lost stream still stops dispatch without guessing event ownership or resending.
 - OpenCode v2 idle waits now use the caller's deadline, with a 60-second bound when no caller deadline is supplied.
 - OpenCode v1 now reports stream failures and EOF completion consistently, keeps caller cancellation distinct from cleanup, and closes its stream iterator and timers.

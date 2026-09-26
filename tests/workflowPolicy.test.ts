@@ -125,8 +125,8 @@ describe('release workflow policy', () => {
     const action = review.steps!.find((step) => String(step.uses).startsWith('actions/dependency-review-action@')) as SetupStep
     expect(action.with).toMatchObject({
       'fail-on-scopes': 'runtime,development,unknown',
-      'base-ref': '${{ github.event.repository.default_branch }}',
-      'head-ref': '${{ github.sha }}',
+      'base-ref': '${{ github.event.pull_request.base.sha || github.event.repository.default_branch }}',
+      'head-ref': '${{ github.event.pull_request.head.sha || github.sha }}',
     })
     expect((ci.packaging as Job & { needs: string[] }).needs).toContain('dependency-review')
     expect((ci.packaging as Job & { if: string }).if).toBe('always()')

@@ -44,9 +44,9 @@ jobs:
         with:
           fail-on-scopes: runtime,development,unknown
           # Push and manual runs must enforce the same dependency gate as PRs.
-          # PR events use their own base/head SHAs; these refs cover other events.
-          base-ref: ${{ github.event.repository.default_branch }}
-          head-ref: ${{ github.sha }}
+          # Use exact PR commits, or the default branch and head for other events.
+          base-ref: ${{ github.event.pull_request.base.sha || github.event.repository.default_branch }}
+          head-ref: ${{ github.event.pull_request.head.sha || github.sha }}
 
   # 4,400+ lines of workflow YAML, most of it inline bash and PowerShell that no
   # other check reads. `npm run lint` covers the application and never opens

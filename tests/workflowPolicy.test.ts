@@ -112,7 +112,7 @@ describe('release workflow policy', () => {
         expect(JSON.stringify(job), scope).not.toContain('secrets.')
         expect((job as { container?: unknown }).container, scope).toBeUndefined()
         expect((job as { environment?: unknown }).environment, scope).toBeUndefined()
-        // Action pre hooks run before step conditions, so exclude the whole matrix.
+        // ponytail: pre hooks bypass step conditions; split mixed ARM jobs only if their other legs need auditing.
         const runner = job as Job & { 'runs-on'?: unknown; strategy?: unknown }
         expect(JSON.stringify([runner['runs-on'], runner.strategy]), scope).not.toMatch(/ubuntu[^"]*arm|linux-arm64/i)
         expect(audit.with?.['egress-policy'], scope).toBe('audit')

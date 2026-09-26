@@ -10,10 +10,10 @@ if (!['bun', 'pnpm', 'yarn', 'opencode-v1', 'opencode-v2'].includes(tool)) {
 }
 const root = join(__dirname, 'ci-tools', tool)
 const manifest = JSON.parse(readFileSync(join(root, 'package.json'), 'utf8'))
-const [name] = Object.keys(manifest.dependencies)
-const packageRoot = join(root, 'node_modules', name)
+const [packageName] = Object.keys(manifest.dependencies)
+const packageRoot = join(root, 'node_modules', packageName)
 const installed = JSON.parse(readFileSync(join(packageRoot, 'package.json'), 'utf8'))
-if (installed.version !== manifest.dependencies[name]) throw new Error(`Unexpected ${name} version`)
+if (installed.version !== manifest.dependencies[packageName]) throw new Error(`Unexpected ${packageName} version`)
 
 if (tool === 'bun' || tool.startsWith('opencode-')) {
   const platform = process.platform === 'win32' ? 'windows' : process.platform
@@ -42,7 +42,6 @@ const bin = tool === 'bun' && process.platform === 'win32'
   : join(root, 'node_modules', '.bin')
 if (!process.env.GITHUB_PATH) throw new Error('GITHUB_PATH is required')
 appendFileSync(process.env.GITHUB_PATH, `${bin}\n`)
-console.log(`${name}@${installed.version} ready at ${bin}`)
 if (process.env.GITHUB_STEP_SUMMARY) {
-  appendFileSync(process.env.GITHUB_STEP_SUMMARY, `- CI tool: ${name}@${installed.version}\n`)
+  appendFileSync(process.env.GITHUB_STEP_SUMMARY, `- CI tool: ${packageName}@${installed.version}\n`)
 }

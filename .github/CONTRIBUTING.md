@@ -157,6 +157,12 @@ on the normal PATH and checks that they run. Windows Bun uses its native
 binary directory; OpenCode retains its npm shim so the Windows tests exercise
 that launcher. CI does not add trusted-executable directory overrides.
 
+The production container uses the npm bundled in its digest-pinned Node image.
+The root `packageManager` pin declares the npm toolchain for repository
+dependency installs, and `scripts/pin-npm.mjs` enforces its reviewed policy in
+CI. The container install uses the release lockfile with lifecycle scripts
+disabled, so it does not download a second npm version.
+
 `main` requires a branch to be up to date, so merging one Renovate pull request
 leaves the others behind. Renovate rebases them itself in its nightly window.
 To have one sooner, tick the rebase box in its description. Do not press

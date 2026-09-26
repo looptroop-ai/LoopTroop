@@ -154,11 +154,21 @@ bundled npm-to-approved-development-npm notice is expected. Runner/cache service
 diagnostics are external to these changes. No action retirement warning or new
 application warning was found; these are recorded rather than hidden.
 The refreshed review at `ab2f33d` contained 14 conversation comments, eight
-submitted reviews and 17 inline comments. Kilo found no code defects and
-Greptile reported no blocker. CodeRabbit repeated its suggestion to restore the
-Docker npm download; the owner's explicit choice to use the pinned image's
-bundled npm still applies. SonarCloud reports a passing gate. The `b079ade`
-DeepSource run added three style comments, bringing the inline count to 20.
+submitted reviews and 17 inline comments. On `78fb340`, the latest refresh had
+14 conversation comments, ten submitted reviews and 23 inline comments.
+Greptile reviewed that head and found no actionable issue; Kilo reports no
+issues, Codacy reports zero new issues, and SonarCloud's gate passes with zero
+new or accepted issues and zero hotspots. CodeRabbit and the latest Copilot note
+again recommend restoring or checking the Docker npm pin. That conflicts
+with the owner's explicit choice to use the npm bundled in the digest-pinned
+image; the script-free production install remains locked by the release
+lockfile. DeepSource's JavaScript check failed at `78fb340` on three newly
+reported findings: the local identifier `name`, a browser-only console rule on
+the Node-only setup helper, and a module-scope function declaration in a Vitest
+test. The identifier is now `packageName`, redundant console output is removed
+while tool versions remain in the GitHub step summary, and the test predicate
+uses an arrow expression. The next DeepSource scan will verify those changes;
+its Docker, Shell and Secrets checks pass.
 
 The next CI run at `44da9d61` failed in both macOS test lanes because the native
 fixture searched every lock entry and selected the OpenCode wrapper package,

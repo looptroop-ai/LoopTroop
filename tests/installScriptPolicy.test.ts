@@ -27,15 +27,13 @@ const workflows = readdirSync(workflowDir).filter((file) => /\.ya?ml$/.test(file
   },
 }))
 
-function isRunnerNativePackage(
+const isRunnerNativePackage = (
   packageName: string,
   metadata: { os?: string[]; cpu?: string[] } | undefined,
-): boolean {
-  return metadata?.os?.includes(process.platform) === true
+): boolean => metadata?.os?.includes(process.platform) === true
     && metadata?.cpu?.includes(process.arch) === true
     && !packageName.includes('musl')
     && (process.arch !== 'x64' || packageName.endsWith('-baseline'))
-}
 
 describe('dependency install script policy', () => {
   it('approves exactly the locked esbuild scripts, with no production install hooks', () => {

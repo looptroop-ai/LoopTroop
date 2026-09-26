@@ -103,8 +103,8 @@ describe('dependency install script policy', () => {
   })
 
   it.each([
-    ['ci.yml', 'node-managers', 'Install ${{ matrix.manager }}', 'scripts', '${{ matrix.manager }}'],
-    ['published-smoke.yml', 'smoke', 'Install the node manager', '.ci-tools-source/scripts', '${{ matrix.channel }}'],
+    ['ci.yml', 'node-managers', 'Install $' + '{{ matrix.manager }}', 'scripts', '$' + '{{ matrix.manager }}'],
+    ['published-smoke.yml', 'smoke', 'Install the node manager', '.ci-tools-source/scripts', '$' + '{{ matrix.channel }}'],
     ['published-smoke.yml', 'smoke', 'Install OpenCode v2', '.ci-tools-source/scripts', 'opencode-v2'],
     ['published-smoke.yml', 'smoke', 'Install OpenCode v1 on Windows', '.ci-tools-source/scripts', 'opencode-v1'],
   ])('installs then prepares the locked tool in %s / %s / %s', (file, job, name, scripts, tool) => {

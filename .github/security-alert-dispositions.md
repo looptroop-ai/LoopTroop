@@ -133,7 +133,7 @@ DeepSource reported the separate analysis findings below.
 | Job-wide executable trust override masks normal discovery | Removed the override. All five installed tools resolve through the existing trusted launcher on Linux with ordinary PATH. Windows Bun exposes its native bin directory; OpenCode retains its command shim. |
 | Native setup aliases, missing binaries and incompatible executables | Deduplicate declared targets and run a bounded version probe before adding PATH. Tests cover missing and invalid binaries, both OpenCode lanes and Bun, using independent platform metadata from committed locks. No speculative musl runner or package-layout fallback is added. |
 | CI tools grouped with runtime updates; majors lose labels; lock refresh splits | Restrict runtime rules to the root manifest. Apply CI metadata separately from the patch/minor group. Major updates keep their major label and separate PRs; the weekly lock refresh covers root and nested locks together. Yarn Classic and both OpenCode major lanes remain explicit; Bun and pnpm majors remain reviewable. |
-| Weak install-policy assertions | Compare the exact installation commands in each setup step, verify every tooling lock and integrity field, reject local links, and assert the helper cannot write a trust override. Keep literal workflow expressions escaped for static analysis. |
+| Weak install-policy assertions | Compare the exact installation commands in each setup step, verify every tooling lock and integrity field, reject local links, and assert the helper cannot write a trust override. Build literal workflow expressions from separate string pieces in test data so static analysis does not mistake them for JavaScript interpolation. |
 | Broader network and authentication coverage | Add normalized IPv4/IPv6, bracketed dotted mapped IPv6, hostile syntax and Host/Origin port parity. Every private API route in the contract inventory must reject an unauthenticated request before its handler. Fast-check reports the seed and shrink path on failure; a fixed seed would unnecessarily reduce exploration. |
 | JSON proof test and leftover sidecars | Name the JSON check precisely, assert its final directory contents, and verify successful YAML/JSONL writes clean temporary sidecars. Credential hashing behavior is unchanged. |
 | Process quoting coverage overstated | Distinguish POSIX real-process coverage from shared Windows launcher tests; add command substitution and a trailing-backslash path to the latter. |
@@ -153,10 +153,11 @@ Renovate transitive-package deprecations and its optional RE2 fallback. The
 bundled npm-to-approved-development-npm notice is expected. Runner/cache service
 diagnostics are external to these changes. No action retirement warning or new
 application warning was found; these are recorded rather than hidden.
-The refreshed review contained 14 conversation comments, six submitted reviews
-and 13 inline comments. CodeRabbit and Kilo found no code defects; Greptile
-reported no blocking issue. The owner repeated the preference for bundled npm;
-that existing decision still applies. SonarCloud reports a passing gate.
+The refreshed review at `ab2f33d` contained 14 conversation comments, eight
+submitted reviews and 17 inline comments. Kilo found no code defects and
+Greptile reported no blocker. CodeRabbit repeated its suggestion to restore the
+Docker npm download; the owner's explicit choice to use the pinned image's
+bundled npm still applies. SonarCloud reports a passing gate.
 
 The next CI run at `44da9d61` failed in both macOS test lanes because the native
 fixture searched every lock entry and selected the OpenCode wrapper package,
@@ -165,8 +166,11 @@ wrapper's native optional dependencies. The fixture now filters only the root
 package's optional dependencies and then checks their locked platform metadata.
 The same run's sole Codacy critical flagged a fixed `it.each` filename as
 possible user input to `path.join`; the test now uses static filenames directly.
-The three DeepSource literal-template suggestions now use ordinary string
-literals. The `.mjs` parser report still conflicts with the documented ESM
+Using ordinary quoted strings for literal GitHub expressions caused three new
+DeepSource `Unexpected template string expression` reports at `ab2f33d`. The
+regression data now builds those strings from separate `$` and `{{ ... }}`
+pieces, preserving the exact workflow expressions without looking like a JS
+template. The `.mjs` parser report still conflicts with the documented ESM
 default and the repository's executable module configuration; no analyzer
 exclusion was added. Its medium-risk complexity suggestion is confined to the
 native-binary test harness and does not identify a runtime defect.
@@ -174,8 +178,10 @@ The corrected fixture passes all 82 focused atomic-write and install-policy
 tests locally, test TypeScript checking, and ESLint. A platform-metadata check
 also selected the correct locked native package for Bun and both OpenCode lanes
 on macOS ARM64, Linux x64 and Windows x64. The full local suite passed before
-this test-only correction; the next CI run will exercise the corrected fixture
-on macOS.
+this test-only correction. In the latest checks at this audit, macOS install
+smoke and binary jobs passed while test jobs were still running; DeepSource
+JavaScript still reported the findings from `ab2f33d`, and the new test-only
+correction awaits its next analysis run.
 
 Follow-up verification: 458 test files passed, with 7,071 tests passed and 13
 existing skips. Full lint, both typecheck projects, build, package contents,

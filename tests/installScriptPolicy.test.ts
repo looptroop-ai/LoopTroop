@@ -1,7 +1,7 @@
 import { execFile, spawnSync } from 'node:child_process'
 import { createServer } from 'node:http'
 import { promisify } from 'node:util'
-import { copyFileSync, existsSync, mkdirSync, readFileSync, readdirSync, writeFileSync } from 'node:fs'
+import { copyFileSync, existsSync, mkdirSync, readFileSync, readdirSync, statSync, writeFileSync } from 'node:fs'
 import { join } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import * as yaml from 'js-yaml'
@@ -67,33 +67,56 @@ describe('dependency install script policy', () => {
     expect(installs).toBeGreaterThan(0)
   })
 
-  it('installs CI tools with integrity locks and no third-party lifecycle scripts', () => {
-    for (const tool of ['bun', 'pnpm', 'yarn', 'opencode-v1', 'opencode-v2']) {
-      const directory = join(repo, 'scripts/ci-tools', tool)
-      const toolManifest = JSON.parse(readFileSync(join(directory, 'package.json'), 'utf8')) as { dependencies: Record<string, string> }
-      const lock = JSON.parse(readFileSync(join(directory, 'package-lock.json'), 'utf8')) as {
-        packages: Record<string, { dependencies?: Record<string, string>; integrity?: string }>
-      }
-      expect(lock.packages['']?.dependencies).toEqual(toolManifest.dependencies)
-      for (const [name, version] of Object.entries(toolManifest.dependencies)) {
-        expect(version, name).toMatch(/^\d+\.\d+\.\d+$/)
-      }
-      for (const [path, entry] of Object.entries(lock.packages)) {
-        if (path) expect(entry.integrity, `${tool}: ${path}`).toMatch(/^sha512-/)
-      }
+  it.each(['bun', 'pnpm', 'yarn', 'opencode-v1', 'opencode-v2'])('locks %s to registry integrity hashes', (tool) => {
+    const directory = join(repo, 'scripts/ci-tools', tool)
+    const toolManifest = JSON.parse(readFileSync(join(directory, 'package.json'), 'utf8')) as {
+      dependencies: Record<string, string>; scripts?: Record<string, string>
     }
-    const ci = workflows.find(({ file }) => file === 'ci.yml')!.document.jobs['node-managers']!
-    expect(ci.strategy?.matrix?.manager).toEqual(['bun', 'pnpm', 'yarn'])
-    expect(ci.steps?.find(({ name }) => name === 'Install ${{ matrix.manager }}')?.run)
-      .toContain('npm ci --ignore-scripts --prefix scripts/ci-tools/${{ matrix.manager }}')
-    const smoke = workflows.find(({ file }) => file === 'published-smoke.yml')!.document.jobs['smoke']!
-    for (const [name, tool] of [['Install OpenCode v2', 'opencode-v2'], ['Install OpenCode v1 on Windows', 'opencode-v1']]) {
-      const step = smoke.steps?.find((step) => step.name === name)
-      expect(step?.run).toContain(`npm ci --ignore-scripts --prefix .ci-tools-source/scripts/ci-tools/${tool}`)
-      expect(step?.run).toContain(`node .ci-tools-source/scripts/setup-ci-tool.mjs ${tool}`)
+    const lock = JSON.parse(readFileSync(join(directory, 'package-lock.json'), 'utf8')) as {
+      lockfileVersion: number
+      packages: Record<string, { dependencies?: Record<string, string>; integrity?: string; link?: boolean }>
     }
-    expect(smoke.steps?.find(({ name }) => name === 'Install the node manager')?.run)
-      .toContain('npm ci --ignore-scripts --prefix .ci-tools-source/scripts/ci-tools/${{ matrix.channel }}')
+    expect(lock.lockfileVersion).toBe(3)
+    expect(lock.packages['']?.dependencies).toEqual(toolManifest.dependencies)
+    expect(toolManifest.scripts).toBeUndefined()
+    for (const [name, version] of Object.entries(toolManifest.dependencies)) {
+      expect(version, name).toMatch(/^\d+\.\d+\.\d+$/)
+    }
+    for (const [path, entry] of Object.entries(lock.packages)) {
+      if (!path) continue
+      // Local/workspace links would bypass the registry integrity contract.
+      expect(entry.link, `${tool}: ${path}`).not.toBe(true)
+      expect(entry.integrity, `${tool}: ${path}`).toMatch(/^sha512-/)
+    }
+  })
+
+  it('installs CI tools without global installs, approvals or executable trust overrides', () => {
+    const commands = workflows.flatMap(({ document }) => Object.values(document.jobs)
+      .flatMap(({ steps = [] }) => steps.map(({ run = '' }) => run)))
+    for (const command of commands) {
+      expect(command).not.toMatch(/--allow-scripts=/)
+      expect(command).not.toMatch(/npm (?:i|install)\b[^\n]*(?:bun|pnpm|yarn|opencode-ai|@opencode\/cli)(?:@|\s|$)/)
+    }
+    const setup = readFileSync(join(repo, 'scripts/setup-ci-tool.mjs'), 'utf8')
+    expect(setup).not.toContain('LOOPTROOP_TRUSTED_EXECUTABLE_DIRS')
+    expect(setup).not.toContain('GITHUB_ENV')
+  })
+
+  it.each([
+    ['ci.yml', 'node-managers', `Install \${{ matrix.manager }}`, 'scripts', `\${{ matrix.manager }}`],
+    ['published-smoke.yml', 'smoke', 'Install the node manager', '.ci-tools-source/scripts', `\${{ matrix.channel }}`],
+    ['published-smoke.yml', 'smoke', 'Install OpenCode v2', '.ci-tools-source/scripts', 'opencode-v2'],
+    ['published-smoke.yml', 'smoke', 'Install OpenCode v1 on Windows', '.ci-tools-source/scripts', 'opencode-v1'],
+  ])('installs then prepares the locked tool in %s / %s / %s', (file, job, name, scripts, tool) => {
+    const step = workflows.find((workflow) => workflow.file === file)?.document.jobs[job]?.steps
+      ?.find((step) => step.name === name)
+    expect(step).toBeDefined()
+    const installLines = step?.run?.split('\n').map((line) => line.trim())
+      .filter((line) => /^(?:npm |node .*setup-ci-tool)/.test(line))
+    expect(installLines).toEqual([
+      `npm ci --ignore-scripts --prefix ${scripts}/ci-tools/${tool}`,
+      `node ${scripts}/setup-ci-tool.mjs ${tool}`,
+    ])
   })
 
   it('pins the Renovate validator and centralizes script-free npm bootstraps', () => {
@@ -110,36 +133,62 @@ describe('dependency install script policy', () => {
     expect(pinScript).not.toContain("npm(['install', '--global', `npm@${declared}`])")
   })
 
-  it('copies only the installed native CI binary and fails when that binary is absent', () => {
+  it.each(['bun', 'opencode-v1', 'opencode-v2'])('verifies the %s native binary before publishing PATH', (tool) => {
     const root = makeTempDir('looptroop-ci-tool-')
     try {
-      const directory = join(root, 'ci-tools/bun')
-      const packageRoot = join(directory, 'node_modules/bun')
-      const platform = process.platform === 'win32' ? 'windows' : process.platform
-      const arch = process.arch === 'arm64' ? 'aarch64' : process.arch
-      const native = `@oven/bun-${platform}-${arch}${process.arch === 'x64' ? '-baseline' : ''}`
+      const original = join(repo, 'scripts/ci-tools', tool)
+      const toolManifest = JSON.parse(readFileSync(join(original, 'package.json'), 'utf8')) as {
+        dependencies: Record<string, string>
+      }
+      const [name] = Object.keys(toolManifest.dependencies)
+      if (!name) throw new Error(`Missing dependency for ${tool}`)
+      const lock = JSON.parse(readFileSync(join(original, 'package-lock.json'), 'utf8')) as {
+        packages: Record<string, { os?: string[]; cpu?: string[] }>
+      }
+      // Select from published package metadata, independently of the helper's
+      // aarch64/arm64 naming conversion and package-scope suffix construction.
+      const nativeEntry = Object.entries(lock.packages).find(([path, entry]) =>
+        entry.os?.includes(process.platform) && entry.cpu?.includes(process.arch)
+        && !path.includes('musl') && (process.arch !== 'x64' || path.endsWith('-baseline')))
+      if (!nativeEntry) throw new Error(`Missing fixture package for ${tool}`)
+      const native = nativeEntry[0].slice('node_modules/'.length)
+      const directory = join(root, 'ci-tools', tool)
+      const packageRoot = join(directory, 'node_modules', name)
       const nativeBin = join(directory, 'node_modules', native, 'bin')
+      const command = tool === 'bun' ? 'bun' : 'opencode'
+      const targets = tool === 'bun'
+        ? { bun: 'bin/bun.exe', bunx: 'bin/bunx.exe' }
+        : { opencode: 'bin/opencode.exe', opencode2: 'bin/opencode.exe' }
       mkdirSync(join(packageRoot, 'bin'), { recursive: true })
       mkdirSync(nativeBin, { recursive: true })
       copyFileSync(join(repo, 'scripts/setup-ci-tool.mjs'), join(root, 'setup-ci-tool.mjs'))
-      writeFileSync(join(directory, 'package.json'), JSON.stringify({ dependencies: { bun: '1.0.0' } }))
+      writeFileSync(join(directory, 'package.json'), JSON.stringify(toolManifest))
       writeFileSync(join(packageRoot, 'package.json'), JSON.stringify({
-        version: '1.0.0', optionalDependencies: { [native]: '1.0.0' },
-        bin: { bun: 'bin/bun.exe', bunx: 'bin/bunx.exe' },
-        scripts: { postinstall: 'exit 99' },
+        version: toolManifest.dependencies[name], optionalDependencies: { [native]: toolManifest.dependencies[name] },
+        bin: targets,
       }))
       const env = { ...process.env, GITHUB_PATH: join(root, 'path'), GITHUB_ENV: join(root, 'env') }
-      const run = () => spawnSync(process.execPath, [join(root, 'setup-ci-tool.mjs'), 'bun'], { env, encoding: 'utf8' })
-      expect(run().status).not.toBe(0)
+      const run = () => spawnSync(process.execPath, [join(root, 'setup-ci-tool.mjs'), tool], { env, encoding: 'utf8' })
+      const absent = run()
+      expect(absent.status).not.toBe(0)
+      expect(absent.stderr).toContain('ENOENT')
       expect(existsSync(env.GITHUB_PATH)).toBe(false)
-      writeFileSync(join(nativeBin, process.platform === 'win32' ? 'bun.exe' : 'bun'), 'verified native bytes')
+      const source = join(nativeBin, `${command}${process.platform === 'win32' ? '.exe' : ''}`)
+      writeFileSync(source, 'invalid executable')
+      const invalid = run()
+      expect(invalid.status).not.toBe(0)
+      expect(invalid.stderr).toContain('--version failed:')
+      expect(existsSync(env.GITHUB_PATH)).toBe(false)
+      copyFileSync(process.execPath, source)
       const result = run()
       expect(result.status, result.stderr).toBe(0)
-      for (const command of ['bun', 'bunx']) {
-        expect(readFileSync(join(packageRoot, 'bin', `${command}.exe`), 'utf8')).toBe('verified native bytes')
+      for (const target of new Set(Object.values(targets))) {
+        expect(statSync(join(packageRoot, target)).size).toBe(statSync(process.execPath).size)
       }
-      expect(readFileSync(env.GITHUB_PATH, 'utf8')).toBe(`${join(directory, 'node_modules/.bin')}\n`)
-      expect(readFileSync(env.GITHUB_ENV, 'utf8')).toContain(join(packageRoot, 'bin'))
+      const expectedBin = tool === 'bun' && process.platform === 'win32'
+        ? join(packageRoot, 'bin') : join(directory, 'node_modules/.bin')
+      expect(readFileSync(env.GITHUB_PATH, 'utf8')).toBe(`${expectedBin}\n`)
+      expect(existsSync(env.GITHUB_ENV)).toBe(false)
     } finally {
       removeTempDir(root)
     }

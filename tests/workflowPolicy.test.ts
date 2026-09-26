@@ -51,6 +51,12 @@ type RenovateRule = {
   groupName?: string
   groupSlug?: string
   labels?: string[]
+  addLabels?: string[]
+  rangeStrategy?: string
+  semanticCommitType?: string
+  allowedVersions?: string
+  matchFileNames?: string[]
+  matchUpdateTypes?: string[]
   matchDepTypes?: string[]
   matchPackageNames?: string[]
 }
@@ -842,6 +848,29 @@ describe('release workflow policy', () => {
     const toolchain = rules.findIndex((rule) => rule.groupName === 'toolchain (node + npm)')
     expect(toolchain, 'toolchain group').toBeGreaterThan(-1)
     expect(rules.findIndex((rule) => rule.groupSlug === 'node-floor'), 'the Node floor rule comes after the toolchain group').toBeGreaterThan(toolchain)
+  })
+
+  it('keeps CI-tool majors separate and lockfile refreshes in the shared weekly branch', () => {
+    const rules = (JSON.parse(readFileSync(join(repo, '.github/renovate.json'), 'utf8')) as RenovateConfig).packageRules
+    const ciRules = rules.filter((rule) => rule.matchFileNames?.some((file) => file.startsWith('scripts/ci-tools/')))
+    const grouped = ciRules.filter((rule) => rule.groupName)
+    expect(grouped).toHaveLength(1)
+    expect(grouped[0]).toMatchObject({ groupName: 'CI tools', matchUpdateTypes: ['patch', 'minor'] })
+    // A path-only grouping rule also matches lockFileMaintenance, creating a
+    // second refresh branch. Labels replace; addLabels preserves 'major'.
+    expect(ciRules.every((rule) => rule.labels === undefined)).toBe(true)
+    expect(ciRules).toContainEqual(expect.objectContaining({
+      matchFileNames: ['scripts/ci-tools/**/package.json'],
+      rangeStrategy: 'pin', semanticCommitType: 'chore', addLabels: ['ci'],
+    }))
+    expect(rules.find((rule) => rule.groupName === 'ships to users (non-major)' && rule.matchDepTypes?.includes('dependencies'))?.matchFileNames)
+      .toEqual(['package.json'])
+    for (const [name, range] of [['yarn', '<2'], ['opencode-ai', '>=1 <2'], ['@opencode/cli', '>=2 <3']] as const) {
+      expect(ciRules.find((rule) => rule.matchPackageNames?.includes(name))?.allowedVersions).toBe(range)
+    }
+    for (const name of ['bun', 'pnpm']) {
+      expect(ciRules.filter((rule) => rule.matchPackageNames?.includes(name)).some((rule) => rule.allowedVersions)).toBe(false)
+    }
   })
 
   it('downloads Renovate notices outside checkout and gives the token only to push', () => {

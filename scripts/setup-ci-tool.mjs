@@ -1,5 +1,6 @@
 import { appendFileSync, chmodSync, copyFileSync, readFileSync } from 'node:fs'
-import { delimiter, dirname, join } from 'node:path'
+import { spawnSync } from 'node:child_process'
+import { dirname, join } from 'node:path'
 import { fileURLToPath } from 'node:url'
 
 // npm ci verifies the committed integrity hashes and creates the platform shims.
@@ -24,17 +25,25 @@ if (tool === 'bun' || tool.startsWith('opencode-')) {
   if (!nativeName) throw new Error(`No reviewed native package for ${tool} on ${suffix}`)
   const binary = `${tool === 'bun' ? 'bun' : 'opencode'}${process.platform === 'win32' ? '.exe' : ''}`
   const source = join(root, 'node_modules', nativeName, 'bin', binary)
-  for (const target of Object.values(installed.bin)) {
+  const targets = [...new Set(Object.values(installed.bin))]
+  for (const target of targets) {
     copyFileSync(source, join(packageRoot, target))
     chmodSync(join(packageRoot, target), 0o755)
   }
+  const probe = spawnSync(join(packageRoot, targets[0]), ['--version'], { encoding: 'utf8', timeout: 30_000 })
+  if (probe.error || probe.status !== 0) {
+    throw new Error(`${name} --version failed: ${probe.error?.message ?? probe.stderr ?? probe.signal ?? probe.status}`)
+  }
 }
 
-const bin = join(root, 'node_modules', '.bin')
-if (!process.env.GITHUB_PATH || !process.env.GITHUB_ENV) throw new Error('GitHub Actions environment files are required')
+// Keep Bun's native Windows PATH layout. OpenCode keeps its npm shim so the
+// Windows smoke still covers .cmd launches.
+const bin = tool === 'bun' && process.platform === 'win32'
+  ? join(packageRoot, 'bin')
+  : join(root, 'node_modules', '.bin')
+if (!process.env.GITHUB_PATH) throw new Error('GITHUB_PATH is required')
 appendFileSync(process.env.GITHUB_PATH, `${bin}\n`)
-// The smoke driver deliberately rejects arbitrary executables from a checkout.
-// Trust only this integrity-checked package's shims and binary directory.
-const trusted = [process.env.LOOPTROOP_TRUSTED_EXECUTABLE_DIRS, bin, join(packageRoot, 'bin')].filter(Boolean)
-appendFileSync(process.env.GITHUB_ENV, `LOOPTROOP_TRUSTED_EXECUTABLE_DIRS=${trusted.join(delimiter)}\n`)
 console.log(`${name}@${installed.version} ready at ${bin}`)
+if (process.env.GITHUB_STEP_SUMMARY) {
+  appendFileSync(process.env.GITHUB_STEP_SUMMARY, `- CI tool: ${name}@${installed.version}\n`)
+}

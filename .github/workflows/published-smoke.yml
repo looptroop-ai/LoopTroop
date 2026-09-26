@@ -238,6 +238,14 @@ jobs:
             scripts/setup-ci-tool.mjs
           sparse-checkout-cone-mode: false
 
+      - name: Record release and tooling revisions
+        shell: bash
+        env:
+          RELEASE_VERSION: ${{ needs.plan.outputs.version }}
+          TOOLING_REVISION: ${{ github.workflow_sha }}
+        run: |
+          printf '%s\n' "- Release under test: v${RELEASE_VERSION}" "- CI tooling revision: ${TOOLING_REVISION}" >> "$GITHUB_STEP_SUMMARY"
+
       - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7
         with:
           node-version-file: .nvmrc

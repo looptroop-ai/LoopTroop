@@ -24,7 +24,7 @@ import { removeTempDir } from '../server/test/tempDir'
  * reviewer sees it — the same reason `smokePublished.test.ts` names its matrix
  * legs instead of asserting a length.
  *
- * This is a contract test, not a behaviour test. It says nothing about whether
+ * The route inventory says nothing about whether
  * a route works; it says the name is still the name. When a change to one of
  * these is deliberate, update the list and say so in the pull request.
  */
@@ -223,6 +223,17 @@ describe('wire contract', () => {
 
   it('serves exactly the documented API routes', () => {
     expect(registeredRoutes()).toEqual(EXPECTED_ROUTES)
+  })
+
+  it('authenticates every private API route before its handler', async () => {
+    const app = fullSurfaceApp()
+    for (const route of EXPECTED_ROUTES) {
+      if (route === 'GET /api/health' || route === 'POST /api/auth/exchange') continue
+      const [method, path] = route.split(' ') as [string, string]
+      const response = await app.request(path.replace(/:[^/]+/g, '1'), { method })
+      expect(response.status, route).toBe(401)
+      expect(await response.json(), route).toEqual({ error: 'Unauthorized' })
+    }
   })
 
   it('broadcasts exactly the documented SSE event names', () => {

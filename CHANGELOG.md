@@ -264,6 +264,7 @@ Unreleased changes appear first and represent commits that have not yet been inc
 - The unused `server/db/drizzle.config.ts` alias. Every database script already selects its app or project config explicitly, so keeping a third config that Drizzle Kit cannot discover from the repository root only advertised a command that no longer worked.
 
 ### Fixed
+- CI tool setup uses normal executable discovery, probes copied native binaries before exposing them, and preserves native Windows Bun lookup. Renovate keeps CI-tool major updates separate and refreshes all lockfiles together; network, authentication, atomic-write and install-policy regressions cover the review findings.
 - Container builds use npm bundled in the digest-pinned Node image, removing a separate unverified npm download while retaining the release lockfile and disabled install scripts.
 - The process-tree test passes child-program inputs through arguments instead of interpolating paths into JavaScript. Security regressions verify folder-discovery authentication, credential-file proof exclusions, and literal shell metacharacters in process arguments. Reviewed false positives and accepted repository-policy limitations are recorded with their evidence.
 - Kanban preset tests open menus through the keyboard so focus changes in jsdom do not dismiss them during persistence and accessibility checks.

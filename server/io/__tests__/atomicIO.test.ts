@@ -42,14 +42,15 @@ describe('safeAtomicWrite', () => {
     expect(readFileSync(filePath, 'utf-8')).toBe('nested content')
   })
 
-  it('writes daemon credentials without a password-hash sidecar', () => {
+  it('writes daemon JSON without an atomic recovery proof', () => {
     const filePath = join(TEST_DIR, 'daemon.json')
     const content = JSON.stringify({ apiToken: 'test-token' })
+    const wait = vi.fn()
     safeAtomicWrite(filePath, content, {
       mode: 0o600,
       deps: {
         platform: process.platform,
-        wait: () => {},
+        wait,
         rename: (from, to) => {
           expect(existsSync(atomicProofPath(from))).toBe(false)
           expect(readFileSync(from, 'utf8')).toBe(content)
@@ -58,6 +59,12 @@ describe('safeAtomicWrite', () => {
       },
     })
     expect(readFileSync(filePath, 'utf8')).toBe(content)
+    expect(readdirSync(TEST_DIR)).toEqual(['daemon.json'])
+  })
+
+  it.each(['artifact.jsonl', 'prd.yaml'])('removes the recovery proof after publishing %s', (filename) => {
+    safeAtomicWrite(join(TEST_DIR, filename), '{}\n')
+    expect(readdirSync(TEST_DIR)).toEqual([filename])
   })
 
   /**

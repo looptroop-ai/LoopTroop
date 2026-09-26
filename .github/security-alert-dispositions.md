@@ -24,7 +24,7 @@ the separate npm download is removed.
 | #174 | The process-tree test passes its marker path and child source through argv. Both programs use fixed source; no path is interpolated into JavaScript. |
 | #163 | False positive. `writeDaemonRecord` writes the API token to owner-only `daemon.json`. Atomic recovery proofs apply only to YAML/JSONL, so this token does not reach the hash. SHA-256 verifies whole-file crash completeness, not a password. A regression inspects the temporary file before rename and asserts no proof exists. |
 | #187 | False positive. The SHA-256 digest identifies exact wire credentials in an in-memory protocol cache. It is not persisted or used as a password verifier. The cache already holds the Basic authorization header required by the connection. Existing tests verify credential changes produce distinct cache entries. |
-| #184 | False positive. The trusted resolver supplies the executable; `spawn` receives a separate argument array. Windows command scripts go through the shared launcher, which escapes arguments and rejects unsafe expansion. A real-process regression preserves shell metacharacters in an absolute path argument. |
+| #184 | False positive. The trusted resolver supplies the executable; `spawn` receives a separate argument array. Windows command scripts go through the shared launcher, which escapes arguments and rejects unsafe expansion. A POSIX real-process regression preserves shell metacharacters in an absolute path argument; separate shared-launcher tests cover Windows quoting and unsafe expansion. |
 | #176 | False positive. The authenticated folder picker intentionally lists owner-selected absolute local directories before attachment. There is no single workspace boundary for this operation. |
 | #177 | False positive. Project discovery checks existence of normalized owner-selected local paths. The check is behind Host/Origin and authentication middleware. |
 | #178 | False positive. Timeout diagnosis reads only the selected repository's fixed `.git` metadata file to locate its Git directory. Linked-worktree metadata can legitimately reside outside the worktree. File contents are not returned through the API. |
@@ -45,26 +45,25 @@ No status, prompt, parser, payload key or ticket lifecycle behavior changes.
 - #190 and #191: OpenCode tooling installs use committed npm integrity locks and
   disable third-party lifecycle scripts. The setup helper copies the selected
   optional native binary into the package's declared executable path after npm
-  creates its shims. Windows keeps the real npm-generated command shim.
+  creates its shims. OpenCode keeps the real npm-generated Windows command shim; Bun exposes its native Windows executable directory. Native binaries must pass a version probe before entering PATH.
 - #193: the container uses the npm already included in its digest-pinned Node
   image. Production installation retains the release lockfile and disabled
   lifecycle scripts. It no longer downloads a separate npm package merely to
   match the development toolchain.
 - #194 through #197: Bun, pnpm, Yarn and both OpenCode tooling versions have
   isolated lockfiles under `scripts/ci-tools`. This avoids executable-name
-  collisions and installing unrelated native binaries. Renovate maintains these
+  collisions and installing unrelated tools. Upstream optional dependencies can still include multiple native variants for the selected platform. Renovate maintains these
   manifests; Yarn remains Classic and each OpenCode lane stays within its major.
   Bun setup no longer races its postinstall against npm's Windows cleanup.
 - #198: fast-check generates network-trust inputs in the ordinary Vitest suite.
-  Properties check the IPv4 loopback range and mapped IPv6 forms, invalid ports,
-  and hostile hostname suffixes. The pinned Scorecard v5.5.0 recognizes this
+  Eight thousand generated cases check normalized IPv4 and IPv6 forms, the IPv4 loopback range and mapped IPv6 forms, invalid ports,
+  and hostile hostname suffixes; fixed cases check Host/Origin port parity and rejected URL syntax. The pinned Scorecard v5.5.0 recognizes this
   integration. It adds only development dependencies and no runtime fuzzer.
 
 Published-feed checks still install LoopTroop from the live feed. Their driver
 comes from the release being tested; their tooling manifests and helper come
 from the workflow's exact source commit, so a weekly check can use maintained
-tooling while testing the current published release. Additional trusted
-executable directories are limited to those integrity-locked CI tool installs.
+tooling while testing the current published release. The job summary records the release version, exact tooling commit and installed tool versions. Tools resolve through normal PATH without setting a trusted-directory override.
 No user runtime trust policy is widened.
 
 ### SAST coverage (#199)
@@ -119,6 +118,53 @@ through the existing trusted launcher on Linux; Windows command-shim generation
 was inspected separately. The website passed 97 tests, its build and site/CLI
 verification. No end-to-end or lifecycle smoke was run; cross-platform runtime
 verification remains with CI, whose completion is not awaited.
+
+### PR #194 review follow-up
+
+Read the complete PR conversation, submitted reviews, inline comments, bot
+reports and the linked local 20-point review together with CI before editing.
+Both [push CI](https://github.com/looptroop-ai/LoopTroop/actions/runs/36243457413)
+and [PR CI](https://github.com/looptroop-ai/LoopTroop/actions/runs/36243464149)
+passed at `6043e07a`, including Windows and macOS tool smokes. SonarCloud and
+DeepSource reported the separate analysis findings below.
+
+| Review finding | Resolution |
+| --- | --- |
+| Job-wide executable trust override masks normal discovery | Removed the override. All five installed tools resolve through the existing trusted launcher on Linux with ordinary PATH. Windows Bun exposes its native bin directory; OpenCode retains its command shim. |
+| Native setup aliases, missing binaries and incompatible executables | Deduplicate declared targets and run a bounded version probe before adding PATH. Tests cover missing and invalid binaries, both OpenCode lanes and Bun, using independent platform metadata from committed locks. No speculative musl runner or package-layout fallback is added. |
+| CI tools grouped with runtime updates; majors lose labels; lock refresh splits | Restrict runtime rules to the root manifest. Apply CI metadata separately from the patch/minor group. Major updates keep their major label and separate PRs; the weekly lock refresh covers root and nested locks together. Yarn Classic and both OpenCode major lanes remain explicit; Bun and pnpm majors remain reviewable. |
+| Weak install-policy assertions | Compare the exact installation commands in each setup step, verify every tooling lock and integrity field, reject local links, and assert the helper cannot write a trust override. Keep literal workflow expressions escaped for static analysis. |
+| Broader network and authentication coverage | Add normalized IPv4/IPv6, bracketed dotted mapped IPv6, hostile syntax and Host/Origin port parity. Every private API route in the contract inventory must reject an unauthenticated request before its handler. Fast-check reports the seed and shrink path on failure; a fixed seed would unnecessarily reduce exploration. |
+| JSON proof test and leftover sidecars | Name the JSON check precisely, assert its final directory contents, and verify successful YAML/JSONL writes clean temporary sidecars. Credential hashing behavior is unchanged. |
+| Process quoting coverage overstated | Distinguish POSIX real-process coverage from shared Windows launcher tests; add command substitution and a trailing-backslash path to the latter. |
+| Workflow tooling differs from the release tested | Preserve that intentional separation and record the release version, exact tooling commit and installed tool versions in the job summary. |
+| Restore a separate npm download or enforce npm 12 in the container | Rejected per the owner's explicit choice. Production installation disables all scripts and uses the release lock; the development npm lifecycle allowlist is a separate policy. |
+| SonarCloud S8689 / GitHub #202 | Proven false positive: the log contains the public npm package name, package.json version checked against its committed pin, and CI installation path. No credential reaches it. Dismissed the GitHub import under the owner's authorization. The refreshed SonarCloud bot comment and both Sonar checks now report success with zero new issues. |
+| DeepSource ESM parse error and small test findings | Escaped literal workflow expressions, removed non-null assertions and replaced the empty callback with a test spy. Node executes the `.mjs` helper and ESLint explicitly parses it as a module. [DeepSource's documented module default](https://docs.deepsource.com/docs/platform/reference/core-analyzers) is also ES modules; its source-type error is an external parser/configuration issue, not a reason to rewrite valid ESM or exclude the file. Small test loops remain where they express the policy directly. |
+| Unrelated artifacts, hardlinks, extra config guards, exact fixture listing and separate disposition PR | No demonstrated defect warrants changes. Existing cleanup and fixture assertions are intentional; the owner requested one branch and PR. Security notes clarify existing authenticated-owner behavior rather than relaxing runtime controls. |
+
+Codex, Amazon Q, Greptile, Kilo and CodeRabbit supplied no additional actionable
+code findings. Sourcery requested human review, Socket supplied package scores,
+and Gitar did not run a review on its free plan. None changes the owner's
+accepted human-review and badge limitations.
+
+The successful CI logs retain upstream download-artifact Buffer deprecations,
+Renovate transitive-package deprecations and its optional RE2 fallback. The
+bundled npm-to-approved-development-npm notice is expected. Runner/cache service
+diagnostics are external to these changes. No action retirement warning or new
+application warning was found; these are recorded rather than hidden.
+The refreshed review contained 13 conversation comments, four submitted reviews
+and nine inline comments. Only SonarCloud's comment changed, reporting a passing
+quality gate. DeepSource parser settings require access to that service; this
+session has GitHub access but no DeepSource credentials.
+No blanket analyzer suppression is added.
+
+Follow-up verification: 458 test files passed, with 7,071 tests passed and 13
+existing skips. Full lint, both typecheck projects, build, package contents,
+production native-addon scan, version consistency, script stripping, installer
+synchronization, license checks, Actionlint/ShellCheck and strict Renovate
+validation passed. Website verification passed 97 tests, build, site/CLI checks
+and license checks. No end-to-end or lifecycle smoke was run.
 
 ## PR18 identifier and test fixes
 

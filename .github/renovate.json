@@ -104,7 +104,10 @@
         "patch",
         "minor"
       ],
-      "groupName": "ships to users (non-major)"
+      "groupName": "ships to users (non-major)",
+      "matchFileNames": [
+        "package.json"
+      ]
     },
     {
       "description": "The bundled frontend half of the group above.",
@@ -325,17 +328,29 @@
       "enabled": false
     },
     {
-      "description": "Keep CI-only tool manifests and their integrity locks together. Yarn Classic is required for yarn global; OpenCode v1 preserves the Windows npm shim regression.",
+      "description": "CI tools stay exact-pinned with their integrity locks. Their updates are tooling chores, and the CI label is added without replacing the major label.",
       "matchFileNames": [
         "scripts/ci-tools/**/package.json"
       ],
-      "groupName": "CI tools",
-      "labels": [
-        "dependencies",
+      "rangeStrategy": "pin",
+      "semanticCommitType": "chore",
+      "addLabels": [
         "ci"
       ]
     },
     {
+      "description": "Group patch and minor CI-tool updates. Majors stay separate per package, and lockfile maintenance shares the ordinary weekly refresh. The OpenCode manifests test separate supported majors, but their non-major updates can share this pull request.",
+      "matchFileNames": [
+        "scripts/ci-tools/**/package.json"
+      ],
+      "matchUpdateTypes": [
+        "patch",
+        "minor"
+      ],
+      "groupName": "CI tools"
+    },
+    {
+      "description": "Yarn Classic provides yarn global for the published install smoke. Remove this ceiling only when that channel no longer needs it. A manually pinned version outside this range will not be downgraded by Renovate.",
       "matchFileNames": [
         "scripts/ci-tools/yarn/package.json"
       ],
@@ -345,15 +360,17 @@
       "allowedVersions": "<2"
     },
     {
+      "description": "The v1 manifest exercises the Windows npm-shim regression on OpenCode 1.x. Keep this lane on major 1 until its test is retired. Renovate cannot repair a manually pinned version outside this range.",
       "matchFileNames": [
         "scripts/ci-tools/opencode-v1/package.json"
       ],
       "matchPackageNames": [
         "opencode-ai"
       ],
-      "allowedVersions": "<2"
+      "allowedVersions": ">=1 <2"
     },
     {
+      "description": "The v2 manifest exercises the OpenCode 2.x CLI separately from v1. Change the lane and its regression coverage together when adopting another major. Renovate cannot repair a manually pinned version outside this range.",
       "matchFileNames": [
         "scripts/ci-tools/opencode-v2/package.json"
       ],

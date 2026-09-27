@@ -862,14 +862,14 @@ jobs:
           VERSION: ${{ needs.detect.outputs.version }}
         run: |
           set -euo pipefail
-          prerelease=()
-          case "${VERSION}" in *-*) prerelease=(--prerelease) ;; esac
+          set --
+          case "${VERSION}" in *-*) set -- --prerelease ;; esac
           node scripts/release-draft.ts \
             --version "${VERSION}" \
             --manifest release-manifest.json \
             --dir . \
             --notes /tmp/notes.md \
-            "${prerelease[@]}"
+            "$@"
 
       # The whole ordering rests on a tag meaning "finished". A draft creates no
       # tag — verified against this repository rather than assumed — and this

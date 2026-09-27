@@ -12,7 +12,7 @@ Unreleased changes appear first and represent commits that have not yet been inc
 ### Summary
 - Contributors can review V8 coverage across all four Vitest projects.
 - Security reports now have a private disclosure policy with scoped Safe Harbor terms.
-- New stable releases provide a downloadable signed bundle.
+- New stable releases attach a verified provenance bundle as `release-provenance.sigstore.json`.
 - CI tools install from integrity lockfiles without third-party lifecycle scripts, network boundaries gain generated-input tests, and security findings have verified dispositions.
 - Pull requests block vulnerable dependency changes, supported read-only CI jobs audit network activity, and OpenSSF Scorecard reports repository security checks.
 - OpenCode v2 supports forked sessions from a verified event boundary; v1 remains supported, and prompts wait through catalog reloads under their workflow deadline.
@@ -48,8 +48,8 @@ Unreleased changes appear first and represent commits that have not yet been inc
 - The OrcaCode pull-request review workflow is removed; it reported a failed check on every pull request and never completed a successful run.
 
 ### Added
-- `npm run test:coverage` reports V8 coverage across all four Vitest projects. CI uploads LCOV to Codecov through an OIDC-only job; project and patch statuses are informational without numerical targets.
-- New stable releases include the existing signed bundle as a downloadable asset; earlier releases are unchanged.
+- `npm run test:coverage` reports V8 coverage across all four Vitest projects. CI uploads LCOV to Codecov with OIDC on pushes, manual runs, and pull requests from this repository. Public-fork pull requests use the tokenless upload path. Project and patch statuses are informational without numerical targets.
+- New stable releases attach the native provenance bundle as `release-provenance.sigstore.json`. Before updating the draft, the workflow verifies it against the expected release manifest, repository, workflow, and source commit; earlier releases are unchanged.
 - Generated-input tests cover loopback recognition, IPv4-mapped IPv6, invalid ports, and hostile hostname suffixes through fast-check. CI-only Bun, pnpm, Yarn and OpenCode installations have separate integrity lockfiles maintained by Renovate; published-feed checks preserve the release driver while loading tools from the workflow commit. Native probe failures retain the package-specific diagnostic, and the setup fixture stays below the analyzer's complexity threshold. The digest-pinned production image uses its bundled npm for the locked, script-free install.
 - CI Dependency Review checks runtime, development, and unknown dependency scopes; the required Packaging check blocks failed, cancelled, or skipped reviews on every CI event. Branch pushes and manual runs compare their commit with the default branch so their checks cannot bypass pull-request review.
 - Harden-Runner audits supported jobs without write permissions, publishing credentials, or protected environments. Job containers and whole matrices containing Linux ARM64 are excluded because the action pre hook runs before step conditions; audit mode records network activity without enforcing an outbound allowlist.
@@ -271,6 +271,7 @@ Unreleased changes appear first and represent commits that have not yet been inc
 
 ### Fixed
 - CI tool setup uses normal executable discovery, probes copied native binaries before exposing them, and preserves native Windows Bun lookup. Renovate keeps CI-tool major updates separate and refreshes all lockfiles together; network, authentication, atomic-write and install-policy regressions cover the review findings.
+- Stable-release drafting passes optional arguments without expanding an empty Bash array under `nounset`, avoiding the macOS system Bash failure.
 - Container builds use npm bundled in the digest-pinned Node image, removing a separate unverified npm download while retaining the release lockfile and disabled install scripts.
 - The process-tree test passes child-program inputs through arguments instead of interpolating paths into JavaScript. Security regressions verify folder-discovery authentication, credential-file proof exclusions, and literal shell metacharacters in process arguments. Reviewed false positives and accepted repository-policy limitations are recorded with their evidence.
 - Kanban preset tests open menus through the keyboard so focus changes in jsdom do not dismiss them during persistence and accessibility checks.

@@ -10,6 +10,7 @@ Unreleased changes appear first and represent commits that have not yet been inc
 > Changes merged since the last versioned release that have not yet shipped in a tagged version.
 
 ### Summary
+- Failed ticket starts that stay in DRAFT clear provisional model locks and can be retried with updated settings.
 - CI reports V8 coverage across all four projects, and regression tests cover more CLI, workflow, interview, adapter, parser, and UI paths.
 - Security reports now have a private disclosure policy with scoped Safe Harbor terms.
 - New stable releases attach a verified provenance bundle as `release-provenance.sigstore.json`.
@@ -272,6 +273,7 @@ Unreleased changes appear first and represent commits that have not yet been inc
 - The unused `server/db/drizzle.config.ts` alias. Every database script already selects its app or project config explicitly, so keeping a third config that Drizzle Kit cannot discover from the repository root only advertised a command that no longer worked.
 
 ### Fixed
+- Failed START dispatches now clear provisional model locks from the ticket row and metadata while preserving a ticket whose actor has already advanced.
 - Process-control guard tests use a known live process for mismatched-token checks, avoiding intermittent Windows process-start lookup failures.
 - CI selects Bun's available x64 package when verifying a new Bun version, so the update no longer fails because the package has no separate baseline variant.
 - CI runs pnpm 12's locked Windows executable directly, so the global install check works while dependency lifecycle scripts stay disabled.

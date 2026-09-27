@@ -114,6 +114,16 @@ export function lockTicketModelSelection(
   })
 }
 
+export function clearTicketModelSelectionLock(projectRoot: string, externalId: string): TicketMetaRecord {
+  const current = readTicketMeta(projectRoot, externalId)
+  if (!('startedAt' in current || 'lockedMainImplementer' in current || 'lockedCouncilMembers' in current)) {
+    return current
+  }
+
+  const { startedAt: _startedAt, lockedMainImplementer: _lockedMainImplementer, lockedCouncilMembers: _lockedCouncilMembers, ...unlocked } = current
+  return writeTicketMeta(projectRoot, externalId, unlocked)
+}
+
 export function resolveTicketBaseBranch(projectRoot: string, externalId: string): string {
   const meta = readTicketMeta(projectRoot, externalId)
   if (typeof meta.baseBranch === 'string' && meta.baseBranch.trim().length > 0) {

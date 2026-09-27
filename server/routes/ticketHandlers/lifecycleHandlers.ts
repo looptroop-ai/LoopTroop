@@ -49,6 +49,7 @@ import {
   isDisplayOnlyMockTicket,
   isAttemptTrackedPhase,
   lockTicketStartConfiguration,
+  rollbackTicketStartConfiguration,
   patchTicket,
   resolveTicketContinuationCandidate,
 } from '../../storage/tickets'
@@ -90,31 +91,11 @@ import { resolveStoredWorkflowPhase } from '@shared/workflowMeta'
 import { parseLockedCouncilMemberVariants } from '../../storage/ticketQueries'
 
 function rollbackTicketStartToDraft(ticketId: string): void {
-  patchTicket(ticketId, {
-    status: 'DRAFT',
-    xstateSnapshot: null,
-    errorMessage: null,
-    branchName: null,
-    startedAt: null,
-    lockedMainImplementer: null,
-    lockedMainImplementerVariant: null,
-    lockedCouncilMembers: null,
-    lockedCouncilMemberVariants: null,
-    lockedInterviewQuestions: null,
-    lockedCoverageFollowUpBudgetPercent: null,
-    lockedMaxCoveragePasses: null,
-    lockedMaxPrdCoveragePasses: null,
-    lockedMaxBeadsCoveragePasses: null,
-    lockedStructuredRetryCount: null,
-    lockedManualQaEnabled: null,
-    lockedManualQaSource: null,
-    lockedAiQuestionsEnabled: null,
-    lockedAiQuestionsSource: null,
-    lockedAiQuestionWindow: null,
-    lockedAiQuestionWindowSource: null,
-    lockedGitHookPolicy: null,
-    lockedGitHookPolicySource: null,
-  })
+  const actorState = getTicketState(ticketId)
+  if (actorState && actorState.state !== 'DRAFT') return
+  if (getTicketByRef(ticketId)?.status !== 'DRAFT') return
+
+  if (!rollbackTicketStartConfiguration(ticketId)) return
   stopActor(ticketId)
 }
 

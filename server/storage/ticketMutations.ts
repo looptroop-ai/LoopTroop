@@ -8,7 +8,7 @@ import { getProjectContextById } from './projects'
 import { manualQaImprovementTickets, opencodeSessions, phaseArtifacts, projects, ticketErrorOccurrences, ticketPhaseAttempts, ticketStatusHistory, tickets } from '../db/schema'
 import { detectGitBaseBranch, getProjectWorktreesRoot } from './paths'
 import { resolveProjectTicketContainedPath, writeProjectTicketFile } from '../ticket/containedPath'
-import { councilMembersEqualOrdered, lockTicketModelSelection, resolveTicketBaseBranch } from '../ticket/metadata'
+import { clearTicketModelSelectionLock, councilMembersEqualOrdered, lockTicketModelSelection, resolveTicketBaseBranch } from '../ticket/metadata'
 import type {
   PublicTicket,
   TicketErrorOccurrence,
@@ -710,6 +710,49 @@ export function lockTicketStartConfiguration(
     throw new Error(`Ticket not found after locking start configuration: ${ticketRef}`)
   }
   return toPublicTicket(context.projectId, updated)
+}
+
+export function rollbackTicketStartConfiguration(ticketRef: string): PublicTicket | undefined {
+  const context = getTicketContext(ticketRef)
+  if (!context || context.localTicket.status !== 'DRAFT') return undefined
+
+  context.projectDb.update(tickets)
+    .set({
+      status: 'DRAFT',
+      xstateSnapshot: null,
+      errorMessage: null,
+      branchName: null,
+      startedAt: null,
+      lockedMainImplementer: null,
+      lockedMainImplementerVariant: null,
+      lockedCouncilMembers: null,
+      lockedCouncilMemberVariants: null,
+      lockedInterviewQuestions: null,
+      lockedCoverageFollowUpBudgetPercent: null,
+      lockedMaxCoveragePasses: null,
+      lockedMaxPrdCoveragePasses: null,
+      lockedMaxBeadsCoveragePasses: null,
+      lockedStructuredRetryCount: null,
+      lockedManualQaEnabled: null,
+      lockedManualQaSource: null,
+      lockedAiQuestionsEnabled: null,
+      lockedAiQuestionsSource: null,
+      lockedAiQuestionWindow: null,
+      lockedAiQuestionWindowSource: null,
+      lockedGitHookPolicy: null,
+      lockedGitHookPolicySource: null,
+      updatedAt: new Date().toISOString(),
+    })
+    .where(and(eq(tickets.id, context.localTicketId), eq(tickets.status, 'DRAFT')))
+    .run()
+
+  const updated = context.projectDb.select().from(tickets).where(eq(tickets.id, context.localTicketId)).get()
+  if (!updated || updated.status !== 'DRAFT') return undefined
+
+  clearTicketModelSelectionLock(context.projectRoot, context.externalId)
+  const publicTicket = toPublicTicket(context.projectId, updated)
+  syncTicketRuntimeProjection(publicTicket)
+  return publicTicket
 }
 
 export async function deleteTicket(ticketRef: string): Promise<boolean> {

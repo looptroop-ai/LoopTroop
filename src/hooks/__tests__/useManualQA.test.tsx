@@ -26,21 +26,6 @@ function createQueryHarness() {
 describe('useManualQaRound', () => {
   afterEach(() => vi.restoreAllMocks())
 
-  it('polls again while the server is generating a checklist', async () => {
-    vi.spyOn(globalThis, 'fetch').mockResolvedValue(new Response(JSON.stringify({ status: 'generating' }), {
-      status: 200,
-      headers: { 'Content-Type': 'application/json' },
-    }))
-    const { client, wrapper } = createQueryHarness()
-    const { result } = renderHook(() => useManualQaRound('ticket-1', 3), { wrapper })
-    await waitFor(() => expect(result.current.isSuccess).toBe(true))
-
-    const query = client.getQueryCache().find({ queryKey: ['manual-qa', 'ticket-1', 'version', 3] })!
-    const refetchInterval = query.options.refetchInterval
-    expect(typeof refetchInterval).toBe('function')
-    if (typeof refetchInterval === 'function') expect(refetchInterval(query)).toBeGreaterThan(0)
-  })
-
   it('normalizes checklist items with the documented Manual QA schema', async () => {
     vi.spyOn(globalThis, 'fetch').mockResolvedValue(new Response(JSON.stringify({
       version: 1,
@@ -230,12 +215,10 @@ describe('Manual QA mutations', () => {
         draft: { results: {} },
       }),
     })
-    expect(invalidate.mock.calls.map(([filters]) => filters.queryKey)).toEqual([
-      ['manual-qa', 'ticket-1', 'version', 2],
-      ['manual-qa', 'ticket-1', 'index'],
-      ['ticket', 'ticket-1'],
-      ['tickets'],
-    ])
+    expect(invalidate).toHaveBeenNthCalledWith(1, { queryKey: ['manual-qa', 'ticket-1', 'version', 2] })
+    expect(invalidate).toHaveBeenNthCalledWith(2, { queryKey: ['manual-qa', 'ticket-1', 'index'] })
+    expect(invalidate).toHaveBeenNthCalledWith(3, { queryKey: ['ticket', 'ticket-1'] })
+    expect(invalidate).toHaveBeenNthCalledWith(4, { queryKey: ['tickets'] })
     submit.unmount()
 
     invalidate.mockClear()

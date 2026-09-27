@@ -324,7 +324,7 @@ export default defineConfig({
         '**/generated/**',
         '**/*.generated.*',
       ],
-      reporter: ['lcov', 'text', 'json-summary'],
+      reporter: ['lcovonly', 'text', 'json-summary'],
       // Deliberately stopped or detached children leave incomplete profiles and add filesystem I/O.
       autoAttachSubprocess: false,
     },

@@ -26,8 +26,6 @@ type Job = {
   'runs-on'?: string
 }
 
-const commitRef = `\${{ github.event.pull_request.head.sha || github.sha }}`
-
 const step = (job: Job, predicate: (candidate: Step) => boolean): Step => {
   const result = job.steps?.find(predicate)
   if (!result) throw new Error('Expected workflow step is missing')
@@ -50,7 +48,7 @@ describe('coverage and Codecov policy', () => {
     expect(coverage).toMatchObject({
       provider: 'v8',
       include: ['{src,server,shared}/**/*.{ts,tsx,js,jsx,mjs,cjs}'],
-      reporter: ['lcov', 'text', 'json-summary'],
+      reporter: ['lcovonly', 'text', 'json-summary'],
       autoAttachSubprocess: false,
     })
     expect(coverage?.thresholds).toBeUndefined()
@@ -66,27 +64,28 @@ describe('coverage and Codecov policy', () => {
     ])
   })
 
-  it('keeps Codecov upload isolated from the coverage collection job', () => {
-    const coverage = requiredJob('coverage')
+  it('collects coverage in Verify and keeps the OIDC upload separate', () => {
+    const verify = requiredJob('verify')
     const upload = requiredJob('codecov')
-    expect(coverage['runs-on']).toBe('ubuntu-latest')
-    expect(coverage.permissions).toEqual({ contents: 'read' })
-    const audit = step(coverage, (candidate) => candidate.uses?.startsWith('step-security/harden-runner@') ?? false)
-    expect(audit.with?.['egress-policy']).toBe('audit')
-    const collectionCheckout = step(coverage, (candidate) => candidate.uses?.startsWith('actions/checkout@') ?? false)
-    expect(collectionCheckout.with).toMatchObject({ ref: commitRef, 'persist-credentials': false })
-    expect(step(coverage, (candidate) => candidate.uses?.startsWith('actions/setup-node@') ?? false).with)
+    expect(ci.jobs.coverage).toBeUndefined()
+    expect(verify['runs-on']).toBe('ubuntu-latest')
+    expect(verify.permissions).toEqual({ contents: 'read' })
+    const collectionCheckout = step(verify, (candidate) => candidate.uses?.startsWith('actions/checkout@') ?? false)
+    expect(collectionCheckout.with).toEqual({ 'persist-credentials': false })
+    expect(step(verify, (candidate) => candidate.uses?.startsWith('actions/setup-node@') ?? false).with)
       .toMatchObject({ 'node-version-file': '.nvmrc', cache: 'npm' })
-    expect(coverage.steps?.some((candidate) => candidate.run === 'node scripts/pin-npm.mjs')).toBe(true)
-    expect(coverage.steps?.some((candidate) => candidate.run === 'npm ci')).toBe(true)
-    expect(coverage.steps?.some((candidate) => candidate.run === 'npm run test:coverage')).toBe(true)
-    expect(step(coverage, (candidate) => candidate.uses?.startsWith('actions/upload-artifact@') ?? false).with)
-      .toMatchObject({ name: 'coverage-report', path: 'coverage/', 'if-no-files-found': 'error' })
+    expect(verify.steps?.some((candidate) => candidate.run === 'node scripts/pin-npm.mjs')).toBe(true)
+    expect(verify.steps?.some((candidate) => candidate.run === 'npm ci')).toBe(true)
+    expect(verify.steps?.some((candidate) => candidate.run === 'npm run test')).toBe(false)
+    expect(verify.steps?.some((candidate) => candidate.run === 'npm run test:coverage')).toBe(true)
+    expect(step(verify, (candidate) => candidate.uses?.startsWith('actions/upload-artifact@') ?? false).with)
+      .toMatchObject({
+        name: 'coverage-report', path: 'coverage/', 'if-no-files-found': 'error', 'retention-days': 7,
+      })
 
-    expect(upload.needs).toBe('coverage')
+    expect(upload.needs).toBe('verify')
     expect(upload.permissions).toEqual({ contents: 'read', 'id-token': 'write' })
     const uploadCheckout = step(upload, (candidate) => candidate.uses?.startsWith('actions/checkout@') ?? false)
-    expect(uploadCheckout.with).toMatchObject({ ref: commitRef, 'persist-credentials': false })
     expect(uploadCheckout.with).toEqual(collectionCheckout.with)
     expect(step(upload, (candidate) => candidate.uses?.startsWith('actions/download-artifact@') ?? false).with)
       .toMatchObject({ name: 'coverage-report', path: 'coverage' })

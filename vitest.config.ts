@@ -182,6 +182,7 @@ const serverIntegrationTests = [
   'server/workflow/phases/__tests__/ticketDirContext.test.ts',
   'server/workflow/__tests__/beadsDraftPhase.test.ts',
   'server/workflow/__tests__/beadsRefinePhase.test.ts',
+  'server/workflow/phases/__tests__/beadsExpandStep.test.ts',
   'server/workflow/__tests__/beadsVotePhase.test.ts',
   'server/workflow/__tests__/coverageEnvelope.test.ts',
   'server/workflow/__tests__/executionPhase.test.ts',

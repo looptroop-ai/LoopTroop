@@ -42,7 +42,7 @@ describe('process-control identity guards', () => {
   })
 
   it('refuses a live pid whose token is different or unavailable', async () => {
-    const { pid } = target()
+    const pid = process.pid
     const match = vi.spyOn(processIdentity, 'matchProcess').mockReturnValue({ kind: 'different' })
 
     expect(signalTermination(pid, 'original-start')).toBe(false)

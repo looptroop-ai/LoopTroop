@@ -556,6 +556,29 @@ describe('runGitHookValidationCommands', () => {
     expect(refused.recoveryFailure).toContain(markerPath)
     expect(existsSync(markerPath)).toBe(true)
   })
+
+  it.each(['../outside', 'absolute', 'bad\0name'])(
+    'refuses a restore marker containing unsafe untracked path %j',
+    async (candidate) => {
+      const root = makeRepo()
+      const unsafePath = candidate === 'absolute' ? join(root, 'outside') : candidate
+      const markerPath = writeInterruptedValidationMarker(root, { untrackedPaths: [unsafePath] })
+
+      const refused = await runGitHookValidationCommands({
+        commands: [hookCommand('must-not-run', 'node -e "process.exit(9)"')],
+        worktreePath: root,
+        stopOnFirstFailure: true,
+        protectWorktree: false,
+        auditFileMutation: false,
+        nextTimeoutMs: () => 30_000,
+      })
+
+      expect(refused.refused).toBe(true)
+      expect(refused.recoveryFailure).toContain('restore marker is malformed')
+      expect(refused.recoveryFailure).toContain(markerPath)
+      expect(existsSync(markerPath)).toBe(true)
+    },
+  )
 })
 
 describe('runGitHookValidationCommand', () => {

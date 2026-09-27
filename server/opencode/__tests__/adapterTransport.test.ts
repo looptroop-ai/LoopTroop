@@ -1493,5 +1493,36 @@ describe('OpenCode adapter transport orchestration', () => {
       directory: '/worktree',
       answers: [['a']],
     }), expect.anything())
+
+    await adapter.listPendingQuestions(undefined, undefined, 'session-1')
+    await adapter.rejectQuestion('question-1', undefined, undefined, 'session-1')
+    expect(client.question.reject).toHaveBeenCalledWith(expect.objectContaining({
+      requestID: 'question-1',
+      directory: '/worktree',
+    }), expect.anything())
+  })
+
+  it('wraps session creation errors and uses the cached worktree directory for cleanup', async () => {
+    const failure = new Error('session-scoped permissions are unsupported')
+    const failingAdapter = createAdapter(createV2Transport({
+      createSession: vi.fn(async () => { throw failure }),
+    }).transport)
+
+    await expect(failingAdapter.createSession('/workspace')).rejects.toThrow(
+      'Failed to create OpenCode session: session-scoped permissions are unsupported',
+    )
+    await expect(failingAdapter.createSession('/workspace', undefined, {
+      permission: [{ permission: 'read', pattern: '*', action: 'allow' }],
+    })).rejects.toThrow(/allow-all permissions.*Upgrade OpenCode/s)
+
+    const session = { id: 'created-session', directory: '/trusted/worktree' }
+    const { transport } = createV2Transport({
+      createSession: vi.fn(async () => session),
+      interruptSession: vi.fn(async () => true),
+    })
+    const adapter = createAdapter(transport)
+    await expect(adapter.createSession('/workspace')).resolves.toEqual(session)
+    await expect(adapter.abortSession(session.id)).resolves.toBe(true)
+    expect(transport.interruptSession).toHaveBeenCalledWith(session.id, '/trusted/worktree')
   })
 })

@@ -10,8 +10,7 @@ Unreleased changes appear first and represent commits that have not yet been inc
 > Changes merged since the last versioned release that have not yet shipped in a tagged version.
 
 ### Summary
-- CLI status now has regression coverage for daemon ownership, shutdown recovery, and one-time sign-in links.
-- Contributors can review V8 coverage across all four Vitest projects.
+- CI reports V8 coverage across all four projects, and regression tests cover more CLI, workflow, interview, adapter, parser, and UI paths.
 - Security reports now have a private disclosure policy with scoped Safe Harbor terms.
 - New stable releases attach a verified provenance bundle as `release-provenance.sigstore.json`.
 - CI tools install from integrity lockfiles without third-party lifecycle scripts, network boundaries gain generated-input tests, and security findings have verified dispositions.
@@ -50,6 +49,7 @@ Unreleased changes appear first and represent commits that have not yet been inc
 
 ### Added
 - Added focused CLI tests for healthy, missing, unresponsive, and cleanup-pending daemon status, including token redaction and invalid sign-in nonces.
+- Regression tests now exercise workflow setup and verification, interview normalization and answer edits, manual QA routes, OpenCode adapter error paths, YAML repairs, and artifact and prompt UI states. Database- and mock-backed workflow tests run in the isolated integration project, and the source scan test allows a minute under coverage instrumentation.
 - `npm run test:coverage` reports V8 coverage across all four Vitest projects as LCOV, text, and JSON summary output. CI collects it in the required Ubuntu Verify job and retains the LCOV and JSON files for seven days. Pull request reports use the same source revision Codecov associates with the upload. A separate OIDC Codecov job uploads LCOV on pushes, manual runs, and pull requests from this repository; public-fork pull requests use the tokenless path. Project and patch statuses are informational without numerical targets.
 - New stable releases attach the native provenance bundle as `release-provenance.sigstore.json`. Before updating the draft, the workflow verifies it against the expected release manifest, repository, workflow, and source commit; earlier releases are unchanged.
 - Generated-input tests cover loopback recognition, IPv4-mapped IPv6, invalid ports, and hostile hostname suffixes through fast-check. CI-only Bun, pnpm, Yarn and OpenCode installations have separate integrity lockfiles maintained by Renovate; published-feed checks preserve the release driver while loading tools from the workflow commit. Native probe failures retain the package-specific diagnostic, and the setup fixture stays below the analyzer's complexity threshold. The digest-pinned production image uses its bundled npm for the locked, script-free install.

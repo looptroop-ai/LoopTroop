@@ -1,7 +1,8 @@
-import { describe, expect, it } from 'vitest'
+import { describe, expect, it, vi } from 'vitest'
 import { OpenCodeSDKAdapter } from '../adapter'
 import { OpenCodeV1Transport } from '../v1Transport'
 import { OpenCodeConnectionError } from '../connection'
+import type { OpenCodeTransport } from '../transport'
 import type { GenericMessagePart, StreamEvent } from '../types'
 
 interface AdapterInternals {
@@ -154,5 +155,24 @@ describe.concurrent('OpenCode diagnostic event mapping', () => {
       response: { status: 404 },
       error: { data: { status: 500 } },
     })).toBe(true)
+  })
+
+  it('returns only confirmed missing sessions as null and preserves other lookup failures', async () => {
+    const withGetSession = (getSession: OpenCodeTransport['getSession']) => new OpenCodeSDKAdapter(
+      'http://127.0.0.1:4096',
+      undefined,
+      async () => ({ getSession } as unknown as OpenCodeTransport),
+    )
+    const session = { id: 'session-1', directory: '/trusted/worktree' }
+    await expect(withGetSession(vi.fn(async () => session)).getSession('session-1')).resolves.toEqual(session)
+
+    const missing = { response: { status: 404 } }
+    await expect(withGetSession(vi.fn(async () => { throw missing })).getSession('missing')).resolves.toBeNull()
+
+    const unconfirmed = new Error('session not found (404)')
+    await expect(withGetSession(vi.fn(async () => { throw unconfirmed })).getSession('unknown')).rejects.toBe(unconfirmed)
+
+    const cancelled = new DOMException('Request cancelled', 'AbortError')
+    await expect(withGetSession(vi.fn(async () => { throw cancelled })).getSession('cancelled')).rejects.toBe(cancelled)
   })
 })

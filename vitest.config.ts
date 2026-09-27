@@ -200,6 +200,7 @@ const serverIntegrationTests = [
   'server/workflow/__tests__/workflowErrors.test.ts',
   'server/workflow/__tests__/skipAllInterviewQuestionsToApproval.test.ts',
   'server/workflow/__tests__/verificationFinalTestPhase.test.ts',
+  'server/workflow/__tests__/verificationPhaseCoverage.test.ts',
   // Mocks the OpenCode session layer, which the daemon tests load for real.
   'server/phases/prd/__tests__/draft.test.ts',
   // Asserts on real module state (timers, signal handlers, sockets), so it
@@ -292,6 +293,7 @@ const serverIntegrationTests = [
   'server/storage/__tests__/ticketQueries.test.ts',
   'server/storage/__tests__/projectWorktreeCleanup.test.ts',
   'server/workflow/__tests__/executionSetupPhase.test.ts',
+  'server/workflow/__tests__/executionSetupPlanPhase.test.ts',
   'server/workflow/__tests__/interviewVotePhase.test.ts',
   'server/workflow/__tests__/interviewBatchCas.test.ts',
   'server/workflow/__tests__/interviewBatchClaims.test.ts',

@@ -3,8 +3,12 @@ import { afterEach, describe, expect, it, vi } from 'vitest'
 import type { TicketContext } from '../../machines/types'
 import { ticketMachine } from '../../machines/ticketMachine'
 import { attachWorkflowRunner } from '../runner'
+import { handleCleanup as handleCleanupPhase } from '../phases/cleanupPhase'
+import * as phaseHelpers from '../phases/helpers'
 import * as questionWindows from '../questionWindows'
 import { interviewQASessions, phaseIntermediate, runningPhases, ticketAbortControllers } from '../phases'
+import * as cleaner from '../../phases/cleanup/cleaner'
+import * as ticketStorage from '../../storage/tickets'
 import { OpenCodeUnavailableError, TicketWorkspaceNotInitializedError } from '../../lib/workflowErrors'
 import { TEST, makeTicketContext } from '../../test/factories'
 import {
@@ -275,6 +279,45 @@ describe('attachWorkflowRunner', () => {
       codes: ['MOCK_LIFECYCLE_FAILED'],
     }))
     actor.stop()
+  })
+
+  it('stores the cleanup report, emits its details, and completes the phase', async () => {
+    const report = {
+      status: 'warning' as const,
+      removedDirs: ['/ticket/runtime/sessions'],
+      removedFiles: ['/ticket/runtime/state.yaml'],
+      preservedPaths: ['/ticket/.ticket/prd.yaml'],
+      errors: ['Could not remove runtime/tmp'],
+    }
+    const cleanup = vi.spyOn(cleaner, 'cleanupTicketResources').mockReturnValue(report)
+    const insertArtifact = vi.spyOn(ticketStorage, 'insertPhaseArtifact').mockImplementation(() => undefined)
+    const emitLog = vi.spyOn(phaseHelpers, 'emitPhaseLog').mockImplementation(() => undefined)
+    isMockOpenCodeModeMock.mockReturnValue(false)
+    const context = makeTicketContext()
+    const sendEvent = vi.fn()
+
+    try {
+      await handleCleanupPhase(TEST.ticketId, context, sendEvent)
+
+      expect(cleanup).toHaveBeenCalledWith(TEST.ticketId)
+      expect(insertArtifact).toHaveBeenCalledWith(TEST.ticketId, {
+        phase: 'CLEANING_ENV',
+        artifactType: 'cleanup_report',
+        content: JSON.stringify(report),
+      })
+      expect(emitLog.mock.calls.map((call) => call[4])).toEqual([
+        'Removed: /ticket/runtime/sessions',
+        'Removed file: /ticket/runtime/state.yaml',
+        'Preserved: /ticket/.ticket/prd.yaml',
+        'Cleanup error: Could not remove runtime/tmp',
+        'Cleanup completed with 1 warning(s).',
+      ])
+      expect(sendEvent).toHaveBeenCalledExactlyOnceWith({ type: 'CLEANUP_DONE' })
+    } finally {
+      cleanup.mockRestore()
+      insertArtifact.mockRestore()
+      emitLog.mockRestore()
+    }
   })
 
   it('preserves other phases error codes for typed workspace failures', async () => {

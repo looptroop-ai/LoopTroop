@@ -303,6 +303,91 @@ items:
     expect(screen.getByText('Keep imports idempotent.')).toBeInTheDocument()
   })
 
+  it('renders answers from the legacy interview snapshot shape', () => {
+    render(
+      <InterviewAnswersView
+        content={JSON.stringify({
+          questions: [
+            {
+              id: 'Q01',
+              prompt: 'Which deployment targets are required?',
+              answerType: 'multiple_choice',
+              options: [
+                { id: 'web', label: 'Web' },
+                { id: 'desktop', label: 'Desktop' },
+              ],
+            },
+            { id: 'Q02', prompt: 'Should the old migration be skipped?', answerType: 'free_text' },
+          ],
+          answers: {
+            Q01: { skipped: false, answer: 'Start with web only.', selectedOptionIds: ['web'], answeredAt: '2026-01-02T03:04:05Z' },
+            Q02: { skipped: true, answer: '', selectedOptionIds: [], answeredAt: '2026-01-02T03:05:05Z' },
+          },
+        })}
+      />,
+    )
+
+    openFoundationGroup()
+    expect(screen.getByText('Which deployment targets are required?')).toBeInTheDocument()
+    expect(screen.getByText('Web')).toBeInTheDocument()
+    expect(screen.getByText('Start with web only.')).toBeInTheDocument()
+    expect(screen.getByText('Should the old migration be skipped?')).toBeInTheDocument()
+    expect(screen.getByText(/This question was skipped/i)).toBeInTheDocument()
+  })
+
+  it('shows question changes and their source in a final interview diff', async () => {
+    render(
+      <ArtifactContent
+        artifactId="final-interview"
+        phase="REFINING_INTERVIEW"
+        content={JSON.stringify({
+          winnerId: 'openai/gpt-5.2',
+          originalContent: buildCanonicalInterviewContent([
+            { id: 'Q01', phase: 'Foundation', prompt: 'How should imports work?' },
+          ]),
+          refinedContent: buildCanonicalInterviewContent([
+            { id: 'Q01', phase: 'Foundation', prompt: 'How should imports remain idempotent?' },
+          ]),
+          uiRefinementDiff: {
+            domain: 'interview',
+            winnerId: 'openai/gpt-5.2',
+            generatedAt: '2026-09-01T12:00:00.000Z',
+            entries: [
+              {
+                key: 'Q01:modified:0',
+                changeType: 'modified',
+                itemKind: 'question',
+                label: 'Q01',
+                beforeText: 'Phase: Foundation\nHow should imports work?',
+                afterText: 'Phase: Foundation\nHow should imports remain idempotent?',
+                inspiration: {
+                  memberId: '',
+                  sourceLabel: 'Alternative import prompt',
+                  sourceText: 'Could imports be safely repeated?',
+                },
+                attributionStatus: 'inspired',
+              },
+            ],
+          },
+        })}
+      />,
+    )
+
+    fireEvent.click(screen.getByRole('button', { name: /^Diff(?: \(\d+\))?$/i }))
+    expect(screen.getByText('Q01')).toBeInTheDocument()
+    expect(screen.getByText(hasExactTextContent('How should imports work?'))).toBeInTheDocument()
+    expect(screen.getByText(hasExactTextContent('How should imports remain idempotent?'))).toBeInTheDocument()
+
+    const trigger = document.querySelector('.lucide-lightbulb')?.parentElement
+    expect(trigger).toBeTruthy()
+    if (!trigger) return
+    fireEvent.pointerMove(trigger)
+    fireEvent.mouseEnter(trigger)
+
+    expect(await screen.findByText('Inspired by Unknown model')).toBeInTheDocument()
+    expect(screen.getByText('Could imports be safely repeated?')).toBeInTheDocument()
+  })
+
   it('merges execution setup plan diagnostics into the setup plan artifact view', () => {
     render(
       <ArtifactContent
@@ -1580,6 +1665,86 @@ items:
     expect(screen.getByText('No refinement changes recorded.')).toBeInTheDocument()
   })
 
+  it('shows structured and legacy inferred source blocks in PRD refinement tooltips', async () => {
+    const prdContent = buildPrdDocumentContent()
+
+    render(
+      <ArtifactContent
+        artifactId="refined-prd"
+        phase="REFINING_PRD"
+        content={JSON.stringify({
+          winnerId: 'openai/gpt-5.2',
+          refinedContent: prdContent,
+          uiRefinementDiff: {
+            domain: 'prd',
+            winnerId: 'openai/gpt-5.2',
+            generatedAt: '2026-09-01T12:00:00.000Z',
+            entries: [
+              {
+                key: 'blocks',
+                changeType: 'modified',
+                itemKind: 'epic',
+                label: 'Structured source',
+                beforeText: 'Before',
+                afterText: 'After',
+                inspiration: {
+                  memberId: '',
+                  sourceLabel: 'Source blocks',
+                  blocks: [
+                    { kind: 'epic', id: 'EPIC-4', label: 'Epic', text: 'Epic source text.' },
+                    { kind: 'user_story', id: 'US-4', label: 'Story', text: 'Story source text.' },
+                    { kind: 'bead', id: 'bead-4', label: 'Bead', text: 'Bead source text.' },
+                  ],
+                },
+                attributionStatus: 'inspired',
+              },
+              {
+                key: 'legacy',
+                changeType: 'modified',
+                itemKind: 'legacy_item',
+                label: 'Legacy source',
+                beforeText: 'Before',
+                afterText: 'After',
+                inspiration: {
+                  memberId: '',
+                  sourceId: 'US-9',
+                  sourceLabel: 'Older user story source',
+                  sourceText: 'Verify rollback after deployment.',
+                },
+                attributionStatus: 'inspired',
+              },
+            ],
+          },
+        })}
+      />,
+    )
+
+    fireEvent.click(screen.getByRole('button', { name: /^Diff(?: \(\d+\))?$/i }))
+    const triggers = document.querySelectorAll('.lucide-lightbulb')
+    expect(triggers).toHaveLength(2)
+
+    const firstTrigger = triggers[0]?.parentElement
+    expect(firstTrigger).toBeTruthy()
+    if (!firstTrigger) return
+    fireEvent.pointerMove(firstTrigger)
+    fireEvent.mouseEnter(firstTrigger)
+    expect(await screen.findByText('Inspired by Unknown model')).toBeInTheDocument()
+    expect(screen.getByText('EPIC-4')).toBeInTheDocument()
+    expect(screen.getByText('US-4')).toBeInTheDocument()
+    expect(screen.getByText('bead-4')).toBeInTheDocument()
+    expect(screen.getByText('Epic source text.')).toBeInTheDocument()
+    expect(screen.getByText('Story source text.')).toBeInTheDocument()
+    expect(screen.getByText('Bead source text.')).toBeInTheDocument()
+
+    const secondTrigger = document.querySelectorAll('.lucide-lightbulb')[1]?.parentElement
+    expect(secondTrigger).toBeTruthy()
+    if (!secondTrigger) return
+    fireEvent.pointerMove(secondTrigger)
+    fireEvent.mouseEnter(secondTrigger)
+    expect(await screen.findByText('US-9')).toBeInTheDocument()
+    expect(screen.getByText('Verify rollback after deployment.')).toBeInTheDocument()
+  })
+
   // PR-13 §13.1 pointed `PrdDraftView` at the shared parser in
   // `src/lib/prdDocument.ts`. It used to accept anything carrying an `epics`
   // array, so a draft with no `artifact: prd` marker or with untitled epics
@@ -1958,6 +2123,44 @@ items:
     expect(screen.getByText('GUI verification needs a concrete repo-standard test path before approval.')).toBeInTheDocument()
     expect(screen.queryByText('Stale attempt gap that should not win over remainingGaps.')).not.toBeInTheDocument()
     expect(screen.queryByText('Historical transition gap that should not win over remainingGaps.')).not.toBeInTheDocument()
+  })
+
+  it('shows standalone transition notes and the candidate diff for a coverage pass', () => {
+    render(
+      <ArtifactContent
+        artifactId="coverage-report"
+        phase="WAITING_PRD_APPROVAL"
+        content={JSON.stringify({
+          transitions: [
+            {
+              fromVersion: 1,
+              toVersion: 2,
+              summary: 'Coverage revised PRD Candidate v1 into v2.',
+              gaps: ['The first candidate missed rollback verification.'],
+              auditNotes: 'status: gaps',
+              fromContent: buildPrdDocumentContent({
+                architectureConstraint: 'Keep deployment steps documented.',
+              }),
+              toContent: buildPrdDocumentContent({
+                architectureConstraint: 'Keep deployment and rollback steps documented.',
+              }),
+              gapResolutions: [],
+              resolutionNotes: ['Added rollback verification to the architecture constraints.'],
+            },
+          ],
+        })}
+      />,
+    )
+
+    fireEvent.click(screen.getByRole('button', { name: /v1 > v2/i }))
+    expect(screen.getByText('The first candidate missed rollback verification.')).toBeInTheDocument()
+
+    fireEvent.click(screen.getByRole('button', { name: 'Resolution Notes' }))
+    expect(screen.getByText('Added rollback verification to the architecture constraints.')).toBeInTheDocument()
+
+    fireEvent.click(screen.getByRole('button', { name: 'Diff' }))
+    expect(screen.getAllByText(hasExactTextContent('- Keep deployment steps documented.')).length).toBeGreaterThan(0)
+    expect(screen.getAllByText(hasExactTextContent('- Keep deployment and rollback steps documented.')).length).toBeGreaterThan(0)
   })
 
   it('labels user-triggered coverage fixes as Extra Fix tabs and keeps Latest Check last', () => {

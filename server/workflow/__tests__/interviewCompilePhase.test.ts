@@ -1,12 +1,18 @@
 import { afterAll, beforeEach, describe, expect, it, vi } from 'vitest'
 import { readFileSync, rmSync, symlinkSync } from 'node:fs'
 import { join } from 'node:path'
-import { createInterviewSessionSnapshot } from '../../phases/interview/sessionState'
+import {
+  buildPersistedBatch,
+  createInterviewSessionSnapshot,
+  INTERVIEW_QA_SESSION_ARTIFACT,
+  recordBatchAnswers,
+  recordPreparedBatch,
+} from '../../phases/interview/sessionState'
 import { parseUiArtifactCompanionArtifact } from '@shared/artifactCompanions'
 import { parseUiRefinementDiffArtifact } from '@shared/refinementDiffArtifacts'
 import type { DraftPhaseResult, DraftProgressEvent } from '../../council/types'
 import { attachProject } from '../../storage/projects'
-import { createTicket, getLatestPhaseArtifact, getTicketPaths } from '../../storage/tickets'
+import { createTicket, getLatestPhaseArtifact, getTicketPaths, upsertLatestPhaseArtifact } from '../../storage/tickets'
 import { TEST, makeTicketContextFromTicket as makeTicketContext } from '../../test/factories'
 import { createInitializedTestTicket, createTestRepoManager, resetTestDb } from '../../test/integration'
 import { initializeTicket } from '../../ticket/initialize'
@@ -32,7 +38,35 @@ vi.mock('../../council/refiner', () => ({
   refineDraft: refineDraftMock,
 }))
 
-import { handleInterviewCompile, handleInterviewDeliberate, loadCanonicalInterview, writeCanonicalInterview } from '../phases/interviewPhase'
+import {
+  buildCoverageFollowUpCommentary,
+  buildInterviewRefinePrompt,
+  buildInterviewVotePrompt,
+  buildMockInterviewCompiledContent,
+  buildMockInterviewDraftContent,
+  buildMockInterviewDrafts,
+  buildMockInterviewFollowUpQuestions,
+  buildMockInterviewFinalQuestion,
+  buildMockInterviewQuestions,
+  buildMockInterviewVoteResult,
+  buildPersistedMockInterviewBatch,
+  handleInterviewCompile,
+  handleInterviewDeliberate,
+  handleInterviewQAStart,
+  handleMockCouncilDeliberate,
+  handleMockInterviewCompile,
+  handleMockInterviewQAStart,
+  handleMockInterviewVote,
+  loadCanonicalInterview,
+  readInterviewQASessionArtifact,
+  readInterviewSessionSnapshotArtifact,
+  readMockInterviewWinnerId,
+  restoreInterruptedInterviewBatch,
+  snapshotFingerprint,
+  writeCanonicalInterview,
+  writeInterviewSessionSnapshotArtifact,
+} from '../phases/interviewPhase'
+import { broadcaster } from '../../sse/broadcaster'
 
 const repoManager = createTestRepoManager('interview-compile')
 
@@ -511,5 +545,254 @@ describe('interview workflow phases', () => {
     ]))
 
     expect(sendEvent).toHaveBeenCalledWith({ type: 'READY' })
+  })
+
+  it('builds mock interview batches and preserves the voting and refinement prompt context', () => {
+    const questions = buildMockInterviewQuestions()
+    expect(questions.map(({ id }) => id)).toEqual(['goal', 'constraints', 'verification'])
+    expect(buildMockInterviewFollowUpQuestions()[0]?.id).toBe('tradeoffs')
+    expect(buildMockInterviewFinalQuestion().id).toBe('final_notes')
+    expect(buildMockInterviewCompiledContent()).toContain('What is the primary outcome')
+    expect(buildMockInterviewDraftContent(0)).not.toContain('tradeoffs-2')
+    expect(buildMockInterviewDraftContent(1)).toContain('tradeoffs-2')
+
+    const members = TEST.councilMembers.map((modelId) => ({
+      modelId,
+      name: modelId.split('/').at(-1) ?? modelId,
+    }))
+    const drafts = buildMockInterviewDrafts(members)
+    expect(drafts.map(({ questionCount }) => questionCount)).toEqual([3, 4])
+    const voteResult = buildMockInterviewVoteResult(members, drafts)
+    expect(voteResult).toMatchObject({
+      winnerId: TEST.councilMembers[0],
+      totalScore: 185,
+      presentationOrders: {
+        [TEST.councilMembers[0]]: { order: [TEST.councilMembers[0], TEST.councilMembers[1]] },
+        [TEST.councilMembers[1]]: { order: [TEST.councilMembers[1], TEST.councilMembers[0]] },
+      },
+    })
+
+    const ticketState = {
+      ticketId: TEST.externalId,
+      title: 'Test voting prompt',
+      description: 'Keep interview context.',
+      relevantFiles: 'src/main.ts',
+    }
+    const votePrompt = buildInterviewVotePrompt(ticketState, ['Draft A'], [
+      { category: 'Coverage', weight: 3, description: 'Checks requirement coverage.' },
+    ])
+    const refinePrompt = buildInterviewRefinePrompt(ticketState, drafts[0]!, drafts.slice(1))
+    expect(votePrompt[0]?.content).toContain('Coverage (3pts)')
+    expect(refinePrompt[0]?.content).toContain('Alternative Draft 1')
+    expect(buildCoverageFollowUpCommentary('\n  \nA missing acceptance criterion.\n')).toBe(
+      'Coverage follow-up needed: A missing acceptance criterion.',
+    )
+    expect(buildCoverageFollowUpCommentary(' \n ')).toBe(
+      'Coverage follow-up questions generated to close remaining gaps.',
+    )
+
+    let snapshot = createInterviewSessionSnapshot({
+      winnerId: TEST.councilMembers[0],
+      compiledQuestions: questions.map(({ id, phase, question }) => ({ id, phase, question })),
+      maxInitialQuestions: questions.length,
+    })
+    expect(buildPersistedMockInterviewBatch(snapshot)).toBeNull()
+    const initialBatch = buildPersistedBatch({
+      questions: questions.map(({ id, phase, question, priority, rationale }) => ({ id, phase, question, priority, rationale })),
+      progress: { current: 1, total: 3 },
+      isComplete: false,
+      isFinalFreeForm: false,
+      aiCommentary: 'Start.',
+      batchNumber: 1,
+    }, 'prom4', snapshot)
+    snapshot = recordBatchAnswers(
+      recordPreparedBatch(snapshot, initialBatch),
+      Object.fromEntries(questions.map(({ id }) => [id, 'answered'])),
+    )
+
+    const followUp = buildPersistedMockInterviewBatch(snapshot)
+    expect(followUp).toMatchObject({ batchNumber: 2, isFinalFreeForm: false })
+    snapshot = recordBatchAnswers(
+      recordPreparedBatch(snapshot, buildPersistedBatch(followUp!, 'prom4', snapshot)),
+      { tradeoffs: 'Keep the public interface small.' },
+    )
+    const finalQuestion = buildPersistedMockInterviewBatch(snapshot)
+    expect(finalQuestion).toMatchObject({ batchNumber: 3, isFinalFreeForm: true })
+    snapshot = recordBatchAnswers(
+      recordPreparedBatch(snapshot, buildPersistedBatch(finalQuestion!, 'prom4', snapshot)),
+      { final_notes: 'Preserve deterministic output.' },
+    )
+    expect(buildPersistedMockInterviewBatch(snapshot)).toBeNull()
+  })
+
+  it('writes mock interview draft artifacts and announces the council candidates', async () => {
+    const { ticket } = await createInitializedTestTicket(repoManager)
+    const context = makeTicketContext(ticket, { status: 'COUNCIL_DELIBERATING' })
+    const sendEvent = vi.fn()
+
+    await handleMockCouncilDeliberate(ticket.id, context, sendEvent)
+
+    const artifact = getLatestPhaseArtifact(ticket.id, 'interview_drafts', 'COUNCIL_DELIBERATING')
+    const persisted = JSON.parse(artifact?.content ?? '{}') as {
+      drafts: Array<{ memberId: string; outcome: string }>
+      isFinal: boolean
+    }
+    expect(persisted.drafts.map(({ memberId }) => memberId)).toEqual([...TEST.councilMembers])
+    expect(persisted.drafts[0]).toMatchObject({ memberId: TEST.councilMembers[0], outcome: 'completed' })
+    expect(persisted.isFinal).toBe(true)
+    expect(sendEvent).toHaveBeenCalledWith({
+      type: 'QUESTIONS_READY',
+      result: { winnerId: TEST.councilMembers[0] },
+    })
+  })
+
+  it('writes the mock interview winner and emits the voting decision', async () => {
+    const { ticket } = await createInitializedTestTicket(repoManager)
+    const context = makeTicketContext(ticket, { status: 'COUNCIL_VOTING_INTERVIEW' })
+    const sendEvent = vi.fn()
+
+    await handleMockInterviewVote(ticket.id, context, sendEvent)
+
+    const artifact = getLatestPhaseArtifact(ticket.id, 'interview_votes', 'COUNCIL_VOTING_INTERVIEW')
+    expect(JSON.parse(artifact?.content ?? '{}')).toEqual({
+      winnerId: TEST.councilMembers[0],
+      isFinal: true,
+    })
+    expect(sendEvent).toHaveBeenCalledWith({ type: 'WINNER_SELECTED', winner: TEST.councilMembers[0] })
+  })
+
+  it('compiles a mock interview from the persisted winner and supports the fallback', async () => {
+    const { ticket } = await createInitializedTestTicket(repoManager)
+    const context = makeTicketContext(ticket, { status: 'COMPILING_INTERVIEW' })
+    const sendEvent = vi.fn()
+
+    expect(readMockInterviewWinnerId(ticket.id, 'fallback-model')).toBe('fallback-model')
+    upsertLatestPhaseArtifact(
+      ticket.id,
+      'interview_votes',
+      'COUNCIL_VOTING_INTERVIEW',
+      JSON.stringify({ winnerId: TEST.councilMembers[1] }),
+    )
+    expect(readMockInterviewWinnerId(ticket.id, 'fallback-model')).toBe(TEST.councilMembers[1])
+
+    await handleMockInterviewCompile(ticket.id, context, sendEvent)
+
+    expect(JSON.parse(getLatestPhaseArtifact(ticket.id, 'interview_winner', 'COMPILING_INTERVIEW')?.content ?? '{}'))
+      .toEqual({ winnerId: TEST.councilMembers[1] })
+    expect(JSON.parse(getLatestPhaseArtifact(ticket.id, 'interview_compiled', 'COMPILING_INTERVIEW')?.content ?? '{}'))
+      .toMatchObject({ refinedContent: expect.stringContaining('What is the primary outcome') })
+    expect(sendEvent).toHaveBeenCalledWith({ type: 'READY' })
+  })
+
+  it('starts and persists a mock interview batch', async () => {
+    const { ticket } = await createInitializedTestTicket(repoManager)
+    const context = makeTicketContext(ticket, {
+      status: 'WAITING_INTERVIEW_ANSWERS',
+      lockedInterviewQuestions: 10,
+      lockedCoverageFollowUpBudgetPercent: 20,
+      lockedMaxCoveragePasses: 3,
+    })
+
+    await handleMockInterviewQAStart(ticket.id, context)
+
+    expect(readInterviewQASessionArtifact(ticket.id)).toEqual({
+      sessionId: 'mock-session',
+      winnerId: TEST.councilMembers[0],
+    })
+    expect(readInterviewSessionSnapshotArtifact(ticket.id)?.currentBatch).toMatchObject({
+      batchNumber: 1,
+      questions: [{ id: 'goal' }, { id: 'constraints' }, { id: 'verification' }],
+    })
+  })
+
+  it('resumes a persisted interview batch without starting a model session', async () => {
+    const { ticket } = await createInitializedTestTicket(repoManager)
+    const base = createInterviewSessionSnapshot({
+      winnerId: TEST.councilMembers[0],
+      compiledQuestions: [{ id: 'Q01', phase: 'Foundation', question: 'What matters most?' }],
+      maxInitialQuestions: 1,
+    })
+    const batch = buildPersistedBatch({
+      questions: [{ id: 'Q01', phase: 'Foundation', question: 'What matters most?' }],
+      progress: { current: 1, total: 1 },
+      isComplete: false,
+      isFinalFreeForm: false,
+      aiCommentary: 'Answer this question.',
+      batchNumber: 1,
+    }, 'prom4', base)
+    const snapshot = recordPreparedBatch(base, batch)
+    writeInterviewSessionSnapshotArtifact(ticket.id, snapshot)
+    const broadcast = vi.spyOn(broadcaster, 'broadcast')
+
+    try {
+      await handleInterviewQAStart(
+        ticket.id,
+        makeTicketContext(ticket, { status: 'WAITING_INTERVIEW_ANSWERS' }),
+        vi.fn(),
+        new AbortController().signal,
+      )
+      expect(broadcast).toHaveBeenCalledWith(ticket.id, 'needs_input', {
+        ticketId: ticket.id,
+        type: 'interview_batch',
+        batch: snapshot.currentBatch,
+      })
+    } finally {
+      broadcast.mockRestore()
+    }
+  })
+
+  it('restores an interrupted PROM4 batch only while its answered snapshot still matches', async () => {
+    const { ticket } = await createInitializedTestTicket(repoManager)
+    const base = createInterviewSessionSnapshot({
+      winnerId: TEST.councilMembers[0],
+      compiledQuestions: [{ id: 'Q01', phase: 'Foundation', question: 'What matters most?' }],
+      maxInitialQuestions: 1,
+    })
+    const batch = buildPersistedBatch({
+      questions: [{ id: 'Q01', phase: 'Foundation', question: 'What matters most?' }],
+      progress: { current: 1, total: 1 },
+      isComplete: false,
+      isFinalFreeForm: false,
+      aiCommentary: 'Answer this question.',
+      batchNumber: 1,
+    }, 'prom4', base)
+    const originalSnapshot = recordPreparedBatch(base, batch)
+    const answeredSnapshot = recordBatchAnswers(originalSnapshot, { Q01: 'The required outcome.' })
+    const markerType = 'interview_batch_in_flight'
+    const marker = {
+      originalSnapshot,
+      answeredSnapshotFingerprint: snapshotFingerprint(answeredSnapshot),
+    }
+
+    writeInterviewSessionSnapshotArtifact(ticket.id, answeredSnapshot)
+    upsertLatestPhaseArtifact(ticket.id, markerType, 'WAITING_INTERVIEW_ANSWERS', JSON.stringify(marker))
+    expect(restoreInterruptedInterviewBatch(ticket.id)).toBe(true)
+    expect(readInterviewSessionSnapshotArtifact(ticket.id)?.currentBatch).toMatchObject({ batchNumber: 1 })
+    expect(getLatestPhaseArtifact(ticket.id, markerType, 'WAITING_INTERVIEW_ANSWERS')).toBeUndefined()
+
+    const editedSnapshot = {
+      ...answeredSnapshot,
+      updatedAt: '2099-09-17T00:00:00.000Z',
+      answers: { ...answeredSnapshot.answers, Q01: { ...answeredSnapshot.answers.Q01!, answer: 'Edited after interruption.' } },
+    }
+    writeInterviewSessionSnapshotArtifact(ticket.id, editedSnapshot)
+    upsertLatestPhaseArtifact(ticket.id, markerType, 'WAITING_INTERVIEW_ANSWERS', JSON.stringify(marker))
+    expect(restoreInterruptedInterviewBatch(ticket.id)).toBe(false)
+    expect(readInterviewSessionSnapshotArtifact(ticket.id)?.answers.Q01?.answer).toBe('Edited after interruption.')
+    expect(getLatestPhaseArtifact(ticket.id, markerType, 'WAITING_INTERVIEW_ANSWERS')).toBeUndefined()
+  })
+
+  it('rejects malformed interview QA session artifacts', async () => {
+    const { ticket } = await createInitializedTestTicket(repoManager)
+    upsertLatestPhaseArtifact(ticket.id, INTERVIEW_QA_SESSION_ARTIFACT, 'WAITING_INTERVIEW_ANSWERS', '{')
+    expect(readInterviewQASessionArtifact(ticket.id)).toBeNull()
+
+    upsertLatestPhaseArtifact(
+      ticket.id,
+      INTERVIEW_QA_SESSION_ARTIFACT,
+      'WAITING_INTERVIEW_ANSWERS',
+      JSON.stringify({ sessionId: 123, winnerId: TEST.councilMembers[0] }),
+    )
+    expect(readInterviewQASessionArtifact(ticket.id)).toBeNull()
   })
 })

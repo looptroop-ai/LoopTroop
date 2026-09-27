@@ -71,7 +71,10 @@ describe('coverage and Codecov policy', () => {
     expect(verify['runs-on']).toBe('ubuntu-latest')
     expect(verify.permissions).toEqual({ contents: 'read' })
     const collectionCheckout = step(verify, (candidate) => candidate.uses?.startsWith('actions/checkout@') ?? false)
-    expect(collectionCheckout.with).toEqual({ 'persist-credentials': false })
+    expect(collectionCheckout.with).toEqual({
+      ref: '${{ github.event.pull_request.head.sha || github.sha }}',
+      'persist-credentials': false,
+    })
     expect(step(verify, (candidate) => candidate.uses?.startsWith('actions/setup-node@') ?? false).with)
       .toMatchObject({ 'node-version-file': '.nvmrc', cache: 'npm' })
     expect(verify.steps?.some((candidate) => candidate.run === 'node scripts/pin-npm.mjs')).toBe(true)

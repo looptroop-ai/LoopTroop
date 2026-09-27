@@ -145,6 +145,7 @@ const serverIntegrationTests = [
   'server/git/__tests__/runCommandFallback.test.ts',
   // Real Git/database work and module mocks require isolated workers.
   'server/cli/__tests__/logsCommand.test.ts',
+  'server/cli/__tests__/commandsCoverage.test.ts',
   'server/lib/__tests__/daemonPaths.test.ts',
   'server/workflow/__tests__/interviewSkipReasons.test.ts',
   'server/workflow/__tests__/skipReceipts.test.ts',

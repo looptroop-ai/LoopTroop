@@ -4,7 +4,7 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { LOOPTROOP_OPENCODE_LOGS_ENV } from '@shared/opencodeLogMode'
-import { writeDaemonState, type DaemonState } from '../../lib/daemonPaths'
+import { readDaemonState, writeDaemonState, type DaemonState } from '../../lib/daemonPaths'
 import { removeTempDir } from '../../test/tempDir'
 
 const mocks = vi.hoisted(() => ({
@@ -43,7 +43,7 @@ vi.mock('../../lib/executablePath', async () => {
 
 vi.mock('../daemonProcess', () => ({ runDaemonProcess: mocks.runDaemonProcess }))
 
-import { openCommand, openInBrowser, probeRecordedDaemon, restartCommand, startCommand, stopCommand } from '../commands'
+import { abandonFailedStart, openCommand, openInBrowser, probeRecordedDaemon, restartCommand, startCommand, stopCommand, waitForReady } from '../commands'
 
 type FakeChild = EventEmitter & {
   pid: number
@@ -193,6 +193,64 @@ describe('daemon startup and shutdown command paths', () => {
     expect(output.stdout()).toContain('No projects attached yet. Add one in the interface.')
   })
 
+  it('adopts a winning concurrent start and cleans up only its own losing child', async () => {
+    const child = makeChild(45_681)
+    const winner = makeState({ pid: 45_682, instanceId: 'winning-instance', startToken: 'winner-token' })
+    mocks.isProcessAlive.mockReturnValue(true)
+    mocks.readProcessStartToken.mockReturnValue('losing-token')
+    mocks.spawn.mockImplementation((_file: string, _args: string[], options: { stdio?: unknown[] }) => {
+      closeSpawnLogFile(options)
+      writeDaemonState(winner, configDir)
+      return child
+    })
+    stubDaemonFetch(winner)
+    const output = captureOutput()
+
+    expect(await startCommand()).toBe(0)
+    expect(output.stdout()).toContain('LoopTroop is already running')
+    expect(output.stderr()).toContain(`Stopped the daemon that never finished starting (pid ${child.pid}).`)
+    expect(readDaemonState(configDir)).toEqual(winner)
+  })
+
+  it('refuses to start a second daemon while the recorded process is not answering', async () => {
+    const state = makeState()
+    writeDaemonState(state, configDir)
+    stubFetch(() => { throw new Error('connection refused') })
+    const output = captureOutput()
+
+    expect(await startCommand()).toBe(1)
+    expect(output.stderr()).toContain('but is not answering')
+    expect(mocks.spawn).not.toHaveBeenCalled()
+  })
+
+  it('keeps start idempotent and asks for a restart before enabling full OpenCode logs', async () => {
+    const state = makeState()
+    writeDaemonState(state, configDir)
+    stubDaemonFetch(state)
+    const output = captureOutput()
+
+    expect(await startCommand({ opencodeLogs: 'all' })).toBe(0)
+    expect(mocks.spawn).not.toHaveBeenCalled()
+    expect(output.stdout()).toContain('LoopTroop is already running')
+    expect(output.stderr()).toContain('Run `looptroop stop`, then start it again with that option.')
+  })
+
+  it('starts the foreground daemon with the selected options', async () => {
+    expect(await startCommand({ foreground: true, port: 45_674, opencodeLogs: 'all' })).toBe(0)
+    expect(mocks.runDaemonProcess).toHaveBeenCalledWith({ foreground: true, port: 45_674, opencodeLogs: 'all' })
+    expect(mocks.spawn).not.toHaveBeenCalled()
+  })
+
+  it('refuses to start while the previous shutdown still owns its retry state', async () => {
+    writeDaemonState(makeState({ shutdownPending: true }), configDir)
+    mocks.isProcessAlive.mockReturnValue(false)
+    const output = captureOutput()
+
+    expect(await startCommand()).toBe(1)
+    expect(output.stderr()).toContain('previous daemon shutdown is still incomplete')
+    expect(mocks.spawn).not.toHaveBeenCalled()
+  })
+
   it('shows the log path when a background start never publishes ready state', async () => {
     const child = makeChild(45_676)
     mocks.isProcessAlive.mockReturnValue(false)
@@ -206,6 +264,99 @@ describe('daemon startup and shutdown command paths', () => {
     expect(child.kill).not.toHaveBeenCalled()
     expect(output.stderr()).toContain('LoopTroop failed to start. Recent log output:')
     expect(output.stderr()).toContain('Full log:')
+  })
+
+  it('does not adopt a ready state written by a different daemon child', async () => {
+    const state = makeState({ pid: 45_677, startToken: 'winner-token' })
+    mocks.isProcessAlive.mockReturnValue(true)
+    writeDaemonState(state, configDir)
+    stubDaemonFetch(state)
+
+    await expect(waitForReady(configDir, 45_678, 'loser-token', makeChild(45_678)))
+      .resolves.toMatchObject({ kind: 'other-instance', state })
+  })
+
+  it('accepts tokenless readiness only while the direct child is still live', async () => {
+    const child = makeChild(45_679)
+    const state = makeState({ pid: child.pid })
+    mocks.isProcessAlive.mockReturnValue(true)
+    writeDaemonState(state, configDir)
+    stubDaemonFetch(state)
+
+    await expect(waitForReady(configDir, child.pid, null, child)).resolves.toMatchObject({ kind: 'ready', state })
+
+    child.exitCode = 0
+    await expect(waitForReady(configDir, child.pid, null, child)).resolves.toMatchObject({ kind: 'unverifiable', state })
+  })
+
+  it('returns not-ready immediately when the launched child exits before publishing state', async () => {
+    mocks.isProcessAlive.mockReturnValue(false)
+    await expect(waitForReady(configDir, 45_683, 'missing-state-token', makeChild(45_683)))
+      .resolves.toEqual({ kind: 'not-ready' })
+  })
+
+  it('stops its own failed-start child through the live handle when no start token exists', async () => {
+    const child = makeChild(45_680)
+
+    expect(await abandonFailedStart(configDir, child, null)).toBe(
+      `Stopped the daemon that never finished starting (pid ${child.pid}).`,
+    )
+    expect(child.kill).toHaveBeenCalledWith('SIGTERM')
+    expect(mocks.killProcessTree).not.toHaveBeenCalled()
+  })
+
+  it('force-stops its own failed-start child through the direct handle after SIGTERM times out', async () => {
+    const child = makeChild(45_686)
+    child.kill = vi.fn((signal?: NodeJS.Signals) => {
+      if (signal === 'SIGKILL') child.exitCode = 0
+      return true
+    })
+    vi.spyOn(Date, 'now')
+      .mockReturnValueOnce(0)
+      .mockReturnValueOnce(20_000)
+      .mockReturnValueOnce(30_000)
+      .mockReturnValueOnce(40_000)
+      .mockReturnValue(50_000)
+
+    await expect(abandonFailedStart(configDir, child, null))
+      .resolves.toBe(`Stopped the daemon that never finished starting (pid ${child.pid}).`)
+    expect(child.kill.mock.calls.map(([signal]) => signal)).toEqual(['SIGTERM', 'SIGKILL'])
+    expect(mocks.killProcessTree).not.toHaveBeenCalled()
+  })
+
+  it('reports a failed-start child that survives both direct-handle signals', async () => {
+    const child = makeChild(45_687)
+    child.kill = vi.fn(() => true)
+    vi.spyOn(Date, 'now')
+      .mockReturnValueOnce(0)
+      .mockReturnValueOnce(20_000)
+      .mockReturnValueOnce(30_000)
+      .mockReturnValueOnce(40_000)
+      .mockReturnValue(50_000)
+
+    await expect(abandonFailedStart(configDir, child, null))
+      .resolves.toContain('could not be stopped')
+    expect(child.kill.mock.calls.map(([signal]) => signal)).toEqual(['SIGTERM', 'SIGKILL'])
+    expect(mocks.killProcessTree).not.toHaveBeenCalled()
+  })
+
+  it('leaves a live failed-start process alone when its identity cannot be verified', async () => {
+    const child = makeChild(45_684)
+    mocks.isProcessAlive.mockReturnValue(true)
+    mocks.matchProcess.mockReturnValue({ kind: 'unknown', reason: 'the process start time is unavailable' })
+
+    await expect(abandonFailedStart(configDir, child, 'captured-token'))
+      .resolves.toContain('the process start time is unavailable')
+    expect(mocks.killProcessTree).not.toHaveBeenCalled()
+    expect(mocks.signalTermination).not.toHaveBeenCalled()
+  })
+
+  it('clears failed-start artifacts when its tokenless direct child has already exited', async () => {
+    const child = makeChild(45_685)
+    child.exitCode = 0
+
+    await expect(abandonFailedStart(configDir, child, null)).resolves.toBeNull()
+    expect(child.kill).not.toHaveBeenCalled()
   })
 
   it('restarts by starting the daemon in foreground mode after a clean stop', async () => {
@@ -251,7 +402,34 @@ describe('daemon startup and shutdown command paths', () => {
     expect(await stopCommand()).toBe(1)
     expect(output.stderr()).toContain('runtime cleanup is still incomplete')
     expect(mocks.signalTermination).not.toHaveBeenCalled()
-    expect(await probeRecordedDaemon(configDir)).toMatchObject({ kind: 'running', state })
+    expect(readDaemonState(configDir)).toEqual(state)
+  })
+
+  it('tries a graceful signal for a pending shutdown but retains the record when cleanup is unconfirmed', async () => {
+    const state = makeState({ shutdownPending: true })
+    writeDaemonState(state, configDir)
+    stubFetch(() => { throw new Error('control plane is unavailable') })
+    mocks.signalTermination.mockReturnValue(true)
+    const output = captureOutput()
+
+    expect(await stopCommand()).toBe(1)
+    expect(mocks.signalTermination).toHaveBeenCalledWith(state.pid, null)
+    expect(mocks.killProcessTree).not.toHaveBeenCalled()
+    expect(output.stderr()).toContain('runtime cleanup is still incomplete')
+    expect(readDaemonState(configDir)).toEqual(state)
+  })
+
+  it('uses the process-tree fallback when the authenticated shutdown and signal fail', async () => {
+    const state = makeState()
+    writeDaemonState(state, configDir)
+    stubFetch(() => { throw new Error('connection refused') })
+    mocks.killProcessTree.mockResolvedValue(true)
+    const output = captureOutput()
+
+    expect(await stopCommand()).toBe(0)
+    expect(mocks.killProcessTree).toHaveBeenCalledWith(state.pid, null)
+    expect(output.stdout()).toContain('LoopTroop did not shut down cleanly and was killed.')
+    expect(await probeRecordedDaemon(configDir)).toEqual({ kind: 'not-running' })
   })
 
   it('clears a record when its live pid answers as a different instance', async () => {

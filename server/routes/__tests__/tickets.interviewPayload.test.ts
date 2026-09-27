@@ -16,6 +16,7 @@ import {
 } from '../../phases/interview/sessionState'
 import { contentSha256 } from '../../lib/contentHash'
 import { createFixtureRepoManager } from '../../test/fixtureRepo'
+import { claimInterviewBatch, releaseInterviewBatch } from '../../workflow/phases/interviewPhase'
 import { ticketRouter } from '../tickets'
 
 const repositories = createFixtureRepoManager({
@@ -263,5 +264,38 @@ describe('ticketRouter interview payload route', () => {
       INTERVIEW_SESSION_ARTIFACT,
       'WAITING_INTERVIEW_ANSWERS',
     )?.content).toBe(sessionContent)
+  })
+
+  it('rejects edit requests outside the answer phase and while the batch is claimed', async () => {
+    const ticket = createInterviewPayloadTicket()
+    const edit = (body: unknown) => app.request(`/api/tickets/${ticket.id}/edit-answer`, {
+      method: 'PATCH',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(body),
+    })
+    const payload = { batchNumber: 1, questionId: 'Q01', answer: 'Edited answer.' }
+
+    const wrongStatus = await edit(payload)
+    expect(wrongStatus.status).toBe(409)
+    expect(await wrongStatus.json()).toEqual({ error: 'Ticket is not waiting for interview answers' })
+
+    patchTicket(ticket.id, { status: 'WAITING_INTERVIEW_ANSWERS' })
+    const invalidPayload = await edit({ ...payload, answer: 42 })
+    expect(invalidPayload.status).toBe(400)
+    expect(await invalidPayload.json()).toMatchObject({ error: 'Invalid payload' })
+
+    const missingSession = await edit(payload)
+    expect(missingSession.status).toBe(404)
+    expect(await missingSession.json()).toEqual({ error: 'No interview session found' })
+
+    const claimToken = claimInterviewBatch(ticket.id)
+    expect(claimToken).toBeTruthy()
+    try {
+      const claimed = await edit(payload)
+      expect(claimed.status).toBe(409)
+      expect(await claimed.json()).toEqual({ error: 'An interview batch is being processed; try editing again when it finishes' })
+    } finally {
+      if (claimToken) releaseInterviewBatch(ticket.id, claimToken)
+    }
   })
 })

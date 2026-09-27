@@ -1,6 +1,6 @@
 import { afterAll, beforeEach, describe, expect, it, vi } from 'vitest'
 import { Hono } from 'hono'
-import { existsSync, readFileSync } from 'node:fs'
+import { existsSync, readFileSync, rmSync } from 'node:fs'
 import { initializeDatabase } from '../../db/init'
 import { sqlite } from '../../db/index'
 import { clearProjectDatabaseCache } from '../../db/project'
@@ -25,6 +25,7 @@ import type { InterviewDocument } from '@shared/interviewArtifact'
 import { contentSha256 } from '../../lib/contentHash'
 import { listSkipEvents } from '../../workflow/skipReceipts'
 import { countSkipEvents } from '@shared/skipReceipt'
+import { claimPlanningEdit, releasePlanningEdit } from '../ticketHandlers/routeUtils'
 
 vi.mock('../../machines/persistence', async () => {
   const storage = await import('../../storage/tickets')
@@ -54,6 +55,12 @@ vi.mock('../../machines/persistence', async () => {
     stopActor: vi.fn(() => true),
   }
 })
+
+vi.mock('../../opencode/sessionManager', () => ({
+  abortTicketSessions: vi.fn(async () => true),
+}))
+
+import { abortTicketSessions } from '../../opencode/sessionManager'
 
 const repoManager = createFixtureRepoManager({
   templatePrefix: 'looptroop-ticket-route-interview-approval-',
@@ -119,6 +126,7 @@ describe('ticketRouter interview approval routes', () => {
     clearProjectDatabaseCache()
     initializeDatabase()
     sqlite.exec('DELETE FROM attached_projects; DELETE FROM profiles;')
+    vi.mocked(abortTicketSessions).mockReset().mockResolvedValue(true)
   })
 
   afterAll(() => {
@@ -305,6 +313,50 @@ describe('ticketRouter interview approval routes', () => {
     ]))
   })
 
+  it('restarts PRD planning when a raw YAML edit is saved after drafting began', async () => {
+    const { app, ticket, paths, raw, document } = await setupApprovalTicket()
+    patchTicket(ticket.id, { status: 'REFINING_PRD' })
+    createFreshPhaseAttempts(ticket.id, INTERVIEW_EDIT_RESTART_PHASES)
+
+    const editedDocument: InterviewDocument = {
+      ...document,
+      questions: document.questions.map((question) => question.id === 'Q01'
+        ? {
+          ...question,
+          answer: {
+            skipped: false,
+            selected_option_ids: [],
+            free_text: 'Restart PRD planning from the corrected raw interview.',
+          },
+        }
+        : question),
+    }
+    const response = await app.request(`/api/tickets/${ticket.id}/interview`, {
+      method: 'PUT',
+      ...interviewEditPayload(raw, { content: buildInterviewDocumentYaml(editedDocument) }),
+    })
+
+    expect(response.status).toBe(200)
+    const payload = await response.json() as {
+      success: boolean
+      document: InterviewDocument
+      status?: string
+    }
+    expect(payload.success).toBe(true)
+    expect(payload.document.status).toBe('approved')
+    expect(payload.status).toBe('DRAFTING_PRD')
+    expect(payload.document.questions.find((question) => question.id === 'Q01')?.answer.free_text)
+      .toBe('Restart PRD planning from the corrected raw interview.')
+    expect(readFileSync(`${paths.ticketDir}/interview.yaml`, 'utf-8')).toContain('status: approved')
+
+    const attemptsResponse = await app.request(`/api/tickets/${ticket.id}/phases/WAITING_INTERVIEW_APPROVAL/attempts`)
+    expect(attemptsResponse.status).toBe(200)
+    expect(await attemptsResponse.json()).toEqual([
+      expect.objectContaining({ attemptNumber: 2, state: 'active' }),
+      expect.objectContaining({ attemptNumber: 1, state: 'archived', archivedReason: 'interview_edit_restart' }),
+    ])
+  })
+
   it('does not archive attempts when a post-approval interview edit is invalid', async () => {
     const { app, ticket, raw } = await setupApprovalTicket()
     patchTicket(ticket.id, { status: 'REFINING_PRD' })
@@ -462,6 +514,109 @@ describe('ticketRouter interview approval routes', () => {
       currentContentSha256: contentSha256(remoteRaw),
     })
     expect(readFileSync(`${paths.ticketDir}/interview.yaml`, 'utf-8')).toBe(remoteRaw)
+  })
+
+  it('rejects raw saves without content and reports a missing current interview document', async () => {
+    const { app, ticket, paths, raw } = await setupApprovalTicket()
+    const invalidPayload = await app.request(`/api/tickets/${ticket.id}/interview`, {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ expectedContentSha256: contentSha256(raw) }),
+    })
+    expect(invalidPayload.status).toBe(400)
+    expect(await invalidPayload.json()).toMatchObject({ error: 'Invalid interview document payload' })
+
+    rmSync(`${paths.ticketDir}/interview.yaml`)
+    const answerSave = await app.request(`/api/tickets/${ticket.id}/interview-answers`, {
+      method: 'PUT',
+      ...interviewEditPayload(raw, {
+        questions: [{
+          id: 'Q01',
+          answer: { skipped: false, selected_option_ids: [], free_text: 'Still requires the current draft.' },
+        }],
+      }),
+    })
+    expect(answerSave.status).toBe(400)
+    expect(await answerSave.json()).toMatchObject({ error: 'Failed to read interview document' })
+
+    const rawSave = await app.request(`/api/tickets/${ticket.id}/interview`, {
+      method: 'PUT',
+      ...interviewEditPayload(raw, { content: raw }),
+    })
+    expect(rawSave.status).toBe(400)
+    expect(await rawSave.json()).toMatchObject({ error: 'Failed to read interview document' })
+  })
+
+  it('rejects answer and raw saves while another planning edit owns the claim', async () => {
+    const { app, ticket, raw } = await setupApprovalTicket()
+    const claimToken = claimPlanningEdit(ticket.id)
+    expect(claimToken).toBeTruthy()
+
+    try {
+      const answerSave = await app.request(`/api/tickets/${ticket.id}/interview-answers`, {
+        method: 'PUT',
+        ...interviewEditPayload(raw, {
+          questions: [{
+            id: 'Q01',
+            answer: { skipped: false, selected_option_ids: [], free_text: 'Another edit already owns this ticket.' },
+          }],
+        }),
+      })
+      expect(answerSave.status).toBe(409)
+      expect(await answerSave.json()).toEqual({
+        error: 'A planning edit is already being processed; try again when it finishes',
+      })
+
+      const rawSave = await app.request(`/api/tickets/${ticket.id}/interview`, {
+        method: 'PUT',
+        ...interviewEditPayload(raw, { content: raw }),
+      })
+      expect(rawSave.status).toBe(409)
+      expect(await rawSave.json()).toEqual({
+        error: 'A planning edit is already being processed; try again when it finishes',
+      })
+    } finally {
+      if (claimToken) releasePlanningEdit(ticket.id, claimToken)
+    }
+  })
+
+  it('keeps both interview edit surfaces unchanged when a planning restart cannot stop active sessions', async () => {
+    const answerTicket = await setupApprovalTicket()
+    patchTicket(answerTicket.ticket.id, { status: 'REFINING_PRD' })
+    createFreshPhaseAttempts(answerTicket.ticket.id, INTERVIEW_EDIT_RESTART_PHASES)
+    const rawTicket = await setupApprovalTicket()
+    patchTicket(rawTicket.ticket.id, { status: 'REFINING_PRD' })
+    createFreshPhaseAttempts(rawTicket.ticket.id, INTERVIEW_EDIT_RESTART_PHASES)
+    vi.mocked(abortTicketSessions).mockResolvedValueOnce(false).mockResolvedValueOnce(false)
+
+    const answerSave = await answerTicket.app.request(`/api/tickets/${answerTicket.ticket.id}/interview-answers`, {
+      method: 'PUT',
+      ...interviewEditPayload(answerTicket.raw, {
+        questions: [{
+          id: 'Q01',
+          answer: { skipped: false, selected_option_ids: [], free_text: 'Restart from this answer.' },
+        }],
+      }),
+    })
+    expect(answerSave.status).toBe(400)
+    expect(await answerSave.json()).toMatchObject({
+      error: 'Failed to save interview answers',
+      details: 'Could not confirm that active OpenCode sessions stopped',
+    })
+    expect(getTicketByRef(answerTicket.ticket.id)?.status).toBe('REFINING_PRD')
+    expect(readFileSync(`${answerTicket.paths.ticketDir}/interview.yaml`, 'utf-8')).toBe(answerTicket.raw)
+
+    const rawSave = await rawTicket.app.request(`/api/tickets/${rawTicket.ticket.id}/interview`, {
+      method: 'PUT',
+      ...interviewEditPayload(rawTicket.raw, { content: rawTicket.raw }),
+    })
+    expect(rawSave.status).toBe(400)
+    expect(await rawSave.json()).toMatchObject({
+      error: 'Failed to save interview document',
+      details: 'Could not confirm that active OpenCode sessions stopped',
+    })
+    expect(getTicketByRef(rawTicket.ticket.id)?.status).toBe('REFINING_PRD')
+    expect(readFileSync(`${rawTicket.paths.ticketDir}/interview.yaml`, 'utf-8')).toBe(rawTicket.raw)
   })
 
   it('validates raw interview YAML, canonicalizes it, and forces draft status', async () => {

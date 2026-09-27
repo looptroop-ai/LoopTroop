@@ -1,5 +1,6 @@
 const { appendFileSync, chmodSync, copyFileSync, readFileSync } = require('node:fs')
 const { spawnSync } = require('node:child_process')
+const { tmpdir } = require('node:os')
 const { join } = require('node:path')
 
 // npm ci verifies the committed integrity hashes and creates the platform shims.
@@ -50,7 +51,7 @@ if (process.platform === 'win32' && tool === 'pnpm') {
   }
   // pnpm 12's npm shim targets a shell placeholder when install scripts are disabled.
   bin = join(root, 'node_modules', nativeName)
-  const probe = spawnSync(join(bin, 'pnpm.exe'), ['--version'], { encoding: 'utf8', timeout: 30_000 })
+  const probe = spawnSync(join(bin, 'pnpm.exe'), ['--version'], { cwd: tmpdir(), encoding: 'utf8', timeout: 30_000 })
   if (probe.error || probe.status !== 0 || probe.stdout.trim() !== installed.version) {
     throw new Error(`pnpm --version failed: ${probe.error?.message ?? probe.stderr ?? probe.signal ?? probe.status}`)
   }

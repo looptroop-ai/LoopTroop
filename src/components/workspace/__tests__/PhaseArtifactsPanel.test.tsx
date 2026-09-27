@@ -13,6 +13,7 @@ import {
 } from '@/test/workspaceArtifactBuilders'
 import { buildUiArtifactCompanionArtifactType } from '@shared/artifactCompanions'
 import { PhaseArtifactsPanel } from '../PhaseArtifactsPanel'
+import { buildCouncilMemberArtifacts, getCouncilStatusLabel } from '../councilArtifacts'
 import type { TicketArtifact, TicketArtifactCollectionState } from '@/hooks/useTicketArtifacts'
 
 function successfulArtifactState(artifacts: TicketArtifact[]): TicketArtifactCollectionState {
@@ -638,6 +639,119 @@ describe('PhaseArtifactsPanel', () => {
 
     expect(screen.getAllByText('proposed 1 questions')).toHaveLength(2)
     expect(screen.queryAllByText('waiting for response')).toHaveLength(0)
+    expect(screen.getByRole('button', { name: /gpt-5\.2/i })).toHaveClass('bg-primary')
+  })
+
+  it('discovers voting members from votes and carries failed draft outcomes into scoring', () => {
+    const draftArtifact = makeArtifact({
+      phase: 'DRAFTING_PRD',
+      artifactType: 'prd_drafts',
+      content: JSON.stringify({
+        drafts: [
+          { memberId: 'model/invalid', outcome: 'invalid_output' },
+          { memberId: 'model/timeout', outcome: 'timed_out' },
+          { memberId: 'model/failed', outcome: 'failed' },
+        ],
+      }),
+    })
+    const voteArtifact = makeArtifact({
+      phase: 'COUNCIL_VOTING_PRD',
+      artifactType: 'prd_votes',
+      content: JSON.stringify({
+        votes: [
+          { voterId: 'model/invalid', draftId: 'model/invalid', totalScore: 0 },
+          { voterId: 'model/timeout', draftId: 'model/invalid', totalScore: 0 },
+          { voterId: 'model/failed', draftId: 'model/invalid', totalScore: 0 },
+          { voterId: 'model/invalid', draftId: 'model/timeout', totalScore: 0 },
+        ],
+      }),
+    })
+
+    const members = buildCouncilMemberArtifacts('COUNCIL_VOTING_PRD', [draftArtifact, voteArtifact], [], false)
+
+    expect(members.map(({ modelId }) => modelId)).toEqual(['model/invalid', 'model/timeout', 'model/failed'])
+    expect(members.map(({ outcome, detail }) => [outcome, detail])).toEqual([
+      ['invalid_output', 'draft had invalid output'],
+      ['timed_out', 'draft timed out'],
+      ['failed', 'draft failed'],
+    ])
+  })
+
+  it.each([
+    ['drafting', 'Drafting'],
+    ['scoring', 'Scoring'],
+    ['refining', 'Refining'],
+    ['verifying', 'Verifying'],
+    ['working', 'Working'],
+  ] as const)('uses the %s status label when an outcome is absent', (action, label) => {
+    expect(getCouncilStatusLabel(undefined, action)).toBe(label)
+  })
+
+  it('shows useful invalid draft metrics, explicit failure details, and generated line counts', () => {
+    const draftArtifact = makeArtifact({
+      phase: 'DRAFTING_PRD',
+      artifactType: 'prd_drafts',
+      content: JSON.stringify({
+        drafts: [
+          {
+            memberId: 'model/invalid',
+            outcome: 'invalid_output',
+            content: 'Malformed output retained for review',
+            draftMetrics: { epicCount: 2 },
+          },
+          { memberId: 'model/failed', outcome: 'failed', error: 'Provider rejected the request' },
+          { memberId: 'model/timeout', outcome: 'timed_out' },
+          { memberId: 'model/plain', outcome: 'completed', content: 'First generated line\nSecond generated line' },
+        ],
+      }),
+    })
+
+    renderWithProviders(
+      <TestPhaseArtifactsPanel
+        phase="DRAFTING_PRD"
+        isCompleted={false}
+        councilMemberCount={4}
+        councilMemberNames={['model/invalid', 'model/failed', 'model/timeout', 'model/plain']}
+        preloadedArtifacts={[draftArtifact]}
+      />,
+    )
+
+    expect(screen.getByText('2 epics · 0 user stories')).toBeInTheDocument()
+    expect(screen.getByText('Provider rejected the request')).toBeInTheDocument()
+    expect(screen.getByText('no response received')).toBeInTheDocument()
+    expect(screen.getByText('2 lines generated')).toBeInTheDocument()
+    expect(screen.getByText('Invalid Output')).toBeInTheDocument()
+    expect(screen.getByText('Failed')).toBeInTheDocument()
+    expect(screen.getByText('Timed Out')).toBeInTheDocument()
+  })
+
+  it('uses a stored interview winner when revisiting drafts without vote artifacts', () => {
+    const draftArtifact = makeArtifact({
+      phase: 'COUNCIL_DELIBERATING',
+      artifactType: 'interview_drafts',
+      content: JSON.stringify({
+        drafts: [
+          { memberId: 'openai/gpt-5.1', outcome: 'completed', content: 'Alternative question?' },
+          { memberId: 'openai/gpt-5.2', outcome: 'completed', content: 'Winning question?' },
+        ],
+      }),
+    })
+    const winnerArtifact = makeArtifact({
+      phase: 'COUNCIL_DELIBERATING',
+      artifactType: 'interview_winner',
+      content: JSON.stringify({ winnerId: 'openai/gpt-5.2' }),
+    })
+
+    renderWithProviders(
+      <TestPhaseArtifactsPanel
+        phase="COUNCIL_DELIBERATING"
+        isCompleted
+        councilMemberCount={2}
+        councilMemberNames={['openai/gpt-5.1', 'openai/gpt-5.2']}
+        preloadedArtifacts={[draftArtifact, winnerArtifact]}
+      />,
+    )
+
     expect(screen.getByRole('button', { name: /gpt-5\.2/i })).toHaveClass('bg-primary')
   })
 

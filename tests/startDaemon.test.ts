@@ -7,11 +7,15 @@ import {
   DaemonStartBlockedError,
   DaemonShutdownPendingError,
   startDaemon,
+  installShutdownHandlers,
   describeOpenCode,
   nextStateForOpenCode,
   type DaemonHandle,
 } from '../server/daemon/startDaemon'
+import * as runtimeFactory from '../server/createRuntime'
+import * as openCodeFactory from '../server/opencode/factory'
 import { OpenCodeSupervisor } from '../server/opencode/supervisor'
+import type { OpenCodeStatus } from '../server/opencode/supervisor'
 import * as daemonPaths from '../server/lib/daemonPaths'
 import * as processControl from '../server/cli/processControl'
 import * as processIdentity from '../server/lib/processIdentity'
@@ -232,6 +236,234 @@ describe('daemon startup and shutdown', () => {
     })).rejects.toBeInstanceOf(DaemonShutdownPendingError)
     expect(JSON.parse(readFileSync(getDaemonStatePath(configDir), 'utf8'))).toMatchObject(pending)
     expect(existsSync(getDaemonLockPath(configDir))).toBe(false)
+  })
+
+  it('rechecks retained OpenCode ownership after acquiring the lock', async () => {
+    const configDir = makeConfigDir()
+    const failure = {
+      reason: 'startup-cleanup-incomplete',
+      at: '2026-01-02T03:04:05.000Z',
+      version: '0.0.0-test',
+      message: 'OpenCode did not stop during startup cleanup.',
+      openCode: { baseUrl: 'http://127.0.0.1:4096', pid: 4242 },
+    } as const
+    const readFailure = vi.spyOn(daemonPaths, 'readDaemonStartFailure')
+      .mockReturnValueOnce(null)
+      .mockReturnValueOnce(failure)
+
+    try {
+      await expect(startDaemon({
+        configDir,
+        settings: ephemeralSettings(),
+        version: '0.0.0-test',
+      })).rejects.toBeInstanceOf(DaemonStartBlockedError)
+
+      expect(readFailure).toHaveBeenCalledTimes(2)
+      expect(existsSync(getDaemonLockPath(configDir))).toBe(false)
+    } finally {
+      readFailure.mockRestore()
+    }
+  })
+
+  it('rechecks a pending shutdown after acquiring the lock', async () => {
+    const configDir = makeConfigDir()
+    const pending: DaemonState = {
+      instanceId: 'pending-instance',
+      pid: process.pid,
+      port: 4096,
+      host: '127.0.0.1',
+      startedAt: '2026-01-02T03:04:05.000Z',
+      version: '0.0.0-test',
+      apiToken: 'pending-token',
+      shutdownPending: true,
+    }
+    const readState = vi.spyOn(daemonPaths, 'readDaemonState')
+      .mockReturnValueOnce(null)
+      .mockReturnValueOnce(pending)
+
+    try {
+      await expect(startDaemon({
+        configDir,
+        settings: ephemeralSettings(),
+        version: '0.0.0-test',
+      })).rejects.toBeInstanceOf(DaemonShutdownPendingError)
+
+      expect(readState).toHaveBeenCalledTimes(2)
+      expect(existsSync(getDaemonLockPath(configDir))).toBe(false)
+    } finally {
+      readState.mockRestore()
+    }
+  })
+
+  it('preserves an owned OpenCode record that has no safe pid to check', async () => {
+    const configDir = makeConfigDir()
+    const previous: DaemonState = {
+      instanceId: 'previous-daemon',
+      pid: 12_341,
+      port: 4096,
+      host: '127.0.0.1',
+      startedAt: '2026-01-02T03:04:05.000Z',
+      version: '0.0.0-test',
+      apiToken: 'previous-api-token',
+      opencode: { baseUrl: 'http://127.0.0.1:4096', owned: true, status: 'managed' },
+    }
+    writeDaemonState(previous, configDir)
+    const alive = vi.spyOn(processControl, 'isProcessAlive').mockReturnValue(false)
+
+    try {
+      await expect(startDaemon({
+        configDir,
+        settings: ephemeralSettings(),
+        version: '0.0.0-test',
+      })).rejects.toThrow(/owned OpenCode server has no recorded pid/)
+
+      expect(JSON.parse(readFileSync(getDaemonStatePath(configDir), 'utf8'))).toEqual(previous)
+      expect(existsSync(getDaemonLockPath(configDir))).toBe(false)
+    } finally {
+      alive.mockRestore()
+    }
+  })
+
+  it('retains the OpenCode identity when later startup cleanup is incomplete', async () => {
+    const configDir = makeConfigDir()
+    const startupError = new Error('runtime could not bind')
+    const runtime = {
+      start: vi.fn().mockRejectedValue(startupError),
+      close: vi.fn().mockRejectedValue(new Error('runtime close failed')),
+    }
+    const create = vi.spyOn(runtimeFactory, 'createRuntime')
+      .mockReturnValue(runtime as unknown as ReturnType<typeof runtimeFactory.createRuntime>)
+    const startSpy = vi.spyOn(OpenCodeSupervisor.prototype, 'start').mockResolvedValue({
+      kind: 'managed',
+      baseUrl: 'http://127.0.0.1:4096',
+      pid: 12_342,
+    })
+    const stopSpy = vi.spyOn(OpenCodeSupervisor.prototype, 'stop').mockResolvedValue(false)
+    const ownedProcess = vi.spyOn(OpenCodeSupervisor.prototype, 'ownedProcess', 'get')
+      .mockReturnValue({ pid: 12_342, startToken: null })
+    const report = vi.spyOn(console, 'error').mockImplementation(() => {})
+
+    try {
+      await expect(startDaemon({
+        configDir,
+        settings: ephemeralSettings(),
+        version: '0.0.0-test',
+      })).rejects.toBe(startupError)
+
+      expect(runtime.close).toHaveBeenCalledOnce()
+      expect(stopSpy).toHaveBeenCalledOnce()
+      expect(daemonPaths.readDaemonStartFailure(configDir)).toMatchObject({
+        reason: 'startup-cleanup-incomplete',
+        openCode: { baseUrl: 'http://127.0.0.1:4096', pid: 12_342 },
+      })
+      const failure = daemonPaths.readDaemonStartFailure(configDir)
+      expect(failure?.reason === 'startup-cleanup-incomplete' && failure.openCode).not.toHaveProperty('startToken')
+      expect(existsSync(getDaemonLockPath(configDir))).toBe(true)
+      expect(report).toHaveBeenCalledWith(expect.stringContaining('daemon lock was retained'))
+    } finally {
+      report.mockRestore()
+      ownedProcess.mockRestore()
+      stopSpy.mockRestore()
+      startSpy.mockRestore()
+      create.mockRestore()
+    }
+  })
+
+  it('retains the lock and child identity if OpenCode throws during startup cleanup', async () => {
+    const configDir = makeConfigDir()
+    const startupError = new Error('runtime could not bind')
+    const runtime = {
+      start: vi.fn().mockRejectedValue(startupError),
+      close: vi.fn().mockResolvedValue(undefined),
+    }
+    const create = vi.spyOn(runtimeFactory, 'createRuntime')
+      .mockReturnValue(runtime as unknown as ReturnType<typeof runtimeFactory.createRuntime>)
+    const startSpy = vi.spyOn(OpenCodeSupervisor.prototype, 'start').mockResolvedValue({
+      kind: 'managed',
+      baseUrl: 'http://127.0.0.1:4096',
+      pid: 12_342,
+    })
+    const stopSpy = vi.spyOn(OpenCodeSupervisor.prototype, 'stop')
+      .mockRejectedValue(new Error('OpenCode cleanup failed'))
+    const ownedProcess = vi.spyOn(OpenCodeSupervisor.prototype, 'ownedProcess', 'get')
+      .mockReturnValue({ pid: 12_342, startToken: 'child-start-token' })
+    const report = vi.spyOn(console, 'error').mockImplementation(() => {})
+
+    try {
+      await expect(startDaemon({
+        configDir,
+        settings: ephemeralSettings(),
+        version: '0.0.0-test',
+      })).rejects.toBe(startupError)
+
+      expect(daemonPaths.readDaemonStartFailure(configDir)).toMatchObject({
+        reason: 'startup-cleanup-incomplete',
+        openCode: { pid: 12_342, startToken: 'child-start-token' },
+      })
+      expect(existsSync(getDaemonLockPath(configDir))).toBe(true)
+      expect(report).toHaveBeenCalledWith(expect.stringContaining('daemon lock was retained'))
+    } finally {
+      report.mockRestore()
+      ownedProcess.mockRestore()
+      stopSpy.mockRestore()
+      startSpy.mockRestore()
+      create.mockRestore()
+    }
+  })
+
+  it('leaves the previous daemon record when retained-child evidence cannot be written', async () => {
+    const configDir = makeConfigDir()
+    const previous: DaemonState = {
+      instanceId: 'stale-daemon',
+      pid: 12_341,
+      port: 4096,
+      host: '127.0.0.1',
+      startedAt: '2026-01-02T03:04:05.000Z',
+      version: '0.0.0-test',
+      apiToken: 'stale-api-token',
+    }
+    writeDaemonState(previous, configDir)
+    const alive = vi.spyOn(processControl, 'isProcessAlive').mockReturnValue(false)
+    const startupError = new Error('runtime could not bind')
+    const runtime = {
+      start: vi.fn().mockRejectedValue(startupError),
+      close: vi.fn().mockResolvedValue(undefined),
+    }
+    const create = vi.spyOn(runtimeFactory, 'createRuntime')
+      .mockReturnValue(runtime as unknown as ReturnType<typeof runtimeFactory.createRuntime>)
+    const startSpy = vi.spyOn(OpenCodeSupervisor.prototype, 'start').mockResolvedValue({
+      kind: 'managed',
+      baseUrl: 'http://127.0.0.1:4096',
+      pid: 12_342,
+    })
+    const stopSpy = vi.spyOn(OpenCodeSupervisor.prototype, 'stop').mockResolvedValue(false)
+    const ownedProcess = vi.spyOn(OpenCodeSupervisor.prototype, 'ownedProcess', 'get')
+      .mockReturnValue({ pid: 12_342, startToken: 'child-start-token' })
+    const writeFailure = vi.spyOn(daemonPaths, 'writeDaemonStartFailure').mockImplementation(() => {
+      throw new Error('disk full')
+    })
+    const report = vi.spyOn(console, 'error').mockImplementation(() => {})
+
+    try {
+      await expect(startDaemon({
+        configDir,
+        settings: ephemeralSettings(),
+        version: '0.0.0-test',
+      })).rejects.toBe(startupError)
+
+      expect(daemonPaths.readDaemonStartFailure(configDir)).toBeNull()
+      expect(JSON.parse(readFileSync(getDaemonStatePath(configDir), 'utf8'))).toEqual(previous)
+      expect(existsSync(getDaemonLockPath(configDir))).toBe(true)
+      expect(report).toHaveBeenCalledWith(expect.stringContaining('leaving existing state untouched'))
+    } finally {
+      report.mockRestore()
+      writeFailure.mockRestore()
+      ownedProcess.mockRestore()
+      stopSpy.mockRestore()
+      startSpy.mockRestore()
+      create.mockRestore()
+      alive.mockRestore()
+    }
   })
 
   function writeOwnedOrphan(configDir: string): DaemonState {
@@ -691,5 +923,138 @@ describe('daemon startup and shutdown', () => {
         expect(next).toBeNull()
       })
     })
+  })
+
+  it('refreshes the OpenCode record and keeps serving if a refresh write fails', async () => {
+    const configDir = makeConfigDir()
+    let publishStatus: ((status: OpenCodeStatus) => void) | undefined
+    const startSpy = vi.spyOn(OpenCodeSupervisor.prototype, 'start').mockImplementation(async function (this: OpenCodeSupervisor) {
+      const instance = this as unknown as { options: { onStatusChange?: (status: OpenCodeStatus) => void } }
+      publishStatus = instance.options.onStatusChange
+      return { kind: 'adopted', baseUrl: 'http://127.0.0.1:4096' }
+    })
+    const resetTransport = vi.spyOn(openCodeFactory, 'resetOpenCodeAdapterTransport')
+
+    try {
+      const handle = await start(configDir)
+      expect(publishStatus).toBeDefined()
+      publishStatus?.({ kind: 'managed', baseUrl: 'http://127.0.0.1:4096', pid: 12_342 })
+      expect(resetTransport).toHaveBeenCalledOnce()
+      expect(JSON.parse(readFileSync(getDaemonStatePath(configDir), 'utf8'))).toMatchObject({
+        opencode: { baseUrl: 'http://127.0.0.1:4096', owned: true, status: 'managed', pid: 12_342 },
+      })
+
+      const beforeFailedRefresh = readFileSync(getDaemonStatePath(configDir), 'utf8')
+      const writeState = vi.spyOn(daemonPaths, 'writeDaemonState').mockImplementation(() => {
+        throw new Error('disk full')
+      })
+      try {
+        expect(() => publishStatus?.({
+          kind: 'degraded',
+          baseUrl: 'http://127.0.0.1:4096',
+          reason: 'OpenCode restart failed',
+        })).not.toThrow()
+        expect(readFileSync(getDaemonStatePath(configDir), 'utf8')).toBe(beforeFailedRefresh)
+        expect((await fetch(`http://${handle.state.host}:${handle.state.port}/api/health`)).ok).toBe(true)
+      } finally {
+        writeState.mockRestore()
+      }
+    } finally {
+      resetTransport.mockRestore()
+      startSpy.mockRestore()
+    }
+  })
+
+  it('keeps the daemon running when pending-shutdown state cannot be written', async () => {
+    const configDir = makeConfigDir()
+    const handle = await start(configDir)
+    const persistState = daemonPaths.writeDaemonState
+    const writeState = vi.spyOn(daemonPaths, 'writeDaemonState').mockImplementation((state, stateDir) => {
+      if (state.shutdownPending) throw new Error('disk full')
+      return persistState(state, stateDir)
+    })
+
+    try {
+      await expect(handle.stop()).rejects.toThrow('Could not record pending daemon shutdown: disk full')
+      expect(JSON.parse(readFileSync(getDaemonStatePath(configDir), 'utf8'))).not.toHaveProperty('shutdownPending')
+      expect((await fetch(`http://${handle.state.host}:${handle.state.port}/api/health`)).ok).toBe(true)
+    } finally {
+      writeState.mockRestore()
+    }
+
+    await expect(handle.stop()).resolves.toBeUndefined()
+  })
+
+  it('logs a shutdown request failure when no process listener owns the exit', async () => {
+    const configDir = makeConfigDir()
+    const handle = await start(configDir)
+    const stop = vi.spyOn(OpenCodeSupervisor.prototype, 'stop')
+      .mockRejectedValueOnce(new Error('OpenCode is still running'))
+    const report = vi.spyOn(console, 'error').mockImplementation(() => {})
+
+    try {
+      const response = await fetch(`http://${handle.state.host}:${handle.state.port}/api/daemon/shutdown`, {
+        method: 'POST',
+        headers: { Authorization: `Bearer ${handle.credentials.apiToken}` },
+      })
+      expect(response.status).toBe(202)
+      await vi.waitFor(() => {
+        expect(report).toHaveBeenCalledWith('[daemon] Shutdown failed: OpenCode is still running')
+      })
+      expect(stop).toHaveBeenCalledOnce()
+      expect((await fetch(`http://${handle.state.host}:${handle.state.port}/api/health`)).ok).toBe(true)
+    } finally {
+      report.mockRestore()
+      stop.mockRestore()
+    }
+  })
+
+  it('retries a rejected shutdown handler and ignores duplicate signals', async () => {
+    const beforeTerm = new Set(process.listeners('SIGTERM'))
+    const beforeInt = new Set(process.listeners('SIGINT'))
+    const stop = vi.fn()
+      .mockRejectedValueOnce(new Error('runtime drain is incomplete'))
+      .mockResolvedValue(undefined)
+    let requestShutdown: ((reason: string) => void) | undefined
+    const handle = {
+      onShutdownRequest(listener: (reason: string) => void) { requestShutdown = listener },
+      stop,
+    } as unknown as DaemonHandle
+    const report = vi.spyOn(console, 'error').mockImplementation(() => {})
+    const log = vi.spyOn(console, 'log').mockImplementation(() => {})
+    const exit = vi.spyOn(process, 'exit').mockImplementation((() => undefined) as never)
+    let termHandlers = process.listeners('SIGTERM').filter(() => false)
+    let intHandlers = process.listeners('SIGINT').filter(() => false)
+
+    vi.useFakeTimers()
+    try {
+      installShutdownHandlers(handle)
+      termHandlers = process.listeners('SIGTERM').filter(listener => !beforeTerm.has(listener))
+      intHandlers = process.listeners('SIGINT').filter(listener => !beforeInt.has(listener))
+      expect(termHandlers).toHaveLength(1)
+      expect(intHandlers).toHaveLength(1)
+
+      requestShutdown?.('an API request')
+      await Promise.resolve()
+      await Promise.resolve()
+      expect(stop).toHaveBeenCalledOnce()
+      expect(report).toHaveBeenCalledWith(expect.stringContaining('retrying in 500ms'))
+
+      ;(termHandlers[0] as () => void)()
+      ;(intHandlers[0] as () => void)()
+      expect(stop).toHaveBeenCalledOnce()
+
+      await vi.advanceTimersByTimeAsync(500)
+      expect(stop).toHaveBeenCalledTimes(2)
+      expect(exit).toHaveBeenCalledWith(0)
+      expect(log).toHaveBeenCalledWith('[daemon] Shutting down (an API request).')
+    } finally {
+      for (const listener of termHandlers) process.off('SIGTERM', listener as never)
+      for (const listener of intHandlers) process.off('SIGINT', listener as never)
+      vi.useRealTimers()
+      exit.mockRestore()
+      log.mockRestore()
+      report.mockRestore()
+    }
   })
 })

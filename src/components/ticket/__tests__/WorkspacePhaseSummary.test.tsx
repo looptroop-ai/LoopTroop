@@ -3,17 +3,22 @@ import { fireEvent, screen, waitFor } from '@testing-library/react'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import type { LogContextValue, LogEntry } from '@/context/logUtils'
 import { TEST, makeTicket } from '@/test/factories'
+import { getTicketArtifactsQueryKey } from '@/hooks/useTicketArtifacts'
 import { normalizeTicketResponse } from '@/lib/ticketNormalization'
 import { renderWithProviders, createTestQueryClient, createJsonResponse, withLogContext } from '@/test/renderHelpers'
 import { WorkspacePhaseSummary } from '../WorkspacePhaseSummary'
 
-function createLogEntry(line: string, timestamp: string): LogEntry {
+function createLogEntry(
+  line: string,
+  timestamp: string | undefined,
+  status: LogEntry['status'] = 'VERIFYING_PRD_COVERAGE',
+): LogEntry {
   return {
     id: `${timestamp}:${line}`,
     entryId: `${timestamp}:${line}`,
     line,
     source: 'system',
-    status: 'VERIFYING_PRD_COVERAGE',
+    status,
     timestamp,
     audience: 'all',
     kind: 'milestone',
@@ -22,7 +27,20 @@ function createLogEntry(line: string, timestamp: string): LogEntry {
   }
 }
 
-function renderWithLogContext(ui: ReactElement, logsByPhase: Record<string, LogEntry[]>) {
+function mockWorkspacePhaseQueries() {
+  vi.mocked(globalThis.fetch).mockImplementation((input) => {
+    const url = String(input)
+    if (url.endsWith('/artifacts')) return createJsonResponse([])
+    if (url.includes('/attempts')) return createJsonResponse([])
+    throw new Error(`Unhandled fetch: ${url}`)
+  })
+}
+
+function renderWithLogContext(
+  ui: ReactElement,
+  logsByPhase: Record<string, LogEntry[]>,
+  queryClient = createTestQueryClient(),
+) {
   const value: LogContextValue = {
     logsByPhase,
     activePhase: null,
@@ -43,7 +61,7 @@ function renderWithLogContext(ui: ReactElement, logsByPhase: Record<string, LogE
 
   return renderWithProviders(
     withLogContext(value, ui),
-    { queryClient: createTestQueryClient() },
+    { queryClient },
   )
 }
 
@@ -558,6 +576,209 @@ describe('WorkspacePhaseSummary', () => {
 
     await waitFor(() => {
       expect(screen.getByRole('button', { name: 'Preparing Workspace Runtime (retry attempt 2 - execution setup attempt 3 of 5)' })).toBeInTheDocument()
+    })
+  })
+
+  it.each([
+    {
+      line: 'Resuming execution setup session for user-requested attempt 3 (configured automatic budget 5).',
+      timestamp: '2026-01-01T00:01:00.000Z',
+      expected: 'execution setup attempt 3 of 5',
+    },
+    {
+      line: 'Resuming execution setup session for user-requested attempt 2.',
+      timestamp: undefined,
+      expected: 'execution setup attempt 2',
+    },
+    {
+      line: 'Starting execution setup tooling persistence attempt 4 for the workspace with base budget 6.',
+      timestamp: '2026-01-01T00:01:00.000Z',
+      expected: 'execution setup attempt 4 of 6',
+    },
+    {
+      line: 'Execution setup attempt 4 session created.',
+      timestamp: '2026-01-01T00:01:00.000Z',
+      expected: 'execution setup attempt 4',
+    },
+    {
+      line: 'Execution setup attempt 3 produced a runtime profile.',
+      timestamp: '2026-01-01T00:01:00.000Z',
+      expected: 'execution setup attempt 3',
+    },
+    {
+      line: 'Execution setup attempt 5 failed while checking project tools.',
+      timestamp: '2026-01-01T00:01:00.000Z',
+      expected: 'execution setup attempt 5',
+    },
+  ])('shows live setup progress from log: $line', ({ line, timestamp, expected }) => {
+    mockWorkspacePhaseQueries()
+    const ticket = makeTicket({ status: 'PREPARING_EXECUTION_ENV' })
+
+    renderWithLogContext(
+      <WorkspacePhaseSummary phase="PREPARING_EXECUTION_ENV" ticket={ticket} />,
+      {
+        PREPARING_EXECUTION_ENV: [createLogEntry(line, timestamp, 'PREPARING_EXECUTION_ENV')],
+      },
+    )
+
+    expect(screen.getByRole('button', { name: `Preparing Workspace Runtime (${expected})` })).toBeInTheDocument()
+  })
+
+  it('shows the base execution setup label when its live logs have no recognized attempt', () => {
+    mockWorkspacePhaseQueries()
+    const ticket = makeTicket({ status: 'PREPARING_EXECUTION_ENV' })
+
+    renderWithLogContext(
+      <WorkspacePhaseSummary phase="PREPARING_EXECUTION_ENV" ticket={ticket} />,
+      { PREPARING_EXECUTION_ENV: [createLogEntry('Checking the project workspace.', TEST.timestamp, 'PREPARING_EXECUTION_ENV')] },
+    )
+
+    expect(screen.getByRole('button', { name: 'Preparing Workspace Runtime' })).toBeInTheDocument()
+  })
+
+  it.each([
+    {
+      line: 'Revised PRD Candidate v2 into PRD Candidate v4.',
+      expected: 'checking version 4',
+    },
+    {
+      line: 'The latest PRD Candidate v5 is ready for another review.',
+      expected: 'checking version 5',
+    },
+  ])('shows the version from a $expected coverage log', async ({ line, expected }) => {
+    mockWorkspacePhaseQueries()
+    const ticket = makeTicket({ status: 'VERIFYING_PRD_COVERAGE' })
+
+    renderWithLogContext(
+      <WorkspacePhaseSummary phase="VERIFYING_PRD_COVERAGE" ticket={ticket} />,
+      {
+        VERIFYING_PRD_COVERAGE: [
+          createLogEntry('Transition: REFINING_PRD -> VERIFYING_PRD_COVERAGE', '2026-01-01T00:00:00.000Z'),
+          createLogEntry(line, '2026-01-01T00:00:01.000Z'),
+        ],
+      },
+    )
+
+    await waitFor(() => {
+      expect(screen.getByRole('button', { name: `Coverage Check (PRD) (${expected})` })).toBeInTheDocument()
+    })
+  })
+
+  it('ignores stale coverage artifacts from before the current coverage activation', async () => {
+    vi.mocked(globalThis.fetch).mockImplementation((input) => {
+      const url = String(input)
+      if (url.endsWith('/artifacts')) {
+        return createJsonResponse([{
+          id: 1,
+          ticketId: TEST.ticketId,
+          phase: 'VERIFYING_PRD_COVERAGE',
+          artifactType: 'prd_coverage_revision',
+          filePath: null,
+          content: JSON.stringify({ candidateVersion: 9, coverageRunNumber: 9, maxCoveragePasses: 9 }),
+          createdAt: '2026-01-01T00:00:30.000Z',
+          updatedAt: '2026-01-01T00:00:30.000Z',
+        }])
+      }
+      if (url.includes('/attempts')) return createJsonResponse([])
+      throw new Error(`Unhandled fetch: ${url}`)
+    })
+    const ticket = makeTicket({ status: 'VERIFYING_PRD_COVERAGE' })
+    const queryClient = createTestQueryClient()
+
+    renderWithLogContext(
+      <WorkspacePhaseSummary phase="VERIFYING_PRD_COVERAGE" ticket={ticket} />,
+      {
+        VERIFYING_PRD_COVERAGE: [
+          createLogEntry('Transition: REFINING_PRD -> VERIFYING_PRD_COVERAGE', '2026-01-01T00:01:00.000Z'),
+          createLogEntry('Coverage verification started using winning model: test-vendor/test-model (run 3/5).', '2026-01-01T00:02:00.000Z'),
+          createLogEntry('PRD Candidate v2 is being checked.', '2026-01-01T00:03:00.000Z'),
+        ],
+      },
+      queryClient,
+    )
+
+    await waitFor(() => {
+      expect(queryClient.getQueryData(getTicketArtifactsQueryKey(ticket.id))).toHaveLength(1)
+      expect(screen.getByRole('button', { name: 'Coverage Check (PRD) (checking version 2, pass 3 of 5)' })).toBeInTheDocument()
+    })
+  })
+
+  it('falls back to the generic error summary when no recovery action is available', () => {
+    const ticket = makeTicket({ status: 'BLOCKED_ERROR' })
+
+    renderWithProviders(
+      <WorkspacePhaseSummary phase="BLOCKED_ERROR" ticket={ticket} />,
+    )
+
+    expect(screen.getByRole('button', { name: 'Error — Workflow phase' })).toBeInTheDocument()
+    expect(screen.getByText(/No error details were captured/)).toHaveTextContent(/Open Details to review the failure and available recovery options/)
+  })
+
+  it('does not show a countdown for a completed bead in a live coding phase', () => {
+    const ticket = makeTicket({
+      status: 'CODING',
+      runtime: {
+        ...makeTicket().runtime,
+        activeBeadId: 'bead-1',
+        perIterationTimeoutMs: 8 * 60 * 1000,
+        beads: [{
+          id: 'bead-1',
+          title: 'Completed bead',
+          status: 'completed',
+          iteration: 1,
+          startedAt: '2026-01-01T00:00:00.000Z',
+        }],
+      },
+    })
+
+    renderWithProviders(
+      <WorkspacePhaseSummary phase="CODING" ticket={ticket} />,
+    )
+
+    expect(screen.queryByText('08:00')).not.toBeInTheDocument()
+  })
+
+  it('falls back safely when stored coverage artifacts contain malformed JSON', async () => {
+    vi.mocked(globalThis.fetch).mockImplementation((input) => {
+      const url = String(input)
+      if (url.endsWith('/artifacts')) {
+        return createJsonResponse([
+          {
+            id: 1,
+            ticketId: TEST.ticketId,
+            phase: 'VERIFYING_PRD_COVERAGE',
+            artifactType: 'prd_coverage',
+            filePath: null,
+            content: '{ malformed coverage record',
+            createdAt: TEST.timestamp,
+            updatedAt: TEST.timestamp,
+          },
+          {
+            id: 2,
+            ticketId: TEST.ticketId,
+            phase: 'VERIFYING_PRD_COVERAGE',
+            artifactType: 'prd_coverage_revision',
+            filePath: null,
+            content: '{ malformed candidate record',
+            createdAt: TEST.timestamp,
+            updatedAt: TEST.timestamp,
+          },
+        ])
+      }
+      if (url.includes('/attempts')) return createJsonResponse([])
+      throw new Error(`Unhandled fetch: ${url}`)
+    })
+    const ticket = makeTicket({ status: 'VERIFYING_PRD_COVERAGE' })
+    const queryClient = createTestQueryClient()
+
+    renderWithProviders(
+      <WorkspacePhaseSummary phase="VERIFYING_PRD_COVERAGE" ticket={ticket} />,
+      { queryClient },
+    )
+
+    await waitFor(() => {
+      expect(queryClient.getQueryData(getTicketArtifactsQueryKey(ticket.id))).toHaveLength(2)
+      expect(screen.getByRole('button', { name: 'Coverage Check (PRD) (checking version 1)' })).toBeInTheDocument()
     })
   })
 })

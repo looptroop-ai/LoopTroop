@@ -106,6 +106,14 @@ function executeWindowsScope(run: string, changedPaths: string[], diffStatus = 0
   }
 }
 
+function executeCleanTreeGate(run: string, workingTree: string) {
+  const fixture = 'git() { case "$1:$2" in status:--porcelain) printf "%s" "$WORKING_TREE" ;; --no-pager:diff) printf "simulated diff\\n" ;; *) return 2 ;; esac; }\n'
+  return spawnSync('bash', ['-euo', 'pipefail', '-c', fixture + run], {
+    encoding: 'utf8',
+    env: { ...process.env, WORKING_TREE: workingTree },
+  })
+}
+
 describe('release workflow policy', () => {
   it('limits runner auditing to supported jobs without publishing credentials', () => {
     for (const [file, workflow] of workflows) {
@@ -147,6 +155,55 @@ describe('release workflow policy', () => {
       })
       expect(run.status, `${result}: ${run.stderr}`).toBe(result === 'success' ? 0 : 1)
     }
+  })
+
+  it('runs the workflow, shell, and local verification gates in blocking CI jobs', () => {
+    const ci = workflows.get('ci.yml')!.jobs!
+    const scripts = (JSON.parse(readFileSync(join(repo, 'package.json'), 'utf8')) as {
+      scripts: Record<string, string>
+    }).scripts
+    const workflowLint = ci.workflows as Job & { 'runs-on'?: string; 'continue-on-error'?: unknown }
+    expect(workflowLint['runs-on']).toBe('ubuntu-latest')
+    expect(Object.hasOwn(workflowLint, 'continue-on-error')).toBe(false)
+
+    const lintSteps = workflowLint.steps ?? []
+    const installer = lintSteps.find((candidate) => candidate.name === 'Install actionlint')
+    const lintCommand = lintSteps.find((candidate) => candidate.name === 'Lint the workflows')?.run
+    expect(String(installer?.run)).toMatch(/version=\d+\.\d+\.\d+/)
+    expect(String(installer?.run)).toMatch(/sha256=[a-f0-9]{64}/)
+    expect(lintSteps.some((candidate) => candidate.run === 'shellcheck --version')).toBe(true)
+    expect(String(lintCommand)).toContain('/tmp/actionlint -color -shellcheck="shellcheck -S warning"')
+
+    const verify = ci.verify!
+    const verificationCommands = [
+      ['npm run lint', 'lint'],
+      ['npm run typecheck', 'typecheck'],
+      ['npm run test:coverage', 'test:coverage'],
+      ['npm run build', 'build'],
+      ['npm run verify:no-native-addons', 'verify:no-native-addons'],
+      ['npm run verify:package', 'verify:package'],
+      ['npm run verify:version', 'verify:version'],
+      ['npm run verify:strip-types', 'verify:strip-types'],
+      ['npm run licenses:check', 'licenses:check'],
+    ] as const
+    const steps = verify.steps ?? []
+    const indices = verificationCommands.map(([command, script]) => {
+      expect(scripts[script], `${script} is an npm script`).toBeDefined()
+      const index = steps.findIndex((candidate) => candidate.run === command)
+      expect(index, `${command} stays in the blocking Verify job`).toBeGreaterThan(-1)
+      return index
+    })
+    expect(indices).toEqual([...indices].sort((a, b) => a - b))
+    expect(steps.some((candidate) => String(candidate.run ?? '').includes('server/lib/__tests__/executablePath.test.ts'))).toBe(true)
+    const cleanTree = steps.find((candidate) => candidate.name === 'Verify working tree is clean after build')
+    expect(cleanTree).toBeDefined()
+    const cleanTreeCommand = String(cleanTree?.run ?? '')
+    const clean = executeCleanTreeGate(cleanTreeCommand, '')
+    expect(clean.status, clean.stderr).toBe(0)
+    const dirty = executeCleanTreeGate(cleanTreeCommand, ' M generated-output.js')
+    expect(dirty.status).toBe(1)
+    expect(dirty.stdout).toContain('Build modified tracked files')
+    expect(dirty.stdout).toContain('simulated diff')
   })
 
   it('fails release tag verification on registry errors while accepting a confirmed missing tag', () => {

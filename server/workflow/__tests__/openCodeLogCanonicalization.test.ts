@@ -1,6 +1,7 @@
 import { afterAll, beforeEach, describe, expect, it, vi } from 'vitest'
 import { resolve } from 'node:path'
 import { makeTempDir, removeTempDir } from '../../test/tempDir'
+import { TEST } from '../../test/factories'
 
 vi.mock('../../sse/broadcaster', () => ({
   broadcaster: {
@@ -8,9 +9,25 @@ vi.mock('../../sse/broadcaster', () => ({
   },
 }))
 
+vi.mock('../questionWindows', async (importOriginal) => ({
+  ...await importOriginal<typeof import('../questionWindows')>(),
+  attachRequest: vi.fn(),
+  markRequestReplied: vi.fn(),
+  markRequestRejectedExternally: vi.fn(),
+}))
+
+vi.mock('../aiQuestionSettings', async (importOriginal) => ({
+  ...await importOriginal<typeof import('../aiQuestionSettings')>(),
+  resolveAiQuestionSettings: vi.fn(() => ({ enabled: true, windowMs: 120_000 })),
+}))
+
 import * as ticketsModule from '../../storage/tickets'
 import * as atomicAppendModule from '../../io/atomicAppend'
 import { broadcaster } from '../../sse/broadcaster'
+import * as questionWindowsModule from '../questionWindows'
+import * as aiQuestionSettingsModule from '../aiQuestionSettings'
+import * as phaseAttemptsModule from '../../storage/ticketPhaseAttempts'
+import type { Message } from '../../opencode/types'
 
 const projectRoot = makeTempDir('looptroop-opencode-log-canonicalization-')
 const executionLogPath = resolve(projectRoot, 'execution-log.jsonl')
@@ -1101,5 +1118,290 @@ describe('OpenCode log canonicalization', () => {
     expect(toolEntry?.content).toContain('Attachments: 2')
     expect(toolEntry?.content).toContain('- results.json (application/json)')
     expect(toolEntry?.content).toContain('Compacted: 2026-07-23T10:00:00.000Z')
+  })
+
+  it('removes live text parts and clears orphaned or emptied messages', () => {
+    const state = createOpenCodeStreamState()
+    const base = [TEST.ticketId, TEST.externalId, 'CODING', TEST.model, 'ses-remove'] as const
+
+    emitOpenCodeStreamEvent(...base, {
+      type: 'text', sessionId: 'ses-remove', messageId: 'msg-keep', partId: 'part-a',
+      text: 'discarded', streaming: true, complete: false,
+    }, state)
+    emitOpenCodeStreamEvent(...base, {
+      type: 'text', sessionId: 'ses-remove', messageId: 'msg-keep', partId: 'part-b',
+      text: 'kept', streaming: true, complete: false,
+    }, state)
+    emitOpenCodeStreamEvent(...base, { type: 'part_removed', sessionId: 'ses-remove' }, state)
+    state.textPartToMessageIds.set('orphan-part', 'missing-message')
+    emitOpenCodeStreamEvent(...base, {
+      type: 'part_removed', sessionId: 'ses-remove', partId: 'orphan-part',
+    }, state)
+    emitOpenCodeStreamEvent(...base, {
+      type: 'text', sessionId: 'ses-remove', messageId: 'msg-drop', partId: 'part-drop',
+      text: 'removed entirely', streaming: true, complete: false,
+    }, state)
+    emitOpenCodeStreamEvent(...base, {
+      type: 'part_removed', sessionId: 'ses-remove', partId: 'part-a',
+    }, state)
+    emitOpenCodeStreamEvent(...base, {
+      type: 'part_removed', sessionId: 'ses-remove', partId: 'part-drop',
+    }, state)
+    emitOpenCodeStreamEvent(...base, { type: 'done', sessionId: 'ses-remove' }, state)
+
+    expect(state.liveTextMessages.size).toBe(0)
+    expect(state.textPartToMessageIds.size).toBe(0)
+    expect(getPersistedTextEntries()).toContainEqual(expect.objectContaining({
+      entryId: 'ses-remove:msg-keep:text',
+      content: 'kept',
+      op: 'finalize',
+    }))
+    expect(getPersistedTextEntries()).not.toContainEqual(expect.objectContaining({
+      entryId: 'ses-remove:msg-drop:text',
+    }))
+  })
+
+  it('finalizes reasoning, steps, and pending text when the session becomes idle', () => {
+    const state = createOpenCodeStreamState()
+    const base = [TEST.ticketId, TEST.externalId, 'CODING', TEST.model, 'ses-idle'] as const
+
+    emitOpenCodeStreamEvent(...base, {
+      type: 'reasoning', sessionId: 'ses-idle', partId: 'reason-1',
+      text: 'considering options', streaming: true, complete: false,
+    }, state)
+    emitOpenCodeStreamEvent(...base, {
+      type: 'reasoning', sessionId: 'ses-idle', partId: 'reason-1',
+      text: 'considering options carefully', streaming: false, complete: true,
+    }, state)
+    emitOpenCodeStreamEvent(...base, {
+      type: 'step', sessionId: 'ses-idle', partId: 'step-1',
+      step: 'start', complete: false,
+    }, state)
+    emitOpenCodeStreamEvent(...base, {
+      type: 'step', sessionId: 'ses-idle', partId: 'step-1',
+      step: 'finish', reason: 'stop', complete: true,
+    }, state)
+    emitOpenCodeStreamEvent(...base, {
+      type: 'text', sessionId: 'ses-idle', messageId: 'msg-pending', partId: 'text-pending',
+      text: 'final answer', streaming: true, complete: false,
+    }, state)
+    emitOpenCodeStreamEvent(...base, {
+      type: 'session_status', sessionId: 'ses-idle', status: 'idle',
+    }, state)
+
+    expect(getPersistedEntries()).toEqual(expect.arrayContaining([
+      expect.objectContaining({ entryId: 'ses-idle:reason-1', content: 'considering options carefully', op: 'finalize' }),
+      expect.objectContaining({ entryId: 'ses-idle:step-1', content: 'Step finished: stop', op: 'finalize' }),
+      expect.objectContaining({ entryId: 'ses-idle:msg-pending:text', content: 'final answer', op: 'finalize' }),
+      expect.objectContaining({ entryId: 'ses-idle:status', content: 'Session status: idle.', op: 'finalize' }),
+    ]))
+    expect(state.liveKinds.size).toBe(0)
+    expect(state.liveTextMessages.size).toBe(0)
+  })
+
+  it('logs provider retries and attaches normalized recovery actions to the status event', () => {
+    const state = createOpenCodeStreamState()
+
+    emitOpenCodeStreamEvent(TEST.ticketId, TEST.externalId, 'CODING', TEST.model, 'ses-retry', {
+      type: 'session_status',
+      sessionId: 'ses-retry',
+      status: 'retry',
+      attempt: 87,
+      message: '  retrying\n after a provider error  ',
+      action: {
+        provider: '  OpenAI  ',
+        reason: '  rate limited ',
+        title: ' Try again ',
+        message: 'Wait briefly',
+        label: 'Open support',
+        link: 'https://support.example.test/retry?token=secret',
+      },
+    }, state)
+
+    expect(getPersistedEntries()).toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        entryId: 'ses-retry:provider-action:87',
+        type: 'error',
+        content: expect.stringContaining('Provider recovery required (retry #87) for OpenAI.'),
+        data: expect.objectContaining({
+          recoveryAction: expect.objectContaining({
+            provider: 'OpenAI',
+            reason: 'rate limited',
+            link: 'https://support.example.test/retry?token=secret',
+          }),
+        }),
+      }),
+    ]))
+  })
+
+  it('routes asked, replied, and rejected question events through the question window and SSE payload', () => {
+    const state = createOpenCodeStreamState()
+    const ticketLookup = vi.spyOn(ticketsModule, 'getTicketByRef').mockReturnValue({
+      title: 'Question ticket',
+      status: 'CODING',
+    } as ReturnType<typeof ticketsModule.getTicketByRef> & {})
+    const phaseAttemptLookup = vi.spyOn(phaseAttemptsModule, 'resolvePhaseAttempt').mockReturnValue(3)
+
+    try {
+      const base = [TEST.ticketId, TEST.externalId, 'CODING', TEST.model, 'ses-question'] as const
+      emitOpenCodeStreamEvent(...base, {
+        type: 'question',
+        sessionId: 'ses-question',
+        action: 'asked',
+        requestId: 'req-1',
+        questions: [{ question: 'Which database?', header: 'Storage', options: [{ label: 'SQLite', description: 'Local file' }] }],
+        tool: { callId: 'call-1', messageId: 'msg-1' },
+      }, state)
+      emitOpenCodeStreamEvent(...base, {
+        type: 'question', sessionId: 'ses-question', action: 'replied', requestId: 'req-1', answers: [{ answers: ['SQLite'] }],
+      }, state)
+      emitOpenCodeStreamEvent(...base, {
+        type: 'question', sessionId: 'ses-question', action: 'rejected', requestId: 'req-2',
+      }, state)
+
+      expect(questionWindowsModule.attachRequest).toHaveBeenCalledWith(expect.objectContaining({
+        ticketId: TEST.ticketId, sessionId: 'ses-question', requestId: 'req-1',
+        memberId: TEST.model, phase: 'CODING', phaseAttempt: 3, windowMs: 120_000,
+      }))
+      expect(aiQuestionSettingsModule.resolveAiQuestionSettings).toHaveBeenCalledWith(TEST.ticketId)
+      expect(phaseAttemptsModule.resolvePhaseAttempt).toHaveBeenCalledWith(TEST.ticketId, 'CODING')
+      expect(questionWindowsModule.markRequestReplied).toHaveBeenCalledWith(TEST.ticketId, 'ses-question', 'req-1')
+      expect(questionWindowsModule.markRequestRejectedExternally).toHaveBeenCalledWith(TEST.ticketId, 'ses-question', 'req-2')
+      expect(mockBroadcast.mock.calls.filter(([, event]) => event === 'needs_input').map(([, , payload]) => payload)).toEqual([
+        expect.objectContaining({
+          type: 'opencode_question', action: 'asked', ticketTitle: 'Question ticket', status: 'CODING',
+          questionCount: 1, requestId: 'req-1', questions: expect.any(Array),
+        }),
+        expect.objectContaining({ type: 'opencode_question_resolved', action: 'replied', answers: [{ answers: ['SQLite'] }] }),
+        expect.objectContaining({ type: 'opencode_question_resolved', action: 'rejected', questions: [], questionCount: 0 }),
+      ])
+      expect(getAiPersistedEntries()).toEqual(expect.arrayContaining([
+        expect.objectContaining({ content: '[QUESTION] AI asked 1 question: Which database?' }),
+        expect.objectContaining({ content: '[QUESTION] AI question answered.' }),
+        expect.objectContaining({ content: '[QUESTION] AI question rejected.' }),
+      ]))
+    } finally {
+      ticketLookup.mockRestore()
+      phaseAttemptLookup.mockRestore()
+    }
+  })
+
+  it('records todo transitions, part summaries, edited files, debug errors, and permission details', () => {
+    const state = createOpenCodeStreamState()
+    const base = [TEST.ticketId, TEST.externalId, 'CODING', TEST.model, 'ses-events'] as const
+
+    emitOpenCodeStreamEvent(...base, {
+      type: 'todo', sessionId: 'ses-events', todos: [{ content: 'Add coverage', status: 'pending', priority: 'medium' }],
+    }, state)
+    emitOpenCodeStreamEvent(...base, {
+      type: 'todo', sessionId: 'ses-events', todos: [{ content: 'Add coverage', status: 'completed', priority: 'medium' }],
+    }, state)
+    emitOpenCodeStreamEvent(...base, {
+      type: 'part_summary', sessionId: 'ses-events', partType: 'file', partId: 'file-info',
+      summary: 'Read package metadata', severity: 'info', complete: true,
+    }, state)
+    emitOpenCodeStreamEvent(...base, {
+      type: 'part_summary', sessionId: 'ses-events', partType: 'patch', partId: 'patch-error',
+      summary: 'Patch failed', severity: 'error', details: { path: 'src/app.ts' }, complete: true,
+    }, state)
+    emitOpenCodeStreamEvent(...base, {
+      type: 'file_edited', sessionId: 'ses-events', file: 'src/app.ts',
+    }, state)
+    emitOpenCodeStreamEvent(...base, {
+      type: 'debug_event', sessionId: 'ses-events', eventName: 'provider.failed', summary: 'Provider failed', severity: 'debug',
+    }, state)
+    emitOpenCodeStreamEvent(...base, {
+      type: 'debug_event', sessionId: 'ses-events', eventName: 'provider.error', summary: 'Request rejected', severity: 'error',
+    }, state)
+    emitOpenCodeStreamEvent(...base, {
+      type: 'permission', sessionId: 'ses-events', action: 'asked', permissionId: 'perm-1',
+      permission: 'read', title: 'Read source', patterns: ['src/**'],
+    }, state)
+
+    expect(getPersistedEntries()).toEqual(expect.arrayContaining([
+      expect.objectContaining({ content: '[TASK] 1 completed: completed: Add coverage' }),
+      expect.objectContaining({ entryId: 'ses-events:file-info', content: 'Read package metadata', type: 'info', kind: 'session' }),
+      expect.objectContaining({ entryId: 'ses-events:patch-error', content: 'Patch failed', type: 'error', kind: 'error', data: { details: { path: 'src/app.ts' } } }),
+      expect.objectContaining({ entryId: 'ses-events:file-edited:src/app.ts', content: '[TOOL] File edited: src/app.ts' }),
+      expect.objectContaining({ entryId: 'ses-events:opencode:provider.error:error', content: '[ERROR] Request rejected', source: 'error', audience: 'debug' }),
+    ]))
+    const debugEntries = getPersistedEntries().filter((entry) => entry.type === 'debug')
+    expect(debugEntries.some((entry) => String(entry.content).includes('opencode.provider.failed'))).toBe(true)
+    expect(debugEntries.some((entry) => String(entry.content).includes('opencode.permission') && String(entry.content).includes('perm-1'))).toBe(true)
+  })
+
+  it('backfills tool attachments while ignoring malformed or empty metadata', () => {
+    const messages: Message[] = [{
+      id: 'msg-attachment',
+      role: 'assistant',
+      content: 'Finished reading attachments.',
+      parts: [{
+        id: 'tool-attachment',
+        sessionID: 'ses-attachment',
+        messageID: 'msg-attachment',
+        type: 'tool',
+        callID: 'call-attachment',
+        tool: 'read',
+        state: {
+          status: 'completed',
+          attachments: [
+            null as unknown as Record<string, unknown>,
+            { name: 'report.csv', mediaType: 'text/csv' },
+            { filename: 'trace.log', mime: 'text/plain' },
+            { filename: '', mime: '' },
+          ],
+        },
+      }],
+    }]
+
+    emitOpenCodeSessionLogs(
+      TEST.ticketId, TEST.externalId, 'CODING', TEST.model, 'ses-attachment', 'coding_main',
+      'Finished reading attachments.', messages, createOpenCodeStreamState(),
+    )
+
+    const toolEntry = getAiPersistedEntries().find((entry) => entry.entryId === 'ses-attachment:tool-attachment')
+    expect(toolEntry?.content).toContain('Attachments: 2')
+    expect(toolEntry?.content).toContain('- report.csv (text/csv)')
+    expect(toolEntry?.content).toContain('- trace.log (text/plain)')
+  })
+
+  it('uses a response fallback when an errored assistant message has no text parts', () => {
+    const state = createOpenCodeStreamState()
+    const messages: Message[] = [{
+      id: 'msg-error',
+      role: 'assistant',
+      content: '',
+      info: {
+        id: 'msg-error',
+        sessionID: 'ses-error-fallback',
+        role: 'assistant',
+        error: {
+          name: 'APIError',
+          message: 'Model generation failed',
+          statusCode: 503,
+          isRetryable: true,
+        },
+      },
+    }]
+
+    emitOpenCodeSessionLogs(
+      TEST.ticketId, TEST.externalId, 'CODING', TEST.model, 'ses-error-fallback', 'coding_main',
+      'Last available response.', messages, state,
+    )
+
+    expect(getPersistedTextEntries()).toContainEqual(expect.objectContaining({
+      entryId: 'ses-error-fallback:msg-error:text',
+      content: 'Last available response.',
+      op: 'append',
+    }))
+    expect(getAiPersistedEntries()).toContainEqual(expect.objectContaining({
+      entryId: 'ses-error-fallback:msg-error:assistant-error',
+      type: 'error',
+      content: expect.stringContaining('Model generation failed'),
+      data: expect.objectContaining({
+        errorDetails: expect.objectContaining({ statusCode: 503, isRetryable: true }),
+      }),
+    }))
+    expect(state.finalizedTextEntryIds.has('ses-error-fallback:msg-error:text')).toBe(true)
   })
 })

@@ -857,6 +857,34 @@ describe.concurrent('cached candidate parsing', () => {
     expect(repairWarnings).toContain('Trimmed trailing terminal noise after the complete structured artifact.')
   })
 
+  it.each([
+    ['ANSI reset and bracketed paste markers', '\u001b[31m[200~\u001b[0m'],
+    ['a terminal paste marker followed by its stray bracket', '[200~['],
+    ['a short terminal marker', '[A~'],
+  ])('trims terminal control sequences and paste markers after JSON (%s)', (_, noise) => {
+    const repairWarnings: string[] = []
+
+    expect(parseYamlOrJsonCandidate(`{"terminal_noise":true}${noise}`, {
+      allowTrailingTerminalNoise: true,
+      repairWarnings,
+    })).toEqual({ terminal_noise: true })
+    expect(repairWarnings).toContain('Trimmed trailing terminal noise after the complete structured artifact.')
+  })
+
+  it('trims terminal-only lines and inline control sequences after YAML', () => {
+    const repairWarnings: string[] = []
+
+    expect(parseYamlOrJsonCandidate('answer: complete\u001b[0m', {
+      allowTrailingTerminalNoise: true,
+      repairWarnings,
+    })).toEqual({ answer: 'complete' })
+    expect(parseYamlOrJsonCandidate('answer: complete\n\u001b[0m\n[200~', {
+      allowTrailingTerminalNoise: true,
+      repairWarnings,
+    })).toEqual({ answer: 'complete' })
+    expect(repairWarnings).toContain('Trimmed trailing terminal noise after the complete structured artifact.')
+  })
+
   it('does not trim terminal noise after an unbalanced JSON root', () => {
     expect(() => parseYamlOrJsonCandidate('{"items":[1,2]\u001b[0m', {
       allowTrailingTerminalNoise: true,

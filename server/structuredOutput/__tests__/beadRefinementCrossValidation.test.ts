@@ -46,6 +46,57 @@ describe('bead refinement cross-validation', () => {
     expect(result.repairWarnings).toHaveLength(3)
   })
 
+  it('returns no synthesized changes when a refinement leaves every bead unchanged', () => {
+    const unchanged = document([
+      bead('stable', 'Stable work', 'Keep this description.'),
+    ])
+
+    const result = normalizeBeadRefinementOutput(unchanged, unchanged)
+
+    expect(result.ok).toBe(true)
+    if (!result.ok) return
+    expect(result.value.changes).toEqual([])
+    expect(result.value.repairApplied).toBe(false)
+    expect(result.repairWarnings).toEqual([])
+  })
+
+  it('synthesizes only the omitted additions and removals beside an explicit edit', () => {
+    const winner = document([
+      bead('updated', 'Updated work', 'Original description.'),
+      bead('removed', 'Removed work', 'No longer needed.'),
+    ])
+    const refined = document([
+      bead('updated', 'Updated work', 'Revised description.'),
+      bead('added', 'New work', 'Added during refinement.'),
+    ], [
+      {
+        type: 'modified',
+        item_type: 'bead',
+        before: { id: 'updated', title: 'Updated work' },
+        after: { id: 'updated', title: 'Updated work' },
+      },
+    ])
+
+    const result = normalizeBeadRefinementOutput(refined, winner)
+
+    expect(result.ok).toBe(true)
+    if (!result.ok) return
+    expect(result.value.changes.map(({ type, before, after, attributionStatus }) => ({
+      type,
+      before: before?.id ?? null,
+      after: after?.id ?? null,
+      attributionStatus,
+    }))).toEqual([
+      { type: 'modified', before: 'updated', after: 'updated', attributionStatus: 'model_unattributed' },
+      { type: 'added', before: null, after: 'added', attributionStatus: 'synthesized_unattributed' },
+      { type: 'removed', before: 'removed', after: null, attributionStatus: 'synthesized_unattributed' },
+    ])
+    expect(result.repairWarnings).toEqual(expect.arrayContaining([
+      expect.stringContaining('Synthesized omitted beads refinement added change'),
+      expect.stringContaining('Synthesized omitted beads refinement removed change'),
+    ]))
+  })
+
   it('drops invalid and no-op changes, resolves labels, and hydrates valid inspiration', () => {
     const winner = document([
       bead('stable', 'Stable work', 'Keep this description.'),

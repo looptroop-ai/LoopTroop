@@ -314,6 +314,51 @@ describe.concurrent('beads refinement validation', () => {
     )
   })
 
+  it('synthesizes omitted add and remove records from a partially declared refinement', () => {
+    const winnerDraftContent = buildBeadsRefinementContent()
+    const refinedDocument = readBeadDocument(winnerDraftContent)
+    const switcherBead = refinedDocument.beads[0]!
+    switcherBead.description = 'Keep the switcher accessible from the keyboard.'
+    refinedDocument.beads = [
+      switcherBead,
+      {
+        ...refinedDocument.beads[1]!,
+        id: 'bead-3',
+        title: 'Add cache invalidation coverage',
+        prdRefs: ['EPIC-1', 'US-3'],
+        description: 'Cover cache invalidation explicitly.',
+      },
+    ]
+    refinedDocument.changes = [modifiedChange(
+      { id: 'bead-1', label: 'Keep existing switcher bead' },
+      { id: 'bead-1', label: 'Keep existing switcher bead' },
+    )]
+
+    const result = validateBeadsRefinementOutput(writeBeadDocument(refinedDocument), { winnerDraftContent })
+
+    expect(result.changes).toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        type: 'added',
+        before: null,
+        after: expect.objectContaining({ id: 'bead-3', label: 'Add cache invalidation coverage' }),
+        attributionStatus: 'synthesized_unattributed',
+      }),
+      expect.objectContaining({
+        type: 'removed',
+        before: expect.objectContaining({ id: 'bead-2', label: 'Update persistence coverage' }),
+        after: null,
+        attributionStatus: 'synthesized_unattributed',
+      }),
+    ]))
+    expect(result.repairWarnings).toContain(
+      'Synthesized omitted beads refinement added change for bead "bead-3" (present in refined output but not in winner draft).',
+    )
+    expect(result.repairWarnings).toContain(
+      'Synthesized omitted beads refinement removed change for bead "bead-2" (present in winner draft but not in refined output).',
+    )
+    expect(result.repairWarnings.some((warning) => warning.includes('do not fully account for the diff'))).toBe(false)
+  })
+
   it('keeps an identical inspiration when duplicate modified records collapse', () => {
     const winnerDraftContent = buildBeadsRefinementContent()
     const change = modifiedChange(

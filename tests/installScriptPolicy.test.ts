@@ -28,13 +28,16 @@ const workflows = readdirSync(workflowDir).filter((file) => /\.ya?ml$/.test(file
   },
 }))
 
+const isPreferredNativePackage = (packageName: string): boolean =>
+  process.arch !== 'x64' || packageName.endsWith('-baseline') || packageName.startsWith('@oven/bun-')
+
 const isRunnerNativePackage = (
   packageName: string,
   metadata: { os?: string[]; cpu?: string[] } | undefined,
 ): boolean => metadata?.os?.includes(process.platform) === true
     && metadata?.cpu?.includes(process.arch) === true
     && !packageName.includes('musl')
-    && (process.arch !== 'x64' || packageName.endsWith('-baseline'))
+    && isPreferredNativePackage(packageName)
 
 const expectedNativeBinPath = (tool: string, packageRoot: string, directory: string): string =>
   tool === 'bun' && process.platform === 'win32'

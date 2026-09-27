@@ -9,9 +9,12 @@ import type { DraftPhaseResult } from '../../council/types'
 import type { deliberateInterview as DeliberateInterview } from '../../phases/interview/deliberate'
 import { opencodeSessions } from '../../db/schema'
 import { getLatestPhaseArtifact, getTicketContext } from '../../storage/tickets'
+import * as atomicWrite from '../../io/atomicWrite'
 import { TEST } from '../../test/factories'
 import { createInitializedTestTicket, createTestRepoManager, resetTestDb } from '../../test/integration'
+import { listSkipEvents, writeSkipReceipts } from '../skipReceipts'
 import { interviewQASessions, phaseIntermediate } from '../phases/state'
+import * as interviewQa from '../../phases/interview/qa'
 
 const { checkHealthMock, getSessionMock, deliberateInterviewMock } = vi.hoisted(() => ({
   checkHealthMock: vi.fn(),
@@ -33,6 +36,7 @@ import {
   handleInterviewDeliberate,
   handleInterviewQABatch,
   handleMockInterviewQAStart,
+  processInterviewBatchAsync,
   readInterviewSessionSnapshotArtifact,
   releaseInterviewBatch,
   writeInterviewSessionSnapshotArtifact,
@@ -52,6 +56,25 @@ function draftContent(question: string) {
 
 function answerQuestions(questions: Array<{ id: string }>) {
   return Object.fromEntries(questions.map((question, index) => [question.id, `Answer ${index + 1}.`]))
+}
+
+function makeActiveProm4Batch(ticketId: string) {
+  const base = createInterviewSessionSnapshot({
+    winnerId: TEST.councilMembers[0],
+    compiledQuestions: [{ id: 'Q01', phase: 'Foundation', question: 'Which outcome matters most?' }],
+    maxInitialQuestions: 1,
+  })
+  const batch = buildPersistedBatch({
+    questions: [{ id: 'Q01', phase: 'Foundation', question: 'Which outcome matters most?' }],
+    progress: { current: 1, total: 1 },
+    isComplete: false,
+    isFinalFreeForm: false,
+    aiCommentary: 'Answer the primary question.',
+    batchNumber: 1,
+  }, 'prom4', base)
+  const active = recordPreparedBatch(base, batch)
+  writeInterviewSessionSnapshotArtifact(ticketId, active)
+  return active
 }
 
 describe('additional interview phase flows', () => {
@@ -254,6 +277,164 @@ describe('additional interview phase flows', () => {
 
     await expect(handleInterviewQABatch(ticket.id, { Q01: 'An answer without a question batch.' }))
       .rejects.toThrow('No active interview batch for this ticket')
+  })
+
+  it('persists a replacement PROM4 session when a submitted batch has no reusable session', async () => {
+    const { ticket } = await createInitializedTestTicket(repoManager, {
+      title: 'Restart an interview session after its persisted session is unavailable',
+    })
+    makeActiveProm4Batch(ticket.id)
+    const claim = claimInterviewBatch(ticket.id)
+    expect(claim).toBeTruthy()
+    const firstBatch = {
+      questions: [{ id: 'Q02', phase: 'Structure', question: 'Which boundary should remain fixed?' }],
+      progress: { current: 2, total: 3 },
+      isComplete: false,
+      isFinalFreeForm: false,
+      aiCommentary: 'Continue with one boundary question.',
+      batchNumber: 2,
+    }
+    const start = vi.spyOn(interviewQa, 'startInterviewSession').mockResolvedValue({
+      sessionId: 'replacement-prom4-session',
+      firstBatch,
+    })
+
+    try {
+      const result = await handleInterviewQABatch(
+        ticket.id,
+        { Q01: 'The main outcome is stable behavior.' },
+        {},
+        {},
+        {},
+        claim ?? undefined,
+      )
+
+      expect(start).toHaveBeenCalledOnce()
+      expect(result).toMatchObject({ batchNumber: 2, questions: [{ id: 'Q02' }] })
+      expect(interviewQASessions.get(ticket.id)).toEqual({
+        sessionId: 'replacement-prom4-session',
+        winnerId: TEST.councilMembers[0],
+      })
+      expect(JSON.parse(getLatestPhaseArtifact(ticket.id, 'interview_qa_session')!.content)).toEqual({
+        sessionId: 'replacement-prom4-session',
+        winnerId: TEST.councilMembers[0],
+      })
+    } finally {
+      start.mockRestore()
+      releaseInterviewBatch(ticket.id, claim ?? undefined)
+    }
+  })
+
+  it('commits the completed PROM4 snapshot and canonical interview after the final answer', async () => {
+    const { ticket, paths } = await createInitializedTestTicket(repoManager, {
+      title: 'Complete a PROM4 interview after its final answer',
+    })
+    const active = makeActiveProm4Batch(ticket.id)
+    interviewQASessions.set(ticket.id, { sessionId: 'prom4-session', winnerId: active.winnerId })
+    const claim = claimInterviewBatch(ticket.id)
+    expect(claim).toBeTruthy()
+    const submit = vi.spyOn(interviewQa, 'submitBatchToSession').mockResolvedValue({
+      questions: [],
+      progress: { current: 1, total: 1 },
+      isComplete: true,
+      isFinalFreeForm: false,
+      aiCommentary: 'The interview is complete.',
+      batchNumber: 1,
+    })
+
+    try {
+      const result = await handleInterviewQABatch(
+        ticket.id,
+        { Q01: 'The main outcome is stable behavior.' },
+        {},
+        {},
+        {},
+        claim ?? undefined,
+      )
+
+      expect(submit).toHaveBeenCalledOnce()
+      expect(result).toMatchObject({ isComplete: true, batchNumber: 1 })
+      expect(readInterviewSessionSnapshotArtifact(ticket.id)).toMatchObject({
+        completedAt: expect.any(String),
+        answers: { Q01: { answer: 'The main outcome is stable behavior.' } },
+      })
+      expect(readFileSync(`${paths.ticketDir}/interview.yaml`, 'utf8')).toContain('The main outcome is stable behavior.')
+    } finally {
+      submit.mockRestore()
+      releaseInterviewBatch(ticket.id, claim ?? undefined)
+    }
+  })
+
+  it('restores the active PROM4 batch when writing its completed canonical interview fails', async () => {
+    const { ticket } = await createInitializedTestTicket(repoManager, {
+      title: 'Restore an interview batch after canonical write failure',
+    })
+    const active = makeActiveProm4Batch(ticket.id)
+    interviewQASessions.set(ticket.id, { sessionId: 'prom4-session', winnerId: active.winnerId })
+    const claim = claimInterviewBatch(ticket.id)
+    expect(claim).toBeTruthy()
+    const submit = vi.spyOn(interviewQa, 'submitBatchToSession').mockResolvedValue({
+      questions: [],
+      progress: { current: 1, total: 1 },
+      isComplete: true,
+      isFinalFreeForm: false,
+      aiCommentary: 'The interview is complete.',
+      batchNumber: 1,
+    })
+    const originalSafeWrite = atomicWrite.safeAtomicWriteWithin
+    const failCanonicalWrite = vi.spyOn(atomicWrite, 'safeAtomicWriteWithin').mockImplementation((...args) => {
+      if (String(args[1]).includes('interview.yaml')) throw new Error('injected final canonical write failure')
+      return originalSafeWrite(...args)
+    })
+
+    try {
+      await expect(processInterviewBatchAsync(
+        ticket.id,
+        { Q01: 'The main outcome is stable behavior.' },
+        active,
+        {},
+        {},
+        claim ?? undefined,
+      )).rejects.toThrow('injected final canonical write failure')
+
+      expect(readInterviewSessionSnapshotArtifact(ticket.id)).toEqual(active)
+      expect(getLatestPhaseArtifact(ticket.id, 'interview_batch_in_flight', 'WAITING_INTERVIEW_ANSWERS')).toBeUndefined()
+    } finally {
+      failCanonicalWrite.mockRestore()
+      submit.mockRestore()
+      releaseInterviewBatch(ticket.id, claim ?? undefined)
+    }
+  })
+
+  it('cleans up an uncommitted skip receipt when the PROM4 snapshot claim is stale', async () => {
+    const { ticket } = await createInitializedTestTicket(repoManager, {
+      title: 'Discard a skip receipt after the interview claim expires',
+    })
+    makeActiveProm4Batch(ticket.id)
+    const actionId = 'stale-prom4-skip-attempt'
+    writeSkipReceipts({
+      ticketId: ticket.id,
+      surface: 'interview_question',
+      itemType: 'interview_question',
+      phase: 'WAITING_INTERVIEW_ANSWERS',
+      ticketStatusBefore: 'WAITING_INTERVIEW_ANSWERS',
+      actionId,
+      items: [{ itemId: 'Q01', reason: 'The answer needs more investigation.' }],
+    })
+    const receipt = { actionId }
+
+    await expect(handleInterviewQABatch(
+      ticket.id,
+      { Q01: '' },
+      {},
+      { Q01: 'The answer needs more investigation.' },
+      receipt,
+      'expired-claim-token',
+    )).rejects.toThrow('Interview batch changed or its claim expired before processing started')
+
+    expect(receipt.actionId).toBeUndefined()
+    expect(listSkipEvents(ticket.id).some((event) => event.actionId === actionId)).toBe(false)
+    expect(getLatestPhaseArtifact(ticket.id, 'interview_batch_in_flight', 'WAITING_INTERVIEW_ANSWERS')).toBeUndefined()
   })
 
   it('replays persisted mock batches after the abandoned mock session is gone', async () => {

@@ -11,6 +11,7 @@ import {
 import { parseUiArtifactCompanionArtifact } from '@shared/artifactCompanions'
 import { parseUiRefinementDiffArtifact } from '@shared/refinementDiffArtifacts'
 import type { DraftPhaseResult, DraftProgressEvent } from '../../council/types'
+import type { refineDraft as RefineDraft } from '../../council/refiner'
 import { attachProject } from '../../storage/projects'
 import { createTicket, getLatestPhaseArtifact, getTicketPaths, upsertLatestPhaseArtifact } from '../../storage/tickets'
 import { TEST, makeTicketContextFromTicket as makeTicketContext } from '../../test/factories'
@@ -142,6 +143,104 @@ describe('interview workflow phases', () => {
     expect(() => loadCanonicalInterview(paths.ticketDir)).toThrow('escapes root')
     expect(() => writeCanonicalInterview(ticket.externalId, paths.ticketDir, snapshot)).toThrow('must not be a symbolic link')
   })
+
+  it('forwards compile session, stream, and prompt callbacks, and rejects invalid compile inputs before dispatch', async () => {
+    const { ticket, paths } = await createInitializedTestTicket(repoManager, {
+      title: 'Forward interview refinement activity',
+    })
+    const context = makeTicketContext(ticket, {
+      status: 'COMPILING_INTERVIEW',
+      lockedMainImplementer: TEST.implementer,
+      lockedCouncilMembers: [...TEST.councilMembers],
+      lockedInterviewQuestions: 10,
+      lockedCoverageFollowUpBudgetPercent: 20,
+      lockedMaxCoveragePasses: 3,
+    })
+    const sendEvent = vi.fn()
+
+    await expect(handleInterviewCompile(ticket.id, context, sendEvent, new AbortController().signal))
+      .rejects.toThrow('No interview vote results found — cannot refine')
+
+    const winnerId = TEST.councilMembers[0]
+    const invalidWinner = {
+      phase: 'interview' as const,
+      worktreePath: paths.worktreePath,
+      winnerId,
+      drafts: [{ memberId: winnerId, content: 'questions: [', outcome: 'completed' as const, duration: 1 }],
+      memberOutcomes: { [winnerId]: 'completed' as const },
+      ticketState: {
+        ticketId: ticket.externalId,
+        title: ticket.title,
+        description: ticket.description ?? '',
+        relevantFiles: '',
+      },
+    }
+    phaseIntermediate.set(`${ticket.id}:interview`, invalidWinner)
+    const aborted = new AbortController()
+    aborted.abort()
+    await expect(handleInterviewCompile(ticket.id, context, sendEvent, aborted.signal)).rejects.toThrow(ticket.id)
+
+    await expect(handleInterviewCompile(ticket.id, context, sendEvent, new AbortController().signal))
+      .rejects.toThrow(/Winning interview draft .* could not be parsed/)
+    expect(refineDraftMock).not.toHaveBeenCalled()
+
+    const winnerContent = buildInterviewDraftContent('Which outcome should remain stable?')
+    phaseIntermediate.set(`${ticket.id}:interview`, {
+      ...invalidWinner,
+      drafts: [{ memberId: winnerId, content: winnerContent, outcome: 'completed', duration: 1 }],
+    })
+    refineDraftMock.mockImplementationOnce(async (...args: unknown[]) => {
+      const onSessionLog = args[7] as Parameters<RefineDraft>[7]
+      const onStreamEvent = args[8] as Parameters<RefineDraft>[8]
+      const onPromptDispatched = args[9] as Parameters<RefineDraft>[9]
+      const buildPrompt = args[11] as Parameters<RefineDraft>[11]
+      const validateResponse = args[12] as Parameters<RefineDraft>[12]
+      expect(buildPrompt?.(
+        args[1] as Parameters<RefineDraft>[1],
+        args[2] as Parameters<RefineDraft>[2],
+      )[0]?.content).toContain('## Winning Draft')
+      expect(() => validateResponse?.('questions: [')).toThrow()
+      onSessionLog?.({
+        stage: 'refine',
+        memberId: winnerId,
+        sessionId: 'interview-refinement-session',
+        response: '',
+        messages: [],
+      })
+      onStreamEvent?.({
+        stage: 'refine',
+        memberId: winnerId,
+        sessionId: 'interview-refinement-session',
+        event: {
+          type: 'step',
+          sessionId: 'interview-refinement-session',
+          step: 'start',
+          complete: false,
+        },
+      })
+      onPromptDispatched?.({
+        stage: 'refine',
+        memberId: winnerId,
+        event: {
+          session: { id: 'interview-refinement-session' },
+          parts: [{ type: 'text', content: 'refinement prompt' }],
+          promptText: 'refinement prompt',
+          promptNumber: 1,
+          timeoutKind: 'ai_response',
+        },
+      })
+      throw new Error('refinement stopped after callback delivery')
+    })
+
+    await expect(handleInterviewCompile(ticket.id, context, sendEvent, new AbortController().signal))
+      .rejects.toThrow('refinement stopped after callback delivery')
+
+    const logContents = readFileSync(paths.executionLogPath, 'utf8')
+    expect(logContents).toContain('OpenCode refine:')
+    expect(logContents).toContain('Step started.')
+    expect(logContents).toContain('refinement prompt')
+  })
+
   beforeEach(() => {
     resetTestDb()
     phaseIntermediate.clear()
@@ -713,7 +812,6 @@ describe('interview workflow phases', () => {
       JSON.stringify({ winnerId: TEST.councilMembers[1] }),
     )
     expect(readMockInterviewWinnerId(ticket.id, 'fallback-model')).toBe(TEST.councilMembers[1])
-
     await handleMockInterviewCompile(ticket.id, context, sendEvent)
 
     expect(JSON.parse(getLatestPhaseArtifact(ticket.id, 'interview_winner', 'COMPILING_INTERVIEW')?.content ?? '{}'))
@@ -721,6 +819,9 @@ describe('interview workflow phases', () => {
     expect(JSON.parse(getLatestPhaseArtifact(ticket.id, 'interview_compiled', 'COMPILING_INTERVIEW')?.content ?? '{}'))
       .toMatchObject({ refinedContent: expect.stringContaining('What is the primary outcome') })
     expect(sendEvent).toHaveBeenCalledWith({ type: 'READY' })
+
+    upsertLatestPhaseArtifact(ticket.id, 'interview_votes', 'COUNCIL_VOTING_INTERVIEW', '{')
+    expect(readMockInterviewWinnerId(ticket.id, 'fallback-model')).toBe('fallback-model')
   })
 
   it('starts and persists a mock interview batch', async () => {
@@ -979,6 +1080,9 @@ describe('interview workflow phases', () => {
     expect(restoreInterruptedInterviewBatch(ticket.id)).toBe(false)
     expect(readInterviewSessionSnapshotArtifact(ticket.id)?.currentBatch?.batchNumber).toBe(1)
     expect(getLatestPhaseArtifact(ticket.id, markerType, 'WAITING_INTERVIEW_ANSWERS')).toBeUndefined()
+
+    upsertLatestPhaseArtifact(ticket.id, markerType, 'WAITING_INTERVIEW_ANSWERS', '{')
+    expect(restoreInterruptedInterviewBatch(ticket.id)).toBe(false)
   })
 
   it('rejects malformed interview QA session artifacts', async () => {

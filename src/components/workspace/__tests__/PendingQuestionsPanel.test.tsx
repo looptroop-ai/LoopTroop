@@ -7,6 +7,7 @@ import { createAiQuestionContextStub } from '@/test/aiQuestionContext'
 import {
   clearTicketPersistentState,
   getTicketQuestionsCollapsedStorageKey,
+  TICKET_STATE_CLEARED_EVENT,
 } from '@/components/ticket/renderedTickets'
 import { PendingQuestionsPanel } from '../PendingQuestionsPanel'
 
@@ -109,11 +110,57 @@ describe('PendingQuestionsPanel', () => {
     const toggle = screen.getByRole('button', { name: /claude-opus-4/i })
     expect(toggle).toHaveAttribute('aria-expanded', 'false')
 
+    act(() => {
+      window.dispatchEvent(new CustomEvent(TICKET_STATE_CLEARED_EVENT, { detail: { ticketId: otherTicketId } }))
+    })
+    expect(toggle).toHaveAttribute('aria-expanded', 'false')
+
     act(() => { clearTicketPersistentState(TICKET_ID) })
 
     expect(toggle).toHaveAttribute('aria-expanded', 'true')
     expect(localStorage.getItem(getTicketQuestionsCollapsedStorageKey(TICKET_ID))).toBeNull()
     expect(localStorage.getItem(getTicketQuestionsCollapsedStorageKey(otherTicketId))).toBe('1')
+  })
+
+  it('remembers collapsing and expanding the panel for this ticket', () => {
+    renderPanel({ getTicketRequests: () => [makeRequest()] })
+    const toggle = screen.getByRole('button', { name: /claude-opus-4/i })
+    const key = getTicketQuestionsCollapsedStorageKey(TICKET_ID)
+
+    fireEvent.click(toggle)
+    expect(toggle).toHaveAttribute('aria-expanded', 'false')
+    expect(localStorage.getItem(key)).toBe('1')
+
+    fireEvent.click(toggle)
+    expect(toggle).toHaveAttribute('aria-expanded', 'true')
+    expect(localStorage.getItem(key)).toBeNull()
+  })
+
+  it('keeps the panel usable when browser storage is blocked', () => {
+    const getItem = vi.spyOn(window.localStorage, 'getItem').mockImplementation(() => {
+      throw new Error('Storage disabled')
+    })
+    const setItem = vi.spyOn(window.localStorage, 'setItem').mockImplementation(() => {
+      throw new Error('Storage disabled')
+    })
+    const removeItem = vi.spyOn(window.localStorage, 'removeItem').mockImplementation(() => {
+      throw new Error('Storage disabled')
+    })
+
+    try {
+      renderPanel({ getTicketRequests: () => [makeRequest()] })
+      const toggle = screen.getByRole('button', { name: /claude-opus-4/i })
+      expect(toggle).toHaveAttribute('aria-expanded', 'true')
+
+      fireEvent.click(toggle)
+      expect(toggle).toHaveAttribute('aria-expanded', 'false')
+      fireEvent.click(toggle)
+      expect(toggle).toHaveAttribute('aria-expanded', 'true')
+    } finally {
+      getItem.mockRestore()
+      setItem.mockRestore()
+      removeItem.mockRestore()
+    }
   })
 
   it('gives each model a tab and shows the countdown once', () => {
@@ -130,6 +177,31 @@ describe('PendingQuestionsPanel', () => {
     expect(screen.getAllByText('2:00')).toHaveLength(1)
   })
 
+  it('refreshes the displayed countdown on its one-second tick', () => {
+    vi.useFakeTimers()
+    const getRemainingMs = vi.fn().mockReturnValue(240_000)
+    const value = createAiQuestionContextStub({
+      getTicketRequests: () => [makeRequest()],
+      getTimer: () => makeTimer(),
+      getRemainingMs,
+    })
+    const view = render(
+      <AIQuestionContext.Provider value={value}>
+        <PendingQuestionsPanel ticketId={TICKET_ID} />
+      </AIQuestionContext.Provider>,
+    )
+
+    try {
+      expect(screen.getByText('4:00')).toBeInTheDocument()
+      getRemainingMs.mockReturnValue(239_000)
+      act(() => { vi.advanceTimersByTime(1_000) })
+      expect(screen.getByText('3:59')).toBeInTheDocument()
+    } finally {
+      view.unmount()
+      vi.useRealTimers()
+    }
+  })
+
   it('disambiguates two tabs for the same model', () => {
     renderPanel({
       getTicketRequests: () => [
@@ -142,6 +214,57 @@ describe('PendingQuestionsPanel', () => {
     const tabs = screen.getAllByRole('tab').map((tab) => tab.textContent ?? '')
     expect(tabs[0]).toContain('1111')
     expect(tabs[1]).toContain('2222')
+  })
+
+  it('uses readable labels when model ids have no provider or are missing', () => {
+    renderPanel({
+      getTicketRequests: () => [
+        makeRequest({ modelId: 'custom-model' }),
+        makeRequest({ sessionId: 'ses_b', requestId: 'req_b', modelId: undefined }),
+      ],
+    })
+
+    expect(screen.getAllByRole('tab').map((tab) => tab.textContent)).toEqual([
+      'custom-model · 1',
+      'OpenCode · 1',
+    ])
+  })
+
+  it('supports tab arrow, Home, and End navigation and clears a skip reason when switching models', () => {
+    const first = makeRequest({
+      questions: [
+        { header: 'One', question: 'First?', options: [{ label: 'Yes' }] },
+        { header: 'Two', question: 'Second?', options: [{ label: 'No' }] },
+      ],
+    })
+    const second = makeRequest({ sessionId: 'ses_b', requestId: 'req_b', modelId: 'openai/gpt-5' })
+    const stopTimer = vi.fn()
+    renderPanel({ getTicketRequests: () => [first, second], stopTimer })
+    const tabs = screen.getAllByRole('tab')
+
+    expect(fireEvent.keyDown(tabs[0]!, { key: 'Enter' })).toBe(true)
+    expect(tabs[0]).toHaveAttribute('aria-selected', 'true')
+
+    fireEvent.click(screen.getByRole('button', { name: 'Skip' }))
+    fireEvent.change(screen.getByLabelText(/skip reason/i), { target: { value: 'Only for this request' } })
+    fireEvent.keyDown(tabs[0]!, { key: 'ArrowLeft' })
+    expect(tabs[1]).toHaveAttribute('aria-selected', 'true')
+    expect(tabs[1]).toHaveFocus()
+    expect(screen.queryByLabelText(/skip reason/i)).not.toBeInTheDocument()
+
+    fireEvent.keyDown(tabs[1]!, { key: 'ArrowRight' })
+    expect(tabs[0]).toHaveAttribute('aria-selected', 'true')
+    fireEvent.keyDown(tabs[0]!, { key: 'ArrowRight' })
+    expect(tabs[1]).toHaveAttribute('aria-selected', 'true')
+    fireEvent.keyDown(tabs[1]!, { key: 'ArrowLeft' })
+    expect(tabs[0]).toHaveAttribute('aria-selected', 'true')
+    fireEvent.keyDown(tabs[0]!, { key: 'End' })
+    expect(tabs[1]).toHaveAttribute('aria-selected', 'true')
+    fireEvent.keyDown(tabs[1]!, { key: 'Home' })
+    expect(tabs[0]).toHaveAttribute('aria-selected', 'true')
+    fireEvent.click(tabs[1]!)
+    expect(tabs[1]).toHaveAttribute('aria-selected', 'true')
+    expect(stopTimer).toHaveBeenCalled()
   })
 
   it('stops the clock on any engagement, not just the button', () => {
@@ -282,6 +405,35 @@ describe('PendingQuestionsPanel', () => {
     expect(answerRequest).toHaveBeenCalledWith(TICKET_ID, 'req_a', [['desktop-app', 'web-app']])
   })
 
+  it('removes a multiple-choice option when it is selected a second time', () => {
+    renderPanel({
+      getTicketRequests: () => [makeRequest({
+        questions: [{ header: 'Targets', question: 'Which targets?', options: [{ label: 'Desktop' }], multiple: true }],
+      })],
+    })
+    const option = screen.getByRole('checkbox', { name: 'Desktop' })
+    const submit = screen.getByRole('button', { name: 'Send answer' })
+
+    fireEvent.click(option)
+    expect(option).toBeChecked()
+    expect(submit).toBeEnabled()
+    fireEvent.click(option)
+    expect(option).not.toBeChecked()
+    expect(submit).toBeDisabled()
+  })
+
+  it('shows request errors and disables answers while submitting', () => {
+    renderPanel({
+      getTicketRequests: () => [makeRequest({ submitting: true, error: 'Could not send answer.' })],
+    })
+
+    expect(screen.getByText('Could not send answer.')).toBeInTheDocument()
+    expect(screen.getByRole('radio', { name: 'SQLite' })).toBeDisabled()
+    expect(screen.getByRole('textbox')).toBeDisabled()
+    expect(screen.getByRole('button', { name: 'Skip' })).toBeDisabled()
+    expect(screen.getByRole('button', { name: 'Send answer' })).toBeDisabled()
+  })
+
   it('will not send until every question in the batch has an answer', () => {
     const answerRequest = vi.fn()
     renderPanel({
@@ -307,6 +459,33 @@ describe('PendingQuestionsPanel', () => {
     expect(screen.getByRole('button', { name: 'Send all answers' })).toBeEnabled()
   })
 
+  it('moves backward between batch questions and can back out of skipping', () => {
+    renderPanel({
+      getTicketRequests: () => [makeRequest({
+        questions: [
+          { header: 'One', question: 'First?', options: [{ label: 'Yes' }] },
+          { header: 'Two', question: 'Second?', options: [{ label: 'No' }] },
+        ],
+      })],
+    })
+
+    const previous = screen.getByRole('button', { name: 'Previous' })
+    const next = screen.getByRole('button', { name: 'Next' })
+    expect(previous).toBeDisabled()
+    fireEvent.click(next)
+    expect(screen.getByText('2 of 2')).toBeInTheDocument()
+    expect(next).toBeDisabled()
+    expect(previous).toBeEnabled()
+    fireEvent.click(previous)
+    expect(screen.getByText('1 of 2')).toBeInTheDocument()
+
+    fireEvent.click(screen.getByRole('button', { name: 'Skip' }))
+    expect(screen.getByText(/skipping refuses all 2 questions/i)).toBeInTheDocument()
+    fireEvent.click(screen.getByRole('button', { name: 'Back' }))
+    expect(screen.queryByLabelText(/skip reason/i)).not.toBeInTheDocument()
+    expect(screen.getByRole('button', { name: 'Skip' })).toBeInTheDocument()
+  })
+
   it('asks for a reason before skipping', () => {
     const skipRequest = vi.fn()
     renderPanel({
@@ -321,6 +500,17 @@ describe('PendingQuestionsPanel', () => {
     fireEvent.click(screen.getByRole('button', { name: 'Skip this question' }))
 
     expect(skipRequest).toHaveBeenCalledWith(TICKET_ID, 'req_a', 'Not my call.')
+  })
+
+  it('submits an empty skip reason as null', () => {
+    const skipRequest = vi.fn()
+    renderPanel({ getTicketRequests: () => [makeRequest()], skipRequest })
+
+    fireEvent.click(screen.getByRole('button', { name: 'Skip' }))
+    fireEvent.change(screen.getByLabelText(/skip reason/i), { target: { value: '   ' } })
+    fireEvent.click(screen.getByRole('button', { name: 'Skip this question' }))
+
+    expect(skipRequest).toHaveBeenCalledWith(TICKET_ID, 'req_a', null)
   })
 
   it('renders the model’s text as plain text', () => {

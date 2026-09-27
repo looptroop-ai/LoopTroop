@@ -55,7 +55,7 @@ describe('beads expansion persisted-input guards', () => {
     )
   })
 
-  it('requires an approved PRD after loading a valid semantic blueprint', async () => {
+  it('falls back to a valid refined blueprint when the newest coverage revision is invalid', async () => {
     const { ticket, context } = await createInitializedTestTicket(repoManager)
     const winnerId = 'openai/gpt-5-mini'
     const blueprint = [
@@ -90,6 +90,16 @@ describe('beads expansion persisted-input guards', () => {
       phase: 'REFINING_BEADS',
       artifactType: 'beads_refined',
       content: JSON.stringify({ winnerId, refinedContent: blueprint }),
+    })
+    insertPhaseArtifact(ticket.id, {
+      phase: 'WAITING_BEADS_APPROVAL',
+      artifactType: 'beads_coverage_revision',
+      content: JSON.stringify({ winnerId, candidateVersion: 1, refinedContent: 'older revision' }),
+    })
+    insertPhaseArtifact(ticket.id, {
+      phase: 'VERIFYING_BEADS_COVERAGE',
+      artifactType: 'beads_coverage_revision',
+      content: JSON.stringify({ winnerId, candidateVersion: 0, refinedContent: 'invalid blueprint' }),
     })
     writeTicketFile(ticket.id, 'prd.yaml', '  \n')
 

@@ -101,6 +101,31 @@ describe('verification phase persisted-input guards', () => {
       'prd',
       "PRD coverage requires the winning model's Full Answers artifact for prd-winner, but it was not available.",
     )
+
+    insertPhaseArtifact(ticket.id, {
+      phase: 'DRAFTING_PRD',
+      artifactType: 'prd_full_answers',
+      content: '{',
+    })
+    await expectCoverageError(
+      ticket.id,
+      context,
+      'prd',
+      "PRD coverage requires the winning model's Full Answers artifact for prd-winner, but it was not available.",
+    )
+
+    writeTicketFile(ticket.id, 'prd.yaml', '  \n')
+    insertPhaseArtifact(ticket.id, {
+      phase: 'REFINING_PRD',
+      artifactType: 'prd_refined',
+      content: '{',
+    })
+    await expectCoverageError(
+      ticket.id,
+      context,
+      'prd',
+      'PRD coverage requires a canonical prd.yaml or recovered prd_refined artifact, but neither was available.',
+    )
   })
 
   it('rejects beads coverage without an approved PRD, missing blueprint, or valid semantic blueprint', async () => {
@@ -119,6 +144,30 @@ describe('verification phase persisted-input guards', () => {
     )
 
     writeTicketFile(ticket.id, 'prd.yaml', makePrdYaml({ ticketId: ticket.externalId }))
+    await expectCoverageError(
+      ticket.id,
+      context,
+      'beads',
+      'Beads coverage requires a canonical semantic beads blueprint or recovered beads coverage revision artifact, but neither was available.',
+    )
+
+    insertPhaseArtifact(ticket.id, {
+      phase: 'REFINING_BEADS',
+      artifactType: 'beads_refined',
+      content: '{',
+    })
+    await expectCoverageError(
+      ticket.id,
+      context,
+      'beads',
+      'Beads coverage requires a canonical semantic beads blueprint or recovered beads coverage revision artifact, but neither was available.',
+    )
+
+    insertPhaseArtifact(ticket.id, {
+      phase: 'VERIFYING_BEADS_COVERAGE',
+      artifactType: 'beads_coverage_revision',
+      content: '{',
+    })
     await expectCoverageError(
       ticket.id,
       context,

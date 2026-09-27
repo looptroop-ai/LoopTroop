@@ -1,20 +1,26 @@
 import { afterAll, beforeEach, describe, expect, it, vi } from 'vitest'
-import { chmodSync, existsSync, mkdirSync, writeFileSync } from 'fs'
+import { chmodSync, existsSync, mkdirSync, readFileSync, writeFileSync } from 'fs'
 import { dirname, join } from 'path'
 import { makeBeadsYaml, TEST } from '../../test/factories'
 import { createInitializedTestTicket, createTestRepoManager, resetTestDb } from '../../test/integration'
 import { getLatestPhaseArtifact, upsertLatestPhaseArtifact } from '../../storage/tickets'
+import { updateProject } from '../../storage/projects'
 import type {
   ExecutionSetupProfile,
   ExecutionSetupReport,
   ExecutionSetupResult,
 } from '../../phases/executionSetup/types'
+import type { ExecutionSetupAttemptTiming } from '../../phases/executionSetup/executor'
+import type { OpenCodeResponseMeta } from '../../opencode/assistantMessageAnalysis'
+import type { PromptPart, Session, StreamEvent } from '../../opencode/types'
+import type { OpenCodePromptCompletedEvent, OpenCodePromptDispatchEvent } from '../runOpenCodePrompt'
 import {
   clearAllPendingSessionContinuationsForTests,
   requestSessionContinuation,
 } from '../../opencode/sessionContinuation'
 import { SessionManager } from '../../opencode/sessionManager'
 import { createShellCommandSpec } from '@shared/commandSpec'
+import { detectHostContext } from '../../lib/hostContext'
 
 /**
  * Quotes one argument for the shell these probe commands are handed to.
@@ -34,12 +40,14 @@ function quoteShellArg(value: string): string {
 
 const {
   executeExecutionSetupWithRetriesMock,
+  runOpenCodeSessionPromptMock,
   recordWorktreeStartCommitMock,
   resetWorktreeToCommitMock,
   isMockOpenCodeModeMock,
   materializeExecutionSetupWorkspaceInputsMock,
 } = vi.hoisted(() => ({
   executeExecutionSetupWithRetriesMock: vi.fn(),
+  runOpenCodeSessionPromptMock: vi.fn(),
   recordWorktreeStartCommitMock: vi.fn(),
   resetWorktreeToCommitMock: vi.fn(),
   isMockOpenCodeModeMock: vi.fn(),
@@ -49,6 +57,11 @@ const {
 vi.mock('../../phases/executionSetup/executor', () => ({
   executeExecutionSetupWithRetries: executeExecutionSetupWithRetriesMock,
 }))
+
+vi.mock('../runOpenCodePrompt', async () => {
+  const actual = await vi.importActual<typeof import('../runOpenCodePrompt')>('../runOpenCodePrompt')
+  return { ...actual, runOpenCodeSessionPrompt: runOpenCodeSessionPromptMock }
+})
 
 vi.mock('../../phases/execution/gitOps', () => ({
   WORKTREE_RESET_PRESERVE_PATHS: ['.ticket'],
@@ -76,7 +89,23 @@ import { handleExecutionSetup } from '../phases/executionSetupPhase'
 
 const repoManager = createTestRepoManager('execution-setup-phase-')
 
-function writeExecutionSetupPlan(ticketId: string, externalId: string) {
+function writeExecutionSetupPlan(
+  ticketId: string,
+  externalId: string,
+  options: {
+    gitHookPolicy?: 'validate_advisory' | 'validate_required'
+    validationCommands?: Array<{ id: string; hook: string; command: string; purpose: string }>
+    steps?: Array<{
+      id: string
+      title: string
+      purpose: string
+      required: boolean
+      rationale: string
+      commands: string[]
+      cautions: string[]
+    }>
+  } = {},
+) {
   upsertLatestPhaseArtifact(ticketId, 'execution_setup_plan', 'WAITING_EXECUTION_SETUP_APPROVAL', JSON.stringify({
     schema_version: 1,
     ticket_id: externalId,
@@ -90,7 +119,7 @@ function writeExecutionSetupPlan(ticketId: string, externalId: string) {
       gaps: [],
     },
     temp_roots: ['.ticket/runtime/execution-setup'],
-    steps: [],
+    steps: options.steps ?? [],
     project_commands: {
       prepare: [],
       test_full: [],
@@ -102,6 +131,10 @@ function writeExecutionSetupPlan(ticketId: string, externalId: string) {
       lint: 'impacted-or-package',
       typecheck: 'impacted-or-package',
       full_project_fallback: 'never-block-on-unrelated-baseline',
+    },
+    git_hooks: {
+      policy: options.gitHookPolicy ?? 'validate_advisory',
+      validation_commands: options.validationCommands ?? [],
     },
     cautions: [],
   }, null, 2))
@@ -220,6 +253,7 @@ describe('handleExecutionSetup', () => {
   beforeEach(() => {
     resetTestDb()
     executeExecutionSetupWithRetriesMock.mockReset()
+    runOpenCodeSessionPromptMock.mockReset()
     recordWorktreeStartCommitMock.mockReset()
     resetWorktreeToCommitMock.mockReset()
     isMockOpenCodeModeMock.mockReset()
@@ -229,6 +263,540 @@ describe('handleExecutionSetup', () => {
     recordWorktreeStartCommitMock.mockReturnValue('setup-start-sha')
     isMockOpenCodeModeMock.mockReturnValue(false)
     materializeExecutionSetupWorkspaceInputsMock.mockReturnValue({ copiedPaths: [] })
+  })
+
+  it('stops before setup when OpenCode mock mode is enabled', async () => {
+    const { ticket, context } = await createInitializedTestTicket(repoManager, {
+      title: 'Execution setup mock mode',
+    })
+    isMockOpenCodeModeMock.mockReturnValueOnce(true)
+
+    const sendEvent = vi.fn()
+    await handleExecutionSetup(ticket.id, context, sendEvent, new AbortController().signal)
+
+    expect(sendEvent).toHaveBeenCalledWith(expect.objectContaining({
+      type: 'ERROR',
+      codes: ['MOCK_EXECUTION_UNSUPPORTED'],
+    }))
+    expect(executeExecutionSetupWithRetriesMock).not.toHaveBeenCalled()
+  })
+
+  it.each([
+    { remainingMs: undefined, ready: true },
+    { remainingMs: 0, ready: false },
+  ])('honors the execution setup work budget when validating an approved hook ($remainingMs ms remain)', async ({ remainingMs, ready }) => {
+    const { ticket, context, paths } = await createInitializedTestTicket(repoManager, {
+      title: `Execution setup hook budget ${remainingMs ?? 'unbounded'}`,
+    })
+    mkdirSync(paths.executionSetupDir, { recursive: true })
+    const markerPath = join(paths.executionSetupDir, 'hook-ran.txt')
+    const markerScript = `require('node:fs').writeFileSync(${JSON.stringify(markerPath)}, 'ran')`
+    const command = `${quoteShellArg(process.execPath)} -e ${quoteShellArg(markerScript)}`
+    writeExecutionSetupPlan(ticket.id, ticket.externalId, {
+      validationCommands: [{
+        id: 'write-marker',
+        hook: 'pre-commit',
+        command,
+        purpose: 'Confirm approved hook validation runs within the setup budget.',
+      }],
+    })
+
+    executeExecutionSetupWithRetriesMock.mockImplementationOnce(async (...args: unknown[]) => {
+      const callbacks = args[5] as {
+        evaluateGeneration: (entry: {
+          attempt: number
+          generation: ReturnType<typeof buildExecutionSetupGeneration>
+          timing: ExecutionSetupAttemptTiming
+        }) => Promise<ExecutionSetupReport>
+      }
+      return await callbacks.evaluateGeneration({
+        attempt: 1,
+        generation: buildExecutionSetupGeneration({ profile: readyExecutionSetupProfile(ticket.externalId) }),
+        timing: {
+          timeoutMs: 60_000,
+          budget: {
+            remainingMs: () => remainingMs,
+          } as unknown as NonNullable<ExecutionSetupAttemptTiming['budget']>,
+        },
+      })
+    })
+
+    const sendEvent = vi.fn()
+    await handleExecutionSetup(
+      ticket.id,
+      { ...context, lockedMainImplementer: TEST.implementer },
+      sendEvent,
+      new AbortController().signal,
+    )
+
+    if (ready) {
+      expect(existsSync(markerPath)).toBe(true)
+      expect(sendEvent).toHaveBeenCalledWith({ type: 'EXECUTION_SETUP_READY' })
+    } else {
+      expect(existsSync(markerPath)).toBe(false)
+      expect(sendEvent).toHaveBeenCalledWith(expect.objectContaining({
+        type: 'EXECUTION_SETUP_FAILED',
+        errors: expect.arrayContaining([expect.stringContaining('while validating Git hooks')]),
+      }))
+    }
+  })
+
+  it.each([
+    { policy: 'validate_advisory' as const, ready: true },
+    { policy: 'validate_required' as const, ready: false },
+  ])('routes hook failures according to the approved $policy policy', async ({ policy, ready }) => {
+    const { ticket, context } = await createInitializedTestTicket(repoManager, {
+      title: `Execution setup ${policy} hook failure`,
+    })
+    updateProject(ticket.projectId, { gitHookPolicy: policy })
+    const passes = `${quoteShellArg(process.execPath)} -e ${quoteShellArg('process.exit(0)')}`
+    const fails = `${quoteShellArg(process.execPath)} -e ${quoteShellArg('process.stderr.write(String.fromCharCode(104,111,111,107,32,99,104,101,99,107,32,102,97,105,108,101,100)); process.exit(4)')}`
+    writeExecutionSetupPlan(ticket.id, ticket.externalId, {
+      gitHookPolicy: policy,
+      validationCommands: [
+        { id: 'passing-check', hook: 'pre-commit', command: passes, purpose: 'Confirm every approved hook runs.' },
+        { id: 'failing-check', hook: 'pre-push', command: fails, purpose: 'Exercise the configured failure policy.' },
+      ],
+    })
+
+    executeExecutionSetupWithRetriesMock.mockImplementationOnce(async (...args: unknown[]) => {
+      const callbacks = args[5] as {
+        evaluateGeneration: (entry: {
+          attempt: number
+          generation: ReturnType<typeof buildExecutionSetupGeneration>
+        }) => Promise<ExecutionSetupReport>
+      }
+      return await callbacks.evaluateGeneration({
+        attempt: 1,
+        generation: buildExecutionSetupGeneration({ profile: readyExecutionSetupProfile(ticket.externalId) }),
+      })
+    })
+
+    const sendEvent = vi.fn()
+    await handleExecutionSetup(
+      ticket.id,
+      { ...context, lockedMainImplementer: TEST.implementer },
+      sendEvent,
+      new AbortController().signal,
+    )
+
+    const reportArtifact = getLatestPhaseArtifact(ticket.id, 'execution_setup_report', 'PREPARING_EXECUTION_ENV')
+    const report = JSON.parse(reportArtifact?.content ?? '{}') as ExecutionSetupReport
+    expect(report.profile?.gitHooks.validationReceipts).toMatchObject([
+      { id: 'passing-check', status: 'passed' },
+      { id: 'failing-check', status: 'failed', outputExcerpt: expect.stringContaining('hook check failed') },
+    ])
+    expect(report.ready).toBe(ready)
+    if (ready) {
+      expect(report.profile?.cautions).toEqual(expect.arrayContaining([
+        expect.stringContaining('Explicit Git hook validation failed (pre-push)'),
+      ]))
+      expect(sendEvent).toHaveBeenCalledWith({ type: 'EXECUTION_SETUP_READY' })
+    } else {
+      expect(report.errors).toEqual(expect.arrayContaining([
+        expect.stringContaining('Explicit Git hook validation failed (pre-push)'),
+      ]))
+      expect(sendEvent).toHaveBeenCalledWith(expect.objectContaining({ type: 'EXECUTION_SETUP_FAILED' }))
+    }
+  })
+
+  it('requires a repository-level workspace probe when beads define test commands', async () => {
+    const { ticket, context, paths } = await createInitializedTestTicket(repoManager, {
+      title: 'Execution setup bead test commands need workspace probe',
+    })
+    writeExecutionSetupPlan(ticket.id, ticket.externalId)
+    writeFileSync(paths.beadsPath, `${JSON.stringify({
+      id: 'bead-1',
+      title: 'Add a workspace probe',
+      status: 'pending',
+      testCommands: [createShellCommandSpec('npm run test')],
+    })}\n`)
+
+    executeExecutionSetupWithRetriesMock.mockImplementationOnce(async (...args: unknown[]) => {
+      const callbacks = args[5] as {
+        evaluateGeneration: (entry: {
+          attempt: number
+          generation: ReturnType<typeof buildExecutionSetupGeneration>
+        }) => Promise<ExecutionSetupReport>
+      }
+      return await callbacks.evaluateGeneration({
+        attempt: 1,
+        generation: buildExecutionSetupGeneration({ profile: readyExecutionSetupProfile(ticket.externalId) }),
+      })
+    })
+
+    const sendEvent = vi.fn()
+    await handleExecutionSetup(
+      ticket.id,
+      { ...context, lockedMainImplementer: TEST.implementer },
+      sendEvent,
+      new AbortController().signal,
+    )
+
+    expect(sendEvent).toHaveBeenCalledWith(expect.objectContaining({
+      type: 'EXECUTION_SETUP_FAILED',
+      errors: expect.arrayContaining([expect.stringContaining('repository-level workspace_probe')]),
+    }))
+  })
+
+  it('persists retry notes and reports a terminal tooling blocker', async () => {
+    const { ticket, context } = await createInitializedTestTicket(repoManager, {
+      title: 'Execution setup terminal tooling blocker',
+    })
+    writeExecutionSetupPlan(ticket.id, ticket.externalId)
+    const profile: ExecutionSetupProfile = {
+      ...readyExecutionSetupProfile(ticket.externalId),
+      status: 'blocked',
+      toolRequirements: [{
+        launcher: 'licensed-tool',
+        requiredBy: ['project_commands.test_full[0]'],
+        status: 'not_provisionable',
+        missingProbe: 'licensed-tool --version',
+        provisioningAttempts: [],
+        finalProbe: 'licensed-tool --version',
+        failureReason: 'The only installer requires an interactive license flow.',
+      }],
+    }
+
+    executeExecutionSetupWithRetriesMock.mockImplementationOnce(async (...args: unknown[]) => {
+      type PhaseGeneration = Omit<ReturnType<typeof buildExecutionSetupGeneration>, 'session'> & {
+        session?: { id: string }
+      }
+      type AttemptMetadata = ExecutionSetupAttemptTiming & {
+        baseMaxIterations: number
+        isManualContinuationAttempt: boolean
+        isExtraToolingPersistenceAttempt: boolean
+        extraToolingPersistenceAttempt: number
+        maxExtraToolingPersistenceAttempts: number
+      }
+      const callbacks = args[5] as {
+        evaluateGeneration: (entry: {
+          attempt: number
+          generation: PhaseGeneration
+          timing: ExecutionSetupAttemptTiming
+        }) => Promise<ExecutionSetupReport>
+        onAttemptStart?: (attempt: number, metadata: AttemptMetadata) => void | Promise<void>
+        onAttemptComplete?: (entry: { attempt: number; report: ExecutionSetupReport; generation: PhaseGeneration }) => void | Promise<void>
+        onRetryAnalysisStart?: (entry: { attempt: number; report: ExecutionSetupReport; generation: PhaseGeneration }) => void | Promise<void>
+        generateRetryNote?: (entry: {
+          attempt: number
+          report: ExecutionSetupReport
+          generation: PhaseGeneration
+          notes: string[]
+          timing: ExecutionSetupAttemptTiming
+        }) => Promise<string | null | undefined>
+        onFailedAttempt?: (entry: {
+          attempt: number
+          report: ExecutionSetupReport
+          generation: PhaseGeneration
+          note: string
+          notes: string[]
+          canRetry: boolean
+        }) => void | Promise<void>
+        onRetriesExhausted?: (entry: {
+          attempt: number
+          maxIterations: number
+          report: ExecutionSetupReport
+          notes: string[]
+          reason?: 'exhausted' | 'repeated_tooling_failure' | 'not_provisionable'
+        }) => void | Promise<void>
+      }
+      const timing = { timeoutMs: 60_000 }
+      const generation: PhaseGeneration = {
+        ...buildExecutionSetupGeneration({
+          profile,
+          checks: { workspace: 'pass', tooling: 'fail', tempScope: 'pass', policy: 'pass' },
+        }),
+        session: undefined,
+      }
+      await callbacks.onAttemptStart?.(1, {
+        ...timing,
+        baseMaxIterations: 1,
+        isManualContinuationAttempt: false,
+        isExtraToolingPersistenceAttempt: false,
+        extraToolingPersistenceAttempt: 0,
+        maxExtraToolingPersistenceAttempts: 2,
+      })
+      const report = await callbacks.evaluateGeneration({ attempt: 1, generation, timing })
+      await callbacks.onAttemptComplete?.({ attempt: 1, report, generation })
+      await callbacks.onRetryAnalysisStart?.({ attempt: 1, report, generation })
+      const generatedNote = await callbacks.generateRetryNote?.({
+        attempt: 1,
+        report,
+        generation,
+        notes: [],
+        timing,
+      })
+      const note = generatedNote ?? 'Attempt 1 failed because no safe licensed-tool provisioning path is available.'
+      const notes = [note]
+      await callbacks.onFailedAttempt?.({ attempt: 1, report, generation, note, notes, canRetry: false })
+      await callbacks.onRetriesExhausted?.({
+        attempt: 1,
+        maxIterations: 1,
+        report,
+        notes,
+        reason: 'not_provisionable',
+      })
+      return { ...report, attempt: 1, maxIterations: 1, attemptHistory: [], retryNotes: notes }
+    })
+
+    const sendEvent = vi.fn()
+    await handleExecutionSetup(
+      ticket.id,
+      { ...context, lockedMainImplementer: TEST.implementer },
+      sendEvent,
+      new AbortController().signal,
+    )
+
+    const retryNotesArtifact = getLatestPhaseArtifact(ticket.id, 'execution_setup_retry_notes', 'PREPARING_EXECUTION_ENV')
+    expect(JSON.parse(retryNotesArtifact?.content ?? '{}').notes).toEqual([
+      'Attempt 1 failed because no safe licensed-tool provisioning path is available.',
+    ])
+    expect(sendEvent).toHaveBeenCalledWith(expect.objectContaining({
+      type: 'EXECUTION_SETUP_FAILED',
+      errors: expect.arrayContaining([expect.stringContaining('required tools check failed')]),
+    }))
+  })
+
+  it('reports bootstrap commands that were added beyond the approved setup plan', async () => {
+    const { ticket, context } = await createInitializedTestTicket(repoManager, {
+      title: 'Execution setup command additions',
+    })
+    const shell = detectHostContext().preferredShell
+    const approvedCommand = createShellCommandSpec('npm run setup', shell)
+    const addedCommand = createShellCommandSpec('npm run generated-setup', shell)
+    writeExecutionSetupPlan(ticket.id, ticket.externalId, {
+      steps: [{
+        id: 'approved-setup',
+        title: 'Run approved setup',
+        purpose: 'Install the approved project tooling.',
+        required: true,
+        rationale: 'The setup plan approved the repository command.',
+        commands: ['npm run setup'],
+        cautions: [],
+      }],
+    })
+
+    executeExecutionSetupWithRetriesMock.mockImplementationOnce(async (...args: unknown[]) => {
+      const callbacks = args[5] as {
+        evaluateGeneration: (entry: {
+          attempt: number
+          generation: ReturnType<typeof buildExecutionSetupGeneration>
+        }) => Promise<ExecutionSetupReport>
+      }
+      return await callbacks.evaluateGeneration({
+        attempt: 1,
+        generation: buildExecutionSetupGeneration({
+          profile: {
+            ...readyExecutionSetupProfile(ticket.externalId),
+            bootstrapCommands: [approvedCommand, addedCommand],
+          },
+        }),
+      })
+    })
+
+    const sendEvent = vi.fn()
+    await handleExecutionSetup(
+      ticket.id,
+      { ...context, lockedMainImplementer: TEST.implementer },
+      sendEvent,
+      new AbortController().signal,
+    )
+
+    const reportArtifact = getLatestPhaseArtifact(ticket.id, 'execution_setup_report', 'PREPARING_EXECUTION_ENV')
+    const report = JSON.parse(reportArtifact?.content ?? '{}') as ExecutionSetupReport
+    expect(report.approvedPlanCommands).toEqual([approvedCommand])
+    expect(report.executionAddedCommands).toEqual([addedCommand])
+    expect(sendEvent).toHaveBeenCalledWith({ type: 'EXECUTION_SETUP_READY' })
+  })
+
+  it('persists session, stream, prompt, and structured-retry milestones from the setup runner', async () => {
+    const { ticket, context, paths } = await createInitializedTestTicket(repoManager, {
+      title: 'Execution setup OpenCode event logs',
+    })
+    writeExecutionSetupPlan(ticket.id, ticket.externalId)
+    mkdirSync(join(paths.worktreePath, 'node_modules', 'generated-package'), { recursive: true })
+    writeFileSync(join(paths.worktreePath, 'node_modules', 'generated-package', 'index.js'), 'module.exports = 1\n')
+    const session: Session = { id: 'ses-setup-event-logs' }
+    const promptDispatched: OpenCodePromptDispatchEvent = {
+      session,
+      parts: [],
+      promptText: 'Prepare the approved workspace.',
+      promptNumber: 1,
+      timeoutKind: 'execution_setup',
+      model: TEST.implementer,
+    }
+    const promptCompleted: OpenCodePromptCompletedEvent = {
+      session,
+      parts: [],
+      response: 'Workspace inspection started.',
+      messages: [],
+      responseMeta: {
+        hasAssistantMessage: true,
+        latestAssistantWasEmpty: false,
+        latestAssistantHasError: false,
+        latestAssistantWasStale: false,
+      } satisfies OpenCodeResponseMeta,
+      attemptMeta: {
+        outcome: 'clean',
+        responseAccepted: true,
+        discardedResponse: false,
+        sessionErrored: false,
+        latestAssistantErrored: false,
+      },
+    }
+
+    executeExecutionSetupWithRetriesMock.mockImplementationOnce(async (...args: unknown[]) => {
+      const callbacks = args[5] as {
+        evaluateGeneration: (entry: {
+          attempt: number
+          generation: ReturnType<typeof buildExecutionSetupGeneration>
+        }) => Promise<ExecutionSetupReport>
+        onSessionCreated?: (sessionId: string, attempt: number) => void
+        onOpenCodeStreamEvent?: (entry: { sessionId: string; attempt: number; event: StreamEvent }) => void
+        onPromptDispatched?: (entry: { sessionId: string; attempt: number; event: OpenCodePromptDispatchEvent }) => void
+        onPromptCompleted?: (entry: { attempt: number; stage: string; event: OpenCodePromptCompletedEvent }) => void
+        onStructuredRetryStart?: (entry: { attempt: number; sessionId: string; retryAttempt: number }) => void
+        onAttemptComplete?: (entry: {
+          attempt: number
+          report: ExecutionSetupReport
+          generation: ReturnType<typeof buildExecutionSetupGeneration>
+        }) => void | Promise<void>
+      }
+      callbacks.onSessionCreated?.(session.id, 1)
+      callbacks.onOpenCodeStreamEvent?.({
+        sessionId: session.id,
+        attempt: 1,
+        event: {
+          type: 'text',
+          sessionId: session.id,
+          messageId: 'assistant-message',
+          partId: 'part-1',
+          text: 'Workspace scan started.',
+          streaming: true,
+          complete: false,
+        },
+      })
+      callbacks.onPromptDispatched?.({ sessionId: session.id, attempt: 1, event: promptDispatched })
+      callbacks.onPromptCompleted?.({ attempt: 1, stage: 'execution_setup', event: promptCompleted })
+      callbacks.onStructuredRetryStart?.({ attempt: 1, sessionId: session.id, retryAttempt: 1 })
+      const generation = buildExecutionSetupGeneration({
+        profile: readyExecutionSetupProfile(ticket.externalId),
+        checks: { workspace: 'pass', tooling: 'fail', tempScope: 'pass', policy: 'pass' },
+      })
+      const report = await callbacks.evaluateGeneration({ attempt: 1, generation })
+      await callbacks.onAttemptComplete?.({ attempt: 1, report, generation })
+      return report
+    })
+
+    const sendEvent = vi.fn()
+    await handleExecutionSetup(
+      ticket.id,
+      { ...context, lockedMainImplementer: TEST.implementer },
+      sendEvent,
+      new AbortController().signal,
+    )
+
+    const executionLog = readFileSync(paths.executionLogPath, 'utf8')
+    expect(executionLog).toContain('Execution setup attempt 1 session created')
+    expect(executionLog).toContain('Prepare the approved workspace.')
+    expect(executionLog).toContain('OpenCode execution_setup:')
+    expect(executionLog).toContain('Correcting the structured execution setup result')
+    expect(executionLog).toContain('Suggested .gitignore entries: node_modules/')
+  })
+
+  it('generates a same-session retry note and forwards its prompt lifecycle logs', async () => {
+    const { ticket, context, paths } = await createInitializedTestTicket(repoManager, {
+      title: 'Execution setup retry prompt lifecycle',
+    })
+    writeExecutionSetupPlan(ticket.id, ticket.externalId)
+    runOpenCodeSessionPromptMock.mockImplementationOnce(async (input: {
+      session: Session
+      parts: PromptPart[]
+      timeoutMs?: number
+      timeoutKind?: string
+      onPromptDispatched?: (event: OpenCodePromptDispatchEvent) => void
+      onPromptCompleted?: (event: OpenCodePromptCompletedEvent) => void
+    }) => {
+      const responseMeta: OpenCodeResponseMeta = {
+        hasAssistantMessage: true,
+        latestAssistantWasEmpty: false,
+        latestAssistantHasError: false,
+        latestAssistantWasStale: false,
+      }
+      const attemptMeta = {
+        outcome: 'clean' as const,
+        responseAccepted: true,
+        discardedResponse: false,
+        sessionErrored: false,
+        latestAssistantErrored: false,
+      }
+      input.onPromptDispatched?.({
+        session: input.session,
+        parts: input.parts,
+        promptText: 'Summarize the setup failure and propose a safe next step.',
+        promptNumber: 2,
+        timeoutKind: 'execution_setup',
+      })
+      input.onPromptCompleted?.({
+        session: input.session,
+        parts: input.parts,
+        response: 'Try the repository toolchain.',
+        messages: [],
+        responseMeta,
+        attemptMeta,
+      })
+      return {
+        session: input.session,
+        response: '  Try the repository toolchain.  ',
+        messages: [],
+        responseMeta,
+        attemptMeta,
+      }
+    })
+
+    executeExecutionSetupWithRetriesMock.mockImplementationOnce(async (...args: unknown[]) => {
+      const callbacks = args[5] as {
+        evaluateGeneration: (entry: {
+          attempt: number
+          generation: ReturnType<typeof buildExecutionSetupGeneration>
+          timing: ExecutionSetupAttemptTiming
+        }) => Promise<ExecutionSetupReport>
+        generateRetryNote?: (entry: {
+          attempt: number
+          report: ExecutionSetupReport
+          generation: ReturnType<typeof buildExecutionSetupGeneration>
+          notes: string[]
+          timing: ExecutionSetupAttemptTiming
+        }) => Promise<string | null | undefined>
+      }
+      const generation = buildExecutionSetupGeneration({
+        profile: readyExecutionSetupProfile(ticket.externalId),
+        checks: { workspace: 'pass', tooling: 'fail', tempScope: 'pass', policy: 'pass' },
+      })
+      const timing = { timeoutMs: 60_000 }
+      const report = await callbacks.evaluateGeneration({ attempt: 1, generation, timing })
+      const note = await callbacks.generateRetryNote?.({ attempt: 1, report, generation, notes: [], timing })
+      expect(note).toBe('Try the repository toolchain.')
+      return report
+    })
+
+    const sendEvent = vi.fn()
+    await handleExecutionSetup(
+      ticket.id,
+      { ...context, lockedMainImplementer: TEST.implementer },
+      sendEvent,
+      new AbortController().signal,
+    )
+
+    expect(runOpenCodeSessionPromptMock).toHaveBeenCalledWith(expect.objectContaining({
+      session: { id: 'ses-setup-validation' },
+      timeoutMs: 60_000,
+      timeoutKind: 'execution_setup',
+    }))
+    const executionLog = readFileSync(paths.executionLogPath, 'utf8')
+    expect(executionLog).toContain('Summarize the setup failure and propose a safe next step.')
+    expect(executionLog).toContain('OpenCode execution_setup_note:')
   })
 
   it('runs one numbered manual attempt after the latest persisted setup report', async () => {

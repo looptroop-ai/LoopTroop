@@ -1502,6 +1502,57 @@ describe('OpenCode adapter transport orchestration', () => {
     }), expect.anything())
   })
 
+  it('retries a transient snapshot read and remembers then clears question worktree ownership', async () => {
+    let dispatched = false
+    let recoveryReads = 0
+    const questions = [
+      [{ id: 'question-owner', sessionID: 'session-1', questions: [] }],
+      [{ id: 'question-cached', sessionID: 'session-1', questions: [] }],
+      [{ id: 'question-aborted', sessionID: 'session-1', questions: [] }],
+    ]
+    let questionListCalls = 0
+    const { transport, source } = createV2Transport({
+      getSessionMessages: vi.fn(async () => {
+        if (!dispatched) return [message('old-assistant', 'stale answer')]
+        recoveryReads += 1
+        if (recoveryReads === 1) throw new Error('temporary snapshot failure')
+        return [message('new-assistant', 'recovered answer')]
+      }),
+      listPendingQuestions: vi.fn(async () => questions[questionListCalls++] ?? []),
+      interruptSession: vi.fn(async () => { throw Object.assign(new Error('session was removed'), { statusCode: 404 }) }),
+      dispatchPrompt: vi.fn(async () => {
+        dispatched = true
+        source.push(
+          inboxEvent('inbox_enqueued', 'inbox-own', 51),
+          executionEvent('execution_started', 52),
+          inboxEvent('inbox_delivered', 'inbox-own', 53),
+          executionEvent('execution_terminal', 54),
+        )
+        return { kind: 'accepted' as const, receipt: { inboxID: 'inbox-own' } }
+      }),
+    })
+    const adapter = createAdapter(transport)
+
+    await expect(adapter.promptSession('session-1', [{ type: 'text', content: 'prompt' }]))
+      .resolves.toBe('recovered answer')
+    expect(recoveryReads).toBe(2)
+
+    await adapter.listPendingQuestions('/worktree')
+    await adapter.replyQuestion('question-owner', [['approved']])
+    await adapter.listPendingQuestions(undefined, undefined, 'session-1')
+    await adapter.rejectQuestion('question-cached')
+    await adapter.listPendingQuestions('/worktree')
+
+    await expect(adapter.abortSession('session-1')).resolves.toBe(true)
+    await expect(adapter.replyQuestion('question-aborted', [['approved']]))
+      .rejects.toThrow('has no trusted session directory')
+
+    expect(transport.getSession).toHaveBeenCalledWith('session-1', undefined)
+    expect(transport.replyQuestion).toHaveBeenCalledWith('session-1', 'question-owner', [['approved']], '/worktree', undefined)
+    expect(transport.rejectQuestion).toHaveBeenCalledWith('session-1', 'question-cached', '/worktree', undefined)
+    expect(transport.interruptSession).toHaveBeenCalledWith('session-1', '/worktree')
+  })
+
   it('wraps session creation errors and uses the cached worktree directory for cleanup', async () => {
     const failure = new Error('session-scoped permissions are unsupported')
     const failingAdapter = createAdapter(createV2Transport({

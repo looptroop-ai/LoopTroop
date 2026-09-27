@@ -1,8 +1,17 @@
 import { afterAll, beforeEach, describe, expect, it, vi } from 'vitest'
-import { writeFileSync } from 'fs'
+import { existsSync, readFileSync, writeFileSync } from 'fs'
+import { parseUiArtifactCompanionArtifact } from '@shared/artifactCompanions'
 import { makePrdYaml, TEST } from '../../test/factories'
 import { createInitializedTestTicket, createTestRepoManager, resetTestDb } from '../../test/integration'
 import { getLatestPhaseArtifact, insertPhaseArtifact } from '../../storage/tickets'
+import {
+  buildPersistedBatch,
+  createInterviewSessionSnapshot,
+  INTERVIEW_SESSION_ARTIFACT,
+  recordBatchAnswers,
+  recordPreparedBatch,
+  serializeInterviewSessionSnapshot,
+} from '../../phases/interview/sessionState'
 import type { PreFlightRunOptions } from '../../phases/preflight/doctor'
 import type { DiagnosticCheck, PreFlightReport } from '../../phases/preflight/types'
 import type { executeFinalTestWithRetries } from '../../phases/finalTest/executor'
@@ -53,6 +62,7 @@ vi.mock('../runOpenCodePrompt', async () => {
 })
 
 import {
+  handleCoverageVerification,
   handleFinalTest,
   handleMockBeadsExpansion,
   handleMockCoverage,
@@ -176,6 +186,124 @@ describe('mock verification handlers', () => {
       expandedContent: expect.stringContaining('"id":"test-1-bead-1"'),
     })
     expect(sendEvent).toHaveBeenCalledWith({ type: 'EXPANDED' })
+  })
+})
+
+describe('interview coverage recovery', () => {
+  async function createCompletedInterviewSnapshot(ticketId: string) {
+    const winnerId = TEST.councilMembers[0]
+    const questions = Array.from({ length: 5 }, (_, index) => ({
+      id: `Q0${index + 1}`,
+      phase: 'Requirements',
+      question: `Which requirement matters most for step ${index + 1}?`,
+    }))
+    const initialSnapshot = createInterviewSessionSnapshot({
+      winnerId,
+      compiledQuestions: questions,
+      maxInitialQuestions: questions.length,
+    })
+    const batch = buildPersistedBatch({
+      questions,
+      progress: { current: questions.length, total: questions.length },
+      isComplete: true,
+      isFinalFreeForm: false,
+      aiCommentary: 'Initial questions completed.',
+      batchNumber: 1,
+    }, 'prom4', initialSnapshot)
+    const answeredSnapshot = recordBatchAnswers(
+      recordPreparedBatch(initialSnapshot, batch),
+      Object.fromEntries(questions.map((question, index) => [question.id, `Answer ${index + 1}`])),
+    )
+
+    insertPhaseArtifact(ticketId, {
+      phase: 'REFINING_INTERVIEW',
+      artifactType: 'interview_winner',
+      content: JSON.stringify({ winnerId }),
+    })
+    insertPhaseArtifact(ticketId, {
+      phase: 'WAITING_INTERVIEW_ANSWERS',
+      artifactType: INTERVIEW_SESSION_ARTIFACT,
+      content: serializeInterviewSessionSnapshot(answeredSnapshot),
+    })
+    return { winnerId, questions, answeredSnapshot }
+  }
+
+  it('rebuilds missing interview.yaml from the session snapshot before clean coverage', async () => {
+    const { ticket, context, paths } = await createInitializedTestTicket(repoManager)
+    const { questions } = await createCompletedInterviewSnapshot(ticket.id)
+    const interviewPath = `${paths.ticketDir}/interview.yaml`
+    expect(existsSync(interviewPath)).toBe(false)
+    runOpenCodePromptMock.mockResolvedValueOnce({
+      session: { id: 'interview-coverage-clean', projectPath: paths.worktreePath },
+      response: ['status: clean', 'gaps: []', 'follow_up_questions: []'].join('\n'),
+      messages: [],
+    })
+    const sendEvent = vi.fn()
+
+    await handleCoverageVerification(ticket.id, context, sendEvent, 'interview', new AbortController().signal)
+
+    expect(existsSync(interviewPath)).toBe(true)
+    const canonicalInterview = readFileSync(interviewPath, 'utf-8')
+    expect(canonicalInterview).toContain('Answer 1')
+    const prompt = runOpenCodePromptMock.mock.calls[0]?.[0]?.parts.map((part) => part.content).join('\n')
+    expect(prompt).toContain('follow_up_budget_total: 1')
+    expect(prompt).toContain('follow_up_budget_remaining: 1')
+    expect(prompt).toContain(questions[0]!.question)
+
+    const inputArtifact = getLatestPhaseArtifact(ticket.id, 'ui_artifact_companion:interview_coverage_input', 'VERIFYING_INTERVIEW_COVERAGE')
+    const coverageInput = parseUiArtifactCompanionArtifact(inputArtifact!.content)?.payload as {
+      interview?: string
+      userAnswers?: string
+    } | undefined
+    expect(coverageInput?.interview).toBe(canonicalInterview)
+    expect(coverageInput?.userAnswers).toContain('Q01: Which requirement matters most for step 1?')
+    expect(coverageInput?.userAnswers).toContain('Answer: Answer 1')
+    expect(JSON.parse(getLatestPhaseArtifact(ticket.id, 'interview_coverage', 'VERIFYING_INTERVIEW_COVERAGE')!.content)).toMatchObject({
+      winnerId: TEST.councilMembers[0],
+      hasGaps: false,
+      coverageRunNumber: 1,
+      limitReached: false,
+    })
+    expect(sendEvent).toHaveBeenCalledWith({ type: 'COVERAGE_CLEAN' })
+  })
+
+  it('persists a targeted follow-up batch when coverage finds a resolvable gap', async () => {
+    const { ticket, context, paths } = await createInitializedTestTicket(repoManager)
+    const { questions } = await createCompletedInterviewSnapshot(ticket.id)
+    const followUpQuestion = 'Which requirement should the first milestone prioritize?'
+    runOpenCodePromptMock.mockResolvedValueOnce({
+      session: { id: 'interview-coverage-gaps', projectPath: paths.worktreePath },
+      response: [
+        'status: gaps',
+        'gaps:',
+        '  - The first milestone priority is unclear.',
+        'follow_up_questions:',
+        `  - ${followUpQuestion}`,
+      ].join('\n'),
+      messages: [],
+    })
+    const sendEvent = vi.fn()
+
+    await handleCoverageVerification(ticket.id, context, sendEvent, 'interview', new AbortController().signal)
+
+    const persistedSnapshot = JSON.parse(getLatestPhaseArtifact(ticket.id, INTERVIEW_SESSION_ARTIFACT)!.content)
+    expect(persistedSnapshot.currentBatch).toMatchObject({
+      source: 'coverage',
+      batchNumber: 2,
+      questions: [expect.objectContaining({
+        question: followUpQuestion,
+        source: 'coverage_follow_up',
+        roundNumber: 1,
+      })],
+    })
+    expect(persistedSnapshot.questions).toHaveLength(questions.length + 1)
+    expect(JSON.parse(getLatestPhaseArtifact(ticket.id, 'interview_coverage', 'VERIFYING_INTERVIEW_COVERAGE')!.content)).toMatchObject({
+      hasGaps: true,
+      coverageRunNumber: 1,
+      terminationReason: 'gaps',
+    })
+    expect(sendEvent).toHaveBeenCalledWith({ type: 'GAPS_FOUND' })
+    expect(sendEvent).not.toHaveBeenCalledWith({ type: 'COVERAGE_LIMIT_REACHED' })
   })
 })
 

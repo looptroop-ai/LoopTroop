@@ -9,11 +9,25 @@ import { OpenCodeSDKAdapter } from '../adapter'
 import type { OpenCodeV1Client } from '../v1Transport'
 import { withProviderCatalogReload } from '../providerCatalogReload'
 
-function createClient(promptDelayMs: number): OpenCodeV1Client {
+function createClient(
+  promptDelayMs: number,
+  overrides: {
+    messageReadError?: Error
+    sessionUpdateError?: Error
+    streamEvents?: Array<{ type: string; properties?: Record<string, unknown> }>
+  } = {},
+): OpenCodeV1Client {
   return {
     session: {
       get: vi.fn(async () => ({ data: { id: 'session-1', directory: '/worktree' } })),
-      messages: vi.fn(async () => ({ data: [] })),
+      messages: vi.fn(async () => {
+        if (overrides.messageReadError) throw overrides.messageReadError
+        return { data: [] }
+      }),
+      update: vi.fn(async () => {
+        if (overrides.sessionUpdateError) throw overrides.sessionUpdateError
+        return { data: { id: 'session-1' } }
+      }),
       prompt: vi.fn(async (_request, options) => await new Promise((resolve, reject) => {
         const signal = options?.signal
         const cleanup = () => signal?.removeEventListener('abort', onAbort)
@@ -38,6 +52,10 @@ function createClient(promptDelayMs: number): OpenCodeV1Client {
     global: {
       event: vi.fn(async options => ({
         stream: (async function* () {
+          if (overrides.streamEvents) {
+            yield* overrides.streamEvents
+            return
+          }
           const signal = options?.signal
           if (!signal) return
           await new Promise<void>(resolve => {
@@ -73,6 +91,70 @@ describe('OpenCode prompt deadlines', () => {
     } finally {
       clearTimeout(timer)
     }
+  })
+
+  it('continues a v1 prompt when the optional assistant baseline cannot be read', async () => {
+    const adapter = new OpenCodeSDKAdapter(
+      'http://127.0.0.1:4096',
+      createClient(1, { messageReadError: new Error('baseline read unavailable') }),
+    )
+
+    await expect(adapter.promptSession('session-1', [{ type: 'text', content: 'continue without baseline' }]))
+      .resolves.toBe('completed after the short API timeout')
+  })
+
+  it('drops removed streamed text parts before returning the latest message text', async () => {
+    const partUpdate = (id: string, messageID: string, text: string) => ({
+      type: 'message.part.updated',
+      properties: {
+        part: { id, sessionID: 'session-1', messageID, type: 'text', text },
+      },
+    })
+    const client = createClient(1000, {
+      messageReadError: new Error('snapshot baseline unavailable'),
+      streamEvents: [
+        partUpdate('old-part-a', 'old-message', 'stale '),
+        partUpdate('old-part-b', 'old-message', 'fragment'),
+        { type: 'message.part.removed', properties: { sessionID: 'session-1', partID: 'old-part-a' } },
+        { type: 'message.part.removed', properties: { sessionID: 'session-1', partID: 'old-part-b' } },
+        partUpdate('current-part', 'current-message', 'latest answer'),
+        { type: 'session.idle', properties: { sessionID: 'session-1' } },
+      ],
+    })
+    const adapter = new OpenCodeSDKAdapter('http://127.0.0.1:4096', client)
+
+    await expect(adapter.promptSession('session-1', [{ type: 'text', content: 'get answer' }]))
+      .resolves.toBe('latest answer')
+  })
+
+  it('explains when the v1 server cannot apply session permissions', async () => {
+    const client = createClient(1, { sessionUpdateError: new Error('permission update rejected') })
+    const adapter = new OpenCodeSDKAdapter('http://127.0.0.1:4096', client)
+
+    await expect(adapter.promptSession(
+      'session-1',
+      [{ type: 'text', content: 'apply permissions' }],
+      undefined,
+      { permission: [{ permission: 'bash', pattern: '*', action: 'allow' }] },
+    )).rejects.toThrow(/Failed to apply OpenCode session permissions: permission update rejected.*upgrade OpenCode/is)
+
+    expect(client.session.update).toHaveBeenCalledTimes(1)
+    expect(client.session.prompt).not.toHaveBeenCalled()
+  })
+
+  it('preserves cancellation from the v1 session permission update', async () => {
+    const abort = Object.assign(new Error('permission update aborted'), { name: 'AbortError' })
+    const client = createClient(1, { sessionUpdateError: abort })
+    const adapter = new OpenCodeSDKAdapter('http://127.0.0.1:4096', client)
+
+    await expect(adapter.promptSession(
+      'session-1',
+      [{ type: 'text', content: 'cancel permission update' }],
+      undefined,
+      { permission: [{ permission: 'bash', pattern: '*', action: 'allow' }] },
+    )).rejects.toBe(abort)
+
+    expect(client.session.prompt).not.toHaveBeenCalled()
   })
 
   it('waits for an in-progress catalog reload while holding the same-session prompt lock', async () => {

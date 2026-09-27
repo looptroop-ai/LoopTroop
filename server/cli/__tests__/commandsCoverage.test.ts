@@ -4,7 +4,13 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { LOOPTROOP_OPENCODE_LOGS_ENV } from '@shared/opencodeLogMode'
-import { readDaemonState, writeDaemonState, type DaemonState } from '../../lib/daemonPaths'
+import {
+  readDaemonStartFailure,
+  readDaemonState,
+  writeDaemonStartFailure,
+  writeDaemonState,
+  type DaemonState,
+} from '../../lib/daemonPaths'
 import { removeTempDir } from '../../test/tempDir'
 
 const mocks = vi.hoisted(() => ({
@@ -289,6 +295,20 @@ describe('daemon startup and shutdown command paths', () => {
     await expect(waitForReady(configDir, child.pid, null, child)).resolves.toMatchObject({ kind: 'unverifiable', state })
   })
 
+  it('returns not-ready after a live child fails to publish state by the deadline', async () => {
+    const now = vi.spyOn(Date, 'now')
+      .mockReturnValueOnce(0)
+      .mockReturnValueOnce(1)
+      .mockReturnValue(60_000)
+    mocks.isProcessAlive.mockReturnValue(true)
+
+    await expect(waitForReady(configDir, 45_693, 'captured-start-token', makeChild(45_693)))
+      .resolves.toEqual({ kind: 'not-ready' })
+
+    expect(now).toHaveBeenCalled()
+    expect(mocks.isProcessAlive).toHaveBeenCalledWith(45_693)
+  })
+
   it('returns not-ready immediately when the launched child exits before publishing state', async () => {
     mocks.isProcessAlive.mockReturnValue(false)
     await expect(waitForReady(configDir, 45_683, 'missing-state-token', makeChild(45_683)))
@@ -357,6 +377,87 @@ describe('daemon startup and shutdown command paths', () => {
 
     await expect(abandonFailedStart(configDir, child, null)).resolves.toBeNull()
     expect(child.kill).not.toHaveBeenCalled()
+  })
+
+  it('does not signal a retained startup child when its process token is missing', async () => {
+    const failure = {
+      reason: 'startup-cleanup-incomplete' as const,
+      at: '2026-09-28T00:00:00.000Z',
+      version: '1.2.3',
+      message: 'OpenCode cleanup could not be verified.',
+      openCode: { baseUrl: 'http://127.0.0.1:4096', pid: 45_689 },
+    }
+    writeDaemonStartFailure(failure, configDir)
+    const output = captureOutput()
+
+    expect(await stopCommand()).toBe(1)
+    expect(readDaemonStartFailure(configDir)).toEqual(failure)
+    expect(output.stderr()).toContain('retained ownership of its previous startup')
+    expect(output.stderr()).toContain('OpenCode pid 45689')
+    expect(mocks.matchProcess).not.toHaveBeenCalled()
+    expect(mocks.signalTermination).not.toHaveBeenCalled()
+    expect(mocks.killProcessTree).not.toHaveBeenCalled()
+  })
+
+  it('keeps startup ownership when the recorded OpenCode pid belongs to another process', async () => {
+    const failure = {
+      reason: 'startup-cleanup-incomplete' as const,
+      at: '2026-09-28T00:00:00.000Z',
+      version: '1.2.3',
+      message: 'OpenCode cleanup could not be verified.',
+      openCode: {
+        baseUrl: 'http://127.0.0.1:4096',
+        pid: 45_690,
+        startToken: 'original-opencode-token',
+      },
+    }
+    writeDaemonStartFailure(failure, configDir)
+    mocks.isProcessAlive.mockImplementation((pid: number) => pid === failure.openCode.pid)
+    mocks.matchProcess.mockReturnValue({ kind: 'different' })
+    const output = captureOutput()
+
+    expect(await stopCommand()).toBe(1)
+    expect(readDaemonStartFailure(configDir)).toEqual(failure)
+    expect(output.stderr()).toContain('retained ownership of its previous startup')
+    expect(mocks.matchProcess).toHaveBeenCalledWith(failure.openCode.pid, failure.openCode.startToken)
+    expect(mocks.signalTermination).not.toHaveBeenCalled()
+    expect(mocks.killProcessTree).not.toHaveBeenCalled()
+  })
+
+  it('rechecks process identity before force-stopping a failed-start child', async () => {
+    const child = makeChild(45_691)
+    const token = 'captured-start-token'
+    writeDaemonState(makeState({ pid: child.pid, startToken: token }), configDir)
+    mocks.isProcessAlive.mockReturnValue(true)
+    mocks.matchProcess
+      .mockReturnValueOnce({ kind: 'same' })
+      .mockReturnValueOnce({ kind: 'same' })
+      .mockReturnValueOnce({ kind: 'different' })
+    mocks.signalTermination.mockReturnValue(true)
+    mocks.waitForExit.mockResolvedValue(false)
+
+    await expect(abandonFailedStart(configDir, child, token)).resolves.toBeNull()
+
+    expect(mocks.signalTermination).toHaveBeenCalledOnce()
+    expect(mocks.waitForExit).toHaveBeenCalledOnce()
+    expect(mocks.killProcessTree).not.toHaveBeenCalled()
+    expect(readDaemonState(configDir)).toBeNull()
+  })
+
+  it('clears a failed-start record when identity changes before any signal', async () => {
+    const child = makeChild(45_692)
+    const token = 'captured-start-token'
+    writeDaemonState(makeState({ pid: child.pid, startToken: token }), configDir)
+    mocks.isProcessAlive.mockReturnValue(true)
+    mocks.matchProcess
+      .mockReturnValueOnce({ kind: 'same' })
+      .mockReturnValueOnce({ kind: 'different' })
+
+    await expect(abandonFailedStart(configDir, child, token)).resolves.toBeNull()
+
+    expect(mocks.signalTermination).not.toHaveBeenCalled()
+    expect(mocks.killProcessTree).not.toHaveBeenCalled()
+    expect(readDaemonState(configDir)).toBeNull()
   })
 
   it('restarts by starting the daemon in foreground mode after a clean stop', async () => {
@@ -484,6 +585,23 @@ describe('open command browser and sign-in paths', () => {
     expect(output.stdout()).toContain('Opened http://127.0.0.1:4317')
     expect(output.stdout()).not.toContain('single-use-nonce')
     expect(output.stderr()).toContain('only applies when LoopTroop starts the daemon')
+  })
+
+  it('does not print the nonce when the browser sign-in check cannot reach the daemon', async () => {
+    const state = makeState()
+    writeDaemonState(state, configDir)
+    stubFetch((url) => {
+      if (url.pathname === '/api/health') return jsonResponse({ instanceId: state.instanceId })
+      if (url.pathname === '/api/auth/bootstrap') return jsonResponse({ nonce: 'private-nonce' })
+      if (url.pathname === '/api/auth/bootstrap/status') throw new Error('connection reset')
+      throw new Error(`Unexpected daemon request: ${url.pathname}`)
+    })
+    const output = captureOutput()
+
+    expect(await openCommand({ open: () => ({ opened: true }), waitMs: 10 })).toBe(0)
+    expect(output.stdout()).toContain('Opened http://127.0.0.1:4317')
+    expect(output.stdout()).not.toContain('private-nonce')
+    expect(output.stdout()).not.toContain('No browser signed in')
   })
 
   it('prints the sign-in link when the browser opener cannot launch', async () => {

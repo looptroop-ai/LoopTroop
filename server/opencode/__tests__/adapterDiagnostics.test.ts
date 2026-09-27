@@ -38,6 +38,19 @@ describe.concurrent('OpenCode diagnostic event mapping', () => {
     },
   )
 
+  it('uses a generic health error for non-Error transport failures', async () => {
+    const adapter = new OpenCodeSDKAdapter(
+      'http://127.0.0.1:4096',
+      undefined,
+      () => Promise.reject('connection unavailable'),
+    )
+
+    await expect(adapter.checkHealth()).resolves.toEqual({
+      available: false,
+      error: 'Connection failed',
+    })
+  })
+
   it('ignores a tool part that arrives before OpenCode supplies its state', () => {
     const event = createAdapterInternals().mapPartUpdate({
       id: 'part-pending',

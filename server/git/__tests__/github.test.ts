@@ -1,3 +1,6 @@
+import { mkdtempSync, rmSync, writeFileSync } from 'node:fs'
+import { tmpdir } from 'node:os'
+import { join } from 'node:path'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 import { spawnFromSyncResult } from '../../test/childProcess'
 
@@ -40,6 +43,19 @@ function makeSpawnResult(overrides: {
     output: [null, overrides.stdout ?? '', overrides.stderr ?? ''],
     signal: null,
   } as ReturnType<typeof import('node:child_process').spawnSync>
+}
+
+function pullRequestRecord(number: number) {
+  return {
+    number,
+    html_url: `https://github.com/looptroop-ai/LoopTroop/pull/${number}`,
+    title: `Change ${number}`,
+    body: `Details for ${number}`,
+    state: 'open',
+    draft: true,
+    head: { ref: 'ticket-branch', sha: 'candidate-sha' },
+    base: { ref: 'main' },
+  }
 }
 
 describe('server/git/github', () => {
@@ -88,6 +104,15 @@ describe('server/git/github', () => {
       : makeSpawnResult({ stdout: JSON.stringify(record) }))
     const github = await import('../github')
     await expect(github.getPullRequestByNumber('/repo', 42)).rejects.toThrow('invalid metadata for pull request #42')
+  })
+
+  it('rejects an empty GitHub response when reading a numbered pull request', async () => {
+    spawnSyncMock.mockImplementation((command: string) => command === 'git'
+      ? makeSpawnResult({ stdout: 'https://github.com/looptroop-ai/LoopTroop.git' })
+      : makeSpawnResult())
+
+    const github = await import('../github')
+    await expect(github.getPullRequestByNumber('/repo', 42)).rejects.toThrow('GitHub CLI returned empty JSON output')
   })
 
   it('recognizes merged=true even when the merged timestamp is unavailable', async () => {
@@ -196,6 +221,15 @@ describe('server/git/github', () => {
     expect(spawnSyncMock).toHaveBeenCalledTimes(1)
   })
 
+  it('reuses a successful SSH alias hostname probe', async () => {
+    spawnSyncMock.mockReturnValue(makeSpawnResult({ stdout: 'hostname github.com\n' }))
+
+    const github = await import('../github')
+    expect(github.parseGitHubRemoteUrl('git@company-git:owner/repo.git')).toMatchObject({ owner: 'owner', repo: 'repo' })
+    expect(github.parseGitHubRemoteUrl('git@company-git:owner/another-repo.git')).toMatchObject({ repo: 'another-repo' })
+    expect(spawnSyncMock).toHaveBeenCalledTimes(1)
+  })
+
   it('rejects an SSH alias remote when the alias resolves to a non-GitHub host', async () => {
     spawnSyncMock.mockReturnValue(makeSpawnResult({
       stdout: 'host company-git\nhostname gitlab.example.com\nuser git\n',
@@ -263,6 +297,20 @@ describe('server/git/github', () => {
     })
   })
 
+  it.each([
+    [JSON.stringify({ hosts: { 'github.com': [
+      { state: 'error', active: false, login: 'first', error: 'expired' },
+      { state: 'error', active: false, login: 'second' },
+    ] } }), 'first (error): expired; second (error)'],
+    ['{}', 'No github.com auth entries found.'],
+    ['not-json', 'Failed to parse gh auth status JSON:'],
+  ])('explains inactive or missing GitHub auth entries', async (stdout, expectedError) => {
+    spawnSyncMock.mockReturnValue(makeSpawnResult({ stdout }))
+
+    const github = await import('../github')
+    await expect(github.getGhAuthStatus()).resolves.toMatchObject({ ok: false, error: expect.stringContaining(expectedError) })
+  })
+
   it('falls back to the non-JSON auth-status command when the installed gh CLI does not support --json', async () => {
     spawnSyncMock
       .mockReturnValueOnce(makeSpawnResult({
@@ -278,6 +326,62 @@ describe('server/git/github', () => {
       ['gh', ['auth', 'status', '--hostname', 'github.com', '--json', 'hosts'], expect.any(Object)],
       ['gh', ['auth', 'status', '--hostname', 'github.com'], expect.any(Object)],
     ])
+  })
+
+  it('returns a direct GitHub auth command failure', async () => {
+    spawnSyncMock.mockReturnValue(makeSpawnResult({ status: 1, stderr: 'network unavailable' }))
+
+    const github = await import('../github')
+    await expect(github.getGhAuthStatus()).resolves.toEqual({ ok: false, error: 'network unavailable' })
+  })
+
+  it('reports whether gh is installed from its version probe', async () => {
+    spawnSyncMock.mockReturnValue(makeSpawnResult({ status: 1, stderr: 'gh missing' }))
+
+    const github = await import('../github')
+    expect(github.isGhInstalled()).toBe(false)
+    expect(spawnSyncMock).toHaveBeenCalledWith('gh', ['--version'], expect.any(Object))
+  })
+
+  it.each([
+    [0, 'viewer can access the repository'],
+    [1, 'repository is unavailable'],
+  ])('reports repository access when gh exits with status %i', async (status, message) => {
+    spawnSyncMock.mockImplementation((command: string) => command === 'git'
+      ? makeSpawnResult({ stdout: 'https://github.com/looptroop-ai/LoopTroop.git' })
+      : makeSpawnResult({ status, stderr: status === 0 ? '' : message }))
+
+    const github = await import('../github')
+    const result = await github.getGitHubRepoAccess('/repo')
+    if (status === 0) {
+      expect(result).toMatchObject({ ok: true, repo: { slug: 'looptroop-ai/LoopTroop' } })
+    } else {
+      expect(result).toEqual({ ok: false, error: message })
+    }
+  })
+
+  it('keeps repository write access unknown when origin cannot be read', async () => {
+    spawnSyncMock.mockReturnValue(makeSpawnResult({ status: 1, stderr: 'origin is missing' }))
+
+    const github = await import('../github')
+    await expect(github.getGitHubRepoWriteAccess('/repo')).resolves.toEqual({
+      status: 'unknown',
+      permission: null,
+      error: 'Project must have an origin remote that resolves to github.com.',
+    })
+  })
+
+  it('keeps repository write access unknown when the permission request fails', async () => {
+    spawnSyncMock.mockImplementation((command: string) => command === 'git'
+      ? makeSpawnResult({ stdout: 'https://github.com/looptroop-ai/LoopTroop.git' })
+      : makeSpawnResult({ status: 1, stderr: 'permission request failed' }))
+
+    const github = await import('../github')
+    await expect(github.getGitHubRepoWriteAccess('/repo')).resolves.toEqual({
+      status: 'unknown',
+      permission: null,
+      error: 'permission request failed',
+    })
   })
 
   it.each(['WRITE', 'MAINTAIN', 'ADMIN'])(
@@ -341,6 +445,93 @@ describe('server/git/github', () => {
     expect(result.error).toContain('Failed to parse GitHub repository permission')
   })
 
+  it.each([
+    [{ viewerPermission: 'PULL_REQUEST_REVIEWER' }, 'GitHub CLI returned an unsupported viewer permission: PULL_REQUEST_REVIEWER'],
+    [{}, 'GitHub CLI did not return a viewer permission.'],
+  ])('keeps unsupported or missing repository permissions unknown', async (payload, error) => {
+    spawnSyncMock.mockImplementation((command: string) => command === 'git'
+      ? makeSpawnResult({ stdout: 'https://github.com/looptroop-ai/LoopTroop.git' })
+      : makeSpawnResult({ stdout: JSON.stringify(payload) }))
+
+    const github = await import('../github')
+    await expect(github.getGitHubRepoWriteAccess('/repo')).resolves.toEqual({
+      status: 'unknown',
+      permission: payload.viewerPermission ?? null,
+      error,
+    })
+  })
+
+  it('updates the newest matching draft pull request and keeps its metadata if GitHub returns a sparse update', async () => {
+    spawnSyncMock.mockImplementation((command: string, args: readonly string[]) => {
+      if (command === 'git') return makeSpawnResult({ stdout: 'https://github.com/looptroop-ai/LoopTroop.git' })
+      if (args.includes('PATCH')) return makeSpawnResult({ stdout: '{}' })
+      if (args.includes('GET')) {
+        return makeSpawnResult({ stdout: JSON.stringify([pullRequestRecord(4), { number: 5 }, pullRequestRecord(12)]) })
+      }
+      return makeSpawnResult()
+    })
+
+    const github = await import('../github')
+    const result = await github.createOrUpdateDraftPullRequest({
+      projectPath: '/repo',
+      branchName: 'ticket-branch',
+      baseBranch: 'main',
+      title: 'Updated title',
+      body: 'Updated description',
+    })
+
+    expect(result).toMatchObject({ number: 12, title: 'Change 12', state: 'draft' })
+    const patchCall = spawnSyncMock.mock.calls.find(([, args]) => Array.isArray(args) && args.includes('PATCH'))
+    expect(patchCall?.[1]).toContain('repos/looptroop-ai/LoopTroop/pulls/12')
+    expect(patchCall?.[1]).toContain('title=Updated title')
+    expect(patchCall?.[1]).toContain('body=Updated description')
+  })
+
+  it('creates a draft pull request when no matching request exists', async () => {
+    spawnSyncMock.mockImplementation((command: string, args: readonly string[]) => {
+      if (command === 'git') return makeSpawnResult({ stdout: 'https://github.com/looptroop-ai/LoopTroop.git' })
+      if (args.includes('GET')) return makeSpawnResult({ stdout: '[]' })
+      if (args.includes('POST')) return makeSpawnResult({ stdout: JSON.stringify(pullRequestRecord(42)) })
+      return makeSpawnResult()
+    })
+
+    const github = await import('../github')
+    const result = await github.createOrUpdateDraftPullRequest({
+      projectPath: '/repo',
+      branchName: 'ticket-branch',
+      baseBranch: 'main',
+      title: 'New draft',
+      body: 'Review the candidate.',
+    })
+
+    expect(result).toMatchObject({ number: 42, title: 'Change 42', state: 'draft' })
+    const postCall = spawnSyncMock.mock.calls.find(([, args]) => Array.isArray(args) && args.includes('POST'))
+    expect(postCall?.[1]).toEqual(expect.arrayContaining([
+      'repos/looptroop-ai/LoopTroop/pulls',
+      'head=ticket-branch',
+      'base=main',
+      'title=New draft',
+      'body=Review the candidate.',
+      'draft=true',
+    ]))
+  })
+
+  it('rejects a draft creation response that contains no pull request metadata', async () => {
+    spawnSyncMock.mockImplementation((command: string, args: readonly string[]) => {
+      if (command === 'git') return makeSpawnResult({ stdout: 'https://github.com/looptroop-ai/LoopTroop.git' })
+      return makeSpawnResult({ stdout: args.includes('GET') ? '[]' : '{}' })
+    })
+
+    const github = await import('../github')
+    await expect(github.createOrUpdateDraftPullRequest({
+      projectPath: '/repo',
+      branchName: 'ticket-branch',
+      baseBranch: 'main',
+      title: 'New draft',
+      body: 'Review the candidate.',
+    })).rejects.toThrow('GitHub CLI did not return pull request metadata after creation')
+  })
+
   it('omits an oversized patch instead of throwing during PR diff capture', async () => {
     spawnSyncMock.mockImplementation((_command: string, args: readonly string[]) => {
       if (args.includes('--stat')) {
@@ -363,6 +554,111 @@ describe('server/git/github', () => {
     expect(result.patchTruncated).toBe(true)
     expect(result.patchError).toBe('spawnSync git ENOBUFS')
     expect(result.patch).toContain('omitted the full patch')
+  })
+
+  it('returns patch and NUL-delimited file names when diff capture succeeds', async () => {
+    spawnSyncMock.mockImplementation((_command: string, args: readonly string[]) => {
+      if (args.includes('--stat')) return makeSpawnResult({ stdout: 'src/app.ts | 1 +' })
+      if (args.includes('--name-status') && args.includes('-z')) {
+        return makeSpawnResult({ stdout: 'M\0src/app.ts\0' })
+      }
+      if (args.includes('--name-status')) return makeSpawnResult({ stdout: 'M\tsrc/app.ts' })
+      if (args.includes('--unified=0')) return makeSpawnResult({ stdout: '@@ -0,0 +1 @@\n+new line' })
+      return makeSpawnResult()
+    })
+
+    const github = await import('../github')
+    expect(github.readGitDiff('/repo', 'base', 'head')).toEqual({
+      stat: 'src/app.ts | 1 +',
+      nameStatus: 'M\tsrc/app.ts',
+      nameStatusZ: 'M\0src/app.ts\0',
+      patch: '@@ -0,0 +1 @@\n+new line',
+      patchTruncated: false,
+      patchError: null,
+    })
+  })
+
+  it('marks recovery receipt git status as unreadable instead of implying the worktree is clean', async () => {
+    spawnSyncMock.mockImplementation((_command: string, args: readonly string[]) => (
+      args.includes('rev-parse') || args.includes('status')
+        ? makeSpawnResult({ status: 1, stderr: 'not a git repository' })
+        : makeSpawnResult()
+    ))
+
+    const github = await import('../github')
+    const receipt = github.captureGitRecoveryReceipt({
+      projectPath: '/missing-repo',
+      phase: 'delivery',
+      step: 'push_candidate_branch',
+      error: 'push failed',
+      branch: 'ticket-1',
+      baseBranch: 'main',
+    })
+
+    expect(receipt).toMatchObject({
+      headSha: null,
+      statusUnreadable: true,
+      stagedFiles: [],
+      unstagedFiles: [],
+      untrackedFiles: [],
+      nextSafeActions: expect.arrayContaining(['Inspect the local candidate commit and remote ticket branch before retrying.']),
+    })
+  })
+
+  it.each([
+    ['create_or_update_pull_request', 'Run gh auth status and re-authenticate if needed, then retry the ticket.'],
+    ['mark_pull_request_ready', 'Inspect the draft pull request state in GitHub, then retry the merge action.'],
+    ['merge_pull_request', 'Inspect the pull request mergeability in GitHub, resolve blockers, then retry the merge action.'],
+    ['verify_pull_request_candidate', 'Confirm the pull request targets the expected base branch and still points at the recorded candidate commit, then retry.'],
+    ['verify_remote_merge', 'Fetch origin and confirm the remote base branch contains the merged pull request commit, then retry.'],
+    ['rewrite_candidate_commit', 'Commit, stash or restore tracked changes in the ticket worktree, then retry the ticket.'],
+    ['sync_local_base_branch', 'Resolve tracked local changes or any Git-reported untracked overwrite conflict, then retry the explicit local base-branch sync.'],
+    ['unrecognized_step', 'Inspect the recorded git recovery receipt, resolve the blocking git or GitHub issue, then retry.'],
+  ])('gives recovery guidance for %s', async (step, action) => {
+    spawnSyncMock.mockReturnValue(makeSpawnResult())
+
+    const github = await import('../github')
+    const receipt = github.captureGitRecoveryReceipt({
+      projectPath: '/repo', phase: 'delivery', step, error: 'failed', branch: 'ticket-1', baseBranch: 'main',
+    })
+    expect(receipt.nextSafeActions).toContain(action)
+  })
+
+  it('refuses a reset when an ignored local file blocks a path restored by the candidate base', async () => {
+    const projectPath = mkdtempSync(join(tmpdir(), 'looptroop-github-clobber-'))
+    try {
+      writeFileSync(join(projectPath, 'generated'), 'local output')
+      spawnSyncMock.mockImplementation((_command: string, args: readonly string[]) => (
+        args.includes('--diff-filter=D')
+          ? makeSpawnResult({ stdout: 'generated/result.json\0' })
+          : makeSpawnResult()
+      ))
+
+      const github = await import('../github')
+      expect(() => github.ensureNoUntrackedPathsClobberedBy(projectPath, 'merge-base', 'candidate rewrite')).toThrow(
+        'Local files would be overwritten by candidate rewrite: generated',
+      )
+    } finally {
+      rmSync(projectPath, { recursive: true, force: true })
+    }
+  })
+
+  it('allows a candidate checkout to replace a path that HEAD already tracks', async () => {
+    const projectPath = mkdtempSync(join(tmpdir(), 'looptroop-github-overwrite-'))
+    try {
+      writeFileSync(join(projectPath, 'scratch.log'), 'local content')
+      spawnSyncMock.mockImplementation((_command: string, args: readonly string[]) => (
+        args.includes('ls-tree')
+          ? makeSpawnResult({ stdout: 'scratch.log\0' })
+          : makeSpawnResult()
+      ))
+
+      const github = await import('../github')
+      expect(() => github.ensureNoUntrackedPathsOverwrittenBy(projectPath, ['scratch.log'], 'candidate checkout')).not.toThrow()
+      expect(spawnSyncMock.mock.calls.some(([, args]) => Array.isArray(args) && args.includes('ls-tree'))).toBe(true)
+    } finally {
+      rmSync(projectPath, { recursive: true, force: true })
+    }
   })
 
   it('syncs the local base branch with fetch progress disabled', async () => {
@@ -399,6 +695,27 @@ describe('server/git/github', () => {
     const statusCallIndex = spawnSyncMock.mock.calls.findIndex(([, args]) => Array.isArray(args) && args.includes('status'))
     expect(fetchCallIndex).toBeGreaterThanOrEqual(0)
     expect(statusCallIndex).toBeGreaterThan(fetchCallIndex)
+  })
+
+  it('creates the local base from origin when its local branch does not exist', async () => {
+    spawnSyncMock.mockImplementation((_command: string, args: readonly string[]) => {
+      if (args.includes('checkout') && args.at(-1) === 'main') {
+        return makeSpawnResult({ status: 1, stderr: "error: pathspec 'main' did not match any file(s) known to git" })
+      }
+      if (args.includes('rev-parse') && args.includes('--abbrev-ref')) return makeSpawnResult({ stdout: 'ticket-1\n' })
+      if (args.includes('rev-parse') && args.includes('refs/remotes/origin/main')) return makeSpawnResult({ stdout: 'remote-sha\n' })
+      if (args.includes('rev-parse') && args.includes('HEAD')) return makeSpawnResult({ stdout: 'local-sha\n' })
+      return makeSpawnResult()
+    })
+
+    const github = await import('../github')
+    await expect(github.syncLocalBaseBranch('/repo', 'main')).resolves.toEqual({
+      originalBranch: 'ticket-1',
+      localBaseHead: 'local-sha',
+      remoteBaseHead: 'remote-sha',
+    })
+    expect(spawnMock.mock.calls.some(([command, args]) => command === 'git' && (args as string[]).join(' ') === 'checkout main')).toBe(true)
+    expect(spawnMock.mock.calls.some(([command, args]) => command === 'git' && (args as string[]).join(' ') === 'checkout -B main origin/main')).toBe(true)
   })
 
   it('allows untracked files during explicit local base sync until Git reports an overwrite conflict', async () => {
@@ -456,6 +773,43 @@ describe('server/git/github', () => {
     expect(() => github.ensureWorktreeClean('/repo')).not.toThrow()
   })
 
+  it('blocks local base sync when tracked worktree changes could be lost', async () => {
+    spawnSyncMock.mockImplementation((_command: string, args: readonly string[]) => (
+      args.includes('status') ? makeSpawnResult({ stdout: ' M tracked.ts\0' }) : makeSpawnResult()
+    ))
+
+    const github = await import('../github')
+    expect(() => github.ensureNoTrackedWorktreeChanges('/repo', 'candidate rewrite')).toThrow(
+      'Worktree has tracked changes that would make candidate rewrite unsafe.',
+    )
+  })
+
+  it('fails closed when Git cannot compare the paths restored by a candidate base', async () => {
+    spawnSyncMock.mockReturnValue(makeSpawnResult({ status: 1, stderr: 'object is unavailable' }))
+
+    const github = await import('../github')
+    expect(() => github.ensureNoUntrackedPathsClobberedBy('/repo', 'merge-base', 'candidate rewrite')).toThrow(
+      'Could not compare merge-base with HEAD before candidate rewrite: object is unavailable',
+    )
+  })
+
+  it('fails closed when Git cannot determine whether a candidate path is tracked', async () => {
+    const projectPath = mkdtempSync(join(tmpdir(), 'looptroop-github-tree-error-'))
+    try {
+      writeFileSync(join(projectPath, 'scratch.log'), 'local content')
+      spawnSyncMock.mockImplementation((_command: string, args: readonly string[]) => (
+        args.includes('ls-tree') ? makeSpawnResult({ status: 1, stderr: 'tree is unavailable' }) : makeSpawnResult()
+      ))
+
+      const github = await import('../github')
+      expect(() => github.ensureNoUntrackedPathsOverwrittenBy(projectPath, ['scratch.log'], 'candidate checkout')).toThrow(
+        'Could not read HEAD before candidate checkout: tree is unavailable',
+      )
+    } finally {
+      rmSync(projectPath, { recursive: true, force: true })
+    }
+  })
+
   it('verifies a remote base contains the merged commit without touching the checkout', async () => {
     spawnSyncMock.mockImplementation((_command: string, args: readonly string[]) => {
       if (args.includes('fetch')) return makeSpawnResult()
@@ -498,6 +852,16 @@ describe('server/git/github', () => {
     await expect(github.verifyRemoteBaseContainsCommit('/repo', 'main', 'candidate123')).rejects.toThrow(
       'Remote origin/main does not contain commit candidate123. Latest remote base is remote-base-sha.',
     )
+  })
+
+  it('rejects remote merge verification when the candidate SHA is unavailable', async () => {
+    const github = await import('../github')
+
+    await expect(github.verifyRemoteBaseContainsCommit('/repo', 'main', '  ')).rejects.toThrow(
+      'Cannot verify remote merge without a pull request head or candidate commit SHA.',
+    )
+    expect(spawnSyncMock).not.toHaveBeenCalled()
+    expect(spawnMock).not.toHaveBeenCalled()
   })
 
   it('deletes a remote branch only with the verified expected-head lease', async () => {

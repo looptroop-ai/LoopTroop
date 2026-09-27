@@ -7,6 +7,8 @@ import { clearProjectDatabaseCache } from '../../db/project'
 import { broadcaster } from '../../sse/broadcaster'
 import { attachProject, updateProject } from '../../storage/projects'
 import { createTicket, DISPLAY_ONLY_MOCK_BRANCH_NAME, getTicketByRef, getTicketPaths, patchTicket, updateTicket } from '../../storage/tickets'
+import { sendTicketEvent, stopActor } from '../../machines/persistence'
+import * as ticketStorage from '../../storage/tickets'
 import { createFixtureRepoManager } from '../../test/fixtureRepo'
 import { makeTempDir, removeTempDir } from '../../test/tempDir'
 import { LOOPTROOP_OPENCODE_ROUTING_CONFIG } from '../../../shared/openRouterRouting'
@@ -136,6 +138,8 @@ describe('ticketRouter POST /tickets/:id/start', () => {
       ],
     })
     vi.mocked(initializeTicket).mockClear()
+    vi.mocked(sendTicketEvent).mockClear()
+    vi.mocked(stopActor).mockClear()
   })
 
   afterAll(() => {
@@ -209,6 +213,74 @@ describe('ticketRouter POST /tickets/:id/start', () => {
       status: 'DRAFT',
       branchName: DISPLAY_ONLY_MOCK_BRANCH_NAME,
     })
+  })
+
+  it('rejects a concurrent start while the first request validates models', async () => {
+    const { app, ticket } = setupStartTicketApp()
+    let validationStarted!: () => void
+    let finishValidation!: (value: Awaited<ReturnType<typeof validateModelSelection>>) => void
+    const started = new Promise<void>((resolve) => { validationStarted = resolve })
+    const validation = new Promise<Awaited<ReturnType<typeof validateModelSelection>>>((resolve) => { finishValidation = resolve })
+    vi.mocked(validateModelSelection).mockImplementationOnce(() => {
+      validationStarted()
+      return validation
+    })
+
+    const firstStart = app.request(`/api/tickets/${ticket.id}/start`, { method: 'POST' })
+    await started
+    const overlappingStart = await app.request(`/api/tickets/${ticket.id}/start`, { method: 'POST' })
+
+    expect(overlappingStart.status).toBe(429)
+    expect(await overlappingStart.json()).toEqual({ error: 'Ticket start is already in progress' })
+
+    finishValidation({
+      mainImplementer: 'openai/codex-mini-latest',
+      councilMembers: ['openai/codex-mini-latest', 'openai/gpt-5.3-codex'],
+    })
+    expect((await firstStart).status).toBe(200)
+    broadcaster.clearTicket(ticket.id)
+  })
+
+  it('restores DRAFT when the start configuration lock reports that the ticket is missing', async () => {
+    const { app, ticket } = setupStartTicketApp()
+    vi.spyOn(ticketStorage, 'lockTicketStartConfiguration').mockReturnValueOnce(undefined)
+
+    const response = await app.request(`/api/tickets/${ticket.id}/start`, { method: 'POST' })
+
+    expect(response.status).toBe(404)
+    expect(await response.json()).toEqual({ error: 'Ticket not found' })
+    expect(getTicketByRef(ticket.id)).toMatchObject({
+      status: 'DRAFT',
+      branchName: null,
+      startedAt: null,
+      lockedMainImplementer: null,
+      lockedCouncilMembers: [],
+    })
+    expect(stopActor).toHaveBeenCalledWith(ticket.id)
+    expect(sendTicketEvent).not.toHaveBeenCalled()
+    broadcaster.clearTicket(ticket.id)
+  })
+
+  it('rejects malformed saved council variant data before locking a start', async () => {
+    sqlite.exec(`
+      INSERT INTO profiles (main_implementer, council_members, council_member_variants)
+      VALUES ('openai/codex-mini-latest', '["openai/codex-mini-latest"]', '[]');
+    `)
+    const { app, ticket } = setupStartTicketApp()
+    vi.mocked(initializeTicket).mockResolvedValueOnce({
+      worktreePath: '/worktree',
+      ticketDir: '/ticket',
+      branchName: ticket.externalId,
+      baseBranch: 'main',
+      reused: false,
+    })
+
+    const response = await app.request(`/api/tickets/${ticket.id}/start`, { method: 'POST' })
+
+    expect(response.status).toBe(400)
+    expect(await response.json()).toEqual({ error: 'Invalid configuration: malformed councilMemberVariants' })
+    expect(getTicketByRef(ticket.id)).toMatchObject({ status: 'DRAFT', branchName: null, lockedCouncilMemberVariants: null })
+    expect(sendTicketEvent).not.toHaveBeenCalled()
   })
 
   it('rejects ticket start before routing config writes while another prompt is active', async () => {
@@ -418,6 +490,25 @@ describe('ticketRouter POST /tickets/:id/start', () => {
       '✗ Workspace Init: Worktree initialization exploded.',
     ])
 
+    broadcaster.clearTicket(ticket.id)
+  })
+
+  it('returns an initialization error when INIT_FAILED cannot be dispatched', async () => {
+    const { app, ticket } = setupStartTicketApp()
+    vi.mocked(initializeTicket).mockRejectedValueOnce(new Error('Worktree initialization exploded.'))
+    vi.mocked(sendTicketEvent).mockImplementationOnce(() => {
+      throw new Error('Actor is unavailable')
+    })
+
+    const response = await app.request(`/api/tickets/${ticket.id}/start`, { method: 'POST' })
+
+    expect(response.status).toBe(500)
+    expect(await response.json()).toMatchObject({
+      error: 'Failed to block ticket after initialization error',
+      details: 'Actor is unavailable',
+    })
+    expect(getTicketByRef(ticket.id)?.status).toBe('DRAFT')
+    expect(getDraftLogMessages(ticket.id)).toContain('Failed to block ticket after initialization error: Actor is unavailable')
     broadcaster.clearTicket(ticket.id)
   })
 })

@@ -4,7 +4,7 @@ import { afterEach, describe, expect, it, vi } from 'vitest'
 import { OpenCodeSDKAdapter } from '../adapter'
 import { OpenCodeV1Transport } from '../v1Transport'
 import type { PromptPart } from '../types'
-import { getTicketContext, getTicketPaths, readTicketFile } from '../../storage/tickets'
+import { getLatestPhaseArtifact, getTicketContext, getTicketPaths, readTicketFile } from '../../storage/tickets'
 import { makeTempDir, removeTempDir } from '../../test/tempDir'
 import { readManualQaText } from '../../phases/manualQa/storage'
 import * as runtime from '../../runtime'
@@ -174,6 +174,36 @@ describe('OpenCode Manual QA file parts', () => {
     expect(beadData).toContain('## Dependencies (blocked by)\n- None')
     expect(beadData).not.toContain('Manual QA Fix Origin')
     expect(parts.filter((part) => part.source === 'bead_note')).toEqual([])
+  })
+
+  it('assembles council context with approved ticket artifacts and a saved setup plan', async () => {
+    const ticketDir = makeTempDir('adapter-council-context-')
+    roots.push(ticketDir)
+    const beadsPath = join(ticketDir, 'beads.jsonl')
+    vi.mocked(getTicketContext).mockReturnValue({
+      ticketRef: '1:COUNCIL-1',
+      projectId: 1,
+      localTicket: { title: 'Council context', description: 'Review the approved setup plan.' },
+    } as NonNullable<ReturnType<typeof getTicketContext>>)
+    vi.mocked(getTicketPaths).mockReturnValue({ ticketDir, beadsPath } as NonNullable<ReturnType<typeof getTicketPaths>>)
+    vi.mocked(readTicketFile).mockImplementation((_ticketId, path) => ({
+      'interview.yaml': 'approved interview answers',
+      'prd.yaml': 'approved product requirements',
+      'runtime/execution-setup-profile.json': '{"runtime":"node"}',
+    }[path] ?? null))
+    vi.mocked(getLatestPhaseArtifact).mockImplementation((_ticketId, artifact) => artifact === 'execution_setup_plan'
+      ? { content: 'approved execution plan' } as NonNullable<ReturnType<typeof getLatestPhaseArtifact>>
+      : undefined)
+
+    const parts = await new OpenCodeSDKAdapter('http://127.0.0.1:9')
+      .assembleCouncilContext('1:COUNCIL-1', 'execution_setup_plan_regenerate')
+
+    expect(parts).toEqual(expect.arrayContaining([
+      expect.objectContaining({ source: 'ticket_details', content: expect.stringContaining('Council context') }),
+      expect.objectContaining({ source: 'prd', content: 'approved product requirements' }),
+      expect.objectContaining({ source: 'execution_setup_profile', content: '{"runtime":"node"}' }),
+      expect.objectContaining({ source: 'execution_setup_plan', content: 'approved execution plan' }),
+    ]))
   })
 
   it('assembles no bead context when the ticket has no stored directory', async () => {

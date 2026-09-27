@@ -1,6 +1,7 @@
-import { existsSync, readFileSync, writeFileSync } from 'node:fs'
+import { createHash } from 'node:crypto'
+import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
 import { spawnSync } from 'node:child_process'
-import { resolve } from 'node:path'
+import { dirname, resolve } from 'node:path'
 import { afterAll, beforeEach, describe, expect, it, vi } from 'vitest'
 import { createInitializedTestTicket, createTestRepoManager, resetTestDb } from '../../../test/integration'
 import {
@@ -11,7 +12,10 @@ import {
   listTickets,
   listPhaseAttempts,
   patchTicket,
+  getTicketContext,
+  DISPLAY_ONLY_MOCK_BRANCH_NAME,
 } from '../../../storage/tickets'
+import { manualQaOperations } from '../../../db/schema'
 import {
   buildFinalTestFileEffectsAudit,
   captureFinalTestDirtyFiles,
@@ -148,6 +152,23 @@ function terminalSummary(
   }
 }
 
+function setImprovementDraft(setup: Awaited<ReturnType<typeof prepareFixture>>, itemId = 'item-one') {
+  setup.draft.results[0] = {
+    ...setup.draft.results[0]!,
+    outcome: 'improvement',
+    improvementDraftId: 'improvement-draft',
+  }
+  setup.draft.improvements = [{
+    id: 'improvement-draft',
+    itemId,
+    title: 'Improve the verified behavior',
+    description: 'Make the behavior easier to understand.',
+    evidenceIds: [],
+    priority: 2,
+    manualQaEnabled: true,
+  }]
+}
+
 describe('Manual QA submission recovery and integrity', () => {
   beforeEach(() => resetTestDb())
   afterAll(() => {
@@ -172,6 +193,19 @@ describe('Manual QA submission recovery and integrity', () => {
 
     const drift = detectManualQaWorkspaceDrift(setup.ticket.id, 1)
     expect(drift.files.map((file) => file.path)).toContain(unusual)
+  })
+
+  it('treats display-only mock tickets as drift-free without reading a workspace baseline', async () => {
+    const setup = await prepareFixture()
+    patchTicket(setup.ticket.id, { branchName: DISPLAY_ONLY_MOCK_BRANCH_NAME })
+
+    expect(detectManualQaWorkspaceDrift(setup.ticket.id, 1)).toEqual({
+      drifted: false,
+      headChanged: false,
+      baselineHead: '0000000000000000000000000000000000000000',
+      currentHead: '0000000000000000000000000000000000000000',
+      files: [],
+    })
   })
 
   it('persists top-level summary artifacts and re-dispatches a durable untransitioned outcome', async () => {
@@ -221,6 +255,61 @@ describe('Manual QA submission recovery and integrity', () => {
       sendEvent: vi.fn(),
     })
     expect(JSON.parse(readFileSync(operationPath, 'utf8')).state).toBe('complete')
+  })
+
+  it('records image capability from the selected OpenCode catalog model', async () => {
+    const setup = await prepareFixture()
+    patchTicket(setup.ticket.id, {
+      lockedMainImplementer: 'openai/codex-mini-latest',
+      lockedMainImplementerVariant: ' high ',
+    })
+    vi.stubEnv('LOOPTROOP_OPENCODE_MODE', 'mock')
+
+    try {
+      const summary = await submitManualQa({
+        ticketId: setup.ticket.id,
+        version: 1,
+        draft: setup.draft,
+        guard: setup.guard,
+        sendEvent: vi.fn(),
+      })
+      expect(summary.modelCapability).toMatchObject({
+        modelId: 'openai/codex-mini-latest',
+        modelVariant: 'high',
+        capabilityLookup: 'available',
+        supportsImages: false,
+        imageEvidenceMode: 'references_only',
+      })
+    } finally {
+      vi.unstubAllEnvs()
+    }
+  })
+
+  it('keeps submission available when model capability lookup fails', async () => {
+    const setup = await prepareFixture()
+    patchTicket(setup.ticket.id, { lockedMainImplementer: 'provider/offline-model' })
+    vi.stubEnv('LOOPTROOP_OPENCODE_MODE', 'live')
+    vi.stubEnv('LOOPTROOP_OPENCODE_BASE_URL', 'http://127.0.0.1:1')
+    vi.stubGlobal('fetch', vi.fn().mockRejectedValue(new Error('provider service is offline')))
+
+    try {
+      const summary = await submitManualQa({
+        ticketId: setup.ticket.id,
+        version: 1,
+        draft: setup.draft,
+        guard: setup.guard,
+        sendEvent: vi.fn(),
+      })
+      expect(summary.modelCapability).toMatchObject({
+        modelId: 'provider/offline-model',
+        capabilityLookup: 'unavailable',
+        supportsImages: null,
+        imageEvidenceMode: 'references_only',
+      })
+    } finally {
+      vi.unstubAllGlobals()
+      vi.unstubAllEnvs()
+    }
   })
 
   it('repairs a missing phase summary before replaying a canonical terminal outcome', async () => {
@@ -291,6 +380,90 @@ describe('Manual QA submission recovery and integrity', () => {
     expect(sendEvent).toHaveBeenCalledWith({ type: 'MANUAL_QA_SKIPPED' })
   })
 
+  it.each([
+    {
+      recovery: 'missing',
+      receipt: null,
+      operationActionId: null,
+      expectedError: 'skip receipt is missing during recovery',
+    },
+    {
+      recovery: 'invalid',
+      receipt: '[]',
+      operationActionId: null,
+      expectedError: 'skip receipt is invalid during recovery',
+    },
+    {
+      recovery: 'mismatched with its durable summary',
+      receipt: JSON.stringify({ artifact: 'manual_qa_summary', version: 1, actionId: 'skip-one' }),
+      operationActionId: null,
+      expectedError: 'skip receipt does not match the durable summary',
+    },
+    {
+      recovery: 'mismatched with its operation',
+      receipt: JSON.stringify({ artifact: 'manual_qa_skip_receipt', version: 1, actionId: 'other-action' }),
+      operationActionId: 'expected-action',
+      expectedError: 'skip receipt does not match the recovery operation',
+    },
+  ])('fails closed when the terminal skip receipt is $recovery', async ({
+    receipt,
+    operationActionId,
+    expectedError,
+  }) => {
+    const setup = await prepareFixture()
+    const paths = getManualQaStoragePaths(setup.paths.ticketDir, 1)
+    persistManualQaSummary(setup.paths.ticketDir, terminalSummary(setup, 'skipped', 'Recovered skip'))
+    if (operationActionId) {
+      reserveManualQaSubmissionOperation({
+        ticketDir: setup.paths.ticketDir,
+        path: paths.operationPath,
+        actionId: operationActionId,
+        operationType: 'skip',
+        ticketId: setup.ticket.id,
+        version: 1,
+        checklistHash: setup.guard.expectedChecklistHash,
+        draftRevision: setup.guard.expectedDraftRevision,
+      })
+    }
+    if (receipt !== null) writeFileSync(paths.skipReceiptPath, receipt)
+
+    await expect(skipManualQa({
+      ticketId: setup.ticket.id,
+      version: 1,
+      draft: setup.draft,
+      guard: { ...setup.guard, operationType: 'skip' },
+      sendEvent: vi.fn(),
+    })).rejects.toThrow(expectedError)
+  })
+
+  it('rejects a recovered terminal summary whose operation belongs to another ticket', async () => {
+    const setup = await prepareFixture()
+    const paths = getManualQaStoragePaths(setup.paths.ticketDir, 1)
+    persistManualQaSummary(setup.paths.ticketDir, terminalSummary(setup, 'passed'))
+    writeFileSync(paths.operationPath, JSON.stringify({
+      schemaVersion: 1,
+      actionId: 'wrong-ticket-operation',
+      operationType: 'submit',
+      ticketId: 'another-ticket',
+      version: 1,
+      checklistHash: setup.guard.expectedChecklistHash,
+      draftRevision: 1,
+      state: 'staged',
+      improvementTicketIds: [],
+      fixBeadIds: [],
+      createdAt: '2026-07-13T12:00:00.000Z',
+      updatedAt: '2026-07-13T12:00:00.000Z',
+    }))
+
+    await expect(submitManualQa({
+      ticketId: setup.ticket.id,
+      version: 1,
+      draft: setup.draft,
+      guard: setup.guard,
+      sendEvent: vi.fn(),
+    })).rejects.toThrow('operation journal does not match the durable summary')
+  })
+
   it('rejects a conflicting operation before writing canonical submission results', async () => {
     const setup = await prepareFixture()
     const paths = getManualQaStoragePaths(setup.paths.ticketDir, 1)
@@ -325,6 +498,209 @@ describe('Manual QA submission recovery and integrity', () => {
       guard: { ...setup.guard, actionId: 'invalid action id' },
       sendEvent: vi.fn(),
     })).rejects.toThrow('valid action ID')
+    expect(existsSync(operationPath)).toBe(false)
+  })
+
+  it('rejects stale mutation guards before reserving an operation', async () => {
+    const setup = await prepareFixture()
+    const operationPath = getManualQaStoragePaths(setup.paths.ticketDir, 1).operationPath
+    const submit = (guard = setup.guard) => submitManualQa({
+      ticketId: setup.ticket.id,
+      version: 1,
+      draft: setup.draft,
+      guard,
+      sendEvent: vi.fn(),
+    })
+
+    await expect(submit({ ...setup.guard, expectedChecklistHash: 'not-a-hash' }))
+      .rejects.toThrow('valid checklist hash')
+    await expect(submit({ ...setup.guard, expectedChecklistHash: '0'.repeat(64) }))
+      .rejects.toThrow('checklist changed')
+    await expect(submit({ ...setup.guard, expectedDraftRevision: -1 }))
+      .rejects.toThrow('valid draft revision')
+    await expect(submit({ ...setup.guard, expectedDraftRevision: 2 }))
+      .rejects.toThrow('draft revision changed')
+
+    insertPhaseArtifact(setup.ticket.id, {
+      phase: 'UI_STATE',
+      artifactType: 'ui_state:manual_qa_draft:v1',
+      content: '{',
+      createdAt: new Date(Date.now() + 10_000).toISOString(),
+    })
+    await expect(submit()).rejects.toThrow('Stored Manual QA draft state is invalid')
+
+    insertPhaseArtifact(setup.ticket.id, {
+      phase: 'UI_STATE',
+      artifactType: 'ui_state:manual_qa_draft:v1',
+      content: JSON.stringify({ revision: 0, data: {} }),
+      createdAt: new Date(Date.now() + 20_000).toISOString(),
+    })
+    await expect(submit()).rejects.toThrow('draft revision conflict')
+    expect(existsSync(operationPath)).toBe(false)
+  })
+
+  it('rejects required pending results and incomplete failure or improvement details', async () => {
+    const setup = await prepareFixture()
+    const submit = () => submitManualQa({
+      ticketId: setup.ticket.id,
+      version: 1,
+      draft: setup.draft,
+      guard: setup.guard,
+      sendEvent: vi.fn(),
+    })
+
+    setup.draft.results[0] = { ...setup.draft.results[0]!, outcome: 'pending' }
+    await expect(submit()).rejects.toThrow('Item 1 Verify item-one is required')
+
+    setup.draft.results[0] = { ...setup.draft.results[0]!, outcome: 'fail', observation: '  ' }
+    await expect(submit()).rejects.toThrow('marked Fail and requires an observation')
+
+    setImprovementDraft(setup)
+    setup.draft.results[0] = { ...setup.draft.results[0]!, improvementDraftId: undefined }
+    await expect(submit()).rejects.toThrow('does not have a matching reviewed draft')
+
+    setup.draft.results[0] = { ...setup.draft.results[0]!, improvementDraftId: 'improvement-draft' }
+    setup.draft.improvements[0]!.contextOverride = '  '
+    await expect(submit()).rejects.toThrow('cannot have empty Manual QA context')
+    expect(existsSync(getManualQaStoragePaths(setup.paths.ticketDir, 1).operationPath)).toBe(false)
+  })
+
+  it('rejects action IDs whose database input differs from the retry', async () => {
+    const setup = await prepareFixture()
+    const context = getTicketContext(setup.ticket.id)!
+    context.projectDb.insert(manualQaOperations).values({
+      ticketId: context.localTicketId,
+      actionId: setup.guard.actionId,
+      version: 2,
+      checklistHash: setup.guard.expectedChecklistHash,
+      draftRevision: setup.guard.expectedDraftRevision,
+      state: 'staged',
+      payload: '{}',
+    }).run()
+
+    await expect(submitManualQa({
+      ticketId: setup.ticket.id,
+      version: 1,
+      draft: setup.draft,
+      guard: setup.guard,
+      sendEvent: vi.fn(),
+    })).rejects.toThrow('action ID was already used with different database input')
+  })
+
+  it('rejects canonical results that conflict with a reserved submission retry', async () => {
+    const setup = await prepareFixture()
+    const paths = getManualQaStoragePaths(setup.paths.ticketDir, 1)
+    reserveManualQaSubmissionOperation({
+      ticketDir: setup.paths.ticketDir,
+      path: paths.operationPath,
+      actionId: setup.guard.actionId,
+      operationType: 'submit',
+      ticketId: setup.ticket.id,
+      version: 1,
+      checklistHash: setup.guard.expectedChecklistHash,
+      draftRevision: setup.guard.expectedDraftRevision,
+    })
+    persistManualQaResults(setup.paths.ticketDir, {
+      ...setup.draft,
+      results: setup.draft.results.map((result) => ({ ...result, note: 'Different immutable input.' })),
+      artifact: 'manual_qa_results',
+      actionId: setup.guard.actionId,
+      submittedAt: '2026-07-13T12:00:00.000Z',
+    })
+
+    await expect(submitManualQa({
+      ticketId: setup.ticket.id,
+      version: 1,
+      draft: setup.draft,
+      guard: setup.guard,
+      sendEvent: vi.fn(),
+    })).rejects.toThrow('Canonical Manual QA results conflict with the reserved submission operation')
+  })
+
+  it.each([
+    { reservationKind: 'wrong origin', expectedError: 'improvement reservation is invalid' },
+    { reservationKind: 'non-string ticket reference', expectedError: 'improvement reservation is invalid' },
+    { reservationKind: 'ticket with conflicting settings', expectedError: 'settings conflict with the reserved draft' },
+  ])('rejects an improvement reservation with a $reservationKind', async ({ reservationKind, expectedError }) => {
+    const setup = await prepareFixture()
+    setImprovementDraft(setup)
+    const originId = `manual-qa:${setup.ticket.externalId}:v1:improvement-draft`
+    const reservationDir = resolve(getManualQaStoragePaths(setup.paths.ticketDir, 1).versionDir, 'improvement-operations')
+    const reservationPath = resolve(
+      reservationDir,
+      `${createHash('sha256').update(originId).digest('hex')}.json`,
+    )
+    mkdirSync(dirname(reservationPath), { recursive: true })
+    const reservation = reservationKind === 'wrong origin'
+      ? { originId: 'another-origin', ticketId: setup.ticket.id }
+      : reservationKind === 'non-string ticket reference'
+        ? { originId, ticketId: 42 }
+        : { originId, ticketId: setup.ticket.id }
+    writeFileSync(reservationPath, JSON.stringify(reservation))
+
+    await expect(submitManualQa({
+      ticketId: setup.ticket.id,
+      version: 1,
+      draft: setup.draft,
+      guard: setup.guard,
+      sendEvent: vi.fn(),
+    })).rejects.toThrow(expectedError)
+  })
+
+  it('records removed improvement evidence as omitted instead of losing the ticket origin', async () => {
+    const setup = await prepareFixture()
+    setImprovementDraft(setup)
+    const evidence = await streamManualQaEvidence({
+      ticketDir: setup.paths.ticketDir,
+      version: 1,
+      itemId: 'item-one',
+      evidenceId: 'removed-improvement-evidence',
+      originalName: 'observation.txt',
+      mediaType: 'text/plain',
+      body: byteStream(new TextEncoder().encode('Evidence removed before ticket creation.')),
+    })
+    setup.draft.evidence = [evidence]
+    setup.draft.results[0]!.evidenceIds = [evidence.id]
+    setup.draft.improvements[0]!.evidenceIds = [evidence.id]
+    rmSync(resolve(getManualQaStoragePaths(setup.paths.ticketDir, 1).evidenceDir, evidence.storedName))
+
+    const summary = await submitManualQa({
+      ticketId: setup.ticket.id,
+      version: 1,
+      draft: setup.draft,
+      guard: setup.guard,
+      sendEvent: vi.fn(),
+    })
+    const childPaths = getTicketPaths(summary.improvementTicketIds[0]!)!
+    const origin = JSON.parse(readFileSync(resolve(childPaths.ticketDir, 'meta', 'manual-qa-origin.json'), 'utf8'))
+
+    expect(origin.evidenceRefs).toEqual([])
+    expect(origin.omittedEvidence).toEqual([
+      expect.objectContaining({ id: evidence.id, reason: expect.any(String) }),
+    ])
+  })
+
+  it.each(['submit', 'skip'] as const)('rejects %s when the verified workspace has drifted', async (action) => {
+    const setup = await prepareFixture()
+    const untrackedPath = 'manual-qa-review-drift.txt'
+    writeFileSync(resolve(setup.paths.worktreePath, untrackedPath), 'Changed after the QA checkpoint.\n')
+    const sendEvent = vi.fn()
+    const operationPath = getManualQaStoragePaths(setup.paths.ticketDir, 1).operationPath
+    const request = action === 'submit'
+      ? submitManualQa({ ticketId: setup.ticket.id, version: 1, draft: setup.draft, guard: setup.guard, sendEvent })
+      : skipManualQa({
+        ticketId: setup.ticket.id,
+        version: 1,
+        draft: setup.draft,
+        guard: { ...setup.guard, operationType: 'skip' },
+        sendEvent,
+      })
+
+    await expect(request).rejects.toMatchObject({
+      code: 'MANUAL_QA_WORKSPACE_DRIFT',
+      drift: { drifted: true, files: [expect.objectContaining({ path: untrackedPath })] },
+    })
+    expect(sendEvent).not.toHaveBeenCalled()
     expect(existsSync(operationPath)).toBe(false)
   })
 
@@ -666,6 +1042,60 @@ describe('Manual QA submission recovery and integrity', () => {
     }
   })
 
+  it('recovers a created-fixes summary when its local operation journal is missing', async () => {
+    const setup = await prepareFixture()
+    setup.draft.results[0] = {
+      ...setup.draft.results[0]!,
+      outcome: 'fail',
+      observation: 'The verified behavior is broken.',
+    }
+    const summary = await submitManualQa({
+      ticketId: setup.ticket.id,
+      version: 1,
+      draft: setup.draft,
+      guard: setup.guard,
+      sendEvent: vi.fn(),
+      generateFixBeads: async () => [{
+        groupId: 'item:item-one',
+        title: 'Repair item one behavior',
+        description: 'Restore the verified behavior.',
+        prdRefs: [],
+        contextGuidance: { patterns: [], anti_patterns: [] },
+        acceptanceCriteria: ['Item one works as specified.'],
+        tests: ['Add a regression test for item one.'],
+        testCommands: [],
+        testCommandReason: 'Run the item one regression test.',
+        labels: ['manual-qa'],
+        blockedByGroupIds: [],
+        targetFiles: ['src/item-one.ts'],
+      }],
+    })
+    expect(summary.outcome).toBe('created_fixes')
+    const paths = getManualQaStoragePaths(setup.paths.ticketDir, 1)
+    const beforeAttempts = Object.fromEntries(
+      ['RUNNING_FINAL_TEST', 'GENERATING_QA_CHECKLIST', 'WAITING_MANUAL_QA']
+        .map((phase) => [phase, listPhaseAttempts(setup.ticket.id, phase).length]),
+    )
+    rmSync(paths.operationPath, { force: true })
+    writeJsonl(paths.eventsPath, readJsonl<{ eventType?: string }>(paths.eventsPath)
+      .filter((event) => event.eventType !== 'completed'))
+    const sendEvent = vi.fn()
+
+    const recovered = await submitManualQa({
+      ticketId: setup.ticket.id,
+      version: 1,
+      draft: setup.draft,
+      guard: setup.guard,
+      sendEvent,
+    })
+
+    expect(recovered).toEqual(summary)
+    expect(sendEvent).toHaveBeenCalledWith({ type: 'MANUAL_QA_FIXES_CREATED' })
+    for (const [phase, count] of Object.entries(beforeAttempts)) {
+      expect(listPhaseAttempts(setup.ticket.id, phase)).toHaveLength(count + 1)
+    }
+  })
+
   it('moves fix-bead generation failures to the error path before creating any child work', async () => {
     const setup = await prepareFixture([checklistItem('failed-item'), checklistItem('improvement-item')])
     setup.draft.results = [
@@ -819,6 +1249,18 @@ describe('Manual QA submission recovery and integrity', () => {
       manualQaEnabled: true,
     })
     expect(readFileSync(resolve(childPaths.ticketDir, origin.evidenceRefs[0].relativePath))).toEqual(Buffer.from(evidenceBytes))
+    const sourcePaths = getManualQaStoragePaths(setup.paths.ticketDir, 1)
+    const originId = `manual-qa:${setup.ticket.externalId}:v1:improvement-one`
+    const reservationPath = resolve(
+      sourcePaths.versionDir,
+      'improvement-operations',
+      `${createHash('sha256').update(originId).digest('hex')}.json`,
+    )
+    rmSync(sourcePaths.summaryPath, { force: true })
+    rmSync(reservationPath, { force: true })
+    writeJsonl(sourcePaths.eventsPath, readJsonl<{ eventType?: string }>(sourcePaths.eventsPath)
+      .filter((event) => event.eventType !== 'completed'))
+    writeFileSync(resolve(childPaths.ticketDir, 'meta', 'manual-qa-origin.json'), '{')
     const retried = await submitManualQa({
       ticketId: setup.ticket.id,
       version: 1,
@@ -827,5 +1269,7 @@ describe('Manual QA submission recovery and integrity', () => {
       sendEvent: vi.fn(),
     })
     expect(retried.improvementTicketIds).toEqual([childId])
+    expect(JSON.parse(readFileSync(resolve(childPaths.ticketDir, 'meta', 'manual-qa-origin.json'), 'utf8')))
+      .toMatchObject({ source: 'manual_qa_improvement', originId })
   })
 })

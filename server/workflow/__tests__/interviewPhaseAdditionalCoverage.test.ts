@@ -152,6 +152,33 @@ describe('additional interview phase flows', () => {
     expect(checkHealthMock).toHaveBeenCalledOnce()
   })
 
+  it('persists failed draft outcomes and blocks the interview when council quorum is not met', async () => {
+    const { ticket, context } = await createInitializedTestTicket(repoManager, {
+      title: 'Stop interview drafting when council quorum fails',
+    })
+    const drafts = TEST.councilMembers.map((memberId) => ({
+      memberId,
+      outcome: 'failed' as const,
+      duration: 5,
+      content: '',
+      error: 'Provider unavailable.',
+    }))
+    deliberateInterviewMock.mockResolvedValueOnce({
+      phase: 'interview_draft',
+      drafts,
+      memberOutcomes: Object.fromEntries(drafts.map(({ memberId, outcome }) => [memberId, outcome])),
+      deadlineReached: false,
+    } satisfies DraftPhaseResult)
+    const sendEvent = vi.fn()
+
+    await expect(handleInterviewDeliberate(ticket.id, context, sendEvent, new AbortController().signal))
+      .rejects.toThrow('Council quorum not met for interview_draft')
+
+    expect(getLatestPhaseArtifact(ticket.id, 'interview_drafts', 'COUNCIL_DELIBERATING')).toBeTruthy()
+    expect(phaseIntermediate.has(`${ticket.id}:interview`)).toBe(false)
+    expect(sendEvent).not.toHaveBeenCalled()
+  })
+
   it('advances a mock interview through its follow-up batch and writes the completed canonical artifact', async () => {
     const { ticket, context, paths } = await createInitializedTestTicket(repoManager, {
       title: 'Complete a mock interview',
@@ -218,6 +245,15 @@ describe('additional interview phase flows', () => {
     } finally {
       releaseInterviewBatch(ticket.id, claim ?? undefined)
     }
+  })
+
+  it('rejects answers when no interview batch is active', async () => {
+    const { ticket } = await createInitializedTestTicket(repoManager, {
+      title: 'Reject answers without an active interview batch',
+    })
+
+    await expect(handleInterviewQABatch(ticket.id, { Q01: 'An answer without a question batch.' }))
+      .rejects.toThrow('No active interview batch for this ticket')
   })
 
   it('replays persisted mock batches after the abandoned mock session is gone', async () => {

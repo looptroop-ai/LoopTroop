@@ -1,6 +1,10 @@
+import { mkdirSync, writeFileSync } from 'node:fs'
+import { join } from 'node:path'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { makeTempDir, removeTempDir } from '../../../test/tempDir'
 import { TEST, makeTicketContext } from '../../../test/factories'
+import type { StreamEvent } from '../../../opencode/types'
+import type { OpenCodePromptDispatchEvent } from '../../../workflow/runOpenCodePrompt'
 import { handleManualQaChecklistGeneration } from '../generator'
 
 const mocks = vi.hoisted(() => ({
@@ -193,6 +197,96 @@ describe('Manual QA generation orchestration', () => {
       expect.objectContaining({ parsed: checklist }),
     )
     expect(sendEvent).toHaveBeenCalledWith({ type: 'QA_CHECKLIST_READY' })
+  })
+
+  it.each([
+    ['unfinished', null, 7, false],
+    ['failed', { outcome: 'failed' }, 7, false],
+    ['completed', { outcome: 'passed' }, 8, true],
+  ])('reuses a %s reservation only when that round did not finish', async (_label, summary, expectedVersion, allocatesNext) => {
+    const ticketDir = roots.at(-1)!
+    const manualQaDir = join(ticketDir, 'manual-qa')
+    mkdirSync(manualQaDir, { recursive: true })
+    writeFileSync(join(manualQaDir, 'generation-reservation-v6.json'), '{}')
+    writeFileSync(join(manualQaDir, 'generation-reservation-v7.json'), '{}')
+    mocks.readManualQaSummary.mockReturnValue(summary)
+    mocks.allocateNextManualQaVersion.mockReturnValue(8)
+
+    await handleManualQaChecklistGeneration(TEST.ticketId, ticketContext, vi.fn())
+
+    expect(mocks.prepareManualQaCheckpoint).toHaveBeenCalledWith(TEST.ticketId, expectedVersion)
+    expect(mocks.allocateNextManualQaVersion).toHaveBeenCalledTimes(allocatesNext ? 1 : 0)
+    expect(mocks.parseManualQaChecklistOutput).toHaveBeenCalledWith(expect.any(String), expect.objectContaining({
+      version: expectedVersion,
+    }))
+  })
+
+  it('recomputes and persists coverage when restoring a checklist with a missing coverage artifact', async () => {
+    mocks.readManualQaChecklist.mockReturnValue(checklist)
+    mocks.readManualQaCoverage.mockReturnValue(null)
+
+    await handleManualQaChecklistGeneration(TEST.ticketId, {
+      ...ticketContext,
+      lockedMainImplementer: undefined,
+    }, vi.fn())
+
+    expect(mocks.computeManualQaCoverage).toHaveBeenCalledWith(checklist, [])
+    expect(mocks.persistManualQaCoverage).toHaveBeenCalledWith(expect.any(String), coverage)
+    expect(mocks.runOpenCodePrompt).not.toHaveBeenCalled()
+  })
+
+  it('forwards stream progress only after the prompt session is known', async () => {
+    const event: StreamEvent = {
+      type: 'text',
+      sessionId: 'session-1',
+      text: 'Checking the workflow.',
+      streaming: true,
+      complete: false,
+    }
+    mocks.runOpenCodePrompt.mockImplementationOnce(async (input: unknown) => {
+      const callbacks = input as {
+        onSessionCreated: (session: { id: string }) => void
+        onPromptDispatched: (dispatchEvent: OpenCodePromptDispatchEvent) => void
+        onStreamEvent: (streamEvent: StreamEvent) => void
+      }
+      const dispatchEvent: OpenCodePromptDispatchEvent = {
+        session: { id: 'session-1' },
+        parts: [],
+        promptText: 'Generate the checklist.',
+        promptNumber: 1,
+        timeoutKind: 'ai_response',
+        model: TEST.implementer,
+      }
+      callbacks.onPromptDispatched(dispatchEvent)
+      callbacks.onStreamEvent(event)
+      callbacks.onSessionCreated({ id: 'session-1' })
+      callbacks.onStreamEvent(event)
+      return {
+        session: { id: 'session-1' },
+        response: '<MANUAL_QA_CHECKLIST>summary: ready</MANUAL_QA_CHECKLIST>',
+        messages: [],
+      }
+    })
+
+    await handleManualQaChecklistGeneration(TEST.ticketId, ticketContext, vi.fn())
+
+    expect(mocks.emitOpenCodePromptLog).toHaveBeenCalledWith(
+      TEST.ticketId,
+      TEST.externalId,
+      'GENERATING_QA_CHECKLIST',
+      TEST.implementer,
+      expect.objectContaining({ promptText: 'Generate the checklist.' }),
+    )
+    expect(mocks.emitOpenCodeStreamEvent).toHaveBeenCalledTimes(1)
+    expect(mocks.emitOpenCodeStreamEvent).toHaveBeenCalledWith(
+      TEST.ticketId,
+      TEST.externalId,
+      'GENERATING_QA_CHECKLIST',
+      TEST.implementer,
+      'session-1',
+      event,
+      expect.any(Object),
+    )
   })
 
   it('retries invalid structured output with the validation error and records the retry', async () => {

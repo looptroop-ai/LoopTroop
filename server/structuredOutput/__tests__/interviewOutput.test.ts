@@ -210,4 +210,222 @@ describe('interview output normalization edge cases', () => {
     expect(result.ok).toBe(false)
     if (!result.ok) expect(result.error).toContain('missing valid status')
   })
+
+  it('normalizes batch option strings and drops empty single-choice options', () => {
+    const result = normalizeInterviewTurnOutput(tagged('INTERVIEW_BATCH', {
+      batch_number: 1,
+      progress: { current: 0, total: 1 },
+      questions: [
+        {
+          id: 'Q01',
+          question: 'Which approach?',
+          phase: 'Custom',
+          priority: 'urgent',
+          answer_type: 'single_choice',
+          options: [],
+        },
+        {
+          id: 'Q02',
+          question: 'Which checks?',
+          options: ['  Unit tests  ', '   ', { key: 'lint', name: 'Lint' }],
+        },
+        {
+          id: 'Q03',
+          question: 'Which formats?',
+          answer_type: 'multiple_choice',
+          options: [],
+        },
+      ],
+    }))
+
+    expect(result.ok).toBe(true)
+    if (!result.ok) return
+    expect(result.value.kind).toBe('batch')
+    if (result.value.kind !== 'batch') return
+    expect(result.value.batch.questions).toEqual([
+      { id: 'Q01', question: 'Which approach?', phase: 'Custom', priority: 'urgent' },
+      {
+        id: 'Q02',
+        question: 'Which checks?',
+        options: [{ id: 'opt1', label: 'Unit tests' }, { id: 'lint', label: 'Lint' }],
+      },
+      { id: 'Q03', question: 'Which formats?' },
+    ])
+  })
+
+  it.each([
+    ['a non-object change', null, 'is not an object'],
+    ['an unknown type', { type: 'renamed', before: { id: 'Q01', phase: 'foundation', question: 'What is the original goal?' }, after: { id: 'Q01', phase: 'foundation', question: 'What is the refined goal?' } }, 'unknown type'],
+    ['a non-object question', { type: 'modified', before: true, after: { id: 'Q01', phase: 'foundation', question: 'What is the refined goal?' } }, 'must be an object'],
+    ['an unknown phase', { type: 'modified', before: { id: 'Q01', phase: 'custom', question: 'What is the original goal?' }, after: { id: 'Q01', phase: 'foundation', question: 'What is the refined goal?' } }, 'Unknown question phase'],
+    ['both missing sides', { type: 'modified' }, 'is missing before and after'],
+    ['a null before side', { type: 'modified', before: null, after: { id: 'Q01', phase: 'foundation', question: 'What is the refined goal?' } }, 'must use a populated before'],
+    ['a null after side', { type: 'modified', before: { id: 'Q01', phase: 'foundation', question: 'What is the original goal?' }, after: null }, 'must use a populated after'],
+    ['an added change with a before record', { type: 'added', before: { id: 'Q01', phase: 'foundation', question: 'What is the original goal?' }, after: { id: 'Q02', phase: 'foundation', question: 'What is another goal?' } }, 'with type added must use before: null'],
+    ['a removed change with a populated after record', { type: 'removed', before: { id: 'Q01', phase: 'foundation', question: 'What is the original goal?' }, after: { id: 'Q02', phase: 'foundation', question: 'What is another goal?' } }, 'with type removed must use after: null'],
+  ])('rejects refinement changes with %s', (_label, change, expectedError) => {
+    const result = normalizeInterviewRefinementOutput(JSON.stringify({
+      questions: [{ id: 'Q01', phase: 'foundation', question: 'What is the original goal?' }],
+      changes: [change],
+    }), winnerDraft, 10)
+
+    expect(result.ok).toBe(false)
+    if (!result.ok) expect(result.error).toContain(expectedError)
+  })
+
+  it('soft-repairs malformed inspiration and hydrates a valid losing-draft question', () => {
+    const winnerQuestions = [
+      { id: 'Q01', phase: 'foundation', question: 'Original goal?' },
+      { id: 'Q02', phase: 'structure', question: 'Original structure?' },
+      { id: 'Q03', phase: 'assembly', question: 'Original assembly?' },
+      { id: 'Q04', phase: 'assembly', question: 'Original release?' },
+      { id: 'Q05', phase: 'assembly', question: 'Original format?' },
+    ]
+    const finalQuestions = [
+      { id: 'Q01', phase: 'foundation', question: 'Refined goal?' },
+      { id: 'Q02', phase: 'structure', question: 'Refined structure?' },
+      { id: 'Q03', phase: 'assembly', question: 'Refined assembly?' },
+      { id: 'Q04', phase: 'assembly', question: 'Refined release?' },
+      { id: 'Q05', phase: 'assembly', question: 'Refined format?' },
+    ]
+    const losingDrafts = [{
+      memberId: 'alternative',
+      content: [
+        'questions:',
+        '  - id: Q09',
+        '    phase: foundation',
+        '    question: "Canonical inspiration?"',
+      ].join('\n'),
+    }]
+    const result = normalizeInterviewRefinementOutput(JSON.stringify({
+      questions: finalQuestions,
+      changes: [
+        {
+          type: 'modified', before: winnerQuestions[0], after: finalQuestions[0],
+          inspiration: {
+            alternative_draft: 1,
+            question: { id: 'Q09', phase: 'unknown phase', question: 'Canonical inspiration?' },
+          },
+        },
+        {
+          type: 'modified', before: winnerQuestions[1], after: finalQuestions[1],
+          inspiration: { alternative_draft: 1, question: 42 },
+        },
+        {
+          type: 'modified', before: winnerQuestions[2], after: finalQuestions[2],
+          inspiration: { alternative_draft: 1, question: { question: '' } },
+        },
+        {
+          type: 'modified', before: winnerQuestions[3], after: finalQuestions[3],
+          inspiration: false,
+        },
+        {
+          type: 'modified', before: winnerQuestions[4], after: finalQuestions[4],
+          inspiration: null,
+        },
+      ],
+    }), [
+      'questions:',
+      '  - id: Q01',
+      '    phase: foundation',
+      '    question: "Original goal?"',
+      '  - id: Q02',
+      '    phase: structure',
+      '    question: "Original structure?"',
+      '  - id: Q03',
+      '    phase: assembly',
+      '    question: "Original assembly?"',
+      '  - id: Q04',
+      '    phase: assembly',
+      '    question: "Original release?"',
+      '  - id: Q05',
+      '    phase: assembly',
+      '    question: "Original format?"',
+    ].join('\n'), 10, losingDrafts)
+
+    expect(result.ok).toBe(true)
+    if (!result.ok) return
+    expect(result.value.changes[0]?.inspiration).toMatchObject({
+      memberId: 'alternative',
+      question: { id: 'Q09', phase: 'foundation', question: 'Canonical inspiration?' },
+    })
+    expect(result.value.changes.slice(1).map(({ attributionStatus, inspiration }) => ({ attributionStatus, inspiration })))
+      .toEqual([
+        { attributionStatus: 'invalid_unattributed', inspiration: null },
+        { attributionStatus: 'invalid_unattributed', inspiration: null },
+        { attributionStatus: 'invalid_unattributed', inspiration: null },
+        { attributionStatus: 'model_unattributed', inspiration: null },
+      ])
+  })
+
+  it('removes a stale top-level question declared as removed', () => {
+    const original = { id: 'Q01', phase: 'foundation', question: 'What is the original goal?' }
+    const removed = { id: 'Q02', phase: 'structure', question: 'Which structure should be removed?' }
+    const result = normalizeInterviewRefinementOutput(JSON.stringify({
+      questions: [original, removed],
+      changes: [{ type: 'removed', before: removed, after: null }],
+    }), buildYamlDocument({ questions: [original, removed] }), 10)
+
+    expect(result.ok).toBe(true)
+    if (!result.ok) return
+    expect(result.value.questions).toEqual([original])
+    expect(result.repairWarnings).toContain(
+      'Removed stale top-level refined interview question Q02 using removed change at index 0.',
+    )
+  })
+
+  it('normalizes duplicate winner ids when the caller already accounted for omitted changes', () => {
+    const winner = buildYamlDocument({ questions: [
+      { id: 'Q01', phase: 'foundation', question: 'First goal?' },
+      { id: 'Q01', phase: 'assembly', question: 'Final step?' },
+    ] })
+    const result = normalizeInterviewRefinementOutput(JSON.stringify({
+      questions: [{ id: 'Q03', phase: 'foundation', question: 'A final goal?' }],
+    }), winner, 10, undefined, {
+      missingChangesPolicy: 'accounted_elsewhere',
+    })
+
+    expect(result.ok).toBe(true)
+    if (!result.ok) return
+    expect(result.repairWarnings).toContain('Renumbered duplicate question id Q01 at index 1 to Q02.')
+  })
+
+  it('rejects missing and unaccounted refinement changes', () => {
+    const nonObject = normalizeInterviewRefinementOutput('[]', winnerDraft, 10)
+    expect(nonObject.ok).toBe(false)
+    if (!nonObject.ok) expect(nonObject.error).toContain('not a YAML/JSON object')
+
+    const missingQuestions = normalizeInterviewRefinementOutput(JSON.stringify({ changes: [] }), winnerDraft, 10)
+    expect(missingQuestions.ok).toBe(false)
+    if (!missingQuestions.ok) expect(missingQuestions.error).toContain('missing questions')
+
+    const unmatchedAfter = normalizeInterviewRefinementOutput(JSON.stringify({
+      questions: [{ id: 'Q01', phase: 'foundation', question: 'Refined goal?' }],
+      changes: [{
+        type: 'modified',
+        before: { id: 'Q01', phase: 'foundation', question: 'What is the original goal?' },
+        after: { id: 'Q09', phase: 'foundation', question: 'Unlisted final question?' },
+      }],
+    }), winnerDraft, 10)
+    expect(unmatchedAfter.ok).toBe(false)
+    if (!unmatchedAfter.ok) expect(unmatchedAfter.error).toContain('does not match any question from the refined final list')
+  })
+
+  it('rejects a refined question referenced by multiple changes', () => {
+    const winner = buildYamlDocument({ questions: [
+      { id: 'Q01', phase: 'foundation', question: 'First goal?' },
+      { id: 'Q02', phase: 'structure', question: 'Second goal?' },
+    ] })
+    const after = { id: 'Q03', phase: 'assembly', question: 'Combined final goal?' }
+    const result = normalizeInterviewRefinementOutput(JSON.stringify({
+      questions: [after],
+      changes: [
+        { type: 'modified', before: { id: 'Q01', phase: 'foundation', question: 'First goal?' }, after },
+        { type: 'modified', before: { id: 'Q02', phase: 'structure', question: 'Second goal?' }, after },
+      ],
+    }), winner, 10)
+
+    expect(result.ok).toBe(false)
+    if (!result.ok) expect(result.error).toContain('reuses a refined question already referenced by another change')
+  })
 })

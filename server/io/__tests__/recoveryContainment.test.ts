@@ -1,4 +1,4 @@
-import { appendFileSync, existsSync, lstatSync, mkdirSync, readFileSync, readdirSync, renameSync, rmSync, symlinkSync, writeFileSync } from 'node:fs'
+import { appendFileSync, closeSync, existsSync, lstatSync, mkdirSync, openSync, readFileSync, readSync, readdirSync, renameSync, rmSync, statSync, symlinkSync, truncateSync, writeFileSync, writeSync } from 'node:fs'
 import * as fs from 'fs'
 import { join } from 'node:path'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
@@ -21,6 +21,25 @@ afterEach(() => {
 })
 
 describe('recovery descriptor containment', () => {
+  it('preserves an unreadable temp beside its existing target', () => {
+    const target = join(directory, 'runtime', 'execution-setup-profile.json')
+    const tmp = makeAtomicTmpPath(target)
+    writeFileSync(target, '{"existing":true}')
+    writeFileSync(tmp, '{"recovery":true}')
+    const open = fileReader.openFileNoFollowSync
+    vi.spyOn(fileReader, 'openFileNoFollowSync').mockImplementation((candidate, flags) => {
+      if (candidate === tmp) throw Object.assign(new Error('permission denied'), { code: 'EACCES' })
+      return open(candidate, flags)
+    })
+    const warning = vi.spyOn(console, 'warn').mockImplementation(() => {})
+
+    expect(recoverOrphanTmpFiles(directory)).toEqual([])
+
+    expect(readFileSync(target, 'utf8')).toBe('{"existing":true}')
+    expect(existsSync(tmp)).toBe(true)
+    expect(warning).toHaveBeenCalledWith(expect.stringContaining('beside its existing target'), expect.any(Error))
+  })
+
   it.each([
     ['file', false], ['alias', false], ['file', true], ['alias', true],
   ] as const)('rejects a replaced %s before linking and pins unsupported-link copies (copy fallback: %s)', (replacementKind, copyFallback) => {
@@ -455,6 +474,49 @@ describe('recovery descriptor containment', () => {
     expect(recoverOrphanTmpFiles(directory)).toEqual([target])
     expect(readFileSync(target, 'utf8')).toBe(content)
     expect(existsSync(tmp)).toBe(false)
+  })
+
+  it('checks large JSONL tails within a bounded scan and truncates only a corrupt final record', () => {
+    const path = join(directory, 'large-log.jsonl')
+    const fileSize = 257 * 1024 * 1024
+    const header = Buffer.from('{"kept":true}\n')
+    writeFileSync(path, '')
+    truncateSync(path, fileSize)
+
+    const writeAt = (position: number, content: Buffer) => {
+      const fd = openSync(path, 'r+')
+      try {
+        writeSync(fd, content, 0, content.length, position)
+      } finally {
+        closeSync(fd)
+      }
+    }
+
+    writeAt(0, header)
+    writeAt(fileSize - 5 * 1024 * 1024 - 1, Buffer.from('\n'))
+    expect(fixTrailingLineCorruption(path)).toBe(false)
+    expect(statSync(path).size).toBe(fileSize)
+
+    const validTail = Buffer.from('\n{"a":0}\n')
+    const tailStart = fileSize - validTail.length
+    writeAt(tailStart, validTail)
+    expect(fixTrailingLineCorruption(path)).toBe(false)
+    expect(statSync(path).size).toBe(fileSize)
+
+    const corruptTail = Buffer.from('\n{"a":?}\n')
+    expect(corruptTail.length).toBe(validTail.length)
+    writeAt(tailStart, corruptTail)
+    expect(fixTrailingLineCorruption(path)).toBe(true)
+    expect(statSync(path).size).toBe(tailStart + 1)
+
+    const fd = openSync(path, 'r')
+    try {
+      const retainedHeader = Buffer.alloc(header.length)
+      expect(readSync(fd, retainedHeader, 0, retainedHeader.length, 0)).toBe(header.length)
+      expect(retainedHeader).toEqual(header)
+    } finally {
+      closeSync(fd)
+    }
   })
 
   it('truncates the opened file even if its pathname is replaced before reading', () => {

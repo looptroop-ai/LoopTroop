@@ -4,8 +4,10 @@ import { dirname, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { describe, expect, it } from 'vitest'
 import {
+  appendWrapperKeyRepairWarning,
   buildStructuredRetryPrompt,
   collectStructuredCandidates,
+  findMaybeUnwrappedWrapperPath,
   getValueByAliases,
   maybeUnwrapRecord,
   parseYamlOrJsonCandidate,
@@ -77,6 +79,15 @@ describe.concurrent('structured output normalization helpers', () => {
     const arbitrary = { only: { answer: 42 } }
     expect(unwrapExplicitWrapperRecord(arbitrary, ['data'])).toBe(arbitrary)
     expect(unwrapExplicitWrapperRecord({ data: { answer: 42 } }, ['data'], 5)).toEqual({ data: { answer: 42 } })
+  })
+
+  it('reports the path through nested singleton wrappers', () => {
+    expect(findMaybeUnwrappedWrapperPath({ outer: { inner: { answer: 42 } } }, ['payload', 'result']))
+      .toEqual(['outer', 'inner', 'answer'])
+
+    const warnings: string[] = []
+    appendWrapperKeyRepairWarning(warnings, ['outer', 'inner', 'payload'])
+    expect(warnings).toEqual(['Removed wrapper key chain "outer -> inner -> payload" from top level.'])
   })
 
   it('normalizes list entries, dates, multiline values, and unsupported input', () => {
@@ -153,6 +164,54 @@ describe.concurrent('repairCoverageGapStringList', () => {
 })
 
 describe.concurrent('parseYamlOrJsonCandidate', () => {
+  it.each([
+    [
+      'invalid quoted escape with a misindented list property',
+      ['items:', '  - id: first', '   pattern: "a\\+b"'].join('\n'),
+      { items: [{ id: 'first', pattern: 'a\\+b' }] },
+    ],
+    [
+      'inner quotes with a misindented list property',
+      ['items:', '  - id: first', '   text: "Use `origin: "date"` safely."'].join('\n'),
+      { items: [{ id: 'first', text: 'Use `origin: "date"` safely.' }] },
+    ],
+    [
+      'colon-containing scalar with a misindented list property',
+      ['items:', '  - id: first', '   summary: evidence: stale state'].join('\n'),
+      { items: [{ id: 'first', summary: 'evidence: stale state' }] },
+    ],
+    [
+      'reserved-indicator scalar with a misindented list property',
+      ['items:', '  - id: first', '   owner: @team'].join('\n'),
+      { items: [{ id: 'first', owner: '@team' }] },
+    ],
+    [
+      'sequence entry with drifted sibling indentation',
+      ['items:', '  - id: first', '    title: First', '   - id: second', '    title: Second'].join('\n'),
+      { items: [{ id: 'first', title: 'First' }, { id: 'second', title: 'Second' }] },
+    ],
+    [
+      'sequence entry and child property with drifted indentation',
+      ['items:', '  - id: first', '    title: First', '   - id: second', '   title: Second'].join('\n'),
+      { items: [{ id: 'first', title: 'First' }, { id: 'second', title: 'Second' }] },
+    ],
+  ] as const)('recovers %s without changing the visible field values', (_caseName, content, expected) => {
+    expect(parseYamlOrJsonCandidate(content)).toEqual(expected)
+  })
+
+  it('reports all stripped XML-style lines when there are several', () => {
+    const repairWarnings: string[] = []
+    const parsed = parseYamlOrJsonCandidate([
+      '<analysis>',
+      '<result>',
+      '<payload>',
+      'answer: 42',
+    ].join('\n'), { repairWarnings })
+
+    expect(parsed).toEqual({ answer: 42 })
+    expect(repairWarnings).toContain('Stripped XML-style tags <analysis>, <result>, and <payload> from the payload before parsing.')
+  })
+
   it('preserves a flow-body string while repairing an unrelated duplicate key', () => {
     const body = [
       'body: [',
@@ -883,6 +942,27 @@ describe.concurrent('cached candidate parsing', () => {
       repairWarnings,
     })).toEqual({ answer: 'complete' })
     expect(repairWarnings).toContain('Trimmed trailing terminal noise after the complete structured artifact.')
+  })
+
+  it('ignores trailing control bytes while rejecting malformed or incomplete ANSI escapes', () => {
+    const repairWarnings: string[] = []
+    expect(parseYamlOrJsonCandidate('{"control_noise":true}\u0001', {
+      allowTrailingTerminalNoise: true,
+      repairWarnings,
+    })).toEqual({ control_noise: true })
+    expect(repairWarnings).toContain('Trimmed trailing terminal noise after the complete structured artifact.')
+
+    for (const escape of ['\u001b[\u0019', '\u001b[?']) {
+      expect(() => parseYamlOrJsonCandidate(`{"control_noise":true}${escape}`, {
+        allowTrailingTerminalNoise: true,
+      })).toThrow()
+    }
+  })
+
+  it('does not treat an unclosed JSON string as a complete artifact before trailing noise', () => {
+    expect(() => parseYamlOrJsonCandidate('"unterminated value\u001b[0m', {
+      allowTrailingTerminalNoise: true,
+    })).toThrow()
   })
 
   it('does not trim terminal noise after an unbalanced JSON root', () => {

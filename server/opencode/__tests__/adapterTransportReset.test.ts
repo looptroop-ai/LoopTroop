@@ -2,6 +2,7 @@ import { afterEach, describe, expect, it, vi } from 'vitest'
 import { OpenCodeSDKAdapter } from '../adapter'
 import { getOpenCodeAdapter, resetOpenCodeAdapter, resetOpenCodeAdapterTransport } from '../factory'
 import { configureOpenCodeRuntime, resetOpenCodeRuntimeConfig } from '../runtimeConfig'
+import { invalidateOpenCodeConnection } from '../connection'
 import type { OpenCodeTransport, OpenCodeTransportEventEnvelope } from '../transport'
 import type { Message } from '../types'
 
@@ -74,6 +75,46 @@ describe('OpenCode adapter transport refresh', () => {
     resetOpenCodeAdapter()
     resetOpenCodeRuntimeConfig()
     vi.restoreAllMocks()
+  })
+
+  it.each([
+    { suffix: 'v2', info: { version: '2.1.0', pid: 42 }, expectedProtocol: 'v2' as const },
+    { suffix: 'v1', info: null, expectedProtocol: 'v1' as const },
+  ])('negotiates $expectedProtocol when no transport resolver is supplied', async ({ suffix, info, expectedProtocol }) => {
+    const baseUrl = `http://127.0.0.1:4096/adapter-negotiation-${suffix}`
+    const requestedPaths: string[] = []
+    const jsonResponse = (body: unknown) => new Response(JSON.stringify(body), {
+      headers: { 'content-type': 'application/json' },
+    })
+    vi.spyOn(globalThis, 'fetch').mockImplementation(async (input) => {
+      const url = new URL(input instanceof Request ? input.url : String(input))
+      requestedPaths.push(url.pathname)
+      if (url.pathname.endsWith('/api/info')) {
+        return info ? jsonResponse(info) : new Response(null, { status: 404 })
+      }
+      if (url.pathname.endsWith('/global/health')) {
+        return jsonResponse({ version: '1.23.0', healthy: true })
+      }
+      if (url.pathname.endsWith('/api/session')) return jsonResponse({ data: [] })
+      throw new Error(`Unexpected ${url.pathname}`)
+    })
+
+    try {
+      const adapter = new OpenCodeSDKAdapter(baseUrl)
+      if (expectedProtocol === 'v2') {
+        await expect(adapter.listSessions()).resolves.toEqual([])
+        expect(requestedPaths).toContain('/adapter-negotiation-v2/api/session')
+      } else {
+        const resolved = await (adapter as unknown as {
+          getTransport(signal?: AbortSignal): Promise<OpenCodeTransport>
+        }).getTransport()
+        expect(resolved.protocol).toBe('v1')
+        expect(requestedPaths).toContain('/adapter-negotiation-v1/global/health')
+      }
+      expect(requestedPaths).toContain(`/adapter-negotiation-${suffix}/api/info`)
+    } finally {
+      invalidateOpenCodeConnection(baseUrl)
+    }
   })
 
   it('keeps the selected transport through a prompt, permission reply, and snapshot, then resolves again', async () => {

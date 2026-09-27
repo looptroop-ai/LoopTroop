@@ -296,6 +296,17 @@ describe('ticketRouter POST /tickets/:id/retry', () => {
     expect(sendTicketEvent).not.toHaveBeenCalled()
   })
 
+  it('rejects retry unless the ticket is in BLOCKED_ERROR', async () => {
+    const { app, ticket } = setupRetryTicketApp()
+
+    const response = await app.request(`/api/tickets/${ticket.id}/retry`, { method: 'POST' })
+
+    expect(response.status).toBe(409)
+    expect(await response.json()).toEqual({ error: 'Retry only works from BLOCKED_ERROR state' })
+    expect(sendTicketEvent).not.toHaveBeenCalled()
+    expect(getTicketByRef(ticket.id)?.status).toBe('DRAFT')
+  })
+
   it('keeps the existing CODING reset path before dispatching retry', async () => {
     const { app, ticket } = setupRetryTicketApp()
     patchTicket(ticket.id, {

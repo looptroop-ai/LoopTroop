@@ -8,9 +8,14 @@ import {
   parseInterviewSessionSnapshot,
   recordPreparedBatch,
   serializeInterviewSessionSnapshot,
+  updateInterviewAnswer,
 } from '../../phases/interview/sessionState'
+import { opencodeSessions } from '../../db/schema'
+import { getOpenCodeAdapter } from '../../opencode/factory'
 import { resetTestDb, createTestRepoManager, createInitializedTestTicket } from '../../test/integration'
-import { patchTicket, getLatestPhaseArtifact, upsertLatestPhaseArtifact } from '../../storage/tickets'
+import { getTicketContext, patchTicket, getLatestPhaseArtifact, upsertLatestPhaseArtifact } from '../../storage/tickets'
+import { listOpenCodeSessionsForTicket } from '../../opencode/sessionManager'
+import { listSkipEvents } from '../skipReceipts'
 import { phaseIntermediate, interviewQASessions } from '../phases/state'
 
 const { submitBatchToSessionMock } = vi.hoisted(() => ({
@@ -29,6 +34,7 @@ import {
   markInterviewBatchStopPending,
   processInterviewBatchAsync,
   releaseInterviewBatch,
+  restoreInterviewQASession,
 } from '../phases/interviewPhase'
 import { abortTicketWork } from '../phases/state'
 
@@ -153,6 +159,99 @@ describe('interview batch durable CAS', () => {
     )
     expect(restored?.answers.Q01?.answer).toBe('Edited while paused.')
     expect(restored?.currentBatch?.batchNumber).toBe(original.currentBatch?.batchNumber)
+  })
+
+  it('reattaches a failed skipped batch without losing a concurrent answer edit or its single history entry', async () => {
+    const { ticket, original } = await seedInterviewBatch()
+    let rejectModel: ((error: Error) => void) | undefined
+    submitBatchToSessionMock.mockImplementation(() => new Promise<BatchResponse>((_, reject) => {
+      rejectModel = reject
+    }))
+    const claim = claimInterviewBatch(ticket.id)
+    expect(claim).toBeTruthy()
+    const processing = processInterviewBatchAsync(
+      ticket.id,
+      { Q01: '' },
+      original,
+      {},
+      { Q01: 'Waiting for the right information.' },
+      claim ?? undefined,
+    )
+    await vi.waitFor(() => expect(submitBatchToSessionMock).toHaveBeenCalled())
+
+    const answered = parseInterviewSessionSnapshot(
+      getLatestPhaseArtifact(ticket.id, INTERVIEW_SESSION_ARTIFACT)?.content,
+    )
+    expect(answered?.answers.Q01).toMatchObject({ skipped: true, skipReason: 'Waiting for the right information.' })
+    const skipEvent = listSkipEvents(ticket.id).find((event) => event.itemId === 'Q01')
+    expect(skipEvent).toBeDefined()
+
+    const edited = updateInterviewAnswer(answered!, 'Q01', 'The requirement changed while PROM4 was running.')
+    upsertLatestPhaseArtifact(
+      ticket.id,
+      INTERVIEW_SESSION_ARTIFACT,
+      'WAITING_INTERVIEW_ANSWERS',
+      serializeInterviewSessionSnapshot(edited),
+    )
+    rejectModel?.(new Error('fixture model rejected'))
+    await expect(processing).rejects.toThrow('fixture model rejected')
+
+    const restored = parseInterviewSessionSnapshot(
+      getLatestPhaseArtifact(ticket.id, INTERVIEW_SESSION_ARTIFACT)?.content,
+    )
+    expect(restored?.answers.Q01).toMatchObject({
+      answer: 'The requirement changed while PROM4 was running.',
+      skipped: false,
+    })
+    expect(restored?.currentBatch).toEqual(original.currentBatch)
+    expect(restored?.batchHistory).toEqual(original.batchHistory)
+    expect(listSkipEvents(ticket.id).some((event) => event.actionId === skipEvent?.actionId)).toBe(false)
+  })
+
+  it('reactivates an abandoned PROM4 session when the remote session still exists', async () => {
+    const { ticket } = await seedInterviewBatch()
+    const context = getTicketContext(ticket.id)
+    expect(context).not.toBeNull()
+    context!.projectDb.insert(opencodeSessions).values({
+      sessionId: 'session-1',
+      ticketId: context!.localTicketId,
+      phase: 'WAITING_INTERVIEW_ANSWERS',
+      state: 'abandoned',
+    }).run()
+    interviewQASessions.delete(ticket.id)
+    const remoteSession = vi.spyOn(getOpenCodeAdapter(), 'getSession').mockResolvedValue({ id: 'session-1' })
+
+    await expect(restoreInterviewQASession(ticket.id)).resolves.toEqual({
+      sessionId: 'session-1',
+      winnerId: 'model-a',
+    })
+
+    expect(remoteSession).toHaveBeenCalledWith('session-1', undefined)
+    expect(listOpenCodeSessionsForTicket(ticket.id)).toEqual([
+      expect.objectContaining({ sessionId: 'session-1', state: 'active' }),
+    ])
+    expect(interviewQASessions.get(ticket.id)).toEqual({ sessionId: 'session-1', winnerId: 'model-a' })
+  })
+
+  it('drops a cached PROM4 session when its abandoned remote session is gone', async () => {
+    const { ticket } = await seedInterviewBatch()
+    const context = getTicketContext(ticket.id)
+    expect(context).not.toBeNull()
+    context!.projectDb.insert(opencodeSessions).values({
+      sessionId: 'session-1',
+      ticketId: context!.localTicketId,
+      phase: 'WAITING_INTERVIEW_ANSWERS',
+      state: 'abandoned',
+    }).run()
+    const remoteSession = vi.spyOn(getOpenCodeAdapter(), 'getSession').mockResolvedValue(null)
+
+    await expect(restoreInterviewQASession(ticket.id)).resolves.toBeNull()
+
+    expect(remoteSession).toHaveBeenCalledWith('session-1', undefined)
+    expect(interviewQASessions.has(ticket.id)).toBe(false)
+    expect(listOpenCodeSessionsForTicket(ticket.id, ['abandoned'])).toEqual([
+      expect.objectContaining({ sessionId: 'session-1', state: 'abandoned' }),
+    ])
   })
 
   it('publishes a successful next batch and releases its claim', async () => {

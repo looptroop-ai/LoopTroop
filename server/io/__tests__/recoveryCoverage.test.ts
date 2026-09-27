@@ -1,4 +1,4 @@
-import { existsSync, lstatSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs'
+import { existsSync, lstatSync, mkdirSync, readFileSync, renameSync, writeFileSync } from 'node:fs'
 import { dirname, join } from 'node:path'
 import { afterEach, beforeEach, describe, expect, it } from 'vitest'
 import { makeAtomicTmpPath } from '../atomicWrite'
@@ -65,6 +65,58 @@ describe('recovery fallback markers', () => {
     expect(() => recoverOrphanTmpFiles(rootDir)).toThrow(RecoveryBlockedError)
     expect(readFileSync(targetPath, 'utf8')).toBe('{"owner":"newer"}')
     expect(readFileSync(tmpPath, 'utf8')).toBe(content)
+    expect(existsSync(`${tmpPath}.recovery`)).toBe(true)
+  })
+
+  it('preserves a concurrent temp replacement when cleanup must copy across filesystems', () => {
+    const targetPath = join(rootDir, 'runtime', 'owner.json')
+    mkdirSync(dirname(targetPath), { recursive: true })
+    const tmpPath = makeAtomicTmpPath(targetPath)
+    const original = '{"owner":'
+    const replacement = '{"owner":"concurrent generation"}'
+    const heldOriginal = join(rootDir, 'held-original-temp')
+    writeFileSync(tmpPath, original)
+    let injected = false
+    const deps = {
+      link: () => { throw Object.assign(new Error('cross-device link'), { code: 'EXDEV' }) },
+      rename: (from: string, to: string) => {
+        renameSync(from, to)
+        if (!injected) {
+          injected = true
+          renameSync(to, heldOriginal)
+          writeFileSync(to, replacement)
+        }
+      },
+    }
+
+    expect(recoverOrphanTmpFiles(rootDir, 'ticket', deps)).toEqual([])
+
+    expect(injected).toBe(true)
+    expect(readFileSync(heldOriginal, 'utf8')).toBe(original)
+    expect(readFileSync(tmpPath, 'utf8')).toBe(replacement)
+    expect(existsSync(targetPath)).toBe(false)
+  })
+
+  it('blocks an incomplete fallback target that grew beyond its source', () => {
+    const targetPath = join(rootDir, 'runtime', 'owner.json')
+    mkdirSync(dirname(targetPath), { recursive: true })
+    const tmpPath = makeAtomicTmpPath(targetPath)
+    const sourceContent = '{"owner":"source"}'
+    const targetContent = `${sourceContent} newer data`
+    writeFileSync(tmpPath, sourceContent)
+    writeFileSync(targetPath, targetContent)
+    writeFileSync(`${tmpPath}.recovery`, JSON.stringify({
+      version: 1,
+      targetPath,
+      source: fileIdentity(tmpPath),
+      target: fileIdentity(targetPath),
+      complete: false,
+    }))
+
+    expect(() => recoverOrphanTmpFiles(rootDir)).toThrow(RecoveryBlockedError)
+
+    expect(readFileSync(targetPath, 'utf8')).toBe(targetContent)
+    expect(readFileSync(tmpPath, 'utf8')).toBe(sourceContent)
     expect(existsSync(`${tmpPath}.recovery`)).toBe(true)
   })
 })

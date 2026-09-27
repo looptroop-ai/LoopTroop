@@ -1025,6 +1025,53 @@ describe('ticketRouter execution setup plan approval routes', () => {
     expect(payload.status).toBe('PREPARING_EXECUTION_ENV')
   })
 
+  it('rejects setup-plan approval from another workflow state', async () => {
+    const { app, ticket } = await setupExecutionSetupPlanTicket()
+    patchTicket(ticket.id, { status: 'PREPARING_EXECUTION_ENV' })
+
+    const response = await app.request(`/api/tickets/${ticket.id}/approve-execution-setup-plan`, {
+      method: 'POST',
+      ...approvalPayload('current draft'),
+    })
+
+    expect(response.status).toBe(409)
+    expect(await response.json()).toEqual({ error: 'Ticket is not waiting for execution setup plan approval' })
+  })
+
+  it('refuses setup-plan approval before a persisted draft is available', async () => {
+    const { app, ticket } = await setupExecutionSetupPlanTicket()
+
+    const response = await app.request(`/api/tickets/${ticket.id}/approve-execution-setup-plan`, {
+      method: 'POST',
+      ...approvalPayload('not persisted'),
+    })
+
+    expect(response.status).toBe(409)
+    expect(await response.json()).toEqual({ error: 'Execution setup plan is not ready yet' })
+    expect(getTicketByRef(ticket.id)?.status).toBe('WAITING_EXECUTION_SETUP_APPROVAL')
+  })
+
+  it('keeps setup approval blocked while another ticket occupies the project execution band', async () => {
+    const { app, ticket } = await setupExecutionSetupPlanTicket()
+    const executingTicket = createTicket({
+      projectId: ticket.projectId,
+      title: 'Another executing ticket',
+      description: 'Hold the project execution slot during approval.',
+    })
+    patchTicket(executingTicket.id, { status: 'CODING' })
+
+    const response = await app.request(`/api/tickets/${ticket.id}/approve-execution-setup-plan`, {
+      method: 'POST',
+      ...approvalPayload('draft awaiting approval'),
+    })
+
+    expect(response.status).toBe(409)
+    expect(await response.json()).toMatchObject({
+      error: expect.stringContaining(executingTicket.externalId),
+    })
+    expect(getTicketByRef(ticket.id)?.status).toBe('WAITING_EXECUTION_SETUP_APPROVAL')
+  })
+
   it('requires expectedContentSha256 for execution setup plan approval', async () => {
     const { app, ticket } = await setupExecutionSetupPlanTicket()
     upsertLatestPhaseArtifact(

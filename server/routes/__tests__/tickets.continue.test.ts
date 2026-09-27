@@ -160,6 +160,21 @@ describe('ticketRouter POST /tickets/:id/continue', () => {
     ])
   })
 
+  it('clears a pending continuation if dispatching CONTINUE fails', async () => {
+    const { app, ticket } = setupContinueTicketApp()
+    blockTicketWithContinuableError(ticket.id, 'PREPARING_EXECUTION_ENV')
+    const dispatchError = new Error('actor stopped before continuation')
+    vi.mocked(sendTicketEvent).mockImplementationOnce(() => { throw dispatchError })
+
+    const response = await app.request(`/api/tickets/${ticket.id}/continue`, { method: 'POST' })
+    const body = await response.json() as { error?: string; details?: string }
+
+    expect(response.status).toBe(500)
+    expect(body).toEqual({ error: 'Failed to continue ticket', details: dispatchError.message })
+    expect(hasPendingSessionContinuationForTicketPhase(ticket.id, 'PREPARING_EXECUTION_ENV')).toBe(false)
+    expect(getTicketByRef(ticket.id)?.status).toBe('BLOCKED_ERROR')
+  })
+
   it('continues when OpenCode list omits a preserved session that exact lookup can still read', async () => {
     const { app, ticket } = setupContinueTicketApp()
     ensureActivePhaseAttempt(ticket.id, 'PREPARING_EXECUTION_ENV')

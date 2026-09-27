@@ -1,5 +1,14 @@
+import * as jsYaml from 'js-yaml'
 import { describe, expect, it } from 'vitest'
-import { validateBeadsRefinementOutput } from '../refined'
+import { TEST } from '../../../test/factories'
+import {
+  BEADS_PIPELINE_STEPS,
+  buildBeadsRefinedArtifact,
+  buildBeadsRefinementRetryPrompt,
+  getRefinementBeadMetrics,
+  parseBeadsRefinedArtifact,
+  validateBeadsRefinementOutput,
+} from '../refined'
 
 function buildBeadsRefinementContent(options: {
   beadOneDescription?: string
@@ -65,6 +74,34 @@ function buildBeadsRefinementContent(options: {
   }
 
   return content.join('\n')
+}
+
+type BeadYamlEntry = Record<string, unknown>
+
+function readBeadDocument(content: string): { beads: BeadYamlEntry[]; [key: string]: unknown } {
+  return jsYaml.load(content) as { beads: BeadYamlEntry[]; [key: string]: unknown }
+}
+
+function writeBeadDocument(document: { beads: BeadYamlEntry[]; [key: string]: unknown }): string {
+  return jsYaml.dump(document, { lineWidth: -1, noRefs: true }) as string
+}
+
+function withChanges(content: string, changes: unknown[]): string {
+  return writeBeadDocument({ ...readBeadDocument(content), changes })
+}
+
+function modifiedChange(
+  before: { id: string; label: string },
+  after: { id: string; label: string },
+  inspiration?: unknown,
+) {
+  return {
+    type: 'modified',
+    item_type: 'bead',
+    before,
+    after,
+    ...(inspiration === undefined ? {} : { inspiration }),
+  }
 }
 
 describe.concurrent('beads refinement validation', () => {
@@ -194,5 +231,319 @@ describe.concurrent('beads refinement validation', () => {
 
     expect(() => validateBeadsRefinementOutput(refinedContent, { winnerDraftContent }))
       .toThrow('modified bead ids must remain stable')
+  })
+
+  it('resolves change items by a unique title and returns the canonical ids', () => {
+    const winnerDraftContent = buildBeadsRefinementContent()
+    const refinedContent = withChanges(
+      buildBeadsRefinementContent({
+        beadTwoDescription: 'Refresh the persistence coverage details with storage-shape verification.',
+      }),
+      [modifiedChange(
+        { id: 'stale-before', label: '  UPDATE persistence coverage ' },
+        { id: 'stale-after', label: ' Update persistence coverage ' },
+      )],
+    )
+
+    const result = validateBeadsRefinementOutput(refinedContent, { winnerDraftContent })
+
+    expect(result.changes).toEqual([
+      expect.objectContaining({
+        type: 'modified',
+        before: expect.objectContaining({ id: 'bead-2', label: 'Update persistence coverage' }),
+        after: expect.objectContaining({ id: 'bead-2', label: 'Update persistence coverage' }),
+      }),
+    ])
+  })
+
+  it('repairs an incomplete modified record from the canonical bead diff', () => {
+    const winnerDraftContent = buildBeadsRefinementContent()
+    const refinedContent = withChanges(
+      buildBeadsRefinementContent({
+        beadTwoDescription: 'Refresh the persistence coverage details with storage-shape verification.',
+      }),
+      [modifiedChange(
+        { id: 'unknown-bead', label: 'No matching winner bead' },
+        { id: 'bead-2', label: 'Update persistence coverage' },
+      )],
+    )
+
+    const result = validateBeadsRefinementOutput(refinedContent, { winnerDraftContent })
+
+    expect(result.changes).toEqual([
+      expect.objectContaining({
+        type: 'modified',
+        before: expect.objectContaining({ id: 'bead-2' }),
+        after: expect.objectContaining({ id: 'bead-2' }),
+        attributionStatus: 'synthesized_unattributed',
+      }),
+    ])
+    expect(result.repairWarnings).toContain(
+      'Skipped beads refinement change at index 0: modified change has no resolvable before or after item.',
+    )
+  })
+
+  it('detects list edits even when delimiter-joined fingerprints would collide', () => {
+    const winnerDraftContent = buildBeadsRefinementContent()
+    const winnerDocument = readBeadDocument(winnerDraftContent)
+    const refinedDocument = readBeadDocument(buildBeadsRefinementContent({
+      beadTwoDescription: 'Refresh the persistence coverage details with storage-shape verification.',
+    }))
+    ;(winnerDocument.beads[0]!.contextGuidance as Record<string, unknown>).patterns = ['alpha|beta']
+    ;(refinedDocument.beads[0]!.contextGuidance as Record<string, unknown>).patterns = ['alpha', 'beta']
+    refinedDocument.changes = [modifiedChange(
+      { id: 'bead-2', label: 'Update persistence coverage' },
+      { id: 'bead-2', label: 'Update persistence coverage' },
+    )]
+
+    const result = validateBeadsRefinementOutput(
+      writeBeadDocument(refinedDocument),
+      { winnerDraftContent: writeBeadDocument(winnerDocument) },
+    )
+
+    expect(result.changes).toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        type: 'modified',
+        before: expect.objectContaining({ id: 'bead-1' }),
+        after: expect.objectContaining({ id: 'bead-1' }),
+        attributionStatus: 'synthesized_unattributed',
+      }),
+    ]))
+    expect(result.repairWarnings).toContain(
+      'Synthesized omitted beads refinement modified change for bead "bead-1" by matching id across the winning and refined drafts.',
+    )
+  })
+
+  it('keeps an identical inspiration when duplicate modified records collapse', () => {
+    const winnerDraftContent = buildBeadsRefinementContent()
+    const change = modifiedChange(
+      { id: 'bead-2', label: 'Update persistence coverage' },
+      { id: 'bead-2', label: 'Update persistence coverage' },
+      { alternative_draft: 1, item: { id: 'idea-1', title: 'Add coverage for expiry' } },
+    )
+    const refinedContent = withChanges(
+      buildBeadsRefinementContent({
+        beadTwoDescription: 'Refresh the persistence coverage details with storage-shape verification.',
+      }),
+      [change, structuredClone(change)],
+    )
+
+    const result = validateBeadsRefinementOutput(refinedContent, {
+      winnerDraftContent,
+      losingDraftMeta: [{ memberId: TEST.councilMembers[0] }],
+    })
+
+    expect(result.changes).toHaveLength(1)
+    expect(result.changes[0]).toMatchObject({
+      attributionStatus: 'inspired',
+      inspiration: { draftIndex: 0, memberId: TEST.councilMembers[0] },
+    })
+    expect(result.repairWarnings).toContain(
+      'Collapsed duplicate beads refinement modified change at index 1 because bead-2 was already covered by an identical modified change.',
+    )
+  })
+
+  it('drops conflicting inspiration when duplicate modified records disagree', () => {
+    const winnerDraftContent = buildBeadsRefinementContent()
+    const before = { id: 'bead-2', label: 'Update persistence coverage' }
+    const after = { id: 'bead-2', label: 'Update persistence coverage' }
+    const refinedContent = withChanges(
+      buildBeadsRefinementContent({
+        beadTwoDescription: 'Refresh the persistence coverage details with storage-shape verification.',
+      }),
+      [
+        modifiedChange(before, after, {
+          alternative_draft: 1,
+          item: { id: 'idea-1', title: 'Add coverage for expiry', detail: 'First rationale' },
+        }),
+        modifiedChange(before, after, {
+          alternative_draft: 1,
+          item: { id: 'idea-1', title: 'Add coverage for expiry', detail: 'Different rationale' },
+        }),
+      ],
+    )
+
+    const result = validateBeadsRefinementOutput(refinedContent, {
+      winnerDraftContent,
+      losingDraftMeta: [{ memberId: TEST.councilMembers[0] }],
+    })
+
+    expect(result.changes).toHaveLength(1)
+    expect(result.changes[0]).toMatchObject({ inspiration: null, attributionStatus: 'model_unattributed' })
+  })
+
+  it('collapses malformed and absent inspiration to model attribution', () => {
+    const winnerDraftContent = buildBeadsRefinementContent()
+    const before = { id: 'bead-2', label: 'Update persistence coverage' }
+    const after = { id: 'bead-2', label: 'Update persistence coverage' }
+    const refinedContent = withChanges(
+      buildBeadsRefinementContent({
+        beadTwoDescription: 'Refresh the persistence coverage details with storage-shape verification.',
+      }),
+      [
+        modifiedChange(before, after),
+        modifiedChange(before, after, { alternative_draft: 1, item: null }),
+      ],
+    )
+
+    const result = validateBeadsRefinementOutput(refinedContent, { winnerDraftContent })
+
+    expect(result.changes).toHaveLength(1)
+    expect(result.changes[0]).toMatchObject({ inspiration: null, attributionStatus: 'model_unattributed' })
+  })
+
+  it('declines the ID stability repair when a surviving title is ambiguous', () => {
+    const winnerDraftContent = buildBeadsRefinementContent()
+    const winnerDocument = readBeadDocument(winnerDraftContent)
+    const firstBead = { ...winnerDocument.beads[0]!, title: 'Update persistence coverage' }
+    const secondBead = winnerDocument.beads[1]!
+    const shiftedBead = {
+      ...secondBead,
+      id: 'bead-3',
+      description: 'Refresh the persistence coverage details with storage-shape verification.',
+    }
+    const addedBead = {
+      ...firstBead,
+      id: 'bead-2',
+      title: 'Add cache invalidation coverage',
+      description: 'Cover cache invalidation explicitly.',
+    }
+    const refinedContent = writeBeadDocument({
+      beads: [firstBead, shiftedBead, addedBead],
+      changes: [
+        modifiedChange(
+          { id: 'bead-2', label: 'Update persistence coverage' },
+          { id: 'bead-3', label: 'Update persistence coverage' },
+        ),
+        { type: 'added', item_type: 'bead', before: null, after: { id: 'bead-2', label: 'Add cache invalidation coverage' } },
+      ],
+    })
+
+    expect(() => validateBeadsRefinementOutput(refinedContent, { winnerDraftContent }))
+      .toThrow('modified bead ids must remain stable')
+  })
+})
+
+describe('beads refined artifact helpers', () => {
+  it('builds an artifact with a trimmed council winner and omits empty optional fields', () => {
+    const winnerDraftContent = buildBeadsRefinementContent()
+    const refinement = validateBeadsRefinementOutput(winnerDraftContent, { winnerDraftContent })
+    const artifact = buildBeadsRefinedArtifact(
+      `  ${TEST.councilMembers[0]}  `,
+      winnerDraftContent,
+      refinement,
+      { repairApplied: false, repairWarnings: [], autoRetryCount: 0 },
+    )
+
+    expect(artifact).toMatchObject({
+      winnerId: TEST.councilMembers[0],
+      refinedContent: refinement.refinedContent,
+      draftMetrics: { beadCount: 2, totalTestCount: 2, totalAcceptanceCriteriaCount: 2 },
+      pipelineSteps: BEADS_PIPELINE_STEPS,
+      structuredOutput: { repairApplied: false, autoRetryCount: 0 },
+    })
+    expect(artifact).not.toHaveProperty('changes')
+    expect(getRefinementBeadMetrics(refinement.beadSubsets)).toEqual(artifact.draftMetrics)
+    expect(() => buildBeadsRefinedArtifact('  ', winnerDraftContent, refinement))
+      .toThrow('Beads refined artifact is missing winnerId')
+  })
+
+  it('includes non-empty changes when building the artifact', () => {
+    const winnerDraftContent = buildBeadsRefinementContent()
+    const refinedContent = buildBeadsRefinementContent({
+      beadTwoDescription: 'Refresh the persistence coverage details with storage-shape verification.',
+    })
+    const refinement = validateBeadsRefinementOutput(refinedContent, { winnerDraftContent })
+    const artifact = buildBeadsRefinedArtifact(TEST.model, winnerDraftContent, refinement)
+
+    expect(artifact.changes).toEqual(refinement.changes)
+  })
+
+  it.each([
+    ['invalid JSON', '{ truncated', 'Beads refined artifact is not valid JSON'],
+    ['a non-object payload', '[]', 'Beads refined artifact payload is invalid'],
+    ['blank refined content', JSON.stringify({ refinedContent: '  ' }), 'Beads refined artifact is missing refinedContent'],
+    ['metrics that cannot be derived', JSON.stringify({ refinedContent: 'not: [valid' }), 'Beads refined artifact is missing draftMetrics'],
+  ])('rejects %s', (_label, content, message) => {
+    expect(() => parseBeadsRefinedArtifact(content)).toThrow(message)
+  })
+
+  it('derives metrics from a legacy bead list and restores the default pipeline', () => {
+    const artifact = parseBeadsRefinedArtifact(JSON.stringify({
+      winnerId: ` ${TEST.model} `,
+      refinedContent: jsYaml.dump([
+        { acceptance_criteria: ['one', 'two'], tests: ['first'] },
+        'non-object entry',
+        { acceptanceCriteria: ['three'], tests: [] },
+      ]) as string,
+      pipelineSteps: [],
+    }))
+
+    expect(artifact).toMatchObject({
+      winnerId: TEST.model,
+      draftMetrics: { beadCount: 3, totalTestCount: 1, totalAcceptanceCriteriaCount: 3 },
+      pipelineSteps: BEADS_PIPELINE_STEPS,
+    })
+  })
+
+  it('re-derives metrics when the stored metrics contain invalid counts', () => {
+    const artifact = parseBeadsRefinedArtifact(JSON.stringify({
+      refinedContent: jsYaml.dump({ beads: [{ tests: ['first'], acceptanceCriteria: ['one'] }] }),
+      draftMetrics: { beadCount: 1.5, totalTestCount: '1', totalAcceptanceCriteriaCount: 1 },
+    }))
+
+    expect(artifact.draftMetrics).toEqual({ beadCount: 1, totalTestCount: 1, totalAcceptanceCriteriaCount: 1 })
+  })
+
+  it('accepts normalized metrics and only keeps valid custom pipeline steps', () => {
+    const artifact = parseBeadsRefinedArtifact(JSON.stringify({
+      refinedContent: 'beads: []',
+      draftMetrics: { beadCount: 7, totalTestCount: 9, totalAcceptanceCriteriaCount: 11 },
+      pipelineSteps: [
+        null,
+        { step: 'custom_review', description: 'Review custom refinements.' },
+        { step: 'missing_description' },
+      ],
+      changes: 'not-an-array',
+    }))
+
+    expect(artifact).toMatchObject({
+      draftMetrics: { beadCount: 7, totalTestCount: 9, totalAcceptanceCriteriaCount: 11 },
+      pipelineSteps: [{ step: 'custom_review', description: 'Review custom refinements.' }],
+      changes: [],
+    })
+  })
+})
+
+describe('beads refinement retry prompt', () => {
+  it('strips a top-level legacy changes block while preserving the bead content', () => {
+    const prompt = buildBeadsRefinementRetryPrompt([], {
+      validationError: 'changes did not match the refined output',
+      rawResponse: 'beads:\n  - id: bead-1\n    title: Keep the existing bead\nchanges:\n  - type: modified\n',
+    })
+
+    expect(prompt.at(-1)?.content).toContain('## Beads Refinement Structured Output Retry')
+    expect(prompt.at(-1)?.content).toContain('Your previous response failed validation: changes did not match the refined output')
+    expect(prompt.at(-1)?.content).toContain('title: Keep the existing bead')
+    expect(prompt.at(-1)?.content).not.toContain('\nchanges:')
+  })
+
+  it('preserves malformed YAML while removing only the legacy changes section', () => {
+    const prompt = buildBeadsRefinementRetryPrompt([], {
+      validationError: 'invalid YAML',
+      rawResponse: 'beads: [unterminated\nchanges:\n  - type: modified\n    before: old\n',
+    })
+
+    expect(prompt.at(-1)?.content).toContain('beads: [unterminated')
+    expect(prompt.at(-1)?.content).not.toContain('\nchanges:')
+  })
+
+  it('keeps blank previous responses blank in the prompt', () => {
+    const prompt = buildBeadsRefinementRetryPrompt([], {
+      validationError: 'empty result',
+      rawResponse: '  \n\t',
+    })
+
+    expect(prompt.at(-1)?.content).toContain('## Previous Invalid Response\n```yaml\n\n```')
   })
 })

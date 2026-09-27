@@ -212,4 +212,38 @@ describe('ticketRouter coverage gap fix route', () => {
     })
     await firstRequest
   })
+
+  it('blocks beads approval while a beads coverage fix is running', async () => {
+    const { app, ticket } = await setupPrdApprovalTicket()
+    patchTicket(ticket.id, { status: 'WAITING_BEADS_APPROVAL' })
+
+    let resolveFix!: (value: unknown) => void
+    const fixPromise = new Promise<unknown>((resolve) => {
+      resolveFix = resolve
+    })
+    performCoverageExtraFixMock.mockImplementation(() => fixPromise)
+
+    const fixRequest = app.request(`/api/tickets/${ticket.id}/coverage/fix-gaps`, coverageFixPayload('beads'))
+    await vi.waitFor(() => {
+      expect(performCoverageExtraFixMock).toHaveBeenCalledTimes(1)
+    })
+
+    const approvalResponse = await app.request(`/api/tickets/${ticket.id}/approve-beads`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ expectedContentSha256: contentSha256('beads draft') }),
+    })
+    expect(approvalResponse.status).toBe(409)
+    expect(await approvalResponse.json()).toEqual({ error: 'Coverage gap fix is in progress' })
+
+    resolveFix({
+      domain: 'beads',
+      status: 'gaps',
+      remainingGaps: ['A Beads gap remains.'],
+      extraFixNumber: 1,
+      changed: false,
+      summary: 'Extra Fix 1 made no artifact changes; 1 gap remains in Implementation Plan v1.',
+    })
+    await fixRequest
+  })
 })

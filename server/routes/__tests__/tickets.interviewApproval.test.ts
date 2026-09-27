@@ -728,6 +728,35 @@ describe('ticketRouter interview approval routes', () => {
     expect(receiptData.stored_content_sha256).toBe(contentSha256(savedRaw))
   })
 
+  it('dispatches interview approval through the generic approve route', async () => {
+    const { app, ticket, raw } = await setupApprovalTicket()
+
+    const response = await app.request(`/api/tickets/${ticket.id}/approve`, {
+      method: 'POST',
+      ...approvalPayload(raw),
+    })
+
+    expect(response.status).toBe(200)
+    expect(await response.json()).toMatchObject({
+      message: 'Interview approved',
+      status: 'DRAFTING_PRD',
+    })
+  })
+
+  it('rejects interview approval when the ticket has left its approval state', async () => {
+    const { app, ticket, raw } = await setupApprovalTicket()
+    patchTicket(ticket.id, { status: 'DRAFTING_PRD' })
+
+    const response = await app.request(`/api/tickets/${ticket.id}/approve-interview`, {
+      method: 'POST',
+      ...approvalPayload(raw),
+    })
+
+    expect(response.status).toBe(409)
+    expect(await response.json()).toEqual({ error: 'Ticket is not waiting for interview approval' })
+    expect(getTicketByRef(ticket.id)?.status).toBe('DRAFTING_PRD')
+  })
+
   it('requires expectedContentSha256 for interview approval', async () => {
     const { app, ticket } = await setupApprovalTicket()
 

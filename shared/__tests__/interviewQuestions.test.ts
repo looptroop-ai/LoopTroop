@@ -75,7 +75,124 @@ describe('shared interview question parsing', () => {
     ])
   })
 
+  it('normalizes raw question strings in an allowed top-level array', () => {
+    expect(parseInterviewQuestions(JSON.stringify([
+      '[Structure] Question 16: Which parts must connect?',
+    ]), { allowTopLevelArray: true })).toEqual([
+      { id: 'Q16', phase: 'Structure', question: 'Which parts must connect?' },
+    ])
+  })
+
   it('returns the original nonempty content when no candidate can be unwrapped', () => {
     expect(unwrapInterviewYamlFence('  no structured artifact here  ')).toBe('no structured artifact here')
+  })
+
+  it('reads nested question maps and keeps custom phases and IDs', () => {
+    expect(parseInterviewQuestions(JSON.stringify({
+      items: {
+        question3: '[Foundation] What outcome matters?',
+        custom: { qid: 'research', section: ' Discovery ', content: 'What evidence is missing?' },
+      },
+    }))).toEqual([
+      { id: 'Q03', phase: 'Foundation', question: 'What outcome matters?' },
+      { id: 'research', phase: 'Discovery', question: 'What evidence is missing?' },
+    ])
+  })
+
+  it('reports malformed entries in strict question maps by key', () => {
+    expect(() => parseInterviewQuestions(JSON.stringify({
+      questions: {
+        Q1: { phase: 'foundation', question: 'What matters?' },
+        broken: { rationale: 'No question or phase' },
+      },
+    }))).toThrow(/malformed entries at broken/)
+  })
+
+  it('surfaces invalid YAML when no loose questions can be recovered', () => {
+    expect(() => parseInterviewQuestions('questions: [\n')).toThrow(/^Invalid YAML:/)
+  })
+
+  it('falls back to loose questions after a malformed YAML wrapper', () => {
+    expect(extractInterviewQuestionPreviews([
+      'answer: [unterminated',
+      '# Assembly',
+      '- Q12: How will this be checked?',
+    ].join('\n'))).toEqual([
+      { id: 'Q12', phase: 'Assembly', question: 'How will this be checked?' },
+    ])
+  })
+
+  it('closes an unclosed question before the next structured item', () => {
+    const onCandidateRepairApplied = vi.fn()
+    expect(parseInterviewQuestions([
+      'questions:',
+      '  - id: Q21',
+      '    phase: foundation',
+      '    question: "What outcome matters?',
+      '',
+      '  - id: Q22',
+      '    phase: structure',
+      '    question: "Which parts connect?"',
+    ].join('\n'), { onCandidateRepairApplied })).toEqual([
+      { id: 'Q21', phase: 'Foundation', question: 'What outcome matters?' },
+      { id: 'Q22', phase: 'Structure', question: 'Which parts connect?' },
+    ])
+    expect(onCandidateRepairApplied).toHaveBeenCalledTimes(1)
+  })
+
+  it('repairs bare phase list entries with a following question field', () => {
+    const onCandidateRepairApplied = vi.fn()
+    expect(parseInterviewQuestions([
+      'questions:',
+      '  - foundation',
+      '    question: "What outcome matters?"',
+      '  - assembly',
+      '    prompt: "How should the pieces fit?"',
+    ].join('\n'), { onCandidateRepairApplied })).toEqual([
+      { id: 'Q01', phase: 'Foundation', question: 'What outcome matters?' },
+      { id: 'Q02', phase: 'Assembly', question: 'How should the pieces fit?' },
+    ])
+    expect(onCandidateRepairApplied).toHaveBeenCalledTimes(1)
+  })
+
+  it('recovers multiline loose questions without consuming the next item', () => {
+    expect(extractInterviewQuestionPreviews([
+      '# Foundation',
+      '- id: Q14',
+      'phase: foundation',
+      'question: "What outcome should',
+      'the first version support?',
+      '- id: Q15',
+      'phase: structure',
+      'question: "How should it connect?"',
+    ].join('\n'))).toEqual([
+      { id: 'Q14', phase: 'Foundation', question: 'What outcome should the first version support?' },
+      { id: 'Q15', phase: 'Structure', question: 'How should it connect?' },
+    ])
+  })
+
+  it('carries a recovered loose ID to the next bare phase entry', () => {
+    expect(extractInterviewQuestionPreviews([
+      'invalid: [wrapper',
+      '# Foundation',
+      '- foundation',
+      'question: "What outcome matters? id: Q7 phase: foundation"',
+      '- assembly',
+      'question: "How will the pieces fit?"',
+    ].join('\n'))).toEqual([
+      { id: 'Q01', phase: 'Foundation', question: 'What outcome matters? foundation' },
+      { id: 'Q07', phase: 'Assembly', question: 'How will the pieces fit?' },
+    ])
+  })
+
+  it('uses only indented prose as a loose question continuation', () => {
+    expect(extractInterviewQuestionPreviews([
+      'invalid: [wrapper',
+      'question: What must the first version do?',
+      '  phase: Discovery',
+      '  before expanding further?',
+    ].join('\n'))).toEqual([
+      { id: 'Q01', phase: 'Discovery', question: 'What must the first version do? before expanding further?' },
+    ])
   })
 })

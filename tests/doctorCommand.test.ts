@@ -733,6 +733,31 @@ describe('doctor command', () => {
       if (result.kind === 'ok') expect(result.output).toContain('v')
     })
 
+    it('reports missing tools when no executables resolve from PATH', async () => {
+      const root = mkdtempSync(join(tmpdir(), 'looptroop-doctor-empty-path-'))
+      tempDirs.push(root)
+      const emptyBinDir = join(root, 'bin')
+      const configDir = join(root, 'config')
+      vi.stubEnv('PATH', emptyBinDir)
+      vi.stubEnv('LOOPTROOP_TRUSTED_EXECUTABLE_DIRS', emptyBinDir)
+      vi.stubEnv('LOOPTROOP_CONFIG_DIR', configDir)
+      vi.stubEnv('LOOPTROOP_OPENCODE_MODE', 'real')
+      vi.stubEnv('LOOPTROOP_OPENCODE_BASE_URL', 'http://127.0.0.1:1')
+      vi.spyOn(globalThis, 'fetch').mockRejectedValue(new TypeError('offline'))
+
+      const checks = await runChecks()
+      const check = (name: string) => checks.find((entry) => entry.name === name)
+
+      expect(check('npm')).toMatchObject({ status: 'warn', missing: true })
+      expect(check('git')).toMatchObject({ status: 'fail', missing: true })
+      expect(check('git')?.remedy).toMatch(/install/i)
+      expect(check('gh')).toMatchObject({ status: 'warn', missing: true })
+      expect(check('gh auth')).toMatchObject({ status: 'warn' })
+      expect(check('config dir')).toMatchObject({ name: 'config dir', status: 'ok', detail: configDir })
+      expect(check('opencode cli')).toMatchObject({ status: 'warn', missing: true })
+      expect(check('opencode')).toMatchObject({ status: 'fail' })
+    })
+
     it('does not pass daemon credentials to a probe child', () => {
       const ambientApiToken = process.env.LOOPTROOP_API_TOKEN
       const ambientDevEventToken = process.env.LOOPTROOP_DEV_EVENT_TOKEN

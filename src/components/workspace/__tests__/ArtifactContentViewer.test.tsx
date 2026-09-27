@@ -259,6 +259,59 @@ items:
     expect(screen.getByText('No appropriate automated command exists for this interactive check.')).toBeInTheDocument()
   })
 
+  it('keeps malformed structured guidance visible instead of dropping it', () => {
+    render(
+      <BeadsDraftView content={JSON.stringify({ beads: [
+        { id: 'array-guidance', title: 'Array guidance', contextGuidance: ['legacy', 'guidance'] },
+        { id: 'unknown-guidance', title: 'Unknown guidance', contextGuidance: { extensionRule: 'Keep this source data.' } },
+      ] })} />,
+    )
+
+    fireEvent.click(screen.getByRole('button', { name: /Array guidance/ }))
+    expect(screen.getByText('legacy,guidance')).toBeInTheDocument()
+
+    fireEvent.click(screen.getByRole('button', { name: /Unknown guidance/ }))
+    expect(screen.getByText((_text, element) =>
+      element?.tagName === 'CODE' && element.textContent?.includes('"extensionRule": "Keep this source data."'),
+    )).toBeInTheDocument()
+  })
+
+  it('uses distinct status tones for completed, active, and failed beads', () => {
+    render(
+      <BeadsDraftView content={JSON.stringify({ beads: [
+        { id: 'done', title: 'Completed bead', status: 'done' },
+        { id: 'active', title: 'Active bead', status: 'in_progress' },
+        { id: 'failed', title: 'Failed bead', status: 'error' },
+      ] })} />,
+    )
+
+    const cardFor = (title: string) => screen.getByRole('button', { name: new RegExp(title) }).parentElement?.parentElement
+    expect(cardFor('Completed bead')).toHaveClass('border-green-300/80')
+    expect(cardFor('Active bead')).toHaveClass('border-blue-300/80')
+    expect(cardFor('Failed bead')).toHaveClass('border-red-300/80')
+  })
+
+  it('renders bead dependencies and structured test commands', () => {
+    render(
+      <BeadsDraftView content={JSON.stringify({ beads: [
+        {
+          id: 'bead-one',
+          title: 'Run the targeted checks',
+          dependencies: { blocked_by: ['bead-two', 'external-blocker'], blocks: ['bead-two', 'external-dependent'] },
+          testCommands: [{ mode: 'process', program: 'npm', args: ['test', '--', '--run'], cwd: '.', env: {} }],
+        },
+        { id: 'bead-two', title: 'Follow-up verification' },
+      ] })} />,
+    )
+
+    fireEvent.click(screen.getByRole('button', { name: /Run the targeted checks/ }))
+
+    expect(screen.getAllByText('bead-two (#2)')).toHaveLength(2)
+    expect(screen.getByText('external-blocker')).toBeInTheDocument()
+    expect(screen.getByText('external-dependent')).toBeInTheDocument()
+    expect(screen.getByText('npm test -- --run')).toBeInTheDocument()
+  })
+
   it('uses the interview results header for approval-phase canonical interviews', () => {
     render(
       <ArtifactContent
@@ -278,6 +331,49 @@ items:
 
     expect(screen.getByText('Interview Results')).toBeInTheDocument()
     expect(screen.getByRole('button', { name: 'Q&A' })).toBeInTheDocument()
+  })
+
+  it('renders a canonical final interview document directly', () => {
+    render(
+      <ArtifactContent
+        artifactId="final-interview"
+        content={buildCanonicalInterviewContent([
+          { id: 'Q01', prompt: 'Which data should be preserved?', answer: { skipped: false, free_text: 'Keep source identifiers.' } },
+        ])}
+      />,
+    )
+
+    expect(screen.getByRole('button', { name: 'Q&A' })).toBeInTheDocument()
+    openFoundationGroup()
+    expect(screen.getByText('Which data should be preserved?')).toBeInTheDocument()
+    expect(screen.getByText('Keep source identifiers.')).toBeInTheDocument()
+  })
+
+  it('preserves malformed nested interview content as raw output', () => {
+    const malformedInterview = 'artifact: interview\nquestions: [unfinished'
+
+    render(<InterviewAnswersView content={JSON.stringify({ interview: malformedInterview })} />)
+
+    expect(screen.getByText('artifact: interview')).toBeInTheDocument()
+    expect(screen.getByText('questions: [unfinished')).toBeInTheDocument()
+  })
+
+  it('keeps an unrecognized artifact body readable as raw output', () => {
+    const content = 'Raw body for a future artifact type.'
+
+    render(<ArtifactContent artifactId="future-artifact" content={content} />)
+
+    expect(screen.getByText((_text, element) =>
+      element?.tagName === 'PRE' && element.textContent === content,
+    )).toBeInTheDocument()
+  })
+
+  it('keeps an interview wrapper with no readable questions available as raw output', () => {
+    const content = JSON.stringify({ refinedContent: 'No structured interview questions here.', userAnswers: '{}' })
+
+    render(<InterviewAnswersView content={content} />)
+
+    expect(screen.getByText(content)).toBeInTheDocument()
   })
 
   it('renders interview answers without the interview summary section', () => {
@@ -381,11 +477,39 @@ items:
     const trigger = document.querySelector('.lucide-lightbulb')?.parentElement
     expect(trigger).toBeTruthy()
     if (!trigger) return
+    const questionDiffButton = screen.getByText('Q01').closest('button')
+    expect(questionDiffButton).toHaveAttribute('aria-expanded', 'true')
+    fireEvent.click(trigger)
+    expect(questionDiffButton).toHaveAttribute('aria-expanded', 'true')
     fireEvent.pointerMove(trigger)
     fireEvent.mouseEnter(trigger)
 
     expect(await screen.findByText('Inspired by Unknown model')).toBeInTheDocument()
     expect(screen.getByText('Could imports be safely repeated?')).toBeInTheDocument()
+
+    fireEvent.click(screen.getByRole('button', { name: 'Final Questions' }))
+    expect(screen.getByText('How should imports remain idempotent?')).toBeInTheDocument()
+  })
+
+  it.each([
+    ['invalid JSON', 'Malformed interview output that must remain readable.'],
+    ['missing refined content', JSON.stringify({ originalContent: 'Previously saved interview questions.' })],
+  ])('keeps a final interview fallback visible for %s', (_caseName, content) => {
+    render(<ArtifactContent artifactId="final-interview" content={content} />)
+
+    expect(screen.getByText((_text, element) =>
+      element?.tagName === 'PRE' && Boolean(element.textContent?.includes('interview')),
+    )).toBeInTheDocument()
+  })
+
+  it('keeps malformed final PRD output available as raw text', () => {
+    const content = 'Malformed PRD output must remain available for inspection.'
+
+    render(<ArtifactContent artifactId="final-prd-draft" content={content} />)
+
+    expect(screen.getByText((_text, element) =>
+      element?.tagName === 'PRE' && element.textContent === content,
+    )).toBeInTheDocument()
   })
 
   it('merges execution setup plan diagnostics into the setup plan artifact view', () => {
@@ -555,6 +679,41 @@ items:
     expect(screen.getByText('What outcome matters most?')).toBeInTheDocument()
     expect(screen.getByText('Keep imports idempotent.')).toBeInTheDocument()
     expect(screen.queryByText('Skipped')).not.toBeInTheDocument()
+  })
+
+  it('renders answers from the legacy refined-questions envelope', () => {
+    const refinedContent = [
+      'questions:',
+      '  - id: Q01',
+      '    phase: Foundation',
+      '    question: "Which key should identify an answer?"',
+      '  - id: Q02',
+      '    phase: Structure',
+      '    question: "How should old answers be handled?"',
+      '  - id: Q03',
+      '    phase: Structure',
+      '    question: "What should happen without an answer?"',
+    ].join('\n')
+
+    render(
+      <InterviewAnswersView
+        content={JSON.stringify({
+          refinedContent,
+          userAnswers: JSON.stringify({
+            Q1: 'Use stable question IDs.',
+            'How should old answers be handled?': 'Keep them visible as legacy answers.',
+            'Retired prompt': 'Preserve its recorded response.',
+          }),
+        })}
+      />,
+    )
+
+    expect(screen.getByText('Which key should identify an answer?')).toBeInTheDocument()
+    expect(screen.getByText('Use stable question IDs.')).toBeInTheDocument()
+    expect(screen.getByText('Keep them visible as legacy answers.')).toBeInTheDocument()
+    expect(screen.getByText('Retired prompt')).toBeInTheDocument()
+    expect(screen.getByText('Preserve its recorded response.')).toBeInTheDocument()
+    expect(screen.getByText('Skipped')).toBeInTheDocument()
   })
 
   it('emphasizes changed words inside execution commit diffs', () => {
@@ -1559,6 +1718,40 @@ items:
     expect(screen.getByText(/Expansion added 12 execution fields across 2 beads\./)).toBeInTheDocument()
   })
 
+  it('pairs unequal-length expansion rows by matching plan ids', () => {
+    const semanticPlanContent = JSON.stringify([
+      { id: 'plan-one', title: 'Planned execution' },
+    ])
+    const expandedContent = JSON.stringify([
+      { id: 'plan-one', title: 'Planned execution', issueType: 'task', priority: 1, status: 'pending' },
+      { id: 'run-added', title: 'Added by expansion', issueType: 'bug', labels: ['triage'], priority: 2, status: 'open' },
+    ])
+
+    render(
+      <ArtifactContent
+        artifactId="refined-beads"
+        phase="EXPANDING_BEADS"
+        content={JSON.stringify({ semanticPlanContent, refinedContent: expandedContent })}
+      />,
+    )
+
+    fireEvent.click(screen.getByRole('button', { name: 'Diff vs Plan' }))
+
+    expect(screen.getByText(/Expansion added 8 execution fields across 2 beads\./)).toBeInTheDocument()
+    expect(screen.queryByText('plan-one -> plan-one')).not.toBeInTheDocument()
+    expect(screen.getByText('Added by expansion').closest('button')).toBeInTheDocument()
+
+    fireEvent.click(screen.getByText('Added by expansion').closest('button')!)
+
+    expect(screen.getByText('Execution ID')).toBeInTheDocument()
+    expect(screen.getByText('run-added')).toBeInTheDocument()
+    expect(screen.getByText('triage')).toBeInTheDocument()
+
+    fireEvent.click(screen.getByRole('button', { name: 'Sections' }))
+
+    expect(screen.getByText('2 beads')).toBeInTheDocument()
+  })
+
   it('shares expansion bead parsing between the count and sections view', () => {
     const warn = vi.spyOn(console, 'warn').mockImplementation(() => undefined)
     const semanticPlanContent = JSON.stringify([
@@ -1775,6 +1968,57 @@ items:
     expect(screen.queryByText('Product')).not.toBeInTheDocument()
   })
 
+  it('renders the legacy markdown PRD headings and their details', () => {
+    render(
+      <PrdDraftView
+        content={[
+          '## Product',
+          'The import workflow should be safe to retry.',
+          '## Scope',
+          '- Keep existing source IDs.',
+          '**Epic 1: Idempotent imports**',
+          '- Retry interrupted imports without creating duplicates.',
+          '**User Story 1: Recover after interruption**',
+          '- Preserve a clear recovery path for operators.',
+        ].join('\n')}
+      />,
+    )
+
+    expect(screen.getByText('Product')).toBeInTheDocument()
+    expect(screen.getByText((_text, element) => element?.className === 'text-xs' && element.textContent === '• The import workflow should be safe to retry.')).toBeInTheDocument()
+    fireEvent.click(screen.getByRole('button', { name: 'Scope' }))
+    expect(screen.getByText((_text, element) => element?.className === 'text-xs' && element.textContent === '• Keep existing source IDs.')).toBeInTheDocument()
+    fireEvent.click(screen.getByRole('button', { name: 'Epic 1: Idempotent imports' }))
+    expect(screen.getByText((_text, element) => element?.className === 'text-xs' && element.textContent === '• Retry interrupted imports without creating duplicates.')).toBeInTheDocument()
+    expect(screen.getByText('User Story 1: Recover after interruption')).toBeInTheDocument()
+  })
+
+  it('renders legacy plain-text bead lists and keeps unrelated text readable', () => {
+    vi.spyOn(console, 'warn').mockImplementation(() => {})
+
+    render(
+      <div>
+        <BeadsDraftView
+          content={[
+            'Bead 1: Parse old plan files',
+            '- Read issue headings in order.',
+            'Keep the title when the body is empty.',
+            'Issue 2: Preserve operator notes',
+            '* Show notes below the matching bead.',
+          ].join('\n')}
+        />
+        <BeadsDraftView content="This content does not contain a bead or issue heading." />
+      </div>,
+    )
+
+    expect(screen.getByText('Parse old plan files')).toBeInTheDocument()
+    fireEvent.click(screen.getByRole('button', { name: /Parse old plan files/ }))
+    expect(screen.getByText(hasExactTextContent('• Read issue headings in order.'))).toBeInTheDocument()
+    expect(screen.getByText(hasExactTextContent('• Keep the title when the body is empty.'))).toBeInTheDocument()
+    expect(screen.getByText('Preserve operator notes')).toBeInTheDocument()
+    expect(screen.getByText('This content does not contain a bead or issue heading.')).toBeInTheDocument()
+  })
+
   it('shows PRD refinement auto retries as raw attempt variants', () => {
     const prdContent = buildPrdDocumentContent()
     const rejectedRawResponse = 'this is prose, not the PRD schema'
@@ -1938,6 +2182,70 @@ items:
     expect(screen.getByRole('button', { name: /^Diff(?: \(\d+\))?$/i })).toBeInTheDocument()
     expect(screen.getAllByText(hasTextContent('Audit input candidate')).length).toBeGreaterThan(0)
     expect(screen.getByText('Coverage revised candidate')).toBeInTheDocument()
+
+    fireEvent.click(screen.getByRole('button', { name: 'PRD Candidate v2' }))
+    expect(screen.getByText('Coverage revised candidate')).toBeInTheDocument()
+  })
+
+  it('switches between audit and resolution notes in a legacy coverage report', () => {
+    const revisionContent = JSON.stringify({
+      candidateVersion: 2,
+      refinedContent: buildPrdDocumentContent({ epicTitle: 'Legacy coverage candidate' }),
+      gapResolutions: [
+        {
+          gap: 'Preserve the historic audit note.',
+          action: 'already_covered',
+          rationale: 'The existing candidate already records this requirement.',
+          affectedItems: [],
+        },
+      ],
+    })
+
+    render(
+      <ArtifactContent
+        artifactId="coverage-report"
+        content={JSON.stringify({
+          coverageReviewContent: 'Previous coverage audit text.',
+          revisionContent,
+        })}
+      />,
+    )
+
+    expect(screen.getByRole('button', { name: 'Resolution Notes' })).toBeInTheDocument()
+    fireEvent.click(screen.getByRole('button', { name: 'Resolution Notes' }))
+    expect(screen.getByText('Preserve the historic audit note.')).toBeInTheDocument()
+  })
+
+  it('keeps unrecognized coverage report bodies available as raw output', () => {
+    const content = 'Coverage report body from an unsupported format.'
+
+    render(<ArtifactContent artifactId="coverage-report" content={content} />)
+
+    expect(screen.getByText((_text, element) =>
+      element?.tagName === 'PRE' && element.textContent === content,
+    )).toBeInTheDocument()
+  })
+
+  it('shows the latest coverage result directly when there is no transition history', () => {
+    render(
+      <ArtifactContent
+        artifactId="coverage-report"
+        content={JSON.stringify({ status: 'clean', summary: 'The latest candidate passes coverage.', hasGaps: false, gaps: [], transitions: [] })}
+      />,
+    )
+
+    expect(screen.getByText('No coverage gaps found')).toBeInTheDocument()
+    expect(screen.getByText('The latest candidate passes coverage.')).toBeInTheDocument()
+  })
+
+  it('preserves an empty legacy coverage envelope as raw output', () => {
+    const content = JSON.stringify({ coverageReviewContent: null, revisionContent: 'Unparsed prior revision report.' })
+
+    render(<ArtifactContent artifactId="coverage-report" content={content} />)
+
+    expect(screen.getByText((_text, element) =>
+      element?.tagName === 'PRE' && element.textContent?.includes('Unparsed prior revision report.'),
+    )).toBeInTheDocument()
   })
 
   it('renders coverage report with resolution notes tab', () => {
@@ -1974,6 +2282,230 @@ items:
     expect(screen.getByText('Missing retry-cap approval behavior.')).toBeInTheDocument()
     expect(screen.getByText(/Added explicit approval handling when unresolved gaps remain after the retry cap/i)).toBeInTheDocument()
     expect(screen.getByText('Epic EPIC-1: Coverage revised candidate')).toBeInTheDocument()
+  })
+
+  it('renders coverage transition resolutions and attributed PRD diff entries', async () => {
+    render(
+      <ArtifactContent
+        artifactId="coverage-report"
+        phase="REFINING_PRD"
+        content={JSON.stringify({
+          transitions: [
+            {
+              fromVersion: 1,
+              toVersion: 2,
+              summary: 'Coverage revised the PRD candidate.',
+              gaps: ['Clarify import recovery.'],
+              auditNotes: 'status: gaps',
+              fromContent: 'epics: []',
+              toContent: 'epics:\n  - id: EPIC-1\n    title: Import recovery',
+              gapResolutions: [
+                {
+                  gap: 'Clarify import recovery.',
+                  action: 'updated_prd',
+                  rationale: 'Added recovery requirements to the PRD.',
+                  affectedItems: [
+                    { itemType: 'epic', id: 'EPIC-1', label: 'Import recovery' },
+                    { itemType: 'user_story', id: 'US-2', label: 'Retry safely' },
+                    { itemType: 'bead', id: 'BD-3', label: 'Preserve checkpoints' },
+                  ],
+                },
+                {
+                  gap: 'Document the implementation detail.',
+                  action: 'updated_beads',
+                  rationale: 'Added a concrete implementation bead.',
+                  affectedItems: [],
+                },
+                {
+                  gap: 'Confirm existing import behavior.',
+                  action: 'already_covered',
+                  rationale: 'The approved PRD already specifies this behavior.',
+                  affectedItems: [],
+                },
+                {
+                  gap: 'Choose the final retry limit.',
+                  action: 'left_unresolved',
+                  rationale: 'The operator must choose this limit.',
+                  affectedItems: [],
+                },
+              ],
+              resolutionNotes: [],
+              uiRefinementDiff: {
+                domain: 'prd',
+                winnerId: 'openai/gpt-5.2',
+                generatedAt: '2026-09-01T12:00:00.000Z',
+                entries: [
+                  {
+                    key: 'epic-inspired',
+                    changeType: 'modified',
+                    itemKind: 'legacy_initiative',
+                    label: 'Import recovery',
+                    beforeText: 'Without safe retries.',
+                    afterText: 'Retry interrupted imports safely.',
+                    inspiration: {
+                      memberId: '',
+                      sourceId: 'EPIC-1',
+                      sourceLabel: 'Approved epic context',
+                      sourceText: 'The import lifecycle must remain idempotent.',
+                    },
+                    attributionStatus: 'inspired',
+                  },
+                  {
+                    key: 'story-inspired',
+                    changeType: 'added',
+                    itemKind: 'legacy_story',
+                    label: 'Retry safely',
+                    afterText: 'Recover from interrupted imports.',
+                    inspiration: {
+                      memberId: '',
+                      sourceId: 'US-2',
+                      sourceLabel: 'Approved story context',
+                      sourceText: '',
+                    },
+                    attributionStatus: 'inspired',
+                  },
+                  {
+                    key: 'bead-inspired',
+                    changeType: 'removed',
+                    itemKind: 'bead',
+                    label: 'Obsolete recovery step',
+                    beforeText: 'Retry without validating the checkpoint.',
+                    inspiration: {
+                      memberId: 'openai/gpt-5.2',
+                      sourceLabel: 'Approved plan context',
+                      blocks: [
+                        { kind: 'bead', id: 'BD-3', label: 'Checkpoint validation', text: 'Validate the saved import checkpoint.' },
+                      ],
+                    },
+                    attributionStatus: 'inspired',
+                  },
+                  {
+                    key: 'product-unattributed',
+                    changeType: 'modified',
+                    itemKind: 'product.problem_statement',
+                    label: 'Problem statement',
+                    beforeText: 'The old statement.',
+                    afterText: 'The updated statement.',
+                    attributionStatus: 'model_unattributed',
+                  },
+                  {
+                    key: 'scope-synthesized',
+                    changeType: 'added',
+                    itemKind: 'scope.out_of_scope',
+                    label: 'Out of scope',
+                    afterText: 'Cross-project imports.',
+                    attributionStatus: 'synthesized_unattributed',
+                  },
+                  {
+                    key: 'custom-invalid',
+                    changeType: 'removed',
+                    itemKind: 'custom_field.value',
+                    label: 'Old custom field',
+                    beforeText: 'Unverified content.',
+                    attributionStatus: 'invalid_unattributed',
+                  },
+                  {
+                    key: 'technical-model-unattributed',
+                    changeType: 'modified',
+                    itemKind: 'technical_requirements.data_model',
+                    label: 'Data model',
+                    beforeText: 'Store import metadata.',
+                    afterText: 'Store retry-safe import metadata.',
+                    attributionStatus: 'model_unattributed',
+                  },
+                  {
+                    key: 'partial-inspiration',
+                    changeType: 'modified',
+                    itemKind: 'legacy_field',
+                    label: 'Legacy source information',
+                    afterText: 'Retain the recorded source text.',
+                    inspiration: {
+                      memberId: '',
+                      sourceId: 'EPIC-9',
+                      sourceLabel: '',
+                      sourceText: 'This source has no display label.',
+                    },
+                    attributionStatus: 'inspired',
+                  },
+                  {
+                    key: 'unsupported-source-kind',
+                    changeType: 'modified',
+                    itemKind: 'custom_field.value',
+                    label: 'Custom source field',
+                    afterText: 'Keep the custom field visible without guessing its source type.',
+                    inspiration: {
+                      memberId: '',
+                      sourceId: 'FIELD-9',
+                      sourceLabel: 'Custom extension context',
+                      sourceText: 'The extension owns this field definition.',
+                    },
+                    attributionStatus: 'inspired',
+                  },
+                ],
+              },
+            },
+          ],
+        })}
+      />,
+    )
+
+    fireEvent.click(screen.getByRole('button', { name: 'v1 > v2' }))
+    expect(screen.getByText('Clarify import recovery.')).toBeInTheDocument()
+
+    fireEvent.click(screen.getByRole('button', { name: 'Resolution Notes' }))
+    expect(screen.getByText('Updated PRD')).toBeInTheDocument()
+    expect(screen.getByText('Updated Plan')).toBeInTheDocument()
+    expect(screen.getByText('Already Covered')).toBeInTheDocument()
+    expect(screen.getByText('Left Unresolved')).toBeInTheDocument()
+    expect(screen.getByText('Epic EPIC-1: Import recovery')).toBeInTheDocument()
+    expect(screen.getByText('User Story US-2: Retry safely')).toBeInTheDocument()
+    expect(screen.getByText('Bead BD-3: Preserve checkpoints')).toBeInTheDocument()
+    expect(screen.getAllByText('No directly affected items were recorded for this resolution.')).toHaveLength(3)
+
+    fireEvent.click(screen.getByRole('button', { name: 'Diff' }))
+    expect(screen.getByText('Modified 5')).toBeInTheDocument()
+    expect(screen.getByText('Added 2')).toBeInTheDocument()
+    expect(screen.getByText('Removed 2')).toBeInTheDocument()
+    expect(screen.getAllByText('No source recorded')).toHaveLength(2)
+    expect(screen.getByText('Auto-detected diff')).toBeInTheDocument()
+    expect(screen.getByText('Attribution cleared')).toBeInTheDocument()
+
+    const inspirationTriggers = Array.from(document.querySelectorAll('.lucide-lightbulb'))
+      .map((icon) => icon.parentElement)
+      .filter((trigger): trigger is HTMLElement => trigger instanceof HTMLElement)
+    expect(inspirationTriggers).toHaveLength(5)
+
+    const epicDiffButton = screen.getByText('Import recovery').closest('button')
+    expect(epicDiffButton).toHaveAttribute('aria-expanded', 'true')
+    fireEvent.click(inspirationTriggers[0]!)
+    expect(epicDiffButton).toHaveAttribute('aria-expanded', 'true')
+
+    fireEvent.pointerMove(inspirationTriggers[0]!)
+    fireEvent.mouseEnter(inspirationTriggers[0]!)
+    expect(await screen.findByText('EPIC-1')).toBeInTheDocument()
+    expect(screen.getByText('The import lifecycle must remain idempotent.')).toBeInTheDocument()
+
+    fireEvent.pointerMove(inspirationTriggers[1]!)
+    fireEvent.mouseEnter(inspirationTriggers[1]!)
+    expect(await screen.findByText('US-2')).toBeInTheDocument()
+    expect(screen.getByText('Approved story context')).toBeInTheDocument()
+
+    fireEvent.pointerMove(inspirationTriggers[2]!)
+    fireEvent.mouseEnter(inspirationTriggers[2]!)
+    expect(await screen.findByText('BD-3')).toBeInTheDocument()
+    expect(screen.getByText('Validate the saved import checkpoint.')).toBeInTheDocument()
+
+    fireEvent.pointerMove(inspirationTriggers[3]!)
+    fireEvent.mouseEnter(inspirationTriggers[3]!)
+    expect(await screen.findByText('EPIC-9')).toBeInTheDocument()
+    expect(screen.getByText('This source has no display label.')).toBeInTheDocument()
+
+    fireEvent.pointerMove(inspirationTriggers[4]!)
+    fireEvent.mouseEnter(inspirationTriggers[4]!)
+    fireEvent.focus(inspirationTriggers[4]!)
+    expect(await screen.findByText('Inspired by Unknown model')).toBeInTheDocument()
+    expect(screen.queryByText('FIELD-9')).not.toBeInTheDocument()
+    expect(screen.queryByText('The extension owns this field definition.')).not.toBeInTheDocument()
   })
 
   it('uses simpler PRD coverage resolution note copy during verification', () => {
@@ -2408,6 +2940,30 @@ items:
     expect(screen.getByText('Draft 2: draft-a')).toBeInTheDocument()
   })
 
+  it('infers a completed voter outcome from a saved vote when the outcome tag is unknown', () => {
+    render(
+      <ArtifactContent
+        artifactId="prd-votes"
+        phase="COUNCIL_VOTING_PRD"
+        content={JSON.stringify({
+          drafts: [{ memberId: 'vendor/draft-a', outcome: 'completed', content: 'draft-a' }],
+          votes: [{
+            voterId: 'vendor/voter-a',
+            draftId: 'vendor/draft-a',
+            totalScore: 91,
+            scores: [{ category: 'Coverage of requirements', score: 91 }],
+          }],
+          voterOutcomes: { 'vendor/voter-a': 'future_outcome' },
+          winnerId: 'vendor/draft-a',
+          isFinal: true,
+        })}
+      />,
+    )
+
+    expect(screen.getByText('(1/1 complete)')).toBeInTheDocument()
+    expect(screen.getAllByText('Finished').length).toBeGreaterThan(0)
+  })
+
   it('switches vote raw tabs between all models, exact voter raw, and validated voter output', async () => {
     const writeTextMock = mockClipboard()
 
@@ -2812,6 +3368,39 @@ items:
     expect(screen.getByText((_text, element) => element?.tagName === 'PRE' && element.textContent === validatedDraftResponse)).toBeInTheDocument()
     expect(screen.queryByText((_text, element) => element?.tagName === 'PRE' && element.textContent === rawDraftResponse)).not.toBeInTheDocument()
     expect(screen.queryByText((_text, element) => element?.tagName === 'PRE' && element.textContent === rejectedDraftResponse)).not.toBeInTheDocument()
+  })
+
+  it.each([
+    ['pending', 'Artifact is still being generated for this member.'],
+    ['completed', 'No content available yet.'],
+  ])('explains when a generic council draft has no content (%s)', (outcome, expectedMessage) => {
+    const memberId = 'vendor/provider-a'
+
+    render(
+      <ArtifactContent
+        artifactId="candidate-member-vendor%2Fprovider-a"
+        phase="COUNCIL_DELIBERATING"
+        content={JSON.stringify({ drafts: [{ memberId, outcome, content: '' }] })}
+      />,
+    )
+
+    expect(screen.getByText(expectedMessage)).toBeInTheDocument()
+  })
+
+  it('shows generic council member output when no specialized artifact view applies', () => {
+    const rawContent = 'Plain output from a council member in an unstructured artifact domain.'
+
+    render(
+      <ArtifactContent
+        artifactId="candidate-member-vendor%2Fprovider-a"
+        phase="COUNCIL_DELIBERATING"
+        content={JSON.stringify({
+          drafts: [{ memberId: 'vendor/provider-a', outcome: 'completed', content: rawContent }],
+        })}
+      />,
+    )
+
+    expect(screen.getByText(rawContent)).toBeInTheDocument()
   })
 
   it('switches draft raw tabs between raw output and validated version when both exist', async () => {

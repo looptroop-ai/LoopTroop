@@ -269,6 +269,48 @@ describe('pull request drafting context', () => {
     expect(section).toContain('Created fix beads: qa-v2-fix')
   })
 
+  it.each([
+    '',
+    'not: [valid YAML',
+    'version: 1\ncreatedFixBeadIds: [qa-1]',
+  ])('omits malformed or incomplete Manual QA summaries from the PR body', (summary) => {
+    expect(buildManualQaPullRequestSection(summary)).toBe('')
+  })
+
+  it('renders a scalar PR draft section and uses the fallback title', async () => {
+    resetTestDb()
+    const { ticket, context } = await createPullRequestReadyTicket({ structuredRetryCount: 0 })
+
+    mocks.runOpenCodePrompt.mockResolvedValueOnce({
+      session: { id: 'candidate-audit-scalar-draft' },
+      response: validCandidateAuditResponse(),
+      messages: [],
+    })
+    mocks.runOpenCodePrompt.mockResolvedValueOnce({
+      session: { id: 'pr-draft-scalar-section' },
+      response: [
+        'title: "  "',
+        'summary: A concise summary of the implementation.',
+        'why:',
+        '  - The ticket requested this behavior.',
+        'what_changed:',
+        '  - Updated the relevant code path.',
+        'validation:',
+        '  - Final tests passed.',
+        'follow_ups: Add a release note after review.',
+      ].join('\n'),
+      messages: [],
+    })
+
+    await handleCreatePullRequest(ticket.id, context, vi.fn(), new AbortController().signal)
+
+    expect(mocks.createOrUpdateDraftPullRequest).toHaveBeenCalledWith(expect.objectContaining({
+      title: `${ticket.externalId}: ${ticket.title}`,
+      body: expect.stringContaining('## Follow-ups\n- Add a release note after review.'),
+    }))
+    expect(mocks.runOpenCodeSessionPrompt).not.toHaveBeenCalled()
+  })
+
   it('retries malformed PR drafts before push and PR side effects', async () => {
     resetTestDb()
     const { ticket, context, project, paths } = await createPullRequestReadyTicket({ structuredRetryCount: 1 })

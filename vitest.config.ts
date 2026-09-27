@@ -209,6 +209,7 @@ const serverIntegrationTests = [
   'server/workflow/__tests__/verificationPhaseCoverage.test.ts',
   'server/workflow/__tests__/verificationPhaseGuardCoverage.test.ts',
   'server/workflow/__tests__/verificationBeadsExpansionGuards.test.ts',
+  'server/workflow/__tests__/verificationPrdArtifactRecovery.test.ts',
   // Mocks the OpenCode session layer, which the daemon tests load for real.
   'server/phases/prd/__tests__/draft.test.ts',
   // Asserts on real module state (timers, signal handlers, sockets), so it
@@ -337,6 +338,7 @@ export default defineConfig({
         '**/*.generated.*',
       ],
       reporter: ['lcovonly', 'text', 'json-summary'],
+      thresholds: { lines: 90 },
       // Deliberately stopped or detached children leave incomplete profiles and add filesystem I/O.
       autoAttachSubprocess: false,
     },

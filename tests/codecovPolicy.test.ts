@@ -39,7 +39,7 @@ const requiredJob = (name: string): Job => {
 }
 
 describe('coverage and Codecov policy', () => {
-  it('collects V8 coverage across the four Vitest projects without thresholds', () => {
+  it('collects V8 coverage across the four Vitest projects with a 90% line floor', () => {
     expect(packageJson.scripts['test:coverage']).toBe('vitest run --coverage')
     expect(packageJson.devDependencies.vitest).toMatch(/\S/)
     expect(packageJson.devDependencies['@vitest/coverage-v8']).toBe(packageJson.devDependencies.vitest)
@@ -51,7 +51,7 @@ describe('coverage and Codecov policy', () => {
       reporter: ['lcovonly', 'text', 'json-summary'],
       autoAttachSubprocess: false,
     })
-    expect(coverage?.thresholds).toBeUndefined()
+    expect(coverage?.thresholds?.lines).toBe(90)
     for (const pattern of [
       '**/*.test.*', '**/*.spec.*', '**/__tests__/**', '**/{test,tests}/**',
       '**/{helper,helpers,fixture,fixtures}/**', '**/*.d.{ts,cts,mts}',
@@ -112,11 +112,15 @@ describe('coverage and Codecov policy', () => {
     expect(packaging.needs).not.toContain('codecov')
   })
 
-  it('keeps project and patch coverage statuses informational', () => {
+  it('blocks project coverage below 90% and keeps patch status informational', () => {
     const config = loadYaml(readFileSync(join(repo, 'codecov.yml'), 'utf8')) as {
       coverage: { status: { project: { default: Record<string, unknown> }; patch: { default: Record<string, unknown> } } }
     }
-    expect(config.coverage.status.project.default).toEqual({ informational: true })
+    expect(config.coverage.status.project.default).toEqual({
+      target: '90%',
+      threshold: '0%',
+      informational: false,
+    })
     expect(config.coverage.status.patch.default).toEqual({ informational: true })
   })
 })

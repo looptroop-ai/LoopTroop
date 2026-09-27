@@ -342,6 +342,30 @@ describe('runGitHookValidationCommands', () => {
     })
   })
 
+  it('reports LoopTroop state and generated output separately in the mutation audit', async () => {
+    const root = makeRepo()
+    const run = await runGitHookValidationCommands({
+      commands: [hookCommand(
+        'writer',
+        'node -e "const fs=require(\'fs\');fs.mkdirSync(\'.ticket\',{recursive:true});fs.mkdirSync(\'tmp\',{recursive:true});fs.writeFileSync(\'.ticket/hook.json\',\'internal\');fs.writeFileSync(\'tmp/output.log\',\'generated\')"',
+      )],
+      worktreePath: root,
+      stopOnFirstFailure: true,
+      protectWorktree: true,
+      auditFileMutation: true,
+      nextTimeoutMs: () => 30_000,
+    })
+
+    expect(run.fileAudit).toEqual({
+      mutated: true,
+      candidatePaths: [],
+      temporaryPaths: ['tmp/output.log'],
+      internalPaths: ['.ticket/hook.json'],
+    })
+    expect(existsSync(join(root, '.ticket', 'hook.json'))).toBe(false)
+    expect(existsSync(join(root, 'tmp', 'output.log'))).toBe(false)
+  })
+
   it('does not audit its own durable restore marker on a protected no-op', async () => {
     const run = await runGitHookValidationCommands({
       commands: [],
@@ -471,6 +495,29 @@ describe('runGitHookValidationCommands', () => {
       nextTimeoutMs: () => 30_000,
     })
     expect(refused.recoveryFailure).toMatch(/valid Git index/)
+    expect(refused.recoveryFailure).toContain(markerPath)
+    expect(existsSync(markerPath)).toBe(true)
+    expect(readFileSync(join(root, 'tracked.txt'), 'utf8')).toBe('before\n')
+  })
+
+  it.each([
+    ['incomplete padding', 'A', /persisted index is not valid base64/],
+    ['noncanonical bytes', 'AB==', /persisted index is not canonical base64/],
+  ])('refuses a marker with %s before reading its index', async (_label, indexBase64, reason) => {
+    const root = makeRepo()
+    const markerPath = writeInterruptedValidationMarker(root, { indexBase64 })
+
+    const refused = await runGitHookValidationCommands({
+      commands: [],
+      worktreePath: root,
+      stopOnFirstFailure: true,
+      protectWorktree: false,
+      auditFileMutation: false,
+      nextTimeoutMs: () => 30_000,
+    })
+
+    expect(refused.refused).toBe(true)
+    expect(refused.recoveryFailure).toMatch(reason)
     expect(refused.recoveryFailure).toContain(markerPath)
     expect(existsSync(markerPath)).toBe(true)
     expect(readFileSync(join(root, 'tracked.txt'), 'utf8')).toBe('before\n')

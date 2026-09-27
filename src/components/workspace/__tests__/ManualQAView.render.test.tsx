@@ -780,7 +780,7 @@ describe('ManualQAView recovery behavior', () => {
     })
   })
 
-  it('reports errors when a resumed skip or a new skip fails', async () => {
+  it('reports an error when a resumed skip fails', async () => {
     mocks.round.mockReturnValue({
       data: {
         ...round,
@@ -795,19 +795,17 @@ describe('ManualQAView recovery behavior', () => {
     renderWithProviders(<ManualQAView ticket={waitingTicket()} />)
     fireEvent.click(screen.getByRole('button', { name: 'Resume skip' }))
     expect(await screen.findByRole('alert')).toHaveTextContent('Recovery failed')
+  })
 
-    cleanup()
-    vi.clearAllMocks()
-    mocks.index.mockReturnValue({ data: { activeVersion: 1, completedRounds: 0, latestOutcome: null, artifactAvailable: true, versions: [{ version: 1, status: 'waiting', artifactAvailable: true, phaseAttempt: 1 }] }, isLoading: false, error: null })
-    mocks.uiState.mockReturnValue({ data: { scope: 'manual_qa_draft:v1', exists: false, data: null, revision: 0, clientRevision: null, updatedAt: null }, refetch: mocks.refetchUiState })
-    mocks.round.mockReturnValue({ data: round, isLoading: false, error: null, refetch: mocks.refetchRound })
-    mocks.save.mockResolvedValue({ conflict: false, revision: 1, updatedAt: new Date().toISOString() })
+
+  it('keeps the skip dialog open and reports when a new skip fails', async () => {
     mocks.skip.mockRejectedValueOnce(new Error('Integration unavailable'))
     renderWithProviders(<ManualQAView ticket={waitingTicket()} />)
     fireEvent.click(screen.getByRole('button', { name: 'Skip Manual QA…' }))
     fireEvent.click(screen.getByRole('button', { name: 'Skip and integrate' }))
 
-    expect(await screen.findByRole('alert')).toHaveTextContent('Integration unavailable')
+    await waitFor(() => expect(document.querySelector('[role="alert"]')).toHaveTextContent('Integration unavailable'))
+    expect(screen.getByRole('dialog')).toBeInTheDocument()
   })
 
   it('reconciles a timed-out evidence upload when the round refresh finds the saved file', async () => {
@@ -898,12 +896,15 @@ describe('ManualQAView recovery behavior', () => {
     mocks.round.mockReturnValue({ data: driftRound, isLoading: false, error: null, refetch: mocks.refetchRound })
     mocks.refetchRound.mockResolvedValueOnce({ data: { ...round, draftRevision: 9 } })
     mocks.includeDrift.mockRejectedValueOnce(new Error('response lost after server applied decision'))
-    renderWithProviders(<ManualQAView ticket={waitingTicket()} />)
+    const ticket = waitingTicket()
+    const { rerender } = renderWithProviders(<ManualQAView ticket={ticket} />)
 
     fireEvent.click(screen.getByRole('button', { name: 'Include in checkpoint' }))
     await waitFor(() => expect(mocks.includeDrift).toHaveBeenCalledOnce())
 
     expect(screen.queryByRole('alert')).not.toBeInTheDocument()
+    mocks.round.mockReturnValue({ data: round, isLoading: false, error: null, refetch: mocks.refetchRound })
+    rerender(<ManualQAView ticket={ticket} />)
     expect(screen.queryByRole('button', { name: 'Include in checkpoint' })).not.toBeInTheDocument()
   })
 

@@ -11,6 +11,9 @@ const state = vi.hoisted(() => ({
     current: 'original: yes\n',
     default: 'original: yes\n',
   },
+  promptLoading: false,
+  promptUnavailable: false,
+  promptError: null as Error | null,
   saveResult: { errors: [] as string[], warnings: [] as string[] },
 }))
 
@@ -20,7 +23,11 @@ const previewMutateAsync = vi.hoisted(() => vi.fn())
 const previewReset = vi.hoisted(() => vi.fn())
 
 vi.mock('@/hooks/usePrompts', () => ({
-  usePrompt: () => ({ data: state.prompt, isLoading: false, error: null }),
+  usePrompt: () => ({
+    data: state.promptUnavailable ? undefined : state.prompt,
+    isLoading: state.promptLoading,
+    error: state.promptError,
+  }),
   useSavePrompt: () => ({ mutateAsync: saveMutateAsync, isPending: false }),
   useRevertPrompt: () => ({ mutateAsync: revertMutateAsync, isPending: false }),
   // A fresh `reset` on every render, as the real mutation hook returns.
@@ -71,6 +78,9 @@ beforeEach(() => {
     current: 'original: yes\n',
     default: 'original: yes\n',
   }
+  state.promptLoading = false
+  state.promptUnavailable = false
+  state.promptError = null
   state.saveResult = { errors: [], warnings: [] }
   saveMutateAsync.mockReset().mockImplementation(async () => state.saveResult)
   previewMutateAsync.mockReset().mockResolvedValue({ preview: 'assembled prompt\n' })
@@ -79,6 +89,39 @@ beforeEach(() => {
 })
 
 afterEach(cleanup)
+
+describe('PromptEditor loading and view modes', () => {
+  it('shows loading, query errors, and a missing-prompt fallback', () => {
+    state.promptLoading = true
+    const view = renderEditor()
+    expect(screen.getByText('Loading prompt…')).toBeInTheDocument()
+
+    state.promptLoading = false
+    state.promptError = new Error('Prompt catalog unavailable')
+    view.rerender(<PromptEditor promptId="interview" wordWrap={false} onToggleWordWrap={vi.fn()} />)
+    expect(screen.getByText('Prompt catalog unavailable')).toBeInTheDocument()
+
+    state.promptError = null
+    state.promptUnavailable = true
+    view.rerender(<PromptEditor promptId="interview" wordWrap={false} onToggleWordWrap={vi.fn()} />)
+    expect(screen.getByText('Failed to load this prompt.')).toBeInTheDocument()
+  })
+
+  it('toggles the editable copy into and out of comparison mode', () => {
+    renderEditor()
+
+    const compareButton = screen.getByRole('button', { name: 'Compare to default' })
+    fireEvent.click(compareButton)
+    expect(screen.getByText('Built-in default (read-only)')).toBeInTheDocument()
+    expect(screen.getByText('Your version — editable')).toBeInTheDocument()
+    fireEvent.change(screen.getByLabelText('Prompt source'), { target: { value: 'compared draft\n' } })
+    expect(screen.getByRole('button', { name: 'Save' })).toBeEnabled()
+
+    fireEvent.click(compareButton)
+    expect(screen.queryByText('Built-in default (read-only)')).not.toBeInTheDocument()
+    expect(screen.getByLabelText('Prompt source')).toHaveValue('compared draft\n')
+  })
+})
 
 /**
  * A successful save records its warnings and a "Saved" line, then invalidates the
@@ -329,6 +372,32 @@ describe('PromptEditor save feedback — canonicalized and failed saves', () => 
     expect(screen.getByLabelText('Prompt source')).toHaveValue('later draft\n')
   })
 
+  it('clears the preview and save feedback when reset-all replaces the draft', async () => {
+    state.prompt = { ...state.prompt, current: 'saved copy\n', modified: true }
+    state.saveResult = { errors: [], warnings: ['Prompt was saved with a warning.'] }
+    const view = renderEditorWithReset(null)
+
+    fireEvent.change(screen.getByLabelText('Prompt source'), { target: { value: 'my saved draft\n' } })
+    await act(async () => {
+      fireEvent.click(screen.getByRole('button', { name: 'Save' }))
+    })
+    expect(screen.getByText('Saved. New runs will use this prompt.')).toBeInTheDocument()
+    expect(screen.getByText('Prompt was saved with a warning.')).toBeInTheDocument()
+
+    fireEvent.click(screen.getByRole('button', { name: 'Preview' }))
+    await screen.findByText(/assembled prompt/)
+
+    view.rerender(<PromptEditor promptId="interview" wordWrap={false} onToggleWordWrap={vi.fn()} resetRequest={{ id: 3, status: 'pending' }} />)
+    state.prompt = { ...state.prompt, current: 'factory copy\n', modified: false }
+    view.rerender(<PromptEditor promptId="interview" wordWrap={false} onToggleWordWrap={vi.fn()} resetRequest={{ id: 3, status: 'success' }} />)
+
+    expect(screen.getByLabelText('Prompt source')).toHaveValue('factory copy\n')
+    expect(screen.queryByText('Saved. New runs will use this prompt.')).not.toBeInTheDocument()
+    expect(screen.queryByText('Prompt was saved with a warning.')).not.toBeInTheDocument()
+    expect(screen.queryByText(/assembled prompt/)).not.toBeInTheDocument()
+    expect(previewReset).toHaveBeenCalled()
+  })
+
   it('preserves the draft when reset-all fails', async () => {
     state.prompt = { ...state.prompt, current: 'saved copy\n', modified: true }
     const { rerender } = renderEditorWithReset(null)
@@ -338,5 +407,59 @@ describe('PromptEditor save feedback — canonicalized and failed saves', () => 
     rerender(<PromptEditor promptId="interview" wordWrap={false} onToggleWordWrap={vi.fn()} resetRequest={{ id: 2, status: 'failure' }} />)
 
     expect(screen.getByLabelText('Prompt source')).toHaveValue('still editing\n')
+  })
+})
+
+describe('PromptEditor revert query updates', () => {
+  it('adopts a refreshed prompt copy when no edit follows a revert request', async () => {
+    state.prompt = { ...state.prompt, current: 'saved copy\n', modified: true }
+    let release: (value: { current: string }) => void = () => undefined
+    revertMutateAsync.mockImplementationOnce(() => new Promise((resolve) => { release = resolve }))
+    const view = renderEditor()
+
+    fireEvent.change(screen.getByLabelText('Prompt source'), { target: { value: 'draft being reverted\n' } })
+    fireEvent.click(screen.getByRole('button', { name: 'Revert' }))
+    state.prompt = { ...state.prompt, current: 'factory copy\n', modified: false }
+    // A query refresh can publish the reverted copy while the mutation request is pending.
+    // Rerender the same editor instance, as the dialog does when its query changes.
+    view.rerender(<PromptEditor promptId="interview" wordWrap={false} onToggleWordWrap={vi.fn()} />)
+
+    expect(screen.getByLabelText('Prompt source')).toHaveValue('factory copy\n')
+    await act(async () => { release({ current: 'factory copy\n' }) })
+    expect(screen.getByLabelText('Prompt source')).toHaveValue('factory copy\n')
+    expect(previewReset).toHaveBeenCalled()
+  })
+
+  it('keeps a later draft when the refreshed copy arrives during revert', async () => {
+    state.prompt = { ...state.prompt, current: 'saved copy\n', modified: true }
+    let release: (value: { current: string }) => void = () => undefined
+    revertMutateAsync.mockImplementationOnce(() => new Promise((resolve) => { release = resolve }))
+    const view = renderEditor()
+
+    fireEvent.change(screen.getByLabelText('Prompt source'), { target: { value: 'draft at revert\n' } })
+    fireEvent.click(screen.getByRole('button', { name: 'Revert' }))
+    fireEvent.change(screen.getByLabelText('Prompt source'), { target: { value: 'later draft\n' } })
+    state.prompt = { ...state.prompt, current: 'factory copy\n', modified: false }
+    view.rerender(<PromptEditor promptId="interview" wordWrap={false} onToggleWordWrap={vi.fn()} />)
+
+    expect(screen.getByLabelText('Prompt source')).toHaveValue('later draft\n')
+    await act(async () => { release({ current: 'factory copy\n' }) })
+    expect(screen.getByLabelText('Prompt source')).toHaveValue('later draft\n')
+  })
+
+  it('ignores a revert result after switching to another prompt', async () => {
+    state.prompt = { ...state.prompt, current: 'saved copy\n', modified: true }
+    let release: (value: { current: string }) => void = () => undefined
+    revertMutateAsync.mockImplementationOnce(() => new Promise((resolve) => { release = resolve }))
+    const view = renderEditor()
+
+    fireEvent.change(screen.getByLabelText('Prompt source'), { target: { value: 'interview draft\n' } })
+    fireEvent.click(screen.getByRole('button', { name: 'Revert' }))
+    state.prompt = { ...state.prompt, id: 'council', current: 'council prompt\n', modified: false }
+    view.rerender(<PromptEditor promptId="council" wordWrap={false} onToggleWordWrap={vi.fn()} />)
+
+    await act(async () => { release({ current: 'interview default\n' }) })
+    expect(screen.getByLabelText('Prompt source')).toHaveValue('council prompt\n')
+    expect(screen.queryByText(/interview default/)).not.toBeInTheDocument()
   })
 })

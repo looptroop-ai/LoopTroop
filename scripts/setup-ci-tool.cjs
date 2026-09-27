@@ -41,9 +41,20 @@ if (tool === 'bun' || tool.startsWith('opencode-')) {
 
 // Keep Bun's native Windows PATH layout. OpenCode keeps its npm shim so the
 // Windows smoke still covers .cmd launches.
-const bin = tool === 'bun' && process.platform === 'win32'
-  ? join(packageRoot, 'bin')
-  : join(root, 'node_modules', '.bin')
+let bin = join(root, 'node_modules', '.bin')
+if (process.platform === 'win32' && tool === 'bun') bin = join(packageRoot, 'bin')
+if (process.platform === 'win32' && tool === 'pnpm') {
+  const nativeName = `@pnpm/exe.win32-${process.arch}`
+  if (installed.optionalDependencies?.[nativeName] !== installed.version) {
+    throw new Error(`No reviewed native package for ${tool} on win32-${process.arch}`)
+  }
+  // pnpm 12's npm shim targets a shell placeholder when install scripts are disabled.
+  bin = join(root, 'node_modules', nativeName)
+  const probe = spawnSync(join(bin, 'pnpm.exe'), ['--version'], { encoding: 'utf8', timeout: 30_000 })
+  if (probe.error || probe.status !== 0 || probe.stdout.trim() !== installed.version) {
+    throw new Error(`pnpm --version failed: ${probe.error?.message ?? probe.stderr ?? probe.signal ?? probe.status}`)
+  }
+}
 if (!process.env.GITHUB_PATH) throw new Error('GITHUB_PATH is required')
 appendFileSync(process.env.GITHUB_PATH, `${bin}\n`)
 if (process.env.GITHUB_STEP_SUMMARY) {

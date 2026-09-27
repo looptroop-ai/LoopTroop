@@ -601,6 +601,26 @@ describe('OpenCode adapter transport orchestration', () => {
     expect(transport.dispatchPrompt).not.toHaveBeenCalled()
   })
 
+  it.each([
+    { stage: 'before waiting for the session', idleCalls: 0, failingRead: 1 },
+    { stage: 'after waiting for the session', idleCalls: 1, failingRead: 2 },
+  ])('fails closed when v2 history becomes unavailable $stage', async ({ stage, idleCalls, failingRead }) => {
+    let cursorReads = 0
+    const { transport } = createV2Transport({
+      readSessionLog: vi.fn(async (_sessionId, after) => {
+        if (after === undefined) return { events: [], cursor: 50, coverageComplete: false }
+        cursorReads += 1
+        if (cursorReads === failingRead) throw new Error('history backend unavailable')
+        return { events: [], cursor: after, coverageComplete: true }
+      }),
+    })
+
+    await expect(createAdapter(transport).promptSession('session-1', [{ type: 'text', content: 'prompt' }]))
+      .rejects.toThrow(`OpenCode v2 history is unavailable ${stage}: history backend unavailable`)
+    expect(transport.waitForIdle).toHaveBeenCalledTimes(idleCalls)
+    expect(transport.dispatchPrompt).not.toHaveBeenCalled()
+  })
+
   it('does not retry durable recovery after an automatic permission reply fails', async () => {
     const { transport, source } = createV2Transport({
       replyPermission: vi.fn(async () => { throw new Error('permission endpoint unavailable') }),
@@ -758,6 +778,16 @@ describe('OpenCode adapter transport orchestration', () => {
         name: 'OpenCodeSessionError',
         sessionError: 'SSE disconnected',
       })
+  })
+
+  it('fails an accepted v1 prompt when the event stream ends before its terminal event', async () => {
+    const transport = createV1Transport({
+      dispatchPrompt: vi.fn(async () => ({ kind: 'accepted' as const, receipt: { inboxID: 'inbox-own' } })),
+    })
+
+    await expect(createAdapter(transport).promptSession('session-1', [{ type: 'text', content: 'prompt' }]))
+      .rejects.toThrow('OpenCode event stream ended before the accepted prompt completed')
+    expect(transport.dispatchPrompt).toHaveBeenCalledTimes(1)
   })
 
   it('keeps streamed v1 text when echo recovery cannot read the message snapshot', async () => {
@@ -1183,6 +1213,33 @@ describe('OpenCode adapter transport orchestration', () => {
     await expect(prompt).rejects.toThrow('Another prompt entered the OpenCode session during result attribution')
   })
 
+  it('rejects a terminal snapshot when a newer user turn follows its assistant message', async () => {
+    let reads = 0
+    const { transport, source } = createV2Transport({
+      getSessionMessages: vi.fn(async () => {
+        reads += 1
+        if (reads === 1) return [message('old-assistant', 'stale answer')]
+        return [
+          message('own-assistant', 'answer from an earlier turn'),
+          { id: 'newer-user', role: 'user', content: 'a later prompt', parts: [] },
+        ]
+      }),
+      dispatchPrompt: vi.fn(async () => {
+        source.push(
+          inboxEvent('inbox_enqueued', 'inbox-own', 51),
+          executionEvent('execution_started', 52),
+          inboxEvent('inbox_delivered', 'inbox-own', 53),
+          executionEvent('execution_terminal', 54),
+        )
+        return { kind: 'accepted' as const, receipt: { inboxID: 'inbox-own' } }
+      }),
+    })
+
+    await expect(createAdapter(transport).promptSession('session-1', [{ type: 'text', content: 'prompt' }]))
+      .rejects.toThrow('OpenCode completed the accepted prompt but the newest assistant snapshot is stale')
+    expect(reads).toBe(2)
+  })
+
   it('replays the durable log after a recovered snapshot when SSE closed during that snapshot', async () => {
     let reads = 0
     let logReads = 0
@@ -1288,6 +1345,38 @@ describe('OpenCode adapter transport orchestration', () => {
 
     await expect(createAdapter(transport).promptSession('session-1', [{ type: 'text', content: 'prompt' }]))
       .rejects.toThrow('unaccounted durable sequence gap')
+  })
+
+  it.each([
+    {
+      failure: 'history read error',
+      expected: 'OpenCode v2 history is unavailable for accepted prompt recovery: history backend unavailable',
+    },
+    {
+      failure: 'incomplete history segment',
+      expected: 'OpenCode v2 history is incomplete; durable event sequences cannot certify accepted prompt completion',
+    },
+  ])('fails accepted-prompt recovery when durable history has a $failure', async ({ failure, expected }) => {
+    let dispatched = false
+    const { transport, source } = createV2Transport({
+      dispatchPrompt: vi.fn(async () => {
+        dispatched = true
+        source.fail(new Error('SSE disconnected'))
+        return { kind: 'accepted' as const, receipt: { inboxID: 'inbox-own' } }
+      }),
+      readSessionLog: vi.fn(async (_sessionId: string, after?: number) => {
+        if (after === undefined) return { events: [], cursor: 50, coverageComplete: false }
+        if (dispatched && failure === 'history read error') throw new Error('history backend unavailable')
+        if (dispatched && failure === 'incomplete history segment') {
+          return { events: [], cursor: after + 1, coverageComplete: true }
+        }
+        return { events: [], cursor: after, coverageComplete: true }
+      }),
+    })
+
+    await expect(createAdapter(transport).promptSession('session-1', [{ type: 'text', content: 'prompt' }]))
+      .rejects.toThrow(expected)
+    expect(transport.dispatchPrompt).toHaveBeenCalledTimes(1)
   })
 
   it('fails closed if an echo-refresh snapshot cannot be certified by durable replay', async () => {

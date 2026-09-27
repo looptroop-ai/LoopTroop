@@ -1,6 +1,6 @@
 import type { ReactNode } from 'react'
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
-import { act, fireEvent, render, screen, waitFor } from '@testing-library/react'
+import { act, fireEvent, render, screen, waitFor, within } from '@testing-library/react'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { ProjectForm } from '../ProjectForm'
 import { TooltipProvider } from '@/components/ui/tooltip'
@@ -58,7 +58,23 @@ vi.mock('@/hooks/useProfile', () => ({
 }))
 
 vi.mock('../FolderPicker', () => ({
-  FolderPicker: ({ open }: { open: boolean }) => (open ? <div>Folder Picker</div> : null),
+  FolderPicker: ({
+    open,
+    onClose,
+    onSelect,
+    initialPath,
+  }: {
+    open: boolean
+    onClose: () => void
+    onSelect: (path: string) => void
+    initialPath: string
+  }) => (open ? (
+    <div>
+      <span>Current picker path: {initialPath}</span>
+      <button type="button" onClick={() => onSelect('/work/picked')}>Choose folder</button>
+      <button type="button" onClick={onClose}>Close picker</button>
+    </div>
+  ) : null),
 }))
 
 vi.mock('../AppearancePickers', () => ({
@@ -128,6 +144,65 @@ describe('ProjectForm', () => {
 
     await waitFor(() => expect(screen.getByLabelText(/Project Name/i)).toHaveValue('Unsaved project'))
     expect(dirty).toHaveBeenLastCalledWith(true)
+  })
+
+  it('applies profile defaults to an untouched form after profile loading', async () => {
+    mockProfileState.data = undefined
+    mockProfileState.isLoading = true
+    const dirty = vi.fn()
+    const view = render(<ProjectForm onClose={vi.fn()} onDirtyChange={dirty} />, { wrapper: Wrapper })
+
+    mockProfileState.data = { manualQaEnabled: true, gitHookPolicy: 'use_native_hooks', ignoreMode: 'skip' }
+    mockProfileState.isLoading = false
+    view.rerender(<ProjectForm onClose={vi.fn()} onDirtyChange={dirty} />)
+    fireEvent.click(screen.getByRole('button', { name: /Advanced/ }))
+
+    await waitFor(() => {
+      expect(screen.getByRole('radio', { name: 'Enabled' })).toHaveAttribute('aria-checked', 'true')
+      expect(screen.getByRole('radio', { name: 'Run' })).toHaveAttribute('aria-checked', 'true')
+    })
+    expect(dirty).toHaveBeenLastCalledWith(false)
+  })
+
+  it('opens the folder picker, handles dismissal, and adopts the selected folder', () => {
+    render(<ProjectForm onClose={vi.fn()} />, { wrapper: Wrapper })
+
+    fireEvent.click(screen.getByRole('button', { name: 'Browse...' }))
+    expect(screen.getByText('Current picker path:')).toBeInTheDocument()
+    fireEvent.click(screen.getByRole('button', { name: 'Close picker' }))
+    expect(screen.queryByText(/Current picker path:/)).not.toBeInTheDocument()
+
+    fireEvent.click(screen.getByRole('button', { name: 'Browse...' }))
+    fireEvent.click(screen.getByRole('button', { name: 'Choose folder' }))
+    expect(screen.getByLabelText(/Project Folder/i)).toHaveValue('/work/picked')
+    expect(screen.queryByText(/Current picker path:/)).not.toBeInTheDocument()
+  })
+
+  it('shows a recovery message when repository validation fails', async () => {
+    vi.stubGlobal('fetch', vi.fn().mockRejectedValue(new Error('offline')))
+    render(<ProjectForm onClose={vi.fn()} />, { wrapper: Wrapper })
+
+    fireEvent.change(screen.getByLabelText(/Project Folder/i), { target: { value: '/work/offline' } })
+
+    expect(await screen.findByText('Git check failed. Verify the absolute folder path and try again.'))
+      .toBeInTheDocument()
+  })
+
+  it('ignores a repository-check failure that arrives after unmount', async () => {
+    let rejectCheck!: (reason: Error) => void
+    const check = new Promise<Response>((_resolve, reject) => { rejectCheck = reject })
+    const fetchMock = vi.fn(() => check)
+    vi.stubGlobal('fetch', fetchMock)
+    const view = render(<ProjectForm onClose={vi.fn()} />, { wrapper: Wrapper })
+
+    fireEvent.change(screen.getByLabelText(/Project Folder/i), { target: { value: '/work/offline' } })
+    await waitFor(() => expect(fetchMock).toHaveBeenCalledTimes(1))
+    view.unmount()
+
+    await act(async () => {
+      rejectCheck(new Error('offline'))
+      await check.catch(() => undefined)
+    })
   })
 
   it('does not replace edits made while the restore check is pending', async () => {
@@ -211,6 +286,20 @@ describe('ProjectForm', () => {
       expect.any(Object),
     )
     expect(mockProjectMutations.create.mutate).toHaveBeenCalledTimes(1)
+
+    const updatedProject = makeCreatedProject({
+      name: 'Later project',
+      shortname: 'SAVE',
+      folderPath: '/work/repository',
+    })
+    const updateOptions = mockProjectMutations.update.mutate.mock.calls[0]?.[1] as {
+      onSuccess: (updated: Project) => void
+    }
+    act(() => updateOptions.onSuccess(updatedProject))
+
+    expect(onClose).toHaveBeenCalledTimes(1)
+    expect(dirty).toHaveBeenLastCalledWith(false)
+    expect(mockAddToast).toHaveBeenCalledWith('success', 'Project updated.')
   })
 
   it('warns and blocks adding a directory that is already attached', async () => {
@@ -452,8 +541,8 @@ describe('ProjectForm', () => {
           interviewQuestions: null,
           ticketCounter: 4,
           ignoreMode: 'local',
-          createdAt: '2026-06-01T10:00:00.000Z',
-          updatedAt: '2026-06-29T10:00:00.000Z',
+          createdAt: '2000-06-01T10:00:00.000Z',
+          updatedAt: '2001-06-29T10:00:00.000Z',
         }}
       />, 
       { wrapper: Wrapper },
@@ -461,6 +550,7 @@ describe('ProjectForm', () => {
 
     expect(screen.getByText('State Folder')).toBeInTheDocument()
     expect(screen.getByText('/home/liviu/LoopTroop/.looptroop')).toBeInTheDocument()
+    expect(screen.getAllByText(/\d+ years ago/)).toHaveLength(2)
 
     fireEvent.click(screen.getByRole('button', { name: /Advanced/ }))
     expect(screen.getByRole('radio', { name: 'This clone' })).toBeChecked()
@@ -489,6 +579,8 @@ describe('ProjectForm', () => {
           ticketCounter: 7,
           ticketCount: 7,
           activeTicketCount: 2,
+          aiQuestionsOverride: true,
+          aiQuestionWindowOverride: 5 * 60_000,
           gitHookPolicy: 'use_native_hooks',
           manualQaOverride: true,
           ignoreMode: 'skip',
@@ -522,6 +614,8 @@ describe('ProjectForm', () => {
         existingStateAction: 'restore',
         gitHookPolicy: 'use_native_hooks',
         manualQaOverride: true,
+        aiQuestionsOverride: true,
+        aiQuestionWindowOverride: 5 * 60_000,
         ignoreMode: 'skip',
       }),
       expect.any(Object),
@@ -626,6 +720,11 @@ describe('ProjectForm', () => {
     expect(screen.getByRole('dialog')).toHaveTextContent('New project settings used')
     expect(screen.getByRole('dialog')).toHaveTextContent('NEW-1')
 
+    fireEvent.click(within(screen.getByRole('dialog')).getByRole('button', { name: 'Cancel' }))
+    expect(screen.queryByRole('dialog')).not.toBeInTheDocument()
+    fireEvent.click(screen.getByRole('button', { name: 'Start Fresh' }))
+    expect(screen.getByRole('dialog')).toBeInTheDocument()
+
     fireEvent.click(screen.getByRole('button', { name: 'Start Fresh' }))
     expect(mockProjectMutations.create.mutate).toHaveBeenCalledWith(
       expect.objectContaining({
@@ -640,6 +739,44 @@ describe('ProjectForm', () => {
       folderPath: '/work/meili',
     })))
     expect(mockAddToast).toHaveBeenCalledWith('success', 'Fresh project created after removing existing LoopTroop state.')
+  })
+
+  it('deletes an edited project only after confirmation and reports mutation outcomes', () => {
+    const onClose = vi.fn()
+    const confirm = vi.fn().mockReturnValue(false)
+    vi.stubGlobal('confirm', confirm)
+    render(<ProjectForm onClose={onClose} project={makeCreatedProject()} />, { wrapper: Wrapper })
+
+    fireEvent.click(screen.getByRole('button', { name: 'Delete Project' }))
+    expect(confirm).toHaveBeenCalledWith(
+      'Are you sure you want to delete this project? This will remove its local .looptroop state from the repo and cannot be undone.',
+    )
+    expect(mockProjectMutations.remove.mutate).not.toHaveBeenCalled()
+
+    confirm.mockReturnValue(true)
+    fireEvent.click(screen.getByRole('button', { name: 'Delete Project' }))
+    const failure = mockProjectMutations.remove.mutate.mock.calls[0]?.[1] as {
+      onError: (error: Error) => void
+    }
+    act(() => failure.onError(new Error('Delete failed')))
+    expect(mockAddToast).toHaveBeenCalledWith('error', 'Delete failed', 5000)
+
+    fireEvent.click(screen.getByRole('button', { name: 'Delete Project' }))
+    const success = mockProjectMutations.remove.mutate.mock.calls[1]?.[1] as {
+      onSuccess: () => void
+    }
+    act(() => success.onSuccess())
+    expect(mockAddToast).toHaveBeenCalledWith('success', 'Project deleted and local LoopTroop state removed.')
+    expect(onClose).toHaveBeenCalledTimes(1)
+  })
+
+  it('opens and closes disk cleanup for the edited project', () => {
+    render(<ProjectForm onClose={vi.fn()} project={makeCreatedProject()} />, { wrapper: Wrapper })
+
+    fireEvent.click(screen.getByRole('button', { name: 'Free Disk Space…' }))
+    expect(screen.getByRole('dialog')).toHaveTextContent('Delete worktrees for completed & canceled tickets in Created project')
+    fireEvent.click(within(screen.getByRole('dialog')).getByRole('button', { name: 'Cancel' }))
+    expect(screen.queryByRole('dialog')).not.toBeInTheDocument()
   })
 
   it('keeps destructive confirmation open and disabled while submission is pending or fails', async () => {

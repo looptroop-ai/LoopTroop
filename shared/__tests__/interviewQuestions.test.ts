@@ -83,6 +83,14 @@ describe('shared interview question parsing', () => {
     ])
   })
 
+  it('uses inline IDs when a structured question object has no ID field', () => {
+    expect(parseInterviewQuestions(JSON.stringify([
+      { phase: 'assembly', question: 'Q08: How will the parts fit together?' },
+    ]), { allowTopLevelArray: true })).toEqual([
+      { id: 'Q08', phase: 'Assembly', question: 'How will the parts fit together?' },
+    ])
+  })
+
   it('returns the original nonempty content when no candidate can be unwrapped', () => {
     expect(unwrapInterviewYamlFence('  no structured artifact here  ')).toBe('no structured artifact here')
   })
@@ -194,5 +202,24 @@ describe('shared interview question parsing', () => {
     ].join('\n'))).toEqual([
       { id: 'Q01', phase: 'Discovery', question: 'What must the first version do? before expanding further?' },
     ])
+  })
+
+  it('preserves escaped quotes and skips blank lines while recovering a loose question', () => {
+    const questions = extractInterviewQuestionPreviews([
+      'invalid: [wrapper',
+      '# Foundation',
+      'question: "What is the \\"best\\" outcome?',
+      '',
+      '  before choosing?"',
+    ].join('\n'))
+
+    expect(questions).toHaveLength(1)
+    expect(questions[0]).toMatchObject({ id: 'Q01', phase: 'Foundation' })
+    expect(questions[0]?.question).toContain('best')
+    expect(questions[0]?.question).toContain('before choosing?')
+  })
+
+  it('returns no previews for an empty nested question wrapper', () => {
+    expect(extractInterviewQuestionPreviews(JSON.stringify({ result: { items: {} } }))).toEqual([])
   })
 })

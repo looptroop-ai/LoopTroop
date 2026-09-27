@@ -472,6 +472,20 @@ dismissed state was read back from the API. Each is accepted only for the stated
 | #49 | `typescript:S4036` | `server/test/tempDir.ts:93` | Test fixture | 2026-09-11 |
 | #158 | `githubactions:S6505` | `.github/workflows/published-smoke.yml:342` | OpenCode tooling (PR analysis repeat) | 2026-09-11 |
 
+## PR195 dismissal ledger
+
+GitHub code-scanning alert #203 was dismissed as `false positive` on 2026-09-27, and its
+dismissed state was read back from the API. It reports the `npm ci` step in the read-only
+`coverage` job. That job verifies npm 12 immediately before installation; the root `allowScripts`
+policy permits only the exact esbuild versions `0.25.12` and `0.28.2`, explicitly denies
+`fsevents@2.3.3`, and leaves all other install scripts blocked. The job has `contents: read` and
+checks out without persisted credentials. This uses the existing Project policy rationale and
+does not change the npm install policy. SonarCloud evaluates its quality gate separately.
+
+| Alert | Rule | Location at review | Reason | Date |
+| --- | --- | --- | --- | --- |
+| #203 | `githubactions:S6505` | `.github/workflows/ci.yml:255` | Project policy | 2026-09-27 |
+
 ## Fixed instead of dismissed
 
 - Docker's production install disables lifecycle scripts. Its Node base shipped npm 11, so the

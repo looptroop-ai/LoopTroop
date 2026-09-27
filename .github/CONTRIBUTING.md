@@ -50,7 +50,10 @@ Useful commands:
 npm run lint
 npm run typecheck
 npm run test
+npm run test:coverage
 ```
+
+`npm run test:coverage` runs all four Vitest projects, writes `coverage/lcov.info` and `coverage/coverage-summary.json`, and prints a text report. CI uses it in the required Ubuntu Verify job and retains the files as a seven-day artifact. A separate OIDC Codecov job uploads LCOV; project and patch statuses are informational and have no percentage targets.
 
 `typecheck` runs two projects: the application (`tsconfig.json`) and the root
 `tests/` directory (`tsconfig.tests.json`). They are separate so that adding a

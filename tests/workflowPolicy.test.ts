@@ -114,6 +114,40 @@ function executeCleanTreeGate(run: string, workingTree: string) {
   })
 }
 
+function executeNodeFloorGate(run: string, before: string, after: string, checkerStatus = 0) {
+  const directory = mkdtempSync(join(tmpdir(), 'looptroop-node-floor-gate-'))
+  const checkerCalls = join(directory, 'checker-calls')
+  const fixture = [
+    'git() { case "$1" in fetch) return 0 ;; show) printf \'{}\\n\' ;; *) return 2 ;; esac; }',
+    'node() {',
+    '  if [ "$1" = "-p" ]; then',
+    '    case "$2" in *readFileSync\\(0*) printf "%s\\n" "$BEFORE" ;; *) printf "%s\\n" "$AFTER" ;; esac',
+    '  elif [ "$1" = "scripts/check-node-feeds.ts" ]; then',
+    '    printf "called\\n" >> "$CHECKER_CALLS"',
+    '    return "$CHECKER_STATUS"',
+    '  else return 2; fi',
+    '}',
+    '',
+  ].join('\n')
+
+  try {
+    const result = spawnSync('bash', ['-euo', 'pipefail', '-c', fixture + run], {
+      encoding: 'utf8',
+      env: {
+        ...process.env,
+        AFTER: after,
+        BASE_REF: 'base-ref',
+        BEFORE: before,
+        CHECKER_CALLS: checkerCalls,
+        CHECKER_STATUS: String(checkerStatus),
+      },
+    })
+    return { ...result, checkerCalled: existsSync(checkerCalls) }
+  } finally {
+    rmSync(directory, { recursive: true, force: true })
+  }
+}
+
 describe('release workflow policy', () => {
   it('limits runner auditing to supported jobs without publishing credentials', () => {
     for (const [file, workflow] of workflows) {
@@ -655,6 +689,22 @@ describe('release workflow policy', () => {
 
     const packaging = ci.packaging as (Job & { needs?: unknown }) | undefined
     expect(packaging?.needs, 'Packaging waits on the declared-floor lanes').toContain('test-matrix')
+  })
+
+  it('skips the networked Node-feed verifier for an unchanged floor and propagates failures for a changed floor', () => {
+    const verify = workflows.get('ci.yml')?.jobs?.verify
+    const gate = verify?.steps?.find((step) => step.name === 'Check every feed offers a changed Node floor')
+    if (typeof gate?.run !== 'string') throw new Error('Node floor feed gate script missing')
+
+    const unchanged = executeNodeFloorGate(gate.run, '>=24.15.0', '>=24.15.0')
+    expect(unchanged.status, unchanged.stderr).toBe(0)
+    expect(unchanged.stdout).toContain('engines.node is unchanged (>=24.15.0); no feed to check.')
+    expect(unchanged.checkerCalled).toBe(false)
+
+    const changed = executeNodeFloorGate(gate.run, '>=24.15.0', '>=24.17.0', 17)
+    expect(changed.status, changed.stderr).toBe(17)
+    expect(changed.stdout).toContain('engines.node changes from >=24.15.0 to >=24.17.0.')
+    expect(changed.checkerCalled).toBe(true)
   })
 
   /**

@@ -4,6 +4,7 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import {
   mintBootstrapUrl,
+  startCommand,
   statusCommand,
 } from '../commands'
 import {
@@ -22,6 +23,7 @@ describe('CLI daemon status', () => {
   afterEach(() => {
     restoreStdout()
     restoreStdout = () => {}
+    vi.restoreAllMocks()
     vi.unstubAllGlobals()
     if (originalConfigDir === undefined) delete process.env.LOOPTROOP_CONFIG_DIR
     else process.env.LOOPTROOP_CONFIG_DIR = originalConfigDir
@@ -150,6 +152,36 @@ describe('CLI daemon status', () => {
     expect(await statusCommand(false)).toBe(1)
     expect(stdout.text()).toContain(`LoopTroop is not answering, but pid ${process.pid} is still running`)
     expect(stdout.text()).toContain('Run `looptroop stop`')
+  })
+
+  it('keeps start idempotent when the recorded daemon is answering', async () => {
+    const configDir = useConfigDir()
+    writeDaemonState(makeState(), configDir)
+    vi.stubGlobal('fetch', vi.fn().mockResolvedValue(
+      new Response(JSON.stringify({ instanceId: 'status-instance' }), { status: 200 }),
+    ))
+    const stdout = captureStdout()
+    const stderr = vi.spyOn(process.stderr, 'write').mockImplementation(() => true)
+
+    expect(await startCommand({ opencodeLogs: 'all' })).toBe(0)
+    expect(stdout.text()).toContain('LoopTroop is already running')
+    expect(stderr).toHaveBeenCalledWith(expect.stringContaining('only applies when LoopTroop starts the daemon'))
+  })
+
+  it('refuses start while the previous startup still owns OpenCode', async () => {
+    const configDir = useConfigDir()
+    writeDaemonStartFailure({
+      reason: 'startup-cleanup-incomplete',
+      at: '2026-09-27T00:00:00.000Z',
+      version: '1.2.3',
+      message: 'OpenCode cleanup could not be verified.',
+      openCode: { baseUrl: 'http://127.0.0.1:4096', pid: 9876 },
+    }, configDir)
+    const stderr = vi.spyOn(process.stderr, 'write').mockImplementation(() => true)
+
+    expect(await startCommand()).toBe(1)
+    expect(stderr).toHaveBeenCalledWith(expect.stringContaining('previous startup still owns OpenCode'))
+    expect(stderr).toHaveBeenCalledWith(expect.stringContaining('pid 9876'))
   })
 })
 

@@ -4,7 +4,7 @@ import type { TicketContext } from '../../machines/types'
 import { ticketMachine } from '../../machines/ticketMachine'
 import { attachWorkflowRunner } from '../runner'
 import * as questionWindows from '../questionWindows'
-import { phaseIntermediate, runningPhases, ticketAbortControllers } from '../phases'
+import { interviewQASessions, phaseIntermediate, runningPhases, ticketAbortControllers } from '../phases'
 import { OpenCodeUnavailableError, TicketWorkspaceNotInitializedError } from '../../lib/workflowErrors'
 import { TEST, makeTicketContext } from '../../test/factories'
 import {
@@ -33,9 +33,11 @@ function createSnapshotActor(value: string, overrides: Partial<TicketContext> = 
 
 const {
   mockLifecyclePhaseMocks,
+  livePhaseMocks,
   handleInterviewDeliberateMock,
   handleCodingMock,
   handleFinalTestMock,
+  handleManualQaChecklistGenerationMock,
   handlePrdRefineMock,
   handleExecutionSetupPlanGenerationMock,
   handleMockExecutionUnsupportedMock,
@@ -58,9 +60,29 @@ const {
     handleMockBeadsExpansion: vi.fn(),
     handleMockCoverage: vi.fn(),
   },
+  livePhaseMocks: {
+    handleInterviewVote: vi.fn(),
+    handleInterviewCompile: vi.fn(),
+    handleInterviewQAStart: vi.fn(),
+    handleCoverageVerification: vi.fn(),
+    handlePrdDraft: vi.fn(),
+    handlePrdVote: vi.fn(),
+    handleBeadsDraft: vi.fn(),
+    handleBeadsVote: vi.fn(),
+    handleBeadsRefine: vi.fn(),
+    handleBeadsExpansion: vi.fn(),
+    handlePreFlight: vi.fn(),
+    handleExecutionSetup: vi.fn(),
+    handleRelevantFilesScan: vi.fn(),
+    handleManualQaChecklistGeneration: vi.fn(),
+    handleIntegration: vi.fn(),
+    handleCreatePullRequest: vi.fn(),
+    handleCleanup: vi.fn(),
+  },
   handleInterviewDeliberateMock: vi.fn(),
   handleCodingMock: vi.fn(),
   handleFinalTestMock: vi.fn(),
+  handleManualQaChecklistGenerationMock: vi.fn(),
   handlePrdRefineMock: vi.fn(),
   handleExecutionSetupPlanGenerationMock: vi.fn(),
   handleMockExecutionUnsupportedMock: vi.fn(),
@@ -83,11 +105,17 @@ vi.mock('../../opencode/sessionManager', async (importOriginal) => ({
   abortTicketSessions: abortTicketSessionsMock,
 }))
 
+vi.mock('../../phases/manualQa', async (importOriginal) => ({
+  ...await importOriginal<typeof import('../../phases/manualQa')>(),
+  handleManualQaChecklistGeneration: handleManualQaChecklistGenerationMock,
+}))
+
 vi.mock('../phases', async () => {
   const actual = await vi.importActual<typeof import('../phases')>('../phases')
   return {
     ...actual,
     ...mockLifecyclePhaseMocks,
+    ...livePhaseMocks,
     handleInterviewDeliberate: handleInterviewDeliberateMock,
     handleCoding: handleCodingMock,
     handleFinalTest: handleFinalTestMock,
@@ -115,9 +143,11 @@ describe('attachWorkflowRunner', () => {
     }
     ticketAbortControllers.clear()
     for (const mock of Object.values(mockLifecyclePhaseMocks)) mock.mockReset()
+    for (const mock of Object.values(livePhaseMocks)) mock.mockReset()
     handleInterviewDeliberateMock.mockReset()
     handleCodingMock.mockReset()
     handleFinalTestMock.mockReset()
+    handleManualQaChecklistGenerationMock.mockReset()
     handlePrdRefineMock.mockReset()
     handleExecutionSetupPlanGenerationMock.mockReset()
     handleMockExecutionUnsupportedMock.mockReset()
@@ -127,6 +157,7 @@ describe('attachWorkflowRunner', () => {
     isTicketCancellationPendingMock.mockReset().mockReturnValue(false)
     clearAllPendingSessionContinuationsForTests()
     phaseIntermediate.clear()
+    interviewQASessions.clear()
   })
 
   it.each([
@@ -153,6 +184,96 @@ describe('attachWorkflowRunner', () => {
     expect(actor.getSnapshot().context.errorCodes).toEqual([code])
     expect(error.name).toBe('Error')
     expect(JSON.stringify(error)).toBe(JSON.stringify(new Error(error.message)))
+    actor.stop()
+  })
+
+  it.each([
+    ['SCANNING_RELEVANT_FILES', 'handleRelevantFilesScan', 'RELEVANT_FILES_SCAN_FAILED'],
+    ['COUNCIL_DELIBERATING', 'handleInterviewDeliberate', 'QUORUM_NOT_MET'],
+    ['COUNCIL_VOTING_INTERVIEW', 'handleInterviewVote', 'QUORUM_NOT_MET', 'interview'],
+    ['COMPILING_INTERVIEW', 'handleInterviewCompile', undefined, 'interview'],
+    ['WAITING_INTERVIEW_ANSWERS', 'handleInterviewQAStart', 'PROM4_INIT_FAILED'],
+    ['VERIFYING_INTERVIEW_COVERAGE', 'handleCoverageVerification', 'COVERAGE_FAILED', 'interview'],
+    ['DRAFTING_PRD', 'handlePrdDraft', 'QUORUM_NOT_MET'],
+    ['COUNCIL_VOTING_PRD', 'handlePrdVote', 'QUORUM_NOT_MET', 'prd'],
+    ['REFINING_PRD', 'handlePrdRefine', undefined, 'prd'],
+    ['VERIFYING_PRD_COVERAGE', 'handleCoverageVerification', 'COVERAGE_FAILED', 'prd'],
+    ['DRAFTING_BEADS', 'handleBeadsDraft', 'QUORUM_NOT_MET'],
+    ['COUNCIL_VOTING_BEADS', 'handleBeadsVote', 'QUORUM_NOT_MET', 'beads'],
+    ['REFINING_BEADS', 'handleBeadsRefine', undefined, 'beads'],
+    ['VERIFYING_BEADS_COVERAGE', 'handleCoverageVerification', 'COVERAGE_FAILED', 'beads'],
+    ['EXPANDING_BEADS', 'handleBeadsExpansion', 'EXPANSION_FAILED'],
+    ['PRE_FLIGHT_CHECK', 'handlePreFlight', 'PREFLIGHT_FAILED'],
+    ['GENERATING_EXECUTION_SETUP_PLAN', 'handleExecutionSetupPlanGeneration', 'EXECUTION_SETUP_PLAN_FAILED'],
+    ['PREPARING_EXECUTION_ENV', 'handleExecutionSetup', 'EXECUTION_SETUP_FAILED'],
+    ['CODING', 'handleCoding', 'CODING_FAILED'],
+    ['RUNNING_FINAL_TEST', 'handleFinalTest', 'TESTS_FAILED'],
+    ['GENERATING_QA_CHECKLIST', 'handleManualQaChecklistGeneration', 'MANUAL_QA_CHECKLIST_FAILED'],
+    ['INTEGRATING_CHANGES', 'handleIntegration', 'INTEGRATION_FAILED'],
+    ['CREATING_PULL_REQUEST', 'handleCreatePullRequest', 'PULL_REQUEST_FAILED'],
+    ['CLEANING_ENV', 'handleCleanup', 'CLEANUP_FAILED'],
+  ] as const)('sends a phase-specific blocked error when %s fails', async (state, handlerName, code, intermediatePhase?) => {
+    const handlers = {
+      ...livePhaseMocks,
+      handleInterviewDeliberate: handleInterviewDeliberateMock,
+      handlePrdRefine: handlePrdRefineMock,
+      handleExecutionSetupPlanGeneration: handleExecutionSetupPlanGenerationMock,
+      handleCoding: handleCodingMock,
+      handleFinalTest: handleFinalTestMock,
+      handleManualQaChecklistGeneration: handleManualQaChecklistGenerationMock,
+    }
+    const handler = handlers[handlerName as keyof typeof handlers]
+    const error = new Error('phase failed')
+    handler.mockRejectedValue(error)
+    if (intermediatePhase) phaseIntermediate.set(`${TEST.ticketId}:${intermediatePhase}`, {} as never)
+
+    const actor = createSnapshotActor(state)
+    const sendEvent = vi.fn((event) => actor.send(event))
+    actor.start()
+    attachWorkflowRunner(TEST.ticketId, actor, sendEvent)
+
+    await vi.waitFor(() => expect(actor.getSnapshot().value).toBe('BLOCKED_ERROR'))
+    expect(sendEvent).toHaveBeenCalledWith(expect.objectContaining({
+      type: 'ERROR',
+      message: error.message,
+      ...(code ? { codes: [code] } : {}),
+    }))
+    await vi.waitFor(() => expect(runningPhases.has(`${TEST.ticketId}:${state}`)).toBe(false))
+    actor.stop()
+  })
+
+  it.each([
+    ['COUNCIL_VOTING_INTERVIEW', 'Council data lost after restart. Retry to re-run deliberation.'],
+    ['COMPILING_INTERVIEW', 'Council data lost after restart. Retry to re-run deliberation.'],
+    ['COUNCIL_VOTING_PRD', 'Council data lost after restart. Retry to re-run PRD drafting.'],
+    ['REFINING_PRD', 'Council data lost after restart. Retry to re-run PRD drafting.'],
+    ['COUNCIL_VOTING_BEADS', 'Council data lost after restart. Retry to re-run beads drafting.'],
+    ['REFINING_BEADS', 'Council data lost after restart. Retry to re-run beads drafting.'],
+  ] as const)('blocks restored %s when its persisted intermediate data is missing', async (state, message) => {
+    const actor = createSnapshotActor(state)
+    const sendEvent = vi.fn((event) => actor.send(event))
+    actor.start()
+    attachWorkflowRunner(TEST.ticketId, actor, sendEvent)
+
+    await vi.waitFor(() => expect(actor.getSnapshot().value).toBe('BLOCKED_ERROR'))
+    expect(sendEvent).toHaveBeenCalledWith({ type: 'ERROR', message, codes: ['INTERMEDIATE_DATA_LOST'] })
+    actor.stop()
+  })
+
+  it('turns a failed mock lifecycle handler into a blocked workflow error', async () => {
+    isMockOpenCodeModeMock.mockReturnValue(true)
+    mockLifecyclePhaseMocks.handleMockPrdDraft.mockRejectedValue(new Error('mock phase failed'))
+    const actor = createSnapshotActor('DRAFTING_PRD')
+    const sendEvent = vi.fn((event) => actor.send(event))
+    actor.start()
+    attachWorkflowRunner(TEST.ticketId, actor, sendEvent)
+
+    await vi.waitFor(() => expect(actor.getSnapshot().value).toBe('BLOCKED_ERROR'))
+    expect(sendEvent).toHaveBeenCalledWith(expect.objectContaining({
+      type: 'ERROR',
+      message: 'mock phase failed',
+      codes: ['MOCK_LIFECYCLE_FAILED'],
+    }))
     actor.stop()
   })
 
@@ -227,6 +348,51 @@ describe('attachWorkflowRunner', () => {
     expect(sendEvent).not.toHaveBeenCalled()
     for (const handler of Object.values(mockLifecyclePhaseMocks)) expect(handler).not.toHaveBeenCalled()
     expect(handleMockExecutionUnsupportedMock).not.toHaveBeenCalled()
+  })
+
+  it.each([
+    ['SCANNING_RELEVANT_FILES', 'handleRelevantFilesScan'],
+    ['COUNCIL_VOTING_INTERVIEW', 'handleInterviewVote', 'interview'],
+    ['COMPILING_INTERVIEW', 'handleInterviewCompile', 'interview'],
+    ['WAITING_INTERVIEW_ANSWERS', 'handleInterviewQAStart'],
+    ['VERIFYING_INTERVIEW_COVERAGE', 'handleCoverageVerification', 'interview'],
+    ['DRAFTING_PRD', 'handlePrdDraft'],
+    ['COUNCIL_VOTING_PRD', 'handlePrdVote', 'prd'],
+    ['VERIFYING_PRD_COVERAGE', 'handleCoverageVerification', 'prd'],
+    ['DRAFTING_BEADS', 'handleBeadsDraft'],
+    ['COUNCIL_VOTING_BEADS', 'handleBeadsVote', 'beads'],
+    ['REFINING_BEADS', 'handleBeadsRefine', 'beads'],
+    ['VERIFYING_BEADS_COVERAGE', 'handleCoverageVerification', 'beads'],
+    ['EXPANDING_BEADS', 'handleBeadsExpansion'],
+    ['PRE_FLIGHT_CHECK', 'handlePreFlight'],
+    ['PREPARING_EXECUTION_ENV', 'handleExecutionSetup'],
+    ['RUNNING_FINAL_TEST', 'handleFinalTest'],
+    ['GENERATING_QA_CHECKLIST', 'handleManualQaChecklistGeneration'],
+    ['INTEGRATING_CHANGES', 'handleIntegration'],
+    ['CREATING_PULL_REQUEST', 'handleCreatePullRequest'],
+    ['CLEANING_ENV', 'handleCleanup'],
+  ] as const)('dispatches the live handler for %s', async (state, handlerName, phase?) => {
+    const handler = handlerName === 'handleFinalTest'
+      ? handleFinalTestMock.mockResolvedValue(undefined)
+      : handlerName === 'handleManualQaChecklistGeneration'
+        ? handleManualQaChecklistGenerationMock.mockResolvedValue(undefined)
+        : livePhaseMocks[handlerName as keyof typeof livePhaseMocks].mockResolvedValue(undefined)
+    if (phase) phaseIntermediate.set(`${TEST.ticketId}:${phase}`, {} as never)
+
+    const actor = createSnapshotActor(state)
+    const sendEvent = vi.fn()
+    actor.start()
+    attachWorkflowRunner(TEST.ticketId, actor, sendEvent)
+
+    await vi.waitFor(() => expect(handler).toHaveBeenCalledTimes(1))
+    const expectedArgs = handlerName === 'handleCoverageVerification'
+      ? [TEST.ticketId, expect.anything(), sendEvent, phase, expect.anything()]
+      : state === 'CLEANING_ENV'
+        ? [TEST.ticketId, expect.anything(), sendEvent]
+        : [TEST.ticketId, expect.anything(), sendEvent, expect.anything()]
+    expect(handler).toHaveBeenCalledWith(...expectedArgs)
+    await vi.waitFor(() => expect(runningPhases.has(`${TEST.ticketId}:${state}`)).toBe(false))
+    actor.stop()
   })
 
   it.each([

@@ -18,9 +18,13 @@ if (installed.version !== manifest.dependencies[packageName]) throw new Error(`U
 if (tool === 'bun' || tool.startsWith('opencode-')) {
   const platform = process.platform === 'win32' ? 'windows' : process.platform
   const arch = tool === 'bun' && process.arch === 'arm64' ? 'aarch64' : process.arch
-  // Baseline x64 binaries work on runners without AVX2. These CI jobs use glibc.
+  // Prefer baseline x64 binaries when available. Bun 1.4 ships one x64 binary.
   const suffix = `${platform}-${arch}${process.arch === 'x64' ? '-baseline' : ''}`
-  const nativeName = Object.keys(installed.optionalDependencies).find((dependency) => dependency.endsWith(`-${suffix}`))
+  const dependencies = Object.keys(installed.optionalDependencies)
+  const nativeName = dependencies.find((dependency) => dependency.endsWith(`-${suffix}`))
+    ?? (tool === 'bun' && process.arch === 'x64'
+      ? dependencies.find((dependency) => dependency.endsWith(`-${platform}-${arch}`))
+      : undefined)
   if (!nativeName) throw new Error(`No reviewed native package for ${tool} on ${suffix}`)
   const binary = `${tool === 'bun' ? 'bun' : 'opencode'}${process.platform === 'win32' ? '.exe' : ''}`
   const source = join(root, 'node_modules', nativeName, 'bin', binary)

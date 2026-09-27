@@ -270,6 +270,7 @@ Unreleased changes appear first and represent commits that have not yet been inc
 - The unused `server/db/drizzle.config.ts` alias. Every database script already selects its app or project config explicitly, so keeping a third config that Drizzle Kit cannot discover from the repository root only advertised a command that no longer worked.
 
 ### Fixed
+- CI selects Bun's available x64 package when verifying a new Bun version, so the update no longer fails because the package has no separate baseline variant.
 - CI tool setup uses normal executable discovery, probes copied native binaries before exposing them, and preserves native Windows Bun lookup. Renovate keeps CI-tool major updates separate and refreshes all lockfiles together; network, authentication, atomic-write and install-policy regressions cover the review findings.
 - Stable-release arguments use positional parameters so the workflow test passes on macOS Bash 3.2 under `nounset`; the release draft job itself runs on Ubuntu.
 - Container builds use npm bundled in the digest-pinned Node image, removing a separate unverified npm download while retaining the release lockfile and disabled install scripts.

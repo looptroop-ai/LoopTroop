@@ -34,7 +34,7 @@ const isRunnerNativePackage = (
 ): boolean => metadata?.os?.includes(process.platform) === true
     && metadata?.cpu?.includes(process.arch) === true
     && !packageName.includes('musl')
-    && (process.arch !== 'x64' || packageName.endsWith('-baseline'))
+    && (process.arch !== 'x64' || packageName.endsWith('-baseline') || packageName.startsWith('@oven/bun-'))
 
 const expectedNativeBinPath = (tool: string, packageRoot: string, directory: string): string =>
   tool === 'bun' && process.platform === 'win32'

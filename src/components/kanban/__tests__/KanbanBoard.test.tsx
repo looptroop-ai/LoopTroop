@@ -32,6 +32,11 @@ function openPresetsMenu() {
   fireEvent.keyDown(trigger, { key: 'ArrowDown' })
 }
 
+function openDropdown(trigger: HTMLElement) {
+  act(() => trigger.focus())
+  fireEvent.keyDown(trigger, { key: 'ArrowDown' })
+}
+
 function makeFilters(search = ''): UIContextValue['state']['filters'] {
   return {
     projectId: null,
@@ -234,6 +239,107 @@ describe('KanbanBoard', () => {
     expect(screen.getByText('Active workflow')).toBeInTheDocument()
     expect(screen.getByText('Waiting for user')).toBeInTheDocument()
     expect(screen.getByText('Completed tickets')).toBeInTheDocument()
+  })
+
+  it('selects and clears the project filter through its dropdown', () => {
+    const dispatch = vi.fn()
+    const project = makeProject({ icon: 'data:image/png;base64,AAAA' })
+    mockBoardData([], [project])
+    const uiValue = makeUIValue('', dispatch, { projectId: project.id })
+    uiValue.state.showTriageBar = true
+    const { container } = sharedRenderWithProviders(
+      <UIContext.Provider value={uiValue}>
+        <KanbanBoard />
+      </UIContext.Provider>,
+    )
+
+    const trigger = screen.getByRole('button', { name: project.name })
+    expect(container.querySelector('img[src="data:image/png;base64,AAAA"]')).toBeInTheDocument()
+    openDropdown(trigger)
+    fireEvent.click(screen.getByRole('menuitem', { name: 'All Projects' }))
+    expect(dispatch).toHaveBeenCalledWith({ type: 'SET_FILTER', filter: { projectId: null } })
+
+    openDropdown(trigger)
+    fireEvent.click(screen.getByRole('menuitem', { name: project.name }))
+    expect(dispatch).toHaveBeenCalledWith({ type: 'SET_FILTER', filter: { projectId: project.id } })
+  })
+
+  it('adds status, phase, and priority filters from the triage controls', () => {
+    const dispatch = vi.fn()
+    mockBoardData([], [makeProject()])
+    renderTriageBar({}, dispatch)
+
+    const statusGroup = screen.getByText('Status').parentElement as HTMLElement
+    openDropdown(within(statusGroup).getByRole('button'))
+    fireEvent.click(screen.getByRole('menuitem', { name: 'Backlog' }))
+    expect(dispatch).toHaveBeenCalledWith({ type: 'SET_FILTER', filter: { status: ['DRAFT'] } })
+
+    const phaseGroup = screen.getByText('Phase').parentElement as HTMLElement
+    openDropdown(within(phaseGroup).getByRole('button'))
+    fireEvent.click(screen.getByText('Implementation', { exact: true }))
+    expect(dispatch).toHaveBeenCalledWith({ type: 'SET_FILTER', filter: { phase: ['implementation'] } })
+
+    fireEvent.click(screen.getByRole('button', { name: 'H' }))
+    expect(dispatch).toHaveBeenCalledWith({ type: 'SET_FILTER', filter: { priority: [2] } })
+  })
+
+  it('clears the last selected status, phase, and priority filters', () => {
+    const dispatch = vi.fn()
+    mockBoardData([], [makeProject()])
+    renderTriageBar({ status: ['CODING'], phase: ['implementation'], priority: [1] }, dispatch)
+
+    const statusGroup = screen.getByText('Status').parentElement as HTMLElement
+    openDropdown(within(statusGroup).getByRole('button'))
+    fireEvent.click(screen.getByRole('menuitem', { name: /Implementing/ }))
+    expect(dispatch).toHaveBeenCalledWith({ type: 'SET_FILTER', filter: { status: null } })
+
+    const phaseGroup = screen.getByText('Phase').parentElement as HTMLElement
+    openDropdown(within(phaseGroup).getByRole('button'))
+    fireEvent.click(screen.getByText('Implementation', { exact: true }))
+    expect(dispatch).toHaveBeenCalledWith({ type: 'SET_FILTER', filter: { phase: null } })
+
+    fireEvent.click(screen.getByRole('button', { name: 'VH' }))
+    expect(dispatch).toHaveBeenCalledWith({ type: 'SET_FILTER', filter: { priority: null } })
+  })
+
+  it('dispatches stale, error, mock, and sort filter changes', () => {
+    const dispatch = vi.fn()
+    mockBoardData([], [makeProject()])
+    renderTriageBar({}, dispatch)
+
+    fireEvent.change(screen.getByLabelText('Stale'), { target: { value: '3' } })
+    fireEvent.change(screen.getByLabelText('Errors'), { target: { value: 'blocked' } })
+    fireEvent.change(screen.getByLabelText('Mocks'), { target: { value: 'hide' } })
+    fireEvent.change(screen.getByLabelText('Sort'), { target: { value: 'title_asc' } })
+
+    expect(dispatch).toHaveBeenNthCalledWith(1, { type: 'SET_FILTER', filter: { stuckDays: 3 } })
+    expect(dispatch).toHaveBeenNthCalledWith(2, { type: 'SET_FILTER', filter: { errorState: 'blocked' } })
+    expect(dispatch).toHaveBeenNthCalledWith(3, { type: 'SET_FILTER', filter: { showMocks: false } })
+    expect(dispatch).toHaveBeenNthCalledWith(4, { type: 'SET_FILTER', filter: { sortBy: 'title_asc' } })
+  })
+
+  it('resets all filters when an active non-search filter leaves no matching tickets', () => {
+    const dispatch = vi.fn()
+    mockBoardData([], [makeProject()])
+    renderWithFilters({ status: ['CODING'] }, dispatch)
+
+    expect(screen.getByText('No tickets match active search or filters.')).toBeInTheDocument()
+    fireEvent.click(screen.getByRole('button', { name: 'Reset filters & search' }))
+
+    expect(dispatch).toHaveBeenCalledWith({
+      type: 'SET_FILTER',
+      filter: {
+        search: '',
+        projectId: null,
+        priority: null,
+        status: null,
+        phase: null,
+        stuckDays: null,
+        errorState: 'none',
+        sortBy: 'updatedAt_desc',
+        showMocks: true,
+      },
+    })
   })
 
   it('filters rendered tickets and column counts by ticket ID compact matching', () => {
@@ -462,8 +568,8 @@ describe('KanbanBoard', () => {
         'Night ops': {
           priority: [1, 2],
           stuckDays: 3,
-          status: null,
-          phase: null,
+          status: ['CODING'],
+          phase: ['implementation'],
           errorState: 'blocked',
           sortBy: 'priority_asc',
           showMocks: true,
@@ -482,6 +588,8 @@ describe('KanbanBoard', () => {
 
     const tooltip = await screen.findByRole('tooltip')
     expect(tooltip).toHaveTextContent('Priority: Very High, High')
+    expect(tooltip).toHaveTextContent('Status: Implementing (Bead ?/?)')
+    expect(tooltip).toHaveTextContent('Phase: Implementation')
     expect(tooltip).toHaveTextContent('Stale: > 3 days inactive')
     expect(tooltip).toHaveTextContent('Errors: Currently blocked')
     expect(tooltip).toHaveTextContent('Sort: Priority (High to Low)')
@@ -510,7 +618,13 @@ describe('KanbanBoard', () => {
     const { unmount } = renderWithProviders(<KanbanBoard />)
 
     openPresetsMenu()
-    fireEvent.change(screen.getByPlaceholderText('New preset...'), {
+    const input = screen.getByPlaceholderText('New preset...')
+    input.focus()
+    fireEvent.keyDown(input, { key: 'ArrowDown' })
+    fireEvent.pointerDown(input)
+    expect(input).toHaveFocus()
+    expect(screen.getByRole('menu')).toContainElement(input)
+    fireEvent.change(input, {
       target: { value: 'Night ops' },
     })
     fireEvent.click(screen.getByRole('button', { name: 'Save' }))
@@ -570,6 +684,52 @@ describe('KanbanBoard', () => {
 
     openPresetsMenu()
     expect(screen.getByRole('button', { name: 'Project ops' })).toBeInTheDocument()
+  })
+
+  it('applies and deletes a saved preset', () => {
+    const dispatch = vi.fn()
+    const uiValue = makeUIValue('', dispatch)
+    uiValue.state.showTriageBar = true
+    uiValue.state.presetsByProject = {
+      'looptroop-presets-global': {
+        'Night ops': {
+          priority: [1, 4],
+          stuckDays: 7,
+          status: ['CODING'],
+          phase: ['implementation'],
+          errorState: 'past',
+          sortBy: 'title_desc',
+          showMocks: false,
+        },
+      },
+    }
+    sharedRenderWithProviders(
+      <UIContext.Provider value={uiValue}>
+        <KanbanBoard />
+      </UIContext.Provider>,
+    )
+
+    openPresetsMenu()
+    fireEvent.click(screen.getByRole('button', { name: 'Night ops' }))
+    expect(dispatch).toHaveBeenCalledWith({
+      type: 'SET_FILTER',
+      filter: {
+        priority: [1, 4],
+        status: ['CODING'],
+        phase: ['implementation'],
+        stuckDays: 7,
+        errorState: 'past',
+        sortBy: 'title_desc',
+        showMocks: false,
+      },
+    })
+
+    fireEvent.click(screen.getByRole('button', { name: 'Delete preset Night ops' }))
+    expect(dispatch).toHaveBeenCalledWith({
+      type: 'SET_PRESETS',
+      presetKey: 'looptroop-presets-global',
+      presets: {},
+    })
   })
 
   it('shows a dashboard no-results state with a clear action', () => {

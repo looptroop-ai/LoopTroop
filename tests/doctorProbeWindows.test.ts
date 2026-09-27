@@ -1,8 +1,14 @@
-import { describe, it, expect, vi, beforeEach } from 'vitest'
+import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
+import { mkdtempSync, rmSync } from 'node:fs'
+import { tmpdir } from 'node:os'
+import { join } from 'node:path'
+import { writeDaemonState } from '../server/lib/daemonPaths'
 
 const spawnSync = vi.hoisted(() => vi.fn())
 const resolveTrustedProgram = vi.hoisted(() => vi.fn())
 const resolveInterpreter = vi.hoisted(() => vi.fn())
+const probeOpenCodeConnection = vi.hoisted(() => vi.fn())
+const probePort = vi.hoisted(() => vi.fn())
 
 vi.mock('node:child_process', async (importOriginal) => {
   const actual = await importOriginal<typeof import('node:child_process')>()
@@ -23,13 +29,24 @@ vi.mock('../server/lib/executablePath', async (importOriginal) => {
   }
 })
 
+vi.mock('../server/opencode/connection', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('../server/opencode/connection')>()
+  return { ...actual, probeOpenCodeConnection }
+})
+
+vi.mock('../server/lib/portProbe', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('../server/lib/portProbe')>()
+  return { ...actual, probePort }
+})
+
 /** An npm-installed shim: what Node refuses to launch directly. */
 const NPM_SHIM = 'C:\\Users\\dev\\AppData\\Roaming\\npm\\npm.cmd'
 /** A real program, which needs no interpreter on any platform. */
 const GH_EXE = 'C:\\Program Files\\GitHub CLI\\gh.exe'
 const CMD = 'C:\\Windows\\System32\\cmd.exe'
 
-const { runProbe } = await import('../server/cli/doctorCommand')
+const { runProbe, runChecks } = await import('../server/cli/doctorCommand')
+const { OpenCodeConnectionError } = await import('../server/opencode/connection')
 
 /**
  * A doctor probe resolves the tool's name to a file and then decides how to
@@ -45,6 +62,14 @@ const { runProbe } = await import('../server/cli/doctorCommand')
  * from Linux CI, where the Windows branch can otherwise never run.
  */
 describe('probing external commands on Windows', () => {
+  const tempDirs: string[] = []
+
+  afterEach(() => {
+    vi.restoreAllMocks()
+    vi.unstubAllEnvs()
+    for (const dir of tempDirs.splice(0)) rmSync(dir, { recursive: true, force: true })
+  })
+
   function withPlatform<T>(platform: NodeJS.Platform, run: () => T): T {
     const original = Object.getOwnPropertyDescriptor(process, 'platform')
     Object.defineProperty(process, 'platform', { value: platform, configurable: true })
@@ -60,6 +85,8 @@ describe('probing external commands on Windows', () => {
     spawnSync.mockReturnValue({ status: 0, signal: null, stdout: '11.12.1\n', stderr: '', output: [], pid: 1 })
     resolveInterpreter.mockReset()
     resolveInterpreter.mockReturnValue({ path: CMD })
+    probeOpenCodeConnection.mockReset()
+    probePort.mockReset().mockResolvedValue({ kind: 'free' })
     resolveTrustedProgram.mockReset()
     resolveTrustedProgram.mockImplementation((command: string) => {
       if (command === 'npm') return { path: NPM_SHIM }
@@ -194,5 +221,153 @@ describe('probing external commands on Windows', () => {
 
     const result = withPlatform('win32', () => runProbe('gh', ['auth', 'status'], 50))
     expect(result).toEqual({ kind: 'timed-out' })
+  })
+
+  it('reports timeout and trust refusal outcomes through stable doctor checks', async () => {
+    vi.stubEnv('LOOPTROOP_OPENCODE_MODE', 'real')
+    vi.stubEnv('LOOPTROOP_OPENCODE_BASE_URL', 'http://127.0.0.1:4096')
+    vi.spyOn(globalThis, 'fetch').mockRejectedValue(new TypeError('offline'))
+    probeOpenCodeConnection.mockRejectedValue(new Error('offline'))
+    spawnSync.mockReturnValue({
+      status: null,
+      signal: 'SIGKILL',
+      stdout: '',
+      stderr: '',
+      output: [],
+      pid: 1,
+      error: Object.assign(new Error('probe timed out'), { code: 'ETIMEDOUT' }),
+    })
+    const refusal = 'git resolves outside the trusted executable directories.'
+    resolveTrustedProgram.mockImplementation((command: string) => {
+      if (command === 'npm') return { path: NPM_SHIM }
+      if (command === 'gh') return { path: GH_EXE }
+      if (command === 'git') return { reason: refusal, refusedAt: '/untrusted/git' }
+      return { path: command }
+    })
+
+    const checks = await runChecks()
+    const check = (name: string) => checks.find(entry => entry.name === name)
+
+    expect(check('npm')).toMatchObject({
+      name: 'npm',
+      status: 'warn',
+      detail: '`npm --version` did not answer within 5s',
+    })
+    expect(check('git')).toMatchObject({
+      name: 'git',
+      status: 'fail',
+      missing: true,
+      detail: refusal,
+      remedy: expect.stringContaining('LOOPTROOP_TRUSTED_EXECUTABLE_DIRS'),
+    })
+    expect(check('gh')).toMatchObject({
+      name: 'gh',
+      status: 'warn',
+      detail: '`gh --version` did not answer within 5s',
+    })
+    expect(check('gh auth')).toMatchObject({
+      name: 'gh auth',
+      status: 'warn',
+      detail: '`gh auth status` did not answer within 10s',
+    })
+    expect(check('opencode cli')).toMatchObject({
+      name: 'opencode cli',
+      status: 'warn',
+      detail: '`opencode --version` did not answer within 5s',
+    })
+    expect(check('opencode')?.detail).toContain('offline')
+  })
+
+  it('preserves a typed OpenCode config authentication failure', async () => {
+    vi.stubEnv('LOOPTROOP_OPENCODE_MODE', 'real')
+    vi.spyOn(globalThis, 'fetch').mockResolvedValue(new Response('{}', { status: 404 }))
+    probeOpenCodeConnection.mockRejectedValue(new OpenCodeConnectionError(
+      'authentication',
+      'credentials were rejected',
+      401,
+    ))
+
+    const check = (await runChecks()).find(entry => entry.name === 'opencode')
+
+    expect(check).toMatchObject({
+      name: 'opencode',
+      status: 'fail',
+      detail: 'authentication: credentials were rejected',
+      remedy: 'Check OPENCODE_PASSWORD for v2, or OPENCODE_SERVER_PASSWORD and OPENCODE_SERVER_USERNAME for v1.',
+    })
+  })
+
+  it.each([
+    ['darwin', 'brew install git'],
+    ['win32', 'winget install git'],
+  ] as const)('uses the %s package-manager hint for a missing tool', async (platform, remedy) => {
+    vi.stubEnv('PATH', '')
+    vi.stubEnv('LOOPTROOP_TRUSTED_EXECUTABLE_DIRS', '')
+    vi.spyOn(globalThis, 'fetch').mockResolvedValue(new Response('{}', { status: 404 }))
+    resolveTrustedProgram.mockReturnValue({ reason: 'git was not found in any trusted directory on PATH.' })
+    const original = Object.getOwnPropertyDescriptor(process, 'platform')
+    Object.defineProperty(process, 'platform', { value: platform, configurable: true })
+
+    try {
+      const check = (await runChecks()).find(entry => entry.name === 'git')
+
+      expect(check).toMatchObject({ name: 'git', status: 'fail', missing: true, remedy })
+    } finally {
+      if (original) Object.defineProperty(process, 'platform', original)
+    }
+  })
+
+  it('reports an uncheckable port as a warning', async () => {
+    vi.spyOn(globalThis, 'fetch').mockResolvedValue(new Response('{}', { status: 404 }))
+    probePort.mockResolvedValue({ kind: 'error', message: 'permission denied' })
+    resolveTrustedProgram.mockReturnValue({ reason: 'tool is missing' })
+
+    const check = (await runChecks()).find(entry => entry.name === 'port')
+
+    expect(check).toMatchObject({
+      name: 'port',
+      status: 'warn',
+      detail: '3000 could not be checked: permission denied',
+      remedy: 'Check the local firewall or privilege rules for this port.',
+    })
+  })
+
+  it.each([
+    ['non-object health response', { kind: 'json', value: [] }, 'responded 200 at'],
+    ['starting health response', { kind: 'json', value: { status: 'starting', error: 'still warming up' } }, 'network: still warming up'],
+    ['disconnected health response', { kind: 'reject' }, 'offline; not reachable at'],
+  ] as const)('reports a daemon with a %s OpenCode health check', async (_caseName, result, expectedDetail) => {
+    const configDir = mkdtempSync(join(tmpdir(), 'looptroop-doctor-daemon-'))
+    tempDirs.push(configDir)
+    vi.stubEnv('LOOPTROOP_CONFIG_DIR', configDir)
+    vi.stubEnv('LOOPTROOP_OPENCODE_MODE', 'real')
+    vi.stubEnv('LOOPTROOP_OPENCODE_BASE_URL', 'http://127.0.0.1:4096')
+    const daemon = {
+      instanceId: 'doctor-probe-daemon',
+      pid: process.pid,
+      port: 3000,
+      host: '127.0.0.1',
+      startedAt: '2026-01-02T03:04:05.000Z',
+      version: '0.0.0-test',
+      apiToken: 'doctor-token',
+      opencode: { baseUrl: 'http://127.0.0.1:4096', owned: false, status: 'adopted' as const },
+    }
+    writeDaemonState(daemon, configDir)
+    vi.spyOn(globalThis, 'fetch').mockImplementation(async (input) => {
+      const url = String(input)
+      if (url.endsWith('/api/health')) {
+        return new Response(JSON.stringify({ instanceId: daemon.instanceId }), { status: 200 })
+      }
+      if (url.endsWith('/api/health/opencode')) {
+        if (result.kind === 'reject') throw new TypeError('offline')
+        return new Response(JSON.stringify(result.value), { status: 200 })
+      }
+      return new Response('{}', { status: 404 })
+    })
+
+    const check = (await runChecks()).find(entry => entry.name === 'opencode')
+
+    expect(check?.status).toBe('fail')
+    expect(check?.detail).toContain(expectedDetail)
   })
 })

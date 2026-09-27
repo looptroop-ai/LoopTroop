@@ -43,7 +43,7 @@ vi.mock('../../lib/executablePath', async () => {
 
 vi.mock('../daemonProcess', () => ({ runDaemonProcess: mocks.runDaemonProcess }))
 
-import { abandonFailedStart, openCommand, openInBrowser, probeRecordedDaemon, restartCommand, startCommand, stopCommand, waitForReady } from '../commands'
+import { abandonFailedStart, browserOpener, openCommand, openInBrowser, probeRecordedDaemon, restartCommand, startCommand, stopCommand, waitForReady } from '../commands'
 
 type FakeChild = EventEmitter & {
   pid: number
@@ -364,6 +364,16 @@ describe('daemon startup and shutdown command paths', () => {
     expect(mocks.runDaemonProcess).toHaveBeenCalledWith({ foreground: true, port: 45_673 })
   })
 
+  it('reports a clean stop when no daemon or lock record exists', async () => {
+    const output = captureOutput()
+
+    expect(await stopCommand()).toBe(0)
+    expect(output.stdout()).toBe('LoopTroop is not running.\n')
+    expect(output.stderr()).toBe('')
+    expect(mocks.signalTermination).not.toHaveBeenCalled()
+    expect(mocks.killProcessTree).not.toHaveBeenCalled()
+  })
+
   it('reports a daemon whose probe cannot prove the live pid and leaves it alone', async () => {
     const state = makeState()
     writeDaemonState(state, configDir)
@@ -446,6 +456,22 @@ describe('daemon startup and shutdown command paths', () => {
 })
 
 describe('open command browser and sign-in paths', () => {
+  it('prints the sign-in link when the browser opens but never spends its nonce', async () => {
+    const state = makeState()
+    writeDaemonState(state, configDir)
+    stubFetch((url) => {
+      if (url.pathname === '/api/health') return jsonResponse({ instanceId: state.instanceId })
+      if (url.pathname === '/api/auth/bootstrap') return jsonResponse({ nonce: 'single-use-nonce' })
+      if (url.pathname === '/api/auth/bootstrap/status') return jsonResponse({ pending: true })
+      throw new Error(`Unexpected daemon request: ${url.pathname}`)
+    })
+    const output = captureOutput()
+
+    expect(await openCommand({ open: () => ({ opened: true }), waitMs: 1 })).toBe(0)
+    expect(output.stdout()).toContain('No browser signed in. If none opened, use this link:')
+    expect(output.stdout()).toContain('http://127.0.0.1:4317/#bootstrap=single-use-nonce')
+  })
+
   it('opens a signed-in browser URL without printing the single-use nonce', async () => {
     const state = makeState()
     writeDaemonState(state, configDir)
@@ -513,5 +539,28 @@ describe('open command browser and sign-in paths', () => {
       opened: false,
       reason: 'permission denied',
     })
+  })
+
+  it('returns an asynchronous browser spawn error and settles the child once', async () => {
+    const child = makeChild(45_688)
+    mocks.spawn.mockReturnValue(child)
+    const pending = openInBrowser('http://127.0.0.1:4317')
+
+    child.emit('error', new Error('browser launch failed'))
+    child.emit('exit', 0)
+
+    await expect(pending).resolves.toEqual({ opened: false, reason: 'browser launch failed' })
+    expect(child.unref).toHaveBeenCalledOnce()
+  })
+
+  it('selects the native browser opener for each supported platform', () => {
+    const url = 'https://example.test/#token'
+
+    expect(browserOpener(url, 'darwin')).toEqual({ command: 'open', args: [url] })
+    expect(browserOpener(url, 'win32')).toEqual({
+      command: 'rundll32.exe',
+      args: ['url.dll,FileProtocolHandler', url],
+    })
+    expect(browserOpener(url, 'linux')).toEqual({ command: 'xdg-open', args: [url] })
   })
 })

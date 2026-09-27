@@ -267,6 +267,19 @@ describe('interview coverage recovery', () => {
     expect(sendEvent).toHaveBeenCalledWith({ type: 'COVERAGE_CLEAN' })
   })
 
+  it('rebuilds canonical interview state before mock interview coverage', async () => {
+    const { ticket, context, paths } = await createInitializedTestTicket(repoManager)
+    await createCompletedInterviewSnapshot(ticket.id)
+    const interviewPath = `${paths.ticketDir}/interview.yaml`
+    expect(existsSync(interviewPath)).toBe(false)
+    const sendEvent = vi.fn()
+
+    await handleMockCoverage(ticket.id, context, 'interview', sendEvent)
+
+    expect(readFileSync(interviewPath, 'utf-8')).toContain('Answer 1')
+    expect(sendEvent).toHaveBeenCalledWith({ type: 'COVERAGE_CLEAN' })
+  })
+
   it('persists a targeted follow-up batch when coverage finds a resolvable gap', async () => {
     const { ticket, context, paths } = await createInitializedTestTicket(repoManager)
     const { questions } = await createCompletedInterviewSnapshot(ticket.id)

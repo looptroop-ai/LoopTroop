@@ -653,6 +653,12 @@ describe('handlePrdRefine', () => {
         attempt: callNumber,
         message: 'The usage limit has been reached',
       })
+      options.onStreamEvent?.({
+        type: 'step',
+        step: 'finish',
+        reason: 'end_turn',
+        tokens: { input: 24, output: 8 },
+      })
 
       return {
         session,

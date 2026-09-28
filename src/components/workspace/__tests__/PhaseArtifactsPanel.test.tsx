@@ -5,6 +5,8 @@ import { renderWithProviders } from '@/test/renderHelpers'
 import {
   buildBeadsDocumentContent,
   buildBeadsDraftCompanionContent,
+  buildExecutionSetupPlanContent,
+  buildExecutionSetupPlanReportContent,
   buildExecutionSetupProfileArtifactContent,
   buildExecutionSetupReportArtifactContent,
   buildPhaseArtifactsInterviewDocumentContent,
@@ -13,6 +15,7 @@ import {
 } from '@/test/workspaceArtifactBuilders'
 import { buildUiArtifactCompanionArtifactType } from '@shared/artifactCompanions'
 import { PhaseArtifactsPanel } from '../PhaseArtifactsPanel'
+import { buildCouncilMemberArtifacts, getCouncilStatusLabel } from '../councilArtifacts'
 import type { TicketArtifact, TicketArtifactCollectionState } from '@/hooks/useTicketArtifacts'
 
 function successfulArtifactState(artifacts: TicketArtifact[]): TicketArtifactCollectionState {
@@ -125,10 +128,13 @@ describe('PhaseArtifactsPanel', () => {
       />,
     )
 
-    fireEvent.click(screen.getByRole('button', { name: /Manual QA Checklist/i }))
     expect(screen.getByRole('alert')).toHaveTextContent('HTTP 503: busy')
     fireEvent.click(screen.getByRole('button', { name: 'Retry' }))
     expect(retry).toHaveBeenCalledTimes(1)
+    fireEvent.click(screen.getByRole('button', { name: /Manual QA Checklist/i }))
+    expect(screen.getByRole('dialog')).toHaveTextContent('HTTP 503: busy')
+    fireEvent.click(screen.getByRole('button', { name: 'Retry' }))
+    expect(retry).toHaveBeenCalledTimes(2)
   })
 
   it.each([
@@ -152,6 +158,7 @@ describe('PhaseArtifactsPanel', () => {
   })
 
   it('keeps loaded content visible when a background refresh fails', () => {
+    const retry = vi.fn(async () => undefined)
     const checklistArtifact = makeArtifact({
       phase: 'GENERATING_QA_CHECKLIST',
       artifactType: 'manual_qa_checklist',
@@ -166,6 +173,7 @@ describe('PhaseArtifactsPanel', () => {
           status: 'error',
           isError: true,
           error: new Error('refresh unavailable'),
+          refetch: retry,
         }}
       />,
     )
@@ -173,6 +181,8 @@ describe('PhaseArtifactsPanel', () => {
     fireEvent.click(screen.getByRole('button', { name: /Manual QA Checklist/i }))
     expect(screen.getByRole('dialog')).toHaveTextContent('Previously loaded checklist')
     expect(screen.getByRole('alert')).toHaveTextContent('Showing previously loaded content')
+    fireEvent.click(screen.getByRole('button', { name: 'Retry' }))
+    expect(retry).toHaveBeenCalledOnce()
   })
 
   it('adds each bead title and execution priority to completed commit artifacts', async () => {
@@ -208,6 +218,99 @@ describe('PhaseArtifactsPanel', () => {
       expect(screen.getByText('#1 · bead-1 · First commit')).toBeInTheDocument()
       expect(screen.getByText('#2 · bead-2 · Second commit')).toBeInTheDocument()
     })
+  })
+
+  it('opens the final candidate diff from the bead commits artifact', () => {
+    const candidateDiffArtifact = makeArtifact({
+      phase: 'CREATING_PULL_REQUEST',
+      artifactType: 'candidate_diff',
+      content: JSON.stringify({
+        status: 'passed',
+        patch: [
+          'diff --git a/src/final.ts b/src/final.ts',
+          '--- a/src/final.ts',
+          '+++ b/src/final.ts',
+          '@@ -1 +1 @@',
+          '-draft',
+          '+final candidate behavior',
+        ].join('\n'),
+      }),
+    })
+
+    renderWithProviders(
+      <TestPhaseArtifactsPanel
+        phase="WAITING_PR_REVIEW"
+        isCompleted
+        preloadedArtifacts={[candidateDiffArtifact]}
+      />,
+    )
+
+    fireEvent.click(screen.getByRole('button', { name: /Bead Commits/i }))
+    fireEvent.click(screen.getByRole('button', { name: /src\/final\.ts/i }))
+    expect(screen.getByText(hasExactTextContent('+final candidate behavior'))).toBeInTheDocument()
+  })
+
+  it('shows the relevant-file scan token count in its artifact chip', () => {
+    const content = '{"files":[{"path":"src/server.ts","reason":"handles requests"}]}'
+    const scanArtifact = makeArtifact({
+      phase: 'SCANNING_RELEVANT_FILES',
+      artifactType: 'relevant_files_scan',
+      content,
+    })
+
+    renderWithProviders(
+      <TestPhaseArtifactsPanel
+        phase="SCANNING_RELEVANT_FILES"
+        isCompleted={false}
+        preloadedArtifacts={[scanArtifact]}
+      />,
+    )
+
+    expect(screen.getByRole('button', { name: /Relevant Files/i })).toHaveTextContent(/\d+ tokens/)
+  })
+
+  it('uses vote records to count voters when explicit voter outcomes are absent', () => {
+    const voteArtifact = makeArtifact({
+      phase: 'COUNCIL_VOTING_INTERVIEW',
+      artifactType: 'interview_votes',
+      content: JSON.stringify({
+        winnerId: 'openai/gpt-5.2',
+        votes: [
+          { voterId: 'openai/gpt-5.2', draftId: 'openai/gpt-5.2', totalScore: 90, scores: [] },
+          { voterId: 'openai/gpt-5.2', draftId: 'openai/gpt-5.1', totalScore: 80, scores: [] },
+        ],
+      }),
+    })
+
+    renderWithProviders(
+      <TestPhaseArtifactsPanel
+        phase="COUNCIL_VOTING_INTERVIEW"
+        isCompleted={false}
+        councilMemberCount={1}
+        councilMemberNames={['openai/gpt-5.2']}
+        preloadedArtifacts={[voteArtifact]}
+      />,
+    )
+
+    expect(screen.getByText('1 voter · 2 drafts')).toBeInTheDocument()
+  })
+
+  it('shows a concise line-count detail for generic preflight reports', () => {
+    const diagnosticsArtifact = makeArtifact({
+      phase: 'PRE_FLIGHT_CHECK',
+      artifactType: 'preflight_report',
+      content: 'Workspace diagnostics\nOne actionable finding.',
+    })
+
+    renderWithProviders(
+      <TestPhaseArtifactsPanel
+        phase="PRE_FLIGHT_CHECK"
+        isCompleted={false}
+        preloadedArtifacts={[diagnosticsArtifact]}
+      />,
+    )
+
+    expect(screen.getByRole('button', { name: /Doctor Diagnostics/i })).toHaveTextContent('2 lines')
   })
 
   it('opens the generated Manual QA checklist artifact with readable results', () => {
@@ -316,6 +419,39 @@ describe('PhaseArtifactsPanel', () => {
     expect(screen.getByRole('button', { name: 'Runtime' })).toBeInTheDocument()
     expect(screen.getByText('Command Audit')).toBeInTheDocument()
     expect(screen.getByRole('button', { name: 'Raw' })).toBeInTheDocument()
+  })
+
+  it('shows failed execution setup generation diagnostics on the plan chip', () => {
+    const planArtifact = makeArtifact({
+      phase: 'GENERATING_EXECUTION_SETUP_PLAN',
+      artifactType: 'execution_setup_plan',
+      content: buildExecutionSetupPlanContent(),
+    })
+    const reportArtifact = makeArtifact({
+      phase: 'GENERATING_EXECUTION_SETUP_PLAN',
+      artifactType: 'execution_setup_plan_report',
+      content: JSON.stringify({
+        ...JSON.parse(buildExecutionSetupPlanReportContent()),
+        status: 'failed',
+        ready: false,
+        source: 'regenerate',
+        rawAttempts: [{ attempt: 1, rawResponse: 'invalid setup output' }],
+        errors: ['Required readiness evidence was missing.'],
+      }),
+    })
+
+    renderWithProviders(
+      <TestPhaseArtifactsPanel
+        phase="GENERATING_EXECUTION_SETUP_PLAN"
+        isCompleted={false}
+        preloadedArtifacts={[planArtifact, reportArtifact]}
+      />,
+    )
+
+    expect(screen.getAllByText('regenerated · 1 raw attempt · 1 diagnostic')).toHaveLength(2)
+    fireEvent.click(screen.getByRole('button', { name: /Workspace Setup Plan/i }))
+    expect(screen.getByText('Generation Errors')).toBeInTheDocument()
+    expect(screen.getByText('Required readiness evidence was missing.')).toBeInTheDocument()
   })
 
   it('collapses interview voting artifacts into a winning draft card plus shared voting details', () => {
@@ -638,6 +774,119 @@ describe('PhaseArtifactsPanel', () => {
 
     expect(screen.getAllByText('proposed 1 questions')).toHaveLength(2)
     expect(screen.queryAllByText('waiting for response')).toHaveLength(0)
+    expect(screen.getByRole('button', { name: /gpt-5\.2/i })).toHaveClass('bg-primary')
+  })
+
+  it('discovers voting members from votes and carries failed draft outcomes into scoring', () => {
+    const draftArtifact = makeArtifact({
+      phase: 'DRAFTING_PRD',
+      artifactType: 'prd_drafts',
+      content: JSON.stringify({
+        drafts: [
+          { memberId: 'model/invalid', outcome: 'invalid_output' },
+          { memberId: 'model/timeout', outcome: 'timed_out' },
+          { memberId: 'model/failed', outcome: 'failed' },
+        ],
+      }),
+    })
+    const voteArtifact = makeArtifact({
+      phase: 'COUNCIL_VOTING_PRD',
+      artifactType: 'prd_votes',
+      content: JSON.stringify({
+        votes: [
+          { voterId: 'model/invalid', draftId: 'model/invalid', totalScore: 0 },
+          { voterId: 'model/timeout', draftId: 'model/invalid', totalScore: 0 },
+          { voterId: 'model/failed', draftId: 'model/invalid', totalScore: 0 },
+          { voterId: 'model/invalid', draftId: 'model/timeout', totalScore: 0 },
+        ],
+      }),
+    })
+
+    const members = buildCouncilMemberArtifacts('COUNCIL_VOTING_PRD', [draftArtifact, voteArtifact], [], false)
+
+    expect(members.map(({ modelId }) => modelId)).toEqual(['model/invalid', 'model/timeout', 'model/failed'])
+    expect(members.map(({ outcome, detail }) => [outcome, detail])).toEqual([
+      ['invalid_output', 'draft had invalid output'],
+      ['timed_out', 'draft timed out'],
+      ['failed', 'draft failed'],
+    ])
+  })
+
+  it.each([
+    ['drafting', 'Drafting'],
+    ['scoring', 'Scoring'],
+    ['refining', 'Refining'],
+    ['verifying', 'Verifying'],
+    ['working', 'Working'],
+  ] as const)('uses the %s status label when an outcome is absent', (action, label) => {
+    expect(getCouncilStatusLabel(undefined, action)).toBe(label)
+  })
+
+  it('shows useful invalid draft metrics, explicit failure details, and generated line counts', () => {
+    const draftArtifact = makeArtifact({
+      phase: 'DRAFTING_PRD',
+      artifactType: 'prd_drafts',
+      content: JSON.stringify({
+        drafts: [
+          {
+            memberId: 'model/invalid',
+            outcome: 'invalid_output',
+            content: 'Malformed output retained for review',
+            draftMetrics: { epicCount: 2 },
+          },
+          { memberId: 'model/failed', outcome: 'failed', error: 'Provider rejected the request' },
+          { memberId: 'model/timeout', outcome: 'timed_out' },
+          { memberId: 'model/plain', outcome: 'completed', content: 'First generated line\nSecond generated line' },
+        ],
+      }),
+    })
+
+    renderWithProviders(
+      <TestPhaseArtifactsPanel
+        phase="DRAFTING_PRD"
+        isCompleted={false}
+        councilMemberCount={4}
+        councilMemberNames={['model/invalid', 'model/failed', 'model/timeout', 'model/plain']}
+        preloadedArtifacts={[draftArtifact]}
+      />,
+    )
+
+    expect(screen.getByText('2 epics · 0 user stories')).toBeInTheDocument()
+    expect(screen.getByText('Provider rejected the request')).toBeInTheDocument()
+    expect(screen.getByText('no response received')).toBeInTheDocument()
+    expect(screen.getByText('2 lines generated')).toBeInTheDocument()
+    expect(screen.getByText('Invalid Output')).toBeInTheDocument()
+    expect(screen.getByText('Failed')).toBeInTheDocument()
+    expect(screen.getByText('Timed Out')).toBeInTheDocument()
+  })
+
+  it('uses a stored interview winner when revisiting drafts without vote artifacts', () => {
+    const draftArtifact = makeArtifact({
+      phase: 'COUNCIL_DELIBERATING',
+      artifactType: 'interview_drafts',
+      content: JSON.stringify({
+        drafts: [
+          { memberId: 'openai/gpt-5.1', outcome: 'completed', content: 'Alternative question?' },
+          { memberId: 'openai/gpt-5.2', outcome: 'completed', content: 'Winning question?' },
+        ],
+      }),
+    })
+    const winnerArtifact = makeArtifact({
+      phase: 'COUNCIL_DELIBERATING',
+      artifactType: 'interview_winner',
+      content: JSON.stringify({ winnerId: 'openai/gpt-5.2' }),
+    })
+
+    renderWithProviders(
+      <TestPhaseArtifactsPanel
+        phase="COUNCIL_DELIBERATING"
+        isCompleted
+        councilMemberCount={2}
+        councilMemberNames={['openai/gpt-5.1', 'openai/gpt-5.2']}
+        preloadedArtifacts={[draftArtifact, winnerArtifact]}
+      />,
+    )
+
     expect(screen.getByRole('button', { name: /gpt-5\.2/i })).toHaveClass('bg-primary')
   })
 
@@ -1498,6 +1747,31 @@ describe('PhaseArtifactsPanel', () => {
     expect(screen.getByText('Execution ID')).toBeInTheDocument()
     expect(screen.getByText(expandedBead.id)).toBeInTheDocument()
     expect(screen.getByText('src/components/workspace/ExpandedPlanView.tsx')).toBeInTheDocument()
+  })
+
+  it('keeps the latest validated plan visible before expanded beads are produced', () => {
+    const coverageRevisionArtifact = makeArtifact({
+      phase: 'VERIFYING_BEADS_COVERAGE',
+      artifactType: 'beads_coverage_revision',
+      content: JSON.stringify({
+        winnerId: 'openai/gpt-5.2',
+        refinedContent: buildBeadsDocumentContent([
+          { id: 'bead-1', title: 'Keep the approved plan visible during expansion' },
+        ]),
+        candidateVersion: 2,
+      }),
+    })
+
+    renderWithProviders(
+      <TestPhaseArtifactsPanel
+        phase="EXPANDING_BEADS"
+        isCompleted={false}
+        preloadedArtifacts={[coverageRevisionArtifact]}
+      />,
+    )
+
+    fireEvent.click(screen.getByRole('button', { name: /Expanded Plan v2/i }))
+    expect(screen.getByText('Keep the approved plan visible during expansion')).toBeInTheDocument()
   })
 
   it('hides stale PRD diff metadata in approval when coverage did not revise the candidate', () => {
@@ -3288,12 +3562,24 @@ describe('PhaseArtifactsPanel', () => {
         message: 'Draft pull request ready at https://github.com/looptroop-ai/pocketbase-master/pull/42.',
       }),
     })
+    const candidateAuditArtifact = makeArtifact({
+      phase: 'CREATING_PULL_REQUEST',
+      artifactType: 'candidate_file_audit',
+      content: JSON.stringify({
+        status: 'passed',
+        includedFiles: ['src/app.ts'],
+        excludedFiles: ['.env'],
+        entries: [{ path: '.env', decision: 'exclude', reason: 'Contains local credentials.' }],
+        stats: { totalFiles: 2, includedFiles: 1, excludedFiles: 1, reviewedFiles: 0 },
+        warnings: ['The local environment file was omitted from the candidate.'],
+      }),
+    })
 
     renderWithProviders(
       <TestPhaseArtifactsPanel
         phase="CREATING_PULL_REQUEST"
         isCompleted={true}
-        preloadedArtifacts={[pullRequestArtifact]}
+        preloadedArtifacts={[pullRequestArtifact, candidateAuditArtifact]}
       />,
     )
 
@@ -3307,5 +3593,9 @@ describe('PhaseArtifactsPanel', () => {
       'https://github.com/looptroop-ai/pocketbase-master/pull/42',
     )
     expect(screen.getByText('Adds the scoped theme regression test.')).toBeInTheDocument()
+    expect(screen.getByText('Candidate File Audit')).toBeInTheDocument()
+    expect(screen.getByText('.env')).toBeInTheDocument()
+    expect(screen.getByText('Contains local credentials.')).toBeInTheDocument()
+    expect(screen.getByText('The local environment file was omitted from the candidate.')).toBeInTheDocument()
   })
 })

@@ -25,6 +25,7 @@ import {
   schedulePendingCancellationCleanupRetry,
 } from '../../workflow/runner'
 import { TicketInitializationError, initializeTicket } from '../../ticket/initialize'
+import { readTicketMetaForMutation, TicketMetadataFormatError } from '../../ticket/metadata'
 import { withCommandLoggingAsync } from '../../log/commandLogger'
 import { validateModelSelection } from '../../opencode/modelValidation'
 import {
@@ -38,6 +39,7 @@ import { getOpenCodeConnection } from '../../opencode/connection'
 import { getOpenCodeBaseUrl } from '../../opencode/runtimeConfig'
 import {
   archiveActivePhaseAttempts,
+  buildTicketRef,
   cleanupCanceledTicketData,
   createFreshPhaseAttempts,
   deleteTicket as deleteStoredTicket,
@@ -49,6 +51,7 @@ import {
   isDisplayOnlyMockTicket,
   isAttemptTrackedPhase,
   lockTicketStartConfiguration,
+  rollbackTicketStartConfiguration,
   patchTicket,
   resolveTicketContinuationCandidate,
 } from '../../storage/tickets'
@@ -90,32 +93,20 @@ import { resolveStoredWorkflowPhase } from '@shared/workflowMeta'
 import { parseLockedCouncilMemberVariants } from '../../storage/ticketQueries'
 
 function rollbackTicketStartToDraft(ticketId: string): void {
-  patchTicket(ticketId, {
-    status: 'DRAFT',
-    xstateSnapshot: null,
-    errorMessage: null,
-    branchName: null,
-    startedAt: null,
-    lockedMainImplementer: null,
-    lockedMainImplementerVariant: null,
-    lockedCouncilMembers: null,
-    lockedCouncilMemberVariants: null,
-    lockedInterviewQuestions: null,
-    lockedCoverageFollowUpBudgetPercent: null,
-    lockedMaxCoveragePasses: null,
-    lockedMaxPrdCoveragePasses: null,
-    lockedMaxBeadsCoveragePasses: null,
-    lockedStructuredRetryCount: null,
-    lockedManualQaEnabled: null,
-    lockedManualQaSource: null,
-    lockedAiQuestionsEnabled: null,
-    lockedAiQuestionsSource: null,
-    lockedAiQuestionWindow: null,
-    lockedAiQuestionWindowSource: null,
-    lockedGitHookPolicy: null,
-    lockedGitHookPolicySource: null,
-  })
-  stopActor(ticketId)
+  const ticket = getTicketByRef(ticketId)
+  if (ticket && ticket.status !== 'DRAFT') return
+
+  const actorState = getTicketState(ticketId)
+  if (actorState && actorState.state !== 'DRAFT') cancelTicket(ticketId)
+
+  try {
+    if (ticket) rollbackTicketStartConfiguration(ticketId)
+  } catch (error) {
+    logTicketOperationError(ticketId, 'Failed to roll back ticket start configuration', error)
+  } finally {
+    const ticketAfterRollback = getTicketByRef(ticketId)
+    if (!ticketAfterRollback || ticketAfterRollback.status === 'DRAFT') stopActor(ticketId)
+  }
 }
 
 const startingTickets = new Set<string>()
@@ -130,11 +121,20 @@ export async function handleStartTicket(c: Context) {
   if (ticketContext.localTicket.status !== 'DRAFT') {
     return c.json({ error: 'Ticket can only be started from DRAFT status' }, 409)
   }
+  try {
+    readTicketMetaForMutation(ticketContext.projectRoot, ticketContext.externalId)
+  } catch (error) {
+    if (error instanceof TicketMetadataFormatError) {
+      return c.json({ error: error.message }, 409)
+    }
+    return c.json({ error: 'Unable to read ticket metadata.' }, 500)
+  }
 
-  if (startingTickets.has(ticketId)) {
+  const startKey = buildTicketRef(ticketContext.projectId, ticketContext.externalId)
+  if (startingTickets.has(startKey)) {
     return c.json({ error: 'Ticket start is already in progress' }, 429)
   }
-  startingTickets.add(ticketId)
+  startingTickets.add(startKey)
 
   try {
   const startPhase = 'DRAFT'
@@ -216,6 +216,12 @@ export async function handleStartTicket(c: Context) {
       },
     )
   } catch (err) {
+    if (err instanceof TicketMetadataFormatError) {
+      emitRoutePhaseLog(ticketId, startPhase, 'error', `✗ Workspace Init: ${err.message}`, {
+        error: err.message,
+      })
+      return c.json({ error: err.message }, 409)
+    }
     const initErr = err instanceof TicketInitializationError
       ? err
       : new TicketInitializationError('INIT_UNKNOWN', getErrorMessage(err))
@@ -364,6 +370,9 @@ export async function handleStartTicket(c: Context) {
       error: details,
       rollback: 'preserved_worktree',
     })
+    if (err instanceof TicketMetadataFormatError) {
+      return c.json({ error: details }, 409)
+    }
     return c.json({
       error: 'Failed to persist ticket start configuration',
       details,
@@ -404,7 +413,7 @@ export async function handleStartTicket(c: Context) {
 
   return respondWithState(c, ticketId, 'Start action accepted')
   } finally {
-    startingTickets.delete(ticketId)
+    startingTickets.delete(startKey)
   }
 }
 

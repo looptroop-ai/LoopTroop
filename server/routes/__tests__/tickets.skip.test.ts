@@ -22,7 +22,7 @@ import {
   upsertLatestPhaseArtifact,
 } from '../../storage/tickets'
 import { createFixtureRepoManager } from '../../test/fixtureRepo'
-import { claimInterviewBatch } from '../../workflow/phases/interviewPhase'
+import { claimInterviewBatch, markInterviewBatchStopPending } from '../../workflow/phases/interviewPhase'
 import { initializeTicket } from '../../ticket/initialize'
 
 vi.mock('../../opencode/sessionManager', () => ({
@@ -151,7 +151,10 @@ describe('ticketRouter POST /tickets/:id/skip', () => {
     const app = new Hono()
     app.route('/api', ticketRouter)
 
-    vi.mocked(abortTicketSessions).mockResolvedValueOnce(false).mockResolvedValueOnce(true)
+    vi.mocked(abortTicketSessions)
+      .mockResolvedValueOnce(false)
+      .mockRejectedValueOnce(new Error('Transient session-stop failure.'))
+      .mockResolvedValueOnce(true)
     const uncertainResponse = await app.request(`/api/tickets/${ticket.id}/skip`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
@@ -163,6 +166,22 @@ describe('ticketRouter POST /tickets/:id/skip', () => {
       }),
     })
     expect(uncertainResponse.status).toBe(409)
+    expect(getTicketByRef(ticket.id)?.status).toBe('WAITING_INTERVIEW_ANSWERS')
+
+    const retryAfterStopError = await app.request(`/api/tickets/${ticket.id}/skip`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        batchNumber: 2,
+        answers: {
+          Q03: 'Exercise retries against a flaky upstream fake.',
+        },
+      }),
+    })
+    expect(retryAfterStopError.status).toBe(409)
+    expect(await retryAfterStopError.json()).toEqual({
+      error: 'Could not confirm the interview stopped; try again shortly',
+    })
     expect(getTicketByRef(ticket.id)?.status).toBe('WAITING_INTERVIEW_ANSWERS')
 
     const response = await app.request(`/api/tickets/${ticket.id}/skip`, {
@@ -245,7 +264,8 @@ describe('ticketRouter POST /tickets/:id/skip', () => {
     // the ticket on; the batch then fails and reverts to its own snapshot,
     // undoing the skip-all entirely. Nothing but this claim stops the overlap —
     // the ticket stays in `WAITING_INTERVIEW_ANSWERS` throughout.
-    expect(claimInterviewBatch(ticket.id)).toBeTruthy()
+    const batchClaim = claimInterviewBatch(ticket.id)
+    expect(batchClaim).toBeTruthy()
 
     const response = await app.request(`/api/tickets/${ticket.id}/skip`, {
       method: 'POST',
@@ -255,6 +275,91 @@ describe('ticketRouter POST /tickets/:id/skip', () => {
 
     expect(response.status).toBe(409)
     expect(getTicketByRef(ticket.id)?.status).toBe('WAITING_INTERVIEW_ANSWERS')
+
+    expect(markInterviewBatchStopPending(ticket.id, batchClaim!, 'answer')).toBe(true)
+    const pendingAnswerStop = await app.request(`/api/tickets/${ticket.id}/skip`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ batchNumber: 1, answers: {}, selectedOptions: {}, skipReasons: {} }),
+    })
+    expect(pendingAnswerStop.status).toBe(409)
+    expect(await pendingAnswerStop.json()).toEqual({
+      error: 'An answer batch stop is awaiting confirmation; try again shortly',
+    })
+    expect(getTicketByRef(ticket.id)?.status).toBe('WAITING_INTERVIEW_ANSWERS')
+  })
+
+  it('rejects malformed, stale, and invalid skip-all payloads before stopping any session', async () => {
+    const project = attachProject({
+      folderPath: repoManager.createRepo(),
+      name: 'Skip validation',
+      shortname: 'SKIPVALID',
+    })
+    const ticket = createTicket({
+      projectId: project.id,
+      title: 'Skip validation',
+      description: 'Check skip-all input guards.',
+    })
+    const app = new Hono()
+    app.route('/api', ticketRouter)
+    const request = (body: string) => app.request(`/api/tickets/${ticket.id}/skip`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body,
+    })
+
+    const wrongStatus = await request(JSON.stringify({ batchNumber: 1, answers: {} }))
+    expect(wrongStatus.status).toBe(409)
+    expect(await wrongStatus.json()).toEqual({ error: 'Ticket is not waiting for interview answers' })
+
+    patchTicket(ticket.id, { status: 'WAITING_INTERVIEW_ANSWERS' })
+    const malformed = await request('{')
+    expect(malformed.status).toBe(400)
+    expect(await malformed.json()).toEqual({ error: 'Skip request body must be valid JSON' })
+
+    const invalidPayload = await request(JSON.stringify({ batchNumber: 0, answers: {} }))
+    expect(invalidPayload.status).toBe(400)
+    expect(await invalidPayload.json()).toMatchObject({ error: 'Invalid answers payload' })
+
+    const missingSession = await request(JSON.stringify({ batchNumber: 1, answers: {} }))
+    expect(missingSession.status).toBe(404)
+    expect(await missingSession.json()).toEqual({ error: 'No interview session found' })
+
+    const base = createInterviewSessionSnapshot({
+      winnerId: 'openai/gpt-5-mini',
+      compiledQuestions: [{ id: 'Q01', phase: 'Foundation', question: 'Why?' }],
+      maxInitialQuestions: 1,
+    })
+    const batch = buildPersistedBatch({
+      questions: [{ id: 'Q01', phase: 'Foundation', question: 'Why?' }],
+      progress: { current: 1, total: 1 },
+      isComplete: false,
+      isFinalFreeForm: false,
+      aiCommentary: 'One question.',
+      batchNumber: 1,
+    }, 'prom4', base)
+    upsertLatestPhaseArtifact(
+      ticket.id,
+      INTERVIEW_SESSION_ARTIFACT,
+      'WAITING_INTERVIEW_ANSWERS',
+      serializeInterviewSessionSnapshot(recordPreparedBatch(base, batch)),
+    )
+
+    const stale = await request(JSON.stringify({ batchNumber: 2, answers: {} }))
+    expect(stale.status).toBe(409)
+    expect(await stale.json()).toEqual({ error: 'Interview batch is stale; refresh before submitting' })
+
+    const invalidSelection = await request(JSON.stringify({
+      batchNumber: 1,
+      answers: {},
+      selectedOptions: { Q01: ['option-a'] },
+    }))
+    expect(invalidSelection.status).toBe(400)
+    expect(await invalidSelection.json()).toMatchObject({
+      error: 'Invalid answers payload',
+      details: ['Question Q01 is free text and cannot carry selected options.'],
+    })
+    expect(abortTicketSessions).not.toHaveBeenCalled()
   })
 
   it('refuses a skip reason attached to a question the person answered', async () => {

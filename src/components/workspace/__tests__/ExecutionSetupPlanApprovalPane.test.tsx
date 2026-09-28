@@ -3,6 +3,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { makeTicket, TEST } from '@/test/factories'
 import { createTestQueryClient, renderWithProviders } from '@/test/renderHelpers'
 import { getTicketPhaseAttemptsQueryKey } from '@/hooks/useTicketPhaseAttempts'
+import { parseExecutionSetupPlanContent } from '@/lib/executionSetupPlan'
 import { ExecutionSetupPlanApprovalPane } from '../ExecutionSetupPlanApprovalPane'
 
 const mockSaveUiState = vi.fn()
@@ -820,5 +821,280 @@ describe('ExecutionSetupPlanApprovalPane', () => {
       )
     })
     expect(screen.getByLabelText('YAML editor')).not.toHaveValue(buildRawPlan())
+  })
+
+  it('falls back to another phase report and tolerates a malformed approval receipt', async () => {
+    mockUseTicketArtifacts.mockReturnValue({
+      artifacts: [
+        {
+          id: 51,
+          ticketId: TEST.ticketId,
+          phase: 'GENERATING_EXECUTION_SETUP_PLAN',
+          artifactType: 'execution_setup_plan_report',
+          filePath: null,
+          content: buildReportContent('regenerate', ['Recheck the package-manager choice.']),
+          createdAt: '2026-03-25T10:15:00.000Z',
+        },
+        {
+          id: 52,
+          ticketId: TEST.ticketId,
+          phase: 'WAITING_EXECUTION_SETUP_APPROVAL',
+          artifactType: 'approval_receipt',
+          filePath: null,
+          content: '{ invalid receipt',
+          createdAt: '2026-03-25T10:30:00.000Z',
+        },
+      ],
+      isLoading: false,
+    })
+
+    renderWithProviders(<ExecutionSetupPlanApprovalPane ticket={makeTicket({ status: 'PREPARING_EXECUTION_ENV' })} readOnly />)
+
+    expect(await screen.findByTestId('artifact-content')).toHaveTextContent('execution-setup-plan:with-report:plan')
+    expect(screen.getByText('Regeneration Request')).toBeInTheDocument()
+    expect(screen.getByText('Recheck the package-manager choice.')).toBeInTheDocument()
+    expect(screen.getByText('Approved setup contract')).toBeInTheDocument()
+    expect(screen.getAllByText('Approved')).toHaveLength(2)
+    expect(screen.queryByText('Approved by user')).not.toBeInTheDocument()
+    expect(screen.queryByText('1 step')).not.toBeInTheDocument()
+  })
+
+  it('blocks saving raw edits that do not parse as a setup plan', async () => {
+    renderWithProviders(<ExecutionSetupPlanApprovalPane ticket={makeTicket({ status: 'WAITING_EXECUTION_SETUP_APPROVAL' })} />)
+    await screen.findByTestId('artifact-content')
+
+    fireEvent.click(screen.getByRole('button', { name: 'Edit' }))
+    await screen.findByTestId('execution-setup-plan-editor')
+    fireEvent.click(screen.getByRole('button', { name: 'Raw' }))
+
+    const editor = await screen.findByLabelText<HTMLTextAreaElement>('YAML editor')
+    fireEvent.change(editor, { target: { value: '{' } })
+
+    const parseError = parseExecutionSetupPlanContent('{').error
+    expect(parseError).not.toBeNull()
+    expect(screen.getByText(parseError!)).toBeInTheDocument()
+
+    fireEvent.click(screen.getByRole('button', { name: 'Save' }))
+
+    expect(screen.getAllByText(parseError!)).toHaveLength(2)
+    expect(vi.mocked(globalThis.fetch).mock.calls.some(([, init]) => init?.method === 'PUT')).toBe(false)
+  })
+
+  it('shows a save conflict while keeping the edited plan open', async () => {
+    const planUrl = `/api/tickets/${encodeURIComponent(TEST.ticketId)}/execution-setup-plan`
+    const defaultFetch = vi.mocked(globalThis.fetch).getMockImplementation()
+    vi.mocked(globalThis.fetch).mockImplementation((input, init) => {
+      if (String(input) === planUrl && init?.method === 'PUT') {
+        return Promise.resolve(new Response(JSON.stringify({ error: 'Conflict', message: 'Another editor saved a newer plan.' }), {
+          status: 409,
+          headers: { 'Content-Type': 'application/json' },
+        }))
+      }
+      return defaultFetch!(input, init)
+    })
+
+    renderWithProviders(<ExecutionSetupPlanApprovalPane ticket={makeTicket({ status: 'WAITING_EXECUTION_SETUP_APPROVAL' })} />)
+    await screen.findByTestId('artifact-content')
+    fireEvent.click(screen.getByRole('button', { name: 'Edit' }))
+    await screen.findByTestId('execution-setup-plan-editor')
+    fireEvent.click(screen.getByRole('button', { name: 'Raw' }))
+    fireEvent.change(await screen.findByLabelText('YAML editor'), {
+      target: { value: buildRawPlan('A changed setup plan.') },
+    })
+    fireEvent.click(screen.getByRole('button', { name: 'Save' }))
+
+    expect(await screen.findByText(/Another editor saved a newer plan/)).toBeInTheDocument()
+    expect(screen.getByLabelText('YAML editor')).toHaveValue(buildRawPlan('A changed setup plan.'))
+    expect(screen.getByRole('button', { name: 'Save' })).toBeEnabled()
+  })
+
+  it('approves the saved plan against its current content hash and invalidates ticket data', async () => {
+    const queryClient = createTestQueryClient()
+    const invalidateSpy = vi.spyOn(queryClient, 'invalidateQueries')
+
+    renderWithProviders(<ExecutionSetupPlanApprovalPane ticket={makeTicket({ status: 'WAITING_EXECUTION_SETUP_APPROVAL' })} />, {
+      queryClient,
+    })
+    await screen.findByTestId('artifact-content')
+    fireEvent.click(screen.getByRole('button', { name: 'Approve' }))
+
+    await waitFor(() => {
+      const approveCall = vi.mocked(globalThis.fetch).mock.calls.find(([input, init]) => (
+        String(input) === `/api/tickets/${encodeURIComponent(TEST.ticketId)}/approve-execution-setup-plan`
+        && init?.method === 'POST'
+      ))
+      expect(JSON.parse(String(approveCall?.[1]?.body))).toEqual({ expectedContentSha256: 'a'.repeat(64) })
+    })
+
+    expect(invalidateSpy).toHaveBeenCalledWith({ queryKey: ['tickets'] })
+    expect(invalidateSpy).toHaveBeenCalledWith({ queryKey: ['ticket', TEST.ticketId] })
+    expect(invalidateSpy).toHaveBeenCalledWith({ queryKey: ['artifact', TEST.ticketId, 'execution-setup-plan'] })
+    expect(mockClearTicketArtifactsCache).toHaveBeenCalledWith(queryClient, TEST.ticketId)
+  })
+
+  it('shows an approval conflict and sends the plan content hash', async () => {
+    const defaultFetch = vi.mocked(globalThis.fetch).getMockImplementation()
+    vi.mocked(globalThis.fetch).mockImplementation((input, init) => {
+      if (String(input) === `/api/tickets/${encodeURIComponent(TEST.ticketId)}/approve-execution-setup-plan` && init?.method === 'POST') {
+        return Promise.resolve(new Response(JSON.stringify({ error: 'Conflict', message: 'The setup plan changed before approval.' }), {
+          status: 409,
+          headers: { 'Content-Type': 'application/json' },
+        }))
+      }
+      return defaultFetch!(input, init)
+    })
+
+    renderWithProviders(<ExecutionSetupPlanApprovalPane ticket={makeTicket({ status: 'WAITING_EXECUTION_SETUP_APPROVAL' })} />)
+    await screen.findByTestId('artifact-content')
+    fireEvent.click(screen.getByRole('button', { name: 'Approve' }))
+
+    expect(await screen.findByText(/The setup plan changed before approval/)).toBeInTheDocument()
+    const approveCall = vi.mocked(globalThis.fetch).mock.calls.find(([input, init]) => (
+      String(input) === `/api/tickets/${encodeURIComponent(TEST.ticketId)}/approve-execution-setup-plan`
+      && init?.method === 'POST'
+    ))
+    expect(JSON.parse(String(approveCall?.[1]?.body))).toEqual({ expectedContentSha256: 'a'.repeat(64) })
+  })
+
+  it('clears a failed approval request after a successful retry', async () => {
+    const planUrl = `/api/tickets/${encodeURIComponent(TEST.ticketId)}/execution-setup-plan`
+    let failRead = true
+    let attempts = 0
+    const defaultFetch = vi.mocked(globalThis.fetch).getMockImplementation()
+    vi.mocked(globalThis.fetch).mockImplementation((input, init) => {
+      if (String(input) === planUrl && (!init?.method || init.method === 'GET')) {
+        attempts += 1
+        if (failRead) {
+          return Promise.resolve(new Response(JSON.stringify({ error: 'Unavailable', message: 'Temporary plan read failure.' }), {
+            status: 503,
+            headers: { 'Content-Type': 'application/json' },
+          }))
+        }
+      }
+      return defaultFetch!(input, init)
+    })
+
+    renderWithProviders(<ExecutionSetupPlanApprovalPane ticket={makeTicket({ status: 'WAITING_EXECUTION_SETUP_APPROVAL' })} />)
+    const alert = await screen.findByRole('alert')
+    expect(alert).toHaveTextContent('The setup plan could not be loaded.')
+    expect(alert).toHaveTextContent('Temporary plan read failure.')
+
+    failRead = false
+    fireEvent.click(within(alert).getByRole('button', { name: 'Retry' }))
+
+    expect(await screen.findByTestId('artifact-content')).toHaveTextContent('execution-setup-plan:with-report:plan')
+    expect(screen.queryByText('The setup plan could not be loaded.')).not.toBeInTheDocument()
+    expect(attempts).toBeGreaterThanOrEqual(2)
+  })
+
+  it('keeps the loaded plan visible after a failed refresh and lets the user retry', async () => {
+    const planUrl = `/api/tickets/${encodeURIComponent(TEST.ticketId)}/execution-setup-plan`
+    let failRead = false
+    const defaultFetch = vi.mocked(globalThis.fetch).getMockImplementation()
+    vi.mocked(globalThis.fetch).mockImplementation((input, init) => {
+      if (String(input) === planUrl && (!init?.method || init.method === 'GET') && failRead) {
+        return Promise.resolve(new Response(JSON.stringify({ error: 'Unavailable', message: 'Refresh did not complete.' }), {
+          status: 503,
+          headers: { 'Content-Type': 'application/json' },
+        }))
+      }
+      return defaultFetch!(input, init)
+    })
+    const queryClient = createTestQueryClient()
+
+    renderWithProviders(<ExecutionSetupPlanApprovalPane ticket={makeTicket({ status: 'WAITING_EXECUTION_SETUP_APPROVAL' })} />, { queryClient })
+    expect(await screen.findByTestId('artifact-content')).toHaveTextContent('execution-setup-plan:with-report:plan')
+
+    failRead = true
+    await act(async () => {
+      await queryClient.refetchQueries({ queryKey: ['artifact', TEST.ticketId, 'execution-setup-plan'] })
+    })
+
+    const alert = await screen.findByRole('alert')
+    expect(alert).toHaveTextContent('Showing the last setup plan that loaded. The refresh failed.')
+    expect(screen.getByTestId('artifact-content')).toHaveTextContent('execution-setup-plan:with-report:plan')
+
+    failRead = false
+    fireEvent.click(within(alert).getByRole('button', { name: 'Retry' }))
+    await waitFor(() => {
+      expect(screen.queryByText('Showing the last setup plan that loaded. The refresh failed.')).not.toBeInTheDocument()
+    })
+    expect(screen.getByTestId('artifact-content')).toHaveTextContent('execution-setup-plan:with-report:plan')
+  })
+
+  it('shows a regeneration request failure without losing the commentary', async () => {
+    const regenerateUrl = `/api/tickets/${encodeURIComponent(TEST.ticketId)}/regenerate-execution-setup-plan`
+    const defaultFetch = vi.mocked(globalThis.fetch).getMockImplementation()
+    vi.mocked(globalThis.fetch).mockImplementation((input, init) => {
+      if (String(input) === regenerateUrl && init?.method === 'POST') {
+        return Promise.resolve(new Response(JSON.stringify({ error: 'Unavailable', message: 'The setup generator is busy.' }), {
+          status: 503,
+          headers: { 'Content-Type': 'application/json' },
+        }))
+      }
+      return defaultFetch!(input, init)
+    })
+
+    renderWithProviders(<ExecutionSetupPlanApprovalPane ticket={makeTicket({ status: 'WAITING_EXECUTION_SETUP_APPROVAL' })} />)
+    await screen.findByTestId('artifact-content')
+    fireEvent.click(screen.getByRole('button', { name: 'Regenerate ...' }))
+    const dialog = await screen.findByRole('dialog')
+    const commentary = within(dialog).getByRole('textbox')
+    fireEvent.change(commentary, { target: { value: 'Use the repository-native setup path.' } })
+    fireEvent.click(within(dialog).getByRole('button', { name: 'Regenerate' }))
+
+    expect(await screen.findByText(/The setup generator is busy/)).toBeInTheDocument()
+    expect(within(screen.getByRole('dialog')).getByRole('textbox')).toHaveValue('Use the repository-native setup path.')
+    expect(within(screen.getByRole('dialog')).getByRole('button', { name: 'Regenerate' })).toBeEnabled()
+  })
+
+  it('cancels a runtime rewind warning from Escape without entering edit mode', async () => {
+    renderWithProviders(<ExecutionSetupPlanApprovalPane ticket={makeTicket({ status: 'PREPARING_EXECUTION_ENV' })} />)
+    await screen.findByTestId('artifact-content')
+    fireEvent.click(screen.getByRole('button', { name: 'Edit' }))
+
+    const warning = await screen.findByRole('dialog')
+    expect(within(warning).getByText('Return to setup approval?')).toBeInTheDocument()
+    fireEvent.keyDown(warning, { key: 'Escape' })
+
+    await waitFor(() => expect(screen.queryByText('Return to setup approval?')).not.toBeInTheDocument())
+    expect(screen.queryByTestId('execution-setup-plan-editor')).not.toBeInTheDocument()
+  })
+
+  it('closes the regenerate dialog through Escape and its Cancel action', async () => {
+    renderWithProviders(<ExecutionSetupPlanApprovalPane ticket={makeTicket({ status: 'WAITING_EXECUTION_SETUP_APPROVAL' })} />)
+    await screen.findByTestId('artifact-content')
+
+    fireEvent.click(screen.getByRole('button', { name: 'Regenerate ...' }))
+    let dialog = await screen.findByRole('dialog')
+    fireEvent.keyDown(dialog, { key: 'Escape' })
+    await waitFor(() => expect(screen.queryByText('Regenerate setup plan')).not.toBeInTheDocument())
+
+    fireEvent.click(screen.getByRole('button', { name: 'Regenerate ...' }))
+    dialog = await screen.findByRole('dialog')
+    fireEvent.click(within(dialog).getByRole('button', { name: 'Cancel' }))
+
+    await waitFor(() => expect(screen.queryByText('Regenerate setup plan')).not.toBeInTheDocument())
+  })
+
+  it('keeps dirty edits when Escape closes the discard confirmation', async () => {
+    renderWithProviders(<ExecutionSetupPlanApprovalPane ticket={makeTicket({ status: 'WAITING_EXECUTION_SETUP_APPROVAL' })} />)
+    await screen.findByTestId('artifact-content')
+    fireEvent.click(screen.getByRole('button', { name: 'Edit' }))
+    await screen.findByTestId('execution-setup-plan-editor')
+    fireEvent.click(screen.getByRole('button', { name: 'Raw' }))
+
+    const editor = await screen.findByLabelText<HTMLTextAreaElement>('YAML editor')
+    const draft = buildRawPlan('Keep this unsaved setup plan.')
+    fireEvent.change(editor, { target: { value: draft } })
+    fireEvent.click(screen.getByRole('button', { name: 'View' }))
+
+    const discardDialog = await screen.findByRole('dialog')
+    expect(within(discardDialog).getByText('Discard unsaved setup-plan edits?')).toBeInTheDocument()
+    fireEvent.keyDown(discardDialog, { key: 'Escape' })
+
+    await waitFor(() => expect(screen.queryByText('Discard unsaved setup-plan edits?')).not.toBeInTheDocument())
+    expect(screen.getByLabelText('YAML editor')).toHaveValue(draft)
+    expect(screen.getByRole('button', { name: 'Save' })).toBeEnabled()
   })
 })

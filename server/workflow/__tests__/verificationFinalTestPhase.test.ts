@@ -402,4 +402,51 @@ describe('handleFinalTest', () => {
     expect(readFileSync(`${paths.worktreePath}/local-output.txt`, 'utf8')).toBe('leave on disk\n')
     expect(sendEvent).toHaveBeenCalledWith({ type: 'TESTS_PASSED' })
   })
+
+  it('keeps unclassified output local-only when no final-test session is available', async () => {
+    const { ticket, context, paths } = await createInitializedTestTicket(repoManager, {
+      title: 'Final-test classification without a session',
+    })
+
+    executeFinalTestWithRetriesMock.mockImplementationOnce(async (...args: unknown[]) => {
+      writeFileSync(join(args[2] as string, 'unclassified-output.txt'), 'leave on disk\n')
+      return {
+        status: 'passed' as const,
+        passed: true,
+        checkedAt: '2026-04-09T12:00:00.000Z',
+        plannedBy: TEST.implementer,
+        testFiles: [],
+        modifiedFiles: [],
+        fileEffects: [],
+        testsCount: 0,
+        modelOutput: '<FINAL_TEST_COMMANDS>{"commands":["true"]}</FINAL_TEST_COMMANDS>',
+        commands: [],
+        errors: [],
+        attempt: 1,
+        maxIterations: 1,
+        attemptHistory: [],
+        retryNotes: [],
+      }
+    })
+
+    const sendEvent = vi.fn()
+    await handleFinalTest(
+      ticket.id,
+      { ...context, lockedMainImplementer: TEST.implementer },
+      sendEvent,
+      new AbortController().signal,
+    )
+
+    expect(runOpenCodeSessionPromptMock).not.toHaveBeenCalled()
+    const artifact = getLatestPhaseArtifact(ticket.id, 'final_test_file_effects_audit', 'RUNNING_FINAL_TEST')
+    const audit = JSON.parse(artifact!.content)
+    expect(audit.localOnlyFiles).toEqual(['unclassified-output.txt'])
+    expect(audit.classificationRetry).toMatchObject({
+      status: 'fallback',
+      requestedFiles: ['unclassified-output.txt'],
+      warning: expect.stringContaining('planning session was unavailable'),
+    })
+    expect(readFileSync(join(paths.worktreePath, 'unclassified-output.txt'), 'utf8')).toBe('leave on disk\n')
+    expect(sendEvent).toHaveBeenCalledWith({ type: 'TESTS_PASSED' })
+  })
 })

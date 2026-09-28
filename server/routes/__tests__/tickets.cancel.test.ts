@@ -303,6 +303,21 @@ describe('ticketRouter POST /tickets/:id/cancel', () => {
     expect(sendTicketEvent).not.toHaveBeenCalled()
   })
 
+  it('rejects malformed JSON before attempting cancellation', async () => {
+    const { ticket } = await createCancelableTicket(repoManager.createRepo())
+
+    const response = await app.request(`/api/tickets/${ticket.id}/cancel`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: '{"deleteContent":',
+    })
+
+    expect(response.status).toBe(400)
+    expect(await response.json()).toEqual({ error: 'Cancel request body must be valid JSON' })
+    expect(getTicketByRef(ticket.id)?.status).toBe('DRAFTING_PRD')
+    expect(sendTicketEvent).not.toHaveBeenCalled()
+  })
+
 
   it('keeps receipts when only the logs are deleted', async () => {
     const repoDir = repoManager.createRepo()
@@ -403,6 +418,32 @@ describe('ticketRouter POST /tickets/:id/cancel', () => {
       availableActions: [],
       errorMessage: null,
     })
+    expect(ensureActorForTicket).not.toHaveBeenCalled()
+    expect(sendTicketEvent).not.toHaveBeenCalled()
+  })
+
+  it('deletes display-only mock tickets without creating workflow actors', async () => {
+    const repoDir = repoManager.createRepo()
+    const project = attachProject({ folderPath: repoDir, name: 'MockCancelDelete', shortname: 'MDEL' })
+    const ticket = createTicket({
+      projectId: project.id,
+      title: 'Mock delete route test',
+      description: 'Deleting a mock ticket should not hydrate workflow state.',
+    })
+    patchTicket(ticket.id, {
+      branchName: DISPLAY_ONLY_MOCK_BRANCH_NAME,
+      status: 'SCANNING_RELEVANT_FILES',
+    })
+
+    const response = await app.request(`/api/tickets/${ticket.id}/cancel`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ deleteTicket: true }),
+    })
+
+    expect(response.status).toBe(200)
+    expect(await response.json()).toEqual({ success: true, ticketId: ticket.id })
+    expect(getTicketByRef(ticket.id)).toBeUndefined()
     expect(ensureActorForTicket).not.toHaveBeenCalled()
     expect(sendTicketEvent).not.toHaveBeenCalled()
   })

@@ -16,6 +16,7 @@ import { sqlite } from '../../db/index'
 import { clearProjectDatabaseCache, getExistingProjectDatabase } from '../../db/project'
 import {
   abortTicketSessions,
+  hasUnresolvedSessionOwnership,
   listOpenCodeSessionsForTicket,
   recoverPendingOpenCodeSessionOwnership,
   SessionManager,
@@ -654,6 +655,156 @@ describe('SessionManager', () => {
     expect(listOpenCodeSessionsForTicket(ticket.id, []).map((session) => session.sessionId)).toEqual([created.id])
     expect(listOpenCodeSessionsForTicket(ticket.id, ['active', 'abandoned']).map((session) => session.sessionId)).toEqual([created.id])
     expect(listOpenCodeSessionsForTicket(ticket.id, ['nonexistent-state'])).toEqual([])
+  })
+
+  it('fails closed when a ticket reference cannot be resolved', async () => {
+    const unresolvedTicketId = 'not-a-ticket-reference'
+
+    await expect(abortTicketSessions(unresolvedTicketId)).resolves.toBe(false)
+    expect(recoverPendingOpenCodeSessionOwnership(unresolvedTicketId)).toBe(false)
+    expect(hasUnresolvedSessionOwnership(unresolvedTicketId)).toBe(true)
+  })
+
+  it('keeps malformed pending ownership visible and blocks cleanup success', async () => {
+    const { ticket, adapter, sessionManager, session } = await createOwnedSessionFixture({
+      phase: 'CODING',
+      title: 'Preserve malformed ownership state',
+      description: 'Invalid recovery metadata must remain visible for repair.',
+    })
+    await sessionManager.completeSession(session.id)
+    writeTicketFile(ticket.id, 'runtime/opencode-pending-sessions.json', JSON.stringify([{
+      sessionId: 'session-with-invalid-attempt',
+      phase: 'CODING',
+      phaseAttempt: 0,
+      memberId: null,
+      beadId: null,
+      iteration: null,
+      step: null,
+    }]))
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => undefined)
+
+    try {
+      expect(recoverPendingOpenCodeSessionOwnership(ticket.id)).toBe(false)
+      expect(sessionManager.hasUnresolvedSessionOwnership(ticket.id)).toBe(true)
+      expect(sessionManager.hasUnresolvedSessionOwnershipForScope(ticket.id, 'CODING', {
+        phaseAttempt: 1,
+      })).toBe(true)
+      await expect(abortTicketSessions(ticket.id)).resolves.toBe(false)
+      expect(adapter.abortCalls).toEqual([])
+      expect(readTicketFile(ticket.id, 'runtime/opencode-pending-sessions.json')).not.toBeNull()
+    } finally {
+      warn.mockRestore()
+    }
+  })
+
+  it('leaves pending ownership durable when the database cannot replay it yet', async () => {
+    const { ticket, sessionManager, session } = await createOwnedSessionFixture({
+      phase: 'CODING',
+      title: 'Recover pending ownership after a read-only window',
+      description: 'Recovery should retain its marker until SQLite accepts the row.',
+    })
+    await sessionManager.completeSession(session.id)
+    const sessionId = 'session-restored-after-readonly'
+    writeTicketFile(ticket.id, 'runtime/opencode-pending-sessions.json', JSON.stringify([{
+      sessionId,
+      phase: 'CODING',
+      phaseAttempt: 2,
+      memberId: 'model-a',
+      beadId: null,
+      iteration: 3,
+      step: 'execute',
+    }]))
+    const context = getTicketContext(ticket.id)!
+    const projectDatabase = getExistingProjectDatabase(context.projectRoot)
+    expect(projectDatabase).toBeDefined()
+    projectDatabase!.sqlite.pragma('query_only = ON')
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => undefined)
+
+    try {
+      expect(recoverPendingOpenCodeSessionOwnership(ticket.id)).toBe(false)
+      expect(listOpenCodeSessionsForTicket(ticket.id, ['active']).map((row) => row.sessionId)).toEqual([])
+      expect(readTicketFile(ticket.id, 'runtime/opencode-pending-sessions.json')).not.toBeNull()
+
+      projectDatabase!.sqlite.pragma('query_only = OFF')
+      expect(recoverPendingOpenCodeSessionOwnership(ticket.id)).toBe(true)
+      expect(listOpenCodeSessionsForTicket(ticket.id, ['active'])).toEqual([
+        expect.objectContaining({
+          sessionId,
+          phase: 'CODING',
+          phaseAttempt: 2,
+          memberId: 'model-a',
+          iteration: 3,
+          step: 'execute',
+        }),
+      ])
+      expect(readTicketFile(ticket.id, 'runtime/opencode-pending-sessions.json')).toBeNull()
+    } finally {
+      projectDatabase!.sqlite.pragma('query_only = OFF')
+      warn.mockRestore()
+    }
+  })
+
+  it('reports read and abort errors without losing the active session record', async () => {
+    const { ticket, adapter, sessionManager, session } = await createOwnedSessionFixture({
+      phase: 'CODING',
+      title: 'Retain ownership while its marker is unreadable',
+      description: 'Cleanup must not claim success while it cannot inspect its marker.',
+    })
+    const readFile = vi.spyOn(ticketQueries, 'readTicketFile').mockImplementation(() => {
+      throw new Error('permission denied')
+    })
+    const abort = vi.spyOn(adapter, 'abortSession').mockRejectedValue(new Error('OpenCode is unavailable'))
+    const factorySpy = vi.spyOn(opencodeFactory, 'getOpenCodeAdapter').mockReturnValue(adapter)
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => undefined)
+
+    try {
+      expect(recoverPendingOpenCodeSessionOwnership(ticket.id)).toBe(false)
+      expect(sessionManager.hasUnresolvedSessionOwnership(ticket.id)).toBe(true)
+      await expect(abortTicketSessions(ticket.id)).resolves.toBe(false)
+      expect(listOpenCodeSessionsForTicket(ticket.id, ['active']).map((row) => row.sessionId)).toEqual([session.id])
+      expect(abort).toHaveBeenCalledWith(session.id)
+    } finally {
+      warn.mockRestore()
+      factorySpy.mockRestore()
+      abort.mockRestore()
+      readFile.mockRestore()
+    }
+  })
+
+  it('retries a pending-session abort after a transient adapter rejection', async () => {
+    const { ticket, adapter, sessionManager, session } = await createOwnedSessionFixture({
+      phase: 'CODING',
+      title: 'Retry pending session cleanup',
+      description: 'An abort error must preserve ownership for a later cleanup attempt.',
+    })
+    await sessionManager.completeSession(session.id)
+    writeTicketFile(ticket.id, 'runtime/opencode-pending-sessions.json', JSON.stringify([{
+      sessionId: 'session-with-pending-ownership',
+      phase: 'CODING',
+      phaseAttempt: 1,
+      memberId: null,
+      beadId: null,
+      iteration: null,
+      step: null,
+    }]))
+    const abort = vi.spyOn(adapter, 'abortSession')
+      .mockRejectedValueOnce(new Error('temporary connection failure'))
+      .mockResolvedValueOnce(true)
+    const factorySpy = vi.spyOn(opencodeFactory, 'getOpenCodeAdapter').mockReturnValue(adapter)
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => undefined)
+
+    try {
+      await expect(abortTicketSessions(ticket.id)).resolves.toBe(false)
+      expect(readTicketFile(ticket.id, 'runtime/opencode-pending-sessions.json')).not.toBeNull()
+
+      await expect(abortTicketSessions(ticket.id)).resolves.toBe(true)
+      expect(readTicketFile(ticket.id, 'runtime/opencode-pending-sessions.json')).toBeNull()
+      expect(adapter.forgetCalls).toContain('session-with-pending-ownership')
+    } finally {
+      warn.mockRestore()
+      factorySpy.mockRestore()
+      abort.mockRestore()
+    }
   })
 
   it('does not replace a stale session until its remote stop is confirmed', async () => {

@@ -1,5 +1,5 @@
 import { describe, expect, it, vi } from 'vitest'
-import { normalizeBeadsJsonlOutput } from '../index'
+import { normalizeBeadSubsetYamlOutput, normalizeBeadsJsonlOutput } from '../index'
 import { reconcileStoredBeadStatus } from '../../phases/beads/beadsFile'
 
 const TEST_COMMAND = {
@@ -38,6 +38,23 @@ function buildBeadRecord(overrides: Record<string, unknown> = {}): Record<string
 
 function parseBead(overrides: Record<string, unknown> = {}) {
   return normalizeBeadsJsonlOutput(JSON.stringify([buildBeadRecord(overrides)]))
+}
+
+function buildBeadSubset(overrides: Record<string, unknown> = {}) {
+  return {
+    id: 'bead-1',
+    title: 'First bead',
+    prdRefs: ['EPIC-1 / US-1'],
+    description: 'Do the first step.',
+    contextGuidance: {
+      patterns: ['Keep the bead narrowly scoped.'],
+      anti_patterns: ['Do not depend on unrelated files.'],
+    },
+    acceptanceCriteria: ['done'],
+    tests: ['test'],
+    testCommands: [TEST_COMMAND],
+    ...overrides,
+  }
 }
 
 describe('bead status validation', () => {
@@ -118,6 +135,31 @@ describe('bead iteration clamping', () => {
     expect(result.repairWarnings.some((warning) => warning.includes('replaced invalid iteration'))).toBe(true)
   })
 
+  it('keeps only valid failed-iteration and retry notes', () => {
+    const result = parseBead({
+      failedIterationNotes: [
+        { timestamp: ' 2026-08-01 ', iteration: '2', content: 'test failed', errorCode: ' TEST_FAILED ' },
+        null,
+        { timestamp: '', iteration: 2, content: 'missing time' },
+        { timestamp: '2026-08-02', iteration: 'later', content: 'invalid iteration' },
+        { timestamp: '2026-08-03', iteration: 3, content: '   ' },
+      ],
+      userRetryNotes: [
+        { timestamp: '2026-08-04', iteration: 4, content: 'Retry requested.' },
+      ],
+    })
+
+    expect(result.ok).toBe(true)
+    if (!result.ok) return
+    expect(result.value[0]?.failedIterationNotes).toEqual([
+      { timestamp: '2026-08-01', iteration: 2, content: 'test failed', errorCode: 'TEST_FAILED' },
+    ])
+    expect(result.value[0]?.userRetryNotes).toEqual([
+      { timestamp: '2026-08-04', iteration: 4, content: 'Retry requested.' },
+    ])
+    expect(result.value[0]?.finalizationFailureNotes).toEqual([])
+  })
+
   it('keeps a valid iteration without warning', () => {
     const result = parseBead({ iteration: 4 })
     expect(result.ok).toBe(true)
@@ -138,6 +180,48 @@ describe('bead iteration clamping', () => {
     if (!command || command.mode !== 'shell') return
     expect(command.script).toBe('npm run canonical')
     expect(result.repairWarnings).toContain('Resolved "testCommands" and ignored the conflicting value in "test_commands".')
+  })
+})
+
+describe('bead subset output validation', () => {
+  it('normalizes guidance strings and repairs duplicate IDs without losing warnings', () => {
+    const result = normalizeBeadSubsetYamlOutput(JSON.stringify({ beads: [
+      buildBeadSubset({
+        id: 'duplicate',
+        contextGuidance: 'Patterns:\n- Use small changes.\nAnti-patterns:\n- Skip validation.',
+      }),
+      buildBeadSubset({ id: 'duplicate', title: 'Second bead', prdRefs: [] }),
+    ] }))
+
+    expect(result.ok).toBe(true)
+    if (!result.ok) return
+    expect(result.value.map(({ id }) => id)).toEqual(['duplicate', 'duplicate-2'])
+    expect(result.value[0]?.contextGuidance).toEqual({
+      patterns: ['Use small changes.'],
+      anti_patterns: ['Skip validation.'],
+    })
+    expect(result.repairWarnings).toEqual(expect.arrayContaining([
+      'Canonicalized string context guidance at index 0 into patterns/anti_patterns object.',
+      'Renumbered duplicate bead id "duplicate" to "duplicate-2".',
+      'Bead "duplicate-2" has no PRD references (prdRefs is empty).',
+    ]))
+  })
+
+  it.each([
+    ['empty output', { beads: [] }, 'Bead subset output is empty'],
+    ['non-object guidance', { beads: [buildBeadSubset({ contextGuidance: 3 })] }, 'must be a string or object'],
+    ['guidance missing a pattern', { beads: [buildBeadSubset({ contextGuidance: { anti_patterns: ['avoid'] } })] }, 'missing patterns'],
+    ['guidance missing anti-patterns', { beads: [buildBeadSubset({ contextGuidance: { patterns: ['safe'] } })] }, 'missing anti-patterns'],
+    ['empty guidance string', { beads: [buildBeadSubset({ contextGuidance: '  ' })] }, 'is empty'],
+    ['empty acceptance criteria', { beads: [buildBeadSubset({ acceptanceCriteria: [] })] }, 'is missing acceptance criteria'],
+    ['empty tests', { beads: [buildBeadSubset({ tests: [] })] }, 'is missing tests'],
+    ['blank test command reason', { beads: [buildBeadSubset({ testCommands: [], testCommandReason: '  ' })] }, 'invalid testCommandReason'],
+  ])('rejects %s with a structured validation error', (_label, payload, expected) => {
+    const result = normalizeBeadSubsetYamlOutput(JSON.stringify(payload))
+
+    expect(result.ok).toBe(false)
+    if (result.ok) return
+    expect(result.error).toContain(expected)
   })
 })
 

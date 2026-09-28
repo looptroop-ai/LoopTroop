@@ -38,6 +38,7 @@ export {
   recordTicketErrorOccurrence,
   resolveLatestTicketErrorOccurrence,
   lockTicketStartConfiguration,
+  rollbackTicketStartConfiguration,
   deleteTicket,
   cleanupCanceledTicketData,
 } from './ticketMutations'

@@ -511,6 +511,10 @@ describe('recoverOrphanTmpFiles', () => {
     expect(existsSync(tmpFile)).toBe(false)
   })
 
+  it('returns cleanly when the scan root is missing', () => {
+    expect(recoverOrphanTmpFiles(join(TEST_DIR, 'missing'))).toEqual([])
+  })
+
   it('handles nested .tmp files', () => {
     const target = join(TEST_DIR, 'runtime', 'owner.json')
     orphan(target, '"content"')
@@ -632,6 +636,28 @@ describe('recoverOrphanTmpFiles', () => {
     expect(existsSync(tmpFile)).toBe(false)
   })
 
+  it('promotes proved JSONL only after validating every non-empty record', () => {
+    const target = join(TEST_DIR, 'runtime', 'execution-log.jsonl')
+    const content = '{"a":1}\n\n{"b":2}\n'
+    const tmpFile = orphanJsonl(target, content)
+
+    expect(recoverOrphanTmpFiles(TEST_DIR)).toEqual([target])
+    expect(readFileSync(target, 'utf8')).toBe(content)
+    expect(existsSync(tmpFile)).toBe(false)
+  })
+
+  it.each([
+    ['a missing final newline', '{"a":1}\n{"b":2}'],
+    ['an incomplete record', '{"a":1}\n{"b":\n'],
+  ])('leaves proved JSONL with %s for inspection', (_reason, content) => {
+    const target = join(TEST_DIR, 'runtime', 'execution-log.jsonl')
+    const tmpFile = orphanJsonl(target, content)
+
+    expect(recoverOrphanTmpFiles(TEST_DIR)).toEqual([])
+    expect(existsSync(target)).toBe(false)
+    expect(readFileSync(tmpFile, 'utf8')).toBe(content)
+  })
+
   it('leaves an empty JSONL temp without a complete-write proof', () => {
     const target = join(TEST_DIR, 'beads', 'feature', '.beads', 'issues.jsonl')
     const tmpFile = orphan(target, '')
@@ -711,6 +737,16 @@ describe('recoverOrphanTmpFiles', () => {
     expect(recoverOrphanTmpFiles(TEST_DIR)).toEqual([])
     expect(existsSync(tmpFile)).toBe(true)
     expect(existsSync(target)).toBe(false)
+  })
+
+  it('promotes a known plain-text artifact without applying structured parsing', () => {
+    const target = join(TEST_DIR, '.gitignore')
+    const content = 'runtime/\n'
+    const tmpFile = orphan(target, content)
+
+    expect(recoverOrphanTmpFiles(TEST_DIR)).toEqual([target])
+    expect(readFileSync(target, 'utf8')).toBe(content)
+    expect(existsSync(tmpFile)).toBe(false)
   })
 
   it('leaves a temp file it cannot read rather than deleting it unseen', () => {

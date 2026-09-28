@@ -12,6 +12,7 @@ import { ensureActivePhaseAttempt } from '../../storage/ticketPhaseAttempts'
 import { createFixtureRepoManager } from '../../test/fixtureRepo'
 import { initializeTicket } from '../../ticket/initialize'
 import { abortTicketSessions } from '../../opencode/sessionManager'
+import { cancelTicket } from '../../workflow/runner'
 
 vi.mock('../../workflow/runner', async () => (await import('../../test/routeMocks')).workflowRunnerMock())
 
@@ -163,5 +164,30 @@ describe('ticketRouter DELETE /tickets/:id', () => {
     expect(second.status).toBe(200)
     expect(getTicketByRef(ticket.id)).toBeUndefined()
     expect(vi.mocked(abortTicketSessions)).toHaveBeenCalledTimes(2)
+  })
+
+  it('refuses nonterminal tickets and preserves terminal tickets when cleanup throws', async () => {
+    const repoDir = repoManager.createRepo()
+    const project = attachProject({ folderPath: repoDir, name: 'LoopTroop delete guards', shortname: 'GUARD' })
+    const ticket = createTicket({ projectId: project.id, title: 'Must remain' })
+    const app = new Hono()
+    app.route('/api', ticketRouter)
+
+    const nonterminal = await app.request(`/api/tickets/${ticket.id}`, { method: 'DELETE' })
+    expect(nonterminal.status).toBe(409)
+    expect(await nonterminal.json()).toEqual({ error: 'Only completed or canceled tickets can be deleted' })
+
+    patchTicket(ticket.id, { status: 'CANCELED' })
+    vi.mocked(cancelTicket).mockImplementationOnce(() => {
+      throw new Error('workflow cleanup failed')
+    })
+    const cleanupFailure = await app.request(`/api/tickets/${ticket.id}`, { method: 'DELETE' })
+
+    expect(cleanupFailure.status).toBe(500)
+    expect(await cleanupFailure.json()).toEqual({
+      error: 'Failed to delete ticket',
+      details: 'workflow cleanup failed',
+    })
+    expect(getTicketByRef(ticket.id)).toBeDefined()
   })
 })

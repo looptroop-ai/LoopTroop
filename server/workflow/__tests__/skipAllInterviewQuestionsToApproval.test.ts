@@ -3,6 +3,9 @@ import { readFileSync } from 'node:fs'
 import { initializeDatabase } from '../../db/init'
 import { sqlite } from '../../db/index'
 import { clearProjectDatabaseCache } from '../../db/project'
+import { phaseArtifacts } from '../../db/schema'
+import { eq } from 'drizzle-orm'
+import { join } from 'node:path'
 import {
   buildPersistedBatch,
   createInterviewSessionSnapshot,
@@ -15,6 +18,7 @@ import { parseUiArtifactCompanionArtifact } from '@shared/artifactCompanions'
 import { attachProject } from '../../storage/projects'
 import {
   createTicket,
+  getTicketContext,
   getLatestPhaseArtifact,
   getTicketPaths,
   readTicketFile,
@@ -160,7 +164,7 @@ describe('skipAllInterviewQuestionsToApproval', () => {
     const paths = getTicketPaths(ticket.id)
     expect(paths).toBeDefined()
 
-    const interviewYaml = readFileSync(paths!.ticketDir + '/interview.yaml', 'utf-8')
+    const interviewYaml = readFileSync(join(paths!.ticketDir, 'interview.yaml'), 'utf-8')
     expect(interviewYaml).toBe(result.canonicalInterview)
     expect(interviewYaml).toContain('ticket_id: LOOP-1')
     expect(interviewYaml).toContain('free_text: Keep imports idempotent.')
@@ -316,5 +320,41 @@ describe('skipAllInterviewQuestionsToApproval', () => {
 
     const retry = skipAllInterviewQuestionsToApproval(ticket.id, { Q01: '' })
     expect(retry.snapshot.completedAt).toBeTruthy()
+  })
+
+  it('restores a coverage artifact row replaced while Skip All is rolling back', async () => {
+    const { ticket } = await makeActiveSkipAllTicket()
+    const context = getTicketContext(ticket.id)!
+    upsertLatestPhaseArtifact(
+      ticket.id,
+      'interview_coverage',
+      'VERIFYING_INTERVIEW_COVERAGE',
+      JSON.stringify({ winnerId: 'before-skip-all', hasGaps: true }),
+    )
+    const before = getLatestPhaseArtifact(ticket.id, 'interview_coverage', 'VERIFYING_INTERVIEW_COVERAGE')!
+    const originalSafeWrite = atomicWrite.safeAtomicWriteWithin
+    const coverageMirrorWrite = vi.spyOn(atomicWrite, 'safeAtomicWriteWithin').mockImplementation((...args) => {
+      if (args[1].replaceAll('\\', '/').endsWith('/ui/artifact-companions/interview_coverage.json')) {
+        context.projectDb.delete(phaseArtifacts).where(eq(phaseArtifacts.id, before.id)).run()
+        upsertLatestPhaseArtifact(
+          ticket.id,
+          'interview_coverage',
+          'VERIFYING_INTERVIEW_COVERAGE',
+          JSON.stringify({ winnerId: 'concurrent-replacement', hasGaps: false }),
+        )
+        throw new Error('injected coverage mirror failure after replacement')
+      }
+      return originalSafeWrite(...args)
+    })
+
+    try {
+      expect(() => skipAllInterviewQuestionsToApproval(ticket.id, { Q01: '' }))
+        .toThrow('injected coverage mirror failure after replacement')
+    } finally {
+      coverageMirrorWrite.mockRestore()
+    }
+
+    const restored = getLatestPhaseArtifact(ticket.id, 'interview_coverage', 'VERIFYING_INTERVIEW_COVERAGE')
+    expect(restored).toMatchObject({ id: before.id, content: before.content })
   })
 })

@@ -1,6 +1,6 @@
 import { afterAll, beforeEach, describe, expect, it, vi } from 'vitest'
 import { Hono } from 'hono'
-import { existsSync, mkdirSync, readFileSync, renameSync, symlinkSync, writeFileSync } from 'node:fs'
+import { existsSync, mkdirSync, readFileSync, renameSync, symlinkSync, unlinkSync, writeFileSync } from 'node:fs'
 import { resolve } from 'node:path'
 import { initializeDatabase } from '../../db/init'
 import { sqlite } from '../../db/index'
@@ -28,6 +28,7 @@ import { buildInterviewDocument, buildPrdDocument } from '../../test/factories'
 import type { PrdDocument } from '../../structuredOutput/types'
 import { contentSha256 } from '../../lib/contentHash'
 import { listSkipEvents } from '../../workflow/skipReceipts'
+import * as skipReceiptWriter from '../../workflow/skipReceipts'
 
 vi.mock('../../machines/persistence', async () => {
   const storage = await import('../../storage/tickets')
@@ -276,6 +277,144 @@ describe('ticketRouter PRD approval routes', () => {
     expect(savedRaw).toContain('status: draft')
     expect(savedRaw).toContain("approved_by: ''")
     expect(savedRaw).toContain("approved_at: ''")
+  })
+
+  it('restarts Beads planning when a structured PRD edit is saved from a later phase', async () => {
+    const { app, ticket, paths, prdRaw } = await setupPrdApprovalTicket()
+    patchTicket(ticket.id, { status: 'WAITING_BEADS_APPROVAL' })
+    createFreshPhaseAttempts(ticket.id, PRD_EDIT_RESTART_PHASES)
+
+    const document = buildPrdDocument(
+      ticket.externalId,
+      '0000000000000000000000000000000000000000000000000000000000000000',
+    )
+    document.product.problem_statement = 'Restart Beads from the edited structured PRD.'
+    const response = await app.request(`/api/files/${ticket.id}/prd`, {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ expectedContentSha256: contentSha256(prdRaw), document }),
+    })
+
+    expect(response.status).toBe(200)
+    const payload = await response.json() as { content: string; status?: string }
+    expect(payload.status).toBe('DRAFTING_BEADS')
+    expect(payload.content).toContain('status: approved')
+    expect(payload.content).toContain('Restart Beads from the edited structured PRD.')
+    expect(readFileSync(`${paths.ticketDir}/prd.yaml`, 'utf8')).toBe(payload.content)
+
+    const receipt = getLatestPhaseArtifact(ticket.id, 'user_edit_receipt:prd', 'WAITING_PRD_APPROVAL')
+    expect(JSON.parse(receipt!.content)).toMatchObject({
+      action: 'save_and_restart',
+      edit_surface: 'structured',
+      ticket_status_before: 'WAITING_BEADS_APPROVAL',
+      ticket_status_after: 'DRAFTING_BEADS',
+    })
+  })
+
+  it('leaves the reviewed PRD untouched when remote work cannot be stopped for an edit', async () => {
+    const { app, ticket, paths, prdRaw } = await setupPrdApprovalTicket()
+    patchTicket(ticket.id, { status: 'WAITING_BEADS_APPROVAL' })
+    createFreshPhaseAttempts(ticket.id, PRD_EDIT_RESTART_PHASES)
+    const restart = vi.spyOn(routeUtils, 'preparePlanningRestart')
+      .mockRejectedValueOnce(new Error('Remote work did not stop'))
+
+    try {
+      const response = await app.request(`/api/files/${ticket.id}/prd`, {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          expectedContentSha256: contentSha256(prdRaw),
+          content: prdRaw.replace('Import pipeline', 'Edited import pipeline'),
+        }),
+      })
+
+      expect(response.status).toBe(400)
+      expect(await response.json()).toMatchObject({
+        error: 'Failed to save PRD document',
+        details: 'Remote work did not stop',
+      })
+      expect(readFileSync(`${paths.ticketDir}/prd.yaml`, 'utf8')).toBe(prdRaw)
+      expect(getTicketByRef(ticket.id)?.status).toBe('WAITING_BEADS_APPROVAL')
+      expect(getLatestPhaseArtifact(ticket.id, 'user_edit_receipt:prd', 'WAITING_PRD_APPROVAL')).toBeUndefined()
+    } finally {
+      restart.mockRestore()
+    }
+  })
+
+  it('leaves a structured PRD untouched when remote work cannot be stopped', async () => {
+    const { app, ticket, paths, prdRaw } = await setupPrdApprovalTicket()
+    patchTicket(ticket.id, { status: 'WAITING_BEADS_APPROVAL' })
+    createFreshPhaseAttempts(ticket.id, PRD_EDIT_RESTART_PHASES)
+    const document = buildPrdDocument(
+      ticket.externalId,
+      '0000000000000000000000000000000000000000000000000000000000000000',
+    )
+    const restart = vi.spyOn(routeUtils, 'preparePlanningRestart')
+      .mockRejectedValueOnce(new Error('Remote work did not stop'))
+
+    try {
+      const response = await app.request(`/api/files/${ticket.id}/prd`, {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ expectedContentSha256: contentSha256(prdRaw), document }),
+      })
+
+      expect(response.status).toBe(400)
+      expect(await response.json()).toMatchObject({
+        error: 'Failed to save PRD document',
+        details: 'Remote work did not stop',
+      })
+      expect(readFileSync(`${paths.ticketDir}/prd.yaml`, 'utf8')).toBe(prdRaw)
+      expect(getTicketByRef(ticket.id)?.status).toBe('WAITING_BEADS_APPROVAL')
+      expect(getLatestPhaseArtifact(ticket.id, 'user_edit_receipt:prd', 'WAITING_PRD_APPROVAL')).toBeUndefined()
+    } finally {
+      restart.mockRestore()
+    }
+  })
+
+  it('returns a read error if the current PRD disappears before an edit', async () => {
+    const { app, ticket, paths, prdRaw } = await setupPrdApprovalTicket()
+    unlinkSync(`${paths.ticketDir}/prd.yaml`)
+
+    const response = await app.request(`/api/files/${ticket.id}/prd`, {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        expectedContentSha256: contentSha256(prdRaw),
+        content: prdRaw,
+      }),
+    })
+
+    expect(response.status).toBe(400)
+    expect(await response.json()).toMatchObject({
+      error: 'Failed to read PRD document',
+      details: 'PRD artifact not found',
+    })
+    expect(existsSync(`${paths.ticketDir}/prd.yaml`)).toBe(false)
+  })
+
+  it('returns a read error if the current PRD disappears before a structured edit', async () => {
+    const { app, ticket, paths, prdRaw } = await setupPrdApprovalTicket()
+    unlinkSync(`${paths.ticketDir}/prd.yaml`)
+
+    const response = await app.request(`/api/files/${ticket.id}/prd`, {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        expectedContentSha256: contentSha256(prdRaw),
+        document: buildPrdDocument(
+          ticket.externalId,
+          '0000000000000000000000000000000000000000000000000000000000000000',
+        ),
+      }),
+    })
+
+    expect(response.status).toBe(400)
+    expect(await response.json()).toMatchObject({
+      error: 'Failed to read PRD document',
+      details: 'PRD artifact not found',
+    })
+    expect(existsSync(`${paths.ticketDir}/prd.yaml`)).toBe(false)
   })
 
   it('requires the loaded PRD hash before a save can invalidate downstream work', async () => {
@@ -891,5 +1030,36 @@ describe('ticketRouter PRD approval routes', () => {
     const receipt = getLatestPhaseArtifact(ticket.id, 'approval_receipt', 'WAITING_PRD_APPROVAL')
     expect(JSON.parse(receipt!.content).gap_acknowledgement).toBeUndefined()
     expect(listSkipEvents(ticket.id)).toHaveLength(0)
+  })
+
+  it('continues approval if recording the gap skip receipt fails', async () => {
+    const { app, ticket, prdRaw } = await setupPrdApprovalTicket()
+    const writeSkipReceipt = vi.spyOn(skipReceiptWriter, 'writeSkipReceipts')
+      .mockImplementationOnce(() => { throw new Error('Skip receipt storage is unavailable') })
+    const error = vi.spyOn(console, 'error').mockImplementation(() => undefined)
+
+    try {
+      const response = await app.request(`/api/tickets/${ticket.id}/approve-prd`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          expectedContentSha256: contentSha256(prdRaw),
+          gapAcknowledgementReason: 'The remaining gap is tracked separately.',
+        }),
+      })
+
+      expect(response.status).toBe(200)
+      expect(await response.json()).toMatchObject({ message: 'PRD approved', status: 'DRAFTING_BEADS' })
+      expect(getTicketByRef(ticket.id)?.status).toBe('DRAFTING_BEADS')
+      expect(writeSkipReceipt).toHaveBeenCalledOnce()
+      expect(error).toHaveBeenCalledWith(
+        expect.stringContaining('Failed to record the gap acknowledgement'),
+        expect.objectContaining({ message: 'Skip receipt storage is unavailable' }),
+      )
+      expect(listSkipEvents(ticket.id)).toHaveLength(0)
+    } finally {
+      writeSkipReceipt.mockRestore()
+      error.mockRestore()
+    }
   })
 })

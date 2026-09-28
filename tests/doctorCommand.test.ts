@@ -1,12 +1,14 @@
 import { describe, it, expect, afterEach, vi } from 'vitest'
-import { mkdtempSync, chmodSync, writeFileSync, readFileSync } from 'node:fs'
+import { mkdtempSync, chmodSync, rmSync, writeFileSync, readFileSync } from 'node:fs'
+import { execFileSync } from 'node:child_process'
 import { createServer } from 'node:net'
 import { tmpdir } from 'node:os'
 import { delimiter, join } from 'node:path'
 import { doctorCommand, runChecks, isOpenCodeCliLaunchable, judgeOpenCode, runProbe } from '../server/cli/doctorCommand'
 import { NODE_FLOOR as FLOOR } from '../server/lib/nodeFloor'
 import { formatNodeVersion } from '../shared/nodeFloor'
-import { writeDaemonState, type DaemonState } from '../server/lib/daemonPaths'
+import { writeDaemonState, writeDaemonStartFailure, type DaemonState } from '../server/lib/daemonPaths'
+import { applyIgnoreMode } from '../server/git/repository'
 import { APP_VERSION } from '../server/lib/appVersion'
 import { removeTempDir } from '../server/test/tempDir'
 
@@ -19,6 +21,7 @@ describe('doctor command', () => {
   const tempDirs: string[] = []
   const previousConfigDir = process.env.LOOPTROOP_CONFIG_DIR
   const previousMode = process.env.LOOPTROOP_OPENCODE_MODE
+  const previousFrontendPort = process.env.LOOPTROOP_FRONTEND_PORT
 
   afterEach(() => {
     vi.restoreAllMocks()
@@ -35,6 +38,8 @@ describe('doctor command', () => {
     else process.env.LOOPTROOP_CONFIG_DIR = previousConfigDir
     if (previousMode === undefined) delete process.env.LOOPTROOP_OPENCODE_MODE
     else process.env.LOOPTROOP_OPENCODE_MODE = previousMode
+    if (previousFrontendPort === undefined) delete process.env.LOOPTROOP_FRONTEND_PORT
+    else process.env.LOOPTROOP_FRONTEND_PORT = previousFrontendPort
   })
 
   function useConfigDir(): string {
@@ -54,6 +59,83 @@ describe('doctor command', () => {
     return { text: () => captured }
   }
 
+  it('reports attached-project ignore state and a database it cannot read', async () => {
+    const configDir = useConfigDir()
+    vi.spyOn(globalThis, 'fetch').mockResolvedValue(new Response('{}', { status: 404 }))
+    const [{ db, sqlite, APP_DB_PATH, closeDatabase }, { initializeDatabase }, { attachedProjects }, schemaVersion] = await Promise.all([
+      import('../server/db/index'),
+      import('../server/db/init'),
+      import('../server/db/schema'),
+      import('../server/db/schemaVersion'),
+    ])
+    initializeDatabase()
+
+    try {
+      const currentSchema = (await runChecks()).find((check) => check.name === 'schema')
+      expect(currentSchema).toMatchObject({ status: 'ok', detail: `database schema v${schemaVersion.APP_SCHEMA_VERSION}, matching this LoopTroop` })
+
+      sqlite.pragma(`user_version = ${schemaVersion.APP_SCHEMA_VERSION + 1}`)
+      const newerSchema = (await runChecks()).find((check) => check.name === 'schema')
+      expect(newerSchema).toMatchObject({
+        status: 'fail',
+        detail: expect.stringContaining(`version ${schemaVersion.APP_SCHEMA_VERSION + 1}`),
+      })
+
+      sqlite.pragma('user_version = 1')
+      const olderSchema = (await runChecks()).find((check) => check.name === 'schema')
+      expect(olderSchema).toMatchObject({
+        status: 'warn',
+        detail: expect.stringContaining(`will be upgraded to ${schemaVersion.APP_SCHEMA_VERSION}`),
+      })
+
+      sqlite.pragma('user_version = 0')
+      const unversionedSchema = (await runChecks()).find((check) => check.name === 'schema')
+      expect(unversionedSchema).toMatchObject({ status: 'warn', detail: expect.stringContaining('predates LoopTroop') })
+
+      sqlite.pragma(`user_version = ${schemaVersion.APP_SCHEMA_VERSION}`)
+      const beforeAttach = (await runChecks()).find((check) => check.name === 'project ignores')
+      expect(beforeAttach).toMatchObject({ status: 'ok', detail: 'no projects attached yet' })
+
+      db.insert(attachedProjects).values({ folderPath: configDir }).run()
+      const afterAttach = (await runChecks()).find((check) => check.name === 'project ignores')
+      expect(afterAttach).toMatchObject({ status: 'warn', label: 'git ignores' })
+      expect(afterAttach?.detail).toContain(configDir)
+
+      db.delete(attachedProjects).run()
+      const ignoredProject = mkdtempSync(join(tmpdir(), 'looptroop-doctor-project-'))
+      tempDirs.push(ignoredProject)
+      execFileSync('git', ['-C', ignoredProject, 'init'], { stdio: 'pipe' })
+      applyIgnoreMode(ignoredProject, 'repo')
+      db.insert(attachedProjects).values({ folderPath: ignoredProject }).run()
+      const ignored = (await runChecks()).find((check) => check.name === 'project ignores')
+      expect(ignored).toMatchObject({ status: 'ok', label: 'git ignores' })
+      expect(ignored?.detail).toContain('1 project(s)')
+
+      closeDatabase()
+      rmSync(APP_DB_PATH, { force: true })
+      rmSync(`${APP_DB_PATH}-wal`, { force: true })
+      rmSync(`${APP_DB_PATH}-shm`, { force: true })
+      const { Database } = await import('../server/db/sqliteShim')
+      const emptyDatabase = new Database(APP_DB_PATH)
+      emptyDatabase.close()
+      const freshSchema = (await runChecks()).find((check) => check.name === 'schema')
+      expect(freshSchema).toMatchObject({ status: 'ok', detail: 'no database yet' })
+
+      closeDatabase()
+      writeFileSync(APP_DB_PATH, 'not a SQLite database')
+      const unreadable = await runChecks()
+      expect(unreadable.find((check) => check.name === 'schema')).toMatchObject({
+        status: 'fail',
+        detail: expect.stringContaining('cannot read'),
+        remedy: expect.stringContaining('file permissions'),
+      })
+      expect(unreadable.find((check) => check.name === 'project ignores')?.detail)
+        .toBe('skipped, database unreadable')
+    } finally {
+      closeDatabase()
+    }
+  })
+
   it('reports on the runtime, tooling, config and services', async () => {
     useConfigDir()
 
@@ -67,13 +149,36 @@ describe('doctor command', () => {
     expect(names).toContain('daemon')
   })
 
+  it('recognizes a development server without a registered daemon', async () => {
+    useConfigDir()
+    const server = createServer()
+    await new Promise<void>((resolve, reject) => {
+      server.once('error', reject)
+      server.listen(0, '127.0.0.1', resolve)
+    })
+    process.env.LOOPTROOP_FRONTEND_PORT = String((server.address() as { port: number }).port)
+
+    try {
+      const check = (await runChecks()).find((entry) => entry.name === 'daemon')
+
+      expect(check).toMatchObject({
+        status: 'ok',
+        detail: 'not running — a development server is serving the interface instead',
+      })
+    } finally {
+      await new Promise<void>((resolve, reject) => {
+        server.close((error) => error ? reject(error) : resolve())
+      })
+    }
+  })
+
   it('brackets an IPv6 daemon address in its report', async () => {
     const configDir = useConfigDir()
     writeDaemonState({
       instanceId: 'ipv6-daemon',
       pid: process.pid,
       host: '::1',
-      port: 4317,
+      port: 3000,
       startedAt: new Date().toISOString(),
       version: '0.0.0-test',
       apiToken: 'test-token',
@@ -90,7 +195,16 @@ describe('doctor command', () => {
 
     const check = (await runChecks()).find((entry) => entry.name === 'daemon')
 
-    expect(check?.detail).toContain('http://[::1]:4317')
+    expect(check?.detail).toContain('http://[::1]:3000')
+  })
+
+  it('reports a free frontend port as no development server', async () => {
+    useConfigDir()
+    process.env.LOOPTROOP_FRONTEND_PORT = String(await reservePort())
+
+    const check = (await runChecks()).find((entry) => entry.name === 'daemon')
+
+    expect(check).toMatchObject({ status: 'ok', detail: 'not running' })
   })
 
   /**
@@ -590,6 +704,27 @@ describe('doctor command', () => {
       expect(check?.status).toBe('ok')
       expect(check?.remedy).toBeUndefined()
     })
+
+    it('reports when startup could not prove its OpenCode process was stopped', async () => {
+      const configDir = useConfigDir()
+      writeDaemonStartFailure({
+        reason: 'startup-cleanup-incomplete',
+        at: '2026-01-02T03:04:05.000Z',
+        version: '0.0.0-test',
+        message: 'OpenCode cleanup was not confirmed.',
+        openCode: { baseUrl: 'http://127.0.0.1:4096', pid: 12345 },
+      }, configDir)
+
+      const check = (await runChecks()).find((entry) => entry.name === 'last start')
+
+      expect(check).toMatchObject({
+        name: 'last start',
+        label: 'start cleanup',
+        status: 'fail',
+        detail: expect.stringContaining('http://127.0.0.1:4096 (pid 12345) was not proven stopped'),
+        remedy: 'Run `looptroop stop` to retry the owned cleanup before starting again.',
+      })
+    })
   })
 
   /**
@@ -731,6 +866,31 @@ describe('doctor command', () => {
 
       expect(result.kind).toBe('ok')
       if (result.kind === 'ok') expect(result.output).toContain('v')
+    })
+
+    it('reports missing tools when no executables resolve from PATH', async () => {
+      const root = mkdtempSync(join(tmpdir(), 'looptroop-doctor-empty-path-'))
+      tempDirs.push(root)
+      const emptyBinDir = join(root, 'bin')
+      const configDir = join(root, 'config')
+      vi.stubEnv('PATH', emptyBinDir)
+      vi.stubEnv('LOOPTROOP_TRUSTED_EXECUTABLE_DIRS', emptyBinDir)
+      vi.stubEnv('LOOPTROOP_CONFIG_DIR', configDir)
+      vi.stubEnv('LOOPTROOP_OPENCODE_MODE', 'real')
+      vi.stubEnv('LOOPTROOP_OPENCODE_BASE_URL', 'http://127.0.0.1:1')
+      vi.spyOn(globalThis, 'fetch').mockRejectedValue(new TypeError('offline'))
+
+      const checks = await runChecks()
+      const check = (name: string) => checks.find((entry) => entry.name === name)
+
+      expect(check('npm')).toMatchObject({ status: 'warn', missing: true })
+      expect(check('git')).toMatchObject({ status: 'fail', missing: true })
+      expect(check('git')?.remedy).toMatch(/install/i)
+      expect(check('gh')).toMatchObject({ status: 'warn', missing: true })
+      expect(check('gh auth')).toMatchObject({ status: 'warn' })
+      expect(check('config dir')).toMatchObject({ name: 'config dir', status: 'ok', detail: configDir })
+      expect(check('opencode cli')).toMatchObject({ status: 'warn', missing: true })
+      expect(check('opencode')).toMatchObject({ status: 'fail' })
     })
 
     it('does not pass daemon credentials to a probe child', () => {

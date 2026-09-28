@@ -1,7 +1,7 @@
 import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react'
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
-import { makeBead, makeTicket } from '@/test/factories'
+import { makeBead, makePrdDocument, makeTicket } from '@/test/factories'
 import { TooltipProvider } from '@/components/ui/tooltip'
 import type { Ticket } from '@/hooks/useTickets'
 import { useLogs } from '@/context/useLogContext'
@@ -77,10 +77,22 @@ afterEach(() => {
 
 describe('CodingView hover cards', () => {
   describe('PRD ref hover card', () => {
-    it('renders PRD ref codes with cursor-help styling when bead has prdRefs', () => {
+    it('shows the matching epic, story acceptance criteria, and missing-ref state', async () => {
+      const prd = makePrdDocument()
+      fetchSpy.mockImplementation((input: RequestInfo | URL) => String(input) === '/api/files/1%3ATEST-1/prd'
+        ? Promise.resolve(new Response(JSON.stringify({ content: JSON.stringify(prd) }), { status: 200 }))
+        : Promise.resolve(new Response(JSON.stringify([]), { status: 200 })))
+
       renderCoding({
         runtime: {
-          beads: [makeBead({ id: 'bead-1', title: 'Test Bead', status: 'in_progress', iteration: 1, prdRefs: ['E1', 'US1.1'] })],
+          beads: [makeBead({
+            id: 'bead-1',
+            title: 'Test Bead',
+            status: 'in_progress',
+            iteration: 1,
+            acceptanceCriteria: ['Runtime-only criterion.'],
+            prdRefs: ['EPIC-A', 'US-A1', 'EPIC-MISSING'],
+          })],
         },
       })
 
@@ -88,13 +100,24 @@ describe('CodingView hover cards', () => {
       fireEvent.click(screen.getByRole('button', { name: /Test Bead/ }))
 
       // PRD refs should be rendered as code elements with cursor-help
-      const e1 = screen.getByText('E1')
-      expect(e1.tagName).toBe('CODE')
-      expect(e1.className).toContain('cursor-help')
+      const epicRef = screen.getByText('EPIC-A')
+      expect(epicRef.tagName).toBe('CODE')
+      expect(epicRef.className).toContain('cursor-help')
 
-      const us11 = screen.getByText('US1.1')
-      expect(us11.tagName).toBe('CODE')
-      expect(us11.className).toContain('cursor-help')
+      const storyRef = screen.getByText('US-A1')
+      expect(storyRef.tagName).toBe('CODE')
+      expect(storyRef.className).toContain('cursor-help')
+
+      fireEvent.pointerEnter(epicRef, { pointerType: 'mouse' })
+      expect(await screen.findByText('Validate the test scenario.')).toBeInTheDocument()
+
+      fireEvent.pointerEnter(storyRef, { pointerType: 'mouse' })
+      expect(await screen.findByText('As a user, I can perform the test action.')).toBeInTheDocument()
+      expect(screen.getByText(/Test criterion is met\./)).toBeInTheDocument()
+
+      const missingRef = screen.getByText('EPIC-MISSING')
+      fireEvent.pointerEnter(missingRef, { pointerType: 'mouse' })
+      expect(await screen.findByText('Reference not found in PRD')).toBeInTheDocument()
     })
   })
 
@@ -120,7 +143,7 @@ describe('CodingView hover cards', () => {
   })
 
   describe('Dependency bead hover card', () => {
-    it('renders blocked_by dependency IDs with cursor-help styling', () => {
+    it('shows blocker details and lets you open that bead', async () => {
       renderCoding({
         runtime: {
           beads: [
@@ -136,6 +159,17 @@ describe('CodingView hover cards', () => {
       expect(depCode.tagName).toBe('CODE')
       expect(depCode.className).toContain('cursor-help')
       expect(depCode.textContent).toBe('bead-2 (#2)')
+
+      fireEvent.pointerEnter(depCode, { pointerType: 'mouse' })
+      fireEvent.click(await screen.findByRole('button', { name: 'View bead →' }))
+      expect(screen.getByRole('button', { name: 'Back to live' })).toBeInTheDocument()
+      expect(screen.getByText((_, element) =>
+        element?.tagName === 'DIV'
+        && element.className.includes('uppercase tracking-wider')
+        && element.textContent === 'Blocker Bead',
+      )).toBeInTheDocument()
+      fireEvent.click(screen.getByRole('button', { name: 'Back to live' }))
+      expect(screen.queryByRole('button', { name: 'Back to live' })).not.toBeInTheDocument()
     })
 
     it('renders blocks dependency IDs as well', () => {
@@ -155,6 +189,30 @@ describe('CodingView hover cards', () => {
       expect(depCode.className).toContain('cursor-help')
       expect(depCode.textContent).toBe('bead-3 (#2)')
     })
+  })
+
+  it('opens a bead that shares a label and returns to the current bead', async () => {
+    renderCoding({
+      runtime: {
+        beads: [
+          makeBead({ id: 'bead-1', title: 'Current bead', status: 'in_progress', iteration: 1, labels: ['shared-work'] }),
+          makeBead({ id: 'bead-2', title: 'Related bead', status: 'pending', iteration: 0, labels: ['shared-work'] }),
+        ],
+      },
+    })
+
+    fireEvent.click(screen.getByRole('button', { name: /Current bead/ }))
+    const sharedLabel = screen.getByText('shared-work')
+    const labelTrigger = sharedLabel.parentElement
+    expect(labelTrigger).toBeTruthy()
+    fireEvent.pointerEnter(labelTrigger!, { pointerType: 'mouse' })
+
+    fireEvent.click(await screen.findByRole('button', { name: /Related bead \(#2\)/ }))
+    expect(screen.getByRole('button', { name: 'Back to live' })).toBeInTheDocument()
+
+    fireEvent.click(screen.getByRole('button', { name: 'Back to live' }))
+    expect(screen.queryByRole('button', { name: 'Back to live' })).not.toBeInTheDocument()
+    expect(screen.getByRole('button', { name: /Current bead/ })).toBeInTheDocument()
   })
 
   describe('Target file row', () => {

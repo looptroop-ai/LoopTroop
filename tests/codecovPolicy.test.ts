@@ -1,5 +1,5 @@
-import { readFileSync } from 'node:fs'
-import { join } from 'node:path'
+import { readFileSync, readdirSync } from 'node:fs'
+import { join, relative, sep } from 'node:path'
 import { load as loadYaml } from 'js-yaml'
 import { describe, expect, it } from 'vitest'
 import vitestConfig from '../vitest.config'
@@ -39,7 +39,7 @@ const requiredJob = (name: string): Job => {
 }
 
 describe('coverage and Codecov policy', () => {
-  it('collects V8 coverage across the four Vitest projects without thresholds', () => {
+  it('collects V8 coverage across the four Vitest projects with 90% line and 80% branch floors', () => {
     expect(packageJson.scripts['test:coverage']).toBe('vitest run --coverage')
     expect(packageJson.devDependencies.vitest).toMatch(/\S/)
     expect(packageJson.devDependencies['@vitest/coverage-v8']).toBe(packageJson.devDependencies.vitest)
@@ -51,17 +51,47 @@ describe('coverage and Codecov policy', () => {
       reporter: ['lcovonly', 'text', 'json-summary'],
       autoAttachSubprocess: false,
     })
-    expect(coverage?.thresholds).toBeUndefined()
+    expect(coverage?.thresholds?.lines).toBe(90)
+    expect(coverage?.thresholds?.branches).toBe(80)
     for (const pattern of [
       '**/*.test.*', '**/*.spec.*', '**/__tests__/**', '**/{test,tests}/**',
       '**/{helper,helpers,fixture,fixtures}/**', '**/*.d.{ts,cts,mts}',
       '**/*.config.*', '**/generated/**', '**/*.generated.*',
     ]) expect(coverage?.exclude).toContain(pattern)
 
-    const projects = vitestConfig.test?.projects as Array<{ test?: { name?: string } }>
+    const projects = vitestConfig.test?.projects as Array<{ test?: { name?: string; include?: string[]; isolate?: boolean; pool?: string } }>
     expect(projects.map((project) => project.test?.name)).toEqual([
       'client-dom', 'client-node', 'server-pure', 'server-integration',
     ])
+  })
+
+  it('keeps mocked, process-spawning, and integration tests isolated', () => {
+    const projects = vitestConfig.test?.projects as Array<{ test?: { name?: string; include?: string[]; isolate?: boolean; pool?: string } }>
+    const integration = projects.find((project) => project.test?.name === 'server-integration')
+    expect(integration?.test).toMatchObject({ pool: 'forks', isolate: true })
+    const includes = integration?.test?.include ?? []
+    const matches = (file: string) => includes.some((pattern) => {
+      const wildcard = pattern.indexOf('*')
+      if (wildcard < 0) return pattern === file
+      const prefix = pattern.slice(0, wildcard)
+      const suffix = pattern.slice(wildcard + 1)
+      const middle = file.slice(prefix.length, file.length - suffix.length)
+      return file.startsWith(prefix) && file.endsWith(suffix) && !middle.includes('/')
+    })
+    const scan = (directory: string): string[] => readdirSync(directory, { withFileTypes: true }).flatMap((entry) => {
+      const absolute = join(directory, entry.name)
+      if (entry.isDirectory()) return scan(absolute)
+      if (!/\.(?:test|spec)\.[jt]sx?$/.test(entry.name)) return []
+      const file = relative(repo, absolute).split(sep).join('/')
+      const source = readFileSync(absolute, 'utf8')
+      const hasMock = /\bvi\.(?:mock|doMock)\s*\(/.test(source)
+      const spawnsProcess = source.split(/\r?\n/).some((line) =>
+        /^\s*import\b/.test(line) && /from\s*['"](?:node:)?child_process['"]/.test(line))
+      return hasMock || spawnsProcess || file.includes('.integration.test.') ? [file] : []
+    })
+    const missing = ['server', 'shared', 'tests'].flatMap(scan).filter((file) => !matches(file))
+
+    expect(missing).toEqual([])
   })
 
   it('collects coverage in Verify and keeps the OIDC upload separate', () => {
@@ -112,11 +142,15 @@ describe('coverage and Codecov policy', () => {
     expect(packaging.needs).not.toContain('codecov')
   })
 
-  it('keeps project and patch coverage statuses informational', () => {
+  it('reports project coverage and keeps patch status informational', () => {
     const config = loadYaml(readFileSync(join(repo, 'codecov.yml'), 'utf8')) as {
       coverage: { status: { project: { default: Record<string, unknown> }; patch: { default: Record<string, unknown> } } }
     }
-    expect(config.coverage.status.project.default).toEqual({ informational: true })
+    expect(config.coverage.status.project.default).toEqual({
+      target: '90%',
+      threshold: '0%',
+      informational: false,
+    })
     expect(config.coverage.status.patch.default).toEqual({ informational: true })
   })
 })

@@ -11,8 +11,15 @@ const workflowDir = join(repo, '.github/workflows')
 const files = readdirSync(workflowDir).filter((file) => /\.ya?ml$/.test(file))
 const source = new Map(files.map((file) => [file, readFileSync(join(workflowDir, file), 'utf8')]))
 
-type Step = { name?: unknown; run?: unknown; uses?: unknown; env?: Record<string, unknown> }
-type Job = { permissions?: Record<string, unknown>; steps?: Step[] }
+type Step = {
+  name?: unknown
+  run?: unknown
+  uses?: unknown
+  env?: Record<string, unknown>
+  if?: unknown
+  'continue-on-error'?: unknown
+}
+type Job = { permissions?: Record<string, unknown>; steps?: Step[]; if?: unknown; 'continue-on-error'?: unknown }
 type Workflow = { jobs?: Record<string, Job> }
 
 const workflows = new Map(files.map((file) => [
@@ -106,6 +113,48 @@ function executeWindowsScope(run: string, changedPaths: string[], diffStatus = 0
   }
 }
 
+function executeCleanTreeGate(run: string, workingTree: string) {
+  const fixture = 'git() { case "$1:$2" in status:--porcelain) printf "%s" "$WORKING_TREE" ;; --no-pager:diff) printf "simulated diff\\n" ;; *) return 2 ;; esac; }\n'
+  return spawnSync('bash', ['-euo', 'pipefail', '-c', fixture + run], {
+    encoding: 'utf8',
+    env: { ...process.env, WORKING_TREE: workingTree },
+  })
+}
+
+function executeNodeFloorGate(run: string, before: string, after: string, checkerStatus = 0) {
+  const directory = mkdtempSync(join(tmpdir(), 'looptroop-node-floor-gate-'))
+  const checkerCalls = join(directory, 'checker-calls')
+  const fixture = [
+    'git() { case "$1" in fetch) return 0 ;; show) printf \'{}\\n\' ;; *) return 2 ;; esac; }',
+    'node() {',
+    '  if [ "$1" = "-p" ]; then',
+    '    case "$2" in *readFileSync\\(0*) cat >/dev/null; printf "%s\\n" "$BEFORE" ;; *) printf "%s\\n" "$AFTER" ;; esac',
+    '  elif [ "$1" = "scripts/check-node-feeds.ts" ]; then',
+    '    printf "called\\n" >> "$CHECKER_CALLS"',
+    '    return "$CHECKER_STATUS"',
+    '  else return 2; fi',
+    '}',
+    '',
+  ].join('\n')
+
+  try {
+    const result = spawnSync('bash', ['-euo', 'pipefail', '-c', fixture + run], {
+      encoding: 'utf8',
+      env: {
+        ...process.env,
+        AFTER: after,
+        BASE_REF: 'base-ref',
+        BEFORE: before,
+        CHECKER_CALLS: checkerCalls,
+        CHECKER_STATUS: String(checkerStatus),
+      },
+    })
+    return { ...result, checkerCalled: existsSync(checkerCalls) }
+  } finally {
+    rmSync(directory, { recursive: true, force: true })
+  }
+}
+
 describe('release workflow policy', () => {
   it('limits runner auditing to supported jobs without publishing credentials', () => {
     for (const [file, workflow] of workflows) {
@@ -147,6 +196,61 @@ describe('release workflow policy', () => {
       })
       expect(run.status, `${result}: ${run.stderr}`).toBe(result === 'success' ? 0 : 1)
     }
+  })
+
+  it('runs the workflow, shell, and local verification gates in blocking CI jobs', () => {
+    const ci = workflows.get('ci.yml')!.jobs!
+    const scripts = (JSON.parse(readFileSync(join(repo, 'package.json'), 'utf8')) as {
+      scripts: Record<string, string>
+    }).scripts
+    const workflowLint = ci.workflows as Job & { 'runs-on'?: string; 'continue-on-error'?: unknown }
+    expect(workflowLint['runs-on']).toBe('ubuntu-latest')
+    expect(Object.hasOwn(workflowLint, 'continue-on-error')).toBe(false)
+
+    const lintSteps = workflowLint.steps ?? []
+    const installer = lintSteps.find((candidate) => candidate.name === 'Install actionlint')
+    const lintCommand = lintSteps.find((candidate) => candidate.name === 'Lint the workflows')?.run
+    expect(String(installer?.run)).toMatch(/version=\d+\.\d+\.\d+/)
+    expect(String(installer?.run)).toMatch(/sha256=[a-f0-9]{64}/)
+    expect(lintSteps.some((candidate) => candidate.run === 'shellcheck --version')).toBe(true)
+    expect(String(lintCommand)).toContain('/tmp/actionlint -color -shellcheck="shellcheck -S warning"')
+
+    const verify = ci.verify as (Job & { 'continue-on-error'?: unknown }) | undefined
+    if (!verify) throw new Error('ci.yml: verify job missing')
+    expect(Object.hasOwn(verify, 'continue-on-error'), 'the required Verify job must remain blocking').toBe(false)
+    const verificationCommands = [
+      ['npm run lint', 'lint'],
+      ['npm run typecheck', 'typecheck'],
+      ['npm run test:coverage', 'test:coverage'],
+      ['npm run build', 'build'],
+      ['npm run verify:no-native-addons', 'verify:no-native-addons'],
+      ['npm run verify:package', 'verify:package'],
+      ['npm run verify:version', 'verify:version'],
+      ['npm run verify:strip-types', 'verify:strip-types'],
+      ['npm run licenses:check', 'licenses:check'],
+    ] as const
+    const steps = verify.steps ?? []
+    const indices = verificationCommands.map(([command, script]) => {
+      expect(scripts[script], `${script} is an npm script`).toBeDefined()
+      const index = steps.findIndex((candidate) => candidate.run === command)
+      expect(index, `${command} stays in the blocking Verify job`).toBeGreaterThan(-1)
+      return index
+    })
+    expect(indices).toEqual([...indices].sort((a, b) => a - b))
+    const coverageStep = steps.find((candidate) => candidate.run === 'npm run test:coverage')
+    expect(coverageStep).toBeDefined()
+    expect(Object.hasOwn(coverageStep!, 'if'), 'coverage must run in the Verify job').toBe(false)
+    expect(Object.hasOwn(coverageStep!, 'continue-on-error'), 'coverage failures must fail Verify').toBe(false)
+    expect(steps.some((candidate) => String(candidate.run ?? '').includes('server/lib/__tests__/executablePath.test.ts'))).toBe(true)
+    const cleanTree = steps.find((candidate) => candidate.name === 'Verify working tree is clean after build')
+    expect(cleanTree).toBeDefined()
+    const cleanTreeCommand = String(cleanTree?.run ?? '')
+    const clean = executeCleanTreeGate(cleanTreeCommand, '')
+    expect(clean.status, clean.stderr).toBe(0)
+    const dirty = executeCleanTreeGate(cleanTreeCommand, ' M generated-output.js')
+    expect(dirty.status).toBe(1)
+    expect(dirty.stdout).toContain('Build modified tracked files')
+    expect(dirty.stdout).toContain('simulated diff')
   })
 
   it('fails release tag verification on registry errors while accepting a confirmed missing tag', () => {
@@ -598,6 +702,22 @@ describe('release workflow policy', () => {
 
     const packaging = ci.packaging as (Job & { needs?: unknown }) | undefined
     expect(packaging?.needs, 'Packaging waits on the declared-floor lanes').toContain('test-matrix')
+  })
+
+  it('skips the networked Node-feed verifier for an unchanged floor and propagates failures for a changed floor', () => {
+    const verify = workflows.get('ci.yml')?.jobs?.verify
+    const gate = verify?.steps?.find((step) => step.name === 'Check every feed offers a changed Node floor')
+    if (typeof gate?.run !== 'string') throw new Error('Node floor feed gate script missing')
+
+    const unchanged = executeNodeFloorGate(gate.run, '>=24.15.0', '>=24.15.0')
+    expect(unchanged.status, unchanged.stderr).toBe(0)
+    expect(unchanged.stdout).toContain('engines.node is unchanged (>=24.15.0); no feed to check.')
+    expect(unchanged.checkerCalled).toBe(false)
+
+    const changed = executeNodeFloorGate(gate.run, '>=24.15.0', '>=24.17.0', 17)
+    expect(changed.status, changed.stderr).toBe(17)
+    expect(changed.stdout).toContain('engines.node changes from >=24.15.0 to >=24.17.0.')
+    expect(changed.checkerCalled).toBe(true)
   })
 
   /**

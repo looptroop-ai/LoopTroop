@@ -19,6 +19,13 @@ interface TicketModelSelectionLock {
   lockedCouncilMembers: string[]
 }
 
+export class TicketMetadataFormatError extends SyntaxError {
+  constructor() {
+    super('Ticket metadata must contain a JSON object before the ticket can start.')
+    this.name = 'TicketMetadataFormatError'
+  }
+}
+
 function normalizeModelId(value: string | null | undefined): string | null {
   const trimmed = typeof value === 'string' ? value.trim() : ''
   return trimmed.length > 0 ? trimmed : null
@@ -56,13 +63,38 @@ export function getTicketMetaPath(projectRoot: string, externalId: string): stri
   return resolveProjectTicketContainedPath(projectRoot, externalId, 'meta/ticket.meta.json')
 }
 
+function parseTicketMeta(path: string): TicketMetaRecord {
+  const contents = readFileNoFollowSync(path)
+  let parsed: unknown
+  try {
+    parsed = JSON.parse(contents)
+  } catch (error) {
+    if (error instanceof SyntaxError) throw new TicketMetadataFormatError()
+    throw error
+  }
+  if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) {
+    throw new TicketMetadataFormatError()
+  }
+  return parsed as TicketMetaRecord
+}
+
 export function readTicketMeta(projectRoot: string, externalId: string): TicketMetaRecord {
   const path = getTicketMetaPath(projectRoot, externalId)
   try {
-    const parsed = JSON.parse(readFileNoFollowSync(path)) as TicketMetaRecord
-    return parsed && typeof parsed === 'object' ? parsed : {}
+    return parseTicketMeta(path)
   } catch {
     return {}
+  }
+}
+
+/** Read metadata for a write-modify operation without treating I/O errors as an empty record. */
+export function readTicketMetaForMutation(projectRoot: string, externalId: string): TicketMetaRecord {
+  const path = getTicketMetaPath(projectRoot, externalId)
+  try {
+    return parseTicketMeta(path)
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === 'ENOENT') return {}
+    throw error
   }
 }
 
@@ -76,14 +108,15 @@ export function updateTicketMeta(
   externalId: string,
   patch: Partial<TicketMetaRecord>,
 ): TicketMetaRecord {
-  const current = readTicketMeta(projectRoot, externalId)
+  const current = readTicketMetaForMutation(projectRoot, externalId)
   return writeTicketMeta(projectRoot, externalId, { ...current, ...patch })
 }
 
-export function lockTicketModelSelection(
+export function prepareTicketModelSelectionLock(
   projectRoot: string,
   externalId: string,
   lock: TicketModelSelectionLock,
+  replaceExisting = false,
 ): TicketMetaRecord {
   const lockedMainImplementer = normalizeModelId(lock.lockedMainImplementer)
   const lockedCouncilMembers = normalizeModelList(lock.lockedCouncilMembers)
@@ -95,23 +128,35 @@ export function lockTicketModelSelection(
     throw new Error('Locked council members are required.')
   }
 
-  const current = readTicketMeta(projectRoot, externalId)
+  const current = readTicketMetaForMutation(projectRoot, externalId)
   const currentMainImplementer = normalizeModelId(current.lockedMainImplementer)
   const currentCouncilMembers = normalizeModelList(current.lockedCouncilMembers)
 
-  if (currentMainImplementer && currentMainImplementer !== lockedMainImplementer) {
+  if (!replaceExisting && currentMainImplementer && currentMainImplementer !== lockedMainImplementer) {
     throw new Error(`Ticket model configuration is immutable after start: ${externalId}`)
   }
-  if (currentCouncilMembers.length > 0 && !councilMembersEqualOrdered(currentCouncilMembers, lockedCouncilMembers)) {
+  if (!replaceExisting && currentCouncilMembers.length > 0 && !councilMembersEqualOrdered(currentCouncilMembers, lockedCouncilMembers)) {
     throw new Error(`Ticket model configuration is immutable after start: ${externalId}`)
   }
 
-  return writeTicketMeta(projectRoot, externalId, {
+  return {
     ...current,
-    startedAt: current.startedAt ?? lock.startedAt,
-    lockedMainImplementer: currentMainImplementer ?? lockedMainImplementer,
-    lockedCouncilMembers: currentCouncilMembers.length > 0 ? currentCouncilMembers : lockedCouncilMembers,
-  })
+    startedAt: replaceExisting ? lock.startedAt : current.startedAt ?? lock.startedAt,
+    lockedMainImplementer: replaceExisting ? lockedMainImplementer : currentMainImplementer ?? lockedMainImplementer,
+    lockedCouncilMembers: replaceExisting || currentCouncilMembers.length === 0
+      ? lockedCouncilMembers
+      : currentCouncilMembers,
+  }
+}
+
+export function clearTicketModelSelectionLock(projectRoot: string, externalId: string): TicketMetaRecord {
+  const current = readTicketMetaForMutation(projectRoot, externalId)
+  if (!('startedAt' in current || 'lockedMainImplementer' in current || 'lockedCouncilMembers' in current)) {
+    return current
+  }
+
+  const { startedAt: _startedAt, lockedMainImplementer: _lockedMainImplementer, lockedCouncilMembers: _lockedCouncilMembers, ...unlocked } = current
+  return writeTicketMeta(projectRoot, externalId, unlocked)
 }
 
 export function resolveTicketBaseBranch(projectRoot: string, externalId: string): string {
@@ -129,7 +174,12 @@ export function resolveTicketBaseBranch(projectRoot: string, externalId: string)
     if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error
   }
   if (ticketDirExists) {
-    updateTicketMeta(projectRoot, externalId, { baseBranch: detected })
+    try {
+      updateTicketMeta(projectRoot, externalId, { baseBranch: detected })
+    } catch (error) {
+      // Keep read-only ticket projections available when stored metadata is malformed.
+      if (!(error instanceof TicketMetadataFormatError)) throw error
+    }
   }
   return detected
 }

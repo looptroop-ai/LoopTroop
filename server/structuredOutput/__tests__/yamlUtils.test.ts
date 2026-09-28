@@ -3,7 +3,23 @@ import { readFileSync } from 'node:fs'
 import { dirname, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { describe, expect, it } from 'vitest'
-import { buildStructuredRetryPrompt, getValueByAliases, parseYamlOrJsonCandidate, REPAIR_PIPELINE_VERSION } from '../yamlUtils'
+import {
+  appendWrapperKeyRepairWarning,
+  buildStructuredRetryPrompt,
+  collectStructuredCandidates,
+  findMaybeUnwrappedWrapperPath,
+  getValueByAliases,
+  maybeUnwrapRecord,
+  parseYamlOrJsonCandidate,
+  repairCoverageGapStringList,
+  REPAIR_PIPELINE_VERSION,
+  toBoolean,
+  toInteger,
+  toOptionalString,
+  toOrdinalInteger,
+  toStringArray,
+  unwrapExplicitWrapperRecord,
+} from '../yamlUtils'
 
 describe.concurrent('buildStructuredRetryPrompt', () => {
   it('keeps retry prompts focused on schema correction only', () => {
@@ -18,7 +34,184 @@ describe.concurrent('buildStructuredRetryPrompt', () => {
   })
 })
 
+describe.concurrent('collectStructuredCandidates', () => {
+  it('deduplicates raw, transcript-stripped, fenced, tagged, and top-level candidates', () => {
+    const candidates = collectStructuredCandidates([
+      '[assistant] Please parse this response:',
+      '```json',
+      '{"answer": 1}',
+      '```',
+      '<result>',
+      '{"answer": 2}',
+      '</result>',
+      'answer: 3',
+    ].join('\n'), { tags: ['result'], topLevelHints: ['answer'] })
+
+    expect(candidates).toContain('[assistant] Please parse this response:\n```json\n{"answer": 1}\n```\n<result>\n{"answer": 2}\n</result>\nanswer: 3')
+    expect(candidates).toContain('Please parse this response:\n```json\n{"answer": 1}\n```\n<result>\n{"answer": 2}\n</result>\nanswer: 3')
+    expect(candidates).toContain('{"answer": 1}')
+    expect(candidates).toContain('{"answer": 2}')
+    expect(candidates).toContain('answer: 3')
+    expect(new Set(candidates).size).toBe(candidates.length)
+  })
+
+  it('recovers top-level hints glued after a recoverable prose prefix', () => {
+    expect(collectStructuredCandidates('prose before payload: answer: 4\nnext: true', {
+      topLevelHints: ['answer'],
+    })).toContain('answer: 4\nnext: true')
+  })
+})
+
+describe.concurrent('structured output normalization helpers', () => {
+  it('unwraps preferred and singleton records while preserving multi-key records', () => {
+    const nested = { data: { payload: { answer: 42, other: true }, metadata: 'kept' } }
+    expect(maybeUnwrapRecord(nested, ['payload'])).toEqual({ answer: 42, other: true })
+    expect(maybeUnwrapRecord({ only: { answer: 42 } }, [])).toBe(42)
+    const multiKey = { first: 1, second: 2 }
+    expect(maybeUnwrapRecord(multiKey, [])).toBe(multiKey)
+    expect(maybeUnwrapRecord('not a record', ['data'])).toBe('not a record')
+    expect(maybeUnwrapRecord({ data: { answer: 42 } }, ['data'], 5)).toEqual({ data: { answer: 42 } })
+  })
+
+  it('unwraps explicit wrapper names without unwrapping arbitrary singleton records', () => {
+    const wrapped = { DATA: { payload: { answer: 42 } } }
+    expect(unwrapExplicitWrapperRecord(wrapped, ['data', 'payload'])).toEqual({ answer: 42 })
+    const arbitrary = { only: { answer: 42 } }
+    expect(unwrapExplicitWrapperRecord(arbitrary, ['data'])).toBe(arbitrary)
+    expect(unwrapExplicitWrapperRecord({ data: { answer: 42 } }, ['data'], 5)).toEqual({ data: { answer: 42 } })
+  })
+
+  it('reports the path through nested singleton wrappers', () => {
+    expect(findMaybeUnwrappedWrapperPath({ outer: { inner: { answer: 42 } } }, ['payload', 'result']))
+      .toEqual(['outer', 'inner', 'answer'])
+
+    const warnings: string[] = []
+    appendWrapperKeyRepairWarning(warnings, ['outer', 'inner', 'payload'])
+    expect(warnings).toEqual(['Removed wrapper key chain "outer -> inner -> payload" from top level.'])
+  })
+
+  it('normalizes list entries, dates, multiline values, and unsupported input', () => {
+    const date = new Date('2025-03-04T05:06:07.000Z')
+    expect(toStringArray([date, '  text  ', null, undefined, 4, { owner: 'model' }])).toEqual([
+      '2025-03-04T05:06:07.000Z',
+      'text',
+      '4',
+      'owner: model',
+    ])
+    expect(toStringArray('  - first\n* second\n3) third  ')).toEqual(['first', 'second', 'third'])
+    expect(toStringArray('  \n  ')).toEqual([])
+    expect(toStringArray({ answer: 42 })).toEqual([])
+    expect(toOptionalString(date)).toBe('2025-03-04T05:06:07.000Z')
+    expect(toOptionalString('  text  ')).toBe('text')
+    expect(toOptionalString('   ')).toBeUndefined()
+    expect(toOptionalString(42)).toBeUndefined()
+  })
+
+  it('converts finite integers, ordinal labels, and common boolean spellings', () => {
+    expect(toInteger(2.9)).toBe(2)
+    expect(toInteger(' -3.8 ')).toBe(-3)
+    expect(toInteger('not a number')).toBeNull()
+    expect(toInteger(Number.POSITIVE_INFINITY)).toBeNull()
+    expect(toInteger('  ')).toBeNull()
+    expect(toOrdinalInteger('Alternative draft #12')).toBe(12)
+    expect(toOrdinalInteger('draft 3')).toBe(3)
+    expect(toOrdinalInteger('version 8')).toBe(8)
+    expect(toOrdinalInteger('no ordinal')).toBeNull()
+    expect(toBoolean(true)).toBe(true)
+    expect(toBoolean(0)).toBe(false)
+    expect(toBoolean(' YES ')).toBe(true)
+    expect(toBoolean('N')).toBe(false)
+    expect(toBoolean(2)).toBeNull()
+    expect(toBoolean('unknown')).toBeNull()
+    expect(toBoolean(null)).toBeNull()
+  })
+})
+
+describe.concurrent('repairCoverageGapStringList', () => {
+  it('repairs malformed direct list items and preserves safe nested values and following fields', () => {
+    const repaired = repairCoverageGapStringList([
+      'gaps:',
+      '  - Root cause: missing validation',
+      '  "Quoted reason" # keep comment',
+      '  - already quoted',
+      '  - |',
+      '    preserved block body',
+      '  # preserve comment',
+      'issues:',
+      '  - Another gap: missing output',
+      'next: outside the gap list',
+    ].join('\n'))
+
+    expect(repaired.repairApplied).toBe(true)
+    expect(repaired.repairWarnings).toEqual(['Repaired malformed coverage gap list items before reparsing.'])
+    expect(repaired.content).toContain('  - "Root cause: missing validation"')
+    expect(repaired.content).toContain('  - "Quoted reason" # keep comment')
+    expect(repaired.content).toContain('  - "already quoted"')
+    expect(repaired.content).toContain('  - |\n    preserved block body')
+    expect(repaired.content).toContain('  # preserve comment')
+    expect(repaired.content).toContain('  - "Another gap: missing output"\nnext: outside the gap list')
+    expect(parseYamlOrJsonCandidate(repaired.content)).toEqual({
+      gaps: ['Root cause: missing validation', 'Quoted reason', 'already quoted', 'preserved block body\n'],
+      issues: ['Another gap: missing output'],
+      next: 'outside the gap list',
+    })
+  })
+
+  it('leaves valid lists and unrelated nested keys unchanged', () => {
+    const content = 'gaps:\n  - "already quoted"\n  - |\n    preserved block body'
+    expect(repairCoverageGapStringList(content)).toEqual({ content, repairApplied: false, repairWarnings: [] })
+  })
+})
+
 describe.concurrent('parseYamlOrJsonCandidate', () => {
+  it.each([
+    [
+      'invalid quoted escape with a misindented list property',
+      ['items:', '  - id: first', '   pattern: "a\\+b"'].join('\n'),
+      { items: [{ id: 'first', pattern: 'a\\+b' }] },
+    ],
+    [
+      'inner quotes with a misindented list property',
+      ['items:', '  - id: first', '   text: "Use `origin: "date"` safely."'].join('\n'),
+      { items: [{ id: 'first', text: 'Use `origin: "date"` safely.' }] },
+    ],
+    [
+      'colon-containing scalar with a misindented list property',
+      ['items:', '  - id: first', '   summary: evidence: stale state'].join('\n'),
+      { items: [{ id: 'first', summary: 'evidence: stale state' }] },
+    ],
+    [
+      'reserved-indicator scalar with a misindented list property',
+      ['items:', '  - id: first', '   owner: @team'].join('\n'),
+      { items: [{ id: 'first', owner: '@team' }] },
+    ],
+    [
+      'sequence entry with drifted sibling indentation',
+      ['items:', '  - id: first', '    title: First', '   - id: second', '    title: Second'].join('\n'),
+      { items: [{ id: 'first', title: 'First' }, { id: 'second', title: 'Second' }] },
+    ],
+    [
+      'sequence entry and child property with drifted indentation',
+      ['items:', '  - id: first', '    title: First', '   - id: second', '   title: Second'].join('\n'),
+      { items: [{ id: 'first', title: 'First' }, { id: 'second', title: 'Second' }] },
+    ],
+  ] as const)('recovers %s without changing the visible field values', (_caseName, content, expected) => {
+    expect(parseYamlOrJsonCandidate(content)).toEqual(expected)
+  })
+
+  it('reports all stripped XML-style lines when there are several', () => {
+    const repairWarnings: string[] = []
+    const parsed = parseYamlOrJsonCandidate([
+      '<analysis>',
+      '<result>',
+      '<payload>',
+      'answer: 42',
+    ].join('\n'), { repairWarnings })
+
+    expect(parsed).toEqual({ answer: 42 })
+    expect(repairWarnings).toContain('Stripped XML-style tags <analysis>, <result>, and <payload> from the payload before parsing.')
+  })
+
   it('preserves a flow-body string while repairing an unrelated duplicate key', () => {
     const body = [
       'body: [',
@@ -689,6 +882,95 @@ describe.concurrent('cached candidate parsing', () => {
     expect(() => parseYamlOrJsonCandidate(content)).toThrow()
     expect(() => parseYamlOrJsonCandidate(content, { allowTrailingTerminalNoise: false })).toThrow()
   })
+
+  it('reports quoted-scalar repair when reserved-indicator repair completes parsing', () => {
+    const repairWarnings: string[] = []
+    const parsed = parseYamlOrJsonCandidate([
+      'api_contracts:',
+      "  - ''Response includes Content-Disposition: attachment; filename=synonyms.json''",
+      'owner: @team',
+    ].join('\n'), { repairWarnings }) as {
+      api_contracts: string[]
+      owner: string
+    }
+
+    expect(parsed).toEqual({
+      api_contracts: ['Response includes Content-Disposition: attachment; filename=synonyms.json'],
+      owner: '@team',
+    })
+    expect(repairWarnings).toContain('Repaired improperly quoted YAML scalar value.')
+  })
+
+  it.each([
+    ['object with nested delimiters and escaped quotes', JSON.stringify({ value: 'close } ] and \\"quote' }), { value: 'close } ] and \\"quote' }],
+    ['array root', JSON.stringify([1, { value: '] }' }]), [1, { value: '] }' }]],
+    ['quoted string root', JSON.stringify('text with \\"quotes\\", } and ]'), 'text with \\"quotes\\", } and ]'],
+    ['number root', '-12.5e2', -1250],
+    ['boolean root', 'false', false],
+    ['null root', 'null', null],
+  ])('trims terminal noise after balanced JSON %s roots', (_, json, expected) => {
+    const content = ` \n${json}\u001b[0m`
+    const repairWarnings: string[] = []
+
+    expect(parseYamlOrJsonCandidate(content, { allowTrailingTerminalNoise: true, repairWarnings })).toEqual(expected)
+    expect(repairWarnings).toContain('Trimmed trailing terminal noise after the complete structured artifact.')
+  })
+
+  it.each([
+    ['ANSI reset and bracketed paste markers', '\u001b[31m[200~\u001b[0m'],
+    ['a terminal paste marker followed by its stray bracket', '[200~['],
+    ['a short terminal marker', '[A~'],
+  ])('trims terminal control sequences and paste markers after JSON (%s)', (_, noise) => {
+    const repairWarnings: string[] = []
+
+    expect(parseYamlOrJsonCandidate(`{"terminal_noise":true}${noise}`, {
+      allowTrailingTerminalNoise: true,
+      repairWarnings,
+    })).toEqual({ terminal_noise: true })
+    expect(repairWarnings).toContain('Trimmed trailing terminal noise after the complete structured artifact.')
+  })
+
+  it('trims terminal-only lines and inline control sequences after YAML', () => {
+    const repairWarnings: string[] = []
+
+    expect(parseYamlOrJsonCandidate('answer: complete\u001b[0m', {
+      allowTrailingTerminalNoise: true,
+      repairWarnings,
+    })).toEqual({ answer: 'complete' })
+    expect(parseYamlOrJsonCandidate('answer: complete\n\u001b[0m\n[200~', {
+      allowTrailingTerminalNoise: true,
+      repairWarnings,
+    })).toEqual({ answer: 'complete' })
+    expect(repairWarnings).toContain('Trimmed trailing terminal noise after the complete structured artifact.')
+  })
+
+  it('ignores trailing control bytes while rejecting malformed or incomplete ANSI escapes', () => {
+    const repairWarnings: string[] = []
+    expect(parseYamlOrJsonCandidate('{"control_noise":true}\u0001', {
+      allowTrailingTerminalNoise: true,
+      repairWarnings,
+    })).toEqual({ control_noise: true })
+    expect(repairWarnings).toContain('Trimmed trailing terminal noise after the complete structured artifact.')
+
+    for (const escape of ['\u001b[\u0019', '\u001b[?']) {
+      expect(() => parseYamlOrJsonCandidate(`{"control_noise":true}${escape}`, {
+        allowTrailingTerminalNoise: true,
+      })).toThrow()
+    }
+  })
+
+  it('does not treat an unclosed JSON string as a complete artifact before trailing noise', () => {
+    expect(() => parseYamlOrJsonCandidate('"unterminated value\u001b[0m', {
+      allowTrailingTerminalNoise: true,
+    })).toThrow()
+  })
+
+  it('does not trim terminal noise after an unbalanced JSON root', () => {
+    expect(() => parseYamlOrJsonCandidate('{"items":[1,2]\u001b[0m', {
+      allowTrailingTerminalNoise: true,
+    })).toThrow()
+  })
+
 })
 
 describe.concurrent('getValueByAliases', () => {

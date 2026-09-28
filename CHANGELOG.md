@@ -10,7 +10,9 @@ Unreleased changes appear first and represent commits that have not yet been inc
 > Changes merged since the last versioned release that have not yet shipped in a tagged version.
 
 ### Summary
-- Contributors can review V8 coverage across all four Vitest projects.
+- Kanban pagination arrows follow the visible page, and Escape cancels an uncommitted page-number edit.
+- Failed ticket starts that stay in DRAFT clear provisional model locks and can be retried with updated settings; corrupt metadata stays readable and cannot be overwritten by a start.
+- V8 coverage now exceeds 90% line coverage across all four Vitest projects; the required Verify job enforces 90% lines and 80% branches while Codecov reports separately.
 - Security reports now have a private disclosure policy with scoped Safe Harbor terms.
 - New stable releases attach a verified provenance bundle as `release-provenance.sigstore.json`.
 - CI tools install from integrity lockfiles without third-party lifecycle scripts, network boundaries gain generated-input tests, and security findings have verified dispositions.
@@ -48,7 +50,10 @@ Unreleased changes appear first and represent commits that have not yet been inc
 - The OrcaCode pull-request review workflow is removed; it reported a failed check on every pull request and never completed a successful run.
 
 ### Added
-- `npm run test:coverage` reports V8 coverage across all four Vitest projects as LCOV, text, and JSON summary output. CI collects it in the required Ubuntu Verify job and retains the LCOV and JSON files for seven days. Pull request reports use the same source revision Codecov associates with the upload. A separate OIDC Codecov job uploads LCOV on pushes, manual runs, and pull requests from this repository; public-fork pull requests use the tokenless path. Project and patch statuses are informational without numerical targets.
+- Added focused CLI tests for healthy, missing, unresponsive, and cleanup-pending daemon status, including token redaction and invalid sign-in nonces.
+- Server regression tests cover CLI dispatch and help, project and ticket CRUD routes, project-deletion rollback, approval/interview routes, PRD refinement and persisted-artifact validation, PRD and Beads pipeline recovery, runtime-profile command-wrapper repair, setup-plan generation and phase-version safeguards, pull-request and Beads refinement, supervisor probe and mock-mode behavior, workflow setup and verification, interview QA result mapping, resume, and answer edits, Manual QA generation retries and restoration, Manual QA routes, and OpenCode adapter errors and stream-event logging.
+- Tooling and UI regression tests cover third-party notice generation and stale-output checks, ticket-artifact query and cache recovery, Kanban sorting and pagination, YAML repairs, and artifact, prompt, and setup-plan editor interactions. Database- and mock-backed workflow tests run in the isolated integration project, and the source scan test allows a minute under coverage instrumentation.
+- `npm run test:coverage` reports V8 coverage across all four Vitest projects as LCOV, text, and JSON summary output, and fails below 90% global line or 80% branch coverage. CI collects it in the required Ubuntu Verify job and retains the LCOV and JSON files for seven days. Pull request reports use the same source revision Codecov associates with the upload. A separate OIDC Codecov job uploads LCOV on pushes, manual runs, and pull requests from this repository; public-fork pull requests use the tokenless path. Codecov project and patch statuses are reported separately and are not required CI gates.
 - New stable releases attach the native provenance bundle as `release-provenance.sigstore.json`. Before updating the draft, the workflow verifies it against the expected release manifest, repository, workflow, and source commit; earlier releases are unchanged.
 - Generated-input tests cover loopback recognition, IPv4-mapped IPv6, invalid ports, and hostile hostname suffixes through fast-check. CI-only Bun, pnpm, Yarn and OpenCode installations have separate integrity lockfiles maintained by Renovate; published-feed checks preserve the release driver while loading tools from the workflow commit. Native probe failures retain the package-specific diagnostic, and the setup fixture stays below the analyzer's complexity threshold. The digest-pinned production image uses its bundled npm for the locked, script-free install.
 - CI Dependency Review checks runtime, development, and unknown dependency scopes; the required Packaging check blocks failed, cancelled, or skipped reviews on every CI event. Branch pushes and manual runs compare their commit with the default branch so their checks cannot bypass pull-request review.
@@ -270,6 +275,11 @@ Unreleased changes appear first and represent commits that have not yet been inc
 - The unused `server/db/drizzle.config.ts` alias. Every database script already selects its app or project config explicitly, so keeping a third config that Drizzle Kit cannot discover from the repository root only advertised a command that no longer worked.
 
 ### Fixed
+- Concurrent ticket starts now share an in-flight guard across equivalent ticket reference spellings.
+- Windows full-suite test jobs now have a 40-minute timeout, so slower runners do not cancel tests that are still progressing.
+- Starting a ticket rejects malformed metadata before workspace initialization, while ticket reads remain available and the corrupt file is preserved. DRAFT rows remain retryable after interrupted lock writes, and rollback clears SQLite before metadata.
+- Escape cancels a Kanban page-number edit without letting the blur handler commit its stale value; pagination arrows follow the visible page while the input is edited.
+- Failed START dispatches clear provisional model locks and stop an actor whose persisted ticket remains in DRAFT; an actor is preserved once the ticket's stored workflow state has advanced.
 - Process-control guard tests use a known live process for mismatched-token checks, avoiding intermittent Windows process-start lookup failures.
 - CI selects Bun's available x64 package when verifying a new Bun version, so the update no longer fails because the package has no separate baseline variant.
 - CI runs pnpm 12's locked Windows executable directly, so the global install check works while dependency lifecycle scripts stay disabled.

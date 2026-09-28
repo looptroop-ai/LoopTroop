@@ -32,7 +32,7 @@ import {
 import { createTicket, patchTicket } from '../../storage/ticketMutations'
 import { createFixtureRepoManager } from '../../test/fixtureRepo'
 import { projectRouter } from '../projects'
-import { removeTempDir } from '../../test/tempDir'
+import { makeTempDir, removeTempDir } from '../../test/tempDir'
 
 const getGitHubRepoWriteAccessMock = vi.hoisted(() => vi.fn())
 
@@ -912,7 +912,7 @@ describe('projectRouter project cleanup', () => {
     expect(existsSync(worktreePath)).toBe(false)
   })
 
-  it('refuses direct project deletion while active tickets exist', () => {
+  it('refuses project deletion while active tickets exist', async () => {
     const repoDir = repoManager.createRepo()
     const project = attachProject({
       folderPath: repoDir,
@@ -923,6 +923,179 @@ describe('projectRouter project cleanup', () => {
     patchTicket(ticket.id, { status: 'CODING' })
 
     expect(() => deleteProject(project.id)).toThrow('Cannot delete project while tickets are still active')
+
+    const app = new Hono()
+    app.route('/api', projectRouter)
+    const response = await app.request(`/api/projects/${project.id}`, { method: 'DELETE' })
+    expect(response.status).toBe(409)
+    expect(await response.json()).toMatchObject({ error: expect.stringContaining('Some tickets are still in progress') })
     expect(existsSync(getProjectLoopTroopDir(repoDir))).toBe(true)
+  })
+
+  it('lists projects and reports valid, invalid, and missing project IDs', async () => {
+    const repoDir = repoManager.createRepo()
+    const project = attachProject({ folderPath: repoDir, name: 'Listed Project', shortname: 'LST' })
+    const app = new Hono()
+    app.route('/api', projectRouter)
+
+    const listing = await app.request('/api/projects')
+    expect(listing.status).toBe(200)
+    expect(await listing.json()).toEqual([expect.objectContaining({ id: project.id, name: 'Listed Project' })])
+
+    const detail = await app.request(`/api/projects/${project.id}`)
+    expect(detail.status).toBe(200)
+    expect(await detail.json()).toMatchObject({ id: project.id, shortname: 'LST' })
+
+    const invalidId = await app.request('/api/projects/not-a-number')
+    expect(invalidId.status).toBe(400)
+    expect(await invalidId.json()).toEqual({ error: 'Invalid project ID' })
+
+    const missing = await app.request('/api/projects/999999')
+    expect(missing.status).toBe(404)
+    expect(await missing.json()).toEqual({ error: 'Project not found' })
+  })
+
+  it('validates project create and update requests and requires a GitHub origin', async () => {
+    const repoDir = repoManager.createRepo()
+    const repoWithoutOrigin = repoManager.createRepo()
+    const project = attachProject({ folderPath: repoDir, name: 'Editable Project', shortname: 'EDT' })
+    const app = new Hono()
+    app.route('/api', projectRouter)
+
+    const invalidCreate = await app.request('/api/projects', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ name: '', shortname: 'bad', folderPath: '' }),
+    })
+    expect(invalidCreate.status).toBe(400)
+    expect(await invalidCreate.json()).toMatchObject({ error: 'Invalid input', message: expect.stringContaining('shortname:') })
+
+    const missingOrigin = await app.request('/api/projects', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ name: 'No Origin', shortname: 'NOR', folderPath: repoWithoutOrigin }),
+    })
+    expect(missingOrigin.status).toBe(400)
+    expect(await missingOrigin.json()).toMatchObject({ error: 'GitHub origin remote is required' })
+
+    const invalidId = await app.request('/api/projects/not-a-number', {
+      method: 'PATCH',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ name: 'Updated' }),
+    })
+    expect(invalidId.status).toBe(400)
+
+    const invalidUpdate = await app.request(`/api/projects/${project.id}`, {
+      method: 'PATCH',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ color: 'not-a-color' }),
+    })
+    expect(invalidUpdate.status).toBe(400)
+
+    const missingProject = await app.request('/api/projects/999999', {
+      method: 'PATCH',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ name: 'Updated' }),
+    })
+    expect(missingProject.status).toBe(404)
+
+    const updated = await app.request(`/api/projects/${project.id}`, {
+      method: 'PATCH',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ name: 'Updated Project' }),
+    })
+    expect(updated.status).toBe(200)
+    expect(await updated.json()).toMatchObject({ id: project.id, name: 'Updated Project' })
+  })
+
+  it('rejects folders without a GitHub repository before attaching', async () => {
+    const repoWithoutOrigin = repoManager.createRepo()
+    const nonGitDir = makeTempDir('looptroop-project-route-non-git-')
+    const app = new Hono()
+    app.route('/api', projectRouter)
+
+    const missingOrigin = await app.request(`/api/projects/check-git?path=${encodeURIComponent(repoWithoutOrigin)}`)
+    expect(missingOrigin.status).toBe(200)
+    expect(await missingOrigin.json()).toMatchObject({
+      isGit: true,
+      status: 'invalid',
+      message: 'Git repository found, but origin must resolve to github.com.',
+    })
+
+    const nonGit = await app.request(`/api/projects/check-git?path=${encodeURIComponent(nonGitDir)}`)
+    expect(nonGit.status).toBe(200)
+    expect(await nonGit.json()).toMatchObject({ isGit: false, status: 'invalid' })
+
+    const previousNodeEnv = process.env.NODE_ENV
+    process.env.NODE_ENV = 'development'
+    try {
+      const invalidCreate = await app.request('/api/projects', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          name: 'Not a repository',
+          shortname: 'NAR',
+          folderPath: resolve(nonGitDir, 'missing'),
+        }),
+      })
+      expect(invalidCreate.status).toBe(400)
+      expect(await invalidCreate.json()).toMatchObject({
+        error: 'Folder is not a git repository',
+        details: expect.stringContaining('Please initialize the repository'),
+      })
+    } finally {
+      if (previousNodeEnv === undefined) delete process.env.NODE_ENV
+      else process.env.NODE_ENV = previousNodeEnv
+      removeTempDir(nonGitDir)
+    }
+  })
+
+  it('lists directories in order and returns errors for missing paths and files', async () => {
+    const repoDir = repoManager.createRepo()
+    mkdirSync(resolve(repoDir, 'zeta'))
+    mkdirSync(resolve(repoDir, 'alpha'))
+    const app = new Hono()
+    app.route('/api', projectRouter)
+
+    const listing = await app.request(`/api/projects/ls?path=${encodeURIComponent(repoDir)}`)
+    expect(listing.status).toBe(200)
+    const payload = await listing.json() as { dirs: Array<{ name: string }> }
+    const names = payload.dirs.map(({ name }) => name)
+    expect(names).toContain('alpha')
+    expect(names).toContain('zeta')
+    expect(names.indexOf('alpha')).toBeLessThan(names.indexOf('zeta'))
+    expect(names).not.toContain('README.md')
+
+    const missingPath = await app.request(`/api/projects/ls?path=${encodeURIComponent(resolve(repoDir, 'missing'))}`)
+    expect(missingPath.status).toBe(400)
+    expect(await missingPath.json()).toMatchObject({ error: expect.stringContaining('Path does not exist:') })
+
+    const filePath = resolve(repoDir, 'README.md')
+    const fileListing = await app.request(`/api/projects/ls?path=${encodeURIComponent(filePath)}`)
+    expect(fileListing.status).toBe(400)
+    expect(await fileListing.json()).toMatchObject({ error: `Cannot read directory: ${normalizeFolderPath(filePath)}` })
+  })
+
+  it('reports the size of terminal-ticket worktrees and validates the project ID', async () => {
+    const repoDir = repoManager.createRepo()
+    const project = attachProject({ folderPath: repoDir, name: 'Size Project', shortname: 'SIZ' })
+    const ticket = createTicket({ projectId: project.id, title: 'Completed worktree' })
+    patchTicket(ticket.id, { status: 'COMPLETED' })
+    const worktreePath = resolve(repoDir, '.looptroop', 'worktrees', ticket.externalId)
+    mkdirSync(worktreePath, { recursive: true })
+    writeFileSync(resolve(worktreePath, 'size-probe.txt'), '12345')
+    const app = new Hono()
+    app.route('/api', projectRouter)
+
+    const invalidId = await app.request('/api/projects/not-a-number/worktrees/size')
+    expect(invalidId.status).toBe(400)
+
+    const missingProject = await app.request('/api/projects/999999/worktrees/size')
+    expect(missingProject.status).toBe(404)
+
+    const size = await app.request(`/api/projects/${project.id}/worktrees/size`)
+    expect(size.status).toBe(200)
+    const payload = await size.json() as { bytes: number }
+    expect(payload.bytes).toBeGreaterThan(0)
   })
 })

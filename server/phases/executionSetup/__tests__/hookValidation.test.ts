@@ -9,6 +9,7 @@ import {
   runGitHookValidationCommands,
 } from '../hookValidation'
 import { createShellCommandSpec } from '@shared/commandSpec'
+import { DEFAULT_GIT_HOOK_POLICY } from '@shared/gitHookPolicy'
 import { detectHostContext } from '../../../lib/hostContext'
 import { COMMAND_OUTPUT_EXCERPT_LENGTH } from '../../../lib/constants'
 
@@ -141,6 +142,50 @@ describe('runExplicitGitHookValidation', () => {
     })
   })
 
+  it('skips a profile whose command entries cannot be normalized', async () => {
+    const root = makeRepo()
+    const result = await runExplicitGitHookValidation({
+      profileContent: JSON.stringify({
+        git_hooks: {
+          policy: 'validate_advisory',
+          validation_commands: [
+            null,
+            [],
+            { id: 1, hook: 'pre-commit', command: { mode: 'process', program: 'node' } },
+            { id: 'unsafe', hook: 'pre-commit', command: { mode: 'unknown', program: 'node' } },
+          ],
+        },
+      }),
+      worktreePath: root,
+    })
+
+    expect(result.receipts).toEqual([expect.objectContaining({
+      id: 'git-hook-policy',
+      status: 'skipped',
+      outputExcerpt: 'No explicit Git hook validation commands were approved.',
+    })])
+    expect(result.errors).toEqual([])
+    expect(result.warnings).toEqual([])
+  })
+
+  it('reports an unreadable profile instead of claiming validation was disabled', async () => {
+    const result = await runExplicitGitHookValidation({
+      profileContent: '{not valid JSON',
+      worktreePath: makeRepo(),
+    })
+
+    expect(result).toMatchObject({
+      policy: DEFAULT_GIT_HOOK_POLICY,
+      receipts: [expect.objectContaining({
+        id: 'git-hook-policy',
+        status: 'skipped',
+        outputExcerpt: 'Explicit validation was skipped: the workspace profile declares no readable git hook policy.',
+      })],
+      errors: [],
+      warnings: ['The workspace profile declares no readable git hook policy, so explicit hook validation was skipped.'],
+    })
+  })
+
   it('audits files mutated by an explicit hook command', async () => {
     const root = makeRepo()
 
@@ -231,6 +276,23 @@ describe('runExplicitGitHookValidation', () => {
     expect(result.receipts).toEqual([expect.objectContaining({ status: 'skipped' })])
     expect(result.errors).toHaveLength(1)
     expect(() => readFileSync(join(root, 'ran.txt'), 'utf8')).toThrow()
+  })
+
+  it('blocks advisory validation when an interrupted restore marker is unreadable', async () => {
+    const root = makeRepo()
+    const markerPath = writeInterruptedValidationMarker(root)
+    writeFileSync(markerPath, '{not valid JSON')
+
+    const result = await runExplicitGitHookValidation({
+      profileContent: profile('validate_advisory', 'node -e "require(\'fs\').writeFileSync(\'ran.txt\', \'x\')"'),
+      worktreePath: root,
+    })
+
+    expect(result.receipts).toEqual([expect.objectContaining({ id: 'git-hook-policy', status: 'skipped' })])
+    expect(result.errors).toEqual([expect.stringContaining('the restore marker is not valid JSON')])
+    expect(result.warnings).toEqual([])
+    expect(existsSync(join(root, 'ran.txt'))).toBe(false)
+    expect(existsSync(markerPath)).toBe(true)
   })
 
   it('reports a failed restore as an error instead of throwing over the run', async () => {
@@ -340,6 +402,30 @@ describe('runGitHookValidationCommands', () => {
       temporaryPaths: [],
       internalPaths: [],
     })
+  })
+
+  it('reports LoopTroop state and generated output separately in the mutation audit', async () => {
+    const root = makeRepo()
+    const run = await runGitHookValidationCommands({
+      commands: [hookCommand(
+        'writer',
+        'node -e "const fs=require(\'fs\');fs.mkdirSync(\'.ticket\',{recursive:true});fs.mkdirSync(\'tmp\',{recursive:true});fs.writeFileSync(\'.ticket/hook.json\',\'internal\');fs.writeFileSync(\'tmp/output.log\',\'generated\')"',
+      )],
+      worktreePath: root,
+      stopOnFirstFailure: true,
+      protectWorktree: true,
+      auditFileMutation: true,
+      nextTimeoutMs: () => 30_000,
+    })
+
+    expect(run.fileAudit).toEqual({
+      mutated: true,
+      candidatePaths: [],
+      temporaryPaths: ['tmp/output.log'],
+      internalPaths: ['.ticket/hook.json'],
+    })
+    expect(existsSync(join(root, '.ticket', 'hook.json'))).toBe(false)
+    expect(existsSync(join(root, 'tmp', 'output.log'))).toBe(false)
   })
 
   it('does not audit its own durable restore marker on a protected no-op', async () => {
@@ -476,6 +562,29 @@ describe('runGitHookValidationCommands', () => {
     expect(readFileSync(join(root, 'tracked.txt'), 'utf8')).toBe('before\n')
   })
 
+  it.each([
+    ['incomplete padding', 'A', /persisted index is not valid base64/],
+    ['noncanonical bytes', 'AB==', /persisted index is not canonical base64/],
+  ])('refuses a marker with %s before reading its index', async (_label, indexBase64, reason) => {
+    const root = makeRepo()
+    const markerPath = writeInterruptedValidationMarker(root, { indexBase64 })
+
+    const refused = await runGitHookValidationCommands({
+      commands: [],
+      worktreePath: root,
+      stopOnFirstFailure: true,
+      protectWorktree: false,
+      auditFileMutation: false,
+      nextTimeoutMs: () => 30_000,
+    })
+
+    expect(refused.refused).toBe(true)
+    expect(refused.recoveryFailure).toMatch(reason)
+    expect(refused.recoveryFailure).toContain(markerPath)
+    expect(existsSync(markerPath)).toBe(true)
+    expect(readFileSync(join(root, 'tracked.txt'), 'utf8')).toBe('before\n')
+  })
+
   it.runIf(process.platform !== 'win32')('refuses a marker symlink even when its target remains inside app data', async () => {
     const root = makeRepo()
     const markerPath = writeInterruptedValidationMarker(root)
@@ -556,6 +665,29 @@ describe('runGitHookValidationCommands', () => {
     expect(refused.recoveryFailure).toContain(markerPath)
     expect(existsSync(markerPath)).toBe(true)
   })
+
+  it.each(['../outside', 'absolute', 'bad\0name'])(
+    'refuses a restore marker containing unsafe untracked path %j',
+    async (candidate) => {
+      const root = makeRepo()
+      const unsafePath = candidate === 'absolute' ? join(root, 'outside') : candidate
+      const markerPath = writeInterruptedValidationMarker(root, { untrackedPaths: [unsafePath] })
+
+      const refused = await runGitHookValidationCommands({
+        commands: [hookCommand('must-not-run', 'node -e "process.exit(9)"')],
+        worktreePath: root,
+        stopOnFirstFailure: true,
+        protectWorktree: false,
+        auditFileMutation: false,
+        nextTimeoutMs: () => 30_000,
+      })
+
+      expect(refused.refused).toBe(true)
+      expect(refused.recoveryFailure).toContain('restore marker is malformed')
+      expect(refused.recoveryFailure).toContain(markerPath)
+      expect(existsSync(markerPath)).toBe(true)
+    },
+  )
 })
 
 describe('runGitHookValidationCommand', () => {

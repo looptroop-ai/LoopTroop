@@ -1,7 +1,9 @@
 import { afterAll, beforeEach, describe, expect, it, vi } from 'vitest'
 import { existsSync, readFileSync, writeFileSync } from 'node:fs'
+import { join } from 'node:path'
 import { parseUiArtifactCompanionArtifact } from '@shared/artifactCompanions'
-import { getLatestPhaseArtifact } from '../../storage/tickets'
+import { getLatestPhaseArtifact, insertPhaseArtifact } from '../../storage/tickets'
+import type { draftBeads } from '../../phases/beads/draft'
 import { TEST } from '../../test/factories'
 import { createInitializedTestTicket, createTestRepoManager, resetTestDb } from '../../test/integration'
 import { phaseIntermediate } from '../phases/state'
@@ -23,7 +25,12 @@ vi.mock('../../phases/beads/draft', async () => {
   }
 })
 
-import { handleBeadsDraft } from '../phases/beadsPhase'
+import {
+  handleBeadsDraft,
+  handleMockBeadsDraft,
+  handleMockBeadsRefine,
+  readMockBeadsWinnerId,
+} from '../phases/beadsPhase'
 
 const repoManager = createTestRepoManager('beads-draft')
 
@@ -121,9 +128,9 @@ describe('handleBeadsDraft', () => {
       _worktreePath: unknown,
       _options: unknown,
       _signal: unknown,
-      _onOpenCodeSessionLog: unknown,
-      _onOpenCodeStreamEvent: unknown,
-      _onOpenCodePromptDispatched: unknown,
+      onOpenCodeSessionLog: Parameters<typeof draftBeads>[6],
+      onOpenCodeStreamEvent: Parameters<typeof draftBeads>[7],
+      onOpenCodePromptDispatched: Parameters<typeof draftBeads>[8],
       onDraftProgress?: (entry: {
         memberId: string
         status: string
@@ -184,6 +191,36 @@ describe('handleBeadsDraft', () => {
         '    testCommands:',
         '      - npm run test:server',
       ].join('\n')
+      onOpenCodeSessionLog?.({
+        stage: 'draft',
+        memberId: TEST.councilMembers[0],
+        sessionId: 'session-beads-a',
+        response: 'Member A drafted three beads.',
+        messages: [],
+      })
+      onOpenCodeStreamEvent?.({
+        stage: 'draft',
+        memberId: TEST.councilMembers[0],
+        sessionId: 'session-beads-a',
+        event: {
+          type: 'text',
+          sessionId: 'session-beads-a',
+          text: 'Drafting the project-local storage bead.',
+          streaming: false,
+          complete: true,
+        },
+      })
+      onOpenCodePromptDispatched?.({
+        stage: 'draft',
+        memberId: TEST.councilMembers[0],
+        event: {
+          session: { id: 'session-beads-a' },
+          parts: [{ type: 'text', content: 'Beads draft prompt' }],
+          promptText: 'Beads draft prompt',
+          promptNumber: 1,
+          timeoutKind: 'ai_response',
+        },
+      })
       onDraftProgress?.({
         memberId: TEST.councilMembers[0],
         status: 'session_created',
@@ -356,10 +393,72 @@ describe('handleBeadsDraft', () => {
     expect(existsSync(paths.executionLogPath)).toBe(true)
     const executionLog = readFileSync(paths.executionLogPath, 'utf-8')
     expect(executionLog).toContain('Beads draft round completed')
+    expect(executionLog).toContain('Member A drafted three beads.')
+    expect(executionLog).toContain('First AI activity observed from test-vendor/council-a')
+    expect(executionLog).toContain('Beads draft prompt')
     expect(executionLog).toContain('Beads draft normalization applied repairs')
     expect(executionLog).toContain('Beads draft required 1 structured retry attempt(s)')
     expect(sendEvent).toHaveBeenCalledWith({ type: 'DRAFTS_READY' })
     expect(phaseIntermediate.get(`${ticket.id}:beads`)).toBeDefined()
     expect(paths.ticketDir).toContain('.ticket')
+  })
+
+  it('writes deterministic mock drafts and refines them using the selected winner', async () => {
+    const { ticket, context, paths } = await createInitializedTestTicket(repoManager, {
+      title: 'Exercise mock beads phases',
+    })
+    const sendEvent = vi.fn()
+
+    await handleMockBeadsDraft(ticket.id, context, sendEvent)
+
+    const draftsArtifact = getLatestPhaseArtifact(ticket.id, 'beads_drafts', 'DRAFTING_BEADS')
+    expect(draftsArtifact).toBeDefined()
+    const draftPayload = JSON.parse(draftsArtifact!.content) as {
+      drafts: Array<{ memberId: string; outcome: string; content: string }>
+      memberOutcomes: Record<string, string>
+      isFinal: boolean
+    }
+    expect(draftPayload.isFinal).toBe(true)
+    expect(draftPayload.drafts.length).toBeGreaterThan(0)
+    expect(Object.values(draftPayload.memberOutcomes)).toEqual(
+      Array.from({ length: draftPayload.drafts.length }, () => 'completed'),
+    )
+    expect(draftPayload.drafts[0]?.content).toContain(context.title)
+
+    const draftCompanion = getLatestPhaseArtifact(ticket.id, 'ui_artifact_companion:beads_drafts', 'DRAFTING_BEADS')
+    const draftCompanionPayload = parseUiArtifactCompanionArtifact(draftCompanion!.content)?.payload as {
+      draftDetails?: Array<{ duration?: number; draftMetrics?: { beadCount?: number } }>
+    } | undefined
+    expect(draftCompanionPayload?.draftDetails?.[0]).toMatchObject({
+      duration: 1,
+      draftMetrics: { beadCount: 3 },
+    })
+
+    const winnerId = TEST.councilMembers[1]!
+    insertPhaseArtifact(ticket.id, {
+      phase: 'COUNCIL_VOTING_BEADS',
+      artifactType: 'beads_votes',
+      content: JSON.stringify({ winnerId }),
+    })
+    await handleMockBeadsRefine(ticket.id, context, sendEvent)
+
+    const refined = getLatestPhaseArtifact(ticket.id, 'beads_refined', 'REFINING_BEADS')
+    expect(JSON.parse(refined!.content)).toMatchObject({ refinedContent: expect.stringContaining(context.title) })
+    expect(JSON.parse(getLatestPhaseArtifact(ticket.id, 'beads_winner', 'REFINING_BEADS')!.content)).toEqual({ winnerId })
+    expect(JSON.parse(getLatestPhaseArtifact(ticket.id, 'ui_refinement_diff:beads', 'REFINING_BEADS')!.content))
+      .toMatchObject({ domain: 'beads', winnerId })
+    expect(existsSync(join(paths.ticketDir, 'ui', 'refinement-diffs', 'beads.json'))).toBe(true)
+
+    for (const content of ['not JSON', JSON.stringify({ winnerId: 42 })]) {
+      insertPhaseArtifact(ticket.id, {
+        phase: 'COUNCIL_VOTING_BEADS',
+        artifactType: 'beads_votes',
+        content,
+      })
+      expect(readMockBeadsWinnerId(ticket.id, TEST.councilMembers[0]!)).toBe(TEST.councilMembers[0])
+    }
+
+    expect(sendEvent).toHaveBeenNthCalledWith(1, { type: 'DRAFTS_READY' })
+    expect(sendEvent).toHaveBeenNthCalledWith(2, { type: 'REFINED' })
   })
 })

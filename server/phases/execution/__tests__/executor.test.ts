@@ -1,5 +1,6 @@
 import { afterAll, describe, expect, it, vi } from 'vitest'
 import { MockOpenCodeAdapter } from '../../../opencode/adapter'
+import type { Message, ToolMessagePart } from '../../../opencode/types'
 import { OPENCODE_EXECUTION_ALLOW_ALL_PERMISSIONS } from '../../../opencode/permissions'
 import { executeBead } from '../executor'
 import type { Bead } from '../../beads/types'
@@ -362,6 +363,64 @@ describe('executeBead', () => {
     })
     expect(result.rawAttempts?.[0]?.initialInput).toContain('BEAD_STATUS')
     expect(result.rawAttempts?.[0]?.error).toContain('tests still failing')
+  })
+
+  it('keeps recent tool failure evidence in the fallback note when PROM51 fails', async () => {
+    const adapter = new SequencedMockOpenCodeAdapter()
+    const modelOutput = 'Model output '.repeat(55)
+    adapter.mockResponses.set('mock-session-1#1', modelOutput)
+    adapter.promptFailures.set('mock-session-1#2', new Error('recovery note unavailable'))
+
+    const toolPart = (
+      id: string,
+      tool: unknown,
+      state: unknown,
+    ): NonNullable<Message['parts']>[number] => ({
+      id,
+      sessionID: 'mock-session-1',
+      messageID: 'prior-tools',
+      callID: id,
+      type: 'tool',
+      tool: tool as string,
+      state: state as ToolMessagePart['state'],
+    })
+    adapter.messages.set('mock-session-1', [{
+      id: 'prior-tools',
+      role: 'assistant',
+      parts: [
+        { id: 'text-part', sessionID: 'mock-session-1', messageID: 'prior-tools', type: 'text', text: 'not a tool result' },
+        toolPart('success', 'read', { status: 'completed', output: 'file read successfully' }),
+        toolPart('long-error', 'run_command', { status: 'error', error: 'x'.repeat(400), output: 'prefer error details' }),
+        toolPart('output-error', 'tests', { output: 'test process failed with exit code 1' }),
+        toolPart('empty-error', 42, { status: 'error' }),
+        toolPart('malformed-state', 'malformed', null),
+      ],
+    }])
+
+    const bead = buildBead()
+    const result = await executeBead(
+      adapter,
+      bead,
+      [{ type: 'text', content: 'Bead context' }],
+      '/tmp/test',
+      1,
+      PROFILE_DEFAULTS.perIterationTimeout,
+      undefined,
+      { structuredRetryCount: 0 },
+    )
+
+    const note = bead.failedIterationNotes[0]?.content ?? ''
+    expect(result.success).toBe(false)
+    expect(note).toContain(`run_command (error): ${'x'.repeat(320)}...`)
+    expect(note).toContain('tests (unknown): test process failed with exit code 1')
+    expect(note).toContain('tool (error): No details captured.')
+    expect(note).toContain(`Last model output: ${modelOutput.trim().slice(0, 500)}...`)
+    expect(note).not.toContain('prefer error details')
+
+    const recoveryPrompt = adapter.promptCalls[1]?.parts[0]?.content ?? ''
+    expect(recoveryPrompt).toContain('Recent Failure Excerpts')
+    expect(recoveryPrompt).toContain('run_command (error)')
+    expect(recoveryPrompt).toContain('tests (unknown)')
   })
 
   it('withholds context-wipe cleanup when the remote session abort is unconfirmed', async () => {

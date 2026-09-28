@@ -62,7 +62,10 @@ function makeUIValue(ticketId: string, externalId: string): UIContextValue {
 }
 
 describe('DashboardHeader', () => {
-  afterEach(() => { Reflect.deleteProperty(navigator, 'clipboard') })
+  afterEach(() => {
+    Reflect.deleteProperty(navigator, 'clipboard')
+    vi.restoreAllMocks()
+  })
 
   beforeAll(() => {
     Object.defineProperty(window, 'requestAnimationFrame', {
@@ -116,6 +119,137 @@ describe('DashboardHeader', () => {
     expect(await screen.findByRole('alert')).toHaveTextContent('Copy failed')
     fireEvent.click(button)
     await waitFor(() => { expect(screen.queryByRole('alert')).not.toBeInTheDocument() })
+  })
+
+  it('reveals the artifact folder and reports a failed reveal request', async () => {
+    const ticket = makeTicket({ status: 'DRAFTING_PRD', projectId: 1 })
+    const fetchMock = vi.spyOn(globalThis, 'fetch')
+      .mockResolvedValueOnce(new Response(null, { status: 200 }))
+      .mockRejectedValueOnce(new Error('File manager unavailable'))
+    const consoleError = vi.spyOn(console, 'error').mockImplementation(() => undefined)
+
+    renderWithProviders(
+      <UIContext.Provider value={makeUIValue(ticket.id, ticket.externalId)}>
+        <DashboardHeader ticket={ticket} />
+      </UIContext.Provider>,
+    )
+    fireEvent.click(screen.getByRole('button', { name: /details/i }))
+    const location = screen.getByText('Artifacts Location').parentElement as HTMLElement
+    const openButton = within(location).getAllByRole('button')[0]!
+
+    await act(async () => { fireEvent.click(openButton) })
+    expect(fetchMock).toHaveBeenNthCalledWith(1, '/api/files/open-path', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ path: ticket.runtime.artifactRoot }),
+    })
+    await waitFor(() => { expect(openButton).not.toBeDisabled() })
+
+    await act(async () => { fireEvent.click(openButton) })
+    await waitFor(() => {
+      expect(consoleError).toHaveBeenCalledWith('Error opening path:', expect.any(Error))
+      expect(openButton).not.toBeDisabled()
+    })
+  })
+
+  it('renders a project data icon as an image', () => {
+    const icon = 'data:image/png;base64,ZmFrZQ=='
+    mockUseProjects.mockReturnValue({
+      data: [{
+        id: 1,
+        name: 'Acme Console',
+        shortname: 'ACME',
+        icon,
+        color: '#2563eb',
+        folderPath: '/tmp/acme-console',
+      }],
+    })
+    const ticket = makeTicket({ status: 'DRAFTING_PRD', projectId: 1 })
+
+    const { container } = renderWithProviders(
+      <UIContext.Provider value={makeUIValue(ticket.id, ticket.externalId)}>
+        <DashboardHeader ticket={ticket} />
+      </UIContext.Provider>,
+    )
+
+    expect(container.querySelector('img')).toHaveAttribute('src', icon)
+  })
+
+  it('saves a trimmed title on Enter and discards edits on Escape', async () => {
+    const updateTicket = vi.fn().mockResolvedValue(undefined)
+    mockUseUpdateTicket.mockReturnValue({ mutateAsync: updateTicket })
+    const ticket = makeTicket({ status: 'DRAFT', title: 'Original title' })
+
+    renderWithProviders(
+      <UIContext.Provider value={makeUIValue(ticket.id, ticket.externalId)}>
+        <DashboardHeader ticket={ticket} />
+      </UIContext.Provider>,
+    )
+
+    fireEvent.click(screen.getByRole('button', { name: 'Edit title' }))
+    const input = screen.getByRole('textbox')
+    expect(input).toHaveFocus()
+    fireEvent.change(input, { target: { value: '  Updated title  ' } })
+    fireEvent.keyDown(input, { key: 'Enter' })
+
+    await waitFor(() => {
+      expect(updateTicket).toHaveBeenCalledWith({ id: ticket.id, title: 'Updated title' })
+      expect(screen.queryByRole('textbox')).not.toBeInTheDocument()
+    })
+
+    fireEvent.click(screen.getByRole('button', { name: 'Edit title' }))
+    const secondInput = screen.getByRole('textbox')
+    fireEvent.change(secondInput, { target: { value: 'Unsaved title' } })
+    fireEvent.keyDown(secondInput, { key: 'Escape' })
+
+    expect(screen.getByRole('heading', { name: ticket.title })).toBeInTheDocument()
+    expect(updateTicket).toHaveBeenCalledOnce()
+  })
+
+  it('does not submit an empty title and restores the title if saving fails', async () => {
+    const updateTicket = vi.fn().mockRejectedValue(new Error('offline'))
+    mockUseUpdateTicket.mockReturnValue({ mutateAsync: updateTicket })
+    const ticket = makeTicket({ status: 'DRAFT', title: 'Original title' })
+
+    renderWithProviders(
+      <UIContext.Provider value={makeUIValue(ticket.id, ticket.externalId)}>
+        <DashboardHeader ticket={ticket} />
+      </UIContext.Provider>,
+    )
+
+    fireEvent.click(screen.getByRole('button', { name: 'Edit title' }))
+    const blankInput = screen.getByRole('textbox')
+    fireEvent.change(blankInput, { target: { value: '   ' } })
+    fireEvent.keyDown(blankInput, { key: 'Enter' })
+
+    await waitFor(() => { expect(screen.queryByRole('textbox')).not.toBeInTheDocument() })
+    expect(updateTicket).not.toHaveBeenCalled()
+
+    fireEvent.click(screen.getByRole('button', { name: 'Edit title' }))
+    const failingInput = screen.getByRole('textbox')
+    fireEvent.change(failingInput, { target: { value: 'Changed title' } })
+    fireEvent.keyDown(failingInput, { key: 'Enter' })
+
+    await waitFor(() => {
+      expect(updateTicket).toHaveBeenCalledWith({ id: ticket.id, title: 'Changed title' })
+      expect(screen.queryByRole('textbox')).not.toBeInTheDocument()
+    })
+    expect(screen.getByRole('heading', { name: ticket.title })).toBeInTheDocument()
+  })
+
+  it('dispatches close when the dashboard close button is selected', () => {
+    const ticket = makeTicket({ status: 'DRAFTING_PRD' })
+    const uiValue = makeUIValue(ticket.id, ticket.externalId)
+
+    renderWithProviders(
+      <UIContext.Provider value={uiValue}>
+        <DashboardHeader ticket={ticket} />
+      </UIContext.Provider>,
+    )
+
+    fireEvent.click(screen.getByRole('button', { name: 'Close dashboard' }))
+
+    expect(uiValue.dispatch).toHaveBeenCalledWith({ type: 'CLOSE_TICKET' })
   })
 
   it('shows deterministic bead completion and the ETA range during execution', () => {
@@ -345,6 +479,32 @@ describe('DashboardHeader', () => {
     expect(screen.getByText('bold').tagName).toBe('STRONG')
     expect(screen.queryByRole('tab', { name: 'Markdown' })).not.toBeInTheDocument()
     expect(screen.queryByRole('tab', { name: 'Raw' })).not.toBeInTheDocument()
+  })
+
+  it('lists cleanup warnings when the warning count is opened', async () => {
+    const ticket = makeTicket({
+      status: 'DRAFTING_PRD',
+      cleanup: {
+        status: 'warning',
+        errorCount: 2,
+        latestReportArtifactId: null,
+        errors: ['Unable to remove worktree files', 'Unable to prune the local branch'],
+      },
+    })
+
+    renderWithProviders(
+      <UIContext.Provider value={makeUIValue(ticket.id, ticket.externalId)}>
+        <DashboardHeader ticket={ticket} />
+      </UIContext.Provider>,
+    )
+    fireEvent.click(screen.getByRole('button', { name: /details/i }))
+    const warningTrigger = screen.getByText('2 warnings').parentElement as HTMLElement
+    fireEvent.pointerMove(warningTrigger)
+    fireEvent.mouseEnter(warningTrigger)
+
+    expect(await screen.findByText('Cleanup Warnings:')).toBeInTheDocument()
+    expect(screen.getByText('Unable to remove worktree files')).toBeInTheDocument()
+    expect(screen.getByText('Unable to prune the local branch')).toBeInTheDocument()
   })
 
   it('marks display-only mock tickets in the header and details external ID', () => {
@@ -599,15 +759,15 @@ describe('DashboardHeader', () => {
    * browser drops, so the bar rendered at whatever width the last one had.
    */
   describe('the disk allocation bar', () => {
-    async function openSizeBreakdown(size: number) {
+    async function openSizeBreakdown(size: number, breakdown: unknown = {
+      logs: { total: 0, children: [] },
+      artifacts: { total: 0, children: [] },
+      source: { total: 0, children: [] },
+    }) {
       const ticket = makeTicket({ status: 'DRAFTING_PRD', availableActions: ['cancel'] })
       vi.spyOn(globalThis, 'fetch').mockResolvedValue(new Response(JSON.stringify({
         size,
-        breakdown: {
-          logs: { total: 0, children: [] },
-          artifacts: { total: 0, children: [] },
-          source: { total: 0, children: [] },
-        },
+        breakdown,
       }), { status: 200, headers: { 'Content-Type': 'application/json' } }))
 
       renderWithProviders(
@@ -621,6 +781,27 @@ describe('DashboardHeader', () => {
       })
       return screen.getByTitle(/^Source Code:/).parentElement as HTMLElement
     }
+
+    it('shows a size request error and allows a successful retry', async () => {
+      const fetchMock = vi.spyOn(globalThis, 'fetch')
+        .mockRejectedValueOnce(new Error('Disk scan failed'))
+        .mockResolvedValueOnce(new Response(JSON.stringify({ size: 42 }), { status: 200 }))
+      const ticket = makeTicket({ status: 'DRAFTING_PRD', availableActions: ['cancel'] })
+
+      renderWithProviders(
+        <UIContext.Provider value={makeUIValue(ticket.id, ticket.externalId)}>
+          <DashboardHeader ticket={ticket} />
+        </UIContext.Provider>,
+      )
+      fireEvent.click(screen.getByRole('button', { name: /details/i }))
+      fireEvent.click(screen.getByRole('button', { name: /calculate size/i }))
+
+      expect(await screen.findByText('Disk scan failed')).toBeInTheDocument()
+      fireEvent.click(screen.getByRole('button', { name: /calculate size/i }))
+
+      expect(await screen.findByText('Occupied')).toBeInTheDocument()
+      expect(fetchMock).toHaveBeenCalledTimes(2)
+    })
 
     it('gives every segment a real width when the ticket occupies nothing', async () => {
       const bar = await openSizeBreakdown(0)
@@ -653,6 +834,43 @@ describe('DashboardHeader', () => {
 
       expect(screen.getByTitle(/^Source Code:/)).toHaveStyle({ width: '50%' })
       expect(screen.getByTitle(/^Execution Logs:/)).toHaveStyle({ width: '25%' })
+    })
+
+    it('expands source and artifact trees and lists execution log files', async () => {
+      await openSizeBreakdown(4096, {
+        logs: { total: 1024, children: [{ name: 'worker.log', size: 1024, isDirectory: false }] },
+        artifacts: {
+          total: 1024,
+          children: [
+            { name: 'empty-artifacts', size: 0, isDirectory: true },
+            { name: 'prd.json', size: 1024, isDirectory: false },
+          ],
+        },
+        source: {
+          total: 2048,
+          children: [{
+            name: 'src',
+            size: 2048,
+            isDirectory: true,
+            children: [{ name: 'main.ts', size: 1024, isDirectory: false }],
+          }],
+        },
+      })
+
+      fireEvent.click(screen.getByRole('button', { name: /source code/i }))
+      const sourceFolder = screen.getByRole('button', { name: /src/ })
+      expect(sourceFolder).toHaveAttribute('aria-expanded', 'false')
+      fireEvent.click(sourceFolder)
+      expect(sourceFolder).toHaveAttribute('aria-expanded', 'true')
+      expect(screen.getByText('main.ts')).toBeInTheDocument()
+
+      fireEvent.click(screen.getByRole('button', { name: /phase artifacts/i }))
+      expect(screen.getByText('empty-artifacts')).toBeInTheDocument()
+      expect(screen.getByText('prd.json')).toBeInTheDocument()
+      expect(screen.queryByRole('button', { name: /empty-artifacts/ })).not.toBeInTheDocument()
+
+      fireEvent.click(screen.getByRole('button', { name: /execution logs/i }))
+      expect(screen.getByText('worker.log')).toBeInTheDocument()
     })
   })
 })

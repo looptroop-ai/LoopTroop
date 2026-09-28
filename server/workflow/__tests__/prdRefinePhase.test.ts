@@ -44,7 +44,7 @@ vi.mock('../runOpenCodePrompt', () => ({
 }))
 
 import { handlePrdRefine } from '../phases/prdPhase'
-import { handleCoverageVerification } from '../phases/verificationPhase'
+import { handleCoverageVerification, performCoverageExtraFix } from '../phases/verificationPhase'
 
 const repoManager = createTestRepoManager('prd-refine')
 
@@ -551,6 +551,75 @@ describe('handlePrdRefine', () => {
     expect(sendEvent).toHaveBeenCalledWith({ type: 'COVERAGE_CLEAN' })
   })
 
+  it('runs a PRD coverage extra fix and persists the revised candidate after a clean audit', async () => {
+    const { ticket, context, paths, winnerId } = await setupCoverageTest()
+    const coverageGap = 'Document the approval response when the retry limit is reached.'
+    insertPhaseArtifact(ticket.id, {
+      phase: 'VERIFYING_PRD_COVERAGE',
+      artifactType: 'prd_coverage',
+      content: JSON.stringify({
+        winnerId,
+        status: 'gaps',
+        gaps: [coverageGap],
+        coverageRunNumber: 1,
+        maxCoveragePasses: 3,
+        finalCandidateVersion: 1,
+      }),
+    })
+    runOpenCodePromptMock
+      .mockResolvedValueOnce({
+        session: { id: 'prd-extra-fix-revision', projectPath: paths.worktreePath },
+        response: buildValidCoverageRevisionOutput(ticket.externalId, coverageGap),
+        messages: [],
+      })
+      .mockResolvedValueOnce({
+        session: { id: 'prd-extra-fix-audit', projectPath: paths.worktreePath },
+        response: ['status: clean', 'gaps: []', 'follow_up_questions: []'].join('\n'),
+        messages: [],
+      })
+
+    await expect(performCoverageExtraFix({
+      ticketId: ticket.id,
+      context,
+      domain: 'prd',
+      signal: new AbortController().signal,
+    })).resolves.toMatchObject({
+      domain: 'prd',
+      status: 'clean',
+      remainingGaps: [],
+      extraFixNumber: 1,
+      changed: true,
+    })
+
+    expect(runOpenCodePromptMock).toHaveBeenCalledTimes(2)
+    const revision = JSON.parse(getLatestPhaseArtifact(ticket.id, 'prd_coverage_revision', 'WAITING_PRD_APPROVAL')!.content)
+    expect(revision).toMatchObject({
+      winnerId: context.lockedMainImplementer,
+      candidateVersion: 2,
+      source: 'ai_fix_button',
+      extraFixNumber: 1,
+    })
+    expect(readFileSync(`${paths.ticketDir}/prd.yaml`, 'utf-8')).toContain('Prompt hardening and approval safety')
+
+    const coverage = JSON.parse(getLatestPhaseArtifact(ticket.id, 'prd_coverage', 'WAITING_PRD_APPROVAL')!.content)
+    expect(coverage).toMatchObject({
+      winnerId,
+      status: 'clean',
+      coverageRunNumber: 1,
+      finalCandidateVersion: 2,
+      remainingGaps: [],
+      latestExtraFixSummary: expect.stringContaining('cleared all coverage gaps'),
+    })
+    const companion = parseUiArtifactCompanionArtifact(
+      getLatestPhaseArtifact(ticket.id, 'ui_artifact_companion:prd_coverage', 'WAITING_PRD_APPROVAL')!.content,
+    )?.payload as { attempts?: Array<{ source?: string; candidateVersion?: number; status?: string }> } | undefined
+    expect(companion?.attempts).toContainEqual(expect.objectContaining({
+      source: 'ai_fix_button',
+      candidateVersion: 2,
+      status: 'clean',
+    }))
+  })
+
   it('fails PRD coverage clearly when the winner Full Answers artifact is unavailable', async () => {
     const { ticket, context } = await setupCoverageTest({ writeFullAnswers: false })
     const sendEvent = vi.fn()
@@ -583,6 +652,12 @@ describe('handlePrdRefine', () => {
         status: 'retry',
         attempt: callNumber,
         message: 'The usage limit has been reached',
+      })
+      options.onStreamEvent?.({
+        type: 'step',
+        step: 'finish',
+        reason: 'end_turn',
+        tokens: { input: 24, output: 8 },
       })
 
       return {

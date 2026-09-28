@@ -20,7 +20,7 @@ import {
   getTicketWorktreePath as resolveTicketWorktreePath,
   normalizeFolderPath,
 } from '../storage/paths'
-import { updateTicketMeta } from './metadata'
+import { readTicketMetaForMutation, updateTicketMeta } from './metadata'
 import { ensureWorktreeOwnerMarker } from '../storage/worktreeOwnership'
 import { resolveProjectTicketContainedPath, writeProjectTicketFile } from './containedPath'
 import { getErrorMessage } from '@shared/typeGuards'
@@ -351,6 +351,7 @@ export async function initializeTicket(options: InitializeOptions): Promise<Init
   // Callers may pass an uncanonicalised folder; normalising here keeps every
   // derived path byte-identical to the project root stored at attach time.
   const projectFolder = normalizeFolderPath(options.projectFolder)
+  readTicketMetaForMutation(projectFolder, options.externalId)
   assertManagedWorktreesRoot(projectFolder, getProjectWorktreesRoot(projectFolder))
   ensureGitRepo(projectFolder)
   await tryFetchOrigin(projectFolder)

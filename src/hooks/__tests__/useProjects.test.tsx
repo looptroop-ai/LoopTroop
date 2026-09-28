@@ -6,6 +6,7 @@ import { LOG_STORAGE_PREFIX } from '@/context/logUtils'
 import { createTestQueryClient } from '@/test/renderHelpers'
 import { getTicketArtifactsQueryKey } from '../useTicketArtifacts'
 import { useCreateProject, useDeleteProject } from '../useProjects'
+import { isTicketClosing } from '../useTickets'
 
 function createWrapper(queryClient: QueryClient) {
   return function Wrapper({ children }: { children: ReactNode }) {
@@ -129,5 +130,31 @@ describe('useProjects', () => {
     expect(queryClient.getQueryData(['ticket', '1:EXACT-1'])).toBeUndefined()
     expect(queryClient.getQueryData(['ticket', '1e0:OTHER-1'])).toEqual({ id: '1e0:OTHER-1' })
     expect(queryClient.getQueryData(['ticket', ' 1 :OTHER-2'])).toEqual({ id: ' 1 :OTHER-2' })
+  })
+
+  it('reopens cached tickets when project deletion fails', async () => {
+    const queryClient = createTestQueryClient()
+    const deletedTicketIds = ['7:DELETE-1', '7:DELETE-2']
+    queryClient.setQueryData(['tickets'], deletedTicketIds.map((id) => ({ id, projectId: 7 })))
+    deletedTicketIds.forEach((id) => queryClient.setQueryData(['ticket', id], { id }))
+    vi.stubGlobal('fetch', vi.fn(async () => {
+      expect(deletedTicketIds.every(isTicketClosing)).toBe(true)
+      return new Response(JSON.stringify({ error: 'Project still has active tickets' }), {
+        status: 409,
+        headers: { 'Content-Type': 'application/json' },
+      })
+    }))
+
+    const { result } = renderHook(() => useDeleteProject(), {
+      wrapper: createWrapper(queryClient),
+    })
+
+    await act(async () => {
+      await expect(result.current.mutateAsync(7)).rejects.toThrow('Failed to delete project')
+    })
+
+    expect(deletedTicketIds.every(isTicketClosing)).toBe(false)
+    expect(queryClient.getQueryData(['tickets'])).toHaveLength(2)
+    deletedTicketIds.forEach((id) => expect(queryClient.getQueryData(['ticket', id])).toEqual({ id }))
   })
 })

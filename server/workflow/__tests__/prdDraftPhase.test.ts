@@ -2,6 +2,8 @@ import { afterAll, beforeEach, describe, expect, it, vi } from 'vitest'
 import { existsSync, readFileSync, symlinkSync, writeFileSync } from 'node:fs'
 import { parseUiArtifactCompanionArtifact } from '@shared/artifactCompanions'
 import type { DraftResult, Vote } from '../../council/types'
+import type { conductVoting as ConductVoting } from '../../council/voter'
+import type { draftPRD as DraftPrd } from '../../phases/prd/draft'
 import { clearProjectDatabaseCache } from '../../db/project'
 import { getLatestPhaseArtifact } from '../../storage/tickets'
 import { TEST, makeInterviewYaml, makePrdYaml } from '../../test/factories'
@@ -36,7 +38,13 @@ vi.mock('../../council/voter', async () => {
   }
 })
 
-import { handleMockPrdDraft, handleMockPrdVote, handlePrdDraft, handlePrdVote } from '../phases/prdPhase'
+import {
+  handleMockPrdDraft,
+  handleMockPrdRefine,
+  handleMockPrdVote,
+  handlePrdDraft,
+  handlePrdVote,
+} from '../phases/prdPhase'
 import { upsertCouncilDraftArtifact } from '../phases/helpers'
 
 const repoManager = createTestRepoManager('prd-draft-')
@@ -81,6 +89,165 @@ describe('handlePrdDraft', () => {
 
     expect(draftPRDMock).not.toHaveBeenCalled()
     expect(getLatestPhaseArtifact(ticket.id, 'prd_drafts', 'DRAFTING_PRD')).toBeUndefined()
+  })
+
+  it('rejects an invalid canonical interview before dispatching PRD drafts', async () => {
+    const { ticket, context, paths } = await createInitializedTestTicket(repoManager)
+    writeFileSync(`${paths.ticketDir}/interview.yaml`, 'not a canonical interview document', 'utf-8')
+
+    await expect(handlePrdDraft(ticket.id, context, vi.fn(), new AbortController().signal))
+      .rejects
+      .toThrow('Canonical interview artifact is invalid for PRD drafting')
+
+    expect(draftPRDMock).not.toHaveBeenCalled()
+  })
+
+  it('forwards draft callbacks and preserves failure details for finished members', async () => {
+    const { ticket, context, paths } = await createInitializedTestTicket(repoManager)
+    const sendEvent = vi.fn()
+    const interviewContent = makeInterviewYaml({ ticket_id: ticket.externalId })
+    const prdContent = makePrdYaml({ ticketId: ticket.externalId })
+    writeFileSync(`${paths.ticketDir}/interview.yaml`, interviewContent, 'utf-8')
+
+    draftPRDMock.mockImplementationOnce(async (
+      _adapter: unknown,
+      _members: unknown,
+      _ticketState: unknown,
+      _projectPath: unknown,
+      _options: unknown,
+      _signal: unknown,
+      onOpenCodeSessionLog?: Parameters<typeof DraftPrd>[6],
+      onOpenCodeStreamEvent?: Parameters<typeof DraftPrd>[7],
+      onOpenCodePromptDispatched?: Parameters<typeof DraftPrd>[8],
+      onDraftProgress?: Parameters<typeof DraftPrd>[9],
+      onFullAnswersProgress?: Parameters<typeof DraftPrd>[10],
+      onStepEvent?: Parameters<typeof DraftPrd>[11],
+    ) => {
+      const memberId = TEST.councilMembers[0]
+      onOpenCodeSessionLog?.({
+        stage: 'draft', memberId, sessionId: 'prd-session', response: 'draft response', messages: [],
+      })
+      onOpenCodeStreamEvent?.({
+        stage: 'draft',
+        memberId,
+        sessionId: 'prd-session',
+        event: { type: 'text', sessionId: 'prd-session', text: 'draft token', streaming: false, complete: true },
+      })
+      onOpenCodePromptDispatched?.({
+        stage: 'draft',
+        memberId,
+        event: {
+          session: { id: 'prd-session' },
+          parts: [{ type: 'text', content: 'draft prompt' }],
+          promptText: 'draft prompt',
+          promptNumber: 1,
+          timeoutKind: 'ai_response',
+        },
+      })
+
+      onDraftProgress?.({ memberId, status: 'session_created', sessionId: 'prd-session' })
+      onDraftProgress?.({ memberId: 'unknown-member', status: 'finished', outcome: 'completed' })
+      onDraftProgress?.({
+        memberId,
+        status: 'finished',
+        outcome: 'completed',
+        content: prdContent,
+        duration: 25,
+        draftMetrics: { epicCount: 1, userStoryCount: 1 },
+        rawResponse: 'raw draft',
+        normalizedResponse: prdContent,
+        rawAttempts: [{ attempt: 1, stage: 'prd_draft', outcome: 'accepted', rawResponse: 'raw draft' }],
+        skippedReason: 'not skipped',
+        structuredOutput: {
+          repairApplied: true,
+          repairWarnings: ['Canonicalized a harmless draft alias.'],
+          autoRetryCount: 1,
+          validationError: 'The first response used an alias.',
+        },
+      })
+      onFullAnswersProgress?.({ memberId: TEST.councilMembers[1], status: 'session_created', sessionId: 'answers-session' })
+      onFullAnswersProgress?.({ memberId: 'unknown-member', status: 'finished', outcome: 'completed' })
+      onFullAnswersProgress?.({
+        memberId,
+        status: 'finished',
+        outcome: 'completed',
+        content: interviewContent,
+        duration: 22,
+        questionCount: 1,
+        rawResponse: 'raw full answers',
+        normalizedResponse: interviewContent,
+        structuredOutput: {
+          repairApplied: false,
+          repairWarnings: [],
+          autoRetryCount: 1,
+          validationError: 'The first answer omitted a canonical question.',
+        },
+      })
+
+      onStepEvent?.({ memberId, step: 'full_answers', status: 'started' })
+      onStepEvent?.({ memberId, step: 'full_answers', status: 'skipped' })
+      onStepEvent?.({ memberId, step: 'prd_draft', status: 'skipped', error: 'Full Answers failed validation' })
+      onStepEvent?.({ memberId, step: 'prd_draft', status: 'completed' })
+      onStepEvent?.({ memberId, step: 'full_answers', status: 'failed', outcome: 'timed_out', error: 'deadline reached' })
+      onStepEvent?.({ memberId, step: 'prd_draft', status: 'failed', outcome: 'failed' })
+
+      return {
+        phase: 'prd_draft',
+        fullAnswers: [
+          { memberId, outcome: 'completed', content: interviewContent, duration: 22, questionCount: 1 },
+          { memberId: TEST.councilMembers[1], outcome: 'timed_out', content: '', duration: 30, error: 'deadline reached' },
+        ],
+        drafts: TEST.councilMembers.map((member) => ({
+          memberId: member,
+          outcome: 'completed',
+          content: prdContent,
+          duration: 25,
+        })),
+        memberOutcomes: Object.fromEntries(TEST.councilMembers.map((member) => [member, 'completed'])),
+        fullAnswerOutcomes: {
+          [memberId]: 'completed',
+          [TEST.councilMembers[1]]: 'timed_out',
+        },
+        deadlineReached: true,
+      }
+    })
+
+    await handlePrdDraft(ticket.id, context, sendEvent, new AbortController().signal)
+
+    expect(sendEvent).toHaveBeenCalledWith({ type: 'DRAFTS_READY' })
+    expect(phaseIntermediate.get(`${ticket.id}:prd`)).toMatchObject({
+      fullAnswers: expect.arrayContaining([expect.objectContaining({ memberId: TEST.councilMembers[0], outcome: 'completed' })]),
+      drafts: expect.arrayContaining([expect.objectContaining({ memberId: TEST.councilMembers[0], content: prdContent })]),
+    })
+    expect(readFileSync(paths.executionLogPath, 'utf-8')).toContain('Full Answers timed out')
+    expect(readFileSync(paths.executionLogPath, 'utf-8')).toContain('PRD draft completed.')
+    expect(readFileSync(paths.executionLogPath, 'utf-8')).toContain('Full Answers skipped; reusing the approved interview artifact.')
+  })
+
+  it('blocks PRD drafting when completed drafts do not meet the configured quorum', async () => {
+    const { ticket, context, paths } = await createInitializedTestTicket(repoManager)
+    writeFileSync(`${paths.ticketDir}/interview.yaml`, makeInterviewYaml({ ticket_id: ticket.externalId }), 'utf-8')
+    draftPRDMock.mockResolvedValueOnce({
+      phase: 'prd_draft',
+      fullAnswers: [],
+      drafts: TEST.councilMembers.map((member) => ({
+        memberId: member,
+        outcome: 'invalid_output',
+        content: '',
+        duration: 0,
+        error: 'invalid draft',
+      })),
+      memberOutcomes: Object.fromEntries(TEST.councilMembers.map((member) => [member, 'invalid_output'])),
+      fullAnswerOutcomes: {},
+      deadlineReached: false,
+    })
+
+    await expect(handlePrdDraft(ticket.id, context, vi.fn(), new AbortController().signal))
+      .rejects
+      .toThrow(/Council quorum not met for prd_draft/)
+
+    expect(getLatestPhaseArtifact(ticket.id, 'prd_drafts', 'DRAFTING_PRD')).toBeDefined()
+    expect(phaseIntermediate.get(`${ticket.id}:prd`)).toBeUndefined()
   })
 
   it('persists invalid draft diagnostics without visible artifact content', async () => {
@@ -129,6 +296,63 @@ describe('handlePrdDraft', () => {
     expect(companionPayload?.draftDetails?.[0]?.content).toBeUndefined()
     expect(companionPayload?.draftDetails?.[0]?.rawResponse).toBe(malformedOutput)
     expect(companionPayload?.draftDetails?.[0]?.rawAttempts?.[0]?.rawResponse).toBe(malformedOutput)
+  })
+
+  it('rejects PRD voting when the phase has no draft state', async () => {
+    const { ticket, context } = await createInitializedTestTicket(repoManager)
+
+    await expect(handlePrdVote(ticket.id, context, vi.fn(), new AbortController().signal))
+      .rejects
+      .toThrow('No PRD drafts found — cannot vote')
+
+    expect(conductVotingMock).not.toHaveBeenCalled()
+  })
+
+  it('marks a failed PRD vote artifact final when voter quorum is not met', async () => {
+    const { ticket, context, paths } = await createInitializedTestTicket(repoManager)
+    const drafts = TEST.councilMembers.map((member) => buildMockVoteDraft(member, member))
+    phaseIntermediate.set(`${ticket.id}:prd`, {
+      drafts,
+      memberOutcomes: Object.fromEntries(TEST.councilMembers.map((member) => [member, 'completed'])),
+      worktreePath: paths.worktreePath,
+      phase: 'prd_draft',
+    })
+    conductVotingMock.mockResolvedValueOnce({
+      votes: [],
+      memberOutcomes: Object.fromEntries(TEST.councilMembers.map((member) => [member, 'failed'])),
+      deadlineReached: true,
+      presentationOrders: {},
+      voterDetails: TEST.councilMembers.map((voterId) => ({ voterId, error: 'model unavailable' })),
+    })
+
+    await expect(handlePrdVote(ticket.id, context, vi.fn(), new AbortController().signal))
+      .rejects
+      .toThrow(/PRD voting quorum not met/)
+
+    const voteRow = getLatestPhaseArtifact(ticket.id, 'prd_votes', 'COUNCIL_VOTING_PRD')
+    expect(JSON.parse(voteRow!.content)).toMatchObject({ isFinal: true })
+  })
+
+  it('rejects an empty vote list even when the voter outcome quorum passed', async () => {
+    const { ticket, context, paths } = await createInitializedTestTicket(repoManager)
+    phaseIntermediate.set(`${ticket.id}:prd`, {
+      drafts: TEST.councilMembers.map((member) => buildMockVoteDraft(member, member)),
+      memberOutcomes: Object.fromEntries(TEST.councilMembers.map((member) => [member, 'completed'])),
+      worktreePath: paths.worktreePath,
+      phase: 'prd_draft',
+    })
+    conductVotingMock.mockResolvedValueOnce({
+      votes: [],
+      memberOutcomes: Object.fromEntries(TEST.councilMembers.map((member) => [member, 'completed'])),
+      deadlineReached: false,
+      presentationOrders: {},
+      voterDetails: [],
+    })
+
+    await expect(handlePrdVote(ticket.id, context, vi.fn(), new AbortController().signal))
+      .rejects
+      .toThrow('PRD voting failed: no valid vote responses received')
+    expect(selectWinnerMock).not.toHaveBeenCalled()
   })
 
   it('persists normalized draft metadata and logs PRD-specific metrics', async () => {
@@ -470,6 +694,7 @@ describe('handlePrdDraft', () => {
 
     await handleMockPrdDraft(ticket.id, context, sendEvent)
     await handleMockPrdVote(ticket.id, context, sendEvent)
+    await handleMockPrdRefine(ticket.id, context, sendEvent)
 
     const voteRow = getLatestPhaseArtifact(ticket.id, 'prd_votes', 'COUNCIL_VOTING_PRD')
     const voteCompanionRow = getLatestPhaseArtifact(ticket.id, 'ui_artifact_companion:prd_votes', 'COUNCIL_VOTING_PRD')
@@ -496,6 +721,9 @@ describe('handlePrdDraft', () => {
     expect(voteCompanion?.totalScore).toBeGreaterThan(0)
     expect(sendEvent).toHaveBeenCalledWith({ type: 'DRAFTS_READY' })
     expect(sendEvent).toHaveBeenCalledWith({ type: 'WINNER_SELECTED', winner: voteArtifact.winnerId })
+    expect(sendEvent).toHaveBeenCalledWith({ type: 'REFINED' })
+    expect(getLatestPhaseArtifact(ticket.id, 'prd_refined', 'REFINING_PRD')).toBeDefined()
+    expect(readFileSync(`${paths.ticketDir}/prd.yaml`, 'utf-8')).toContain('artifact: prd')
   })
 
   it('persists live and final PRD vote artifacts with winner metadata and presentation order', async () => {
@@ -503,6 +731,7 @@ describe('handlePrdDraft', () => {
     const sendEvent = vi.fn()
     const draftA = buildMockVoteDraft(TEST.councilMembers[0], 'Alpha')
     const draftB = buildMockVoteDraft(TEST.councilMembers[1], 'Beta')
+    writeFileSync(`${paths.ticketDir}/interview.yaml`, makeInterviewYaml({ ticket_id: ticket.externalId }), 'utf-8')
 
     phaseIntermediate.set(`${ticket.id}:prd`, {
       drafts: [draftA, draftB],
@@ -512,13 +741,6 @@ describe('handlePrdDraft', () => {
       },
       worktreePath: paths.worktreePath,
       phase: 'prd_draft',
-      ticketState: {
-        ticketId: context.externalId,
-        title: context.title,
-        description: context.title,
-        relevantFiles: 'files:\n  - path: src/main.ts',
-        interview: makeInterviewYaml({ ticket_id: ticket.externalId }),
-      },
     })
 
     conductVotingMock.mockImplementationOnce(async (
@@ -530,9 +752,9 @@ describe('handlePrdDraft', () => {
       _phase: string,
       _timeoutMs: number,
       _signal: AbortSignal,
-      _onOpenCodeSessionLog: unknown,
-      _onOpenCodeStreamEvent: unknown,
-      _onOpenCodePromptDispatched: unknown,
+      onOpenCodeSessionLog?: Parameters<typeof ConductVoting>[8],
+      onOpenCodeStreamEvent?: Parameters<typeof ConductVoting>[9],
+      onOpenCodePromptDispatched?: Parameters<typeof ConductVoting>[10],
       onVoteProgress?: (entry: { memberId: string; outcome: string; votes: Vote[]; rawResponse?: string; normalizedResponse?: string }) => void,
       buildPromptForVoter?: (entry: {
         voter: { modelId: string }
@@ -542,6 +764,28 @@ describe('handlePrdDraft', () => {
     ) => {
       expect(contextParts).toEqual([])
       expect(buildPromptForVoter).toBeTypeOf('function')
+
+      const voterId = TEST.councilMembers[0]
+      onOpenCodeSessionLog?.({
+        stage: 'vote', memberId: voterId, sessionId: 'prd-vote-session', response: 'vote response', messages: [],
+      })
+      onOpenCodeStreamEvent?.({
+        stage: 'vote',
+        memberId: voterId,
+        sessionId: 'prd-vote-session',
+        event: { type: 'text', sessionId: 'prd-vote-session', text: 'vote token', streaming: false, complete: true },
+      })
+      onOpenCodePromptDispatched?.({
+        stage: 'vote',
+        memberId: voterId,
+        event: {
+          session: { id: 'prd-vote-session' },
+          parts: [{ type: 'text', content: 'vote prompt' }],
+          promptText: 'vote prompt',
+          promptNumber: 1,
+          timeoutKind: 'ai_response',
+        },
+      })
 
       const prompt = buildPromptForVoter!({
         voter: { modelId: TEST.councilMembers[0] },
@@ -565,6 +809,7 @@ describe('handlePrdDraft', () => {
       expect(rendered).toContain('### draft')
       expect(rendered).toContain('Draft 1:')
       expect(rendered).toContain('Draft 2:')
+      expect(rendered).toContain('artifact: interview')
       // Rubric must appear inside ## Context as ### vote_rubric (not as a disconnected trailing part)
       expect(rendered).toContain('### vote_rubric')
       const contextIdx = rendered.indexOf('## Context')

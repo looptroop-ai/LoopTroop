@@ -1,12 +1,18 @@
 import { EventEmitter } from 'node:events'
 import type { ChildProcess } from 'node:child_process'
 import { afterEach, describe, expect, it, vi } from 'vitest'
+import { terminateProcessTree } from '../../lib/processTree'
 import {
   defaultTermination,
   OpenCodeSupervisor,
   type ProcessTermination,
 } from '../supervisor'
 import { invalidateOpenCodeConnection } from '../connection'
+
+vi.mock('../../lib/processTree', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('../../lib/processTree')>()
+  return { ...actual, terminateProcessTree: vi.fn() }
+})
 
 const originalAuthEnv = {
   OPENCODE_PASSWORD: process.env.OPENCODE_PASSWORD,
@@ -33,6 +39,12 @@ function fakeChild(pid: number, exitCode: number | null = null): EventEmitter & 
   })
 }
 
+function fetchFailure(code: string): TypeError {
+  return new TypeError('fetch failed', {
+    cause: Object.assign(new Error('connection failed'), { code }),
+  })
+}
+
 function terminationProbe() {
   const exited = new Set<number>()
   const termination: ProcessTermination = {
@@ -49,6 +61,106 @@ function terminationProbe() {
 }
 
 describe('OpenCodeSupervisor', () => {
+  it('waits for Windows tree termination proof after its leader exits', async () => {
+    const platformDescriptor = Object.getOwnPropertyDescriptor(process, 'platform')
+    if (!platformDescriptor?.configurable) throw new Error('process.platform cannot be stubbed in this test runtime')
+
+    const child = Object.assign(fakeChild(4301), { kill: vi.fn() })
+    const taskkill = Object.assign(new EventEmitter(), {
+      exitCode: null as number | null,
+      kill: vi.fn(),
+    })
+    let probes = 0
+    const supervisor = new OpenCodeSupervisor({
+      baseUrl: 'http://127.0.0.1:4096',
+      probe: async () => ++probes > 1,
+      spawnProcess: (() => child) as never,
+      resolveProgram: () => '/opt/opencode',
+      exitBudgets: { gracefulMs: 100, forceMs: 100 },
+    })
+
+    try {
+      Object.defineProperty(process, 'platform', { ...platformDescriptor, value: 'win32' })
+      await supervisor.start()
+      vi.mocked(terminateProcessTree).mockImplementationOnce(() => taskkill as unknown as ChildProcess)
+
+      let stopped = false
+      const stopping = supervisor.stop().then((result) => {
+        stopped = true
+        return result
+      })
+      child.exitCode = 0
+      child.emit('exit', 0)
+      await Promise.resolve()
+
+      expect(stopped).toBe(false)
+      expect(taskkill.kill).not.toHaveBeenCalled()
+      taskkill.exitCode = 0
+      taskkill.emit('exit', 0)
+
+      await expect(stopping).resolves.toBe(true)
+      expect(terminateProcessTree).toHaveBeenCalledWith(child, 'SIGTERM', 'windows')
+      expect(child.kill).not.toHaveBeenCalled()
+      expect(supervisor.ownedProcess).toBeNull()
+    } finally {
+      Object.defineProperty(process, 'platform', platformDescriptor)
+    }
+  })
+
+  it('retains the Windows child handle when graceful and forced tree cleanup fail', async () => {
+    const platformDescriptor = Object.getOwnPropertyDescriptor(process, 'platform')
+    if (!platformDescriptor?.configurable) throw new Error('process.platform cannot be stubbed in this test runtime')
+
+    const child = Object.assign(fakeChild(4309), { kill: vi.fn() })
+    const gracefulTaskkill = Object.assign(new EventEmitter(), {
+      exitCode: null as number | null,
+      kill: vi.fn(),
+    })
+    const forceTaskkill = Object.assign(new EventEmitter(), {
+      exitCode: null as number | null,
+      kill: vi.fn(),
+    })
+    let probes = 0
+    const supervisor = new OpenCodeSupervisor({
+      baseUrl: 'http://127.0.0.1:4096',
+      probe: async () => ++probes > 1,
+      spawnProcess: (() => child) as never,
+      resolveProgram: () => '/opt/opencode',
+      exitBudgets: { gracefulMs: 100, forceMs: 100 },
+    })
+    const consoleError = vi.spyOn(console, 'error').mockImplementation(() => {})
+
+    try {
+      Object.defineProperty(process, 'platform', { ...platformDescriptor, value: 'win32' })
+      await supervisor.start()
+      vi.mocked(terminateProcessTree)
+        .mockImplementationOnce((_ownedChild, signal) => {
+          expect(signal).toBe('SIGTERM')
+          queueMicrotask(() => {
+            gracefulTaskkill.exitCode = 1
+            gracefulTaskkill.emit('exit', 1)
+          })
+          return gracefulTaskkill as unknown as ChildProcess
+        })
+        .mockImplementationOnce((_ownedChild, signal) => {
+          expect(signal).toBe('SIGKILL')
+          queueMicrotask(() => forceTaskkill.emit('error', new Error('taskkill failed')))
+          return forceTaskkill as unknown as ChildProcess
+        })
+
+      await expect(supervisor.stop()).resolves.toBe(false)
+
+      expect(terminateProcessTree).toHaveBeenCalledTimes(2)
+      expect(gracefulTaskkill.kill).not.toHaveBeenCalled()
+      expect(forceTaskkill.kill).not.toHaveBeenCalled()
+      expect(child.kill).not.toHaveBeenCalled()
+      expect(supervisor.ownedProcess).toEqual({ pid: 4309, startToken: null })
+    } finally {
+      Object.defineProperty(process, 'platform', platformDescriptor)
+      consoleError.mockRestore()
+    }
+  })
+
   it('waits for a POSIX descendant group after its leader exits', () => {
     if (process.platform === 'win32') return
 
@@ -139,6 +251,90 @@ describe('OpenCodeSupervisor', () => {
 
     await expect(supervisor.start()).resolves.toEqual({ kind: 'adopted', baseUrl: 'http://127.0.0.1:4096' })
     expect(fetchMock).toHaveBeenCalledTimes(3)
+  })
+
+  it('keeps polling after a transient network failure during managed startup', async () => {
+    const fetchMock = vi.fn()
+      .mockRejectedValueOnce(fetchFailure('ECONNREFUSED'))
+      .mockRejectedValueOnce(fetchFailure('ECONNRESET'))
+      .mockResolvedValueOnce(new Response(JSON.stringify({ version: '2.0.15', pid: 813 }), {
+        headers: { 'content-type': 'application/json' },
+      }))
+    vi.stubGlobal('fetch', fetchMock)
+    const child = fakeChild(4302)
+    const { termination } = terminationProbe()
+    const supervisor = new OpenCodeSupervisor({
+      baseUrl: 'http://127.0.0.1:4096',
+      spawnProcess: (() => child) as never,
+      resolveProgram: () => '/opt/opencode',
+      termination,
+      readyTimeoutMs: 2_000,
+    })
+
+    await expect(supervisor.start()).resolves.toEqual({
+      kind: 'managed',
+      baseUrl: 'http://127.0.0.1:4096',
+      pid: 4302,
+    })
+    expect(fetchMock).toHaveBeenCalledTimes(3)
+    await supervisor.stop()
+  })
+
+  it('cleans up a child when its spawn error races the health probe', async () => {
+    const child = fakeChild(4303)
+    const { termination } = terminationProbe()
+    const supervisor = new OpenCodeSupervisor({
+      baseUrl: 'http://127.0.0.1:4096',
+      probe: async () => false,
+      spawnProcess: (() => {
+        queueMicrotask(() => child.emit('error', new Error('spawn failed')))
+        return child
+      }) as never,
+      resolveProgram: () => '/opt/opencode',
+      termination,
+      readyTimeoutMs: 2_000,
+    })
+
+    await expect(supervisor.start()).rejects.toMatchObject({ name: 'OpenCodeMissingError' })
+    expect(termination.request).toHaveBeenCalledWith(4303, null)
+    expect(supervisor.ownedProcess).toBeNull()
+    await expect(supervisor.stop()).resolves.toBe(true)
+  })
+
+  it('rejects startup when stop makes the child exit during its health wait', async () => {
+    const child = fakeChild(4308)
+    let resolveSpawned!: () => void
+    const spawned = new Promise<void>((resolve) => { resolveSpawned = resolve })
+    const termination: ProcessTermination = {
+      request: vi.fn(() => true),
+      force: vi.fn(async () => undefined),
+      hasExited: vi.fn(() => {
+        if (child.exitCode === null) {
+          child.exitCode = 0
+          child.emit('exit', 0)
+        }
+        return true
+      }),
+    }
+    let probes = 0
+    const supervisor = new OpenCodeSupervisor({
+      baseUrl: 'http://127.0.0.1:4096',
+      probe: async () => ++probes === 1 ? false : new Promise<boolean>(() => {}),
+      spawnProcess: (() => {
+        resolveSpawned()
+        return child
+      }) as never,
+      resolveProgram: () => '/opt/opencode',
+      termination,
+    })
+    const starting = supervisor.start()
+
+    await spawned
+    await expect(supervisor.stop()).resolves.toBe(true)
+    await expect(starting).rejects.toThrow('OpenCode exited with code 0')
+
+    expect(termination.request).toHaveBeenCalledWith(4308, null)
+    expect(supervisor.ownedProcess).toBeNull()
   })
 
   it('shares an in-memory ephemeral password with a managed child when no password was supplied', async () => {
@@ -395,6 +591,43 @@ describe('OpenCodeSupervisor', () => {
     expect(spawnProcess).toHaveBeenCalledTimes(2)
     expect(statuses).toContain('managed:4104')
     await supervisor.stop()
+  })
+
+  it('reports restart exhaustion even when the status listener throws', async () => {
+    const firstChild = fakeChild(4304)
+    const children = [firstChild, fakeChild(4305), fakeChild(4306), fakeChild(4307)]
+    const { termination } = terminationProbe()
+    const spawnProcess = vi.fn(() => children.shift()!)
+    const onStatusChange = vi.fn(() => { throw new Error('status storage is unavailable') })
+    let probes = 0
+    const supervisor = new OpenCodeSupervisor({
+      baseUrl: 'http://127.0.0.1:4096',
+      probe: async () => ++probes === 2,
+      spawnProcess: spawnProcess as never,
+      resolveProgram: () => '/opt/opencode',
+      termination,
+      readyTimeoutMs: 100,
+      restartBackoffMs: 0,
+      onStatusChange,
+    })
+    const consoleError = vi.spyOn(console, 'error').mockImplementation(() => {})
+
+    try {
+      await supervisor.start()
+      firstChild.emit('exit', 1)
+
+      await vi.waitFor(() => expect(supervisor.current).toMatchObject({
+        kind: 'degraded',
+        reason: 'OpenCode exited 3 times; giving up. Coding operations are unavailable.',
+      }), { timeout: 5_000 })
+
+      expect(spawnProcess).toHaveBeenCalledTimes(4)
+      expect(onStatusChange).toHaveBeenCalledTimes(4)
+      expect(onStatusChange).toHaveBeenLastCalledWith(supervisor.current)
+      await expect(supervisor.stop()).resolves.toBe(true)
+    } finally {
+      consoleError.mockRestore()
+    }
   })
 
   it('rejects a managed launch whose child has no process id', async () => {

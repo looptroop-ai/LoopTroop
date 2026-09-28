@@ -601,6 +601,26 @@ describe('OpenCode adapter transport orchestration', () => {
     expect(transport.dispatchPrompt).not.toHaveBeenCalled()
   })
 
+  it.each([
+    { stage: 'before waiting for the session', idleCalls: 0, failingRead: 1 },
+    { stage: 'after waiting for the session', idleCalls: 1, failingRead: 2 },
+  ])('fails closed when v2 history becomes unavailable $stage', async ({ stage, idleCalls, failingRead }) => {
+    let cursorReads = 0
+    const { transport } = createV2Transport({
+      readSessionLog: vi.fn(async (_sessionId, after) => {
+        if (after === undefined) return { events: [], cursor: 50, coverageComplete: false }
+        cursorReads += 1
+        if (cursorReads === failingRead) throw new Error('history backend unavailable')
+        return { events: [], cursor: after, coverageComplete: true }
+      }),
+    })
+
+    await expect(createAdapter(transport).promptSession('session-1', [{ type: 'text', content: 'prompt' }]))
+      .rejects.toThrow(`OpenCode v2 history is unavailable ${stage}: history backend unavailable`)
+    expect(transport.waitForIdle).toHaveBeenCalledTimes(idleCalls)
+    expect(transport.dispatchPrompt).not.toHaveBeenCalled()
+  })
+
   it('does not retry durable recovery after an automatic permission reply fails', async () => {
     const { transport, source } = createV2Transport({
       replyPermission: vi.fn(async () => { throw new Error('permission endpoint unavailable') }),
@@ -758,6 +778,16 @@ describe('OpenCode adapter transport orchestration', () => {
         name: 'OpenCodeSessionError',
         sessionError: 'SSE disconnected',
       })
+  })
+
+  it('fails an accepted v1 prompt when the event stream ends before its terminal event', async () => {
+    const transport = createV1Transport({
+      dispatchPrompt: vi.fn(async () => ({ kind: 'accepted' as const, receipt: { inboxID: 'inbox-own' } })),
+    })
+
+    await expect(createAdapter(transport).promptSession('session-1', [{ type: 'text', content: 'prompt' }]))
+      .rejects.toThrow('OpenCode event stream ended before the accepted prompt completed')
+    expect(transport.dispatchPrompt).toHaveBeenCalledTimes(1)
   })
 
   it('keeps streamed v1 text when echo recovery cannot read the message snapshot', async () => {
@@ -1183,6 +1213,33 @@ describe('OpenCode adapter transport orchestration', () => {
     await expect(prompt).rejects.toThrow('Another prompt entered the OpenCode session during result attribution')
   })
 
+  it('rejects a terminal snapshot when a newer user turn follows its assistant message', async () => {
+    let reads = 0
+    const { transport, source } = createV2Transport({
+      getSessionMessages: vi.fn(async () => {
+        reads += 1
+        if (reads === 1) return [message('old-assistant', 'stale answer')]
+        return [
+          message('own-assistant', 'answer from an earlier turn'),
+          { id: 'newer-user', role: 'user', content: 'a later prompt', parts: [] },
+        ]
+      }),
+      dispatchPrompt: vi.fn(async () => {
+        source.push(
+          inboxEvent('inbox_enqueued', 'inbox-own', 51),
+          executionEvent('execution_started', 52),
+          inboxEvent('inbox_delivered', 'inbox-own', 53),
+          executionEvent('execution_terminal', 54),
+        )
+        return { kind: 'accepted' as const, receipt: { inboxID: 'inbox-own' } }
+      }),
+    })
+
+    await expect(createAdapter(transport).promptSession('session-1', [{ type: 'text', content: 'prompt' }]))
+      .rejects.toThrow('OpenCode completed the accepted prompt but the newest assistant snapshot is stale')
+    expect(reads).toBe(2)
+  })
+
   it('replays the durable log after a recovered snapshot when SSE closed during that snapshot', async () => {
     let reads = 0
     let logReads = 0
@@ -1288,6 +1345,38 @@ describe('OpenCode adapter transport orchestration', () => {
 
     await expect(createAdapter(transport).promptSession('session-1', [{ type: 'text', content: 'prompt' }]))
       .rejects.toThrow('unaccounted durable sequence gap')
+  })
+
+  it.each([
+    {
+      failure: 'history read error',
+      expected: 'OpenCode v2 history is unavailable for accepted prompt recovery: history backend unavailable',
+    },
+    {
+      failure: 'incomplete history segment',
+      expected: 'OpenCode v2 history is incomplete; durable event sequences cannot certify accepted prompt completion',
+    },
+  ])('fails accepted-prompt recovery when durable history has a $failure', async ({ failure, expected }) => {
+    let dispatched = false
+    const { transport, source } = createV2Transport({
+      dispatchPrompt: vi.fn(async () => {
+        dispatched = true
+        source.fail(new Error('SSE disconnected'))
+        return { kind: 'accepted' as const, receipt: { inboxID: 'inbox-own' } }
+      }),
+      readSessionLog: vi.fn(async (_sessionId: string, after?: number) => {
+        if (after === undefined) return { events: [], cursor: 50, coverageComplete: false }
+        if (dispatched && failure === 'history read error') throw new Error('history backend unavailable')
+        if (dispatched && failure === 'incomplete history segment') {
+          return { events: [], cursor: after + 1, coverageComplete: true }
+        }
+        return { events: [], cursor: after, coverageComplete: true }
+      }),
+    })
+
+    await expect(createAdapter(transport).promptSession('session-1', [{ type: 'text', content: 'prompt' }]))
+      .rejects.toThrow(expected)
+    expect(transport.dispatchPrompt).toHaveBeenCalledTimes(1)
   })
 
   it('fails closed if an echo-refresh snapshot cannot be certified by durable replay', async () => {
@@ -1493,5 +1582,101 @@ describe('OpenCode adapter transport orchestration', () => {
       directory: '/worktree',
       answers: [['a']],
     }), expect.anything())
+
+    await adapter.listPendingQuestions(undefined, undefined, 'session-1')
+    await adapter.rejectQuestion('question-1', undefined, undefined, 'session-1')
+    expect(client.question.reject).toHaveBeenCalledWith(expect.objectContaining({
+      requestID: 'question-1',
+      directory: '/worktree',
+    }), expect.anything())
+  })
+
+  it('retries a transient snapshot read and remembers then clears question worktree ownership', async () => {
+    let dispatched = false
+    let recoveryReads = 0
+    const questions = [
+      [{ id: 'question-owner', sessionID: 'session-1', questions: [] }],
+      [{ id: 'question-cached', sessionID: 'session-1', questions: [] }],
+      [{ id: 'question-aborted', sessionID: 'session-1', questions: [] }],
+    ]
+    let questionListCalls = 0
+    const { transport, source } = createV2Transport({
+      getSessionMessages: vi.fn(async () => {
+        if (!dispatched) return [message('old-assistant', 'stale answer')]
+        recoveryReads += 1
+        if (recoveryReads === 1) throw new Error('temporary snapshot failure')
+        return [message('new-assistant', 'recovered answer')]
+      }),
+      listPendingQuestions: vi.fn(async () => questions[questionListCalls++] ?? []),
+      interruptSession: vi.fn(async () => { throw Object.assign(new Error('session was removed'), { statusCode: 404 }) }),
+      dispatchPrompt: vi.fn(async () => {
+        dispatched = true
+        source.push(
+          inboxEvent('inbox_enqueued', 'inbox-own', 51),
+          executionEvent('execution_started', 52),
+          inboxEvent('inbox_delivered', 'inbox-own', 53),
+          executionEvent('execution_terminal', 54),
+        )
+        return { kind: 'accepted' as const, receipt: { inboxID: 'inbox-own' } }
+      }),
+    })
+    const adapter = createAdapter(transport)
+
+    await expect(adapter.promptSession('session-1', [{ type: 'text', content: 'prompt' }]))
+      .resolves.toBe('recovered answer')
+    expect(recoveryReads).toBe(2)
+
+    await adapter.listPendingQuestions('/worktree')
+    await adapter.replyQuestion('question-owner', [['approved']])
+    await adapter.listPendingQuestions(undefined, undefined, 'session-1')
+    await adapter.rejectQuestion('question-cached')
+    await adapter.listPendingQuestions('/worktree')
+
+    await expect(adapter.abortSession('session-1')).resolves.toBe(true)
+    await expect(adapter.replyQuestion('question-aborted', [['approved']]))
+      .rejects.toThrow('has no trusted session directory')
+
+    expect(transport.getSession).toHaveBeenCalledWith('session-1', undefined)
+    expect(transport.replyQuestion).toHaveBeenCalledWith('session-1', 'question-owner', [['approved']], '/worktree', undefined)
+    expect(transport.rejectQuestion).toHaveBeenCalledWith('session-1', 'question-cached', '/worktree', undefined)
+    expect(transport.interruptSession).toHaveBeenCalledWith('session-1', '/worktree')
+  })
+
+  it('wraps session creation errors and uses the cached worktree directory for cleanup', async () => {
+    const failure = new Error('session-scoped permissions are unsupported')
+    const failingAdapter = createAdapter(createV2Transport({
+      createSession: vi.fn(async () => { throw failure }),
+    }).transport)
+
+    await expect(failingAdapter.createSession('/workspace')).rejects.toThrow(
+      'Failed to create OpenCode session: session-scoped permissions are unsupported',
+    )
+    await expect(failingAdapter.createSession('/workspace', undefined, {
+      permission: [{ permission: 'read', pattern: '*', action: 'allow' }],
+    })).rejects.toThrow(/allow-all permissions.*Upgrade OpenCode/s)
+
+    const session = { id: 'created-session', directory: '/trusted/worktree' }
+    const { transport } = createV2Transport({
+      createSession: vi.fn(async () => session),
+      interruptSession: vi.fn(async () => true),
+    })
+    const adapter = createAdapter(transport)
+    await expect(adapter.createSession('/workspace')).resolves.toEqual(session)
+    await expect(adapter.abortSession(session.id)).resolves.toBe(true)
+    expect(transport.interruptSession).toHaveBeenCalledWith(session.id, '/trusted/worktree')
+  })
+
+  it('rejects an already-aborted call while transport initialization is pending', async () => {
+    let resolveInitialization: ((transport: OpenCodeTransport) => void) | undefined
+    const initialization = new Promise<OpenCodeTransport>(resolve => { resolveInitialization = resolve })
+    const resolver = vi.fn(() => initialization)
+    const adapter = new OpenCodeSDKAdapter('http://127.0.0.1:4096', undefined, resolver)
+    const cancelled = new AbortController()
+    cancelled.abort()
+
+    await expect(adapter.listSessions(cancelled.signal)).rejects.toMatchObject({ name: 'AbortError' })
+
+    resolveInitialization?.(createV2Transport().transport)
+    expect(resolver).toHaveBeenCalledTimes(1)
   })
 })

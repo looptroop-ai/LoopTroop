@@ -31,7 +31,7 @@ vi.mock('../runOpenCodePrompt', () => ({
 }))
 
 import { handleBeadsRefine } from '../phases/beadsPhase'
-import { handleBeadsExpansion, handleCoverageVerification } from '../phases/verificationPhase'
+import { handleBeadsExpansion, handleCoverageVerification, performCoverageExtraFix } from '../phases/verificationPhase'
 
 const repoManager = createTestRepoManager('beads-refine')
 
@@ -469,6 +469,80 @@ describe('handleBeadsRefine', () => {
     await expect(handleBeadsRefine(ticket.id, context, sendEvent, new AbortController().signal))
       .rejects.toThrow('could not be parsed')
     expect(refineDraftMock).not.toHaveBeenCalled()
+  })
+
+  it('keeps an unchanged blueprint when the refinement introduces no semantic changes', async () => {
+    const { ticket, context, paths } = await createInitializedTestTicket(repoManager, {
+      title: 'Keep an unchanged beads blueprint',
+    })
+    const sendEvent = vi.fn()
+    const winnerId = TEST.councilMembers[0]
+    const winnerDraftContent = buildBeadSubsetContent()
+
+    phaseIntermediate.set(`${ticket.id}:beads`, {
+      phase: 'beads',
+      worktreePath: paths.worktreePath,
+      winnerId,
+      drafts: [{ memberId: winnerId, outcome: 'completed', content: winnerDraftContent, duration: 1 }],
+      memberOutcomes: { [winnerId]: 'completed' },
+      contextBuilder: () => [],
+    })
+    refineDraftMock.mockImplementationOnce(async (
+      _adapter: unknown,
+      _winnerDraft: unknown,
+      _losingDrafts: unknown,
+      _contextParts: unknown,
+      _projectPath: unknown,
+      _timeoutMs: unknown,
+      _signal: unknown,
+      _onOpenCodeSessionLog: unknown,
+      _onOpenCodeStreamEvent: unknown,
+      _onOpenCodePromptDispatched: unknown,
+      _sessionOwnership: unknown,
+      _buildPrompt: unknown,
+      validateResponse?: (content: string) => { normalizedContent?: string },
+    ) => ({
+      content: validateResponse?.(winnerDraftContent).normalizedContent ?? winnerDraftContent,
+      rawAttempts: [],
+    }))
+
+    await handleBeadsRefine(ticket.id, context, sendEvent, new AbortController().signal)
+
+    expect(getLatestPhaseArtifact(ticket.id, 'ui_refinement_diff:beads', 'REFINING_BEADS')).toBeDefined()
+    const refinedArtifact = JSON.parse(getLatestPhaseArtifact(ticket.id, 'beads_refined', 'REFINING_BEADS')!.content) as {
+      winnerId: string
+      refinedContent: string
+    }
+    expect(refinedArtifact.winnerId).toBe(winnerId)
+    expect(refinedArtifact.refinedContent).toContain('Validate refinement attribution')
+    expect(phaseIntermediate.get(`${ticket.id}:beads`)).toBeUndefined()
+    expect(sendEvent).toHaveBeenCalledWith({ type: 'REFINED' })
+  })
+
+  it('logs and preserves state when the refinement service fails', async () => {
+    const { ticket, context, paths } = await createInitializedTestTicket(repoManager, {
+      title: 'Recover a failed beads refinement',
+    })
+    const sendEvent = vi.fn()
+    const winnerId = TEST.councilMembers[0]
+
+    phaseIntermediate.set(`${ticket.id}:beads`, {
+      phase: 'beads',
+      worktreePath: paths.worktreePath,
+      winnerId,
+      drafts: [{ memberId: winnerId, outcome: 'completed', content: buildBeadSubsetContent(), duration: 1 }],
+      memberOutcomes: { [winnerId]: 'completed' },
+      contextBuilder: () => [],
+    })
+    refineDraftMock.mockRejectedValueOnce(new Error('council service unavailable'))
+
+    await expect(handleBeadsRefine(ticket.id, context, sendEvent, new AbortController().signal))
+      .rejects.toThrow('council service unavailable')
+
+    expect(readFileSync(paths.executionLogPath, 'utf-8')).toContain('Substep blueprint_refine failed: council service unavailable')
+    expect(phaseIntermediate.get(`${ticket.id}:beads`)).toBeDefined()
+    expect(getLatestPhaseArtifact(ticket.id, 'beads_refined', 'REFINING_BEADS')).toBeUndefined()
+    expect(sendEvent).not.toHaveBeenCalled()
   })
 
   it('runs terminal bead expansion only after beads coverage becomes clean', async () => {
@@ -1028,6 +1102,77 @@ describe('handleBeadsRefine', () => {
     expect(storedTicket?.runtime.totalBeads).toBe(2)
     expect(storedTicket?.runtime.currentBead).toBe(1)
     expect(storedTicket?.runtime.percentComplete).toBe(0)
+  })
+
+  it('runs a beads coverage extra fix, re-audits the candidate, and expands it before approval', async () => {
+    const { ticket, context, paths } = await createInitializedTestTicket(repoManager, {
+      title: 'Apply a beads coverage extra fix',
+      description: 'Revise the semantic plan and persist an audited, executable result.',
+    })
+    const winnerId = TEST.councilMembers[0]
+    const coverageGap = 'Add a semantic bead that makes unresolved coverage visible during approval.'
+    const initialBlueprint = buildBeadSubsetContent()
+    writeFileSync(resolve(paths.ticketDir, 'prd.yaml'), buildPrdContent(), 'utf-8')
+    insertPhaseArtifact(ticket.id, {
+      phase: 'REFINING_BEADS',
+      artifactType: 'beads_winner',
+      content: JSON.stringify({ winnerId }),
+    })
+    insertPhaseArtifact(ticket.id, {
+      phase: 'REFINING_BEADS',
+      artifactType: 'beads_refined',
+      content: JSON.stringify({ winnerId, refinedContent: initialBlueprint }),
+    })
+    insertPhaseArtifact(ticket.id, {
+      phase: 'VERIFYING_BEADS_COVERAGE',
+      artifactType: 'beads_coverage',
+      content: JSON.stringify({
+        winnerId,
+        status: 'gaps',
+        gaps: [coverageGap],
+        coverageRunNumber: 1,
+        maxCoveragePasses: 3,
+        finalCandidateVersion: 1,
+      }),
+    })
+    runOpenCodePromptMock
+      .mockResolvedValueOnce({
+        session: { id: 'beads-extra-fix-revision', projectPath: paths.worktreePath },
+        response: buildValidBeadsCoverageRevisionOutput(coverageGap),
+        messages: [],
+      })
+      .mockResolvedValueOnce({
+        session: { id: 'beads-extra-fix-audit', projectPath: paths.worktreePath },
+        response: ['status: clean', 'gaps: []', 'follow_up_questions: []'].join('\n'),
+        messages: [],
+      })
+      .mockResolvedValueOnce({
+        session: { id: 'beads-extra-fix-expansion', projectPath: paths.worktreePath },
+        response: buildValidExpansionOutput(),
+        messages: [],
+      })
+
+    await expect(performCoverageExtraFix({
+      ticketId: ticket.id,
+      context,
+      domain: 'beads',
+      signal: new AbortController().signal,
+    })).resolves.toMatchObject({
+      domain: 'beads',
+      status: 'clean',
+      remainingGaps: [],
+      extraFixNumber: 1,
+      changed: true,
+    })
+
+    expect(runOpenCodePromptMock).toHaveBeenCalledTimes(3)
+    expect(JSON.parse(getLatestPhaseArtifact(ticket.id, 'beads_coverage_revision', 'WAITING_BEADS_APPROVAL')!.content))
+      .toMatchObject({ winnerId: TEST.implementer, candidateVersion: 2, source: 'ai_fix_button', extraFixNumber: 1 })
+    expect(JSON.parse(getLatestPhaseArtifact(ticket.id, 'beads_coverage', 'WAITING_BEADS_APPROVAL')!.content))
+      .toMatchObject({ status: 'clean', finalCandidateVersion: 2, remainingGaps: [] })
+    expect(JSON.parse(getLatestPhaseArtifact(ticket.id, 'beads_expanded', 'WAITING_BEADS_APPROVAL')!.content))
+      .toMatchObject({ candidateVersion: 2, expandedContent: expect.stringContaining('proj-1-render-coverage-warning-state') })
+    expect(readPersistedBeads(paths.beadsPath)).toHaveLength(2)
   })
 })
 

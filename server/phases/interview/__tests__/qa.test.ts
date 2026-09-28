@@ -25,6 +25,8 @@ class SequencedMockOpenCodeAdapter extends MockOpenCodeAdapter {
 describe.concurrent('PROM4 interview session parsing', () => {
   it('frames compiled questions as the working checklist in the initial PROM4 prompt', async () => {
     const adapter = new SequencedMockOpenCodeAdapter()
+    const streamedEvents: unknown[] = []
+    const dispatchedPrompts: unknown[] = []
     adapter.mockResponses.set('mock-session-1', [
       '<INTERVIEW_BATCH>',
       'batch_number: 1',
@@ -61,6 +63,9 @@ describe.concurrent('PROM4 interview session parsing', () => {
       },
       5,
       20,
+      undefined,
+      (entry) => streamedEvents.push(entry),
+      (entry) => dispatchedPrompts.push(entry),
     )
 
     const messages = adapter.messages.get('mock-session-1') ?? []
@@ -70,6 +75,11 @@ describe.concurrent('PROM4 interview session parsing', () => {
     expect(firstPrompt).toContain('Treat the compiled questions above as your working interview checklist')
     expect((firstPrompt.match(/## Compiled Questions \(from council\)/g) ?? [])).toHaveLength(1)
     expect(firstPrompt).not.toContain('### interview')
+    expect(streamedEvents).toContainEqual(expect.objectContaining({
+      sessionId: 'mock-session-1',
+      event: expect.objectContaining({ type: 'text' }),
+    }))
+    expect(dispatchedPrompts).toContainEqual(expect.objectContaining({ sessionId: 'mock-session-1' }))
   })
 
   it('retries invalid structured output in the same session and returns the corrected batch', async () => {
@@ -89,6 +99,12 @@ describe.concurrent('PROM4 interview session parsing', () => {
       '    phase: Foundation',
       '    priority: critical',
       '    rationale: Establish the core goal.',
+      '    answer_type: single_choice',
+      '    options:',
+      '      - id: reliability',
+      '        label: Reliability',
+      '      - id: speed',
+      '        label: Speed',
       '</INTERVIEW_BATCH>',
     ].join('\n'))
 
@@ -123,6 +139,11 @@ describe.concurrent('PROM4 interview session parsing', () => {
           question: 'What problem are we solving?',
           phase: 'Foundation',
           priority: 'critical',
+          answerType: 'single_choice',
+          options: [
+            { id: 'reliability', label: 'Reliability' },
+            { id: 'speed', label: 'Speed' },
+          ],
         },
       ],
     })
@@ -131,6 +152,332 @@ describe.concurrent('PROM4 interview session parsing', () => {
     expect(messages.some((message) => typeof message.content === 'string' && message.content.includes('Structured Output Retry'))).toBe(true)
     expect(adapter.promptCalls[0]?.options?.permission).toEqual(SILENT_READ_ONLY_PERMISSIONS)
     expect(adapter.promptCalls[1]?.options?.permission).toEqual(SILENT_READ_ONLY_PERMISSIONS)
+  })
+
+  it('returns a complete PROM4 artifact as a completed batch', async () => {
+    const adapter = new MockOpenCodeAdapter()
+    adapter.mockResponses.set('existing-session', [
+      '<INTERVIEW_COMPLETE>',
+      '```yaml',
+      'interview:',
+      '  schema_version: 1',
+      '  artifact: interview',
+      '  questions:',
+      '    - id: Q01',
+      '      prompt: What problem are we solving?',
+      '  approval:',
+      '    approved_by: ""',
+      '    approved_at: ""',
+      '```',
+      '</INTERVIEW_COMPLETE>',
+    ].join('\n'))
+
+    const result = await submitBatchToSession(adapter, 'existing-session', { Q01: 'Reliable output' })
+
+    expect(result).toMatchObject({
+      questions: [],
+      progress: { current: 0, total: 0 },
+      isComplete: true,
+      isFinalFreeForm: false,
+      aiCommentary: 'Interview complete.',
+      batchNumber: -1,
+    })
+    expect(result.finalYaml).toContain('schema_version: 1')
+    expect(result.finalYaml).toContain('artifact: interview')
+  })
+
+  it('resumes from skipped, current, and pending interview questions', async () => {
+    const adapter = new MockOpenCodeAdapter()
+    const nextBatchResponse = [
+      '<INTERVIEW_BATCH>',
+      'batch_number: 3',
+      'progress:',
+      '  current: 2',
+      '  total: 3',
+      'is_final_free_form: false',
+      'ai_commentary: Continue with the remaining implementation question.',
+      'questions:',
+      '  - id: Q03',
+      '    question: How should success be measured?',
+      '    phase: Assembly',
+      '    priority: high',
+      '    rationale: Define an observable outcome.',
+      '</INTERVIEW_BATCH>',
+    ].join('\n')
+    adapter.mockResponses.set('mock-session-1', nextBatchResponse)
+
+    const baseSnapshot = createInterviewSessionSnapshot({
+      winnerId: 'model-a',
+      compiledQuestions: [
+        { id: 'Q01', phase: 'Foundation', question: 'What outcome matters most?' },
+        { id: 'Q02', phase: 'Structure', question: 'Which users need support first?' },
+        { id: 'Q03', phase: 'Assembly', question: 'How should success be measured?' },
+      ],
+      maxInitialQuestions: 3,
+      followUpBudgetPercent: 20,
+    })
+    const firstBatch = buildPersistedBatch({
+      questions: [{ id: 'Q01', question: 'What outcome matters most?', phase: 'Foundation' }],
+      progress: { current: 1, total: 3 },
+      isComplete: false,
+      isFinalFreeForm: false,
+      aiCommentary: 'Start with the core outcome.',
+      batchNumber: 1,
+    }, 'prom4', baseSnapshot)
+    const afterSkip = recordBatchAnswers(recordPreparedBatch(baseSnapshot, firstBatch), { Q01: '' })
+    const currentBatch = buildPersistedBatch({
+      questions: [{ id: 'Q02', question: 'Which users need support first?', phase: 'Structure' }],
+      progress: { current: 2, total: 3 },
+      isComplete: false,
+      isFinalFreeForm: false,
+      aiCommentary: 'Continue with user scope.',
+      batchNumber: 2,
+    }, 'prom4', afterSkip)
+    const resumeSnapshot = recordPreparedBatch(afterSkip, currentBatch)
+
+    await startInterviewSession(
+      adapter,
+      '/tmp/test',
+      'model-a',
+      '',
+      {
+        ticketId: TEST.externalId,
+        title: 'Resume mixed question states',
+        description: 'Keep skipped and unanswered questions visible after a restart.',
+        relevantFiles: '',
+      },
+      3,
+      20,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      resumeSnapshot,
+    )
+
+    const resumePrompt = adapter.messages.get('mock-session-1')?.find((message) => message.role === 'user')?.content ?? ''
+    expect(resumePrompt).toContain('Answered or skipped questions:\n- Q01 (skipped) [Foundation]: [SKIPPED]')
+    expect(resumePrompt).toContain('Pending questions:\n- Q02 (pending) [Structure]: Which users need support first?')
+    expect(resumePrompt).toContain('- Q03 (pending) [Assembly]: How should success be measured?')
+
+    adapter.mockResponses.set('mock-session-2', nextBatchResponse)
+    await startInterviewSession(
+      adapter,
+      '/tmp/test',
+      'model-a',
+      '',
+      {
+        ticketId: TEST.externalId,
+        title: 'Resume interview with no submitted answers',
+        description: 'Keep the unanswered checklist visible after a restart.',
+        relevantFiles: '',
+      },
+      3,
+      20,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      baseSnapshot,
+    )
+    const emptyHistoryPrompt = adapter.messages.get('mock-session-2')?.find((message) => message.role === 'user')?.content ?? ''
+    expect(emptyHistoryPrompt).toContain('Answered or skipped questions:\n[none]')
+  })
+
+  it('fails an empty response when no restart snapshot is available', async () => {
+    const adapter = new MockOpenCodeAdapter()
+    adapter.mockResponses.set('existing-session', '')
+
+    await expect(submitBatchToSession(adapter, 'existing-session', { Q01: '  ' }))
+      .rejects.toThrow('PROM4 output failed validation without a recoverable session')
+    expect(adapter.promptCalls).toHaveLength(1)
+    expect(adapter.messages.get('existing-session')?.find((message) => message.role === 'user')?.content)
+      .toContain('Q01: [SKIPPED]')
+  })
+
+  it('aborts the active session when submitting answers fails', async () => {
+    class FailingPromptAdapter extends MockOpenCodeAdapter {
+      readonly abortedSessions: string[] = []
+
+      override async promptSession(..._args: Parameters<MockOpenCodeAdapter['promptSession']>): Promise<string> {
+        throw new Error('Follow-up prompt failed')
+      }
+
+      override async abortSession(sessionId: string): Promise<boolean> {
+        this.abortedSessions.push(sessionId)
+        return true
+      }
+    }
+
+    const adapter = new FailingPromptAdapter()
+
+    await expect(submitBatchToSession(adapter, 'existing-session', { Q01: 'Reliable output' }))
+      .rejects.toThrow('Follow-up prompt failed')
+    expect(adapter.abortedSessions).toEqual(['existing-session'])
+  })
+
+  it('surfaces transport errors while retrying structured interview output', async () => {
+    class FailingRetryAdapter extends SequencedMockOpenCodeAdapter {
+      override async promptSession(...args: Parameters<MockOpenCodeAdapter['promptSession']>): Promise<string> {
+        if (this.promptCalls.length > 0) throw new Error('Structured retry prompt failed')
+        return await super.promptSession(...args)
+      }
+    }
+
+    const adapter = new FailingRetryAdapter()
+    adapter.mockResponses.set('existing-session', 'I will ask some useful questions.')
+
+    await expect(submitBatchToSession(adapter, 'existing-session', { Q01: 'Reliable output' }))
+      .rejects.toThrow('Structured retry prompt failed')
+    expect(adapter.promptCalls).toHaveLength(1)
+  })
+
+  it('reports structured validation exhaustion after the configured retries', async () => {
+    const adapter = new SequencedMockOpenCodeAdapter()
+    adapter.mockResponses.set('existing-session#1', 'I will ask some questions now.')
+    adapter.mockResponses.set('existing-session#2', 'Here are some unstructured questions.')
+
+    await expect(submitBatchToSession(
+      adapter,
+      'existing-session',
+      { Q01: 'Reliable output' },
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      1,
+    )).rejects.toThrow('PROM4 output failed validation after 1 structured retry attempt(s)')
+    expect(adapter.promptCalls).toHaveLength(2)
+  })
+
+  it('keeps a session error visible when abort cannot be confirmed', async () => {
+    class UnconfirmedAbortAdapter extends MockOpenCodeAdapter {
+      override async abortSession(_sessionId: string): Promise<boolean> {
+        return false
+      }
+    }
+
+    const adapter = new UnconfirmedAbortAdapter()
+    adapter.mockResponses.set('mock-session-1', 'This is not a structured interview response.')
+
+    await expect(startInterviewSession(
+      adapter,
+      '/tmp/test',
+      'model-a',
+      'questions: []',
+      {
+        ticketId: TEST.externalId,
+        title: 'Unconfirmed session cleanup',
+        description: 'Do not hide validation failure if the session remains active.',
+        relevantFiles: '',
+      },
+      3,
+      20,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      0,
+    )).rejects.toThrow('Could not confirm abort of OpenCode session mock-session-1')
+  })
+
+  it('stops an initial session when prompt dispatch fails', async () => {
+    class FailingPromptAdapter extends MockOpenCodeAdapter {
+      readonly abortedSessions: string[] = []
+
+      override async promptSession(..._args: Parameters<MockOpenCodeAdapter['promptSession']>): Promise<string> {
+        throw new Error('Initial interview prompt failed')
+      }
+
+      override async abortSession(sessionId: string): Promise<boolean> {
+        this.abortedSessions.push(sessionId)
+        return true
+      }
+    }
+
+    const adapter = new FailingPromptAdapter()
+
+    await expect(startInterviewSession(
+      adapter,
+      '/tmp/test',
+      'model-a',
+      'questions: []',
+      {
+        ticketId: TEST.externalId,
+        title: 'Clean up failed initial prompt',
+        description: 'Stop a created session when its first prompt cannot complete.',
+        relevantFiles: '',
+      },
+      3,
+      20,
+    )).rejects.toThrow('Initial interview prompt failed')
+    expect(adapter.abortedSessions).toContain('mock-session-1')
+  })
+
+  it('propagates invalid initial output after successful session cleanup', async () => {
+    const adapter = new MockOpenCodeAdapter()
+    adapter.mockResponses.set('mock-session-1', 'No structured interview artifact was returned.')
+
+    await expect(startInterviewSession(
+      adapter,
+      '/tmp/test',
+      'model-a',
+      'questions: []',
+      {
+        ticketId: TEST.externalId,
+        title: 'Clean up invalid initial output',
+        description: 'Stop the session before reporting exhausted validation retries.',
+        relevantFiles: '',
+      },
+      3,
+      20,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      0,
+    )).rejects.toThrow('PROM4 output failed validation after 0 structured retry attempt(s)')
+  })
+
+  it('fails closed when aborting an invalid initial session throws', async () => {
+    class FailingAbortAdapter extends MockOpenCodeAdapter {
+      override async abortSession(_sessionId: string): Promise<boolean> {
+        throw new Error('Remote abort unavailable')
+      }
+    }
+
+    const adapter = new FailingAbortAdapter()
+    adapter.mockResponses.set('mock-session-1', 'No structured interview artifact was returned.')
+
+    await expect(startInterviewSession(
+      adapter,
+      '/tmp/test',
+      'model-a',
+      'questions: []',
+      {
+        ticketId: TEST.externalId,
+        title: 'Fail closed on abort error',
+        description: 'Do not report a recoverable parse error with a live remote session.',
+        relevantFiles: '',
+      },
+      3,
+      20,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      0,
+    )).rejects.toThrow('Could not confirm abort of OpenCode session mock-session-1')
   })
 
   it('restarts the initial PROM4 session after an empty response', async () => {

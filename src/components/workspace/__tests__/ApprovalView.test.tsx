@@ -988,10 +988,13 @@ describe('Read-only approval attempts', () => {
   })
 
   it('says the PRD request failed instead of drawing an empty artifact', async () => {
+    let prdReads = 0
     vi.spyOn(globalThis, 'fetch').mockImplementation((input) => {
       const url = String(input)
       if (url.endsWith('/attempts')) return createJsonResponse([])
       if (url === `/api/files/${encodeURIComponent(TEST.ticketId)}/prd`) {
+        prdReads += 1
+        if (prdReads > 1) return createJsonResponse({ content: '# Recovered PRD' })
         return Promise.resolve(new Response(JSON.stringify({ error: 'Artifact store unavailable' }), {
           status: 503,
           headers: { 'Content-Type': 'application/json' },
@@ -1007,6 +1010,10 @@ describe('Read-only approval attempts', () => {
     expect(await screen.findByText('This artifact could not be loaded.')).toBeInTheDocument()
     expect(screen.getByText('Failed to load PRD (HTTP 503: Artifact store unavailable)')).toBeInTheDocument()
     expect(screen.queryByText('No PRD artifact available.')).not.toBeInTheDocument()
+
+    fireEvent.click(screen.getByRole('button', { name: 'Retry' }))
+    await waitFor(() => expect(prdReads).toBe(2))
+    expect(screen.queryByText('This artifact could not be loaded.')).not.toBeInTheDocument()
   })
 })
 
@@ -1074,12 +1081,13 @@ describe('Approval surfaces on a failed request', () => {
     // Coverage gaps live in the artifacts. A failed request made the warning
     // absent, which reads exactly like "no gaps" — so the button said "Approve"
     // and the operator approved without the question having been answered.
+    const refetchArtifacts = vi.fn()
     mockUseTicketArtifacts.mockReturnValue({
       artifacts: undefined,
       isLoading: false,
       isError: true,
       error: new Error('Failed to load ticket artifacts (HTTP 503: busy)'),
-      refetch: vi.fn(),
+      refetch: refetchArtifacts,
     })
     vi.spyOn(globalThis, 'fetch').mockImplementation((input) => {
       const url = String(input)
@@ -1104,6 +1112,9 @@ describe('Approval surfaces on a failed request', () => {
     await waitFor(() => expect(screen.queryByText('No beads artifact available yet.')).not.toBeInTheDocument())
     await waitFor(() => expect(screen.queryByText('Loading beads…')).not.toBeInTheDocument())
     expect(screen.getByRole('button', { name: /^Approve/ })).toBeDisabled()
+
+    fireEvent.click(screen.getByRole('button', { name: 'Retry' }))
+    expect(refetchArtifacts).toHaveBeenCalledTimes(1)
   })
   /**
    * A tracker with a line nobody could read.
@@ -1594,5 +1605,333 @@ describe('Approval surfaces on a failed request', () => {
         expect(String((put![1] as RequestInit).body)).toContain('Draft from H1')
       })
     })
+  })
+})
+
+describe('additional beads approval paths', () => {
+  beforeEach(() => {
+    mockUseInterviewQuestions.mockReset().mockReturnValue({ data: undefined, isLoading: false })
+    mockUseTicketUIState.mockReset().mockReturnValue({
+      isSuccess: true,
+      data: { scope: 'approval_beads', exists: false, data: null, updatedAt: null },
+    })
+    mockSaveUiState.mockReset()
+    mockClearTicketArtifactsCache.mockReset()
+    mockUseTicketArtifacts.mockReset().mockReturnValue({ artifacts: [], isLoading: false })
+  })
+
+  afterEach(() => {
+    cleanup()
+    vi.restoreAllMocks()
+  })
+
+  it('validates JSONL rows before sending a beads save', async () => {
+    const raw = '{"id":"B-1","title":"Original","status":"pending"}\n'
+    const contentSha256 = 'j'.repeat(64)
+    mockUseTicketUIState.mockReturnValue({
+      isSuccess: true,
+      data: {
+        scope: 'approval_beads',
+        exists: true,
+        data: { isEditMode: true, editTab: 'jsonl', jsonlDraft: raw, contentSha256 },
+        updatedAt: TEST.timestamp,
+      },
+    })
+    const fetchSpy = vi.spyOn(globalThis, 'fetch').mockImplementation((input) => {
+      const url = String(input)
+      if (url.endsWith('/beads/raw')) {
+        return createBeadsRawResponse([{ id: 'B-1', title: 'Original', status: 'pending' }], {
+          content: raw,
+          contentSha256,
+        })
+      }
+      if (url.endsWith('/artifacts') || url.endsWith('/attempts')) return createJsonResponse([])
+      throw new Error(`Unexpected fetch: ${url}`)
+    })
+
+    renderApprovalView(makeTicket({ status: 'WAITING_BEADS_APPROVAL' }), 'beads')
+
+    const editor = await screen.findByLabelText('YAML editor')
+    fireEvent.change(editor, { target: { value: '[]\n' } })
+    fireEvent.click(screen.getByRole('button', { name: /^Save$/ }))
+    expect(await screen.findByRole('alert')).toHaveTextContent('Line 1: expected a JSON object, got array')
+
+    fireEvent.change(editor, { target: { value: '\n{"title":"Missing id","status":"pending"}\n' } })
+    fireEvent.click(screen.getByRole('button', { name: /^Save$/ }))
+    expect(await screen.findByRole('alert')).toHaveTextContent('Line 2: every bead needs a non-empty "id"')
+    expect(fetchSpy.mock.calls.some(([, init]) => (init as RequestInit | undefined)?.method === 'PUT')).toBe(false)
+  })
+
+  it('saves structured edits while retaining dependency metadata and canonical fields', async () => {
+    const initialBead = {
+      id: 'B-1',
+      title: 'Original title',
+      status: 'pending',
+      acceptanceCriteria: ['Canonical criterion'],
+      acceptance_criteria: ['Old alias'],
+      prdRefs: ['PRD-1'],
+      prd_refs: ['OLD-PRD-1'],
+      contextGuidance: { patterns: ['preserve pattern'], anti_patterns: ['preserve caution'] },
+      dependencies: { blocked_by: [], blocks: [], custom_policy: 'preserve this metadata' },
+      testCommands: [],
+      testCommandReason: 'Reviewed manually.',
+    }
+    let storedBeads: unknown[] = [initialBead]
+    let submittedBeads: Array<Record<string, unknown>> = []
+    const fetchSpy = vi.spyOn(globalThis, 'fetch').mockImplementation((input, init) => {
+      const url = String(input)
+      if (url.endsWith('/beads/raw')) {
+        return createBeadsRawResponse(storedBeads, { contentSha256: 'structured-hash' })
+      }
+      if (url.endsWith('/artifacts') || url.endsWith('/attempts')) return createJsonResponse([])
+      if (url.endsWith('/beads') && init?.method === 'PUT') {
+        const body = JSON.parse(String(init.body)) as { beads: Array<Record<string, unknown>> }
+        submittedBeads = body.beads
+        storedBeads = body.beads
+        return createBeadsSaveResponse(storedBeads)
+      }
+      throw new Error(`Unexpected fetch: ${url}`)
+    })
+
+    renderApprovalView(makeTicket({ status: 'WAITING_BEADS_APPROVAL' }), 'beads')
+
+    const editButton = await screen.findByRole('button', { name: 'Edit' })
+    await waitFor(() => expect(editButton).toBeEnabled())
+    fireEvent.click(editButton)
+    fireEvent.click(screen.getByRole('button', { name: /Original title/ }))
+    fireEvent.change(screen.getByLabelText('Title'), { target: { value: 'Updated title' } })
+    fireEvent.click(screen.getByRole('button', { name: /^Save$/ }))
+
+    await waitFor(() => expect(submittedBeads).toHaveLength(1))
+    expect(submittedBeads[0]).toMatchObject({
+      id: 'B-1',
+      title: 'Updated title',
+      acceptanceCriteria: ['Canonical criterion'],
+      prdRefs: ['PRD-1'],
+      contextGuidance: { patterns: ['preserve pattern'], anti_patterns: ['preserve caution'] },
+      dependencies: { blocked_by: [], blocks: [], custom_policy: 'preserve this metadata' },
+    })
+    expect(submittedBeads[0]).not.toHaveProperty('acceptance_criteria')
+    expect(submittedBeads[0]).not.toHaveProperty('prd_refs')
+    await waitFor(() => expect(screen.getByRole('button', { name: 'Edit' })).toBeInTheDocument())
+    expect(fetchSpy.mock.calls.some(([, init]) => (init as RequestInit | undefined)?.method === 'PUT')).toBe(true)
+  })
+
+  it('keeps the editor open when a beads save omits its canonical response', async () => {
+    const raw = '{"id":"B-1","title":"Original","status":"pending"}\n'
+    const contentSha256 = 'm'.repeat(64)
+    mockUseTicketUIState.mockReturnValue({
+      isSuccess: true,
+      data: {
+        scope: 'approval_beads',
+        exists: true,
+        data: {
+          isEditMode: true,
+          editTab: 'jsonl',
+          jsonlDraft: '{"id":"B-1","title":"Changed","status":"pending"}\n',
+          contentSha256,
+        },
+        updatedAt: TEST.timestamp,
+      },
+    })
+    const fetchSpy = vi.spyOn(globalThis, 'fetch').mockImplementation((input, init) => {
+      const url = String(input)
+      if (url.endsWith('/beads/raw')) {
+        return createBeadsRawResponse([{ id: 'B-1', title: 'Original', status: 'pending' }], { content: raw, contentSha256 })
+      }
+      if (url.endsWith('/artifacts') || url.endsWith('/attempts')) return createJsonResponse([])
+      if (url.endsWith('/beads') && init?.method === 'PUT') return createJsonResponse({ success: true })
+      throw new Error(`Unexpected fetch: ${url}`)
+    })
+
+    renderApprovalView(makeTicket({ status: 'WAITING_BEADS_APPROVAL' }), 'beads')
+
+    expect(await screen.findByLabelText('YAML editor')).toHaveValue('{"id":"B-1","title":"Changed","status":"pending"}\n')
+    fireEvent.click(screen.getByRole('button', { name: /^Save$/ }))
+
+    expect(await screen.findByRole('alert')).toHaveTextContent(
+      'Save succeeded but did not return canonical bead content; reload to verify the saved tracker.',
+    )
+    expect(screen.getByLabelText('YAML editor')).toBeInTheDocument()
+    expect(fetchSpy.mock.calls.some(([, init]) => (init as RequestInit | undefined)?.method === 'PUT')).toBe(true)
+  })
+
+  it('recovers from initial and refresh beads read failures with Retry', async () => {
+    let beadsReads = 0
+    vi.spyOn(globalThis, 'fetch').mockImplementation((input) => {
+      const url = String(input)
+      if (url.endsWith('/beads/raw')) {
+        beadsReads += 1
+        if (beadsReads === 1 || beadsReads === 3) {
+          return Promise.resolve(new Response(JSON.stringify({ error: 'Temporary beads read failure.' }), {
+            status: 503,
+            headers: { 'Content-Type': 'application/json' },
+          }))
+        }
+        return createBeadsRawResponse([{
+          id: `B-${beadsReads}`,
+          title: `Beads loaded on read ${beadsReads}`,
+          status: 'pending',
+          testCommandReason: 'Reviewed manually.',
+        }], { contentSha256: `read-${beadsReads}` })
+      }
+      if (url.endsWith('/artifacts') || url.endsWith('/attempts')) return createJsonResponse([])
+      throw new Error(`Unexpected fetch: ${url}`)
+    })
+    const { queryClient } = renderApprovalView(makeTicket({ status: 'WAITING_BEADS_APPROVAL' }), 'beads')
+
+    expect(await screen.findByText('The beads artifact could not be loaded.')).toBeInTheDocument()
+    fireEvent.click(screen.getByRole('button', { name: 'Retry' }))
+    expect(await screen.findByText('Beads loaded on read 2')).toBeInTheDocument()
+
+    await queryClient.invalidateQueries({ queryKey: ['artifact', TEST.ticketId, 'beads', 'approval'] })
+    expect(await screen.findByText('Showing the last beads that loaded. The refresh failed.')).toBeInTheDocument()
+    fireEvent.click(screen.getByRole('button', { name: 'Retry' }))
+    expect(await screen.findByText('Beads loaded on read 4')).toBeInTheDocument()
+    expect(screen.queryByText('Showing the last beads that loaded. The refresh failed.')).not.toBeInTheDocument()
+  })
+
+  it('reports failures from approving beads and repairing coverage gaps', async () => {
+    mockUseTicketArtifacts.mockReturnValue({
+      artifacts: [{
+        id: 903,
+        ticketId: TEST.ticketId,
+        phase: 'WAITING_BEADS_APPROVAL',
+        artifactType: 'beads_coverage',
+        filePath: null,
+        createdAt: TEST.timestamp,
+        content: JSON.stringify({
+          status: 'gaps',
+          summary: 'Some planned coverage remains open.',
+          finalCandidateVersion: 2,
+          hasRemainingGaps: true,
+          remainingGaps: ['Add one more regression case.'],
+        }),
+      }],
+      isLoading: false,
+    })
+    const fetchSpy = vi.spyOn(globalThis, 'fetch').mockImplementation((input) => {
+      const url = String(input)
+      if (url.endsWith('/beads/raw')) {
+        return createBeadsRawResponse([{
+          id: 'B-1',
+          title: 'Ready bead',
+          status: 'pending',
+          testCommands: [{ mode: 'process', program: 'npm', args: ['test'], cwd: '.', env: {} }],
+        }], { contentSha256: 'approval-hash' })
+      }
+      if (url.endsWith('/artifacts') || url.endsWith('/attempts')) return createJsonResponse([])
+      if (url.endsWith('/coverage/fix-gaps') || url.endsWith('/approve-beads')) {
+        const message = url.endsWith('/coverage/fix-gaps') ? 'Coverage repair unavailable.' : 'Approval service unavailable.'
+        return Promise.resolve(new Response(JSON.stringify({ error: message }), {
+          status: 503,
+          headers: { 'Content-Type': 'application/json' },
+        }))
+      }
+      throw new Error(`Unexpected fetch: ${url}`)
+    })
+
+    renderApprovalView(makeTicket({ status: 'WAITING_BEADS_APPROVAL' }), 'beads')
+
+    fireEvent.click(await screen.findByRole('button', { name: /Coverage Warning/i }))
+    fireEvent.click(screen.getByRole('button', { name: 'Fix gaps with AI' }))
+    expect(await screen.findByText(/Coverage repair unavailable\./)).toBeInTheDocument()
+
+    fireEvent.click(screen.getByRole('button', { name: /Approve with gaps/i }))
+    expect(await screen.findByRole('alert')).toHaveTextContent('Approval service unavailable.')
+    expect(fetchSpy.mock.calls.some(([url]) => String(url).endsWith('/coverage/fix-gaps'))).toBe(true)
+    expect(fetchSpy.mock.calls.some(([url]) => String(url).endsWith('/approve-beads'))).toBe(true)
+  })
+
+  it('keeps a dirty beads draft while users close or cancel the discard prompt', async () => {
+    vi.spyOn(globalThis, 'fetch').mockImplementation((input) => {
+      const url = String(input)
+      if (url.endsWith('/beads/raw')) {
+        return createBeadsRawResponse([{
+          id: 'B-1', title: 'Original title', status: 'pending', testCommandReason: 'Reviewed manually.',
+        }], { contentSha256: 'dialog-hash' })
+      }
+      if (url.endsWith('/artifacts') || url.endsWith('/attempts')) return createJsonResponse([])
+      throw new Error(`Unexpected fetch: ${url}`)
+    })
+
+    renderApprovalView(makeTicket({ status: 'WAITING_BEADS_APPROVAL' }), 'beads')
+
+    const editButton = await screen.findByRole('button', { name: 'Edit' })
+    await waitFor(() => expect(editButton).toBeEnabled())
+    fireEvent.click(editButton)
+    fireEvent.click(screen.getByRole('button', { name: /Original title/ }))
+    const title = screen.getByLabelText('Title')
+    fireEvent.change(title, { target: { value: 'Unsaved title' } })
+    fireEvent.click(screen.getByRole('button', { name: 'JSONL' }))
+    expect(await screen.findByText('Discard unsaved beads edits?')).toBeInTheDocument()
+
+    fireEvent.keyDown(document, { key: 'Escape' })
+    await waitFor(() => expect(screen.queryByText('Discard unsaved beads edits?')).not.toBeInTheDocument())
+    expect(screen.getByLabelText('Title')).toHaveValue('Unsaved title')
+
+    fireEvent.click(screen.getByRole('button', { name: 'JSONL' }))
+    fireEvent.click(await screen.findByRole('button', { name: 'Keep Editing' }))
+    expect(screen.queryByText('Discard unsaved beads edits?')).not.toBeInTheDocument()
+    expect(screen.getByLabelText('Title')).toHaveValue('Unsaved title')
+
+    fireEvent.click(screen.getByRole('button', { name: 'View' }))
+    fireEvent.click(await screen.findByRole('button', { name: 'Discard Changes' }))
+    expect(await screen.findByRole('button', { name: 'Edit' })).toBeInTheDocument()
+    expect(screen.queryByLabelText('Title')).not.toBeInTheDocument()
+    expect(screen.getByRole('button', { name: /Original title/ })).toBeInTheDocument()
+  })
+
+  it('renders live beads and safely falls back for a malformed archived snapshot', async () => {
+    mockUseTicketArtifacts.mockImplementation((_ticketId: string, options?: { phaseAttempt?: number }) => ({
+      artifacts: options?.phaseAttempt === 1 ? [{
+        id: 904,
+        ticketId: TEST.ticketId,
+        phase: 'WAITING_BEADS_APPROVAL',
+        artifactType: 'approval_snapshot:beads',
+        filePath: null,
+        createdAt: TEST.timestamp,
+        content: '{malformed snapshot',
+      }] : [],
+      isLoading: false,
+    }))
+    vi.spyOn(globalThis, 'fetch').mockImplementation((input) => {
+      const url = String(input)
+      if (url.endsWith('/attempts')) {
+        return createJsonResponse([
+          {
+            ticketId: TEST.ticketId,
+            phase: 'WAITING_BEADS_APPROVAL',
+            attemptNumber: 1,
+            state: 'archived',
+            archivedReason: 'superseded_by_edit',
+            createdAt: TEST.timestamp,
+            archivedAt: TEST.timestamp,
+          },
+          {
+            ticketId: TEST.ticketId,
+            phase: 'WAITING_BEADS_APPROVAL',
+            attemptNumber: 2,
+            state: 'active',
+            archivedReason: null,
+            createdAt: TEST.timestamp,
+            archivedAt: null,
+          },
+        ])
+      }
+      if (url === `/api/tickets/${encodeURIComponent(TEST.ticketId)}/beads`) {
+        return createJsonResponse([{ id: 'B-1', title: 'Current bead', status: 'pending' }])
+      }
+      throw new Error(`Unexpected fetch: ${url}`)
+    })
+
+    renderWithProviders(
+      <ApprovalView ticket={makeTicket({ status: 'WAITING_BEADS_APPROVAL' })} artifactType="beads" readOnly />,
+    )
+
+    expect(await screen.findByText('Current bead')).toBeInTheDocument()
+    fireEvent.change(screen.getByRole('combobox', { name: /version/i }), { target: { value: '1' } })
+    expect(await screen.findByText('No beads artifact available.')).toBeInTheDocument()
+    expect(screen.getByText(/This archived attempt is read-only/)).toBeInTheDocument()
   })
 })

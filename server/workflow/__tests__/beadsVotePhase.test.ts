@@ -3,7 +3,7 @@ import { parseUiArtifactCompanionArtifact } from '@shared/artifactCompanions'
 import type { Vote } from '../../council/types'
 import { VOTING_RUBRIC_BEADS } from '../../council/types'
 import { clearProjectDatabaseCache } from '../../db/project'
-import { getLatestPhaseArtifact } from '../../storage/tickets'
+import { getLatestPhaseArtifact, insertPhaseArtifact } from '../../storage/tickets'
 import { TEST, makePrdYaml } from '../../test/factories'
 import { createInitializedTestTicket, createTestRepoManager, resetTestDb } from '../../test/integration'
 import { buildBeadsContextBuilder } from '../../phases/beads/draft'
@@ -28,7 +28,12 @@ vi.mock('../../council/voter', async () => {
   }
 })
 
-import { handleBeadsVote, handleMockBeadsVote } from '../phases/beadsPhase'
+import {
+  handleBeadsVote,
+  handleMockBeadsRefine,
+  handleMockBeadsVote,
+  readMockBeadsWinnerId,
+} from '../phases/beadsPhase'
 
 const repoManager = createTestRepoManager('beads-vote-')
 
@@ -476,5 +481,53 @@ describe('beads voting workflow', () => {
     expect(voteCompanion?.drafts?.[0]?.content).toContain('beads:')
     expect(voteCompanion?.drafts?.[0]?.content).toContain('contextGuidance:')
     expect(sendEvent).toHaveBeenCalledWith({ type: 'WINNER_SELECTED', winner: TEST.councilMembers[0] })
+  })
+
+  it.each([
+    ['missing vote artifact', undefined],
+    ['malformed vote artifact', '{malformed'],
+    ['vote artifact without a string winner', JSON.stringify({ winnerId: 42 })],
+  ])('uses the configured first-member fallback when the %s is unavailable', async (_label, content) => {
+    const { ticket } = await createInitializedTestTicket(repoManager, { title: 'Mock beads winner fallback' })
+    const fallbackWinnerId = TEST.councilMembers[0]
+    if (content !== undefined) {
+      insertPhaseArtifact(ticket.id, {
+        phase: 'COUNCIL_VOTING_BEADS',
+        artifactType: 'beads_votes',
+        content,
+      })
+    }
+
+    expect(readMockBeadsWinnerId(ticket.id, fallbackWinnerId)).toBe(fallbackWinnerId)
+  })
+
+  it('refines mock beads from the persisted vote winner and records the semantic blueprint diff', async () => {
+    const { ticket, context } = await createInitializedTestTicket(repoManager, {
+      title: 'Mock beads refinement',
+      description: 'Keep deterministic mock refinement attributable to the selected winner.',
+    })
+    const winnerId = TEST.councilMembers[1]
+    const sendEvent = vi.fn()
+    context.lockedCouncilMembers = [...TEST.councilMembers]
+    insertPhaseArtifact(ticket.id, {
+      phase: 'COUNCIL_VOTING_BEADS',
+      artifactType: 'beads_votes',
+      content: JSON.stringify({ winnerId }),
+    })
+
+    await handleMockBeadsRefine(ticket.id, context, sendEvent)
+
+    const refined = JSON.parse(getLatestPhaseArtifact(ticket.id, 'beads_refined', 'REFINING_BEADS')!.content) as {
+      refinedContent?: string
+    }
+    expect(refined.refinedContent).toContain('beads:')
+    expect(refined.refinedContent).toContain('Mock beads refinement')
+    expect(JSON.parse(getLatestPhaseArtifact(ticket.id, 'beads_winner', 'REFINING_BEADS')!.content)).toEqual({ winnerId })
+    expect(JSON.parse(getLatestPhaseArtifact(ticket.id, 'ui_refinement_diff:beads', 'REFINING_BEADS')!.content)).toMatchObject({
+      domain: 'beads',
+      winnerId,
+    })
+    expect(getLatestPhaseArtifact(ticket.id, 'beads_expanded', 'REFINING_BEADS')).toBeUndefined()
+    expect(sendEvent).toHaveBeenCalledWith({ type: 'REFINED' })
   })
 })

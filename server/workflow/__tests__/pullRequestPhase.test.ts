@@ -8,14 +8,18 @@ import {
 import { createInitializedTestTicket, createTestRepoManager, resetTestDb } from '../../test/integration'
 import { getLatestPhaseArtifact, upsertLatestPhaseArtifact } from '../../storage/tickets'
 import { updateProject } from '../../storage/projects'
+import type { OpenCodePromptCompletedEvent, runOpenCodePrompt } from '../runOpenCodePrompt'
 import {
   buildPullRequestContext,
   buildManualQaPullRequestSection,
   buildPullRequestPrompt,
+  completeCloseUnmerged,
   completeMergedPullRequest,
   handleCreatePullRequest,
   readPullRequestReport,
   refreshPullRequestState,
+  PULL_REQUEST_REPORT_ARTIFACT,
+  MERGE_REPORT_ARTIFACT,
 } from '../phases/pullRequestPhase'
 
 const mocks = vi.hoisted(() => ({
@@ -187,6 +191,17 @@ describe('pull request drafting context', () => {
     ].join('\n')
   }
 
+  function validPullRequestDraftResponse(title = 'Valid PR draft') {
+    return [
+      `title: ${title}`,
+      'summary: Summarized the implementation.',
+      'why: The ticket requested this behavior.',
+      'what_changed: Updated the relevant code path.',
+      'validation: Final tests passed.',
+      'follow_ups: []',
+    ].join('\n')
+  }
+
   it('uses only ticket details and PRD as context while appending reports and diff sections explicitly', async () => {
     resetTestDb()
     const { ticket, context, paths } = await createInitializedTestTicket(repoManager, {
@@ -267,6 +282,137 @@ describe('pull request drafting context', () => {
 
     expect(section).toContain('Outcome: created fixes')
     expect(section).toContain('Created fix beads: qa-v2-fix')
+  })
+
+  it.each([
+    '',
+    'not: [valid YAML',
+    'version: 1\ncreatedFixBeadIds: [qa-1]',
+  ])('omits malformed or incomplete Manual QA summaries from the PR body', (summary) => {
+    expect(buildManualQaPullRequestSection(summary)).toBe('')
+  })
+
+  it('renders a scalar PR draft section and uses the fallback title', async () => {
+    resetTestDb()
+    const { ticket, context } = await createPullRequestReadyTicket({ structuredRetryCount: 0 })
+
+    mocks.runOpenCodePrompt.mockResolvedValueOnce({
+      session: { id: 'candidate-audit-scalar-draft' },
+      response: validCandidateAuditResponse(),
+      messages: [],
+    })
+    mocks.runOpenCodePrompt.mockResolvedValueOnce({
+      session: { id: 'pr-draft-scalar-section' },
+      response: [
+        'title: "  "',
+        'summary: A concise summary of the implementation.',
+        'why:',
+        '  - The ticket requested this behavior.',
+        'what_changed:',
+        '  - Updated the relevant code path.',
+        'validation:',
+        '  - Final tests passed.',
+        'follow_ups: Add a release note after review.',
+      ].join('\n'),
+      messages: [],
+    })
+
+    await handleCreatePullRequest(ticket.id, context, vi.fn(), new AbortController().signal)
+
+    expect(mocks.createOrUpdateDraftPullRequest).toHaveBeenCalledWith(expect.objectContaining({
+      title: `${ticket.externalId}: ${ticket.title}`,
+      body: expect.stringContaining('## Follow-ups\n- Add a release note after review.'),
+    }))
+    expect(mocks.runOpenCodeSessionPrompt).not.toHaveBeenCalled()
+  })
+
+  it('does not run a candidate-file audit when the candidate diff is empty', async () => {
+    resetTestDb()
+    const { ticket, context } = await createPullRequestReadyTicket({ structuredRetryCount: 0 })
+    mocks.readGitDiff.mockReturnValue({
+      stat: '',
+      nameStatus: '',
+      nameStatusZ: '',
+      patch: '',
+      patchTruncated: false,
+      patchError: null,
+    })
+    mocks.runOpenCodePrompt.mockResolvedValueOnce({
+      session: { id: 'pr-draft-empty-diff' },
+      response: validPullRequestDraftResponse(),
+      messages: [],
+    })
+
+    await handleCreatePullRequest(ticket.id, context, vi.fn(), new AbortController().signal)
+
+    expect(mocks.runOpenCodePrompt).toHaveBeenCalledOnce()
+    expect(mocks.runOpenCodePrompt.mock.calls[0]?.[0].parts[0]?.content).toContain('draft pull request')
+    expect(readPullRequestReport(ticket.id)?.candidateFileAudit).toMatchObject({
+      status: 'passed',
+      includedFiles: [],
+      excludedFiles: [],
+    })
+    expect(mocks.createOrUpdateDraftPullRequest).toHaveBeenCalledOnce()
+  })
+
+  it('falls back to including every changed file when the candidate audit returns invalid YAML', async () => {
+    resetTestDb()
+    const { ticket, context } = await createPullRequestReadyTicket({ structuredRetryCount: 0 })
+    mocks.runOpenCodePrompt.mockResolvedValueOnce({
+      session: { id: 'candidate-audit-invalid-yaml' },
+      response: 'files: [unfinished',
+      messages: [],
+    })
+    mocks.runOpenCodePrompt.mockResolvedValueOnce({
+      session: { id: 'pr-draft-after-invalid-audit' },
+      response: validPullRequestDraftResponse(),
+      messages: [],
+    })
+
+    await handleCreatePullRequest(ticket.id, context, vi.fn(), new AbortController().signal)
+
+    expect(readPullRequestReport(ticket.id)?.candidateFileAudit).toMatchObject({
+      status: 'fallback',
+      includedFiles: ['src/example.ts'],
+      excludedFiles: [],
+      warnings: [expect.stringContaining('Candidate file audit fell back to including all files')],
+    })
+    expect(mocks.runOpenCodePrompt).toHaveBeenCalledTimes(2)
+    expect(mocks.createOrUpdateDraftPullRequest).toHaveBeenCalledOnce()
+  })
+
+  it('rejects pull request drafting when the integration report lacks candidate metadata', async () => {
+    resetTestDb()
+    const { ticket, context } = await createPullRequestReadyTicket()
+    upsertLatestPhaseArtifact(
+      ticket.id,
+      'integration_report',
+      'INTEGRATING_CHANGES',
+      JSON.stringify({ candidateCommitSha: 'candidate123' }),
+    )
+
+    await expect(handleCreatePullRequest(
+      ticket.id,
+      context,
+      vi.fn(),
+      new AbortController().signal,
+    )).rejects.toThrow('Integration report is missing candidate commit metadata.')
+    expect(mocks.runOpenCodePrompt).not.toHaveBeenCalled()
+    expect(mocks.pushBranchRef).not.toHaveBeenCalled()
+  })
+
+  it('rejects pull request drafting when no main implementer is locked', async () => {
+    resetTestDb()
+    const { ticket, context } = await createPullRequestReadyTicket()
+
+    await expect(handleCreatePullRequest(
+      ticket.id,
+      { ...context, lockedMainImplementer: null },
+      vi.fn(),
+      new AbortController().signal,
+    )).rejects.toThrow('No locked main implementer is configured for pull request drafting.')
+    expect(mocks.runOpenCodePrompt).not.toHaveBeenCalled()
+    expect(mocks.pushBranchRef).not.toHaveBeenCalled()
   })
 
   it('retries malformed PR drafts before push and PR side effects', async () => {
@@ -375,6 +521,69 @@ describe('pull request drafting context', () => {
     expect(report?.rawAttempts).toEqual([
       expect.objectContaining({ attempt: 1, outcome: 'rejected' }),
     ])
+  })
+
+  it('keeps every changed file and proceeds when the candidate-file audit omits a path', async () => {
+    resetTestDb()
+    const { ticket, context, paths } = await createPullRequestReadyTicket({ structuredRetryCount: 0 })
+    const sendEvent = vi.fn()
+    const auditSession = { id: 'candidate-audit-incomplete' }
+    const auditParts = [{ type: 'text' as const, content: 'Audit changed files against the request.' }]
+    const auditResponse = 'files: []'
+
+    mocks.runOpenCodePrompt.mockImplementationOnce(async (options: Parameters<typeof runOpenCodePrompt>[0]) => {
+      options.onSessionCreated?.(auditSession)
+      options.onStreamEvent?.({
+        type: 'text',
+        sessionId: auditSession.id,
+        text: 'Reviewing the changed source file.',
+        streaming: false,
+        complete: true,
+      })
+      options.onPromptDispatched?.({
+        session: auditSession,
+        parts: auditParts,
+        promptText: 'Candidate file audit prompt',
+        promptNumber: 1,
+        timeoutKind: 'ai_response',
+      })
+      options.onPromptCompleted?.({
+        session: auditSession,
+        parts: auditParts,
+        response: auditResponse,
+        messages: [],
+        responseMeta: {} as OpenCodePromptCompletedEvent['responseMeta'],
+        attemptMeta: {} as OpenCodePromptCompletedEvent['attemptMeta'],
+      })
+      return { session: auditSession, response: auditResponse, messages: [] }
+    })
+    mocks.runOpenCodePrompt.mockResolvedValueOnce({
+      session: { id: 'pr-draft-after-audit-fallback' },
+      response: [
+        'title: Keep all candidate changes',
+        'summary: The PR audit could not classify every file.',
+        'why: The ticket still needs review.',
+        'what_changed: Kept the changed source file for review.',
+        'validation: Final tests passed.',
+        'follow_ups: []',
+      ].join('\n'),
+      messages: [],
+    })
+
+    await handleCreatePullRequest(ticket.id, context, sendEvent, new AbortController().signal)
+
+    const report = readPullRequestReport(ticket.id)
+    expect(report?.candidateFileAudit).toMatchObject({
+      status: 'fallback',
+      includedFiles: ['src/example.ts'],
+      excludedFiles: [],
+      warnings: [expect.stringContaining('Candidate file audit fell back to including all files')],
+    })
+    const executionLog = readFileSync(paths.executionLogPath, 'utf8')
+    expect(executionLog).toContain('Candidate file audit prompt')
+    expect(executionLog).toContain('Candidate file audit fell back to including all files')
+    expect(mocks.createOrUpdateDraftPullRequest).toHaveBeenCalledOnce()
+    expect(sendEvent).toHaveBeenCalledWith({ type: 'PULL_REQUEST_READY' })
   })
 
   it('does not continue to git side effects when a draft session stop is unconfirmed', async () => {
@@ -762,5 +971,106 @@ describe('pull request drafting context', () => {
       prNumber: 42,
       pr: null,
     })
+  })
+
+  it('marks a draft PR ready before merging', async () => {
+    resetTestDb()
+    const { ticket, context } = await createInitializedTestTicket(repoManager, {
+      title: 'Complete a draft pull request',
+    })
+    const draftPr = {
+      number: 42,
+      url: 'https://github.example/pulls/42',
+      title: 'Complete a draft pull request',
+      body: 'Body',
+      state: 'draft' as const,
+      baseRefName: 'main',
+      headRefName: ticket.externalId,
+      headRefOid: 'candidate123',
+      createdAt: '2026-01-01T00:00:00.000Z',
+      updatedAt: '2026-01-01T00:00:00.000Z',
+      closedAt: null,
+      mergedAt: null,
+    }
+    const readyPr = { ...draftPr, state: 'open' as const }
+    const mergedPr = { ...readyPr, state: 'merged' as const, mergeCommitSha: 'landed-from-draft' }
+    mocks.getPullRequestByNumber.mockReturnValueOnce(draftPr)
+    mocks.markPullRequestReady.mockReturnValueOnce(readyPr)
+    mocks.mergePullRequest.mockReturnValueOnce(mergedPr)
+
+    const merged = await completeMergedPullRequest(buildMergeCompletionInput(
+      ticket,
+      context,
+      draftPr,
+      false,
+    ))
+
+    expect(mocks.markPullRequestReady).toHaveBeenCalledWith(context.externalId, 42)
+    expect(mocks.mergePullRequest).toHaveBeenCalledWith(context.externalId, 42, draftPr.title, 'candidate123')
+    expect(merged).toMatchObject({ disposition: 'merged', remoteBaseHead: 'remote-base-sha' })
+  })
+
+  it('records a recovery receipt when the remote PR remains open after a merge attempt', async () => {
+    resetTestDb()
+    const { ticket, context } = await createInitializedTestTicket(repoManager, {
+      title: 'Merge remains open',
+    })
+    const prInfo = {
+      number: 42,
+      url: 'https://github.example/pulls/42',
+      title: 'Merge remains open',
+      body: 'Body',
+      state: 'open' as const,
+      baseRefName: 'main',
+      headRefName: ticket.externalId,
+      headRefOid: 'candidate123',
+      createdAt: '2026-01-01T00:00:00.000Z',
+      updatedAt: '2026-01-01T00:00:00.000Z',
+      closedAt: null,
+      mergedAt: null,
+    }
+    mocks.getPullRequestByNumber.mockReturnValue(prInfo)
+    mocks.mergePullRequest.mockReturnValue(prInfo)
+
+    await expect(completeMergedPullRequest(buildMergeCompletionInput(
+      ticket,
+      context,
+      prInfo,
+      false,
+    ))).rejects.toThrow('Pull request #42 did not report merged after merge completion; state is open.')
+
+    expect(mocks.mergePullRequest).toHaveBeenCalledOnce()
+    expect(mocks.verifyRemoteBaseContainsCommit).not.toHaveBeenCalled()
+    const receipt = getLatestPhaseArtifact(ticket.id, 'git_recovery_receipt', 'WAITING_PR_REVIEW')
+    expect(JSON.parse(receipt!.content)).toMatchObject({
+      step: 'merge_pull_request',
+      error: 'Pull request #42 did not report merged after merge completion; state is open.',
+      pr: prInfo,
+    })
+  })
+
+  it('persists a close-unmerged reason when the pull request report is missing or malformed', async () => {
+    resetTestDb()
+    const { ticket } = await createInitializedTestTicket(repoManager, {
+      title: 'Finish without merging',
+    })
+    upsertLatestPhaseArtifact(ticket.id, PULL_REQUEST_REPORT_ARTIFACT, 'CREATING_PULL_REQUEST', '{')
+    expect(readPullRequestReport(ticket.id)).toBeNull()
+    const closed = completeCloseUnmerged({
+      ticketId: ticket.id,
+      baseBranch: 'main',
+      headBranch: ticket.externalId,
+      candidateCommitSha: null,
+      prReport: null,
+      reason: '  Leave this PR for another review.  ',
+    })
+    expect(closed).toMatchObject({
+      disposition: 'closed_unmerged',
+      prNumber: null,
+      closeReason: 'Leave this PR for another review.',
+    })
+    expect(JSON.parse(getLatestPhaseArtifact(ticket.id, MERGE_REPORT_ARTIFACT, 'WAITING_PR_REVIEW')!.content))
+      .toMatchObject({ disposition: 'closed_unmerged', closeReason: 'Leave this PR for another review.' })
+    expect(mocks.tryDeleteRemoteBranch).not.toHaveBeenCalled()
   })
 })

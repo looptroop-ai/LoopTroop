@@ -1172,10 +1172,106 @@ describe('CodingView', () => {
     expect(screen.getByText((content) => content.includes('previous failed input'))).toBeTruthy()
     expect(screen.getByText((content) => content.includes('current retry input'))).toBeTruthy()
 
+    fireEvent.click(screen.getByRole('button', { name: 'Show selected iteration logs' }))
+    expect(screen.getByRole('button', { name: 'Show all logs for bead' })).toHaveAttribute('aria-pressed', 'false')
+    expect(screen.getByRole('button', { name: /Iteration 2/ })).toHaveAttribute('aria-pressed', 'true')
+    expect(screen.getByText((content) => content.includes('current retry input'))).toBeTruthy()
+    expect(screen.queryByText((content) => content.includes('previous failed input'))).toBeNull()
+
     fireEvent.click(screen.getByRole('button', { name: /Iteration 1/ }))
     expect(screen.queryByText((content) => content.includes('current retry input'))).toBeNull()
     expect(screen.getByText((content) => content.includes('previous failed input'))).toBeTruthy()
     expect(screen.queryByText((content) => content.includes('delayed old event'))).toBeNull()
+  })
+
+  it('shows Manual QA origin evidence and a valid implementation timeline, while omitting reversed durations', () => {
+    renderCoding({
+      runtime: {
+        beads: [
+          {
+            id: 'manual-qa-bead',
+            title: 'Manual QA bead',
+            status: 'done',
+            iteration: 1,
+            createdAt: 'not-a-date',
+            startedAt: '2026-05-28T10:00:00.000Z',
+            completedAt: '2026-05-28T10:02:00.000Z',
+            qaOrigin: {
+              schemaVersion: 1,
+              actionId: 'manual-qa-action-1',
+              sourceTicketId: TEST.ticketId,
+              sourceTicketExternalId: TEST.externalId,
+              version: 2,
+              sourceItems: [{
+                itemId: 'qa-item-1',
+                lineageId: 'qa-lineage-1',
+                behavior: 'Checkout recovery',
+                observation: 'The retry button stayed disabled.',
+                expectedResult: 'Retrying should recover the checkout.',
+                evidence: [
+                  {
+                    id: 'image-1',
+                    originalName: 'checkout.png',
+                    mediaType: 'image/png',
+                    size: 128,
+                    sha256: 'image-hash',
+                    relativePath: 'evidence/checkout.png',
+                  },
+                  {
+                    id: 'text-1',
+                    originalName: 'console.txt',
+                    mediaType: 'text/plain',
+                    size: 64,
+                    sha256: 'text-hash',
+                    relativePath: 'evidence/console.txt',
+                  },
+                ],
+                links: [
+                  { id: 'trace-1', url: 'https://example.test/trace', label: 'Checkout trace' },
+                  { id: 'issue-1', url: 'https://example.test/issue' },
+                ],
+              }],
+            },
+          } as RuntimeBeadInput & { createdAt: string },
+          {
+            id: 'reversed-duration-bead',
+            title: 'Reversed duration bead',
+            status: 'done',
+            iteration: 1,
+            startedAt: '2026-05-28T10:02:00.000Z',
+            completedAt: '2026-05-28T10:01:00.000Z',
+          },
+        ],
+      },
+    })
+
+    fireEvent.click(screen.getByRole('button', { name: /Manual QA bead/ }))
+
+    expect(screen.getByText('Manual QA origin · Round v2')).toBeInTheDocument()
+    expect(screen.getByText('Checkout recovery')).toBeInTheDocument()
+    expect(screen.getByText('The retry button stayed disabled.')).toBeInTheDocument()
+    expect(screen.getByText('Retrying should recover the checkout.')).toBeInTheDocument()
+
+    const imageLink = screen.getByRole('link', { name: /checkout\.png/ })
+    expect(imageLink).toHaveAttribute('href', '/api/tickets/1%3ATEST-1/manual-qa/versions/2/evidence/qa-item-1/image-1')
+    expect(screen.getByRole('img', { name: 'checkout.png' })).toHaveAttribute(
+      'src',
+      '/api/tickets/1%3ATEST-1/manual-qa/versions/2/evidence/qa-item-1/image-1?inline=true',
+    )
+    expect(screen.getByRole('link', { name: /console\.txt/ })).toHaveAttribute(
+      'href',
+      '/api/tickets/1%3ATEST-1/manual-qa/versions/2/evidence/qa-item-1/text-1',
+    )
+    expect(screen.getByRole('link', { name: 'Checkout trace' })).toHaveAttribute('href', 'https://example.test/trace')
+    expect(screen.getByRole('link', { name: 'https://example.test/issue' })).toHaveAttribute('href', 'https://example.test/issue')
+    expect(screen.getByText('not-a-date')).toBeInTheDocument()
+    expect(screen.getByText('Implementation Time')).toBeInTheDocument()
+
+    fireEvent.click(screen.getByRole('button', { name: 'Back to live' }))
+    fireEvent.click(screen.getByRole('button', { name: /Reversed duration bead/ }))
+    expect(screen.getByText('Timeline')).toBeInTheDocument()
+    expect(screen.getByText('Started')).toBeInTheDocument()
+    expect(screen.queryByText('Implementation Time')).not.toBeInTheDocument()
   })
 
   it('uses log-derived output as a fallback when a persisted attempt only has input', () => {

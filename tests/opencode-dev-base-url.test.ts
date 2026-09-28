@@ -13,6 +13,7 @@ describe('resolveOpenCodeBaseUrl', () => {
   it('authenticates a local provider directly but never follows its redirect', async () => {
     vi.stubEnv('OPENCODE_SERVER_USERNAME', 'opencode')
     vi.stubEnv('OPENCODE_SERVER_PASSWORD', 'local-test-password')
+    vi.stubEnv('OPENCODE_PASSWORD', 'local-test-password')
     const authorization = `Basic ${Buffer.from('opencode:local-test-password').toString('base64')}`
     let redirect = false
     const requests: string[] = []

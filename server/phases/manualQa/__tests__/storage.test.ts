@@ -1,4 +1,4 @@
-import { cpSync, existsSync, mkdirSync, readFileSync, rmSync, symlinkSync, writeFileSync } from 'node:fs'
+import { cpSync, existsSync, mkdirSync, readFileSync, readdirSync, rmSync, symlinkSync, writeFileSync } from 'node:fs'
 import { basename, dirname, join } from 'node:path'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import { makeTempDir, removeTempDir } from '../../../test/tempDir'
@@ -7,6 +7,7 @@ import {
   ManualQaEvidenceLinkSchema,
 } from '../types'
 import {
+  allocateNextManualQaVersion,
   completeManualQaReservation,
   appendManualQaEvent,
   getManualQaStoragePaths,
@@ -28,6 +29,7 @@ import {
   readManualQaSummary,
   readManualQaModelCapabilitySnapshot,
   readManualQaResults,
+  resolveContainedEvidencePath,
   removeManualQaEvidence,
   reserveManualQaVersion,
   resolveActiveManualQaVersion,
@@ -129,6 +131,17 @@ describe('Manual QA canonical storage', () => {
     expect(() => read(ticketDir, 1)).toThrow('escapes root')
   })
 
+  it('rethrows containment failures while reading the evidence index', () => {
+    const ticketDir = root()
+    const outside = root()
+    const paths = getManualQaStoragePaths(ticketDir, 1)
+    mkdirSync(paths.versionDir, { recursive: true })
+    symlinkSync(outside, paths.evidenceDir, process.platform === 'win32' ? 'junction' : 'dir')
+
+    expect(() => readManualQaEvidenceIndex(ticketDir, 1)).toThrow('unsafe directory')
+    expect(existsSync(join(outside, 'index.json'))).toBe(false)
+  })
+
   it('rejects a linked event root even when no versioned artifact is requested', () => {
     const ticketDir = root()
     symlinkSync(root(), join(ticketDir, 'manual-qa'), process.platform === 'win32' ? 'junction' : 'dir')
@@ -150,7 +163,30 @@ describe('Manual QA canonical storage', () => {
     appendManualQaEvent(ticketDir, event)
     expect(readManualQaEvents(ticketDir)).toEqual([event])
     expect(listManualQaVersions(ticketDir)).toEqual([2])
+    expect(allocateNextManualQaVersion(ticketDir)).toBe(3)
     expect(() => getManualQaStoragePaths(ticketDir, 1)).toThrow('unsafe directory')
+  })
+
+  it('treats an absent evidence index as empty and enforces missing-path containment options', () => {
+    const ticketDir = root()
+    const manualQaRoot = join(ticketDir, 'manual-qa')
+    const evidenceDir = join(manualQaRoot, 'v1', 'evidence')
+
+    expect(readManualQaEvidenceIndex(ticketDir, 1)).toEqual([])
+    mkdirSync(manualQaRoot)
+    expect(() => resolveContainedEvidencePath(manualQaRoot, evidenceDir, '../outside.png'))
+      .toThrow('escaped Manual QA storage containment')
+    expect(() => resolveContainedEvidencePath(manualQaRoot, evidenceDir, 'item-1/image.png'))
+      .toThrow('Evidence directory is missing')
+    expect(resolveContainedEvidencePath(manualQaRoot, evidenceDir, 'item-1/image.png', {
+      allowMissingParents: true,
+    })).toBe(join(evidenceDir, 'item-1', 'image.png'))
+
+    mkdirSync(evidenceDir, { recursive: true })
+    expect(() => resolveContainedEvidencePath(manualQaRoot, evidenceDir, 'image.png'))
+      .toThrow('Evidence path is missing')
+    expect(resolveContainedEvidencePath(manualQaRoot, evidenceDir, 'image.png', { allowMissing: true }))
+      .toBe(join(evidenceDir, 'image.png'))
   })
 
   it('reuses a durable generation reservation after restart', () => {
@@ -158,6 +194,8 @@ describe('Manual QA canonical storage', () => {
     const first = reserveManualQaVersion(ticketDir, '1:DEMO-1', 1, 'generation:one')
     const restored = reserveManualQaVersion(ticketDir, '1:DEMO-1', 1, 'generation:two')
     expect(restored).toEqual(first)
+    expect(() => reserveManualQaVersion(ticketDir, '1:OTHER-1', 1, 'generation:wrong-ticket'))
+      .toThrow('does not match the requested ticket/version')
     completeManualQaReservation(ticketDir, first, 'a'.repeat(64))
     expect(JSON.parse(readFileSync(getManualQaStoragePaths(ticketDir, 1).reservationPath, 'utf8'))).toMatchObject({
       state: 'complete',
@@ -323,6 +361,43 @@ describe('Manual QA canonical storage', () => {
     expect(() => resolveManualQaEvidence({ ticketDir, version: 1, itemId: evidence.itemId, evidenceId: evidence.id })).toThrow('not found')
   })
 
+  it('rejects missing or stale evidence metadata when removing an indexed file', async () => {
+    const ticketDir = root()
+    persistChecklist(ticketDir)
+    const evidence = await streamManualQaEvidence({
+      ticketDir,
+      version: 1,
+      itemId: 'qa-v1-001',
+      evidenceId: 'canonical-removal',
+      originalName: 'trace.txt',
+      mediaType: 'text/plain',
+      body: byteStream(new TextEncoder().encode('canonical evidence')),
+    })
+    const evidencePath = resolveManualQaEvidence({
+      ticketDir,
+      version: 1,
+      itemId: evidence.itemId,
+      evidenceId: evidence.id,
+    }).path
+
+    await expect(removeManualQaEvidence({
+      ticketDir,
+      version: 1,
+      itemId: evidence.itemId,
+      evidenceId: 'missing-evidence',
+    })).rejects.toThrow('Evidence was not found')
+    await expect(removeManualQaEvidence({
+      ticketDir,
+      version: 1,
+      itemId: evidence.itemId,
+      evidenceId: evidence.id,
+      evidence: { ...evidence, sha256: 'b'.repeat(64) },
+    })).rejects.toThrow('does not match the canonical evidence metadata')
+
+    expect(readManualQaEvidenceIndex(ticketDir, 1)).toEqual([evidence])
+    expect(existsSync(evidencePath)).toBe(true)
+  })
+
   it('keeps every concurrent upload in the index', async () => {
     const ticketDir = root()
     persistChecklist(ticketDir)
@@ -342,6 +417,96 @@ describe('Manual QA canonical storage', () => {
     // replacement list; run together they overwrote one another's entries.
     expect(readManualQaEvidenceIndex(ticketDir, 1).map((entry) => entry.id).sort())
       .toEqual(['concurrent-a', 'concurrent-b', 'concurrent-c', 'concurrent-d'])
+  })
+
+  it('returns the canonical record for an identical upload that finishes after its retry', async () => {
+    const ticketDir = root()
+    persistChecklist(ticketDir)
+    const bytes = new TextEncoder().encode('same evidence bytes')
+    let releaseFirst!: () => void
+    let markFirstPull!: () => void
+    const firstPulled = new Promise<void>((resolve) => { markFirstPull = resolve })
+    const release = new Promise<void>((resolve) => { releaseFirst = resolve })
+    let pulled = false
+    const delayedBody = new ReadableStream<Uint8Array>({
+      async pull(controller) {
+        if (pulled) return
+        pulled = true
+        controller.enqueue(bytes)
+        markFirstPull()
+        await release
+        controller.close()
+      },
+    }, { highWaterMark: 0 })
+    const firstUpload = streamManualQaEvidence({
+      ticketDir,
+      version: 1,
+      itemId: 'qa-v1-001',
+      evidenceId: 'same-action-race',
+      originalName: 'same.txt',
+      mediaType: 'text/plain',
+      body: delayedBody,
+    })
+    await firstPulled
+    const retry = await streamManualQaEvidence({
+      ticketDir,
+      version: 1,
+      itemId: 'qa-v1-001',
+      evidenceId: 'same-action-race',
+      originalName: 'same.txt',
+      mediaType: 'text/plain',
+      body: byteStream(bytes),
+    })
+    releaseFirst()
+    const recovered = await firstUpload
+
+    expect(recovered).toEqual(retry)
+    expect(readManualQaEvidenceIndex(ticketDir, 1)).toEqual([retry])
+  })
+
+  it('rejects concurrent reuse of an evidence ID with conflicting metadata', async () => {
+    const ticketDir = root()
+    persistChecklist(ticketDir)
+    const bytes = new TextEncoder().encode('same evidence bytes')
+    let releaseFirst!: () => void
+    let markFirstPull!: () => void
+    const firstPulled = new Promise<void>((resolve) => { markFirstPull = resolve })
+    const release = new Promise<void>((resolve) => { releaseFirst = resolve })
+    let pulled = false
+    const delayedBody = new ReadableStream<Uint8Array>({
+      async pull(controller) {
+        if (pulled) return
+        pulled = true
+        controller.enqueue(bytes)
+        markFirstPull()
+        await release
+        controller.close()
+      },
+    }, { highWaterMark: 0 })
+    const firstUpload = streamManualQaEvidence({
+      ticketDir,
+      version: 1,
+      itemId: 'qa-v1-001',
+      evidenceId: 'conflicting-action-race',
+      originalName: 'same.bin',
+      mediaType: 'text/plain',
+      body: delayedBody,
+    })
+    await firstPulled
+    const canonical = await streamManualQaEvidence({
+      ticketDir,
+      version: 1,
+      itemId: 'qa-v1-001',
+      evidenceId: 'conflicting-action-race',
+      originalName: 'same.bin',
+      mediaType: 'application/octet-stream',
+      body: byteStream(bytes),
+    })
+    releaseFirst()
+
+    await expect(firstUpload).rejects.toThrow('Evidence ID already exists: conflicting-action-race')
+    expect(readManualQaEvidenceIndex(ticketDir, 1)).toEqual([canonical])
+    expect(canonical.mediaType).toBe('application/octet-stream')
   })
 
   it('applies every concurrent removal instead of letting the last writer win', async () => {
@@ -571,6 +736,60 @@ describe('Manual QA canonical storage', () => {
     expect(existsSync(join(outside, 'evidence'))).toBe(false)
   })
 
+  it('rejects an item-directory symlink before an evidence upload can write through it', async () => {
+    const ticketDir = root()
+    const outside = root()
+    persistChecklist(ticketDir)
+    const paths = getManualQaStoragePaths(ticketDir, 1)
+    mkdirSync(paths.evidenceDir, { recursive: true })
+    const outsideFile = join(outside, 'trace.txt')
+    writeFileSync(outsideFile, 'outside content')
+    symlinkSync(
+      outside,
+      join(paths.evidenceDir, 'item-qa-v1-001'),
+      process.platform === 'win32' ? 'junction' : 'dir',
+    )
+
+    await expect(streamManualQaEvidence({
+      ticketDir,
+      version: 1,
+      itemId: 'qa-v1-001',
+      evidenceId: 'blocked-item-symlink',
+      originalName: 'trace.txt',
+      mediaType: 'text/plain',
+      body: byteStream(new TextEncoder().encode('overwrite attempt')),
+    })).rejects.toThrow('unsafe directory')
+    expect(readFileSync(outsideFile, 'utf8')).toBe('outside content')
+    expect(readManualQaEvidenceIndex(ticketDir, 1)).toEqual([])
+  })
+
+  it('removes a partial upload when the request body fails while streaming', async () => {
+    const ticketDir = root()
+    persistChecklist(ticketDir)
+    const itemDirectory = join(getManualQaStoragePaths(ticketDir, 1).evidenceDir, 'item-qa-v1-001')
+    const body = new ReadableStream<Uint8Array>({
+      start(controller) {
+        controller.enqueue(new TextEncoder().encode('partial evidence'))
+      },
+      pull(controller) {
+        controller.error(new Error('client disconnected'))
+      },
+    }, { highWaterMark: 0 })
+
+    await expect(streamManualQaEvidence({
+      ticketDir,
+      version: 1,
+      itemId: 'qa-v1-001',
+      evidenceId: 'interrupted-body',
+      originalName: 'partial.txt',
+      mediaType: 'text/plain',
+      body,
+    })).rejects.toThrow('client disconnected')
+
+    expect(readManualQaEvidenceIndex(ticketDir, 1)).toEqual([])
+    expect(readdirSync(itemDirectory)).toEqual([])
+  })
+
   it('binds evidence to real checklist items and verifies preview file signatures', async () => {
     const ticketDir = root()
     persistChecklist(ticketDir)
@@ -594,6 +813,32 @@ describe('Manual QA canonical storage', () => {
       body: byteStream(new TextEncoder().encode('<html>not an image</html>')),
     })
     expect(spoofed.inlinePreview).toBe(false)
+  })
+
+  it('recognizes valid JPEG, GIF, WebP, and AVIF signatures for inline previews', async () => {
+    const ticketDir = root()
+    persistChecklist(ticketDir)
+    const signatures: Array<[string, number[]]> = [
+      ['image/jpeg', [0xff, 0xd8, 0xff]],
+      ['image/gif', [...new TextEncoder().encode('GIF87a')]],
+      ['image/gif', [...new TextEncoder().encode('GIF89a')]],
+      ['image/webp', [...new TextEncoder().encode('RIFF0000WEBP')]],
+      ['image/avif', [0, 0, 0, 0, ...new TextEncoder().encode('ftypavif')]],
+      ['image/avif', [0, 0, 0, 0, ...new TextEncoder().encode('ftypavis')]],
+    ]
+
+    for (const [index, [mediaType, signature]] of signatures.entries()) {
+      const evidence = await streamManualQaEvidence({
+        ticketDir,
+        version: 1,
+        itemId: 'qa-v1-001',
+        evidenceId: `signature-${index}`,
+        originalName: `signature-${index}.bin`,
+        mediaType,
+        body: byteStream(Uint8Array.from(signature)),
+      })
+      expect(evidence.inlinePreview).toBe(true)
+    }
   })
 
   it('uses collision-safe action receipts and rejects action reuse for different evidence', async () => {
@@ -726,6 +971,8 @@ describe('Manual QA canonical storage', () => {
     persistManualQaModelCapabilitySnapshot(ticketDir, snapshot)
     persistManualQaModelCapabilitySnapshot(ticketDir, snapshot)
     expect(readManualQaModelCapabilitySnapshot(ticketDir, 1)).toEqual(snapshot)
+    expect(() => persistManualQaModelCapabilitySnapshot(ticketDir, { ...snapshot, modelVariant: 'low' }))
+      .toThrow('immutable once captured')
 
     const event = {
       schemaVersion: 1 as const,
@@ -739,6 +986,8 @@ describe('Manual QA canonical storage', () => {
     }
     appendManualQaEvent(ticketDir, event)
     appendManualQaEvent(ticketDir, event)
+    expect(() => appendManualQaEvent(ticketDir, { ...event, data: { checklistHash: 'b'.repeat(64) } }))
+      .toThrow('was reused with different content')
     expect(readManualQaEvents(ticketDir)).toEqual([event])
   })
 

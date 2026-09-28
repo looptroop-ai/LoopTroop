@@ -97,10 +97,10 @@ const profileData = {
   updatedAt: '2026-03-13T15:47:26.973Z',
 }
 
-function mockFetch(handler: (url: string, init?: RequestInit) => Promise<Response>) {
+function mockFetch(handler: (url: string, init?: RequestInit) => Promise<Response>, projects: unknown[] = [projectData]) {
   return vi.spyOn(globalThis, 'fetch').mockImplementation((input, init) => {
     const url = String(input)
-    if (url === '/api/projects') return createJsonResponse([projectData])
+    if (url === '/api/projects') return createJsonResponse(projects)
     if (url === '/api/profile') return createJsonResponse(profileData)
     if (url.startsWith(`/api/tickets/${encodeURIComponent(TEST.ticketId)}/logs?`)) {
       return createJsonResponse({ entries: [], olderCursor: null, hasOlder: false })
@@ -177,6 +177,24 @@ describe('DraftView', () => {
     expect(screen.getByRole('button', { name: /^Log$/i })).toBeInTheDocument()
   })
 
+  it('keeps the draft log viewer open after a successful start', async () => {
+    const fetchMock = mockFetch((url) => {
+      if (url === `/api/tickets/${encodeURIComponent(TEST.ticketId)}/start`) {
+        return createJsonResponse({ message: 'Ticket started.', ticketId: TEST.ticketId })
+      }
+      throw new Error(`Unhandled fetch: ${url}`)
+    })
+
+    renderWithProviders(<DraftView ticket={makeTicket({ availableActions: ['start', 'cancel'] })} />)
+
+    fireEvent.click(await screen.findByRole('button', { name: /start ticket/i }))
+
+    expect(await screen.findByText(/No log entries yet\. Logs will stream here during execution\./i)).toBeInTheDocument()
+    await waitFor(() => expect(screen.getByRole('button', { name: /start ticket/i })).toBeEnabled())
+    expect(fetchMock).toHaveBeenCalledWith(`/api/tickets/${encodeURIComponent(TEST.ticketId)}/start`, expect.objectContaining({ method: 'POST' }))
+    expect(screen.queryByRole('alert')).not.toBeInTheDocument()
+  })
+
   it('renders streamed draft logs through LogProvider once the start viewer is open', async () => {
     const startResponse = createDeferredJsonResponse({ error: 'Failed to start ticket.' }, 400)
 
@@ -247,7 +265,7 @@ describe('DraftView', () => {
       throw new Error(`Unhandled fetch: ${url}`)
     })
 
-    renderWithProviders(<DraftView ticket={makeTicket({ description: 'Add a planning gate before interview.', availableActions: ['start', 'cancel'] })} />)
+    const { rerender } = renderWithProviders(<DraftView ticket={makeTicket({ description: 'Add a planning gate before interview.', availableActions: ['start', 'cancel'] })} />)
 
     fireEvent.click(screen.getByRole('button', { name: /edit description/i }))
 
@@ -261,11 +279,97 @@ describe('DraftView', () => {
       expect(screen.getByText(updatedDescription)).toBeInTheDocument()
       expect(screen.queryByRole('textbox', { name: 'Ticket description' })).not.toBeInTheDocument()
     })
+    rerender(<DraftView ticket={makeTicket({ description: updatedDescription, availableActions: ['start', 'cancel'] })} />)
+    expect(await screen.findByText(updatedDescription)).toBeInTheDocument()
     expect(fetchMock).toHaveBeenCalledWith(`/api/tickets/${encodeURIComponent(TEST.ticketId)}`, expect.objectContaining({
       method: 'PATCH',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ description: updatedDescription }),
     }))
+  })
+
+  it('cancels description edits and syncs later ticket description updates', async () => {
+    const initialDescription = 'Keep the original draft context.'
+    const externalDescription = 'A collaborator updated this draft description.'
+    const { rerender } = renderWithProviders(<DraftView ticket={makeTicket({ description: initialDescription })} />)
+
+    fireEvent.click(await screen.findByRole('button', { name: /edit description/i }))
+    fireEvent.change(screen.getByRole('textbox', { name: 'Ticket description' }), {
+      target: { value: 'Unsaved local change.' },
+    })
+    fireEvent.click(screen.getByRole('button', { name: 'Cancel' }))
+
+    expect(screen.getByText(initialDescription)).toBeInTheDocument()
+    expect(screen.getByRole('tab', { name: 'Markdown' })).toHaveAttribute('aria-selected', 'true')
+
+    rerender(<DraftView ticket={makeTicket({ description: externalDescription })} />)
+
+    expect(await screen.findByText(externalDescription)).toBeInTheDocument()
+  })
+
+  it('keeps description editing open and shows the server error when saving fails', async () => {
+    mockFetch((url, init) => {
+      if (url === `/api/tickets/${encodeURIComponent(TEST.ticketId)}` && init?.method === 'PATCH') {
+        return createJsonResponse({ error: 'Description update rejected.' }, 400)
+      }
+      throw new Error(`Unhandled fetch: ${url}`)
+    })
+
+    renderWithProviders(<DraftView ticket={makeTicket({ description: 'Original description.' })} />)
+
+    fireEvent.click(await screen.findByRole('button', { name: /edit description/i }))
+    fireEvent.change(screen.getByRole('textbox', { name: 'Ticket description' }), {
+      target: { value: 'A new description.' },
+    })
+    fireEvent.click(screen.getByRole('button', { name: 'Save' }))
+
+    expect(await screen.findByRole('alert')).toHaveTextContent('Description update rejected.')
+    expect(screen.getByRole('textbox', { name: 'Ticket description' })).toHaveValue('A new description.')
+  })
+
+  it('restores draft setting selections when their ticket updates fail', async () => {
+    mockFetch((url, init) => {
+      if (url === `/api/tickets/${encodeURIComponent(TEST.ticketId)}`) {
+        const body = JSON.parse(String(init?.body)) as Record<string, unknown>
+        const setting = 'manualQaOverride' in body
+          ? 'Manual QA'
+          : 'aiQuestionsOverride' in body
+            ? 'AI questions'
+            : 'AI question wait'
+        return createJsonResponse({ error: `${setting} update rejected.` }, 400)
+      }
+      throw new Error(`Unhandled fetch: ${url}`)
+    })
+
+    renderWithProviders(<DraftView ticket={makeTicket()} />)
+    fireEvent.click(await screen.findByRole('button', { name: /Advanced/ }))
+
+    const manualQa = within(screen.getByRole('radiogroup', { name: 'Manual QA setting' }))
+    fireEvent.click(manualQa.getByRole('radio', { name: 'Disabled' }))
+    expect(await screen.findByText(/Manual QA update rejected\./)).toBeInTheDocument()
+    expect(manualQa.getByRole('radio', { name: 'Enabled' })).toHaveAttribute('aria-checked', 'true')
+
+    const aiQuestions = within(screen.getByRole('radiogroup', { name: 'AI questions setting' }))
+    fireEvent.click(aiQuestions.getByRole('radio', { name: 'On' }))
+    expect(await screen.findByText(/AI questions update rejected\./)).toBeInTheDocument()
+    expect(aiQuestions.getByRole('radio', { name: 'Inherit' })).toHaveAttribute('aria-checked', 'true')
+
+    fireEvent.click(screen.getByRole('radio', { name: 'Set a custom ai question wait' }))
+    expect(await screen.findByText(/AI question wait update rejected\./)).toBeInTheDocument()
+    expect(screen.getByRole('radio', { name: 'Inherit ai question wait' })).toHaveAttribute('aria-checked', 'true')
+    expect(screen.queryByRole('spinbutton', { name: 'AI question wait' })).not.toBeInTheDocument()
+  })
+
+  it('falls back to the main implementer when project council JSON is malformed', async () => {
+    mockFetch((url) => {
+      throw new Error(`Unhandled fetch: ${url}`)
+    }, [{ ...projectData, councilMembers: '{invalid-json' }])
+
+    renderWithProviders(<DraftView ticket={makeTicket()} />)
+
+    expect(await screen.findByText('Current Council Members')).toBeInTheDocument()
+    expect(screen.getByText('openai/codex-mini-latest')).toBeInTheDocument()
+    expect(screen.queryByText('openai/gpt-5.3-codex')).not.toBeInTheDocument()
   })
 
   it('previews Markdown descriptions and switches back to the raw source', () => {

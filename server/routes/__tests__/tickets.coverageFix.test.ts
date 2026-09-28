@@ -188,28 +188,76 @@ describe('ticketRouter coverage gap fix route', () => {
     performCoverageExtraFixMock.mockImplementation(() => fixPromise)
 
     const firstRequest = app.request(`/api/tickets/${ticket.id}/coverage/fix-gaps`, coverageFixPayload('prd'))
-    await vi.waitFor(() => {
-      expect(performCoverageExtraFixMock).toHaveBeenCalledTimes(1)
-    })
+    try {
+      await vi.waitFor(() => {
+        expect(performCoverageExtraFixMock).toHaveBeenCalledTimes(1)
+      })
 
-    const secondResponse = await app.request(`/api/tickets/${ticket.id}/coverage/fix-gaps`, coverageFixPayload('prd'))
-    expect(secondResponse.status).toBe(409)
+      const secondResponse = await app.request(`/api/tickets/${ticket.id}/coverage/fix-gaps`, coverageFixPayload('prd'))
+      expect(secondResponse.status).toBe(409)
 
-    const approvalResponse = await app.request(`/api/tickets/${ticket.id}/approve-prd`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ expectedContentSha256: contentSha256(prdRaw) }),
-    })
-    expect(approvalResponse.status).toBe(409)
+      const approvalResponse = await app.request(`/api/tickets/${ticket.id}/approve-prd`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ expectedContentSha256: contentSha256(prdRaw) }),
+      })
+      expect(approvalResponse.status).toBe(409)
+    } finally {
+      resolveFix({
+        domain: 'prd',
+        status: 'gaps',
+        remainingGaps: ['Gap remains.'],
+        extraFixNumber: 1,
+        changed: true,
+        summary: 'Extra Fix 1 revised PRD Candidate v1 into PRD Candidate v2; 1 gap remains.',
+      })
+      const firstResponse = await firstRequest
+      expect(firstResponse.status).toBe(200)
+      expect(await firstResponse.json()).toMatchObject({
+        result: { domain: 'prd', remainingGaps: ['Gap remains.'] },
+      })
+    }
 
-    resolveFix({
-      domain: 'prd',
-      status: 'gaps',
-      remainingGaps: ['Gap remains.'],
-      extraFixNumber: 1,
-      changed: true,
-      summary: 'Extra Fix 1 revised PRD Candidate v1 into PRD Candidate v2; 1 gap remains.',
+  })
+
+  it('blocks beads approval while a beads coverage fix is running', async () => {
+    const { app, ticket } = await setupPrdApprovalTicket()
+    patchTicket(ticket.id, { status: 'WAITING_BEADS_APPROVAL' })
+
+    let resolveFix!: (value: unknown) => void
+    const fixPromise = new Promise<unknown>((resolve) => {
+      resolveFix = resolve
     })
-    await firstRequest
+    performCoverageExtraFixMock.mockImplementation(() => fixPromise)
+
+    const fixRequest = app.request(`/api/tickets/${ticket.id}/coverage/fix-gaps`, coverageFixPayload('beads'))
+    try {
+      await vi.waitFor(() => {
+        expect(performCoverageExtraFixMock).toHaveBeenCalledTimes(1)
+      })
+
+      const approvalResponse = await app.request(`/api/tickets/${ticket.id}/approve-beads`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ expectedContentSha256: contentSha256('beads draft') }),
+      })
+      expect(approvalResponse.status).toBe(409)
+      expect(await approvalResponse.json()).toEqual({ error: 'Coverage gap fix is in progress' })
+    } finally {
+      resolveFix({
+        domain: 'beads',
+        status: 'gaps',
+        remainingGaps: ['A Beads gap remains.'],
+        extraFixNumber: 1,
+        changed: false,
+        summary: 'Extra Fix 1 made no artifact changes; 1 gap remains in Implementation Plan v1.',
+      })
+      const fixResponse = await fixRequest
+      expect(fixResponse.status).toBe(200)
+      expect(await fixResponse.json()).toMatchObject({
+        result: { domain: 'beads', remainingGaps: ['A Beads gap remains.'] },
+      })
+    }
+
   })
 })

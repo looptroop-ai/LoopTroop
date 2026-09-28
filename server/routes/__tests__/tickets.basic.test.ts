@@ -22,8 +22,15 @@ vi.mock('../../opencode/sessionManager', () => ({
   abortTicketSessions: vi.fn(async () => true),
 }))
 
-import { ensureActorForTicket, sendTicketEvent } from '../../machines/persistence'
+import { createTicketActor, ensureActorForTicket, sendTicketEvent } from '../../machines/persistence'
 import { claimInterviewBatch, handleInterviewQABatch, processInterviewBatchAsync, releaseInterviewBatch } from '../../workflow/runner'
+import {
+  claimInterviewBatch as claimDurableInterviewBatch,
+  claimInterviewBatchAfterConfirmedStop,
+  getPendingInterviewBatchStopToken,
+  markInterviewBatchStopPending,
+  releaseInterviewBatch as releaseDurableInterviewBatch,
+} from '../../workflow/phases/interviewPhase'
 import { abortTicketSessions } from '../../opencode/sessionManager'
 import { ticketRouter } from '../tickets'
 
@@ -177,6 +184,32 @@ describe('ticketRouter basic ticket routes', () => {
     expect(await missingResponse.json()).toEqual({ error: 'Ticket not found' })
   })
 
+  it('creates a ticket and reports a missing project', async () => {
+    const { project } = createBasicTicket()
+    const created = await app.request('/api/tickets', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ projectId: project.id, title: 'Created through the API' }),
+    })
+
+    expect(created.status).toBe(201)
+    const ticket = await created.json() as { id: string; projectId: number; title: string }
+    expect(ticket).toMatchObject({ projectId: project.id, title: 'Created through the API' })
+    expect(createTicketActor).toHaveBeenCalledWith(ticket.id, expect.objectContaining({
+      ticketId: ticket.id,
+      projectId: project.id,
+      title: 'Created through the API',
+    }))
+
+    const missingProject = await app.request('/api/tickets', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ projectId: 999_999, title: 'Missing project' }),
+    })
+    expect(missingProject.status).toBe(404)
+    expect(await missingProject.json()).toEqual({ error: 'Project not found' })
+  })
+
   it('exposes cleanup warning summaries from the latest cleanup report', async () => {
     const { ticket } = createBasicTicket()
     insertPhaseArtifact(ticket.id, {
@@ -248,6 +281,28 @@ describe('ticketRouter basic ticket routes', () => {
       error: 'Status field is API-protected. Use workflow actions to change status.',
     })
     expect(getTicketByRef(ticket.id)?.status).toBe('DRAFT')
+  })
+
+  it('returns 404 for a missing ticket and rejects override edits after the draft phase', async () => {
+    const missing = await app.request('/api/tickets/missing-ticket', {
+      method: 'PATCH',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ title: 'No ticket' }),
+    })
+    expect(missing.status).toBe(404)
+    expect(await missing.json()).toEqual({ error: 'Ticket not found' })
+
+    const { ticket } = createBasicTicket()
+    patchTicket(ticket.id, { status: 'WAITING_INTERVIEW_ANSWERS' })
+    const response = await app.request(`/api/tickets/${ticket.id}`, {
+      method: 'PATCH',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ manualQaOverride: true }),
+    })
+    expect(response.status).toBe(409)
+    expect(await response.json()).toEqual({
+      error: 'Manual QA override can only be changed while the ticket is in DRAFT status.',
+    })
   })
 
   it('keeps direct interview answer submission disabled', async () => {
@@ -374,6 +429,161 @@ describe('ticketRouter basic ticket routes', () => {
     })
     expect(unknown.status).toBe(400)
     expect(claimInterviewBatch).not.toHaveBeenCalled()
+  })
+
+  it('rejects malformed answer batches, incompatible selections, and reasons for answered questions', async () => {
+    const notWaiting = createBasicTicket().ticket
+    const wrongStatus = await app.request(`/api/tickets/${notWaiting.id}/answer-batch`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ batchNumber: 1, answers: {} }),
+    })
+    expect(wrongStatus.status).toBe(409)
+    expect(await wrongStatus.json()).toEqual({ error: 'Ticket is not waiting for interview answers' })
+
+    const malformedTicket = createInterviewBatchTicket()
+    const malformed = await app.request(`/api/tickets/${malformedTicket.id}/answer-batch`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: '{',
+    })
+    expect(malformed.status).toBe(400)
+    expect(await malformed.json()).toEqual({ error: 'Answer batch request body must be valid JSON' })
+
+    const invalidPayloadTicket = createInterviewBatchTicket()
+    const invalidPayload = await app.request(`/api/tickets/${invalidPayloadTicket.id}/answer-batch`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ batchNumber: 0, answers: {} }),
+    })
+    expect(invalidPayload.status).toBe(400)
+    expect(await invalidPayload.json()).toMatchObject({ error: 'Invalid answers payload' })
+
+    const invalidSelectionTicket = createInterviewBatchTicket()
+    const invalidSelection = await app.request(`/api/tickets/${invalidSelectionTicket.id}/answer-batch`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ batchNumber: 1, answers: {}, selectedOptions: { Q01: ['option-a'] } }),
+    })
+    expect(invalidSelection.status).toBe(400)
+    expect(await invalidSelection.json()).toMatchObject({
+      error: 'Invalid answers payload',
+      details: ['Question Q01 is free text and cannot carry selected options.'],
+    })
+
+    const reasonTicket = createInterviewBatchTicket()
+    const reasonForAnswer = await app.request(`/api/tickets/${reasonTicket.id}/answer-batch`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        batchNumber: 1,
+        answers: { Q01: 'This is an answer, not a skip.' },
+        skipReasons: { Q01: 'Not applicable.' },
+      }),
+    })
+    expect(reasonForAnswer.status).toBe(400)
+    expect(await reasonForAnswer.json()).toEqual({
+      error: 'A skip reason was sent for a question that is not being skipped',
+      questionIds: ['Q01'],
+    })
+    expect(claimInterviewBatch).not.toHaveBeenCalled()
+  })
+
+  it('moves a completed synchronous batch into the interview-complete state when the final answer is skipped', async () => {
+    const ticket = createInterviewBatchTicket()
+    vi.mocked(handleInterviewQABatch).mockResolvedValueOnce({
+      questions: [],
+      progress: { current: 1, total: 1 },
+      isComplete: true,
+      isFinalFreeForm: true,
+      aiCommentary: 'The interview is complete.',
+      batchNumber: 1,
+    })
+
+    const response = await app.request(`/api/tickets/${ticket.id}/answer-batch`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ batchNumber: 1, answers: { Q01: '' } }),
+    })
+
+    expect(response.status).toBe(200)
+    expect(await response.json()).toMatchObject({ isComplete: true, isFinalFreeForm: true })
+    expect(handleInterviewQABatch).toHaveBeenCalledWith(ticket.id, { Q01: '' }, {}, {}, undefined, expect.any(String))
+    expect(sendTicketEvent).toHaveBeenCalledWith(ticket.id, { type: 'INTERVIEW_COMPLETE' })
+  })
+
+  it('announces a completed asynchronous batch after accepting it', async () => {
+    const ticket = createInterviewBatchTicket()
+    const previousMode = process.env.LOOPTROOP_OPENCODE_MODE
+    delete process.env.LOOPTROOP_OPENCODE_MODE
+    vi.mocked(processInterviewBatchAsync).mockResolvedValueOnce({
+      questions: [],
+      progress: { current: 1, total: 1 },
+      isComplete: true,
+      isFinalFreeForm: true,
+      aiCommentary: 'The interview is complete.',
+      batchNumber: 1,
+    })
+
+    try {
+      const response = await app.request(`/api/tickets/${ticket.id}/answer-batch`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ batchNumber: 1, answers: { Q01: 'The final answer.' } }),
+      })
+
+      expect(response.status).toBe(202)
+      expect(await response.json()).toEqual({ accepted: true })
+      await vi.waitFor(() => expect(sendTicketEvent).toHaveBeenCalledWith(ticket.id, { type: 'INTERVIEW_COMPLETE' }))
+    } finally {
+      if (previousMode === undefined) delete process.env.LOOPTROOP_OPENCODE_MODE
+      else process.env.LOOPTROOP_OPENCODE_MODE = previousMode
+    }
+  })
+
+  it('releases the answer claim and returns an error when synchronous batch processing fails', async () => {
+    const ticket = createInterviewBatchTicket()
+    vi.mocked(handleInterviewQABatch).mockRejectedValueOnce(new Error('Synthetic batch failure.'))
+
+    const response = await app.request(`/api/tickets/${ticket.id}/answer-batch`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ batchNumber: 1, answers: { Q01: 'An answer.' } }),
+    })
+
+    expect(response.status).toBe(500)
+    expect(await response.json()).toEqual({
+      error: 'Failed to process batch',
+      details: 'Synthetic batch failure.',
+    })
+    expect(releaseInterviewBatch).toHaveBeenCalledWith(ticket.id, expect.any(String))
+  })
+
+  it('refuses answer submission while a skip-all stop is awaiting confirmation', async () => {
+    const ticket = createInterviewBatchTicket()
+    const initialClaim = claimDurableInterviewBatch(ticket.id)
+    expect(initialClaim).toBeTruthy()
+    expect(markInterviewBatchStopPending(ticket.id, initialClaim!, 'skip')).toBe(true)
+    const pendingStopToken = getPendingInterviewBatchStopToken(ticket.id, 'skip')
+    expect(pendingStopToken).toBeTruthy()
+
+    try {
+      const response = await app.request(`/api/tickets/${ticket.id}/answer-batch`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ batchNumber: 1, answers: { Q01: 'Do not overlap skip-all.' } }),
+      })
+      expect(response.status).toBe(409)
+      expect(await response.json()).toEqual({
+        error: 'A skip-all stop is awaiting confirmation; try again shortly',
+      })
+      expect(handleInterviewQABatch).not.toHaveBeenCalled()
+    } finally {
+      if (pendingStopToken) {
+        const confirmedClaim = claimInterviewBatchAfterConfirmedStop(ticket.id, 'skip', pendingStopToken)
+        if (confirmedClaim) releaseDurableInterviewBatch(ticket.id, confirmedClaim)
+      }
+    }
   })
 
   it('keeps a timeout claim when mocked processing cannot provide durable state', async () => {

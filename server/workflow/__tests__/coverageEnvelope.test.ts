@@ -1,15 +1,26 @@
-import { describe, expect, it } from 'vitest'
+import { afterAll, beforeEach, describe, expect, it, vi } from 'vitest'
+import * as jsYaml from 'js-yaml'
+import { existsSync, readFileSync, writeFileSync } from 'node:fs'
+import { TEST, makeInterviewYaml, makePrdYaml } from '../../test/factories'
+import { createInitializedTestTicket, createTestRepoManager, resetTestDb } from '../../test/integration'
+import { getLatestPhaseArtifact, insertPhaseArtifact } from '../../storage/tickets'
+import { buildPrdRefinedArtifact, validatePrdRefinementOutput } from '../../phases/prd/refined'
 
-// Deliberately no `vi.mock('../../opencode/factory')` here. This file runs in
-// the `server-pure` project, which sets `isolate: false` so its files share one
-// module registry per worker. A factory mock in this file leaked into
-// `server/opencode/__tests__/providerCatalog.test.ts` whenever the two landed in
-// the same worker in that order, stubbing `isMockOpenCodeMode` to `false` and
-// failing its mock-mode test. Importing `verificationPhase` needs no mock.
+const { runOpenCodePromptMock } = vi.hoisted(() => ({
+  runOpenCodePromptMock: vi.fn(),
+}))
+
+vi.mock('../runOpenCodePrompt', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('../runOpenCodePrompt')>()),
+  runOpenCodePrompt: runOpenCodePromptMock,
+}))
+
 import {
+  handleCoverageVerification,
   normalizeBeadsCoverageEnvelope,
   normalizeInterviewCoverageEnvelope,
   normalizePrdCoverageEnvelope,
+  performCoverageExtraFix,
   reconcileExhaustedCoverageEnvelope,
 } from '../phases/verificationPhase'
 import type { CoverageResultEnvelope } from '../../structuredOutput'
@@ -18,6 +29,107 @@ const followUp = { id: 'FU1', question: 'Which platforms?' }
 
 function envelope(overrides: Partial<CoverageResultEnvelope> = {}): CoverageResultEnvelope {
   return { status: 'clean', gaps: [], followUpQuestions: [], ...overrides }
+}
+
+const repoManager = createTestRepoManager('verification-coverage-extra-fix')
+const coverageGap = 'Document the expected behavior when coverage retries are exhausted.'
+
+function buildCoverageRevision(candidateContent: string, gap: string, changed: boolean): string {
+  const document = jsYaml.load(candidateContent) as Record<string, unknown>
+  const epics = document.epics as Array<Record<string, unknown>>
+  const epic = epics[0]!
+  const beforeTitle = String(epic.title)
+  const afterTitle = changed ? `${beforeTitle} with retry exhaustion behavior` : beforeTitle
+
+  if (changed) {
+    epic.title = afterTitle
+    document.changes = [{
+      type: 'modified',
+      item_type: 'epic',
+      before: { id: epic.id, title: beforeTitle },
+      after: { id: epic.id, title: afterTitle },
+      inspiration: null,
+    }]
+  }
+
+  document.gap_resolutions = [{
+    gap,
+    action: changed ? 'updated_prd' : 'left_unresolved',
+    rationale: changed
+      ? 'The epic now records the retry-exhaustion behavior.'
+      : 'The current PRD does not define this behavior, so the gap remains open.',
+    affected_items: [{ item_type: 'epic', id: epic.id, label: afterTitle }],
+  }]
+
+  return jsYaml.dump(document, { lineWidth: 120, noRefs: true }) as string
+}
+
+async function setupPrdCoverage(options: { writePrd?: boolean; lockedMainImplementer?: string | null } = {}) {
+  const { ticket, context, paths } = await createInitializedTestTicket(repoManager)
+  const winnerId = TEST.councilMembers[0]
+  const interviewContent = makeInterviewYaml({ ticket_id: ticket.externalId })
+  const rawCandidate = makePrdYaml({ ticketId: ticket.externalId })
+  let candidate = rawCandidate
+  for (let pass = 0; pass < 3; pass += 1) {
+    candidate = validatePrdRefinementOutput(candidate, {
+      ticketId: ticket.externalId,
+      interviewContent,
+      winnerDraftContent: candidate,
+      missingChangesPolicy: 'accounted_elsewhere',
+    }).refinedContent
+  }
+
+  writeFileSync(`${paths.ticketDir}/interview.yaml`, interviewContent, 'utf-8')
+  if (options.writePrd !== false) {
+    writeFileSync(`${paths.ticketDir}/prd.yaml`, candidate, 'utf-8')
+  }
+
+  context.lockedMainImplementer = options.lockedMainImplementer === undefined
+    ? TEST.implementer
+    : options.lockedMainImplementer
+  context.lockedMainImplementerVariant = context.lockedMainImplementer ? 'main-variant' : null
+  context.lockedCouncilMembers = [winnerId, TEST.councilMembers[1]]
+  context.lockedCouncilMemberVariants = { [winnerId]: 'council-variant' }
+
+  insertPhaseArtifact(ticket.id, {
+    phase: 'DRAFTING_PRD',
+    artifactType: 'prd_full_answers',
+    content: JSON.stringify({ drafts: [{ memberId: winnerId, outcome: 'completed', content: interviewContent }] }),
+  })
+  insertPhaseArtifact(ticket.id, {
+    phase: 'REFINING_PRD',
+    artifactType: 'prd_winner',
+    content: JSON.stringify({ winnerId }),
+  })
+  insertPhaseArtifact(ticket.id, {
+    phase: 'VERIFYING_PRD_COVERAGE',
+    artifactType: 'prd_coverage',
+    content: JSON.stringify({
+      winnerId,
+      status: 'gaps',
+      gaps: [coverageGap],
+      coverageRunNumber: 1,
+      maxCoveragePasses: 3,
+      finalCandidateVersion: 1,
+      attempts: [{
+        candidateVersion: 1,
+        status: 'gaps',
+        summary: 'PRD Candidate v1 still has 1 gap.',
+        gaps: [coverageGap],
+        auditNotes: '',
+        response: '',
+        normalizedContent: '',
+        structuredOutput: {},
+        coverageRunNumber: 1,
+        maxCoveragePasses: 3,
+        limitReached: false,
+        terminationReason: 'gaps',
+      }],
+      transitions: [],
+    }),
+  })
+
+  return { ticket, context, paths, winnerId, interviewContent, candidate }
 }
 
 describe('interview coverage envelope', () => {
@@ -121,5 +233,145 @@ describe('PRD and beads coverage envelopes keep their existing contract', () => 
     expect(result.validationError).toBe(
       `${label} coverage reported status gaps but did not return any non-empty gap strings. Return at least one concrete gap string.`,
     )
+  })
+})
+
+describe('PRD coverage extra-fix recovery paths', () => {
+  beforeEach(() => {
+    resetTestDb()
+    runOpenCodePromptMock.mockReset()
+  })
+
+  afterAll(() => {
+    repoManager.cleanup()
+  })
+
+  it('records a no-change extra fix while keeping unresolved gaps and the current candidate version', async () => {
+    const { ticket, context, paths, candidate } = await setupPrdCoverage({ lockedMainImplementer: null })
+    runOpenCodePromptMock
+      .mockResolvedValueOnce({
+        session: { id: 'prd-extra-fix-no-change-revision', projectPath: paths.worktreePath },
+        response: buildCoverageRevision(candidate, coverageGap, false),
+        messages: [],
+      })
+      .mockResolvedValueOnce({
+        session: { id: 'prd-extra-fix-no-change-audit', projectPath: paths.worktreePath },
+        response: ['status: gaps', 'gaps:', `  - ${coverageGap}`, 'follow_up_questions: []'].join('\n'),
+        messages: [],
+      })
+
+    await expect(performCoverageExtraFix({
+      ticketId: ticket.id,
+      context,
+      domain: 'prd',
+      signal: new AbortController().signal,
+    })).resolves.toMatchObject({
+      domain: 'prd',
+      status: 'gaps',
+      remainingGaps: [coverageGap],
+      extraFixNumber: 1,
+      changed: false,
+      summary: expect.stringContaining('made no artifact changes'),
+    })
+
+    expect(runOpenCodePromptMock).toHaveBeenCalledTimes(2)
+    expect(runOpenCodePromptMock.mock.calls.map(([options]) => options.variant)).toEqual([
+      'council-variant',
+      'council-variant',
+    ])
+    expect(getLatestPhaseArtifact(ticket.id, 'prd_coverage_revision', 'WAITING_PRD_APPROVAL')).toBeUndefined()
+    expect(readFileSync(`${paths.ticketDir}/prd.yaml`, 'utf-8').trim()).toBe(candidate.trim())
+    expect(JSON.parse(getLatestPhaseArtifact(ticket.id, 'prd_coverage', 'WAITING_PRD_APPROVAL')!.content)).toMatchObject({
+      status: 'gaps',
+      finalCandidateVersion: 1,
+      remainingGaps: [coverageGap],
+    })
+  })
+
+  it('persists a changed candidate when its follow-up audit still finds gaps and honors locked model variants', async () => {
+    const { ticket, context, paths, candidate, winnerId } = await setupPrdCoverage({ lockedMainImplementer: TEST.councilMembers[0] })
+    runOpenCodePromptMock
+      .mockResolvedValueOnce({
+        session: { id: 'prd-extra-fix-still-gaps-revision', projectPath: paths.worktreePath },
+        response: buildCoverageRevision(candidate, coverageGap, true),
+        messages: [],
+      })
+      .mockResolvedValueOnce({
+        session: { id: 'prd-extra-fix-still-gaps-audit', projectPath: paths.worktreePath },
+        response: ['status: gaps', 'gaps:', `  - ${coverageGap}`, 'follow_up_questions: []'].join('\n'),
+        messages: [],
+      })
+
+    await expect(performCoverageExtraFix({
+      ticketId: ticket.id,
+      context,
+      domain: 'prd',
+      signal: new AbortController().signal,
+    })).resolves.toMatchObject({
+      domain: 'prd',
+      status: 'gaps',
+      remainingGaps: [coverageGap],
+      extraFixNumber: 1,
+      changed: true,
+      summary: expect.stringContaining('revised PRD Candidate v1 into PRD Candidate v2'),
+    })
+
+    expect(runOpenCodePromptMock).toHaveBeenCalledTimes(2)
+    expect(runOpenCodePromptMock.mock.calls.map(([options]) => options.variant)).toEqual([
+      'main-variant',
+      'council-variant',
+    ])
+    expect(JSON.parse(getLatestPhaseArtifact(ticket.id, 'prd_coverage_revision', 'WAITING_PRD_APPROVAL')!.content)).toMatchObject({
+      winnerId,
+      candidateVersion: 2,
+      source: 'ai_fix_button',
+      extraFixNumber: 1,
+    })
+    expect(readFileSync(`${paths.ticketDir}/prd.yaml`, 'utf-8')).toContain('with retry exhaustion behavior')
+    expect(JSON.parse(getLatestPhaseArtifact(ticket.id, 'prd_coverage', 'WAITING_PRD_APPROVAL')!.content)).toMatchObject({
+      status: 'gaps',
+      finalCandidateVersion: 2,
+      remainingGaps: [coverageGap],
+    })
+  })
+
+  it('restores a missing PRD from the scoped refined artifact when the latest unscoped artifact is malformed', async () => {
+    const { ticket, context, paths, candidate } = await setupPrdCoverage({
+      writePrd: false,
+      lockedMainImplementer: null,
+    })
+    const winnerId = TEST.councilMembers[0]
+    const interviewContent = makeInterviewYaml({ ticket_id: ticket.externalId })
+    const refinement = validatePrdRefinementOutput(candidate, {
+      ticketId: ticket.externalId,
+      interviewContent,
+      winnerDraftContent: candidate,
+      missingChangesPolicy: 'accounted_elsewhere',
+    })
+    const refinedArtifact = buildPrdRefinedArtifact(winnerId, candidate, refinement)
+    insertPhaseArtifact(ticket.id, {
+      phase: 'REFINING_PRD',
+      artifactType: 'prd_refined',
+      content: JSON.stringify(refinedArtifact),
+    })
+    insertPhaseArtifact(ticket.id, {
+      phase: 'WAITING_PRD_APPROVAL',
+      artifactType: 'prd_refined',
+      content: '{malformed latest refined artifact',
+    })
+    runOpenCodePromptMock.mockResolvedValueOnce({
+      session: { id: 'prd-coverage-recovered-candidate-audit', projectPath: paths.worktreePath },
+      response: ['status: clean', 'gaps: []', 'follow_up_questions: []'].join('\n'),
+      messages: [],
+    })
+    const sendEvent = vi.fn()
+
+    await handleCoverageVerification(ticket.id, context, sendEvent, 'prd', new AbortController().signal)
+
+    expect(existsSync(`${paths.ticketDir}/prd.yaml`)).toBe(true)
+    expect(readFileSync(`${paths.ticketDir}/prd.yaml`, 'utf-8').trim()).toBe(refinedArtifact.refinedContent.trim())
+    expect(runOpenCodePromptMock).toHaveBeenCalledTimes(1)
+    expect(runOpenCodePromptMock.mock.calls[0]?.[0]?.variant).toBe('council-variant')
+    expect(sendEvent).toHaveBeenCalledWith({ type: 'COVERAGE_CLEAN' })
   })
 })

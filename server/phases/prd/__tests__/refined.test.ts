@@ -134,6 +134,18 @@ describe.concurrent('PRD refined artifacts', () => {
     expect(retryPrompt[0]?.content).toContain('Every epic must include at least one fully populated `user_stories` entry')
   })
 
+  it('removes a legacy changes list from the previous response while retaining the base prompt', () => {
+    const base = { type: 'text' as const, content: 'Keep this context.' }
+    const retryPrompt = buildPrdRefinementRetryPrompt([base], {
+      validationError: 'The previous changes list was invalid.',
+      rawResponse: buildPrdContent({ changes: [{ type: 'added', item_type: 'user_story' }] }),
+    })
+
+    expect(retryPrompt[0]).toEqual(base)
+    expect(retryPrompt[1]?.content).toContain('product:')
+    expect(retryPrompt[1]?.content).not.toContain('\nchanges:')
+  })
+
   it('validates a refined PRD only when changes fully and exactly cover the winner-to-final diff', () => {
     const result = validatePrdRefinementOutput(buildValidRefinementOutput(), {
       ...validationContext(),
@@ -190,6 +202,17 @@ describe.concurrent('PRD refined artifacts', () => {
     expect(warningText).toContain('no item-level changes were reconstructed')
     expect(warningText).not.toContain('Reconstructed omitted item-level changes')
     expect(result.repairApplied).toBe(true)
+  })
+
+  it('allows document edits when the caller accounts for them elsewhere', () => {
+    const result = validatePrdRefinementOutput(
+      buildPrdContent({ problemStatement: 'Keep PRD changes in the external gap resolution list.' }),
+      validationContext({ missingChangesPolicy: 'accounted_elsewhere' }),
+    )
+
+    expect(result.document.product.problem_statement).toBe('Keep PRD changes in the external gap resolution list.')
+    expect(result.changes).toEqual([])
+    expect(result.repairWarnings.join('\n')).not.toContain(PRD_MISSING_CHANGES_WARNING)
   })
 
   it('rejects a refinement that added a story without returning changes', () => {
@@ -502,6 +525,30 @@ describe.concurrent('PRD refined artifacts', () => {
     expect(result.repairWarnings.join('\n')).toContain('Collapsed duplicate PRD refinement modified change')
   })
 
+  it('preserves matching inspiration when collapsing duplicate modified changes', () => {
+    const winnerDraftContent = buildPrdContent({ includeStoryTwo: false })
+    const result = validatePrdRefinementOutput(buildPrdContent({
+      storyOneTitle: 'Validate PRD refinement exactly',
+      includeStoryTwo: false,
+      changes: [1, 2].map(() => ({
+        type: 'modified',
+        item_type: 'user_story',
+        before: { id: 'US-1', title: 'Validate PRD refinement' },
+        after: { id: 'US-1', title: 'Validate PRD refinement exactly' },
+        inspiration: { alternative_draft: 1, item: { id: 'US-8', title: 'Expose retry telemetry' } },
+      })),
+    }), {
+      ...validationContext({ winnerDraftContent }),
+      losingDraftMeta: [{ memberId: 'openai/gpt-5-mini' }],
+    })
+
+    expect(result.changes).toHaveLength(1)
+    expect(result.changes[0]).toMatchObject({
+      inspiration: { draftIndex: 0, memberId: 'openai/gpt-5-mini' },
+      attributionStatus: 'inspired',
+    })
+  })
+
   it('synthesizes omitted same-identity user story modifications', () => {
     const winnerDraftContent = buildPrdContent({ includeStoryTwo: false })
     const result = validatePrdRefinementOutput(buildPrdContent({
@@ -715,6 +762,25 @@ describe.concurrent('PRD refined artifacts', () => {
     })
   })
 
+  it('clears inspiration references to losing drafts that do not exist', () => {
+    const result = validatePrdRefinementOutput(buildPrdContent({
+      includeStoryThree: true,
+      changes: [{
+        type: 'added', item_type: 'user_story', before: null,
+        after: { id: 'US-3', title: 'Surface retry metadata' },
+        inspiration: { alternative_draft: 2, item: { id: 'US-8', title: 'Expose retry telemetry' } },
+      }],
+    }), {
+      ...validationContext({ winnerDraftContent: buildPrdContent({ includeStoryThree: false }) }),
+      losingDraftMeta: [{ memberId: 'openai/gpt-5-mini' }],
+    })
+
+    expect(result.changes[0]).toMatchObject({ inspiration: null, attributionStatus: 'invalid_unattributed' })
+    expect(result.repairWarnings).toContain(
+      'Cleared out-of-range PRD refinement inspiration at index 0 because alternative draft 2 does not exist.',
+    )
+  })
+
   it('defaults uninspired edits to model_unattributed', () => {
     const result = validatePrdRefinementOutput(buildPrdContent({
       storyOneTitle: 'Validate PRD refinement exactly',
@@ -761,6 +827,26 @@ describe.concurrent('PRD refined artifacts', () => {
       autoRetryCount: 1,
       validationError: 'PRD refinement output is missing changes',
     })
+    expect(() => buildPrdRefinedArtifact('  ', refinement.winnerDraftContent, refinement))
+      .toThrow('PRD refined artifact is missing winnerId')
     expect(() => requirePrdRefinedArtifact(undefined)).toThrow('No validated refined PRD found')
+  })
+
+  it('derives metrics when persisted metrics are malformed', () => {
+    const parsed = parsePrdRefinedArtifact(JSON.stringify({
+      refinedContent: buildPrdContent({ includeStoryTwo: false }),
+      draftMetrics: { epicCount: 1.5, userStoryCount: 1 },
+    }))
+
+    expect(parsed.draftMetrics).toEqual({ epicCount: 1, userStoryCount: 1 })
+  })
+
+  it.each([
+    ['invalid JSON', '{', 'PRD refined artifact is not valid JSON'],
+    ['non-object JSON', '[]', 'PRD refined artifact payload is invalid'],
+    ['empty refined content', JSON.stringify({ refinedContent: ' ', draftMetrics: { epicCount: 0, userStoryCount: 0 } }), 'PRD refined artifact is missing refinedContent'],
+    ['unreadable draft metrics', JSON.stringify({ refinedContent: 'not a PRD document' }), 'PRD refined artifact is missing draftMetrics'],
+  ])('rejects persisted artifacts with %s', (_label, content, message) => {
+    expect(() => parsePrdRefinedArtifact(content)).toThrow(message)
   })
 })

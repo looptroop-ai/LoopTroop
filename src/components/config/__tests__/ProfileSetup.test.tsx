@@ -764,4 +764,155 @@ describe('ProfileSetup', () => {
     fireEvent.click(screen.getByRole('button', { name: 'About' }))
     expect(onOpenAbout).toHaveBeenCalledTimes(1)
   })
+
+  it('reports disconnected and empty-model states from OpenCode health and discovery', async () => {
+    vi.mocked(fetch).mockImplementation(async (input: RequestInfo | URL) => {
+      const url = typeof input === 'string' ? input : input.toString()
+      if (url === '/api/health/opencode') return { ok: false } as Response
+      return {
+        ok: true,
+        json: async () => ({ models: [], connectedProviders: [], defaultModels: {} }),
+      } as Response
+    })
+
+    const { rendered } = await renderProfileSetup()
+    expect(await screen.findByText('OpenCode not connected')).toBeInTheDocument()
+    expect(rendered.container).toHaveTextContent('Start it with opencode serve')
+
+    rendered.unmount()
+    vi.mocked(fetch).mockImplementation(async (input: RequestInfo | URL) => {
+      const url = typeof input === 'string' ? input : input.toString()
+      if (url === '/api/health/opencode') {
+        return { ok: true, json: async () => ({ status: 'ok' }) } as Response
+      }
+      return {
+        ok: true,
+        json: async () => ({ models: [], connectedProviders: [], defaultModels: {} }),
+      } as Response
+    })
+    await renderProfileSetup()
+    expect(await screen.findByText('OpenCode connected, but no models are available')).toBeInTheDocument()
+  })
+
+  it('updates OpenRouter routing preferences while keeping suffixes attached to saved models', async () => {
+    profileForTest = {
+      ...existingProfile,
+      mainImplementer: 'openrouter/anthropic/claude-3.5-sonnet:floor',
+      councilMembers: JSON.stringify([
+        'openrouter/anthropic/claude-3.5-sonnet:floor',
+        'openrouter/google/gemini-2.5-pro:thinking',
+      ]),
+      councilMemberVariants: JSON.stringify({ 'openrouter/google/gemini-2.5-pro': 'high' }),
+    }
+    vi.mocked(fetch).mockImplementation(async (input: RequestInfo | URL) => {
+      const url = typeof input === 'string' ? input : input.toString()
+      if (url === '/api/health/opencode') {
+        return { ok: true, json: async () => ({ status: 'ok' }) } as Response
+      }
+      return {
+        ok: true,
+        json: async () => ({
+          models: [
+            { fullId: 'openrouter/anthropic/claude-3.5-sonnet', name: 'Claude 3.5 Sonnet' },
+            { fullId: 'openrouter/google/gemini-2.5-pro', name: 'Gemini 2.5 Pro' },
+          ],
+          connectedProviders: ['openrouter'],
+          defaultModels: {},
+        }),
+      } as Response
+    })
+
+    await renderProfileSetup()
+
+    const nitroButtons = screen.getAllByRole('button', { name: 'Nitro' })
+    expect(nitroButtons).toHaveLength(2)
+    fireEvent.click(nitroButtons[0]!)
+    fireEvent.click(screen.getAllByRole('button', { name: 'Free' })[1]!)
+    fireEvent.click(screen.getByRole('button', { name: 'Save' }))
+
+    await waitFor(() => expect(updateProfileMutate).toHaveBeenCalledWith(
+      expect.objectContaining({
+        mainImplementer: 'openrouter/anthropic/claude-3.5-sonnet:nitro',
+        councilMembers: JSON.stringify([
+          'openrouter/anthropic/claude-3.5-sonnet:nitro',
+          'openrouter/google/gemini-2.5-pro:free',
+        ]),
+        councilMemberVariants: JSON.stringify({ 'openrouter/google/gemini-2.5-pro:free': 'high' }),
+      }),
+      expect.anything(),
+    ))
+  })
+
+  it('removes a council member and its saved effort variant together', async () => {
+    profileForTest = {
+      ...existingProfile,
+      councilMemberVariants: JSON.stringify({ 'openai/gpt-5.1-codex': 'high' }),
+    }
+
+    await renderProfileSetup()
+    fireEvent.click(screen.getByRole('button', { name: 'Remove council member 2' }))
+    fireEvent.click(screen.getByRole('button', { name: 'Save' }))
+
+    await waitFor(() => expect(updateProfileMutate).toHaveBeenCalledWith(
+      expect.objectContaining({
+        councilMembers: JSON.stringify(['opencode/big-pickle']),
+        councilMemberVariants: '',
+      }),
+      expect.anything(),
+    ))
+  })
+
+  it('saves edits from the less common numeric settings as validated profile values', async () => {
+    await renderProfileSetup()
+    fireEvent.click(screen.getByRole('button', { name: 'Advanced' }))
+
+    const values: Record<string, string> = {
+      'OpenCode Max Steps': '99',
+      'Min Council Quorum': '2',
+      'Max Interview Questions': '30',
+      'Coverage Follow-Up Budget': '25',
+      'Interview Coverage Passes': '3',
+      'Max Bead Retries': '8',
+      'Tool Input Max Chars': '5000',
+      'Tool Output Max Chars': '14000',
+      'Tool Error Max Chars': '7000',
+    }
+    for (const [label, value] of Object.entries(values)) {
+      fireEvent.change(screen.getByLabelText(label), { target: { value } })
+    }
+    fireEvent.click(screen.getByRole('button', { name: 'Save' }))
+
+    await waitFor(() => expect(updateProfileMutate).toHaveBeenCalledWith(
+      expect.objectContaining({
+        opencodeSteps: 99,
+        minCouncilQuorum: 2,
+        interviewQuestions: 30,
+        coverageFollowUpBudgetPercent: 25,
+        maxCoveragePasses: 3,
+        maxIterations: 8,
+        toolInputMaxChars: 5000,
+        toolOutputMaxChars: 14000,
+        toolErrorMaxChars: 7000,
+      }),
+      expect.anything(),
+    ))
+  })
+
+  it('creates a first profile and closes after its save succeeds', async () => {
+    profileForTest = null
+    const onClose = vi.fn()
+    await renderProfileSetup(undefined, undefined, onClose)
+
+    fireEvent.click(screen.getByRole('button', { name: 'Main Implementer Model Search models…' }))
+    fireEvent.click(screen.getByRole('button', { name: 'Save' }))
+
+    await waitFor(() => expect(createProfileMutate).toHaveBeenCalledWith(
+      expect.objectContaining({ mainImplementer: 'openai/next-model' }),
+      expect.anything(),
+    ))
+    expect(updateProfileMutate).not.toHaveBeenCalled()
+    const options = createProfileMutate.mock.calls[0]?.[1] as { onSuccess: () => void }
+    await act(async () => { options.onSuccess() })
+    expect(onClose).toHaveBeenCalledTimes(1)
+  })
 })

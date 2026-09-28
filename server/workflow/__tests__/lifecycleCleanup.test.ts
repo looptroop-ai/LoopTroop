@@ -11,6 +11,7 @@ import {
   getTicketCancellationGeneration,
   isTicketCancellationPending,
   markTicketCancellationPending,
+  ticketAbortControllers,
 } from '../phases/state'
 import {
   claimInterviewBatch,
@@ -192,6 +193,16 @@ describe('cleanupTicketState', () => {
     cleanupTicketState(TICKET)
     expect(isTicketWorkSuspended(TICKET)).toBe(false)
     expect(hasInFlightInterviewBatch(TICKET)).toBe(false)
+  })
+
+  it('aborts the ticket controller when cancellation begins', () => {
+    const controller = new AbortController()
+    ticketAbortControllers.set(TICKET, controller)
+
+    cancelTicket(TICKET)
+
+    expect(controller.signal.aborted).toBe(true)
+    expect(ticketAbortControllers.has(TICKET)).toBe(false)
   })
 
   it('keeps cancellation ownership after a process restart', () => {

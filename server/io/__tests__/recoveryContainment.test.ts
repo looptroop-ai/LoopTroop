@@ -7,6 +7,46 @@ import { makeAtomicTmpPath } from '../atomicWrite'
 import * as fileReader from '../readFile'
 import { makeTempDir, removeTempDir } from '../../test/tempDir'
 
+const readCallRange = (buffer: ArrayBufferView, args: unknown[]) => {
+  if (typeof args[0] === 'number') {
+    return {
+      offset: Number(args[0]),
+      length: Number(args[1]),
+      position: args[2] as number | bigint | null,
+    }
+  }
+  const options = args[0] as { offset?: number; length?: number; position?: number | bigint | null } | undefined
+  return {
+    offset: options?.offset ?? 0,
+    length: options?.length ?? buffer.byteLength,
+    position: options?.position ?? null,
+  }
+}
+
+const copySparseRead = (
+  buffer: ArrayBufferView,
+  offset: number,
+  length: number,
+  position: number,
+  segments: Array<{ position: number; content: Buffer }>,
+) => {
+  const bytes = Buffer.from(buffer.buffer, buffer.byteOffset, buffer.byteLength)
+  const readEnd = position + length
+  bytes.fill(0, offset, offset + length)
+  for (const segment of segments) {
+    const copyStart = Math.max(position, segment.position)
+    const copyEnd = Math.min(readEnd, segment.position + segment.content.length)
+    if (copyStart < copyEnd) {
+      segment.content.copy(
+        bytes,
+        offset + copyStart - position,
+        copyStart - segment.position,
+        copyEnd - segment.position,
+      )
+    }
+  }
+}
+
 vi.mock('fs', async (importOriginal) => ({ ...await importOriginal<typeof import('fs')>() }))
 
 let directory: string
@@ -21,6 +61,25 @@ afterEach(() => {
 })
 
 describe('recovery descriptor containment', () => {
+  it('preserves an unreadable temp beside its existing target', () => {
+    const target = join(directory, 'runtime', 'execution-setup-profile.json')
+    const tmp = makeAtomicTmpPath(target)
+    writeFileSync(target, '{"existing":true}')
+    writeFileSync(tmp, '{"recovery":true}')
+    const open = fileReader.openFileNoFollowSync
+    vi.spyOn(fileReader, 'openFileNoFollowSync').mockImplementation((candidate, flags) => {
+      if (candidate === tmp) throw Object.assign(new Error('permission denied'), { code: 'EACCES' })
+      return open(candidate, flags)
+    })
+    const warning = vi.spyOn(console, 'warn').mockImplementation(() => {})
+
+    expect(recoverOrphanTmpFiles(directory)).toEqual([])
+
+    expect(readFileSync(target, 'utf8')).toBe('{"existing":true}')
+    expect(existsSync(tmp)).toBe(true)
+    expect(warning).toHaveBeenCalledWith(expect.stringContaining('beside its existing target'), expect.any(Error))
+  })
+
   it.each([
     ['file', false], ['alias', false], ['file', true], ['alias', true],
   ] as const)('rejects a replaced %s before linking and pins unsupported-link copies (copy fallback: %s)', (replacementKind, copyFallback) => {
@@ -455,6 +514,44 @@ describe('recovery descriptor containment', () => {
     expect(recoverOrphanTmpFiles(directory)).toEqual([target])
     expect(readFileSync(target, 'utf8')).toBe(content)
     expect(existsSync(tmp)).toBe(false)
+  })
+
+  it('checks large JSONL tails within a bounded scan and truncates only a corrupt final record', () => {
+    const path = join(directory, 'large-log.jsonl')
+    const fileSize = 257 * 1024 * 1024
+    const header = Buffer.from('{"kept":true}\n')
+    const separatorOffset = fileSize - 5 * 1024 * 1024 - 1
+    const tailStart = fileSize - Buffer.byteLength('\n{"a":0}\n')
+    let tail = Buffer.from('\n{"a":0}\n')
+    const originalFstat = fs.fstatSync
+    const originalRead = fs.readSync
+    const truncatedTo: Array<number | undefined> = []
+    writeFileSync(path, '')
+
+    vi.spyOn(fs, 'fstatSync').mockImplementation((fd, ...args) => {
+      const stats = originalFstat(fd, ...args)
+      return Object.assign(Object.create(Object.getPrototypeOf(stats)), stats, { size: fileSize })
+    })
+    vi.spyOn(fs, 'readSync').mockImplementation((fd, buffer, ...args: unknown[]) => {
+      const { offset, length, position: requestedPosition } = readCallRange(buffer, args)
+      if (requestedPosition === null) return originalRead(fd, buffer, { offset, length, position: null })
+      copySparseRead(buffer, offset, length, Number(requestedPosition), [
+        { position: 0, content: header },
+        { position: separatorOffset, content: Buffer.from('\n') },
+        { position: tailStart, content: tail },
+      ])
+      return length
+    })
+    vi.spyOn(fs, 'ftruncateSync').mockImplementation((_fd, length) => {
+      truncatedTo.push(length)
+    })
+
+    expect(fixTrailingLineCorruption(path)).toBe(false)
+    expect(truncatedTo).toEqual([])
+
+    tail = Buffer.from('\n{"a":?}\n')
+    expect(fixTrailingLineCorruption(path)).toBe(true)
+    expect(truncatedTo).toEqual([tailStart + 1])
   })
 
   it('truncates the opened file even if its pathname is replaced before reading', () => {

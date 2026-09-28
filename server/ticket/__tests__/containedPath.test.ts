@@ -1,9 +1,16 @@
-import { afterEach, beforeEach, describe, expect, it } from 'vitest'
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { mkdirSync, readFileSync, rmSync, symlinkSync, writeFileSync } from 'node:fs'
 import { join } from 'node:path'
 import { makeTempDir } from '../../test/tempDir'
 import { resolveProjectTicketContainedPath, writeProjectTicketFile } from '../containedPath'
-import { getTicketBeadsPath, readTicketMeta, writeTicketMeta } from '../metadata'
+import {
+  getTicketBeadsPath,
+  prepareTicketModelSelectionLock,
+  readTicketMeta,
+  readTicketMetaForMutation,
+  writeTicketMeta,
+} from '../metadata'
+import * as fileReader from '../../io/readFile'
 import { readFileNoFollowSync } from '../../io/readFile'
 
 let scratch: string
@@ -15,15 +22,90 @@ beforeEach(() => {
   ticketDir = join(project, '.looptroop', 'worktrees', 'ABC-1', '.ticket')
   mkdirSync(project)
 })
-afterEach(() => rmSync(scratch, { recursive: true, force: true }))
+afterEach(() => {
+  vi.restoreAllMocks()
+  rmSync(scratch, { recursive: true, force: true })
+})
 
 describe('ticket file containment', () => {
   it('preserves missing metadata and creates nested metadata through the contained writer', () => {
     expect(readTicketMeta(project, 'ABC-1')).toEqual({})
+    expect(readTicketMetaForMutation(project, 'ABC-1')).toEqual({})
     writeTicketMeta(project, 'ABC-1', { title: 'safe', baseBranch: 'feature/topic' })
     expect(readTicketMeta(project, 'ABC-1')).toEqual({ title: 'safe', baseBranch: 'feature/topic' })
     expect(getTicketBeadsPath(project, 'ABC-1', 'feature/topic'))
       .toBe(join(ticketDir, 'beads', 'feature', 'topic', '.beads', 'issues.jsonl'))
+  })
+
+  it('preserves an existing model lock unless replacing a provisional selection', () => {
+    const initialSelection = {
+      startedAt: '2026-09-28T09:00:00.000Z',
+      lockedMainImplementer: 'openai/gpt-5-codex',
+      lockedCouncilMembers: ['openai/gpt-5-codex', 'openai/gpt-5-mini'],
+    }
+    expect(prepareTicketModelSelectionLock(project, 'ABC-1', initialSelection)).toEqual(initialSelection)
+    expect(readTicketMeta(project, 'ABC-1')).toEqual({})
+
+    writeTicketMeta(project, 'ABC-1', {
+      title: 'keep metadata',
+      lockedMainImplementer: initialSelection.lockedMainImplementer,
+      lockedCouncilMembers: initialSelection.lockedCouncilMembers,
+    })
+    expect(prepareTicketModelSelectionLock(project, 'ABC-1', initialSelection)).toEqual({
+      title: 'keep metadata',
+      ...initialSelection,
+    })
+
+    const original = {
+      title: 'keep metadata',
+      startedAt: '2026-09-28T10:00:00.000Z',
+      lockedMainImplementer: 'openai/gpt-5-codex',
+      lockedCouncilMembers: ['openai/gpt-5-codex', 'openai/gpt-5-mini'],
+    }
+    writeTicketMeta(project, 'ABC-1', original)
+
+    const sameSelection = {
+      startedAt: '2026-09-28T11:00:00.000Z',
+      lockedMainImplementer: original.lockedMainImplementer,
+      lockedCouncilMembers: original.lockedCouncilMembers,
+    }
+    expect(prepareTicketModelSelectionLock(project, 'ABC-1', sameSelection)).toEqual(original)
+    expect(() => prepareTicketModelSelectionLock(project, 'ABC-1', {
+      ...sameSelection,
+      lockedMainImplementer: 'anthropic/claude-sonnet-4',
+    })).toThrow(/immutable after start/i)
+    expect(() => prepareTicketModelSelectionLock(project, 'ABC-1', {
+      ...sameSelection,
+      lockedCouncilMembers: [...original.lockedCouncilMembers].reverse(),
+    })).toThrow(/immutable after start/i)
+
+    const replacement = {
+      startedAt: '2026-09-28T12:00:00.000Z',
+      lockedMainImplementer: 'anthropic/claude-sonnet-4',
+      lockedCouncilMembers: ['anthropic/claude-sonnet-4', 'openai/gpt-5-mini'],
+    }
+    expect(prepareTicketModelSelectionLock(project, 'ABC-1', replacement, true)).toEqual({
+      ...original,
+      ...replacement,
+    })
+    expect(readTicketMeta(project, 'ABC-1')).toEqual(original)
+  })
+
+  it.each(['{bad', 'null', '[]', '42', '"text"'])('keeps malformed or non-object metadata %s readable without making it writable', (content) => {
+    writeProjectTicketFile(project, 'ABC-1', 'meta/ticket.meta.json', content)
+
+    expect(readTicketMeta(project, 'ABC-1')).toEqual({})
+    expect(() => readTicketMetaForMutation(project, 'ABC-1')).toThrow(SyntaxError)
+    expect(readFileSync(join(ticketDir, 'meta', 'ticket.meta.json'), 'utf8')).toBe(content)
+  })
+
+  it('propagates metadata I/O errors instead of treating them as an empty record', () => {
+    writeTicketMeta(project, 'ABC-1', { title: 'keep existing data' })
+    vi.spyOn(fileReader, 'readFileNoFollowSync').mockImplementation(() => {
+      throw Object.assign(new Error('permission denied'), { code: 'EACCES' })
+    })
+
+    expect(() => readTicketMetaForMutation(project, 'ABC-1')).toThrow('permission denied')
   })
 
   it('rejects ticket and branch traversal before normalizing the path', () => {

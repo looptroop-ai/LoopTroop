@@ -92,4 +92,73 @@ describe('TicketDescriptionViewer', () => {
       'https://example.com/already%20encoded%2Fpath?q=%E2%9C%93',
     )
   })
+
+  it('renders ordered lists, deeper headings, blockquotes, and horizontal rules', () => {
+    const { container } = render(
+      <TicketDescriptionViewer
+        description={[
+          '## Scope',
+          '### Checks',
+          '#### Details',
+          '',
+          '1. First ordered item',
+          '2) Second ordered item',
+          '',
+          '> First cited line',
+          '> Second cited line',
+          'After the quotation.',
+          '',
+          '---',
+        ].join('\n')}
+      />,
+    )
+
+    expect(screen.getByRole('heading', { name: 'Scope', level: 4 })).toBeInTheDocument()
+    expect(screen.getByRole('heading', { name: 'Checks', level: 5 })).toBeInTheDocument()
+    expect(screen.getByRole('heading', { name: 'Details', level: 6 })).toBeInTheDocument()
+    const orderedList = screen.getByRole('list')
+    expect(orderedList.tagName).toBe('OL')
+    expect(orderedList).toHaveTextContent('First ordered item')
+    expect(orderedList).toHaveTextContent('Second ordered item')
+    expect(screen.getByText((_content, element) => element?.tagName === 'BLOCKQUOTE')).toHaveTextContent(
+      'First cited lineSecond cited line',
+    )
+    expect(screen.getByText('After the quotation.')).toBeInTheDocument()
+    expect(container.querySelector('hr')).not.toBeNull()
+  })
+
+  it('keeps incomplete inline Markdown visible as text and renders strikethrough', () => {
+    const { container } = render(
+      <TicketDescriptionViewer
+        description={[
+          'Unclosed `code marker',
+          '[unfinished link label',
+          '[unclosed target](https://example.com',
+          '**unfinished emphasis',
+          '~~removed text~~',
+        ].join('\n')}
+      />,
+    )
+
+    expect(container.textContent).toContain('Unclosed `code marker')
+    expect(container.textContent).toContain('[unfinished link label')
+    expect(container.textContent).toContain('[unclosed target](https://example.com')
+    expect(container.textContent).toContain('**unfinished emphasis')
+    expect(container.querySelector('code')).toBeNull()
+    expect(container.querySelector('a')).toBeNull()
+    expect(container.querySelector('strong')).toBeNull()
+    expect(screen.getByText('removed text').tagName).toBe('DEL')
+  })
+
+  it('parses escaped parentheses in link targets and renders malformed URLs as text', () => {
+    render(
+      <TicketDescriptionViewer
+        description={String.raw`[escaped target](https://example.com/path\)segment)
+[invalid target](https://[invalid)`}
+      />,
+    )
+
+    expect(screen.getByRole('link', { name: 'escaped target' }).getAttribute('href')).toMatch(/^https:\/\/example\.com\//)
+    expect(screen.getByText('invalid target').tagName).toBe('SPAN')
+  })
 })

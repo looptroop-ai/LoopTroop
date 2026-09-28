@@ -127,10 +127,10 @@ function makeUIValue(overrides: Partial<UIContextValue['state']> = {}, dispatch 
   }
 }
 
-function renderShell(uiValue = makeUIValue(), onOpenAbout?: () => void, queryClient?: QueryClient) {
+function renderShell(uiValue = makeUIValue(), onOpenAbout?: () => void, queryClient?: QueryClient, isModalOpen = false) {
   return renderWithProviders(
     <UIContext.Provider value={uiValue}>
-      <AppShell onOpenAbout={onOpenAbout} onNavigateHome={() => undefined}>
+      <AppShell isModalOpen={isModalOpen} onOpenAbout={onOpenAbout} onNavigateHome={() => undefined}>
         <div>Dashboard</div>
       </AppShell>
     </UIContext.Provider>,
@@ -275,6 +275,180 @@ describe('AppShell', () => {
       type: 'SET_FILTER',
       filter: { search: 'Lumen Console' },
     })
+  })
+
+  it('normalizes and deduplicates project prefixes before sorting and limiting suggestions', () => {
+    const suggestions: Project[] = [
+      ...projects,
+      { ...projects[0]!, id: 4, name: ' Lumen Console ' },
+      { ...projects[0]!, id: 5, name: '   ' },
+      ...Array.from({ length: 10 }, (_, index) => ({
+        ...projects[0]!,
+        id: index + 10,
+        name: `L project ${String(index).padStart(2, '0')}`,
+      })),
+      { ...projects[0]!, id: 30, name: ' L project 00 ' },
+    ]
+    mockUseProjects.mockReturnValue({ data: suggestions })
+    renderShell(makeUIValue({ filters: makeFilters('  L ') }))
+    fireEvent.focus(screen.getByRole('searchbox', { name: /search tickets/i }))
+
+    expect(screen.getAllByRole('option').map((option) => option.textContent)).toEqual([
+      'L project 00',
+      'L project 01',
+      'L project 02',
+      'L project 03',
+      'L project 04',
+      'L project 05',
+      'L project 06',
+      'L project 07',
+    ])
+  })
+
+  it('shows project suggestions only while a nonempty search is focused', () => {
+    vi.useFakeTimers()
+    try {
+      renderShell(makeUIValue({ filters: makeFilters('L') }))
+      const search = screen.getByRole('searchbox', { name: /search tickets/i })
+      expect(screen.queryByRole('listbox')).not.toBeInTheDocument()
+
+      fireEvent.focus(search)
+      expect(screen.getByRole('listbox')).toBeInTheDocument()
+      fireEvent.blur(search)
+      act(() => { vi.advanceTimersByTime(100) })
+      expect(screen.queryByRole('listbox')).not.toBeInTheDocument()
+    } finally {
+      vi.useRealTimers()
+    }
+  })
+
+  it.each([
+    ['input', () => document.createElement('input')],
+    ['textarea', () => document.createElement('textarea')],
+    ['select', () => document.createElement('select')],
+    ['contenteditable element', () => {
+      const element = document.createElement('div')
+      Object.defineProperty(element, 'isContentEditable', { value: true })
+      return element
+    }],
+    ['textbox role', () => {
+      const element = document.createElement('div')
+      element.setAttribute('role', 'textbox')
+      return element
+    }],
+  ])('does not take the slash shortcut from a %s', (_name, createTarget) => {
+    renderShell()
+    const search = screen.getByRole('searchbox', { name: /search tickets/i })
+    expect(fireEvent.keyDown(search, { key: '/' })).toBe(true)
+    const target = createTarget()
+    document.body.append(target)
+
+    try {
+      expect(fireEvent.keyDown(target, { key: '/' })).toBe(true)
+      expect(screen.getByRole('button', { name: 'Open ticket search' })).toHaveAttribute('aria-expanded', 'false')
+    } finally {
+      target.remove()
+    }
+  })
+
+  it('uses the slash shortcut from a non-text target and respects modifiers and the active view', () => {
+    const matchMedia = vi.spyOn(window, 'matchMedia').mockReturnValue({ matches: true } as MediaQueryList)
+    try {
+      const view = renderShell()
+      const search = screen.getByRole('searchbox', { name: /search tickets/i })
+
+      expect(fireEvent.keyDown(document, { key: '/' })).toBe(false)
+      expect(search).toHaveFocus()
+
+      search.blur()
+      for (const modifier of ['ctrlKey', 'metaKey', 'altKey'] as const) {
+        expect(fireEvent.keyDown(document.body, { key: '/', [modifier]: true })).toBe(true)
+      }
+
+      expect(fireEvent.keyDown(document.body, { key: '/', shiftKey: true })).toBe(false)
+      expect(search).toHaveFocus()
+      view.unmount()
+    } finally {
+      matchMedia.mockRestore()
+    }
+
+    renderShell(makeUIValue({ activeView: 'ticket' }))
+    expect(fireEvent.keyDown(document.body, { key: '/' })).toBe(true)
+    expect(screen.getByRole('button', { name: 'Open ticket search' })).toHaveAttribute('aria-expanded', 'false')
+  })
+
+  it('opens, focuses, and closes the mobile search with the frame callback and empty Escape', () => {
+    const requestFrame = Object.getOwnPropertyDescriptor(window, 'requestAnimationFrame')
+    const frames: FrameRequestCallback[] = []
+    Object.defineProperty(window, 'requestAnimationFrame', {
+      configurable: true,
+      value: (callback: FrameRequestCallback) => {
+        frames.push(callback)
+        return frames.length
+      },
+    })
+    try {
+      renderShell()
+      const toggle = screen.getByRole('button', { name: 'Open ticket search' })
+      fireEvent.click(toggle)
+      expect(toggle).toHaveAttribute('aria-expanded', 'true')
+
+      const search = document.getElementById('dashboard-ticket-search-mobile')!
+      act(() => { frames.splice(0).forEach((frame) => frame(0)) })
+      expect(search).toHaveFocus()
+      fireEvent.click(toggle)
+      expect(toggle).toHaveAttribute('aria-expanded', 'false')
+      fireEvent.click(toggle)
+      expect(toggle).toHaveAttribute('aria-expanded', 'true')
+      const reopenedFromButton = document.getElementById('dashboard-ticket-search-mobile')!
+      act(() => { frames.splice(0).forEach((frame) => frame(0)) })
+      expect(reopenedFromButton).toHaveFocus()
+
+      fireEvent.keyDown(reopenedFromButton, { key: 'Escape' })
+      expect(toggle).toHaveAttribute('aria-expanded', 'false')
+      expect(document.getElementById('dashboard-ticket-search-mobile')).toBeNull()
+
+      expect(fireEvent.keyDown(document, { key: '/' })).toBe(false)
+      expect(toggle).toHaveAttribute('aria-expanded', 'true')
+      const reopenedSearch = document.getElementById('dashboard-ticket-search-mobile')!
+      act(() => { frames.splice(0).forEach((frame) => frame(0)) })
+      expect(reopenedSearch).toHaveFocus()
+    } finally {
+      if (requestFrame) Object.defineProperty(window, 'requestAnimationFrame', requestFrame)
+      else Reflect.deleteProperty(window, 'requestAnimationFrame')
+    }
+  })
+
+  it('uses the timer fallback when animation frames are unavailable', () => {
+    const requestFrame = Object.getOwnPropertyDescriptor(window, 'requestAnimationFrame')
+    const pendingFrames: Array<() => void> = []
+    const timeout = vi.spyOn(window, 'setTimeout').mockImplementation(((callback: TimerHandler) => {
+      if (typeof callback === 'function') pendingFrames.push(callback as () => void)
+      return 0
+    }) as typeof window.setTimeout)
+    try {
+      Object.defineProperty(window, 'requestAnimationFrame', {
+        configurable: true,
+        writable: true,
+        value: undefined,
+      })
+      renderShell()
+      fireEvent.click(screen.getByRole('button', { name: 'Open ticket search' }))
+      act(() => { pendingFrames.splice(0).forEach((frame) => frame()) })
+      expect(document.getElementById('dashboard-ticket-search-mobile')).toHaveFocus()
+    } finally {
+      timeout.mockRestore()
+      if (requestFrame) Object.defineProperty(window, 'requestAnimationFrame', requestFrame)
+      else Reflect.deleteProperty(window, 'requestAnimationFrame')
+    }
+  })
+
+  it('disables search and ignores the slash shortcut while a modal is open', () => {
+    renderShell(makeUIValue(), undefined, undefined, true)
+    expect(screen.getByRole('searchbox', { name: /search tickets/i })).toBeDisabled()
+    expect(screen.getByRole('button', { name: 'Open ticket search' })).toBeDisabled()
+    expect(fireEvent.keyDown(document.body, { key: '/' })).toBe(true)
+    expect(screen.getByRole('button', { name: 'Open ticket search' })).toHaveAttribute('aria-expanded', 'false')
   })
 
   it('does not show the reconnecting banner or arm a reload when backend is reachable', () => {

@@ -724,6 +724,56 @@ describe('ticketRouter PR review routes', () => {
     expect(completeCloseUnmergedMock).toHaveBeenCalledOnce()
   })
 
+  it('rejects malformed close-unmerged JSON before checking the pull request', async () => {
+    const { ticket } = await createWaitingPrReviewTicket()
+    const app = new Hono().route('/api', ticketRouter)
+
+    const response = await app.request(`/api/tickets/${ticket.id}/close-unmerged`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: '{',
+    })
+
+    expect(response.status).toBe(400)
+    expect(await response.json()).toEqual({ error: 'Close request body must be valid JSON' })
+    expect(refreshPullRequestStateMock).not.toHaveBeenCalled()
+    expect(completeCloseUnmergedMock).not.toHaveBeenCalled()
+  })
+
+  it('refuses to finish without merge when the pull request report is missing', async () => {
+    const { ticket } = await createWaitingPrReviewTicket()
+    readPullRequestReportMock.mockReturnValue(null)
+    const app = new Hono().route('/api', ticketRouter)
+
+    const response = await app.request(`/api/tickets/${ticket.id}/close-unmerged`, { method: 'POST' })
+
+    expect(response.status).toBe(409)
+    expect(await response.json()).toMatchObject({ error: expect.stringContaining('Pull request report not found') })
+    expect(refreshPullRequestStateMock).not.toHaveBeenCalled()
+    expect(completeCloseUnmergedMock).not.toHaveBeenCalled()
+  })
+
+  it('refuses a close decision when the pull request changes during remote verification', async () => {
+    const { ticket } = await createWaitingPrReviewTicket()
+    const report = readPullRequestReportMock()
+    refreshPullRequestStateMock.mockImplementationOnce(async () => {
+      readPullRequestReportMock.mockReturnValue({ ...report, prNumber: 43 })
+      return {
+        number: 42,
+        url: 'https://github.com/test/repo/pull/42',
+        state: 'draft',
+      }
+    })
+    const app = new Hono().route('/api', ticketRouter)
+
+    const response = await app.request(`/api/tickets/${ticket.id}/close-unmerged`, { method: 'POST' })
+
+    expect(response.status).toBe(409)
+    expect(await response.json()).toEqual({ error: 'The pull request changed while it was being verified. Reload and try again.' })
+    expect(refreshPullRequestStateMock).toHaveBeenCalledOnce()
+    expect(completeCloseUnmergedMock).not.toHaveBeenCalled()
+  })
+
   it('refuses Merge, Close, and Cancel when a closed-unmerged checkpoint is already recorded', async () => {
     const { ticket } = await createWaitingPrReviewTicket()
     insertClosedUnmergedCheckpoint(ticket.id)

@@ -521,11 +521,12 @@ describe('recovery descriptor containment', () => {
     const fileSize = 257 * 1024 * 1024
     const header = Buffer.from('{"kept":true}\n')
     const separatorOffset = fileSize - 5 * 1024 * 1024 - 1
-    const tailStart = fileSize - Buffer.byteLength('\n{"a":0}\n')
     let tail = Buffer.from('\n{"a":0}\n')
+    let tailStart = fileSize - tail.length
     const originalFstat = fs.fstatSync
     const originalRead = fs.readSync
     const truncatedTo: Array<number | undefined> = []
+    const warning = vi.spyOn(console, 'warn').mockImplementation(() => {})
     writeFileSync(path, '')
 
     vi.spyOn(fs, 'fstatSync').mockImplementation((fd, ...args) => {
@@ -549,7 +550,14 @@ describe('recovery descriptor containment', () => {
     expect(fixTrailingLineCorruption(path)).toBe(false)
     expect(truncatedTo).toEqual([])
 
+    tail = Buffer.alloc(4 * 1024 * 1024 + 1, 0x78)
+    tailStart = fileSize - tail.length
+    expect(fixTrailingLineCorruption(path)).toBe(false)
+    expect(warning).toHaveBeenCalledWith(expect.stringContaining('last line exceeds 4 MB scan limit'))
+    expect(truncatedTo).toEqual([])
+
     tail = Buffer.from('\n{"a":?}\n')
+    tailStart = fileSize - tail.length
     expect(fixTrailingLineCorruption(path)).toBe(true)
     expect(truncatedTo).toEqual([tailStart + 1])
   })

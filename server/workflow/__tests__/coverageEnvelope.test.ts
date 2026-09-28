@@ -5,6 +5,11 @@ import { TEST, makeInterviewYaml, makePrdYaml } from '../../test/factories'
 import { createInitializedTestTicket, createTestRepoManager, resetTestDb } from '../../test/integration'
 import { getLatestPhaseArtifact, insertPhaseArtifact } from '../../storage/tickets'
 import { buildPrdRefinedArtifact, validatePrdRefinementOutput } from '../../phases/prd/refined'
+import {
+  createInterviewSessionSnapshot,
+  INTERVIEW_SESSION_ARTIFACT,
+  serializeInterviewSessionSnapshot,
+} from '../../phases/interview/sessionState'
 
 const { runOpenCodePromptMock } = vi.hoisted(() => ({
   runOpenCodePromptMock: vi.fn(),
@@ -236,7 +241,7 @@ describe('PRD and beads coverage envelopes keep their existing contract', () => 
   })
 })
 
-describe('PRD coverage extra-fix recovery paths', () => {
+describe('coverage integration recovery paths', () => {
   beforeEach(() => {
     resetTestDb()
     runOpenCodePromptMock.mockReset()
@@ -373,5 +378,55 @@ describe('PRD coverage extra-fix recovery paths', () => {
     expect(runOpenCodePromptMock).toHaveBeenCalledTimes(1)
     expect(runOpenCodePromptMock.mock.calls[0]?.[0]?.variant).toBe('council-variant')
     expect(sendEvent).toHaveBeenCalledWith({ type: 'COVERAGE_CLEAN' })
+  })
+
+  it('emits ERROR without persisting coverage when structured output stays malformed after retries', async () => {
+    const { ticket, context, paths } = await createInitializedTestTicket(repoManager)
+    const winnerId = TEST.councilMembers[0]
+    const snapshot = createInterviewSessionSnapshot({
+      winnerId,
+      compiledQuestions: [{ id: 'Q01', phase: 'Requirements', question: 'Which requirement matters most?' }],
+      maxInitialQuestions: 1,
+    })
+    context.lockedStructuredRetryCount = 2
+    insertPhaseArtifact(ticket.id, {
+      phase: 'COMPILING_INTERVIEW',
+      artifactType: 'interview_winner',
+      content: JSON.stringify({ winnerId }),
+    })
+    insertPhaseArtifact(ticket.id, {
+      phase: 'WAITING_INTERVIEW_ANSWERS',
+      artifactType: INTERVIEW_SESSION_ARTIFACT,
+      content: serializeInterviewSessionSnapshot(snapshot),
+    })
+    runOpenCodePromptMock
+      .mockResolvedValueOnce({
+        session: { id: 'malformed-coverage-1', projectPath: paths.worktreePath },
+        response: 'not valid coverage output',
+        messages: [],
+      })
+      .mockResolvedValueOnce({
+        session: { id: 'malformed-coverage-2', projectPath: paths.worktreePath },
+        response: 'not valid coverage output',
+        messages: [],
+      })
+      .mockResolvedValueOnce({
+        session: { id: 'malformed-coverage-3', projectPath: paths.worktreePath },
+        response: 'not valid coverage output',
+        messages: [],
+      })
+    const sendEvent = vi.fn()
+
+    await handleCoverageVerification(ticket.id, context, sendEvent, 'interview', new AbortController().signal)
+
+    expect(runOpenCodePromptMock).toHaveBeenCalledTimes(3)
+    expect(sendEvent).toHaveBeenCalledWith(expect.objectContaining({
+      type: 'ERROR',
+      message: expect.stringContaining('after 2 structured retry attempt(s)'),
+      codes: ['COVERAGE_FAILED'],
+    }))
+    expect(getLatestPhaseArtifact(ticket.id, 'interview_coverage', 'VERIFYING_INTERVIEW_COVERAGE')).toBeUndefined()
+    expect(getLatestPhaseArtifact(ticket.id, 'ui_artifact_companion:interview_coverage_input', 'VERIFYING_INTERVIEW_COVERAGE')).toBeUndefined()
+    expect(getLatestPhaseArtifact(ticket.id, 'ui_artifact_companion:interview_coverage', 'VERIFYING_INTERVIEW_COVERAGE')).toBeUndefined()
   })
 })

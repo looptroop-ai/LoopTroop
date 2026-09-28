@@ -359,6 +359,33 @@ describe.concurrent('beads refinement validation', () => {
     expect(result.repairWarnings.some((warning) => warning.includes('do not fully account for the diff'))).toBe(false)
   })
 
+  it('synthesizes an omitted ID-drift edit by its unique title instead of adding and removing the bead', () => {
+    const winnerDraftContent = buildBeadsRefinementContent()
+    const refinedDocument = readBeadDocument(winnerDraftContent)
+    refinedDocument.beads[0]!.description = 'Keep the switcher accessible from the keyboard.'
+    refinedDocument.beads[1]!.id = 'bead-3'
+    refinedDocument.beads[1]!.description = 'Refresh persistence coverage with storage-shape verification.'
+    refinedDocument.changes = [modifiedChange(
+      { id: 'bead-1', label: 'Keep existing switcher bead' },
+      { id: 'bead-1', label: 'Keep existing switcher bead' },
+    )]
+
+    const result = validateBeadsRefinementOutput(writeBeadDocument(refinedDocument), { winnerDraftContent })
+
+    expect(result.changes).toHaveLength(2)
+    expect(result.changes.filter((change) => change.attributionStatus === 'synthesized_unattributed')).toEqual([
+      expect.objectContaining({
+        type: 'modified',
+        before: expect.objectContaining({ id: 'bead-2', label: 'Update persistence coverage' }),
+        after: expect.objectContaining({ id: 'bead-3', label: 'Update persistence coverage' }),
+      }),
+    ])
+    expect(result.changes.every((change) => change.type === 'modified')).toBe(true)
+    expect(result.repairWarnings).toContain(
+      'Synthesized omitted beads refinement modified change for bead "bead-2" → "bead-3" by matching title across the winning and refined drafts.',
+    )
+  })
+
   it('keeps an identical inspiration when duplicate modified records collapse', () => {
     const winnerDraftContent = buildBeadsRefinementContent()
     const change = modifiedChange(

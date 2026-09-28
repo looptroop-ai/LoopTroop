@@ -512,12 +512,15 @@ export function validateBeadsRefinementOutput(
     )
   }
 
-  const { beads: refinedBeads, changes: rawChanges } = refinementResult.value
+  const { beads: refinedBeads, changes: normalizedChanges } = refinementResult.value
+  const rawChanges = normalizedChanges.filter((change) => change.attributionStatus !== 'synthesized_unattributed')
   let normalizedContent = refinementResult.value.normalizedContent
-  const repairWarnings = [...refinementResult.repairWarnings]
+  const repairWarnings = refinementResult.repairWarnings.filter(
+    (warning) => !warning.startsWith('Synthesized omitted beads refinement '),
+  )
   let repairApplied = refinementResult.repairApplied
 
-  if (rawChanges.length === 0) {
+  if (normalizedChanges.length === 0) {
     return {
       beadSubsets: refinedBeads,
       metrics: getRefinementBeadMetrics(refinedBeads),

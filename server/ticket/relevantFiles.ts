@@ -30,8 +30,8 @@ export function buildRelevantFilesArtifact(ticketId: string, parsed: RelevantFil
   // Budget is computed from rationale + content_preview (the lightweight fields)
   let totalChars = files.reduce((sum, f) => sum + f.rationale.length + f.content_preview.length, 0)
   if (totalChars > MAX_TOTAL_CHARS) {
-    // Sort by relevance (low first) so we trim the least relevant
-    files.sort((a, b) => (RELEVANCE_ORDER[b.relevance] ?? 2) - (RELEVANCE_ORDER[a.relevance] ?? 2))
+    // Sort by relevance (high first) so popping trims the least relevant.
+    files.sort((a, b) => (RELEVANCE_ORDER[a.relevance] ?? 2) - (RELEVANCE_ORDER[b.relevance] ?? 2))
     while (totalChars > MAX_TOTAL_CHARS && files.length > 0) {
       const removed = files.pop()!
       totalChars -= removed.rationale.length + removed.content_preview.length

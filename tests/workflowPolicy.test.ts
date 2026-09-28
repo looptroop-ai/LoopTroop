@@ -16,10 +16,11 @@ type Step = {
   run?: unknown
   uses?: unknown
   env?: Record<string, unknown>
+  with?: Record<string, unknown>
   if?: unknown
   'continue-on-error'?: unknown
 }
-type Job = { permissions?: Record<string, unknown>; steps?: Step[]; if?: unknown; 'continue-on-error'?: unknown }
+type Job = { permissions?: Record<string, unknown>; steps?: Step[]; if?: unknown; 'continue-on-error'?: unknown; 'runs-on'?: unknown }
 type Workflow = { jobs?: Record<string, Job> }
 
 const workflows = new Map(files.map((file) => [
@@ -412,6 +413,23 @@ describe('release workflow policy', () => {
 
     const test = steps.findIndex((step) => step.run === 'npm run test')
     expect(test, 'the suite runs after the switch').toBeGreaterThan(switchTo)
+    expect(steps[test]?.if, 'Verify covers the duplicate Ubuntu toolchain suite with coverage')
+      .toBe("matrix.os != 'ubuntu-latest' || matrix.label != 'toolchain floor'")
+
+    const verify = workflows.get('ci.yml')?.jobs?.verify as (Job & { steps?: Array<Step & { if?: unknown; with?: Record<string, unknown> }> }) | undefined
+    expect(verify?.['runs-on'], 'the overlapping suite runs on Ubuntu').toBe('ubuntu-latest')
+    expect(verify?.steps?.some((step) => step.with?.['node-version-file'] === '.nvmrc'), 'the overlapping suite uses the toolchain floor')
+      .toBe(true)
+    const coverage = verify?.steps?.find((step) => step.run === 'npm run test:coverage')
+    expect(coverage, 'the overlapping suite still runs under coverage').toBeDefined()
+    expect(Object.hasOwn(coverage!, 'if'), 'the overlapping coverage suite stays unconditional').toBe(false)
+    const verifySteps = verify?.steps ?? []
+    const toolchainSetup = verifySteps.findIndex((step) =>
+      String(step.uses ?? '').startsWith('actions/setup-node@') && step.with?.['node-version-file'] === '.nvmrc')
+    const coverageIndex = verifySteps.findIndex((step) => step.run === 'npm run test:coverage')
+    expect(toolchainSetup, 'Verify reads the toolchain Node from .nvmrc').toBeGreaterThan(-1)
+    expect(verifySteps[toolchainSetup]?.if, 'the .nvmrc toolchain setup stays unconditional').toBeUndefined()
+    expect(toolchainSetup, '.nvmrc is installed before the coverage suite').toBeLessThan(coverageIndex)
   })
 
   /**

@@ -343,6 +343,11 @@ jobs:
         run: npm ci
 
       - name: Test
+        # Verify already runs the full suite with coverage on Ubuntu at the
+        # exact .nvmrc toolchain. Keep this matrix check name stable, but avoid
+        # running that same suite twice; the other five matrix lanes still run
+        # the complete test command.
+        if: matrix.os != 'ubuntu-latest' || matrix.label != 'toolchain floor'
         run: npm run test
 
   # A small Windows PR gate for changes that can alter executable resolution or

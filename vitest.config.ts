@@ -109,6 +109,7 @@ const clientNodeTests = [
   'src/components/workspace/__tests__/phaseArtifactTypes.test.ts',
   'src/components/workspace/__tests__/phaseAttemptSelection.test.ts',
   'src/components/workspace/__tests__/supplementalArtifacts.test.ts',
+  'src/components/workspace/textDiffSegments.test.ts',
   'src/hooks/__tests__/clearTicketCaches.test.ts',
   'src/hooks/__tests__/ticketStatusCache.test.ts',
   'src/hooks/__tests__/useTickets.test.ts',

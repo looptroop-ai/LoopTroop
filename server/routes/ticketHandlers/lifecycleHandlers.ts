@@ -39,6 +39,7 @@ import { getOpenCodeConnection } from '../../opencode/connection'
 import { getOpenCodeBaseUrl } from '../../opencode/runtimeConfig'
 import {
   archiveActivePhaseAttempts,
+  buildTicketRef,
   cleanupCanceledTicketData,
   createFreshPhaseAttempts,
   deleteTicket as deleteStoredTicket,
@@ -129,10 +130,11 @@ export async function handleStartTicket(c: Context) {
     return c.json({ error: 'Unable to read ticket metadata.' }, 500)
   }
 
-  if (startingTickets.has(ticketId)) {
+  const startKey = buildTicketRef(ticketContext.projectId, ticketContext.externalId)
+  if (startingTickets.has(startKey)) {
     return c.json({ error: 'Ticket start is already in progress' }, 429)
   }
-  startingTickets.add(ticketId)
+  startingTickets.add(startKey)
 
   try {
   const startPhase = 'DRAFT'
@@ -411,7 +413,7 @@ export async function handleStartTicket(c: Context) {
 
   return respondWithState(c, ticketId, 'Start action accepted')
   } finally {
-    startingTickets.delete(ticketId)
+    startingTickets.delete(startKey)
   }
 }
 

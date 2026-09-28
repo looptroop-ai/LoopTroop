@@ -300,8 +300,9 @@ describe('ticketRouter POST /tickets/:id/start', () => {
     })
   })
 
-  it('rejects a concurrent start while the first request validates models', async () => {
-    const { app, ticket } = setupStartTicketApp()
+  it('rejects concurrent starts through equivalent ticket refs while the first request validates models', async () => {
+    const { app, project, ticket } = setupStartTicketApp()
+    vi.mocked(validateModelSelection).mockClear()
     let validationStarted!: () => void
     let finishValidation!: (value: Awaited<ReturnType<typeof validateModelSelection>>) => void
     const started = new Promise<void>((resolve) => { validationStarted = resolve })
@@ -313,10 +314,12 @@ describe('ticketRouter POST /tickets/:id/start', () => {
 
     const firstStart = app.request(`/api/tickets/${ticket.id}/start`, { method: 'POST' })
     await started
-    const overlappingStart = await app.request(`/api/tickets/${ticket.id}/start`, { method: 'POST' })
+    const alias = `0${project.id}:${ticket.externalId}`
+    const overlappingStart = await app.request(`/api/tickets/${alias}/start`, { method: 'POST' })
 
     expect(overlappingStart.status).toBe(429)
     expect(await overlappingStart.json()).toEqual({ error: 'Ticket start is already in progress' })
+    expect(validateModelSelection).toHaveBeenCalledTimes(1)
 
     finishValidation({
       mainImplementer: 'openai/codex-mini-latest',

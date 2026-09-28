@@ -275,6 +275,8 @@ Unreleased changes appear first and represent commits that have not yet been inc
 - The unused `server/db/drizzle.config.ts` alias. Every database script already selects its app or project config explicitly, so keeping a third config that Drizzle Kit cannot discover from the repository root only advertised a command that no longer worked.
 
 ### Fixed
+- Concurrent ticket starts now share an in-flight guard across equivalent ticket reference spellings.
+- Windows full-suite test jobs now have a 40-minute timeout, so slower runners do not cancel tests that are still progressing.
 - Starting a ticket rejects malformed metadata before workspace initialization, while ticket reads remain available and the corrupt file is preserved. DRAFT rows remain retryable after interrupted lock writes, and rollback clears SQLite before metadata.
 - Escape cancels a Kanban page-number edit without letting the blur handler commit its stale value; pagination arrows follow the visible page while the input is edited.
 - Failed START dispatches clear provisional model locks and stop an actor whose persisted ticket remains in DRAFT; an actor is preserved once the ticket's stored workflow state has advanced.

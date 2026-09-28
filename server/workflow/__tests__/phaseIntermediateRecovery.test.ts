@@ -50,9 +50,17 @@ describe('tryRecoverPhaseIntermediate validates the persisted winner', () => {
       }),
     })
     const outside = repoManager.createRepo()
-    symlinkSync(outside, join(paths.ticketDir, pipeline === 'prd' ? 'interview.yaml' : 'prd.yaml'), 'junction')
-    expect(tryRecoverPhaseIntermediate(ticket.id, context, pipeline, false)).toBe(false)
-    expect(phaseIntermediate.has(`${ticket.id}:${pipeline}`)).toBe(false)
+    const outsideFile = join(outside, 'README.md')
+    const inputPath = join(paths.ticketDir, pipeline === 'prd' ? 'interview.yaml' : 'prd.yaml')
+    symlinkSync(outsideFile, inputPath, process.platform === 'win32' ? 'file' : undefined)
+    const containmentError = vi.spyOn(console, 'error').mockImplementation(() => {})
+    try {
+      expect(tryRecoverPhaseIntermediate(ticket.id, context, pipeline, false)).toBe(false)
+      expect(containmentError).toHaveBeenCalledWith(expect.stringContaining('Symbolic link escapes root'))
+      expect(phaseIntermediate.has(`${ticket.id}:${pipeline}`)).toBe(false)
+    } finally {
+      containmentError.mockRestore()
+    }
   })
   beforeEach(() => {
     resetTestDb()

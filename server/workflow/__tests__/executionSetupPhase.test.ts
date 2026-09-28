@@ -1,10 +1,11 @@
 import { afterAll, beforeEach, describe, expect, it, vi } from 'vitest'
-import { chmodSync, existsSync, mkdirSync, readFileSync, writeFileSync } from 'fs'
-import { dirname, join } from 'path'
+import { chmodSync, existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs'
+import { dirname, join } from 'node:path'
 import { makeBeadsYaml, TEST } from '../../test/factories'
 import { createInitializedTestTicket, createTestRepoManager, resetTestDb } from '../../test/integration'
 import { getLatestPhaseArtifact, upsertLatestPhaseArtifact } from '../../storage/tickets'
 import { updateProject } from '../../storage/projects'
+import { resolveContainedPath } from '../../lib/containedPath'
 import type {
   ExecutionSetupProfile,
   ExecutionSetupReport,
@@ -21,22 +22,9 @@ import {
 import { SessionManager } from '../../opencode/sessionManager'
 import { createShellCommandSpec } from '@shared/commandSpec'
 import { detectHostContext } from '../../lib/hostContext'
+import type { CommandSpec } from '@shared/commandSpec'
 
-/**
- * Quotes one argument for the shell these probe commands are handed to.
- *
- * The specs below are `mode: 'shell'`, so the script text is interpreted by
- * cmd.exe on Windows and by a POSIX shell everywhere else — the same split the
- * production executor makes when it resolves a shell. Local to this file
- * because it is scaffolding for building probe scripts, not a contract: the
- * production path never renders a shell script from parts.
- */
-function quoteShellArg(value: string): string {
-  if (process.platform === 'win32') {
-    return `"${value.replace(/"/g, '""')}"`
-  }
-  return `'${value.replace(/'/g, "'\\''")}'`
-}
+const executionSetupWrapperPath = `.ticket/runtime/execution-setup/run${process.platform === 'win32' ? '.cmd' : ''}`
 
 const {
   executeExecutionSetupWithRetriesMock,
@@ -94,7 +82,7 @@ function writeExecutionSetupPlan(
   externalId: string,
   options: {
     gitHookPolicy?: 'validate_advisory' | 'validate_required'
-    validationCommands?: Array<{ id: string; hook: string; command: string; purpose: string }>
+    validationCommands?: Array<{ id: string; hook: string; command: CommandSpec; purpose: string }>
     steps?: Array<{
       id: string
       title: string
@@ -243,10 +231,37 @@ function buildExecutionSetupGeneration(input: {
   }
 }
 
-function writeExecutableSetupWrapper(wrapperPath: string, body = '#!/usr/bin/env sh\nexec "$@"\n') {
+function nodeProcessCommand(script: string): CommandSpec {
+  return {
+    mode: 'process',
+    program: process.execPath,
+    args: ['-e', script],
+    cwd: '.',
+    env: {},
+  }
+}
+
+function executionSetupWrapperCommand(script: string): CommandSpec {
+  return {
+    mode: 'process',
+    program: `./${executionSetupWrapperPath}`,
+    args: [process.execPath, '-e', script],
+    cwd: '.',
+    env: {},
+  }
+}
+
+function writeExecutableSetupWrapper(
+  wrapperPath: string,
+  body = '#!/usr/bin/env sh\nexport LOOP_SETUP_WRAPPER=1\nexec "$@"\n',
+) {
   mkdirSync(dirname(wrapperPath), { recursive: true })
-  writeFileSync(wrapperPath, body)
-  chmodSync(wrapperPath, 0o755)
+  if (process.platform === 'win32') {
+    writeFileSync(`${wrapperPath}.cmd`, '@echo off\r\nset LOOP_SETUP_WRAPPER=1\r\n%*\r\n')
+  } else {
+    writeFileSync(wrapperPath, body)
+    chmodSync(wrapperPath, 0o755)
+  }
 }
 
 describe('handleExecutionSetup', () => {
@@ -289,9 +304,9 @@ describe('handleExecutionSetup', () => {
       title: `Execution setup hook budget ${remainingMs ?? 'unbounded'}`,
     })
     mkdirSync(paths.executionSetupDir, { recursive: true })
-    const markerPath = join(paths.executionSetupDir, 'hook-ran.txt')
+    const markerPath = resolveContainedPath(paths.worktreePath, '.ticket/runtime/execution-setup/hook-ran.txt', { allowMissingParents: true })
     const markerScript = `require('node:fs').writeFileSync(${JSON.stringify(markerPath)}, 'ran')`
-    const command = `${quoteShellArg(process.execPath)} -e ${quoteShellArg(markerScript)}`
+    const command = nodeProcessCommand(markerScript)
     writeExecutionSetupPlan(ticket.id, ticket.externalId, {
       validationCommands: [{
         id: 'write-marker',
@@ -349,8 +364,8 @@ describe('handleExecutionSetup', () => {
       title: `Execution setup ${policy} hook failure`,
     })
     updateProject(ticket.projectId, { gitHookPolicy: policy })
-    const passes = `${quoteShellArg(process.execPath)} -e ${quoteShellArg('process.exit(0)')}`
-    const fails = `${quoteShellArg(process.execPath)} -e ${quoteShellArg('process.stderr.write(String.fromCharCode(104,111,111,107,32,99,104,101,99,107,32,102,97,105,108,101,100)); process.exit(4)')}`
+    const passes = nodeProcessCommand('process.exit(0)')
+    const fails = nodeProcessCommand('process.stderr.write(String.fromCharCode(104,111,111,107,32,99,104,101,99,107,32,102,97,105,108,101,100)); process.exit(4)')
     writeExecutionSetupPlan(ticket.id, ticket.externalId, {
       gitHookPolicy: policy,
       validationCommands: [
@@ -982,7 +997,7 @@ describe('handleExecutionSetup', () => {
       title: 'Execution setup remaining validation budget',
     })
     writeExecutionSetupPlan(ticket.id, ticket.externalId)
-    const slowProbe = `${quoteShellArg(process.execPath)} -e ${quoteShellArg('setTimeout(() => {}, 1000)')}`
+    const slowProbe = nodeProcessCommand('setTimeout(() => {}, 1000)')
 
     executeExecutionSetupWithRetriesMock.mockImplementationOnce(async (...args: unknown[]) => {
       const callbacks = args[5] as {
@@ -997,7 +1012,7 @@ describe('handleExecutionSetup', () => {
         generation: buildExecutionSetupGeneration({
           profile: {
             ...readyExecutionSetupProfile(ticket.externalId),
-            toolingProbeCommands: [createShellCommandSpec(slowProbe)],
+            toolingProbeCommands: [slowProbe],
           },
         }),
         timing: {
@@ -1429,7 +1444,7 @@ describe('handleExecutionSetup', () => {
       ...readyExecutionSetupProfile(ticket.externalId),
       reusableArtifacts: [
         {
-          path: '.ticket/runtime/execution-setup/run',
+          path: executionSetupWrapperPath,
           kind: 'command-wrapper',
           purpose: 'sources prepared runtime before commands',
         },
@@ -1481,12 +1496,12 @@ describe('handleExecutionSetup', () => {
       ...readyExecutionSetupProfile(ticket.externalId),
       reusableArtifacts: [
         {
-          path: '.ticket/runtime/execution-setup/run',
+          path: executionSetupWrapperPath,
           kind: 'command-wrapper',
           purpose: 'sources prepared runtime before commands',
         },
       ],
-      toolingProbeCommands: [createShellCommandSpec(`./.ticket/runtime/execution-setup/run ${quoteShellArg(process.execPath)} -e ${quoteShellArg('process.exit(0)')}`)],
+      toolingProbeCommands: [executionSetupWrapperCommand('process.exit(0)')],
     }
 
     executeExecutionSetupWithRetriesMock.mockImplementationOnce(async (...args: unknown[]) => {
@@ -1512,9 +1527,7 @@ describe('handleExecutionSetup', () => {
 
     expect(sendEvent).toHaveBeenCalledWith({
       type: 'EXECUTION_SETUP_FAILED',
-      // Shells word this differently: bash says "not found", macOS and BSD
-      // /bin/sh say "No such file or directory". Match the exit code instead.
-      errors: [expect.stringContaining('exit code 127')],
+      errors: [expect.stringContaining('Execution setup tooling probe failed')],
     })
     expect(sendEvent).not.toHaveBeenCalledWith({ type: 'EXECUTION_SETUP_READY' })
   })
@@ -1529,11 +1542,11 @@ describe('handleExecutionSetup', () => {
       ...readyExecutionSetupProfile(ticket.externalId),
       projectCommands: {
         prepare: [],
-        testFull: [createShellCommandSpec(`${quoteShellArg(process.execPath)} -e ${quoteShellArg('process.exit(0)')}`)],
+        testFull: [nodeProcessCommand('process.exit(0)')],
         lintFull: [],
         typecheckFull: [],
       },
-      toolingProbeCommands: [createShellCommandSpec(`${quoteShellArg(process.execPath)} -e ${quoteShellArg('process.exit(3)')}`)],
+      toolingProbeCommands: [nodeProcessCommand('process.exit(3)')],
     }
 
     executeExecutionSetupWithRetriesMock.mockImplementationOnce(async (...args: unknown[]) => {
@@ -1569,23 +1582,18 @@ describe('handleExecutionSetup', () => {
       title: 'Execution setup passing probe gate',
     })
     writeExecutionSetupPlan(ticket.id, ticket.externalId)
-    writeExecutableSetupWrapper(
-      join(paths.executionSetupDir, 'run'),
-      '#!/usr/bin/env sh\nexport LOOP_SETUP_WRAPPER=1\nexec "$@"\n',
-    )
+    writeExecutableSetupWrapper(join(paths.executionSetupDir, 'run'))
 
     const profile = {
       ...readyExecutionSetupProfile(ticket.externalId),
       reusableArtifacts: [
         {
-          path: '.ticket/runtime/execution-setup/run',
+          path: executionSetupWrapperPath,
           kind: 'command-wrapper',
           purpose: 'sources prepared runtime before commands',
         },
       ],
-      toolingProbeCommands: [
-        createShellCommandSpec(`./.ticket/runtime/execution-setup/run ${quoteShellArg(process.execPath)} -e ${quoteShellArg("if (process.env.LOOP_SETUP_WRAPPER !== '1') process.exit(9)")}`),
-      ],
+      toolingProbeCommands: [executionSetupWrapperCommand("if (process.env.LOOP_SETUP_WRAPPER !== '1') process.exit(9)")],
     }
 
     executeExecutionSetupWithRetriesMock.mockImplementationOnce(async (...args: unknown[]) => {

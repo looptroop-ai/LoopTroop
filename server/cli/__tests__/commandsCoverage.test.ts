@@ -59,7 +59,7 @@ type FakeChild = Omit<ChildProcess, 'pid' | 'stderr' | 'kill' | 'unref'> & {
   unref: Mock<() => void>
 }
 
-function makeChild(pid: number): FakeChild {
+const makeChild = (pid: number): FakeChild => {
   const child = new ChildProcess() as FakeChild
   Object.defineProperty(child, 'pid', { value: pid })
   child.stderr = new PassThrough()
@@ -67,11 +67,11 @@ function makeChild(pid: number): FakeChild {
     if (signal === 'SIGTERM') Object.defineProperty(child, 'exitCode', { value: 0 })
     return true
   })
-  child.unref = vi.fn((): void => {})
+  child.unref = vi.fn()
   return child
 }
 
-function closeSpawnLogFile(options: { stdio?: unknown[] }) {
+const closeSpawnLogFile = (options: { stdio?: unknown[] }): void => {
   const fds = new Set((options.stdio ?? []).filter((value): value is number => typeof value === 'number'))
   for (const fd of fds) closeSync(fd)
 }
@@ -521,7 +521,11 @@ describe('daemon startup and shutdown command paths', () => {
     const output = captureOutput()
 
     expect(await stopCommand()).toBe(1)
-    expect(mocks.signalTermination).toHaveBeenCalledWith(state.pid, null)
+    if (process.platform === 'win32') {
+      expect(mocks.signalTermination).not.toHaveBeenCalled()
+    } else {
+      expect(mocks.signalTermination).toHaveBeenCalledWith(state.pid, null)
+    }
     expect(mocks.killProcessTree).not.toHaveBeenCalled()
     expect(output.stderr()).toContain('runtime cleanup is still incomplete')
     expect(readDaemonState(configDir)).toEqual(state)

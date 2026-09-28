@@ -5,8 +5,9 @@ import { initializeDatabase } from '../../db/init'
 import { sqlite } from '../../db/index'
 import { clearProjectDatabaseCache } from '../../db/project'
 import { readTicketMeta } from '../../ticket/metadata'
+import * as ticketFileStorage from '../../ticket/containedPath'
 import { createFixtureRepoManager } from '../../test/fixtureRepo'
-import { attachProject, updateProject } from '../projects'
+import { attachProject, getProjectContextById, updateProject } from '../projects'
 import {
   createTicket,
   createManualQaImprovementTicket,
@@ -20,6 +21,7 @@ import {
   lockTicketStartConfiguration,
   patchTicket,
   recordTicketErrorOccurrence,
+  rollbackTicketStartConfiguration,
   resolveLatestTicketErrorOccurrence,
   updateTicket,
 } from '../tickets'
@@ -230,6 +232,130 @@ describe('ticket start configuration locking', () => {
     const normalizedRepoDir = normalizeFolderPath(repoDir)
     expect(getTicketPaths(ticket.id)?.debugLogPath).toBe(getTicketDebugLogPath(normalizedRepoDir, ticket.externalId))
     expect(getTicketPaths(ticket.id)?.aiLogPath).toBe(getTicketAiLogPath(normalizedRepoDir, ticket.externalId))
+  })
+
+  it('restores metadata when the database lock fails and allows a later start retry', () => {
+    const repoDir = lockRepoManager.createRepo()
+    const project = attachProject({ folderPath: repoDir, name: 'LoopTroop', shortname: 'RETRY' })
+    const ticket = createTicket({ projectId: project.id, title: 'Retry configuration lock' })
+    const context = getProjectContextById(project.id)!
+    const input = {
+      branchName: ticket.externalId,
+      startedAt: '2026-09-28T10:00:00.000Z',
+      lockedMainImplementer: 'openai/gpt-5-codex',
+      lockedCouncilMembers: ['openai/gpt-5-codex', 'openai/gpt-5-mini'],
+      lockedInterviewQuestions: 50,
+      lockedCoverageFollowUpBudgetPercent: 20,
+      lockedMaxCoveragePasses: 2,
+      lockedMaxPrdCoveragePasses: 5,
+      lockedMaxBeadsCoveragePasses: 5,
+      lockedStructuredRetryCount: 3,
+    }
+    const beforeMeta = readTicketMeta(repoDir, ticket.externalId)
+
+    context.projectDb.$client.exec('PRAGMA query_only = ON')
+    try {
+      expect(() => lockTicketStartConfiguration(ticket.id, input)).toThrow()
+    } finally {
+      context.projectDb.$client.exec('PRAGMA query_only = OFF')
+    }
+
+    expect(getTicketByRef(ticket.id)).toMatchObject({
+      status: 'DRAFT',
+      branchName: null,
+      startedAt: null,
+      lockedMainImplementer: null,
+      lockedCouncilMembers: [],
+    })
+    expect(readTicketMeta(repoDir, ticket.externalId)).toEqual(beforeMeta)
+
+    expect(lockTicketStartConfiguration(ticket.id, input)).toMatchObject({
+      status: 'DRAFT',
+      startedAt: input.startedAt,
+      lockedMainImplementer: input.lockedMainImplementer,
+      lockedCouncilMembers: input.lockedCouncilMembers,
+    })
+    expect(readTicketMeta(repoDir, ticket.externalId)).toMatchObject({
+      startedAt: input.startedAt,
+      lockedMainImplementer: input.lockedMainImplementer,
+      lockedCouncilMembers: input.lockedCouncilMembers,
+    })
+  })
+
+  it('does not replace ticket metadata when reading it for a lock fails', () => {
+    const repoDir = lockRepoManager.createRepo()
+    const project = attachProject({ folderPath: repoDir, name: 'LoopTroop', shortname: 'READFAIL' })
+    const ticket = createTicket({ projectId: project.id, title: 'Preserve unreadable metadata' })
+    const metadataPath = join(getTicketPaths(ticket.id)!.ticketDir, 'meta', 'ticket.meta.json')
+    rmSync(metadataPath)
+    mkdirSync(metadataPath)
+
+    expect(() => lockTicketStartConfiguration(ticket.id, {
+      branchName: ticket.externalId,
+      startedAt: '2026-09-28T10:00:00.000Z',
+      lockedMainImplementer: 'openai/gpt-5-codex',
+      lockedCouncilMembers: ['openai/gpt-5-codex', 'openai/gpt-5-mini'],
+      lockedInterviewQuestions: 50,
+      lockedCoverageFollowUpBudgetPercent: 20,
+      lockedMaxCoveragePasses: 2,
+      lockedMaxPrdCoveragePasses: 5,
+      lockedMaxBeadsCoveragePasses: 5,
+      lockedStructuredRetryCount: 3,
+    })).toThrow('Expected a regular file without a replaced link')
+
+    expect(getTicketByRef(ticket.id)).toMatchObject({
+      status: 'DRAFT',
+      branchName: null,
+      startedAt: null,
+      lockedMainImplementer: null,
+      lockedCouncilMembers: [],
+    })
+    expect(existsSync(metadataPath)).toBe(true)
+  })
+
+  it('leaves the database model lock intact when clearing its metadata fails', () => {
+    const repoDir = lockRepoManager.createRepo()
+    const project = attachProject({ folderPath: repoDir, name: 'LoopTroop', shortname: 'ROLLBACK' })
+    const ticket = createTicket({ projectId: project.id, title: 'Retry start rollback' })
+    const input = {
+      branchName: ticket.externalId,
+      startedAt: '2026-09-28T10:00:00.000Z',
+      lockedMainImplementer: 'openai/gpt-5-codex',
+      lockedCouncilMembers: ['openai/gpt-5-codex', 'openai/gpt-5-mini'],
+      lockedInterviewQuestions: 50,
+      lockedCoverageFollowUpBudgetPercent: 20,
+      lockedMaxCoveragePasses: 2,
+      lockedMaxPrdCoveragePasses: 5,
+      lockedMaxBeadsCoveragePasses: 5,
+      lockedStructuredRetryCount: 3,
+    }
+    lockTicketStartConfiguration(ticket.id, input)
+    vi.spyOn(ticketFileStorage, 'writeProjectTicketFile').mockImplementationOnce(() => {
+      throw new Error('Metadata volume is temporarily unavailable')
+    })
+
+    expect(() => rollbackTicketStartConfiguration(ticket.id)).toThrow('Metadata volume is temporarily unavailable')
+    expect(getTicketByRef(ticket.id)).toMatchObject({
+      status: 'DRAFT',
+      branchName: input.branchName,
+      startedAt: input.startedAt,
+      lockedMainImplementer: input.lockedMainImplementer,
+      lockedCouncilMembers: input.lockedCouncilMembers,
+    })
+    expect(readTicketMeta(repoDir, ticket.externalId)).toMatchObject({
+      startedAt: input.startedAt,
+      lockedMainImplementer: input.lockedMainImplementer,
+      lockedCouncilMembers: input.lockedCouncilMembers,
+    })
+
+    expect(rollbackTicketStartConfiguration(ticket.id)).toMatchObject({
+      status: 'DRAFT',
+      branchName: null,
+      startedAt: null,
+      lockedMainImplementer: null,
+      lockedCouncilMembers: [],
+    })
+    expect(readTicketMeta(repoDir, ticket.externalId)).not.toHaveProperty('lockedMainImplementer')
   })
 
   it('validates required start models and keeps locked council variants immutable', () => {

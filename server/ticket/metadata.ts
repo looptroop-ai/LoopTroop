@@ -56,13 +56,28 @@ export function getTicketMetaPath(projectRoot: string, externalId: string): stri
   return resolveProjectTicketContainedPath(projectRoot, externalId, 'meta/ticket.meta.json')
 }
 
+function parseTicketMeta(path: string): TicketMetaRecord {
+  const parsed = JSON.parse(readFileNoFollowSync(path)) as TicketMetaRecord
+  return parsed && typeof parsed === 'object' ? parsed : {}
+}
+
 export function readTicketMeta(projectRoot: string, externalId: string): TicketMetaRecord {
   const path = getTicketMetaPath(projectRoot, externalId)
   try {
-    const parsed = JSON.parse(readFileNoFollowSync(path)) as TicketMetaRecord
-    return parsed && typeof parsed === 'object' ? parsed : {}
+    return parseTicketMeta(path)
   } catch {
     return {}
+  }
+}
+
+/** Read metadata for a write-modify operation without treating I/O errors as an empty record. */
+export function readTicketMetaForMutation(projectRoot: string, externalId: string): TicketMetaRecord {
+  const path = getTicketMetaPath(projectRoot, externalId)
+  try {
+    return parseTicketMeta(path)
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === 'ENOENT') return {}
+    throw error
   }
 }
 
@@ -76,7 +91,7 @@ export function updateTicketMeta(
   externalId: string,
   patch: Partial<TicketMetaRecord>,
 ): TicketMetaRecord {
-  const current = readTicketMeta(projectRoot, externalId)
+  const current = readTicketMetaForMutation(projectRoot, externalId)
   return writeTicketMeta(projectRoot, externalId, { ...current, ...patch })
 }
 
@@ -95,7 +110,7 @@ export function lockTicketModelSelection(
     throw new Error('Locked council members are required.')
   }
 
-  const current = readTicketMeta(projectRoot, externalId)
+  const current = readTicketMetaForMutation(projectRoot, externalId)
   const currentMainImplementer = normalizeModelId(current.lockedMainImplementer)
   const currentCouncilMembers = normalizeModelList(current.lockedCouncilMembers)
 
@@ -115,7 +130,7 @@ export function lockTicketModelSelection(
 }
 
 export function clearTicketModelSelectionLock(projectRoot: string, externalId: string): TicketMetaRecord {
-  const current = readTicketMeta(projectRoot, externalId)
+  const current = readTicketMetaForMutation(projectRoot, externalId)
   if (!('startedAt' in current || 'lockedMainImplementer' in current || 'lockedCouncilMembers' in current)) {
     return current
   }

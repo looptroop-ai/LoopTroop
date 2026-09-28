@@ -27,8 +27,10 @@ const packagingJobs = [
   'aur-package',
 ]
 
+const hasBashAndJq = spawnSync('bash', ['-euo', 'pipefail', '-c', 'command -v jq'], { encoding: 'utf8' }).status === 0
+
 describe('CI packaging gate policy', () => {
-  it('blocks packaging unless every required job succeeds', () => {
+  it.skipIf(!hasBashAndJq)('blocks packaging unless every required job succeeds', () => {
     const packaging = ci.jobs.packaging
     if (!packaging?.needs) throw new Error('ci.yml: packaging dependencies missing')
     expect([...packaging.needs].sort()).toEqual([...packagingJobs].sort())

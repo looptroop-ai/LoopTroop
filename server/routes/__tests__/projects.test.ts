@@ -1073,7 +1073,7 @@ describe('projectRouter project cleanup', () => {
     const filePath = resolve(repoDir, 'README.md')
     const fileListing = await app.request(`/api/projects/ls?path=${encodeURIComponent(filePath)}`)
     expect(fileListing.status).toBe(400)
-    expect(await fileListing.json()).toMatchObject({ error: `Cannot read directory: ${filePath}` })
+    expect(await fileListing.json()).toMatchObject({ error: `Cannot read directory: ${normalizeFolderPath(filePath)}` })
   })
 
   it('reports the size of terminal-ticket worktrees and validates the project ID', async () => {

@@ -39,7 +39,7 @@ const requiredJob = (name: string): Job => {
 }
 
 describe('coverage and Codecov policy', () => {
-  it('collects V8 coverage across the four Vitest projects with a 90% line floor', () => {
+  it('collects V8 coverage across the four Vitest projects with 90% line and 80% branch floors', () => {
     expect(packageJson.scripts['test:coverage']).toBe('vitest run --coverage')
     expect(packageJson.devDependencies.vitest).toMatch(/\S/)
     expect(packageJson.devDependencies['@vitest/coverage-v8']).toBe(packageJson.devDependencies.vitest)
@@ -52,6 +52,7 @@ describe('coverage and Codecov policy', () => {
       autoAttachSubprocess: false,
     })
     expect(coverage?.thresholds?.lines).toBe(90)
+    expect(coverage?.thresholds?.branches).toBe(80)
     for (const pattern of [
       '**/*.test.*', '**/*.spec.*', '**/__tests__/**', '**/{test,tests}/**',
       '**/{helper,helpers,fixture,fixtures}/**', '**/*.d.{ts,cts,mts}',

@@ -252,11 +252,10 @@ describe('ticket lifecycle recovery guards', () => {
       lockedCouncilMembers: [],
     })
     expect(stopActor).toHaveBeenCalledOnce()
-    expect(readTicketMeta(project.folderPath, ticket.externalId)).not.toMatchObject({
-      startedAt: expect.any(String),
-      lockedMainImplementer: expect.any(String),
-      lockedCouncilMembers: expect.any(Array),
-    })
+    const ticketMeta = readTicketMeta(project.folderPath, ticket.externalId)
+    expect(ticketMeta).not.toHaveProperty('startedAt')
+    expect(ticketMeta).not.toHaveProperty('lockedMainImplementer')
+    expect(ticketMeta).not.toHaveProperty('lockedCouncilMembers')
 
     validateModelSelectionMock.mockResolvedValueOnce({
       mainImplementer: TEST.model,
@@ -276,7 +275,7 @@ describe('ticket lifecycle recovery guards', () => {
     })
   })
 
-  it('does not roll back start settings after the actor has already left DRAFT', async () => {
+  it('does not roll back start settings after START has been persisted', async () => {
     const { app, project, ticket } = setupRetryApp()
     validateModelSelectionMock.mockResolvedValueOnce({
       mainImplementer: TEST.implementer,
@@ -285,6 +284,7 @@ describe('ticket lifecycle recovery guards', () => {
     const dispatchError = new Error('persistence failed after START transition')
     sendTicketEventMock.mockImplementationOnce(() => {
       getTicketStateMock.mockReturnValueOnce({ state: 'SCANNING_RELEVANT_FILES' })
+      patchTicket(ticket.id, { status: 'SCANNING_RELEVANT_FILES' })
       throw dispatchError
     })
 
@@ -296,7 +296,7 @@ describe('ticket lifecycle recovery guards', () => {
       details: dispatchError.message,
     })
     expect(getTicketByRef(ticket.id)).toMatchObject({
-      status: 'DRAFT',
+      status: 'SCANNING_RELEVANT_FILES',
       lockedMainImplementer: TEST.implementer,
       lockedCouncilMembers: [...TEST.councilMembers],
     })

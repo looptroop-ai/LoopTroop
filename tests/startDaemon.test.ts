@@ -324,12 +324,48 @@ describe('daemon startup and shutdown', () => {
     }
   })
 
+  it('releases startup ownership when runtime startup fails but cleanup succeeds', async () => {
+    const configDir = makeConfigDir()
+    const startupError = new Error('runtime could not bind')
+    const runtime = {
+      start: vi.fn().mockRejectedValue(startupError),
+      close: vi.fn().mockResolvedValue(undefined),
+    }
+    const create = vi.spyOn(runtimeFactory, 'createRuntime')
+      .mockReturnValue(runtime as unknown as ReturnType<typeof runtimeFactory.createRuntime>)
+    const startSpy = vi.spyOn(OpenCodeSupervisor.prototype, 'start').mockResolvedValue({
+      kind: 'managed',
+      baseUrl: 'http://127.0.0.1:4096',
+      pid: 12_342,
+    })
+    const stopSpy = vi.spyOn(OpenCodeSupervisor.prototype, 'stop').mockResolvedValue(true)
+
+    try {
+      await expect(startDaemon({
+        configDir,
+        settings: ephemeralSettings(),
+        version: '0.0.0-test',
+      })).rejects.toBe(startupError)
+
+      expect(runtime.start).toHaveBeenCalledOnce()
+      expect(runtime.close).toHaveBeenCalledOnce()
+      expect(stopSpy).toHaveBeenCalledOnce()
+      expect(existsSync(getDaemonLockPath(configDir))).toBe(false)
+      expect(existsSync(getDaemonStatePath(configDir))).toBe(false)
+      expect(daemonPaths.readDaemonStartFailure(configDir)).toBeNull()
+    } finally {
+      stopSpy.mockRestore()
+      startSpy.mockRestore()
+      create.mockRestore()
+    }
+  })
+
   it('retains the OpenCode identity when later startup cleanup is incomplete', async () => {
     const configDir = makeConfigDir()
     const startupError = new Error('runtime could not bind')
     const runtime = {
       start: vi.fn().mockRejectedValue(startupError),
-      close: vi.fn().mockRejectedValue(new Error('runtime close failed')),
+      close: vi.fn().mockResolvedValue(undefined),
     }
     const create = vi.spyOn(runtimeFactory, 'createRuntime')
       .mockReturnValue(runtime as unknown as ReturnType<typeof runtimeFactory.createRuntime>)
@@ -350,6 +386,7 @@ describe('daemon startup and shutdown', () => {
         version: '0.0.0-test',
       })).rejects.toBe(startupError)
 
+      expect(runtime.start).toHaveBeenCalledOnce()
       expect(runtime.close).toHaveBeenCalledOnce()
       expect(stopSpy).toHaveBeenCalledOnce()
       expect(daemonPaths.readDaemonStartFailure(configDir)).toMatchObject({
@@ -357,7 +394,11 @@ describe('daemon startup and shutdown', () => {
         openCode: { baseUrl: 'http://127.0.0.1:4096', pid: 12_342 },
       })
       const failure = daemonPaths.readDaemonStartFailure(configDir)
-      expect(failure?.reason === 'startup-cleanup-incomplete' && failure.openCode).not.toHaveProperty('startToken')
+      expect(failure?.reason).toBe('startup-cleanup-incomplete')
+      expect(failure && 'openCode' in failure ? failure.openCode : undefined).toEqual({
+        baseUrl: 'http://127.0.0.1:4096',
+        pid: 12_342,
+      })
       expect(existsSync(getDaemonLockPath(configDir))).toBe(true)
       expect(report).toHaveBeenCalledWith(expect.stringContaining('daemon lock was retained'))
     } finally {

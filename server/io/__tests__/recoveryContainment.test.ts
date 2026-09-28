@@ -1,4 +1,4 @@
-import { appendFileSync, closeSync, existsSync, lstatSync, mkdirSync, openSync, readFileSync, readSync, readdirSync, renameSync, rmSync, statSync, symlinkSync, truncateSync, writeFileSync, writeSync } from 'node:fs'
+import { appendFileSync, existsSync, lstatSync, mkdirSync, readFileSync, readdirSync, renameSync, rmSync, symlinkSync, writeFileSync } from 'node:fs'
 import * as fs from 'fs'
 import { join } from 'node:path'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
@@ -480,43 +480,61 @@ describe('recovery descriptor containment', () => {
     const path = join(directory, 'large-log.jsonl')
     const fileSize = 257 * 1024 * 1024
     const header = Buffer.from('{"kept":true}\n')
+    const separatorOffset = fileSize - 5 * 1024 * 1024 - 1
+    const tailStart = fileSize - Buffer.byteLength('\n{"a":0}\n')
+    let tail = Buffer.from('\n{"a":0}\n')
+    const originalFstat = fs.fstatSync
+    const originalRead = fs.readSync
+    const truncatedTo: Array<number | undefined> = []
     writeFileSync(path, '')
-    truncateSync(path, fileSize)
 
-    const writeAt = (position: number, content: Buffer) => {
-      const fd = openSync(path, 'r+')
-      try {
-        writeSync(fd, content, 0, content.length, position)
-      } finally {
-        closeSync(fd)
+    vi.spyOn(fs, 'fstatSync').mockImplementation((fd, ...args) => {
+      const stats = originalFstat(fd, ...args)
+      return Object.assign(Object.create(Object.getPrototypeOf(stats)), stats, { size: fileSize })
+    })
+    vi.spyOn(fs, 'readSync').mockImplementation((fd, buffer, ...args: unknown[]) => {
+      const positional = args.length >= 3 && typeof args[0] === 'number'
+      const options = args[0] as { offset?: number; length?: number; position?: number | bigint | null } | undefined
+      const offset = positional ? Number(args[0]) : options?.offset ?? 0
+      const length = positional ? Number(args[1]) : options?.length ?? buffer.byteLength
+      const requestedPosition = positional
+        ? args[2] as number | bigint | null
+        : options?.position ?? null
+      if (requestedPosition === null) {
+        return originalRead(fd, buffer, { offset, length, position: null })
       }
-    }
+      const position = Number(requestedPosition)
+      const bytes = Buffer.from(buffer.buffer, buffer.byteOffset, buffer.byteLength)
+      const readEnd = position + length
+      bytes.fill(0, offset, offset + length)
+      for (const segment of [
+        { position: 0, content: header },
+        { position: separatorOffset, content: Buffer.from('\n') },
+        { position: tailStart, content: tail },
+      ]) {
+        const copyStart = Math.max(position, segment.position)
+        const copyEnd = Math.min(readEnd, segment.position + segment.content.length)
+        if (copyStart < copyEnd) {
+          segment.content.copy(
+            bytes,
+            offset + copyStart - position,
+            copyStart - segment.position,
+            copyEnd - segment.position,
+          )
+        }
+      }
+      return length
+    })
+    vi.spyOn(fs, 'ftruncateSync').mockImplementation((_fd, length) => {
+      truncatedTo.push(length)
+    })
 
-    writeAt(0, header)
-    writeAt(fileSize - 5 * 1024 * 1024 - 1, Buffer.from('\n'))
     expect(fixTrailingLineCorruption(path)).toBe(false)
-    expect(statSync(path).size).toBe(fileSize)
+    expect(truncatedTo).toEqual([])
 
-    const validTail = Buffer.from('\n{"a":0}\n')
-    const tailStart = fileSize - validTail.length
-    writeAt(tailStart, validTail)
-    expect(fixTrailingLineCorruption(path)).toBe(false)
-    expect(statSync(path).size).toBe(fileSize)
-
-    const corruptTail = Buffer.from('\n{"a":?}\n')
-    expect(corruptTail.length).toBe(validTail.length)
-    writeAt(tailStart, corruptTail)
+    tail = Buffer.from('\n{"a":?}\n')
     expect(fixTrailingLineCorruption(path)).toBe(true)
-    expect(statSync(path).size).toBe(tailStart + 1)
-
-    const fd = openSync(path, 'r')
-    try {
-      const retainedHeader = Buffer.alloc(header.length)
-      expect(readSync(fd, retainedHeader, 0, retainedHeader.length, 0)).toBe(header.length)
-      expect(retainedHeader).toEqual(header)
-    } finally {
-      closeSync(fd)
-    }
+    expect(truncatedTo).toEqual([tailStart + 1])
   })
 
   it('truncates the opened file even if its pathname is replaced before reading', () => {

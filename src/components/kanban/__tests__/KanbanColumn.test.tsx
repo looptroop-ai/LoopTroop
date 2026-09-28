@@ -85,6 +85,105 @@ describe('KanbanColumn', () => {
     expect(screen.getByText('of 3')).toBeInTheDocument()
   })
 
+  it('starts arrow navigation from the typed page number', () => {
+    render(
+      <TooltipProvider>
+        <UIProvider>
+          <KanbanColumn
+            column={{
+              id: 'done',
+              title: 'Done',
+              description: 'Completed tickets',
+              tooltip: 'Terminal tickets that no longer advance automatically.',
+            }}
+            tickets={makeCompletedTickets(31)}
+            projectMap={new Map<number, Project>()}
+          />
+        </UIProvider>
+      </TooltipProvider>,
+    )
+
+    const pageInput = screen.getByRole('textbox', { name: /done current page/i })
+    const controls = within(screen.getByRole('group', { name: 'Done pagination' }))
+    const pageButtons = controls.getAllByRole('button')
+    const previousPage = pageButtons[0]!
+    const nextPage = pageButtons[1]!
+
+    fireEvent.change(pageInput, { target: { value: '2' } })
+    expect(previousPage).toBeEnabled()
+    fireEvent.click(nextPage)
+
+    expect(pageInput).toHaveValue('3')
+    expect(screen.getByLabelText(ticketCardLabel('TEST-1'))).toBeInTheDocument()
+    expect(screen.queryByLabelText(ticketCardLabel('TEST-16'))).not.toBeInTheDocument()
+  })
+
+  it('clears a canceled edit when the Escape blur is missed and the input receives focus again', () => {
+    render(
+      <TooltipProvider>
+        <UIProvider>
+          <KanbanColumn
+            column={{
+              id: 'done',
+              title: 'Done',
+              description: 'Completed tickets',
+              tooltip: 'Terminal tickets that no longer advance automatically.',
+            }}
+            tickets={makeCompletedTickets(31)}
+            projectMap={new Map<number, Project>()}
+          />
+        </UIProvider>
+      </TooltipProvider>,
+    )
+
+    const pageInput = screen.getByRole('textbox', { name: /done current page/i })
+    const blur = vi.spyOn(HTMLInputElement.prototype, 'blur').mockImplementation(() => {})
+
+    pageInput.focus()
+    fireEvent.change(pageInput, { target: { value: '2' } })
+    fireEvent.keyDown(pageInput, { key: 'Escape' })
+    blur.mockRestore()
+
+    fireEvent.focus(pageInput)
+    fireEvent.change(pageInput, { target: { value: '2' } })
+    fireEvent.blur(pageInput)
+
+    expect(pageInput).toHaveValue('2')
+    expect(screen.getByLabelText(ticketCardLabel('TEST-16'))).toBeInTheDocument()
+  })
+
+  it('commits a new edit when Escape blur is missed and the input stays focused', () => {
+    render(
+      <TooltipProvider>
+        <UIProvider>
+          <KanbanColumn
+            column={{
+              id: 'done',
+              title: 'Done',
+              description: 'Completed tickets',
+              tooltip: 'Terminal tickets that no longer advance automatically.',
+            }}
+            tickets={makeCompletedTickets(31)}
+            projectMap={new Map<number, Project>()}
+          />
+        </UIProvider>
+      </TooltipProvider>,
+    )
+
+    const pageInput = screen.getByRole('textbox', { name: /done current page/i })
+    const blur = vi.spyOn(HTMLInputElement.prototype, 'blur').mockImplementation(() => {})
+    pageInput.focus()
+    fireEvent.change(pageInput, { target: { value: '2' } })
+    fireEvent.keyDown(pageInput, { key: 'Escape' })
+    fireEvent.change(pageInput, { target: { value: '3' } })
+    blur.mockRestore()
+    fireEvent.blur(pageInput)
+
+    expect(pageInput).toHaveValue('3')
+    expect(screen.getByLabelText(ticketCardLabel('TEST-1'))).toBeInTheDocument()
+    expect(screen.queryByLabelText(ticketCardLabel('TEST-16'))).not.toBeInTheDocument()
+  })
+
   it('navigates pages, clamps entered page numbers, and resets after its inputs change', () => {
     const tickets = makeCompletedTickets(31)
     const column = {

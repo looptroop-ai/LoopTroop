@@ -192,17 +192,27 @@ describe('ProjectForm', () => {
     let rejectCheck!: (reason: Error) => void
     const check = new Promise<Response>((_resolve, reject) => { rejectCheck = reject })
     const fetchMock = vi.fn(() => check)
+    const dirty = vi.fn()
+    const reportError = vi.spyOn(console, 'error').mockImplementation(() => {})
     vi.stubGlobal('fetch', fetchMock)
-    const view = render(<ProjectForm onClose={vi.fn()} />, { wrapper: Wrapper })
+    const view = render(<ProjectForm onClose={vi.fn()} onDirtyChange={dirty} />, { wrapper: Wrapper })
 
-    fireEvent.change(screen.getByLabelText(/Project Folder/i), { target: { value: '/work/offline' } })
-    await waitFor(() => expect(fetchMock).toHaveBeenCalledTimes(1))
-    view.unmount()
+    try {
+      fireEvent.change(screen.getByLabelText(/Project Folder/i), { target: { value: '/work/offline' } })
+      await waitFor(() => expect(fetchMock).toHaveBeenCalledTimes(1))
+      const dirtyCallsBeforeUnmount = dirty.mock.calls.length
+      view.unmount()
 
-    await act(async () => {
-      rejectCheck(new Error('offline'))
-      await check.catch(() => undefined)
-    })
+      await act(async () => {
+        rejectCheck(new Error('offline'))
+        await expect(check).rejects.toThrow('offline')
+      })
+
+      expect(dirty).toHaveBeenCalledTimes(dirtyCallsBeforeUnmount)
+      expect(reportError).not.toHaveBeenCalled()
+    } finally {
+      reportError.mockRestore()
+    }
   })
 
   it('does not replace edits made while the restore check is pending', async () => {

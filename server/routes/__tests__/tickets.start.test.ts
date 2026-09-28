@@ -1,14 +1,16 @@
 import { afterAll, beforeEach, describe, expect, it, vi } from 'vitest'
 import { Hono } from 'hono'
 import { existsSync, readFileSync, writeFileSync } from 'node:fs'
+import { join } from 'node:path'
 import { initializeDatabase } from '../../db/init'
 import { sqlite } from '../../db/index'
 import { clearProjectDatabaseCache } from '../../db/project'
 import { broadcaster } from '../../sse/broadcaster'
 import { attachProject, updateProject } from '../../storage/projects'
 import { createTicket, DISPLAY_ONLY_MOCK_BRANCH_NAME, getTicketByRef, getTicketPaths, patchTicket, updateTicket } from '../../storage/tickets'
-import { sendTicketEvent, stopActor } from '../../machines/persistence'
+import { getTicketState, sendTicketEvent, stopActor } from '../../machines/persistence'
 import * as ticketStorage from '../../storage/tickets'
+import * as ticketFileStorage from '../../ticket/containedPath'
 import { createFixtureRepoManager } from '../../test/fixtureRepo'
 import { makeTempDir, removeTempDir } from '../../test/tempDir'
 import { LOOPTROOP_OPENCODE_ROUTING_CONFIG } from '../../../shared/openRouterRouting'
@@ -261,6 +263,67 @@ describe('ticketRouter POST /tickets/:id/start', () => {
     broadcaster.clearTicket(ticket.id)
   })
 
+  it.each(['undefined', 'throws'])('stops a draft actor when rollback %s after a failed start', async (rollbackResult) => {
+    const { app, ticket } = setupStartTicketApp()
+    vi.spyOn(ticketStorage, 'lockTicketStartConfiguration').mockReturnValueOnce(undefined)
+    const rollbackSpy = vi.spyOn(ticketStorage, 'rollbackTicketStartConfiguration')
+    if (rollbackResult === 'throws') {
+      rollbackSpy.mockImplementationOnce(() => { throw new Error('Metadata rollback failed') })
+    } else {
+      rollbackSpy.mockReturnValueOnce(undefined)
+    }
+
+    const response = await app.request(`/api/tickets/${ticket.id}/start`, { method: 'POST' })
+
+    expect(response.status).toBe(404)
+    expect(stopActor).toHaveBeenCalledWith(ticket.id)
+    expect(sendTicketEvent).not.toHaveBeenCalled()
+    broadcaster.clearTicket(ticket.id)
+  })
+
+  it('keeps a draft retryable when writing the ticket metadata lock fails', async () => {
+    const { app, ticket } = setupStartTicketApp()
+    const ticketPaths = getTicketPaths(ticket.id)!
+    const metadataPath = join(ticketPaths.ticketDir, 'meta', 'ticket.meta.json')
+    const init = {
+      worktreePath: ticketPaths.worktreePath,
+      ticketDir: ticketPaths.ticketDir,
+      branchName: ticket.externalId,
+      baseBranch: 'main',
+      reused: true,
+    }
+    vi.mocked(initializeTicket).mockResolvedValueOnce(init)
+    vi.spyOn(ticketFileStorage, 'writeProjectTicketFile').mockImplementationOnce(() => {
+      throw new Error('Metadata volume is temporarily unavailable')
+    })
+
+    const failedStart = await app.request(`/api/tickets/${ticket.id}/start`, { method: 'POST' })
+
+    expect({ status: failedStart.status, body: await failedStart.json() }).toMatchObject({
+      status: 500,
+      body: { error: 'Failed to persist ticket start configuration' },
+    })
+    expect(getTicketByRef(ticket.id)).toMatchObject({
+      status: 'DRAFT',
+      branchName: null,
+      startedAt: null,
+      lockedMainImplementer: null,
+      lockedCouncilMembers: [],
+    })
+    expect(stopActor).toHaveBeenCalledWith(ticket.id)
+    expect(sendTicketEvent).not.toHaveBeenCalled()
+
+    vi.mocked(initializeTicket).mockResolvedValueOnce(init)
+    const retriedStart = await app.request(`/api/tickets/${ticket.id}/start`, { method: 'POST' })
+
+    expect(retriedStart.status).toBe(200)
+    expect(getTicketByRef(ticket.id)).toMatchObject({ status: 'SCANNING_RELEVANT_FILES' })
+    expect(JSON.parse(readFileSync(metadataPath, 'utf8'))).toMatchObject({
+      lockedMainImplementer: 'openai/codex-mini-latest',
+    })
+    broadcaster.clearTicket(ticket.id)
+  })
+
   it('rejects malformed saved council variant data before locking a start', async () => {
     sqlite.exec(`
       INSERT INTO profiles (main_implementer, council_members, council_member_variants)
@@ -510,5 +573,57 @@ describe('ticketRouter POST /tickets/:id/start', () => {
     expect(getTicketByRef(ticket.id)?.status).toBe('DRAFT')
     expect(getDraftLogMessages(ticket.id)).toContain('Failed to block ticket after initialization error: Actor is unavailable')
     broadcaster.clearTicket(ticket.id)
+  })
+
+  it('stops an actor whose START advanced in memory but failed to persist', async () => {
+    const { app, ticket } = setupStartTicketApp()
+    // The actor advanced, but the mocked START dispatch fails before its persisted row changes.
+    vi.mocked(getTicketState).mockReturnValue({ ...getTicketState(ticket.id)!, state: 'SCANNING_RELEVANT_FILES' })
+    vi.mocked(sendTicketEvent).mockImplementationOnce(() => {
+      throw new Error('Snapshot persistence failed')
+    })
+
+    const response = await app.request(`/api/tickets/${ticket.id}/start`, { method: 'POST' })
+
+    expect(response.status).toBe(500)
+    expect(await response.json()).toMatchObject({
+      error: 'Failed to start ticket',
+      details: 'Snapshot persistence failed',
+    })
+    expect(getTicketByRef(ticket.id)).toMatchObject({
+      status: 'DRAFT',
+      branchName: null,
+      startedAt: null,
+      lockedMainImplementer: null,
+      lockedCouncilMembers: [],
+    })
+    expect(stopActor).toHaveBeenCalledWith(ticket.id)
+  })
+
+  it('preserves a started actor when START persisted before dispatch threw', async () => {
+    const { app, ticket } = setupStartTicketApp()
+    vi.mocked(sendTicketEvent).mockImplementationOnce((ticketRef) => {
+      ticketStorage.patchTicket(String(ticketRef), { status: 'SCANNING_RELEVANT_FILES' })
+      throw new Error('START dispatch failed after persistence')
+    })
+
+    const response = await app.request(`/api/tickets/${ticket.id}/start`, { method: 'POST' })
+
+    expect(response.status).toBe(500)
+    expect(await response.json()).toMatchObject({
+      error: 'Failed to start ticket',
+      details: 'START dispatch failed after persistence',
+    })
+    expect(getTicketByRef(ticket.id)).toMatchObject({
+      status: 'SCANNING_RELEVANT_FILES',
+      branchName: ticket.externalId,
+      lockedMainImplementer: 'openai/codex-mini-latest',
+      lockedCouncilMembers: [
+        'openai/codex-mini-latest',
+        'openai/gpt-5.3-codex',
+        'anthropic/claude-sonnet-4',
+      ],
+    })
+    expect(stopActor).not.toHaveBeenCalled()
   })
 })

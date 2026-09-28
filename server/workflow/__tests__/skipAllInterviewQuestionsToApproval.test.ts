@@ -5,6 +5,7 @@ import { sqlite } from '../../db/index'
 import { clearProjectDatabaseCache } from '../../db/project'
 import { phaseArtifacts } from '../../db/schema'
 import { eq } from 'drizzle-orm'
+import { join } from 'node:path'
 import {
   buildPersistedBatch,
   createInterviewSessionSnapshot,
@@ -163,7 +164,7 @@ describe('skipAllInterviewQuestionsToApproval', () => {
     const paths = getTicketPaths(ticket.id)
     expect(paths).toBeDefined()
 
-    const interviewYaml = readFileSync(paths!.ticketDir + '/interview.yaml', 'utf-8')
+    const interviewYaml = readFileSync(join(paths!.ticketDir, 'interview.yaml'), 'utf-8')
     expect(interviewYaml).toBe(result.canonicalInterview)
     expect(interviewYaml).toContain('ticket_id: LOOP-1')
     expect(interviewYaml).toContain('free_text: Keep imports idempotent.')
@@ -333,7 +334,7 @@ describe('skipAllInterviewQuestionsToApproval', () => {
     const before = getLatestPhaseArtifact(ticket.id, 'interview_coverage', 'VERIFYING_INTERVIEW_COVERAGE')!
     const originalSafeWrite = atomicWrite.safeAtomicWriteWithin
     const coverageMirrorWrite = vi.spyOn(atomicWrite, 'safeAtomicWriteWithin').mockImplementation((...args) => {
-      if (args[1].endsWith('/ui/artifact-companions/interview_coverage.json')) {
+      if (args[1].replaceAll('\\', '/').endsWith('/ui/artifact-companions/interview_coverage.json')) {
         context.projectDb.delete(phaseArtifacts).where(eq(phaseArtifacts.id, before.id)).run()
         upsertLatestPhaseArtifact(
           ticket.id,

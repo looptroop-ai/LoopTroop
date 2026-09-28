@@ -36,6 +36,8 @@ export function KanbanColumn({
   const [currentPage, setCurrentPage] = useState(1)
   const [pageInput, setPageInput] = useState('1')
   const ignoreNextBlur = useRef(false)
+  const inputPage = Number.parseInt(pageInput, 10)
+  const pageForNavigation = Number.isNaN(inputPage) ? currentPage : inputPage
 
   useEffect(() => {
     setCurrentPage(1)
@@ -150,10 +152,14 @@ export function KanbanColumn({
             </div>
           )}
           {totalPages > 1 && (
-            <div className="flex items-center justify-center gap-2 pt-2">
+            <div
+              role="group"
+              aria-label={`${column.title} pagination`}
+              className="flex items-center justify-center gap-2 pt-2"
+            >
               <button
-                onClick={() => setPage(currentPage - 1)}
-                disabled={currentPage === 1}
+                onClick={() => setPage(pageForNavigation - 1)}
+                disabled={pageForNavigation <= 1}
                 className="text-muted-foreground hover:text-foreground disabled:opacity-30"
               >
                 <ChevronLeft className="h-4 w-4" />
@@ -167,6 +173,7 @@ export function KanbanColumn({
                   aria-label={`${column.title} current page`}
                   value={pageInput}
                   onChange={(event) => {
+                    ignoreNextBlur.current = false
                     setPageInput(event.target.value.replace(/\D/g, ''))
                   }}
                   onBlur={() => {
@@ -176,7 +183,10 @@ export function KanbanColumn({
                     }
                     commitPageInput(pageInput)
                   }}
-                  onFocus={(event) => event.currentTarget.select()}
+                  onFocus={(event) => {
+                    ignoreNextBlur.current = false
+                    event.currentTarget.select()
+                  }}
                   onKeyDown={(event) => {
                     if (event.key === 'Enter') {
                       event.preventDefault()
@@ -186,7 +196,9 @@ export function KanbanColumn({
                     if (event.key === 'Escape') {
                       event.preventDefault()
                       setPageInput(String(currentPage))
-                      ignoreNextBlur.current = true
+                      if (event.currentTarget.ownerDocument.activeElement === event.currentTarget) {
+                        ignoreNextBlur.current = true
+                      }
                       event.currentTarget.blur()
                     }
                   }}
@@ -196,8 +208,8 @@ export function KanbanColumn({
                 <span>of {totalPages}</span>
               </div>
               <button
-                onClick={() => setPage(currentPage + 1)}
-                disabled={currentPage === totalPages}
+                onClick={() => setPage(pageForNavigation + 1)}
+                disabled={pageForNavigation >= totalPages}
                 className="text-muted-foreground hover:text-foreground disabled:opacity-30"
               >
                 <ChevronRight className="h-4 w-4" />

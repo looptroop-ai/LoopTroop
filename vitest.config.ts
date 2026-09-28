@@ -146,6 +146,7 @@ const serverIntegrationTests = [
   // Real Git/database work and module mocks require isolated workers.
   'server/cli/__tests__/logsCommand.test.ts',
   'server/cli/__tests__/commandsCoverage.test.ts',
+  'server/cli/__tests__/cliDispatch.test.ts',
   'server/lib/__tests__/daemonPaths.test.ts',
   'server/workflow/__tests__/interviewSkipReasons.test.ts',
   'server/workflow/__tests__/skipReceipts.test.ts',
@@ -292,13 +293,15 @@ const serverIntegrationTests = [
   // Same reason: it runs `doctor`'s real checks to read their names back, and
   // those probe `git`, `gh` and `npm` with `execFileSync`.
   'tests/wireContract.test.ts',
+  // These policy tests launch shell or Node child processes.
+  'tests/ciGatePolicy.test.ts',
+  'tests/thirdPartyNotices.test.ts',
+  'tests/workflowPolicy.test.ts',
 
   'server/db/__tests__/sqliteContract.test.ts',
   'server/machines/__tests__/persistence.test.ts',
   'server/phases/executionSetup/__tests__/workspaceInputs.test.ts',
   'server/phases/executionSetupPlan/__tests__/generator.test.ts',
-  'server/phases/manualQa/__tests__/checkpoint.test.ts',
-  'server/phases/manualQa/__tests__/generatorFlow.test.ts',
   'server/phases/manualQa/__tests__/operations.test.ts',
   'server/storage/__tests__/ticketQueries.test.ts',
   'server/storage/__tests__/projectWorktreeCleanup.test.ts',
@@ -338,7 +341,7 @@ export default defineConfig({
         '**/*.generated.*',
       ],
       reporter: ['lcovonly', 'text', 'json-summary'],
-      thresholds: { lines: 90 },
+      thresholds: { lines: 90, branches: 80 },
       // Deliberately stopped or detached children leave incomplete profiles and add filesystem I/O.
       autoAttachSubprocess: false,
     },

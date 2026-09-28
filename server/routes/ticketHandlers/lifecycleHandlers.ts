@@ -91,12 +91,17 @@ import { resolveStoredWorkflowPhase } from '@shared/workflowMeta'
 import { parseLockedCouncilMemberVariants } from '../../storage/ticketQueries'
 
 function rollbackTicketStartToDraft(ticketId: string): void {
-  const actorState = getTicketState(ticketId)
-  if (actorState && actorState.state !== 'DRAFT') return
-  if (getTicketByRef(ticketId)?.status !== 'DRAFT') return
+  const ticket = getTicketByRef(ticketId)
+  if (ticket && ticket.status !== 'DRAFT') return
 
-  if (!rollbackTicketStartConfiguration(ticketId)) return
-  stopActor(ticketId)
+  try {
+    if (ticket) rollbackTicketStartConfiguration(ticketId)
+  } catch (error) {
+    logTicketOperationError(ticketId, 'Failed to roll back ticket start configuration', error)
+  } finally {
+    const ticketAfterRollback = getTicketByRef(ticketId)
+    if (!ticketAfterRollback || ticketAfterRollback.status === 'DRAFT') stopActor(ticketId)
+  }
 }
 
 const startingTickets = new Set<string>()

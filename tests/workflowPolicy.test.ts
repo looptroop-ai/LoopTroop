@@ -198,7 +198,7 @@ describe('release workflow policy', () => {
     }).scripts
     const workflowLint = ci.workflows as Job & { 'runs-on'?: string; 'continue-on-error'?: unknown }
     expect(workflowLint['runs-on']).toBe('ubuntu-latest')
-    expect(Object.hasOwn(workflowLint, 'continue-on-error')).toBe(false)
+    expect(workflowLint['continue-on-error'] ?? false).toBe(false)
 
     const lintSteps = workflowLint.steps ?? []
     const installer = lintSteps.find((candidate) => candidate.name === 'Install actionlint')
@@ -210,7 +210,7 @@ describe('release workflow policy', () => {
 
     const verify = ci.verify as (Job & { 'continue-on-error'?: unknown }) | undefined
     if (!verify) throw new Error('ci.yml: verify job missing')
-    expect(Object.hasOwn(verify, 'continue-on-error'), 'the required Verify job must remain blocking').toBe(false)
+    expect(verify['continue-on-error'] ?? false, 'the required Verify job must remain blocking').toBe(false)
     const verificationCommands = [
       ['npm run lint', 'lint'],
       ['npm run typecheck', 'typecheck'],

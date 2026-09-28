@@ -108,17 +108,14 @@ describe('OpenCode supervisor coverage edges', () => {
     expect(spawnProcess).not.toHaveBeenCalled()
   })
 
-  it('does not signal a live process whose start token does not match', async () => {
-    if (process.platform === 'win32') return
-
+  it.skipIf(process.platform === 'win32')('does not signal a live process whose start token does not match', async () => {
     const staleToken = 'not-the-current-process-start-token'
     expect(defaultTermination.request(process.pid, staleToken)).toBe(false)
     await defaultTermination.force(process.pid, staleToken)
     expect(defaultTermination.hasExited(process.pid, staleToken)).toBe(false)
   })
 
-  it('requires tree proof before treating a vanished Windows PID as stopped', () => {
-    if (process.platform !== 'linux') return
+  it.skipIf(process.platform !== 'linux')('requires tree proof before treating a vanished Windows PID as stopped', () => {
     const platformDescriptor = Object.getOwnPropertyDescriptor(process, 'platform')
     if (!platformDescriptor?.configurable) return
 
@@ -131,9 +128,7 @@ describe('OpenCode supervisor coverage edges', () => {
     }
   })
 
-  it('explains why an installed but untrusted OpenCode executable was refused', async () => {
-    if (process.platform === 'win32') return
-
+  it.skipIf(process.platform === 'win32')('explains why an installed but untrusted OpenCode executable was refused', async () => {
     const directory = await mkdtemp(join(tmpdir(), 'looptroop-supervisor-'))
     const envKeys = ['PATH', 'OPENCODE_INSTALL_DIR', 'LOOPTROOP_TRUSTED_EXECUTABLE_DIRS'] as const
     const originalEnv = Object.fromEntries(envKeys.map((key) => [key, process.env[key]]))

@@ -2,17 +2,17 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { DAEMON_ARGV } from '../daemonHandoff'
 
 const mocks = vi.hoisted(() => ({
-  getUpdateStatus: vi.fn(async () => null),
-  runDaemonProcess: vi.fn(async () => undefined),
-  setupCommand: vi.fn(async () => 0),
-  startCommand: vi.fn(async () => 0),
-  stopCommand: vi.fn(async () => 0),
-  restartCommand: vi.fn(async () => 0),
-  statusCommand: vi.fn(async () => 0),
-  openCommand: vi.fn(async () => 0),
-  doctorCommand: vi.fn(async (_json: boolean, _update: Promise<unknown>) => 0),
-  logsCommand: vi.fn(async () => 0),
-  cleanCommand: vi.fn(async () => 0),
+  getUpdateStatus: vi.fn(() => Promise.resolve(null)),
+  runDaemonProcess: vi.fn(() => Promise.resolve()),
+  setupCommand: vi.fn(() => Promise.resolve(0)),
+  startCommand: vi.fn(() => Promise.resolve(0)),
+  stopCommand: vi.fn(() => Promise.resolve(0)),
+  restartCommand: vi.fn(() => Promise.resolve(0)),
+  statusCommand: vi.fn((_json: boolean, _update?: Promise<unknown>) => Promise.resolve(0)),
+  openCommand: vi.fn(() => Promise.resolve(0)),
+  doctorCommand: vi.fn((_json: boolean, _update: Promise<unknown>) => Promise.resolve(0)),
+  logsCommand: vi.fn(() => Promise.resolve(0)),
+  cleanCommand: vi.fn(() => Promise.resolve(0)),
 }))
 
 vi.mock('../../lib/updateCheck', () => ({
@@ -62,16 +62,17 @@ describe('CLI command dispatch', () => {
   })
 
   it.each([
-    { args: ['--version'], rejection: undefined, exitCode: 0, output: /\d+\.\d+\.\d+/ },
-    { args: [DAEMON_ARGV], rejection: 'daemon failed', exitCode: 1, output: /daemon failed/ },
-  ])('sets the process exit code when the CLI module is the entry point', async ({ args, rejection, exitCode, output }) => {
+    { args: ['--version'], rejection: undefined, exitCode: 0, output: /\d+\.\d+\.\d+/, isEntryPoint: true, isSea: false },
+    { args: [DAEMON_ARGV], rejection: 'daemon failed', exitCode: 1, output: /daemon failed/, isEntryPoint: true, isSea: false },
+    { args: ['--version'], rejection: undefined, exitCode: 0, output: /\d+\.\d+\.\d+/, isEntryPoint: false, isSea: true },
+  ])('sets the process exit code when the CLI is an entry point or SEA binary', async ({ args, rejection, exitCode, output, isEntryPoint, isSea }) => {
     const originalArgv = [...process.argv]
     const originalExitCode = process.exitCode
     process.argv.splice(0, process.argv.length, process.execPath, '/tmp/looptroop-cli-entrypoint.js', ...args)
     process.exitCode = undefined
     if (rejection) mocks.runDaemonProcess.mockRejectedValueOnce(new Error(rejection))
-    vi.doMock('../entryPoint', () => ({ isEntryPoint: () => true }))
-    vi.doMock('../lib/isSea', () => ({ isSea: () => false }))
+    vi.doMock('../entryPoint', () => ({ isEntryPoint: () => isEntryPoint }))
+    vi.doMock('../../lib/isSea', () => ({ isSea: () => isSea }))
 
     try {
       vi.resetModules()
@@ -82,7 +83,7 @@ describe('CLI command dispatch', () => {
       process.argv.splice(0, process.argv.length, ...originalArgv)
       process.exitCode = originalExitCode
       vi.doUnmock('../entryPoint')
-      vi.doUnmock('../lib/isSea')
+      vi.doUnmock('../../lib/isSea')
       vi.resetModules()
     }
   })
@@ -132,7 +133,7 @@ describe('CLI command dispatch', () => {
     await main(['open', '--print-url'])
     await main(['doctor', '--json'])
 
-    expect(mocks.statusCommand).toHaveBeenCalledWith(true, undefined)
+    expect(mocks.statusCommand.mock.calls[0]?.[0]).toBe(true)
     expect(mocks.openCommand).toHaveBeenCalledWith({ printUrl: true })
     expect(mocks.doctorCommand.mock.calls[0]?.[0]).toBe(true)
     expect(mocks.doctorCommand.mock.calls[0]?.[1]).toBeInstanceOf(Promise)

@@ -8,7 +8,14 @@ import { getProjectContextById } from './projects'
 import { manualQaImprovementTickets, opencodeSessions, phaseArtifacts, projects, ticketErrorOccurrences, ticketPhaseAttempts, ticketStatusHistory, tickets } from '../db/schema'
 import { detectGitBaseBranch, getProjectWorktreesRoot } from './paths'
 import { resolveProjectTicketContainedPath, writeProjectTicketFile } from '../ticket/containedPath'
-import { clearTicketModelSelectionLock, councilMembersEqualOrdered, lockTicketModelSelection, resolveTicketBaseBranch } from '../ticket/metadata'
+import {
+  clearTicketModelSelectionLock,
+  councilMembersEqualOrdered,
+  lockTicketModelSelection,
+  readTicketMetaForMutation,
+  resolveTicketBaseBranch,
+  writeTicketMeta,
+} from '../ticket/metadata'
 import type {
   PublicTicket,
   TicketErrorOccurrence,
@@ -243,6 +250,23 @@ function recordsEqual(left: Record<string, string> | null, right: Record<string,
   const rightKeys = Object.keys(right)
   if (leftKeys.length !== rightKeys.length) return false
   return leftKeys.every((key) => left[key] === right[key])
+}
+
+function restoreTicketMetaAfterFailure(
+  projectRoot: string,
+  externalId: string,
+  previousMeta: ReturnType<typeof readTicketMetaForMutation>,
+  originalError: unknown,
+): never {
+  try {
+    writeTicketMeta(projectRoot, externalId, previousMeta)
+  } catch (restoreError) {
+    throw new AggregateError(
+      [originalError, restoreError],
+      `Ticket metadata could not be restored after a failed start configuration update: ${externalId}`,
+    )
+  }
+  throw originalError
 }
 
 function assertLockedModelConfigurationMutable(
@@ -672,84 +696,112 @@ export function lockTicketStartConfiguration(
     lockedGitHookPolicySource: input.lockedGitHookPolicySource ?? 'profile',
   })
 
+  const previousMeta = readTicketMetaForMutation(context.projectRoot, context.externalId)
   const meta = lockTicketModelSelection(context.projectRoot, context.externalId, {
     startedAt: input.startedAt,
     lockedMainImplementer,
     lockedCouncilMembers,
   })
 
-  context.projectDb.update(tickets)
-    .set({
-      branchName: input.branchName,
-      lockedMainImplementer,
-      lockedMainImplementerVariant: input.lockedMainImplementerVariant ?? null,
-      lockedCouncilMembers: lockedCouncilMembersRaw,
-      lockedCouncilMemberVariants: lockedCouncilMemberVariantsRaw,
-      lockedInterviewQuestions: input.lockedInterviewQuestions,
-      lockedCoverageFollowUpBudgetPercent: input.lockedCoverageFollowUpBudgetPercent,
-      lockedMaxCoveragePasses: input.lockedMaxCoveragePasses,
-      lockedMaxPrdCoveragePasses: input.lockedMaxPrdCoveragePasses,
-      lockedMaxBeadsCoveragePasses: input.lockedMaxBeadsCoveragePasses,
-      lockedStructuredRetryCount: input.lockedStructuredRetryCount,
-      lockedManualQaEnabled: input.lockedManualQaEnabled ?? false,
-      lockedManualQaSource: input.lockedManualQaSource ?? 'profile',
-      lockedAiQuestionsEnabled: input.lockedAiQuestionsEnabled ?? false,
-      lockedAiQuestionsSource: input.lockedAiQuestionsSource ?? 'profile',
-      lockedAiQuestionWindow: input.lockedAiQuestionWindow ?? AI_QUESTION_WINDOW_DEFAULT_MS,
-      lockedAiQuestionWindowSource: input.lockedAiQuestionWindowSource ?? 'profile',
-      lockedGitHookPolicy: input.lockedGitHookPolicy ?? DEFAULT_GIT_HOOK_POLICY,
-      lockedGitHookPolicySource: input.lockedGitHookPolicySource ?? 'profile',
-      startedAt: meta.startedAt ?? input.startedAt,
-      updatedAt: new Date().toISOString(),
-    })
-    .where(eq(tickets.id, context.localTicketId))
-    .run()
+  try {
+    return context.projectDb.transaction((tx) => {
+      tx.update(tickets)
+        .set({
+          branchName: input.branchName,
+          lockedMainImplementer,
+          lockedMainImplementerVariant: input.lockedMainImplementerVariant ?? null,
+          lockedCouncilMembers: lockedCouncilMembersRaw,
+          lockedCouncilMemberVariants: lockedCouncilMemberVariantsRaw,
+          lockedInterviewQuestions: input.lockedInterviewQuestions,
+          lockedCoverageFollowUpBudgetPercent: input.lockedCoverageFollowUpBudgetPercent,
+          lockedMaxCoveragePasses: input.lockedMaxCoveragePasses,
+          lockedMaxPrdCoveragePasses: input.lockedMaxPrdCoveragePasses,
+          lockedMaxBeadsCoveragePasses: input.lockedMaxBeadsCoveragePasses,
+          lockedStructuredRetryCount: input.lockedStructuredRetryCount,
+          lockedManualQaEnabled: input.lockedManualQaEnabled ?? false,
+          lockedManualQaSource: input.lockedManualQaSource ?? 'profile',
+          lockedAiQuestionsEnabled: input.lockedAiQuestionsEnabled ?? false,
+          lockedAiQuestionsSource: input.lockedAiQuestionsSource ?? 'profile',
+          lockedAiQuestionWindow: input.lockedAiQuestionWindow ?? AI_QUESTION_WINDOW_DEFAULT_MS,
+          lockedAiQuestionWindowSource: input.lockedAiQuestionWindowSource ?? 'profile',
+          lockedGitHookPolicy: input.lockedGitHookPolicy ?? DEFAULT_GIT_HOOK_POLICY,
+          lockedGitHookPolicySource: input.lockedGitHookPolicySource ?? 'profile',
+          startedAt: meta.startedAt ?? input.startedAt,
+          updatedAt: new Date().toISOString(),
+        })
+        .where(eq(tickets.id, context.localTicketId))
+        .run()
 
-  const updated = context.projectDb.select().from(tickets).where(eq(tickets.id, context.localTicketId)).get()
-  if (!updated) {
-    throw new Error(`Ticket not found after locking start configuration: ${ticketRef}`)
+      const updated = tx.select().from(tickets).where(eq(tickets.id, context.localTicketId)).get()
+      if (!updated) {
+        throw new Error(`Ticket not found after locking start configuration: ${ticketRef}`)
+      }
+      return toPublicTicket(context.projectId, updated)
+    })
+  } catch (error) {
+    restoreTicketMetaAfterFailure(context.projectRoot, context.externalId, previousMeta, error)
   }
-  return toPublicTicket(context.projectId, updated)
 }
 
 export function rollbackTicketStartConfiguration(ticketRef: string): PublicTicket | undefined {
   const context = getTicketContext(ticketRef)
   if (!context || context.localTicket.status !== 'DRAFT') return undefined
 
-  context.projectDb.update(tickets)
-    .set({
-      status: 'DRAFT',
-      xstateSnapshot: null,
-      errorMessage: null,
-      branchName: null,
-      startedAt: null,
-      lockedMainImplementer: null,
-      lockedMainImplementerVariant: null,
-      lockedCouncilMembers: null,
-      lockedCouncilMemberVariants: null,
-      lockedInterviewQuestions: null,
-      lockedCoverageFollowUpBudgetPercent: null,
-      lockedMaxCoveragePasses: null,
-      lockedMaxPrdCoveragePasses: null,
-      lockedMaxBeadsCoveragePasses: null,
-      lockedStructuredRetryCount: null,
-      lockedManualQaEnabled: null,
-      lockedManualQaSource: null,
-      lockedAiQuestionsEnabled: null,
-      lockedAiQuestionsSource: null,
-      lockedAiQuestionWindow: null,
-      lockedAiQuestionWindowSource: null,
-      lockedGitHookPolicy: null,
-      lockedGitHookPolicySource: null,
-      updatedAt: new Date().toISOString(),
-    })
-    .where(and(eq(tickets.id, context.localTicketId), eq(tickets.status, 'DRAFT')))
-    .run()
+  const previousMeta = readTicketMetaForMutation(context.projectRoot, context.externalId)
+  let metadataMayHaveChanged = false
+  const updated = (() => {
+    try {
+      return context.projectDb.transaction((tx) => {
+        const current = tx.select().from(tickets).where(eq(tickets.id, context.localTicketId)).get()
+        if (!current || current.status !== 'DRAFT') return undefined
 
-  const updated = context.projectDb.select().from(tickets).where(eq(tickets.id, context.localTicketId)).get()
-  if (!updated || updated.status !== 'DRAFT') return undefined
+        metadataMayHaveChanged = true
+        clearTicketModelSelectionLock(context.projectRoot, context.externalId)
+        tx.update(tickets)
+          .set({
+            status: 'DRAFT',
+            xstateSnapshot: null,
+            errorMessage: null,
+            branchName: null,
+            startedAt: null,
+            lockedMainImplementer: null,
+            lockedMainImplementerVariant: null,
+            lockedCouncilMembers: null,
+            lockedCouncilMemberVariants: null,
+            lockedInterviewQuestions: null,
+            lockedCoverageFollowUpBudgetPercent: null,
+            lockedMaxCoveragePasses: null,
+            lockedMaxPrdCoveragePasses: null,
+            lockedMaxBeadsCoveragePasses: null,
+            lockedStructuredRetryCount: null,
+            lockedManualQaEnabled: null,
+            lockedManualQaSource: null,
+            lockedAiQuestionsEnabled: null,
+            lockedAiQuestionsSource: null,
+            lockedAiQuestionWindow: null,
+            lockedAiQuestionWindowSource: null,
+            lockedGitHookPolicy: null,
+            lockedGitHookPolicySource: null,
+            updatedAt: new Date().toISOString(),
+          })
+          .where(and(eq(tickets.id, context.localTicketId), eq(tickets.status, 'DRAFT')))
+          .run()
 
-  clearTicketModelSelectionLock(context.projectRoot, context.externalId)
+        const restored = tx.select().from(tickets).where(eq(tickets.id, context.localTicketId)).get()
+        return restored?.status === 'DRAFT' ? restored : undefined
+      })
+    } catch (error) {
+      if (metadataMayHaveChanged) {
+        restoreTicketMetaAfterFailure(context.projectRoot, context.externalId, previousMeta, error)
+      }
+      throw error
+    }
+  })()
+  if (!updated) {
+    if (metadataMayHaveChanged) writeTicketMeta(context.projectRoot, context.externalId, previousMeta)
+    return undefined
+  }
+
   const publicTicket = toPublicTicket(context.projectId, updated)
   syncTicketRuntimeProjection(publicTicket)
   return publicTicket

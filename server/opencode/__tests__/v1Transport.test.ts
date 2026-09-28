@@ -357,11 +357,13 @@ describe('OpenCode v1 transport direct behavior', () => {
       },
     })
     const subscription = await sdk.subscribeToEvents('session-1', undefined, caller.signal, 100)
-    const events = subscription.events[Symbol.asyncIterator]()
+    const receivedEventTypes: string[] = []
 
-    await expect(events.next()).resolves.toMatchObject({ value: { event: { type: 'step' } }, done: false })
-    caller.abort()
-    await expect(events.next()).resolves.toMatchObject({ done: true })
+    for await (const { event } of subscription.events) {
+      if (event) receivedEventTypes.push(event.type)
+      caller.abort()
+    }
+    expect(receivedEventTypes).toEqual(['step'])
   })
 
   it('summarizes tool and compact message parts without exposing unrelated event payloads', () => {

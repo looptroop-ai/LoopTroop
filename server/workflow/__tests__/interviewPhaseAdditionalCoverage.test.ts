@@ -96,7 +96,7 @@ describe('additional interview phase flows', () => {
   })
 
   it('forwards live draft session, stream, prompt, and progress events into the phase logs', async () => {
-    const { ticket, context } = await createInitializedTestTicket(repoManager, {
+    const { ticket, context, paths } = await createInitializedTestTicket(repoManager, {
       title: 'Preserve live interview draft progress',
     })
     const sendEvent = vi.fn()
@@ -126,11 +126,10 @@ describe('additional interview phase flows', () => {
         memberId: firstMember,
         sessionId: 'draft-session-1',
         event: {
-          type: 'text',
+          type: 'step',
           sessionId: 'draft-session-1',
-          text: 'draft stream output',
-          streaming: false,
-          complete: true,
+          step: 'start',
+          complete: false,
         },
       })
       onPromptDispatched?.({
@@ -173,6 +172,11 @@ describe('additional interview phase flows', () => {
     expect(getLatestPhaseArtifact(ticket.id, 'interview_drafts', 'COUNCIL_DELIBERATING')?.content)
       .toContain('Which outcome is most important?')
     expect(checkHealthMock).toHaveBeenCalledOnce()
+    const phaseLog = readFileSync(paths.executionLogPath, 'utf8')
+    expect(phaseLog).toContain(`OpenCode draft: ${firstMember} session=draft-session-1`)
+    expect(phaseLog).toContain('Step started.')
+    expect(phaseLog).toContain('interview draft prompt')
+    expect(phaseLog).toContain(`Interview draft session created for ${firstMember}: draft-session-1.`)
   })
 
   it('persists failed draft outcomes and blocks the interview when council quorum is not met', async () => {

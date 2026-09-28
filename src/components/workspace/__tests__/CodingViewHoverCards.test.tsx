@@ -79,7 +79,7 @@ describe('CodingView hover cards', () => {
   describe('PRD ref hover card', () => {
     it('shows the matching epic, story acceptance criteria, and missing-ref state', async () => {
       const prd = makePrdDocument()
-      fetchSpy.mockImplementation((input) => String(input) === '/api/files/1%3ATEST-1/prd'
+      fetchSpy.mockImplementation((input: RequestInfo | URL) => String(input) === '/api/files/1%3ATEST-1/prd'
         ? Promise.resolve(new Response(JSON.stringify({ content: JSON.stringify(prd) }), { status: 200 }))
         : Promise.resolve(new Response(JSON.stringify([]), { status: 200 })))
 

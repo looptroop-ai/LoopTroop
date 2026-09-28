@@ -1232,7 +1232,7 @@ describe('CodingView', () => {
                 ],
               }],
             },
-          },
+          } as RuntimeBeadInput & { createdAt: string },
           {
             id: 'reversed-duration-bead',
             title: 'Reversed duration bead',

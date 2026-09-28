@@ -341,7 +341,7 @@ describe('ExecutionSetupPlanEditor workspace verification', () => {
       target: { value: 'install --offline' },
     })
     current = sync()
-    expect(current.steps[0]?.commands[0]?.args).toEqual(['install --offline'])
+    expect(current.steps[0]?.commands[0]).toMatchObject({ mode: 'process', args: ['install --offline'] })
 
     fireEvent.change(screen.getByLabelText('Setup command 1 working directory'), { target: { value: 'packages/app' } })
     current = sync()

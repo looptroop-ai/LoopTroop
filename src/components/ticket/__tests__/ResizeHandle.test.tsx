@@ -21,7 +21,7 @@ describe('ResizeHandle', () => {
     const onResizeEnd = vi.fn()
 
     render(<ResizeHandle onResize={onResize} onResizeEnd={onResizeEnd} />)
-    const handle = screen.getByRole('separator', { orientation: 'vertical' })
+    const handle = screen.getByRole('separator')
 
     fireEvent.mouseDown(handle)
     expect(document.body.style.cursor).toBe('col-resize')
@@ -48,7 +48,7 @@ describe('ResizeHandle', () => {
     const onResizeEnd = vi.fn()
 
     render(<ResizeHandle onResize={onResize} onResizeEnd={onResizeEnd} />)
-    fireEvent.mouseDown(screen.getByRole('separator', { orientation: 'vertical' }))
+    fireEvent.mouseDown(screen.getByRole('separator'))
     fireEvent.mouseUp(document)
 
     expect(onResize).not.toHaveBeenCalled()
@@ -61,7 +61,7 @@ describe('ResizeHandle', () => {
     const onResize = vi.fn()
     const removeEventListener = vi.spyOn(document, 'removeEventListener')
     const { unmount } = render(<ResizeHandle onResize={onResize} />)
-    const handle = screen.getByRole('separator', { orientation: 'vertical' })
+    const handle = screen.getByRole('separator')
 
     fireEvent.mouseDown(handle)
     fireEvent.mouseMove(document, { clientX: 320 })

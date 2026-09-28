@@ -30,7 +30,7 @@ describe('VerticalResizeHandle', () => {
     vi.spyOn(container, 'getBoundingClientRect').mockReturnValue(makeRect(500, 800))
 
     render(<VerticalResizeHandle onResize={onResize} containerRef={containerRef} />)
-    const handle = screen.getByRole('separator', { orientation: 'horizontal' })
+    const handle = screen.getByRole('separator')
 
     fireEvent.mouseDown(handle)
     expect(document.body.style.cursor).toBe('row-resize')
@@ -54,7 +54,7 @@ describe('VerticalResizeHandle', () => {
     const containerRef: { current: HTMLElement | null } = { current: null }
 
     render(<VerticalResizeHandle onResize={onResize} containerRef={containerRef} />)
-    fireEvent.mouseDown(screen.getByRole('separator', { orientation: 'horizontal' }))
+    fireEvent.mouseDown(screen.getByRole('separator'))
     fireEvent.mouseMove(document, { clientY: 250 })
 
     expect(onResize).not.toHaveBeenCalled()
@@ -71,7 +71,7 @@ describe('VerticalResizeHandle', () => {
     vi.spyOn(container, 'getBoundingClientRect').mockReturnValue(makeRect(500, 600))
     const removeEventListener = vi.spyOn(document, 'removeEventListener')
     const { unmount } = render(<VerticalResizeHandle onResize={onResize} containerRef={containerRef} />)
-    const handle = screen.getByRole('separator', { orientation: 'horizontal' })
+    const handle = screen.getByRole('separator')
 
     fireEvent.mouseDown(handle)
     fireEvent.mouseMove(document, { clientY: 300 })

@@ -8,8 +8,8 @@ import { PrdApprovalEditor } from '../PrdApprovalEditor'
 function listEditor(container: HTMLElement, label: string) {
   const labelElement = within(container).getByText(label, { exact: true })
   const section = labelElement.closest('div.rounded-xl')
-  expect(section).not.toBeNull()
-  return within(section!)
+  if (!(section instanceof HTMLDivElement)) throw new Error(`Could not find list editor section: ${label}`)
+  return within(section)
 }
 
 function ControlledEditor({
@@ -174,7 +174,8 @@ describe('PrdApprovalEditor', () => {
 
     const epicTrigger = screen.getByRole('button', { name: /EPIC-A Test epic 1 story/ })
     fireEvent.click(epicTrigger)
-    const epicSection = epicTrigger.closest('div.border')!
+    const epicSection = epicTrigger.closest('div.border')
+    if (!(epicSection instanceof HTMLDivElement)) throw new Error('Could not find epic editor section')
     const epicSteps = listEditor(epicSection, 'Epic Implementation Steps')
     fireEvent.click(epicSteps.getByRole('button', { name: 'Add Step' }))
     expect(onChange).toHaveBeenLastCalledWith(expect.objectContaining({

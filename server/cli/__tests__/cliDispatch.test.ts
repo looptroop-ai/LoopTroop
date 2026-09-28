@@ -10,7 +10,7 @@ const mocks = vi.hoisted(() => ({
   restartCommand: vi.fn(async () => 0),
   statusCommand: vi.fn(async () => 0),
   openCommand: vi.fn(async () => 0),
-  doctorCommand: vi.fn(async () => 0),
+  doctorCommand: vi.fn(async (_json: boolean, _update: Promise<unknown>) => 0),
   logsCommand: vi.fn(async () => 0),
   cleanCommand: vi.fn(async () => 0),
 }))

@@ -97,7 +97,13 @@ describe('execution setup runtime profile', () => {
         prepare: [],
         testFull: [],
         lintFull: [],
-        typecheckFull: [`node ./${EXECUTION_SETUP_RUN_WRAPPER} typecheck`],
+        typecheckFull: [{
+          mode: 'shell',
+          shell: 'posix',
+          script: `node ./${EXECUTION_SETUP_RUN_WRAPPER} typecheck`,
+          cwd: '.',
+          env: {},
+        }],
       },
     }))).toBe(EXECUTION_SETUP_RUN_WRAPPER)
     expect(getExecutionSetupCommandWrapper(null)).toBeNull()

@@ -18,6 +18,10 @@ class SequencedMockOpenCodeAdapter extends MockOpenCodeAdapter {
     if (queuedResponse !== undefined) {
       this.mockResponses.set(sessionId, queuedResponse)
     }
+    const queuedAssistantInfo = this.mockAssistantInfos.get(`${sessionId}#${nextCount}`)
+    if (queuedAssistantInfo !== undefined) {
+      this.mockAssistantInfos.set(sessionId, queuedAssistantInfo)
+    }
 
     return await super.promptSession(...args)
   }
@@ -78,14 +82,29 @@ describe('generateExecutionSetupPlan', () => {
     const adapter = new SequencedMockOpenCodeAdapter()
     adapter.mockResponses.set('mock-session-1#1', 'I drafted the setup plan.')
     adapter.mockResponses.set('mock-session-1#2', buildReadyPlanResponse())
+    const createdSessions: string[] = []
+    const streamedEvents: Array<{ sessionId: string; event: { type: string } }> = []
+    const completedStages: string[] = []
 
     const result = await generateExecutionSetupPlan(
       adapter,
       [{ type: 'text', content: 'Execution setup plan context' }],
       '/tmp/test',
+      undefined,
+      {
+        onSessionCreated: (sessionId) => createdSessions.push(sessionId),
+        onOpenCodeStreamEvent: (entry) => streamedEvents.push(entry),
+        onPromptCompleted: ({ stage }) => completedStages.push(stage),
+      },
     )
 
     expect(result.plan?.steps[0]?.title).toBe('Bootstrap project dependencies')
+    expect(createdSessions).toEqual(['mock-session-1'])
+    expect(streamedEvents).toEqual(expect.arrayContaining([
+      expect.objectContaining({ sessionId: 'mock-session-1', event: expect.objectContaining({ type: 'text' }) }),
+      expect.objectContaining({ sessionId: 'mock-session-1', event: expect.objectContaining({ type: 'done' }) }),
+    ]))
+    expect(completedStages).toEqual(['execution_setup_plan_main', 'execution_setup_plan_structured_retry'])
     expect(result.structuredOutput.autoRetryCount).toBe(1)
     expect(result.rawAttempts).toEqual([
       expect.objectContaining({ attempt: 1, outcome: 'rejected', rawResponse: 'I drafted the setup plan.' }),
@@ -146,6 +165,99 @@ describe('generateExecutionSetupPlan', () => {
       typeof message.content === 'string'
       && message.content.includes('The generated plan needs one additional semantic correction')
     ))).toBe(true)
+  })
+
+  it('starts a fresh owned session when OpenCode reports an errored assistant response', async () => {
+    resetTestDb()
+    const { ticket } = await createInitializedTestTicket(repoManager, {
+      title: 'Replace errored setup plan session',
+    })
+    patchTicket(ticket.id, { status: 'WAITING_EXECUTION_SETUP_APPROVAL' })
+    const adapter = new SequencedMockOpenCodeAdapter()
+    adapter.mockResponses.set('mock-session-1#1', 'provider error response')
+    adapter.mockAssistantInfos.set('mock-session-1#1', { error: new Error('provider returned error') })
+    adapter.mockResponses.set('mock-session-2#1', buildReadyPlanResponse())
+
+    const result = await generateExecutionSetupPlan(
+      adapter,
+      [{ type: 'text', content: 'Execution setup plan context' }],
+      '/tmp/test',
+      undefined,
+      { ticketId: ticket.id },
+    )
+
+    expect(result.plan?.summary).toBe('Workspace setup is ready for review.')
+    expect(adapter.sessions.map((session) => session.id)).toEqual(['mock-session-1', 'mock-session-2'])
+    expect(listOpenCodeSessionsForTicket(ticket.id, ['abandoned']).map((session) => session.sessionId))
+      .toEqual(['mock-session-1'])
+    expect(listOpenCodeSessionsForTicket(ticket.id, ['completed']).map((session) => session.sessionId))
+      .toEqual(['mock-session-2'])
+  })
+
+  it('fails closed when it cannot confirm cleanup of an invalid terminal response', async () => {
+    const adapter = new MockOpenCodeAdapter()
+    adapter.mockResponses.set('mock-session-1', 'not a setup plan')
+    adapter.abortSession = async () => {
+      throw new Error('OpenCode is unavailable')
+    }
+
+    await expect(generateExecutionSetupPlan(
+      adapter,
+      [{ type: 'text', content: 'Execution setup plan context' }],
+      '/tmp/test',
+      undefined,
+      { structuredRetryCount: 0 },
+    )).rejects.toThrow('Could not confirm abort of OpenCode session mock-session-1')
+  })
+
+  it('cleans up the active session and propagates a structured retry failure', async () => {
+    class RetryFailureAdapter extends MockOpenCodeAdapter {
+      private promptCount = 0
+
+      override async promptSession(...args: Parameters<MockOpenCodeAdapter['promptSession']>): Promise<string> {
+        this.promptCount += 1
+        if (this.promptCount === 2) throw new Error('Structured retry failed')
+        return await super.promptSession(...args)
+      }
+    }
+
+    const adapter = new RetryFailureAdapter()
+    adapter.mockResponses.set('mock-session-1', 'not a setup plan')
+
+    await expect(generateExecutionSetupPlan(
+      adapter,
+      [{ type: 'text', content: 'Execution setup plan context' }],
+      '/tmp/test',
+    )).rejects.toThrow('Structured retry failed')
+  })
+
+  it('aborts the created session and preserves an initial prompt failure', async () => {
+    class FailingPromptAdapter extends MockOpenCodeAdapter {
+      readonly abortedSessions: string[] = []
+
+      override async promptSession(..._args: Parameters<MockOpenCodeAdapter['promptSession']>): Promise<string> {
+        throw new Error('OpenCode prompt failed')
+      }
+
+      override async abortSession(sessionId: string): Promise<boolean> {
+        this.abortedSessions.push(sessionId)
+        return true
+      }
+    }
+
+    const adapter = new FailingPromptAdapter()
+    const createdSessions: string[] = []
+
+    await expect(generateExecutionSetupPlan(
+      adapter,
+      [{ type: 'text', content: 'Execution setup plan context' }],
+      '/tmp/test',
+      undefined,
+      { onSessionCreated: (sessionId) => createdSessions.push(sessionId) },
+    )).rejects.toThrow('OpenCode prompt failed')
+
+    expect(createdSessions).toEqual(['mock-session-1'])
+    expect(adapter.abortedSessions).toContain('mock-session-1')
   })
 
   it('completes owned setup-plan sessions after a ready plan is parsed', async () => {

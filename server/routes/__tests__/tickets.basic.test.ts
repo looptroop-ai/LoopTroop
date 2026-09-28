@@ -22,7 +22,7 @@ vi.mock('../../opencode/sessionManager', () => ({
   abortTicketSessions: vi.fn(async () => true),
 }))
 
-import { ensureActorForTicket, sendTicketEvent } from '../../machines/persistence'
+import { createTicketActor, ensureActorForTicket, sendTicketEvent } from '../../machines/persistence'
 import { claimInterviewBatch, handleInterviewQABatch, processInterviewBatchAsync, releaseInterviewBatch } from '../../workflow/runner'
 import {
   claimInterviewBatch as claimDurableInterviewBatch,
@@ -184,6 +184,32 @@ describe('ticketRouter basic ticket routes', () => {
     expect(await missingResponse.json()).toEqual({ error: 'Ticket not found' })
   })
 
+  it('creates a ticket and reports a missing project', async () => {
+    const { project } = createBasicTicket()
+    const created = await app.request('/api/tickets', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ projectId: project.id, title: 'Created through the API' }),
+    })
+
+    expect(created.status).toBe(201)
+    const ticket = await created.json() as { id: string; projectId: number; title: string }
+    expect(ticket).toMatchObject({ projectId: project.id, title: 'Created through the API' })
+    expect(createTicketActor).toHaveBeenCalledWith(ticket.id, expect.objectContaining({
+      ticketId: ticket.id,
+      projectId: project.id,
+      title: 'Created through the API',
+    }))
+
+    const missingProject = await app.request('/api/tickets', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ projectId: 999_999, title: 'Missing project' }),
+    })
+    expect(missingProject.status).toBe(404)
+    expect(await missingProject.json()).toEqual({ error: 'Project not found' })
+  })
+
   it('exposes cleanup warning summaries from the latest cleanup report', async () => {
     const { ticket } = createBasicTicket()
     insertPhaseArtifact(ticket.id, {
@@ -255,6 +281,28 @@ describe('ticketRouter basic ticket routes', () => {
       error: 'Status field is API-protected. Use workflow actions to change status.',
     })
     expect(getTicketByRef(ticket.id)?.status).toBe('DRAFT')
+  })
+
+  it('returns 404 for a missing ticket and rejects override edits after the draft phase', async () => {
+    const missing = await app.request('/api/tickets/missing-ticket', {
+      method: 'PATCH',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ title: 'No ticket' }),
+    })
+    expect(missing.status).toBe(404)
+    expect(await missing.json()).toEqual({ error: 'Ticket not found' })
+
+    const { ticket } = createBasicTicket()
+    patchTicket(ticket.id, { status: 'WAITING_INTERVIEW_ANSWERS' })
+    const response = await app.request(`/api/tickets/${ticket.id}`, {
+      method: 'PATCH',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ manualQaOverride: true }),
+    })
+    expect(response.status).toBe(409)
+    expect(await response.json()).toEqual({
+      error: 'Manual QA override can only be changed while the ticket is in DRAFT status.',
+    })
   })
 
   it('keeps direct interview answer submission disabled', async () => {

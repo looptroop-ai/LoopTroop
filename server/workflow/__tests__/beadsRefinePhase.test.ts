@@ -471,6 +471,80 @@ describe('handleBeadsRefine', () => {
     expect(refineDraftMock).not.toHaveBeenCalled()
   })
 
+  it('keeps an unchanged blueprint when the refinement introduces no semantic changes', async () => {
+    const { ticket, context, paths } = await createInitializedTestTicket(repoManager, {
+      title: 'Keep an unchanged beads blueprint',
+    })
+    const sendEvent = vi.fn()
+    const winnerId = TEST.councilMembers[0]
+    const winnerDraftContent = buildBeadSubsetContent()
+
+    phaseIntermediate.set(`${ticket.id}:beads`, {
+      phase: 'beads',
+      worktreePath: paths.worktreePath,
+      winnerId,
+      drafts: [{ memberId: winnerId, outcome: 'completed', content: winnerDraftContent, duration: 1 }],
+      memberOutcomes: { [winnerId]: 'completed' },
+      contextBuilder: () => [],
+    })
+    refineDraftMock.mockImplementationOnce(async (
+      _adapter: unknown,
+      _winnerDraft: unknown,
+      _losingDrafts: unknown,
+      _contextParts: unknown,
+      _projectPath: unknown,
+      _timeoutMs: unknown,
+      _signal: unknown,
+      _onOpenCodeSessionLog: unknown,
+      _onOpenCodeStreamEvent: unknown,
+      _onOpenCodePromptDispatched: unknown,
+      _sessionOwnership: unknown,
+      _buildPrompt: unknown,
+      validateResponse?: (content: string) => { normalizedContent?: string },
+    ) => ({
+      content: validateResponse?.(winnerDraftContent).normalizedContent ?? winnerDraftContent,
+      rawAttempts: [],
+    }))
+
+    await handleBeadsRefine(ticket.id, context, sendEvent, new AbortController().signal)
+
+    expect(getLatestPhaseArtifact(ticket.id, 'ui_refinement_diff:beads', 'REFINING_BEADS')).toBeDefined()
+    const refinedArtifact = JSON.parse(getLatestPhaseArtifact(ticket.id, 'beads_refined', 'REFINING_BEADS')!.content) as {
+      winnerId: string
+      refinedContent: string
+    }
+    expect(refinedArtifact.winnerId).toBe(winnerId)
+    expect(refinedArtifact.refinedContent).toContain('Validate refinement attribution')
+    expect(phaseIntermediate.get(`${ticket.id}:beads`)).toBeUndefined()
+    expect(sendEvent).toHaveBeenCalledWith({ type: 'REFINED' })
+  })
+
+  it('logs and preserves state when the refinement service fails', async () => {
+    const { ticket, context, paths } = await createInitializedTestTicket(repoManager, {
+      title: 'Recover a failed beads refinement',
+    })
+    const sendEvent = vi.fn()
+    const winnerId = TEST.councilMembers[0]
+
+    phaseIntermediate.set(`${ticket.id}:beads`, {
+      phase: 'beads',
+      worktreePath: paths.worktreePath,
+      winnerId,
+      drafts: [{ memberId: winnerId, outcome: 'completed', content: buildBeadSubsetContent(), duration: 1 }],
+      memberOutcomes: { [winnerId]: 'completed' },
+      contextBuilder: () => [],
+    })
+    refineDraftMock.mockRejectedValueOnce(new Error('council service unavailable'))
+
+    await expect(handleBeadsRefine(ticket.id, context, sendEvent, new AbortController().signal))
+      .rejects.toThrow('council service unavailable')
+
+    expect(readFileSync(paths.executionLogPath, 'utf-8')).toContain('Substep blueprint_refine failed: council service unavailable')
+    expect(phaseIntermediate.get(`${ticket.id}:beads`)).toBeDefined()
+    expect(getLatestPhaseArtifact(ticket.id, 'beads_refined', 'REFINING_BEADS')).toBeUndefined()
+    expect(sendEvent).not.toHaveBeenCalled()
+  })
+
   it('runs terminal bead expansion only after beads coverage becomes clean', async () => {
     const { ticket, context, paths } = await createInitializedTestTicket(repoManager, {
       title: 'Revise beads during coverage',

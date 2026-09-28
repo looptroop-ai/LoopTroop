@@ -1,5 +1,5 @@
 import type { ReactNode } from 'react'
-import { fireEvent, render, screen } from '@testing-library/react'
+import { fireEvent, render, screen, within } from '@testing-library/react'
 import { describe, expect, it, vi } from 'vitest'
 import { TooltipProvider } from '@/components/ui/tooltip'
 import { UIProvider } from '@/context/UIContext'
@@ -85,6 +85,70 @@ describe('KanbanColumn', () => {
     expect(screen.getByText('of 3')).toBeInTheDocument()
   })
 
+  it('navigates pages, clamps entered page numbers, and resets after its inputs change', () => {
+    const tickets = makeCompletedTickets(31)
+    const column = {
+      id: 'done',
+      title: 'Done',
+      description: 'Completed tickets',
+      tooltip: 'Terminal tickets that no longer advance automatically.',
+    } as const
+    const renderColumn = (resetKey: string, visibleTickets = tickets) => (
+      <TooltipProvider>
+        <UIProvider>
+          <KanbanColumn
+            column={column}
+            tickets={visibleTickets}
+            projectMap={new Map<number, Project>()}
+            resetKey={resetKey}
+          />
+        </UIProvider>
+      </TooltipProvider>
+    )
+    const { rerender } = render(renderColumn('initial'))
+    const pageInput = screen.getByRole('textbox', { name: /done current page/i })
+    const controls = within(screen.getByText('Page').parentElement!.parentElement!)
+    const pageButtons = controls.getAllByRole('button')
+    const previousPage = pageButtons[0]!
+    const nextPage = pageButtons[1]!
+
+    expect(previousPage).toBeDisabled()
+    fireEvent.click(nextPage)
+    expect(pageInput).toHaveValue('2')
+    expect(screen.getByLabelText(ticketCardLabel('TEST-16'))).toBeInTheDocument()
+    expect(previousPage).toBeEnabled()
+
+    pageInput.focus()
+    fireEvent.change(pageInput, { target: { value: '99' } })
+    fireEvent.keyDown(pageInput, { key: 'Enter' })
+    expect(pageInput).toHaveValue('3')
+    expect(screen.getByLabelText(ticketCardLabel('TEST-1'))).toBeInTheDocument()
+    expect(nextPage).toBeDisabled()
+
+    fireEvent.click(previousPage)
+    pageInput.focus()
+    fireEvent.change(pageInput, { target: { value: '0' } })
+    fireEvent.blur(pageInput)
+    expect(pageInput).toHaveValue('1')
+    expect(screen.getByLabelText(ticketCardLabel('TEST-31'))).toBeInTheDocument()
+
+    fireEvent.click(nextPage)
+    pageInput.focus()
+    fireEvent.change(pageInput, { target: { value: '' } })
+    fireEvent.blur(pageInput)
+    expect(pageInput).toHaveValue('2')
+
+    pageInput.focus()
+    fireEvent.change(pageInput, { target: { value: '1' } })
+    fireEvent.keyDown(pageInput, { key: 'Escape' })
+    expect(pageInput).toHaveValue('2')
+    expect(screen.getByLabelText(ticketCardLabel('TEST-16'))).toBeInTheDocument()
+
+    rerender(renderColumn('tickets-changed', tickets.slice(0, 30)))
+    expect(pageInput).toHaveValue('1')
+    expect(screen.getByLabelText(ticketCardLabel('TEST-30'))).toBeInTheDocument()
+  })
+
   it('marks display-only mock ticket IDs on cards', () => {
     const ticket = makeTicket({
       externalId: 'TEST-99',
@@ -120,7 +184,7 @@ describe('KanbanColumn', () => {
       externalId: 'A',
       title: 'Zeta ticket',
       priority: 3,
-      createdAt: '2026-06-01T12:00:00.000Z',
+      createdAt: '2026-06-04T12:00:00.000Z',
       updatedAt: '2026-06-01T13:00:00.000Z',
     })
     const ticketB = makeTicket({
@@ -136,11 +200,19 @@ describe('KanbanColumn', () => {
       externalId: 'C',
       title: 'Beta ticket',
       priority: 2,
-      createdAt: '2026-06-03T12:00:00.000Z',
+      createdAt: '2026-06-01T12:00:00.000Z',
       updatedAt: '2026-06-03T13:00:00.000Z',
     })
+    const ticketD = makeTicket({
+      id: '1:D',
+      externalId: 'D',
+      title: 'Delta ticket',
+      priority: 2,
+      createdAt: '2026-06-03T12:00:00.000Z',
+      updatedAt: '2026-06-04T13:00:00.000Z',
+    })
 
-    const ticketsList = [ticketA, ticketB, ticketC]
+    const ticketsList = [ticketA, ticketB, ticketC, ticketD]
 
     const { rerender } = render(
       <TooltipProvider>
@@ -160,54 +232,39 @@ describe('KanbanColumn', () => {
       </TooltipProvider>,
     )
 
-    // Default updatedAt_desc sorting: C (June 3), B (June 2), A (June 1)
-    // The card title is the button that opens the ticket.
-    let renderedCardTitles = screen.getAllByRole('button', { name: ANY_TICKET_CARD_LABEL })
-      .map(el => el.textContent)
-    expect(renderedCardTitles).toEqual(['Beta ticket', 'Alpha ticket', 'Zeta ticket'])
+    const sortCases: Array<[string, string[]]> = [
+      ['updatedAt_desc', ['Delta ticket', 'Beta ticket', 'Alpha ticket', 'Zeta ticket']],
+      ['updatedAt_asc', ['Zeta ticket', 'Alpha ticket', 'Beta ticket', 'Delta ticket']],
+      ['createdAt_desc', ['Zeta ticket', 'Delta ticket', 'Alpha ticket', 'Beta ticket']],
+      ['createdAt_asc', ['Beta ticket', 'Alpha ticket', 'Delta ticket', 'Zeta ticket']],
+      ['priority_asc', ['Alpha ticket', 'Delta ticket', 'Beta ticket', 'Zeta ticket']],
+      ['priority_desc', ['Zeta ticket', 'Delta ticket', 'Beta ticket', 'Alpha ticket']],
+      ['title_asc', ['Alpha ticket', 'Beta ticket', 'Delta ticket', 'Zeta ticket']],
+      ['title_desc', ['Zeta ticket', 'Delta ticket', 'Beta ticket', 'Alpha ticket']],
+    ]
 
-    // Sort by Title A-Z
-    rerender(
-      <TooltipProvider>
-        <UIProvider>
-          <KanbanColumn
-            column={{
-              id: 'todo',
-              title: 'To Do',
-              description: 'Backlog',
-              tooltip: 'Tooltip text',
-            }}
-            tickets={ticketsList}
-            projectMap={new Map<number, Project>()}
-            sortBy="title_asc"
-          />
-        </UIProvider>
-      </TooltipProvider>,
-    )
-    renderedCardTitles = screen.getAllByRole('button', { name: ANY_TICKET_CARD_LABEL })
-      .map(el => el.textContent)
-    expect(renderedCardTitles).toEqual(['Alpha ticket', 'Beta ticket', 'Zeta ticket'])
+    for (const [sortBy, expectedTitles] of sortCases) {
+      rerender(
+        <TooltipProvider>
+          <UIProvider>
+            <KanbanColumn
+              column={{
+                id: 'todo',
+                title: 'To Do',
+                description: 'Backlog',
+                tooltip: 'Tooltip text',
+              }}
+              tickets={ticketsList}
+              projectMap={new Map<number, Project>()}
+              sortBy={sortBy}
+            />
+          </UIProvider>
+        </TooltipProvider>,
+      )
 
-    // Sort by Priority High to Low: B (priority 1), C (priority 2), A (priority 3)
-    rerender(
-      <TooltipProvider>
-        <UIProvider>
-          <KanbanColumn
-            column={{
-              id: 'todo',
-              title: 'To Do',
-              description: 'Backlog',
-              tooltip: 'Tooltip text',
-            }}
-            tickets={ticketsList}
-            projectMap={new Map<number, Project>()}
-            sortBy="priority_asc"
-          />
-        </UIProvider>
-      </TooltipProvider>,
-    )
-    renderedCardTitles = screen.getAllByRole('button', { name: ANY_TICKET_CARD_LABEL })
-      .map(el => el.textContent)
-    expect(renderedCardTitles).toEqual(['Alpha ticket', 'Beta ticket', 'Zeta ticket'])
+      const renderedCardTitles = screen.getAllByRole('button', { name: ANY_TICKET_CARD_LABEL })
+        .map(el => el.textContent)
+      expect(renderedCardTitles).toEqual(expectedTitles)
+    }
   })
 })

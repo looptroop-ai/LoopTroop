@@ -10,8 +10,9 @@ Unreleased changes appear first and represent commits that have not yet been inc
 > Changes merged since the last versioned release that have not yet shipped in a tagged version.
 
 ### Summary
+- Pressing Escape while editing a Kanban page number cancels the edit without changing pages.
 - Failed ticket starts that stay in DRAFT clear provisional model locks and can be retried with updated settings.
-- V8 line coverage now exceeds 90% across all four projects, and CI enforces a 90% minimum with broader CLI, route, PRD refinement, runtime-profile, workflow, adapter, parser, and UI regression tests.
+- V8 line coverage now exceeds 90% across all four Vitest projects, and CI enforces a 90% minimum with broader CLI, route, PRD, setup-plan, pull-request, supervisor, transport, license notice, and UI regression tests.
 - Security reports now have a private disclosure policy with scoped Safe Harbor terms.
 - New stable releases attach a verified provenance bundle as `release-provenance.sigstore.json`.
 - CI tools install from integrity lockfiles without third-party lifecycle scripts, network boundaries gain generated-input tests, and security findings have verified dispositions.
@@ -50,7 +51,8 @@ Unreleased changes appear first and represent commits that have not yet been inc
 
 ### Added
 - Added focused CLI tests for healthy, missing, unresponsive, and cleanup-pending daemon status, including token redaction and invalid sign-in nonces.
-- Regression tests now cover CLI dispatch and help, project and approval/interview routes, PRD refinement and persisted-artifact validation, runtime-profile command-wrapper repair, workflow setup and verification, bead expansion and refinement, interview question recovery, normalization, and answer edits, Manual QA generation retries and restoration, Manual QA routes, OpenCode adapter errors and stream-event logging, YAML repairs, and artifact, prompt, and setup-plan editor interactions. Database- and mock-backed workflow tests run in the isolated integration project, and the source scan test allows a minute under coverage instrumentation.
+- Server regression tests cover CLI dispatch and help, project and ticket CRUD routes, project-deletion rollback, approval/interview routes, PRD refinement and persisted-artifact validation, PRD and Beads pipeline recovery, runtime-profile command-wrapper repair, setup-plan generation and phase-version safeguards, pull-request and Beads refinement, supervisor probe and mock-mode behavior, workflow setup and verification, interview QA result mapping, resume, and answer edits, Manual QA generation retries and restoration, Manual QA routes, and OpenCode adapter errors and stream-event logging.
+- Tooling and UI regression tests cover third-party notice generation and stale-output checks, ticket-artifact query and cache recovery, Kanban sorting and pagination, YAML repairs, and artifact, prompt, and setup-plan editor interactions. Database- and mock-backed workflow tests run in the isolated integration project, and the source scan test allows a minute under coverage instrumentation.
 - `npm run test:coverage` reports V8 coverage across all four Vitest projects as LCOV, text, and JSON summary output, and fails below 90% global line coverage. CI collects it in the required Ubuntu Verify job and retains the LCOV and JSON files for seven days. Pull request reports use the same source revision Codecov associates with the upload. A separate OIDC Codecov job uploads LCOV on pushes, manual runs, and pull requests from this repository; public-fork pull requests use the tokenless path. The Codecov project status blocks below 90%; patch status remains informational.
 - New stable releases attach the native provenance bundle as `release-provenance.sigstore.json`. Before updating the draft, the workflow verifies it against the expected release manifest, repository, workflow, and source commit; earlier releases are unchanged.
 - Generated-input tests cover loopback recognition, IPv4-mapped IPv6, invalid ports, and hostile hostname suffixes through fast-check. CI-only Bun, pnpm, Yarn and OpenCode installations have separate integrity lockfiles maintained by Renovate; published-feed checks preserve the release driver while loading tools from the workflow commit. Native probe failures retain the package-specific diagnostic, and the setup fixture stays below the analyzer's complexity threshold. The digest-pinned production image uses its bundled npm for the locked, script-free install.
@@ -273,6 +275,7 @@ Unreleased changes appear first and represent commits that have not yet been inc
 - The unused `server/db/drizzle.config.ts` alias. Every database script already selects its app or project config explicitly, so keeping a third config that Drizzle Kit cannot discover from the repository root only advertised a command that no longer worked.
 
 ### Fixed
+- Escape now cancels a Kanban page-number edit without letting the blur handler commit its stale value.
 - Failed START dispatches now clear provisional model locks from the ticket row and metadata while preserving a ticket whose actor has already advanced.
 - Process-control guard tests use a known live process for mismatched-token checks, avoiding intermittent Windows process-start lookup failures.
 - CI selects Bun's available x64 package when verifying a new Bun version, so the update no longer fails because the package has no separate baseline variant.

@@ -348,9 +348,10 @@ describe('OpenCode v2 fetch transport', () => {
     const subscription = await transport.subscribeToEvents('session-1', '/workspace', undefined, undefined, 4)
 
     expect(subscription).toMatchObject({ cursor: 6, coverageComplete: true })
-    expect(subscription.initialEvents.map(event => event.event?.type)).toEqual(['question', 'inbox_enqueued', 'execution_started'])
-    expect(subscription.initialEvents[0]?.event).toMatchObject({ type: 'question', action: 'asked', requestId: 'form-1' })
-    await subscription.close()
+    const initialEvents = subscription.initialEvents ?? []
+    expect(initialEvents.map(event => event.event?.type)).toEqual(['question', 'inbox_enqueued', 'execution_started'])
+    expect(initialEvents[0]?.event).toMatchObject({ type: 'question', action: 'asked', requestId: 'form-1' })
+    await subscription.close!()
   })
 
   it.each([
@@ -375,7 +376,7 @@ describe('OpenCode v2 fetch transport', () => {
 
     expect(subscription.coverageComplete).toBe(false)
     expect(subscription.initialEvents).toEqual([{ cursor: 5, coverageGap: true }])
-    await subscription.close()
+    await subscription.close!()
   })
 
   it('detects both a missing history prefix and a missing watermark tail', async () => {

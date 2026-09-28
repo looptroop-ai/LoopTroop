@@ -1665,4 +1665,18 @@ describe('OpenCode adapter transport orchestration', () => {
     await expect(adapter.abortSession(session.id)).resolves.toBe(true)
     expect(transport.interruptSession).toHaveBeenCalledWith(session.id, '/trusted/worktree')
   })
+
+  it('rejects an already-aborted call while transport initialization is pending', async () => {
+    let resolveInitialization: ((transport: OpenCodeTransport) => void) | undefined
+    const initialization = new Promise<OpenCodeTransport>(resolve => { resolveInitialization = resolve })
+    const resolver = vi.fn(() => initialization)
+    const adapter = new OpenCodeSDKAdapter('http://127.0.0.1:4096', undefined, resolver)
+    const cancelled = new AbortController()
+    cancelled.abort()
+
+    await expect(adapter.listSessions(cancelled.signal)).rejects.toMatchObject({ name: 'AbortError' })
+
+    resolveInitialization?.(createV2Transport().transport)
+    expect(resolver).toHaveBeenCalledTimes(1)
+  })
 })

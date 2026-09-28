@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from 'react'
+import { useEffect, useMemo, useRef, useState } from 'react'
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card'
 import { Badge } from '@/components/ui/badge'
 import { ScrollArea } from '@/components/ui/scroll-area'
@@ -35,6 +35,7 @@ export function KanbanColumn({
 }: KanbanColumnProps) {
   const [currentPage, setCurrentPage] = useState(1)
   const [pageInput, setPageInput] = useState('1')
+  const ignoreNextBlur = useRef(false)
 
   useEffect(() => {
     setCurrentPage(1)
@@ -168,7 +169,13 @@ export function KanbanColumn({
                   onChange={(event) => {
                     setPageInput(event.target.value.replace(/\D/g, ''))
                   }}
-                  onBlur={() => commitPageInput(pageInput)}
+                  onBlur={() => {
+                    if (ignoreNextBlur.current) {
+                      ignoreNextBlur.current = false
+                      return
+                    }
+                    commitPageInput(pageInput)
+                  }}
                   onFocus={(event) => event.currentTarget.select()}
                   onKeyDown={(event) => {
                     if (event.key === 'Enter') {
@@ -179,6 +186,7 @@ export function KanbanColumn({
                     if (event.key === 'Escape') {
                       event.preventDefault()
                       setPageInput(String(currentPage))
+                      ignoreNextBlur.current = true
                       event.currentTarget.blur()
                     }
                   }}

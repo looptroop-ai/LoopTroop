@@ -302,6 +302,23 @@ describe('ticketRouter execution setup plan approval routes', () => {
     expect(payload.plan.summary).toBe('Prepare the workspace runtime.')
   })
 
+  it('reports missing tickets and unreadable setup plans from the read route', async () => {
+    const { app, ticket } = await setupExecutionSetupPlanTicket()
+
+    const missing = await app.request('/api/tickets/missing/execution-setup-plan')
+    expect(missing.status).toBe(404)
+
+    upsertLatestPhaseArtifact(
+      ticket.id,
+      'execution_setup_plan',
+      'WAITING_EXECUTION_SETUP_APPROVAL',
+      'not a valid execution setup plan',
+    )
+    const unreadable = await app.request(`/api/tickets/${ticket.id}/execution-setup-plan`)
+    expect(unreadable.status).toBe(400)
+    expect(await unreadable.json()).toMatchObject({ error: 'Failed to read execution setup plan' })
+  })
+
   it('saves a structured execution setup plan draft', async () => {
     const { app, ticket } = await setupExecutionSetupPlanTicket()
 
@@ -366,6 +383,51 @@ describe('ticketRouter execution setup plan approval routes', () => {
     expect(staleHash.status).toBe(409)
     expect(getLatestPhaseArtifact(ticket.id, 'execution_setup_plan', 'WAITING_EXECUTION_SETUP_APPROVAL')?.content)
       .toBe(raw)
+  })
+
+  it('rejects malformed raw setup-plan content without creating an artifact', async () => {
+    const { app, ticket } = await setupExecutionSetupPlanTicket()
+
+    const response = await app.request(`/api/tickets/${ticket.id}/execution-setup-plan`, {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ content: 'not a valid setup plan' }),
+    })
+
+    expect(response.status).toBe(400)
+    expect(await response.json()).toMatchObject({ error: 'Failed to save execution setup plan' })
+    expect(getLatestPhaseArtifact(ticket.id, 'execution_setup_plan', 'WAITING_EXECUTION_SETUP_APPROVAL')).toBeUndefined()
+  })
+
+  it('rejects invalid and archived setup-plan versions on writes', async () => {
+    const { app, ticket } = await setupExecutionSetupPlanTicket()
+    const invalidAttempt = await app.request(`/api/tickets/${ticket.id}/execution-setup-plan?phaseAttempt=0`, {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ plan: buildStructuredPlan(ticket.externalId) }),
+    })
+    expect(invalidAttempt.status).toBe(400)
+
+    upsertLatestPhaseArtifact(
+      ticket.id,
+      'execution_setup_plan',
+      'WAITING_EXECUTION_SETUP_APPROVAL',
+      serializePlan(ticket.externalId, 'Archived draft'),
+    )
+    await app.request(`/api/tickets/${ticket.id}/regenerate-execution-setup-plan`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ commentary: 'Create a fresh attempt.' }),
+    })
+    patchTicket(ticket.id, { status: 'WAITING_EXECUTION_SETUP_APPROVAL' })
+
+    const archivedAttempt = await app.request(`/api/tickets/${ticket.id}/execution-setup-plan?phaseAttempt=1`, {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ plan: buildStructuredPlan(ticket.externalId) }),
+    })
+    expect(archivedAttempt.status).toBe(409)
+    expect(await archivedAttempt.json()).toMatchObject({ error: 'Archived artifact versions are read-only' })
   })
 
   it('fails closed when the persisted setup plan cannot be read', async () => {
@@ -820,6 +882,22 @@ describe('ticketRouter execution setup plan approval routes', () => {
     expect(existsSync(join(paths!.executionSetupDir, 'tool-cache', 'cache.txt'))).toBe(true)
   })
 
+  it('rejects an explicit phase version when a runtime setup save would rewind the phase', async () => {
+    const { app, ticket } = await setupExecutionSetupPlanTicket()
+    await moveTicketToRuntimeSetup(app, ticket)
+
+    const response = await app.request(`/api/tickets/${ticket.id}/execution-setup-plan?phaseAttempt=1`, {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ plan: buildStructuredPlan(ticket.externalId) }),
+    })
+
+    expect(response.status).toBe(409)
+    expect(await response.json()).toMatchObject({
+      error: 'Cannot write an explicit setup-plan version while rewinding workspace runtime setup',
+    })
+  })
+
   it('rewinds from runtime setup before regenerating the setup plan', async () => {
     const { app, ticket } = await setupExecutionSetupPlanTicket()
     await moveTicketToRuntimeSetup(app, ticket, 'Approved plan before regenerate rewind.')
@@ -856,6 +934,20 @@ describe('ticketRouter execution setup plan approval routes', () => {
       'GENERATING_EXECUTION_SETUP_PLAN',
     )?.content)
       .toContain('Regenerate after runtime setup started.')
+  })
+
+  it('rejects malformed raw drafts before regenerating the setup plan', async () => {
+    const { app, ticket } = await setupExecutionSetupPlanTicket()
+
+    const response = await app.request(`/api/tickets/${ticket.id}/regenerate-execution-setup-plan`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ commentary: 'Use this draft.', rawContent: 'not a valid setup plan' }),
+    })
+
+    expect(response.status).toBe(400)
+    expect(await response.json()).toMatchObject({ error: 'Invalid raw setup plan draft' })
+    expect(listPhaseAttempts(ticket.id, 'WAITING_EXECUTION_SETUP_APPROVAL')).toHaveLength(1)
   })
 
   it('archives a blocked workspace runtime attempt and returns to setup plan approval for editing', async () => {

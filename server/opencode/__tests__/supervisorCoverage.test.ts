@@ -7,6 +7,7 @@ import {
   defaultTermination,
   OpenCodeMissingError,
   OpenCodeSupervisor,
+  probeOpenCode,
   type ProcessTermination,
 } from '../supervisor'
 
@@ -28,6 +29,37 @@ function confirmedTermination(exited = true): ProcessTermination {
 }
 
 describe('OpenCode supervisor coverage edges', () => {
+  it('returns a boolean for healthy and unreachable OpenCode probes', async () => {
+    try {
+      vi.stubGlobal('fetch', vi.fn(async () => new Response(JSON.stringify({ version: '2.0.15', pid: 812 }), {
+        headers: { 'content-type': 'application/json' },
+      })))
+      await expect(probeOpenCode('http://127.0.0.1:4096')).resolves.toBe(true)
+
+      vi.stubGlobal('fetch', vi.fn(async () => { throw new TypeError('fetch failed') }))
+      await expect(probeOpenCode('http://127.0.0.1:4096')).resolves.toBe(false)
+    } finally {
+      vi.unstubAllGlobals()
+    }
+  })
+
+  it('does not probe or spawn in mock mode', async () => {
+    const probe = vi.fn(async () => false)
+    const spawnProcess = vi.fn()
+    const supervisor = new OpenCodeSupervisor({
+      baseUrl: 'http://127.0.0.1:4096',
+      mock: true,
+      probe,
+      spawnProcess: spawnProcess as never,
+    })
+
+    await expect(supervisor.start()).resolves.toEqual({ kind: 'mock' })
+    expect(supervisor.current).toEqual({ kind: 'mock' })
+    expect(probe).not.toHaveBeenCalled()
+    expect(spawnProcess).not.toHaveBeenCalled()
+    await expect(supervisor.stop()).resolves.toBe(true)
+  })
+
   it('keeps missing-binary and refused-binary guidance distinct', () => {
     const missing = new OpenCodeMissingError('http://127.0.0.1:4096')
     const refused = new OpenCodeMissingError('http://127.0.0.1:4096', 'executable is outside trusted paths')

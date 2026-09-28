@@ -208,7 +208,9 @@ describe('release workflow policy', () => {
     expect(lintSteps.some((candidate) => candidate.run === 'shellcheck --version')).toBe(true)
     expect(String(lintCommand)).toContain('/tmp/actionlint -color -shellcheck="shellcheck -S warning"')
 
-    const verify = ci.verify!
+    const verify = ci.verify as (Job & { 'continue-on-error'?: unknown }) | undefined
+    if (!verify) throw new Error('ci.yml: verify job missing')
+    expect(Object.hasOwn(verify, 'continue-on-error'), 'the required Verify job must remain blocking').toBe(false)
     const verificationCommands = [
       ['npm run lint', 'lint'],
       ['npm run typecheck', 'typecheck'],

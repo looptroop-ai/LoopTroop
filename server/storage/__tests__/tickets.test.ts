@@ -308,6 +308,72 @@ describe('ticket start configuration locking', () => {
     })
   })
 
+  it('keeps start locks when rollback is requested after the ticket leaves DRAFT', () => {
+    const repoDir = lockRepoManager.createRepo()
+    const project = attachProject({ folderPath: repoDir, name: 'LoopTroop', shortname: 'ROLLBACKSTATE' })
+    const ticket = createTicket({ projectId: project.id, title: 'Preserve a started ticket' })
+    const input = {
+      branchName: ticket.externalId,
+      startedAt: '2026-09-28T10:00:00.000Z',
+      lockedMainImplementer: 'openai/gpt-5-codex',
+      lockedCouncilMembers: ['openai/gpt-5-codex', 'openai/gpt-5-mini'],
+      lockedInterviewQuestions: 50,
+      lockedCoverageFollowUpBudgetPercent: 20,
+      lockedMaxCoveragePasses: 2,
+      lockedMaxPrdCoveragePasses: 5,
+      lockedMaxBeadsCoveragePasses: 5,
+      lockedStructuredRetryCount: 3,
+    }
+    lockTicketStartConfiguration(ticket.id, input)
+    const metadataBefore = readTicketMeta(repoDir, ticket.externalId)
+    patchTicket(ticket.id, { status: 'SCANNING_RELEVANT_FILES' })
+
+    expect(rollbackTicketStartConfiguration(ticket.id)).toBeUndefined()
+    expect(getTicketByRef(ticket.id)).toMatchObject({
+      status: 'SCANNING_RELEVANT_FILES',
+      lockedMainImplementer: input.lockedMainImplementer,
+      lockedCouncilMembers: input.lockedCouncilMembers,
+    })
+    expect(readTicketMeta(repoDir, ticket.externalId)).toEqual(metadataBefore)
+  })
+
+  it('keeps start locks when the ticket advances between rollback preflight and its transaction', () => {
+    const repoDir = lockRepoManager.createRepo()
+    const project = attachProject({ folderPath: repoDir, name: 'LoopTroop', shortname: 'ROLLBACKRACE' })
+    const ticket = createTicket({ projectId: project.id, title: 'Preserve a concurrent start' })
+    const input = {
+      branchName: ticket.externalId,
+      startedAt: '2026-09-28T10:00:00.000Z',
+      lockedMainImplementer: 'openai/gpt-5-codex',
+      lockedCouncilMembers: ['openai/gpt-5-codex', 'openai/gpt-5-mini'],
+      lockedInterviewQuestions: 50,
+      lockedCoverageFollowUpBudgetPercent: 20,
+      lockedMaxCoveragePasses: 2,
+      lockedMaxPrdCoveragePasses: 5,
+      lockedMaxBeadsCoveragePasses: 5,
+      lockedStructuredRetryCount: 3,
+    }
+    lockTicketStartConfiguration(ticket.id, input)
+    const context = getProjectContextById(project.id)!
+    const originalTransaction = context.projectDb.transaction.bind(context.projectDb)
+    vi.spyOn(context.projectDb, 'transaction').mockImplementationOnce((callback) => {
+      patchTicket(ticket.id, { status: 'SCANNING_RELEVANT_FILES' })
+      return originalTransaction(callback)
+    })
+
+    expect(rollbackTicketStartConfiguration(ticket.id)).toBeUndefined()
+    expect(getTicketByRef(ticket.id)).toMatchObject({
+      status: 'SCANNING_RELEVANT_FILES',
+      lockedMainImplementer: input.lockedMainImplementer,
+      lockedCouncilMembers: input.lockedCouncilMembers,
+    })
+    expect(readTicketMeta(repoDir, ticket.externalId)).toMatchObject({
+      startedAt: input.startedAt,
+      lockedMainImplementer: input.lockedMainImplementer,
+      lockedCouncilMembers: input.lockedCouncilMembers,
+    })
+  })
+
   it('keeps ticket reads available and preserves corrupt metadata when locking is refused', () => {
     const repoDir = lockRepoManager.createRepo()
     const project = attachProject({ folderPath: repoDir, name: 'LoopTroop', shortname: 'CORRUPT' })

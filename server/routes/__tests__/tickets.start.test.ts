@@ -14,6 +14,7 @@ import * as ticketFileStorage from '../../ticket/containedPath'
 import { createFixtureRepoManager } from '../../test/fixtureRepo'
 import { makeTempDir, removeTempDir } from '../../test/tempDir'
 import { LOOPTROOP_OPENCODE_ROUTING_CONFIG } from '../../../shared/openRouterRouting'
+import * as ticketMetadata from '../../ticket/metadata'
 const { mockGetOpenCodeConnection } = vi.hoisted(() => ({ mockGetOpenCodeConnection: vi.fn() }))
 vi.mock('../../opencode/connection', async (importOriginal) => ({
   ...await importOriginal<typeof import('../../opencode/connection')>(),
@@ -215,6 +216,22 @@ describe('ticketRouter POST /tickets/:id/start', () => {
     broadcaster.clearTicket(ticket.id)
   })
 
+  it('reports ticket metadata read failures before initializing the workspace', async () => {
+    const { app, project, ticket } = setupStartTicketApp()
+    ticketMetadata.writeTicketMeta(project.folderPath, ticket.externalId, { baseBranch: 'main' })
+    vi.spyOn(ticketMetadata, 'readTicketMetaForMutation').mockImplementationOnce(() => {
+      throw new Error('permission denied')
+    })
+
+    const response = await app.request(`/api/tickets/${ticket.id}/start`, { method: 'POST' })
+
+    expect(response.status).toBe(500)
+    expect(await response.json()).toEqual({ error: 'Unable to read ticket metadata.' })
+    expect(initializeTicket).not.toHaveBeenCalled()
+    expect(getTicketByRef(ticket.id)).toMatchObject({ status: 'DRAFT' })
+    broadcaster.clearTicket(ticket.id)
+  })
+
   it('keeps a ticket in DRAFT if metadata becomes malformed during initialization', async () => {
     const { app, ticket } = setupStartTicketApp()
     const metadataPath = join(getTicketPaths(ticket.id)!.ticketDir, 'meta', 'ticket.meta.json')
@@ -344,6 +361,22 @@ describe('ticketRouter POST /tickets/:id/start', () => {
     expect(response.status).toBe(404)
     expect(stopActor).toHaveBeenCalledWith(ticket.id)
     expect(sendTicketEvent).not.toHaveBeenCalled()
+    broadcaster.clearTicket(ticket.id)
+  })
+
+  it('keeps an actor running if the ticket advances while start rollback is failing', async () => {
+    const { app, ticket } = setupStartTicketApp()
+    vi.spyOn(ticketStorage, 'lockTicketStartConfiguration').mockReturnValueOnce(undefined)
+    vi.spyOn(ticketStorage, 'rollbackTicketStartConfiguration').mockImplementationOnce(() => {
+      patchTicket(ticket.id, { status: 'SCANNING_RELEVANT_FILES' })
+      throw new Error('Ticket advanced during rollback')
+    })
+
+    const response = await app.request(`/api/tickets/${ticket.id}/start`, { method: 'POST' })
+
+    expect(response.status).toBe(404)
+    expect(getTicketByRef(ticket.id)).toMatchObject({ status: 'SCANNING_RELEVANT_FILES' })
+    expect(stopActor).not.toHaveBeenCalled()
     broadcaster.clearTicket(ticket.id)
   })
 

@@ -81,6 +81,35 @@ function promptRequest(overrides: Partial<OpenCodePromptRequest> = {}): OpenCode
 }
 
 describe('OpenCode v2 fetch transport', () => {
+  it('reads a session and skips an update when no permission change was requested', async () => {
+    const { transport, requests } = createTransport(request => {
+      if (request.url.pathname === '/api/session/session%2F1') {
+        return jsonResponse({ data: { id: 'session/1', location: { directory: '/workspace' } } })
+      }
+      throw new Error(`Unexpected ${request.method} ${request.url}`)
+    })
+
+    await expect(transport.getSession('session/1')).resolves.toMatchObject({ id: 'session/1', projectPath: '/workspace' })
+    await transport.updateSession('session/1', '/workspace', {})
+
+    expect(requests).toHaveLength(1)
+    expect(requests[0]?.url.pathname).toBe('/api/session/session%2F1')
+  })
+
+  it('validates pending inbox entries before returning their ids', async () => {
+    const valid = createTransport(() => jsonResponse({ data: [{ id: 'inbox-1' }, { id: 'inbox-2' }] }))
+    await expect(valid.transport.listPendingInboxes('session/1')).resolves.toEqual(['inbox-1', 'inbox-2'])
+    expect(valid.requests[0]?.url.pathname).toBe('/api/session/session%2F1/inbox')
+
+    const invalidList = createTransport(() => jsonResponse({ data: {} }))
+    await expect(invalidList.transport.listPendingInboxes('session-1'))
+      .rejects.toThrow('invalid pending inbox list')
+
+    const missingId = createTransport(() => jsonResponse({ data: [{}] }))
+    await expect(missingId.transport.listPendingInboxes('session-1'))
+      .rejects.toThrow('pending inbox without an id')
+  })
+
   it('uses the v2 routes and returns prompt acceptance with its inbox receipt', async () => {
     const { transport, requests } = createTransport(request => {
       if (request.url.pathname.endsWith('/model') || request.url.pathname.endsWith('/agent')) return emptyResponse()
@@ -174,6 +203,16 @@ describe('OpenCode v2 fetch transport', () => {
     await expect(transport.dispatchPrompt(promptRequest({ tools: { bash: false } })))
       .rejects.toThrow('does not support per-prompt tool overrides')
     expect(requests).toHaveLength(before)
+  })
+
+  it('requires a model selection before applying a prompt variant', async () => {
+    const { transport, requests } = createTransport(() => {
+      throw new Error('A request should not be made without a model')
+    })
+
+    await expect(transport.dispatchPrompt(promptRequest({ model: undefined, variant: 'high' })))
+      .rejects.toThrow('requires a model selection')
+    expect(requests).toHaveLength(0)
   })
 
   it('waits for the durable log watermark and returns only events after the requested cursor', async () => {
@@ -281,6 +320,62 @@ describe('OpenCode v2 fetch transport', () => {
       cursor: 73,
       coverageComplete: false,
     })
+  })
+
+  it('certifies an unpersisted history from contiguous live events, including session-scoped forms', async () => {
+    const form = {
+      id: 'form-1',
+      sessionID: 'session-1',
+      title: 'Choose a target',
+      metadata: { kind: 'question' },
+      fields: [{ key: 'q0', type: 'string', title: 'Target' }],
+    }
+    const { transport } = createTransport(request => {
+      if (request.url.pathname === '/api/event') return eventStream([
+        { type: 'server.connected' },
+        { type: 'server.connected' },
+        { type: 'session.instructions.updated', data: { sessionID: 'session-1', delta: {} }, durable: { aggregateID: 'session-1', seq: 4 } },
+        { type: 'form.created', data: { form } },
+        { type: 'session.inbox.enqueued', data: { sessionID: 'session-1', inboxID: 'inbox-1' }, durable: { aggregateID: 'session-1', seq: 5 } },
+        { type: 'session.execution.started', data: { sessionID: 'session-1' }, durable: { aggregateID: 'session-1', seq: 6 } },
+      ])
+      if (request.url.pathname.endsWith('/log')) {
+        return eventStream([{ type: 'log.synced', aggregateID: 'session-1', seq: 6 }])
+      }
+      throw new Error(`Unexpected ${request.method} ${request.url}`)
+    })
+
+    const subscription = await transport.subscribeToEvents('session-1', '/workspace', undefined, undefined, 4)
+
+    expect(subscription).toMatchObject({ cursor: 6, coverageComplete: true })
+    expect(subscription.initialEvents.map(event => event.event?.type)).toEqual(['question', 'inbox_enqueued', 'execution_started'])
+    expect(subscription.initialEvents[0]?.event).toMatchObject({ type: 'question', action: 'asked', requestId: 'form-1' })
+    await subscription.close()
+  })
+
+  it.each([
+    {
+      reason: 'a non-contiguous sequence',
+      raw: { type: 'session.inbox.enqueued', data: { sessionID: 'session-1', inboxID: 'inbox-1' }, durable: { aggregateID: 'session-1', seq: 6 } },
+    },
+    {
+      reason: 'an unmapped event',
+      raw: { type: 'session.future.event', data: { sessionID: 'session-1' }, durable: { aggregateID: 'session-1', seq: 5 } },
+    },
+  ])('leaves an unpersisted history uncertified after $reason', async ({ raw }) => {
+    const { transport } = createTransport(request => {
+      if (request.url.pathname === '/api/event') return eventStream([{ type: 'server.connected' }, raw])
+      if (request.url.pathname.endsWith('/log')) {
+        return eventStream([{ type: 'log.synced', aggregateID: 'session-1', seq: 6 }])
+      }
+      throw new Error(`Unexpected ${request.method} ${request.url}`)
+    })
+
+    const subscription = await transport.subscribeToEvents('session-1', '/workspace', undefined, undefined, 4)
+
+    expect(subscription.coverageComplete).toBe(false)
+    expect(subscription.initialEvents).toEqual([{ cursor: 5, coverageGap: true }])
+    await subscription.close()
   })
 
   it('detects both a missing history prefix and a missing watermark tail', async () => {
@@ -635,6 +730,55 @@ describe('OpenCode v2 fetch transport', () => {
     })
   })
 
+  it('keeps live coverage gaps sticky when a new durable event type arrives', async () => {
+    const { transport } = createTransport(request => {
+      if (request.url.pathname === '/api/event') return eventStream([
+        { type: 'server.connected' },
+        { type: 'session.future.event', data: { sessionID: 'session-1' }, durable: { aggregateID: 'session-1', seq: 1 } },
+        { type: 'session.execution.succeeded', data: { sessionID: 'session-1' }, durable: { aggregateID: 'session-1', seq: 2 } },
+      ])
+      if (request.url.pathname.endsWith('/log')) return eventStream([{ type: 'log.synced', aggregateID: 'session-1', seq: 0 }])
+      throw new Error(`Unexpected ${request.method} ${request.url}`)
+    })
+
+    const subscription = await transport.subscribeToEvents('session-1', '/workspace')
+    const iterator = subscription.events[Symbol.asyncIterator]()
+
+    await expect(iterator.next()).resolves.toMatchObject({
+      done: false,
+      value: { cursor: 2, coverageGap: true, event: { type: 'execution_terminal', outcome: 'succeeded' } },
+    })
+    await iterator.return?.(undefined)
+  })
+
+  it.each([
+    { name: 'a non-event response', response: () => new Response('not an event stream', { headers: { 'content-type': 'text/plain' } }), error: 'returned text/plain for an event stream' },
+    { name: 'an event stream without a body', response: () => new Response(null, { headers: { 'content-type': 'text/event-stream' } }), error: 'without a response body' },
+    { name: 'an event before server.connected', response: () => eventStream([{ type: 'session.execution.started' }]), error: 'did not start with server.connected' },
+    { name: 'malformed event JSON', response: () => new Response('data: {bad json}\n\n', { headers: { 'content-type': 'text/event-stream' } }), error: 'malformed JSON' },
+  ])('rejects $name from an event endpoint', async ({ response, error }) => {
+    const { transport } = createTransport(() => response())
+
+    await expect(transport.subscribeToEvents('session-1', '/workspace')).rejects.toThrow(error)
+  })
+
+  it.each([
+    {
+      event: { type: 'session.inbox.enqueued', data: { sessionID: 'session-1', inboxID: 'inbox-1' }, durable: { aggregateID: 'another-session', seq: 1 } },
+      watermark: { type: 'log.synced', aggregateID: 'session-1', seq: 0 },
+      error: 'without its session cursor',
+    },
+    {
+      event: { type: 'session.inbox.enqueued', data: { sessionID: 'session-1', inboxID: 'inbox-1' }, durable: { aggregateID: 'session-1', seq: 1 } },
+      watermark: { type: 'log.synced', aggregateID: 'another-session', seq: 1 },
+      error: 'watermark belongs to another session',
+    },
+  ])('rejects session log events with mismatched cursors or watermarks', async ({ event, watermark, error }) => {
+    const { transport } = createTransport(() => eventStream([event, watermark]))
+
+    await expect(transport.readSessionLog('session-1')).rejects.toThrow(error)
+  })
+
   it('marks every initial backlog event when the initial log scan is incomplete', async () => {
     const { transport } = createTransport(request => {
       if (request.url.pathname === '/api/event') return eventStream([{ type: 'server.connected' }])
@@ -819,6 +963,17 @@ describe('OpenCode v2 fetch transport', () => {
     expect(eventRedirect.requests[0]?.redirect).toBe('manual')
   })
 
+  it('surfaces plain-text HTTP error bodies without losing their message', async () => {
+    const { transport } = createTransport(() => new Response('upstream unavailable', { status: 502 }))
+
+    await expect(transport.getSession('session-1')).rejects.toMatchObject({
+      name: 'V2OpenCodeHttpError',
+      status: 502,
+      body: 'upstream unavailable',
+      message: 'OpenCode v2 request failed (HTTP 502): upstream unavailable',
+    })
+  })
+
   it('classifies a forbidden provider catalog as an authentication health failure', async () => {
     vi.stubEnv('LOOPTROOP_OPENCODE_MODE', 'live')
     vi.stubEnv('LOOPTROOP_OPENCODE_BASE_URL', 'http://127.0.0.1:4096')
@@ -900,6 +1055,14 @@ describe('OpenCode v2 fetch transport', () => {
     expect(requests[1]?.url.searchParams.get('resume')).toBe('false')
   })
 
+  it('treats an already-missing session as successfully interrupted', async () => {
+    const { transport, requests } = createTransport(() => jsonResponse({ _tag: 'SessionNotFoundError' }, 404))
+
+    await expect(transport.interruptSession('missing')).resolves.toBe(true)
+    expect(requests).toHaveLength(1)
+    expect(requests[0]?.url.pathname).toBe('/api/session/missing/interrupt')
+  })
+
   it('keeps form and permission replies scoped to their session', async () => {
     const form = {
       id: 'form-1',
@@ -938,6 +1101,21 @@ describe('OpenCode v2 fetch transport', () => {
     expect(requests[0]?.url.searchParams.get('location[directory]')).toBe('/workspace')
     expect(requests[3]?.body).toEqual({ answer: { q0: 'prod' } })
     expect(requests[6]?.body).toEqual({ decision: 'always' })
+  })
+
+  it('refuses to reply to a question form owned by another session', async () => {
+    const { transport, requests } = createTransport(() => jsonResponse({ data: {
+      id: 'form-1',
+      sessionID: 'another-session',
+      title: 'Choose a target',
+      metadata: { kind: 'question' },
+      fields: [{ key: 'q0', type: 'string', title: 'Target' }],
+    } }))
+
+    await expect(transport.replyQuestion('session-1', 'form-1', [['prod']], '/workspace'))
+      .rejects.toThrow('belongs to another session')
+    expect(requests).toHaveLength(1)
+    expect(requests[0]?.method).toBe('GET')
   })
 
   it('returns null only for the exact tagged session-not-found response', async () => {

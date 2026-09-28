@@ -1250,10 +1250,10 @@ describe('OpenCode log canonicalization', () => {
         action: 'asked',
         requestId: 'req-1',
         questions: [{ question: 'Which database?', header: 'Storage', options: [{ label: 'SQLite', description: 'Local file' }] }],
-        tool: { callId: 'call-1', messageId: 'msg-1' },
+        tool: { callID: 'call-1', messageID: 'msg-1' },
       }, state)
       emitOpenCodeStreamEvent(...base, {
-        type: 'question', sessionId: 'ses-question', action: 'replied', requestId: 'req-1', answers: [{ answers: ['SQLite'] }],
+        type: 'question', sessionId: 'ses-question', action: 'replied', requestId: 'req-1', answers: [['SQLite']],
       }, state)
       emitOpenCodeStreamEvent(...base, {
         type: 'question', sessionId: 'ses-question', action: 'rejected', requestId: 'req-2',
@@ -1272,7 +1272,7 @@ describe('OpenCode log canonicalization', () => {
           type: 'opencode_question', action: 'asked', ticketTitle: 'Question ticket', status: 'CODING',
           questionCount: 1, requestId: 'req-1', questions: expect.any(Array),
         }),
-        expect.objectContaining({ type: 'opencode_question_resolved', action: 'replied', answers: [{ answers: ['SQLite'] }] }),
+        expect.objectContaining({ type: 'opencode_question_resolved', action: 'replied', answers: [['SQLite']] }),
         expect.objectContaining({ type: 'opencode_question_resolved', action: 'rejected', questions: [], questionCount: 0 }),
       ])
       expect(getAiPersistedEntries()).toEqual(expect.arrayContaining([

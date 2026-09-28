@@ -18,7 +18,7 @@ import {
   writeGeneratedExecutionSetupPlanReport,
 } from '../../phases/executionSetupPlan/document'
 import type { generateExecutionSetupPlan } from '../../phases/executionSetupPlan/generator'
-import type { OpenCodePromptCompletedEvent, OpenCodePromptDispatchEvent } from '../runOpenCodePrompt'
+import type { OpenCodePromptDispatchEvent } from '../runOpenCodePrompt'
 import { createInitializedTestTicket, createTestRepoManager, resetTestDb } from '../../test/integration'
 import { TEST } from '../../test/factories'
 
@@ -207,7 +207,20 @@ describe('handleExecutionSetupPlanGeneration', () => {
           parts: [],
           response: 'Plan generated.',
           messages: [],
-        } as OpenCodePromptCompletedEvent,
+          responseMeta: {
+            hasAssistantMessage: true,
+            latestAssistantWasEmpty: false,
+            latestAssistantHasError: false,
+            latestAssistantWasStale: false,
+          },
+          attemptMeta: {
+            outcome: 'clean',
+            responseAccepted: true,
+            discardedResponse: false,
+            sessionErrored: false,
+            latestAssistantErrored: false,
+          },
+        },
       })
       return generation
     })
@@ -249,6 +262,7 @@ describe('handleExecutionSetupPlanGeneration', () => {
     generateExecutionSetupPlanMock.mockImplementationOnce(async (...args: Parameters<typeof generateExecutionSetupPlan>) => {
       const [,, worktreePath,, options] = args
       expect(worktreePath).toBe(paths.worktreePath)
+      if (!options) throw new Error('Expected execution setup plan callbacks')
       expect(options.promptTemplate).toBeDefined()
       const promptContext = args[1]
       expect(promptContext.map((part) => part.source)).toEqual([

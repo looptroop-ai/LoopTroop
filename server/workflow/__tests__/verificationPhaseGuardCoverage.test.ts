@@ -7,7 +7,7 @@ import { handleCoverageVerification } from '../phases/verificationPhase'
 const repoManager = createTestRepoManager('verification-phase-guard-coverage-')
 
 const coverageWinners = [
-  { phase: 'interview', artifactType: 'interview_winner', artifactPhase: 'REFINING_INTERVIEW' },
+  { phase: 'interview', artifactType: 'interview_winner', artifactPhase: 'COMPILING_INTERVIEW' },
   { phase: 'prd', artifactType: 'prd_winner', artifactPhase: 'REFINING_PRD' },
   { phase: 'beads', artifactType: 'beads_winner', artifactPhase: 'REFINING_BEADS' },
 ] as const
@@ -78,7 +78,7 @@ describe('verification phase persisted-input guards', () => {
   it('fails cleanly when interview state or the PRD winner answers are missing', async () => {
     const { ticket, context } = await createInitializedTestTicket(repoManager)
     insertPhaseArtifact(ticket.id, {
-      phase: 'REFINING_INTERVIEW',
+      phase: 'COMPILING_INTERVIEW',
       artifactType: 'interview_winner',
       content: JSON.stringify({ winnerId: 'interview-winner' }),
     })

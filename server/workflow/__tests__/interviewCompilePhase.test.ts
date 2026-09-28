@@ -11,7 +11,7 @@ import {
 import { parseUiArtifactCompanionArtifact } from '@shared/artifactCompanions'
 import { parseUiRefinementDiffArtifact } from '@shared/refinementDiffArtifacts'
 import type { DraftPhaseResult, DraftProgressEvent } from '../../council/types'
-import type { refineDraft as RefineDraft } from '../../council/refiner'
+import type { refineDraft } from '../../council/refiner'
 import { attachProject } from '../../storage/projects'
 import { createTicket, getLatestPhaseArtifact, getTicketPaths, upsertLatestPhaseArtifact } from '../../storage/tickets'
 import { TEST, makeTicketContextFromTicket as makeTicketContext } from '../../test/factories'
@@ -190,14 +190,14 @@ describe('interview workflow phases', () => {
       drafts: [{ memberId: winnerId, content: winnerContent, outcome: 'completed', duration: 1 }],
     })
     refineDraftMock.mockImplementationOnce(async (...args: unknown[]) => {
-      const onSessionLog = args[7] as Parameters<RefineDraft>[7]
-      const onStreamEvent = args[8] as Parameters<RefineDraft>[8]
-      const onPromptDispatched = args[9] as Parameters<RefineDraft>[9]
-      const buildPrompt = args[11] as Parameters<RefineDraft>[11]
-      const validateResponse = args[12] as Parameters<RefineDraft>[12]
+      const onSessionLog = args[7] as Parameters<typeof refineDraft>[7]
+      const onStreamEvent = args[8] as Parameters<typeof refineDraft>[8]
+      const onPromptDispatched = args[9] as Parameters<typeof refineDraft>[9]
+      const buildPrompt = args[11] as Parameters<typeof refineDraft>[11]
+      const validateResponse = args[12] as Parameters<typeof refineDraft>[12]
       expect(buildPrompt?.(
-        args[1] as Parameters<RefineDraft>[1],
-        args[2] as Parameters<RefineDraft>[2],
+        args[1] as Parameters<typeof refineDraft>[1],
+        args[2] as Parameters<typeof refineDraft>[2],
       )[0]?.content).toContain('## Winning Draft')
       expect(() => validateResponse?.('questions: [')).toThrow()
       onSessionLog?.({

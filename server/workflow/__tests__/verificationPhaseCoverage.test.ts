@@ -16,7 +16,8 @@ import type { PreFlightRunOptions } from '../../phases/preflight/doctor'
 import type { DiagnosticCheck, PreFlightReport } from '../../phases/preflight/types'
 import type { executeFinalTestWithRetries } from '../../phases/finalTest/executor'
 import type { FinalTestGenerationResult } from '../../phases/finalTest/generator'
-import type { FinalTestExecutionReport } from '../../phases/finalTest/runner'
+import type { FinalTestCommandResult, FinalTestExecutionReport } from '../../phases/finalTest/runner'
+import type { PromptPart } from '../../opencode/types'
 
 const {
   executeFinalTestWithRetriesMock,
@@ -216,7 +217,7 @@ describe('interview coverage recovery', () => {
     )
 
     insertPhaseArtifact(ticketId, {
-      phase: 'REFINING_INTERVIEW',
+      phase: 'COMPILING_INTERVIEW',
       artifactType: 'interview_winner',
       content: JSON.stringify({ winnerId }),
     })
@@ -245,7 +246,7 @@ describe('interview coverage recovery', () => {
     expect(existsSync(interviewPath)).toBe(true)
     const canonicalInterview = readFileSync(interviewPath, 'utf-8')
     expect(canonicalInterview).toContain('Answer 1')
-    const prompt = runOpenCodePromptMock.mock.calls[0]?.[0]?.parts.map((part) => part.content).join('\n')
+    const prompt = runOpenCodePromptMock.mock.calls[0]?.[0]?.parts.map((part: PromptPart) => part.content).join('\n')
     expect(prompt).toContain('follow_up_budget_total: 1')
     expect(prompt).toContain('follow_up_budget_remaining: 1')
     expect(prompt).toContain(questions[0]!.question)
@@ -382,7 +383,7 @@ describe('final-test retry notes', () => {
 
     executeFinalTestWithRetriesMock.mockImplementationOnce(async (...args: Parameters<typeof executeFinalTestWithRetries>) => {
       const callbacks = args[5]
-      const command = {
+      const command: FinalTestCommandResult = {
         command: { mode: 'shell', shell: 'posix', script: 'npm test', cwd: '.', env: {} },
         displayCommand: 'npm test',
         exitCode: null,

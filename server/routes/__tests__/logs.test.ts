@@ -79,22 +79,23 @@ afterAll(() => {
 })
 
 describe('ticket log projection API', () => {
-  /**
-   * Three hundred separate appends, each a synchronous write to a real file,
-   * and the count is what the assertions are about: the twenty newest of three
-   * hundred, with older pages behind them. On Windows every one of those writes
-   * carries the filesystem's per-write cost — the same eight tests take 1.2s
-   * here and 37s on a hosted Windows runner — so this one crosses the shared
-   * 20s budget while measuring platform I/O rather than the pagination it
-   * exists to check. The rows cannot be reduced without changing what is
-   * asserted, so the budget is raised for this test alone rather than for the
-   * whole project, and rather than retrying a test that is not flaky.
-   */
+  /** Seed history in one write so this test measures projection pagination. */
   it('defaults to the newest 20 projected rows without reading the complete history', async () => {
     const { ticket } = await createInitializedTestTicket(repoManager)
-    for (let index = 0; index < 300; index += 1) {
-      appendLogEvent(ticket.id, 'info', 'CODING', `row-${index}`, { timestamp: `2026-01-01T00:00:${String(index % 60).padStart(2, '0')}.000Z` }, 'system', 'CODING')
-    }
+    const paths = getTicketPaths(ticket.id)
+    expect(paths).not.toBeNull()
+    const lines = Array.from({ length: 300 }, (_, index) => JSON.stringify({
+      timestamp: `2026-01-01T00:00:${String(index % 60).padStart(2, '0')}.000Z`,
+      type: 'info',
+      ticketId: ticket.id,
+      phase: 'CODING',
+      phaseAttempt: 1,
+      status: 'CODING',
+      source: 'system',
+      message: `row-${index}`,
+      content: `row-${index}`,
+    })).join('\n') + '\n'
+    appendFileSync(paths!.executionLogPath, lines)
 
     const response = await app.request(`/api/tickets/${encodeURIComponent(ticket.id)}/logs?scope=phase&phase=CODING&view=overview`)
     expect(response.status).toBe(200)
@@ -112,7 +113,7 @@ describe('ticket log projection API', () => {
     expect(body.olderCursor).toEqual(expect.any(String))
     expect(body.totalEntries).toBe(300)
     expect(body.totalTextLines).toBe(300)
-  }, 60_000)
+  })
 
   it('filters command chatter before paginating the overview', async () => {
     const { ticket } = await createInitializedTestTicket(repoManager)

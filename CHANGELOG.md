@@ -10,6 +10,7 @@ Unreleased changes appear first and represent commits that have not yet been inc
 > Changes merged since the last versioned release that have not yet shipped in a tagged version.
 
 ### Summary
+- The test suite keeps the same pagination and append guarantees with less platform-dependent filesystem work.
 - Kanban pagination arrows follow the visible page, and Escape cancels an uncommitted page-number edit.
 - Failed ticket starts that stay in DRAFT clear provisional model locks and can be retried with updated settings; corrupt metadata stays readable and cannot be overwritten by a start.
 - V8 coverage now exceeds 90% line coverage across all four Vitest projects; the required Verify job enforces 90% lines and 80% branches while Codecov reports separately.
@@ -48,6 +49,9 @@ Unreleased changes appear first and represent commits that have not yet been inc
 - OpenCode step-cap recovery keeps its authoritative marker in owner-only app configuration, preserving edited or unverified configs instead of trusting a mutable ticket copy; active retries stop when the cap cannot be re-applied safely.
 - Protected hook validation reports structured recovery refusals with the retained marker path and manual remedy, while CLI cleanup keeps ignored files and strict non-Git skeleton checks at the final removal boundary.
 - The OrcaCode pull-request review workflow is removed; it reported a failed check on every pull request and never completed a successful run.
+
+### Performance
+- The log pagination test seeds its 300-row JSONL history with one write and keeps append persistence covered separately, removing its per-test timeout override.
 
 ### Added
 - Added focused CLI tests for healthy, missing, unresponsive, and cleanup-pending daemon status, including token redaction and invalid sign-in nonces.

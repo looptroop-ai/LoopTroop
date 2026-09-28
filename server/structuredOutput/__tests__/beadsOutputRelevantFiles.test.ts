@@ -48,6 +48,6 @@ describe('relevant files output parsing failures', () => {
     expect(result.ok).toBe(false)
     if (result.ok) return
     expect(result.error).toBeTruthy()
-    expect(result.value).toBeUndefined()
+    expect(result).not.toHaveProperty('value')
   })
 })

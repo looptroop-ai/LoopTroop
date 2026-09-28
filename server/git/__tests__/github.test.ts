@@ -456,7 +456,7 @@ describe('server/git/github', () => {
     const github = await import('../github')
     await expect(github.getGitHubRepoWriteAccess('/repo')).resolves.toEqual({
       status: 'unknown',
-      permission: payload.viewerPermission ?? null,
+      permission: ('viewerPermission' in payload ? payload.viewerPermission : undefined) ?? null,
       error,
     })
   })

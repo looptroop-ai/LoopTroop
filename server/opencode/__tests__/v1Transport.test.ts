@@ -199,7 +199,7 @@ describe('OpenCode v1 transport direct behavior', () => {
       },
       { id: 'question-2', sessionID: 'session-2', questions: [] },
     ]
-    const questions = vi.fn(async () => ({ data: [] as unknown[] }))
+    const questions = vi.fn(async (): Promise<{ data: unknown[] | null }> => ({ data: [] }))
       .mockResolvedValueOnce({ data: questionRows })
       .mockResolvedValueOnce({ data: questionRows })
       .mockResolvedValueOnce({ data: null })
@@ -323,7 +323,7 @@ describe('OpenCode v1 transport direct behavior', () => {
     const completed = []
     const endedSubscription = await ended.subscribeToEvents('session-1', undefined, undefined, 100)
     for await (const { event } of endedSubscription.events) completed.push(event)
-    expect(completed.map((event) => event.type)).toEqual(['step', 'done'])
+    expect(completed.map((event) => event?.type)).toEqual(['step', 'done'])
 
     const pendingNext = new Promise<IteratorResult<unknown>>(() => undefined)
     const returnIterator = vi.fn(async () => ({ done: true as const, value: undefined }))
@@ -340,7 +340,7 @@ describe('OpenCode v1 transport direct behavior', () => {
     const stalledEvents = []
     for await (const { event } of stalledSubscription.events) stalledEvents.push(event)
 
-    expect(stalledEvents.map((event) => event.type)).toEqual(['step', 'done'])
+    expect(stalledEvents.map((event) => event?.type)).toEqual(['step', 'done'])
     expect(returnIterator).toHaveBeenCalledOnce()
   })
 

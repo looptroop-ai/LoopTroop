@@ -227,7 +227,7 @@ describe('Manual QA generation orchestration', () => {
 
     await handleManualQaChecklistGeneration(TEST.ticketId, {
       ...ticketContext,
-      lockedMainImplementer: undefined,
+      lockedMainImplementer: null,
     }, vi.fn())
 
     expect(mocks.computeManualQaCoverage).toHaveBeenCalledWith(checklist, [])
@@ -350,7 +350,7 @@ describe('Manual QA generation orchestration', () => {
 
     await handleManualQaChecklistGeneration(TEST.ticketId, {
       ...ticketContext,
-      lockedMainImplementer: undefined,
+      lockedMainImplementer: null,
     }, sendEvent)
 
     expect(mocks.completeManualQaReservation).toHaveBeenCalledWith(
@@ -365,7 +365,7 @@ describe('Manual QA generation orchestration', () => {
   it('requires the main implementer model when there is nothing to restore', async () => {
     await expect(handleManualQaChecklistGeneration(TEST.ticketId, {
       ...ticketContext,
-      lockedMainImplementer: undefined,
+      lockedMainImplementer: null,
     }, vi.fn())).rejects.toThrow('requires the locked main implementer model')
 
     expect(mocks.runOpenCodePrompt).not.toHaveBeenCalled()

@@ -99,7 +99,7 @@ const draft: ManualQaDraft = {
   updatedAt: TEST.timestamp,
 }
 
-const existingBead = {
+const existingBead: Bead = {
   id: 'existing-bead',
   title: 'Save selected preference',
   description: 'Persist and restore the selected preference.',
@@ -109,10 +109,23 @@ const existingBead = {
   tests: ['Test reload persistence.'],
   testCommands: [],
   testCommandReason: 'The current project has no automated test command for this check.',
+  priority: 1,
+  status: 'pending',
+  issueType: 'task',
+  externalRef: TEST.externalId,
   labels: ['preferences'],
   dependencies: { blocked_by: [], blocks: [] },
   targetFiles: ['src/preferences/store.ts'],
-} as Bead
+  failedIterationNotes: [],
+  userRetryNotes: [],
+  finalizationFailureNotes: [],
+  iteration: 1,
+  createdAt: TEST.timestamp,
+  updatedAt: TEST.timestamp,
+  completedAt: '',
+  startedAt: '',
+  beadStartCommit: null,
+}
 
 const response = `<MANUAL_QA_FIX_BEADS>
 beads:

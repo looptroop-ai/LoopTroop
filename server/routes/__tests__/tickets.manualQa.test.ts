@@ -201,7 +201,8 @@ describe('ticketRouter Manual QA routes', () => {
     const stagedRemoveBody = guard(fixture, 'remove-staged')
     const stagedRemove = await app.request(secondEvidencePath, jsonRequest('DELETE', stagedRemoveBody))
     expect(stagedRemove.status).toBe(200)
-    expect(await app.request(secondEvidencePath, jsonRequest('DELETE', stagedRemoveBody)).then((response) => response.status)).toBe(200)
+    const stagedRemoveReplay = await app.request(secondEvidencePath, jsonRequest('DELETE', stagedRemoveBody))
+    expect(stagedRemoveReplay.status).toBe(200)
     expect(readManualQaEvidenceIndex(fixture.paths.ticketDir, 1)).toEqual([])
   })
 

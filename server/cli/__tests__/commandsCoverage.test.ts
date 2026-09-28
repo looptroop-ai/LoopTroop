@@ -1,8 +1,9 @@
-import { EventEmitter } from 'node:events'
+import { ChildProcess } from 'node:child_process'
 import { closeSync, mkdtempSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
-import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
+import { PassThrough } from 'node:stream'
+import { afterEach, beforeEach, describe, expect, it, vi, type Mock } from 'vitest'
 import { LOOPTROOP_OPENCODE_LOGS_ENV } from '@shared/opencodeLogMode'
 import {
   readDaemonStartFailure,
@@ -51,26 +52,22 @@ vi.mock('../daemonProcess', () => ({ runDaemonProcess: mocks.runDaemonProcess })
 
 import { abandonFailedStart, browserOpener, openCommand, openInBrowser, probeRecordedDaemon, restartCommand, startCommand, stopCommand, waitForReady } from '../commands'
 
-type FakeChild = EventEmitter & {
+type FakeChild = Omit<ChildProcess, 'pid' | 'stderr' | 'kill' | 'unref'> & {
   pid: number
-  exitCode: number | null
-  signalCode: NodeJS.Signals | null
-  stderr: EventEmitter
-  kill: ReturnType<typeof vi.fn>
-  unref: ReturnType<typeof vi.fn>
+  stderr: PassThrough
+  kill: Mock<(signal?: NodeJS.Signals) => boolean>
+  unref: Mock<() => void>
 }
 
 function makeChild(pid: number): FakeChild {
-  const child = new EventEmitter() as FakeChild
-  child.pid = pid
-  child.exitCode = null
-  child.signalCode = null
-  child.stderr = new EventEmitter()
+  const child = new ChildProcess() as FakeChild
+  Object.defineProperty(child, 'pid', { value: pid })
+  child.stderr = new PassThrough()
   child.kill = vi.fn((signal?: NodeJS.Signals) => {
-    if (signal === 'SIGTERM') child.exitCode = 0
+    if (signal === 'SIGTERM') Object.defineProperty(child, 'exitCode', { value: 0 })
     return true
   })
-  child.unref = vi.fn()
+  child.unref = vi.fn((): void => {})
   return child
 }
 
@@ -291,7 +288,7 @@ describe('daemon startup and shutdown command paths', () => {
 
     await expect(waitForReady(configDir, child.pid, null, child)).resolves.toMatchObject({ kind: 'ready', state })
 
-    child.exitCode = 0
+    Object.defineProperty(child, 'exitCode', { value: 0 })
     await expect(waitForReady(configDir, child.pid, null, child)).resolves.toMatchObject({ kind: 'unverifiable', state })
   })
 
@@ -328,7 +325,7 @@ describe('daemon startup and shutdown command paths', () => {
   it('force-stops its own failed-start child through the direct handle after SIGTERM times out', async () => {
     const child = makeChild(45_686)
     child.kill = vi.fn((signal?: NodeJS.Signals) => {
-      if (signal === 'SIGKILL') child.exitCode = 0
+      if (signal === 'SIGKILL') Object.defineProperty(child, 'exitCode', { value: 0 })
       return true
     })
     vi.spyOn(Date, 'now')
@@ -373,7 +370,7 @@ describe('daemon startup and shutdown command paths', () => {
 
   it('clears failed-start artifacts when its tokenless direct child has already exited', async () => {
     const child = makeChild(45_685)
-    child.exitCode = 0
+    Object.defineProperty(child, 'exitCode', { value: 0 })
 
     await expect(abandonFailedStart(configDir, child, null)).resolves.toBeNull()
     expect(child.kill).not.toHaveBeenCalled()

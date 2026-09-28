@@ -324,8 +324,7 @@ describe('ticketRouter interview approval routes', () => {
         ? {
           ...question,
           answer: {
-            skipped: false,
-            selected_option_ids: [],
+            ...question.answer,
             free_text: 'Restart PRD planning from the corrected raw interview.',
           },
         }

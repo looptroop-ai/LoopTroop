@@ -17,6 +17,7 @@ import {
   getTicketByRef,
   getTicketPaths,
   insertPhaseArtifact,
+  listTickets,
   listNonTerminalTickets,
   lockTicketStartConfiguration,
   patchTicket,
@@ -282,6 +283,37 @@ describe('ticket start configuration locking', () => {
     })
   })
 
+  it('keeps ticket reads available and can lock a ticket after metadata corruption', () => {
+    const repoDir = lockRepoManager.createRepo()
+    const project = attachProject({ folderPath: repoDir, name: 'LoopTroop', shortname: 'CORRUPT' })
+    const ticket = createTicket({ projectId: project.id, title: 'Recover corrupt metadata' })
+    const metadataPath = join(getTicketPaths(ticket.id)!.ticketDir, 'meta', 'ticket.meta.json')
+    writeFileSync(metadataPath, '{bad')
+
+    expect(getTicketByRef(ticket.id)?.id).toBe(ticket.id)
+    expect(listTickets(project.id).map(({ id }) => id)).toContain(ticket.id)
+
+    writeFileSync(metadataPath, '{bad')
+    const locked = lockTicketStartConfiguration(ticket.id, {
+      branchName: ticket.externalId,
+      startedAt: '2026-09-28T10:00:00.000Z',
+      lockedMainImplementer: 'openai/gpt-5-codex',
+      lockedCouncilMembers: ['openai/gpt-5-codex', 'openai/gpt-5-mini'],
+      lockedInterviewQuestions: 50,
+      lockedCoverageFollowUpBudgetPercent: 20,
+      lockedMaxCoveragePasses: 2,
+      lockedMaxPrdCoveragePasses: 5,
+      lockedMaxBeadsCoveragePasses: 5,
+      lockedStructuredRetryCount: 3,
+    })
+
+    expect(locked?.lockedMainImplementer).toBe('openai/gpt-5-codex')
+    expect(readTicketMeta(repoDir, ticket.externalId)).toMatchObject({
+      lockedMainImplementer: 'openai/gpt-5-codex',
+      lockedCouncilMembers: ['openai/gpt-5-codex', 'openai/gpt-5-mini'],
+    })
+  })
+
   it('does not replace ticket metadata when reading it for a lock fails', () => {
     const repoDir = lockRepoManager.createRepo()
     const project = attachProject({ folderPath: repoDir, name: 'LoopTroop', shortname: 'READFAIL' })
@@ -356,6 +388,91 @@ describe('ticket start configuration locking', () => {
       lockedCouncilMembers: [],
     })
     expect(readTicketMeta(repoDir, ticket.externalId)).not.toHaveProperty('lockedMainImplementer')
+  })
+
+  it('restores metadata when the database reset fails after the metadata lock was cleared', () => {
+    const repoDir = lockRepoManager.createRepo()
+    const project = attachProject({ folderPath: repoDir, name: 'LoopTroop', shortname: 'ROLLBACKRACE' })
+    const ticket = createTicket({ projectId: project.id, title: 'Protect rollback consistency' })
+    const context = getProjectContextById(project.id)!
+    lockTicketStartConfiguration(ticket.id, {
+      branchName: ticket.externalId,
+      startedAt: '2026-09-28T10:00:00.000Z',
+      lockedMainImplementer: 'openai/gpt-5-codex',
+      lockedCouncilMembers: ['openai/gpt-5-codex', 'openai/gpt-5-mini'],
+      lockedInterviewQuestions: 50,
+      lockedCoverageFollowUpBudgetPercent: 20,
+      lockedMaxCoveragePasses: 2,
+      lockedMaxPrdCoveragePasses: 5,
+      lockedMaxBeadsCoveragePasses: 5,
+      lockedStructuredRetryCount: 3,
+    })
+    context.projectDb.$client.exec('PRAGMA query_only = ON')
+    try {
+      expect(() => rollbackTicketStartConfiguration(ticket.id)).toThrow()
+    } finally {
+      context.projectDb.$client.exec('PRAGMA query_only = OFF')
+    }
+
+    expect(getTicketByRef(ticket.id)).toMatchObject({
+      status: 'DRAFT',
+      lockedMainImplementer: 'openai/gpt-5-codex',
+      lockedCouncilMembers: ['openai/gpt-5-codex', 'openai/gpt-5-mini'],
+    })
+    expect(readTicketMeta(repoDir, ticket.externalId)).toMatchObject({
+      lockedMainImplementer: 'openai/gpt-5-codex',
+      lockedCouncilMembers: ['openai/gpt-5-codex', 'openai/gpt-5-mini'],
+    })
+
+    expect(rollbackTicketStartConfiguration(ticket.id)).toMatchObject({
+      status: 'DRAFT',
+      lockedMainImplementer: null,
+      lockedCouncilMembers: [],
+    })
+  })
+
+  it('rolls back SQLite changes when the restored ticket is no longer DRAFT', () => {
+    const repoDir = lockRepoManager.createRepo()
+    const project = attachProject({ folderPath: repoDir, name: 'LoopTroop', shortname: 'ROLLBACKSTATUS' })
+    const ticket = createTicket({ projectId: project.id, title: 'Reject a changed rollback status' })
+    const context = getProjectContextById(project.id)!
+    const trigger = 'force_non_draft_during_ticket_start_rollback'
+    lockTicketStartConfiguration(ticket.id, {
+      branchName: ticket.externalId,
+      startedAt: '2026-09-28T10:00:00.000Z',
+      lockedMainImplementer: 'openai/gpt-5-codex',
+      lockedCouncilMembers: ['openai/gpt-5-codex', 'openai/gpt-5-mini'],
+      lockedInterviewQuestions: 50,
+      lockedCoverageFollowUpBudgetPercent: 20,
+      lockedMaxCoveragePasses: 2,
+      lockedMaxPrdCoveragePasses: 5,
+      lockedMaxBeadsCoveragePasses: 5,
+      lockedStructuredRetryCount: 3,
+    })
+    context.projectDb.$client.exec(`
+      CREATE TRIGGER ${trigger} AFTER UPDATE OF locked_main_implementer ON tickets
+      WHEN NEW.locked_main_implementer IS NULL
+      BEGIN
+        UPDATE tickets SET status = 'SCANNING_RELEVANT_FILES' WHERE id = NEW.id;
+      END;
+    `)
+    try {
+      expect(() => rollbackTicketStartConfiguration(ticket.id))
+        .toThrow(`Ticket ${ticket.id} is not in DRAFT status during start rollback`)
+    } finally {
+      context.projectDb.$client.exec(`DROP TRIGGER ${trigger}`)
+    }
+
+    expect(getTicketByRef(ticket.id)).toMatchObject({
+      status: 'DRAFT',
+      branchName: ticket.externalId,
+      lockedMainImplementer: 'openai/gpt-5-codex',
+      lockedCouncilMembers: ['openai/gpt-5-codex', 'openai/gpt-5-mini'],
+    })
+    expect(readTicketMeta(repoDir, ticket.externalId)).toMatchObject({
+      lockedMainImplementer: 'openai/gpt-5-codex',
+      lockedCouncilMembers: ['openai/gpt-5-codex', 'openai/gpt-5-mini'],
+    })
   })
 
   it('validates required start models and keeps locked council variants immutable', () => {

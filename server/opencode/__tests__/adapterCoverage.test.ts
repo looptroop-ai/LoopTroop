@@ -13,14 +13,6 @@ vi.mock('../../storage/tickets', () => ({
   readTicketFile: vi.fn(),
 }))
 
-interface QaEvidenceLoader {
-  loadQaEvidenceFileParts(ticketId: string, beadId: string): Promise<unknown[]>
-}
-
-function qaEvidenceLoader(adapter: OpenCodeSDKAdapter): QaEvidenceLoader {
-  return adapter as unknown as QaEvidenceLoader
-}
-
 const tempDirs: string[] = []
 
 afterEach(() => {
@@ -67,7 +59,7 @@ describe('OpenCode adapter remaining coverage', () => {
       beadsPath: join(ticketDir, 'beads.jsonl'),
     } as NonNullable<ReturnType<typeof getTicketPaths>>)
 
-    await expect(qaEvidenceLoader(new OpenCodeSDKAdapter()).loadQaEvidenceFileParts(TEST.ticketId, 'bead'))
+    await expect(new OpenCodeSDKAdapter().assembleBeadContext(TEST.ticketId, 'bead'))
       .resolves.toEqual([])
   })
 
@@ -81,7 +73,7 @@ describe('OpenCode adapter remaining coverage', () => {
       beadsPath,
     } as NonNullable<ReturnType<typeof getTicketPaths>>)
 
-    await expect(qaEvidenceLoader(new OpenCodeSDKAdapter()).loadQaEvidenceFileParts(TEST.ticketId, 'bead'))
+    await expect(new OpenCodeSDKAdapter().assembleBeadContext(TEST.ticketId, 'bead'))
       .rejects.toThrow('Failed to load Manual QA evidence manifest for bead bead:')
   })
 })

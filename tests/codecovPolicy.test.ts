@@ -113,7 +113,7 @@ describe('coverage and Codecov policy', () => {
     expect(packaging.needs).not.toContain('codecov')
   })
 
-  it('blocks project coverage below 90% and keeps patch status informational', () => {
+  it('reports project coverage and keeps patch status informational', () => {
     const config = loadYaml(readFileSync(join(repo, 'codecov.yml'), 'utf8')) as {
       coverage: { status: { project: { default: Record<string, unknown> }; patch: { default: Record<string, unknown> } } }
     }

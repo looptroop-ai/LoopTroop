@@ -11,8 +11,15 @@ const workflowDir = join(repo, '.github/workflows')
 const files = readdirSync(workflowDir).filter((file) => /\.ya?ml$/.test(file))
 const source = new Map(files.map((file) => [file, readFileSync(join(workflowDir, file), 'utf8')]))
 
-type Step = { name?: unknown; run?: unknown; uses?: unknown; env?: Record<string, unknown> }
-type Job = { permissions?: Record<string, unknown>; steps?: Step[] }
+type Step = {
+  name?: unknown
+  run?: unknown
+  uses?: unknown
+  env?: Record<string, unknown>
+  if?: unknown
+  'continue-on-error'?: unknown
+}
+type Job = { permissions?: Record<string, unknown>; steps?: Step[]; if?: unknown; 'continue-on-error'?: unknown }
 type Workflow = { jobs?: Record<string, Job> }
 
 const workflows = new Map(files.map((file) => [
@@ -121,7 +128,7 @@ function executeNodeFloorGate(run: string, before: string, after: string, checke
     'git() { case "$1" in fetch) return 0 ;; show) printf \'{}\\n\' ;; *) return 2 ;; esac; }',
     'node() {',
     '  if [ "$1" = "-p" ]; then',
-    '    case "$2" in *readFileSync\\(0*) printf "%s\\n" "$BEFORE" ;; *) printf "%s\\n" "$AFTER" ;; esac',
+    '    case "$2" in *readFileSync\\(0*) cat >/dev/null; printf "%s\\n" "$BEFORE" ;; *) printf "%s\\n" "$AFTER" ;; esac',
     '  elif [ "$1" = "scripts/check-node-feeds.ts" ]; then',
     '    printf "called\\n" >> "$CHECKER_CALLS"',
     '    return "$CHECKER_STATUS"',
@@ -198,7 +205,7 @@ describe('release workflow policy', () => {
     }).scripts
     const workflowLint = ci.workflows as Job & { 'runs-on'?: string; 'continue-on-error'?: unknown }
     expect(workflowLint['runs-on']).toBe('ubuntu-latest')
-    expect(workflowLint['continue-on-error'] ?? false).toBe(false)
+    expect(Object.hasOwn(workflowLint, 'continue-on-error')).toBe(false)
 
     const lintSteps = workflowLint.steps ?? []
     const installer = lintSteps.find((candidate) => candidate.name === 'Install actionlint')
@@ -210,7 +217,7 @@ describe('release workflow policy', () => {
 
     const verify = ci.verify as (Job & { 'continue-on-error'?: unknown }) | undefined
     if (!verify) throw new Error('ci.yml: verify job missing')
-    expect(verify['continue-on-error'] ?? false, 'the required Verify job must remain blocking').toBe(false)
+    expect(Object.hasOwn(verify, 'continue-on-error'), 'the required Verify job must remain blocking').toBe(false)
     const verificationCommands = [
       ['npm run lint', 'lint'],
       ['npm run typecheck', 'typecheck'],
@@ -230,6 +237,10 @@ describe('release workflow policy', () => {
       return index
     })
     expect(indices).toEqual([...indices].sort((a, b) => a - b))
+    const coverageStep = steps.find((candidate) => candidate.run === 'npm run test:coverage')
+    expect(coverageStep).toBeDefined()
+    expect(Object.hasOwn(coverageStep!, 'if'), 'coverage must run in the Verify job').toBe(false)
+    expect(Object.hasOwn(coverageStep!, 'continue-on-error'), 'coverage failures must fail Verify').toBe(false)
     expect(steps.some((candidate) => String(candidate.run ?? '').includes('server/lib/__tests__/executablePath.test.ts'))).toBe(true)
     const cleanTree = steps.find((candidate) => candidate.name === 'Verify working tree is clean after build')
     expect(cleanTree).toBeDefined()

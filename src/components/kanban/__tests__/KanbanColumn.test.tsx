@@ -85,7 +85,7 @@ describe('KanbanColumn', () => {
     expect(screen.getByText('of 3')).toBeInTheDocument()
   })
 
-  it('starts arrow navigation from the typed page number', () => {
+  it('advances from the visible page without committing an edited page number first', () => {
     render(
       <TooltipProvider>
         <UIProvider>
@@ -110,12 +110,52 @@ describe('KanbanColumn', () => {
     const nextPage = pageButtons[1]!
 
     fireEvent.change(pageInput, { target: { value: '2' } })
-    expect(previousPage).toBeEnabled()
+    expect(previousPage).toBeDisabled()
+    expect(fireEvent.mouseDown(nextPage)).toBe(false)
+    expect(pageInput).toHaveValue('2')
     fireEvent.click(nextPage)
 
+    expect(pageInput).toHaveValue('2')
+    expect(screen.getByLabelText(ticketCardLabel('TEST-16'))).toBeInTheDocument()
+    expect(screen.queryByLabelText(ticketCardLabel('TEST-31'))).not.toBeInTheDocument()
+  })
+
+  it('keeps arrow bounds tied to the visible page when the typed page is out of range', () => {
+    render(
+      <TooltipProvider>
+        <UIProvider>
+          <KanbanColumn
+            column={{
+              id: 'done',
+              title: 'Done',
+              description: 'Completed tickets',
+              tooltip: 'Terminal tickets that no longer advance automatically.',
+            }}
+            tickets={makeCompletedTickets(31)}
+            projectMap={new Map<number, Project>()}
+          />
+        </UIProvider>
+      </TooltipProvider>,
+    )
+
+    const pageInput = screen.getByRole('textbox', { name: /done current page/i })
+    const controls = within(screen.getByRole('group', { name: 'Done pagination' }))
+    const pageButtons = controls.getAllByRole('button')
+    const previousPage = pageButtons[0]!
+    const nextPage = pageButtons[1]!
+
+    fireEvent.change(pageInput, { target: { value: '999' } })
+    expect(previousPage).toBeDisabled()
+    expect(nextPage).toBeEnabled()
+    fireEvent.click(nextPage)
+    expect(pageInput).toHaveValue('2')
+
+    fireEvent.change(pageInput, { target: { value: '0' } })
+    expect(previousPage).toBeEnabled()
+    expect(nextPage).toBeEnabled()
+    fireEvent.click(nextPage)
     expect(pageInput).toHaveValue('3')
     expect(screen.getByLabelText(ticketCardLabel('TEST-1'))).toBeInTheDocument()
-    expect(screen.queryByLabelText(ticketCardLabel('TEST-16'))).not.toBeInTheDocument()
   })
 
   it('clears a canceled edit when the Escape blur is missed and the input receives focus again', () => {

@@ -7,6 +7,40 @@ import { makeAtomicTmpPath } from '../atomicWrite'
 import * as fileReader from '../readFile'
 import { makeTempDir, removeTempDir } from '../../test/tempDir'
 
+function readCallRange(buffer: ArrayBufferView, args: unknown[]) {
+  const positional = typeof args[0] === 'number'
+  const options = args[0] as { offset?: number; length?: number; position?: number | bigint | null } | undefined
+  return {
+    offset: positional ? Number(args[0]) : options?.offset ?? 0,
+    length: positional ? Number(args[1]) : options?.length ?? buffer.byteLength,
+    position: positional ? args[2] as number | bigint | null : options?.position ?? null,
+  }
+}
+
+function copySparseRead(
+  buffer: ArrayBufferView,
+  offset: number,
+  length: number,
+  position: number,
+  segments: Array<{ position: number; content: Buffer }>,
+) {
+  const bytes = Buffer.from(buffer.buffer, buffer.byteOffset, buffer.byteLength)
+  const readEnd = position + length
+  bytes.fill(0, offset, offset + length)
+  for (const segment of segments) {
+    const copyStart = Math.max(position, segment.position)
+    const copyEnd = Math.min(readEnd, segment.position + segment.content.length)
+    if (copyStart < copyEnd) {
+      segment.content.copy(
+        bytes,
+        offset + copyStart - position,
+        copyStart - segment.position,
+        copyEnd - segment.position,
+      )
+    }
+  }
+}
+
 vi.mock('fs', async (importOriginal) => ({ ...await importOriginal<typeof import('fs')>() }))
 
 let directory: string
@@ -493,36 +527,13 @@ describe('recovery descriptor containment', () => {
       return Object.assign(Object.create(Object.getPrototypeOf(stats)), stats, { size: fileSize })
     })
     vi.spyOn(fs, 'readSync').mockImplementation((fd, buffer, ...args: unknown[]) => {
-      const positional = args.length >= 3 && typeof args[0] === 'number'
-      const options = args[0] as { offset?: number; length?: number; position?: number | bigint | null } | undefined
-      const offset = positional ? Number(args[0]) : options?.offset ?? 0
-      const length = positional ? Number(args[1]) : options?.length ?? buffer.byteLength
-      const requestedPosition = positional
-        ? args[2] as number | bigint | null
-        : options?.position ?? null
-      if (requestedPosition === null) {
-        return originalRead(fd, buffer, { offset, length, position: null })
-      }
-      const position = Number(requestedPosition)
-      const bytes = Buffer.from(buffer.buffer, buffer.byteOffset, buffer.byteLength)
-      const readEnd = position + length
-      bytes.fill(0, offset, offset + length)
-      for (const segment of [
+      const { offset, length, position: requestedPosition } = readCallRange(buffer, args)
+      if (requestedPosition === null) return originalRead(fd, buffer, { offset, length, position: null })
+      copySparseRead(buffer, offset, length, Number(requestedPosition), [
         { position: 0, content: header },
         { position: separatorOffset, content: Buffer.from('\n') },
         { position: tailStart, content: tail },
-      ]) {
-        const copyStart = Math.max(position, segment.position)
-        const copyEnd = Math.min(readEnd, segment.position + segment.content.length)
-        if (copyStart < copyEnd) {
-          segment.content.copy(
-            bytes,
-            offset + copyStart - position,
-            copyStart - segment.position,
-            copyEnd - segment.position,
-          )
-        }
-      }
+      ])
       return length
     })
     vi.spyOn(fs, 'ftruncateSync').mockImplementation((_fd, length) => {

@@ -36,8 +36,6 @@ export function KanbanColumn({
   const [currentPage, setCurrentPage] = useState(1)
   const [pageInput, setPageInput] = useState('1')
   const ignoreNextBlur = useRef(false)
-  const inputPage = Number.parseInt(pageInput, 10)
-  const pageForNavigation = Number.isNaN(inputPage) ? currentPage : inputPage
 
   useEffect(() => {
     setCurrentPage(1)
@@ -158,8 +156,9 @@ export function KanbanColumn({
               className="flex items-center justify-center gap-2 pt-2"
             >
               <button
-                onClick={() => setPage(pageForNavigation - 1)}
-                disabled={pageForNavigation <= 1}
+                onMouseDown={(event) => event.preventDefault()}
+                onClick={() => setPage(currentPage - 1)}
+                disabled={currentPage <= 1}
                 className="text-muted-foreground hover:text-foreground disabled:opacity-30"
               >
                 <ChevronLeft className="h-4 w-4" />
@@ -208,8 +207,9 @@ export function KanbanColumn({
                 <span>of {totalPages}</span>
               </div>
               <button
-                onClick={() => setPage(pageForNavigation + 1)}
-                disabled={pageForNavigation >= totalPages}
+                onMouseDown={(event) => event.preventDefault()}
+                onClick={() => setPage(currentPage + 1)}
+                disabled={currentPage >= totalPages}
                 className="text-muted-foreground hover:text-foreground disabled:opacity-30"
               >
                 <ChevronRight className="h-4 w-4" />

@@ -94,6 +94,9 @@ function rollbackTicketStartToDraft(ticketId: string): void {
   const ticket = getTicketByRef(ticketId)
   if (ticket && ticket.status !== 'DRAFT') return
 
+  const actorState = getTicketState(ticketId)
+  if (actorState && actorState.state !== 'DRAFT') cancelTicket(ticketId)
+
   try {
     if (ticket) rollbackTicketStartConfiguration(ticketId)
   } catch (error) {

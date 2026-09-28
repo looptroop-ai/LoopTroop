@@ -58,7 +58,7 @@ export function getTicketMetaPath(projectRoot: string, externalId: string): stri
 
 function parseTicketMeta(path: string): TicketMetaRecord {
   const parsed = JSON.parse(readFileNoFollowSync(path)) as TicketMetaRecord
-  return parsed && typeof parsed === 'object' ? parsed : {}
+  return parsed && typeof parsed === 'object' && !Array.isArray(parsed) ? parsed : {}
 }
 
 export function readTicketMeta(projectRoot: string, externalId: string): TicketMetaRecord {
@@ -76,7 +76,7 @@ export function readTicketMetaForMutation(projectRoot: string, externalId: strin
   try {
     return parseTicketMeta(path)
   } catch (error) {
-    if ((error as NodeJS.ErrnoException).code === 'ENOENT') return {}
+    if ((error as NodeJS.ErrnoException).code === 'ENOENT' || error instanceof SyntaxError) return {}
     throw error
   }
 }
@@ -95,7 +95,7 @@ export function updateTicketMeta(
   return writeTicketMeta(projectRoot, externalId, { ...current, ...patch })
 }
 
-export function lockTicketModelSelection(
+export function prepareTicketModelSelectionLock(
   projectRoot: string,
   externalId: string,
   lock: TicketModelSelectionLock,
@@ -121,12 +121,12 @@ export function lockTicketModelSelection(
     throw new Error(`Ticket model configuration is immutable after start: ${externalId}`)
   }
 
-  return writeTicketMeta(projectRoot, externalId, {
+  return {
     ...current,
     startedAt: current.startedAt ?? lock.startedAt,
     lockedMainImplementer: currentMainImplementer ?? lockedMainImplementer,
     lockedCouncilMembers: currentCouncilMembers.length > 0 ? currentCouncilMembers : lockedCouncilMembers,
-  })
+  }
 }
 
 export function clearTicketModelSelectionLock(projectRoot: string, externalId: string): TicketMetaRecord {

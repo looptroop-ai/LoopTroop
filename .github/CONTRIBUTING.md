@@ -53,7 +53,7 @@ npm run test
 npm run test:coverage
 ```
 
-`npm run test:coverage` runs all four Vitest projects, writes `coverage/lcov.info` and `coverage/coverage-summary.json`, and prints a text report. The command fails below 90% global line coverage. CI uses it in the required Ubuntu Verify job and retains the files as a seven-day artifact. A separate OIDC Codecov job uploads LCOV; its project status blocks below 90%, while patch status remains informational.
+`npm run test:coverage` runs all four Vitest projects, writes `coverage/lcov.info` and `coverage/coverage-summary.json`, and prints a text report. The command fails below 90% global line coverage or 80% branch coverage. CI uses it in the required Ubuntu Verify job and retains the files as a seven-day artifact. A separate OIDC Codecov job uploads LCOV and reports project and patch status; Codecov is not a required gate.
 
 `typecheck` runs two projects: the application (`tsconfig.json`) and the root
 `tests/` directory (`tsconfig.tests.json`). They are separate so that adding a

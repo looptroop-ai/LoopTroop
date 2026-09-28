@@ -11,7 +11,7 @@ import { resolveProjectTicketContainedPath, writeProjectTicketFile } from '../ti
 import {
   clearTicketModelSelectionLock,
   councilMembersEqualOrdered,
-  lockTicketModelSelection,
+  prepareTicketModelSelectionLock,
   readTicketMetaForMutation,
   resolveTicketBaseBranch,
   writeTicketMeta,
@@ -696,51 +696,52 @@ export function lockTicketStartConfiguration(
     lockedGitHookPolicySource: input.lockedGitHookPolicySource ?? 'profile',
   })
 
-  const previousMeta = readTicketMetaForMutation(context.projectRoot, context.externalId)
-  const meta = lockTicketModelSelection(context.projectRoot, context.externalId, {
-    startedAt: input.startedAt,
+  const startedAt = context.localTicket.startedAt ?? input.startedAt
+  const meta = prepareTicketModelSelectionLock(context.projectRoot, context.externalId, {
+    startedAt,
     lockedMainImplementer,
     lockedCouncilMembers,
   })
 
-  try {
-    return context.projectDb.transaction((tx) => {
-      tx.update(tickets)
-        .set({
-          branchName: input.branchName,
-          lockedMainImplementer,
-          lockedMainImplementerVariant: input.lockedMainImplementerVariant ?? null,
-          lockedCouncilMembers: lockedCouncilMembersRaw,
-          lockedCouncilMemberVariants: lockedCouncilMemberVariantsRaw,
-          lockedInterviewQuestions: input.lockedInterviewQuestions,
-          lockedCoverageFollowUpBudgetPercent: input.lockedCoverageFollowUpBudgetPercent,
-          lockedMaxCoveragePasses: input.lockedMaxCoveragePasses,
-          lockedMaxPrdCoveragePasses: input.lockedMaxPrdCoveragePasses,
-          lockedMaxBeadsCoveragePasses: input.lockedMaxBeadsCoveragePasses,
-          lockedStructuredRetryCount: input.lockedStructuredRetryCount,
-          lockedManualQaEnabled: input.lockedManualQaEnabled ?? false,
-          lockedManualQaSource: input.lockedManualQaSource ?? 'profile',
-          lockedAiQuestionsEnabled: input.lockedAiQuestionsEnabled ?? false,
-          lockedAiQuestionsSource: input.lockedAiQuestionsSource ?? 'profile',
-          lockedAiQuestionWindow: input.lockedAiQuestionWindow ?? AI_QUESTION_WINDOW_DEFAULT_MS,
-          lockedAiQuestionWindowSource: input.lockedAiQuestionWindowSource ?? 'profile',
-          lockedGitHookPolicy: input.lockedGitHookPolicy ?? DEFAULT_GIT_HOOK_POLICY,
-          lockedGitHookPolicySource: input.lockedGitHookPolicySource ?? 'profile',
-          startedAt: meta.startedAt ?? input.startedAt,
-          updatedAt: new Date().toISOString(),
-        })
-        .where(eq(tickets.id, context.localTicketId))
-        .run()
+  const updated = context.projectDb.transaction((tx) => {
+    tx.update(tickets)
+      .set({
+        branchName: input.branchName,
+        lockedMainImplementer,
+        lockedMainImplementerVariant: input.lockedMainImplementerVariant ?? null,
+        lockedCouncilMembers: lockedCouncilMembersRaw,
+        lockedCouncilMemberVariants: lockedCouncilMemberVariantsRaw,
+        lockedInterviewQuestions: input.lockedInterviewQuestions,
+        lockedCoverageFollowUpBudgetPercent: input.lockedCoverageFollowUpBudgetPercent,
+        lockedMaxCoveragePasses: input.lockedMaxCoveragePasses,
+        lockedMaxPrdCoveragePasses: input.lockedMaxPrdCoveragePasses,
+        lockedMaxBeadsCoveragePasses: input.lockedMaxBeadsCoveragePasses,
+        lockedStructuredRetryCount: input.lockedStructuredRetryCount,
+        lockedManualQaEnabled: input.lockedManualQaEnabled ?? false,
+        lockedManualQaSource: input.lockedManualQaSource ?? 'profile',
+        lockedAiQuestionsEnabled: input.lockedAiQuestionsEnabled ?? false,
+        lockedAiQuestionsSource: input.lockedAiQuestionsSource ?? 'profile',
+        lockedAiQuestionWindow: input.lockedAiQuestionWindow ?? AI_QUESTION_WINDOW_DEFAULT_MS,
+        lockedAiQuestionWindowSource: input.lockedAiQuestionWindowSource ?? 'profile',
+        lockedGitHookPolicy: input.lockedGitHookPolicy ?? DEFAULT_GIT_HOOK_POLICY,
+        lockedGitHookPolicySource: input.lockedGitHookPolicySource ?? 'profile',
+        startedAt: meta.startedAt ?? startedAt,
+        updatedAt: new Date().toISOString(),
+      })
+      .where(eq(tickets.id, context.localTicketId))
+      .run()
 
-      const updated = tx.select().from(tickets).where(eq(tickets.id, context.localTicketId)).get()
-      if (!updated) {
-        throw new Error(`Ticket not found after locking start configuration: ${ticketRef}`)
-      }
-      return toPublicTicket(context.projectId, updated)
-    })
-  } catch (error) {
-    restoreTicketMetaAfterFailure(context.projectRoot, context.externalId, previousMeta, error)
-  }
+    const updatedRow = tx.select().from(tickets).where(eq(tickets.id, context.localTicketId)).get()
+    if (!updatedRow) {
+      throw new Error(`Ticket not found after locking start configuration: ${ticketRef}`)
+    }
+    return updatedRow
+  })
+
+  // The DB is authoritative. A crash after this commit can be repaired from
+  // the DRAFT row on the next start; metadata must never lock models first.
+  writeTicketMeta(context.projectRoot, context.externalId, meta)
+  return toPublicTicket(context.projectId, updated)
 }
 
 export function rollbackTicketStartConfiguration(ticketRef: string): PublicTicket | undefined {
@@ -788,7 +789,10 @@ export function rollbackTicketStartConfiguration(ticketRef: string): PublicTicke
           .run()
 
         const restored = tx.select().from(tickets).where(eq(tickets.id, context.localTicketId)).get()
-        return restored?.status === 'DRAFT' ? restored : undefined
+        if (!restored || restored.status !== 'DRAFT') {
+          throw new Error(`Ticket ${ticketRef} is not in DRAFT status during start rollback`)
+        }
+        return restored
       })
     } catch (error) {
       if (metadataMayHaveChanged) {

@@ -20,6 +20,7 @@ vi.mock('../../opencode/connection', async (importOriginal) => ({
   getOpenCodeConnection: mockGetOpenCodeConnection,
 }))
 import { beginOpenCodePromptActivity } from '../../opencode/providerCatalogReload'
+import * as workflowRunner from '../../workflow/runner'
 
 vi.mock('../../machines/persistence', async () => {
   const storage = await import('../../storage/tickets')
@@ -196,6 +197,22 @@ describe('ticketRouter POST /tickets/:id/start', () => {
     broadcaster.clearTicket(ticket.id)
   })
 
+  it('starts a ticket when its metadata file is malformed', async () => {
+    const { app, ticket } = setupStartTicketApp()
+    const metadataPath = join(getTicketPaths(ticket.id)!.ticketDir, 'meta', 'ticket.meta.json')
+    writeFileSync(metadataPath, '{bad')
+
+    const response = await app.request(`/api/tickets/${ticket.id}/start`, { method: 'POST' })
+
+    expect(response.status).toBe(200)
+    expect(getTicketByRef(ticket.id)).toMatchObject({ status: 'SCANNING_RELEVANT_FILES' })
+    expect(JSON.parse(readFileSync(metadataPath, 'utf8'))).toMatchObject({
+      baseBranch: expect.any(String),
+      lockedMainImplementer: 'openai/codex-mini-latest',
+    })
+    broadcaster.clearTicket(ticket.id)
+  })
+
   it('rejects display-only mock tickets before workspace initialization', async () => {
     const { app, ticket } = setupStartTicketApp()
     patchTicket(ticket.id, {
@@ -294,6 +311,10 @@ describe('ticketRouter POST /tickets/:id/start', () => {
     }
     vi.mocked(initializeTicket).mockResolvedValueOnce(init)
     vi.spyOn(ticketFileStorage, 'writeProjectTicketFile').mockImplementationOnce(() => {
+      expect(getTicketByRef(ticket.id)).toMatchObject({
+        status: 'DRAFT',
+        lockedMainImplementer: 'openai/codex-mini-latest',
+      })
       throw new Error('Metadata volume is temporarily unavailable')
     })
 
@@ -582,6 +603,7 @@ describe('ticketRouter POST /tickets/:id/start', () => {
     vi.mocked(sendTicketEvent).mockImplementationOnce(() => {
       throw new Error('Snapshot persistence failed')
     })
+    const cancel = vi.spyOn(workflowRunner, 'cancelTicket')
 
     const response = await app.request(`/api/tickets/${ticket.id}/start`, { method: 'POST' })
 
@@ -597,6 +619,7 @@ describe('ticketRouter POST /tickets/:id/start', () => {
       lockedMainImplementer: null,
       lockedCouncilMembers: [],
     })
+    expect(cancel).toHaveBeenCalledWith(ticket.id)
     expect(stopActor).toHaveBeenCalledWith(ticket.id)
   })
 

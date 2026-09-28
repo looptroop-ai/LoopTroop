@@ -26,6 +26,7 @@ import { contentSha256 } from '../../lib/contentHash'
 import { listSkipEvents } from '../../workflow/skipReceipts'
 import { countSkipEvents } from '@shared/skipReceipt'
 import { claimPlanningEdit, releasePlanningEdit } from '../ticketHandlers/routeUtils'
+import * as skipReceiptWriter from '../../workflow/skipReceipts'
 
 vi.mock('../../machines/persistence', async () => {
   const storage = await import('../../storage/tickets')
@@ -883,6 +884,54 @@ describe('ticketRouter interview approval routes', () => {
       itemId: 'Q01',
       reason: 'Decided outside the interview.',
     })
+  })
+
+  it('keeps a saved interview edit successful when its skip receipt cannot be written', async () => {
+    const { app, ticket, paths } = await setupApprovalTicket()
+    const raw = readFileSync(`${paths.ticketDir}/interview.yaml`, 'utf-8')
+    const writeSkipReceipt = vi.spyOn(skipReceiptWriter, 'writeSkipReceipts')
+      .mockImplementationOnce(() => { throw new Error('Skip receipt storage is unavailable') })
+    const error = vi.spyOn(console, 'error').mockImplementation(() => undefined)
+
+    try {
+      const response = await app.request(`/api/tickets/${ticket.id}/interview-answers`, {
+        method: 'PUT',
+        ...interviewEditPayload(raw, {
+          questions: [
+            {
+              id: 'Q01',
+              answer: {
+                skipped: true,
+                selected_option_ids: [],
+                free_text: '',
+                skip_reason: 'Covered by the ticket description.',
+              },
+            },
+            {
+              id: 'FINAL',
+              answer: {
+                skipped: false,
+                selected_option_ids: [],
+                free_text: 'Keep retries observable and reviewable.',
+              },
+            },
+          ],
+        }),
+      })
+
+      expect(response.status).toBe(200)
+      expect(readFileSync(`${paths.ticketDir}/interview.yaml`, 'utf-8'))
+        .toContain('skip_reason: Covered by the ticket description.')
+      expect(writeSkipReceipt).toHaveBeenCalledOnce()
+      expect(error).toHaveBeenCalledWith(
+        expect.stringContaining('Failed to record approval skip receipts for'),
+        expect.any(Error),
+      )
+      expect(listSkipEvents(ticket.id)).toHaveLength(0)
+    } finally {
+      writeSkipReceipt.mockRestore()
+      error.mockRestore()
+    }
   })
 
   it('records a resolution when a skipped answer is answered after all', async () => {

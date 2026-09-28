@@ -5,9 +5,13 @@ import { makeTempDir, removeTempDir } from '../../../test/tempDir'
 import type { ExecutionSetupProfile } from '../types'
 import {
   EXECUTION_SETUP_RUN_WRAPPER,
+  commandMentionsExecutionSetupWrapper,
   findCanonicalExecutionSetupCommandWrapper,
   getExecutionSetupCommandWrapper,
   getExecutionSetupCommandWrapperFromContent,
+  getExecutionSetupCommandWrapperFromRecord,
+  hasExecutionSetupProjectCommands,
+  normalizeExecutionSetupCommandPath,
   repairExecutionSetupCommandWrapper,
 } from '../runtimeProfile'
 
@@ -57,6 +61,20 @@ function profile(overrides: Partial<ExecutionSetupProfile> = {}): ExecutionSetup
 }
 
 describe('execution setup runtime profile', () => {
+  it('normalizes wrapper paths in strings and rendered command specs', () => {
+    expect(normalizeExecutionSetupCommandPath('.\\.ticket\\runtime\\execution-setup\\run')).toBe(EXECUTION_SETUP_RUN_WRAPPER)
+    expect(normalizeExecutionSetupCommandPath(`  ./${EXECUTION_SETUP_RUN_WRAPPER}  `)).toBe(`./${EXECUTION_SETUP_RUN_WRAPPER}`)
+    expect(commandMentionsExecutionSetupWrapper(`  node .\\${EXECUTION_SETUP_RUN_WRAPPER} test  `)).toBe(true)
+    expect(commandMentionsExecutionSetupWrapper({
+      mode: 'shell',
+      shell: 'posix',
+      script: `./${EXECUTION_SETUP_RUN_WRAPPER} test`,
+      cwd: '.',
+      env: {},
+    })).toBe(true)
+    expect(commandMentionsExecutionSetupWrapper('npm test', 'tools/run')).toBe(false)
+  })
+
   it('prefers an explicitly declared wrapper over the canonical disk fallback', () => {
     const worktree = makeWorktree()
     writeCanonicalWrapper(worktree)
@@ -65,6 +83,92 @@ describe('execution setup runtime profile', () => {
     })
 
     expect(getExecutionSetupCommandWrapper(configured, worktree)).toBe('tools/custom-run')
+  })
+
+  it('finds wrapper declarations in artifacts and project commands', () => {
+    expect(getExecutionSetupCommandWrapper(profile({
+      reusableArtifacts: [
+        { path: '   ', kind: 'command-wrapper', purpose: 'Empty path' },
+        { path: `./${EXECUTION_SETUP_RUN_WRAPPER}`, kind: 'script', purpose: 'Canonical wrapper' },
+      ],
+    }))).toBe(`./${EXECUTION_SETUP_RUN_WRAPPER}`)
+    expect(getExecutionSetupCommandWrapper(profile({
+      projectCommands: {
+        prepare: [],
+        testFull: [],
+        lintFull: [],
+        typecheckFull: [`node ./${EXECUTION_SETUP_RUN_WRAPPER} typecheck`],
+      },
+    }))).toBe(EXECUTION_SETUP_RUN_WRAPPER)
+    expect(getExecutionSetupCommandWrapper(null)).toBeNull()
+    expect(getExecutionSetupCommandWrapper(profile())).toBeNull()
+
+    const worktree = makeWorktree()
+    writeCanonicalWrapper(worktree)
+    expect(getExecutionSetupCommandWrapper(profile(), worktree)).toBe(EXECUTION_SETUP_RUN_WRAPPER)
+  })
+
+  it('reports project commands in any supported command group', () => {
+    expect(hasExecutionSetupProjectCommands(null)).toBe(false)
+    for (const group of ['prepare', 'testFull', 'lintFull', 'typecheckFull'] as const) {
+      expect(hasExecutionSetupProjectCommands(profile({
+        projectCommands: { prepare: [], testFull: [], lintFull: [], typecheckFull: [], [group]: ['npm test'] },
+      }))).toBe(true)
+    }
+    expect(hasExecutionSetupProjectCommands(profile())).toBe(false)
+  })
+
+  it('reads nested and flat wrapper records, including persisted field aliases', () => {
+    expect(getExecutionSetupCommandWrapperFromRecord({
+      profile: {
+        reusable_artifacts: [
+          null,
+          { path: 42, kind: 'command-wrapper' },
+          { path: '  tools/custom-run  ', kind: ' command-wrapper ' },
+        ],
+      },
+    })).toBe('tools/custom-run')
+
+    expect(getExecutionSetupCommandWrapperFromRecord({
+      reusableArtifacts: [
+        false,
+        { path: 42, kind: 3 },
+        { path: `./${EXECUTION_SETUP_RUN_WRAPPER}`, kind: 'script' },
+      ],
+    })).toBe(`./${EXECUTION_SETUP_RUN_WRAPPER}`)
+
+    expect(getExecutionSetupCommandWrapperFromRecord({
+      profile: {
+        project_commands: {
+          prepare: [null, '  '],
+          test_full: [`node ./${EXECUTION_SETUP_RUN_WRAPPER} test`],
+          lint_full: [],
+          typecheck_full: [],
+        },
+      },
+    })).toBe(EXECUTION_SETUP_RUN_WRAPPER)
+    expect(getExecutionSetupCommandWrapperFromRecord({
+      profile: [],
+      projectCommands: { prepare: 1 },
+      reusableArtifacts: 'invalid',
+    })).toBeNull()
+    expect(getExecutionSetupCommandWrapperFromRecord({ projectCommands: 1 })).toBeNull()
+
+    const worktree = makeWorktree()
+    writeCanonicalWrapper(worktree)
+    expect(getExecutionSetupCommandWrapperFromRecord({ projectCommands: {} }, worktree)).toBe(EXECUTION_SETUP_RUN_WRAPPER)
+  })
+
+  it('reads wrapper declarations from JSON content and ignores non-record JSON', () => {
+    expect(getExecutionSetupCommandWrapperFromContent(JSON.stringify({
+      reusable_artifacts: [{ path: 'tools/run', kind: 'command-wrapper' }],
+    }))).toBe('tools/run')
+    expect(getExecutionSetupCommandWrapperFromContent('[]')).toBeNull()
+    const worktree = makeWorktree()
+    writeCanonicalWrapper(worktree)
+    expect(getExecutionSetupCommandWrapperFromContent('[]', worktree)).toBe(EXECUTION_SETUP_RUN_WRAPPER)
+    expect(getExecutionSetupCommandWrapperFromContent(null)).toBeNull()
+    expect(getExecutionSetupCommandWrapperFromContent('{invalid')).toBeNull()
   })
 
   it.runIf(process.platform !== 'win32')('discovers only an executable canonical regular file', () => {
@@ -117,5 +221,32 @@ describe('execution setup runtime profile', () => {
     ])
     expect(first.profile.cautions).toHaveLength(1)
     expect(second).toEqual({ profile: first.profile, repaired: false })
+  })
+
+  it('adds the canonical artifact when missing without duplicating an existing caution', () => {
+    const worktree = makeWorktree()
+    writeCanonicalWrapper(worktree)
+    const existingCaution = 'LoopTroop detected and recorded the canonical execution setup command wrapper.'
+    const original = profile({ cautions: [existingCaution], reusableArtifacts: [{
+      path: 'tools/other',
+      kind: 'binary',
+      purpose: 'Other tool',
+    }] })
+
+    const repaired = repairExecutionSetupCommandWrapper(original, worktree)
+
+    expect(repaired.repaired).toBe(true)
+    expect(repaired.profile.reusableArtifacts).toContainEqual({
+      path: EXECUTION_SETUP_RUN_WRAPPER,
+      kind: 'command-wrapper',
+      purpose: 'Preserves the execution setup environment for later project commands.',
+    })
+    expect(repaired.profile.cautions).toEqual([existingCaution])
+  })
+
+  it('leaves a profile unchanged when the canonical wrapper is absent', () => {
+    const original = profile()
+
+    expect(repairExecutionSetupCommandWrapper(original, makeWorktree())).toEqual({ profile: original, repaired: false })
   })
 })

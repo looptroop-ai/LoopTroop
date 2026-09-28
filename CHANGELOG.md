@@ -10,6 +10,7 @@ Unreleased changes appear first and represent commits that have not yet been inc
 > Changes merged since the last versioned release that have not yet shipped in a tagged version.
 
 ### Summary
+- Interrupted hook recovery is now regression-tested against tracked worktree edits, preserving both the edit and recovery marker without running hooks.
 - The test suite keeps the same pagination and append guarantees with less platform-dependent filesystem work.
 - Kanban pagination arrows follow the visible page, and Escape cancels an uncommitted page-number edit.
 - Failed ticket starts that stay in DRAFT clear provisional model locks and can be retried with updated settings; corrupt metadata stays readable and cannot be overwritten by a start.
@@ -54,6 +55,7 @@ Unreleased changes appear first and represent commits that have not yet been inc
 - The log pagination test seeds its 300-row JSONL history with one write and keeps append persistence covered separately, removing its per-test timeout override.
 
 ### Added
+- Hook recovery tests now cover the tracked-worktree-edit refusal path, including preservation of the changed file and marker and proof that no hook runs.
 - Added focused CLI tests for healthy, missing, unresponsive, and cleanup-pending daemon status, including token redaction and invalid sign-in nonces.
 - Server regression tests cover CLI dispatch and help, project and ticket CRUD routes, project-deletion rollback, approval/interview routes, PRD refinement and persisted-artifact validation, PRD and Beads pipeline recovery, runtime-profile command-wrapper repair, setup-plan generation and phase-version safeguards, pull-request and Beads refinement, supervisor probe and mock-mode behavior, workflow setup and verification, interview QA result mapping, resume, and answer edits, Manual QA generation retries and restoration, Manual QA routes, and OpenCode adapter errors and stream-event logging.
 - Tooling and UI regression tests cover third-party notice generation and stale-output checks, ticket-artifact query and cache recovery, Kanban sorting and pagination, YAML repairs, and artifact, prompt, and setup-plan editor interactions. Database- and mock-backed workflow tests run in the isolated integration project, and the source scan test allows a minute under coverage instrumentation.

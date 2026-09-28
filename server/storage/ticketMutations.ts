@@ -12,7 +12,6 @@ import {
   clearTicketModelSelectionLock,
   councilMembersEqualOrdered,
   prepareTicketModelSelectionLock,
-  readTicketMetaForMutation,
   resolveTicketBaseBranch,
   writeTicketMeta,
 } from '../ticket/metadata'
@@ -252,27 +251,12 @@ function recordsEqual(left: Record<string, string> | null, right: Record<string,
   return leftKeys.every((key) => left[key] === right[key])
 }
 
-function restoreTicketMetaAfterFailure(
-  projectRoot: string,
-  externalId: string,
-  previousMeta: ReturnType<typeof readTicketMetaForMutation>,
-  originalError: unknown,
-): never {
-  try {
-    writeTicketMeta(projectRoot, externalId, previousMeta)
-  } catch (restoreError) {
-    throw new AggregateError(
-      [originalError, restoreError],
-      `Ticket metadata could not be restored after a failed start configuration update: ${externalId}`,
-    )
-  }
-  throw originalError
-}
-
 function assertLockedModelConfigurationMutable(
   ticket: LocalTicketRow,
   patch: Partial<Omit<LocalTicketRow, 'id' | 'projectId' | 'externalId' | 'createdAt'>>,
+  allowDraftReplacement = false,
 ) {
+  if (allowDraftReplacement && ticket.status === 'DRAFT') return
   const updatesLockedModels = 'lockedMainImplementer' in patch
     || 'lockedCouncilMembers' in patch
     || 'lockedMainImplementerVariant' in patch
@@ -333,7 +317,9 @@ function assertLockedConfigurationMutable(
   patch: LocalTicketPatch,
   fields: readonly (keyof LocalTicketPatch)[],
   label: string,
+  allowDraftReplacement = false,
 ) {
+  if (allowDraftReplacement && ticket.status === 'DRAFT') return
   if (ticket.startedAt === null || patch.startedAt === null) return
 
   for (const field of fields) {
@@ -347,7 +333,9 @@ function assertLockedConfigurationMutable(
 function assertLockedGitHookConfigurationMutable(
   ticket: LocalTicketRow,
   patch: Partial<Omit<LocalTicketRow, 'id' | 'projectId' | 'externalId' | 'createdAt'>>,
+  allowDraftReplacement = false,
 ) {
+  if (allowDraftReplacement && ticket.status === 'DRAFT') return
   const updatesLock = 'lockedGitHookPolicy' in patch || 'lockedGitHookPolicySource' in patch
   if (!updatesLock || ticket.startedAt === null || patch.startedAt === null) return
 
@@ -670,6 +658,7 @@ export function lockTicketStartConfiguration(
   if (lockedCouncilMembers.length === 0) {
     throw new Error('Locked council members are required.')
   }
+  const replaceExisting = context.localTicket.status === 'DRAFT'
 
   const lockedCouncilMembersRaw = JSON.stringify(lockedCouncilMembers)
   const lockedCouncilMemberVariantsRaw = input.lockedCouncilMemberVariants
@@ -680,28 +669,34 @@ export function lockTicketStartConfiguration(
     lockedMainImplementerVariant: input.lockedMainImplementerVariant ?? null,
     lockedCouncilMembers: lockedCouncilMembersRaw,
     lockedCouncilMemberVariants: lockedCouncilMemberVariantsRaw,
-  })
+  }, replaceExisting)
   assertLockedConfigurationMutable(context.localTicket, {
     lockedManualQaEnabled: input.lockedManualQaEnabled ?? false,
     lockedManualQaSource: input.lockedManualQaSource ?? 'profile',
-  }, LOCKED_MANUAL_QA_FIELDS, 'Manual QA')
+  }, LOCKED_MANUAL_QA_FIELDS, 'Manual QA', replaceExisting)
   assertLockedConfigurationMutable(context.localTicket, {
     lockedAiQuestionsEnabled: input.lockedAiQuestionsEnabled ?? false,
     lockedAiQuestionsSource: input.lockedAiQuestionsSource ?? 'profile',
     lockedAiQuestionWindow: input.lockedAiQuestionWindow ?? AI_QUESTION_WINDOW_DEFAULT_MS,
     lockedAiQuestionWindowSource: input.lockedAiQuestionWindowSource ?? 'profile',
-  }, LOCKED_AI_QUESTION_FIELDS, 'AI question')
+  }, LOCKED_AI_QUESTION_FIELDS, 'AI question', replaceExisting)
   assertLockedGitHookConfigurationMutable(context.localTicket, {
     lockedGitHookPolicy: input.lockedGitHookPolicy ?? DEFAULT_GIT_HOOK_POLICY,
     lockedGitHookPolicySource: input.lockedGitHookPolicySource ?? 'profile',
-  })
+  }, replaceExisting)
 
-  const startedAt = context.localTicket.startedAt ?? input.startedAt
+  const existingMainImplementer = normalizeModelId(context.localTicket.lockedMainImplementer)
+  const existingCouncilMembers = parseLockedCouncilMembers(context.localTicket.lockedCouncilMembers)
+  const sameModelSelection = existingMainImplementer === lockedMainImplementer
+    && councilMembersEqualOrdered(existingCouncilMembers, lockedCouncilMembers)
+  const startedAt = replaceExisting && sameModelSelection && context.localTicket.startedAt
+    ? context.localTicket.startedAt
+    : input.startedAt
   const meta = prepareTicketModelSelectionLock(context.projectRoot, context.externalId, {
     startedAt,
     lockedMainImplementer,
     lockedCouncilMembers,
-  })
+  }, replaceExisting)
 
   const updated = context.projectDb.transaction((tx) => {
     tx.update(tickets)
@@ -738,8 +733,8 @@ export function lockTicketStartConfiguration(
     return updatedRow
   })
 
-  // The DB is authoritative. A crash after this commit can be repaired from
-  // the DRAFT row on the next start; metadata must never lock models first.
+  // The DB is authoritative. A crash after this commit can be replaced on the
+  // next start while the ticket is still DRAFT.
   writeTicketMeta(context.projectRoot, context.externalId, meta)
   return toPublicTicket(context.projectId, updated)
 }
@@ -748,63 +743,50 @@ export function rollbackTicketStartConfiguration(ticketRef: string): PublicTicke
   const context = getTicketContext(ticketRef)
   if (!context || context.localTicket.status !== 'DRAFT') return undefined
 
-  const previousMeta = readTicketMetaForMutation(context.projectRoot, context.externalId)
-  let metadataMayHaveChanged = false
-  const updated = (() => {
-    try {
-      return context.projectDb.transaction((tx) => {
-        const current = tx.select().from(tickets).where(eq(tickets.id, context.localTicketId)).get()
-        if (!current || current.status !== 'DRAFT') return undefined
+  const updated = context.projectDb.transaction((tx) => {
+    const current = tx.select().from(tickets).where(eq(tickets.id, context.localTicketId)).get()
+    if (!current || current.status !== 'DRAFT') return undefined
 
-        metadataMayHaveChanged = true
-        clearTicketModelSelectionLock(context.projectRoot, context.externalId)
-        tx.update(tickets)
-          .set({
-            status: 'DRAFT',
-            xstateSnapshot: null,
-            errorMessage: null,
-            branchName: null,
-            startedAt: null,
-            lockedMainImplementer: null,
-            lockedMainImplementerVariant: null,
-            lockedCouncilMembers: null,
-            lockedCouncilMemberVariants: null,
-            lockedInterviewQuestions: null,
-            lockedCoverageFollowUpBudgetPercent: null,
-            lockedMaxCoveragePasses: null,
-            lockedMaxPrdCoveragePasses: null,
-            lockedMaxBeadsCoveragePasses: null,
-            lockedStructuredRetryCount: null,
-            lockedManualQaEnabled: null,
-            lockedManualQaSource: null,
-            lockedAiQuestionsEnabled: null,
-            lockedAiQuestionsSource: null,
-            lockedAiQuestionWindow: null,
-            lockedAiQuestionWindowSource: null,
-            lockedGitHookPolicy: null,
-            lockedGitHookPolicySource: null,
-            updatedAt: new Date().toISOString(),
-          })
-          .where(and(eq(tickets.id, context.localTicketId), eq(tickets.status, 'DRAFT')))
-          .run()
-
-        const restored = tx.select().from(tickets).where(eq(tickets.id, context.localTicketId)).get()
-        if (!restored || restored.status !== 'DRAFT') {
-          throw new Error(`Ticket ${ticketRef} is not in DRAFT status during start rollback`)
-        }
-        return restored
+    tx.update(tickets)
+      .set({
+        status: 'DRAFT',
+        xstateSnapshot: null,
+        errorMessage: null,
+        branchName: null,
+        startedAt: null,
+        lockedMainImplementer: null,
+        lockedMainImplementerVariant: null,
+        lockedCouncilMembers: null,
+        lockedCouncilMemberVariants: null,
+        lockedInterviewQuestions: null,
+        lockedCoverageFollowUpBudgetPercent: null,
+        lockedMaxCoveragePasses: null,
+        lockedMaxPrdCoveragePasses: null,
+        lockedMaxBeadsCoveragePasses: null,
+        lockedStructuredRetryCount: null,
+        lockedManualQaEnabled: null,
+        lockedManualQaSource: null,
+        lockedAiQuestionsEnabled: null,
+        lockedAiQuestionsSource: null,
+        lockedAiQuestionWindow: null,
+        lockedAiQuestionWindowSource: null,
+        lockedGitHookPolicy: null,
+        lockedGitHookPolicySource: null,
+        updatedAt: new Date().toISOString(),
       })
-    } catch (error) {
-      if (metadataMayHaveChanged) {
-        restoreTicketMetaAfterFailure(context.projectRoot, context.externalId, previousMeta, error)
-      }
-      throw error
+      .where(and(eq(tickets.id, context.localTicketId), eq(tickets.status, 'DRAFT')))
+      .run()
+
+    const restored = tx.select().from(tickets).where(eq(tickets.id, context.localTicketId)).get()
+    if (!restored || restored.status !== 'DRAFT') {
+      throw new Error(`Ticket ${ticketRef} is not in DRAFT status during start rollback`)
     }
-  })()
-  if (!updated) {
-    if (metadataMayHaveChanged) writeTicketMeta(context.projectRoot, context.externalId, previousMeta)
-    return undefined
-  }
+    return restored
+  })
+  if (!updated) return undefined
+
+  // A file write after commit cannot leave SQLite locked when metadata storage fails.
+  clearTicketModelSelectionLock(context.projectRoot, context.externalId)
 
   const publicTicket = toPublicTicket(context.projectId, updated)
   syncTicketRuntimeProjection(publicTicket)

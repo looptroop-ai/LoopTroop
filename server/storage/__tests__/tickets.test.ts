@@ -1,5 +1,5 @@
 import { afterAll, beforeEach, describe, expect, it, vi } from 'vitest'
-import { existsSync, mkdirSync, renameSync, rmSync, symlinkSync, writeFileSync } from 'node:fs'
+import { existsSync, mkdirSync, readFileSync, renameSync, rmSync, symlinkSync, writeFileSync } from 'node:fs'
 import { join } from 'node:path'
 import { initializeDatabase } from '../../db/init'
 import { sqlite } from '../../db/index'
@@ -179,21 +179,6 @@ describe('ticket start configuration locking', () => {
     expect(repeatedLock?.startedAt).toBe(startedAt)
     expect(readTicketMeta(repoDir, ticket.externalId).startedAt).toBe(startedAt)
 
-    expect(() => lockTicketStartConfiguration(ticket.id, {
-      branchName: ticket.externalId,
-      startedAt,
-      lockedMainImplementer,
-      lockedCouncilMembers,
-      lockedInterviewQuestions: 50,
-      lockedCoverageFollowUpBudgetPercent: 20,
-      lockedMaxCoveragePasses: 2,
-      lockedMaxPrdCoveragePasses: 5,
-      lockedMaxBeadsCoveragePasses: 5,
-      lockedStructuredRetryCount: 3,
-      lockedManualQaEnabled: true,
-      lockedManualQaSource: 'ticket',
-    })).toThrow(/Manual QA configuration is immutable after start/i)
-
     expect(() => patchTicket(ticket.id, {
       lockedMainImplementer: 'anthropic/claude-sonnet-4',
     })).toThrow(/immutable after start/i)
@@ -283,18 +268,11 @@ describe('ticket start configuration locking', () => {
     })
   })
 
-  it('keeps ticket reads available and can lock a ticket after metadata corruption', () => {
+  it('replaces a provisional DRAFT lock when a retry changes start settings', () => {
     const repoDir = lockRepoManager.createRepo()
-    const project = attachProject({ folderPath: repoDir, name: 'LoopTroop', shortname: 'CORRUPT' })
-    const ticket = createTicket({ projectId: project.id, title: 'Recover corrupt metadata' })
-    const metadataPath = join(getTicketPaths(ticket.id)!.ticketDir, 'meta', 'ticket.meta.json')
-    writeFileSync(metadataPath, '{bad')
-
-    expect(getTicketByRef(ticket.id)?.id).toBe(ticket.id)
-    expect(listTickets(project.id).map(({ id }) => id)).toContain(ticket.id)
-
-    writeFileSync(metadataPath, '{bad')
-    const locked = lockTicketStartConfiguration(ticket.id, {
+    const project = attachProject({ folderPath: repoDir, name: 'LoopTroop', shortname: 'DRAFTRETRY' })
+    const ticket = createTicket({ projectId: project.id, title: 'Retry provisional configuration' })
+    const initial = {
       branchName: ticket.externalId,
       startedAt: '2026-09-28T10:00:00.000Z',
       lockedMainImplementer: 'openai/gpt-5-codex',
@@ -305,13 +283,63 @@ describe('ticket start configuration locking', () => {
       lockedMaxPrdCoveragePasses: 5,
       lockedMaxBeadsCoveragePasses: 5,
       lockedStructuredRetryCount: 3,
-    })
+    }
+    lockTicketStartConfiguration(ticket.id, initial)
 
-    expect(locked?.lockedMainImplementer).toBe('openai/gpt-5-codex')
+    const retry = {
+      ...initial,
+      startedAt: '2026-09-28T11:00:00.000Z',
+      lockedMainImplementer: 'anthropic/claude-sonnet-4',
+      lockedCouncilMembers: ['anthropic/claude-sonnet-4', 'openai/gpt-5-mini'],
+      lockedManualQaEnabled: true,
+      lockedManualQaSource: 'ticket' as const,
+    }
+    expect(lockTicketStartConfiguration(ticket.id, retry)).toMatchObject({
+      status: 'DRAFT',
+      startedAt: retry.startedAt,
+      lockedMainImplementer: retry.lockedMainImplementer,
+      lockedCouncilMembers: retry.lockedCouncilMembers,
+      lockedManualQaEnabled: true,
+    })
     expect(readTicketMeta(repoDir, ticket.externalId)).toMatchObject({
+      startedAt: retry.startedAt,
+      lockedMainImplementer: retry.lockedMainImplementer,
+      lockedCouncilMembers: retry.lockedCouncilMembers,
+    })
+  })
+
+  it('keeps ticket reads available and preserves corrupt metadata when locking is refused', () => {
+    const repoDir = lockRepoManager.createRepo()
+    const project = attachProject({ folderPath: repoDir, name: 'LoopTroop', shortname: 'CORRUPT' })
+    const ticket = createTicket({ projectId: project.id, title: 'Recover corrupt metadata' })
+    const metadataPath = join(getTicketPaths(ticket.id)!.ticketDir, 'meta', 'ticket.meta.json')
+    writeFileSync(metadataPath, '{bad')
+
+    expect(getTicketByRef(ticket.id)?.id).toBe(ticket.id)
+    expect(listTickets(project.id).map(({ id }) => id)).toContain(ticket.id)
+
+    writeFileSync(metadataPath, '{bad')
+    expect(() => lockTicketStartConfiguration(ticket.id, {
+      branchName: ticket.externalId,
+      startedAt: '2026-09-28T10:00:00.000Z',
       lockedMainImplementer: 'openai/gpt-5-codex',
       lockedCouncilMembers: ['openai/gpt-5-codex', 'openai/gpt-5-mini'],
+      lockedInterviewQuestions: 50,
+      lockedCoverageFollowUpBudgetPercent: 20,
+      lockedMaxCoveragePasses: 2,
+      lockedMaxPrdCoveragePasses: 5,
+      lockedMaxBeadsCoveragePasses: 5,
+      lockedStructuredRetryCount: 3,
+    })).toThrow(SyntaxError)
+
+    expect(getTicketByRef(ticket.id)).toMatchObject({
+      status: 'DRAFT',
+      branchName: null,
+      startedAt: null,
+      lockedMainImplementer: null,
+      lockedCouncilMembers: [],
     })
+    expect(readFileSync(metadataPath, 'utf8')).toBe('{bad')
   })
 
   it('does not replace ticket metadata when reading it for a lock fails', () => {
@@ -345,7 +373,7 @@ describe('ticket start configuration locking', () => {
     expect(existsSync(metadataPath)).toBe(true)
   })
 
-  it('leaves the database model lock intact when clearing its metadata fails', () => {
+  it('clears the database lock before a metadata-clear failure and can retry', () => {
     const repoDir = lockRepoManager.createRepo()
     const project = attachProject({ folderPath: repoDir, name: 'LoopTroop', shortname: 'ROLLBACK' })
     const ticket = createTicket({ projectId: project.id, title: 'Retry start rollback' })
@@ -369,10 +397,10 @@ describe('ticket start configuration locking', () => {
     expect(() => rollbackTicketStartConfiguration(ticket.id)).toThrow('Metadata volume is temporarily unavailable')
     expect(getTicketByRef(ticket.id)).toMatchObject({
       status: 'DRAFT',
-      branchName: input.branchName,
-      startedAt: input.startedAt,
-      lockedMainImplementer: input.lockedMainImplementer,
-      lockedCouncilMembers: input.lockedCouncilMembers,
+      branchName: null,
+      startedAt: null,
+      lockedMainImplementer: null,
+      lockedCouncilMembers: [],
     })
     expect(readTicketMeta(repoDir, ticket.externalId)).toMatchObject({
       startedAt: input.startedAt,
@@ -390,7 +418,7 @@ describe('ticket start configuration locking', () => {
     expect(readTicketMeta(repoDir, ticket.externalId)).not.toHaveProperty('lockedMainImplementer')
   })
 
-  it('restores metadata when the database reset fails after the metadata lock was cleared', () => {
+  it('leaves metadata untouched when the database reset fails', () => {
     const repoDir = lockRepoManager.createRepo()
     const project = attachProject({ folderPath: repoDir, name: 'LoopTroop', shortname: 'ROLLBACKRACE' })
     const ticket = createTicket({ projectId: project.id, title: 'Protect rollback consistency' })

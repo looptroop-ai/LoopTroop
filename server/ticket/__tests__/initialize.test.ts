@@ -1,7 +1,7 @@
 import { afterAll, beforeEach, describe, expect, it, vi } from 'vitest'
 import { existsSync, mkdirSync, readdirSync, readFileSync, symlinkSync, writeFileSync } from 'node:fs'
 import { spawnSync } from 'node:child_process'
-import { resolve } from 'node:path'
+import { join, resolve } from 'node:path'
 import { appendLogEvent } from '../../log/executionLog'
 import { getCommandLogContext, withCommandLoggingAsync } from '../../log/commandLogger'
 import { attachProject } from '../../storage/projects'
@@ -126,6 +126,27 @@ describe('initializeTicket', () => {
     expect(persistedLog).not.toContain('INIT_WORKTREE_CREATE_FAILED')
     expect(persistedLog).not.toContain('Ticket worktree is invalid after initialization')
     expect(unsafeAppendCount).toBe(0)
+  })
+
+  it('rejects malformed metadata before creating a worktree or branch', async () => {
+    const repoDir = repoManager.createRepo()
+    const project = attachProject({
+      folderPath: repoDir,
+      name: TEST.projectName,
+      shortname: TEST.shortname,
+    })
+    const ticket = createTicket({ projectId: project.id, title: 'Keep corrupt metadata' })
+    const paths = getTicketPaths(ticket.id)
+    if (!paths) throw new Error('Expected ticket paths before initialization')
+    const metadataPath = join(paths.ticketDir, 'meta', 'ticket.meta.json')
+    writeFileSync(metadataPath, '{bad')
+
+    await expect(initializeTicket({ projectFolder: repoDir, externalId: ticket.externalId }))
+      .rejects.toThrow(SyntaxError)
+
+    expect(existsSync(join(paths.worktreePath, '.git'))).toBe(false)
+    expect(git(repoDir, ['branch', '--list', ticket.externalId])).toBe('')
+    expect(readFileSync(metadataPath, 'utf8')).toBe('{bad')
   })
 
   it('blocks worktree creation when the project already tracks LoopTroop runtime paths', async () => {

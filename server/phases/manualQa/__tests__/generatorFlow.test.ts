@@ -59,7 +59,10 @@ vi.mock('../../../workflow/phases/helpers', () => ({
   resolveAiResponseRuntimeSettings: mocks.resolveAiResponseRuntimeSettings,
   resolveStructuredRetryRuntimeSettings: mocks.resolveStructuredRetryRuntimeSettings,
 }))
-vi.mock('../../../workflow/runOpenCodePrompt', () => ({ runOpenCodePrompt: mocks.runOpenCodePrompt }))
+vi.mock('../../../workflow/runOpenCodePrompt', async (importOriginal) => ({
+  ...await importOriginal<typeof import('../../../workflow/runOpenCodePrompt')>(),
+  runOpenCodePrompt: mocks.runOpenCodePrompt,
+}))
 vi.mock('../../../phases/beads/beadsFile', () => ({ readBeadsFile: mocks.readBeadsFile }))
 vi.mock('../../../workflow/artifactCompanions', () => ({
   persistUiArtifactCompanionArtifact: mocks.persistUiArtifactCompanionArtifact,

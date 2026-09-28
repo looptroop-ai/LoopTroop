@@ -25,6 +25,7 @@ import {
   schedulePendingCancellationCleanupRetry,
 } from '../../workflow/runner'
 import { TicketInitializationError, initializeTicket } from '../../ticket/initialize'
+import { readTicketMetaForMutation, TicketMetadataFormatError } from '../../ticket/metadata'
 import { withCommandLoggingAsync } from '../../log/commandLogger'
 import { validateModelSelection } from '../../opencode/modelValidation'
 import {
@@ -119,6 +120,14 @@ export async function handleStartTicket(c: Context) {
   if (ticketContext.localTicket.status !== 'DRAFT') {
     return c.json({ error: 'Ticket can only be started from DRAFT status' }, 409)
   }
+  try {
+    readTicketMetaForMutation(ticketContext.projectRoot, ticketContext.externalId)
+  } catch (error) {
+    if (error instanceof TicketMetadataFormatError) {
+      return c.json({ error: error.message }, 409)
+    }
+    return c.json({ error: 'Unable to read ticket metadata.' }, 500)
+  }
 
   if (startingTickets.has(ticketId)) {
     return c.json({ error: 'Ticket start is already in progress' }, 429)
@@ -205,6 +214,12 @@ export async function handleStartTicket(c: Context) {
       },
     )
   } catch (err) {
+    if (err instanceof TicketMetadataFormatError) {
+      emitRoutePhaseLog(ticketId, startPhase, 'error', `✗ Workspace Init: ${err.message}`, {
+        error: err.message,
+      })
+      return c.json({ error: err.message }, 409)
+    }
     const initErr = err instanceof TicketInitializationError
       ? err
       : new TicketInitializationError('INIT_UNKNOWN', getErrorMessage(err))
@@ -353,6 +368,9 @@ export async function handleStartTicket(c: Context) {
       error: details,
       rollback: 'preserved_worktree',
     })
+    if (err instanceof TicketMetadataFormatError) {
+      return c.json({ error: details }, 409)
+    }
     return c.json({
       error: 'Failed to persist ticket start configuration',
       details,

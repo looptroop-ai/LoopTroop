@@ -19,6 +19,13 @@ interface TicketModelSelectionLock {
   lockedCouncilMembers: string[]
 }
 
+export class TicketMetadataFormatError extends SyntaxError {
+  constructor() {
+    super('Ticket metadata must contain a JSON object before the ticket can start.')
+    this.name = 'TicketMetadataFormatError'
+  }
+}
+
 function normalizeModelId(value: string | null | undefined): string | null {
   const trimmed = typeof value === 'string' ? value.trim() : ''
   return trimmed.length > 0 ? trimmed : null
@@ -57,8 +64,18 @@ export function getTicketMetaPath(projectRoot: string, externalId: string): stri
 }
 
 function parseTicketMeta(path: string): TicketMetaRecord {
-  const parsed = JSON.parse(readFileNoFollowSync(path)) as TicketMetaRecord
-  return parsed && typeof parsed === 'object' && !Array.isArray(parsed) ? parsed : {}
+  const contents = readFileNoFollowSync(path)
+  let parsed: unknown
+  try {
+    parsed = JSON.parse(contents)
+  } catch (error) {
+    if (error instanceof SyntaxError) throw new TicketMetadataFormatError()
+    throw error
+  }
+  if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) {
+    throw new TicketMetadataFormatError()
+  }
+  return parsed as TicketMetaRecord
 }
 
 export function readTicketMeta(projectRoot: string, externalId: string): TicketMetaRecord {
@@ -76,7 +93,7 @@ export function readTicketMetaForMutation(projectRoot: string, externalId: strin
   try {
     return parseTicketMeta(path)
   } catch (error) {
-    if ((error as NodeJS.ErrnoException).code === 'ENOENT' || error instanceof SyntaxError) return {}
+    if ((error as NodeJS.ErrnoException).code === 'ENOENT') return {}
     throw error
   }
 }
@@ -99,6 +116,7 @@ export function prepareTicketModelSelectionLock(
   projectRoot: string,
   externalId: string,
   lock: TicketModelSelectionLock,
+  replaceExisting = false,
 ): TicketMetaRecord {
   const lockedMainImplementer = normalizeModelId(lock.lockedMainImplementer)
   const lockedCouncilMembers = normalizeModelList(lock.lockedCouncilMembers)
@@ -114,18 +132,20 @@ export function prepareTicketModelSelectionLock(
   const currentMainImplementer = normalizeModelId(current.lockedMainImplementer)
   const currentCouncilMembers = normalizeModelList(current.lockedCouncilMembers)
 
-  if (currentMainImplementer && currentMainImplementer !== lockedMainImplementer) {
+  if (!replaceExisting && currentMainImplementer && currentMainImplementer !== lockedMainImplementer) {
     throw new Error(`Ticket model configuration is immutable after start: ${externalId}`)
   }
-  if (currentCouncilMembers.length > 0 && !councilMembersEqualOrdered(currentCouncilMembers, lockedCouncilMembers)) {
+  if (!replaceExisting && currentCouncilMembers.length > 0 && !councilMembersEqualOrdered(currentCouncilMembers, lockedCouncilMembers)) {
     throw new Error(`Ticket model configuration is immutable after start: ${externalId}`)
   }
 
   return {
     ...current,
-    startedAt: current.startedAt ?? lock.startedAt,
-    lockedMainImplementer: currentMainImplementer ?? lockedMainImplementer,
-    lockedCouncilMembers: currentCouncilMembers.length > 0 ? currentCouncilMembers : lockedCouncilMembers,
+    startedAt: replaceExisting ? lock.startedAt : current.startedAt ?? lock.startedAt,
+    lockedMainImplementer: replaceExisting ? lockedMainImplementer : currentMainImplementer ?? lockedMainImplementer,
+    lockedCouncilMembers: replaceExisting || currentCouncilMembers.length === 0
+      ? lockedCouncilMembers
+      : currentCouncilMembers,
   }
 }
 
@@ -154,7 +174,12 @@ export function resolveTicketBaseBranch(projectRoot: string, externalId: string)
     if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error
   }
   if (ticketDirExists) {
-    updateTicketMeta(projectRoot, externalId, { baseBranch: detected })
+    try {
+      updateTicketMeta(projectRoot, externalId, { baseBranch: detected })
+    } catch (error) {
+      // Keep read-only ticket projections available when stored metadata is malformed.
+      if (!(error instanceof TicketMetadataFormatError)) throw error
+    }
   }
   return detected
 }

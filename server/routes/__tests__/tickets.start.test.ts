@@ -68,6 +68,7 @@ vi.mock('../../ticket/initialize', async (importOriginal) => {
 
 import { validateModelSelection } from '../../opencode/modelValidation'
 import { TicketInitializationError, initializeTicket } from '../../ticket/initialize'
+import { TicketMetadataFormatError } from '../../ticket/metadata'
 import { ticketRouter } from '../tickets'
 
 const repoManager = createFixtureRepoManager({
@@ -197,19 +198,67 @@ describe('ticketRouter POST /tickets/:id/start', () => {
     broadcaster.clearTicket(ticket.id)
   })
 
-  it('starts a ticket when its metadata file is malformed', async () => {
+  it('rejects malformed ticket metadata before initializing the workspace', async () => {
     const { app, ticket } = setupStartTicketApp()
     const metadataPath = join(getTicketPaths(ticket.id)!.ticketDir, 'meta', 'ticket.meta.json')
     writeFileSync(metadataPath, '{bad')
 
     const response = await app.request(`/api/tickets/${ticket.id}/start`, { method: 'POST' })
 
-    expect(response.status).toBe(200)
-    expect(getTicketByRef(ticket.id)).toMatchObject({ status: 'SCANNING_RELEVANT_FILES' })
-    expect(JSON.parse(readFileSync(metadataPath, 'utf8'))).toMatchObject({
-      baseBranch: expect.any(String),
-      lockedMainImplementer: 'openai/codex-mini-latest',
+    expect(response.status).toBe(409)
+    expect(await response.json()).toEqual({
+      error: 'Ticket metadata must contain a JSON object before the ticket can start.',
     })
+    expect(initializeTicket).not.toHaveBeenCalled()
+    expect(getTicketByRef(ticket.id)).toMatchObject({ status: 'DRAFT' })
+    expect(readFileSync(metadataPath, 'utf8')).toBe('{bad')
+    broadcaster.clearTicket(ticket.id)
+  })
+
+  it('keeps a ticket in DRAFT if metadata becomes malformed during initialization', async () => {
+    const { app, ticket } = setupStartTicketApp()
+    const metadataPath = join(getTicketPaths(ticket.id)!.ticketDir, 'meta', 'ticket.meta.json')
+    vi.mocked(initializeTicket).mockImplementationOnce(async () => {
+      writeFileSync(metadataPath, '{bad')
+      throw new TicketMetadataFormatError()
+    })
+
+    const response = await app.request(`/api/tickets/${ticket.id}/start`, { method: 'POST' })
+
+    expect(response.status).toBe(409)
+    expect(await response.json()).toEqual({
+      error: 'Ticket metadata must contain a JSON object before the ticket can start.',
+    })
+    expect(sendTicketEvent).not.toHaveBeenCalled()
+    expect(getTicketByRef(ticket.id)).toMatchObject({ status: 'DRAFT' })
+    expect(readFileSync(metadataPath, 'utf8')).toBe('{bad')
+    broadcaster.clearTicket(ticket.id)
+  })
+
+  it('keeps a ticket in DRAFT if metadata becomes malformed after workspace initialization', async () => {
+    const { app, ticket } = setupStartTicketApp()
+    const paths = getTicketPaths(ticket.id)!
+    const metadataPath = join(paths.ticketDir, 'meta', 'ticket.meta.json')
+    vi.mocked(initializeTicket).mockImplementationOnce(async () => {
+      writeFileSync(metadataPath, '{bad')
+      return {
+        worktreePath: paths.worktreePath,
+        ticketDir: paths.ticketDir,
+        branchName: ticket.externalId,
+        baseBranch: 'main',
+        reused: false,
+      }
+    })
+
+    const response = await app.request(`/api/tickets/${ticket.id}/start`, { method: 'POST' })
+
+    expect(response.status).toBe(409)
+    expect(await response.json()).toEqual({
+      error: 'Ticket metadata must contain a JSON object before the ticket can start.',
+    })
+    expect(sendTicketEvent).not.toHaveBeenCalled()
+    expect(getTicketByRef(ticket.id)).toMatchObject({ status: 'DRAFT' })
+    expect(readFileSync(metadataPath, 'utf8')).toBe('{bad')
     broadcaster.clearTicket(ticket.id)
   })
 

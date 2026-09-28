@@ -7,23 +7,29 @@ import { makeAtomicTmpPath } from '../atomicWrite'
 import * as fileReader from '../readFile'
 import { makeTempDir, removeTempDir } from '../../test/tempDir'
 
-function readCallRange(buffer: ArrayBufferView, args: unknown[]) {
-  const positional = typeof args[0] === 'number'
+const readCallRange = (buffer: ArrayBufferView, args: unknown[]) => {
+  if (typeof args[0] === 'number') {
+    return {
+      offset: Number(args[0]),
+      length: Number(args[1]),
+      position: args[2] as number | bigint | null,
+    }
+  }
   const options = args[0] as { offset?: number; length?: number; position?: number | bigint | null } | undefined
   return {
-    offset: positional ? Number(args[0]) : options?.offset ?? 0,
-    length: positional ? Number(args[1]) : options?.length ?? buffer.byteLength,
-    position: positional ? args[2] as number | bigint | null : options?.position ?? null,
+    offset: options?.offset ?? 0,
+    length: options?.length ?? buffer.byteLength,
+    position: options?.position ?? null,
   }
 }
 
-function copySparseRead(
+const copySparseRead = (
   buffer: ArrayBufferView,
   offset: number,
   length: number,
   position: number,
   segments: Array<{ position: number; content: Buffer }>,
-) {
+) => {
   const bytes = Buffer.from(buffer.buffer, buffer.byteOffset, buffer.byteLength)
   const readEnd = position + length
   bytes.fill(0, offset, offset + length)

@@ -11,7 +11,7 @@ Unreleased changes appear first and represent commits that have not yet been inc
 
 ### Summary
 - Kanban pagination arrows follow the visible page, and Escape cancels an uncommitted page-number edit.
-- Failed ticket starts that stay in DRAFT clear provisional model locks and can be retried with updated settings; malformed metadata no longer blocks ticket reads or starts.
+- Failed ticket starts that stay in DRAFT clear provisional model locks and can be retried with updated settings; corrupt metadata stays readable and cannot be overwritten by a start.
 - V8 coverage now exceeds 90% line coverage across all four Vitest projects; the required Verify job enforces 90% lines and 80% branches while Codecov reports separately.
 - Security reports now have a private disclosure policy with scoped Safe Harbor terms.
 - New stable releases attach a verified provenance bundle as `release-provenance.sigstore.json`.
@@ -275,9 +275,9 @@ Unreleased changes appear first and represent commits that have not yet been inc
 - The unused `server/db/drizzle.config.ts` alias. Every database script already selects its app or project config explicitly, so keeping a third config that Drizzle Kit cannot discover from the repository root only advertised a command that no longer worked.
 
 ### Fixed
+- Starting a ticket rejects malformed metadata before workspace initialization, while ticket reads remain available and the corrupt file is preserved. DRAFT rows remain retryable after interrupted lock writes, and rollback clears SQLite before metadata.
 - Escape cancels a Kanban page-number edit without letting the blur handler commit its stale value; pagination arrows follow the visible page while the input is edited.
 - Failed START dispatches clear provisional model locks and stop an actor whose persisted ticket remains in DRAFT; an actor is preserved once the ticket's stored workflow state has advanced.
-- A malformed ticket metadata file no longer blocks reads or starts. Failed metadata writes during start roll back provisional model locks.
 - Process-control guard tests use a known live process for mismatched-token checks, avoiding intermittent Windows process-start lookup failures.
 - CI selects Bun's available x64 package when verifying a new Bun version, so the update no longer fails because the package has no separate baseline variant.
 - CI runs pnpm 12's locked Windows executable directly, so the global install check works while dependency lifecycle scripts stay disabled.

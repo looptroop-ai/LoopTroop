@@ -13,7 +13,10 @@ import {
   readManualQaEvents,
 } from '../storage'
 
-vi.mock('../../../workflow/runOpenCodePrompt', () => ({ runOpenCodePrompt: vi.fn() }))
+vi.mock('../../../workflow/runOpenCodePrompt', async (importOriginal) => ({
+  ...await importOriginal<typeof import('../../../workflow/runOpenCodePrompt')>(),
+  runOpenCodePrompt: vi.fn(),
+}))
 
 const repoManager = createTestRepoManager('manual-qa-generator-flow-')
 

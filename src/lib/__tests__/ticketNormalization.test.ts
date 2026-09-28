@@ -26,6 +26,47 @@ describe('normalizeTicketResponse', () => {
     expect(() => normalizeTicketResponse([])).toThrow('was not an object')
     expect(() => normalizeTicketResponse({ status: 'CODING' })).toThrow('carried no id')
     expect(() => normalizeTicketResponse({ id: '1:X-1' })).toThrow('carried no status')
+    expect(() => normalizeTicketResponse({ id: '1:X-1', status: '' })).toThrow('carried no status')
+  })
+
+  it('keeps valid runtime ETA shapes and drops malformed ones', () => {
+    for (const basis of ['history', 'current', 'default'] as const) {
+      const eta = { bestMs: 1, likelyMs: 2, worstMs: 3, basis }
+      expect(normalizeTicketResponse(wirePayload({ runtime: { eta } })).runtime.eta).toEqual(eta)
+    }
+
+    const invalidEtas = [
+      null,
+      'not-an-eta',
+      [],
+      { bestMs: Number.NaN, likelyMs: 2, worstMs: 3, basis: 'history' },
+      { bestMs: 1, likelyMs: Number.POSITIVE_INFINITY, worstMs: 3, basis: 'history' },
+      { bestMs: 1, likelyMs: 2, worstMs: '3', basis: 'history' },
+      { bestMs: 1, likelyMs: 2, worstMs: 3, basis: 'planned' },
+    ]
+
+    for (const eta of invalidEtas) {
+      expect(normalizeTicketResponse(wirePayload({ runtime: { eta } })).runtime.eta).toBeNull()
+    }
+  })
+
+  it('preserves known final-test and PR states and falls back for unknown values', () => {
+    for (const finalTestStatus of ['passed', 'failed'] as const) {
+      expect(normalizeTicketResponse(wirePayload({ runtime: { finalTestStatus } })).runtime.finalTestStatus)
+        .toBe(finalTestStatus)
+    }
+    for (const prState of ['draft', 'open', 'merged', 'closed'] as const) {
+      expect(normalizeTicketResponse(wirePayload({ runtime: { prState } })).runtime.prState).toBe(prState)
+    }
+
+    const ticket = normalizeTicketResponse(wirePayload({
+      status: 'CODING',
+      runtime: { finalTestStatus: 'running', prState: 'queued' },
+    }))
+
+    expect(ticket.status).toBe('CODING')
+    expect(ticket.runtime.finalTestStatus).toBe('pending')
+    expect(ticket.runtime.prState).toBeNull()
   })
 
   it('fills a missing runtime from the ticket\'s own bead columns', () => {
@@ -111,6 +152,68 @@ describe('normalizeTicketResponse', () => {
     }))
 
     expect(ticket.runtime.beads?.[0]?.qaOrigin).toBeNull()
+  })
+
+  it('filters malformed nested Manual QA source items, evidence, and links', () => {
+    const ticket = normalizeTicketResponse(wirePayload({
+      runtime: {
+        beads: [{
+          id: 'bead-1',
+          title: 'x',
+          status: 'pending',
+          iteration: 0,
+          qaOrigin: {
+            sourceTicketId: '1:QA-9',
+            sourceTicketExternalId: 9,
+            actionId: 42,
+            version: 2,
+            imageDelivery: 'unknown',
+            sourceItems: [
+              null,
+              { itemId: '' },
+              {
+                itemId: 'item-1',
+                lineageId: 7,
+                behavior: 42,
+                observation: null,
+                expectedResult: ['not text'],
+                evidence: [
+                  null,
+                  {},
+                  { id: 7 },
+                  { id: 'evidence-1', originalName: 9, mediaType: null, size: '4', sha256: 3, relativePath: {} },
+                ],
+                links: [null, {}, { id: 7, url: 'https://example.test' }, { id: 'link-1', url: 'https://example.test', label: 9 }],
+              },
+            ],
+          },
+        }],
+      },
+    }))
+
+    expect(ticket.runtime.beads?.[0]?.qaOrigin).toEqual({
+      schemaVersion: 1,
+      actionId: '',
+      sourceTicketId: '1:QA-9',
+      sourceTicketExternalId: '1:QA-9',
+      version: 2,
+      sourceItems: [{
+        itemId: 'item-1',
+        lineageId: 'item-1',
+        behavior: '',
+        observation: '',
+        expectedResult: '',
+        evidence: [{
+          id: 'evidence-1',
+          originalName: 'evidence-1',
+          mediaType: 'application/octet-stream',
+          size: 0,
+          sha256: '',
+          relativePath: '',
+        }],
+        links: [{ id: 'link-1', url: 'https://example.test' }],
+      }],
+    })
   })
 
   it('keeps only actions this client can dispatch', () => {

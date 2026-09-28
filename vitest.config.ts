@@ -143,6 +143,16 @@ const serverIntegrationTests = [
   'server/council/__tests__/sessionOwnershipStop.test.ts',
   'server/__tests__/startupArtifacts.test.ts',
   'server/git/__tests__/runCommandFallback.test.ts',
+  // These run real Git/process fixtures and must not block or mutate a shared worker.
+  'server/git/__tests__/hookDiscovery.test.ts',
+  'server/git/__tests__/ignoreMode.test.ts',
+  'server/git/__tests__/runCommand.test.ts',
+  'server/git/__tests__/worktreeRemoval.test.ts',
+  'server/io/__tests__/fileLock.test.ts',
+  'server/lib/__tests__/executablePath.test.ts',
+  'server/phases/execution/__tests__/opencodeStepsConfig.test.ts',
+  'server/phases/finalTest/__tests__/fileEffectsAudit.test.ts',
+  'server/storage/__tests__/paths.test.ts',
   // Real Git/database work and module mocks require isolated workers.
   'server/cli/__tests__/logsCommand.test.ts',
   'server/cli/__tests__/commandsCoverage.test.ts',
@@ -178,6 +188,7 @@ const serverIntegrationTests = [
   'server/phases/manualQa/__tests__/focusedDiff.test.ts',
   'server/phases/manualQa/__tests__/checkpoint.test.ts',
   'server/phases/manualQa/__tests__/generatorFlow.test.ts',
+  'server/phases/manualQa/__tests__/generatorFlow.integration.test.ts',
   'server/phases/manualQa/__tests__/fixBeadsGeneration.test.ts',
   'server/routes/__tests__/*.test.ts',
   'server/storage/__tests__/ticketRuntimeProjection.test.ts',
@@ -236,6 +247,18 @@ const serverIntegrationTests = [
   'tests/startCommandAbandon.test.ts',
   'tests/openCommand.test.ts',
   'tests/cleanCommand.test.ts',
+  // These tests launch local CLI, Node, Git, or shell processes.
+  'tests/channelInputs.test.ts',
+  'tests/cliLauncher.test.ts',
+  'tests/devChildEnvironment.test.ts',
+  'tests/docsInstallCatalog.test.ts',
+  'tests/line-endings.test.ts',
+  'tests/nodeFloor.test.ts',
+  'tests/packagingProbes.test.ts',
+  'tests/processControl.test.ts',
+  'tests/releaseAssets.test.ts',
+  'tests/releaseProvenanceWorkflow.test.ts',
+  'tests/releaseScriptArgs.test.ts',
   // Reads the real database module, which siblings replace with a mock.
   'tests/doctorCommand.test.ts',
   // Spawns the channel push driver as a child process against a stubbed `gh`.

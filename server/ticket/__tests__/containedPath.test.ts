@@ -30,10 +30,12 @@ describe('ticket file containment', () => {
       .toBe(join(ticketDir, 'beads', 'feature', 'topic', '.beads', 'issues.jsonl'))
   })
 
-  it.each(['{bad', 'null', '[]', '42', '"text"'])('treats malformed or non-object metadata %s as an empty record', (content) => {
+  it.each(['{bad', 'null', '[]', '42', '"text"'])('keeps malformed or non-object metadata %s readable without making it writable', (content) => {
     writeProjectTicketFile(project, 'ABC-1', 'meta/ticket.meta.json', content)
 
-    expect(readTicketMetaForMutation(project, 'ABC-1')).toEqual({})
+    expect(readTicketMeta(project, 'ABC-1')).toEqual({})
+    expect(() => readTicketMetaForMutation(project, 'ABC-1')).toThrow(SyntaxError)
+    expect(readFileSync(join(ticketDir, 'meta', 'ticket.meta.json'), 'utf8')).toBe(content)
   })
 
   it('propagates metadata I/O errors instead of treating them as an empty record', () => {

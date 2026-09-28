@@ -109,15 +109,29 @@ describe('KanbanColumn', () => {
     const previousPage = pageButtons[0]!
     const nextPage = pageButtons[1]!
 
+    pageInput.focus()
     fireEvent.change(pageInput, { target: { value: '2' } })
     expect(previousPage).toBeDisabled()
     expect(fireEvent.mouseDown(nextPage)).toBe(false)
+    expect(pageInput).toHaveFocus()
     expect(pageInput).toHaveValue('2')
     fireEvent.click(nextPage)
 
     expect(pageInput).toHaveValue('2')
     expect(screen.getByLabelText(ticketCardLabel('TEST-16'))).toBeInTheDocument()
     expect(screen.queryByLabelText(ticketCardLabel('TEST-31'))).not.toBeInTheDocument()
+
+    fireEvent.change(pageInput, { target: { value: '3' } })
+    expect(previousPage).toBeEnabled()
+    expect(nextPage).toBeEnabled()
+    expect(fireEvent.mouseDown(previousPage)).toBe(false)
+    expect(pageInput).toHaveFocus()
+    expect(pageInput).toHaveValue('3')
+    fireEvent.click(previousPage)
+
+    expect(pageInput).toHaveValue('1')
+    expect(screen.getByLabelText(ticketCardLabel('TEST-31'))).toBeInTheDocument()
+    expect(screen.queryByLabelText(ticketCardLabel('TEST-16'))).not.toBeInTheDocument()
   })
 
   it('keeps arrow bounds tied to the visible page when the typed page is out of range', () => {

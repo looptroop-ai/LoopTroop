@@ -1,4 +1,4 @@
-import { beforeEach, describe, expect, it, vi } from 'vitest'
+import { afterAll, beforeEach, describe, expect, it, vi } from 'vitest'
 import { Hono } from 'hono'
 import { serve } from '@hono/node-server'
 import { request } from 'node:http'
@@ -18,7 +18,6 @@ import {
   patchTicket,
 } from '../../storage/tickets'
 import { createFixtureRepoManager } from '../../test/fixtureRepo'
-import { initializeTicket } from '../../ticket/initialize'
 import { ticketRouter } from '../tickets'
 import { listSkipEvents } from '../../workflow/skipReceipts'
 import { hasClosedUnmergedReport, hasVerifiedMergeReport, syncWaitingPullRequestTicket } from '../../workflow/mergeCompletion'
@@ -118,14 +117,9 @@ async function createWaitingPrReviewTicket() {
     description: 'Verify the PR review routes.',
   })
 
-  const init = await initializeTicket({
-    projectFolder: repoDir,
-    externalId: ticket.externalId,
-  })
-
   patchTicket(ticket.id, {
     status: 'WAITING_PR_REVIEW',
-    branchName: init.branchName,
+    branchName: ticket.externalId,
   })
 
   insertPhaseArtifact(ticket.id, {
@@ -133,14 +127,14 @@ async function createWaitingPrReviewTicket() {
     artifactType: 'integration_report',
     content: JSON.stringify({
       status: 'passed',
-      baseBranch: init.baseBranch,
+      baseBranch: ticket.runtime.baseBranch,
       candidateCommitSha: 'abc123def456',
       preSquashHead: 'old789hash',
       mergeBase: 'mergebase123',
     }),
   })
 
-  return { repoDir, ticket, init }
+  return { ticket }
 }
 
 function insertClosedUnmergedCheckpoint(
@@ -171,6 +165,8 @@ function insertClosedUnmergedCheckpoint(
 }
 
 describe('ticketRouter PR review routes', () => {
+  afterAll(() => repoManager.cleanup())
+
   beforeEach(() => {
     clearProjectDatabaseCache()
     initializeDatabase()

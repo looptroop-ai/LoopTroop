@@ -11,7 +11,7 @@ Unreleased changes appear first and represent commits that have not yet been inc
 
 ### Summary
 - Interrupted hook recovery is now regression-tested against tracked worktree edits, preserving both the edit and recovery marker without running hooks.
-- The test suite keeps the same pagination and append guarantees with less platform-dependent filesystem work.
+- Regression fixtures now seed log history and PR review state directly, avoiding redundant writes and worktree setup while preserving append, merge, and recovery checks.
 - Kanban pagination arrows follow the visible page, and Escape cancels an uncommitted page-number edit.
 - Failed ticket starts that stay in DRAFT clear provisional model locks and can be retried with updated settings; corrupt metadata stays readable and cannot be overwritten by a start.
 - V8 coverage now exceeds 90% line coverage across all four Vitest projects; the required Verify job enforces 90% lines and 80% branches while Codecov reports separately.
@@ -53,6 +53,7 @@ Unreleased changes appear first and represent commits that have not yet been inc
 
 ### Performance
 - The log pagination test seeds its 300-row JSONL history with one write and keeps append persistence covered separately, removing its per-test timeout override.
+- PR review route tests no longer initialize a ticket worktree per case, and now remove their fixture repositories after the suite; the focused file runtime fell from 46.8s to 23.7s.
 
 ### Added
 - Hook recovery tests now cover the tracked-worktree-edit refusal path, including preservation of the changed file and marker and proof that no hook runs.

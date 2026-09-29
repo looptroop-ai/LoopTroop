@@ -579,8 +579,14 @@ describe('installer core', () => {
       return dir
     }
 
+    let defaultArchive: { name: string, body: Buffer, sha256: string } | null = null
+
+    beforeAll(() => {
+      defaultArchive = canInstallBinary ? buildArchive('0.5.9', stubProgram('0.5.9')) : null
+    })
+
     beforeEach(() => {
-      archive = canInstallBinary ? buildArchive('0.5.9', stubProgram('0.5.9')) : null
+      archive = defaultArchive
       omitArchiveDigest = false
     })
 
@@ -1189,10 +1195,16 @@ describe('installer core', () => {
  * chance to object.
  */
 describe('bounded transfers', () => {
+  beforeEach(() => vi.useFakeTimers())
+  afterEach(() => vi.useRealTimers())
+
   it('abandons a transfer that stops making progress', async () => {
     const guard = stallGuard(20, 'The download')
 
-    await new Promise((done) => setTimeout(done, 60))
+    await vi.advanceTimersByTimeAsync(19)
+    expect(guard.signal.aborted).toBe(false)
+
+    await vi.advanceTimersByTimeAsync(1)
 
     expect(guard.signal.aborted).toBe(true)
     expect(guard.reason()).toContain('made no progress')
@@ -1203,7 +1215,7 @@ describe('bounded transfers', () => {
     const guard = stallGuard(60, 'The download')
 
     for (let tick = 0; tick < 5; tick += 1) {
-      await new Promise((done) => setTimeout(done, 20))
+      await vi.advanceTimersByTimeAsync(20)
       guard.touch()
     }
 
@@ -1810,20 +1822,24 @@ describe('installer wrappers', () => {
       const run = runWrapper(['--tarball', '/nonexistent/looptroop.tgz'], {
         node: [
           '#!/bin/sh',
-          "trap 'echo CHILD-GOT-TERM; exit 3' TERM",
-          'echo CHILD-RUNNING',
-          // Backgrounded and waited on, because a trap in `sh` cannot interrupt
-          // a foreground command either.
           'sleep 30 &',
-          'wait',
+          'sleeper=$!',
+          // The trap owns the sleeper too: exiting the shell without reaping
+          // it leaves the inherited output pipes open until `sleep` finishes.
+          "trap 'kill \"$sleeper\" 2>/dev/null; wait \"$sleeper\" 2>/dev/null; echo CHILD-GOT-TERM; exit 3' TERM",
+          // Readiness means the trap and its child PID are both in place.
+          'echo CHILD-READY',
+          'wait "$sleeper"',
           '',
         ].join('\n'),
       })
-      await waitForOutput(run, 'CHILD-RUNNING')
+      await waitForOutput(run, 'CHILD-READY')
 
+      const started = Date.now()
       run.child.kill('SIGTERM')
       const settled = await run.settled
 
+      expect(Date.now() - started).toBeLessThan(10_000)
       expect(run.output()).toContain('CHILD-GOT-TERM')
       expectExit({ ...settled, outputText: run.output }, 3)
       expect(leftovers(run.temp)).toEqual([])

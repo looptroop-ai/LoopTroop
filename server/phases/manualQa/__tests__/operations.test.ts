@@ -4,10 +4,12 @@ import { spawnSync } from 'node:child_process'
 import { dirname, resolve } from 'node:path'
 import { afterAll, beforeEach, describe, expect, it, vi } from 'vitest'
 import { createInitializedTestTicket, createTestRepoManager, resetTestDb } from '../../../test/integration'
+import { attachProject } from '../../../storage/projects'
 import {
   getLatestPhaseArtifact,
   getTicketByRef,
   getTicketPaths,
+  createTicket,
   insertPhaseArtifact,
   listTickets,
   listPhaseAttempts,
@@ -35,8 +37,10 @@ import type { ManualQaChecklist, ManualQaDraft, ManualQaSummary } from '../types
 import { readJsonl, writeJsonl } from '../../../io/jsonl'
 import type { Bead } from '../../beads/types'
 import { listSkipEvents } from '../../../workflow/skipReceipts'
+import { updateTicketMeta } from '../../../ticket/metadata'
 
 const repoManager = createTestRepoManager('manual-qa-operations-')
+const operationRepoDir = repoManager.createRepo()
 
 function checklistItem(id: string, required = true): ManualQaChecklist['items'][number] {
   return {
@@ -57,32 +61,27 @@ function checklistItem(id: string, required = true): ManualQaChecklist['items'][
   }
 }
 
-async function prepareFixture(items = [checklistItem('item-one')]) {
-  const setup = await createInitializedTestTicket(repoManager, { title: 'Manual QA submission' })
-  const clean = captureFinalTestDirtyFiles(setup.paths.worktreePath)
-  insertPhaseArtifact(setup.ticket.id, {
-    phase: 'RUNNING_FINAL_TEST',
-    artifactType: 'final_test_file_effects_audit',
-    content: JSON.stringify(buildFinalTestFileEffectsAudit({
-      baselineDirtyFiles: clean,
-      dirtyFilesAfterTesting: clean,
-      declaredEffects: [],
-    })),
-  })
-  await prepareManualQaCheckpoint(setup.ticket.id, 1)
-  persistManualQaChecklist(setup.paths.ticketDir, {
+function finishFixture(
+  setup: {
+    ticket: ReturnType<typeof createTicket>
+    paths: NonNullable<ReturnType<typeof getTicketPaths>>
+  },
+  items: ManualQaChecklist['items'],
+) {
+  const { ticket, paths } = setup
+  persistManualQaChecklist(paths.ticketDir, {
     schemaVersion: 1,
     artifact: 'manual_qa_checklist',
-    ticketId: setup.ticket.externalId,
+    ticketId: ticket.externalId,
     version: 1,
     generatedAt: new Date().toISOString(),
     summary: 'Verify the implemented behavior.',
     notApplicablePrdRefs: [],
     items,
   })
-  const checklistHash = getManualQaChecklistHash(setup.paths.ticketDir, 1)!
-  patchTicket(setup.ticket.id, { status: 'WAITING_MANUAL_QA' })
-  insertPhaseArtifact(setup.ticket.id, {
+  const checklistHash = getManualQaChecklistHash(paths.ticketDir, 1)!
+  patchTicket(ticket.id, { status: 'WAITING_MANUAL_QA' })
+  insertPhaseArtifact(ticket.id, {
     phase: 'UI_STATE',
     artifactType: 'ui_state:manual_qa_draft:v1',
     content: JSON.stringify({ revision: 1, data: {} }),
@@ -90,7 +89,7 @@ async function prepareFixture(items = [checklistItem('item-one')]) {
   const draft: ManualQaDraft = {
     schemaVersion: 1,
     artifact: 'manual_qa_draft',
-    ticketId: setup.ticket.externalId,
+    ticketId: ticket.externalId,
     version: 1,
     checklistHash,
     draftRevision: 1,
@@ -112,6 +111,45 @@ async function prepareFixture(items = [checklistItem('item-one')]) {
     draft,
     guard: { actionId: 'submit-one', operationType: 'submit' as const, expectedChecklistHash: checklistHash, expectedDraftRevision: 1 },
   }
+}
+
+function prepareFixture(items = [checklistItem('item-one')]) {
+  // Most cases target operation persistence and validation; dedicated cases below retain real worktree drift coverage.
+  const project = attachProject({
+    folderPath: operationRepoDir,
+    name: 'Manual QA operations',
+    shortname: 'MQA',
+    ignoreMode: 'skip',
+  })
+  const ticket = createTicket({ projectId: project.id, title: 'Manual QA submission' })
+  updateTicketMeta(operationRepoDir, ticket.externalId, { baseBranch: 'main' })
+  patchTicket(ticket.id, { branchName: DISPLAY_ONLY_MOCK_BRANCH_NAME })
+  const paths = getTicketPaths(ticket.id)
+  if (!paths) throw new Error('Expected ticket paths for the display-only fixture')
+  return finishFixture({ ticket, paths }, items)
+}
+
+async function prepareWorkspaceFixture(items = [checklistItem('item-one')]) {
+  const setup = await createInitializedTestTicket(repoManager, { title: 'Manual QA submission' })
+  const clean = captureFinalTestDirtyFiles(setup.paths.worktreePath)
+  insertPhaseArtifact(setup.ticket.id, {
+    phase: 'RUNNING_FINAL_TEST',
+    artifactType: 'final_test_file_effects_audit',
+    content: JSON.stringify(buildFinalTestFileEffectsAudit({
+      baselineDirtyFiles: clean,
+      dirtyFilesAfterTesting: clean,
+      declaredEffects: [],
+    })),
+  })
+  await prepareManualQaCheckpoint(setup.ticket.id, 1)
+  const fixture = finishFixture(setup, items)
+  expect(fixture.ticket.branchName).not.toBe(DISPLAY_ONLY_MOCK_BRANCH_NAME)
+  expect(detectManualQaWorkspaceDrift(fixture.ticket.id, 1)).toMatchObject({
+    drifted: false,
+    headChanged: false,
+    files: [],
+  })
+  return fixture
 }
 
 function byteStream(value: Uint8Array) {
@@ -170,14 +208,17 @@ function setImprovementDraft(setup: Awaited<ReturnType<typeof prepareFixture>>, 
 }
 
 describe('Manual QA submission recovery and integrity', () => {
-  beforeEach(() => resetTestDb())
+  beforeEach(() => {
+    resetTestDb()
+    rmSync(resolve(operationRepoDir, '.looptroop'), { recursive: true, force: true })
+  })
   afterAll(() => {
     resetTestDb()
     repoManager.cleanup()
   })
 
   it('keeps NUL-delimited tracked paths opaque during drift detection', async () => {
-    const setup = await prepareFixture()
+    const setup = await prepareWorkspaceFixture()
     // Backslashes and control characters are valid POSIX filename bytes but
     // backslashes are separators on Windows. Exercise the opaque-path
     // contract with the strongest legal fixture on each filesystem.
@@ -197,7 +238,6 @@ describe('Manual QA submission recovery and integrity', () => {
 
   it('treats display-only mock tickets as drift-free without reading a workspace baseline', async () => {
     const setup = await prepareFixture()
-    patchTicket(setup.ticket.id, { branchName: DISPLAY_ONLY_MOCK_BRANCH_NAME })
 
     expect(detectManualQaWorkspaceDrift(setup.ticket.id, 1)).toEqual({
       drifted: false,
@@ -209,7 +249,7 @@ describe('Manual QA submission recovery and integrity', () => {
   })
 
   it('persists top-level summary artifacts and re-dispatches a durable untransitioned outcome', async () => {
-    const setup = await prepareFixture()
+    const setup = await prepareWorkspaceFixture()
     const firstEvent = vi.fn()
     const summary = await submitManualQa({
       ticketId: setup.ticket.id,
@@ -465,7 +505,7 @@ describe('Manual QA submission recovery and integrity', () => {
   })
 
   it('rejects a conflicting operation before writing canonical submission results', async () => {
-    const setup = await prepareFixture()
+    const setup = await prepareWorkspaceFixture()
     const paths = getManualQaStoragePaths(setup.paths.ticketDir, 1)
     reserveManualQaSubmissionOperation({
       ticketDir: setup.paths.ticketDir,
@@ -566,7 +606,7 @@ describe('Manual QA submission recovery and integrity', () => {
   })
 
   it('rejects action IDs whose database input differs from the retry', async () => {
-    const setup = await prepareFixture()
+    const setup = await prepareWorkspaceFixture()
     const context = getTicketContext(setup.ticket.id)!
     context.projectDb.insert(manualQaOperations).values({
       ticketId: context.localTicketId,
@@ -588,7 +628,7 @@ describe('Manual QA submission recovery and integrity', () => {
   })
 
   it('rejects canonical results that conflict with a reserved submission retry', async () => {
-    const setup = await prepareFixture()
+    const setup = await prepareWorkspaceFixture()
     const paths = getManualQaStoragePaths(setup.paths.ticketDir, 1)
     reserveManualQaSubmissionOperation({
       ticketDir: setup.paths.ticketDir,
@@ -681,7 +721,7 @@ describe('Manual QA submission recovery and integrity', () => {
   })
 
   it.each(['submit', 'skip'] as const)('rejects %s when the verified workspace has drifted', async (action) => {
-    const setup = await prepareFixture()
+    const setup = await prepareWorkspaceFixture()
     const untrackedPath = 'manual-qa-review-drift.txt'
     writeFileSync(resolve(setup.paths.worktreePath, untrackedPath), 'Changed after the QA checkpoint.\n')
     const sendEvent = vi.fn()
@@ -705,7 +745,7 @@ describe('Manual QA submission recovery and integrity', () => {
   })
 
   it('reuses the immutable canonical results snapshot on a partial-operation retry', async () => {
-    const setup = await prepareFixture()
+    const setup = await prepareWorkspaceFixture()
     const paths = getManualQaStoragePaths(setup.paths.ticketDir, 1)
     reserveManualQaSubmissionOperation({
       ticketDir: setup.paths.ticketDir,
@@ -984,7 +1024,7 @@ describe('Manual QA submission recovery and integrity', () => {
   })
 
   it('resumes a failed round without duplicating fresh phase attempts', async () => {
-    const setup = await prepareFixture()
+    const setup = await prepareWorkspaceFixture()
     setup.draft.results[0] = {
       ...setup.draft.results[0]!,
       outcome: 'fail',
@@ -1043,7 +1083,7 @@ describe('Manual QA submission recovery and integrity', () => {
   })
 
   it('recovers a created-fixes summary when its local operation journal is missing', async () => {
-    const setup = await prepareFixture()
+    const setup = await prepareWorkspaceFixture()
     setup.draft.results[0] = {
       ...setup.draft.results[0]!,
       outcome: 'fail',
@@ -1174,7 +1214,7 @@ describe('Manual QA submission recovery and integrity', () => {
     item.expectedResult = 'The chosen value remains selected after reload'
     item.prdRefs = [{ ref: 'EPIC-1/STORY-1/AC-1', coverage: 'full' }]
     item.beadRefs = ['source-bead']
-    const setup = await prepareFixture([item])
+    const setup = await prepareWorkspaceFixture([item])
     writeFileSync(resolve(setup.paths.ticketDir, 'prd.yaml'), [
       'epics:',
       '  - id: EPIC-1',

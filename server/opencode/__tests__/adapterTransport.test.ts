@@ -6,6 +6,23 @@ import { OpenCodeV1Transport, type OpenCodeV1Client } from '../v1Transport'
 import { V2OpenCodeTransport } from '../v2Transport'
 import { OpenCodePromptReceiptUnavailableError } from '../transport'
 
+const realSetTimeout = globalThis.setTimeout.bind(globalThis)
+const realClearTimeout = globalThis.clearTimeout.bind(globalThis)
+
+async function settleWithin<T>(promise: Promise<T>, description: string, timeoutMs = 1_000): Promise<T> {
+  let timeout: ReturnType<typeof setTimeout> | undefined
+  try {
+    return await Promise.race([
+      promise,
+      new Promise<never>((_, reject) => {
+        timeout = realSetTimeout(() => reject(new Error(`Timed out waiting for ${description}`)), timeoutMs)
+      }),
+    ])
+  } finally {
+    if (timeout !== undefined) realClearTimeout(timeout)
+  }
+}
+
 function message(id: string, content: string): Message {
   return {
     id,
@@ -478,13 +495,18 @@ describe('OpenCode adapter transport orchestration', () => {
 
   it('preserves caller cancellation when an aborted v2 POST has no verifiable receipt', async () => {
     const controller = new AbortController()
+    let markDispatchStarted: (() => void) | undefined
+    const dispatchStarted = new Promise<void>(resolve => { markDispatchStarted = resolve })
     const { transport } = createV2Transport({
-      dispatchPrompt: vi.fn((_request: OpenCodePromptRequest, signal?: AbortSignal) => new Promise<PromptDispatch>((_resolve, reject) => {
-        signal?.addEventListener('abort', () => reject(new OpenCodePromptReceiptUnavailableError('session-1')), { once: true })
-      })),
+      dispatchPrompt: vi.fn((_request: OpenCodePromptRequest, signal?: AbortSignal) => {
+        markDispatchStarted?.()
+        return new Promise<PromptDispatch>((_resolve, reject) => {
+          signal?.addEventListener('abort', () => reject(new OpenCodePromptReceiptUnavailableError('session-1')), { once: true })
+        })
+      }),
     })
     const prompt = createAdapter(transport).promptSession('session-1', [{ type: 'text', content: 'prompt' }], controller.signal)
-    while (!vi.mocked(transport.dispatchPrompt).mock.calls.length) await new Promise(resolve => setTimeout(resolve, 0))
+    await dispatchStarted
     controller.abort()
 
     await expect(prompt).rejects.toMatchObject({
@@ -498,6 +520,8 @@ describe('OpenCode adapter transport orchestration', () => {
   it('opens v2 event coverage before changing permissions and consumes its cursor-only update', async () => {
     const { transport, source, markDispatched } = createV2Transport()
     const order: string[] = []
+    let markPermissionCursorObserved: (() => void) | undefined
+    const permissionCursorObserved = new Promise<void>(resolve => { markPermissionCursorObserved = resolve })
     vi.mocked(transport.readSessionLog).mockImplementation(async (_sessionId, after) => {
       order.push(after === undefined ? 'cursor' : `history:${after}`)
       return { events: [], cursor: after ?? 50, coverageComplete: true }
@@ -505,12 +529,25 @@ describe('OpenCode adapter transport orchestration', () => {
     vi.mocked(transport.waitForIdle).mockImplementation(async () => { order.push('idle') })
     vi.mocked(transport.subscribeToEvents).mockImplementation(async (_sessionId, _directory, signal, _safetyMs, afterCursor) => {
       order.push(`subscribe:${afterCursor}`)
-      return { events: source.events(signal), cursor: afterCursor, coverageComplete: true }
+      const events = source.events(signal)
+      return {
+        events: (async function* () {
+          for await (const envelope of events) {
+            yield envelope
+            if (envelope.cursor === 51) markPermissionCursorObserved?.()
+          }
+        })(),
+        cursor: afterCursor,
+        coverageComplete: true,
+      }
     })
     vi.mocked(transport.updateSession).mockImplementation(async () => {
+      if (!order.some(entry => entry.startsWith('subscribe:'))) {
+        throw new Error('Session update started before the v2 event subscription')
+      }
       order.push('permissions')
       source.push({ cursor: 51 })
-      await new Promise(resolve => setTimeout(resolve, 10))
+      await settleWithin(permissionCursorObserved, 'permission cursor event')
     })
     vi.mocked(transport.dispatchPrompt).mockImplementation(async () => {
       order.push('dispatch')
@@ -1126,7 +1163,25 @@ describe('OpenCode adapter transport orchestration', () => {
   })
 
   it('does not treat idle status or stale streamed output as completion of an accepted prompt', async () => {
+    vi.useFakeTimers()
+    let markStaleOutputObserved: (() => void) | undefined
+    const staleOutputObserved = new Promise<void>(resolve => { markStaleOutputObserved = resolve })
     const { transport, source } = createV2Transport({
+      subscribeToEvents: vi.fn(async (_sessionId, _directory, signal, _safetyMs, afterCursor) => {
+        const events = source.events(signal)
+        return {
+          events: (async function* () {
+            for await (const envelope of events) {
+              yield envelope
+              if (envelope.event?.type === 'text' && envelope.event.messageId === 'old-assistant') {
+                markStaleOutputObserved?.()
+              }
+            }
+          })(),
+          cursor: afterCursor ?? 50,
+          coverageComplete: true,
+        }
+      }),
       dispatchPrompt: vi.fn(async () => {
         source.push(
           { event: { type: 'session_status', sessionId: 'session-1', status: 'idle' } },
@@ -1136,14 +1191,24 @@ describe('OpenCode adapter transport orchestration', () => {
       }),
     })
     const controller = new AbortController()
-    const prompt = createAdapter(transport).promptSession('session-1', [{ type: 'text', content: 'new prompt' }], controller.signal)
-    let settled = false
-    void prompt.finally(() => { settled = true }).catch(() => undefined)
-    await new Promise(resolve => setTimeout(resolve, 20))
-    expect(settled).toBe(false)
-    controller.abort()
-    await expect(prompt).rejects.toMatchObject({ name: 'AbortError' })
-    expect(transport.dispatchPrompt).toHaveBeenCalledTimes(1)
+    try {
+      const prompt = createAdapter(transport).promptSession('session-1', [{ type: 'text', content: 'new prompt' }], controller.signal)
+      let settled = false
+      void prompt.finally(() => { settled = true }).catch(() => undefined)
+      await settleWithin(staleOutputObserved, 'stale streamed output')
+      source.fail(new Error('SSE disconnected after stale output'))
+      await vi.advanceTimersByTimeAsync(1_000)
+      expect(transport.readSessionLog).toHaveBeenCalledWith('session-1', 50, expect.any(AbortSignal))
+      expect(settled).toBe(false)
+      controller.abort()
+      await vi.advanceTimersByTimeAsync(200)
+      await expect(prompt).rejects.toMatchObject({ name: 'AbortError' })
+      expect(transport.dispatchPrompt).toHaveBeenCalledTimes(1)
+    } finally {
+      controller.abort()
+      vi.clearAllTimers()
+      vi.useRealTimers()
+    }
   })
 
   it('recovers an accepted prompt from the durable log without resubmitting it', async () => {
@@ -1180,9 +1245,26 @@ describe('OpenCode adapter transport orchestration', () => {
     let reads = 0
     let markSnapshotStarted: (() => void) | undefined
     let releaseSnapshot: (() => void) | undefined
+    let markExternalInboxObserved: (() => void) | undefined
     const snapshotStarted = new Promise<void>(resolve => { markSnapshotStarted = resolve })
     const delayedSnapshot = new Promise<void>(resolve => { releaseSnapshot = resolve })
+    const externalInboxObserved = new Promise<void>(resolve => { markExternalInboxObserved = resolve })
     const { transport, source } = createV2Transport({
+      subscribeToEvents: vi.fn(async (_sessionId, _directory, signal, _safetyMs, afterCursor) => {
+        const events = source.events(signal)
+        return {
+          events: (async function* () {
+            for await (const envelope of events) {
+              yield envelope
+              if (envelope.event?.type === 'inbox_enqueued' && envelope.event.inboxID === 'inbox-external') {
+                markExternalInboxObserved?.()
+              }
+            }
+          })(),
+          cursor: afterCursor ?? 50,
+          coverageComplete: true,
+        }
+      }),
       getSessionMessages: vi.fn(async () => {
         reads += 1
         if (reads === 1) return [message('old-assistant', 'stale answer')]
@@ -1204,13 +1286,20 @@ describe('OpenCode adapter transport orchestration', () => {
       }),
     })
 
-    const prompt = createAdapter(transport).promptSession('session-1', [{ type: 'text', content: 'prompt' }])
-    await snapshotStarted
-    source.push(inboxEvent('inbox_enqueued', 'inbox-external', 55))
-    await new Promise(resolve => setTimeout(resolve, 0))
-    releaseSnapshot?.()
+    const controller = new AbortController()
+    const prompt = createAdapter(transport).promptSession('session-1', [{ type: 'text', content: 'prompt' }], controller.signal)
+    void prompt.catch(() => undefined)
+    try {
+      await settleWithin(snapshotStarted, 'terminal snapshot load')
+      source.push(inboxEvent('inbox_enqueued', 'inbox-external', 55))
+      await settleWithin(externalInboxObserved, 'external inbox event')
+      releaseSnapshot?.()
 
-    await expect(prompt).rejects.toThrow('Another prompt entered the OpenCode session during result attribution')
+      await expect(prompt).rejects.toThrow('Another prompt entered the OpenCode session during result attribution')
+    } finally {
+      releaseSnapshot?.()
+      controller.abort()
+    }
   })
 
   it('rejects a terminal snapshot when a newer user turn follows its assistant message', async () => {

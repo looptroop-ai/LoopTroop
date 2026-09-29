@@ -162,8 +162,20 @@ export function parseRefinementChanges(
         continue
       }
 
-      const before = rawBefore === null ? null : normalizeRefinementChangeItem(rawBefore)
-      const after = rawAfter === null ? null : normalizeRefinementChangeItem(rawAfter)
+      const before = rawBefore === undefined
+        ? undefined
+        : rawBefore === null ? null : normalizeRefinementChangeItem(rawBefore)
+      const after = rawAfter === undefined
+        ? undefined
+        : rawAfter === null ? null : normalizeRefinementChangeItem(rawAfter)
+      if (rawBefore !== undefined && rawBefore !== null && before === null) {
+        repairWarnings.push(`Skipped refinement change at index ${index} with invalid before item.`)
+        continue
+      }
+      if (rawAfter !== undefined && rawAfter !== null && after === null) {
+        repairWarnings.push(`Skipped refinement change at index ${index} with invalid after item.`)
+        continue
+      }
 
       const rawInspiration = getValueByAliases(entry, ['inspiration', 'inspired_by'])
       const inspiration = rawInspiration === null || rawInspiration === undefined

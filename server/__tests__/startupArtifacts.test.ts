@@ -22,6 +22,7 @@ const startupFixture = vi.hoisted(() => ({
     failureKind?: 'authentication' | 'unsupported_protocol' | 'network' | 'model_discovery'
     error?: string
   } | null,
+  healthError: null as Error | null,
 }))
 
 vi.mock('../storage/tickets', async (importOriginal) => {
@@ -45,7 +46,12 @@ vi.mock('../db/indexes', async (importOriginal) => ({
   createIndexes: startupFixture.createIndexes,
 }))
 vi.mock('../opencode/factory', () => ({
-  getOpenCodeAdapter: () => ({ checkHealth: async () => startupFixture.health ?? { available: true } }),
+  getOpenCodeAdapter: () => ({
+    checkHealth: async () => {
+      if (startupFixture.healthError) throw startupFixture.healthError
+      return startupFixture.health ?? { available: true }
+    },
+  }),
 }))
 vi.mock('../storage/projects', async (importOriginal) => ({
   ...await importOriginal<typeof import('../storage/projects')>(),
@@ -78,6 +84,7 @@ afterEach(() => {
   startupFixture.hydrateAllTickets.mockClear()
   startupFixture.rebuildTicketRuntimeProjections.mockClear()
   startupFixture.health = null
+  startupFixture.healthError = null
   vi.restoreAllMocks()
   for (const root of roots.splice(0)) removeTempDir(root)
 })
@@ -215,5 +222,21 @@ describe('startup artifact recovery', () => {
     await startupSequence()
 
     expect(log).toHaveBeenCalledWith('[startup] OpenCode via v2 is reachable (version: 2.0.15).')
+  }, 30_000)
+
+  it('continues startup hydration when the OpenCode health check rejects', async () => {
+    const configDir = makeTempDir('looptroop-startup-opencode-health-rejection-')
+    roots.push(configDir)
+    process.env.LOOPTROOP_CONFIG_DIR = configDir
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => undefined)
+    const log = vi.spyOn(console, 'log').mockImplementation(() => undefined)
+    startupFixture.healthError = new Error('health adapter rejected')
+    const { startupSequence } = await import('../startup')
+
+    await expect(startupSequence()).resolves.toBeUndefined()
+
+    expect(warn).toHaveBeenCalledWith('[startup] OpenCode health check failed: health adapter rejected')
+    expect(startupFixture.hydrateAllTickets).toHaveBeenCalledTimes(1)
+    expect(log).toHaveBeenCalledWith('[startup] Startup complete')
   }, 30_000)
 })

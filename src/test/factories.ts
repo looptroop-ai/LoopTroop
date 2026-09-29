@@ -124,19 +124,6 @@ export function makeTicket(overrides: TicketOverrides = {}): Ticket {
 }
 
 // ---------------------------------------------------------------------------
-// Log entry factory
-// ---------------------------------------------------------------------------
-export function makeLogEntry(overrides: Record<string, unknown> = {}) {
-  return {
-    ts: Date.now(),
-    phase: 'CODING',
-    event: 'test_event',
-    detail: 'Test detail',
-    ...overrides,
-  }
-}
-
-// ---------------------------------------------------------------------------
 // PrdDocument factory
 // ---------------------------------------------------------------------------
 export function makePrdDocument(overrides: Partial<PrdDocument> = {}): PrdDocument {

@@ -401,7 +401,11 @@ export async function executeCommand(
           : (input.spawnProcess === undefined && platform !== 'windows'
               ? readProcessStartToken(child.pid)
               : null)
-        if (childStartToken !== null) {
+        // An injected spawner or identity reader may describe an invented pid,
+        // so only capture the real host process group on the default path.
+        if (childStartToken !== null
+          && input.spawnProcess === undefined
+          && input.readProcessStartToken === undefined) {
           capturedGroup = captureProcessGroup(child.pid, platform, childStartToken)
           if (capturedGroup !== null) {
             groupRefreshHandle = setInterval(() => {

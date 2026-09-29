@@ -6,6 +6,7 @@ import {
   markTicketRendered,
   getTicketQuestionsCollapsedStorageKey,
   getTicketSseLastEventIdStorageKey,
+  __renderedTicketsForTests,
 } from '@/components/ticket/renderedTickets'
 import {
   clearTicketUiStateRevisions,
@@ -16,7 +17,12 @@ import {
 const ticketId = '1:DEL-1'
 const otherTicketId = '1:DEL-2'
 
-afterEach(() => vi.unstubAllGlobals())
+afterEach(() => {
+  vi.unstubAllGlobals()
+  __renderedTicketsForTests.reset()
+  clearTicketUiStateRevisions(ticketId)
+  clearTicketUiStateRevisions(otherTicketId)
+})
 
 /** One entry per query family that keys on a ticket id, as of this change. */
 function seedCache(client: QueryClient) {
@@ -86,7 +92,6 @@ describe('clearTicketCaches module-scope stores', () => {
 
     expect(getTicketUiStateRevision(ticketId, 'approval_prd')).toBe(0)
     expect(getTicketUiStateRevision(otherTicketId, 'approval_prd')).toBe(9)
-    clearTicketUiStateRevisions(otherTicketId)
   })
 
   it('matches an id nested inside an object key part', async () => {

@@ -20,7 +20,7 @@ export function resetTestDb() {
   sqlite.exec('DELETE FROM attached_projects; DELETE FROM profiles;')
 }
 
-export async function createInitializedTestTicket(
+export function createUninitializedTestTicket(
   repoManager: ReturnType<typeof createTestRepoManager>,
   overrides: {
     projectName?: string
@@ -41,13 +41,8 @@ export async function createInitializedTestTicket(
     description: overrides.description ?? 'Test description.',
   })
 
-  await initializeTicket({
-    projectFolder: repoDir,
-    externalId: ticket.externalId,
-  })
-
   const paths = getTicketPaths(ticket.id)
-  if (!paths) throw new Error('Expected ticket paths after initialization')
+  if (!paths) throw new Error('Expected ticket paths after creation')
 
   return {
     ticket,
@@ -55,5 +50,30 @@ export async function createInitializedTestTicket(
     paths,
     repoDir,
     project,
+  }
+}
+
+export async function createInitializedTestTicket(
+  repoManager: ReturnType<typeof createTestRepoManager>,
+  overrides: {
+    projectName?: string
+    shortname?: string
+    title?: string
+    description?: string
+  } = {},
+) {
+  const setup = createUninitializedTestTicket(repoManager, overrides)
+
+  await initializeTicket({
+    projectFolder: setup.repoDir,
+    externalId: setup.ticket.externalId,
+  })
+
+  const paths = getTicketPaths(setup.ticket.id)
+  if (!paths) throw new Error('Expected ticket paths after initialization')
+
+  return {
+    ...setup,
+    paths,
   }
 }

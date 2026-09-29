@@ -1,10 +1,10 @@
 import { afterAll, beforeEach, describe, expect, it, vi } from 'vitest'
 import { chmodSync, existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs'
 import { dirname, join } from 'node:path'
-import { makeBeadsYaml, TEST } from '../../test/factories'
-import { createInitializedTestTicket, createTestRepoManager, resetTestDb } from '../../test/integration'
-import { getLatestPhaseArtifact, upsertLatestPhaseArtifact } from '../../storage/tickets'
-import { updateProject } from '../../storage/projects'
+import { makeBeadsYaml, makeTicketContextFromTicket, TEST } from '../../test/factories'
+import { createInitializedTestTicket as createGitBackedTestTicket, createTestRepoManager, resetTestDb } from '../../test/integration'
+import { createTicket, getLatestPhaseArtifact, getTicketPaths, upsertLatestPhaseArtifact } from '../../storage/tickets'
+import { attachProject, updateProject } from '../../storage/projects'
 import { resolveContainedPath } from '../../lib/containedPath'
 import type {
   ExecutionSetupProfile,
@@ -25,6 +25,11 @@ import { detectHostContext } from '../../lib/hostContext'
 import type { CommandSpec } from '@shared/commandSpec'
 
 const executionSetupWrapperPath = `.ticket/runtime/execution-setup/run${process.platform === 'win32' ? '.cmd' : ''}`
+const executionSetupWrapperArtifact = {
+  path: executionSetupWrapperPath,
+  kind: 'command-wrapper' as const,
+  purpose: 'sources prepared runtime before commands',
+}
 
 const {
   executeExecutionSetupWithRetriesMock,
@@ -76,6 +81,17 @@ vi.mock('../../phases/executionSetup/workspaceInputs', () => ({
 import { handleExecutionSetup } from '../phases/executionSetupPhase'
 
 const repoManager = createTestRepoManager('execution-setup-phase-')
+
+function createExecutionSetupTestTicket(overrides: { title: string }) {
+  const repoDir = repoManager.createRepo()
+  const project = attachProject({ folderPath: repoDir, name: TEST.projectName, shortname: TEST.shortname })
+  const ticket = createTicket({ projectId: project.id, title: overrides.title, description: 'Test description.' })
+  const paths = getTicketPaths(ticket.id)
+  if (!paths) throw new Error('Expected ticket paths after creation')
+  mkdirSync(paths.executionSetupDir, { recursive: true })
+  mkdirSync(dirname(paths.beadsPath), { recursive: true })
+  return { ticket, context: makeTicketContextFromTicket(ticket), paths }
+}
 
 function writeExecutionSetupPlan(
   ticketId: string,
@@ -187,6 +203,7 @@ function readyExecutionSetupProfile(ticketId: string): ExecutionSetupProfile {
 
 function failedToolRequirementWithAttempts(
   attempts: NonNullable<ExecutionSetupProfile['toolRequirements']>[number]['provisioningAttempts'],
+  failureReason = 'tool could not be provisioned',
 ): NonNullable<ExecutionSetupProfile['toolRequirements']>[number] {
   return {
     launcher: 'project-tool',
@@ -195,7 +212,19 @@ function failedToolRequirementWithAttempts(
     missingProbe: 'project-tool --version',
     provisioningAttempts: attempts,
     finalProbe: './.ticket/runtime/execution-setup/run project-tool --version',
-    failureReason: 'tool could not be provisioned',
+    failureReason,
+  }
+}
+
+function notProvisionableToolRequirement(failureReason: string) {
+  return {
+    launcher: 'project-tool',
+    requiredBy: ['project_commands.test_full[0]'],
+    status: 'not_provisionable' as const,
+    missingProbe: 'project-tool --version',
+    provisioningAttempts: [],
+    finalProbe: '',
+    failureReason,
   }
 }
 
@@ -203,9 +232,10 @@ function buildExecutionSetupGeneration(input: {
   profile: ExecutionSetupProfile
   checks?: ExecutionSetupResult['checks']
   summary?: string
+  sessionId?: string
 }) {
   return {
-    session: { id: 'ses-setup-validation' },
+    session: { id: input.sessionId ?? 'ses-setup-validation' },
     output: '<EXECUTION_SETUP_RESULT>{"status":"ready"}</EXECUTION_SETUP_RESULT>',
     result: {
       status: 'ready' as const,
@@ -229,6 +259,15 @@ function buildExecutionSetupGeneration(input: {
       autoRetryCount: 0,
     },
   }
+}
+
+function mockExecutionSetupGeneration(generation: unknown) {
+  executeExecutionSetupWithRetriesMock.mockImplementationOnce(async (...args: unknown[]) => {
+    const callbacks = args[5] as {
+      evaluateGeneration: (entry: { attempt: number; generation: unknown }) => Promise<unknown>
+    }
+    return callbacks.evaluateGeneration({ attempt: 1, generation })
+  })
 }
 
 function nodeProcessCommand(script: string): CommandSpec {
@@ -281,7 +320,7 @@ describe('handleExecutionSetup', () => {
   })
 
   it('stops before setup when OpenCode mock mode is enabled', async () => {
-    const { ticket, context } = await createInitializedTestTicket(repoManager, {
+    const { ticket, context } = createExecutionSetupTestTicket({
       title: 'Execution setup mock mode',
     })
     isMockOpenCodeModeMock.mockReturnValueOnce(true)
@@ -300,10 +339,9 @@ describe('handleExecutionSetup', () => {
     { remainingMs: undefined, ready: true },
     { remainingMs: 0, ready: false },
   ])('honors the execution setup work budget when validating an approved hook ($remainingMs ms remain)', async ({ remainingMs, ready }) => {
-    const { ticket, context, paths } = await createInitializedTestTicket(repoManager, {
+    const { ticket, context, paths } = createExecutionSetupTestTicket({
       title: `Execution setup hook budget ${remainingMs ?? 'unbounded'}`,
     })
-    mkdirSync(paths.executionSetupDir, { recursive: true })
     const markerPath = resolveContainedPath(paths.worktreePath, '.ticket/runtime/execution-setup/hook-ran.txt', { allowMissingParents: true })
     const markerScript = `require('node:fs').writeFileSync(${JSON.stringify(markerPath)}, 'ran')`
     const command = nodeProcessCommand(markerScript)
@@ -360,7 +398,7 @@ describe('handleExecutionSetup', () => {
     { policy: 'validate_advisory' as const, ready: true },
     { policy: 'validate_required' as const, ready: false },
   ])('routes hook failures according to the approved $policy policy', async ({ policy, ready }) => {
-    const { ticket, context } = await createInitializedTestTicket(repoManager, {
+    const { ticket, context } = createExecutionSetupTestTicket({
       title: `Execution setup ${policy} hook failure`,
     })
     updateProject(ticket.projectId, { gitHookPolicy: policy })
@@ -374,18 +412,7 @@ describe('handleExecutionSetup', () => {
       ],
     })
 
-    executeExecutionSetupWithRetriesMock.mockImplementationOnce(async (...args: unknown[]) => {
-      const callbacks = args[5] as {
-        evaluateGeneration: (entry: {
-          attempt: number
-          generation: ReturnType<typeof buildExecutionSetupGeneration>
-        }) => Promise<ExecutionSetupReport>
-      }
-      return await callbacks.evaluateGeneration({
-        attempt: 1,
-        generation: buildExecutionSetupGeneration({ profile: readyExecutionSetupProfile(ticket.externalId) }),
-      })
-    })
+    mockExecutionSetupGeneration(buildExecutionSetupGeneration({ profile: readyExecutionSetupProfile(ticket.externalId) }))
 
     const sendEvent = vi.fn()
     await handleExecutionSetup(
@@ -416,7 +443,7 @@ describe('handleExecutionSetup', () => {
   })
 
   it('requires a repository-level workspace probe when beads define test commands', async () => {
-    const { ticket, context, paths } = await createInitializedTestTicket(repoManager, {
+    const { ticket, context, paths } = createExecutionSetupTestTicket({
       title: 'Execution setup bead test commands need workspace probe',
     })
     writeExecutionSetupPlan(ticket.id, ticket.externalId)
@@ -427,18 +454,7 @@ describe('handleExecutionSetup', () => {
       testCommands: [createShellCommandSpec('npm run test')],
     })}\n`)
 
-    executeExecutionSetupWithRetriesMock.mockImplementationOnce(async (...args: unknown[]) => {
-      const callbacks = args[5] as {
-        evaluateGeneration: (entry: {
-          attempt: number
-          generation: ReturnType<typeof buildExecutionSetupGeneration>
-        }) => Promise<ExecutionSetupReport>
-      }
-      return await callbacks.evaluateGeneration({
-        attempt: 1,
-        generation: buildExecutionSetupGeneration({ profile: readyExecutionSetupProfile(ticket.externalId) }),
-      })
-    })
+    mockExecutionSetupGeneration(buildExecutionSetupGeneration({ profile: readyExecutionSetupProfile(ticket.externalId) }))
 
     const sendEvent = vi.fn()
     await handleExecutionSetup(
@@ -455,7 +471,7 @@ describe('handleExecutionSetup', () => {
   })
 
   it('persists retry notes and reports a terminal tooling blocker', async () => {
-    const { ticket, context } = await createInitializedTestTicket(repoManager, {
+    const { ticket, context } = createExecutionSetupTestTicket({
       title: 'Execution setup terminal tooling blocker',
     })
     writeExecutionSetupPlan(ticket.id, ticket.externalId)
@@ -574,7 +590,7 @@ describe('handleExecutionSetup', () => {
   })
 
   it('reports bootstrap commands that were added beyond the approved setup plan', async () => {
-    const { ticket, context } = await createInitializedTestTicket(repoManager, {
+    const { ticket, context } = createExecutionSetupTestTicket({
       title: 'Execution setup command additions',
     })
     const shell = detectHostContext().preferredShell
@@ -626,7 +642,7 @@ describe('handleExecutionSetup', () => {
   })
 
   it('persists session, stream, prompt, and structured-retry milestones from the setup runner', async () => {
-    const { ticket, context, paths } = await createInitializedTestTicket(repoManager, {
+    const { ticket, context, paths } = await createGitBackedTestTicket(repoManager, {
       title: 'Execution setup OpenCode event logs',
     })
     writeExecutionSetupPlan(ticket.id, ticket.externalId)
@@ -721,7 +737,7 @@ describe('handleExecutionSetup', () => {
   })
 
   it('generates a same-session retry note and forwards its prompt lifecycle logs', async () => {
-    const { ticket, context, paths } = await createInitializedTestTicket(repoManager, {
+    const { ticket, context, paths } = createExecutionSetupTestTicket({
       title: 'Execution setup retry prompt lifecycle',
     })
     writeExecutionSetupPlan(ticket.id, ticket.externalId)
@@ -815,7 +831,7 @@ describe('handleExecutionSetup', () => {
   })
 
   it('runs one numbered manual attempt after the latest persisted setup report', async () => {
-    const { ticket, context } = await createInitializedTestTicket(repoManager, {
+    const { ticket, context } = createExecutionSetupTestTicket({
       title: 'Execution setup manual session retry',
     })
     writeExecutionSetupPlan(ticket.id, ticket.externalId)
@@ -858,7 +874,7 @@ describe('handleExecutionSetup', () => {
   })
 
   it('keeps an honest blocked profile diagnostic-only and does not publish it as reusable runtime state', async () => {
-    const { ticket, context, paths } = await createInitializedTestTicket(repoManager, {
+    const { ticket, context, paths } = createExecutionSetupTestTicket({
       title: 'Execution setup honest blocked result',
     })
     writeExecutionSetupPlan(ticket.id, ticket.externalId)
@@ -919,7 +935,7 @@ describe('handleExecutionSetup', () => {
   })
 
   it('rejects an otherwise ready profile after the aggregate setup-attempt deadline expires', async () => {
-    const { ticket, context } = await createInitializedTestTicket(repoManager, {
+    const { ticket, context } = createExecutionSetupTestTicket({
       title: 'Execution setup aggregate deadline',
     })
     writeExecutionSetupPlan(ticket.id, ticket.externalId)
@@ -961,7 +977,7 @@ describe('handleExecutionSetup', () => {
   })
 
   it('reports an unreadable bead tracker instead of treating it as having no test commands', async () => {
-    const { ticket, context, paths } = await createInitializedTestTicket(repoManager, {
+    const { ticket, context, paths } = createExecutionSetupTestTicket({
       title: 'Execution setup malformed bead tracker',
     })
     writeExecutionSetupPlan(ticket.id, ticket.externalId)
@@ -993,7 +1009,7 @@ describe('handleExecutionSetup', () => {
   })
 
   it('caps backend setup probes at the time remaining in the aggregate attempt', async () => {
-    const { ticket, context } = await createInitializedTestTicket(repoManager, {
+    const { ticket, context } = createExecutionSetupTestTicket({
       title: 'Execution setup remaining validation budget',
     })
     writeExecutionSetupPlan(ticket.id, ticket.externalId)
@@ -1043,7 +1059,7 @@ describe('handleExecutionSetup', () => {
   })
 
   it('preserves LoopTroop ticket artifacts when resetting before an execution-setup retry', async () => {
-    const { ticket, context, paths } = await createInitializedTestTicket(repoManager, {
+    const { ticket, context, paths } = createExecutionSetupTestTicket({
       title: 'Execution setup reset preservation',
     })
     writeExecutionSetupPlan(ticket.id, ticket.externalId)
@@ -1113,7 +1129,7 @@ describe('handleExecutionSetup', () => {
   })
 
   it('withholds the execution-setup reset until a paused session stop is confirmed', async () => {
-    const { ticket, context, paths } = await createInitializedTestTicket(repoManager, {
+    const { ticket, context, paths } = createExecutionSetupTestTicket({
       title: 'Execution setup remote stop confirmation',
     })
     writeExecutionSetupPlan(ticket.id, ticket.externalId)
@@ -1164,44 +1180,22 @@ describe('handleExecutionSetup', () => {
   })
 
   it('rejects a schema-compatible setup result when tooling checks fail', async () => {
-    const { ticket, context } = await createInitializedTestTicket(repoManager, {
+    const { ticket, context } = createExecutionSetupTestTicket({
       title: 'Execution setup tooling gate',
     })
     writeExecutionSetupPlan(ticket.id, ticket.externalId)
 
-    executeExecutionSetupWithRetriesMock.mockImplementationOnce(async (...args: unknown[]) => {
-      const callbacks = args[5] as {
-        evaluateGeneration: (entry: { attempt: number; generation: unknown }) => Promise<unknown>
-      }
-      return await callbacks.evaluateGeneration({
-        attempt: 1,
-        generation: {
-          session: { id: 'ses-setup-tooling-fail' },
-          output: '<EXECUTION_SETUP_RESULT>{"status":"ready"}</EXECUTION_SETUP_RESULT>',
-          result: {
-            status: 'ready',
-            summary: 'Required launcher is unavailable.',
-            profile: readyExecutionSetupProfile(ticket.externalId),
-            checks: {
-              workspace: 'pass',
-              tooling: 'fail',
-              tempScope: 'pass',
-              policy: 'pass',
-            },
-          },
-          parse: {
-            markerFound: true,
-            result: null,
-            errors: [],
-          },
-          structuredOutput: {
-            repairApplied: false,
-            repairWarnings: [],
-            autoRetryCount: 0,
-          },
-        },
-      })
-    })
+    mockExecutionSetupGeneration(buildExecutionSetupGeneration({
+      profile: readyExecutionSetupProfile(ticket.externalId),
+      summary: 'Required launcher is unavailable.',
+      sessionId: 'ses-setup-tooling-fail',
+      checks: {
+        workspace: 'pass',
+        tooling: 'fail',
+        tempScope: 'pass',
+        policy: 'pass',
+      },
+    }))
 
     const sendEvent = vi.fn()
     await handleExecutionSetup(
@@ -1279,19 +1273,11 @@ describe('handleExecutionSetup', () => {
     {
       title: 'not provisionable without reason',
       toolRequirements: [
-        {
-          launcher: 'project-tool',
-          requiredBy: ['project_commands.test_full[0]'],
-          status: 'not_provisionable' as const,
-          missingProbe: 'project-tool --version',
-          provisioningAttempts: [],
-          finalProbe: '',
-          failureReason: '',
-        },
+        notProvisionableToolRequirement(''),
       ],
     },
   ])('rejects incomplete tooling failure evidence for $title', async ({ title, toolRequirements }) => {
-    const { ticket, context } = await createInitializedTestTicket(repoManager, {
+    const { ticket, context } = createExecutionSetupTestTicket({
       title: `Execution setup ${title}`,
     })
     writeExecutionSetupPlan(ticket.id, ticket.externalId)
@@ -1301,23 +1287,10 @@ describe('handleExecutionSetup', () => {
       toolRequirements,
     }
 
-    executeExecutionSetupWithRetriesMock.mockImplementationOnce(async (...args: unknown[]) => {
-      const callbacks = args[5] as {
-        evaluateGeneration: (entry: { attempt: number; generation: unknown }) => Promise<unknown>
-      }
-      return await callbacks.evaluateGeneration({
-        attempt: 1,
-        generation: buildExecutionSetupGeneration({
-          profile,
-          checks: {
-            workspace: 'pass',
-            tooling: 'fail',
-            tempScope: 'pass',
-            policy: 'pass',
-          },
-        }),
-      })
-    })
+    mockExecutionSetupGeneration(buildExecutionSetupGeneration({
+      profile,
+      checks: { workspace: 'pass', tooling: 'fail', tempScope: 'pass', policy: 'pass' },
+    }))
 
     const sendEvent = vi.fn()
     await handleExecutionSetup(
@@ -1344,46 +1317,30 @@ describe('handleExecutionSetup', () => {
     {
       title: 'failed provisioning evidence',
       toolRequirements: [
-        {
-          launcher: 'project-tool',
-          requiredBy: ['project_commands.test_full[0]'],
-          status: 'failed' as const,
-          missingProbe: 'project-tool --version',
-          provisioningAttempts: [
-            {
-              strategy: 'official archive',
-              commands: [createShellCommandSpec('./install-project-tool --prefix .ticket/runtime/execution-setup/tool-cache/project-tool')],
-              result: 'failed',
-              reason: 'official archive download returned 404',
-            },
-            {
-              strategy: 'repository version manager',
-              commands: [createShellCommandSpec('./repo-toolchain install --cache .ticket/runtime/execution-setup/tool-cache/project-tool')],
-              result: 'failed',
-              reason: 'repository version manager could not resolve the requested version',
-            },
-          ],
-          finalProbe: './.ticket/runtime/execution-setup/run project-tool --version',
-          failureReason: 'official archive download returned 404',
-        },
+        failedToolRequirementWithAttempts([
+          {
+            strategy: 'official archive',
+            commands: [createShellCommandSpec('./install-project-tool --prefix .ticket/runtime/execution-setup/tool-cache/project-tool')],
+            result: 'failed',
+            reason: 'official archive download returned 404',
+          },
+          {
+            strategy: 'repository version manager',
+            commands: [createShellCommandSpec('./repo-toolchain install --cache .ticket/runtime/execution-setup/tool-cache/project-tool')],
+            result: 'failed',
+            reason: 'repository version manager could not resolve the requested version',
+          },
+        ], 'official archive download returned 404'),
       ],
     },
     {
       title: 'no safe provisioning path evidence',
       toolRequirements: [
-        {
-          launcher: 'project-tool',
-          requiredBy: ['project_commands.test_full[0]'],
-          status: 'not_provisionable' as const,
-          missingProbe: 'project-tool --version',
-          provisioningAttempts: [],
-          finalProbe: '',
-          failureReason: 'the repository requires a licensed interactive installer that cannot run safely in temp roots',
-        },
+        notProvisionableToolRequirement('the repository requires a licensed interactive installer that cannot run safely in temp roots'),
       ],
     },
   ])('accepts tooling failure evidence for $title', async ({ title, toolRequirements }) => {
-    const { ticket, context } = await createInitializedTestTicket(repoManager, {
+    const { ticket, context } = createExecutionSetupTestTicket({
       title: `Execution setup ${title}`,
     })
     writeExecutionSetupPlan(ticket.id, ticket.externalId)
@@ -1393,23 +1350,10 @@ describe('handleExecutionSetup', () => {
       toolRequirements,
     }
 
-    executeExecutionSetupWithRetriesMock.mockImplementationOnce(async (...args: unknown[]) => {
-      const callbacks = args[5] as {
-        evaluateGeneration: (entry: { attempt: number; generation: unknown }) => Promise<unknown>
-      }
-      return await callbacks.evaluateGeneration({
-        attempt: 1,
-        generation: buildExecutionSetupGeneration({
-          profile,
-          checks: {
-            workspace: 'pass',
-            tooling: 'fail',
-            tempScope: 'pass',
-            policy: 'pass',
-          },
-        }),
-      })
-    })
+    mockExecutionSetupGeneration(buildExecutionSetupGeneration({
+      profile,
+      checks: { workspace: 'pass', tooling: 'fail', tempScope: 'pass', policy: 'pass' },
+    }))
 
     const sendEvent = vi.fn()
     await handleExecutionSetup(
@@ -1434,7 +1378,7 @@ describe('handleExecutionSetup', () => {
   })
 
   it('rejects a ready setup profile that declares reusable command execution without tooling probes', async () => {
-    const { ticket, context, paths } = await createInitializedTestTicket(repoManager, {
+    const { ticket, context, paths } = createExecutionSetupTestTicket({
       title: 'Execution setup missing probes gate',
     })
     writeExecutionSetupPlan(ticket.id, ticket.externalId)
@@ -1442,13 +1386,7 @@ describe('handleExecutionSetup', () => {
 
     const profile = {
       ...readyExecutionSetupProfile(ticket.externalId),
-      reusableArtifacts: [
-        {
-          path: executionSetupWrapperPath,
-          kind: 'command-wrapper',
-          purpose: 'sources prepared runtime before commands',
-        },
-      ],
+      reusableArtifacts: [executionSetupWrapperArtifact],
       projectCommands: {
         prepare: [],
         testFull: [createShellCommandSpec('project test')],
@@ -1487,20 +1425,14 @@ describe('handleExecutionSetup', () => {
   })
 
   it('rejects a ready setup profile when its declared wrapper is missing', async () => {
-    const { ticket, context } = await createInitializedTestTicket(repoManager, {
+    const { ticket, context } = createExecutionSetupTestTicket({
       title: 'Execution setup missing wrapper gate',
     })
     writeExecutionSetupPlan(ticket.id, ticket.externalId)
 
     const profile = {
       ...readyExecutionSetupProfile(ticket.externalId),
-      reusableArtifacts: [
-        {
-          path: executionSetupWrapperPath,
-          kind: 'command-wrapper',
-          purpose: 'sources prepared runtime before commands',
-        },
-      ],
+      reusableArtifacts: [executionSetupWrapperArtifact],
       toolingProbeCommands: [executionSetupWrapperCommand('process.exit(0)')],
     }
 
@@ -1533,7 +1465,7 @@ describe('handleExecutionSetup', () => {
   })
 
   it('rejects a ready setup profile when a tooling probe fails', async () => {
-    const { ticket, context } = await createInitializedTestTicket(repoManager, {
+    const { ticket, context } = createExecutionSetupTestTicket({
       title: 'Execution setup failing probe gate',
     })
     writeExecutionSetupPlan(ticket.id, ticket.externalId)
@@ -1578,7 +1510,7 @@ describe('handleExecutionSetup', () => {
   })
 
   it('accepts a ready setup profile when the wrapper and tooling probe pass', async () => {
-    const { ticket, context, paths } = await createInitializedTestTicket(repoManager, {
+    const { ticket, context, paths } = createExecutionSetupTestTicket({
       title: 'Execution setup passing probe gate',
     })
     writeExecutionSetupPlan(ticket.id, ticket.externalId)
@@ -1586,13 +1518,7 @@ describe('handleExecutionSetup', () => {
 
     const profile = {
       ...readyExecutionSetupProfile(ticket.externalId),
-      reusableArtifacts: [
-        {
-          path: executionSetupWrapperPath,
-          kind: 'command-wrapper',
-          purpose: 'sources prepared runtime before commands',
-        },
-      ],
+      reusableArtifacts: [executionSetupWrapperArtifact],
       toolingProbeCommands: [executionSetupWrapperCommand("if (process.env.LOOP_SETUP_WRAPPER !== '1') process.exit(9)")],
     }
 
@@ -1622,7 +1548,7 @@ describe('handleExecutionSetup', () => {
   })
 
   it.runIf(process.platform !== 'win32')('does not silently apply an unapproved setup wrapper', async () => {
-    const { ticket, context, paths } = await createInitializedTestTicket(repoManager, {
+    const { ticket, context, paths } = createExecutionSetupTestTicket({
       title: 'Execution setup canonical wrapper fallback',
     })
     const bareProbeCommand = 'workspace-probe-tool'
@@ -1713,7 +1639,7 @@ describe('handleExecutionSetup', () => {
   })
 
   it('rejects a ready setup result when setup leaves committable project changes', async () => {
-    const { ticket, context, paths } = await createInitializedTestTicket(repoManager, {
+    const { ticket, context, paths } = await createGitBackedTestTicket(repoManager, {
       title: 'Execution setup dirty worktree gate',
     })
     writeExecutionSetupPlan(ticket.id, ticket.externalId)
@@ -1773,7 +1699,7 @@ describe('handleExecutionSetup', () => {
   })
 
   it('allows generated setup noise but records gitignore suggestions as profile cautions', async () => {
-    const { ticket, context, paths } = await createInitializedTestTicket(repoManager, {
+    const { ticket, context, paths } = await createGitBackedTestTicket(repoManager, {
       title: 'Execution setup generated noise warning',
     })
     writeExecutionSetupPlan(ticket.id, ticket.externalId)

@@ -47,6 +47,19 @@ describe('doctor command', () => {
     tempDirs.push(dir)
     process.env.LOOPTROOP_CONFIG_DIR = dir
     process.env.LOOPTROOP_OPENCODE_MODE = 'mock'
+    writeFileSync(join(dir, 'tool-versions.json'), JSON.stringify({
+      lastAttemptAt: new Date().toISOString(),
+      opencodeSource: null,
+      versions: { node: '24.0.0', npm: '11.0.0', gh: '2.75.0', git: '2.50.0' },
+    }))
+
+    const gh = join(dir, process.platform === 'win32' ? 'gh.cmd' : 'gh')
+    writeFileSync(gh, process.platform === 'win32'
+      ? '@echo off\r\nif "%1"=="--version" echo gh version 2.75.0 (test)\r\nif "%1"=="auth" echo Logged in to github.com account test\r\nexit /b 0\r\n'
+      : '#!/bin/sh\nif [ "$1" = "--version" ]; then echo "gh version 2.75.0 (test)"; else echo "Logged in to github.com account test"; fi\n')
+    if (process.platform !== 'win32') chmodSync(gh, 0o700)
+    vi.stubEnv('PATH', `${dir}${delimiter}${process.env.PATH ?? ''}`)
+    vi.stubEnv('LOOPTROOP_TRUSTED_EXECUTABLE_DIRS', dir)
     return dir
   }
 
@@ -138,8 +151,10 @@ describe('doctor command', () => {
 
   it('reports on the runtime, tooling, config and services', async () => {
     useConfigDir()
+    const fetchMock = vi.spyOn(globalThis, 'fetch').mockRejectedValue(new Error('Unexpected network request'))
 
-    const names = (await runChecks()).map((check) => check.name)
+    const checks = await runChecks()
+    const names = checks.map((check) => check.name)
 
     expect(names).toContain('node')
     expect(names).toContain('git')
@@ -147,6 +162,8 @@ describe('doctor command', () => {
     expect(names).toContain('schema')
     expect(names).toContain('opencode')
     expect(names).toContain('daemon')
+    expect(checks.find((check) => check.name === 'gh auth')).toMatchObject({ status: 'ok', detail: 'authenticated' })
+    expect(fetchMock).not.toHaveBeenCalled()
   })
 
   it('recognizes a development server without a registered daemon', async () => {

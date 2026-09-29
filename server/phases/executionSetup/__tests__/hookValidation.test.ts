@@ -520,6 +520,29 @@ describe('runGitHookValidationCommands', () => {
     expect(readFileSync(join(root, 'tracked.txt'), 'utf8')).toBe('before\n')
   })
 
+  it('refuses interrupted recovery when a tracked file changed and does not run hooks', async () => {
+    const root = makeRepo()
+    const markerPath = writeInterruptedValidationMarker(root)
+    writeFileSync(join(root, 'tracked.txt'), 'edited after interruption\n')
+
+    const refused = await runGitHookValidationCommands({
+      commands: [hookCommand('must-not-run', 'node -e "require(\'fs\').writeFileSync(\'hook-ran.txt\', \'yes\')"')],
+      worktreePath: root,
+      stopOnFirstFailure: true,
+      protectWorktree: true,
+      auditFileMutation: true,
+      nextTimeoutMs: () => 30_000,
+    })
+
+    expect(refused.refused).toBe(true)
+    expect(refused.recoveryFailure).toContain('tracked worktree files changed after the restore marker was written')
+    expect(refused.recoveryFailure).toContain(markerPath)
+    expect(refused.outcomes).toEqual([])
+    expect(readFileSync(join(root, 'tracked.txt'), 'utf8')).toBe('edited after interruption\n')
+    expect(existsSync(markerPath)).toBe(true)
+    expect(existsSync(join(root, 'hook-ran.txt'))).toBe(false)
+  })
+
   it('refuses an index flag change even when its tree is unchanged', async () => {
     const root = makeRepo()
     const markerPath = writeInterruptedValidationMarker(root)

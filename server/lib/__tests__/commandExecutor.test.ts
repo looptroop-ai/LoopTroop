@@ -690,6 +690,7 @@ describe('executeCommand', () => {
   it('keeps the spawn token when the pid is recycled before timeout', async () => {
     let token: string | null = 'spawn-generation'
     const readToken = vi.spyOn(processIdentity, 'readProcessStartToken').mockImplementation(() => token)
+    const captureGroup = vi.spyOn(processTree, 'captureProcessGroup')
     const escalate = vi.spyOn(processTree, 'terminateProcessTreeWithEscalation').mockImplementation(() => undefined)
     try {
       vi.useFakeTimers()
@@ -708,6 +709,7 @@ describe('executeCommand', () => {
         spawnProcess: (() => child) as unknown as typeof spawn,
         readProcessStartToken: () => token,
       })
+      expect(captureGroup).not.toHaveBeenCalled()
 
       // This is the replacement visible to the escalation's later identity
       // check; the executor must still hand it the token captured at spawn.
@@ -719,6 +721,7 @@ describe('executeCommand', () => {
       expect((await pending).timedOut).toBe(true)
     } finally {
       readToken.mockRestore()
+      captureGroup.mockRestore()
       escalate.mockRestore()
     }
   })

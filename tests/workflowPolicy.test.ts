@@ -16,10 +16,11 @@ type Step = {
   run?: unknown
   uses?: unknown
   env?: Record<string, unknown>
+  with?: Record<string, unknown>
   if?: unknown
   'continue-on-error'?: unknown
 }
-type Job = { permissions?: Record<string, unknown>; steps?: Step[]; if?: unknown; 'continue-on-error'?: unknown }
+type Job = { name?: unknown; permissions?: Record<string, unknown>; steps?: Step[]; if?: unknown; 'continue-on-error'?: unknown; 'runs-on'?: unknown }
 type Workflow = { jobs?: Record<string, Job> }
 
 const workflows = new Map(files.map((file) => [
@@ -393,6 +394,8 @@ describe('release workflow policy', () => {
     }) | undefined
     if (!job) throw new Error('ci.yml: test-matrix job missing')
     expect(Object.hasOwn(job, 'continue-on-error'), 'test-matrix continue-on-error').toBe(false)
+    expect(job.name, 'pull_request keeps the required matrix contexts; push uses separate contexts')
+      .toBe("Test (${{ matrix.os }}, ${{ matrix.label }})${{ github.event_name == 'push' && matrix.os == 'ubuntu-latest' && matrix.label == 'toolchain floor' && ' [push]' || '' }}")
 
     const matrix = job.strategy?.matrix ?? {}
     expect(Object.keys(matrix).sort(), 'test-matrix axes').toEqual(['label', 'os'])
@@ -410,8 +413,32 @@ describe('release workflow policy', () => {
     expect(steps[switchTo]?.if).toBe(floorOnly)
     expect(String(steps[read]?.run), 'the floor is parsed by the shared parser').toContain('parseNodeFloor')
 
+    const checkout = steps.find((step) => String(step.uses ?? '').startsWith('actions/checkout@'))
+    expect(checkout, 'test-matrix checks out the event ref').toBeDefined()
+    expect(checkout?.with?.ref, 'test-matrix keeps the default PR merge ref').toBeUndefined()
+
     const test = steps.findIndex((step) => step.run === 'npm run test')
     expect(test, 'the suite runs after the switch').toBeGreaterThan(switchTo)
+    expect(steps[test]?.if, 'only pushes skip the Ubuntu toolchain suite already covered by Verify')
+      .toBe("github.event_name != 'push' || matrix.os != 'ubuntu-latest' || matrix.label != 'toolchain floor'")
+
+    const verify = workflows.get('ci.yml')?.jobs?.verify as (Job & { steps?: Array<Step & { if?: unknown; with?: Record<string, unknown> }> }) | undefined
+    expect(verify?.['runs-on'], 'the overlapping suite runs on Ubuntu').toBe('ubuntu-latest')
+    expect(Object.hasOwn(verify ?? {}, 'if'), 'Verify itself stays unconditional').toBe(false)
+    expect(verify?.steps?.some((step) => step.with?.['node-version-file'] === '.nvmrc'), 'the overlapping suite uses the toolchain floor')
+      .toBe(true)
+    const coverage = verify?.steps?.find((step) => step.run === 'npm run test:coverage')
+    expect(coverage, 'the overlapping suite still runs under coverage').toBeDefined()
+    expect(Object.hasOwn(coverage!, 'if'), 'the overlapping coverage suite stays unconditional').toBe(false)
+    const verifySteps = verify?.steps ?? []
+    const verifyCheckout = verifySteps.find((step) => String(step.uses ?? '').startsWith('actions/checkout@'))
+    expect(verifyCheckout?.with?.ref, 'Verify attributes PR coverage to the PR head').toBe('${{ github.event.pull_request.head.sha || github.sha }}')
+    const toolchainSetup = verifySteps.findIndex((step) =>
+      String(step.uses ?? '').startsWith('actions/setup-node@') && step.with?.['node-version-file'] === '.nvmrc')
+    const coverageIndex = verifySteps.findIndex((step) => step.run === 'npm run test:coverage')
+    expect(toolchainSetup, 'Verify reads the toolchain Node from .nvmrc').toBeGreaterThan(-1)
+    expect(verifySteps[toolchainSetup]?.if, 'the .nvmrc toolchain setup stays unconditional').toBeUndefined()
+    expect(toolchainSetup, '.nvmrc is installed before the coverage suite').toBeLessThan(coverageIndex)
   })
 
   /**

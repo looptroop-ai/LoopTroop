@@ -356,18 +356,18 @@ function buildBeadItemFromSubset(bead: BeadSubset): NormalizedBeadItem {
     // prdRefs and contextGuidance are part of the bead's content: an edit that
     // touched only those was dropped from `changes` while the YAML kept the new
     // values.
-    contentFingerprint: [
+    contentFingerprint: JSON.stringify([
       bead.id,
       label,
       detail,
-      bead.prdRefs.join('|'),
-      bead.contextGuidance.patterns.join('|'),
-      bead.contextGuidance.anti_patterns.join('|'),
-      bead.acceptanceCriteria.join('|'),
-      bead.tests.join('|'),
-      bead.testCommands.map((command) => renderCommandSpec(command)).join('|'),
+      bead.prdRefs,
+      bead.contextGuidance.patterns,
+      bead.contextGuidance.anti_patterns,
+      bead.acceptanceCriteria,
+      bead.tests,
+      bead.testCommands.map((command) => renderCommandSpec(command)),
       bead.testCommandReason ?? '',
-    ].join('\x1f'),
+    ]),
   }
 }
 
@@ -407,6 +407,8 @@ function resolveBeadChangeItem(
 export interface ValidatedBeadRefinementResult {
   beads: BeadSubset[]
   changes: RefinementChange[]
+  declaredChanges: RefinementChange[]
+  synthesizedRepairWarnings: string[]
   normalizedContent: string
   repairApplied: boolean
   repairWarnings: string[]
@@ -471,6 +473,8 @@ export function normalizeBeadRefinementOutput(
       value: {
         beads: refinedBeads,
         changes: synthesized.changes,
+        declaredChanges: rawChanges,
+        synthesizedRepairWarnings: synthesized.repairWarnings,
         normalizedContent: refinedResult.normalizedContent,
         repairApplied,
         repairWarnings,
@@ -517,6 +521,11 @@ export function normalizeBeadRefinementOutput(
       if (!before) {
         repairApplied = true
         repairWarnings.push(`Skipped beads refinement change at index ${index}: removed change has no resolvable before item.`)
+        continue
+      }
+      if (change.after !== null && change.after !== undefined) {
+        repairApplied = true
+        repairWarnings.push(`Skipped beads refinement change at index ${index}: removed change must use after: null.`)
         continue
       }
     }
@@ -586,6 +595,8 @@ export function normalizeBeadRefinementOutput(
     value: {
       beads: refinedBeads,
       changes: validatedChanges,
+      declaredChanges: rawChanges,
+      synthesizedRepairWarnings: synthesized.repairWarnings,
       normalizedContent: refinedResult.normalizedContent,
       repairApplied,
       repairWarnings,

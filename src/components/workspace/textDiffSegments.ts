@@ -15,7 +15,6 @@ function mergeTextDiffSegments(segments: TextDiffSegment[]): TextDiffSegment[] {
   const merged: TextDiffSegment[] = []
 
   for (const segment of segments) {
-    if (!segment.text) continue
     const previous = merged[merged.length - 1]
     if (previous && previous.changed === segment.changed) {
       previous.text += segment.text
@@ -32,8 +31,8 @@ function buildReplacementSegments(before: string, after: string): {
   after: TextDiffSegment[]
 } {
   return {
-    before: before ? [{ text: before, changed: true }] : [],
-    after: after ? [{ text: after, changed: true }] : [],
+    before: [{ text: before, changed: true }],
+    after: [{ text: after, changed: true }],
   }
 }
 
@@ -42,8 +41,8 @@ export function buildTextDiffSegments(before: string | undefined, after: string 
   after: TextDiffSegment[]
 } {
   if (!before && !after) return { before: [], after: [] }
-  if (!before) return { before: [], after: after ? [{ text: after, changed: true }] : [] }
-  if (!after) return { before: before ? [{ text: before, changed: true }] : [], after: [] }
+  if (!before) return { before: [], after: [{ text: after!, changed: true }] }
+  if (!after) return { before: [{ text: before, changed: true }], after: [] }
   if (before === after) {
     return {
       before: [{ text: before, changed: false }],

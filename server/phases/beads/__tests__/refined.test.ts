@@ -698,6 +698,35 @@ describe.concurrent('beads refinement validation', () => {
     expect(result.repairWarnings.some((warning) => warning.includes('do not fully account for the diff'))).toBe(false)
   })
 
+  it('preserves valid inspiration when a declared removal omits its after side', () => {
+    const winnerDraftContent = buildBeadsRefinementContent()
+    const refinedDocument = readBeadDocument(winnerDraftContent)
+    refinedDocument.beads = refinedDocument.beads.filter((bead) => bead.id !== 'bead-2')
+    const result = validateBeadsRefinementOutput(
+      withChanges(writeBeadDocument(refinedDocument), [{
+        type: 'removed',
+        item_type: 'bead',
+        before: { id: 'bead-2', label: 'Update persistence coverage' },
+        inspiration: { alternative_draft: 1, item: { id: 'idea-1', title: 'Add coverage for expiry' } },
+      }]),
+      {
+        winnerDraftContent,
+        losingDraftMeta: [{ memberId: TEST.councilMembers[0] }],
+      },
+    )
+
+    expect(result.changes).toEqual([
+      expect.objectContaining({
+        type: 'removed',
+        before: expect.objectContaining({ id: 'bead-2', label: 'Update persistence coverage' }),
+        after: null,
+        attributionStatus: 'inspired',
+        inspiration: expect.objectContaining({ draftIndex: 0, memberId: TEST.councilMembers[0] }),
+      }),
+    ])
+    expect(result.repairWarnings.some((warning) => warning.startsWith('Synthesized omitted beads refinement removed change'))).toBe(false)
+  })
+
   it('keeps an unproven title-matched ID drift as an add and remove', () => {
     const winnerDraftContent = buildBeadsRefinementContent()
     const refinedDocument = readBeadDocument(winnerDraftContent)

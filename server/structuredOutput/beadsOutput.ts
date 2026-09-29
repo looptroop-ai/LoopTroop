@@ -523,7 +523,7 @@ export function normalizeBeadRefinementOutput(
         repairWarnings.push(`Skipped beads refinement change at index ${index}: removed change has no resolvable before item.`)
         continue
       }
-      if (change.after !== null) {
+      if (change.after !== null && change.after !== undefined) {
         repairApplied = true
         repairWarnings.push(`Skipped beads refinement change at index ${index}: removed change must use after: null.`)
         continue

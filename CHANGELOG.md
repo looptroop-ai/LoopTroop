@@ -10,7 +10,7 @@ Unreleased changes appear first and represent commits that have not yet been inc
 > Changes merged since the last versioned release that have not yet shipped in a tagged version.
 
 ### Summary
-- Beads refinement repairs stable IDs only from explicit records and rejects contradictory change rows, while relevant-files budgets retain higher-priority entries.
+- Beads refinement preserves stable IDs and council attribution when it reconciles conflicting change records, and relevant-files budgets keep higher-priority entries.
 - The test suite removes redundant worktree and log replay setup while strengthening boundary, timeout, and transport regressions.
 - Kanban pagination arrows follow the visible page, and Escape cancels an uncommitted page-number edit.
 - Failed ticket starts that stay in DRAFT clear provisional model locks and can be retried with updated settings; corrupt metadata stays readable and cannot be overwritten by a start.
@@ -288,7 +288,7 @@ Unreleased changes appear first and represent commits that have not yet been inc
 - The unused `server/db/drizzle.config.ts` alias. Every database script already selects its app or project config explicitly, so keeping a third config that Drizzle Kit cannot discover from the repository root only advertised a command that no longer worked.
 
 ### Fixed
-- Beads refinement repairs a uniquely title-matched ID collision only when explicit mismatched modification and addition records identify the surviving and newly added beads; contradictory add/remove rows that reuse a live stable ID are skipped so synthesis emits the canonical modification.
+- Beads refinement repairs a uniquely title-matched ID collision only when one explicit mismatched modification and one `before: null` addition resolve to the affected beads, with `after: null` removals for any other winner beads missing from the refined artifact. A stale added ID can resolve through a unique title, while extra or conflicting rows still block repair. Contradictory add/remove rows for a live bead become one stable-ID modification and keep valid council inspiration instead of producing a false addition/removal pair. List-valued bead content is compared structurally so separator characters cannot hide an edit.
 - Relevant-files artifact budgets now discard lower-priority entries first and preserve higher-priority files when the size limit is exceeded.
 - Concurrent ticket starts now share an in-flight guard across equivalent ticket reference spellings.
 - Windows full-suite test jobs now have a 40-minute timeout, so slower runners do not cancel tests that are still progressing.

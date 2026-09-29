@@ -21,6 +21,36 @@ function makeChange(overrides: Record<string, unknown> = {}) {
 }
 
 describe.concurrent('parseRefinementChanges — inspiration item parsing', () => {
+  it('preserves missing change sides separately from explicit null sides', () => {
+    const item = { id: 'US-1', title: 'Original story' }
+    const { changes } = parseRefinementChanges([
+      { type: 'removed', before: item },
+      { type: 'removed', before: item, after: null },
+      { type: 'added', after: item },
+      { type: 'added', before: null, after: item },
+    ])
+
+    expect(changes.map(({ before, after }) => [before, after])).toEqual([
+      [{ id: 'US-1', label: 'Original story' }, undefined],
+      [{ id: 'US-1', label: 'Original story' }, null],
+      [undefined, { id: 'US-1', label: 'Original story' }],
+      [null, { id: 'US-1', label: 'Original story' }],
+    ])
+  })
+
+  it('skips malformed populated sides instead of treating them as explicit null', () => {
+    const { changes, repairWarnings } = parseRefinementChanges([
+      { type: 'added', before: { title: 'Incomplete previous item' }, after: { id: 'US-1', title: 'New story' } },
+      { type: 'removed', before: { id: 'US-2', title: 'Removed story' }, after: { title: 'Incomplete next item' } },
+    ])
+
+    expect(changes).toEqual([])
+    expect(repairWarnings).toEqual([
+      'Skipped refinement change at index 0 with invalid before item.',
+      'Skipped refinement change at index 1 with invalid after item.',
+    ])
+  })
+
   it('uses the canonical item_type spelling and reports a conflicting camel alias', () => {
     const { changes, repairWarnings } = parseRefinementChanges([
       makeChange({ item_type: 'user_story', itemType: 'bead' }),

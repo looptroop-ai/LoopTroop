@@ -104,6 +104,69 @@ function modifiedChange(
   }
 }
 
+function buildBeadIdShiftFixture(winnerDraftContent = buildBeadsRefinementContent()) {
+  const refinedDocument = readBeadDocument(winnerDraftContent)
+  const switcher = refinedDocument.beads.find((bead) => bead.id === 'bead-1')
+  const survivor = refinedDocument.beads.find((bead) => bead.id === 'bead-2')
+  if (!switcher || !survivor) throw new Error('Expected the two beads used by the ID-shift fixture')
+
+  survivor.id = 'bead-3'
+  survivor.description = 'Refresh persistence coverage with storage-shape verification.'
+  refinedDocument.beads = [
+    switcher,
+    survivor,
+    {
+      ...switcher,
+      id: 'bead-2',
+      title: 'Add cache invalidation coverage',
+      prdRefs: ['EPIC-1', 'US-3'],
+      description: 'Cover cache invalidation explicitly.',
+    },
+  ]
+  return { winnerDraftContent, refinedDocument }
+}
+
+function buildBeadIdShiftFixtureWithExtraWinner() {
+  const winnerDocument = readBeadDocument(buildBeadsRefinementContent())
+  const existingBead = winnerDocument.beads.find((bead) => bead.id === 'bead-1')
+  if (!existingBead) throw new Error('Expected the winner bead used by the ID-shift fixture')
+  winnerDocument.beads.push({
+    ...existingBead,
+    id: 'bead-4',
+    title: 'Existing utility coverage',
+    description: 'Retain the original utility coverage.',
+  })
+  return buildBeadIdShiftFixture(writeBeadDocument(winnerDocument))
+}
+
+function declareBeadIdShift(
+  refinedDocument: { beads: BeadYamlEntry[]; [key: string]: unknown },
+  addedId = 'bead-2',
+  extraChanges: unknown[] = [],
+  includeAddedBefore = true,
+  addedBefore: unknown = null,
+) {
+  const addedChange: Record<string, unknown> = {
+    type: 'added',
+    item_type: 'bead',
+    after: { id: addedId, label: 'Add cache invalidation coverage' },
+  }
+  if (includeAddedBefore) addedChange.before = addedBefore
+  refinedDocument.changes = [
+    modifiedChange(
+      { id: 'bead-2', label: 'Update persistence coverage' },
+      { id: 'bead-3', label: 'Update persistence coverage' },
+    ),
+    addedChange,
+    ...extraChanges,
+  ]
+}
+
+const contradictoryBeadChanges = [
+  ['added', { type: 'added', item_type: 'bead', before: null, after: { id: 'bead-2', label: 'Update persistence coverage' } }],
+  ['removed', { type: 'removed', item_type: 'bead', before: { id: 'bead-2', label: 'Update persistence coverage' }, after: null }],
+] as const
+
 describe.concurrent('beads refinement validation', () => {
   it('does not synthesize a title-match modified change when the winner and refined bead are identical', () => {
     const winnerDraftContent = buildBeadsRefinementContent()
@@ -129,41 +192,10 @@ describe.concurrent('beads refinement validation', () => {
   })
 
   it('restores stable ids when a declared addition unambiguously displaced a surviving bead', () => {
-    const winnerDraftContent = buildBeadsRefinementContent()
-    const refinedContent = [
-      buildBeadsRefinementContent()
-        .replace(
-          'Refresh the persistence coverage details.',
-          'Refresh the persistence coverage details with storage-shape verification.',
-        )
-        .replace(
-          '  - id: "bead-2"',
-          [
-            '  - id: "bead-2"',
-            '    title: "Add cache invalidation coverage"',
-            '    prdRefs: ["EPIC-1", "US-3"]',
-            '    description: "Cover cache invalidation explicitly."',
-            '    contextGuidance:',
-            '      patterns: ["Reuse the existing cache helper."]',
-            '      anti_patterns: ["Do not introduce a second cache."]',
-            '    acceptanceCriteria: ["Invalidate stale cache entries."]',
-            '    tests: ["Test stale cache invalidation."]',
-            '    testCommands: [{mode: "process", program: "npm", args: ["test", "--", "cache"], cwd: ".", env: {}}]',
-            '  - id: "bead-3"',
-          ].join('\n'),
-        ),
-      'changes:',
-      '  - type: modified',
-      '    item_type: bead',
-      '    before: { id: "bead-2", label: "Update persistence coverage" }',
-      '    after: { id: "bead-3", label: "Update persistence coverage" }',
-      '  - type: added',
-      '    item_type: bead',
-      '    before: null',
-      '    after: { id: "bead-2", label: "Add cache invalidation coverage" }',
-    ].join('\n')
+    const { winnerDraftContent, refinedDocument } = buildBeadIdShiftFixture()
+    declareBeadIdShift(refinedDocument)
 
-    const result = validateBeadsRefinementOutput(refinedContent, { winnerDraftContent })
+    const result = validateBeadsRefinementOutput(writeBeadDocument(refinedDocument), { winnerDraftContent })
 
     expect(result.beadSubsets.find((bead) => bead.title === 'Update persistence coverage')?.id).toBe('bead-2')
     expect(result.beadSubsets.find((bead) => bead.title === 'Add cache invalidation coverage')?.id).toBe('bead-3')
@@ -222,21 +254,7 @@ describe.concurrent('beads refinement validation', () => {
   })
 
   it('does not repair a colliding ID shift when the mismatched modification is omitted', () => {
-    const winnerDraftContent = buildBeadsRefinementContent()
-    const refinedDocument = readBeadDocument(winnerDraftContent)
-    const survivingBead = refinedDocument.beads[1]!
-    survivingBead.id = 'bead-3'
-    survivingBead.description = 'Refresh persistence coverage with storage-shape verification.'
-    refinedDocument.beads = [
-      refinedDocument.beads[0]!,
-      survivingBead,
-      {
-        ...refinedDocument.beads[0]!,
-        id: 'bead-2',
-        title: 'Add cache invalidation coverage',
-        description: 'Cover cache invalidation explicitly.',
-      },
-    ]
+    const { winnerDraftContent, refinedDocument } = buildBeadIdShiftFixture()
     refinedDocument.changes = []
 
     const result = validateBeadsRefinementOutput(writeBeadDocument(refinedDocument), { winnerDraftContent })
@@ -288,21 +306,7 @@ describe.concurrent('beads refinement validation', () => {
   })
 
   it('does not repair a title-resolved modification with incorrect declared ids', () => {
-    const winnerDraftContent = buildBeadsRefinementContent()
-    const refinedDocument = readBeadDocument(winnerDraftContent)
-    const survivingBead = refinedDocument.beads[1]!
-    survivingBead.id = 'bead-3'
-    survivingBead.description = 'Refresh persistence coverage with storage-shape verification.'
-    refinedDocument.beads = [
-      refinedDocument.beads[0]!,
-      survivingBead,
-      {
-        ...refinedDocument.beads[0]!,
-        id: 'bead-2',
-        title: 'Add cache invalidation coverage',
-        description: 'Cover cache invalidation explicitly.',
-      },
-    ]
+    const { winnerDraftContent, refinedDocument } = buildBeadIdShiftFixture()
     refinedDocument.changes = [modifiedChange(
       { id: 'wrong-before', label: 'Update persistence coverage' },
       { id: 'wrong-after', label: 'Update persistence coverage' },
@@ -310,6 +314,94 @@ describe.concurrent('beads refinement validation', () => {
 
     expect(() => validateBeadsRefinementOutput(writeBeadDocument(refinedDocument), { winnerDraftContent }))
       .toThrow('modified bead ids must remain stable (before "bead-2", after "bead-3")')
+  })
+
+  it('repairs a declared addition by its unique title when its ID is stale', () => {
+    const { winnerDraftContent, refinedDocument } = buildBeadIdShiftFixtureWithExtraWinner()
+    declareBeadIdShift(refinedDocument, 'wrong-added-id', [{
+      type: 'removed',
+      item_type: 'bead',
+      before: { id: 'bead-4', label: 'Existing utility coverage' },
+      after: null,
+    }])
+
+    const result = validateBeadsRefinementOutput(writeBeadDocument(refinedDocument), { winnerDraftContent })
+
+    expect(result.beadSubsets.find((bead) => bead.title === 'Update persistence coverage')?.id).toBe('bead-2')
+    expect(result.beadSubsets.find((bead) => bead.title === 'Add cache invalidation coverage')?.id).toBe('bead-3')
+    expect(result.changes).toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        type: 'removed',
+        before: expect.objectContaining({ id: 'bead-4', label: 'Existing utility coverage' }),
+        after: null,
+      }),
+    ]))
+    expect(result.repairWarnings).toContain(
+      'Restored Beads refinement ID stability at change index 0: reassigned surviving bead "Update persistence coverage" from bead-3 to bead-2 and reassigned newly added bead "Add cache invalidation coverage" from bead-2 to bead-3.',
+    )
+  })
+
+  it.each([
+    ['a populated after item', { after: { id: 'bead-1', label: 'Keep existing switcher bead' } }],
+    ['a malformed after item', { after: { label: 'Incomplete removed item' } }],
+    ['no after field', {}],
+  ])('rejects an ID-shift repair when a removed winner row has %s', (_description, afterField) => {
+    const { winnerDraftContent, refinedDocument } = buildBeadIdShiftFixtureWithExtraWinner()
+    declareBeadIdShift(refinedDocument, 'wrong-added-id', [{
+      type: 'removed',
+      item_type: 'bead',
+      before: { id: 'bead-4', label: 'Existing utility coverage' },
+      ...afterField,
+    }])
+
+    expect(() => validateBeadsRefinementOutput(writeBeadDocument(refinedDocument), { winnerDraftContent }))
+      .toThrow('modified bead ids must remain stable')
+  })
+
+  it.each([
+    ['current ID', 'bead-2'],
+    ['stale ID', 'wrong-added-id'],
+  ])('does not repair an ID shift when a %s addition omits before: null', (_description, addedId) => {
+    const { winnerDraftContent, refinedDocument } = buildBeadIdShiftFixture()
+    declareBeadIdShift(refinedDocument, addedId, [], false)
+
+    expect(() => validateBeadsRefinementOutput(writeBeadDocument(refinedDocument), { winnerDraftContent }))
+      .toThrow('modified bead ids must remain stable')
+  })
+
+  it('does not repair an ID shift when the addition has a malformed before item', () => {
+    const { winnerDraftContent, refinedDocument } = buildBeadIdShiftFixtureWithExtraWinner()
+    declareBeadIdShift(refinedDocument, 'wrong-added-id', [{
+      type: 'removed',
+      item_type: 'bead',
+      before: { id: 'bead-4', label: 'Existing utility coverage' },
+      after: null,
+    }], true, { label: 'Incomplete previous item' })
+
+    expect(() => validateBeadsRefinementOutput(writeBeadDocument(refinedDocument), { winnerDraftContent }))
+      .toThrow('modified bead ids must remain stable')
+  })
+
+  it.each([
+    ['an extra unresolved ID change', modifiedChange(
+      { id: 'ghost-1', label: 'Missing prior bead' },
+      { id: 'ghost-2', label: 'Missing refined bead' },
+    )],
+    ['an extra unresolved removal that names the shifted ID', {
+      type: 'removed', item_type: 'bead', before: { id: 'bead-3', label: 'Missing bead' }, after: null,
+    }],
+    ['an extra addition that names the shifted ID', {
+      type: 'added', item_type: 'bead', before: null, after: { id: 'bead-3', label: 'Update persistence coverage' },
+    }],
+    ['an addition with an unexpected before item', {
+      type: 'added', item_type: 'bead', before: { id: 'ghost', label: 'Missing bead' }, after: { id: 'bead-2', label: 'Add cache invalidation coverage' },
+    }],
+  ])('rejects an ID-shift repair with %s', (_description, extraChange) => {
+    const { winnerDraftContent, refinedDocument } = buildBeadIdShiftFixture()
+    declareBeadIdShift(refinedDocument, 'bead-2', [extraChange])
+
+    expect(() => validateBeadsRefinementOutput(writeBeadDocument(refinedDocument), { winnerDraftContent }))
+      .toThrow('modified bead ids must remain stable')
   })
 
   it('does not treat a moved winner bead as newly added when its title matches', () => {
@@ -490,32 +582,26 @@ describe.concurrent('beads refinement validation', () => {
   it('detects list edits even when delimiter-joined fingerprints would collide', () => {
     const winnerDraftContent = buildBeadsRefinementContent()
     const winnerDocument = readBeadDocument(winnerDraftContent)
-    const refinedDocument = readBeadDocument(buildBeadsRefinementContent({
-      beadTwoDescription: 'Refresh the persistence coverage details with storage-shape verification.',
-    }))
+    const refinedDocument = readBeadDocument(winnerDraftContent)
     ;(winnerDocument.beads[0]!.contextGuidance as Record<string, unknown>).patterns = ['alpha|beta']
     ;(refinedDocument.beads[0]!.contextGuidance as Record<string, unknown>).patterns = ['alpha', 'beta']
-    refinedDocument.changes = [modifiedChange(
-      { id: 'bead-2', label: 'Update persistence coverage' },
-      { id: 'bead-2', label: 'Update persistence coverage' },
-    )]
 
     const result = validateBeadsRefinementOutput(
       writeBeadDocument(refinedDocument),
       { winnerDraftContent: writeBeadDocument(winnerDocument) },
     )
 
-    expect(result.changes).toEqual(expect.arrayContaining([
+    expect(result.changes).toEqual([
       expect.objectContaining({
         type: 'modified',
         before: expect.objectContaining({ id: 'bead-1' }),
         after: expect.objectContaining({ id: 'bead-1' }),
         attributionStatus: 'synthesized_unattributed',
       }),
-    ]))
-    expect(result.repairWarnings).toContain(
-      'Synthesized omitted beads refinement modified change for bead "bead-1" by matching id across the winning and refined drafts.',
-    )
+    ])
+    expect(result.repairWarnings.filter((warning) =>
+      warning === 'Synthesized omitted beads refinement modified change for bead "bead-1" by matching id across the winning and refined drafts.',
+    )).toHaveLength(1)
   })
 
   it('synthesizes omitted add and remove records from a partially declared refinement', () => {
@@ -563,48 +649,42 @@ describe.concurrent('beads refinement validation', () => {
     expect(result.repairWarnings.some((warning) => warning.includes('do not fully account for the diff'))).toBe(false)
   })
 
-  it('repairs a declared removal when the same bead ID remains in the refined draft', () => {
+  it.each(contradictoryBeadChanges)('preserves valid inspiration when a contradictory %s row becomes a modification', (_type, change) => {
     const winnerDraftContent = buildBeadsRefinementContent()
     const refinedDocument = readBeadDocument(winnerDraftContent)
     refinedDocument.beads[1]!.description = 'Refresh persistence coverage with storage-shape verification.'
-    refinedDocument.changes = [{
-      type: 'removed',
-      item_type: 'bead',
-      before: { id: 'bead-2', label: 'Update persistence coverage' },
-      after: null,
-    }]
+    const inspiredChange = {
+      ...change,
+      inspiration: { alternative_draft: 1, item: { id: 'idea-1', title: 'Add coverage for expiry' } },
+    }
+    const refinedContent = withChanges(writeBeadDocument(refinedDocument), [inspiredChange])
+    const losingDraftMeta = [{ memberId: TEST.councilMembers[0] }]
 
-    const result = validateBeadsRefinementOutput(writeBeadDocument(refinedDocument), { winnerDraftContent })
+    const result = validateBeadsRefinementOutput(refinedContent, { winnerDraftContent, losingDraftMeta })
 
     expect(result.changes).toEqual([
       expect.objectContaining({
         type: 'modified',
         before: expect.objectContaining({ id: 'bead-2' }),
         after: expect.objectContaining({ id: 'bead-2' }),
-        attributionStatus: 'synthesized_unattributed',
+        attributionStatus: 'inspired',
+        inspiration: expect.objectContaining({ draftIndex: 0, memberId: TEST.councilMembers[0] }),
       }),
     ])
-    expect(result.repairWarnings).toContain(
-      'Skipped beads refinement change at index 0: removed bead "bead-2" remains in the refined output.',
-    )
-    expect(result.repairWarnings).not.toContain(
-      'Synthesized omitted beads refinement added change for bead "bead-2" (present in refined output but not in winner draft).',
-    )
-    expect(result.repairWarnings.some((warning) => warning.includes('do not fully account for the diff'))).toBe(false)
+    expect(result.repairWarnings.some((warning) => warning.startsWith('Corrected beads refinement change at index 0:'))).toBe(true)
+    expect(result.repairWarnings.some((warning) => warning.startsWith('Synthesized omitted beads refinement added change'))).toBe(false)
+    expect(result.repairWarnings.some((warning) => warning.startsWith('Synthesized omitted beads refinement removed change'))).toBe(false)
   })
 
-  it('repairs a declared addition when the same bead ID already exists in the winner draft', () => {
+  it.each(contradictoryBeadChanges)('records an unattributed contradictory %s row as a synthesized modification', (_type, change) => {
     const winnerDraftContent = buildBeadsRefinementContent()
     const refinedDocument = readBeadDocument(winnerDraftContent)
     refinedDocument.beads[1]!.description = 'Refresh persistence coverage with storage-shape verification.'
-    refinedDocument.changes = [{
-      type: 'added',
-      item_type: 'bead',
-      before: null,
-      after: { id: 'bead-2', label: 'Update persistence coverage' },
-    }]
 
-    const result = validateBeadsRefinementOutput(writeBeadDocument(refinedDocument), { winnerDraftContent })
+    const result = validateBeadsRefinementOutput(
+      withChanges(writeBeadDocument(refinedDocument), [change]),
+      { winnerDraftContent },
+    )
 
     expect(result.changes).toEqual([
       expect.objectContaining({
@@ -614,9 +694,7 @@ describe.concurrent('beads refinement validation', () => {
         attributionStatus: 'synthesized_unattributed',
       }),
     ])
-    expect(result.repairWarnings).toContain(
-      'Skipped beads refinement change at index 0: added bead "bead-2" already exists in the winner draft.',
-    )
+    expect(result.repairWarnings.some((warning) => warning.startsWith('Corrected beads refinement change at index 0:'))).toBe(true)
     expect(result.repairWarnings.some((warning) => warning.includes('do not fully account for the diff'))).toBe(false)
   })
 

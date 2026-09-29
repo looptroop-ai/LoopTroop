@@ -1214,7 +1214,7 @@ describe('Manual QA submission recovery and integrity', () => {
     item.expectedResult = 'The chosen value remains selected after reload'
     item.prdRefs = [{ ref: 'EPIC-1/STORY-1/AC-1', coverage: 'full' }]
     item.beadRefs = ['source-bead']
-    const setup = await prepareFixture([item])
+    const setup = await prepareWorkspaceFixture([item])
     writeFileSync(resolve(setup.paths.ticketDir, 'prd.yaml'), [
       'epics:',
       '  - id: EPIC-1',

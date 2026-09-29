@@ -208,11 +208,23 @@ function findUnambiguousBeadIdShiftRepair(
   const reusedLabelKey = reusedIdItem.label.toLowerCase().trim()
   if (winnerLookup.byLabel.has(reusedLabelKey)) return null
 
+  const declaredRemovedIds = new Set<string>()
+  for (const change of declaredChanges) {
+    if (change.type !== 'removed' || change.after !== null) continue
+    const removed = resolveBeadChangeItem(change.before, winnerLookup)
+    if (removed) declaredRemovedIds.add(removed.id)
+  }
+  if ([...winnerLookup.byId.keys()].some((id) =>
+    id !== winnerId && !refinedLookup.byId.has(id) && !declaredRemovedIds.has(id),
+  )) return null
+
   const addedMatches = changes
     .map((candidate, candidateIndex) => ({ candidate, candidateIndex }))
     .filter(({ candidate }) => candidate.type === 'added' && candidate.after?.id === winnerId)
   const declaredAddedMatches = declaredChanges.filter(
-    (change) => change.type === 'added' && change.after?.id === winnerId,
+    (change) => change.type === 'added'
+      && change.before === null
+      && resolveBeadChangeItem(change.after, refinedLookup)?.id === winnerId,
   )
   if (addedMatches.length !== 1 || declaredAddedMatches.length !== 1) return null
 
@@ -223,7 +235,7 @@ function findUnambiguousBeadIdShiftRepair(
     || change.after?.id === shiftedId
   const isExpectedChange = (change: RefinementChange) =>
     (change.type === 'modified' && change.before?.id === winnerId && change.after?.id === shiftedId)
-    || (change.type === 'added' && !change.before && change.after?.id === winnerId)
+    || (change.type === 'added' && change.before === null && change.after?.id === winnerId)
   if (
     changes.some((change) => referencesShiftIds(change) && !isExpectedChange(change))
     || declaredChanges.some((change) => referencesShiftIds(change) && !isExpectedChange(change))
@@ -504,16 +516,15 @@ export function validateBeadsRefinementOutput(
     )
   }
 
-  const { beads: refinedBeads, changes: normalizedChanges } = refinementResult.value
+  const {
+    beads: refinedBeads,
+    changes: normalizedChanges,
+    declaredChanges,
+    synthesizedRepairWarnings,
+  } = refinementResult.value
   const rawChanges = normalizedChanges.filter((change) => change.attributionStatus !== 'synthesized_unattributed')
-  const declaredChangesResult = normalizeBeadSubsetYamlOutput(rawContent, options.losingDraftMeta)
-  const declaredChanges = declaredChangesResult.ok && Array.isArray(declaredChangesResult.value.changes)
-    ? declaredChangesResult.value.changes
-    : []
   let normalizedContent = refinementResult.value.normalizedContent
-  const repairWarnings = refinementResult.repairWarnings.filter(
-    (warning) => !warning.startsWith('Synthesized omitted beads refinement '),
-  )
+  const repairWarnings = refinementResult.repairWarnings.filter((warning) => !synthesizedRepairWarnings.includes(warning))
   let repairApplied = refinementResult.repairApplied
 
   if (normalizedChanges.length === 0) {
@@ -560,12 +571,39 @@ export function validateBeadsRefinementOutput(
   const validatedChanges: RefinementChange[] = []
 
   for (const [index, change] of rawChanges.entries()) {
-    const before = resolveBeadChangeItem(change.before, winnerLookup)
-    const after = resolveBeadChangeItem(change.after, refinedLookup)
-    const canonicalBefore = before ? winnerLookup.byId.get(before.id) ?? null : null
-    const canonicalAfter = after ? refinedLookup.byId.get(after.id) ?? null : null
+    let type = change.type
+    let before = resolveBeadChangeItem(change.before, winnerLookup)
+    let after = resolveBeadChangeItem(change.after, refinedLookup)
+    let canonicalBefore = before ? winnerLookup.byId.get(before.id) ?? null : null
+    let canonicalAfter = after ? refinedLookup.byId.get(after.id) ?? null : null
 
-    if (change.type === 'modified') {
+    // Correct a contradictory add/remove when the same stable ID exists in
+    // both drafts. Keeping the row in the common path preserves its inspiration.
+    if (type === 'added' && change.before === null && after) {
+      const existing = winnerLookup.byId.get(after.id)
+      if (existing) {
+        before = existing
+        canonicalBefore = existing
+        type = 'modified'
+        repairApplied = true
+        repairWarnings.push(
+          `Corrected beads refinement change at index ${index}: added bead "${after.id}" already exists in the winner draft, so its content difference is recorded as modified.`,
+        )
+      }
+    } else if (type === 'removed' && change.after === null && before) {
+      const surviving = refinedLookup.byId.get(before.id)
+      if (surviving) {
+        after = surviving
+        canonicalAfter = surviving
+        type = 'modified'
+        repairApplied = true
+        repairWarnings.push(
+          `Corrected beads refinement change at index ${index}: removed bead "${before.id}" remains in the refined output, so its content difference is recorded as modified.`,
+        )
+      }
+    }
+
+    if (type === 'modified') {
       if (!before || !after) {
         repairApplied = true
         repairWarnings.push(`Skipped beads refinement change at index ${index}: modified change has no resolvable before or after item.`)
@@ -583,7 +621,7 @@ export function validateBeadsRefinementOutput(
           }),
         )
       }
-    } else if (change.type === 'added') {
+    } else if (type === 'added') {
       if (!after) {
         repairApplied = true
         repairWarnings.push(`Skipped beads refinement change at index ${index}: added change has no resolvable after item.`)
@@ -594,7 +632,7 @@ export function validateBeadsRefinementOutput(
         repairWarnings.push(`Skipped beads refinement change at index ${index}: added bead "${after.id}" already exists in the winner draft.`)
         continue
       }
-    } else if (change.type === 'removed') {
+    } else if (type === 'removed') {
       if (!before) {
         repairApplied = true
         repairWarnings.push(`Skipped beads refinement change at index ${index}: removed change has no resolvable before item.`)
@@ -619,7 +657,11 @@ export function validateBeadsRefinementOutput(
     }
 
     let inspiration = change.inspiration ?? null
-    let attributionStatus = normalizeAttributionStatus(change.attributionStatus, inspiration)
+    let attributionStatus = type !== change.type
+      && !inspiration
+      && change.attributionStatus === 'model_unattributed'
+      ? 'synthesized_unattributed'
+      : normalizeAttributionStatus(change.attributionStatus, inspiration)
     if (inspiration) {
       const losingDraft = options.losingDraftMeta?.[inspiration.draftIndex]
       if (!losingDraft) {
@@ -641,7 +683,7 @@ export function validateBeadsRefinementOutput(
 
     preparedChanges.push({
       sourceIndex: index,
-      type: change.type,
+      type,
       before: before ? cloneCanonicalItem(before) : change.before ?? null,
       after: after ? cloneCanonicalItem(after) : change.after ?? null,
       canonicalBefore,

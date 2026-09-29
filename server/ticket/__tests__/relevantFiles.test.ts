@@ -61,4 +61,18 @@ describe('buildRelevantFilesArtifact', () => {
     expect(artifact.file_count).toBe(1)
     expect(artifact.files.map(({ path }) => path)).toEqual(['src/boundary.ts'])
   })
+
+  it('stops trimming when removing the last low-priority file reaches the exact budget', () => {
+    const artifact = load(buildRelevantFilesArtifact('ABC-1', {
+      file_count: 3,
+      files: [
+        makeFile('src/low.ts', 'low', 1),
+        makeFile('src/high.ts', 'high', MAX_TOTAL_CHARS - 2),
+        makeFile('src/medium.ts', 'medium', 2),
+      ],
+    })) as { file_count: number; files: Array<{ path: string }> }
+
+    expect(artifact.file_count).toBe(2)
+    expect(artifact.files.map(({ path }) => path)).toEqual(['src/high.ts', 'src/medium.ts'])
+  })
 })

@@ -10,7 +10,8 @@ Unreleased changes appear first and represent commits that have not yet been inc
 > Changes merged since the last versioned release that have not yet shipped in a tagged version.
 
 ### Summary
-- Beads refinement repairs ID collisions only with explicit modification and addition records, while relevant-files budgets retain higher-priority entries.
+- Beads refinement repairs stable IDs only from explicit records and rejects contradictory change rows, while relevant-files budgets retain higher-priority entries.
+- The test suite removes redundant worktree and log replay setup while strengthening boundary, timeout, and transport regressions.
 - Kanban pagination arrows follow the visible page, and Escape cancels an uncommitted page-number edit.
 - Failed ticket starts that stay in DRAFT clear provisional model locks and can be retried with updated settings; corrupt metadata stays readable and cannot be overwritten by a start.
 - V8 coverage now exceeds 90% line coverage across all four Vitest projects; the required Verify job enforces 90% lines and 80% branches while Codecov reports separately.
@@ -51,11 +52,11 @@ Unreleased changes appear first and represent commits that have not yet been inc
 - The OrcaCode pull-request review workflow is removed; it reported a failed check on every pull request and never completed a successful run.
 
 ### Performance
-- The log pagination test seeds its 300-row JSONL history with one write and keeps append persistence covered separately, removing its per-test timeout override.
+- Log route tests use uninitialized ticket fixtures, and one 2,000-row cold catch-up case now covers exact newest-page contents, paging metadata, health, and concurrent-reader agreement; the duplicate 300-row replay test is removed.
 - PR review route tests no longer initialize a ticket worktree per case, and now remove their fixture repositories after the suite; the focused file runtime fell from 46.8s to 23.7s.
 - Execution-phase ticket fixtures fell from 50.9s to 22.4s, execution-setup fixtures from 27.0s to 15.4s, and Manual QA operations from 34.1s to 19.9s by reserving initialized Git worktrees for cases that assert Git behavior.
-- CI skips the duplicate Ubuntu toolchain-floor suite on pushes; pull requests still run it against the proposed merge, with Verify covering the PR head.
-- Installer binary tests reuse one immutable archive fixture, and stall-guard deadline cases use fake timers instead of waiting for real deadlines.
+- CI skips the duplicate Ubuntu toolchain-floor suite on pushes under a distinct `[push]` status name; pull requests retain the required test context, with Verify covering the PR head.
+- Installer binary tests reuse one immutable archive fixture, and stall-guard deadline tests use fake timers to assert the exact idle-time boundary.
 
 ### Added
 - Hook recovery tests now cover the tracked-worktree-edit refusal path, including preservation of the changed file and marker and proof that no hook runs.
@@ -287,7 +288,7 @@ Unreleased changes appear first and represent commits that have not yet been inc
 - The unused `server/db/drizzle.config.ts` alias. Every database script already selects its app or project config explicitly, so keeping a third config that Drizzle Kit cannot discover from the repository root only advertised a command that no longer worked.
 
 ### Fixed
-- Beads refinement repairs a uniquely title-matched ID collision only when explicit mismatched modification and addition records identify the surviving and newly added beads.
+- Beads refinement repairs a uniquely title-matched ID collision only when explicit mismatched modification and addition records identify the surviving and newly added beads; contradictory add/remove rows that reuse a live stable ID are skipped so synthesis emits the canonical modification.
 - Relevant-files artifact budgets now discard lower-priority entries first and preserve higher-priority files when the size limit is exceeded.
 - Concurrent ticket starts now share an in-flight guard across equivalent ticket reference spellings.
 - Windows full-suite test jobs now have a 40-minute timeout, so slower runners do not cancel tests that are still progressing.

@@ -20,7 +20,7 @@ type Step = {
   if?: unknown
   'continue-on-error'?: unknown
 }
-type Job = { permissions?: Record<string, unknown>; steps?: Step[]; if?: unknown; 'continue-on-error'?: unknown; 'runs-on'?: unknown }
+type Job = { name?: unknown; permissions?: Record<string, unknown>; steps?: Step[]; if?: unknown; 'continue-on-error'?: unknown; 'runs-on'?: unknown }
 type Workflow = { jobs?: Record<string, Job> }
 
 const workflows = new Map(files.map((file) => [
@@ -394,6 +394,8 @@ describe('release workflow policy', () => {
     }) | undefined
     if (!job) throw new Error('ci.yml: test-matrix job missing')
     expect(Object.hasOwn(job, 'continue-on-error'), 'test-matrix continue-on-error').toBe(false)
+    expect(job.name, 'pull_request keeps the required matrix contexts; push uses separate contexts')
+      .toBe("Test (${{ matrix.os }}, ${{ matrix.label }})${{ github.event_name == 'push' && matrix.os == 'ubuntu-latest' && matrix.label == 'toolchain floor' && ' [push]' || '' }}")
 
     const matrix = job.strategy?.matrix ?? {}
     expect(Object.keys(matrix).sort(), 'test-matrix axes').toEqual(['label', 'os'])

@@ -1201,7 +1201,10 @@ describe('bounded transfers', () => {
   it('abandons a transfer that stops making progress', async () => {
     const guard = stallGuard(20, 'The download')
 
-    await vi.advanceTimersByTimeAsync(20)
+    await vi.advanceTimersByTimeAsync(19)
+    expect(guard.signal.aborted).toBe(false)
+
+    await vi.advanceTimersByTimeAsync(1)
 
     expect(guard.signal.aborted).toBe(true)
     expect(guard.reason()).toContain('made no progress')

@@ -151,7 +151,7 @@ describe('doctor command', () => {
 
   it('reports on the runtime, tooling, config and services', async () => {
     useConfigDir()
-    const fetchMock = vi.spyOn(globalThis, 'fetch')
+    const fetchMock = vi.spyOn(globalThis, 'fetch').mockRejectedValue(new Error('Unexpected network request'))
 
     const checks = await runChecks()
     const names = checks.map((check) => check.name)

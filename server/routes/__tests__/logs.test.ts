@@ -1,16 +1,16 @@
 import { afterAll, beforeEach, describe, expect, it, vi } from 'vitest'
 import { Hono } from 'hono'
 import { createHash } from 'node:crypto'
-import { appendFileSync, statSync } from 'node:fs'
+import { appendFileSync, mkdirSync, statSync } from 'node:fs'
 import * as fsPromises from 'node:fs/promises'
-import { join } from 'node:path'
+import { dirname, join } from 'node:path'
 import { clearProjectDatabaseCache, getProjectDatabase } from '../../db/project'
 import { sqlite } from '../../db/index'
 import { appendLogEvent } from '../../log/executionLog'
 import { exportLogEntries, queryLogPage } from '../../log/projection'
 import { ticketRouter } from '../tickets'
 import { health } from '../health'
-import { createInitializedTestTicket, createTestRepoManager, resetTestDb } from '../../test/integration'
+import { createTestRepoManager, createUninitializedTestTicket, resetTestDb } from '../../test/integration'
 import { getTicketPaths } from '../../storage/tickets'
 import { getTicketContext } from '../../storage/ticketQueries'
 import type {
@@ -44,6 +44,12 @@ const repoManager = createTestRepoManager('log-projection-')
 const app = new Hono()
 app.route('/api', ticketRouter)
 app.route('/api', health)
+
+function createLogTestTicket() {
+  const fixture = createUninitializedTestTicket(repoManager)
+  mkdirSync(dirname(fixture.paths.executionLogPath), { recursive: true })
+  return fixture
+}
 
 beforeEach(() => {
   clearProjectDatabaseCache()
@@ -79,44 +85,8 @@ afterAll(() => {
 })
 
 describe('ticket log projection API', () => {
-  /** Seed history in one write so this test measures projection pagination. */
-  it('defaults to the newest 20 projected rows without reading the complete history', async () => {
-    const { ticket } = await createInitializedTestTicket(repoManager)
-    const paths = getTicketPaths(ticket.id)
-    expect(paths).not.toBeNull()
-    const lines = Array.from({ length: 300 }, (_, index) => JSON.stringify({
-      timestamp: `2026-01-01T00:00:${String(index % 60).padStart(2, '0')}.000Z`,
-      type: 'info',
-      ticketId: ticket.id,
-      phase: 'CODING',
-      phaseAttempt: 1,
-      status: 'CODING',
-      source: 'system',
-      message: `row-${index}`,
-      content: `row-${index}`,
-    })).join('\n') + '\n'
-    appendFileSync(paths!.executionLogPath, lines)
-
-    const response = await app.request(`/api/tickets/${encodeURIComponent(ticket.id)}/logs?scope=phase&phase=CODING&view=overview`)
-    expect(response.status).toBe(200)
-    const body = await response.json() as {
-      entries: Array<{ content: string }>
-      hasOlder: boolean
-      olderCursor: string
-      totalEntries: number
-      totalTextLines: number
-    }
-    expect(body.entries).toHaveLength(20)
-    expect(body.entries[0]?.content).toBe('row-280')
-    expect(body.entries.at(-1)?.content).toBe('row-299')
-    expect(body.hasOlder).toBe(true)
-    expect(body.olderCursor).toEqual(expect.any(String))
-    expect(body.totalEntries).toBe(300)
-    expect(body.totalTextLines).toBe(300)
-  })
-
   it('filters command chatter before paginating the overview', async () => {
-    const { ticket } = await createInitializedTestTicket(repoManager)
+    const { ticket } = createLogTestTicket()
     appendLogEvent(ticket.id, 'info', 'CODING', 'visible milestone', {}, 'system', 'CODING')
     for (let index = 0; index < 25; index += 1) {
       appendLogEvent(ticket.id, 'info', 'CODING', `[CMD] $ command-${index}`, {}, 'system', 'CODING')
@@ -136,7 +106,7 @@ describe('ticket log projection API', () => {
   })
 
   it('filters historical rows by bead id so completed bead transcripts remain addressable', async () => {
-    const { ticket } = await createInitializedTestTicket(repoManager)
+    const { ticket } = createLogTestTicket()
     appendLogEvent(ticket.id, 'model_output', 'CODING', 'older bead output', {
       audience: 'ai',
       kind: 'text',
@@ -161,7 +131,7 @@ describe('ticket log projection API', () => {
   })
 
   it('filters AI detail-only rows before paginating the overview', async () => {
-    const { ticket } = await createInitializedTestTicket(repoManager)
+    const { ticket } = createLogTestTicket()
     for (let index = 0; index < 25; index += 1) {
       appendLogEvent(ticket.id, 'model_output', 'CODING', `tool detail ${index}`, {
         audience: 'ai',
@@ -180,10 +150,8 @@ describe('ticket log projection API', () => {
     }))
   })
 
-  it('keeps health responsive and deduplicates readers during a cold projection catch-up', async () => {
-    const { ticket } = await createInitializedTestTicket(repoManager)
-    const paths = getTicketPaths(ticket.id)
-    expect(paths).not.toBeNull()
+  it('paginates newest rows during a shared cold projection catch-up', async () => {
+    const { ticket, paths } = createLogTestTicket()
     const lines = Array.from({ length: 2_000 }, (_, index) => JSON.stringify({
       timestamp: `2026-01-01T00:00:${String(index % 60).padStart(2, '0')}.000Z`,
       type: 'info',
@@ -195,7 +163,7 @@ describe('ticket log projection API', () => {
       message: `cold-${index}`,
       content: `cold-${index}`,
     })).join('\n') + '\n'
-    appendFileSync(paths!.executionLogPath, lines)
+    appendFileSync(paths.executionLogPath, lines)
 
     const firstHistory = app.request(`/api/tickets/${encodeURIComponent(ticket.id)}/logs?scope=phase&phase=CODING&view=overview`)
     const secondHistory = app.request(`/api/tickets/${encodeURIComponent(ticket.id)}/logs?scope=phase&phase=CODING&view=overview`)
@@ -204,15 +172,26 @@ describe('ticket log projection API', () => {
     expect(await healthResponse.json()).toEqual(expect.objectContaining({ status: 'ok' }))
 
     const [first, second] = await Promise.all([firstHistory, secondHistory])
-    const firstBody = await first.json() as { entries: Array<{ content: string }> }
-    const secondBody = await second.json() as { entries: Array<{ content: string }> }
-    expect(firstBody.entries).toHaveLength(20)
-    expect(secondBody.entries).toEqual(firstBody.entries)
-    expect(firstBody.entries.at(-1)?.content).toBe('cold-1999')
+    const firstBody = await first.json() as {
+      entries: Array<{ content: string }>
+      hasOlder: boolean
+      olderCursor: string
+      totalEntries: number
+      totalTextLines: number
+    }
+    const secondBody = await second.json() as typeof firstBody
+    expect(firstBody.entries.map(({ content }) => content)).toEqual(
+      Array.from({ length: 20 }, (_, index) => `cold-${1_980 + index}`),
+    )
+    expect(secondBody).toEqual(firstBody)
+    expect(firstBody.hasOlder).toBe(true)
+    expect(firstBody.olderCursor).toEqual(expect.any(String))
+    expect(firstBody.totalEntries).toBe(2_000)
+    expect(firstBody.totalTextLines).toBe(2_000)
   })
 
   it('returns newest matching rows first, pages older rows, and exports complete history', async () => {
-    const { ticket } = await createInitializedTestTicket(repoManager)
+    const { ticket } = createLogTestTicket()
     for (let index = 0; index < 4; index += 1) {
       appendLogEvent(ticket.id, 'info', 'CODING', `row-${index}`, { timestamp: `2026-01-01T00:00:0${index}.000Z` }, 'system', 'CODING')
     }
@@ -247,7 +226,7 @@ describe('ticket log projection API', () => {
   })
 
   it('exports the same complete history whether it fits one page or five', async () => {
-    const { ticket } = await createInitializedTestTicket(repoManager)
+    const { ticket } = createLogTestTicket()
     for (let index = 0; index < 5; index += 1) {
       appendLogEvent(ticket.id, 'info', 'CODING', `row-${index}`, { timestamp: `2026-01-01T00:00:0${index}.000Z` }, 'system', 'CODING')
     }
@@ -268,7 +247,7 @@ describe('ticket log projection API', () => {
   })
 
   it('counts logical text lines for the complete filtered result without applying the page cursor', async () => {
-    const { ticket } = await createInitializedTestTicket(repoManager)
+    const { ticket } = createLogTestTicket()
     appendLogEvent(ticket.id, 'info', 'CODING', 'first\nsecond\nthird', {}, 'system', 'CODING')
     appendLogEvent(ticket.id, 'info', 'CODING', '', {}, 'system', 'CODING')
     appendLogEvent(ticket.id, 'info', 'CODING', '[CMD] $ ignored-overview\nsecond-command-line', {}, 'system', 'CODING')
@@ -303,7 +282,7 @@ describe('ticket log projection API', () => {
   })
 
   it('uses the shared classification for command, error, AI, and debug views', async () => {
-    const { ticket } = await createInitializedTestTicket(repoManager)
+    const { ticket } = createLogTestTicket()
     appendLogEvent(ticket.id, 'info', 'CODING', '[CMD] $ npm test', {}, 'system', 'CODING')
     appendLogEvent(ticket.id, 'error', 'CODING', 'failed', {}, 'error', 'CODING')
     appendLogEvent(ticket.id, 'model_output', 'CODING', 'thinking', { audience: 'ai', modelId: 'test/model' }, 'opencode', 'CODING')
@@ -317,7 +296,7 @@ describe('ticket log projection API', () => {
   })
 
   it('makes historical DEBUG a four-source ticket-scoped union', async () => {
-    const { ticket, repoDir } = await createInitializedTestTicket(repoManager)
+    const { ticket, repoDir } = createLogTestTicket()
     appendLogEvent(ticket.id, 'info', 'CODING', 'system row', {
       sessionId: 'session-debug', phaseAttempt: 2, timestamp: '2026-01-01T00:00:01.000Z',
     }, 'system', 'CODING')
@@ -370,7 +349,7 @@ describe('ticket log projection API', () => {
   })
 
   it('keeps native DEBUG rows when their session owner has a different model', async () => {
-    const { ticket, repoDir } = await createInitializedTestTicket(repoManager)
+    const { ticket, repoDir } = createLogTestTicket()
     appendLogEvent(ticket.id, 'info', 'CODING', 'session owner', {
       sessionId: 'session-native-model',
       modelId: 'test/owner-model',
@@ -394,7 +373,7 @@ describe('ticket log projection API', () => {
   })
 
   it('uses the native timestamp index for newest and older keyset pages', async () => {
-    const { ticket, repoDir } = await createInitializedTestTicket(repoManager)
+    const { ticket, repoDir } = createLogTestTicket()
     appendLogEvent(ticket.id, 'info', 'CODING', 'ticket session', {
       sessionId: 'session-plan', timestamp: '2026-01-01T00:00:01.000Z',
     }, 'system', 'CODING')
@@ -490,7 +469,7 @@ describe('ticket log projection API', () => {
   })
 
   it('pages persisted debug rows when a ticket has no native sessions', async () => {
-    const { ticket } = await createInitializedTestTicket(repoManager)
+    const { ticket } = createLogTestTicket()
     appendLogEvent(ticket.id, 'debug', 'CODING', 'persisted debug newest', { timestamp: '2026-01-01T00:00:03.000Z' }, 'debug', 'CODING')
     appendLogEvent(ticket.id, 'debug', 'CODING', 'persisted debug oldest', { timestamp: '2026-01-01T00:00:01.000Z' }, 'debug', 'CODING')
     const first = await queryLogPage(ticket.id, {
@@ -505,7 +484,7 @@ describe('ticket log projection API', () => {
   })
 
   it('reports an expired native cursor instead of returning a partial page', async () => {
-    const { ticket, repoDir } = await createInitializedTestTicket(repoManager)
+    const { ticket, repoDir } = createLogTestTicket()
     appendLogEvent(ticket.id, 'info', 'CODING', 'ticket session', {
       sessionId: 'session-expiry', timestamp: '2026-01-01T00:00:01.000Z',
     }, 'system', 'CODING')
@@ -537,7 +516,7 @@ describe('ticket log projection API', () => {
   })
 
   it('does not cache an empty complete history when a native candidate read fails', async () => {
-    const { ticket, repoDir } = await createInitializedTestTicket(repoManager)
+    const { ticket, repoDir } = createLogTestTicket()
     appendLogEvent(ticket.id, 'info', 'CODING', 'ticket session', {
       sessionId: 'session-read-error', timestamp: '2026-01-01T00:00:01.000Z',
     }, 'system', 'CODING')
@@ -550,7 +529,7 @@ describe('ticket log projection API', () => {
   })
 
   it('accepts native growth after the captured boundary during indexing', async () => {
-    const { ticket, repoDir } = await createInitializedTestTicket(repoManager)
+    const { ticket, repoDir } = createLogTestTicket()
     appendLogEvent(ticket.id, 'info', 'CODING', 'ticket session', {
       sessionId: 'session-source-change', timestamp: '2026-01-01T00:00:01.000Z',
     }, 'system', 'CODING')
@@ -584,7 +563,7 @@ describe('ticket log projection API', () => {
   })
 
   it('fails closed when indexed native bytes are rewritten during indexing', async () => {
-    const { ticket, repoDir } = await createInitializedTestTicket(repoManager)
+    const { ticket, repoDir } = createLogTestTicket()
     appendLogEvent(ticket.id, 'info', 'CODING', 'ticket session', {
       sessionId: 'session-source-rewrite', timestamp: '2026-01-01T00:00:01.000Z',
     }, 'system', 'CODING')
@@ -615,7 +594,7 @@ describe('ticket log projection API', () => {
   })
 
   it('fails closed when an unterminated native tail is rewritten during indexing', async () => {
-    const { ticket, repoDir } = await createInitializedTestTicket(repoManager)
+    const { ticket, repoDir } = createLogTestTicket()
     appendLogEvent(ticket.id, 'info', 'CODING', 'ticket session', {
       sessionId: 'session-tail-rewrite', timestamp: '2026-01-01T00:00:01.000Z',
     }, 'system', 'CODING')
@@ -662,7 +641,7 @@ describe('ticket log projection API', () => {
   })
 
   it('refreshes same-size native rewrites while keeping an older cursor immutable', async () => {
-    const { ticket, repoDir } = await createInitializedTestTicket(repoManager)
+    const { ticket, repoDir } = createLogTestTicket()
     appendLogEvent(ticket.id, 'info', 'CODING', 'ticket session', {
       sessionId: 'session-rewrite', timestamp: '2026-01-01T00:00:01.000Z',
     }, 'system', 'CODING')
@@ -690,7 +669,7 @@ describe('ticket log projection API', () => {
   })
 
   it('replaces a same-inode native file when a growing rewrite changes the indexed prefix', async () => {
-    const { ticket, repoDir } = await createInitializedTestTicket(repoManager)
+    const { ticket, repoDir } = createLogTestTicket()
     appendLogEvent(ticket.id, 'info', 'CODING', 'ticket session', {
       sessionId: 'session-growing-rewrite', timestamp: '2026-01-01T00:00:01.000Z',
     }, 'system', 'CODING')
@@ -745,7 +724,7 @@ describe('ticket log projection API', () => {
   })
 
   it('indexes an append from the saved byte offset and snapshots one generation pointer', async () => {
-    const { ticket, repoDir } = await createInitializedTestTicket(repoManager)
+    const { ticket, repoDir } = createLogTestTicket()
     appendLogEvent(ticket.id, 'info', 'CODING', 'ticket session', {
       sessionId: 'session-append', timestamp: '2026-01-01T00:00:01.000Z',
     }, 'system', 'CODING')
@@ -830,7 +809,7 @@ describe('ticket log projection API', () => {
   })
 
   it('bounds a missing-session prefix before appending the suffix for every session', async () => {
-    const { ticket, repoDir } = await createInitializedTestTicket(repoManager)
+    const { ticket, repoDir } = createLogTestTicket()
     appendLogEvent(ticket.id, 'info', 'CODING', 'session A', {
       sessionId: 'session-a', timestamp: '2026-01-01T00:00:01.000Z',
     }, 'system', 'CODING')
@@ -885,7 +864,7 @@ describe('ticket log projection API', () => {
   })
 
   it('replaces an existing unterminated tail while adding a newly requested session', async () => {
-    const { ticket, repoDir } = await createInitializedTestTicket(repoManager)
+    const { ticket, repoDir } = createLogTestTicket()
     appendLogEvent(ticket.id, 'info', 'CODING', 'session A', {
       sessionId: 'session-tail-a', timestamp: '2026-01-01T00:00:01.000Z',
     }, 'system', 'CODING')
@@ -930,7 +909,7 @@ describe('ticket log projection API', () => {
   })
 
   it('retains the current manifest when snapshot timestamps tie or roll back', async () => {
-    const { ticket, repoDir } = await createInitializedTestTicket(repoManager)
+    const { ticket, repoDir } = createLogTestTicket()
     appendLogEvent(ticket.id, 'info', 'CODING', 'session for rotation', {
       sessionId: 'session-clock', timestamp: '2026-01-01T00:00:01.000Z',
     }, 'system', 'CODING')
@@ -981,7 +960,7 @@ describe('ticket log projection API', () => {
   })
 
   it('keeps unrelated native rotation out of the ticket snapshot and ingests it separately', async () => {
-    const { ticket, repoDir } = await createInitializedTestTicket(repoManager)
+    const { ticket, repoDir } = createLogTestTicket()
     appendLogEvent(ticket.id, 'info', 'CODING', 'ticket session', {
       sessionId: 'session-incremental', timestamp: '2026-01-01T00:00:01.000Z',
     }, 'system', 'CODING')
@@ -1017,7 +996,7 @@ describe('ticket log projection API', () => {
   })
 
   it('serializes native ingestion across concurrent phase session scopes', async () => {
-    const { ticket, repoDir } = await createInitializedTestTicket(repoManager)
+    const { ticket, repoDir } = createLogTestTicket()
     appendLogEvent(ticket.id, 'info', 'CODING', 'attempt one', {
       sessionId: 'session-one', phaseAttempt: 1, timestamp: '2026-01-01T00:00:01.000Z',
     }, 'system', 'CODING')
@@ -1065,7 +1044,7 @@ describe('ticket log projection API', () => {
   })
 
   it('keeps a native cursor on its indexed snapshot when files rotate between pages', async () => {
-    const { ticket, repoDir } = await createInitializedTestTicket(repoManager)
+    const { ticket, repoDir } = createLogTestTicket()
     appendLogEvent(ticket.id, 'info', 'CODING', 'ticket session', {
       sessionId: 'session-stable', timestamp: '2026-01-01T00:00:01.000Z',
     }, 'system', 'CODING')
@@ -1098,7 +1077,7 @@ describe('ticket log projection API', () => {
   })
 
   it('shows one AI provider error in both the model transcript and ERROR history', async () => {
-    const { ticket } = await createInitializedTestTicket(repoManager)
+    const { ticket } = createLogTestTicket()
     appendLogEvent(
       ticket.id,
       'error',
@@ -1121,7 +1100,7 @@ describe('ticket log projection API', () => {
   })
 
   it('restores model milestones and source-attributed rows once across pages and exports', async () => {
-    const { ticket } = await createInitializedTestTicket(repoManager)
+    const { ticket } = createLogTestTicket()
     const scope = { audience: 'all', kind: 'milestone', phaseAttempt: 2, beadId: 'bead-1' }
     appendLogEvent(ticket.id, 'info', 'CODING', 'model milestone', { ...scope, modelId: 'test/model' }, 'system', 'CODING')
     appendLogEvent(ticket.id, 'model_output', 'CODING', 'model output', { ...scope, audience: 'ai', kind: 'text', modelId: 'test/model' }, 'opencode', 'CODING')
@@ -1158,8 +1137,8 @@ describe('ticket log projection API', () => {
   })
 
   it('lists all scoped models independently of the selected view, model, and newest page', async () => {
-    const { ticket } = await createInitializedTestTicket(repoManager)
-    const { ticket: otherTicket } = await createInitializedTestTicket(repoManager)
+    const { ticket } = createLogTestTicket()
+    const { ticket: otherTicket } = createLogTestTicket()
     const scope = { audience: 'all', kind: 'milestone', phaseAttempt: 2, beadId: 'bead-1' }
     appendLogEvent(ticket.id, 'info', 'CODING', 'older explicit model', { ...scope, modelId: 'test/a' }, 'model:test/ignored-source', 'CODING')
     appendLogEvent(ticket.id, 'info', 'CODING', 'older source model', { ...scope, modelId: '' }, 'model:test/b', 'CODING')
@@ -1195,7 +1174,7 @@ describe('ticket log projection API', () => {
   })
 
   it('recovers AI-only writes and newer finalizations without losing repeated anonymous appends', async () => {
-    const { ticket } = await createInitializedTestTicket(repoManager)
+    const { ticket } = createLogTestTicket()
     const paths = getTicketPaths(ticket.id)!
     const base = { phase: 'CODING', phaseAttempt: 1, type: 'model_output', audience: 'ai', source: 'model:test/model' }
     const row = (second: number, content: string, fields = {}) => ({
@@ -1237,7 +1216,7 @@ describe('ticket log projection API', () => {
   })
 
   it('keeps bare model output in AI and ALL without exposing detail or debug rows', async () => {
-    const { ticket } = await createInitializedTestTicket(repoManager)
+    const { ticket } = createLogTestTicket()
     const base = { phase: 'CODING', timestamp: '2026-01-01T00:00:00.000Z' }
     const rows = [
       { ...base, type: 'model_output', content: '[DEBUG] quoted by a model' },
@@ -1274,7 +1253,7 @@ describe('ticket log projection API', () => {
   })
 
   it('keeps an AI cursor stable when finalization switches the winning channel between pages', async () => {
-    const { ticket } = await createInitializedTestTicket(repoManager)
+    const { ticket } = createLogTestTicket()
     const paths = getTicketPaths(ticket.id)!
     const base = { phase: 'CODING', type: 'model_output', audience: 'ai', op: 'finalize', modelId: 'test/model', timestamp: '2026-01-01T00:00:01.000Z' }
     appendFileSync(paths.executionLogPath, [
@@ -1312,7 +1291,7 @@ describe('ticket log projection API', () => {
   })
 
   it('exhausts AI pages across undated and equal-timestamp boundaries', async () => {
-    const { ticket } = await createInitializedTestTicket(repoManager)
+    const { ticket } = createLogTestTicket()
     const paths = getTicketPaths(ticket.id)!
     const rows = [
       { entryId: 'dated-a', timestamp: '2026-01-01T00:00:01.000Z', content: 'dated a' },
@@ -1344,7 +1323,7 @@ describe('ticket log projection API', () => {
   })
 
   it('rejects cursor fields with array values before binding them to SQLite', async () => {
-    const { ticket } = await createInitializedTestTicket(repoManager)
+    const { ticket } = createLogTestTicket()
     const valid = { ordinal: 1, timestamp: '', mirrorKey: 'entry:a', mirrorOccurrence: 0 }
     for (const cursor of [
       { ordinal: 1, timestamp: '', channel: ['ai'] },

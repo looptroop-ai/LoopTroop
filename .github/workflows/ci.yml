@@ -281,7 +281,9 @@ jobs:
     # survive a version move — "toolchain floor" for the runtime this
     # repository builds on, "declared floor" for the one `engines.node`
     # promises to users.
-    name: Test (${{ matrix.os }}, ${{ matrix.label }})
+    # This skipped push copy is not the required merge-ref test. Give only that
+    # row a separate name so its success cannot satisfy or mask the PR check.
+    name: Test (${{ matrix.os }}, ${{ matrix.label }})${{ github.event_name == 'push' && matrix.os == 'ubuntu-latest' && matrix.label == 'toolchain floor' && ' [push]' || '' }}
     runs-on: ${{ matrix.os }}
     timeout-minutes: ${{ matrix.os == 'windows-latest' && 40 || 30 }}
     strategy:
@@ -342,8 +344,8 @@ jobs:
         run: npm ci
 
       - name: Test
-        # Verify covers this lane on pushes; pull requests use the merge ref
-        # here, while Verify checks out the PR head for coverage.
+        # Verify covers this lane on pushes; the push-only job name keeps this
+        # skipped step out of the identically named required pull_request check.
         if: github.event_name != 'push' || matrix.os != 'ubuntu-latest' || matrix.label != 'toolchain floor'
         run: npm run test
 

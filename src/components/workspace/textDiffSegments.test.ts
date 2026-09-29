@@ -94,19 +94,9 @@ describe('buildTextDiffSegments', () => {
     expect(buildTextDiffSegments(before, after)).toEqual(expected)
   })
 
-  it('uses a bounded replacement for oversized token streams', () => {
-    const before = Array.from({ length: 2_001 }, (_, index) => `before${index}`).join(' ')
-    const after = Array.from({ length: 2_001 }, (_, index) => `after${index}`).join(' ')
-
-    expect(buildTextDiffSegments(before, after)).toEqual({
-      before: [changed(before)],
-      after: [changed(after)],
-    })
-  })
-
   it('uses a bounded replacement when the token limit is exceeded below the cell limit', () => {
-    const before = `${'before '.repeat(1_000)}last`
-    const after = 'after'
+    const before = `${'same '.repeat(1_000)}old`
+    const after = 'same new'
 
     expect(buildTextDiffSegments(before, after)).toEqual({
       before: [changed(before)],
@@ -134,8 +124,9 @@ describe('buildTextDiffSegments', () => {
   })
 
   it('uses a bounded replacement when the token matrix exceeds the cell limit', () => {
-    const before = Array.from({ length: 251 }, (_, index) => `before${index}`).join(' ')
-    const after = Array.from({ length: 251 }, (_, index) => `after${index}`).join(' ')
+    const sharedPrefix = 'same '.repeat(250)
+    const before = `${sharedPrefix}old`
+    const after = `${sharedPrefix}new`
 
     expect(buildTextDiffSegments(before, after)).toEqual({
       before: [changed(before)],

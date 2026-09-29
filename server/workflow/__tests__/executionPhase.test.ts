@@ -1240,11 +1240,19 @@ describe('handleCoding', () => {
   })
 
   it.each([
-    { finalization: 'a true no-op', result: { committed: false, pushed: false } },
-    { finalization: 'a push failure', result: { committed: true, pushed: false, error: 'remote rejected push' } },
-  ])('marks the bead done after $finalization', async ({ result }) => {
+    {
+      finalization: 'a true no-op',
+      result: { committed: false, pushed: false },
+      expectedLog: 'No local commit was needed for bead bead-1',
+    },
+    {
+      finalization: 'a push failure',
+      result: { committed: true, pushed: false, error: 'remote rejected push' },
+      expectedLog: 'Git push warning for bead bead-1: remote rejected push',
+    },
+  ])('marks the bead done after $finalization', async ({ result, expectedLog }) => {
     commitBeadChangesMock.mockReturnValue(result)
-    const { ticket, context } = createExecutionTestTicket(repoManager, {
+    const { ticket, context, paths } = createExecutionTestTicket(repoManager, {
       title: 'Successful finalization',
     })
     writeTicketBeads(ticket.id, [makePendingBead('bead-1', 1)])
@@ -1263,6 +1271,7 @@ describe('handleCoding', () => {
     expect(sendEvent).toHaveBeenCalledWith({ type: 'ALL_BEADS_DONE' })
     expect(sendEvent).not.toHaveBeenCalledWith(expect.objectContaining({ type: 'BEAD_ERROR' }))
     expect(readTicketBeads(ticket.id).find((b) => b.id === 'bead-1')?.status).toBe('done')
+    expect(readFileSync(paths.executionLogPath, 'utf8')).toContain(expectedLog)
   })
 
   it('re-finalizes a successful execution checkpoint after a finalization retry without resetting work', async () => {

@@ -142,7 +142,14 @@ async function prepareWorkspaceFixture(items = [checklistItem('item-one')]) {
     })),
   })
   await prepareManualQaCheckpoint(setup.ticket.id, 1)
-  return finishFixture(setup, items)
+  const fixture = finishFixture(setup, items)
+  expect(fixture.ticket.branchName).not.toBe(DISPLAY_ONLY_MOCK_BRANCH_NAME)
+  expect(detectManualQaWorkspaceDrift(fixture.ticket.id, 1)).toMatchObject({
+    drifted: false,
+    headChanged: false,
+    files: [],
+  })
+  return fixture
 }
 
 function byteStream(value: Uint8Array) {
@@ -498,7 +505,7 @@ describe('Manual QA submission recovery and integrity', () => {
   })
 
   it('rejects a conflicting operation before writing canonical submission results', async () => {
-    const setup = await prepareFixture()
+    const setup = await prepareWorkspaceFixture()
     const paths = getManualQaStoragePaths(setup.paths.ticketDir, 1)
     reserveManualQaSubmissionOperation({
       ticketDir: setup.paths.ticketDir,
@@ -599,7 +606,7 @@ describe('Manual QA submission recovery and integrity', () => {
   })
 
   it('rejects action IDs whose database input differs from the retry', async () => {
-    const setup = await prepareFixture()
+    const setup = await prepareWorkspaceFixture()
     const context = getTicketContext(setup.ticket.id)!
     context.projectDb.insert(manualQaOperations).values({
       ticketId: context.localTicketId,
@@ -621,7 +628,7 @@ describe('Manual QA submission recovery and integrity', () => {
   })
 
   it('rejects canonical results that conflict with a reserved submission retry', async () => {
-    const setup = await prepareFixture()
+    const setup = await prepareWorkspaceFixture()
     const paths = getManualQaStoragePaths(setup.paths.ticketDir, 1)
     reserveManualQaSubmissionOperation({
       ticketDir: setup.paths.ticketDir,
@@ -738,7 +745,7 @@ describe('Manual QA submission recovery and integrity', () => {
   })
 
   it('reuses the immutable canonical results snapshot on a partial-operation retry', async () => {
-    const setup = await prepareFixture()
+    const setup = await prepareWorkspaceFixture()
     const paths = getManualQaStoragePaths(setup.paths.ticketDir, 1)
     reserveManualQaSubmissionOperation({
       ticketDir: setup.paths.ticketDir,
@@ -1017,7 +1024,7 @@ describe('Manual QA submission recovery and integrity', () => {
   })
 
   it('resumes a failed round without duplicating fresh phase attempts', async () => {
-    const setup = await prepareFixture()
+    const setup = await prepareWorkspaceFixture()
     setup.draft.results[0] = {
       ...setup.draft.results[0]!,
       outcome: 'fail',
@@ -1076,7 +1083,7 @@ describe('Manual QA submission recovery and integrity', () => {
   })
 
   it('recovers a created-fixes summary when its local operation journal is missing', async () => {
-    const setup = await prepareFixture()
+    const setup = await prepareWorkspaceFixture()
     setup.draft.results[0] = {
       ...setup.draft.results[0]!,
       outcome: 'fail',

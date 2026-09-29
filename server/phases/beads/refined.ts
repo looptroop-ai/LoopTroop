@@ -589,10 +589,20 @@ export function validateBeadsRefinementOutput(
         repairWarnings.push(`Skipped beads refinement change at index ${index}: added change has no resolvable after item.`)
         continue
       }
+      if (winnerLookup.byId.has(after.id)) {
+        repairApplied = true
+        repairWarnings.push(`Skipped beads refinement change at index ${index}: added bead "${after.id}" already exists in the winner draft.`)
+        continue
+      }
     } else if (change.type === 'removed') {
       if (!before) {
         repairApplied = true
         repairWarnings.push(`Skipped beads refinement change at index ${index}: removed change has no resolvable before item.`)
+        continue
+      }
+      if (refinedLookup.byId.has(before.id)) {
+        repairApplied = true
+        repairWarnings.push(`Skipped beads refinement change at index ${index}: removed bead "${before.id}" remains in the refined output.`)
         continue
       }
     }

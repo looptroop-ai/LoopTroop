@@ -11,7 +11,7 @@ Unreleased changes appear first and represent commits that have not yet been inc
 
 ### Summary
 - Beads refinement preserves stable IDs and council attribution when it reconciles conflicting change records, and relevant-files budgets keep higher-priority entries.
-- The test suite removes redundant worktree and log replay setup while strengthening boundary, timeout, and transport regressions.
+- The test suite removes redundant worktree and log replay setup, avoids host process scans for fake child IDs, and strengthens boundary, timeout, and transport regressions.
 - Kanban pagination arrows follow the visible page, and Escape cancels an uncommitted page-number edit.
 - Failed ticket starts that stay in DRAFT clear provisional model locks and can be retried with updated settings; corrupt metadata stays readable and cannot be overwritten by a start.
 - V8 coverage now exceeds 90% line coverage across all four Vitest projects; the required Verify job enforces 90% lines and 80% branches while Codecov reports separately.
@@ -57,6 +57,7 @@ Unreleased changes appear first and represent commits that have not yet been inc
 - Execution-phase ticket fixtures fell from 50.9s to 22.4s, execution-setup fixtures from 27.0s to 15.4s, and Manual QA operations from 34.1s to 19.9s by reserving initialized Git worktrees for cases that assert Git behavior.
 - CI skips the duplicate Ubuntu toolchain-floor suite on pushes under a distinct `[push]` status name; pull requests retain the required test context, with Verify covering the PR head.
 - Installer binary tests reuse one immutable archive fixture, and stall-guard deadline tests use fake timers to assert the exact idle-time boundary.
+- Timeout executor tests with injected child identities skip real Linux process-group scans, keeping assertions independent of runner PID allocation.
 
 ### Added
 - Hook recovery tests now cover the tracked-worktree-edit refusal path, including preservation of the changed file and marker and proof that no hook runs.

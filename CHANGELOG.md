@@ -10,10 +10,7 @@ Unreleased changes appear first and represent commits that have not yet been inc
 > Changes merged since the last versioned release that have not yet shipped in a tagged version.
 
 ### Summary
-- Beads refinement can recover omitted modifications when a case-insensitive, trimmed title uniquely identifies the bead across drafts.
-- Tests avoid duplicate CI work and unnecessary Git worktree setup while preserving integration checks and replacing timing guesses with event signals.
-- Interrupted hook recovery is now regression-tested against tracked worktree edits, preserving both the edit and recovery marker without running hooks.
-- Regression fixtures now seed log history and PR review state directly, avoiding redundant writes and worktree setup while preserving append, merge, and recovery checks.
+- Beads refinement repairs ID collisions only with explicit modification and addition records, while relevant-files budgets retain higher-priority entries.
 - Kanban pagination arrows follow the visible page, and Escape cancels an uncommitted page-number edit.
 - Failed ticket starts that stay in DRAFT clear provisional model locks and can be retried with updated settings; corrupt metadata stays readable and cannot be overwritten by a start.
 - V8 coverage now exceeds 90% line coverage across all four Vitest projects; the required Verify job enforces 90% lines and 80% branches while Codecov reports separately.
@@ -57,7 +54,7 @@ Unreleased changes appear first and represent commits that have not yet been inc
 - The log pagination test seeds its 300-row JSONL history with one write and keeps append persistence covered separately, removing its per-test timeout override.
 - PR review route tests no longer initialize a ticket worktree per case, and now remove their fixture repositories after the suite; the focused file runtime fell from 46.8s to 23.7s.
 - Execution-phase ticket fixtures fell from 50.9s to 22.4s, execution-setup fixtures from 27.0s to 15.4s, and Manual QA operations from 34.1s to 19.9s by reserving initialized Git worktrees for cases that assert Git behavior.
-- CI no longer runs the full suite twice on the Ubuntu toolchain-floor lane; that Node version still runs the suite through the required Verify coverage step.
+- CI skips the duplicate Ubuntu toolchain-floor suite on pushes; pull requests still run it against the proposed merge, with Verify covering the PR head.
 - Installer binary tests reuse one immutable archive fixture, and stall-guard deadline cases use fake timers instead of waiting for real deadlines.
 
 ### Added
@@ -290,7 +287,7 @@ Unreleased changes appear first and represent commits that have not yet been inc
 - The unused `server/db/drizzle.config.ts` alias. Every database script already selects its app or project config explicitly, so keeping a third config that Drizzle Kit cannot discover from the repository root only advertised a command that no longer worked.
 
 ### Fixed
-- Beads refinement can restore an omitted modification when an unclaimed bead has a unique trimmed, case-insensitive title across both drafts.
+- Beads refinement repairs a uniquely title-matched ID collision only when explicit mismatched modification and addition records identify the surviving and newly added beads.
 - Relevant-files artifact budgets now discard lower-priority entries first and preserve higher-priority files when the size limit is exceeded.
 - Concurrent ticket starts now share an in-flight guard across equivalent ticket reference spellings.
 - Windows full-suite test jobs now have a 40-minute timeout, so slower runners do not cancel tests that are still progressing.

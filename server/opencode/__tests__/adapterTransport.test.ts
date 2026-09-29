@@ -525,6 +525,9 @@ describe('OpenCode adapter transport orchestration', () => {
       }
     })
     vi.mocked(transport.updateSession).mockImplementation(async () => {
+      if (!order.some(entry => entry.startsWith('subscribe:'))) {
+        throw new Error('Session update started before the v2 event subscription')
+      }
       order.push('permissions')
       source.push({ cursor: 51 })
       await permissionCursorObserved
@@ -1143,6 +1146,7 @@ describe('OpenCode adapter transport orchestration', () => {
   })
 
   it('does not treat idle status or stale streamed output as completion of an accepted prompt', async () => {
+    vi.useFakeTimers()
     let markStaleOutputObserved: (() => void) | undefined
     const staleOutputObserved = new Promise<void>(resolve => { markStaleOutputObserved = resolve })
     const { transport, source } = createV2Transport({
@@ -1170,14 +1174,23 @@ describe('OpenCode adapter transport orchestration', () => {
       }),
     })
     const controller = new AbortController()
-    const prompt = createAdapter(transport).promptSession('session-1', [{ type: 'text', content: 'new prompt' }], controller.signal)
-    let settled = false
-    void prompt.finally(() => { settled = true }).catch(() => undefined)
-    await staleOutputObserved
-    expect(settled).toBe(false)
-    controller.abort()
-    await expect(prompt).rejects.toMatchObject({ name: 'AbortError' })
-    expect(transport.dispatchPrompt).toHaveBeenCalledTimes(1)
+    try {
+      const prompt = createAdapter(transport).promptSession('session-1', [{ type: 'text', content: 'new prompt' }], controller.signal)
+      let settled = false
+      void prompt.finally(() => { settled = true }).catch(() => undefined)
+      await staleOutputObserved
+      source.fail(new Error('SSE disconnected after stale output'))
+      await vi.advanceTimersByTimeAsync(1_000)
+      expect(transport.readSessionLog).toHaveBeenCalled()
+      expect(settled).toBe(false)
+      controller.abort()
+      await vi.advanceTimersByTimeAsync(200)
+      await expect(prompt).rejects.toMatchObject({ name: 'AbortError' })
+      expect(transport.dispatchPrompt).toHaveBeenCalledTimes(1)
+    } finally {
+      controller.abort()
+      vi.useRealTimers()
+    }
   })
 
   it('recovers an accepted prompt from the durable log without resubmitting it', async () => {

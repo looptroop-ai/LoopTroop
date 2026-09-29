@@ -167,6 +167,7 @@ function cloneCanonicalItem(item: NormalizedBeadRefinementItem): RefinementChang
 
 function findUnambiguousBeadIdShiftRepair(
   changes: RefinementChange[],
+  declaredChanges: RefinementChange[],
   winnerLookup: ReturnType<typeof buildBeadItemLookup>,
   refinedLookup: ReturnType<typeof buildBeadItemLookup>,
 ): BeadIdShiftRepair | null {
@@ -175,34 +176,63 @@ function findUnambiguousBeadIdShiftRepair(
     .filter(({ change }) => change.type === 'modified' && change.before && change.after && change.before.id !== change.after.id)
   if (mismatched.length !== 1) return null
 
-  const { change, index: modifiedChangeIndex } = mismatched[0]!
-  const winnerId = change.before!.id
-  const shiftedId = change.after!.id
+  const modifiedChange = mismatched[0]!
+  const winnerId = modifiedChange.change.before!.id
+  const shiftedId = modifiedChange.change.after!.id
+  const declaredMismatched = declaredChanges.filter(
+    (change) => change.type === 'modified'
+      && change.before
+      && change.after
+      && change.before.id !== change.after.id,
+  )
+  if (
+    declaredMismatched.length !== 1
+    || declaredMismatched[0]?.before?.id !== winnerId
+    || declaredMismatched[0]?.after?.id !== shiftedId
+  ) return null
+
   const winnerItem = winnerLookup.byId.get(winnerId)
   const shiftedItem = refinedLookup.byId.get(shiftedId)
   const reusedIdItem = refinedLookup.byId.get(winnerId)
   if (!winnerItem || !shiftedItem || !reusedIdItem || winnerLookup.byId.has(shiftedId)) return null
 
-  const winnerLabelMatches = winnerLookup.byLabel.get(winnerItem.label.toLowerCase().trim())
-  const refinedLabelMatches = refinedLookup.byLabel.get(winnerItem.label.toLowerCase().trim())
+  const labelKey = winnerItem.label.toLowerCase().trim()
+  const winnerLabelMatches = winnerLookup.byLabel.get(labelKey)
+  const refinedLabelMatches = refinedLookup.byLabel.get(labelKey)
   if (
     winnerLabelMatches?.length !== 1
     || refinedLabelMatches?.length !== 1
     || refinedLabelMatches[0]?.id !== shiftedId
-    || reusedIdItem.contentFingerprint === shiftedItem.contentFingerprint
-  ) {
-    return null
-  }
+  ) return null
+
+  const reusedLabelKey = reusedIdItem.label.toLowerCase().trim()
+  if (winnerLookup.byLabel.has(reusedLabelKey)) return null
 
   const addedMatches = changes
     .map((candidate, candidateIndex) => ({ candidate, candidateIndex }))
     .filter(({ candidate }) => candidate.type === 'added' && candidate.after?.id === winnerId)
-  if (addedMatches.length !== 1) return null
+  const declaredAddedMatches = declaredChanges.filter(
+    (change) => change.type === 'added' && change.after?.id === winnerId,
+  )
+  if (addedMatches.length !== 1 || declaredAddedMatches.length !== 1) return null
+
+  const referencesShiftIds = (change: RefinementChange) =>
+    change.before?.id === winnerId
+    || change.before?.id === shiftedId
+    || change.after?.id === winnerId
+    || change.after?.id === shiftedId
+  const isExpectedChange = (change: RefinementChange) =>
+    (change.type === 'modified' && change.before?.id === winnerId && change.after?.id === shiftedId)
+    || (change.type === 'added' && !change.before && change.after?.id === winnerId)
+  if (
+    changes.some((change) => referencesShiftIds(change) && !isExpectedChange(change))
+    || declaredChanges.some((change) => referencesShiftIds(change) && !isExpectedChange(change))
+  ) return null
 
   return {
     winnerId,
     shiftedId,
-    modifiedChangeIndex,
+    modifiedChangeIndex: modifiedChange.index,
     addedChangeIndex: addedMatches[0]!.candidateIndex,
   }
 }
@@ -326,13 +356,12 @@ function collapseDuplicateModifiedBeadChanges(
 }
 
 // ---------------------------------------------------------------------------
-// Enhanced synthesis with label-based fallback
+// Synthesize omitted changes from stable IDs after any safe ID repair.
 // ---------------------------------------------------------------------------
 
 function synthesizeOmittedBeadChanges(params: {
   winnerItems: NormalizedBeadRefinementItem[]
   refinedItems: NormalizedBeadRefinementItem[]
-  winnerLookup: ReturnType<typeof buildBeadItemLookup>
   refinedLookup: ReturnType<typeof buildBeadItemLookup>
   usedBeforeIds: Set<string>
   usedAfterIds: Set<string>
@@ -376,44 +405,7 @@ function synthesizeOmittedBeadChanges(params: {
     )
   }
 
-  // Strategy 2: Same label (title) match when ID changed → modified
-  for (const winnerItem of params.winnerItems) {
-    if (params.usedBeforeIds.has(winnerItem.id)) continue
-
-    const labelKey = winnerItem.label.toLowerCase().trim()
-    const refinedByLabel = params.refinedLookup.byLabel.get(labelKey)
-    if (!refinedByLabel || refinedByLabel.length !== 1) continue
-
-    const refinedMatch = refinedByLabel[0]!
-    if (params.usedAfterIds.has(refinedMatch.id)) continue
-
-    // Confirm this winner label is also unique
-    const winnerByLabel = params.winnerLookup.byLabel.get(labelKey)
-    if (!winnerByLabel || winnerByLabel.length !== 1) continue
-
-    const winnerContentKey = buildBeadItemContentKey(winnerItem)
-    const refinedContentKey = buildBeadItemContentKey(refinedMatch)
-    if (winnerItem.id === refinedMatch.id) continue
-    if (winnerContentKey === refinedContentKey) continue
-
-    params.usedBeforeIds.add(winnerItem.id)
-    params.usedAfterIds.add(refinedMatch.id)
-    params.usedBeforeContentKeys.add(winnerContentKey)
-    params.usedAfterContentKeys.add(refinedContentKey)
-    synthesizedChanges.push({
-      type: 'modified',
-      itemType: 'bead',
-      before: cloneCanonicalItem(winnerItem),
-      after: cloneCanonicalItem(refinedMatch),
-      inspiration: null,
-      attributionStatus: 'synthesized_unattributed',
-    })
-    repairWarnings.push(
-      `Synthesized omitted beads refinement modified change for bead "${winnerItem.id}" → "${refinedMatch.id}" by matching title across the winning and refined drafts.`,
-    )
-  }
-
-  // Strategy 3: Added beads (in refined but not in winner)
+  // Strategy 2: Added beads not already covered by an ID-stability repair.
   for (const refinedItem of params.refinedItems) {
     if (params.usedAfterIds.has(refinedItem.id)) continue
 
@@ -432,7 +424,7 @@ function synthesizeOmittedBeadChanges(params: {
     )
   }
 
-  // Strategy 4: Removed beads (in winner but not in refined)
+  // Strategy 3: Removed beads (in winner but not in refined)
   for (const winnerItem of params.winnerItems) {
     if (params.usedBeforeIds.has(winnerItem.id)) continue
 
@@ -514,6 +506,10 @@ export function validateBeadsRefinementOutput(
 
   const { beads: refinedBeads, changes: normalizedChanges } = refinementResult.value
   const rawChanges = normalizedChanges.filter((change) => change.attributionStatus !== 'synthesized_unattributed')
+  const declaredChangesResult = normalizeBeadSubsetYamlOutput(rawContent, options.losingDraftMeta)
+  const declaredChanges = declaredChangesResult.ok && Array.isArray(declaredChangesResult.value.changes)
+    ? declaredChangesResult.value.changes
+    : []
   let normalizedContent = refinementResult.value.normalizedContent
   const repairWarnings = refinementResult.repairWarnings.filter(
     (warning) => !warning.startsWith('Synthesized omitted beads refinement '),
@@ -539,7 +535,7 @@ export function validateBeadsRefinementOutput(
   const winnerLookup = buildBeadItemLookup(winnerItems)
   let refinedItems = refinedBeads.map(buildBeadItemFromSubset)
   let refinedLookup = buildBeadItemLookup(refinedItems)
-  const idShiftRepair = findUnambiguousBeadIdShiftRepair(rawChanges, winnerLookup, refinedLookup)
+  const idShiftRepair = findUnambiguousBeadIdShiftRepair(rawChanges, declaredChanges, winnerLookup, refinedLookup)
   if (idShiftRepair) {
     const survivingBead = refinedBeads.find((bead) => bead.id === idShiftRepair.shiftedId)!
     const addedBead = refinedBeads.find((bead) => bead.id === idShiftRepair.winnerId)!
@@ -675,11 +671,10 @@ export function validateBeadsRefinementOutput(
     })
   }
 
-  // Enhanced synthesis with label-based fallback
+  // Synthesize any remaining changes from stable IDs.
   const synthesized = synthesizeOmittedBeadChanges({
     winnerItems,
     refinedItems,
-    winnerLookup,
     refinedLookup,
     usedBeforeIds,
     usedAfterIds,

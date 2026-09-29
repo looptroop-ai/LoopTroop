@@ -519,10 +519,11 @@ describe('recovery descriptor containment', () => {
   it('checks large JSONL tails within a bounded scan and truncates only a corrupt final record', () => {
     const path = join(directory, 'large-log.jsonl')
     const fileSize = 257 * 1024 * 1024
+    const context = Buffer.from('{"context":true}\n')
     const header = Buffer.from('{"kept":true}\n')
-    const separatorOffset = fileSize - 5 * 1024 * 1024 - 1
-    let tail = Buffer.from('\n{"a":0}\n')
+    let tail = Buffer.from('{"a":0}\n')
     let tailStart = fileSize - tail.length
+    let contextStart = tailStart - context.length
     const originalFstat = fs.fstatSync
     const originalRead = fs.readSync
     const truncatedTo: Array<number | undefined> = []
@@ -538,7 +539,7 @@ describe('recovery descriptor containment', () => {
       if (requestedPosition === null) return originalRead(fd, buffer, { offset, length, position: null })
       copySparseRead(buffer, offset, length, Number(requestedPosition), [
         { position: 0, content: header },
-        { position: separatorOffset, content: Buffer.from('\n') },
+        { position: contextStart, content: context },
         { position: tailStart, content: tail },
       ])
       return length
@@ -550,16 +551,26 @@ describe('recovery descriptor containment', () => {
     expect(fixTrailingLineCorruption(path)).toBe(false)
     expect(truncatedTo).toEqual([])
 
-    tail = Buffer.alloc(4 * 1024 * 1024 + 1, 0x78)
+    tail = Buffer.from('{"a":?}\n')
     tailStart = fileSize - tail.length
+    contextStart = tailStart - context.length
+    expect(fixTrailingLineCorruption(path)).toBe(true)
+    expect(truncatedTo).toEqual([tailStart])
+
+    truncatedTo.length = 0
+    tail = Buffer.alloc(4 * 1024 * 1024 - 1, 0x78)
+    tailStart = fileSize - tail.length
+    contextStart = tailStart - context.length
+    expect(fixTrailingLineCorruption(path)).toBe(true)
+    expect(truncatedTo).toEqual([tailStart])
+
+    truncatedTo.length = 0
+    tail = Buffer.alloc(4 * 1024 * 1024, 0x78)
+    tailStart = fileSize - tail.length
+    contextStart = tailStart - context.length
     expect(fixTrailingLineCorruption(path)).toBe(false)
     expect(warning).toHaveBeenCalledWith(expect.stringContaining('last line exceeds 4 MB scan limit'))
     expect(truncatedTo).toEqual([])
-
-    tail = Buffer.from('\n{"a":?}\n')
-    tailStart = fileSize - tail.length
-    expect(fixTrailingLineCorruption(path)).toBe(true)
-    expect(truncatedTo).toEqual([tailStart + 1])
   })
 
   it('truncates the opened file even if its pathname is replaced before reading', () => {

@@ -1,25 +1,28 @@
 import { describe, expect, it } from 'vitest'
 import { buildTextDiffSegments } from './textDiffSegments'
 
+const unchanged = (text: string) => ({ text, changed: false })
+const changed = (text: string) => ({ text, changed: true })
+
 describe('buildTextDiffSegments', () => {
   it('keeps equal small text as one unchanged segment', () => {
     expect(buildTextDiffSegments('one two', 'one two')).toEqual({
-      before: [{ text: 'one two', changed: false }],
-      after: [{ text: 'one two', changed: false }],
+      before: [unchanged('one two')],
+      after: [unchanged('one two')],
     })
   })
 
   it('marks only the changed span', () => {
     expect(buildTextDiffSegments('The quick brown fox', 'The quick red fox')).toEqual({
       before: [
-        { text: 'The quick ', changed: false },
-        { text: 'brown', changed: true },
-        { text: ' fox', changed: false },
+        unchanged('The quick '),
+        changed('brown'),
+        unchanged(' fox'),
       ],
       after: [
-        { text: 'The quick ', changed: false },
-        { text: 'red', changed: true },
-        { text: ' fox', changed: false },
+        unchanged('The quick '),
+        changed('red'),
+        unchanged(' fox'),
       ],
     })
   })
@@ -28,15 +31,15 @@ describe('buildTextDiffSegments', () => {
     { direction: 'inserted span', before: 'alpha omega', after: 'alpha beta omega', changedOn: 'after' },
     { direction: 'deleted span', before: 'alpha beta omega', after: 'alpha omega', changedOn: 'before' },
   ])('marks only the side containing the $direction', ({ before, after, changedOn }) => {
-    const unchanged = [{ text: 'alpha omega', changed: false }]
-    const changed = [
-      { text: 'alpha ', changed: false },
-      { text: 'beta ', changed: true },
-      { text: 'omega', changed: false },
+    const unchangedSpan = [unchanged('alpha omega')]
+    const changedSpan = [
+      unchanged('alpha '),
+      changed('beta '),
+      unchanged('omega'),
     ]
     const expected = changedOn === 'before'
-      ? { before: changed, after: unchanged }
-      : { before: unchanged, after: changed }
+      ? { before: changedSpan, after: unchangedSpan }
+      : { before: unchangedSpan, after: changedSpan }
 
     expect(buildTextDiffSegments(before, after)).toEqual(expected)
   })
@@ -47,8 +50,8 @@ describe('buildTextDiffSegments', () => {
       before: 'stable',
       after: 'stable added',
       expected: {
-        before: [{ text: 'stable', changed: false }],
-        after: [{ text: 'stable', changed: false }, { text: ' added', changed: true }],
+        before: [unchanged('stable')],
+        after: [unchanged('stable'), changed(' added')],
       },
     },
     {
@@ -56,8 +59,8 @@ describe('buildTextDiffSegments', () => {
       before: 'stable removed',
       after: 'stable',
       expected: {
-        before: [{ text: 'stable', changed: false }, { text: ' removed', changed: true }],
-        after: [{ text: 'stable', changed: false }],
+        before: [unchanged('stable'), changed(' removed')],
+        after: [unchanged('stable')],
       },
     },
   ])('keeps a trailing $direction in its changed span', ({ before, after, expected }) => {
@@ -67,14 +70,14 @@ describe('buildTextDiffSegments', () => {
   it('coalesces adjacent changed word and punctuation tokens into one span', () => {
     expect(buildTextDiffSegments('keep old! tail', 'keep new? tail')).toEqual({
       before: [
-        { text: 'keep ', changed: false },
-        { text: 'old!', changed: true },
-        { text: ' tail', changed: false },
+        unchanged('keep '),
+        changed('old!'),
+        unchanged(' tail'),
       ],
       after: [
-        { text: 'keep ', changed: false },
-        { text: 'new?', changed: true },
-        { text: ' tail', changed: false },
+        unchanged('keep '),
+        changed('new?'),
+        unchanged(' tail'),
       ],
     })
   })
@@ -85,8 +88,8 @@ describe('buildTextDiffSegments', () => {
   })
 
   it.each([
-    { direction: 'inserted', before: '', after: 'new text', expected: { before: [], after: [{ text: 'new text', changed: true }] } },
-    { direction: 'deleted', before: 'old text', after: '', expected: { before: [{ text: 'old text', changed: true }], after: [] } },
+    { direction: 'inserted', before: '', after: 'new text', expected: { before: [], after: [changed('new text')] } },
+    { direction: 'deleted', before: 'old text', after: '', expected: { before: [changed('old text')], after: [] } },
   ])('marks full-text $direction as changed', ({ before, after, expected }) => {
     expect(buildTextDiffSegments(before, after)).toEqual(expected)
   })
@@ -96,8 +99,8 @@ describe('buildTextDiffSegments', () => {
     const after = Array.from({ length: 2_001 }, (_, index) => `after${index}`).join(' ')
 
     expect(buildTextDiffSegments(before, after)).toEqual({
-      before: [{ text: before, changed: true }],
-      after: [{ text: after, changed: true }],
+      before: [changed(before)],
+      after: [changed(after)],
     })
   })
 
@@ -106,8 +109,8 @@ describe('buildTextDiffSegments', () => {
     const after = 'after'
 
     expect(buildTextDiffSegments(before, after)).toEqual({
-      before: [{ text: before, changed: true }],
-      after: [{ text: after, changed: true }],
+      before: [changed(before)],
+      after: [changed(after)],
     })
   })
 
@@ -118,14 +121,14 @@ describe('buildTextDiffSegments', () => {
 
     expect(buildTextDiffSegments(before, after)).toEqual({
       before: [
-        { text: unchangedPrefix, changed: false },
-        { text: 'old', changed: true },
-        { text: ' ', changed: false },
+        unchanged(unchangedPrefix),
+        changed('old'),
+        unchanged(' '),
       ],
       after: [
-        { text: unchangedPrefix, changed: false },
-        { text: 'new', changed: true },
-        { text: ' ', changed: false },
+        unchanged(unchangedPrefix),
+        changed('new'),
+        unchanged(' '),
       ],
     })
   })
@@ -135,8 +138,8 @@ describe('buildTextDiffSegments', () => {
     const after = Array.from({ length: 251 }, (_, index) => `after${index}`).join(' ')
 
     expect(buildTextDiffSegments(before, after)).toEqual({
-      before: [{ text: before, changed: true }],
-      after: [{ text: after, changed: true }],
+      before: [changed(before)],
+      after: [changed(after)],
     })
   })
 })

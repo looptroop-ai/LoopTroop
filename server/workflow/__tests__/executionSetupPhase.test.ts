@@ -25,6 +25,11 @@ import { detectHostContext } from '../../lib/hostContext'
 import type { CommandSpec } from '@shared/commandSpec'
 
 const executionSetupWrapperPath = `.ticket/runtime/execution-setup/run${process.platform === 'win32' ? '.cmd' : ''}`
+const executionSetupWrapperArtifact = {
+  path: executionSetupWrapperPath,
+  kind: 'command-wrapper' as const,
+  purpose: 'sources prepared runtime before commands',
+}
 
 const {
   executeExecutionSetupWithRetriesMock,
@@ -198,6 +203,7 @@ function readyExecutionSetupProfile(ticketId: string): ExecutionSetupProfile {
 
 function failedToolRequirementWithAttempts(
   attempts: NonNullable<ExecutionSetupProfile['toolRequirements']>[number]['provisioningAttempts'],
+  failureReason = 'tool could not be provisioned',
 ): NonNullable<ExecutionSetupProfile['toolRequirements']>[number] {
   return {
     launcher: 'project-tool',
@@ -206,7 +212,19 @@ function failedToolRequirementWithAttempts(
     missingProbe: 'project-tool --version',
     provisioningAttempts: attempts,
     finalProbe: './.ticket/runtime/execution-setup/run project-tool --version',
-    failureReason: 'tool could not be provisioned',
+    failureReason,
+  }
+}
+
+function notProvisionableToolRequirement(failureReason: string) {
+  return {
+    launcher: 'project-tool',
+    requiredBy: ['project_commands.test_full[0]'],
+    status: 'not_provisionable' as const,
+    missingProbe: 'project-tool --version',
+    provisioningAttempts: [],
+    finalProbe: '',
+    failureReason,
   }
 }
 
@@ -214,9 +232,10 @@ function buildExecutionSetupGeneration(input: {
   profile: ExecutionSetupProfile
   checks?: ExecutionSetupResult['checks']
   summary?: string
+  sessionId?: string
 }) {
   return {
-    session: { id: 'ses-setup-validation' },
+    session: { id: input.sessionId ?? 'ses-setup-validation' },
     output: '<EXECUTION_SETUP_RESULT>{"status":"ready"}</EXECUTION_SETUP_RESULT>',
     result: {
       status: 'ready' as const,
@@ -240,6 +259,15 @@ function buildExecutionSetupGeneration(input: {
       autoRetryCount: 0,
     },
   }
+}
+
+function mockExecutionSetupGeneration(generation: unknown) {
+  executeExecutionSetupWithRetriesMock.mockImplementationOnce(async (...args: unknown[]) => {
+    const callbacks = args[5] as {
+      evaluateGeneration: (entry: { attempt: number; generation: unknown }) => Promise<unknown>
+    }
+    return callbacks.evaluateGeneration({ attempt: 1, generation })
+  })
 }
 
 function nodeProcessCommand(script: string): CommandSpec {
@@ -384,18 +412,7 @@ describe('handleExecutionSetup', () => {
       ],
     })
 
-    executeExecutionSetupWithRetriesMock.mockImplementationOnce(async (...args: unknown[]) => {
-      const callbacks = args[5] as {
-        evaluateGeneration: (entry: {
-          attempt: number
-          generation: ReturnType<typeof buildExecutionSetupGeneration>
-        }) => Promise<ExecutionSetupReport>
-      }
-      return await callbacks.evaluateGeneration({
-        attempt: 1,
-        generation: buildExecutionSetupGeneration({ profile: readyExecutionSetupProfile(ticket.externalId) }),
-      })
-    })
+    mockExecutionSetupGeneration(buildExecutionSetupGeneration({ profile: readyExecutionSetupProfile(ticket.externalId) }))
 
     const sendEvent = vi.fn()
     await handleExecutionSetup(
@@ -437,18 +454,7 @@ describe('handleExecutionSetup', () => {
       testCommands: [createShellCommandSpec('npm run test')],
     })}\n`)
 
-    executeExecutionSetupWithRetriesMock.mockImplementationOnce(async (...args: unknown[]) => {
-      const callbacks = args[5] as {
-        evaluateGeneration: (entry: {
-          attempt: number
-          generation: ReturnType<typeof buildExecutionSetupGeneration>
-        }) => Promise<ExecutionSetupReport>
-      }
-      return await callbacks.evaluateGeneration({
-        attempt: 1,
-        generation: buildExecutionSetupGeneration({ profile: readyExecutionSetupProfile(ticket.externalId) }),
-      })
-    })
+    mockExecutionSetupGeneration(buildExecutionSetupGeneration({ profile: readyExecutionSetupProfile(ticket.externalId) }))
 
     const sendEvent = vi.fn()
     await handleExecutionSetup(
@@ -1179,39 +1185,17 @@ describe('handleExecutionSetup', () => {
     })
     writeExecutionSetupPlan(ticket.id, ticket.externalId)
 
-    executeExecutionSetupWithRetriesMock.mockImplementationOnce(async (...args: unknown[]) => {
-      const callbacks = args[5] as {
-        evaluateGeneration: (entry: { attempt: number; generation: unknown }) => Promise<unknown>
-      }
-      return await callbacks.evaluateGeneration({
-        attempt: 1,
-        generation: {
-          session: { id: 'ses-setup-tooling-fail' },
-          output: '<EXECUTION_SETUP_RESULT>{"status":"ready"}</EXECUTION_SETUP_RESULT>',
-          result: {
-            status: 'ready',
-            summary: 'Required launcher is unavailable.',
-            profile: readyExecutionSetupProfile(ticket.externalId),
-            checks: {
-              workspace: 'pass',
-              tooling: 'fail',
-              tempScope: 'pass',
-              policy: 'pass',
-            },
-          },
-          parse: {
-            markerFound: true,
-            result: null,
-            errors: [],
-          },
-          structuredOutput: {
-            repairApplied: false,
-            repairWarnings: [],
-            autoRetryCount: 0,
-          },
-        },
-      })
-    })
+    mockExecutionSetupGeneration(buildExecutionSetupGeneration({
+      profile: readyExecutionSetupProfile(ticket.externalId),
+      summary: 'Required launcher is unavailable.',
+      sessionId: 'ses-setup-tooling-fail',
+      checks: {
+        workspace: 'pass',
+        tooling: 'fail',
+        tempScope: 'pass',
+        policy: 'pass',
+      },
+    }))
 
     const sendEvent = vi.fn()
     await handleExecutionSetup(
@@ -1289,15 +1273,7 @@ describe('handleExecutionSetup', () => {
     {
       title: 'not provisionable without reason',
       toolRequirements: [
-        {
-          launcher: 'project-tool',
-          requiredBy: ['project_commands.test_full[0]'],
-          status: 'not_provisionable' as const,
-          missingProbe: 'project-tool --version',
-          provisioningAttempts: [],
-          finalProbe: '',
-          failureReason: '',
-        },
+        notProvisionableToolRequirement(''),
       ],
     },
   ])('rejects incomplete tooling failure evidence for $title', async ({ title, toolRequirements }) => {
@@ -1311,23 +1287,10 @@ describe('handleExecutionSetup', () => {
       toolRequirements,
     }
 
-    executeExecutionSetupWithRetriesMock.mockImplementationOnce(async (...args: unknown[]) => {
-      const callbacks = args[5] as {
-        evaluateGeneration: (entry: { attempt: number; generation: unknown }) => Promise<unknown>
-      }
-      return await callbacks.evaluateGeneration({
-        attempt: 1,
-        generation: buildExecutionSetupGeneration({
-          profile,
-          checks: {
-            workspace: 'pass',
-            tooling: 'fail',
-            tempScope: 'pass',
-            policy: 'pass',
-          },
-        }),
-      })
-    })
+    mockExecutionSetupGeneration(buildExecutionSetupGeneration({
+      profile,
+      checks: { workspace: 'pass', tooling: 'fail', tempScope: 'pass', policy: 'pass' },
+    }))
 
     const sendEvent = vi.fn()
     await handleExecutionSetup(
@@ -1354,42 +1317,26 @@ describe('handleExecutionSetup', () => {
     {
       title: 'failed provisioning evidence',
       toolRequirements: [
-        {
-          launcher: 'project-tool',
-          requiredBy: ['project_commands.test_full[0]'],
-          status: 'failed' as const,
-          missingProbe: 'project-tool --version',
-          provisioningAttempts: [
-            {
-              strategy: 'official archive',
-              commands: [createShellCommandSpec('./install-project-tool --prefix .ticket/runtime/execution-setup/tool-cache/project-tool')],
-              result: 'failed',
-              reason: 'official archive download returned 404',
-            },
-            {
-              strategy: 'repository version manager',
-              commands: [createShellCommandSpec('./repo-toolchain install --cache .ticket/runtime/execution-setup/tool-cache/project-tool')],
-              result: 'failed',
-              reason: 'repository version manager could not resolve the requested version',
-            },
-          ],
-          finalProbe: './.ticket/runtime/execution-setup/run project-tool --version',
-          failureReason: 'official archive download returned 404',
-        },
+        failedToolRequirementWithAttempts([
+          {
+            strategy: 'official archive',
+            commands: [createShellCommandSpec('./install-project-tool --prefix .ticket/runtime/execution-setup/tool-cache/project-tool')],
+            result: 'failed',
+            reason: 'official archive download returned 404',
+          },
+          {
+            strategy: 'repository version manager',
+            commands: [createShellCommandSpec('./repo-toolchain install --cache .ticket/runtime/execution-setup/tool-cache/project-tool')],
+            result: 'failed',
+            reason: 'repository version manager could not resolve the requested version',
+          },
+        ], 'official archive download returned 404'),
       ],
     },
     {
       title: 'no safe provisioning path evidence',
       toolRequirements: [
-        {
-          launcher: 'project-tool',
-          requiredBy: ['project_commands.test_full[0]'],
-          status: 'not_provisionable' as const,
-          missingProbe: 'project-tool --version',
-          provisioningAttempts: [],
-          finalProbe: '',
-          failureReason: 'the repository requires a licensed interactive installer that cannot run safely in temp roots',
-        },
+        notProvisionableToolRequirement('the repository requires a licensed interactive installer that cannot run safely in temp roots'),
       ],
     },
   ])('accepts tooling failure evidence for $title', async ({ title, toolRequirements }) => {
@@ -1403,23 +1350,10 @@ describe('handleExecutionSetup', () => {
       toolRequirements,
     }
 
-    executeExecutionSetupWithRetriesMock.mockImplementationOnce(async (...args: unknown[]) => {
-      const callbacks = args[5] as {
-        evaluateGeneration: (entry: { attempt: number; generation: unknown }) => Promise<unknown>
-      }
-      return await callbacks.evaluateGeneration({
-        attempt: 1,
-        generation: buildExecutionSetupGeneration({
-          profile,
-          checks: {
-            workspace: 'pass',
-            tooling: 'fail',
-            tempScope: 'pass',
-            policy: 'pass',
-          },
-        }),
-      })
-    })
+    mockExecutionSetupGeneration(buildExecutionSetupGeneration({
+      profile,
+      checks: { workspace: 'pass', tooling: 'fail', tempScope: 'pass', policy: 'pass' },
+    }))
 
     const sendEvent = vi.fn()
     await handleExecutionSetup(
@@ -1452,13 +1386,7 @@ describe('handleExecutionSetup', () => {
 
     const profile = {
       ...readyExecutionSetupProfile(ticket.externalId),
-      reusableArtifacts: [
-        {
-          path: executionSetupWrapperPath,
-          kind: 'command-wrapper',
-          purpose: 'sources prepared runtime before commands',
-        },
-      ],
+      reusableArtifacts: [executionSetupWrapperArtifact],
       projectCommands: {
         prepare: [],
         testFull: [createShellCommandSpec('project test')],
@@ -1504,13 +1432,7 @@ describe('handleExecutionSetup', () => {
 
     const profile = {
       ...readyExecutionSetupProfile(ticket.externalId),
-      reusableArtifacts: [
-        {
-          path: executionSetupWrapperPath,
-          kind: 'command-wrapper',
-          purpose: 'sources prepared runtime before commands',
-        },
-      ],
+      reusableArtifacts: [executionSetupWrapperArtifact],
       toolingProbeCommands: [executionSetupWrapperCommand('process.exit(0)')],
     }
 
@@ -1596,13 +1518,7 @@ describe('handleExecutionSetup', () => {
 
     const profile = {
       ...readyExecutionSetupProfile(ticket.externalId),
-      reusableArtifacts: [
-        {
-          path: executionSetupWrapperPath,
-          kind: 'command-wrapper',
-          purpose: 'sources prepared runtime before commands',
-        },
-      ],
+      reusableArtifacts: [executionSetupWrapperArtifact],
       toolingProbeCommands: [executionSetupWrapperCommand("if (process.env.LOOP_SETUP_WRAPPER !== '1') process.exit(9)")],
     }
 

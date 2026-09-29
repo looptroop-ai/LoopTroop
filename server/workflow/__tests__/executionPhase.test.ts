@@ -162,6 +162,23 @@ function makeNote(content: string, iteration = 1) {
   return { timestamp: '2026-01-01T00:00:00.000Z', iteration, content }
 }
 
+function writeExecutionCheckpoint(ticketId: string, bead: Bead, output: string, checkpointUpdatedAt = bead.updatedAt) {
+  upsertLatestPhaseArtifact(ticketId, `bead_execution:${bead.id}`, 'CODING', JSON.stringify({
+    success: true,
+    beadId: bead.id,
+    iteration: bead.iteration,
+    output,
+    errors: [],
+    checkpoint: {
+      beadId: bead.id,
+      iteration: bead.iteration,
+      startedAt: bead.startedAt,
+      updatedAt: checkpointUpdatedAt,
+      beadStartCommit: bead.beadStartCommit,
+    },
+  }))
+}
+
 describe('handleCoding', () => {
   beforeEach(() => {
     resetTestDb()
@@ -255,19 +272,6 @@ describe('handleCoding', () => {
       iteration: 1,
       output: 'done',
       errors: [],
-      rawAttempts: [
-        {
-          attempt: 1,
-          iteration: 1,
-          status: 'accepted',
-          outcome: 'accepted',
-          initialInput: 'raw bead prompt',
-          rawResponse: 'done',
-          modelOutput: 'done',
-          modelId: 'model-a',
-          sessionId: 'session-1',
-        },
-      ],
     })
 
     await handleCoding(ticket.id, context, sendEvent, new AbortController().signal)
@@ -341,19 +345,6 @@ describe('handleCoding', () => {
       iteration: 1,
       output: 'done',
       errors: [],
-      rawAttempts: [
-        {
-          attempt: 1,
-          iteration: 1,
-          status: 'accepted',
-          outcome: 'accepted',
-          initialInput: 'raw bead prompt',
-          rawResponse: 'done',
-          modelOutput: 'done',
-          modelId: 'model-a',
-          sessionId: 'session-1',
-        },
-      ],
     })
 
     await handleCoding(ticket.id, context, sendEvent, new AbortController().signal)
@@ -843,20 +834,7 @@ describe('handleCoding', () => {
       beadStartCommit: 'start-sha',
     })
     writeTicketBeads(ticket.id, [interruptedBead])
-    upsertLatestPhaseArtifact(ticket.id, 'bead_execution:bead-1', 'CODING', JSON.stringify({
-      success: true,
-      beadId: 'bead-1',
-      iteration: 2,
-      output: 'checkpointed done',
-      errors: [],
-      checkpoint: {
-        beadId: interruptedBead.id,
-        iteration: interruptedBead.iteration,
-        startedAt: interruptedBead.startedAt,
-        updatedAt: interruptedBead.updatedAt,
-        beadStartCommit: interruptedBead.beadStartCommit,
-      },
-    }))
+    writeExecutionCheckpoint(ticket.id, interruptedBead, 'checkpointed done')
     const sendEvent = vi.fn()
 
     await handleCoding(ticket.id, context, sendEvent, new AbortController().signal)
@@ -879,20 +857,7 @@ describe('handleCoding', () => {
       beadStartCommit: 'start-sha',
     })
     writeTicketBeads(ticket.id, [interruptedBead])
-    upsertLatestPhaseArtifact(ticket.id, 'bead_execution:bead-1', 'CODING', JSON.stringify({
-      success: true,
-      beadId: 'bead-1',
-      iteration: 2,
-      output: 'stale done',
-      errors: [],
-      checkpoint: {
-        beadId: interruptedBead.id,
-        iteration: interruptedBead.iteration,
-        startedAt: interruptedBead.startedAt,
-        updatedAt: '2026-01-01T00:00:00.000Z',
-        beadStartCommit: interruptedBead.beadStartCommit,
-      },
-    }))
+    writeExecutionCheckpoint(ticket.id, interruptedBead, 'stale done', '2026-01-01T00:00:00.000Z')
     executeBeadMock.mockResolvedValueOnce({
       success: true,
       beadId: 'bead-1',
@@ -1274,32 +1239,13 @@ describe('handleCoding', () => {
     expect(readTicketBeads(ticket.id).find((b) => b.id === 'bead-1')?.status).toBe('error')
   })
 
-  it('marks the bead done when finalization is a true no-op', async () => {
-    commitBeadChangesMock.mockReturnValue({ committed: false, pushed: false })
+  it.each([
+    { finalization: 'a true no-op', result: { committed: false, pushed: false } },
+    { finalization: 'a push failure', result: { committed: true, pushed: false, error: 'remote rejected push' } },
+  ])('marks the bead done after $finalization', async ({ result }) => {
+    commitBeadChangesMock.mockReturnValue(result)
     const { ticket, context } = createExecutionTestTicket(repoManager, {
-      title: 'No-op finalization',
-    })
-    writeTicketBeads(ticket.id, [makePendingBead('bead-1', 1)])
-    const sendEvent = vi.fn()
-
-    executeBeadMock.mockResolvedValueOnce({
-      success: true,
-      beadId: 'bead-1',
-      iteration: 1,
-      output: 'done',
-      errors: [],
-    })
-
-    await handleCoding(ticket.id, context, sendEvent, new AbortController().signal)
-
-    expect(sendEvent).toHaveBeenCalledWith({ type: 'ALL_BEADS_DONE' })
-    expect(readTicketBeads(ticket.id).find((b) => b.id === 'bead-1')?.status).toBe('done')
-  })
-
-  it('treats push failure as a warning after successful local commit', async () => {
-    commitBeadChangesMock.mockReturnValue({ committed: true, pushed: false, error: 'remote rejected push' })
-    const { ticket, context } = createExecutionTestTicket(repoManager, {
-      title: 'Push warning finalization',
+      title: 'Successful finalization',
     })
     writeTicketBeads(ticket.id, [makePendingBead('bead-1', 1)])
     const sendEvent = vi.fn()

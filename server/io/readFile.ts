@@ -1,9 +1,17 @@
-import { closeSync, constants, fstatSync, lstatSync, openSync, readFileSync } from 'node:fs'
+import { closeSync, constants, fstatSync, lstatSync, openSync, readFileSync, type BigIntStats } from 'node:fs'
 import { ContainedPathError } from '../lib/containedPath'
+
+function assertFileIdentity(before: BigIntStats | undefined, opened: BigIntStats, after: BigIntStats): void {
+  if (!opened.isFile() || after.isSymbolicLink()
+    || opened.dev !== after.dev || opened.ino !== after.ino
+    || (before && (before.dev !== opened.dev || before.ino !== opened.ino))) {
+    throw new ContainedPathError('File changed before it could be opened')
+  }
+}
 
 /** Open a regular, already-contained file; the caller owns the descriptor. */
 export function openFileNoFollowSync(filePath: string, flags = constants.O_RDONLY): number {
-  let before
+  let before: BigIntStats | undefined
   try {
     before = lstatSync(filePath, { bigint: true })
   } catch (error) {
@@ -18,12 +26,7 @@ export function openFileNoFollowSync(filePath: string, flags = constants.O_RDONL
   try {
     const opened = fstatSync(fd, { bigint: true })
     const after = lstatSync(filePath, { bigint: true })
-    if (!opened.isFile() || after.isSymbolicLink()
-      || opened.dev !== after.dev || opened.ino !== after.ino
-      || opened.birthtimeNs !== after.birthtimeNs
-      || (before && (before.dev !== opened.dev || before.ino !== opened.ino || before.birthtimeNs !== opened.birthtimeNs))) {
-      throw new ContainedPathError('File changed before it could be opened')
-    }
+    assertFileIdentity(before, opened, after)
     return fd
   } catch (error) {
     closeSync(fd)

@@ -1,7 +1,7 @@
 import { closeSync, constants, fstatSync, lstatSync, openSync, readFileSync, type BigIntStats } from 'node:fs'
 import { ContainedPathError } from '../lib/containedPath'
 
-function assertFileIdentity(before: BigIntStats | undefined, opened: BigIntStats, after: BigIntStats): void {
+const assertFileIdentity = (before: BigIntStats | undefined, opened: BigIntStats, after: BigIntStats): void => {
   if (!opened.isFile() || after.isSymbolicLink()
     || opened.dev !== after.dev || opened.ino !== after.ino
     || (before && (before.dev !== opened.dev || before.ino !== opened.ino))) {

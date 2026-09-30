@@ -1,0 +1,32 @@
+# PULLFROG ACTION — DO NOT EDIT EXCEPT WHERE INDICATED
+name: Pullfrog
+run-name: ${{ inputs.name || github.workflow }}
+on:
+  workflow_dispatch:
+    inputs:
+      prompt:
+        type: string
+        description: Agent prompt
+      name:
+        type: string
+        description: Run name
+
+permissions:
+  contents: read
+
+jobs:
+  pullfrog:
+    runs-on: ubuntu-latest
+    permissions:
+      id-token: write
+      contents: read
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          fetch-depth: 1
+          persist-credentials: false
+      - name: Run agent
+        uses: pullfrog/pullfrog@9d9014dffa1bc03e4f77b7a3474c5c6aa9a9602f # v0
+        with:
+          prompt: ${{ inputs.prompt }}

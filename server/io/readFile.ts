@@ -4,10 +4,9 @@ import { ContainedPathError } from '../lib/containedPath'
 /** Open a regular, already-contained file; the caller owns the descriptor. */
 export function openFileNoFollowSync(filePath: string, flags = constants.O_RDONLY): number {
   const assertFileIdentity = (before: BigIntStats | undefined, opened: BigIntStats, after: BigIntStats): void => {
-    const sameIdentity = (left: BigIntStats, right: BigIntStats) => left.dev === right.dev && left.ino === right.ino
-    if (!opened.isFile() || after.isSymbolicLink()
-      || !sameIdentity(opened, after)
-      || (before !== undefined && !sameIdentity(before, opened))) {
+    const sameIdentity = (left: BigIntStats | undefined, right: BigIntStats) =>
+      left === undefined || (left.dev === right.dev && left.ino === right.ino)
+    if (!(opened.isFile() && after.isFile() && sameIdentity(opened, after) && sameIdentity(before, opened))) {
       throw new ContainedPathError('File changed before it could be opened')
     }
   }

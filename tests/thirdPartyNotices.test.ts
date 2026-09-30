@@ -167,7 +167,7 @@ describe('third-party notice generator', () => {
     try {
       const result = run(fixture)
 
-      expect(result.status).toBe(1)
+      expect(result.status, result.stderr).toBe(1)
       expect(result.stderr).toMatch(/dist[/\\]client[/\\]bundled-packages\.json is missing\./)
       expect(result.stderr).toContain('Run `npm run build` first')
       expect(calls(fixture)).toEqual([])

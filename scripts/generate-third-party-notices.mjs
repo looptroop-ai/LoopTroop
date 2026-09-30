@@ -69,6 +69,11 @@ function resolveCopyright(licenseText, manifest) {
   return null
 }
 
+function fail(...messages) {
+  for (const message of messages) console.error(message)
+  process.exitCode = 1
+}
+
 /** `npm ls --omit=dev` gives the production tree, including transitive packages. */
 function collectProductionPackages() {
   // `execTool`, not `execFileSync`: npm is `npm.cmd` on Windows, which
@@ -112,8 +117,8 @@ function collectBundledFrontendPackages() {
   try {
     names = JSON.parse(readFileSync(BUNDLED_PACKAGES_MANIFEST, 'utf8'))
   } catch {
-    console.error(`FAIL: ${BUNDLED_PACKAGES_MANIFEST} is not readable JSON.`)
-    process.exit(1)
+    fail(`FAIL: ${BUNDLED_PACKAGES_MANIFEST} is not readable JSON.`)
+    return null
   }
 
   const packages = []
@@ -123,8 +128,8 @@ function collectBundledFrontendPackages() {
     // A build artefact naming a package that is no longer installed means the
     // manifest is stale; rebuilding is the fix, so say so rather than guess.
     if (!manifest?.version) {
-      console.error(`FAIL: bundled package "${name}" is not installed. Run \`npm run build:client\` and retry.`)
-      process.exit(1)
+      fail(`FAIL: bundled package "${name}" is not installed. Run \`npm run build:client\` and retry.`)
+      return null
     }
     packages.push({ name, version: manifest.version })
   }
@@ -232,59 +237,66 @@ function render(packages) {
   return `${lines.join('\n')}\n`
 }
 
-const checkOnly = process.argv.includes('--check')
+function main() {
+  if (!existsSync(BUNDLED_PACKAGES_MANIFEST)) {
+    fail(
+      `FAIL: ${BUNDLED_PACKAGES_MANIFEST} is missing.`,
+      'The client bundle inlines frontend packages that the production',
+      'dependency tree cannot see. Run `npm run build` first so their',
+      'licences are not silently omitted.',
+    )
+    return
+  }
 
-if (!existsSync(BUNDLED_PACKAGES_MANIFEST)) {
-  console.error(`FAIL: ${BUNDLED_PACKAGES_MANIFEST} is missing.`)
-  console.error('The client bundle inlines frontend packages that the production')
-  console.error('dependency tree cannot see. Run `npm run build` first so their')
-  console.error('licences are not silently omitted.')
-  process.exit(1)
-}
+  const seen = new Set()
+  const productionPackages = collectProductionPackages()
+  const bundledPackages = collectBundledFrontendPackages()
+  if (bundledPackages === null) return
+  const allPackages = [...productionPackages, ...bundledPackages]
+    .filter((entry) => {
+      const key = `${entry.name}@${entry.version}`
+      if (seen.has(key)) return false
+      seen.add(key)
+      return true
+    })
+    .sort((a, b) => a.name.localeCompare(b.name) || a.version.localeCompare(b.version))
 
-const seen = new Set()
-const allPackages = [...collectProductionPackages(), ...collectBundledFrontendPackages()]
-  .filter((entry) => {
-    const key = `${entry.name}@${entry.version}`
-    if (seen.has(key)) return false
-    seen.add(key)
-    return true
+  const packages = allPackages.map((entry) => {
+    const packageDir = findPackageDir(entry.name)
+    const manifest = packageDir ? readManifest(packageDir) : null
+    if (!manifest) return { ...entry, license: 'UNKNOWN', copyright: null, licenseText: null, noticeText: null }
+    const licenseText = findLicenseText(packageDir)
+    return {
+      ...entry,
+      license: resolveLicenseId(manifest),
+      copyright: resolveCopyright(licenseText, manifest),
+      licenseText,
+      noticeText: findNoticeText(packageDir),
+    }
   })
-  .sort((a, b) => a.name.localeCompare(b.name) || a.version.localeCompare(b.version))
 
-const packages = allPackages.map((entry) => {
-  const packageDir = findPackageDir(entry.name)
-  const manifest = packageDir ? readManifest(packageDir) : null
-  if (!manifest) return { ...entry, license: 'UNKNOWN', copyright: null, licenseText: null, noticeText: null }
-  const licenseText = findLicenseText(packageDir)
-  return {
-    ...entry,
-    license: resolveLicenseId(manifest),
-    copyright: resolveCopyright(licenseText, manifest),
-    licenseText,
-    noticeText: findNoticeText(packageDir),
+  const unknown = packages.filter((entry) => entry.license === 'UNKNOWN')
+  if (unknown.length > 0) {
+    fail(
+      `FAIL: ${unknown.length} package(s) have no declared licence:\n`,
+      ...unknown.map((entry) => `  ${entry.name}@${entry.version}`),
+      '\nA redistributed package must declare a licence.',
+    )
+    return
   }
-})
 
-const unknown = packages.filter((entry) => entry.license === 'UNKNOWN')
-if (unknown.length > 0) {
-  console.error(`FAIL: ${unknown.length} package(s) have no declared licence:\n`)
-  for (const entry of unknown) console.error(`  ${entry.name}@${entry.version}`)
-  console.error('\nA redistributed package must declare a licence.')
-  process.exit(1)
+  const rendered = render(packages)
+  if (process.argv.includes('--check')) {
+    const existing = existsSync(OUTPUT_PATH) ? readFileSync(OUTPUT_PATH, 'utf8') : null
+    if (existing !== rendered) {
+      fail(`FAIL: ${OUTPUT_PATH} is out of date.`, 'Run `npm run licenses:generate` and commit the result.')
+      return
+    }
+    console.log(`PASS: ${OUTPUT_PATH} matches the redistributed package set (${packages.length} packages).`)
+  } else {
+    writeFileSync(OUTPUT_PATH, rendered)
+    console.log(`Wrote ${OUTPUT_PATH} covering ${packages.length} packages.`)
+  }
 }
 
-const rendered = render(packages)
-
-if (checkOnly) {
-  const existing = existsSync(OUTPUT_PATH) ? readFileSync(OUTPUT_PATH, 'utf8') : null
-  if (existing !== rendered) {
-    console.error(`FAIL: ${OUTPUT_PATH} is out of date.`)
-    console.error('Run `npm run licenses:generate` and commit the result.')
-    process.exit(1)
-  }
-  console.log(`PASS: ${OUTPUT_PATH} matches the redistributed package set (${packages.length} packages).`)
-} else {
-  writeFileSync(OUTPUT_PATH, rendered)
-  console.log(`Wrote ${OUTPUT_PATH} covering ${packages.length} packages.`)
-}
+main()

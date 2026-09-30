@@ -4,10 +4,25 @@ import { join } from 'node:path'
 import { makeTempDir, removeTempDir } from '../../test/tempDir'
 
 const race = vi.hoisted(() => {
-  return { beforeOpen: undefined as (() => void) | undefined, afterMkdir: undefined as (() => void) | undefined, fd: -1, reads: 0 }
+  return {
+    beforeOpen: undefined as (() => void) | undefined,
+    afterMkdir: undefined as (() => void) | undefined,
+    identities: undefined as Array<{ dev: bigint; ino: bigint }> | undefined,
+    identityCalls: 0,
+    fd: -1,
+    reads: 0,
+  }
 })
 vi.mock('node:fs', async (importOriginal) => {
   const actual = await importOriginal<typeof import('node:fs')>()
+  const withIdentity = (stats: object | undefined, bigint: boolean) => {
+    if (!stats) return stats
+    const identity = race.identities?.[race.identityCalls++]
+    return identity ? Object.assign(Object.create(Object.getPrototypeOf(stats)), stats, {
+      dev: bigint ? identity.dev : Number(identity.dev),
+      ino: bigint ? identity.ino : Number(identity.ino),
+    }) : stats
+  }
   return {
     ...actual,
     // Exercise the Windows fallback even when this test runs on POSIX.
@@ -24,6 +39,12 @@ vi.mock('node:fs', async (importOriginal) => {
       race.fd = actual.openSync(...args)
       return race.fd
     },
+    lstatSync: (...args: Parameters<typeof actual.lstatSync>) => withIdentity(
+      actual.lstatSync(...args), typeof args[1] === 'object' && args[1]?.bigint === true,
+    ),
+    fstatSync: (...args: Parameters<typeof actual.fstatSync>) => withIdentity(
+      actual.fstatSync(...args), typeof args[1] === 'object' && args[1]?.bigint === true,
+    ),
     readFileSync: (...args: Parameters<typeof actual.readFileSync>) => {
       race.reads += 1
       return actual.readFileSync(...args)
@@ -38,6 +59,8 @@ const roots: string[] = []
 afterEach(() => {
   race.beforeOpen = undefined
   race.afterMkdir = undefined
+  race.identities = undefined
+  race.identityCalls = 0
   race.reads = 0
   for (const root of roots.splice(0)) removeTempDir(root)
 })
@@ -70,5 +93,17 @@ describe('no-follow fallback without O_NOFOLLOW', () => {
     expect(() => readFileNoFollowSync(file)).toThrow('File changed')
     expect(race.reads).toBe(0)
     expect(() => fstatSync(race.fd)).toThrow(expect.objectContaining({ code: 'EBADF' }))
+  })
+
+  it('compares file identities exactly beyond number precision', () => {
+    const root = makeTempDir('read-file-identity-precision-')
+    roots.push(root)
+    const file = join(root, 'file')
+    writeFileSync(file, 'must not be read')
+    const original = { dev: 9_007_199_254_740_993n, ino: 9_007_199_254_740_993n }
+    race.identities = [original, original, { ...original, ino: original.ino - 1n }]
+
+    expect(() => readFileNoFollowSync(file)).toThrow('File changed')
+    expect(race.reads).toBe(0)
   })
 })

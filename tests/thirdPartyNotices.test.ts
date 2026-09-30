@@ -176,6 +176,21 @@ describe('third-party notice generator', () => {
     }
   })
 
+  it('fails without writing notices when the bundled-package manifest is invalid JSON', () => {
+    const fixture = createFixture({ bundle: [] })
+    try {
+      writeFileSync(join(fixture.root, 'dist', 'client', 'bundled-packages.json'), '{')
+      const result = run(fixture)
+
+      expect(result.status, result.stderr).toBe(1)
+      expect(result.stderr).toMatch(/dist[/\\]client[/\\]bundled-packages\.json is not readable JSON\./)
+      expect(existsSync(join(fixture.root, 'THIRD-PARTY-NOTICES.md'))).toBe(false)
+      expect(calls(fixture)).toEqual([['ls', '--omit=dev', '--all', '--json']])
+    } finally {
+      removeTempDir(fixture.root)
+    }
+  })
+
   it('fails when the bundle manifest names a package that is no longer installed', () => {
     const fixture = createFixture({ bundle: ['removed-frontend-lib'] })
     try {

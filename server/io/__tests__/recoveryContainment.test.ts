@@ -210,10 +210,11 @@ describe('recovery descriptor containment', () => {
       writeFileSync(target, '{"newerWriter":true}')
       replacementInstalled = true
     })
-    vi.spyOn(fs, 'lstatSync').mockImplementation((path) => {
-      const stats = lstat(path)
+    vi.spyOn(fs, 'lstatSync').mockImplementation((path, options) => {
+      const stats = lstat(path, options)
       if (replacementInstalled && path === target) {
-        const sourceStats = lstat(tmp)
+        const sourceStats = lstat(tmp, options)
+        if (!sourceStats) throw new Error('Expected the recovery temp to exist')
         return Object.assign(
           Object.create(Object.getPrototypeOf(stats)),
           stats,

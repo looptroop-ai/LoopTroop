@@ -10,6 +10,7 @@ Unreleased changes appear first and represent commits that have not yet been inc
 > Changes merged since the last versioned release that have not yet shipped in a tagged version.
 
 ### Summary
+- No-follow file reads now detect replaced files using exact file identity on Windows before consuming their contents.
 - Beads refinement preserves stable IDs and council attribution when it reconciles conflicting change records, and relevant-files budgets keep higher-priority entries.
 - The test suite removes redundant worktree and log replay setup, avoids host process scans for fake child IDs, and strengthens boundary, timeout, and transport regressions.
 - Kanban pagination arrows follow the visible page, and Escape cancels an uncommitted page-number edit.
@@ -289,6 +290,7 @@ Unreleased changes appear first and represent commits that have not yet been inc
 - The unused `server/db/drizzle.config.ts` alias. Every database script already selects its app or project config explicitly, so keeping a third config that Drizzle Kit cannot discover from the repository root only advertised a command that no longer worked.
 
 ### Fixed
+- No-follow file reads compare device and inode with BigInt precision, so Windows file replacements cannot pass through rounded file identity values.
 - Beads refinement repairs a uniquely title-matched ID collision only when one explicit mismatched modification and one `before: null` addition resolve to the affected beads, with `after: null` removals for any other winner beads missing from the refined artifact. A stale added ID can resolve through a unique title, while extra or conflicting rows still block repair. Contradictory add/remove rows for a live bead become one stable-ID modification and keep valid council inspiration instead of producing a false addition/removal pair. A declared removal without an `after` side normalizes to `after: null` while retaining valid inspiration, but still cannot authorize ID repair without an explicit null. List-valued bead content is compared structurally so separator characters cannot hide an edit.
 - Relevant-files artifact budgets now discard lower-priority entries first and preserve higher-priority files when the size limit is exceeded.
 - Concurrent ticket starts now share an in-flight guard across equivalent ticket reference spellings.

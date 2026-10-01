@@ -10,10 +10,10 @@ const expected = {
   winget: 'winget upgrade LoopTroopAI.LoopTroop',
   aur: 'yay -Syu looptroop-bin   (or your AUR helper of choice)',
   container: 'docker pull looptroopai/looptroop:latest',
-  binary: 'curl --proto "=https" --proto-redir "=https" --tlsv1.2 -fsSL https://www.looptroop.ovh/install | sh -s -- --binary',
+  binary: 'curl -fsSL https://www.looptroop.ovh/install | sh -s -- --binary',
 } as const
 
-const binaryWindowsUpgrade = '$script = curl.exe --proto "=https" --proto-redir "=https" --tlsv1.2 -fsSL https://www.looptroop.ovh/install.ps1; if ($LASTEXITCODE -ne 0 -or !$script) { throw "Installer download failed" }; & ([scriptblock]::Create(($script -join "`n"))) -Binary'
+const binaryWindowsUpgrade = "$installer = irm https://www.looptroop.ovh/install.ps1 -ErrorAction Stop; if ($installer -notmatch '\\S') { throw 'Installer download failed' }; & ([scriptblock]::Create($installer)) -Binary"
 
 const wiringContracts = [
   {

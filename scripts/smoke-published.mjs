@@ -74,7 +74,7 @@ const OPENCODE_PROBE_TIMEOUT_MS = 2_000
  */
 const binaryUpgradeCommand = (platform) => (platform === 'win32'
   ? powershellInstaller('https://www.looptroop.ovh/install.ps1', ' -Binary')
-  : 'curl --proto "=https" --proto-redir "=https" --tlsv1.2 -fsSL https://www.looptroop.ovh/install | sh -s -- --binary')
+  : 'curl -fsSL https://www.looptroop.ovh/install | sh -s -- --binary')
 
 const REPO = process.env.LOOPTROOP_INSTALL_REPO || 'looptroop-ai/LoopTroop'
 const API = process.env.LOOPTROOP_INSTALL_API || 'https://api.github.com'
@@ -166,7 +166,7 @@ export const CHANNELS = {
   // against a real release". This is that proof, and until now it existed only
   // for PowerShell.
   'installer-sh': {
-    documented: 'curl --proto "=https" --proto-redir "=https" --tlsv1.2 -fsSL https://www.looptroop.ovh/install | sh',
+    documented: 'curl -fsSL https://www.looptroop.ovh/install | sh',
     legs: [
       { os: 'ubuntu-latest', tier: 'release', opencode: 'npm' },
       { os: 'macos-latest', tier: 'release', opencode: 'npm' },
@@ -179,7 +179,7 @@ export const CHANNELS = {
     publishJob: 'finalize',
     publishHint: 'The website redirects /install to the latest release asset; check the release has install.sh attached.',
     install: ({ version, pin }) => shellSpec(
-      `curl --proto "=https" --proto-redir "=https" --tlsv1.2 -fsSL ${installerUrl('install.sh', version, pin)} | sh${pin ? ` -s -- --version ${version}` : ''}`,
+      `curl -fsSL ${installerUrl('install.sh', version, pin)} | sh${pin ? ` -s -- --version ${version}` : ''}`,
     ),
     // The installer's default mode hands the verified tarball to `npm install
     // -g`, precisely so that npm's own uninstall keeps working.
@@ -228,7 +228,7 @@ export const CHANNELS = {
   // Node runtime — into `~/.looptroop`. Documented as a way to *install*, not
   // only to upgrade.
   'installer-sh-binary': {
-    documented: 'curl --proto "=https" --proto-redir "=https" --tlsv1.2 -fsSL https://www.looptroop.ovh/install | sh -s -- --binary',
+    documented: 'curl -fsSL https://www.looptroop.ovh/install | sh -s -- --binary',
     legs: [{ os: 'ubuntu-latest', tier: 'weekly', opencode: 'npm' }],
     daemon: true,
     pinnable: true,
@@ -239,7 +239,7 @@ export const CHANNELS = {
     publishHint: 'Check the release carries looptroop-<version>-linux-x64.tar.gz.',
     pathHint: () => join(binaryPrefix(), 'bin'),
     install: ({ version, pin }) => shellSpec(
-      `curl --proto "=https" --proto-redir "=https" --tlsv1.2 -fsSL ${installerUrl('install.sh', version, pin)} | sh -s -- --binary${pin ? ` --version ${version}` : ''}`,
+      `curl -fsSL ${installerUrl('install.sh', version, pin)} | sh -s -- --binary${pin ? ` --version ${version}` : ''}`,
     ),
     // No uninstall command exists for this channel; the documentation says to
     // remove the directory.
@@ -737,9 +737,11 @@ function shellSpec(line) {
   return { command: 'sh', args: ['-c', line], display: line }
 }
 
-/** Capture a complete HTTPS-only script before execution, preserving PowerShell lines. */
+/** Guard argument-bearing downloads before creating a script block. */
 function powershellInstaller(url, args = '') {
-  return `$script = curl.exe --proto "=https" --proto-redir "=https" --tlsv1.2 -fsSL ${url}; if ($LASTEXITCODE -ne 0 -or !$script) { throw "Installer download failed" }; & ([scriptblock]::Create(($script -join "\`n")))${args}`
+  return args
+    ? `$installer = irm ${url} -ErrorAction Stop; if ($installer -notmatch '\\S') { throw 'Installer download failed' }; & ([scriptblock]::Create($installer))${args}`
+    : `irm ${url} | iex`
 }
 
 /** Run the Windows command in the preinstalled PowerShell 5.1 runtime. */

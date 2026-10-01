@@ -1,9 +1,9 @@
 #!/usr/bin/env pwsh
 # LoopTroop installer for Windows.
 #
-#   $script = curl.exe --proto "=https" --proto-redir "=https" --tlsv1.2 -fsSL https://www.looptroop.ovh/install.ps1; if ($LASTEXITCODE -ne 0 -or !$script) { throw "Installer download failed" }; & ([scriptblock]::Create(($script -join "`n")))
-#   $script = curl.exe --proto "=https" --proto-redir "=https" --tlsv1.2 -fsSL https://www.looptroop.ovh/install.ps1; if ($LASTEXITCODE -ne 0 -or !$script) { throw "Installer download failed" }; & ([scriptblock]::Create(($script -join "`n"))) -Version 9.9.9
-#   $script = curl.exe --proto "=https" --proto-redir "=https" --tlsv1.2 -fsSL https://www.looptroop.ovh/install.ps1; if ($LASTEXITCODE -ne 0 -or !$script) { throw "Installer download failed" }; & ([scriptblock]::Create(($script -join "`n"))) -Binary
+#   irm https://www.looptroop.ovh/install.ps1 | iex
+#   $installer = irm https://www.looptroop.ovh/install.ps1 -ErrorAction Stop; if ($installer -notmatch '\S') { throw 'Installer download failed' }; & ([scriptblock]::Create($installer)) -Version 9.9.9
+#   $installer = irm https://www.looptroop.ovh/install.ps1 -ErrorAction Stop; if ($installer -notmatch '\S') { throw 'Installer download failed' }; & ([scriptblock]::Create($installer)) -Binary
 #
 # Downloads what a LoopTroop release published, checks it against the checksum
 # that release recorded, and installs it: the npm package with npm by default,

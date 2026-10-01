@@ -466,36 +466,49 @@ describe('planMatrix', () => {
     // The website URL is the path a user takes, and exercising the redirect is
     // half the point of the leg.
     const sh = installedChannel('installer-sh').install({ version: '9.9.9', pin: false })
-    expect(sh.display).toBe('curl --proto "=https" --proto-redir "=https" --tlsv1.2 -fsSL https://www.looptroop.ovh/install | sh')
+    expect(sh.display).toBe('curl -fsSL https://www.looptroop.ovh/install | sh')
 
     const ps1 = installedChannel('installer-ps1').install({ version: '9.9.9', pin: false })
-    expect(ps1.display).toBe('$script = curl.exe --proto "=https" --proto-redir "=https" --tlsv1.2 -fsSL https://www.looptroop.ovh/install.ps1; if ($LASTEXITCODE -ne 0 -or !$script) { throw "Installer download failed" }; & ([scriptblock]::Create(($script -join "`n")))')
+    expect(ps1.display).toBe('irm https://www.looptroop.ovh/install.ps1 | iex')
   })
 
-  it.runIf(process.platform === 'win32' || spawnSync('pwsh', ['-NoProfile', '-Command', '$PSVersionTable.PSVersion.ToString()'], { timeout: 10_000 }).status === 0).each([[0, false], [22, false], [0, true]] as const)('executes PowerShell downloads only after curl succeeds (exit %i, empty %s)', (exitCode, empty) => {
+  it.runIf(process.platform === 'win32' || spawnSync('pwsh', ['-NoProfile', '-Command', '$PSVersionTable.PSVersion.ToString()'], { timeout: 10_000 }).status === 0).each([
+    { name: 'complete script', response: `@'
+param([switch]$Binary, [string]$Version)
+$message = @"
+complete script
+"@
+Write-Output "$message $Binary $Version"
+'@`, status: 0, preference: 'Stop', argumentsOnly: false },
+    { name: 'failed download', response: "throw 'Installer download failed'", status: 1, preference: 'Stop', argumentsOnly: false },
+    { name: 'empty download', response: "return ''", status: 1, preference: 'Stop', argumentsOnly: false },
+    { name: 'nonterminating download error', response: "Write-Error 'Installer download failed'; return", status: 1, preference: 'Continue', argumentsOnly: true },
+    { name: 'whitespace download', response: "return '  '", status: 1, preference: 'Continue', argumentsOnly: true },
+    { name: 'null download', response: 'return $null', status: 1, preference: 'Continue', argumentsOnly: true },
+  ])('preserves native PowerShell scripts and arguments: $name', ({ response, status, preference, argumentsOnly }) => {
     const shell = process.platform === 'win32' ? 'powershell.exe' : 'pwsh'
-    const command = installedChannel('installer-ps1-binary').install({ version: '9.9.9', pin: true }).display
-    const result = spawnSync(shell, ['-NoProfile', '-NonInteractive', '-Command', `
-function Invoke-MockCurl {
-  $global:LASTEXITCODE = ${exitCode}
-  if (${empty ? '$true' : '$false'}) { return }
-  'param([switch]$Binary, [string]$Version)'
-  '$message = @"'
-  'complete script'
-  '"@'
-  'Write-Output "$message $Binary $Version"'
+    for (const { key, pin, stdout } of [
+      { key: 'installer-ps1', pin: false, stdout: 'complete script False' },
+      { key: 'installer-ps1', pin: true, stdout: 'complete script False 9.9.9' },
+      { key: 'installer-ps1-binary', pin: false, stdout: 'complete script True' },
+      { key: 'installer-ps1-binary', pin: true, stdout: 'complete script True 9.9.9' },
+    ].slice(Number(argumentsOnly))) {
+      // A missing mock fails locally before it can install anything.
+      const display = installedChannel(key).install({ version: '9.9.9', pin }).display
+      if (!display) throw new Error(`Missing installer command for ${key}`)
+      const command = display.replace(/https:\/\/[^)\s]+/, 'http://127.0.0.1:1/install.ps1')
+      const result = spawnSync(shell, ['-NoProfile', '-NonInteractive', '-Command', `
+$ErrorActionPreference = '${preference}'
+function Invoke-RestMethod {
+  [CmdletBinding()]
+  param([string]$Uri)
+  ${response}
 }
-Set-Alias -Name curl.exe -Value Invoke-MockCurl
 ${command}
 `], { encoding: 'utf8', timeout: 30_000 })
-    expect(result.error).toBeUndefined()
-    if (exitCode === 0 && !empty) {
-      expect(result.status, result.stderr).toBe(0)
-      expect(result.stdout.trim()).toBe('complete script True 9.9.9')
-    } else {
-      expect(result.status).not.toBe(0)
-      expect(result.stderr).toContain('Installer download failed')
-      expect(result.stdout).not.toContain('complete script')
+      expect(result.error).toBeUndefined()
+      expect(result.status, result.stderr).toBe(status)
+      expect(result.stdout.trim()).toBe(status === 0 ? stdout : '')
     }
   }, 45_000)
 
@@ -540,7 +553,7 @@ ${command}
     // form. One string here would fail on one of the two operating systems.
     const { upgradeCommand } = installedChannel('installer-sh-binary').expect
     expect(upgradeCommand('win32')).toContain('scriptblock')
-    expect(upgradeCommand('linux')).toBe('curl --proto "=https" --proto-redir "=https" --tlsv1.2 -fsSL https://www.looptroop.ovh/install | sh -s -- --binary')
+    expect(upgradeCommand('linux')).toBe('curl -fsSL https://www.looptroop.ovh/install | sh -s -- --binary')
     expect(upgradeCommand('win32')).not.toBe(upgradeCommand('linux'))
   })
 

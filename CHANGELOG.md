@@ -10,6 +10,7 @@ Unreleased changes appear first and represent commits that have not yet been inc
 > Changes merged since the last versioned release that have not yet shipped in a tagged version.
 
 ### Summary
+- Improved punctuation and readability across user-facing app text, the website and repository documentation while preserving their content.
 - Setup instructions are shorter, documentation code blocks wrap to fit the page, and obsolete repository audit records are removed.
 - The repository now links to the published roadmap and explains where contributions are welcome and when to discuss larger changes.
 - Pullfrog workflows can run manually prompted agents while keeping model credentials in Pullfrog's encrypted secret store.
@@ -152,6 +153,7 @@ Unreleased changes appear first and represent commits that have not yet been inc
 - Closed the two critical and seven high code-scanning findings. Windows opens sign-in links through the URL protocol handler without `cmd.exe`; the published install smoke accepts only the stable and `rc.N` version formats the release tooling can produce; channel checks no longer compile command-line values as regular expressions or mistake uninstall output for an installed channel; ticket links receive URI encoding after protocol validation without changing existing percent escapes; release-note markers and multiline third-party notice cells use context-specific handling; node-manager smoke paths come from fixed manager mappings; and test fixtures no longer use predictable paths under `/tmp`.
 
 ### Changed
+- Made small punctuation, grammar and plain-language edits across user-facing app text, the website and repository Markdown. The edits retain the original ideas, details and qualifications.
 - Simplified README installation choices, moved standalone executables into the final collapsed option, and kept detailed operational guidance in the published docs. Public installer examples use `curl -fsSL` on macOS/Linux and `irm ... | iex` in PowerShell; argument-bearing PowerShell commands stay on one line and reject failed, empty or blank downloads before execution. Release checksum verification is unchanged.
 - Removed extra Getting Started explanations, kept shell-specific notes inside their install tabs, and enabled wrapping for documentation code blocks.
 - OpenCode transport race tests now wait for dispatch and event-consumption signals instead of polling and sleeping; the original race assertions remain intact.

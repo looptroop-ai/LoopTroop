@@ -100,7 +100,7 @@ property of the platform rather than of this daemon. LoopTroop refuses that
 cookie on any request the browser does not vouch for as same-origin, which is
 what stops another local page from driving the API through your browser. It
 cannot stop a program already running as you from reading the cookie out of the
-browser's store and replaying it by hand — such a program can forge every header
+browser's store and replaying it by hand. Such a program can forge every header
 a server could check, and it could equally read the API token from the state
 file. Anything running as your user is inside the boundary.
 

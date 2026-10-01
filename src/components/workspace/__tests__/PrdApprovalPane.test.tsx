@@ -1,4 +1,4 @@
-import { fireEvent, screen, waitFor } from '@testing-library/react'
+import { act, fireEvent, screen, waitFor } from '@testing-library/react'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { buildPrdDocumentYaml, type PrdApprovalDraft } from '@/lib/prdDocument'
 import { makeTicket, makePrdDocument, TEST } from '@/test/factories'
@@ -215,13 +215,15 @@ describe('PrdApprovalPane', () => {
     fireEvent.click(screen.getByRole('button', { name: 'Edit' }))
     await screen.findByLabelText('structured-prd-editor')
 
-    window.dispatchEvent(new CustomEvent('looptroop:ui-state-flush-error', {
-      detail: {
-        ticketId: TEST.ticketId,
-        scope: 'approval_prd',
-        message: 'The latest draft could not be saved while leaving the ticket.',
-      },
-    }))
+    act(() => {
+      window.dispatchEvent(new CustomEvent('looptroop:ui-state-flush-error', {
+        detail: {
+          ticketId: TEST.ticketId,
+          scope: 'approval_prd',
+          message: 'The latest draft could not be saved while leaving the ticket.',
+        },
+      }))
+    })
 
     await waitFor(() => expect(screen.getByText(/Autosave failed/)).toBeInTheDocument())
   })

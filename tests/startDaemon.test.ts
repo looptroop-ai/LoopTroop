@@ -1,4 +1,4 @@
-import { describe, it, expect, afterEach, vi } from 'vitest'
+import { describe, it, expect, beforeAll, afterEach, vi } from 'vitest'
 import { mkdtempSync, existsSync, readFileSync, statSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
@@ -22,6 +22,7 @@ import * as processIdentity from '../server/lib/processIdentity'
 import { getDaemonLockPath, getDaemonStatePath, writeDaemonStartFailure, writeDaemonState, type DaemonState } from '../server/lib/daemonPaths'
 import { resolveSettings } from '../server/lib/appSettings'
 import { APP_SCHEMA_VERSION } from '../server/db/schemaVersion'
+import { initializeDatabase } from '../server/db/init'
 import { removeTempDir } from '../server/test/tempDir'
 
 /**
@@ -32,6 +33,13 @@ import { removeTempDir } from '../server/test/tempDir'
 describe('daemon startup and shutdown', () => {
   const tempDirs: string[] = []
   const running: DaemonHandle[] = []
+
+  beforeAll(() => {
+    // Prepare the cold schema and native identity cache under the hook budget,
+    // so the first readiness test has the same fixture as subsequent starts.
+    processIdentity.readProcessStartToken(process.pid)
+    initializeDatabase()
+  })
 
   afterEach(async () => {
     for (const handle of running.splice(0)) await handle.stop()

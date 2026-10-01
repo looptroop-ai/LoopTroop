@@ -2,8 +2,8 @@
 # LoopTroop installer for Windows.
 #
 #   irm https://www.looptroop.ovh/install.ps1 | iex
-#   & ([scriptblock]::Create((irm https://www.looptroop.ovh/install.ps1))) -Version 9.9.9
-#   & ([scriptblock]::Create((irm https://www.looptroop.ovh/install.ps1))) -Binary
+#   $installer = irm https://www.looptroop.ovh/install.ps1 -ErrorAction Stop; if ($installer -notmatch '\S') { throw 'Installer download failed' }; & ([scriptblock]::Create($installer)) -Version 9.9.9
+#   $installer = irm https://www.looptroop.ovh/install.ps1 -ErrorAction Stop; if ($installer -notmatch '\S') { throw 'Installer download failed' }; & ([scriptblock]::Create($installer)) -Binary
 #
 # Downloads what a LoopTroop release published, checks it against the checksum
 # that release recorded, and installs it: the npm package with npm by default,

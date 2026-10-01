@@ -216,8 +216,9 @@ without runner auditing.
 Retained tooling warnings stay visible and are rechecked when upstream fixes or
 applicable advisories appear:
 
-- Artifact extraction reports deprecated Buffer construction. Keep artifact
-  digest verification when updating or replacing the download action.
+- Artifact extraction reports deprecated Buffer construction in the latest
+  download action ([upstream issue #484](https://github.com/actions/download-artifact/issues/484)).
+  Keep artifact digest verification when updating or replacing the action.
 - Renovate's validator has deprecated transitive dependencies and falls back to
   JavaScript RegExp when its optional RE2 module is unavailable. Review patterns
   that need RE2-specific behavior before adding them; keep configuration

@@ -472,37 +472,44 @@ describe('planMatrix', () => {
     expect(ps1.display).toBe('irm https://www.looptroop.ovh/install.ps1 | iex')
   })
 
-  it.runIf(process.platform === 'win32' || spawnSync('pwsh', ['-NoProfile', '-Command', '$PSVersionTable.PSVersion.ToString()'], { timeout: 10_000 }).status === 0).each([[false, false], [true, false], [false, true]] as const)('preserves native PowerShell scripts and arguments (failed %s, empty %s)', (failed, empty) => {
-    const shell = process.platform === 'win32' ? 'powershell.exe' : 'pwsh'
-    for (const key of ['installer-ps1', 'installer-ps1-binary']) {
-      const binary = key === 'installer-ps1-binary'
-      // A missing mock fails locally before it can install anything.
-      const command = installedChannel(key).install({ version: '9.9.9', pin: binary }).display
-        .replace(/https:\/\/[^)\s]+/, 'http://127.0.0.1:1/install.ps1')
-      const result = spawnSync(shell, ['-NoProfile', '-NonInteractive', '-Command', `
-$ErrorActionPreference = 'Stop'
-function Invoke-RestMethod {
-  if (${failed ? '$true' : '$false'}) { throw 'Installer download failed' }
-  if (${empty ? '$true' : '$false'}) { return '' }
-  @'
+  it.runIf(process.platform === 'win32' || spawnSync('pwsh', ['-NoProfile', '-Command', '$PSVersionTable.PSVersion.ToString()'], { timeout: 10_000 }).status === 0).each([
+    { name: 'complete script', response: `@'
 param([switch]$Binary, [string]$Version)
 $message = @"
 complete script
 "@
 Write-Output "$message $Binary $Version"
-'@
+'@`, status: 0, preference: 'Stop', argumentsOnly: false },
+    { name: 'failed download', response: "throw 'Installer download failed'", status: 1, preference: 'Stop', argumentsOnly: false },
+    { name: 'empty download', response: "return ''", status: 1, preference: 'Stop', argumentsOnly: false },
+    { name: 'nonterminating download error', response: "Write-Error 'Installer download failed'; return", status: 1, preference: 'Continue', argumentsOnly: true },
+    { name: 'whitespace download', response: "return '  '", status: 1, preference: 'Continue', argumentsOnly: true },
+    { name: 'null download', response: 'return $null', status: 1, preference: 'Continue', argumentsOnly: true },
+  ])('preserves native PowerShell scripts and arguments: $name', ({ response, status, preference, argumentsOnly }) => {
+    const shell = process.platform === 'win32' ? 'powershell.exe' : 'pwsh'
+    for (const { key, pin, stdout } of [
+      { key: 'installer-ps1', pin: false, stdout: 'complete script False' },
+      { key: 'installer-ps1', pin: true, stdout: 'complete script False 9.9.9' },
+      { key: 'installer-ps1-binary', pin: false, stdout: 'complete script True' },
+      { key: 'installer-ps1-binary', pin: true, stdout: 'complete script True 9.9.9' },
+    ]) {
+      if (argumentsOnly && !pin && key === 'installer-ps1') continue
+      // A missing mock fails locally before it can install anything.
+      const display = installedChannel(key).install({ version: '9.9.9', pin }).display
+      if (!display) throw new Error(`Missing installer command for ${key}`)
+      const command = display.replace(/https:\/\/[^)\s]+/, 'http://127.0.0.1:1/install.ps1')
+      const result = spawnSync(shell, ['-NoProfile', '-NonInteractive', '-Command', `
+$ErrorActionPreference = '${preference}'
+function Invoke-RestMethod {
+  [CmdletBinding()]
+  param([string]$Uri)
+  ${response}
 }
 ${command}
 `], { encoding: 'utf8', timeout: 30_000 })
       expect(result.error).toBeUndefined()
-      if (!failed && !empty) {
-        expect(result.status, result.stderr).toBe(0)
-        expect(result.stdout.trim()).toBe(binary ? 'complete script True 9.9.9' : 'complete script False')
-      } else {
-        if (failed || !binary) expect(result.status).not.toBe(0)
-        if (failed) expect(result.stderr).toContain('Installer download failed')
-        expect(result.stdout).not.toContain('complete script')
-      }
+      expect(result.status, result.stderr).toBe(status)
+      expect(result.stdout.trim()).toBe(status === 0 ? stdout : '')
     }
   }, 45_000)
 

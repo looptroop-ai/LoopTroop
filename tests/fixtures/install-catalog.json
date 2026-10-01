@@ -95,7 +95,7 @@
       "upgradeCommands": {
         "linux": "curl -fsSL https://www.looptroop.ovh/install | sh -s -- --binary",
         "darwin": "curl -fsSL https://www.looptroop.ovh/install | sh -s -- --binary",
-        "win32": "& ([scriptblock]::Create((irm https://www.looptroop.ovh/install.ps1))) -Binary"
+        "win32": "$installer = irm https://www.looptroop.ovh/install.ps1 -ErrorAction Stop; if ($installer -notmatch '\\S') { throw 'Installer download failed' }; & ([scriptblock]::Create($installer)) -Binary"
       },
       "legs": [
         {
@@ -282,7 +282,7 @@
       "upgradeCommands": {
         "linux": "curl -fsSL https://www.looptroop.ovh/install | sh -s -- --binary",
         "darwin": "curl -fsSL https://www.looptroop.ovh/install | sh -s -- --binary",
-        "win32": "& ([scriptblock]::Create((irm https://www.looptroop.ovh/install.ps1))) -Binary"
+        "win32": "$installer = irm https://www.looptroop.ovh/install.ps1 -ErrorAction Stop; if ($installer -notmatch '\\S') { throw 'Installer download failed' }; & ([scriptblock]::Create($installer)) -Binary"
       },
       "legs": [
         {
@@ -304,7 +304,7 @@
       "upgradeCommands": {
         "linux": "curl -fsSL https://www.looptroop.ovh/install | sh -s -- --binary",
         "darwin": "curl -fsSL https://www.looptroop.ovh/install | sh -s -- --binary",
-        "win32": "& ([scriptblock]::Create((irm https://www.looptroop.ovh/install.ps1))) -Binary"
+        "win32": "$installer = irm https://www.looptroop.ovh/install.ps1 -ErrorAction Stop; if ($installer -notmatch '\\S') { throw 'Installer download failed' }; & ([scriptblock]::Create($installer)) -Binary"
       },
       "legs": [
         {
@@ -348,7 +348,7 @@
       "id": "installer-ps1-binary",
       "kind": "installed",
       "live": true,
-      "documentedInstall": "& ([scriptblock]::Create((irm https://www.looptroop.ovh/install.ps1))) -Binary",
+      "documentedInstall": "$installer = irm https://www.looptroop.ovh/install.ps1 -ErrorAction Stop; if ($installer -notmatch '\\S') { throw 'Installer download failed' }; & ([scriptblock]::Create($installer)) -Binary",
       "stubReason": null,
       "moderated": null,
       "pinnable": true,
@@ -356,7 +356,7 @@
       "upgradeCommands": {
         "linux": "curl -fsSL https://www.looptroop.ovh/install | sh -s -- --binary",
         "darwin": "curl -fsSL https://www.looptroop.ovh/install | sh -s -- --binary",
-        "win32": "& ([scriptblock]::Create((irm https://www.looptroop.ovh/install.ps1))) -Binary"
+        "win32": "$installer = irm https://www.looptroop.ovh/install.ps1 -ErrorAction Stop; if ($installer -notmatch '\\S') { throw 'Installer download failed' }; & ([scriptblock]::Create($installer)) -Binary"
       },
       "legs": [
         {

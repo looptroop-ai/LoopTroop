@@ -66,21 +66,15 @@ describe('docs install catalog', () => {
   it('pins the catalog decisions independently of the smoke recipe implementation', () => {
     const catalog = runCatalog()
 
-    expect(catalog.channels.find((entry) => entry.id === 'installer-sh')).toMatchObject({
-      documentedInstall: 'curl -fsSL https://www.looptroop.ovh/install | sh',
-    })
-    expect(catalog.channels.find((entry) => entry.id === 'installer-ps1')).toMatchObject({
-      documentedInstall: 'irm https://www.looptroop.ovh/install.ps1 | iex',
-    })
-    expect(catalog.channels.find((entry) => entry.id === 'installer-ps1-binary')).toMatchObject({
-      documentedInstall: '& ([scriptblock]::Create((irm https://www.looptroop.ovh/install.ps1))) -Binary',
-    })
-    expect(catalog.channels.find((entry) => entry.id === 'installer-sh-binary')).toMatchObject({
-      documentedInstall: 'curl -fsSL https://www.looptroop.ovh/install | sh -s -- --binary',
-    })
-    expect(catalog.channels.find((entry) => entry.id === 'scoop')).toMatchObject({
-      documentedInstall: 'scoop bucket add looptroop https://github.com/looptroop-ai/scoop-bucket; scoop install looptroop',
-    })
+    for (const [id, documentedInstall] of [
+      ['installer-sh', 'curl -fsSL https://www.looptroop.ovh/install | sh'],
+      ['installer-ps1', 'irm https://www.looptroop.ovh/install.ps1 | iex'],
+      ['installer-ps1-binary', "$installer = irm https://www.looptroop.ovh/install.ps1 -ErrorAction Stop; if ($installer -notmatch '\\S') { throw 'Installer download failed' }; & ([scriptblock]::Create($installer)) -Binary"],
+      ['installer-sh-binary', 'curl -fsSL https://www.looptroop.ovh/install | sh -s -- --binary'],
+      ['scoop', 'scoop bucket add looptroop https://github.com/looptroop-ai/scoop-bucket; scoop install looptroop'],
+    ]) {
+      expect(catalog.channels.find((entry) => entry.id === id), id).toMatchObject({ documentedInstall })
+    }
     expect(catalog.channels.find((entry) => entry.id === 'container')).toMatchObject({
       kind: 'delegated',
     })

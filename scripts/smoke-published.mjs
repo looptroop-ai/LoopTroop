@@ -737,9 +737,11 @@ function shellSpec(line) {
   return { command: 'sh', args: ['-c', line], display: line }
 }
 
-/** Native PowerShell downloads preserve newlines; arguments need a script block. */
+/** Guard argument-bearing downloads before creating a script block. */
 function powershellInstaller(url, args = '') {
-  return args ? `& ([scriptblock]::Create((irm ${url})))${args}` : `irm ${url} | iex`
+  return args
+    ? `$installer = irm ${url} -ErrorAction Stop; if ($installer -notmatch '\\S') { throw 'Installer download failed' }; & ([scriptblock]::Create($installer))${args}`
+    : `irm ${url} | iex`
 }
 
 /** Run the Windows command in the preinstalled PowerShell 5.1 runtime. */

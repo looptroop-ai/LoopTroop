@@ -234,7 +234,7 @@ async function main() {
     inspection = inspectDoctorInstall(doctor.stdout, {
       channel: 'binary',
       upgradeCommand: IS_WINDOWS
-        ? '& ([scriptblock]::Create((irm https://www.looptroop.ovh/install.ps1))) -Binary'
+        ? "$installer = irm https://www.looptroop.ovh/install.ps1 -ErrorAction Stop; if ($installer -notmatch '\\S') { throw 'Installer download failed' }; & ([scriptblock]::Create($installer)) -Binary"
         : 'curl -fsSL https://www.looptroop.ovh/install | sh -s -- --binary',
     })
   } catch {

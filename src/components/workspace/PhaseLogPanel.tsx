@@ -439,7 +439,7 @@ export function PhaseLogPanel({
       {!hideHeader && !hasToolbarPrefix && (
         <div ref={headerRef} className="px-1 py-1.5 flex items-center gap-2">
           <span className="text-xs font-medium text-muted-foreground uppercase tracking-wider">
-            Log — {getStatusUserLabel(phase, {
+            Log: {getStatusUserLabel(phase, {
               currentBead: ticket?.runtime?.currentBead,
               totalBeads: ticket?.runtime?.totalBeads,
             })}
@@ -453,7 +453,7 @@ export function PhaseLogPanel({
         {toolbarPrefix ? (
           <>
             {toolbarPrefix}
-            <span className="text-xs text-muted-foreground shrink-0">—</span>
+            <span className="text-xs text-muted-foreground shrink-0">-</span>
           </>
         ) : null}
         {FIXED_TABS.map(tab => {

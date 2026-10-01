@@ -2913,7 +2913,7 @@ export function ArtifactContent({
         )
       }
       const winnerContent = winnerDraft?.content ?? councilResult.winnerContent ?? ''
-      if (!winnerContent) return <div className="text-xs text-muted-foreground italic">Voting still in progress — winner not yet determined.</div>
+      if (!winnerContent) return <div className="text-xs text-muted-foreground italic">Voting still in progress. Winner not yet determined.</div>
       const header = winnerDraft ? (
         <ModelBadge
           modelId={winnerDraft.memberId}

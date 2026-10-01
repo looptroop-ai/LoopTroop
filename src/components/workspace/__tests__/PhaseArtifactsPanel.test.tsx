@@ -607,7 +607,7 @@ describe('PhaseArtifactsPanel', () => {
     expect(screen.getByText('proposed 3 questions')).toBeInTheDocument()
     expect(screen.getByText('Final Interview Results')).toBeInTheDocument()
     expect(screen.getByText('gpt-5.2 · 3 questions')).toBeInTheDocument()
-    expect(screen.queryByText('Winner — refining draft')).not.toBeInTheDocument()
+    expect(screen.queryByText('Winner: refining draft')).not.toBeInTheDocument()
     expect(screen.queryByText('🔄 Refining')).not.toBeInTheDocument()
     expect(screen.queryByText('Interview Draft Diff')).not.toBeInTheDocument()
 

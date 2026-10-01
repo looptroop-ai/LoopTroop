@@ -1275,7 +1275,7 @@ function deriveInterventionFromWarning(warning: string): StructuredIntervention 
       category: 'cleanup',
       title: 'Normalized artifact status to "draft"',
       summary: 'The artifact status was set to an unsupported or premature value and was corrected to "draft".',
-      why: 'At this stage of the workflow, the artifact must start as a draft — the model set it to a different status prematurely.',
+      why: 'At this stage of the workflow, the artifact must start as a draft. The model set it to a different status prematurely.',
       how: 'LoopTroop overrode the status field to "draft", the required value for newly generated artifacts at this workflow stage.',
     })
   }
@@ -1287,7 +1287,7 @@ function deriveInterventionFromWarning(warning: string): StructuredIntervention 
       category: 'cleanup',
       title: 'Cleared pre-filled approval fields',
       summary: 'Approval metadata (timestamps, approver info) was pre-populated by the model and had to be cleared.',
-      why: 'Approval fields should only be set by explicit user action — pre-filling them would bypass the approval workflow.',
+      why: 'Approval fields should only be set by explicit user action. Pre-filling them would bypass the approval workflow.',
       how: 'LoopTroop cleared the pre-filled approval metadata so the artifact starts in a proper unapproved state.',
     })
   }
@@ -1371,7 +1371,7 @@ function deriveInterventionFromWarning(warning: string): StructuredIntervention 
       category: 'cleanup',
       title: 'Restored an answered question from the approved artifact',
       summary: 'A previously answered and approved interview question was omitted or altered by the model and was restored.',
-      why: 'Approved answers are authoritative — the model should not modify or omit them in subsequent drafts.',
+      why: 'Approved answers are authoritative. The model should not modify or omit them in subsequent drafts.',
       how: 'LoopTroop copied the authoritative answered record from the approved Interview Results artifact.',
     })
   }
@@ -1395,7 +1395,7 @@ function deriveInterventionFromWarning(warning: string): StructuredIntervention 
       category: 'cleanup',
       title: 'Canonicalized follow_up_rounds from approved artifact',
       summary: 'The follow_up_rounds data was altered or omitted by the model and was restored from the approved artifact.',
-      why: 'Follow-up round data was already approved — the model should preserve it exactly as-is in subsequent drafts.',
+      why: 'Follow-up round data was already approved. The model should preserve it exactly as-is in subsequent drafts.',
       how: 'LoopTroop restored follow_up_rounds from the authoritative approved Interview Results artifact.',
     })
   }
@@ -1407,7 +1407,7 @@ function deriveInterventionFromWarning(warning: string): StructuredIntervention 
       category: 'cleanup',
       title: 'Canonicalized the document summary',
       summary: 'The document summary was altered by the model and was restored to match the approved artifact.',
-      why: 'The approved summary is authoritative — rewording it could misrepresent the approved interview content.',
+      why: 'The approved summary is authoritative. Rewording it could misrepresent the approved interview content.',
       how: 'LoopTroop restored the summary text from the authoritative approved artifact.',
     })
   }
@@ -1419,7 +1419,7 @@ function deriveInterventionFromWarning(warning: string): StructuredIntervention 
       category: 'cleanup',
       title: 'Flagged a bead with no PRD references',
       summary: 'A bead has an empty prdRefs list, meaning it does not trace to any PRD user story or epic.',
-      why: 'Every bead should reference at least one PRD item for traceability — an empty prdRefs may indicate the bead was fabricated or the references were lost.',
+      why: 'Every bead should reference at least one PRD item for traceability. An empty prdRefs may indicate the bead was fabricated or the references were lost.',
       how: 'LoopTroop recorded the missing-reference warning; the bead was kept but flagged for review.',
     })
   }
@@ -1479,7 +1479,7 @@ function deriveInterventionFromWarning(warning: string): StructuredIntervention 
       category: 'cleanup',
       title: 'Restored preserved narrative fields after drift',
       summary: 'Part 1 narrative fields drifted during expansion (punctuation or whitespace changes only) and were restored.',
-      why: 'Narrative fields from Part 1 of the blueprint are preserved verbatim — even minor punctuation or whitespace changes are considered drift.',
+      why: 'Narrative fields from Part 1 of the blueprint are preserved verbatim. Even minor punctuation or whitespace changes are considered drift.',
       how: 'LoopTroop detected the cosmetic drift, restored the original Part 1 narrative field values, and kept the expanded content.',
     })
   }

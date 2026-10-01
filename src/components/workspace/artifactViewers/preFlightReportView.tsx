@@ -88,7 +88,7 @@ export function PreFlightReportView({ content }: { content: string }) {
           <span className="text-sm font-medium">
             {report.passed
               ? `All checks passed (${report.checks.length} checks)`
-              : `Pre-flight failed — ${report.criticalFailures.length} critical issue${report.criticalFailures.length === 1 ? '' : 's'}`}
+              : `Pre-flight failed: ${report.criticalFailures.length} critical issue${report.criticalFailures.length === 1 ? '' : 's'}`}
           </span>
           {report.warnings.length > 0 && (
             <span className="text-xs text-amber-600 dark:text-amber-400 ml-auto">

@@ -170,9 +170,9 @@ export type NumericFieldKey = keyof typeof numericFields
 export function getFieldError(key: NumericFieldKey, rawNumeric: Record<string, string>): string | null {
   const raw = rawNumeric[key]
   const cfg = numericFields[key]
-  if (raw === '' || raw === undefined) return `Required (${cfg.min}–${cfg.max})`
+  if (raw === '' || raw === undefined) return `Required (${cfg.min} to ${cfg.max})`
   const n = Number(raw)
-  if (isNaN(n) || !Number.isInteger(n)) return `Must be a whole number (${cfg.min}–${cfg.max})`
+  if (isNaN(n) || !Number.isInteger(n)) return `Must be a whole number (${cfg.min} to ${cfg.max})`
   if (n < cfg.min) return `Minimum is ${cfg.min}`
   if (n > cfg.max) return `Maximum is ${cfg.max}`
   return null

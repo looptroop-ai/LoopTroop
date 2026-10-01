@@ -51,7 +51,7 @@ export function ExistingProjectActionDialog({
               {project.ticketCount} {project.ticketCount === 1 ? 'ticket' : 'tickets'} will be deleted
               {project.activeTicketCount > 0 && (
                 <span className="text-destructive">
-                  {' '}— including {project.activeTicketCount} active
+                  , including {project.activeTicketCount} active
                 </span>
               )}
             </p>

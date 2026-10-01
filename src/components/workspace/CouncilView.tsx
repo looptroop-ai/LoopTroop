@@ -190,7 +190,7 @@ export function CouncilView({ phase, ticket }: CouncilViewProps) {
           <CardHeader className="px-3 py-1.5">
             <CardTitle className="text-[13px] flex items-center gap-1.5">
               {archivedAttemptNumber == null ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : null}
-              AI Council — {domain} {step}
+              AI Council: {domain} {step}
             </CardTitle>
           </CardHeader>
           <CardContent className="px-3 pb-1.5 pt-0">

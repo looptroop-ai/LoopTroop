@@ -12,10 +12,10 @@ import type {
 } from '@/lib/executionSetupPlan'
 
 const GIT_HOOK_POLICY_AUDIT_LABELS: Record<ExecutionSetupPlan['gitHooks']['policy'], string> = {
-  observe_only: 'Observe — bypass hooks, no validation',
-  validate_advisory: 'Check — warn if validation fails',
-  validate_required: 'Require — block if validation fails',
-  use_native_hooks: 'Run — allow Git hooks to act normally',
+  observe_only: 'Observe: bypass hooks, no validation',
+  validate_advisory: 'Check: warn if validation fails',
+  validate_required: 'Require: block if validation fails',
+  use_native_hooks: 'Run: allow Git hooks to act normally',
 }
 
 function emptyProcessCommand(): CommandSpec {

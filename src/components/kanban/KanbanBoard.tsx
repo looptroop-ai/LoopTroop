@@ -697,7 +697,7 @@ export function KanbanBoard() {
       {isTicketsError && (
         <DataUnavailableBanner
           title="Tickets unavailable"
-          description="LoopTroop could not reach the server, so the board is empty. Your tickets are not lost — check that the LoopTroop backend is running, then retry."
+          description="LoopTroop could not reach the server, so the board is empty. Your tickets are not lost. Check that the LoopTroop backend is running, then retry."
           error={ticketsError}
           onRetry={() => { void refetchTickets() }}
           isRetrying={isFetchingTickets}

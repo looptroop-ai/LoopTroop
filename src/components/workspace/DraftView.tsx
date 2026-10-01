@@ -271,14 +271,14 @@ export function DraftView({ ticket }: DraftViewProps) {
           <div className="text-center">
             <h3 className="text-lg font-semibold">Ready to Start</h3>
             <p className="text-xs text-muted-foreground mt-1">
-              Click Start to begin the AI-driven interview process. This may take hours — LoopTroop optimizes for correctness, not speed.
+              Click Start to begin the AI-driven interview process. This may take hours. LoopTroop optimizes for correctness, not speed.
             </p>
           </div>
 
           {/* Ticket metadata: priority, creation date, project */}
           <div className="w-full flex flex-wrap items-center justify-center gap-3 text-xs">
             <Badge variant="outline" className={PRIORITY_COLORS[ticket.priority] ?? PRIORITY_COLORS[3]}>
-              P{ticket.priority} — {PRIORITY_LABELS[ticket.priority] ?? 'Normal'}
+              P{ticket.priority}: {PRIORITY_LABELS[ticket.priority] ?? 'Normal'}
             </Badge>
             <Tooltip>
                         <TooltipTrigger asChild>

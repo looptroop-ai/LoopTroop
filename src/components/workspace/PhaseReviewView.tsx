@@ -116,7 +116,7 @@ export function PhaseReviewView({ phase, ticket }: PhaseReviewViewProps) {
             <div className="max-w-lg mx-auto space-y-4">
               <div className="flex flex-wrap items-center gap-3 text-xs">
                 <Badge variant="outline">
-                  P{ticket.priority} — {PRIORITY_LABELS[ticket.priority] ?? 'Normal'}
+                  P{ticket.priority}: {PRIORITY_LABELS[ticket.priority] ?? 'Normal'}
                 </Badge>
                 <Tooltip>
                                 <TooltipTrigger asChild>

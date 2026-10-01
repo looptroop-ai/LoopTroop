@@ -116,7 +116,7 @@ vi.mock('../ActiveWorkspace', () => ({
           <div key={entry.entryId}>{entry.line}</div>
         ))}
         {selectedPhase === 'DRAFT' && ticket.status !== 'DRAFT' ? (
-          <button type="button">Log — Backlog</button>
+          <button type="button">Log: Backlog</button>
         ) : null}
       </div>
     )
@@ -1004,7 +1004,7 @@ describe('TicketDashboard', () => {
       expect(screen.getByTestId('navigator-current')).toHaveTextContent('SCANNING_RELEVANT_FILES')
       expect(screen.getByTestId('navigator-selected')).toHaveTextContent('DRAFT')
       expect(screen.getByTestId('active-workspace')).toHaveTextContent('DRAFT')
-      expect(screen.getByRole('button', { name: 'Log — Backlog' })).toBeInTheDocument()
+      expect(screen.getByRole('button', { name: 'Log: Backlog' })).toBeInTheDocument()
     })
   })
 

@@ -102,7 +102,7 @@ export function BeadsApprovalEditor({ beads, disabled, onChange }: BeadsApproval
           Use the JSONL tab for full-power editing.
         </p>
       </div>
-      <div className="text-xs text-muted-foreground mb-2">{beads.length} beads — click to expand and edit</div>
+      <div className="text-xs text-muted-foreground mb-2">{beads.length} beads. Click to expand and edit.</div>
       {beads.map((bead, index) => {
         const isExpanded = expandedIndex === index
         const headerId = fieldId(index, 'header')
@@ -206,11 +206,11 @@ export function BeadsApprovalEditor({ beads, disabled, onChange }: BeadsApproval
 
                 {/* Context Guidance */}
                 <div>
-                  <div id={fieldLabelId(index, 'patterns')} className="text-[10px] font-semibold uppercase tracking-widest text-foreground/60 block mb-1">Context Guidance — Patterns</div>
+                  <div id={fieldLabelId(index, 'patterns')} className="text-[10px] font-semibold uppercase tracking-widest text-foreground/60 block mb-1">Context Guidance: Patterns</div>
                   <StringListEditor idPrefix={fieldId(index, 'patterns')} labelId={fieldLabelId(index, 'patterns')} label="Pattern" items={bead.contextGuidance.patterns} onChange={(items) => { updateBead(index, { contextGuidance: { ...bead.contextGuidance, patterns: items } }) }} disabled={disabled} placeholder="Pattern..." />
                 </div>
                 <div>
-                  <div id={fieldLabelId(index, 'anti-patterns')} className="text-[10px] font-semibold uppercase tracking-widest text-foreground/60 block mb-1">Context Guidance — Anti-patterns</div>
+                  <div id={fieldLabelId(index, 'anti-patterns')} className="text-[10px] font-semibold uppercase tracking-widest text-foreground/60 block mb-1">Context Guidance: Anti-patterns</div>
                   <StringListEditor idPrefix={fieldId(index, 'anti-patterns')} labelId={fieldLabelId(index, 'anti-patterns')} label="Anti-pattern" items={bead.contextGuidance.anti_patterns} onChange={(items) => { updateBead(index, { contextGuidance: { ...bead.contextGuidance, anti_patterns: items } }) }} disabled={disabled} placeholder="Anti-pattern..." />
                 </div>
 

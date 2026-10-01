@@ -33,7 +33,7 @@ const CONTEXT_KEY_LABELS: Record<WorkflowContextKey, { label: string; descriptio
   full_answers: { label: 'Full Answers', description: 'Model-generated interview results where skipped questions have been filled in by the AI. PRD coverage uses only the winning model\'s Full Answers artifact as its canonical source.' },
   user_answers: { label: 'User Answers', description: 'The raw user responses collected during the interview loop, including answer text, skip/unskip decisions, and batch submission history across initial and follow-up rounds.' },
   votes: { label: 'Council Votes', description: 'Structured vote payloads from each council member, including rubric scores, rankings, and outcome metadata. Used to select the winning draft and provide audit transparency.' },
-  prd: { label: 'PRD', description: 'The product requirements document artifact — either the latest coverage-checked candidate or the user-approved version. Contains requirements, acceptance criteria, edge cases, and test intent.' },
+  prd: { label: 'PRD', description: 'The product requirements document artifact: either the latest coverage-checked candidate or the user-approved version. Contains requirements, acceptance criteria, edge cases, and test intent.' },
   beads: { label: 'Beads Plan', description: 'The current beads artifact. During coverage phases this contains the semantic blueprint with task descriptions and acceptance criteria. After the expansion step, it contains execution-ready bead records with dependency graphs, commands, and runtime fields.' },
   beads_draft: { label: 'Semantic Blueprint', description: 'The refined semantic beads blueprint before final expansion. Contains high-level task decomposition, acceptance criteria, and test intent without execution-specific fields. Used as input to the expansion step that produces execution-ready bead records.' },
   tests: { label: 'Verification Tests', description: 'Coverage and final test context including test commands, expected outcomes, and test intent derived from the PRD and beads plan. Used during self-testing and integration phases.' },
@@ -395,7 +395,7 @@ function getBlockedErrorSummary(
 
   if (!isLiveOccurrence) {
     return {
-      label: `Past error — ${failedPhaseLabel}`,
+      label: `Past error: ${failedPhaseLabel}`,
       description: `${failedPhaseLabel} failed: ${message} This saved occurrence is read-only; its resolution is available in Details.`,
     }
   }
@@ -412,7 +412,7 @@ function getBlockedErrorSummary(
   }
 
   return {
-    label: `Error — ${failedPhaseLabel}`,
+    label: `Error: ${failedPhaseLabel}`,
     description: `${failedPhaseLabel} failed: ${message} ${recoveryGuidance.join('. ')}.`,
   }
 }
@@ -717,7 +717,7 @@ export function WorkspacePhaseSummary({ phase, ticket, errorMessage, errorOccurr
                       <div key={section.label} className="space-y-1">
                         <h4 className="text-sm font-medium text-foreground">
                           {section.label}
-                          {section.description ? <span className="font-normal text-muted-foreground">{` — ${section.description}`}</span> : null}
+                          {section.description ? <span className="font-normal text-muted-foreground">{`: ${section.description}`}</span> : null}
                         </h4>
                         <ul className="list-disc space-y-1 pl-5 text-sm text-muted-foreground">
                           {section.keys.map((key) => {
@@ -725,7 +725,7 @@ export function WorkspacePhaseSummary({ phase, ticket, errorMessage, errorOccurr
                             return (
                               <li key={key}>
                                 <span className="font-medium text-foreground">{info.label}</span>
-                                {` — ${info.description}`}
+                                {`: ${info.description}`}
                               </li>
                             )
                           })}
@@ -740,7 +740,7 @@ export function WorkspacePhaseSummary({ phase, ticket, errorMessage, errorOccurr
                       return (
                         <li key={key}>
                           <span className="font-medium text-foreground">{info.label}</span>
-                          {` — ${info.description}`}
+                          {`: ${info.description}`}
                         </li>
                       )
                     })}

@@ -182,9 +182,9 @@ function clampToRange(ms: number, minMs: number, maxMs: number): number {
 }
 
 function validate(raw: string, minMinutes: number, maxMinutes: number): string | null {
-  if (raw.trim() === '') return `Enter a number of minutes (${minMinutes}–${maxMinutes}).`
+  if (raw.trim() === '') return `Enter a number of minutes (${minMinutes} to ${maxMinutes}).`
   const minutes = Number(raw)
-  if (!Number.isInteger(minutes)) return `Use whole minutes (${minMinutes}–${maxMinutes}).`
+  if (!Number.isInteger(minutes)) return `Use whole minutes (${minMinutes} to ${maxMinutes}).`
   if (minutes < minMinutes) return `Minimum is ${minMinutes} minute${minMinutes === 1 ? '' : 's'}.`
   if (minutes > maxMinutes) return `Maximum is ${maxMinutes} minutes.`
   return null

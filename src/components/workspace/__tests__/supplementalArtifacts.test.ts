@@ -15,7 +15,7 @@ describe.concurrent('getSupplementalArtifacts', () => {
     expect(getSupplementalArtifacts('VERIFYING_BEADS_COVERAGE')).toContainEqual(
       expect.objectContaining({
         id: 'refined-beads',
-        description: 'Latest blueprint candidate — semantic during coverage review, expanded into execution-ready beads after expansion.',
+        description: 'Latest blueprint candidate: semantic during coverage review, expanded into execution-ready beads after expansion.',
       }),
     )
   })
@@ -24,7 +24,7 @@ describe.concurrent('getSupplementalArtifacts', () => {
     expect(getSupplementalArtifacts('EXPANDING_BEADS')).toContainEqual(
       expect.objectContaining({
         id: 'refined-beads',
-        description: 'Latest blueprint candidate — semantic during coverage review, expanded into execution-ready beads after expansion.',
+        description: 'Latest blueprint candidate: semantic during coverage review, expanded into execution-ready beads after expansion.',
       }),
     )
   })

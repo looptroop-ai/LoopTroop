@@ -299,7 +299,7 @@ function buildRefiningMemberArtifacts(
       : shouldShowProposedDraft
         ? getDraftDetail(domain, draft)
         : isWinner
-          ? 'Winner — refining draft'
+          ? 'Winner: refining draft'
           : getDraftCompletionDetail(domain, draft)
 
     return {
@@ -381,7 +381,7 @@ function makeFullAnswersViewer(modelId: string, content: string): CouncilViewerA
   const safe = encodeURIComponent(modelId)
   return {
     id: `prd-fullanswers-member-${safe}`,
-    label: `Full Answers — ${getModelDisplayName(modelId)}`,
+    label: `Full Answers: ${getModelDisplayName(modelId)}`,
     description: 'Interview results with skipped answers filled in',
     content,
   }
@@ -499,7 +499,7 @@ function getCoverageDetail(result: CoverageResultLike | null): string {
 function makeDraftViewer(domain: Domain, modelId: string, content: string): CouncilViewerArtifact {
   return {
     id: getDraftArtifactId(domain, modelId),
-    label: `${getDomainLabel(domain)} Draft — ${getModelDisplayName(modelId)}`,
+    label: `${getDomainLabel(domain)} Draft: ${getModelDisplayName(modelId)}`,
     description: getDraftDescription(domain),
     content,
   }
@@ -722,4 +722,3 @@ function countQuestionsInContent(content: string): number {
   }
   return count
 }
-

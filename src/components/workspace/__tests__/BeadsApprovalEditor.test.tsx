@@ -48,8 +48,8 @@ describe('BeadsApprovalEditor accessibility', () => {
     expect(within(screen.getByRole('group', { name: 'Tests' })).getByRole('textbox')).toHaveValue('The fields have names.')
     expect(screen.getByRole('group', { name: 'Planned Test Commands' })).toBeInTheDocument()
     expect(screen.getByRole('group', { name: 'Target Files' })).toBeInTheDocument()
-    expect(screen.getByRole('group', { name: 'Context Guidance — Patterns' })).toBeInTheDocument()
-    expect(screen.getByRole('group', { name: 'Context Guidance — Anti-patterns' })).toBeInTheDocument()
+    expect(screen.getByRole('group', { name: 'Context Guidance: Patterns' })).toBeInTheDocument()
+    expect(screen.getByRole('group', { name: 'Context Guidance: Anti-patterns' })).toBeInTheDocument()
     expect(screen.getByRole('group', { name: 'PRD References' })).toBeInTheDocument()
     expect(screen.getByRole('group', { name: 'Blocked By' })).toBeInTheDocument()
 

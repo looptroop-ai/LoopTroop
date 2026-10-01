@@ -244,9 +244,9 @@ describe('ModelPicker', () => {
     expect(within(outputPricedOption).queryByText('Free')).not.toBeInTheDocument()
     expect(within(outputPricedOption).getByText('$')).toBeInTheDocument()
     expect(within(tieredOutputOption).queryByText('Free')).not.toBeInTheDocument()
-    expect(within(tieredOutputOption).getByText('$–$$')).toBeInTheDocument()
+    expect(within(tieredOutputOption).getByText('$ to $$')).toBeInTheDocument()
     expect(within(sameBucketOption).getByText('Cheap')).toBeInTheDocument()
-    expect(within(sameBucketOption).queryByText(/–/)).not.toBeInTheDocument()
+    expect(within(sameBucketOption).queryByText(/ to /)).not.toBeInTheDocument()
     expect(within(cachePricedOption).queryByText('Free')).not.toBeInTheDocument()
     expect(within(cachePricedOption).getByText('Cheap')).toBeInTheDocument()
 

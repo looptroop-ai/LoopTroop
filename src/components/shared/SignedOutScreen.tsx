@@ -59,7 +59,7 @@ export function SignedOutScreen() {
           <p className="mt-4 text-sm text-muted-foreground">
             This page is on <code className="font-mono">localhost</code>. LoopTroop signs browsers
             in at <code className="font-mono">127.0.0.1</code>, and a session at one name is never
-            sent to the other — open{' '}
+            sent to the other. Open{' '}
             <code className="font-mono">{`127.0.0.1:${window.location.port}`}</code> instead.
           </p>
         )}

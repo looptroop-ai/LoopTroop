@@ -97,7 +97,7 @@ describe('InheritableDurationField', () => {
     expect(onChange).not.toHaveBeenCalled()
 
     fireEvent.change(input, { target: { value: '' } })
-    expect(screen.getByRole('alert')).toHaveTextContent('Enter a number of minutes (1–60).')
+    expect(screen.getByRole('alert')).toHaveTextContent('Enter a number of minutes (1 to 60).')
     expect(onChange).not.toHaveBeenCalled()
   })
 

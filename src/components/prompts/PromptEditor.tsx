@@ -401,7 +401,7 @@ export function PromptEditor({ promptId, wordWrap, onToggleWordWrap, onDirtyChan
       {mode === 'diff' && (
         <div className="flex border-b border-border/60 bg-muted/40 text-xs text-muted-foreground">
           <span className="flex-1 border-r border-border/60 px-4 py-1.5">Built-in default (read-only)</span>
-          <span className="flex-1 px-4 py-1.5">Your version — editable</span>
+          <span className="flex-1 px-4 py-1.5">Your editable version</span>
         </div>
       )}
       {mode === 'preview' && (

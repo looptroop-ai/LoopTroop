@@ -135,7 +135,7 @@ function validateJsonl(jsonl: string): string | null {
         return `Line ${i + 1}: every bead needs a non-empty "id"`
       }
     } catch {
-      return `Line ${i + 1}: invalid JSON — ${line.substring(0, 60)}…`
+      return `Line ${i + 1}: invalid JSON: ${line.substring(0, 60)}…`
     }
   }
   return null
@@ -489,7 +489,7 @@ function BeadsApprovalPane({
       const summary = hasMalformedLines ? malformedLineSummary : unrepresentableLineSummary
       setSaveError(
         `${summary} ${hasMalformedLines ? 'could not be read' : 'does not describe a bead'}, and the structured editor `
-        + `does not contain ${lines.length === 1 ? 'it' : 'them'}. Repair the file in the JSONL tab instead — saving `
+        + `does not contain ${lines.length === 1 ? 'it' : 'them'}. Repair the file in the JSONL tab instead; saving `
         + `from here would drop ${lines.length === 1 ? 'that line' : 'those lines'}.`,
       )
       return
@@ -502,7 +502,7 @@ function BeadsApprovalPane({
     } else if (hasUnstructuredGuidance) {
       setSaveError(
         `${unstructuredGuidanceBeadIds.join(', ')} store context guidance as free text, which the structured editor `
-        + 'cannot show. Edit them in the JSONL tab instead — saving from here would replace that text with empty lists.',
+        + 'cannot show. Edit them in the JSONL tab instead; saving from here would replace that text with empty lists.',
       )
       return
     }
@@ -604,7 +604,7 @@ function BeadsApprovalPane({
       // offering the way back, is the whole point of refusing rather than
       // overwriting.
       setSaveError(staleResponse
-        ? `${message}. Reload to work from the file that is there now — reloading replaces your draft with it.`
+        ? `${message}. Reload to work from the file that is there now. Reloading replaces your draft with it.`
         : message)
       if (staleResponse) setStaleSave(true)
     } finally {
@@ -901,7 +901,7 @@ function BeadsApprovalPane({
                   ) : (
                     <>
                       The structured editor cannot read every test command on {unrepresentableCommandBeadIds.join(', ')}
-                      {' '}— an older form it does not model — and saving from it would drop them. Edit those beads in
+                      {' '}(an older form it does not model), and saving from it would drop them. Edit those beads in
                       the JSONL tab instead.
                     </>
                   )}

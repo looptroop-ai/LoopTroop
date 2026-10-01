@@ -479,7 +479,7 @@ export function DashboardHeader({ ticket }: DashboardHeaderProps) {
             </div>
             <div>
               <span className="text-xs font-medium text-muted-foreground">Priority</span>
-              <p className="mt-0.5">P{ticket.priority} — {getPriorityLabel(ticket.priority)}</p>
+              <p className="mt-0.5">P{ticket.priority}: {getPriorityLabel(ticket.priority)}</p>
             </div>
             <div>
               <span className="text-xs font-medium text-muted-foreground">Created</span>
@@ -494,7 +494,7 @@ export function DashboardHeader({ ticket }: DashboardHeaderProps) {
             {ticket.status !== 'DRAFT' && (
               <div>
                 <span className="text-xs font-medium text-muted-foreground">Started At</span>
-                <p className="mt-0.5">{ticket.startedAt ? new Date(ticket.startedAt).toLocaleString() : '—'}</p>
+                <p className="mt-0.5">{ticket.startedAt ? new Date(ticket.startedAt).toLocaleString() : '-'}</p>
               </div>
             )}
             {ticket.startedAt && (

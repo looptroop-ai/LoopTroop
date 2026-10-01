@@ -33,7 +33,7 @@ describe('ErrorOccurrencesPanel', () => {
     )
 
     expect(screen.getByRole('button', { name: /errors/i })).toBeInTheDocument()
-    expect(screen.queryByText('Error 1 — Implementing (Bead ?/?)')).not.toBeInTheDocument()
+    expect(screen.queryByText('Error 1: Implementing (Bead ?/?)')).not.toBeInTheDocument()
   })
 
   it('auto-expands for a live blocked ticket and lists all errors in one section', () => {
@@ -77,8 +77,8 @@ describe('ErrorOccurrencesPanel', () => {
     )
 
     expect(screen.getByRole('button', { name: /errors/i })).toHaveAttribute('aria-expanded', 'true')
-    expect(screen.getByText('Error 2 — Refining Specs')).toBeInTheDocument()
-    expect(screen.getByText('Error 1 — Implementing (Bead ?/?)')).toBeInTheDocument()
+    expect(screen.getByText('Error 2: Refining Specs')).toBeInTheDocument()
+    expect(screen.getByText('Error 1: Implementing (Bead ?/?)')).toBeInTheDocument()
     expect(screen.queryByText('Current')).not.toBeInTheDocument()
     expect(screen.queryByRole('button', { name: /past errors/i })).not.toBeInTheDocument()
 
@@ -172,7 +172,7 @@ describe('ErrorOccurrencesPanel', () => {
     expect(header).toHaveTextContent('Active')
     expect(header).not.toHaveTextContent('bead-with-a-very-long-generated-name')
     expect(header).not.toHaveTextContent('iter 4')
-    expect(screen.getByText('Error 1 — Implementing (Bead 4/9)')).toBeInTheDocument()
+    expect(screen.getByText('Error 1: Implementing (Bead 4/9)')).toBeInTheDocument()
   })
 
   it('auto-expands when a resolved occurrence is selected', () => {
@@ -204,7 +204,7 @@ describe('ErrorOccurrencesPanel', () => {
     )
 
     expect(screen.getByRole('button', { name: /errors/i })).toHaveAttribute('aria-expanded', 'true')
-    expect(screen.getByText('Error 1 — Implementing (Bead ?/?)')).toBeInTheDocument()
+    expect(screen.getByText('Error 1: Implementing (Bead ?/?)')).toBeInTheDocument()
   })
 
   it('wraps long status labels and omits milliseconds in the summary subtitle', () => {

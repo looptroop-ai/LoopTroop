@@ -262,8 +262,8 @@ async function main() {
   await invoke(installed, ['start'], { env: childEnv })
   if (!await daemonIsRunning()) fail('The daemon did not start, so the upgrade case cannot be exercised.')
 
-  const upgrade = await install()
   try {
+    const upgrade = await install()
     if (!upgrade.stdout.includes('Stopping the running daemon')) {
       fail('The installer replaced the executable without stopping the daemon.', upgrade.stdout)
     }

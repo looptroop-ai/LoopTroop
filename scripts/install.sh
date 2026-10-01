@@ -2313,6 +2313,26 @@ function installGlobally(tarball) {
 // program.
 
 const EXE = process.platform === 'win32' ? '.exe' : ''
+const FILE_RETRY_OPTIONS = { maxRetries: 10, retryDelay: 100 }
+
+/** Waits out Windows sharing locks, using the same bounded budget as cleanup. */
+export function renameWithRetry(from, to, {
+  platform = process.platform,
+  rename = renameSync,
+  wait = (ms) => { Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, ms) },
+} = {}) {
+  for (let attempt = 0; ; attempt += 1) {
+    try {
+      return rename(from, to)
+    } catch (error) {
+      if (platform !== 'win32'
+        || !['EBUSY', 'EPERM', 'EACCES'].includes(error.code)
+        || attempt >= FILE_RETRY_OPTIONS.maxRetries) throw error
+      // Repeat only this atomic rename of the same paths, never the transaction.
+      wait(FILE_RETRY_OPTIONS.retryDelay * (attempt + 1))
+    }
+  }
+}
 
 /**
  * Removes something if it can, and never throws. A leftover is not a failure.
@@ -2324,7 +2344,7 @@ const EXE = process.platform === 'win32' ? '.exe' : ''
  */
 function discard(path) {
   try {
-    rmSync(path, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 })
+    rmSync(path, { recursive: true, force: true, ...FILE_RETRY_OPTIONS })
     return true
   } catch {
     return false
@@ -2762,9 +2782,8 @@ function waitFor(condition, timeoutMs) {
  * has proved it runs.
  *
  * Two renames rather than a copy over the top. `rename` within a directory is
- * atomic, so no reader ever sees a half-written file, and it is the one
- * operation permitted on a *running* executable on Windows — which cannot be
- * overwritten or deleted, but can be moved out of the way.
+ * atomic, so no reader ever sees a half-written file. The daemon is already
+ * confirmed stopped; Windows sharing handles can still need time to release.
  */
 function swapIntoPlace(staged, installed, backup) {
   const incoming = `${installed}.incoming-${process.pid}`
@@ -2776,13 +2795,13 @@ function swapIntoPlace(staged, installed, backup) {
   chmodSync(incoming, 0o755)
 
   const had = existsSync(installed)
-  if (had) renameSync(installed, backup)
+  if (had) renameWithRetry(installed, backup)
 
   try {
-    renameSync(incoming, installed)
+    renameWithRetry(incoming, installed)
   } catch (error) {
     discard(incoming)
-    if (had) renameSync(backup, installed)
+    if (had) renameWithRetry(backup, installed)
     throw error
   }
 
@@ -2885,7 +2904,7 @@ function installBinary(archive, { version, prefix }) {
     const rollBack = (reason, ...detail) => {
       const quarantine = `${installed}.rejected-${process.pid}`
       discard(quarantine)
-      renameSync(installed, quarantine)
+      renameWithRetry(installed, quarantine)
 
       // Two renames, and the second one can fail — a Windows lock, a permission
       // change, a full disk. Unguarded, that left the good executable sitting in
@@ -2895,14 +2914,14 @@ function installBinary(archive, { version, prefix }) {
       // the user is left with *something* rather than nothing.
       if (replaced) {
         try {
-          renameSync(backup, installed)
+          renameWithRetry(backup, installed)
         } catch (restoreError) {
           // Put the rejected file back rather than leave nothing installed. It
           // does not work — that is why this path was reached — but a program
           // that fails is recoverable, and an absent one is not.
           let putBack = false
           try {
-            renameSync(quarantine, installed)
+            renameWithRetry(quarantine, installed)
             putBack = true
           } catch {
             // Nothing left to try; the message says where each copy ended up.

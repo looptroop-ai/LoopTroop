@@ -9,7 +9,7 @@ import { dirname, join, resolve, win32 } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import {
   binaryAssetName, binaryTarget, defaultPrefix, detectLibc, INSTALL_OPTIONS, onPath, planProgramLaunch,
-  findTrustedExecutablePath, probePort, runTool, stallGuard, streamBody,
+  findTrustedExecutablePath, probePort, renameWithRetry, runTool, stallGuard, streamBody,
 } from '../scripts/installer-core.mjs'
 import { removeTempDir } from '../server/test/tempDir'
 
@@ -106,6 +106,65 @@ function expectExit(run: InstallerRun, status: number) {
     ...(mismatch ? { output: output.slice(-2000) } : {}),
   }).toEqual({ status, signal: null })
 }
+
+describe('bounded Windows binary renames', () => {
+  const from = 'prefix/bin/looptroop.exe'
+  const to = 'prefix/bin/.looptroop-previous.exe'
+
+  it('does not wait when the first attempt succeeds', () => {
+    const rename = vi.fn()
+    const wait = vi.fn()
+    renameWithRetry(from, to, { platform: 'win32', rename, wait })
+    expect(rename).toHaveBeenCalledExactlyOnceWith(from, to)
+    expect(wait).not.toHaveBeenCalled()
+  })
+
+  it.each(['EBUSY', 'EPERM', 'EACCES'])('retries the same paths when a transient %s lock clears', (code) => {
+    const error = Object.assign(new Error('Windows sharing lock'), { code })
+    const rename = vi.fn()
+      .mockImplementationOnce(() => { throw error })
+      .mockImplementationOnce(() => { throw error })
+    const wait = vi.fn()
+
+    renameWithRetry(from, to, { platform: 'win32', rename, wait })
+
+    expect(rename.mock.calls).toEqual([[from, to], [from, to], [from, to]])
+    expect(wait.mock.calls).toEqual([[100], [200]])
+  })
+
+  it('fails with the original error after exhausting the cleanup retry budget', () => {
+    const error = Object.assign(new Error('Windows sharing lock persists'), { code: 'EBUSY' })
+    const rename = vi.fn(() => { throw error })
+    const wait = vi.fn()
+
+    expect(() => renameWithRetry(from, to, { platform: 'win32', rename, wait })).toThrow(error)
+
+    expect(rename).toHaveBeenCalledTimes(11)
+    expect(wait.mock.calls).toEqual(Array.from({ length: 10 }, (_, index) => [100 * (index + 1)]))
+  })
+
+  it.each(['ENOENT', 'EXDEV', 'ENOSPC', undefined])('does not retry permanent errors (%s)', (code) => {
+    const error = Object.assign(new Error('Rename cannot succeed'), { code })
+    const rename = vi.fn(() => { throw error })
+    const wait = vi.fn()
+
+    expect(() => renameWithRetry(from, to, { platform: 'win32', rename, wait })).toThrow(error)
+
+    expect(rename).toHaveBeenCalledExactlyOnceWith(from, to)
+    expect(wait).not.toHaveBeenCalled()
+  })
+
+  it.each(['linux', 'darwin'] as const)('does not retry POSIX failures on %s', (platform) => {
+    const error = Object.assign(new Error('Rename denied'), { code: 'EPERM' })
+    const rename = vi.fn(() => { throw error })
+    const wait = vi.fn()
+
+    expect(() => renameWithRetry(from, to, { platform, rename, wait })).toThrow(error)
+
+    expect(rename).toHaveBeenCalledExactlyOnceWith(from, to)
+    expect(wait).not.toHaveBeenCalled()
+  })
+})
 
 describe('installer core', () => {
   const tempDirs: string[] = []

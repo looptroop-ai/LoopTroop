@@ -459,7 +459,7 @@ export function formatSkipReceiptLogLines(receipts: SkipReceipt[]): string[] {
       : [describeSkipSurface(receipt.surface), receipt.item_id].filter(Boolean).join(' ')
     const { text } = truncateSkipReason(receipt.reason, SKIP_REASON_LOG_MAX_LENGTH)
     const reason = text ? text.replace(/\s*\n\s*/g, ' ⏎ ') : 'no reason given'
-    return `Skipped: ${what} — ${reason} [${receipt.receipt_id}]`
+    return `Skipped: ${what}; ${reason} [${receipt.receipt_id}]`
   })
 }
 

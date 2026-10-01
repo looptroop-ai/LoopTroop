@@ -455,7 +455,7 @@ export async function cleanCommand(options: CleanOptions): Promise<number> {
 
   if (lock.kind === 'unreadable') {
     process.stderr.write(
-      'The single-instance lock exists but does not yet name an owner — most likely a daemon ' +
+      'The single-instance lock exists but does not yet name an owner, most likely a daemon ' +
       'still starting up. Nothing was cleaned. Try again in a moment.\n',
     )
     return 1

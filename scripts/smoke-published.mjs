@@ -275,7 +275,7 @@ export const CHANNELS = {
     opencodePort: 39626,
     propagationCapMs: 10 * 60_000,
     publishJob: 'publish-homebrew',
-    publishHint: 'Check looptroop-ai/homebrew-tap commits — if the commit is there, brew\'s fetch is stale; if not, the push failed.',
+    publishHint: 'Check looptroop-ai/homebrew-tap commits. If the commit is there, brew\'s fetch is stale; if not, the push failed.',
     // The bundle carries its own locked dependency tree and the formula puts
     // keg-only node@24 on PATH itself, so the launcher must work with no Node
     // of its own on PATH. On a runner that already has one, a formula that
@@ -338,7 +338,7 @@ export const CHANNELS = {
     opencodePort: 39633,
     propagationCapMs: 10 * 60_000,
     publishJob: 'publish-chocolatey',
-    publishHint: 'Check community.chocolatey.org/packages/looptroop — an approved version is served, a submitted one is not.',
+    publishHint: 'Check community.chocolatey.org/packages/looptroop: an approved version is served, but a submitted one is not.',
     moderated: { queue: 'Chocolatey community moderation', graceDays: 14 },
     // Not `provesOwnRuntime`: the nuspec *depends* on nodejs-lts rather than
     // carrying a runtime, exactly as the Scoop manifest does, so stripping Node
@@ -389,7 +389,7 @@ export const CHANNELS = {
     opencodePort: 39634,
     propagationCapMs: 10 * 60_000,
     publishJob: 'publish-winget',
-    publishHint: 'Check the pull request at microsoft/winget-pkgs — merged is not indexed; the publish pipeline runs after the merge.',
+    publishHint: 'Check the pull request at microsoft/winget-pkgs: a merged pull request is not indexed; the publish pipeline runs after the merge.',
     moderated: { queue: 'the microsoft/winget-pkgs review queue', graceDays: 14 },
     // The zip carries its own Node, so this must run with none on PATH.
     provesOwnRuntime: true,
@@ -1649,7 +1649,7 @@ async function runChannel(recipe, options) {
 
     heading('The daemon starts on the port it was given')
     if (!(await portIsFree(port))) {
-      fail('port is free before start', `${port} is already held — this runner is dirty`)
+      fail('port is free before start', `${port} is already held: this runner is dirty`)
       return { ok: false, served }
     }
     const started = cli(['start', '--port', String(port)])
@@ -2293,7 +2293,7 @@ async function main() {
       : 'installs, serves and uninstalls from its published feed'
     log(`PASS: ${recipe.key} ${version} ${did}.`)
   } else {
-    log(`FAIL: ${recipe.key} ${version} — ${failures.length} assertion(s) failed:`)
+    log(`FAIL: ${recipe.key} ${version} (${failures.length} assertion(s) failed):`)
     for (const entry of failures) log(`  - ${entry}`)
     process.exitCode = 1
   }

@@ -976,7 +976,7 @@ export const PROM_EXECUTION_SETUP_NOTE: PromptTemplate = {
 
 export const PROM_CODING: PromptTemplate = {
   id: 'PROM_CODING',
-  description: 'Bead Implementation Prompt — guides the AI implementer through executing a single bead',
+  description: 'Bead Implementation Prompt: guides the AI implementer through executing a single bead',
   systemRole: 'You are an expert AI implementer executing a specific implementation task (bead) within a larger ticket. You have full tool access to read, write, and run commands in the worktree.',
   task: 'Implement the active bead requirements in the worktree, pass all quality gates (tests, lint, typecheck, qualitative review), and output a structured completion marker.',
   instructions: [

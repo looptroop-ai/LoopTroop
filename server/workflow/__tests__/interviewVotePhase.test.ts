@@ -74,7 +74,7 @@ describe('interview voting workflow', () => {
       {} as TicketContext,
       vi.fn(),
       new AbortController().signal,
-    )).rejects.toThrow('No interview drafts found — cannot vote')
+    )).rejects.toThrow('No interview drafts found: cannot vote')
   })
 
   it.each([

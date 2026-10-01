@@ -361,8 +361,8 @@ export function binaryTarget(platform, arch, libc = 'glibc') {
     return {
       refusal: [
         'There is no standalone executable for Intel Macs.',
-        'Node cannot build a single-file executable for darwin-x64 at all — the feature',
-        'supports arm64 only — so this is a gap in the runtime, not a build we skipped.',
+        'Node cannot build a single-file executable for darwin-x64 at all. The feature',
+        'supports arm64 only, so this is a gap in the runtime, not a build we skipped.',
         '',
         'On an Intel Mac, use Homebrew or npm:',
         '  brew install looptroop-ai/tap/looptroop',

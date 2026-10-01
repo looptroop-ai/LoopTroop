@@ -303,7 +303,7 @@ describe('handlePrdDraft', () => {
 
     await expect(handlePrdVote(ticket.id, context, vi.fn(), new AbortController().signal))
       .rejects
-      .toThrow('No PRD drafts found — cannot vote')
+      .toThrow('No PRD drafts found: cannot vote')
 
     expect(conductVotingMock).not.toHaveBeenCalled()
   })

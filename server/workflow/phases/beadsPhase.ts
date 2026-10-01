@@ -482,13 +482,13 @@ export async function handleBeadsVote(
 ) {
   const intermediate = phaseIntermediate.get(`${ticketId}:beads`)
   if (!intermediate) {
-    throw new Error('No Beads drafts found — cannot vote')
+    throw new Error('No Beads drafts found: cannot vote')
   }
 
   const { members } = resolveCouncilMembers(context)
   const councilSettings = resolveCouncilRuntimeSettings(context)
   if (!intermediate.contextBuilder) {
-    throw new Error('No beads context builder found — cannot vote')
+    throw new Error('No beads context builder found: cannot vote')
   }
   const voteTicketState = intermediate.ticketState ?? (() => {
     const { ticket, relevantFiles } = loadTicketDirContext(context)
@@ -652,14 +652,14 @@ export async function handleBeadsRefine(
   loadTicketDirContext(context)
   const intermediate = phaseIntermediate.get(`${ticketId}:beads`)
   if (!intermediate || !intermediate.winnerId) {
-    throw new Error('No Beads vote results found — cannot refine')
+    throw new Error('No Beads vote results found: cannot refine')
   }
 
   const winnerDraft = requireWinnerDraft(intermediate.drafts, intermediate.winnerId, 'Beads')
   const losingDrafts = intermediate.drafts.filter(d => d.memberId !== intermediate.winnerId && d.outcome === 'completed')
   const councilSettings = resolveCouncilRuntimeSettings(context)
   if (!intermediate.contextBuilder) {
-    throw new Error('No beads context builder found — cannot refine')
+    throw new Error('No beads context builder found: cannot refine')
   }
   const refineContext = intermediate.contextBuilder('refine')
   const streamStates = new Map<string, OpenCodeStreamState>()
@@ -796,7 +796,7 @@ export async function handleBeadsRefine(
   // artifact that skipped the builder's own checks — a weaker record than the
   // parser would have allowed. PRD throws here; so does this now.
   if (!refinementResult) {
-    throw new Error('Beads refinement returned without a validated result — refusing to persist an unvalidated blueprint')
+    throw new Error('Beads refinement returned without a validated result: refusing to persist an unvalidated blueprint')
   }
 
   // Clean up intermediate data
@@ -804,7 +804,7 @@ export async function handleBeadsRefine(
 
   const draftMetrics = refinementResult.metrics
   emitPhaseLog(ticketId, context.externalId, 'REFINING_BEADS', 'info',
-    `Substep blueprint_refine completed — ${draftMetrics.beadCount} beads, ${draftMetrics.totalTestCount} tests, ${draftMetrics.totalAcceptanceCriteriaCount} acceptance criteria.`)
+    `Substep blueprint_refine completed: ${draftMetrics.beadCount} beads, ${draftMetrics.totalTestCount} tests, ${draftMetrics.totalAcceptanceCriteriaCount} acceptance criteria.`)
 
   const uiDiffArtifact = validatedChanges.length > 0
     ? buildBeadsUiRefinementDiffArtifactFromChanges({

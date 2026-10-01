@@ -930,7 +930,7 @@ export async function stopCommand(): Promise<number> {
     // lie, and removing it would let the next start run a second daemon
     // alongside the one currently starting.
     process.stderr.write(
-      'LoopTroop is not answering, and its single-instance lock exists but does not yet name an owner — ' +
+      'LoopTroop is not answering, and its single-instance lock exists but does not yet name an owner, ' +
       'most likely a daemon still starting up. Nothing was stopped, and the lock was left in place. ' +
       'Try again in a moment, or run `looptroop doctor` if it persists.\n',
     )
@@ -1006,7 +1006,7 @@ export function describeOpenCodeForStatus(opencode: DaemonState['opencode']): st
 
   switch (opencode.status) {
     case 'degraded':
-      return `unavailable — ${opencode.detail ?? 'the server stopped responding'}`
+      return `unavailable: ${opencode.detail ?? 'the server stopped responding'}`
     case 'managed':
       return `${opencode.baseUrl} (started by LoopTroop, pid ${opencode.pid ?? 'unknown'})`
     case 'adopted':

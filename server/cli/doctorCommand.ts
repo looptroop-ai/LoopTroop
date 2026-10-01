@@ -694,7 +694,7 @@ async function checkDaemon(daemon: DaemonState | null): Promise<Check> {
     return {
       name: 'daemon',
       status: 'ok',
-      detail: 'not running — a development server is serving the interface instead',
+      detail: 'not running: a development server is serving the interface instead',
       note: 'This reports the installed daemon. `npm run dev` serves the interface itself and registers no daemon.',
     }
   }
@@ -939,7 +939,7 @@ function checkInstallChannel(): Check {
         // the command a person came to `doctor` to copy, and burying it inside
         // a sentence next to the channel name made it hard to find and easy to
         // mistype. `note` prints under the detail even when the check is fine.
-        note: `upgrade: ${steps}${info.upgradeNote ? ` — ${info.upgradeNote}` : ''}`,
+        note: `upgrade: ${steps}${info.upgradeNote ? `; ${info.upgradeNote}` : ''}`,
       }
 }
 

@@ -111,7 +111,7 @@ const livenessTimer = setInterval(() => {
     console.error(
       `[dev-backend] The backend has not answered on port ${backendPort} for ${Math.round(graceMs / 1000)}s. `
       + 'It exited and the watcher is still waiting for a file change, so nothing else will notice. '
-      + 'Failing so the stack goes down with it — scroll up for the error that killed it.',
+      + 'Failing so the stack goes down with it. Scroll up for the error that killed it.',
     )
     shuttingDown = true
     clearInterval(livenessTimer)

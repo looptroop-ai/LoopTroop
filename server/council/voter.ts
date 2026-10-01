@@ -626,7 +626,7 @@ export function selectWinner(
   }
 
   if (winnerId === null) {
-    throw new Error('Council voting produced no scored draft — cannot select a winner')
+    throw new Error('Council voting produced no scored draft: cannot select a winner')
   }
 
   return { winnerId, totalScore: winnerScore }

@@ -26,7 +26,7 @@ export function requireWinnerDraft(
 ): DraftResult {
   const winnerDraft = drafts.find((draft) => draft.memberId === winnerId)
   if (!winnerDraft) {
-    throw new Error(`${label} winner ${winnerId} has no matching draft — cannot refine`)
+    throw new Error(`${label} winner ${winnerId} has no matching draft: cannot refine`)
   }
   return winnerDraft
 }

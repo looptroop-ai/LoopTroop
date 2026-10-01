@@ -252,7 +252,7 @@ export async function runPreFlightChecks(
         name: 'Dependency Graph',
         category: 'graph',
         result: 'fail',
-        message: 'No runnable bead found — all beads are blocked by dependencies',
+        message: 'No runnable bead found: all beads are blocked by dependencies',
       })
     }
   }
@@ -345,7 +345,7 @@ export async function runPreFlightChecks(
       name: 'Git Worktree',
       category: 'git',
       result: 'fail',
-      message: 'Ticket paths not available — cannot verify worktree',
+      message: 'Ticket paths not available: cannot verify worktree',
     })
   }
 
@@ -397,25 +397,25 @@ export async function runPreFlightChecks(
       name: 'GitHub Remote',
       category: 'git',
       result: 'fail',
-      message: 'Ticket paths not available — cannot verify GitHub remote',
+      message: 'Ticket paths not available: cannot verify GitHub remote',
     })
     checks.push({
       name: 'GitHub CLI',
       category: 'connectivity',
       result: 'fail',
-      message: 'Ticket paths not available — cannot verify gh CLI',
+      message: 'Ticket paths not available: cannot verify gh CLI',
     })
     checks.push({
       name: 'GitHub Auth',
       category: 'connectivity',
       result: 'fail',
-      message: 'Ticket paths not available — cannot verify GitHub auth',
+      message: 'Ticket paths not available: cannot verify GitHub auth',
     })
     checks.push({
       name: 'GitHub Repo Access',
       category: 'connectivity',
       result: 'fail',
-      message: 'Ticket paths not available — cannot verify GitHub repository access',
+      message: 'Ticket paths not available: cannot verify GitHub repository access',
     })
   }
 

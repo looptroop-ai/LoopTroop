@@ -12,7 +12,7 @@ import { getErrorMessage } from '@shared/typeGuards'
  * file at a release tag and rewrites its command block from this string — so the
  * page cannot quietly fall behind a flag added here.
  */
-export const USAGE = `LoopTroop — local AI coding orchestration
+export const USAGE = `LoopTroop: local AI coding orchestration
 
 Usage: looptroop <command> [options]
 
@@ -55,7 +55,7 @@ for what a single command does and takes.
  * bloating that block to five screens.
  */
 const COMMAND_HELP: Record<string, string> = {
-  open: `looptroop open — open the interface
+  open: `looptroop open: open the interface
 
 Usage: looptroop open [--print-url] [--opencode-logs=all]
 
@@ -71,8 +71,8 @@ Options:
 
 The link is normally kept out of the terminal, because the nonce in it is a live
 credential. It is printed anyway when no browser could be opened, or when one was
-opened and never arrived — over SSH, in WSL, on a machine with no default
-browser — because a page that says "run looptroop open" is no help when open is
+opened and never arrived (over SSH, in WSL, or on a machine with no default
+browser), because a page that says "run looptroop open" is no help when open is
 what just failed. Paste it into any browser on this machine.
 
 If a daemon is already running, it is reused rather than restarted, so open is
@@ -80,7 +80,7 @@ safe to run repeatedly. The OpenCode log option then requires a stop and start.
 
 See also: start (no browser), status (is it running).
 `,
-  start: `looptroop start — run the daemon in the background
+  start: `looptroop start: run the daemon in the background
 
 Usage: looptroop start [--port <n>] [--foreground] [--opencode-logs=all]
 
@@ -99,7 +99,7 @@ writes to the log that \`looptroop logs\` reads.
 
 See also: open (start and open a browser), stop, restart, logs.
 `,
-  stop: `looptroop stop — stop the running daemon
+  stop: `looptroop stop: stop the running daemon
 
 Usage: looptroop stop
 
@@ -107,7 +107,7 @@ Asks the daemon to exit, waits for it to actually go, and reports if it did not.
 Any OpenCode process LoopTroop started is stopped with it; one that was already
 running when LoopTroop adopted it is left alone.
 `,
-  restart: `looptroop restart — stop, then start again
+  restart: `looptroop restart: stop, then start again
 
 Usage: looptroop restart [--port <n>]
 
@@ -117,7 +117,7 @@ Options:
 The command to run after upgrading through a package manager: the running daemon
 is still executing the previous version's code until it is replaced.
 `,
-  status: `looptroop status — is the daemon running
+  status: `looptroop status: is the daemon running
 
 Usage: looptroop status [--json]
 
@@ -129,7 +129,7 @@ and the OpenCode it is using. Running LoopTroop from a checkout with
 \`npm run dev\` is not the daemon, and is reported as not running even though a
 browser can reach that development server.
 `,
-  logs: `looptroop logs — show the daemon log
+  logs: `looptroop logs: show the daemon log
 
 Usage: looptroop logs [--follow] [--lines <n>]
 
@@ -140,7 +140,7 @@ Options:
 Reads the log the background daemon writes. A daemon started with --foreground
 logs to its own terminal instead, and has nothing here.
 `,
-  doctor: `looptroop doctor — check that this machine can run LoopTroop
+  doctor: `looptroop doctor: check that this machine can run LoopTroop
 
 Usage: looptroop doctor [--json]
 
@@ -155,7 +155,7 @@ Each line is marked: a tick for fine, an exclamation for something worth knowing
 a cross for something that will stop LoopTroop working. Anything not fine carries
 the command that fixes it.
 `,
-  setup: `looptroop setup — attach a project from the terminal
+  setup: `looptroop setup: attach a project from the terminal
 
 Usage: looptroop setup [--yes]
 
@@ -167,7 +167,7 @@ Optional: the same thing can be done inside the interface, which is where most
 people do it. Reach for this when scripting a new machine, or when you are
 already in the project directory.
 `,
-  clean: `looptroop clean — remove abandoned worktrees
+  clean: `looptroop clean: remove abandoned worktrees
 
 Usage: looptroop clean [--apply]
 

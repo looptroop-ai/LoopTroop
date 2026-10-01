@@ -159,7 +159,7 @@ export function resolveReleaseState(facts: ReleaseFacts): ReleaseStateResult {
       safeToContinue: true,
       reason:
         `v${facts.version} is tagged at ${facts.targetSha}, published on GitHub, and on npm under `
-        + `"${facts.expectedDistTag}" — every channel is done, so there is nothing to publish. `
+        + `"${facts.expectedDistTag}"; every channel is done, so there is nothing to publish. `
         + 'The bytes were not compared: this ran before any build, so there was no integrity to '
         + 'compare against. The publishing run already made that comparison against the registry. '
         + 'To repeat it, rebuild the tag and re-run detection with the resulting '
@@ -184,7 +184,7 @@ export function resolveReleaseState(facts: ReleaseFacts): ReleaseStateResult {
       state: 'skip',
       safeToContinue: true,
       reason:
-        `This push did not change the version — package.json still carries ${facts.manifestVersion}. `
+        `This push did not change the version: package.json still carries ${facts.manifestVersion}. `
         + 'Releases are cut by merging a release pull request, so there is nothing to do here.',
     }
   }
@@ -199,7 +199,7 @@ export function resolveReleaseState(facts: ReleaseFacts): ReleaseStateResult {
       safeToContinue: false,
       reason:
         `Hard stop: ${TAG_COMMIT_MISMATCH}. v${facts.version} resolves to ${facts.tagSha}, `
-        + `but this release is cut from ${facts.targetSha}. Investigate before retrying — `
+        + `but this release is cut from ${facts.targetSha}. Investigate before retrying: `
         + 'a retry would publish one commit under a tag that names another.',
     }
   }
@@ -244,7 +244,7 @@ export function resolveReleaseState(facts: ReleaseFacts): ReleaseStateResult {
       reason:
         `Hard stop: npm carries ${facts.version} under "${facts.expectedDistTag}" at ${facts.npmIntegrity}, `
         + 'which matches this build, but the dist-tag does not resolve to this version. '
-        + 'Move it with `npm dist-tag add looptroop@VERSION TAG` — a workflow cannot repair a '
+        + 'Move it with `npm dist-tag add looptroop@VERSION TAG`. A workflow cannot repair a '
         + 'dist-tag it did not break, and retrying would publish nothing new.',
     }
   }

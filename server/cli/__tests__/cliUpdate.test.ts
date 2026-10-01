@@ -26,7 +26,7 @@ import { main } from '../cli'
 
 const update = {
   currentVersion: APP_VERSION,
-  latestVersion: '0.6.0',
+  latestVersion: '99.99.99',
   updateAvailable: true,
   checkedAt: '2026-08-16T08:00:00.000Z',
   installChannel: 'npm' as const,

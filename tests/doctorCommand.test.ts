@@ -312,7 +312,7 @@ describe('doctor command', () => {
     const stdout = captureStdout()
     const update = {
       currentVersion: APP_VERSION,
-      latestVersion: '0.6.0',
+      latestVersion: '99.99.99',
       updateAvailable: true,
       checkedAt: '2026-08-16T08:00:00.000Z',
       installChannel: 'npm' as const,
@@ -326,7 +326,7 @@ describe('doctor command', () => {
     // Named `looptroop` rather than `version`, so the line says which version it
     // is among the four the report now lists.
     expect(stdout.text()).toContain('looptroop')
-    expect(stdout.text()).toContain(`${APP_VERSION} (latest 0.6.0)`)
+    expect(stdout.text()).toContain(`${APP_VERSION} (latest 99.99.99)`)
     expect(stdout.text()).toContain('npm install -g looptroop@latest')
     expect(stdout.text()).toContain('looptroop restart')
   })

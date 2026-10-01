@@ -180,3 +180,14 @@ export function streamBody(
 
 /** Runs a synchronous install with exclusive ownership of its directory. */
 export function withInstallLock<T>(dir: string, action: () => T): T
+
+/** Retries only Windows sharing-lock failures, with the cleanup retry budget. */
+export function renameWithRetry(
+  from: string,
+  to: string,
+  deps?: {
+    platform?: NodeJS.Platform
+    rename?: (from: string, to: string) => void
+    wait?: (ms: number) => void
+  },
+): void

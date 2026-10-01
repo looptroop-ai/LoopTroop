@@ -196,7 +196,16 @@ failed, cancelled, or skipped reviews on every CI event. Pull requests compare
 their base and head commits. Pushes and manual runs compare the workflow commit
 with the default branch, so a branch-push check cannot bypass the review.
 
-Renovate manages dependency updates. GitHub's CodeQL default setup scans the
+Renovate manages dependency updates. CI runs its strict configuration validator
+from the official container, pinned by version and image digest, with a read-only
+repository mount. The prebuilt distribution avoids installing deprecated npm
+dependencies during validation.
+
+Standalone binaries use Node's native single-executable builder. Cross-platform
+binary checks run before publication; the third-party Postject injector is no
+longer used.
+
+GitHub's CodeQL default setup scans the
 application and workflows. OpenSSF Scorecard publishes repository security
 results on pushes to main and weekly, using the workflow token to read rulesets.
 The maintainer accepts the current lack of required independent human approvals
@@ -219,11 +228,3 @@ applicable advisories appear:
 - Artifact extraction reports deprecated Buffer construction in the latest
   download action ([upstream issue #484](https://github.com/actions/download-artifact/issues/484)).
   Keep artifact digest verification when updating or replacing the action.
-- Renovate's validator has deprecated transitive dependencies and falls back to
-  JavaScript RegExp when its optional RE2 module is unavailable. Review patterns
-  that need RE2-specific behavior before adding them; keep configuration
-  validation and avoid broad native-script approvals.
-- Postject's Linux injection emits LIEF section-name diagnostics. Keep binary
-  checks and revisit when its bundled LIEF is updated; stripping the executable
-  to silence these warnings can break it. Windows signature-removal diagnostics
-  are allowed by Node's single-executable build procedure.

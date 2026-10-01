@@ -18,9 +18,10 @@ type Step = {
   env?: Record<string, unknown>
   with?: Record<string, unknown>
   if?: unknown
+  shell?: unknown
   'continue-on-error'?: unknown
 }
-type Job = { name?: unknown; permissions?: Record<string, unknown>; steps?: Step[]; if?: unknown; 'continue-on-error'?: unknown; 'runs-on'?: unknown }
+type Job = { name?: unknown; permissions?: Record<string, unknown>; steps?: Step[]; if?: unknown; 'continue-on-error'?: unknown; 'runs-on'?: unknown; defaults?: { run?: { shell?: unknown } } }
 type Workflow = { jobs?: Record<string, Job> }
 
 const workflows = new Map(files.map((file) => [
@@ -252,6 +253,18 @@ describe('release workflow policy', () => {
     expect(dirty.status).toBe(1)
     expect(dirty.stdout).toContain('Build modified tracked files')
     expect(dirty.stdout).toContain('simulated diff')
+  })
+
+  it('expands release artifact VERSION arguments in Bash on Windows', () => {
+    const job = workflows.get('release.yml')?.jobs?.['verify-artifact']
+    if (!job) throw new Error('Release artifact verification job is missing')
+    const matrix = (job as { strategy?: { matrix?: { os?: string[] } } }).strategy?.matrix
+    expect(matrix?.os).toContain('windows-latest')
+    const versionSteps = (job.steps ?? []).filter((step) => step.env?.VERSION !== undefined && /\$\{VERSION\}/.test(String(step.run)))
+    expect(versionSteps.length).toBeGreaterThan(0)
+    for (const step of versionSteps) {
+      expect(step.shell ?? job.defaults?.run?.shell, String(step.name)).toBe('bash')
+    }
   })
 
   it('fails release tag verification on registry errors while accepting a confirmed missing tag', () => {

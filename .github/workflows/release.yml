@@ -624,6 +624,11 @@ jobs:
       && needs.build.result == 'success'
     runs-on: ${{ matrix.os }}
     timeout-minutes: 30
+    # All versioned artifact arguments use Bash environment-variable syntax.
+    # Windows otherwise defaults to PowerShell, where ${VERSION} is not $env:VERSION.
+    defaults:
+      run:
+        shell: bash
     strategy:
       fail-fast: false
       matrix:

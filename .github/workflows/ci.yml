@@ -181,8 +181,15 @@ jobs:
 
       # Pinned, not @latest: an unpinned validator makes this check
       # nondeterministic and can fail on a release we never chose.
+      # Use the prebuilt distribution rather than installing its deprecated
+      # transitive npm packages on each run; strict validation stays the same.
       - name: Validate Renovate configuration
-        run: npx --yes --package renovate@44.115.10 renovate-config-validator --strict
+        run: >-
+          docker run --rm
+          --mount "type=bind,src=$PWD,dst=/repo,readonly"
+          --workdir /repo
+          ghcr.io/renovatebot/renovate:44.115.10@sha256:e262ed52b23dd8c545c80faf5b1ad5c95a07b3f198888de8d7b8928f45c307c7
+          renovate-config-validator --strict
 
       # A redistributed package must declare a licence. The check also fails
       # when the committed file is out of date.

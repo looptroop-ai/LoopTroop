@@ -149,7 +149,7 @@ describe('dependency install script policy', () => {
       .flatMap(({ steps = [] }) => steps.map(({ run = '' }) => run)))
     const validators = commands.filter((run) => run.includes('renovate-config-validator'))
     expect(validators).toHaveLength(1)
-    expect(validators[0]).toMatch(/^npx --yes --package renovate@\d+\.\d+\.\d+ renovate-config-validator --strict$/)
+    expect(validators[0]).toMatch(/^docker run --rm --mount "type=bind,src=\$PWD,dst=\/repo,readonly" --workdir \/repo ghcr\.io\/renovatebot\/renovate:\d+\.\d+\.\d+@sha256:[a-f0-9]{64} renovate-config-validator --strict$/)
     const lines = commands.flatMap((run) => run.split('\n').map((line) => line.trim()))
     expect(lines.filter((line) => /^npm install --global .*npm@/.test(line))).toHaveLength(0)
     expect(lines.filter((line) => /^node scripts\/pin-npm\.mjs(?: --prefer-bundled)?$/.test(line)).length).toBeGreaterThan(0)

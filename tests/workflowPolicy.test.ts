@@ -256,10 +256,11 @@ describe('release workflow policy', () => {
   })
 
   it('expands release artifact VERSION arguments in Bash on Windows', () => {
-    const job = workflows.get('release.yml')!.jobs!['verify-artifact']!
+    const job = workflows.get('release.yml')?.jobs?.['verify-artifact']
+    if (!job) throw new Error('Release artifact verification job is missing')
     const matrix = (job as { strategy?: { matrix?: { os?: string[] } } }).strategy?.matrix
     expect(matrix?.os).toContain('windows-latest')
-    const versionSteps = (job.steps ?? []).filter((step) => step.env?.VERSION !== undefined && String(step.run).includes('${VERSION}'))
+    const versionSteps = (job.steps ?? []).filter((step) => step.env?.VERSION !== undefined && /\$\{VERSION\}/.test(String(step.run)))
     expect(versionSteps.length).toBeGreaterThan(0)
     for (const step of versionSteps) {
       expect(step.shell ?? job.defaults?.run?.shell, String(step.name)).toBe('bash')

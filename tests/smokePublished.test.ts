@@ -492,8 +492,7 @@ Write-Output "$message $Binary $Version"
       { key: 'installer-ps1', pin: true, stdout: 'complete script False 9.9.9' },
       { key: 'installer-ps1-binary', pin: false, stdout: 'complete script True' },
       { key: 'installer-ps1-binary', pin: true, stdout: 'complete script True 9.9.9' },
-    ]) {
-      if (argumentsOnly && !pin && key === 'installer-ps1') continue
+    ].slice(Number(argumentsOnly))) {
       // A missing mock fails locally before it can install anything.
       const display = installedChannel(key).install({ version: '9.9.9', pin }).display
       if (!display) throw new Error(`Missing installer command for ${key}`)

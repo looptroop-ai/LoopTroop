@@ -3577,7 +3577,7 @@ export async function handleCoverageVerification(
       : getLatestPhaseArtifact(ticketId, 'beads_winner') ?? getLatestPhaseArtifact(ticketId, 'beads_votes')
 
   if (!winnerArtifact) {
-    const msg = `No persisted council winner found for ${phase} phase — cannot determine winning model`
+    const msg = `No persisted council winner found for ${phase} phase: cannot determine winning model`
     emitPhaseLog(ticketId, context.externalId, stateLabel, 'error', msg)
     sendEvent({ type: 'ERROR', message: msg, codes: ['COVERAGE_FAILED'] })
     return
@@ -4279,7 +4279,7 @@ export async function handleBeadsExpansion(
   const winnerArtifact = getLatestPhaseArtifact(ticketId, 'beads_winner')
     ?? getLatestPhaseArtifact(ticketId, 'beads_votes')
   if (!winnerArtifact) {
-    const msg = 'No persisted council winner found for beads — cannot determine winning model for expansion'
+    const msg = 'No persisted council winner found for beads: cannot determine winning model for expansion'
     emitPhaseLog(ticketId, context.externalId, stateLabel, 'error', msg)
     sendEvent({ type: 'ERROR', message: msg, codes: ['COVERAGE_FAILED'] })
     return

@@ -713,7 +713,7 @@ export function PhaseArtifactsPanel({ phase, isCompleted, ticketId, councilMembe
         <div className="mt-2">
           <div className="flex items-baseline gap-1.5 px-0.5 mb-0.5">
             <span className="text-[11px] font-mono font-semibold text-foreground/80">Part 1</span>
-            <span className="text-[11px] text-muted-foreground">— Answering Skipped Questions</span>
+            <span className="text-[11px] text-muted-foreground">(Answering Skipped Questions)</span>
           </div>
           <p className="text-[10px] text-muted-foreground mb-1.5 px-0.5">
             Each model fills in answers to questions that were skipped during the interview.
@@ -737,7 +737,7 @@ export function PhaseArtifactsPanel({ phase, isCompleted, ticketId, councilMembe
         <div className={hasFullAnswerRow ? '' : 'mt-2'}>
           <div className="flex items-baseline gap-1.5 px-0.5 mb-0.5">
             <span className="text-[11px] font-mono font-semibold text-foreground/80">Part 2</span>
-            <span className="text-[11px] text-muted-foreground">— Generating PRD Drafts</span>
+            <span className="text-[11px] text-muted-foreground">(Generating PRD Drafts)</span>
           </div>
           <p className="text-[10px] text-muted-foreground mb-1.5 px-0.5">
             Each council model independently generates a competing PRD draft based on the complete interview answers.

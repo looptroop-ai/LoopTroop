@@ -103,7 +103,7 @@ export function AnswerEditor({
                 ? `Coverage Follow-up${currentBatch.roundNumber ? ` · Round ${currentBatch.roundNumber}` : ''}`
                 : currentBatch.isFinalFreeForm
                   ? 'Final Question'
-                  : `Interview Q&A — Batch ${currentBatch.batchNumber}`}
+                  : `Interview Q&A, Batch ${currentBatch.batchNumber}`}
             </CardTitle>
             {currentBatch.progress.total > 0 && (
               <Tooltip>

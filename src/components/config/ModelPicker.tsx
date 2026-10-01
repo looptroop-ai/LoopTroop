@@ -45,7 +45,7 @@ function costLabel(model: OpenCodeModel): { label: string; color: string } | nul
   const lower = singleCostLabel(min)
   const upper = singleCostLabel(max)
   return {
-    label: lower.label === upper.label ? lower.label : `${lower.label}–${upper.label}`,
+    label: lower.label === upper.label ? lower.label : `${lower.label} to ${upper.label}`,
     color: upper.color,
   }
 }
@@ -575,7 +575,7 @@ export function ModelPicker({ id, label, value, onChange, placeholder = 'Search 
                 className="rounded border-input"
               />
               <span className="text-xs text-muted-foreground">
-                Show all providers {allModels ? `(${allModels.length} models)` : ''} — currently showing {connectedModels?.length ?? 0} connected
+                Show all providers {allModels ? `(${allModels.length} models)` : ''}: currently showing {connectedModels?.length ?? 0} connected
               </span>
             </label>
           )}

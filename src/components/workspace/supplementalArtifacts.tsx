@@ -45,7 +45,7 @@ export function getSupplementalArtifacts(phase: string, isCompleted = false): Ar
     ]
   }
   if (phase === 'VERIFYING_BEADS_COVERAGE' || phase === 'EXPANDING_BEADS' || phase === 'WAITING_BEADS_APPROVAL') {
-    return [{ id: 'refined-beads', label: 'Refined Beads', description: 'Latest blueprint candidate — semantic during coverage review, expanded into execution-ready beads after expansion.', icon: <FileText className="h-3.5 w-3.5" /> }]
+    return [{ id: 'refined-beads', label: 'Refined Beads', description: 'Latest blueprint candidate: semantic during coverage review, expanded into execution-ready beads after expansion.', icon: <FileText className="h-3.5 w-3.5" /> }]
   }
   if (phase === 'SCANNING_RELEVANT_FILES') {
     return [{ id: 'relevant-files-scan', label: 'Relevant Files', description: 'Source files identified as relevant by AI analysis', icon: <FileText className="h-3.5 w-3.5" /> }]

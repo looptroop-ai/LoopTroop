@@ -48,7 +48,7 @@ function formatRecoveryAction(action: OpenCodeProviderAction, attempt?: number):
     : action.title ?? action.message
   const reason = action.reason ? `Reason: ${action.reason}` : undefined
   const suggestion = action.label
-    ? `Suggested action: ${action.label}${action.link ? ` — ${action.link}` : ''}`
+    ? `Suggested action: ${action.label}${action.link ? ` (${action.link})` : ''}`
     : action.link
       ? `Recovery link: ${action.link}`
       : undefined

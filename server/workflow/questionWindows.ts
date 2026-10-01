@@ -819,7 +819,7 @@ async function rejectRecord(
     record,
     actor,
     resolution,
-    reason: failure ? [reason, `Could not tell OpenCode: ${failure}`].filter(Boolean).join(' — ') : reason,
+    reason: failure ? [reason, `Could not tell OpenCode: ${failure}`].filter(Boolean).join('; ') : reason,
     ...(siblingIds ? { siblingIds } : {}),
   })
   broadcaster.broadcast(record.ticketId, 'needs_input', {
@@ -1300,7 +1300,7 @@ function writeOrphanReceipt(
   const context = getTicketContext(owner.ticketId)
   if (!context) return
   const reason = failure
-    ? `The daemon restarted and this session did not come back — Could not tell OpenCode: ${failure}`
+    ? `The daemon restarted and this session did not come back; could not tell OpenCode: ${failure}`
     : 'The daemon restarted and this session did not come back.'
   try {
     writeSkipReceipts({

@@ -136,7 +136,7 @@ function normalizeNoteEntries(input: unknown, stripAnsi = true): BeadNoteEntry[]
 }
 
 function formatTimestamp(iso: string): React.ReactNode {
-  if (!iso) return '—'
+  if (!iso) return '-'
   try {
     const d = new Date(iso)
     if (isNaN(d.getTime())) return iso

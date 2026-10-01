@@ -17,7 +17,7 @@ const OPTIONS: Array<{ value: IgnoreMode; label: string; tooltip: string }> = [
   {
     value: 'repo',
     label: 'Repository',
-    tooltip: "Appends the rules to the repository's tracked .gitignore. It is committed with the repository, so every clone and worktree inherits it — and collaborators see the change in a diff.",
+    tooltip: "Appends the rules to the repository's tracked .gitignore. It is committed with the repository, so every clone and worktree inherits it. Collaborators see the change in a diff.",
   },
   {
     value: 'local',

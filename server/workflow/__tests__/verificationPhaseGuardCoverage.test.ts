@@ -38,7 +38,7 @@ describe('verification phase persisted-input guards', () => {
         ticket.id,
         context,
         phase,
-        `No persisted council winner found for ${phase} phase — cannot determine winning model`,
+        `No persisted council winner found for ${phase} phase: cannot determine winning model`,
       )
 
       insertPhaseArtifact(ticket.id, { phase: artifactPhase, artifactType, content: '{' })

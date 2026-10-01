@@ -48,7 +48,7 @@ const TAB_TOOLTIPS: Record<string, string> = {
   AI: 'Raw inputs (prompts), outputs, reasoning, and tool executions from AI models.',
   CMD: 'Shell commands executed during the ticket lifecycle, including git operations and build tools.',
   ERROR: 'Errors and exceptions encountered during execution.',
-  DEBUG: 'Every log line from LoopTroop and OpenCode — system, AI, debug, and native OpenCode server logs. Loaded on demand.',
+  DEBUG: 'Every log line from LoopTroop and OpenCode, including system, AI, debug, and native OpenCode server logs. Loaded on demand.',
 }
 
 interface PhaseGroup {
@@ -505,7 +505,7 @@ export function FullLogView({ ticket }: FullLogViewProps) {
         <div className="flex items-center gap-2">
           <ScrollText className="h-4 w-4 text-muted-foreground" />
           <span className="text-sm font-mono font-medium text-foreground">Full Log</span>
-          <span className="text-[11px] text-muted-foreground">— Complete ticket lifecycle</span>
+          <span className="text-[11px] text-muted-foreground">(Complete ticket lifecycle)</span>
         </div>
       </div>
 

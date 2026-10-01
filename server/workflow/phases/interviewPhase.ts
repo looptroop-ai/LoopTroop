@@ -1358,7 +1358,7 @@ export async function handleInterviewVote(
 ) {
   const intermediate = phaseIntermediate.get(`${ticketId}:interview`)
   if (!intermediate) {
-    throw new Error('No interview drafts found — cannot vote')
+    throw new Error('No interview drafts found: cannot vote')
   }
 
   const { members } = resolveCouncilMembers(context)
@@ -1533,7 +1533,7 @@ export async function handleInterviewCompile(
 ) {
   const intermediate = phaseIntermediate.get(`${ticketId}:interview`)
   if (!intermediate || !intermediate.winnerId) {
-    throw new Error('No interview vote results found — cannot refine')
+    throw new Error('No interview vote results found: cannot refine')
   }
 
   const winnerDraft = requireWinnerDraft(intermediate.drafts, intermediate.winnerId, 'Interview')
@@ -1790,7 +1790,7 @@ export async function handleInterviewQAStart(
     } catch { /* ignore */ }
   }
   if (!winnerId) {
-    const msg = 'No interview winner found — cannot start PROM4 session'
+    const msg = 'No interview winner found: cannot start PROM4 session'
     emitPhaseLog(ticketId, context.externalId, 'WAITING_INTERVIEW_ANSWERS', 'error', msg)
     sendEvent({ type: 'ERROR', message: msg, codes: ['PROM4_NO_WINNER'] })
     return
@@ -1805,8 +1805,8 @@ export async function handleInterviewQAStart(
     const details = getErrorMessage(error)
     const code = compiledArtifact ? 'PROM4_INVALID_COMPILED_INTERVIEW' : 'PROM4_NO_COMPILED_INTERVIEW'
     const msg = compiledArtifact
-      ? `Compiled interview artifact invalid — cannot start PROM4 session: ${details}`
-      : 'No validated compiled interview found — cannot start PROM4 session'
+      ? `Compiled interview artifact invalid; cannot start PROM4 session: ${details}`
+      : 'No validated compiled interview found: cannot start PROM4 session'
     emitPhaseLog(ticketId, context.externalId, 'WAITING_INTERVIEW_ANSWERS', 'error', msg)
     sendEvent({ type: 'ERROR', message: msg, codes: [code] })
     return

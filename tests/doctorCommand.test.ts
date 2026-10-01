@@ -180,7 +180,7 @@ describe('doctor command', () => {
 
       expect(check).toMatchObject({
         status: 'ok',
-        detail: 'not running — a development server is serving the interface instead',
+        detail: 'not running: a development server is serving the interface instead',
       })
     } finally {
       await new Promise<void>((resolve, reject) => {

@@ -74,7 +74,7 @@ export function CancelTicketDialog({ ticketId, open, onOpenChange }: CancelTicke
             <span className="text-sm leading-snug text-muted-foreground group-hover:text-foreground transition-colors">
               <span className="font-medium text-foreground">Delete AI-generated artifacts and worktree</span>
               <br />
-              Permanently removes all AI-generated content stored for this ticket — interview questions and answers, PRD drafts, beads plan entries — and deletes the isolated git worktree including its branch and any code written to it. This cannot be undone.
+              Permanently removes all AI-generated content stored for this ticket (interview questions and answers, PRD drafts, and beads plan entries) and deletes the isolated git worktree, including its branch and any code written to it. This cannot be undone.
             </span>
           </label>
           <label className={`flex items-start gap-3 cursor-pointer group ${deleteTicket ? 'opacity-50 cursor-not-allowed pointer-events-none' : ''}`}>

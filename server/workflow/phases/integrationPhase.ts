@@ -211,7 +211,7 @@ export async function handleIntegration(
   }
 
   emitPhaseLog(ticketId, context.externalId, 'INTEGRATING_CHANGES', 'info',
-    `Integration complete — candidate ${report.candidateCommitSha} ready for draft pull request creation`,
+    `Integration complete: candidate ${report.candidateCommitSha} ready for draft pull request creation`,
     { source: 'system', audience: 'all' })
   sendEvent({ type: 'INTEGRATION_DONE' })
     },

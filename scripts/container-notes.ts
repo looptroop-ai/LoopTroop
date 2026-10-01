@@ -38,7 +38,7 @@ export function containerBlock(input: ContainerBlockInput): string {
     `\`${indexDigest}\`.`,
     '',
     'The image ships without OpenCode, so a bare `docker run` exits at',
-    'startup by design — see [Run it in a container](https://github.com/looptroop-ai/LoopTroop#run-it-in-a-container)',
+    'startup by design. See [Run it in a container](https://github.com/looptroop-ai/LoopTroop#run-it-in-a-container)',
     'for how to point it at a server and reach the interface.',
     END,
   ].join('\n')

@@ -536,7 +536,7 @@ describe('ErrorView', () => {
 
     renderWithProviders(<ErrorView ticket={ticket} />)
 
-    expect(screen.getByText('Error 1 — Implementing (Bead 2/5)')).toBeInTheDocument()
+    expect(screen.getByText('Error 1: Implementing (Bead 2/5)')).toBeInTheDocument()
     expect(screen.getByText('Blocked from Implementing (Bead 2/5)')).toBeInTheDocument()
     expect(screen.queryByText(/Bead \?\/\?/)).not.toBeInTheDocument()
   })

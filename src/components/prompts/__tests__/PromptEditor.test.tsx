@@ -113,7 +113,7 @@ describe('PromptEditor loading and view modes', () => {
     const compareButton = screen.getByRole('button', { name: 'Compare to default' })
     fireEvent.click(compareButton)
     expect(screen.getByText('Built-in default (read-only)')).toBeInTheDocument()
-    expect(screen.getByText('Your version — editable')).toBeInTheDocument()
+    expect(screen.getByText('Your editable version')).toBeInTheDocument()
     fireEvent.change(screen.getByLabelText('Prompt source'), { target: { value: 'compared draft\n' } })
     expect(screen.getByRole('button', { name: 'Save' })).toBeEnabled()
 

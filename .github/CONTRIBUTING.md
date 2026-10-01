@@ -53,9 +53,10 @@ built bundle instead:
 LOOPTROOP_DEV_FRONTEND=preview npm run dev
 ```
 
-Same URL, same backend, same ports — but the frontend is built once and served
-as a bundle. Hot reload is the trade: code changes need a restart. Use it when
-you are running LoopTroop rather than developing it; leave it unset otherwise.
+The URL, backend, and ports stay the same, but the frontend is built once and
+served as a bundle. Hot reload is the trade: code changes need a restart. Use
+it when you are running LoopTroop rather than developing it; leave it unset
+otherwise.
 
 Useful commands:
 
@@ -114,7 +115,7 @@ writes, and unknown untracked additions remain until attribution is resolved.
 Do not claim native-platform or lifecycle verification beyond the evidence for
 the change.
 
-**When a release changes an install path, a command, a flag or a channel, the website repository ships in the same batch.** The published documentation lives in `looptroop-ai/LoopTroop-Website`, so nothing in this repository's CI can notice when it falls behind — and it did, for four releases, while every page still opened with `git clone` and `npm run dev`. Two automated guards now catch part of it (`verify:site` requires Getting Started to lead with an install command, and `sync:cli --check` fails when the CLI reference drifts from `USAGE`), but neither knows about a new channel or a changed flag. This repository now also exposes `node scripts/docs-install-catalog.mjs`, which prints the published-smoke install table as JSON so the website can verify its consolidated installation docs against the channels and commands this repository actually ships. Bumping `CLI_SOURCE_REF` in the website's `scripts/sync-cli-reference.mjs` to the new tag, and re-running `npm run sync:cli`, is part of shipping a release.
+**When a release changes an install path, a command, a flag or a channel, the website repository ships in the same batch.** The published documentation lives in `looptroop-ai/LoopTroop-Website`, so nothing in this repository's CI can notice when it falls behind. It did, for four releases, while every page still opened with `git clone` and `npm run dev`. Two automated guards now catch part of it (`verify:site` requires Getting Started to lead with an install command, and `sync:cli --check` fails when the CLI reference drifts from `USAGE`), but neither knows about a new channel or a changed flag. This repository now also exposes `node scripts/docs-install-catalog.mjs`, which prints the published-smoke install table as JSON so the website can verify its consolidated installation docs against the channels and commands this repository actually ships. Bumping `CLI_SOURCE_REF` in the website's `scripts/sync-cli-reference.mjs` to the new tag, and re-running `npm run sync:cli`, is part of shipping a release.
 
 If website CI must verify that catalog before a release tag exists, use an
 immutable app commit that contains the catalog, check out that same ref in the

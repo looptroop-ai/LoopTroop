@@ -195,7 +195,7 @@ function render(packages) {
     // escape and split this row into an extra cell.
     const copyright = entry.copyright
       ? escapeMarkdownTableCell(entry.copyright)
-      : '—'
+      : '-'
     lines.push(`| \`${entry.name}\` | ${entry.version} | ${entry.license} | ${copyright} |`)
   }
 

@@ -258,7 +258,7 @@ try {
   heading('The image is present and describes itself')
   const inspected = docker(['image', 'inspect', '--format', '{{json .Config}}', options.image])
   if (!check('the image exists locally', inspected.code === 0, options.image)) {
-    throw new Error(`cannot inspect ${options.image} — build it first, or pull it`)
+    throw new Error(`cannot inspect ${options.image}: build it first, or pull it`)
   }
   const config = readJson(inspected.stdout, 'docker image inspect')
   if (config === null) throw new Error('cannot read the image config')

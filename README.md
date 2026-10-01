@@ -5,7 +5,7 @@
 
 LoopTroop helps you turn a coding ticket into a planned, reviewable, agent-executed pull request.
 
-Instead of trusting a single, endless AI chat session - where the conversation history gets bloated, the AI gets confused, and code quality falls off a cliff - LoopTroop breaks the job into clean, separate stages. **Planning** turns an interview into a PRD, which is then split into the smallest manageable milestones, called "beads." **Execution** runs each bead through multiple targeted auto-fix loops. A **final review** ties it all together.
+Instead of trusting a single, endless AI chat session, where the conversation history gets bloated, the AI gets confused, and code quality falls off a cliff, LoopTroop breaks the job into clean, separate stages. **Planning** turns an interview into a PRD, which is then split into the smallest manageable milestones, called "beads." **Execution** runs each bead through multiple targeted auto-fix loops. A **final review** ties it all together.
 
 | Architectural Layer | Core | Technical Lifecycle |
 | :--- | :--- | :--- |
@@ -229,7 +229,7 @@ uninstalling, download verification, and channel availability.
 
 ## What is LoopTroop?
 
-LoopTroop is a **local GUI orchestrator for long-running, high-correctness AI software delivery** - taking you from a raw idea to merged code. Free and fully open-source.
+LoopTroop is a **local GUI orchestrator for long-running, high-correctness AI software delivery**, taking you from a raw idea to merged code. It is free and fully open-source.
 
 Unlike high-speed coding tools that optimize for immediate chat responses, LoopTroop is built for **complex, multi-file feature work** where alignment and correctness are paramount. It optimizes for a "slow and perfect" paradigm, intentionally sacrificing raw speed to deliver a final result that matches exactly how you envisioned it.
 
@@ -259,7 +259,7 @@ LoopTroop keeps workflow state outside the model, stores durable artifacts, and 
 
 ### Context Engineering
 
-Context rot is the enemy of autonomous agents. Traditional agent loops suffer from it-excessive conversational history and irrelevant files overwhelm the model, causing code quality to degrade. Performance can drop severely when reaching just 40% of the maximum context window, resulting in missing files, broken imports, and "AI slop." [[note]](https://antekapetanovic.com/blog/context-engineering/ "Context Engineering: When \"You're Absolutely Right\" Means You're Absolutely Not")
+Context rot is the enemy of autonomous agents. Traditional agent loops suffer from it: excessive conversational history and irrelevant files overwhelm the model, causing code quality to degrade. Performance can drop severely when reaching just 40% of the maximum context window, resulting in missing files, broken imports, and "AI slop." [[note]](https://antekapetanovic.com/blog/context-engineering/ "Context Engineering: When \"You're Absolutely Right\" Means You're Absolutely Not")
 
 LoopTroop solves this through precise context curation. Instead of sending full conversational transcripts, the engine isolates payloads to the active status. During execution, the agent only sees the specific active bead, its immediate file target, and the test file. During planning phases, it receives only the minimum context relevant to the current step.
 
@@ -271,7 +271,7 @@ Read more: [Context Engineering](https://www.looptroop.ovh/docs/context-engineer
 
 The LLM Council is LoopTroop's planning system. Instead of relying on a single model run, LoopTroop orchestrates multiple independent model instances that **draft** plans, **score** each other using a weighted rubric, and **vote** on proposals. The winner then **refines** its draft by synthesizing the strongest ideas from the losing drafts and **verifies** coverage before any execution begins.
 
-This multi-role process (draft → vote → refine → verify) is utilized for:
+This multi-role process (draft → vote → refine → verify) is used for:
 - Interview questions
 - PRD/Specs generation
 - Bead/blueprint generation
@@ -280,7 +280,7 @@ Read more: [LLM Council](https://www.looptroop.ovh/docs/llm-council)
 
 ### Interview
 
-Before writing a spec, the LLM Council compiles a list of targeted questions to resolve any ambiguities. This interactive session gathers requirements and clarifies intent-because matching your vision is the goal, this phase can take over an hour by design.
+Before writing a spec, the LLM Council compiles a list of targeted questions to resolve any ambiguities. This interactive session gathers requirements and clarifies intent. Because matching your vision is the goal, this phase can take over an hour by design.
 
 You answer these questions directly in the Interview workspace to clarify edge cases, design decisions, and requirements, ensuring the model never operates on false assumptions. Although a final interview is created after the council's draft-vote-refine cycle is complete, the user still receives questions in batches that can adapt based on previous answers.
 
@@ -294,9 +294,9 @@ Read more: [PRD](https://www.looptroop.ovh/docs/prd)
 
 ### Beads
 
-LoopTroop implements **only the Beads methodology**-not the full external Beads Project-extracting just the lightweight planning structure needed to bring immediate value to your repository.
+LoopTroop implements **only the Beads methodology**, not the full external Beads Project. It extracts just the lightweight planning structure needed to bring immediate value to your repository.
 
-Using Steve Yegge's *Beads Project* methodology, epics are split into "beads"-the smallest, independently implementable units of work. Each bead contains:
+Using Steve Yegge's *Beads Project* methodology, epics are split into "beads", the smallest, independently implementable units of work. Each bead contains:
 - Clear purpose and objective
 - Measurable acceptance criteria
 - Necessary dependencies and prerequisite context
@@ -357,9 +357,9 @@ Read more: [Ticket Flow](https://www.looptroop.ovh/docs/ticket-flow)
 
 ## Run it in a VM
 
-Beyond the install itself — covered per channel above — LoopTroop needs a local
-repository with a GitHub origin, and **strongly wants a VM or sandboxed
-development environment**.
+The channel-specific install instructions appear above. Beyond the install
+itself, LoopTroop needs a local repository with a GitHub origin, and **strongly
+wants a VM or sandboxed development environment**.
 
 ### Why a VM?
 
@@ -391,7 +391,7 @@ Direct coding-agent loops are highly useful, but they degrade rapidly when task 
 
 LoopTroop is not a magic autopilot. It does not remove the need to review code, inspect diffs, protect secrets, or run work in a safe environment. It is best understood as an orchestration layer around coding agents: planning, state, approvals, execution boundaries, retries, and delivery.
 
-- **Cost-Sensitive Budgets:** Orchestrating multi-model councils and long retry loops uses a high volume of API tokens, though costs can be mitigated by leveraging subscription plans via providers in OpenCode.
+- **Cost-Sensitive Budgets:** Orchestrating multi-model councils and long retry loops uses a high volume of API tokens, though subscription plans from providers in OpenCode can help reduce costs.
 - **Urgent or Quick Fixes:** If you need a trivial change completed in seconds, LoopTroop's overhead will feel slow.
 - **Simple Tasks:** For quick edits or trivial apps, standard IDE chat tools or tools like Replit, Bolt, or Lovable are better fits.
 
@@ -420,7 +420,7 @@ When the app is running, the same docs are also available from the dashboard.
 
 LoopTroop is early alpha software, but it is usable for real work. The full ticket lifecycle is implemented, but some bugs are still likely. The core primitives (planning, execution, retries) are functional.
 
-**Configured limitations:** In LoopTroop alpha, LLM Councils support 2–10 distinct models, including the main implementer. Each project may have only one active ticket in the execution band at a time; additional tickets must wait until it finishes or is canceled.
+**Configured limitations:** In LoopTroop alpha, LLM Councils support 2 to 10 distinct models, including the main implementer. Each project may have only one active ticket in the execution band at a time; additional tickets must wait until it finishes or is canceled.
 
 Roadmap: [Roadmap](https://www.looptroop.ovh/docs/roadmap)
 

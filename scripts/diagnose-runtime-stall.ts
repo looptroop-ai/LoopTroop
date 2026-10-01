@@ -3513,7 +3513,7 @@ function printAdvancedDiagnostics(params: {
   heading('DNS Resolution Probe')
   kv('localhost', params.dnsProbe.ok
     ? `${params.dnsProbe.durationMs}ms → ${params.dnsProbe.addresses.join(', ')}`
-    : `FAILED – ${params.dnsProbe.error}`)
+    : `FAILED: ${params.dnsProbe.error}`)
 
   heading('File Descriptor Limits')
   if (params.fdLimits.error && !params.fdLimits.soft) {

@@ -287,7 +287,7 @@ export function ExecutionSetupPlanView({
               />
               <ArtifactListSection
                 title="Workspace Probes"
-                items={plan.workspaceProbes.map((probe) => `${probe.id}: ${renderCommandSpec(probe.command, plan.hostContext.preferredShell)}${probe.purpose ? ` — ${probe.purpose}` : ''}`)}
+                items={plan.workspaceProbes.map((probe) => `${probe.id}: ${renderCommandSpec(probe.command, plan.hostContext.preferredShell)}${probe.purpose ? `; ${probe.purpose}` : ''}`)}
                 emptyLabel="No repository-level workspace probes were recorded."
                 tone="default"
               />
@@ -302,7 +302,7 @@ export function ExecutionSetupPlanView({
               />
               <ArtifactListSection
                 title="Git Hook Validation Commands"
-                items={plan.gitHooks.validationCommands.map((entry) => `${entry.hook || 'hook'}: ${renderCommandSpec(entry.command, plan.hostContext.preferredShell)}${entry.purpose ? ` — ${entry.purpose}` : ''}`)}
+                items={plan.gitHooks.validationCommands.map((entry) => `${entry.hook || 'hook'}: ${renderCommandSpec(entry.command, plan.hostContext.preferredShell)}${entry.purpose ? `; ${entry.purpose}` : ''}`)}
                 emptyLabel="No explicit hook validations were approved; hook validation will be recorded as skipped."
                 tone="default"
               />
@@ -642,7 +642,7 @@ function ExecutionSetupProfileSummary({
         <div className="grid grid-cols-1 gap-3 lg:grid-cols-2">
           <ArtifactListSection
             title="Workspace Probes"
-            items={profile.workspaceProbes.map((probe) => `${probe.id}: ${probe.command}${probe.purpose ? ` — ${probe.purpose}` : ''}`)}
+            items={profile.workspaceProbes.map((probe) => `${probe.id}: ${probe.command}${probe.purpose ? `; ${probe.purpose}` : ''}`)}
             emptyLabel="No repository-level workspace probes were recorded."
           />
           <ArtifactListSection
@@ -652,7 +652,7 @@ function ExecutionSetupProfileSummary({
           />
           <ArtifactListSection
             title="Workspace Probe Outcomes"
-            items={profile.workspaceProbeReceipts.map((receipt) => `${receipt.id}: ${receipt.status} (${receipt.durationMs}ms${receipt.exitCode == null ? '' : `; exit ${receipt.exitCode}`})${receipt.outputExcerpt ? ` — ${receipt.outputExcerpt}` : ''}`)}
+            items={profile.workspaceProbeReceipts.map((receipt) => `${receipt.id}: ${receipt.status} (${receipt.durationMs}ms${receipt.exitCode == null ? '' : `; exit ${receipt.exitCode}`})${receipt.outputExcerpt ? `; ${receipt.outputExcerpt}` : ''}`)}
             emptyLabel="No workspace probe outcomes were recorded."
             tone="default"
           />
@@ -670,7 +670,7 @@ function ExecutionSetupProfileSummary({
             />
             <ArtifactListSection
               title="Git Hook Validation Outcomes"
-              items={profile.gitHooks.validationReceipts.map((receipt) => `${receipt.id}: ${receipt.status} (${receipt.durationMs}ms${receipt.exitCode == null ? '' : `; exit ${receipt.exitCode}`})${receipt.outputExcerpt ? ` — ${receipt.outputExcerpt}` : ''}`)}
+              items={profile.gitHooks.validationReceipts.map((receipt) => `${receipt.id}: ${receipt.status} (${receipt.durationMs}ms${receipt.exitCode == null ? '' : `; exit ${receipt.exitCode}`})${receipt.outputExcerpt ? `; ${receipt.outputExcerpt}` : ''}`)}
               emptyLabel="No Git-hook validation outcomes were recorded."
             />
           </div>

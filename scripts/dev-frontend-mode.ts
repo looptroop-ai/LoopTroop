@@ -37,6 +37,6 @@ export function resolveDevFrontendMode(env: Env = process.env): DevFrontendMode 
 
 export function describeDevFrontendMode(mode: DevFrontendMode): string {
   return mode === 'preview'
-    ? 'Built bundle (no hot reload) — faster first load, rebuild to see code changes'
+    ? 'Built bundle (no hot reload): faster first load, rebuild to see code changes'
     : 'Dev server with hot reload'
 }

@@ -240,7 +240,7 @@ export function InterviewQAView({ ticket }: InterviewQAViewProps) {
             <p className="text-sm font-medium text-destructive">Processing Error</p>
             <p className="text-xs text-muted-foreground">{processingError}</p>
             <p className="text-[10px] text-muted-foreground">
-              The batch has been restored — you can re-submit your answers.
+              The batch has been restored. You can re-submit your answers.
             </p>
             <Button
               size="sm"
@@ -274,7 +274,7 @@ export function InterviewQAView({ ticket }: InterviewQAViewProps) {
             <DialogDescription>
               This keeps the answers you already submitted, preserves anything currently typed in this batch,
               marks every other unanswered interview question as skipped, and moves the ticket to Interview Approval.
-              The skipped questions are answered by AI models at the start of the PRD phase — and those models
+              The skipped questions are answered by AI models at the start of the PRD phase. Those models
               get to read whatever you write below.
             </DialogDescription>
           </DialogHeader>

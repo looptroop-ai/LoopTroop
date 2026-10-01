@@ -383,11 +383,11 @@ export function TicketForm({ onClose, onDirtyChange, onEditingChange }: TicketFo
               onChange={e => setPriority(Number(e.target.value))}
               className="w-48 rounded-md border border-input bg-background px-3 py-2 text-sm"
             >
-              <option value={1}>1 — Very High</option>
-              <option value={2}>2 — High</option>
-              <option value={3}>3 — Normal</option>
-              <option value={4}>4 — Low</option>
-              <option value={5}>5 — Very Low</option>
+              <option value={1}>1: Very High</option>
+              <option value={2}>2: High</option>
+              <option value={3}>3: Normal</option>
+              <option value={4}>4: Low</option>
+              <option value={5}>5: Very Low</option>
             </select>
           </div>
 

@@ -156,7 +156,7 @@ export function formatErrorOccurrenceLabel(
     ? occurrence.occurrenceNumber
     : fallbackIndex
   const phaseLabel = getStatusUserLabel(occurrence.blockedFromStatus, labelOptions)
-  return `Error ${occurrenceLabel} — ${phaseLabel}`
+  return `Error ${occurrenceLabel}: ${phaseLabel}`
 }
 
 export function formatErrorOccurrenceStatus(

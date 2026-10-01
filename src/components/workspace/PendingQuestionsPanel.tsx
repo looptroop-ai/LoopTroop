@@ -349,7 +349,7 @@ export function PendingQuestionsPanel({ ticketId }: { ticketId: string }) {
                   disabled={active.submitting}
                   label="Skip reason"
                   help={active.questions.length > 1
-                    ? `Skipping refuses all ${active.questions.length} questions in this request — OpenCode takes one verdict for the batch. Kept in the ticket's skip trail; the model is not told.`
+                    ? `Skipping refuses all ${active.questions.length} questions in this request. OpenCode takes one verdict for the batch. The skip is kept in the ticket's skip trail, and the model is not told.`
                     : "Kept in the ticket's skip trail. The model is not told."}
                   autoFocus
                 />

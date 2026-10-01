@@ -142,7 +142,7 @@ describe('WorkspacePhaseSummary', () => {
       />,
     )
 
-    expect(screen.getByRole('button', { name: 'Error — Refining Specs' })).toBeInTheDocument()
+    expect(screen.getByRole('button', { name: 'Error: Refining Specs' })).toBeInTheDocument()
     expect(screen.getByText(/Refining Specs failed: The runner crashed while executing bead B-12\./)).toBeInTheDocument()
     expect(screen.getByText(/Retry starts a fresh Refining Specs attempt\./)).toBeInTheDocument()
     expect(screen.getByText(/Continue resumes the preserved provider session\./)).toBeInTheDocument()
@@ -171,7 +171,7 @@ describe('WorkspacePhaseSummary', () => {
       />,
     )
 
-    expect(screen.getByRole('button', { name: 'Past error — Council Drafting Specs' })).toBeInTheDocument()
+    expect(screen.getByRole('button', { name: 'Past error: Council Drafting Specs' })).toBeInTheDocument()
     expect(screen.getByText(/Council Drafting Specs failed: Provider connection closed\./)).toBeInTheDocument()
     expect(screen.getByText(/This saved occurrence is read-only/)).toBeInTheDocument()
     expect(screen.queryByText(/Retry starts/)).not.toBeInTheDocument()
@@ -710,7 +710,7 @@ describe('WorkspacePhaseSummary', () => {
       <WorkspacePhaseSummary phase="BLOCKED_ERROR" ticket={ticket} />,
     )
 
-    expect(screen.getByRole('button', { name: 'Error — Workflow phase' })).toBeInTheDocument()
+    expect(screen.getByRole('button', { name: 'Error: Workflow phase' })).toBeInTheDocument()
     expect(screen.getByText(/No error details were captured/)).toHaveTextContent(/Open Details to review the failure and available recovery options/)
   })
 

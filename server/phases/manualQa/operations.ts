@@ -515,7 +515,7 @@ function resolveBeadWorkAreas(beads: Bead[], refs: string[]): string[] {
     const targetFiles = (bead.targetFiles ?? []).slice(0, 8).join(', ')
     const readable = [title, description && description !== title ? description : null]
       .filter((value): value is string => Boolean(value))
-      .join(' — ')
+      .join(': ')
     const withFiles = `${readable}${targetFiles ? `${readable ? ' ' : ''}(files: ${targetFiles})` : ''}`.trim()
     if (withFiles && !workAreas.includes(withFiles)) workAreas.push(withFiles)
   }

@@ -97,6 +97,6 @@ describe('requireWinnerDraft', () => {
 
   it('names the phase and the winner when no draft matches', () => {
     expect(() => requireWinnerDraft(drafts, 'ghost', 'PRD'))
-      .toThrow('PRD winner ghost has no matching draft — cannot refine')
+      .toThrow('PRD winner ghost has no matching draft: cannot refine')
   })
 })

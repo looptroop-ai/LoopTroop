@@ -75,7 +75,7 @@ export function parseCompletionMarker(output: string, expectedBeadId?: string): 
 
   // Marker says complete but gates fail → treat as incomplete per spec
   if (isComplete && !gatesValid) {
-    errors.push('Marker says completed but quality gates failed — treating as incomplete')
+    errors.push('Marker says completed but quality gates failed; treating as incomplete')
   }
 
   return {

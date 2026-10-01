@@ -72,7 +72,7 @@ describe.concurrent('buildSessionStatusLogEntries', () => {
         type: 'error',
         kind: 'error',
         op: 'append',
-        content: 'Provider recovery required (retry #3) for anthropic. Reason: oauth_expired Authentication required: Sign in to continue using this provider. Suggested action: Sign in — https://provider.example/login',
+        content: 'Provider recovery required (retry #3) for anthropic. Reason: oauth_expired Authentication required: Sign in to continue using this provider. Suggested action: Sign in (https://provider.example/login)',
         recoveryAction: event.action,
       },
       {

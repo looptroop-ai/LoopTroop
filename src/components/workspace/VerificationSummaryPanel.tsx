@@ -39,7 +39,7 @@ function tryParseJson<T>(content: string | null | undefined): T | null {
 }
 
 function shortSha(sha: string | null | undefined): string {
-  if (!sha) return '—'
+  if (!sha) return '-'
   return sha.slice(0, 8)
 }
 

@@ -346,7 +346,7 @@ const descriptor = renderDescriptor(channel, desired)
 const remote = readRemote()
 const decision = decideChannelWrite(desired, remote === null ? null : parseDescriptor(channel, remote.text), { force })
 
-log(`${channel}: ${decision.action} — ${decision.reason}`)
+log(`${channel}: ${decision.action}: ${decision.reason}`)
 
 if (decision.action === 'refuse' || decision.action === 'conflict') {
   fail(

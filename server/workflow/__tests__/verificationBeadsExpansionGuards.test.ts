@@ -29,7 +29,7 @@ describe('beads expansion persisted-input guards', () => {
     await expectExpansionError(
       ticket.id,
       context,
-      'No persisted council winner found for beads — cannot determine winning model for expansion',
+      'No persisted council winner found for beads: cannot determine winning model for expansion',
     )
 
     insertPhaseArtifact(ticket.id, {

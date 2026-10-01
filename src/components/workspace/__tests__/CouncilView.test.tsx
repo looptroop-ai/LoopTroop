@@ -84,7 +84,7 @@ describe('CouncilView', () => {
 
     render(<CouncilView phase="DRAFTING_PRD" ticket={makeTicket({ status: 'DRAFTING_PRD' })} />)
 
-    expect(screen.getByText('AI Council — PRD Drafting')).toBeInTheDocument()
+    expect(screen.getByText('AI Council: PRD Drafting')).toBeInTheDocument()
     expect(screen.getByText('Each council model is independently generating a prd draft.')).toBeInTheDocument()
     expect(screen.getByTestId('phase-artifacts-panel')).toHaveTextContent(`DRAFTING_PRD:${TEST.ticketId}:2:${TEST.councilMembers.join(',')}`)
     expect(screen.getByTestId('phase-log-section')).toHaveTextContent('DRAFTING_PRD')
@@ -99,7 +99,7 @@ describe('CouncilView', () => {
 
     render(<CouncilView phase="COUNCIL_VOTING_INTERVIEW" ticket={partialTicket} />)
 
-    expect(screen.getByText('AI Council — Interview Voting')).toBeInTheDocument()
+    expect(screen.getByText('AI Council: Interview Voting')).toBeInTheDocument()
     expect(screen.getByTestId('phase-artifacts-panel')).toHaveTextContent(`COUNCIL_VOTING_INTERVIEW:${TEST.ticketId}:3::`)
   })
 
@@ -254,10 +254,10 @@ describe('CouncilView', () => {
   })
 
   it.each([
-    ['SCANNING_RELEVANT_FILES', 'AI Council — Relevant Files Scanning', 'AI is reading relevant source files to build richer context for council deliberation.'],
-    ['EXPANDING_BEADS', 'AI Council — Beads Expanding', 'Winning model expands the validated implementation plan into execution-ready bead records.'],
-    ['REFINING_PRD', 'AI Council — PRD Refining', 'Winning model incorporates best ideas from other drafts.'],
-    ['VERIFYING_INTERVIEW_COVERAGE', 'AI Council — Interview Verifying Coverage', 'Winning model verifies interview covers all requirements.'],
+    ['SCANNING_RELEVANT_FILES', 'AI Council: Relevant Files Scanning', 'AI is reading relevant source files to build richer context for council deliberation.'],
+    ['EXPANDING_BEADS', 'AI Council: Beads Expanding', 'Winning model expands the validated implementation plan into execution-ready bead records.'],
+    ['REFINING_PRD', 'AI Council: PRD Refining', 'Winning model incorporates best ideas from other drafts.'],
+    ['VERIFYING_INTERVIEW_COVERAGE', 'AI Council: Interview Verifying Coverage', 'Winning model verifies interview covers all requirements.'],
   ])('renders the %s phase label and guidance', (phase, heading, guidance) => {
     render(<CouncilView phase={phase} ticket={makeTicket()} />)
 
@@ -307,11 +307,11 @@ describe('CouncilView', () => {
   it('uses generic labels when a council phase or domain is not recognized', () => {
     const { rerender } = render(<CouncilView phase="COUNCIL_VOTING_CUSTOM" ticket={makeTicket()} />)
 
-    expect(screen.getByText(/AI Council —/)).toHaveTextContent('AI Council — Voting')
+    expect(screen.getByText(/AI Council:/)).toHaveTextContent('AI Council: Voting')
     expect(screen.queryByText(/complete ·/)).not.toBeInTheDocument()
 
     rerender(<CouncilView phase="COUNCIL_CUSTOM_STAGE" ticket={makeTicket()} />)
 
-    expect(screen.getByText(/AI Council —/)).toHaveTextContent('AI Council — Processing')
+    expect(screen.getByText(/AI Council:/)).toHaveTextContent('AI Council: Processing')
   })
 })

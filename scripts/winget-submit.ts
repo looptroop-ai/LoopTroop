@@ -396,7 +396,7 @@ try {
       hint: (detail) => (/without .?workflows?.? scope/i.test(detail)
         ? `This branch introduces a workflow file ${FORK} does not have. Sync the fork `
           + `(gh repo sync ${FORK} --source ${UPSTREAM} --branch master --force), and give `
-          + 'WINGET_TOKEN the `workflow` scope — a credential without it can neither push nor merge one.'
+          + 'WINGET_TOKEN the `workflow` scope. A credential without it can neither push nor merge one.'
         : ''),
     })
   }

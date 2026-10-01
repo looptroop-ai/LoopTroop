@@ -152,7 +152,7 @@ describe('ActiveWorkspace', () => {
       />,
     )
 
-    expect(await screen.findByText(/error view:err-live(:live|:readonly)?|Blocked — Error/)).toBeInTheDocument()
+    expect(await screen.findByText(/error view:err-live(:live|:readonly)?|Blocked: Error/)).toBeInTheDocument()
   })
 
   it('opens read-only error review mode for a resolved error occurrence', async () => {

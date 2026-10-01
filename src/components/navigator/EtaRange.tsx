@@ -49,7 +49,7 @@ export function EtaRange({ eta, className, showTooltip = true }: EtaRangeProps) 
       </TooltipTrigger>
       <TooltipContent className="max-w-xs text-center text-balance">
         Estimated time remaining (approximate): best {formatDuration(eta.bestMs)} · worst {formatDuration(eta.worstMs)}.
-        {eta.basis === 'default' && ' No throughput history yet — this is a rough default.'}
+        {eta.basis === 'default' && ' No throughput history yet. This is a rough default.'}
         {eta.basis === 'current' && ' Based on this run so far; refines as more beads complete.'}
       </TooltipContent>
     </Tooltip>

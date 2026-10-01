@@ -586,7 +586,7 @@ export async function handlePrdVote(
 ) {
   const intermediate = phaseIntermediate.get(`${ticketId}:prd`)
   if (!intermediate) {
-    throw new Error('No PRD drafts found — cannot vote')
+    throw new Error('No PRD drafts found: cannot vote')
   }
 
   const { members } = resolveCouncilMembers(context)
@@ -755,7 +755,7 @@ export async function handlePrdRefine(
 ) {
   const intermediate = phaseIntermediate.get(`${ticketId}:prd`)
   if (!intermediate || !intermediate.winnerId) {
-    throw new Error('No PRD vote results found — cannot refine')
+    throw new Error('No PRD vote results found: cannot refine')
   }
 
   const winnerDraft = requireWinnerDraft(intermediate.drafts, intermediate.winnerId, 'PRD')

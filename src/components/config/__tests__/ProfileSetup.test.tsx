@@ -237,7 +237,7 @@ describe('ProfileSetup', () => {
     const refetchQueriesSpy = vi.spyOn(queryClient, 'refetchQueries').mockResolvedValue()
     await renderProfileSetup(queryClient)
 
-    expect(screen.getByText('Minimum council votes required (1–6)')).toBeInTheDocument()
+    expect(screen.getByText('Minimum council votes required (1 to 6)')).toBeInTheDocument()
     expect(screen.getByText('Coverage')).toBeInTheDocument()
     expect(screen.getByText('OpenCode Provider Recovery')).toBeInTheDocument()
     const advancedButton = screen.getByRole('button', { name: 'Advanced' })
@@ -397,7 +397,7 @@ describe('ProfileSetup', () => {
     await renderProfileSetup()
 
     expect(await screen.findByText('· high')).toHaveClass('text-muted-foreground')
-    expect(screen.getByText('MAI — auto-included')).toBeInTheDocument()
+    expect(screen.getByText('MAI (auto-included)')).toBeInTheDocument()
   })
 
   it('resets the effort selection to None when the main model changes', async () => {
@@ -515,7 +515,7 @@ describe('ProfileSetup', () => {
     const responseTimeoutLink = screen.getByRole('link', { name: 'Open documentation for AI Response Timeout' })
     fireEvent.focus(responseTimeoutLink)
     expect(await screen.findByRole('tooltip')).toHaveTextContent(
-      'Wait time for planning and other AI-only responses (10–3600s). Open the detailed documentation.',
+      'Wait time for planning and other AI-only responses (10 to 3600s). Open the detailed documentation.',
     )
   })
 

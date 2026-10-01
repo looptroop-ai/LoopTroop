@@ -159,7 +159,7 @@ describe('interview workflow phases', () => {
     const sendEvent = vi.fn()
 
     await expect(handleInterviewCompile(ticket.id, context, sendEvent, new AbortController().signal))
-      .rejects.toThrow('No interview vote results found — cannot refine')
+      .rejects.toThrow('No interview vote results found: cannot refine')
 
     const winnerId = TEST.councilMembers[0]
     const invalidWinner = {
@@ -894,7 +894,7 @@ describe('interview workflow phases', () => {
 
     expect(sendEvent).toHaveBeenCalledWith({
       type: 'ERROR',
-      message: 'No interview winner found — cannot start PROM4 session',
+      message: 'No interview winner found: cannot start PROM4 session',
       codes: ['PROM4_NO_WINNER'],
     })
   })

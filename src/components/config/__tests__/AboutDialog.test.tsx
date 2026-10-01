@@ -45,16 +45,16 @@ vi.mock('@/hooks/useUpdateStatus', () => ({
     isLoading: false,
     data: {
       currentVersion: packageJson.version,
-      latestVersion: '0.6.0',
+      latestVersion: '99.99.99',
       updateAvailable: true,
       checkedAt: '2026-08-16T08:00:00.000Z',
       installChannel: 'npm',
       upgradeCommand: 'npm install -g looptroop@latest',
       postUpgradeCommand: 'looptroop restart',
       release: {
-        version: '0.6.0',
-        name: 'LoopTroop 0.6.0',
-        url: 'https://github.com/looptroop-ai/LoopTroop/releases/tag/v0.6.0',
+        version: '99.99.99',
+        name: 'LoopTroop 99.99.99',
+        url: 'https://github.com/looptroop-ai/LoopTroop/releases/tag/v99.99.99',
         publishedAt: '2026-08-15T12:00:00.000Z',
         notes: 'Added release-aware update guidance.\n\nFixed stale daemon instructions.',
       },
@@ -80,7 +80,7 @@ describe('AboutDialog', () => {
     render(<AboutDialog />)
 
     expect(screen.getByText(`v${packageJson.version}`)).toBeInTheDocument()
-    expect(screen.getByText('v0.6.0')).toBeInTheDocument()
+    expect(screen.getByText('v99.99.99')).toBeInTheDocument()
     // Twice now, deliberately: once as the upgrade command for this install
     // channel, which is shown whether or not an update is waiting, and once as a
     // numbered step in the how-to-update list.
@@ -88,7 +88,7 @@ describe('AboutDialog', () => {
     expect(screen.getByText('looptroop restart')).toBeInTheDocument()
 
     const changelog = screen.getByRole('link', { name: /changelog/i })
-    expect(changelog).toHaveAttribute('href', 'https://github.com/looptroop-ai/LoopTroop/releases/tag/v0.6.0')
+    expect(changelog).toHaveAttribute('href', 'https://github.com/looptroop-ai/LoopTroop/releases/tag/v99.99.99')
     fireEvent.focus(changelog)
 
     expect(await screen.findByText(/Added release-aware update guidance/)).toBeInTheDocument()

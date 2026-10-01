@@ -9,6 +9,59 @@ Unreleased changes appear first and represent commits that have not yet been inc
 
 > Changes merged since the last versioned release that have not yet shipped in a tagged version.
 
+## 0.6.0 (2026-10-01)
+
+### LoopTroop v0.6 — Our biggest update yet!
+
+This is a massive release: 78 commits, 1,065 files changed, and 201,161 lines changed — 172,183 added / 28,978 removed — since v0.5.9, across the application, tests, tooling, and documentation.
+
+Smarter AI questions, skip reasons you can trace, a major optimization effort, and more than twice the passing tests. There’s a lot packed into this one! 🎉
+
+### ✨ What’s new
+
+#### ⏭️ Skip reasons & decision history
+
+Add optional reasons when skipping interview questions, approving plans with coverage gaps, skipping Manual QA, cancelling, or finishing without a merge. The new Skips panel keeps the decision history together across phases and retries, including later changes and reversals. [#122](https://github.com/looptroop-ai/LoopTroop/pull/122)
+
+#### 💬 AI questions that fit your workflow
+
+Questions now appear in an inline panel with separate model tabs and a configurable 1–60 minute wait, defaulting to 5 minutes. If you’re away, expiry declines the question so the model can continue using its own judgment. Interacting stops the countdown and gives you time to answer. [#126](https://github.com/looptroop-ai/LoopTroop/pull/126)
+
+#### ⚡ A major optimization & cleanup effort
+
+Smarter parsing caches, fewer redundant requests, and less repeated work in live logs and history handling. In the recorded cache benchmark, repeated parsing of a 64-bead document dropped from 24.3 ms to 0.68 ms — approximately 36× faster for that workload. [Log improvements](https://github.com/looptroop-ai/LoopTroop/pull/136) · [Parser benchmark](https://github.com/looptroop-ai/LoopTroop/blob/89e7be26a7bbb23d00992376ecab390bed130a7e/.github/pr20-implementation.md#verification)
+
+#### 🧪 More than twice the tests
+
+Passing tests grew from 3,495 to 8,099 — up 132% — across 500 test files, with 93.19% line coverage. New regression coverage strengthens workflows, recovery, parsers, installation, and UI interactions, while enforced coverage thresholds help protect those gains. [Previous CI](https://github.com/looptroop-ai/LoopTroop/actions/runs/32943354658/job/98098782774) · [Current CI](https://github.com/looptroop-ai/LoopTroop/actions/runs/36839676810/job/110295510470)
+
+#### 🔌 OpenCode v2 support
+
+LoopTroop now detects and supports OpenCode v1 and v2, including native v2 integration, provider/model catalog handling, and stronger session tracking. Interrupted streams and uncertain prompt delivery receive safer recovery handling. [#191](https://github.com/looptroop-ai/LoopTroop/pull/191)
+
+#### 💾 More reliable runs & recovery
+
+Stronger crash, restart, cancellation, and retry handling helps preserve project files, settings, and workflow progress. The daemon also detects PRs merged on GitHub and completes their tickets in the background — even with the browser closed, including squash and rebase merges. [#133](https://github.com/looptroop-ai/LoopTroop/pull/133) · [#156](https://github.com/looptroop-ai/LoopTroop/pull/156)
+
+#### 📜 Logs that stay complete and easier to follow
+
+Better recovery from reconnects and pagination gaps, more reliable streaming history, stable model tabs and filters, and preserved history across retries and cancellations. Log exports stay complete, and failed clipboard copies now show a clear error. [#136](https://github.com/looptroop-ai/LoopTroop/pull/136) · [#158](https://github.com/looptroop-ai/LoopTroop/pull/158)
+
+#### ✨ A smoother, more accessible workspace
+
+Improved keyboard navigation, dialog focus, pagination, and error feedback. Drafts, answers, and unsaved edits stay with the correct ticket when switching, while stronger save checks help prevent stale changes from overwriting newer work. [#134](https://github.com/looptroop-ai/LoopTroop/pull/134) · [#137](https://github.com/looptroop-ai/LoopTroop/pull/137) · [Detailed changes](https://github.com/looptroop-ai/LoopTroop/blob/v0.6.0/CHANGELOG.md#060-2026-10-01)
+
+#### 🛡️ Stronger security & release verification
+
+Hardened executable launches, file-access boundaries, and credential handling, plus stronger dependency checks. New stable releases also include a downloadable, verified provenance bundle to help verify where release artifacts came from. [#152](https://github.com/looptroop-ai/LoopTroop/pull/152) · [#195](https://github.com/looptroop-ai/LoopTroop/pull/195)
+
+#### 🪟 Easier installs & upgrades
+
+Chocolatey and WinGet are now live installation channels, alongside Scoop fixes and stronger installer checks. Package installs support Node 24.18.0+ with its bundled npm, removing the requirement for a particular npm version. [#173](https://github.com/looptroop-ai/LoopTroop/pull/173) · [#176](https://github.com/looptroop-ai/LoopTroop/pull/176) · [#181](https://github.com/looptroop-ai/LoopTroop/pull/181)
+
+💚 Thanks to everyone testing, reporting issues, and helping shape LoopTroop!
+
+
 ### Summary
 - Improved punctuation and readability across user-facing app text, the website and repository documentation while preserving their content.
 - Setup instructions are shorter, documentation code blocks wrap to fit the page, and obsolete repository audit records are removed.
@@ -299,6 +352,7 @@ Unreleased changes appear first and represent commits that have not yet been inc
 - The unused `server/db/drizzle.config.ts` alias. Every database script already selects its app or project config explicitly, so keeping a third config that Drizzle Kit cannot discover from the repository root only advertised a command that no longer worked.
 
 ### Fixed
+- Update-check test fixtures use a distinct future version so new releases do not collide with the running version or fail the version-consistency check.
 - Project color choices now have stable list keys on their tooltips, removing React's missing-key warning.
 - Third-party notice generation now returns a normal failure status on validation errors, avoiding abrupt Node shutdown crashes on Windows.
 - No-follow file reads compare device and inode with BigInt precision, so Windows file replacements cannot pass through rounded file identity values.

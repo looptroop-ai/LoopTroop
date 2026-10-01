@@ -161,12 +161,12 @@ describe('AppShell', () => {
   it('shows a subtle update indicator and opens About from the version', () => {
     const onOpenAbout = vi.fn()
     mockUseUpdateStatus.mockReturnValue({
-      data: { updateAvailable: true, latestVersion: '0.6.0' },
+      data: { updateAvailable: true, latestVersion: '99.99.99' },
     })
 
     renderShell(uiValue, onOpenAbout)
 
-    const versionButton = screen.getByRole('button', { name: /update 0\.6\.0 available; open about/i })
+    const versionButton = screen.getByRole('button', { name: /update 99\.99\.99 available; open about/i })
     expect(within(versionButton).getByTestId('update-available-icon')).toBeInTheDocument()
     fireEvent.click(versionButton)
     expect(onOpenAbout).toHaveBeenCalledOnce()

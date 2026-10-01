@@ -21,6 +21,19 @@ checks as sandboxed or assume a repository-local wrapper is inert metadata.
 - Improve documentation when behavior is unclear or has drifted from the implementation.
 - Submit focused pull requests that fix one problem or add one clearly scoped improvement.
 
+## Where help is welcome
+
+- Reproducible bug reports with steps, expected behavior, and relevant logs.
+- Documentation corrections when instructions are unclear or differ from current behavior. Published docs live in the [LoopTroop-Website repository](https://github.com/looptroop-ai/LoopTroop-Website).
+- Platform and installation feedback from macOS, Linux, and Windows, including the install channel and environment where a problem occurred.
+- Focused fixes for a specific bug or usability problem, with checks that demonstrate the fix.
+
+## Before starting a larger change
+
+Discuss substantial features and architectural changes in an issue or [GitHub Discussion](https://github.com/looptroop-ai/LoopTroop/discussions) before starting implementation. Describe the problem and proposed scope so maintainers can confirm the direction before you invest time.
+
+Keep pull requests focused. Submit unrelated refactors separately. The [roadmap](../ROADMAP.md) describes possible directions; a listed idea still needs an agreed scope before implementation.
+
 ## Local setup
 
 ```bash

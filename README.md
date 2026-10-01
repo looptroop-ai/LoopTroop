@@ -83,7 +83,7 @@ curl -fsSL https://www.looptroop.ovh/install | sh
 ```
 
 ```powershell
-$script = curl.exe --proto "=https" --proto-redir "=https" --tlsv1.2 -fsSL https://www.looptroop.ovh/install.ps1; if ($LASTEXITCODE -ne 0 -or !$script) { throw "Installer download failed" }; & ([scriptblock]::Create(($script -join "`n")))
+irm https://www.looptroop.ovh/install.ps1 | iex
 ```
 
 Requires Node 24.18.0 or newer. Installs the latest release through npm.

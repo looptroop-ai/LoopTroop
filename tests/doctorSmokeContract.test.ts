@@ -13,7 +13,7 @@ const expected = {
   binary: 'curl -fsSL https://www.looptroop.ovh/install | sh -s -- --binary',
 } as const
 
-const binaryWindowsUpgrade = '$script = curl.exe --proto "=https" --proto-redir "=https" --tlsv1.2 -fsSL https://www.looptroop.ovh/install.ps1; if ($LASTEXITCODE -ne 0 -or !$script) { throw "Installer download failed" }; & ([scriptblock]::Create(($script -join "`n"))) -Binary'
+const binaryWindowsUpgrade = '& ([scriptblock]::Create((irm https://www.looptroop.ovh/install.ps1))) -Binary'
 
 const wiringContracts = [
   {

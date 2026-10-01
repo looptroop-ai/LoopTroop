@@ -469,33 +469,40 @@ describe('planMatrix', () => {
     expect(sh.display).toBe('curl -fsSL https://www.looptroop.ovh/install | sh')
 
     const ps1 = installedChannel('installer-ps1').install({ version: '9.9.9', pin: false })
-    expect(ps1.display).toBe('$script = curl.exe --proto "=https" --proto-redir "=https" --tlsv1.2 -fsSL https://www.looptroop.ovh/install.ps1; if ($LASTEXITCODE -ne 0 -or !$script) { throw "Installer download failed" }; & ([scriptblock]::Create(($script -join "`n")))')
+    expect(ps1.display).toBe('irm https://www.looptroop.ovh/install.ps1 | iex')
   })
 
-  it.runIf(process.platform === 'win32' || spawnSync('pwsh', ['-NoProfile', '-Command', '$PSVersionTable.PSVersion.ToString()'], { timeout: 10_000 }).status === 0).each([[0, false], [22, false], [0, true]] as const)('executes PowerShell downloads only after curl succeeds (exit %i, empty %s)', (exitCode, empty) => {
+  it.runIf(process.platform === 'win32' || spawnSync('pwsh', ['-NoProfile', '-Command', '$PSVersionTable.PSVersion.ToString()'], { timeout: 10_000 }).status === 0).each([[false, false], [true, false], [false, true]] as const)('preserves native PowerShell scripts and arguments (failed %s, empty %s)', (failed, empty) => {
     const shell = process.platform === 'win32' ? 'powershell.exe' : 'pwsh'
-    const command = installedChannel('installer-ps1-binary').install({ version: '9.9.9', pin: true }).display
-    const result = spawnSync(shell, ['-NoProfile', '-NonInteractive', '-Command', `
-function Invoke-MockCurl {
-  $global:LASTEXITCODE = ${exitCode}
-  if (${empty ? '$true' : '$false'}) { return }
-  'param([switch]$Binary, [string]$Version)'
-  '$message = @"'
-  'complete script'
-  '"@'
-  'Write-Output "$message $Binary $Version"'
+    for (const key of ['installer-ps1', 'installer-ps1-binary']) {
+      const binary = key === 'installer-ps1-binary'
+      // A missing mock fails locally before it can install anything.
+      const command = installedChannel(key).install({ version: '9.9.9', pin: binary }).display
+        .replace(/https:\/\/[^)\s]+/, 'http://127.0.0.1:1/install.ps1')
+      const result = spawnSync(shell, ['-NoProfile', '-NonInteractive', '-Command', `
+$ErrorActionPreference = 'Stop'
+function Invoke-RestMethod {
+  if (${failed ? '$true' : '$false'}) { throw 'Installer download failed' }
+  if (${empty ? '$true' : '$false'}) { return '' }
+  @'
+param([switch]$Binary, [string]$Version)
+$message = @"
+complete script
+"@
+Write-Output "$message $Binary $Version"
+'@
 }
-Set-Alias -Name curl.exe -Value Invoke-MockCurl
 ${command}
 `], { encoding: 'utf8', timeout: 30_000 })
-    expect(result.error).toBeUndefined()
-    if (exitCode === 0 && !empty) {
-      expect(result.status, result.stderr).toBe(0)
-      expect(result.stdout.trim()).toBe('complete script True 9.9.9')
-    } else {
-      expect(result.status).not.toBe(0)
-      expect(result.stderr).toContain('Installer download failed')
-      expect(result.stdout).not.toContain('complete script')
+      expect(result.error).toBeUndefined()
+      if (!failed && !empty) {
+        expect(result.status, result.stderr).toBe(0)
+        expect(result.stdout.trim()).toBe(binary ? 'complete script True 9.9.9' : 'complete script False')
+      } else {
+        if (failed || !binary) expect(result.status).not.toBe(0)
+        if (failed) expect(result.stderr).toContain('Installer download failed')
+        expect(result.stdout).not.toContain('complete script')
+      }
     }
   }, 45_000)
 

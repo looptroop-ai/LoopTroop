@@ -69,6 +69,12 @@ describe('docs install catalog', () => {
     expect(catalog.channels.find((entry) => entry.id === 'installer-sh')).toMatchObject({
       documentedInstall: 'curl -fsSL https://www.looptroop.ovh/install | sh',
     })
+    expect(catalog.channels.find((entry) => entry.id === 'installer-ps1')).toMatchObject({
+      documentedInstall: 'irm https://www.looptroop.ovh/install.ps1 | iex',
+    })
+    expect(catalog.channels.find((entry) => entry.id === 'installer-ps1-binary')).toMatchObject({
+      documentedInstall: '& ([scriptblock]::Create((irm https://www.looptroop.ovh/install.ps1))) -Binary',
+    })
     expect(catalog.channels.find((entry) => entry.id === 'installer-sh-binary')).toMatchObject({
       documentedInstall: 'curl -fsSL https://www.looptroop.ovh/install | sh -s -- --binary',
     })

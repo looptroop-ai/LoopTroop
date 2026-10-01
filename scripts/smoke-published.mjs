@@ -737,9 +737,9 @@ function shellSpec(line) {
   return { command: 'sh', args: ['-c', line], display: line }
 }
 
-/** Capture a complete HTTPS-only script before execution, preserving PowerShell lines. */
+/** Native PowerShell downloads preserve newlines; arguments need a script block. */
 function powershellInstaller(url, args = '') {
-  return `$script = curl.exe --proto "=https" --proto-redir "=https" --tlsv1.2 -fsSL ${url}; if ($LASTEXITCODE -ne 0 -or !$script) { throw "Installer download failed" }; & ([scriptblock]::Create(($script -join "\`n")))${args}`
+  return args ? `& ([scriptblock]::Create((irm ${url})))${args}` : `irm ${url} | iex`
 }
 
 /** Run the Windows command in the preinstalled PowerShell 5.1 runtime. */

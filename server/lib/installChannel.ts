@@ -91,10 +91,9 @@ const UPGRADE_COMMANDS: Record<InstallChannel, string> = {
   // place: it stops the daemon, swaps the file, checks the new one runs, rolls
   // back if it does not, and starts the daemon again if it had been running.
   //
-  // Capture the complete HTTPS-only download before executing it. Joining native
-  // stdout restores the line breaks PowerShell needs, including here-strings.
+  // Invoke-RestMethod keeps the complete script and its original line breaks.
   binary: process.platform === 'win32'
-    ? '$script = curl.exe --proto "=https" --proto-redir "=https" --tlsv1.2 -fsSL https://www.looptroop.ovh/install.ps1; if ($LASTEXITCODE -ne 0 -or !$script) { throw "Installer download failed" }; & ([scriptblock]::Create(($script -join "`n"))) -Binary'
+    ? '& ([scriptblock]::Create((irm https://www.looptroop.ovh/install.ps1))) -Binary'
     : 'curl -fsSL https://www.looptroop.ovh/install | sh -s -- --binary',
   container: 'docker pull looptroopai/looptroop:latest',
   source: 'git pull && npm install && npm run build',

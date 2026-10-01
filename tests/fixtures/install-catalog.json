@@ -65,7 +65,7 @@
       "id": "installer-ps1",
       "kind": "installed",
       "live": true,
-      "documentedInstall": "$script = curl.exe --proto \"=https\" --proto-redir \"=https\" --tlsv1.2 -fsSL https://www.looptroop.ovh/install.ps1; if ($LASTEXITCODE -ne 0 -or !$script) { throw \"Installer download failed\" }; & ([scriptblock]::Create(($script -join \"`n\")))",
+      "documentedInstall": "irm https://www.looptroop.ovh/install.ps1 | iex",
       "stubReason": null,
       "moderated": null,
       "pinnable": true,
@@ -95,7 +95,7 @@
       "upgradeCommands": {
         "linux": "curl -fsSL https://www.looptroop.ovh/install | sh -s -- --binary",
         "darwin": "curl -fsSL https://www.looptroop.ovh/install | sh -s -- --binary",
-        "win32": "$script = curl.exe --proto \"=https\" --proto-redir \"=https\" --tlsv1.2 -fsSL https://www.looptroop.ovh/install.ps1; if ($LASTEXITCODE -ne 0 -or !$script) { throw \"Installer download failed\" }; & ([scriptblock]::Create(($script -join \"`n\"))) -Binary"
+        "win32": "& ([scriptblock]::Create((irm https://www.looptroop.ovh/install.ps1))) -Binary"
       },
       "legs": [
         {
@@ -282,7 +282,7 @@
       "upgradeCommands": {
         "linux": "curl -fsSL https://www.looptroop.ovh/install | sh -s -- --binary",
         "darwin": "curl -fsSL https://www.looptroop.ovh/install | sh -s -- --binary",
-        "win32": "$script = curl.exe --proto \"=https\" --proto-redir \"=https\" --tlsv1.2 -fsSL https://www.looptroop.ovh/install.ps1; if ($LASTEXITCODE -ne 0 -or !$script) { throw \"Installer download failed\" }; & ([scriptblock]::Create(($script -join \"`n\"))) -Binary"
+        "win32": "& ([scriptblock]::Create((irm https://www.looptroop.ovh/install.ps1))) -Binary"
       },
       "legs": [
         {
@@ -304,7 +304,7 @@
       "upgradeCommands": {
         "linux": "curl -fsSL https://www.looptroop.ovh/install | sh -s -- --binary",
         "darwin": "curl -fsSL https://www.looptroop.ovh/install | sh -s -- --binary",
-        "win32": "$script = curl.exe --proto \"=https\" --proto-redir \"=https\" --tlsv1.2 -fsSL https://www.looptroop.ovh/install.ps1; if ($LASTEXITCODE -ne 0 -or !$script) { throw \"Installer download failed\" }; & ([scriptblock]::Create(($script -join \"`n\"))) -Binary"
+        "win32": "& ([scriptblock]::Create((irm https://www.looptroop.ovh/install.ps1))) -Binary"
       },
       "legs": [
         {
@@ -348,7 +348,7 @@
       "id": "installer-ps1-binary",
       "kind": "installed",
       "live": true,
-      "documentedInstall": "$script = curl.exe --proto \"=https\" --proto-redir \"=https\" --tlsv1.2 -fsSL https://www.looptroop.ovh/install.ps1; if ($LASTEXITCODE -ne 0 -or !$script) { throw \"Installer download failed\" }; & ([scriptblock]::Create(($script -join \"`n\"))) -Binary",
+      "documentedInstall": "& ([scriptblock]::Create((irm https://www.looptroop.ovh/install.ps1))) -Binary",
       "stubReason": null,
       "moderated": null,
       "pinnable": true,
@@ -356,7 +356,7 @@
       "upgradeCommands": {
         "linux": "curl -fsSL https://www.looptroop.ovh/install | sh -s -- --binary",
         "darwin": "curl -fsSL https://www.looptroop.ovh/install | sh -s -- --binary",
-        "win32": "$script = curl.exe --proto \"=https\" --proto-redir \"=https\" --tlsv1.2 -fsSL https://www.looptroop.ovh/install.ps1; if ($LASTEXITCODE -ne 0 -or !$script) { throw \"Installer download failed\" }; & ([scriptblock]::Create(($script -join \"`n\"))) -Binary"
+        "win32": "& ([scriptblock]::Create((irm https://www.looptroop.ovh/install.ps1))) -Binary"
       },
       "legs": [
         {

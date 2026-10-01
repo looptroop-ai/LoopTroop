@@ -13,7 +13,7 @@ Unreleased changes appear first and represent commits that have not yet been inc
 
 ### LoopTroop v0.6 — Our biggest update yet!
 
-This is a massive release: 78 commits, 1,065 files changed, and 201,161 lines changed — 172,183 added / 28,978 removed — since v0.5.9, across the application, tests, tooling, and documentation.
+This is a massive release: 80 commits, 1,065 files changed, and 198,747 lines changed — 169,311 added / 29,436 removed — since v0.5.9, across the application, tests, tooling, and documentation.
 
 Smarter AI questions, skip reasons you can trace, a major optimization effort, and more than twice the passing tests. There’s a lot packed into this one! 🎉
 
@@ -33,7 +33,7 @@ Smarter parsing caches, fewer redundant requests, and less repeated work in live
 
 #### 🧪 More than twice the tests
 
-Passing tests grew from 3,495 to 8,099 — up 132% — across 500 test files, with 93.19% line coverage. New regression coverage strengthens workflows, recovery, parsers, installation, and UI interactions, while enforced coverage thresholds help protect those gains. [Previous CI](https://github.com/looptroop-ai/LoopTroop/actions/runs/32943354658/job/98098782774) · [Current CI](https://github.com/looptroop-ai/LoopTroop/actions/runs/36839676810/job/110295510470)
+Passing tests grew from 3,495 to 8,102 — up 132% — across 500 test files, with 93.19% line coverage. New regression coverage strengthens workflows, recovery, parsers, installation, and UI interactions, while enforced coverage thresholds help protect those gains. [Previous CI](https://github.com/looptroop-ai/LoopTroop/actions/runs/32943354658/job/98098782774) · [Current CI](https://github.com/looptroop-ai/LoopTroop/actions/runs/36898870891/job/110492694559)
 
 #### 🔌 OpenCode v2 support
 

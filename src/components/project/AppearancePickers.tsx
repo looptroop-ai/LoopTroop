@@ -237,10 +237,9 @@ export function ColorPickerSection({ color, onColorChange, isColorPickerOpen, on
         <div className="w-[240px] sm:w-64 max-w-[85vw]">
           <div className="grid grid-cols-4 gap-2">
             {PROJECT_COLORS.map(c => (
-              <Tooltip>
+              <Tooltip key={c.value}>
                   <TooltipTrigger asChild>
                     <button
-                                key={c.value}
                                 type="button"
                                 className="group flex flex-col items-center gap-1 rounded-lg p-1 transition hover:bg-muted/60 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary"
                                 onClick={() => { onColorChange(c.value); onColorOpenChange(false) }}

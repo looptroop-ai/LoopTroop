@@ -297,6 +297,7 @@ Unreleased changes appear first and represent commits that have not yet been inc
 - The unused `server/db/drizzle.config.ts` alias. Every database script already selects its app or project config explicitly, so keeping a third config that Drizzle Kit cannot discover from the repository root only advertised a command that no longer worked.
 
 ### Fixed
+- Project color choices now have stable list keys on their tooltips, removing React's missing-key warning.
 - Third-party notice generation now returns a normal failure status on validation errors, avoiding abrupt Node shutdown crashes on Windows.
 - No-follow file reads compare device and inode with BigInt precision, so Windows file replacements cannot pass through rounded file identity values.
 - Beads refinement repairs a uniquely title-matched ID collision only when one explicit mismatched modification and one `before: null` addition resolve to the affected beads, with `after: null` removals for any other winner beads missing from the refined artifact. A stale added ID can resolve through a unique title, while extra or conflicting rows still block repair. Contradictory add/remove rows for a live bead become one stable-ID modification and keep valid council inspiration instead of producing a false addition/removal pair. A declared removal without an `after` side normalizes to `after: null` while retaining valid inspiration, but still cannot authorize ID repair without an explicit null. List-valued bead content is compared structurally so separator characters cannot hide an edit.

@@ -85,7 +85,7 @@
       ]
     },
     {
-      "description": "Everything declared as a devDependency, below a major, in one pull request: build and release tooling (vite, typescript, postject, drizzle-kit), lint and test tooling, type packages and Tailwind. The rules after this one take the bundled frontend, esbuild and Drizzle back out, and hold typescript and @types/node below their ceilings, which only limits the version this group offers.",
+      "description": "Everything declared as a devDependency, below a major, in one pull request: build and release tooling (vite, typescript, drizzle-kit), lint and test tooling, type packages and Tailwind. The rules after this one take the bundled frontend, esbuild and Drizzle back out, and hold typescript and @types/node below their ceilings, which only limits the version this group offers.",
       "matchDepTypes": [
         "devDependencies"
       ],

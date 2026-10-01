@@ -10,6 +10,7 @@ Unreleased changes appear first and represent commits that have not yet been inc
 > Changes merged since the last versioned release that have not yet shipped in a tagged version.
 
 ### Summary
+- The repository now links to the published roadmap and explains where contributions are welcome and when to discuss larger changes.
 - Pullfrog workflows can run manually prompted agents while keeping model credentials in Pullfrog's encrypted secret store.
 - No-follow file reads now detect replaced files using exact file identity on Windows before consuming their contents.
 - Beads refinement preserves stable IDs and council attribution when it reconciles conflicting change records, and relevant-files budgets keep higher-priority entries.
@@ -62,6 +63,7 @@ Unreleased changes appear first and represent commits that have not yet been inc
 - Timeout executor tests with injected child identities skip real Linux process-group scans, keeping assertions independent of runner PID allocation.
 
 ### Added
+- Added `ROADMAP.md` linking to the published planning notes, with alpha and priority caveats, and contribution guidance for bug reports, documentation corrections, platform feedback, focused fixes, and discussion before substantial changes.
 - Added a manually dispatched Pullfrog workflow with immutable action references and no persisted checkout credentials; model keys stay in Pullfrog's encrypted secret store instead of being passed through as a bundle of GitHub secrets.
 - Hook recovery tests now cover the tracked-worktree-edit refusal path, including preservation of the changed file and marker and proof that no hook runs.
 - Regression tests cover malformed structured coverage retries, optional startup health-check rejection, oversized recovery tails, large text-diff cutoffs, and relevant-files artifact budget boundaries.

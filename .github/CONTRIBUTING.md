@@ -141,8 +141,9 @@ npm scans new publications before making them available for installation. The
 release verifier polls for roughly 30 minutes after publishing. Each metadata
 read has a 15-second fetch timeout and no npm retries; the polling loop retries
 at 15-second intervals and checks its 30-minute deadline before each read.
-The job has a 40-minute timeout. An accepted publish can still time out while npm is
-processing it. Once the registry serves the version, rerunning the original
+The job has a 40-minute timeout shared by setup, publication, and verification.
+An accepted publish can still time out while npm is processing it. Once the
+registry serves the version, rerunning the original
 npm job reuses its verified artifact and checks the registry's integrity and
 dist-tags before finalization. Container tagging and repair use sparse
 checkouts that include the shared executable resolver needed by Docker tooling.

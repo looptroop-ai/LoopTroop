@@ -395,7 +395,7 @@ describe('release workflow policy', () => {
     const verification = workflows.get('release.yml')?.jobs?.npm?.steps?.find((step) =>
       step.name === 'Verify the registry agrees')
     const run = String(verification?.run ?? '')
-    const poll = run.slice(run.indexOf("published=''"), run.indexOf('if [ -z "${published}" ]'))
+    const poll = run.slice(run.indexOf("published=''"), run.search(/if \[ -z "\$\{published\}" \]/))
       .replace('30 * 60', '2')
     const directory = mkdtempSync(join(tmpdir(), 'looptroop-npm-deadline-'))
     const calls = join(directory, 'calls')

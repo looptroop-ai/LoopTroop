@@ -66,6 +66,12 @@ describe('docs install catalog', () => {
   it('pins the catalog decisions independently of the smoke recipe implementation', () => {
     const catalog = runCatalog()
 
+    expect(catalog.channels.find((entry) => entry.id === 'installer-sh')).toMatchObject({
+      documentedInstall: 'curl -fsSL https://www.looptroop.ovh/install | sh',
+    })
+    expect(catalog.channels.find((entry) => entry.id === 'installer-sh-binary')).toMatchObject({
+      documentedInstall: 'curl -fsSL https://www.looptroop.ovh/install | sh -s -- --binary',
+    })
     expect(catalog.channels.find((entry) => entry.id === 'scoop')).toMatchObject({
       documentedInstall: 'scoop bucket add looptroop https://github.com/looptroop-ai/scoop-bucket; scoop install looptroop',
     })

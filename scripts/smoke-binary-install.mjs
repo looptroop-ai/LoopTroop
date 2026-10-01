@@ -235,7 +235,7 @@ async function main() {
       channel: 'binary',
       upgradeCommand: IS_WINDOWS
         ? '$script = curl.exe --proto "=https" --proto-redir "=https" --tlsv1.2 -fsSL https://www.looptroop.ovh/install.ps1; if ($LASTEXITCODE -ne 0 -or !$script) { throw "Installer download failed" }; & ([scriptblock]::Create(($script -join "`n"))) -Binary'
-        : 'curl --proto "=https" --proto-redir "=https" --tlsv1.2 -fsSL https://www.looptroop.ovh/install | sh -s -- --binary',
+        : 'curl -fsSL https://www.looptroop.ovh/install | sh -s -- --binary',
     })
   } catch {
     fail('`doctor --json` did not produce parseable JSON.', `${doctor.stdout}${doctor.stderr}`.slice(0, 2000))

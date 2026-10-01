@@ -1,9 +1,9 @@
 #!/bin/sh
 # LoopTroop installer for macOS and Linux.
 #
-#   curl --proto '=https' --proto-redir '=https' --tlsv1.2 -fsSL https://www.looptroop.ovh/install | sh
-#   curl --proto '=https' --proto-redir '=https' --tlsv1.2 -fsSL https://www.looptroop.ovh/install | sh -s -- --version 9.9.9
-#   curl --proto '=https' --proto-redir '=https' --tlsv1.2 -fsSL https://www.looptroop.ovh/install | sh -s -- --binary
+#   curl -fsSL https://www.looptroop.ovh/install | sh
+#   curl -fsSL https://www.looptroop.ovh/install | sh -s -- --version 9.9.9
+#   curl -fsSL https://www.looptroop.ovh/install | sh -s -- --binary
 #
 # Downloads what a LoopTroop release published, checks it against the checksum
 # that release recorded, and installs it: the npm package with npm by default,

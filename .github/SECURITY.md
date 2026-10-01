@@ -165,6 +165,23 @@ release-maturity delay; security advisories shorten that delay to two days. The
 full policy is documented in
 [Operations Guide](https://www.looptroop.ovh/docs/operations#scheduled-dependency-updates).
 
+### Install-script policy
+
+Repository dependency installs require npm 12. The `allowScripts` policy in
+`package.json` approves only the exact locked esbuild versions needed for its
+binary setup, explicitly denies fsevents, and blocks other dependency install
+scripts. Review the approvals and npm's policy before changing the npm major.
+The root allowlist applies only to repository installs; global installs and npx
+use separate contexts. CI bootstraps npm with lifecycle scripts disabled.
+
+The Node Current lane keeps bundled npm within the reviewed major and otherwise
+warns and installs the repository's declared npm version before dependencies.
+Production container and standalone-bundle installs disable lifecycle scripts.
+
+CodeMirror and Radix components inject runtime CSS, so the browser CSP permits
+inline styles while restricting scripts to the same origin. Removing that style
+permission requires nonce support in both HTML serving and the style consumers.
+
 ## Repository security checks
 
 CI-only Bun, pnpm, Yarn and OpenCode installs use committed integrity lockfiles
@@ -184,7 +201,7 @@ application and workflows. OpenSSF Scorecard publishes repository security
 results on pushes to main and weekly, using the workflow token to read rulesets.
 The maintainer accepts the current lack of required independent human approvals
 and an OpenSSF Best Practices badge. Per-alert evidence and dashboard decisions
-are recorded in [security-alert-dispositions.md](security-alert-dispositions.md).
+remain in GitHub's code-scanning alerts and the associated pull requests.
 
 Harden-Runner audits network activity in supported jobs that have read-only
 permissions and no publishing credentials or protected environment. Audit mode
@@ -193,3 +210,19 @@ jobs running inside containers, and whole job matrices containing Linux ARM64
 are excluded. Harden-Runner starts through an action pre hook, which runs before
 a step condition; excluding the whole matrix also leaves its other platforms
 without runner auditing.
+
+### Upstream CI warnings
+
+Retained tooling warnings stay visible and are rechecked when upstream fixes or
+applicable advisories appear:
+
+- Artifact extraction reports deprecated Buffer construction. Keep artifact
+  digest verification when updating or replacing the download action.
+- Renovate's validator has deprecated transitive dependencies and falls back to
+  JavaScript RegExp when its optional RE2 module is unavailable. Review patterns
+  that need RE2-specific behavior before adding them; keep configuration
+  validation and avoid broad native-script approvals.
+- Postject's Linux injection emits LIEF section-name diagnostics. Keep binary
+  checks and revisit when its bundled LIEF is updated; stripping the executable
+  to silence these warnings can break it. Windows signature-removal diagnostics
+  are allowed by Node's single-executable build procedure.

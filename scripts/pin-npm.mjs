@@ -53,8 +53,8 @@ if (!declared) {
   fail(`package.json "packageManager" must name an exact npm version, not ${JSON.stringify(manifest.packageManager)}.`)
 }
 
-// Changing this major requires reviewing the lifecycle policy and its dismissals.
-if (!declared.startsWith('12.')) fail('Review .github/security-alert-dispositions.md before changing the npm policy major.')
+// Changing this major requires reviewing the lifecycle policy and its approvals.
+if (!declared.startsWith('12.')) fail('Review package.json allowScripts and .github/SECURITY.md before changing the npm policy major.')
 
 const current = npm(['--version'])
 if (process.argv.includes('--check-policy')) {

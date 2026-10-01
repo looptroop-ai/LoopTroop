@@ -5,7 +5,7 @@
 
 LoopTroop helps you turn a coding ticket into a planned, reviewable, agent-executed pull request.
 
-Instead of trusting a single, endlfdsfdsfess AI chat session - where the conversation history gets bloated, the AI gets confused, and code quality falls off a cliff - LoopTroop breaks the job into clean, separate stages. **Planning** turns an interview into a PRD, which is then split into the smallest manageable milestones, called "beads." **Execution** runs each bead through multiple targeted auto-fix loops. A **final review** ties it all together.
+Instead of trusting a single, endless AI chat session - where the conversation history gets bloated, the AI gets confused, and code quality falls off a cliff - LoopTroop breaks the job into clean, separate stages. **Planning** turns an interview into a PRD, which is then split into the smallest manageable milestones, called "beads." **Execution** runs each bead through multiple targeted auto-fix loops. A **final review** ties it all together.
 
 | Architectural Layer | Core | Technical Lifecycle |
 | :--- | :--- | :--- |
@@ -64,207 +64,158 @@ Instead of trusting a single, endlfdsfdsfess AI chat session - where the convers
 ## Quick start
 
 ```bash
-curl --proto '=https' --proto-redir '=https' --tlsv1.2 -fsSL https://www.looptroop.ovh/install | sh
+curl -fsSL https://www.looptroop.ovh/install | sh
 looptroop open
 ```
 
-`open` starts LoopTroop in the background if it is not already running. Use
-`looptroop start` if you want the service without a browser.
+`open` starts LoopTroop in the background and opens the browser.
 
-Configure a provider in OpenCode, then choose an available model in LoopTroop's
-Configuration screen. LoopTroop detects OpenCode v1 or v2 from the authenticated
-server API; it supports both. Attach a local repository with a GitHub origin, create a ticket, and start it.
-
+Configure a provider in OpenCode, choose a model in LoopTroop's Configuration
+screen, attach a local repository with a GitHub origin, and create a ticket.
 
 ### Every way to install it
 
 <details>
-<summary><b>curl / irm</b> — the one-line installer (shown above)</summary>
+<summary><b>curl / PowerShell</b></summary>
 
 ```bash
-curl --proto '=https' --proto-redir '=https' --tlsv1.2 -fsSL https://www.looptroop.ovh/install | sh
+curl -fsSL https://www.looptroop.ovh/install | sh
 ```
 
 ```powershell
 $script = curl.exe --proto "=https" --proto-redir "=https" --tlsv1.2 -fsSL https://www.looptroop.ovh/install.ps1; if ($LASTEXITCODE -ne 0 -or !$script) { throw "Installer download failed" }; & ([scriptblock]::Create(($script -join "`n")))
 ```
 
-Resolves the newest release, checks the download against the checksum that
-release published, and hands it to npm. Because it installs through npm,
-`npm install -g looptroop@latest` and `npm uninstall -g looptroop` keep working
-exactly as they would have. Pin a version with `--version X.Y.Z` (`-Version` on
-Windows). It installs wherever npm's global prefix points; change that with
-`npm config set prefix`.
+Requires Node 24.18.0 or newer. Installs the latest release through npm.
 
-**Needs Node 24.18.0 or newer already installed**, with the npm that came with
-it. It never installs Node for you, never asks for sudo, and writes nothing
-outside npm's global prefix.
-
-There is also a standalone executable that carries its own Node runtime — see
-[Installation](https://www.looptroop.ovh/docs/installation#standalone-executable).
 </details>
 
 <details>
-<summary><b>npm</b> — everywhere</summary>
+<summary><b>npm</b></summary>
 
 ```bash
 npm install -g looptroop
-npm install -g looptroop@latest   # upgrade
+npm install -g looptroop@latest # upgrade
 ```
 
-**Needs Node 24.18.0 or newer**, plus git and `gh`.
+Requires Node 24.18.0 or newer.
+
 </details>
 
 <details>
-<summary><b>Homebrew</b> — macOS and Linux</summary>
+<summary><b>Homebrew</b> (macOS and Linux)</summary>
 
 ```bash
 brew install looptroop-ai/tap/looptroop
-brew upgrade looptroop            # upgrade
+brew upgrade looptroop # upgrade
 ```
 
-**Needs nothing else.** The formula pulls in `node@24` and `gh`, and takes git
-from the OS. It installs a locked bundle built once per release from the
-release lockfile, so everyone on this channel runs the exact versions the
-release was tested against.
+Installs Node and `gh`; uses the OS's Git.
+
 </details>
 
 <details>
-<summary><b>Scoop</b> — Windows</summary>
+<summary><b>Scoop</b> (Windows)</summary>
 
 ```powershell
 scoop bucket add looptroop https://github.com/looptroop-ai/scoop-bucket
 scoop install looptroop
-scoop update looptroop            # upgrade
+scoop update looptroop # upgrade
 ```
 
-**Needs nothing else.** The manifest depends on `nodejs-lts`, `git` and `gh`.
-Like Homebrew, it installs the locked bundle built from the release lockfile.
+Installs Node, Git and `gh`.
+
 </details>
 
 <details>
-<summary><b>Chocolatey</b> — Windows</summary>
+<summary><b>Chocolatey</b> (Windows)</summary>
 
 ```powershell
 choco install looptroop
-choco upgrade looptroop           # upgrade
+choco upgrade looptroop # upgrade
 ```
 
-**Needs nothing else.** The package depends on `nodejs-lts`, `git` and `gh`, and
-installs the same locked bundle Homebrew and Scoop do.
+Installs Node, Git and `gh`. New releases can take a few days to reach the feed.
 
-A moderator reviews every version before the community feed serves it, so a new
-release usually reaches this channel days after the others.
 </details>
 
 <details>
-<summary><b>WinGet</b> — Windows</summary>
+<summary><b>WinGet</b> (Windows)</summary>
 
 ```powershell
 winget install LoopTroopAI.LoopTroop
 
-# upgrade — stop first, because Windows will not replace a running executable
+# Stop before upgrading so Windows can replace the executable.
 looptroop stop
 winget upgrade LoopTroopAI.LoopTroop
 ```
 
-**Needs nothing else.** This channel installs the standalone executable, which
-carries its own Node runtime; git and `gh` come from the manifest's declared
-dependencies.
+Includes Node; installs Git and `gh`. New releases can take a few days to reach
+the feed.
 
-Each version is a pull request into `microsoft/winget-pkgs`, reviewed by people
-at Microsoft, so a new release usually reaches this channel days after the
-others.
 </details>
 
 <details>
-<summary><b>bun</b> — everywhere</summary>
+<summary><b>bun</b></summary>
 
 ```bash
 bun add -g looptroop
-bun add -g looptroop@latest       # upgrade
+bun add -g looptroop@latest # upgrade
 ```
 
-**Needs Node 24.18.0 or newer as well as bun** — the launcher is a Node program,
-so bun installs it but Node runs it — plus git and `gh`.
+Requires bun and Node 24.18.0 or newer.
+
 </details>
 
 <details>
-<summary><b>pnpm</b> — everywhere</summary>
+<summary><b>pnpm</b></summary>
 
 ```bash
 pnpm add -g looptroop
-pnpm add -g looptroop@latest      # upgrade
+pnpm add -g looptroop@latest # upgrade
 ```
 
-**Needs Node 24.18.0 or newer as well as pnpm**, plus git and `gh`.
+Requires pnpm and Node 24.18.0 or newer. New releases may be delayed by pnpm's
+24-hour publication-age check.
 
-pnpm holds a new version back for about a day: it will not resolve a tag to a
-version published in the last 24 hours — a supply-chain protection, on by
-default — so `@latest` installs the newest release older than that window.
-Asking for an exact version bypasses it.
 </details>
 
 <details>
-<summary><b>Yarn Classic</b> — Bash/zsh commands</summary>
+<summary><b>Yarn Classic</b> (Bash/zsh)</summary>
 
 ```bash
 yarn global add looptroop
-export PATH="$(yarn global bin):$PATH"   # Yarn does not do this for you
-yarn global upgrade looptroop@latest     # upgrade
+export PATH="$(yarn global bin):$PATH"
+yarn global upgrade looptroop@latest # upgrade
 ```
 
-**Needs Node 24.18.0 or newer as well as Yarn**, plus git and `gh`.
+Requires Yarn 1.x and Node 24.18.0 or newer. Add the PATH line to your shell
+profile. For modern Yarn or PowerShell, use another install method.
 
-These commands use Bash or zsh syntax. Yarn Classic also runs on Windows, but a
-PowerShell PATH command is not documented here. Use npm on Windows for the
-recommended documented setup.
-
-**In Bash or zsh, Yarn does not put its global binaries on `PATH`.** This looks
-like a failed install and is not: the add reports success, and then `looptroop`
-is not a command. Add the line above to your shell profile, or the next terminal
-will have forgotten it. npm, bun and pnpm all install somewhere already on
-`PATH`, which is why this catches people out on Yarn alone.
-
-**Yarn Classic (1.x) only.** Yarn 2 removed `yarn global` and never replaced it,
-so modern Yarn cannot install a CLI globally at all — and it does not say so
-cleanly: `yarn global add looptroop` on Yarn 4 reads `global` as a package name
-and fails with a lockfile error. On modern Yarn, run it without installing with
-`yarn dlx looptroop`, or install it with one of the other channels.
 </details>
 
 <details>
-<summary><b>Docker</b> — linux/amd64 and linux/arm64</summary>
+<summary><b>Docker</b> (linux/amd64 and linux/arm64)</summary>
 
 ```bash
 docker pull looptroopai/looptroop:latest
 ```
 
-**Needs only Docker.** Node, git and `gh` are all in the image. Release images
-use the matching tarball and `package-lock.json`, then record the installed
-package versions before the multi-architecture image is published. Two things
-the image still needs from you, both deliberately not baked in: an OpenCode
-server it can reach, and a project mounted at its own absolute path. See the
-[Installation page](https://www.looptroop.ovh/docs/installation#running-in-a-container).
+Includes Node, Git and `gh`. Connect an OpenCode server and mount your project
+as described in [Installation](https://www.looptroop.ovh/docs/installation#running-in-a-container).
+
 </details>
 
-### Standalone executable
+<details>
+<summary><b>Standalone executable</b> (macOS, Linux and Windows)</summary>
 
-Standalone release archives carry Node `v26.9.0` in the executable, so a
-downloaded archive runs without Node installed on the host. That embedded
-runtime is separate from the application and package floor: Node `24.18.0+`
-remains required for the npm, bun, pnpm and Yarn channels. The container
-carries its own Node, newer than that floor.
+Download an archive from [GitHub Releases](https://github.com/looptroop-ai/LoopTroop/releases/latest)
+and extract it. Includes Node; requires Git and `gh`.
 
-Node 26 is currently the Current release line, with its planned Active LTS
-transition on 2026-10-28. Embedded-runtime security maintenance follows
-[Node's release schedule](https://github.com/nodejs/Release#release-schedule)
-separately from LoopTroop's application-runtime support; dates can change.
+</details>
 
-**[The Installation page](https://www.looptroop.ovh/docs/installation) is the one
-place that tracks which channels are live**, and covers upgrading, uninstalling,
-verifying a download against the checksums each release publishes, and running in
-a container.
+See [Installation](https://www.looptroop.ovh/docs/installation) for upgrades,
+uninstalling, download verification, and channel availability.
 
 ### What you need besides LoopTroop
 
@@ -302,7 +253,7 @@ flowchart LR
     G -.->|"Retry"| E
 ```
 
-LoopTroop keeps workflow state outside the model, stores durable artifacts, and asks for approval at important boundaries. Optional Manual QA runs after final tests: you complete the checklist while manually controlling the app, then the ticket continues to integration. Failed checks create QA-fix beads, while improvements creates new tickets.
+LoopTroop keeps workflow state outside the model, stores durable artifacts, and asks for approval at important boundaries. Optional Manual QA runs after final tests: you complete the checklist while manually controlling the app, then the ticket continues to integration. Failed checks create QA-fix beads, while improvements create new tickets.
 
 ## Core ideas
 
@@ -366,7 +317,6 @@ fail ──> log failure trace ──> safe reset ──> retry fresh
 
 This cycle repeats until all tests pass or retry limits are reached. **This can take hours (sometimes 10+ hours) by design.** It is built to run unattended (e.g., overnight).
 
-
 Read more: [Beads & Execution](https://www.looptroop.ovh/docs/beads)
 
 ### Worktree isolation
@@ -397,7 +347,6 @@ what a wrapper can do on the host.
 
 Read more: [System Architecture](https://www.looptroop.ovh/docs/system-architecture)
 
-
 ### Human approval gates
 
 LoopTroop keeps you in control of critical state transitions. You actively review and sign off on planning specs, execution blueprints, and final pull request deliverables. *(Note: Human approval gates will become optional in future releases).*
@@ -405,7 +354,6 @@ LoopTroop keeps you in control of critical state transitions. You actively revie
 For tickets with Manual QA enabled, LoopTroop prepares a checklist while you manually control the app and accept/reject/skip/create new tickets from the items.
 
 Read more: [Ticket Flow](https://www.looptroop.ovh/docs/ticket-flow)
-
 
 ## Run it in a VM
 
@@ -425,7 +373,6 @@ While this makes long-running autonomous tasks possible, it introduces real risk
 - Logs and artifacts help you inspect what happened
 - A VM protects the rest of your computer
 
-
 ## Why not just use a coding agent directly?
 
 Direct coding-agent loops are highly useful, but they degrade rapidly when task complexity or repository scale increases.
@@ -440,7 +387,6 @@ Direct coding-agent loops are highly useful, but they degrade rapidly when task 
 | **Risky Edits** | Code modifications are made directly in your active checkout, potentially leaving your main branch in an unstable state. | **Isolated Git Worktrees:** Executes all changes in dedicated, isolated worktrees away from your primary working branch. |
 | **Opaque Execution** | Internal states, planning notes, and test outputs are lost inside unstructured chat history. | **Structured Durability:** Maintains state locally inside SQLite, JSONL logs, and easily inspectable `.ticket/**` YAML artifacts. |
 
-
 ## What LoopTroop is not
 
 LoopTroop is not a magic autopilot. It does not remove the need to review code, inspect diffs, protect secrets, or run work in a safe environment. It is best understood as an orchestration layer around coding agents: planning, state, approvals, execution boundaries, retries, and delivery.
@@ -448,7 +394,6 @@ LoopTroop is not a magic autopilot. It does not remove the need to review code, 
 - **Cost-Sensitive Budgets:** Orchestrating multi-model councils and long retry loops uses a high volume of API tokens, though costs can be mitigated by leveraging subscription plans via providers in OpenCode.
 - **Urgent or Quick Fixes:** If you need a trivial change completed in seconds, LoopTroop's overhead will feel slow.
 - **Simple Tasks:** For quick edits or trivial apps, standard IDE chat tools or tools like Replit, Bolt, or Lovable are better fits.
-
 
 ## Documentation
 

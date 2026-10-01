@@ -466,7 +466,7 @@ describe('planMatrix', () => {
     // The website URL is the path a user takes, and exercising the redirect is
     // half the point of the leg.
     const sh = installedChannel('installer-sh').install({ version: '9.9.9', pin: false })
-    expect(sh.display).toBe('curl --proto "=https" --proto-redir "=https" --tlsv1.2 -fsSL https://www.looptroop.ovh/install | sh')
+    expect(sh.display).toBe('curl -fsSL https://www.looptroop.ovh/install | sh')
 
     const ps1 = installedChannel('installer-ps1').install({ version: '9.9.9', pin: false })
     expect(ps1.display).toBe('$script = curl.exe --proto "=https" --proto-redir "=https" --tlsv1.2 -fsSL https://www.looptroop.ovh/install.ps1; if ($LASTEXITCODE -ne 0 -or !$script) { throw "Installer download failed" }; & ([scriptblock]::Create(($script -join "`n")))')
@@ -540,7 +540,7 @@ ${command}
     // form. One string here would fail on one of the two operating systems.
     const { upgradeCommand } = installedChannel('installer-sh-binary').expect
     expect(upgradeCommand('win32')).toContain('scriptblock')
-    expect(upgradeCommand('linux')).toBe('curl --proto "=https" --proto-redir "=https" --tlsv1.2 -fsSL https://www.looptroop.ovh/install | sh -s -- --binary')
+    expect(upgradeCommand('linux')).toBe('curl -fsSL https://www.looptroop.ovh/install | sh -s -- --binary')
     expect(upgradeCommand('win32')).not.toBe(upgradeCommand('linux'))
   })
 

@@ -1044,10 +1044,13 @@ jobs:
         run: |
           set -euo pipefail
           published=''
+          deadline=$((SECONDS + 30 * 60))
           for attempt in {1..120}; do
+            if [ "${SECONDS}" -ge "${deadline}" ]; then break; fi
             # Both conditions belong to the `if` so that neither a 404 exit nor
             # an empty value trips `set -e` and fails the step mid-poll.
-            if published=$(npm view "looptroop@${VERSION}" dist.integrity 2>/dev/null) \
+            # The loop retries; each read must fit inside the remaining job budget.
+            if published=$(npm view "looptroop@${VERSION}" dist.integrity --fetch-timeout=15000 --fetch-retries=0 2>/dev/null) \
                && [ -n "${published}" ]; then
               break
             fi
@@ -1056,7 +1059,7 @@ jobs:
             # An `&&` guard here would be the loop body's last command, so a
             # false test on the final attempt would trip `set -e` and report a
             # verification failure the registry never caused.
-            if [ "${attempt}" -lt 120 ]; then sleep 15; fi
+            if [ "${attempt}" -lt 120 ] && [ "${SECONDS}" -lt "${deadline}" ]; then sleep 15; fi
           done
           if [ -z "${published}" ]; then
             echo "::error::looptroop@${VERSION} did not become visible on the registry."

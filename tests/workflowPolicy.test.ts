@@ -378,7 +378,7 @@ describe('release workflow policy', () => {
     const run = String(verification?.run ?? '')
     const attempts = Number(/for attempt in \{1\.\.(\d+)\}; do/.exec(run)?.[1])
     const interval = Number(/then sleep (\d+); fi/.exec(run)?.[1])
-    const delayedAttempts = Number(/if \[ "\$\{attempt\}" -lt (\d+) \]; then sleep/.exec(run)?.[1])
+    const delayedAttempts = Number(/if \[ "\$\{attempt\}" -lt (\d+) \]/.exec(run)?.[1])
     const waitSeconds = (attempts - 1) * interval
     expect(delayedAttempts).toBe(attempts)
     expect(interval).toBe(15)
@@ -386,6 +386,38 @@ describe('release workflow policy', () => {
     expect(waitSeconds).toBeLessThanOrEqual(30 * 60)
     expect(Number(job?.['timeout-minutes']) * 60).toBeGreaterThanOrEqual(waitSeconds + 10 * 60)
     expect(Number(job?.['timeout-minutes'])).toBeLessThanOrEqual(40)
+    expect(run).toContain('deadline=$((SECONDS + 30 * 60))')
+    expect(run).toMatch(/for attempt[^\n]+\n\s+if \[ "\$\{SECONDS\}" -ge "\$\{deadline\}" \]; then break; fi/)
+    expect(run).toContain('dist.integrity --fetch-timeout=15000 --fetch-retries=0')
+  })
+
+  it.skipIf(process.platform === 'win32')('stops after a slow metadata read reaches the deadline, without another pacing delay', () => {
+    const verification = workflows.get('release.yml')?.jobs?.npm?.steps?.find((step) =>
+      step.name === 'Verify the registry agrees')
+    const run = String(verification?.run ?? '')
+    const poll = run.slice(run.indexOf("published=''"), run.indexOf('if [ -z "${published}" ]'))
+      .replace('30 * 60', '2')
+    const directory = mkdtempSync(join(tmpdir(), 'looptroop-npm-deadline-'))
+    const calls = join(directory, 'calls')
+    const pacing = join(directory, 'pacing')
+    const fixture = [
+      'npm() { printf "%s\\n" "$*" >> "$NPM_CALLS"; command sleep 2.1; return 1; }',
+      'sleep() { printf "%s\\n" "$*" >> "$PACING_CALLS"; }',
+      '',
+    ].join('\n')
+    try {
+      const result = spawnSync('bash', ['-euo', 'pipefail', '-c', fixture + poll], {
+        encoding: 'utf8', timeout: 10_000,
+        env: { ...process.env, VERSION: '99.99.99', NPM_CALLS: calls, PACING_CALLS: pacing },
+      })
+      expect(result.status, `${result.stdout}${result.stderr}`).toBe(0)
+      const reads = readFileSync(calls, 'utf8').trim().split(/\r?\n/)
+      expect(reads).toHaveLength(1)
+      expect(reads[0]).toContain('--fetch-timeout=15000 --fetch-retries=0')
+      expect(existsSync(pacing)).toBe(false)
+    } finally {
+      rmSync(directory, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 })
+    }
   })
 
   /**

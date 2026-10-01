@@ -5,7 +5,7 @@
 
 LoopTroop helps you turn a coding ticket into a planned, reviewable, agent-executed pull request.
 
-Instead of trusting a single, endless AI chat session - where the conversation history gets bloated, the AI gets confused, and code quality falls off a cliff - LoopTroop breaks the job into clean, separate stages. **Planning** turns an interview into a PRD, which is then split into the smallest manageable milestones, called "beads." **Execution** runs each bead through multiple targeted auto-fix loops. A **final review** ties it all together.
+Instead of trusting a single, endlfdsfdsfess AI chat session - where the conversation history gets bloated, the AI gets confused, and code quality falls off a cliff - LoopTroop breaks the job into clean, separate stages. **Planning** turns an interview into a PRD, which is then split into the smallest manageable milestones, called "beads." **Execution** runs each bead through multiple targeted auto-fix loops. A **final review** ties it all together.
 
 | Architectural Layer | Core | Technical Lifecycle |
 | :--- | :--- | :--- |
@@ -71,50 +71,10 @@ looptroop open
 `open` starts LoopTroop in the background if it is not already running. Use
 `looptroop start` if you want the service without a browser.
 
-For maintenance, `clean --apply` rechecks each abandoned worktree immediately
-before removal and keeps it when ownership, activity, registration, or Git
-state has changed. If Git cannot list registered worktrees, cleanup keeps the
-directories in place, including when that check fails after the preview.
-Both CLI cleanup and **Free Disk Space** keep worktrees containing ignored
-files such as `.env`, dependency folders, or build output, except LoopTroop's
-own runtime files. Explicit ticket and project deletion remains destructive.
-Process cleanup refuses a signal when the recorded process
-identity is missing, recycled, or otherwise unverifiable. See the
-[CLI Reference](https://www.looptroop.ovh/docs/cli) for service commands.
-
-When `start` launches a daemon itself, it can still accept that live direct
-child if Windows temporarily cannot report its start time. A persisted record
-without a verifiable identity is never adopted or signalled by PID alone.
-Health checks must return the recorded instance ID. Failed starts can stop
-their own live child through the retained process handle, even when the
-start-time probe is unavailable. Log follow watches the containing directory
-so rename-and-create rotation resumes at the start of the replacement file.
-
-If the daemon crashes while its managed OpenCode child is still running, the
-next `start` checks the retained owned-server record before probing or adopting
-OpenCode. When the child identity is verified, run `looptroop stop` and then
-retry `looptroop start`. An unverifiable live identity keeps startup blocked;
-if the recorded OpenCode child is confirmed dead or its PID now belongs to
-another process, startup can proceed. A stored PID alone never authorizes a
-signal.
-
 Configure a provider in OpenCode, then choose an available model in LoopTroop's
 Configuration screen. LoopTroop detects OpenCode v1 or v2 from the authenticated
-server API; it supports both without requiring a major-version change. Attach a
-local repository with a GitHub origin, create a ticket, and start it.
+server API; it supports both. Attach a local repository with a GitHub origin, create a ticket, and start it.
 
-If LoopTroop cannot confirm that an OpenCode session stopped remotely, it keeps
-the ticket retryable and leaves the ownership visible. The durable session-
-ownership marker, `runtime/opencode-pending-sessions.json`, can recover those
-session IDs when the project database is unavailable. Cancellation separately
-writes the private `.ticket/runtime/cancellation-pending.json` marker before
-cleanup; missing means no pending stop, while malformed or unreadable content
-fails closed and blocks coding. This cancellation marker records the stop
-request but does not identify or recover a remote session. Cleanup removes it
-only after terminal cleanup through the contained ticket-file boundary, or
-after a CODING Retry has confirmed the previous stop and safely recovered its
-bead. If both the database and ownership marker storage are unavailable, only
-the current process can guard the session, so a restart cannot claim recovery.
 
 ### Every way to install it
 
@@ -315,16 +275,6 @@ a container.
 - **OpenCode**, with a configured provider and available model. LoopTroop starts
   the installed CLI when no server is already reachable, and detects v1 or v2
   automatically. It does not install OpenCode for you.
-- On Linux user namespaces, a tool whose owner is the kernel's unmapped
-  overflow UID is refused by default, including in a canonical OpenCode
-  directory. If you deliberately keep tools in such a directory, set
-  `LOOPTROOP_TRUSTED_EXECUTABLE_DIRS` in the daemon's own environment to the
-  absolute directory that contains them. Separate multiple directories with
-  `:` on macOS/Linux or `;` on Windows; only the directories you name are
-  opted in, and a child process cannot change this setting.
-- Windows tool discovery uses the supported `.exe`, `.com`, `.cmd` and `.bat`
-  entries in `PATHEXT`. It skips script types that need another interpreter,
-  such as `.ps1` and `.vbs`, rather than selecting a tool it cannot launch.
 
 ## What is LoopTroop?
 
@@ -406,11 +356,9 @@ A bead acts as a small, isolated implementation unit, allowing the execution age
 
 Read more: [Beads](https://www.looptroop.ovh/docs/beads)
 
-Bead approval preserves unknown stored statuses for JSONL repair instead of silently changing them to `pending`. Known aliases still normalize to supported statuses, while approval rejects a missing status or priority rather than inventing one. Executable beads must include their acceptance criteria, tests, and target-file lists, and each test command is a structured command or has an explicit reason for being omitted. Editing waits for the loaded artifact's content hash, so every save can check that it is replacing the version you read; saves return the canonical JSONL and hash that the server wrote. Duplicate bead IDs and malformed nested Manual QA evidence are rejected on authoritative reads, and malformed JSON bodies receive a stable 400 response. Canonical empty fields clear legacy aliases in the editor as they do on the server. YAML repair keeps valid answers, folded text, and literal block text unchanged, including compact nested blocks.
-
 ### Execution & Ralph-style recovery
 
-The actual implementation is carried out by an AI coding agent (OpenCode) running in an isolated workspace. If the agent struggles, continuing the same conversation can make things worse. LoopTroop's retry mechanism (the "Ralph Loop") preserves a highly compact error trace from the failure, attempts a safe worktree reset, discards the contaminated session, and begins a fresh run with clean context plus a note from previous failures. A conflicting OpenCode step-cap marker can refuse that destructive reset while preserving the edited config and sidecar; a later bead may continue without a fresh cap when no reset is needed.
+The actual implementation is carried out by an AI coding agent (OpenCode) running in an isolated workspace. If the agent struggles, continuing the same conversation can make things worse. LoopTroop's retry mechanism (the "Ralph Loop") preserves a highly compact error trace from the failure, attempts a safe worktree reset, discards the contaminated session, and begins a fresh run with clean context plus a note from previous failures.
 
 ```text
 fail ──> log failure trace ──> safe reset ──> retry fresh
@@ -418,56 +366,12 @@ fail ──> log failure trace ──> safe reset ──> retry fresh
 
 This cycle repeats until all tests pass or retry limits are reached. **This can take hours (sometimes 10+ hours) by design.** It is built to run unattended (e.g., overnight).
 
-When `OpenCode Max Steps` is set, LoopTroop keeps the authoritative restore
-marker in its owner-only app configuration at
-`<app-config>/opencode-steps/<ticket-directory-hash>.json`, outside the mutable
-worktree. A ticket-side `opencode-steps-restore.json` is only a convenient copy
-for inspection. If the capped root `opencode.json` is edited, the edited bytes
-and authoritative marker stay in place and a destructive reset that would
-overwrite them is refused. Ordinary capped runs still retry normally; a later
-bead can continue without applying a fresh cap when no reset is needed, and
-valid marker evidence keeps the root config out of bead and final commits. A
-missing local copy does not erase valid external evidence. A missing marker
-after a restart provides no attributable restore operation, so LoopTroop does
-not infer ownership from the local copy or from absence; malformed existing
-authority likewise stays visible and is not overwritten.
-If a live retry loses that marker or cannot reapply the cap after a reset, the
-retry stops with the exact marker path and a manual remedy instead of running
-uncapped.
-Applying the cap does not add a common Git exclude rule.
-Filesystem-equivalent casing follows the actual worktree paths; native
-Windows/macOS equivalent-case behavior is not claimed here.
-
-Managed OpenCode shutdown keeps its direct process handle until the complete
-owned tree is proven gone. On Windows, a leader exit alone is not that proof:
-the `/T` taskkill operation must finish successfully as well, so failed or
-interrupted cleanup keeps the daemon ownership records available for retry.
-
-Protected Git-hook validation keeps its crash-recovery marker in LoopTroop's
-owner-only application data rather than inside the project, so a hook cannot
-delete the only record needed to undo its changes. Recovery compares the
-current tracked and staged state with that marker before restoring anything;
-new or edited files remain untouched until the ambiguity is resolved.
-
-If startup finds an orphan YAML or whole-file JSONL temp without its matching
-proof, including an empty JSONL temp, it warns and leaves the temp unpromoted
-for inspection. Recovery blocks startup only when an in-progress fallback's
-`.recovery` ownership or completeness cannot be verified; that typed diagnostic
-appears before projections, ticket hydration, or execution timers, with the
-affected files preserved. LoopTroop does not guess or silently promote an
-uncertain write.
-A new bead stays pending until its reset commit has been recorded. If that read
-fails or the ticket is canceled while it runs, no coding session starts; Retry
-can attempt the checkpoint again without inventing a reset target. If the
-checkpoint was recorded but the status write was interrupted, Retry can also
-safely reset that still-pending bead from its recorded anchor; a pending bead
-without either marker remains untouched.
 
 Read more: [Beads & Execution](https://www.looptroop.ovh/docs/beads)
 
 ### Worktree isolation
 
-LoopTroop runs execution steps inside isolated Git worktrees rather than modifying your active branch. This keeps your working copy clean and ensures reliable, inspectable diffs. Git mutations and resets have bounded process cleanup, unusual filenames stay intact when diffs are read, and generated runtime files stay out of candidate commits. Protected Git-hook validation uses an identity-bound restore marker for the worktree and index; invalid or escaped markers fail before recovery writes, and unknown untracked additions stay intact when attribution is unclear. Note that worktrees provide workspace isolation, not sandboxed host security.
+LoopTroop runs execution steps inside isolated Git worktrees rather than modifying your active branch. This keeps your working copy clean and ensures reliable, inspectable diffs. Note that worktrees provide workspace isolation, not sandboxed host security.
 
 When cleanup is run in its conservative mode, LoopTroop asks Git for ignored
 untracked entries in a real worktree and preserves user files; only its own
@@ -493,71 +397,10 @@ what a wrapper can do on the host.
 
 Read more: [System Architecture](https://www.looptroop.ovh/docs/system-architecture)
 
-## Security boundaries
-
-LoopTroop runs coding agents with your local user permissions. Worktrees keep
-repository changes separate, but they do not sandbox the host. Use a disposable
-VM or another isolated development environment for unattended runs.
-
-Session cookies require same-origin proof; a bearer header cannot bypass checks
-on an accompanying cookie. Local mode requires a loopback Host, and an Origin
-matching the request's scheme, hostname, and effective port. Without Origin,
-cookie-bearing requests require `Sec-Fetch-Site: same-origin`. Origin parsing
-rejects alternate IPv4 spellings and explicit port `0`; configured development
-origins remain a separate development-mode exception. For a browser behind a TLS
-terminating proxy, set `LOOPTROOP_PUBLIC_ORIGIN` (or `publicOrigin` in
-`config.json`) to the one HTTPS origin users open. The backend may remain HTTP;
-the setting does not change its bind address, and `LOOPTROOP_ALLOW_REMOTE_API=1`
-is still required for remote browser access or when the backend itself is
-reachable off loopback, even if the proxy connects to a loopback bind. The
-cookie-bearing requests with an Origin must match the configured HTTPS origin
-exactly, and their cookies use `Secure`. Without Origin they still require
-`Sec-Fetch-Site: same-origin`, and the proxy must preserve the public `Host`;
-forwarded host and scheme headers are never trusted. A remote deployment
-without the setting is bearer-token only, and the browser session cookie is
-rejected even when a bearer header is also present. CLI sign-in links use the
-configured public origin while daemon API calls continue to use the internal
-address.
-
-Startup rejects a configured public origin unless remote API mode is enabled.
-Bearer tokens do not enable browser CORS: a browser request from an unconfigured
-origin remains forbidden, while token-only scripts without an Origin can connect.
-
-Server-sent events reserve a connection slot before asynchronous setup begins.
-The limits are six connections per ticket and 100 across the daemon. Failed
-opens, aborted streams, replay errors, and ticket cleanup release the same
-reservation safely; terminal ticket cleanup aborts a pending handshake or
-replay write before releasing its slot. Manual QA action IDs use letters,
-numbers, `.`, `_`, `:` and `-`, start with a letter or number, and are
-limited to 160 characters.
-
-Project commands, Git and hook commands, tool subprocesses, and `doctor`
-probes remove `LOOPTROOP_API_TOKEN`, `LOOPTROOP_DEV_EVENT_TOKEN`,
-`OPENCODE_PASSWORD`, and `OPENCODE_SERVER_PASSWORD` after their explicit
-environment overrides are merged. The backend retains the OpenCode password
-aliases for authenticated requests, and a managed OpenCode server receives the
-configured aliases it needs. The development web process keeps
-`LOOPTROOP_API_TOKEN` for the Vite proxy but does not receive the OpenCode
-passwords. Provider and Git credentials stay available where their caller
-needs them, and the trusted CLI handoff keeps its configured daemon
-environment. This filtering controls credential propagation; it is not a
-process sandbox. `LOOPTROOP_API_TOKEN` authorizes the wider bind; it is not the
-live API or browser-session token minted by the daemon and recorded in
-owner-only daemon state.
-
-Static checks keep process launches and raw filesystem operations at their
-approved boundaries. They reject the ordinary static spellings of built-in
-loads too: namespace destructuring, direct or zero-expression-template
-`require`/`import`, computed string-literal `child_process` methods,
-`process.getBuiltinModule`, and re-exports, including computed filesystem
-methods, nested `fs.promises`, shell options, and directory APIs. Runtime
-callers still rely on contained, no-follow, managed-root, and ticket-root
-helpers. The checks use exact filenames and operation allowlists; they do not
-provide whole-program alias or dataflow analysis.
 
 ### Human approval gates
 
-LoopTroop keeps you in control of critical state transitions. You actively review and sign off on planning specs, execution blueprints, and final pull request deliverables.
+LoopTroop keeps you in control of critical state transitions. You actively review and sign off on planning specs, execution blueprints, and final pull request deliverables. *(Note: Human approval gates will become optional in future releases).*
 
 For tickets with Manual QA enabled, LoopTroop prepares a checklist while you manually control the app and accept/reject/skip/create new tickets from the items.
 

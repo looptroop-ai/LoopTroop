@@ -115,7 +115,7 @@ writes, and unknown untracked additions remain until attribution is resolved.
 Do not claim native-platform or lifecycle verification beyond the evidence for
 the change.
 
-**When a release changes an install path, a command, a flag or a channel, the website repository ships in the same batch.** The published documentation lives in `looptroop-ai/LoopTroop-Website`, so nothing in this repository's CI can notice when it falls behind. It did, for four releases, while every page still opened with `git clone` and `npm run dev`. Two automated guards now catch part of it (`verify:site` requires Getting Started to lead with an install command, and `sync:cli --check` fails when the CLI reference drifts from `USAGE`), but neither knows about a new channel or a changed flag. This repository now also exposes `node scripts/docs-install-catalog.mjs`, which prints the published-smoke install table as JSON so the website can verify its consolidated installation docs against the channels and commands this repository actually ships. Bumping `CLI_SOURCE_REF` in the website's `scripts/sync-cli-reference.mjs` to the new tag, and re-running `npm run sync:cli`, is part of shipping a release.
+**When a release changes an install path, a command, a flag or a channel, the website repository ships in the same batch.** The published documentation lives in `looptroop-ai/LoopTroop-Website`, so nothing in this repository's CI can notice when it falls behind. It did, for four releases, while every page still opened with `git clone` and `npm run dev`. Two automated guards now catch part of it (`verify:site` requires Getting Started to lead with an install command, and `sync:cli --check` fails when the CLI reference drifts from `USAGE`), but neither knows about a new channel or a changed flag. This repository now also exposes `node scripts/docs-install-catalog.mjs`, which prints the published-smoke install table as JSON so the website can verify its consolidated installation docs against the channels and commands this repository actually ships. Bumping `CLI_SOURCE_REF` in the website's `scripts/sync-cli-reference.mjs` to the new tag's full commit SHA, and re-running `npm run sync:cli`, is part of shipping a release.
 
 If website CI must verify that catalog before a release tag exists, use an
 immutable app commit that contains the catalog, check out that same ref in the
@@ -136,6 +136,15 @@ invocation that needs them. Release scripts reject unknown flags and positional
 arguments, while published smoke checks read `doctor --json`'s structured
 `checks[].install.channel` and `checks[].install.upgradeCommand` fields instead
 of display prose.
+
+npm scans new publications before making them available for installation. The
+release verifier polls for roughly 20 minutes after publishing; its job has a
+30-minute timeout. An accepted publish can still time out while npm is
+processing it. Once the registry serves the version, rerunning the original
+npm job reuses its verified artifact and checks the registry's integrity and
+dist-tags before finalization. Container tagging and repair use sparse
+checkouts that include the shared executable resolver needed by Docker tooling.
+See [npm's publication scan announcement](https://github.blog/changelog/2026-07-28-npm-publish-time-malware-scanning-and-dual-use-metadata/).
 
 Standalone binary jobs use Node `v26.9.0`'s native `--build-sea` builder. This is
 an embedded-runtime pin only. Application, package and container jobs run the

@@ -573,6 +573,7 @@ jobs:
           sparse-checkout: |
             .nvmrc
             scripts
+            server/lib/executablePath.ts
           sparse-checkout-cone-mode: false
 
       - name: Set up Node

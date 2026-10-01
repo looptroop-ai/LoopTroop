@@ -1,5 +1,5 @@
-import { existsSync, mkdtempSync, readFileSync, readdirSync, rmSync } from 'node:fs'
-import { join } from 'node:path'
+import { cpSync, existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync } from 'node:fs'
+import { basename, dirname, join } from 'node:path'
 import { spawnSync } from 'node:child_process'
 import { tmpdir } from 'node:os'
 import * as yaml from 'js-yaml'
@@ -21,7 +21,7 @@ type Step = {
   shell?: unknown
   'continue-on-error'?: unknown
 }
-type Job = { name?: unknown; permissions?: Record<string, unknown>; steps?: Step[]; if?: unknown; 'continue-on-error'?: unknown; 'runs-on'?: unknown; defaults?: { run?: { shell?: unknown } } }
+type Job = { name?: unknown; permissions?: Record<string, unknown>; steps?: Step[]; if?: unknown; 'continue-on-error'?: unknown; 'runs-on'?: unknown; 'timeout-minutes'?: unknown; defaults?: { run?: { shell?: unknown } } }
 type Workflow = { jobs?: Record<string, Job> }
 
 const workflows = new Map(files.map((file) => [
@@ -344,6 +344,49 @@ describe('release workflow policy', () => {
     const sparse = options['sparse-checkout']
     if (sparse !== undefined) expect(String(sparse).split(/\s+/), `${where} sparse checkout includes .nvmrc`).toContain('.nvmrc')
   }
+
+  it.each([
+    ['release.yml', 'container-manifest'],
+    ['container-republish.yml', 'manifest'],
+  ])('%s: %s can load its container helper from the sparse checkout', (file, name) => {
+    const checkout = workflows.get(file)?.jobs?.[name]?.steps?.find((step) =>
+      String(step.uses ?? '').startsWith('actions/checkout@'))
+    const patterns = checkout?.with?.['sparse-checkout']
+    expect(typeof patterns).toBe('string')
+    const directory = mkdtempSync(join(tmpdir(), 'looptroop-container-sparse-'))
+    try {
+      for (const path of String(patterns).trim().split(/\s+/)) {
+        const destination = join(directory, path)
+        mkdirSync(dirname(destination), { recursive: true })
+        // CI tool installs in the working tree are absent from a sparse checkout.
+        cpSync(join(repo, path), destination, {
+          recursive: true, filter: (source) => basename(source) !== 'node_modules',
+        })
+      }
+      const loaded = spawnSync(process.execPath, [
+        '--input-type=module', '-e', 'await import("./scripts/container-docker.ts")',
+      ], { cwd: directory, encoding: 'utf8', timeout: 10_000 })
+      expect(loaded.status, loaded.stderr).toBe(0)
+    } finally {
+      rmSync(directory, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 })
+    }
+  })
+
+  it('allows a bounded twenty-minute npm scan wait with job time left for verification', () => {
+    const job = workflows.get('release.yml')?.jobs?.npm
+    const verification = job?.steps?.find((step) => step.name === 'Verify the registry agrees')
+    const run = String(verification?.run ?? '')
+    const attempts = Number(/for attempt in \{1\.\.(\d+)\}; do/.exec(run)?.[1])
+    const interval = Number(/then sleep (\d+); fi/.exec(run)?.[1])
+    const delayedAttempts = Number(/if \[ "\$\{attempt\}" -lt (\d+) \]; then sleep/.exec(run)?.[1])
+    const waitSeconds = (attempts - 1) * interval
+    expect(delayedAttempts).toBe(attempts)
+    expect(interval).toBe(15)
+    expect(waitSeconds).toBeGreaterThanOrEqual(20 * 60 - interval)
+    expect(waitSeconds).toBeLessThanOrEqual(20 * 60)
+    expect(Number(job?.['timeout-minutes']) * 60).toBeGreaterThanOrEqual(waitSeconds + 10 * 60)
+    expect(Number(job?.['timeout-minutes'])).toBeLessThanOrEqual(30)
+  })
 
   /**
    * A typed selector must be a named exception. An expression is the floor lane

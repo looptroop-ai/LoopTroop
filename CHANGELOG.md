@@ -13,7 +13,7 @@ Unreleased changes appear first and represent commits that have not yet been inc
 - Release publication waits for npm's package scans and includes the executable resolver needed to publish container tags.
 
 ### Fixed
-- npm registry verification allows roughly 20 minutes for publish-time scanning, with a 30-minute job timeout. Container tagging and repair jobs include the shared executable resolver in their sparse checkouts, so Docker commands can start without loading application dependencies.
+- npm registry verification allows roughly 30 minutes for publish-time scanning, with a 40-minute job timeout. Container tagging and repair jobs include the shared executable resolver in their sparse checkouts, so Docker commands can start without loading application dependencies.
 
 ## 0.6.0 (2026-10-01)
 

@@ -372,7 +372,7 @@ describe('release workflow policy', () => {
     }
   })
 
-  it('allows a bounded twenty-minute npm scan wait with job time left for verification', () => {
+  it('allows a bounded thirty-minute npm scan wait with job time left for verification', () => {
     const job = workflows.get('release.yml')?.jobs?.npm
     const verification = job?.steps?.find((step) => step.name === 'Verify the registry agrees')
     const run = String(verification?.run ?? '')
@@ -382,10 +382,10 @@ describe('release workflow policy', () => {
     const waitSeconds = (attempts - 1) * interval
     expect(delayedAttempts).toBe(attempts)
     expect(interval).toBe(15)
-    expect(waitSeconds).toBeGreaterThanOrEqual(20 * 60 - interval)
-    expect(waitSeconds).toBeLessThanOrEqual(20 * 60)
+    expect(waitSeconds).toBeGreaterThanOrEqual(30 * 60 - interval)
+    expect(waitSeconds).toBeLessThanOrEqual(30 * 60)
     expect(Number(job?.['timeout-minutes']) * 60).toBeGreaterThanOrEqual(waitSeconds + 10 * 60)
-    expect(Number(job?.['timeout-minutes'])).toBeLessThanOrEqual(30)
+    expect(Number(job?.['timeout-minutes'])).toBeLessThanOrEqual(40)
   })
 
   /**

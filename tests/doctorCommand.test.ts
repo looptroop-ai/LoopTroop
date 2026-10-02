@@ -50,6 +50,8 @@ describe('doctor command', () => {
     writeFileSync(join(dir, 'tool-versions.json'), JSON.stringify({
       lastAttemptAt: new Date().toISOString(),
       opencodeSource: null,
+      // The line the cached `node` answer is for: another one is looked up again.
+      nodeLine: Number(process.versions.node.split('.')[0]),
       versions: { node: '24.0.0', npm: '11.0.0', gh: '2.75.0', git: '2.50.0' },
     }))
 
@@ -986,6 +988,29 @@ describe('doctor command', () => {
       expect(check('config dir')).toMatchObject({ name: 'config dir', status: 'ok', detail: configDir })
       expect(check('opencode cli')).toMatchObject({ status: 'warn', missing: true })
       expect(check('opencode')).toMatchObject({ status: 'fail' })
+    })
+
+    it('says an absent optional tool is optional, and names only what blocks', async () => {
+      const root = mkdtempSync(join(tmpdir(), 'looptroop-doctor-empty-path-'))
+      tempDirs.push(root)
+      const emptyBinDir = join(root, 'bin')
+      vi.stubEnv('PATH', emptyBinDir)
+      vi.stubEnv('LOOPTROOP_TRUSTED_EXECUTABLE_DIRS', emptyBinDir)
+      vi.stubEnv('LOOPTROOP_CONFIG_DIR', join(root, 'config'))
+      vi.stubEnv('LOOPTROOP_OPENCODE_MODE', 'real')
+      vi.stubEnv('LOOPTROOP_OPENCODE_BASE_URL', 'http://127.0.0.1:1')
+      vi.spyOn(globalThis, 'fetch').mockRejectedValue(new TypeError('offline'))
+      const failing = (await runChecks()).filter((entry) => entry.status === 'fail').map((entry) => entry.label ?? entry.name)
+      const stdout = captureStdout()
+
+      expect(await doctorCommand(false)).toBe(1)
+      const lines = stdout.text().split('\n')
+      const gh = lines.findIndex((line) => /^✗ gh\s/.test(line))
+      expect(lines[gh + 1]).toBe('  ↳ Optional: only needed for pull requests. LoopTroop runs without it.')
+      // Every absent tool is marked ✗, so the verdict names the ones that block.
+      expect(failing).toContain('git')
+      expect(failing).not.toContain('gh')
+      expect(lines).toContain(`LoopTroop cannot run until these are fixed: ${failing.join(', ')}.`)
     })
 
     it('does not pass daemon credentials to a probe child', () => {

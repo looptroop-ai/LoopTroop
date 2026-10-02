@@ -318,9 +318,16 @@ function checkNpm(latest: string | null = null): Check {
 function checkBinary(
   name: string,
   args: string[],
-  required: boolean,
   latest: string | null = null,
+  /**
+   * What the tool is for, when LoopTroop can run without it. Said beside a
+   * missing one: doctor marks every missing tool `✗`, and an optional one read
+   * as a blocker right above the verdict.
+   */
+  optional?: string,
 ): Check {
+  const required = optional === undefined
+  const optionalNote = required ? {} : { note: `Optional: ${optional}. LoopTroop runs without it.` }
   const probe = runProbe(name, args, PROBE_TIMEOUT_MS)
   if (probe.kind === 'ok') {
     const line = probe.output.trim().split('\n')[0] ?? 'present'
@@ -333,7 +340,7 @@ function checkBinary(
   if (probe.kind === 'timed-out') {
     // Installed, and stuck. Whether that is fatal is the same question as for a
     // missing one: git is not optional, gh is.
-    return { status: required ? 'fail' : 'warn', ...timedOutCheck(name, `${name} ${args.join(' ')}`, PROBE_TIMEOUT_MS) }
+    return { status: required ? 'fail' : 'warn', ...timedOutCheck(name, `${name} ${args.join(' ')}`, PROBE_TIMEOUT_MS), ...optionalNote }
   }
 
   return {
@@ -341,6 +348,7 @@ function checkBinary(
     status: required ? 'fail' : 'warn',
     missing: true,
     ...unavailable(probe, 'not found on PATH', installHint(name)),
+    ...optionalNote,
   }
 }
 
@@ -1057,8 +1065,8 @@ export async function runChecks(): Promise<Check[]> {
   return [
     checkNode(resolved.node),
     checkNpm(resolved.npm),
-    checkBinary('git', ['--version'], true, resolved.git),
-    checkBinary('gh', ['--version'], false, resolved.gh),
+    checkBinary('git', ['--version'], resolved.git),
+    checkBinary('gh', ['--version'], resolved.gh, 'only needed for pull requests'),
     checkGitHubAuth(),
     checkConfigDir(),
     checkInstallChannel(),
@@ -1105,7 +1113,8 @@ export async function doctorCommand(
   const checks = await runChecks()
   const resolved = (await update) ?? undefined
   const displayedChecks = resolved === undefined ? checks : [versionCheck(resolved), ...checks]
-  const failed = checks.some((check) => check.status === 'fail')
+  const failures = checks.filter((check) => check.status === 'fail')
+  const failed = failures.length > 0
 
   if (json) {
     // Only JSON on stdout, so the output can be piped into a parser.
@@ -1131,8 +1140,11 @@ export async function doctorCommand(
     }
   }
 
+  // Named, because a missing optional tool is marked `✗` too, and "the
+  // failures above" read as every `✗` on the screen.
   process.stdout.write(failed
-    ? '\nLoopTroop cannot run until the failures above are fixed.\n'
+    ? `\nLoopTroop cannot run until ${failures.length === 1 ? 'this is' : 'these are'} fixed: `
+      + `${failures.map((check) => check.label ?? check.name).join(', ')}.\n`
     : '\nThis machine can run LoopTroop.\n')
 
   return failed ? 1 : 0

@@ -1,4 +1,4 @@
-import { cpSync, existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync } from 'node:fs'
+import { cpSync, existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from 'node:fs'
 import { basename, dirname, join } from 'node:path'
 import { spawnSync } from 'node:child_process'
 import { tmpdir } from 'node:os'
@@ -748,6 +748,43 @@ describe('release workflow policy', () => {
     expect(repair).toContain("[ \"${inventory_status}\" -eq 42 ]")
     expect(repair).toContain('rm -f "${inventory}"\n            inventory="image-package-inventory-unavailable-${ARCH}.txt"')
     expect(repair).toContain('cat "${inventory}"')
+  })
+
+  it.each([
+    { name: 'legacy object', version: '1.2.3', metadata: { 'dist-tags': { latest: '1.2.3' }, versions: ['1.1.9', '1.2.3'] }, expected: 'latest 1.2' },
+    { name: 'npm singleton array', version: '1.2.3', metadata: [{ 'dist-tags': { latest: '1.2.3' }, versions: ['1.1.9', '1.2.3'] }], expected: 'latest 1.2' },
+    { name: 'older release', version: '1.1.9', metadata: [{ 'dist-tags': { latest: '1.2.3' }, versions: ['1.1.9', '1.2.3'] }], expected: '1.1' },
+    { name: 'prerelease', version: '1.3.0-rc.1', metadata: [{ 'dist-tags': { latest: '1.2.3', next: '1.3.0-rc.1' }, versions: ['1.2.3', '1.3.0-rc.1'] }], expected: 'next' },
+    { name: 'unproven tags', version: '1.2.3', metadata: {}, expected: '' },
+    { name: 'empty array', version: '1.2.3', metadata: [], expected: null },
+    { name: 'ambiguous array', version: '1.2.3', metadata: [{}, {}], expected: null },
+    { name: 'null singleton', version: '1.2.3', metadata: [null], expected: null },
+    { name: 'primitive', version: '1.2.3', metadata: '1.2.3', expected: null },
+  ])('container repair resolves floating tags from $name npm metadata', ({ version, metadata, expected }) => {
+    const run = workflows.get('container-republish.yml')?.jobs?.prepare?.steps?.find((step) => step.name === 'Which floating tags this repair may move')?.run
+    const script = typeof run === 'string' ? run.match(/floating=\$\(node -e '([\s\S]*?)'\)/)?.[1] : undefined
+    if (!script) throw new Error('Container repair npm metadata script missing')
+    const directory = mkdtempSync(join(tmpdir(), 'looptroop-container-metadata-'))
+    try {
+      mkdirSync(join(directory, 'scripts'))
+      cpSync(join(repo, 'scripts/container-tags.ts'), join(directory, 'scripts/container-tags.ts'))
+      writeFileSync(join(directory, 'npm-view.json'), JSON.stringify(metadata))
+      const result = spawnSync(process.execPath, ['-e', script], {
+        cwd: directory,
+        encoding: 'utf8',
+        env: { ...process.env, VERSION: version },
+      })
+      if (expected === null) {
+        expect(result.status).not.toBe(0)
+        expect(result.stdout).toBe('')
+        expect(result.stderr).toContain('Invalid npm package metadata')
+      } else {
+        expect(result.status, result.stderr).toBe(0)
+        expect(result.stdout).toBe(expected)
+      }
+    } finally {
+      rmSync(directory, { recursive: true, force: true })
+    }
   })
 
   it('keeps moved sources in their existing destination folders', () => {

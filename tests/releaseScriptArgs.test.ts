@@ -11,6 +11,38 @@ function fixtureScript(path: string, body: string): void {
   chmodSync(path, 0o755)
 }
 
+const detectWithNpmMetadata = (integrity: string, distTags: string, expectedIntegrity?: string) => {
+  const work = mkdtempSync(join(tmpdir(), 'looptroop-release-detect-'))
+  const output = join(work, 'github-output')
+  try {
+    fixtureScript(join(work, 'git'), `printf '%s' '${'a'.repeat(40)}'`)
+    fixtureScript(join(work, 'gh'), `printf '%s' '{"isDraft":false,"tagName":"v99.99.99"}'`)
+    fixtureScript(join(work, 'npm'), `case "$3" in
+  dist.integrity) printf '%s' "$NPM_INTEGRITY" ;;
+  dist-tags) printf '%s' "$NPM_DIST_TAGS" ;;
+  *) exit 2 ;;
+esac`)
+    const result = spawnSync(process.execPath, [
+      'scripts/release-detect.ts', '--version', '99.99.99',
+      ...(expectedIntegrity ? ['--expected-integrity', expectedIntegrity] : []),
+    ], {
+      cwd: repo,
+      env: {
+        ...process.env,
+        LOOPTROOP_TRUSTED_EXECUTABLE_DIRS: work,
+        NPM_INTEGRITY: integrity,
+        NPM_DIST_TAGS: distTags,
+        GITHUB_OUTPUT: output,
+      },
+      encoding: 'utf8',
+      timeout: 10_000,
+    })
+    return { ...result, outputs: existsSync(output) ? readFileSync(output, 'utf8') : '' }
+  } finally {
+    rmSync(work, { recursive: true, force: true })
+  }
+}
+
 const invalidArguments = (option: string, nextOption: string) => [
   ['unknown option', ['--typo', 'value'], 'Unknown option --typo'],
   ['positional extra', ['stray'], 'Unexpected argument'],
@@ -19,6 +51,42 @@ const invalidArguments = (option: string, nextOption: string) => [
 ] as const
 
 describe('release script argument contracts', () => {
+  it.skipIf(process.platform === 'win32')('normalizes legacy and singleton npm metadata before release decisions', () => {
+    const integrity = 'sha512-Zml4dHVyZQ=='
+    const distTags = { latest: '99.99.99' }
+    for (const [label, integrityValue, tagsValue] of [
+      ['legacy', integrity, distTags],
+      ['singleton', [integrity], [distTags]],
+    ] as const) {
+      for (const expectedIntegrity of [undefined, integrity]) {
+        const result = detectWithNpmMetadata(JSON.stringify(integrityValue), JSON.stringify(tagsValue), expectedIntegrity)
+        expect(result.error, label).toBeUndefined()
+        expect(result.status, `${label}: ${result.stderr}`).toBe(0)
+        expect(result.outputs, label).toContain(`state=${expectedIntegrity ? 'complete' : 'unverified'}\n`)
+        expect(result.outputs, label).toContain('proceed=false\n')
+        expect(result.outputs, label).toContain('needs_npm=false\n')
+      }
+    }
+  })
+
+  it.skipIf(process.platform === 'win32')('rejects ambiguous or malformed npm metadata before writing resume outputs', () => {
+    const integrity = JSON.stringify('sha512-Zml4dHVyZQ==')
+    const distTags = JSON.stringify({ latest: '99.99.99' })
+    const invalid = ['not-json', '[]', 'null']
+    for (const [label, integrityValue, tagsValue] of [
+      ...[...invalid, `[${integrity},${integrity}]`, `[[${integrity}]]`, '{}', '""']
+        .map((value) => [`integrity ${value}`, value, distTags] as const),
+      ...[...invalid, `[${distTags},${distTags}]`, `[[${distTags}]]`, '"latest"', '{"latest":42}', '{"latest":""}']
+        .map((value) => [`dist-tags ${value}`, integrity, value] as const),
+    ]) {
+      const result = detectWithNpmMetadata(integrityValue, tagsValue)
+      expect(result.error, label).toBeUndefined()
+      expect(result.status, label).not.toBe(0)
+      expect(result.stderr, label).toMatch(/FAIL: .*npm/)
+      expect(result.outputs, label).toBe('')
+    }
+  }, 15_000)
+
   it('uses the pinned native SEA builder without a legacy injector fallback', () => {
     const builder = readFileSync(join(repo, 'scripts/build-binary.mjs'), 'utf8')
 

@@ -147,6 +147,11 @@ registry serves the version, rerunning the original
 npm job reuses its verified artifact and checks the registry's integrity and
 dist-tags before finalization. Container tagging and repair use sparse
 checkouts that include the shared executable resolver needed by Docker tooling.
+Release detection and container repair accept npm's one-item array responses
+alongside its earlier JSON shapes. Detection validates integrity and dist-tags
+before deciding whether publication needs to resume. Container repair moves
+floating tags only when npm's dist-tags and published versions authorize them;
+invalid or ambiguous response shapes stop the repair.
 See [npm's publication scan announcement](https://github.blog/changelog/2026-07-28-npm-publish-time-malware-scanning-and-dual-use-metadata/).
 
 Standalone binary jobs use Node `v26.9.0`'s native `--build-sea` builder. This is

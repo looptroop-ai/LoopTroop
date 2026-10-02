@@ -263,7 +263,11 @@ jobs:
 
           floating=$(node -e '
             const fs = require("node:fs")
-            const view = JSON.parse(fs.readFileSync("npm-view.json", "utf8"))
+            const result = JSON.parse(fs.readFileSync("npm-view.json", "utf8"))
+            const view = Array.isArray(result) && result.length === 1 ? result[0] : result
+            if (!view || typeof view !== "object" || Array.isArray(view)) {
+              throw new Error("Invalid npm package metadata: expected an object or singleton array")
+            }
             const version = process.env.VERSION
             const series = version.split(".").slice(0, 2).join(".")
             import("./scripts/container-tags.ts").then((m) => {

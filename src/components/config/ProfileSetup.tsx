@@ -418,7 +418,7 @@ export function ProfileSetup({ onClose, onOpenAbout = () => undefined, onDirtyCh
             )}
             {isOpenCodeConnected === false && (
               <div className="mt-2 rounded-md bg-muted px-3 py-2 text-xs text-muted-foreground">
-                LoopTroop could not reach the configured OpenCode server. Start it with <code className="font-mono bg-muted-foreground/10 px-1 rounded">opencode serve</code> or check the backend OpenCode URL.
+                LoopTroop could not reach its OpenCode server. Restart LoopTroop (<code className="font-mono bg-muted-foreground/10 px-1 rounded">looptroop restart</code>) so it starts OpenCode again, or check the backend OpenCode URL.
               </div>
             )}
           </div>

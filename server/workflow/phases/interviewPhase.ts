@@ -1142,7 +1142,7 @@ export async function handleInterviewDeliberate(
     const health = await raceWithCancel(adapter.checkHealth(signal), signal, ticketId)
     throwIfAborted(signal, ticketId)
     if (!health.available) {
-      const msg = `OpenCode server is not running. Start it with \`opencode serve\`. (${health.error ?? 'connection refused'})`
+      const msg = `OpenCode server is not running. Restart LoopTroop (\`looptroop restart\`) so it starts OpenCode again. (${health.error ?? 'connection refused'})`
       emitPhaseLog(ticketId, context.externalId, phase, 'error', msg)
       throw new OpenCodeUnavailableError(msg)
     }
@@ -1157,7 +1157,7 @@ export async function handleInterviewDeliberate(
     throwIfCancelled(err, signal, ticketId)
     // Re-throw if we already formatted the message
     if (err instanceof OpenCodeUnavailableError) throw err
-    const msg = `OpenCode server is not running. Start it with \`opencode serve\`. (${getErrorMessage(err)})`
+    const msg = `OpenCode server is not running. Restart LoopTroop (\`looptroop restart\`) so it starts OpenCode again. (${getErrorMessage(err)})`
     emitPhaseLog(ticketId, context.externalId, phase, 'error', msg)
     throw new OpenCodeUnavailableError(msg)
   }

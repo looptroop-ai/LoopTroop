@@ -105,7 +105,7 @@ describe('useOpenCodeModels', () => {
         connectedProviders: [],
         defaultModels: {},
         code: 'OPENCODE_UNREACHABLE',
-        message: 'OpenCode server is not reachable. Start it with `opencode serve`.',
+        message: 'OpenCode server is not reachable. Restart LoopTroop (`looptroop restart`) so it starts OpenCode again, or check the OpenCode URL setting.',
       }),
     })))
 
@@ -123,7 +123,7 @@ describe('useOpenCodeModels', () => {
             connectedProviders: [],
             defaultModels: {},
             code: 'OPENCODE_UNREACHABLE',
-            message: 'OpenCode server is not reachable. Start it with `opencode serve`.',
+            message: 'OpenCode server is not reachable. Restart LoopTroop (`looptroop restart`) so it starts OpenCode again, or check the OpenCode URL setting.',
           }),
         })
         .mockResolvedValueOnce({

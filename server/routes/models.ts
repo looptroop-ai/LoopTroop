@@ -28,7 +28,7 @@ async function modelDiscoveryFailure() {
       ? 'OpenCode is connected, but model discovery failed.'
       : health.failureKind === 'authentication'
         ? 'OpenCode rejected the configured credentials. Check OPENCODE_PASSWORD for v2, or OPENCODE_SERVER_PASSWORD and OPENCODE_SERVER_USERNAME for v1.'
-        : 'OpenCode server is not reachable. Start it with `opencode serve`.',
+        : 'OpenCode server is not reachable. Restart LoopTroop (`looptroop restart`) so it starts OpenCode again, or check the OpenCode URL setting.',
   }
 }
 

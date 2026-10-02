@@ -777,7 +777,10 @@ describe('ProfileSetup', () => {
 
     const { rendered } = await renderProfileSetup()
     expect(await screen.findByText('OpenCode not connected')).toBeInTheDocument()
-    expect(rendered.container).toHaveTextContent('Start it with opencode serve')
+    expect(rendered.container).toHaveTextContent('Restart LoopTroop (looptroop restart) so it starts OpenCode again')
+    // OpenCode v2 makes up a password for every server started by hand, so
+    // LoopTroop could never sign in to one this told you to start.
+    expect(rendered.container).not.toHaveTextContent('opencode serve')
 
     rendered.unmount()
     vi.mocked(fetch).mockImplementation(async (input: RequestInfo | URL) => {

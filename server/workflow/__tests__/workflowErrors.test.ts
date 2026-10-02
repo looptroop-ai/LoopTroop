@@ -49,7 +49,7 @@ describe('workflow error throw boundaries', () => {
     expect(error).toBeInstanceOf(OpenCodeUnavailableError)
     expect(error).toMatchObject({
       name: 'Error',
-      message: 'OpenCode server is not running. Start it with `opencode serve`. (connection refused)',
+      message: 'OpenCode server is not running. Restart LoopTroop (`looptroop restart`) so it starts OpenCode again. (connection refused)',
     })
     expect(JSON.stringify(error)).toBe('{}')
   })

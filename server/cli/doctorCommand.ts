@@ -12,6 +12,7 @@ import { daemonOrigin, readDaemonStartFailure, type DaemonState } from '../lib/d
 import { OpenCodeConnectionError, probeOpenCodeConnection, type OpenCodeFailureKind } from '../opencode/connection'
 import type { SchemaCompatibility } from '../db/schemaVersion'
 import { readRunningDaemon } from './commands'
+import { inspectOrphanedOpenCode } from './cleanCommand'
 import { getErrorMessage } from '@shared/typeGuards'
 import { formatNodeVersion, parseNodeVersion, satisfiesNodeFloor } from '@shared/nodeFloor'
 import { NODE_FLOOR } from '../lib/nodeFloor'
@@ -536,6 +537,23 @@ async function checkOpenCode(daemon: DaemonState | null, cliAvailable: boolean):
   const settings = resolveSettings()
   if (settings.opencodeMode === 'mock') {
     return { name: 'opencode', status: 'ok', detail: 'mock mode' }
+  }
+
+  // A killed daemon runs no cleanup, so the OpenCode it started can outlive it,
+  // still holding the port with a password only that daemon knew. The next
+  // start refuses to run alongside it whatever a probe of the address says —
+  // and a probe would call it "a server LoopTroop cannot use" and move past it.
+  if (daemon === null) {
+    const orphan = inspectOrphanedOpenCode()
+    if (orphan.kind === 'stoppable') {
+      return {
+        name: 'opencode',
+        status: 'fail',
+        detail: `the OpenCode a stopped LoopTroop started (pid ${orphan.pid}) is still running, `
+          + 'and `looptroop start` will not run alongside it',
+        remedy: 'Run `looptroop clean --apply` to stop it.',
+      }
+    }
   }
 
   const reachable = daemon

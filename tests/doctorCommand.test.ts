@@ -8,6 +8,7 @@ import { doctorCommand, runChecks, isOpenCodeCliLaunchable, judgeOpenCode, runPr
 import { NODE_FLOOR as FLOOR } from '../server/lib/nodeFloor'
 import { formatNodeVersion } from '../shared/nodeFloor'
 import { writeDaemonState, writeDaemonStartFailure, type DaemonState } from '../server/lib/daemonPaths'
+import { readProcessStartToken } from '../server/lib/processIdentity'
 import { applyIgnoreMode } from '../server/git/repository'
 import { APP_VERSION } from '../server/lib/appVersion'
 import { removeTempDir } from '../server/test/tempDir'
@@ -189,6 +190,37 @@ describe('doctor command', () => {
         server.close((error) => error ? reject(error) : resolve())
       })
     }
+  })
+
+  it('fails while a killed daemon\'s own OpenCode is still running, whatever answers on its port', async () => {
+    const configDir = useConfigDir()
+    process.env.LOOPTROOP_OPENCODE_MODE = 'real'
+    // The daemon is gone; the OpenCode it started is not. This test process
+    // stands in for it, with its real start identity, so nothing is signalled.
+    const exited = execFileSync(process.execPath, ['-e', 'process.stdout.write(String(process.pid))'], { encoding: 'utf8' })
+    const startToken = readProcessStartToken(process.pid)
+    expect(startToken, 'this platform cannot report process start times').toBeTruthy()
+    writeDaemonState({
+      instanceId: 'killed-daemon',
+      pid: Number(exited),
+      host: '127.0.0.1',
+      port: 1,
+      startedAt: new Date().toISOString(),
+      version: '0.0.0-test',
+      apiToken: 'test-token',
+      opencode: { baseUrl: 'http://127.0.0.1:4096', owned: true, status: 'managed', pid: process.pid, startToken: startToken ?? '' },
+    }, configDir)
+    // Its password died with the daemon, so a probe sees a server that rejects
+    // LoopTroop — the case a start would otherwise move past.
+    vi.spyOn(globalThis, 'fetch').mockResolvedValue(new Response('', { status: 401 }))
+
+    const check = (await runChecks()).find((entry) => entry.name === 'opencode')
+
+    expect(check).toMatchObject({
+      status: 'fail',
+      detail: expect.stringContaining(`(pid ${process.pid}) is still running`),
+      remedy: 'Run `looptroop clean --apply` to stop it.',
+    })
   })
 
   it('brackets an IPv6 daemon address in its report', async () => {

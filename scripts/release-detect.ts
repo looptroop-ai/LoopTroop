@@ -79,6 +79,21 @@ function isNpm404(stderr: string): boolean {
   return /E404|404 Not Found/.test(stderr)
 }
 
+/** npm 12 wraps single-field responses in a singleton array. */
+function parseNpmValue(raw: string, what: string): unknown {
+  let value: unknown
+  try {
+    value = JSON.parse(raw)
+  } catch {
+    fail(`npm returned invalid JSON for ${what}.`)
+  }
+  if (Array.isArray(value)) {
+    if (value.length !== 1) fail(`npm returned ambiguous metadata for ${what}: expected exactly one result.`)
+    return value[0]
+  }
+  return value
+}
+
 
 function runOrAbsent(
   command: string,
@@ -214,7 +229,12 @@ const integrityRaw = runOrAbsent(
   isNpm404,
   `npm version ${version}`,
 )
-const npmIntegrity = integrityRaw ? integrityRaw.replace(/^"|"$/g, '') : null
+let npmIntegrity: string | null = null
+if (integrityRaw !== null) {
+  const value = parseNpmValue(integrityRaw, `version ${version} integrity`)
+  if (typeof value !== 'string' || value.trim() === '') fail(`npm returned invalid integrity for version ${version}.`)
+  npmIntegrity = value
+}
 
 let npmDistTags: Record<string, string> | null = null
 const distTagsRaw = runOrAbsent(
@@ -223,12 +243,13 @@ const distTagsRaw = runOrAbsent(
   isNpm404,
   `npm dist-tags for ${packageName}`,
 )
-if (distTagsRaw) {
-  try {
-    npmDistTags = JSON.parse(distTagsRaw)
-  } catch {
-    npmDistTags = null
+if (distTagsRaw !== null) {
+  const value = parseNpmValue(distTagsRaw, `dist-tags for ${packageName}`)
+  if (value === null || typeof value !== 'object' || Array.isArray(value)
+    || Object.values(value).some((tag) => typeof tag !== 'string' || tag.trim() === '')) {
+    fail(`npm returned invalid dist-tags for ${packageName}.`)
   }
+  npmDistTags = value as Record<string, string>
 }
 
 // The workflow passes the exact pre-push SHA; anything else forces the

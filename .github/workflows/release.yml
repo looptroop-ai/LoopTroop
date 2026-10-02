@@ -937,7 +937,7 @@ jobs:
       && needs.build.result == 'success'
       && needs.draft-release.result == 'success'
     runs-on: ubuntu-latest
-    timeout-minutes: 20
+    timeout-minutes: 40
     environment: release
     permissions:
       contents: read
@@ -1034,6 +1034,9 @@ jobs:
       # Proves npm stored the bytes we verified, and that the dist-tags landed
       # where they belong. Polled because the registry is read-through-cached and
       # a fresh publish is not visible on the first request.
+      # npm's publish-time scan usually takes five minutes, but can take fifteen
+      # minutes or more; allow roughly thirty minutes within the forty-minute job.
+      # https://github.blog/changelog/2026-07-28-npm-publish-time-malware-scanning-and-dual-use-metadata/
       - name: Verify the registry agrees
         env:
           VERSION: ${{ needs.detect.outputs.version }}
@@ -1041,10 +1044,13 @@ jobs:
         run: |
           set -euo pipefail
           published=''
-          for attempt in 1 2 3 4 5 6 7 8 9 10; do
+          deadline=$((SECONDS + 30 * 60))
+          for attempt in {1..120}; do
+            if [ "${SECONDS}" -ge "${deadline}" ]; then break; fi
             # Both conditions belong to the `if` so that neither a 404 exit nor
             # an empty value trips `set -e` and fails the step mid-poll.
-            if published=$(npm view "looptroop@${VERSION}" dist.integrity 2>/dev/null) \
+            # The loop retries; each read must fit inside the remaining job budget.
+            if published=$(npm view "looptroop@${VERSION}" dist.integrity --fetch-timeout=15000 --fetch-retries=0 2>/dev/null) \
                && [ -n "${published}" ]; then
               break
             fi
@@ -1053,7 +1059,7 @@ jobs:
             # An `&&` guard here would be the loop body's last command, so a
             # false test on the final attempt would trip `set -e` and report a
             # verification failure the registry never caused.
-            if [ "${attempt}" -lt 10 ]; then sleep 15; fi
+            if [ "${attempt}" -lt 120 ] && [ "${SECONDS}" -lt "${deadline}" ]; then sleep 15; fi
           done
           if [ -z "${published}" ]; then
             echo "::error::looptroop@${VERSION} did not become visible on the registry."
@@ -1585,6 +1591,7 @@ jobs:
           sparse-checkout: |
             .nvmrc
             scripts
+            server/lib/executablePath.ts
           sparse-checkout-cone-mode: false
 
       - name: Set up Node

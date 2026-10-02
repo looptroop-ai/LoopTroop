@@ -103,7 +103,7 @@ describe('CenteredModal — dialog semantics and focus containment', () => {
     const dialog = screen.getByRole('dialog', { name: 'Configuration' })
     const first = screen.getByRole('button', { name: 'Close' })
     const last = screen.getByRole('button', { name: 'last' })
-    first.focus()
+    act(() => { first.focus() })
 
     fireEvent.keyDown(first, { key: 'Tab', shiftKey: true })
 

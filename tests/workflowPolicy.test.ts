@@ -1,5 +1,5 @@
-import { existsSync, mkdtempSync, readFileSync, readdirSync, rmSync } from 'node:fs'
-import { join } from 'node:path'
+import { cpSync, existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync } from 'node:fs'
+import { basename, dirname, join } from 'node:path'
 import { spawnSync } from 'node:child_process'
 import { tmpdir } from 'node:os'
 import * as yaml from 'js-yaml'
@@ -21,7 +21,7 @@ type Step = {
   shell?: unknown
   'continue-on-error'?: unknown
 }
-type Job = { name?: unknown; permissions?: Record<string, unknown>; steps?: Step[]; if?: unknown; 'continue-on-error'?: unknown; 'runs-on'?: unknown; defaults?: { run?: { shell?: unknown } } }
+type Job = { name?: unknown; permissions?: Record<string, unknown>; steps?: Step[]; if?: unknown; 'continue-on-error'?: unknown; 'runs-on'?: unknown; 'timeout-minutes'?: unknown; defaults?: { run?: { shell?: unknown } } }
 type Workflow = { jobs?: Record<string, Job> }
 
 const workflows = new Map(files.map((file) => [
@@ -344,6 +344,81 @@ describe('release workflow policy', () => {
     const sparse = options['sparse-checkout']
     if (sparse !== undefined) expect(String(sparse).split(/\s+/), `${where} sparse checkout includes .nvmrc`).toContain('.nvmrc')
   }
+
+  it.each([
+    ['release.yml', 'container-manifest'],
+    ['container-republish.yml', 'manifest'],
+  ])('%s: %s can load its container helper from the sparse checkout', (file, name) => {
+    const checkout = workflows.get(file)?.jobs?.[name]?.steps?.find((step) =>
+      String(step.uses ?? '').startsWith('actions/checkout@'))
+    const patterns = checkout?.with?.['sparse-checkout']
+    expect(typeof patterns).toBe('string')
+    const directory = mkdtempSync(join(tmpdir(), 'looptroop-container-sparse-'))
+    try {
+      for (const path of String(patterns).trim().split(/\s+/)) {
+        const destination = join(directory, path)
+        mkdirSync(dirname(destination), { recursive: true })
+        // CI tool installs in the working tree are absent from a sparse checkout.
+        cpSync(join(repo, path), destination, {
+          recursive: true, filter: (source) => basename(source) !== 'node_modules',
+        })
+      }
+      const loaded = spawnSync(process.execPath, [
+        '--input-type=module', '-e', 'await import("./scripts/container-docker.ts")',
+      ], { cwd: directory, encoding: 'utf8', timeout: 10_000 })
+      expect(loaded.status, loaded.stderr).toBe(0)
+    } finally {
+      rmSync(directory, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 })
+    }
+  })
+
+  it('allows a bounded thirty-minute npm scan wait with job time left for verification', () => {
+    const job = workflows.get('release.yml')?.jobs?.npm
+    const verification = job?.steps?.find((step) => step.name === 'Verify the registry agrees')
+    const run = String(verification?.run ?? '')
+    const attempts = Number(/for attempt in \{1\.\.(\d+)\}; do/.exec(run)?.[1])
+    const interval = Number(/then sleep (\d+); fi/.exec(run)?.[1])
+    const delayedAttempts = Number(/if \[ "\$\{attempt\}" -lt (\d+) \]/.exec(run)?.[1])
+    const waitSeconds = (attempts - 1) * interval
+    expect(delayedAttempts).toBe(attempts)
+    expect(interval).toBe(15)
+    expect(waitSeconds).toBeGreaterThanOrEqual(30 * 60 - interval)
+    expect(waitSeconds).toBeLessThanOrEqual(30 * 60)
+    expect(Number(job?.['timeout-minutes']) * 60).toBeGreaterThanOrEqual(waitSeconds + 10 * 60)
+    expect(Number(job?.['timeout-minutes'])).toBeLessThanOrEqual(40)
+    expect(run).toContain('deadline=$((SECONDS + 30 * 60))')
+    expect(run).toMatch(/for attempt[^\n]+\n\s+if \[ "\$\{SECONDS\}" -ge "\$\{deadline\}" \]; then break; fi/)
+    expect(run).toContain('dist.integrity --fetch-timeout=15000 --fetch-retries=0')
+  })
+
+  it.skipIf(process.platform === 'win32')('stops after a slow metadata read reaches the deadline, without another pacing delay', () => {
+    const verification = workflows.get('release.yml')?.jobs?.npm?.steps?.find((step) =>
+      step.name === 'Verify the registry agrees')
+    const run = String(verification?.run ?? '')
+    const poll = run.slice(run.indexOf("published=''"), run.search(/if \[ -z "\$\{published\}" \]/))
+      .replace('30 * 60', '2')
+    const directory = mkdtempSync(join(tmpdir(), 'looptroop-npm-deadline-'))
+    const calls = join(directory, 'calls')
+    const pacing = join(directory, 'pacing')
+    const fixture = [
+      'npm() { printf "%s\\n" "$*" >> "$NPM_CALLS"; command sleep 2.1; return 1; }',
+      'sleep() { printf "%s\\n" "$*" >> "$PACING_CALLS"; }',
+      '',
+    ].join('\n')
+    try {
+      const result = spawnSync('bash', ['-euo', 'pipefail', '-c', fixture + poll], {
+        encoding: 'utf8', timeout: 10_000,
+        env: { ...process.env, VERSION: '99.99.99', NPM_CALLS: calls, PACING_CALLS: pacing },
+      })
+      expect(result.status, `${result.stdout}${result.stderr}`).toBe(0)
+      const reads = readFileSync(calls, 'utf8').trim().split(/\r?\n/)
+      expect(reads).toHaveLength(1)
+      expect(reads[0]).toContain('--fetch-timeout=15000 --fetch-retries=0')
+      expect(existsSync(pacing)).toBe(false)
+    } finally {
+      rmSync(directory, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 })
+    }
+  })
 
   /**
    * A typed selector must be a named exception. An expression is the floor lane

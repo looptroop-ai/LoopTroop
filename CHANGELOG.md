@@ -9,6 +9,13 @@ Unreleased changes appear first and represent commits that have not yet been inc
 
 > Changes merged since the last versioned release that have not yet shipped in a tagged version.
 
+### Summary
+- Release publication waits for npm's package scans and includes the executable resolver needed to publish container tags.
+
+### Fixed
+- npm registry verification allows roughly 30 minutes for publish-time scanning, with a 15-second timeout per polling metadata read, a polling deadline, and a 40-minute job timeout. Container tagging and repair jobs include the shared executable resolver in their sparse checkouts, so Docker commands can start without loading application dependencies.
+- Daemon readiness tests prepare the real schema and process-identity fixtures before timing startup. UI tests synchronize custom events and focus changes with React updates to avoid `act` warnings.
+
 ## 0.6.0 (2026-10-01)
 
 ### LoopTroop v0.6 — Our biggest update yet!

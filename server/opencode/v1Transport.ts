@@ -59,9 +59,12 @@ export type OpenCodeV1Client = ReturnType<typeof createOpencodeClient>
 export class OpenCodeV1Transport implements OpenCodeTransport {
   readonly protocol = 'v1' as const
   private readonly client: OpenCodeV1Client
+  /** Whether requests carry a password, for telling "none configured" from "rejected". */
+  private readonly sendsCredentials: boolean
 
   constructor(baseUrl: string, client?: OpenCodeV1Client, headers?: Record<string, string>) {
     const authHeader = getOpenCodeBasicAuthHeader()
+    this.sendsCredentials = headers ? Object.hasOwn(headers, 'Authorization') : authHeader !== undefined
     this.client = client ?? createOpencodeClient({
       baseUrl,
       ...(headers ? { headers } : authHeader ? { headers: { Authorization: authHeader } } : {}),
@@ -255,7 +258,13 @@ export class OpenCodeV1Transport implements OpenCodeTransport {
       version = health.data?.version ? String(health.data.version) : version
     } catch (healthError) {
       if (this.healthFailureKind(healthError) === 'authentication') {
-        return { available: false, protocol: 'v1', failureKind: 'authentication', error: getErrorMessage(healthError) }
+        return {
+          available: false,
+          protocol: 'v1',
+          failureKind: 'authentication',
+          error: getErrorMessage(healthError),
+          credentialsSent: this.sendsCredentials,
+        }
       }
       try {
         await this.client.session.status(undefined, this.requestOptions(withTimeout()))
@@ -288,6 +297,7 @@ export class OpenCodeV1Transport implements OpenCodeTransport {
         version,
         models: [],
         failureKind,
+        ...(failureKind === 'authentication' ? { credentialsSent: this.sendsCredentials } : {}),
         error: `OpenCode is reachable, but model discovery failed: ${getErrorMessage(error)}`,
       }
     }

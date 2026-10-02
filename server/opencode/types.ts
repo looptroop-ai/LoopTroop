@@ -359,4 +359,6 @@ export interface HealthStatus {
   models?: string[]
   failureKind?: 'authentication' | 'unsupported_protocol' | 'network' | 'model_discovery'
   error?: string
+  /** On an authentication failure: whether LoopTroop sent a password at all. */
+  credentialsSent?: boolean
 }

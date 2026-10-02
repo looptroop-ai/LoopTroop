@@ -37,6 +37,7 @@ import { interviewBatchClaims, phaseArtifacts } from '../../db/schema'
 import { getLatestPhaseArtifact, getTicketByRef, getTicketContext, getTicketPaths, insertPhaseArtifact, upsertLatestPhaseArtifact, countPhaseArtifacts, readTicketFile, removeTicketFile, writeTicketFile } from '../../storage/tickets'
 import { compareAndSetLatestPhaseArtifact } from '../../storage/ticketArtifacts'
 import { isMockOpenCodeMode } from '../../opencode/factory'
+import { openCodeAuthAdvice } from '../../opencode/connection'
 import { safeAtomicWriteWithin } from '../../io/atomicWrite'
 import { readFileNoFollowSync } from '../../io/readFile'
 import { resolveContainedPath } from '../../lib/containedPath'
@@ -1142,7 +1143,11 @@ export async function handleInterviewDeliberate(
     const health = await raceWithCancel(adapter.checkHealth(signal), signal, ticketId)
     throwIfAborted(signal, ticketId)
     if (!health.available) {
-      const msg = `OpenCode server is not running. Restart LoopTroop (\`looptroop restart\`) so it starts OpenCode again. (${health.error ?? 'connection refused'})`
+      // A server that refuses LoopTroop is running; restarting does not change
+      // the password it is sent.
+      const msg = health.failureKind === 'authentication'
+        ? `${openCodeAuthAdvice(health.credentialsSent ?? true)} (${health.error ?? 'authentication failed'})`
+        : `OpenCode server is not running. Restart LoopTroop (\`looptroop restart\`) so it starts OpenCode again. (${health.error ?? 'connection refused'})`
       emitPhaseLog(ticketId, context.externalId, phase, 'error', msg)
       throw new OpenCodeUnavailableError(msg)
     }

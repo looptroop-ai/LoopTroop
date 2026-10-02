@@ -142,6 +142,28 @@ describe('models routes', () => {
     }
   })
 
+  it('words the failure by what was sent, not by an environment the supervisor fills in itself', async () => {
+    // The supervisor writes a generated password into this process's
+    // environment before it launches its own server, so the environment says
+    // "configured" for a password nobody configured.
+    vi.stubEnv('OPENCODE_PASSWORD', 'generated-by-the-supervisor')
+    try {
+      checkHealth.mockResolvedValueOnce({ available: false, failureKind: 'authentication', error: 'HTTP 401', credentialsSent: false })
+      fetchProviderCatalog.mockRejectedValueOnce(new Error('unauthorized'))
+      const none = await (await createApp().request('/api/models')).json()
+      expect(none.message).toMatch(/^OpenCode requires a password, and none is configured\./)
+
+      vi.stubEnv('OPENCODE_PASSWORD', '')
+      checkHealth.mockResolvedValueOnce({ available: false, failureKind: 'authentication', error: 'HTTP 401', credentialsSent: true })
+      fetchProviderCatalog.mockRejectedValueOnce(new Error('unauthorized'))
+      const rejected = await (await createApp().request('/api/models')).json()
+      expect(rejected.message).toMatch(/^OpenCode rejected the configured credentials\./)
+      expect(rejected.message).toContain('then run `looptroop restart`.')
+    } finally {
+      vi.unstubAllEnvs()
+    }
+  })
+
   it('says no password is configured when LoopTroop had none to send', async () => {
     // A hand-started OpenCode v2 makes up its own password; "rejected the
     // configured credentials" pointed at a setting nobody had made.

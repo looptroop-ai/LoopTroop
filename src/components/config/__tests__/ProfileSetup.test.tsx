@@ -797,6 +797,26 @@ describe('ProfileSetup', () => {
     expect(await screen.findByText('OpenCode connected, but no models are available')).toBeInTheDocument()
   })
 
+  it('asks for the password, not a restart, when OpenCode refused LoopTroop', async () => {
+    vi.mocked(fetch).mockImplementation(async (input: RequestInfo | URL) => {
+      const url = typeof input === 'string' ? input : input.toString()
+      if (url === '/api/health/opencode') {
+        return { ok: true, json: async () => ({ status: 'unavailable', failureKind: 'authentication' }) } as Response
+      }
+      return {
+        ok: true,
+        json: async () => ({ models: [], connectedProviders: [], defaultModels: {} }),
+      } as Response
+    })
+
+    const { rendered } = await renderProfileSetup()
+    expect(await screen.findByText('OpenCode not connected')).toBeInTheDocument()
+    expect(rendered.container).toHaveTextContent(
+      "OpenCode is running but refused LoopTroop's sign-in. Set OPENCODE_PASSWORD to that server's password, then run looptroop restart.",
+    )
+    expect(rendered.container).not.toHaveTextContent('could not reach')
+  })
+
   it('updates OpenRouter routing preferences while keeping suffixes attached to saved models', async () => {
     profileForTest = {
       ...existingProfile,

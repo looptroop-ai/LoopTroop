@@ -11,6 +11,13 @@ export interface OpenCodeConnection {
 }
 
 export class OpenCodeConnectionError extends Error {
+  /**
+   * Set on an authentication failure: whether LoopTroop put a password on the
+   * wire. Read rather than the environment, which the supervisor fills with a
+   * generated password before it launches its own server.
+   */
+  credentialsSent?: boolean
+
   constructor(
     readonly failureKind: OpenCodeFailureKind,
     message: string,
@@ -127,9 +134,24 @@ function majorVersion(value: unknown, major: 1 | 2): value is string {
  * never written, when an OpenCode v2 started by hand had simply made up its own.
  */
 function authFailure(response: Response, credentialsSent: boolean): OpenCodeConnectionError {
-  return responseError(response, 'authentication', credentialsSent
+  const error = responseError(response, 'authentication', credentialsSent
     ? 'OpenCode rejected the configured credentials'
     : 'OpenCode requires a password, and none is configured')
+  error.credentialsSent = credentialsSent
+  return error
+}
+
+/**
+ * What to do about a server that refused LoopTroop, for every surface that
+ * reports one: the model screen, the interview phase and the setup notice.
+ * The two openings are the phrases the model picker classifies on.
+ */
+export function openCodeAuthAdvice(credentialsSent: boolean): string {
+  return credentialsSent
+    ? 'OpenCode rejected the configured credentials. Check OPENCODE_PASSWORD for v2, or OPENCODE_SERVER_PASSWORD '
+      + 'and OPENCODE_SERVER_USERNAME for v1, then run `looptroop restart`.'
+    : 'OpenCode requires a password, and none is configured. Set OPENCODE_PASSWORD to that server\'s password, '
+      + 'and OPENCODE_SERVER_USERNAME too if a v1 server\'s user is not `opencode`, then run `looptroop restart`.'
 }
 
 async function probeV1(

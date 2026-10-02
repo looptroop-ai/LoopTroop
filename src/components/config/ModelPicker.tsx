@@ -74,7 +74,7 @@ function getModelQueryErrorCopy(error: unknown): { trigger: string; detail: stri
   if (message.includes('rejected the configured credentials')) {
     return {
       trigger: 'OpenCode credentials rejected',
-      detail: 'Check OPENCODE_PASSWORD for v2 or OPENCODE_SERVER_PASSWORD and OPENCODE_SERVER_USERNAME for v1, then restart OpenCode.',
+      detail: 'Check OPENCODE_PASSWORD for v2 or OPENCODE_SERVER_PASSWORD and OPENCODE_SERVER_USERNAME for v1, then run looptroop restart.',
     }
   }
   if (message.includes('active work') || message.includes('unanswered requests')) {

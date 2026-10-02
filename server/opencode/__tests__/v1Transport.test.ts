@@ -161,6 +161,13 @@ describe('OpenCode v1 transport direct behavior', () => {
     }).checkHealth()).resolves.toMatchObject({ available: false, failureKind: 'authentication', error: 'credentials rejected' })
     expect(authStatus).not.toHaveBeenCalled()
 
+    // Whether a password went out decides the wording of what to do next.
+    const rejectingClient = { global: { health: vi.fn(async () => { throw authentication }) } } as unknown as OpenCodeV1Client
+    await expect(new OpenCodeV1Transport('http://127.0.0.1:4096', rejectingClient, { Authorization: 'Basic x' }).checkHealth())
+      .resolves.toMatchObject({ failureKind: 'authentication', credentialsSent: true })
+    await expect(new OpenCodeV1Transport('http://127.0.0.1:4096', rejectingClient, {}).checkHealth())
+      .resolves.toMatchObject({ failureKind: 'authentication', credentialsSent: false })
+
     const healthNetworkError = Object.assign(new Error('health endpoint unavailable'), { statusCode: 500 })
     const unsupported = Object.assign(new Error('v1 status route missing'), { statusCode: 404 })
     await expect(transport({

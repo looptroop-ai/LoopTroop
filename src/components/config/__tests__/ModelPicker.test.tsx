@@ -315,6 +315,8 @@ describe('ModelPicker', () => {
 
     expect(screen.getByRole('alert')).toHaveTextContent('OPENCODE_PASSWORD')
     expect(screen.getByRole('alert')).toHaveTextContent('OPENCODE_SERVER_PASSWORD')
+    // Restarting OpenCode by hand is what made a password nobody knows.
+    expect(screen.getByRole('alert')).toHaveTextContent('then run looptroop restart')
   })
 
   it('says OpenCode needs a password when LoopTroop had none to send', () => {

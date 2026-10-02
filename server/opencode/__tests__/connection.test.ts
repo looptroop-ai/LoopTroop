@@ -142,6 +142,7 @@ describe('getOpenCodeConnection', () => {
       status: 401,
       canStartManagedServer: false,
       message: 'OpenCode rejected the configured credentials (HTTP 401).',
+      credentialsSent: true,
     })
     expect(fetchMock).toHaveBeenCalledTimes(2)
   })
@@ -157,6 +158,7 @@ describe('getOpenCodeConnection', () => {
       failureKind: 'authentication',
       status: 401,
       message: 'OpenCode requires a password, and none is configured (HTTP 401).',
+      credentialsSent: false,
     })
   })
 

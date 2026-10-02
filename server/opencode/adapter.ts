@@ -1373,6 +1373,7 @@ export class OpenCodeSDKAdapter implements OpenCodeAdapter {
           available: false,
           failureKind: err.failureKind,
           error: err.message,
+          ...(err.credentialsSent === undefined ? {} : { credentialsSent: err.credentialsSent }),
         }
       }
       return {

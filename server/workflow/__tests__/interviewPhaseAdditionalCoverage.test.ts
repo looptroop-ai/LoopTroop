@@ -179,6 +179,27 @@ describe('additional interview phase flows', () => {
     expect(phaseLog).toContain(`Interview draft session created for ${firstMember}: draft-session-1.`)
   })
 
+  it('tells a server that refused LoopTroop apart from one that is not running', async () => {
+    const { ticket, context } = await createInitializedTestTicket(repoManager, {
+      title: 'Explain an OpenCode that refuses LoopTroop',
+    })
+    // Running, but it wants a password LoopTroop does not have: a restart
+    // alone would send the same nothing again.
+    checkHealthMock.mockResolvedValueOnce({
+      available: false,
+      failureKind: 'authentication',
+      error: 'OpenCode requires a password, and none is configured (HTTP 401).',
+      credentialsSent: false,
+    })
+    await expect(handleInterviewDeliberate(ticket.id, context, vi.fn(), new AbortController().signal))
+      .rejects.toThrow(/^OpenCode requires a password, and none is configured\. Set OPENCODE_PASSWORD/)
+
+    checkHealthMock.mockResolvedValueOnce({ available: false, failureKind: 'network', error: 'connection refused' })
+    await expect(handleInterviewDeliberate(ticket.id, context, vi.fn(), new AbortController().signal))
+      .rejects.toThrow('OpenCode server is not running. Restart LoopTroop (`looptroop restart`) so it starts OpenCode again.')
+    expect(deliberateInterviewMock).not.toHaveBeenCalled()
+  })
+
   it('persists failed draft outcomes and blocks the interview when council quorum is not met', async () => {
     const { ticket, context } = await createInitializedTestTicket(repoManager, {
       title: 'Stop interview drafting when council quorum fails',

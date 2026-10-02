@@ -964,6 +964,20 @@ describe('OpenCode v2 fetch transport', () => {
     expect(eventRedirect.requests[0]?.redirect).toBe('manual')
   })
 
+  it('says on an authentication failure whether it sent a password', async () => {
+    const forbidden = () => jsonResponse({ message: 'forbidden' }, 401)
+    await expect(createTransport(forbidden).transport.checkHealth()).resolves.toMatchObject({
+      failureKind: 'authentication',
+      credentialsSent: false,
+    })
+
+    const signedIn = new V2OpenCodeTransport('http://127.0.0.1:4096', {
+      fetch: async () => forbidden(),
+      headers: { Authorization: `Basic ${Buffer.from('opencode:secret').toString('base64')}` },
+    })
+    await expect(signedIn.checkHealth()).resolves.toMatchObject({ failureKind: 'authentication', credentialsSent: true })
+  })
+
   it('surfaces plain-text HTTP error bodies without losing their message', async () => {
     const { transport } = createTransport(() => new Response('upstream unavailable', { status: 502 }))
 

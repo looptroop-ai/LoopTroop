@@ -689,7 +689,10 @@ async function download(url, destination) {
  * `/root` or `~` with mode `0700`) so foreign users cannot reach or rewrite it.
  * Traversable or sticky/shared directories (like `/tmp`) are refused. A Linux
  * kernel overflow UID is not a known owner, even in this canonical location; it
- * needs an explicit `LOOPTROOP_TRUSTED_EXECUTABLE_DIRS` entry.
+ * needs an explicit `LOOPTROOP_TRUSTED_EXECUTABLE_DIRS` entry. An `opencode`
+ * owned by root, this user or the Node binary's owner needs no exception, so
+ * its bits are not judged either: a stock Ubuntu or Fedora desktop creates
+ * `~/.opencode/bin` group-writable.
  *
  * On Windows there is no ownership check either: `fs.stat` reports mode `0777`
  * and uid `0` for everything on NTFS, so neither means anything. Windows gets
@@ -1489,9 +1492,30 @@ function fileRefusal(candidate        , target        , context              )  
  */
 function candidateRefusal(directory        , candidate        , target        , context              )                {
   if (!context.stat(directory)?.isDirectory()) return 'its directory is not a directory'
-  return ownershipRefusal(directory, 'directory', context)
-    ?? ownershipRefusal(trustedPath.dirname(target), 'target directory', context)
-    ?? fileRefusal(candidate, target, context)
+  const judged = context.canonicalOpenCodeDir && !hasForeignOwner([candidate, target], context)
+    ? { ...context, canonicalOpenCodeDir: false }
+    : context
+  return ownershipRefusal(directory, 'directory', judged)
+    ?? ownershipRefusal(trustedPath.dirname(target), 'target directory', judged)
+    ?? fileRefusal(candidate, target, judged)
+}
+
+/**
+ * Whether the canonical OpenCode exception is what would let one of `files`
+ * run: it belongs to an owner the ordinary rule refuses. Permission bits exist
+ * to make that exception safe, so they are judged only then. An `opencode` that
+ * belongs to root, this user or the Node binary's owner meets the same rule as
+ * every other tool — Ubuntu and Fedora give each user a private group and a
+ * `002` umask, so judging bits there refused the `~/.opencode/bin` that the
+ * OpenCode installer creates on every stock desktop. A file that cannot be
+ * inspected is left to `fileRefusal`, which says so.
+ */
+function hasForeignOwner(files                   , context              )          {
+  const mountTable = context.readMountTable()
+  return files.some((file) => {
+    const owner = context.stat(file)?.uid
+    return owner !== undefined && !context.owners.has(owner) && !isWindowsDriveMount(file, mountTable)
+  })
 }
 
 function identityMatches(stats                        , entry                                  )          {

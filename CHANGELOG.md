@@ -11,8 +11,10 @@ Unreleased changes appear first and represent commits that have not yet been inc
 
 ### Summary
 - Release publication waits for npm's package scans, includes the executable resolver needed to publish container tags, and reads npm metadata correctly during recovery and channel repair.
+- LoopTroop starts OpenCode from `~/.opencode/bin` again on Ubuntu, Fedora and other Linux desktops, where the OpenCode installer creates that folder group-writable.
 
 ### Fixed
+- An `opencode` in `~/.opencode/bin` was refused when its folder was writable by its group, even when you owned the folder and the binary. Ubuntu and Fedora give every user a private group and a `002` umask, so the folders the OpenCode installer creates are always group-writable there, and LoopTroop could neither start OpenCode nor pass `doctor`. Permission bits now count only when the binary belongs to another account: the case where root unpacks an official release archive and the binary keeps the build machine's owner (uid 1001). An `opencode` owned by you or by root gets the same ownership check as `git`, `gh` and `npm`.
 - npm registry verification allows roughly 30 minutes for publish-time scanning, with a 15-second timeout per polling metadata read, a polling deadline, and a 40-minute job timeout. Container tagging and repair jobs include the shared executable resolver in their sparse checkouts, so Docker commands can start without loading application dependencies.
 - Container repair reads npm's object and one-item array metadata, so the current stable image receives its authorized `latest` and series tags while older releases retain their existing safeguards. Release recovery also unwraps npm field responses before comparing published integrity and dist-tags, so completed releases are recognized correctly. Invalid or ambiguous response shapes stop publication.
 - Daemon readiness tests prepare the real schema and process-identity fixtures before timing startup. UI tests synchronize custom events and focus changes with React updates to avoid `act` warnings.

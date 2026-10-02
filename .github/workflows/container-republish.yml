@@ -386,7 +386,7 @@ jobs:
       # makes every run depend on a fresh CDN download, which is exactly how the
       # arm64 leg of the first release was lost.
       - name: Set up Buildx
-        uses: docker/setup-buildx-action@37fe631027851001ddb9b187196cc803df7f5f0e # v4.3.0
+        uses: docker/setup-buildx-action@f87e5991a6d7451dcb8d9637bfbc97413f497069 # v4.4.1
         with:
           version: v0.37.1
 

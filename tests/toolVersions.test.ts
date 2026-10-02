@@ -15,6 +15,8 @@ const NODE_RELEASES = [
   { version: 'v24.21.0', lts: 'Krypton' },
   { version: 'v24.9.0', lts: 'Krypton' },
   { version: 'v24.19.0', lts: 'Krypton' },
+  // Not a release: a suffix never counts, whatever its number.
+  { version: 'v24.99.0-nightly20260930', lts: false },
 ]
 
 function fixtureFetch(requested: string[]): typeof fetch {

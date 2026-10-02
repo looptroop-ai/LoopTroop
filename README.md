@@ -219,8 +219,8 @@ uninstalling, download verification, and channel availability.
 
 ### What you need besides LoopTroop
 
-- **git**, and **`gh`** authenticated, for the pull-request step at the end of a
-  ticket. Installed for you via Homebrew, Scoop, Chocolatey, WinGet and the AUR;
+- **git**, and **`gh`** authenticated: a ticket checks both before it starts
+  coding, because it ends in a pull request. Installed for you via Homebrew, Scoop, Chocolatey, WinGet and the AUR;
   **not** installed if you used npm, bun, pnpm, Yarn or the standalone
   executable, which have no way to declare a dependency.
 - **OpenCode**, with a configured provider and available model. LoopTroop starts

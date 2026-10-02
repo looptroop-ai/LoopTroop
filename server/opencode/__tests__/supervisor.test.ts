@@ -370,6 +370,43 @@ describe('OpenCodeSupervisor', () => {
       expect(findFreePort).not.toHaveBeenCalled()
     })
 
+    it('judges a server that answered 5xx by what it answers once it is up', async () => {
+      // Booting at first, then a server that rejects LoopTroop after all.
+      let answers = 0
+      const { status, supervisor } = await startMoved(() => new Response('', { status: ++answers === 1 ? 503 : 401 }))
+
+      expect(status).toMatchObject({
+        kind: 'managed',
+        baseUrl: 'http://127.0.0.1:4098',
+        movedFrom: { baseUrl: 'http://127.0.0.1:4096', reason: NOT_CONFIGURED },
+      })
+      await supervisor.stop()
+    })
+
+    it('explains a server the user named that rejects LoopTroop once it is up, without moving', async () => {
+      delete process.env.OPENCODE_PASSWORD
+      delete process.env.OPENCODE_SERVER_PASSWORD
+      let answers = 0
+      vi.stubGlobal('fetch', vi.fn(async () => new Response('', { status: ++answers === 1 ? 503 : 401 })))
+      const spawnProcess = vi.fn()
+      const findFreePort = vi.fn(async () => 4098)
+      const supervisor = new OpenCodeSupervisor({
+        baseUrl: 'http://127.0.0.1:4096',
+        findFreePort,
+        spawnProcess: spawnProcess as never,
+        resolveProgram: () => '/opt/opencode',
+        readyTimeoutMs: 2_000,
+      })
+
+      await expect(supervisor.start()).rejects.toMatchObject({
+        failureKind: 'authentication',
+        message: `OpenCode at http://127.0.0.1:4096 cannot be used: ${NOT_CONFIGURED} Set OPENCODE_PASSWORD to that server's `
+          + 'password, or remove LOOPTROOP_OPENCODE_BASE_URL (or opencodeBaseUrl in config.json) so LoopTroop starts its own OpenCode.',
+      })
+      expect(findFreePort).not.toHaveBeenCalled()
+      expect(spawnProcess).not.toHaveBeenCalled()
+    })
+
     it('says what to do when no port after the default one is free', async () => {
       vi.stubGlobal('fetch', vi.fn(async () => new Response('', { status: 401 })))
       const spawnProcess = vi.fn()

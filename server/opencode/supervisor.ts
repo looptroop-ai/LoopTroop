@@ -428,25 +428,21 @@ export class OpenCodeSupervisor {
     }
 
     invalidateOpenCodeConnection(this.baseUrl)
-    let initial: 'ready' | 'absent' | 'starting'
+    let adopt: boolean
     try {
-      initial = await this.probeState()
+      const initial = await this.probeState()
+      // An HTTP response proves another process owns the address. Give a server
+      // that is still booting time to become healthy; never launch over it.
+      // What it turns out to be once it answers is judged like a first answer.
+      if (initial === 'starting') await this.waitForHealth()
+      adopt = initial !== 'absent'
     } catch (error) {
       if (!isUnusableServer(error)) throw error
       if (!this.options.movable) throw this.explainUnusable(error)
       await this.moveToFreePort(error.message)
-      initial = 'absent'
+      adopt = false
     }
-    if (initial === 'ready') {
-      this.status = { kind: 'adopted', baseUrl: this.baseUrl }
-      this.startReported = true
-      return this.status
-    }
-
-    // An HTTP response proves another process owns the address. Give a server
-    // that is still booting time to become healthy; never launch over it.
-    if (initial === 'starting') {
-      await this.waitForHealth()
+    if (adopt) {
       this.status = { kind: 'adopted', baseUrl: this.baseUrl }
       this.startReported = true
       return this.status

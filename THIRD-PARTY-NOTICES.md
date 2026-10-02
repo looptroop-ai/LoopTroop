@@ -70,10 +70,10 @@ frontend packages inlined into the client bundle.
 | `drizzle-orm` | 1.0.0-rc.4 | Apache-2.0 | Drizzle Team |
 | `get-nonce` | 1.0.1 | MIT | Copyright (c) 2020 Anton Korzunov |
 | `gpt-tokenizer` | 4.0.0 | MIT | Copyright (c) 2023-2024 Bazyli Brzoska |
-| `hono` | 4.13.8 | MIT | Copyright (c) 2021 - present, Yusuke Wada and Hono contributors |
+| `hono` | 4.13.9 | MIT | Copyright (c) 2021 - present, Yusuke Wada and Hono contributors |
 | `isexe` | 2.0.0 | ISC | Copyright (c) Isaac Z. Schlueter and Contributors |
 | `js-yaml` | 5.4.2 | MIT | Copyright (C) 2011-2015 by Vitaly Puzrin |
-| `lucide-react` | 1.47.0 | ISC | Copyright (c) 2026 Lucide Icons and Contributors |
+| `lucide-react` | 1.48.0 | ISC | Copyright (c) 2026 Lucide Icons and Contributors |
 | `path-key` | 3.1.1 | MIT | Copyright (c) Sindre Sorhus <sindresorhus@gmail.com> (sindresorhus.com) |
 | `react` | 19.3.0 | MIT | Copyright (c) Meta Platforms, Inc. and affiliates. |
 | `react-dom` | 19.3.0 | MIT | Copyright (c) Meta Platforms, Inc. and affiliates. |
@@ -1032,7 +1032,7 @@ SOFTWARE.
 
 ### MIT
 
-Applies to: `hono@4.13.8`
+Applies to: `hono@4.13.9`
 
 ```text
 MIT License
@@ -1088,7 +1088,7 @@ THE SOFTWARE.
 
 ### ISC
 
-Applies to: `lucide-react@1.47.0`
+Applies to: `lucide-react@1.48.0`
 
 ```text
 ISC License

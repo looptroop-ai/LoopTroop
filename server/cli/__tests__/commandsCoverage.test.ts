@@ -209,8 +209,8 @@ describe('daemon startup and shutdown command paths', () => {
     const output = captureOutput()
 
     expect(await startCommand()).toBe(0)
-    expect(output.stdout()).toContain('\nOpenCode runs at http://127.0.0.1:4098, because http://127.0.0.1:4096 is used by '
-      + 'another server: OpenCode requires a password, and none is configured (HTTP 401).\n')
+    expect(output.stdout()).toContain('\nOpenCode runs at http://127.0.0.1:4098 because http://127.0.0.1:4096 was taken by '
+      + 'another server when LoopTroop started: OpenCode requires a password, and none is configured (HTTP 401).\n')
   })
 
   it('adopts a winning concurrent start and cleans up only its own losing child', async () => {
@@ -561,6 +561,58 @@ describe('daemon startup and shutdown command paths', () => {
     expect(await probeRecordedDaemon(configDir)).toEqual({ kind: 'not-running' })
   })
 
+  /**
+   * A killed daemon runs no cleanup, and the OpenCode it started keeps its port
+   * with a password only that daemon knew. `stop` used to clear the record and
+   * leave it running, so the next start moved past its own server.
+   */
+  describe('the OpenCode a stopped daemon left running', () => {
+    const DAEMON_PID = 99_999_998
+    const OPENCODE_PID = 99_999_999
+
+    function recordLeftover() {
+      const state = makeState({
+        pid: DAEMON_PID,
+        opencode: { baseUrl: 'http://127.0.0.1:4096', owned: true, status: 'managed', pid: OPENCODE_PID, startToken: 'opencode-token' },
+      })
+      writeDaemonState(state, configDir)
+      mocks.isProcessAlive.mockImplementation((pid: number) => pid === OPENCODE_PID)
+      // Nothing real is signalled: these pids are invented.
+      return vi.spyOn(process, 'kill').mockImplementation(() => true)
+    }
+
+    it('is ended, and only then is its record cleared', async () => {
+      const kill = recordLeftover()
+      const output = captureOutput()
+
+      expect(await stopCommand()).toBe(0)
+      expect(output.stdout()).toContain(`Stopped the OpenCode server (pid ${OPENCODE_PID}) that the stopped LoopTroop left running.`)
+      if (process.platform !== 'win32') expect(kill).toHaveBeenCalledWith(-OPENCODE_PID, 'SIGTERM')
+      expect(readDaemonState(configDir)).toBeNull()
+    })
+
+    it('keeps the record when it would not stop, so the next stop can retry', async () => {
+      recordLeftover()
+      mocks.waitForExit.mockResolvedValue(false)
+      const output = captureOutput()
+
+      expect(await stopCommand()).toBe(1)
+      expect(output.stderr()).toContain(`Could not stop the OpenCode server (pid ${OPENCODE_PID})`)
+      expect(readDaemonState(configDir)).toMatchObject({ pid: DAEMON_PID })
+    })
+
+    it('is never signalled once its pid belongs to something else', async () => {
+      const kill = recordLeftover()
+      mocks.matchProcess.mockReturnValue({ kind: 'different' })
+      captureOutput()
+
+      expect(await stopCommand()).toBe(0)
+      expect(kill).not.toHaveBeenCalled()
+      expect(mocks.killProcessTree).not.toHaveBeenCalled()
+      expect(readDaemonState(configDir)).toBeNull()
+    })
+  })
+
   it('clears a record when its live pid answers as a different instance', async () => {
     const state = makeState()
     writeDaemonState(state, configDir)
@@ -647,11 +699,11 @@ describe('open command browser and sign-in paths', () => {
     expect(output.stdout()).toContain('No projects attached yet. Add one in the interface.')
   })
 
-  it('says where OpenCode went when it starts the daemon, and only then', async () => {
+  it('says where OpenCode went whether or not it started the daemon', async () => {
     const movedFrom = { baseUrl: 'http://127.0.0.1:4096', reason: 'OpenCode requires a password, and none is configured (HTTP 401).' }
     const opencode = { baseUrl: 'http://127.0.0.1:4098', owned: true, status: 'managed' as const, pid: 4242, movedFrom }
-    const line = 'OpenCode runs at http://127.0.0.1:4098, because http://127.0.0.1:4096 is used by another server: '
-      + 'OpenCode requires a password, and none is configured (HTTP 401).'
+    const line = 'OpenCode runs at http://127.0.0.1:4098 because http://127.0.0.1:4096 was taken by another server when '
+      + 'LoopTroop started: OpenCode requires a password, and none is configured (HTTP 401).'
     const child = makeChild(45_677)
     const state = makeState({ pid: child.pid, startToken: 'test-start-token', opencode })
     startDaemonOnSpawn(state, child)
@@ -659,13 +711,20 @@ describe('open command browser and sign-in paths', () => {
     const started = captureOutput()
 
     expect(await openCommand({ printUrl: true })).toBe(0)
-    expect(started.stdout()).toContain(`LoopTroop is not running. Starting it...\n${line}\n`)
+    expect(started.stdout()).toContain(`LoopTroop is not running. Starting it...\n\n${line}\n`)
     restoreOutput()
 
-    // Already running: that start said it, and `status` keeps saying it.
+    // Already running: `open` is how people come back to it, and nothing else
+    // on its screen says where OpenCode is.
     const running = captureOutput()
     expect(await openCommand({ printUrl: true })).toBe(0)
-    expect(running.stdout()).not.toContain('OpenCode runs at')
+    expect(running.stdout()).toContain(`\n${line}\n`)
+    restoreOutput()
+
+    const startedAgain = captureOutput()
+    expect(await startCommand()).toBe(0)
+    expect(startedAgain.stdout()).toContain('LoopTroop is already running')
+    expect(startedAgain.stdout()).toContain(`\n${line}\n`)
   })
 
   it('returns the opener error when the desktop browser process exits unsuccessfully', async () => {

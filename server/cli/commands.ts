@@ -257,6 +257,7 @@ export async function startCommand(options: CliOptions = {}): Promise<number> {
       `(pid ${existing.state.pid}).\n` +
       'Run `looptroop open` for a signed-in link.\n',
     )
+    writeOpenCodeMove(existing.state)
     if (options.opencodeLogs === 'all') writeAllLogsRequiresRestart()
     return 0
   }
@@ -311,6 +312,7 @@ export async function startCommand(options: CliOptions = {}): Promise<number> {
       `(pid ${launched.state.pid}).\n` +
       'Run `looptroop open` for a signed-in link.\n',
     )
+    writeOpenCodeMove(launched.state)
     if (options.opencodeLogs === 'all') writeAllLogsRequiresRestart()
     return 0
   }
@@ -334,8 +336,7 @@ export async function startCommand(options: CliOptions = {}): Promise<number> {
       ? '\nThe link signs this browser in once and then expires. Run `looptroop open` for a new one.\n'
       : '\nCould not mint a sign-in link; run `looptroop open` to try again.\n'),
   )
-  const move = describeOpenCodeMove(state.opencode)
-  if (move !== null) process.stdout.write(`\n${move}\n`)
+  writeOpenCodeMove(state)
 
   await hintFirstRun(state)
   return 0
@@ -907,6 +908,26 @@ export async function stopCommand(): Promise<number> {
     process.stderr.write(`The recorded daemon is gone: ${probe.reason}.\n`)
   }
 
+  // A killed daemon runs no cleanup, so the OpenCode it started can outlive it,
+  // holding its port with a password only that daemon knew. Clearing the record
+  // first would leave that server running with nothing left that names it: the
+  // next start would find the port taken and move past its own server. Only a
+  // server whose recorded start identity still matches is signalled.
+  if (recordedBeforeProbe?.opencode?.owned === true) {
+    const { judgeOrphanedOpenCode, stopOpenCode } = await import('./cleanCommand')
+    const orphan = judgeOrphanedOpenCode(recordedBeforeProbe)
+    if (orphan.kind === 'stoppable') {
+      if (!await stopOpenCode(orphan.pid, recordedBeforeProbe.opencode.startToken)) {
+        process.stderr.write(
+          `Could not stop the OpenCode server (pid ${orphan.pid}) that the stopped LoopTroop left running. `
+          + 'Its record was kept so `looptroop stop` can retry.\n',
+        )
+        return 1
+      }
+      process.stdout.write(`Stopped the OpenCode server (pid ${orphan.pid}) that the stopped LoopTroop left running.\n`)
+    }
+  }
+
   // Clear debris so the next start is not blocked by a lock whose owner died.
   // A recorded start failure survives: `stop` is what someone runs after a
   // start that did not take, and it is the only account of why.
@@ -1011,7 +1032,7 @@ export function describeOpenCodeForStatus(opencode: DaemonState['opencode']): st
       return `unavailable: ${opencode.detail ?? 'the server stopped responding'}`
     case 'managed':
       return `${opencode.baseUrl} (started by LoopTroop, pid ${opencode.pid ?? 'unknown'}`
-        + `${opencode.movedFrom === undefined ? '' : `; ${opencode.movedFrom.baseUrl} is used by another server`})`
+        + `)${opencode.movedFrom === undefined ? '' : `. ${describeMoveReason(opencode.movedFrom)}`}`
     case 'adopted':
       return `${opencode.baseUrl} (started elsewhere)`
     default:
@@ -1028,8 +1049,21 @@ export function describeOpenCodeForStatus(opencode: DaemonState['opencode']): st
  */
 export function describeOpenCodeMove(opencode: DaemonState['opencode']): string | null {
   if (opencode?.movedFrom === undefined) return null
-  return `OpenCode runs at ${opencode.baseUrl}, because ${opencode.movedFrom.baseUrl} is used by another server: `
-    + opencode.movedFrom.reason
+  return `OpenCode runs at ${opencode.baseUrl} because ${describeMoveReason(opencode.movedFrom)}`
+}
+
+/**
+ * Why OpenCode is elsewhere, in the past tense: it records what held the
+ * address when LoopTroop started, which may have exited since.
+ */
+export function describeMoveReason(movedFrom: NonNullable<NonNullable<DaemonState['opencode']>['movedFrom']>): string {
+  return `${movedFrom.baseUrl} was taken by another server when LoopTroop started: ${movedFrom.reason}`
+}
+
+/** Printed by `start` and `open` whenever the daemon's OpenCode was moved. */
+function writeOpenCodeMove(state: DaemonState): void {
+  const move = describeOpenCodeMove(state.opencode)
+  if (move !== null) process.stdout.write(`\n${move}\n`)
 }
 
 export async function statusCommand(json: boolean, update?: UpdateStatus): Promise<number> {
@@ -1326,9 +1360,11 @@ export async function openCommand(options: OpenOptions = {}): Promise<number> {
     if (!launched) return 1
     state = launched.state
     started = true
-    const move = describeOpenCodeMove(state.opencode)
-    if (move !== null) process.stdout.write(`${move}\n`)
   }
+  // Whether or not this call started it: `open` is how most people come back
+  // to a running LoopTroop, and nothing else on its screen says where
+  // OpenCode is.
+  writeOpenCodeMove(state)
 
   const link = await mintBootstrapUrl(state)
   if (!link) {

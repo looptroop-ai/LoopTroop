@@ -1,7 +1,7 @@
 import { existsSync, readdirSync, statSync, type Dirent } from 'node:fs'
 import { basename, resolve } from 'node:path'
 import { acquireDaemonLock, inspectDaemonLock, type AcquiredLock } from '../lib/daemonLock'
-import { clearDaemonState, readDaemonState } from '../lib/daemonPaths'
+import { clearDaemonState, readDaemonState, type DaemonState } from '../lib/daemonPaths'
 import { matchProcess } from '../lib/processIdentity'
 import { getProjectWorktreesRoot, normalizeFolderPath } from '../storage/paths'
 import { markerVouchesFor, readWorktreeOwnerMarker } from '../storage/worktreeOwnership'
@@ -259,7 +259,12 @@ export function planWorktreeCleanup(
 export type OpenCodeVerdict =
   | { kind: 'nothing', detail: string }
   | { kind: 'stoppable', pid: number }
-  | { kind: 'kept', pid: number, reason: string }
+  /**
+   * Alive, and not provably the server the record names. `identity` keeps the
+   * two cases apart, because `start` does: a pid now owned by another process
+   * is stale debris it starts past, while one it cannot identify blocks it.
+   */
+  | { kind: 'kept', pid: number, reason: string, identity: 'different' | 'unknown' }
 
 /**
  * Whether the daemon record names an OpenCode server that outlived it.
@@ -272,7 +277,11 @@ export type OpenCodeVerdict =
  * Nothing is signalled unless the recorded start identity still matches.
  */
 export function inspectOrphanedOpenCode(configDir?: string): OpenCodeVerdict {
-  const state = readDaemonState(configDir)
+  return judgeOrphanedOpenCode(readDaemonState(configDir))
+}
+
+/** As `inspectOrphanedOpenCode`, for a record the caller has already read. */
+export function judgeOrphanedOpenCode(state: DaemonState | null): OpenCodeVerdict {
   if (state === null) return { kind: 'nothing', detail: 'no daemon record' }
 
   const opencode = state.opencode
@@ -290,9 +299,9 @@ export function inspectOrphanedOpenCode(configDir?: string): OpenCodeVerdict {
     case 'same':
       return { kind: 'stoppable', pid }
     case 'different':
-      return { kind: 'kept', pid, reason: 'that pid now belongs to a different process' }
+      return { kind: 'kept', pid, reason: 'that pid now belongs to a different process', identity: 'different' }
     default:
-      return { kind: 'kept', pid, reason: match.reason }
+      return { kind: 'kept', pid, reason: match.reason, identity: 'unknown' }
   }
 }
 
@@ -302,7 +311,7 @@ export function inspectOrphanedOpenCode(configDir?: string): OpenCodeVerdict {
  * identity is re-checked before each signal because the process may exit between
  * the decision and the delivery — and the pid could then be reused.
  */
-async function stopOpenCode(pid: number, startToken: string | undefined): Promise<boolean> {
+export async function stopOpenCode(pid: number, startToken: string | undefined): Promise<boolean> {
   if (process.platform !== 'win32') {
     const beforeGroup = matchProcess(pid, startToken)
     if (beforeGroup.kind !== 'same') return !isProcessAlive(pid)

@@ -300,6 +300,24 @@ describe('probing external commands on Windows', () => {
     })
   })
 
+  it.each([
+    ['refused', new OpenCodeConnectionError('network', 'Could not reach the OpenCode server.', undefined, true), 'warn', 'will launch one'],
+    // Accepted the connection and never answered: the supervisor fails that start.
+    ['silent', new OpenCodeConnectionError('network', 'Could not reach the OpenCode server.', undefined, false), 'fail', 'network: Could not reach'],
+    ['timed out', Object.assign(new Error('The operation was aborted due to timeout'), { name: 'TimeoutError' }), 'fail', 'Nothing answered within 2 seconds.'],
+    // Still booting: the supervisor waits for it.
+    ['booting', new OpenCodeConnectionError('network', 'OpenCode v2 info probe failed (HTTP 503).', 503), 'warn', 'responded 503'],
+  ] as const)('promises a launch only for a refused connection (%s)', async (_label, error, status, detail) => {
+    vi.stubEnv('LOOPTROOP_OPENCODE_MODE', 'real')
+    vi.spyOn(globalThis, 'fetch').mockResolvedValue(new Response('{}', { status: 404 }))
+    probeOpenCodeConnection.mockRejectedValue(error)
+
+    const check = (await runChecks()).find(entry => entry.name === 'opencode')
+
+    expect(check).toMatchObject({ name: 'opencode', status })
+    expect(check?.detail).toContain(detail)
+  })
+
   it('warns, rather than fails, when the default OpenCode address is held by a server LoopTroop cannot use', async () => {
     vi.stubEnv('LOOPTROOP_OPENCODE_MODE', 'real')
     vi.spyOn(globalThis, 'fetch').mockResolvedValue(new Response('{}', { status: 404 }))

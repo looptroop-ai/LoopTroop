@@ -558,6 +558,8 @@ describe('clean command', () => {
       const verdict = inspectOrphanedOpenCode(configDir)
       expect(verdict.kind).toBe('kept')
       expect(verdict.kind === 'kept' ? verdict.reason : '').toContain('no start-identity token')
+      // `start` refuses to replace a record it cannot prove, so doctor must too.
+      expect(verdict.kind === 'kept' ? verdict.identity : '').toBe('unknown')
     })
 
     it('never signals a pid that now belongs to something else', () => {
@@ -576,6 +578,8 @@ describe('clean command', () => {
       const verdict = inspectOrphanedOpenCode(configDir)
       expect(verdict.kind).toBe('kept')
       expect(verdict.kind === 'kept' ? verdict.reason : '').toContain('different process')
+      // Stale debris `start` moves past, unlike an unknown identity.
+      expect(verdict.kind === 'kept' ? verdict.identity : '').toBe('different')
     })
 
     it('leaves an adopted server alone however it is recorded', () => {

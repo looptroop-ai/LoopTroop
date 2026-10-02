@@ -7,11 +7,11 @@ import { resolveInstallInfo } from '../lib/installChannel'
 import { summarizeUpdateStatus, type UpdateStatus } from '../lib/updateCheck'
 import { getLatestToolVersions } from '../lib/toolVersions'
 import { isDevStackRunning } from '../lib/devStack'
-import { probePort } from '../lib/portProbe'
+import { findFreePort, probePort } from '../lib/portProbe'
 import { daemonOrigin, readDaemonStartFailure, type DaemonState } from '../lib/daemonPaths'
 import { OpenCodeConnectionError, probeOpenCodeConnection, type OpenCodeFailureKind } from '../opencode/connection'
 import type { SchemaCompatibility } from '../db/schemaVersion'
-import { readRunningDaemon } from './commands'
+import { describeMoveReason, probeRecordedDaemon, type DaemonProbe } from './commands'
 import { inspectOrphanedOpenCode } from './cleanCommand'
 import { getErrorMessage } from '@shared/typeGuards'
 import { formatNodeVersion, parseNodeVersion, satisfiesNodeFloor } from '@shared/nodeFloor'
@@ -321,14 +321,14 @@ function checkBinary(
   args: string[],
   latest: string | null = null,
   /**
-   * What the tool is for, when LoopTroop can run without it. Said beside a
-   * missing one: doctor marks every missing tool `✗`, and an optional one read
-   * as a blocker right above the verdict.
+   * For a tool LoopTroop can start without, what it is still needed for. Said
+   * beside a missing one: doctor marks every missing tool `✗`, and an optional
+   * one read as a blocker right above the verdict.
    */
   optional?: string,
 ): Check {
   const required = optional === undefined
-  const optionalNote = required ? {} : { note: `Optional: ${optional}. LoopTroop runs without it.` }
+  const optionalNote = required ? {} : { note: optional }
   const probe = runProbe(name, args, PROBE_TIMEOUT_MS)
   if (probe.kind === 'ok') {
     const line = probe.output.trim().split('\n')[0] ?? 'present'
@@ -369,7 +369,7 @@ function checkGitHubAuth(): Check {
     // A refused `gh` is not a logged-out one: `gh auth login` cannot help a tool
     // this machine will not run, and saying so was the confusion `unavailable`
     // exists to remove for every other probe.
-    ...unavailable(probe, 'not authenticated', 'Run `gh auth login`. Only needed for pull-request delivery.'),
+    ...unavailable(probe, 'not authenticated', 'Run `gh auth login`. A ticket needs it before coding starts.'),
   }
 }
 
@@ -432,6 +432,8 @@ export function judgeOpenCode(
     cliAvailable: boolean
     /** The address is LoopTroop's default, which a start moves off when it is held. */
     movable?: boolean
+    /** Where a start would move to now; null when no port is free, absent when not asked. */
+    nextFreePort?: number | null
   },
 ): Check {
   const { baseUrl } = context
@@ -441,30 +443,12 @@ export function judgeOpenCode(
     return {
       name: 'opencode',
       status: 'ok',
-      detail: `reachable at ${reachable.url ?? baseUrl}${protocol}${moved ? `; ${moved.baseUrl} is used by another server` : ''}`,
+      detail: `reachable at ${reachable.url ?? baseUrl}${protocol}${moved ? `. ${describeMoveReason(moved)}` : ''}`,
     }
   }
 
-  // Before a start, a default address held by a server LoopTroop cannot use is
-  // not a failure: the start leaves that server alone and takes the next free
-  // port, exactly as it does for its own web port.
-  if (reachable.kind === 'failed' && context.movable === true && context.daemon === null
-    && (reachable.failureKind === 'authentication' || reachable.failureKind === 'unsupported_protocol')) {
-    const held = `${baseUrl} is used by another server that LoopTroop cannot use: ${reachable.error}`
-    return context.cliAvailable
-      ? {
-          name: 'opencode',
-          status: 'warn',
-          detail: `${held} \`looptroop start\` will start its own OpenCode on the next free port.`,
-          remedy: 'No action needed: LoopTroop leaves that server alone.',
-        }
-      : {
-          name: 'opencode',
-          status: 'fail',
-          detail: `${held} \`opencode\` cannot be launched to start LoopTroop's own.`,
-          remedy: OPENCODE_INSTALL_REMEDY,
-        }
-  }
+  const held = judgeHeldDefaultAddress(reachable, context)
+  if (held !== null) return held
 
   if (reachable.kind === 'failed') {
     const details = reachable.error
@@ -505,6 +489,17 @@ export function judgeOpenCode(
     }
   }
 
+  // Before the launch question: a start waits for a server that is still
+  // booting and adopts it, with or without a CLI of its own.
+  if (reachable.kind === 'responded') {
+    return {
+      name: 'opencode',
+      status: 'warn',
+      detail: `${detail}; the address is occupied by a server that is still responding`,
+      remedy: "Check that server's readiness before starting LoopTroop.",
+    }
+  }
+
   if (!context.cliAvailable) {
     return {
       name: 'opencode',
@@ -516,15 +511,6 @@ export function judgeOpenCode(
     }
   }
 
-  if (reachable.kind === 'responded') {
-    return {
-      name: 'opencode',
-      status: 'warn',
-      detail: `${detail}; the address is occupied by a server that is still responding`,
-      remedy: "Check that server's readiness before starting LoopTroop.",
-    }
-  }
-
   return {
     name: 'opencode',
     status: 'warn',
@@ -533,37 +519,127 @@ export function judgeOpenCode(
   }
 }
 
-async function checkOpenCode(daemon: DaemonState | null, cliAvailable: boolean): Promise<Check> {
+/**
+ * Before a start, a default address held by a server LoopTroop cannot use, or
+ * null when that is not the case. Not a failure: the start leaves that server
+ * alone and takes the next free port, as it does for its own web port. Unless
+ * no OpenCode could be launched, or no port is free.
+ */
+function judgeHeldDefaultAddress(
+  reachable: OpenCodeReachability,
+  context: { baseUrl: string; daemon: DaemonState | null; cliAvailable: boolean; movable?: boolean; nextFreePort?: number | null },
+): Check | null {
+  if (reachable.kind !== 'failed' || context.movable !== true || context.daemon !== null) return null
+  if (reachable.failureKind !== 'authentication' && reachable.failureKind !== 'unsupported_protocol') return null
+
+  const held = `${context.baseUrl} is used by another server that LoopTroop cannot use: ${reachable.error}`
+  if (!context.cliAvailable) {
+    return {
+      name: 'opencode',
+      status: 'fail',
+      detail: `${held} \`opencode\` cannot be launched to start LoopTroop's own.`,
+      remedy: OPENCODE_INSTALL_REMEDY,
+    }
+  }
+  if (context.nextFreePort === null) {
+    return {
+      name: 'opencode',
+      status: 'fail',
+      detail: `${held} No free port after it was found for LoopTroop's own OpenCode.`,
+      remedy: 'Stop that server, or set LOOPTROOP_OPENCODE_BASE_URL to a free address.',
+    }
+  }
+  const where = context.nextFreePort === undefined ? 'the next free port' : `the next free port (now ${context.nextFreePort})`
+  return {
+    name: 'opencode',
+    status: 'warn',
+    detail: `${held} \`looptroop start\` will start its own OpenCode on ${where}.`,
+    remedy: 'No action needed: LoopTroop leaves that server alone.',
+  }
+}
+
+/**
+ * Why the next start would refuse before it ever looks at OpenCode's address,
+ * as an `opencode` check, or null. Asked before the mode, because `start`
+ * reconciles its previous record before it reads the mode.
+ */
+function leftoverOpenCodeCheck(probe: DaemonProbe): Check | null {
+  // Alive but not answering is not "stopped": nothing it owns is orphaned, and
+  // `start` refuses to run beside it. The daemon check says what to do.
+  if (probe.kind === 'not-answering' || probe.kind === 'unverifiable') {
+    return {
+      name: 'opencode',
+      status: 'warn',
+      detail: `not checked: LoopTroop (pid ${probe.state.pid}) is running but not answering`,
+      remedy: 'Run `looptroop stop`, then start LoopTroop again.',
+    }
+  }
+  if (probe.kind === 'running') return null
+
+  // A start that found the leftover replaces the daemon record with this one.
+  const failure = readDaemonStartFailure()
+  if (failure?.reason === 'startup-cleanup-incomplete') {
+    return {
+      name: 'opencode',
+      status: 'warn',
+      detail: `not checked: a previous start still owns OpenCode at ${failure.openCode.baseUrl} (pid ${failure.openCode.pid})`,
+      remedy: 'Run `looptroop stop` to retry the owned cleanup before starting again.',
+    }
+  }
+
+  // The daemon is gone. A killed one runs no cleanup, so the OpenCode it
+  // started can outlive it with a password only it knew; a probe of the
+  // address would call that "a server LoopTroop cannot use" and promise a move.
+  const orphan = inspectOrphanedOpenCode()
+  if (orphan.kind === 'stoppable') {
+    return {
+      name: 'opencode',
+      status: 'fail',
+      detail: `the OpenCode that a LoopTroop which did not shut down started (pid ${orphan.pid}) is still running, `
+        + 'and `looptroop start` will not run alongside it',
+      remedy: 'Run `looptroop stop` to end it.',
+    }
+  }
+  // A pid that now belongs to another process is debris `start` moves past;
+  // one it cannot identify blocks it.
+  if (orphan.kind === 'kept' && orphan.identity === 'unknown') {
+    return {
+      name: 'opencode',
+      status: 'fail',
+      detail: `an OpenCode recorded as LoopTroop's own (pid ${orphan.pid}) is still running but cannot be identified `
+        + `(${orphan.reason}), and \`looptroop start\` will not replace that record`,
+      remedy: `If pid ${orphan.pid} is that OpenCode, end it. Then run \`looptroop stop\` to clear the record.`,
+    }
+  }
+  return null
+}
+
+async function checkOpenCode(probe: DaemonProbe, cliAvailable: boolean): Promise<Check> {
+  const leftover = leftoverOpenCodeCheck(probe)
+  if (leftover !== null) return leftover
+
   const settings = resolveSettings()
   if (settings.opencodeMode === 'mock') {
     return { name: 'opencode', status: 'ok', detail: 'mock mode' }
   }
 
-  // A killed daemon runs no cleanup, so the OpenCode it started can outlive it,
-  // still holding the port with a password only that daemon knew. The next
-  // start refuses to run alongside it whatever a probe of the address says —
-  // and a probe would call it "a server LoopTroop cannot use" and move past it.
-  if (daemon === null) {
-    const orphan = inspectOrphanedOpenCode()
-    if (orphan.kind === 'stoppable') {
-      return {
-        name: 'opencode',
-        status: 'fail',
-        detail: `the OpenCode a stopped LoopTroop started (pid ${orphan.pid}) is still running, `
-          + 'and `looptroop start` will not run alongside it',
-        remedy: 'Run `looptroop clean --apply` to stop it.',
-      }
-    }
-  }
-
+  const daemon = probe.kind === 'running' ? probe.state : null
   const reachable = daemon
     ? await probeDaemonOpenCode(daemon)
     : await probeOpenCodeConfig(settings.opencodeBaseUrl)
+  const movable = settings.sources.opencodeBaseUrl === 'default'
+  // Where a start would move to, asked the way the start asks: past the
+  // daemon's own port, which it binds only after OpenCode is up.
+  const nextFreePort = movable && daemon === null && reachable.kind === 'failed'
+    && (reachable.failureKind === 'authentication' || reachable.failureKind === 'unsupported_protocol')
+    ? await findFreePort('127.0.0.1', Number(new URL(settings.opencodeBaseUrl).port) + 1, settings.port > 0 ? [settings.port] : [])
+    : undefined
   return judgeOpenCode(reachable, {
     baseUrl: settings.opencodeBaseUrl,
     daemon,
     cliAvailable,
-    movable: settings.sources.opencodeBaseUrl === 'default',
+    movable,
+    ...(nextFreePort === undefined ? {} : { nextFreePort }),
   })
 }
 
@@ -574,7 +650,16 @@ async function probeOpenCodeConfig(baseUrl: string): Promise<OpenCodeReachabilit
   } catch (error) {
     if (error instanceof OpenCodeConnectionError) {
       if (error.failureKind === 'network' && error.status === undefined) {
-        return { kind: 'unreachable', error: error.message }
+        // Only a refused connection proves nothing listens there, which is what
+        // lets a start launch its own: the supervisor fails the start on a
+        // port that accepts the connection and never answers.
+        return error.canStartManagedServer
+          ? { kind: 'unreachable', error: error.message }
+          : { kind: 'failed', failureKind: 'network', error: error.message }
+      }
+      // A server answering 5xx is still booting, and a start waits for it.
+      if (error.failureKind === 'network' && error.status !== undefined) {
+        return { kind: 'responded', status: error.status, url: baseUrl }
       }
       return {
         kind: 'failed',
@@ -582,6 +667,10 @@ async function probeOpenCodeConfig(baseUrl: string): Promise<OpenCodeReachabilit
         error: error.message,
         ...(error.status === undefined ? {} : { status: error.status }),
       }
+    }
+    // This probe's own deadline: something holds the address without answering.
+    if (error instanceof Error && error.name === 'TimeoutError') {
+      return { kind: 'failed', failureKind: 'network', error: 'Nothing answered within 2 seconds.' }
     }
     return { kind: 'unreachable', error: getErrorMessage(error) }
   }
@@ -744,12 +833,25 @@ async function checkPort(daemon: DaemonState | null): Promise<Check> {
  * Probed by binding rather than by reading a process list: the port is the thing
  * that actually matters, and it is the same test the port check already trusts.
  */
-async function checkDaemon(daemon: DaemonState | null): Promise<Check> {
-  if (daemon) {
+async function checkDaemon(probe: DaemonProbe): Promise<Check> {
+  if (probe.kind === 'running') {
+    const daemon = probe.state
     return {
       name: 'daemon',
       status: 'ok',
       detail: `running on ${daemonOrigin(daemon.host, daemon.port)} (pid ${daemon.pid})`,
+    }
+  }
+
+  // "Not running" was the old answer here, which sent people to `start`, and
+  // `start` refuses to run beside it.
+  if (probe.kind === 'not-answering' || probe.kind === 'unverifiable') {
+    return {
+      name: 'daemon',
+      status: 'warn',
+      detail: `pid ${probe.state.pid} is still running but not answering`
+        + (probe.kind === 'unverifiable' ? `, and ${probe.reason}` : ''),
+      remedy: 'If it stays this way, run `looptroop stop`, then start LoopTroop again.',
     }
   }
 
@@ -1067,7 +1169,8 @@ export async function runChecks(): Promise<Check[]> {
   // Read once and shared: the port check needs to know whether the process
   // holding the port is our own daemon, and probing twice would be two more
   // HTTP requests for an answer that cannot have changed in between.
-  const daemon = await readRunningDaemon()
+  const daemonProbe = await probeRecordedDaemon()
+  const daemon = daemonProbe.kind === 'running' ? daemonProbe.state : null
   // The one local version probe chooses the matching OpenCode package source;
   // the result also supplies the check below, so it is never run twice.
   const opencodeProbe = probeOpenCodeCliVersion()
@@ -1084,7 +1187,7 @@ export async function runChecks(): Promise<Check[]> {
     checkNode(resolved.node),
     checkNpm(resolved.npm),
     checkBinary('git', ['--version'], resolved.git),
-    checkBinary('gh', ['--version'], resolved.gh, 'only needed for pull requests'),
+    checkBinary('gh', ['--version'], resolved.gh, 'Optional to start LoopTroop, but a ticket needs it before coding starts.'),
     checkGitHubAuth(),
     checkConfigDir(),
     checkInstallChannel(),
@@ -1092,9 +1195,9 @@ export async function runChecks(): Promise<Check[]> {
     await checkLastStart(),
     await checkProjectIgnores(),
     opencodeCli,
-    await checkOpenCode(daemon, isOpenCodeCliLaunchable(opencodeCli)),
+    await checkOpenCode(daemonProbe, isOpenCodeCliLaunchable(opencodeCli)),
     await checkPort(daemon),
-    await checkDaemon(daemon),
+    await checkDaemon(daemonProbe),
   ]
 }
 

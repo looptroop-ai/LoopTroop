@@ -62,7 +62,7 @@ function getModelQueryErrorCopy(error: unknown): { trigger: string; detail: stri
   if (message.includes('not reachable')) {
     return {
       trigger: 'OpenCode not reachable',
-      detail: 'LoopTroop could not reach OpenCode. It starts automatically with npm run dev, so check that the OpenCode process launched successfully.',
+      detail: 'LoopTroop could not reach OpenCode. LoopTroop starts OpenCode itself, so run looptroop restart to start it again, or looptroop doctor to see why it is not answering.',
     }
   }
   if (message.includes('rejected the configured credentials')) {

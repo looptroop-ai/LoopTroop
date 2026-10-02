@@ -289,6 +289,9 @@ describe('ModelPicker', () => {
     fireEvent.click(screen.getByRole('button', { name: /^Pick a model/ }))
     fireEvent.click(screen.getByRole('button', { name: /^Pick a model/ }))
     expect(screen.getByRole('alert')).toHaveTextContent('could not reach OpenCode')
+    // An installed LoopTroop starts OpenCode itself; `npm run dev` is not how.
+    expect(screen.getByRole('alert')).toHaveTextContent('run looptroop restart to start it again')
+    expect(screen.getByRole('alert')).not.toHaveTextContent('npm run dev')
   })
 
   it('shows the credential names to check after OpenCode rejects authentication', () => {

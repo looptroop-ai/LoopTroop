@@ -844,6 +844,84 @@ describe('doctor command', () => {
       expect(judgeOpenCode({ kind: 'ok' }, { baseUrl, daemon: null, cliAvailable: false }).status).toBe('ok')
     })
 
+    /**
+     * The default address held by a server LoopTroop cannot use. A start
+     * leaves it alone and takes the next free port, so before a start it is
+     * not a failure — it was the one this report called fatal on a machine
+     * whose only problem was a hand-started OpenCode v2 with its own password.
+     */
+    describe('a default address held by a server LoopTroop cannot use', () => {
+      const NOT_CONFIGURED = 'OpenCode requires a password, and none is configured (HTTP 401).'
+
+      it('only warns when a start would move past it', () => {
+        for (const failureKind of ['authentication', 'unsupported_protocol'] as const) {
+          const check = judgeOpenCode(
+            { kind: 'failed', failureKind, error: NOT_CONFIGURED, status: 401 },
+            { baseUrl, daemon: null, cliAvailable: true, movable: true },
+          )
+
+          expect(check.status).toBe('warn')
+          expect(check.detail).toBe(`${baseUrl} is used by another server that LoopTroop cannot use: ${NOT_CONFIGURED} `
+            + '`looptroop start` will start its own OpenCode on the next free port.')
+        }
+      })
+
+      it('fails when no OpenCode could be started next to it', () => {
+        const check = judgeOpenCode(
+          { kind: 'failed', failureKind: 'authentication', error: NOT_CONFIGURED, status: 401 },
+          { baseUrl, daemon: null, cliAvailable: false, movable: true },
+        )
+
+        expect(check.status).toBe('fail')
+        expect(check.remedy).toContain('opencode.ai')
+      })
+
+      it('fails, and says what to change, when the user set that address', () => {
+        const check = judgeOpenCode(
+          { kind: 'failed', failureKind: 'authentication', error: NOT_CONFIGURED, status: 401 },
+          { baseUrl, daemon: null, cliAvailable: true, movable: false },
+        )
+
+        expect(check.status).toBe('fail')
+        expect(check.remedy).toContain('Set OPENCODE_PASSWORD to that server\'s password')
+        expect(check.remedy).toContain('remove LOOPTROOP_OPENCODE_BASE_URL')
+      })
+
+      it('does not offer a move to a daemon that is already running', () => {
+        const check = judgeOpenCode(
+          { kind: 'failed', failureKind: 'authentication', error: NOT_CONFIGURED, status: 401 },
+          { baseUrl, daemon: daemonWith({ baseUrl, owned: false, status: 'adopted' }), cliAvailable: true, movable: true },
+        )
+
+        expect(check.status).toBe('fail')
+        expect(check.remedy).not.toContain('LOOPTROOP_OPENCODE_BASE_URL')
+      })
+
+      it('says where the running server went instead', () => {
+        const movedTo = 'http://127.0.0.1:4098'
+        const check = judgeOpenCode(
+          { kind: 'ok', protocol: 'v2', version: '2.0.22', url: movedTo },
+          {
+            baseUrl,
+            daemon: daemonWith({
+              baseUrl: movedTo,
+              owned: true,
+              status: 'managed',
+              pid: 4242,
+              movedFrom: { baseUrl, reason: NOT_CONFIGURED },
+            }),
+            cliAvailable: true,
+            movable: true,
+          },
+        )
+
+        expect(check).toMatchObject({
+          status: 'ok',
+          detail: `reachable at ${movedTo} (v2, 2.0.22); ${baseUrl} is used by another server`,
+        })
+      })
+    })
+
     it('carries the status code when something else answers on that port', () => {
       const check = judgeOpenCode(
         { kind: 'responded', status: 502 },

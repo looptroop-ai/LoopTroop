@@ -334,6 +334,8 @@ export async function startCommand(options: CliOptions = {}): Promise<number> {
       ? '\nThe link signs this browser in once and then expires. Run `looptroop open` for a new one.\n'
       : '\nCould not mint a sign-in link; run `looptroop open` to try again.\n'),
   )
+  const move = describeOpenCodeMove(state.opencode)
+  if (move !== null) process.stdout.write(`\n${move}\n`)
 
   await hintFirstRun(state)
   return 0
@@ -1008,7 +1010,8 @@ export function describeOpenCodeForStatus(opencode: DaemonState['opencode']): st
     case 'degraded':
       return `unavailable: ${opencode.detail ?? 'the server stopped responding'}`
     case 'managed':
-      return `${opencode.baseUrl} (started by LoopTroop, pid ${opencode.pid ?? 'unknown'})`
+      return `${opencode.baseUrl} (started by LoopTroop, pid ${opencode.pid ?? 'unknown'}`
+        + `${opencode.movedFrom === undefined ? '' : `; ${opencode.movedFrom.baseUrl} is used by another server`})`
     case 'adopted':
       return `${opencode.baseUrl} (started elsewhere)`
     default:
@@ -1016,6 +1019,17 @@ export function describeOpenCodeForStatus(opencode: DaemonState['opencode']): st
       // said, and guessing beyond that would be inventing the answer.
       return `${opencode.baseUrl}${opencode.owned ? ' (started by LoopTroop)' : ''}`
   }
+}
+
+/**
+ * What `start` and `open` say when LoopTroop's own OpenCode is not where it
+ * was meant to be. The start succeeded, so nothing else on screen would tell
+ * you that the default address belongs to a server LoopTroop could not use.
+ */
+export function describeOpenCodeMove(opencode: DaemonState['opencode']): string | null {
+  if (opencode?.movedFrom === undefined) return null
+  return `OpenCode runs at ${opencode.baseUrl}, because ${opencode.movedFrom.baseUrl} is used by another server: `
+    + opencode.movedFrom.reason
 }
 
 export async function statusCommand(json: boolean, update?: UpdateStatus): Promise<number> {
@@ -1312,6 +1326,8 @@ export async function openCommand(options: OpenOptions = {}): Promise<number> {
     if (!launched) return 1
     state = launched.state
     started = true
+    const move = describeOpenCodeMove(state.opencode)
+    if (move !== null) process.stdout.write(`${move}\n`)
   }
 
   const link = await mintBootstrapUrl(state)

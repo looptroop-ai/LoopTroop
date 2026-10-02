@@ -16,6 +16,7 @@ import * as runtimeFactory from '../server/createRuntime'
 import * as openCodeFactory from '../server/opencode/factory'
 import { OpenCodeSupervisor } from '../server/opencode/supervisor'
 import type { OpenCodeStatus } from '../server/opencode/supervisor'
+import { getOpenCodeBaseUrl, resetOpenCodeRuntimeConfig } from '../server/opencode/runtimeConfig'
 import * as daemonPaths from '../server/lib/daemonPaths'
 import * as processControl from '../server/cli/processControl'
 import * as processIdentity from '../server/lib/processIdentity'
@@ -881,11 +882,8 @@ describe('daemon startup and shutdown', () => {
     const baseUrl = 'http://127.0.0.1:4096'
 
     it('distinguishes a server it gave up on from one it never owned', () => {
-      const degraded = describeOpenCode(
-        { kind: 'degraded', baseUrl, reason: 'exited 3 times' },
-        baseUrl,
-      )
-      const adopted = describeOpenCode({ kind: 'adopted', baseUrl }, baseUrl)
+      const degraded = describeOpenCode({ kind: 'degraded', baseUrl, reason: 'exited 3 times' })
+      const adopted = describeOpenCode({ kind: 'adopted', baseUrl })
 
       expect(degraded).toMatchObject({ status: 'degraded', owned: false, detail: 'exited 3 times' })
       expect(adopted).toMatchObject({ status: 'adopted', owned: false })
@@ -893,13 +891,23 @@ describe('daemon startup and shutdown', () => {
     })
 
     it('marks a managed server owned, with the pid a reaper needs', () => {
-      const managed = describeOpenCode({ kind: 'managed', baseUrl, pid: process.pid }, baseUrl)
+      const managed = describeOpenCode({ kind: 'managed', baseUrl, pid: process.pid })
 
       expect(managed).toMatchObject({ status: 'managed', owned: true, pid: process.pid })
+      expect(managed).not.toHaveProperty('movedFrom')
+    })
+
+    it('records a server that moved off a held default port where it is, and why', () => {
+      // `clean` and `status` read this address; the one asked for belongs to
+      // somebody else's server.
+      const movedFrom = { baseUrl, reason: 'OpenCode requires a password, and none is configured (HTTP 401).' }
+      const managed = describeOpenCode({ kind: 'managed', baseUrl: 'http://127.0.0.1:4098', pid: process.pid, movedFrom })
+
+      expect(managed).toMatchObject({ baseUrl: 'http://127.0.0.1:4098', status: 'managed', owned: true, movedFrom })
     })
 
     it('says nothing at all in mock mode, where there is no server', () => {
-      expect(describeOpenCode({ kind: 'mock' }, baseUrl)).toBeUndefined()
+      expect(describeOpenCode({ kind: 'mock' })).toBeUndefined()
     })
 
     /**
@@ -922,7 +930,6 @@ describe('daemon startup and shutdown', () => {
         const next = nextStateForOpenCode(
           recorded,
           { kind: 'managed', baseUrl, pid: 222 },
-          baseUrl,
           { released: false },
         )
 
@@ -938,7 +945,6 @@ describe('daemon startup and shutdown', () => {
         const next = nextStateForOpenCode(
           recorded,
           { kind: 'degraded', baseUrl, reason: 'exited 3 times' },
-          baseUrl,
           { released: false },
         )
 
@@ -954,7 +960,6 @@ describe('daemon startup and shutdown', () => {
         const next = nextStateForOpenCode(
           recorded,
           { kind: 'degraded', baseUrl, reason: 'stopped' },
-          baseUrl,
           { released: true },
         )
 
@@ -965,13 +970,49 @@ describe('daemon startup and shutdown', () => {
         const next = nextStateForOpenCode(
           null,
           { kind: 'managed', baseUrl, pid: 222 },
-          baseUrl,
           { released: false },
         )
 
         expect(next).toBeNull()
       })
     })
+  })
+
+  it('moves OpenCode only off its default address, and then uses the address it moved to', async () => {
+    const movedFrom = { baseUrl: 'http://127.0.0.1:4096', reason: 'OpenCode requires a password, and none is configured (HTTP 401).' }
+    const movable: Array<boolean | undefined> = []
+    const startSpy = vi.spyOn(OpenCodeSupervisor.prototype, 'start').mockImplementation(async function (this: OpenCodeSupervisor) {
+      movable.push((this as unknown as { options: { movable?: boolean } }).options.movable)
+      return { kind: 'managed', baseUrl: 'http://127.0.0.1:4098', pid: process.pid, movedFrom }
+    })
+    const address = vi.spyOn(OpenCodeSupervisor.prototype, 'baseUrl', 'get').mockReturnValue('http://127.0.0.1:4098')
+    const stopSpy = vi.spyOn(OpenCodeSupervisor.prototype, 'stop').mockResolvedValue(true)
+
+    try {
+      const configDir = makeConfigDir()
+      await start(configDir)
+      expect(JSON.parse(readFileSync(getDaemonStatePath(configDir), 'utf8'))).toMatchObject({
+        opencode: { baseUrl: 'http://127.0.0.1:4098', owned: true, status: 'managed', movedFrom },
+      })
+      // The adapter talks to the server that is really there, not to the
+      // address somebody else's server holds.
+      expect(getOpenCodeBaseUrl()).toBe('http://127.0.0.1:4098')
+
+      const settings = ephemeralSettings()
+      running.push(await startDaemon({
+        configDir: makeConfigDir(),
+        settings: { ...settings, sources: { ...settings.sources, opencodeBaseUrl: 'env' } },
+        version: '0.0.0-test',
+      }))
+      // A URL the user set is theirs, even when it is the default value.
+      expect(movable).toEqual([true, false])
+    } finally {
+      for (const handle of running.splice(0)) await handle.stop()
+      stopSpy.mockRestore()
+      address.mockRestore()
+      startSpy.mockRestore()
+      resetOpenCodeRuntimeConfig()
+    }
   })
 
   it('refreshes the OpenCode record and keeps serving if a refresh write fails', async () => {

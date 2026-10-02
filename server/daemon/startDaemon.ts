@@ -101,12 +101,11 @@ export interface StartDaemonOptions {
 export function nextStateForOpenCode(
   current: DaemonState | null,
   status: OpenCodeStatus,
-  baseUrl: string,
   options: { released: boolean },
 ): DaemonState | null {
   if (current === null || options.released) return null
 
-  const opencode = describeOpenCode(status, baseUrl)
+  const opencode = describeOpenCode(status)
   // Mock mode has no server to describe, and nothing about it can change.
   if (opencode === undefined) return null
 
@@ -207,12 +206,13 @@ function recordStartFailure(
  * one. Both are "not ours to stop", but only one of them means coding
  * operations are unavailable, and a reader that cannot tell them apart reports
  * a healthy server for a daemon that has given up.
+ *
+ * The address is the status's own: a server moved off a default port held by
+ * someone else is recorded where it is, never where it was asked to be.
  */
-export function describeOpenCode(
-  status: OpenCodeStatus,
-  baseUrl: string,
-): DaemonState['opencode'] {
+export function describeOpenCode(status: OpenCodeStatus): DaemonState['opencode'] {
   if (status.kind === 'mock') return undefined
+  const { baseUrl } = status
   if (status.kind === 'degraded') {
     return { baseUrl, owned: false, status: 'degraded', detail: status.reason }
   }
@@ -225,6 +225,7 @@ export function describeOpenCode(
     status: 'managed',
     pid: status.pid,
     ...(startToken === null ? {} : { startToken }),
+    ...(status.movedFrom === undefined ? {} : { movedFrom: status.movedFrom }),
   }
 }
 
@@ -370,7 +371,7 @@ export async function startDaemon(options: StartDaemonOptions): Promise<DaemonHa
     // cached transport so in-flight calls retain theirs and later calls can
     // resolve the now-ready server again.
     if (status.kind === 'managed') resetOpenCodeAdapterTransport()
-    const next = nextStateForOpenCode(recordedState, status, settings.opencodeBaseUrl, {
+    const next = nextStateForOpenCode(recordedState, status, {
       released: stateFileReleased,
     })
     if (next === null) return
@@ -406,6 +407,7 @@ export async function startDaemon(options: StartDaemonOptions): Promise<DaemonHa
     // avoids a half-started daemon that cannot do any work.
     opencode = new OpenCodeSupervisor({
       baseUrl: settings.opencodeBaseUrl,
+      movable: settings.sources.opencodeBaseUrl === 'default',
       mock: settings.opencodeMode === 'mock',
       printLogs: options.opencodeLogs === 'all',
       onStatusChange: recordOpenCodeStatus,
@@ -413,7 +415,9 @@ export async function startDaemon(options: StartDaemonOptions): Promise<DaemonHa
     const opencodeStatus = await opencode.start()
 
     runtime = createRuntime({
-      settings,
+      // The address OpenCode is really on, which differs from the setting when
+      // the default port was held by a server LoopTroop could not use.
+      settings: { ...settings, opencodeBaseUrl: opencode.baseUrl },
       mode: 'production',
       credentials,
       bootstrapNonces,
@@ -423,7 +427,7 @@ export async function startDaemon(options: StartDaemonOptions): Promise<DaemonHa
     })
     const address = await runtime.start()
 
-    const opencodeState = describeOpenCode(opencodeStatus, settings.opencodeBaseUrl)
+    const opencodeState = describeOpenCode(opencodeStatus)
     // Recorded so `stop` can tell this process from whatever inherits its pid
     // once it stops answering /api/health partway through its own shutdown.
     const startToken = readProcessStartToken(process.pid)
@@ -550,7 +554,7 @@ export async function startDaemon(options: StartDaemonOptions): Promise<DaemonHa
       options.configDir,
       cleanupComplete || retainedOpenCode === null || retainedOpenCode === undefined
         ? undefined
-        : { baseUrl: settings.opencodeBaseUrl, ...retainedOpenCode },
+        : { baseUrl: opencode?.baseUrl ?? settings.opencodeBaseUrl, ...retainedOpenCode },
     )
     if (cleanupComplete) {
       if (heartbeat) clearInterval(heartbeat)

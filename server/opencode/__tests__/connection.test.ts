@@ -141,8 +141,23 @@ describe('getOpenCodeConnection', () => {
       failureKind: 'authentication',
       status: 401,
       canStartManagedServer: false,
+      message: 'OpenCode rejected the configured credentials (HTTP 401).',
     })
     expect(fetchMock).toHaveBeenCalledTimes(2)
+  })
+
+  it('says no password is configured when LoopTroop had none to send', async () => {
+    // An OpenCode v2 started by hand makes up its own password. "Rejected the
+    // configured credentials" sent people looking for a setting they never made.
+    delete process.env.OPENCODE_PASSWORD
+    delete process.env.OPENCODE_SERVER_PASSWORD
+    vi.stubGlobal('fetch', vi.fn(async () => new Response('', { status: 401 })))
+
+    await expect(getOpenCodeConnection(BASE_URL)).rejects.toMatchObject({
+      failureKind: 'authentication',
+      status: 401,
+      message: 'OpenCode requires a password, and none is configured (HTTP 401).',
+    })
   })
 
   it('rejects redirects and unrecognized successful responses', async () => {

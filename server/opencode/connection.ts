@@ -121,8 +121,15 @@ function majorVersion(value: unknown, major: 1 | 2): value is string {
   return typeof value === 'string' && new RegExp(`^v?${major}\\.\\d+\\.\\d+(?:[-+].*)?$`).test(value.trim())
 }
 
-function authFailure(response: Response): OpenCodeConnectionError {
-  return responseError(response, 'authentication', 'OpenCode rejected the configured credentials')
+/**
+ * A 401 or 403. Worded by whether LoopTroop sent a password at all: "rejected
+ * the configured credentials" sent people hunting for a configuration they had
+ * never written, when an OpenCode v2 started by hand had simply made up its own.
+ */
+function authFailure(response: Response, credentialsSent: boolean): OpenCodeConnectionError {
+  return responseError(response, 'authentication', credentialsSent
+    ? 'OpenCode rejected the configured credentials'
+    : 'OpenCode requires a password, and none is configured')
 }
 
 async function probeV1(
@@ -136,7 +143,7 @@ async function probeV1(
     response = await request(`${base}/global/health`, authorization, signal)
   } catch (error) {
     if (priorResponse && error instanceof OpenCodeConnectionError) {
-      if (priorResponse.status === 401 || priorResponse.status === 403) throw authFailure(priorResponse)
+      if (priorResponse.status === 401 || priorResponse.status === 403) throw authFailure(priorResponse, authorization !== undefined)
       throw new OpenCodeConnectionError(error.failureKind, error.message, error.status, false, { cause: error })
     }
     throw error
@@ -145,7 +152,7 @@ async function probeV1(
   if (response.status === 401 || response.status === 403) {
     throw authFailure(priorResponse && (priorResponse.status === 401 || priorResponse.status === 403)
       ? priorResponse
-      : response)
+      : response, authorization !== undefined)
   }
   if (response.status >= 300 && response.status < 400) {
     throw responseError(response, 'unsupported_protocol', 'OpenCode health probe redirected')
@@ -178,12 +185,12 @@ async function probe(base: string, auth: ReturnType<typeof credentials>, signal?
         return await probeV1(base, auth.v1, signal, v2)
       } catch (error) {
         if (error instanceof OpenCodeConnectionError && error.failureKind === 'unsupported_protocol') {
-          throw authFailure(v2)
+          throw authFailure(v2, auth.v2 !== undefined)
         }
         throw error
       }
     }
-    throw authFailure(v2)
+    throw authFailure(v2, auth.v2 !== undefined)
   }
   if (v2.status >= 300 && v2.status < 400) {
     throw responseError(v2, 'unsupported_protocol', 'OpenCode v2 info probe redirected')

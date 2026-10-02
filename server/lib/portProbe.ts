@@ -32,3 +32,15 @@ export function probePort(port: number, host = '127.0.0.1'): Promise<PortProbe> 
     })
   })
 }
+
+/**
+ * The first port from `from` that `host` can bind right now, trying at most
+ * `attempts` of them, or null. A report about the past, like `probePort`: the
+ * caller that binds next can still lose the port to someone faster.
+ */
+export async function findFreePort(host: string, from: number, attempts = 50): Promise<number | null> {
+  for (let port = from; port < from + attempts && port <= 65_535; port += 1) {
+    if ((await probePort(port, host)).kind === 'free') return port
+  }
+  return null
+}

@@ -384,6 +384,10 @@ function checkConfigDir(): Check {
   }
 }
 
+/** For a machine with no `opencode` LoopTroop can launch. */
+const OPENCODE_INSTALL_REMEDY = 'Install it from https://opencode.ai, or set LOOPTROOP_OPENCODE_BASE_URL to an OpenCode server '
+  + 'that is already running and OPENCODE_PASSWORD to its password.'
+
 /** What asking the OpenCode server for its config established. */
 export type OpenCodeReachability =
   | { kind: 'ok'; protocol?: 'v1' | 'v2'; version?: string; url?: string }
@@ -413,18 +417,51 @@ export type OpenCodeReachability =
  */
 export function judgeOpenCode(
   reachable: OpenCodeReachability,
-  context: { baseUrl: string; daemon: DaemonState | null; cliAvailable: boolean },
+  context: {
+    baseUrl: string
+    daemon: DaemonState | null
+    cliAvailable: boolean
+    /** The address is LoopTroop's default, which a start moves off when it is held. */
+    movable?: boolean
+  },
 ): Check {
   const { baseUrl } = context
   if (reachable.kind === 'ok') {
     const protocol = reachable.protocol ? ` (${reachable.protocol}${reachable.version ? `, ${reachable.version}` : ''})` : ''
-    return { name: 'opencode', status: 'ok', detail: `reachable at ${reachable.url ?? baseUrl}${protocol}` }
+    const moved = context.daemon?.opencode?.movedFrom
+    return {
+      name: 'opencode',
+      status: 'ok',
+      detail: `reachable at ${reachable.url ?? baseUrl}${protocol}${moved ? `; ${moved.baseUrl} is used by another server` : ''}`,
+    }
+  }
+
+  // Before a start, a default address held by a server LoopTroop cannot use is
+  // not a failure: the start leaves that server alone and takes the next free
+  // port, exactly as it does for its own web port.
+  if (reachable.kind === 'failed' && context.movable === true && context.daemon === null
+    && (reachable.failureKind === 'authentication' || reachable.failureKind === 'unsupported_protocol')) {
+    const held = `${baseUrl} is used by another server that LoopTroop cannot use: ${reachable.error}`
+    return context.cliAvailable
+      ? {
+          name: 'opencode',
+          status: 'warn',
+          detail: `${held} \`looptroop start\` will start its own OpenCode on the next free port.`,
+          remedy: 'No action needed: LoopTroop leaves that server alone.',
+        }
+      : {
+          name: 'opencode',
+          status: 'fail',
+          detail: `${held} \`opencode\` cannot be launched to start LoopTroop's own.`,
+          remedy: OPENCODE_INSTALL_REMEDY,
+        }
   }
 
   if (reachable.kind === 'failed') {
     const details = reachable.error
     const remedy = reachable.failureKind === 'authentication'
-      ? 'Check OPENCODE_PASSWORD for v2, or OPENCODE_SERVER_PASSWORD and OPENCODE_SERVER_USERNAME for v1.'
+      ? 'Set OPENCODE_PASSWORD to that server\'s password (and OPENCODE_SERVER_USERNAME if a v1 server\'s user is not `opencode`).'
+        + (context.movable === true ? '' : ' Or remove LOOPTROOP_OPENCODE_BASE_URL (or opencodeBaseUrl in config.json) so LoopTroop starts its own OpenCode.')
       : reachable.failureKind === 'unsupported_protocol'
         ? 'Point LOOPTROOP_OPENCODE_BASE_URL at an OpenCode v1 or v2 server.'
         : reachable.failureKind === 'model_discovery'
@@ -466,7 +503,7 @@ export function judgeOpenCode(
       // Nothing is running and nothing could be started: the next start is
       // refused before it binds a port, rather than launching a server.
       detail: `${detail}, and \`opencode\` cannot be launched`,
-      remedy: 'Install it from https://opencode.ai, or point LOOPTROOP_OPENCODE_BASE_URL at a running server.',
+      remedy: OPENCODE_INSTALL_REMEDY,
     }
   }
 
@@ -496,7 +533,12 @@ async function checkOpenCode(daemon: DaemonState | null, cliAvailable: boolean):
   const reachable = daemon
     ? await probeDaemonOpenCode(daemon)
     : await probeOpenCodeConfig(settings.opencodeBaseUrl)
-  return judgeOpenCode(reachable, { baseUrl: settings.opencodeBaseUrl, daemon, cliAvailable })
+  return judgeOpenCode(reachable, {
+    baseUrl: settings.opencodeBaseUrl,
+    daemon,
+    cliAvailable,
+    movable: settings.sources.opencodeBaseUrl === 'default',
+  })
 }
 
 async function probeOpenCodeConfig(baseUrl: string): Promise<OpenCodeReachability> {
@@ -623,7 +665,7 @@ function checkOpenCodeVersion(probe: OpenCodeCliProbe, latest: string | null = n
     // A server that is already running can still serve LoopTroop, so a missing
     // binary is only a problem for starting one. Whether that is survivable is
     // decided by `judgeOpenCode`, which can see both facts at once.
-    ...unavailable(probe.probe, 'not found on PATH', 'Install it from https://opencode.ai, or point LOOPTROOP_OPENCODE_BASE_URL at a running server.'),
+    ...unavailable(probe.probe, 'not found on PATH', OPENCODE_INSTALL_REMEDY),
   }
 }
 

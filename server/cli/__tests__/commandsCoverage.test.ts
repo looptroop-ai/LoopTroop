@@ -196,6 +196,23 @@ describe('daemon startup and shutdown command paths', () => {
     expect(output.stdout()).toContain('No projects attached yet. Add one in the interface.')
   })
 
+  it('says where OpenCode went when the default address belonged to another server', async () => {
+    const child = makeChild(45_676)
+    const movedFrom = { baseUrl: 'http://127.0.0.1:4096', reason: 'OpenCode requires a password, and none is configured (HTTP 401).' }
+    const state = makeState({
+      pid: child.pid,
+      startToken: 'test-start-token',
+      opencode: { baseUrl: 'http://127.0.0.1:4098', owned: true, status: 'managed', pid: 4242, movedFrom },
+    })
+    startDaemonOnSpawn(state, child)
+    stubDaemonFetch(state, [])
+    const output = captureOutput()
+
+    expect(await startCommand()).toBe(0)
+    expect(output.stdout()).toContain('\nOpenCode runs at http://127.0.0.1:4098, because http://127.0.0.1:4096 is used by '
+      + 'another server: OpenCode requires a password, and none is configured (HTTP 401).\n')
+  })
+
   it('adopts a winning concurrent start and cleans up only its own losing child', async () => {
     const child = makeChild(45_681)
     const winner = makeState({ pid: 45_682, instanceId: 'winning-instance', startToken: 'winner-token' })
@@ -628,6 +645,27 @@ describe('open command browser and sign-in paths', () => {
     expect(output.stdout()).toContain('http://127.0.0.1:4317/#bootstrap=single-use-nonce')
     expect(output.stdout()).toContain('Full managed OpenCode DEBUG output is enabled.')
     expect(output.stdout()).toContain('No projects attached yet. Add one in the interface.')
+  })
+
+  it('says where OpenCode went when it starts the daemon, and only then', async () => {
+    const movedFrom = { baseUrl: 'http://127.0.0.1:4096', reason: 'OpenCode requires a password, and none is configured (HTTP 401).' }
+    const opencode = { baseUrl: 'http://127.0.0.1:4098', owned: true, status: 'managed' as const, pid: 4242, movedFrom }
+    const line = 'OpenCode runs at http://127.0.0.1:4098, because http://127.0.0.1:4096 is used by another server: '
+      + 'OpenCode requires a password, and none is configured (HTTP 401).'
+    const child = makeChild(45_677)
+    const state = makeState({ pid: child.pid, startToken: 'test-start-token', opencode })
+    startDaemonOnSpawn(state, child)
+    stubDaemonFetch(state, [])
+    const started = captureOutput()
+
+    expect(await openCommand({ printUrl: true })).toBe(0)
+    expect(started.stdout()).toContain(`LoopTroop is not running. Starting it...\n${line}\n`)
+    restoreOutput()
+
+    // Already running: that start said it, and `status` keeps saying it.
+    const running = captureOutput()
+    expect(await openCommand({ printUrl: true })).toBe(0)
+    expect(running.stdout()).not.toContain('OpenCode runs at')
   })
 
   it('returns the opener error when the desktop browser process exits unsuccessfully', async () => {

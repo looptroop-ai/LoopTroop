@@ -280,6 +280,8 @@ describe('probing external commands on Windows', () => {
 
   it('preserves a typed OpenCode config authentication failure', async () => {
     vi.stubEnv('LOOPTROOP_OPENCODE_MODE', 'real')
+    // Set by the user: the default address would be moved past instead.
+    vi.stubEnv('LOOPTROOP_OPENCODE_BASE_URL', 'http://127.0.0.1:4096')
     vi.spyOn(globalThis, 'fetch').mockResolvedValue(new Response('{}', { status: 404 }))
     probeOpenCodeConnection.mockRejectedValue(new OpenCodeConnectionError(
       'authentication',
@@ -293,8 +295,25 @@ describe('probing external commands on Windows', () => {
       name: 'opencode',
       status: 'fail',
       detail: 'authentication: credentials were rejected',
-      remedy: 'Check OPENCODE_PASSWORD for v2, or OPENCODE_SERVER_PASSWORD and OPENCODE_SERVER_USERNAME for v1.',
+      remedy: 'Set OPENCODE_PASSWORD to that server\'s password (and OPENCODE_SERVER_USERNAME if a v1 server\'s user is not `opencode`). '
+        + 'Or remove LOOPTROOP_OPENCODE_BASE_URL (or opencodeBaseUrl in config.json) so LoopTroop starts its own OpenCode.',
     })
+  })
+
+  it('warns, rather than fails, when the default OpenCode address is held by a server LoopTroop cannot use', async () => {
+    vi.stubEnv('LOOPTROOP_OPENCODE_MODE', 'real')
+    vi.spyOn(globalThis, 'fetch').mockResolvedValue(new Response('{}', { status: 404 }))
+    probeOpenCodeConnection.mockRejectedValue(new OpenCodeConnectionError(
+      'authentication',
+      'OpenCode requires a password, and none is configured (HTTP 401).',
+      401,
+    ))
+
+    const check = (await runChecks()).find(entry => entry.name === 'opencode')
+
+    // The smokes read this check before `start` and accept `ok` or `warn` only.
+    expect(check).toMatchObject({ name: 'opencode', status: 'warn' })
+    expect(check?.detail).toContain('will start its own OpenCode on the next free port')
   })
 
   it.each([

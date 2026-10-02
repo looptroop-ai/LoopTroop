@@ -327,7 +327,7 @@ describe('OpenCodeSupervisor', () => {
         pid: 4310,
         movedFrom: { baseUrl: 'http://127.0.0.1:4096', reason: NOT_CONFIGURED },
       })
-      expect(findFreePort).toHaveBeenCalledWith('127.0.0.1', 4097)
+      expect(findFreePort).toHaveBeenCalledWith('127.0.0.1', 4097, [])
       expect(launchedArgs).toEqual(['serve', '--hostname', '127.0.0.1', '--port', '4098'])
       expect(supervisor.baseUrl).toBe('http://127.0.0.1:4098')
       expect(warned).toEqual([
@@ -405,6 +405,23 @@ describe('OpenCodeSupervisor', () => {
       })
       expect(findFreePort).not.toHaveBeenCalled()
       expect(spawnProcess).not.toHaveBeenCalled()
+    })
+
+    it('hands the ports it must not take to the free-port search', async () => {
+      vi.stubGlobal('fetch', vi.fn(async () => new Response('', { status: 401 })))
+      const findFreePort = vi.fn(async () => null)
+      const supervisor = new OpenCodeSupervisor({
+        baseUrl: 'http://127.0.0.1:4096',
+        movable: true,
+        avoidPorts: [4097],
+        findFreePort,
+        spawnProcess: vi.fn() as never,
+        resolveProgram: () => '/opt/opencode',
+      })
+
+      await expect(supervisor.start()).rejects.toThrow('no free port after it was found')
+      // The daemon's own port, which it binds only after OpenCode is up.
+      expect(findFreePort).toHaveBeenCalledWith('127.0.0.1', 4097, [4097])
     })
 
     it('says what to do when no port after the default one is free', async () => {

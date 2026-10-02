@@ -30,16 +30,29 @@ describe('findFreePort', () => {
     const { port, release } = await hold()
     await release()
 
-    expect(await findFreePort('127.0.0.1', port, 1)).toBe(port)
+    expect(await findFreePort('127.0.0.1', port, [], 1)).toBe(port)
+  })
+
+  it('skips a port it was told is spoken for, free or not', async () => {
+    const { port, release } = await hold()
+    await release()
+
+    // The daemon's own port is free until it binds, after OpenCode is up.
+    expect(await findFreePort('127.0.0.1', port, [port], 1)).toBeNull()
   })
 
   it('never returns a port somebody holds', async () => {
     const { port } = await hold()
 
-    expect(await findFreePort('127.0.0.1', port, 1)).toBeNull()
+    expect(await findFreePort('127.0.0.1', port, [], 1)).toBeNull()
+  })
+
+  it('treats an address it cannot bind as having no free port', async () => {
+    // TEST-NET-1: not an address of this machine, so binding fails at once.
+    expect(await findFreePort('192.0.2.1', 40_000, [], 2)).toBeNull()
   })
 
   it('does not look past the last port there is', async () => {
-    expect(await findFreePort('127.0.0.1', 65_536, 5)).toBeNull()
+    expect(await findFreePort('127.0.0.1', 65_536, [], 5)).toBeNull()
   })
 })

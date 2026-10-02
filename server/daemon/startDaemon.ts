@@ -408,6 +408,9 @@ export async function startDaemon(options: StartDaemonOptions): Promise<DaemonHa
     opencode = new OpenCodeSupervisor({
       baseUrl: settings.opencodeBaseUrl,
       movable: settings.sources.opencodeBaseUrl === 'default',
+      // Bound only after OpenCode is up, so a move must not take it first. Port
+      // 0 asks the OS for one, which a move cannot collide with.
+      avoidPorts: settings.port > 0 ? [settings.port] : [],
       mock: settings.opencodeMode === 'mock',
       printLogs: options.opencodeLogs === 'all',
       onStatusChange: recordOpenCodeStatus,

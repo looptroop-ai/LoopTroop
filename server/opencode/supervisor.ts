@@ -107,7 +107,8 @@ export class OpenCodeMissingError extends Error {
       ? `OpenCode is not running at ${baseUrl}, and the \`opencode\` command is not on PATH.\n`
         + 'Install it from https://opencode.ai, or set LOOPTROOP_OPENCODE_BASE_URL to an OpenCode server that is '
         + 'already running and OPENCODE_PASSWORD to its password.'
-      : `OpenCode is not running at ${baseUrl}, and the \`opencode\` that was found will not be run: ${refusal}`)
+      : `OpenCode is not running at ${baseUrl}, and the \`opencode\` that was found will not be run: ${refusal}\n`
+        + 'Or reinstall OpenCode so that it is owned by you or by root.')
     this.name = 'OpenCodeMissingError'
   }
 }
@@ -301,8 +302,14 @@ export interface OpenCodeSupervisorOptions {
    * An address the user set is never moved: they asked for that server.
    */
   movable?: boolean
-  /** Injected by tests: the first free port on `host` from `from`, or null. */
-  findFreePort?: (host: string, from: number) => Promise<number | null>
+  /**
+   * Ports the move must not take although they are free now: the daemon's own,
+   * which it binds only after OpenCode is up. Taking it made an explicit
+   * `--port 4097` fail on its own OpenCode.
+   */
+  avoidPorts?: readonly number[]
+  /** Injected by tests: the first free port on `host` from `from`, skipping `avoid`, or null. */
+  findFreePort?: (host: string, from: number, avoid: readonly number[]) => Promise<number | null>
   mock?: boolean
   /** Pass full DEBUG output through stdout/stderr for a managed server. */
   printLogs?: boolean
@@ -482,7 +489,7 @@ export class OpenCodeSupervisor {
   private async moveToFreePort(reason: string): Promise<void> {
     const { host, port } = serveAddress(this.baseUrl)
     const bindHost = host.startsWith('[') ? host.slice(1, -1) : host
-    const free = await (this.options.findFreePort ?? findFreePort)(bindHost, Number(port) + 1)
+    const free = await (this.options.findFreePort ?? findFreePort)(bindHost, Number(port) + 1, this.options.avoidPorts ?? [])
     if (free === null) {
       throw new Error(
         `${this.baseUrl} is used by another server, and no free port after it was found for LoopTroop's own `

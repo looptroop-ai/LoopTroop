@@ -3,6 +3,7 @@ import { mkdtempSync, existsSync, readFileSync, statSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { request as httpRequest } from 'node:http'
+import { createServer as createNetServer } from 'node:net'
 import {
   DaemonStartBlockedError,
   DaemonShutdownPendingError,
@@ -54,6 +55,15 @@ describe('daemon startup and shutdown', () => {
     const dir = mkdtempSync(join(tmpdir(), 'looptroop-daemon-'))
     tempDirs.push(dir)
     return dir
+  }
+
+  /** A port nothing holds right now, for a daemon that must bind a named one. */
+  async function freePort(): Promise<number> {
+    const server = createNetServer()
+    await new Promise<void>((done) => server.listen(0, '127.0.0.1', done))
+    const { port } = server.address() as { port: number }
+    await new Promise((done) => server.close(done))
+    return port
   }
 
   function ephemeralSettings() {
@@ -981,8 +991,11 @@ describe('daemon startup and shutdown', () => {
   it('moves OpenCode only off its default address, and then uses the address it moved to', async () => {
     const movedFrom = { baseUrl: 'http://127.0.0.1:4096', reason: 'OpenCode requires a password, and none is configured (HTTP 401).' }
     const movable: Array<boolean | undefined> = []
+    const avoided: Array<readonly number[] | undefined> = []
     const startSpy = vi.spyOn(OpenCodeSupervisor.prototype, 'start').mockImplementation(async function (this: OpenCodeSupervisor) {
-      movable.push((this as unknown as { options: { movable?: boolean } }).options.movable)
+      const { options } = this as unknown as { options: { movable?: boolean; avoidPorts?: readonly number[] } }
+      movable.push(options.movable)
+      avoided.push(options.avoidPorts)
       return { kind: 'managed', baseUrl: 'http://127.0.0.1:4098', pid: process.pid, movedFrom }
     })
     const address = vi.spyOn(OpenCodeSupervisor.prototype, 'baseUrl', 'get').mockReturnValue('http://127.0.0.1:4098')
@@ -999,13 +1012,17 @@ describe('daemon startup and shutdown', () => {
       expect(getOpenCodeBaseUrl()).toBe('http://127.0.0.1:4098')
 
       const settings = ephemeralSettings()
+      const daemonPort = await freePort()
       running.push(await startDaemon({
         configDir: makeConfigDir(),
-        settings: { ...settings, sources: { ...settings.sources, opencodeBaseUrl: 'env' } },
+        settings: { ...settings, port: daemonPort, sources: { ...settings.sources, opencodeBaseUrl: 'env' } },
         version: '0.0.0-test',
       }))
       // A URL the user set is theirs, even when it is the default value.
       expect(movable).toEqual([true, false])
+      // The daemon binds its own port only after OpenCode is up, so a move must
+      // not take it; port 0 is the OS's choice and cannot collide.
+      expect(avoided).toEqual([[], [daemonPort]])
     } finally {
       for (const handle of running.splice(0)) await handle.stop()
       stopSpy.mockRestore()

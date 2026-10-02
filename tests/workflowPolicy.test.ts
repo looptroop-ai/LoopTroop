@@ -761,7 +761,7 @@ describe('release workflow policy', () => {
     { name: 'null singleton', version: '1.2.3', metadata: [null], expected: null },
     { name: 'primitive', version: '1.2.3', metadata: '1.2.3', expected: null },
   ])('container repair resolves floating tags from $name npm metadata', ({ version, metadata, expected }) => {
-    const run = workflows.get('container-republish.yml')!.jobs?.prepare?.steps?.find((step) => step.name === 'Which floating tags this repair may move')?.run
+    const run = workflows.get('container-republish.yml')?.jobs?.prepare?.steps?.find((step) => step.name === 'Which floating tags this repair may move')?.run
     const script = typeof run === 'string' ? run.match(/floating=\$\(node -e '([\s\S]*?)'\)/)?.[1] : undefined
     if (!script) throw new Error('Container repair npm metadata script missing')
     const directory = mkdtempSync(join(tmpdir(), 'looptroop-container-metadata-'))

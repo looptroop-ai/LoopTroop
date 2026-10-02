@@ -11,7 +11,7 @@ function fixtureScript(path: string, body: string): void {
   chmodSync(path, 0o755)
 }
 
-function detectWithNpmMetadata(integrity: string, distTags: string, expectedIntegrity?: string) {
+const detectWithNpmMetadata = (integrity: string, distTags: string, expectedIntegrity?: string) => {
   const work = mkdtempSync(join(tmpdir(), 'looptroop-release-detect-'))
   const output = join(work, 'github-output')
   try {

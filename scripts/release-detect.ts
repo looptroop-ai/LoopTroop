@@ -80,7 +80,7 @@ function isNpm404(stderr: string): boolean {
 }
 
 /** npm 12 wraps single-field responses in a singleton array. */
-function parseNpmValue(raw: string, what: string): unknown {
+const parseNpmValue = (raw: string, what: string): unknown => {
   let value: unknown
   try {
     value = JSON.parse(raw)

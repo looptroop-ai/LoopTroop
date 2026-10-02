@@ -124,15 +124,42 @@ describe('models routes', () => {
   })
 
   it('preserves authentication failures in the model discovery message', async () => {
-    checkHealth.mockResolvedValueOnce({ available: false, failureKind: 'authentication', error: 'HTTP 401' })
-    fetchProviderCatalog.mockRejectedValueOnce(new Error('unauthorized'))
+    vi.stubEnv('OPENCODE_PASSWORD', 'configured')
+    vi.stubEnv('OPENCODE_SERVER_PASSWORD', '')
+    try {
+      checkHealth.mockResolvedValueOnce({ available: false, failureKind: 'authentication', error: 'HTTP 401' })
+      fetchProviderCatalog.mockRejectedValueOnce(new Error('unauthorized'))
 
-    const response = await createApp().request('/api/models')
-    const body = await response.json()
+      const response = await createApp().request('/api/models')
+      const body = await response.json()
 
-    expect(body).toMatchObject({
-      code: 'OPENCODE_UNREACHABLE',
-      message: expect.stringContaining('OpenCode rejected the configured credentials.'),
-    })
+      expect(body).toMatchObject({
+        code: 'OPENCODE_UNREACHABLE',
+        message: expect.stringContaining('OpenCode rejected the configured credentials.'),
+      })
+    } finally {
+      vi.unstubAllEnvs()
+    }
+  })
+
+  it('says no password is configured when LoopTroop had none to send', async () => {
+    // A hand-started OpenCode v2 makes up its own password; "rejected the
+    // configured credentials" pointed at a setting nobody had made.
+    vi.stubEnv('OPENCODE_PASSWORD', '')
+    vi.stubEnv('OPENCODE_SERVER_PASSWORD', '')
+    try {
+      checkHealth.mockResolvedValueOnce({ available: false, failureKind: 'authentication', error: 'HTTP 401' })
+      fetchProviderCatalog.mockRejectedValueOnce(new Error('unauthorized'))
+
+      const body = await (await createApp().request('/api/models')).json()
+
+      expect(body).toMatchObject({
+        code: 'OPENCODE_UNREACHABLE',
+        message: expect.stringMatching(/^OpenCode requires a password, and none is configured\. Set OPENCODE_PASSWORD/),
+      })
+      expect(body.message).not.toContain('rejected')
+    } finally {
+      vi.unstubAllEnvs()
+    }
   })
 })

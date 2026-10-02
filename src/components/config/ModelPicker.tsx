@@ -65,6 +65,12 @@ function getModelQueryErrorCopy(error: unknown): { trigger: string; detail: stri
       detail: 'LoopTroop could not reach OpenCode. LoopTroop starts OpenCode itself, so run looptroop restart to start it again, or looptroop doctor to see why it is not answering.',
     }
   }
+  if (message.includes('requires a password, and none is configured')) {
+    return {
+      trigger: 'OpenCode needs a password',
+      detail: 'OpenCode asked for a password and LoopTroop has none. Set OPENCODE_PASSWORD to that server\'s password, then run looptroop restart.',
+    }
+  }
   if (message.includes('rejected the configured credentials')) {
     return {
       trigger: 'OpenCode credentials rejected',

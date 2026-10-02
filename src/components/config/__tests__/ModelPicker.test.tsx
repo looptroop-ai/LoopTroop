@@ -317,6 +317,29 @@ describe('ModelPicker', () => {
     expect(screen.getByRole('alert')).toHaveTextContent('OPENCODE_SERVER_PASSWORD')
   })
 
+  it('says OpenCode needs a password when LoopTroop had none to send', () => {
+    const error = new Error('OpenCode requires a password, and none is configured. Set OPENCODE_PASSWORD to that server\'s password.')
+    vi.mocked(useOpenCodeModels).mockReturnValue({
+      data: undefined,
+      isLoading: false,
+      isError: true,
+      error,
+      isFetching: false,
+    } as ReturnType<typeof useOpenCodeModels>)
+    vi.mocked(useAllOpenCodeModels).mockReturnValue({
+      data: undefined,
+      isLoading: false,
+      isError: false,
+      error: null,
+      isFetching: false,
+    } as ReturnType<typeof useAllOpenCodeModels>)
+    render(<ModelPicker value="" onChange={vi.fn()} />)
+    fireEvent.click(screen.getByRole('button', { name: /^Pick a model/ }))
+
+    expect(screen.getByRole('alert')).toHaveTextContent('OpenCode asked for a password and LoopTroop has none')
+    expect(screen.getByRole('alert')).not.toHaveTextContent('rejected')
+  })
+
   it('shows the stored full id in parentheses beside the pretty name in the open list', () => {
     render(<ModelPicker value="openai/gpt-alpha" onChange={vi.fn()} />)
 

@@ -3,6 +3,7 @@ import { getOpenCodeAdapter } from '../opencode/factory'
 import { fetchProviderCatalog, flattenCatalogModels, refreshProviderCatalog } from '../opencode/providerCatalog'
 import { ProviderCatalogBusyError } from '../opencode/providerCatalogReload'
 import type { OpenCodeCatalogResponse, OpenCodeCatalogScope } from '../../shared/opencodeCatalog'
+import { hasOpenCodePassword } from '../../shared/opencodeAuth'
 
 const modelsRouter = new Hono()
 
@@ -27,7 +28,12 @@ async function modelDiscoveryFailure() {
     message: available
       ? 'OpenCode is connected, but model discovery failed.'
       : health.failureKind === 'authentication'
-        ? 'OpenCode rejected the configured credentials. Check OPENCODE_PASSWORD for v2, or OPENCODE_SERVER_PASSWORD and OPENCODE_SERVER_USERNAME for v1.'
+        // Worded by whether LoopTroop had a password to send, as the connection
+        // layer words its own 401: "rejected" a password nobody configured sent
+        // people looking for a setting they had never made.
+        ? hasOpenCodePassword(process.env)
+          ? 'OpenCode rejected the configured credentials. Check OPENCODE_PASSWORD for v2, or OPENCODE_SERVER_PASSWORD and OPENCODE_SERVER_USERNAME for v1.'
+          : 'OpenCode requires a password, and none is configured. Set OPENCODE_PASSWORD to that server\'s password, and OPENCODE_SERVER_USERNAME too if a v1 server\'s user is not `opencode`.'
         : 'OpenCode server is not reachable. Restart LoopTroop (`looptroop restart`) so it starts OpenCode again, or check the OpenCode URL setting.',
   }
 }

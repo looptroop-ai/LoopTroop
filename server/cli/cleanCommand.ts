@@ -5,8 +5,8 @@ import { clearDaemonState, readDaemonState, type DaemonState } from '../lib/daem
 import { matchProcess } from '../lib/processIdentity'
 import { getProjectWorktreesRoot, normalizeFolderPath } from '../storage/paths'
 import { markerVouchesFor, readWorktreeOwnerMarker } from '../storage/worktreeOwnership'
-import { isProcessAlive, killProcessTree, waitForExit } from './processControl'
-import { readRunningDaemon } from './commands'
+import { isProcessAlive } from './processControl'
+import { readRunningDaemon, stopOpenCodeTree } from './commands'
 import { getErrorMessage } from '@shared/typeGuards'
 import { runCommandSync } from '../git/runCommand'
 import { assertManagedWorktreesRoot, assertNoIgnoredWorktreeFiles } from '../git/worktreeRemoval'
@@ -41,9 +41,6 @@ export interface WorktreeCandidate {
  * than one that was abandoned.
  */
 const LIVE_WINDOW_MS = 10 * 60_000
-
-/** Long enough for OpenCode to close its listeners, short enough to not hang. */
-const OPENCODE_GRACEFUL_MS = 5_000
 
 /** Matched against when deciding whether the closing advice is worth printing. */
 const NO_MARKER_REASON = 'no LoopTroop ownership marker'
@@ -305,38 +302,6 @@ export function judgeOrphanedOpenCode(state: DaemonState | null): OpenCodeVerdic
   }
 }
 
-/**
- * SIGTERM to the group first, as the supervisor's own stop does: OpenCode leads
- * the group, so this reaches anything it started. Escalation is bounded, and the
- * identity is re-checked before each signal because the process may exit between
- * the decision and the delivery — and the pid could then be reused.
- */
-export async function stopOpenCode(pid: number, startToken: string | undefined): Promise<boolean> {
-  if (process.platform !== 'win32') {
-    const beforeGroup = matchProcess(pid, startToken)
-    if (beforeGroup.kind !== 'same') return !isProcessAlive(pid)
-
-    try {
-      process.kill(-pid, 'SIGTERM')
-    } catch {
-      // A group can disappear while the leader is still present. Recheck the
-      // leader before falling back to a direct signal, because the pid may
-      // have been reused in that gap.
-      if (matchProcess(pid, startToken).kind !== 'same') return !isProcessAlive(pid)
-      try {
-        process.kill(pid, 'SIGTERM')
-      } catch {
-        // Exited between the check and the signal.
-      }
-    }
-    if (await waitForExit(pid, OPENCODE_GRACEFUL_MS)) return true
-  }
-
-  if (matchProcess(pid, startToken).kind !== 'same') return !isProcessAlive(pid)
-  await killProcessTree(pid, startToken ?? null)
-  return await waitForExit(pid, OPENCODE_GRACEFUL_MS)
-}
-
 export function recheckWorktreeCleanupCandidate(
   candidate: WorktreeCandidate,
   closedTicketIds: readonly string[],
@@ -535,7 +500,8 @@ export async function cleanCommand(options: CleanOptions): Promise<number> {
     process.stdout.write(`\nRemoved ${removed} worktree(s).\n`)
 
     if (orphan.kind === 'stoppable') {
-      const stop = options.stopProcess ?? stopOpenCode
+      const stop = options.stopProcess
+        ?? (async (pid: number, startToken: string | undefined) => await stopOpenCodeTree(pid, startToken) !== null)
       const stopped = await stop(orphan.pid, recorded?.opencode?.startToken)
       if (stopped) {
         stoppedOrphan = true

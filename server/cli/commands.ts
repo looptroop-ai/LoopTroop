@@ -1,7 +1,7 @@
 import { spawn, type ChildProcess } from 'node:child_process'
 import { openSync } from 'node:fs'
 import { setTimeout as delay } from 'node:timers/promises'
-import { readDaemonState, getDaemonLogPath, getDaemonLogDir, clearDaemonState, clearDaemonStartFailure, readDaemonStartFailure, redactDaemonState, daemonBrowserOrigin, daemonOrigin, type DaemonState, type DaemonStartFailure } from '../lib/daemonPaths'
+import { readDaemonState, getDaemonLogPath, getDaemonStatePath, getDaemonLogDir, clearDaemonState, clearDaemonStartFailure, readDaemonStartFailure, redactDaemonState, daemonBrowserOrigin, daemonOrigin, type DaemonState, type DaemonStartFailure } from '../lib/daemonPaths'
 import { resolveTrustedExecutable } from '../lib/executablePath'
 import { resolveAppConfigDir, ensureSecureDir } from '../lib/appConfigDir'
 import { rotateDaemonLog } from '../lib/daemonLog'
@@ -594,6 +594,11 @@ export type StopOutcome =
   | { kind: 'failed'; pid: number }
   /** The pid is alive but is no longer the daemon, so nothing was signalled. */
   | { kind: 'not-ours'; pid: number; reason: string }
+  /**
+   * The daemon is gone, but the OpenCode it started was not proven gone, so its
+   * record was kept. `unverifiable` says why it was not even signalled.
+   */
+  | { kind: 'opencode-left'; pid: number; unverifiable?: string }
 
 /**
  * Whether the pid recorded for this daemon still belongs to it.
@@ -619,6 +624,86 @@ function stillTheDaemon(state: DaemonState): 'gone' | 'ours' | { reason: string 
 }
 
 /**
+ * Whether the tree a detached OpenCode led is gone, not just its leader.
+ *
+ * A detached POSIX child uses its own pid as the group id, and ESRCH is the
+ * only proof that no member remains: a descendant that ignored SIGTERM keeps
+ * the port, and the password only the dead daemon knew, after the leader has
+ * exited. Windows has no group to probe, so only a completed `taskkill /T`
+ * proves it there.
+ */
+function openCodeTreeGone(pid: number, snapshot: ProcessGroupSnapshot | null, windowsTreeProven = false): boolean {
+  if (isProcessAlive(pid)) return false
+  if (process.platform === 'win32') return windowsTreeProven
+  if (snapshot !== null && hasCapturedProcessGroupMember(snapshot)) return false
+  try {
+    process.kill(-pid, 0)
+    return false
+  } catch (error) {
+    return (error as NodeJS.ErrnoException).code === 'ESRCH'
+  }
+}
+
+/**
+ * SIGTERM to the group a token-proven OpenCode leads, so whatever it started is
+ * asked to exit too rather than left for the kill. Falls back to the leader
+ * alone, re-proven, when the group is gone.
+ */
+function signalOpenCodeGroup(pid: number, startToken: string): boolean {
+  if (process.platform === 'win32' || matchProcess(pid, startToken).kind !== 'same') return false
+  try {
+    process.kill(-pid, 'SIGTERM')
+    return true
+  } catch {
+    return signalTermination(pid, startToken)
+  }
+}
+
+/**
+ * Ends an OpenCode tree that no daemon is left to stop: a start that failed
+ * partway, or a daemon that was killed. `startToken` is the identity recorded
+ * when it was spawned; nothing is signalled unless the leader still matches it.
+ *
+ * Null unless the whole tree is proven gone, so the caller keeps the record
+ * that names it and a retry can finish the job.
+ */
+export async function stopOpenCodeTree(pid: number, startToken: string | undefined): Promise<{ forced: boolean } | null> {
+  // A tokenless record has no durable proof once the original ChildProcess
+  // handle is gone. Keep it blocked even when the numeric leader disappeared.
+  if (startToken === undefined) return null
+  if (!isProcessAlive(pid)) return openCodeTreeGone(pid, null) ? { forced: false } : null
+  // A recycled or unverifiable leader is never a reason to signal, nor proof
+  // that the detached descendants are gone.
+  if (matchProcess(pid, startToken).kind !== 'same') return null
+
+  // Capture the detached Linux group while the token-proven leader is live;
+  // refresh it immediately before escalation to include late descendants.
+  let snapshot = process.platform === 'linux'
+    ? captureProcessGroup(pid, 'linux', startToken)
+    : null
+
+  if (signalOpenCodeGroup(pid, startToken) && await waitForExit(pid, DEFAULT_STOP_BUDGETS.signalMs)
+    && openCodeTreeGone(pid, snapshot)) {
+    return { forced: false }
+  }
+
+  if (snapshot !== null && isProcessAlive(pid) && matchProcess(pid, startToken).kind === 'same') {
+    snapshot = refreshProcessGroup(snapshot)
+  }
+
+  // The token is checked again inside killProcessTree before it can signal.
+  const killed = await killProcessTree(pid, startToken)
+  if (!await waitForExit(pid, DEFAULT_STOP_BUDGETS.forceMs)) return null
+
+  // If the leader exited before the force call, use only the captured Linux
+  // group provenance; never recreate ownership from the old numeric pid.
+  if (snapshot !== null && hasCapturedProcessGroupMember(snapshot)) {
+    terminateCapturedProcessGroupAfterLeaderExit(snapshot, 'SIGKILL')
+  }
+  return openCodeTreeGone(pid, snapshot, killed) ? { forced: killed } : null
+}
+
+/**
  * Finishes a startup that exited while its owned OpenCode child was still
  * live. The record carries a start token, so a later CLI can prove the child
  * before signalling it; a missing token is preserved rather than guessed.
@@ -628,74 +713,10 @@ async function stopIncompleteStart(
   configDir: string,
 ): Promise<StopOutcome> {
   const { pid, startToken } = failure.openCode
-  const groupGone = (targetPid: number): boolean => {
-    if (process.platform === 'win32') return false
-    try {
-      process.kill(-targetPid, 0)
-      return false
-    } catch (error) {
-      return (error as NodeJS.ErrnoException).code === 'ESRCH'
-    }
-  }
-  const treeGone = (snapshot: ProcessGroupSnapshot | null, windowsTreeProven = false): boolean => {
-    if (isProcessAlive(pid)) return false
-    if (process.platform === 'win32') return windowsTreeProven
-    if (snapshot !== null && hasCapturedProcessGroupMember(snapshot)) return false
-    // A detached POSIX child uses its own pid as the group id. ESRCH is the
-    // only proof that no member remains; leader exit alone is not enough.
-    return groupGone(pid)
-  }
-  const clearIfProven = (snapshot: ProcessGroupSnapshot | null, forced: boolean, windowsTreeProven = false): StopOutcome | null => {
-    if (!treeGone(snapshot, windowsTreeProven)) return null
-    return clearDaemonStartFailure(failure, configDir)
-      ? { kind: 'stopped', forced }
-      : { kind: 'incomplete', pid, context: 'startup' }
-  }
-
-  if (startToken === undefined) {
-    // A tokenless record has no durable proof once the original ChildProcess
-    // handle is gone. Keep it blocked even when the numeric leader disappeared.
-    return { kind: 'incomplete', pid, context: 'startup' }
-  }
-
-  if (!isProcessAlive(pid)) return clearIfProven(null, false) ?? { kind: 'incomplete', pid, context: 'startup' }
-
-  const match = matchProcess(pid, startToken)
-  if (match.kind !== 'same') {
-    // A recycled or unverifiable leader is never a reason to discard detached
-    // descendants. Leave the retained record until a safe group-absence probe.
-    return { kind: 'incomplete', pid, context: 'startup' }
-  }
-
-  // Capture the detached Linux group while the token-proven leader is live;
-  // refresh it immediately before escalation to include late descendants.
-  let snapshot = process.platform === 'linux'
-    ? captureProcessGroup(pid, 'linux', startToken)
-    : null
-
-  if (signalTermination(pid, startToken) && await waitForExit(pid, DEFAULT_STOP_BUDGETS.signalMs)) {
-    const settled = clearIfProven(snapshot, false)
-    if (settled !== null) return settled
-  }
-
-  if (snapshot !== null && isProcessAlive(pid) && matchProcess(pid, startToken).kind === 'same') {
-    snapshot = refreshProcessGroup(snapshot)
-  }
-
-  // This is an explicitly requested cleanup of a token-proven child from a
-  // failed startup, not the accepted-but-incomplete live-daemon shutdown path.
-  // The token is checked again inside killProcessTree before it can signal.
-  const killed = await killProcessTree(pid, startToken)
-  if (!await waitForExit(pid, DEFAULT_STOP_BUDGETS.forceMs)) {
-    return { kind: 'incomplete', pid, context: 'startup' }
-  }
-
-  // If the leader exited before the force call, use only the captured Linux
-  // group provenance; never recreate ownership from the old numeric pid.
-  if (snapshot !== null && hasCapturedProcessGroupMember(snapshot)) {
-    terminateCapturedProcessGroupAfterLeaderExit(snapshot, 'SIGKILL')
-  }
-  return clearIfProven(snapshot, killed, killed) ?? { kind: 'incomplete', pid, context: 'startup' }
+  const stopped = await stopOpenCodeTree(pid, startToken)
+  return stopped !== null && clearDaemonStartFailure(failure, configDir)
+    ? { kind: 'stopped', forced: stopped.forced }
+    : { kind: 'incomplete', pid, context: 'startup' }
 }
 
 /**
@@ -847,10 +868,40 @@ export async function stopRunningDaemon(
  * handler. Leaving its records behind would mean a successful `stop` reporting
  * success while `status` still described a daemon.
  */
-function finishStop(state: DaemonState, configDir: string | undefined, forced: boolean): StopOutcome {
+async function finishStop(state: DaemonState, configDir: string | undefined, forced: boolean): Promise<StopOutcome> {
   clearLockOwnedBy(state.pid, configDir)
+  // The daemon may have moved OpenCode to a new pid since `state` was read.
+  const fresh = readDaemonState(configDir)
+  const left = await reapLeftOpenCode(fresh?.instanceId === state.instanceId ? fresh : state)
+  if (left !== null) return left
   clearDaemonState(state.instanceId, configDir)
   return { kind: 'stopped', forced }
+}
+
+/**
+ * Stops the OpenCode a daemon left running, before the record that names it
+ * is cleared. Null when nothing of it is left; otherwise why the record stays.
+ *
+ * OpenCode leads its own process group, so a daemon that never ran its own
+ * shutdown — killed by `stop`'s last rung, or by anyone else — leaves it
+ * running, holding its port with a password only that daemon knew. With the
+ * record gone nothing would name it: the next start would find the port taken
+ * and move past its own server, and no `stop` could find it again. A pid whose
+ * identity cannot be read is kept for the same reason `start` refuses it; one
+ * that now belongs to another process is stale, and `start` moves past it too.
+ */
+async function reapLeftOpenCode(state: DaemonState): Promise<StopOutcome | null> {
+  if (state.opencode?.owned !== true) return null
+  const { judgeOrphanedOpenCode } = await import('./cleanCommand')
+  const orphan = judgeOrphanedOpenCode(state)
+  if (orphan.kind === 'nothing' || (orphan.kind === 'kept' && orphan.identity === 'different')) return null
+  if (orphan.kind === 'kept') return { kind: 'opencode-left', pid: orphan.pid, unverifiable: orphan.reason }
+
+  if (await stopOpenCodeTree(orphan.pid, state.opencode.startToken) === null) {
+    return { kind: 'opencode-left', pid: orphan.pid }
+  }
+  process.stdout.write(`Stopped the OpenCode server (pid ${orphan.pid}) that LoopTroop left running.\n`)
+  return null
 }
 
 /** True when the daemon accepted the request; false for any failure to reach it. */
@@ -908,32 +959,9 @@ export async function stopCommand(): Promise<number> {
     process.stderr.write(`The recorded daemon is gone: ${probe.reason}.\n`)
   }
 
-  // A killed daemon runs no cleanup, so the OpenCode it started can outlive it,
-  // holding its port with a password only that daemon knew. Clearing the record
-  // first would leave that server running with nothing left that names it: the
-  // next start would find the port taken and move past its own server. Only a
-  // server whose recorded start identity still matches is signalled.
-  if (recordedBeforeProbe?.opencode?.owned === true) {
-    const { judgeOrphanedOpenCode, stopOpenCode } = await import('./cleanCommand')
-    const orphan = judgeOrphanedOpenCode(recordedBeforeProbe)
-    if (orphan.kind === 'stoppable') {
-      if (!await stopOpenCode(orphan.pid, recordedBeforeProbe.opencode.startToken)) {
-        process.stderr.write(
-          `Could not stop the OpenCode server (pid ${orphan.pid}) that the stopped LoopTroop left running. `
-          + 'Its record was kept so `looptroop stop` can retry.\n',
-        )
-        return 1
-      }
-      process.stdout.write(`Stopped the OpenCode server (pid ${orphan.pid}) that the stopped LoopTroop left running.\n`)
-    }
-  }
-
   // Clear debris so the next start is not blocked by a lock whose owner died.
-  // A recorded start failure survives: `stop` is what someone runs after a
-  // start that did not take, and it is the only account of why.
-  if (recordedBeforeProbe !== null) {
-    clearDaemonState(recordedBeforeProbe.instanceId, configDir)
-  }
+  // The lock goes first: while a live process holds it, nothing below is ours
+  // to touch, and "Nothing was stopped" has to stay true.
   const lock = releaseStaleLock(configDir)
 
   if (lock.kind === 'held') {
@@ -958,6 +986,14 @@ export async function stopCommand(): Promise<number> {
       'Try again in a moment, or run `looptroop doctor` if it persists.\n',
     )
     return 1
+  }
+
+  // A recorded start failure survives: `stop` is what someone runs after a
+  // start that did not take, and it is the only account of why.
+  if (recordedBeforeProbe !== null) {
+    const left = await reapLeftOpenCode(recordedBeforeProbe)
+    if (left !== null) return reportStopOutcome(left)
+    clearDaemonState(recordedBeforeProbe.instanceId, configDir)
   }
 
   process.stdout.write('LoopTroop is not running.\n')
@@ -1002,6 +1038,19 @@ function reportStopOutcome(outcome: StopOutcome): number {
       `LoopTroop stopped answering, and pid ${outcome.pid} was left alone because ${outcome.reason}. ` +
       'Run `looptroop status` to confirm nothing is still running.\n',
     )
+    return 1
+  }
+
+  if (outcome.kind === 'opencode-left') {
+    process.stderr.write(outcome.unverifiable === undefined
+      ? `LoopTroop is not running, but the OpenCode server it started (pid ${outcome.pid}), or a process that `
+        + 'server started, did not stop. Its record was kept so `looptroop stop` can retry.\n'
+      // Kept for the reason `start` refuses it: a server of ours that nothing
+      // names any more is one the next start moves past and never stops.
+      : `LoopTroop is not running, but pid ${outcome.pid}, recorded as the OpenCode server it started, `
+        + `could not be checked: ${outcome.unverifiable}. Nothing was signalled, and the record was kept. `
+        + `If pid ${outcome.pid} is that OpenCode server, end it, then run \`looptroop stop\` again. `
+        + `If it is something else, delete ${getDaemonStatePath()} instead.\n`)
     return 1
   }
 

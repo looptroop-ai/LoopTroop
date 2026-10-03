@@ -251,7 +251,7 @@ export class OpenCodeSDKAdapter implements OpenCodeAdapter {
         throw new Error(
           `Failed to create OpenCode session with allow-all permissions: ${errorMessage}. ` +
           'Allow-all sessions require an OpenCode server that supports session-scoped permissions. ' +
-          'Upgrade OpenCode and restart `opencode serve`.',
+          'Upgrade OpenCode, then restart LoopTroop (`looptroop restart`) or the OpenCode server it uses.',
         )
       }
       throw new Error(
@@ -467,7 +467,7 @@ export class OpenCodeSDKAdapter implements OpenCodeAdapter {
           if (isAbortError(error) || operationSignal?.aborted) throw error
           throw new Error(
             `Failed to apply OpenCode session permissions: ${getErrorMessage(error)}. ` +
-            'Session permission updates require a current OpenCode server; upgrade OpenCode and restart `opencode serve`.',
+            'Session permission updates require a current OpenCode server; upgrade OpenCode, then restart LoopTroop (`looptroop restart`) or the OpenCode server it uses.',
           )
         }
       }
@@ -871,7 +871,7 @@ export class OpenCodeSDKAdapter implements OpenCodeAdapter {
           if (isAbortError(error) || operationSignal?.aborted) throw error
           throw new Error(
             `Failed to apply OpenCode session permissions: ${getErrorMessage(error)}. ` +
-            'Session permission updates require a current OpenCode server; upgrade OpenCode and restart `opencode serve`.',
+            'Session permission updates require a current OpenCode server; upgrade OpenCode, then restart LoopTroop (`looptroop restart`) or the OpenCode server it uses.',
           )
         }
       }
@@ -1373,6 +1373,7 @@ export class OpenCodeSDKAdapter implements OpenCodeAdapter {
           available: false,
           failureKind: err.failureKind,
           error: err.message,
+          ...(err.credentialsSent === undefined ? {} : { credentialsSent: err.credentialsSent }),
         }
       }
       return {

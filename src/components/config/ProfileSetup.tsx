@@ -54,6 +54,17 @@ import { DEFAULT_IGNORE_MODE } from '@shared/ignoreMode'
 import { cn } from '@/lib/utils'
 import { DEFAULT_GIT_HOOK_POLICY } from '@shared/gitHookPolicy'
 
+/** For a `/health/opencode` refusal that arrives without the backend's advice. */
+const REFUSED_SIGN_IN_FALLBACK = 'OpenCode is running but refused LoopTroop\'s sign-in. '
+  + 'Set `OPENCODE_PASSWORD` to that server\'s password, then run `looptroop restart`.'
+
+/** The server's advice quotes commands and variables in backticks; show those as code. */
+function renderBacktickCode(text: string) {
+  return text.split('`').map((part, index) => index % 2 === 1
+    ? <code key={index} className="font-mono bg-muted-foreground/10 px-1 rounded">{part}</code>
+    : part)
+}
+
 function profileDraftSnapshot(
   formData: CreateProfileInput,
   rawNumeric: Record<string, string>,
@@ -254,6 +265,11 @@ export function ProfileSetup({ onClose, onOpenAbout = () => undefined, onDirtyCh
   }
 
   const [isOpenCodeConnected, setIsOpenCodeConnected] = useState<boolean | null>(null)
+  // A server that refused LoopTroop's sign-in is running: the fix is its
+  // password, not a restart. The server words which password, since it knows
+  // whether one was sent at all.
+  const [openCodeRefusedSignIn, setOpenCodeRefusedSignIn] = useState(false)
+  const [openCodeSignInAdvice, setOpenCodeSignInAdvice] = useState<string | null>(null)
   const [isRefreshingModels, setIsRefreshingModels] = useState(false)
 
   useEffect(() => {
@@ -265,8 +281,10 @@ export function ProfileSetup({ onClose, onOpenAbout = () => undefined, onDirtyCh
           return
         }
 
-        const payload = await res.json().catch(() => null) as { status?: string } | null
+        const payload = await res.json().catch(() => null) as { status?: string, failureKind?: string, advice?: unknown } | null
         setIsOpenCodeConnected(payload?.status === 'ok')
+        setOpenCodeRefusedSignIn(payload?.failureKind === 'authentication')
+        setOpenCodeSignInAdvice(typeof payload?.advice === 'string' && payload.advice.trim() ? payload.advice : null)
       })
       .catch((err) => { if (err.name !== 'AbortError') setIsOpenCodeConnected(false) })
     return () => controller.abort()
@@ -418,7 +436,9 @@ export function ProfileSetup({ onClose, onOpenAbout = () => undefined, onDirtyCh
             )}
             {isOpenCodeConnected === false && (
               <div className="mt-2 rounded-md bg-muted px-3 py-2 text-xs text-muted-foreground">
-                LoopTroop could not reach the configured OpenCode server. Start it with <code className="font-mono bg-muted-foreground/10 px-1 rounded">opencode serve</code> or check the backend OpenCode URL.
+                {openCodeRefusedSignIn
+                  ? renderBacktickCode(openCodeSignInAdvice ?? REFUSED_SIGN_IN_FALLBACK)
+                  : <>LoopTroop could not reach its OpenCode server. Restart LoopTroop (<code className="font-mono bg-muted-foreground/10 px-1 rounded">looptroop restart</code>) so it starts OpenCode again, or check the backend OpenCode URL.</>}
               </div>
             )}
           </div>

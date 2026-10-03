@@ -1,9 +1,26 @@
+import { createServer } from 'node:http'
+import type { AddressInfo } from 'node:net'
 import { describe, expect, it, vi } from 'vitest'
 import { OpenCodeV1Transport, type OpenCodeV1Client } from '../v1Transport'
 import type { GenericMessagePart } from '../types'
 
 function transport(client: Record<string, unknown>): OpenCodeV1Transport {
   return new OpenCodeV1Transport('http://127.0.0.1:4096', client as unknown as OpenCodeV1Client)
+}
+
+/** A local server answering each path with the status `statusFor` picks, to drive the real SDK client. */
+async function withStatusServer(statusFor: (path: string) => number, run: (baseUrl: string) => Promise<void>) {
+  const server = createServer((req, res) => {
+    const status = statusFor(req.url ?? '/')
+    res.writeHead(status, { 'content-type': 'application/json' })
+    res.end(status < 400 ? JSON.stringify({ healthy: true, version: '1.0.0', providers: [] }) : JSON.stringify({ error: 'unauthorized' }))
+  })
+  await new Promise<void>(resolve => server.listen(0, '127.0.0.1', resolve))
+  try {
+    await run(`http://127.0.0.1:${(server.address() as AddressInfo).port}`)
+  } finally {
+    await new Promise(resolve => server.close(resolve))
+  }
 }
 
 function eventState() {
@@ -161,6 +178,13 @@ describe('OpenCode v1 transport direct behavior', () => {
     }).checkHealth()).resolves.toMatchObject({ available: false, failureKind: 'authentication', error: 'credentials rejected' })
     expect(authStatus).not.toHaveBeenCalled()
 
+    // Whether a password went out decides the wording of what to do next.
+    const rejectingClient = { global: { health: vi.fn(async () => { throw authentication }) } } as unknown as OpenCodeV1Client
+    await expect(new OpenCodeV1Transport('http://127.0.0.1:4096', rejectingClient, { Authorization: 'Basic x' }).checkHealth())
+      .resolves.toMatchObject({ failureKind: 'authentication', credentialsSent: true })
+    await expect(new OpenCodeV1Transport('http://127.0.0.1:4096', rejectingClient, {}).checkHealth())
+      .resolves.toMatchObject({ failureKind: 'authentication', credentialsSent: false })
+
     const healthNetworkError = Object.assign(new Error('health endpoint unavailable'), { statusCode: 500 })
     const unsupported = Object.assign(new Error('v1 status route missing'), { statusCode: 404 })
     await expect(transport({
@@ -186,6 +210,64 @@ describe('OpenCode v1 transport direct behavior', () => {
       global: { health: vi.fn(async () => ({ data: {} })) },
       config: { providers: vi.fn(async () => { throw modelNetworkError }) },
     }).checkHealth()).resolves.toMatchObject({ available: true, failureKind: 'model_discovery', error: expect.stringContaining('provider route failed') })
+  })
+
+  it('reports a rejected sign-in from the status fallback with whether a password went out', async () => {
+    const unsupported = Object.assign(new Error('health route missing'), { statusCode: 404 })
+    const rejected = Object.assign(new Error('credentials rejected'), { statusCode: 401 })
+    const client = {
+      global: { health: vi.fn(async () => { throw unsupported }) },
+      session: { status: vi.fn(async () => { throw rejected }) },
+    } as unknown as OpenCodeV1Client
+    await expect(new OpenCodeV1Transport('http://127.0.0.1:4096', client, { Authorization: 'Basic x' }).checkHealth())
+      .resolves.toMatchObject({ available: false, failureKind: 'authentication', credentialsSent: true })
+    await expect(new OpenCodeV1Transport('http://127.0.0.1:4096', client, {}).checkHealth())
+      .resolves.toMatchObject({ available: false, failureKind: 'authentication', credentialsSent: false })
+  })
+
+  // The real SDK client resolves `{ error, response }` on an HTTP error instead of throwing.
+  it('reports a 401 the real SDK client returns, not throws, as a rejected sign-in', async () => {
+    // Exact objects: a 401 caught later, by model discovery, reads differently.
+    const rejectedAtHealth = { available: false, protocol: 'v1', failureKind: 'authentication', error: 'OpenCode answered HTTP 401' }
+    await withStatusServer(() => 401, async (baseUrl) => {
+      await expect(new OpenCodeV1Transport(baseUrl, undefined, { Authorization: 'Basic x' }).checkHealth())
+        .resolves.toEqual({ ...rejectedAtHealth, credentialsSent: true })
+      await expect(new OpenCodeV1Transport(baseUrl, undefined, {}).checkHealth())
+        .resolves.toEqual({ ...rejectedAtHealth, credentialsSent: false })
+    })
+
+    // No health route: the status fallback's returned 401 is a rejected sign-in too.
+    await withStatusServer(path => path.startsWith('/global/health') ? 404 : 401, async (baseUrl) => {
+      await expect(new OpenCodeV1Transport(baseUrl, undefined, { Authorization: 'Basic x' }).checkHealth())
+        .resolves.toEqual({ ...rejectedAtHealth, credentialsSent: true })
+    })
+
+    // Only model discovery is guarded: a returned 403 there is a rejected sign-in.
+    const discovery = { protocol: 'v1', version: '1.0.0', models: [] }
+    await withStatusServer(path => path.startsWith('/config/providers') ? 403 : 200, async (baseUrl) => {
+      await expect(new OpenCodeV1Transport(baseUrl, undefined, {}).checkHealth()).resolves.toEqual({
+        ...discovery,
+        available: false,
+        failureKind: 'authentication',
+        credentialsSent: false,
+        error: 'OpenCode is reachable, but model discovery failed: OpenCode answered HTTP 403',
+      })
+    })
+
+    // A returned non-auth error from model discovery stays a model-discovery failure.
+    await withStatusServer(path => path.startsWith('/config/providers') ? 500 : 200, async (baseUrl) => {
+      await expect(new OpenCodeV1Transport(baseUrl, undefined, {}).checkHealth()).resolves.toEqual({
+        ...discovery,
+        available: true,
+        failureKind: 'model_discovery',
+        error: 'OpenCode is reachable, but model discovery failed: OpenCode answered HTTP 500',
+      })
+    })
+
+    await withStatusServer(() => 200, async (baseUrl) => {
+      const health = await new OpenCodeV1Transport(baseUrl, undefined, {}).checkHealth()
+      expect(health).toEqual({ available: true, protocol: 'v1', version: '1.0.0', models: [] })
+    })
   })
 
   it('maps questions, permissions, and interrupt confirmations from v1 responses', async () => {

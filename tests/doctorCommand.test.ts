@@ -7,10 +7,12 @@ import { delimiter, join } from 'node:path'
 import { doctorCommand, runChecks, isOpenCodeCliLaunchable, judgeOpenCode, runProbe } from '../server/cli/doctorCommand'
 import { NODE_FLOOR as FLOOR } from '../server/lib/nodeFloor'
 import { formatNodeVersion } from '../shared/nodeFloor'
-import { writeDaemonState, writeDaemonStartFailure, type DaemonState } from '../server/lib/daemonPaths'
+import { getDaemonStatePath, writeDaemonState, writeDaemonStartFailure, type DaemonState } from '../server/lib/daemonPaths'
+import { readProcessStartToken } from '../server/lib/processIdentity'
 import { applyIgnoreMode } from '../server/git/repository'
 import { APP_VERSION } from '../server/lib/appVersion'
 import { removeTempDir } from '../server/test/tempDir'
+import { leaderlessProcessGroup } from '../server/test/processGroup'
 
 /**
  * 2.12 contract: doctor tells a user whether this machine can run LoopTroop,
@@ -50,6 +52,8 @@ describe('doctor command', () => {
     writeFileSync(join(dir, 'tool-versions.json'), JSON.stringify({
       lastAttemptAt: new Date().toISOString(),
       opencodeSource: null,
+      // The line the cached `node` answer is for: another one is looked up again.
+      nodeLine: Number(process.versions.node.split('.')[0]),
       versions: { node: '24.0.0', npm: '11.0.0', gh: '2.75.0', git: '2.50.0' },
     }))
 
@@ -61,6 +65,20 @@ describe('doctor command', () => {
     vi.stubEnv('PATH', `${dir}${delimiter}${process.env.PATH ?? ''}`)
     vi.stubEnv('LOOPTROOP_TRUSTED_EXECUTABLE_DIRS', dir)
     return dir
+  }
+
+  /**
+   * An `opencode` the resolver will run, in `dir`. Without it a case that needs
+   * a launchable CLI passes only on a machine that has OpenCode installed —
+   * this one does, CI runners do not. 9.9.9 maps to no package source, so the
+   * cached latest-version answer stays valid and nothing is fetched.
+   */
+  function fakeOpenCode(dir: string): void {
+    const opencode = join(dir, process.platform === 'win32' ? 'opencode.cmd' : 'opencode')
+    writeFileSync(opencode, process.platform === 'win32'
+      ? '@echo off\r\necho 9.9.9\r\nexit /b 0\r\n'
+      : '#!/bin/sh\necho 9.9.9\n')
+    if (process.platform !== 'win32') chmodSync(opencode, 0o700)
   }
 
   function captureStdout(): { text: () => string } {
@@ -187,6 +205,256 @@ describe('doctor command', () => {
         server.close((error) => error ? reject(error) : resolve())
       })
     }
+  })
+
+  // A start will not launch OpenCode on the port its own server is about to
+  // bind, and a set address is not moved; doctor used to call that ready.
+  it('fails when a set OpenCode address uses the port LoopTroop itself is set to', async () => {
+    useConfigDir()
+    process.env.LOOPTROOP_OPENCODE_MODE = 'real'
+    const server = createServer()
+    const port = await new Promise<number>((resolve) => {
+      server.listen(0, '127.0.0.1', () => resolve((server.address() as { port: number }).port))
+    })
+    await new Promise<void>((resolve) => server.close(() => resolve()))
+    vi.stubEnv('LOOPTROOP_BACKEND_PORT', String(port))
+    vi.stubEnv('LOOPTROOP_OPENCODE_BASE_URL', `http://127.0.0.1:${port}`)
+
+    expect((await runChecks()).find((entry) => entry.name === 'opencode')).toMatchObject({
+      status: 'fail',
+      detail: `http://127.0.0.1:${port} uses port ${port}, which LoopTroop's own server is set to use, so \`looptroop start\` will fail`,
+    })
+  })
+
+  // A start refuses this before it probes, so a server answering there changes
+  // nothing: the daemon could not bind its own port beside it.
+  it('fails that clash even when a server answers at the address', async () => {
+    useConfigDir()
+    process.env.LOOPTROOP_OPENCODE_MODE = 'real'
+    vi.spyOn(globalThis, 'fetch').mockResolvedValue(new Response('{}', { status: 200, headers: { 'content-type': 'application/json' } }))
+    vi.stubEnv('LOOPTROOP_BACKEND_PORT', '45124')
+    vi.stubEnv('LOOPTROOP_OPENCODE_BASE_URL', 'http://127.0.0.1:45124')
+
+    expect((await runChecks()).find((entry) => entry.name === 'opencode')).toMatchObject({
+      status: 'fail',
+      detail: expect.stringContaining('which LoopTroop\'s own server is set to use'),
+    })
+  })
+
+  // `looptroop start --port 4096`: the default address moves, and doctor names
+  // where to, as it does for a default address held by another server.
+  it('names the port a start moves the default OpenCode address to when LoopTroop takes its port', async () => {
+    const configDir = useConfigDir()
+    process.env.LOOPTROOP_OPENCODE_MODE = 'real'
+    fakeOpenCode(configDir)
+    vi.stubEnv('LOOPTROOP_BACKEND_PORT', '4096')
+
+    expect((await runChecks()).find((entry) => entry.name === 'opencode')).toMatchObject({
+      status: 'warn',
+      detail: expect.stringMatching(/^http:\/\/127\.0\.0\.1:4096 uses port 4096, which LoopTroop's own server is set to use; `looptroop start` will start its own OpenCode on the next free port \(now \d+\)$/),
+    })
+  })
+
+  /**
+   * What the next start would refuse before it ever looks at OpenCode's
+   * address. Each case is one `startDaemon` reconciles from its previous
+   * record, and doctor has to agree with it rather than promise a move.
+   */
+  describe('a previous LoopTroop that is still around', () => {
+    /** A pid that has certainly exited, for the record of a daemon that died. */
+    function departedPid(): number {
+      return Number(execFileSync(process.execPath, ['-e', 'process.stdout.write(String(process.pid))'], { encoding: 'utf8' }))
+    }
+
+    function tokenOfThisProcess(): string {
+      const token = readProcessStartToken(process.pid)
+      expect(token, 'this platform cannot report process start times').toBeTruthy()
+      return token ?? ''
+    }
+
+    /** The record a daemon leaves; this test process stands in for live pids, so nothing is signalled. */
+    function recordDaemon(
+      configDir: string,
+      daemon: { pid: number; startToken?: string },
+      opencode: { pid?: number; startToken?: string },
+      extra: Partial<DaemonState> = {},
+    ) {
+      writeDaemonState({
+        instanceId: 'previous-daemon',
+        pid: daemon.pid,
+        ...(daemon.startToken === undefined ? {} : { startToken: daemon.startToken }),
+        host: '127.0.0.1',
+        port: 1,
+        startedAt: new Date().toISOString(),
+        version: '0.0.0-test',
+        apiToken: 'test-token',
+        opencode: {
+          baseUrl: 'http://127.0.0.1:4096',
+          owned: true,
+          status: 'managed',
+          ...(opencode.pid === undefined ? {} : { pid: opencode.pid }),
+          ...(opencode.startToken === undefined ? {} : { startToken: opencode.startToken }),
+        },
+        ...extra,
+      }, configDir)
+      // Its password died with the daemon, so the address answers 401 — the
+      // case a start would otherwise move past.
+      vi.spyOn(globalThis, 'fetch').mockResolvedValue(new Response('', { status: 401 }))
+    }
+
+    async function opencodeCheck() {
+      return (await runChecks()).find((entry) => entry.name === 'opencode')
+    }
+
+    it('fails while a killed daemon\'s own OpenCode is still running, whatever answers on its port', async () => {
+      const configDir = useConfigDir()
+      process.env.LOOPTROOP_OPENCODE_MODE = 'real'
+      recordDaemon(configDir, { pid: departedPid() }, { pid: process.pid, startToken: tokenOfThisProcess() })
+
+      expect(await opencodeCheck()).toMatchObject({
+        status: 'fail',
+        detail: expect.stringContaining(`(pid ${process.pid}) is still running`),
+        // `stop` ends a dead daemon's OpenCode, and it is also what a start
+        // that already refused tells people to run: one command for both.
+        remedy: 'Run `looptroop stop` to end it.',
+      })
+    })
+
+    it('reports the leftover in mock mode too, which a start reconciles before reading the mode', async () => {
+      const configDir = useConfigDir()
+      recordDaemon(configDir, { pid: departedPid() }, { pid: process.pid, startToken: tokenOfThisProcess() })
+
+      expect(await opencodeCheck()).toMatchObject({ status: 'fail', remedy: 'Run `looptroop stop` to end it.' })
+    })
+
+    it('fails for a leftover it cannot identify, which a start refuses to replace', async () => {
+      const configDir = useConfigDir()
+      process.env.LOOPTROOP_OPENCODE_MODE = 'real'
+      // No start token: a number is not an identity.
+      recordDaemon(configDir, { pid: departedPid() }, { pid: process.pid })
+
+      expect(await opencodeCheck()).toMatchObject({
+        status: 'fail',
+        detail: expect.stringContaining('cannot be identified'),
+        remedy: `If pid ${process.pid} is that OpenCode, end it, then run \`looptroop stop\` to clear the record. `
+          + `If it is something else, delete ${getDaemonStatePath(configDir)}.`,
+      })
+    })
+
+    // `stop` cannot finish a shutdown whose daemon is gone, and a start
+    // refuses the record; doctor used to call that machine ready.
+    it('fails for a daemon that exited before it finished shutting down, in mock mode too', async () => {
+      const configDir = useConfigDir()
+      recordDaemon(configDir, { pid: departedPid() }, { pid: departedPid() }, { shutdownPending: true })
+
+      expect(await opencodeCheck()).toMatchObject({
+        status: 'fail',
+        detail: expect.stringContaining('exited before it finished shutting down'),
+        remedy: expect.stringContaining(`then delete ${getDaemonStatePath(configDir)}.`),
+      })
+    })
+
+    it.skipIf(process.platform === 'win32')('fails for a dead leader whose process group runs on, which a start refuses to replace', async () => {
+      const configDir = useConfigDir()
+      const pgid = await leaderlessProcessGroup()
+      try {
+        recordDaemon(configDir, { pid: departedPid() }, { pid: pgid, startToken: 'anything' })
+
+        expect(await opencodeCheck()).toMatchObject({
+          status: 'fail',
+          detail: expect.stringContaining(`(pid ${pgid}) has exited, but processes in its process group are still running`),
+          remedy: `End them (\`pgrep -g ${pgid}\` lists them), then run \`looptroop stop\` to clear the record. `
+            + `If they are not LoopTroop's, delete ${getDaemonStatePath(configDir)}.`,
+        })
+      } finally {
+        process.kill(-pgid, 'SIGKILL')
+      }
+    })
+
+    it('fails for a record of its own OpenCode with no pid, which a start refuses to replace', async () => {
+      const configDir = useConfigDir()
+      recordDaemon(configDir, { pid: departedPid() }, {})
+
+      expect(await opencodeCheck()).toMatchObject({
+        status: 'fail',
+        detail: expect.stringContaining('but not its pid'),
+        remedy: 'If an OpenCode server is still running at http://127.0.0.1:4096, end it. Then run `looptroop stop` to clear the record.',
+      })
+    })
+
+    it('moves past a recorded pid that now belongs to another process, as a start does', async () => {
+      const configDir = useConfigDir()
+      process.env.LOOPTROOP_OPENCODE_MODE = 'real'
+      fakeOpenCode(configDir)
+      recordDaemon(configDir, { pid: departedPid() }, { pid: process.pid, startToken: 'the-token-of-a-process-that-has-exited' })
+
+      expect(await opencodeCheck()).toMatchObject({
+        status: 'warn',
+        detail: expect.stringContaining('will start its own OpenCode on the next free port'),
+      })
+    })
+
+    it('calls a daemon that is alive but not answering neither stopped nor orphaned', async () => {
+      const configDir = useConfigDir()
+      process.env.LOOPTROOP_OPENCODE_MODE = 'real'
+      // Alive with its real identity, answering nothing on the port it holds.
+      vi.stubEnv('LOOPTROOP_BACKEND_PORT', '45123')
+      const token = tokenOfThisProcess()
+      recordDaemon(configDir, { pid: process.pid, startToken: token }, { pid: process.pid, startToken: token }, { port: 45123 })
+
+      const checks = await runChecks()
+
+      expect(checks.find((entry) => entry.name === 'opencode')).toMatchObject({
+        status: 'warn',
+        detail: `not checked: pid ${process.pid}, recorded as LoopTroop, is running but not answering`,
+        remedy: 'See the daemon check.',
+      })
+      // `start` refuses to run beside it, so the machine cannot run LoopTroop.
+      expect(checks.find((entry) => entry.name === 'daemon')).toMatchObject({
+        status: 'fail',
+        detail: `pid ${process.pid} is still running but not answering`,
+        remedy: 'Run `looptroop stop`, then start LoopTroop again.',
+      })
+      // Its own port, not "another process" to be stopped by hand.
+      expect(checks.find((entry) => entry.name === 'port')).toMatchObject({
+        status: 'ok',
+        detail: `45123 in use by this LoopTroop (pid ${process.pid})`,
+      })
+    })
+
+    // `stop` will not signal a pid it cannot identify, so it cannot be the remedy.
+    it('says how to get past a live daemon pid it cannot identify', async () => {
+      const configDir = useConfigDir()
+      recordDaemon(configDir, { pid: process.pid }, { pid: process.pid })
+
+      expect((await runChecks()).find((entry) => entry.name === 'daemon')).toMatchObject({
+        status: 'fail',
+        detail: expect.stringContaining('not answering, and no start-identity token was recorded for it'),
+        remedy: `If pid ${process.pid} is LoopTroop, end it, then run \`looptroop stop\`. `
+          + `If it is something else, delete ${getDaemonStatePath(configDir)}.`,
+      })
+    })
+
+    it('leaves a start that already recorded the leftover to the start cleanup check', async () => {
+      const configDir = useConfigDir()
+      process.env.LOOPTROOP_OPENCODE_MODE = 'real'
+      writeDaemonStartFailure({
+        reason: 'startup-cleanup-incomplete',
+        at: new Date().toISOString(),
+        version: '0.0.0-test',
+        message: 'The previous daemon ended while its owned OpenCode server was still running.',
+        openCode: { baseUrl: 'http://127.0.0.1:4096', pid: process.pid, startToken: tokenOfThisProcess() },
+      }, configDir)
+      vi.spyOn(globalThis, 'fetch').mockResolvedValue(new Response('', { status: 401 }))
+
+      const checks = await runChecks()
+
+      expect(checks.find((entry) => entry.name === 'last start')).toMatchObject({ status: 'fail' })
+      expect(checks.find((entry) => entry.name === 'opencode')).toMatchObject({
+        status: 'warn',
+        detail: `not checked: a previous start still owns OpenCode at http://127.0.0.1:4096 (pid ${process.pid})`,
+      })
+    })
   })
 
   it('brackets an IPv6 daemon address in its report', async () => {
@@ -840,8 +1108,105 @@ describe('doctor command', () => {
       expect(check.detail).toContain('OpenCode exited 3 times')
     })
 
+    // A start waits for a booting server and adopts it, which needs no CLI.
+    // The `opencode cli` line still says the binary is missing.
+    it('only warns about a server still booting, with or without a CLI', () => {
+      const check = judgeOpenCode({ kind: 'responded', status: 503 }, { baseUrl, daemon: null, cliAvailable: false })
+
+      expect(check.status).toBe('warn')
+      expect(check.detail).toContain('still responding')
+    })
+
     it('reports a reachable server as healthy whoever started it', () => {
       expect(judgeOpenCode({ kind: 'ok' }, { baseUrl, daemon: null, cliAvailable: false }).status).toBe('ok')
+    })
+
+    /**
+     * The default address held by a server LoopTroop cannot use. A start
+     * leaves it alone and takes the next free port, so before a start it is
+     * not a failure — it was the one this report called fatal on a machine
+     * whose only problem was a hand-started OpenCode v2 with its own password.
+     */
+    describe('a default address held by a server LoopTroop cannot use', () => {
+      const NOT_CONFIGURED = 'OpenCode requires a password, and none is configured (HTTP 401).'
+
+      it('only warns when a start would move past it', () => {
+        for (const failureKind of ['authentication', 'unsupported_protocol'] as const) {
+          const check = judgeOpenCode(
+            { kind: 'failed', failureKind, error: NOT_CONFIGURED, status: 401 },
+            { baseUrl, daemon: null, cliAvailable: true, movable: true },
+          )
+
+          expect(check.status).toBe('warn')
+          expect(check.detail).toBe(`${baseUrl} is used by another server that LoopTroop cannot use: ${NOT_CONFIGURED} `
+            + '`looptroop start` will start its own OpenCode on the next free port.')
+        }
+      })
+
+      it('names the port a start would take, and fails when there is none', () => {
+        const failed = { kind: 'failed', failureKind: 'authentication', error: NOT_CONFIGURED, status: 401 } as const
+
+        expect(judgeOpenCode(failed, { baseUrl, daemon: null, cliAvailable: true, movable: true, nextFreePort: 4097 }).detail)
+          .toContain('will start its own OpenCode on the next free port (now 4097).')
+        expect(judgeOpenCode(failed, { baseUrl, daemon: null, cliAvailable: true, movable: true, nextFreePort: null }))
+          .toMatchObject({ status: 'fail', remedy: 'Stop that server, or set LOOPTROOP_OPENCODE_BASE_URL to a free address.' })
+      })
+
+      it('fails when no OpenCode could be started next to it', () => {
+        const check = judgeOpenCode(
+          { kind: 'failed', failureKind: 'authentication', error: NOT_CONFIGURED, status: 401 },
+          { baseUrl, daemon: null, cliAvailable: false, movable: true },
+        )
+
+        expect(check.status).toBe('fail')
+        expect(check.remedy).toContain('opencode.ai')
+      })
+
+      it('fails, and says what to change, when the user set that address', () => {
+        const check = judgeOpenCode(
+          { kind: 'failed', failureKind: 'authentication', error: NOT_CONFIGURED, status: 401 },
+          { baseUrl, daemon: null, cliAvailable: true, movable: false },
+        )
+
+        expect(check.status).toBe('fail')
+        expect(check.remedy).toContain('Set OPENCODE_PASSWORD to that server\'s password')
+        expect(check.remedy).toContain('remove LOOPTROOP_OPENCODE_BASE_URL')
+      })
+
+      it('does not offer a move to a daemon that is already running', () => {
+        const check = judgeOpenCode(
+          { kind: 'failed', failureKind: 'authentication', error: NOT_CONFIGURED, status: 401 },
+          { baseUrl, daemon: daemonWith({ baseUrl, owned: false, status: 'adopted' }), cliAvailable: true, movable: true },
+        )
+
+        expect(check.status).toBe('fail')
+        expect(check.remedy).not.toContain('LOOPTROOP_OPENCODE_BASE_URL')
+      })
+
+      it('says where the running server went instead', () => {
+        const movedTo = 'http://127.0.0.1:4098'
+        const check = judgeOpenCode(
+          { kind: 'ok', protocol: 'v2', version: '2.0.22', url: movedTo },
+          {
+            baseUrl,
+            daemon: daemonWith({
+              baseUrl: movedTo,
+              owned: true,
+              status: 'managed',
+              pid: 4242,
+              movedFrom: { baseUrl, reason: NOT_CONFIGURED },
+            }),
+            cliAvailable: true,
+            movable: true,
+          },
+        )
+
+        expect(check).toMatchObject({
+          status: 'ok',
+          detail: `reachable at ${movedTo} (v2, 2.0.22). ${baseUrl} could not be used when LoopTroop started: `
+            + NOT_CONFIGURED,
+        })
+      })
     })
 
     it('carries the status code when something else answers on that port', () => {
@@ -908,6 +1273,31 @@ describe('doctor command', () => {
       expect(check('config dir')).toMatchObject({ name: 'config dir', status: 'ok', detail: configDir })
       expect(check('opencode cli')).toMatchObject({ status: 'warn', missing: true })
       expect(check('opencode')).toMatchObject({ status: 'fail' })
+    })
+
+    it('says an absent optional tool is optional, and names only what blocks', async () => {
+      const root = mkdtempSync(join(tmpdir(), 'looptroop-doctor-empty-path-'))
+      tempDirs.push(root)
+      const emptyBinDir = join(root, 'bin')
+      vi.stubEnv('PATH', emptyBinDir)
+      vi.stubEnv('LOOPTROOP_TRUSTED_EXECUTABLE_DIRS', emptyBinDir)
+      vi.stubEnv('LOOPTROOP_CONFIG_DIR', join(root, 'config'))
+      vi.stubEnv('LOOPTROOP_OPENCODE_MODE', 'real')
+      vi.stubEnv('LOOPTROOP_OPENCODE_BASE_URL', 'http://127.0.0.1:1')
+      vi.spyOn(globalThis, 'fetch').mockRejectedValue(new TypeError('offline'))
+      const failing = (await runChecks()).filter((entry) => entry.status === 'fail').map((entry) => entry.label ?? entry.name)
+      const stdout = captureStdout()
+
+      expect(await doctorCommand(false)).toBe(1)
+      const lines = stdout.text().split('\n')
+      const gh = lines.findIndex((line) => /^✗ gh\s/.test(line))
+      // A ticket's pre-flight check needs it before coding starts, so "only
+      // for pull requests" was wrong.
+      expect(lines[gh + 1]).toBe('  ↳ Optional to start LoopTroop, but a ticket needs it before coding starts.')
+      // Every absent tool is marked ✗, so the verdict names the ones that block.
+      expect(failing).toContain('git')
+      expect(failing).not.toContain('gh')
+      expect(lines).toContain(`LoopTroop cannot run until these are fixed: ${failing.join(', ')}.`)
     })
 
     it('does not pass daemon credentials to a probe child', () => {

@@ -1,5 +1,6 @@
 import { Hono } from 'hono'
 import { getOpenCodeAdapter } from '../opencode/factory'
+import { credentialsWereSent, openCodeAuthAdvice } from '../opencode/connection'
 import { dismissStartupRestoreNotice, getStartupStatus } from '../startupState'
 import { APP_VERSION } from '../lib/appVersion'
 import { getUpdateStatus } from '../lib/updateCheck'
@@ -17,6 +18,10 @@ health.get('/health', (c) => {
 health.get('/health/opencode', async (c) => {
   const adapter = getOpenCodeAdapter()
   const result = await adapter.checkHealth()
+  // The setup notice shows this advice rather than a sentence of its own:
+  // whether a password was sent decides between "set one" and "check it", and
+  // a v1 server reads different variables than v2.
+  const credentialsSent = result.failureKind === 'authentication' ? credentialsWereSent(result) : undefined
   return c.json({
     status: result.available ? 'ok' : 'unavailable',
     ...(result.protocol ? { protocol: result.protocol } : {}),
@@ -24,6 +29,7 @@ health.get('/health/opencode', async (c) => {
     models: result.models ?? [],
     ...(result.failureKind ? { failureKind: result.failureKind } : {}),
     ...(result.error ? { error: result.error } : {}),
+    ...(credentialsSent === undefined ? {} : { credentialsSent, advice: openCodeAuthAdvice(credentialsSent) }),
   })
 })
 

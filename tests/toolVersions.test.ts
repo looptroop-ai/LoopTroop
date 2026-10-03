@@ -4,11 +4,28 @@ import { getLatestToolVersions, TOOL_CHECK_INTERVAL_MS } from '../server/lib/too
 
 const tempDirs: string[] = []
 
+/**
+ * nodejs.org lists releases by date, newest first: an older line's security
+ * release can come before a newer line's, and 24.9.0 sorts after 24.21.0 as
+ * text. Both are what the npm `node` package's `latest` tag got wrong.
+ */
+const NODE_RELEASES = [
+  { version: 'v22.23.3', lts: 'Jod' },
+  { version: 'v26.10.0', lts: false },
+  { version: 'v24.21.0', lts: 'Krypton' },
+  { version: 'v24.9.0', lts: 'Krypton' },
+  { version: 'v24.19.0', lts: 'Krypton' },
+  // Not a release: a suffix never counts, whatever its number.
+  { version: 'v24.99.0-nightly20260930', lts: false },
+]
+
 function fixtureFetch(requested: string[]): typeof fetch {
   return async (input) => {
     const url = String(input)
     requested.push(url)
-    const body = url.endsWith('/opencode-ai/latest')
+    const body = url === 'https://nodejs.org/dist/index.json'
+      ? NODE_RELEASES
+      : url.endsWith('/opencode-ai/latest')
       ? { version: '1.18.32' }
       : url.endsWith('/@opencode/cli/latest')
         ? { version: '2.0.16' }
@@ -29,6 +46,48 @@ afterEach(() => {
     const dir = tempDirs.pop()
     if (dir) removeTempDir(dir)
   }
+})
+
+describe('latest Node version', () => {
+  function tempConfigDir(): string {
+    const configDir = makeTempDir('looptroop-tool-versions-')
+    tempDirs.push(configDir)
+    return configDir
+  }
+
+  it('is the newest release of the running Node\'s own major line', async () => {
+    const versions = await getLatestToolVersions({
+      configDir: tempConfigDir(),
+      fetchImpl: fixtureFetch([]),
+      now: () => Date.parse('2026-09-24T00:00:00.000Z'),
+      nodeVersion: 'v24.19.0',
+    })
+
+    expect(versions.node).toBe('24.21.0')
+  })
+
+  it('is unknown for a line with no release listed', async () => {
+    const versions = await getLatestToolVersions({
+      configDir: tempConfigDir(),
+      fetchImpl: fixtureFetch([]),
+      now: () => Date.parse('2026-09-24T00:00:00.000Z'),
+      nodeVersion: '27.0.0',
+    })
+
+    expect(versions.node).toBeNull()
+  })
+
+  it('asks again after a Node upgrade rather than reusing the last line\'s answer', async () => {
+    const configDir = tempConfigDir()
+    const now = () => Date.parse('2026-09-24T00:00:00.000Z')
+    await getLatestToolVersions({ configDir, fetchImpl: fixtureFetch([]), now, nodeVersion: '24.19.0' })
+
+    const requested: string[] = []
+    const upgraded = await getLatestToolVersions({ configDir, fetchImpl: fixtureFetch(requested), now, nodeVersion: '26.9.0' })
+
+    expect(requested).toContain('https://nodejs.org/dist/index.json')
+    expect(upgraded.node).toBe('26.10.0')
+  })
 })
 
 describe('latest OpenCode version source', () => {

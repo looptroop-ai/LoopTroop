@@ -289,6 +289,9 @@ describe('ModelPicker', () => {
     fireEvent.click(screen.getByRole('button', { name: /^Pick a model/ }))
     fireEvent.click(screen.getByRole('button', { name: /^Pick a model/ }))
     expect(screen.getByRole('alert')).toHaveTextContent('could not reach OpenCode')
+    // An installed LoopTroop starts OpenCode itself; `npm run dev` is not how.
+    expect(screen.getByRole('alert')).toHaveTextContent('run looptroop restart to start it again')
+    expect(screen.getByRole('alert')).not.toHaveTextContent('npm run dev')
   })
 
   it('shows the credential names to check after OpenCode rejects authentication', () => {
@@ -312,6 +315,31 @@ describe('ModelPicker', () => {
 
     expect(screen.getByRole('alert')).toHaveTextContent('OPENCODE_PASSWORD')
     expect(screen.getByRole('alert')).toHaveTextContent('OPENCODE_SERVER_PASSWORD')
+    // Restarting OpenCode by hand is what made a password nobody knows.
+    expect(screen.getByRole('alert')).toHaveTextContent('then run looptroop restart')
+  })
+
+  it('says OpenCode needs a password when LoopTroop had none to send', () => {
+    const error = new Error('OpenCode requires a password, and none is configured. Set OPENCODE_PASSWORD to that server\'s password.')
+    vi.mocked(useOpenCodeModels).mockReturnValue({
+      data: undefined,
+      isLoading: false,
+      isError: true,
+      error,
+      isFetching: false,
+    } as ReturnType<typeof useOpenCodeModels>)
+    vi.mocked(useAllOpenCodeModels).mockReturnValue({
+      data: undefined,
+      isLoading: false,
+      isError: false,
+      error: null,
+      isFetching: false,
+    } as ReturnType<typeof useAllOpenCodeModels>)
+    render(<ModelPicker value="" onChange={vi.fn()} />)
+    fireEvent.click(screen.getByRole('button', { name: /^Pick a model/ }))
+
+    expect(screen.getByRole('alert')).toHaveTextContent('OpenCode asked for a password and LoopTroop has none')
+    expect(screen.getByRole('alert')).not.toHaveTextContent('rejected')
   })
 
   it('shows the stored full id in parentheses beside the pretty name in the open list', () => {

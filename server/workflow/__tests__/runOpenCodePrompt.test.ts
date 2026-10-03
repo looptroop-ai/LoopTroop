@@ -1533,7 +1533,7 @@ describe('runOpenCodePrompt', () => {
           phase: 'CODING',
         },
       })
-      const rejected = expect(runPromise).rejects.toThrow('Upgrade OpenCode and restart `opencode serve`')
+      const rejected = expect(runPromise).rejects.toThrow('Upgrade OpenCode, then restart LoopTroop (`looptroop restart`) or the OpenCode server it uses.')
 
       await vi.runAllTimersAsync()
       await rejected

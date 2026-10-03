@@ -1425,8 +1425,52 @@ describe('round-2 trust rules', () => {
     }
   })
 
-  itPosix('refuses root-owned opencode if the file is writable by group or others', () => {
-    const { root, dir, resolveOpts, cleanup } = setupOpencodeFixture({ rootMode: 0o700, toolMode: 0o777, foreign: false })
+  itPosix('judges an opencode you own like any other tool, whatever its permission bits', () => {
+    // The bits only make the foreign-owner exception safe. An owner the
+    // ordinary rule trusts needs no exception.
+    const { root, dir, tool, resolveOpts, cleanup } = setupOpencodeFixture({ rootMode: 0o700, toolMode: 0o777, foreign: false })
+    try {
+      const resolution = resolveTrustedExecutable('opencode', {
+        ...resolveOpts,
+        env: { PATH: dir },
+        policyEnv: { HOME: root },
+        platform: 'linux',
+        cache: freshCache(),
+      })
+      expect(resolution.path).toBe(tool)
+    } finally {
+      cleanup()
+    }
+  })
+
+  itPosix('accepts the ~/.opencode/bin a stock Ubuntu or Fedora desktop creates', () => {
+    // A private group and a `002` umask: the installer's directories are 0775.
+    for (const toolMode of [0o755, 0o775]) {
+      const { root, dir, tool, resolveOpts, cleanup } = setupOpencodeFixture({
+        rootMode: 0o750,
+        parentMode: 0o775,
+        dirMode: 0o775,
+        toolMode,
+        foreign: false,
+      })
+      try {
+        const resolution = resolveTrustedExecutable('opencode', {
+          ...resolveOpts,
+          env: { PATH: dir },
+          policyEnv: { HOME: root },
+          platform: 'linux',
+          cache: freshCache(),
+        })
+        expect(resolution.path).toBe(tool)
+        expect(resolveTrustedProgram(tool, { ...resolveOpts, platform: 'linux', policyEnv: { HOME: root } }).path).toBe(tool)
+      } finally {
+        cleanup()
+      }
+    }
+  })
+
+  itPosix('still refuses a foreign-owned opencode in that group-writable layout', () => {
+    const { root, dir, tool, resolveOpts, cleanup } = setupOpencodeFixture({ rootMode: 0o700, parentMode: 0o775, dirMode: 0o775 })
     try {
       const resolution = resolveTrustedExecutable('opencode', {
         ...resolveOpts,
@@ -1437,6 +1481,7 @@ describe('round-2 trust rules', () => {
       })
       expect(resolution.path).toBeUndefined()
       expect(resolution.reason).toContain('is writable by group or others')
+      expect(resolveTrustedProgram(tool, { ...resolveOpts, platform: 'linux', policyEnv: { HOME: root } }).path).toBeUndefined()
     } finally {
       cleanup()
     }

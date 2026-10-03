@@ -15,12 +15,13 @@ import {
   readDaemonStartFailure,
 } from '../lib/daemonPaths'
 import { assertPublicOriginRemoteAccess, resolveSettings, type ResolvedSettings } from '../lib/appSettings'
-import { isProcessAlive } from '../cli/processControl'
+import { isProcessAlive, isProcessGroupAlive } from '../cli/processControl'
 import { matchProcess, readProcessStartToken } from '../lib/processIdentity'
 import { createSessionCredentials, BootstrapNonceStore, type SessionCredentials } from '../middleware/sessionAuth'
-import { OpenCodeSupervisor, type OpenCodeStatus } from '../opencode/supervisor'
+import { bindsDaemonAddress, OpenCodeSupervisor, type OpenCodeStatus } from '../opencode/supervisor'
 import { resetOpenCodeAdapterTransport } from '../opencode/factory'
 import { getErrorMessage } from '@shared/typeGuards'
+import { getBackendHost } from '@shared/appConfig'
 
 /** Keeps the lock's heartbeat ahead of the staleness window. */
 const HEARTBEAT_INTERVAL_MS = 15_000
@@ -101,12 +102,11 @@ export interface StartDaemonOptions {
 export function nextStateForOpenCode(
   current: DaemonState | null,
   status: OpenCodeStatus,
-  baseUrl: string,
   options: { released: boolean },
 ): DaemonState | null {
   if (current === null || options.released) return null
 
-  const opencode = describeOpenCode(status, baseUrl)
+  const opencode = describeOpenCode(status)
   // Mock mode has no server to describe, and nothing about it can change.
   if (opencode === undefined) return null
 
@@ -201,30 +201,34 @@ function recordStartFailure(
  * because this daemon can be killed outright — and when it is, it takes no
  * cleanup with it and OpenCode is left running in its own process group. The
  * token is what lets a later `clean` reap that orphan without ever signalling an
- * unrelated process that happened to inherit the number.
+ * unrelated process that happened to inherit the number. It is the token the
+ * supervisor read at spawn, never one read here: by now the server may have
+ * exited and its pid gone to something else, whose token would then make that
+ * process the one `stop` signals.
  *
  * A degraded server is recorded as itself rather than folded in with an adopted
  * one. Both are "not ours to stop", but only one of them means coding
  * operations are unavailable, and a reader that cannot tell them apart reports
  * a healthy server for a daemon that has given up.
+ *
+ * The address is the status's own: a server moved off a default port held by
+ * someone else is recorded where it is, never where it was asked to be.
  */
-export function describeOpenCode(
-  status: OpenCodeStatus,
-  baseUrl: string,
-): DaemonState['opencode'] {
+export function describeOpenCode(status: OpenCodeStatus): DaemonState['opencode'] {
   if (status.kind === 'mock') return undefined
+  const { baseUrl } = status
   if (status.kind === 'degraded') {
     return { baseUrl, owned: false, status: 'degraded', detail: status.reason }
   }
   if (status.kind === 'adopted') return { baseUrl, owned: false, status: 'adopted' }
 
-  const startToken = readProcessStartToken(status.pid)
   return {
     baseUrl,
     owned: true,
     status: 'managed',
     pid: status.pid,
-    ...(startToken === null ? {} : { startToken }),
+    ...(status.startToken === undefined ? {} : { startToken: status.startToken }),
+    ...(status.movedFrom === undefined ? {} : { movedFrom: status.movedFrom }),
   }
 }
 
@@ -336,6 +340,16 @@ export async function startDaemon(options: StartDaemonOptions): Promise<DaemonHa
           lock.release()
           throw new DaemonStartBlockedError(failure)
         }
+      } else if (isProcessGroupAlive(previousOpenCode.pid)) {
+        // A dead leader is not an empty tree: what OpenCode started can still
+        // be running in its group, holding files or the port. Nothing here can
+        // prove those are ours, so nothing is signalled and the record stays.
+        lock.release()
+        throw new Error(
+          `LoopTroop cannot safely replace its previous daemon record because OpenCode pid ${previousOpenCode.pid} `
+          + 'has exited but processes in its process group are still running. The record was preserved and nothing '
+          + 'was signalled; run `looptroop doctor` to inspect it before retrying.',
+        )
       }
     }
   }
@@ -370,7 +384,7 @@ export async function startDaemon(options: StartDaemonOptions): Promise<DaemonHa
     // cached transport so in-flight calls retain theirs and later calls can
     // resolve the now-ready server again.
     if (status.kind === 'managed') resetOpenCodeAdapterTransport()
-    const next = nextStateForOpenCode(recordedState, status, settings.opencodeBaseUrl, {
+    const next = nextStateForOpenCode(recordedState, status, {
       released: stateFileReleased,
     })
     if (next === null) return
@@ -406,14 +420,20 @@ export async function startDaemon(options: StartDaemonOptions): Promise<DaemonHa
     // avoids a half-started daemon that cannot do any work.
     opencode = new OpenCodeSupervisor({
       baseUrl: settings.opencodeBaseUrl,
+      movable: settings.sources.opencodeBaseUrl === 'default',
+      // Bound only after OpenCode is up, so OpenCode must not take it first.
+      avoidPorts: [settings.port],
+      onDaemonAddress: bindsDaemonAddress(settings.opencodeBaseUrl, getBackendHost(), settings.port),
       mock: settings.opencodeMode === 'mock',
       printLogs: options.opencodeLogs === 'all',
       onStatusChange: recordOpenCodeStatus,
     })
-    const opencodeStatus = await opencode.start()
+    await opencode.start()
 
     runtime = createRuntime({
-      settings,
+      // The address OpenCode is really on, which differs from the setting when
+      // the default port was held by a server LoopTroop could not use.
+      settings: { ...settings, opencodeBaseUrl: opencode.baseUrl },
       mode: 'production',
       credentials,
       bootstrapNonces,
@@ -423,7 +443,10 @@ export async function startDaemon(options: StartDaemonOptions): Promise<DaemonHa
     })
     const address = await runtime.start()
 
-    const opencodeState = describeOpenCode(opencodeStatus, settings.opencodeBaseUrl)
+    // The status now, not the one start() returned: a crash and restart while
+    // the runtime was starting was reported before there was a record to patch,
+    // and the status from before it names the pid that died.
+    const opencodeState = describeOpenCode(opencode.current)
     // Recorded so `stop` can tell this process from whatever inherits its pid
     // once it stops answering /api/health partway through its own shutdown.
     const startToken = readProcessStartToken(process.pid)
@@ -550,7 +573,7 @@ export async function startDaemon(options: StartDaemonOptions): Promise<DaemonHa
       options.configDir,
       cleanupComplete || retainedOpenCode === null || retainedOpenCode === undefined
         ? undefined
-        : { baseUrl: settings.opencodeBaseUrl, ...retainedOpenCode },
+        : { baseUrl: opencode?.baseUrl ?? settings.opencodeBaseUrl, ...retainedOpenCode },
     )
     if (cleanupComplete) {
       if (heartbeat) clearInterval(heartbeat)

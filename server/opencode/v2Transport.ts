@@ -472,11 +472,13 @@ export class V2OpenCodeTransport implements OpenCodeTransport {
       version = stringValue(payload?.version)
     } catch (error) {
       if (signal?.aborted) throw signal.reason
+      const authentication = error instanceof V2OpenCodeHttpError && (error.status === 401 || error.status === 403)
       return {
         available: false,
         protocol: 'v2',
-        failureKind: error instanceof V2OpenCodeHttpError && (error.status === 401 || error.status === 403) ? 'authentication' : 'network',
+        failureKind: authentication ? 'authentication' : 'network',
         error: error instanceof Error ? error.message : String(error),
+        ...(authentication ? { credentialsSent: this.headers.has('authorization') } : {}),
       }
     }
 
@@ -499,6 +501,7 @@ export class V2OpenCodeTransport implements OpenCodeTransport {
         models: [],
         failureKind: authentication ? 'authentication' : 'model_discovery',
         error: authentication ? message : `OpenCode is reachable, but model discovery failed: ${message}`,
+        ...(authentication ? { credentialsSent: this.headers.has('authorization') } : {}),
       }
     }
   }

@@ -1,10 +1,11 @@
 import { spawn, type ChildProcess } from 'node:child_process'
 import { randomBytes } from 'node:crypto'
 import { setTimeout as delay } from 'node:timers/promises'
-import { isProcessAlive, killProcessTree } from '../cli/processControl'
+import { isProcessAlive, isProcessGroupAlive, killProcessTree } from '../cli/processControl'
 import { planProgramLaunch, resolveTrustedExecutable } from '../lib/executablePath'
 import { createOpenCodeServerEnvironment } from '../lib/childEnvironment'
 import { getOpenCodeServeLogArgs } from '../lib/opencodeServeLogArgs'
+import { findFreePort } from '../lib/portProbe'
 import { matchProcess, readProcessStartToken } from '../lib/processIdentity'
 import { captureProcessGroup, hasCapturedProcessGroupMember, refreshProcessGroup, terminateProcessTree, type ProcessGroupSnapshot } from '../lib/processTree'
 import { getErrorMessage } from '@shared/typeGuards'
@@ -79,25 +80,84 @@ async function waitForTreeCommand(command: ChildProcess, timeoutMs: number): Pro
 
 export type OpenCodeStatus =
   | { kind: 'adopted'; baseUrl: string }
-  | { kind: 'managed'; baseUrl: string; pid: number }
+  /**
+   * `startToken` is the identity read when the process was spawned, absent when
+   * none could be read. It travels with the pid because a token looked up later
+   * may belong to whatever process has the number by then.
+   */
+  | { kind: 'managed'; baseUrl: string; pid: number; startToken?: string; movedFrom?: OpenCodeMove }
   | { kind: 'mock' }
   | { kind: 'degraded'; baseUrl: string; reason: string }
 
+/** The address LoopTroop was meant to use, and why its own server is elsewhere. */
+export interface OpenCodeMove {
+  baseUrl: string
+  /**
+   * Why `baseUrl` could not be used, written for a person and read after a
+   * colon: another server holding it, or LoopTroop's own server needing it.
+   */
+  reason: string
+}
+
 export class OpenCodeMissingError extends Error {
   /**
-   * `refusal` is set when an `opencode` *was* found and the resolver would not
-   * run it. The error stays the same class — it degrades exactly as a missing
-   * binary does — but "not on PATH, install it" is the wrong thing to tell
-   * someone whose OpenCode is installed in a directory this machine refuses.
+   * `refusal` is set when an `opencode` *was* found and will not be run: the
+   * resolver refused it, or it could not be launched. The error stays the same
+   * class — it degrades exactly as a missing binary does — but "not on PATH,
+   * install it" is the wrong thing to tell someone whose OpenCode is installed.
+   * The refusal carries its own remedy, because reinstalling OpenCode helps with
+   * a directory this machine refuses and does nothing for a missing cmd.exe.
+   *
+   * Neither message suggests running `opencode serve` by hand. OpenCode v2
+   * makes up a new password for every server started that way, so LoopTroop
+   * could never sign in to it.
    */
   constructor(baseUrl: string, refusal?: string) {
     super(refusal === undefined
-      ? `OpenCode is not running at ${baseUrl} and the \`opencode\` command is not on PATH.\n`
-        + 'Install it from https://opencode.ai, or start it yourself with `opencode serve`.'
-      : `OpenCode is not running at ${baseUrl}, and the \`opencode\` that was found will not be run: ${refusal}\n`
-        + 'Start it yourself with `opencode serve`, or move it somewhere owned by you or by root.')
+      ? `OpenCode is not running at ${baseUrl}, and the \`opencode\` command is not on PATH.\n`
+        + 'Install it from https://opencode.ai, or set LOOPTROOP_OPENCODE_BASE_URL to an OpenCode server that is '
+        + 'already running and OPENCODE_PASSWORD to its password.'
+      : `OpenCode is not running at ${baseUrl}, and the \`opencode\` that was found will not be run: ${refusal}`)
     this.name = 'OpenCodeMissingError'
   }
+}
+
+/** A server answered, and it is not one LoopTroop can use. */
+function isUnusableServer(error: unknown): error is OpenCodeConnectionError {
+  return error instanceof OpenCodeConnectionError
+    && (error.failureKind === 'authentication' || error.failureKind === 'unsupported_protocol')
+}
+
+/**
+ * The host and port `opencode serve` is given for `baseUrl`. `host` keeps an
+ * IPv6 address in brackets, as a URL writes it; `bindHost` is the bare address
+ * a socket is bound to. Exported so `doctor` judges the same address.
+ */
+export function serveAddress(baseUrl: string): { host: string; bindHost: string; port: string } {
+  const url = new URL(baseUrl)
+  const host = url.hostname === 'localhost' ? '127.0.0.1' : url.hostname
+  return {
+    host,
+    bindHost: host.startsWith('[') ? host.slice(1, -1) : host,
+    port: url.port || (url.protocol === 'https:' ? '443' : '80'),
+  }
+}
+
+/**
+ * Whether OpenCode served at `baseUrl` would take the address the daemon binds
+ * once OpenCode is up: the same port, on the same host or under a wildcard
+ * that covers it. Another specific interface on the same port is another
+ * address, and so is the other family: `0.0.0.0` covers no IPv6 address, while
+ * `::` covers both, because Node binds it dual-stack.
+ */
+export function bindsDaemonAddress(baseUrl: string, daemonHost: string, daemonPort: number): boolean {
+  const { bindHost, port } = serveAddress(baseUrl)
+  if (Number(port) !== daemonPort) return false
+  const bare = daemonHost.replace(/^\[|\]$/g, '')
+  const host = bare === 'localhost' ? '127.0.0.1' : bare
+  const covers = (wildcard: string, other: string): boolean =>
+    wildcard === '::' || (wildcard === '0.0.0.0' && !other.includes(':'))
+  return bindHost === host || covers(bindHost, host) || covers(host, bindHost)
 }
 
 /**
@@ -128,19 +188,6 @@ export interface ProcessTermination {
 function matchesExpectedProcess(pid: number, expectedStartToken: string | null): boolean {
   if (expectedStartToken === null || !isProcessAlive(pid)) return false
   return matchProcess(pid, expectedStartToken).kind === 'same'
-}
-
-/** Signal 0 probes whether a POSIX process group still has a member. */
-function isProcessGroupAlive(pid: number): boolean {
-  if (process.platform === 'win32') return false
-  try {
-    process.kill(-pid, 0)
-    return true
-  } catch (error) {
-    // Only ESRCH proves that the group is gone. EPERM and every unexpected
-    // probe failure leave ownership unknown, so shutdown must keep the lock.
-    return (error as NodeJS.ErrnoException).code !== 'ESRCH'
-  }
 }
 
 const capturedGroups = new Map<string, ProcessGroupSnapshot>()
@@ -265,6 +312,32 @@ export interface OwnedOpenCodeProcess {
 
 export interface OpenCodeSupervisorOptions {
   baseUrl: string
+  /**
+   * `baseUrl` is LoopTroop's default rather than an address the user set. A
+   * server already answering there that LoopTroop cannot use — it rejects
+   * LoopTroop's password, or it is not OpenCode — is then left alone, and
+   * LoopTroop's own server starts on the next free port. OpenCode v2 makes up a
+   * password for every `opencode serve` started by hand, and other tools built
+   * on OpenCode take 4096 too, so the default port being held is ordinary.
+   *
+   * An address the user set is never moved: they asked for that server.
+   */
+  movable?: boolean
+  /**
+   * Ports the move must not take although they are free now: the daemon's own,
+   * which it binds only after OpenCode is up. Taking it made an explicit
+   * `--port 4097` fail on its own OpenCode.
+   */
+  avoidPorts?: readonly number[]
+  /**
+   * `baseUrl` is the address the daemon itself binds once OpenCode is up (see
+   * `bindsDaemonAddress`), as with `looptroop start --port 4096`. A default
+   * address moves before it is probed; one the user set fails the start,
+   * because nothing at it, launched or adopted, can share it with the daemon.
+   */
+  onDaemonAddress?: boolean
+  /** Injected by tests: the first free port on `host` from `from`, skipping `avoid`, or null. */
+  findFreePort?: (host: string, from: number, avoid: readonly number[]) => Promise<number | null>
   mock?: boolean
   /** Pass full DEBUG output through stdout/stderr for a managed server. */
   printLogs?: boolean
@@ -294,7 +367,7 @@ export interface OpenCodeSupervisorOptions {
    * Reports every status change after start() has returned: a crash, a restart
    * onto a new pid, or the point where the supervisor gives up.
    *
-   * The daemon writes its state file once, from the status start() returned. A
+   * The daemon writes its state file once, when its own server is up. A
    * server that dies an hour later, or comes back under a different pid, leaves
    * that record describing something that is no longer true — and it is the
    * record `clean` reaps orphans from.
@@ -325,13 +398,21 @@ export class OpenCodeSupervisor {
   private stopping = false
   /** Gates change reports: start() hands its result back to the caller instead. */
   private startReported = false
+  private address: string
+  private move: OpenCodeMove | undefined
 
   constructor(private readonly options: OpenCodeSupervisorOptions) {
+    this.address = options.baseUrl
     this.status = options.mock ? { kind: 'mock' } : { kind: 'degraded', baseUrl: options.baseUrl, reason: 'not started' }
   }
 
   get current(): OpenCodeStatus {
     return this.status
+  }
+
+  /** Where OpenCode is: the address asked for, or the free port LoopTroop moved to. */
+  get baseUrl(): string {
+    return this.address
   }
 
   /**
@@ -346,9 +427,9 @@ export class OpenCodeSupervisor {
   }
 
   private async probeState(): Promise<'ready' | 'absent' | 'starting'> {
-    if (this.options.probe) return await this.options.probe(this.options.baseUrl) ? 'ready' : 'absent'
+    if (this.options.probe) return await this.options.probe(this.baseUrl) ? 'ready' : 'absent'
     try {
-      await probeOpenCodeConnection(this.options.baseUrl)
+      await probeOpenCodeConnection(this.baseUrl)
       return 'ready'
     } catch (error) {
       if (error instanceof OpenCodeConnectionError && error.failureKind === 'network') {
@@ -381,19 +462,37 @@ export class OpenCodeSupervisor {
       return this.status
     }
 
-    invalidateOpenCodeConnection(this.options.baseUrl)
-    const initial = await this.probeState()
-    if (initial === 'ready') {
-      this.status = { kind: 'adopted', baseUrl: this.options.baseUrl }
-      this.startReported = true
-      return this.status
+    invalidateOpenCodeConnection(this.baseUrl)
+    let adopt = false
+    if (this.options.onDaemonAddress) {
+      // The daemon binds its own address only after OpenCode is up, so an
+      // OpenCode there, started or adopted, leaves the daemon unable to start.
+      const { port } = serveAddress(this.baseUrl)
+      if (!this.options.movable) {
+        throw new Error(
+          `LoopTroop's own server and OpenCode at ${this.baseUrl} are both set to use port ${port}, so LoopTroop `
+          + 'could not start. Change one of them: --port (or port in config.json) for LoopTroop, or '
+          + 'LOOPTROOP_OPENCODE_BASE_URL (or opencodeBaseUrl in config.json) for OpenCode.',
+        )
+      }
+      // Not probed: whatever answers there, the address is the daemon's.
+      await this.moveToFreePort(`LoopTroop's own server is set to use port ${port}.`)
+    } else {
+      try {
+        const initial = await this.probeState()
+        // An HTTP response proves another process owns the address. Give a server
+        // that is still booting time to become healthy; never launch over it.
+        // What it turns out to be once it answers is judged like a first answer.
+        if (initial === 'starting') await this.waitForHealth()
+        adopt = initial !== 'absent'
+      } catch (error) {
+        if (!isUnusableServer(error)) throw error
+        if (!this.options.movable) throw this.explainUnusable(error)
+        await this.moveToFreePort(`another server holds it, and answered: ${error.message}`)
+      }
     }
-
-    // An HTTP response proves another process owns the address. Give a server
-    // that is still booting time to become healthy; never launch over it.
-    if (initial === 'starting') {
-      await this.waitForHealth()
-      this.status = { kind: 'adopted', baseUrl: this.options.baseUrl }
+    if (adopt) {
+      this.status = { kind: 'adopted', baseUrl: this.baseUrl }
       this.startReported = true
       return this.status
     }
@@ -403,23 +502,64 @@ export class OpenCodeSupervisor {
     return this.status
   }
 
+  /**
+   * A server the user pointed LoopTroop at, which LoopTroop cannot use. Still
+   * the same error, so callers keep telling the kinds apart, but it now says
+   * what to change: the bare "rejected the configured credentials" left people
+   * looking for a configuration they had never written.
+   */
+  private explainUnusable(error: OpenCodeConnectionError): OpenCodeConnectionError {
+    const remedy = error.failureKind === 'authentication'
+      ? 'Set OPENCODE_PASSWORD to that server\'s password, or remove LOOPTROOP_OPENCODE_BASE_URL '
+        + '(or opencodeBaseUrl in config.json) so LoopTroop starts its own OpenCode.'
+      : 'Point LOOPTROOP_OPENCODE_BASE_URL (or opencodeBaseUrl in config.json) at an OpenCode server, '
+        + 'or remove it so LoopTroop starts its own OpenCode.'
+    return new OpenCodeConnectionError(
+      error.failureKind,
+      `OpenCode at ${this.baseUrl} cannot be used: ${error.message} ${remedy}`,
+      error.status,
+      false,
+      { cause: error },
+    )
+  }
+
+  /**
+   * Leaves the server that holds the default address alone and points this
+   * supervisor at the next free port. Its own launch there is decided exactly
+   * as at the default: nothing answers on a port that was just found free.
+   */
+  private async moveToFreePort(reason: string): Promise<void> {
+    const { bindHost, port } = serveAddress(this.baseUrl)
+    const free = await (this.options.findFreePort ?? findFreePort)(bindHost, Number(port) + 1, this.options.avoidPorts ?? [])
+    if (free === null) {
+      throw new Error(
+        `${this.baseUrl} cannot be used: ${reason} No free port after it was found for LoopTroop's own OpenCode `
+        + 'either. Set LOOPTROOP_OPENCODE_BASE_URL to a free address.',
+      )
+    }
+    const moved = new URL(this.baseUrl)
+    moved.port = String(free)
+    this.move = { baseUrl: this.baseUrl, reason }
+    this.address = moved.origin
+    console.warn(`[opencode] ${this.move.baseUrl} cannot be used: ${reason} `
+      + `Starting LoopTroop's own OpenCode at ${this.address} instead.`)
+  }
+
   private async spawnAndWait(): Promise<OpenCodeStatus> {
-    invalidateOpenCodeConnection(this.options.baseUrl)
+    invalidateOpenCodeConnection(this.baseUrl)
     // A failed launch keeps its handle until termination is confirmed. Do not
     // overwrite that ownership with a restart attempt while the old process
     // may still hold the port.
     if (this.child) {
       const previous = this.child
       if (!await this.terminate(previous.process, previous.startToken)) {
-        throw new Error(`OpenCode process ${previous.pid} is still running at ${this.options.baseUrl}.`)
+        throw new Error(`OpenCode process ${previous.pid} is still running at ${this.baseUrl}.`)
       }
       if (this.child?.process === previous.process) this.child = null
       if (this.stopping) return this.status
     }
 
-    const url = new URL(this.options.baseUrl)
-    const host = url.hostname === 'localhost' ? '127.0.0.1' : url.hostname
-    const port = url.port || (url.protocol === 'https:' ? '443' : '80')
+    const { host, bindHost, port } = serveAddress(this.baseUrl)
     // A parsed URL does not make a hostname safe: `new URL('http://foo&bar:1')`
     // has the hostname `foo&bar`, and on Windows an npm-installed OpenCode is
     // started through cmd.exe. The launcher escapes every argument for cmd.exe,
@@ -433,8 +573,6 @@ export class OpenCodeSupervisor {
 
     this.ensureManagedAuthentication()
     const childEnvironment = createOpenCodeServerEnvironment(process.env)
-
-    const serveHost = host.startsWith('[') ? host.slice(1, -1) : host
 
     // Resolved rather than left to `PATH`. The resolver applies PATHEXT itself,
     // which is what the Windows shell used to be here for: `opencode` is only
@@ -455,7 +593,11 @@ export class OpenCodeSupervisor {
       program = resolution.path ?? null
       refusal = resolution.refusedAt === undefined ? undefined : resolution.reason
     }
-    if (program === null) throw new OpenCodeMissingError(this.options.baseUrl, refusal)
+    if (program === null) {
+      throw new OpenCodeMissingError(this.baseUrl, refusal === undefined
+        ? undefined
+        : `${refusal}\nOr reinstall OpenCode so that it is owned by you or by root.`)
+    }
 
     // Node has refused to launch a `.cmd` or `.bat` directly since the BatBadBut
     // hardening, so an npm-installed OpenCode still goes through cmd.exe — one
@@ -473,9 +615,9 @@ export class OpenCodeSupervisor {
     const logArgs = this.options.printLogs
       ? getOpenCodeServeLogArgs('all', planLaunch(['serve', '--help']), childEnvironment)
       : []
-    const argv = ['serve', ...logArgs, '--hostname', serveHost, '--port', port]
+    const argv = ['serve', ...logArgs, '--hostname', bindHost, '--port', port]
     const launch = planLaunch(argv)
-    if (launch.reason !== undefined) throw new OpenCodeMissingError(this.options.baseUrl, launch.reason)
+    if (launch.reason !== undefined) throw new OpenCodeMissingError(this.baseUrl, launch.reason)
     const child = spawnProcess(launch.file, launch.args, {
       stdio: ['ignore', 'inherit', 'inherit'],
       env: childEnvironment,
@@ -495,7 +637,7 @@ export class OpenCodeSupervisor {
       : null
 
     const spawnFailed = new Promise<never>((_, reject) => {
-      child.once('error', () => reject(new OpenCodeMissingError(this.options.baseUrl)))
+      child.once('error', () => reject(new OpenCodeMissingError(this.baseUrl)))
     })
 
     // An immediate exit almost always means the binary is missing — including
@@ -503,7 +645,7 @@ export class OpenCodeSupervisor {
     // error at all: cmd.exe starts, prints "is not recognized" and exits 9009.
     const exitedEarly = new Promise<never>((_, reject) => {
       child.once('exit', (code) => {
-        if (!this.stopping) reject(new OpenCodeMissingError(this.options.baseUrl))
+        if (!this.stopping) reject(new OpenCodeMissingError(this.baseUrl))
         else reject(new Error(`OpenCode exited with code ${code ?? 'unknown'}`))
       })
     })
@@ -550,7 +692,21 @@ export class OpenCodeSupervisor {
       throw new Error('OpenCode process was started but reported no process id.')
     }
 
-    return { kind: 'managed', baseUrl: this.options.baseUrl, pid }
+    // A token that could not be read at spawn gets one more try while this
+    // handle still holds an unreaped child: its pid cannot have passed to
+    // another process yet, so the token is still this one's. Without it, `stop`
+    // and the next start refuse the record until someone ends the pid by hand.
+    const identity = startToken
+      ?? (this.options.spawnProcess === undefined && !childHasExited(child) ? readProcessStartToken(pid) : null)
+    if (identity !== startToken && this.child?.process === child) this.child = { ...this.child, startToken: identity }
+
+    return {
+      kind: 'managed',
+      baseUrl: this.baseUrl,
+      pid,
+      ...(identity === null ? {} : { startToken: identity }),
+      ...(this.move === undefined ? {} : { movedFrom: this.move }),
+    }
   }
 
   private async waitForHealth(): Promise<void> {
@@ -564,7 +720,7 @@ export class OpenCodeSupervisor {
       }
       await delay(250)
     }
-    throw new Error(`OpenCode did not become reachable at ${this.options.baseUrl} within ${timeout / 1000}s.`)
+    throw new Error(`OpenCode did not become reachable at ${this.baseUrl} within ${timeout / 1000}s.`)
   }
 
   private ensureManagedAuthentication(): void {
@@ -616,7 +772,7 @@ export class OpenCodeSupervisor {
         // server that already died.
         this.setStatus({
           kind: 'degraded',
-          baseUrl: this.options.baseUrl,
+          baseUrl: this.baseUrl,
           reason: getErrorMessage(error),
         })
         console.error(`[opencode] Restart attempt ${attempt} failed: ${this.describeStatusReason()}`)
@@ -626,7 +782,7 @@ export class OpenCodeSupervisor {
     // Retrying forever would hide a broken install behind a restart loop.
     this.setStatus({
       kind: 'degraded',
-      baseUrl: this.options.baseUrl,
+      baseUrl: this.baseUrl,
       reason: `OpenCode exited ${MAX_RESTART_ATTEMPTS} times; giving up. Coding operations are unavailable.`,
     })
     console.error(`[opencode] ${this.describeStatusReason()}`)
@@ -684,7 +840,7 @@ export class OpenCodeSupervisor {
         if (await waitForChildExit(child, budgets.forceMs)) return true
       }
 
-      console.error(`[opencode] pid ${pid} did not exit; it may still be holding ${this.options.baseUrl}.`)
+      console.error(`[opencode] pid ${pid} did not exit; it may still be holding ${this.baseUrl}.`)
       return false
     }
 
@@ -699,7 +855,7 @@ export class OpenCodeSupervisor {
         else child.kill('SIGKILL')
       } catch { /* best effort */ }
       if (await this.waitForExit(termination, pid, null, budgets.forceMs)) return true
-      console.error(`[opencode] pid ${pid} did not exit; it may still be holding ${this.options.baseUrl}.`)
+      console.error(`[opencode] pid ${pid} did not exit; it may still be holding ${this.baseUrl}.`)
       return false
     }
 
@@ -711,7 +867,7 @@ export class OpenCodeSupervisor {
 
     // Reported rather than thrown here: the daemon owns the handle and must
     // retain its lock when the tree could not be verified as gone.
-    console.error(`[opencode] pid ${pid} did not exit; it may still be holding ${this.options.baseUrl}.`)
+    console.error(`[opencode] pid ${pid} did not exit; it may still be holding ${this.baseUrl}.`)
     return false
   }
 

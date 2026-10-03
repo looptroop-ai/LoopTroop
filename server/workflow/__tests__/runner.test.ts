@@ -165,7 +165,7 @@ describe('attachWorkflowRunner', () => {
   })
 
   it.each([
-    [new OpenCodeUnavailableError('OpenCode server is not running. Start it with `opencode serve`. (connection refused)'), 'OPENCODE_UNREACHABLE'],
+    [new OpenCodeUnavailableError('OpenCode server is not running. Restart LoopTroop (`looptroop restart`) so it starts OpenCode again. (connection refused)'), 'OPENCODE_UNREACHABLE'],
     [new TicketWorkspaceNotInitializedError('Ticket workspace not initialized: missing ticket context'), 'WORKSPACE_NOT_INITIALIZED'],
     [new Error('Not enough council responses'), 'QUORUM_NOT_MET'],
     [new OpenCodeUnavailableError('Health check did not pass'), 'OPENCODE_UNREACHABLE'],

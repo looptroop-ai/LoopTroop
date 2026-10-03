@@ -6,6 +6,7 @@ import {
   OpenCodeSupervisor,
   OpenCodeMissingError,
   probeOpenCode,
+  serveAddress,
   type ProcessTermination,
 } from '../server/opencode/supervisor'
 import { invalidateOpenCodeConnection } from '../server/opencode/connection'
@@ -285,9 +286,11 @@ describe('OpenCode supervision', () => {
         probe: async () => false,
       })
 
-      const failure = supervisor.start()
-      await expect(failure).rejects.toBeInstanceOf(OpenCodeMissingError)
-      await expect(failure).rejects.toThrow(/needs cmd\.exe to run/)
+      const failure: unknown = await supervisor.start().catch((error: unknown) => error)
+      expect(failure).toBeInstanceOf(OpenCodeMissingError)
+      expect((failure as Error).message).toMatch(/needs cmd\.exe to run/)
+      // Reinstalling OpenCode fixes a refused directory, not a missing cmd.exe.
+      expect((failure as Error).message).not.toContain('reinstall OpenCode')
     } finally {
       if (original) Object.defineProperty(process, 'platform', original)
     }
@@ -754,6 +757,15 @@ describe('OpenCodeMissingError', () => {
 })
 
 describe('the address OpenCode is started on', () => {
+  it.each([
+    ['http://localhost:4096', { host: '127.0.0.1', bindHost: '127.0.0.1', port: '4096' }],
+    ['http://127.0.0.2', { host: '127.0.0.2', bindHost: '127.0.0.2', port: '80' }],
+    ['https://localhost', { host: '127.0.0.1', bindHost: '127.0.0.1', port: '443' }],
+    ['http://[::1]:4096', { host: '[::1]', bindHost: '::1', port: '4096' }],
+  ])('serves %s at %o', (baseUrl, address) => {
+    expect(serveAddress(baseUrl)).toEqual(address)
+  })
+
   it.each([
     ['[::1]', '::1'],
     ['[::ffff:127.0.0.2]', '::ffff:7f00:2'],

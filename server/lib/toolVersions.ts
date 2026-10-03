@@ -20,13 +20,16 @@ export const TOOL_CHECK_INTERVAL_MS = 15 * 60 * 1000
 
 const REQUEST_TIMEOUT_MS = 3_000
 
-/**
- * Node has no registry API of its own that is cheap to read — `index.json` on
- * nodejs.org is every release ever, hundreds of kilobytes. The `node` package on
- * npm mirrors the release line and answers in about a kilobyte.
- */
 const SOURCES = {
-  node: 'https://registry.npmjs.org/node/latest',
+  /**
+   * Every Node release ever, newest first by date: hundreds of kilobytes as
+   * JSON, about ten on the wire, since nodejs.org compresses it. `doctor` reads
+   * it for the newest release of the line the running Node belongs to. The
+   * `node` package on npm answered in a kilobyte, but its `latest` tag follows
+   * whatever was published last: a 22.x security release published the day
+   * after 26.10.0 had `doctor` tell someone on 24.19.0 that 22.23.3 was newest.
+   */
+  node: 'https://nodejs.org/dist/index.json',
   npm: 'https://registry.npmjs.org/npm/latest',
   /** `gh` publishes GitHub releases, so the newest one is the answer. */
   gh: 'https://api.github.com/repos/cli/cli/releases/latest',
@@ -44,19 +47,22 @@ export type ToolName = typeof TOOL_NAMES[number]
 
 export type LatestToolVersions = Record<ToolName, string | null>
 
-/** Highest `MAJOR.MINOR.PATCH`, ignoring anything with a suffix. */
-function newestStableTag(tags: unknown): string | null {
-  if (!Array.isArray(tags)) return null
-  const versions = tags
-    .map((tag) => (tag as { name?: unknown }).name)
+/**
+ * Highest `MAJOR.MINOR.PATCH` among `names`, ignoring anything with a suffix,
+ * and only within one major `line` when one is given.
+ */
+function highestVersion(names: readonly unknown[], line?: number): string | null {
+  const versions = names
     .filter((name): name is string => typeof name === 'string')
     .map((name) => /^v?(\d+)\.(\d+)\.(\d+)$/.exec(name))
     .filter((match): match is RegExpExecArray => match !== null)
     .map((match) => [Number(match[1]), Number(match[2]), Number(match[3])] as const)
+    .filter(([major]) => line === undefined || major === line)
 
   if (versions.length === 0) return null
-  // Sorted here rather than trusting the API's order, which is not documented
-  // to be by version and is not, for a repository with thousands of tags.
+  // Sorted here rather than trusting either source's order: git's tag listing
+  // is not documented to be by version and is not, for a repository with
+  // thousands of tags, and nodejs.org lists releases by date.
   const [major, minor, patch] = versions.sort((a, b) =>
     b[0] - a[0] || b[1] - a[1] || b[2] - a[2])[0]!
   return `${major}.${minor}.${patch}`
@@ -65,6 +71,8 @@ function newestStableTag(tags: unknown): string | null {
 interface ToolCache {
   lastAttemptAt: string
   opencodeSource?: string | null
+  /** The major line `versions.node` describes. */
+  nodeLine?: number
   versions?: Partial<LatestToolVersions>
 }
 
@@ -90,7 +98,8 @@ function readCache(configDir?: string): ToolCache | null {
     const opencodeSource = typeof candidate.opencodeSource === 'string' || candidate.opencodeSource === null
       ? candidate.opencodeSource
       : undefined
-    return { lastAttemptAt: candidate.lastAttemptAt, opencodeSource, versions }
+    const nodeLine = Number.isSafeInteger(candidate.nodeLine) ? candidate.nodeLine : undefined
+    return { lastAttemptAt: candidate.lastAttemptAt, opencodeSource, nodeLine, versions }
   } catch {
     return null
   }
@@ -108,14 +117,16 @@ function writeCache(cache: ToolCache, configDir?: string): void {
 }
 
 /**
- * Three answer shapes behind one call: npm's registry returns `{ version }`, a
- * GitHub release returns `{ tag_name }`, and a tag listing returns an array to
- * pick the newest stable entry from.
+ * Four answer shapes behind one call: npm's registry returns `{ version }`, a
+ * GitHub release returns `{ tag_name }`, a tag listing returns an array to pick
+ * the newest stable entry from, and nodejs.org an array of releases to pick
+ * the newest of `nodeLine` from.
  */
 async function fetchVersion(
   name: ToolName,
   url: string,
   fetchImpl: typeof globalThis.fetch,
+  nodeLine: number,
 ): Promise<string | null> {
   try {
     const response = await fetchImpl(url, {
@@ -125,7 +136,12 @@ async function fetchVersion(
     if (!response.ok) return null
     const body: unknown = await response.json()
 
-    if (name === 'git') return newestStableTag(body)
+    if (name === 'git') return Array.isArray(body) ? highestVersion(body.map((tag) => (tag as { name?: unknown }).name)) : null
+    if (name === 'node') {
+      return Array.isArray(body)
+        ? highestVersion(body.map((release) => (release as { version?: unknown }).version), nodeLine)
+        : null
+    }
     if (name === 'gh') {
       const tag = (body as { tag_name?: unknown }).tag_name
       return typeof tag === 'string' && tag !== '' ? tag.replace(/^v/, '') : null
@@ -142,6 +158,8 @@ export interface LatestToolVersionOptions {
   fetchImpl?: typeof globalThis.fetch
   now?: () => number
   opencodeVersion?: string
+  /** The running Node's version, whose major line `node` is reported for. Injected by tests. */
+  nodeVersion?: string
 }
 
 function opencodeSourceFor(version?: string): string | null {
@@ -160,10 +178,14 @@ export async function getLatestToolVersions(
   const cached = readCache(options.configDir)
   const known: LatestToolVersions = { ...EMPTY, ...cached?.versions }
   const opencodeSource = opencodeSourceFor(options.opencodeVersion)
+  const nodeLine = Number((options.nodeVersion ?? process.versions.node).replace(/^v/, '').split('.')[0])
   const cacheMatchesSource = cached?.opencodeSource === opencodeSource
   if (!cacheMatchesSource) known.opencode = null
+  // Another Node major since the last lookup: that answer was for another line.
+  const cacheMatchesNodeLine = cached?.nodeLine === nodeLine
+  if (!cacheMatchesNodeLine) known.node = null
 
-  const lastAttempt = cached && cacheMatchesSource ? Date.parse(cached.lastAttemptAt) : Number.NaN
+  const lastAttempt = cached && cacheMatchesSource && cacheMatchesNodeLine ? Date.parse(cached.lastAttemptAt) : Number.NaN
   if (Number.isFinite(lastAttempt) && now - lastAttempt <= TOOL_CHECK_INTERVAL_MS) return known
 
   const names = TOOL_NAMES.filter((name) => name !== 'opencode' || opencodeSource !== null)
@@ -173,6 +195,7 @@ export async function getLatestToolVersions(
     name,
     name === 'opencode' ? opencodeSource! : SOURCES[name],
     fetchImpl,
+    nodeLine,
   )))
 
   const versions: LatestToolVersions = { ...known }
@@ -183,6 +206,6 @@ export async function getLatestToolVersions(
     if (fetched !== null && fetched !== undefined) versions[name] = fetched
   })
 
-  writeCache({ lastAttemptAt: new Date(now).toISOString(), opencodeSource, versions }, options.configDir)
+  writeCache({ lastAttemptAt: new Date(now).toISOString(), opencodeSource, nodeLine, versions }, options.configDir)
   return versions
 }

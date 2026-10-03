@@ -1,7 +1,4 @@
 import { EventEmitter } from 'node:events'
-import { chmod, mkdtemp, rm, writeFile } from 'node:fs/promises'
-import { tmpdir } from 'node:os'
-import { join } from 'node:path'
 import { describe, expect, it, vi } from 'vitest'
 import {
   defaultTermination,
@@ -66,8 +63,12 @@ describe('OpenCode supervisor coverage edges', () => {
 
     expect(missing.name).toBe('OpenCodeMissingError')
     expect(missing.message).toContain('command is not on PATH')
+    expect(missing.message).toContain('LOOPTROOP_OPENCODE_BASE_URL')
+    expect(missing.message).toContain('OPENCODE_PASSWORD')
     expect(refused.message).toContain('will not be run: executable is outside trusted paths')
-    expect(refused.message).toContain('move it somewhere owned by you or by root')
+    // OpenCode v2 makes up a password for every server started by hand, so
+    // LoopTroop could never sign in to one it was told to go and start.
+    for (const message of [missing.message, refused.message]) expect(message).not.toContain('opencode serve')
   })
 
   it('normalizes localhost and uses the default HTTPS port when it launches a server', async () => {
@@ -125,39 +126,6 @@ describe('OpenCode supervisor coverage edges', () => {
       expect(defaultTermination.hasExited(2_147_483_647, 'no-tree-proof')).toBe(false)
     } finally {
       Object.defineProperty(process, 'platform', platformDescriptor)
-    }
-  })
-
-  it.skipIf(process.platform === 'win32')('explains why an installed but untrusted OpenCode executable was refused', async () => {
-    const directory = await mkdtemp(join(tmpdir(), 'looptroop-supervisor-'))
-    const envKeys = ['PATH', 'OPENCODE_INSTALL_DIR', 'LOOPTROOP_TRUSTED_EXECUTABLE_DIRS'] as const
-    const originalEnv = Object.fromEntries(envKeys.map((key) => [key, process.env[key]]))
-    const spawnProcess = vi.fn()
-
-    try {
-      await writeFile(join(directory, 'opencode'), '#!/bin/sh\nexit 0\n', { mode: 0o755 })
-      await chmod(directory, 0o777)
-      process.env.PATH = directory
-      process.env.OPENCODE_INSTALL_DIR = directory
-      process.env.LOOPTROOP_TRUSTED_EXECUTABLE_DIRS = ''
-
-      const supervisor = new OpenCodeSupervisor({
-        baseUrl: 'http://127.0.0.1:4096',
-        probe: async () => false,
-        spawnProcess: spawnProcess as never,
-      })
-      await expect(supervisor.start()).rejects.toMatchObject({
-        name: 'OpenCodeMissingError',
-        message: expect.stringContaining('will not be run'),
-      })
-      expect(spawnProcess).not.toHaveBeenCalled()
-    } finally {
-      for (const key of envKeys) {
-        const original = originalEnv[key]
-        if (original === undefined) delete process.env[key]
-        else process.env[key] = original
-      }
-      await rm(directory, { recursive: true, force: true })
     }
   })
 

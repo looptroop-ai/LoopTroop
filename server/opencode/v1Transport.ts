@@ -59,9 +59,12 @@ export type OpenCodeV1Client = ReturnType<typeof createOpencodeClient>
 export class OpenCodeV1Transport implements OpenCodeTransport {
   readonly protocol = 'v1' as const
   private readonly client: OpenCodeV1Client
+  /** Whether requests carry a password, for telling "none configured" from "rejected". */
+  private readonly sendsCredentials: boolean
 
   constructor(baseUrl: string, client?: OpenCodeV1Client, headers?: Record<string, string>) {
     const authHeader = getOpenCodeBasicAuthHeader()
+    this.sendsCredentials = headers ? Object.hasOwn(headers, 'Authorization') : authHeader !== undefined
     this.client = client ?? createOpencodeClient({
       baseUrl,
       ...(headers ? { headers } : authHeader ? { headers: { Authorization: authHeader } } : {}),
@@ -251,29 +254,37 @@ export class OpenCodeV1Transport implements OpenCodeTransport {
     const withTimeout = () => this.withSdkOperationTimeout(signal)
     let version = 'unknown'
     try {
-      const health = await this.client.global.health(this.requestOptions(withTimeout()))
+      const health = this.rejectHttpError(await this.client.global.health(this.requestOptions(withTimeout())))
       version = health.data?.version ? String(health.data.version) : version
     } catch (healthError) {
       if (this.healthFailureKind(healthError) === 'authentication') {
-        return { available: false, protocol: 'v1', failureKind: 'authentication', error: getErrorMessage(healthError) }
-      }
-      try {
-        await this.client.session.status(undefined, this.requestOptions(withTimeout()))
-      } catch (statusError) {
         return {
           available: false,
           protocol: 'v1',
-          failureKind: this.healthFailureKind(statusError),
+          failureKind: 'authentication',
+          error: getErrorMessage(healthError),
+          credentialsSent: this.sendsCredentials,
+        }
+      }
+      try {
+        this.rejectHttpError(await this.client.session.status(undefined, this.requestOptions(withTimeout())))
+      } catch (statusError) {
+        const failureKind = this.healthFailureKind(statusError)
+        return {
+          available: false,
+          protocol: 'v1',
+          failureKind,
           error: getErrorMessage(statusError),
+          ...(failureKind === 'authentication' ? { credentialsSent: this.sendsCredentials } : {}),
         }
       }
     }
 
     try {
-      const providers = await this.withSdkPromiseTimeout(
+      const providers = this.rejectHttpError(await this.withSdkPromiseTimeout(
         this.client.config.providers(undefined, this.requestOptions(withTimeout())),
         signal,
-      )
+      ))
       return {
         available: true,
         protocol: 'v1',
@@ -288,6 +299,7 @@ export class OpenCodeV1Transport implements OpenCodeTransport {
         version,
         models: [],
         failureKind,
+        ...(failureKind === 'authentication' ? { credentialsSent: this.sendsCredentials } : {}),
         error: `OpenCode is reachable, but model discovery failed: ${getErrorMessage(error)}`,
       }
     }
@@ -300,6 +312,19 @@ export class OpenCodeV1Transport implements OpenCodeTransport {
     if (status === 401 || status === 403) return 'authentication'
     if (status === 404) return 'unsupported_protocol'
     return 'network'
+  }
+
+  /**
+   * The SDK client is built without `throwOnError`, so an HTTP error resolves as
+   * `{ error, response }` instead of rejecting. Reject it with its status, so a
+   * health check classifies it exactly like a thrown one.
+   */
+  private rejectHttpError<T>(result: T): T {
+    const status = this.readHttpStatus(this.getRecord(this.getRecord(result)?.response))
+    if (status !== undefined && status >= 400) {
+      throw Object.assign(new Error(`OpenCode answered HTTP ${status}`), { status })
+    }
+    return result
   }
 
   private async *readEvents(

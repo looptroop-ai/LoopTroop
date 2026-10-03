@@ -1,5 +1,6 @@
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import {
+  credentialsWereSent,
   getOpenCodeConnection,
   invalidateOpenCodeConnection,
   OpenCodeConnectionError,
@@ -141,8 +142,25 @@ describe('getOpenCodeConnection', () => {
       failureKind: 'authentication',
       status: 401,
       canStartManagedServer: false,
+      message: 'OpenCode rejected the configured credentials (HTTP 401).',
+      credentialsSent: true,
     })
     expect(fetchMock).toHaveBeenCalledTimes(2)
+  })
+
+  it('says no password is configured when LoopTroop had none to send', async () => {
+    // An OpenCode v2 started by hand makes up its own password. "Rejected the
+    // configured credentials" sent people looking for a setting they never made.
+    delete process.env.OPENCODE_PASSWORD
+    delete process.env.OPENCODE_SERVER_PASSWORD
+    vi.stubGlobal('fetch', vi.fn(async () => new Response('', { status: 401 })))
+
+    await expect(getOpenCodeConnection(BASE_URL)).rejects.toMatchObject({
+      failureKind: 'authentication',
+      status: 401,
+      message: 'OpenCode requires a password, and none is configured (HTTP 401).',
+      credentialsSent: false,
+    })
   })
 
   it('rejects redirects and unrecognized successful responses', async () => {
@@ -223,5 +241,23 @@ describe('getOpenCodeConnection', () => {
       status: 503,
     })
     expect(fetchMock).toHaveBeenCalledTimes(2)
+  })
+})
+
+describe('credentialsWereSent', () => {
+  it('believes the health result over an environment the supervisor fills in itself', () => {
+    vi.stubEnv('OPENCODE_PASSWORD', 'generated-by-the-supervisor')
+    expect(credentialsWereSent({ credentialsSent: false })).toBe(false)
+    vi.stubEnv('OPENCODE_PASSWORD', '')
+    vi.stubEnv('OPENCODE_SERVER_PASSWORD', '')
+    expect(credentialsWereSent({ credentialsSent: true })).toBe(true)
+  })
+
+  it('falls back to the environment only when the result does not say', () => {
+    vi.stubEnv('OPENCODE_PASSWORD', '')
+    vi.stubEnv('OPENCODE_SERVER_PASSWORD', '')
+    expect(credentialsWereSent({})).toBe(false)
+    vi.stubEnv('OPENCODE_SERVER_PASSWORD', 'v1-secret')
+    expect(credentialsWereSent({})).toBe(true)
   })
 })

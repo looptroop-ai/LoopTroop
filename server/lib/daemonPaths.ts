@@ -63,6 +63,16 @@ export interface DaemonState {
      * platform could not say, which reads as "do not signal this pid".
      */
     startToken?: string
+    /**
+     * Set when LoopTroop's own server is not on the address it was meant to
+     * use: that default address was held by a server LoopTroop could not use,
+     * so it started on the next free port. `baseUrl` above is where it is.
+     */
+    movedFrom?: {
+      baseUrl: string
+      /** What the other server answered, written for a person. */
+      reason: string
+    }
   }
 }
 

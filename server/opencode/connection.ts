@@ -1,5 +1,10 @@
 import { createHash } from 'node:crypto'
-import { getOpenCodeBasicAuthHeader, getOpenCodeV2BasicAuthHeader, withOpenCodePasswordAliases } from '../../shared/opencodeAuth'
+import {
+  getOpenCodeBasicAuthHeader,
+  getOpenCodeV2BasicAuthHeader,
+  hasOpenCodePassword,
+  withOpenCodePasswordAliases,
+} from '../../shared/opencodeAuth'
 
 export type OpenCodeProtocol = 'v1' | 'v2'
 export type OpenCodeFailureKind = 'authentication' | 'unsupported_protocol' | 'network'
@@ -11,6 +16,13 @@ export interface OpenCodeConnection {
 }
 
 export class OpenCodeConnectionError extends Error {
+  /**
+   * Set on an authentication failure: whether LoopTroop put a password on the
+   * wire. Read rather than the environment, which the supervisor fills with a
+   * generated password before it launches its own server.
+   */
+  credentialsSent?: boolean
+
   constructor(
     readonly failureKind: OpenCodeFailureKind,
     message: string,
@@ -121,8 +133,44 @@ function majorVersion(value: unknown, major: 1 | 2): value is string {
   return typeof value === 'string' && new RegExp(`^v?${major}\\.\\d+\\.\\d+(?:[-+].*)?$`).test(value.trim())
 }
 
-function authFailure(response: Response): OpenCodeConnectionError {
-  return responseError(response, 'authentication', 'OpenCode rejected the configured credentials')
+/**
+ * A 401 or 403. Worded by whether LoopTroop sent a password at all: "rejected
+ * the configured credentials" sent people hunting for a configuration they had
+ * never written, when an OpenCode v2 started by hand had simply made up its own.
+ */
+function authFailure(response: Response, credentialsSent: boolean): OpenCodeConnectionError {
+  const error = responseError(response, 'authentication', credentialsSent
+    ? 'OpenCode rejected the configured credentials'
+    : 'OpenCode requires a password, and none is configured')
+  error.credentialsSent = credentialsSent
+  return error
+}
+
+/**
+ * Whether LoopTroop put a password on the wire, for a health result that
+ * refused it. The result says so; the environment is only a fallback for one
+ * that does not, because the supervisor fills it with a generated password
+ * before launching its own server, and it then says "configured" for a
+ * password nobody configured. One reading, so every surface words a refusal
+ * the same way.
+ */
+export function credentialsWereSent(health: { credentialsSent?: boolean }): boolean {
+  return health.credentialsSent ?? hasOpenCodePassword(process.env)
+}
+
+/**
+ * What to do about a server that refused LoopTroop, for the surfaces inside
+ * the app: the model screen (`/models`), the interview phase and the setup
+ * notice (the `advice` of `/health/opencode`). `doctor` and the supervisor word
+ * their own, because they can also offer dropping a configured base URL.
+ * The two openings are the phrases the model picker classifies on.
+ */
+export function openCodeAuthAdvice(credentialsSent: boolean): string {
+  return credentialsSent
+    ? 'OpenCode rejected the configured credentials. Check OPENCODE_PASSWORD for v2, or OPENCODE_SERVER_PASSWORD '
+      + 'and OPENCODE_SERVER_USERNAME for v1, then run `looptroop restart`.'
+    : 'OpenCode requires a password, and none is configured. Set OPENCODE_PASSWORD to that server\'s password, '
+      + 'and OPENCODE_SERVER_USERNAME too if a v1 server\'s user is not `opencode`, then run `looptroop restart`.'
 }
 
 async function probeV1(
@@ -136,7 +184,7 @@ async function probeV1(
     response = await request(`${base}/global/health`, authorization, signal)
   } catch (error) {
     if (priorResponse && error instanceof OpenCodeConnectionError) {
-      if (priorResponse.status === 401 || priorResponse.status === 403) throw authFailure(priorResponse)
+      if (priorResponse.status === 401 || priorResponse.status === 403) throw authFailure(priorResponse, authorization !== undefined)
       throw new OpenCodeConnectionError(error.failureKind, error.message, error.status, false, { cause: error })
     }
     throw error
@@ -145,7 +193,7 @@ async function probeV1(
   if (response.status === 401 || response.status === 403) {
     throw authFailure(priorResponse && (priorResponse.status === 401 || priorResponse.status === 403)
       ? priorResponse
-      : response)
+      : response, authorization !== undefined)
   }
   if (response.status >= 300 && response.status < 400) {
     throw responseError(response, 'unsupported_protocol', 'OpenCode health probe redirected')
@@ -178,12 +226,12 @@ async function probe(base: string, auth: ReturnType<typeof credentials>, signal?
         return await probeV1(base, auth.v1, signal, v2)
       } catch (error) {
         if (error instanceof OpenCodeConnectionError && error.failureKind === 'unsupported_protocol') {
-          throw authFailure(v2)
+          throw authFailure(v2, auth.v2 !== undefined)
         }
         throw error
       }
     }
-    throw authFailure(v2)
+    throw authFailure(v2, auth.v2 !== undefined)
   }
   if (v2.status >= 300 && v2.status < 400) {
     throw responseError(v2, 'unsupported_protocol', 'OpenCode v2 info probe redirected')

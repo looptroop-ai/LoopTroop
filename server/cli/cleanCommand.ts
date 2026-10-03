@@ -1,12 +1,12 @@
 import { existsSync, readdirSync, statSync, type Dirent } from 'node:fs'
 import { basename, resolve } from 'node:path'
 import { acquireDaemonLock, inspectDaemonLock, type AcquiredLock } from '../lib/daemonLock'
-import { clearDaemonState, readDaemonState } from '../lib/daemonPaths'
+import { clearDaemonState, readDaemonState, type DaemonState } from '../lib/daemonPaths'
 import { matchProcess } from '../lib/processIdentity'
 import { getProjectWorktreesRoot, normalizeFolderPath } from '../storage/paths'
 import { markerVouchesFor, readWorktreeOwnerMarker } from '../storage/worktreeOwnership'
-import { isProcessAlive, killProcessTree, waitForExit } from './processControl'
-import { readRunningDaemon } from './commands'
+import { isProcessAlive, isProcessGroupAlive } from './processControl'
+import { readRunningDaemon, stopOpenCodeTree } from './commands'
 import { getErrorMessage } from '@shared/typeGuards'
 import { runCommandSync } from '../git/runCommand'
 import { assertManagedWorktreesRoot, assertNoIgnoredWorktreeFiles } from '../git/worktreeRemoval'
@@ -41,9 +41,6 @@ export interface WorktreeCandidate {
  * than one that was abandoned.
  */
 const LIVE_WINDOW_MS = 10 * 60_000
-
-/** Long enough for OpenCode to close its listeners, short enough to not hang. */
-const OPENCODE_GRACEFUL_MS = 5_000
 
 /** Matched against when deciding whether the closing advice is worth printing. */
 const NO_MARKER_REASON = 'no LoopTroop ownership marker'
@@ -259,7 +256,14 @@ export function planWorktreeCleanup(
 export type OpenCodeVerdict =
   | { kind: 'nothing', detail: string }
   | { kind: 'stoppable', pid: number }
-  | { kind: 'kept', pid: number, reason: string }
+  /**
+   * Not provably gone, and not provably the server the record names, so
+   * nothing is signalled. `identity` keeps the cases apart, because `start`
+   * does: a pid now owned by another process is stale debris it starts past,
+   * while one it cannot identify, or a dead leader whose process group still
+   * has members, blocks it.
+   */
+  | { kind: 'kept', pid: number, reason: string, identity: 'different' | 'unknown' | 'group' }
 
 /**
  * Whether the daemon record names an OpenCode server that outlived it.
@@ -272,7 +276,11 @@ export type OpenCodeVerdict =
  * Nothing is signalled unless the recorded start identity still matches.
  */
 export function inspectOrphanedOpenCode(configDir?: string): OpenCodeVerdict {
-  const state = readDaemonState(configDir)
+  return judgeOrphanedOpenCode(readDaemonState(configDir))
+}
+
+/** As `inspectOrphanedOpenCode`, for a record the caller has already read. */
+export function judgeOrphanedOpenCode(state: DaemonState | null): OpenCodeVerdict {
   if (state === null) return { kind: 'nothing', detail: 'no daemon record' }
 
   const opencode = state.opencode
@@ -283,49 +291,24 @@ export function inspectOrphanedOpenCode(configDir?: string): OpenCodeVerdict {
 
   const pid = opencode.pid
   if (pid === undefined) return { kind: 'nothing', detail: 'the recorded OpenCode server has no pid' }
-  if (!isProcessAlive(pid)) return { kind: 'nothing', detail: 'the recorded OpenCode server has already exited' }
+  if (!isProcessAlive(pid)) {
+    // A dead leader is not an empty tree: what it started can still be running
+    // in its group. A later process cannot prove whose those members are, so
+    // they are reported, never signalled.
+    return isProcessGroupAlive(pid)
+      ? { kind: 'kept', pid, reason: 'it has exited, but processes in its process group are still running', identity: 'group' }
+      : { kind: 'nothing', detail: 'the recorded OpenCode server has already exited' }
+  }
 
   const match = matchProcess(pid, opencode.startToken)
   switch (match.kind) {
     case 'same':
       return { kind: 'stoppable', pid }
     case 'different':
-      return { kind: 'kept', pid, reason: 'that pid now belongs to a different process' }
+      return { kind: 'kept', pid, reason: 'that pid now belongs to a different process', identity: 'different' }
     default:
-      return { kind: 'kept', pid, reason: match.reason }
+      return { kind: 'kept', pid, reason: match.reason, identity: 'unknown' }
   }
-}
-
-/**
- * SIGTERM to the group first, as the supervisor's own stop does: OpenCode leads
- * the group, so this reaches anything it started. Escalation is bounded, and the
- * identity is re-checked before each signal because the process may exit between
- * the decision and the delivery — and the pid could then be reused.
- */
-async function stopOpenCode(pid: number, startToken: string | undefined): Promise<boolean> {
-  if (process.platform !== 'win32') {
-    const beforeGroup = matchProcess(pid, startToken)
-    if (beforeGroup.kind !== 'same') return !isProcessAlive(pid)
-
-    try {
-      process.kill(-pid, 'SIGTERM')
-    } catch {
-      // A group can disappear while the leader is still present. Recheck the
-      // leader before falling back to a direct signal, because the pid may
-      // have been reused in that gap.
-      if (matchProcess(pid, startToken).kind !== 'same') return !isProcessAlive(pid)
-      try {
-        process.kill(pid, 'SIGTERM')
-      } catch {
-        // Exited between the check and the signal.
-      }
-    }
-    if (await waitForExit(pid, OPENCODE_GRACEFUL_MS)) return true
-  }
-
-  if (matchProcess(pid, startToken).kind !== 'same') return !isProcessAlive(pid)
-  await killProcessTree(pid, startToken ?? null)
-  return await waitForExit(pid, OPENCODE_GRACEFUL_MS)
 }
 
 export function recheckWorktreeCleanupCandidate(
@@ -526,7 +509,8 @@ export async function cleanCommand(options: CleanOptions): Promise<number> {
     process.stdout.write(`\nRemoved ${removed} worktree(s).\n`)
 
     if (orphan.kind === 'stoppable') {
-      const stop = options.stopProcess ?? stopOpenCode
+      const stop = options.stopProcess
+        ?? (async (pid: number, startToken: string | undefined) => await stopOpenCodeTree(pid, startToken) !== null)
       const stopped = await stop(orphan.pid, recorded?.opencode?.startToken)
       if (stopped) {
         stoppedOrphan = true

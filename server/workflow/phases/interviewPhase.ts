@@ -37,6 +37,7 @@ import { interviewBatchClaims, phaseArtifacts } from '../../db/schema'
 import { getLatestPhaseArtifact, getTicketByRef, getTicketContext, getTicketPaths, insertPhaseArtifact, upsertLatestPhaseArtifact, countPhaseArtifacts, readTicketFile, removeTicketFile, writeTicketFile } from '../../storage/tickets'
 import { compareAndSetLatestPhaseArtifact } from '../../storage/ticketArtifacts'
 import { isMockOpenCodeMode } from '../../opencode/factory'
+import { credentialsWereSent, openCodeAuthAdvice } from '../../opencode/connection'
 import { safeAtomicWriteWithin } from '../../io/atomicWrite'
 import { readFileNoFollowSync } from '../../io/readFile'
 import { resolveContainedPath } from '../../lib/containedPath'
@@ -1142,7 +1143,12 @@ export async function handleInterviewDeliberate(
     const health = await raceWithCancel(adapter.checkHealth(signal), signal, ticketId)
     throwIfAborted(signal, ticketId)
     if (!health.available) {
-      const msg = `OpenCode server is not running. Start it with \`opencode serve\`. (${health.error ?? 'connection refused'})`
+      // A server that refuses LoopTroop is running; restarting does not change
+      // the password it is sent. The advice alone: the error opens with the
+      // same sentence, so appending it said everything twice.
+      const msg = health.failureKind === 'authentication'
+        ? openCodeAuthAdvice(credentialsWereSent(health))
+        : `OpenCode server is not running. Restart LoopTroop (\`looptroop restart\`) so it starts OpenCode again. (${health.error ?? 'connection refused'})`
       emitPhaseLog(ticketId, context.externalId, phase, 'error', msg)
       throw new OpenCodeUnavailableError(msg)
     }
@@ -1157,7 +1163,7 @@ export async function handleInterviewDeliberate(
     throwIfCancelled(err, signal, ticketId)
     // Re-throw if we already formatted the message
     if (err instanceof OpenCodeUnavailableError) throw err
-    const msg = `OpenCode server is not running. Start it with \`opencode serve\`. (${getErrorMessage(err)})`
+    const msg = `OpenCode server is not running. Restart LoopTroop (\`looptroop restart\`) so it starts OpenCode again. (${getErrorMessage(err)})`
     emitPhaseLog(ticketId, context.externalId, phase, 'error', msg)
     throw new OpenCodeUnavailableError(msg)
   }

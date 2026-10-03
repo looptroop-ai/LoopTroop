@@ -3,6 +3,7 @@ import { mkdtempSync, existsSync, readFileSync, statSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { request as httpRequest } from 'node:http'
+import { createServer as createNetServer } from 'node:net'
 import {
   DaemonStartBlockedError,
   DaemonShutdownPendingError,
@@ -16,6 +17,7 @@ import * as runtimeFactory from '../server/createRuntime'
 import * as openCodeFactory from '../server/opencode/factory'
 import { OpenCodeSupervisor } from '../server/opencode/supervisor'
 import type { OpenCodeStatus } from '../server/opencode/supervisor'
+import { getOpenCodeBaseUrl, resetOpenCodeRuntimeConfig } from '../server/opencode/runtimeConfig'
 import * as daemonPaths from '../server/lib/daemonPaths'
 import * as processControl from '../server/cli/processControl'
 import * as processIdentity from '../server/lib/processIdentity'
@@ -53,6 +55,15 @@ describe('daemon startup and shutdown', () => {
     const dir = mkdtempSync(join(tmpdir(), 'looptroop-daemon-'))
     tempDirs.push(dir)
     return dir
+  }
+
+  /** A port nothing holds right now, for a daemon that must bind a named one. */
+  async function freePort(): Promise<number> {
+    const server = createNetServer()
+    await new Promise<void>((done) => server.listen(0, '127.0.0.1', done))
+    const { port } = server.address() as { port: number }
+    await new Promise((done) => server.close(done))
+    return port
   }
 
   function ephemeralSettings() {
@@ -328,6 +339,39 @@ describe('daemon startup and shutdown', () => {
       expect(JSON.parse(readFileSync(getDaemonStatePath(configDir), 'utf8'))).toEqual(previous)
       expect(existsSync(getDaemonLockPath(configDir))).toBe(false)
     } finally {
+      alive.mockRestore()
+    }
+  })
+
+  // A dead leader is not an empty tree: what OpenCode started can still be
+  // running in its group. Replacing the record lost the only name for it.
+  it('preserves an owned OpenCode record whose leader exited while its process group runs on', async () => {
+    const configDir = makeConfigDir()
+    const previous: DaemonState = {
+      instanceId: 'previous-daemon',
+      pid: 12_341,
+      port: 4096,
+      host: '127.0.0.1',
+      startedAt: '2026-01-02T03:04:05.000Z',
+      version: '0.0.0-test',
+      apiToken: 'previous-api-token',
+      opencode: { baseUrl: 'http://127.0.0.1:4096', owned: true, status: 'managed', pid: 12_342, startToken: 'opencode-token' },
+    }
+    writeDaemonState(previous, configDir)
+    const alive = vi.spyOn(processControl, 'isProcessAlive').mockReturnValue(false)
+    const group = vi.spyOn(processControl, 'isProcessGroupAlive').mockImplementation((pgid) => pgid === 12_342)
+
+    try {
+      await expect(startDaemon({
+        configDir,
+        settings: ephemeralSettings(),
+        version: '0.0.0-test',
+      })).rejects.toThrow('OpenCode pid 12342 has exited but processes in its process group are still running')
+
+      expect(JSON.parse(readFileSync(getDaemonStatePath(configDir), 'utf8'))).toEqual(previous)
+      expect(existsSync(getDaemonLockPath(configDir))).toBe(false)
+    } finally {
+      group.mockRestore()
       alive.mockRestore()
     }
   })
@@ -881,11 +925,8 @@ describe('daemon startup and shutdown', () => {
     const baseUrl = 'http://127.0.0.1:4096'
 
     it('distinguishes a server it gave up on from one it never owned', () => {
-      const degraded = describeOpenCode(
-        { kind: 'degraded', baseUrl, reason: 'exited 3 times' },
-        baseUrl,
-      )
-      const adopted = describeOpenCode({ kind: 'adopted', baseUrl }, baseUrl)
+      const degraded = describeOpenCode({ kind: 'degraded', baseUrl, reason: 'exited 3 times' })
+      const adopted = describeOpenCode({ kind: 'adopted', baseUrl })
 
       expect(degraded).toMatchObject({ status: 'degraded', owned: false, detail: 'exited 3 times' })
       expect(adopted).toMatchObject({ status: 'adopted', owned: false })
@@ -893,13 +934,39 @@ describe('daemon startup and shutdown', () => {
     })
 
     it('marks a managed server owned, with the pid a reaper needs', () => {
-      const managed = describeOpenCode({ kind: 'managed', baseUrl, pid: process.pid }, baseUrl)
+      const managed = describeOpenCode({ kind: 'managed', baseUrl, pid: 12_342, startToken: 'spawn-token' })
 
-      expect(managed).toMatchObject({ status: 'managed', owned: true, pid: process.pid })
+      expect(managed).toStrictEqual({ baseUrl, status: 'managed', owned: true, pid: 12_342, startToken: 'spawn-token' })
+    })
+
+    /**
+     * Between the spawn and this record, OpenCode can exit and its pid go to an
+     * unrelated process. A token read now would be that process's, and `stop`
+     * would then signal it as LoopTroop's orphan.
+     */
+    it('records the start token read at spawn, never one looked up later', () => {
+      const late = vi.spyOn(processIdentity, 'readProcessStartToken').mockReturnValue('reused-pid-token')
+      try {
+        expect(describeOpenCode({ kind: 'managed', baseUrl, pid: 12_342, startToken: 'spawn-token' }))
+          .toMatchObject({ pid: 12_342, startToken: 'spawn-token' })
+        // No token at spawn means no proof of identity, not a reason to find one.
+        expect(describeOpenCode({ kind: 'managed', baseUrl, pid: 12_342 })).not.toHaveProperty('startToken')
+      } finally {
+        late.mockRestore()
+      }
+    })
+
+    it('records a server that moved off a held default port where it is, and why', () => {
+      // `clean` and `status` read this address; the one asked for belongs to
+      // somebody else's server.
+      const movedFrom = { baseUrl, reason: 'OpenCode requires a password, and none is configured (HTTP 401).' }
+      const managed = describeOpenCode({ kind: 'managed', baseUrl: 'http://127.0.0.1:4098', pid: 12_342, movedFrom })
+
+      expect(managed).toMatchObject({ baseUrl: 'http://127.0.0.1:4098', status: 'managed', owned: true, movedFrom })
     })
 
     it('says nothing at all in mock mode, where there is no server', () => {
-      expect(describeOpenCode({ kind: 'mock' }, baseUrl)).toBeUndefined()
+      expect(describeOpenCode({ kind: 'mock' })).toBeUndefined()
     })
 
     /**
@@ -922,7 +989,6 @@ describe('daemon startup and shutdown', () => {
         const next = nextStateForOpenCode(
           recorded,
           { kind: 'managed', baseUrl, pid: 222 },
-          baseUrl,
           { released: false },
         )
 
@@ -938,7 +1004,6 @@ describe('daemon startup and shutdown', () => {
         const next = nextStateForOpenCode(
           recorded,
           { kind: 'degraded', baseUrl, reason: 'exited 3 times' },
-          baseUrl,
           { released: false },
         )
 
@@ -954,7 +1019,6 @@ describe('daemon startup and shutdown', () => {
         const next = nextStateForOpenCode(
           recorded,
           { kind: 'degraded', baseUrl, reason: 'stopped' },
-          baseUrl,
           { released: true },
         )
 
@@ -965,13 +1029,72 @@ describe('daemon startup and shutdown', () => {
         const next = nextStateForOpenCode(
           null,
           { kind: 'managed', baseUrl, pid: 222 },
-          baseUrl,
           { released: false },
         )
 
         expect(next).toBeNull()
       })
     })
+  })
+
+  it('moves OpenCode only off its default address, and then uses the address it moved to', async () => {
+    const movedFrom = { baseUrl: 'http://127.0.0.1:4096', reason: 'OpenCode requires a password, and none is configured (HTTP 401).' }
+    const movable: Array<boolean | undefined> = []
+    const avoided: Array<readonly number[] | undefined> = []
+    const onDaemon: Array<boolean | undefined> = []
+    const moved: OpenCodeStatus = { kind: 'managed', baseUrl: 'http://127.0.0.1:4098', pid: process.pid, movedFrom }
+    const startSpy = vi.spyOn(OpenCodeSupervisor.prototype, 'start').mockImplementation(async function (this: OpenCodeSupervisor) {
+      const { options } = this as unknown as { options: { movable?: boolean; avoidPorts?: readonly number[]; onDaemonAddress?: boolean } }
+      movable.push(options.movable)
+      avoided.push(options.avoidPorts)
+      onDaemon.push(options.onDaemonAddress)
+      return moved
+    })
+    const address = vi.spyOn(OpenCodeSupervisor.prototype, 'baseUrl', 'get').mockReturnValue('http://127.0.0.1:4098')
+    const current = vi.spyOn(OpenCodeSupervisor.prototype, 'current', 'get').mockReturnValue(moved)
+    const stopSpy = vi.spyOn(OpenCodeSupervisor.prototype, 'stop').mockResolvedValue(true)
+
+    try {
+      const configDir = makeConfigDir()
+      await start(configDir)
+      expect(JSON.parse(readFileSync(getDaemonStatePath(configDir), 'utf8'))).toMatchObject({
+        opencode: { baseUrl: 'http://127.0.0.1:4098', owned: true, status: 'managed', movedFrom },
+      })
+      // The adapter talks to the server that is really there, not to the
+      // address somebody else's server holds.
+      expect(getOpenCodeBaseUrl()).toBe('http://127.0.0.1:4098')
+
+      const settings = ephemeralSettings()
+      const daemonPort = await freePort()
+      running.push(await startDaemon({
+        configDir: makeConfigDir(),
+        settings: { ...settings, port: daemonPort, sources: { ...settings.sources, opencodeBaseUrl: 'env' } },
+        version: '0.0.0-test',
+      }))
+      // A URL the user set is theirs, even when it is the default value.
+      expect(movable).toEqual([true, false])
+      // The daemon binds its own port only after OpenCode is up, so OpenCode
+      // must not take it. The first is this suite's port 0, which settings
+      // never produce: `--port` and config.json both refuse it.
+      expect(avoided).toEqual([[0], [daemonPort]])
+
+      // OpenCode's address on the daemon's own port: the supervisor is told
+      // before it probes, so it moves or refuses rather than taking the port.
+      const sharedPort = await freePort()
+      running.push(await startDaemon({
+        configDir: makeConfigDir(),
+        settings: { ...settings, port: sharedPort, opencodeBaseUrl: `http://127.0.0.1:${sharedPort}` },
+        version: '0.0.0-test',
+      }))
+      expect(onDaemon).toEqual([false, false, true])
+    } finally {
+      for (const handle of running.splice(0)) await handle.stop()
+      stopSpy.mockRestore()
+      current.mockRestore()
+      address.mockRestore()
+      startSpy.mockRestore()
+      resetOpenCodeRuntimeConfig()
+    }
   })
 
   it('refreshes the OpenCode record and keeps serving if a refresh write fails', async () => {
@@ -1010,6 +1133,50 @@ describe('daemon startup and shutdown', () => {
       }
     } finally {
       resetTransport.mockRestore()
+      startSpy.mockRestore()
+    }
+  })
+
+  /**
+   * A crash and restart while the runtime is still starting is reported before
+   * there is a record to patch, so the report itself is dropped. The record
+   * written once the runtime is up must name the server running then, or `stop`
+   * and `clean` go looking for the pid that died.
+   */
+  it('records the OpenCode a restart left running while the runtime was starting', async () => {
+    const configDir = makeConfigDir()
+    const baseUrl = 'http://127.0.0.1:4096'
+    const first: OpenCodeStatus = { kind: 'managed', baseUrl, pid: 12_342, startToken: 'first-start' }
+    const restarted: OpenCodeStatus = { kind: 'managed', baseUrl, pid: 12_343, startToken: 'restarted-start' }
+    let supervisor: { setStatus(status: OpenCodeStatus): void } | undefined
+    const startSpy = vi.spyOn(OpenCodeSupervisor.prototype, 'start').mockImplementation(async function (this: OpenCodeSupervisor) {
+      // Left as a real start() leaves it, so the restart below goes through the
+      // supervisor's own status reporting.
+      supervisor = this as unknown as { setStatus(status: OpenCodeStatus): void }
+      Object.assign(this, { status: first, startReported: true })
+      return first
+    })
+    const runtime = {
+      start: vi.fn(async () => {
+        // What a crash does once the relaunch is healthy.
+        supervisor?.setStatus(restarted)
+        return { port: 4317, hostname: '127.0.0.1' }
+      }),
+      close: vi.fn().mockResolvedValue(undefined),
+    }
+    const create = vi.spyOn(runtimeFactory, 'createRuntime')
+      .mockReturnValue(runtime as unknown as ReturnType<typeof runtimeFactory.createRuntime>)
+
+    try {
+      const handle = await start(configDir)
+
+      expect(runtime.start).toHaveBeenCalledOnce()
+      expect(handle.state.opencode).toMatchObject({ pid: 12_343, startToken: 'restarted-start' })
+      expect(JSON.parse(readFileSync(getDaemonStatePath(configDir), 'utf8'))).toMatchObject({
+        opencode: { owned: true, status: 'managed', pid: 12_343, startToken: 'restarted-start' },
+      })
+    } finally {
+      create.mockRestore()
       startSpy.mockRestore()
     }
   })

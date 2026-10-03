@@ -7,7 +7,7 @@ import { delimiter, join } from 'node:path'
 import { doctorCommand, runChecks, isOpenCodeCliLaunchable, judgeOpenCode, runProbe } from '../server/cli/doctorCommand'
 import { NODE_FLOOR as FLOOR } from '../server/lib/nodeFloor'
 import { formatNodeVersion } from '../shared/nodeFloor'
-import { writeDaemonState, writeDaemonStartFailure, type DaemonState } from '../server/lib/daemonPaths'
+import { getDaemonStatePath, writeDaemonState, writeDaemonStartFailure, type DaemonState } from '../server/lib/daemonPaths'
 import { readProcessStartToken } from '../server/lib/processIdentity'
 import { applyIgnoreMode } from '../server/git/repository'
 import { APP_VERSION } from '../server/lib/appVersion'
@@ -64,6 +64,20 @@ describe('doctor command', () => {
     vi.stubEnv('PATH', `${dir}${delimiter}${process.env.PATH ?? ''}`)
     vi.stubEnv('LOOPTROOP_TRUSTED_EXECUTABLE_DIRS', dir)
     return dir
+  }
+
+  /**
+   * An `opencode` the resolver will run, in `dir`. Without it a case that needs
+   * a launchable CLI passes only on a machine that has OpenCode installed —
+   * this one does, CI runners do not. 9.9.9 maps to no package source, so the
+   * cached latest-version answer stays valid and nothing is fetched.
+   */
+  function fakeOpenCode(dir: string): void {
+    const opencode = join(dir, process.platform === 'win32' ? 'opencode.cmd' : 'opencode')
+    writeFileSync(opencode, process.platform === 'win32'
+      ? '@echo off\r\necho 9.9.9\r\nexit /b 0\r\n'
+      : '#!/bin/sh\necho 9.9.9\n')
+    if (process.platform !== 'win32') chmodSync(opencode, 0o700)
   }
 
   function captureStdout(): { text: () => string } {
@@ -192,6 +206,25 @@ describe('doctor command', () => {
     }
   })
 
+  // A start will not launch OpenCode on the port its own server is about to
+  // bind, and a set address is not moved; doctor used to call that ready.
+  it('fails when a set OpenCode address uses the port LoopTroop itself is set to', async () => {
+    useConfigDir()
+    process.env.LOOPTROOP_OPENCODE_MODE = 'real'
+    const server = createServer()
+    const port = await new Promise<number>((resolve) => {
+      server.listen(0, '127.0.0.1', () => resolve((server.address() as { port: number }).port))
+    })
+    await new Promise<void>((resolve) => server.close(() => resolve()))
+    vi.stubEnv('LOOPTROOP_BACKEND_PORT', String(port))
+    vi.stubEnv('LOOPTROOP_OPENCODE_BASE_URL', `http://127.0.0.1:${port}`)
+
+    expect((await runChecks()).find((entry) => entry.name === 'opencode')).toMatchObject({
+      status: 'fail',
+      detail: expect.stringContaining(`would start OpenCode on port ${port}, which LoopTroop's own server is set to use`),
+    })
+  })
+
   /**
    * What the next start would refuse before it ever looks at OpenCode's
    * address. Each case is one `startDaemon` reconciles from its previous
@@ -210,7 +243,12 @@ describe('doctor command', () => {
     }
 
     /** The record a daemon leaves; this test process stands in for live pids, so nothing is signalled. */
-    function recordDaemon(configDir: string, daemon: { pid: number; startToken?: string }, opencode: { pid: number; startToken?: string }) {
+    function recordDaemon(
+      configDir: string,
+      daemon: { pid: number; startToken?: string },
+      opencode: { pid?: number; startToken?: string },
+      extra: Partial<DaemonState> = {},
+    ) {
       writeDaemonState({
         instanceId: 'previous-daemon',
         pid: daemon.pid,
@@ -224,9 +262,10 @@ describe('doctor command', () => {
           baseUrl: 'http://127.0.0.1:4096',
           owned: true,
           status: 'managed',
-          pid: opencode.pid,
+          ...(opencode.pid === undefined ? {} : { pid: opencode.pid }),
           ...(opencode.startToken === undefined ? {} : { startToken: opencode.startToken }),
         },
+        ...extra,
       }, configDir)
       // Its password died with the daemon, so the address answers 401 — the
       // case a start would otherwise move past.
@@ -267,13 +306,39 @@ describe('doctor command', () => {
       expect(await opencodeCheck()).toMatchObject({
         status: 'fail',
         detail: expect.stringContaining('cannot be identified'),
-        remedy: `If pid ${process.pid} is that OpenCode, end it. Then run \`looptroop stop\` to clear the record.`,
+        remedy: `If pid ${process.pid} is that OpenCode, end it, then run \`looptroop stop\` to clear the record. `
+          + `If it is something else, delete ${getDaemonStatePath(configDir)}.`,
+      })
+    })
+
+    // `stop` cannot finish a shutdown whose daemon is gone, and a start
+    // refuses the record; doctor used to call that machine ready.
+    it('fails for a daemon that exited before it finished shutting down, in mock mode too', async () => {
+      const configDir = useConfigDir()
+      recordDaemon(configDir, { pid: departedPid() }, { pid: departedPid() }, { shutdownPending: true })
+
+      expect(await opencodeCheck()).toMatchObject({
+        status: 'fail',
+        detail: expect.stringContaining('exited before it finished shutting down'),
+        remedy: expect.stringContaining(`then delete ${getDaemonStatePath(configDir)}.`),
+      })
+    })
+
+    it('fails for a record of its own OpenCode with no pid, which a start refuses to replace', async () => {
+      const configDir = useConfigDir()
+      recordDaemon(configDir, { pid: departedPid() }, {})
+
+      expect(await opencodeCheck()).toMatchObject({
+        status: 'fail',
+        detail: expect.stringContaining('but not its pid'),
+        remedy: 'If an OpenCode server is still running at http://127.0.0.1:4096, end it. Then run `looptroop stop` to clear the record.',
       })
     })
 
     it('moves past a recorded pid that now belongs to another process, as a start does', async () => {
       const configDir = useConfigDir()
       process.env.LOOPTROOP_OPENCODE_MODE = 'real'
+      fakeOpenCode(configDir)
       recordDaemon(configDir, { pid: departedPid() }, { pid: process.pid, startToken: 'the-token-of-a-process-that-has-exited' })
 
       expect(await opencodeCheck()).toMatchObject({
@@ -285,20 +350,41 @@ describe('doctor command', () => {
     it('calls a daemon that is alive but not answering neither stopped nor orphaned', async () => {
       const configDir = useConfigDir()
       process.env.LOOPTROOP_OPENCODE_MODE = 'real'
-      // Alive with its real identity, answering nothing on port 1.
+      // Alive with its real identity, answering nothing on the port it holds.
+      vi.stubEnv('LOOPTROOP_BACKEND_PORT', '45123')
       const token = tokenOfThisProcess()
-      recordDaemon(configDir, { pid: process.pid, startToken: token }, { pid: process.pid, startToken: token })
+      recordDaemon(configDir, { pid: process.pid, startToken: token }, { pid: process.pid, startToken: token }, { port: 45123 })
 
       const checks = await runChecks()
 
       expect(checks.find((entry) => entry.name === 'opencode')).toMatchObject({
         status: 'warn',
-        detail: `not checked: LoopTroop (pid ${process.pid}) is running but not answering`,
+        detail: `not checked: pid ${process.pid}, recorded as LoopTroop, is running but not answering`,
+        remedy: 'See the daemon check.',
+      })
+      // `start` refuses to run beside it, so the machine cannot run LoopTroop.
+      expect(checks.find((entry) => entry.name === 'daemon')).toMatchObject({
+        status: 'fail',
+        detail: `pid ${process.pid} is still running but not answering`,
         remedy: 'Run `looptroop stop`, then start LoopTroop again.',
       })
-      expect(checks.find((entry) => entry.name === 'daemon')).toMatchObject({
-        status: 'warn',
-        detail: `pid ${process.pid} is still running but not answering`,
+      // Its own port, not "another process" to be stopped by hand.
+      expect(checks.find((entry) => entry.name === 'port')).toMatchObject({
+        status: 'ok',
+        detail: `45123 in use by this LoopTroop (pid ${process.pid})`,
+      })
+    })
+
+    // `stop` will not signal a pid it cannot identify, so it cannot be the remedy.
+    it('says how to get past a live daemon pid it cannot identify', async () => {
+      const configDir = useConfigDir()
+      recordDaemon(configDir, { pid: process.pid }, { pid: process.pid })
+
+      expect((await runChecks()).find((entry) => entry.name === 'daemon')).toMatchObject({
+        status: 'fail',
+        detail: expect.stringContaining('not answering, and no start-identity token was recorded for it'),
+        remedy: `If pid ${process.pid} is LoopTroop, end it, then run \`looptroop stop\`. `
+          + `If it is something else, delete ${getDaemonStatePath(configDir)}.`,
       })
     })
 
@@ -973,6 +1059,15 @@ describe('doctor command', () => {
       // Written by the daemon that watched it happen; `doctor` runs in a
       // different process minutes later and cannot rediscover it.
       expect(check.detail).toContain('OpenCode exited 3 times')
+    })
+
+    // A start waits for a booting server and adopts it, which needs no CLI.
+    // The `opencode cli` line still says the binary is missing.
+    it('only warns about a server still booting, with or without a CLI', () => {
+      const check = judgeOpenCode({ kind: 'responded', status: 503 }, { baseUrl, daemon: null, cliAvailable: false })
+
+      expect(check.status).toBe('warn')
+      expect(check.detail).toContain('still responding')
     })
 
     it('reports a reachable server as healthy whoever started it', () => {

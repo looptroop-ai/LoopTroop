@@ -145,16 +145,19 @@ export function serveAddress(baseUrl: string): { host: string; bindHost: string;
 
 /**
  * Whether OpenCode served at `baseUrl` would take the address the daemon binds
- * once OpenCode is up: the same port, on the same host or with a wildcard on
- * either side. Another specific interface on the same port is another address.
+ * once OpenCode is up: the same port, on the same host or under a wildcard
+ * that covers it. Another specific interface on the same port is another
+ * address, and so is the other family: `0.0.0.0` covers no IPv6 address, while
+ * `::` covers both, because Node binds it dual-stack.
  */
 export function bindsDaemonAddress(baseUrl: string, daemonHost: string, daemonPort: number): boolean {
   const { bindHost, port } = serveAddress(baseUrl)
   if (Number(port) !== daemonPort) return false
   const bare = daemonHost.replace(/^\[|\]$/g, '')
   const host = bare === 'localhost' ? '127.0.0.1' : bare
-  const wildcard = (value: string): boolean => value === '0.0.0.0' || value === '::'
-  return bindHost === host || wildcard(bindHost) || wildcard(host)
+  const covers = (wildcard: string, other: string): boolean =>
+    wildcard === '::' || (wildcard === '0.0.0.0' && !other.includes(':'))
+  return bindHost === host || covers(bindHost, host) || covers(host, bindHost)
 }
 
 /**

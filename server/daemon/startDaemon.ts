@@ -200,7 +200,10 @@ function recordStartFailure(
  * because this daemon can be killed outright — and when it is, it takes no
  * cleanup with it and OpenCode is left running in its own process group. The
  * token is what lets a later `clean` reap that orphan without ever signalling an
- * unrelated process that happened to inherit the number.
+ * unrelated process that happened to inherit the number. It is the token the
+ * supervisor read at spawn, never one read here: by now the server may have
+ * exited and its pid gone to something else, whose token would then make that
+ * process the one `stop` signals.
  *
  * A degraded server is recorded as itself rather than folded in with an adopted
  * one. Both are "not ours to stop", but only one of them means coding
@@ -218,13 +221,12 @@ export function describeOpenCode(status: OpenCodeStatus): DaemonState['opencode'
   }
   if (status.kind === 'adopted') return { baseUrl, owned: false, status: 'adopted' }
 
-  const startToken = readProcessStartToken(status.pid)
   return {
     baseUrl,
     owned: true,
     status: 'managed',
     pid: status.pid,
-    ...(startToken === null ? {} : { startToken }),
+    ...(status.startToken === undefined ? {} : { startToken: status.startToken }),
     ...(status.movedFrom === undefined ? {} : { movedFrom: status.movedFrom }),
   }
 }
@@ -408,14 +410,13 @@ export async function startDaemon(options: StartDaemonOptions): Promise<DaemonHa
     opencode = new OpenCodeSupervisor({
       baseUrl: settings.opencodeBaseUrl,
       movable: settings.sources.opencodeBaseUrl === 'default',
-      // Bound only after OpenCode is up, so a move must not take it first. Port
-      // 0 asks the OS for one, which a move cannot collide with.
-      avoidPorts: settings.port > 0 ? [settings.port] : [],
+      // Bound only after OpenCode is up, so OpenCode must not take it first.
+      avoidPorts: [settings.port],
       mock: settings.opencodeMode === 'mock',
       printLogs: options.opencodeLogs === 'all',
       onStatusChange: recordOpenCodeStatus,
     })
-    const opencodeStatus = await opencode.start()
+    await opencode.start()
 
     runtime = createRuntime({
       // The address OpenCode is really on, which differs from the setting when
@@ -430,7 +431,10 @@ export async function startDaemon(options: StartDaemonOptions): Promise<DaemonHa
     })
     const address = await runtime.start()
 
-    const opencodeState = describeOpenCode(opencodeStatus)
+    // The status now, not the one start() returned: a crash and restart while
+    // the runtime was starting was reported before there was a record to patch,
+    // and the status from before it names the pid that died.
+    const opencodeState = describeOpenCode(opencode.current)
     // Recorded so `stop` can tell this process from whatever inherits its pid
     // once it stops answering /api/health partway through its own shutdown.
     const startToken = readProcessStartToken(process.pid)

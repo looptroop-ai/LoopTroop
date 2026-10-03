@@ -80,7 +80,12 @@ async function waitForTreeCommand(command: ChildProcess, timeoutMs: number): Pro
 
 export type OpenCodeStatus =
   | { kind: 'adopted'; baseUrl: string }
-  | { kind: 'managed'; baseUrl: string; pid: number; movedFrom?: OpenCodeMove }
+  /**
+   * `startToken` is the identity read when the process was spawned, absent when
+   * none could be read. It travels with the pid because a token looked up later
+   * may belong to whatever process has the number by then.
+   */
+  | { kind: 'managed'; baseUrl: string; pid: number; startToken?: string; movedFrom?: OpenCodeMove }
   | { kind: 'mock' }
   | { kind: 'degraded'; baseUrl: string; reason: string }
 
@@ -93,10 +98,12 @@ export interface OpenCodeMove {
 
 export class OpenCodeMissingError extends Error {
   /**
-   * `refusal` is set when an `opencode` *was* found and the resolver would not
-   * run it. The error stays the same class — it degrades exactly as a missing
-   * binary does — but "not on PATH, install it" is the wrong thing to tell
-   * someone whose OpenCode is installed in a directory this machine refuses.
+   * `refusal` is set when an `opencode` *was* found and will not be run: the
+   * resolver refused it, or it could not be launched. The error stays the same
+   * class — it degrades exactly as a missing binary does — but "not on PATH,
+   * install it" is the wrong thing to tell someone whose OpenCode is installed.
+   * The refusal carries its own remedy, because reinstalling OpenCode helps with
+   * a directory this machine refuses and does nothing for a missing cmd.exe.
    *
    * Neither message suggests running `opencode serve` by hand. OpenCode v2
    * makes up a new password for every server started that way, so LoopTroop
@@ -107,8 +114,7 @@ export class OpenCodeMissingError extends Error {
       ? `OpenCode is not running at ${baseUrl}, and the \`opencode\` command is not on PATH.\n`
         + 'Install it from https://opencode.ai, or set LOOPTROOP_OPENCODE_BASE_URL to an OpenCode server that is '
         + 'already running and OPENCODE_PASSWORD to its password.'
-      : `OpenCode is not running at ${baseUrl}, and the \`opencode\` that was found will not be run: ${refusal}\n`
-        + 'Or reinstall OpenCode so that it is owned by you or by root.')
+      : `OpenCode is not running at ${baseUrl}, and the \`opencode\` that was found will not be run: ${refusal}`)
     this.name = 'OpenCodeMissingError'
   }
 }
@@ -119,11 +125,19 @@ function isUnusableServer(error: unknown): error is OpenCodeConnectionError {
     && (error.failureKind === 'authentication' || error.failureKind === 'unsupported_protocol')
 }
 
-/** The host and port `opencode serve` is given for `baseUrl`. */
-function serveAddress(baseUrl: string): { host: string; port: string } {
+/**
+ * The host and port `opencode serve` is given for `baseUrl`. `host` keeps an
+ * IPv6 address in brackets, as a URL writes it; `bindHost` is the bare address
+ * a socket is bound to. Exported so `doctor` judges the same address.
+ */
+export function serveAddress(baseUrl: string): { host: string; bindHost: string; port: string } {
   const url = new URL(baseUrl)
   const host = url.hostname === 'localhost' ? '127.0.0.1' : url.hostname
-  return { host, port: url.port || (url.protocol === 'https:' ? '443' : '80') }
+  return {
+    host,
+    bindHost: host.startsWith('[') ? host.slice(1, -1) : host,
+    port: url.port || (url.protocol === 'https:' ? '443' : '80'),
+  }
 }
 
 /**
@@ -339,7 +353,7 @@ export interface OpenCodeSupervisorOptions {
    * Reports every status change after start() has returned: a crash, a restart
    * onto a new pid, or the point where the supervisor gives up.
    *
-   * The daemon writes its state file once, from the status start() returned. A
+   * The daemon writes its state file once, when its own server is up. A
    * server that dies an hour later, or comes back under a different pid, leaves
    * that record describing something that is no longer true — and it is the
    * record `clean` reaps orphans from.
@@ -435,24 +449,42 @@ export class OpenCodeSupervisor {
     }
 
     invalidateOpenCodeConnection(this.baseUrl)
-    let adopt: boolean
-    try {
-      const initial = await this.probeState()
-      // An HTTP response proves another process owns the address. Give a server
-      // that is still booting time to become healthy; never launch over it.
-      // What it turns out to be once it answers is judged like a first answer.
-      if (initial === 'starting') await this.waitForHealth()
-      adopt = initial !== 'absent'
-    } catch (error) {
-      if (!isUnusableServer(error)) throw error
-      if (!this.options.movable) throw this.explainUnusable(error)
-      await this.moveToFreePort(error.message)
-      adopt = false
+    // The daemon binds its own port only after OpenCode is up, so an OpenCode
+    // started on that port takes it first and the daemon then fails to start.
+    const { port } = serveAddress(this.baseUrl)
+    const takesDaemonPort = this.options.avoidPorts?.includes(Number(port)) ?? false
+    let adopt = false
+    if (takesDaemonPort && this.options.movable) {
+      // Not probed: whatever answers there, the port is the daemon's.
+      await this.moveToFreePort(`LoopTroop's own server is set to use port ${port}.`)
+    } else {
+      try {
+        const initial = await this.probeState()
+        // An HTTP response proves another process owns the address. Give a server
+        // that is still booting time to become healthy; never launch over it.
+        // What it turns out to be once it answers is judged like a first answer.
+        if (initial === 'starting') await this.waitForHealth()
+        adopt = initial !== 'absent'
+      } catch (error) {
+        if (!isUnusableServer(error)) throw error
+        if (!this.options.movable) throw this.explainUnusable(error)
+        await this.moveToFreePort(error.message)
+      }
     }
     if (adopt) {
       this.status = { kind: 'adopted', baseUrl: this.baseUrl }
       this.startReported = true
       return this.status
+    }
+    // An address the user set is never moved, and a server already answering
+    // there was adopted above. Launching one would only fail the daemon later.
+    if (takesDaemonPort && !this.options.movable) {
+      throw new Error(
+        `LoopTroop's own server and OpenCode are both set to use port ${port}. Nothing is running at ${this.baseUrl}, `
+        + 'so LoopTroop would start OpenCode there and then could not start itself. Change one of them: --port '
+        + '(or port in config.json) for LoopTroop, or LOOPTROOP_OPENCODE_BASE_URL (or opencodeBaseUrl in config.json) '
+        + 'for OpenCode.',
+      )
     }
 
     this.status = await this.spawnAndWait()
@@ -487,13 +519,14 @@ export class OpenCodeSupervisor {
    * as at the default: nothing answers on a port that was just found free.
    */
   private async moveToFreePort(reason: string): Promise<void> {
-    const { host, port } = serveAddress(this.baseUrl)
-    const bindHost = host.startsWith('[') ? host.slice(1, -1) : host
+    const { bindHost, port } = serveAddress(this.baseUrl)
     const free = await (this.options.findFreePort ?? findFreePort)(bindHost, Number(port) + 1, this.options.avoidPorts ?? [])
     if (free === null) {
       throw new Error(
-        `${this.baseUrl} is used by another server, and no free port after it was found for LoopTroop's own `
-        + `OpenCode. That server answered: ${reason} Stop it, or set LOOPTROOP_OPENCODE_BASE_URL to a free address.`,
+        // `reason` is either what the server there answered or that the port
+        // is LoopTroop's own, so it is quoted rather than attributed.
+        `LoopTroop's own OpenCode cannot use ${this.baseUrl}, and no free port after it was found. ${reason} `
+        + 'Set LOOPTROOP_OPENCODE_BASE_URL to a free address.',
       )
     }
     const moved = new URL(this.baseUrl)
@@ -518,7 +551,7 @@ export class OpenCodeSupervisor {
       if (this.stopping) return this.status
     }
 
-    const { host, port } = serveAddress(this.baseUrl)
+    const { host, bindHost, port } = serveAddress(this.baseUrl)
     // A parsed URL does not make a hostname safe: `new URL('http://foo&bar:1')`
     // has the hostname `foo&bar`, and on Windows an npm-installed OpenCode is
     // started through cmd.exe. The launcher escapes every argument for cmd.exe,
@@ -532,8 +565,6 @@ export class OpenCodeSupervisor {
 
     this.ensureManagedAuthentication()
     const childEnvironment = createOpenCodeServerEnvironment(process.env)
-
-    const serveHost = host.startsWith('[') ? host.slice(1, -1) : host
 
     // Resolved rather than left to `PATH`. The resolver applies PATHEXT itself,
     // which is what the Windows shell used to be here for: `opencode` is only
@@ -554,7 +585,11 @@ export class OpenCodeSupervisor {
       program = resolution.path ?? null
       refusal = resolution.refusedAt === undefined ? undefined : resolution.reason
     }
-    if (program === null) throw new OpenCodeMissingError(this.baseUrl, refusal)
+    if (program === null) {
+      throw new OpenCodeMissingError(this.baseUrl, refusal === undefined
+        ? undefined
+        : `${refusal}\nOr reinstall OpenCode so that it is owned by you or by root.`)
+    }
 
     // Node has refused to launch a `.cmd` or `.bat` directly since the BatBadBut
     // hardening, so an npm-installed OpenCode still goes through cmd.exe — one
@@ -572,7 +607,7 @@ export class OpenCodeSupervisor {
     const logArgs = this.options.printLogs
       ? getOpenCodeServeLogArgs('all', planLaunch(['serve', '--help']), childEnvironment)
       : []
-    const argv = ['serve', ...logArgs, '--hostname', serveHost, '--port', port]
+    const argv = ['serve', ...logArgs, '--hostname', bindHost, '--port', port]
     const launch = planLaunch(argv)
     if (launch.reason !== undefined) throw new OpenCodeMissingError(this.baseUrl, launch.reason)
     const child = spawnProcess(launch.file, launch.args, {
@@ -649,7 +684,13 @@ export class OpenCodeSupervisor {
       throw new Error('OpenCode process was started but reported no process id.')
     }
 
-    return { kind: 'managed', baseUrl: this.baseUrl, pid, ...(this.move === undefined ? {} : { movedFrom: this.move }) }
+    return {
+      kind: 'managed',
+      baseUrl: this.baseUrl,
+      pid,
+      ...(startToken === null ? {} : { startToken }),
+      ...(this.move === undefined ? {} : { movedFrom: this.move }),
+    }
   }
 
   private async waitForHealth(): Promise<void> {

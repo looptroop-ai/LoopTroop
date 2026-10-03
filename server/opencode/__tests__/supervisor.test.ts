@@ -2,6 +2,7 @@ import { EventEmitter } from 'node:events'
 import type { ChildProcess } from 'node:child_process'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import { resolveTrustedExecutable } from '../../lib/executablePath'
+import * as processIdentity from '../../lib/processIdentity'
 import { terminateProcessTree } from '../../lib/processTree'
 import {
   defaultTermination,
@@ -265,9 +266,118 @@ describe('OpenCodeSupervisor', () => {
 
     await expect(supervisor.start()).rejects.toMatchObject({
       name: 'OpenCodeMissingError',
-      message: expect.stringContaining(`will not be run: ${refusal}`),
+      message: expect.stringContaining(`will not be run: ${refusal}\nOr reinstall OpenCode so that it is owned by you or by root.`),
     })
     expect(spawnProcess).not.toHaveBeenCalled()
+  })
+
+  /**
+   * Only a real spawn reads a start token: the spawn seam's invented pids must
+   * never reach a real identity probe. `true` ignores the serve arguments, and
+   * exits only after start() has seen the server healthy.
+   */
+  it.skipIf(process.platform === 'win32')('publishes the start token read at spawn with the managed status', async () => {
+    const token = vi.spyOn(processIdentity, 'readProcessStartToken')
+      .mockReturnValueOnce('spawn-token')
+      .mockReturnValue('reused-pid-token')
+    let probes = 0
+    const supervisor = new OpenCodeSupervisor({
+      baseUrl: 'http://127.0.0.1:4096',
+      probe: async () => ++probes > 1,
+      resolveProgram: () => '/usr/bin/true',
+      termination: terminationProbe().termination,
+    })
+
+    try {
+      const status = await supervisor.start()
+      expect(status).toEqual({ kind: 'managed', baseUrl: 'http://127.0.0.1:4096', pid: expect.any(Number), startToken: 'spawn-token' })
+      expect(supervisor.ownedProcess).toEqual({ pid: (status as { pid: number }).pid, startToken: 'spawn-token' })
+    } finally {
+      await supervisor.stop()
+      token.mockRestore()
+    }
+  })
+
+  /**
+   * `looptroop start --port 4096` with OpenCode at its default address. The
+   * daemon binds its port only after OpenCode is up, so an OpenCode started
+   * there took the port and the daemon then failed to start on its own one.
+   */
+  describe('an OpenCode address on the daemon\'s own port', () => {
+    it('moves a default address before probing it', async () => {
+      const probed: string[] = []
+      const ports: string[] = []
+      const findFreePort = vi.fn(async () => 4097)
+      const supervisor = new OpenCodeSupervisor({
+        baseUrl: 'http://127.0.0.1:4096',
+        movable: true,
+        avoidPorts: [4096],
+        findFreePort,
+        probe: async (url) => {
+          probed.push(url)
+          return ports.length > 0
+        },
+        spawnProcess: ((_program: string, args: string[]) => {
+          ports.push(args.at(-1)!)
+          return fakeChild(4320)
+        }) as never,
+        resolveProgram: () => '/opt/opencode',
+        termination: terminationProbe().termination,
+      })
+      const warn = vi.spyOn(console, 'warn').mockImplementation(() => {})
+
+      try {
+        await expect(supervisor.start()).resolves.toEqual({
+          kind: 'managed',
+          baseUrl: 'http://127.0.0.1:4097',
+          pid: 4320,
+          movedFrom: { baseUrl: 'http://127.0.0.1:4096', reason: 'LoopTroop\'s own server is set to use port 4096.' },
+        })
+        // Whatever answers on 4096, the daemon is about to need it.
+        expect(probed).not.toContain('http://127.0.0.1:4096')
+        expect(findFreePort).toHaveBeenCalledWith('127.0.0.1', 4097, [4096])
+        expect(ports).toEqual(['4097'])
+        await supervisor.stop()
+      } finally {
+        warn.mockRestore()
+      }
+    })
+
+    it('refuses to start OpenCode on it when the user set the address, naming both settings', async () => {
+      const spawnProcess = vi.fn()
+      const findFreePort = vi.fn(async () => 4097)
+      const supervisor = new OpenCodeSupervisor({
+        baseUrl: 'http://127.0.0.1:4096',
+        avoidPorts: [4096],
+        findFreePort,
+        probe: async () => false,
+        spawnProcess: spawnProcess as never,
+        resolveProgram: () => '/opt/opencode',
+      })
+
+      await expect(supervisor.start()).rejects.toThrow(
+        'LoopTroop\'s own server and OpenCode are both set to use port 4096. Nothing is running at '
+        + 'http://127.0.0.1:4096, so LoopTroop would start OpenCode there and then could not start itself. Change one '
+        + 'of them: --port (or port in config.json) for LoopTroop, or LOOPTROOP_OPENCODE_BASE_URL (or opencodeBaseUrl '
+        + 'in config.json) for OpenCode.',
+      )
+      expect(spawnProcess).not.toHaveBeenCalled()
+      expect(findFreePort).not.toHaveBeenCalled()
+    })
+
+    it('still adopts a server already answering at an address the user set', async () => {
+      const spawnProcess = vi.fn()
+      const supervisor = new OpenCodeSupervisor({
+        baseUrl: 'http://127.0.0.1:4096',
+        avoidPorts: [4096],
+        probe: async () => true,
+        spawnProcess: spawnProcess as never,
+        resolveProgram: () => '/opt/opencode',
+      })
+
+      await expect(supervisor.start()).resolves.toEqual({ kind: 'adopted', baseUrl: 'http://127.0.0.1:4096' })
+      expect(spawnProcess).not.toHaveBeenCalled()
+    })
   })
 
   /**
@@ -436,7 +546,7 @@ describe('OpenCodeSupervisor', () => {
       })
 
       await expect(supervisor.start()).rejects.toThrow(
-        'http://127.0.0.1:4096 is used by another server, and no free port after it was found',
+        "LoopTroop's own OpenCode cannot use http://127.0.0.1:4096, and no free port after it was found.",
       )
       expect(spawnProcess).not.toHaveBeenCalled()
     })

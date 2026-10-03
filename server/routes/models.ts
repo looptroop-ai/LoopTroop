@@ -3,8 +3,7 @@ import { getOpenCodeAdapter } from '../opencode/factory'
 import { fetchProviderCatalog, flattenCatalogModels, refreshProviderCatalog } from '../opencode/providerCatalog'
 import { ProviderCatalogBusyError } from '../opencode/providerCatalogReload'
 import type { OpenCodeCatalogResponse, OpenCodeCatalogScope } from '../../shared/opencodeCatalog'
-import { hasOpenCodePassword } from '../../shared/opencodeAuth'
-import { openCodeAuthAdvice } from '../opencode/connection'
+import { credentialsWereSent, openCodeAuthAdvice } from '../opencode/connection'
 
 const modelsRouter = new Hono()
 
@@ -30,10 +29,8 @@ async function modelDiscoveryFailure() {
       ? 'OpenCode is connected, but model discovery failed.'
       : health.failureKind === 'authentication'
         // Worded by whether LoopTroop put a password on the wire, which the
-        // health check reports. Not the environment: the supervisor fills that
-        // with a generated password before launching its own server, so it says
-        // "configured" for a password nobody configured.
-        ? openCodeAuthAdvice(health.credentialsSent ?? hasOpenCodePassword(process.env))
+        // health check reports, not by the environment the supervisor fills in.
+        ? openCodeAuthAdvice(credentialsWereSent(health))
         : 'OpenCode server is not reachable. Restart LoopTroop (`looptroop restart`) so it starts OpenCode again, or check the OpenCode URL setting.',
   }
 }

@@ -15,6 +15,7 @@ import { createInitializedTestTicket, createTestRepoManager, resetTestDb } from 
 import { listSkipEvents, writeSkipReceipts } from '../skipReceipts'
 import { interviewQASessions, phaseIntermediate } from '../phases/state'
 import * as interviewQa from '../../phases/interview/qa'
+import { openCodeAuthAdvice } from '../../opencode/connection'
 
 const { checkHealthMock, getSessionMock, deliberateInterviewMock } = vi.hoisted(() => ({
   checkHealthMock: vi.fn(),
@@ -191,13 +192,31 @@ describe('additional interview phase flows', () => {
       error: 'OpenCode requires a password, and none is configured (HTTP 401).',
       credentialsSent: false,
     })
+    // The advice alone: the error opens with the same sentence, so appending
+    // it said everything twice.
     await expect(handleInterviewDeliberate(ticket.id, context, vi.fn(), new AbortController().signal))
-      .rejects.toThrow(/^OpenCode requires a password, and none is configured\. Set OPENCODE_PASSWORD/)
+      .rejects.toHaveProperty('message', openCodeAuthAdvice(false))
 
     checkHealthMock.mockResolvedValueOnce({ available: false, failureKind: 'network', error: 'connection refused' })
     await expect(handleInterviewDeliberate(ticket.id, context, vi.fn(), new AbortController().signal))
       .rejects.toThrow('OpenCode server is not running. Restart LoopTroop (`looptroop restart`) so it starts OpenCode again.')
     expect(deliberateInterviewMock).not.toHaveBeenCalled()
+  })
+
+  it('words a refusal that does not say what was sent the way the model screen does', async () => {
+    const { ticket, context } = await createInitializedTestTicket(repoManager, {
+      title: 'Word an unexplained OpenCode refusal like the model screen',
+    })
+    // Assuming a password was sent told people with none configured to check it.
+    vi.stubEnv('OPENCODE_PASSWORD', '')
+    vi.stubEnv('OPENCODE_SERVER_PASSWORD', '')
+    try {
+      checkHealthMock.mockResolvedValueOnce({ available: false, failureKind: 'authentication', error: 'HTTP 401' })
+      await expect(handleInterviewDeliberate(ticket.id, context, vi.fn(), new AbortController().signal))
+        .rejects.toHaveProperty('message', openCodeAuthAdvice(false))
+    } finally {
+      vi.unstubAllEnvs()
+    }
   })
 
   it('persists failed draft outcomes and blocks the interview when council quorum is not met', async () => {

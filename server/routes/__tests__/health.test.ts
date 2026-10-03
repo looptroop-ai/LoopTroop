@@ -9,6 +9,13 @@ import { getProjectDbPath, normalizeFolderPath } from '../../storage/paths'
 import packageJson from '../../../package.json'
 import { removeTempDir } from '../../test/tempDir'
 
+const { checkHealth } = vi.hoisted(() => ({ checkHealth: vi.fn() }))
+
+vi.mock('../../opencode/factory', async (importOriginal) => ({
+  ...await importOriginal<typeof import('../../opencode/factory')>(),
+  getOpenCodeAdapter: () => ({ checkHealth }),
+}))
+
 const repoManager = createFixtureRepoManager({
   templatePrefix: 'looptroop-health-route-',
   files: {
@@ -418,5 +425,55 @@ describe('health startup routes', () => {
     expect(tables).toEqual([{ name: 'ticket_phase_attempts' }])
     expect(artifactIndexes.map((index) => index.name)).toContain('idx_phase_artifacts_ticket_phase_attempt')
     expect(sessionIndexes.map((index) => index.name)).toContain('idx_sessions_ticket_phase_step')
+  })
+})
+
+describe('OpenCode health route', () => {
+  afterEach(() => {
+    checkHealth.mockReset()
+    vi.unstubAllEnvs()
+  })
+
+  async function requestOpenCodeHealth() {
+    const { health } = await import('../health')
+    const app = new Hono()
+    app.route('/api', health)
+    return (await app.request('/api/health/opencode')).json()
+  }
+
+  it('words a refusal by what was sent, not by an environment the supervisor fills in itself', async () => {
+    // The setup notice shows this advice. One sentence telling everyone to set
+    // OPENCODE_PASSWORD was wrong for a v1 server and for a wrong password.
+    vi.stubEnv('OPENCODE_PASSWORD', 'generated-by-the-supervisor')
+    checkHealth.mockResolvedValueOnce({ available: false, failureKind: 'authentication', error: 'HTTP 401', credentialsSent: false })
+    const none = await requestOpenCodeHealth()
+    expect(none).toEqual({
+      status: 'unavailable',
+      models: [],
+      failureKind: 'authentication',
+      error: 'HTTP 401',
+      credentialsSent: false,
+      advice: expect.stringMatching(/^OpenCode requires a password, and none is configured\. Set OPENCODE_PASSWORD/),
+    })
+
+    vi.stubEnv('OPENCODE_PASSWORD', '')
+    vi.stubEnv('OPENCODE_SERVER_PASSWORD', '')
+    checkHealth.mockResolvedValueOnce({ available: false, failureKind: 'authentication', error: 'HTTP 401', credentialsSent: true })
+    const rejected = await requestOpenCodeHealth()
+    expect(rejected).toMatchObject({ failureKind: 'authentication', credentialsSent: true })
+    expect(rejected.advice).toMatch(/^OpenCode rejected the configured credentials\./)
+    expect(rejected.advice).toContain('OPENCODE_SERVER_PASSWORD and OPENCODE_SERVER_USERNAME for v1')
+
+    // A result that does not say falls back to the environment, as the model
+    // screen and the interview phase do.
+    checkHealth.mockResolvedValueOnce({ available: false, failureKind: 'authentication', error: 'HTTP 401' })
+    const unsaid = await requestOpenCodeHealth()
+    expect(unsaid).toMatchObject({ credentialsSent: false, advice: none.advice })
+  })
+
+  it('adds no sign-in advice to a server that is simply not answering', async () => {
+    checkHealth.mockResolvedValueOnce({ available: false, failureKind: 'network', error: 'connection refused' })
+    const payload = await requestOpenCodeHealth()
+    expect(payload).toEqual({ status: 'unavailable', models: [], failureKind: 'network', error: 'connection refused' })
   })
 })

@@ -1,5 +1,6 @@
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import {
+  credentialsWereSent,
   getOpenCodeConnection,
   invalidateOpenCodeConnection,
   OpenCodeConnectionError,
@@ -240,5 +241,23 @@ describe('getOpenCodeConnection', () => {
       status: 503,
     })
     expect(fetchMock).toHaveBeenCalledTimes(2)
+  })
+})
+
+describe('credentialsWereSent', () => {
+  it('believes the health result over an environment the supervisor fills in itself', () => {
+    vi.stubEnv('OPENCODE_PASSWORD', 'generated-by-the-supervisor')
+    expect(credentialsWereSent({ credentialsSent: false })).toBe(false)
+    vi.stubEnv('OPENCODE_PASSWORD', '')
+    vi.stubEnv('OPENCODE_SERVER_PASSWORD', '')
+    expect(credentialsWereSent({ credentialsSent: true })).toBe(true)
+  })
+
+  it('falls back to the environment only when the result does not say', () => {
+    vi.stubEnv('OPENCODE_PASSWORD', '')
+    vi.stubEnv('OPENCODE_SERVER_PASSWORD', '')
+    expect(credentialsWereSent({})).toBe(false)
+    vi.stubEnv('OPENCODE_SERVER_PASSWORD', 'v1-secret')
+    expect(credentialsWereSent({})).toBe(true)
   })
 })

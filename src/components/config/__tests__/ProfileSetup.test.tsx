@@ -797,17 +797,21 @@ describe('ProfileSetup', () => {
     expect(await screen.findByText('OpenCode connected, but no models are available')).toBeInTheDocument()
   })
 
-  it('asks for the password, not a restart, when OpenCode refused LoopTroop', async () => {
+  function mockOpenCodeRefusal(health: Record<string, unknown>) {
     vi.mocked(fetch).mockImplementation(async (input: RequestInfo | URL) => {
       const url = typeof input === 'string' ? input : input.toString()
       if (url === '/api/health/opencode') {
-        return { ok: true, json: async () => ({ status: 'unavailable', failureKind: 'authentication' }) } as Response
+        return { ok: true, json: async () => ({ status: 'unavailable', failureKind: 'authentication', ...health }) } as Response
       }
       return {
         ok: true,
         json: async () => ({ models: [], connectedProviders: [], defaultModels: {} }),
       } as Response
     })
+  }
+
+  it('asks for the password, not a restart, when OpenCode refused LoopTroop', async () => {
+    mockOpenCodeRefusal({})
 
     const { rendered } = await renderProfileSetup()
     expect(await screen.findByText('OpenCode not connected')).toBeInTheDocument()
@@ -815,6 +819,39 @@ describe('ProfileSetup', () => {
       "OpenCode is running but refused LoopTroop's sign-in. Set OPENCODE_PASSWORD to that server's password, then run looptroop restart.",
     )
     expect(rendered.container).not.toHaveTextContent('could not reach')
+  })
+
+  it('shows the backend advice for a refusal, which knows whether a password was sent', async () => {
+    // One sentence telling everyone to set OPENCODE_PASSWORD was wrong for a
+    // v1 server, which reads other variables, and for a password that was wrong.
+    mockOpenCodeRefusal({
+      credentialsSent: true,
+      advice: 'OpenCode rejected the configured credentials. Check OPENCODE_PASSWORD for v2, or OPENCODE_SERVER_PASSWORD '
+        + 'and OPENCODE_SERVER_USERNAME for v1, then run `looptroop restart`.',
+    })
+    const { rendered } = await renderProfileSetup()
+    expect(await screen.findByText('OpenCode not connected')).toBeInTheDocument()
+    expect(rendered.container).toHaveTextContent(
+      'OpenCode rejected the configured credentials. Check OPENCODE_PASSWORD for v2, or OPENCODE_SERVER_PASSWORD '
+        + 'and OPENCODE_SERVER_USERNAME for v1, then run looptroop restart.',
+    )
+    expect(screen.getByText('looptroop restart').tagName).toBe('CODE')
+    expect(rendered.container).not.toHaveTextContent('refused LoopTroop\'s sign-in')
+
+    rendered.unmount()
+    mockOpenCodeRefusal({
+      credentialsSent: false,
+      advice: 'OpenCode requires a password, and none is configured. Set OPENCODE_PASSWORD to that server\'s password, '
+        + 'and OPENCODE_SERVER_USERNAME too if a v1 server\'s user is not `opencode`, then run `looptroop restart`.',
+    })
+    const second = await renderProfileSetup()
+    expect(await screen.findByText('OpenCode not connected')).toBeInTheDocument()
+    expect(second.rendered.container).toHaveTextContent(
+      'OpenCode requires a password, and none is configured. Set OPENCODE_PASSWORD to that server\'s password, '
+        + 'and OPENCODE_SERVER_USERNAME too if a v1 server\'s user is not opencode, then run looptroop restart.',
+    )
+    expect(screen.getByText('opencode').tagName).toBe('CODE')
+    expect(second.rendered.container).not.toHaveTextContent('`')
   })
 
   it('updates OpenRouter routing preferences while keeping suffixes attached to saved models', async () => {

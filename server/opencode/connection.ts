@@ -1,5 +1,10 @@
 import { createHash } from 'node:crypto'
-import { getOpenCodeBasicAuthHeader, getOpenCodeV2BasicAuthHeader, withOpenCodePasswordAliases } from '../../shared/opencodeAuth'
+import {
+  getOpenCodeBasicAuthHeader,
+  getOpenCodeV2BasicAuthHeader,
+  hasOpenCodePassword,
+  withOpenCodePasswordAliases,
+} from '../../shared/opencodeAuth'
 
 export type OpenCodeProtocol = 'v1' | 'v2'
 export type OpenCodeFailureKind = 'authentication' | 'unsupported_protocol' | 'network'
@@ -142,8 +147,22 @@ function authFailure(response: Response, credentialsSent: boolean): OpenCodeConn
 }
 
 /**
- * What to do about a server that refused LoopTroop, for every surface that
- * reports one: the model screen, the interview phase and the setup notice.
+ * Whether LoopTroop put a password on the wire, for a health result that
+ * refused it. The result says so; the environment is only a fallback for one
+ * that does not, because the supervisor fills it with a generated password
+ * before launching its own server, and it then says "configured" for a
+ * password nobody configured. One reading, so every surface words a refusal
+ * the same way.
+ */
+export function credentialsWereSent(health: { credentialsSent?: boolean }): boolean {
+  return health.credentialsSent ?? hasOpenCodePassword(process.env)
+}
+
+/**
+ * What to do about a server that refused LoopTroop, for the surfaces inside
+ * the app: the model screen (`/models`), the interview phase and the setup
+ * notice (the `advice` of `/health/opencode`). `doctor` and the supervisor word
+ * their own, because they can also offer dropping a configured base URL.
  * The two openings are the phrases the model picker classifies on.
  */
 export function openCodeAuthAdvice(credentialsSent: boolean): string {

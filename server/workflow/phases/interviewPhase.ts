@@ -37,7 +37,7 @@ import { interviewBatchClaims, phaseArtifacts } from '../../db/schema'
 import { getLatestPhaseArtifact, getTicketByRef, getTicketContext, getTicketPaths, insertPhaseArtifact, upsertLatestPhaseArtifact, countPhaseArtifacts, readTicketFile, removeTicketFile, writeTicketFile } from '../../storage/tickets'
 import { compareAndSetLatestPhaseArtifact } from '../../storage/ticketArtifacts'
 import { isMockOpenCodeMode } from '../../opencode/factory'
-import { openCodeAuthAdvice } from '../../opencode/connection'
+import { credentialsWereSent, openCodeAuthAdvice } from '../../opencode/connection'
 import { safeAtomicWriteWithin } from '../../io/atomicWrite'
 import { readFileNoFollowSync } from '../../io/readFile'
 import { resolveContainedPath } from '../../lib/containedPath'
@@ -1144,9 +1144,10 @@ export async function handleInterviewDeliberate(
     throwIfAborted(signal, ticketId)
     if (!health.available) {
       // A server that refuses LoopTroop is running; restarting does not change
-      // the password it is sent.
+      // the password it is sent. The advice alone: the error opens with the
+      // same sentence, so appending it said everything twice.
       const msg = health.failureKind === 'authentication'
-        ? `${openCodeAuthAdvice(health.credentialsSent ?? true)} (${health.error ?? 'authentication failed'})`
+        ? openCodeAuthAdvice(credentialsWereSent(health))
         : `OpenCode server is not running. Restart LoopTroop (\`looptroop restart\`) so it starts OpenCode again. (${health.error ?? 'connection refused'})`
       emitPhaseLog(ticketId, context.externalId, phase, 'error', msg)
       throw new OpenCodeUnavailableError(msg)

@@ -11,7 +11,8 @@ import { findFreePort, probePort } from '../lib/portProbe'
 import { daemonOrigin, getDaemonStatePath, readDaemonStartFailure, readDaemonState, type DaemonState } from '../lib/daemonPaths'
 import { OpenCodeConnectionError, probeOpenCodeConnection, type OpenCodeFailureKind } from '../opencode/connection'
 import type { SchemaCompatibility } from '../db/schemaVersion'
-import { serveAddress } from '../opencode/supervisor'
+import { bindsDaemonAddress, serveAddress } from '../opencode/supervisor'
+import { getBackendHost } from '@shared/appConfig'
 import { describeMoveReason, probeRecordedDaemon, type DaemonProbe } from './commands'
 import { getErrorMessage } from '@shared/typeGuards'
 import { formatNodeVersion, parseNodeVersion, satisfiesNodeFloor } from '@shared/nodeFloor'
@@ -642,6 +643,18 @@ async function leftoverOpenCodeCheck(probe: DaemonProbe): Promise<Check | null> 
       remedy: 'Run `looptroop stop` to end it.',
     }
   }
+  // A dead leader whose group still has members blocks a start too, and
+  // nothing proves that group id still names what LoopTroop started.
+  if (orphan.kind === 'kept' && orphan.identity === 'group') {
+    return {
+      name: 'opencode',
+      status: 'fail',
+      detail: `the OpenCode that a LoopTroop which did not shut down started (pid ${orphan.pid}) has exited, but `
+        + 'processes in its process group are still running, and `looptroop start` will not replace that record',
+      remedy: `End them (\`pgrep -g ${orphan.pid}\` lists them), then run \`looptroop stop\` to clear the record. `
+        + `If they are not LoopTroop's, delete ${getDaemonStatePath()}.`,
+    }
+  }
   // A pid that now belongs to another process is debris `start` moves past;
   // one it cannot identify blocks it.
   if (orphan.kind === 'kept' && orphan.identity === 'unknown') {
@@ -667,24 +680,18 @@ async function checkOpenCode(probe: DaemonProbe, cliAvailable: boolean): Promise
   }
 
   const daemon = probe.kind === 'running' ? probe.state : null
-  const reachable = daemon
-    ? await probeDaemonOpenCode(daemon)
-    : await probeOpenCodeConfig(settings.opencodeBaseUrl)
   const movable = settings.sources.opencodeBaseUrl === 'default'
   const { bindHost, port } = serveAddress(settings.opencodeBaseUrl)
 
-  // A start refuses to launch OpenCode on the port its own server is about to
-  // bind; a default address is moved off it instead, so only a set one fails.
-  if (!movable && daemon === null && reachable.kind === 'unreachable' && Number(port) === settings.port) {
-    return {
-      name: 'opencode',
-      status: 'fail',
-      detail: `nothing answers at ${settings.opencodeBaseUrl}, and \`looptroop start\` would start OpenCode on port ${port}, `
-        + 'which LoopTroop\'s own server is set to use',
-      remedy: 'Choose another port with --port (or port in config.json), or change LOOPTROOP_OPENCODE_BASE_URL '
-        + '(or opencodeBaseUrl in config.json).',
-    }
+  // Asked before the address is probed, as a start asks it: the daemon binds
+  // its own address after OpenCode is up, so nothing at it can be used.
+  if (daemon === null && bindsDaemonAddress(settings.opencodeBaseUrl, getBackendHost(), settings.port)) {
+    return await judgeDaemonAddress(settings.opencodeBaseUrl, { bindHost, port }, { movable, cliAvailable, daemonPort: settings.port })
   }
+
+  const reachable = daemon
+    ? await probeDaemonOpenCode(daemon)
+    : await probeOpenCodeConfig(settings.opencodeBaseUrl)
 
   // Where a start would move to, asked the way the start asks: past the
   // daemon's own port, which it binds only after OpenCode is up. Not asked
@@ -699,6 +706,50 @@ async function checkOpenCode(probe: DaemonProbe, cliAvailable: boolean): Promise
     movable,
     ...(nextFreePort === undefined ? {} : { nextFreePort }),
   })
+}
+
+/**
+ * OpenCode's address is the one LoopTroop's own server binds once OpenCode is
+ * up. A start moves a default address to the next free port before probing it,
+ * and fails on one the user set, so doctor says the same.
+ */
+async function judgeDaemonAddress(
+  baseUrl: string,
+  address: { bindHost: string; port: string },
+  context: { movable: boolean; cliAvailable: boolean; daemonPort: number },
+): Promise<Check> {
+  const clash = `${baseUrl} uses port ${address.port}, which LoopTroop's own server is set to use`
+  if (!context.movable) {
+    return {
+      name: 'opencode',
+      status: 'fail',
+      detail: `${clash}, so \`looptroop start\` will fail`,
+      remedy: 'Choose another port with --port (or port in config.json), or change LOOPTROOP_OPENCODE_BASE_URL '
+        + '(or opencodeBaseUrl in config.json).',
+    }
+  }
+  if (!context.cliAvailable) {
+    return {
+      name: 'opencode',
+      status: 'fail',
+      detail: `${clash}, and \`opencode\` cannot be launched to start LoopTroop's own elsewhere`,
+      remedy: OPENCODE_INSTALL_REMEDY,
+    }
+  }
+  const free = await findFreePort(address.bindHost, Number(address.port) + 1, [context.daemonPort])
+  return free === null
+    ? {
+        name: 'opencode',
+        status: 'fail',
+        detail: `${clash}, and no free port after it was found for LoopTroop's own OpenCode`,
+        remedy: 'Choose another port with --port (or port in config.json).',
+      }
+    : {
+        name: 'opencode',
+        status: 'warn',
+        detail: `${clash}; \`looptroop start\` will start its own OpenCode on the next free port (now ${free})`,
+        remedy: 'No action needed: LoopTroop moves its OpenCode off that port.',
+      }
 }
 
 /**

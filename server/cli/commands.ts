@@ -12,7 +12,7 @@ import { clearLockOwnedBy, releaseStaleLock } from '../lib/daemonLock'
 import { matchProcess, readProcessStartToken } from '../lib/processIdentity'
 import { captureProcessGroup, hasCapturedProcessGroupMember, refreshProcessGroup, terminateCapturedProcessGroupAfterLeaderExit, type ProcessGroupSnapshot } from '../lib/processTree'
 import { daemonArgv } from './daemonHandoff'
-import { isProcessAlive, killProcessTree, signalTermination, waitForExit } from './processControl'
+import { isProcessAlive, isProcessGroupAlive, killProcessTree, signalTermination, waitForExit } from './processControl'
 import { getErrorMessage } from '@shared/typeGuards'
 
 /** A start is abandoned rather than hanging forever if the child never reports. */
@@ -596,9 +596,11 @@ export type StopOutcome =
   | { kind: 'not-ours'; pid: number; reason: string }
   /**
    * The daemon is gone, but the OpenCode it started was not proven gone, so its
-   * record was kept. `unverifiable` says why it was not even signalled.
+   * record was kept: signalled and not proven stopped, a pid whose identity
+   * could not be read, or a dead leader whose process group still has members.
    */
-  | { kind: 'opencode-left'; pid: number; unverifiable?: string }
+  | { kind: 'opencode-left'; pid: number; left: 'unproven' | 'group' }
+  | { kind: 'opencode-left'; pid: number; left: 'unidentified'; reason: string }
 
 /**
  * Whether the pid recorded for this daemon still belongs to it.
@@ -636,12 +638,7 @@ function openCodeTreeGone(pid: number, snapshot: ProcessGroupSnapshot | null, wi
   if (isProcessAlive(pid)) return false
   if (process.platform === 'win32') return windowsTreeProven
   if (snapshot !== null && hasCapturedProcessGroupMember(snapshot)) return false
-  try {
-    process.kill(-pid, 0)
-    return false
-  } catch (error) {
-    return (error as NodeJS.ErrnoException).code === 'ESRCH'
-  }
+  return !isProcessGroupAlive(pid)
 }
 
 /**
@@ -895,10 +892,14 @@ async function reapLeftOpenCode(state: DaemonState): Promise<StopOutcome | null>
   const { judgeOrphanedOpenCode } = await import('./cleanCommand')
   const orphan = judgeOrphanedOpenCode(state)
   if (orphan.kind === 'nothing' || (orphan.kind === 'kept' && orphan.identity === 'different')) return null
-  if (orphan.kind === 'kept') return { kind: 'opencode-left', pid: orphan.pid, unverifiable: orphan.reason }
+  if (orphan.kind === 'kept') {
+    return orphan.identity === 'group'
+      ? { kind: 'opencode-left', pid: orphan.pid, left: 'group' }
+      : { kind: 'opencode-left', pid: orphan.pid, left: 'unidentified', reason: orphan.reason }
+  }
 
   if (await stopOpenCodeTree(orphan.pid, state.opencode.startToken) === null) {
-    return { kind: 'opencode-left', pid: orphan.pid }
+    return { kind: 'opencode-left', pid: orphan.pid, left: 'unproven' }
   }
   process.stdout.write(`Stopped the OpenCode server (pid ${orphan.pid}) that LoopTroop left running.\n`)
   return null
@@ -1042,15 +1043,33 @@ function reportStopOutcome(outcome: StopOutcome): number {
   }
 
   if (outcome.kind === 'opencode-left') {
-    process.stderr.write(outcome.unverifiable === undefined
-      ? `LoopTroop is not running, but the OpenCode server it started (pid ${outcome.pid}), or a process that `
-        + 'server started, did not stop. Its record was kept so `looptroop stop` can retry.\n'
-      // Kept for the reason `start` refuses it: a server of ours that nothing
-      // names any more is one the next start moves past and never stops.
-      : `LoopTroop is not running, but pid ${outcome.pid}, recorded as the OpenCode server it started, `
-        + `could not be checked: ${outcome.unverifiable}. Nothing was signalled, and the record was kept. `
-        + `If pid ${outcome.pid} is that OpenCode server, end it, then run \`looptroop stop\` again. `
-        + `If it is something else, delete ${getDaemonStatePath()} instead.\n`)
+    // Each keeps the record for the reason `start` refuses it: a server of ours
+    // that nothing names any more is one the next start moves past and never stops.
+    switch (outcome.left) {
+      case 'unproven':
+        process.stderr.write(
+          `LoopTroop is not running, but the OpenCode server it started (pid ${outcome.pid}) could not be confirmed `
+          + 'stopped, together with everything it started. Its record was kept so `looptroop stop` can retry.\n',
+        )
+        break
+      case 'group':
+        // Not signalled from here: once the leader is gone, nothing proves
+        // that group id still names what LoopTroop started.
+        process.stderr.write(
+          `LoopTroop is not running. The OpenCode server it started (pid ${outcome.pid}) has exited, but processes `
+          + 'in its process group are still running. Nothing was signalled, and the record was kept. '
+          + `End them (\`pgrep -g ${outcome.pid}\` lists them), then run \`looptroop stop\` again. `
+          + `If they are not LoopTroop's, delete ${getDaemonStatePath()} instead.\n`,
+        )
+        break
+      default:
+        process.stderr.write(
+          `LoopTroop is not running, but pid ${outcome.pid}, recorded as the OpenCode server it started, `
+          + `could not be checked: ${outcome.reason}. Nothing was signalled, and the record was kept. `
+          + `If pid ${outcome.pid} is that OpenCode server, end it, then run \`looptroop stop\` again. `
+          + `If it is something else, delete ${getDaemonStatePath()} instead.\n`,
+        )
+    }
     return 1
   }
 
@@ -1102,11 +1121,12 @@ export function describeOpenCodeMove(opencode: DaemonState['opencode']): string 
 }
 
 /**
- * Why OpenCode is elsewhere, in the past tense: it records what held the
- * address when LoopTroop started, which may have exited since.
+ * Why OpenCode is elsewhere, in the past tense: it records why the address
+ * could not be used when LoopTroop started, and what held it may have exited
+ * since.
  */
 export function describeMoveReason(movedFrom: NonNullable<NonNullable<DaemonState['opencode']>['movedFrom']>): string {
-  return `${movedFrom.baseUrl} was taken by another server when LoopTroop started: ${movedFrom.reason}`
+  return `${movedFrom.baseUrl} could not be used when LoopTroop started: ${movedFrom.reason}`
 }
 
 /** Printed by `start` and `open` whenever the daemon's OpenCode was moved. */

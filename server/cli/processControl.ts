@@ -21,6 +21,23 @@ export function isProcessAlive(pid: number): boolean {
   }
 }
 
+/**
+ * Whether a POSIX process group still has a member. Only ESRCH proves it has
+ * none, so a probe that fails any other way counts as alive. A detached child
+ * leads a group whose id is its pid, and that group can outlive it: what it
+ * started keeps running after it exits. Windows has no process groups.
+ */
+export function isProcessGroupAlive(pgid: number): boolean {
+  // -1 and -0 address every process this user may signal, not one group.
+  if (process.platform === 'win32' || !Number.isInteger(pgid) || pgid <= 1) return false
+  try {
+    process.kill(-pgid, 0)
+    return true
+  } catch (error) {
+    return (error as NodeJS.ErrnoException).code !== 'ESRCH'
+  }
+}
+
 /** Resolves true as soon as the process is gone, false when the budget runs out. */
 export async function waitForExit(pid: number, timeoutMs: number): Promise<boolean> {
   const deadline = Date.now() + timeoutMs

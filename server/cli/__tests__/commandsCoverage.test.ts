@@ -18,6 +18,7 @@ import { removeTempDir } from '../../test/tempDir'
 const mocks = vi.hoisted(() => ({
   spawn: vi.fn(),
   isProcessAlive: vi.fn(),
+  isProcessGroupAlive: vi.fn(),
   killProcessTree: vi.fn(),
   signalTermination: vi.fn(),
   waitForExit: vi.fn(),
@@ -34,6 +35,7 @@ vi.mock('node:child_process', async () => {
 
 vi.mock('../processControl', () => ({
   isProcessAlive: mocks.isProcessAlive,
+  isProcessGroupAlive: mocks.isProcessGroupAlive,
   killProcessTree: mocks.killProcessTree,
   signalTermination: mocks.signalTermination,
   waitForExit: mocks.waitForExit,
@@ -160,6 +162,7 @@ beforeEach(() => {
   useConfigDir()
   vi.clearAllMocks()
   mocks.isProcessAlive.mockImplementation((pid: number) => pid === process.pid)
+  mocks.isProcessGroupAlive.mockReturnValue(false)
   mocks.waitForExit.mockResolvedValue(true)
   mocks.signalTermination.mockReturnValue(false)
   mocks.killProcessTree.mockResolvedValue(false)
@@ -210,8 +213,8 @@ describe('daemon startup and shutdown command paths', () => {
     const output = captureOutput()
 
     expect(await startCommand()).toBe(0)
-    expect(output.stdout()).toContain('\nOpenCode runs at http://127.0.0.1:4098 because http://127.0.0.1:4096 was taken by '
-      + 'another server when LoopTroop started: OpenCode requires a password, and none is configured (HTTP 401).\n')
+    expect(output.stdout()).toContain('\nOpenCode runs at http://127.0.0.1:4098 because http://127.0.0.1:4096 could not be '
+      + 'used when LoopTroop started: OpenCode requires a password, and none is configured (HTTP 401).\n')
   })
 
   it('adopts a winning concurrent start and cleans up only its own losing child', async () => {
@@ -585,12 +588,11 @@ describe('daemon startup and shutdown command paths', () => {
       writeDaemonState(state, configDir)
       const alive = new Set([OPENCODE_PID, ...(options.daemonAlive === true ? [DAEMON_PID] : [])])
       mocks.isProcessAlive.mockImplementation((pid: number) => alive.has(pid))
+      mocks.isProcessGroupAlive.mockImplementation((pgid: number) =>
+        pgid === OPENCODE_PID && (alive.has(OPENCODE_PID) || options.survivor === true))
       mocks.killProcessTree.mockImplementation(async (pid: number) => alive.delete(pid))
       const kill = vi.spyOn(process, 'kill').mockImplementation((pid: number, signal?: string | number) => {
         if (pid === -OPENCODE_PID && signal === 'SIGTERM') alive.delete(OPENCODE_PID)
-        if (pid === -OPENCODE_PID && signal === 0 && !alive.has(OPENCODE_PID) && options.survivor !== true) {
-          throw Object.assign(new Error('no such process group'), { code: 'ESRCH' })
-        }
         return true
       })
       return { state, kill, alive }
@@ -612,19 +614,31 @@ describe('daemon startup and shutdown command paths', () => {
       const output = captureOutput()
 
       expect(await stopCommand()).toBe(1)
-      expect(output.stderr()).toContain(`the OpenCode server it started (pid ${OPENCODE_PID}), or a process that server started, did not stop`)
+      expect(output.stderr()).toContain(`the OpenCode server it started (pid ${OPENCODE_PID}) could not be confirmed stopped`)
       expect(readDaemonState(configDir)).toEqual(state)
     })
 
     // Leader exit alone is not proof: a child that ignored SIGTERM still
     // holds the port, and with the record gone nothing would name it.
-    it.skipIf(process.platform === 'win32')('keeps the record while a process it started is still running', async () => {
-      const { state, alive } = recordLeftover({ survivor: true })
-      const output = captureOutput()
+    it.skipIf(process.platform === 'win32')('keeps the record while a process it started is still running, on every retry', async () => {
+      const { state, alive, kill } = recordLeftover({ survivor: true })
+      const first = captureOutput()
 
       expect(await stopCommand()).toBe(1)
       expect(alive.has(OPENCODE_PID)).toBe(false)
-      expect(output.stderr()).toContain('or a process that server started, did not stop')
+      expect(first.stderr()).toContain('could not be confirmed stopped, together with everything it started')
+      expect(readDaemonState(configDir)).toEqual(state)
+      restoreOutput()
+
+      // The retry the message asks for used to find the leader gone, call that
+      // "nothing left", and clear the record while the survivor ran on.
+      kill.mockClear()
+      const retry = captureOutput()
+      expect(await stopCommand()).toBe(1)
+      expect(retry.stderr()).toContain(`The OpenCode server it started (pid ${OPENCODE_PID}) has exited, but processes in its process group are still running.`)
+      expect(retry.stderr()).toContain(`\`pgrep -g ${OPENCODE_PID}\` lists them`)
+      // Nothing proves that group id still names what LoopTroop started.
+      expect(kill).not.toHaveBeenCalled()
       expect(readDaemonState(configDir)).toEqual(state)
     })
 
@@ -676,7 +690,7 @@ describe('daemon startup and shutdown command paths', () => {
       const output = captureOutput()
 
       expect(await stopCommand()).toBe(1)
-      expect(output.stderr()).toContain(`the OpenCode server it started (pid ${OPENCODE_PID}), or a process that server started, did not stop`)
+      expect(output.stderr()).toContain(`the OpenCode server it started (pid ${OPENCODE_PID}) could not be confirmed stopped`)
       expect(readDaemonState(configDir)).toEqual(state)
     })
 
@@ -788,7 +802,7 @@ describe('open command browser and sign-in paths', () => {
   it('says where OpenCode went whether or not it started the daemon', async () => {
     const movedFrom = { baseUrl: 'http://127.0.0.1:4096', reason: 'OpenCode requires a password, and none is configured (HTTP 401).' }
     const opencode = { baseUrl: 'http://127.0.0.1:4098', owned: true, status: 'managed' as const, pid: 4242, movedFrom }
-    const line = 'OpenCode runs at http://127.0.0.1:4098 because http://127.0.0.1:4096 was taken by another server when '
+    const line = 'OpenCode runs at http://127.0.0.1:4098 because http://127.0.0.1:4096 could not be used when '
       + 'LoopTroop started: OpenCode requires a password, and none is configured (HTTP 401).'
     const child = makeChild(45_677)
     const state = makeState({ pid: child.pid, startToken: 'test-start-token', opencode })

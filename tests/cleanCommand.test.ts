@@ -27,6 +27,7 @@ import * as commandRunner from '../server/git/runCommand'
 import { getDaemonStatePath, type DaemonState } from '../server/lib/daemonPaths'
 import { readProcessStartToken } from '../server/lib/processIdentity'
 import { normalizeFolderPath } from '../server/storage/paths'
+import { leaderlessProcessGroup } from '../server/test/processGroup'
 import { attachProject } from '../server/storage/projects'
 import { removeTempDir } from '../server/test/tempDir'
 import {
@@ -606,6 +607,28 @@ describe('clean command', () => {
       })
 
       expect(inspectOrphanedOpenCode(configDir).kind).toBe('nothing')
+    })
+
+    // A dead leader is not an empty tree, and nothing proves that the group id
+    // still names what LoopTroop started: reported, never signalled.
+    it.skipIf(process.platform === 'win32')('keeps a leader that exited while its process group runs on', async () => {
+      const configDir = makeTempDir('config')
+      const pgid = await leaderlessProcessGroup()
+      try {
+        writeState(configDir, {
+          pid: departedPid,
+          opencode: { baseUrl: 'http://127.0.0.1:4096', owned: true, pid: pgid, startToken: 'anything' },
+        })
+
+        expect(inspectOrphanedOpenCode(configDir)).toEqual({
+          kind: 'kept',
+          pid: pgid,
+          reason: 'it has exited, but processes in its process group are still running',
+          identity: 'group',
+        })
+      } finally {
+        process.kill(-pgid, 'SIGKILL')
+      }
     })
 
     it('stops a verified orphan under --apply and clears the record', async () => {

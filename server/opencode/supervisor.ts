@@ -1,7 +1,7 @@
 import { spawn, type ChildProcess } from 'node:child_process'
 import { randomBytes } from 'node:crypto'
 import { setTimeout as delay } from 'node:timers/promises'
-import { isProcessAlive, killProcessTree } from '../cli/processControl'
+import { isProcessAlive, isProcessGroupAlive, killProcessTree } from '../cli/processControl'
 import { planProgramLaunch, resolveTrustedExecutable } from '../lib/executablePath'
 import { createOpenCodeServerEnvironment } from '../lib/childEnvironment'
 import { getOpenCodeServeLogArgs } from '../lib/opencodeServeLogArgs'
@@ -92,7 +92,10 @@ export type OpenCodeStatus =
 /** The address LoopTroop was meant to use, and why its own server is elsewhere. */
 export interface OpenCodeMove {
   baseUrl: string
-  /** What the server holding `baseUrl` answered, written for a person. */
+  /**
+   * Why `baseUrl` could not be used, written for a person and read after a
+   * colon: another server holding it, or LoopTroop's own server needing it.
+   */
   reason: string
 }
 
@@ -141,6 +144,20 @@ export function serveAddress(baseUrl: string): { host: string; bindHost: string;
 }
 
 /**
+ * Whether OpenCode served at `baseUrl` would take the address the daemon binds
+ * once OpenCode is up: the same port, on the same host or with a wildcard on
+ * either side. Another specific interface on the same port is another address.
+ */
+export function bindsDaemonAddress(baseUrl: string, daemonHost: string, daemonPort: number): boolean {
+  const { bindHost, port } = serveAddress(baseUrl)
+  if (Number(port) !== daemonPort) return false
+  const bare = daemonHost.replace(/^\[|\]$/g, '')
+  const host = bare === 'localhost' ? '127.0.0.1' : bare
+  const wildcard = (value: string): boolean => value === '0.0.0.0' || value === '::'
+  return bindHost === host || wildcard(bindHost) || wildcard(host)
+}
+
+/**
  * Everything the supervisor needs in order to end a process tree, named by what
  * it accomplishes rather than by how any one platform accomplishes it.
  *
@@ -168,19 +185,6 @@ export interface ProcessTermination {
 function matchesExpectedProcess(pid: number, expectedStartToken: string | null): boolean {
   if (expectedStartToken === null || !isProcessAlive(pid)) return false
   return matchProcess(pid, expectedStartToken).kind === 'same'
-}
-
-/** Signal 0 probes whether a POSIX process group still has a member. */
-function isProcessGroupAlive(pid: number): boolean {
-  if (process.platform === 'win32') return false
-  try {
-    process.kill(-pid, 0)
-    return true
-  } catch (error) {
-    // Only ESRCH proves that the group is gone. EPERM and every unexpected
-    // probe failure leave ownership unknown, so shutdown must keep the lock.
-    return (error as NodeJS.ErrnoException).code !== 'ESRCH'
-  }
 }
 
 const capturedGroups = new Map<string, ProcessGroupSnapshot>()
@@ -322,6 +326,13 @@ export interface OpenCodeSupervisorOptions {
    * `--port 4097` fail on its own OpenCode.
    */
   avoidPorts?: readonly number[]
+  /**
+   * `baseUrl` is the address the daemon itself binds once OpenCode is up (see
+   * `bindsDaemonAddress`), as with `looptroop start --port 4096`. A default
+   * address moves before it is probed; one the user set fails the start,
+   * because nothing at it, launched or adopted, can share it with the daemon.
+   */
+  onDaemonAddress?: boolean
   /** Injected by tests: the first free port on `host` from `from`, skipping `avoid`, or null. */
   findFreePort?: (host: string, from: number, avoid: readonly number[]) => Promise<number | null>
   mock?: boolean
@@ -449,13 +460,19 @@ export class OpenCodeSupervisor {
     }
 
     invalidateOpenCodeConnection(this.baseUrl)
-    // The daemon binds its own port only after OpenCode is up, so an OpenCode
-    // started on that port takes it first and the daemon then fails to start.
-    const { port } = serveAddress(this.baseUrl)
-    const takesDaemonPort = this.options.avoidPorts?.includes(Number(port)) ?? false
     let adopt = false
-    if (takesDaemonPort && this.options.movable) {
-      // Not probed: whatever answers there, the port is the daemon's.
+    if (this.options.onDaemonAddress) {
+      // The daemon binds its own address only after OpenCode is up, so an
+      // OpenCode there, started or adopted, leaves the daemon unable to start.
+      const { port } = serveAddress(this.baseUrl)
+      if (!this.options.movable) {
+        throw new Error(
+          `LoopTroop's own server and OpenCode at ${this.baseUrl} are both set to use port ${port}, so LoopTroop `
+          + 'could not start. Change one of them: --port (or port in config.json) for LoopTroop, or '
+          + 'LOOPTROOP_OPENCODE_BASE_URL (or opencodeBaseUrl in config.json) for OpenCode.',
+        )
+      }
+      // Not probed: whatever answers there, the address is the daemon's.
       await this.moveToFreePort(`LoopTroop's own server is set to use port ${port}.`)
     } else {
       try {
@@ -468,23 +485,13 @@ export class OpenCodeSupervisor {
       } catch (error) {
         if (!isUnusableServer(error)) throw error
         if (!this.options.movable) throw this.explainUnusable(error)
-        await this.moveToFreePort(error.message)
+        await this.moveToFreePort(`another server holds it, and answered: ${error.message}`)
       }
     }
     if (adopt) {
       this.status = { kind: 'adopted', baseUrl: this.baseUrl }
       this.startReported = true
       return this.status
-    }
-    // An address the user set is never moved, and a server already answering
-    // there was adopted above. Launching one would only fail the daemon later.
-    if (takesDaemonPort && !this.options.movable) {
-      throw new Error(
-        `LoopTroop's own server and OpenCode are both set to use port ${port}. Nothing is running at ${this.baseUrl}, `
-        + 'so LoopTroop would start OpenCode there and then could not start itself. Change one of them: --port '
-        + '(or port in config.json) for LoopTroop, or LOOPTROOP_OPENCODE_BASE_URL (or opencodeBaseUrl in config.json) '
-        + 'for OpenCode.',
-      )
     }
 
     this.status = await this.spawnAndWait()
@@ -523,17 +530,15 @@ export class OpenCodeSupervisor {
     const free = await (this.options.findFreePort ?? findFreePort)(bindHost, Number(port) + 1, this.options.avoidPorts ?? [])
     if (free === null) {
       throw new Error(
-        // `reason` is either what the server there answered or that the port
-        // is LoopTroop's own, so it is quoted rather than attributed.
-        `LoopTroop's own OpenCode cannot use ${this.baseUrl}, and no free port after it was found. ${reason} `
-        + 'Set LOOPTROOP_OPENCODE_BASE_URL to a free address.',
+        `${this.baseUrl} cannot be used: ${reason} No free port after it was found for LoopTroop's own OpenCode `
+        + 'either. Set LOOPTROOP_OPENCODE_BASE_URL to a free address.',
       )
     }
     const moved = new URL(this.baseUrl)
     moved.port = String(free)
     this.move = { baseUrl: this.baseUrl, reason }
     this.address = moved.origin
-    console.warn(`[opencode] ${this.move.baseUrl} is used by another server: ${reason} `
+    console.warn(`[opencode] ${this.move.baseUrl} cannot be used: ${reason} `
       + `Starting LoopTroop's own OpenCode at ${this.address} instead.`)
   }
 
@@ -684,11 +689,19 @@ export class OpenCodeSupervisor {
       throw new Error('OpenCode process was started but reported no process id.')
     }
 
+    // A token that could not be read at spawn gets one more try while this
+    // handle still holds an unreaped child: its pid cannot have passed to
+    // another process yet, so the token is still this one's. Without it, `stop`
+    // and the next start refuse the record until someone ends the pid by hand.
+    const identity = startToken
+      ?? (this.options.spawnProcess === undefined && !childHasExited(child) ? readProcessStartToken(pid) : null)
+    if (identity !== startToken && this.child?.process === child) this.child = { ...this.child, startToken: identity }
+
     return {
       kind: 'managed',
       baseUrl: this.baseUrl,
       pid,
-      ...(startToken === null ? {} : { startToken }),
+      ...(identity === null ? {} : { startToken: identity }),
       ...(this.move === undefined ? {} : { movedFrom: this.move }),
     }
   }

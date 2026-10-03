@@ -12,6 +12,7 @@ import { readProcessStartToken } from '../server/lib/processIdentity'
 import { applyIgnoreMode } from '../server/git/repository'
 import { APP_VERSION } from '../server/lib/appVersion'
 import { removeTempDir } from '../server/test/tempDir'
+import { leaderlessProcessGroup } from '../server/test/processGroup'
 
 /**
  * 2.12 contract: doctor tells a user whether this machine can run LoopTroop,
@@ -221,7 +222,36 @@ describe('doctor command', () => {
 
     expect((await runChecks()).find((entry) => entry.name === 'opencode')).toMatchObject({
       status: 'fail',
-      detail: expect.stringContaining(`would start OpenCode on port ${port}, which LoopTroop's own server is set to use`),
+      detail: `http://127.0.0.1:${port} uses port ${port}, which LoopTroop's own server is set to use, so \`looptroop start\` will fail`,
+    })
+  })
+
+  // A start refuses this before it probes, so a server answering there changes
+  // nothing: the daemon could not bind its own port beside it.
+  it('fails that clash even when a server answers at the address', async () => {
+    useConfigDir()
+    process.env.LOOPTROOP_OPENCODE_MODE = 'real'
+    vi.spyOn(globalThis, 'fetch').mockResolvedValue(new Response('{}', { status: 200, headers: { 'content-type': 'application/json' } }))
+    vi.stubEnv('LOOPTROOP_BACKEND_PORT', '45124')
+    vi.stubEnv('LOOPTROOP_OPENCODE_BASE_URL', 'http://127.0.0.1:45124')
+
+    expect((await runChecks()).find((entry) => entry.name === 'opencode')).toMatchObject({
+      status: 'fail',
+      detail: expect.stringContaining('which LoopTroop\'s own server is set to use'),
+    })
+  })
+
+  // `looptroop start --port 4096`: the default address moves, and doctor names
+  // where to, as it does for a default address held by another server.
+  it('names the port a start moves the default OpenCode address to when LoopTroop takes its port', async () => {
+    const configDir = useConfigDir()
+    process.env.LOOPTROOP_OPENCODE_MODE = 'real'
+    fakeOpenCode(configDir)
+    vi.stubEnv('LOOPTROOP_BACKEND_PORT', '4096')
+
+    expect((await runChecks()).find((entry) => entry.name === 'opencode')).toMatchObject({
+      status: 'warn',
+      detail: expect.stringMatching(/^http:\/\/127\.0\.0\.1:4096 uses port 4096, which LoopTroop's own server is set to use; `looptroop start` will start its own OpenCode on the next free port \(now \d+\)$/),
     })
   })
 
@@ -322,6 +352,23 @@ describe('doctor command', () => {
         detail: expect.stringContaining('exited before it finished shutting down'),
         remedy: expect.stringContaining(`then delete ${getDaemonStatePath(configDir)}.`),
       })
+    })
+
+    it.skipIf(process.platform === 'win32')('fails for a dead leader whose process group runs on, which a start refuses to replace', async () => {
+      const configDir = useConfigDir()
+      const pgid = await leaderlessProcessGroup()
+      try {
+        recordDaemon(configDir, { pid: departedPid() }, { pid: pgid, startToken: 'anything' })
+
+        expect(await opencodeCheck()).toMatchObject({
+          status: 'fail',
+          detail: expect.stringContaining(`(pid ${pgid}) has exited, but processes in its process group are still running`),
+          remedy: `End them (\`pgrep -g ${pgid}\` lists them), then run \`looptroop stop\` to clear the record. `
+            + `If they are not LoopTroop's, delete ${getDaemonStatePath(configDir)}.`,
+        })
+      } finally {
+        process.kill(-pgid, 'SIGKILL')
+      }
     })
 
     it('fails for a record of its own OpenCode with no pid, which a start refuses to replace', async () => {
@@ -1156,7 +1203,7 @@ describe('doctor command', () => {
 
         expect(check).toMatchObject({
           status: 'ok',
-          detail: `reachable at ${movedTo} (v2, 2.0.22). ${baseUrl} was taken by another server when LoopTroop started: `
+          detail: `reachable at ${movedTo} (v2, 2.0.22). ${baseUrl} could not be used when LoopTroop started: `
             + NOT_CONFIGURED,
         })
       })

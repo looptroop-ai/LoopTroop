@@ -15,12 +15,13 @@ import {
   readDaemonStartFailure,
 } from '../lib/daemonPaths'
 import { assertPublicOriginRemoteAccess, resolveSettings, type ResolvedSettings } from '../lib/appSettings'
-import { isProcessAlive } from '../cli/processControl'
+import { isProcessAlive, isProcessGroupAlive } from '../cli/processControl'
 import { matchProcess, readProcessStartToken } from '../lib/processIdentity'
 import { createSessionCredentials, BootstrapNonceStore, type SessionCredentials } from '../middleware/sessionAuth'
-import { OpenCodeSupervisor, type OpenCodeStatus } from '../opencode/supervisor'
+import { bindsDaemonAddress, OpenCodeSupervisor, type OpenCodeStatus } from '../opencode/supervisor'
 import { resetOpenCodeAdapterTransport } from '../opencode/factory'
 import { getErrorMessage } from '@shared/typeGuards'
+import { getBackendHost } from '@shared/appConfig'
 
 /** Keeps the lock's heartbeat ahead of the staleness window. */
 const HEARTBEAT_INTERVAL_MS = 15_000
@@ -339,6 +340,16 @@ export async function startDaemon(options: StartDaemonOptions): Promise<DaemonHa
           lock.release()
           throw new DaemonStartBlockedError(failure)
         }
+      } else if (isProcessGroupAlive(previousOpenCode.pid)) {
+        // A dead leader is not an empty tree: what OpenCode started can still
+        // be running in its group, holding files or the port. Nothing here can
+        // prove those are ours, so nothing is signalled and the record stays.
+        lock.release()
+        throw new Error(
+          `LoopTroop cannot safely replace its previous daemon record because OpenCode pid ${previousOpenCode.pid} `
+          + 'has exited but processes in its process group are still running. The record was preserved and nothing '
+          + 'was signalled; run `looptroop doctor` to inspect it before retrying.',
+        )
       }
     }
   }
@@ -412,6 +423,7 @@ export async function startDaemon(options: StartDaemonOptions): Promise<DaemonHa
       movable: settings.sources.opencodeBaseUrl === 'default',
       // Bound only after OpenCode is up, so OpenCode must not take it first.
       avoidPorts: [settings.port],
+      onDaemonAddress: bindsDaemonAddress(settings.opencodeBaseUrl, getBackendHost(), settings.port),
       mock: settings.opencodeMode === 'mock',
       printLogs: options.opencodeLogs === 'all',
       onStatusChange: recordOpenCodeStatus,

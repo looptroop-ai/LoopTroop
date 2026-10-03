@@ -35,9 +35,9 @@ describe('status output for OpenCode', () => {
     const movedFrom = { baseUrl, reason: 'OpenCode requires a password, and none is configured (HTTP 401).' }
     const moved = { baseUrl: 'http://127.0.0.1:4098', owned: true, status: 'managed' as const, pid: 4242, movedFrom }
 
-    // Past tense: it records what held the address when LoopTroop started,
-    // which may have exited since.
-    const reason = `${baseUrl} was taken by another server when LoopTroop started: ${movedFrom.reason}`
+    // Past tense: it records why the address could not be used when LoopTroop
+    // started, and what held it may have exited since.
+    const reason = `${baseUrl} could not be used when LoopTroop started: ${movedFrom.reason}`
     expect(describeOpenCodeForStatus(moved)).toBe(`http://127.0.0.1:4098 (started by LoopTroop, pid 4242). ${reason}`)
     expect(describeOpenCodeMove(moved)).toBe(`OpenCode runs at http://127.0.0.1:4098 because ${reason}`)
     expect(describeOpenCodeMove({ baseUrl, owned: true, status: 'managed', pid: 4242 })).toBeNull()

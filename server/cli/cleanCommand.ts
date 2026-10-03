@@ -5,7 +5,7 @@ import { clearDaemonState, readDaemonState, type DaemonState } from '../lib/daem
 import { matchProcess } from '../lib/processIdentity'
 import { getProjectWorktreesRoot, normalizeFolderPath } from '../storage/paths'
 import { markerVouchesFor, readWorktreeOwnerMarker } from '../storage/worktreeOwnership'
-import { isProcessAlive } from './processControl'
+import { isProcessAlive, isProcessGroupAlive } from './processControl'
 import { readRunningDaemon, stopOpenCodeTree } from './commands'
 import { getErrorMessage } from '@shared/typeGuards'
 import { runCommandSync } from '../git/runCommand'
@@ -257,11 +257,13 @@ export type OpenCodeVerdict =
   | { kind: 'nothing', detail: string }
   | { kind: 'stoppable', pid: number }
   /**
-   * Alive, and not provably the server the record names. `identity` keeps the
-   * two cases apart, because `start` does: a pid now owned by another process
-   * is stale debris it starts past, while one it cannot identify blocks it.
+   * Not provably gone, and not provably the server the record names, so
+   * nothing is signalled. `identity` keeps the cases apart, because `start`
+   * does: a pid now owned by another process is stale debris it starts past,
+   * while one it cannot identify, or a dead leader whose process group still
+   * has members, blocks it.
    */
-  | { kind: 'kept', pid: number, reason: string, identity: 'different' | 'unknown' }
+  | { kind: 'kept', pid: number, reason: string, identity: 'different' | 'unknown' | 'group' }
 
 /**
  * Whether the daemon record names an OpenCode server that outlived it.
@@ -289,7 +291,14 @@ export function judgeOrphanedOpenCode(state: DaemonState | null): OpenCodeVerdic
 
   const pid = opencode.pid
   if (pid === undefined) return { kind: 'nothing', detail: 'the recorded OpenCode server has no pid' }
-  if (!isProcessAlive(pid)) return { kind: 'nothing', detail: 'the recorded OpenCode server has already exited' }
+  if (!isProcessAlive(pid)) {
+    // A dead leader is not an empty tree: what it started can still be running
+    // in its group. A later process cannot prove whose those members are, so
+    // they are reported, never signalled.
+    return isProcessGroupAlive(pid)
+      ? { kind: 'kept', pid, reason: 'it has exited, but processes in its process group are still running', identity: 'group' }
+      : { kind: 'nothing', detail: 'the recorded OpenCode server has already exited' }
+  }
 
   const match = matchProcess(pid, opencode.startToken)
   switch (match.kind) {

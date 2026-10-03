@@ -343,6 +343,39 @@ describe('daemon startup and shutdown', () => {
     }
   })
 
+  // A dead leader is not an empty tree: what OpenCode started can still be
+  // running in its group. Replacing the record lost the only name for it.
+  it('preserves an owned OpenCode record whose leader exited while its process group runs on', async () => {
+    const configDir = makeConfigDir()
+    const previous: DaemonState = {
+      instanceId: 'previous-daemon',
+      pid: 12_341,
+      port: 4096,
+      host: '127.0.0.1',
+      startedAt: '2026-01-02T03:04:05.000Z',
+      version: '0.0.0-test',
+      apiToken: 'previous-api-token',
+      opencode: { baseUrl: 'http://127.0.0.1:4096', owned: true, status: 'managed', pid: 12_342, startToken: 'opencode-token' },
+    }
+    writeDaemonState(previous, configDir)
+    const alive = vi.spyOn(processControl, 'isProcessAlive').mockReturnValue(false)
+    const group = vi.spyOn(processControl, 'isProcessGroupAlive').mockImplementation((pgid) => pgid === 12_342)
+
+    try {
+      await expect(startDaemon({
+        configDir,
+        settings: ephemeralSettings(),
+        version: '0.0.0-test',
+      })).rejects.toThrow('OpenCode pid 12342 has exited but processes in its process group are still running')
+
+      expect(JSON.parse(readFileSync(getDaemonStatePath(configDir), 'utf8'))).toEqual(previous)
+      expect(existsSync(getDaemonLockPath(configDir))).toBe(false)
+    } finally {
+      group.mockRestore()
+      alive.mockRestore()
+    }
+  })
+
   it('releases startup ownership when runtime startup fails but cleanup succeeds', async () => {
     const configDir = makeConfigDir()
     const startupError = new Error('runtime could not bind')
@@ -1008,11 +1041,13 @@ describe('daemon startup and shutdown', () => {
     const movedFrom = { baseUrl: 'http://127.0.0.1:4096', reason: 'OpenCode requires a password, and none is configured (HTTP 401).' }
     const movable: Array<boolean | undefined> = []
     const avoided: Array<readonly number[] | undefined> = []
+    const onDaemon: Array<boolean | undefined> = []
     const moved: OpenCodeStatus = { kind: 'managed', baseUrl: 'http://127.0.0.1:4098', pid: process.pid, movedFrom }
     const startSpy = vi.spyOn(OpenCodeSupervisor.prototype, 'start').mockImplementation(async function (this: OpenCodeSupervisor) {
-      const { options } = this as unknown as { options: { movable?: boolean; avoidPorts?: readonly number[] } }
+      const { options } = this as unknown as { options: { movable?: boolean; avoidPorts?: readonly number[]; onDaemonAddress?: boolean } }
       movable.push(options.movable)
       avoided.push(options.avoidPorts)
+      onDaemon.push(options.onDaemonAddress)
       return moved
     })
     const address = vi.spyOn(OpenCodeSupervisor.prototype, 'baseUrl', 'get').mockReturnValue('http://127.0.0.1:4098')
@@ -1042,6 +1077,16 @@ describe('daemon startup and shutdown', () => {
       // must not take it. The first is this suite's port 0, which settings
       // never produce: `--port` and config.json both refuse it.
       expect(avoided).toEqual([[0], [daemonPort]])
+
+      // OpenCode's address on the daemon's own port: the supervisor is told
+      // before it probes, so it moves or refuses rather than taking the port.
+      const sharedPort = await freePort()
+      running.push(await startDaemon({
+        configDir: makeConfigDir(),
+        settings: { ...settings, port: sharedPort, opencodeBaseUrl: `http://127.0.0.1:${sharedPort}` },
+        version: '0.0.0-test',
+      }))
+      expect(onDaemon).toEqual([false, false, true])
     } finally {
       for (const handle of running.splice(0)) await handle.stop()
       stopSpy.mockRestore()

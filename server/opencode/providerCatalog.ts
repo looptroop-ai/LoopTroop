@@ -1,7 +1,7 @@
 import { getOpenCodeBaseUrl } from './runtimeConfig'
 import type { OpenCodeCatalogModel, OpenCodeCatalogResponse } from '../../shared/opencodeCatalog'
 import { isMockOpenCodeMode } from './factory'
-import { SDK_OPERATION_TIMEOUT_MS, DEFAULT_CONTEXT_WINDOW_LIMIT } from '../lib/constants'
+import { OPENCODE_CATALOG_TIMEOUT_MS, DEFAULT_CONTEXT_WINDOW_LIMIT } from '../lib/constants'
 import { getOpenCodeConnection, type OpenCodeConnection } from './connection'
 import { ProviderCatalogBusyError, withProviderCatalogReload as withReloadLease } from './providerCatalogReload'
 import { isRecord } from '@shared/typeGuards'
@@ -187,8 +187,8 @@ function fetchCatalogEndpoint(
     // the caller's cancellation now actually reaches the request instead of
     // only abandoning the wait for it.
     signal: signal
-      ? AbortSignal.any([signal, AbortSignal.timeout(SDK_OPERATION_TIMEOUT_MS)])
-      : AbortSignal.timeout(SDK_OPERATION_TIMEOUT_MS),
+      ? AbortSignal.any([signal, AbortSignal.timeout(OPENCODE_CATALOG_TIMEOUT_MS)])
+      : AbortSignal.timeout(OPENCODE_CATALOG_TIMEOUT_MS),
     ...(Object.keys(headers).length > 0 ? { headers } : {}),
   })
 }

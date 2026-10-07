@@ -83,6 +83,12 @@ function getModelQueryErrorCopy(error: unknown): { trigger: string; detail: stri
       detail: 'Wait for OpenCode prompts and questions to finish, then retry refreshing models.',
     }
   }
+  if (message.includes('model discovery timed out')) {
+    return {
+      trigger: 'Model loading timed out',
+      detail: 'Loading models from OpenCode took too long. Use the reload button next to AI Models to try again.',
+    }
+  }
   if (message.includes('model discovery failed') || message.includes('catalog')) {
     return {
       trigger: 'OpenCode connected, models unavailable',
@@ -91,7 +97,9 @@ function getModelQueryErrorCopy(error: unknown): { trigger: string; detail: stri
   }
   return {
     trigger: 'OpenCode models unavailable',
-    detail: 'LoopTroop could not load models from OpenCode.',
+    detail: error instanceof Error && error.message
+      ? `LoopTroop could not load models from OpenCode. ${error.message}`
+      : 'LoopTroop could not load models from OpenCode.',
   }
 }
 

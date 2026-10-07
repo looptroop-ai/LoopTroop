@@ -42,31 +42,42 @@ async function requestModelsApi(
   // when the component unmounts. Either ending the request is correct, so both
   // are honoured rather than one replacing the other.
   const timeout = AbortSignal.timeout(MODEL_FETCH_TIMEOUT_MS)
-  const res = await fetch(path, {
-    method,
-    signal: signal ? AbortSignal.any([signal, timeout]) : timeout,
-  })
-  if (!res.ok) {
-    if (res.status === 409) {
-      const body: unknown = await res.clone().json().catch(() => null)
-      if (body && typeof body === 'object' && !Array.isArray(body)) {
-        const { code, message } = body as { code?: unknown; message?: unknown }
-        if (code === 'OPENCODE_BUSY') {
-          throw new OpenCodeModelsError(
-            typeof message === 'string' ? message : 'OpenCode has active work or unanswered requests.',
-            code,
-          )
+  try {
+    const res = await fetch(path, {
+      method,
+      signal: signal ? AbortSignal.any([signal, timeout]) : timeout,
+    })
+    if (!res.ok) {
+      if (res.status === 409) {
+        const body: unknown = await res.clone().json().catch(() => null)
+        if (body && typeof body === 'object' && !Array.isArray(body)) {
+          const { code, message } = body as { code?: unknown; message?: unknown }
+          if (code === 'OPENCODE_BUSY') {
+            throw new OpenCodeModelsError(
+              typeof message === 'string' ? message : 'OpenCode has active work or unanswered requests.',
+              code,
+            )
+          }
         }
       }
+      throw await failedResponseError(res, 'Failed to fetch models')
     }
-    throw await failedResponseError(res, 'Failed to fetch models')
+    const data: ModelsApiResponse = await res.json()
+    // When the backend cannot reach OpenCode it returns a `message` with an empty
+    // model list (HTTP 200). Treat this as a retriable error so react-query retries
+    // during the startup window while OpenCode is still initialising.
+    if (data.message) throw new OpenCodeModelsError(data.message, data.code)
+    return data
+  } catch (error) {
+    if (timeout.aborted && !signal?.aborted
+      && (error === timeout.reason || (error instanceof DOMException && error.name === 'AbortError'))) {
+      throw new OpenCodeModelsError(
+        'OpenCode model discovery timed out. Try refreshing models.',
+        'OPENCODE_DISCOVERY_FAILED',
+      )
+    }
+    throw error
   }
-  const data: ModelsApiResponse = await res.json()
-  // When the backend cannot reach OpenCode it returns a `message` with an empty
-  // model list (HTTP 200). Treat this as a retriable error so react-query retries
-  // during the startup window while OpenCode is still initialising.
-  if (data.message) throw new OpenCodeModelsError(data.message, data.code)
-  return data
 }
 
 export function fetchModelsApi(signal?: AbortSignal): Promise<ModelsApiResponse> {

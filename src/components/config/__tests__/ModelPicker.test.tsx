@@ -319,6 +319,36 @@ describe('ModelPicker', () => {
     expect(screen.getByRole('alert')).toHaveTextContent('then run looptroop restart')
   })
 
+  it.each([
+    {
+      kind: 'timeout',
+      message: 'OpenCode model discovery timed out. Try refreshing models.',
+      trigger: 'Model loading timed out',
+      detail: 'Loading models from OpenCode took too long. Use the reload button next to AI Models to try again.',
+    },
+    {
+      kind: 'HTTP',
+      message: 'Failed to fetch models (HTTP 503): upstream unavailable',
+      trigger: 'OpenCode models unavailable',
+      detail: 'LoopTroop could not load models from OpenCode. Failed to fetch models (HTTP 503): upstream unavailable',
+    },
+  ])('explains $kind failures in the trigger and alert', ({ message, trigger, detail }) => {
+    vi.mocked(useOpenCodeModels).mockReturnValue({
+      data: undefined,
+      isLoading: false,
+      isError: true,
+      error: new Error(message),
+      isFetching: false,
+    } as ReturnType<typeof useOpenCodeModels>)
+    render(<ModelPicker value="" onChange={vi.fn()} />)
+    const picker = screen.getByRole('button', { name: /^Pick a model/ })
+    expect(picker).toHaveTextContent(trigger)
+
+    fireEvent.click(picker)
+
+    expect(screen.getByRole('alert')).toHaveTextContent(detail)
+  })
+
   it('says OpenCode needs a password when LoopTroop had none to send', () => {
     const error = new Error('OpenCode requires a password, and none is configured. Set OPENCODE_PASSWORD to that server\'s password.')
     vi.mocked(useOpenCodeModels).mockReturnValue({

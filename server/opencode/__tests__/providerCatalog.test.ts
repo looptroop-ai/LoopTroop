@@ -116,6 +116,48 @@ describe('fetchProviderCatalog', () => {
     expect(fetchMock).toHaveBeenCalledWith('http://127.0.0.1:4096/provider', expect.any(Object))
   })
 
+  it('loads a healthy provider catalog that takes longer than five seconds', async () => {
+    vi.useFakeTimers()
+    try {
+      // Native AbortSignal.timeout does not follow Vitest's clock.
+      vi.spyOn(AbortSignal, 'timeout').mockImplementation((delay) => {
+        const controller = new AbortController()
+        setTimeout(() => controller.abort(new DOMException('Timed out', 'TimeoutError')), delay)
+        return controller.signal
+      })
+      vi.stubGlobal('fetch', vi.fn((_input: RequestInfo | URL, init?: RequestInit) => new Promise<Response>((resolve, reject) => {
+        init?.signal?.addEventListener('abort', () => reject(init.signal?.reason), { once: true })
+        setTimeout(() => resolve(jsonResponse({
+          all: [{ id: 'openai', name: 'OpenAI', models: { 'gpt-5': { id: 'gpt-5', name: 'GPT-5' } } }],
+          connected: ['openai'],
+          default: {},
+        })), 6_000)
+      })))
+
+      const catalog = fetchProviderCatalog()
+      const loaded = expect(catalog).resolves.toMatchObject({ connected: ['openai'] })
+      await vi.advanceTimersByTimeAsync(6_000)
+      await loaded
+      expect(flattenCatalogModels(await catalog).map((model) => model.fullId)).toEqual(['openai/gpt-5'])
+    } finally {
+      vi.useRealTimers()
+    }
+  })
+
+  it('still cancels catalog discovery when the caller aborts', async () => {
+    vi.stubGlobal('fetch', vi.fn((_input: RequestInfo | URL, init?: RequestInit) => new Promise<Response>((_resolve, reject) => {
+      init?.signal?.addEventListener('abort', () => reject(init.signal?.reason), { once: true })
+    })))
+    const controller = new AbortController()
+    const reason = new DOMException('Cancelled', 'AbortError')
+    const cancelled = expect(fetchProviderCatalog(controller.signal)).rejects.toBe(reason)
+    await vi.waitFor(() => expect(fetch).toHaveBeenCalledOnce())
+
+    controller.abort(reason)
+
+    await cancelled
+  })
+
   it('fetches a v2 catalog from the transport URL and auth supplied by its owner', async () => {
     const fetchMock = vi.fn((input: RequestInfo | URL) => {
       const path = new URL(String(input)).pathname

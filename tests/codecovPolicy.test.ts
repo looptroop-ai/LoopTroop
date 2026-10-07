@@ -121,7 +121,8 @@ describe('coverage and Codecov policy', () => {
     const uploadCheckout = step(upload, (candidate) => candidate.uses?.startsWith('actions/checkout@') ?? false)
     expect(uploadCheckout.with).toEqual(collectionCheckout.with)
     expect(step(upload, (candidate) => candidate.uses?.startsWith('actions/download-artifact@') ?? false).with)
-      .toMatchObject({ name: 'coverage-report', path: 'coverage' })
+      .toMatchObject({ name: 'coverage-report', 'skip-decompress': true, 'digest-mismatch': 'error' })
+    expect(upload.steps?.some((candidate) => candidate.uses?.startsWith('./'))).toBe(false)
     const action = step(upload, (candidate) => candidate.uses?.startsWith('codecov/codecov-action@') ?? false)
     expect(action.uses).toMatch(/^codecov\/codecov-action@[0-9a-f]{40}$/)
     expect(action.with).toMatchObject({
@@ -134,7 +135,12 @@ describe('coverage and Codecov policy', () => {
     })
     expect(action.with?.token).toBeUndefined()
     expect(action.with?.skip_validation).toBeUndefined()
-    expect(upload.steps?.some((candidate) => candidate.run !== undefined)).toBe(false)
+    const nativeSteps = upload.steps?.filter((candidate) => candidate.run !== undefined) ?? []
+    expect(nativeSteps).toHaveLength(2)
+    expect(nativeSteps[0]?.run).toContain('tempfile.mkdtemp(')
+    expect(nativeSteps[1]?.run).toContain('zipfile.ZipFile(')
+    for (const native of nativeSteps) expect(native.run).toContain('"$python_command" -I -')
+    expect(nativeSteps.some((candidate) => /npm\s+(?:ci|install)|node\s+scripts\//.test(candidate.run ?? ''))).toBe(false)
     expect(upload.steps?.some((candidate) => candidate.uses?.startsWith('step-security/harden-runner@'))).toBe(false)
 
     const packaging = requiredJob('packaging')

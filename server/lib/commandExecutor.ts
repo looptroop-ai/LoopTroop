@@ -4,7 +4,7 @@ import { isAbsolute, relative, resolve } from 'node:path'
 import type { CommandSpec, RuntimeEnvironment } from '../../shared/commandSpec'
 import type { CommandShellKind, HostPlatform } from '../../shared/hostContext'
 import { createBoundedOutputCollector } from './commandOutput'
-import { planProgramLaunch, resolveTrustedExecutable, resolveTrustedProgram, type TrustedExecutableResolution } from './executablePath'
+import { planProgramLaunch, programChildEnvironment, resolveTrustedExecutable, resolveTrustedProgram, type TrustedExecutableResolution } from './executablePath'
 import { FORCE_KILL_DELAY_MS, PROCESS_ABANDON_GRACE_MS } from './constants'
 import { captureProcessGroup, refreshProcessGroup, terminateProcessTreeWithEscalation, type ProcessGroupSnapshot } from './processTree'
 import { readProcessStartToken } from './processIdentity'
@@ -292,8 +292,9 @@ export async function executeCommand(
   // process-mode `npm test` resolved correctly and then failed with EINVAL. The
   // shared launcher starts it through cmd.exe, found through the same seam as
   // the program, with every argument escaped for cmd.exe.
+  const launchPlatform = platform === 'windows' ? 'win32' : platform === 'macos' ? 'darwin' : 'linux'
   const launch = planProgramLaunch(resolvedProgram.path, invocation.args, {
-    platform: platform === 'windows' ? 'win32' : platform === 'macos' ? 'darwin' : 'linux',
+    platform: launchPlatform,
     // What cmd.exe will run with, the plan's variables included: they decide
     // what a `%…%` in an argument could expand to.
     env: childEnvironment,
@@ -316,7 +317,7 @@ export async function executeCommand(
   return await new Promise<CommandExecutionResult>((resolveExecution) => {
     const child = spawnProcess(launch.file, launch.args, {
       cwd,
-      env: childEnvironment,
+      env: programChildEnvironment(launch.file, childEnvironment, launchPlatform),
       windowsVerbatimArguments: launch.windowsVerbatimArguments,
       stdio: ['ignore', 'pipe', 'pipe'],
       detached: platform !== 'windows',

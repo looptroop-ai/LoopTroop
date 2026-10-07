@@ -20,7 +20,7 @@ import { existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync }
 import { tmpdir } from 'node:os'
 import { dirname, join, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
-import { execTool, launchTool, toolPath } from './tool-path.ts'
+import { execTool, launchTool, programChildEnvironment, toolPath } from './tool-path.ts'
 
 const repoRoot = resolve(dirname(fileURLToPath(import.meta.url)), '..')
 const IS_WINDOWS = process.platform === 'win32'
@@ -111,7 +111,7 @@ try {
     const [probeCommand, probeArgs] = wrapper(...options)
     const probe = spawnSync(probeCommand, probeArgs, {
       encoding: 'utf8',
-      env: installEnv,
+      env: programChildEnvironment(probeCommand, installEnv),
     })
     const output = `${probe.stdout ?? ''}${probe.stderr ?? ''}`
 
@@ -130,7 +130,7 @@ try {
 
   const install = spawnSync(command, args, {
     encoding: 'utf8',
-    env: installEnv,
+    env: programChildEnvironment(command, installEnv),
   })
   // Both streams, always. A wrapper that exits 0 having printed nothing is a
   // failure mode in its own right, and hiding stderr on the success path makes

@@ -21,7 +21,7 @@ import { chmodSync, existsSync, mkdirSync, mkdtempSync, readdirSync, rmSync, wri
 import { tmpdir } from 'node:os'
 import { basename, join, resolve } from 'node:path'
 import { removeWorkDirectory } from './smoke-lib.mjs'
-import { spawnProgram, toolPath } from './tool-path.ts'
+import { execTool, programChildEnvironment, spawnProgram, toolPath } from './tool-path.ts'
 
 function fail(message, ...detail) {
   process.stderr.write(`\nFAIL: ${message}\n`)
@@ -53,7 +53,8 @@ function invoke(command, args, options = {}) {
   return new Promise((settle, reject) => {
     // Resolved against the environment the child gets, not this process's.
     const env = { ...process.env, ...options.env }
-    const child = spawn(spawnProgram(command, { env }), args, { env })
+    const program = spawnProgram(command, { env })
+    const child = spawn(program, args, { env: programChildEnvironment(program, env) })
     let stdout = ''
     let stderr = ''
     child.stdout.on('data', (chunk) => { stdout += chunk.toString() })
@@ -117,7 +118,7 @@ async function main() {
 
   log(`Unpacking ${basename(archive)}...`)
   if (archive.endsWith('.zip')) {
-    execFileSync(toolPath('powershell'), ['-NoProfile', '-Command',
+    execTool('powershell', ['-NoProfile', '-Command',
       // A PowerShell single-quoted literal ends at the first `'` unless it is
       // doubled, and `archive` is a command-line argument.
       `Expand-Archive -LiteralPath ${psLiteral(archive)} -DestinationPath ${psLiteral(unpacked)} -Force`,

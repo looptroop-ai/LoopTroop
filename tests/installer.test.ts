@@ -9,7 +9,7 @@ import { dirname, join, resolve, win32 } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import {
   binaryAssetName, binaryTarget, defaultPrefix, detectLibc, INSTALL_OPTIONS, onPath, planProgramLaunch,
-  findTrustedExecutablePath, probePort, renameWithRetry, runTool, stallGuard, streamBody,
+  findTrustedExecutablePath, probePort, programChildEnvironment, renameWithRetry, runTool, stallGuard, streamBody,
 } from '../scripts/installer-core.mjs'
 import { removeTempDir } from '../server/test/tempDir'
 
@@ -1488,6 +1488,25 @@ describe('windows command lines', () => {
   it('spawns a real program directly, arguments untouched', () => {
     expect(planProgramLaunch('C:\\Windows\\System32\\tar.exe', ['-xf', 'a b.tgz'], { platform: 'win32' }))
       .toEqual({ file: 'C:\\Windows\\System32\\tar.exe', args: ['-xf', 'a b.tgz'], windowsVerbatimArguments: false })
+  })
+
+  it('ships the PowerShell module environment rule in the generated core', () => {
+    const env = Object.freeze({ pSmOdUlEpAtH: 'PowerShell 7 modules', SAMPLE: 'kept' })
+    expect(programChildEnvironment('C:\\Windows\\powershell.exe', env, 'win32')).toEqual({ SAMPLE: 'kept' })
+    expect(programChildEnvironment('C:\\PowerShell\\pwsh.exe', env, 'win32')).toBe(env)
+  })
+
+  it.runIf(process.platform === 'win32')('runs Get-FileHash with incompatible parent module paths', () => {
+    const quotedCore = CORE.replaceAll("'", "''")
+    const result = runTool('powershell', ['-NoProfile', '-NonInteractive', '-Command', `(Get-FileHash -LiteralPath '${quotedCore}' -Algorithm SHA256).Hash`], {
+      encoding: 'utf8',
+      env: { ...process.env, PSModulePath: 'C:\\PowerShell7-only-modules' },
+      timeout: 20_000,
+    })
+    expect(result.error).toBeUndefined()
+    expect(String(result.stderr).trim()).toBe('')
+    expect(result.status).toBe(0)
+    expect(String(result.stdout).trim().toLowerCase()).toBe(createHash('sha256').update(readFileSync(CORE)).digest('hex'))
   })
 })
 

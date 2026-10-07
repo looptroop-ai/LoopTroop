@@ -220,6 +220,35 @@ describe('buildCommandInvocation', () => {
 })
 
 describe('executeCommand', () => {
+  it.each([
+    ['shell', 'powershell.exe', true],
+    ['process', 'powershell.exe', true],
+    ['shell', 'pwsh.exe', false],
+    ['process', 'node.exe', false],
+  ] as const)('keeps module environments scoped to the resolved %s program %s', async (mode, program, resetModules) => {
+    const env = { PSModulePath: 'PowerShell 7 modules', SAMPLE: 'kept' }
+    let spawnedEnv: NodeJS.ProcessEnv | undefined
+    const command: CommandSpec = mode === 'shell'
+      ? { mode, shell: 'powershell', script: 'Get-FileHash file', cwd: '.', env: { pSmOdUlEpAtH: 'command modules' } }
+      : { mode, program, args: [], cwd: '.', env: { pSmOdUlEpAtH: 'command modules' } }
+    await executeCommand(command, {
+      repoRoot: makeRepo(),
+      platform: 'windows',
+      env,
+      resolveProgram: () => ({ path: `C:\\tools\\${program}` }),
+      spawnProcess: ((_file: string, _args: string[], options: { env: NodeJS.ProcessEnv }) => {
+        spawnedEnv = options.env
+        const child = makeUnkillableChild()
+        setImmediate(() => child.emit('close', 0, null))
+        return child
+      }) as unknown as typeof spawn,
+    })
+    expect(spawnedEnv?.SAMPLE).toBe('kept')
+    expect(spawnedEnv?.PSModulePath).toBe(resetModules ? undefined : env.PSModulePath)
+    expect(spawnedEnv?.pSmOdUlEpAtH).toBe(resetModules ? undefined : 'command modules')
+    expect(env).toEqual({ PSModulePath: 'PowerShell 7 modules', SAMPLE: 'kept' })
+  })
+
   it('strips daemon and OpenCode credentials after environment merges without mutating callers', async () => {
     const ambient = process.env.LOOPTROOP_API_TOKEN
     process.env.LOOPTROOP_API_TOKEN = 'ambient-daemon-token'

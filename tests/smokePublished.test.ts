@@ -1,4 +1,4 @@
-import { describe, it, expect } from 'vitest'
+import { describe, it, expect, vi } from 'vitest'
 import { chmodSync, mkdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
 import { spawnSync } from 'node:child_process'
 import { tmpdir } from 'node:os'
@@ -15,6 +15,8 @@ import {
   isOpenCodeInfoReady,
   moderationSkipReason,
   openCodeAnswers,
+  run,
+  runCaptured,
   waitForOpenCode,
   validatePublishedVersion,
   whichLooptroop,
@@ -597,9 +599,14 @@ describe('adopted OpenCode readiness', () => {
       `Basic ${Buffer.from(`opencode:${password}`).toString('base64')}`,
     )
 
-    const requests: Array<{ url: string; authorization: string | null }> = []
+    const requests: Array<{ url: string; authorization: string | null; connection: string | null }> = []
     const fetchImpl: typeof fetch = async (input, init) => {
-      requests.push({ url: String(input), authorization: new Headers(init?.headers).get('authorization') })
+      const headers = new Headers(init?.headers)
+      requests.push({
+        url: String(input),
+        authorization: headers.get('authorization'),
+        connection: headers.get('connection'),
+      })
       return new Response(JSON.stringify({ version: '2.0.16', pid: 321 }), {
         status: 200,
         headers: { 'Content-Type': 'application/json' },
@@ -610,6 +617,7 @@ describe('adopted OpenCode readiness', () => {
     expect(requests).toEqual([{
       url: 'http://127.0.0.1:4096/api/info',
       authorization: credentials.headers.Authorization,
+      connection: 'close',
     }])
   })
 
@@ -627,6 +635,23 @@ describe('adopted OpenCode readiness', () => {
 
     expect(requestSignal?.aborted).toBe(true)
     expect(Date.now() - started).toBeLessThan(1_000)
+  })
+
+  it('reports a transport failure without retrying or exposing request credentials', async () => {
+    const output = vi.spyOn(process.stdout, 'write').mockImplementation(() => true)
+    const fetchImpl = vi.fn<typeof fetch>().mockRejectedValue(
+      new TypeError('fetch failed', { cause: { code: 'UND_ERR_SOCKET' } }),
+    )
+    try {
+      expect(await openCodeAnswers(4096, { Authorization: 'private-password' }, fetchImpl)).toBe(false)
+      expect(fetchImpl).toHaveBeenCalledTimes(1)
+      expect(output).toHaveBeenCalledWith('  OpenCode info probe failed: UND_ERR_SOCKET\n')
+      const log = output.mock.calls.flat().join('')
+      expect(log).not.toContain('private-password')
+      expect(log).not.toContain('Authorization')
+    } finally {
+      output.mockRestore()
+    }
   })
 
   it.each([204, 401, 404, 500])('rejects HTTP %i from the adopted server', async (status) => {
@@ -701,7 +726,7 @@ describe('workflow dispatch wiring', () => {
     // The Windows gate runs the resolver fixture with an extensionless shim
     // before npm.cmd. Keep this driver on that same path rather than accepting
     // the first line printed by `where`, which is not CreateProcess semantics.
-    expect(driver).toContain("import { findToolPath, launchTool, planToolLaunch } from './tool-path.ts'")
+    expect(driver).toContain("import { findToolPath, launchTool, planToolLaunch, programChildEnvironment } from './tool-path.ts'")
     expect(driver).not.toContain("run('where', ['looptroop']")
   })
 
@@ -740,12 +765,112 @@ describe('workflow dispatch wiring', () => {
     const missingCwd = join(tmpdir(), `looptroop-published-missing-cwd-${process.pid}`)
     rmSync(missingCwd, { recursive: true, force: true })
 
-    const result = driver.run(process.execPath, ['--version'], { cwd: missingCwd })
+    for (const run of [driver.run, runCaptured]) {
+      const result = await run(process.execPath, ['--version'], { cwd: missingCwd })
+
+      expect(result.code).toBeNull()
+      expect(result.combined).toContain(`${process.execPath}: ENOENT:`)
+      expect(result.combined).not.toContain('process.execPath is not on PATH')
+    }
+  })
+
+  it('preserves the real PowerShell module environment for ordinary and captured CLI launchers', async () => {
+    const bogusModules = join(tmpdir(), 'unavailable-powershell-modules')
+    const env: NodeJS.ProcessEnv = { pSmOdUlEpAtH: bogusModules }
+    // Node keeps the first case-insensitive Windows env key. Contaminate
+    // inherited spellings too so none can conceal unwanted environment cleanup.
+    for (const name of Object.keys(process.env)) {
+      if (name.toLowerCase() === 'psmodulepath') env[name] = bogusModules
+    }
+    for (const launch of [run, runCaptured]) {
+      const result = await launch(process.execPath, ['-e',
+        'process.stdout.write(process.env.pSmOdUlEpAtH || "")',
+      ], { env, timeout: 10_000 })
+      expect(result.code, result.combined).toBe(0)
+      expect(result.stdout).toBe(bogusModules)
+    }
+  })
+
+  it.each([0, 7])('captures launcher exit %i without waiting for a detached child to close its output', async (code) => {
+    const root = makeTempDir('looptroop-published-capture-')
+    const pidPath = join(root, 'child.pid')
+    try {
+      const result = await runCaptured(process.execPath, ['-e', `
+        const { spawn } = require('node:child_process')
+        const { writeFileSync } = require('node:fs')
+        const child = spawn(process.execPath, ['-e', 'setInterval(() => {}, 1000)'], {
+          detached: true,
+          stdio: 'inherit',
+        })
+        writeFileSync(process.argv[1], String(child.pid))
+        child.unref()
+        process.stdout.write('launcher stdout\\n')
+        process.stderr.write('launcher stderr\\n')
+        process.exit(${code})
+      `, pidPath], { timeout: 10_000 })
+
+      expect(result).toEqual({
+        code,
+        stdout: 'launcher stdout\n',
+        stderr: 'launcher stderr\n',
+        combined: 'launcher stdout\nlauncher stderr\n',
+      })
+      expect(() => process.kill(Number(readFileSync(pidPath, 'utf8')), 0)).not.toThrow()
+    } finally {
+      try {
+        const pid = Number(readFileSync(pidPath, 'utf8'))
+        if (Number.isInteger(pid) && pid > 0) process.kill(pid, 'SIGTERM')
+      } catch {
+        // The fixture failed to start or already exited.
+      }
+      removeTempDir(root)
+    }
+  })
+
+  it('keeps captured output and the timeout error when a launcher hangs', async () => {
+    const result = await runCaptured(process.execPath, ['-e', `
+      process.stdout.write('before timeout\\n')
+      process.stderr.write('launcher stalled\\n')
+      setInterval(() => {}, 1000)
+    `], { timeout: 5_000 })
 
     expect(result.code).toBeNull()
-    expect(result.combined).toContain(`${process.execPath}: ENOENT:`)
-    expect(result.combined).not.toContain('process.execPath is not on PATH')
+    expect(result.stdout).toBe('before timeout\n')
+    expect(result.stderr).toBe('launcher stalled\n')
+    expect(result.combined).toContain('before timeout\nlauncher stalled\n')
+    expect(result.combined).toContain(`${process.execPath}: ETIMEDOUT:`)
   })
+
+  it.skipIf(process.platform !== 'win32')('stops a timed-out command wrapper and its CLI child before returning', async () => {
+    const root = makeTempDir('looptroop-published-wrapper-timeout-')
+    const launcher = join(root, 'launcher.cmd')
+    const childScript = join(root, 'child.cjs')
+    const pidPath = join(root, 'child.pid')
+    writeFileSync(launcher, `@echo off\r\n"${process.execPath}" "%~dp0child.cjs" "%~dp0child.pid"\r\n`)
+    writeFileSync(childScript, `
+      require('node:fs').writeFileSync(process.argv[2], String(process.pid))
+      process.stdout.write('CLI child is waiting\\n')
+      setInterval(() => {}, 1000)
+    `)
+    try {
+      const result = await runCaptured(launcher, [], { timeout: 5_000 })
+      const childPid = Number(readFileSync(pidPath, 'utf8'))
+
+      expect(result.code).toBeNull()
+      expect(result.stdout).toBe('CLI child is waiting\n')
+      expect(result.combined).toContain('ETIMEDOUT:')
+      expect(result.combined).not.toContain('cleanup could not be confirmed')
+      expect(() => process.kill(childPid, 0)).toThrow()
+    } finally {
+      try {
+        const childPid = Number(readFileSync(pidPath, 'utf8'))
+        if (Number.isInteger(childPid) && childPid > 0) process.kill(childPid, 'SIGTERM')
+      } catch {
+        // The fixture was already killed or never started.
+      }
+      removeTempDir(root)
+    }
+  }, 60_000)
 
   it('gives every gh step a token as well as a permission', () => {
     // `permissions:` scopes a token; it does not put one in the environment.

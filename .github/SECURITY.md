@@ -220,11 +220,22 @@ are excluded. Harden-Runner starts through an action pre hook, which runs before
 a step condition; excluding the whole matrix also leaves its other platforms
 without runner auditing.
 
-### Upstream CI warnings
+### Artifact integrity
 
-Retained tooling warnings stay visible and are rechecked when upstream fixes or
-applicable advisories appear:
+Artifact downloads use the pinned official GitHub action in raw-download mode
+and fail on a digest mismatch. Python's standard library extracts the verified
+ZIPs only into the workspace or runner temporary directory. It rejects
+checkout-controlled destination symlinks, Windows alternate data-stream names,
+and archive paths that would escape the destination, including through an
+existing symlink. This avoids the action's deprecated unzip dependency
+([upstream issue #484](https://github.com/actions/download-artifact/issues/484))
+while preserving artifact names, merged downloads and integrity checks.
+Credentialed jobs keep extraction code inside the workflow; read-only jobs
+share a local action. Python runs in isolated mode so repository files cannot
+replace its standard-library imports.
 
-- Artifact extraction reports deprecated Buffer construction in the latest
-  download action ([upstream issue #484](https://github.com/actions/download-artifact/issues/484)).
-  Keep artifact digest verification when updating or replacing the action.
+Published-install checks run their driver and tooling from the workflow's
+immutable commit. A manual diagnostic selects a workflow branch or tag rather
+than injecting a different code ref into the default branch's cache scope.
+Weekly checks and channel repairs use current CI; release-time checks select
+the release workflow.

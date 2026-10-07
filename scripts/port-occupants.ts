@@ -1,7 +1,7 @@
 import { execFileSync } from 'node:child_process'
 import { realpathSync } from 'node:fs'
 import { basename } from 'node:path'
-import { spawnProgram } from './tool-path.ts'
+import { programChildEnvironment, spawnProgram } from './tool-path.ts'
 
 const MAX_DISPLAY_OCCUPANTS = 2
 const MAX_COMMAND_LENGTH = 88
@@ -44,7 +44,9 @@ function createDefaultDeps(): PortInspectorDeps {
     },
     runCommand: (file, args) => {
       try {
-        return execFileSync(spawnProgram(file), args, {
+        const program = spawnProgram(file)
+        return execFileSync(program, args, {
+          env: programChildEnvironment(program),
           encoding: 'utf8',
           stdio: ['ignore', 'pipe', 'pipe'],
           windowsHide: true,

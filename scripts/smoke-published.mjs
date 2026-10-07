@@ -29,12 +29,14 @@
  */
 import { spawnSync, spawn } from 'node:child_process'
 import { createHash, randomBytes } from 'node:crypto'
-import { existsSync, mkdirSync, mkdtempSync, openSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
+import { closeSync, existsSync, mkdirSync, mkdtempSync, openSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
 import { createServer } from 'node:net'
 import { homedir, tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { removeWorkDirectory, waitForHealth } from './smoke-lib.mjs'
-import { findToolPath, launchTool, planToolLaunch } from './tool-path.ts'
+import { findToolPath, launchTool, planToolLaunch, programChildEnvironment } from './tool-path.ts'
+import { killProcessTree, waitForExit } from '../server/cli/processControl.ts'
+import { readProcessStartToken } from '../server/lib/processIdentity.ts'
 // The published identifier, and where its submissions live, from the module
 // that renders the manifests carrying them. `winget-pkgs` derives its directory
 // from the identifier, so it is the same in the submission, in the install
@@ -61,6 +63,9 @@ const IS_WINDOWS = process.platform === 'win32'
  * shared helper, which would give one script's patience to the other two.
  */
 const HEALTH_TIMEOUT_MS = 60_000
+// The CLI first identifies its child, then allows 60s for readiness and
+// performs bootstrap requests or failed-start cleanup before it exits.
+const START_TIMEOUT_MS = 180_000
 const OPENCODE_PROBE_TIMEOUT_MS = 2_000
 
 /**
@@ -835,12 +840,10 @@ function redact(text) {
 }
 
 // ---------------------------------------------------------------------------
-// Process helpers. Copied from smoke-install.mjs rather than shared: there are
-// eleven standalone smoke scripts and no helper module, and introducing one
-// inside a packaging change would touch all eleven.
+// Process helpers use the same trusted launch plan for captured and ordinary commands.
 // ---------------------------------------------------------------------------
 
-export function run(command, args, options = {}) {
+function planRun(command, args, options) {
   // Resolved against the environment the child gets, and started the way the
   // daemon starts a program: a Windows command script — npm.cmd, yarn.cmd, the
   // installed looptroop.cmd — through a resolved cmd.exe with every argument
@@ -849,12 +852,18 @@ export function run(command, args, options = {}) {
   const { env: extraEnv, ...spawnOptions } = options
   const env = { ...process.env, ...(extraEnv ?? {}) }
   const launch = planToolLaunch(command, args, { env })
+  // Keep the real user's environment for the CLI under test; only Windows
+  // PowerShell itself needs its incompatible inherited module paths removed.
+  const childEnv = launch.reason === undefined ? programChildEnvironment(launch.file, env) : env
+  return { launch, options: { ...spawnOptions, env: childEnv, windowsVerbatimArguments: launch.windowsVerbatimArguments } }
+}
+
+export function run(command, args, options = {}) {
+  const { launch, options: spawnOptions } = planRun(command, args, options)
   if (launch.reason !== undefined) return { code: null, stdout: '', stderr: '', combined: launch.reason }
   const result = spawnSync(launch.file, launch.args, {
     encoding: 'utf8',
     ...spawnOptions,
-    env,
-    windowsVerbatimArguments: launch.windowsVerbatimArguments,
   })
   // A null status means the process never started. The resolved file can still
   // exist: a missing cwd, interpreter or loader also reports ENOENT. Keep the
@@ -871,6 +880,74 @@ export function run(command, args, options = {}) {
     combined: result.status === null && result.error
       ? `${combined}${launchFailure}`
       : combined,
+  }
+}
+
+/** File capture lets a launcher exit while a detached child still owns its output handles. */
+export async function runCaptured(command, args, options = {}) {
+  const { timeout = START_TIMEOUT_MS, ...requestedOptions } = options
+  const { launch, options: spawnOptions } = planRun(command, args, requestedOptions)
+  if (launch.reason !== undefined) return { code: null, stdout: '', stderr: '', combined: launch.reason }
+  const scratch = mkdtempSync(join(tmpdir(), 'looptroop-published-output-'))
+  const stdoutPath = join(scratch, 'stdout')
+  const stderrPath = join(scratch, 'stderr')
+  const descriptors = []
+  try {
+    descriptors.push(openSync(stdoutPath, 'wx', 0o600))
+    descriptors.push(openSync(stderrPath, 'wx', 0o600))
+    const result = await new Promise((resolve) => {
+      const child = spawn(launch.file, launch.args, {
+        ...spawnOptions,
+        detached: !IS_WINDOWS,
+        stdio: ['ignore', ...descriptors],
+      })
+      let settled = false
+      let timedOut = false
+      let timer
+      const finish = (code, error) => {
+        if (settled) return
+        settled = true
+        clearTimeout(timer)
+        child.unref()
+        resolve({
+          code,
+          combined: error
+            ? `${launch.file}: ${error.code ?? 'launch failed'}: ${error.message ?? String(error)}`
+            : '',
+        })
+      }
+      child.once('error', (error) => finish(null, error))
+      child.once('exit', (code) => {
+        // On Windows the wrapper can exit before taskkill has walked its
+        // descendants. Keep cleanup authoritative after a timeout.
+        if (!timedOut) finish(code)
+      })
+      const deadline = Date.now() + timeout
+      const startToken = readProcessStartToken(child.pid ?? 0)
+      timer = setTimeout(async () => {
+        timedOut = true
+        // Never kill just cmd.exe: its CLI child could finish starting while
+        // teardown runs. Reuse the product's bounded, identity-guarded tree kill.
+        let gone = false
+        try {
+          const killed = child.pid !== undefined && await killProcessTree(child.pid, startToken)
+          gone = killed && await waitForExit(child.pid, 5_000)
+        } catch {
+          // An unconfirmed cleanup still reports the original timeout.
+        }
+        finish(null, {
+          code: 'ETIMEDOUT',
+          message: `launcher exceeded ${timeout}ms${gone ? '' : '; launcher tree cleanup could not be confirmed'}`,
+        })
+      }, Math.max(0, deadline - Date.now()))
+    })
+    const stdout = readFileSync(stdoutPath, 'utf8')
+    const stderr = readFileSync(stderrPath, 'utf8')
+    return { ...result, stdout, stderr, combined: `${stdout}${stderr}${result.combined}` }
+  } finally {
+    for (const descriptor of descriptors) closeSync(descriptor)
+    const leftover = removeWorkDirectory(scratch)
+    if (leftover) log(`  (could not remove captured output ${scratch}: ${leftover.message})`)
   }
 }
 
@@ -1532,6 +1609,7 @@ async function runChannel(recipe, options) {
     // whatever the runner already had, and report a pass for software this leg
     // never installed.
     if (install.code !== 0) {
+      log(install.combined.trim())
       fail('install', `exit ${install.code}: ${install.combined.trim().split('\n').slice(-3).join(' / ')}`)
       return { ok: false, served }
     }
@@ -1652,12 +1730,18 @@ async function runChannel(recipe, options) {
       fail('port is free before start', `${port} is already held: this runner is dirty`)
       return { ok: false, served }
     }
-    const started = cli(['start', '--port', String(port)])
+    const started = await runCaptured(shim(), ['start', '--port', String(port)], { cwd: elsewhere, env: childEnv })
     // Recorded before the check, not after: a `start` that failed may still
     // have left something half-up holding the port and the lock, which is
     // exactly what the teardown exists to clear.
     startedDaemon = true
     if (!check('start', started.code === 0, `exit ${started.code}: ${started.combined.trim().slice(-300)}`, `port ${port}`)) {
+      log(`  captured start output:\n${started.combined.trim()}`)
+      try {
+        log(`  daemon.log (last 30 lines):\n${readFileSync(join(configDir, 'logs', 'daemon.log'), 'utf8').trim().split('\n').slice(-30).join('\n')}`)
+      } catch (error) {
+        log(`  daemon log unavailable: ${error.message}`)
+      }
       return { ok: false, served }
     }
 
@@ -1765,11 +1849,25 @@ async function runChannel(recipe, options) {
     if (opencodeMode === 'adopt') {
       // A daemon that killed a server it did not start would take a user's own
       // OpenCode down with it.
-      check(
+      const survived = await openCodeAnswers(opencodePort, adoptedOpenCodeCredentials.headers)
+      if (!check(
         'adopted OpenCode outlived the daemon',
-        await openCodeAnswers(opencodePort, adoptedOpenCodeCredentials.headers),
+        survived,
         'the adopted server was killed or stopped returning valid info',
-      )
+      )) {
+        log(`  adopted process: pid=${adopted?.pid}, alive=${processAlive(adopted?.pid)}, exit=${adopted?.exitCode}, signal=${adopted?.signalCode}`)
+        const diagnostic = run('curl', [
+          '--silent', '--show-error', '--max-time', '3', '--noproxy', '*',
+          '--header', `Authorization: ${adoptedOpenCodeCredentials.headers.Authorization}`,
+          `http://127.0.0.1:${opencodePort}/api/info`,
+        ], { env: ANONYMOUS })
+        log(`  independent info probe: exit ${diagnostic.code}: ${diagnostic.combined.trim()}`)
+        try {
+          log(readFileSync(join(scratch, 'adopted-opencode.log'), 'utf8').trim().split('\n').slice(-30).join('\n'))
+        } catch (error) {
+          log(`  adopted OpenCode log unavailable: ${error.message}`)
+        }
+      }
     } else if (opencodeMode !== 'mock') {
       check('managed OpenCode stopped with the daemon', await portIsClosed(opencodePort), `${opencodePort} still answers`)
       // The port closing is not the same as the process being gone: a
@@ -1890,12 +1988,21 @@ export function isOpenCodeInfoReady(status, value) {
 export async function openCodeAnswers(port, headers, fetchImpl = fetch, timeoutMs = OPENCODE_PROBE_TIMEOUT_MS) {
   try {
     const response = await fetchImpl(`http://127.0.0.1:${port}/api/info`, {
-      headers,
+      // Readiness and survival checks must not share a socket the server has
+      // closed while the install smoke was running.
+      headers: { ...headers, Connection: 'close' },
       signal: AbortSignal.timeout(timeoutMs),
     })
-    if (response.status !== 200) return false
-    return isOpenCodeInfoReady(response.status, await response.json())
-  } catch {
+    if (response.status !== 200) {
+      log(`  OpenCode info probe returned HTTP ${response.status}`)
+      return false
+    }
+    const info = await response.json()
+    const ready = isOpenCodeInfoReady(response.status, info)
+    if (!ready) log(`  OpenCode info probe returned invalid identity: version=${info?.version}, pid=${info?.pid}`)
+    return ready
+  } catch (error) {
+    log(`  OpenCode info probe failed: ${error?.cause?.code ?? error?.message ?? String(error)}`)
     return false
   }
 }

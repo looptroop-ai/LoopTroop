@@ -19,10 +19,12 @@ type Step = {
   with?: Record<string, unknown>
   if?: unknown
   shell?: unknown
+  'timeout-minutes'?: unknown
   'continue-on-error'?: unknown
 }
-type Job = { name?: unknown; permissions?: Record<string, unknown>; steps?: Step[]; if?: unknown; 'continue-on-error'?: unknown; 'runs-on'?: unknown; 'timeout-minutes'?: unknown; defaults?: { run?: { shell?: unknown } } }
-type Workflow = { jobs?: Record<string, Job> }
+type Permissions = Record<string, unknown> | string
+type Job = { name?: unknown; permissions?: Permissions; steps?: Step[]; if?: unknown; 'continue-on-error'?: unknown; 'runs-on'?: unknown; 'timeout-minutes'?: unknown; defaults?: { run?: { shell?: unknown } } }
+type Workflow = { jobs?: Record<string, Job>; permissions?: Permissions; env?: Record<string, unknown> }
 
 const workflows = new Map(files.map((file) => [
   file,
@@ -164,9 +166,11 @@ describe('release workflow policy', () => {
         const audit = (job.steps ?? []).find((step) => String(step.uses).startsWith('step-security/harden-runner@')) as SetupStep | undefined
         if (!audit) continue
         const scope = `${file}: ${name}`
-        const permissions = job.permissions ?? (workflow as { permissions?: Record<string, unknown> }).permissions ?? {}
-        expect(Object.values(permissions), scope).not.toContain('write')
-        expect(JSON.stringify(job), scope).not.toContain('secrets.')
+        const permissions = job.permissions ?? workflow.permissions
+        expect(permissions, scope).toBeDefined()
+        if (typeof permissions === 'string') expect(permissions, scope).toBe('read-all')
+        else expect(Object.values(permissions ?? {}).every((value) => value === 'read' || value === 'none'), scope).toBe(true)
+        expect(JSON.stringify([workflow.env, job]), scope).not.toMatch(/\bsecrets\s*(?:\.|\[)/)
         expect((job as { container?: unknown }).container, scope).toBeUndefined()
         expect((job as { environment?: unknown }).environment, scope).toBeUndefined()
         // ponytail: pre hooks bypass step conditions; split mixed ARM jobs only if their other legs need auditing.
@@ -603,19 +607,22 @@ describe('release workflow policy', () => {
   it('keeps OIDC and attestation permissions off dependency/build jobs', () => {
     for (const [file, workflow] of workflows) {
       for (const [jobName, job] of Object.entries(workflow.jobs ?? {})) {
-        const permissions = job.permissions ?? {}
-        if (permissions['id-token'] !== 'write' && permissions.attestations !== 'write') continue
+        const permissions = job.permissions ?? workflow.permissions
+        if (typeof permissions === 'string' ? permissions === 'read-all' :
+          permissions && permissions['id-token'] !== 'write' && permissions.attestations !== 'write') continue
         expect(runs(job), `${file}: ${jobName}`).not.toMatch(/\bnpm\s+(?:ci|install|run)\b/)
       }
     }
     const release = workflows.get('release.yml')!
-    expect(release.jobs?.binary?.permissions?.['id-token']).toBeUndefined()
-    expect(release.jobs?.build?.permissions?.attestations).toBeUndefined()
+    expect(release.jobs?.binary?.permissions).not.toEqual(expect.objectContaining({ 'id-token': 'write' }))
+    expect(release.jobs?.build?.permissions).not.toEqual(expect.objectContaining({ attestations: 'write' }))
     expect(runs(release.jobs?.npm ?? {})).toMatch(/\bnpm publish\b/)
     expect(runs(release.jobs?.npm ?? {})).not.toMatch(/\bnpm\s+(?:ci|install|run)\b/)
-    expect(release.jobs?.['attest-release-assets']?.permissions?.attestations).toBe('write')
-    expect(release.jobs?.['container-attest']?.permissions?.['id-token']).toBe('write')
-    expect(runs(release.jobs?.['attest-release-assets'] ?? {}).trim()).toBe('')
+    expect(release.jobs?.['attest-release-assets']?.permissions).toEqual(expect.objectContaining({ attestations: 'write' }))
+    expect(release.jobs?.['container-attest']?.permissions).toEqual(expect.objectContaining({ 'id-token': 'write' }))
+    expect(runs(release.jobs?.['attest-release-assets'] ?? {})).toContain('zipfile.ZipFile(')
+    expect(runs(release.jobs?.['attest-release-assets'] ?? {})).not.toMatch(/\bnode\s+scripts\//)
+    expect(release.jobs?.['attest-release-assets']?.steps?.some((step) => String(step.uses).startsWith('./'))).toBe(false)
     expect(runs(release.jobs?.['container-attest'] ?? {})).toContain('docker login ghcr.io')
     expect(runs(release.jobs?.['container-attest'] ?? {})).not.toMatch(/\bnpm\s+(?:ci|install|run)\b/)
   })
@@ -628,12 +635,20 @@ describe('release workflow policy', () => {
     }
   })
 
-  it('uses the released tag for scheduled and repair smoke code', () => {
+  it('freezes the workflow driver for every smoke leg and uses current CI for channel repairs', () => {
     const smoke = source.get('published-smoke.yml')!
-    expect(smoke).toContain('git checkout --detach "refs/tags/v${VERSION}"')
-    expect(smoke).toContain('ref: refs/tags/v${{ needs.plan.outputs.version }}')
-    expect(source.get('channel-republish.yml')!).not.toMatch(/--ref\s+main/)
-    expect(source.get('container-republish.yml')!).not.toMatch(/--ref\s+main/)
+    const jobs = workflows.get('published-smoke.yml')!.jobs!
+    const checkout = jobs.plan!.steps!.find((step) => String(step.uses).startsWith('actions/checkout@'))!
+    expect(checkout.with?.ref).toBe('${{ github.workflow_sha }}')
+    expect(smoke).not.toContain('driver_ref')
+    expect(smoke).not.toContain('git checkout --detach "refs/tags/v${VERSION}"')
+    const smokeCheckout = jobs.smoke!.steps!.find((step) => String(step.uses).startsWith('actions/checkout@'))!
+    expect(smokeCheckout.with?.ref).toBe('${{ github.workflow_sha }}')
+    for (const file of ['channel-republish.yml', 'container-republish.yml']) {
+      const dispatch = source.get(file)!.split('gh workflow run published-smoke.yml')[1]!
+      expect(dispatch).toContain('--ref main')
+      expect(dispatch).toContain('-f version="${VERSION}"')
+    }
     expect(source.get('release.yml')!).toContain('--ref "v${VERSION}"')
   })
 
@@ -646,6 +661,22 @@ describe('release workflow policy', () => {
     expect(gate).toContain('--pin')
     expect(gate).toContain('--profile gate')
     expect(gate).toContain('--leg "npm (windows-latest)"')
+  })
+
+  it('runs Windows published installs outside Git Bash with the same arguments and credentials', () => {
+    const steps = workflows.get('published-smoke.yml')!.jobs!.smoke!.steps!
+    const installSteps = steps.filter((step) => String(step.name).startsWith('Install it, run it, and uninstall it again'))
+    expect(installSteps).toHaveLength(2)
+    expect(installSteps[0]!.shell).toBe('bash')
+    expect(installSteps[0]!.if).toBe("runner.os != 'Windows'")
+    expect(installSteps[1]!.shell).toBe('pwsh')
+    expect(installSteps[1]!.if).toBe("runner.os == 'Windows'")
+    expect(installSteps[1]!['timeout-minutes']).toBe("${{ matrix.channel == 'chocolatey' && 20 || 40 }}")
+    expect(workflows.get('published-smoke.yml')!.jobs!.smoke!['timeout-minutes']).toBe(40)
+    expect(installSteps[1]!.env).toEqual(installSteps[0]!.env)
+    expect(installSteps[1]!.run).toContain('node scripts/smoke-published.mjs @smokeArgs')
+    expect(installSteps[1]!.run).toContain('exit $LASTEXITCODE')
+    expect(installSteps[1]!.run).toContain("if ($env:PIN) { $smokeArgs += '--pin' }")
   })
 
   it('executes the Windows affected-file scope against affected and unrelated paths', () => {
@@ -717,7 +748,7 @@ describe('release workflow policy', () => {
       release.indexOf('  attest-release-assets:'),
       release.indexOf('  verify-artifact:'),
     )
-    expect(releaseAttestation).toContain('path: release-assets')
+    expect(releaseAttestation).toContain('ARTIFACT_DESTINATION: release-assets')
     expect(releaseAttestation).toContain('subject-path: release-assets/*')
     expect(releaseAttestation).not.toContain('looptroop-*.tgz')
     const releaseContainer = release.slice(release.indexOf('  container-build:'), release.indexOf('  container-manifest:'))
@@ -732,7 +763,7 @@ describe('release workflow policy', () => {
     expect(repairPrepare).toContain('--dir "${ASSET_DIR}"')
     expect(repairPrepare).toContain('${process.env.ASSET_DIR}/package-lock.json')
     const repairBuild = repair.slice(repair.indexOf('  build:'), repair.indexOf('  manifest:'))
-    expect(repairBuild).toContain('path: release-assets')
+    expect(repairBuild).toContain('ARTIFACT_DESTINATION: release-assets')
     expect(repairBuild).toContain('LOCKFILE: ${{ needs.prepare.outputs.lockfile }}')
     expect(repairBuild).toContain('if [ -f scripts/Dockerfile ]; then')
     expect(repairBuild).toContain('if ! test -f "${dockerfile}"; then')
@@ -1147,7 +1178,7 @@ describe('release workflow policy', () => {
 
   it('downloads Renovate notices outside checkout and gives the token only to push', () => {
     const text = source.get('renovate-notices.yml')!
-    expect(text).toContain('path: ${{ runner.temp }}/third-party-notices-artifact')
+    expect(text).toContain('ARTIFACT_DESTINATION: ${{ runner.temp }}/third-party-notices-artifact')
     expect(text).toContain('Validate and copy the notices artifact')
     expect(text).toContain('persist-credentials: false')
     expect(text).toContain('RELEASE_TOKEN: ${{ secrets.RELEASE_PR_TOKEN }}')

@@ -23,10 +23,13 @@ import { isAbsolute } from 'node:path'
 import {
   bareNameSearchReachesWorkingDirectory,
   planProgramLaunch,
+  programChildEnvironment,
   resolveTrustedProgram,
   type ProgramLaunch,
   type ProgramLaunchPlan,
 } from '../server/lib/executablePath.ts'
+
+export { programChildEnvironment }
 
 export interface ToolLookup {
   /**
@@ -110,7 +113,7 @@ export function execTool(name: string, args: readonly string[], options: ExecToo
     encoding: 'utf8',
     stdio: ['ignore', 'pipe', 'inherit'],
     ...spawnOptions,
-    env,
+    env: programChildEnvironment(launch.file, env, platform),
     windowsVerbatimArguments: launch.windowsVerbatimArguments,
   })
   if (result.error) throw result.error

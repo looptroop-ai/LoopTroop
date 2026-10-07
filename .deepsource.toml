@@ -1,0 +1,32 @@
+version = 1
+
+test_patterns = ["**/__tests__/**", "**/*.test.ts", "**/*.test.tsx", "**/tests/**"]
+exclude_patterns = [
+  "**/node_modules/**", "**/dist/**", "**/build/**", "**/coverage/**",
+  "**/.cache/**", "**/.temp/**", "**/.tmp/**", "**/.DS_Store/**",
+]
+
+[[analyzers]]
+name = "docker"
+enabled = true
+
+[[analyzers]]
+name = "javascript"
+enabled = true
+
+[analyzers.meta]
+dialect = "typescript"
+style_guide = "airbnb"
+module_system = "es-modules"
+cyclomatic_complexity_threshold = "low"
+
+[[analyzers]]
+name = "shell"
+enabled = true
+
+[analyzers.meta]
+dialect = "sh"
+
+[[analyzers]]
+name = "secrets"
+enabled = true

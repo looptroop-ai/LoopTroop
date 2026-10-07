@@ -144,6 +144,12 @@ export function planProgramLaunch(
   | { file: string; args: string[]; windowsVerbatimArguments: boolean; reason?: undefined }
   | { file?: undefined; args?: undefined; windowsVerbatimArguments?: undefined; reason: string }
 
+export function programChildEnvironment(
+  program: string,
+  env?: NodeJS.ProcessEnv,
+  platform?: NodeJS.Platform,
+): NodeJS.ProcessEnv
+
 /**
  * Runs a tool the installer needs, by the path the generated resolver chose.
  *

@@ -205,7 +205,7 @@ if can_symlink:
     alias.symlink_to(workspace, target_is_directory=True)
     assert extract({'artifact.zip': 'alias.txt'}, destination=alias / 'output', workspace_root=alias) == ''
     assert (output / 'alias.txt').read_text() == 'fixture'
-    assert extract({'artifact.zip': 'canonical.txt'}, workspace_root=alias) == ''
+    assert extract({'artifact.zip': 'canonical.txt'}, destination=output.resolve(), workspace_root=alias) == ''
     assert (output / 'canonical.txt').read_text() == 'fixture'
 assert not (root / 'escape.txt').exists()
 assert 'Artifact destination escapes' in extract({'artifact.zip': 'parent-escape.txt'}, destination=workspace / '..' / 'outside')

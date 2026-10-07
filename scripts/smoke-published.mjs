@@ -848,6 +848,13 @@ export function run(command, args, options = {}) {
   // as a run that never started, with the reason.
   const { env: extraEnv, ...spawnOptions } = options
   const env = { ...process.env, ...(extraEnv ?? {}) }
+  // pwsh -> Node -> Windows PowerShell otherwise inherits incompatible PS7
+  // modules. Let each child PowerShell rebuild its standard module paths.
+  if (IS_WINDOWS) {
+    for (const name of Object.keys(env)) {
+      if (name.toLowerCase() === 'psmodulepath') delete env[name]
+    }
+  }
   const launch = planToolLaunch(command, args, { env })
   if (launch.reason !== undefined) return { code: null, stdout: '', stderr: '', combined: launch.reason }
   const result = spawnSync(launch.file, launch.args, {
@@ -1935,7 +1942,9 @@ export function isOpenCodeInfoReady(status, value) {
 export async function openCodeAnswers(port, headers, fetchImpl = fetch, timeoutMs = OPENCODE_PROBE_TIMEOUT_MS) {
   try {
     const response = await fetchImpl(`http://127.0.0.1:${port}/api/info`, {
-      headers,
+      // Readiness and survival checks must not share a socket the server has
+      // closed while the install smoke was running.
+      headers: { ...headers, Connection: 'close' },
       signal: AbortSignal.timeout(timeoutMs),
     })
     if (response.status !== 200) {

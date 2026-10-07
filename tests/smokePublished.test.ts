@@ -15,6 +15,7 @@ import {
   isOpenCodeInfoReady,
   moderationSkipReason,
   openCodeAnswers,
+  run,
   runCaptured,
   waitForOpenCode,
   validatePublishedVersion,
@@ -598,9 +599,14 @@ describe('adopted OpenCode readiness', () => {
       `Basic ${Buffer.from(`opencode:${password}`).toString('base64')}`,
     )
 
-    const requests: Array<{ url: string; authorization: string | null }> = []
+    const requests: Array<{ url: string; authorization: string | null; connection: string | null }> = []
     const fetchImpl: typeof fetch = async (input, init) => {
-      requests.push({ url: String(input), authorization: new Headers(init?.headers).get('authorization') })
+      const headers = new Headers(init?.headers)
+      requests.push({
+        url: String(input),
+        authorization: headers.get('authorization'),
+        connection: headers.get('connection'),
+      })
       return new Response(JSON.stringify({ version: '2.0.16', pid: 321 }), {
         status: 200,
         headers: { 'Content-Type': 'application/json' },
@@ -611,6 +617,7 @@ describe('adopted OpenCode readiness', () => {
     expect(requests).toEqual([{
       url: 'http://127.0.0.1:4096/api/info',
       authorization: credentials.headers.Authorization,
+      connection: 'close',
     }])
   })
 
@@ -762,6 +769,29 @@ describe('workflow dispatch wiring', () => {
       expect(result.combined).toContain(`${process.execPath}: ENOENT:`)
       expect(result.combined).not.toContain('process.execPath is not on PATH')
     }
+  })
+
+  it.skipIf(process.platform !== 'win32')('restores Windows PowerShell module defaults through a Node child', () => {
+    const bogusModules = join(tmpdir(), 'unavailable-powershell-modules')
+    const env: NodeJS.ProcessEnv = { pSmOdUlEpAtH: bogusModules }
+    // Node keeps the first case-insensitive Windows env key. Contaminate
+    // inherited spellings too so none can conceal a missing normalization.
+    for (const name of Object.keys(process.env)) {
+      if (name.toLowerCase() === 'psmodulepath') env[name] = bogusModules
+    }
+    const result = run(process.execPath, ['-e', `
+      const { spawnSync } = require('node:child_process')
+      const child = spawnSync('powershell.exe', [
+        '-NoProfile', '-NonInteractive', '-Command',
+        '$ErrorActionPreference = "Stop"; (Get-FileHash -LiteralPath $env:SystemRoot\\\\System32\\\\cmd.exe).Algorithm',
+      ], { encoding: 'utf8' })
+      process.stdout.write(child.stdout || '')
+      process.stderr.write(child.stderr || String(child.error || ''))
+      process.exit(child.status ?? 1)
+    `], { env, timeout: 10_000 })
+
+    expect(result.code, result.combined).toBe(0)
+    expect(result.stdout.trim()).toBe('SHA256')
   })
 
   it.each([0, 7])('captures launcher exit %i without waiting for a detached child to close its output', (code) => {

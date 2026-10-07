@@ -234,13 +234,16 @@ export function binaryPrefix(): string
 /** Resolves the installed launcher from PATH, optionally with a prepended directory. */
 export function whichLooptroop(pathHint?: string): string | null
 
-/** Runs the resolved launcher with private output files and a bounded wait for its exit. */
-export function runCaptured(command: string, args: string[], options?: import('node:child_process').SpawnSyncOptions): {
+/** Runs a resolved tool with the smoke's child environment. */
+export function run(command: string, args: string[], options?: import('node:child_process').SpawnSyncOptions): {
   code: number | null
   stdout: string
   stderr: string
   combined: string
 }
+
+/** Runs the resolved launcher with private output files and a bounded wait for its exit. */
+export function runCaptured(command: string, args: string[], options?: import('node:child_process').SpawnSyncOptions): ReturnType<typeof run>
 
 export function planMatrix(options?: {
   tier?: string

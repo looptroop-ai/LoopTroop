@@ -219,8 +219,7 @@ jobs:
           ref: ${{ github.workflow_sha }}
           persist-credentials: false
 
-      # CI tools belong to this workflow; the driver comes from the tested
-      # release unless a repair explicitly selected another revision.
+      # CI tools and the driver use the same immutable workflow commit.
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
         with:
           ref: ${{ github.workflow_sha }}

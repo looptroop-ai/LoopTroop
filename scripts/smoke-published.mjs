@@ -1532,6 +1532,7 @@ async function runChannel(recipe, options) {
     // whatever the runner already had, and report a pass for software this leg
     // never installed.
     if (install.code !== 0) {
+      log(install.combined.trim())
       fail('install', `exit ${install.code}: ${install.combined.trim().split('\n').slice(-3).join(' / ')}`)
       return { ok: false, served }
     }
@@ -1765,11 +1766,25 @@ async function runChannel(recipe, options) {
     if (opencodeMode === 'adopt') {
       // A daemon that killed a server it did not start would take a user's own
       // OpenCode down with it.
-      check(
+      const survived = await openCodeAnswers(opencodePort, adoptedOpenCodeCredentials.headers)
+      if (!check(
         'adopted OpenCode outlived the daemon',
-        await openCodeAnswers(opencodePort, adoptedOpenCodeCredentials.headers),
+        survived,
         'the adopted server was killed or stopped returning valid info',
-      )
+      )) {
+        log(`  adopted process: pid=${adopted?.pid}, alive=${processAlive(adopted?.pid)}, exit=${adopted?.exitCode}, signal=${adopted?.signalCode}`)
+        const diagnostic = run('curl', [
+          '--silent', '--show-error', '--max-time', '3', '--noproxy', '*',
+          '--header', `Authorization: ${adoptedOpenCodeCredentials.headers.Authorization}`,
+          `http://127.0.0.1:${opencodePort}/api/info`,
+        ], { env: ANONYMOUS })
+        log(`  independent info probe: exit ${diagnostic.code}: ${diagnostic.combined.trim()}`)
+        try {
+          log(readFileSync(join(scratch, 'adopted-opencode.log'), 'utf8').trim().split('\n').slice(-30).join('\n'))
+        } catch (error) {
+          log(`  adopted OpenCode log unavailable: ${error.message}`)
+        }
+      }
     } else if (opencodeMode !== 'mock') {
       check('managed OpenCode stopped with the daemon', await portIsClosed(opencodePort), `${opencodePort} still answers`)
       // The port closing is not the same as the process being gone: a
@@ -1893,9 +1908,16 @@ export async function openCodeAnswers(port, headers, fetchImpl = fetch, timeoutM
       headers,
       signal: AbortSignal.timeout(timeoutMs),
     })
-    if (response.status !== 200) return false
-    return isOpenCodeInfoReady(response.status, await response.json())
-  } catch {
+    if (response.status !== 200) {
+      log(`  OpenCode info probe returned HTTP ${response.status}`)
+      return false
+    }
+    const info = await response.json()
+    const ready = isOpenCodeInfoReady(response.status, info)
+    if (!ready) log(`  OpenCode info probe returned invalid identity: version=${info?.version}, pid=${info?.pid}`)
+    return ready
+  } catch (error) {
+    log(`  OpenCode info probe failed: ${error?.cause?.code ?? error?.message ?? String(error)}`)
     return false
   }
 }

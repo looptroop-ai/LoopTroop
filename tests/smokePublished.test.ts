@@ -1,4 +1,4 @@
-import { describe, it, expect } from 'vitest'
+import { describe, it, expect, vi } from 'vitest'
 import { chmodSync, mkdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
 import { spawnSync } from 'node:child_process'
 import { tmpdir } from 'node:os'
@@ -627,6 +627,20 @@ describe('adopted OpenCode readiness', () => {
 
     expect(requestSignal?.aborted).toBe(true)
     expect(Date.now() - started).toBeLessThan(1_000)
+  })
+
+  it('reports a transport failure without retrying or exposing request credentials', async () => {
+    const output = vi.spyOn(process.stdout, 'write').mockImplementation(() => true)
+    const fetchImpl = vi.fn<typeof fetch>().mockRejectedValue(
+      new TypeError('fetch failed', { cause: { code: 'UND_ERR_SOCKET' } }),
+    )
+    try {
+      expect(await openCodeAnswers(4096, { Authorization: 'private-password' }, fetchImpl)).toBe(false)
+      expect(fetchImpl).toHaveBeenCalledTimes(1)
+      expect(output).toHaveBeenCalledWith('  OpenCode info probe failed: UND_ERR_SOCKET\n')
+    } finally {
+      output.mockRestore()
+    }
   })
 
   it.each([204, 401, 404, 500])('rejects HTTP %i from the adopted server', async (status) => {

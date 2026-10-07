@@ -628,10 +628,18 @@ describe('release workflow policy', () => {
     }
   })
 
-  it('uses the released tag for scheduled and repair smoke code', () => {
+  it('defaults smoke code to the release tag and freezes an explicit repair driver for every leg', () => {
     const smoke = source.get('published-smoke.yml')!
+    const jobs = workflows.get('published-smoke.yml')!.jobs!
+    const checkout = jobs.plan!.steps!.find((step) => String(step.uses).startsWith('actions/checkout@'))!
+    expect(checkout.with?.ref).toBe('${{ inputs.driver_ref || github.workflow_sha }}')
+    const releasedDriver = jobs.plan!.steps!.find((step) => step.name === 'Check out the tested release')!
+    expect(releasedDriver.if).toBe("inputs.driver_ref == ''")
     expect(smoke).toContain('git checkout --detach "refs/tags/v${VERSION}"')
-    expect(smoke).toContain('ref: refs/tags/v${{ needs.plan.outputs.version }}')
+    expect(smoke).toContain("driver_sha: ${{ steps.driver.outputs.sha }}")
+    expect(smoke).toContain('git rev-parse HEAD')
+    const smokeCheckout = jobs.smoke!.steps!.find((step) => String(step.uses).startsWith('actions/checkout@'))!
+    expect(smokeCheckout.with?.ref).toBe('${{ needs.plan.outputs.driver_sha }}')
     expect(source.get('channel-republish.yml')!).not.toMatch(/--ref\s+main/)
     expect(source.get('container-republish.yml')!).not.toMatch(/--ref\s+main/)
     expect(source.get('release.yml')!).toContain('--ref "v${VERSION}"')

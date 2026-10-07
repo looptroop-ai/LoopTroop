@@ -19,6 +19,10 @@ on:
         description: 'Released version to test (blank = latest stable)'
         type: string
         default: ''
+      driver_ref:
+        description: 'Repair driver ref (blank = tested release tag)'
+        type: string
+        default: ''
       tier:
         description: 'Which legs to run'
         type: choice
@@ -103,6 +107,7 @@ jobs:
     outputs:
       matrix: ${{ steps.plan.outputs.matrix }}
       version: ${{ steps.resolve.outputs.version }}
+      driver_sha: ${{ steps.driver.outputs.sha }}
     steps:
       - name: Audit runner network activity
         uses: step-security/harden-runner@e14015d583714f6e62063499dc959a02595150a1 # v2.21.1
@@ -111,6 +116,7 @@ jobs:
 
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
         with:
+          ref: ${{ inputs.driver_ref || github.workflow_sha }}
           persist-credentials: false
 
       - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7
@@ -148,7 +154,10 @@ jobs:
       # A scheduled run resolves the newest published release while still on
       # the default branch. Run the driver from that release's tag so a later
       # main change cannot alter what an older release is being asked to prove.
+      # An explicit repair ref keeps the selected driver instead. Resolve it
+      # once below so every leg uses the same commit even if its branch moves.
       - name: Check out the tested release
+        if: inputs.driver_ref == ''
         env:
           VERSION: ${{ steps.resolve.outputs.version }}
         shell: bash
@@ -156,6 +165,11 @@ jobs:
           set -euo pipefail
           git fetch --force --quiet origin "refs/tags/v${VERSION}:refs/tags/v${VERSION}"
           git checkout --detach "refs/tags/v${VERSION}"
+
+      - name: Resolve the driver revision
+        id: driver
+        shell: bash
+        run: git rev-parse HEAD | sed 's/^/sha=/' >> "$GITHUB_OUTPUT"
 
       # The matrix comes from the recipe table in the driver, so the workflow
       # and the recipes cannot disagree about which legs exist.
@@ -223,11 +237,11 @@ jobs:
 
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
         with:
-          ref: refs/tags/v${{ needs.plan.outputs.version }}
+          ref: ${{ needs.plan.outputs.driver_sha }}
           persist-credentials: false
 
-      # CI tools belong to this workflow; the driver above still comes from the
-      # tested release, including releases made before these lockfiles existed.
+      # CI tools belong to this workflow; the driver comes from the tested
+      # release unless a repair explicitly selected another revision.
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
         with:
           ref: ${{ github.workflow_sha }}
@@ -242,9 +256,10 @@ jobs:
         shell: bash
         env:
           RELEASE_VERSION: ${{ needs.plan.outputs.version }}
+          DRIVER_REVISION: ${{ needs.plan.outputs.driver_sha }}
           TOOLING_REVISION: ${{ github.workflow_sha }}
         run: |
-          printf '%s\n' "- Release under test: v${RELEASE_VERSION}" "- CI tooling revision: ${TOOLING_REVISION}" >> "$GITHUB_STEP_SUMMARY"
+          printf '%s\n' "- Release under test: v${RELEASE_VERSION}" "- Smoke driver revision: ${DRIVER_REVISION}" "- CI tooling revision: ${TOOLING_REVISION}" >> "$GITHUB_STEP_SUMMARY"
 
       - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7
         with:

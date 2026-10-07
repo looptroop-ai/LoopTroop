@@ -15,6 +15,7 @@ import {
   isOpenCodeInfoReady,
   moderationSkipReason,
   openCodeAnswers,
+  runCaptured,
   waitForOpenCode,
   validatePublishedVersion,
   whichLooptroop,
@@ -754,11 +755,63 @@ describe('workflow dispatch wiring', () => {
     const missingCwd = join(tmpdir(), `looptroop-published-missing-cwd-${process.pid}`)
     rmSync(missingCwd, { recursive: true, force: true })
 
-    const result = driver.run(process.execPath, ['--version'], { cwd: missingCwd })
+    for (const run of [driver.run, runCaptured]) {
+      const result = run(process.execPath, ['--version'], { cwd: missingCwd })
+
+      expect(result.code).toBeNull()
+      expect(result.combined).toContain(`${process.execPath}: ENOENT:`)
+      expect(result.combined).not.toContain('process.execPath is not on PATH')
+    }
+  })
+
+  it.each([0, 7])('captures launcher exit %i without waiting for a detached child to close its output', (code) => {
+    const root = makeTempDir('looptroop-published-capture-')
+    const pidPath = join(root, 'child.pid')
+    try {
+      const result = runCaptured(process.execPath, ['-e', `
+        const { spawn } = require('node:child_process')
+        const { writeFileSync } = require('node:fs')
+        const child = spawn(process.execPath, ['-e', 'setInterval(() => {}, 1000)'], {
+          detached: true,
+          stdio: 'inherit',
+        })
+        writeFileSync(process.argv[1], String(child.pid))
+        child.unref()
+        process.stdout.write('launcher stdout\\n')
+        process.stderr.write('launcher stderr\\n')
+        process.exit(${code})
+      `, pidPath], { timeout: 10_000 })
+
+      expect(result).toEqual({
+        code,
+        stdout: 'launcher stdout\n',
+        stderr: 'launcher stderr\n',
+        combined: 'launcher stdout\nlauncher stderr\n',
+      })
+      expect(() => process.kill(Number(readFileSync(pidPath, 'utf8')), 0)).not.toThrow()
+    } finally {
+      try {
+        const pid = Number(readFileSync(pidPath, 'utf8'))
+        if (Number.isInteger(pid) && pid > 0) process.kill(pid, 'SIGTERM')
+      } catch {
+        // The fixture failed to start or already exited.
+      }
+      removeTempDir(root)
+    }
+  })
+
+  it('keeps captured output and the timeout error when a launcher hangs', () => {
+    const result = runCaptured(process.execPath, ['-e', `
+      process.stdout.write('before timeout\\n')
+      process.stderr.write('launcher stalled\\n')
+      setInterval(() => {}, 1000)
+    `], { timeout: 5_000 })
 
     expect(result.code).toBeNull()
-    expect(result.combined).toContain(`${process.execPath}: ENOENT:`)
-    expect(result.combined).not.toContain('process.execPath is not on PATH')
+    expect(result.stdout).toBe('before timeout\n')
+    expect(result.stderr).toBe('launcher stalled\n')
+    expect(result.combined).toContain('before timeout\nlauncher stalled\n')
+    expect(result.combined).toContain(`${process.execPath}: ETIMEDOUT:`)
   })
 
   it('gives every gh step a token as well as a permission', () => {

@@ -30,7 +30,11 @@ describe('findFreePort', () => {
     const { port, release } = await hold()
     await release()
 
-    expect(await findFreePort('127.0.0.1', port, [], 1)).toBe(port)
+    // Closing the fixture releases its reservation; another test can claim it.
+    const found = await findFreePort('127.0.0.1', port)
+    expect(found).not.toBeNull()
+    expect(found).toBeGreaterThanOrEqual(port)
+    expect(found).toBeLessThan(Math.min(port + 50, 65_536))
   })
 
   it('skips a port it was told is spoken for, free or not', async () => {

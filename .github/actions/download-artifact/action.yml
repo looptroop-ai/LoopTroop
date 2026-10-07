@@ -1,0 +1,50 @@
+name: Download verified artifacts
+description: Download artifacts with GitHub's action and extract verified ZIPs without its deprecated unzip dependency.
+inputs:
+  name:
+    description: Artifact name.
+    default: ''
+  path:
+    description: Extraction directory, defaulting to the workspace.
+    default: ''
+  pattern:
+    description: Artifact name pattern.
+    default: ''
+  merge-multiple:
+    description: Extract all matching artifacts into the same directory.
+    default: 'false'
+runs:
+  using: composite
+  steps:
+    - name: Prepare an isolated download directory
+      id: raw
+      shell: bash
+      run: |
+        python_command=$(command -v python3 || command -v python)
+        "$python_command" -I - <<'PY'
+        import os, tempfile
+        with open(os.environ['GITHUB_OUTPUT'], 'a', encoding='utf-8') as output:
+            output.write('path=' + tempfile.mkdtemp(prefix='verified-artifact-', dir=os.environ['RUNNER_TEMP']) + '\n')
+        PY
+
+    # Keep downloads separate even when extraction merges them: raw ZIPs can
+    # have the same filename. GitHub still verifies every artifact's digest.
+    - name: Download and verify the ZIPs
+      uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8
+      with:
+        name: ${{ inputs.name }}
+        pattern: ${{ inputs.pattern }}
+        path: ${{ steps.raw.outputs.path }}
+        merge-multiple: false
+        skip-decompress: true
+        digest-mismatch: error
+
+    - name: Extract the verified ZIPs
+      shell: bash
+      env:
+        ARTIFACT_RAW: ${{ steps.raw.outputs.path }}
+        ARTIFACT_DESTINATION: ${{ inputs.path }}
+        ARTIFACT_MERGE: ${{ inputs.merge-multiple }}
+      run: |
+        python_command=$(command -v python3 || command -v python)
+        "$python_command" -I "$GITHUB_ACTION_PATH/extract.py"

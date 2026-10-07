@@ -69,22 +69,21 @@ describe('release script argument contracts', () => {
     }
   })
 
-  it.skipIf(process.platform === 'win32')('rejects ambiguous or malformed npm metadata before writing resume outputs', () => {
-    const integrity = JSON.stringify('sha512-Zml4dHVyZQ==')
-    const distTags = JSON.stringify({ latest: '99.99.99' })
-    const invalid = ['not-json', '[]', 'null']
-    for (const [label, integrityValue, tagsValue] of [
-      ...[...invalid, `[${integrity},${integrity}]`, `[[${integrity}]]`, '{}', '""']
-        .map((value) => [`integrity ${value}`, value, distTags] as const),
-      ...[...invalid, `[${distTags},${distTags}]`, `[[${distTags}]]`, '"latest"', '{"latest":42}', '{"latest":""}']
-        .map((value) => [`dist-tags ${value}`, integrity, value] as const),
-    ]) {
-      const result = detectWithNpmMetadata(integrityValue, tagsValue)
-      expect(result.error, label).toBeUndefined()
-      expect(result.status, label).not.toBe(0)
-      expect(result.stderr, label).toMatch(/FAIL: .*npm/)
-      expect(result.outputs, label).toBe('')
-    }
+  const integrity = JSON.stringify('sha512-Zml4dHVyZQ==')
+  const distTags = JSON.stringify({ latest: '99.99.99' })
+  const invalid = ['not-json', '[]', 'null']
+  // Each real process gets its own deadline instead of sharing one across all cases.
+  it.skipIf(process.platform === 'win32').each([
+    ...[...invalid, `[${integrity},${integrity}]`, `[[${integrity}]]`, '{}', '""']
+      .map((value) => [`integrity ${value}`, value, distTags] as const),
+    ...[...invalid, `[${distTags},${distTags}]`, `[[${distTags}]]`, '"latest"', '{"latest":42}', '{"latest":""}']
+      .map((value) => [`dist-tags ${value}`, integrity, value] as const),
+  ])('rejects %s before writing resume outputs', (label, integrityValue, tagsValue) => {
+    const result = detectWithNpmMetadata(integrityValue, tagsValue)
+    expect(result.error, label).toBeUndefined()
+    expect(result.status, label).not.toBe(0)
+    expect(result.stderr, label).toMatch(/FAIL: .*npm/)
+    expect(result.outputs, label).toBe('')
   }, 15_000)
 
   it('uses the pinned native SEA builder without a legacy injector fallback', () => {

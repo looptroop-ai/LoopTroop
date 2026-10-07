@@ -595,7 +595,7 @@ jobs:
           set -euo pipefail
           gh workflow run published-smoke.yml \
             --repo "${GITHUB_REPOSITORY}" \
-            --ref "v${VERSION}" \
+            --ref main \
             -f version="${VERSION}" \
             -f tier=weekly \
             -f only="${CHANNEL}" \

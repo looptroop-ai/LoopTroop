@@ -248,7 +248,8 @@ const serverIntegrationTests = [
   'tests/startCommandAbandon.test.ts',
   'tests/openCommand.test.ts',
   'tests/cleanCommand.test.ts',
-  // These tests launch local CLI, Node, Git, or shell processes.
+  // These tests launch local CLI, Node, Python, Git, or shell processes.
+  'tests/artifactDownload.test.ts',
   'tests/channelInputs.test.ts',
   'tests/cliLauncher.test.ts',
   'tests/devChildEnvironment.test.ts',

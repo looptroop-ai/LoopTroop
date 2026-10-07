@@ -115,11 +115,71 @@ jobs:
           ref: ${{ github.event.pull_request.head.sha }}
           persist-credentials: false
 
+      - name: Prepare an isolated artifact download
+        id: artifact_raw_1
+        shell: bash
+        run: |
+          python_command=$(command -v python3 || command -v python)
+          "$python_command" -I - <<'PY'
+          import os, tempfile
+          with open(os.environ['GITHUB_OUTPUT'], 'a', encoding='utf-8') as output:
+              output.write('path=' + tempfile.mkdtemp(prefix='verified-artifact-', dir=os.environ['RUNNER_TEMP']) + '\n')
+          PY
+
       - name: Download the patch
         uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8
         with:
           name: node-floor-patch
-          path: ${{ runner.temp }}/node-floor-artifact
+          path: ${{ steps.artifact_raw_1.outputs.path }}
+          merge-multiple: false
+          skip-decompress: true
+          digest-mismatch: error
+
+      - name: Extract verified artifacts without repository code
+        shell: bash
+        env:
+          ARTIFACT_RAW: ${{ steps.artifact_raw_1.outputs.path }}
+          ARTIFACT_DESTINATION: ${{ runner.temp }}/node-floor-artifact
+          ARTIFACT_MERGE: 'false'
+        run: |
+          python_command=$(command -v python3 || command -v python)
+          "$python_command" -I - <<'PY'
+          """Extract GitHub's raw artifact downloads while keeping their directory layout."""
+          import os
+          from pathlib import Path, PurePosixPath, PureWindowsPath
+          import shutil
+          import stat
+          import zipfile
+
+          raw = Path(os.environ['ARTIFACT_RAW']).resolve()
+          destination = Path(os.environ['ARTIFACT_DESTINATION'] or os.environ['GITHUB_WORKSPACE']).expanduser().resolve()
+          merge = os.environ['ARTIFACT_MERGE'] == 'true'
+          destination.mkdir(parents=True, exist_ok=True)
+
+          try:
+              for archive in sorted(raw.rglob('*')):
+                  if not archive.is_file():
+                      continue
+                  target = (destination if merge else destination / archive.parent.relative_to(raw)).resolve()
+                  if not target.is_relative_to(destination):
+                      raise ValueError(f'Artifact directory escapes destination: {archive.parent.name}')
+                  with zipfile.ZipFile(archive) as source:
+                      for entry in source.infolist():
+                          name = PurePosixPath(entry.filename.replace('\\', '/'))
+                          if name.is_absolute() or '..' in name.parts or PureWindowsPath(entry.filename).drive or stat.S_ISLNK(entry.external_attr >> 16):
+                              raise ValueError(f'Unsafe artifact path: {entry.filename}')
+                          output = (target / name).resolve()
+                          if not output.is_relative_to(target):
+                              raise ValueError(f'Artifact path escapes destination: {entry.filename}')
+                          if entry.is_dir():
+                              output.mkdir(parents=True, exist_ok=True)
+                          else:
+                              output.parent.mkdir(parents=True, exist_ok=True)
+                              with source.open(entry) as contents, output.open('wb') as result:
+                                  shutil.copyfileobj(contents, result)
+          finally:
+              shutil.rmtree(raw)
+          PY
 
       # The patch came from code on the branch, so it is checked before git sees
       # it as anything but text: exactly one regular file; an edit to files the

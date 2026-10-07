@@ -354,11 +354,71 @@ jobs:
       id-token: write
       attestations: write
     steps:
+      - name: Prepare an isolated artifact download
+        id: artifact_raw_1
+        shell: bash
+        run: &prepare_verified_artifact |
+          python_command=$(command -v python3 || command -v python)
+          "$python_command" -I - <<'PY'
+          import os, tempfile
+          with open(os.environ['GITHUB_OUTPUT'], 'a', encoding='utf-8') as output:
+              output.write('path=' + tempfile.mkdtemp(prefix='verified-artifact-', dir=os.environ['RUNNER_TEMP']) + '\n')
+          PY
+
       - name: Download the binary archives
         uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8
         with:
           pattern: release-binary-*
-          merge-multiple: true
+          path: ${{ steps.artifact_raw_1.outputs.path }}
+          merge-multiple: false
+          skip-decompress: true
+          digest-mismatch: error
+
+      - name: Extract verified artifacts without repository code
+        shell: bash
+        env:
+          ARTIFACT_RAW: ${{ steps.artifact_raw_1.outputs.path }}
+          ARTIFACT_DESTINATION: ''
+          ARTIFACT_MERGE: 'true'
+        run: &extract_verified_artifact |
+          python_command=$(command -v python3 || command -v python)
+          "$python_command" -I - <<'PY'
+          """Extract GitHub's raw artifact downloads while keeping their directory layout."""
+          import os
+          from pathlib import Path, PurePosixPath, PureWindowsPath
+          import shutil
+          import stat
+          import zipfile
+
+          raw = Path(os.environ['ARTIFACT_RAW']).resolve()
+          destination = Path(os.environ['ARTIFACT_DESTINATION'] or os.environ['GITHUB_WORKSPACE']).expanduser().resolve()
+          merge = os.environ['ARTIFACT_MERGE'] == 'true'
+          destination.mkdir(parents=True, exist_ok=True)
+
+          try:
+              for archive in sorted(raw.rglob('*')):
+                  if not archive.is_file():
+                      continue
+                  target = (destination if merge else destination / archive.parent.relative_to(raw)).resolve()
+                  if not target.is_relative_to(destination):
+                      raise ValueError(f'Artifact directory escapes destination: {archive.parent.name}')
+                  with zipfile.ZipFile(archive) as source:
+                      for entry in source.infolist():
+                          name = PurePosixPath(entry.filename.replace('\\', '/'))
+                          if name.is_absolute() or '..' in name.parts or PureWindowsPath(entry.filename).drive or stat.S_ISLNK(entry.external_attr >> 16):
+                              raise ValueError(f'Unsafe artifact path: {entry.filename}')
+                          output = (target / name).resolve()
+                          if not output.is_relative_to(target):
+                              raise ValueError(f'Artifact path escapes destination: {entry.filename}')
+                          if entry.is_dir():
+                              output.mkdir(parents=True, exist_ok=True)
+                          else:
+                              output.parent.mkdir(parents=True, exist_ok=True)
+                              with source.open(entry) as contents, output.open('wb') as result:
+                                  shutil.copyfileobj(contents, result)
+          finally:
+              shutil.rmtree(raw)
+          PY
 
       - name: Attest the binary archives
         uses: actions/attest-build-provenance@4d101475d8b20a2381f78447822ac1eab6504dd8 # v4.2.2
@@ -461,7 +521,7 @@ jobs:
       # are all part of one release.
       - name: Collect the standalone binaries
         if: needs.detect.outputs.skip_binaries != 'true'
-        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8
+        uses: ./.github/actions/download-artifact
         with:
           pattern: release-binary-*
           merge-multiple: true
@@ -584,11 +644,27 @@ jobs:
       id-token: write
       attestations: write
     steps:
+      - name: Prepare an isolated artifact download
+        id: artifact_raw_1
+        shell: bash
+        run: *prepare_verified_artifact
+
       - name: Download the release artefacts
         uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8
         with:
           name: release-artefacts
-          path: release-assets
+          path: ${{ steps.artifact_raw_1.outputs.path }}
+          merge-multiple: false
+          skip-decompress: true
+          digest-mismatch: error
+
+      - name: Extract verified artifacts without repository code
+        shell: bash
+        env:
+          ARTIFACT_RAW: ${{ steps.artifact_raw_1.outputs.path }}
+          ARTIFACT_DESTINATION: release-assets
+          ARTIFACT_MERGE: 'false'
+        run: *extract_verified_artifact
 
       # Verified with: gh attestation verify <file> --repo looptroop-ai/LoopTroop
       - name: Attest the release assets
@@ -655,7 +731,7 @@ jobs:
         run: node scripts/pin-npm.mjs
 
       - name: Download the release artefacts
-        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8
+        uses: ./.github/actions/download-artifact
         with:
           name: release-artefacts
 
@@ -718,7 +794,7 @@ jobs:
         run: node scripts/pin-npm.mjs
 
       - name: Download the release artefacts
-        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8
+        uses: ./.github/actions/download-artifact
         with:
           name: release-artefacts
 
@@ -782,16 +858,49 @@ jobs:
       - name: Pin npm
         run: node scripts/pin-npm.mjs
 
+      - name: Prepare an isolated artifact download
+        id: artifact_raw_1
+        shell: bash
+        run: *prepare_verified_artifact
+
       - name: Download the release artefacts
         uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8
         with:
           name: release-artefacts
+          path: ${{ steps.artifact_raw_1.outputs.path }}
+          merge-multiple: false
+          skip-decompress: true
+          digest-mismatch: error
+
+      - name: Extract verified artifacts without repository code
+        shell: bash
+        env:
+          ARTIFACT_RAW: ${{ steps.artifact_raw_1.outputs.path }}
+          ARTIFACT_DESTINATION: ''
+          ARTIFACT_MERGE: 'false'
+        run: *extract_verified_artifact
+
+      - name: Prepare an isolated artifact download
+        id: artifact_raw_2
+        shell: bash
+        run: *prepare_verified_artifact
 
       - name: Download the provenance bundle
         uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8
         with:
           name: release-provenance
-          path: release-provenance
+          path: ${{ steps.artifact_raw_2.outputs.path }}
+          merge-multiple: false
+          skip-decompress: true
+          digest-mismatch: error
+
+      - name: Extract verified artifacts without repository code
+        shell: bash
+        env:
+          ARTIFACT_RAW: ${{ steps.artifact_raw_2.outputs.path }}
+          ARTIFACT_DESTINATION: release-provenance
+          ARTIFACT_MERGE: 'false'
+        run: *extract_verified_artifact
 
       # Verify the manifest once: its signed digests cover every deterministic
       # release asset. Keep the original bundle as a separate release asset so
@@ -963,10 +1072,27 @@ jobs:
       - name: Check the bundled npm client
         run: npm --version
 
+      - name: Prepare an isolated artifact download
+        id: artifact_raw_1
+        shell: bash
+        run: *prepare_verified_artifact
+
       - name: Download the release artefacts
         uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8
         with:
           name: release-artefacts
+          path: ${{ steps.artifact_raw_1.outputs.path }}
+          merge-multiple: false
+          skip-decompress: true
+          digest-mismatch: error
+
+      - name: Extract verified artifacts without repository code
+        shell: bash
+        env:
+          ARTIFACT_RAW: ${{ steps.artifact_raw_1.outputs.path }}
+          ARTIFACT_DESTINATION: ''
+          ARTIFACT_MERGE: 'false'
+        run: *extract_verified_artifact
 
       - name: Verify the bytes before publishing
         run: |
@@ -1230,10 +1356,27 @@ jobs:
         with:
           fetch-depth: 0
 
+      - name: Prepare an isolated artifact download
+        id: artifact_raw_1
+        shell: bash
+        run: *prepare_verified_artifact
+
       - name: Download the release artefacts
         uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8
         with:
           name: release-artefacts
+          path: ${{ steps.artifact_raw_1.outputs.path }}
+          merge-multiple: false
+          skip-decompress: true
+          digest-mismatch: error
+
+      - name: Extract verified artifacts without repository code
+        shell: bash
+        env:
+          ARTIFACT_RAW: ${{ steps.artifact_raw_1.outputs.path }}
+          ARTIFACT_DESTINATION: ''
+          ARTIFACT_MERGE: 'false'
+        run: *extract_verified_artifact
 
       # Annotated, not lightweight, and pushed before the release is published.
       # If this succeeds and the next step fails, the state resolver reads
@@ -1347,10 +1490,27 @@ jobs:
       - name: Pin npm
         run: node scripts/pin-npm.mjs
 
+      - name: Prepare an isolated artifact download
+        id: artifact_raw_1
+        shell: bash
+        run: *prepare_verified_artifact
+
       - name: Download the release artefacts
         uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8
         with:
           name: release-artefacts
+          path: ${{ steps.artifact_raw_1.outputs.path }}
+          merge-multiple: false
+          skip-decompress: true
+          digest-mismatch: error
+
+      - name: Extract verified artifacts without repository code
+        shell: bash
+        env:
+          ARTIFACT_RAW: ${{ steps.artifact_raw_1.outputs.path }}
+          ARTIFACT_DESTINATION: ''
+          ARTIFACT_MERGE: 'false'
+        run: *extract_verified_artifact
 
       - name: Verify the artefact matches the manifest
         env:
@@ -1601,11 +1761,27 @@ jobs:
 
       # `merge-multiple` because the two legs uploaded one file each under
       # different artefact names; this flattens both into the working directory.
+      - name: Prepare an isolated artifact download
+        id: artifact_raw_1
+        shell: bash
+        run: *prepare_verified_artifact
+
       - name: Download the digests
         uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8
         with:
           pattern: container-digest-*
-          merge-multiple: true
+          path: ${{ steps.artifact_raw_1.outputs.path }}
+          merge-multiple: false
+          skip-decompress: true
+          digest-mismatch: error
+
+      - name: Extract verified artifacts without repository code
+        shell: bash
+        env:
+          ARTIFACT_RAW: ${{ steps.artifact_raw_1.outputs.path }}
+          ARTIFACT_DESTINATION: ''
+          ARTIFACT_MERGE: 'true'
+        run: *extract_verified_artifact
 
       # Logins do not survive a job boundary, so both are done again here.
       - name: Log in to Docker Hub and GHCR
@@ -1965,10 +2141,27 @@ jobs:
         with:
           node-version-file: .nvmrc
 
+      - name: Prepare an isolated artifact download
+        id: artifact_raw_1
+        shell: bash
+        run: *prepare_verified_artifact
+
       - name: Download the release artefacts
         uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8
         with:
           name: release-artefacts
+          path: ${{ steps.artifact_raw_1.outputs.path }}
+          merge-multiple: false
+          skip-decompress: true
+          digest-mismatch: error
+
+      - name: Extract verified artifacts without repository code
+        shell: bash
+        env:
+          ARTIFACT_RAW: ${{ steps.artifact_raw_1.outputs.path }}
+          ARTIFACT_DESTINATION: ''
+          ARTIFACT_MERGE: 'false'
+        run: *extract_verified_artifact
 
       - name: Read what this release publishes
         id: inputs
@@ -2047,10 +2240,27 @@ jobs:
         with:
           node-version-file: .nvmrc
 
+      - name: Prepare an isolated artifact download
+        id: artifact_raw_1
+        shell: bash
+        run: *prepare_verified_artifact
+
       - name: Download the release artefacts
         uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8
         with:
           name: release-artefacts
+          path: ${{ steps.artifact_raw_1.outputs.path }}
+          merge-multiple: false
+          skip-decompress: true
+          digest-mismatch: error
+
+      - name: Extract verified artifacts without repository code
+        shell: bash
+        env:
+          ARTIFACT_RAW: ${{ steps.artifact_raw_1.outputs.path }}
+          ARTIFACT_DESTINATION: ''
+          ARTIFACT_MERGE: 'false'
+        run: *extract_verified_artifact
 
       - name: Read what this release publishes
         id: inputs
@@ -2102,10 +2312,27 @@ jobs:
         with:
           node-version-file: .nvmrc
 
+      - name: Prepare an isolated artifact download
+        id: artifact_raw_1
+        shell: bash
+        run: *prepare_verified_artifact
+
       - name: Download the release artefacts
         uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8
         with:
           name: release-artefacts
+          path: ${{ steps.artifact_raw_1.outputs.path }}
+          merge-multiple: false
+          skip-decompress: true
+          digest-mismatch: error
+
+      - name: Extract verified artifacts without repository code
+        shell: bash
+        env:
+          ARTIFACT_RAW: ${{ steps.artifact_raw_1.outputs.path }}
+          ARTIFACT_DESTINATION: ''
+          ARTIFACT_MERGE: 'false'
+        run: *extract_verified_artifact
 
       - name: Read what this release publishes
         id: inputs
@@ -2205,10 +2432,27 @@ jobs:
         with:
           node-version-file: .nvmrc
 
+      - name: Prepare an isolated artifact download
+        id: artifact_raw_1
+        shell: bash
+        run: *prepare_verified_artifact
+
       - name: Download the release artefacts
         uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8
         with:
           name: release-artefacts
+          path: ${{ steps.artifact_raw_1.outputs.path }}
+          merge-multiple: false
+          skip-decompress: true
+          digest-mismatch: error
+
+      - name: Extract verified artifacts without repository code
+        shell: bash
+        env:
+          ARTIFACT_RAW: ${{ steps.artifact_raw_1.outputs.path }}
+          ARTIFACT_DESTINATION: ''
+          ARTIFACT_MERGE: 'false'
+        run: *extract_verified_artifact
 
       - name: Read what this release publishes
         id: inputs
@@ -2308,10 +2552,27 @@ jobs:
         with:
           node-version-file: .nvmrc
 
+      - name: Prepare an isolated artifact download
+        id: artifact_raw_1
+        shell: bash
+        run: *prepare_verified_artifact
+
       - name: Download the release artefacts
         uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8
         with:
           name: release-artefacts
+          path: ${{ steps.artifact_raw_1.outputs.path }}
+          merge-multiple: false
+          skip-decompress: true
+          digest-mismatch: error
+
+      - name: Extract verified artifacts without repository code
+        shell: bash
+        env:
+          ARTIFACT_RAW: ${{ steps.artifact_raw_1.outputs.path }}
+          ARTIFACT_DESTINATION: ''
+          ARTIFACT_MERGE: 'false'
+        run: *extract_verified_artifact
 
       - name: Read what this release publishes
         id: inputs

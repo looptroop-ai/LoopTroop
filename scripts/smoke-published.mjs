@@ -29,7 +29,7 @@
  */
 import { spawnSync, spawn } from 'node:child_process'
 import { createHash, randomBytes } from 'node:crypto'
-import { existsSync, mkdirSync, mkdtempSync, openSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
+import { closeSync, existsSync, mkdirSync, mkdtempSync, openSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
 import { createServer } from 'node:net'
 import { homedir, tmpdir } from 'node:os'
 import { join } from 'node:path'
@@ -874,6 +874,30 @@ export function run(command, args, options = {}) {
   }
 }
 
+/** File capture lets a launcher exit while a detached child still owns its output handles. */
+export function runCaptured(command, args, options = {}) {
+  const scratch = mkdtempSync(join(tmpdir(), 'looptroop-published-output-'))
+  const stdoutPath = join(scratch, 'stdout')
+  const stderrPath = join(scratch, 'stderr')
+  const descriptors = []
+  try {
+    descriptors.push(openSync(stdoutPath, 'wx', 0o600))
+    descriptors.push(openSync(stderrPath, 'wx', 0o600))
+    const result = run(command, args, {
+      timeout: HEALTH_TIMEOUT_MS,
+      ...options,
+      stdio: ['ignore', ...descriptors],
+    })
+    const stdout = readFileSync(stdoutPath, 'utf8')
+    const stderr = readFileSync(stderrPath, 'utf8')
+    return { ...result, stdout, stderr, combined: `${stdout}${stderr}${result.combined}` }
+  } finally {
+    for (const descriptor of descriptors) closeSync(descriptor)
+    const leftover = removeWorkDirectory(scratch)
+    if (leftover) log(`  (could not remove captured output ${scratch}: ${leftover.message})`)
+  }
+}
+
 /** npm, which `run` resolves to `npm.cmd` on Windows and starts through cmd.exe. */
 function npm(args, options = {}) {
   return run('npm', args, options)
@@ -1653,12 +1677,18 @@ async function runChannel(recipe, options) {
       fail('port is free before start', `${port} is already held: this runner is dirty`)
       return { ok: false, served }
     }
-    const started = cli(['start', '--port', String(port)])
+    const started = runCaptured(shim(), ['start', '--port', String(port)], { cwd: elsewhere, env: childEnv })
     // Recorded before the check, not after: a `start` that failed may still
     // have left something half-up holding the port and the lock, which is
     // exactly what the teardown exists to clear.
     startedDaemon = true
     if (!check('start', started.code === 0, `exit ${started.code}: ${started.combined.trim().slice(-300)}`, `port ${port}`)) {
+      log(`  captured start output:\n${started.combined.trim()}`)
+      try {
+        log(`  daemon.log (last 30 lines):\n${readFileSync(join(configDir, 'logs', 'daemon.log'), 'utf8').trim().split('\n').slice(-30).join('\n')}`)
+      } catch (error) {
+        log(`  daemon log unavailable: ${error.message}`)
+      }
       return { ok: false, served }
     }
 

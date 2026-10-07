@@ -19,6 +19,7 @@ type Step = {
   with?: Record<string, unknown>
   if?: unknown
   shell?: unknown
+  'timeout-minutes'?: unknown
   'continue-on-error'?: unknown
 }
 type Job = { name?: unknown; permissions?: Record<string, unknown>; steps?: Step[]; if?: unknown; 'continue-on-error'?: unknown; 'runs-on'?: unknown; 'timeout-minutes'?: unknown; defaults?: { run?: { shell?: unknown } } }
@@ -615,7 +616,9 @@ describe('release workflow policy', () => {
     expect(runs(release.jobs?.npm ?? {})).not.toMatch(/\bnpm\s+(?:ci|install|run)\b/)
     expect(release.jobs?.['attest-release-assets']?.permissions?.attestations).toBe('write')
     expect(release.jobs?.['container-attest']?.permissions?.['id-token']).toBe('write')
-    expect(runs(release.jobs?.['attest-release-assets'] ?? {}).trim()).toBe('')
+    expect(runs(release.jobs?.['attest-release-assets'] ?? {})).toContain('zipfile.ZipFile(')
+    expect(runs(release.jobs?.['attest-release-assets'] ?? {})).not.toMatch(/\bnode\s+scripts\//)
+    expect(release.jobs?.['attest-release-assets']?.steps?.some((step) => String(step.uses).startsWith('./'))).toBe(false)
     expect(runs(release.jobs?.['container-attest'] ?? {})).toContain('docker login ghcr.io')
     expect(runs(release.jobs?.['container-attest'] ?? {})).not.toMatch(/\bnpm\s+(?:ci|install|run)\b/)
   })
@@ -628,20 +631,21 @@ describe('release workflow policy', () => {
     }
   })
 
-  it('defaults smoke code to the release tag and freezes an explicit repair driver for every leg', () => {
+  it('freezes the workflow driver for every smoke leg and uses current CI for channel repairs', () => {
     const smoke = source.get('published-smoke.yml')!
     const jobs = workflows.get('published-smoke.yml')!.jobs!
     const checkout = jobs.plan!.steps!.find((step) => String(step.uses).startsWith('actions/checkout@'))!
     expect(checkout.with?.ref).toBe('${{ inputs.driver_ref || github.workflow_sha }}')
-    const releasedDriver = jobs.plan!.steps!.find((step) => step.name === 'Check out the tested release')!
-    expect(releasedDriver.if).toBe("inputs.driver_ref == ''")
-    expect(smoke).toContain('git checkout --detach "refs/tags/v${VERSION}"')
+    expect(smoke).not.toContain('git checkout --detach "refs/tags/v${VERSION}"')
     expect(smoke).toContain("driver_sha: ${{ steps.driver.outputs.sha }}")
     expect(smoke).toContain('git rev-parse HEAD')
     const smokeCheckout = jobs.smoke!.steps!.find((step) => String(step.uses).startsWith('actions/checkout@'))!
     expect(smokeCheckout.with?.ref).toBe('${{ needs.plan.outputs.driver_sha }}')
-    expect(source.get('channel-republish.yml')!).not.toMatch(/--ref\s+main/)
-    expect(source.get('container-republish.yml')!).not.toMatch(/--ref\s+main/)
+    for (const file of ['channel-republish.yml', 'container-republish.yml']) {
+      const dispatch = source.get(file)!.split('gh workflow run published-smoke.yml')[1]!
+      expect(dispatch).toContain('--ref main')
+      expect(dispatch).toContain('-f version="${VERSION}"')
+    }
     expect(source.get('release.yml')!).toContain('--ref "v${VERSION}"')
   })
 
@@ -664,6 +668,8 @@ describe('release workflow policy', () => {
     expect(installSteps[0]!.if).toBe("runner.os != 'Windows'")
     expect(installSteps[1]!.shell).toBe('pwsh')
     expect(installSteps[1]!.if).toBe("runner.os == 'Windows'")
+    expect(installSteps[1]!['timeout-minutes']).toBe("${{ matrix.channel == 'chocolatey' && 20 || 40 }}")
+    expect(workflows.get('published-smoke.yml')!.jobs!.smoke!['timeout-minutes']).toBe(40)
     expect(installSteps[1]!.env).toEqual(installSteps[0]!.env)
     expect(installSteps[1]!.run).toContain('node scripts/smoke-published.mjs @smokeArgs')
     expect(installSteps[1]!.run).toContain('exit $LASTEXITCODE')
@@ -739,7 +745,7 @@ describe('release workflow policy', () => {
       release.indexOf('  attest-release-assets:'),
       release.indexOf('  verify-artifact:'),
     )
-    expect(releaseAttestation).toContain('path: release-assets')
+    expect(releaseAttestation).toContain('ARTIFACT_DESTINATION: release-assets')
     expect(releaseAttestation).toContain('subject-path: release-assets/*')
     expect(releaseAttestation).not.toContain('looptroop-*.tgz')
     const releaseContainer = release.slice(release.indexOf('  container-build:'), release.indexOf('  container-manifest:'))
@@ -754,7 +760,7 @@ describe('release workflow policy', () => {
     expect(repairPrepare).toContain('--dir "${ASSET_DIR}"')
     expect(repairPrepare).toContain('${process.env.ASSET_DIR}/package-lock.json')
     const repairBuild = repair.slice(repair.indexOf('  build:'), repair.indexOf('  manifest:'))
-    expect(repairBuild).toContain('path: release-assets')
+    expect(repairBuild).toContain('ARTIFACT_DESTINATION: release-assets')
     expect(repairBuild).toContain('LOCKFILE: ${{ needs.prepare.outputs.lockfile }}')
     expect(repairBuild).toContain('if [ -f scripts/Dockerfile ]; then')
     expect(repairBuild).toContain('if ! test -f "${dockerfile}"; then')
@@ -1169,7 +1175,7 @@ describe('release workflow policy', () => {
 
   it('downloads Renovate notices outside checkout and gives the token only to push', () => {
     const text = source.get('renovate-notices.yml')!
-    expect(text).toContain('path: ${{ runner.temp }}/third-party-notices-artifact')
+    expect(text).toContain('ARTIFACT_DESTINATION: ${{ runner.temp }}/third-party-notices-artifact')
     expect(text).toContain('Validate and copy the notices artifact')
     expect(text).toContain('persist-credentials: false')
     expect(text).toContain('RELEASE_TOKEN: ${{ secrets.RELEASE_PR_TOKEN }}')

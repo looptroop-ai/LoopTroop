@@ -234,6 +234,14 @@ export function binaryPrefix(): string
 /** Resolves the installed launcher from PATH, optionally with a prepended directory. */
 export function whichLooptroop(pathHint?: string): string | null
 
+/** Runs the resolved launcher with private output files and a bounded wait for its exit. */
+export function runCaptured(command: string, args: string[], options?: import('node:child_process').SpawnSyncOptions): {
+  code: number | null
+  stdout: string
+  stderr: string
+  combined: string
+}
+
 export function planMatrix(options?: {
   tier?: string
   only?: string[]

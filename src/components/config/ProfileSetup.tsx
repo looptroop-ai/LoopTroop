@@ -53,6 +53,7 @@ import { IgnoreModeSetting } from '@/components/project/IgnoreModeSetting'
 import { DEFAULT_IGNORE_MODE } from '@shared/ignoreMode'
 import { cn } from '@/lib/utils'
 import { DEFAULT_GIT_HOOK_POLICY } from '@shared/gitHookPolicy'
+import { describeQueryError } from '@/lib/fetchError'
 
 /** For a `/health/opencode` refusal that arrives without the backend's advice. */
 const REFUSED_SIGN_IN_FALLBACK = 'OpenCode is running but refused LoopTroop\'s sign-in. '
@@ -318,10 +319,12 @@ export function ProfileSetup({ onClose, onOpenAbout = () => undefined, onDirtyCh
     setIsRefreshingModels(true)
     try {
       await refreshOpenCodeModelsQuery(queryClient)
+    } catch (error) {
+      addToast('error', describeQueryError(error) ?? 'Failed to reload OpenCode providers and models.', 5000)
     } finally {
       setIsRefreshingModels(false)
     }
-  }, [queryClient])
+  }, [addToast, queryClient])
 
   useEffect(() => {
     const err = createProfile.error || updateProfile.error

@@ -1,7 +1,7 @@
 import { fireEvent, render, screen, within } from '@testing-library/react'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 import { ModelPicker } from '../ModelPicker'
-import { useAllOpenCodeModels, useOpenCodeModelCatalog, useOpenCodeModels, type OpenCodeModel } from '@/hooks/useOpenCodeModels'
+import { OpenCodeModelsError, useAllOpenCodeModels, useOpenCodeModelCatalog, useOpenCodeModels, type OpenCodeModel } from '@/hooks/useOpenCodeModels'
 
 vi.mock('@/hooks/useOpenCodeModels', async () => {
   const actual = await vi.importActual<typeof import('@/hooks/useOpenCodeModels')>('@/hooks/useOpenCodeModels')
@@ -317,6 +317,77 @@ describe('ModelPicker', () => {
     expect(screen.getByRole('alert')).toHaveTextContent('OPENCODE_SERVER_PASSWORD')
     // Restarting OpenCode by hand is what made a password nobody knows.
     expect(screen.getByRole('alert')).toHaveTextContent('then run looptroop restart')
+  })
+
+  it.each([
+    {
+      kind: 'timeout',
+      message: 'OpenCode model discovery timed out. Try refreshing models.',
+      trigger: 'Model loading timed out',
+      detail: 'Loading models from OpenCode took too long. Use the reload button next to AI Models to try again.',
+    },
+    {
+      kind: 'HTTP',
+      message: 'Failed to fetch models (HTTP 503): upstream unavailable',
+      trigger: 'OpenCode models unavailable',
+      detail: 'LoopTroop could not load models from OpenCode. Failed to fetch models (HTTP 503): upstream unavailable',
+    },
+  ])('explains $kind failures in the trigger and alert', ({ message, trigger, detail }) => {
+    vi.mocked(useOpenCodeModels).mockReturnValue({
+      data: undefined,
+      isLoading: false,
+      isError: true,
+      error: new Error(message),
+      isFetching: false,
+    } as ReturnType<typeof useOpenCodeModels>)
+    render(<ModelPicker value="" onChange={vi.fn()} />)
+    const picker = screen.getByRole('button', { name: /^Pick a model/ })
+    expect(picker).toHaveTextContent(trigger)
+
+    fireEvent.click(picker)
+
+    expect(screen.getByRole('alert')).toHaveTextContent(detail)
+  })
+
+  it('uses the timeout code before interpreting model catalog error text', () => {
+    vi.mocked(useOpenCodeModels).mockReturnValue({
+      data: undefined,
+      isLoading: false,
+      isError: true,
+      error: new OpenCodeModelsError('The model catalog request exceeded its deadline.', 'OPENCODE_DISCOVERY_TIMEOUT'),
+      isFetching: false,
+    } as ReturnType<typeof useOpenCodeModels>)
+    render(<ModelPicker value="" onChange={vi.fn()} />)
+    const picker = screen.getByRole('button', { name: /^Pick a model/ })
+    expect(picker).toHaveTextContent('Model loading timed out')
+
+    fireEvent.click(picker)
+
+    expect(screen.getByRole('alert')).toHaveTextContent('Use the reload button next to AI Models to try again.')
+    expect(screen.getByRole('alert')).not.toHaveTextContent('LoopTroop reached OpenCode')
+  })
+
+  it.each([
+    { kind: 'Error', error: new Error('  Unexpected server response  '), detail: 'Unexpected server response' },
+    { kind: 'string', error: '  Unexpected server response  ', detail: 'Unexpected server response' },
+    { kind: 'blank', error: new Error('  '), detail: '' },
+    { kind: 'unknown object', error: { status: 503 }, detail: '' },
+    { kind: 'long response', error: new Error(`  ${'x'.repeat(250)}  `), detail: `${'x'.repeat(200)}…` },
+  ])('trims and limits generic $kind error details', ({ error, detail }) => {
+    vi.mocked(useOpenCodeModels).mockReturnValue({
+      data: undefined,
+      isLoading: false,
+      isError: true,
+      error,
+      isFetching: false,
+    } as ReturnType<typeof useOpenCodeModels>)
+    render(<ModelPicker value="" onChange={vi.fn()} />)
+    const picker = screen.getByRole('button', { name: /^Pick a model/ })
+    expect(picker).toHaveTextContent('OpenCode models unavailable')
+
+    fireEvent.click(picker)
+
+    expect(screen.getByRole('alert').textContent).toBe(`LoopTroop could not load models from OpenCode.${detail ? ` ${detail}` : ''}`)
   })
 
   it('says OpenCode needs a password when LoopTroop had none to send', () => {

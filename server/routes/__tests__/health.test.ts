@@ -434,12 +434,22 @@ describe('OpenCode health route', () => {
     vi.unstubAllEnvs()
   })
 
-  async function requestOpenCodeHealth() {
+  async function requestOpenCodeHealth(request?: Request) {
     const { health } = await import('../health')
     const app = new Hono()
     app.route('/api', health)
-    return (await app.request('/api/health/opencode')).json()
+    return (await app.request(request ?? '/api/health/opencode')).json()
   }
+
+  it('forwards cancellation and preserves the health payload without a model catalog', async () => {
+    checkHealth.mockResolvedValueOnce({ available: true, protocol: 'v1', version: 'test-version' })
+    const request = new Request('http://localhost/api/health/opencode')
+
+    const payload = await requestOpenCodeHealth(request)
+
+    expect(checkHealth).toHaveBeenCalledWith(request.signal)
+    expect(payload).toEqual({ status: 'ok', protocol: 'v1', version: 'test-version', models: [] })
+  })
 
   it('words a refusal by what was sent, not by an environment the supervisor fills in itself', async () => {
     // The setup notice shows this advice. One sentence telling everyone to set

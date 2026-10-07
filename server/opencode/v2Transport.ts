@@ -20,7 +20,6 @@ import {
   mapV2QuestionAnswer,
   mapV2Session,
 } from './v2Mapping'
-import { fetchProviderCatalogForV2Server, flattenCatalogModels } from './providerCatalog'
 import { MESSAGE_LIST_LIMIT, SDK_OPERATION_TIMEOUT_MS, SESSION_LIST_LIMIT } from '../lib/constants'
 
 type RecordValue = Record<string, unknown>
@@ -482,28 +481,7 @@ export class V2OpenCodeTransport implements OpenCodeTransport {
       }
     }
 
-    try {
-      const models = flattenCatalogModels(
-        await fetchProviderCatalogForV2Server(this.baseUrl.href, Object.fromEntries(this.headers.entries()), signal),
-        'connected',
-      ).map(model => model.fullId)
-      return { available: true, protocol: 'v2', ...(version ? { version } : {}), models }
-    } catch (error) {
-      if (signal?.aborted) throw signal.reason
-      const message = error instanceof Error ? error.message : String(error)
-      const authentication = error instanceof V2OpenCodeHttpError
-        ? error.status === 401 || error.status === 403
-        : /\b(?:401|403)\b/.test(message)
-      return {
-        available: !authentication,
-        protocol: 'v2',
-        ...(version ? { version } : {}),
-        models: [],
-        failureKind: authentication ? 'authentication' : 'model_discovery',
-        error: authentication ? message : `OpenCode is reachable, but model discovery failed: ${message}`,
-        ...(authentication ? { credentialsSent: this.headers.has('authorization') } : {}),
-      }
-    }
+    return { available: true, protocol: 'v2', ...(version ? { version } : {}) }
   }
 
   private async getQuestionForm(sessionId: string, requestId: string, signal?: AbortSignal): Promise<unknown> {

@@ -152,22 +152,18 @@ describe('OpenCode v1 transport direct behavior', () => {
     await expect(transport({}).readSessionLog('session-1')).rejects.toThrow('does not expose a durable session log')
   })
 
-  it('checks health through SDK health, status fallback, and connected model discovery', async () => {
+  it('checks connectivity through SDK health and status fallback without loading models', async () => {
+    const providers = vi.fn(() => Promise.reject(new Error('catalog unavailable')))
     const healthy = transport({
       global: { health: vi.fn(async () => ({ data: { version: 1.2 } })) },
-      config: { providers: vi.fn(async () => ({ data: { providers: [
-        null,
-        { id: 'openai', models: { 'gpt-1': {}, 'gpt-2': {} } },
-        { id: 'empty' },
-        { models: { ignored: {} } },
-      ] } })) },
+      config: { providers },
     })
-    await expect(healthy.checkHealth()).resolves.toMatchObject({
+    await expect(healthy.checkHealth()).resolves.toEqual({
       available: true,
       protocol: 'v1',
       version: '1.2',
-      models: ['openai/gpt-1', 'openai/gpt-2'],
     })
+    expect(providers).not.toHaveBeenCalled()
 
     const authentication = Object.assign(new Error('credentials rejected'), { statusCode: 401 })
     const authGlobal = { health: vi.fn(async () => { throw authentication }) }
@@ -195,21 +191,10 @@ describe('OpenCode v1 transport direct behavior', () => {
     const reachable = transport({
       global: { health: vi.fn(async () => { throw healthNetworkError }) },
       session: { status: vi.fn(async () => ({ data: {} })) },
-      config: { providers: vi.fn(async () => ({ data: { providers: [{ id: 'anthropic', models: { sonnet: {} } }] } })) },
+      config: { providers },
     })
-    await expect(reachable.checkHealth()).resolves.toMatchObject({ available: true, version: 'unknown', models: ['anthropic/sonnet'] })
-
-    const modelAuthError = Object.assign(new Error('providers require authentication'), { statusCode: 403 })
-    await expect(transport({
-      global: { health: vi.fn(async () => ({ data: { version: 'ready' } })) },
-      config: { providers: vi.fn(async () => { throw modelAuthError }) },
-    }).checkHealth()).resolves.toMatchObject({ available: false, failureKind: 'authentication', version: 'ready' })
-
-    const modelNetworkError = new Error('provider route failed')
-    await expect(transport({
-      global: { health: vi.fn(async () => ({ data: {} })) },
-      config: { providers: vi.fn(async () => { throw modelNetworkError }) },
-    }).checkHealth()).resolves.toMatchObject({ available: true, failureKind: 'model_discovery', error: expect.stringContaining('provider route failed') })
+    await expect(reachable.checkHealth()).resolves.toEqual({ available: true, protocol: 'v1', version: 'unknown' })
+    expect(providers).not.toHaveBeenCalled()
   })
 
   it('reports a rejected sign-in from the status fallback with whether a password went out', async () => {
@@ -242,31 +227,9 @@ describe('OpenCode v1 transport direct behavior', () => {
         .resolves.toEqual({ ...rejectedAtHealth, credentialsSent: true })
     })
 
-    // Only model discovery is guarded: a returned 403 there is a rejected sign-in.
-    const discovery = { protocol: 'v1', version: '1.0.0', models: [] }
-    await withStatusServer(path => path.startsWith('/config/providers') ? 403 : 200, async (baseUrl) => {
-      await expect(new OpenCodeV1Transport(baseUrl, undefined, {}).checkHealth()).resolves.toEqual({
-        ...discovery,
-        available: false,
-        failureKind: 'authentication',
-        credentialsSent: false,
-        error: 'OpenCode is reachable, but model discovery failed: OpenCode answered HTTP 403',
-      })
-    })
-
-    // A returned non-auth error from model discovery stays a model-discovery failure.
-    await withStatusServer(path => path.startsWith('/config/providers') ? 500 : 200, async (baseUrl) => {
-      await expect(new OpenCodeV1Transport(baseUrl, undefined, {}).checkHealth()).resolves.toEqual({
-        ...discovery,
-        available: true,
-        failureKind: 'model_discovery',
-        error: 'OpenCode is reachable, but model discovery failed: OpenCode answered HTTP 500',
-      })
-    })
-
     await withStatusServer(() => 200, async (baseUrl) => {
       const health = await new OpenCodeV1Transport(baseUrl, undefined, {}).checkHealth()
-      expect(health).toEqual({ available: true, protocol: 'v1', version: '1.0.0', models: [] })
+      expect(health).toEqual({ available: true, protocol: 'v1', version: '1.0.0' })
     })
   })
 

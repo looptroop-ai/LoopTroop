@@ -28,6 +28,7 @@ export interface OpenCodeCatalogModel {
 }
 
 export type OpenCodeCatalogScope = 'connected' | 'all' | 'available'
+export type OpenCodeCatalogReloadState = 'not_started' | 'unknown' | 'completed'
 
 export interface OpenCodeCatalogResponse {
   all: Array<{

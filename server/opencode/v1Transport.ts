@@ -31,7 +31,6 @@ import {
   SDK_OPERATION_TIMEOUT_MS,
   SESSION_LIST_LIMIT,
   MESSAGE_LIST_LIMIT,
-  MAX_CATALOG_MODEL_IDS,
 } from '../lib/constants'
 import { extractTextFromMessageParts } from './assistantMessageAnalysis'
 import { enrichGenericOpenCodeProviderError } from './logDiagnostics'
@@ -280,29 +279,7 @@ export class OpenCodeV1Transport implements OpenCodeTransport {
       }
     }
 
-    try {
-      const providers = this.rejectHttpError(await this.withSdkPromiseTimeout(
-        this.client.config.providers(undefined, this.requestOptions(withTimeout())),
-        signal,
-      ))
-      return {
-        available: true,
-        protocol: 'v1',
-        version,
-        models: this.extractConnectedModelIds(providers.data),
-      }
-    } catch (error) {
-      const failureKind = this.healthFailureKind(error) === 'authentication' ? 'authentication' : 'model_discovery'
-      return {
-        available: failureKind !== 'authentication',
-        protocol: 'v1',
-        version,
-        models: [],
-        failureKind,
-        ...(failureKind === 'authentication' ? { credentialsSent: this.sendsCredentials } : {}),
-        error: `OpenCode is reachable, but model discovery failed: ${getErrorMessage(error)}`,
-      }
-    }
+    return { available: true, protocol: 'v1', version }
   }
 
   private healthFailureKind(error: unknown): 'authentication' | 'unsupported_protocol' | 'network' {
@@ -419,18 +396,6 @@ export class OpenCodeV1Transport implements OpenCodeTransport {
   private withSdkOperationTimeout(signal?: AbortSignal): AbortSignal {
     const timeoutSignal = AbortSignal.timeout(SDK_OPERATION_TIMEOUT_MS)
     return signal ? AbortSignal.any([signal, timeoutSignal]) : timeoutSignal
-  }
-
-  private async withSdkPromiseTimeout<T>(operation: Promise<T>, signal?: AbortSignal): Promise<T> {
-    const timeoutSignal = this.withSdkOperationTimeout(signal)
-    if (timeoutSignal.aborted) {
-      throw timeoutSignal.reason instanceof Error ? timeoutSignal.reason : new Error('OpenCode SDK operation timed out')
-    }
-    return await new Promise<T>((resolve, reject) => {
-      const onAbort = () => reject(timeoutSignal.reason instanceof Error ? timeoutSignal.reason : new Error('OpenCode SDK operation timed out'))
-      timeoutSignal.addEventListener('abort', onAbort, { once: true })
-      operation.then(resolve, reject).finally(() => timeoutSignal.removeEventListener('abort', onAbort))
-    })
   }
 
   private mapSession(session: Record<string, unknown>): Session {
@@ -1201,24 +1166,6 @@ export class OpenCodeV1Transport implements OpenCodeTransport {
     if (typeof value?.status === 'number') return value.status
     if (typeof value?.statusCode === 'number') return value.statusCode
     return undefined
-  }
-
-  private extractConnectedModelIds(data: unknown): string[] {
-    const record = this.getRecord(data)
-    const providers = Array.isArray(record?.providers) ? record.providers : []
-    const modelIds: string[] = []
-
-    for (const provider of providers) {
-      const providerRecord = this.getRecord(provider)
-      const providerId = typeof providerRecord?.id === 'string' ? providerRecord.id : undefined
-      const models = this.getRecord(providerRecord?.models)
-      if (!providerId || !models) continue
-      for (const modelId of Object.keys(models)) {
-        modelIds.push(`${providerId}/${modelId}`)
-      }
-    }
-
-    return modelIds.slice(0, MAX_CATALOG_MODEL_IDS)
   }
 
   private getRecord(value: unknown): Record<string, unknown> | null {

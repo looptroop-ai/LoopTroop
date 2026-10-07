@@ -22,6 +22,7 @@ vi.mock('../../opencode/factory', () => ({
 
 import { modelsRouter } from '../models'
 import { ProviderCatalogBusyError } from '../../opencode/providerCatalogReload'
+import type { OpenCodeCatalogReloadState } from '../../../shared/opencodeCatalog'
 
 const catalog = {
   supportsAllModels: true,
@@ -59,18 +60,22 @@ describe('models routes', () => {
   })
 
   it('returns only configured-provider models by default', async () => {
-    const response = await createApp().request('/api/models')
+    const request = new Request('http://localhost/api/models')
+    const response = await createApp().request(request)
     const body = await response.json()
 
+    expect(fetchProviderCatalog).toHaveBeenCalledWith(request.signal, 'connected')
     expect(body.models.map((model: { fullId: string }) => model.fullId)).toEqual(['openai/connected'])
     expect(body.catalogScope).toBe('connected')
     expect(body).not.toHaveProperty('allModels')
   })
 
   it('returns the full catalog only when explicitly requested', async () => {
-    const response = await createApp().request('/api/models?scope=all')
+    const request = new Request('http://localhost/api/models?scope=all')
+    const response = await createApp().request(request)
     const body = await response.json()
 
+    expect(fetchProviderCatalog).toHaveBeenCalledWith(request.signal, 'all')
     expect(body.models.map((model: { fullId: string }) => model.fullId)).toEqual([
       'google/optional',
       'openai/connected',
@@ -92,10 +97,12 @@ describe('models routes', () => {
   })
 
   it('keeps strong refresh limited to configured-provider models', async () => {
-    const response = await createApp().request('/api/models/refresh', { method: 'POST' })
+    const request = new Request('http://localhost/api/models/refresh', { method: 'POST' })
+    const response = await createApp().request(request)
     const body = await response.json()
 
     expect(refreshProviderCatalog).toHaveBeenCalledOnce()
+    expect(refreshProviderCatalog).toHaveBeenCalledWith(request.signal, expect.any(Function))
     expect(body.models.map((model: { fullId: string }) => model.fullId)).toEqual(['openai/connected'])
   })
 
@@ -114,13 +121,100 @@ describe('models routes', () => {
   it('returns a machine-readable retry code when discovery fails after connection', async () => {
     fetchProviderCatalog.mockRejectedValueOnce(new Error('catalog unavailable'))
 
-    const response = await createApp().request('/api/models')
+    const request = new Request('http://localhost/api/models')
+    const response = await createApp().request(request)
     const body = await response.json()
 
+    expect(checkHealth).toHaveBeenCalledWith(request.signal)
     expect(body).toMatchObject({
       code: 'OPENCODE_DISCOVERY_FAILED',
       message: 'OpenCode is connected, but model discovery failed.',
     })
+  })
+
+  it.each([
+    ['GET', '/api/models', fetchProviderCatalog],
+    ['POST', '/api/models/refresh', refreshProviderCatalog],
+  ] as const)('reports %s catalog timeouts without another health probe', async (method, path, discover) => {
+    discover.mockRejectedValueOnce(new DOMException('catalog deadline elapsed', 'TimeoutError'))
+
+    const response = await createApp().request(path, { method })
+
+    expect(response.status).toBe(200)
+    await expect(response.json()).resolves.toEqual({
+      models: [],
+      connectedProviders: [],
+      defaultModels: {},
+      code: 'OPENCODE_DISCOVERY_TIMEOUT',
+      message: 'OpenCode model discovery timed out. Try refreshing models.',
+      ...(method === 'POST' ? { reloadState: 'not_started' } : {}),
+    })
+    expect(checkHealth).not.toHaveBeenCalled()
+  })
+
+  it.each([
+    ['probe or safety failure', 'not_started'],
+    ['unconfirmed reload', 'unknown'],
+    ['catalog failure after confirmed reload', 'completed'],
+  ] as const)('reports reload progress for %s', async (_description, reloadState) => {
+    refreshProviderCatalog.mockImplementationOnce((_signal: AbortSignal, onReloadState: (state: OpenCodeCatalogReloadState) => void) => {
+      if (reloadState !== 'not_started') onReloadState(reloadState)
+      return Promise.reject(new Error('catalog unavailable'))
+    })
+
+    const response = await createApp().request('/api/models/refresh', { method: 'POST' })
+
+    expect(response.status).toBe(200)
+    await expect(response.json()).resolves.toMatchObject({ code: 'OPENCODE_DISCOVERY_FAILED', reloadState })
+  })
+
+  it.each([
+    ['GET', '/api/models', fetchProviderCatalog, new Error('catalog unavailable')],
+    ['POST', '/api/models/refresh', refreshProviderCatalog, new ProviderCatalogBusyError()],
+    ['POST', '/api/models/refresh', refreshProviderCatalog, new DOMException('catalog deadline elapsed', 'TimeoutError')],
+  ] as const)('preserves caller cancellation for %s instead of reporting a discovery failure', async (method, path, discover, failure) => {
+    const controller = new AbortController()
+    const reason = new DOMException('request cancelled', 'AbortError')
+    discover.mockImplementationOnce(() => {
+      controller.abort(reason)
+      return Promise.reject(failure)
+    })
+    const request = new Request(`http://localhost${path}`, { method, signal: controller.signal })
+    const app = createApp()
+    const onError = vi.fn()
+    app.onError((error, c) => {
+      onError(error)
+      return c.body(null, 503)
+    })
+
+    const response = await app.request(request)
+
+    expect(response.status).toBe(503)
+    expect(onError).toHaveBeenCalledWith(reason)
+    expect(checkHealth).not.toHaveBeenCalled()
+  })
+
+  it('preserves cancellation while diagnostic health is running', async () => {
+    const controller = new AbortController()
+    const reason = new DOMException('request cancelled', 'AbortError')
+    fetchProviderCatalog.mockRejectedValueOnce(new Error('catalog unavailable'))
+    checkHealth.mockImplementationOnce(() => {
+      controller.abort(reason)
+      return Promise.resolve({ available: true })
+    })
+    const request = new Request('http://localhost/api/models', { signal: controller.signal })
+    const app = createApp()
+    const onError = vi.fn()
+    app.onError((error, c) => {
+      onError(error)
+      return c.body(null, 503)
+    })
+
+    const response = await app.request(request)
+
+    expect(response.status).toBe(503)
+    expect(checkHealth).toHaveBeenCalledWith(request.signal)
+    expect(onError).toHaveBeenCalledWith(reason)
   })
 
   it('preserves authentication failures in the model discovery message', async () => {

@@ -1,7 +1,12 @@
 import { getOpenCodeBaseUrl } from './runtimeConfig'
-import type { OpenCodeCatalogModel, OpenCodeCatalogResponse } from '../../shared/opencodeCatalog'
+import type { OpenCodeCatalogModel, OpenCodeCatalogResponse, OpenCodeCatalogReloadState } from '../../shared/opencodeCatalog'
 import { isMockOpenCodeMode } from './factory'
-import { SDK_OPERATION_TIMEOUT_MS, DEFAULT_CONTEXT_WINDOW_LIMIT } from '../lib/constants'
+import {
+  OPENCODE_CATALOG_TIMEOUT_MS,
+  OPENCODE_CATALOG_REFRESH_TIMEOUT_MS,
+  SDK_OPERATION_TIMEOUT_MS,
+  DEFAULT_CONTEXT_WINDOW_LIMIT,
+} from '../lib/constants'
 import { getOpenCodeConnection, type OpenCodeConnection } from './connection'
 import { ProviderCatalogBusyError, withProviderCatalogReload as withReloadLease } from './providerCatalogReload'
 import { isRecord } from '@shared/typeGuards'
@@ -80,24 +85,23 @@ function buildMockCatalog(): OpenCodeCatalogResponse {
   }
 }
 
-export async function fetchProviderCatalog(signal?: AbortSignal): Promise<OpenCodeCatalogResponse> {
+export async function fetchProviderCatalog(
+  signal?: AbortSignal,
+  scope: 'connected' | 'all' = 'connected',
+): Promise<OpenCodeCatalogResponse> {
   if (isMockOpenCodeMode()) {
     return buildMockCatalog()
   }
 
-  const baseUrl = getOpenCodeBaseUrl()
-  const connection = await getOpenCodeConnection(baseUrl, signal)
-  if (connection.protocol === 'v2') return fetchV2ProviderCatalog(baseUrl, connection.headers, signal)
-
-  let response = await fetchCatalogEndpoint(baseUrl, connection, '/provider', {}, signal)
-  if (response.status === 404) {
-    response = await fetchCatalogEndpoint(baseUrl, connection, '/config/providers', {}, signal)
+  signal = catalogOperationSignal(signal, OPENCODE_CATALOG_TIMEOUT_MS)
+  try {
+    const baseUrl = getOpenCodeBaseUrl()
+    const connection = await getOpenCodeConnection(baseUrl, signal)
+    return await fetchProviderCatalogWithConnection(baseUrl, connection, signal, scope)
+  } catch (error) {
+    signal.throwIfAborted()
+    throw error
   }
-  if (!response.ok) {
-    throw new Error(`OpenCode provider catalog request failed with ${response.status}`)
-  }
-
-  return normalizeProviderCatalog(await response.json())
 }
 
 export function flattenCatalogModels(
@@ -151,78 +155,97 @@ export async function fetchConnectedModelIds(signal?: AbortSignal): Promise<stri
   return flattenCatalogModels(catalog, 'connected').map((model) => model.fullId)
 }
 
-export async function refreshProviderCatalog(signal?: AbortSignal): Promise<OpenCodeCatalogResponse> {
-  if (isMockOpenCodeMode()) return buildMockCatalog()
+export async function refreshProviderCatalog(
+  signal?: AbortSignal,
+  onReloadState?: (state: OpenCodeCatalogReloadState) => void,
+): Promise<OpenCodeCatalogResponse> {
+  if (isMockOpenCodeMode()) {
+    onReloadState?.('completed')
+    return buildMockCatalog()
+  }
 
-  return withProviderCatalogReload((_connection, refresh) => refresh(), signal)
+  return withProviderCatalogReload((_connection, refresh) => refresh(onReloadState), signal)
 }
 
 export async function withProviderCatalogReload<T>(
   operation: (
     connection: OpenCodeConnection,
-    refresh: () => Promise<OpenCodeCatalogResponse>,
+    refresh: (onReloadState?: (state: OpenCodeCatalogReloadState) => void) => Promise<OpenCodeCatalogResponse>,
   ) => Promise<T>,
   signal?: AbortSignal,
 ): Promise<T> {
-  const baseUrl = getOpenCodeBaseUrl()
-  const connection = await getOpenCodeConnection(baseUrl, signal)
-  return withReloadLease(
-    () => assertProviderCatalogCanReload(baseUrl, connection, signal),
-    () => operation(connection, () => reloadProviderCatalog(baseUrl, connection, signal)),
-  )
+  const reloadSignal = catalogOperationSignal(signal, OPENCODE_CATALOG_REFRESH_TIMEOUT_MS)
+  try {
+    const baseUrl = getOpenCodeBaseUrl()
+    const connection = await getOpenCodeConnection(baseUrl, reloadSignal)
+    reloadSignal.throwIfAborted()
+    return await withReloadLease(
+      () => assertProviderCatalogCanReload(baseUrl, connection, reloadSignal),
+      () => {
+        reloadSignal.throwIfAborted()
+        return operation(connection, (onReloadState) => reloadProviderCatalog(baseUrl, connection, reloadSignal, onReloadState))
+      },
+    )
+  } catch (error) {
+    reloadSignal.throwIfAborted()
+    throw error
+  }
+}
+
+function catalogOperationSignal(signal: AbortSignal | undefined, timeoutMs: number): AbortSignal {
+  const timeout = AbortSignal.timeout(timeoutMs)
+  return signal ? AbortSignal.any([signal, timeout]) : timeout
 }
 
 function fetchCatalogEndpoint(
   baseUrl: string,
   connection: OpenCodeConnection,
   path: string,
-  init: RequestInit = {},
-  signal?: AbortSignal,
+  init: RequestInit,
+  signal: AbortSignal,
+  timeoutMs?: number,
 ) {
   const headers = { ...connection.headers, ...Object.fromEntries(new Headers(init.headers).entries()) }
   while (baseUrl.endsWith('/')) baseUrl = baseUrl.slice(0, -1)
   return fetch(`${baseUrl}${path}`, {
     ...init,
-    // Combined rather than replaced: the operation timeout still applies, and
-    // the caller's cancellation now actually reaches the request instead of
-    // only abandoning the wait for it.
-    signal: signal
-      ? AbortSignal.any([signal, AbortSignal.timeout(SDK_OPERATION_TIMEOUT_MS)])
-      : AbortSignal.timeout(SDK_OPERATION_TIMEOUT_MS),
+    signal: timeoutMs ? catalogOperationSignal(signal, timeoutMs) : signal,
     ...(Object.keys(headers).length > 0 ? { headers } : {}),
   })
-}
-
-export async function fetchProviderCatalogForV2Server(
-  baseUrl: string,
-  headers: Record<string, string>,
-  signal?: AbortSignal,
-): Promise<OpenCodeCatalogResponse> {
-  return fetchV2ProviderCatalog(baseUrl, headers, signal)
 }
 
 async function fetchV2ProviderCatalog(
   baseUrl: string,
   headers: Record<string, string>,
-  signal?: AbortSignal,
+  signal: AbortSignal,
 ): Promise<OpenCodeCatalogResponse> {
   const connection: OpenCodeConnection = { protocol: 'v2', version: '', headers }
-  const [providersResponse, modelsResponse, defaultResponse] = await Promise.all([
-    fetchCatalogEndpoint(baseUrl, connection, '/api/provider', {}, signal),
-    fetchCatalogEndpoint(baseUrl, connection, '/api/model', {}, signal),
-    fetchCatalogEndpoint(baseUrl, connection, '/api/model/default', {}, signal),
-  ])
-  const providers = await readLocationData(providersResponse, 'provider catalog')
-  const models = await readLocationData(modelsResponse, 'model catalog')
-  const defaultModel = await readLocationData(defaultResponse, 'default model', true)
-  return normalizeV2ProviderCatalog(providers, models, defaultModel)
+  const controller = new AbortController()
+  signal = AbortSignal.any([signal, controller.signal])
+  try {
+    const [providers, models, defaultModel] = await Promise.all([
+      fetchCatalogEndpoint(baseUrl, connection, '/api/provider', {}, signal)
+        .then((response) => readLocationData(response, 'provider catalog')),
+      fetchCatalogEndpoint(baseUrl, connection, '/api/model', {}, signal)
+        .then((response) => readLocationData(response, 'model catalog')),
+      fetchCatalogEndpoint(baseUrl, connection, '/api/model/default', {}, signal)
+        .then((response) => readLocationData(response, 'default model', true)),
+    ])
+    return normalizeV2ProviderCatalog(providers, models, defaultModel)
+  } catch (error) {
+    controller.abort(error)
+    throw error
+  }
 }
 
 async function reloadProviderCatalog(
   baseUrl: string,
   connection: OpenCodeConnection,
-  signal?: AbortSignal,
+  signal: AbortSignal,
+  onReloadState?: (state: OpenCodeCatalogReloadState) => void,
 ): Promise<OpenCodeCatalogResponse> {
+  signal.throwIfAborted()
+  onReloadState?.('unknown')
   if (connection.protocol === 'v2') {
     const response = await fetchCatalogEndpoint(baseUrl, connection, '/api/location/reload', { method: 'POST' }, signal)
     if (response.status !== 204) {
@@ -235,17 +258,22 @@ async function reloadProviderCatalog(
     }
   }
 
+  onReloadState?.('completed')
   return fetchProviderCatalogWithConnection(baseUrl, connection, signal)
 }
 
 async function fetchProviderCatalogWithConnection(
   baseUrl: string,
   connection: OpenCodeConnection,
-  signal?: AbortSignal,
+  signal: AbortSignal,
+  scope: 'connected' | 'all' = 'connected',
 ) {
   if (connection.protocol === 'v2') return fetchV2ProviderCatalog(baseUrl, connection.headers, signal)
-  let response = await fetchCatalogEndpoint(baseUrl, connection, '/provider', {}, signal)
-  if (response.status === 404) response = await fetchCatalogEndpoint(baseUrl, connection, '/config/providers', {}, signal)
+  const path = scope === 'all' ? '/provider' : '/config/providers'
+  let response = await fetchCatalogEndpoint(baseUrl, connection, path, {}, signal)
+  if (scope === 'all' && response.status === 404) {
+    response = await fetchCatalogEndpoint(baseUrl, connection, '/config/providers', {}, signal)
+  }
   if (!response.ok) throw new Error(`OpenCode provider catalog request failed with ${response.status}`)
   return normalizeProviderCatalog(await response.json())
 }
@@ -253,11 +281,11 @@ async function fetchProviderCatalogWithConnection(
 async function assertProviderCatalogCanReload(
   baseUrl: string,
   connection: OpenCodeConnection,
-  signal?: AbortSignal,
+  signal: AbortSignal,
 ): Promise<void> {
   if (connection.protocol !== 'v2') return
 
-  const activeResponse = await fetchCatalogEndpoint(baseUrl, connection, '/api/session/active', {}, signal)
+  const activeResponse = await fetchCatalogEndpoint(baseUrl, connection, '/api/session/active', {}, signal, SDK_OPERATION_TIMEOUT_MS)
   const activeValue: unknown = await readJsonResponse(activeResponse, 'OpenCode active session list')
   if (!isRecord(activeValue) || !isRecord(activeValue.data)) {
     throw new Error('OpenCode active session list returned an unexpected response')
@@ -289,9 +317,9 @@ async function listSessionRequests(
   baseUrl: string,
   connection: OpenCodeConnection,
   path: string,
-  signal?: AbortSignal,
+  signal: AbortSignal,
 ): Promise<unknown[]> {
-  const response = await fetchCatalogEndpoint(baseUrl, connection, path, {}, signal)
+  const response = await fetchCatalogEndpoint(baseUrl, connection, path, {}, signal, SDK_OPERATION_TIMEOUT_MS)
   if (response.status === 404) return []
   const value: unknown = await readJsonResponse(response, 'OpenCode pending request list')
   const data = isRecord(value) && 'data' in value ? value.data : value
@@ -304,6 +332,7 @@ async function readJsonResponse(response: Response, description: string): Promis
   try {
     return await response.json()
   } catch (cause) {
+    if (!(cause instanceof SyntaxError)) throw cause
     throw new Error(`${description} returned invalid JSON`, { cause })
   }
 }

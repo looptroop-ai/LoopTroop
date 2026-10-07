@@ -18,8 +18,10 @@ export const RECOVERY_RELOAD_COOLDOWN_MS = 10_000
 export const RECOVERY_RELOAD_DELAY_MS = 50
 /** Minimum visible warning duration before an automatic recovery reload is armed */
 export const RECOVERY_RELOAD_MIN_ACTIVE_MS = 5000
-/** Model fetch timeout */
-export const MODEL_FETCH_TIMEOUT_MS = 5000
+/** Allow catalog discovery and its health diagnostic to finish before aborting. */
+export const MODEL_FETCH_TIMEOUT_MS = 30_000
+/** Allow provider reloads to rebuild the catalog before aborting. */
+export const MODEL_REFRESH_TIMEOUT_MS = 60_000
 /** Max raw output length before truncation */
 export const MAX_RAW_OUTPUT_LENGTH = 4000
 

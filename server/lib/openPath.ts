@@ -3,7 +3,7 @@ import { promises as fs, lstatSync, realpathSync } from 'node:fs'
 import { dirname, isAbsolute } from 'node:path'
 import { promisify } from 'node:util'
 import { ContainedPathError, resolveContainedPath } from './containedPath'
-import { resolveTrustedExecutable } from './executablePath'
+import { programChildEnvironment, resolveTrustedExecutable } from './executablePath'
 
 const execFileAsync = promisify(execFile)
 
@@ -65,7 +65,7 @@ export async function revealFolderInExplorer(targetPath: string, allowedRoots: s
       }
       throw error
     }
-    return execFileAsync(resolution.path, args)
+    return execFileAsync(resolution.path, args, { env: programChildEnvironment(resolution.path) })
   }
 
   const isWsl = process.platform === 'linux' && (

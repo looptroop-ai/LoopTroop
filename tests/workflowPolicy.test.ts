@@ -22,8 +22,9 @@ type Step = {
   'timeout-minutes'?: unknown
   'continue-on-error'?: unknown
 }
-type Job = { name?: unknown; permissions?: Record<string, unknown>; steps?: Step[]; if?: unknown; 'continue-on-error'?: unknown; 'runs-on'?: unknown; 'timeout-minutes'?: unknown; defaults?: { run?: { shell?: unknown } } }
-type Workflow = { jobs?: Record<string, Job> }
+type Permissions = Record<string, unknown> | string
+type Job = { name?: unknown; permissions?: Permissions; steps?: Step[]; if?: unknown; 'continue-on-error'?: unknown; 'runs-on'?: unknown; 'timeout-minutes'?: unknown; defaults?: { run?: { shell?: unknown } } }
+type Workflow = { jobs?: Record<string, Job>; permissions?: Permissions; env?: Record<string, unknown> }
 
 const workflows = new Map(files.map((file) => [
   file,
@@ -165,9 +166,11 @@ describe('release workflow policy', () => {
         const audit = (job.steps ?? []).find((step) => String(step.uses).startsWith('step-security/harden-runner@')) as SetupStep | undefined
         if (!audit) continue
         const scope = `${file}: ${name}`
-        const permissions = job.permissions ?? (workflow as { permissions?: Record<string, unknown> }).permissions ?? {}
-        expect(Object.values(permissions), scope).not.toContain('write')
-        expect(JSON.stringify(job), scope).not.toContain('secrets.')
+        const permissions = job.permissions ?? workflow.permissions
+        expect(permissions, scope).toBeDefined()
+        if (typeof permissions === 'string') expect(permissions, scope).toBe('read-all')
+        else expect(Object.values(permissions ?? {}).every((value) => value === 'read' || value === 'none'), scope).toBe(true)
+        expect(JSON.stringify([workflow.env, job]), scope).not.toMatch(/\bsecrets\s*(?:\.|\[)/)
         expect((job as { container?: unknown }).container, scope).toBeUndefined()
         expect((job as { environment?: unknown }).environment, scope).toBeUndefined()
         // ponytail: pre hooks bypass step conditions; split mixed ARM jobs only if their other legs need auditing.
@@ -604,18 +607,19 @@ describe('release workflow policy', () => {
   it('keeps OIDC and attestation permissions off dependency/build jobs', () => {
     for (const [file, workflow] of workflows) {
       for (const [jobName, job] of Object.entries(workflow.jobs ?? {})) {
-        const permissions = job.permissions ?? {}
-        if (permissions['id-token'] !== 'write' && permissions.attestations !== 'write') continue
+        const permissions = job.permissions ?? workflow.permissions
+        if (typeof permissions === 'string' ? permissions === 'read-all' :
+          permissions && permissions['id-token'] !== 'write' && permissions.attestations !== 'write') continue
         expect(runs(job), `${file}: ${jobName}`).not.toMatch(/\bnpm\s+(?:ci|install|run)\b/)
       }
     }
     const release = workflows.get('release.yml')!
-    expect(release.jobs?.binary?.permissions?.['id-token']).toBeUndefined()
-    expect(release.jobs?.build?.permissions?.attestations).toBeUndefined()
+    expect(release.jobs?.binary?.permissions).not.toEqual(expect.objectContaining({ 'id-token': 'write' }))
+    expect(release.jobs?.build?.permissions).not.toEqual(expect.objectContaining({ attestations: 'write' }))
     expect(runs(release.jobs?.npm ?? {})).toMatch(/\bnpm publish\b/)
     expect(runs(release.jobs?.npm ?? {})).not.toMatch(/\bnpm\s+(?:ci|install|run)\b/)
-    expect(release.jobs?.['attest-release-assets']?.permissions?.attestations).toBe('write')
-    expect(release.jobs?.['container-attest']?.permissions?.['id-token']).toBe('write')
+    expect(release.jobs?.['attest-release-assets']?.permissions).toEqual(expect.objectContaining({ attestations: 'write' }))
+    expect(release.jobs?.['container-attest']?.permissions).toEqual(expect.objectContaining({ 'id-token': 'write' }))
     expect(runs(release.jobs?.['attest-release-assets'] ?? {})).toContain('zipfile.ZipFile(')
     expect(runs(release.jobs?.['attest-release-assets'] ?? {})).not.toMatch(/\bnode\s+scripts\//)
     expect(release.jobs?.['attest-release-assets']?.steps?.some((step) => String(step.uses).startsWith('./'))).toBe(false)

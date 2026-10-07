@@ -646,6 +646,9 @@ describe('adopted OpenCode readiness', () => {
       expect(await openCodeAnswers(4096, { Authorization: 'private-password' }, fetchImpl)).toBe(false)
       expect(fetchImpl).toHaveBeenCalledTimes(1)
       expect(output).toHaveBeenCalledWith('  OpenCode info probe failed: UND_ERR_SOCKET\n')
+      const log = output.mock.calls.flat().join('')
+      expect(log).not.toContain('private-password')
+      expect(log).not.toContain('Authorization')
     } finally {
       output.mockRestore()
     }
@@ -723,7 +726,7 @@ describe('workflow dispatch wiring', () => {
     // The Windows gate runs the resolver fixture with an extensionless shim
     // before npm.cmd. Keep this driver on that same path rather than accepting
     // the first line printed by `where`, which is not CreateProcess semantics.
-    expect(driver).toContain("import { findToolPath, launchTool, planToolLaunch } from './tool-path.ts'")
+    expect(driver).toContain("import { findToolPath, launchTool, planToolLaunch, programChildEnvironment } from './tool-path.ts'")
     expect(driver).not.toContain("run('where', ['looptroop']")
   })
 
@@ -763,7 +766,7 @@ describe('workflow dispatch wiring', () => {
     rmSync(missingCwd, { recursive: true, force: true })
 
     for (const run of [driver.run, runCaptured]) {
-      const result = run(process.execPath, ['--version'], { cwd: missingCwd })
+      const result = await run(process.execPath, ['--version'], { cwd: missingCwd })
 
       expect(result.code).toBeNull()
       expect(result.combined).toContain(`${process.execPath}: ENOENT:`)
@@ -771,34 +774,28 @@ describe('workflow dispatch wiring', () => {
     }
   })
 
-  it.skipIf(process.platform !== 'win32')('restores Windows PowerShell module defaults through a Node child', () => {
+  it('preserves the real PowerShell module environment for ordinary and captured CLI launchers', async () => {
     const bogusModules = join(tmpdir(), 'unavailable-powershell-modules')
     const env: NodeJS.ProcessEnv = { pSmOdUlEpAtH: bogusModules }
     // Node keeps the first case-insensitive Windows env key. Contaminate
-    // inherited spellings too so none can conceal a missing normalization.
+    // inherited spellings too so none can conceal unwanted environment cleanup.
     for (const name of Object.keys(process.env)) {
       if (name.toLowerCase() === 'psmodulepath') env[name] = bogusModules
     }
-    const result = run(process.execPath, ['-e', `
-      const { spawnSync } = require('node:child_process')
-      const child = spawnSync('powershell.exe', [
-        '-NoProfile', '-NonInteractive', '-Command',
-        '$ErrorActionPreference = "Stop"; (Get-FileHash -LiteralPath $env:SystemRoot\\\\System32\\\\cmd.exe).Algorithm',
-      ], { encoding: 'utf8' })
-      process.stdout.write(child.stdout || '')
-      process.stderr.write(child.stderr || String(child.error || ''))
-      process.exit(child.status ?? 1)
-    `], { env, timeout: 10_000 })
-
-    expect(result.code, result.combined).toBe(0)
-    expect(result.stdout.trim()).toBe('SHA256')
+    for (const launch of [run, runCaptured]) {
+      const result = await launch(process.execPath, ['-e',
+        'process.stdout.write(process.env.pSmOdUlEpAtH || "")',
+      ], { env, timeout: 10_000 })
+      expect(result.code, result.combined).toBe(0)
+      expect(result.stdout).toBe(bogusModules)
+    }
   })
 
-  it.each([0, 7])('captures launcher exit %i without waiting for a detached child to close its output', (code) => {
+  it.each([0, 7])('captures launcher exit %i without waiting for a detached child to close its output', async (code) => {
     const root = makeTempDir('looptroop-published-capture-')
     const pidPath = join(root, 'child.pid')
     try {
-      const result = runCaptured(process.execPath, ['-e', `
+      const result = await runCaptured(process.execPath, ['-e', `
         const { spawn } = require('node:child_process')
         const { writeFileSync } = require('node:fs')
         const child = spawn(process.execPath, ['-e', 'setInterval(() => {}, 1000)'], {
@@ -830,8 +827,8 @@ describe('workflow dispatch wiring', () => {
     }
   })
 
-  it('keeps captured output and the timeout error when a launcher hangs', () => {
-    const result = runCaptured(process.execPath, ['-e', `
+  it('keeps captured output and the timeout error when a launcher hangs', async () => {
+    const result = await runCaptured(process.execPath, ['-e', `
       process.stdout.write('before timeout\\n')
       process.stderr.write('launcher stalled\\n')
       setInterval(() => {}, 1000)
@@ -843,6 +840,37 @@ describe('workflow dispatch wiring', () => {
     expect(result.combined).toContain('before timeout\nlauncher stalled\n')
     expect(result.combined).toContain(`${process.execPath}: ETIMEDOUT:`)
   })
+
+  it.skipIf(process.platform !== 'win32')('stops a timed-out command wrapper and its CLI child before returning', async () => {
+    const root = makeTempDir('looptroop-published-wrapper-timeout-')
+    const launcher = join(root, 'launcher.cmd')
+    const childScript = join(root, 'child.cjs')
+    const pidPath = join(root, 'child.pid')
+    writeFileSync(launcher, `@echo off\r\n"${process.execPath}" "%~dp0child.cjs" "%~dp0child.pid"\r\n`)
+    writeFileSync(childScript, `
+      require('node:fs').writeFileSync(process.argv[2], String(process.pid))
+      process.stdout.write('CLI child is waiting\\n')
+      setInterval(() => {}, 1000)
+    `)
+    try {
+      const result = await runCaptured(launcher, [], { timeout: 5_000 })
+      const childPid = Number(readFileSync(pidPath, 'utf8'))
+
+      expect(result.code).toBeNull()
+      expect(result.stdout).toBe('CLI child is waiting\n')
+      expect(result.combined).toContain('ETIMEDOUT:')
+      expect(result.combined).not.toContain('cleanup could not be confirmed')
+      expect(() => process.kill(childPid, 0)).toThrow()
+    } finally {
+      try {
+        const childPid = Number(readFileSync(pidPath, 'utf8'))
+        if (Number.isInteger(childPid) && childPid > 0) process.kill(childPid, 'SIGTERM')
+      } catch {
+        // The fixture was already killed or never started.
+      }
+      removeTempDir(root)
+    }
+  }, 60_000)
 
   it('gives every gh step a token as well as a permission', () => {
     // `permissions:` scopes a token; it does not put one in the environment.

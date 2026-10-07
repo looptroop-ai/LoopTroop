@@ -17,9 +17,7 @@ enabled = true
 [analyzers.meta]
 dialect = "typescript"
 style_guide = "airbnb"
-ecma_version = "2020"
 module_system = "es-modules"
-track_test_doc_coverage = false
 cyclomatic_complexity_threshold = "low"
 
 [[analyzers]]

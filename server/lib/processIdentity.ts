@@ -1,5 +1,5 @@
 import { execFileSync } from 'node:child_process'
-import { findTrustedExecutablePath } from './executablePath'
+import { findTrustedExecutablePath, programChildEnvironment } from './executablePath.ts'
 import { readFileSync } from 'node:fs'
 import { createHash } from 'node:crypto'
 
@@ -64,6 +64,7 @@ function createDefaultDeps(): ProcessIdentityDeps {
       if (program === null) return null
       try {
         return execFileSync(program, args, {
+          env: programChildEnvironment(program),
           encoding: 'utf8',
           stdio: ['ignore', 'pipe', 'ignore'],
           timeout: process.platform === 'win32' ? WINDOWS_COMMAND_TIMEOUT_MS : COMMAND_TIMEOUT_MS,

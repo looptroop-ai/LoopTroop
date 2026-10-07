@@ -10,6 +10,7 @@ import {
   launchThroughInterpreter,
   needsCommandInterpreter,
   planProgramLaunch,
+  programChildEnvironment,
   requireTrustedExecutablePath as requireTrustedExecutablePathImpl,
   resolveCommandInterpreter as resolveCommandInterpreterImpl,
   resolveTrustedExecutable as resolveTrustedExecutableImpl,
@@ -61,6 +62,31 @@ function resolveTrustedProgram(program: string, options: TrustedExecutableOption
  * the second test in a file depend on the first.
  */
 const roots: string[] = []
+
+describe('programChildEnvironment', () => {
+  it.each([
+    ['C:\\Windows\\System32\\WindowsPowerShell\\v1.0\\PoWeRsHeLl.ExE', 'win32'],
+    ['/mnt/c/Windows/System32/WindowsPowerShell/v1.0/powershell.exe', 'linux'],
+    ['powershell', 'win32'],
+  ] as const)('rebuilds module paths only for Windows PowerShell: %s', (program, platform) => {
+    const env = Object.freeze({ PSModulePath: 'PowerShell 7 modules', pSmOdUlEpAtH: 'second spelling', WinPSModulePath: 'Windows modules', SAMPLE: 'kept' })
+    expect(programChildEnvironment(program, env, platform)).toEqual({ WinPSModulePath: 'Windows modules', SAMPLE: 'kept' })
+    expect(env.PSModulePath).toBe('PowerShell 7 modules')
+    expect(env.pSmOdUlEpAtH).toBe('second spelling')
+  })
+
+  it.each([
+    ['C:\\Program Files\\PowerShell\\7\\pwsh.exe', 'win32'],
+    ['C:\\nodejs\\node.exe', 'win32'],
+    ['C:\\tools\\looptroop.exe', 'win32'],
+    ['C:\\tools\\powershell.cmd', 'win32'],
+    ['/usr/bin/powershell', 'linux'],
+    ['/usr/bin/pwsh', 'darwin'],
+  ] as const)('preserves the environment for %s', (program, platform) => {
+    const env = Object.freeze({ PSModulePath: 'custom modules', SAMPLE: 'kept' })
+    expect(programChildEnvironment(program, env, platform)).toBe(env)
+  })
+})
 
 afterEach(() => {
   for (const root of roots.splice(0)) removeTempDir(root)

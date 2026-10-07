@@ -242,8 +242,8 @@ export function run(command: string, args: string[], options?: import('node:chil
   combined: string
 }
 
-/** Runs the resolved launcher with private output files and a bounded wait for its exit. */
-export function runCaptured(command: string, args: string[], options?: import('node:child_process').SpawnSyncOptions): ReturnType<typeof run>
+/** Runs the resolved launcher with private output files and a separate three-minute start deadline. */
+export function runCaptured(command: string, args: string[], options?: import('node:child_process').SpawnOptions & { timeout?: number }): Promise<ReturnType<typeof run>>
 
 export function planMatrix(options?: {
   tier?: string

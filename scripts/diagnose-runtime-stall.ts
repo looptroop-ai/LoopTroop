@@ -9,7 +9,7 @@ import { Database } from '../server/db/sqliteShim'
 import { getErrorMessage } from '../shared/typeGuards'
 import { stripAnsiSequences } from '../shared/ansi'
 import { TERMINAL_WORKFLOW_STATUSES } from '../shared/workflowMeta'
-import { resolveTrustedProgram } from '../server/lib/executablePath.ts'
+import { programChildEnvironment, resolveTrustedProgram } from '../server/lib/executablePath.ts'
 
 interface CliOptions {
   backendPort?: number
@@ -703,6 +703,7 @@ function runShell(command: string, timeoutMs = 5000): CommandResult {
   // so an unresolvable shell is reported, not thrown.
   const shell = resolveTrustedProgram(shellCmd)
   const result = shell.path === undefined ? null : spawnSync(shell.path, shellArgs, {
+    env: programChildEnvironment(shell.path),
     cwd: process.cwd(),
     encoding: 'utf8',
     timeout: timeoutMs,
@@ -772,6 +773,7 @@ function runProcess(command: string, args: string[], timeoutMs = 3000): CommandR
   }
   const program = resolution.path
   const result = spawnSync(program, args, {
+    env: programChildEnvironment(program),
     cwd: process.cwd(),
     encoding: 'utf8',
     timeout: timeoutMs,

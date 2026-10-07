@@ -173,7 +173,9 @@ jobs:
                   with zipfile.ZipFile(archive) as source:
                       for entry in source.infolist():
                           name = PurePosixPath(entry.filename.replace('\\', '/'))
-                          if name.is_absolute() or '..' in name.parts or PureWindowsPath(entry.filename).drive or stat.S_ISLNK(entry.external_attr >> 16):
+                          if (name.is_absolute() or '..' in name.parts or PureWindowsPath(entry.filename).drive
+                                  or (os.name == 'nt' and any(':' in part for part in name.parts))
+                                  or stat.S_ISLNK(entry.external_attr >> 16)):
                               raise ValueError(f'Unsafe artifact path: {entry.filename}')
                           output = (target / name).resolve()
                           if not output.is_relative_to(target):

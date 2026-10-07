@@ -1,6 +1,6 @@
 import { spawn } from 'node:child_process'
-import { findTrustedExecutablePath } from '../lib/executablePath'
-import { matchProcess } from '../lib/processIdentity'
+import { findTrustedExecutablePath } from '../lib/executablePath.ts'
+import { matchProcess } from '../lib/processIdentity.ts'
 import { setTimeout as delay } from 'node:timers/promises'
 
 /**

@@ -139,6 +139,7 @@ describe('coverage and Codecov policy', () => {
     expect(nativeSteps).toHaveLength(2)
     expect(nativeSteps[0]?.run).toContain('tempfile.mkdtemp(')
     expect(nativeSteps[1]?.run).toContain('zipfile.ZipFile(')
+    for (const native of nativeSteps) expect(native.run).toContain('"$python_command" -I -')
     expect(nativeSteps.some((candidate) => /npm\s+(?:ci|install)|node\s+scripts\//.test(candidate.run ?? ''))).toBe(false)
     expect(upload.steps?.some((candidate) => candidate.uses?.startsWith('step-security/harden-runner@'))).toBe(false)
 

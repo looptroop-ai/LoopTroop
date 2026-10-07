@@ -6,8 +6,9 @@ import * as yaml from 'js-yaml'
 import { describe, expect, it } from 'vitest'
 
 type Step = { id?: string; uses?: string; with?: Record<string, unknown>; env?: Record<string, string>; run?: string }
-type Job = { steps: Step[]; permissions?: Record<string, string>; environment?: unknown }
-type Workflow = { permissions?: Record<string, string>; jobs: Record<string, Job> }
+type Permissions = Record<string, string> | string
+type Job = { steps?: Step[]; permissions?: Permissions; environment?: unknown; env?: Record<string, string> }
+type Workflow = { permissions?: Permissions; env?: Record<string, string>; jobs: Record<string, Job> }
 const repo = process.cwd()
 const actionPath = join(repo, '.github/actions/download-artifact')
 const python = process.platform === 'win32' ? 'python' : 'python3'
@@ -16,8 +17,31 @@ const workflows = readdirSync(join(repo, '.github/workflows')).filter((name) => 
 }))
 const extractor = readFileSync(join(actionPath, 'extract.py'), 'utf8')
 const embeddedPython = (run: string) => run.match(/- <<'PY'\n([\s\S]*)\nPY\n?$/)?.[1] + '\n'
+const isPrivileged = (workflow: Omit<Workflow, 'jobs'>, job: Job) => {
+  const permissions = job.permissions ?? workflow.permissions
+  return permissions === undefined || (typeof permissions === 'string' ? permissions !== 'read-all' :
+    Object.values(permissions).some((value) => value !== 'read' && value !== 'none')) ||
+    Boolean(job.environment) || /\bsecrets\s*(?:\.|\[)/.test(JSON.stringify([workflow.env, job]))
+}
 
 describe('verified artifact downloads', () => {
+  it('requires explicit read-only permissions and checks every secret scope', () => {
+    const readOnly = { permissions: { contents: 'read' } }
+    const token = { env: { GH_TOKEN: '${{ github.token }}' } }
+    expect(isPrivileged({}, token)).toBe(true)
+    expect(isPrivileged({ permissions: 'write-all' }, token)).toBe(true)
+    expect(isPrivileged({ permissions: '${{ inputs.permissions }}' }, token)).toBe(true)
+    expect(isPrivileged({ permissions: { contents: 'write' } }, token)).toBe(true)
+    expect(isPrivileged({ permissions: 'read-all' }, token)).toBe(false)
+    expect(isPrivileged(readOnly, token)).toBe(false)
+    expect(isPrivileged({ permissions: 'write-all' }, { ...readOnly, ...token })).toBe(false)
+    expect(isPrivileged({ permissions: {} }, {})).toBe(false)
+    expect(isPrivileged({ ...readOnly, env: { TOKEN: '${{ secrets.TOKEN }}' } }, {})).toBe(true)
+    expect(isPrivileged(readOnly, { env: { TOKEN: '${{ secrets["TOKEN"] }}' } })).toBe(true)
+    expect(isPrivileged(readOnly, { steps: [{ env: { TOKEN: '${{ secrets.TOKEN }}' } }] })).toBe(true)
+    expect(isPrivileged(readOnly, { environment: 'release' })).toBe(true)
+  })
+
   it('keeps digest checks on every download without running repository tooling beside credentials', () => {
     const action = yaml.load(readFileSync(join(actionPath, 'action.yml'), 'utf8')) as { runs: { steps: Step[] } }
     const download = action.runs.steps.find((step) => step.uses?.startsWith('actions/download-artifact@'))
@@ -28,9 +52,9 @@ describe('verified artifact downloads', () => {
     expect(action.runs.steps[2]?.run).toContain('"$python_command" -I "$GITHUB_ACTION_PATH/extract.py"')
     let count = 0
     for (const { file, workflow } of workflows) {
-      for (const [job, { steps = [], permissions, environment }] of Object.entries(workflow.jobs)) {
-        const privileged = Object.values(permissions ?? workflow.permissions ?? {}).includes('write') ||
-          Boolean(environment) || JSON.stringify(steps).includes('secrets.')
+      for (const [job, definition] of Object.entries(workflow.jobs)) {
+        const { steps = [] } = definition
+        const privileged = isPrivileged(workflow, definition)
         const downloadIds = new Set<string>()
         for (const [index, step] of steps.entries()) {
           const official = step.uses?.startsWith('actions/download-artifact@')
@@ -69,10 +93,10 @@ describe('verified artifact downloads', () => {
     const arch = readFileSync(join(repo, '.github/workflows/ci.yml'), 'utf8')
     expect(arch).toMatch(/pacman -Syyu[^\n]*\bpython\b/)
     const release = workflows.find(({ file }) => file === 'release.yml')!.workflow
-    expect(release.jobs.npm!.steps.find((step) => step.uses?.startsWith('actions/checkout@'))?.with)
+    expect(release.jobs.npm!.steps?.find((step) => step.uses?.startsWith('actions/checkout@'))?.with)
       .toMatchObject({ 'sparse-checkout': '.nvmrc', 'sparse-checkout-cone-mode': false, 'persist-credentials': false })
     for (const job of ['attest-binaries', 'attest-release-assets']) {
-      expect(release.jobs[job]!.steps.some((step) => step.uses?.startsWith('actions/checkout@'))).toBe(false)
+      expect(release.jobs[job]!.steps?.some((step) => step.uses?.startsWith('actions/checkout@'))).toBe(false)
     }
   })
 
@@ -132,8 +156,25 @@ assert not raw.exists()
 for name in ['../escape.txt', '/absolute.txt', r'C:\escape.txt', r'..\escape.txt']:
     assert 'Unsafe artifact path' in extract({'artifact.zip': name}), name
 assert 'Unsafe artifact path' in extract({'artifact.zip': 'link'}, symlink=True)
-# Creating filesystem links requires elevation on some Windows runners.
-if os.name != 'nt':
+if os.name == 'nt':
+    for name in ['report.txt:payload', 'nested/report.txt:payload:$DATA', 'directory:stream/report.txt']:
+        assert 'Unsafe artifact path' in extract({'artifact.zip': name}), name
+        assert not raw.exists()
+else:
+    assert extract({'artifact.zip': 'nested/report.txt:payload'}) == ''
+    assert (output / 'nested/report.txt:payload').read_text() == 'fixture'
+# Exercise native Windows links too whenever this account can create them.
+can_symlink = True
+probe = root / 'symlink-probe'
+try:
+    probe.symlink_to(workspace, target_is_directory=True)
+except OSError as error:
+    if os.name != 'nt' or error.winerror != 1314:
+        raise
+    can_symlink = False
+else:
+    probe.unlink()
+if can_symlink:
     outside = root / 'outside.txt'
     outside.write_text('untouched')
     (output / 'existing-link').symlink_to(outside)

@@ -34,7 +34,9 @@ import { createServer } from 'node:net'
 import { homedir, tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { removeWorkDirectory, waitForHealth } from './smoke-lib.mjs'
-import { findToolPath, launchTool, planToolLaunch } from './tool-path.ts'
+import { findToolPath, launchTool, planToolLaunch, programChildEnvironment } from './tool-path.ts'
+import { killProcessTree, waitForExit } from '../server/cli/processControl.ts'
+import { readProcessStartToken } from '../server/lib/processIdentity.ts'
 // The published identifier, and where its submissions live, from the module
 // that renders the manifests carrying them. `winget-pkgs` derives its directory
 // from the identifier, so it is the same in the submission, in the install
@@ -61,6 +63,9 @@ const IS_WINDOWS = process.platform === 'win32'
  * shared helper, which would give one script's patience to the other two.
  */
 const HEALTH_TIMEOUT_MS = 60_000
+// The CLI first identifies its child, then allows 60s for readiness and
+// performs bootstrap requests or failed-start cleanup before it exits.
+const START_TIMEOUT_MS = 180_000
 const OPENCODE_PROBE_TIMEOUT_MS = 2_000
 
 /**
@@ -835,12 +840,10 @@ function redact(text) {
 }
 
 // ---------------------------------------------------------------------------
-// Process helpers. Copied from smoke-install.mjs rather than shared: there are
-// eleven standalone smoke scripts and no helper module, and introducing one
-// inside a packaging change would touch all eleven.
+// Process helpers use the same trusted launch plan for captured and ordinary commands.
 // ---------------------------------------------------------------------------
 
-export function run(command, args, options = {}) {
+function planRun(command, args, options) {
   // Resolved against the environment the child gets, and started the way the
   // daemon starts a program: a Windows command script — npm.cmd, yarn.cmd, the
   // installed looptroop.cmd — through a resolved cmd.exe with every argument
@@ -848,20 +851,19 @@ export function run(command, args, options = {}) {
   // as a run that never started, with the reason.
   const { env: extraEnv, ...spawnOptions } = options
   const env = { ...process.env, ...(extraEnv ?? {}) }
-  // pwsh -> Node -> Windows PowerShell otherwise inherits incompatible PS7
-  // modules. Let each child PowerShell rebuild its standard module paths.
-  if (IS_WINDOWS) {
-    for (const name of Object.keys(env)) {
-      if (name.toLowerCase() === 'psmodulepath') delete env[name]
-    }
-  }
   const launch = planToolLaunch(command, args, { env })
+  // Keep the real user's environment for the CLI under test; only Windows
+  // PowerShell itself needs its incompatible inherited module paths removed.
+  const childEnv = launch.reason === undefined ? programChildEnvironment(launch.file, env) : env
+  return { launch, options: { ...spawnOptions, env: childEnv, windowsVerbatimArguments: launch.windowsVerbatimArguments } }
+}
+
+export function run(command, args, options = {}) {
+  const { launch, options: spawnOptions } = planRun(command, args, options)
   if (launch.reason !== undefined) return { code: null, stdout: '', stderr: '', combined: launch.reason }
   const result = spawnSync(launch.file, launch.args, {
     encoding: 'utf8',
     ...spawnOptions,
-    env,
-    windowsVerbatimArguments: launch.windowsVerbatimArguments,
   })
   // A null status means the process never started. The resolved file can still
   // exist: a missing cwd, interpreter or loader also reports ENOENT. Keep the
@@ -882,7 +884,10 @@ export function run(command, args, options = {}) {
 }
 
 /** File capture lets a launcher exit while a detached child still owns its output handles. */
-export function runCaptured(command, args, options = {}) {
+export async function runCaptured(command, args, options = {}) {
+  const { timeout = START_TIMEOUT_MS, ...requestedOptions } = options
+  const { launch, options: spawnOptions } = planRun(command, args, requestedOptions)
+  if (launch.reason !== undefined) return { code: null, stdout: '', stderr: '', combined: launch.reason }
   const scratch = mkdtempSync(join(tmpdir(), 'looptroop-published-output-'))
   const stdoutPath = join(scratch, 'stdout')
   const stderrPath = join(scratch, 'stderr')
@@ -890,10 +895,51 @@ export function runCaptured(command, args, options = {}) {
   try {
     descriptors.push(openSync(stdoutPath, 'wx', 0o600))
     descriptors.push(openSync(stderrPath, 'wx', 0o600))
-    const result = run(command, args, {
-      timeout: HEALTH_TIMEOUT_MS,
-      ...options,
-      stdio: ['ignore', ...descriptors],
+    const result = await new Promise((resolve) => {
+      const child = spawn(launch.file, launch.args, {
+        ...spawnOptions,
+        detached: !IS_WINDOWS,
+        stdio: ['ignore', ...descriptors],
+      })
+      let settled = false
+      let timedOut = false
+      let timer
+      const finish = (code, error) => {
+        if (settled) return
+        settled = true
+        clearTimeout(timer)
+        child.unref()
+        resolve({
+          code,
+          combined: error
+            ? `${launch.file}: ${error.code ?? 'launch failed'}: ${error.message ?? String(error)}`
+            : '',
+        })
+      }
+      child.once('error', (error) => finish(null, error))
+      child.once('exit', (code) => {
+        // On Windows the wrapper can exit before taskkill has walked its
+        // descendants. Keep cleanup authoritative after a timeout.
+        if (!timedOut) finish(code)
+      })
+      const deadline = Date.now() + timeout
+      const startToken = readProcessStartToken(child.pid ?? 0)
+      timer = setTimeout(async () => {
+        timedOut = true
+        // Never kill just cmd.exe: its CLI child could finish starting while
+        // teardown runs. Reuse the product's bounded, identity-guarded tree kill.
+        let gone = false
+        try {
+          const killed = child.pid !== undefined && await killProcessTree(child.pid, startToken)
+          gone = killed && await waitForExit(child.pid, 5_000)
+        } catch {
+          // An unconfirmed cleanup still reports the original timeout.
+        }
+        finish(null, {
+          code: 'ETIMEDOUT',
+          message: `launcher exceeded ${timeout}ms${gone ? '' : '; launcher tree cleanup could not be confirmed'}`,
+        })
+      }, Math.max(0, deadline - Date.now()))
     })
     const stdout = readFileSync(stdoutPath, 'utf8')
     const stderr = readFileSync(stderrPath, 'utf8')
@@ -1684,7 +1730,7 @@ async function runChannel(recipe, options) {
       fail('port is free before start', `${port} is already held: this runner is dirty`)
       return { ok: false, served }
     }
-    const started = runCaptured(shim(), ['start', '--port', String(port)], { cwd: elsewhere, env: childEnv })
+    const started = await runCaptured(shim(), ['start', '--port', String(port)], { cwd: elsewhere, env: childEnv })
     // Recorded before the check, not after: a `start` that failed may still
     // have left something half-up holding the port and the lock, which is
     // exactly what the teardown exists to clear.

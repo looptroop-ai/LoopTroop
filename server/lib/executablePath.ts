@@ -1138,6 +1138,21 @@ export function requireTrustedExecutablePath(name: string, options: TrustedExecu
   return resolution.path
 }
 
+/** Windows PowerShell must rebuild its module paths after a PowerShell 7 parent. */
+export function programChildEnvironment(
+  program: string,
+  env: NodeJS.ProcessEnv = process.env,
+  platform: NodeJS.Platform = process.platform,
+): NodeJS.ProcessEnv {
+  const name = trustedPath.win32.basename(program).toLowerCase()
+  if (name !== 'powershell.exe' && !(platform === 'win32' && name === 'powershell')) return env
+  const childEnv = { ...env }
+  for (const key of Object.keys(childEnv)) {
+    if (key.toLowerCase() === 'psmodulepath') delete childEnv[key]
+  }
+  return childEnv
+}
+
 /**
  * How to start a resolved program: the file to spawn, its arguments, and whether
  * Node must pass those arguments through untouched.

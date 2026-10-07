@@ -4,11 +4,14 @@ import { join } from 'node:path'
 import { makeTempDir } from '../../test/tempDir'
 import * as containment from '../containedPath'
 
-const { launch } = vi.hoisted(() => ({ launch: vi.fn(async (_program: string, _args: string[]) => ({ stdout: '' })) }))
+const { launch } = vi.hoisted(() => ({ launch: vi.fn(async (_program: string, _args: string[], _options: { env: NodeJS.ProcessEnv }) => ({ stdout: '' })) }))
 vi.mock('node:child_process', () => ({
   execFile: Object.assign(() => {}, { [Symbol.for('nodejs.util.promisify.custom')]: launch }),
 }))
-vi.mock('../executablePath', () => ({ resolveTrustedExecutable: (name: string) => ({ path: `/trusted/${name}` }) }))
+vi.mock('../executablePath', async (importOriginal) => ({
+  ...await importOriginal<typeof import('../executablePath')>(),
+  resolveTrustedExecutable: (name: string) => ({ path: `/trusted/${name}` }),
+}))
 
 import { encodedInvokeItem, revealFolderInExplorer } from '../openPath'
 
@@ -130,13 +133,16 @@ describe('folder opener containment', () => {
   it.skipIf(process.platform !== 'linux')('keeps translated trailing spaces in the PowerShell and Explorer arguments', async () => {
     const { project } = fixture()
     vi.stubEnv('WSL_DISTRO_NAME', 'test')
+    vi.stubEnv('PSModulePath', 'PowerShell 7 modules')
     const windowsPath = 'C:\\project with trailing space '
     launch.mockResolvedValueOnce({ stdout: `${windowsPath}\n` })
       .mockRejectedValueOnce(new Error('PowerShell unavailable'))
     await revealFolderInExplorer(project, [project])
     expect(launch.mock.calls[0]?.[1]).toEqual(['-w', project])
     expect(launch.mock.calls[1]?.[1]).toContain(encodedInvokeItem(windowsPath))
+    expect(launch.mock.calls[1]?.[2].env.PSModulePath).toBeUndefined()
     expect(launch.mock.calls[2]?.[1]).toEqual([windowsPath])
+    expect(launch.mock.calls[2]?.[2].env.PSModulePath).toBe('PowerShell 7 modules')
   })
 
   it.skipIf(process.platform !== 'linux')('does not launch Explorer with an untranslated POSIX path', async () => {

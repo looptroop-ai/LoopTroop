@@ -23,7 +23,7 @@ import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, statSync } fr
 import { tmpdir } from 'node:os'
 import { join, resolve } from 'node:path'
 import { waitForHealth } from './smoke-lib.mjs'
-import { planToolLaunch } from './tool-path.ts'
+import { planToolLaunch, programChildEnvironment } from './tool-path.ts'
 
 const IS_WINDOWS = process.platform === 'win32'
 
@@ -131,7 +131,7 @@ function run(command, args, options = {}) {
   const result = spawnSync(launch.file, launch.args, {
     encoding: 'utf8',
     ...spawnOptions,
-    env,
+    env: programChildEnvironment(launch.file, env),
     windowsVerbatimArguments: launch.windowsVerbatimArguments,
   })
   return {

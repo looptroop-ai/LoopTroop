@@ -23,7 +23,7 @@ frontend packages inlined into the client bundle.
 | `@floating-ui/dom` | 1.8.0 | MIT | Copyright (c) 2021-present Floating UI contributors |
 | `@floating-ui/react-dom` | 2.1.9 | MIT | Copyright (c) 2021-present Floating UI contributors |
 | `@floating-ui/utils` | 0.2.12 | MIT | Copyright (c) 2021-present Floating UI contributors |
-| `@hono/node-server` | 2.1.1 | MIT | Copyright (c) 2022 - present, Yusuke Wada and Hono contributors |
+| `@hono/node-server` | 2.1.3 | MIT | Copyright (c) 2022 - present, Yusuke Wada and Hono contributors |
 | `@lezer/common` | 1.5.1 | MIT | Copyright (C) 2018 by Marijn Haverbeke <marijn@haverbeke.berlin> and others |
 | `@lezer/highlight` | 1.2.3 | MIT | Copyright (C) 2018 by Marijn Haverbeke <marijn@haverbeke.berlin> and others |
 | `@lezer/lr` | 1.4.8 | MIT | Copyright (C) 2018 by Marijn Haverbeke <marijn@haverbeke.berlin> and others |
@@ -70,17 +70,17 @@ frontend packages inlined into the client bundle.
 | `drizzle-orm` | 1.0.0-rc.4 | Apache-2.0 | Drizzle Team |
 | `get-nonce` | 1.0.1 | MIT | Copyright (c) 2020 Anton Korzunov |
 | `gpt-tokenizer` | 4.0.0 | MIT | Copyright (c) 2023-2024 Bazyli Brzoska |
-| `hono` | 4.13.9 | MIT | Copyright (c) 2021 - present, Yusuke Wada and Hono contributors |
+| `hono` | 4.13.11 | MIT | Copyright (c) 2021 - present, Yusuke Wada and Hono contributors |
 | `isexe` | 2.0.0 | ISC | Copyright (c) Isaac Z. Schlueter and Contributors |
 | `js-yaml` | 5.4.2 | MIT | Copyright (C) 2011-2015 by Vitaly Puzrin |
-| `lucide-react` | 1.48.0 | ISC | Copyright (c) 2026 Lucide Icons and Contributors |
+| `lucide-react` | 1.49.0 | ISC | Copyright (c) 2026 Lucide Icons and Contributors |
 | `path-key` | 3.1.1 | MIT | Copyright (c) Sindre Sorhus <sindresorhus@gmail.com> (sindresorhus.com) |
 | `react` | 19.3.0 | MIT | Copyright (c) Meta Platforms, Inc. and affiliates. |
 | `react-dom` | 19.3.0 | MIT | Copyright (c) Meta Platforms, Inc. and affiliates. |
 | `react-remove-scroll` | 2.7.2 | MIT | Copyright (c) 2017 Anton Korzunov |
 | `react-remove-scroll-bar` | 2.3.8 | MIT | Anton Korzunov <thekashey@gmail.com> |
 | `react-style-singleton` | 2.2.3 | MIT | Copyright (c) 2017 Anton Korzunov |
-| `react-virtuoso` | 4.18.15 | MIT | Copyright (c) 2020 Petyo Ivanov |
+| `react-virtuoso` | 4.18.16 | MIT | Copyright (c) 2020 Petyo Ivanov |
 | `scheduler` | 0.28.0 | MIT | Copyright (c) Meta Platforms, Inc. and affiliates. |
 | `shebang-command` | 2.0.0 | MIT | Copyright (c) Kevin Mårtensson <kevinmartensson@gmail.com> (github.com/kevva) |
 | `shebang-regex` | 3.0.0 | MIT | Copyright (c) Sindre Sorhus <sindresorhus@gmail.com> (sindresorhus.com) |
@@ -390,7 +390,7 @@ THE SOFTWARE.
 
 ### MIT
 
-Applies to: `@hono/node-server@2.1.1`
+Applies to: `@hono/node-server@2.1.3`
 
 ```text
 MIT License
@@ -1032,7 +1032,7 @@ SOFTWARE.
 
 ### MIT
 
-Applies to: `hono@4.13.9`
+Applies to: `hono@4.13.11`
 
 ```text
 MIT License
@@ -1088,7 +1088,7 @@ THE SOFTWARE.
 
 ### ISC
 
-Applies to: `lucide-react@1.48.0`
+Applies to: `lucide-react@1.49.0`
 
 ```text
 ISC License
@@ -1138,7 +1138,7 @@ SOFTWARE.
 
 ### MIT
 
-Applies to: `react-virtuoso@4.18.15`
+Applies to: `react-virtuoso@4.18.16`
 
 ```text
 MIT License

@@ -656,6 +656,20 @@ describe('release workflow policy', () => {
     expect(gate).toContain('--leg "npm (windows-latest)"')
   })
 
+  it('runs Windows published installs outside Git Bash with the same arguments and credentials', () => {
+    const steps = workflows.get('published-smoke.yml')!.jobs!.smoke!.steps!
+    const installSteps = steps.filter((step) => String(step.name).startsWith('Install it, run it, and uninstall it again'))
+    expect(installSteps).toHaveLength(2)
+    expect(installSteps[0]!.shell).toBe('bash')
+    expect(installSteps[0]!.if).toBe("runner.os != 'Windows'")
+    expect(installSteps[1]!.shell).toBe('pwsh')
+    expect(installSteps[1]!.if).toBe("runner.os == 'Windows'")
+    expect(installSteps[1]!.env).toEqual(installSteps[0]!.env)
+    expect(installSteps[1]!.run).toContain('node scripts/smoke-published.mjs @smokeArgs')
+    expect(installSteps[1]!.run).toContain('exit $LASTEXITCODE')
+    expect(installSteps[1]!.run).toContain("if ($env:PIN) { $smokeArgs += '--pin' }")
+  })
+
   it('executes the Windows affected-file scope against affected and unrelated paths', () => {
     const windowsGate = workflows.get('ci.yml')!.jobs?.['windows-gate']
     const scope = windowsGate?.steps?.find((step) => step.name === 'Check whether the Windows profile is affected')?.run

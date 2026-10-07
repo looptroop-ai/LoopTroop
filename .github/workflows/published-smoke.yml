@@ -396,8 +396,9 @@ jobs:
       # that answers 403 and asserts the message a user actually sees.
       - name: Install it, run it, and uninstall it again
         id: smoke
+        if: runner.os != 'Windows'
         shell: bash
-        env:
+        env: &published_smoke_env
           GITHUB_TOKEN: ${{ github.token }}
           VERSION: ${{ needs.plan.outputs.version }}
           CHANNEL: ${{ matrix.channel }}
@@ -417,6 +418,37 @@ jobs:
             --leg "${LEG}" \
             --result-file "${RUNNER_TEMP}/result.json" \
             ${PIN}
+
+      # Chocolatey resolves the Git dependency for real. Git Bash holds Git's
+      # DLLs open, preventing a silent installer from replacing them.
+      - name: Install it, run it, and uninstall it again (Windows)
+        if: runner.os == 'Windows'
+        shell: pwsh
+        env: *published_smoke_env
+        run: |
+          $smokeArgs = @(
+            '--channel', $env:CHANNEL,
+            '--version', $env:VERSION,
+            '--opencode', $env:OPENCODE,
+            '--leg', $env:LEG,
+            '--result-file', (Join-Path $env:RUNNER_TEMP 'result.json')
+          )
+          if ($env:PIN) { $smokeArgs += '--pin' }
+          node scripts/smoke-published.mjs @smokeArgs
+          exit $LASTEXITCODE
+
+      - name: Show Chocolatey installer logs on failure
+        if: failure() && matrix.channel == 'chocolatey'
+        shell: pwsh
+        run: |
+          $installLogs = @(Get-ChildItem -LiteralPath $env:TEMP -Filter 'Setup Log*.txt' -ErrorAction SilentlyContinue)
+          $chocoRoot = if ($env:ChocolateyInstall) { $env:ChocolateyInstall } else { Join-Path $env:ProgramData 'chocolatey' }
+          $chocoLog = Join-Path $chocoRoot 'logs/chocolatey.log'
+          if (Test-Path -LiteralPath $chocoLog) { $installLogs += Get-Item -LiteralPath $chocoLog }
+          foreach ($installLog in $installLogs) {
+            Write-Output "Installer log: $($installLog.FullName)"
+            Get-Content -LiteralPath $installLog.FullName -Tail 120
+          }
 
       # Unique per leg: upload-artifact rejects duplicate names, and two legs
       # sharing one would overwrite a result and read as a missing leg.

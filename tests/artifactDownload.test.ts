@@ -91,8 +91,12 @@ describe('verified artifact downloads', () => {
         const result = spawnSync(python, ['-I', '-c', String.raw`
 import os, pathlib, stat, sys, zipfile
 root, helper = pathlib.Path(sys.argv[1]), sys.argv[2]
-raw, output = root / 'raw', root / 'output'
-def extract(entries, merge=False, symlink=False):
+workspace, runner_temp = root / 'workspace', root / 'runner-temp'
+workspace.mkdir()
+runner_temp.mkdir()
+os.chdir(workspace)
+raw, output = root / 'raw', workspace / 'output'
+def extract(entries, merge=False, symlink=False, destination=output, workspace_root=workspace):
     raw.mkdir()
     for archive, name in entries.items():
         path = raw / archive
@@ -101,7 +105,8 @@ def extract(entries, merge=False, symlink=False):
             entry = zipfile.ZipInfo(name)
             if symlink: entry.external_attr = (stat.S_IFLNK | 0o777) << 16
             target.writestr(entry, 'fixture')
-    os.environ.update(ARTIFACT_RAW=str(raw), ARTIFACT_DESTINATION=str(output), ARTIFACT_MERGE=str(merge).lower())
+    os.environ.update(ARTIFACT_RAW=str(raw), ARTIFACT_DESTINATION=str(destination), ARTIFACT_MERGE=str(merge).lower(),
+                      GITHUB_WORKSPACE=str(workspace_root), RUNNER_TEMP=str(runner_temp))
     try:
         exec(compile(helper, '<artifact extractor>', 'exec'), {'__name__': '__main__'})
     except ValueError as error:
@@ -115,6 +120,15 @@ assert extract({'first/artifact.zip': 'a.txt', 'second/artifact.zip': 'b.txt'}) 
 assert (output / 'first/a.txt').read_text() == (output / 'second/b.txt').read_text() == 'fixture'
 assert extract({'first/artifact.zip': 'merged-a.txt', 'second/artifact.zip': 'merged-b.txt'}, merge=True) == ''
 assert (output / 'merged-a.txt').read_text() == (output / 'merged-b.txt').read_text() == 'fixture'
+assert extract({'artifact.zip': 'workspace.txt'}, destination='') == ''
+assert (workspace / 'workspace.txt').read_text() == 'fixture'
+assert extract({'artifact.zip': 'relative.txt'}, destination='relative') == ''
+assert (workspace / 'relative/relative.txt').read_text() == 'fixture'
+assert extract({'artifact.zip': 'temporary.txt'}, destination=runner_temp / 'nested') == ''
+assert (runner_temp / 'nested/temporary.txt').read_text() == 'fixture'
+assert 'Artifact destination escapes' in extract({'artifact.zip': 'external.txt'}, destination=root / 'outside')
+assert not (root / 'outside').exists()
+assert not raw.exists()
 for name in ['../escape.txt', '/absolute.txt', r'C:\escape.txt', r'..\escape.txt']:
     assert 'Unsafe artifact path' in extract({'artifact.zip': name}), name
 assert 'Unsafe artifact path' in extract({'artifact.zip': 'link'}, symlink=True)
@@ -125,7 +139,36 @@ if os.name != 'nt':
     (output / 'existing-link').symlink_to(outside)
     assert 'Artifact path escapes destination' in extract({'artifact.zip': 'existing-link'})
     assert outside.read_text() == 'untouched'
+    external = root / 'external'
+    external.mkdir()
+    destination_link = workspace / 'destination-link'
+    destination_link.symlink_to(external, target_is_directory=True)
+    assert 'Artifact destination escapes' in extract({'artifact.zip': 'escaped.txt'}, destination=destination_link)
+    assert not raw.exists()
+    assert 'Artifact destination escapes' in extract({'artifact.zip': 'escaped.txt'}, destination=destination_link / 'nested')
+    assert not raw.exists()
+    assert list(external.iterdir()) == []
+    internal_link = workspace / 'internal-link'
+    internal_link.symlink_to(output, target_is_directory=True)
+    assert 'Artifact destination escapes' in extract({'artifact.zip': 'redirected.txt'}, destination=internal_link)
+    assert 'Artifact destination escapes' in extract({'artifact.zip': 'redirected.txt'}, destination=internal_link / 'nested')
+    assert not (output / 'redirected.txt').exists()
+    assert not (output / 'nested/redirected.txt').exists()
+    assert not raw.exists()
+    temporary_link = workspace / 'temporary-link'
+    temporary_link.symlink_to(runner_temp, target_is_directory=True)
+    assert 'Artifact destination escapes' in extract({'artifact.zip': 'escaped.txt'}, destination=temporary_link)
+    assert not (runner_temp / 'escaped.txt').exists()
+    # Runner roots may themselves use a platform-provided alias, as on macOS.
+    alias = root / 'workspace-alias'
+    alias.symlink_to(workspace, target_is_directory=True)
+    assert extract({'artifact.zip': 'alias.txt'}, destination=alias / 'output', workspace_root=alias) == ''
+    assert (output / 'alias.txt').read_text() == 'fixture'
+    assert extract({'artifact.zip': 'canonical.txt'}, workspace_root=alias) == ''
+    assert (output / 'canonical.txt').read_text() == 'fixture'
 assert not (root / 'escape.txt').exists()
+assert 'Artifact destination escapes' in extract({'artifact.zip': 'parent-escape.txt'}, destination=workspace / '..' / 'outside')
+assert not (root / 'outside').exists()
 assert not raw.exists()
 assert extract({}) == ''
 assert not raw.exists()

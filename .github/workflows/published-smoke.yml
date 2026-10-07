@@ -19,10 +19,6 @@ on:
         description: 'Released version to test (blank = latest stable)'
         type: string
         default: ''
-      driver_ref:
-        description: 'Driver ref (blank = workflow commit)'
-        type: string
-        default: ''
       tier:
         description: 'Which legs to run'
         type: choice
@@ -107,7 +103,6 @@ jobs:
     outputs:
       matrix: ${{ steps.plan.outputs.matrix }}
       version: ${{ steps.resolve.outputs.version }}
-      driver_sha: ${{ steps.driver.outputs.sha }}
     steps:
       - name: Audit runner network activity
         uses: step-security/harden-runner@e14015d583714f6e62063499dc959a02595150a1 # v2.21.1
@@ -116,7 +111,7 @@ jobs:
 
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
         with:
-          ref: ${{ inputs.driver_ref || github.workflow_sha }}
+          ref: ${{ github.workflow_sha }}
           persist-credentials: false
 
       - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7
@@ -150,14 +145,6 @@ jobs:
           fi
           echo "Testing ${version}"
           echo "version=${version}" >> "$GITHUB_OUTPUT"
-
-      # Weekly runs use current CI repairs; release dispatches select the tag
-      # as their workflow ref. Freeze either choice, or an explicit driver_ref,
-      # once so all legs use the same code while installing from live feeds.
-      - name: Resolve the driver revision
-        id: driver
-        shell: bash
-        run: git rev-parse HEAD | sed 's/^/sha=/' >> "$GITHUB_OUTPUT"
 
       # The matrix comes from the recipe table in the driver, so the workflow
       # and the recipes cannot disagree about which legs exist.
@@ -225,7 +212,11 @@ jobs:
 
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
         with:
-          ref: ${{ needs.plan.outputs.driver_sha }}
+          # The workflow's immutable commit keeps code in the selected ref's
+          # cache security scope. Repair runs select a branch with --ref;
+          # release dispatches select their tag. No input can substitute code
+          # from another ref inside a default-branch run.
+          ref: ${{ github.workflow_sha }}
           persist-credentials: false
 
       # CI tools belong to this workflow; the driver comes from the tested
@@ -244,7 +235,7 @@ jobs:
         shell: bash
         env:
           RELEASE_VERSION: ${{ needs.plan.outputs.version }}
-          DRIVER_REVISION: ${{ needs.plan.outputs.driver_sha }}
+          DRIVER_REVISION: ${{ github.workflow_sha }}
           TOOLING_REVISION: ${{ github.workflow_sha }}
         run: |
           printf '%s\n' "- Release under test: v${RELEASE_VERSION}" "- Smoke driver revision: ${DRIVER_REVISION}" "- CI tooling revision: ${TOOLING_REVISION}" >> "$GITHUB_STEP_SUMMARY"
@@ -501,11 +492,18 @@ jobs:
           import zipfile
 
           raw = Path(os.environ['ARTIFACT_RAW']).resolve()
-          destination = Path(os.environ['ARTIFACT_DESTINATION'] or os.environ['GITHUB_WORKSPACE']).expanduser().resolve()
           merge = os.environ['ARTIFACT_MERGE'] == 'true'
-          destination.mkdir(parents=True, exist_ok=True)
 
           try:
+              configured = Path(os.environ['ARTIFACT_DESTINATION'] or os.environ['GITHUB_WORKSPACE']).expanduser().absolute()
+              destination = configured.resolve()
+              roots = [(Path(os.environ[key]).absolute(), Path(os.environ[key]).resolve())
+                       for key in ('GITHUB_WORKSPACE', 'RUNNER_TEMP') if os.environ.get(key)]
+              if not any(configured.is_relative_to(base) and destination.is_relative_to(resolved)
+                         and destination == Path(os.path.abspath(resolved / configured.relative_to(base)))
+                         for root, resolved in roots for base in (root, resolved)):
+                  raise ValueError(f'Artifact destination escapes workspace or runner temporary directory, or follows an untrusted symlink: {configured}')
+              destination.mkdir(parents=True, exist_ok=True)
               for archive in sorted(raw.rglob('*')):
                   if not archive.is_file():
                       continue

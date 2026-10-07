@@ -152,11 +152,18 @@ jobs:
           import zipfile
 
           raw = Path(os.environ['ARTIFACT_RAW']).resolve()
-          destination = Path(os.environ['ARTIFACT_DESTINATION'] or os.environ['GITHUB_WORKSPACE']).expanduser().resolve()
           merge = os.environ['ARTIFACT_MERGE'] == 'true'
-          destination.mkdir(parents=True, exist_ok=True)
 
           try:
+              configured = Path(os.environ['ARTIFACT_DESTINATION'] or os.environ['GITHUB_WORKSPACE']).expanduser().absolute()
+              destination = configured.resolve()
+              roots = [(Path(os.environ[key]).absolute(), Path(os.environ[key]).resolve())
+                       for key in ('GITHUB_WORKSPACE', 'RUNNER_TEMP') if os.environ.get(key)]
+              if not any(configured.is_relative_to(base) and destination.is_relative_to(resolved)
+                         and destination == Path(os.path.abspath(resolved / configured.relative_to(base)))
+                         for root, resolved in roots for base in (root, resolved)):
+                  raise ValueError(f'Artifact destination escapes workspace or runner temporary directory, or follows an untrusted symlink: {configured}')
+              destination.mkdir(parents=True, exist_ok=True)
               for archive in sorted(raw.rglob('*')):
                   if not archive.is_file():
                       continue

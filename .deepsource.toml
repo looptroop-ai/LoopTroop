@@ -1,0 +1,34 @@
+version = 1
+
+test_patterns = ["**/__tests__/**", "**/*.test.ts", "**/*.test.tsx", "**/tests/**"]
+exclude_patterns = [
+  "**/node_modules/**", "**/dist/**", "**/build/**", "**/coverage/**",
+  "**/.cache/**", "**/.temp/**", "**/.tmp/**", "**/.DS_Store/**",
+]
+
+[[analyzers]]
+name = "docker"
+enabled = true
+
+[[analyzers]]
+name = "javascript"
+enabled = true
+
+[analyzers.meta]
+dialect = "typescript"
+style_guide = "airbnb"
+ecma_version = "2020"
+module_system = "es-modules"
+track_test_doc_coverage = false
+cyclomatic_complexity_threshold = "low"
+
+[[analyzers]]
+name = "shell"
+enabled = true
+
+[analyzers.meta]
+dialect = "sh"
+
+[[analyzers]]
+name = "secrets"
+enabled = true

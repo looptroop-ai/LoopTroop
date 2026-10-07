@@ -635,12 +635,11 @@ describe('release workflow policy', () => {
     const smoke = source.get('published-smoke.yml')!
     const jobs = workflows.get('published-smoke.yml')!.jobs!
     const checkout = jobs.plan!.steps!.find((step) => String(step.uses).startsWith('actions/checkout@'))!
-    expect(checkout.with?.ref).toBe('${{ inputs.driver_ref || github.workflow_sha }}')
+    expect(checkout.with?.ref).toBe('${{ github.workflow_sha }}')
+    expect(smoke).not.toContain('driver_ref')
     expect(smoke).not.toContain('git checkout --detach "refs/tags/v${VERSION}"')
-    expect(smoke).toContain("driver_sha: ${{ steps.driver.outputs.sha }}")
-    expect(smoke).toContain('git rev-parse HEAD')
     const smokeCheckout = jobs.smoke!.steps!.find((step) => String(step.uses).startsWith('actions/checkout@'))!
-    expect(smokeCheckout.with?.ref).toBe('${{ needs.plan.outputs.driver_sha }}')
+    expect(smokeCheckout.with?.ref).toBe('${{ github.workflow_sha }}')
     for (const file of ['channel-republish.yml', 'container-republish.yml']) {
       const dispatch = source.get(file)!.split('gh workflow run published-smoke.yml')[1]!
       expect(dispatch).toContain('--ref main')

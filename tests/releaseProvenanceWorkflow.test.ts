@@ -12,6 +12,7 @@ type Step = {
   run?: string
   uses?: string
   with?: Record<string, unknown>
+  env?: Record<string, unknown>
 }
 type Job = {
   needs?: string[]
@@ -145,9 +146,20 @@ describe('release provenance workflow', () => {
     expect(downloads).toHaveLength(1)
     const download = downloads[0]
     if (!download) throw new Error('Provenance bundle download step is missing')
-    expect(download.with).toMatchObject({ name: 'release-provenance', path: 'release-provenance' })
+    expect(download.with).toMatchObject({
+      name: 'release-provenance',
+      path: expect.stringMatching(/^\$\{\{ steps\.artifact_raw_\d+\.outputs\.path \}\}$/),
+      'skip-decompress': true,
+      'digest-mismatch': 'error',
+    })
+    const extraction = draftSteps.find((candidate) => candidate.env?.ARTIFACT_DESTINATION === 'release-provenance')
+    if (!extraction) throw new Error('Provenance bundle extraction step is missing')
+    expect(extraction.env?.ARTIFACT_RAW).toBe(download.with?.path)
+    const extractIndex = draftSteps.indexOf(extraction)
     const verifyIndex = draftSteps.indexOf(step(draftJob, 'Verify the release provenance'))
     const createIndex = draftSteps.indexOf(step(draftJob, 'Create or update the draft release'))
+    expect(draftSteps.indexOf(download)).toBeLessThan(extractIndex)
+    expect(extractIndex).toBeLessThan(verifyIndex)
     expect(verifyIndex).toBeLessThan(createIndex)
     expect(verifyRun).toContain('gh attestation verify release-manifest.json')
     expect(verifyRun).toContain('cp release-provenance/attestation.json release-provenance.sigstore.json')

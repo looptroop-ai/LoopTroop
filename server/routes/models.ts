@@ -4,6 +4,7 @@ import { fetchProviderCatalog, flattenCatalogModels, refreshProviderCatalog } fr
 import { ProviderCatalogBusyError } from '../opencode/providerCatalogReload'
 import type { OpenCodeCatalogResponse, OpenCodeCatalogScope } from '../../shared/opencodeCatalog'
 import { credentialsWereSent, openCodeAuthAdvice } from '../opencode/connection'
+import { warnIfVerbose } from '../runtime'
 
 const modelsRouter = new Hono()
 
@@ -16,9 +17,21 @@ function serializeCatalog(catalog: OpenCodeCatalogResponse, scope: 'connected' |
   }
 }
 
-async function modelDiscoveryFailure() {
+async function modelDiscoveryFailure(error: unknown, signal: AbortSignal) {
+  signal.throwIfAborted()
+  warnIfVerbose('[models] OpenCode model discovery failed:', error)
+  if (error instanceof Error && error.name === 'TimeoutError') {
+    return {
+      models: [],
+      connectedProviders: [],
+      defaultModels: {},
+      code: 'OPENCODE_DISCOVERY_TIMEOUT' as const,
+      message: 'OpenCode model discovery timed out. Try refreshing models.',
+    }
+  }
   const adapter = getOpenCodeAdapter()
-  const health = await adapter.checkHealth()
+  const health = await adapter.checkHealth(signal)
+  signal.throwIfAborted()
   const available = health.available
   return {
     models: [],
@@ -38,20 +51,21 @@ async function modelDiscoveryFailure() {
 modelsRouter.get('/models', async (c) => {
   try {
     const scope = c.req.query('scope') === 'all' ? 'all' : 'connected'
-    return c.json(serializeCatalog(await fetchProviderCatalog(), scope))
-  } catch {
-    return c.json(await modelDiscoveryFailure())
+    return c.json(serializeCatalog(await fetchProviderCatalog(c.req.raw.signal, scope), scope))
+  } catch (error) {
+    return c.json(await modelDiscoveryFailure(error, c.req.raw.signal))
   }
 })
 
 modelsRouter.post('/models/refresh', async (c) => {
   try {
-    return c.json(serializeCatalog(await refreshProviderCatalog(), 'connected'))
+    return c.json(serializeCatalog(await refreshProviderCatalog(c.req.raw.signal), 'connected'))
   } catch (error) {
+    c.req.raw.signal.throwIfAborted()
     if (error instanceof ProviderCatalogBusyError) {
       return c.json({ code: 'OPENCODE_BUSY', message: error.message }, 409)
     }
-    return c.json(await modelDiscoveryFailure())
+    return c.json(await modelDiscoveryFailure(error, c.req.raw.signal))
   }
 })
 

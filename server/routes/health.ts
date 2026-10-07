@@ -17,7 +17,7 @@ health.get('/health', (c) => {
 
 health.get('/health/opencode', async (c) => {
   const adapter = getOpenCodeAdapter()
-  const result = await adapter.checkHealth()
+  const result = await adapter.checkHealth(c.req.raw.signal)
   // The setup notice shows this advice rather than a sentence of its own:
   // whether a password was sent decides between "set one" and "check it", and
   // a v1 server reads different variables than v2.

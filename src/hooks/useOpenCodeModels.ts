@@ -4,6 +4,7 @@ import {
   MODEL_FETCH_RETRY_COUNT,
   MODEL_FETCH_RETRY_DELAY_MS,
   MODEL_FETCH_TIMEOUT_MS,
+  MODEL_REFRESH_TIMEOUT_MS,
   QUERY_STALE_TIME_5M,
 } from '@/lib/constants'
 import { failedResponseError } from '@/lib/fetchError'
@@ -14,10 +15,10 @@ interface ModelsApiResponse {
   defaultModels: Record<string, string>
   catalogScope?: OpenCodeCatalogScope
   message?: string
-  code?: 'OPENCODE_UNREACHABLE' | 'OPENCODE_DISCOVERY_FAILED' | 'OPENCODE_BUSY'
+  code?: OpenCodeModelsErrorCode
 }
 
-export type OpenCodeModelsErrorCode = 'OPENCODE_UNREACHABLE' | 'OPENCODE_DISCOVERY_FAILED' | 'OPENCODE_BUSY'
+export type OpenCodeModelsErrorCode = 'OPENCODE_UNREACHABLE' | 'OPENCODE_DISCOVERY_FAILED' | 'OPENCODE_DISCOVERY_TIMEOUT' | 'OPENCODE_BUSY'
 
 export class OpenCodeModelsError extends Error {
   readonly code?: OpenCodeModelsErrorCode
@@ -41,11 +42,12 @@ async function requestModelsApi(
   // The deadline is this request's own; the query's signal is the one that fires
   // when the component unmounts. Either ending the request is correct, so both
   // are honoured rather than one replacing the other.
-  const timeout = AbortSignal.timeout(MODEL_FETCH_TIMEOUT_MS)
+  const timeout = AbortSignal.timeout(method === 'POST' ? MODEL_REFRESH_TIMEOUT_MS : MODEL_FETCH_TIMEOUT_MS)
+  const requestSignal = signal ? AbortSignal.any([signal, timeout]) : timeout
   try {
     const res = await fetch(path, {
       method,
-      signal: signal ? AbortSignal.any([signal, timeout]) : timeout,
+      signal: requestSignal,
     })
     if (!res.ok) {
       if (res.status === 409) {
@@ -69,11 +71,12 @@ async function requestModelsApi(
     if (data.message) throw new OpenCodeModelsError(data.message, data.code)
     return data
   } catch (error) {
-    if (timeout.aborted && !signal?.aborted
-      && (error === timeout.reason || (error instanceof DOMException && error.name === 'AbortError'))) {
+    if (timeout.aborted && requestSignal.reason === timeout.reason
+      && (error === timeout.reason || (error instanceof DOMException
+        && (error.name === 'AbortError' || error.name === 'TimeoutError')))) {
       throw new OpenCodeModelsError(
         'OpenCode model discovery timed out. Try refreshing models.',
-        'OPENCODE_DISCOVERY_FAILED',
+        'OPENCODE_DISCOVERY_TIMEOUT',
       )
     }
     throw error
@@ -92,10 +95,16 @@ function refreshModelsApi(signal?: AbortSignal): Promise<ModelsApiResponse> {
   return requestModelsApi('/api/models/refresh', 'POST', signal)
 }
 
-function shouldRetryModelFetch(failureCount: number, error: Error): boolean {
-  const code = (error as OpenCodeModelsError).code
-  return failureCount < MODEL_FETCH_RETRY_COUNT
-    && (code === 'OPENCODE_UNREACHABLE' || code === 'OPENCODE_DISCOVERY_FAILED')
+function modelFetchRetry() {
+  let timeoutRetries = 0
+  return (failureCount: number, error: Error): boolean => {
+    // Each new fetch starts at zero, even when it reuses this callback.
+    if (failureCount === 0) timeoutRetries = 0
+    const code = (error as OpenCodeModelsError).code
+    if (code === 'OPENCODE_DISCOVERY_TIMEOUT') return timeoutRetries++ < 1
+    return failureCount < MODEL_FETCH_RETRY_COUNT
+      && (code === 'OPENCODE_UNREACHABLE' || code === 'OPENCODE_DISCOVERY_FAILED')
+  }
 }
 
 export function clearOpenCodeModelsQuery(queryClient: Pick<QueryClient, 'removeQueries'>) {
@@ -105,13 +114,19 @@ export function clearOpenCodeModelsQuery(queryClient: Pick<QueryClient, 'removeQ
 }
 
 export async function refreshOpenCodeModelsQuery(queryClient: Pick<QueryClient, 'cancelQueries' | 'fetchQuery' | 'invalidateQueries'>) {
-  await queryClient.cancelQueries({ queryKey: OPENCODE_MODELS_QUERY_KEY, exact: true })
+  await queryClient.cancelQueries({ queryKey: ['opencode-models'] })
+  let refreshStarted = false
   const data = await queryClient.fetchQuery({
     queryKey: OPENCODE_MODELS_QUERY_KEY,
-    queryFn: ({ signal }) => refreshModelsApi(signal),
+    queryFn: ({ signal }) => {
+      // Retries read the catalog without restarting OpenCode again.
+      if (refreshStarted) return fetchModelsApi(signal)
+      refreshStarted = true
+      return refreshModelsApi(signal)
+    },
     // A manual refresh must POST even when the connected catalog is still fresh.
     staleTime: 0,
-    retry: shouldRetryModelFetch,
+    retry: modelFetchRetry(),
     retryDelay: MODEL_FETCH_RETRY_DELAY_MS,
   })
   await queryClient.invalidateQueries({ queryKey: ALL_OPENCODE_MODELS_QUERY_KEY, exact: true })
@@ -131,7 +146,7 @@ export function useOpenCodeModelCatalog() {
     queryKey: OPENCODE_MODELS_QUERY_KEY,
     queryFn: ({ signal }) => fetchModelsApi(signal),
     staleTime: QUERY_STALE_TIME_5M,
-    retry: shouldRetryModelFetch,
+    retry: modelFetchRetry(),
     retryDelay: MODEL_FETCH_RETRY_DELAY_MS,
   })
 }
@@ -148,7 +163,7 @@ export function useAllOpenCodeModels(enabled = false) {
     queryKey: ALL_OPENCODE_MODELS_QUERY_KEY,
     queryFn: ({ signal }) => fetchAllModelsApi(signal),
     staleTime: QUERY_STALE_TIME_5M,
-    retry: shouldRetryModelFetch,
+    retry: modelFetchRetry(),
     retryDelay: MODEL_FETCH_RETRY_DELAY_MS,
     select: (data) => data.models,
     enabled,

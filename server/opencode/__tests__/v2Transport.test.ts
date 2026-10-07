@@ -1,7 +1,7 @@
 import { describe, expect, it, vi } from 'vitest'
 import { OpenCodePromptReceiptUnavailableError, type OpenCodePromptRequest } from '../transport'
 import { V2OpenCodeHttpError, V2OpenCodeTransport } from '../v2Transport'
-import { invalidateOpenCodeConnection } from '../connection'
+import { OpenCodeSDKAdapter } from '../adapter'
 
 interface CapturedRequest {
   url: URL
@@ -877,43 +877,10 @@ describe('OpenCode v2 fetch transport', () => {
       throw new Error(`Unexpected ${request.method} ${request.url}`)
     })
 
-    vi.stubGlobal('fetch', async (input: RequestInfo | URL) => {
-      const path = new URL(String(input)).pathname
-      const locationResponse = (data: unknown) => jsonResponse({ location: { directory: '/workspace' }, data })
-      if (path === '/api/provider') return locationResponse([
-        { id: 'anthropic', name: 'Anthropic' },
-        { id: 'google', name: 'Google' },
-        { id: 'openai', name: 'OpenAI' },
-      ])
-      if (path === '/api/model') return locationResponse([
-        ['anthropic', 'claude-sonnet-4', 'Claude Sonnet 4'],
-        ['google', 'gemini-2.5-pro', 'Gemini 2.5 Pro'],
-        ['openai', 'codex-mini-latest', 'Codex Mini Latest'],
-        ['openai', 'gpt-5.3-codex', 'GPT-5.3 Codex'],
-      ].map(([providerID, id, name]) => ({
-        providerID,
-        id,
-        modelID: id,
-        name,
-        enabled: true,
-        capabilities: { input: ['text'], output: ['text'] },
-        cost: [],
-        limit: { context: 1_000_000 },
-        variants: [],
-      })))
-      if (path === '/api/model/default') return locationResponse(null)
-      throw new Error(`Unexpected catalog request ${path}`)
-    })
-
     const session = await transport.createSession('/workspace')
     const sessions = await transport.listSessions()
     const messages = await transport.getSessionMessages('session-1')
-    let health
-    try {
-      health = await transport.checkHealth()
-    } finally {
-      vi.unstubAllGlobals()
-    }
+    const health = await transport.checkHealth()
 
     expect(session).toMatchObject({ id: 'session-1', projectPath: '/workspace', directory: '/workspace', title: 'Review' })
     expect(sessions.map(value => value.id)).toEqual(['session-1', 'session-2'])
@@ -923,12 +890,6 @@ describe('OpenCode v2 fetch transport', () => {
       available: true,
       protocol: 'v2',
       version: '2.0.15',
-      models: [
-        'anthropic/claude-sonnet-4',
-        'google/gemini-2.5-pro',
-        'openai/codex-mini-latest',
-        'openai/gpt-5.3-codex',
-      ],
     })
     expect(requests[0]?.body).toEqual({ location: { directory: '/workspace' } })
     expect(requests[1]?.url.searchParams.get('order')).toBe('desc')
@@ -989,63 +950,42 @@ describe('OpenCode v2 fetch transport', () => {
     })
   })
 
-  it('classifies a forbidden provider catalog as an authentication health failure', async () => {
-    vi.stubEnv('LOOPTROOP_OPENCODE_MODE', 'live')
-    vi.stubEnv('LOOPTROOP_OPENCODE_BASE_URL', 'http://127.0.0.1:4096')
-    invalidateOpenCodeConnection()
-    vi.stubGlobal('fetch', async (input: RequestInfo | URL) => {
-      const url = input instanceof Request ? new URL(input.url) : new URL(String(input))
-      if (url.pathname === '/api/info') return jsonResponse({ version: '2.0.16', pid: 1 })
-      return jsonResponse({ message: 'forbidden' }, 403)
-    })
+  it('keeps adapter health available without requesting a slow or unavailable catalog', async () => {
+    const catalogFetch = vi.fn(() => new Promise<Response>(() => undefined))
+    vi.stubGlobal('fetch', catalogFetch)
     try {
-      const { transport } = createTransport(request => request.url.pathname === '/api/info'
+      const { transport, requests } = createTransport(request => request.url.pathname === '/api/info'
         ? jsonResponse({ version: '2.0.16', pid: 1 })
         : jsonResponse({ message: 'forbidden' }, 403))
+      const adapter = new OpenCodeSDKAdapter('http://127.0.0.1:4096', undefined, () => Promise.resolve(transport))
 
-      await expect(transport.checkHealth()).resolves.toMatchObject({
-        available: false,
+      await expect(adapter.checkHealth()).resolves.toEqual({
+        available: true,
         protocol: 'v2',
         version: '2.0.16',
-        failureKind: 'authentication',
       })
+      expect(requests.map(request => request.url.pathname)).toEqual(['/api/info'])
+      expect(catalogFetch).not.toHaveBeenCalled()
     } finally {
       vi.unstubAllGlobals()
-      vi.unstubAllEnvs()
-      invalidateOpenCodeConnection()
     }
   })
 
-  it('discovers health models using its own server URL and authentication headers', async () => {
-    const catalogRequests: { url: URL; authorization: string | null }[] = []
-    vi.stubGlobal('fetch', async (input: RequestInfo | URL, init?: RequestInit) => {
-      const url = input instanceof Request ? new URL(input.url) : new URL(String(input))
-      catalogRequests.push({ url, authorization: new Headers(init?.headers).get('authorization') })
-      if (url.pathname.endsWith('/api/provider')) return jsonResponse({ location: '/providers', data: [] })
-      if (url.pathname.endsWith('/api/model')) return jsonResponse({ location: '/models', data: [] })
-      if (url.pathname.endsWith('/api/model/default')) return jsonResponse({ location: '/default', data: null })
-      throw new Error(`Unexpected catalog request ${url}`)
+  it('checks health using its own server URL and authentication headers', async () => {
+    const requests: { url: URL; authorization: string | null }[] = []
+    const transport = new V2OpenCodeTransport('http://private-opencode.example:5111', {
+      headers: { Authorization: 'Bearer transport-secret' },
+      fetch: (input, init) => {
+        const url = input instanceof Request ? new URL(input.url) : new URL(String(input))
+        requests.push({ url, authorization: new Headers(init?.headers).get('authorization') })
+        if (url.pathname === '/api/info') return Promise.resolve(jsonResponse({ version: '2.0.16' }))
+        return Promise.reject(new Error(`Unexpected transport request ${url}`))
+      },
     })
-    try {
-      const transport = new V2OpenCodeTransport('http://private-opencode.example:5111', {
-        headers: { Authorization: 'Bearer transport-secret' },
-        fetch: async input => {
-          const url = input instanceof Request ? new URL(input.url) : new URL(String(input))
-          if (url.pathname === '/api/info') return jsonResponse({ version: '2.0.16' })
-          throw new Error(`Unexpected transport request ${url}`)
-        },
-      })
 
-      await expect(transport.checkHealth()).resolves.toMatchObject({ available: true, protocol: 'v2', version: '2.0.16', models: [] })
-      expect(catalogRequests.map(request => request.url.origin)).toEqual([
-        'http://private-opencode.example:5111',
-        'http://private-opencode.example:5111',
-        'http://private-opencode.example:5111',
-      ])
-      expect(catalogRequests.map(request => request.authorization)).toEqual(Array(3).fill('Bearer transport-secret'))
-    } finally {
-      vi.unstubAllGlobals()
-    }
+    await expect(transport.checkHealth()).resolves.toEqual({ available: true, protocol: 'v2', version: '2.0.16' })
+    expect(requests.map(request => request.url.href)).toEqual(['http://private-opencode.example:5111/api/info'])
+    expect(requests.map(request => request.authorization)).toEqual(['Bearer transport-secret'])
   })
 
   it('updates v2 permission rules and confirms an interrupt only after the server is idle', async () => {

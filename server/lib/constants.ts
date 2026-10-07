@@ -6,8 +6,10 @@ export const COUNCIL_RESPONSE_TIMEOUT_MS = SHARED_PROFILE_DEFAULTS.councilRespon
 export const ADAPTER_RETRY_DELAY_MS = 2000
 /** Default SDK operation timeout */
 export const SDK_OPERATION_TIMEOUT_MS = 5000
-/** Provider catalog discovery and reload timeout */
-export const OPENCODE_CATALOG_TIMEOUT_MS = 10_000
+/** Total provider catalog read budget, including protocol discovery and fallback */
+export const OPENCODE_CATALOG_TIMEOUT_MS = 25_000
+/** Total provider reload budget, including safety checks, disposal, and catalog read */
+export const OPENCODE_CATALOG_REFRESH_TIMEOUT_MS = 55_000
 /** Delays between OpenCode session creation retries */
 export const OPENCODE_SESSION_CREATE_RETRY_DELAYS_MS = [1000, 3000, 7000] as const
 /** Max time spent collecting health diagnostics after a session creation failure */
@@ -73,9 +75,6 @@ export const MAX_RELEVANT_FILES_CHARS = 160_000
 export const SESSION_LIST_LIMIT = 1000
 /** Max message list limit */
 export const MESSAGE_LIST_LIMIT = 10_000
-/** Max model IDs in catalog request */
-export const MAX_CATALOG_MODEL_IDS = 50
-
 /** Default truncation length for command log output */
 export const LOG_TRUNCATION_LENGTH = 800
 /** Truncation length for command stdout/stderr in verification */

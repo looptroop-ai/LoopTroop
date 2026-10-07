@@ -22,6 +22,7 @@ vi.mock('../../opencode/factory', () => ({
 
 import { modelsRouter } from '../models'
 import { ProviderCatalogBusyError } from '../../opencode/providerCatalogReload'
+import type { OpenCodeCatalogReloadState } from '../../../shared/opencodeCatalog'
 
 const catalog = {
   supportsAllModels: true,
@@ -101,7 +102,7 @@ describe('models routes', () => {
     const body = await response.json()
 
     expect(refreshProviderCatalog).toHaveBeenCalledOnce()
-    expect(refreshProviderCatalog).toHaveBeenCalledWith(request.signal)
+    expect(refreshProviderCatalog).toHaveBeenCalledWith(request.signal, expect.any(Function))
     expect(body.models.map((model: { fullId: string }) => model.fullId)).toEqual(['openai/connected'])
   })
 
@@ -146,8 +147,25 @@ describe('models routes', () => {
       defaultModels: {},
       code: 'OPENCODE_DISCOVERY_TIMEOUT',
       message: 'OpenCode model discovery timed out. Try refreshing models.',
+      ...(method === 'POST' ? { reloadState: 'not_started' } : {}),
     })
     expect(checkHealth).not.toHaveBeenCalled()
+  })
+
+  it.each([
+    ['probe or safety failure', 'not_started'],
+    ['unconfirmed reload', 'unknown'],
+    ['catalog failure after confirmed reload', 'completed'],
+  ] as const)('reports reload progress for %s', async (_description, reloadState) => {
+    refreshProviderCatalog.mockImplementationOnce((_signal: AbortSignal, onReloadState: (state: OpenCodeCatalogReloadState) => void) => {
+      if (reloadState !== 'not_started') onReloadState(reloadState)
+      return Promise.reject(new Error('catalog unavailable'))
+    })
+
+    const response = await createApp().request('/api/models/refresh', { method: 'POST' })
+
+    expect(response.status).toBe(200)
+    await expect(response.json()).resolves.toMatchObject({ code: 'OPENCODE_DISCOVERY_FAILED', reloadState })
   })
 
   it.each([

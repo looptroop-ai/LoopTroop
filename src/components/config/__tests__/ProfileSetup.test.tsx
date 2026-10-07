@@ -6,6 +6,7 @@ import { ToastProvider } from '@/components/shared/Toast'
 import { TooltipProvider } from '@/components/ui/tooltip'
 import { ProfileSetup } from '../ProfileSetup'
 import { OPENCODE_MODELS_QUERY_KEY } from '@/hooks/useOpenCodeModels'
+import { MODEL_FETCH_RETRY_DELAY_MS } from '@/lib/constants'
 
 const updateProfileMutate = vi.fn()
 const createProfileMutate = vi.fn()
@@ -765,6 +766,45 @@ describe('ProfileSetup', () => {
     await waitFor(() => expect(reloadBtn).toBeEnabled())
     expect(reloadBtn.querySelector('svg')).not.toHaveClass('animate-spin')
     expect(queryClient.getQueryData(OPENCODE_MODELS_QUERY_KEY)).toEqual(cachedModels)
+  })
+
+  it('reports an unconfirmed reload timeout after a catalog read recovers', async () => {
+    const { queryClient } = await renderProfileSetup()
+    const reloadBtn = screen.getByRole('button', { name: 'Reload OpenCode providers and models' })
+    await waitFor(() => expect(reloadBtn).toBeEnabled())
+    const message = 'OpenCode provider reload timed out before completion could be confirmed.'
+    const recovered = {
+      models: [{ fullId: 'openai/recovered-model' }],
+      connectedProviders: ['openai'],
+      defaultModels: {},
+    }
+    vi.mocked(fetch).mockClear()
+    vi.mocked(fetch)
+      .mockResolvedValueOnce(new Response(JSON.stringify({
+        models: [],
+        code: 'OPENCODE_DISCOVERY_TIMEOUT',
+        message,
+        reloadState: 'unknown',
+      })))
+      .mockResolvedValueOnce(new Response(JSON.stringify(recovered)))
+
+    vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] })
+    try {
+      await act(async () => {
+        fireEvent.click(reloadBtn)
+        await vi.advanceTimersByTimeAsync(0)
+      })
+      expect(reloadBtn).toBeDisabled()
+      await act(async () => { await vi.advanceTimersByTimeAsync(MODEL_FETCH_RETRY_DELAY_MS + 1) })
+
+      expect(vi.mocked(fetch).mock.calls.map(([path]) => path)).toEqual(['/api/models/refresh', '/api/models'])
+      expect(queryClient.getQueryData(OPENCODE_MODELS_QUERY_KEY)).toEqual(recovered)
+      expect(screen.getByText(message)).toBeInTheDocument()
+      expect(reloadBtn).toBeEnabled()
+      expect(reloadBtn.querySelector('svg')).not.toHaveClass('animate-spin')
+    } finally {
+      vi.useRealTimers()
+    }
   })
 
   it('renders an About button and calls the provided handler', async () => {

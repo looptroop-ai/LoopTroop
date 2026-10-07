@@ -112,6 +112,24 @@ describe('useOpenCodeModels', () => {
     await expect(fetchModelsApi()).rejects.toThrow(/not reachable/i)
   })
 
+  it.each(['not_started', 'unknown', 'completed'] as const)('preserves the backend reload state %s on a coded error', async (reloadState) => {
+    vi.stubGlobal('fetch', vi.fn().mockResolvedValue({
+      ok: true,
+      json: () => Promise.resolve({
+        models: [],
+        code: 'OPENCODE_DISCOVERY_FAILED',
+        message: 'OpenCode model discovery failed.',
+        reloadState,
+      }),
+    }))
+
+    await expect(fetchModelsApi()).rejects.toMatchObject({
+      name: 'OpenCodeModelsError',
+      code: 'OPENCODE_DISCOVERY_FAILED',
+      reloadState,
+    })
+  })
+
   it('retries the explicit OpenCode startup response and succeeds when it comes up', async () => {
     vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] })
     try {
@@ -420,15 +438,17 @@ describe('useOpenCodeModels', () => {
       expect(AbortSignal.timeout).toHaveBeenCalledWith(MODEL_REFRESH_TIMEOUT_MS)
     })
 
-    it('retries a timed-out provider reload with a read instead of restarting OpenCode again', async () => {
+    it('recovers a timed-out reload with a read without claiming that the reload completed', async () => {
       const fetchMock = vi.fn()
         .mockImplementationOnce((_path, { signal }: { signal: AbortSignal }) => new Promise((_resolve, reject) => {
           signal.addEventListener('abort', () => reject(signal.reason), { once: true })
         }))
         .mockResolvedValue({ ok: true, json: () => Promise.resolve({ models: [{ fullId: 'openai/recovered-model' }] }) })
       vi.stubGlobal('fetch', fetchMock)
-      const response = expect(refreshOpenCodeModelsQuery(createTestQueryClient())).resolves.toMatchObject({
-        models: [{ fullId: 'openai/recovered-model' }],
+      const queryClient = createTestQueryClient()
+      const response = expect(refreshOpenCodeModelsQuery(queryClient)).rejects.toMatchObject({
+        code: 'OPENCODE_DISCOVERY_TIMEOUT',
+        message: 'OpenCode model discovery timed out. Try refreshing models.',
       })
 
       await vi.advanceTimersByTimeAsync(MODEL_REFRESH_TIMEOUT_MS)
@@ -442,6 +462,149 @@ describe('useOpenCodeModels', () => {
       ])
       expect(AbortSignal.timeout).toHaveBeenNthCalledWith(1, MODEL_REFRESH_TIMEOUT_MS)
       expect(AbortSignal.timeout).toHaveBeenNthCalledWith(2, MODEL_FETCH_TIMEOUT_MS)
+      expect(queryClient.getQueryData(OPENCODE_MODELS_QUERY_KEY)).toMatchObject({
+        models: [{ fullId: 'openai/recovered-model' }],
+      })
+    })
+
+    it.each([
+      ['not_started', 'OPENCODE_DISCOVERY_FAILED', 'POST', true],
+      ['not_started', 'OPENCODE_DISCOVERY_TIMEOUT', 'POST', true],
+      ['completed', 'OPENCODE_DISCOVERY_FAILED', 'GET', true],
+      ['completed', 'OPENCODE_DISCOVERY_TIMEOUT', 'GET', true],
+      ['unknown', 'OPENCODE_DISCOVERY_FAILED', undefined, false],
+      ['unknown', 'OPENCODE_DISCOVERY_TIMEOUT', 'GET', false],
+    ] as const)('retries %s %s using %s and reports confirmed success %s', async (reloadState, code, nextMethod, succeeds) => {
+      const message = 'OpenCode provider reload failed.'
+      const fetchMock = vi.fn()
+        .mockResolvedValueOnce({
+          ok: true,
+          json: () => Promise.resolve({ models: [], reloadState, code, message }),
+        })
+        .mockResolvedValue({ ok: true, json: () => Promise.resolve({ models: [{ fullId: 'openai/recovered-model' }] }) })
+      vi.stubGlobal('fetch', fetchMock)
+      const queryClient = createTestQueryClient()
+      const cachedModels = { models: [{ fullId: 'openai/old-model' }] }
+      queryClient.setQueryData(OPENCODE_MODELS_QUERY_KEY, cachedModels)
+      const refresh = refreshOpenCodeModelsQuery(queryClient)
+      const outcome = succeeds
+        ? expect(refresh).resolves.toMatchObject({ models: [{ fullId: 'openai/recovered-model' }] })
+        : expect(refresh).rejects.toMatchObject({ code, message, reloadState })
+
+      await vi.advanceTimersByTimeAsync(2 * MODEL_FETCH_RETRY_DELAY_MS)
+
+      await outcome
+      expect(fetchMock.mock.calls.map(([path, options]) => [path, options.method])).toEqual(nextMethod
+        ? [['/api/models/refresh', 'POST'], [nextMethod === 'POST' ? '/api/models/refresh' : '/api/models', nextMethod]]
+        : [['/api/models/refresh', 'POST']])
+      expect(queryClient.getQueryData(OPENCODE_MODELS_QUERY_KEY)).toEqual(nextMethod
+        ? { models: [{ fullId: 'openai/recovered-model' }] }
+        : cachedModels)
+    })
+
+    it.each([
+      ['not_started', 'OPENCODE_UNREACHABLE', 'POST', true],
+      ['completed', 'OPENCODE_DISCOVERY_FAILED', 'GET', true],
+      ['unknown', 'OPENCODE_DISCOVERY_TIMEOUT', 'GET', false],
+    ] as const)('keeps the %s reload retry intact when its connected-model observer rerenders', async (reloadState, code, nextMethod, succeeds) => {
+      const cachedModels = { models: [{ fullId: 'openai/old-model' }] }
+      const recoveredModels = { models: [{ fullId: 'openai/recovered-model' }] }
+      const message = 'The provider reload failed.'
+      const fetchMock = vi.fn()
+        .mockResolvedValueOnce({
+          ok: true,
+          json: () => Promise.resolve({ models: [], reloadState, code, message }),
+        })
+        .mockResolvedValue({ ok: true, json: () => Promise.resolve(recoveredModels) })
+      vi.stubGlobal('fetch', fetchMock)
+      const queryClient = createTestQueryClient()
+      queryClient.setQueryData(OPENCODE_MODELS_QUERY_KEY, cachedModels)
+      const { result, rerender } = renderHook(() => useOpenCodeModels(), { wrapper: queryWrapper(queryClient) })
+      const refresh = refreshOpenCodeModelsQuery(queryClient)
+      const outcome = succeeds
+        ? expect(refresh).resolves.toEqual(recoveredModels)
+        : expect(refresh).rejects.toMatchObject({ code, message, reloadState })
+
+      await act(async () => { await vi.advanceTimersByTimeAsync(0) })
+      expect(fetchMock).toHaveBeenCalledTimes(1)
+      rerender()
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(MODEL_FETCH_RETRY_DELAY_MS)
+        await outcome
+        await vi.advanceTimersByTimeAsync(1)
+      })
+
+      expect(fetchMock.mock.calls.map(([path, options]) => [path, options.method])).toEqual([
+        ['/api/models/refresh', 'POST'],
+        [nextMethod === 'POST' ? '/api/models/refresh' : '/api/models', nextMethod],
+      ])
+      expect(queryClient.getQueryData(OPENCODE_MODELS_QUERY_KEY)).toEqual(recoveredModels)
+      expect(result.current.data).toEqual(recoveredModels.models)
+    })
+
+    it('retries an unconfirmed timeout once after safe startup reload retries', async () => {
+      const fetchMock = vi.fn()
+        .mockResolvedValueOnce({
+          ok: true,
+          json: () => Promise.resolve({
+            models: [],
+            reloadState: 'not_started',
+            code: 'OPENCODE_UNREACHABLE',
+            message: 'OpenCode is still starting.',
+          }),
+        })
+        .mockResolvedValueOnce({
+          ok: true,
+          json: () => Promise.resolve({
+            models: [],
+            reloadState: 'unknown',
+            code: 'OPENCODE_DISCOVERY_TIMEOUT',
+            message: 'The reload deadline expired.',
+          }),
+        })
+        .mockResolvedValue({ ok: true, json: () => Promise.resolve({ models: [{ fullId: 'openai/recovered-model' }] }) })
+      vi.stubGlobal('fetch', fetchMock)
+      const queryClient = createTestQueryClient()
+      const outcome = expect(refreshOpenCodeModelsQuery(queryClient)).rejects.toMatchObject({
+        code: 'OPENCODE_DISCOVERY_TIMEOUT',
+        message: 'The reload deadline expired.',
+      })
+
+      await vi.advanceTimersByTimeAsync(2 * MODEL_FETCH_RETRY_DELAY_MS)
+
+      await outcome
+      expect(fetchMock.mock.calls.map(([path, options]) => [path, options.method])).toEqual([
+        ['/api/models/refresh', 'POST'],
+        ['/api/models/refresh', 'POST'],
+        ['/api/models', 'GET'],
+      ])
+    })
+
+    it.each(['OPENCODE_DISCOVERY_FAILED', 'OPENCODE_DISCOVERY_TIMEOUT'])('stops after the single unconfirmed recovery read fails with %s', async (code) => {
+      const fetchMock = vi.fn()
+        .mockResolvedValueOnce({
+          ok: true,
+          json: () => Promise.resolve({
+            models: [],
+            reloadState: 'unknown',
+            code: 'OPENCODE_DISCOVERY_TIMEOUT',
+            message: 'The reload deadline expired.',
+          }),
+        })
+        .mockResolvedValue({
+          ok: true,
+          json: () => Promise.resolve({ models: [], code, message: 'Recovery read failed.' }),
+        })
+      vi.stubGlobal('fetch', fetchMock)
+      const outcome = expect(refreshOpenCodeModelsQuery(createTestQueryClient())).rejects.toMatchObject({
+        code,
+        message: 'Recovery read failed.',
+      })
+
+      await vi.advanceTimersByTimeAsync(2 * MODEL_FETCH_RETRY_DELAY_MS)
+
+      await outcome
+      expect(fetchMock).toHaveBeenCalledTimes(2)
     })
   })
 
@@ -508,7 +671,7 @@ describe('useOpenCodeModels', () => {
     expect(queryClient.getQueryState(ALL_OPENCODE_MODELS_QUERY_KEY)?.isInvalidated).toBe(false)
   })
 
-  it('cancels both connected and all-model reads before reloading providers', async () => {
+  it('cancels catalog reads and an earlier refresh before reloading providers', async () => {
     const cancelled: string[] = []
     const fetchMock = vi.fn((path: string, { signal }: { signal: AbortSignal }) => path === '/api/models/refresh'
       ? Promise.resolve({ ok: true, json: () => Promise.resolve({ models: [] }) })
@@ -528,11 +691,20 @@ describe('useOpenCodeModels', () => {
       queryKey: ALL_OPENCODE_MODELS_QUERY_KEY,
       queryFn: ({ signal }) => fetchAllModelsApi(signal),
     }).catch(() => undefined)
+    const earlierRefresh = queryClient.fetchQuery({
+      queryKey: ['opencode-models', 'refresh'],
+      queryFn: ({ signal }) => new Promise((_resolve, reject) => {
+        signal.addEventListener('abort', () => {
+          cancelled.push('earlier refresh')
+          reject(signal.reason)
+        }, { once: true })
+      }),
+    }).catch(() => undefined)
 
     await refreshOpenCodeModelsQuery(queryClient)
-    await Promise.all([connected, all])
+    await Promise.all([connected, all, earlierRefresh])
 
-    expect(cancelled).toEqual(['/api/models', '/api/models?scope=all'])
+    expect(cancelled).toEqual(['/api/models', '/api/models?scope=all', 'earlier refresh'])
     expect(fetchMock).toHaveBeenCalledTimes(3)
     expect(fetchMock).toHaveBeenLastCalledWith('/api/models/refresh', {
       method: 'POST',

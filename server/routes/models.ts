@@ -2,7 +2,7 @@ import { Hono } from 'hono'
 import { getOpenCodeAdapter } from '../opencode/factory'
 import { fetchProviderCatalog, flattenCatalogModels, refreshProviderCatalog } from '../opencode/providerCatalog'
 import { ProviderCatalogBusyError } from '../opencode/providerCatalogReload'
-import type { OpenCodeCatalogResponse, OpenCodeCatalogScope } from '../../shared/opencodeCatalog'
+import type { OpenCodeCatalogReloadState, OpenCodeCatalogResponse, OpenCodeCatalogScope } from '../../shared/opencodeCatalog'
 import { credentialsWereSent, openCodeAuthAdvice } from '../opencode/connection'
 import { warnIfVerbose } from '../runtime'
 
@@ -58,14 +58,16 @@ modelsRouter.get('/models', async (c) => {
 })
 
 modelsRouter.post('/models/refresh', async (c) => {
+  let reloadState: OpenCodeCatalogReloadState = 'not_started'
   try {
-    return c.json(serializeCatalog(await refreshProviderCatalog(c.req.raw.signal), 'connected'))
+    const catalog = await refreshProviderCatalog(c.req.raw.signal, (state) => { reloadState = state })
+    return c.json(serializeCatalog(catalog, 'connected'))
   } catch (error) {
     c.req.raw.signal.throwIfAborted()
     if (error instanceof ProviderCatalogBusyError) {
       return c.json({ code: 'OPENCODE_BUSY', message: error.message }, 409)
     }
-    return c.json(await modelDiscoveryFailure(error, c.req.raw.signal))
+    return c.json({ ...await modelDiscoveryFailure(error, c.req.raw.signal), reloadState })
   }
 })
 

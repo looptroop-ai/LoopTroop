@@ -1,5 +1,5 @@
 import { useQuery, type QueryClient } from '@tanstack/react-query'
-import type { OpenCodeCatalogModel, OpenCodeCatalogScope } from '@shared/opencodeCatalog'
+import type { OpenCodeCatalogModel, OpenCodeCatalogReloadState, OpenCodeCatalogScope } from '@shared/opencodeCatalog'
 import {
   MODEL_FETCH_RETRY_COUNT,
   MODEL_FETCH_RETRY_DELAY_MS,
@@ -16,23 +16,27 @@ interface ModelsApiResponse {
   catalogScope?: OpenCodeCatalogScope
   message?: string
   code?: OpenCodeModelsErrorCode
+  reloadState?: OpenCodeCatalogReloadState
 }
 
 export type OpenCodeModelsErrorCode = 'OPENCODE_UNREACHABLE' | 'OPENCODE_DISCOVERY_FAILED' | 'OPENCODE_DISCOVERY_TIMEOUT' | 'OPENCODE_BUSY'
 
 export class OpenCodeModelsError extends Error {
   readonly code?: OpenCodeModelsErrorCode
+  readonly reloadState?: OpenCodeCatalogReloadState
 
-  constructor(message: string, code?: OpenCodeModelsErrorCode) {
+  constructor(message: string, code?: OpenCodeModelsErrorCode, reloadState?: OpenCodeCatalogReloadState) {
     super(message)
     this.name = 'OpenCodeModelsError'
     this.code = code
+    this.reloadState = reloadState
   }
 }
 
 export type OpenCodeModel = OpenCodeCatalogModel
 export const OPENCODE_MODELS_QUERY_KEY = ['opencode-models', 'connected'] as const
 export const ALL_OPENCODE_MODELS_QUERY_KEY = ['opencode-models', 'all'] as const
+const OPENCODE_MODELS_REFRESH_QUERY_KEY = ['opencode-models', 'refresh'] as const
 
 async function requestModelsApi(
   path: string,
@@ -68,7 +72,7 @@ async function requestModelsApi(
     // When the backend cannot reach OpenCode it returns a `message` with an empty
     // model list (HTTP 200). Treat this as a retriable error so react-query retries
     // during the startup window while OpenCode is still initialising.
-    if (data.message) throw new OpenCodeModelsError(data.message, data.code)
+    if (data.message) throw new OpenCodeModelsError(data.message, data.code, data.reloadState)
     return data
   } catch (error) {
     if (timeout.aborted && requestSignal.reason === timeout.reason
@@ -113,23 +117,42 @@ export function clearOpenCodeModelsQuery(queryClient: Pick<QueryClient, 'removeQ
   })
 }
 
-export async function refreshOpenCodeModelsQuery(queryClient: Pick<QueryClient, 'cancelQueries' | 'fetchQuery' | 'invalidateQueries'>) {
+export async function refreshOpenCodeModelsQuery(queryClient: Pick<QueryClient, 'cancelQueries' | 'fetchQuery' | 'invalidateQueries' | 'setQueryData'>) {
   await queryClient.cancelQueries({ queryKey: ['opencode-models'] })
-  let refreshStarted = false
+  let reloadState: OpenCodeCatalogReloadState = 'not_started'
+  let unconfirmedReloadFailure: OpenCodeModelsError | undefined
+  const retry = modelFetchRetry()
   const data = await queryClient.fetchQuery({
-    queryKey: OPENCODE_MODELS_QUERY_KEY,
-    queryFn: ({ signal }) => {
-      // Retries read the catalog without restarting OpenCode again.
-      if (refreshStarted) return fetchModelsApi(signal)
-      refreshStarted = true
-      return refreshModelsApi(signal)
+    // Model observers must not replace this operation's query function on retry.
+    queryKey: OPENCODE_MODELS_REFRESH_QUERY_KEY,
+    queryFn: async ({ signal }) => {
+      // Repeat the reload only when the backend confirms it never started.
+      if (reloadState !== 'not_started') return fetchModelsApi(signal)
+      reloadState = 'unknown'
+      try {
+        const refreshed = await refreshModelsApi(signal)
+        reloadState = 'completed'
+        return refreshed
+      } catch (error) {
+        if (error instanceof OpenCodeModelsError) {
+          reloadState = error.reloadState ?? 'unknown'
+          if (reloadState === 'unknown') unconfirmedReloadFailure = error
+        }
+        throw error
+      }
     },
     // A manual refresh must POST even when the connected catalog is still fresh.
     staleTime: 0,
-    retry: modelFetchRetry(),
+    retry: (failureCount, error) => {
+      if (reloadState === 'unknown' && (error as OpenCodeModelsError).code !== 'OPENCODE_DISCOVERY_TIMEOUT') return false
+      return retry(failureCount, error)
+    },
     retryDelay: MODEL_FETCH_RETRY_DELAY_MS,
   })
+  queryClient.setQueryData(OPENCODE_MODELS_QUERY_KEY, data)
   await queryClient.invalidateQueries({ queryKey: ALL_OPENCODE_MODELS_QUERY_KEY, exact: true })
+  // A recovered read updates the cache without proving the reload completed.
+  if (unconfirmedReloadFailure) throw unconfirmedReloadFailure
   return data
 }
 

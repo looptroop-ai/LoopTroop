@@ -1,5 +1,5 @@
 import { getOpenCodeBaseUrl } from './runtimeConfig'
-import type { OpenCodeCatalogModel, OpenCodeCatalogResponse } from '../../shared/opencodeCatalog'
+import type { OpenCodeCatalogModel, OpenCodeCatalogResponse, OpenCodeCatalogReloadState } from '../../shared/opencodeCatalog'
 import { isMockOpenCodeMode } from './factory'
 import {
   OPENCODE_CATALOG_TIMEOUT_MS,
@@ -155,16 +155,22 @@ export async function fetchConnectedModelIds(signal?: AbortSignal): Promise<stri
   return flattenCatalogModels(catalog, 'connected').map((model) => model.fullId)
 }
 
-export async function refreshProviderCatalog(signal?: AbortSignal): Promise<OpenCodeCatalogResponse> {
-  if (isMockOpenCodeMode()) return buildMockCatalog()
+export async function refreshProviderCatalog(
+  signal?: AbortSignal,
+  onReloadState?: (state: OpenCodeCatalogReloadState) => void,
+): Promise<OpenCodeCatalogResponse> {
+  if (isMockOpenCodeMode()) {
+    onReloadState?.('completed')
+    return buildMockCatalog()
+  }
 
-  return withProviderCatalogReload((_connection, refresh) => refresh(), signal)
+  return withProviderCatalogReload((_connection, refresh) => refresh(onReloadState), signal)
 }
 
 export async function withProviderCatalogReload<T>(
   operation: (
     connection: OpenCodeConnection,
-    refresh: () => Promise<OpenCodeCatalogResponse>,
+    refresh: (onReloadState?: (state: OpenCodeCatalogReloadState) => void) => Promise<OpenCodeCatalogResponse>,
   ) => Promise<T>,
   signal?: AbortSignal,
 ): Promise<T> {
@@ -177,7 +183,7 @@ export async function withProviderCatalogReload<T>(
       () => assertProviderCatalogCanReload(baseUrl, connection, reloadSignal),
       () => {
         reloadSignal.throwIfAborted()
-        return operation(connection, () => reloadProviderCatalog(baseUrl, connection, reloadSignal))
+        return operation(connection, (onReloadState) => reloadProviderCatalog(baseUrl, connection, reloadSignal, onReloadState))
       },
     )
   } catch (error) {
@@ -236,7 +242,10 @@ async function reloadProviderCatalog(
   baseUrl: string,
   connection: OpenCodeConnection,
   signal: AbortSignal,
+  onReloadState?: (state: OpenCodeCatalogReloadState) => void,
 ): Promise<OpenCodeCatalogResponse> {
+  signal.throwIfAborted()
+  onReloadState?.('unknown')
   if (connection.protocol === 'v2') {
     const response = await fetchCatalogEndpoint(baseUrl, connection, '/api/location/reload', { method: 'POST' }, signal)
     if (response.status !== 204) {
@@ -249,6 +258,7 @@ async function reloadProviderCatalog(
     }
   }
 
+  onReloadState?.('completed')
   return fetchProviderCatalogWithConnection(baseUrl, connection, signal)
 }
 

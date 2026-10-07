@@ -74,29 +74,25 @@ describe('fetchProviderCatalog', () => {
       headers: { Authorization: 'Basic ZGV2LXVzZXI6ZGV2LXNlY3JldA==' },
     })
 
-    const fetchMock = vi.fn(async () => ({
-      ok: true,
-      status: 200,
-      json: async () => ({
-        providers: [
-          {
-            id: 'openai',
-            name: 'OpenAI',
-            models: {
-              'gpt-5': {
-                id: 'gpt-5',
-                name: 'GPT-5',
-                family: 'gpt',
-                capabilities: { reasoning: true, toolcall: true, input: { image: true } },
-                cost: { input: 1, output: 2 },
-                limit: { context: 200_000 },
-                variants: { high: { reasoningEffort: 'high' } },
-              },
+    const fetchMock = vi.fn().mockResolvedValue(jsonResponse({
+      providers: [
+        {
+          id: 'openai',
+          name: 'OpenAI',
+          models: {
+            'gpt-5': {
+              id: 'gpt-5',
+              name: 'GPT-5',
+              family: 'gpt',
+              capabilities: { reasoning: true, toolcall: true, input: { image: true } },
+              cost: { input: 1, output: 2 },
+              limit: { context: 200_000 },
+              variants: { high: { reasoningEffort: 'high' } },
             },
           },
-        ],
-        default: { openai: 'gpt-5' },
-      }),
+        },
+      ],
+      default: { openai: 'gpt-5' },
     }))
     vi.stubGlobal('fetch', fetchMock)
 
@@ -232,9 +228,9 @@ describe('fetchProviderCatalog', () => {
         await delayedResponse({}, 2_000, signal)
         return { protocol: 'v1', version: '1.0.0', headers: {} }
       })
-      const fetchMock = vi.fn((input: RequestInfo | URL, init?: RequestInit) => {
+      const fetchMock = vi.fn((input: RequestInfo | URL, { signal }: { signal: AbortSignal }) => {
         const fullCatalog = new URL(String(input)).pathname === '/provider'
-        return delayedResponse({}, fullCatalog ? 18_000 : 8_000, init!.signal!, fullCatalog ? 404 : 200)
+        return delayedResponse({}, fullCatalog ? 18_000 : 8_000, signal, fullCatalog ? 404 : 200)
       })
       vi.stubGlobal('fetch', fetchMock)
       const rejected = expect(fetchProviderCatalog(undefined, 'all')).rejects.toMatchObject({ name: 'TimeoutError' })
@@ -355,7 +351,8 @@ describe('fetchProviderCatalog', () => {
       })
     vi.stubGlobal('fetch', fetchMock)
 
-    const catalog = await refreshProviderCatalog()
+    const onReloadState = vi.fn()
+    const catalog = await refreshProviderCatalog(undefined, onReloadState)
 
     expect(fetchMock).toHaveBeenNthCalledWith(
       1,
@@ -371,23 +368,103 @@ describe('fetchProviderCatalog', () => {
       expect.any(Object),
     )
     expect(catalog.connected).toEqual(['openai'])
+    expect(onReloadState.mock.calls).toEqual([['unknown'], ['completed']])
   })
 
   it('fails without fetching providers when instance disposal fails', async () => {
     const fetchMock = vi.fn().mockResolvedValue({ ok: false, status: 500 })
     vi.stubGlobal('fetch', fetchMock)
+    const onReloadState = vi.fn()
 
-    await expect(refreshProviderCatalog()).rejects.toThrow('refresh failed with 500')
+    await expect(refreshProviderCatalog(undefined, onReloadState)).rejects.toThrow('refresh failed with 500')
     expect(fetchMock).toHaveBeenCalledTimes(1)
+    expect(onReloadState.mock.calls).toEqual([['unknown']])
+  })
+
+  it('does not report a dispatched reload when protocol discovery fails', async () => {
+    const reason = new Error('Connection unavailable')
+    getOpenCodeConnection.mockRejectedValue(reason)
+    const fetchMock = vi.fn()
+    vi.stubGlobal('fetch', fetchMock)
+    const onReloadState = vi.fn()
+
+    await expect(refreshProviderCatalog(undefined, onReloadState)).rejects.toBe(reason)
+
+    expect(onReloadState).not.toHaveBeenCalled()
+    expect(fetchMock).not.toHaveBeenCalled()
+  })
+
+  it('does not report a dispatched reload when a safety check times out', async () => {
+    vi.useFakeTimers()
+    try {
+      mockAbortTimeouts()
+      getOpenCodeConnection.mockResolvedValue({ protocol: 'v2', version: '2.0.16', headers: {} })
+      const fetchMock = vi.fn((_input: RequestInfo | URL, { signal }: { signal: AbortSignal }) =>
+        delayedResponse({ data: {} }, 6_000, signal),
+      )
+      vi.stubGlobal('fetch', fetchMock)
+      const onReloadState = vi.fn()
+      const rejected = expect(refreshProviderCatalog(undefined, onReloadState)).rejects.toMatchObject({ name: 'TimeoutError' })
+
+      await vi.advanceTimersByTimeAsync(5_000)
+
+      await rejected
+      expect(fetchMock).toHaveBeenCalledOnce()
+      expect(onReloadState).not.toHaveBeenCalled()
+    } finally {
+      vi.useRealTimers()
+    }
+  })
+
+  it.each(['v1', 'v2'] as const)('reports unknown when the %s reload POST times out', async (protocol) => {
+    vi.useFakeTimers()
+    try {
+      mockAbortTimeouts()
+      getOpenCodeConnection.mockResolvedValue({ protocol, version: '', headers: {} })
+      const fetchMock = vi.fn((input: RequestInfo | URL, { signal }: { signal: AbortSignal }) => {
+        if (new URL(String(input)).pathname === '/api/session/active') return Promise.resolve(jsonResponse({ data: {} }))
+        return delayedResponse({}, 60_000, signal)
+      })
+      vi.stubGlobal('fetch', fetchMock)
+      const onReloadState = vi.fn()
+      const rejected = expect(refreshProviderCatalog(undefined, onReloadState)).rejects.toMatchObject({ name: 'TimeoutError' })
+
+      await vi.advanceTimersByTimeAsync(55_000)
+
+      await rejected
+      expect(onReloadState.mock.calls).toEqual([['unknown']])
+      expect(fetchMock.mock.calls.some(([input]) => new URL(String(input)).pathname === '/config/providers')).toBe(false)
+      const endPrompt = beginOpenCodePromptActivity()
+      endPrompt()
+    } finally {
+      vi.useRealTimers()
+    }
+  })
+
+  it.each(['v1', 'v2'] as const)('reports completed when the catalog fetch fails after the confirmed %s reload', async (protocol) => {
+    getOpenCodeConnection.mockResolvedValue({ protocol, version: '', headers: {} })
+    const fetchMock = vi.fn((input: RequestInfo | URL) => {
+      const path = new URL(String(input)).pathname
+      if (path === '/api/session/active') return Promise.resolve(jsonResponse({ data: {} }))
+      if (path === '/api/location/reload') return Promise.resolve(new Response(null, { status: 204 }))
+      if (path === '/instance/dispose') return Promise.resolve(jsonResponse({}))
+      return Promise.resolve(jsonResponse({}, 503))
+    })
+    vi.stubGlobal('fetch', fetchMock)
+    const onReloadState = vi.fn()
+
+    await expect(refreshProviderCatalog(undefined, onReloadState)).rejects.toThrow('provider catalog request failed with 503')
+
+    expect(onReloadState.mock.calls).toEqual([['unknown'], ['completed']])
   })
 
   it('allows a cold catalog read lasting thirty-four seconds within the reload budget', async () => {
     vi.useFakeTimers()
     try {
       const timeout = mockAbortTimeouts()
-      const fetchMock = vi.fn((input: RequestInfo | URL, init?: RequestInit) => {
+      const fetchMock = vi.fn((input: RequestInfo | URL, { signal }: { signal: AbortSignal }) => {
         const disposing = new URL(String(input)).pathname === '/instance/dispose'
-        return delayedResponse({ providers: [], default: {} }, disposing ? 1_000 : 34_000, init!.signal!)
+        return delayedResponse({ providers: [], default: {} }, disposing ? 1_000 : 34_000, signal)
       })
       vi.stubGlobal('fetch', fetchMock)
       const loaded = expect(refreshProviderCatalog()).resolves.toMatchObject({ connected: [] })
@@ -407,17 +484,19 @@ describe('fetchProviderCatalog', () => {
     vi.useFakeTimers()
     try {
       const timeout = mockAbortTimeouts()
-      const fetchMock = vi.fn((_input: RequestInfo | URL, init?: RequestInit) =>
-        delayedResponse({ providers: [], default: {} }, 30_000, init!.signal!),
+      const fetchMock = vi.fn((_input: RequestInfo | URL, { signal }: { signal: AbortSignal }) =>
+        delayedResponse({ providers: [], default: {} }, 30_000, signal),
       )
       vi.stubGlobal('fetch', fetchMock)
-      const rejected = expect(refreshProviderCatalog()).rejects.toMatchObject({ name: 'TimeoutError' })
+      const onReloadState = vi.fn()
+      const rejected = expect(refreshProviderCatalog(undefined, onReloadState)).rejects.toMatchObject({ name: 'TimeoutError' })
 
       await vi.advanceTimersByTimeAsync(55_000)
 
       await rejected
       expect(fetchMock).toHaveBeenCalledTimes(2)
       expect(timeout.mock.calls).toEqual([[55_000]])
+      expect(onReloadState.mock.calls).toEqual([['unknown'], ['completed']])
       const endPrompt = beginOpenCodePromptActivity()
       endPrompt()
     } finally {
@@ -573,11 +652,13 @@ describe('fetchProviderCatalog', () => {
     const fetchMock = vi.fn()
     vi.stubGlobal('fetch', fetchMock)
 
-    const catalog = await refreshProviderCatalog()
+    const onReloadState = vi.fn()
+    const catalog = await refreshProviderCatalog(undefined, onReloadState)
 
     expect(fetchMock).not.toHaveBeenCalled()
     expect(getOpenCodeConnection).not.toHaveBeenCalled()
     expect(catalog.connected).toContain('openai')
+    expect(onReloadState.mock.calls).toEqual([['completed']])
   })
 
   it('normalizes the v2 provider/model/default envelopes and keeps canonical and upstream IDs distinct', async () => {
@@ -804,7 +885,8 @@ describe('fetchProviderCatalog', () => {
       .mockResolvedValueOnce(locationResponse(null))
     vi.stubGlobal('fetch', fetchMock)
 
-    const catalog = await refreshProviderCatalog()
+    const onReloadState = vi.fn()
+    const catalog = await refreshProviderCatalog(undefined, onReloadState)
 
     expect(fetchMock).toHaveBeenNthCalledWith(1, 'http://127.0.0.1:4096/api/session/active', expect.objectContaining({
       headers: { Authorization: 'Bearer test' },
@@ -822,5 +904,6 @@ describe('fetchProviderCatalog', () => {
     ])
     expect(catalog.supportsAllModels).toBe(false)
     expect(getOpenCodeConnection).toHaveBeenCalledOnce()
+    expect(onReloadState.mock.calls).toEqual([['unknown'], ['completed']])
   })
 })

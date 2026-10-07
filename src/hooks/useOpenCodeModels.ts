@@ -117,38 +117,44 @@ export function clearOpenCodeModelsQuery(queryClient: Pick<QueryClient, 'removeQ
   })
 }
 
-export async function refreshOpenCodeModelsQuery(queryClient: Pick<QueryClient, 'cancelQueries' | 'fetchQuery' | 'invalidateQueries' | 'setQueryData'>) {
+export async function refreshOpenCodeModelsQuery(queryClient: Pick<QueryClient, 'cancelQueries' | 'fetchQuery' | 'invalidateQueries' | 'setQueryData' | 'removeQueries'>) {
   await queryClient.cancelQueries({ queryKey: ['opencode-models'] })
   let reloadState: OpenCodeCatalogReloadState = 'not_started'
   let unconfirmedReloadFailure: OpenCodeModelsError | undefined
   const retry = modelFetchRetry()
-  const data = await queryClient.fetchQuery({
-    // Model observers must not replace this operation's query function on retry.
-    queryKey: OPENCODE_MODELS_REFRESH_QUERY_KEY,
-    queryFn: async ({ signal }) => {
-      // Repeat the reload only when the backend confirms it never started.
-      if (reloadState !== 'not_started') return fetchModelsApi(signal)
-      reloadState = 'unknown'
-      try {
-        const refreshed = await refreshModelsApi(signal)
-        reloadState = 'completed'
-        return refreshed
-      } catch (error) {
-        if (error instanceof OpenCodeModelsError) {
-          reloadState = error.reloadState ?? 'unknown'
-          if (reloadState === 'unknown') unconfirmedReloadFailure = error
+  let data: ModelsApiResponse
+  try {
+    data = await queryClient.fetchQuery({
+      // Model observers must not replace this operation's query function on retry.
+      queryKey: OPENCODE_MODELS_REFRESH_QUERY_KEY,
+      queryFn: async ({ signal }) => {
+        // Repeat the reload only when the backend confirms it never started.
+        if (reloadState !== 'not_started') return fetchModelsApi(signal)
+        reloadState = 'unknown'
+        try {
+          const refreshed = await refreshModelsApi(signal)
+          reloadState = 'completed'
+          return refreshed
+        } catch (error) {
+          if (error instanceof OpenCodeModelsError) {
+            reloadState = error.reloadState ?? 'unknown'
+            if (reloadState === 'unknown') unconfirmedReloadFailure = error
+          }
+          throw error
         }
-        throw error
-      }
-    },
-    // A manual refresh must POST even when the connected catalog is still fresh.
-    staleTime: 0,
-    retry: (failureCount, error) => {
-      if (reloadState === 'unknown' && (error as OpenCodeModelsError).code !== 'OPENCODE_DISCOVERY_TIMEOUT') return false
-      return retry(failureCount, error)
-    },
-    retryDelay: MODEL_FETCH_RETRY_DELAY_MS,
-  })
+      },
+      // A manual refresh must POST even when the connected catalog is still fresh.
+      staleTime: 0,
+      retry: (failureCount, error) => {
+        if (reloadState === 'unknown' && (error as OpenCodeModelsError).code !== 'OPENCODE_DISCOVERY_TIMEOUT') return false
+        return retry(failureCount, error)
+      },
+      retryDelay: MODEL_FETCH_RETRY_DELAY_MS,
+    })
+  } finally {
+    // Dashboard refetches must never replay a completed manual operation.
+    queryClient.removeQueries({ queryKey: OPENCODE_MODELS_REFRESH_QUERY_KEY, exact: true })
+  }
   queryClient.setQueryData(OPENCODE_MODELS_QUERY_KEY, data)
   await queryClient.invalidateQueries({ queryKey: ALL_OPENCODE_MODELS_QUERY_KEY, exact: true })
   // A recovered read updates the cache without proving the reload completed.

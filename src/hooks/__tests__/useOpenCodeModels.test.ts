@@ -500,6 +500,7 @@ describe('useOpenCodeModels', () => {
       expect(queryClient.getQueryData(OPENCODE_MODELS_QUERY_KEY)).toEqual(nextMethod
         ? { models: [{ fullId: 'openai/recovered-model' }] }
         : cachedModels)
+      expect(queryClient.getQueryState(['opencode-models', 'refresh'])).toBeUndefined()
     })
 
     it.each([
@@ -605,6 +606,66 @@ describe('useOpenCodeModels', () => {
 
       await outcome
       expect(fetchMock).toHaveBeenCalledTimes(2)
+    })
+
+    it('does not repeat a failed provider reload when the dashboard refetches every query', async () => {
+      const cachedModels = { models: [{ fullId: 'openai/old-model' }] }
+      let postAttempts = 0
+      const fetchMock = vi.fn((_path, { method }: { method: string }) => {
+        const fails = method === 'POST' && ++postAttempts <= MODEL_FETCH_RETRY_COUNT + 1
+        return Promise.resolve({
+          ok: true,
+          json: () => Promise.resolve(fails
+            ? { models: [], reloadState: 'not_started', code: 'OPENCODE_DISCOVERY_FAILED', message: 'The safety check failed.' }
+            : cachedModels),
+        })
+      })
+      vi.stubGlobal('fetch', fetchMock)
+      const queryClient = createTestQueryClient()
+      queryClient.setQueryData(OPENCODE_MODELS_QUERY_KEY, cachedModels)
+      renderHook(() => useOpenCodeModels(), { wrapper: queryWrapper(queryClient) })
+      const outcome = expect(refreshOpenCodeModelsQuery(queryClient)).rejects.toThrow('The safety check failed.')
+
+      await act(async () => { await vi.advanceTimersByTimeAsync(MODEL_FETCH_RETRY_COUNT * MODEL_FETCH_RETRY_DELAY_MS) })
+      await outcome
+      expect(fetchMock).toHaveBeenCalledTimes(MODEL_FETCH_RETRY_COUNT + 1)
+
+      await act(async () => { await queryClient.refetchQueries() })
+
+      expect(fetchMock.mock.calls.filter(([, options]) => options.method === 'POST')).toHaveLength(MODEL_FETCH_RETRY_COUNT + 1)
+      expect(fetchMock).toHaveBeenLastCalledWith('/api/models', { method: 'GET', signal: expect.any(AbortSignal) })
+      expect(queryClient.getQueryState(['opencode-models', 'refresh'])).toBeUndefined()
+      expect(queryClient.getQueryData(OPENCODE_MODELS_QUERY_KEY)).toEqual(cachedModels)
+    })
+
+    it('cleans up a cancelled refresh without cancelling its replacement', async () => {
+      let completeReplacement!: (value: unknown) => void
+      let replacementSignal!: AbortSignal
+      const fetchMock = vi.fn()
+        .mockImplementationOnce((_path, { signal }: { signal: AbortSignal }) => new Promise((_resolve, reject) => {
+          signal.addEventListener('abort', () => reject(signal.reason), { once: true })
+        }))
+        .mockImplementationOnce((_path, { signal }: { signal: AbortSignal }) => new Promise((resolve, reject) => {
+          completeReplacement = resolve
+          replacementSignal = signal
+          signal.addEventListener('abort', () => reject(signal.reason), { once: true })
+        }))
+      vi.stubGlobal('fetch', fetchMock)
+      const queryClient = createTestQueryClient()
+      const cancelled = expect(refreshOpenCodeModelsQuery(queryClient)).rejects.toMatchObject({ name: 'Error' })
+      await vi.advanceTimersByTimeAsync(0)
+      const replacement = refreshOpenCodeModelsQuery(queryClient)
+      const outcome = expect(replacement).resolves.toMatchObject({ models: [{ fullId: 'openai/new-model' }] })
+      await vi.advanceTimersByTimeAsync(0)
+
+      await cancelled
+      expect(replacementSignal.aborted).toBe(false)
+      completeReplacement({ ok: true, json: () => Promise.resolve({ models: [{ fullId: 'openai/new-model' }] }) })
+      await outcome
+
+      expect(fetchMock).toHaveBeenCalledTimes(2)
+      expect(queryClient.getQueryState(['opencode-models', 'refresh'])).toBeUndefined()
+      expect(queryClient.getQueryData(OPENCODE_MODELS_QUERY_KEY)).toMatchObject({ models: [{ fullId: 'openai/new-model' }] })
     })
   })
 

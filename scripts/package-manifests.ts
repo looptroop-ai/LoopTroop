@@ -204,6 +204,7 @@ export function renderNuspec(inputs: ChannelInputs): string {
     <authors>LoopTroop AI</authors>
     <projectUrl>${HOMEPAGE}</projectUrl>
     <licenseUrl>${REPOSITORY}/blob/v${inputs.version}/LICENSE</licenseUrl>
+    <copyright>Copyright (c) 2026 LoopTroop AI</copyright>
     <requireLicenseAcceptance>false</requireLicenseAcceptance>
     <projectSourceUrl>${REPOSITORY}</projectSourceUrl>
     <docsUrl>${HOMEPAGE}docs</docsUrl>

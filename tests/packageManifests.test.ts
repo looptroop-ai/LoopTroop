@@ -179,6 +179,12 @@ describe('the Chocolatey nuspec', () => {
     expect(parseDescriptor('chocolatey', nuspec).version).toBe(INPUTS.version)
   })
 
+  it('declares the copyright recorded in LICENSE', () => {
+    const copyright = readFileSync(resolve(fixtures, '..', '..', '..', 'LICENSE'), 'utf8')
+      .match(/^Copyright .+$/m)?.[0]
+    expect(nuspec).toContain(`<copyright>${copyright}</copyright>`)
+  })
+
   it('declares the dependencies doctor treats as required', () => {
     expect(nuspec).toContain('id="nodejs-lts"')
     expect(nuspec).toContain('id="git"')

@@ -10,6 +10,7 @@
     <authors>LoopTroop AI</authors>
     <projectUrl>https://www.looptroop.ovh/</projectUrl>
     <licenseUrl>https://github.com/looptroop-ai/LoopTroop/blob/v9.9.9/LICENSE</licenseUrl>
+    <copyright>Copyright (c) 2026 LoopTroop AI</copyright>
     <requireLicenseAcceptance>false</requireLicenseAcceptance>
     <projectSourceUrl>https://github.com/looptroop-ai/LoopTroop</projectSourceUrl>
     <docsUrl>https://www.looptroop.ovh/docs</docsUrl>

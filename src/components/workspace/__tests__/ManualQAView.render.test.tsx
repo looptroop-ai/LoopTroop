@@ -858,11 +858,11 @@ describe('ManualQAView recovery behavior', () => {
     fireEvent.click(screen.getByRole('button', { name: 'Pass' }))
     fireEvent.click(screen.getByRole('button', { name: 'Submit QA' }))
 
-    expect(await screen.findByRole('button', { name: /reload latest draft/i })).toBeInTheDocument()
-    fireEvent.click(screen.getByRole('button', { name: /reload latest draft/i }))
-    await waitFor(() => expect(screen.getByRole('button', { name: 'Pass' })).toHaveAttribute('data-selected', 'true'))
+    const reload = await screen.findByRole('button', { name: /reload latest draft/i })
+    fireEvent.click(reload)
+    expect(await screen.findByText('Saved on another tab.')).toBeInTheDocument()
+    expect(screen.getByRole('button', { name: 'Pass' })).toHaveAttribute('data-selected', 'true')
     expect(screen.queryByText(/newer draft.*reload/i)).not.toBeInTheDocument()
-    expect(screen.getByText('Saved on another tab.')).toBeInTheDocument()
 
     fireEvent.click(screen.getByRole('button', { name: 'Submit QA' }))
     await waitFor(() => expect(mocks.submit).toHaveBeenCalled())

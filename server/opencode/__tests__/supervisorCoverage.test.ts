@@ -62,10 +62,10 @@ describe('OpenCode supervisor coverage edges', () => {
     const refused = new OpenCodeMissingError('http://127.0.0.1:4096', 'executable is outside trusted paths')
 
     expect(missing.name).toBe('OpenCodeMissingError')
-    expect(missing.message).toContain('command is not on PATH')
+    expect(missing.message).toContain('command was not found on PATH or in an OpenCode installation directory')
     expect(missing.message).toContain('LOOPTROOP_OPENCODE_BASE_URL')
     expect(missing.message).toContain('OPENCODE_PASSWORD')
-    expect(refused.message).toContain('will not be run: executable is outside trusted paths')
+    expect(refused.message).toContain('OpenCode is not running at http://127.0.0.1:4096: executable is outside trusted paths')
     // OpenCode v2 makes up a password for every server started by hand, so
     // LoopTroop could never sign in to one it was told to go and start.
     for (const message of [missing.message, refused.message]) expect(message).not.toContain('opencode serve')

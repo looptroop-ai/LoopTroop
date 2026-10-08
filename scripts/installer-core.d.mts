@@ -126,6 +126,11 @@ export function findTrustedExecutablePath(
   },
 ): string | null
 
+export function trustedSearchDirectories(
+  options?: Parameters<typeof findTrustedExecutablePath>[1],
+  name?: string,
+): string[]
+
 /**
  * The launcher generated into the core with the resolver: how `runTool` starts
  * a resolved program — directly, or for a Windows command script through a

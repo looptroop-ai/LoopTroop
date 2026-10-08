@@ -1,4 +1,4 @@
-import { afterEach, describe, it, expect } from 'vitest'
+import { afterEach, describe, it, expect, vi } from 'vitest'
 import { EventEmitter, once } from 'node:events'
 import { createServer } from 'node:http'
 import {
@@ -10,6 +10,7 @@ import {
   type ProcessTermination,
 } from '../server/opencode/supervisor'
 import { invalidateOpenCodeConnection } from '../server/opencode/connection'
+import * as openCodeServeLogArgs from '../server/lib/opencodeServeLogArgs'
 
 const originalAuthEnv = {
   OPENCODE_PASSWORD: process.env.OPENCODE_PASSWORD,
@@ -17,6 +18,7 @@ const originalAuthEnv = {
 }
 
 afterEach(() => {
+  vi.restoreAllMocks()
   for (const [key, value] of Object.entries(originalAuthEnv)) {
     if (value === undefined) delete process.env[key]
     else process.env[key] = value
@@ -311,7 +313,11 @@ describe('OpenCode supervision', () => {
     await expect(supervisor.start()).rejects.toBeInstanceOf(OpenCodeMissingError)
   })
 
-  it('fails loudly when cmd.exe reports the binary missing by exit code', async () => {
+  it.each([
+    [9009, null, 'code 9009'],
+    [1, null, 'code 1'],
+    [null, 'SIGTERM', 'signal SIGTERM'],
+  ] as const)('reports an early exit (%s, %s) with the selected executable and cause', async (code, signal, cause) => {
     const baseUrl = makeBaseUrl()
 
     const supervisor = new OpenCodeSupervisor({
@@ -319,19 +325,21 @@ describe('OpenCode supervision', () => {
       resolveProgram: () => OPENCODE_BIN,
       spawnProcess: (() => {
         const child = makeChild()
-        // What cmd.exe does for a command it cannot find: it starts, prints
-        // "is not recognized" and exits 9009. There is no 'error' event at all,
-        // so the early exit is the only signal that the binary is not there.
-        queueMicrotask(() => child.emit('exit', 9009))
+        queueMicrotask(() => child.emit('exit', code, signal))
         return child as never
       }) as never,
       probe: async () => false,
+      termination: makeTerminationRecorder().termination,
     })
 
-    await expect(supervisor.start()).rejects.toBeInstanceOf(OpenCodeMissingError)
+    const failure = await supervisor.start().catch((error: unknown) => error)
+    expect(failure).toBeInstanceOf(OpenCodeMissingError)
+    expect((failure as Error).message).toContain(`${OPENCODE_BIN} exited before becoming healthy (${cause}).`)
+    expect((failure as Error).message).not.toContain('Install it from')
   })
 
   it('requests console log output only when the all-log mode is requested', async () => {
+    vi.spyOn(openCodeServeLogArgs, 'getOpenCodeServeLogArgs').mockReturnValue(['--print-logs', '--log-level', 'debug'])
     const baseUrl = makeBaseUrl()
     const child = makeChild()
     let spawned = false
@@ -363,6 +371,8 @@ describe('OpenCode supervision', () => {
       OPENCODE_BIN,
       'serve',
       '--print-logs',
+      '--log-level',
+      'debug',
       '--hostname',
       '127.0.0.1',
       '--port',
@@ -433,7 +443,10 @@ describe('OpenCode supervision', () => {
       probe: async () => false,
     })
 
-    await expect(supervisor.start()).rejects.toThrow(OpenCodeMissingError)
+    const failure = await supervisor.start().catch((error: unknown) => error)
+    expect(failure).toBeInstanceOf(OpenCodeMissingError)
+    expect((failure as Error).message).toContain(`${OPENCODE_BIN} could not be started: spawn opencode ENOENT`)
+    expect((failure as Error).message).not.toContain('Install it from')
   })
 
   it('restarts a bounded number of times, then degrades', async () => {
@@ -748,10 +761,10 @@ describe('OpenCodeMissingError', () => {
   it('says "install it" for a missing binary, and the refusal for a refused one', () => {
     // Same class either way — both degrade the same — but telling someone
     // whose OpenCode is installed to install it was the wrong advice.
-    expect(new OpenCodeMissingError('http://127.0.0.1:4096').message).toContain('is not on PATH')
+    expect(new OpenCodeMissingError('http://127.0.0.1:4096').message).toContain('was not found on PATH or in an OpenCode installation directory')
 
     const refused = new OpenCodeMissingError('http://127.0.0.1:4096', 'its directory is owned by uid 4242.')
-    expect(refused.message).toContain('will not be run: its directory is owned by uid 4242.')
+    expect(refused.message).toContain('OpenCode is not running at http://127.0.0.1:4096: its directory is owned by uid 4242.')
     expect(refused.message).not.toContain('Install it from')
   })
 })

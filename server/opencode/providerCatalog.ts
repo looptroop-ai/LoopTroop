@@ -223,6 +223,10 @@ async function fetchV2ProviderCatalog(
   const controller = new AbortController()
   signal = AbortSignal.any([signal, controller.signal])
   try {
+    // Integration discovery waits for plugin activation; catalog reads return the current snapshot.
+    await fetchCatalogEndpoint(baseUrl, connection, '/api/integration', {}, signal)
+      .then((response) => readLocationData(response, 'provider activation'))
+    signal.throwIfAborted()
     const [providers, models, defaultModel] = await Promise.all([
       fetchCatalogEndpoint(baseUrl, connection, '/api/provider', {}, signal)
         .then((response) => readLocationData(response, 'provider catalog')),
@@ -268,7 +272,9 @@ async function fetchProviderCatalogWithConnection(
   signal: AbortSignal,
   scope: 'connected' | 'all' = 'connected',
 ) {
-  if (connection.protocol === 'v2') return fetchV2ProviderCatalog(baseUrl, connection.headers, signal)
+  if (connection.protocol === 'v2') {
+    return fetchV2ProviderCatalog(baseUrl, connection.headers, signal)
+  }
   const path = scope === 'all' ? '/provider' : '/config/providers'
   let response = await fetchCatalogEndpoint(baseUrl, connection, path, {}, signal)
   if (scope === 'all' && response.status === 404) {

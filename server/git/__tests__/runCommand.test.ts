@@ -1,4 +1,4 @@
-import { describe, expect, it } from 'vitest'
+import { describe, expect, it, vi } from 'vitest'
 import {
   GIT_MUTATION_TIMEOUT_MS,
   GIT_DEFAULT_TIMEOUT_MS,
@@ -296,25 +296,43 @@ describe('server/git/runCommand', () => {
 
   it.runIf(process.platform !== 'win32')('kills a redirected descendant while the timed-out leader remains live', async () => {
     const root = makeTempDir('run-command-redirected-child-')
+    const realSetTimeout = setTimeout
+    let triggerTimeout: (() => void) | undefined
+    // Hold only the command deadline until both fixture processes can ignore SIGTERM.
+    const deadline = vi.spyOn(globalThis, 'setTimeout').mockImplementationOnce((callback, delay, ...args) =>
+      realSetTimeout(() => { triggerTimeout = () => callback(...args) }, delay))
     try {
       const marker = join(root, 'redirected-child-survived')
+      const ready = join(root, 'redirected-child-ready')
       const descendant = [
         'const fs = require("node:fs")',
         'process.on("SIGTERM", () => {})',
         "setTimeout(() => fs.writeFileSync(process.argv[1], 'survived'), 3000)",
+        "fs.writeFileSync(process.argv[2], 'ready')",
       ].join(';')
       const leader = [
         "const { spawn } = require('node:child_process')",
-        "const child = spawn(process.execPath, ['-e', process.argv[1], process.argv[2]], { stdio: 'ignore' }); child.unref()",
         'process.on("SIGTERM", () => {})',
+        "const child = spawn(process.execPath, ['-e', process.argv[1], process.argv[2], process.argv[3]], { stdio: 'ignore' }); child.unref()",
         'setTimeout(() => {}, 60000)',
       ].join(';')
 
-      const started = Date.now()
-      const result = await runCommand(node, ['-e', leader, descendant, marker], {
+      const command = runCommand(node, ['-e', leader, descendant, marker, ready], {
         timeoutMs: 300,
         log: false,
       })
+      const readyDeadline = Date.now() + 5_000
+      while (!triggerTimeout || !existsSync(ready)) {
+        if (Date.now() >= readyDeadline) throw new Error('The fixture did not install its SIGTERM handlers')
+        await new Promise((resolve) => realSetTimeout(resolve, 10))
+      }
+      const started = Date.now()
+      const timersBeforeDeadline = deadline.mock.calls.length
+      triggerTimeout()
+      // The first timer created by the deadline sends SIGKILL; the later
+      // abandonment timer can also make elapsed time exceed two seconds.
+      expect(deadline.mock.calls[timersBeforeDeadline]).toEqual([expect.any(Function), 2_000])
+      const result = await command
       const elapsed = Date.now() - started
 
       expect(result.ok).toBe(false)
@@ -329,6 +347,8 @@ describe('server/git/runCommand', () => {
       // pre-close tree termination.
       expect(existsSync(marker)).toBe(false)
     } finally {
+      deadline.mockRestore()
+      await stopActiveCommands()
       removeTempDir(root)
     }
   })

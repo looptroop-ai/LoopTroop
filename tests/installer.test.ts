@@ -9,7 +9,7 @@ import { dirname, join, resolve, win32 } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import {
   binaryAssetName, binaryTarget, defaultPrefix, detectLibc, INSTALL_OPTIONS, onPath, planProgramLaunch,
-  findTrustedExecutablePath, probePort, programChildEnvironment, renameWithRetry, runTool, stallGuard, streamBody,
+  findTrustedExecutablePath, probePort, programChildEnvironment, renameWithRetry, runTool, stallGuard, streamBody, trustedSearchDirectories,
 } from '../scripts/installer-core.mjs'
 import { removeTempDir } from '../server/test/tempDir'
 
@@ -1430,6 +1430,45 @@ describe('PATH resolution', () => {
     const dir = directoryWith('tool.cmd', 'tool.exe')
 
     expect(resolveOnPath('tool.cmd', dir, PATHEXT)).toBe(join(dir, 'tool.cmd'))
+  })
+
+  it.each(['opencode', 'opencode.exe', 'opencode.cmd'])('uses canonical OpenCode directories for %s in the generated resolver', command => {
+    const canonical = directoryWith('opencode.exe', 'opencode.cmd')
+    const system = directoryWith('opencode.exe', 'opencode.cmd')
+    const override = directoryWith('opencode.exe', 'opencode.cmd')
+    const options = {
+      env: { PATH: system },
+      policyEnv: { USERPROFILE: 'relative', OPENCODE_INSTALL_DIR: canonical, SystemRoot: 'relative', PATHEXT },
+      platform: 'win32' as const,
+      cache: null,
+    }
+    const file = command === 'opencode' ? 'opencode.exe' : command
+    expect(findTrustedExecutablePath(command, options)).toBe(join(canonical, file))
+    expect(findTrustedExecutablePath(command, { ...options, env: { PATH: '' } })).toBe(join(canonical, file))
+    expect(findTrustedExecutablePath(command, {
+      ...options,
+      policyEnv: { ...options.policyEnv, LOOPTROOP_TRUSTED_EXECUTABLE_DIRS: override },
+    })).toBe(join(override, file))
+    expect(findTrustedExecutablePath(command, {
+      ...options,
+      policyEnv: { ...options.policyEnv, OPENCODE_INSTALL_DIR: '' },
+    })).toBe(join(system, file))
+  })
+
+  it('keeps explicit configuration ahead of a home installation already on PATH', () => {
+    expect(trustedSearchDirectories({
+      env: { PATH: 'C:\\Windows\\System32;C:\\Users\\Alice\\.opencode\\bin;C:\\OpenCode\\bin;C:\\Tools' },
+      policyEnv: { USERPROFILE: 'C:\\Users\\Alice', OPENCODE_INSTALL_DIR: 'C:\\OpenCode\\bin', SystemRoot: 'C:\\Windows' },
+      platform: 'win32',
+    }, 'opencode.exe')).toEqual([
+      'C:\\OpenCode\\bin',
+      'C:\\Users\\Alice\\.opencode\\bin',
+      'C:\\Windows\\System32',
+      'C:\\Windows',
+      'C:\\Windows\\System32\\Wbem',
+      'C:\\Windows\\System32\\WindowsPowerShell\\v1.0',
+      'C:\\Tools',
+    ])
   })
 
   it('searches PATH entries in order', () => {

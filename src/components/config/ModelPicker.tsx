@@ -15,6 +15,7 @@ interface ModelPickerProps {
   onChange: (modelFullId: string) => void
   placeholder?: string
   disabledValues?: string[]
+  isRefreshing?: boolean
 }
 
 function singleCostLabel(input: number): { label: string; color: string } {
@@ -184,7 +185,7 @@ function ModelRow({ model, selected, disabled, onSelect, id, active }: {
   )
 }
 
-export function ModelPicker({ id, label, value, onChange, placeholder = 'Search models…', disabledValues = [] }: ModelPickerProps) {
+export function ModelPicker({ id, label, value, onChange, placeholder = 'Search models…', disabledValues = [], isRefreshing = false }: ModelPickerProps) {
   const [isShowingAll, setIsShowingAll] = useState(false)
   const {
     data: connectedModels,
@@ -204,9 +205,9 @@ export function ModelPicker({ id, label, value, onChange, placeholder = 'Search 
   } = useAllOpenCodeModels(isShowingAll && supportsAllModels)
   const showingAll = isShowingAll && supportsAllModels
   const models = showingAll ? allModels : connectedModels
-  const isLoading = showingAll ? loadingAll : loadingConnected
+  const isLoading = isRefreshing || (showingAll ? loadingAll : loadingConnected)
   const isError = showingAll ? hasAllError : hasConnectedError
-  const isFetching = showingAll ? fetchingAll : fetchingConnected
+  const isFetching = isRefreshing || (showingAll ? fetchingAll : fetchingConnected)
   const activeError = showingAll ? allError : connectedError
   const errorCopy = useMemo(() => getModelQueryErrorCopy(activeError), [activeError])
   const [isOpen, setIsOpen] = useState(false)
@@ -312,6 +313,9 @@ export function ModelPicker({ id, label, value, onChange, placeholder = 'Search 
   const cleanDisabledValues = useMemo(() => disabledValues.map(cleanModelId), [disabledValues, cleanModelId])
 
   const selected = models?.find(m => m.fullId === cleanValue) ?? allModels?.find(m => m.fullId === cleanValue) ?? connectedModels?.find(m => m.fullId === cleanValue)
+  const modelCountLabel = models?.length
+    ? `${models.length.toLocaleString()} ${models.length === 1 ? 'model' : 'models'} found.`
+    : undefined
 
   const filtered = useMemo(() => {
     if (!models) return []
@@ -395,6 +399,7 @@ export function ModelPicker({ id, label, value, onChange, placeholder = 'Search 
         type="button"
         aria-controls={isOpen ? popupId : undefined}
         aria-expanded={isOpen}
+        aria-busy={isFetching || undefined}
         aria-labelledby={`${ownerId}-label ${ownerId}-value`}
         onClick={() => {
           setIsOpen(v => !v)
@@ -428,7 +433,7 @@ export function ModelPicker({ id, label, value, onChange, placeholder = 'Search 
             <span className="font-mono text-xs">{value}</span>
           ) : (
             <span className="text-muted-foreground">
-              {isLoading ? 'Loading models…' : models && models.length === 0 ? 'No models available' : placeholder}
+              {isLoading ? 'Loading models…' : models && models.length === 0 ? 'No models available' : modelCountLabel ? `${modelCountLabel} ${placeholder}` : placeholder}
             </span>
           )}
         </span>
@@ -466,7 +471,7 @@ export function ModelPicker({ id, label, value, onChange, placeholder = 'Search 
                   setQuery(e.target.value)
                   setActiveOptionId(undefined)
                 }}
-                placeholder="Search by name, provider, family…"
+                placeholder={modelCountLabel ? `${modelCountLabel} Search by name, provider, family…` : 'Search by name, provider, family…'}
                 className="flex-1 bg-transparent text-sm outline-none placeholder:text-muted-foreground"
                 aria-label={label ? `${label}: search models` : 'Search models'}
                 aria-describedby={`${ownerId}-value`}
@@ -493,27 +498,6 @@ export function ModelPicker({ id, label, value, onChange, placeholder = 'Search 
               />
               <span className="text-xs text-muted-foreground">Show free models only</span>
             </label>
-            <div className="flex flex-wrap gap-1 px-3 pb-2 max-h-24 overflow-y-auto">
-              {grouped.map(([providerID, { providerName, models: providerModels }]) => (
-                <button
-                  key={providerID}
-                  type="button"
-                  aria-expanded={!collapsedProviders.includes(providerID)}
-                  aria-controls={`${ownerId}-provider-${encodeURIComponent(providerID)}`}
-                  onClick={() => {
-                    setCollapsedProviders(current => current.includes(providerID)
-                      ? current.filter(id => id !== providerID)
-                      : [...current, providerID])
-                    setActiveOptionId(undefined)
-                  }}
-                  className="flex items-center gap-1 rounded border border-border px-2 py-1 text-xs text-muted-foreground hover:bg-accent focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
-                >
-                  {providerName}
-                  <span className="opacity-60">{providerModels.length} {providerModels.length === 1 ? 'model' : 'models'}</span>
-                  <ChevronDown className={cn('h-3 w-3', collapsedProviders.includes(providerID) && '-rotate-90')} aria-hidden="true" />
-                </button>
-              ))}
-            </div>
           </div>
 
           {/* Results */}
@@ -542,24 +526,38 @@ export function ModelPicker({ id, label, value, onChange, placeholder = 'Search 
               </div>
             )}
 
-            {!isLoading && !isError && grouped.length > 0 && grouped.every(([providerID]) => collapsedProviders.includes(providerID)) && (
-              <div role="status" className="px-4 py-6 text-sm text-muted-foreground text-center">
-                All providers are collapsed. Expand a provider above to see its models.
-              </div>
-            )}
-
-            <div id={listboxId} role="listbox" aria-label={label ? `${label}: available models` : 'Available models'}>
-              {grouped.map(([providerID, { providerName, models: providerModels }]) => (
+            {/* Own model groups without including their interactive provider headings. */}
+            <div
+              id={listboxId}
+              role="listbox"
+              aria-label={label ? `${label}: available models` : 'Available models'}
+              aria-owns={grouped.filter(([providerID]) => !collapsedProviders.includes(providerID))
+                .map(([providerID]) => `${ownerId}-provider-${encodeURIComponent(providerID)}`).join(' ') || undefined}
+            />
+            {grouped.map(([providerID, { providerName, models: providerModels }]) => (
+              <div key={providerID}>
+                <button
+                  type="button"
+                  aria-expanded={!collapsedProviders.includes(providerID)}
+                  aria-controls={`${ownerId}-provider-${encodeURIComponent(providerID)}`}
+                  onClick={() => {
+                    setCollapsedProviders(current => current.includes(providerID)
+                      ? current.filter(id => id !== providerID)
+                      : [...current, providerID])
+                    setActiveOptionId(undefined)
+                  }}
+                  className="sticky top-0 z-10 flex w-full items-center gap-2 bg-popover/95 backdrop-blur-sm h-8 px-3 text-[11px] font-semibold uppercase tracking-wider text-muted-foreground border-b border-border/40 hover:bg-accent focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-ring"
+                >
+                  <span className="truncate">{providerName}</span>
+                  <span className="text-[10px] font-normal normal-case tracking-normal opacity-60">{providerModels.length} {providerModels.length === 1 ? 'model' : 'models'}</span>
+                  <ChevronDown className={cn('ml-auto h-3 w-3 shrink-0', collapsedProviders.includes(providerID) && '-rotate-90')} aria-hidden="true" />
+                </button>
                 <div
-                  key={providerID}
                   id={`${ownerId}-provider-${encodeURIComponent(providerID)}`}
                   role="group"
                   aria-label={providerName}
                   hidden={collapsedProviders.includes(providerID)}
                 >
-                  <div aria-hidden="true" className="sticky top-0 z-10 bg-popover/95 backdrop-blur-sm h-8 px-3 leading-8 truncate text-[11px] font-semibold uppercase tracking-wider text-muted-foreground border-b border-border/40">
-                    {providerName}
-                  </div>
                   {providerModels.map(model => (
                     <ModelRow
                       key={model.fullId}
@@ -579,8 +577,8 @@ export function ModelPicker({ id, label, value, onChange, placeholder = 'Search 
                     />
                   ))}
                 </div>
-              ))}
-            </div>
+              </div>
+            ))}
           </div>
 
           {supportsAllModels && (

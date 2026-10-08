@@ -111,13 +111,13 @@ function modelFetchRetry() {
   }
 }
 
-export function clearOpenCodeModelsQuery(queryClient: Pick<QueryClient, 'removeQueries'>) {
-  queryClient.removeQueries({
+export function invalidateOpenCodeModelsQuery(queryClient: Pick<QueryClient, 'invalidateQueries'>) {
+  return queryClient.invalidateQueries({
     queryKey: ['opencode-models'],
   })
 }
 
-export async function refreshOpenCodeModelsQuery(queryClient: Pick<QueryClient, 'cancelQueries' | 'fetchQuery' | 'invalidateQueries' | 'setQueryData' | 'removeQueries'>) {
+export async function refreshOpenCodeModelsQuery(queryClient: Pick<QueryClient, 'cancelQueries' | 'fetchQuery' | 'getQueryData' | 'invalidateQueries' | 'setQueryData' | 'removeQueries'>) {
   await queryClient.cancelQueries({ queryKey: ['opencode-models'] })
   let reloadState: OpenCodeCatalogReloadState = 'not_started'
   let unconfirmedReloadFailure: OpenCodeModelsError | undefined
@@ -151,10 +151,23 @@ export async function refreshOpenCodeModelsQuery(queryClient: Pick<QueryClient, 
       },
       retryDelay: MODEL_FETCH_RETRY_DELAY_MS,
     })
+  } catch (error) {
+    // A failed reload must not strand a cancelled first read in either scope.
+    for (const queryKey of [OPENCODE_MODELS_QUERY_KEY, ALL_OPENCODE_MODELS_QUERY_KEY]) {
+      if (queryClient.getQueryData(queryKey) === undefined) {
+        void queryClient.invalidateQueries({ queryKey, exact: true })
+      }
+    }
+    throw error
   } finally {
     // Dashboard refetches must never replay a completed manual operation.
     queryClient.removeQueries({ queryKey: OPENCODE_MODELS_REFRESH_QUERY_KEY, exact: true })
   }
+  // A health-triggered catalog read can start while the provider reload is running.
+  await Promise.all([
+    queryClient.cancelQueries({ queryKey: OPENCODE_MODELS_QUERY_KEY, exact: true }),
+    queryClient.cancelQueries({ queryKey: ALL_OPENCODE_MODELS_QUERY_KEY, exact: true }),
+  ])
   queryClient.setQueryData(OPENCODE_MODELS_QUERY_KEY, data)
   await queryClient.invalidateQueries({ queryKey: ALL_OPENCODE_MODELS_QUERY_KEY, exact: true })
   // A recovered read updates the cache without proving the reload completed.

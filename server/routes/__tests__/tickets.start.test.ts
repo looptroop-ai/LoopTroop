@@ -548,38 +548,26 @@ describe('ticketRouter POST /tickets/:id/start', () => {
     broadcaster.clearTicket(ticket.id)
   })
 
-  it('freezes the effective Manual QA value and its inheritance source at start', async () => {
+  it.each([
+    { name: 'project defaults', projectOverride: null, ticketOverride: null, enabled: true, source: 'project' },
+    { name: 'project override', projectOverride: false, ticketOverride: null, enabled: false, source: 'project' },
+    { name: 'ticket override', projectOverride: false, ticketOverride: true, enabled: true, source: 'ticket' },
+  ])('freezes the effective Manual QA value and its inheritance source at start ($name)', async ({ projectOverride, ticketOverride, enabled, source }) => {
     sqlite.exec(`
       INSERT INTO profiles (main_implementer, council_members, manual_qa_enabled)
       VALUES ('openai/codex-mini-latest', '["openai/codex-mini-latest"]', 1);
     `)
-    const inherited = setupStartTicketApp()
-    expect((await inherited.app.request(`/api/tickets/${inherited.ticket.id}/start`, { method: 'POST' })).status).toBe(200)
-    expect(getTicketByRef(inherited.ticket.id)).toMatchObject({
-      lockedManualQaEnabled: true,
-      lockedManualQaSource: 'project',
+    const { app, project, ticket } = setupStartTicketApp()
+    if (projectOverride !== null) updateProject(project.id, { manualQaOverride: projectOverride })
+    if (ticketOverride !== null) updateTicket(ticket.id, { manualQaOverride: ticketOverride })
+
+    expect((await app.request(`/api/tickets/${ticket.id}/start`, { method: 'POST' })).status).toBe(200)
+    expect(getTicketByRef(ticket.id)).toMatchObject({
+      lockedManualQaEnabled: enabled,
+      lockedManualQaSource: source,
     })
 
-    const projectOverride = setupStartTicketApp()
-    updateProject(projectOverride.project.id, { manualQaOverride: false })
-    expect((await projectOverride.app.request(`/api/tickets/${projectOverride.ticket.id}/start`, { method: 'POST' })).status).toBe(200)
-    expect(getTicketByRef(projectOverride.ticket.id)).toMatchObject({
-      lockedManualQaEnabled: false,
-      lockedManualQaSource: 'project',
-    })
-
-    const overridden = setupStartTicketApp()
-    updateProject(overridden.project.id, { manualQaOverride: false })
-    updateTicket(overridden.ticket.id, { manualQaOverride: true })
-    expect((await overridden.app.request(`/api/tickets/${overridden.ticket.id}/start`, { method: 'POST' })).status).toBe(200)
-    expect(getTicketByRef(overridden.ticket.id)).toMatchObject({
-      lockedManualQaEnabled: true,
-      lockedManualQaSource: 'ticket',
-    })
-
-    broadcaster.clearTicket(inherited.ticket.id)
-    broadcaster.clearTicket(projectOverride.ticket.id)
-    broadcaster.clearTicket(overridden.ticket.id)
+    broadcaster.clearTicket(ticket.id)
   })
 
   it('freezes the saved project Git hook policy at start', async () => {

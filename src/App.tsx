@@ -23,7 +23,7 @@ import { useTickets } from '@/hooks/useTickets'
 import { useProfile } from '@/hooks/useProfile'
 import { useStartupStatus } from '@/hooks/useStartupStatus'
 import { useQueryClient } from '@tanstack/react-query'
-import { clearOpenCodeModelsQuery } from '@/hooks/useOpenCodeModels'
+import { invalidateOpenCodeModelsQuery } from '@/hooks/useOpenCodeModels'
 import { useRecoveryAutoReload } from '@/hooks/useRecoveryAutoReload'
 import { useWorkflowMeta } from '@/hooks/useWorkflowMeta'
 import { preloadWorkspaceForView } from '@/components/ticket/workspacePreload'
@@ -274,7 +274,7 @@ function App() {
 
   useEffect(() => {
     if (openedWithModalRef.current === 'profile') {
-      clearOpenCodeModelsQuery(queryClient)
+      void invalidateOpenCodeModelsQuery(queryClient)
     }
   }, [queryClient])
 
@@ -561,7 +561,7 @@ function App() {
   // One open and one close transition, shared by every routed modal. The URL
   // follows from the state through the route effect above.
   const openModal = useCallback((modal: ModalRoute) => {
-    if (modal === 'profile') clearOpenCodeModelsQuery(queryClient)
+    if (modal === 'profile') void invalidateOpenCodeModelsQuery(queryClient)
     if (modal === 'ticket') setTicketModalEditing(false)
     setModalDirty((current) => current[modal] ? { ...current, [modal]: false } : current)
     setActiveModal(modal)

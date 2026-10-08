@@ -1,4 +1,4 @@
-import { createReadStream, existsSync, statSync, watch, type Stats } from 'node:fs'
+import { createReadStream, existsSync, statSync, watch, type BigIntStats } from 'node:fs'
 import { StringDecoder } from 'node:string_decoder'
 import { basename, dirname } from 'node:path'
 import { setTimeout as delay } from 'node:timers/promises'
@@ -19,7 +19,7 @@ interface TailRead {
   generation: string | null
   text: string
   offset: number
-  identity: Pick<Stats, 'dev' | 'ino' | 'birthtimeMs'>
+  identity: Pick<BigIntStats, 'dev' | 'ino' | 'birthtimeNs'>
   /** Bytes held by the initial decoder until the first follow window arrives. */
   decoderSeed: Buffer
   /** Whether the original tail ended with a complete newline. */
@@ -43,8 +43,8 @@ async function readTail(logPath: string, lines: number, attempt = 0): Promise<Ta
   const { open } = await import('node:fs/promises')
   const handle = await open(logPath, 'r')
   try {
-    const identity = await handle.stat()
-    const size = identity.size
+    const identity = await handle.stat({ bigint: true })
+    const size = Number(identity.size)
     let position = size
     const chunks: Buffer[] = []
     let newlines = 0
@@ -164,16 +164,17 @@ function followLog(logPath: string, tail: TailRead): Promise<void> {
       if (reading) return
       const currentGeneration = readDaemonLogGeneration(logPath)
       if (currentGeneration === null) return
-      let current: Stats
+      let current: BigIntStats
       try {
-        current = statSync(logPath)
+        // Distinct native file IDs can round to the same number.
+        current = statSync(logPath, { bigint: true })
       } catch {
         return
       }
 
-      const size = current.size
+      const size = Number(current.size)
       if (currentGeneration !== generation || current.dev !== identity.dev || current.ino !== identity.ino
-        || current.birthtimeMs !== identity.birthtimeMs || size < offset) {
+        || current.birthtimeNs !== identity.birthtimeNs || size < offset) {
         offset = 0
         decoder = new StringDecoder('utf8')
       }

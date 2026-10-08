@@ -231,30 +231,49 @@ describe('useDebouncedApprovalUiState', () => {
   })
 
   it('does not acknowledge a flushed snapshot after a later local edit', async () => {
-    const queryClient = createTestQueryClient()
-    let releaseBody!: (value: unknown) => void
-    const oldBody = new Promise(resolve => { releaseBody = resolve })
-    vi.spyOn(globalThis, 'fetch').mockResolvedValue({
-      ok: true,
-      json: () => oldBody,
-    } as Response)
-    const saveUiState = vi.fn().mockResolvedValue({ success: true })
-    const hook = renderHook(
-      (props: HarnessProps) => useHarness(props),
-      { initialProps: { snapshot: { value: 'first' }, saveUiState, queryClient } },
-    )
+    vi.useFakeTimers()
+    try {
+      const queryClient = createTestQueryClient()
+      let releaseBody!: (value: unknown) => void
+      const oldBody = new Promise(resolve => { releaseBody = resolve })
+      vi.spyOn(globalThis, 'fetch').mockResolvedValue({
+        ok: true,
+        json: () => oldBody,
+      } as Response)
+      const saveUiState = vi.fn().mockResolvedValue({ success: true })
+      const hook = renderHook(
+        (props: HarnessProps) => useHarness(props),
+        { initialProps: { snapshot: { value: 'first' }, saveUiState, queryClient } },
+      )
 
-    act(() => window.dispatchEvent(new Event('pagehide')))
-    hook.rerender({ snapshot: { value: 'later' }, saveUiState, queryClient })
+      act(() => window.dispatchEvent(new Event('pagehide')))
+      hook.rerender({ snapshot: { value: 'later' }, saveUiState, queryClient })
 
-    await act(async () => {
-      releaseBody({ conflict: false, revision: 8 })
-      await Promise.resolve()
-    })
+      await act(async () => {
+        releaseBody({ conflict: false, revision: 8 })
+        await Promise.resolve()
+      })
 
-    expect(hook.result.current.lastSavedSnapshotRef.current).not.toBe(JSON.stringify({ value: 'first' }))
-    expect(hook.result.current.autosave.state).not.toBe('saved')
-    hook.unmount()
+      expect(saveUiState).not.toHaveBeenCalled()
+      expect(hook.result.current.lastSavedSnapshotRef.current).toBe('')
+      expect(hook.result.current.autosave.state).toBe('pending')
+
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(10)
+      })
+
+      expect(saveUiState).toHaveBeenCalledExactlyOnceWith({
+        ticketId: '1:T-42',
+        scope: 'approval_prd',
+        data: { value: 'later' },
+      })
+      expect(hook.result.current.lastSavedSnapshotRef.current).toBe(JSON.stringify({ value: 'later' }))
+      expect(hook.result.current.autosave.state).toBe('saved')
+      hook.unmount()
+    } finally {
+      vi.clearAllTimers()
+      vi.useRealTimers()
+    }
   })
 
   it('reports a keepalive failure through the autosave error channel', async () => {

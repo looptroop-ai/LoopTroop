@@ -148,24 +148,31 @@ function installHint(tool: string): string {
  * hint, sent people to reinstall something they had.
  */
 function unavailable(probe: ProbeResult, detail: string, remedy: string): { detail: string; remedy: string } {
-  if (probe.kind !== 'unavailable' || probe.refusal === undefined) return { detail, remedy }
-  return {
-    detail: probe.refusal,
-    remedy: `Set ${TRUSTED_EXECUTABLE_DIRS_ENV} to that directory if the tool is meant to be there, or install it somewhere owned by you or by root.`,
+  if (probe.kind === 'unavailable') {
+    if (probe.refusal !== undefined) return {
+      detail: probe.refusal,
+      remedy: `Set ${TRUSTED_EXECUTABLE_DIRS_ENV} to that directory if the tool is meant to be there, or install it somewhere owned by you or by root.`,
+    }
+    if (probe.failure !== undefined) return {
+      detail: `${probe.path}: ${probe.failure}`,
+      remedy: `Repair this OpenCode installation, or set ${TRUSTED_EXECUTABLE_DIRS_ENV} to the directory containing a working installation.`,
+    }
   }
+  return { detail, remedy }
 }
 
 /** What running one of doctor's probe commands established. */
 export type ProbeResult =
-  | { kind: 'ok'; output: string }
+  | { kind: 'ok'; output: string; path?: string }
   | { kind: 'timed-out' }
   /**
-   * Not on PATH, or on it and exiting non-zero — or found and refused, in which
+   * No executable was found, or it exited non-zero — or found and refused, in which
    * case `refusal` says why. A refused tool degrades exactly as a missing one
    * does, but the advice differs: "install it" is wrong for a tool that is
-   * installed, somewhere this machine will not run it from.
+   * installed, somewhere this machine will not run it from. OpenCode also
+   * keeps its selected path and launch failure for diagnosing broken shims.
    */
-  | { kind: 'unavailable'; refusal?: string }
+  | { kind: 'unavailable'; refusal?: string; path?: string; failure?: string }
 
 /**
  * Runs one of doctor's probe commands under a deadline.
@@ -211,12 +218,13 @@ export function runProbe(command: string, args: string[], timeoutMs: number): Pr
   const env = createChildEnvironment({ ...process.env, ...NON_INTERACTIVE_GIT_ENV })
   const launch = planProgramLaunch(resolution.path, args, { env })
   if (launch.reason !== undefined) return { kind: 'unavailable', refusal: launch.reason }
+  const opencode = command === 'opencode'
   const started = Date.now()
   // `spawnSync`, not `execFileSync`: only `spawnSync` documents
   // `windowsVerbatimArguments`, which a line escaped for cmd.exe needs.
   const result = spawnSync(launch.file, launch.args, {
     encoding: 'utf8',
-    stdio: ['ignore', 'pipe', 'ignore'],
+    stdio: ['ignore', 'pipe', opencode ? 'pipe' : 'ignore'],
     timeout: timeoutMs,
     // Escalates rather than asking twice: a probe that outran its budget has
     // nothing left to negotiate, and `doctor` must not hang on one.
@@ -224,7 +232,9 @@ export function runProbe(command: string, args: string[], timeoutMs: number): Pr
     env,
     windowsVerbatimArguments: launch.windowsVerbatimArguments,
   })
-  if (result.error === undefined && result.status === 0) return { kind: 'ok', output: result.stdout }
+  if (result.error === undefined && result.status === 0) return {
+    kind: 'ok', output: result.stdout, ...(opencode ? { path: resolution.path } : {}),
+  }
   // A command that was found and then hung is a different problem from one that
   // is not installed, and the install hint would be wrong advice.
   //
@@ -239,9 +249,17 @@ export function runProbe(command: string, args: string[], timeoutMs: number): Pr
   // one — telling someone to install a tool they already have, which is the
   // exact confusion this branch exists to prevent.
   const elapsed = Date.now() - started
-  return (result.error as NodeJS.ErrnoException | undefined)?.code === 'ETIMEDOUT' || elapsed >= timeoutMs
-    ? { kind: 'timed-out' }
-    : { kind: 'unavailable' }
+  if ((result.error as NodeJS.ErrnoException | undefined)?.code === 'ETIMEDOUT' || elapsed >= timeoutMs) {
+    return { kind: 'timed-out' }
+  }
+  if (!opencode) return { kind: 'unavailable' }
+  const stderr = result.stderr?.trim().split(/\r?\n/, 1)[0]?.trim()
+  const failure = result.error !== undefined
+    ? `could not be started: ${getErrorMessage(result.error)}`
+    : result.signal
+      ? `was terminated by ${result.signal}`
+      : `exited with code ${result.status ?? 'unknown'}${stderr ? `: ${stderr}` : ''}`
+  return { kind: 'unavailable', path: resolution.path, failure }
 }
 
 /** The line to show for a probe that never came back, and what to do about it. */
@@ -431,6 +449,7 @@ export function judgeOpenCode(
     baseUrl: string
     daemon: DaemonState | null
     cliAvailable: boolean
+    cliRemedy?: string
     /** The address is LoopTroop's default, which a start moves off when it is held. */
     movable?: boolean
     /** Where a start would move to now; null when no port is free, absent when not asked. */
@@ -508,7 +527,7 @@ export function judgeOpenCode(
       // Nothing is running and nothing could be started: the next start is
       // refused before it binds a port, rather than launching a server.
       detail: `${detail}, and \`opencode\` cannot be launched`,
-      remedy: OPENCODE_INSTALL_REMEDY,
+      remedy: context.cliRemedy ?? OPENCODE_INSTALL_REMEDY,
     }
   }
 
@@ -541,7 +560,7 @@ function heldByUnusableServer(
  */
 function judgeHeldDefaultAddress(
   reachable: OpenCodeReachability,
-  context: { baseUrl: string; daemon: DaemonState | null; cliAvailable: boolean; movable?: boolean; nextFreePort?: number | null },
+  context: { baseUrl: string; daemon: DaemonState | null; cliAvailable: boolean; cliRemedy?: string; movable?: boolean; nextFreePort?: number | null },
 ): Check | null {
   if (!heldByUnusableServer(reachable, context)) return null
 
@@ -551,7 +570,7 @@ function judgeHeldDefaultAddress(
       name: 'opencode',
       status: 'fail',
       detail: `${held} \`opencode\` cannot be launched to start LoopTroop's own.`,
-      remedy: OPENCODE_INSTALL_REMEDY,
+      remedy: context.cliRemedy ?? OPENCODE_INSTALL_REMEDY,
     }
   }
   if (context.nextFreePort === null) {
@@ -670,7 +689,7 @@ async function leftoverOpenCodeCheck(probe: DaemonProbe): Promise<Check | null> 
   return null
 }
 
-async function checkOpenCode(probe: DaemonProbe, cliAvailable: boolean): Promise<Check> {
+async function checkOpenCode(probe: DaemonProbe, cli: Check): Promise<Check> {
   const leftover = await leftoverOpenCodeCheck(probe)
   if (leftover !== null) return leftover
 
@@ -680,13 +699,15 @@ async function checkOpenCode(probe: DaemonProbe, cliAvailable: boolean): Promise
   }
 
   const daemon = probe.kind === 'running' ? probe.state : null
+  const cliAvailable = isOpenCodeCliLaunchable(cli)
+  const cliRemedy = cli.remedy
   const movable = settings.sources.opencodeBaseUrl === 'default'
   const { bindHost, port } = serveAddress(settings.opencodeBaseUrl)
 
   // Asked before the address is probed, as a start asks it: the daemon binds
   // its own address after OpenCode is up, so nothing at it can be used.
   if (daemon === null && bindsDaemonAddress(settings.opencodeBaseUrl, getBackendHost(), settings.port)) {
-    return await judgeDaemonAddress(settings.opencodeBaseUrl, { bindHost, port }, { movable, cliAvailable, daemonPort: settings.port })
+    return await judgeDaemonAddress(settings.opencodeBaseUrl, { bindHost, port }, { movable, cliAvailable, cliRemedy, daemonPort: settings.port })
   }
 
   const reachable = daemon
@@ -703,6 +724,7 @@ async function checkOpenCode(probe: DaemonProbe, cliAvailable: boolean): Promise
     baseUrl: settings.opencodeBaseUrl,
     daemon,
     cliAvailable,
+    cliRemedy,
     movable,
     ...(nextFreePort === undefined ? {} : { nextFreePort }),
   })
@@ -716,7 +738,7 @@ async function checkOpenCode(probe: DaemonProbe, cliAvailable: boolean): Promise
 async function judgeDaemonAddress(
   baseUrl: string,
   address: { bindHost: string; port: string },
-  context: { movable: boolean; cliAvailable: boolean; daemonPort: number },
+  context: { movable: boolean; cliAvailable: boolean; cliRemedy?: string; daemonPort: number },
 ): Promise<Check> {
   const clash = `${baseUrl} uses port ${address.port}, which LoopTroop's own server is set to use`
   if (!context.movable) {
@@ -733,7 +755,7 @@ async function judgeDaemonAddress(
       name: 'opencode',
       status: 'fail',
       detail: `${clash}, and \`opencode\` cannot be launched to start LoopTroop's own elsewhere`,
-      remedy: OPENCODE_INSTALL_REMEDY,
+      remedy: context.cliRemedy ?? OPENCODE_INSTALL_REMEDY,
     }
   }
   const free = await findFreePort(address.bindHost, Number(address.port) + 1, [context.daemonPort])
@@ -842,7 +864,7 @@ async function probeDaemonOpenCode(daemon: DaemonState): Promise<OpenCodeReachab
  * binary is absent and when it timed out, and treating the timeout as
  * unavailable made doctor report that `opencode` cannot be launched — about a
  * CLI that is installed and merely slow to answer. Only a binary that is
- * genuinely absent makes launching impossible.
+ * absent, refused, or known to fail makes launching impossible.
  */
 export function isOpenCodeCliLaunchable(check: Check): boolean {
   return check.missing !== true
@@ -850,7 +872,7 @@ export function isOpenCodeCliLaunchable(check: Check): boolean {
 
 type OpenCodeCliProbe =
   | { kind: 'mock' }
-  | { kind: 'ok'; version: string }
+  | { kind: 'ok'; version: string; path?: string }
   | { kind: 'timed-out' }
   | { kind: 'unavailable'; probe: Extract<ProbeResult, { kind: 'unavailable' }> }
 
@@ -863,7 +885,7 @@ function probeOpenCodeCliVersion(): OpenCodeCliProbe {
   if (probe.kind === 'ok') {
     const line = probe.output.trim().split('\n')[0] || 'present'
     const found = versionIn(line) ?? line
-    return { kind: 'ok', version: found }
+    return { kind: 'ok', version: found, path: probe.path }
   }
 
   if (probe.kind === 'timed-out') {
@@ -876,7 +898,10 @@ function probeOpenCodeCliVersion(): OpenCodeCliProbe {
 function checkOpenCodeVersion(probe: OpenCodeCliProbe, latest: string | null = null): Check {
   if (probe.kind === 'mock') return { name: 'opencode cli', status: 'ok', detail: 'not needed in mock mode' }
   if (probe.kind === 'ok') {
-    return { name: 'opencode cli', status: 'ok', detail: withLatest(probe.version, latest) }
+    return {
+      name: 'opencode cli', status: 'ok', detail: withLatest(probe.version, latest),
+      ...(probe.path === undefined ? {} : { note: `Resolved executable: ${probe.path}` }),
+    }
   }
   if (probe.kind === 'timed-out') {
     return { status: 'warn', ...timedOutCheck('opencode cli', 'opencode --version', PROBE_TIMEOUT_MS) }
@@ -889,7 +914,7 @@ function checkOpenCodeVersion(probe: OpenCodeCliProbe, latest: string | null = n
     // A server that is already running can still serve LoopTroop, so a missing
     // binary is only a problem for starting one. Whether that is survivable is
     // decided by `judgeOpenCode`, which can see both facts at once.
-    ...unavailable(probe.probe, 'not found on PATH', OPENCODE_INSTALL_REMEDY),
+    ...unavailable(probe.probe, 'not found in an OpenCode installation directory or on PATH', OPENCODE_INSTALL_REMEDY),
   }
 }
 
@@ -1325,7 +1350,7 @@ export async function runChecks(): Promise<Check[]> {
     await checkLastStart(),
     await checkProjectIgnores(),
     opencodeCli,
-    await checkOpenCode(daemonProbe, isOpenCodeCliLaunchable(opencodeCli)),
+    await checkOpenCode(daemonProbe, opencodeCli),
     await checkPort(daemonProbe),
     await checkDaemon(daemonProbe),
   ]

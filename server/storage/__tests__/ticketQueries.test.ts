@@ -7,6 +7,7 @@ import { writeJsonl } from '../../io/jsonl'
 import { createTicket, getTicketByRef, getTicketContext, listTickets, listWaitingPullRequestTicketRefs, readTicketFile, resolveTicketContainedPath } from '../tickets'
 import { DISPLAY_ONLY_MOCK_BRANCH_NAME, resolveReviewCutoffStatus } from '../ticketQueries'
 import { questionWaits, ticketStatusHistory, tickets } from '../../db/schema'
+import { recoverTicketRuntimeArtifacts } from '../../startup'
 
 const runtimeRepoManager = createTestRepoManager('ticket-runtime-qa-origin-')
 
@@ -120,7 +121,6 @@ describe('runtime Manual QA bead origin projection', () => {
     const saved = join(unsafe.paths.projectRoot, 'saved-ticket')
     renameSync(unsafe.paths.ticketDir, saved)
     symlinkSync(saved, unsafe.paths.ticketDir, 'junction')
-    const { recoverTicketRuntimeArtifacts } = await import('../../startup')
     const warning = vi.spyOn(console, 'warn').mockImplementation(() => {})
     try {
       expect(recoverTicketRuntimeArtifacts().rebuiltProjections).toBe(1)

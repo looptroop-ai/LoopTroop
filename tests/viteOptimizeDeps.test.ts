@@ -33,7 +33,13 @@ function collectBrowserBareImports(): string[] {
     tsConfigFilePath: 'tsconfig.json',
     skipAddingFilesFromTsConfig: true,
   })
-  project.addSourceFilesAtPaths(['src/**/*.{ts,tsx}', 'shared/**/*.{ts,tsx}'])
+  project.addSourceFilesAtPaths([
+    'src/**/*.{ts,tsx}',
+    'shared/**/*.{ts,tsx}',
+    '!**/__tests__/**',
+    '!src/test/**',
+    '!**/*.{test,spec}.{ts,tsx}',
+  ])
 
   const imports = new Set<string>(GENERATED_REACT_RUNTIME_IMPORTS)
   for (const sourceFile of project.getSourceFiles().filter((file) => isProductionSource(file.getFilePath()))) {

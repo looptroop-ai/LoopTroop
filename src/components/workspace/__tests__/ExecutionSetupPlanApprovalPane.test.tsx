@@ -1051,7 +1051,9 @@ describe('ExecutionSetupPlanApprovalPane', () => {
   it('cancels a runtime rewind warning from Escape without entering edit mode', async () => {
     renderWithProviders(<ExecutionSetupPlanApprovalPane ticket={makeTicket({ status: 'PREPARING_EXECUTION_ENV' })} />)
     await screen.findByTestId('artifact-content')
-    fireEvent.click(screen.getByRole('button', { name: 'Edit' }))
+    const edit = screen.getByRole('button', { name: 'Edit' })
+    await waitFor(() => expect(edit).toBeEnabled())
+    fireEvent.click(edit)
 
     const warning = await screen.findByRole('dialog')
     expect(within(warning).getByText('Return to setup approval?')).toBeInTheDocument()

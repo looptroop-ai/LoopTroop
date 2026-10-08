@@ -303,17 +303,17 @@ export function ProfileSetup({ onClose, onOpenAbout = () => undefined, onDirtyCh
     if (isOpenCodeConnected === false) {
       return { dotClass: 'bg-red-500', label: 'OpenCode not connected' }
     }
-    if (modelsError && !modelsFetching) {
-      return { dotClass: 'bg-amber-500', label: 'OpenCode connected, but model discovery failed' }
-    }
-    if (modelsLoading || modelsFetching) {
+    if (modelsLoading || modelsFetching || isRefreshingModels) {
       return { dotClass: 'bg-amber-500', label: 'OpenCode connected, checking models…' }
+    }
+    if (modelsError) {
+      return { dotClass: 'bg-amber-500', label: 'OpenCode connected, but model discovery failed' }
     }
     if ((models?.length ?? 0) === 0) {
       return { dotClass: 'bg-amber-500', label: 'OpenCode connected, but no models are available' }
     }
     return { dotClass: 'bg-green-500', label: 'OpenCode connected and working' }
-  }, [isOpenCodeConnected, models, modelsError, modelsFetching, modelsLoading])
+  }, [isOpenCodeConnected, models, modelsError, modelsFetching, modelsLoading, isRefreshingModels])
 
   const handleReloadModels = useCallback(async () => {
     setIsRefreshingModels(true)
@@ -392,8 +392,8 @@ export function ProfileSetup({ onClose, onOpenAbout = () => undefined, onDirtyCh
                   type="button"
                   id="reload-opencode-models"
                   onClick={() => { void handleReloadModels() }}
-                  disabled={modelsFetching || isRefreshingModels}
-                  className="p-0.5 rounded text-muted-foreground hover:text-foreground hover:bg-muted transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
+                  disabled={isRefreshingModels}
+                  className="p-0.5 rounded text-brand-600 dark:text-brand-400 hover:text-brand-700 dark:hover:text-brand-300 transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-brand-500 disabled:opacity-50 disabled:cursor-not-allowed"
                   aria-label="Reload OpenCode providers and models"
                 >
                   <RefreshCw className={`h-3 w-3 ${modelsFetching || isRefreshingModels ? 'animate-spin' : ''}`} />
@@ -415,6 +415,7 @@ export function ProfileSetup({ onClose, onOpenAbout = () => undefined, onDirtyCh
               />
             </div>
             <ModelPicker
+              isRefreshing={isRefreshingModels}
               id="main-implementer"
               label="Main Implementer Model"
               value={formData.mainImplementer ?? ''}
@@ -471,6 +472,7 @@ export function ProfileSetup({ onClose, onOpenAbout = () => undefined, onDirtyCh
                 <div key={i} className="flex items-center gap-2">
                   <div className="flex-1 space-y-1.5">
                     <ModelPicker
+                      isRefreshing={isRefreshingModels}
                       value={slot}
                       onChange={v => {
                         setCouncilSlots(prev => prev.map((s, j) => j === i ? v : s))

@@ -205,6 +205,32 @@ describe('ModelPicker', () => {
     expect(screen.getByText('GPT Alpha')).toBeInTheDocument()
   })
 
+  it('uses only inline provider headings to collapse models below the filters', () => {
+    const onChange = vi.fn()
+    render(<ModelPicker value="openai/gpt-alpha" onChange={onChange} />)
+    fireEvent.click(screen.getByRole('button', { name: /^Pick a model/ }))
+    const filters = screen.getByRole('checkbox', { name: 'Show free models only' }).closest('label')!.parentElement!
+    expect(within(filters).queryByRole('button', { name: /^OpenAI/ })).not.toBeInTheDocument()
+    const results = filters.nextElementSibling as HTMLElement
+    const heading = within(results).getByRole('button', { name: /^OpenAI/ })
+    const group = screen.getByRole('group', { name: 'OpenAI' })
+    expect(heading.nextElementSibling).toBe(group)
+    expect(heading).toHaveAttribute('type', 'button')
+
+    fireEvent.click(heading)
+
+    expect(heading).toBeVisible()
+    expect(heading).toHaveAttribute('aria-expanded', 'false')
+    expect(group).toHaveAttribute('hidden')
+    expect(screen.queryByRole('option', { name: /GPT Alpha/ })).not.toBeInTheDocument()
+    expect(screen.getByRole('option', { name: /Claude GPT Bridge/ })).toBeVisible()
+    expect(onChange).not.toHaveBeenCalled()
+
+    fireEvent.click(heading)
+
+    expect(screen.getByRole('option', { name: /GPT Alpha/ })).toHaveAttribute('aria-selected', 'true')
+  })
+
   it('loads the full catalog only after Show all providers is selected', () => {
     render(<ModelPicker value="" onChange={vi.fn()} />)
 
@@ -445,7 +471,7 @@ describe('ModelPicker', () => {
 
     fireEvent.click(trigger)
 
-    const dropdown = screen.getByRole('listbox', { name: 'Available models' })
+    const dropdown = document.getElementById(trigger.getAttribute('aria-controls')!)!
     expect(within(dropdown).getByText('GPT Alpha')).toBeInTheDocument()
     expect(within(dropdown).getByText('(openai/gpt-alpha)')).toBeInTheDocument()
     expect(trigger).not.toHaveTextContent('(openai/gpt-alpha)')
@@ -613,11 +639,13 @@ describe('ModelPicker — combobox', () => {
     expect(onChange).toHaveBeenCalledExactlyOnceWith(customModel.fullId)
   })
 
-  it('explains how to restore models when every provider is collapsed', () => {
+  it('keeps every provider heading available when all its models are collapsed', () => {
     render(<ModelPicker value="" onChange={vi.fn()} />)
     fireEvent.click(screen.getByRole('button', { name: /^Pick a model/ }))
     for (const name of [/^OpenAI/, /^Anthropic/, /^Local/]) fireEvent.click(screen.getByRole('button', { name }))
-    expect(screen.getByRole('status')).toHaveTextContent('All providers are collapsed. Expand a provider above to see its models.')
+    expect(screen.queryByRole('status')).not.toBeInTheDocument()
+    expect(screen.getAllByRole('button', { expanded: false })).toHaveLength(3)
+    expect(screen.getByRole('listbox')).not.toHaveAttribute('aria-owns')
     expect(screen.queryByRole('option')).not.toBeInTheDocument()
     const search = screen.getByRole('combobox')
     fireEvent.keyDown(search, { key: 'ArrowDown' })
@@ -658,10 +686,11 @@ describe('ModelPicker — combobox', () => {
     expect(within(listbox).queryByRole('button')).not.toBeInTheDocument()
     expect(within(listbox).queryByRole('checkbox')).not.toBeInTheDocument()
     expect(within(listbox).queryByRole('combobox')).not.toBeInTheDocument()
-    expect(within(listbox).getByRole('group', { name: 'OpenAI' })).toBeInTheDocument()
-    expect(within(listbox).getByRole('option', { name: /GPT Alpha/ })).toHaveAttribute('aria-selected', 'true')
-    expect(within(listbox).getByRole('option', { name: /Claude GPT Bridge/ })).toHaveAttribute('aria-disabled', 'true')
-    for (const option of within(listbox).getAllByRole('option')) expect(option).toHaveAttribute('tabindex', '-1')
+    const groups = screen.getAllByRole('group')
+    expect(listbox.getAttribute('aria-owns')?.split(' ')).toEqual(groups.map(group => group.id))
+    expect(screen.getByRole('option', { name: /GPT Alpha/ })).toHaveAttribute('aria-selected', 'true')
+    expect(screen.getByRole('option', { name: /Claude GPT Bridge/ })).toHaveAttribute('aria-disabled', 'true')
+    for (const option of screen.getAllByRole('option')) expect(option).toHaveAttribute('tabindex', '-1')
   })
 
   it('uses arrows and Enter to choose an enabled model while focus stays in search', () => {
@@ -697,6 +726,7 @@ describe('ModelPicker — combobox', () => {
     fireEvent.click(disclosure)
     expect(disclosure).toHaveAttribute('aria-expanded', 'false')
     expect(document.getElementById(disclosure.getAttribute('aria-controls')!)).toHaveAttribute('hidden')
+    expect(screen.getByRole('listbox').getAttribute('aria-owns')?.split(' ')).not.toContain(disclosure.getAttribute('aria-controls'))
     const search = screen.getByRole('combobox')
     fireEvent.keyDown(search, { key: 'ArrowUp' })
     expect(search).toHaveAttribute('aria-activedescendant', screen.getByRole('option', { name: /Claude GPT Bridge/ }).id)
@@ -754,7 +784,8 @@ describe('ModelPicker — combobox', () => {
     for (const search of searches) {
       fireEvent.keyDown(search, { key: 'ArrowDown' })
       const listbox = document.getElementById(search.getAttribute('aria-controls')!)!
-      expect(listbox).toContainElement(document.getElementById(search.getAttribute('aria-activedescendant')!))
+      const activeOption = document.getElementById(search.getAttribute('aria-activedescendant')!)!
+      expect(listbox.getAttribute('aria-owns')?.split(' ')).toContain(activeOption.closest('[role="group"]')!.id)
     }
   })
 })

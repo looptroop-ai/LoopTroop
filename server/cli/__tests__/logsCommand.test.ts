@@ -1,6 +1,6 @@
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import { EventEmitter } from 'node:events'
-import { mkdirSync, mkdtempSync, readFileSync, renameSync, rmSync, writeFileSync } from 'node:fs'
+import { mkdirSync, mkdtempSync, readFileSync, renameSync, rmSync, writeFileSync, type BigIntStats, type Stats } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { dirname, join } from 'node:path'
 import { getDaemonLogPath } from '../../lib/daemonPaths'
@@ -16,6 +16,7 @@ const originalConfigDir = process.env.LOOPTROOP_CONFIG_DIR
 afterEach(() => {
   vi.restoreAllMocks()
   vi.doUnmock('node:fs')
+  vi.doUnmock('node:fs/promises')
   vi.resetModules()
   watchMock.mockReset()
   createReadStreamMock.mockReset()
@@ -28,10 +29,42 @@ async function loadLogsCommand(): Promise<typeof import('../logsCommand').logsCo
   return (await import('../logsCommand')).logsCommand
 }
 
-function mockFollowIO(): void {
+function mockFollowIO(identity?: { path: string, inode: () => bigint }): void {
+  const withIdentity = (stats: Stats | BigIntStats | undefined) => {
+    if (!identity || !stats) return stats
+    const ino = identity.inode()
+    // NTFS can preserve creation time when a renamed path is recreated.
+    return typeof stats.ino === 'bigint'
+      ? Object.assign(stats, { ino, birthtimeMs: 1n, birthtimeNs: 1_000_000n })
+      : Object.assign(stats, { ino: Number(ino), birthtimeMs: 1 })
+  }
   vi.doMock('node:fs', async () => {
     const actual = await vi.importActual<typeof import('node:fs')>('node:fs')
-    return { ...actual, watch: watchMock, createReadStream: createReadStreamMock }
+    return {
+      ...actual,
+      watch: watchMock,
+      createReadStream: createReadStreamMock,
+      statSync: identity
+        ? (...args: Parameters<typeof actual.statSync>) => {
+            const stats = actual.statSync(...args)
+            return String(args[0]) === identity.path ? withIdentity(stats) : stats
+          }
+        : actual.statSync,
+    }
+  })
+  if (identity) vi.doMock('node:fs/promises', async () => {
+    const actual = await vi.importActual<typeof import('node:fs/promises')>('node:fs/promises')
+    return {
+      ...actual,
+      open: async (...args: Parameters<typeof actual.open>) => {
+        const handle = await actual.open(...args)
+        if (String(args[0]) === identity.path) {
+          const stat = handle.stat.bind(handle)
+          handle.stat = (async (...args: Parameters<typeof handle.stat>) => withIdentity(await stat(...args))) as typeof handle.stat
+        }
+        return handle
+      },
+    }
   })
   vi.resetModules()
 }
@@ -280,18 +313,33 @@ describe('logsCommand', () => {
     expect(stdout.text()).toBe('tail\ncomplete new generation\n')
   })
 
-  it.each(['handoff', 'active read'])('keeps replacement bytes when rotation happens during %s', async (phase) => {
+  it.each([
+    { phase: 'handoff', identity: 'native' },
+    { phase: 'active read', identity: 'native' },
+    { phase: 'handoff', identity: 'large colliding IDs' },
+    { phase: 'active read', identity: 'large colliding IDs' },
+  ])('keeps replacement bytes when rotation happens during $phase ($identity)', async ({ phase, identity }) => {
     withDaemonLog('tail\n')
     const stdout = captureStdout()
     const logPath = getDaemonLogPath()
     const replacement = 'replacement longer than the old log\n'
-    mockFollowIO()
+    let rotated = false
+    const oldInode = 2n ** 54n
+    const newInode = oldInode + 1n
+    if (identity === 'large colliding IDs') {
+      expect(newInode).not.toBe(oldInode)
+      expect(Number(newInode)).toBe(Number(oldInode))
+    }
+    mockFollowIO(identity === 'large colliding IDs'
+      ? { path: logPath, inode: () => rotated ? newInode : oldInode }
+      : undefined)
     const logsCommand = await loadLogsCommand()
     let onChange: ((event: string, filename?: string) => void) | undefined
     let reads = 0
     const rotate = () => {
       renameSync(logPath, `${logPath}.1`)
       writeFileSync(logPath, replacement)
+      rotated = true
     }
     watchMock.mockImplementation((_path: string, _options: unknown, listener: typeof onChange) => {
       onChange = listener

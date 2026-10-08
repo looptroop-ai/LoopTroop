@@ -1,5 +1,5 @@
 import { screen, waitFor } from '@testing-library/react'
-import { describe, expect, it } from 'vitest'
+import { afterEach, describe, expect, it, vi } from 'vitest'
 import { TEST } from '@/test/factories'
 import { renderWithProviders, createTestQueryClient } from '@/test/renderHelpers'
 import { BeadsApprovalNavigator } from '../BeadsApprovalNavigator'
@@ -12,6 +12,8 @@ function renderNavigator(beads: unknown) {
 }
 
 describe('BeadsApprovalNavigator', () => {
+  afterEach(() => vi.restoreAllMocks())
+
   it('lists beads with their blocked-by counts', async () => {
     renderNavigator([
       { id: 'B-1', title: 'First bead', dependencies: { blocked_by: ['B-0'] } },
@@ -35,6 +37,7 @@ describe('BeadsApprovalNavigator', () => {
    * filtering was added to the artifact parser alone.
    */
   it('drops entries that are not beads, and numbers what is left', async () => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {})
     renderNavigator([null, 42, 'nope', { id: 'B-1', title: 'Real bead' }])
 
     await waitFor(() => {
@@ -43,6 +46,11 @@ describe('BeadsApprovalNavigator', () => {
     // The one real bead is #1, matching the `bead-0` anchor the viewer renders.
     expect(screen.getByText('#1')).toBeInTheDocument()
     expect(screen.queryByText(/Bead 1|Bead 2|Bead 3/)).not.toBeInTheDocument()
+    expect(warn.mock.calls).toEqual([
+      ['[beads] Ignored entry 1 of the bead artifact: entry is not an object.'],
+      ['[beads] Ignored entry 2 of the bead artifact: entry is not an object.'],
+      ['[beads] Ignored entry 3 of the bead artifact: entry is not an object.'],
+    ])
   })
 
   /**
@@ -61,6 +69,7 @@ describe('BeadsApprovalNavigator', () => {
   })
 
   it('numbers the surviving beads so the outline and the artifact view agree', async () => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {})
     renderNavigator([{ id: 'B-1', title: 'First' }, null, { id: 'B-2', title: 'Second' }])
 
     await waitFor(() => {
@@ -69,6 +78,9 @@ describe('BeadsApprovalNavigator', () => {
     // Second is #2, not #3: the viewer renders it at `bead-1`.
     expect(screen.getByText('#2')).toBeInTheDocument()
     expect(screen.queryByText('#3')).not.toBeInTheDocument()
+    expect(warn.mock.calls).toEqual([
+      ['[beads] Ignored entry 2 of the bead artifact: entry is not an object.'],
+    ])
   })
 
   it('tolerates a non-object dependencies field', async () => {

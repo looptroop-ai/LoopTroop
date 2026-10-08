@@ -863,7 +863,7 @@ describe('executeBead', () => {
     expect(result.errorCodes).toEqual([BEAD_RETRY_BUDGET_EXHAUSTED, BEAD_ITERATION_TIMEOUT])
   }, 40_000)
 
-  it('resets and retries when the per-iteration timeout expires during a continuation prompt', async () => {
+  it('resets and retries when the per-iteration timeout expires during a continuation prompt', async ({ onTestFinished }) => {
     const adapter = new SequencedMockOpenCodeAdapter()
     adapter.mockResponses.set('mock-session-1#1', [
       '<BEAD_STATUS>',
@@ -879,7 +879,16 @@ describe('executeBead', () => {
     ].join('\n'))
 
     const contextWipeReasons: string[] = []
-    const result = await executeBead(
+    // Advance the clock only after the continuation is dispatched, so machine
+    // load cannot expire the 25 ms budget during the initial prompt instead.
+    vi.useFakeTimers()
+    onTestFinished(() => { vi.useRealTimers() })
+    let onContinuationDispatched!: () => void
+    const continuationDispatched = new Promise<void>((resolve) => {
+      onContinuationDispatched = resolve
+    })
+    let dispatchedPrompts = 0
+    const runPromise = executeBead(
       adapter,
       buildBead(),
       [{ type: 'text', content: 'Bead context' }],
@@ -888,11 +897,18 @@ describe('executeBead', () => {
       25,
       undefined,
       {
+        onPromptDispatched: () => {
+          if (++dispatchedPrompts === 2) onContinuationDispatched()
+        },
         onContextWipe: async ({ reason }) => {
           contextWipeReasons.push(reason)
         },
       },
     )
+
+    await continuationDispatched
+    await vi.advanceTimersByTimeAsync(25)
+    const result = await runPromise
 
     expect(result.success).toBe(true)
     expect(result.iteration).toBe(2)

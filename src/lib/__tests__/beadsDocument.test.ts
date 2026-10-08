@@ -126,8 +126,11 @@ describe('countBeadsInContent', () => {
   // Reaching it for a collection the parser *did* read and rejected would
   // report beads over a viewer showing raw text.
   it('counts zero when the parser read a collection and rejected every entry', () => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {})
     expect(countBeadsInContent('- id: {}\n')).toBe(0)
+    expect(warn).not.toHaveBeenCalled()
     expect(parseBeadsArtifact('- id: {}\n')).toBeNull()
+    expect(warn).toHaveBeenCalledExactlyOnceWith('[beads] Ignored entry 1 of the bead artifact: no usable id.')
   })
 
   // A summary chip is redrawn on every render; parser diagnostics belong to the
@@ -531,7 +534,12 @@ describe('a tracker whose damage comes first', () => {
   })
 
   it('still reads ordinary text as no bead artifact at all', () => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {})
     expect(parseBeadsArtifact('This is a paragraph about beads.\nAnd another line.\n')).toBeNull()
+    expect(warn.mock.calls).toEqual([
+      ['[beads] Ignored line 1 of the bead artifact: it is not valid JSON.'],
+      ['[beads] Ignored line 2 of the bead artifact: it is not valid JSON.'],
+    ])
   })
 })
 

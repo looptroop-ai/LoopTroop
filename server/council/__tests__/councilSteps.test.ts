@@ -203,9 +203,11 @@ describe('Council draft, vote and refine steps', () => {
   it('recovers a draft timeout after the first remote stop attempt is unconfirmed', async () => {
     class StopRetryAdapter extends MockOpenCodeAdapter {
       readonly abortCalls: string[] = []
+      readonly promptedSessionIds: string[] = []
       private abortAttempt = 0
 
-      override async promptSession(_sessionId: string, _parts: PromptPart[], signal?: AbortSignal): Promise<string> {
+      override async promptSession(sessionId: string, _parts: PromptPart[], signal?: AbortSignal): Promise<string> {
+        this.promptedSessionIds.push(sessionId)
         return stalledPrompt(signal)
       }
 
@@ -216,46 +218,75 @@ describe('Council draft, vote and refine steps', () => {
       }
     }
 
-    const retryAdapter = new StopRetryAdapter()
-    const draftRun = await generateDrafts(
-      retryAdapter,
-      [members[0]!],
-      [{ type: 'text', content: 'draft prompt' }],
-      '/tmp/test',
-      5,
-    )
+    vi.useFakeTimers()
+    try {
+      const retryAdapter = new StopRetryAdapter()
+      const draftRun = generateDrafts(
+        retryAdapter,
+        [members[0]!],
+        [{ type: 'text', content: 'draft prompt' }],
+        '/tmp/test',
+        5,
+      )
 
-    expect(draftRun.drafts[0]?.outcome).toBe('timed_out')
-    expect(retryAdapter.abortCalls.length).toBeGreaterThanOrEqual(3)
+      await vi.advanceTimersByTimeAsync(0)
+      expect(retryAdapter.promptedSessionIds).toEqual(['mock-session-1'])
+      expect(retryAdapter.abortCalls).toEqual([])
+
+      await vi.advanceTimersByTimeAsync(5)
+      const result = await draftRun
+
+      expect(result.drafts[0]?.outcome).toBe('timed_out')
+      expect(retryAdapter.abortCalls.length).toBeGreaterThanOrEqual(3)
+    } finally {
+      vi.useRealTimers()
+    }
   })
 
   it('does not report a draft timeout when remote stop remains unconfirmed', async () => {
     class UnconfirmedStopAdapter extends MockOpenCodeAdapter {
       readonly finishedEvents: DraftProgressEvent[] = []
+      readonly promptedSessionIds: string[] = []
+      readonly abortCalls: string[] = []
 
-      override async promptSession(_sessionId: string, _parts: PromptPart[], signal?: AbortSignal): Promise<string> {
+      override async promptSession(sessionId: string, _parts: PromptPart[], signal?: AbortSignal): Promise<string> {
+        this.promptedSessionIds.push(sessionId)
         return stalledPrompt(signal)
       }
 
-      override async abortSession(_sessionId: string): Promise<boolean> {
+      override async abortSession(sessionId: string): Promise<boolean> {
+        this.abortCalls.push(sessionId)
         return false
       }
     }
 
-    const unconfirmedAdapter = new UnconfirmedStopAdapter()
-    await expect(generateDrafts(
-      unconfirmedAdapter,
-      [members[0]!],
-      [{ type: 'text', content: 'draft prompt' }],
-      '/tmp/test',
-      5,
-      undefined,
-      undefined,
-      undefined,
-      (entry) => unconfirmedAdapter.finishedEvents.push(entry),
-    )).rejects.toThrow('Could not confirm abort of OpenCode session mock-session-1')
+    vi.useFakeTimers()
+    try {
+      const unconfirmedAdapter = new UnconfirmedStopAdapter()
+      const rejection = expect(generateDrafts(
+        unconfirmedAdapter,
+        [members[0]!],
+        [{ type: 'text', content: 'draft prompt' }],
+        '/tmp/test',
+        5,
+        undefined,
+        undefined,
+        undefined,
+        (entry) => unconfirmedAdapter.finishedEvents.push(entry),
+      )).rejects.toThrow('Could not confirm abort of OpenCode session mock-session-1')
 
-    expect(unconfirmedAdapter.finishedEvents.filter(entry => entry.status === 'finished')).toEqual([])
+      await vi.advanceTimersByTimeAsync(0)
+      expect(unconfirmedAdapter.promptedSessionIds).toEqual(['mock-session-1'])
+      expect(unconfirmedAdapter.abortCalls).toEqual([])
+
+      await vi.advanceTimersByTimeAsync(5)
+      await rejection
+
+      expect(unconfirmedAdapter.abortCalls).toContain('mock-session-1')
+      expect(unconfirmedAdapter.finishedEvents.filter(entry => entry.status === 'finished')).toEqual([])
+    } finally {
+      vi.useRealTimers()
+    }
   })
 
   it('returns partial draft results at the hard phase deadline', async () => {

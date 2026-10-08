@@ -15,6 +15,7 @@ interface ModelPickerProps {
   onChange: (modelFullId: string) => void
   placeholder?: string
   disabledValues?: string[]
+  isRefreshing?: boolean
 }
 
 function singleCostLabel(input: number): { label: string; color: string } {
@@ -184,7 +185,7 @@ function ModelRow({ model, selected, disabled, onSelect, id, active }: {
   )
 }
 
-export function ModelPicker({ id, label, value, onChange, placeholder = 'Search models…', disabledValues = [] }: ModelPickerProps) {
+export function ModelPicker({ id, label, value, onChange, placeholder = 'Search models…', disabledValues = [], isRefreshing = false }: ModelPickerProps) {
   const [isShowingAll, setIsShowingAll] = useState(false)
   const {
     data: connectedModels,
@@ -204,9 +205,9 @@ export function ModelPicker({ id, label, value, onChange, placeholder = 'Search 
   } = useAllOpenCodeModels(isShowingAll && supportsAllModels)
   const showingAll = isShowingAll && supportsAllModels
   const models = showingAll ? allModels : connectedModels
-  const isLoading = showingAll ? loadingAll : loadingConnected
+  const isLoading = isRefreshing || (showingAll ? loadingAll : loadingConnected)
   const isError = showingAll ? hasAllError : hasConnectedError
-  const isFetching = showingAll ? fetchingAll : fetchingConnected
+  const isFetching = isRefreshing || (showingAll ? fetchingAll : fetchingConnected)
   const activeError = showingAll ? allError : connectedError
   const errorCopy = useMemo(() => getModelQueryErrorCopy(activeError), [activeError])
   const [isOpen, setIsOpen] = useState(false)

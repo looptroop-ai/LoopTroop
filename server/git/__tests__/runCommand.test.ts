@@ -327,7 +327,11 @@ describe('server/git/runCommand', () => {
         await new Promise((resolve) => realSetTimeout(resolve, 10))
       }
       const started = Date.now()
+      const timersBeforeDeadline = deadline.mock.calls.length
       triggerTimeout()
+      // The first timer created by the deadline sends SIGKILL; the later
+      // abandonment timer can also make elapsed time exceed two seconds.
+      expect(deadline.mock.calls[timersBeforeDeadline]).toEqual([expect.any(Function), 2_000])
       const result = await command
       const elapsed = Date.now() - started
 

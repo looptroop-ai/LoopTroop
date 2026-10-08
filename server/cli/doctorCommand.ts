@@ -253,7 +253,7 @@ export function runProbe(command: string, args: string[], timeoutMs: number): Pr
     return { kind: 'timed-out' }
   }
   if (!opencode) return { kind: 'unavailable' }
-  const stderr = result.stderr?.trim().split(/\r?\n/, 1)[0]
+  const stderr = result.stderr?.trim().split(/\r?\n/, 1)[0]?.trim()
   const failure = result.error !== undefined
     ? `could not be started: ${getErrorMessage(result.error)}`
     : result.signal
@@ -449,6 +449,7 @@ export function judgeOpenCode(
     baseUrl: string
     daemon: DaemonState | null
     cliAvailable: boolean
+    cliRemedy?: string
     /** The address is LoopTroop's default, which a start moves off when it is held. */
     movable?: boolean
     /** Where a start would move to now; null when no port is free, absent when not asked. */
@@ -526,7 +527,7 @@ export function judgeOpenCode(
       // Nothing is running and nothing could be started: the next start is
       // refused before it binds a port, rather than launching a server.
       detail: `${detail}, and \`opencode\` cannot be launched`,
-      remedy: OPENCODE_INSTALL_REMEDY,
+      remedy: context.cliRemedy ?? OPENCODE_INSTALL_REMEDY,
     }
   }
 
@@ -559,7 +560,7 @@ function heldByUnusableServer(
  */
 function judgeHeldDefaultAddress(
   reachable: OpenCodeReachability,
-  context: { baseUrl: string; daemon: DaemonState | null; cliAvailable: boolean; movable?: boolean; nextFreePort?: number | null },
+  context: { baseUrl: string; daemon: DaemonState | null; cliAvailable: boolean; cliRemedy?: string; movable?: boolean; nextFreePort?: number | null },
 ): Check | null {
   if (!heldByUnusableServer(reachable, context)) return null
 
@@ -569,7 +570,7 @@ function judgeHeldDefaultAddress(
       name: 'opencode',
       status: 'fail',
       detail: `${held} \`opencode\` cannot be launched to start LoopTroop's own.`,
-      remedy: OPENCODE_INSTALL_REMEDY,
+      remedy: context.cliRemedy ?? OPENCODE_INSTALL_REMEDY,
     }
   }
   if (context.nextFreePort === null) {
@@ -688,7 +689,7 @@ async function leftoverOpenCodeCheck(probe: DaemonProbe): Promise<Check | null> 
   return null
 }
 
-async function checkOpenCode(probe: DaemonProbe, cliAvailable: boolean): Promise<Check> {
+async function checkOpenCode(probe: DaemonProbe, cli: Check): Promise<Check> {
   const leftover = await leftoverOpenCodeCheck(probe)
   if (leftover !== null) return leftover
 
@@ -698,13 +699,15 @@ async function checkOpenCode(probe: DaemonProbe, cliAvailable: boolean): Promise
   }
 
   const daemon = probe.kind === 'running' ? probe.state : null
+  const cliAvailable = isOpenCodeCliLaunchable(cli)
+  const cliRemedy = cli.remedy
   const movable = settings.sources.opencodeBaseUrl === 'default'
   const { bindHost, port } = serveAddress(settings.opencodeBaseUrl)
 
   // Asked before the address is probed, as a start asks it: the daemon binds
   // its own address after OpenCode is up, so nothing at it can be used.
   if (daemon === null && bindsDaemonAddress(settings.opencodeBaseUrl, getBackendHost(), settings.port)) {
-    return await judgeDaemonAddress(settings.opencodeBaseUrl, { bindHost, port }, { movable, cliAvailable, daemonPort: settings.port })
+    return await judgeDaemonAddress(settings.opencodeBaseUrl, { bindHost, port }, { movable, cliAvailable, cliRemedy, daemonPort: settings.port })
   }
 
   const reachable = daemon
@@ -721,6 +724,7 @@ async function checkOpenCode(probe: DaemonProbe, cliAvailable: boolean): Promise
     baseUrl: settings.opencodeBaseUrl,
     daemon,
     cliAvailable,
+    cliRemedy,
     movable,
     ...(nextFreePort === undefined ? {} : { nextFreePort }),
   })
@@ -734,7 +738,7 @@ async function checkOpenCode(probe: DaemonProbe, cliAvailable: boolean): Promise
 async function judgeDaemonAddress(
   baseUrl: string,
   address: { bindHost: string; port: string },
-  context: { movable: boolean; cliAvailable: boolean; daemonPort: number },
+  context: { movable: boolean; cliAvailable: boolean; cliRemedy?: string; daemonPort: number },
 ): Promise<Check> {
   const clash = `${baseUrl} uses port ${address.port}, which LoopTroop's own server is set to use`
   if (!context.movable) {
@@ -751,7 +755,7 @@ async function judgeDaemonAddress(
       name: 'opencode',
       status: 'fail',
       detail: `${clash}, and \`opencode\` cannot be launched to start LoopTroop's own elsewhere`,
-      remedy: OPENCODE_INSTALL_REMEDY,
+      remedy: context.cliRemedy ?? OPENCODE_INSTALL_REMEDY,
     }
   }
   const free = await findFreePort(address.bindHost, Number(address.port) + 1, [context.daemonPort])
@@ -860,7 +864,7 @@ async function probeDaemonOpenCode(daemon: DaemonState): Promise<OpenCodeReachab
  * binary is absent and when it timed out, and treating the timeout as
  * unavailable made doctor report that `opencode` cannot be launched — about a
  * CLI that is installed and merely slow to answer. Only a binary that is
- * genuinely absent makes launching impossible.
+ * absent, refused, or known to fail makes launching impossible.
  */
 export function isOpenCodeCliLaunchable(check: Check): boolean {
   return check.missing !== true
@@ -1346,7 +1350,7 @@ export async function runChecks(): Promise<Check[]> {
     await checkLastStart(),
     await checkProjectIgnores(),
     opencodeCli,
-    await checkOpenCode(daemonProbe, isOpenCodeCliLaunchable(opencodeCli)),
+    await checkOpenCode(daemonProbe, opencodeCli),
     await checkPort(daemonProbe),
     await checkDaemon(daemonProbe),
   ]

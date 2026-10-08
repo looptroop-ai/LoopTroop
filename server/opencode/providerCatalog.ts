@@ -1,4 +1,3 @@
-import { setTimeout as delay } from 'node:timers/promises'
 import { getOpenCodeBaseUrl } from './runtimeConfig'
 import type { OpenCodeCatalogModel, OpenCodeCatalogResponse, OpenCodeCatalogReloadState } from '../../shared/opencodeCatalog'
 import { isMockOpenCodeMode } from './factory'
@@ -273,7 +272,7 @@ async function fetchProviderCatalogWithConnection(
     let catalog = await fetchV2ProviderCatalog(baseUrl, connection.headers, signal)
     // V2 builds its location before background plugins populate providers and models.
     for (let attempt = 0; attempt < 10 && flattenCatalogModels(catalog).length === 0; attempt += 1) {
-      await delay(500, undefined, { signal })
+      await waitForProviderActivation(signal)
       catalog = await fetchV2ProviderCatalog(baseUrl, connection.headers, signal)
     }
     return catalog
@@ -285,6 +284,21 @@ async function fetchProviderCatalogWithConnection(
   }
   if (!response.ok) throw new Error(`OpenCode provider catalog request failed with ${response.status}`)
   return normalizeProviderCatalog(await response.json())
+}
+
+function waitForProviderActivation(signal: AbortSignal): Promise<void> {
+  signal.throwIfAborted()
+  return new Promise((resolve, reject) => {
+    const onAbort = () => {
+      clearTimeout(timer)
+      reject(signal.reason)
+    }
+    const timer = setTimeout(() => {
+      signal.removeEventListener('abort', onAbort)
+      resolve()
+    }, 500)
+    signal.addEventListener('abort', onAbort, { once: true })
+  })
 }
 
 async function assertProviderCatalogCanReload(

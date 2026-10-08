@@ -753,6 +753,51 @@ describe('useOpenCodeModels', () => {
     expect(fetch).toHaveBeenLastCalledWith('/api/models', { method: 'GET', signal: expect.any(AbortSignal) })
   })
 
+  it.each([409, 503])('restarts a cancelled first full-catalog read after HTTP %s without refetching cached connected models', async (status) => {
+    const cachedModels = { models: [{ fullId: 'openai/connected-model' }] }
+    const recoveredModels = [{ fullId: 'anthropic/all-model' }]
+    let allReads = 0
+    let initialSignal: AbortSignal | undefined
+    const fetchMock = vi.fn((path: string, { method, signal }: { method: string; signal: AbortSignal }) => {
+      if (method === 'POST') {
+        return Promise.resolve(new Response(JSON.stringify(status === 409
+          ? { code: 'OPENCODE_BUSY', message: 'OpenCode has active work.' }
+          : { error: 'OpenCode is unavailable.' }), { status }))
+      }
+      expect(path).toBe('/api/models?scope=all')
+      if (++allReads === 1) {
+        initialSignal = signal
+        return new Promise<Response>((_resolve, reject) => {
+          signal.addEventListener('abort', () => reject(signal.reason), { once: true })
+        })
+      }
+      return Promise.resolve(new Response(JSON.stringify({ models: recoveredModels })))
+    })
+    vi.stubGlobal('fetch', fetchMock)
+    const queryClient = createTestQueryClient()
+    queryClient.setQueryData(OPENCODE_MODELS_QUERY_KEY, cachedModels)
+    const { result } = renderHook(() => ({ connected: useOpenCodeModels(), all: useAllOpenCodeModels(true) }), {
+      wrapper: queryWrapper(queryClient),
+    })
+    expect(result.current.all.isLoading).toBe(true)
+
+    await act(async () => {
+      await expect(refreshOpenCodeModelsQuery(queryClient)).rejects.toThrow(status === 409
+        ? 'OpenCode has active work.'
+        : /HTTP 503/)
+    })
+
+    expect(initialSignal?.aborted).toBe(true)
+    await waitFor(() => expect(result.current.all.data).toEqual(recoveredModels))
+    expect(result.current.connected.data).toEqual(cachedModels.models)
+    expect(queryClient.getQueryState(OPENCODE_MODELS_QUERY_KEY)?.isInvalidated).toBe(false)
+    expect(fetchMock.mock.calls.map(([path, options]) => [path, options.method])).toEqual([
+      ['/api/models?scope=all', 'GET'],
+      ['/api/models/refresh', 'POST'],
+      ['/api/models?scope=all', 'GET'],
+    ])
+  })
+
   it('keeps cached models and does not retry a busy refresh', async () => {
     const fetchMock = vi.fn().mockResolvedValue(new Response(JSON.stringify({
       code: 'OPENCODE_BUSY',

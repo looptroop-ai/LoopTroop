@@ -303,17 +303,17 @@ export function ProfileSetup({ onClose, onOpenAbout = () => undefined, onDirtyCh
     if (isOpenCodeConnected === false) {
       return { dotClass: 'bg-red-500', label: 'OpenCode not connected' }
     }
-    if (modelsError && !modelsFetching) {
-      return { dotClass: 'bg-amber-500', label: 'OpenCode connected, but model discovery failed' }
-    }
-    if (modelsLoading || modelsFetching) {
+    if (modelsLoading || modelsFetching || isRefreshingModels) {
       return { dotClass: 'bg-amber-500', label: 'OpenCode connected, checking models…' }
+    }
+    if (modelsError) {
+      return { dotClass: 'bg-amber-500', label: 'OpenCode connected, but model discovery failed' }
     }
     if ((models?.length ?? 0) === 0) {
       return { dotClass: 'bg-amber-500', label: 'OpenCode connected, but no models are available' }
     }
     return { dotClass: 'bg-green-500', label: 'OpenCode connected and working' }
-  }, [isOpenCodeConnected, models, modelsError, modelsFetching, modelsLoading])
+  }, [isOpenCodeConnected, models, modelsError, modelsFetching, modelsLoading, isRefreshingModels])
 
   const handleReloadModels = useCallback(async () => {
     setIsRefreshingModels(true)
@@ -415,6 +415,7 @@ export function ProfileSetup({ onClose, onOpenAbout = () => undefined, onDirtyCh
               />
             </div>
             <ModelPicker
+              isRefreshing={isRefreshingModels}
               id="main-implementer"
               label="Main Implementer Model"
               value={formData.mainImplementer ?? ''}
@@ -471,6 +472,7 @@ export function ProfileSetup({ onClose, onOpenAbout = () => undefined, onDirtyCh
                 <div key={i} className="flex items-center gap-2">
                   <div className="flex-1 space-y-1.5">
                     <ModelPicker
+                      isRefreshing={isRefreshingModels}
                       value={slot}
                       onChange={v => {
                         setCouncilSlots(prev => prev.map((s, j) => j === i ? v : s))

@@ -225,10 +225,10 @@ export function trustedSearchDirectories(options: TrustedExecutableOptions = {},
   const canonicalDirs = isOpencode ? canonicalTrustedDirectories(platform, policyEnv) : []
   const pathEntries = pathValue.split(p.delimiter)
   const canonicalEntries = canonicalDirs.flatMap(directory => {
-    const aliases = trustedDirectorySet([directory])
+    const aliases = trustedDirectorySet([directory], platform)
     const matchingEntries = pathEntries.filter(entry => {
       const dir = asSearchDirectory(entry, platform)
-      return dir !== '' && p.isAbsolute(dir) && directoryMatches(dir, aliases)
+      return dir !== '' && p.isAbsolute(dir) && directoryMatches(dir, aliases, platform)
     })
     return [...matchingEntries, directory]
   })
@@ -355,7 +355,7 @@ export function canonicalTrustedDirectories(platform: NodeJS.Platform, policyEnv
   return dirs
 }
 
-function trustedDirectorySet(dirs: readonly string[]): Set<string> {
+function trustedDirectorySet(dirs: readonly string[], platform: NodeJS.Platform): Set<string> {
   const set = new Set<string>()
   for (const dir of dirs) {
     set.add(dir)
@@ -364,26 +364,31 @@ function trustedDirectorySet(dirs: readonly string[]): Set<string> {
     const real = realpathOrNull(dir)
     if (real !== null) set.add(real)
   }
-  return set
+  // realpath preserves case on Windows; comparison keys must not replace the
+  // original search entries used for file lookup and invocation.
+  return platform === 'win32'
+    ? new Set([...set].map(dir => trustedPath.win32.resolve(dir).toLowerCase()))
+    : set
 }
 
 export function canonicalTrustedDirectorySet(platform: NodeJS.Platform, policyEnv: NodeJS.ProcessEnv): Set<string> {
-  return trustedDirectorySet(canonicalTrustedDirectories(platform, policyEnv))
+  return trustedDirectorySet(canonicalTrustedDirectories(platform, policyEnv), platform)
 }
 
 export function trustedOperatorDirectories(policyEnv: NodeJS.ProcessEnv, platform: NodeJS.Platform): Set<string> {
   const p = pathFor(platform)
   const override = policyEnv[TRUSTED_EXECUTABLE_DIRS_ENV] ?? ''
   const entries = searchEntries(override.split(p.delimiter), platform)
-  return trustedDirectorySet(entries)
+  return trustedDirectorySet(entries, platform)
 }
 
-function directoryMatches(directory: string, trustedDirs: Set<string>): boolean {
-  if (trustedDirs.has(directory)) return true
+function directoryMatches(directory: string, trustedDirs: Set<string>, platform: NodeJS.Platform): boolean {
+  const key = platform === 'win32' ? trustedPath.win32.resolve(directory).toLowerCase() : directory
+  if (trustedDirs.has(key)) return true
   if (trustedDirs.has(trustedPath.normalize(directory))) return true
   if (trustedDirs.has(trustedPath.resolve(directory))) return true
   const real = realpathOrNull(directory)
-  return real !== null && trustedDirs.has(real)
+  return real !== null && trustedDirs.has(platform === 'win32' ? trustedPath.win32.resolve(real).toLowerCase() : real)
 }
 
 /**
@@ -995,14 +1000,14 @@ export function resolveTrustedExecutable(
 
   const cached = cache?.get(cacheKey)
   if (cached) {
-    const inCanonicalDir = directoryMatches(cached.directory, canonicalDirs)
-      || directoryMatches(trustedPath.dirname(cached.path), canonicalDirs)
+    const inCanonicalDir = directoryMatches(cached.directory, canonicalDirs, platform)
+      || directoryMatches(trustedPath.dirname(cached.path), canonicalDirs, platform)
     const context: TrustContext = {
       platform,
       readMountTable,
       stat,
       lstat,
-      namedByOperator: directoryMatches(cached.directory, namedByOperator),
+      namedByOperator: directoryMatches(cached.directory, namedByOperator, platform),
       canonicalOpenCodeDir: isOpencode && inCanonicalDir,
       isOpencode,
       owners,
@@ -1023,14 +1028,14 @@ export function resolveTrustedExecutable(
       // An App Execution Alias is the program at its own path; see isWindowsAppAlias.
       const alias = isWindowsAppAlias(candidate, platform)
       const target = alias ? candidate : realpathOrNull(candidate)
-      const inCanonicalDir = directoryMatches(directory, canonicalDirs)
-        || (target !== null && directoryMatches(trustedPath.dirname(target), canonicalDirs))
+      const inCanonicalDir = directoryMatches(directory, canonicalDirs, platform)
+        || (target !== null && directoryMatches(trustedPath.dirname(target), canonicalDirs, platform))
       const context: TrustContext = {
         platform,
         readMountTable,
         stat,
         lstat,
-        namedByOperator: directoryMatches(directory, namedByOperator),
+        namedByOperator: directoryMatches(directory, namedByOperator, platform),
         canonicalOpenCodeDir: isOpencode && inCanonicalDir,
         isOpencode,
         owners,
@@ -1124,8 +1129,8 @@ export function resolveTrustedProgram(
   const canonicalDirs = canonicalTrustedDirectorySet(platform, policyEnv)
   const directory = p.dirname(program)
   const isOpencode = isExactOpencode(program, platform)
-  const inCanonicalDir = directoryMatches(directory, canonicalDirs)
-    || directoryMatches(p.dirname(target), canonicalDirs)
+  const inCanonicalDir = directoryMatches(directory, canonicalDirs, platform)
+    || directoryMatches(p.dirname(target), canonicalDirs, platform)
   const overflow = platform === 'linux'
     ? overflowOwnership(options.readUidMap ?? readUidMapFromProc, options.readOverflowUid ?? readOverflowUidFromProc)
     : { unverifiable: false }
@@ -1134,7 +1139,7 @@ export function resolveTrustedProgram(
     readMountTable: options.readMountTable ?? readMountTableFromProc,
     stat,
     lstat,
-    namedByOperator: directoryMatches(directory, named),
+    namedByOperator: directoryMatches(directory, named, platform),
     canonicalOpenCodeDir: isOpencode && inCanonicalDir,
     isOpencode,
     owners: trustedOwners(overflow, stat),

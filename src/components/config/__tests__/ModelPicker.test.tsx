@@ -167,6 +167,22 @@ describe('ModelPicker', () => {
     mockModelsQuery()
   })
 
+  it('keeps the picker loading during a manual refresh that cancelled its first read', () => {
+    vi.mocked(useOpenCodeModels).mockReturnValue({
+      data: undefined,
+      isLoading: false,
+      isError: false,
+      error: null,
+      isFetching: false,
+    } as ReturnType<typeof useOpenCodeModels>)
+    render(<ModelPicker value="" onChange={vi.fn()} isRefreshing />)
+
+    fireEvent.click(screen.getByRole('button', { name: 'Pick a model Loading models…' }))
+
+    expect(screen.getByRole('status')).toHaveTextContent('Loading models from OpenCode…')
+    expect(screen.queryByText('OpenCode is connected, but no models are currently available.')).not.toBeInTheDocument()
+  })
+
   it('shows the loaded model count in the picker and search field', () => {
     mockModelsQuery(models, [...models, { ...models[0]!, fullId: 'openai/extra-model' }])
     render(<ModelPicker value="" onChange={vi.fn()} />)
@@ -688,6 +704,12 @@ describe('ModelPicker — combobox', () => {
     expect(within(listbox).queryByRole('combobox')).not.toBeInTheDocument()
     const groups = screen.getAllByRole('group')
     expect(listbox.getAttribute('aria-owns')?.split(' ')).toEqual(groups.map(group => group.id))
+    for (const group of groups) {
+      expect(within(group).getAllByRole('option').length).toBeGreaterThan(0)
+      expect(within(group).queryByRole('button')).not.toBeInTheDocument()
+      expect(within(group).queryByRole('checkbox')).not.toBeInTheDocument()
+      expect(within(group).queryByRole('combobox')).not.toBeInTheDocument()
+    }
     expect(screen.getByRole('option', { name: /GPT Alpha/ })).toHaveAttribute('aria-selected', 'true')
     expect(screen.getByRole('option', { name: /Claude GPT Bridge/ })).toHaveAttribute('aria-disabled', 'true')
     for (const option of screen.getAllByRole('option')) expect(option).toHaveAttribute('tabindex', '-1')

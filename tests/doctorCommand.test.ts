@@ -901,7 +901,9 @@ describe('doctor command', () => {
     const cli = checks.find((check) => check.name === 'opencode cli')
 
     expect(cli?.detail).toBe('2.0.15 (latest 2.0.16)')
-    expect(cli?.note).toBe(`Resolved executable: ${join(binDir, process.platform === 'win32' ? 'opencode.cmd' : 'opencode')}`)
+    const expectedNote = `Resolved executable: ${join(binDir, process.platform === 'win32' ? 'opencode.cmd' : 'opencode')}`
+    expect(process.platform === 'win32' ? cli?.note?.toLowerCase() : cli?.note)
+      .toBe(process.platform === 'win32' ? expectedNote.toLowerCase() : expectedNote)
     expect(cli).not.toHaveProperty('opencodeMajor')
     expect(requested).toContain('https://registry.npmjs.org/@opencode/cli/latest')
     expect(requested).not.toContain('https://registry.npmjs.org/opencode-ai/latest')
@@ -1067,6 +1069,19 @@ describe('doctor command', () => {
       // happens next.
       expect(check.status).toBe('fail')
       expect(check.remedy).toContain('opencode.ai')
+    })
+
+    it.each([
+      'Repair this OpenCode installation.',
+      'Set LOOPTROOP_TRUSTED_EXECUTABLE_DIRS to the intended directory.',
+    ])('keeps CLI advice when no server can be launched: %s', (cliRemedy) => {
+      for (const reachable of [
+        { kind: 'unreachable' },
+        { kind: 'failed', failureKind: 'authentication', error: 'Another server requires a password.' },
+      ] as const) {
+        const check = judgeOpenCode(reachable, { baseUrl, daemon: null, cliAvailable: false, cliRemedy, movable: true })
+        expect(check).toMatchObject({ name: 'opencode', status: 'fail', remedy: cliRemedy })
+      }
     })
 
     it('only warns when a start would launch one', () => {
@@ -1260,31 +1275,39 @@ describe('doctor command', () => {
       if (result.kind === 'ok') expect(result.output).toContain('v')
     })
 
-    it('reports the selected OpenCode shim and its failure instead of telling the user to install it', async () => {
+    it.each(['unreachable', 'daemon-address'] as const)('keeps selected-shim repair advice in CLI and %s checks', async (address) => {
       const root = useConfigDir()
       const program = join(root, process.platform === 'win32' ? 'opencode.cmd' : 'opencode')
       writeFileSync(program, process.platform === 'win32'
         ? '@echo off\r\necho Error: OpenCode postinstall did not run. 1>&2\r\necho More installation details. 1>&2\r\nexit /b 1\r\n'
-        : '#!/bin/sh\nprintf "Error: OpenCode postinstall did not run.\\nMore installation details.\\n" >&2\nexit 1\n')
+        : '#!/bin/sh\nprintf "Error: OpenCode postinstall did not run.   \\nMore installation details.\\n" >&2\nexit 1\n')
       if (process.platform !== 'win32') chmodSync(program, 0o700)
       vi.stubEnv('LOOPTROOP_OPENCODE_MODE', 'real')
-      vi.stubEnv('LOOPTROOP_OPENCODE_BASE_URL', 'http://127.0.0.1:1')
-      vi.spyOn(globalThis, 'fetch').mockRejectedValue(new TypeError('offline'))
+      vi.stubEnv('LOOPTROOP_OPENCODE_BASE_URL', address === 'unreachable' ? 'http://127.0.0.1:1' : '')
+      if (address === 'daemon-address') vi.stubEnv('LOOPTROOP_BACKEND_PORT', '4096')
+      vi.spyOn(globalThis, 'fetch').mockRejectedValue(new TypeError('fetch failed', { cause: { code: 'ECONNREFUSED' } }))
 
-      expect(runProbe('opencode', ['--version'], 5_000)).toEqual({
-        kind: 'unavailable', path: program,
+      const probe = runProbe('opencode', ['--version'], 5_000)
+      expect(probe).toMatchObject({
+        kind: 'unavailable',
         failure: 'exited with code 1: Error: OpenCode postinstall did not run.',
       })
+      const selectedPath = probe.kind === 'unavailable' ? probe.path : undefined
+      expect(process.platform === 'win32' ? selectedPath?.toLowerCase() : selectedPath)
+        .toBe(process.platform === 'win32' ? program.toLowerCase() : program)
       const stdout = captureStdout()
       await doctorCommand(true)
       const { checks } = JSON.parse(stdout.text()) as { checks: Awaited<ReturnType<typeof runChecks>> }
       const cli = checks.find((check) => check.name === 'opencode cli')
       expect(cli).toMatchObject({
         status: 'warn', missing: true,
-        detail: `${program}: exited with code 1: Error: OpenCode postinstall did not run.`,
+        detail: `${selectedPath}: exited with code 1: Error: OpenCode postinstall did not run.`,
       })
       expect(cli?.remedy).toContain('Repair this OpenCode installation')
       expect(cli?.remedy).not.toContain('Install it from')
+      const service = checks.find((check) => check.name === 'opencode')
+      expect(service).toMatchObject({ status: 'fail', remedy: cli?.remedy })
+      expect(service?.detail).toContain('cannot be launched')
     })
 
     it('reports missing tools when no executables resolve from PATH', async () => {

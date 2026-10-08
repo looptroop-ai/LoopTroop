@@ -946,7 +946,10 @@ describe('fetchProviderCatalog', () => {
       await vi.advanceTimersByTimeAsync(0)
       expect(fetchMock).toHaveBeenCalledTimes(operation === 'reload' ? 5 : 3)
       activated = true
-      await vi.advanceTimersByTimeAsync(500)
+      await vi.advanceTimersByTimeAsync(499)
+      expect(fetchMock).toHaveBeenCalledTimes(operation === 'reload' ? 5 : 3)
+      await vi.advanceTimersByTimeAsync(1)
+      expect(fetchMock).toHaveBeenCalledTimes(operation === 'reload' ? 8 : 6)
 
       expect(flattenCatalogModels(await catalog).map((entry) => entry.fullId)).toEqual(['openai/gpt-5'])
       for (const path of ['/api/provider', '/api/model', '/api/model/default']) {
@@ -954,6 +957,52 @@ describe('fetchProviderCatalog', () => {
       }
       expect(fetchMock.mock.calls.filter(([input]) => String(input).endsWith('/api/location/reload'))).toHaveLength(operation === 'reload' ? 1 : 0)
       expect(getOpenCodeConnection).toHaveBeenCalledOnce()
+      expect(timeout.mock.calls).toEqual(operation === 'reload' ? [[55_000], [5_000]] : [[25_000]])
+      expect(onReloadState.mock.calls).toEqual(operation === 'reload' ? [['unknown'], ['completed']] : [])
+    } finally {
+      vi.clearAllTimers()
+      vi.useRealTimers()
+    }
+  })
+
+  it.each([
+    { operation: 'read', deadline: 25_000 },
+    { operation: 'reload', deadline: 55_000 },
+  ] as const)('expires the $operation deadline during the v2 activation wait', async ({ operation, deadline }) => {
+    vi.useFakeTimers()
+    try {
+      const timeout = mockAbortTimeouts()
+      getOpenCodeConnection.mockImplementation(async (_baseUrl: string, signal: AbortSignal) => {
+        await delayedResponse({}, deadline - 100, signal)
+        return { protocol: 'v2', version: '2.0.24', headers: {} }
+      })
+      const fetchMock = vi.fn((input: RequestInfo | URL) => {
+        const path = new URL(String(input)).pathname
+        if (path === '/api/session/active') return Promise.resolve(jsonResponse({ data: {} }))
+        if (path === '/api/location/reload') return Promise.resolve(new Response(null, { status: 204 }))
+        return Promise.resolve(locationResponse(path === '/api/model/default' ? null : []))
+      })
+      vi.stubGlobal('fetch', fetchMock)
+      const onReloadState = vi.fn()
+      let settled = false
+      const catalog = (operation === 'reload' ? refreshProviderCatalog(undefined, onReloadState) : fetchProviderCatalog()).finally(() => {
+        settled = true
+      })
+      const rejected = expect(catalog).rejects.toMatchObject({ name: 'TimeoutError' })
+
+      await vi.advanceTimersByTimeAsync(deadline - 1)
+      expect(settled).toBe(false)
+      expect(fetchMock).toHaveBeenCalledTimes(operation === 'reload' ? 5 : 3)
+      if (operation === 'reload') expect(beginOpenCodePromptActivity).toThrow(ProviderCatalogBusyError)
+      await vi.advanceTimersByTimeAsync(1)
+      await rejected
+      expect(settled).toBe(true)
+
+      const endPrompt = beginOpenCodePromptActivity()
+      endPrompt()
+      await vi.advanceTimersByTimeAsync(5_000)
+      expect(fetchMock).toHaveBeenCalledTimes(operation === 'reload' ? 5 : 3)
+      expect(fetchMock.mock.calls.filter(([input]) => String(input).endsWith('/api/location/reload'))).toHaveLength(operation === 'reload' ? 1 : 0)
       expect(timeout.mock.calls).toEqual(operation === 'reload' ? [[55_000], [5_000]] : [[25_000]])
       expect(onReloadState.mock.calls).toEqual(operation === 'reload' ? [['unknown'], ['completed']] : [])
     } finally {

@@ -497,6 +497,48 @@ describe('Windows resolution', () => {
     expect(trustedSearchDirectories(options, 'git.exe')).toEqual(ordinary)
   })
 
+  it.each([
+    ['c:\\opencode\\bin', 'c:\\users\\alice\\.opencode\\bin'],
+    ['c:/OPENCODE/bin', 'c:/users/ALICE/.opencode/bin'],
+    ['C:\\OPENCODE\\BIN\\', 'C:\\USERS\\ALICE\\.OPENCODE\\BIN\\'],
+  ])('keeps the Windows canonical PATH spelling %s ahead of the home alias %s', (customAlias, homeAlias) => {
+    const options = {
+      env: { PATH: ['C:\\Tools', homeAlias, customAlias].join(win32.delimiter) },
+      policyEnv: { USERPROFILE: 'C:\\Users\\Alice', OPENCODE_INSTALL_DIR: 'C:\\OpenCode\\bin', SystemRoot: 'C:\\Windows' },
+      platform: 'win32' as const,
+    }
+    expect(trustedSearchDirectories(options, 'opencode')).toEqual([
+      customAlias.replace(/[\\/]$/, ''),
+      homeAlias.replace(/[\\/]$/, ''),
+      'C:\\Windows\\System32',
+      'C:\\Windows',
+      'C:\\Windows\\System32\\Wbem',
+      'C:\\Windows\\System32\\WindowsPowerShell\\v1.0',
+      'C:\\Tools',
+    ])
+  })
+
+  it.skipIf(process.platform !== 'win32').each(['USERPROFILE', 'HOME'])('resolves case-varied canonical PATH aliases on Windows with %s', homeVariable => {
+    const root = tempRoot()
+    const custom = join(root, 'Configured', 'bin')
+    const home = join(root, '.opencode', 'bin')
+    const system = join(root, 'system')
+    const customAlias = custom.toUpperCase().replace(/\\/g, '/')
+    const homeAlias = home.toLowerCase()
+    const customFile = makeExecutable(custom, 'opencode.EXE')
+    makeExecutable(home, 'opencode.EXE')
+    makeExecutable(system, 'opencode.EXE')
+    const options = {
+      env: { PATH: [system, homeAlias, customAlias].join(win32.delimiter) },
+      policyEnv: { [homeVariable]: root, OPENCODE_INSTALL_DIR: custom, PATHEXT: '.EXE', SystemRoot: NO_WINDOWS },
+      platform: 'win32' as const,
+      cache: freshCache(),
+    }
+    expect(resolveTrustedExecutable('opencode', options).path).toBe(join(customAlias, 'opencode.EXE'))
+    unlinkSync(customFile)
+    expect(resolveTrustedExecutable('opencode', options).path).toBe(join(homeAlias, 'opencode.EXE'))
+  })
+
   it('applies PATHEXT to a bare name', () => {
     const root = tempRoot()
     // `.EXE` before `.CMD` in PATHEXT, and the .CMD exists too: the order in the
@@ -1771,6 +1813,22 @@ describe('round-2 trust rules', () => {
     }
     expect(trustedSearchDirectories(options, 'opencode')).toEqual([customAlias, custom, homeAlias, home])
     expect(resolveTrustedExecutable('opencode', options).path).toBe(join(customAlias, 'opencode'))
+  })
+
+  itPosix('keeps case-distinct POSIX directories separate from canonical OpenCode', () => {
+    const root = tempRoot()
+    const canonical = join(root, 'Configured')
+    const other = join(root, 'configured')
+    const expected = makeExecutable(canonical, 'opencode')
+    makeExecutable(other, 'opencode')
+    const options = {
+      env: { PATH: other },
+      policyEnv: { HOME: root, OPENCODE_INSTALL_DIR: canonical },
+      platform: 'linux' as const,
+      cache: freshCache(),
+    }
+    expect(trustedSearchDirectories(options, 'opencode')).toEqual([canonical, join(root, '.opencode', 'bin'), other])
+    expect(resolveTrustedExecutable('opencode', options).path).toBe(expected)
   })
 
   itPosix.each([false, true])('prioritizes canonical ~/.opencode/bin ahead of system PATH (canonical on PATH: %s)', onPath => {

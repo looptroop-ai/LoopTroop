@@ -101,9 +101,10 @@ export interface OpenCodeMove {
 
 export class OpenCodeMissingError extends Error {
   /**
-   * `refusal` is set when an `opencode` *was* found and will not be run: the
-   * resolver refused it, or it could not be launched. The error stays the same
-   * class — it degrades exactly as a missing binary does — but "not on PATH,
+   * `refusal` explains why a resolved `opencode` cannot provide the server:
+   * the resolver refused it, it could not be launched, or it exited before
+   * becoming healthy. The error stays the same class — it degrades exactly as
+   * a missing binary does — but "not on PATH,
    * install it" is the wrong thing to tell someone whose OpenCode is installed.
    * The refusal carries its own remedy, because reinstalling OpenCode helps with
    * a directory this machine refuses and does nothing for a missing cmd.exe.
@@ -114,10 +115,10 @@ export class OpenCodeMissingError extends Error {
    */
   constructor(baseUrl: string, refusal?: string) {
     super(refusal === undefined
-      ? `OpenCode is not running at ${baseUrl}, and the \`opencode\` command is not on PATH.\n`
+      ? `OpenCode is not running at ${baseUrl}, and the \`opencode\` command was not found on PATH or in an OpenCode installation directory.\n`
         + 'Install it from https://opencode.ai, or set LOOPTROOP_OPENCODE_BASE_URL to an OpenCode server that is '
         + 'already running and OPENCODE_PASSWORD to its password.'
-      : `OpenCode is not running at ${baseUrl}, and the \`opencode\` that was found will not be run: ${refusal}`)
+      : `OpenCode is not running at ${baseUrl}: ${refusal}`)
     this.name = 'OpenCodeMissingError'
   }
 }
@@ -637,15 +638,13 @@ export class OpenCodeSupervisor {
       : null
 
     const spawnFailed = new Promise<never>((_, reject) => {
-      child.once('error', () => reject(new OpenCodeMissingError(this.baseUrl)))
+      child.once('error', (error) => reject(new OpenCodeMissingError(this.baseUrl, `${program} could not be started: ${getErrorMessage(error)}`)))
     })
 
-    // An immediate exit almost always means the binary is missing — including
-    // through cmd.exe above, where a shim whose target is gone is not a spawn
-    // error at all: cmd.exe starts, prints "is not recognized" and exits 9009.
+    // A broken shim can launch successfully and exit before the server is healthy.
     const exitedEarly = new Promise<never>((_, reject) => {
-      child.once('exit', (code) => {
-        if (!this.stopping) reject(new OpenCodeMissingError(this.baseUrl))
+      child.once('exit', (code, signal) => {
+        if (!this.stopping) reject(new OpenCodeMissingError(this.baseUrl, `${program} exited before becoming healthy (${signal ? `signal ${signal}` : `code ${code ?? 'unknown'}`}).`))
         else reject(new Error(`OpenCode exited with code ${code ?? 'unknown'}`))
       })
     })

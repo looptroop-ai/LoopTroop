@@ -271,7 +271,7 @@ describe('OpenCodeSupervisor', () => {
 
     await expect(supervisor.start()).rejects.toMatchObject({
       name: 'OpenCodeMissingError',
-      message: expect.stringContaining(`will not be run: ${refusal}\nOr reinstall OpenCode so that it is owned by you or by root.`),
+      message: `OpenCode is not running at http://127.0.0.1:4096: ${refusal}\nOr reinstall OpenCode so that it is owned by you or by root.`,
     })
     expect(spawnProcess).not.toHaveBeenCalled()
   })

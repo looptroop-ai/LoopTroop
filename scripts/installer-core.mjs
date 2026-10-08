@@ -696,13 +696,15 @@ async function download(url, destination) {
  *
  * On Windows there is no ownership check either: `fs.stat` reports mode `0777`
  * and uid `0` for everything on NTFS, so neither means anything. Windows gets
- * `PATHEXT` handling, the system directories searched first as `CreateProcess`
- * searches them, and the structural rules. The override adds directories to
+ * `PATHEXT` handling, system directories before ordinary `PATH` entries, and
+ * the structural rules. OpenCode's canonical directories precede the system
+ * directories too. The override adds directories to
  * search; it cannot narrow the search, on Windows or anywhere else.
  *
- * The policy inputs — the override, the Windows system root, `PATHEXT` and
- * `ComSpec` — are read from this process's environment (`policyEnv`), never
- * from the one a child is being given. A command that could set its own
+ * The policy inputs — the override, OpenCode directory hints and home,
+ * the Windows system root, `PATHEXT` and `ComSpec` — come from this process's
+ * environment (`policyEnv`), never from the one a child is being given.
+ * A command that could set its own
  * `LOOPTROOP_TRUSTED_EXECUTABLE_DIRS` could vouch for any directory it liked.
  *
  * `scripts/trusted-tool.ts` answers the same question with a *stricter* policy,
@@ -758,6 +760,7 @@ const DEFAULT_PATHEXT = '.COM;.EXE;.BAT;.CMD'
  * will not run it from. Falling back to the bare name after a refusal would
  * spawn the very file this module exists to refuse.
  */
+
 
 
 
@@ -847,15 +850,19 @@ function pathFor(platform                 )                           {
  * directory is telling the daemon where a tool is, and a tool that is not on
  * `PATH` at all is exactly the case they are answering.
  *
- * When resolving OpenCode, canonical tool directories (`~/.opencode/bin`,
- * `OPENCODE_INSTALL_DIR`, `OPENCODE_DIR`) are prioritized ahead of system `PATH`
- * so dedicated OpenCode installations take precedence over general system/npm
- * binaries, falling back cleanly to the rest of `PATH`.
+ * OpenCode searches the first absolute `OPENCODE_INSTALL_DIR` or `OPENCODE_DIR`,
+ * then `~/.opencode/bin`, ahead of system `PATH`. Matching PATH aliases keep
+ * their spelling within each canonical directory's priority. Missing candidates
+ * fall back to the rest of `PATH`; a candidate that fails the trust policy
+ * stops resolution.
  *
  * Relative entries are dropped rather than resolved. `PATH` conventionally
  * carries `.` and empty segments, both of which mean the current directory, and
  * for a daemon whose current directory is a checkout that is the one location
  * that must never win.
+ *
+ * @param name OpenCode names, including Windows executable extensions, enable
+ * canonical-directory priority. Omit it for the ordinary tool search order.
  */
 export function trustedSearchDirectories(options                           = {}, name         )           {
   const env = options.env ?? process.env
@@ -863,37 +870,23 @@ export function trustedSearchDirectories(options                           = {},
   const platform = options.platform ?? process.platform
   const p = pathFor(platform)
   const pathValue = env.PATH ?? env.Path ?? ''
-  const isOpencode = name !== undefined && (platform === 'win32' ? name.toLowerCase() === 'opencode' : name === 'opencode')
-
-  if (!isOpencode) {
-    return searchEntries([
-      ...(policyEnv[TRUSTED_EXECUTABLE_DIRS_ENV] ?? '').split(p.delimiter),
-      ...windowsSystemDirectories(platform, policyEnv),
-      ...pathValue.split(p.delimiter),
-    ], platform)
-  }
-
-  const canonicalDirs = canonicalTrustedDirectories(platform, policyEnv)
-  const canonicalSet = canonicalTrustedDirectorySet(platform, policyEnv)
-  const rawPathEntries = pathValue.split(p.delimiter)
-  const canonicalPathEntries           = []
-  const otherPathEntries           = []
-
-  for (const entry of rawPathEntries) {
-    const dir = asSearchDirectory(entry, platform)
-    if (dir !== '' && p.isAbsolute(dir) && directoryMatches(dir, canonicalSet)) {
-      canonicalPathEntries.push(entry)
-    } else {
-      otherPathEntries.push(entry)
-    }
-  }
+  const isOpencode = name !== undefined && isExactOpencode(name, platform)
+  const canonicalDirs = isOpencode ? canonicalTrustedDirectories(platform, policyEnv) : []
+  const pathEntries = pathValue.split(p.delimiter)
+  const canonicalEntries = canonicalDirs.flatMap(directory => {
+    const aliases = trustedDirectorySet([directory])
+    const matchingEntries = pathEntries.filter(entry => {
+      const dir = asSearchDirectory(entry, platform)
+      return dir !== '' && p.isAbsolute(dir) && directoryMatches(dir, aliases)
+    })
+    return [...matchingEntries, directory]
+  })
 
   return searchEntries([
     ...(policyEnv[TRUSTED_EXECUTABLE_DIRS_ENV] ?? '').split(p.delimiter),
-    ...canonicalPathEntries,
-    ...canonicalDirs,
+    ...canonicalEntries,
     ...windowsSystemDirectories(platform, policyEnv),
-    ...otherPathEntries,
+    ...pathEntries,
   ], platform)
 }
 
@@ -999,20 +992,19 @@ export function canonicalTrustedDirectories(platform                 , policyEnv
   }
   const p = pathFor(platform)
   const dirs           = []
-  if (home && p.isAbsolute(home)) {
-    dirs.push(p.join(home, '.opencode', 'bin'))
-  }
   for (const custom of [policyEnv.OPENCODE_INSTALL_DIR, policyEnv.OPENCODE_DIR]) {
     if (custom && p.isAbsolute(custom)) {
       dirs.push(custom)
       break
     }
   }
+  if (home && p.isAbsolute(home)) {
+    dirs.push(p.join(home, '.opencode', 'bin'))
+  }
   return dirs
 }
 
-export function canonicalTrustedDirectorySet(platform                 , policyEnv                   )              {
-  const dirs = canonicalTrustedDirectories(platform, policyEnv)
+function trustedDirectorySet(dirs                   )              {
   const set = new Set        ()
   for (const dir of dirs) {
     set.add(dir)
@@ -1024,18 +1016,15 @@ export function canonicalTrustedDirectorySet(platform                 , policyEn
   return set
 }
 
+export function canonicalTrustedDirectorySet(platform                 , policyEnv                   )              {
+  return trustedDirectorySet(canonicalTrustedDirectories(platform, policyEnv))
+}
+
 export function trustedOperatorDirectories(policyEnv                   , platform                 )              {
   const p = pathFor(platform)
   const override = policyEnv[TRUSTED_EXECUTABLE_DIRS_ENV] ?? ''
   const entries = searchEntries(override.split(p.delimiter), platform)
-  const set = new Set        (entries)
-  for (const entry of entries) {
-    set.add(trustedPath.normalize(entry))
-    set.add(trustedPath.resolve(entry))
-    const real = realpathOrNull(entry)
-    if (real !== null) set.add(real)
-  }
-  return set
+  return trustedDirectorySet(entries)
 }
 
 function directoryMatches(directory        , trustedDirs             )          {
@@ -1609,9 +1598,9 @@ function entryStillHolds(entry                  , platform                 , con
  * The file `name` would run as, if it is one this daemon is willing to spawn.
  *
  * A hit that fails the ownership rule is refused rather than skipped. Carrying
- * on down `PATH` would resolve to a *different* program than the one the
- * operating system would have run — silently, and differently from every other
- * tool on the machine, which is worse than saying no.
+ * on down the search list would silently replace the selected installation.
+ * OpenCode deliberately promotes canonical installations ahead of ordinary
+ * `PATH`; the same refusal rule applies to those promoted candidates.
  */
 export function resolveTrustedExecutable(
   name        ,
@@ -1635,7 +1624,7 @@ export function resolveTrustedExecutable(
   }
 
   const override = policyEnv[TRUSTED_EXECUTABLE_DIRS_ENV] ?? ''
-  const isOpencode = platform === 'win32' ? name.toLowerCase() === 'opencode' : name === 'opencode'
+  const isOpencode = isExactOpencode(name, platform)
   const directories = trustedSearchDirectories({ env, policyEnv, platform }, name)
   const namedByOperator = trustedOperatorDirectories(policyEnv, platform)
   const canonicalDirs = canonicalTrustedDirectorySet(platform, policyEnv)
@@ -1725,7 +1714,7 @@ export function resolveTrustedExecutable(
   }
 
   return {
-    reason: `${name} was not found in any trusted directory on PATH.`
+    reason: `${name} was not found in any trusted directory${isOpencode ? ' searched for OpenCode' : ' on PATH'}.`
       + ` Install it, or set ${TRUSTED_EXECUTABLE_DIRS_ENV} to the directory holding it.`,
   }
 }

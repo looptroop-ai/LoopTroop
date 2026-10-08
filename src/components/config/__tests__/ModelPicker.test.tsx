@@ -167,6 +167,27 @@ describe('ModelPicker', () => {
     mockModelsQuery()
   })
 
+  it('shows the loaded model count in the picker and search field', () => {
+    mockModelsQuery(models, [...models, { ...models[0]!, fullId: 'openai/extra-model' }])
+    render(<ModelPicker value="" onChange={vi.fn()} />)
+
+    expect(screen.getByRole('button', { name: 'Pick a model 8 models found. Search models…' })).toBeInTheDocument()
+    fireEvent.click(screen.getByRole('button', { name: /^Pick a model/ }))
+    expect(screen.getByLabelText('Search models')).toHaveAttribute('placeholder', '8 models found. Search by name, provider, family…')
+
+    fireEvent.click(screen.getByRole('checkbox', { name: /Show all providers/i }))
+    expect(screen.getByRole('button', { name: 'Pick a model 9 models found. Search models…' })).toBeInTheDocument()
+    expect(screen.getByLabelText('Search models')).toHaveAttribute('placeholder', '9 models found. Search by name, provider, family…')
+  })
+
+  it('keeps the selected model visible while showing the singular count in search', () => {
+    mockModelsQuery([models[0]!])
+    render(<ModelPicker value={models[0]!.fullId} onChange={vi.fn()} />)
+
+    fireEvent.click(screen.getByRole('button', { name: /Pick a model GPT Alpha OpenAI/ }))
+    expect(screen.getByLabelText('Search models')).toHaveAttribute('placeholder', '1 model found. Search by name, provider, family…')
+  })
+
   it('allows provider groups to collapse while search is active', () => {
     render(<ModelPicker value="" onChange={vi.fn()} />)
 

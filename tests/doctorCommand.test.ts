@@ -92,6 +92,13 @@ describe('doctor command', () => {
 
   it('reports attached-project ignore state and a database it cannot read', async () => {
     const configDir = useConfigDir()
+    // These repeated checks exercise database state, so npm's host startup cost
+    // must not decide whether the case fits its timeout.
+    const npm = join(configDir, process.platform === 'win32' ? 'npm.cmd' : 'npm')
+    writeFileSync(npm, process.platform === 'win32'
+      ? '@echo off\r\necho 11.0.0\r\nexit /b 0\r\n'
+      : '#!/bin/sh\necho 11.0.0\n')
+    if (process.platform !== 'win32') chmodSync(npm, 0o700)
     vi.spyOn(globalThis, 'fetch').mockResolvedValue(new Response('{}', { status: 404 }))
     const [{ db, sqlite, APP_DB_PATH, closeDatabase }, { initializeDatabase }, { attachedProjects }, schemaVersion] = await Promise.all([
       import('../server/db/index'),
@@ -888,10 +895,13 @@ describe('doctor command', () => {
       })
     })
 
-    const checks = await runChecks()
+    const stdout = captureStdout()
+    await doctorCommand(true)
+    const { checks } = JSON.parse(stdout.text()) as { checks: Awaited<ReturnType<typeof runChecks>> }
     const cli = checks.find((check) => check.name === 'opencode cli')
 
     expect(cli?.detail).toBe('2.0.15 (latest 2.0.16)')
+    expect(cli?.note).toBe(`Resolved executable: ${join(binDir, process.platform === 'win32' ? 'opencode.cmd' : 'opencode')}`)
     expect(cli).not.toHaveProperty('opencodeMajor')
     expect(requested).toContain('https://registry.npmjs.org/@opencode/cli/latest')
     expect(requested).not.toContain('https://registry.npmjs.org/opencode-ai/latest')
@@ -1248,6 +1258,33 @@ describe('doctor command', () => {
 
       expect(result.kind).toBe('ok')
       if (result.kind === 'ok') expect(result.output).toContain('v')
+    })
+
+    it('reports the selected OpenCode shim and its failure instead of telling the user to install it', async () => {
+      const root = useConfigDir()
+      const program = join(root, process.platform === 'win32' ? 'opencode.cmd' : 'opencode')
+      writeFileSync(program, process.platform === 'win32'
+        ? '@echo off\r\necho Error: OpenCode postinstall did not run. 1>&2\r\necho More installation details. 1>&2\r\nexit /b 1\r\n'
+        : '#!/bin/sh\nprintf "Error: OpenCode postinstall did not run.\\nMore installation details.\\n" >&2\nexit 1\n')
+      if (process.platform !== 'win32') chmodSync(program, 0o700)
+      vi.stubEnv('LOOPTROOP_OPENCODE_MODE', 'real')
+      vi.stubEnv('LOOPTROOP_OPENCODE_BASE_URL', 'http://127.0.0.1:1')
+      vi.spyOn(globalThis, 'fetch').mockRejectedValue(new TypeError('offline'))
+
+      expect(runProbe('opencode', ['--version'], 5_000)).toEqual({
+        kind: 'unavailable', path: program,
+        failure: 'exited with code 1: Error: OpenCode postinstall did not run.',
+      })
+      const stdout = captureStdout()
+      await doctorCommand(true)
+      const { checks } = JSON.parse(stdout.text()) as { checks: Awaited<ReturnType<typeof runChecks>> }
+      const cli = checks.find((check) => check.name === 'opencode cli')
+      expect(cli).toMatchObject({
+        status: 'warn', missing: true,
+        detail: `${program}: exited with code 1: Error: OpenCode postinstall did not run.`,
+      })
+      expect(cli?.remedy).toContain('Repair this OpenCode installation')
+      expect(cli?.remedy).not.toContain('Install it from')
     })
 
     it('reports missing tools when no executables resolve from PATH', async () => {

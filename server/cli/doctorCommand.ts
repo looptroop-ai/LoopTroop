@@ -148,24 +148,31 @@ function installHint(tool: string): string {
  * hint, sent people to reinstall something they had.
  */
 function unavailable(probe: ProbeResult, detail: string, remedy: string): { detail: string; remedy: string } {
-  if (probe.kind !== 'unavailable' || probe.refusal === undefined) return { detail, remedy }
-  return {
-    detail: probe.refusal,
-    remedy: `Set ${TRUSTED_EXECUTABLE_DIRS_ENV} to that directory if the tool is meant to be there, or install it somewhere owned by you or by root.`,
+  if (probe.kind === 'unavailable') {
+    if (probe.refusal !== undefined) return {
+      detail: probe.refusal,
+      remedy: `Set ${TRUSTED_EXECUTABLE_DIRS_ENV} to that directory if the tool is meant to be there, or install it somewhere owned by you or by root.`,
+    }
+    if (probe.failure !== undefined) return {
+      detail: `${probe.path}: ${probe.failure}`,
+      remedy: `Repair this OpenCode installation, or set ${TRUSTED_EXECUTABLE_DIRS_ENV} to the directory containing a working installation.`,
+    }
   }
+  return { detail, remedy }
 }
 
 /** What running one of doctor's probe commands established. */
 export type ProbeResult =
-  | { kind: 'ok'; output: string }
+  | { kind: 'ok'; output: string; path?: string }
   | { kind: 'timed-out' }
   /**
-   * Not on PATH, or on it and exiting non-zero — or found and refused, in which
+   * No executable was found, or it exited non-zero — or found and refused, in which
    * case `refusal` says why. A refused tool degrades exactly as a missing one
    * does, but the advice differs: "install it" is wrong for a tool that is
-   * installed, somewhere this machine will not run it from.
+   * installed, somewhere this machine will not run it from. OpenCode also
+   * keeps its selected path and launch failure for diagnosing broken shims.
    */
-  | { kind: 'unavailable'; refusal?: string }
+  | { kind: 'unavailable'; refusal?: string; path?: string; failure?: string }
 
 /**
  * Runs one of doctor's probe commands under a deadline.
@@ -211,12 +218,13 @@ export function runProbe(command: string, args: string[], timeoutMs: number): Pr
   const env = createChildEnvironment({ ...process.env, ...NON_INTERACTIVE_GIT_ENV })
   const launch = planProgramLaunch(resolution.path, args, { env })
   if (launch.reason !== undefined) return { kind: 'unavailable', refusal: launch.reason }
+  const opencode = command === 'opencode'
   const started = Date.now()
   // `spawnSync`, not `execFileSync`: only `spawnSync` documents
   // `windowsVerbatimArguments`, which a line escaped for cmd.exe needs.
   const result = spawnSync(launch.file, launch.args, {
     encoding: 'utf8',
-    stdio: ['ignore', 'pipe', 'ignore'],
+    stdio: ['ignore', 'pipe', opencode ? 'pipe' : 'ignore'],
     timeout: timeoutMs,
     // Escalates rather than asking twice: a probe that outran its budget has
     // nothing left to negotiate, and `doctor` must not hang on one.
@@ -224,7 +232,9 @@ export function runProbe(command: string, args: string[], timeoutMs: number): Pr
     env,
     windowsVerbatimArguments: launch.windowsVerbatimArguments,
   })
-  if (result.error === undefined && result.status === 0) return { kind: 'ok', output: result.stdout }
+  if (result.error === undefined && result.status === 0) return {
+    kind: 'ok', output: result.stdout, ...(opencode ? { path: resolution.path } : {}),
+  }
   // A command that was found and then hung is a different problem from one that
   // is not installed, and the install hint would be wrong advice.
   //
@@ -239,9 +249,17 @@ export function runProbe(command: string, args: string[], timeoutMs: number): Pr
   // one — telling someone to install a tool they already have, which is the
   // exact confusion this branch exists to prevent.
   const elapsed = Date.now() - started
-  return (result.error as NodeJS.ErrnoException | undefined)?.code === 'ETIMEDOUT' || elapsed >= timeoutMs
-    ? { kind: 'timed-out' }
-    : { kind: 'unavailable' }
+  if ((result.error as NodeJS.ErrnoException | undefined)?.code === 'ETIMEDOUT' || elapsed >= timeoutMs) {
+    return { kind: 'timed-out' }
+  }
+  if (!opencode) return { kind: 'unavailable' }
+  const stderr = result.stderr?.trim().split(/\r?\n/, 1)[0]
+  const failure = result.error !== undefined
+    ? `could not be started: ${getErrorMessage(result.error)}`
+    : result.signal
+      ? `was terminated by ${result.signal}`
+      : `exited with code ${result.status ?? 'unknown'}${stderr ? `: ${stderr}` : ''}`
+  return { kind: 'unavailable', path: resolution.path, failure }
 }
 
 /** The line to show for a probe that never came back, and what to do about it. */
@@ -850,7 +868,7 @@ export function isOpenCodeCliLaunchable(check: Check): boolean {
 
 type OpenCodeCliProbe =
   | { kind: 'mock' }
-  | { kind: 'ok'; version: string }
+  | { kind: 'ok'; version: string; path?: string }
   | { kind: 'timed-out' }
   | { kind: 'unavailable'; probe: Extract<ProbeResult, { kind: 'unavailable' }> }
 
@@ -863,7 +881,7 @@ function probeOpenCodeCliVersion(): OpenCodeCliProbe {
   if (probe.kind === 'ok') {
     const line = probe.output.trim().split('\n')[0] || 'present'
     const found = versionIn(line) ?? line
-    return { kind: 'ok', version: found }
+    return { kind: 'ok', version: found, path: probe.path }
   }
 
   if (probe.kind === 'timed-out') {
@@ -876,7 +894,10 @@ function probeOpenCodeCliVersion(): OpenCodeCliProbe {
 function checkOpenCodeVersion(probe: OpenCodeCliProbe, latest: string | null = null): Check {
   if (probe.kind === 'mock') return { name: 'opencode cli', status: 'ok', detail: 'not needed in mock mode' }
   if (probe.kind === 'ok') {
-    return { name: 'opencode cli', status: 'ok', detail: withLatest(probe.version, latest) }
+    return {
+      name: 'opencode cli', status: 'ok', detail: withLatest(probe.version, latest),
+      ...(probe.path === undefined ? {} : { note: `Resolved executable: ${probe.path}` }),
+    }
   }
   if (probe.kind === 'timed-out') {
     return { status: 'warn', ...timedOutCheck('opencode cli', 'opencode --version', PROBE_TIMEOUT_MS) }
@@ -889,7 +910,7 @@ function checkOpenCodeVersion(probe: OpenCodeCliProbe, latest: string | null = n
     // A server that is already running can still serve LoopTroop, so a missing
     // binary is only a problem for starting one. Whether that is survivable is
     // decided by `judgeOpenCode`, which can see both facts at once.
-    ...unavailable(probe.probe, 'not found on PATH', OPENCODE_INSTALL_REMEDY),
+    ...unavailable(probe.probe, 'not found in an OpenCode installation directory or on PATH', OPENCODE_INSTALL_REMEDY),
   }
 }
 

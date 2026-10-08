@@ -111,8 +111,8 @@ function modelFetchRetry() {
   }
 }
 
-export function clearOpenCodeModelsQuery(queryClient: Pick<QueryClient, 'removeQueries'>) {
-  queryClient.removeQueries({
+export function invalidateOpenCodeModelsQuery(queryClient: Pick<QueryClient, 'invalidateQueries'>) {
+  return queryClient.invalidateQueries({
     queryKey: ['opencode-models'],
   })
 }
@@ -155,6 +155,11 @@ export async function refreshOpenCodeModelsQuery(queryClient: Pick<QueryClient, 
     // Dashboard refetches must never replay a completed manual operation.
     queryClient.removeQueries({ queryKey: OPENCODE_MODELS_REFRESH_QUERY_KEY, exact: true })
   }
+  // A health-triggered catalog read can start while the provider reload is running.
+  await Promise.all([
+    queryClient.cancelQueries({ queryKey: OPENCODE_MODELS_QUERY_KEY, exact: true }),
+    queryClient.cancelQueries({ queryKey: ALL_OPENCODE_MODELS_QUERY_KEY, exact: true }),
+  ])
   queryClient.setQueryData(OPENCODE_MODELS_QUERY_KEY, data)
   await queryClient.invalidateQueries({ queryKey: ALL_OPENCODE_MODELS_QUERY_KEY, exact: true })
   // A recovered read updates the cache without proving the reload completed.

@@ -392,8 +392,8 @@ export function ProfileSetup({ onClose, onOpenAbout = () => undefined, onDirtyCh
                   type="button"
                   id="reload-opencode-models"
                   onClick={() => { void handleReloadModels() }}
-                  disabled={modelsFetching || isRefreshingModels}
-                  className="p-0.5 rounded text-muted-foreground hover:text-foreground hover:bg-muted transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
+                  disabled={isRefreshingModels}
+                  className="p-0.5 rounded text-brand-600 dark:text-brand-400 hover:text-brand-700 dark:hover:text-brand-300 transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-brand-500 disabled:opacity-50 disabled:cursor-not-allowed"
                   aria-label="Reload OpenCode providers and models"
                 >
                   <RefreshCw className={`h-3 w-3 ${modelsFetching || isRefreshingModels ? 'animate-spin' : ''}`} />

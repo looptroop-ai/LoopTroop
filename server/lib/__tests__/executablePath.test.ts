@@ -469,6 +469,34 @@ describe('Windows resolution', () => {
     return { env: { PATH: join(root, 'bin'), USERPROFILE: root }, policyEnv: { SystemRoot: NO_WINDOWS, ...policy } }
   }
 
+  it.each(['opencode', 'OpEnCoDe', 'opencode.EXE', 'opencode.CMD'])('prioritizes canonical installations for %s', name => {
+    const root = tempRoot()
+    const canonical = join(root, 'opencode-bin')
+    const system = join(root, 'system-bin')
+    const fileName = name.includes('.') ? name : `${name}.EXE`
+    const expected = makeExecutable(canonical, fileName)
+    makeExecutable(system, fileName)
+    const options = {
+      env: { PATH: system },
+      policyEnv: { USERPROFILE: 'relative', OPENCODE_INSTALL_DIR: canonical, SystemRoot: NO_WINDOWS, PATHEXT: '.EXE;.CMD' },
+      platform: 'win32' as const,
+      cache: freshCache(),
+    }
+    expect(resolveTrustedExecutable(name, options).path).toBe(expected)
+    expect(resolveTrustedExecutable(name, { ...options, env: { PATH: '' } }).path).toBe(expected)
+  })
+
+  it('searches the Windows canonical home before system directories, only for OpenCode', () => {
+    const options = {
+      env: { PATH: 'C:\\Tools' },
+      policyEnv: { USERPROFILE: 'C:\\Users\\Alice', SystemRoot: 'C:\\Windows' },
+      platform: 'win32' as const,
+    }
+    const ordinary = trustedSearchDirectories(options)
+    expect(trustedSearchDirectories(options, 'opencode.exe')).toEqual(['C:\\Users\\Alice\\.opencode\\bin', ...ordinary])
+    expect(trustedSearchDirectories(options, 'git.exe')).toEqual(ordinary)
+  })
+
   it('applies PATHEXT to a bare name', () => {
     const root = tempRoot()
     // `.EXE` before `.CMD` in PATHEXT, and the .CMD exists too: the order in the
@@ -1656,7 +1684,7 @@ describe('round-2 trust rules', () => {
     makeExecutable(opencodeDir, 'opencode')
 
     // Dot-segment in PATH
-    const dotPath = join(root, '.opencode', '.', 'bin')
+    const dotPath = `${root}/.opencode/./bin`
     const dotResolution = resolveTrustedExecutable('opencode', {
       env: { PATH: dotPath },
       policyEnv: { HOME: root },
@@ -1689,22 +1717,63 @@ describe('round-2 trust rules', () => {
       USERPROFILE: 'C:\\Users\\alice',
       OPENCODE_INSTALL_DIR: 'relative\\bin',
       OPENCODE_DIR: 'C:\\OpenCode\\bin',
-    })).toEqual(['C:\\Users\\alice\\.opencode\\bin', 'C:\\OpenCode\\bin'])
+    })).toEqual(['C:\\OpenCode\\bin', 'C:\\Users\\alice\\.opencode\\bin'])
 
     expect(canonicalTrustedDirectories('linux', {
       HOME: '/home/alice',
       OPENCODE_INSTALL_DIR: '/opt/opencode/bin',
       OPENCODE_DIR: '/alt/opencode/bin',
-    })).toEqual(['/home/alice/.opencode/bin', '/opt/opencode/bin'])
+    })).toEqual(['/opt/opencode/bin', '/home/alice/.opencode/bin'])
 
     expect(canonicalTrustedDirectories('linux', {
       HOME: '/home/alice',
       OPENCODE_INSTALL_DIR: 'relative/bin',
       OPENCODE_DIR: '/opt/opencode/bin',
-    })).toEqual(['/home/alice/.opencode/bin', '/opt/opencode/bin'])
+    })).toEqual(['/opt/opencode/bin', '/home/alice/.opencode/bin'])
   })
 
-  itPosix('prioritizes canonical ~/.opencode/bin ahead of system PATH when both contain opencode', () => {
+  itPosix.each(['OPENCODE_INSTALL_DIR', 'OPENCODE_DIR'])('prefers %s over the home installation even when home is first on PATH', variable => {
+    const root = tempRoot()
+    const home = join(root, '.opencode', 'bin')
+    const custom = join(root, 'configured')
+    const system = join(root, 'system')
+    const expected = makeExecutable(custom, 'opencode')
+    makeExecutable(home, 'opencode')
+    makeExecutable(system, 'opencode')
+    const options = {
+      env: { PATH: `${system}:${home}:${custom}` },
+      policyEnv: { HOME: root, [variable]: custom },
+      platform: 'linux' as const,
+      cache: freshCache(),
+    }
+    expect(trustedSearchDirectories(options, 'opencode')).toEqual([custom, home, system])
+    expect(resolveTrustedExecutable('opencode', options).path).toBe(expected)
+    expect(resolveTrustedExecutable('opencode', { ...options, env: { PATH: system } }).path).toBe(expected)
+    unlinkSync(expected)
+    expect(resolveTrustedExecutable('opencode', options).path).toBe(join(home, 'opencode'))
+  })
+
+  itPosix('preserves the configured canonical PATH alias ahead of a home alias', () => {
+    const root = tempRoot()
+    const home = join(root, '.opencode', 'bin')
+    const custom = join(root, 'configured')
+    const homeAlias = join(root, 'home-alias')
+    const customAlias = join(root, 'custom-alias')
+    makeExecutable(home, 'opencode')
+    makeExecutable(custom, 'opencode')
+    symlinkSync(home, homeAlias)
+    symlinkSync(custom, customAlias)
+    const options = {
+      env: { PATH: `${homeAlias}:${customAlias}` },
+      policyEnv: { HOME: root, OPENCODE_INSTALL_DIR: custom },
+      platform: 'linux' as const,
+      cache: freshCache(),
+    }
+    expect(trustedSearchDirectories(options, 'opencode')).toEqual([customAlias, custom, homeAlias, home])
+    expect(resolveTrustedExecutable('opencode', options).path).toBe(join(customAlias, 'opencode'))
+  })
+
+  itPosix.each([false, true])('prioritizes canonical ~/.opencode/bin ahead of system PATH (canonical on PATH: %s)', onPath => {
     const root = tempRoot()
     const opencodeDir = join(root, '.opencode', 'bin')
     const sysDir = join(root, 'usr', 'bin')
@@ -1712,7 +1781,7 @@ describe('round-2 trust rules', () => {
     makeExecutable(sysDir, 'opencode')
 
     const resolution = resolveTrustedExecutable('opencode', {
-      env: { PATH: sysDir },
+      env: { PATH: onPath ? `${sysDir}:${opencodeDir}` : sysDir },
       policyEnv: { HOME: root },
       platform: 'linux',
       cache: freshCache(),
@@ -1732,6 +1801,45 @@ describe('round-2 trust rules', () => {
       cache: freshCache(),
     })
     expect(resolution.path).toBe(join(sysDir, 'opencode'))
+  })
+
+  itPosix('keeps the operator override ahead of canonical OpenCode directories', () => {
+    const root = tempRoot()
+    const override = join(root, 'selected')
+    const home = join(root, '.opencode', 'bin')
+    const expected = makeExecutable(override, 'opencode')
+    makeExecutable(home, 'opencode')
+    expect(resolveTrustedExecutable('opencode', {
+      env: { PATH: home },
+      policyEnv: { HOME: root, [TRUSTED_EXECUTABLE_DIRS_ENV]: override },
+      platform: 'linux',
+      cache: freshCache(),
+    }).path).toBe(expected)
+  })
+
+  itPosix('does not bypass a refused canonical OpenCode with a trusted PATH installation', () => {
+    const root = tempRoot()
+    chmodSync(root, 0o755)
+    const home = join(root, '.opencode', 'bin')
+    const canonical = makeExecutable(home, 'opencode')
+    const system = join(root, 'system')
+    makeExecutable(system, 'opencode')
+    const foreign = (reader: (path: string) => Stats | null) => (path: string): Stats | null => {
+      const stats = reader(path)
+      return stats !== null && path === canonical
+        ? Object.assign(Object.create(Object.getPrototypeOf(stats)), stats, { uid: FOREIGN_UID })
+        : stats
+    }
+    const resolution = resolveTrustedExecutable('opencode', {
+      env: { PATH: system },
+      policyEnv: { HOME: root },
+      platform: 'linux',
+      cache: freshCache(),
+      stat: foreign(statOrNull),
+      lstat: foreign(lstatOrNull),
+    })
+    expect(resolution.path).toBeUndefined()
+    expect(resolution.refusedAt).toBe(canonical)
   })
 
   itPosix('does not search OpenCode canonical directories for other tools', () => {

@@ -1,3 +1,4 @@
+import { setTimeout as delay } from 'node:timers/promises'
 import { getOpenCodeBaseUrl } from './runtimeConfig'
 import type { OpenCodeCatalogModel, OpenCodeCatalogResponse, OpenCodeCatalogReloadState } from '../../shared/opencodeCatalog'
 import { isMockOpenCodeMode } from './factory'
@@ -268,7 +269,15 @@ async function fetchProviderCatalogWithConnection(
   signal: AbortSignal,
   scope: 'connected' | 'all' = 'connected',
 ) {
-  if (connection.protocol === 'v2') return fetchV2ProviderCatalog(baseUrl, connection.headers, signal)
+  if (connection.protocol === 'v2') {
+    let catalog = await fetchV2ProviderCatalog(baseUrl, connection.headers, signal)
+    // V2 builds its location before background plugins populate providers and models.
+    for (let attempt = 0; attempt < 10 && flattenCatalogModels(catalog).length === 0; attempt += 1) {
+      await delay(500, undefined, { signal })
+      catalog = await fetchV2ProviderCatalog(baseUrl, connection.headers, signal)
+    }
+    return catalog
+  }
   const path = scope === 'all' ? '/provider' : '/config/providers'
   let response = await fetchCatalogEndpoint(baseUrl, connection, path, {}, signal)
   if (scope === 'all' && response.status === 404) {

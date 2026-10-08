@@ -829,20 +829,28 @@ describe('fetchProviderCatalog', () => {
   it.each([
     ['null data', locationResponse(null)],
     ['undefined data omitted by JSON serialization', jsonResponse({ location: { directory: '/workspace' }, data: undefined })],
-  ])('accepts an empty v2 model.default response when %s', async (_label, defaultResponse) => {
-    getOpenCodeConnection.mockResolvedValue({ protocol: 'v2', version: '2.0.15', headers: {} })
-    const fetchMock = vi.fn((input: RequestInfo | URL) => {
-      const path = new URL(String(input)).pathname
-      if (path === '/api/provider') return Promise.resolve(locationResponse([]))
-      if (path === '/api/model') return Promise.resolve(locationResponse([]))
-      if (path === '/api/model/default') return Promise.resolve(defaultResponse)
-      throw new Error(`Unexpected v2 catalog request: ${path}`)
-    })
-    vi.stubGlobal('fetch', fetchMock)
+  ] as const)('accepts an empty v2 model.default response when %s', async (_label, defaultResponse) => {
+    vi.useFakeTimers()
+    try {
+      mockAbortTimeouts()
+      getOpenCodeConnection.mockResolvedValue({ protocol: 'v2', version: '2.0.15', headers: {} })
+      const fetchMock = vi.fn((input: RequestInfo | URL) => {
+        const path = new URL(String(input)).pathname
+        if (path === '/api/provider') return Promise.resolve(locationResponse([]))
+        if (path === '/api/model') return Promise.resolve(locationResponse([]))
+        if (path === '/api/model/default') return Promise.resolve(defaultResponse.clone())
+        throw new Error(`Unexpected v2 catalog request: ${path}`)
+      })
+      vi.stubGlobal('fetch', fetchMock)
 
-    const catalog = await fetchProviderCatalog()
+      const catalog = fetchProviderCatalog()
+      await vi.advanceTimersByTimeAsync(5_000)
 
-    expect(catalog).toEqual({ all: [], connected: [], default: {}, supportsAllModels: false })
+      expect(await catalog).toEqual({ all: [], connected: [], default: {}, supportsAllModels: false })
+    } finally {
+      vi.clearAllTimers()
+      vi.useRealTimers()
+    }
   })
 
   it.each(['/api/provider', '/api/model'])('still rejects a missing v2 %s data envelope', async (malformedPath) => {
@@ -881,7 +889,9 @@ describe('fetchProviderCatalog', () => {
       .mockResolvedValueOnce(jsonResponse({ data: {} }))
       .mockResolvedValueOnce(new Response(null, { status: 204 }))
       .mockResolvedValueOnce(locationResponse([{ id: 'openai', name: 'OpenAI' }]))
-      .mockResolvedValueOnce(locationResponse([]))
+      .mockResolvedValueOnce(locationResponse([
+        { id: 'gpt-5', modelID: 'gpt-5', providerID: 'openai', name: 'GPT-5', enabled: true },
+      ]))
       .mockResolvedValueOnce(locationResponse(null))
     vi.stubGlobal('fetch', fetchMock)
 
@@ -905,5 +915,118 @@ describe('fetchProviderCatalog', () => {
     expect(catalog.supportsAllModels).toBe(false)
     expect(getOpenCodeConnection).toHaveBeenCalledOnce()
     expect(onReloadState.mock.calls).toEqual([['unknown'], ['completed']])
+  })
+
+  it.each([
+    { operation: 'read', initialProviders: false },
+    { operation: 'read', initialProviders: true },
+    { operation: 'reload', initialProviders: false },
+    { operation: 'reload', initialProviders: true },
+  ] as const)('waits for v2 provider activation during $operation with initial providers=$initialProviders', async ({ operation, initialProviders }) => {
+    vi.useFakeTimers()
+    try {
+      const timeout = mockAbortTimeouts()
+      getOpenCodeConnection.mockResolvedValue({ protocol: 'v2', version: '2.0.24', headers: {} })
+      const providers = [{ id: 'openai', name: 'OpenAI', activation: 'enabled' }]
+      const model = { id: 'gpt-5', modelID: 'gpt-5', providerID: 'openai', name: 'GPT-5', enabled: true }
+      let activated = false
+      const fetchMock = vi.fn((input: RequestInfo | URL) => {
+        const path = new URL(String(input)).pathname
+        if (path === '/api/session/active') return Promise.resolve(jsonResponse({ data: {} }))
+        if (path === '/api/location/reload') return Promise.resolve(new Response(null, { status: 204 }))
+        if (path === '/api/provider') return Promise.resolve(locationResponse(activated || initialProviders ? providers : []))
+        if (path === '/api/model') return Promise.resolve(locationResponse(activated ? [model] : []))
+        if (path === '/api/model/default') return Promise.resolve(locationResponse(activated ? model : null))
+        throw new Error(`Unexpected v2 catalog request: ${path}`)
+      })
+      vi.stubGlobal('fetch', fetchMock)
+      const onReloadState = vi.fn()
+      const catalog = operation === 'reload' ? refreshProviderCatalog(undefined, onReloadState) : fetchProviderCatalog()
+
+      await vi.advanceTimersByTimeAsync(0)
+      expect(fetchMock).toHaveBeenCalledTimes(operation === 'reload' ? 5 : 3)
+      activated = true
+      await vi.advanceTimersByTimeAsync(500)
+
+      expect(flattenCatalogModels(await catalog).map((entry) => entry.fullId)).toEqual(['openai/gpt-5'])
+      for (const path of ['/api/provider', '/api/model', '/api/model/default']) {
+        expect(fetchMock.mock.calls.filter(([input]) => new URL(String(input)).pathname === path)).toHaveLength(2)
+      }
+      expect(fetchMock.mock.calls.filter(([input]) => String(input).endsWith('/api/location/reload'))).toHaveLength(operation === 'reload' ? 1 : 0)
+      expect(getOpenCodeConnection).toHaveBeenCalledOnce()
+      expect(timeout.mock.calls).toEqual(operation === 'reload' ? [[55_000], [5_000]] : [[25_000]])
+      expect(onReloadState.mock.calls).toEqual(operation === 'reload' ? [['unknown'], ['completed']] : [])
+    } finally {
+      vi.clearAllTimers()
+      vi.useRealTimers()
+    }
+  })
+
+  it.each(['read', 'reload'] as const)('returns a genuinely empty v2 catalog after the bounded %s activation wait', async (operation) => {
+    vi.useFakeTimers()
+    try {
+      mockAbortTimeouts()
+      getOpenCodeConnection.mockResolvedValue({ protocol: 'v2', version: '2.0.24', headers: {} })
+      const fetchMock = vi.fn((input: RequestInfo | URL) => {
+        const path = new URL(String(input)).pathname
+        if (path === '/api/session/active') return Promise.resolve(jsonResponse({ data: {} }))
+        if (path === '/api/location/reload') return Promise.resolve(new Response(null, { status: 204 }))
+        return Promise.resolve(locationResponse(path === '/api/model/default' ? null : []))
+      })
+      vi.stubGlobal('fetch', fetchMock)
+      let settled = false
+      const catalog = (operation === 'reload' ? refreshProviderCatalog() : fetchProviderCatalog()).then((value) => {
+        settled = true
+        return value
+      })
+
+      await vi.advanceTimersByTimeAsync(4_999)
+      expect(settled).toBe(false)
+      await vi.advanceTimersByTimeAsync(1)
+
+      expect(await catalog).toEqual({ all: [], connected: [], default: {}, supportsAllModels: false })
+      for (const path of ['/api/provider', '/api/model', '/api/model/default']) {
+        expect(fetchMock.mock.calls.filter(([input]) => new URL(String(input)).pathname === path)).toHaveLength(11)
+      }
+      expect(fetchMock.mock.calls.filter(([input]) => String(input).endsWith('/api/location/reload'))).toHaveLength(operation === 'reload' ? 1 : 0)
+    } finally {
+      vi.clearAllTimers()
+      vi.useRealTimers()
+    }
+  })
+
+  it('cancels the v2 activation recheck without replaying reload and releases the prompt lease', async () => {
+    vi.useFakeTimers()
+    try {
+      mockAbortTimeouts()
+      getOpenCodeConnection.mockResolvedValue({ protocol: 'v2', version: '2.0.24', headers: {} })
+      const fetchMock = vi.fn((input: RequestInfo | URL) => {
+        const path = new URL(String(input)).pathname
+        if (path === '/api/session/active') return Promise.resolve(jsonResponse({ data: {} }))
+        if (path === '/api/location/reload') return Promise.resolve(new Response(null, { status: 204 }))
+        return Promise.resolve(locationResponse(path === '/api/model/default' ? null : []))
+      })
+      vi.stubGlobal('fetch', fetchMock)
+      const controller = new AbortController()
+      const reason = new DOMException('Client disconnected', 'AbortError')
+      const onReloadState = vi.fn()
+      const cancelled = expect(refreshProviderCatalog(controller.signal, onReloadState)).rejects.toBe(reason)
+
+      await vi.advanceTimersByTimeAsync(0)
+      expect(fetchMock).toHaveBeenCalledTimes(5)
+      expect(beginOpenCodePromptActivity).toThrow(ProviderCatalogBusyError)
+      controller.abort(reason)
+
+      await cancelled
+      const endPrompt = beginOpenCodePromptActivity()
+      endPrompt()
+      await vi.advanceTimersByTimeAsync(5_000)
+      expect(fetchMock).toHaveBeenCalledTimes(5)
+      expect(fetchMock.mock.calls.filter(([input]) => String(input).endsWith('/api/location/reload'))).toHaveLength(1)
+      expect(onReloadState.mock.calls).toEqual([['unknown'], ['completed']])
+    } finally {
+      vi.clearAllTimers()
+      vi.useRealTimers()
+    }
   })
 })

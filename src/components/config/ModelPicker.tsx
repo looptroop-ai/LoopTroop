@@ -312,6 +312,9 @@ export function ModelPicker({ id, label, value, onChange, placeholder = 'Search 
   const cleanDisabledValues = useMemo(() => disabledValues.map(cleanModelId), [disabledValues, cleanModelId])
 
   const selected = models?.find(m => m.fullId === cleanValue) ?? allModels?.find(m => m.fullId === cleanValue) ?? connectedModels?.find(m => m.fullId === cleanValue)
+  const modelCountLabel = models?.length
+    ? `${models.length.toLocaleString()} ${models.length === 1 ? 'model' : 'models'} found.`
+    : undefined
 
   const filtered = useMemo(() => {
     if (!models) return []
@@ -428,7 +431,7 @@ export function ModelPicker({ id, label, value, onChange, placeholder = 'Search 
             <span className="font-mono text-xs">{value}</span>
           ) : (
             <span className="text-muted-foreground">
-              {isLoading ? 'Loading models…' : models && models.length === 0 ? 'No models available' : placeholder}
+              {isLoading ? 'Loading models…' : models && models.length === 0 ? 'No models available' : modelCountLabel ? `${modelCountLabel} ${placeholder}` : placeholder}
             </span>
           )}
         </span>
@@ -466,7 +469,7 @@ export function ModelPicker({ id, label, value, onChange, placeholder = 'Search 
                   setQuery(e.target.value)
                   setActiveOptionId(undefined)
                 }}
-                placeholder="Search by name, provider, family…"
+                placeholder={modelCountLabel ? `${modelCountLabel} Search by name, provider, family…` : 'Search by name, provider, family…'}
                 className="flex-1 bg-transparent text-sm outline-none placeholder:text-muted-foreground"
                 aria-label={label ? `${label}: search models` : 'Search models'}
                 aria-describedby={`${ownerId}-value`}

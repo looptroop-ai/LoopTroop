@@ -741,6 +741,83 @@ describe('ProfileSetup', () => {
     })
   })
 
+  it('lets a manual reload recover while the first model read is pending', async () => {
+    let discoverySignal: AbortSignal | undefined
+    vi.mocked(fetch).mockImplementation(async (input: RequestInfo | URL, init?: RequestInit) => {
+      const url = typeof input === 'string' ? input : input.toString()
+      if (url === '/api/health/opencode') return new Response(JSON.stringify({ status: 'ok' }))
+      if (url === '/api/models') {
+        return new Promise<Response>((_resolve, reject) => {
+          const signal = init?.signal
+          discoverySignal = signal ?? undefined
+          signal?.addEventListener('abort', () => reject(signal.reason), { once: true })
+        })
+      }
+      return new Response(JSON.stringify({
+        models: [{ fullId: 'openai/recovered-model' }],
+        connectedProviders: ['openai'],
+        defaultModels: {},
+      }))
+    })
+    const { queryClient } = await renderProfileSetup()
+    const reloadBtn = screen.getByRole('button', { name: 'Reload OpenCode providers and models' })
+    await screen.findByText('OpenCode connected, checking models…')
+    expect(reloadBtn).toBeEnabled()
+
+    fireEvent.click(reloadBtn)
+
+    await waitFor(() => expect(fetch).toHaveBeenCalledWith('/api/models/refresh', {
+      method: 'POST',
+      signal: expect.any(AbortSignal),
+    }))
+    expect(discoverySignal?.aborted).toBe(true)
+    await screen.findByText('OpenCode connected and working')
+    expect(queryClient.getQueryData(OPENCODE_MODELS_QUERY_KEY)).toMatchObject({
+      models: [{ fullId: 'openai/recovered-model' }],
+    })
+    expect(reloadBtn).toBeEnabled()
+  })
+
+  it('keeps refreshed models when a delayed health check starts a stale catalog read', async () => {
+    let finishHealth: ((response: Response) => void) | undefined
+    let finishRefresh: ((response: Response) => void) | undefined
+    const catalogReads: Array<{ finish: (response: Response) => void, signal?: AbortSignal }> = []
+    vi.mocked(fetch).mockImplementation(async (input: RequestInfo | URL, init?: RequestInit) => {
+      const url = typeof input === 'string' ? input : input.toString()
+      return new Promise<Response>((resolve) => {
+        if (url === '/api/health/opencode') finishHealth = resolve
+        else if (url === '/api/models/refresh') finishRefresh = resolve
+        else catalogReads.push({ finish: resolve, signal: init?.signal ?? undefined })
+      })
+    })
+    const { queryClient } = await renderProfileSetup()
+    const reloadBtn = screen.getByRole('button', { name: 'Reload OpenCode providers and models' })
+    fireEvent.click(reloadBtn)
+    await waitFor(() => expect(finishRefresh).toBeDefined())
+    expect(catalogReads[0]?.signal?.aborted).toBe(true)
+
+    await act(async () => { finishHealth?.(new Response(JSON.stringify({ status: 'ok' }))) })
+    await waitFor(() => expect(catalogReads).toHaveLength(2))
+    await act(async () => {
+      finishRefresh?.(new Response(JSON.stringify({
+        models: [{ fullId: 'openai/recovered-model' }],
+        connectedProviders: ['openai'],
+        defaultModels: {},
+      })))
+    })
+    await waitFor(() => expect(reloadBtn).toBeEnabled())
+
+    await act(async () => {
+      catalogReads[1]!.finish(new Response(JSON.stringify({ models: [], connectedProviders: [], defaultModels: {} })))
+    })
+
+    expect(queryClient.getQueryData(OPENCODE_MODELS_QUERY_KEY)).toMatchObject({
+      models: [{ fullId: 'openai/recovered-model' }],
+    })
+    expect(screen.getByText('OpenCode connected and working')).toBeInTheDocument()
+    expect(catalogReads[1]?.signal?.aborted).toBe(true)
+  })
+
   it.each([
     {
       status: 409,

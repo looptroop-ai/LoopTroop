@@ -6,7 +6,7 @@ import { createTestQueryClient } from '@/test/renderHelpers'
 import { MODEL_FETCH_RETRY_COUNT, MODEL_FETCH_RETRY_DELAY_MS, MODEL_FETCH_TIMEOUT_MS, MODEL_REFRESH_TIMEOUT_MS } from '@/lib/constants'
 import {
   ALL_OPENCODE_MODELS_QUERY_KEY,
-  clearOpenCodeModelsQuery,
+  invalidateOpenCodeModelsQuery,
   fetchAllModelsApi,
   fetchModelsApi,
   OPENCODE_MODELS_QUERY_KEY,
@@ -669,14 +669,39 @@ describe('useOpenCodeModels', () => {
     })
   })
 
-  it('clears the cached models query before configuration opens', () => {
-    const removeQueries = vi.fn()
+  it('recovers a fresh empty catalog when configuration opens', async () => {
+    const queryClient = createTestQueryClient()
+    queryClient.setQueryData(OPENCODE_MODELS_QUERY_KEY, { models: [], connectedProviders: [], defaultModels: {} })
+    const { result } = renderHook(() => useOpenCodeModels(), { wrapper: queryWrapper(queryClient) })
+    expect(result.current.data).toEqual([])
+    expect(fetch).not.toHaveBeenCalled()
 
-    clearOpenCodeModelsQuery({ removeQueries })
+    await act(async () => { await invalidateOpenCodeModelsQuery(queryClient) })
 
-    expect(removeQueries).toHaveBeenCalledWith({
-      queryKey: ['opencode-models'],
+    await waitFor(() => expect(result.current.data).toEqual([{ fullId: 'openai/gpt-5.3-codex' }]))
+    expect(fetch).toHaveBeenCalledWith('/api/models', { method: 'GET', signal: expect.any(AbortSignal) })
+  })
+
+  it('keeps an active model query attached when configuration opens during discovery', async () => {
+    let finishDiscovery: ((response: Response) => void) | undefined
+    vi.stubGlobal('fetch', vi.fn(() => new Promise<Response>((resolve) => { finishDiscovery = resolve })))
+    const queryClient = createTestQueryClient()
+    const { result } = renderHook(() => useOpenCodeModels(), { wrapper: queryWrapper(queryClient) })
+    const activeQuery = queryClient.getQueryCache().find({ queryKey: OPENCODE_MODELS_QUERY_KEY })
+    expect(result.current.isFetching).toBe(true)
+
+    act(() => { void invalidateOpenCodeModelsQuery(queryClient) })
+    expect(queryClient.getQueryCache().find({ queryKey: OPENCODE_MODELS_QUERY_KEY })).toBe(activeQuery)
+
+    await act(async () => {
+      finishDiscovery?.(new Response(JSON.stringify({ models: [{ fullId: 'openai/ready-model' }] })))
     })
+    await waitFor(() => expect(result.current.data).toEqual([{ fullId: 'openai/ready-model' }]))
+    expect(result.current.isFetching).toBe(false)
+
+    vi.mocked(fetch).mockResolvedValueOnce(new Response(JSON.stringify({ models: [{ fullId: 'openai/refreshed-model' }] })))
+    await act(async () => { await refreshOpenCodeModelsQuery(queryClient) })
+    await waitFor(() => expect(result.current.data).toEqual([{ fullId: 'openai/refreshed-model' }]))
   })
 
   it('refreshes fresh cached models through the strong refresh endpoint', async () => {
@@ -703,6 +728,29 @@ describe('useOpenCodeModels', () => {
     }))
     expect(queryClient.getQueryData(ALL_OPENCODE_MODELS_QUERY_KEY)).toEqual(cachedAllModels)
     expect(queryClient.getQueryState(ALL_OPENCODE_MODELS_QUERY_KEY)?.isInvalidated).toBe(true)
+  })
+
+  it('accepts an empty refreshed catalog and reads it again when configuration reopens', async () => {
+    const queryClient = createTestQueryClient()
+    const { result } = renderHook(() => useOpenCodeModels(), { wrapper: queryWrapper(queryClient) })
+    await waitFor(() => expect(result.current.data).toEqual([{ fullId: 'openai/gpt-5.3-codex' }]))
+    vi.mocked(fetch).mockResolvedValueOnce(new Response(JSON.stringify({
+      models: [],
+      connectedProviders: [],
+      defaultModels: {},
+      catalogScope: 'connected',
+    })))
+
+    await act(async () => { await refreshOpenCodeModelsQuery(queryClient) })
+
+    await waitFor(() => expect(result.current.data).toEqual([]))
+    expect(result.current.isError).toBe(false)
+    expect(fetch).toHaveBeenLastCalledWith('/api/models/refresh', { method: 'POST', signal: expect.any(AbortSignal) })
+
+    await act(async () => { await invalidateOpenCodeModelsQuery(queryClient) })
+
+    await waitFor(() => expect(result.current.data).toEqual([{ fullId: 'openai/gpt-5.3-codex' }]))
+    expect(fetch).toHaveBeenLastCalledWith('/api/models', { method: 'GET', signal: expect.any(AbortSignal) })
   })
 
   it('keeps cached models and does not retry a busy refresh', async () => {

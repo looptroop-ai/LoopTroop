@@ -1703,6 +1703,51 @@ describe('round-2 trust rules', () => {
       OPENCODE_DIR: '/opt/opencode/bin',
     })).toEqual(['/home/alice/.opencode/bin', '/opt/opencode/bin'])
   })
+
+  itPosix('prioritizes canonical ~/.opencode/bin ahead of system PATH when both contain opencode', () => {
+    const root = tempRoot()
+    const opencodeDir = join(root, '.opencode', 'bin')
+    const sysDir = join(root, 'usr', 'bin')
+    makeExecutable(opencodeDir, 'opencode')
+    makeExecutable(sysDir, 'opencode')
+
+    const resolution = resolveTrustedExecutable('opencode', {
+      env: { PATH: sysDir },
+      policyEnv: { HOME: root },
+      platform: 'linux',
+      cache: freshCache(),
+    })
+    expect(resolution.path).toBe(join(opencodeDir, 'opencode'))
+  })
+
+  itPosix('falls back cleanly to system PATH when ~/.opencode/bin does not contain opencode', () => {
+    const root = tempRoot()
+    const sysDir = join(root, 'usr', 'bin')
+    makeExecutable(sysDir, 'opencode')
+
+    const resolution = resolveTrustedExecutable('opencode', {
+      env: { PATH: sysDir },
+      policyEnv: { HOME: root },
+      platform: 'linux',
+      cache: freshCache(),
+    })
+    expect(resolution.path).toBe(join(sysDir, 'opencode'))
+  })
+
+  itPosix('does not search OpenCode canonical directories for other tools', () => {
+    const root = tempRoot()
+    const opencodeDir = join(root, '.opencode', 'bin')
+    const sysDir = join(root, 'usr', 'bin')
+    makeExecutable(opencodeDir, 'git')
+
+    const resolution = resolveTrustedExecutable('git', {
+      env: { PATH: sysDir },
+      policyEnv: { HOME: root },
+      platform: 'linux',
+      cache: freshCache(),
+    })
+    expect(resolution.path).toBeUndefined()
+  })
 })
 
 describe('round-3 trust rules', () => {

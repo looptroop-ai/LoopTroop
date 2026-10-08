@@ -925,21 +925,53 @@ function pathFor(platform                 )                           {
  * directory is telling the daemon where a tool is, and a tool that is not on
  * `PATH` at all is exactly the case they are answering.
  *
+ * When resolving OpenCode, canonical tool directories (`~/.opencode/bin`,
+ * `OPENCODE_INSTALL_DIR`, `OPENCODE_DIR`) are prioritized ahead of system `PATH`
+ * so dedicated OpenCode installations take precedence over general system/npm
+ * binaries, falling back cleanly to the rest of `PATH`.
+ *
  * Relative entries are dropped rather than resolved. `PATH` conventionally
  * carries `.` and empty segments, both of which mean the current directory, and
  * for a daemon whose current directory is a checkout that is the one location
  * that must never win.
  */
-export function trustedSearchDirectories(options                           = {})           {
+export function trustedSearchDirectories(options                           = {}, name         )           {
   const env = options.env ?? process.env
   const policyEnv = options.policyEnv ?? process.env
   const platform = options.platform ?? process.platform
   const p = pathFor(platform)
   const pathValue = env.PATH ?? env.Path ?? ''
+  const isOpencode = name !== undefined && (platform === 'win32' ? name.toLowerCase() === 'opencode' : name === 'opencode')
+
+  if (!isOpencode) {
+    return searchEntries([
+      ...(policyEnv[TRUSTED_EXECUTABLE_DIRS_ENV] ?? '').split(p.delimiter),
+      ...windowsSystemDirectories(platform, policyEnv),
+      ...pathValue.split(p.delimiter),
+    ], platform)
+  }
+
+  const canonicalDirs = canonicalTrustedDirectories(platform, policyEnv)
+  const canonicalSet = canonicalTrustedDirectorySet(platform, policyEnv)
+  const rawPathEntries = pathValue.split(p.delimiter)
+  const canonicalPathEntries           = []
+  const otherPathEntries           = []
+
+  for (const entry of rawPathEntries) {
+    const dir = asSearchDirectory(entry, platform)
+    if (dir !== '' && p.isAbsolute(dir) && directoryMatches(dir, canonicalSet)) {
+      canonicalPathEntries.push(entry)
+    } else {
+      otherPathEntries.push(entry)
+    }
+  }
+
   return searchEntries([
     ...(policyEnv[TRUSTED_EXECUTABLE_DIRS_ENV] ?? '').split(p.delimiter),
+    ...canonicalPathEntries,
+    ...canonicalDirs,
     ...windowsSystemDirectories(platform, policyEnv),
-    ...pathValue.split(p.delimiter),
+    ...otherPathEntries,
   ], platform)
 }
 
@@ -1681,10 +1713,10 @@ export function resolveTrustedExecutable(
   }
 
   const override = policyEnv[TRUSTED_EXECUTABLE_DIRS_ENV] ?? ''
-  const directories = trustedSearchDirectories({ env, policyEnv, platform })
+  const isOpencode = platform === 'win32' ? name.toLowerCase() === 'opencode' : name === 'opencode'
+  const directories = trustedSearchDirectories({ env, policyEnv, platform }, name)
   const namedByOperator = trustedOperatorDirectories(policyEnv, platform)
   const canonicalDirs = canonicalTrustedDirectorySet(platform, policyEnv)
-  const isOpencode = platform === 'win32' ? name.toLowerCase() === 'opencode' : name === 'opencode'
   const extensions = candidateExtensions(name, platform, policyEnv)
   const cache = options.cache === undefined ? processCache : options.cache
   // Operator-trusted directories (the explicit override) and canonical tool

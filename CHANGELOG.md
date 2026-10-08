@@ -10,6 +10,7 @@ Unreleased changes appear first and represent commits that have not yet been inc
 > Changes merged since the last versioned release that have not yet shipped in a tagged version.
 
 ### Summary
+- OpenCode resolution prioritizes canonical installation directories (`~/.opencode/bin`, `OPENCODE_INSTALL_DIR`, `OPENCODE_DIR`) ahead of system PATH, falling back to PATH.
 - Model selection recovers from slow discovery without hiding failed catalog reloads.
 - Published-install checks avoid Windows installer and startup hangs, keep PowerShell modules and OpenCode probes working, and apply CI repairs to existing releases.
 - Windows PowerShell commands and installers load their standard modules when launched from PowerShell 7 through LoopTroop.
@@ -19,6 +20,7 @@ Unreleased changes appear first and represent commits that have not yet been inc
 - `looptroop doctor` compares your Node with the newest release of your own Node line, says what `gh` is still needed for, and names the checks that actually stop LoopTroop from running.
 
 ### Changed
+- When resolving the `opencode` executable, LoopTroop prioritizes canonical directories (`~/.opencode/bin`, `OPENCODE_INSTALL_DIR`, `OPENCODE_DIR`) ahead of system `PATH`. This ensures dedicated OpenCode installations take precedence over general system or npm global binaries (such as legacy v1 packages or uncompleted stubs), while cleanly falling back to `PATH` when canonical directories do not contain the binary.
 - `looptroop doctor` keeps marking a missing `gh` with `✗`, but adds that LoopTroop starts without it and that a ticket needs it before coding starts, when its pre-flight check runs. Its last line names the checks that stop LoopTroop from running, for example `LoopTroop cannot run until this is fixed: opencode.`, instead of pointing at every `✗` above it.
 - When OpenCode's default address (`127.0.0.1:4096`) is held by a server LoopTroop cannot use, because it rejects LoopTroop's password or is not OpenCode, LoopTroop leaves that server alone and starts its own OpenCode on the next free port. OpenCode v2 makes up a new password for every `opencode serve` started by hand, and other tools built on OpenCode take 4096 too, so a server left running there used to stop LoopTroop from starting at all. A server that answers with a 5xx error still counts as an OpenCode that is starting up: LoopTroop waits for it, then judges it by what it answers once it is up. An address you set with `LOOPTROOP_OPENCODE_BASE_URL` or `opencodeBaseUrl` is never moved, and the move never takes LoopTroop's own web port. When LoopTroop's own address is the one OpenCode would use, as with `looptroop start --port 4096`, the default address moves too and `doctor` names the port it would take; an address you set on that port and host stops the start, even when a server already answers there, with a message that names both settings. `looptroop start`, `looptroop open`, `looptroop status`, `looptroop doctor` and the daemon log say where OpenCode went and why. Before the first start, `doctor` reports a held default port as a warning that names the port a start would take, and as a failure when no port is free.
 

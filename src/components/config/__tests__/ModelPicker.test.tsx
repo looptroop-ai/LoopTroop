@@ -183,6 +183,27 @@ describe('ModelPicker', () => {
     expect(screen.queryByText('OpenCode is connected, but no models are currently available.')).not.toBeInTheDocument()
   })
 
+  it('exposes manual refresh on the closed picker while retaining its selected model', () => {
+    const onChange = vi.fn()
+    const { rerender } = render(<ModelPicker value="openai/gpt-alpha" onChange={onChange} />)
+    const trigger = screen.getByRole('button', { name: 'Pick a model GPT Alpha OpenAI' })
+    expect(trigger).not.toHaveAttribute('aria-busy')
+
+    rerender(<ModelPicker value="openai/gpt-alpha" onChange={onChange} isRefreshing />)
+
+    expect(trigger).toHaveAttribute('aria-busy', 'true')
+    expect(trigger).toHaveAttribute('aria-expanded', 'false')
+    expect(trigger).toHaveAccessibleName('Pick a model GPT Alpha OpenAI')
+    expect(screen.queryByRole('combobox')).not.toBeInTheDocument()
+    expect(screen.queryByRole('status')).not.toBeInTheDocument()
+
+    rerender(<ModelPicker value="openai/gpt-alpha" onChange={onChange} />)
+
+    expect(trigger).not.toHaveAttribute('aria-busy')
+    expect(trigger).toHaveAccessibleName('Pick a model GPT Alpha OpenAI')
+    expect(onChange).not.toHaveBeenCalled()
+  })
+
   it('shows the loaded model count in the picker and search field', () => {
     mockModelsQuery(models, [...models, { ...models[0]!, fullId: 'openai/extra-model' }])
     render(<ModelPicker value="" onChange={vi.fn()} />)

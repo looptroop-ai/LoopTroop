@@ -223,6 +223,10 @@ async function fetchV2ProviderCatalog(
   const controller = new AbortController()
   signal = AbortSignal.any([signal, controller.signal])
   try {
+    // Integration discovery waits for plugin activation; catalog reads return the current snapshot.
+    await fetchCatalogEndpoint(baseUrl, connection, '/api/integration', {}, signal)
+      .then((response) => readLocationData(response, 'provider activation'))
+    signal.throwIfAborted()
     const [providers, models, defaultModel] = await Promise.all([
       fetchCatalogEndpoint(baseUrl, connection, '/api/provider', {}, signal)
         .then((response) => readLocationData(response, 'provider catalog')),
@@ -269,13 +273,7 @@ async function fetchProviderCatalogWithConnection(
   scope: 'connected' | 'all' = 'connected',
 ) {
   if (connection.protocol === 'v2') {
-    let catalog = await fetchV2ProviderCatalog(baseUrl, connection.headers, signal)
-    // V2 builds its location before background plugins populate providers and models.
-    for (let attempt = 0; attempt < 10 && flattenCatalogModels(catalog).length === 0; attempt += 1) {
-      await waitForProviderActivation(signal)
-      catalog = await fetchV2ProviderCatalog(baseUrl, connection.headers, signal)
-    }
-    return catalog
+    return fetchV2ProviderCatalog(baseUrl, connection.headers, signal)
   }
   const path = scope === 'all' ? '/provider' : '/config/providers'
   let response = await fetchCatalogEndpoint(baseUrl, connection, path, {}, signal)
@@ -284,21 +282,6 @@ async function fetchProviderCatalogWithConnection(
   }
   if (!response.ok) throw new Error(`OpenCode provider catalog request failed with ${response.status}`)
   return normalizeProviderCatalog(await response.json())
-}
-
-function waitForProviderActivation(signal: AbortSignal): Promise<void> {
-  signal.throwIfAborted()
-  return new Promise((resolve, reject) => {
-    const onAbort = () => {
-      clearTimeout(timer)
-      reject(signal.reason)
-    }
-    const timer = setTimeout(() => {
-      signal.removeEventListener('abort', onAbort)
-      resolve()
-    }, 500)
-    signal.addEventListener('abort', onAbort, { once: true })
-  })
 }
 
 async function assertProviderCatalogCanReload(

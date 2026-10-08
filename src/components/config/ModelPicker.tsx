@@ -399,6 +399,7 @@ export function ModelPicker({ id, label, value, onChange, placeholder = 'Search 
         type="button"
         aria-controls={isOpen ? popupId : undefined}
         aria-expanded={isOpen}
+        aria-busy={isFetching || undefined}
         aria-labelledby={`${ownerId}-label ${ownerId}-value`}
         onClick={() => {
           setIsOpen(v => !v)

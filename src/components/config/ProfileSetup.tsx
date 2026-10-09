@@ -39,6 +39,7 @@ export const ProfileSetup = ({ onClose, onOpenAbout, onDirtyChange }: ProfileSet
   const [rawNumeric, setRawNumeric] = useState<Record<string, string>>(() => buildInitialRawNumeric({ ...formData }))
 
   const hasErrors = hasNumericErrors(rawNumeric) || hasAiQuestionWaitError
+  const isSaveBlocked = [profileLoading, hasErrors].some(Boolean)
 
   const [councilSlots, setCouncilSlots] = useState<CouncilSlot[]>([])
 
@@ -104,7 +105,7 @@ export const ProfileSetup = ({ onClose, onOpenAbout, onDirtyChange }: ProfileSet
     profileBaselineRef.current = next.snapshot
   }, [profile, profileLoading, recordFirstEditedHydration])
 
-  const isDirty = profileBaselineRef.current !== null && draftSnapshot !== profileBaselineRef.current
+  const isDirty = [hasAiQuestionWaitError, profileBaselineRef.current !== null && draftSnapshot !== profileBaselineRef.current].some(Boolean)
   useEffect(() => {
     onDirtyChange?.(isDirty)
   }, [isDirty, onDirtyChange])
@@ -173,7 +174,7 @@ export const ProfileSetup = ({ onClose, onOpenAbout, onDirtyChange }: ProfileSet
 
   const handleSubmit = (e: React.FormEvent) => {
     e.preventDefault()
-    if (hasErrors) return
+    if (isSaveBlocked) return
     const payload = buildProfilePayload(formData, rawNumeric, councilSlots, mainVariant, councilVariants)
     const submittedSnapshot = draftSnapshotRef.current
     const handleSuccess = () => {
@@ -199,41 +200,43 @@ export const ProfileSetup = ({ onClose, onOpenAbout, onDirtyChange }: ProfileSet
     <form onSubmit={handleSubmit} className="max-w-2xl mx-auto space-y-6">
       <Card>
         <CardHeader><CardTitle className="text-sm">Configuration</CardTitle></CardHeader>
-        <CardContent className="space-y-5">
-          <ProfileModelsSection
-            formData={formData} updateField={updateField}
-            councilSlots={councilSlots} setCouncilSlots={setCouncilSlots}
-            mainVariant={mainVariant} setMainVariant={setMainVariant}
-            councilVariants={councilVariants} setCouncilVariants={setCouncilVariants}
-            modelVariantMap={modelVariantMap} models={models}
-            modelsFetching={modelsFetching} isRefreshingModels={isRefreshingModels}
-            handleReloadModels={handleReloadModels}
-            isOpenCodeConnected={isOpenCodeConnected}
-            openCodeRefusedSignIn={openCodeRefusedSignIn}
-            openCodeSignInAdvice={openCodeSignInAdvice}
-          />
-          <Separator />
+        <CardContent>
+          <fieldset disabled={profileLoading} className="min-w-0 space-y-5">
+            <ProfileModelsSection
+              formData={formData} updateField={updateField}
+              councilSlots={councilSlots} setCouncilSlots={setCouncilSlots}
+              mainVariant={mainVariant} setMainVariant={setMainVariant}
+              councilVariants={councilVariants} setCouncilVariants={setCouncilVariants}
+              modelVariantMap={modelVariantMap} models={models}
+              modelsFetching={modelsFetching} isRefreshingModels={isRefreshingModels}
+              handleReloadModels={handleReloadModels}
+              isOpenCodeConnected={isOpenCodeConnected}
+              openCodeRefusedSignIn={openCodeRefusedSignIn}
+              openCodeSignInAdvice={openCodeSignInAdvice}
+            />
+            <Separator />
 
-          <ProfileNumericSections rawNumeric={rawNumeric} onChange={(key, value) => setRawNumeric(previous => ({ ...previous, [key]: value }))} />
+            <ProfileNumericSections rawNumeric={rawNumeric} onChange={(key, value) => setRawNumeric(previous => ({ ...previous, [key]: value }))} />
 
-          <ProfileAdvancedSettings
-            formData={formData} updateField={updateField}
-            isOpen={isAdvancedOpen} onToggle={() => setIsAdvancedOpen(open => !open)}
-            isWaitCustom={isAiQuestionWaitCustom}
-            onWaitChange={value => {
-              setIsAiQuestionWaitCustom(value !== null)
-              updateField('aiQuestionWindow', value ?? PROFILE_DEFAULTS.aiQuestionWindow)
-            }}
-            hasWaitError={hasAiQuestionWaitError} onValidationChange={setHasAiQuestionWaitError}
-            isLoading={profileLoading}
-          />
+            <ProfileAdvancedSettings
+              formData={formData} updateField={updateField}
+              isOpen={isAdvancedOpen} onToggle={() => setIsAdvancedOpen(open => !open)}
+              isWaitCustom={isAiQuestionWaitCustom}
+              onWaitChange={value => {
+                setIsAiQuestionWaitCustom(value !== null)
+                updateField('aiQuestionWindow', value ?? PROFILE_DEFAULTS.aiQuestionWindow)
+              }}
+              hasWaitError={hasAiQuestionWaitError} onValidationChange={setHasAiQuestionWaitError}
+              isLoading={profileLoading}
+            />
 
 
-          <ProfileConnectionStatus status={openCodeStatus} />
+            <ProfileConnectionStatus status={openCodeStatus} />
+          </fieldset>
         </CardContent>
       </Card>
 
-      <ProfileFormActions onOpenAbout={onOpenAbout} onClose={handleClose} isSaving={createProfile.isPending || updateProfile.isPending} hasErrors={hasErrors} />
+      <ProfileFormActions onOpenAbout={onOpenAbout} onClose={handleClose} isSaving={createProfile.isPending || updateProfile.isPending} hasErrors={isSaveBlocked} />
     </form>
   )
 }

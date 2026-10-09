@@ -23,13 +23,14 @@ export interface InheritableDurationFieldProps {
   onValidationChange?: (hasError: boolean) => void
   disabled?: boolean
   disabledReason?: string
-  /** Saved drafts commit a complete edit when focus leaves the input or Enter is pressed. */
+  /** Saved drafts commit valid edits on blur, Enter, Escape, or unmount. */
   commitOnBlur?: boolean
   /** How a resolved duration reads. Defaults to whole minutes. */
   formatValue?: (ms: number) => string
 }
 
 interface DurationFieldControlsProps extends InheritableDurationFieldProps {
+  inheriting: boolean
   rawMinutes: string
   error: string | null
   minMinutes: number
@@ -52,7 +53,9 @@ interface DurationFieldLabelProps {
 const DurationFieldLabel = ({ label, inputId, idPrefix, inheriting, hint, help, disabledReason }: DurationFieldLabelProps) => (
   <div className="min-w-0 flex-1">
     <div className="flex items-center gap-1.5">
-      <label htmlFor={inheriting ? undefined : inputId} className="text-sm font-medium">{label}</label>
+      {inheriting
+        ? <span className="text-sm font-medium">{label}</span>
+        : <label htmlFor={inputId} className="text-sm font-medium">{label}</label>}
       {help}
     </div>
     {hint && <p id={`${idPrefix}-hint`} className="mt-1 text-xs text-muted-foreground">{hint}</p>}
@@ -152,8 +155,8 @@ interface DurationMinutesInputProps {
 
 const DurationMinutesInput = ({ inputId, value, rawMinutes, minMinutes, maxMinutes, error, disabled, describedBy, commitOnBlur, onRawChange, commitMinutes }: DurationMinutesInputProps) => {
   const handleKeyDown = (event: KeyboardEvent<HTMLInputElement>) => {
-    if (event.key !== 'Enter') return
-    event.preventDefault()
+    if (event.key !== 'Enter' && event.key !== 'Escape') return
+    if (event.key === 'Enter') event.preventDefault()
     commitMinutes(event.currentTarget.value)
   }
   return (
@@ -180,9 +183,8 @@ const DurationMinutesInput = ({ inputId, value, rawMinutes, minMinutes, maxMinut
 }
 
 export const DurationFieldControls = (props: DurationFieldControlsProps) => {
-  const { label, idPrefix, value, hint, help, disabledReason, error } = props
+  const { label, idPrefix, inheriting, hint, help, disabledReason, error } = props
   const inputId = `${idPrefix}-minutes`
-  const inheriting = value === null
   const describedBy = getDurationDescribedBy(idPrefix, hint, disabledReason, error)
   return (
     <div className="flex flex-wrap items-start justify-between gap-3">

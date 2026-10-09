@@ -420,6 +420,61 @@ describe('ProjectForm', () => {
       .toBeInTheDocument()
   })
 
+  it('guards implicit form submission until repository validation succeeds', async () => {
+    vi.stubGlobal('fetch', vi.fn(() => createJsonResponse({ isGit: false, status: 'invalid', message: 'Invalid repository' })))
+    render(<ProjectForm onClose={vi.fn()} />, { wrapper: Wrapper })
+    fireEvent.change(screen.getByLabelText(/Project Name/i), { target: { value: 'Demo' } })
+    fireEvent.change(screen.getByLabelText(/Short Name/i), { target: { value: 'DEMO' } })
+    const save = screen.getByRole('button', { name: 'Create Project' })
+    const form = requireElement(save.closest('form'), 'project form')
+
+    fireEvent.submit(form)
+    expect(mockProjectMutations.create.mutate).not.toHaveBeenCalled()
+    fireEvent.change(screen.getByLabelText(/Project Folder/i), { target: { value: '/work/invalid' } })
+    fireEvent.submit(form)
+    expect(mockProjectMutations.create.mutate).not.toHaveBeenCalled()
+    await screen.findByText('Invalid repository')
+    fireEvent.submit(form)
+    expect(mockProjectMutations.create.mutate).not.toHaveBeenCalled()
+
+    vi.mocked(fetch).mockImplementation(() => createJsonResponse({ isGit: true, status: 'valid' }))
+    fireEvent.change(screen.getByLabelText(/Project Folder/i), { target: { value: '/work/valid' } })
+    await waitFor(() => expect(save).toBeEnabled())
+    fireEvent.submit(form)
+    expect(mockProjectMutations.create.mutate).toHaveBeenCalledTimes(1)
+  })
+
+  it('reports an invalid wait edit as dirty and confirms before Cancel or Back discards it', () => {
+    const onBack = vi.fn()
+    const onClose = vi.fn()
+    const dirty = vi.fn()
+    const confirm = vi.spyOn(window, 'confirm').mockReturnValue(false)
+    try {
+      render(<ProjectForm onClose={onClose} onBack={onBack} onDirtyChange={dirty} project={makeCreatedProject({ aiQuestionWindowOverride: 900_000 })} />, { wrapper: Wrapper })
+      fireEvent.click(screen.getByRole('button', { name: /Advanced/ }))
+      const wait = screen.getByLabelText('AI question wait')
+      expect(dirty).toHaveBeenLastCalledWith(false)
+
+      fireEvent.change(wait, { target: { value: '61' } })
+      expect(dirty).toHaveBeenLastCalledWith(true)
+      fireEvent.click(screen.getByRole('button', { name: 'Cancel' }))
+      fireEvent.click(screen.getByRole('button', { name: 'Back to list' }))
+      expect(confirm).toHaveBeenCalledTimes(2)
+      expect(confirm).toHaveBeenCalledWith('Discard your unsaved project changes?')
+      expect(onBack).not.toHaveBeenCalled()
+      expect(onClose).not.toHaveBeenCalled()
+
+      fireEvent.change(wait, { target: { value: '15' } })
+      expect(dirty).toHaveBeenLastCalledWith(false)
+      confirm.mockClear()
+      fireEvent.click(screen.getByRole('button', { name: 'Cancel' }))
+      expect(confirm).not.toHaveBeenCalled()
+      expect(onBack).toHaveBeenCalledTimes(1)
+    } finally {
+      confirm.mockRestore()
+    }
+  })
+
   it('ignores a repository-check failure that arrives after unmount', async () => {
     let rejectCheck!: (reason: Error) => void
     const check = new Promise<Response>((_resolve, reject) => { rejectCheck = reject })
@@ -498,7 +553,8 @@ describe('ProjectForm', () => {
     expect(onClose).toHaveBeenCalledTimes(1)
   })
 
-  it('keeps the form open when a create finishes after a later edit', () => {
+  it('keeps the form open when a create finishes after a later edit', async () => {
+    vi.stubGlobal('fetch', vi.fn(() => createJsonResponse({ isGit: true, status: 'valid' })))
     const onClose = vi.fn()
     const dirty = vi.fn()
     render(<ProjectForm onClose={onClose} onDirtyChange={dirty} />, { wrapper: Wrapper })
@@ -506,6 +562,7 @@ describe('ProjectForm', () => {
     fireEvent.change(screen.getByLabelText(/Project Name/i), { target: { value: 'Saved project' } })
     fireEvent.change(screen.getByLabelText(/Short Name/i), { target: { value: 'SAVE' } })
     fireEvent.change(screen.getByLabelText(/Project Folder/i), { target: { value: '/work/subfolder' } })
+    await waitFor(() => expect(screen.getByRole('button', { name: 'Create Project' })).toBeEnabled())
     fireEvent.submit(requireElement(screen.getByRole('button', { name: 'Create Project' }).closest('form'), 'project form'))
 
     fireEvent.change(screen.getByLabelText(/Project Name/i), { target: { value: 'Later project' } })

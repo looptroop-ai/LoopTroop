@@ -156,10 +156,12 @@ export const numericFields = {
 
 export type NumericFieldKey = keyof typeof numericFields
 
+const isBlankNumericText = (raw: string | undefined) => !raw?.trim()
+
 export const getFieldError = (key: NumericFieldKey, rawNumeric: Record<string, string>): string | null => {
   const raw = rawNumeric[key]
   const cfg = numericFields[key]
-  if (!raw) return `Required (${cfg.min} to ${cfg.max})`
+  if (isBlankNumericText(raw)) return `Required (${cfg.min} to ${cfg.max})`
   const n = Number(raw)
   if (!Number.isInteger(n)) return `Must be a whole number (${cfg.min} to ${cfg.max})`
   if (n < cfg.min) return `Minimum is ${cfg.min}`

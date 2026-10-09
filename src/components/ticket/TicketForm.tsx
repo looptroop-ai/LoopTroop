@@ -98,7 +98,7 @@ export const TicketForm = ({ onClose, onDirtyChange, onEditingChange }: TicketFo
     ticketBaselineRef.current = draftSnapshotRef.current
     onDirtyChange?.(false)
   }, [effectiveProjectId, onDirtyChange, projects.length])
-  const isDirty = draftSnapshot !== ticketBaselineRef.current
+  const isDirty = [hasAiQuestionWaitError, draftSnapshot !== ticketBaselineRef.current].some(Boolean)
   useEffect(() => {
     onDirtyChange?.(isDirty)
   }, [isDirty, onDirtyChange])

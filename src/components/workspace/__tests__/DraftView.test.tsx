@@ -247,7 +247,7 @@ describe('DraftView', () => {
   it.each([
     { commit: 'blur', finish: (input: HTMLElement) => fireEvent.blur(input) },
     { commit: 'Enter', finish: (input: HTMLElement) => fireEvent.keyDown(input, { key: 'Enter' }) },
-  ])('saves only the completed draft wait on $commit and blocks Start while saving', async ({ finish }) => {
+  ])('saves only the completed draft wait on $commit and keeps controls usable while saving', async ({ finish }) => {
     const saved = createDeferredJsonResponse({ ...waitTicket, aiQuestionWindowOverride: 1_800_000 })
     const { input, start, fetchMock } = await renderEditableWait((url, init) => {
       if (url === ticketUrl && init?.method === 'PATCH') return saved.promise
@@ -266,10 +266,8 @@ describe('DraftView', () => {
     expect(fetchMock).not.toHaveBeenCalledWith(ticketUrl, expect.objectContaining({
       body: JSON.stringify({ aiQuestionWindowOverride: 180_000 }),
     }))
-    expect(start).toBeDisabled()
-    expect(input).toBeDisabled()
-    fireEvent.click(start)
-    expect(fetchMock).not.toHaveBeenCalledWith(`${ticketUrl}/start`, expect.anything())
+    expect(start).toBeEnabled()
+    expect(input).toBeEnabled()
 
     await act(async () => { saved.resolve() })
     await waitFor(() => expect(start).toBeEnabled())
@@ -279,19 +277,21 @@ describe('DraftView', () => {
     expect(fetchMock.mock.calls.filter(([, init]) => init?.method === 'PATCH')).toHaveLength(1)
   })
 
-  it('blocks Start while another Advanced setting is saving', async () => {
+  it('queues Start while another Advanced setting is saving', async () => {
     const saved = createDeferredJsonResponse({ ...waitTicket, manualQaOverride: false })
     const { start, fetchMock } = await renderEditableWait((url, init) => {
       if (url === ticketUrl && init?.method === 'PATCH') return saved.promise
+      if (url === `${ticketUrl}/start`) return createJsonResponse({ message: 'Ticket started.' })
       throw new Error(`Unhandled fetch: ${url}`)
     })
     const manualQa = within(screen.getByRole('radiogroup', { name: 'Manual QA setting' }))
     fireEvent.click(manualQa.getByRole('radio', { name: 'Disabled' }))
-    await waitFor(() => expect(start).toBeDisabled())
+    expect(start).toBeEnabled()
     fireEvent.click(start)
     expect(fetchMock).not.toHaveBeenCalledWith(`${ticketUrl}/start`, expect.anything())
 
     await act(async () => { saved.resolve() })
+    await waitFor(() => expect(fetchMock).toHaveBeenCalledWith(`${ticketUrl}/start`, expect.objectContaining({ method: 'POST' })))
     await waitFor(() => expect(start).toBeEnabled())
   })
 
@@ -317,9 +317,130 @@ describe('DraftView', () => {
     await waitFor(() => expect(start).toBeDisabled())
 
     await act(async () => { saved.resolve() })
-    await waitFor(() => expect(start).toBeEnabled())
-    fireEvent.click(start)
     await waitFor(() => expect(fetchMock).toHaveBeenCalledWith(`${ticketUrl}/start`, expect.objectContaining({ method: 'POST' })))
+  })
+
+  it.each([
+    { group: 'Manual QA setting', choice: 'Disabled', payload: { manualQaOverride: false } },
+    { group: 'AI questions setting', choice: 'Off', payload: { aiQuestionsOverride: false } },
+    { group: 'AI question wait source', choice: /Inherit AI question wait/i, payload: { aiQuestionWindowOverride: null } },
+  ])('keeps a native blur-to-$group click and saves it after the wait', async ({ group, choice, payload }) => {
+    const saved = createDeferredJsonResponse({ ...waitTicket, aiQuestionWindowOverride: 1_800_000 })
+    const { input, fetchMock } = await renderEditableWait((url, init) => {
+      if (url !== ticketUrl || init?.method !== 'PATCH') throw new Error(`Unhandled fetch: ${url}`)
+      const patch = JSON.parse(String(init.body))
+      return patch.aiQuestionWindowOverride === 1_800_000
+        ? saved.promise
+        : createJsonResponse({ ...waitTicket, aiQuestionWindowOverride: 1_800_000, ...patch })
+    })
+    const option = within(screen.getByRole('radiogroup', { name: group })).getByRole('radio', { name: choice })
+    fireEvent.change(input, { target: { value: '30' } })
+    await act(async () => { input.focus(); option.focus(); option.click() })
+    expect(fetchMock.mock.calls.filter(([, init]) => init?.method === 'PATCH')).toHaveLength(1)
+    expect(option).toHaveAttribute('aria-checked', 'true')
+
+    await act(async () => { saved.resolve() })
+    await waitFor(() => expect(fetchMock).toHaveBeenCalledWith(ticketUrl, expect.objectContaining({
+      method: 'PATCH', body: JSON.stringify(payload),
+    })))
+    expect(fetchMock.mock.calls.filter(([, init]) => init?.method === 'PATCH')).toHaveLength(2)
+    expect(option).toHaveAttribute('aria-checked', 'true')
+  })
+
+  it('queues description Save after a wait edit', async () => {
+    const saved = createDeferredJsonResponse({ ...waitTicket, aiQuestionWindowOverride: 1_800_000 })
+    const description = 'Keep this edited description.'
+    const { input, fetchMock } = await renderEditableWait((url, init) => {
+      if (url !== ticketUrl || init?.method !== 'PATCH') throw new Error(`Unhandled fetch: ${url}`)
+      const patch = JSON.parse(String(init.body))
+      return patch.description ? createJsonResponse({ ...waitTicket, description }) : saved.promise
+    })
+    fireEvent.click(screen.getByRole('button', { name: /(Edit|Add) Description/i }))
+    fireEvent.change(screen.getByRole('textbox', { name: 'Ticket description' }), { target: { value: description } })
+    const save = screen.getByRole('button', { name: 'Save' })
+    fireEvent.change(input, { target: { value: '30' } })
+    await act(async () => { input.focus(); save.focus(); save.click() })
+    expect(fetchMock.mock.calls.filter(([, init]) => init?.method === 'PATCH')).toHaveLength(1)
+    await act(async () => { saved.resolve() })
+    await waitFor(() => expect(fetchMock).toHaveBeenCalledWith(ticketUrl, expect.objectContaining({ body: JSON.stringify({ description }) })))
+    expect(await screen.findByText(description)).toBeInTheDocument()
+  })
+
+  it.each(['Start', 'AI questions', 'description Save'])('stops queued %s when the preceding wait save fails', async (activation) => {
+    const saved = createDeferredJsonResponse({ error: 'Wait save failed.' }, 400)
+    const { input, start, fetchMock } = await renderEditableWait((url) => {
+      if (url === ticketUrl) return saved.promise
+      throw new Error(`Queued action must not run: ${url}`)
+    })
+    if (activation === 'description Save') {
+      fireEvent.click(screen.getByRole('button', { name: /(Edit|Add) Description/i }))
+      fireEvent.change(screen.getByRole('textbox', { name: 'Ticket description' }), { target: { value: 'Unsaved description.' } })
+    }
+    const target = activation === 'Start' ? start : activation === 'AI questions'
+      ? within(screen.getByRole('radiogroup', { name: 'AI questions setting' })).getByRole('radio', { name: 'Off' })
+      : screen.getByRole('button', { name: 'Save' })
+    fireEvent.change(input, { target: { value: '30' } })
+    await act(async () => { input.focus(); target.focus(); target.click() })
+    await act(async () => { saved.resolve() })
+    await waitFor(() => expect(screen.getAllByRole('alert').some(alert => alert.textContent?.includes('Wait save failed.'))).toBe(true))
+    expect(fetchMock.mock.calls.filter(([, init]) => init?.method === 'PATCH')).toHaveLength(1)
+    expect(fetchMock).not.toHaveBeenCalledWith(`${ticketUrl}/start`, expect.anything())
+    expect(input).toHaveValue(5)
+    if (activation === 'AI questions') expect(target).toHaveAttribute('aria-checked', 'false')
+    if (activation === 'description Save') expect(screen.getByRole('textbox', { name: 'Ticket description' })).toHaveValue('Unsaved description.')
+  })
+
+  it('keeps radio focus during a pending keyboard save and ignores a selected option', async () => {
+    const saved = createDeferredJsonResponse({ ...waitTicket, manualQaOverride: false })
+    const { fetchMock } = await renderEditableWait((url) => {
+      if (url === ticketUrl) return saved.promise
+      throw new Error(`Unhandled fetch: ${url}`)
+    })
+    const group = within(screen.getByRole('radiogroup', { name: 'Manual QA setting' }))
+    const selected = group.getByRole('radio', { name: 'Enabled' })
+    await act(() => selected.focus())
+    fireEvent.keyDown(selected, { key: 'ArrowRight' })
+    const next = group.getByRole('radio', { name: 'Disabled' })
+    await waitFor(() => expect(fetchMock).toHaveBeenCalledWith(ticketUrl, expect.anything()))
+    expect(next).toBeEnabled()
+    expect(next).toHaveFocus()
+    fireEvent.click(next)
+    await act(async () => { saved.resolve() })
+    expect(fetchMock.mock.calls.filter(([, init]) => init?.method === 'PATCH')).toHaveLength(1)
+  })
+
+  it('keeps a later wait edit during saving and rolls back to the last successful value', async () => {
+    const first = createDeferredJsonResponse({ ...waitTicket, aiQuestionWindowOverride: 900_000 })
+    const second = createDeferredJsonResponse({ error: 'Second wait save failed.' }, 400)
+    const { input, fetchMock } = await renderEditableWait((url, init) => {
+      if (url !== ticketUrl) throw new Error(`Unhandled fetch: ${url}`)
+      return JSON.parse(String(init?.body)).aiQuestionWindowOverride === 900_000 ? first.promise : second.promise
+    })
+    fireEvent.change(input, { target: { value: '15' } })
+    fireEvent.blur(input)
+    fireEvent.change(input, { target: { value: '30' } })
+    fireEvent.blur(input)
+    await waitFor(() => expect(fetchMock.mock.calls.filter(([, init]) => init?.method === 'PATCH')).toHaveLength(1))
+    await act(async () => { first.resolve() })
+    await waitFor(() => expect(fetchMock.mock.calls.filter(([, init]) => init?.method === 'PATCH')).toHaveLength(2))
+    expect(input).toHaveValue(30)
+    await act(async () => { second.resolve() })
+    expect(await screen.findByRole('alert')).toHaveTextContent('Second wait save failed.')
+    expect(input).toHaveValue(15)
+  })
+
+  it('shows a failed wait save after native blur collapses Advanced', async () => {
+    const saved = createDeferredJsonResponse({ error: 'Collapsed wait save failed.' }, 400)
+    const { input, advanced } = await renderEditableWait((url) => {
+      if (url === ticketUrl) return saved.promise
+      throw new Error(`Unhandled fetch: ${url}`)
+    })
+    fireEvent.change(input, { target: { value: '30' } })
+    await act(async () => { input.focus(); advanced.focus(); advanced.click() })
+    await act(async () => { saved.resolve() })
+    expect(await screen.findByRole('alert')).toHaveTextContent('Collapsed wait save failed.')
+    expect(screen.getByRole('alert')).toBeVisible()
+    expect(input).not.toBeVisible()
   })
 
   it('locks Advanced edits during Start and unlocks them after a failed start', async () => {
@@ -382,7 +503,9 @@ describe('DraftView', () => {
     expect(screen.getByText('openai/gpt-5.3-codex')).toBeInTheDocument()
     expect(screen.getByText('anthropic/claude-sonnet-4')).toBeInTheDocument()
 
-    fireEvent.click(screen.getByRole('button', { name: /start ticket/i }))
+    const start = screen.getByRole('button', { name: /start ticket/i })
+    await waitFor(() => expect(start).toBeEnabled())
+    fireEvent.click(start)
 
     expect(screen.getByRole('button', { name: /^Log$/i })).toBeInTheDocument()
     expect(await screen.findByText(/No log entries yet\. Logs will stream here during execution\./i)).toBeInTheDocument()
@@ -438,7 +561,9 @@ describe('DraftView', () => {
 
     expect(await screen.findByText('Current Council Members')).toBeInTheDocument()
 
-    fireEvent.click(screen.getByRole('button', { name: /start ticket/i }))
+    const start = screen.getByRole('button', { name: /start ticket/i })
+    await waitFor(() => expect(start).toBeEnabled())
+    fireEvent.click(start)
 
     expect(await screen.findByText(/No log entries yet\. Logs will stream here during execution\./i)).toBeInTheDocument()
 
@@ -552,7 +677,7 @@ describe('DraftView', () => {
     { setting: 'AI questions', group: /AI questions setting/i, choice: 'On', selected: 'Inherit', payload: { aiQuestionsOverride: true } },
     { setting: 'AI question wait', group: /AI question wait source/i, choice: /Set a custom ai question wait/i, selected: /Inherit ai question wait/i, payload: { aiQuestionWindowOverride: 300_000 } },
   ])('restores draft $setting selections when their ticket updates fail', async ({ setting, group, choice, selected, payload }) => {
-    mockFetch((url, init) => {
+    const fetchMock = mockFetch((url, init) => {
       if (url === `/api/tickets/${encodeURIComponent(TEST.ticketId)}`) {
         expect(JSON.parse(String(init?.body))).toEqual(payload)
         return createJsonResponse({ error: `${setting} update rejected.` }, 400)
@@ -560,7 +685,7 @@ describe('DraftView', () => {
       throw new Error(`Unhandled fetch: ${url}`)
     })
 
-    renderWithProviders(<DraftView ticket={makeTicket()} />)
+    renderWithProviders(<DraftView ticket={makeTicket({ manualQaOverride: true })} />)
     fireEvent.click(await screen.findByRole('button', { name: /Advanced/ }))
 
     const controls = within(screen.getByRole('radiogroup', { name: group }))
@@ -568,7 +693,11 @@ describe('DraftView', () => {
     await waitFor(() => expect(option).toBeEnabled())
     fireEvent.click(option)
     expect(await screen.findByRole('alert')).toHaveTextContent(`${setting} update rejected.`)
-    expect(controls.getByRole('radio', { name: selected })).toHaveAttribute('aria-checked', 'true')
+    const restored = controls.getByRole('radio', { name: selected })
+    expect(restored).toHaveAttribute('aria-checked', 'true')
+    fireEvent.click(restored)
+    expect(screen.getByRole('alert')).toHaveTextContent(`${setting} update rejected.`)
+    expect(fetchMock.mock.calls.filter(([, init]) => init?.method === 'PATCH')).toHaveLength(1)
   })
 
   it('falls back to the main implementer when project council JSON is malformed', async () => {

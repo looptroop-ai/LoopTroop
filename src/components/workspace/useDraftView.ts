@@ -71,36 +71,49 @@ export const formatDraftStartError = (message: string) => {
 export const useDraftActions = (ticket: Ticket, startBlocked: boolean) => {
   const action = useTicketAction()
   const update = useUpdateTicket()
-  const mutationInFlight = useRef(false)
+  const pendingUpdate = useRef<Promise<Ticket> | null>(null)
+  const startInFlight = useRef(false)
+  const [isStartQueued, setIsStartQueued] = useState(false)
+  const [isSaving, setIsSaving] = useState(false)
   const [isStartAttemptActive, setIsStartAttemptActive] = useState(false)
   const [startError, setStartError] = useState<string | null>(null)
-  const isBusy = action.isPending || update.isPending
-  const isStartDisabled = isBusy || startBlocked
-  const isMutationBlocked = () => isBusy || mutationInFlight.current
+  const isStarting = action.isPending || isStartQueued
+  const isStartDisabled = isStarting || startBlocked
 
-  const updateTicket = async (input: Parameters<typeof update.mutateAsync>[0]) => {
-    // Query notifications are batched; blur and Start can run before the pending render.
-    mutationInFlight.current = true
+  const updateTicket = (input: Parameters<typeof update.mutateAsync>[0]) => {
+    // Serialize blur and the following activation; a failed save cancels its queued actions.
+    const saved = pendingUpdate.current
+      ? pendingUpdate.current.then(() => update.mutateAsync(input))
+      : update.mutateAsync(input)
+    pendingUpdate.current = saved
+    setIsSaving(true)
+    const finish = () => {
+      if (pendingUpdate.current !== saved) return
+      pendingUpdate.current = null
+      setIsSaving(false)
+    }
+    void saved.then(finish, finish)
+    return saved
+  }
+
+  const handleStart = async () => {
+    if (startBlocked || startInFlight.current) return
+    startInFlight.current = true
+    setIsStartQueued(true)
+    setStartError(null)
     try {
-      return await update.mutateAsync(input)
+      if (pendingUpdate.current) await pendingUpdate.current
+      setIsStartAttemptActive(true)
+      await action.mutateAsync({ id: ticket.id, action: 'start' })
+    } catch (error) {
+      setStartError(formatDraftStartError(getDraftErrorMessage(error, 'Failed to start ticket.')))
     } finally {
-      mutationInFlight.current = false
+      startInFlight.current = false
+      setIsStartQueued(false)
     }
   }
 
-  const handleStart = () => {
-    if (isStartDisabled || mutationInFlight.current) return
-    mutationInFlight.current = true
-    setIsStartAttemptActive(true)
-    setStartError(null)
-    action.mutate({ id: ticket.id, action: 'start' }, {
-      onSuccess: () => setStartError(null),
-      onError: (error) => setStartError(formatDraftStartError(getDraftErrorMessage(error, 'Failed to start ticket.'))),
-      onSettled: () => { mutationInFlight.current = false },
-    })
-  }
-
-  return { updateTicket, handleStart, isMutationBlocked, isBusy, isStartDisabled, isStarting: action.isPending, isSaving: update.isPending, isStartAttemptActive, startError }
+  return { updateTicket, handleStart, isStartDisabled, isStarting, isSaving, isStartAttemptActive, startError }
 }
 
 export type DraftActions = ReturnType<typeof useDraftActions>
@@ -109,7 +122,6 @@ interface DraftSettingOptions<Value> {
   savedValue: Value | null | undefined
   onSave: (value: Value | null) => Promise<Ticket>
   disabled: boolean
-  isMutationBlocked: () => boolean
   onError: (message: string | null) => void
   fallbackError: string
 }
@@ -117,18 +129,30 @@ interface DraftSettingOptions<Value> {
 export const useDraftSetting = <Value extends boolean | number>(options: DraftSettingOptions<Value>) => {
   const savedValue = options.savedValue ?? null
   const [value, setValue] = useState(savedValue)
-  useEffect(() => { setValue(savedValue) }, [savedValue])
+  const lastSavedValue = useRef(savedValue)
+  const pendingCount = useRef(0)
+  const latestRequest = useRef(0)
+  useEffect(() => {
+    lastSavedValue.current = savedValue
+    if (pendingCount.current === 0) setValue(savedValue)
+  }, [savedValue])
 
   const onChange = async (next: Value | null) => {
-    if (options.disabled || options.isMutationBlocked()) return
-    const previous = value
+    if (options.disabled || next === value) return
+    const request = ++latestRequest.current
+    pendingCount.current += 1
     setValue(next)
     options.onError(null)
     try {
       await options.onSave(next)
+      lastSavedValue.current = next
     } catch (error) {
-      setValue(previous)
-      options.onError(getDraftErrorMessage(error, options.fallbackError))
+      if (request === latestRequest.current) {
+        setValue(lastSavedValue.current)
+        options.onError(getDraftErrorMessage(error, options.fallbackError))
+      }
+    } finally {
+      pendingCount.current -= 1
     }
   }
 
@@ -141,9 +165,11 @@ export const useDraftDescription = (ticket: Ticket, actions: DraftActions) => {
   const [mode, setMode] = useState<TicketDescriptionMode>('markdown')
   const [isEditing, setIsEditing] = useState(false)
   const [error, setError] = useState<string | null>(null)
+  const [isSaving, setIsSaving] = useState(false)
   const [lastSyncedDescription, setLastSyncedDescription] = useState(savedDescription)
   const [shouldSkipNextSync, setShouldSkipNextSync] = useState(false)
   const hasDescriptionChanges = text !== savedDescription
+  const isBusy = actions.isStarting || isSaving
 
   useEffect(() => {
     if (savedDescription === lastSyncedDescription) return
@@ -171,13 +197,14 @@ export const useDraftDescription = (ticket: Ticket, actions: DraftActions) => {
   }
 
   const handleSave = async () => {
-    if (actions.isMutationBlocked()) return
+    if (isBusy) return
     if (!hasDescriptionChanges) {
       setMode('markdown')
       setIsEditing(false)
       return
     }
     setError(null)
+    setIsSaving(true)
     try {
       const updated = await actions.updateTicket({ id: ticket.id, description: text })
       setText(updated.description ?? text)
@@ -186,14 +213,16 @@ export const useDraftDescription = (ticket: Ticket, actions: DraftActions) => {
       setIsEditing(false)
     } catch (saveError) {
       setError(getDraftErrorMessage(saveError, 'Failed to save description.'))
+    } finally {
+      setIsSaving(false)
     }
   }
 
   return {
     text, setText, mode, setMode, isEditing, error, handleEdit, handleCancel, handleSave,
-    isSaving: actions.isSaving,
-    isBusy: actions.isBusy,
-    isSaveDisabled: actions.isBusy || !hasDescriptionChanges,
+    isSaving,
+    isBusy,
+    isSaveDisabled: isBusy || !hasDescriptionChanges,
   }
 }
 

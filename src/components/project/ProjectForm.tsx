@@ -280,7 +280,7 @@ export const ProjectForm = ({ onClose, onBack, project, onDirtyChange }: Project
     }
   }, [draftSnapshot, isEditing, profile, profileLoading])
 
-  const isDirty = isProjectDraftDirty(projectBaselineRef.current, draftSnapshot)
+  const isDirty = [hasAiQuestionWaitError, isProjectDraftDirty(projectBaselineRef.current, draftSnapshot)].some(Boolean)
   useEffect(() => {
     onDirtyChange?.(isDirty)
   }, [isDirty, onDirtyChange])
@@ -363,7 +363,7 @@ export const ProjectForm = ({ onClose, onBack, project, onDirtyChange }: Project
   }
 
   const submitNewProject = () => {
-    if (gitInfo.alreadyAttached || hasProjectIdentityConflict) return
+    if (isCreationBlocked) return
     if (restoreMode && existingStateAction !== 'restore') {
       setIsExistingStateConfirmOpen(true)
       return

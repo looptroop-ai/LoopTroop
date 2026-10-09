@@ -513,6 +513,43 @@ describe('TicketForm', () => {
     confirm.mockRestore()
   })
 
+  it('reports an invalid wait edit as dirty and confirms before Cancel discards it', () => {
+    const onClose = vi.fn()
+    const dirty = vi.fn()
+    const confirm = vi.spyOn(window, 'confirm').mockReturnValue(false)
+    try {
+      renderWithProviders(
+        <UIContext.Provider value={makeUIValue()}>
+          <TicketForm onClose={onClose} onDirtyChange={dirty} />
+        </UIContext.Provider>,
+      )
+      fireEvent.change(screen.getByPlaceholderText('Brief summary of the work'), { target: { value: 'Saved draft' } })
+      fireEvent.click(screen.getByRole('button', { name: /Advanced/ }))
+      fireEvent.click(screen.getByRole('radio', { name: /Set a custom ai question wait/i }))
+      const wait = screen.getByLabelText('AI question wait')
+      fireEvent.click(screen.getByRole('button', { name: 'Create Ticket' }))
+      const options = mockUseCreateTicket().mutate.mock.calls[0]?.[1] as { onSuccess: (ticket: Ticket) => void }
+      act(() => options.onSuccess({ id: '1:ACME-5', status: 'DRAFT' } as Ticket))
+      onClose.mockClear()
+      expect(dirty).toHaveBeenLastCalledWith(false)
+
+      fireEvent.change(wait, { target: { value: '' } })
+      expect(dirty).toHaveBeenLastCalledWith(true)
+      fireEvent.click(screen.getByRole('button', { name: 'Cancel' }))
+      expect(confirm).toHaveBeenCalledWith('Discard your unsaved ticket changes?')
+      expect(onClose).not.toHaveBeenCalled()
+
+      fireEvent.change(wait, { target: { value: '5' } })
+      expect(dirty).toHaveBeenLastCalledWith(false)
+      confirm.mockClear()
+      fireEvent.click(screen.getByRole('button', { name: 'Cancel' }))
+      expect(confirm).not.toHaveBeenCalled()
+      expect(onClose).toHaveBeenCalledTimes(1)
+    } finally {
+      confirm.mockRestore()
+    }
+  })
+
   it('saves supported edits by ID after create-and-start without sending locked settings', async () => {
     let resolveCreate!: (ticket: Ticket) => void
     let resolveStart!: (result: { status: string }) => void

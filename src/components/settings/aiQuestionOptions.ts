@@ -27,4 +27,4 @@ export const AI_QUESTIONS_INHERITABLE_OPTIONS: readonly TriStateOption[] = [INHE
 
 export const AI_QUESTION_WAIT_HINT = 'How long a question waits before the run carries on.'
 export const AI_QUESTION_WAIT_DISABLED_HINT = 'AI questions are Off. Your selected wait is kept.'
-export const AI_QUESTION_WAIT_HELP = `Applies when AI questions are On. Choose a wait of ${AI_QUESTION_WINDOW_MIN_MS / 60_000}–${AI_QUESTION_WINDOW_MAX_MS / 60_000} whole minutes. Custom rounds an inherited wait to the nearest whole minute. Waiting does not use up the step's working time. A step can take its full timeout plus the time it spent waiting on you.`
+export const AI_QUESTION_WAIT_HELP = `Applies when AI questions are On. Choose a wait of ${AI_QUESTION_WINDOW_MIN_MS / 60_000}–${AI_QUESTION_WINDOW_MAX_MS / 60_000} whole minutes. Waiting does not use up the step's working time. A step can take its full timeout plus the time it spent waiting on you.`

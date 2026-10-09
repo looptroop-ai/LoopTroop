@@ -23,12 +23,11 @@ export const DraftAdvancedSettings = ({ ticket, context, actions, hasWaitError, 
   const [isOpen, setIsOpen] = useState(false)
   const [manualQaError, setManualQaError] = useState<string | null>(null)
   const [aiQuestionError, setAiQuestionError] = useState<string | null>(null)
-  const areAiSettingsDisabled = actions.isBusy || context.isLoading
+  const areAiSettingsDisabled = actions.isStarting || context.isLoading
   const manualQa = useDraftSetting({
     savedValue: ticket.manualQaOverride,
     onSave: (value) => actions.updateTicket({ id: ticket.id, manualQaOverride: value }),
-    disabled: actions.isBusy,
-    isMutationBlocked: actions.isMutationBlocked,
+    disabled: actions.isStarting,
     onError: setManualQaError,
     fallbackError: 'Failed to update Manual QA setting.',
   })
@@ -36,7 +35,6 @@ export const DraftAdvancedSettings = ({ ticket, context, actions, hasWaitError, 
     savedValue: ticket.aiQuestionsOverride,
     onSave: (value) => actions.updateTicket({ id: ticket.id, aiQuestionsOverride: value }),
     disabled: areAiSettingsDisabled,
-    isMutationBlocked: actions.isMutationBlocked,
     onError: setAiQuestionError,
     fallbackError: 'Failed to update the AI questions setting.',
   })
@@ -46,21 +44,20 @@ export const DraftAdvancedSettings = ({ ticket, context, actions, hasWaitError, 
     savedValue: ticket.aiQuestionWindowOverride,
     onSave: (value) => actions.updateTicket({ id: ticket.id, aiQuestionWindowOverride: value }),
     disabled: isWaitDisabled,
-    isMutationBlocked: actions.isMutationBlocked,
     onError: setAiQuestionError,
     fallbackError: 'Failed to update the AI question wait.',
   })
   const manualQaEnabled = manualQa.value ?? context.inheritedManualQa.enabled
 
   return (
-    <div className="w-full">
+    <div className="w-full" aria-busy={actions.isSaving}>
       <AdvancedSettings isOpen={isOpen} onToggle={() => setIsOpen((open) => !open)} hasWaitError={hasWaitError}>
-        <DraftManualQaRow value={manualQa.value} onChange={manualQa.onChange} inheritedEnabled={manualQaEnabled} disabled={actions.isBusy} />
-        <DraftSettingError message={manualQaError} />
+        <DraftManualQaRow value={manualQa.value} onChange={manualQa.onChange} inheritedEnabled={manualQaEnabled} disabled={actions.isStarting} />
         <DraftAiQuestionsRow value={questions.value} onChange={questions.onChange} inherited={context.inheritedAiQuestions} disabled={areAiSettingsDisabled} />
         <DraftAiQuestionWait value={wait.value} onChange={wait.onChange} inherited={context.inheritedAiQuestionWindow} disabled={isWaitDisabled} questionsEnabled={questionsEnabled} onValidationChange={onWaitValidationChange} />
-        <DraftSettingError message={aiQuestionError} />
       </AdvancedSettings>
+      <DraftSettingError message={manualQaError} />
+      <DraftSettingError message={aiQuestionError} />
     </div>
   )
 }

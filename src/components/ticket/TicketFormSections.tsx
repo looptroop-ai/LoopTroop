@@ -124,7 +124,7 @@ export const TicketProjectField = ({ projects, project, disabled, onSelect }: Ti
 export const TicketTitleField = ({ title, onChange }: { title: string; onChange: (title: string) => void }) => (
   <div>
     <TicketFieldLabel label="Title" help="Short summary of the requested work" className="block mb-1" />
-    <input autoFocus type="text" value={title} onChange={event => onChange(event.target.value)} className="w-full rounded-md border border-input bg-background px-3 py-2 text-sm" placeholder="Brief summary of the work" required />
+    <input type="text" value={title} onChange={event => onChange(event.target.value)} className="w-full rounded-md border border-input bg-background px-3 py-2 text-sm" placeholder="Brief summary of the work" required />
   </div>
 )
 

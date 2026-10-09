@@ -1,5 +1,5 @@
 import { act, cleanup, fireEvent, render, screen } from '@testing-library/react'
-import { startTransition, Suspense, useState, type ComponentProps } from 'react'
+import { startTransition, StrictMode, Suspense, useState, type ComponentProps } from 'react'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import {
   AI_QUESTION_WINDOW_MAX_MS,
@@ -38,6 +38,32 @@ const renderField = (
   return onChange
 }
 
+const draftFieldProps = {
+  label: 'AI question wait',
+  idPrefix: 'test-wait',
+  inheritedMs: 300_000,
+  minMs: AI_QUESTION_WINDOW_MIN_MS,
+  maxMs: AI_QUESTION_WINDOW_MAX_MS,
+  commitOnBlur: true,
+}
+
+const renderRefetchableDraftWait = (onChange = vi.fn()) => {
+  const Controlled = () => {
+    const [value, setValue] = useState<number | null>(300_000)
+    return (
+      <>
+        <button onClick={() => setValue(720_000)}>Refetch saved wait</button>
+        <button onClick={() => setValue(null)}>Refetch inheritance</button>
+        <InheritableDurationField {...draftFieldProps} value={value} onChange={next => {
+          setValue(next)
+          onChange(next)
+        }} />
+      </>
+    )
+  }
+  return { ...render(<Controlled />), onChange }
+}
+
 describe('InheritableDurationField', () => {
   afterEach(cleanup)
 
@@ -48,6 +74,7 @@ describe('InheritableDurationField', () => {
     expect(screen.getByText('5 minutes')).toBeInTheDocument()
     expect(screen.getByText(/from Project/)).toBeInTheDocument()
     expect(screen.queryByLabelText('AI question wait')).not.toBeInTheDocument()
+    expect(screen.getByText('AI question wait').tagName).toBe('SPAN')
   })
 
   it('starts a custom override at the value that already applied', () => {
@@ -383,5 +410,151 @@ describe('InheritableDurationField', () => {
     unmount()
 
     expect(onValidationChange).toHaveBeenLastCalledWith(false)
+  })
+
+  it.each(['Refetch saved wait', 'Refetch inheritance'])('keeps a pending draft edit through %s and saves that edit on blur', (button) => {
+    const { onChange } = renderRefetchableDraftWait()
+    const input = screen.getByLabelText('AI question wait')
+    input.focus()
+    fireEvent.change(input, { target: { value: '15' } })
+
+    fireEvent.click(screen.getByRole('button', { name: button }))
+
+    expect(input).toHaveFocus()
+    expect(input).toHaveValue(15)
+    expect(screen.getByRole('radio', { name: /Set a custom AI question wait/i })).toHaveAttribute('aria-checked', 'true')
+    expect(onChange).not.toHaveBeenCalled()
+    fireEvent.blur(input)
+    expect(onChange).toHaveBeenCalledExactlyOnceWith(900_000)
+    expect(input).toHaveValue(15)
+  })
+
+  it('keeps an invalid pending edit when the saved draft value changes and never emits it', () => {
+    const { onChange, unmount } = renderRefetchableDraftWait()
+    const input = screen.getByLabelText('AI question wait')
+    input.focus()
+    fireEvent.change(input, { target: { value: '61' } })
+    fireEvent.click(screen.getByRole('button', { name: 'Refetch inheritance' }))
+
+    expect(input).toHaveValue(61)
+    expect(input).toHaveAttribute('aria-invalid', 'true')
+    expect(screen.getByRole('alert')).toHaveTextContent('Maximum is 60 minutes.')
+    fireEvent.blur(input)
+    unmount()
+    expect(onChange).not.toHaveBeenCalled()
+  })
+
+  it('restores the owner value after a committed draft wait rolls back', () => {
+    const { onChange } = renderRefetchableDraftWait()
+    const input = screen.getByLabelText('AI question wait')
+    fireEvent.change(input, { target: { value: '30' } })
+    fireEvent.blur(input)
+    expect(input).toHaveValue(30)
+
+    fireEvent.click(screen.getByRole('button', { name: 'Refetch saved wait' }))
+
+    expect(input).toHaveValue(12)
+    expect(screen.queryByRole('alert')).not.toBeInTheDocument()
+    expect(onChange).toHaveBeenCalledExactlyOnceWith(1_800_000)
+  })
+
+  it('saves a valid focused draft edit exactly once when unmounted under StrictMode', () => {
+    const onChange = vi.fn()
+    const { unmount } = render(
+      <StrictMode><InheritableDurationField {...draftFieldProps} value={300_000} onChange={onChange} /></StrictMode>,
+    )
+    expect(onChange).not.toHaveBeenCalled()
+    const input = screen.getByLabelText('AI question wait')
+    input.focus()
+    fireEvent.change(input, { target: { value: '30' } })
+
+    unmount()
+
+    expect(onChange).toHaveBeenCalledExactlyOnceWith(1_800_000)
+  })
+
+  it('saves on Escape without preventing the dashboard close and does not save again on unmount', () => {
+    const { onChange, unmount } = renderRefetchableDraftWait()
+    const input = screen.getByLabelText('AI question wait')
+    input.focus()
+    fireEvent.change(input, { target: { value: '30' } })
+    const onClose = vi.fn((event: KeyboardEvent) => {
+      if (event.defaultPrevented) return
+      unmount()
+    })
+    document.addEventListener('keydown', onClose)
+
+    try {
+      expect(fireEvent.keyDown(input, { key: 'Escape' })).toBe(true)
+    } finally {
+      document.removeEventListener('keydown', onClose)
+    }
+
+    expect(onClose).toHaveBeenCalledOnce()
+    expect(onChange).toHaveBeenCalledExactlyOnceWith(1_800_000)
+  })
+
+  it('saves the latest valid edit when editing and unmounting in one event batch', () => {
+    const onChange = vi.fn()
+    const { unmount } = render(<InheritableDurationField {...draftFieldProps} value={300_000} onChange={onChange} />)
+    const input = screen.getByLabelText('AI question wait')
+
+    act(() => {
+      fireEvent.change(input, { target: { value: '30' } })
+      unmount()
+    })
+
+    expect(onChange).toHaveBeenCalledExactlyOnceWith(1_800_000)
+  })
+
+  it('does not save during a callback update and flushes through the latest callback on unmount', () => {
+    const originalChange = vi.fn()
+    const latestChange = vi.fn()
+    const { rerender, unmount } = render(<InheritableDurationField {...draftFieldProps} value={300_000} onChange={originalChange} />)
+    fireEvent.change(screen.getByLabelText('AI question wait'), { target: { value: '30' } })
+
+    rerender(<InheritableDurationField {...draftFieldProps} value={300_000} onChange={latestChange} />)
+
+    expect(originalChange).not.toHaveBeenCalled()
+    expect(latestChange).not.toHaveBeenCalled()
+    unmount()
+    expect(latestChange).toHaveBeenCalledExactlyOnceWith(1_800_000)
+    expect(originalChange).not.toHaveBeenCalled()
+  })
+
+  it.each([
+    { raw: '61', disabled: false },
+    { raw: '30', disabled: true },
+  ])('does not save pending $raw while disabled=$disabled on Escape or unmount', ({ raw, disabled }) => {
+    const onChange = vi.fn()
+    const { rerender, unmount } = render(<InheritableDurationField {...draftFieldProps} value={300_000} onChange={onChange} />)
+    const input = screen.getByLabelText('AI question wait')
+    fireEvent.change(input, { target: { value: raw } })
+    rerender(<InheritableDurationField {...draftFieldProps} value={300_000} onChange={onChange} disabled={disabled} />)
+
+    fireEvent.keyDown(input, { key: 'Escape' })
+    unmount()
+
+    expect(onChange).not.toHaveBeenCalled()
+  })
+
+  it('does not repeat an immediate edit when the field unmounts', () => {
+    const onChange = renderField(300_000)
+    fireEvent.change(screen.getByLabelText('AI question wait'), { target: { value: '30' } })
+
+    cleanup()
+
+    expect(onChange).toHaveBeenCalledExactlyOnceWith(1_800_000)
+  })
+
+  it.each(['0x10', '0b101'])('rejects %s through number-input sanitization without emitting a wait', (raw) => {
+    const onChange = renderField(300_000)
+    const input = screen.getByLabelText('AI question wait')
+
+    fireEvent.change(input, { target: { value: raw } })
+
+    expect(input).toHaveValue(null)
+    expect(screen.getByRole('alert')).toHaveTextContent('Enter a number of minutes')
+    expect(onChange).not.toHaveBeenCalled()
   })
 })

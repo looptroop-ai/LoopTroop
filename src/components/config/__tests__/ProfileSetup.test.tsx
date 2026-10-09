@@ -192,21 +192,22 @@ describe('ProfileSetup', () => {
     await waitFor(() => expect(onDirtyChange).toHaveBeenLastCalledWith(false))
   })
 
-  it('keeps edits dirty when profile hydration resolves without a saved profile', async () => {
+  it('disables configuration fields until profile loading finishes without a saved profile', async () => {
     profileForTest = undefined
     profileLoadingForTest = true
     const onDirtyChange = vi.fn()
     const view = await renderProfileSetup(undefined, onDirtyChange)
 
     const responseTimeout = screen.getByLabelText('AI Response Timeout')
-    fireEvent.change(responseTimeout, { target: { value: '60' } })
-    await waitFor(() => expect(onDirtyChange).toHaveBeenLastCalledWith(true))
-    fireEvent.click(screen.getByRole('button', { name: /Advanced/ }))
-    const questions = within(screen.getByRole('radiogroup', { name: /AI questions setting/i }))
-    const waitModes = within(screen.getByRole('radiogroup', { name: /AI question wait source/i }))
-    for (const control of [...questions.getAllByRole('radio'), ...waitModes.getAllByRole('radio')]) {
+    const fields = requireElement(responseTimeout.closest('fieldset'), 'configuration fields')
+    for (const control of fields.querySelectorAll('input, button')) {
       expect(control).toBeDisabled()
     }
+    expect(screen.getByRole('button', { name: 'Save' })).toBeDisabled()
+    expect(screen.getByRole('button', { name: 'Cancel' })).toBeEnabled()
+    fireEvent.submit(requireElement(responseTimeout.closest('form'), 'configuration form'))
+    expect(createProfileMutate).not.toHaveBeenCalled()
+    expect(updateProfileMutate).not.toHaveBeenCalled()
 
     profileForTest = null
     profileLoadingForTest = false
@@ -219,21 +220,25 @@ describe('ProfileSetup', () => {
         </TooltipProvider>
       </QueryClientProvider>,
     )
-    expect(responseTimeout).toHaveValue(60)
-    for (const control of [...questions.getAllByRole('radio'), ...waitModes.getAllByRole('radio')]) {
+    for (const control of fields.querySelectorAll('input, button')) {
       expect(control).toBeEnabled()
     }
+    fireEvent.change(responseTimeout, { target: { value: '60' } })
     await waitFor(() => expect(onDirtyChange).toHaveBeenLastCalledWith(true))
   })
 
-  it('keeps a pre-hydration edit when saved profile data arrives', async () => {
+  it('hydrates saved configuration before fields and Save become editable', async () => {
     profileForTest = undefined
     profileLoadingForTest = true
     const onDirtyChange = vi.fn()
     const view = await renderProfileSetup(undefined, onDirtyChange)
 
     const responseTimeout = screen.getByLabelText('AI Response Timeout')
-    fireEvent.change(responseTimeout, { target: { value: '60' } })
+    expect(responseTimeout).toBeDisabled()
+    const picker = screen.getByRole('button', { name: 'Main Implementer Model Search models…' })
+    expect(picker).toBeDisabled()
+    act(() => picker.click())
+    expect(onDirtyChange).toHaveBeenLastCalledWith(false)
     profileForTest = { ...existingProfile, aiQuestionWindow: 900_000 }
     profileLoadingForTest = false
     view.rendered.rerender(
@@ -246,8 +251,49 @@ describe('ProfileSetup', () => {
       </QueryClientProvider>,
     )
 
-    expect(responseTimeout).toHaveValue(60)
-    await waitFor(() => expect(onDirtyChange).toHaveBeenLastCalledWith(true))
+    expect(responseTimeout).toBeEnabled()
+    expect(responseTimeout).toHaveValue(1200)
+    await waitFor(() => expect(onDirtyChange).toHaveBeenLastCalledWith(false))
+    fireEvent.change(responseTimeout, { target: { value: '60' } })
+    fireEvent.click(screen.getByRole('button', { name: 'Save' }))
+    expect(createProfileMutate).not.toHaveBeenCalled()
+    expect(updateProfileMutate).toHaveBeenCalledWith(
+      expect.objectContaining({
+        councilResponseTimeout: 60_000,
+        mainImplementer: existingProfile.mainImplementer,
+        councilMembers: existingProfile.councilMembers,
+        aiQuestionWindow: 900_000,
+      }),
+      expect.anything(),
+    )
+  })
+
+  it('reports an invalid wait edit as dirty and confirms before Cancel discards it', async () => {
+    profileForTest = { ...existingProfile, aiQuestionWindow: 900_000 }
+    const onClose = vi.fn()
+    const dirty = vi.fn()
+    const confirm = vi.spyOn(window, 'confirm').mockReturnValue(false)
+    try {
+      await renderProfileSetup(undefined, dirty, onClose)
+      fireEvent.click(screen.getByRole('button', { name: 'Advanced' }))
+      const wait = screen.getByLabelText('AI question wait')
+      expect(dirty).toHaveBeenLastCalledWith(false)
+
+      fireEvent.change(wait, { target: { value: '' } })
+      expect(dirty).toHaveBeenLastCalledWith(true)
+      fireEvent.click(screen.getByRole('button', { name: 'Cancel' }))
+      expect(confirm).toHaveBeenCalledWith('Discard your unsaved profile changes?')
+      expect(onClose).not.toHaveBeenCalled()
+
+      fireEvent.change(wait, { target: { value: '15' } })
+      expect(dirty).toHaveBeenLastCalledWith(false)
+      confirm.mockClear()
+      fireEvent.click(screen.getByRole('button', { name: 'Cancel' }))
+      expect(confirm).not.toHaveBeenCalled()
+      expect(onClose).toHaveBeenCalledTimes(1)
+    } finally {
+      confirm.mockRestore()
+    }
   })
 
   it('keeps the form open and dirty when edits follow an in-flight save', async () => {

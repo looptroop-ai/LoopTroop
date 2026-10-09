@@ -1,5 +1,4 @@
 import { SHARED_PROFILE_DEFAULTS as PROFILE_DEFAULTS } from '@shared/profileDefaults'
-import { AI_QUESTION_WINDOW_MAX_MS, AI_QUESTION_WINDOW_MIN_MS } from '@shared/aiQuestions'
 import { MAX_TIMEOUT_SECONDS } from '@/lib/constants'
 
 interface NumericFieldConfig {
@@ -36,16 +35,6 @@ export const numericFields = {
     max: MAX_TIMEOUT_SECONDS,
     label: 'AI Response Timeout',
     docsPath: '/configuration#ai-response-timeout',
-    unit: 'seconds',
-    fromStore: (v: number) => String(Math.round(v / 1000)),
-    toStore: (v: number) => v * 1000,
-  },
-  aiQuestionWindow: {
-    // Bounds come from the shared contract so the field and the server agree.
-    min: AI_QUESTION_WINDOW_MIN_MS / 1000,
-    max: AI_QUESTION_WINDOW_MAX_MS / 1000,
-    label: 'AI Question Wait',
-    docsPath: '/configuration#ai-question-wait',
     unit: 'seconds',
     fromStore: (v: number) => String(Math.round(v / 1000)),
     toStore: (v: number) => v * 1000,
@@ -167,12 +156,14 @@ export const numericFields = {
 
 export type NumericFieldKey = keyof typeof numericFields
 
-export function getFieldError(key: NumericFieldKey, rawNumeric: Record<string, string>): string | null {
+const isBlankNumericText = (raw: string | undefined) => !raw?.trim()
+
+export const getFieldError = (key: NumericFieldKey, rawNumeric: Record<string, string>): string | null => {
   const raw = rawNumeric[key]
   const cfg = numericFields[key]
-  if (raw === '' || raw === undefined) return `Required (${cfg.min} to ${cfg.max})`
+  if (isBlankNumericText(raw)) return `Required (${cfg.min} to ${cfg.max})`
   const n = Number(raw)
-  if (isNaN(n) || !Number.isInteger(n)) return `Must be a whole number (${cfg.min} to ${cfg.max})`
+  if (!Number.isInteger(n)) return `Must be a whole number (${cfg.min} to ${cfg.max})`
   if (n < cfg.min) return `Minimum is ${cfg.min}`
   if (n > cfg.max) return `Maximum is ${cfg.max}`
   return null
@@ -182,25 +173,8 @@ export function hasNumericErrors(rawNumeric: Record<string, string>): boolean {
   return (Object.keys(numericFields) as NumericFieldKey[]).some(k => getFieldError(k, rawNumeric) !== null)
 }
 
-export function buildInitialRawNumeric(data: Record<string, unknown>): Record<string, string> {
-  return {
-    perIterationTimeout: numericFields.perIterationTimeout.fromStore((data.perIterationTimeout ?? PROFILE_DEFAULTS.perIterationTimeout) as number),
-    executionSetupTimeout: numericFields.executionSetupTimeout.fromStore((data.executionSetupTimeout ?? PROFILE_DEFAULTS.executionSetupTimeout) as number),
-    councilResponseTimeout: numericFields.councilResponseTimeout.fromStore((data.councilResponseTimeout ?? PROFILE_DEFAULTS.councilResponseTimeout) as number),
-    aiQuestionWindow: numericFields.aiQuestionWindow.fromStore((data.aiQuestionWindow ?? PROFILE_DEFAULTS.aiQuestionWindow) as number),
-    maxIterations: String(data.maxIterations ?? PROFILE_DEFAULTS.maxIterations),
-    minCouncilQuorum: String(data.minCouncilQuorum ?? PROFILE_DEFAULTS.minCouncilQuorum),
-    interviewQuestions: String(data.interviewQuestions ?? PROFILE_DEFAULTS.interviewQuestions),
-    coverageFollowUpBudgetPercent: String(data.coverageFollowUpBudgetPercent ?? PROFILE_DEFAULTS.coverageFollowUpBudgetPercent),
-    maxCoveragePasses: String(data.maxCoveragePasses ?? PROFILE_DEFAULTS.maxCoveragePasses),
-    maxPrdCoveragePasses: String(data.maxPrdCoveragePasses ?? PROFILE_DEFAULTS.maxPrdCoveragePasses),
-    maxBeadsCoveragePasses: String(data.maxBeadsCoveragePasses ?? PROFILE_DEFAULTS.maxBeadsCoveragePasses),
-    structuredRetryCount: String(data.structuredRetryCount ?? PROFILE_DEFAULTS.structuredRetryCount),
-    opencodeRetryLimit: String(data.opencodeRetryLimit ?? PROFILE_DEFAULTS.opencodeRetryLimit),
-    opencodeRetryDelay: numericFields.opencodeRetryDelay.fromStore((data.opencodeRetryDelay ?? PROFILE_DEFAULTS.opencodeRetryDelay) as number),
-    opencodeSteps: String(data.opencodeSteps ?? PROFILE_DEFAULTS.opencodeSteps),
-    toolInputMaxChars: String(data.toolInputMaxChars ?? PROFILE_DEFAULTS.toolInputMaxChars),
-    toolOutputMaxChars: String(data.toolOutputMaxChars ?? PROFILE_DEFAULTS.toolOutputMaxChars),
-    toolErrorMaxChars: String(data.toolErrorMaxChars ?? PROFILE_DEFAULTS.toolErrorMaxChars),
-  }
-}
+export const buildInitialRawNumeric = (data: Record<string, unknown>): Record<string, string> =>
+  Object.fromEntries((Object.keys(numericFields) as NumericFieldKey[]).map(key => [
+    key,
+    numericFields[key].fromStore((data[key] ?? PROFILE_DEFAULTS[key]) as number),
+  ]))

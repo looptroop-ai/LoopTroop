@@ -893,8 +893,8 @@ describe('ticket start configuration locking', () => {
     const ticket = createTicket({ projectId: project.id, title: 'Draft override', manualQaOverride: null })
 
     expect(updateTicket(ticket.id, { manualQaOverride: true })?.manualQaOverride).toBe(true)
-    expect(updateTicket(ticket.id, { aiQuestionsOverride: true, aiQuestionWindowOverride: 90_000 }))
-      .toMatchObject({ aiQuestionsOverride: true, aiQuestionWindowOverride: 90_000 })
+    expect(updateTicket(ticket.id, { aiQuestionsOverride: true, aiQuestionWindowOverride: 180_000 }))
+      .toMatchObject({ aiQuestionsOverride: true, aiQuestionWindowOverride: 180_000 })
     patchTicket(ticket.id, { status: 'SCANNING_RELEVANT_FILES' })
     expect(() => updateTicket(ticket.id, { manualQaOverride: false })).toThrow(/DRAFT status/)
     expect(() => updateTicket(ticket.id, { aiQuestionsOverride: false })).toThrow(/DRAFT status/)

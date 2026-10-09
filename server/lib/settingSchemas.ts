@@ -15,10 +15,11 @@ import { IGNORE_MODES } from '@shared/ignoreMode'
  * module to reuse them.
  */
 
-/** The configured AI-question wait, in milliseconds. */
+/** The configured AI-question wait, in whole minutes expressed as milliseconds. */
 export const aiQuestionWindowSchema = z.number().int()
   .min(AI_QUESTION_WINDOW_MIN_MS)
   .max(AI_QUESTION_WINDOW_MAX_MS)
+  .multipleOf(60_000)
 
 /** The same value as an override. Null is how an override is cleared back to inheriting. */
 export const aiQuestionWindowOverrideSchema = aiQuestionWindowSchema.nullable().optional()

@@ -20,7 +20,7 @@ import { resolveManualQaSettingLabel, type ManualQaOverride } from '@/lib/manual
 import { ConfigurationDocsLink } from '@/components/config/ConfigurationDocsLink'
 import { TriStateSetting } from '@/components/settings/TriStateSetting'
 import { InheritableDurationField } from '@/components/settings/InheritableDurationField'
-import { AI_QUESTIONS_INHERITABLE_OPTIONS, AI_QUESTION_WAIT_HINT } from '@/components/settings/aiQuestionOptions'
+import { AI_QUESTIONS_INHERITABLE_OPTIONS, AI_QUESTION_WAIT_HINT, AI_QUESTION_WAIT_HELP } from '@/components/settings/aiQuestionOptions'
 import {
   describeSettingSource,
   resolveAiQuestionsSettingLabel,
@@ -363,14 +363,19 @@ export function DraftView({ ticket }: DraftViewProps) {
             </button>
             {isAdvancedOpen && (
               <div className="space-y-3 border-t border-border px-3 py-3">
-                <div className="flex items-center justify-between gap-2">
-                  <div className="flex min-w-0 items-center gap-1.5">
-                    <h4 className="text-xs font-medium">Manual QA checkpoint</h4>
-                    <ConfigurationDocsLink
-                      docsPath="/configuration#manual-qa"
-                      label="ticket Manual QA checkpoint"
-                      description="Choose whether this ticket pauses for your verification after final tests. Open the Manual QA documentation."
-                    />
+                <div className="flex flex-wrap items-start justify-between gap-3">
+                  <div className="min-w-0 flex-1">
+                    <div className="flex items-center gap-1.5">
+                      <h4 className="text-sm font-medium">Manual QA checkpoint</h4>
+                      <ConfigurationDocsLink
+                        docsPath="/configuration#manual-qa"
+                        label="ticket Manual QA checkpoint"
+                        description="Choose whether this ticket pauses for your verification after final tests. Open the Manual QA documentation."
+                      />
+                    </div>
+                    <p className="mt-1 text-xs text-muted-foreground">
+                      Choose whether this ticket pauses for your QA checklist after final tests.
+                    </p>
                   </div>
                   <ManualQaSetting
                     idPrefix="draft-manual-qa"
@@ -383,14 +388,19 @@ export function DraftView({ ticket }: DraftViewProps) {
                 </div>
                 {manualQaError && <p role="alert" className="mt-2 text-xs text-destructive">{manualQaError}</p>}
 
-                <div className="flex items-start justify-between gap-2 border-t border-border pt-3">
-                  <div className="flex min-w-0 items-center gap-1.5">
-                    <h4 className="text-xs font-medium">AI questions</h4>
-                    <ConfigurationDocsLink
-                      docsPath="/configuration#ai-questions"
-                      label="ticket AI questions"
-                      description="Choose whether a model may stop a step to ask you a question in this ticket. Open the AI questions documentation."
-                    />
+                <div className="flex flex-wrap items-start justify-between gap-3 border-t border-border pt-3">
+                  <div className="min-w-0 flex-1">
+                    <div className="flex items-center gap-1.5">
+                      <h4 className="text-sm font-medium">AI questions</h4>
+                      <ConfigurationDocsLink
+                        docsPath="/configuration#ai-questions"
+                        label="ticket AI questions"
+                        description="Choose whether a model may pause a step to ask you a question in this ticket. Open the AI questions documentation."
+                      />
+                    </div>
+                    <p className="mt-1 text-xs text-muted-foreground">
+                      Choose whether a model may pause a step to ask you a question.
+                    </p>
                   </div>
                   <TriStateSetting
                     idPrefix="draft-ai-questions"
@@ -418,7 +428,14 @@ export function DraftView({ ticket }: DraftViewProps) {
                     maxMs={AI_QUESTION_WINDOW_MAX_MS}
                     formatValue={formatAiQuestionWindow}
                     disabled={isSavingDescription}
-                    hint={`How long a question waits before the run carries on. ${AI_QUESTION_WAIT_HINT}`}
+                    hint={AI_QUESTION_WAIT_HINT}
+                    help={(
+                      <ConfigurationDocsLink
+                        docsPath="/configuration#ai-question-wait"
+                        label="ticket AI question wait"
+                        description={`${AI_QUESTION_WAIT_HELP} Open the AI question wait documentation.`}
+                      />
+                    )}
                   />
                 </div>
                 {aiQuestionError && <p role="alert" className="mt-2 text-xs text-destructive">{aiQuestionError}</p>}

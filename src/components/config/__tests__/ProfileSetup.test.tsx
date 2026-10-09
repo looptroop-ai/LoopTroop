@@ -1,7 +1,7 @@
 import type { ReactNode } from 'react'
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
-import { act, fireEvent, render, screen, waitFor } from '@testing-library/react'
+import { act, fireEvent, render, screen, waitFor, within } from '@testing-library/react'
 import { ToastProvider } from '@/components/shared/Toast'
 import { TooltipProvider } from '@/components/ui/tooltip'
 import { ProfileSetup } from '../ProfileSetup'
@@ -34,6 +34,8 @@ const existingProfile = {
   toolOutputMaxChars: 12000,
   toolErrorMaxChars: 6000,
   manualQaEnabled: false,
+  aiQuestionsEnabled: true,
+  aiQuestionWindow: 300_000,
   gitHookPolicy: 'use_native_hooks' as const,
   ignoreMode: 'local' as const,
   createdAt: '2026-03-08T14:28:53.309Z',
@@ -100,6 +102,12 @@ async function renderProfileSetup(
   return { queryClient, rendered: rendered! }
 }
 
+function openCustomAiQuestionWait() {
+  fireEvent.click(screen.getByRole('button', { name: 'Advanced' }))
+  fireEvent.click(screen.getByRole('radio', { name: 'Set a custom ai question wait' }))
+  return screen.getByLabelText('AI question wait')
+}
+
 describe('ProfileSetup', () => {
   beforeEach(() => {
     updateProfileMutate.mockReset()
@@ -140,11 +148,11 @@ describe('ProfileSetup', () => {
     await renderProfileSetup(undefined, onDirtyChange)
 
     await waitFor(() => expect(onDirtyChange).toHaveBeenLastCalledWith(false))
-    const waitField = screen.getByLabelText('AI Question Wait')
-    fireEvent.change(waitField, { target: { value: '301' } })
+    const waitField = openCustomAiQuestionWait()
+    fireEvent.change(waitField, { target: { value: '6' } })
     await waitFor(() => expect(onDirtyChange).toHaveBeenLastCalledWith(true))
 
-    fireEvent.change(waitField, { target: { value: '300' } })
+    fireEvent.change(waitField, { target: { value: '5' } })
     await waitFor(() => expect(onDirtyChange).toHaveBeenLastCalledWith(false))
   })
 
@@ -154,8 +162,8 @@ describe('ProfileSetup', () => {
     const onDirtyChange = vi.fn()
     const view = await renderProfileSetup(undefined, onDirtyChange)
 
-    const waitField = screen.getByLabelText('AI Question Wait')
-    fireEvent.change(waitField, { target: { value: '301' } })
+    const waitField = openCustomAiQuestionWait()
+    fireEvent.change(waitField, { target: { value: '6' } })
     await waitFor(() => expect(onDirtyChange).toHaveBeenLastCalledWith(true))
 
     profileForTest = null
@@ -169,6 +177,7 @@ describe('ProfileSetup', () => {
         </TooltipProvider>
       </QueryClientProvider>,
     )
+    expect(screen.getByLabelText('AI question wait')).toHaveValue(6)
     await waitFor(() => expect(onDirtyChange).toHaveBeenLastCalledWith(true))
   })
 
@@ -178,9 +187,9 @@ describe('ProfileSetup', () => {
     const onDirtyChange = vi.fn()
     const view = await renderProfileSetup(undefined, onDirtyChange)
 
-    const waitField = screen.getByLabelText('AI Question Wait')
-    fireEvent.change(waitField, { target: { value: '301' } })
-    profileForTest = existingProfile
+    const waitField = openCustomAiQuestionWait()
+    fireEvent.change(waitField, { target: { value: '6' } })
+    profileForTest = { ...existingProfile, aiQuestionWindow: 900_000 }
     profileLoadingForTest = false
     view.rendered.rerender(
       <QueryClientProvider client={view.queryClient}>
@@ -192,7 +201,7 @@ describe('ProfileSetup', () => {
       </QueryClientProvider>,
     )
 
-    expect(screen.getByLabelText('AI Question Wait')).toHaveValue(301)
+    expect(screen.getByLabelText('AI question wait')).toHaveValue(6)
     await waitFor(() => expect(onDirtyChange).toHaveBeenLastCalledWith(true))
   })
 
@@ -201,10 +210,11 @@ describe('ProfileSetup', () => {
     const onDirtyChange = vi.fn()
     await renderProfileSetup(undefined, onDirtyChange, onClose)
 
-    const waitField = screen.getByLabelText('AI Question Wait')
-    fireEvent.change(waitField, { target: { value: '301' } })
+    const waitField = openCustomAiQuestionWait()
+    fireEvent.change(waitField, { target: { value: '6' } })
     fireEvent.click(screen.getByRole('button', { name: 'Save' }))
-    fireEvent.change(waitField, { target: { value: '302' } })
+    expect(updateProfileMutate.mock.calls.at(-1)?.[0]).toHaveProperty('aiQuestionWindow', 360_000)
+    fireEvent.change(waitField, { target: { value: '7' } })
 
     const options = updateProfileMutate.mock.calls.at(-1)?.[1] as { onSuccess: () => void }
     await act(async () => { options.onSuccess() })
@@ -218,7 +228,7 @@ describe('ProfileSetup', () => {
     const confirm = vi.spyOn(window, 'confirm').mockReturnValue(false)
     await renderProfileSetup(undefined, undefined, onClose)
 
-    fireEvent.change(screen.getByLabelText('AI Question Wait'), { target: { value: '301' } })
+    fireEvent.change(openCustomAiQuestionWait(), { target: { value: '6' } })
     fireEvent.click(screen.getByRole('button', { name: 'Cancel' }))
     expect(confirm).toHaveBeenCalledWith('Discard your unsaved profile changes?')
     expect(onClose).not.toHaveBeenCalled()
@@ -444,11 +454,11 @@ describe('ProfileSetup', () => {
     const docsLinks = screen.getAllByRole('link', { name: /Open documentation for / })
     expect(docsLinks).toHaveLength(24)
 
-    expect(screen.getByRole('link', { name: 'Open documentation for AI Questions' })).toHaveAttribute(
+    expect(screen.getByRole('link', { name: 'Open documentation for AI questions' })).toHaveAttribute(
       'href',
       `${__LOOPTROOP_DOCS_ORIGIN__}/configuration#ai-questions`,
     )
-    expect(screen.getByRole('link', { name: 'Open documentation for AI Question Wait' })).toHaveAttribute(
+    expect(screen.getByRole('link', { name: 'Open documentation for AI question wait' })).toHaveAttribute(
       'href',
       `${__LOOPTROOP_DOCS_ORIGIN__}/configuration#ai-question-wait`,
     )
@@ -521,7 +531,7 @@ describe('ProfileSetup', () => {
     )
   })
 
-  it('persists all three defaults from Advanced', async () => {
+  it('persists Manual QA, hook, and folder-ignore defaults from Advanced', async () => {
     await renderProfileSetup()
 
     fireEvent.click(screen.getByRole('button', { name: 'Advanced' }))
@@ -540,14 +550,48 @@ describe('ProfileSetup', () => {
     ))
   })
 
+  it('shows AI question settings and adjacent help only inside expanded Advanced', async () => {
+    await renderProfileSetup()
+
+    const advancedButton = screen.getByRole('button', { name: 'Advanced' })
+    expect(advancedButton).toHaveAttribute('aria-expanded', 'false')
+    expect(screen.queryByText('AI questions')).not.toBeInTheDocument()
+    expect(screen.queryByText('AI question wait')).not.toBeInTheDocument()
+    expect(screen.queryByRole('radiogroup', { name: 'AI questions setting' })).not.toBeInTheDocument()
+    expect(screen.queryByRole('radiogroup', { name: 'AI question wait source' })).not.toBeInTheDocument()
+
+    fireEvent.click(advancedButton)
+    const advanced = within(advancedButton.parentElement!)
+    for (const label of ['AI questions', 'AI question wait']) {
+      expect(advanced.getByText(label)).toBe(screen.getByText(label))
+      expect(advanced.getByText(label).parentElement).toContainElement(
+        advanced.getByRole('link', { name: `Open documentation for ${label}` }),
+      )
+    }
+    expect(advanced.getByRole('radio', { name: 'Default ai question wait' })).toHaveAttribute('aria-checked', 'true')
+    expect(advanced.getByText('5 minutes')).toBeInTheDocument()
+    expect(screen.queryByLabelText('AI question wait')).not.toBeInTheDocument()
+
+    fireEvent.focus(advanced.getByRole('link', { name: 'Open documentation for AI question wait' }))
+    expect(await screen.findByRole('tooltip')).toHaveTextContent('1–60 whole minutes')
+    expect(screen.getByRole('tooltip')).toHaveTextContent("Waiting does not use up the step's working time.")
+
+    fireEvent.click(advancedButton)
+    expect(screen.queryByText('AI questions')).not.toBeInTheDocument()
+    expect(screen.queryByText('AI question wait')).not.toBeInTheDocument()
+  })
+
   it('persists the AI question defaults the whole cascade starts from', async () => {
     await renderProfileSetup()
 
+    const waitField = openCustomAiQuestionWait()
     expect(screen.getByRole('radio', { name: 'On' })).toHaveAttribute('aria-checked', 'true')
-    expect(screen.getByLabelText('AI Question Wait')).toHaveValue(300)
+    expect(waitField).toHaveValue(5)
 
     fireEvent.click(screen.getByRole('radio', { name: 'Off' }))
-    fireEvent.change(screen.getByLabelText('AI Question Wait minutes'), { target: { value: '10' } })
+    fireEvent.change(waitField, { target: { value: '10' } })
+    fireEvent.click(screen.getByRole('radio', { name: 'Set a custom ai question wait' }))
+    expect(waitField).toHaveValue(10)
     fireEvent.click(screen.getByRole('button', { name: 'Save' }))
 
     await waitFor(() => expect(updateProfileMutate).toHaveBeenCalledWith(
@@ -559,16 +603,55 @@ describe('ProfileSetup', () => {
     ))
   })
 
-  it('refuses an AI question wait outside the range the server accepts', async () => {
+  it('loads a saved custom wait and resets it to the built-in default', async () => {
+    profileForTest = { ...existingProfile, aiQuestionWindow: 900_000 }
     await renderProfileSetup()
+    fireEvent.click(screen.getByRole('button', { name: 'Advanced' }))
 
-    fireEvent.change(screen.getByLabelText('AI Question Wait'), { target: { value: '59' } })
-    expect(screen.getByText('Minimum is 60')).toBeInTheDocument()
-    expect(screen.getByRole('button', { name: 'Save' })).toBeDisabled()
+    expect(screen.getByRole('radio', { name: 'Set a custom ai question wait' })).toHaveAttribute('aria-checked', 'true')
+    expect(screen.getByLabelText('AI question wait')).toHaveValue(15)
+    fireEvent.click(screen.getByRole('radio', { name: 'Set a custom ai question wait' }))
+    expect(screen.getByLabelText('AI question wait')).toHaveValue(15)
 
-    fireEvent.change(screen.getByLabelText('AI Question Wait'), { target: { value: '3601' } })
-    expect(screen.getByText('Maximum is 3600')).toBeInTheDocument()
-    expect(screen.getByRole('button', { name: 'Save' })).toBeDisabled()
+    fireEvent.click(screen.getByRole('radio', { name: 'Default ai question wait' }))
+    expect(screen.queryByLabelText('AI question wait')).not.toBeInTheDocument()
+    expect(screen.getByText('5 minutes')).toBeInTheDocument()
+    fireEvent.click(screen.getByRole('button', { name: 'Save' }))
+
+    expect(updateProfileMutate).toHaveBeenCalledWith(
+      expect.objectContaining({ aiQuestionWindow: 300_000 }),
+      expect.anything(),
+    )
+  })
+
+  it('blocks invalid wait edits until a valid edit or Default clears the error', async () => {
+    await renderProfileSetup()
+    const waitField = openCustomAiQuestionWait()
+    const save = screen.getByRole('button', { name: 'Save' })
+
+    for (const raw of ['0', '61', '2.5', '']) {
+      fireEvent.change(waitField, { target: { value: raw } })
+      expect(waitField).toHaveValue(raw === '' ? null : Number(raw))
+      expect(waitField).toHaveAttribute('aria-invalid', 'true')
+      expect(save).toBeDisabled()
+      fireEvent.submit(save.closest('form')!)
+      expect(updateProfileMutate).not.toHaveBeenCalled()
+      expect(createProfileMutate).not.toHaveBeenCalled()
+    }
+
+    fireEvent.change(waitField, { target: { value: '10' } })
+    expect(save).toBeEnabled()
+    fireEvent.change(waitField, { target: { value: '61' } })
+    expect(save).toBeDisabled()
+
+    fireEvent.click(screen.getByRole('radio', { name: 'Default ai question wait' }))
+    expect(screen.queryByRole('alert')).not.toBeInTheDocument()
+    expect(save).toBeEnabled()
+    fireEvent.click(save)
+    expect(updateProfileMutate).toHaveBeenCalledWith(
+      expect.objectContaining({ aiQuestionWindow: 300_000 }),
+      expect.anything(),
+    )
   })
 
   it('keeps seconds and editable duration parts synchronized for every duration field', async () => {

@@ -46,7 +46,7 @@ export function TriStateSetting({
   const selectedValue = hasMatchingOption ? value : fallbackValue
 
   return (
-    <div>
+    <div className="flex shrink-0 flex-col items-end">
       <div className="inline-flex rounded-md border border-input bg-muted/30 p-0.5" role="radiogroup" aria-label={groupLabel}>
         {options.map((option) => {
           const selected = option.value === selectedValue

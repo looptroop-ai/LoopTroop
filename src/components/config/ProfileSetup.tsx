@@ -47,7 +47,9 @@ import { ConfigurationDocsLink } from './ConfigurationDocsLink'
 import { Tooltip, TooltipTrigger, TooltipContent } from '@/components/ui/tooltip'
 import { ManualQaSetting } from '@/components/manual-qa/ManualQaSetting'
 import { TriStateSetting } from '@/components/settings/TriStateSetting'
-import { AI_QUESTIONS_OPTIONS, AI_QUESTION_WAIT_HINT } from '@/components/settings/aiQuestionOptions'
+import { InheritableDurationField } from '@/components/settings/InheritableDurationField'
+import { AI_QUESTIONS_OPTIONS, AI_QUESTION_WAIT_HINT, AI_QUESTION_WAIT_HELP } from '@/components/settings/aiQuestionOptions'
+import { AI_QUESTION_WINDOW_MAX_MS, AI_QUESTION_WINDOW_MIN_MS, formatAiQuestionWindow } from '@shared/aiQuestions'
 import { GitHookPolicySetting } from '@/components/git-hooks/GitHookPolicySetting'
 import { IgnoreModeSetting } from '@/components/project/IgnoreModeSetting'
 import { DEFAULT_IGNORE_MODE } from '@shared/ignoreMode'
@@ -129,10 +131,14 @@ export function ProfileSetup({ onClose, onOpenAbout = () => undefined, onDirtyCh
   })
 
   const [isAdvancedOpen, setIsAdvancedOpen] = useState(false)
+  const [isAiQuestionWaitCustom, setIsAiQuestionWaitCustom] = useState(
+    (profile?.aiQuestionWindow ?? PROFILE_DEFAULTS.aiQuestionWindow) !== PROFILE_DEFAULTS.aiQuestionWindow,
+  )
+  const [hasAiQuestionWaitError, setHasAiQuestionWaitError] = useState(false)
 
   const [rawNumeric, setRawNumeric] = useState<Record<string, string>>(() => buildInitialRawNumeric({ ...formData }))
 
-  const hasErrors = hasNumericErrors(rawNumeric)
+  const hasErrors = hasNumericErrors(rawNumeric) || hasAiQuestionWaitError
 
   const [councilSlots, setCouncilSlots] = useState<string[]>([])
 
@@ -208,7 +214,6 @@ export function ProfileSetup({ onClose, onOpenAbout = () => undefined, onDirtyCh
       perIterationTimeout: profile.perIterationTimeout ?? PROFILE_DEFAULTS.perIterationTimeout,
       executionSetupTimeout: profile.executionSetupTimeout ?? PROFILE_DEFAULTS.executionSetupTimeout,
       councilResponseTimeout: profile.councilResponseTimeout ?? PROFILE_DEFAULTS.councilResponseTimeout,
-      aiQuestionWindow: profile.aiQuestionWindow ?? PROFILE_DEFAULTS.aiQuestionWindow,
       maxIterations: profile.maxIterations ?? PROFILE_DEFAULTS.maxIterations,
       minCouncilQuorum: profile.minCouncilQuorum ?? PROFILE_DEFAULTS.minCouncilQuorum,
       interviewQuestions: profile.interviewQuestions ?? PROFILE_DEFAULTS.interviewQuestions,
@@ -249,6 +254,7 @@ export function ProfileSetup({ onClose, onOpenAbout = () => undefined, onDirtyCh
 
     setFormData(nextFormData)
     setRawNumeric(nextRawNumeric)
+    setIsAiQuestionWaitCustom(nextFormData.aiQuestionWindow !== PROFILE_DEFAULTS.aiQuestionWindow)
     setMainVariant(nextMainVariant)
     setCouncilVariants(cleanedVariants)
     setCouncilSlots(nextCouncilSlots)
@@ -587,42 +593,6 @@ export function ProfileSetup({ onClose, onOpenAbout = () => undefined, onDirtyCh
 
           <Separator />
 
-          {/* ── AI Questions ── */}
-          <div className="text-xs font-semibold uppercase tracking-wider text-muted-foreground mb-2">AI Questions</div>
-          <div className="flex flex-wrap items-start justify-between gap-3">
-            <div className="min-w-0 flex-1">
-              <div className="flex items-center gap-1.5">
-                <label className="text-sm font-medium">AI Questions</label>
-                <ConfigurationDocsLink
-                  docsPath="/configuration#ai-questions"
-                  label="AI Questions"
-                  description="Choose whether a model may stop a step to ask you a question. Open the AI questions documentation."
-                />
-              </div>
-              <p className="mt-1 text-xs text-muted-foreground">
-                Let a model stop a step to ask you a question. Projects and tickets can set their own answer.
-              </p>
-            </div>
-            <TriStateSetting
-              idPrefix="profile-ai-questions"
-              groupLabel="AI questions setting"
-              options={AI_QUESTIONS_OPTIONS}
-              value={formData.aiQuestionsEnabled ?? PROFILE_DEFAULTS.aiQuestionsEnabled}
-              onChange={(value) => updateField('aiQuestionsEnabled', value === true)}
-              compact
-            />
-          </div>
-          <div className="mt-3">
-            <NumericField
-              fieldKey="aiQuestionWindow"
-              rawNumeric={rawNumeric}
-              onChange={(k, v) => setRawNumeric(prev => ({ ...prev, [k]: v }))}
-              hint={`How long a question waits for you before the run carries on (60 to 3600s). ${AI_QUESTION_WAIT_HINT}`}
-            />
-          </div>
-
-          <Separator />
-
           {/* ── Coverage ── */}
           <div className="text-xs font-semibold uppercase tracking-wider text-muted-foreground mb-2">Coverage</div>
           <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
@@ -695,6 +665,56 @@ export function ProfileSetup({ onClose, onOpenAbout = () => undefined, onDirtyCh
                     value={formData.manualQaEnabled ? true : false}
                     onChange={(value) => updateField('manualQaEnabled', value === true)}
                     compact
+                  />
+                </div>
+
+                <div className="flex flex-wrap items-start justify-between gap-3 border-t border-border pt-4">
+                  <div className="min-w-0 flex-1">
+                    <div className="flex items-center gap-1.5">
+                      <label className="text-sm font-medium">AI questions</label>
+                      <ConfigurationDocsLink
+                        docsPath="/configuration#ai-questions"
+                        label="AI questions"
+                        description="Choose whether a model may pause a step to ask you a question. Open the AI questions documentation."
+                      />
+                    </div>
+                    <p className="mt-1 text-xs text-muted-foreground">
+                      Choose whether a model may pause a step to ask you a question. Projects and tickets can override this.
+                    </p>
+                  </div>
+                  <TriStateSetting
+                    idPrefix="profile-ai-questions"
+                    groupLabel="AI questions setting"
+                    options={AI_QUESTIONS_OPTIONS}
+                    value={formData.aiQuestionsEnabled ?? PROFILE_DEFAULTS.aiQuestionsEnabled}
+                    onChange={(value) => updateField('aiQuestionsEnabled', value === true)}
+                    compact
+                  />
+                </div>
+
+                <div className="border-t border-border pt-4">
+                  <InheritableDurationField
+                    label="AI question wait"
+                    idPrefix="profile-ai-question-wait"
+                    value={isAiQuestionWaitCustom ? formData.aiQuestionWindow ?? PROFILE_DEFAULTS.aiQuestionWindow : null}
+                    onChange={(value) => {
+                      setIsAiQuestionWaitCustom(value !== null)
+                      updateField('aiQuestionWindow', value ?? PROFILE_DEFAULTS.aiQuestionWindow)
+                    }}
+                    onValidationChange={setHasAiQuestionWaitError}
+                    inheritedMs={PROFILE_DEFAULTS.aiQuestionWindow}
+                    inheritLabel="Default"
+                    minMs={AI_QUESTION_WINDOW_MIN_MS}
+                    maxMs={AI_QUESTION_WINDOW_MAX_MS}
+                    formatValue={formatAiQuestionWindow}
+                    hint={AI_QUESTION_WAIT_HINT}
+                    help={(
+                      <ConfigurationDocsLink
+                        docsPath="/configuration#ai-question-wait"
+                        label="AI question wait"
+                        description={`${AI_QUESTION_WAIT_HELP} Open the AI question wait documentation.`}
+                      />
+                    )}
                   />
                 </div>
 

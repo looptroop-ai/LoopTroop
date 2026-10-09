@@ -128,6 +128,8 @@ describe('DraftView', () => {
     expect(advancedButton.parentElement).toHaveClass('border-2')
     expect(advancedButton).toHaveAttribute('aria-expanded', 'false')
     expect(screen.queryByText('Manual QA checkpoint')).not.toBeInTheDocument()
+    expect(screen.queryByText('AI questions')).not.toBeInTheDocument()
+    expect(screen.queryByText('AI question wait')).not.toBeInTheDocument()
 
     fireEvent.click(advancedButton)
     expect(advancedButton).toHaveAttribute('aria-expanded', 'true')
@@ -141,6 +143,20 @@ describe('DraftView', () => {
       `${__LOOPTROOP_DOCS_ORIGIN__}/configuration#manual-qa`,
     )
     expect(screen.queryByText('Git hook policy')).not.toBeInTheDocument()
+    const advanced = within(advancedButton.parentElement!)
+    for (const [label, path] of [
+      ['AI questions', '/configuration#ai-questions'],
+      ['AI question wait', '/configuration#ai-question-wait'],
+    ] as const) {
+      const help = advanced.getByRole('link', { name: `Open documentation for ticket ${label}` })
+      expect(help).toHaveAttribute('href', `${__LOOPTROOP_DOCS_ORIGIN__}${path}`)
+      expect(advanced.getByText(label)).toBe(screen.getByText(label))
+      expect(advanced.getByText(label).parentElement).toContainElement(help)
+    }
+
+    fireEvent.click(advancedButton)
+    expect(screen.queryByText('AI questions')).not.toBeInTheDocument()
+    expect(screen.queryByText('AI question wait')).not.toBeInTheDocument()
   })
 
   it('mounts the draft log viewer immediately when start begins and keeps it open on failure', async () => {

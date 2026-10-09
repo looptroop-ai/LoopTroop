@@ -24,5 +24,5 @@ export const AI_QUESTIONS_OPTIONS: readonly TriStateOption[] = [ON, OFF]
 /** For a project or a ticket, either of which can hand the choice upward. */
 export const AI_QUESTIONS_INHERITABLE_OPTIONS: readonly TriStateOption[] = [INHERIT, ON, OFF]
 
-/** Shared by every surface that explains the wait. */
-export const AI_QUESTION_WAIT_HINT = "Waiting does not use up the step's working time. A step can take its full timeout plus the time it spent waiting on you."
+export const AI_QUESTION_WAIT_HINT = 'How long a question waits before the run carries on.'
+export const AI_QUESTION_WAIT_HELP = "Choose a wait of 1–60 whole minutes. Waiting does not use up the step's working time. A step can take its full timeout plus the time it spent waiting on you."

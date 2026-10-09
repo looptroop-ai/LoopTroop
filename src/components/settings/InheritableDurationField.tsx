@@ -14,9 +14,13 @@ interface InheritableDurationFieldProps {
   inheritedMs: number
   /** Where the inherited value comes from, e.g. "Project". */
   inheritedSourceLabel?: string
+  /** The configuration uses the built-in default rather than another level. */
+  inheritLabel?: string
   minMs: number
   maxMs: number
   hint?: ReactNode
+  help?: ReactNode
+  onValidationChange?: (hasError: boolean) => void
   disabled?: boolean
   /** How a resolved duration reads. Defaults to whole minutes. */
   formatValue?: (ms: number) => string
@@ -38,9 +42,12 @@ export function InheritableDurationField({
   onChange,
   inheritedMs,
   inheritedSourceLabel,
+  inheritLabel = 'Inherit',
   minMs,
   maxMs,
   hint,
+  help,
+  onValidationChange,
   disabled = false,
   formatValue = defaultFormat,
 }: InheritableDurationFieldProps) {
@@ -65,6 +72,9 @@ export function InheritableDurationField({
   }
 
   const error = isInheriting ? null : validate(rawMinutes, minMinutes, maxMinutes)
+  useEffect(() => {
+    onValidationChange?.(error !== null)
+  }, [error, onValidationChange])
 
   const inputId = `${idPrefix}-minutes`
   const hintId = `${idPrefix}-hint`
@@ -80,16 +90,22 @@ export function InheritableDurationField({
   }
 
   return (
-    <div>
-      <label htmlFor={inputId} className="text-sm font-medium">{label}</label>
-      <div className="mt-1.5 flex flex-wrap items-center gap-2">
+    <div className="flex flex-wrap items-start justify-between gap-3">
+      <div className="min-w-0 flex-1">
+        <div className="flex items-center gap-1.5">
+          <label htmlFor={inputId} className="text-sm font-medium">{label}</label>
+          {help}
+        </div>
+        {hint && <p id={hintId} className="mt-1 text-xs text-muted-foreground">{hint}</p>}
+      </div>
+      <div className="flex shrink-0 flex-col items-end gap-1.5">
         <div
           className="inline-flex rounded-md border border-input bg-muted/30 p-0.5"
           role="radiogroup"
           aria-label={`${label} source`}
         >
           {([
-            { inherit: true, text: 'Inherit', ariaLabel: `Inherit ${label.toLowerCase()}` },
+            { inherit: true, text: inheritLabel, ariaLabel: `${inheritLabel} ${label.toLowerCase()}` },
             { inherit: false, text: 'Custom', ariaLabel: `Set a custom ${label.toLowerCase()}` },
           ] as const).map((mode) => {
             const selected = mode.inherit === isInheriting
@@ -103,16 +119,9 @@ export function InheritableDurationField({
                 aria-checked={selected}
                 data-state={selected ? 'checked' : 'unchecked'}
                 disabled={disabled}
-                // Switching to Custom starts from what already applies, so the
-                // override does not silently change the wait as it is created.
-                //
-                // The text is set here as well as emitted. The effect below
-                // syncs it from `value`, but skips when `value` already matches
-                // what this component last emitted — which is exactly the case
-                // after this click. Leaving it to the effect left the box empty
-                // and complaining "enter a number of minutes" while a perfectly
-                // good override was already saved.
                 onClick={() => {
+                  if (selected) return
+                  // Seed Custom from the effective wait and keep the input in sync with our own emission.
                   const next = mode.inherit ? null : clampToRange(inheritedMs, minMs, maxMs)
                   setRawMinutes(next === null ? '' : toMinutesText(next))
                   emit(next)
@@ -132,47 +141,35 @@ export function InheritableDurationField({
         </div>
 
         {isInheriting ? (
-          <p className="text-xs text-muted-foreground">
+          <p className="text-right text-xs text-muted-foreground">
             <span className="font-medium text-foreground">{formatValue(inheritedMs)}</span>
             {inheritedSourceLabel ? ` from ${inheritedSourceLabel}` : ''}
           </p>
         ) : (
-          <div className="flex items-center gap-2">
-            <div className="flex items-center gap-1.5">
-              <input
-                id={inputId}
-                type="number"
-                inputMode="numeric"
-                min={minMinutes}
-                max={maxMinutes}
-                step={1}
-                value={rawMinutes}
-                disabled={disabled}
-                aria-describedby={describedBy || undefined}
-                aria-invalid={error ? true : undefined}
-                onChange={(event) => handleMinutesChange(event.target.value)}
-                className={cn(
-                  'w-20 rounded-md border bg-background px-2 py-1 text-sm',
-                  error ? 'border-red-500' : 'border-input',
-                  disabled && 'cursor-not-allowed opacity-60',
-                )}
-              />
-              <span className="text-xs text-muted-foreground">minutes</span>
-            </div>
-            <button
-              type="button"
+          <div className="flex items-center gap-1.5">
+            <input
+              id={inputId}
+              type="number"
+              inputMode="numeric"
+              min={minMinutes}
+              max={maxMinutes}
+              step={1}
+              value={rawMinutes}
               disabled={disabled}
-              onClick={() => emit(null)}
-              className="text-xs text-muted-foreground underline underline-offset-2 transition-colors hover:text-foreground disabled:cursor-not-allowed disabled:opacity-60"
-            >
-              Clear override
-            </button>
+              aria-describedby={describedBy || undefined}
+              aria-invalid={error ? true : undefined}
+              onChange={(event) => handleMinutesChange(event.target.value)}
+              className={cn(
+                'w-20 rounded-md border bg-background px-2 py-1 text-sm',
+                error ? 'border-red-500' : 'border-input',
+                disabled && 'cursor-not-allowed opacity-60',
+              )}
+            />
+            <span className="text-xs text-muted-foreground">minutes</span>
           </div>
         )}
+        {error && <p id={errorId} role="alert" className="text-right text-xs text-red-500">{error}</p>}
       </div>
-
-      {error && <p id={errorId} role="alert" className="mt-1 text-xs text-red-500">{error}</p>}
-      {hint && <p id={hintId} className="mt-1 text-xs text-muted-foreground">{hint}</p>}
     </div>
   )
 }

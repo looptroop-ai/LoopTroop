@@ -16,7 +16,7 @@ import { ManualQaSetting } from '@/components/manual-qa/ManualQaSetting'
 import { resolveManualQaSettingLabel, type ManualQaOverride } from '@/lib/manualQaSetting'
 import { TriStateSetting } from '@/components/settings/TriStateSetting'
 import { InheritableDurationField } from '@/components/settings/InheritableDurationField'
-import { AI_QUESTIONS_INHERITABLE_OPTIONS, AI_QUESTION_WAIT_HINT } from '@/components/settings/aiQuestionOptions'
+import { AI_QUESTIONS_INHERITABLE_OPTIONS, AI_QUESTION_WAIT_HINT, AI_QUESTION_WAIT_HELP } from '@/components/settings/aiQuestionOptions'
 import {
   describeSettingSource,
   resolveAiQuestionsSettingLabel,
@@ -59,6 +59,7 @@ export function TicketForm({ onClose, onDirtyChange, onEditingChange }: TicketFo
   const [manualQaOverride, setManualQaOverride] = useState<ManualQaOverride>(null)
   const [aiQuestionsOverride, setAiQuestionsOverride] = useState<AiQuestionsOverride>(null)
   const [aiQuestionWindowOverride, setAiQuestionWindowOverride] = useState<AiQuestionWindowOverride>(null)
+  const [hasAiQuestionWaitError, setHasAiQuestionWaitError] = useState(false)
   const [createdTicket, setCreatedTicket] = useState<Ticket | null>(null)
   const [isCreatingAndStarting, setIsCreatingAndStarting] = useState(false)
   const startedCreatedTicketRef = useRef(false)
@@ -126,7 +127,7 @@ export function TicketForm({ onClose, onDirtyChange, onEditingChange }: TicketFo
   })
 
   const handleCreateAndStart = async () => {
-    if (!effectiveProjectId) return
+    if (!effectiveProjectId || hasAiQuestionWaitError) return
     const submittedSnapshot = draftSnapshotRef.current
     setIsCreatingAndStarting(true)
     let ticketWasCreated = false
@@ -159,6 +160,7 @@ export function TicketForm({ onClose, onDirtyChange, onEditingChange }: TicketFo
 
   const handleSubmit = (e: React.FormEvent) => {
     e.preventDefault()
+    if (hasAiQuestionWaitError) return
     if (!effectiveProjectId) {
       addToast('warning', 'Attach a project before creating a ticket.')
       return
@@ -408,14 +410,19 @@ export function TicketForm({ onClose, onDirtyChange, onEditingChange }: TicketFo
                     Workflow settings are fixed once the ticket starts. Title, description, and priority remain editable.
                   </p>
                 )}
-                <div className="flex items-center justify-between gap-2">
-                  <div className="flex min-w-0 items-center gap-1.5">
-                    <label className="text-xs font-medium">Manual QA checkpoint</label>
-                    <ConfigurationDocsLink
-                      docsPath="/configuration#manual-qa"
-                      label="ticket Manual QA checkpoint"
-                      description="Choose whether this ticket pauses for your verification after final tests. Open the Manual QA documentation."
-                    />
+                <div className="flex flex-wrap items-start justify-between gap-3">
+                  <div className="min-w-0 flex-1">
+                    <div className="flex items-center gap-1.5">
+                      <label className="text-sm font-medium">Manual QA checkpoint</label>
+                      <ConfigurationDocsLink
+                        docsPath="/configuration#manual-qa"
+                        label="ticket Manual QA checkpoint"
+                        description="Choose whether this ticket pauses for your verification after final tests. Open the Manual QA documentation."
+                      />
+                    </div>
+                    <p className="mt-1 text-xs text-muted-foreground">
+                      Choose whether this ticket pauses for your QA checklist after final tests.
+                    </p>
                   </div>
                   <ManualQaSetting
                     idPrefix="ticket-manual-qa"
@@ -426,14 +433,19 @@ export function TicketForm({ onClose, onDirtyChange, onEditingChange }: TicketFo
                     compact
                   />
                 </div>
-                <div className="flex items-start justify-between gap-2 border-t border-border pt-3">
-                  <div className="flex min-w-0 items-center gap-1.5">
-                    <label className="text-xs font-medium">AI questions</label>
-                    <ConfigurationDocsLink
-                      docsPath="/configuration#ai-questions"
-                      label="ticket AI questions"
-                      description="Choose whether a model may stop a step to ask you a question in this ticket. Open the AI questions documentation."
-                    />
+                <div className="flex flex-wrap items-start justify-between gap-3 border-t border-border pt-3">
+                  <div className="min-w-0 flex-1">
+                    <div className="flex items-center gap-1.5">
+                      <label className="text-sm font-medium">AI questions</label>
+                      <ConfigurationDocsLink
+                        docsPath="/configuration#ai-questions"
+                        label="ticket AI questions"
+                        description="Choose whether a model may pause a step to ask you a question in this ticket. Open the AI questions documentation."
+                      />
+                    </div>
+                    <p className="mt-1 text-xs text-muted-foreground">
+                      Choose whether a model may pause a step to ask you a question.
+                    </p>
                   </div>
                   <TriStateSetting
                     idPrefix="ticket-ai-questions"
@@ -455,13 +467,21 @@ export function TicketForm({ onClose, onDirtyChange, onEditingChange }: TicketFo
                     idPrefix="ticket-ai-question-wait"
                     value={aiQuestionWindowOverride}
                     onChange={setAiQuestionWindowOverride}
+                    onValidationChange={setHasAiQuestionWaitError}
                     inheritedMs={inheritedAiQuestionWindow.windowMs}
                     inheritedSourceLabel={describeSettingSource(inheritedAiQuestionWindow.source)}
                     disabled={isCreatingAndStarting || isStartPending || (createdTicket !== null && createdTicket.status !== 'DRAFT')}
                     minMs={AI_QUESTION_WINDOW_MIN_MS}
                     maxMs={AI_QUESTION_WINDOW_MAX_MS}
                     formatValue={formatAiQuestionWindow}
-                    hint={`How long a question waits before the run carries on. ${AI_QUESTION_WAIT_HINT}`}
+                    hint={AI_QUESTION_WAIT_HINT}
+                    help={(
+                      <ConfigurationDocsLink
+                        docsPath="/configuration#ai-question-wait"
+                        label="ticket AI question wait"
+                        description={`${AI_QUESTION_WAIT_HELP} Open the AI question wait documentation.`}
+                      />
+                    )}
                   />
                 </div>
               </div>
@@ -486,7 +506,7 @@ export function TicketForm({ onClose, onDirtyChange, onEditingChange }: TicketFo
               <Button
                 type="button"
                 variant="secondary"
-                disabled={isCreatingAndStarting || createTicket.isPending || isStartPending || !effectiveProjectId}
+                disabled={isCreatingAndStarting || createTicket.isPending || isStartPending || hasAiQuestionWaitError || !effectiveProjectId}
                 onClick={handleCreateAndStart}
                 className="rounded-lg border border-border/70 bg-muted/60 text-foreground hover:bg-muted/90 active:scale-[0.98] font-mono text-xs font-semibold shadow-2xs transition-all"
               >
@@ -500,7 +520,7 @@ export function TicketForm({ onClose, onDirtyChange, onEditingChange }: TicketFo
           <TooltipTrigger asChild>
             <Button
               type="submit"
-              disabled={isCreatingAndStarting || createTicket.isPending || isStartPending || isUpdatePending || !effectiveProjectId}
+              disabled={isCreatingAndStarting || createTicket.isPending || isStartPending || isUpdatePending || hasAiQuestionWaitError || !effectiveProjectId}
               className="rounded-lg bg-foreground text-background font-mono text-xs font-semibold hover:opacity-90 active:scale-[0.98] shadow-xs transition-all"
             >
               {isCreatingAndStarting || createTicket.isPending || isUpdatePending

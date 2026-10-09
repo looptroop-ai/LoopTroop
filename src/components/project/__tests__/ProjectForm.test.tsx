@@ -29,7 +29,13 @@ const mockProjectList = vi.hoisted(() => ({
   data: [] as Array<{ name: string; shortname: string }>,
 }))
 const mockProfileState = vi.hoisted(() => ({
-  data: undefined as { manualQaEnabled: boolean; gitHookPolicy: string; ignoreMode: string } | undefined,
+  data: undefined as {
+    manualQaEnabled: boolean
+    gitHookPolicy: string
+    ignoreMode: string
+    aiQuestionsEnabled?: boolean
+    aiQuestionWindow?: number
+  } | undefined,
   isLoading: false,
 }))
 
@@ -162,6 +168,123 @@ describe('ProjectForm', () => {
       expect(screen.getByRole('radio', { name: 'Run' })).toHaveAttribute('aria-checked', 'true')
     })
     expect(dirty).toHaveBeenLastCalledWith(false)
+  })
+
+  it('shows AI question settings and adjacent documentation only inside expanded Advanced', () => {
+    render(<ProjectForm onClose={vi.fn()} project={makeCreatedProject()} />, { wrapper: Wrapper })
+    const advancedButton = screen.getByRole('button', { name: /Advanced/ })
+    expect(advancedButton).toHaveAttribute('aria-expanded', 'false')
+    expect(screen.queryByText('AI questions')).not.toBeInTheDocument()
+    expect(screen.queryByText('AI question wait')).not.toBeInTheDocument()
+    expect(screen.queryByRole('radiogroup', { name: 'AI questions setting' })).not.toBeInTheDocument()
+    expect(screen.queryByRole('radiogroup', { name: 'AI question wait source' })).not.toBeInTheDocument()
+
+    fireEvent.click(advancedButton)
+    const advanced = within(advancedButton.parentElement!)
+    for (const [label, path] of [
+      ['AI questions', '/configuration#ai-questions'],
+      ['AI question wait', '/configuration#ai-question-wait'],
+    ] as const) {
+      const help = advanced.getByRole('link', { name: `Open documentation for project ${label}` })
+      expect(help).toHaveAttribute('href', `${__LOOPTROOP_DOCS_ORIGIN__}${path}`)
+      expect(advanced.getByText(label)).toBe(screen.getByText(label))
+      expect(advanced.getByText(label).parentElement).toContainElement(help)
+    }
+
+    fireEvent.click(advancedButton)
+    expect(screen.queryByText('AI questions')).not.toBeInTheDocument()
+    expect(screen.queryByText('AI question wait')).not.toBeInTheDocument()
+  })
+
+  it('shows effective Configuration values and keeps inheriting on save', () => {
+    mockProfileState.data = {
+      ...mockProfileState.data!,
+      aiQuestionsEnabled: false,
+      aiQuestionWindow: 720_000,
+    }
+    render(<ProjectForm onClose={vi.fn()} project={makeCreatedProject()} />, { wrapper: Wrapper })
+    fireEvent.click(screen.getByRole('button', { name: /Advanced/ }))
+
+    const questions = screen.getByRole('radiogroup', { name: 'AI questions setting' })
+    expect(within(questions).getByRole('radio', { name: 'Inherit' })).toHaveAttribute('aria-checked', 'true')
+    expect(questions.parentElement).toHaveTextContent('Inherits Off from Configuration.')
+    expect(screen.getByRole('radio', { name: 'Inherit ai question wait' })).toHaveAttribute('aria-checked', 'true')
+    expect(screen.getByText('12 minutes').parentElement).toHaveTextContent('12 minutes from Configuration')
+
+    fireEvent.click(screen.getByRole('button', { name: 'Save Changes' }))
+    expect(mockProjectMutations.update.mutate).toHaveBeenCalledWith(
+      expect.objectContaining({ aiQuestionsOverride: null, aiQuestionWindowOverride: null }),
+      expect.any(Object),
+    )
+  })
+
+  it.each([
+    { override: null, minutes: 12 },
+    { override: 900_000, minutes: 15 },
+  ])('edits and saves a custom wait starting from $minutes minutes', ({ override, minutes }) => {
+    mockProfileState.data = { ...mockProfileState.data!, aiQuestionWindow: 720_000 }
+    render(
+      <ProjectForm onClose={vi.fn()} project={makeCreatedProject({ aiQuestionWindowOverride: override })} />,
+      { wrapper: Wrapper },
+    )
+    fireEvent.click(screen.getByRole('button', { name: /Advanced/ }))
+    fireEvent.click(screen.getByRole('radio', { name: 'Set a custom ai question wait' }))
+
+    const wait = screen.getByLabelText('AI question wait')
+    expect(wait).toHaveValue(minutes)
+    expect(screen.queryByRole('button', { name: 'Clear override' })).not.toBeInTheDocument()
+    fireEvent.change(wait, { target: { value: '7' } })
+    fireEvent.click(screen.getByRole('radio', { name: 'Set a custom ai question wait' }))
+    expect(wait).toHaveValue(7)
+    fireEvent.click(within(screen.getByRole('radiogroup', { name: 'AI questions setting' })).getByRole('radio', { name: 'Off' }))
+    fireEvent.click(screen.getByRole('button', { name: 'Save Changes' }))
+
+    expect(mockProjectMutations.update.mutate).toHaveBeenCalledWith(
+      expect.objectContaining({ aiQuestionsOverride: false, aiQuestionWindowOverride: 420_000 }),
+      expect.any(Object),
+    )
+  })
+
+  it.each(['new', 'existing'] as const)('blocks an invalid wait in a %s project until Inherit clears it', async (mode) => {
+    if (mode === 'new') {
+      vi.stubGlobal('fetch', vi.fn(async () => ({
+        ok: true,
+        status: 200,
+        json: async () => ({ isGit: true, status: 'valid', message: 'Git repository root selected' }),
+      })))
+    }
+    render(
+      <ProjectForm onClose={vi.fn()} project={mode === 'existing' ? makeCreatedProject() : undefined} />,
+      { wrapper: Wrapper },
+    )
+    if (mode === 'new') {
+      fireEvent.change(screen.getByLabelText(/Project Name/i), { target: { value: 'Demo' } })
+      fireEvent.change(screen.getByLabelText(/Short Name/i), { target: { value: 'DEMO' } })
+      fireEvent.change(screen.getByLabelText(/Project Folder/i), { target: { value: '/work/demo' } })
+    }
+    const save = screen.getByRole('button', { name: mode === 'new' ? 'Create Project' : 'Save Changes' })
+    await waitFor(() => expect(save).toBeEnabled())
+    fireEvent.click(screen.getByRole('button', { name: /Advanced/ }))
+    fireEvent.click(screen.getByRole('radio', { name: 'Set a custom ai question wait' }))
+    const wait = screen.getByLabelText('AI question wait')
+    fireEvent.change(wait, { target: { value: '61' } })
+
+    expect(wait).toHaveValue(61)
+    expect(wait).toHaveAttribute('aria-invalid', 'true')
+    expect(save).toBeDisabled()
+    fireEvent.submit(save.closest('form')!)
+    expect(mockProjectMutations.create.mutate).not.toHaveBeenCalled()
+    expect(mockProjectMutations.update.mutate).not.toHaveBeenCalled()
+
+    fireEvent.click(screen.getByRole('radio', { name: 'Inherit ai question wait' }))
+    expect(screen.queryByRole('alert')).not.toBeInTheDocument()
+    expect(save).toBeEnabled()
+    fireEvent.click(save)
+    const mutation = mode === 'new' ? mockProjectMutations.create : mockProjectMutations.update
+    expect(mutation.mutate).toHaveBeenCalledWith(
+      expect.objectContaining({ aiQuestionWindowOverride: null }),
+      expect.any(Object),
+    )
   })
 
   it('opens the folder picker, handles dismissal, and adopts the selected folder', () => {

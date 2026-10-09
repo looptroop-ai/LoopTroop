@@ -17,7 +17,7 @@ import { ConfigurationDocsLink } from '@/components/config/ConfigurationDocsLink
 import type { ManualQaOverride } from '@/lib/manualQaSetting'
 import { TriStateSetting } from '@/components/settings/TriStateSetting'
 import { InheritableDurationField } from '@/components/settings/InheritableDurationField'
-import { AI_QUESTIONS_INHERITABLE_OPTIONS, AI_QUESTION_WAIT_HINT } from '@/components/settings/aiQuestionOptions'
+import { AI_QUESTIONS_INHERITABLE_OPTIONS, AI_QUESTION_WAIT_HINT, AI_QUESTION_WAIT_HELP } from '@/components/settings/aiQuestionOptions'
 import type { AiQuestionsOverride, AiQuestionWindowOverride } from '@/lib/aiQuestionSetting'
 import { AI_QUESTION_WINDOW_MAX_MS, AI_QUESTION_WINDOW_MIN_MS, formatAiQuestionWindow } from '@shared/aiQuestions'
 import { useProfile } from '@/hooks/useProfile'
@@ -134,6 +134,7 @@ export function ProjectForm({ onClose, onBack, project, onDirtyChange }: Project
   const [aiQuestionWindowOverride, setAiQuestionWindowOverride] = useState<AiQuestionWindowOverride>(
     project?.aiQuestionWindowOverride ?? null,
   )
+  const [hasAiQuestionWaitError, setHasAiQuestionWaitError] = useState(false)
   const [gitHookPolicy, setGitHookPolicy] = useState<GitHookPolicy>(
     normalizeGitHookPolicySetting(project?.gitHookPolicy)
       ?? normalizeGitHookPolicySetting(profile?.gitHookPolicy)
@@ -354,6 +355,7 @@ export function ProjectForm({ onClose, onBack, project, onDirtyChange }: Project
   }
 
   const createProjectWithSelectedAction = () => {
+    if (hasAiQuestionWaitError) return
     const submittedSnapshot = draftSnapshotRef.current
     createProject.mutate(
       {
@@ -396,6 +398,7 @@ export function ProjectForm({ onClose, onBack, project, onDirtyChange }: Project
 
   const handleSubmit = (e: React.FormEvent) => {
     e.preventDefault()
+    if (hasAiQuestionWaitError) return
     if (editingProject) {
       const submittedSnapshot = draftSnapshotRef.current
       updateProject.mutate(
@@ -604,11 +607,11 @@ export function ProjectForm({ onClose, onBack, project, onDirtyChange }: Project
                       <ConfigurationDocsLink
                         docsPath="/configuration#ai-questions"
                         label="project AI questions"
-                        description="Choose whether a model may stop a step to ask you a question in this project. Open the AI questions documentation."
+                        description="Choose whether a model may pause a step to ask you a question in this project. Open the AI questions documentation."
                       />
                     </div>
                     <p className="mt-1 text-xs text-muted-foreground">
-                      Choose whether a model may stop a step to ask you a question. Tickets can set their own answer.
+                      Choose whether a model may pause a step to ask you a question. Tickets can override this.
                     </p>
                   </div>
                   <TriStateSetting
@@ -617,7 +620,11 @@ export function ProjectForm({ onClose, onBack, project, onDirtyChange }: Project
                     options={AI_QUESTIONS_INHERITABLE_OPTIONS}
                     value={aiQuestionsOverride}
                     onChange={setAiQuestionsOverride}
-                    compact
+                    footer={aiQuestionsOverride === null && (
+                      <p className="mt-1 text-right text-xs text-muted-foreground">
+                        Inherits <span className="font-medium text-foreground">{(profile?.aiQuestionsEnabled ?? PROFILE_DEFAULTS.aiQuestionsEnabled) ? 'On' : 'Off'}</span> from Configuration.
+                      </p>
+                    )}
                   />
                 </div>
                 <div className="border-t border-border pt-3">
@@ -626,12 +633,20 @@ export function ProjectForm({ onClose, onBack, project, onDirtyChange }: Project
                     idPrefix="project-ai-question-wait"
                     value={aiQuestionWindowOverride}
                     onChange={setAiQuestionWindowOverride}
+                    onValidationChange={setHasAiQuestionWaitError}
                     inheritedMs={profile?.aiQuestionWindow ?? PROFILE_DEFAULTS.aiQuestionWindow}
                     inheritedSourceLabel="Configuration"
                     minMs={AI_QUESTION_WINDOW_MIN_MS}
                     maxMs={AI_QUESTION_WINDOW_MAX_MS}
                     formatValue={formatAiQuestionWindow}
-                    hint={`How long a question waits before the run carries on. ${AI_QUESTION_WAIT_HINT}`}
+                    hint={AI_QUESTION_WAIT_HINT}
+                    help={(
+                      <ConfigurationDocsLink
+                        docsPath="/configuration#ai-question-wait"
+                        label="project AI question wait"
+                        description={`${AI_QUESTION_WAIT_HELP} Open the AI question wait documentation.`}
+                      />
+                    )}
                   />
                 </div>
                 <div className="flex flex-wrap items-start justify-between gap-3 border-t border-border pt-3">
@@ -959,7 +974,7 @@ export function ProjectForm({ onClose, onBack, project, onDirtyChange }: Project
           <Button type="button" variant="outline" onClick={handleCloseView} className="rounded-lg">Cancel</Button>
           <Button
             type="submit"
-            disabled={isBusy || (!isEditing && (gitStatus !== 'valid' || gitInfo.alreadyAttached || hasProjectIdentityConflict))}
+            disabled={isBusy || hasAiQuestionWaitError || (!isEditing && (gitStatus !== 'valid' || gitInfo.alreadyAttached || hasProjectIdentityConflict))}
             className="rounded-lg bg-foreground text-background font-semibold hover:opacity-95 active:scale-[0.98] shadow-2xs"
           >
             {isEditing

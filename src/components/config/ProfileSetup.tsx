@@ -1,90 +1,19 @@
 import { useState, useEffect, useMemo, useCallback, useRef } from 'react'
-import { Button } from '@/components/ui/button'
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card'
 import { Separator } from '@/components/ui/separator'
-import { LoadingText } from '@/components/ui/LoadingText'
-import { ModelPicker } from './ModelPicker'
-import { EffortPicker } from './EffortPicker'
-import { OpenRouterRoutingPicker } from './OpenRouterRoutingPicker'
-import type { OpenCodeModel } from '@/hooks/useOpenCodeModels'
-import { getProfileCouncil } from '@/lib/profileCouncil'
-
-function cleanModelId(id: string | null | undefined): string {
-  if (id && id.startsWith('openrouter/')) {
-    return id.split(':')[0]!
-  }
-  return id ?? ''
-}
-
-function parseOpenRouterModel(modelId: string | null | undefined) {
-  const value = modelId ?? ''
-  if (value.startsWith('openrouter/')) {
-    const lastColon = value.lastIndexOf(':')
-    if (lastColon > value.indexOf('/')) {
-      return { base: value.substring(0, lastColon), suffix: value.substring(lastColon) }
-    }
-  }
-  return { base: value, suffix: '' }
-}
-
-function isRouterModel(modelId: string | null | undefined, modelsList?: OpenCodeModel[]): boolean {
-  const clean = cleanModelId(modelId)
-  if (!clean.startsWith('openrouter/')) return false
-  if (clean.startsWith('openrouter/openrouter/')) return true
-  const found = modelsList?.find((model) => model.fullId === clean)
-  return Boolean(found && found.name.toLowerCase().includes('router'))
-}
 import { useProfile, useCreateProfile, useUpdateProfile } from '@/hooks/useProfile'
-import type { CreateProfileInput } from '@/hooks/useProfile'
-import { ChevronDown, Plus, X, RefreshCw } from 'lucide-react'
 import { useToast } from '@/components/shared/useToast'
 import { SHARED_PROFILE_DEFAULTS as PROFILE_DEFAULTS } from '@shared/profileDefaults'
 import { useQueryClient } from '@tanstack/react-query'
 import { useOpenCodeModels, refetchOpenCodeModelsQuery, refreshOpenCodeModelsQuery } from '@/hooks/useOpenCodeModels'
-import { numericFields, hasNumericErrors, buildInitialRawNumeric } from './numericFieldConfig'
-import { NumericField } from './profileNumericUtils'
-import { ConfigurationDocsLink } from './ConfigurationDocsLink'
-import { Tooltip, TooltipTrigger, TooltipContent } from '@/components/ui/tooltip'
-import { ManualQaSetting } from '@/components/manual-qa/ManualQaSetting'
-import { TriStateSetting } from '@/components/settings/TriStateSetting'
-import { InheritableDurationField } from '@/components/settings/InheritableDurationField'
-import { AI_QUESTIONS_OPTIONS, AI_QUESTION_WAIT_HINT, AI_QUESTION_WAIT_HELP } from '@/components/settings/aiQuestionOptions'
-import { AI_QUESTION_WINDOW_MAX_MS, AI_QUESTION_WINDOW_MIN_MS, formatAiQuestionWindow } from '@shared/aiQuestions'
-import { GitHookPolicySetting } from '@/components/git-hooks/GitHookPolicySetting'
-import { IgnoreModeSetting } from '@/components/project/IgnoreModeSetting'
-import { DEFAULT_IGNORE_MODE } from '@shared/ignoreMode'
-import { cn } from '@/lib/utils'
-import { DEFAULT_GIT_HOOK_POLICY } from '@shared/gitHookPolicy'
+import { hasNumericErrors, buildInitialRawNumeric } from './numericFieldConfig'
+import { buildProfileFormData, buildProfilePayload, profileDraftSnapshot, buildHydratedProfileDraft, initialProfileBaseline, type ProfileFormData } from './profileFormData'
+import { ProfileNumericSections } from './ProfileNumericSections'
+import { ProfileAdvancedSettings } from './ProfileAdvancedSettings'
+import { ProfileModelsSection } from './ProfileModelsSection'
+import { ProfileConnectionStatus, ProfileFormActions } from './ProfileSetupFeedback'
 import { describeQueryError } from '@/lib/fetchError'
-
-/** For a `/health/opencode` refusal that arrives without the backend's advice. */
-const REFUSED_SIGN_IN_FALLBACK = 'OpenCode is running but refused LoopTroop\'s sign-in. '
-  + 'Set `OPENCODE_PASSWORD` to that server\'s password, then run `looptroop restart`.'
-
-/** The server's advice quotes commands and variables in backticks; show those as code. */
-function renderBacktickCode(text: string) {
-  return text.split('`').map((part, index) => index % 2 === 1
-    ? <code key={index} className="font-mono bg-muted-foreground/10 px-1 rounded">{part}</code>
-    : part)
-}
-
-function profileDraftSnapshot(
-  formData: CreateProfileInput,
-  rawNumeric: Record<string, string>,
-  councilSlots: string[],
-  mainVariant: string | undefined,
-  councilVariants: Record<string, string>,
-): string {
-  return JSON.stringify({
-    formData: Object.entries(formData).sort(([a], [b]) => a.localeCompare(b)),
-    rawNumeric: Object.entries(rawNumeric).sort(([a], [b]) => a.localeCompare(b)),
-    councilSlots,
-    mainVariant: mainVariant && mainVariant !== 'none' ? mainVariant : null,
-    councilVariants: Object.entries(councilVariants)
-      .filter(([, value]) => value && value !== 'none')
-      .sort(([a], [b]) => a.localeCompare(b)),
-  })
-}
+import { getOpenCodeStatus, getOpenCodeSignInAdvice } from './profileConnectionState'
 
 interface ProfileSetupProps {
   onClose: () => void
@@ -92,47 +21,18 @@ interface ProfileSetupProps {
   onDirtyChange?: (isDirty: boolean) => void
 }
 
-const descriptionDocs = {
-  mainImplementer: '/configuration#main-implementer-model',
-  councilMembers: '/configuration#council-members',
-} as const
-
-export function ProfileSetup({ onClose, onOpenAbout = () => undefined, onDirtyChange }: ProfileSetupProps) {
+export const ProfileSetup = ({ onClose, onOpenAbout, onDirtyChange }: ProfileSetupProps) => {
   const { data: profile, isLoading: profileLoading } = useProfile()
   const createProfile = useCreateProfile()
   const updateProfile = useUpdateProfile()
   const { addToast } = useToast()
   const queryClient = useQueryClient()
 
-  const [formData, setFormData] = useState<CreateProfileInput>({
-    mainImplementer: profile?.mainImplementer ?? '',
-    minCouncilQuorum: profile?.minCouncilQuorum ?? PROFILE_DEFAULTS.minCouncilQuorum,
-    perIterationTimeout: profile?.perIterationTimeout ?? PROFILE_DEFAULTS.perIterationTimeout,
-    executionSetupTimeout: profile?.executionSetupTimeout ?? PROFILE_DEFAULTS.executionSetupTimeout,
-    councilResponseTimeout: profile?.councilResponseTimeout ?? PROFILE_DEFAULTS.councilResponseTimeout,
-    interviewQuestions: profile?.interviewQuestions ?? PROFILE_DEFAULTS.interviewQuestions,
-    coverageFollowUpBudgetPercent: profile?.coverageFollowUpBudgetPercent ?? PROFILE_DEFAULTS.coverageFollowUpBudgetPercent,
-    maxCoveragePasses: profile?.maxCoveragePasses ?? PROFILE_DEFAULTS.maxCoveragePasses,
-    maxPrdCoveragePasses: profile?.maxPrdCoveragePasses ?? PROFILE_DEFAULTS.maxPrdCoveragePasses,
-    maxBeadsCoveragePasses: profile?.maxBeadsCoveragePasses ?? PROFILE_DEFAULTS.maxBeadsCoveragePasses,
-    structuredRetryCount: profile?.structuredRetryCount ?? PROFILE_DEFAULTS.structuredRetryCount,
-    maxIterations: profile?.maxIterations ?? PROFILE_DEFAULTS.maxIterations,
-    opencodeRetryLimit: profile?.opencodeRetryLimit ?? PROFILE_DEFAULTS.opencodeRetryLimit,
-    opencodeRetryDelay: profile?.opencodeRetryDelay ?? PROFILE_DEFAULTS.opencodeRetryDelay,
-    opencodeSteps: profile?.opencodeSteps ?? PROFILE_DEFAULTS.opencodeSteps,
-    toolInputMaxChars: profile?.toolInputMaxChars ?? PROFILE_DEFAULTS.toolInputMaxChars,
-    toolOutputMaxChars: profile?.toolOutputMaxChars ?? PROFILE_DEFAULTS.toolOutputMaxChars,
-    toolErrorMaxChars: profile?.toolErrorMaxChars ?? PROFILE_DEFAULTS.toolErrorMaxChars,
-    manualQaEnabled: profile?.manualQaEnabled ?? PROFILE_DEFAULTS.manualQaEnabled,
-    aiQuestionsEnabled: profile?.aiQuestionsEnabled ?? PROFILE_DEFAULTS.aiQuestionsEnabled,
-    aiQuestionWindow: profile?.aiQuestionWindow ?? PROFILE_DEFAULTS.aiQuestionWindow,
-    gitHookPolicy: profile?.gitHookPolicy ?? DEFAULT_GIT_HOOK_POLICY,
-    ignoreMode: profile?.ignoreMode ?? DEFAULT_IGNORE_MODE,
-  })
+  const [formData, setFormData] = useState<ProfileFormData>(() => buildProfileFormData(profile))
 
   const [isAdvancedOpen, setIsAdvancedOpen] = useState(false)
   const [isAiQuestionWaitCustom, setIsAiQuestionWaitCustom] = useState(
-    (profile?.aiQuestionWindow ?? PROFILE_DEFAULTS.aiQuestionWindow) !== PROFILE_DEFAULTS.aiQuestionWindow,
+    formData.aiQuestionWindow !== PROFILE_DEFAULTS.aiQuestionWindow,
   )
   const [hasAiQuestionWaitError, setHasAiQuestionWaitError] = useState(false)
 
@@ -148,7 +48,7 @@ export function ProfileSetup({ onClose, onOpenAbout = () => undefined, onDirtyCh
   const profileBaselineRef = useRef<string | null>(null)
   const profileHydratedRef = useRef(false)
   const initialDraftRef = useRef<string | null>(null)
-  const draftSnapshot = profileDraftSnapshot(formData, rawNumeric, councilSlots, mainVariant, councilVariants)
+  const draftSnapshot = profileDraftSnapshot(formData, rawNumeric, councilSlots, mainVariant, councilVariants, isAiQuestionWaitCustom)
   const draftSnapshotRef = useRef(draftSnapshot)
   draftSnapshotRef.current = draftSnapshot
   if (initialDraftRef.current === null) initialDraftRef.current = draftSnapshot
@@ -171,95 +71,38 @@ export function ProfileSetup({ onClose, onOpenAbout = () => undefined, onDirtyCh
     }
     return map
   }, [models])
+  const recordFirstEditedHydration = useCallback((isFirst: boolean, baseline: string) => {
+    if (!isFirst) return
+    profileBaselineRef.current = baseline
+    onDirtyChange?.(true)
+  }, [onDirtyChange])
+
   // Sync form state when profile data loads. Once the user has changed a draft,
   // later query refreshes update the baseline only after a successful save; they
   // must not replace the values the user is still editing.
   useEffect(() => {
     if (!profile) {
-      if (profileBaselineRef.current === null) {
-        // Establish the actual initial form as the baseline while hydration is
-        // pending. A missing profile must not absorb a value typed in the gap.
-        profileBaselineRef.current = initialDraftRef.current ?? draftSnapshotRef.current
-      }
+      profileBaselineRef.current = initialProfileBaseline(profileBaselineRef.current, initialDraftRef.current, draftSnapshotRef.current)
       return
     }
     const isFirstProfileHydration = !profileHydratedRef.current
     profileHydratedRef.current = true
-    const nextFormData: CreateProfileInput = {
-      mainImplementer: profile.mainImplementer ?? '',
-      minCouncilQuorum: profile.minCouncilQuorum ?? PROFILE_DEFAULTS.minCouncilQuorum,
-      perIterationTimeout: profile.perIterationTimeout ?? PROFILE_DEFAULTS.perIterationTimeout,
-      executionSetupTimeout: profile.executionSetupTimeout ?? PROFILE_DEFAULTS.executionSetupTimeout,
-      councilResponseTimeout: profile.councilResponseTimeout ?? PROFILE_DEFAULTS.councilResponseTimeout,
-      interviewQuestions: profile.interviewQuestions ?? PROFILE_DEFAULTS.interviewQuestions,
-      coverageFollowUpBudgetPercent: profile.coverageFollowUpBudgetPercent ?? PROFILE_DEFAULTS.coverageFollowUpBudgetPercent,
-      maxCoveragePasses: profile.maxCoveragePasses ?? PROFILE_DEFAULTS.maxCoveragePasses,
-      maxPrdCoveragePasses: profile.maxPrdCoveragePasses ?? PROFILE_DEFAULTS.maxPrdCoveragePasses,
-      maxBeadsCoveragePasses: profile.maxBeadsCoveragePasses ?? PROFILE_DEFAULTS.maxBeadsCoveragePasses,
-      structuredRetryCount: profile.structuredRetryCount ?? PROFILE_DEFAULTS.structuredRetryCount,
-      maxIterations: profile.maxIterations ?? PROFILE_DEFAULTS.maxIterations,
-      opencodeRetryLimit: profile.opencodeRetryLimit ?? PROFILE_DEFAULTS.opencodeRetryLimit,
-      opencodeRetryDelay: profile.opencodeRetryDelay ?? PROFILE_DEFAULTS.opencodeRetryDelay,
-      opencodeSteps: profile.opencodeSteps ?? PROFILE_DEFAULTS.opencodeSteps,
-      toolInputMaxChars: profile.toolInputMaxChars ?? PROFILE_DEFAULTS.toolInputMaxChars,
-      toolOutputMaxChars: profile.toolOutputMaxChars ?? PROFILE_DEFAULTS.toolOutputMaxChars,
-      toolErrorMaxChars: profile.toolErrorMaxChars ?? PROFILE_DEFAULTS.toolErrorMaxChars,
-      manualQaEnabled: profile.manualQaEnabled ?? PROFILE_DEFAULTS.manualQaEnabled,
-      aiQuestionsEnabled: profile.aiQuestionsEnabled ?? PROFILE_DEFAULTS.aiQuestionsEnabled,
-      aiQuestionWindow: profile.aiQuestionWindow ?? PROFILE_DEFAULTS.aiQuestionWindow,
-      gitHookPolicy: profile.gitHookPolicy ?? DEFAULT_GIT_HOOK_POLICY,
-      ignoreMode: profile.ignoreMode ?? DEFAULT_IGNORE_MODE,
-    }
-    const nextRawNumeric = buildInitialRawNumeric({
-      perIterationTimeout: profile.perIterationTimeout ?? PROFILE_DEFAULTS.perIterationTimeout,
-      executionSetupTimeout: profile.executionSetupTimeout ?? PROFILE_DEFAULTS.executionSetupTimeout,
-      councilResponseTimeout: profile.councilResponseTimeout ?? PROFILE_DEFAULTS.councilResponseTimeout,
-      maxIterations: profile.maxIterations ?? PROFILE_DEFAULTS.maxIterations,
-      minCouncilQuorum: profile.minCouncilQuorum ?? PROFILE_DEFAULTS.minCouncilQuorum,
-      interviewQuestions: profile.interviewQuestions ?? PROFILE_DEFAULTS.interviewQuestions,
-      coverageFollowUpBudgetPercent: profile.coverageFollowUpBudgetPercent ?? PROFILE_DEFAULTS.coverageFollowUpBudgetPercent,
-      maxCoveragePasses: profile.maxCoveragePasses ?? PROFILE_DEFAULTS.maxCoveragePasses,
-      maxPrdCoveragePasses: profile.maxPrdCoveragePasses ?? PROFILE_DEFAULTS.maxPrdCoveragePasses,
-      maxBeadsCoveragePasses: profile.maxBeadsCoveragePasses ?? PROFILE_DEFAULTS.maxBeadsCoveragePasses,
-      structuredRetryCount: profile.structuredRetryCount ?? PROFILE_DEFAULTS.structuredRetryCount,
-      opencodeRetryLimit: profile.opencodeRetryLimit ?? PROFILE_DEFAULTS.opencodeRetryLimit,
-      opencodeRetryDelay: profile.opencodeRetryDelay ?? PROFILE_DEFAULTS.opencodeRetryDelay,
-      opencodeSteps: profile.opencodeSteps ?? PROFILE_DEFAULTS.opencodeSteps,
-      toolInputMaxChars: profile.toolInputMaxChars ?? PROFILE_DEFAULTS.toolInputMaxChars,
-      toolOutputMaxChars: profile.toolOutputMaxChars ?? PROFILE_DEFAULTS.toolOutputMaxChars,
-      toolErrorMaxChars: profile.toolErrorMaxChars ?? PROFILE_DEFAULTS.toolErrorMaxChars,
-    })
-    const nextMainVariant = profile.mainImplementerVariant || undefined
-    // Parsed and validated once, in one place: both fields are JSON strings from
-    // the database, and a stored variant that is not a string used to be cast
-    // and handed straight to a badge.
-    const council = getProfileCouncil(profile)
-    const cleanedVariants: Record<string, string> = {}
-    for (const [modelId, variant] of Object.entries(council.variants)) {
-      cleanedVariants[cleanModelId(modelId)] = variant
-    }
-    const nextCouncilSlots = council.members.filter(id => id !== profile.mainImplementer)
-    const nextBaseline = profileDraftSnapshot(nextFormData, nextRawNumeric, nextCouncilSlots, nextMainVariant, cleanedVariants)
-    const currentDraftIsDirty = profileBaselineRef.current !== null
-      ? draftSnapshotRef.current !== profileBaselineRef.current
-      : draftSnapshotRef.current !== initialDraftRef.current
+    const next = buildHydratedProfileDraft(profile)
+    const currentDraftIsDirty = draftSnapshotRef.current !== (profileBaselineRef.current ?? initialDraftRef.current)
     if (currentDraftIsDirty) {
-      if (isFirstProfileHydration) {
-        profileBaselineRef.current = nextBaseline
-        onDirtyChange?.(true)
-      }
+      recordFirstEditedHydration(isFirstProfileHydration, next.snapshot)
       return
     }
-    if (profileBaselineRef.current === nextBaseline) return
+    if (profileBaselineRef.current === next.snapshot) return
 
-    setFormData(nextFormData)
-    setRawNumeric(nextRawNumeric)
-    setIsAiQuestionWaitCustom(nextFormData.aiQuestionWindow !== PROFILE_DEFAULTS.aiQuestionWindow)
-    setMainVariant(nextMainVariant)
-    setCouncilVariants(cleanedVariants)
-    setCouncilSlots(nextCouncilSlots)
-    profileBaselineRef.current = nextBaseline
-  }, [onDirtyChange, profile, profileLoading])
+    setFormData(next.formData)
+    setRawNumeric(next.rawNumeric)
+    setIsAiQuestionWaitCustom(next.isWaitCustom)
+    setMainVariant(next.mainVariant)
+    setCouncilVariants(next.councilVariants)
+    setCouncilSlots(next.councilSlots)
+    profileBaselineRef.current = next.snapshot
+  }, [profile, profileLoading, recordFirstEditedHydration])
 
   const isDirty = profileBaselineRef.current !== null && draftSnapshot !== profileBaselineRef.current
   useEffect(() => {
@@ -289,9 +132,10 @@ export function ProfileSetup({ onClose, onOpenAbout = () => undefined, onDirtyCh
         }
 
         const payload = await res.json().catch(() => null) as { status?: string, failureKind?: string, advice?: unknown } | null
-        setIsOpenCodeConnected(payload?.status === 'ok')
-        setOpenCodeRefusedSignIn(payload?.failureKind === 'authentication')
-        setOpenCodeSignInAdvice(typeof payload?.advice === 'string' && payload.advice.trim() ? payload.advice : null)
+        const { status, failureKind, advice } = payload ?? {}
+        setIsOpenCodeConnected(status === 'ok')
+        setOpenCodeRefusedSignIn(failureKind === 'authentication')
+        setOpenCodeSignInAdvice(getOpenCodeSignInAdvice(advice))
       })
       .catch((err) => { if (err.name !== 'AbortError') setIsOpenCodeConnected(false) })
     return () => controller.abort()
@@ -304,22 +148,9 @@ export function ProfileSetup({ onClose, onOpenAbout = () => undefined, onDirtyCh
     void refetchOpenCodeModelsQuery(queryClient)
   }, [isOpenCodeConnected, queryClient])
 
-  const openCodeStatus = useMemo(() => {
-    if (isOpenCodeConnected === null) return null
-    if (isOpenCodeConnected === false) {
-      return { dotClass: 'bg-red-500', label: 'OpenCode not connected' }
-    }
-    if (modelsLoading || modelsFetching || isRefreshingModels) {
-      return { dotClass: 'bg-amber-500', label: 'OpenCode connected, checking models…' }
-    }
-    if (modelsError) {
-      return { dotClass: 'bg-amber-500', label: 'OpenCode connected, but model discovery failed' }
-    }
-    if ((models?.length ?? 0) === 0) {
-      return { dotClass: 'bg-amber-500', label: 'OpenCode connected, but no models are available' }
-    }
-    return { dotClass: 'bg-green-500', label: 'OpenCode connected and working' }
-  }, [isOpenCodeConnected, models, modelsError, modelsFetching, modelsLoading, isRefreshingModels])
+  const openCodeStatus = useMemo(() => getOpenCodeStatus(
+    isOpenCodeConnected, models, [modelsLoading, modelsFetching, isRefreshingModels].some(Boolean), modelsError,
+  ), [isOpenCodeConnected, models, modelsError, modelsFetching, modelsLoading, isRefreshingModels])
 
   const handleReloadModels = useCallback(async () => {
     setIsRefreshingModels(true)
@@ -343,27 +174,7 @@ export function ProfileSetup({ onClose, onOpenAbout = () => undefined, onDirtyCh
   const handleSubmit = (e: React.FormEvent) => {
     e.preventDefault()
     if (hasErrors) return
-    // Build payload with validated numeric values
-    const validatedData = { ...formData }
-    for (const [key, cfg] of Object.entries(numericFields)) {
-      const n = Number(rawNumeric[key]);
-      (validatedData as Record<string, unknown>)[key] = cfg.toStore(n)
-    }
-    const allCouncil = [validatedData.mainImplementer, ...councilSlots].filter((value): value is string => Boolean(value))
-    const uniqueCouncil = [...new Set(allCouncil)]
-    // Build council member variants map (only for members with a variant set)
-    const variantsMap: Record<string, string> = {}
-    for (const modelId of uniqueCouncil) {
-      if (modelId === validatedData.mainImplementer) continue
-      const v = councilVariants[cleanModelId(modelId)]
-      if (v && v !== 'none') variantsMap[modelId] = v
-    }
-    const payload: CreateProfileInput = {
-      ...validatedData,
-      councilMembers: JSON.stringify(uniqueCouncil),
-      mainImplementerVariant: mainVariant && mainVariant !== 'none' ? mainVariant : '',
-      councilMemberVariants: Object.keys(variantsMap).length > 0 ? JSON.stringify(variantsMap) : '',
-    }
+    const payload = buildProfilePayload(formData, rawNumeric, councilSlots, mainVariant, councilVariants)
     const submittedSnapshot = draftSnapshotRef.current
     const handleSuccess = () => {
       profileBaselineRef.current = submittedSnapshot
@@ -379,414 +190,50 @@ export function ProfileSetup({ onClose, onOpenAbout = () => undefined, onDirtyCh
     }
   }
 
-  const updateField = <K extends keyof CreateProfileInput>(key: K, value: CreateProfileInput[K]) => {
+  const updateField = <K extends keyof ProfileFormData>(key: K, value: ProfileFormData[K]) => {
     setFormData(prev => ({ ...prev, [key]: value }))
   }
-  const mainImplementerVariantLabel = mainVariant && mainVariant !== 'none' ? mainVariant : 'None'
+
 
   return (
     <form onSubmit={handleSubmit} className="max-w-2xl mx-auto space-y-6">
       <Card>
         <CardHeader><CardTitle className="text-sm">Configuration</CardTitle></CardHeader>
         <CardContent className="space-y-5">
-          {/* ── AI Models ── */}
-          <div className="flex items-center gap-1.5 mb-2">
-            <div className="text-xs font-semibold uppercase tracking-wider text-muted-foreground">AI Models</div>
-            <Tooltip>
-              <TooltipTrigger asChild>
-                <button
-                  type="button"
-                  id="reload-opencode-models"
-                  onClick={() => { void handleReloadModels() }}
-                  disabled={isRefreshingModels}
-                  className="p-0.5 rounded text-brand-600 dark:text-brand-400 hover:text-brand-700 dark:hover:text-brand-300 transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-brand-500 disabled:opacity-50 disabled:cursor-not-allowed"
-                  aria-label="Reload OpenCode providers and models"
-                >
-                  <RefreshCw className={`h-3 w-3 ${modelsFetching || isRefreshingModels ? 'animate-spin' : ''}`} />
-                </button>
-              </TooltipTrigger>
-              <TooltipContent>Reload OpenCode providers and models</TooltipContent>
-            </Tooltip>
-          </div>
-          <div>
-            <label className="text-sm font-medium block mb-1" htmlFor="main-implementer">
-              Main Implementer Model
-            </label>
-            <div className="mb-2 flex items-start gap-1.5 text-xs text-muted-foreground">
-              <p className="min-w-0 flex-1">Primary model used for code generation and implementation</p>
-              <ConfigurationDocsLink
-                docsPath={descriptionDocs.mainImplementer}
-                label="Main Implementer Model"
-                description="Select the primary model that writes and implements code. You can choose any available OpenCode model. Open the detailed documentation."
-              />
-            </div>
-            <ModelPicker
-              isRefreshing={isRefreshingModels}
-              id="main-implementer"
-              label="Main Implementer Model"
-              value={formData.mainImplementer ?? ''}
-              onChange={v => {
-                updateField('mainImplementer', v)
-                setMainVariant(undefined)
-              }}
-              disabledValues={councilSlots.filter(Boolean)}
-            />
-            {formData.mainImplementer && (
-              <div className="mt-1.5 space-y-1.5">
-                <EffortPicker
-                  variants={modelVariantMap.get(cleanModelId(formData.mainImplementer))}
-                  value={mainVariant}
-                  onChange={setMainVariant}
-                />
-                {formData.mainImplementer.startsWith('openrouter/') && !isRouterModel(formData.mainImplementer, models) && (() => {
-                  const { base, suffix } = parseOpenRouterModel(formData.mainImplementer)
-                  return <OpenRouterRoutingPicker value={suffix} onChange={(nextSuffix) => updateField('mainImplementer', base + nextSuffix)} />
-                })()}
-              </div>
-            )}
-            {isOpenCodeConnected === false && (
-              <div className="mt-2 rounded-md bg-muted px-3 py-2 text-xs text-muted-foreground">
-                {openCodeRefusedSignIn
-                  ? renderBacktickCode(openCodeSignInAdvice ?? REFUSED_SIGN_IN_FALLBACK)
-                  : <>LoopTroop could not reach its OpenCode server. Restart LoopTroop (<code className="font-mono bg-muted-foreground/10 px-1 rounded">looptroop restart</code>) so it starts OpenCode again, or check the backend OpenCode URL.</>}
-              </div>
-            )}
-          </div>
-          <div>
-            <label className="text-sm font-medium block mb-1">Council Members</label>
-            <div className="mb-2 flex items-start gap-1.5 text-xs text-muted-foreground">
-              <p className="min-w-0 flex-1">
-                Choose up to 10 models to form the review council. The main implementer is automatically included.
-              </p>
-              <ConfigurationDocsLink
-                docsPath={descriptionDocs.councilMembers}
-                label="Council Members"
-                description="Choose the models that review plans and proposals alongside the main implementer. You can select up to nine additional models. Open the detailed documentation."
-              />
-            </div>
-            <div className="space-y-2">
-              <div className="flex items-center gap-2">
-                <div className="flex-1 rounded-lg border border-input bg-muted/40 px-3 py-2.5 text-sm">
-                  <span className="font-medium">{formData.mainImplementer || '(select main implementer above)'}</span>
-                  {formData.mainImplementer && (
-                    <span className="ml-2 text-[10px] text-muted-foreground">· {mainImplementerVariantLabel}</span>
-                  )}
-                  <span className="ml-2 text-[10px] text-muted-foreground">MAI (auto-included)</span>
-                </div>
-              </div>
-              {councilSlots.map((slot, i) => (
-                <div key={i} className="flex items-center gap-2">
-                  <div className="flex-1 space-y-1.5">
-                    <ModelPicker
-                      isRefreshing={isRefreshingModels}
-                      value={slot}
-                      onChange={v => {
-                        setCouncilSlots(prev => prev.map((s, j) => j === i ? v : s))
-                        const cleanSlot = cleanModelId(slot)
-                        if (slot && slot !== v) {
-                          setCouncilVariants(prev => {
-                            const next = { ...prev }
-                            delete next[cleanSlot]
-                            return next
-                          })
-                        }
-                      }}
-                      label={`Council member ${i + 2}`}
-                      placeholder={`Council member ${i + 2}…`}
-                      disabledValues={[formData.mainImplementer, ...councilSlots.filter((_, j) => j !== i)].filter(Boolean) as string[]}
-                    />
-                    {slot && (
-                      <div className="space-y-1.5">
-                        <EffortPicker
-                          variants={modelVariantMap.get(cleanModelId(slot))}
-                          value={councilVariants[cleanModelId(slot)]}
-                          onChange={v => setCouncilVariants(prev => {
-                            const next = { ...prev }
-                            const cleanSlot = cleanModelId(slot)
-                            if (v) next[cleanSlot] = v
-                            else delete next[cleanSlot]
-                            return next
-                          })}
-                        />
-                        {slot.startsWith('openrouter/') && !isRouterModel(slot, models) && (() => {
-                          const { base, suffix } = parseOpenRouterModel(slot)
-                          return <OpenRouterRoutingPicker value={suffix} onChange={(nextSuffix) => {
-                            setCouncilSlots((previous) => previous.map((value, index) => index === i ? base + nextSuffix : value))
-                          }} />
-                        })()}
-                      </div>
-                    )}
-                  </div>
-                  <button
-                    type="button"
-                    onClick={() => {
-                      const removedSlot = councilSlots[i]
-                      setCouncilSlots(prev => prev.filter((_, j) => j !== i))
-                      if (removedSlot) {
-                        setCouncilVariants(prev => {
-                          const next = { ...prev }
-                          delete next[cleanModelId(removedSlot)]
-                          return next
-                        })
-                      }
-                    }}
-                    className="p-2 rounded-md text-muted-foreground hover:text-destructive hover:bg-destructive/10 transition-colors"
-                    aria-label={`Remove council member ${i + 2}`}
-                  >
-                    <X className="h-4 w-4" />
-                  </button>
-                </div>
-              ))}
-              {councilSlots.length < 9 && (
-                <Button
-                  type="button"
-                  variant="outline"
-                  size="sm"
-                  onClick={() => setCouncilSlots(prev => [...prev, ''])}
-                  className="gap-1.5"
-                >
-                  <Plus className="h-3.5 w-3.5" />
-                  Add Council Member
-                </Button>
-              )}
-              {councilSlots.filter(Boolean).length < 1 && (
-                <p className="text-xs text-amber-600">
-                  Add at least 1 more council member (MAI + 1 minimum).
-                </p>
-              )}
-            </div>
-          </div>
-
+          <ProfileModelsSection
+            formData={formData} updateField={updateField}
+            councilSlots={councilSlots} setCouncilSlots={setCouncilSlots}
+            mainVariant={mainVariant} setMainVariant={setMainVariant}
+            councilVariants={councilVariants} setCouncilVariants={setCouncilVariants}
+            modelVariantMap={modelVariantMap} models={models}
+            modelsFetching={modelsFetching} isRefreshingModels={isRefreshingModels}
+            handleReloadModels={handleReloadModels}
+            isOpenCodeConnected={isOpenCodeConnected}
+            openCodeRefusedSignIn={openCodeRefusedSignIn}
+            openCodeSignInAdvice={openCodeSignInAdvice}
+          />
           <Separator />
 
-          {/* ── OpenCode Provider Recovery ── */}
-          <div className="text-xs font-semibold uppercase tracking-wider text-muted-foreground mb-2">OpenCode Provider Recovery</div>
-          <p className="mb-3 text-xs text-muted-foreground">
-            Handles OpenCode rate-limit, usage-limit, overload, timeout, and network retry events across all phases.
-          </p>
-          <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
-            <NumericField fieldKey="opencodeRetryLimit" rawNumeric={rawNumeric} onChange={(k, v) => setRawNumeric(prev => ({ ...prev, [k]: v }))} hint="Continuable OpenCode retry events before blocking any phase prompt (0 to 50)." />
-            <NumericField fieldKey="opencodeRetryDelay" rawNumeric={rawNumeric} onChange={(k, v) => setRawNumeric(prev => ({ ...prev, [k]: v }))} hint="Maximum OpenCode retry grace window before blocking any phase prompt (0 to 3600s)." />
-            <NumericField fieldKey="opencodeSteps" rawNumeric={rawNumeric} onChange={(k, v) => setRawNumeric(prev => ({ ...prev, [k]: v }))} hint="Max steps per OpenCode session (0 = no limit, OpenCode default). Each step ≈ 2 messages in the log." />
-          </div>
+          <ProfileNumericSections rawNumeric={rawNumeric} onChange={(key, value) => setRawNumeric(previous => ({ ...previous, [key]: value }))} />
 
-          <Separator />
-
-          {/* ── AI Thinking ── */}
-          <div className="text-xs font-semibold uppercase tracking-wider text-muted-foreground mb-2">AI Thinking</div>
-          <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
-            <NumericField
-              fieldKey="councilResponseTimeout"
-              rawNumeric={rawNumeric}
-              onChange={(k, v) => setRawNumeric(prev => ({ ...prev, [k]: v }))}
-              hint="Wait time for planning and other AI-only responses (10 to 3600s)."
-              tooltip="Applies to planning and other AI-only responses. It does not apply to coding attempts or pre-implementation workspace setup; use Per-Iteration Timeout and Execution Setup Timeout for those."
-            />
-            <NumericField fieldKey="minCouncilQuorum" rawNumeric={rawNumeric} onChange={(k, v) => setRawNumeric(prev => ({ ...prev, [k]: v }))} hint="Minimum council votes required (1 to 6)" />
-          </div>
-          <div className="mt-3">
-            <NumericField fieldKey="interviewQuestions" rawNumeric={rawNumeric} onChange={(k, v) => setRawNumeric(prev => ({ ...prev, [k]: v }))} hint="Maximum initial clarifying questions (0 to 50; keep above 0 for normal runs)." />
-          </div>
-          <div className="mt-3">
-            <NumericField fieldKey="structuredRetryCount" rawNumeric={rawNumeric} onChange={(k, v) => setRawNumeric(prev => ({ ...prev, [k]: v }))} hint="Retries after invalid structured output (0 to 5)." />
-          </div>
-
-          <Separator />
-
-          {/* ── Coverage ── */}
-          <div className="text-xs font-semibold uppercase tracking-wider text-muted-foreground mb-2">Coverage</div>
-          <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
-            <NumericField fieldKey="coverageFollowUpBudgetPercent" rawNumeric={rawNumeric} onChange={(k, v) => setRawNumeric(prev => ({ ...prev, [k]: v }))} hint="Maximum interview follow-up budget for interview coverage passes (0 to 100%)." />
-            <NumericField fieldKey="maxCoveragePasses" rawNumeric={rawNumeric} onChange={(k, v) => setRawNumeric(prev => ({ ...prev, [k]: v }))} hint="Interview coverage executions allowed before approval fallback (1 to 10)." />
-          </div>
-          <div className="grid grid-cols-1 sm:grid-cols-2 gap-3 mt-3">
-            <NumericField fieldKey="maxPrdCoveragePasses" rawNumeric={rawNumeric} onChange={(k, v) => setRawNumeric(prev => ({ ...prev, [k]: v }))} hint="Maximum PRD coverage executions before approval fallback (2 to 20)." />
-            <NumericField fieldKey="maxBeadsCoveragePasses" rawNumeric={rawNumeric} onChange={(k, v) => setRawNumeric(prev => ({ ...prev, [k]: v }))} hint="Maximum beads coverage executions before approval fallback (2 to 20)." />
-          </div>
-
-          <Separator />
-
-          {/* ── Implementation & Workspace Setup ── */}
-          <div className="text-xs font-semibold uppercase tracking-wider text-muted-foreground mb-2">Implementation &amp; Workspace Setup</div>
-          <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
-            <NumericField fieldKey="maxIterations" rawNumeric={rawNumeric} onChange={(k, v) => setRawNumeric(prev => ({ ...prev, [k]: v }))} hint="Maximum automatic retries per bead during coding (0 to 20). Final test retries use the same limit." />
-            <NumericField fieldKey="perIterationTimeout" rawNumeric={rawNumeric} onChange={(k, v) => setRawNumeric(prev => ({ ...prev, [k]: v }))} hint="Timeout for each attempt (10 to 3600s)" />
-          </div>
-          <div className="mt-3">
-            <NumericField
-              fieldKey="executionSetupTimeout"
-              rawNumeric={rawNumeric}
-              onChange={(k, v) => setRawNumeric(prev => ({ ...prev, [k]: v }))}
-              hint="Total active-work budget for each workspace setup attempt before coding starts (0 to 3600s)."
-              tooltip="This is the maximum total active-work time for one pre-implementation workspace setup attempt. Progress continuations and result corrections share the same budget; every genuine retry receives a fresh full budget."
-            />
-          </div>
-
-          <Separator />
-
-          {/* ── Logging ── */}
-          <div className="text-xs font-semibold uppercase tracking-wider text-muted-foreground mb-2">Logging</div>
-          <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
-            <NumericField fieldKey="toolInputMaxChars" rawNumeric={rawNumeric} onChange={(k, v) => setRawNumeric(prev => ({ ...prev, [k]: v }))} hint="Max characters for tool input in logs (500 to 50K)." />
-            <NumericField fieldKey="toolOutputMaxChars" rawNumeric={rawNumeric} onChange={(k, v) => setRawNumeric(prev => ({ ...prev, [k]: v }))} hint="Max characters for tool output in logs (1K to 100K)." />
-            <NumericField fieldKey="toolErrorMaxChars" rawNumeric={rawNumeric} onChange={(k, v) => setRawNumeric(prev => ({ ...prev, [k]: v }))} hint="Max characters for tool error in logs (500 to 50K)." />
-          </div>
-
-          <Separator />
-
-          <div className="rounded-md border-2 border-border">
-            <button
-              type="button"
-              className="flex w-full items-center justify-between gap-2 px-3 py-2 text-sm font-medium"
-              onClick={() => setIsAdvancedOpen((open) => !open)}
-              aria-expanded={isAdvancedOpen}
-            >
-              Advanced
-              <ChevronDown className={cn('h-4 w-4 transition-transform', isAdvancedOpen && 'rotate-180')} />
-            </button>
-            {isAdvancedOpen && (
-              <div className="space-y-4 border-t border-border px-3 py-3">
-                <div className="flex flex-wrap items-start justify-between gap-3">
-                  <div className="min-w-0 flex-1">
-                    <div className="flex items-center gap-1.5">
-                      <label className="text-sm font-medium">Manual QA checkpoint</label>
-                      <ConfigurationDocsLink
-                        docsPath="/configuration#manual-qa"
-                        label="Manual QA checkpoint"
-                        description="Set the Manual QA default for newly attached projects. Open the Manual QA documentation."
-                      />
-                    </div>
-                    <p className="mt-1 text-xs text-muted-foreground">
-                      Preselect whether new projects pause tickets for your QA checklist after final tests.
-                    </p>
-                  </div>
-                  <ManualQaSetting
-                    idPrefix="profile-manual-qa"
-                    value={formData.manualQaEnabled ? true : false}
-                    onChange={(value) => updateField('manualQaEnabled', value === true)}
-                    compact
-                  />
-                </div>
-
-                <div className="flex flex-wrap items-start justify-between gap-3 border-t border-border pt-4">
-                  <div className="min-w-0 flex-1">
-                    <div className="flex items-center gap-1.5">
-                      <label className="text-sm font-medium">AI questions</label>
-                      <ConfigurationDocsLink
-                        docsPath="/configuration#ai-questions"
-                        label="AI questions"
-                        description="Choose whether a model may pause a step to ask you a question. Open the AI questions documentation."
-                      />
-                    </div>
-                    <p className="mt-1 text-xs text-muted-foreground">
-                      Choose whether a model may pause a step to ask you a question. Projects and tickets can override this.
-                    </p>
-                  </div>
-                  <TriStateSetting
-                    idPrefix="profile-ai-questions"
-                    groupLabel="AI questions setting"
-                    options={AI_QUESTIONS_OPTIONS}
-                    value={formData.aiQuestionsEnabled ?? PROFILE_DEFAULTS.aiQuestionsEnabled}
-                    onChange={(value) => updateField('aiQuestionsEnabled', value === true)}
-                    compact
-                  />
-                </div>
-
-                <div className="pl-4">
-                  <InheritableDurationField
-                    label="AI question wait"
-                    idPrefix="profile-ai-question-wait"
-                    value={isAiQuestionWaitCustom ? formData.aiQuestionWindow ?? PROFILE_DEFAULTS.aiQuestionWindow : null}
-                    onChange={(value) => {
-                      setIsAiQuestionWaitCustom(value !== null)
-                      updateField('aiQuestionWindow', value ?? PROFILE_DEFAULTS.aiQuestionWindow)
-                    }}
-                    onValidationChange={setHasAiQuestionWaitError}
-                    inheritedMs={PROFILE_DEFAULTS.aiQuestionWindow}
-                    inheritLabel="Default"
-                    disabled={!(formData.aiQuestionsEnabled ?? PROFILE_DEFAULTS.aiQuestionsEnabled)}
-                    minMs={AI_QUESTION_WINDOW_MIN_MS}
-                    maxMs={AI_QUESTION_WINDOW_MAX_MS}
-                    formatValue={formatAiQuestionWindow}
-                    hint={AI_QUESTION_WAIT_HINT}
-                    help={(
-                      <ConfigurationDocsLink
-                        docsPath="/configuration#ai-question-wait"
-                        label="AI question wait"
-                        description={`${AI_QUESTION_WAIT_HELP} Open the AI question wait documentation.`}
-                      />
-                    )}
-                  />
-                </div>
-
-                <div className="flex flex-wrap items-start justify-between gap-3 border-t border-border pt-4">
-                  <div className="min-w-0 flex-1">
-                    <div className="flex items-center gap-1.5">
-                      <label className="text-sm font-medium">Git hook policy</label>
-                      <ConfigurationDocsLink
-                        docsPath="/configuration#git-hook-policy"
-                        label="Git hook policy"
-                        description="Set the Git hook default for newly attached projects. Open the Git hook policy documentation."
-                      />
-                    </div>
-                    <p className="mt-1 text-xs text-muted-foreground">
-                      Preselect how new projects handle repository hooks before implementation.
-                    </p>
-                  </div>
-                  <GitHookPolicySetting
-                    value={formData.gitHookPolicy ?? DEFAULT_GIT_HOOK_POLICY}
-                    onChange={(value) => updateField('gitHookPolicy', value)}
-                    compact
-                  />
-                </div>
-
-                <div className="border-t border-border pt-4">
-                  <IgnoreModeSetting
-                    idPrefix="configuration"
-                    description={
-                      <>
-                        Preselect where new projects ignore <span className="font-mono">.looptroop/</span> and{' '}
-                        <span className="font-mono">.ticket/</span>. Rules are appended; existing file content is not changed.
-                      </>
-                    }
-                    value={formData.ignoreMode ?? DEFAULT_IGNORE_MODE}
-                    onChange={(value) => updateField('ignoreMode', value)}
-                  />
-                </div>
-              </div>
-            )}
-          </div>
+          <ProfileAdvancedSettings
+            formData={formData} updateField={updateField}
+            isOpen={isAdvancedOpen} onToggle={() => setIsAdvancedOpen(open => !open)}
+            isWaitCustom={isAiQuestionWaitCustom}
+            onWaitChange={value => {
+              setIsAiQuestionWaitCustom(value !== null)
+              updateField('aiQuestionWindow', value ?? PROFILE_DEFAULTS.aiQuestionWindow)
+            }}
+            hasWaitError={hasAiQuestionWaitError} onValidationChange={setHasAiQuestionWaitError}
+            isLoading={profileLoading}
+          />
 
 
-          {openCodeStatus && (
-            <>
-              <Separator />
-              <div className="flex items-center gap-1.5">
-                <span className={`h-2 w-2 rounded-full ${openCodeStatus.dotClass}`} />
-                <span className="text-xs text-muted-foreground">{openCodeStatus.label}</span>
-              </div>
-            </>
-          )}
+          <ProfileConnectionStatus status={openCodeStatus} />
         </CardContent>
       </Card>
 
-      <div className="flex items-center justify-between gap-2 pt-2">
-        <Button type="button" variant="ghost" onClick={onOpenAbout} className="rounded-lg text-muted-foreground hover:text-foreground">
-          About
-        </Button>
-        <div className="flex items-center gap-2.5">
-          <Button type="button" variant="outline" onClick={handleClose} className="rounded-lg">
-            Cancel
-          </Button>
-          <Button
-            type="submit"
-            disabled={createProfile.isPending || updateProfile.isPending || hasErrors}
-            className="rounded-lg bg-foreground text-background font-semibold hover:opacity-95 active:scale-[0.98] shadow-2xs"
-          >
-            {createProfile.isPending || updateProfile.isPending ? <LoadingText text="Saving" /> : 'Save'}
-          </Button>
-        </div>
-      </div>
+      <ProfileFormActions onOpenAbout={onOpenAbout} onClose={handleClose} isSaving={createProfile.isPending || updateProfile.isPending} hasErrors={hasErrors} />
     </form>
   )
 }

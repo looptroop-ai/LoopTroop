@@ -1,6 +1,7 @@
 import type { ReactNode } from 'react'
 import { cn } from '@/lib/utils'
 import { Tooltip, TooltipContent, TooltipTrigger } from '@/components/ui/tooltip'
+import { handleRadioGroupKeyDown } from './radioGroupNavigation'
 
 /**
  * One button in the row. `value` is what the setting becomes when it is picked:
@@ -47,7 +48,7 @@ export function TriStateSetting({
 
   return (
     <div className="flex shrink-0 flex-col items-end">
-      <div className="inline-flex rounded-md border border-input bg-muted/30 p-0.5" role="radiogroup" aria-label={groupLabel}>
+      <div className="inline-flex rounded-md border border-input bg-muted/30 p-0.5" role="radiogroup" aria-label={groupLabel} onKeyDown={handleRadioGroupKeyDown}>
         {options.map((option) => {
           const selected = option.value === selectedValue
           return (
@@ -59,6 +60,7 @@ export function TriStateSetting({
                   role="radio"
                   aria-label={option.label}
                   aria-checked={selected}
+                  tabIndex={selected ? 0 : -1}
                   data-state={selected ? 'checked' : 'unchecked'}
                   disabled={disabled}
                   onClick={() => onChange(option.value)}

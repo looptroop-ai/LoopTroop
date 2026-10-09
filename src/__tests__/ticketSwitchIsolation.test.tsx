@@ -358,7 +358,7 @@ async function openTicket(ticket: Ticket) {
   }, { timeout: 5_000 })
 }
 
-beforeAll(() => {
+beforeAll(async () => {
   Object.defineProperty(window, 'requestAnimationFrame', {
     configurable: true,
     writable: true,
@@ -369,6 +369,13 @@ beforeAll(() => {
     writable: true,
     value: (handle: number) => window.clearTimeout(handle),
   })
+  // Load the tested views during setup so state assertions do not race cold module transforms.
+  await Promise.all([
+    import('@/components/workspace/InterviewQAView'),
+    import('@/components/workspace/DraftView'),
+    import('@/components/workspace/ManualQAView'),
+    import('@/components/workspace/ErrorView'),
+  ])
 })
 
 beforeEach(() => {

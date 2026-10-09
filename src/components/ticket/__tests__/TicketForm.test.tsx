@@ -65,6 +65,20 @@ function makeUIValue(): UIContextValue {
   }
 }
 
+const requireElement = (element: Element | null | undefined, description: string) => {
+  expect(element).toBeInstanceOf(HTMLElement)
+  if (!(element instanceof HTMLElement)) throw new Error(`Missing ${description}.`)
+  return element
+}
+
+const expectCustomWaitState = (input: HTMLElement, enabled: boolean, minutes: number) => {
+  const modes = screen.getByRole('radiogroup', { name: /AI question wait source/i })
+  for (const radio of within(modes).getAllByRole('radio')) expect(radio).toHaveProperty('disabled', !enabled)
+  expect(input).toHaveProperty('disabled', !enabled)
+  expect(input).toHaveValue(minutes)
+  expect(within(modes).getByRole('radio', { name: /Set a custom ai question wait/i })).toHaveAttribute('aria-checked', 'true')
+}
+
 describe('TicketForm', () => {
   beforeEach(() => {
     mockAddToast.mockReset()
@@ -153,13 +167,13 @@ describe('TicketForm', () => {
     )
     const advancedButton = screen.getByRole('button', { name: /Advanced/ })
     expect(advancedButton).toHaveAttribute('aria-expanded', 'false')
-    expect(screen.queryByText('AI questions')).not.toBeInTheDocument()
-    expect(screen.queryByText('AI question wait')).not.toBeInTheDocument()
+    expect(screen.getByText('AI questions')).not.toBeVisible()
+    expect(screen.getByText('AI question wait')).not.toBeVisible()
     expect(screen.queryByRole('radiogroup', { name: 'AI questions setting' })).not.toBeInTheDocument()
     expect(screen.queryByRole('radiogroup', { name: 'AI question wait source' })).not.toBeInTheDocument()
 
     fireEvent.click(advancedButton)
-    const advanced = within(advancedButton.parentElement!)
+    const advanced = within(requireElement(advancedButton.parentElement, 'Advanced section'))
     for (const [label, path] of [
       ['AI questions', '/configuration#ai-questions'],
       ['AI question wait', '/configuration#ai-question-wait'],
@@ -175,17 +189,17 @@ describe('TicketForm', () => {
     expect(waitRow?.previousElementSibling).toContainElement(advanced.getByRole('radiogroup', { name: 'AI questions setting' }))
 
     fireEvent.click(advancedButton)
-    expect(screen.queryByText('AI questions')).not.toBeInTheDocument()
-    expect(screen.queryByText('AI question wait')).not.toBeInTheDocument()
+    expect(screen.getByText('AI questions')).not.toBeVisible()
+    expect(screen.getByText('AI question wait')).not.toBeVisible()
   })
 
   it.each([
-    { globalEnabled: true, questionsOverride: false, waitOverride: 720_000, questionsSource: 'Project', waitSource: 'Project', enabled: 'Off', minutes: 12 },
-    { globalEnabled: true, questionsOverride: null, waitOverride: null, questionsSource: 'Configuration', waitSource: 'Configuration', enabled: 'On', minutes: 9 },
-    { globalEnabled: true, questionsOverride: false, waitOverride: null, questionsSource: 'Project', waitSource: 'Configuration', enabled: 'Off', minutes: 9 },
-    { globalEnabled: true, questionsOverride: null, waitOverride: 720_000, questionsSource: 'Configuration', waitSource: 'Project', enabled: 'On', minutes: 12 },
-    { globalEnabled: false, questionsOverride: null, waitOverride: null, questionsSource: 'Configuration', waitSource: 'Configuration', enabled: 'Off', minutes: 9 },
-  ])('inherits $enabled questions from $questionsSource and wait from $waitSource without freezing either value', ({ globalEnabled, questionsOverride, waitOverride, questionsSource, waitSource, enabled, minutes }) => {
+    { globalEnabled: true, questionsOverride: false, waitOverride: 720_000, questionsSource: 'Project', waitSource: 'Project', enabled: 'Off', disabled: true, minutes: 12 },
+    { globalEnabled: true, questionsOverride: null, waitOverride: null, questionsSource: 'Configuration', waitSource: 'Configuration', enabled: 'On', disabled: false, minutes: 9 },
+    { globalEnabled: true, questionsOverride: false, waitOverride: null, questionsSource: 'Project', waitSource: 'Configuration', enabled: 'Off', disabled: true, minutes: 9 },
+    { globalEnabled: true, questionsOverride: null, waitOverride: 720_000, questionsSource: 'Configuration', waitSource: 'Project', enabled: 'On', disabled: false, minutes: 12 },
+    { globalEnabled: false, questionsOverride: null, waitOverride: null, questionsSource: 'Configuration', waitSource: 'Configuration', enabled: 'Off', disabled: true, minutes: 9 },
+  ])('inherits $enabled questions from $questionsSource and wait from $waitSource without freezing either value', ({ globalEnabled, questionsOverride, waitOverride, questionsSource, waitSource, enabled, disabled, minutes }) => {
     mockUseProfile.mockReturnValue({ data: { aiQuestionsEnabled: globalEnabled, aiQuestionWindow: 540_000 } })
     mockUseProjects.mockReturnValue({
       data: [{ ...mockUseProjects().data[0], aiQuestionsOverride: questionsOverride, aiQuestionWindowOverride: waitOverride }],
@@ -200,20 +214,16 @@ describe('TicketForm', () => {
     const questions = screen.getByRole('radiogroup', { name: 'AI questions setting' })
     expect(within(questions).getByRole('radio', { name: 'Inherit' })).toHaveAttribute('aria-checked', 'true')
     expect(questions.parentElement).toHaveTextContent(`Inherits ${enabled} from ${questionsSource}.`)
-    expect(screen.getByRole('radio', { name: 'Inherit ai question wait' })).toHaveAttribute('aria-checked', 'true')
+    expect(screen.getByRole('radio', { name: /Inherit ai question wait/i })).toHaveAttribute('aria-checked', 'true')
     expect(screen.getByText(`${minutes} minutes`).parentElement).toHaveTextContent(`${minutes} minutes from ${waitSource}`)
     const modes = within(screen.getByRole('radiogroup', { name: 'AI question wait source' })).getAllByRole('radio')
-    if (enabled === 'Off') {
-      for (const mode of modes) expect(mode).toBeDisabled()
-      fireEvent.click(within(questions).getByRole('radio', { name: 'On' }))
-      for (const mode of modes) expect(mode).toBeEnabled()
-      expect(screen.getByRole('radio', { name: 'Inherit ai question wait' })).toHaveAttribute('aria-checked', 'true')
-      expect(screen.getByText(`${minutes} minutes`)).toBeInTheDocument()
-      fireEvent.click(within(questions).getByRole('radio', { name: 'Inherit' }))
-      for (const mode of modes) expect(mode).toBeDisabled()
-    } else {
-      for (const mode of modes) expect(mode).toBeEnabled()
-    }
+    for (const mode of modes) expect(mode).toHaveProperty('disabled', disabled)
+    fireEvent.click(within(questions).getByRole('radio', { name: 'On' }))
+    for (const mode of modes) expect(mode).toBeEnabled()
+    expect(screen.getByRole('radio', { name: /Inherit ai question wait/i })).toHaveAttribute('aria-checked', 'true')
+    expect(screen.getByText(`${minutes} minutes`)).toBeInTheDocument()
+    fireEvent.click(within(questions).getByRole('radio', { name: 'Inherit' }))
+    for (const mode of modes) expect(mode).toHaveProperty('disabled', disabled)
 
     fireEvent.change(screen.getByPlaceholderText('Brief summary of the work'), { target: { value: 'Inherited settings' } })
     fireEvent.click(screen.getByRole('button', { name: 'Create Ticket' }))
@@ -233,24 +243,18 @@ describe('TicketForm', () => {
       </UIContext.Provider>,
     )
     fireEvent.click(screen.getByRole('button', { name: /Advanced/ }))
-    fireEvent.click(screen.getByRole('radio', { name: 'Set a custom ai question wait' }))
+    fireEvent.click(screen.getByRole('radio', { name: /Set a custom ai question wait/i }))
     const wait = screen.getByLabelText('AI question wait')
     expect(wait).toHaveValue(12)
     expect(screen.queryByRole('button', { name: 'Clear override' })).not.toBeInTheDocument()
 
     fireEvent.change(wait, { target: { value: '7' } })
     const questions = within(screen.getByRole('radiogroup', { name: 'AI questions setting' }))
-    const modes = within(screen.getByRole('radiogroup', { name: 'AI question wait source' })).getAllByRole('radio')
     fireEvent.click(questions.getByRole('radio', { name: 'Off' }))
-    for (const mode of modes) expect(mode).toBeDisabled()
-    expect(wait).toBeDisabled()
-    expect(wait).toHaveValue(7)
-    expect(screen.getByRole('radio', { name: 'Set a custom ai question wait' })).toHaveAttribute('aria-checked', 'true')
+    expectCustomWaitState(wait, false, 7)
 
     fireEvent.click(questions.getByRole('radio', { name: 'On' }))
-    for (const mode of modes) expect(mode).toBeEnabled()
-    expect(wait).toBeEnabled()
-    expect(wait).toHaveValue(7)
+    expectCustomWaitState(wait, true, 7)
     fireEvent.click(questions.getByRole('radio', { name: 'Off' }))
     fireEvent.change(screen.getByPlaceholderText('Brief summary of the work'), { target: { value: 'Custom settings' } })
     fireEvent.click(screen.getByRole('button', { name: 'Create Ticket' }))
@@ -273,7 +277,7 @@ describe('TicketForm', () => {
     expect(create).toBeEnabled()
     expect(start).toBeEnabled()
     fireEvent.click(screen.getByRole('button', { name: /Advanced/ }))
-    fireEvent.click(screen.getByRole('radio', { name: 'Set a custom ai question wait' }))
+    fireEvent.click(screen.getByRole('radio', { name: /Set a custom ai question wait/i }))
     const wait = screen.getByLabelText('AI question wait')
     fireEvent.change(wait, { target: { value: '2.5' } })
 
@@ -283,7 +287,7 @@ describe('TicketForm', () => {
     expect(start).toBeDisabled()
     fireEvent.click(create)
     fireEvent.click(start)
-    fireEvent.submit(create.closest('form')!)
+    fireEvent.submit(requireElement(create.closest('form'), 'ticket form'))
     expect(mockUseCreateTicket().mutate).not.toHaveBeenCalled()
     expect(mockUseCreateTicket().mutateAsync).not.toHaveBeenCalled()
     expect(mockUseTicketAction().mutateAsync).not.toHaveBeenCalled()
@@ -291,7 +295,7 @@ describe('TicketForm', () => {
     const questions = within(screen.getByRole('radiogroup', { name: 'AI questions setting' }))
     fireEvent.click(questions.getByRole('radio', { name: 'Off' }))
     expect(wait).toBeDisabled()
-    expect(wait).toHaveValue(2.5)
+    expect(wait).toHaveValue(5)
     expect(screen.queryByRole('alert')).not.toBeInTheDocument()
     expect(create).toBeEnabled()
     expect(start).toBeEnabled()
@@ -308,7 +312,7 @@ describe('TicketForm', () => {
     expect(create).toBeDisabled()
     expect(start).toBeDisabled()
 
-    fireEvent.click(screen.getByRole('radio', { name: 'Inherit ai question wait' }))
+    fireEvent.click(screen.getByRole('radio', { name: /Inherit ai question wait/i }))
     expect(screen.queryByRole('alert')).not.toBeInTheDocument()
     expect(create).toBeEnabled()
     expect(start).toBeEnabled()
@@ -331,18 +335,18 @@ describe('TicketForm', () => {
     act(() => options.onSuccess({ id: '1:ACME-5', status: 'DRAFT' } as Ticket))
 
     fireEvent.click(screen.getByRole('button', { name: /Advanced/ }))
-    fireEvent.click(screen.getByRole('radio', { name: 'Set a custom ai question wait' }))
+    fireEvent.click(screen.getByRole('radio', { name: /Set a custom ai question wait/i }))
     const wait = screen.getByLabelText('AI question wait')
     fireEvent.change(wait, { target: { value: '0' } })
     const save = screen.getByRole('button', { name: 'Save Ticket' })
     expect(save).toBeDisabled()
-    fireEvent.submit(save.closest('form')!)
+    fireEvent.submit(requireElement(save.closest('form'), 'ticket form'))
     expect(mockUseUpdateTicket().mutate).not.toHaveBeenCalled()
 
     const questions = within(screen.getByRole('radiogroup', { name: 'AI questions setting' }))
     fireEvent.click(questions.getByRole('radio', { name: 'Off' }))
     expect(wait).toBeDisabled()
-    expect(wait).toHaveValue(0)
+    expect(wait).toHaveValue(5)
     expect(save).toBeEnabled()
     fireEvent.click(save)
     expect(mockUseUpdateTicket().mutate).toHaveBeenLastCalledWith(
@@ -361,6 +365,70 @@ describe('TicketForm', () => {
       expect.objectContaining({ id: '1:ACME-5', aiQuestionWindowOverride: 720_000 }),
       expect.any(Object),
     )
+  })
+
+  it('preserves invalid ticket edits and blocks create and start while Advanced is collapsed', () => {
+    renderWithProviders(
+      <UIContext.Provider value={makeUIValue()}>
+        <TicketForm onClose={vi.fn()} />
+      </UIContext.Provider>,
+    )
+    fireEvent.change(screen.getByPlaceholderText('Brief summary of the work'), { target: { value: 'Keep unfinished wait' } })
+    const advanced = screen.getByRole('button', { name: /Advanced/ })
+    fireEvent.click(advanced)
+    fireEvent.click(screen.getByRole('radio', { name: /Set a custom ai question wait/i }))
+    const wait = screen.getByLabelText('AI question wait')
+    fireEvent.change(wait, { target: { value: '61' } })
+
+    fireEvent.click(advanced)
+    expect(wait).not.toBeVisible()
+    expect(wait).toHaveValue(61)
+    expect(screen.getByText('Fix AI question wait in Advanced.')).toBeVisible()
+    const create = screen.getByRole('button', { name: 'Create Ticket' })
+    const start = screen.getByRole('button', { name: 'Create & Start' })
+    expect(create).toBeDisabled()
+    expect(start).toBeDisabled()
+    fireEvent.click(start)
+    fireEvent.submit(requireElement(create.closest('form'), 'ticket form'))
+    expect(mockUseCreateTicket().mutate).not.toHaveBeenCalled()
+    expect(mockUseCreateTicket().mutateAsync).not.toHaveBeenCalled()
+    expect(mockUseTicketAction().mutateAsync).not.toHaveBeenCalled()
+
+    fireEvent.click(advanced)
+    expect(wait).toBeVisible()
+    expect(wait).toHaveValue(61)
+    expect(wait).toHaveAttribute('aria-invalid', 'true')
+    fireEvent.change(wait, { target: { value: '12' } })
+    expect(create).toBeEnabled()
+    expect(start).toBeEnabled()
+  })
+
+  it('moves focus and selects AI questions choices with the arrow keys', () => {
+    renderWithProviders(
+      <UIContext.Provider value={makeUIValue()}>
+        <TicketForm onClose={vi.fn()} />
+      </UIContext.Provider>,
+    )
+    fireEvent.click(screen.getByRole('button', { name: /Advanced/ }))
+    const questions = within(screen.getByRole('radiogroup', { name: /AI questions setting/i }))
+    const inherit = questions.getByRole('radio', { name: 'Inherit' })
+    const on = questions.getByRole('radio', { name: 'On' })
+    const off = questions.getByRole('radio', { name: 'Off' })
+    inherit.focus()
+
+    expect(inherit).toHaveAttribute('tabindex', '0')
+    expect(on).toHaveAttribute('tabindex', '-1')
+    fireEvent.keyDown(inherit, { key: 'ArrowRight' })
+    expect(on).toHaveFocus()
+    expect(on).toHaveAttribute('aria-checked', 'true')
+    fireEvent.keyDown(on, { key: 'ArrowRight' })
+    expect(off).toHaveFocus()
+    expect(off).toHaveAttribute('aria-checked', 'true')
+    expect(screen.getByRole('radio', { name: /Inherit ai question wait/i })).toBeDisabled()
+    fireEvent.keyDown(off, { key: 'ArrowLeft' })
+    expect(on).toHaveFocus()
+    expect(on).toHaveAttribute('tabindex', '0')
+    expect(screen.getByRole('radio', { name: /Inherit ai question wait/i })).toBeEnabled()
   })
 
   it('reports a failed ticket creation instead of leaving the form silent', () => {
@@ -391,7 +459,7 @@ describe('TicketForm', () => {
 
     fireEvent.click(screen.getByRole('button', { name: /Acme Console \(ACME\)/ }))
     const projectOptions = screen.getAllByRole('button', { name: /Acme Console \(ACME\)/ })
-    fireEvent.click(projectOptions.at(-1)!)
+    fireEvent.click(requireElement(projectOptions.at(-1), 'last project option'))
 
     expect(dirty).toHaveBeenLastCalledWith(false)
   })

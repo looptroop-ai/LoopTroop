@@ -1,33 +1,20 @@
 import { useEffect, useRef, useState } from 'react'
-import { Button } from '@/components/ui/button'
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card'
 import { useCreateTicket, useTicketAction, useUpdateTicket, type Ticket } from '@/hooks/useTickets'
-import { useProjects } from '@/hooks/useProjects'
-import { useUI } from '@/context/useUI'
-import { DropdownPicker } from '@/components/shared/DropdownPicker'
-import { LoadingText } from '@/components/ui/LoadingText'
-import { ChevronDown, Check } from 'lucide-react'
-import { cn } from '@/lib/utils'
-import { Tooltip, TooltipTrigger, TooltipContent } from "@/components/ui/tooltip";
-import { TicketDescriptionViewer } from './TicketDescriptionViewer'
-import { TicketDescriptionTabs, type TicketDescriptionMode } from './TicketDescriptionTabs'
-import { SHARED_PROFILE_DEFAULTS as PROFILE_DEFAULTS } from '@shared/profileDefaults'
-import { ManualQaSetting } from '@/components/manual-qa/ManualQaSetting'
-import { resolveManualQaSettingLabel, type ManualQaOverride } from '@/lib/manualQaSetting'
-import { TriStateSetting } from '@/components/settings/TriStateSetting'
-import { InheritableDurationField } from '@/components/settings/InheritableDurationField'
-import { AI_QUESTIONS_INHERITABLE_OPTIONS, AI_QUESTION_WAIT_HINT, AI_QUESTION_WAIT_HELP } from '@/components/settings/aiQuestionOptions'
-import {
-  describeSettingSource,
-  resolveAiQuestionsSettingLabel,
-  resolveAiQuestionWindowLabel,
-  type AiQuestionsOverride,
-  type AiQuestionWindowOverride,
-} from '@/lib/aiQuestionSetting'
-import { AI_QUESTION_WINDOW_MAX_MS, AI_QUESTION_WINDOW_MIN_MS, formatAiQuestionWindow } from '@shared/aiQuestions'
+import { useProjects, type Project } from '@/hooks/useProjects'
 import { useProfile } from '@/hooks/useProfile'
-import { ConfigurationDocsLink } from '@/components/config/ConfigurationDocsLink'
+import { useUI } from '@/context/useUI'
 import { useToast } from '@/components/shared/useToast'
+import type { ManualQaOverride } from '@/lib/manualQaSetting'
+import type { AiQuestionsOverride, AiQuestionWindowOverride } from '@/lib/aiQuestionSetting'
+import {
+  TicketAdvancedFields,
+  TicketDescriptionField,
+  TicketFormActions,
+  TicketPriorityField,
+  TicketProjectField,
+  TicketTitleField,
+} from './TicketFormSections'
 
 interface TicketFormProps {
   onClose: () => void
@@ -35,27 +22,51 @@ interface TicketFormProps {
   onEditingChange?: (isEditing: boolean) => void
 }
 
-function withoutTicketProject(snapshot: string): string {
+const withoutTicketProject = (snapshot: string): string => {
   const parsed = JSON.parse(snapshot) as { projectId?: number | ''; [key: string]: unknown }
   const { projectId: _projectId, ...rest } = parsed
   return JSON.stringify(rest)
 }
 
-export function TicketForm({ onClose, onDirtyChange, onEditingChange }: TicketFormProps) {
+const canHydrateTicketBaseline = (baseline: string | null, snapshot: string) => baseline !== null && withoutTicketProject(baseline) === withoutTicketProject(snapshot)
+
+const getSelectedTicketProject = (projects: Project[], projectId: number | '') => projects.find(project => project.id === projectId) ?? projects[0]
+
+const isTicketWorkflowLocked = (ticket: Ticket | null, creatingAndStarting: boolean, startPending: boolean) => creatingAndStarting || startPending || (ticket !== null && ticket.status !== 'DRAFT')
+
+const isTicketProjectDisabled = (editing: boolean, createPending: boolean, startPending: boolean) => editing || createPending || startPending
+
+const isTicketQuestionsDisabled = (locked: boolean, profileLoading: boolean, projectsLoading: boolean) => locked || profileLoading || projectsLoading
+
+const getTicketPendingState = (creatingAndStarting: boolean, createPending: boolean, startPending: boolean, updatePending: boolean) => ({
+  starting: [creatingAndStarting, createPending, startPending].some(Boolean),
+  saving: [creatingAndStarting, createPending, updatePending].some(Boolean),
+  pending: [creatingAndStarting, createPending, startPending, updatePending].some(Boolean),
+})
+
+const canSubmitTicket = (pending: boolean, hasWaitError: boolean, projectId: number | '') => !pending && !hasWaitError && Boolean(projectId)
+
+const getStartedTicketStatus = (result?: { status?: string; state?: string }) => result?.status ?? result?.state
+
+const reportCreateAndStartFailure = (error: unknown, ticketWasCreated: boolean) => {
+  const message = error instanceof Error ? error.message : 'Failed to start ticket'
+  window.alert(ticketWasCreated
+    ? `Ticket created, but it could not start: ${message}`
+    : `Unable to create and start ticket: ${message}`)
+}
+
+export const TicketForm = ({ onClose, onDirtyChange, onEditingChange }: TicketFormProps) => {
   const { dispatch } = useUI()
   const { addToast } = useToast()
   const createTicket = useCreateTicket()
   const { mutate: updateTicket, isPending: isUpdatePending } = useUpdateTicket()
   const { mutateAsync: startTicket, isPending: isStartPending } = useTicketAction()
-  const { data: projects = [] } = useProjects()
-  const { data: profile } = useProfile()
+  const { data: projects = [], isLoading: projectsLoading } = useProjects()
+  const { data: profile, isLoading: profileLoading } = useProfile()
   const [title, setTitle] = useState('')
   const [description, setDescription] = useState('')
-  const [descriptionMode, setDescriptionMode] = useState<TicketDescriptionMode>('raw')
   const [priority, setPriority] = useState(3)
   const [projectId, setProjectId] = useState<number | ''>('')
-  const [isProjectPickerOpen, setIsProjectPickerOpen] = useState(false)
-  const [isAdvancedOpen, setIsAdvancedOpen] = useState(false)
   const [manualQaOverride, setManualQaOverride] = useState<ManualQaOverride>(null)
   const [aiQuestionsOverride, setAiQuestionsOverride] = useState<AiQuestionsOverride>(null)
   const [aiQuestionWindowOverride, setAiQuestionWindowOverride] = useState<AiQuestionWindowOverride>(null)
@@ -66,8 +77,7 @@ export function TicketForm({ onClose, onDirtyChange, onEditingChange }: TicketFo
   const ticketBaselineRef = useRef<string | null>(null)
   const ticketProjectsHydratedRef = useRef(projects.length > 0)
   const isEditing = createdTicket !== null
-
-  const selectedProject = projects.find(p => p.id === projectId) ?? projects[0]
+  const selectedProject = getSelectedTicketProject(projects, projectId)
   const effectiveProjectId = selectedProject?.id ?? ''
   const draftSnapshot = JSON.stringify({
     title,
@@ -84,8 +94,7 @@ export function TicketForm({ onClose, onDirtyChange, onEditingChange }: TicketFo
   useEffect(() => {
     if (ticketProjectsHydratedRef.current || projects.length === 0) return
     ticketProjectsHydratedRef.current = true
-    const baseline = ticketBaselineRef.current
-    if (!baseline || withoutTicketProject(baseline) !== withoutTicketProject(draftSnapshotRef.current)) return
+    if (!canHydrateTicketBaseline(ticketBaselineRef.current, draftSnapshotRef.current)) return
     ticketBaselineRef.current = draftSnapshotRef.current
     onDirtyChange?.(false)
   }, [effectiveProjectId, onDirtyChange, projects.length])
@@ -96,38 +105,73 @@ export function TicketForm({ onClose, onDirtyChange, onEditingChange }: TicketFo
   useEffect(() => {
     onEditingChange?.(isEditing)
   }, [isEditing, onEditingChange])
-  const effectiveManualQa = resolveManualQaSettingLabel(
-    manualQaOverride,
-    selectedProject?.manualQaOverride ?? null,
-    profile?.manualQaEnabled ?? PROFILE_DEFAULTS.manualQaEnabled,
-  )
-  // What applies while this ticket inherits, so the row can name it.
-  const inheritedAiQuestions = resolveAiQuestionsSettingLabel(
-    null,
-    selectedProject?.aiQuestionsOverride,
-    profile?.aiQuestionsEnabled ?? PROFILE_DEFAULTS.aiQuestionsEnabled,
-  )
-  const inheritedAiQuestionWindow = resolveAiQuestionWindowLabel(
-    null,
-    selectedProject?.aiQuestionWindowOverride,
-    profile?.aiQuestionWindow ?? PROFILE_DEFAULTS.aiQuestionWindow,
-  )
+
+  const pendingState = getTicketPendingState(isCreatingAndStarting, createTicket.isPending, isStartPending, isUpdatePending)
+  const canCreate = canSubmitTicket(pendingState.pending, hasAiQuestionWaitError, effectiveProjectId)
+  const workflowLocked = isTicketWorkflowLocked(createdTicket, isCreatingAndStarting, isStartPending)
+  const projectDisabled = isTicketProjectDisabled(isEditing, createTicket.isPending, isStartPending)
+  const questionsDisabled = isTicketQuestionsDisabled(workflowLocked, profileLoading, projectsLoading)
   const createInput = () => ({
     projectId: effectiveProjectId as number,
     title,
     description: description || undefined,
     priority,
-    // The tri-state, as the AI-question fields on this form already send. Resolving it
-    // to a boolean here froze every new ticket at whatever the project or profile said
-    // at the moment it was created, so a later change to either never reached it — even
-    // though the form was showing "Inherit".
+    // Send the tri-state so future project/profile changes still reach inherited tickets.
     manualQaOverride,
     aiQuestionsOverride,
     aiQuestionWindowOverride,
   })
 
+  const recordSubmittedSnapshot = (submittedSnapshot: string) => {
+    ticketBaselineRef.current = submittedSnapshot
+    const hasLaterEdits = draftSnapshotRef.current !== submittedSnapshot
+    onDirtyChange?.(hasLaterEdits)
+    return hasLaterEdits
+  }
+
+  const finishSubmission = (ticket: Ticket, submittedSnapshot: string, selectTicket: boolean) => {
+    if (recordSubmittedSnapshot(submittedSnapshot)) return
+    if (selectTicket) dispatch({ type: 'SELECT_TICKET', ticketId: ticket.id, externalId: ticket.externalId })
+    onClose()
+  }
+
+  const saveCreatedTicket = (ticket: Ticket) => {
+    const submittedSnapshot = draftSnapshotRef.current
+    const updateInput = {
+      id: ticket.id,
+      title,
+      description,
+      priority,
+      ...(ticket.status === 'DRAFT' ? { manualQaOverride, aiQuestionsOverride, aiQuestionWindowOverride } : {}),
+    }
+    updateTicket(updateInput, {
+      onSuccess: (updated: Ticket) => {
+        setCreatedTicket(updated)
+        finishSubmission(updated, submittedSnapshot, startedCreatedTicketRef.current)
+      },
+      onError: (error) => {
+        const message = error instanceof Error ? error.message : 'Failed to update ticket'
+        addToast('error', `Unable to update ticket: ${message}`, 5000)
+      },
+    })
+  }
+
+  const createTicketDraft = () => {
+    const submittedSnapshot = draftSnapshotRef.current
+    createTicket.mutate(createInput(), {
+      onSuccess: (created: Ticket) => {
+        setCreatedTicket(created)
+        finishSubmission(created, submittedSnapshot, false)
+      },
+      onError: (error) => {
+        const message = error instanceof Error ? error.message : 'Failed to create ticket'
+        addToast('error', `Unable to create ticket: ${message}`, 5000)
+      },
+    })
+  }
+
   const handleCreateAndStart = async () => {
-    if (!effectiveProjectId || hasAiQuestionWaitError) return
+    if (!canCreate) return
     const submittedSnapshot = draftSnapshotRef.current
     setIsCreatingAndStarting(true)
     let ticketWasCreated = false
@@ -135,85 +179,31 @@ export function TicketForm({ onClose, onDirtyChange, onEditingChange }: TicketFo
       const created: Ticket = await createTicket.mutateAsync(createInput())
       ticketWasCreated = true
       setCreatedTicket(created)
-      ticketBaselineRef.current = submittedSnapshot
-      onDirtyChange?.(draftSnapshotRef.current !== submittedSnapshot)
+      recordSubmittedSnapshot(submittedSnapshot)
       const started = await startTicket({ id: created.id, action: 'start' })
       startedCreatedTicketRef.current = true
-      setCreatedTicket(current => current
-        ? { ...current, status: started?.status ?? started?.state ?? current.status }
-        : current)
-      const hasLaterEdits = draftSnapshotRef.current !== submittedSnapshot
-      onDirtyChange?.(hasLaterEdits)
-      if (!hasLaterEdits) {
-        dispatch({ type: 'SELECT_TICKET', ticketId: created.id, externalId: created.externalId })
-        onClose()
-      }
-    } catch (err) {
-      const message = err instanceof Error ? err.message : 'Failed to start ticket'
-      alert(ticketWasCreated
-        ? `Ticket created, but it could not start: ${message}`
-        : `Unable to create and start ticket: ${message}`)
+      setCreatedTicket(current => current ? { ...current, status: getStartedTicketStatus(started) ?? current.status } : current)
+      finishSubmission(created, submittedSnapshot, true)
+    } catch (error) {
+      reportCreateAndStartFailure(error, ticketWasCreated)
     } finally {
       setIsCreatingAndStarting(false)
     }
   }
 
-  const handleSubmit = (e: React.FormEvent) => {
-    e.preventDefault()
+  const handleSubmit = (event: React.FormEvent) => {
+    event.preventDefault()
     if (hasAiQuestionWaitError) return
     if (!effectiveProjectId) {
       addToast('warning', 'Attach a project before creating a ticket.')
       return
     }
+    if (!canCreate) return
     if (createdTicket) {
-      const submittedSnapshot = draftSnapshotRef.current
-      const updateInput = {
-        id: createdTicket.id,
-        title,
-        description,
-        priority,
-        ...(createdTicket.status === 'DRAFT'
-          ? { manualQaOverride, aiQuestionsOverride, aiQuestionWindowOverride }
-          : {}),
-      }
-      updateTicket(
-        updateInput,
-        {
-          onSuccess: (updated: Ticket) => {
-            setCreatedTicket(updated)
-            ticketBaselineRef.current = submittedSnapshot
-            const hasLaterEdits = draftSnapshotRef.current !== submittedSnapshot
-            onDirtyChange?.(hasLaterEdits)
-            if (startedCreatedTicketRef.current && !hasLaterEdits) {
-              dispatch({ type: 'SELECT_TICKET', ticketId: updated.id, externalId: updated.externalId })
-            }
-            if (!hasLaterEdits) onClose()
-          },
-          onError: (err) => {
-            const message = err instanceof Error ? err.message : 'Failed to update ticket'
-            addToast('error', `Unable to update ticket: ${message}`, 5000)
-          },
-        },
-      )
+      saveCreatedTicket(createdTicket)
       return
     }
-    const submittedSnapshot = draftSnapshotRef.current
-    createTicket.mutate(
-      createInput(),
-      {
-        onSuccess: (created: Ticket) => {
-          setCreatedTicket(created)
-          ticketBaselineRef.current = submittedSnapshot
-          const hasLaterEdits = draftSnapshotRef.current !== submittedSnapshot
-          onDirtyChange?.(hasLaterEdits)
-          if (!hasLaterEdits) onClose()
-        },
-        onError: (err) => {
-          const message = err instanceof Error ? err.message : 'Failed to create ticket'
-          addToast('error', `Unable to create ticket: ${message}`, 5000)
-        },
-      },
-    )
+    createTicketDraft()
   }
 
   const handleClose = () => {
@@ -224,313 +214,29 @@ export function TicketForm({ onClose, onDirtyChange, onEditingChange }: TicketFo
   return (
     <form onSubmit={handleSubmit} className="max-w-2xl mx-auto space-y-6">
       <Card>
-        <CardHeader>
-          <CardTitle className="text-sm">Ticket Details</CardTitle>
-        </CardHeader>
+        <CardHeader><CardTitle className="text-sm">Ticket Details</CardTitle></CardHeader>
         <CardContent className="space-y-4">
-          <div>
-            <Tooltip>
-                        <TooltipTrigger asChild>
-                          <label className="text-sm font-medium block mb-1">
-                                    Project
-                                  </label>
-                        </TooltipTrigger>
-                        <TooltipContent className="max-w-xs text-center text-balance">Project where the ticket will run</TooltipContent>
-                      </Tooltip>
-            <DropdownPicker
-              open={isProjectPickerOpen}
-              onOpenChange={setIsProjectPickerOpen}
-              trigger={
-                <Tooltip>
-                    <TooltipTrigger asChild>
-                        <button
-                          type="button"
-                          disabled={isEditing || createTicket.isPending || isStartPending}
-                          className={cn(
-                          'w-full flex items-center justify-between gap-2 rounded-lg border px-3 py-2 text-sm font-medium transition-all shadow-2xs',
-                          isProjectPickerOpen && 'ring-2 ring-brand-500/30',
-                        )}
-                        style={selectedProject?.color ? {
-                          borderColor: `${selectedProject.color}45`,
-                          backgroundColor: `${selectedProject.color}0D`,
-                        } : {
-                          borderColor: 'var(--color-border)',
-                        }}
-                      >
-                        {selectedProject ? (
-                          <span className="flex items-center gap-2 min-w-0 text-left overflow-hidden">
-                            <span className="shrink-0 flex items-center">
-                              {selectedProject.icon?.startsWith('data:')
-                                ? <img src={selectedProject.icon} className="h-5 w-5 rounded block" alt="" />
-                                : <span>{selectedProject.icon}</span>}
-                            </span>
-                            <span className="truncate">{selectedProject.name} ({selectedProject.shortname})</span>
-                          </span>
-                        ) : (
-                          <span className="truncate text-left text-muted-foreground">Select a project...</span>
-                        )}
-                        <ChevronDown className="h-4 w-4 shrink-0 text-muted-foreground" />
-                      </button>
-                    </TooltipTrigger>
-                    <TooltipContent className="max-w-xs text-center text-balance">Choose project</TooltipContent>
-                  </Tooltip>
-              }
-            >
-              <div className="w-[420px] max-w-[calc(100vw-48px)]">
-                <div className="rounded-md border border-input overflow-hidden">
-                  {projects.length === 0 && (
-                    <div className="px-3 py-2 text-sm text-muted-foreground">No projects available</div>
-                  )}
-                  {projects.map((p, idx) => {
-                    const isSelected = effectiveProjectId === p.id
-                    return (
-                      <Tooltip key={p.id}>
-                          <TooltipTrigger asChild>
-                            <button
-                                                type="button"
-                                                disabled={isEditing || createTicket.isPending || isStartPending}
-                                                className={cn(
-                                                  'w-full flex items-center gap-2 px-3 py-2 text-sm text-left transition-colors',
-                                                  idx !== projects.length - 1 && 'border-b border-input',
-                                                  isSelected ? 'bg-accent text-accent-foreground' : 'hover:bg-accent/50',
-                                                )}
-                                                onClick={() => {
-                                                  setProjectId(p.id)
-                                                  setIsProjectPickerOpen(false)
-                                                }}
-                                              >
-                                                <span className="shrink-0 flex items-center">
-                                                  {p.icon?.startsWith('data:')
-                                                    ? <img src={p.icon} className="h-5 w-5 rounded block" alt="" />
-                                                    : <span>{p.icon}</span>}
-                                                </span>
-                                                <span className="truncate flex-1">{p.name} ({p.shortname})</span>
-                                                {isSelected && <Check className="h-4 w-4 text-primary" />}
-                                              </button>
-                          </TooltipTrigger>
-                          <TooltipContent className="max-w-xs text-center text-balance">{`Use project ${p.name}`}</TooltipContent>
-                        </Tooltip>
-                    )
-                  })}
-                </div>
-              </div>
-            </DropdownPicker>
-            {projects.length === 0 && (
-              <p className="mt-1 text-xs text-muted-foreground">
-                No projects are attached yet. Add a project before creating a ticket.
-              </p>
-            )}
-          </div>
-
-          <div>
-            <Tooltip>
-                        <TooltipTrigger asChild>
-                          <label className="text-sm font-medium block mb-1">
-                                    Title
-                                  </label>
-                        </TooltipTrigger>
-                        <TooltipContent className="max-w-xs text-center text-balance">Short summary of the requested work</TooltipContent>
-                      </Tooltip>
-            <input
-              autoFocus
-              type="text"
-              value={title}
-              onChange={e => setTitle(e.target.value)}
-              className="w-full rounded-md border border-input bg-background px-3 py-2 text-sm"
-              placeholder="Brief summary of the work"
-              required
-            />
-          </div>
-
-          <div>
-            <div className="mb-1 flex items-center justify-between gap-2">
-              <Tooltip>
-                          <TooltipTrigger asChild>
-                            <label className="text-sm font-medium">
-                                      Description
-                                    </label>
-                          </TooltipTrigger>
-                          <TooltipContent className="max-w-xs text-center text-balance">Detailed implementation request</TooltipContent>
-                        </Tooltip>
-              <TicketDescriptionTabs mode={descriptionMode} onModeChange={setDescriptionMode} />
-            </div>
-            {descriptionMode === 'raw' ? (
-              <textarea
-                aria-label="Ticket description"
-                value={description}
-                onChange={e => setDescription(e.target.value)}
-                className="w-full rounded-md border border-input bg-background px-3 py-2 text-sm min-h-[140px]"
-                placeholder="Describe what you want to build..."
-              />
-            ) : (
-              <div className="min-h-[140px] max-h-[280px] overflow-y-auto rounded-md border border-input bg-muted/30 px-3 py-2">
-                {description
-                  ? <TicketDescriptionViewer description={description} />
-                  : <p className="text-sm text-muted-foreground">No description yet.</p>}
-              </div>
-            )}
-          </div>
-
-          <div>
-            <Tooltip>
-                        <TooltipTrigger asChild>
-                          <label className="text-sm font-medium block mb-1">
-                                    Priority
-                                  </label>
-                        </TooltipTrigger>
-                        <TooltipContent className="max-w-xs text-center text-balance">Ticket urgency and processing order</TooltipContent>
-                      </Tooltip>
-            <select
-              value={priority}
-              onChange={e => setPriority(Number(e.target.value))}
-              className="w-48 rounded-md border border-input bg-background px-3 py-2 text-sm"
-            >
-              <option value={1}>1: Very High</option>
-              <option value={2}>2: High</option>
-              <option value={3}>3: Normal</option>
-              <option value={4}>4: Low</option>
-              <option value={5}>5: Very Low</option>
-            </select>
-          </div>
-
-          <div className="rounded-md border-2 border-border">
-            <button
-              type="button"
-              className="flex w-full items-center justify-between gap-2 px-3 py-2 text-sm font-medium"
-              onClick={() => setIsAdvancedOpen((open) => !open)}
-              aria-expanded={isAdvancedOpen}
-            >
-              Advanced
-              <ChevronDown className={cn('h-4 w-4 transition-transform', isAdvancedOpen && 'rotate-180')} />
-            </button>
-            {isAdvancedOpen && (
-              <div className="space-y-3 border-t border-border px-3 py-3">
-                {(isCreatingAndStarting || isStartPending || (createdTicket !== null && createdTicket.status !== 'DRAFT')) && (
-                  <p className="text-xs text-muted-foreground">
-                    Workflow settings are fixed once the ticket starts. Title, description, and priority remain editable.
-                  </p>
-                )}
-                <div className="flex flex-wrap items-start justify-between gap-3">
-                  <div className="min-w-0 flex-1">
-                    <div className="flex items-center gap-1.5">
-                      <label className="text-sm font-medium">Manual QA checkpoint</label>
-                      <ConfigurationDocsLink
-                        docsPath="/configuration#manual-qa"
-                        label="ticket Manual QA checkpoint"
-                        description="Choose whether this ticket pauses for your verification after final tests. Open the Manual QA documentation."
-                      />
-                    </div>
-                    <p className="mt-1 text-xs text-muted-foreground">
-                      Choose whether this ticket pauses for your QA checklist after final tests.
-                    </p>
-                  </div>
-                  <ManualQaSetting
-                    idPrefix="ticket-manual-qa"
-                    value={manualQaOverride}
-                    onChange={setManualQaOverride}
-                    inheritedEnabled={effectiveManualQa.enabled}
-                    disabled={isCreatingAndStarting || isStartPending || (createdTicket !== null && createdTicket.status !== 'DRAFT')}
-                    compact
-                  />
-                </div>
-                <div className="flex flex-wrap items-start justify-between gap-3 border-t border-border pt-3">
-                  <div className="min-w-0 flex-1">
-                    <div className="flex items-center gap-1.5">
-                      <label className="text-sm font-medium">AI questions</label>
-                      <ConfigurationDocsLink
-                        docsPath="/configuration#ai-questions"
-                        label="ticket AI questions"
-                        description="Choose whether a model may pause a step to ask you a question in this ticket. Open the AI questions documentation."
-                      />
-                    </div>
-                    <p className="mt-1 text-xs text-muted-foreground">
-                      Choose whether a model may pause a step to ask you a question.
-                    </p>
-                  </div>
-                  <TriStateSetting
-                    idPrefix="ticket-ai-questions"
-                    groupLabel="AI questions setting"
-                    options={AI_QUESTIONS_INHERITABLE_OPTIONS}
-                    value={aiQuestionsOverride}
-                    onChange={setAiQuestionsOverride}
-                    disabled={isCreatingAndStarting || isStartPending || (createdTicket !== null && createdTicket.status !== 'DRAFT')}
-                    footer={aiQuestionsOverride === null && (
-                      <p className="mt-1 text-right text-xs text-muted-foreground">
-                        Inherits <span className="font-medium text-foreground">{inheritedAiQuestions.enabled ? 'On' : 'Off'}</span> from {describeSettingSource(inheritedAiQuestions.source)}.
-                      </p>
-                    )}
-                  />
-                </div>
-                <div className="pl-4">
-                  <InheritableDurationField
-                    label="AI question wait"
-                    idPrefix="ticket-ai-question-wait"
-                    value={aiQuestionWindowOverride}
-                    onChange={setAiQuestionWindowOverride}
-                    onValidationChange={setHasAiQuestionWaitError}
-                    inheritedMs={inheritedAiQuestionWindow.windowMs}
-                    inheritedSourceLabel={describeSettingSource(inheritedAiQuestionWindow.source)}
-                    disabled={isCreatingAndStarting || isStartPending || (createdTicket !== null && createdTicket.status !== 'DRAFT') || !(aiQuestionsOverride ?? inheritedAiQuestions.enabled)}
-                    minMs={AI_QUESTION_WINDOW_MIN_MS}
-                    maxMs={AI_QUESTION_WINDOW_MAX_MS}
-                    formatValue={formatAiQuestionWindow}
-                    hint={AI_QUESTION_WAIT_HINT}
-                    help={(
-                      <ConfigurationDocsLink
-                        docsPath="/configuration#ai-question-wait"
-                        label="ticket AI question wait"
-                        description={`${AI_QUESTION_WAIT_HELP} Open the AI question wait documentation.`}
-                      />
-                    )}
-                  />
-                </div>
-              </div>
-            )}
-          </div>
-
+          <TicketProjectField projects={projects} project={selectedProject} disabled={projectDisabled} onSelect={setProjectId} />
+          <TicketTitleField title={title} onChange={setTitle} />
+          <TicketDescriptionField description={description} onChange={setDescription} />
+          <TicketPriorityField priority={priority} onChange={setPriority} />
+          <TicketAdvancedFields
+            project={selectedProject}
+            profile={profile}
+            locked={workflowLocked}
+            questionsDisabled={questionsDisabled}
+            manualQaOverride={manualQaOverride}
+            onManualQaChange={setManualQaOverride}
+            aiQuestionsOverride={aiQuestionsOverride}
+            onAiQuestionsChange={setAiQuestionsOverride}
+            aiQuestionWindowOverride={aiQuestionWindowOverride}
+            onAiQuestionWindowChange={setAiQuestionWindowOverride}
+            hasWaitError={hasAiQuestionWaitError}
+            onValidationChange={setHasAiQuestionWaitError}
+          />
         </CardContent>
       </Card>
-
-      <div className="flex justify-end gap-2.5 pt-2">
-        <Tooltip>
-          <TooltipTrigger asChild>
-            <Button type="button" variant="outline" onClick={handleClose} className="rounded-lg border-border/70 bg-muted/40 text-muted-foreground hover:bg-muted/70 hover:text-foreground active:scale-[0.98] font-mono text-xs font-medium transition-all">
-              Cancel
-            </Button>
-          </TooltipTrigger>
-          <TooltipContent className="max-w-xs text-center text-balance">{isEditing ? 'Close ticket editor' : 'Close without creating ticket'}</TooltipContent>
-        </Tooltip>
-        {!isEditing && (
-          <Tooltip>
-            <TooltipTrigger asChild>
-              <Button
-                type="button"
-                variant="secondary"
-                disabled={isCreatingAndStarting || createTicket.isPending || isStartPending || hasAiQuestionWaitError || !effectiveProjectId}
-                onClick={handleCreateAndStart}
-                className="rounded-lg border border-border/70 bg-muted/60 text-foreground hover:bg-muted/90 active:scale-[0.98] font-mono text-xs font-semibold shadow-2xs transition-all"
-              >
-                {isCreatingAndStarting || createTicket.isPending || isStartPending ? <LoadingText text="Starting" /> : 'Create & Start'}
-              </Button>
-            </TooltipTrigger>
-            <TooltipContent className="max-w-xs text-center text-balance">Create ticket and immediately start the workflow</TooltipContent>
-          </Tooltip>
-        )}
-        <Tooltip>
-          <TooltipTrigger asChild>
-            <Button
-              type="submit"
-              disabled={isCreatingAndStarting || createTicket.isPending || isStartPending || isUpdatePending || hasAiQuestionWaitError || !effectiveProjectId}
-              className="rounded-lg bg-foreground text-background font-mono text-xs font-semibold hover:opacity-90 active:scale-[0.98] shadow-xs transition-all"
-            >
-              {isCreatingAndStarting || createTicket.isPending || isUpdatePending
-                ? <LoadingText text={isEditing ? 'Saving' : 'Creating'} />
-                : isEditing ? 'Save Ticket' : 'Create Ticket'}
-            </Button>
-          </TooltipTrigger>
-          <TooltipContent className="max-w-xs text-center text-balance">{isEditing ? 'Save changes to this ticket' : 'Create ticket in selected project'}</TooltipContent>
-        </Tooltip>
-      </div>
+      <TicketFormActions editing={isEditing} canSubmit={canCreate} starting={pendingState.starting} saving={pendingState.saving} onClose={handleClose} onCreateAndStart={handleCreateAndStart} />
     </form>
   )
 }

@@ -5,6 +5,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { ProjectForm } from '../ProjectForm'
 import { TooltipProvider } from '@/components/ui/tooltip'
 import type { Project } from '@/hooks/useProjects'
+import { createJsonResponse } from '@/test/renderHelpers'
 
 const mockProjectMutations = vi.hoisted(() => ({
   create: {
@@ -117,6 +118,33 @@ function makeCreatedProject(overrides: Partial<Project> = {}): Project {
   } as Project
 }
 
+const requireElement = (element: Element | null | undefined, description: string) => {
+  expect(element).toBeInstanceOf(HTMLElement)
+  if (!(element instanceof HTMLElement)) throw new Error(`Missing ${description}.`)
+  return element
+}
+
+const projectWaitCases = [
+  {
+    mode: 'new',
+    project: undefined,
+    saveLabel: 'Create Project',
+    mutation: mockProjectMutations.create,
+    fillRequiredFields: () => {
+      fireEvent.change(screen.getByLabelText(/Project Name/i), { target: { value: 'Demo' } })
+      fireEvent.change(screen.getByLabelText(/Short Name/i), { target: { value: 'DEMO' } })
+      fireEvent.change(screen.getByLabelText(/Project Folder/i), { target: { value: '/work/demo' } })
+    },
+  },
+  {
+    mode: 'existing',
+    project: makeCreatedProject(),
+    saveLabel: 'Save Changes',
+    mutation: mockProjectMutations.update,
+    fillRequiredFields: () => undefined,
+  },
+]
+
 describe('ProjectForm', () => {
   afterEach(() => {
     vi.unstubAllGlobals()
@@ -157,52 +185,65 @@ describe('ProjectForm', () => {
     mockProfileState.isLoading = true
     const dirty = vi.fn()
     const view = render(<ProjectForm onClose={vi.fn()} onDirtyChange={dirty} />, { wrapper: Wrapper })
+    fireEvent.click(screen.getByRole('button', { name: /Advanced/ }))
+    const questions = within(screen.getByRole('radiogroup', { name: /AI questions setting/i }))
+    const waits = within(screen.getByRole('radiogroup', { name: /AI question wait source/i }))
+    for (const control of [...questions.getAllByRole('radio'), ...waits.getAllByRole('radio')]) {
+      expect(control).toBeDisabled()
+    }
 
     mockProfileState.data = { manualQaEnabled: true, gitHookPolicy: 'use_native_hooks', ignoreMode: 'skip' }
     mockProfileState.isLoading = false
     view.rerender(<ProjectForm onClose={vi.fn()} onDirtyChange={dirty} />)
-    fireEvent.click(screen.getByRole('button', { name: /Advanced/ }))
 
     await waitFor(() => {
       expect(screen.getByRole('radio', { name: 'Enabled' })).toHaveAttribute('aria-checked', 'true')
       expect(screen.getByRole('radio', { name: 'Run' })).toHaveAttribute('aria-checked', 'true')
     })
     expect(dirty).toHaveBeenLastCalledWith(false)
+    for (const control of [...questions.getAllByRole('radio'), ...waits.getAllByRole('radio')]) {
+      expect(control).toBeEnabled()
+    }
   })
 
   it('shows AI question settings and adjacent documentation only inside expanded Advanced', () => {
     render(<ProjectForm onClose={vi.fn()} project={makeCreatedProject()} />, { wrapper: Wrapper })
     const advancedButton = screen.getByRole('button', { name: /Advanced/ })
     expect(advancedButton).toHaveAttribute('aria-expanded', 'false')
-    expect(screen.queryByText('AI questions')).not.toBeInTheDocument()
-    expect(screen.queryByText('AI question wait')).not.toBeInTheDocument()
-    expect(screen.queryByRole('radiogroup', { name: 'AI questions setting' })).not.toBeInTheDocument()
-    expect(screen.queryByRole('radiogroup', { name: 'AI question wait source' })).not.toBeInTheDocument()
+    expect(screen.getByText('AI questions')).not.toBeVisible()
+    expect(screen.getByText('AI question wait')).not.toBeVisible()
+    expect(screen.queryAllByRole('radiogroup', { name: /^AI (questions setting|question wait source)$/i })).toHaveLength(0)
 
     fireEvent.click(advancedButton)
-    const advanced = within(advancedButton.parentElement!)
-    for (const [label, path] of [
-      ['AI questions', '/configuration#ai-questions'],
-      ['AI question wait', '/configuration#ai-question-wait'],
-    ] as const) {
-      const help = advanced.getByRole('link', { name: `Open documentation for project ${label}` })
-      expect(help).toHaveAttribute('href', `${__LOOPTROOP_DOCS_ORIGIN__}${path}`)
-      expect(advanced.getByText(label)).toBe(screen.getByText(label))
-      expect(advanced.getByText(label).parentElement).toContainElement(help)
-    }
+    const advanced = within(requireElement(advancedButton.parentElement, 'Advanced section'))
     const waitRow = advanced.getByText('AI question wait').closest('.pl-4')
     expect(waitRow).toHaveClass('pl-4')
     expect(waitRow).not.toHaveClass('border-t')
     expect(waitRow?.previousElementSibling).toContainElement(advanced.getByRole('radiogroup', { name: 'AI questions setting' }))
 
     fireEvent.click(advancedButton)
-    expect(screen.queryByText('AI questions')).not.toBeInTheDocument()
-    expect(screen.queryByText('AI question wait')).not.toBeInTheDocument()
+    expect(screen.getByText('AI questions')).not.toBeVisible()
+    expect(screen.getByText('AI question wait')).not.toBeVisible()
+  })
+
+  it.each([
+    { label: 'AI questions', path: '/configuration#ai-questions' },
+    { label: 'AI question wait', path: '/configuration#ai-question-wait' },
+  ])('keeps the project $label help beside its label in Advanced', ({ label, path }) => {
+    render(<ProjectForm onClose={vi.fn()} project={makeCreatedProject()} />, { wrapper: Wrapper })
+    fireEvent.click(screen.getByRole('button', { name: /Advanced/ }))
+    const help = screen.getByRole('link', { name: `Open documentation for project ${label}` })
+
+    expect(help).toHaveAttribute('href', `${__LOOPTROOP_DOCS_ORIGIN__}${path}`)
+    expect(requireElement(help.parentElement, `${label} help row`)).toContainElement(screen.getByText(label))
   })
 
   it('shows effective Configuration values and keeps inheriting on save', () => {
     mockProfileState.data = {
-      ...mockProfileState.data!,
+      manualQaEnabled: false,
+      gitHookPolicy: 'validate_advisory',
+      ignoreMode: 'local',
+      ...mockProfileState.data,
       aiQuestionsEnabled: false,
       aiQuestionWindow: 720_000,
     }
@@ -212,14 +253,14 @@ describe('ProjectForm', () => {
     const questions = screen.getByRole('radiogroup', { name: 'AI questions setting' })
     expect(within(questions).getByRole('radio', { name: 'Inherit' })).toHaveAttribute('aria-checked', 'true')
     expect(questions.parentElement).toHaveTextContent('Inherits Off from Configuration.')
-    expect(screen.getByRole('radio', { name: 'Inherit ai question wait' })).toHaveAttribute('aria-checked', 'true')
+    expect(screen.getByRole('radio', { name: /Inherit ai question wait/i })).toHaveAttribute('aria-checked', 'true')
     expect(screen.getByText('12 minutes').parentElement).toHaveTextContent('12 minutes from Configuration')
     const modes = within(screen.getByRole('radiogroup', { name: 'AI question wait source' })).getAllByRole('radio')
     for (const mode of modes) expect(mode).toBeDisabled()
 
     fireEvent.click(within(questions).getByRole('radio', { name: 'On' }))
     for (const mode of modes) expect(mode).toBeEnabled()
-    expect(screen.getByRole('radio', { name: 'Inherit ai question wait' })).toHaveAttribute('aria-checked', 'true')
+    expect(screen.getByRole('radio', { name: /Inherit ai question wait/i })).toHaveAttribute('aria-checked', 'true')
     expect(screen.getByText('12 minutes').parentElement).toHaveTextContent('12 minutes from Configuration')
     fireEvent.click(within(questions).getByRole('radio', { name: 'Inherit' }))
     for (const mode of modes) expect(mode).toBeDisabled()
@@ -235,19 +276,25 @@ describe('ProjectForm', () => {
     { override: null, minutes: 12 },
     { override: 900_000, minutes: 15 },
   ])('edits and saves a custom wait starting from $minutes minutes', ({ override, minutes }) => {
-    mockProfileState.data = { ...mockProfileState.data!, aiQuestionWindow: 720_000 }
+    mockProfileState.data = {
+      manualQaEnabled: false,
+      gitHookPolicy: 'validate_advisory',
+      ignoreMode: 'local',
+      ...mockProfileState.data,
+      aiQuestionWindow: 720_000,
+    }
     render(
       <ProjectForm onClose={vi.fn()} project={makeCreatedProject({ aiQuestionWindowOverride: override })} />,
       { wrapper: Wrapper },
     )
     fireEvent.click(screen.getByRole('button', { name: /Advanced/ }))
-    fireEvent.click(screen.getByRole('radio', { name: 'Set a custom ai question wait' }))
+    fireEvent.click(screen.getByRole('radio', { name: /Set a custom ai question wait/i }))
 
     const wait = screen.getByLabelText('AI question wait')
     expect(wait).toHaveValue(minutes)
     expect(screen.queryByRole('button', { name: 'Clear override' })).not.toBeInTheDocument()
     fireEvent.change(wait, { target: { value: '7' } })
-    fireEvent.click(screen.getByRole('radio', { name: 'Set a custom ai question wait' }))
+    fireEvent.click(screen.getByRole('radio', { name: /Set a custom ai question wait/i }))
     expect(wait).toHaveValue(7)
     const questions = within(screen.getByRole('radiogroup', { name: 'AI questions setting' }))
     const modes = within(screen.getByRole('radiogroup', { name: 'AI question wait source' })).getAllByRole('radio')
@@ -255,7 +302,7 @@ describe('ProjectForm', () => {
     for (const mode of modes) expect(mode).toBeDisabled()
     expect(wait).toBeDisabled()
     expect(wait).toHaveValue(7)
-    expect(screen.getByRole('radio', { name: 'Set a custom ai question wait' })).toHaveAttribute('aria-checked', 'true')
+    expect(screen.getByRole('radio', { name: /Set a custom ai question wait/i })).toHaveAttribute('aria-checked', 'true')
 
     fireEvent.click(questions.getByRole('radio', { name: 'On' }))
     for (const mode of modes) expect(mode).toBeEnabled()
@@ -270,42 +317,31 @@ describe('ProjectForm', () => {
     )
   })
 
-  it.each(['new', 'existing'] as const)('validates active waits in a %s project, suspends errors while Off, and resets with Inherit', async (mode) => {
-    if (mode === 'new') {
-      vi.stubGlobal('fetch', vi.fn(async () => ({
-        ok: true,
-        status: 200,
-        json: async () => ({ isGit: true, status: 'valid', message: 'Git repository root selected' }),
-      })))
-    }
+  it.each(projectWaitCases)('validates active waits in a $mode project, suspends errors while Off, and resets with Inherit', async ({ project, saveLabel, mutation, fillRequiredFields }) => {
+    vi.stubGlobal('fetch', vi.fn(() => createJsonResponse({ isGit: true, status: 'valid', message: 'Git repository root selected' })))
     render(
-      <ProjectForm onClose={vi.fn()} project={mode === 'existing' ? makeCreatedProject() : undefined} />,
+      <ProjectForm onClose={vi.fn()} project={project} />,
       { wrapper: Wrapper },
     )
-    if (mode === 'new') {
-      fireEvent.change(screen.getByLabelText(/Project Name/i), { target: { value: 'Demo' } })
-      fireEvent.change(screen.getByLabelText(/Short Name/i), { target: { value: 'DEMO' } })
-      fireEvent.change(screen.getByLabelText(/Project Folder/i), { target: { value: '/work/demo' } })
-    }
-    const save = screen.getByRole('button', { name: mode === 'new' ? 'Create Project' : 'Save Changes' })
+    fillRequiredFields()
+    const save = screen.getByRole('button', { name: saveLabel })
     await waitFor(() => expect(save).toBeEnabled())
     fireEvent.click(screen.getByRole('button', { name: /Advanced/ }))
-    fireEvent.click(screen.getByRole('radio', { name: 'Set a custom ai question wait' }))
+    fireEvent.click(screen.getByRole('radio', { name: /Set a custom ai question wait/i }))
     const wait = screen.getByLabelText('AI question wait')
     fireEvent.change(wait, { target: { value: '61' } })
 
     expect(wait).toHaveValue(61)
     expect(wait).toHaveAttribute('aria-invalid', 'true')
     expect(save).toBeDisabled()
-    fireEvent.submit(save.closest('form')!)
+    fireEvent.submit(requireElement(save.closest('form'), 'project form'))
     expect(mockProjectMutations.create.mutate).not.toHaveBeenCalled()
     expect(mockProjectMutations.update.mutate).not.toHaveBeenCalled()
 
-    const mutation = mode === 'new' ? mockProjectMutations.create : mockProjectMutations.update
     const questions = within(screen.getByRole('radiogroup', { name: 'AI questions setting' }))
     fireEvent.click(questions.getByRole('radio', { name: 'Off' }))
     expect(wait).toBeDisabled()
-    expect(wait).toHaveValue(61)
+    expect(wait).toHaveValue(5)
     expect(screen.queryByRole('alert')).not.toBeInTheDocument()
     expect(save).toBeEnabled()
     fireEvent.click(save)
@@ -320,7 +356,7 @@ describe('ProjectForm', () => {
     expect(wait).toHaveAttribute('aria-invalid', 'true')
     expect(save).toBeDisabled()
 
-    fireEvent.click(screen.getByRole('radio', { name: 'Inherit ai question wait' }))
+    fireEvent.click(screen.getByRole('radio', { name: /Inherit ai question wait/i }))
     expect(screen.queryByRole('alert')).not.toBeInTheDocument()
     expect(save).toBeEnabled()
     fireEvent.click(save)
@@ -328,6 +364,36 @@ describe('ProjectForm', () => {
       expect.objectContaining({ aiQuestionWindowOverride: null }),
       expect.any(Object),
     )
+  })
+
+  it.each(projectWaitCases)('preserves an invalid $mode project wait and blocks saving with Advanced collapsed', async ({ project, saveLabel, fillRequiredFields }) => {
+    vi.stubGlobal('fetch', vi.fn(() => createJsonResponse({ isGit: true, status: 'valid', message: 'Git repository root selected' })))
+    render(<ProjectForm onClose={vi.fn()} project={project} />, { wrapper: Wrapper })
+    fillRequiredFields()
+    const save = screen.getByRole('button', { name: saveLabel })
+    await waitFor(() => expect(save).toBeEnabled())
+    const advanced = screen.getByRole('button', { name: /Advanced/ })
+    fireEvent.click(advanced)
+    fireEvent.click(screen.getByRole('radio', { name: /Set a custom ai question wait/i }))
+    const wait = screen.getByLabelText('AI question wait')
+    fireEvent.change(wait, { target: { value: '61' } })
+
+    fireEvent.click(advanced)
+    expect(wait).toHaveValue(61)
+    expect(wait).not.toBeVisible()
+    expect(screen.getByText('Fix AI question wait in Advanced.')).toBeVisible()
+    expect(save).toBeDisabled()
+    fireEvent.submit(requireElement(save.closest('form'), 'project form'))
+    expect(mockProjectMutations.create.mutate).not.toHaveBeenCalled()
+    expect(mockProjectMutations.update.mutate).not.toHaveBeenCalled()
+
+    fireEvent.click(advanced)
+    expect(wait).toBeVisible()
+    expect(wait).toHaveValue(61)
+    expect(wait).toHaveAttribute('aria-invalid', 'true')
+    expect(screen.queryByText('Fix AI question wait in Advanced.')).not.toBeInTheDocument()
+    fireEvent.change(wait, { target: { value: '12' } })
+    expect(save).toBeEnabled()
   })
 
   it('opens the folder picker, handles dismissal, and adopts the selected folder', () => {
@@ -440,7 +506,7 @@ describe('ProjectForm', () => {
     fireEvent.change(screen.getByLabelText(/Project Name/i), { target: { value: 'Saved project' } })
     fireEvent.change(screen.getByLabelText(/Short Name/i), { target: { value: 'SAVE' } })
     fireEvent.change(screen.getByLabelText(/Project Folder/i), { target: { value: '/work/subfolder' } })
-    fireEvent.submit(screen.getByRole('button', { name: 'Create Project' }).closest('form')!)
+    fireEvent.submit(requireElement(screen.getByRole('button', { name: 'Create Project' }).closest('form'), 'project form'))
 
     fireEvent.change(screen.getByLabelText(/Project Name/i), { target: { value: 'Later project' } })
     const createdProject = makeCreatedProject({

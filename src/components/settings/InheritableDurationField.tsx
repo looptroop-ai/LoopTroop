@@ -1,188 +1,62 @@
-import { useEffect, useRef, useState, type ReactNode } from 'react'
-import { cn } from '@/lib/utils'
+import { useEffect, useRef, useState } from 'react'
+import { DurationFieldControls, type InheritableDurationFieldProps } from './DurationFieldControls'
+import { MS_PER_MINUTE, clampDurationToRange, getDurationFieldError, toDurationMinutesText, validateDurationMinutes } from './durationFieldUtils'
 
-const MS_PER_MINUTE = 60_000
-
-interface InheritableDurationFieldProps {
-  /** Human name of the setting. Also drives the accessible names of the controls. */
-  label: string
-  idPrefix: string
-  /** Milliseconds, or `null` to inherit. */
-  value: number | null
-  onChange: (value: number | null) => void
-  /** What applies while this field inherits, in milliseconds. */
-  inheritedMs: number
-  /** Where the inherited value comes from, e.g. "Project". */
-  inheritedSourceLabel?: string
-  /** The configuration uses the built-in default rather than another level. */
-  inheritLabel?: string
-  minMs: number
-  maxMs: number
-  hint?: ReactNode
-  help?: ReactNode
-  onValidationChange?: (hasError: boolean) => void
-  disabled?: boolean
-  /** How a resolved duration reads. Defaults to whole minutes. */
-  formatValue?: (ms: number) => string
-}
-
-function defaultFormat(ms: number): string {
-  const minutes = Math.round(ms / MS_PER_MINUTE)
-  return `${minutes} minute${minutes === 1 ? '' : 's'}`
-}
-
-function toMinutesText(ms: number): string {
-  return String(Math.round(ms / MS_PER_MINUTE))
-}
-
-export function InheritableDurationField({
-  label,
-  idPrefix,
-  value,
-  onChange,
-  inheritedMs,
-  inheritedSourceLabel,
-  inheritLabel = 'Inherit',
-  minMs,
-  maxMs,
-  hint,
-  help,
-  onValidationChange,
-  disabled = false,
-  formatValue = defaultFormat,
-}: InheritableDurationFieldProps) {
+export const InheritableDurationField = (props: InheritableDurationFieldProps) => {
+  const { value, onChange, minMs, maxMs, disabled, onValidationChange } = props
   const minMinutes = Math.round(minMs / MS_PER_MINUTE)
   const maxMinutes = Math.round(maxMs / MS_PER_MINUTE)
   const isInheriting = value === null
 
-  // The typed text is kept locally so an out-of-range edit can be shown and
-  // explained without being pushed up to whoever owns the setting.
-  const [rawMinutes, setRawMinutes] = useState(() => (value === null ? '' : toMinutesText(value)))
+  // Keep invalid typed text locally instead of sending it to the owner.
+  const [rawMinutes, setRawMinutes] = useState(() => toDurationMinutesText(value))
   const lastEmittedRef = useRef<number | null>(value)
 
-  useEffect(() => {
-    if (value === lastEmittedRef.current) return
+  if (value !== lastEmittedRef.current) {
     lastEmittedRef.current = value
-    setRawMinutes(value === null ? '' : toMinutesText(value))
-  }, [value])
+    setRawMinutes(toDurationMinutesText(value))
+  }
 
   const emit = (next: number | null) => {
     lastEmittedRef.current = next
     onChange(next)
   }
 
-  const error = isInheriting || disabled ? null : validate(rawMinutes, minMinutes, maxMinutes)
+  const error = getDurationFieldError(rawMinutes, minMinutes, maxMinutes, isInheriting, disabled)
   useEffect(() => {
     onValidationChange?.(error !== null)
+    return () => onValidationChange?.(false)
   }, [error, onValidationChange])
 
-  const inputId = `${idPrefix}-minutes`
-  const hintId = `${idPrefix}-hint`
-  const errorId = `${idPrefix}-error`
-  const describedBy = [hint ? hintId : null, error ? errorId : null].filter(Boolean).join(' ')
+  const commitMinutes = (raw: string) => {
+    if (disabled || validateDurationMinutes(raw, minMinutes, maxMinutes)) return
+    const next = Number(raw) * MS_PER_MINUTE
+    if (next !== lastEmittedRef.current) emit(next)
+  }
 
-  const handleMinutesChange = (raw: string) => {
+  const handleRawChange = (raw: string) => {
     setRawMinutes(raw)
-    const minutes = Number(raw)
-    if (raw === '' || !Number.isInteger(minutes)) return
-    if (minutes < minMinutes || minutes > maxMinutes) return
-    emit(minutes * MS_PER_MINUTE)
+    if (!props.commitOnBlur) commitMinutes(raw)
+  }
+
+  const handleModeChange = (inheriting: boolean) => {
+    if (inheriting === isInheriting) return
+    // Seed Custom from the effective wait and synchronize before emitting.
+    const next = inheriting ? null : clampDurationToRange(props.inheritedMs, minMs, maxMs)
+    setRawMinutes(toDurationMinutesText(next))
+    emit(next)
   }
 
   return (
-    <div className="flex flex-wrap items-start justify-between gap-3">
-      <div className="min-w-0 flex-1">
-        <div className="flex items-center gap-1.5">
-          <label htmlFor={inputId} className="text-sm font-medium">{label}</label>
-          {help}
-        </div>
-        {hint && <p id={hintId} className="mt-1 text-xs text-muted-foreground">{hint}</p>}
-      </div>
-      <div className="flex shrink-0 flex-col items-end gap-1.5">
-        <div
-          className="inline-flex rounded-md border border-input bg-muted/30 p-0.5"
-          role="radiogroup"
-          aria-label={`${label} source`}
-        >
-          {([
-            { inherit: true, text: inheritLabel, ariaLabel: `${inheritLabel} ${label.toLowerCase()}` },
-            { inherit: false, text: 'Custom', ariaLabel: `Set a custom ${label.toLowerCase()}` },
-          ] as const).map((mode) => {
-            const selected = mode.inherit === isInheriting
-            return (
-              <button
-                key={mode.text}
-                id={`${idPrefix}-${mode.text.toLowerCase()}`}
-                type="button"
-                role="radio"
-                aria-label={mode.ariaLabel}
-                aria-checked={selected}
-                data-state={selected ? 'checked' : 'unchecked'}
-                disabled={disabled}
-                onClick={() => {
-                  if (selected) return
-                  // Seed Custom from the effective wait and keep the input in sync with our own emission.
-                  const next = mode.inherit ? null : clampToRange(inheritedMs, minMs, maxMs)
-                  setRawMinutes(next === null ? '' : toMinutesText(next))
-                  emit(next)
-                }}
-                className={cn(
-                  'rounded px-2.5 py-1 text-xs transition-colors',
-                  selected
-                    ? 'bg-primary font-semibold text-primary-foreground shadow-sm'
-                    : 'text-muted-foreground hover:bg-background hover:text-foreground',
-                  disabled && 'cursor-not-allowed opacity-60',
-                )}
-              >
-                {mode.text}
-              </button>
-            )
-          })}
-        </div>
-
-        {isInheriting ? (
-          <p className="text-right text-xs text-muted-foreground">
-            <span className="font-medium text-foreground">{formatValue(inheritedMs)}</span>
-            {inheritedSourceLabel ? ` from ${inheritedSourceLabel}` : ''}
-          </p>
-        ) : (
-          <div className="flex items-center gap-1.5">
-            <input
-              id={inputId}
-              type="number"
-              inputMode="numeric"
-              min={minMinutes}
-              max={maxMinutes}
-              step={1}
-              value={rawMinutes}
-              disabled={disabled}
-              aria-describedby={describedBy || undefined}
-              aria-invalid={error ? true : undefined}
-              onChange={(event) => handleMinutesChange(event.target.value)}
-              className={cn(
-                'w-20 rounded-md border bg-background px-2 py-1 text-sm',
-                error ? 'border-red-500' : 'border-input',
-                disabled && 'cursor-not-allowed opacity-60',
-              )}
-            />
-            <span className="text-xs text-muted-foreground">minutes</span>
-          </div>
-        )}
-        {error && <p id={errorId} role="alert" className="text-right text-xs text-red-500">{error}</p>}
-      </div>
-    </div>
+    <DurationFieldControls
+      {...props}
+      rawMinutes={rawMinutes}
+      error={error}
+      minMinutes={minMinutes}
+      maxMinutes={maxMinutes}
+      onModeChange={handleModeChange}
+      onRawChange={handleRawChange}
+      commitMinutes={commitMinutes}
+    />
   )
-}
-
-function clampToRange(ms: number, minMs: number, maxMs: number): number {
-  return Math.min(maxMs, Math.max(minMs, Math.round(ms / MS_PER_MINUTE) * MS_PER_MINUTE))
-}
-
-function validate(raw: string, minMinutes: number, maxMinutes: number): string | null {
-  if (raw.trim() === '') return `Enter a number of minutes (${minMinutes} to ${maxMinutes}).`
-  const minutes = Number(raw)
-  if (!Number.isInteger(minutes)) return `Use whole minutes (${minMinutes} to ${maxMinutes}).`
-  if (minutes < minMinutes) return `Minimum is ${minMinutes} minute${minMinutes === 1 ? '' : 's'}.`
-  if (minutes > maxMinutes) return `Maximum is ${maxMinutes} minutes.`
-  return null
 }

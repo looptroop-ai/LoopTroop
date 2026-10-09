@@ -627,13 +627,14 @@ export function ProjectForm({ onClose, onBack, project, onDirtyChange }: Project
                     )}
                   />
                 </div>
-                <div className="border-t border-border pt-3">
+                <div className="pl-4">
                   <InheritableDurationField
                     label="AI question wait"
                     idPrefix="project-ai-question-wait"
                     value={aiQuestionWindowOverride}
                     onChange={setAiQuestionWindowOverride}
                     onValidationChange={setHasAiQuestionWaitError}
+                    disabled={!(aiQuestionsOverride ?? profile?.aiQuestionsEnabled ?? PROFILE_DEFAULTS.aiQuestionsEnabled)}
                     inheritedMs={profile?.aiQuestionWindow ?? PROFILE_DEFAULTS.aiQuestionWindow}
                     inheritedSourceLabel="Configuration"
                     minMs={AI_QUESTION_WINDOW_MIN_MS}

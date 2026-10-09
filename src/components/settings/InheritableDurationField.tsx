@@ -71,7 +71,7 @@ export function InheritableDurationField({
     onChange(next)
   }
 
-  const error = isInheriting ? null : validate(rawMinutes, minMinutes, maxMinutes)
+  const error = isInheriting || disabled ? null : validate(rawMinutes, minMinutes, maxMinutes)
   useEffect(() => {
     onValidationChange?.(error !== null)
   }, [error, onValidationChange])

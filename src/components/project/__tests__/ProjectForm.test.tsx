@@ -190,6 +190,10 @@ describe('ProjectForm', () => {
       expect(advanced.getByText(label)).toBe(screen.getByText(label))
       expect(advanced.getByText(label).parentElement).toContainElement(help)
     }
+    const waitRow = advanced.getByText('AI question wait').closest('.pl-4')
+    expect(waitRow).toHaveClass('pl-4')
+    expect(waitRow).not.toHaveClass('border-t')
+    expect(waitRow?.previousElementSibling).toContainElement(advanced.getByRole('radiogroup', { name: 'AI questions setting' }))
 
     fireEvent.click(advancedButton)
     expect(screen.queryByText('AI questions')).not.toBeInTheDocument()
@@ -210,6 +214,15 @@ describe('ProjectForm', () => {
     expect(questions.parentElement).toHaveTextContent('Inherits Off from Configuration.')
     expect(screen.getByRole('radio', { name: 'Inherit ai question wait' })).toHaveAttribute('aria-checked', 'true')
     expect(screen.getByText('12 minutes').parentElement).toHaveTextContent('12 minutes from Configuration')
+    const modes = within(screen.getByRole('radiogroup', { name: 'AI question wait source' })).getAllByRole('radio')
+    for (const mode of modes) expect(mode).toBeDisabled()
+
+    fireEvent.click(within(questions).getByRole('radio', { name: 'On' }))
+    for (const mode of modes) expect(mode).toBeEnabled()
+    expect(screen.getByRole('radio', { name: 'Inherit ai question wait' })).toHaveAttribute('aria-checked', 'true')
+    expect(screen.getByText('12 minutes').parentElement).toHaveTextContent('12 minutes from Configuration')
+    fireEvent.click(within(questions).getByRole('radio', { name: 'Inherit' }))
+    for (const mode of modes) expect(mode).toBeDisabled()
 
     fireEvent.click(screen.getByRole('button', { name: 'Save Changes' }))
     expect(mockProjectMutations.update.mutate).toHaveBeenCalledWith(
@@ -236,7 +249,19 @@ describe('ProjectForm', () => {
     fireEvent.change(wait, { target: { value: '7' } })
     fireEvent.click(screen.getByRole('radio', { name: 'Set a custom ai question wait' }))
     expect(wait).toHaveValue(7)
-    fireEvent.click(within(screen.getByRole('radiogroup', { name: 'AI questions setting' })).getByRole('radio', { name: 'Off' }))
+    const questions = within(screen.getByRole('radiogroup', { name: 'AI questions setting' }))
+    const modes = within(screen.getByRole('radiogroup', { name: 'AI question wait source' })).getAllByRole('radio')
+    fireEvent.click(questions.getByRole('radio', { name: 'Off' }))
+    for (const mode of modes) expect(mode).toBeDisabled()
+    expect(wait).toBeDisabled()
+    expect(wait).toHaveValue(7)
+    expect(screen.getByRole('radio', { name: 'Set a custom ai question wait' })).toHaveAttribute('aria-checked', 'true')
+
+    fireEvent.click(questions.getByRole('radio', { name: 'On' }))
+    for (const mode of modes) expect(mode).toBeEnabled()
+    expect(wait).toBeEnabled()
+    expect(wait).toHaveValue(7)
+    fireEvent.click(questions.getByRole('radio', { name: 'Off' }))
     fireEvent.click(screen.getByRole('button', { name: 'Save Changes' }))
 
     expect(mockProjectMutations.update.mutate).toHaveBeenCalledWith(
@@ -245,7 +270,7 @@ describe('ProjectForm', () => {
     )
   })
 
-  it.each(['new', 'existing'] as const)('blocks an invalid wait in a %s project until Inherit clears it', async (mode) => {
+  it.each(['new', 'existing'] as const)('validates active waits in a %s project, suspends errors while Off, and resets with Inherit', async (mode) => {
     if (mode === 'new') {
       vi.stubGlobal('fetch', vi.fn(async () => ({
         ok: true,
@@ -276,12 +301,30 @@ describe('ProjectForm', () => {
     expect(mockProjectMutations.create.mutate).not.toHaveBeenCalled()
     expect(mockProjectMutations.update.mutate).not.toHaveBeenCalled()
 
+    const mutation = mode === 'new' ? mockProjectMutations.create : mockProjectMutations.update
+    const questions = within(screen.getByRole('radiogroup', { name: 'AI questions setting' }))
+    fireEvent.click(questions.getByRole('radio', { name: 'Off' }))
+    expect(wait).toBeDisabled()
+    expect(wait).toHaveValue(61)
+    expect(screen.queryByRole('alert')).not.toBeInTheDocument()
+    expect(save).toBeEnabled()
+    fireEvent.click(save)
+    expect(mutation.mutate).toHaveBeenLastCalledWith(
+      expect.objectContaining({ aiQuestionsOverride: false, aiQuestionWindowOverride: 300_000 }),
+      expect.any(Object),
+    )
+
+    fireEvent.click(questions.getByRole('radio', { name: 'On' }))
+    expect(wait).toBeEnabled()
+    expect(wait).toHaveValue(61)
+    expect(wait).toHaveAttribute('aria-invalid', 'true')
+    expect(save).toBeDisabled()
+
     fireEvent.click(screen.getByRole('radio', { name: 'Inherit ai question wait' }))
     expect(screen.queryByRole('alert')).not.toBeInTheDocument()
     expect(save).toBeEnabled()
     fireEvent.click(save)
-    const mutation = mode === 'new' ? mockProjectMutations.create : mockProjectMutations.update
-    expect(mutation.mutate).toHaveBeenCalledWith(
+    expect(mutation.mutate).toHaveBeenLastCalledWith(
       expect.objectContaining({ aiQuestionWindowOverride: null }),
       expect.any(Object),
     )

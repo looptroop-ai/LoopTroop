@@ -105,6 +105,43 @@ describe('InheritableDurationField', () => {
     expect(onChange).not.toHaveBeenCalled()
   })
 
+  it('suppresses validation while disabled and restores the unchanged invalid text when re-enabled', () => {
+    const onChange = vi.fn()
+    const onValidationChange = vi.fn()
+    const props = {
+      label: 'AI question wait',
+      idPrefix: 'test-wait',
+      value: 600_000,
+      onChange,
+      onValidationChange,
+      inheritedMs: 300_000,
+      minMs: AI_QUESTION_WINDOW_MIN_MS,
+      maxMs: AI_QUESTION_WINDOW_MAX_MS,
+    }
+    const { rerender } = render(<InheritableDurationField {...props} />)
+    const input = screen.getByLabelText('AI question wait')
+    fireEvent.change(input, { target: { value: '61' } })
+    expect(onValidationChange).toHaveBeenLastCalledWith(true)
+
+    rerender(<InheritableDurationField {...props} disabled />)
+    for (const radio of screen.getAllByRole('radio')) expect(radio).toBeDisabled()
+    expect(input).toBeDisabled()
+    expect(input).toHaveValue(61)
+    expect(input).not.toHaveAttribute('aria-invalid')
+    expect(screen.getByRole('radio', { name: 'Set a custom ai question wait' })).toHaveAttribute('aria-checked', 'true')
+    expect(screen.queryByRole('alert')).not.toBeInTheDocument()
+    expect(onValidationChange).toHaveBeenLastCalledWith(false)
+
+    rerender(<InheritableDurationField {...props} />)
+    for (const radio of screen.getAllByRole('radio')) expect(radio).toBeEnabled()
+    expect(input).toBeEnabled()
+    expect(input).toHaveValue(61)
+    expect(input).toHaveAttribute('aria-invalid', 'true')
+    expect(screen.getByRole('alert')).toHaveTextContent('Maximum is 60 minutes.')
+    expect(onValidationChange).toHaveBeenLastCalledWith(true)
+    expect(onChange).not.toHaveBeenCalled()
+  })
+
   it.each([
     ['61', 'Maximum is 60 minutes.'],
     ['0', 'Minimum is 1 minute.'],

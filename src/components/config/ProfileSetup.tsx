@@ -692,7 +692,7 @@ export function ProfileSetup({ onClose, onOpenAbout = () => undefined, onDirtyCh
                   />
                 </div>
 
-                <div className="border-t border-border pt-4">
+                <div className="pl-4">
                   <InheritableDurationField
                     label="AI question wait"
                     idPrefix="profile-ai-question-wait"
@@ -704,6 +704,7 @@ export function ProfileSetup({ onClose, onOpenAbout = () => undefined, onDirtyCh
                     onValidationChange={setHasAiQuestionWaitError}
                     inheritedMs={PROFILE_DEFAULTS.aiQuestionWindow}
                     inheritLabel="Default"
+                    disabled={!(formData.aiQuestionsEnabled ?? PROFILE_DEFAULTS.aiQuestionsEnabled)}
                     minMs={AI_QUESTION_WINDOW_MIN_MS}
                     maxMs={AI_QUESTION_WINDOW_MAX_MS}
                     formatValue={formatAiQuestionWindow}

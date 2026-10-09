@@ -461,7 +461,7 @@ export function TicketForm({ onClose, onDirtyChange, onEditingChange }: TicketFo
                     )}
                   />
                 </div>
-                <div className="border-t border-border pt-3">
+                <div className="pl-4">
                   <InheritableDurationField
                     label="AI question wait"
                     idPrefix="ticket-ai-question-wait"
@@ -470,7 +470,7 @@ export function TicketForm({ onClose, onDirtyChange, onEditingChange }: TicketFo
                     onValidationChange={setHasAiQuestionWaitError}
                     inheritedMs={inheritedAiQuestionWindow.windowMs}
                     inheritedSourceLabel={describeSettingSource(inheritedAiQuestionWindow.source)}
-                    disabled={isCreatingAndStarting || isStartPending || (createdTicket !== null && createdTicket.status !== 'DRAFT')}
+                    disabled={isCreatingAndStarting || isStartPending || (createdTicket !== null && createdTicket.status !== 'DRAFT') || !(aiQuestionsOverride ?? inheritedAiQuestions.enabled)}
                     minMs={AI_QUESTION_WINDOW_MIN_MS}
                     maxMs={AI_QUESTION_WINDOW_MAX_MS}
                     formatValue={formatAiQuestionWindow}

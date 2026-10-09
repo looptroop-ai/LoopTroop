@@ -568,6 +568,10 @@ describe('ProfileSetup', () => {
         advanced.getByRole('link', { name: `Open documentation for ${label}` }),
       )
     }
+    const waitRow = advanced.getByText('AI question wait').closest('.pl-4')
+    expect(waitRow).toHaveClass('pl-4')
+    expect(waitRow).not.toHaveClass('border-t')
+    expect(waitRow?.previousElementSibling).toContainElement(advanced.getByRole('radiogroup', { name: 'AI questions setting' }))
     expect(advanced.getByRole('radio', { name: 'Default ai question wait' })).toHaveAttribute('aria-checked', 'true')
     expect(advanced.getByText('5 minutes')).toBeInTheDocument()
     expect(screen.queryByLabelText('AI question wait')).not.toBeInTheDocument()
@@ -581,17 +585,29 @@ describe('ProfileSetup', () => {
     expect(screen.queryByText('AI question wait')).not.toBeInTheDocument()
   })
 
-  it('persists the AI question defaults the whole cascade starts from', async () => {
+  it('preserves the custom wait when re-enabled and saves its duration while questions is Off', async () => {
     await renderProfileSetup()
 
     const waitField = openCustomAiQuestionWait()
     expect(screen.getByRole('radio', { name: 'On' })).toHaveAttribute('aria-checked', 'true')
     expect(waitField).toHaveValue(5)
 
-    fireEvent.click(screen.getByRole('radio', { name: 'Off' }))
     fireEvent.change(waitField, { target: { value: '10' } })
     fireEvent.click(screen.getByRole('radio', { name: 'Set a custom ai question wait' }))
     expect(waitField).toHaveValue(10)
+    const modes = within(screen.getByRole('radiogroup', { name: 'AI question wait source' })).getAllByRole('radio')
+    fireEvent.click(screen.getByRole('radio', { name: 'Off' }))
+    for (const mode of modes) expect(mode).toBeDisabled()
+    expect(waitField).toBeDisabled()
+    expect(waitField).toHaveValue(10)
+    expect(screen.getByRole('radio', { name: 'Set a custom ai question wait' })).toHaveAttribute('aria-checked', 'true')
+
+    fireEvent.click(screen.getByRole('radio', { name: 'On' }))
+    for (const mode of modes) expect(mode).toBeEnabled()
+    expect(waitField).toBeEnabled()
+    expect(waitField).toHaveValue(10)
+    expect(screen.getByRole('radio', { name: 'Set a custom ai question wait' })).toHaveAttribute('aria-checked', 'true')
+    fireEvent.click(screen.getByRole('radio', { name: 'Off' }))
     fireEvent.click(screen.getByRole('button', { name: 'Save' }))
 
     await waitFor(() => expect(updateProfileMutate).toHaveBeenCalledWith(
@@ -624,7 +640,7 @@ describe('ProfileSetup', () => {
     )
   })
 
-  it('blocks invalid wait edits until a valid edit or Default clears the error', async () => {
+  it('blocks active invalid waits, restores validation on re-enable, and clears it with Default', async () => {
     await renderProfileSetup()
     const waitField = openCustomAiQuestionWait()
     const save = screen.getByRole('button', { name: 'Save' })
@@ -644,11 +660,28 @@ describe('ProfileSetup', () => {
     fireEvent.change(waitField, { target: { value: '61' } })
     expect(save).toBeDisabled()
 
+    fireEvent.click(screen.getByRole('radio', { name: 'Off' }))
+    expect(waitField).toBeDisabled()
+    expect(waitField).toHaveValue(61)
+    expect(screen.queryByRole('alert')).not.toBeInTheDocument()
+    expect(save).toBeEnabled()
+    fireEvent.click(save)
+    expect(updateProfileMutate).toHaveBeenLastCalledWith(
+      expect.objectContaining({ aiQuestionsEnabled: false, aiQuestionWindow: 600_000 }),
+      expect.anything(),
+    )
+
+    fireEvent.click(screen.getByRole('radio', { name: 'On' }))
+    expect(waitField).toBeEnabled()
+    expect(waitField).toHaveValue(61)
+    expect(waitField).toHaveAttribute('aria-invalid', 'true')
+    expect(save).toBeDisabled()
+
     fireEvent.click(screen.getByRole('radio', { name: 'Default ai question wait' }))
     expect(screen.queryByRole('alert')).not.toBeInTheDocument()
     expect(save).toBeEnabled()
     fireEvent.click(save)
-    expect(updateProfileMutate).toHaveBeenCalledWith(
+    expect(updateProfileMutate).toHaveBeenLastCalledWith(
       expect.objectContaining({ aiQuestionWindow: 300_000 }),
       expect.anything(),
     )

@@ -416,7 +416,7 @@ export function DraftView({ ticket }: DraftViewProps) {
                     )}
                   />
                 </div>
-                <div className="border-t border-border pt-3">
+                <div className="pl-4">
                   <InheritableDurationField
                     label="AI question wait"
                     idPrefix="draft-ai-question-wait"
@@ -427,7 +427,7 @@ export function DraftView({ ticket }: DraftViewProps) {
                     minMs={AI_QUESTION_WINDOW_MIN_MS}
                     maxMs={AI_QUESTION_WINDOW_MAX_MS}
                     formatValue={formatAiQuestionWindow}
-                    disabled={isSavingDescription}
+                    disabled={isSavingDescription || !(aiQuestionsOverride ?? inheritedAiQuestions.enabled)}
                     hint={AI_QUESTION_WAIT_HINT}
                     help={(
                       <ConfigurationDocsLink

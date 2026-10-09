@@ -119,8 +119,14 @@ describe('DraftView', () => {
     vi.restoreAllMocks()
   })
 
-  it('shows the ticket settings inside the collapsed Advanced section for ordinary Draft tickets', async () => {
-    const ordinaryTicket = makeTicket({ availableActions: ['start', 'cancel'] })
+  it.each([false, null] as const)('shows Advanced settings and preserves disabled duration with AI questions override %s', async (aiQuestionsOverride) => {
+    const ordinaryTicket = makeTicket({ availableActions: ['start', 'cancel'], aiQuestionsOverride, aiQuestionWindowOverride: 900_000 })
+    const fetchMock = mockFetch((url, init) => {
+      if (url === `/api/tickets/${encodeURIComponent(TEST.ticketId)}` && init?.method === 'PATCH') {
+        return createJsonResponse({ ...ordinaryTicket, ...JSON.parse(String(init.body)) })
+      }
+      throw new Error(`Unhandled fetch: ${url}`)
+    }, [{ ...projectData, aiQuestionsOverride: false }])
     renderWithProviders(<DraftView ticket={ordinaryTicket} />)
 
     expect(await screen.findByText('Current Council Members')).toBeInTheDocument()
@@ -153,6 +159,37 @@ describe('DraftView', () => {
       expect(advanced.getByText(label)).toBe(screen.getByText(label))
       expect(advanced.getByText(label).parentElement).toContainElement(help)
     }
+    const waitRow = advanced.getByText('AI question wait').closest('.pl-4')
+    expect(waitRow).toHaveClass('pl-4')
+    expect(waitRow).not.toHaveClass('border-t')
+    expect(waitRow?.previousElementSibling).toContainElement(advanced.getByRole('radiogroup', { name: 'AI questions setting' }))
+
+    const wait = screen.getByLabelText('AI question wait')
+    const modes = within(screen.getByRole('radiogroup', { name: 'AI question wait source' })).getAllByRole('radio')
+    await waitFor(() => expect(wait).toBeDisabled())
+    for (const mode of modes) expect(mode).toBeDisabled()
+    expect(wait).toHaveValue(15)
+    expect(screen.getByRole('radio', { name: 'Set a custom ai question wait' })).toHaveAttribute('aria-checked', 'true')
+
+    const questions = within(screen.getByRole('radiogroup', { name: 'AI questions setting' }))
+    fireEvent.click(questions.getByRole('radio', { name: 'On' }))
+    await waitFor(() => expect(fetchMock).toHaveBeenCalledWith(
+      `/api/tickets/${encodeURIComponent(TEST.ticketId)}`,
+      expect.objectContaining({ method: 'PATCH', body: JSON.stringify({ aiQuestionsOverride: true }) }),
+    ))
+    for (const mode of modes) expect(mode).toBeEnabled()
+    expect(wait).toBeEnabled()
+    expect(wait).toHaveValue(15)
+    expect(screen.getByRole('radio', { name: 'Set a custom ai question wait' })).toHaveAttribute('aria-checked', 'true')
+
+    fireEvent.click(questions.getByRole('radio', { name: 'Inherit' }))
+    await waitFor(() => expect(fetchMock).toHaveBeenCalledWith(
+      `/api/tickets/${encodeURIComponent(TEST.ticketId)}`,
+      expect.objectContaining({ method: 'PATCH', body: JSON.stringify({ aiQuestionsOverride: null }) }),
+    ))
+    for (const mode of modes) expect(mode).toBeDisabled()
+    expect(wait).toBeDisabled()
+    expect(wait).toHaveValue(15)
 
     fireEvent.click(advancedButton)
     expect(screen.queryByText('AI questions')).not.toBeInTheDocument()

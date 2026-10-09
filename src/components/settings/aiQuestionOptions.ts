@@ -9,7 +9,7 @@ const ON: TriStateOption = {
 const OFF: TriStateOption = {
   value: false,
   label: 'Off',
-  tooltip: 'Models never ask. A step that would have asked keeps going and decides on its own.',
+  tooltip: 'Models never ask. A step that would have asked keeps going and decides on its own. The wait controls are disabled, and your chosen duration is kept for when questions are enabled again.',
 }
 
 const INHERIT: TriStateOption = {
@@ -25,4 +25,4 @@ export const AI_QUESTIONS_OPTIONS: readonly TriStateOption[] = [ON, OFF]
 export const AI_QUESTIONS_INHERITABLE_OPTIONS: readonly TriStateOption[] = [INHERIT, ON, OFF]
 
 export const AI_QUESTION_WAIT_HINT = 'How long a question waits before the run carries on.'
-export const AI_QUESTION_WAIT_HELP = "Choose a wait of 1–60 whole minutes. Waiting does not use up the step's working time. A step can take its full timeout plus the time it spent waiting on you."
+export const AI_QUESTION_WAIT_HELP = "Applies when AI questions is On. Choose a wait of 1–60 whole minutes. Waiting does not use up the step's working time. A step can take its full timeout plus the time it spent waiting on you."

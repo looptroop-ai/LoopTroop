@@ -7,13 +7,13 @@ import { ConfigurationDocsLink } from './ConfigurationDocsLink'
 import { EffortPicker } from './EffortPicker'
 import { ModelPicker } from './ModelPicker'
 import { OpenRouterRoutingPicker } from './OpenRouterRoutingPicker'
-import { cleanModelId, type ProfileFormData } from './profileFormData'
+import { cleanModelId, createCouncilSlot, type CouncilSlot, type ProfileFormData } from './profileFormData'
 
 interface ProfileModelsSectionProps {
   formData: ProfileFormData
   updateField: <K extends keyof ProfileFormData>(key: K, value: ProfileFormData[K]) => void
-  councilSlots: string[]
-  setCouncilSlots: Dispatch<SetStateAction<string[]>>
+  councilSlots: CouncilSlot[]
+  setCouncilSlots: Dispatch<SetStateAction<CouncilSlot[]>>
   mainVariant: string | undefined
   setMainVariant: Dispatch<SetStateAction<string | undefined>>
   councilVariants: Record<string, string>
@@ -159,7 +159,7 @@ const MainImplementerSection = ({ formData, updateField, councilSlots, mainVaria
         updateField('mainImplementer', value)
         setMainVariant(undefined)
       }}
-      disabledValues={councilSlots.filter(Boolean)}
+      disabledValues={councilSlots.map(slot => slot.modelId).filter(Boolean)}
     />
     <ModelOptions
       modelId={formData.mainImplementer}
@@ -199,37 +199,37 @@ type CouncilModelsProps = Pick<ProfileModelsSectionProps,
 >
 
 interface CouncilMemberProps extends CouncilModelsProps {
-  slot: string
+  slot: CouncilSlot
   index: number
 }
 
 const CouncilMemberRow = ({ slot, index, formData, councilSlots, setCouncilSlots, councilVariants, setCouncilVariants, modelVariantMap, models, isRefreshingModels }: CouncilMemberProps) => {
   const updateModel = (modelId: string) => {
-    setCouncilSlots(previous => previous.map((value, position) => position === index ? modelId : value))
-    if (slot && slot !== modelId) {
+    setCouncilSlots(previous => previous.map(value => value.id === slot.id ? { ...value, modelId } : value))
+    if (slot.modelId && slot.modelId !== modelId) {
       setCouncilVariants(previous => {
         const next = { ...previous }
-        delete next[cleanModelId(slot)]
+        delete next[cleanModelId(slot.modelId)]
         return next
       })
     }
   }
   const updateVariant = (variant: string | undefined) => setCouncilVariants(previous => {
     const next = { ...previous }
-    const cleanSlot = cleanModelId(slot)
+    const cleanSlot = cleanModelId(slot.modelId)
     if (variant) next[cleanSlot] = variant
     else delete next[cleanSlot]
     return next
   })
   const updateRouting = (modelId: string) => {
-    setCouncilSlots(previous => previous.map((value, position) => position === index ? modelId : value))
+    setCouncilSlots(previous => previous.map(value => value.id === slot.id ? { ...value, modelId } : value))
   }
   const removeMember = () => {
-    setCouncilSlots(previous => previous.filter((_, position) => position !== index))
-    if (slot) {
+    setCouncilSlots(previous => previous.filter(value => value.id !== slot.id))
+    if (slot.modelId) {
       setCouncilVariants(previous => {
         const next = { ...previous }
-        delete next[cleanModelId(slot)]
+        delete next[cleanModelId(slot.modelId)]
         return next
       })
     }
@@ -239,15 +239,15 @@ const CouncilMemberRow = ({ slot, index, formData, councilSlots, setCouncilSlots
       <div className="flex-1 space-y-1.5">
         <ModelPicker
           isRefreshing={isRefreshingModels}
-          value={slot}
+          value={slot.modelId}
           onChange={updateModel}
           label={`Council member ${index + 2}`}
           placeholder={`Council member ${index + 2}…`}
-          disabledValues={[formData.mainImplementer, ...councilSlots.filter((_, position) => position !== index)].filter(Boolean)}
+          disabledValues={[formData.mainImplementer, ...councilSlots.filter(value => value.id !== slot.id).map(value => value.modelId)].filter(Boolean)}
         />
         <ModelOptions
-          modelId={slot}
-          variant={councilVariants[cleanModelId(slot)]}
+          modelId={slot.modelId}
+          variant={councilVariants[cleanModelId(slot.modelId)]}
           onVariantChange={updateVariant}
           onRoutingChange={updateRouting}
           modelVariantMap={modelVariantMap}
@@ -271,6 +271,10 @@ type CouncilSectionProps = CouncilModelsProps & Pick<ProfileModelsSectionProps, 
 
 const CouncilMembersSection = (props: CouncilSectionProps) => {
   const { formData, councilSlots, setCouncilSlots, mainVariant } = props
+  const addMember = () => {
+    const slot = createCouncilSlot('')
+    setCouncilSlots(previous => [...previous, slot])
+  }
   return (
     <div>
       <label className="text-sm font-medium block mb-1">Council Members</label>
@@ -287,21 +291,21 @@ const CouncilMembersSection = (props: CouncilSectionProps) => {
       <div className="space-y-2">
         <MainImplementerCouncilRow mainImplementer={formData.mainImplementer} mainVariant={mainVariant} />
         {councilSlots.map((slot, index) => (
-          <CouncilMemberRow key={index} {...props} slot={slot} index={index} />
+          <CouncilMemberRow key={slot.id} {...props} slot={slot} index={index} />
         ))}
         {councilSlots.length < 9 && (
           <Button
             type="button"
             variant="outline"
             size="sm"
-            onClick={() => setCouncilSlots(previous => [...previous, ''])}
+            onClick={addMember}
             className="gap-1.5"
           >
             <Plus className="h-3.5 w-3.5" />
             Add Council Member
           </Button>
         )}
-        {councilSlots.filter(Boolean).length < 1 && (
+        {councilSlots.map(slot => slot.modelId).filter(Boolean).length < 1 && (
           <p className="text-xs text-amber-600">
             Add at least 1 more council member (MAI + 1 minimum).
           </p>

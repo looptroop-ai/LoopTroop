@@ -1,5 +1,5 @@
-import { cleanup, fireEvent, render, screen } from '@testing-library/react'
-import { useState, type ComponentProps } from 'react'
+import { act, cleanup, fireEvent, render, screen } from '@testing-library/react'
+import { startTransition, Suspense, useState, type ComponentProps } from 'react'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import {
   AI_QUESTION_WINDOW_MAX_MS,
@@ -274,6 +274,39 @@ describe('InheritableDurationField', () => {
     expect(screen.getByRole('alert')).toHaveTextContent('Use whole minutes (1 to 60).')
     expect(onValidationChange).toHaveBeenLastCalledWith(true)
     expect(onChange).not.toHaveBeenCalled()
+  })
+
+  it('synchronizes the owner value after an interrupted render retries', async () => {
+    const pending = new Promise<void>(() => {})
+    const RenderGate = ({ blocked }: { blocked: boolean }) => {
+      if (blocked) throw pending
+      return null
+    }
+    const Controlled = () => {
+      const [value, setValue] = useState<number | null>(300_000)
+      const [blocked, setBlocked] = useState(false)
+      return (
+        <>
+          <button onClick={() => startTransition(() => { setValue(900_000); setBlocked(true) })}>Replace wait</button>
+          <button onClick={() => setBlocked(false)}>Retry render</button>
+          <Suspense fallback="Waiting">
+            <InheritableDurationField
+              label="AI question wait" idPrefix="test-wait" value={value} onChange={setValue}
+              inheritedMs={300_000} minMs={AI_QUESTION_WINDOW_MIN_MS} maxMs={AI_QUESTION_WINDOW_MAX_MS}
+            />
+            <RenderGate blocked={blocked} />
+          </Suspense>
+        </>
+      )
+    }
+    render(<Controlled />)
+
+    await act(() => { fireEvent.click(screen.getByRole('button', { name: 'Replace wait' })) })
+    expect(screen.getByLabelText('AI question wait')).toHaveValue(5)
+
+    await act(() => { fireEvent.click(screen.getByRole('button', { name: 'Retry render' })) })
+    expect(screen.getByLabelText('AI question wait')).toHaveValue(15)
+    expect(screen.queryByRole('alert')).not.toBeInTheDocument()
   })
 
   it.each([

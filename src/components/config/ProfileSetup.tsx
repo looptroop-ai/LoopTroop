@@ -7,7 +7,7 @@ import { SHARED_PROFILE_DEFAULTS as PROFILE_DEFAULTS } from '@shared/profileDefa
 import { useQueryClient } from '@tanstack/react-query'
 import { useOpenCodeModels, refetchOpenCodeModelsQuery, refreshOpenCodeModelsQuery } from '@/hooks/useOpenCodeModels'
 import { hasNumericErrors, buildInitialRawNumeric } from './numericFieldConfig'
-import { buildProfileFormData, buildProfilePayload, profileDraftSnapshot, buildHydratedProfileDraft, initialProfileBaseline, type ProfileFormData } from './profileFormData'
+import { buildProfileFormData, buildProfilePayload, profileDraftSnapshot, buildHydratedProfileDraft, initialProfileBaseline, type CouncilSlot, type ProfileFormData } from './profileFormData'
 import { ProfileNumericSections } from './ProfileNumericSections'
 import { ProfileAdvancedSettings } from './ProfileAdvancedSettings'
 import { ProfileModelsSection } from './ProfileModelsSection'
@@ -40,7 +40,7 @@ export const ProfileSetup = ({ onClose, onOpenAbout, onDirtyChange }: ProfileSet
 
   const hasErrors = hasNumericErrors(rawNumeric) || hasAiQuestionWaitError
 
-  const [councilSlots, setCouncilSlots] = useState<string[]>([])
+  const [councilSlots, setCouncilSlots] = useState<CouncilSlot[]>([])
 
   // Variant state: per-model variant selections
   const [mainVariant, setMainVariant] = useState<string | undefined>(undefined)

@@ -4,6 +4,7 @@ import { DEFAULT_GIT_HOOK_POLICY } from '@shared/gitHookPolicy'
 import { DEFAULT_IGNORE_MODE } from '@shared/ignoreMode'
 import { numericFields, buildInitialRawNumeric } from './numericFieldConfig'
 import { getProfileCouncil } from '@/lib/profileCouncil'
+import { createActionId } from '@/lib/actionId'
 
 const DEFAULT_FORM_DATA = {
   ...SHARED_PROFILE_DEFAULTS,
@@ -13,6 +14,13 @@ const DEFAULT_FORM_DATA = {
 } satisfies CreateProfileInput
 
 export type ProfileFormData = { [K in keyof typeof DEFAULT_FORM_DATA]: NonNullable<CreateProfileInput[K]> }
+
+export interface CouncilSlot {
+  id: string
+  modelId: string
+}
+
+export const createCouncilSlot = (modelId: string): CouncilSlot => ({ id: createActionId(), modelId })
 
 /** Copy only editable settings, applying the same defaults at mount and hydration. */
 export const buildProfileFormData = (profile: Profile | null | undefined): ProfileFormData =>
@@ -26,7 +34,7 @@ export const buildHydratedProfileDraft = (profile: Profile) => {
   const mainVariant = profile.mainImplementerVariant || undefined
   const council = getProfileCouncil(profile)
   const councilVariants = Object.fromEntries(Object.entries(council.variants).map(([id, variant]) => [cleanModelId(id), variant]))
-  const councilSlots = council.members.filter(id => id !== profile.mainImplementer)
+  const councilSlots = council.members.filter(id => id !== profile.mainImplementer).map(createCouncilSlot)
   const isWaitCustom = formData.aiQuestionWindow !== SHARED_PROFILE_DEFAULTS.aiQuestionWindow
   const snapshot = profileDraftSnapshot(formData, rawNumeric, councilSlots, mainVariant, councilVariants, isWaitCustom)
   return { formData, rawNumeric, mainVariant, councilVariants, councilSlots, isWaitCustom, snapshot }
@@ -40,14 +48,14 @@ export const cleanModelId = (id: string | null | undefined): string =>
 export const profileDraftSnapshot = (
   formData: CreateProfileInput,
   rawNumeric: Record<string, string>,
-  councilSlots: string[],
+  councilSlots: CouncilSlot[],
   mainVariant: string | undefined,
   councilVariants: Record<string, string>,
   isAiQuestionWaitCustom: boolean,
 ): string => JSON.stringify({
   formData: Object.entries(formData).sort(([a], [b]) => a.localeCompare(b)),
   rawNumeric: Object.entries(rawNumeric).sort(([a], [b]) => a.localeCompare(b)),
-  councilSlots,
+  councilSlots: councilSlots.map(slot => slot.modelId),
   isAiQuestionWaitCustom,
   mainVariant: mainVariant && mainVariant !== 'none' ? mainVariant : null,
   councilVariants: Object.entries(councilVariants)
@@ -59,7 +67,7 @@ export const profileDraftSnapshot = (
 export const buildProfilePayload = (
   formData: ProfileFormData,
   rawNumeric: Record<string, string>,
-  councilSlots: string[],
+  councilSlots: CouncilSlot[],
   mainVariant: string | undefined,
   councilVariants: Record<string, string>,
 ): CreateProfileInput => {
@@ -67,7 +75,7 @@ export const buildProfilePayload = (
     ...formData,
     ...Object.fromEntries(Object.entries(numericFields).map(([key, config]) => [key, config.toStore(Number(rawNumeric[key]))])),
   }
-  const uniqueCouncil = [...new Set([validatedData.mainImplementer, ...councilSlots].filter(Boolean))]
+  const uniqueCouncil = [...new Set([validatedData.mainImplementer, ...councilSlots.map(slot => slot.modelId)].filter(Boolean))]
   const variantsMap = Object.fromEntries(uniqueCouncil
     .filter(modelId => modelId !== validatedData.mainImplementer)
     .map(modelId => [modelId, councilVariants[cleanModelId(modelId)]])

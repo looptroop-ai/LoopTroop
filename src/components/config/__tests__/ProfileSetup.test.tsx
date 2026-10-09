@@ -1,11 +1,11 @@
-import type { ReactNode } from 'react'
+import type { ComponentProps, ReactNode } from 'react'
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { act, fireEvent, render, screen, waitFor, within } from '@testing-library/react'
 import { ToastProvider } from '@/components/shared/Toast'
 import { TooltipProvider } from '@/components/ui/tooltip'
 import { ProfileSetup } from '../ProfileSetup'
-import { OPENCODE_MODELS_QUERY_KEY } from '@/hooks/useOpenCodeModels'
+import { OPENCODE_MODELS_QUERY_KEY, type OpenCodeModel } from '@/hooks/useOpenCodeModels'
 import { MODEL_FETCH_RETRY_DELAY_MS } from '@/lib/constants'
 
 const updateProfileMutate = vi.fn()
@@ -43,6 +43,7 @@ const existingProfile = {
 }
 let profileForTest: typeof existingProfile | null | undefined = existingProfile
 let profileLoadingForTest = false
+let useRealModelPickerForTest = false
 
 vi.mock('@/hooks/useProfile', () => ({
   useProfile: () => ({ data: profileForTest, isLoading: profileLoadingForTest }),
@@ -58,18 +59,17 @@ vi.mock('@/hooks/useProfile', () => ({
   }),
 }))
 
-vi.mock('../ModelPicker', () => ({
-  ModelPicker: ({ id, label, value, placeholder = 'Search models…', onChange, isRefreshing }: {
-    id?: string
-    label?: string
-    value?: string
-    placeholder?: string
-    onChange?: (modelId: string) => void
-    isRefreshing?: boolean
-  }) => (
-    <button id={id} aria-label={`${label} ${value || placeholder}`} aria-busy={isRefreshing || undefined} type="button" onClick={() => onChange?.('openai/next-model')}>{value || placeholder}</button>
-  ),
-}))
+vi.mock('../ModelPicker', async () => {
+  const actual = await vi.importActual<typeof import('../ModelPicker')>('../ModelPicker')
+  return {
+    ModelPicker: (props: ComponentProps<typeof actual.ModelPicker>) => {
+      if (useRealModelPickerForTest) return <actual.ModelPicker {...props} />
+      const { id, label, value, placeholder = 'Search models…', onChange, isRefreshing } = props
+      const displayedValue = value || placeholder
+      return <button id={id} aria-label={`${label} ${displayedValue}`} aria-busy={isRefreshing || undefined} type="button" onClick={() => onChange('openai/next-model')}>{displayedValue}</button>
+    },
+  }
+})
 
 vi.mock('@/components/shared/DropdownPicker', () => ({
   DropdownPicker: ({ trigger }: { trigger: ReactNode }) => <>{trigger}</>,
@@ -115,12 +115,39 @@ const openCustomAiQuestionWait = () => {
   return screen.getByLabelText('AI question wait')
 }
 
+const renderRealCouncilPickers = async () => {
+  useRealModelPickerForTest = true
+  const modelIds = ['opencode/big-pickle', 'openai/first', 'openai/middle', 'openai/last', 'openai/extra-a', 'openai/extra-b']
+  const models: OpenCodeModel[] = modelIds.map(fullId => ({
+    fullId,
+    id: fullId,
+    name: fullId,
+    providerID: fullId.split('/')[0] ?? '',
+    providerName: 'Test provider',
+    family: 'test',
+    costInput: 0,
+    costOutput: 0,
+    contextWindow: 128_000,
+    canReason: false,
+    canSeeImages: false,
+    canUseTools: true,
+    status: 'stable',
+  }))
+  profileForTest = { ...existingProfile, councilMembers: JSON.stringify(modelIds.slice(0, 4)) }
+  vi.mocked(fetch).mockImplementation(input => {
+    const body = input === '/api/health/opencode' ? { status: 'ok' } : { models, connectedProviders: ['opencode', 'openai'], defaultModels: {} }
+    return Promise.resolve({ ok: true, json: () => Promise.resolve(body) } as Response)
+  })
+  await renderProfileSetup()
+}
+
 describe('ProfileSetup', () => {
   beforeEach(() => {
     updateProfileMutate.mockReset()
     createProfileMutate.mockReset()
     profileForTest = existingProfile
     profileLoadingForTest = false
+    useRealModelPickerForTest = false
     vi.stubGlobal('fetch', vi.fn(async (input: RequestInfo | URL) => {
       const url = typeof input === 'string'
         ? input
@@ -320,6 +347,56 @@ describe('ProfileSetup', () => {
 
     expect(screen.getByRole('button', { name: 'Council member 10 Council member 10…' })).toBeInTheDocument()
     expect(screen.queryByRole('button', { name: 'Add Council Member' })).not.toBeInTheDocument()
+  })
+
+  it('preserves the surviving picker search and focus when an earlier council row is removed', async () => {
+    await renderRealCouncilPickers()
+    const lastPicker = await screen.findByRole('button', { name: /^Council member 4 / })
+    fireEvent.click(lastPicker)
+    const search = screen.getByRole('combobox', { name: 'Council member 4: search models' })
+    fireEvent.change(search, { target: { value: 'last' } })
+    await waitFor(() => expect(search).toHaveFocus())
+
+    act(() => screen.getByRole('button', { name: 'Remove council member 3' }).click())
+
+    expect(screen.getByRole('button', { name: /^Council member 3 / })).toBe(lastPicker)
+    expect(screen.getByRole('combobox', { name: 'Council member 3: search models' })).toBe(search)
+    expect(search).toHaveValue('last')
+    expect(search).toHaveFocus()
+  })
+
+  it('keeps a surviving picker filter after pointer removal of an earlier council row', async () => {
+    await renderRealCouncilPickers()
+    fireEvent.click(await screen.findByRole('button', { name: /^Council member 4 / }))
+    const search = screen.getByRole('combobox', { name: 'Council member 4: search models' })
+    fireEvent.change(search, { target: { value: 'last' } })
+    const remove = screen.getByRole('button', { name: 'Remove council member 3' })
+    fireEvent.mouseDown(remove)
+    fireEvent.click(remove)
+    expect(screen.queryByRole('combobox')).not.toBeInTheDocument()
+
+    fireEvent.click(screen.getByRole('button', { name: /^Council member 3 / }))
+
+    expect(screen.getByRole('combobox', { name: 'Council member 3: search models' })).toHaveValue('last')
+  })
+
+  it('keeps blank council rows distinct and preserves picker identity when a model is selected', async () => {
+    await renderRealCouncilPickers()
+    fireEvent.click(screen.getByRole('button', { name: 'Add Council Member' }))
+    fireEvent.click(screen.getByRole('button', { name: 'Add Council Member' }))
+    const firstBlank = screen.getByRole('button', { name: /^Council member 5 / })
+    const secondBlank = screen.getByRole('button', { name: /^Council member 6 / })
+    fireEvent.click(firstBlank)
+    fireEvent.click(await screen.findByRole('option', { name: /openai\/extra-a/ }))
+
+    expect(screen.getByRole('button', { name: /^Council member 5 / })).toBe(firstBlank)
+    expect(screen.getByRole('button', { name: /^Council member 6 / })).toBe(secondBlank)
+    expect(firstBlank).toHaveFocus()
+    fireEvent.click(screen.getByRole('button', { name: 'Save' }))
+    expect(updateProfileMutate).toHaveBeenCalledWith(
+      expect.objectContaining({ councilMembers: JSON.stringify(['opencode/big-pickle', 'openai/first', 'openai/middle', 'openai/last', 'openai/extra-a']) }),
+      expect.anything(),
+    )
   })
 
   it('normalizes legacy None effort selections to unset configuration overrides on save', async () => {

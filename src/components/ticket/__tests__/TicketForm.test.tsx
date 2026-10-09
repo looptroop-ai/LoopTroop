@@ -403,7 +403,7 @@ describe('TicketForm', () => {
     expect(start).toBeEnabled()
   })
 
-  it('moves focus and selects AI questions choices with the arrow keys', () => {
+  it('moves focus and selects AI questions choices with the arrow keys', async () => {
     renderWithProviders(
       <UIContext.Provider value={makeUIValue()}>
         <TicketForm onClose={vi.fn()} />
@@ -414,7 +414,7 @@ describe('TicketForm', () => {
     const inherit = questions.getByRole('radio', { name: 'Inherit' })
     const on = questions.getByRole('radio', { name: 'On' })
     const off = questions.getByRole('radio', { name: 'Off' })
-    inherit.focus()
+    await act(() => inherit.focus())
 
     expect(inherit).toHaveAttribute('tabindex', '0')
     expect(on).toHaveAttribute('tabindex', '-1')

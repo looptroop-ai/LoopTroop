@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from 'react'
+import { useEffect, useState } from 'react'
 import { DurationFieldControls, type InheritableDurationFieldProps } from './DurationFieldControls'
 import { MS_PER_MINUTE, clampDurationToRange, getDurationFieldError, toDurationMinutesText, validateDurationMinutes } from './durationFieldUtils'
 
@@ -10,15 +10,15 @@ export const InheritableDurationField = (props: InheritableDurationFieldProps) =
 
   // Keep invalid typed text locally instead of sending it to the owner.
   const [rawMinutes, setRawMinutes] = useState(() => toDurationMinutesText(value))
-  const lastEmittedRef = useRef<number | null>(value)
+  const [syncedValue, setSyncedValue] = useState<number | null>(value)
 
-  if (value !== lastEmittedRef.current) {
-    lastEmittedRef.current = value
+  if (value !== syncedValue) {
+    setSyncedValue(value)
     setRawMinutes(toDurationMinutesText(value))
   }
 
   const emit = (next: number | null) => {
-    lastEmittedRef.current = next
+    setSyncedValue(next)
     onChange(next)
   }
 
@@ -31,7 +31,7 @@ export const InheritableDurationField = (props: InheritableDurationFieldProps) =
   const commitMinutes = (raw: string) => {
     if (disabled || validateDurationMinutes(raw, minMinutes, maxMinutes)) return
     const next = Number(raw) * MS_PER_MINUTE
-    if (next !== lastEmittedRef.current) emit(next)
+    if (next !== syncedValue) emit(next)
   }
 
   const handleRawChange = (raw: string) => {

@@ -283,7 +283,7 @@ export function mapV2Event(
     : null
 }
 
-// DurableDefinitions in the pinned OpenCode v2.0.16 session-event manifest.
+// OpenCode's session-event DurableDefinitions; verify this list when updating the v2 CI fixture.
 export const V2_DURABLE_EVENT_TYPES = new Set([
   'session.created',
   'session.agent.selected',

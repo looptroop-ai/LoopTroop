@@ -65,19 +65,22 @@ export const ticketMachine = setup({
       error: ({ event }) => {
         if (event.type === 'ERROR') return event.message
         if (event.type === 'INIT_FAILED') return event.message
+        if (event.type === 'CHECKS_FAILED' || event.type === 'EXECUTION_SETUP_FAILED'
+          || event.type === 'TESTS_FAILED' || event.type === 'BEAD_ERROR') {
+          const cause = event.errors?.filter(error => error.trim().length > 0).join('\n')
+          if (cause) return cause
+        }
         if (event.type === 'CHECKS_FAILED') return 'Pre-flight check failed'
-        if (event.type === 'EXECUTION_SETUP_PLAN_FAILED') return 'Execution setup plan failed'
         if (event.type === 'EXECUTION_SETUP_FAILED') return 'Execution setup failed'
         if (event.type === 'TESTS_FAILED') return 'Final test failed'
-        if (event.type === 'BEAD_ERROR') return 'Bead execution failed'
+        if (event.type === 'BEAD_ERROR') return event.diagnostics?.summary || 'Bead execution failed'
         return 'Unknown error'
       },
       errorCodes: ({ event }) => {
         if (event.type === 'ERROR') return event.codes ?? []
         if (event.type === 'INIT_FAILED') return event.codes ?? []
-        if (event.type === 'CHECKS_FAILED') return event.errors
-        if (event.type === 'EXECUTION_SETUP_PLAN_FAILED') return event.errors ?? []
-        if (event.type === 'EXECUTION_SETUP_FAILED') return event.errors ?? []
+        if (event.type === 'CHECKS_FAILED') return ['PREFLIGHT_FAILED']
+        if (event.type === 'EXECUTION_SETUP_FAILED') return ['EXECUTION_SETUP_FAILED']
         if (event.type === 'BEAD_ERROR') return event.codes ?? []
         if (event.type === 'TESTS_FAILED') return [FINAL_TEST_FAILED]
         return []

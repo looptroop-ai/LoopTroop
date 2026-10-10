@@ -79,6 +79,34 @@ describe('handleFinalTest', () => {
     repoManager.cleanup()
   })
 
+  it('includes failed command details in the blocked-error event', async () => {
+    const { ticket, context } = await createInitializedTestTicket(repoManager)
+    const errors = ['Command failed (1): run final tests']
+    executeFinalTestWithRetriesMock.mockResolvedValueOnce({
+      status: 'failed',
+      passed: false,
+      checkedAt: TEST.timestamp,
+      plannedBy: TEST.implementer,
+      testFiles: [],
+      modifiedFiles: [],
+      fileEffects: [],
+      testsCount: null,
+      modelOutput: '',
+      commands: [],
+      errors,
+      attempt: 2,
+      maxIterations: 2,
+      attemptHistory: [],
+      retryNotes: [],
+    })
+    const sendEvent = vi.fn()
+
+    await handleFinalTest(ticket.id, { ...context, lockedMainImplementer: TEST.implementer }, sendEvent, new AbortController().signal)
+
+    expect(sendEvent).toHaveBeenCalledWith({ type: 'TESTS_FAILED', errors })
+    expect(sendEvent).not.toHaveBeenCalledWith({ type: 'TESTS_PASSED' })
+  })
+
   it('filters reported paths by components and canonical containment without rejecting dotted filenames', async () => {
     const { ticket, context, paths } = await createInitializedTestTicket(repoManager)
     const outside = join(paths.projectRoot, 'outside')

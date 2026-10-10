@@ -705,6 +705,7 @@ export async function handleCoding(
     })
     sendEvent({
       type: 'BEAD_ERROR',
+      errors: result.errors,
       ...(result.errorCodes && result.errorCodes.length > 0 ? { codes: result.errorCodes } : {}),
       ...(result.diagnostics ? { diagnostics: result.diagnostics } : {}),
     })

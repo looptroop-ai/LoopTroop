@@ -5201,7 +5201,7 @@ export async function handleFinalTest(
     errors: report.errors,
     retryNotes: report.retryNotes,
   })
-  sendEvent({ type: 'TESTS_FAILED' })
+  sendEvent({ type: 'TESTS_FAILED', errors: report.errors })
     },
     (phase, type, content) => emitPhaseLog(ticketId, context.externalId, phase, type, content, { source: 'system', audience: 'all' }),
   )

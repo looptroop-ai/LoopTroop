@@ -373,7 +373,7 @@ describe('handleCoding', () => {
 
     await handleCoding(ticket.id, context, sendEvent, new AbortController().signal)
 
-    expect(sendEvent).toHaveBeenCalledWith({ type: 'BEAD_ERROR' })
+    expect(sendEvent).toHaveBeenCalledWith({ type: 'BEAD_ERROR', errors: ['typecheck failed'] })
     expect(sendEvent).not.toHaveBeenCalledWith(expect.objectContaining({ type: 'BEAD_COMPLETE' }))
     expect(sendEvent).not.toHaveBeenCalledWith(expect.objectContaining({ type: 'ALL_BEADS_DONE' }))
     expect(commitBeadChangesMock).not.toHaveBeenCalled()
@@ -408,6 +408,7 @@ describe('handleCoding', () => {
 
     expect(sendEvent).toHaveBeenCalledWith({
       type: 'BEAD_ERROR',
+      errors: ['Reached the configured per-bead retry budget at iteration 10.'],
       codes: [BEAD_RETRY_BUDGET_EXHAUSTED],
     })
 
@@ -444,6 +445,7 @@ describe('handleCoding', () => {
 
     expect(sendEvent).toHaveBeenCalledWith({
       type: 'BEAD_ERROR',
+      errors: ['Iteration 5: No completion marker found'],
       codes: [BEAD_RETRY_BUDGET_EXHAUSTED, OPENCODE_PROVIDER_ERROR],
       diagnostics: expect.objectContaining({
         kind: 'opencode_provider',

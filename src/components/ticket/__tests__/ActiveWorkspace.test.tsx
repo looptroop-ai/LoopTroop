@@ -152,7 +152,7 @@ describe('ActiveWorkspace', () => {
       />,
     )
 
-    expect(await screen.findByText(/error view:err-live(:live|:readonly)?|Blocked: Error/)).toBeInTheDocument()
+    expect(await screen.findByText('error view:err-live:live')).toBeInTheDocument()
   })
 
   it('opens read-only error review mode for a resolved error occurrence', async () => {
@@ -182,7 +182,7 @@ describe('ActiveWorkspace', () => {
       />,
     )
 
-    expect(await screen.findByText(/error view:err-1(:live|:readonly)?|Error Review/)).toBeInTheDocument()
+    expect(await screen.findByText('error view:err-1:readonly')).toBeInTheDocument()
   })
 
   it('renders the live Manual QA workspace', async () => {

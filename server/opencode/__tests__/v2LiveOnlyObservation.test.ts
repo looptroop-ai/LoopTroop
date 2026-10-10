@@ -12,6 +12,8 @@ interface LiveOnlyServerOptions {
   onConnect?: (emit: (event: LiveEvent) => void) => void
   onWait?: (emit: (event: LiveEvent) => void, setPending: (ids: string[]) => void) => void
   onPrompt?: (emit: (event: LiveEvent) => void) => void
+  autoTitleAfterTerminal?: boolean
+  omitWatermarkAt?: 'pre-wait' | 'post-terminal'
   stallAfterCursorLog?: boolean
 }
 
@@ -67,7 +69,11 @@ function createLiveOnlyServer(options: LiveOnlyServerOptions = {}) {
   let inboxReads = 0
   let promptPosted = false
   let promptPostCount = 0
+  let sessionCreateCount = 0
+  let createdTitle: string | undefined
+  let hiddenTitleUsageCount = 0
   let logPayloadCount = 0
+  let logReads = 0
   const connected = deferred()
   const stalledLogOpened = deferred()
   const waitStarted = deferred()
@@ -84,6 +90,14 @@ function createLiveOnlyServer(options: LiveOnlyServerOptions = {}) {
   const fetcher: typeof fetch = async (input, init = {}) => {
     const url = input instanceof Request ? new URL(input.url) : new URL(String(input))
     const method = init.method ?? (input instanceof Request ? input.method : 'GET')
+
+    if (url.pathname === '/api/session' && method === 'POST') {
+      requestOrder.push('create')
+      sessionCreateCount++
+      const body = JSON.parse(String(init.body)) as { title?: string }
+      createdTitle = body.title
+      return jsonResponse({ data: { id: 'session-1', title: createdTitle, location: { directory: '/workspace' } } })
+    }
 
     if (url.pathname === '/api/session/session-1' && method === 'GET') {
       requestOrder.push('session')
@@ -113,6 +127,11 @@ function createLiveOnlyServer(options: LiveOnlyServerOptions = {}) {
     if (url.pathname.endsWith('/log') && method === 'GET') {
       const after = url.searchParams.get('after')
       requestOrder.push(`log:${after ?? 'full'}`)
+      // Preserve the bootstrap and subscription markers, then remove the fresh
+      // marker before the wait or after a completed accepted execution.
+      const omitWatermark = (options.omitWatermarkAt === 'pre-wait' && logReads === 2)
+        || (options.omitWatermarkAt === 'post-terminal' && promptPosted)
+      logReads++
       if (after !== null && options.stallAfterCursorLog) {
         const signal = init.signal
         return new Response(new ReadableStream<Uint8Array>({
@@ -135,7 +154,7 @@ function createLiveOnlyServer(options: LiveOnlyServerOptions = {}) {
       logPayloadCount += events.length
       return sseResponse([
         ...events,
-        { type: 'log.synced', aggregateID: 'session-1', seq: currentWatermark },
+        { type: 'log.synced', aggregateID: 'session-1', ...(omitWatermark ? {} : { seq: currentWatermark }) },
       ])
     }
 
@@ -176,6 +195,13 @@ function createLiveOnlyServer(options: LiveOnlyServerOptions = {}) {
       promptPosted = true
       promptPostCount++
       options.onPrompt?.(emit)
+      if (options.autoTitleAfterTerminal && sessionCreateCount > 0 && createdTitle === undefined) {
+        // The separate title fiber can bill usage after the execution ends and
+        // produce an empty title, leaving no public durable event after it.
+        currentWatermark++
+        hiddenTitleUsageCount++
+        emit({ type: 'session.usage.updated', data: { sessionID: 'session-1', cost: 0, tokens: { input: 1298, output: 14 } } })
+      }
       return jsonResponse({ data: { id: 'inbox-own', sessionID: 'session-1' } })
     }
 
@@ -195,6 +221,9 @@ function createLiveOnlyServer(options: LiveOnlyServerOptions = {}) {
     get logSignalAborted() { return logSignalAborted },
     get logPayloadCount() { return logPayloadCount },
     get promptPostCount() { return promptPostCount },
+    get sessionCreateCount() { return sessionCreateCount },
+    get createdTitle() { return createdTitle },
+    get hiddenTitleUsageCount() { return hiddenTitleUsageCount },
     get currentWatermark() { return currentWatermark },
   }
 }
@@ -202,6 +231,88 @@ function createLiveOnlyServer(options: LiveOnlyServerOptions = {}) {
 const promptParts = [{ type: 'text' as const, content: 'prompt' }]
 
 describe('OpenCode v2 live-only event coverage', () => {
+  it('creates a named session so title accounting cannot trail a completed prompt', async () => {
+    const server = createLiveOnlyServer({
+      autoTitleAfterTerminal: true,
+      onPrompt(emit) {
+        emit({ type: 'session.inbox.enqueued', seq: startCursor + 1, data: { sessionID: 'session-1', inboxID: 'inbox-own' } })
+        emit({ type: 'session.execution.started', seq: startCursor + 2, data: { sessionID: 'session-1' } })
+        emit({ type: 'session.inbox.delivered', seq: startCursor + 3, data: { sessionID: 'session-1', inboxID: 'inbox-own' } })
+        emit({ type: 'session.execution.succeeded', seq: startCursor + 4, data: { sessionID: 'session-1' } })
+      },
+    })
+    const controller = new AbortController()
+    const session = await server.adapter.createSession('/workspace', controller.signal)
+    const prompt = server.adapter.promptSession(session.id, promptParts, controller.signal)
+
+    try {
+      await expect(settleWithin(prompt, 1000)).resolves.toBe('live answer')
+      expect(server.createdTitle).toBe('LoopTroop')
+      expect(server.hiddenTitleUsageCount).toBe(0)
+      expect(server.sessionCreateCount).toBe(1)
+      expect(server.promptPostCount).toBe(1)
+      expect(server.currentWatermark).toBe(startCursor + 4)
+      expect(server.logPayloadCount).toBe(0)
+    } finally {
+      controller.abort(new DOMException('test cleanup', 'AbortError'))
+      await settleWithin(prompt.catch(() => undefined), 1000)
+    }
+  })
+
+  it('refuses a first live sequence that skips activity before the connection opened', async () => {
+    const server = createLiveOnlyServer({
+      onConnect(emit) {
+        // +1 was a public event emitted before registration; seeing +2 first
+        // cannot certify it as internal bookkeeping.
+        emit({ type: 'session.renamed', seq: startCursor + 2, data: { sessionID: 'session-1', title: 'Previous turn' } })
+      },
+      onPrompt(emit) {
+        emit({ type: 'session.inbox.enqueued', seq: startCursor + 3, data: { sessionID: 'session-1', inboxID: 'inbox-own' } })
+        emit({ type: 'session.execution.started', seq: startCursor + 4, data: { sessionID: 'session-1' } })
+        emit({ type: 'session.inbox.delivered', seq: startCursor + 5, data: { sessionID: 'session-1', inboxID: 'inbox-own' } })
+        emit({ type: 'session.execution.succeeded', seq: startCursor + 6, data: { sessionID: 'session-1' } })
+      },
+    })
+    const controller = new AbortController()
+    const prompt = server.adapter.promptSession('session-1', promptParts, controller.signal)
+
+    try {
+      await expect(settleWithin(prompt, 1000)).rejects.toThrow('certifiable event cursor')
+      expect(server.promptPostCount).toBe(0)
+      expect(server.requestOrder).not.toContain('prompt')
+    } finally {
+      controller.abort(new DOMException('test cleanup', 'AbortError'))
+      await settleWithin(prompt.catch(() => undefined), 1000)
+    }
+  })
+
+  it.each([
+    { phase: 'pre-wait' as const, expectedPosts: 0, purpose: 'before waiting for the session' },
+    { phase: 'post-terminal' as const, expectedPosts: 1, purpose: 'while certifying the accepted prompt snapshot' },
+  ])('rejects a missing fresh $phase watermark instead of assuming unchanged history', async ({ phase, expectedPosts, purpose }) => {
+    const server = createLiveOnlyServer({
+      omitWatermarkAt: phase,
+      onPrompt(emit) {
+        emit({ type: 'session.inbox.enqueued', seq: startCursor + 1, data: { sessionID: 'session-1', inboxID: 'inbox-own' } })
+        emit({ type: 'session.execution.started', seq: startCursor + 2, data: { sessionID: 'session-1' } })
+        emit({ type: 'session.inbox.delivered', seq: startCursor + 3, data: { sessionID: 'session-1', inboxID: 'inbox-own' } })
+        emit({ type: 'session.execution.succeeded', seq: startCursor + 4, data: { sessionID: 'session-1' } })
+      },
+    })
+    const controller = new AbortController()
+    const prompt = server.adapter.promptSession('session-1', promptParts, controller.signal)
+
+    try {
+      await expect(settleWithin(prompt, 1000)).rejects.toThrow(`history watermark is unavailable ${purpose}`)
+      expect(server.promptPostCount).toBe(expectedPosts)
+      expect(server.logPayloadCount).toBe(0)
+      if (phase === 'pre-wait') expect(server.requestOrder).not.toContain('wait')
+    } finally {
+      controller.abort(new DOMException('test cleanup', 'AbortError'))
+      await settleWithin(prompt.catch(() => undefined), 1000)
+    }
+  })
+
   it('attributes a scan across internal title-usage sequences omitted from the public stream', async () => {
     const server = createLiveOnlyServer({
       onPrompt(emit) {

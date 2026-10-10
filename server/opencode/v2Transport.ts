@@ -1,3 +1,4 @@
+import { setTimeout as delay } from 'node:timers/promises'
 import type { HealthStatus, Message, OpenCodeQuestionAnswer, OpenCodeQuestionRequest, OpenCodeSessionCreateOptions, Session } from './types'
 import type {
   OpenCodeEventSubscription,
@@ -80,6 +81,8 @@ export class V2OpenCodeTransport implements OpenCodeTransport {
       timeoutMs: SESSION_CREATE_TIMEOUT_MS,
       body: {
         location: { directory: projectPath },
+        // Avoid asynchronous auto-title usage leaving a private sequence after the turn ends.
+        title: 'LoopTroop',
         ...(options?.permission ? { permissions: mapV2PermissionRules(options.permission) } : {}),
       },
     })
@@ -199,8 +202,8 @@ export class V2OpenCodeTransport implements OpenCodeTransport {
     if (afterCursor !== undefined && !coverageComplete && !scan.hasUnmappedEvents && scan.hasWatermark) {
       // With persist=false the log supplies a watermark but no payloads.
       // The public stream omits internal durable events such as title usage.
-      // It certifies the range while continuously connected; replay must still
-      // account for every durable sequence after a disconnect.
+      // A contiguous first event anchors the connection; later gaps can be
+      // private events. Replay must account for every sequence after a disconnect.
       const liveEvents: OpenCodeTransportEventEnvelope[] = []
       const liveState = createV2EventMappingState()
       let liveCursor = afterCursor
@@ -221,9 +224,12 @@ export class V2OpenCodeTransport implements OpenCodeTransport {
           const aggregateID = stringValue(durable?.aggregateID)
           const sequence = numberValue(durable?.seq)
           const data = asRecord(raw.data)
+          const formSessionID = stringValue(asRecord(data?.form)?.sessionID)
           const rawSessionID = stringValue(data?.sessionID)
-            ?? stringValue(asRecord(data?.form)?.sessionID)
-          if ((raw.durable !== undefined || V2_DURABLE_EVENT_TYPES.has(raw.type))
+            ?? formSessionID
+          if (rawSessionID !== sessionId && formSessionID !== sessionId && aggregateID !== sessionId && (rawSessionID || formSessionID || aggregateID)) continue
+          if ((formSessionID !== undefined && rawSessionID !== formSessionID)
+            || (raw.durable !== undefined || V2_DURABLE_EVENT_TYPES.has(raw.type))
             && (!aggregateID || sequence === undefined || !Number.isSafeInteger(sequence) || sequence < 0
               || (rawSessionID !== undefined && rawSessionID !== aggregateID))) {
             streamGap = true
@@ -231,7 +237,7 @@ export class V2OpenCodeTransport implements OpenCodeTransport {
           }
           if (aggregateID === sessionId && sequence !== undefined && Number.isSafeInteger(sequence)) {
             if (sequence <= afterCursor || liveSequences.has(sequence)) continue
-            if (sequence <= liveCursor) {
+            if (sequence <= liveCursor || (liveSequences.size === 0 && sequence !== afterCursor + 1)) {
               streamGap = true
               break
             }
@@ -262,15 +268,17 @@ export class V2OpenCodeTransport implements OpenCodeTransport {
         // mapping of text/tool frames.
         backlog = liveEvents
         mappingState = liveState
+        // OpenCode commits durable events before publishing them, including any overshoot.
         cursor = liveCursor
       } else if (streamGap) {
-        backlog = [...liveEvents, { cursor: liveCursor + 1, coverageGap: true }]
+        backlog = [...liveEvents, { coverageGap: true }]
       }
     }
     const generator = this.followEvents(
       connection,
       sessionId,
       cursor,
+      afterCursor ?? cursor,
       backlog,
       streamSignal,
       ownedConnections,
@@ -307,7 +315,7 @@ export class V2OpenCodeTransport implements OpenCodeTransport {
     )
     return {
       events,
-      ...(scan.hasWatermark ? { cursor: scan.cursor } : after !== undefined ? { cursor: after } : {}),
+      ...(scan.hasWatermark ? { cursor: scan.cursor } : {}),
       coverageComplete: scan.coverageComplete && scan.hasWatermark,
       ...(scan.hasUnmappedEvents ? { hasUnmappedEvents: true } : {}),
     }
@@ -683,6 +691,9 @@ export class V2OpenCodeTransport implements OpenCodeTransport {
           }
           const watermark = numberValue(event.seq)
           const hasWatermark = watermark !== undefined && Number.isSafeInteger(watermark)
+          if (hasWatermark && watermark < maxSequence) {
+            throw new Error('OpenCode v2 session log watermark precedes the requested or observed cursor')
+          }
           if (!hasWatermark || lastCoveredSequence !== watermark) {
             coverageComplete = false
           }
@@ -723,6 +734,7 @@ export class V2OpenCodeTransport implements OpenCodeTransport {
     initialConnection: SseConnection,
     sessionId: string,
     initialCursor: number,
+    baselineCursor: number,
     backlog: OpenCodeTransportEventEnvelope[],
     signal: AbortSignal | undefined,
     ownedConnections: Set<SseConnection>,
@@ -732,7 +744,6 @@ export class V2OpenCodeTransport implements OpenCodeTransport {
   ): AsyncGenerator<OpenCodeTransportEventEnvelope> {
     let connection = initialConnection
     let cursor = initialCursor
-    let coveredThrough = initialCursor
     let coverageGap = initialCoverageGap
     let reconnects = 0
     const seen = new Set<number>(backlog.flatMap(event => event.cursor === undefined ? [] : [event.cursor]))
@@ -747,18 +758,20 @@ export class V2OpenCodeTransport implements OpenCodeTransport {
           const raw = asRecord(result.value)
           if (!raw || typeof raw.type !== 'string') throw new Error('OpenCode v2 event stream returned an invalid event')
           if (raw.type === 'server.connected') continue
-          const rawSessionId = stringValue(asRecord(raw.data)?.sessionID)
-            ?? stringValue(asRecord(asRecord(raw.data)?.form)?.sessionID)
+          const formSessionId = stringValue(asRecord(asRecord(raw.data)?.form)?.sessionID)
+          const rawSessionId = stringValue(asRecord(raw.data)?.sessionID) ?? formSessionId
           const aggregateId = stringValue(asRecord(raw.durable)?.aggregateID)
           const sequence = numberValue(asRecord(raw.durable)?.seq)
-          if ((raw.durable !== undefined || V2_DURABLE_EVENT_TYPES.has(raw.type))
+          if (rawSessionId !== sessionId && formSessionId !== sessionId && aggregateId !== sessionId && (rawSessionId || formSessionId || aggregateId)) continue
+          if ((formSessionId !== undefined && rawSessionId !== formSessionId)
+            || (raw.durable !== undefined || V2_DURABLE_EVENT_TYPES.has(raw.type))
             && (!aggregateId || sequence === undefined || !Number.isSafeInteger(sequence) || sequence < 0
               || (rawSessionId !== undefined && rawSessionId !== aggregateId))) {
             coverageGap = true
             continue
           }
           if (rawSessionId !== sessionId && aggregateId !== sessionId) continue
-          if (sequence !== undefined && sequence <= coveredThrough) continue
+          if (sequence !== undefined && sequence <= baselineCursor) continue
           if (sequence !== undefined && seen.has(sequence)) continue
           const observedAfter = cursor
           if (sequence !== undefined) {
@@ -772,6 +785,7 @@ export class V2OpenCodeTransport implements OpenCodeTransport {
             if (sequence !== undefined) coverageGap = true
             continue
           }
+          if (!coverageGap) reconnects = 0
           yield coverageGap
             ? { ...mapped, coverageGap: true }
             : sequence !== undefined && sequence > observedAfter + 1
@@ -779,58 +793,71 @@ export class V2OpenCodeTransport implements OpenCodeTransport {
               : mapped
         } catch (error) {
           if (signal?.aborted) throw signal.reason
-          reconnects++
-          if (reconnects > EVENT_RECONNECT_ATTEMPTS) {
-            throw new Error('OpenCode v2 event stream could not reconnect; the accepted prompt was not resubmitted', { cause: error })
-          }
-
-          const reconnected = await this.openEventStream(signal)
-          ownedConnections.add(reconnected)
-          const fetchPendingPermissions = !coverageGap
-          const pendingPermissionsResponse = fetchPendingPermissions
-            ? await this.request(`/api/session/${encodeURIComponent(sessionId)}/permission`, { signal })
-            : undefined
-          const replayEvents: OpenCodeTransportEventEnvelope[] = []
-          let replay: SessionLogScan
-          try {
-            replay = await this.scanSessionLog(
-              sessionId,
-              cursor,
-              signal,
-              event => replayEvents.push(event),
-              state,
-            )
-          } catch (replayError) {
-            await reconnected.close()
-            throw replayError
-          }
-          if (!replay.coverageComplete) coverageGap = true
-          await connection.close()
-          connection = reconnected
-          const pendingPermissions: OpenCodeTransportEventEnvelope[] = []
-          if (replay.coverageComplete && !coverageGap && fetchPendingPermissions) {
-            const response = dataOf(pendingPermissionsResponse)
-            if (!Array.isArray(response)) throw new Error('OpenCode v2 returned an invalid pending permission list')
-            for (const request of response) {
-              const event = mapV2Event({ type: 'permission.asked', data: request }, sessionId, state)
-              if (!event?.event || event.event.type !== 'permission') {
-                throw new Error('OpenCode v2 returned an invalid pending permission request')
+          let reconnectError = error
+          while (true) {
+            if (++reconnects > EVENT_RECONNECT_ATTEMPTS) {
+              throw new Error('OpenCode v2 event stream could not reconnect; the accepted prompt was not resubmitted', { cause: reconnectError })
+            }
+            let reconnected: SseConnection | undefined
+            try {
+              reconnected = await this.openEventStream(signal)
+              ownedConnections.add(reconnected)
+              const fetchPendingPermissions = !coverageGap
+              const pendingPermissionsResponse = fetchPendingPermissions
+                ? await this.request(`/api/session/${encodeURIComponent(sessionId)}/permission`, { signal })
+                : undefined
+              const replayEvents: OpenCodeTransportEventEnvelope[] = []
+              // Failed replay must not consume text/tool state before a retry.
+              const replayState = structuredClone(state)
+              const replay = await this.scanSessionLog(
+                sessionId,
+                cursor,
+                signal,
+                event => replayEvents.push(event),
+                replayState,
+              )
+              const replayGap = coverageGap || !replay.coverageComplete
+              const pendingPermissions: OpenCodeTransportEventEnvelope[] = []
+              if (!replayGap && fetchPendingPermissions) {
+                const response = dataOf(pendingPermissionsResponse)
+                if (!Array.isArray(response)) throw new Error('OpenCode v2 returned an invalid pending permission list')
+                for (const request of response) {
+                  const event = mapV2Event({ type: 'permission.asked', data: request }, sessionId, replayState)
+                  if (!event?.event || event.event.type !== 'permission') {
+                    throw new Error('OpenCode v2 returned an invalid pending permission request')
+                  }
+                  pendingPermissions.push(event)
+                }
               }
-              pendingPermissions.push(event)
+              await connection.close()
+              connection = reconnected
+              state = replayState
+              coverageGap = replayGap
+              for (const event of replayEvents) {
+                const sequence = event.cursor
+                if (sequence !== undefined && seen.has(sequence)) continue
+                if (sequence !== undefined) {
+                  seen.add(sequence)
+                  cursor = Math.max(cursor, sequence)
+                }
+                yield coverageGap ? { ...event, coverageGap: true } : event
+              }
+              for (const permission of pendingPermissions) yield permission
+              cursor = Math.max(cursor, replay.cursor)
+              break
+            } catch (retryError) {
+              await reconnected?.close()
+              if (signal?.aborted) throw signal.reason
+              reconnectError = retryError
+              if (reconnects < EVENT_RECONNECT_ATTEMPTS) {
+                try {
+                  await delay(250, undefined, { signal })
+                } catch (delayError) {
+                  throw signal?.aborted ? signal.reason : delayError
+                }
+              }
             }
           }
-          for (const event of replayEvents) {
-            const sequence = event.cursor
-            if (sequence !== undefined && seen.has(sequence)) continue
-            if (sequence !== undefined) {
-              seen.add(sequence)
-              cursor = Math.max(cursor, sequence)
-            }
-            yield coverageGap ? { ...event, coverageGap: true } : event
-          }
-          for (const permission of pendingPermissions) yield permission
-          cursor = Math.max(cursor, replay.cursor)
-          coveredThrough = Math.max(coveredThrough, replay.cursor)
         }
       }
     } finally {

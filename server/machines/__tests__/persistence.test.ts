@@ -277,6 +277,30 @@ describe('hydrateAllTickets', () => {
     }
   })
 
+  it('persists setup failure causes in the ticket and occurrence message', async () => {
+    const { ticket } = await createInitializedTestTicket(repoManager, { title: 'Persist actual setup failure' })
+    const context = makeTicketContextFromTicket(ticket, { status: 'PREPARING_EXECUTION_ENV' })
+    patchTicket(ticket.id, {
+      status: 'PREPARING_EXECUTION_ENV',
+      xstateSnapshot: JSON.stringify({ status: 'active', value: 'PREPARING_EXECUTION_ENV', historyValue: {}, context, children: {} }),
+    })
+
+    try {
+      const actor = ensureActorForTicket(ticket.id)
+      actor.send({ type: 'EXECUTION_SETUP_FAILED', errors: ['Command failed (1): install dependencies'] })
+
+      const blocked = getTicketByRef(ticket.id)
+      expect(blocked?.errorMessage).toBe('Command failed (1): install dependencies')
+      expect(blocked?.errorOccurrences.at(-1)).toMatchObject({
+        blockedFromStatus: 'PREPARING_EXECUTION_ENV',
+        errorMessage: 'Command failed (1): install dependencies',
+        errorCodes: ['EXECUTION_SETUP_FAILED'],
+      })
+    } finally {
+      stopActor(ticket.id)
+    }
+  })
+
   it('resolves blocked-error occurrences as continued when CONTINUE resumes the previous status', async () => {
     const { ticket } = await createInitializedTestTicket(repoManager, {
       title: 'Persist blocked continue',

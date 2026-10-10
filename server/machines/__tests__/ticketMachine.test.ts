@@ -3,6 +3,7 @@ import { createActor } from 'xstate'
 import { FINAL_TEST_FAILED } from '@shared/errorCodes'
 import { getAvailableWorkflowActions, isWorkflowPhaseId, WORKFLOW_PHASE_IDS } from '@shared/workflowMeta'
 import { ticketMachine } from '../ticketMachine'
+import type { TicketEvent } from '../types'
 
 describe('ticketMachine states', () => {
   it('keeps cleanup running when a late Cancel arrives', () => {
@@ -37,6 +38,28 @@ describe('ticketMachine states', () => {
 })
 
 describe('ticketMachine execution setup flow', () => {
+  it.each([
+    ['PRE_FLIGHT_CHECK', 'CHECKS_FAILED', 'PREFLIGHT_FAILED'],
+    ['PREPARING_EXECUTION_ENV', 'EXECUTION_SETUP_FAILED', 'EXECUTION_SETUP_FAILED'],
+    ['RUNNING_FINAL_TEST', 'TESTS_FAILED', FINAL_TEST_FAILED],
+    ['CODING', 'BEAD_ERROR', 'BEAD_RETRY_BUDGET_EXHAUSTED'],
+  ] as const)('records the actual %s failure separately from stable codes', (status, type, code) => {
+    const initial = createActor(ticketMachine, { input: { ticketId: '1:T-1' } })
+    const actor = createActor(ticketMachine, {
+      snapshot: ticketMachine.resolveState({ value: status, context: { ...initial.getSnapshot().context, status } }),
+      input: {},
+    })
+    const errors = ['Command failed (1): install dependencies', '   ', 'Required compiler is unavailable.']
+
+    actor.start()
+    actor.send({ type, errors, ...(type === 'BEAD_ERROR' ? { codes: [code] } : {}) } as TicketEvent)
+
+    expect(actor.getSnapshot().value).toBe('BLOCKED_ERROR')
+    expect(actor.getSnapshot().context.error).toBe('Command failed (1): install dependencies\nRequired compiler is unavailable.')
+    expect(actor.getSnapshot().context.errorCodes).toEqual([code])
+    actor.stop()
+  })
+
   it('records a stable cause code when Final Testing fails', () => {
     const actor = createActor(ticketMachine, {
       snapshot: {
@@ -66,6 +89,7 @@ describe('ticketMachine execution setup flow', () => {
 
     expect(actor.getSnapshot().value).toBe('BLOCKED_ERROR')
     expect(actor.getSnapshot().context.errorCodes).toEqual([FINAL_TEST_FAILED])
+    expect(actor.getSnapshot().context.error).toBe('Final test failed')
   })
 
   it('routes passed final tests through Manual QA only when the started ticket locked it on', () => {
@@ -211,6 +235,7 @@ describe('ticketMachine execution setup flow', () => {
 
     expect(actor.getSnapshot().value).toBe('BLOCKED_ERROR')
     expect(actor.getSnapshot().context.errorCodes).toEqual(['BEAD_RETRY_BUDGET_EXHAUSTED', 'OPENCODE_PROVIDER_ERROR'])
+    expect(actor.getSnapshot().context.error).toBe('The usage limit has been reached')
     expect(actor.getSnapshot().context.errorDiagnostics).toMatchObject({
       kind: 'opencode_provider',
       source: 'provider',

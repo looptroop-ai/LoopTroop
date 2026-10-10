@@ -54,6 +54,33 @@ function eventStream(events: unknown[]): Response {
   return new Response(stream, { headers: { 'content-type': 'text/event-stream; charset=utf-8' } })
 }
 
+function initialSessionLog(cursor: number): Response {
+  return eventStream([
+    ...Array.from({ length: cursor + 1 }, (_, seq) => ({
+      type: 'session.instructions.updated',
+      data: { sessionID: 'session-1', delta: {} },
+      durable: { aggregateID: 'session-1', seq },
+    })),
+    { type: 'log.synced', aggregateID: 'session-1', seq: cursor },
+  ])
+}
+
+function publicEventTransport(events: unknown[], watermark: number) {
+  return createTransport(request => {
+    if (request.url.pathname === '/api/event') return eventStream([{ type: 'server.connected' }, ...events])
+    if (request.url.pathname.endsWith('/log')) return eventStream([{ type: 'log.synced', aggregateID: 'session-1', seq: watermark }])
+    throw new Error(`Unexpected ${request.method} ${request.url}`)
+  })
+}
+
+function publicEventsAround(raw: unknown): unknown[] {
+  return [
+    { type: 'session.created', data: { sessionID: 'session-1' }, durable: { aggregateID: 'session-1', seq: 1 } },
+    raw,
+    { type: 'session.renamed', data: { sessionID: 'session-1', title: 'New title' }, durable: { aggregateID: 'session-1', seq: 3 } },
+  ]
+}
+
 function hangingEventStream(signal?: AbortSignal | null): Response {
   const stream = new ReadableStream<Uint8Array>({
     start(controller) {
@@ -240,7 +267,7 @@ describe('OpenCode v2 fetch transport', () => {
       done: false,
       value: { cursor: 5, event: { type: 'inbox_delivered', sessionId: 'session-1', inboxID: 'inbox-1' } },
     })
-    await iterator.return?.(undefined)
+    await iterator.return?.()
     expect(requests.map(request => request.url.pathname)).toEqual([
       '/api/event',
       '/api/experimental/session/session-1/log',
@@ -270,7 +297,7 @@ describe('OpenCode v2 fetch transport', () => {
       done: false,
       value: { cursor: 6, event: { type: 'execution_terminal', outcome: 'succeeded' } },
     })
-    await iterator.return?.(undefined)
+    await iterator.return?.()
   })
 
   it('reports complete coverage for unchanged numeric cursors and contiguous history', async () => {
@@ -320,6 +347,18 @@ describe('OpenCode v2 fetch transport', () => {
       cursor: 73,
       coverageComplete: false,
     })
+  })
+
+  it.each([
+    { after: 9, events: [] },
+    { after: 4, events: [{ type: 'session.renamed', data: { sessionID: 'session-1', title: 'Future title' }, durable: { aggregateID: 'session-1', seq: 9 } }] },
+  ])('rejects a log watermark behind a requested or observed cursor: %j', async ({ after, events }) => {
+    const { transport } = createTransport(() => eventStream([
+      ...events,
+      { type: 'log.synced', aggregateID: 'session-1', seq: 5 },
+    ]))
+
+    await expect(transport.readSessionLog('session-1', after)).rejects.toThrow('watermark precedes')
   })
 
   it('certifies an unpersisted history from contiguous live events, including session-scoped forms', async () => {
@@ -375,7 +414,7 @@ describe('OpenCode v2 fetch transport', () => {
     const subscription = await transport.subscribeToEvents('session-1', '/workspace', undefined, undefined, 4)
 
     expect(subscription.coverageComplete).toBe(false)
-    expect(subscription.initialEvents).toEqual([{ cursor: 5, coverageGap: true }])
+    expect(subscription.initialEvents).toEqual([{ coverageGap: true }])
     await subscription.close!()
   })
 
@@ -439,7 +478,7 @@ describe('OpenCode v2 fetch transport', () => {
     const subscription = await transport.subscribeToEvents('session-1', '/workspace', undefined, undefined, 4)
     const iterator = subscription.events[Symbol.asyncIterator]()
     const envelopes = [await iterator.next(), await iterator.next(), await iterator.next(), await iterator.next()]
-    await iterator.return?.(undefined)
+    await iterator.return?.()
 
     expect(envelopes.map(next => next.value)).toEqual([
       { cursor: 5 },
@@ -483,7 +522,6 @@ describe('OpenCode v2 fetch transport', () => {
 
     await expect(transport.readSessionLog('session-1', 4)).resolves.toEqual({
       events: [],
-      cursor: 4,
       coverageComplete: false,
     })
   })
@@ -503,7 +541,7 @@ describe('OpenCode v2 fetch transport', () => {
 
     const subscription = await transport.subscribeToEvents('session-1', '/workspace')
     const iterator = subscription.events[Symbol.asyncIterator]()
-    await iterator.return?.(undefined)
+    await iterator.return?.()
 
     expect(eventSignals).toHaveLength(1)
     expect(eventSignals[0]?.aborted).toBe(true)
@@ -520,14 +558,7 @@ describe('OpenCode v2 fetch transport', () => {
       if (request.url.pathname.endsWith('/log')) {
         if (initialLogRead) {
           initialLogRead = false
-          return eventStream([
-            ...Array.from({ length: 5 }, (_, seq) => ({
-              type: 'session.instructions.updated',
-              data: { sessionID: 'session-1', delta: {} },
-              durable: { aggregateID: 'session-1', seq },
-            })),
-            { type: 'log.synced', aggregateID: 'session-1', seq: 4 },
-          ])
+          return initialSessionLog(4)
         }
         expect(request.url.searchParams.get('after')).toBe('4')
         return eventStream([
@@ -561,7 +592,7 @@ describe('OpenCode v2 fetch transport', () => {
       received.push(event.type)
       if (event.type === 'execution_terminal') break
     }
-    await iterator.return?.(undefined)
+    await iterator.return?.()
 
     expect(received).toEqual(['inbox_enqueued', 'execution_started', 'inbox_delivered', 'execution_terminal'])
     expect(requests.filter(request => request.url.pathname.endsWith('/prompt'))).toHaveLength(1)
@@ -571,6 +602,132 @@ describe('OpenCode v2 fetch transport', () => {
     const reconnectEventIndex = requests.findIndex((request, index) => index > 0 && request.url.pathname === '/api/event')
     const replayLogIndex = requests.findIndex(request => request.url.pathname.endsWith('/log') && request.url.searchParams.get('after') === '4')
     expect(reconnectEventIndex).toBeLessThan(replayLogIndex)
+  })
+
+  it.each(['stream', 'permissions', 'log'])('retries a transient %s failure during reconnection without reposting the prompt', async (failedOperation) => {
+    let connections = 0
+    let logReads = 0
+    let faulted = false
+    const terminal = { type: 'session.execution.succeeded', data: { sessionID: 'session-1' }, durable: { aggregateID: 'session-1', seq: 1 } }
+    const { transport, requests } = createTransport(request => {
+      if (request.url.pathname === '/api/event') {
+        connections++
+        if (connections === 2 && failedOperation === 'stream') throw new Error('connection temporarily refused')
+        return eventStream([{ type: 'server.connected' }])
+      }
+      if (request.url.pathname.endsWith('/permission')) {
+        if (failedOperation === 'permissions' && !faulted) {
+          faulted = true
+          throw new Error('permissions temporarily unavailable')
+        }
+        return jsonResponse({ data: [] })
+      }
+      if (request.url.pathname.endsWith('/log')) {
+        if (logReads++ === 0) return initialSessionLog(0)
+        if (failedOperation === 'log' && !faulted) {
+          faulted = true
+          throw new Error('log temporarily unavailable')
+        }
+        return eventStream([terminal, { type: 'log.synced', aggregateID: 'session-1', seq: 1 }])
+      }
+      if (request.url.pathname.endsWith('/instructions/entries/looptroop')) return emptyResponse()
+      if (request.url.pathname.endsWith('/prompt')) return jsonResponse({ data: { id: 'inbox-own' } })
+      throw new Error(`Unexpected ${request.method} ${request.url}`)
+    })
+    const subscription = await transport.subscribeToEvents('session-1', '/workspace')
+    await transport.dispatchPrompt(promptRequest({ sessionId: 'session-1', model: undefined, agent: undefined, variant: undefined }))
+    const iterator = subscription.events[Symbol.asyncIterator]()
+    await expect(iterator.next()).resolves.toMatchObject({ value: { cursor: 1, event: { type: 'execution_terminal' } } })
+    await iterator.return?.()
+    expect(connections).toBe(3)
+    expect(requests.filter(request => request.url.pathname.endsWith('/prompt'))).toHaveLength(1)
+  })
+
+  it('allows more than three reconnects when each connection makes valid live progress', async () => {
+    let connections = 0
+    const { transport } = createTransport(request => {
+      if (request.url.pathname === '/api/event') {
+        connections++
+        return eventStream([
+          { type: 'server.connected' },
+          { type: 'session.renamed', data: { sessionID: 'session-1', title: `Title ${connections}` }, durable: { aggregateID: 'session-1', seq: connections } },
+        ])
+      }
+      if (request.url.pathname.endsWith('/permission')) return jsonResponse({ data: [] })
+      if (request.url.pathname.endsWith('/log')) return eventStream([{ type: 'log.synced', aggregateID: 'session-1', seq: Number(request.url.searchParams.get('after') ?? 0) }])
+      throw new Error(`Unexpected ${request.method} ${request.url}`)
+    })
+    const subscription = await transport.subscribeToEvents('session-1', '/workspace')
+    const iterator = subscription.events[Symbol.asyncIterator]()
+    for (let cursor = 1; cursor <= 5; cursor++) {
+      expect((await iterator.next()).value).toEqual({ cursor })
+    }
+    await iterator.return?.()
+    expect(connections).toBe(5)
+  })
+
+  it('keeps mapping state intact when an incomplete replay must be retried', async () => {
+    let connections = 0
+    let logs = 0
+    const success = { type: 'session.tool.success', data: { sessionID: 'session-1', id: 'tool-1', assistantMessageID: 'assistant-1', content: [] }, durable: { aggregateID: 'session-1', seq: 2 } }
+    const { transport } = createTransport(request => {
+      if (request.url.pathname === '/api/event') {
+        return eventStream([
+          { type: 'server.connected' },
+          ...(connections++ === 0 ? [{ type: 'session.tool.input.started', data: { sessionID: 'session-1', id: 'tool-1', name: 'shell', assistantMessageID: 'assistant-1' }, durable: { aggregateID: 'session-1', seq: 1 } }] : []),
+        ])
+      }
+      if (request.url.pathname.endsWith('/permission')) return jsonResponse({ data: [] })
+      if (request.url.pathname.endsWith('/log')) {
+        logs++
+        if (logs === 1) return initialSessionLog(0)
+        return eventStream([success, ...(logs > 2 ? [{ type: 'log.synced', aggregateID: 'session-1', seq: 2 }] : [])])
+      }
+      throw new Error(`Unexpected ${request.method} ${request.url}`)
+    })
+    const subscription = await transport.subscribeToEvents('session-1', '/workspace')
+    const iterator = subscription.events[Symbol.asyncIterator]()
+    await iterator.next()
+    await expect(iterator.next()).resolves.toMatchObject({ value: { cursor: 2, event: { type: 'tool', tool: 'shell', status: 'completed' } } })
+    await iterator.return?.()
+    expect(connections).toBe(3)
+  })
+
+  it('stops after three failed reconnect attempts and closes all opened streams', async () => {
+    let connections = 0
+    const signals: AbortSignal[] = []
+    const { transport } = createTransport((request, init) => {
+      if (request.url.pathname === '/api/event') {
+        connections++
+        if (init.signal) signals.push(init.signal)
+        if (connections > 1) throw new Error('server unavailable')
+        return eventStream([{ type: 'server.connected' }])
+      }
+      if (request.url.pathname.endsWith('/log')) return initialSessionLog(0)
+      throw new Error(`Unexpected ${request.method} ${request.url}`)
+    })
+    const subscription = await transport.subscribeToEvents('session-1', '/workspace')
+    await expect(subscription.events[Symbol.asyncIterator]().next()).rejects.toThrow('could not reconnect')
+    expect(connections).toBe(4)
+    expect(signals.every(signal => signal.aborted)).toBe(true)
+  })
+
+  it('preserves the caller cancellation reason during reconnect backoff', async () => {
+    const caller = new AbortController()
+    const reason = new Error('workflow deadline reached')
+    let connections = 0
+    const { transport } = createTransport(request => {
+      if (request.url.pathname === '/api/event') {
+        if (connections++ === 0) return eventStream([{ type: 'server.connected' }])
+        setTimeout(() => caller.abort(reason), 20)
+        throw new Error('server temporarily unavailable')
+      }
+      if (request.url.pathname.endsWith('/log')) return initialSessionLog(0)
+      throw new Error(`Unexpected ${request.method} ${request.url}`)
+    })
+    const subscription = await transport.subscribeToEvents('session-1', '/workspace', caller.signal)
+    await expect(subscription.events[Symbol.asyncIterator]().next()).rejects.toBe(reason)
+    expect(connections).toBe(2)
   })
 
   it('fetches lost ephemeral permission asks before final replay and yields them after covered competitors', async () => {
@@ -596,14 +753,7 @@ describe('OpenCode v2 fetch transport', () => {
       if (request.url.pathname.endsWith('/log')) {
         if (initialLogRead) {
           initialLogRead = false
-          return eventStream([
-            ...Array.from({ length: 5 }, (_, seq) => ({
-              type: 'session.instructions.updated',
-              data: { sessionID: 'session-1', delta: {} },
-              durable: { aggregateID: 'session-1', seq },
-            })),
-            { type: 'log.synced', aggregateID: 'session-1', seq: 4 },
-          ])
+          return initialSessionLog(4)
         }
         expect(request.url.searchParams.get('after')).toBe('4')
         expect(competitorEnqueuedDuringPermissionList).toBe(true)
@@ -623,7 +773,7 @@ describe('OpenCode v2 fetch transport', () => {
     competitorEnqueuedDuringPermissionList = true
     finishPermissionList()
     const received = [await first, await iterator.next(), await iterator.next()]
-    await iterator.return?.(undefined)
+    await iterator.return?.()
 
     expect(received.map(next => next.value)).toEqual([
       { cursor: 5, event: { type: 'inbox_enqueued', sessionId: 'session-1', inboxID: 'inbox-external' } },
@@ -686,7 +836,7 @@ describe('OpenCode v2 fetch transport', () => {
         event: { type: 'execution_terminal', outcome: 'succeeded' },
       },
     })
-    await iterator.return?.(undefined)
+    await iterator.return?.()
     expect(requests.some(request => request.url.pathname === '/api/session/session-1/permission')).toBe(true)
   })
 
@@ -749,7 +899,7 @@ describe('OpenCode v2 fetch transport', () => {
       done: false,
       value: { cursor: 2, coverageGap: true, event: { type: 'execution_terminal', outcome: 'succeeded' } },
     })
-    await iterator.return?.(undefined)
+    await iterator.return?.()
   })
 
   it('certifies public live coverage beyond a hidden watermark and keeps subsequent cursors ordered', async () => {
@@ -777,7 +927,102 @@ describe('OpenCode v2 fetch transport', () => {
     await expect(iterator.next()).resolves.toMatchObject({ value: { cursor: 7, observedAfter: 5 } })
     const next = await iterator.next()
     expect(next.value).toEqual({ cursor: 8, event: { type: 'execution_started', sessionId: 'session-1' } })
-    await iterator.return?.(undefined)
+    await iterator.return?.()
+  })
+
+  it('refuses to certify a first live jump across events that could predate the connection', async () => {
+    const { transport } = publicEventTransport([
+      { type: 'session.execution.succeeded', data: { sessionID: 'session-1' }, durable: { aggregateID: 'session-1', seq: 7 } },
+    ], 7)
+
+    const subscription = await transport.subscribeToEvents('session-1', '/workspace', undefined, undefined, 4)
+
+    expect(subscription.coverageComplete).toBe(false)
+    expect(subscription.initialEvents).not.toContainEqual(expect.objectContaining({ observedAfter: 4 }))
+    await subscription.close?.()
+  })
+
+  it.each([
+    { reason: 'missing durable metadata', raw: { type: 'session.inbox.enqueued', data: { sessionID: 'other', inboxID: 'other-inbox' } } },
+    { reason: 'an invalid sequence', raw: { type: 'session.renamed', data: { sessionID: 'other', title: 'Other title' }, durable: { aggregateID: 'other', seq: 2.5 } } },
+    { reason: 'a scoped form', raw: { type: 'session.inbox.enqueued', data: { form: { sessionID: 'other' } }, durable: null } },
+    { reason: 'only an aggregate route', raw: { type: 'session.future.event', durable: { aggregateID: 'other' } } },
+  ])('ignores other-session events with $reason in initial and ongoing coverage', async ({ raw }) => {
+    const events = [
+      raw,
+      { type: 'session.created', data: { sessionID: 'session-1' }, durable: { aggregateID: 'session-1', seq: 1 } },
+      raw,
+      { type: 'session.renamed', data: { sessionID: 'session-1', title: 'Own title' }, durable: { aggregateID: 'session-1', seq: 3 } },
+    ]
+    const initial = publicEventTransport(events, 3)
+    const certified = await initial.transport.subscribeToEvents('session-1', '/workspace', undefined, undefined, 0)
+    expect(certified).toMatchObject({ coverageComplete: true, initialEvents: [{ cursor: 1 }, { cursor: 3, observedAfter: 1 }] })
+    await certified.close?.()
+
+    const following = publicEventTransport(events, 0)
+    const subscription = await following.transport.subscribeToEvents('session-1', '/workspace')
+    const iterator = subscription.events[Symbol.asyncIterator]()
+    await expect(iterator.next()).resolves.toMatchObject({ value: { cursor: 1 } })
+    expect((await iterator.next()).value).toEqual({ cursor: 3, observedAfter: 1 })
+    await iterator.return?.()
+  })
+
+  it('flags a late public event inside a gap certified during initial live coverage', async () => {
+    const { transport } = publicEventTransport([
+      { type: 'session.created', data: { sessionID: 'session-1' }, durable: { aggregateID: 'session-1', seq: 5 } },
+      { type: 'session.renamed', data: { sessionID: 'session-1', title: 'Own title' }, durable: { aggregateID: 'session-1', seq: 7 } },
+      { type: 'session.inbox.enqueued', data: { sessionID: 'session-1', inboxID: 'late-inbox' }, durable: { aggregateID: 'session-1', seq: 6 } },
+      { type: 'session.execution.succeeded', data: { sessionID: 'session-1' }, durable: { aggregateID: 'session-1', seq: 8 } },
+    ], 6)
+    const subscription = await transport.subscribeToEvents('session-1', '/workspace', undefined, undefined, 4)
+    const iterator = subscription.events[Symbol.asyncIterator]()
+    await iterator.next()
+    await iterator.next()
+    await expect(iterator.next()).resolves.toMatchObject({ value: { cursor: 6, coverageGap: true, event: { type: 'inbox_enqueued', inboxID: 'late-inbox' } } })
+    await expect(iterator.next()).resolves.toMatchObject({ value: { cursor: 8, coverageGap: true } })
+    await iterator.return?.()
+  })
+
+  it('does not turn an earlier private gap into replayed history after reconnecting', async () => {
+    let connections = 0
+    const { transport } = createTransport(request => {
+      if (request.url.pathname === '/api/event') return eventStream([
+        { type: 'server.connected' },
+        ...(connections++ === 0 ? [
+          { type: 'session.created', data: { sessionID: 'session-1' }, durable: { aggregateID: 'session-1', seq: 5 } },
+          { type: 'session.renamed', data: { sessionID: 'session-1', title: 'Own title' }, durable: { aggregateID: 'session-1', seq: 7 } },
+        ] : [
+          { type: 'session.inbox.enqueued', data: { sessionID: 'session-1', inboxID: 'late-inbox' }, durable: { aggregateID: 'session-1', seq: 6 } },
+          { type: 'session.execution.succeeded', data: { sessionID: 'session-1' }, durable: { aggregateID: 'session-1', seq: 8 } },
+        ]),
+      ])
+      if (request.url.pathname.endsWith('/permission')) return jsonResponse({ data: [] })
+      if (request.url.pathname.endsWith('/log')) return eventStream([{ type: 'log.synced', aggregateID: 'session-1', seq: request.url.searchParams.get('after') === '4' ? 6 : 7 }])
+      throw new Error(`Unexpected ${request.method} ${request.url}`)
+    })
+    const subscription = await transport.subscribeToEvents('session-1', '/workspace', undefined, undefined, 4)
+    const iterator = subscription.events[Symbol.asyncIterator]()
+    await iterator.next()
+    await iterator.next()
+    await expect(iterator.next()).resolves.toMatchObject({ value: { cursor: 6, coverageGap: true } })
+    await expect(iterator.next()).resolves.toMatchObject({ value: { cursor: 8, coverageGap: true } })
+    await iterator.return?.()
+  })
+
+  it.each([
+    { reason: 'a previously observed duplicate', sequence: 5, complete: true },
+    { reason: 'an unseen backwards sequence', sequence: 6, complete: false },
+  ])('handles $reason while certifying initial live coverage', async ({ sequence, complete }) => {
+    const { transport } = publicEventTransport([
+      { type: 'session.created', data: { sessionID: 'session-1' }, durable: { aggregateID: 'session-1', seq: 5 } },
+      { type: 'session.renamed', data: { sessionID: 'session-1', title: 'Own title' }, durable: { aggregateID: 'session-1', seq: 7 } },
+      { type: 'session.renamed', data: { sessionID: 'session-1', title: 'Repeated title' }, durable: { aggregateID: 'session-1', seq: sequence } },
+      { type: 'session.renamed', data: { sessionID: 'session-1', title: 'Latest title' }, durable: { aggregateID: 'session-1', seq: 9 } },
+    ], 8)
+    const subscription = await transport.subscribeToEvents('session-1', '/workspace', undefined, undefined, 4)
+    expect(subscription.coverageComplete).toBe(complete)
+    if (complete) expect(subscription.initialEvents).toEqual([{ cursor: 5 }, { cursor: 7, observedAfter: 5 }, { cursor: 9, observedAfter: 7 }])
+    await subscription.close?.()
   })
 
   it('rejects an unseen backwards sequence on a public stream', async () => {
@@ -795,7 +1040,7 @@ describe('OpenCode v2 fetch transport', () => {
     const iterator = subscription.events[Symbol.asyncIterator]()
     await expect(iterator.next()).resolves.toMatchObject({ value: { cursor: 3, observedAfter: 0 } })
     await expect(iterator.next()).resolves.toMatchObject({ value: { cursor: 2, coverageGap: true } })
-    await iterator.return?.(undefined)
+    await iterator.return?.()
   })
 
   it.each([
@@ -806,23 +1051,18 @@ describe('OpenCode v2 fetch transport', () => {
     { reason: 'an unknown event without an aggregate', raw: { type: 'session.future.event', durable: { seq: 2 } } },
     { reason: 'a null durable envelope', raw: { type: 'session.future.event', durable: null } },
     { reason: 'conflicting session routing', raw: { type: 'session.inbox.enqueued', data: { sessionID: 'other', inboxID: 'inbox-1' }, durable: { aggregateID: 'session-1', seq: 2 } } },
+    { reason: 'a hidden conflicting form route', raw: { type: 'session.inbox.enqueued', data: { sessionID: 'other', form: { sessionID: 'session-1' }, inboxID: 'inbox-1' }, durable: { aggregateID: 'other', seq: 2 } } },
+    { reason: 'an empty route hiding the current form', raw: { type: 'session.inbox.enqueued', data: { sessionID: '', form: { sessionID: 'session-1' }, inboxID: 'inbox-1' }, durable: { aggregateID: 'other', seq: 2 } } },
+    { reason: 'conflicting ephemeral form routing', raw: { type: 'form.created', data: { sessionID: 'other', form: { sessionID: 'session-1' } } } },
   ])('does not certify public coverage across $reason', async ({ raw }) => {
-    const publicEvents = [
-      { type: 'server.connected' },
-      { type: 'session.created', data: { sessionID: 'session-1' }, durable: { aggregateID: 'session-1', seq: 1 } },
-      raw,
-      { type: 'session.renamed', data: { sessionID: 'session-1', title: 'New title' }, durable: { aggregateID: 'session-1', seq: 3 } },
-    ]
-    const initial = createTransport(request => {
-      if (request.url.pathname === '/api/event') return eventStream(publicEvents)
-      return eventStream([{ type: 'log.synced', aggregateID: 'session-1', seq: 3 }])
-    })
+    const publicEvents = publicEventsAround(raw)
+    const initial = publicEventTransport(publicEvents, 3)
     const uncertified = await initial.transport.subscribeToEvents('session-1', '/workspace', undefined, undefined, 0)
     expect(uncertified.coverageComplete).toBe(false)
-    await uncertified.close!()
+    await uncertified.close?.()
 
     const following = createTransport(request => {
-      if (request.url.pathname === '/api/event') return eventStream(publicEvents)
+      if (request.url.pathname === '/api/event') return eventStream([{ type: 'server.connected' }, ...publicEvents])
       return eventStream([{ type: 'log.synced', aggregateID: 'session-1', seq: 0 }])
     })
 
@@ -832,29 +1072,21 @@ describe('OpenCode v2 fetch transport', () => {
     const next = await iterator.next()
     expect(next.value).toMatchObject({ cursor: 3, coverageGap: true })
     expect(next.value).not.toHaveProperty('observedAfter')
-    await iterator.return?.(undefined)
+    await iterator.return?.()
   })
 
   it.each([null, {}, { type: 23 }])('requires complete replay after an invalid public event frame: %j', async (invalid) => {
-    const publicEvents = [
-      { type: 'server.connected' },
-      { type: 'session.created', data: { sessionID: 'session-1' }, durable: { aggregateID: 'session-1', seq: 1 } },
-      invalid,
-      { type: 'session.renamed', data: { sessionID: 'session-1', title: 'New title' }, durable: { aggregateID: 'session-1', seq: 3 } },
-    ]
-    const initial = createTransport(request => {
-      if (request.url.pathname === '/api/event') return eventStream(publicEvents)
-      return eventStream([{ type: 'log.synced', aggregateID: 'session-1', seq: 3 }])
-    })
+    const publicEvents = publicEventsAround(invalid)
+    const initial = publicEventTransport(publicEvents, 3)
     const uncertified = await initial.transport.subscribeToEvents('session-1', '/workspace', undefined, undefined, 0)
     expect(uncertified.coverageComplete).toBe(false)
-    await uncertified.close!()
+    await uncertified.close?.()
 
     const following = createTransport(request => {
-      if (request.url.pathname === '/api/event') return eventStream(publicEvents)
+      if (request.url.pathname === '/api/event') return eventStream([{ type: 'server.connected' }, ...publicEvents])
       if (request.url.pathname.endsWith('/permission')) return jsonResponse({ data: [] })
       if (request.url.searchParams.get('after') === '1') return eventStream([
-        publicEvents[3],
+        publicEvents[2],
         { type: 'log.synced', aggregateID: 'session-1', seq: 3 },
       ])
       return eventStream([{ type: 'log.synced', aggregateID: 'session-1', seq: 0 }])
@@ -863,7 +1095,7 @@ describe('OpenCode v2 fetch transport', () => {
     const iterator = subscription.events[Symbol.asyncIterator]()
     await expect(iterator.next()).resolves.toMatchObject({ value: { cursor: 1 } })
     await expect(iterator.next()).resolves.toMatchObject({ value: { cursor: 3, coverageGap: true } })
-    await iterator.return?.(undefined)
+    await iterator.return?.()
   })
 
   it.each([
@@ -924,7 +1156,7 @@ describe('OpenCode v2 fetch transport', () => {
     expect(subscription.coverageComplete).toBe(false)
     const iterator = subscription.events[Symbol.asyncIterator]()
     const events = [await iterator.next(), await iterator.next()]
-    await iterator.return?.(undefined)
+    await iterator.return?.()
 
     expect(events.map(next => next.value)).toEqual([
       { cursor: 5, coverageGap: true, event: { type: 'inbox_enqueued', sessionId: 'session-1', inboxID: 'inbox-1' } },
@@ -966,7 +1198,7 @@ describe('OpenCode v2 fetch transport', () => {
     expect(subscription.coverageComplete).toBe(false)
     const iterator = subscription.events[Symbol.asyncIterator]()
     const events = [await iterator.next(), await iterator.next(), await iterator.next()]
-    await iterator.return?.(undefined)
+    await iterator.return?.()
 
     expect(events.map(next => next.value?.coverageGap)).toEqual([true, true, true])
     expect(events.map(next => next.value?.event?.type)).toEqual(['inbox_enqueued', 'inbox_delivered', 'execution_terminal'])
@@ -1005,7 +1237,7 @@ describe('OpenCode v2 fetch transport', () => {
       protocol: 'v2',
       version: '2.0.15',
     })
-    expect(requests[0]?.body).toEqual({ location: { directory: '/workspace' } })
+    expect(requests[0]?.body).toEqual({ location: { directory: '/workspace' }, title: 'LoopTroop' })
     expect(requests[1]?.url.searchParams.get('order')).toBe('desc')
     expect(requests[2]?.url.searchParams.get('cursor')).toBe('sessions-2')
     expect(requests[2]?.url.searchParams.has('order')).toBe(false)

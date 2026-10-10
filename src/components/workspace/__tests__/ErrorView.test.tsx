@@ -1,5 +1,5 @@
 import { act, fireEvent, screen, within } from '@testing-library/react'
-import { beforeEach, describe, expect, it, vi } from 'vitest'
+import { assert, beforeEach, describe, expect, it, vi } from 'vitest'
 import type { ReactElement } from 'react'
 import type { LogContextValue, LogEntry } from '@/context/logUtils'
 import { renderWithProviders, withLogContext } from '@/test/renderHelpers'
@@ -11,6 +11,7 @@ import {
   BEAD_ITERATION_TIMEOUT,
   BEAD_RETRY_BUDGET_EXHAUSTED,
   FINAL_TEST_FAILED,
+  OPENCODE_PROVIDER_AUTH_FAILED,
   OPENCODE_PROVIDER_ERROR,
 } from '@shared/errorCodes'
 
@@ -62,6 +63,7 @@ describe('ErrorView', () => {
     [BEAD_AGENT_RESPONSE_INVALID, 'CODING', 'Agent response incomplete'],
     [BEAD_ITERATION_TIMEOUT, 'CODING', 'Implementation attempt timed out'],
     [OPENCODE_PROVIDER_ERROR, 'CODING', 'Provider or environment unavailable'],
+    [OPENCODE_PROVIDER_AUTH_FAILED, 'CODING', 'Provider or environment unavailable'],
     [BEAD_RETRY_BUDGET_EXHAUSTED, 'CODING', 'Implementation retries exhausted'],
     [BEAD_FINALIZATION_FAILED, 'CODING', 'Git finalization failed'],
     [FINAL_TEST_FAILED, 'RUNNING_FINAL_TEST', 'Final Testing failed'],
@@ -106,15 +108,16 @@ describe('ErrorView', () => {
 
     const errorMessage = screen.getByText('The workflow request could not reach OpenCode.')
     const details = screen.getByText('Technical details').closest('details')
+    assert(details)
     expect(errorMessage).toBeVisible()
     expect(errorMessage.closest('details')).toBeNull()
     expect(details).toHaveAttribute('open')
-    expect(errorMessage.compareDocumentPosition(details!) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy()
+    expect(errorMessage.compareDocumentPosition(details) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy()
     expect(screen.queryByText(/Blocked: Error|Active error|Blocked from|Workflow step failed|Recommended:/)).not.toBeInTheDocument()
     expect(screen.queryByText(/use an available recovery action|current workflow step could not finish safely/i)).not.toBeInTheDocument()
     const retry = screen.getByRole('button', { name: 'Retry' })
     expect(retry).toBeVisible()
-    expect(retry.compareDocumentPosition(details!) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy()
+    expect(retry.compareDocumentPosition(details) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy()
 
     fireEvent.click(screen.getByText('Technical details'))
     expect(details).not.toHaveAttribute('open')
@@ -127,7 +130,83 @@ describe('ErrorView', () => {
 
     renderWithProviders(<ErrorView ticket={ticket} />)
 
-    expect(screen.getByText(/An error occurred but no details were captured/)).toBeVisible()
+    expect(screen.getByText('No error details were captured. Check the server logs.')).toBeVisible()
+  })
+
+  it('uses a real heading when the failed phase is unavailable', () => {
+    const ticket = makeTicket({ status: 'BLOCKED_ERROR', previousStatus: null, errorMessage: 'Request failed.' })
+
+    renderWithProviders(<ErrorView ticket={ticket} />)
+
+    expect(screen.getByRole('heading', { name: 'Error' })).toBeVisible()
+    expect(screen.queryByText('Error (reason)')).not.toBeInTheDocument()
+  })
+
+  it('omits an empty technical-details disclosure', () => {
+    const ticket = makeTicket({ status: 'CANCELED', previousStatus: 'BLOCKED_ERROR', errorMessage: 'Request failed.' })
+
+    renderWithProviders(<ErrorView ticket={ticket} readOnly />)
+
+    expect(screen.getByText('Request failed.')).toBeVisible()
+    expect(screen.queryByText('Technical details')).not.toBeInTheDocument()
+  })
+
+  it.each([
+    [BEAD_FINALIZATION_FAILED, 'CODING'],
+    [FINAL_TEST_FAILED, 'RUNNING_FINAL_TEST'],
+    [OPENCODE_PROVIDER_ERROR, 'SCANNING_RELEVANT_FILES'],
+    ['', 'GENERATING_EXECUTION_SETUP_PLAN'],
+  ])('does not recommend unavailable recovery for %s in %s', (errorCode, blockedFromStatus) => {
+    const ticket = makeLiveCodingErrorTicket()
+    const occurrence = ticket.errorOccurrences?.[0]
+    assert(occurrence)
+    occurrence.blockedFromStatus = blockedFromStatus
+    occurrence.errorCodes = errorCode ? [errorCode] : []
+    ticket.availableActions = ['cancel']
+
+    renderWithProviders(<ErrorView ticket={ticket} />)
+
+    expect(screen.getByRole('button', { name: 'Cancel…' })).toBeVisible()
+    expect(screen.queryByText(/^(Retry|Continue|Review the failed checks)/)).not.toBeInTheDocument()
+  })
+
+  it.each<{ actions: ReturnType<typeof makeTicket>['availableActions']; recommendation: string | null }>([
+    { actions: [], recommendation: null },
+    { actions: ['retry', 'cancel'], recommendation: 'Retry after the service or credentials recover.' },
+    { actions: ['continue', 'cancel'], recommendation: 'Continue the preserved session after the service or credentials recover.' },
+    { actions: ['continue', 'retry', 'cancel'], recommendation: 'Continue the preserved session, or retry after the service or credentials recover.' },
+  ])('matches provider recovery guidance and keyboard order to $actions', ({ actions, recommendation }) => {
+    const ticket = makeLiveCodingErrorTicket()
+    const occurrence = ticket.errorOccurrences?.[0]
+    assert(occurrence)
+    occurrence.errorCodes = [OPENCODE_PROVIDER_ERROR]
+    ticket.availableActions = actions
+
+    renderWithProviders(<ErrorView ticket={ticket} />)
+
+    if (!recommendation) {
+      expect(screen.queryByRole('button')).not.toBeInTheDocument()
+      expect(screen.queryByText(/^(Retry|Continue)/)).not.toBeInTheDocument()
+      return
+    }
+    expect(screen.getByText(recommendation)).toBeVisible()
+    const firstButton = screen.getAllByRole('button')[0]
+    expect(firstButton).toHaveTextContent(actions.includes('continue') ? 'Continue' : 'Retry')
+    expect(screen.getAllByRole('button').at(-1)).toHaveTextContent('Cancel…')
+  })
+
+  it('recommends setup-plan editing alone when retry is unavailable', () => {
+    const ticket = makeLiveCodingErrorTicket()
+    const occurrence = ticket.errorOccurrences?.[0]
+    assert(occurrence)
+    occurrence.blockedFromStatus = 'PREPARING_EXECUTION_ENV'
+    ticket.availableActions = ['edit_execution_setup_plan', 'cancel']
+
+    renderWithProviders(<ErrorView ticket={ticket} />)
+
+    expect(screen.getByText('Edit the setup plan to correct the reported environment problem.')).toBeVisible()
+    expect(screen.queryByText(/retry after fixing/)).not.toBeInTheDocument()
+    expect(screen.getByRole('button', { name: 'Edit setup plan...' })).toBeVisible()
   })
 
   it('shows the reported event-history failure before its expanded diagnostics and recovery controls', () => {
@@ -173,8 +252,10 @@ describe('ErrorView', () => {
 
   it('keeps the selected historical failure visible with its resolution and no recovery controls', () => {
     const activeTicket = makeLiveCodingErrorTicket()
+    const activeOccurrence = activeTicket.errorOccurrences?.[0]
+    assert(activeOccurrence)
     const occurrence = {
-      ...activeTicket.errorOccurrences![0]!,
+      ...activeOccurrence,
       id: 'resolved-coding-error',
       errorMessage: 'An earlier coding attempt timed out.',
       errorCodes: [BEAD_ITERATION_TIMEOUT],
@@ -184,18 +265,65 @@ describe('ErrorView', () => {
     }
     const ticket = makeTicket({
       ...activeTicket,
-      errorOccurrences: [occurrence, activeTicket.errorOccurrences![0]!],
+      errorOccurrences: [occurrence, activeOccurrence],
+      runtime: {
+        ...activeTicket.runtime,
+        currentBead: 4,
+        totalBeads: 5,
+        lastFailedBeadId: 'current-bead',
+        activeBeadIteration: 2,
+        beads: [{
+          id: 'current-bead',
+          title: 'Current failed bead',
+          status: 'failed',
+          iteration: 2,
+          failedIterationNotes: [{ timestamp: '2026-01-01T00:02:00.000Z', iteration: 2, content: 'Current failed iteration' }],
+          userRetryNotes: [{ timestamp: '2026-01-01T00:03:00.000Z', iteration: 2, content: 'Current retry guidance' }],
+          finalizationFailureNotes: [{ timestamp: '2026-01-01T00:04:00.000Z', iteration: 2, content: 'Current finalization failure' }],
+        }],
+      },
     })
 
     renderWithProviders(<ErrorView ticket={ticket} occurrence={occurrence} readOnly />)
 
     expect(screen.getByText('An earlier coding attempt timed out.')).toBeVisible()
     expect(screen.getByText(/^Retried to Implementing/)).toBeVisible()
+    expect(screen.getByRole('heading', { name: 'Implementing' })).toBeVisible()
     expect(screen.getByRole('heading', { name: 'Implementation attempt timed out' })).toBeVisible()
     expect(screen.getByText(/Resolved /)).toBeVisible()
     expect(screen.queryByText('Implementation failed.')).not.toBeInTheDocument()
     expect(screen.queryByText(/Retry the bead with an extra note/)).not.toBeInTheDocument()
     expect(screen.queryByRole('button')).not.toBeInTheDocument()
+    expect(screen.queryByText(/Bead 4\/5|Bead \?\/\?|Failed bead|current-bead/)).not.toBeInTheDocument()
+    expect(screen.queryByText(/Current failed iteration|Current retry guidance|Current finalization failure/)).not.toBeInTheDocument()
+  })
+
+  it('treats an older unresolved occurrence as history even without a readOnly prop', () => {
+    const ticket = makeLiveCodingErrorTicket()
+    const activeOccurrence = ticket.errorOccurrences?.[0]
+    assert(activeOccurrence)
+    const occurrence = { ...activeOccurrence, id: 'older-unresolved', errorMessage: 'An older failure.' }
+    ticket.errorOccurrences = [occurrence, activeOccurrence]
+
+    renderWithProviders(<ErrorView ticket={ticket} occurrence={occurrence} />)
+
+    expect(screen.getByText('An older failure.')).toBeVisible()
+    expect(screen.getByText('Read-only')).toBeVisible()
+    expect(screen.queryByRole('button')).not.toBeInTheDocument()
+  })
+
+  it('does not use the live ticket message for an empty historical error', () => {
+    const ticket = makeLiveCodingErrorTicket()
+    const activeOccurrence = ticket.errorOccurrences?.[0]
+    assert(activeOccurrence)
+    const occurrence = { ...activeOccurrence, id: 'older-empty', errorMessage: '', resolvedAt: '2026-01-01T00:01:00.000Z' }
+    ticket.errorMessage = 'The newest ticket error.'
+    ticket.errorOccurrences = [occurrence, activeOccurrence]
+
+    renderWithProviders(<ErrorView ticket={ticket} occurrence={occurrence} readOnly />)
+
+    expect(screen.getByText('No error details were captured. Check the server logs.')).toBeVisible()
+    expect(screen.queryByText('The newest ticket error.')).not.toBeInTheDocument()
   })
 
   it('uses the failed workflow phase for workspace setup errors without guessing from logs', () => {
@@ -390,11 +518,14 @@ describe('ErrorView', () => {
     expect(screen.getByRole('button', { name: 'Retry' })).toBeInTheDocument()
     liveView.unmount()
 
+    const baseTicket = makeLiveCodingErrorTicket()
+    const baseOccurrence = baseTicket.errorOccurrences?.[0]
+    assert(baseOccurrence)
     const nonCodingTicket = makeTicket({
-      ...makeLiveCodingErrorTicket(),
+      ...baseTicket,
       previousStatus: 'GENERATING_PRD',
       errorOccurrences: [{
-        ...makeLiveCodingErrorTicket().errorOccurrences![0]!,
+        ...baseOccurrence,
         blockedFromStatus: 'GENERATING_PRD',
       }],
     })
@@ -473,7 +604,7 @@ describe('ErrorView', () => {
       return
     }
     const editSetupPlanButton = screen.getByRole('button', { name: 'Edit setup plan...' })
-    expect(editSetupPlanButton.compareDocumentPosition(retryButton) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy()
+    expect(retryButton.compareDocumentPosition(editSetupPlanButton) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy()
 
     fireEvent.click(editSetupPlanButton)
     expect(screen.getByRole('dialog', { name: 'Edit workspace setup plan?' })).toBeInTheDocument()
@@ -521,7 +652,9 @@ describe('ErrorView', () => {
 
   it('cleans terminal formatting and duplicate warnings from the displayed error', () => {
     const ticket = makeLiveCodingErrorTicket()
-    ticket.errorOccurrences![0]!.errorMessage = [
+    const occurrence = ticket.errorOccurrences?.[0]
+    assert(occurrence)
+    occurrence.errorMessage = [
       '\u001b[33mExperimental warning\u001b[39m',
       '\u001b[33mExperimental warning\u001b[39m',
       '\u001b[31m──────\u001b[39m',
@@ -736,6 +869,9 @@ describe('ErrorView', () => {
     expect(screen.getByText(/Timer paused while the ticket is blocked/)).toHaveTextContent(
       'Continue resumes the preserved OpenCode session with a fresh bead timer.',
     )
+    expect(screen.getByText(/Timer paused while the ticket is blocked/).compareDocumentPosition(screen.getByText('Technical details')) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy()
+    expect(screen.getAllByRole('button')[0]).toHaveTextContent('Continue')
+    expect(screen.getByRole('button', { name: 'Continue' }).querySelector('svg')).toHaveAttribute('aria-hidden', 'true')
     expect(screen.getByRole('button', { name: 'Retry with extra note...' })).toBeInTheDocument()
     expect(screen.queryByText(/Failed bead/)).not.toBeInTheDocument()
   })
@@ -851,6 +987,56 @@ describe('ErrorView', () => {
     expect(screen.getByText('invalid_request_error')).toBeInTheDocument()
     expect(screen.getByText('Retryable:')).toBeInTheDocument()
     expect(screen.getByText('no')).toBeInTheDocument()
+    expect(screen.queryByText('Provider message:')).not.toBeInTheDocument()
+    expect(screen.getAllByText(/Your authentication token has been invalidated/)).toHaveLength(1)
+  })
+
+  it('keeps additional provider context visible when its summary contains the primary error', () => {
+    const ticket = makeLiveCodingErrorTicket()
+    const occurrence = ticket.errorOccurrences?.[0]
+    assert(occurrence)
+    occurrence.errorMessage = 'Request failed'
+    occurrence.diagnostics = { kind: 'opencode_provider', source: 'provider', summary: 'Request failed: 429 Too Many Requests' }
+
+    renderWithProviders(<ErrorView ticket={ticket} />)
+
+    expect(screen.getByText('Request failed')).toBeVisible()
+    expect(screen.getByText('Cause:')).toBeVisible()
+    expect(screen.getByText(/Request failed: 429 Too Many Requests/)).toBeVisible()
+    expect(screen.getByText(/Request failed: 429 Too Many Requests/).closest('details')).toBeNull()
+  })
+
+  it('uses the diagnostic cause as the main error when no message was captured', () => {
+    const ticket = makeLiveCodingErrorTicket()
+    const occurrence = ticket.errorOccurrences?.[0]
+    assert(occurrence)
+    occurrence.errorMessage = ''
+    occurrence.diagnostics = { kind: 'transport', source: 'opencode', summary: 'The OpenCode connection closed before the scan finished.' }
+
+    renderWithProviders(<ErrorView ticket={ticket} />)
+
+    expect(screen.getAllByText('The OpenCode connection closed before the scan finished.')).toHaveLength(1)
+    expect(screen.getByText('The OpenCode connection closed before the scan finished.')).toBeVisible()
+    expect(screen.queryByText(/No error details were captured/)).not.toBeInTheDocument()
+    expect(screen.queryByText('Cause:')).not.toBeInTheDocument()
+  })
+
+  it('retains a provider message row when it adds details absent from the main error and summary', () => {
+    const ticket = makeLiveCodingErrorTicket()
+    const occurrence = ticket.errorOccurrences?.[0]
+    assert(occurrence)
+    occurrence.errorMessage = 'Request failed.'
+    occurrence.diagnostics = {
+      kind: 'opencode_provider',
+      source: 'provider',
+      summary: 'HTTP 401',
+      providerErrorMessage: 'Sign in again to refresh the authentication token.',
+    }
+
+    renderWithProviders(<ErrorView ticket={ticket} />)
+
+    expect(screen.getByText('Provider message:')).toBeVisible()
+    expect(screen.getByText('Sign in again to refresh the authentication token.')).toBeVisible()
   })
 
   it('renders model output truncation diagnostics with finish reason and token counts', () => {
@@ -947,9 +1133,12 @@ describe('ErrorView', () => {
 
     renderWithProviders(<ErrorView ticket={ticket} occurrence={occurrence} readOnly />)
 
-    const occurredAt = screen.getByText('Error 1').parentElement!.querySelector('[title]')
+    const context = screen.getByText('Error 1').parentElement
+    assert(context)
+    const occurredAt = context.querySelector('[title]')
+    assert(occurredAt)
     expect(occurredAt).toHaveAttribute('title')
-    expect(occurredAt!.getAttribute('title')).not.toContain('.123')
+    expect(occurredAt.getAttribute('title')).not.toContain('.123')
 
     const resolvedLabel = screen.getByText(/Resolved /)
     expect(resolvedLabel).not.toHaveTextContent('.456')
@@ -1026,8 +1215,10 @@ describe('ErrorView log window for a historical occurrence', () => {
     // nothing could fall inside it. Undated rows used to leak through and mask
     // that; excluding them turned it into an empty log panel.
     const ticket = twoOccurrenceTicket()
+    const occurrence = ticket.errorOccurrences?.[0]
+    assert(occurrence)
     renderWithLogs(
-      <ErrorView ticket={ticket} occurrence={ticket.errorOccurrences![0]} />,
+      <ErrorView ticket={ticket} occurrence={occurrence} />,
       { CODING: [logEntry('work before the first failure', '2026-01-01T09:30:00.000Z')] },
     )
 
@@ -1038,8 +1229,10 @@ describe('ErrorView log window for a historical occurrence', () => {
 
   it('keeps undated lines out of a bounded window', () => {
     const ticket = twoOccurrenceTicket()
+    const occurrence = ticket.errorOccurrences?.[1]
+    assert(occurrence)
     renderWithLogs(
-      <ErrorView ticket={ticket} occurrence={ticket.errorOccurrences![1]} />,
+      <ErrorView ticket={ticket} occurrence={occurrence} />,
       {
         CODING: [
           logEntry('between the two failures', '2026-01-01T11:00:00.000Z'),

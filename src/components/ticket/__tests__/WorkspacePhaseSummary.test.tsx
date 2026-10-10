@@ -1,6 +1,8 @@
 import type { ReactElement } from 'react'
 import { fireEvent, screen, waitFor } from '@testing-library/react'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
+import { createActor } from 'xstate'
+import { ticketMachine } from '@server/machines/ticketMachine'
 import type { LogContextValue, LogEntry } from '@/context/logUtils'
 import { TEST, makeTicket } from '@/test/factories'
 import { getTicketArtifactsQueryKey } from '@/hooks/useTicketArtifacts'
@@ -148,6 +150,35 @@ describe('WorkspacePhaseSummary', () => {
     expect(screen.getByText(/Continue resumes the preserved provider session\./)).toBeInTheDocument()
     expect(screen.queryByText(/noisy parser excerpt/)).not.toBeInTheDocument()
     expect(screen.queryByText(/CODING exposes three separate histories/)).not.toBeInTheDocument()
+  })
+
+  it('summarizes the final stopping reason from a bead failure instead of an earlier attempt', () => {
+    const initial = createActor(ticketMachine, { input: {} })
+    const actor = createActor(ticketMachine, {
+      snapshot: ticketMachine.resolveState({ value: 'CODING', context: { ...initial.getSnapshot().context, status: 'CODING' } }),
+      input: {},
+    })
+    const stoppingReason = 'Reached the configured per-bead retry budget at iteration 5.'
+    actor.start()
+    actor.send({
+      type: 'BEAD_ERROR',
+      errors: [
+        ...Array.from({ length: 5 }, (_, index) => `Iteration ${index + 1}: No completion marker found.`),
+        stoppingReason,
+      ],
+    })
+    const ticket = makeTicket({
+      status: 'BLOCKED_ERROR',
+      previousStatus: 'CODING',
+      errorMessage: actor.getSnapshot().context.error,
+      availableActions: ['retry', 'cancel'],
+    })
+    actor.stop()
+
+    renderWithProviders(<WorkspacePhaseSummary phase="BLOCKED_ERROR" ticket={ticket} />)
+
+    expect(screen.getByText(new RegExp(stoppingReason))).toBeInTheDocument()
+    expect(screen.queryByText(/Iteration 1: No completion marker found/)).not.toBeInTheDocument()
   })
 
   it('does not advertise live recovery actions for a historical error occurrence', () => {

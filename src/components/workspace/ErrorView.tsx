@@ -263,6 +263,16 @@ function explainBlockedError(
   return null
 }
 
+function withContentKeys<T>(items: T[], getIdentity: (item: T) => string) {
+  const duplicateCounts = new Map<string, number>()
+  return items.map((item) => {
+    const identity = getIdentity(item)
+    const duplicateOrdinal = duplicateCounts.get(identity) ?? 0
+    duplicateCounts.set(identity, duplicateOrdinal + 1)
+    return { item, key: JSON.stringify([identity, duplicateOrdinal]) }
+  })
+}
+
 function ErrorTechnicalDetails({ occurrence, primaryErrorMessage }: {
   occurrence: TicketErrorOccurrence | null
   primaryErrorMessage: string
@@ -295,15 +305,15 @@ function ErrorTechnicalDetails({ occurrence, primaryErrorMessage }: {
         )}
         {displayErrorCodes.length > 0 && (
           <div className="flex flex-col items-start gap-1">
-            {displayErrorCodes.map((code, index) => code.includes('\n') || code.length > 120 ? (
+            {withContentKeys(displayErrorCodes, (code) => code).map(({ item: code, key }) => code.includes('\n') || code.length > 120 ? (
               <div
-                key={`${index}:${code}`}
+                key={key}
                 className="w-full rounded-md border border-border px-2.5 py-1 text-[10px] font-mono leading-relaxed whitespace-pre-wrap [overflow-wrap:anywhere]"
               >
                 {code}
               </div>
             ) : (
-              <Badge key={`${index}:${code}`} variant="outline" className="text-[10px]">
+              <Badge key={key} variant="outline" className="text-[10px]">
                 {code}
               </Badge>
             ))}
@@ -327,18 +337,18 @@ function ErrorTechnicalDetails({ occurrence, primaryErrorMessage }: {
 }
 
 function LiveCodingBeadContext({ ticket }: { ticket: Ticket }) {
-  const failedBead = ticket.runtime.lastFailedBeadId
-    ? ticket.runtime.beads?.find((bead) => bead.id === ticket.runtime.lastFailedBeadId) ?? null
-    : null
   const activeRuntimeBead = ticket.runtime.activeBeadId
     ? ticket.runtime.beads?.find((bead) => bead.id === ticket.runtime.activeBeadId) ?? null
+    : null
+  const pausedCodingBead = activeRuntimeBead?.status === 'in_progress' ? activeRuntimeBead : null
+  const failedBead = !pausedCodingBead && ticket.runtime.lastFailedBeadId
+    ? ticket.runtime.beads?.find((bead) => bead.id === ticket.runtime.lastFailedBeadId) ?? null
     : null
   const failedBeadNoteGroups = [
     { title: 'Failed Iteration Notes', notes: failedBead?.failedIterationNotes ?? [] },
     { title: 'User Retry Notes', notes: failedBead?.userRetryNotes ?? [] },
     { title: 'Finalization Failure Notes', notes: failedBead?.finalizationFailureNotes ?? [] },
   ].filter((group) => group.notes.length > 0)
-  const pausedCodingBead = activeRuntimeBead?.status === 'in_progress' ? activeRuntimeBead : null
   const canContinue = ticket.availableActions.includes('continue')
   const canRetry = ticket.availableActions.includes('retry')
 
@@ -352,7 +362,7 @@ function LiveCodingBeadContext({ ticket }: { ticket: Ticket }) {
             {ticket.runtime.activeBeadIteration ? ` on iteration ${ticket.runtime.activeBeadIteration}` : ''}
           </div>
         )}
-        {!failedBead && pausedCodingBead && (
+        {pausedCodingBead && (
           <>
             <div className="flex flex-wrap items-center gap-1.5">
               <Badge variant="outline" className="text-[10px]">Paused</Badge>
@@ -373,8 +383,10 @@ function LiveCodingBeadContext({ ticket }: { ticket: Ticket }) {
             {failedBeadNoteGroups.map((group) => (
               <div key={group.title} className="space-y-1">
                 <div className="text-[10px] uppercase tracking-wider">{group.title}</div>
-                {group.notes.map((note, index) => (
-                  <div key={`${note.timestamp}-${note.iteration}-${index}`} className="rounded border border-border/60 p-1.5">
+                {withContentKeys(group.notes, (note) => JSON.stringify([
+                  note.timestamp, note.iteration, note.content, note.errorCode,
+                ])).map(({ item: note, key }) => (
+                  <div key={key} className="rounded border border-border/60 p-1.5">
                     <div className="mb-0.5 flex flex-wrap gap-1.5 text-[9px] uppercase tracking-wide">
                       {note.iteration > 0 ? <span>Iteration {note.iteration}</span> : null}
                       {note.timestamp ? <span>{note.timestamp}</span> : null}

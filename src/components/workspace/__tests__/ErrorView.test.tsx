@@ -455,6 +455,71 @@ describe('ErrorView', () => {
     expect(screen.getByText('commit failed')).toBeInTheDocument()
   })
 
+  it('preserves duplicate codes and distinct note records across insertion and reordering', () => {
+    const multilineCode = 'TRANSPORT_FAILED\nThe OpenCode connection closed.'
+    const note = { timestamp: '2026-01-01T00:00:00.000Z', iteration: 1, content: 'iteration failed', errorCode: 'CHECK_FAILED' }
+    const otherCodeNote = { ...note, errorCode: 'CHECK_TIMEOUT' }
+    const otherContentNote = { ...note, content: 'provider interrupted' }
+    const ticket = makeTicket({
+      ...makeLiveCodingErrorTicket(),
+      runtime: {
+        lastFailedBeadId: 'bead-1',
+        beads: [{
+          id: 'bead-1',
+          title: 'Failed bead',
+          status: 'error',
+          iteration: 1,
+          failedIterationNotes: [note, { ...note }, otherCodeNote, otherContentNote],
+        }],
+      },
+    })
+    const occurrence = ticket.errorOccurrences?.[0]
+    const failedBead = ticket.runtime.beads?.[0]
+    assert(occurrence && failedBead)
+    occurrence.errorCodes = ['CHECK_FAILED', 'CHECK_FAILED', multilineCode, multilineCode]
+    const consoleError = vi.spyOn(console, 'error')
+
+    try {
+      const { rerender } = renderWithProviders(<ErrorView ticket={ticket} />)
+      const details = screen.getByText('Technical details').closest('details')
+      assert(details)
+      const codes = within(details).getAllByText('CHECK_FAILED')
+      const multilineCodes = within(details).getAllByText(multilineCode, { exact: true, normalizer: value => value })
+      const notes = screen.getAllByText('iteration failed')
+      const otherContent = screen.getByText('provider interrupted')
+      expect(codes).toHaveLength(2)
+      expect(multilineCodes).toHaveLength(2)
+      expect(notes).toHaveLength(3)
+      expect(screen.getAllByText('CHECK_TIMEOUT')).toHaveLength(1)
+
+      occurrence.errorCodes = ['UNRELATED_FAILURE', multilineCode, multilineCode, 'CHECK_FAILED', 'CHECK_FAILED']
+      failedBead.failedIterationNotes = [
+        { ...note, content: 'unrelated note' },
+        otherContentNote,
+        otherCodeNote,
+        note,
+        { ...note },
+      ]
+      rerender(<ErrorView ticket={{ ...ticket }} />)
+
+      const reorderedCodes = within(details).getAllByText('CHECK_FAILED')
+      const reorderedMultilineCodes = within(details).getAllByText(multilineCode, { exact: true, normalizer: value => value })
+      const reorderedNotes = screen.getAllByText('iteration failed')
+      expect(reorderedCodes[0]).toBe(codes[0])
+      expect(reorderedCodes[1]).toBe(codes[1])
+      expect(reorderedMultilineCodes[0]).toBe(multilineCodes[0])
+      expect(reorderedMultilineCodes[1]).toBe(multilineCodes[1])
+      expect(reorderedNotes[0]).toBe(notes[2])
+      expect(reorderedNotes[1]).toBe(notes[0])
+      expect(reorderedNotes[2]).toBe(notes[1])
+      expect(screen.getByText('provider interrupted')).toBe(otherContent)
+      expect(screen.getByText('unrelated note')).toBeVisible()
+      expect(consoleError).not.toHaveBeenCalled()
+    } finally {
+      consoleError.mockRestore()
+    }
+  })
+
   it('shows a coding-specific retry label when the active error exhausted the bead retry budget', () => {
     const ticket = makeTicket({
       status: 'BLOCKED_ERROR',
@@ -822,7 +887,7 @@ describe('ErrorView', () => {
     )
   })
 
-  it('shows a paused coding bead cue for continuable provider interruptions', () => {
+  it.each([false, true])('shows the current paused coding bead cue even with an older failure: %s', (hasOlderFailure) => {
     const ticket = makeTicket({
       status: 'BLOCKED_ERROR',
       previousStatus: 'CODING',
@@ -851,7 +916,16 @@ describe('ErrorView', () => {
         ...makeTicket().runtime,
         activeBeadId: 'bead-9',
         activeBeadIteration: 6,
-        beads: [{
+        lastFailedBeadId: hasOlderFailure ? 'bead-old' : null,
+        beads: [...(hasOlderFailure ? [{
+          id: 'bead-old',
+          title: 'Previously failed bead',
+          status: 'error',
+          iteration: 2,
+          failedIterationNotes: [{ timestamp: '2025-12-31T00:00:00.000Z', iteration: 2, content: 'Earlier bead timed out.' }],
+          userRetryNotes: [{ timestamp: '2025-12-31T00:01:00.000Z', iteration: 2, content: 'Earlier retry instructions.' }],
+          finalizationFailureNotes: [{ timestamp: '2025-12-31T00:02:00.000Z', iteration: 2, content: 'Earlier commit failure.' }],
+        }] : []), {
           id: 'bead-9',
           title: 'Provider-limited bead',
           status: 'in_progress',
@@ -874,6 +948,10 @@ describe('ErrorView', () => {
     expect(screen.getByRole('button', { name: 'Continue' }).querySelector('svg')).toHaveAttribute('aria-hidden', 'true')
     expect(screen.getByRole('button', { name: 'Retry with extra note...' })).toBeInTheDocument()
     expect(screen.queryByText(/Failed bead/)).not.toBeInTheDocument()
+    expect(screen.queryByText('bead-old')).not.toBeInTheDocument()
+    expect(screen.queryByText('Earlier bead timed out.')).not.toBeInTheDocument()
+    expect(screen.queryByText('Earlier retry instructions.')).not.toBeInTheDocument()
+    expect(screen.queryByText('Earlier commit failure.')).not.toBeInTheDocument()
   })
 
   it('shows action errors inline when Continue is rejected', async () => {

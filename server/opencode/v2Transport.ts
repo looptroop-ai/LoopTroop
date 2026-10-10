@@ -833,6 +833,7 @@ export class V2OpenCodeTransport implements OpenCodeTransport {
               connection = reconnected
               state = replayState
               coverageGap = replayGap
+              if (!replayGap && replay.cursor > cursor) reconnects = 0
               for (const event of replayEvents) {
                 const sequence = event.cursor
                 if (sequence !== undefined && seen.has(sequence)) continue

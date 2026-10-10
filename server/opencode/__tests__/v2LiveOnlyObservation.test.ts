@@ -12,6 +12,8 @@ interface LiveOnlyServerOptions {
   onConnect?: (emit: (event: LiveEvent) => void) => void
   onWait?: (emit: (event: LiveEvent) => void, setPending: (ids: string[]) => void) => void
   onPrompt?: (emit: (event: LiveEvent) => void) => void
+  replayRecoveries?: LiveEvent[]
+  streamFailure?: 'invalid-json' | 'invalid-event'
   autoTitleAfterTerminal?: boolean
   omitWatermarkAt?: 'pre-wait' | 'post-terminal'
   stallAfterCursorLog?: boolean
@@ -63,6 +65,7 @@ function createLiveOnlyServer(options: LiveOnlyServerOptions = {}) {
   let eventController: ReadableStreamDefaultController<Uint8Array> | undefined
   let eventSignal: AbortSignal | undefined
   let eventSignalAborted = false
+  let eventConnections = 0
   let logSignalAborted = false
   let currentWatermark = startCursor
   let pendingInboxes: string[] = []
@@ -77,6 +80,13 @@ function createLiveOnlyServer(options: LiveOnlyServerOptions = {}) {
   const connected = deferred()
   const stalledLogOpened = deferred()
   const waitStarted = deferred()
+  const recoveredEvents: LiveEvent[] = []
+
+  const interruptEventStream = () => {
+    if (options.streamFailure === 'invalid-json') eventController?.enqueue(encoder.encode('data: invalid-json\n\n'))
+    if (options.streamFailure === 'invalid-event') eventController?.enqueue(encodeEvent({ type: 23 }))
+    eventController?.close()
+  }
 
   const emit = (event: LiveEvent) => {
     if (event.seq !== undefined) currentWatermark = Math.max(currentWatermark, event.seq)
@@ -106,6 +116,14 @@ function createLiveOnlyServer(options: LiveOnlyServerOptions = {}) {
 
     if (url.pathname === '/api/event' && method === 'GET') {
       requestOrder.push('event')
+      eventConnections++
+      // Keep a broken unbounded retry implementation from starving the test timeout.
+      if (options.replayRecoveries && eventConnections > options.replayRecoveries.length + 4) throw new Error('test reconnect limit exceeded')
+      const recovered = options.replayRecoveries?.[eventConnections - 2]
+      if (recovered) {
+        recoveredEvents.push(recovered)
+        if (recovered.seq !== undefined) currentWatermark = Math.max(currentWatermark, recovered.seq)
+      }
       eventSignal = init.signal ?? undefined
       eventSignal?.addEventListener('abort', () => { eventSignalAborted = true }, { once: true })
       return new Response(new ReadableStream<Uint8Array>({
@@ -120,6 +138,7 @@ function createLiveOnlyServer(options: LiveOnlyServerOptions = {}) {
           }
           if (eventSignal?.aborted) failEventStream()
           else eventSignal?.addEventListener('abort', failEventStream, { once: true })
+          if (eventConnections > 1 && options.replayRecoveries !== undefined) interruptEventStream()
         },
       }), { headers: { 'content-type': 'text/event-stream' } })
     }
@@ -144,7 +163,7 @@ function createLiveOnlyServer(options: LiveOnlyServerOptions = {}) {
           },
         }), { headers: { 'content-type': 'text/event-stream' } })
       }
-      const events: unknown[] = (options.historicalEvents ?? [])
+      const events: unknown[] = [...(options.historicalEvents ?? []), ...recoveredEvents]
         .filter(event => after === null || (event.seq !== undefined && event.seq > Number(after)))
         .map(event => ({
           type: event.type,
@@ -169,6 +188,8 @@ function createLiveOnlyServer(options: LiveOnlyServerOptions = {}) {
         })),
       })
     }
+
+    if (url.pathname.endsWith('/permission') && method === 'GET') return jsonResponse({ data: [] })
 
     if (url.pathname.endsWith('/wait') && method === 'POST') {
       requestOrder.push('wait')
@@ -195,6 +216,7 @@ function createLiveOnlyServer(options: LiveOnlyServerOptions = {}) {
       promptPosted = true
       promptPostCount++
       options.onPrompt?.(emit)
+      if (options.replayRecoveries !== undefined) interruptEventStream()
       if (options.autoTitleAfterTerminal && sessionCreateCount > 0 && createdTitle === undefined) {
         // The separate title fiber can bill usage after the execution ends and
         // produce an empty title, leaving no public durable event after it.
@@ -221,6 +243,7 @@ function createLiveOnlyServer(options: LiveOnlyServerOptions = {}) {
     get logSignalAborted() { return logSignalAborted },
     get logPayloadCount() { return logPayloadCount },
     get promptPostCount() { return promptPostCount },
+    get eventConnections() { return eventConnections },
     get sessionCreateCount() { return sessionCreateCount },
     get createdTitle() { return createdTitle },
     get hiddenTitleUsageCount() { return hiddenTitleUsageCount },
@@ -231,6 +254,76 @@ function createLiveOnlyServer(options: LiveOnlyServerOptions = {}) {
 const promptParts = [{ type: 'text' as const, content: 'prompt' }]
 
 describe('OpenCode v2 live-only event coverage', () => {
+  it.each([
+    { failure: 'EOF', streamFailure: undefined },
+    { failure: 'invalid JSON', streamFailure: 'invalid-json' as const },
+    { failure: 'an invalid event', streamFailure: 'invalid-event' as const },
+  ])('attributes more than three replay-only recoveries after $failure without reposting', async ({ streamFailure }) => {
+    const replayRecoveries: LiveEvent[] = [
+      { type: 'session.inbox.enqueued', seq: startCursor + 1, data: { sessionID: 'session-1', inboxID: 'inbox-own' } },
+      { type: 'session.execution.started', seq: startCursor + 2, data: { sessionID: 'session-1' } },
+      { type: 'session.inbox.delivered', seq: startCursor + 3, data: { sessionID: 'session-1', inboxID: 'inbox-own' } },
+      { type: 'session.step.started', seq: startCursor + 4, data: { sessionID: 'session-1', assistantMessageID: 'assistant-own' } },
+      { type: 'session.text.started', seq: startCursor + 5, data: { sessionID: 'session-1', assistantMessageID: 'assistant-own', ordinal: 0 } },
+      { type: 'session.text.ended', seq: startCursor + 6, data: { sessionID: 'session-1', assistantMessageID: 'assistant-own', ordinal: 0, text: 'live answer' } },
+      { type: 'session.step.ended', seq: startCursor + 7, data: { sessionID: 'session-1', assistantMessageID: 'assistant-own', finish: 'stop' } },
+      { type: 'session.execution.succeeded', seq: startCursor + 8, data: { sessionID: 'session-1' } },
+    ]
+    const server = createLiveOnlyServer({ replayRecoveries, streamFailure })
+    const controller = new AbortController()
+    const prompt = server.adapter.promptSession('session-1', promptParts, controller.signal)
+
+    try {
+      await expect(settleWithin(prompt, 1000)).resolves.toBe('live answer')
+      expect(server.promptPostCount).toBe(1)
+      expect(server.eventConnections).toBeGreaterThan(4)
+      expect(server.currentWatermark).toBe(startCursor + replayRecoveries.length)
+      expect(server.logPayloadCount).toBe(replayRecoveries.length)
+    } finally {
+      controller.abort(new DOMException('test cleanup', 'AbortError'))
+      await settleWithin(prompt.catch(() => undefined), 1000)
+    }
+  })
+
+  it('bounds empty replay recoveries even when each reconnect handshake succeeds', async () => {
+    const server = createLiveOnlyServer({ replayRecoveries: [] })
+    const controller = new AbortController()
+    const subscription = await server.transport.subscribeToEvents('session-1', '/workspace', controller.signal, undefined, startCursor)
+    await server.transport.dispatchPrompt({ sessionId: 'session-1', parts: promptParts }, controller.signal)
+    const event = subscription.events[Symbol.asyncIterator]().next()
+
+    try {
+      await expect(settleWithin(event, 1000)).rejects.toThrow('could not reconnect')
+      expect(server.eventConnections).toBe(4)
+      expect(server.promptPostCount).toBe(1)
+      expect(server.logPayloadCount).toBe(0)
+      expect(server.eventSignalAborted).toBe(true)
+    } finally {
+      controller.abort(new DOMException('test cleanup', 'AbortError'))
+      await subscription.close?.()
+      await settleWithin(event.catch(() => undefined), 1000)
+    }
+  })
+
+  it('rejects an invalid JSON frame when durable replay cannot account for the missing sequence', async () => {
+    const server = createLiveOnlyServer({
+      streamFailure: 'invalid-json',
+      replayRecoveries: [
+        { type: 'session.inbox.enqueued', seq: startCursor + 2, data: { sessionID: 'session-1', inboxID: 'inbox-own' } },
+      ],
+    })
+    const controller = new AbortController()
+    const prompt = server.adapter.promptSession('session-1', promptParts, controller.signal)
+
+    try {
+      await expect(settleWithin(prompt, 1000)).rejects.toThrow('durable sequence gap')
+      expect(server.promptPostCount).toBe(1)
+    } finally {
+      controller.abort(new DOMException('test cleanup', 'AbortError'))
+      await settleWithin(prompt.catch(() => undefined), 1000)
+    }
+  })
+
   it('creates a named session so title accounting cannot trail a completed prompt', async () => {
     const server = createLiveOnlyServer({
       autoTitleAfterTerminal: true,

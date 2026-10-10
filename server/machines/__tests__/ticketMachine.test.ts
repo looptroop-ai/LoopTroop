@@ -42,7 +42,6 @@ describe('ticketMachine execution setup flow', () => {
     ['PRE_FLIGHT_CHECK', 'CHECKS_FAILED', 'PREFLIGHT_FAILED'],
     ['PREPARING_EXECUTION_ENV', 'EXECUTION_SETUP_FAILED', 'EXECUTION_SETUP_FAILED'],
     ['RUNNING_FINAL_TEST', 'TESTS_FAILED', FINAL_TEST_FAILED],
-    ['CODING', 'BEAD_ERROR', 'BEAD_RETRY_BUDGET_EXHAUSTED'],
   ] as const)('records the actual %s failure separately from stable codes', (status, type, code) => {
     const initial = createActor(ticketMachine, { input: { ticketId: '1:T-1' } })
     const actor = createActor(ticketMachine, {
@@ -52,11 +51,47 @@ describe('ticketMachine execution setup flow', () => {
     const errors = ['Command failed (1): install dependencies', '   ', 'Required compiler is unavailable.']
 
     actor.start()
-    actor.send({ type, errors, ...(type === 'BEAD_ERROR' ? { codes: [code] } : {}) } as TicketEvent)
+    actor.send({ type, errors } as TicketEvent)
 
     expect(actor.getSnapshot().value).toBe('BLOCKED_ERROR')
     expect(actor.getSnapshot().context.error).toBe('Command failed (1): install dependencies\nRequired compiler is unavailable.')
     expect(actor.getSnapshot().context.errorCodes).toEqual([code])
+    actor.stop()
+  })
+
+  it.each([
+    { stoppingReason: 'Reached the configured per-bead retry budget at iteration 5.', codes: ['BEAD_RETRY_BUDGET_EXHAUSTED'] },
+    { stoppingReason: 'Could not confirm abort of OpenCode session ses-test; worktree reset withheld.', codes: [] },
+  ])('leads with the final bead stopping reason: $stoppingReason', ({ stoppingReason, codes }) => {
+    const initial = createActor(ticketMachine, { input: {} })
+    const actor = createActor(ticketMachine, {
+      snapshot: ticketMachine.resolveState({ value: 'CODING', context: { ...initial.getSnapshot().context, status: 'CODING' } }),
+      input: {},
+    })
+    const errors = [
+      'Iteration 1: No completion marker found.',
+      'Iteration 2: No completion marker found.',
+      'Iteration 3: No completion marker found.',
+      'Iteration 4: No completion marker found.',
+      'Iteration 5: The provider usage limit has been reached.',
+      stoppingReason,
+    ]
+    const originalErrors = [...errors]
+
+    actor.start()
+    actor.send({ type: 'BEAD_ERROR', errors, codes })
+
+    const messageLines = actor.getSnapshot().context.error?.split('\n')
+    expect(messageLines).toEqual([
+      stoppingReason,
+      'Iteration 5: The provider usage limit has been reached.',
+      'Iteration 4: No completion marker found.',
+      'Iteration 3: No completion marker found.',
+      'Iteration 2: No completion marker found.',
+      'Iteration 1: No completion marker found.',
+    ])
+    expect(errors).toEqual(originalErrors)
+    expect(actor.getSnapshot().context.errorCodes).toEqual(codes)
     actor.stop()
   })
 

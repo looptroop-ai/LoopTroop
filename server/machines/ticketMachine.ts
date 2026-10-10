@@ -67,7 +67,9 @@ export const ticketMachine = setup({
         if (event.type === 'INIT_FAILED') return event.message
         if (event.type === 'CHECKS_FAILED' || event.type === 'EXECUTION_SETUP_FAILED'
           || event.type === 'TESTS_FAILED' || event.type === 'BEAD_ERROR') {
-          const cause = event.errors?.filter(error => error.trim().length > 0).join('\n')
+          const errors = event.errors?.filter(error => error.trim().length > 0)
+          // Bead errors accumulate by attempt, with the final stopping reason last.
+          const cause = (event.type === 'BEAD_ERROR' ? errors?.reverse() : errors)?.join('\n')
           if (cause) return cause
         }
         if (event.type === 'CHECKS_FAILED') return 'Pre-flight check failed'

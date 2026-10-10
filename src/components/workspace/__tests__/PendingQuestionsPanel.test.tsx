@@ -790,32 +790,33 @@ describe("PendingQuestionsPanel", () => {
     });
     const stopTimer = vi.fn();
     renderPanel({ getTicketRequests: () => [first, second], stopTimer });
-    const tabs = screen.getAllByRole("tab");
+    const firstTab = screen.getByRole("tab", { name: /claude-opus-4/ });
+    const secondTab = screen.getByRole("tab", { name: /gpt-5/ });
 
-    expect(fireEvent.keyDown(tabs[0]!, { key: "Enter" })).toBe(true);
-    expect(tabs[0]).toHaveAttribute("aria-selected", "true");
+    expect(fireEvent.keyDown(firstTab, { key: "Enter" })).toBe(true);
+    expect(firstTab).toHaveAttribute("aria-selected", "true");
 
     fireEvent.click(screen.getByRole("button", { name: "Skip" }));
     fireEvent.change(screen.getByLabelText(/skip reason/i), {
       target: { value: "Only for this request" },
     });
-    fireEvent.keyDown(tabs[0]!, { key: "ArrowLeft" });
-    expect(tabs[1]).toHaveAttribute("aria-selected", "true");
-    expect(tabs[1]).toHaveFocus();
+    fireEvent.keyDown(firstTab, { key: "ArrowLeft" });
+    expect(secondTab).toHaveAttribute("aria-selected", "true");
+    expect(secondTab).toHaveFocus();
     expect(screen.queryByLabelText(/skip reason/i)).not.toBeInTheDocument();
 
-    fireEvent.keyDown(tabs[1]!, { key: "ArrowRight" });
-    expect(tabs[0]).toHaveAttribute("aria-selected", "true");
-    fireEvent.keyDown(tabs[0]!, { key: "ArrowRight" });
-    expect(tabs[1]).toHaveAttribute("aria-selected", "true");
-    fireEvent.keyDown(tabs[1]!, { key: "ArrowLeft" });
-    expect(tabs[0]).toHaveAttribute("aria-selected", "true");
-    fireEvent.keyDown(tabs[0]!, { key: "End" });
-    expect(tabs[1]).toHaveAttribute("aria-selected", "true");
-    fireEvent.keyDown(tabs[1]!, { key: "Home" });
-    expect(tabs[0]).toHaveAttribute("aria-selected", "true");
-    fireEvent.click(tabs[1]!);
-    expect(tabs[1]).toHaveAttribute("aria-selected", "true");
+    fireEvent.keyDown(secondTab, { key: "ArrowRight" });
+    expect(firstTab).toHaveAttribute("aria-selected", "true");
+    fireEvent.keyDown(firstTab, { key: "ArrowRight" });
+    expect(secondTab).toHaveAttribute("aria-selected", "true");
+    fireEvent.keyDown(secondTab, { key: "ArrowLeft" });
+    expect(firstTab).toHaveAttribute("aria-selected", "true");
+    fireEvent.keyDown(firstTab, { key: "End" });
+    expect(secondTab).toHaveAttribute("aria-selected", "true");
+    fireEvent.keyDown(secondTab, { key: "Home" });
+    expect(firstTab).toHaveAttribute("aria-selected", "true");
+    fireEvent.click(secondTab);
+    expect(secondTab).toHaveAttribute("aria-selected", "true");
     expect(stopTimer).toHaveBeenCalled();
   });
 

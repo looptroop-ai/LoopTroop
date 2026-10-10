@@ -12,6 +12,7 @@ import { useAIQuestions } from "../useAIQuestions";
 import { makeTicket, TEST } from "@/test/factories";
 import { QUESTION_RECOVERY_INTERVAL_MS } from "@/lib/constants";
 import { PendingQuestionsPanel } from "@/components/workspace/PendingQuestionsPanel";
+import { createJsonResponse } from "@/test/renderHelpers";
 
 class MockEventSource {
   onerror: (() => void) | null = null;
@@ -35,9 +36,11 @@ function Counts({ ticketId }: { ticketId: string }) {
 function SnapshotRecovery({
   ticketId,
   showNew = false,
+  liveQuestion,
 }: {
   ticketId: string;
   showNew?: boolean;
+  liveQuestion?: ReturnType<typeof buildQuestion>;
 }) {
   const { getRequestCount, refreshTicket, ingestSseEvent } = useAIQuestions();
   return (
@@ -56,6 +59,9 @@ function SnapshotRecovery({
         resolve
       </button>
       <button onClick={() => refreshTicket(ticketId)}>refresh</button>
+      {liveQuestion && (
+        <button onClick={() => ingestSseEvent(liveQuestion)}>live</button>
+      )}
       {showNew && (
         <button
           onClick={() =>
@@ -102,8 +108,39 @@ function stubAggregate(body: unknown) {
   vi.stubGlobal("EventSource", MockEventSource);
   vi.stubGlobal(
     "fetch",
-    vi.fn(async () => new Response(JSON.stringify(body), { status: 200 })),
+    vi.fn(() => createJsonResponse(body)),
   );
+}
+
+function stubStaleSnapshot(ticketId: string) {
+  let releaseStale: ((body: unknown) => void) | undefined;
+  let aggregateCalls = 0;
+  vi.stubGlobal("EventSource", MockEventSource);
+  vi.stubGlobal(
+    "fetch",
+    vi.fn((input: RequestInfo | URL) => {
+      const url = String(input);
+      if (url === "/api/opencode/questions" && ++aggregateCalls === 1) {
+        return createJsonResponse({
+          questions: [buildQuestion(ticketId)],
+          timers: {},
+        });
+      }
+      if (url.endsWith("/opencode/questions")) {
+        return new Promise<Response>((resolve) => {
+          releaseStale = (body) => resolve(createJsonResponse(body));
+        });
+      }
+      return createJsonResponse({ questions: [], timer: null });
+    }),
+  );
+  return {
+    pending: () => releaseStale !== undefined,
+    release: (body: unknown) => {
+      if (!releaseStale) throw new Error("No pending stale snapshot");
+      releaseStale(body);
+    },
+  };
 }
 
 function renderProvider(
@@ -563,36 +600,7 @@ describe("AIQuestionProvider", () => {
 
   it("does not resurrect a resolved request from a stale snapshot", async () => {
     const ticket = makeTicket({ status: "CODING" });
-    let releaseStale!: (body: unknown) => void;
-    let aggregateCalls = 0;
-    vi.stubGlobal("EventSource", MockEventSource);
-    vi.stubGlobal(
-      "fetch",
-      vi.fn(async (input: RequestInfo | URL) => {
-        const url = String(input);
-        if (url === "/api/opencode/questions") {
-          aggregateCalls += 1;
-          if (aggregateCalls === 1) {
-            return new Response(
-              JSON.stringify({
-                questions: [buildQuestion(ticket.id)],
-                timers: {},
-              }),
-              { status: 200 },
-            );
-          }
-        }
-        if (url.endsWith("/opencode/questions")) {
-          return new Promise<Response>((resolve) => {
-            releaseStale = (body) =>
-              resolve(new Response(JSON.stringify(body), { status: 200 }));
-          });
-        }
-        return new Response(JSON.stringify({ questions: [], timer: null }), {
-          status: 200,
-        });
-      }),
-    );
+    const stale = stubStaleSnapshot(ticket.id);
 
     renderProvider([ticket], <SnapshotRecovery ticketId={ticket.id} showNew />);
     await waitFor(() =>
@@ -600,15 +608,15 @@ describe("AIQuestionProvider", () => {
     );
 
     fireEvent.click(screen.getByText("refresh"));
-    await waitFor(() => expect(releaseStale).toBeDefined());
+    await waitFor(() => expect(stale.pending()).toBe(true));
 
     fireEvent.click(screen.getByText("resolve"));
     await waitFor(() =>
       expect(screen.getByText("requests:0")).toBeInTheDocument(),
     );
 
-    await act(async () =>
-      releaseStale({ questions: [buildQuestion(ticket.id)], timer: null }),
+    await act(() =>
+      stale.release({ questions: [buildQuestion(ticket.id)], timer: null }),
     );
     expect(screen.getByText("requests:0")).toBeInTheDocument();
 
@@ -621,36 +629,7 @@ describe("AIQuestionProvider", () => {
 
   it("keeps a resolved request gone when a later snapshot still contains its old identity", async () => {
     const ticket = makeTicket({ status: "CODING" });
-    let releaseStale!: (body: unknown) => void;
-    let aggregateCalls = 0;
-    vi.stubGlobal("EventSource", MockEventSource);
-    vi.stubGlobal(
-      "fetch",
-      vi.fn(async (input: RequestInfo | URL) => {
-        const url = String(input);
-        if (url === "/api/opencode/questions") {
-          aggregateCalls += 1;
-          if (aggregateCalls === 1) {
-            return new Response(
-              JSON.stringify({
-                questions: [buildQuestion(ticket.id)],
-                timers: {},
-              }),
-              { status: 200 },
-            );
-          }
-        }
-        if (url.endsWith("/opencode/questions")) {
-          return new Promise<Response>((resolve) => {
-            releaseStale = (body) =>
-              resolve(new Response(JSON.stringify(body), { status: 200 }));
-          });
-        }
-        return new Response(JSON.stringify({ questions: [], timer: null }), {
-          status: 200,
-        });
-      }),
-    );
+    const stale = stubStaleSnapshot(ticket.id);
 
     renderProvider([ticket], <SnapshotRecovery ticketId={ticket.id} />);
     await waitFor(() =>
@@ -665,9 +644,9 @@ describe("AIQuestionProvider", () => {
     );
 
     fireEvent.click(screen.getByText("refresh"));
-    await waitFor(() => expect(releaseStale).toBeDefined());
-    await act(async () =>
-      releaseStale({ questions: [buildQuestion(ticket.id)], timer: null }),
+    await waitFor(() => expect(stale.pending()).toBe(true));
+    await act(() =>
+      stale.release({ questions: [buildQuestion(ticket.id)], timer: null }),
     );
 
     expect(screen.getByText("requests:0")).toBeInTheDocument();
@@ -760,32 +739,9 @@ describe("AIQuestionProvider", () => {
       }),
     );
 
-    function Recovery({ ticketId }: { ticketId: string }) {
-      const { getRequestCount, refreshTicket, ingestSseEvent } =
-        useAIQuestions();
-      return (
-        <>
-          <div>requests:{getRequestCount(ticketId)}</div>
-          <button
-            onClick={() =>
-              ingestSseEvent({
-                type: "opencode_question_resolved",
-                ticketId,
-                sessionId: "session-1234567890",
-                requestId: "question-1",
-              })
-            }
-          >
-            resolve
-          </button>
-          <button onClick={() => refreshTicket(ticketId)}>refresh</button>
-        </>
-      );
-    }
-
     const { rerender } = renderProvider(
       [ticket],
-      <Recovery ticketId={ticket.id} />,
+      <SnapshotRecovery ticketId={ticket.id} />,
     );
     await waitFor(() =>
       expect(screen.getByText("requests:1")).toBeInTheDocument(),
@@ -803,7 +759,7 @@ describe("AIQuestionProvider", () => {
     rerender(
       <UIProvider>
         <AIQuestionProvider tickets={[]}>
-          <Recovery ticketId={ticket.id} />
+          <SnapshotRecovery ticketId={ticket.id} />
         </AIQuestionProvider>
       </UIProvider>,
     );
@@ -813,7 +769,7 @@ describe("AIQuestionProvider", () => {
     rerender(
       <UIProvider>
         <AIQuestionProvider tickets={[ticket]}>
-          <Recovery ticketId={ticket.id} />
+          <SnapshotRecovery ticketId={ticket.id} />
         </AIQuestionProvider>
       </UIProvider>,
     );
@@ -1190,21 +1146,13 @@ describe("AIQuestionProvider", () => {
       }),
     );
 
-    function Refresher({ ticketId }: { ticketId: string }) {
-      const { getRequestCount, refreshTicket, ingestSseEvent } =
-        useAIQuestions();
-      return (
-        <>
-          <div>requests:{getRequestCount(ticketId)}</div>
-          <button onClick={() => refreshTicket(ticketId)}>refresh</button>
-          <button onClick={() => ingestSseEvent(buildQuestion(ticketId))}>
-            live
-          </button>
-        </>
-      );
-    }
-
-    renderProvider([ticket], <Refresher ticketId={ticket.id} />);
+    renderProvider(
+      [ticket],
+      <SnapshotRecovery
+        ticketId={ticket.id}
+        liveQuestion={buildQuestion(ticket.id)}
+      />,
+    );
     await waitFor(() =>
       expect(screen.getByText("requests:0")).toBeInTheDocument(),
     );
@@ -1248,30 +1196,16 @@ describe("AIQuestionProvider", () => {
       }),
     );
 
-    function Refresher({ ticketId }: { ticketId: string }) {
-      const { getRequestCount, refreshTicket, ingestSseEvent } =
-        useAIQuestions();
-      return (
-        <>
-          <div>requests:{getRequestCount(ticketId)}</div>
-          <button onClick={() => refreshTicket(ticketId)}>refresh</button>
-          <button
-            onClick={() =>
-              ingestSseEvent(
-                buildQuestion(ticketId, {
-                  sessionId: "session-live",
-                  requestId: "question-live",
-                }),
-              )
-            }
-          >
-            live
-          </button>
-        </>
-      );
-    }
-
-    renderProvider([ticket], <Refresher ticketId={ticket.id} />);
+    renderProvider(
+      [ticket],
+      <SnapshotRecovery
+        ticketId={ticket.id}
+        liveQuestion={buildQuestion(ticket.id, {
+          sessionId: "session-live",
+          requestId: "question-live",
+        })}
+      />,
+    );
     await waitFor(() =>
       expect(screen.getByText("requests:0")).toBeInTheDocument(),
     );

@@ -731,9 +731,9 @@ export function AIQuestionProvider({
     const activeIds = activeTicketIdsRef.current;
 
     setRequests((current) => {
-      const stale = Object.keys(current).filter(
-        (key) => !activeIds.has(current[key]!.ticketId),
-      );
+      const stale = Object.entries(current)
+        .filter(([, request]) => !activeIds.has(request.ticketId))
+        .map(([key]) => key);
       if (stale.length === 0) return current;
       const next = { ...current };
       for (const key of stale) delete next[key];

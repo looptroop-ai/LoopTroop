@@ -5,6 +5,7 @@ import { UIProvider } from '../UIContext'
 import { useAIQuestions } from '../useAIQuestions'
 import { makeTicket, TEST } from '@/test/factories'
 import { QUESTION_RECOVERY_INTERVAL_MS } from '@/lib/constants'
+import { PendingQuestionsPanel } from '@/components/workspace/PendingQuestionsPanel'
 
 class MockEventSource {
   onerror: (() => void) | null = null
@@ -677,6 +678,67 @@ describe('AIQuestionProvider', () => {
     await waitFor(() => expect(
       screen.getByText('error:Could not send that answer (HTTP 400: Invalid question reply payload)'),
     ).toBeInTheDocument())
+  })
+
+  it('bulk-skips requests in the same session and keeps a failed rejection retryable', async () => {
+    const ticket = makeTicket({ status: 'CODING' })
+    const questions = [
+      buildQuestion(ticket.id),
+      buildQuestion(ticket.id, { requestId: 'question-2' }),
+    ]
+    const rejectPath = (requestId: string) => `/api/tickets/${encodeURIComponent(ticket.id)}/opencode/questions/${requestId}/reject`
+    const pendingRejections = new Map<string, (response: Response) => void>()
+    const fetchMock = vi.fn(async (input: RequestInfo | URL, _init?: RequestInit) => {
+      const url = String(input)
+      if (url.endsWith('/reject')) {
+        return new Promise<Response>((resolve) => pendingRejections.set(url, resolve))
+      }
+      return new Response(JSON.stringify({ questions, timers: {} }), { status: 200 })
+    })
+    vi.stubGlobal('EventSource', MockEventSource)
+    vi.stubGlobal('fetch', fetchMock)
+
+    renderProvider([ticket], <>
+      <Counts ticketId={ticket.id} />
+      <PendingQuestionsPanel ticketId={ticket.id} />
+    </>)
+    await waitFor(() => expect(screen.getByText('pending:2 requests:2')).toBeInTheDocument())
+
+    fireEvent.click(screen.getByRole('button', { name: 'Skip all', exact: true }))
+    fireEvent.change(screen.getByLabelText(/skip reason/i), { target: { value: '  Not my decision.  ' } })
+    fireEvent.click(screen.getByRole('button', { name: 'Skip all questions' }))
+
+    const rejectionCalls = () => fetchMock.mock.calls.filter(([input]) => String(input).endsWith('/reject'))
+    expect(rejectionCalls().map(([input, init]) => ({ path: String(input), body: JSON.parse(String(init?.body)) }))).toEqual([
+      { path: rejectPath('question-1'), body: { reason: 'Not my decision.' } },
+      { path: rejectPath('question-2'), body: { reason: 'Not my decision.' } },
+    ])
+    expect(screen.getByRole('button', { name: 'Back' })).toBeDisabled()
+    expect(screen.getByRole('button', { name: 'Skip all questions' })).toBeDisabled()
+    expect(screen.getByLabelText(/skip reason/i)).toBeDisabled()
+
+    await act(async () => pendingRejections.get(rejectPath('question-1'))!(new Response('{}', { status: 200 })))
+    expect(screen.getByText('pending:1 requests:1')).toBeInTheDocument()
+    expect(screen.getByRole('button', { name: 'Skip all questions' })).toBeDisabled()
+
+    await act(async () => pendingRejections.get(rejectPath('question-2'))!(new Response(
+      JSON.stringify({ error: 'OpenCode unavailable' }), { status: 500 },
+    )))
+    expect(await screen.findByText('Could not skip that question (HTTP 500: OpenCode unavailable)')).toBeInTheDocument()
+    expect(screen.getByText('pending:1 requests:1')).toBeInTheDocument()
+    expect(screen.getByRole('button', { name: 'Back' })).toBeEnabled()
+    expect(screen.getByRole('button', { name: 'Skip all questions' })).toBeEnabled()
+    expect(screen.getByLabelText(/skip reason/i)).toBeEnabled()
+
+    fireEvent.click(screen.getByRole('button', { name: 'Skip all questions' }))
+    expect(rejectionCalls()).toHaveLength(3)
+    expect(rejectionCalls()[2]).toEqual([
+      rejectPath('question-2'),
+      expect.objectContaining({ method: 'POST', body: JSON.stringify({ reason: 'Not my decision.' }) }),
+    ])
+    await act(async () => pendingRejections.get(rejectPath('question-2'))!(new Response('{}', { status: 200 })))
+    await waitFor(() => expect(screen.getByText('pending:0 requests:0')).toBeInTheDocument())
+    expect(screen.queryByRole('region', { name: 'AI questions' })).not.toBeInTheDocument()
   })
 
   it('does not let a slow per-ticket refresh undo a newer live update', async () => {

@@ -1,4 +1,4 @@
-import { act, render, screen, fireEvent } from '@testing-library/react'
+import { act, render, screen, fireEvent, within } from '@testing-library/react'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import { AIQuestionContext } from '@/context/aiQuestionContextDef'
 import type { AiQuestionRequest } from '@/context/aiQuestionContextDef'
@@ -88,6 +88,103 @@ describe('PendingQuestionsPanel', () => {
     expect(screen.getByText('claude-opus-4')).toBeInTheDocument()
     expect(screen.queryByRole('tablist')).not.toBeInTheDocument()
     expect(screen.getByText('4:00')).toBeInTheDocument()
+  })
+
+  it('keeps answer and skip actions outside the scrolling question body', () => {
+    renderPanel({ getTicketRequests: () => [makeRequest()] })
+    const actions = screen.getByRole('group', { name: 'Question actions' })
+    const body = document.getElementById('pending-questions-body')
+
+    expect(within(actions).getByRole('button', { name: 'Skip' })).toBeInTheDocument()
+    expect(within(actions).getByRole('button', { name: 'Send answer' })).toBeInTheDocument()
+    expect(screen.queryByRole('button', { name: 'Skip all' })).not.toBeInTheDocument()
+    expect(body).toBeInTheDocument()
+    expect(body).not.toContainElement(actions)
+
+    fireEvent.click(within(actions).getByRole('button', { name: 'Skip' }))
+    expect(within(actions).getByRole('button', { name: 'Back' })).toBeInTheDocument()
+    expect(within(actions).getByRole('button', { name: 'Skip this question' })).toBeInTheDocument()
+    expect(body).not.toContainElement(actions)
+
+    fireEvent.click(screen.getByRole('button', { name: /claude-opus-4/i }))
+    expect(screen.queryByRole('group', { name: 'Question actions' })).not.toBeInTheDocument()
+  })
+
+  it('skips every pending request across model tabs with the same optional reason', () => {
+    const skipRequest = vi.fn()
+    const stopTimer = vi.fn()
+    renderPanel({
+      getTicketRequests: () => [
+        makeRequest(),
+        makeRequest({
+          sessionId: 'ses_b',
+          requestId: 'req_b',
+          modelId: 'openai/gpt-5',
+          questions: [
+            { header: 'One', question: 'First?', options: [] },
+            { header: 'Two', question: 'Second?', options: [] },
+          ],
+        }),
+      ],
+      skipRequest,
+      stopTimer,
+    })
+
+    expect(screen.getByText('3 waiting')).toBeInTheDocument()
+    fireEvent.click(screen.getByRole('button', { name: 'Skip all' }))
+    expect(stopTimer).toHaveBeenCalledWith(TICKET_ID)
+    expect(skipRequest).not.toHaveBeenCalled()
+    expect(screen.getByText(/all 3 pending questions across every model tab/i)).toBeInTheDocument()
+    fireEvent.change(screen.getByLabelText(/skip reason/i), { target: { value: '  Use your judgment.  ' } })
+    fireEvent.click(screen.getByRole('button', { name: 'Skip all questions' }))
+
+    expect(skipRequest).toHaveBeenCalledTimes(2)
+    expect(skipRequest).toHaveBeenNthCalledWith(1, TICKET_ID, 'req_a', 'Use your judgment.')
+    expect(skipRequest).toHaveBeenNthCalledWith(2, TICKET_ID, 'req_b', 'Use your judgment.')
+  })
+
+  it('offers Skip all for a single multi-question request and rejects it only once', () => {
+    const skipRequest = vi.fn()
+    renderPanel({
+      getTicketRequests: () => [makeRequest({
+        questions: [
+          { header: 'One', question: 'First?', options: [] },
+          { header: 'Two', question: 'Second?', options: [] },
+        ],
+      })],
+      skipRequest,
+    })
+
+    fireEvent.click(screen.getByRole('button', { name: 'Skip all' }))
+    fireEvent.click(screen.getByRole('button', { name: 'Skip all questions' }))
+
+    expect(skipRequest).toHaveBeenCalledExactlyOnceWith(TICKET_ID, 'req_a', null)
+  })
+
+  it('keeps ordinary Skip scoped to the selected request', () => {
+    const skipRequest = vi.fn()
+    renderPanel({
+      getTicketRequests: () => [makeRequest(), makeRequest({ sessionId: 'ses_b', requestId: 'req_b' })],
+      skipRequest,
+    })
+
+    fireEvent.click(screen.getByRole('button', { name: 'Skip' }))
+    fireEvent.click(screen.getByRole('button', { name: 'Skip this question' }))
+
+    expect(skipRequest).toHaveBeenCalledExactlyOnceWith(TICKET_ID, 'req_a', null)
+  })
+
+  it('disables Skip all while another request is submitting', () => {
+    renderPanel({
+      getTicketRequests: () => [
+        makeRequest(),
+        makeRequest({ sessionId: 'ses_b', requestId: 'req_b', submitting: true }),
+      ],
+    })
+
+    expect(screen.getByRole('button', { name: 'Skip all' })).toBeDisabled()
+    expect(screen.getByRole('button', { name: 'Skip' })).toBeEnabled()
+    expect(screen.getByRole('textbox')).toBeEnabled()
   })
 
   it('reloads pending questions when the panel mounts after a reconnect', () => {

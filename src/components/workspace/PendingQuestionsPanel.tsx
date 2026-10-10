@@ -106,7 +106,7 @@ export function PendingQuestionsPanel({ ticketId }: { ticketId: string }) {
   const [activeRequestId, setActiveRequestId] = useState<string | null>(null)
   const [questionIndex, setQuestionIndex] = useState(0)
   const [answers, setAnswers] = useState<Record<string, string[]>>({})
-  const [skipping, setSkipping] = useState(false)
+  const [skipping, setSkipping] = useState<'request' | 'all' | null>(null)
   const [skipReason, setSkipReason] = useState('')
   const tabRefs = useRef<Array<HTMLButtonElement | null>>([])
 
@@ -151,6 +151,9 @@ export function PendingQuestionsPanel({ ticketId }: { ticketId: string }) {
 
   const question: AiQuestionInfo | undefined = active.questions[questionIndex]
   const answeredAll = active.questions.every((_, index) => isAnswered(answers[`${active.requestId}:${index}`]))
+  const waitingCount = requests.reduce((total, request) => total + request.questions.length, 0)
+  const anySubmitting = requests.some((request) => request.submitting)
+  const skipSubmitting = skipping === 'all' ? anySubmitting : active.submitting
   const modelCounts = new Map<string, number>()
   for (const request of requests) {
     const name = shortModelName(request.modelId)
@@ -161,7 +164,7 @@ export function PendingQuestionsPanel({ ticketId }: { ticketId: string }) {
     engage()
     setActiveRequestId(requestId)
     setQuestionIndex(0)
-    setSkipping(false)
+    setSkipping(null)
     // A reason written for one model's question must not follow you to another
     // model's tab and end up filed against a question it was never about.
     setSkipReason('')
@@ -183,6 +186,13 @@ export function PendingQuestionsPanel({ ticketId }: { ticketId: string }) {
       active.requestId,
       active.questions.map((_, index) => answers[`${active.requestId}:${index}`] ?? []),
     )
+  }
+
+  const confirmSkip = () => {
+    const reason = skipReason.trim() || null
+    for (const request of skipping === 'all' ? requests : [active]) {
+      skipRequest(ticketId, request.requestId, reason)
+    }
   }
 
   const onTabKeyDown = (event: React.KeyboardEvent, index: number) => {
@@ -208,12 +218,12 @@ export function PendingQuestionsPanel({ ticketId }: { ticketId: string }) {
   return (
     <section
       className={cn(
-        'shrink-0 border-b border-sky-200 bg-sky-50/70 dark:border-sky-900/60 dark:bg-sky-950/30',
-        !collapsed && 'max-h-[35vh] overflow-y-auto',
+        'flex shrink-0 flex-col border-b border-sky-200 bg-sky-50/70 dark:border-sky-900/60 dark:bg-sky-950/30',
+        !collapsed && 'max-h-[50vh]',
       )}
       aria-label="AI questions"
     >
-      <div className="flex flex-wrap items-center gap-2 px-3 py-2">
+      <div className="flex shrink-0 flex-wrap items-center gap-2 px-3 py-2">
         <button
           type="button"
           className="flex items-center gap-1.5 text-sm font-medium text-sky-900 dark:text-sky-100"
@@ -229,8 +239,55 @@ export function PendingQuestionsPanel({ ticketId }: { ticketId: string }) {
           {requests.length === 1 ? shortModelName(active.modelId) : 'AI questions'}
         </button>
 
+        {!collapsed && (
+          <div role="group" aria-label="Question actions" className="flex flex-wrap items-center gap-2">
+            {skipping ? (
+              <>
+                <Button type="button" size="sm" variant="ghost" disabled={skipSubmitting} onClick={() => setSkipping(null)}>
+                  Back
+                </Button>
+                <Button
+                  type="button"
+                  size="sm"
+                  variant="outline"
+                  disabled={skipSubmitting}
+                  onClick={confirmSkip}
+                >
+                  {skipping === 'all' || active.questions.length > 1 ? 'Skip all questions' : 'Skip this question'}
+                </Button>
+              </>
+            ) : (
+              <>
+                <Button
+                  type="button"
+                  size="sm"
+                  variant="outline"
+                  disabled={active.submitting}
+                  onClick={() => { engage(); setSkipping('request') }}
+                >
+                  Skip
+                </Button>
+                {waitingCount > 1 && (
+                  <Button
+                    type="button"
+                    size="sm"
+                    variant="outline"
+                    disabled={anySubmitting}
+                    onClick={() => { engage(); setSkipping('all') }}
+                  >
+                    Skip all
+                  </Button>
+                )}
+                <Button type="button" size="sm" disabled={active.submitting || !answeredAll} onClick={submit}>
+                  {active.questions.length > 1 ? 'Send all answers' : 'Send answer'}
+                </Button>
+              </>
+            )}
+          </div>
+        )}
+
         <Badge variant="outline" className="text-[11px]">
-          {requests.reduce((total, request) => total + request.questions.length, 0)} waiting
+          {waitingCount} waiting
         </Badge>
 
         {/* Not a live region. A countdown inside one is read out every second —
@@ -260,7 +317,7 @@ export function PendingQuestionsPanel({ ticketId }: { ticketId: string }) {
       </div>
 
       {!collapsed && (
-        <div id="pending-questions-body" className="px-3 pb-3">
+        <div id="pending-questions-body" className="min-h-0 overflow-y-auto px-3 pb-3">
           {requests.length > 1 && (
             <div role="tablist" aria-label="Models asking" className="mb-3 flex flex-wrap gap-1">
               {requests.map((request, index) => {
@@ -346,49 +403,17 @@ export function PendingQuestionsPanel({ ticketId }: { ticketId: string }) {
                 <SkipReasonField
                   value={skipReason}
                   onChange={(value) => { engage(); setSkipReason(value) }}
-                  disabled={active.submitting}
+                  disabled={skipSubmitting}
                   label="Skip reason"
-                  help={active.questions.length > 1
-                    ? `Skipping refuses all ${active.questions.length} questions in this request. OpenCode takes one verdict for the batch. The skip is kept in the ticket's skip trail, and the model is not told.`
-                    : "Kept in the ticket's skip trail. The model is not told."}
+                  help={skipping === 'all'
+                    ? `Skipping refuses all ${waitingCount} pending questions across every model tab. The reason is kept in the ticket's skip trail for each request. The models are not told.`
+                    : active.questions.length > 1
+                      ? `Skipping refuses all ${active.questions.length} questions in this request. OpenCode takes one verdict for the batch. The skip is kept in the ticket's skip trail, and the model is not told.`
+                      : "Kept in the ticket's skip trail. The model is not told."}
                   autoFocus
                 />
               </div>
             )}
-
-            <div className="mt-3 flex flex-wrap items-center justify-end gap-2">
-              {skipping ? (
-                <>
-                  <Button type="button" size="sm" variant="ghost" disabled={active.submitting} onClick={() => setSkipping(false)}>
-                    Back
-                  </Button>
-                  <Button
-                    type="button"
-                    size="sm"
-                    variant="outline"
-                    disabled={active.submitting}
-                    onClick={() => skipRequest(ticketId, active.requestId, skipReason.trim() || null)}
-                  >
-                    {active.questions.length > 1 ? 'Skip all questions' : 'Skip this question'}
-                  </Button>
-                </>
-              ) : (
-                <>
-                  <Button
-                    type="button"
-                    size="sm"
-                    variant="outline"
-                    disabled={active.submitting}
-                    onClick={() => { engage(); setSkipping(true) }}
-                  >
-                    Skip
-                  </Button>
-                  <Button type="button" size="sm" disabled={active.submitting || !answeredAll} onClick={submit}>
-                    {active.questions.length > 1 ? 'Send all answers' : 'Send answer'}
-                  </Button>
-                </>
-              )}
-            </div>
 
             {timer && (
               // The one live region on the panel. It says what the clock is

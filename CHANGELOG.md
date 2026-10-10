@@ -10,6 +10,7 @@ Unreleased changes appear first and represent commits that have not yet been inc
 > Changes merged since the last versioned release that have not yet shipped in a tagged version.
 
 ### Summary
+- AI question actions stay visible, with a Skip all option for questions across every model tab.
 - Development dependency updates fix command injection and denial-of-service vulnerabilities.
 - AI question settings share Advanced rows across Configuration, Project, and New Ticket, with a nested wait that preserves edits and prevents invalid saves or starts.
 - LoopTroop prefers configured and home OpenCode installations over PATH and reports which executable it selected.
@@ -20,6 +21,9 @@ Unreleased changes appear first and represent commits that have not yet been inc
 - LoopTroop starts OpenCode from `~/.opencode/bin` again on Ubuntu, Fedora and other Linux desktops, where the OpenCode installer creates that folder group-writable.
 - When another server already holds OpenCode's default port, LoopTroop starts its own OpenCode on the next free port and tells you where it went.
 - `looptroop doctor` compares your Node with the newest release of your own Node line, says what `gh` is still needed for, and names the checks that actually stop LoopTroop from running.
+
+### Added
+- Added **Skip all** when more than one AI question is pending. It skips every pending model request on the ticket, with one optional reason recorded for each request in the skip trail. The action waits for any answer or skip already being submitted to finish.
 
 ### Changed
 - Moved AI questions and AI question wait into Configuration **Advanced**. Across Configuration, Project, New Ticket, and saved drafts, the wait is an indented subitem directly below AI questions, without a separator. Configuration offers **Default / Custom**: **Default** uses 5 minutes, and **Custom** accepts whole minutes from 1 to 60. Project and Ticket retain **Inherit / Custom**, showing the effective duration and its source. Selecting **Default** or **Inherit** resets the custom override and replaces the separate Clear override action. Configuration treats a mode change as an unsaved edit even when both modes use 5 minutes.
@@ -36,6 +40,7 @@ Unreleased changes appear first and represent commits that have not yet been inc
 - Local OpenCode configuration and plugins in `.opencode/` are now ignored by Git. The repository no longer includes the listener-limit plugin.
 
 ### Fixed
+- AI question panels keep answer and skip buttons beside the waiting count in a fixed header. Only the question content scrolls, and the panel can use up to half the viewport so ordinary questions have room to fit.
 - Artifact compare-and-set tests now run in isolated integration workers, matching their use of real Git worktrees and SQLite databases.
 - Aligned AI-question controls to the right and added contextual `?` help links for both options. Wait controls are disabled when effective AI questions are **Off**, including when **Inherit** resolves to **Off**. Turning questions off shows the last valid duration and preserves the chosen mode and unfinished input. Inactive wait errors do not block saving. Turning questions back on restores the input and its validation.
 - Collapsing **Advanced** preserves unfinished wait input and validation. An invalid active custom wait blocks Configuration and Project saves, ticket creation, and Start; closing an edited form asks before discarding it. Validation and draft save errors remain visible while Advanced is closed. AI question selectors use one Tab stop per group and support arrow keys. Wait values use whole minutes in both the controls and API. The Custom input keeps unfinished edits during background updates and stays synchronized after React interrupts and retries a render.

@@ -65,6 +65,20 @@ describe('stripAnsiSequences', () => {
       // the right way round: the alternative is losing everything that follows.
       expect(stripAnsiSequences(`${ESC}]0;never terminated`)).toBe('0;never terminated')
     })
+
+    it.each([['7-bit', `${ESC}]`], ['8-bit', C1_OSC]])('processes repeated unterminated %s OSC introducers without rescanning their tails', (_name, introducer) => {
+      const input = introducer.repeat(20000)
+      const started = performance.now()
+
+      expect(stripAnsiSequences(input)).toBe('')
+      expect(performance.now() - started).toBeLessThan(1000)
+    })
+
+    it('keeps an unterminated OSC payload before a subsequent valid OSC sequence', () => {
+      const input = `${ESC}]unterminated ${ESC}]title${BELL}visible`
+
+      expect(stripAnsiSequences(input)).toBe('unterminated visible')
+    })
   })
 
   it('strips a mixture in one pass', () => {

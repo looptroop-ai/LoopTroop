@@ -19,6 +19,8 @@ import type { FinalTestGenerationResult } from '../../phases/finalTest/generator
 import type { FinalTestCommandResult, FinalTestExecutionReport } from '../../phases/finalTest/runner'
 import type { PromptPart } from '../../opencode/types'
 import { CancelledError } from '../../council/types'
+import { isContinuableBlockedError } from '../../opencode/sessionContinuation'
+import type { BlockedErrorDiagnostics } from '@shared/errorDiagnostics'
 
 const {
   executeFinalTestWithRetriesMock,
@@ -245,6 +247,57 @@ describe('interview coverage recovery', () => {
 
     expect((error as Error).message).toContain('Interview coverage check 1 of 2: auditing the interview; response attempt 1 of 3 failed:')
     expect(error).toMatchObject({ cause: connectionError, blockedErrorDiagnostics: { modelId: winnerId, sessionId: 'interview-connection-failure' } })
+    const entries = readFileSync(paths.executionLogPath, 'utf-8').trim().split('\n').map((line) => JSON.parse(line) as Record<string, unknown>)
+    expect(entries).toEqual(expect.arrayContaining([
+      expect.objectContaining({ message: expect.stringContaining('New OpenCode session interview-connection-failure ready for Interview coverage check 1 of 2: auditing'), modelId: winnerId, sessionId: 'interview-connection-failure' }),
+    ]))
+  })
+
+  it('preserves continuable interview timeout diagnostics and codes for the workflow runner', async () => {
+    const { ticket, context, paths } = await createInitializedTestTicket(repoManager)
+    const { winnerId } = await createCompletedInterviewSnapshot(ticket.id)
+    const timeout = Object.assign(new Error('Timeout'), {
+      blockedErrorDiagnostics: {
+        kind: 'timeout', source: 'opencode', summary: 'Timeout', modelId: winnerId,
+        sessionId: 'preserved-coverage-session', operation: 'waiting for the accepted prompt to finish',
+      } satisfies BlockedErrorDiagnostics,
+      blockedErrorCodes: ['OPENCODE_TIMEOUT'],
+    })
+    runOpenCodePromptMock.mockImplementationOnce(async (options: Parameters<typeof import('../runOpenCodePrompt').runOpenCodePrompt>[0]) => {
+      options.onSessionCreated?.({ id: 'preserved-coverage-session', projectPath: paths.worktreePath }, { reconnected: true })
+      throw timeout
+    })
+    const sendEvent = vi.fn()
+
+    const error = await handleCoverageVerification(ticket.id, context, sendEvent, 'interview', new AbortController().signal)
+      .then(() => null, (caught: unknown) => caught)
+
+    expect(error).toMatchObject({ cause: timeout, blockedErrorDiagnostics: timeout.blockedErrorDiagnostics, blockedErrorCodes: timeout.blockedErrorCodes })
+    expect((error as Error).message).toContain('Interview coverage check 1 of 2: auditing the interview; response attempt 1 of')
+    expect(isContinuableBlockedError({ diagnostics: (error as { blockedErrorDiagnostics: BlockedErrorDiagnostics }).blockedErrorDiagnostics })).toBe(true)
+    expect(sendEvent).not.toHaveBeenCalled()
+  })
+
+  it('does not attribute a failed interview retry session creation to the prior rejected response', async () => {
+    const { ticket, context, paths } = await createInitializedTestTicket(repoManager)
+    const { winnerId } = await createCompletedInterviewSnapshot(ticket.id)
+    context.lockedStructuredRetryCount = 1
+    runOpenCodePromptMock.mockImplementationOnce(async (options: Parameters<typeof import('../runOpenCodePrompt').runOpenCodePrompt>[0]) => {
+      const session = { id: 'rejected-interview-coverage', projectPath: paths.worktreePath }
+      options.onSessionCreated?.(session, { reconnected: false })
+      return { session, response: '', messages: [] }
+    }).mockRejectedValueOnce(new Error('Failed to create OpenCode session: fetch failed'))
+
+    const error = await handleCoverageVerification(ticket.id, context, vi.fn(), 'interview', new AbortController().signal)
+      .then(() => null, (caught: unknown) => caught)
+
+    expect((error as Error).message).toContain('Interview coverage check 1 of 2: auditing the interview; response attempt 2 of 2 failed:')
+    expect(error).toMatchObject({ blockedErrorDiagnostics: { modelId: winnerId } })
+    expect((error as { blockedErrorDiagnostics: { sessionId?: string } }).blockedErrorDiagnostics.sessionId).toBeUndefined()
+    const entries = readFileSync(paths.executionLogPath, 'utf-8').trim().split('\n').map((line) => JSON.parse(line) as Record<string, unknown>)
+    expect(entries).toEqual(expect.arrayContaining([
+      expect.objectContaining({ message: expect.stringContaining('response attempt 2 of 2. Previous response rejected:') }),
+    ]))
   })
 
   it('preserves cancellation when an interview prompt returns a timeout after cancellation', async () => {

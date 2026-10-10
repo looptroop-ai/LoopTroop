@@ -442,10 +442,10 @@ function buildExactInterventionDetails(
 
   if (code === 'parser_interview_batch_field_tags') {
     const match = warning.match(/^Repaired interview batch field tag at ([a-z_.]+), payload line (\d+): ("(?:\\.|[^"\\])*") -> ("(?:\\.|[^"\\])*")\.$/)
-    if (match) {
+    if (match?.[3] !== undefined && match[4] !== undefined) {
       try {
-        const before = JSON.parse(match[3]!) as string
-        const after = JSON.parse(match[4]!) as string
+        const before = JSON.parse(match[3]) as string
+        const after = JSON.parse(match[4]) as string
         return {
           exactCorrection: `Corrected the formatting of ${match[1]} at payload line ${match[2]}. The emitted value was preserved.`,
           examples: [{ scope: `${match[1]} (payload line ${match[2]})`, before, after: after || '[removed]' }],

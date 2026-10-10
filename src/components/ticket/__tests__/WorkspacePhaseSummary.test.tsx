@@ -572,6 +572,79 @@ describe("WorkspacePhaseSummary", () => {
     });
   });
 
+  it.each([
+    {
+      phase: "VERIFYING_PRD_COVERAGE",
+      line: "Revised PRD Candidate v1 into PRD Candidate v2 and saved it to /project/.ticket/prd.yaml.",
+      otherPhaseLine: "Revised Implementation Plan v8 into Implementation Plan v9.",
+      label: "Coverage Check (PRD) (checking version 2)",
+    },
+    {
+      phase: "VERIFYING_BEADS_COVERAGE",
+      line: "Revised Implementation Plan v1 into Implementation Plan v2.",
+      otherPhaseLine: "Revised PRD Candidate v8 into PRD Candidate v9 and saved it to /project/.ticket/prd.yaml.",
+      label: "Coverage Check (Beads) (checking version 2)",
+    },
+  ] as const)("shows the saved revision version for $phase and ignores other phase labels", async ({ phase, line, otherPhaseLine, label }) => {
+    mockWorkspacePhaseQueries();
+    const ticket = makeTicket({ id: TEST.ticketId, status: phase });
+
+    renderWithLogContext(
+      <WorkspacePhaseSummary phase={phase} ticket={ticket} />,
+      {
+        [phase]: [
+          createLogEntry(line, "2026-01-01T00:00:00.000Z", phase),
+          createLogEntry(otherPhaseLine, "2026-01-01T00:00:01.000Z", phase),
+        ],
+      },
+    );
+
+    await waitFor(() => {
+      expect(screen.getByRole("button", { name: label })).toBeInTheDocument();
+    });
+  });
+
+  it("keeps manual revision logs on the current version and does not invent an automatic pass limit", async () => {
+    mockWorkspacePhaseQueries();
+    const ticket = makeTicket({ id: TEST.ticketId, status: "VERIFYING_PRD_COVERAGE" });
+    renderWithLogContext(
+      <WorkspacePhaseSummary phase="VERIFYING_PRD_COVERAGE" ticket={ticket} />,
+      {
+        VERIFYING_PRD_COVERAGE: [
+          createLogEntry(
+            "PRD manual coverage fix 1: coverage check 4: revising PRD Candidate v3 after 2 gap(s) were found; response attempt 1 of 3.",
+            "2026-01-01T00:00:00.000Z",
+          ),
+        ],
+      },
+    );
+
+    await waitFor(() => {
+      expect(screen.getByRole("button", { name: "Coverage Check (PRD) (checking version 3)" })).toBeInTheDocument();
+    });
+  });
+
+  it("reads the relevant candidate when a log line mentions both planning phases", async () => {
+    mockWorkspacePhaseQueries();
+    const ticket = makeTicket({ id: TEST.ticketId, status: "VERIFYING_BEADS_COVERAGE" });
+    renderWithLogContext(
+      <WorkspacePhaseSummary phase="VERIFYING_BEADS_COVERAGE" ticket={ticket} />,
+      {
+        VERIFYING_BEADS_COVERAGE: [
+          createLogEntry(
+            "Comparing PRD Candidate v8 with Implementation Plan v2.",
+            "2026-01-01T00:00:00.000Z",
+            "VERIFYING_BEADS_COVERAGE",
+          ),
+        ],
+      },
+    );
+
+    await waitFor(() => {
+      expect(screen.getByRole("button", { name: "Coverage Check (Beads) (checking version 2)" })).toBeInTheDocument();
+    });
+  });
+
   it("shows the live interview coverage pass without a candidate version", async () => {
     mockWorkspacePhaseQueries([
       {

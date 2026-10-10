@@ -53,6 +53,30 @@ describe('OpenCode blocked error diagnostics', () => {
     expect(isContinuableBlockedError(result)).toBe(true)
   })
 
+  it.each(['Connection error.', 'OpenCode is unreachable', 'Failed to connect to OpenCode'])('explains explicitly reported communication failures: %s', (message) => {
+    const result = buildOpenCodeBlockedErrorDiagnostics({
+      error: Object.assign(new Error(message, { cause: { message: 'socket closed', code: 'ECONNRESET' } }), {
+        openCodeOperation: 'checking the OpenCode session',
+      }),
+    })
+
+    expect(result.diagnostics).toMatchObject({ kind: 'transport', transportCode: 'ECONNRESET' })
+    expect(result.diagnostics?.summary).toContain('LoopTroop could not communicate with OpenCode while checking the OpenCode session.')
+    expect(result.diagnostics?.summary).toContain('Captured connection details are available in Technical details.')
+    expect(result.diagnostics?.summary).not.toContain('..')
+  })
+
+  it('retains connection details reported by the selected AI SDK retry record', () => {
+    const result = buildOpenCodeBlockedErrorDiagnostics({ error: {
+      name: 'AI_RetryError',
+      errors: [{ message: 'fetch failed', cause: { code: 'ECONNRESET' } }],
+    } })
+
+    expect(result.diagnostics).toMatchObject({ kind: 'transport', transportCode: 'ECONNRESET' })
+    expect(result.diagnostics?.summary).toContain('Captured connection details are available in Technical details.')
+    expect(result.diagnostics?.summary).not.toContain('The exact connection cause was not reported.')
+  })
+
   it('preserves provider details and timeout classification when causes are available', () => {
     const cause = Object.assign(new Error('socket closed'), { code: 'ECONNRESET' })
     const provider = buildOpenCodeBlockedErrorDiagnostics({ error: Object.assign(new Error('Provider returned error', { cause }), {

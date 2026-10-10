@@ -4,7 +4,7 @@ import {
   OPENCODE_SESSION_CREATE_HEALTH_DIAGNOSTIC_TIMEOUT_MS,
   OPENCODE_SESSION_CREATE_RETRY_DELAYS_MS,
 } from '../lib/constants'
-import { getErrorMessage } from '@shared/typeGuards'
+import { getErrorMessage, isRecord } from '@shared/typeGuards'
 
 export interface OpenCodeSessionCreateRetryOptions {
   retryDelaysMs?: readonly number[]
@@ -110,7 +110,15 @@ function buildRetryError(errors: unknown[], lastHealthDiagnostic: string | undef
   const healthDetails = lastHealthDiagnostic
     ? ` Last OpenCode health check: ${lastHealthDiagnostic}.`
     : ''
-  return new Error(`Failed to create OpenCode session after ${attempts} attempts. ${attemptDetails}.${healthDetails}`)
+  const finalError = errors.at(-1)
+  return Object.assign(new Error(
+    `Failed to create OpenCode session after ${attempts} attempts. ${attemptDetails}.${healthDetails}`,
+    { cause: finalError },
+  ), {
+    openCodeOperation: isRecord(finalError) && typeof finalError.openCodeOperation === 'string'
+      ? finalError.openCodeOperation
+      : undefined,
+  })
 }
 
 export async function createOpenCodeSessionWithRetry(

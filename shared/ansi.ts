@@ -24,9 +24,11 @@ const C1_ST = String.fromCodePoint(156)
  * `ESC \` to a BEL later in the text and deletes everything in between —
  * `ESC]0;first ESC\ VISIBLE ESC]0;second BEL tail` returned `tail`, silently
  * eating a real line of build output on its way.
+ * A later introducer also stops the body, so repeated unterminated sequences
+ * do not rescan the same tail for each escape.
  */
 const ANSI_OSC_SEQUENCE = new RegExp(
-  `(?:${ESCAPE}\\]|${C1_OSC})(?:(?!${BELL}|${C1_ST}|${ESCAPE}\\\\)[\\s\\S])*?(?:${BELL}|${C1_ST}|${ESCAPE}\\\\)`,
+  `(?:${ESCAPE}\\]|${C1_OSC})(?:(?!${BELL}|${C1_ST}|${ESCAPE}\\\\|${ESCAPE}\\]|${C1_OSC})[\\s\\S])*?(?:${BELL}|${C1_ST}|${ESCAPE}\\\\)`,
   'g',
 )
 const ANSI_CSI_SEQUENCE = new RegExp(`(?:${ESCAPE}\\[|${C1_CSI})[0-?]*[ -/]*[@-~]`, 'g')

@@ -321,7 +321,25 @@ function describeCoveragePrompt(progress: CoveragePromptProgress, attempt: numbe
   const activity = progress.gapCount === undefined
     ? `auditing ${candidate}`
     : `revising ${candidate} after ${progress.gapCount} gap(s) were found`;
-  return `${label}${progress.extraFixNumber === undefined ? "" : ` manual coverage fix ${progress.extraFixNumber}:`} coverage check ${progress.coverageRunNumber} of ${progress.maxCoveragePasses}: ${activity}; response attempt ${attempt + 1} of ${progress.structuredRetryCount + 1}`;
+  const checkLimit = progress.extraFixNumber === undefined ? ` of ${progress.maxCoveragePasses}` : "";
+  return `${label}${progress.extraFixNumber === undefined ? "" : ` manual coverage fix ${progress.extraFixNumber}:`} coverage check ${progress.coverageRunNumber}${checkLimit}: ${activity}; response attempt ${attempt + 1} of ${progress.structuredRetryCount + 1}`;
+}
+
+function startCoveragePromptAttempt(
+  params: CoveragePromptProgress & { ticketId: string; externalId: string; stateLabel: WorkflowPhaseId; winnerId: string },
+  attempt: number,
+  validationError?: string,
+): string {
+  const progress = describeCoveragePrompt(params, attempt);
+  emitModelSystemLog(
+    params.ticketId,
+    params.externalId,
+    params.stateLabel,
+    "info",
+    `${progress}.${attempt > 0 && validationError ? ` Previous response rejected: ${sanitizeDiagnosticText(validationError).slice(0, 500)}` : ""}`,
+    params.winnerId,
+  );
+  return progress;
 }
 
 function coveragePromptError(error: unknown, progress: string, modelId: string, sessionId: string): Error {
@@ -1171,18 +1189,10 @@ async function runPrdCoverageAuditPrompt(params: {
 
   for (let attempt = 0; attempt <= params.structuredRetryCount; attempt += 1) {
     sessionId = "";
-    const progress = describeCoveragePrompt({
+    const progress = startCoveragePromptAttempt({
       ...params,
       phase: "prd",
-    }, attempt);
-    emitModelSystemLog(
-      params.ticketId,
-      params.externalId,
-      params.stateLabel,
-      "info",
-      `${progress}.${attempt > 0 && structuredMeta.validationError ? ` Previous response rejected: ${sanitizeDiagnosticText(structuredMeta.validationError).slice(0, 500)}` : ""}`,
-      params.winnerId,
-    );
+    }, attempt, structuredMeta.validationError);
     const diagnosticTracker = createOpenCodeDiagnosticTracker(params.winnerId);
     try {
       runResult = await runOpenCodePrompt({
@@ -1472,19 +1482,11 @@ async function runPrdCoverageResolutionPrompt(params: {
   for (let attempt = 0; attempt <= params.structuredRetryCount; attempt += 1) {
     let runResult: Awaited<ReturnType<typeof runOpenCodePrompt>>;
     sessionId = "";
-    const progress = describeCoveragePrompt({
+    const progress = startCoveragePromptAttempt({
       ...params,
       phase: "prd",
       gapCount: params.coverageGaps.length,
-    }, attempt);
-    emitModelSystemLog(
-      params.ticketId,
-      params.externalId,
-      params.stateLabel,
-      "info",
-      `${progress}.${attempt > 0 && structuredMeta.validationError ? ` Previous response rejected: ${sanitizeDiagnosticText(structuredMeta.validationError).slice(0, 500)}` : ""}`,
-      params.winnerId,
-    );
+    }, attempt, structuredMeta.validationError);
     const diagnosticTracker = createOpenCodeDiagnosticTracker(params.winnerId);
     try {
       runResult = await runOpenCodePrompt({
@@ -1693,18 +1695,10 @@ async function runBeadsCoverageAuditPrompt(params: {
 
   for (let attempt = 0; attempt <= params.structuredRetryCount; attempt += 1) {
     sessionId = "";
-    const progress = describeCoveragePrompt({
+    const progress = startCoveragePromptAttempt({
       ...params,
       phase: "beads",
-    }, attempt);
-    emitModelSystemLog(
-      params.ticketId,
-      params.externalId,
-      params.stateLabel,
-      "info",
-      `${progress}.${attempt > 0 && structuredMeta.validationError ? ` Previous response rejected: ${sanitizeDiagnosticText(structuredMeta.validationError).slice(0, 500)}` : ""}`,
-      params.winnerId,
-    );
+    }, attempt, structuredMeta.validationError);
     const diagnosticTracker = createOpenCodeDiagnosticTracker(params.winnerId);
     try {
       runResult = await runOpenCodePrompt({
@@ -1993,19 +1987,11 @@ async function runBeadsCoverageResolutionPrompt(params: {
   for (let attempt = 0; attempt <= params.structuredRetryCount; attempt += 1) {
     let runResult: Awaited<ReturnType<typeof runOpenCodePrompt>>;
     sessionId = "";
-    const progress = describeCoveragePrompt({
+    const progress = startCoveragePromptAttempt({
       ...params,
       phase: "beads",
       gapCount: params.coverageGaps.length,
-    }, attempt);
-    emitModelSystemLog(
-      params.ticketId,
-      params.externalId,
-      params.stateLabel,
-      "info",
-      `${progress}.${attempt > 0 && structuredMeta.validationError ? ` Previous response rejected: ${sanitizeDiagnosticText(structuredMeta.validationError).slice(0, 500)}` : ""}`,
-      params.winnerId,
-    );
+    }, attempt, structuredMeta.validationError);
     const diagnosticTracker = createOpenCodeDiagnosticTracker(params.winnerId);
     try {
       runResult = await runOpenCodePrompt({
@@ -4599,15 +4585,10 @@ export async function handleCoverageVerification(
 
   for (let attempt = 0; attempt <= structuredRetryCount; attempt += 1) {
     sessionId = "";
-    const progress = describeCoveragePrompt({ phase, coverageRunNumber, maxCoveragePasses: effectiveMaxCoveragePasses, structuredRetryCount }, attempt);
-    emitModelSystemLog(
-      ticketId,
-      context.externalId,
-      stateLabel,
-      "info",
-      `${progress}.${attempt > 0 && structuredMeta.validationError ? ` Previous response rejected: ${sanitizeDiagnosticText(structuredMeta.validationError).slice(0, 500)}` : ""}`,
-      winnerId,
-    );
+    const progress = startCoveragePromptAttempt({
+      phase, coverageRunNumber, maxCoveragePasses: effectiveMaxCoveragePasses, structuredRetryCount,
+      ticketId, externalId: context.externalId, stateLabel, winnerId,
+    }, attempt, structuredMeta.validationError);
     const diagnosticTracker = createOpenCodeDiagnosticTracker(winnerId);
     try {
       runResult = await runOpenCodePrompt({
@@ -4666,21 +4647,6 @@ export async function handleCoverageVerification(
       if (error instanceof CancelledError) throw error;
       throwIfCancelled(error, signal, ticketId);
       const contextualError = coveragePromptError(error, progress, winnerId, sessionId);
-      if (error instanceof Error && error.message === "Timeout") {
-        emitPhaseLog(
-          ticketId,
-          context.externalId,
-          stateLabel,
-          "error",
-          contextualError.message,
-        );
-        sendEvent({
-          type: "ERROR",
-          message: contextualError.message,
-          codes: ["COVERAGE_FAILED"],
-        });
-        return;
-      }
       throw contextualError;
     }
 

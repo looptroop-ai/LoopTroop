@@ -1646,7 +1646,7 @@ export class OpenCodeSDKAdapter implements OpenCodeAdapter {
         (err.name === "OpenCodeSessionError" ||
           err.name === "OpenCodeSessionInterrupted")
       )
-        throw err;
+        throw Object.assign(err, { openCodeOperation: operation });
       const enriched = enrichGenericOpenCodeProviderError(err, sessionId);
       if (enriched) {
         const error = new Error(

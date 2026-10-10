@@ -423,7 +423,7 @@ export async function runOpenCodePrompt({
   onStreamEvent,
   onPromptCompleted,
 }: OpenCodeRunOptions & { projectPath: string }): Promise<OpenCodeRunResult> {
-  const sessionManager = sessionOwnership ? new SessionManager(adapter) : null
+  let sessionManager: SessionManager | null = null
   const sessionCreateOptions = resolveSessionCreateOptions()
   const resolvedTimeoutDeadline = workBudget
     ? workBudget.deadlineAt()
@@ -433,25 +433,26 @@ export async function runOpenCodePrompt({
   let reconnected = false
   let preservedForContinuation = false
   try {
-    if (sessionOwnership?.forceFresh) {
-      const existing = sessionManager!.getOwnedActiveSession(
-        sessionOwnership.ticketId,
-        sessionOwnership.phase,
-        sessionOwnership,
-      )
-      if (existing) {
-        const stopped = await adapter.abortSession(existing.sessionId).catch(() => false)
-        if (!stopped) {
-          throw new Error(`Could not confirm abort of existing OpenCode session ${existing.sessionId}`)
-        }
-        await sessionManager!.abandonSession(existing.sessionId)
-        clearSessionContinuation(existing.sessionId)
-        clearOpenCodePromptDispatchCount(existing.sessionId)
-      }
-    }
     if (sessionOwnership) {
+      sessionManager = new SessionManager(adapter)
+      if (sessionOwnership.forceFresh) {
+        const existing = sessionManager.getOwnedActiveSession(
+          sessionOwnership.ticketId,
+          sessionOwnership.phase,
+          sessionOwnership,
+        )
+        if (existing) {
+          const stopped = await adapter.abortSession(existing.sessionId).catch(() => false)
+          if (!stopped) {
+            throw new Error(`Could not confirm abort of existing OpenCode session ${existing.sessionId}`)
+          }
+          await sessionManager.abandonSession(existing.sessionId)
+          clearSessionContinuation(existing.sessionId)
+          clearOpenCodePromptDispatchCount(existing.sessionId)
+        }
+      }
       const existing = !sessionOwnership.forceFresh
-        ? await sessionManager!.validateAndReconnect(
+        ? await sessionManager.validateAndReconnect(
             sessionOwnership.ticketId,
             sessionOwnership.phase,
             sessionOwnership,
@@ -459,7 +460,7 @@ export async function runOpenCodePrompt({
           )
         : null
       reconnected = existing !== null
-      session = existing ?? await sessionManager!.createSessionForPhase(
+      session = existing ?? await sessionManager.createSessionForPhase(
         sessionOwnership.ticketId,
         sessionOwnership.phase,
         sessionOwnership.phaseAttempt ?? 1,

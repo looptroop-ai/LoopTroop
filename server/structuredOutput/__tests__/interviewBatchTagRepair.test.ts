@@ -40,7 +40,9 @@ describe('interview batch field tag recovery', () => {
       const emittedQuestions = jsYaml.load(body.slice(body.indexOf('<questions>') + '<questions>'.length, body.indexOf('</parameter>')))
       const repairedPayload = jsYaml.load(repaired.content) as Record<string, unknown>
       expect(repairedPayload.questions).toEqual(emittedQuestions)
-      expect(repairedPayload.ai_commentary).toBe(body.split('<ai_commentary>\n')[1]!.split('\n</ai_commentary>')[0])
+      const commentary = body.split('<ai_commentary>\n')[1]
+      assert(commentary)
+      expect(repairedPayload.ai_commentary).toBe(commentary.split('\n</ai_commentary>')[0])
 
       const result = normalizeInterviewTurnOutput(response)
       expect(result.ok).toBe(true)
@@ -73,7 +75,7 @@ describe('interview batch field tag recovery', () => {
     expect(result.repairApplied).toBe(false)
     expect(result.repairWarnings).toEqual([])
     expect(result.value.batch.aiCommentary).toBe(payload.ai_commentary)
-    expect(result.value.batch.questions[0]!.question).toBe(payload.questions[0]!.question)
+    expect(result.value.batch.questions[0]?.question).toBe(payload.questions[0]?.question)
   })
 
   it('preserves commentary newlines, colon text, quotes, and literal field tags', () => {
@@ -83,7 +85,8 @@ describe('interview batch field tag recovery', () => {
     expect(result.ok).toBe(true)
     if (!result.ok || result.value.kind !== 'batch') return
     expect(result.value.batch.aiCommentary).toBe(commentary)
-    const warning = result.repairWarnings.find((entry) => entry.includes('at ai_commentary,'))!
+    const warning = result.repairWarnings.find((entry) => entry.includes('at ai_commentary,'))
+    assert(warning)
     expect(warning).toContain(JSON.stringify(`<ai_commentary>\n${commentary}\n</ai_commentary>`))
     expect(warning).toContain(JSON.stringify(`ai_commentary: ${JSON.stringify(commentary)}`))
   })
@@ -98,7 +101,7 @@ describe('interview batch field tag recovery', () => {
     const result = normalizeInterviewTurnOutput(batchResponse(body))
     expect(result.ok).toBe(true)
     if (!result.ok || result.value.kind !== 'batch') return
-    expect(result.value.batch.questions[0]!.question).toBe('<questions>\n  <batch_number>example</batch_number>\n</questions>')
+    expect(result.value.batch.questions[0]?.question).toBe('<questions>\n  <batch_number>example</batch_number>\n</questions>')
   })
 
   it.each([
@@ -140,7 +143,9 @@ describe('interview batch field tag recovery', () => {
 
   it.each([
     ['final flag', '<is_final_free_form>true</is_final_free_form>', { ai_commentary: 'Keep this commentary.' }],
+    ['indented final flag', '  <is_final_free_form>true</is_final_free_form>', { ai_commentary: 'Keep this commentary.' }],
     ['commentary', '<ai_commentary>Keep this commentary.</ai_commentary>', { is_final_free_form: true }],
+    ['indented commentary', '  <ai_commentary>Keep this commentary.</ai_commentary>', { is_final_free_form: true }],
   ])('does not replace emitted %s with a default from a shortened fallback', (_label, taggedField, nativeField) => {
     const body = `${taggedField}\n${buildYamlDocument({
       batch_number: 3,
@@ -180,6 +185,20 @@ describe('interview batch field tag recovery', () => {
     expect(result.repairWarnings.some((warning) => warning.startsWith('Repaired interview batch field tag'))).toBe(false)
   })
 
+  it.each(['tagged', 'fenced'])('keeps existing optional defaults for an independent later %s batch', (kind) => {
+    const canonical = buildYamlDocument({
+      batch_number: 2,
+      progress: { current: 2, total: 9 },
+      questions: [{ id: 'Q02', question: 'Use this independent question?' }],
+    })
+    const candidate = kind === 'tagged' ? batchResponse(canonical) : `\`\`\`yaml\n${canonical}\`\`\``
+    const result = normalizeInterviewTurnOutput(`${batchResponse(simple)}\n${candidate}`)
+    assert(result.ok && result.value.kind === 'batch')
+    expect(result.value.batch).toMatchObject({ batchNumber: 2, isFinalFreeForm: false, aiCommentary: '' })
+    expect(result.value.batch.questions).toEqual([{ id: 'Q02', question: 'Use this independent question?' }])
+    expect(result.repairWarnings.some((warning) => warning.startsWith('Repaired interview batch field tag'))).toBe(false)
+  })
+
   it.each([
     ['duplicate tagged/native flag', 'is_final_free_form: false\n'],
     ['duplicate flag alias', 'isFinalFreeForm: false\n'],
@@ -193,6 +212,20 @@ describe('interview batch field tag recovery', () => {
       questions: [{ id: 'Q09', question: 'Any final comments?' }],
     })}`
     expect(repairInterviewBatchFieldTags(body)).toBeNull()
+    expect(normalizeInterviewTurnOutput(batchResponse(body)).ok).toBe(false)
+  })
+
+  it.each([
+    '<is_final_free_form source="model">true</is_final_free_form>',
+    '<IS_FINAL_FREE_FORM>true</IS_FINAL_FREE_FORM>',
+    'unknown: do not discard\n<is_final_free_form>true</is_final_free_form>',
+  ])('does not replace an unsupported field-tag prefix with default fields: %s', (taggedPrefix) => {
+    const body = `${taggedPrefix}\n${buildYamlDocument({
+      batch_number: 3,
+      progress: { current: 9, total: 9 },
+      ai_commentary: 'Keep this commentary.',
+      questions: [{ id: 'Q09', question: 'Any final comments?' }],
+    })}`
     expect(normalizeInterviewTurnOutput(batchResponse(body)).ok).toBe(false)
   })
 
@@ -233,6 +266,33 @@ describe('interview batch field tag recovery', () => {
     expect(result.repairWarnings.some((warning) => warning.startsWith('Repaired interview batch field tag'))).toBe(false)
   })
 
+  it('does not treat a tag-like prose prefix as a field-tagged payload', () => {
+    const canonical = buildYamlDocument({
+      batch_number: 7,
+      progress: { current: 3, total: 9 },
+      is_final_free_form: true,
+      ai_commentary: 'Native payload commentary.',
+      questions: [{ id: 'Q07', question: 'Native question?' }],
+    })
+    const result = normalizeInterviewTurnOutput(batchResponse(`Here is the payload.\n<questions> section: value\n${canonical}`))
+    assert(result.ok && result.value.kind === 'batch')
+    expect(result.value.batch).toMatchObject({ batchNumber: 7, isFinalFreeForm: true, aiCommentary: 'Native payload commentary.' })
+  })
+
+  it('keeps an independently wrapped batch after an unclosed field-tagged wrapper', () => {
+    const canonical = buildYamlDocument({
+      batch_number: 7,
+      progress: { current: 3, total: 9 },
+      is_final_free_form: true,
+      ai_commentary: 'Native payload commentary.',
+      questions: [{ id: 'Q07', question: 'Native question?' }],
+    })
+    const result = normalizeInterviewTurnOutput(`<INTERVIEW_BATCH>\n<batch_number>1</batch_number>\n${batchResponse(canonical)}`)
+    assert(result.ok && result.value.kind === 'batch')
+    expect(result.value.batch).toMatchObject({ batchNumber: 7, isFinalFreeForm: true, aiCommentary: 'Native payload commentary.' })
+    expect(result.repairWarnings.some((warning) => warning.startsWith('Repaired interview batch field tag'))).toBe(false)
+  })
+
   it('keeps a normally valid fallback completion ahead of field-tag recovery', () => {
     const complete = buildYamlDocument({
       schema_version: '1.0',
@@ -244,6 +304,42 @@ describe('interview batch field tag recovery', () => {
     assert(result.ok && result.value.kind === 'complete')
     expect(result.value.finalYaml).toContain('The interview is complete.')
     expect(result.repairWarnings.some((warning) => warning.startsWith('Repaired interview batch field tag'))).toBe(false)
+  })
+
+  it.each([
+    ['tagged fields', simple],
+    ['mixed fields', `<is_final_free_form>true</is_final_free_form>\n${buildYamlDocument({
+      batch_number: 3,
+      progress: { current: 9, total: 9 },
+      ai_commentary: 'The recoverable final question.',
+      questions: [{ id: 'Q09', question: 'Any final comments?' }],
+    })}`],
+  ])('keeps a fenced completion after an unclosed wrapper containing %s', (_label, body) => {
+    const complete = buildYamlDocument({
+      schema_version: '1.0',
+      summary: 'The interview is complete.',
+      questions: [{ id: 'Q02', question: 'Finished question' }],
+      answers: [{ question_id: 'Q02', answer: 'Finished answer' }],
+    })
+    const result = normalizeInterviewTurnOutput(`<INTERVIEW_BATCH>\n${body}\n\`\`\`yaml\n${complete}\`\`\``)
+    assert(result.ok && result.value.kind === 'complete')
+    expect(result.value.finalYaml).toContain('The interview is complete.')
+    expect(result.repairWarnings.some((warning) => warning.startsWith('Repaired interview batch field tag'))).toBe(false)
+  })
+
+  it.each(['closed', 'unclosed'])('does not promote a fenced completion inside commentary of a %s batch', (wrapper) => {
+    const complete = buildYamlDocument({
+      schema_version: '1.0',
+      summary: 'This completion is only a commentary example.',
+      questions: [{ id: 'Q02', question: 'Example question' }],
+      answers: [{ question_id: 'Q02', answer: 'Example answer' }],
+    })
+    const commentary = `Here is a literal example:\n\`\`\`yaml\n${complete}\`\`\``
+    const body = simple.replace('Keep this wording: "as emitted".', commentary)
+    const response = wrapper === 'closed' ? batchResponse(body) : `<INTERVIEW_BATCH>\n${body}`
+    const result = normalizeInterviewTurnOutput(response)
+    assert(result.ok && result.value.kind === 'batch')
+    expect(result.value.batch.aiCommentary).toBe(commentary)
   })
 
   it('supports mixed native YAML fields and recognized tags', () => {
@@ -288,11 +384,27 @@ describe('interview batch field tag recovery', () => {
     expect(result.repairWarnings.some((warning) => warning.startsWith('Repaired interview batch field tag'))).toBe(false)
   })
 
+  it.each([
+    ['missing commentary', simple.replace('<ai_commentary>\nKeep this wording: "as emitted".\n</ai_commentary>\n', ''), 'Missing required batch fields: ai_commentary.'],
+    ['missing flag', simple.replace('<is_final_free_form>false</is_final_free_form>\n', ''), 'Missing required batch fields: is_final_free_form.'],
+    ['missing closer', simple.replace('</ai_commentary>', ''), 'Missing closing tag </ai_commentary>.'],
+    ['invalid flag', simple.replace('<is_final_free_form>false</is_final_free_form>', '<is_final_free_form>maybe</is_final_free_form>'), 'is_final_free_form must contain true or false.'],
+    ['conflicting field', simple.replace('<batch_number>1</batch_number>', 'batch_number: 2\n<batch_number>1</batch_number>'), 'More than one value was emitted for "batch_number".'],
+    ['invalid progress', simple.replace('  <current>1</current>', '  <current>"1"</current>'), 'progress.current must contain an integer.'],
+  ])('explains why %s cannot be repaired instead of returning an unrelated YAML error', (_label, body, reason) => {
+    const result = normalizeInterviewTurnOutput(batchResponse(body))
+    assert(!result.ok)
+    expect(result.error).toContain('Interview batch field tags could not be repaired safely:')
+    expect(result.error).toContain(reason)
+    expect(result.error).toContain('as plain YAML fields; preserve all emitted values')
+    expect(result.repairWarnings.some((warning) => warning.startsWith('Repaired interview batch field tag'))).toBe(false)
+  })
+
   it('still rejects a structurally repaired batch when a question is missing its text', () => {
     const body = simple.replace('    question: "What should happen?"', '')
     const repaired = repairInterviewBatchFieldTags(body)
-    expect(repaired).not.toBeNull()
-    expect(repaired!.content).not.toContain('question:')
+    assert(repaired)
+    expect(repaired.content).not.toContain('question:')
     const result = normalizeInterviewTurnOutput(batchResponse(body))
     assert(!result.ok)
     expect(result.error).toContain('question text at index 0')
@@ -345,7 +457,7 @@ describe('interview batch field tag recovery', () => {
     })))
     expect(result.ok).toBe(true)
     if (!result.ok || result.value.kind !== 'batch') return
-    expect(result.value.batch.questions[0]!.question).toBe('Keep this question')
+    expect(result.value.batch.questions[0]?.question).toBe('Keep this question')
     expect(result.repairWarnings).toContain('Resolved "question" and ignored the conflicting value in "prompt".')
   })
 

@@ -60,6 +60,15 @@ describe('shared blocked error diagnostics', () => {
     'client_secret',
     'clientSecret',
     'service_api_key',
+    'openaiApiKey',
+    'dbPassword',
+    'userPassword',
+    'awsSecretAccessKey',
+    'sessionToken',
+    'authToken',
+    'idToken',
+    'csrfToken',
+    'bearerToken',
   ])('redacts the complete quoted value for %s without changing JSON structure', (key) => {
     const diagnostics = normalizeBlockedErrorDiagnostics({
       summary: 'Provider error',
@@ -154,8 +163,86 @@ describe('shared blocked error diagnostics', () => {
     expect(sanitizeDiagnosticText('Authorization failed. Authorization is not available.')).toBe('Authorization failed. Authorization is not available.')
   })
 
+  it.each([
+    'Authorization header: Basic Zm9vOmJhcg==',
+    'Authorization header value: Token privatevalue123',
+    'Authorization header = Basic Zm9vOmJhcg==',
+    'Authorization header is Basic Zm9vOmJhcg==',
+    'Authorization: Token privatevalue123',
+    'Authorization has privatevalue123',
+    'Authorization is not privatevalue123',
+    'Basic Zm9vOmJhcg== rejected by proxy',
+    'x-api-key header: privatevalue123',
+    'Incorrect API key provided: privatevalue123',
+    'Authorization code: privatevalue123',
+    'Cookie banner unavailable. Cookie session=privatevalue123',
+  ])('redacts complete credentials after header labels and schemes: %s', (value) => {
+    const diagnostics = normalizeBlockedErrorDiagnostics({ summary: value, causeMessage: value, responseBodyPreview: value })
+
+    expect(diagnostics?.summary).toContain('[redacted]')
+    expect(diagnostics?.summary).not.toContain('privatevalue123')
+    expect(diagnostics?.summary).not.toContain('Zm9vOmJhcg==')
+    expect(diagnostics?.causeMessage).toBe(diagnostics?.summary)
+    expect(diagnostics?.responseBodyPreview).toBe(diagnostics?.summary)
+    expect(normalizeBlockedErrorDiagnostics(diagnostics)).toEqual(diagnostics)
+  })
+
+  it.each([
+    'Cookie: a=privatevalue123; sessionid=privatevalue456',
+    'Cookie header: a=privatevalue123; sessionid=privatevalue456',
+    'Cookie header value: a=privatevalue123; sessionid=privatevalue456',
+    'Cookie header is a=privatevalue123; sessionid=privatevalue456',
+    'Set-Cookie: a=privatevalue123; HttpOnly; sessionid=privatevalue456',
+  ])('redacts the entire cookie header line: %s', (value) => {
+    expect(sanitizeDiagnosticText(`${value}\nKeep this line.`)).toMatch(/\[redacted\]\nKeep this line\.$/)
+    expect(sanitizeDiagnosticText(value)).not.toContain('privatevalue')
+  })
+
+  it('keeps quoted cookie JSON structure and neighboring diagnostics intact', () => {
+    const diagnostics = normalizeBlockedErrorDiagnostics({
+      summary: 'Provider rejected the request.',
+      responseBodyPreview: JSON.stringify({ cookie: 'a=privatevalue123; sessionid=privatevalue456', message: 'Keep this.' }),
+    })
+
+    expect(JSON.parse(diagnostics?.responseBodyPreview ?? '')).toEqual({ cookie: '[redacted]', message: 'Keep this.' })
+  })
+
+  it.each([
+    'API key not valid. Please pass a valid API key.',
+    'The secret has been rotated.',
+    'The password has expired.',
+    'The cookie is stale.',
+    'Authorization header is required.',
+    'Authorization header value is invalid.',
+    'Cookie header value is stale.',
+    'Authorization is not available.',
+    'Missing Authorization header.',
+    'max_tokens=12 input_tokens=13 prompt_token_count=14 tokens=15 passwordHint=readable',
+  ])('preserves ordinary credential-related prose and metrics: %s', (value) => {
+    expect(sanitizeDiagnosticText(value)).toBe(value)
+  })
+
+  it.each([
+    ['https://user:password123@host.example/api?api_key=privatevalue123#privatevalue456', 'https://host.example/api'],
+    ['https://user:password123@host.example:99999/api?opaque=privatevalue123', 'https://host.example:99999/api'],
+    ['https://user:private?value@host.example/path', 'https://host.example/path'],
+    ['https://user:private#value@host.example/path', 'https://host.example/path'],
+    ['https://user:password123@', 'https://'],
+    ['wss://user:password123@host.example/socket?opaque=privatevalue123', 'wss://host.example/socket'],
+    ['https://host.example/user@path', 'https://host.example/user@path'],
+    ['https://host.example?email=user@other.example', 'https://host.example'],
+    ['https://user:password123@host.example?email=user@other.example', 'https://host.example'],
+  ])('removes URL credentials and parameters before persistence: %s', (url, sanitizedUrl) => {
+    const diagnostics = normalizeBlockedErrorDiagnostics({ summary: `Failed to fetch ${url}`, causeMessage: url, responseBodyPreview: JSON.stringify({ url }) })
+
+    expect(diagnostics?.summary).toBe(`Failed to fetch ${sanitizedUrl}`)
+    expect(diagnostics?.causeMessage).toBe(sanitizedUrl)
+    expect(JSON.parse(diagnostics?.responseBodyPreview ?? '')).toEqual({ url: sanitizedUrl })
+    expect(normalizeBlockedErrorDiagnostics(diagnostics)).toEqual(diagnostics)
+  })
+
   it('processes long noncredential field names without retrying at each separator', () => {
-    const prefix = 'a-'.repeat(10000)
+    const prefix = 'a-'.repeat(100000)
     const ordinary = `${prefix}ordinary-field: readable`
     const started = performance.now()
 

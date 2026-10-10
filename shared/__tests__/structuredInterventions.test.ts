@@ -163,7 +163,7 @@ describe('parser fix interventions', () => {
 
   it('keeps closing tag removal visible after intervention normalization', () => {
     const i = deriveOne('Repaired interview batch field tag at progress, payload line 5: "</progress>" -> "".')
-    expect(normalizeStructuredInterventions([i])[0]!.examples).toEqual([
+    expect(normalizeStructuredInterventions([i])[0]?.examples).toEqual([
       { scope: 'progress (payload line 5)', before: '</progress>', after: '[removed]' },
     ])
   })

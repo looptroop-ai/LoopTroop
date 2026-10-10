@@ -173,13 +173,14 @@ function isTimeoutLike(message: string): boolean {
 }
 
 function isTransportLike(message: string): boolean {
-  return /\b(connection reset|socket reset|econnreset|etimedout|eai_again|enotfound|econnrefused|socket hang up|network|fetch failed|failed to prompt|unreachable)\b/i.test(message)
+  return /\b(connection (?:error|reset)|socket reset|econnreset|etimedout|eai_again|enotfound|econnrefused|socket hang up|network|fetch failed|failed to (?:prompt|fetch|connect)|could not (?:reach|connect)|unreachable)\b/i.test(message)
 }
 
 function buildCommunicationSummary(summaryMessage: string, operation: string | undefined, info: ModelErrorInfo | undefined): string {
   const context = operation ? ` while ${operation}` : ''
   const hasCause = info?.transportCode || (info?.causeMessage && !/^fetch failed$/i.test(info.causeMessage))
-  return `LoopTroop could not communicate with OpenCode${context}. Reported error: ${summaryMessage}. ${hasCause ? 'Captured connection details are available in Technical details.' : 'The exact connection cause was not reported.'}`
+  const punctuation = /[.!?]$/.test(summaryMessage) ? '' : '.'
+  return `LoopTroop could not communicate with OpenCode${context}. Reported error: ${summaryMessage}${punctuation} ${hasCause ? 'Captured connection details are available in Technical details.' : 'The exact connection cause was not reported.'}`
 }
 
 function resolveKind(input: {
@@ -295,7 +296,8 @@ export function buildOpenCodeBlockedErrorDiagnostics(
   const operationValue = readErrorProperty(input.error, 'openCodeOperation')
   const operation = cleanOptionalMessage(typeof operationValue === 'string' ? operationValue : undefined)
   const connectionFailure = kind === 'transport'
-    && /\b(connection reset|socket reset|econnreset|etimedout|eai_again|enotfound|econnrefused|socket hang up|network (?:error|failure|failed)|fetch failed|failed to fetch|could not reach)\b/i.test(summaryMessage)
+    && (causeDetails.transportCode !== undefined
+      || /\b(connection (?:error|reset)|socket reset|econnreset|etimedout|eai_again|enotfound|econnrefused|socket hang up|network (?:error|failure|failed)|fetch failed|failed to (?:fetch|connect)|could not (?:reach|connect)|(?:network|opencode)(?: is)? unreachable)\b/i.test(summaryMessage))
   const diagnostics = normalizeBlockedErrorDiagnostics({
     kind,
     source: kind === 'opencode_provider' ? 'provider' : 'opencode',

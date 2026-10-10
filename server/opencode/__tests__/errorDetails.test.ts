@@ -53,6 +53,54 @@ describe('OpenCode model error details', () => {
     })
   })
 
+  it('extracts the selected retry record cause without using earlier retry failures', () => {
+    const info = extractModelErrorInfo({
+      name: 'AI_RetryError',
+      errors: [
+        { message: 'earlier failure', cause: { message: 'earlier socket', code: 'ECONNREFUSED' } },
+        { message: 'fetch failed', statusCode: 502, cause: { message: 'socket closed', code: 'ECONNRESET' } },
+      ],
+    })
+
+    expect(info).toMatchObject({
+      message: 'fetch failed', statusCode: 502,
+      transportCode: 'ECONNRESET', causeMessage: 'socket closed',
+    })
+    expect(JSON.stringify(info)).not.toContain('earlier socket')
+  })
+
+  it('preserves normalized cause fields from serialized transport wrappers', () => {
+    expect(extractModelErrorInfo(new Error('fetch failed', { cause: {
+      message: 'transport wrapper', transportCode: 'ECONNRESET', causeMessage: 'socket closed',
+    } }))).toMatchObject({ transportCode: 'ECONNRESET', causeMessage: 'socket closed' })
+  })
+
+  it.each(['BASE_BRANCH_MISSING', 'ENOENT', 'EACCES'])('does not label %s as a connection code', (code) => {
+    expect(extractModelErrorInfo(Object.assign(new Error('validation failed'), { code }))?.transportCode).toBeUndefined()
+    expect(extractModelErrorInfo(new Error('fetch failed', { cause: { message: 'file missing', code } }))?.transportCode).toBeUndefined()
+  })
+
+  it.each(['ECONNRESET', 'ENETUNREACH', 'ENOTFOUND', 'UND_ERR_SOCKET'])('retains a directly reported %s connection code', (code) => {
+    expect(extractModelErrorInfo(Object.assign(new Error('Connection error.'), { code }))?.transportCode).toBe(code)
+  })
+
+  it.each([
+    'https://private-user:private-password@example.com:99999/path?secret=value#fragment',
+    'https://private-user:private-password@',
+    'wss://private-user:private-password@example.com:99999/path?secret=value#fragment',
+    'https://private-user:private-password?value@example.com/path',
+    'https://private-user:private-password#value@example.com/path',
+  ])('redacts credentials in malformed URLs: %s', (url) => {
+    const info = extractModelErrorInfo({ message: `fetch failed for ${url}`, url })
+    const serialized = JSON.stringify(info)
+
+    expect(serialized).not.toContain('private-user')
+    expect(serialized).not.toContain('private-password')
+    expect(serialized).not.toContain('secret=value')
+    expect(serialized).not.toContain('#fragment')
+    expect(info?.url).toMatch(/^(?:https|wss):\/\//)
+  })
+
   it('redacts a complete cause message before clipping it', () => {
     const credential = ['ghp', '1234567890abcdefghijklmnopqrstuvwxyz'].join('_')
     const error = new TypeError('fetch failed', { cause: new Error(`${'x'.repeat(270)} ${credential}`) })

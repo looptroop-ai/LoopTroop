@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest'
 import type { OpenCodeAdapter } from '../adapter'
 import { createOpenCodeSessionWithRetry } from '../sessionCreation'
+import { buildOpenCodeBlockedErrorDiagnostics } from '../blockedErrorDiagnostics'
 import type {
   HealthStatus,
   Message,
@@ -153,5 +154,27 @@ describe('createOpenCodeSessionWithRetry', () => {
 
     await expect(sessionPromise).rejects.toThrow(/abort/i)
     expect(adapter.createCalls).toHaveLength(1)
+  })
+
+  it('retains the final creation failure cause and known operation after exhausting retries', async () => {
+    const failure = Object.assign(new Error('Failed to create OpenCode session: fetch failed', { cause:
+      new TypeError('fetch failed', { cause: Object.assign(new Error('getaddrinfo ENOTFOUND opencode.local'), { code: 'ENOTFOUND' }) }),
+    }), { openCodeOperation: 'creating an OpenCode session' })
+    const adapter = new TestOpenCodeAdapter([
+      new Error('earlier creation failure'), failure,
+    ], { available: false, error: 'fetch failed' })
+    const error = await createOpenCodeSessionWithRetry(adapter, '/tmp/project', undefined, undefined, { retryDelaysMs: [0] })
+      .catch((failure: unknown) => failure)
+
+    expect(error).toMatchObject({ cause: failure, openCodeOperation: 'creating an OpenCode session' })
+    const result = buildOpenCodeBlockedErrorDiagnostics({ error, modelId: 'provider/model' })
+    expect(result.diagnostics).toMatchObject({
+      operation: 'creating an OpenCode session', transportCode: 'ENOTFOUND',
+      causeMessage: 'getaddrinfo ENOTFOUND opencode.local', modelId: 'provider/model',
+    })
+    expect(result.diagnostics?.sessionId).toBeUndefined()
+    expect(result.diagnostics?.summary).toContain('Captured connection details are available in Technical details.')
+    expect(result.diagnostics?.summary).not.toContain('..')
+    expect(adapter.createCalls).toHaveLength(2)
   })
 })

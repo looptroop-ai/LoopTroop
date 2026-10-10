@@ -493,7 +493,7 @@ describe('additional interview phase flows', () => {
         })
         expect(notices[0].content).toContain(kind === 'retry'
           ? 'accepted after 1 structured retry attempt(s)'
-          : structuredOutput!.interventions![0]!.exactCorrection)
+          : structuredOutput?.interventions?.[0]?.exactCorrection)
       }
     } finally {
       submit.mockRestore()

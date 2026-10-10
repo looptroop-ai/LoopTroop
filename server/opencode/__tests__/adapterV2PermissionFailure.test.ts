@@ -1,5 +1,6 @@
 import { describe, expect, it, vi } from 'vitest'
 import { OpenCodeSDKAdapter } from '../adapter'
+import { buildOpenCodeBlockedErrorDiagnostics } from '../blockedErrorDiagnostics'
 import type { Message } from '../types'
 import type { OpenCodeTransport, OpenCodeTransportEvent, OpenCodeTransportEventEnvelope } from '../transport'
 
@@ -114,11 +115,15 @@ describe('OpenCode v2 accepted prompt failures', () => {
       error: 'provider rejected the request',
     }))
 
-    await expect(adapter.promptSession('session-1', [{ type: 'text', content: 'Run the prompt.' }]))
-      .rejects.toMatchObject({
-        name: 'OpenCodeSessionError',
-        sessionError: 'provider rejected the request',
-      })
+    const error = await adapter.promptSession('session-1', [{ type: 'text', content: 'Run the prompt.' }])
+      .catch((failure: unknown) => failure)
+    expect(error).toMatchObject({
+      name: 'OpenCodeSessionError',
+      sessionError: 'provider rejected the request',
+      openCodeOperation: 'waiting for the accepted prompt to finish',
+    })
+    expect(buildOpenCodeBlockedErrorDiagnostics({ error, sessionId: 'session-1' }).diagnostics?.operation)
+      .toBe('waiting for the accepted prompt to finish')
   })
 
   it('surfaces an assistant snapshot error even after the execution terminal succeeded', async () => {
@@ -135,7 +140,17 @@ describe('OpenCode v2 accepted prompt failures', () => {
       .rejects.toMatchObject({
         name: 'OpenCodeSessionError',
         message: expect.stringContaining('provider quota exhausted'),
+        openCodeOperation: 'collecting the completed response',
       })
+  })
+
+  it('retains the waiting operation when the accepted prompt is interrupted', async () => {
+    const adapter = createLifecycleAdapter(lifecycle({
+      type: 'execution_terminal', sessionId: 'session-1', outcome: 'interrupted',
+    }))
+
+    await expect(adapter.promptSession('session-1', [{ type: 'text', content: 'Run the prompt.' }]))
+      .rejects.toMatchObject({ name: 'OpenCodeSessionInterrupted', openCodeOperation: 'waiting for the accepted prompt to finish' })
   })
 
   it('rejects a cancellation event without its matching enqueue evidence', async () => {

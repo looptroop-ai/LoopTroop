@@ -72,19 +72,31 @@ const COVERAGE_PHASE_META: Record<VersionedCoveragePhase, {
   coverageArtifactType: 'prd_coverage' | 'beads_coverage'
   coverageInputArtifactType: 'prd_coverage_input' | 'beads_coverage_input'
   coverageRevisionArtifactType: 'prd_coverage_revision' | 'beads_coverage_revision'
-  candidateLabel: 'PRD Candidate' | 'Implementation Plan'
 }> = {
   VERIFYING_PRD_COVERAGE: {
     coverageArtifactType: 'prd_coverage',
     coverageInputArtifactType: 'prd_coverage_input',
     coverageRevisionArtifactType: 'prd_coverage_revision',
-    candidateLabel: 'PRD Candidate',
   },
   VERIFYING_BEADS_COVERAGE: {
     coverageArtifactType: 'beads_coverage',
     coverageInputArtifactType: 'beads_coverage_input',
     coverageRevisionArtifactType: 'beads_coverage_revision',
-    candidateLabel: 'Implementation Plan',
+  },
+}
+
+const COVERAGE_VERSION_LOG_PATTERNS = {
+  VERIFYING_PRD_COVERAGE: {
+    revising: /Coverage found .* PRD Candidate v(\d+)\. Revising candidate before the next audit pass\./i,
+    revisionProgress: /coverage check \d+(?: of \d+)?: revising PRD Candidate v(\d+) after/i,
+    revised: /Revised PRD Candidate v\d+ into PRD Candidate v(\d+)(?=\.|\s|$)/i,
+    candidate: /PRD Candidate v(\d+)/i,
+  },
+  VERIFYING_BEADS_COVERAGE: {
+    revising: /Coverage found .* Implementation Plan v(\d+)\. Revising candidate before the next audit pass\./i,
+    revisionProgress: /coverage check \d+(?: of \d+)?: revising Implementation Plan v(\d+) after/i,
+    revised: /Revised Implementation Plan v\d+ into Implementation Plan v(\d+)(?=\.|\s|$)/i,
+    candidate: /Implementation Plan v(\d+)/i,
   },
 }
 
@@ -196,34 +208,29 @@ function extractCoverageVersionFromArtifacts(phase: VersionedCoveragePhase, arti
 
 /** Scans log lines (newest-first) for candidate-version patterns (e.g., "PRD Candidate v3") and returns the latest version found. */
 function extractCoverageVersionFromLogs(phase: VersionedCoveragePhase, lines: string[]): number | null {
-  const candidateLabel = COVERAGE_PHASE_META[phase].candidateLabel
-  const escapedCandidateLabel = candidateLabel.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
-  const revisingPattern = new RegExp(`Coverage found .* ${escapedCandidateLabel} v(\\d+)\\. Revising candidate before the next audit pass\\.`, 'i')
-  const revisionProgressPattern = new RegExp(`coverage check \\d+ of \\d+: revising ${escapedCandidateLabel} v(\\d+) after`, 'i')
-  const revisedPattern = new RegExp(`Revised ${escapedCandidateLabel} v\\d+ into ${escapedCandidateLabel} v(\\d+)\\.`, 'i')
-  const genericVersionPattern = new RegExp(`${escapedCandidateLabel} v(\\d+)`, 'i')
+  const patterns = COVERAGE_VERSION_LOG_PATTERNS[phase]
 
   for (let index = lines.length - 1; index >= 0; index -= 1) {
     const line = lines[index] ?? ''
-    const revisingMatch = line.match(revisingPattern)
+    const revisingMatch = line.match(patterns.revising)
     if (revisingMatch) {
       const currentVersion = Number.parseInt(revisingMatch[1] ?? '', 10)
       return Number.isFinite(currentVersion) ? currentVersion + 1 : null
     }
 
-    const revisionProgressMatch = line.match(revisionProgressPattern)
+    const revisionProgressMatch = line.match(patterns.revisionProgress)
     if (revisionProgressMatch && !/\bmanual coverage fix\b/i.test(line)) {
       const currentVersion = Number.parseInt(revisionProgressMatch[1] ?? '', 10)
       return Number.isFinite(currentVersion) ? currentVersion + 1 : null
     }
 
-    const revisedMatch = line.match(revisedPattern)
+    const revisedMatch = line.match(patterns.revised)
     if (revisedMatch) {
       const nextVersion = Number.parseInt(revisedMatch[1] ?? '', 10)
       return Number.isFinite(nextVersion) ? nextVersion : null
     }
 
-    const genericMatch = line.match(genericVersionPattern)
+    const genericMatch = line.match(patterns.candidate)
     if (genericMatch) {
       const version = Number.parseInt(genericMatch[1] ?? '', 10)
       return Number.isFinite(version) ? version : null

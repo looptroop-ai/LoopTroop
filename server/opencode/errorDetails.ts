@@ -66,7 +66,7 @@ function sanitizeUrl(value: string | undefined): string | undefined {
     url.hash = ''
     return url.toString()
   } catch {
-    return cleaned.split(/[?#]/, 1)[0]
+    return sanitizeDiagnosticText(cleaned)
   }
 }
 
@@ -135,11 +135,22 @@ function findRetryErrorRecord(record: Record<string, unknown> | undefined, depth
   return undefined
 }
 
-function extractCauseDetails(error: unknown): Pick<ModelErrorInfo, 'transportCode' | 'causeMessage'> {
+function readTransportCode(record: Record<string, unknown> | undefined): string | undefined {
+  const explicit = getString(record?.transportCode)
+  if (explicit) return truncate(explicit, 80)
+  const code = getString(record?.code)
+  return code && /^(?:ECONN(?:RESET|REFUSED|ABORTED)|ENET(?:UNREACH|DOWN|RESET)|EHOST(?:UNREACH|DOWN)|EPIPE|ETIMEDOUT|EAI_(?:AGAIN|FAIL)|ENOTFOUND|UND_ERR_[A-Z_]+)$/i.test(code)
+    ? truncate(code, 80)
+    : undefined
+}
+
+function extractCauseDetails(error: unknown, selectedRecord: Record<string, unknown> | undefined): Pick<ModelErrorInfo, 'transportCode' | 'causeMessage'> {
   const root = toRecord(error)
-  let transportCode = truncate(getString(root?.transportCode) ?? getString(root?.code), 80)
-  let causeMessage = truncate(getString(root?.causeMessage))
-  const pending: unknown[] = [root?.cause]
+  let transportCode = readTransportCode(selectedRecord) ?? readTransportCode(root)
+  let causeMessage = truncate(getString(selectedRecord?.causeMessage) ?? getString(root?.causeMessage))
+  const pending: unknown[] = []
+  if (root?.cause !== undefined) pending.push(root.cause)
+  if (selectedRecord?.cause !== undefined && selectedRecord.cause !== root?.cause) pending.push(selectedRecord.cause)
   if (root?.name === 'AggregateError' && Array.isArray(root.errors)) pending.push(...root.errors.slice(0, 8))
   const seen = new Set<unknown>([error])
 
@@ -149,8 +160,8 @@ function extractCauseDetails(error: unknown): Pick<ModelErrorInfo, 'transportCod
     if (cause === undefined || seen.has(cause)) continue
     seen.add(cause)
     const record = toRecord(cause)
-    causeMessage = truncate(getString(record?.message) ?? (typeof cause === 'string' ? cause : undefined)) ?? causeMessage
-    transportCode = truncate(getString(record?.code), 80) ?? transportCode
+    causeMessage = truncate(getString(record?.causeMessage) ?? getString(record?.message) ?? (typeof cause === 'string' ? cause : undefined)) ?? causeMessage
+    transportCode = readTransportCode(record) ?? transportCode
     if (record?.cause !== undefined) pending.push(record.cause)
     if (record?.name === 'AggregateError' && Array.isArray(record.errors)) pending.push(...record.errors.slice(0, 8))
   }
@@ -179,7 +190,7 @@ export function extractModelErrorInfo(error: unknown): ModelErrorInfo | undefine
 
   const info: ModelErrorInfo = {
     name: cleanMessage(getString(record?.name)),
-    ...extractCauseDetails(error),
+    ...extractCauseDetails(error, record),
     message: cleanMessage(
       getString(record?.message)
       ?? getString(data?.message)

@@ -616,9 +616,23 @@ describe('handlePrdRefine', () => {
         winnerId,
         status: 'gaps',
         gaps: [coverageGap],
-        coverageRunNumber: 1,
+        coverageRunNumber: 3,
         maxCoveragePasses: 3,
         finalCandidateVersion: 1,
+        attempts: Array.from({ length: 3 }, (_, index) => ({
+          candidateVersion: 1,
+          status: 'gaps',
+          summary: coverageGap,
+          gaps: [coverageGap],
+          auditNotes: 'The approval response is still missing.',
+          response: 'status: gaps',
+          normalizedContent: 'status: gaps',
+          structuredOutput: { autoRetryCount: 0, repairApplied: false, repairWarnings: [] },
+          coverageRunNumber: index + 1,
+          maxCoveragePasses: 3,
+          limitReached: index === 2,
+          terminationReason: index === 2 ? 'limit_reached' : 'gaps',
+        })),
       }),
     })
     runOpenCodePromptMock
@@ -647,6 +661,14 @@ describe('handlePrdRefine', () => {
     })
 
     expect(runOpenCodePromptMock).toHaveBeenCalledTimes(2)
+    const promptLogs = readExecutionLogEntries(paths.executionLogPath)
+      .map((entry) => String(entry.message))
+      .filter((message) => /PRD manual coverage fix 1: coverage check/.test(message))
+    expect(promptLogs).toEqual(expect.arrayContaining([
+      expect.stringContaining('PRD manual coverage fix 1: coverage check 4: revising PRD Candidate v1 after 1 gap(s) were found; response attempt 1 of'),
+      expect.stringContaining('PRD manual coverage fix 1: coverage check 4: auditing PRD Candidate v2; response attempt 1 of'),
+    ]))
+    expect(promptLogs.some((message) => /coverage check \d+ of \d+/.test(message))).toBe(false)
     const revision = JSON.parse(getLatestPhaseArtifact(ticket.id, 'prd_coverage_revision', 'WAITING_PRD_APPROVAL')!.content)
     expect(revision).toMatchObject({
       winnerId: context.lockedMainImplementer,
@@ -660,7 +682,7 @@ describe('handlePrdRefine', () => {
     expect(coverage).toMatchObject({
       winnerId,
       status: 'clean',
-      coverageRunNumber: 1,
+      coverageRunNumber: 4,
       finalCandidateVersion: 2,
       remainingGaps: [],
       latestExtraFixSummary: expect.stringContaining('cleared all coverage gaps'),

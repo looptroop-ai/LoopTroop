@@ -1,6 +1,10 @@
+import { sanitizeDiagnosticText } from '../../shared/errorDiagnostics'
+
 export interface ModelErrorInfo {
   name?: string
   message?: string
+  transportCode?: string
+  causeMessage?: string
   providerId?: string
   providerModelId?: string
   statusCode?: number
@@ -19,17 +23,6 @@ export interface ModelErrorSummary {
 }
 
 const MAX_ERROR_PREVIEW_LENGTH = 280
-const REDACTED = '[redacted]'
-const CREDENTIAL_WORD_KEY_PATTERN = String.raw`(?:x[-_\s]?api[-_\s]?key|api[-_\s]?key|access[-_\s]?token|refresh[-_\s]?token|password|secret|authorization|cookie|set[-_\s]?cookie)`
-const CREDENTIAL_VALUE_PATTERN = new RegExp(
-  String.raw`(["']?(?:${CREDENTIAL_WORD_KEY_PATTERN})["']?\s*[:=]\s*)(["']?)(?:Bearer\s+)?([^"',\s}&]+)(\2)`,
-  'gi',
-)
-const BEARER_TOKEN_PATTERN = /\b(Bearer\s+)([A-Za-z0-9._~+/-]+=*)/gi
-const CREDENTIAL_WORD_PATTERN = new RegExp(
-  String.raw`\b(${CREDENTIAL_WORD_KEY_PATTERN})\s+(?:is\s+)?(["']?)([^"',\s}&]+)(\2)`,
-  'gi',
-)
 const URL_PATTERN = /\bhttps?:\/\/[^\s"',}]+/gi
 
 function toRecord(value: unknown): Record<string, unknown> | undefined {
@@ -67,6 +60,8 @@ function sanitizeUrl(value: string | undefined): string | undefined {
   if (!cleaned) return undefined
   try {
     const url = new URL(cleaned)
+    url.username = ''
+    url.password = ''
     url.search = ''
     url.hash = ''
     return url.toString()
@@ -78,21 +73,6 @@ function sanitizeUrl(value: string | undefined): string | undefined {
 function redactUrlQuery(value: string): string {
   URL_PATTERN.lastIndex = 0
   return value.replace(URL_PATTERN, (url) => sanitizeUrl(url) ?? url)
-}
-
-function redactSensitive(value: string): string {
-  CREDENTIAL_VALUE_PATTERN.lastIndex = 0
-  BEARER_TOKEN_PATTERN.lastIndex = 0
-  CREDENTIAL_WORD_PATTERN.lastIndex = 0
-  return redactUrlQuery(value)
-    .replace(/\bsk-[A-Za-z0-9_-]{8,}\b/g, REDACTED)
-    .replace(CREDENTIAL_VALUE_PATTERN, (_match, prefix: string, quote: string, _secret: string, closingQuote: string) =>
-      `${prefix}${quote}${REDACTED}${closingQuote}`,
-    )
-    .replace(CREDENTIAL_WORD_PATTERN, (_match, key: string, quote: string, _secret: string, closingQuote: string) =>
-      `${key} ${quote}${REDACTED}${closingQuote}`,
-    )
-    .replace(BEARER_TOKEN_PATTERN, `$1${REDACTED}`)
 }
 
 function trimQuotes(value: string): string {
@@ -109,7 +89,7 @@ function trimQuotes(value: string): string {
 
 function cleanMessage(value: string | undefined): string | undefined {
   if (!value) return undefined
-  const trimmed = redactSensitive(trimQuotes(value))
+  const trimmed = redactUrlQuery(sanitizeDiagnosticText(trimQuotes(value))).trim()
   return trimmed.length > 0 ? trimmed : undefined
 }
 
@@ -143,16 +123,39 @@ function unwrapErrorRecord(error: unknown): Record<string, unknown> | undefined 
   }
 }
 
-function findRetryErrorRecord(record: Record<string, unknown> | undefined): Record<string, unknown> | undefined {
-  if (!record || !Array.isArray(record.errors)) return undefined
+function findRetryErrorRecord(record: Record<string, unknown> | undefined, depth = 0): Record<string, unknown> | undefined {
+  if (!record || !Array.isArray(record.errors) || depth >= 8) return undefined
 
   for (let index = record.errors.length - 1; index >= 0; index -= 1) {
     const candidate = unwrapErrorRecord(record.errors[index])
     if (!candidate) continue
-    return findRetryErrorRecord(candidate) ?? candidate
+    return findRetryErrorRecord(candidate, depth + 1) ?? candidate
   }
 
   return undefined
+}
+
+function extractCauseDetails(error: unknown): Pick<ModelErrorInfo, 'transportCode' | 'causeMessage'> {
+  const root = toRecord(error)
+  let transportCode = truncate(getString(root?.transportCode) ?? getString(root?.code), 80)
+  let causeMessage = truncate(getString(root?.causeMessage))
+  const pending: unknown[] = [root?.cause]
+  if (root?.name === 'AggregateError' && Array.isArray(root.errors)) pending.push(...root.errors.slice(0, 8))
+  const seen = new Set<unknown>([error])
+
+  // Error causes can be circular or aggregate; inspect only a bounded chain.
+  for (let index = 0; index < pending.length && index < 8; index += 1) {
+    const cause = pending[index]
+    if (cause === undefined || seen.has(cause)) continue
+    seen.add(cause)
+    const record = toRecord(cause)
+    causeMessage = truncate(getString(record?.message) ?? (typeof cause === 'string' ? cause : undefined)) ?? causeMessage
+    transportCode = truncate(getString(record?.code), 80) ?? transportCode
+    if (record?.cause !== undefined) pending.push(record.cause)
+    if (record?.name === 'AggregateError' && Array.isArray(record.errors)) pending.push(...record.errors.slice(0, 8))
+  }
+
+  return { transportCode, causeMessage }
 }
 
 export function extractModelErrorInfo(error: unknown): ModelErrorInfo | undefined {
@@ -176,6 +179,7 @@ export function extractModelErrorInfo(error: unknown): ModelErrorInfo | undefine
 
   const info: ModelErrorInfo = {
     name: cleanMessage(getString(record?.name)),
+    ...extractCauseDetails(error),
     message: cleanMessage(
       getString(record?.message)
       ?? getString(data?.message)

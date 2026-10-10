@@ -5,6 +5,7 @@ import type { Message, StreamEvent } from '../types'
 import { OpenCodeV1Transport, type OpenCodeV1Client } from '../v1Transport'
 import { V2OpenCodeTransport } from '../v2Transport'
 import { OpenCodePromptReceiptUnavailableError } from '../transport'
+import { buildOpenCodeBlockedErrorDiagnostics } from '../blockedErrorDiagnostics'
 
 const realSetTimeout = globalThis.setTimeout.bind(globalThis)
 const realClearTimeout = globalThis.clearTimeout.bind(globalThis)
@@ -156,6 +157,99 @@ function withCertifiedPrefix(events: OpenCodeTransportEventEnvelope[]): OpenCode
 }
 
 describe('OpenCode adapter transport orchestration', () => {
+  it('preserves a connection cause and identifies an idle-wait failure before dispatch', async () => {
+    const cause = Object.assign(new Error('socket closed'), { code: 'ECONNRESET' })
+    const fetchError = new TypeError('fetch failed', { cause })
+    const { transport } = createV2Transport({
+      waitForIdle: vi.fn(async () => { throw fetchError }),
+    })
+
+    await expect(createAdapter(transport).promptSession(
+      'session-1', [{ type: 'text', content: 'prompt' }], undefined,
+      { model: { providerID: 'provider', modelID: 'model' } },
+    )).rejects.toMatchObject({
+      cause: fetchError,
+      blockedErrorDiagnostics: {
+        kind: 'transport',
+        modelId: 'provider/model',
+        sessionId: 'session-1',
+        operation: 'waiting for the session to become idle before sending the prompt',
+        transportCode: 'ECONNRESET',
+        causeMessage: 'socket closed',
+        summary: expect.stringContaining('LoopTroop could not communicate with OpenCode while waiting for the session to become idle before sending the prompt'),
+      },
+    })
+    expect(transport.dispatchPrompt).not.toHaveBeenCalled()
+  })
+
+  it('does not claim whether a v1 prompt was accepted when its blocking request fails', async () => {
+    const fetchError = new TypeError('fetch failed')
+    const transport = createV1Transport({ dispatchPrompt: vi.fn(async () => { throw fetchError }) })
+
+    await expect(createAdapter(transport).promptSession('session-1', [{ type: 'text', content: 'prompt' }]))
+      .rejects.toMatchObject({
+        cause: fetchError,
+        blockedErrorDiagnostics: {
+          kind: 'transport',
+          operation: 'sending the prompt or waiting for its response',
+          summary: expect.stringContaining('The exact connection cause was not reported.'),
+        },
+      })
+    expect(transport.dispatchPrompt).toHaveBeenCalledOnce()
+  })
+
+  it('keeps nested causes when accepted-prompt recovery cannot read session history', async () => {
+    const fetchError = new TypeError('fetch failed', {
+      cause: Object.assign(new Error('connection refused'), { code: 'ECONNREFUSED' }),
+    })
+    const { transport, source, markDispatched } = createV2Transport({
+      readSessionLog: vi.fn(async (_id, after?: number) => {
+        if (after === 53) throw fetchError
+        return { events: [], cursor: after ?? 50, coverageComplete: after !== undefined }
+      }),
+      dispatchPrompt: vi.fn(async () => {
+        markDispatched()
+        source.push(
+          inboxEvent('inbox_enqueued', 'inbox-own', 51),
+          executionEvent('execution_started', 52),
+          inboxEvent('inbox_delivered', 'inbox-own', 53),
+        )
+        source.fail(new Error('stream disconnected'))
+        return { kind: 'accepted' as const, receipt: { inboxID: 'inbox-own' } }
+      }),
+    })
+
+    await expect(createAdapter(transport).promptSession('session-1', [{ type: 'text', content: 'prompt' }]))
+      .rejects.toMatchObject({
+        cause: { cause: fetchError },
+        blockedErrorDiagnostics: {
+          operation: 'waiting for the accepted prompt to finish',
+          transportCode: 'ECONNREFUSED',
+          causeMessage: 'connection refused',
+        },
+      })
+  })
+
+  it('retains the original connection cause when creating a session fails', async () => {
+    const fetchError = new TypeError('fetch failed', {
+      cause: Object.assign(new Error('address lookup failed'), { code: 'ENOTFOUND' }),
+    })
+    const transport = createV1Transport({ createSession: vi.fn(async () => { throw fetchError }) })
+
+    const error = await createAdapter(transport).createSession('/workspace').catch((failure: unknown) => failure)
+    expect(error).toMatchObject({
+      cause: fetchError,
+      blockedErrorDiagnostics: {
+        operation: 'creating an OpenCode session',
+        transportCode: 'ENOTFOUND',
+        causeMessage: 'address lookup failed',
+      },
+    })
+    const outerDiagnostics = buildOpenCodeBlockedErrorDiagnostics({ error, modelId: 'winner/model' })
+    expect(outerDiagnostics.diagnostics?.modelId).toBe('winner/model')
+    expect(outerDiagnostics.diagnostics?.sessionId).toBeUndefined()
+  })
+
   it('accepts a stock v2 live turn through the HTTP transport when post-snapshot history is empty', async () => {
     const encoder = new TextEncoder()
     let eventController: ReadableStreamDefaultController<Uint8Array> | undefined

@@ -199,6 +199,7 @@ function extractCoverageVersionFromLogs(phase: VersionedCoveragePhase, lines: st
   const candidateLabel = COVERAGE_PHASE_META[phase].candidateLabel
   const escapedCandidateLabel = candidateLabel.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
   const revisingPattern = new RegExp(`Coverage found .* ${escapedCandidateLabel} v(\\d+)\\. Revising candidate before the next audit pass\\.`, 'i')
+  const revisionProgressPattern = new RegExp(`coverage check \\d+ of \\d+: revising ${escapedCandidateLabel} v(\\d+) after`, 'i')
   const revisedPattern = new RegExp(`Revised ${escapedCandidateLabel} v\\d+ into ${escapedCandidateLabel} v(\\d+)\\.`, 'i')
   const genericVersionPattern = new RegExp(`${escapedCandidateLabel} v(\\d+)`, 'i')
 
@@ -207,6 +208,12 @@ function extractCoverageVersionFromLogs(phase: VersionedCoveragePhase, lines: st
     const revisingMatch = line.match(revisingPattern)
     if (revisingMatch) {
       const currentVersion = Number.parseInt(revisingMatch[1] ?? '', 10)
+      return Number.isFinite(currentVersion) ? currentVersion + 1 : null
+    }
+
+    const revisionProgressMatch = line.match(revisionProgressPattern)
+    if (revisionProgressMatch && !/\bmanual coverage fix\b/i.test(line)) {
+      const currentVersion = Number.parseInt(revisionProgressMatch[1] ?? '', 10)
       return Number.isFinite(currentVersion) ? currentVersion + 1 : null
     }
 
@@ -302,6 +309,7 @@ function extractCoveragePassFromArtifacts(phase: CoveragePhase, artifacts: Ticke
 
 function extractCoveragePassFromLogs(lines: string[]): CoveragePassProgress | null {
   const runPatterns = [
+    /\bcoverage\s+check\s+(\d+)\s+(?:of|\/)\s+(\d+)\b/i,
     /\b(?:run|pass)\s+(\d+)\s*(?:\/|of)\s*(\d+)\b/i,
     /\((\d+)\s*\/\s*(\d+)\)/,
   ]

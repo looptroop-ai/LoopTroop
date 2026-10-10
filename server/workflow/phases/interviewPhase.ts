@@ -93,11 +93,54 @@ import {
   emitCouncilDecisionLogs,
   buildCouncilQuorumErrorWithDiagnostics,
   buildStructuredMetadata,
+  stringifyToolDetail,
   mapCouncilStageToStatus,
 } from './helpers'
 import type { OpenCodeStreamState } from './types'
 
 const INTERVIEW_BATCH_IN_FLIGHT_ARTIFACT = 'interview_batch_in_flight'
+
+function logInterviewBatchNormalization(
+  ticketId: string,
+  externalId: string,
+  modelId: string,
+  sessionId: string,
+  batch: BatchResponse,
+) {
+  if (!batch.structuredOutput || (!batch.structuredOutput.repairWarnings.length && !batch.structuredOutput.autoRetryCount)) return
+  const metadata = buildStructuredMetadata(batch.structuredOutput)
+  const interventions = (metadata.interventions ?? []).map((intervention) => ({
+    ...intervention,
+    ...(intervention.technicalDetail ? { technicalDetail: stringifyToolDetail(intervention.technicalDetail, 1000) } : {}),
+    ...(intervention.rawMessages ? { rawMessages: intervention.rawMessages.map((message) => stringifyToolDetail(message, 1000)) } : {}),
+    ...(intervention.examples ? { examples: intervention.examples.map((example) => ({
+      ...example,
+      ...(example.before ? { before: stringifyToolDetail(example.before, 1000) } : {}),
+      ...(example.after ? { after: stringifyToolDetail(example.after, 1000) } : {}),
+    })) } : {}),
+  }))
+  const content = [
+    'Interview output normalization:',
+    ...interventions.filter((intervention) => intervention.stage !== 'retry')
+      .map((intervention) => stringifyToolDetail(`${intervention.title}: ${intervention.exactCorrection ?? intervention.summary}`, 1000)),
+    ...(metadata.autoRetryCount > 0 ? [`Interview output accepted after ${metadata.autoRetryCount} structured retry attempt(s).`] : []),
+  ].join('\n')
+  const structuredOutput = {
+    ...metadata,
+    repairWarnings: metadata.repairWarnings.map((warning) => stringifyToolDetail(warning, 1000)),
+    ...(metadata.validationError ? { validationError: stringifyToolDetail(metadata.validationError, 1000) } : {}),
+    interventions,
+  }
+  emitModelSystemLog(
+    ticketId,
+    externalId,
+    'WAITING_INTERVIEW_ANSWERS',
+    'info',
+    content,
+    modelId,
+    { sessionId, structuredOutput },
+  )
+}
 
 interface InterruptedInterviewBatch {
   originalSnapshot: InterviewSessionSnapshot
@@ -1891,6 +1934,7 @@ export async function handleInterviewQAStart(
   const persistedBatch = buildPersistedBatch(firstBatch, 'prom4', baseSnapshot)
   const updatedSnapshot = recordPreparedBatch(baseSnapshot, persistedBatch)
   persistInterviewSession(ticketId, updatedSnapshot)
+  logInterviewBatchNormalization(ticketId, context.externalId, winnerId, sessionId, firstBatch)
 
   emitModelSystemLog(
     ticketId,
@@ -2266,6 +2310,7 @@ export async function handleInterviewQABatch(
       }
       throw error
     }
+    logInterviewBatchNormalization(ticketId, externalId, winnerId, result.sessionId ?? sessionInfo.sessionId, result)
 
     emitPhaseLog(
       ticketId,
@@ -2284,6 +2329,7 @@ export async function handleInterviewQABatch(
   const persistedNextBatch = buildPersistedBatch(result, 'prom4', answeredSnapshot)
   const updatedSnapshot = recordPreparedBatch(answeredSnapshot, persistedNextBatch)
   persistResultSnapshot(updatedSnapshot)
+  logInterviewBatchNormalization(ticketId, externalId, winnerId, result.sessionId ?? sessionInfo.sessionId, result)
 
   emitPhaseLog(ticketId, externalId, 'WAITING_INTERVIEW_ANSWERS', 'info',
     `PROM4 batch ${persistedNextBatch.batchNumber}: ${persistedNextBatch.questions.length} questions. Progress: ${persistedNextBatch.progress.current}/${persistedNextBatch.progress.total}.`)

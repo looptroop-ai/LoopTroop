@@ -51,6 +51,7 @@ import {
 } from "@/components/ui/tooltip";
 import { CancelTicketDialog } from "@/components/ticket/CancelTicketDialog";
 import { sanitizeErrorForDisplay } from "@shared/errorDisplay";
+import { normalizeBlockedErrorDiagnostics } from "@shared/errorDiagnostics";
 
 const MAX_RETRY_NOTE_LENGTH = 20_000;
 
@@ -156,6 +157,12 @@ function buildDiagnosticRows(
     rows.push({ label: "Request model", value: diagnostics.requestModel });
   if (diagnostics.sessionId)
     rows.push({ label: "Session", value: diagnostics.sessionId });
+  if (diagnostics.operation)
+    rows.push({ label: "Operation", value: diagnostics.operation });
+  if (diagnostics.transportCode)
+    rows.push({ label: "Connection code", value: diagnostics.transportCode });
+  if (diagnostics.causeMessage)
+    rows.push({ label: "Underlying cause", value: diagnostics.causeMessage });
   if (typeof diagnostics.statusCode === "number")
     rows.push({ label: "HTTP", value: String(diagnostics.statusCode) });
   if (diagnostics.providerErrorType)
@@ -201,8 +208,23 @@ function buildDiagnosticRows(
       label: "Input tokens",
       value: diagnostics.inputTokens.toLocaleString(),
     });
+  if (typeof diagnostics.cacheReadTokens === "number")
+    rows.push({
+      label: "Cache read tokens",
+      value: diagnostics.cacheReadTokens.toLocaleString(),
+    });
+  if (typeof diagnostics.cacheWriteTokens === "number")
+    rows.push({
+      label: "Cache write tokens",
+      value: diagnostics.cacheWriteTokens.toLocaleString(),
+    });
 
-  return rows;
+  return rows
+    .map(({ label, value }) => ({
+      label,
+      value: sanitizeErrorForDisplay(value),
+    }))
+    .filter((row) => row.value.length > 0);
 }
 
 function normalizeErrorText(value: string): string {
@@ -382,17 +404,17 @@ function ErrorTechnicalDetails({
   primaryErrorMessage: string;
 }) {
   if (!occurrence) return null;
-  const diagnostics = occurrence.diagnostics ?? null;
+  const diagnostics = normalizeBlockedErrorDiagnostics(occurrence.diagnostics);
   const diagnosticRows = diagnostics
     ? buildDiagnosticRows(diagnostics, primaryErrorMessage)
     : [];
+  const responseBodyPreview = diagnostics?.responseBodyPreview ?? "";
   const displayErrorCodes = occurrence.errorCodes
     .map((code) => sanitizeErrorForDisplay(code))
     .filter((code) => code.length > 0);
 
   return (
     <details
-      open
       className="rounded border border-border bg-background/70 px-2 py-1.5 text-[11px]"
     >
       <summary className="cursor-pointer font-medium text-foreground">
@@ -457,6 +479,21 @@ function ErrorTechnicalDetails({
                 </div>
               ))}
             </div>
+            {responseBodyPreview && (
+              <div className="space-y-1">
+                <div className="text-muted-foreground/80">
+                  Provider response preview
+                </div>
+                <pre
+                  role="region"
+                  aria-label="Provider response preview"
+                  tabIndex={0}
+                  className="max-h-48 overflow-y-auto font-mono text-foreground whitespace-pre-wrap [overflow-wrap:anywhere]"
+                >
+                  {responseBodyPreview}
+                </pre>
+              </div>
+            )}
           </div>
         )}
       </div>
@@ -588,6 +625,12 @@ export function ErrorView({
   const logCtx = useLogs();
   const activeOccurrence = getActiveErrorOccurrence(ticket);
   const visibleOccurrence = occurrence ?? activeOccurrence;
+  // Synthetic occurrence timestamps follow polling updates, not new failures.
+  const technicalDetailsOccurrenceId =
+    !ticket.errorOccurrences?.length &&
+    visibleOccurrence?.id === activeOccurrence?.id
+      ? [visibleOccurrence?.blockedFromStatus, visibleOccurrence?.errorMessage]
+      : visibleOccurrence?.id;
   const retryActionLabel =
     visibleOccurrence?.blockedFromStatus === "CODING" &&
     visibleOccurrence.errorCodes.includes(BEAD_RETRY_BUDGET_EXHAUSTED) &&
@@ -664,7 +707,9 @@ export function ErrorView({
     isSetupRuntimeError &&
     visibleOccurrence?.blockedFromStatus === "PREPARING_EXECUTION_ENV" &&
     ticket.availableActions.includes("edit_execution_setup_plan");
-  const diagnostics = visibleOccurrence?.diagnostics ?? null;
+  const diagnostics = normalizeBlockedErrorDiagnostics(
+    visibleOccurrence?.diagnostics,
+  );
   const diagnosticSummary = sanitizeErrorForDisplay(diagnostics?.summary ?? "");
   const rawPrimaryErrorMessage =
     visibleOccurrence?.errorMessage ||
@@ -934,6 +979,7 @@ export function ErrorView({
               )}
               {isLiveCodingError && <LiveCodingBeadContext ticket={ticket} />}
               <ErrorTechnicalDetails
+                key={JSON.stringify([ticket.id, technicalDetailsOccurrenceId])}
                 occurrence={visibleOccurrence}
                 primaryErrorMessage={primaryErrorMessage}
               />

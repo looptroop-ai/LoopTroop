@@ -134,6 +134,7 @@ function buildDefaultRule(code: string): StructuredInterventionRule {
     parser_unbalanced_quote: 'Quote Balance Repair',
     parser_wrapper_key: 'Wrapper Key',
     parser_xml_tags: 'XML Tag Strip',
+    parser_interview_batch_field_tags: 'Interview Field Tag Repair',
     cleanup_duplicate_ids: 'Duplicate ID Repair',
     cleanup_refinement_id_stability: 'Refinement ID Stability Repair',
     cleanup_final_free_form_empty: 'Final Free-Form Empty Answer',
@@ -436,6 +437,20 @@ function buildExactInterventionDetails(
 
     return {
       exactCorrection: 'Removed XML-style wrapper tags around the payload before reparsing.',
+    }
+  }
+
+  if (code === 'parser_interview_batch_field_tags') {
+    const match = warning.match(/^Repaired interview batch field tag at ([a-z_.]+), payload line (\d+): ("(?:\\.|[^"\\])*") -> ("(?:\\.|[^"\\])*")\.$/)
+    if (match) {
+      try {
+        const before = JSON.parse(match[3]!) as string
+        const after = JSON.parse(match[4]!) as string
+        return {
+          exactCorrection: `Corrected the formatting of ${match[1]} at payload line ${match[2]}. The emitted value was preserved.`,
+          examples: [{ scope: `${match[1]} (payload line ${match[2]})`, before, after: after || '[removed]' }],
+        }
+      } catch { /* keep the raw warning if its example cannot be decoded */ }
     }
   }
 
@@ -827,6 +842,19 @@ function buildIntervention(
 function deriveInterventionFromWarning(warning: string): StructuredIntervention {
   const normalized = warning.trim().toLowerCase()
 
+  if (/^Repaired interview batch field tag at /i.test(warning)) {
+    return buildIntervention(warning, {
+      code: 'parser_interview_batch_field_tags',
+      stage: 'parse',
+      category: 'parser_fix',
+      title: 'Converted interview field tags to YAML fields',
+      summary: 'The model put tags around individual fields inside the interview batch.',
+      why: 'Tags around field names hide the YAML structure needed to read the questions and progress.',
+      how: 'LoopTroop converted recognized interview fields to YAML, preserved their emitted values, and validated the repaired batch.',
+    })
+  }
+
+
   // ── Dropped category ──────────────────────────────────────────────────
 
   if (/^dropped no-op .* refinement .* (?:identical|unchanged)/i.test(warning)) {
@@ -934,6 +962,7 @@ function deriveInterventionFromWarning(warning: string): StructuredIntervention 
   }
 
   // ── Parser fix category (specific sub-patterns) ───────────────────────
+
 
   if (/terminal noise/i.test(normalized)) {
     return buildIntervention(warning, {

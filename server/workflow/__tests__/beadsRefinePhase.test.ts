@@ -606,6 +606,12 @@ describe('handleBeadsRefine', () => {
     await handleCoverageVerification(ticket.id, context, sendEvent, 'beads', new AbortController().signal)
     await handleBeadsExpansion(ticket.id, context, sendEvent, new AbortController().signal)
 
+    const logMessages = readFileSync(paths.executionLogPath, 'utf-8').split('\n').filter(Boolean).map((line) => String((JSON.parse(line) as { message: string }).message))
+    expect(logMessages).toEqual(expect.arrayContaining([
+      expect.stringContaining('Implementation plan coverage check 1 of 5: auditing Implementation Plan v1; response attempt 1 of'),
+      expect.stringContaining('Implementation plan coverage check 1 of 5: revising Implementation Plan v1 after 1 gap(s) were found; response attempt 1 of'),
+      expect.stringContaining('Implementation plan coverage check 2 of 5: auditing Implementation Plan v2; response attempt 1 of'),
+    ]))
     expect(runOpenCodePromptMock).toHaveBeenCalledTimes(4)
     expect(runOpenCodePromptMock.mock.calls.map(([options]) => options.variant)).toEqual(['high', 'high', 'high', 'high'])
     expect(sendEvent).toHaveBeenCalledWith({ type: 'COVERAGE_CLEAN' })

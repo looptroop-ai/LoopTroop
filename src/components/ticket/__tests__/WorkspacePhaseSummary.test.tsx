@@ -510,6 +510,10 @@ describe("WorkspacePhaseSummary", () => {
           "[SYS] Coverage found 2 gap(s) in PRD Candidate v1. Revising candidate before the next audit pass.",
           "2026-01-01T00:00:02.000Z",
         ),
+        createLogEntry(
+          "Reconnected to existing OpenCode session ses-example ready for PRD coverage check 2 of 5: revising PRD Candidate v1 after 2 gap(s) were found; response attempt 2 of 3. Preparing the request.",
+          "2026-01-01T00:00:03.000Z",
+        ),
       ],
     };
 
@@ -866,11 +870,11 @@ describe("WorkspacePhaseSummary", () => {
             "2026-01-01T00:01:00.000Z",
           ),
           createLogEntry(
-            "Coverage verification started using winning model: test-vendor/test-model (run 3/5).",
+            "PRD coverage check 3 of 5: auditing PRD Candidate v2; response attempt 2 of 3.",
             "2026-01-01T00:02:00.000Z",
           ),
           createLogEntry(
-            "PRD Candidate v2 is being checked.",
+            "Preparing the request for PRD Candidate v2; response attempt 3 of 3.",
             "2026-01-01T00:03:00.000Z",
           ),
         ],

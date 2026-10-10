@@ -515,6 +515,61 @@ describe('handlePrdRefine', () => {
     return { ticket, context, paths, winnerId, interviewContent, fullAnswersContent, winnerDraftContent, refinement }
   }
 
+  it('identifies a revision connection failure after the audit found gaps and preserves its diagnostics', async () => {
+    const { ticket, context, paths, winnerId } = await setupCoverageTest()
+    context.lockedStructuredRetryCount = 2
+    const connectionError = Object.assign(new Error('Failed to prompt OpenCode session: fetch failed'), {
+      blockedErrorDiagnostics: { kind: 'transport', source: 'opencode', summary: 'Connection reset while preparing the request.', modelId: winnerId, sessionId: 'coverage-reconnected', transportCode: 'ECONNRESET' },
+      blockedErrorCodes: ['OPENCODE_PROMPT_RECEIPT_UNAVAILABLE'],
+      openCodePromptReceiptUnavailable: true,
+    })
+    runOpenCodePromptMock.mockResolvedValueOnce({
+      session: { id: 'coverage-audit', projectPath: paths.worktreePath },
+      response: 'status: gaps\ngaps: [Missing acceptance check, Missing deployment check]\nfollow_up_questions: []',
+      messages: [],
+    }).mockImplementationOnce(async (options: Parameters<typeof import('../runOpenCodePrompt').runOpenCodePrompt>[0]) => {
+      options.onSessionCreated?.({ id: 'coverage-reconnected', projectPath: paths.worktreePath }, { reconnected: true })
+      throw connectionError
+    })
+
+    const error = await handleCoverageVerification(ticket.id, context, vi.fn(), 'prd', new AbortController().signal)
+      .then(() => null, (caught: unknown) => caught)
+
+    expect(error).toMatchObject({
+      cause: connectionError,
+      openCodePromptReceiptUnavailable: true,
+      blockedErrorDiagnostics: connectionError.blockedErrorDiagnostics,
+      blockedErrorCodes: connectionError.blockedErrorCodes,
+    })
+    expect((error as Error).message).toContain('PRD coverage check 1 of 5: revising PRD Candidate v1 after 2 gap(s) were found; response attempt 1 of 3 failed:')
+    expect(getLatestPhaseArtifact(ticket.id, 'prd_coverage', 'VERIFYING_PRD_COVERAGE')).toBeUndefined()
+    const entries = readExecutionLogEntries(paths.executionLogPath)
+    expect(entries).toEqual(expect.arrayContaining([
+      expect.objectContaining({ message: expect.stringContaining('Reconnected to existing OpenCode session coverage-reconnected ready for PRD coverage check 1 of 5: revising'), modelId: winnerId, sessionId: 'coverage-reconnected' }),
+    ]))
+    expect(entries.some((entry) => String(entry.message).includes('sending PRD coverage'))).toBe(false)
+  })
+
+  it('does not attribute a failed replacement-session creation to the previous response attempt', async () => {
+    const { ticket, context, paths } = await setupCoverageTest()
+    context.lockedStructuredRetryCount = 1
+    runOpenCodePromptMock.mockImplementationOnce(async (options: Parameters<typeof import('../runOpenCodePrompt').runOpenCodePrompt>[0]) => {
+      const session = { id: 'completed-invalid-response', projectPath: paths.worktreePath }
+      options.onSessionCreated?.(session, { reconnected: false })
+      return { session, response: '', messages: [] }
+    }).mockRejectedValueOnce(new Error('Failed to create OpenCode session: fetch failed'))
+
+    const error = await handleCoverageVerification(ticket.id, context, vi.fn(), 'prd', new AbortController().signal)
+      .then(() => null, (caught: unknown) => caught)
+
+    expect((error as Error).message).toContain('PRD coverage check 1 of 5: auditing PRD Candidate v1; response attempt 2 of 2 failed:')
+    expect(error).toMatchObject({ blockedErrorDiagnostics: { modelId: TEST.councilMembers[0] } })
+    expect((error as { blockedErrorDiagnostics: { sessionId?: string } }).blockedErrorDiagnostics.sessionId).toBeUndefined()
+    expect(readExecutionLogEntries(paths.executionLogPath)).toEqual(expect.arrayContaining([
+      expect.objectContaining({ message: expect.stringContaining('response attempt 2 of 2. Previous response rejected:') }),
+    ]))
+  })
+
   it('uses prd_winner + prd_refined artifacts during PRD coverage verification', async () => {
     const { ticket, context, paths, refinement, fullAnswersContent } = await setupCoverageTest()
     const sendEvent = vi.fn()
@@ -687,7 +742,7 @@ describe('handlePrdRefine', () => {
     expect(runOpenCodePromptMock).toHaveBeenCalledTimes(2)
     expect(sendEvent).not.toHaveBeenCalled()
     expect(error).toBeInstanceOf(Error)
-    expect((error as Error).message).toContain('Coverage output failed validation after 1 structured retry attempt(s): No coverage result content found')
+    expect((error as Error).message).toContain('response attempt 2 of 2 failed validation after 1 structured retry attempt(s): No coverage result content found')
     expect((error as Error).message).not.toContain('The usage limit has been reached')
     expect(error).toMatchObject({
       blockedErrorDiagnostics: {
@@ -1012,8 +1067,11 @@ describe('handlePrdRefine', () => {
 
     const entries = readExecutionLogEntries(paths.executionLogPath)
     expect(entries).toEqual(expect.arrayContaining([
+      expect.objectContaining({ message: expect.stringContaining('PRD coverage check 1 of 5: auditing PRD Candidate v1; response attempt 1 of') }),
+      expect.objectContaining({ message: expect.stringContaining('PRD coverage check 1 of 5: revising PRD Candidate v1 after 1 gap(s) were found; response attempt 2 of') }),
+      expect.objectContaining({ message: expect.stringContaining('PRD coverage check 2 of 5: auditing PRD Candidate v2; response attempt 1 of') }),
       expect.objectContaining({
-        message: expect.stringContaining(`Coverage verification started using winning model: ${winnerId}`),
+        message: expect.stringContaining(`Preparing PRD coverage with winning model: ${winnerId}`),
         source: 'system',
         modelId: winnerId,
       }),

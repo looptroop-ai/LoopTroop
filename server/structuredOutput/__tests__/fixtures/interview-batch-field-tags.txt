@@ -1,0 +1,47 @@
+<INTERVIEW_BATCH>
+<batch_number>1</batch_number>
+<progress>
+  <current>1</current>
+  <total>9</total>
+</progress>
+<is_final_free_form>false</is_final_free_form>
+<ai_commentary>
+Starting the interview with the foundation phase. Q01 is open-ended (who consumes this and why), so I'm giving it focused attention as a single-question-style anchor, then pairing it with two quick factual questions — Q02 on API stability and Q03 on the exact constructor signature/input types — since they're tightly related and low-friction. This establishes scope and intent before I move into structure and assembly.
+</ai_commentary>
+<questions>
+  - id: "Q01"
+    question: "Who is the primary consumer of this feature and what real-world scenario does it solve? For example, is it mainly for CLI tools that print a table of query results and want to show a friendly 'no results' message, or are there other intended use cases (e.g., dashboards, logs, REPLs)?"
+    phase: "Foundation"
+    priority: "critical"
+    rationale: "This anchors the entire feature: the intended consumer and scenario drive decisions about API surface, styling defaults, and test intent downstream."
+    answer_type: "free_text"
+  - id: "Q02"
+    question: "Is this intended as a stable public API addition that should be documented in the Rich docs and survive across minor versions, or is it an experimental/internal convenience for a specific downstream project?"
+    phase: "Foundation"
+    priority: "high"
+    rationale: "Determines whether we invest in docs, changelog, and long-term backward-compatibility guarantees, or treat it as a lightweight internal helper."
+    answer_type: "single_choice"
+    options:
+      - id: "opt1"
+        label: "Stable public API — documented, survives minor versions"
+      - id: "opt2"
+        label: "Experimental/internal convenience for a specific downstream project"
+      - id: "opt3"
+        label: "Public API but behind a feature flag for now"
+  - id: "Q03"
+    question: "What is the exact constructor signature and supported input type for the message? For example, a keyword-only parameter `empty_message: Optional[TextType] = None` on `Table.__init__` that accepts `str` or `rich.text.Text` but not arbitrary renderables — is that the intended scope, or should users be able to pass richer renderables like `Panel` or other `RenderableType`?"
+    phase: "Foundation"
+    priority: "high"
+    rationale: "The accepted type set directly shapes the implementation (type checks, wrapping logic) and the docs/examples, so pinning it early avoids rework."
+    answer_type: "single_choice"
+    options:
+      - id: "opt1"
+        label: "`str` or `rich.text.Text` only (TextType), keyword-only, default None"
+      - id: "opt2"
+        label: "Any `RenderableType` (str, Text, Panel, etc.)"
+      - id: "opt3"
+        label: "`str` only, converted to `Text` internally"
+      - id: "opt4"
+        label: "`str`, `Text`, or any single-line renderable"
+</parameter>
+</INTERVIEW_BATCH>

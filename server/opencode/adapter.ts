@@ -45,7 +45,11 @@ import {
   SDK_OPERATION_TIMEOUT_MS,
 } from "../lib/constants";
 import { analyzeAssistantMessages } from "./assistantMessageAnalysis";
-import { summarizeModelErrorForLog } from "./errorDetails";
+import { extractModelErrorInfo, summarizeModelErrorForLog } from "./errorDetails";
+import {
+  attachOpenCodeBlockedErrorDiagnostics,
+  buildOpenCodeBlockedErrorDiagnostics,
+} from "./blockedErrorDiagnostics";
 import { enrichGenericOpenCodeProviderError } from "./logDiagnostics";
 import { getErrorMessage } from "@shared/typeGuards";
 import { isAbortError } from "../lib/abort";
@@ -321,14 +325,19 @@ export class OpenCodeSDKAdapter implements OpenCodeAdapter {
       )
         throw err;
       const errorMessage = getErrorMessage(err);
-      if (options?.permission) {
-        throw new Error(
-          `Failed to create OpenCode session with allow-all permissions: ${errorMessage}. ` +
+      const error = new Error(
+        options?.permission
+          ? `Failed to create OpenCode session with allow-all permissions: ${errorMessage}. ` +
             "Allow-all sessions require an OpenCode server that supports session-scoped permissions. " +
-            "Upgrade OpenCode, then restart LoopTroop (`looptroop restart`) or the OpenCode server it uses.",
-        );
-      }
-      throw new Error(`Failed to create OpenCode session: ${errorMessage}`);
+            "Upgrade OpenCode, then restart LoopTroop (`looptroop restart`) or the OpenCode server it uses."
+          : `Failed to create OpenCode session: ${errorMessage}`,
+        { cause: err },
+      );
+      Object.assign(error, { openCodeOperation: "creating an OpenCode session" });
+      throw attachOpenCodeBlockedErrorDiagnostics(
+        error,
+        buildOpenCodeBlockedErrorDiagnostics({ error }),
+      );
     }
   }
 
@@ -355,6 +364,7 @@ export class OpenCodeSDKAdapter implements OpenCodeAdapter {
     let streamAbortController: AbortController | undefined;
     let streamDrain: Promise<{ ended: boolean; error?: unknown }> | undefined;
     let streamDrainWaited = false;
+    let operation = "preparing the prompt";
     this.activePromptSessions.add(sessionId);
 
     try {
@@ -370,7 +380,9 @@ export class OpenCodeSDKAdapter implements OpenCodeAdapter {
         ? AbortSignal.any([operationSignal, dispatchAbortController.signal])
         : dispatchAbortController.signal;
 
+      operation = "connecting to OpenCode";
       const transport = await this.getTransport(operationSignal);
+      operation = "checking the OpenCode session";
       const directory = await this.resolveSessionDirectory(
         sessionId,
         operationSignal,
@@ -495,6 +507,7 @@ export class OpenCodeSDKAdapter implements OpenCodeAdapter {
         }
       };
       if (transport.protocol === "v2") {
+        operation = "checking session history before sending the prompt";
         if (typeof transport.listPendingInboxes !== "function") {
           throw new Error(
             "OpenCode v2 pending inbox state is unavailable; refusing to dispatch without a verified inbox boundary",
@@ -510,6 +523,7 @@ export class OpenCodeSDKAdapter implements OpenCodeAdapter {
           if (operationSignal?.aborted || isAbortError(error)) throw error;
           throw new Error(
             `OpenCode v2 history is unavailable; cannot establish a safe cursor before waiting for the session: ${getErrorMessage(error)}`,
+            { cause: error },
           );
         }
         const bootstrapCursorIsValid =
@@ -583,6 +597,7 @@ export class OpenCodeSDKAdapter implements OpenCodeAdapter {
           if (operationSignal?.aborted || isAbortError(error)) throw error;
           throw new Error(
             `OpenCode v2 history is unavailable before waiting for the session: ${getErrorMessage(error)}`,
+            { cause: error },
           );
         }
         if (
@@ -603,8 +618,10 @@ export class OpenCodeSDKAdapter implements OpenCodeAdapter {
           operationSignal,
         );
       }
+      operation = "waiting for the session to become idle before sending the prompt";
       await transport.waitForIdle(sessionId, directory, operationSignal);
       if (transport.protocol === "v2") {
+        operation = "checking session history after the idle wait";
         try {
           idleLog = await transport.readSessionLog(
             sessionId,
@@ -615,6 +632,7 @@ export class OpenCodeSDKAdapter implements OpenCodeAdapter {
           if (operationSignal?.aborted || isAbortError(error)) throw error;
           throw new Error(
             `OpenCode v2 history is unavailable after waiting for the session: ${getErrorMessage(error)}`,
+            { cause: error },
           );
         }
         if (
@@ -629,7 +647,9 @@ export class OpenCodeSDKAdapter implements OpenCodeAdapter {
           idleLog.cursor!,
           "after waiting for the session",
         );
+        operation = "waiting for the session to become idle before sending the prompt";
         await transport.waitForIdle(sessionId, directory, operationSignal);
+        operation = "checking pending session work before sending the prompt";
         const pendingAfterIdle = await transport.listPendingInboxes!(
           sessionId,
           directory,
@@ -642,6 +662,7 @@ export class OpenCodeSDKAdapter implements OpenCodeAdapter {
         }
       }
       if (promptOptions.permission && transport.protocol === "v1") {
+        operation = "applying OpenCode session permissions";
         try {
           await transport.updateSession(
             sessionId,
@@ -654,11 +675,13 @@ export class OpenCodeSDKAdapter implements OpenCodeAdapter {
           throw new Error(
             `Failed to apply OpenCode session permissions: ${getErrorMessage(error)}. ` +
               "Session permission updates require a current OpenCode server; upgrade OpenCode, then restart LoopTroop (`looptroop restart`) or the OpenCode server it uses.",
+            { cause: error },
           );
         }
       }
 
       if (transport.protocol === "v1") {
+        operation = "opening the OpenCode response stream";
         subscription = await transport.subscribeToEvents(
           sessionId,
           directory,
@@ -672,6 +695,7 @@ export class OpenCodeSDKAdapter implements OpenCodeAdapter {
       let baselineMessages: Message[] = [];
       let snapshotBaselineIds: Set<string> | undefined;
       try {
+        operation = "reading session messages before sending the prompt";
         baselineMessages = await transport.getSessionMessages(
           sessionId,
           directory,
@@ -982,7 +1006,9 @@ export class OpenCodeSDKAdapter implements OpenCodeAdapter {
           .catch(async (error) => {
             permissionReplyFailure = new Error(
               `Failed to ${deniedByPolicy ? "reject" : "auto-approve"} OpenCode permission ${streamEvent.permission ?? streamEvent.permissionId}: ${getErrorMessage(error)}`,
+              { cause: error },
             );
+            Object.assign(permissionReplyFailure, { openCodeOperation: "replying to an OpenCode permission request" });
             lifecycle.failure = permissionReplyFailure.message;
             finishLifecycle({
               kind: "conflict",
@@ -1190,6 +1216,7 @@ export class OpenCodeSDKAdapter implements OpenCodeAdapter {
           if (operationSignal?.aborted || isAbortError(error)) throw error;
           throw new Error(
             `OpenCode v2 history is unavailable ${purpose}: ${getErrorMessage(error)}`,
+            { cause: error },
           );
         }
         if (
@@ -1283,6 +1310,7 @@ export class OpenCodeSDKAdapter implements OpenCodeAdapter {
       };
 
       if (promptOptions.permission && transport.protocol === "v2") {
+        operation = "applying OpenCode session permissions";
         try {
           await transport.updateSession(
             sessionId,
@@ -1295,10 +1323,12 @@ export class OpenCodeSDKAdapter implements OpenCodeAdapter {
           throw new Error(
             `Failed to apply OpenCode session permissions: ${getErrorMessage(error)}. ` +
               "Session permission updates require a current OpenCode server; upgrade OpenCode, then restart LoopTroop (`looptroop restart`) or the OpenCode server it uses.",
+            { cause: error },
           );
         }
       }
       if (transport.protocol === "v2") {
+        operation = "checking session history before sending the prompt";
         if (lastCursor === undefined) {
           throw new Error(
             "OpenCode v2 history is unavailable; refusing to dispatch without a durable event cursor",
@@ -1335,6 +1365,9 @@ export class OpenCodeSDKAdapter implements OpenCodeAdapter {
           : {}),
       };
       if (transport.protocol === "v2") v2DispatchStarted = true;
+      operation = transport.protocol === "v1"
+        ? "sending the prompt or waiting for its response"
+        : "sending the prompt and confirming its receipt";
       const dispatchPromise = transport.dispatchPrompt(
         dispatchRequest,
         dispatchSignal,
@@ -1378,6 +1411,7 @@ export class OpenCodeSDKAdapter implements OpenCodeAdapter {
       }
       if (dispatched?.kind === "accepted") {
         if (promptOptions.noReply === true) return "";
+        operation = "waiting for the accepted prompt to finish";
         lifecycle.receiptID = dispatched.receipt.inboxID;
         checkLifecycle();
         await reconcilePendingPermissionEvents();
@@ -1405,6 +1439,7 @@ export class OpenCodeSDKAdapter implements OpenCodeAdapter {
           );
           const error = new Error(
             summary.message || "OpenCode execution failed",
+            { cause: terminal.error },
           );
           Object.assign(error, {
             details: terminal.error,
@@ -1414,6 +1449,7 @@ export class OpenCodeSDKAdapter implements OpenCodeAdapter {
           error.name = "OpenCodeSessionError";
           throw error;
         }
+        operation = "collecting the completed response";
         const snapshot = await this.readAssistantSnapshotWithRetry(
           sessionId,
           undefined,
@@ -1445,6 +1481,7 @@ export class OpenCodeSDKAdapter implements OpenCodeAdapter {
         }
         responseText = snapshot.responseText;
       } else if (dispatched) {
+        operation = "collecting the completed response";
         const completedMessage = dispatched.message;
         if (
           !completedMessage.id ||
@@ -1565,8 +1602,17 @@ export class OpenCodeSDKAdapter implements OpenCodeAdapter {
         );
       return responseText;
     } catch (err) {
-      if (permissionReplyFailure) throw permissionReplyFailure;
+      const attachPromptDiagnostics = (error: Error) => {
+        Object.assign(error, { openCodeOperation: (error as Error & { openCodeOperation?: string }).openCodeOperation ?? operation });
+        return attachOpenCodeBlockedErrorDiagnostics(error, buildOpenCodeBlockedErrorDiagnostics({
+          error,
+          modelId: model ? `${model.providerID}/${model.modelID}` : undefined,
+          sessionId,
+        }));
+      };
+      if (permissionReplyFailure) throw attachPromptDiagnostics(permissionReplyFailure);
       if (err instanceof OpenCodePromptReceiptUnavailableError) {
+        const causeDetails = extractModelErrorInfo(err);
         const error = operationSignal?.aborted
           ? operationSignal.reason instanceof Error
             ? operationSignal.reason
@@ -1581,6 +1627,9 @@ export class OpenCodeSDKAdapter implements OpenCodeAdapter {
             kind: "runtime" as const,
             source: "opencode" as const,
             summary: err.message,
+            operation,
+            transportCode: causeDetails?.transportCode,
+            causeMessage: causeDetails?.causeMessage,
             ...(model
               ? { modelId: `${model.providerID}/${model.modelID}` }
               : {}),
@@ -1602,19 +1651,21 @@ export class OpenCodeSDKAdapter implements OpenCodeAdapter {
       if (enriched) {
         const error = new Error(
           `Failed to prompt OpenCode session: ${enriched.message}`,
+          { cause: err },
         );
         Object.assign(error, {
           details: enriched.details,
           modelErrorDetails: enriched.details,
         });
-        throw error;
+        throw attachPromptDiagnostics(error);
       }
       if (promptSignal?.aborted) throw err;
       if (operationSignal?.aborted && operationSignal.reason instanceof Error)
         throw operationSignal.reason;
-      throw new Error(
+      throw attachPromptDiagnostics(new Error(
         `Failed to prompt OpenCode session: ${getErrorMessage(err)}`,
-      );
+        { cause: err },
+      ));
     } finally {
       streamAbortController?.abort();
       if (streamDrain !== undefined && !streamDrainWaited)
@@ -2386,6 +2437,7 @@ export class OpenCodeSDKAdapter implements OpenCodeAdapter {
         if (signal?.aborted || isAbortError(error)) throw error;
         throw new Error(
           `OpenCode v2 history is unavailable for accepted prompt recovery: ${getErrorMessage(error)}`,
+          { cause: error },
         );
       }
       if (!hasCompleteV2LogCoverage(cursor, log)) {

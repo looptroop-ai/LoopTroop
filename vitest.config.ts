@@ -329,6 +329,7 @@ const serverIntegrationTests = [
   'server/phases/executionSetupPlan/__tests__/generator.test.ts',
   'server/phases/manualQa/__tests__/operations.test.ts',
   'server/storage/__tests__/ticketQueries.test.ts',
+  'server/storage/__tests__/ticketArtifacts.test.ts',
   'server/storage/__tests__/projectWorktreeCleanup.test.ts',
   'server/workflow/__tests__/executionSetupPhase.test.ts',
   'server/workflow/__tests__/executionSetupPlanPhase.test.ts',
